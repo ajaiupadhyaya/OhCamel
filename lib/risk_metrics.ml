@@ -131,6 +131,30 @@ let covariance xs ys =
 let variance xs = covariance xs xs
 let stddev xs = Float.sqrt (variance xs)
 
+(* Is this series constant for practical purposes?
+
+   Not the same question as [variance xs = 0.0], and the difference matters more
+   than it looks. Take ten copies of 0.0425: the true variance is zero, but the
+   mean cannot be represented exactly, so each deviation is a rounding residue
+   around 1e-17 and the computed variance is about 1e-33 -- small, but not zero.
+   Divide one such residue by another, as [beta] does, and the answer is a ratio
+   of two noise terms: a number like -0.3, finite and plausible and completely
+   fabricated. On a dashboard that reads as "the book is inversely exposed to
+   rates", which is a claim about the world derived entirely from float error.
+
+   So the test is relative to the series' own magnitude. A relative standard
+   deviation below 1e-12 is not a small movement; it is four orders of magnitude
+   below anything float arithmetic can distinguish from noise at this scale, and
+   twelve below anything an economic series does.
+
+   The all-zero series is constant by definition and is handled first, since
+   there is no magnitude to be relative to. *)
+let is_effectively_constant ?(relative_tolerance = 1e-12) xs =
+  validate_non_empty ~name:"series" xs;
+  let scale = Array.fold xs ~init:0.0 ~f:(fun acc x -> Float.max acc (Float.abs x)) in
+  if Float.equal scale 0.0 then true
+  else Float.( <= ) (stddev xs) (relative_tolerance *. scale)
+
 (* Rolling beta of an asset against a factor: cov(asset, factor) / var(factor).
 
    The caller decides what "rolling" means by choosing the window it passes; this
@@ -138,12 +162,20 @@ let stddev xs = Float.sqrt (variance xs)
    genuinely undefined there rather than zero -- a constant factor explains
    nothing, and reporting 0.0 would read as "no exposure". *)
 let beta ~asset ~factor =
-  let var_f = variance factor in
-  if Float.equal var_f 0.0 then
+  (* [is_effectively_constant] rather than a test against exact zero. A factor
+     that is constant up to float noise divides one rounding residue by another
+     and returns a finite, plausible, entirely fabricated number -- see the note
+     on that function. Raising here is the same judgement as the original: a
+     constant factor explains nothing, so beta is undefined, and 0.0 would be
+     misread as "no exposure".
+
+     Live callers must not let this escape a node body. graph.ml checks the same
+     predicate before calling, because a flat rate series is an ordinary day. *)
+  if is_effectively_constant factor then
     invalid_arg
-      "risk_metrics: factor series has zero variance, beta is undefined (a constant \
-       factor explains nothing; 0.0 would be misread as 'no exposure')";
-  covariance asset factor /. var_f
+      "risk_metrics: factor series does not move, beta is undefined (a constant factor \
+       explains nothing; 0.0 would be misread as 'no exposure')";
+  covariance asset factor /. variance factor
 
 (* Portfolio standard deviation from weights and a covariance matrix:
    sqrt(w' * Sigma * w).

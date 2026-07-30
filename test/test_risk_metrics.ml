@@ -111,6 +111,53 @@ let test_beta () =
   Alcotest.check feq "perfectly inverted" (-1.0)
     (RM.beta ~asset:[| 4.; 3.; 2.; 1. |] ~factor:[| 1.; 2.; 3.; 4. |])
 
+(* "Constant" has to mean constant-up-to-float-noise, not variance = 0.0.
+
+   Ten copies of 0.0425 have a true variance of zero, but 0.0425 has no exact
+   binary representation, so the computed mean is off by a rounding residue and
+   the computed variance lands around 1e-33 rather than on zero.
+
+   This is the case that motivated the function. Before it existed, [beta]
+   tested for exact zero, let this series through, and divided one noise term by
+   another -- returning -0.3. Finite, plausible, and pure float error. Read on a
+   dashboard it asserts the book is inversely exposed to rates. *)
+let test_effectively_constant () =
+  let repeated v n = Array.create ~len:n v in
+  Alcotest.(check bool)
+    "0.0425 repeated: variance is ~1e-33, not 0.0, but the series is constant" true
+    (RM.is_effectively_constant (repeated 0.0425 10));
+  Alcotest.(check bool)
+    "exactly representable repeats" true
+    (RM.is_effectively_constant (repeated 0.5 10));
+  Alcotest.(check bool)
+    "all zeros -- constant, and no magnitude to be relative to" true
+    (RM.is_effectively_constant (repeated 0.0 10));
+  Alcotest.(check bool)
+    "a single observation cannot vary" true
+    (RM.is_effectively_constant [| 0.0425 |]);
+  (* And it must not swallow real movement, however small. A one-basis-point
+     move in a rate series is a genuine observation, not noise. *)
+  Alcotest.(check bool)
+    "a 1bp move is real" false
+    (RM.is_effectively_constant [| 0.0425; 0.0426; 0.0425 |]);
+  Alcotest.(check bool)
+    "ordinary returns" false
+    (RM.is_effectively_constant [| -0.05; 0.01; 0.03 |]);
+  (* The threshold is relative, so the same absolute movement is real at one
+     scale and noise at another. 1e-9 against values of order 1 is real; against
+     values of order 1e6 it is fifteen orders down and is not. *)
+  Alcotest.(check bool)
+    "1e-9 movement at scale 1 is real" false
+    (RM.is_effectively_constant [| 1.0; 1.000000001 |]);
+  Alcotest.(check bool)
+    "the same movement at scale 1e6 is not" true
+    (RM.is_effectively_constant [| 1e6; 1e6 +. 1e-9 |])
+
+(* The regression, stated at the level it actually bit: beta itself. *)
+let test_beta_rejects_a_noise_constant_factor () =
+  check_invalid_arg "factor constant only up to float noise" (fun () ->
+      RM.beta ~asset:[| 0.01; -0.02; 0.03; 0.00 |] ~factor:(Array.create ~len:4 0.0425))
+
 (* w'Sigma w with w = [0.5; 0.5].
 
    Uncorrelated, Sigma = [[0.04, 0], [0, 0.04]]:
@@ -203,6 +250,10 @@ let suite =
       Alcotest.test_case "variance" `Quick test_variance;
       Alcotest.test_case "covariance" `Quick test_covariance;
       Alcotest.test_case "beta" `Quick test_beta;
+      Alcotest.test_case "constant means constant up to float noise" `Quick
+        test_effectively_constant;
+      Alcotest.test_case "beta rejects a factor that is constant up to noise" `Quick
+        test_beta_rejects_a_noise_constant_factor;
       Alcotest.test_case "portfolio stddev" `Quick test_portfolio_stddev;
       Alcotest.test_case "portfolio parametric VaR" `Quick test_portfolio_parametric_var;
       Alcotest.test_case "covariance matrix" `Quick test_covariance_matrix;

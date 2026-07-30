@@ -176,6 +176,10 @@ module Time = struct
      accidentally reintroduce the deprecated sexp representation. *)
   let epoch = Time_ns.epoch
   let now = Time_ns.now
+  let diff = Time_ns.diff
+  let add = Time_ns.add
+
+  module Span = Time_ns.Span
 end
 
 module Tick = struct

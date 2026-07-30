@@ -35,10 +35,18 @@
                                                      \     +--> historical_var --> var_notional
                                                       \    +--> expected_shortfall --> es_notional
                                                        +------> parametric_var
+                                                            |
+     factor_returns ----------------------------------------+--> portfolio_beta
                                                                         |
      (each limit reads exactly one of the nodes above) --> limit[name] -+--> breaches
 
-   The two edges worth staring at, because they are the ones that justify the
+     -- and, deliberately disconnected from everything above --
+
+     last_tick[S] --+
+                    +--> feed[S] --> feed_health
+     now -----------+
+
+   The three edges worth staring at, because they are the ones that justify the
    architecture:
 
    - [covariance] hangs off [aligned_returns] and NOTHING else. A price tick
@@ -51,8 +59,16 @@
      tick in an unrelated name leaves it strictly untouched -- not "recomputed
      and found equal", but never visited.
 
-   test/test_graph.ml asserts both of those as recomputation counts. That test
-   is the architectural premise stated as an executable claim.
+   - The feed-health branch is a DEAD END on purpose. [now] is advanced by a
+     timer, and if any risk node were downstream of it, that timer would
+     recompute the book on a schedule -- which is precisely the poll-driven
+     design this project exists to replace. Staleness is time-dependent and has
+     to be; the discipline is that nothing else may be. Note the asymmetry:
+     [feed[S]] depends on [last_tick[S]], never on [price[S]], so the two
+     branches share an event but not an edge.
+
+   test/test_graph.ml asserts all three as recomputation counts. That test is
+   the architectural premise stated as an executable claim.
    ------------------------------------------------------------------------ *)
 
 open Core
@@ -91,6 +107,61 @@ module Node_name = struct
   let equity = "equity"
   let drawdown = "current_drawdown"
   let breaches = "breaches"
+  let portfolio_beta = "portfolio_beta"
+  let feed (s : Symbol.t) = "feed:" ^ Symbol.to_string s
+  let feed_health = "feed_health"
+end
+
+(* Is the data arriving?
+
+   This exists because the most dangerous failure a risk engine has is not a
+   wrong number, it is a right-looking number computed from inputs that stopped
+   arriving twenty minutes ago. Every other value in this module answers "what
+   is the risk"; this one answers "should you believe the answer".
+
+   [never_seen] and [stale] are distinct states and are kept distinct. A symbol
+   that has never printed since startup is a subscription that did not take --
+   a configuration problem. A symbol that printed and then went quiet is a feed
+   that dropped, or a name that simply is not trading. Collapsing them into one
+   "no data" flag would hide which of those is happening at the moment you most
+   need to know. *)
+module Feed_health = struct
+  module Symbol_state = struct
+    type t = {
+      symbol : Symbol.t;
+      last_tick : Time.t option;
+      never_seen : bool;
+      stale : bool;
+    }
+    [@@deriving sexp_of, compare, equal, fields ~getters]
+  end
+
+  type t = {
+    symbols : Symbol_state.t list;
+    stale : Symbol.t list;
+    never_seen : Symbol.t list;
+  }
+  [@@deriving sexp_of, fields ~getters]
+
+  (* Age is deliberately NOT a field, and this is the design decision worth
+     understanding in this module.
+
+     Age changes continuously -- by definition, every time the clock moves. A
+     node holding it would therefore produce a new value on every clock tick and
+     wake everything downstream, forever, whether or not anything decision-
+     relevant had happened. The obvious dodge, cutting off on the other fields
+     and letting age ride along, is worse: the node would then report an age it
+     had already declared unchanged, which is a stale number wearing a fresh
+     timestamp -- exactly the failure this whole branch exists to detect.
+
+     So the graph computes the CLASSIFICATION, which changes rarely, and age is
+     derived here on demand from a timestamp the caller already has. *)
+  let age ~(now : Time.t) (state : Symbol_state.t) : Time.Span.t option =
+    Option.map state.Symbol_state.last_tick ~f:(fun tick -> Time.diff now tick)
+
+  (* True when every symbol has printed recently. The single bit a dashboard
+     puts a colour on; the lists above are what it shows when the bit is red. *)
+  let all_healthy t = List.is_empty t.stale && List.is_empty t.never_seen
 end
 
 (* Everything the engine currently believes, read out in one consistent pass.
@@ -122,7 +193,15 @@ module Snapshot = struct
     parametric_var : float option;
     value_at_risk_notional : Notional.t option;
     expected_shortfall_notional : Notional.t option;
+    (* Rolling beta of the book against the macro factor series. [None] for the
+         same reason as the risk numbers above, plus one more: a factor that has
+         not moved over the window makes beta genuinely undefined rather than
+         zero. Flat rate series are routine, not exceptional. *)
+    portfolio_beta : float option;
     warming_up : bool;
+    (* Whether the inputs the numbers above were computed from are still
+         arriving. Read this before reading anything else. *)
+    feed_health : Feed_health.t;
     (* Limits that could be evaluated, breached or not -- a limit sitting at
          30% of its cap is information, so non-breaches are kept. *)
     breaches : Breach.t list;
@@ -142,6 +221,7 @@ type t = {
   confidence : float;
   return_window : int;
   equity_history_limit : int;
+  staleness_threshold : Time.Span.t;
   (* Inputs. These are the only mutable cells in the system; everything else
        is a function of them. *)
   price_vars : Price.t Inc.Var.t Symbol.Map.t;
@@ -149,6 +229,15 @@ type t = {
   returns_vars : float array Inc.Var.t Symbol.Map.t;
   cash_var : Notional.t Inc.Var.t;
   equity_history_var : float array Inc.Var.t;
+  (* The macro factor's return window, fed by fred_client.ml. Separate from
+       [returns_vars] because it is not an instrument: nothing is held in it,
+       so it contributes to beta and to nothing else. *)
+  factor_returns_var : float array Inc.Var.t;
+  (* Feed liveness. [last_tick_vars] is written by [apply_tick]; [now_var] is
+       advanced by a timer. Both feed the dead-end branch described at the top
+       of this file and must never be read by a risk node. *)
+  last_tick_vars : Time.t option Inc.Var.t Symbol.Map.t;
+  now_var : Time.t Inc.Var.t;
   (* Outputs. Incremental is demand-driven: a node with no observer is not
        recomputed at all, so every value the engine is supposed to publish has
        to be observed here or it silently goes stale. *)
@@ -166,6 +255,8 @@ type t = {
   obs_equity : Notional.t Inc.Observer.t;
   obs_drawdown : float Inc.Observer.t;
   obs_breaches : Breach.t option list Inc.Observer.t;
+  obs_portfolio_beta : float option Inc.Observer.t;
+  obs_feed_health : Feed_health.t Inc.Observer.t;
   (* Closures that release the observers above. Held as thunks so [destroy]
        does not have to name fourteen differently-typed observers. *)
   releases : (unit -> unit) list;
@@ -189,8 +280,9 @@ let find_var (vars : 'a Inc.Var.t Symbol.Map.t) (symbol : Symbol.t) ~(what : str
    ------------------------------------------------------------------------- *)
 
 let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zero)
-    ?(equity_history_limit = 10_000) ~(instruments : Instrument.t list)
-    ~(limits : Limit.t list) ~(confidence : float) ~(return_window : int) () : t =
+    ?(equity_history_limit = 10_000) ?(staleness_threshold = Time.Span.of_sec 90.0)
+    ~(instruments : Instrument.t list) ~(limits : Limit.t list) ~(confidence : float)
+    ~(return_window : int) () : t =
   if List.is_empty instruments then invalid_arg "graph: need at least one instrument";
   (match
      List.find_a_dup instruments ~compare:(fun a b ->
@@ -213,6 +305,10 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
   if equity_history_limit < 1 then
     invalid_argf "graph: equity_history_limit must be positive, got %d"
       equity_history_limit ();
+  if Time.Span.( <= ) staleness_threshold Time.Span.zero then
+    invalid_argf "graph: staleness_threshold must be positive, got %s"
+      (Time.Span.to_string_hum staleness_threshold)
+      ();
   (* Validated before a single node exists, so that no node body can ever raise:
      an exception during stabilization leaves the graph in a state Incremental
      cannot recover, and a risk engine that dies on a bad limit definition is
@@ -269,6 +365,15 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
   in
   let cash_var = make_var ~equal:Notional.equal starting_cash in
   let equity_history_var = make_var ~equal:(Array.equal Float.equal) [||] in
+  let factor_returns_var = make_var ~equal:(Array.equal Float.equal) [||] in
+  (* [None] rather than the epoch for "never seen". The epoch would make a
+     symbol that has never printed look like one that printed in 1970, which is
+     a difference the feed-health node exists to report. *)
+  let last_tick_vars =
+    Symbol.Map.of_alist_exn
+      (List.map symbols ~f:(fun s -> (s, make_var ~equal:(Option.equal Time.equal) None)))
+  in
+  let now_var = make_var ~equal:Time.equal Time.epoch in
   (* --- exposure --------------------------------------------------------- *)
   (* Depends on exactly one instrument's price and quantity, because market
      value is price x quantity and nothing else enters into it. One node per
@@ -433,6 +538,50 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
         Option.map covariance ~f:(fun covariance ->
             Risk_metrics.portfolio_parametric_var ~weights ~covariance ~confidence))
   in
+  (* Rolling beta of the book against the macro factor series that fred_client.ml
+     supplies. Depends on the book's own return series and on the factor's, and
+     on nothing else -- beta is a property of two return series, so positions
+     reach it only through the weights that shape [portfolio_returns].
+
+     The two series are trimmed to a common length at the RIGHT edge, exactly as
+     [aligned_returns] does and for the same reason: FRED publishes daily and the
+     book's window fills at its own rate, so the two are almost never the same
+     length. Aligning at the left would regress this week's book against last
+     month's rates.
+
+     Returns [None] rather than raising, in three cases:
+
+     - either series is too short to have a second moment;
+     - the factor never moved over the window. Risk_metrics.beta raises here,
+       and it is right to: a constant factor explains nothing, so beta is
+       undefined rather than zero. But a flat rate series is ROUTINE -- rates do
+       not move most days -- so what is an exceptional condition for a pure
+       function is an ordinary Tuesday for this node. A node body that raised
+       would take the whole graph down on a quiet day.
+     - anything else Risk_metrics.beta objects to.
+
+     Every node body in this module is total; this is the one where that
+     property took real thought. *)
+  let portfolio_beta_node =
+    Inc.map2 portfolio_returns_node (Inc.Var.watch factor_returns_var)
+      ~f:(fun portfolio factor ->
+        note Node_name.portfolio_beta;
+        match portfolio with
+        | None -> None
+        | Some portfolio ->
+            let common = Int.min (Array.length portfolio) (Array.length factor) in
+            if common < 2 then None
+            else
+              let tail xs = Array.sub xs ~pos:(Array.length xs - common) ~len:common in
+              (* [Risk_metrics.beta] raises on a factor that does not move.
+                 Testing the same predicate here rather than catching the
+                 exception keeps the reason for [None] explicit at the call site
+                 -- a bare try-with would also swallow a genuine bug in the
+                 metric, which is the last thing a risk number should do. *)
+              let factor = tail factor in
+              if Risk_metrics.is_effectively_constant factor then None
+              else Some (Risk_metrics.beta ~asset:(tail portfolio) ~factor))
+  in
   (* Return-space risk is a fraction; a limit is written in dollars. Because the
      weights are normalised by gross, r_p * gross is the book's P&L, so gross is
      exactly the right multiplier -- and it is a graph edge rather than a
@@ -518,6 +667,64 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
         note Node_name.breaches;
         results)
   in
+  (* --- feed health ------------------------------------------------------- *)
+  (* A separate branch of the graph that shares no edge with anything above.
+
+     Read the dependencies carefully, because the discipline is in what is
+     ABSENT: [feed[S]] depends on [last_tick[S]] and on [now]. It does NOT
+     depend on [price[S]], even though the same event writes both cells. And
+     nothing upstream depends on [now] -- if any risk node did, the timer that
+     advances the clock would recompute the book on a schedule, which is
+     precisely the polling design this project exists to replace.
+
+     One node per symbol rather than one node over all of them, for the same
+     reason as everywhere else: a tick in one name should not re-examine the
+     liveness of every other. Advancing [now] does recompute all of them, but
+     that is honest -- every symbol's age genuinely changed. *)
+  let feed_nodes =
+    Map.mapi last_tick_vars ~f:(fun ~key:symbol ~data:last_tick_var ->
+        (* Full structural equality, which is only honest because the state
+           holds no continuously-changing field -- see the note on [age] in
+           Feed_health. So a clock tick that leaves every status alone genuinely
+           produces the same value, and stops here. *)
+        cutoff ~equal:Feed_health.Symbol_state.equal
+          (Inc.map2 (Inc.Var.watch last_tick_var) (Inc.Var.watch now_var)
+             ~f:(fun last_tick now ->
+               note (Node_name.feed symbol);
+               {
+                 Feed_health.Symbol_state.symbol;
+                 last_tick;
+                 never_seen = Option.is_none last_tick;
+                 stale =
+                   (match last_tick with
+                   (* Never seen is its own state, not staleness. A symbol that
+                      has never printed is a subscription that did not take; one
+                      that printed and stopped is a feed that dropped. *)
+                   | None -> false
+                   | Some tick -> Time.Span.( > ) (Time.diff now tick) staleness_threshold);
+               })))
+  in
+  (* Depends on the per-symbol states and NOT on [now] directly, so it changes
+     only when some symbol's status actually flips. That makes feed health
+     edge-triggered: an observer on it fires when the answer changes, not every
+     time the clock moves. Phase 3's dashboard stream depends on this -- a health
+     panel that re-rendered every five seconds to say the same thing is how a
+     status display becomes something people stop looking at. *)
+  let feed_health_node =
+    Inc.map
+      (Inc.all (Map.data feed_nodes))
+      ~f:(fun states ->
+        note Node_name.feed_health;
+        {
+          Feed_health.symbols = states;
+          stale =
+            List.filter_map states ~f:(fun s ->
+                if s.Feed_health.Symbol_state.stale then Some s.symbol else None);
+          never_seen =
+            List.filter_map states ~f:(fun s ->
+                if s.Feed_health.Symbol_state.never_seen then Some s.symbol else None);
+        })
+  in
   let t =
     {
       instruments = instruments_map;
@@ -525,11 +732,15 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
       confidence;
       return_window;
       equity_history_limit;
+      staleness_threshold;
       price_vars;
       qty_vars;
       returns_vars;
       cash_var;
       equity_history_var;
+      factor_returns_var;
+      last_tick_vars;
+      now_var;
       obs_exposure_by_instrument = observe exposure_map_node;
       obs_exposure_by_sector = observe sector_map_node;
       obs_gross = observe gross_node;
@@ -544,6 +755,8 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
       obs_equity = observe equity_node;
       obs_drawdown = observe drawdown_node;
       obs_breaches = observe breaches_node;
+      obs_portfolio_beta = observe portfolio_beta_node;
+      obs_feed_health = observe feed_health_node;
       releases = !releases;
     }
   in
@@ -585,8 +798,18 @@ let qty (t : t) (symbol : Symbol.t) : Qty.t =
 let cash (t : t) : Notional.t = Inc.Var.value t.cash_var
 let set_cash (t : t) (cash : Notional.t) : unit = Inc.Var.set t.cash_var cash
 
+(* A tick is a price AND an observation that the feed is alive. [set_price] does
+   only the former, which is why the two are separate entry points rather than
+   one: a manual reprice, a test, or a backfill should not make a dead feed look
+   healthy. Only something that actually arrived over the wire counts as
+   evidence of liveness, and only [apply_tick] is called from there.
+
+   The two writes go to different branches of the graph and never meet -- see
+   the diagram at the top of this file. *)
 let apply_tick (t : t) (tick : Tick.t) : unit =
-  set_price t (Tick.symbol tick) (Tick.price tick)
+  let symbol = Tick.symbol tick in
+  set_price t symbol (Tick.price tick);
+  Inc.Var.set (find_var t.last_tick_vars symbol ~what:"last tick") (Some (Tick.time tick))
 
 (* A fill moves two cells: the position and the cash that paid for it. Buying
    (positive quantity) spends cash, so the cash delta is the negation of the
@@ -629,6 +852,28 @@ let returns (t : t) (symbol : Symbol.t) : float array =
   Inc.Var.value (find_var t.returns_vars symbol ~what:"return window")
 
 let equity_history (t : t) : float array = Inc.Var.value t.equity_history_var
+
+(* The macro factor's return window. Set wholesale rather than appended to,
+   because fred_client.ml re-fetches the whole series on each poll -- FRED
+   revises past observations, so treating the series as append-only would keep a
+   value the publisher has since corrected. *)
+let set_factor_returns (t : t) (returns : float array) : unit =
+  Inc.Var.set t.factor_returns_var (Array.copy returns)
+
+let factor_returns (t : t) : float array = Inc.Var.value t.factor_returns_var
+
+(* Advance the staleness clock. Called by a timer, and the ONLY thing that
+   should ever write this cell.
+
+   Nothing in the risk chain is downstream of it -- see the diagram at the top
+   of this file, and test_graph.ml, which asserts the isolation as an exact
+   recomputation set. If that assertion ever fails, a risk node has acquired a
+   dependency on wall-clock time and this engine has quietly become a poller. *)
+let set_now (t : t) (now : Time.t) : unit = Inc.Var.set t.now_var now
+let now (t : t) : Time.t = Inc.Var.value t.now_var
+
+let last_tick (t : t) (symbol : Symbol.t) : Time.t option =
+  Inc.Var.value (find_var t.last_tick_vars symbol ~what:"last tick")
 
 (* Close the current equity mark and add it to the history the drawdown reads.
 
@@ -682,6 +927,8 @@ let expected_shortfall_notional (t : t) : Notional.t option =
 
 let equity (t : t) : Notional.t = Inc.Observer.value_exn t.obs_equity
 let current_drawdown (t : t) : float = Inc.Observer.value_exn t.obs_drawdown
+let portfolio_beta (t : t) : float option = Inc.Observer.value_exn t.obs_portfolio_beta
+let feed_health (t : t) : Feed_health.t = Inc.Observer.value_exn t.obs_feed_health
 
 (* Limits paired with their result, in the order they were configured. [None]
    means the limit's input was unavailable -- not that it passed. *)
@@ -706,7 +953,9 @@ let snapshot (t : t) : Snapshot.t =
     parametric_var = parametric_var t;
     value_at_risk_notional = value_at_risk_notional t;
     expected_shortfall_notional = expected_shortfall_notional t;
+    portfolio_beta = portfolio_beta t;
     warming_up = Option.is_none historical_var;
+    feed_health = feed_health t;
     breaches = List.filter_map results ~f:(fun (_, breach) -> breach);
     unevaluated_limits =
       List.filter_map results ~f:(fun (limit, breach) ->

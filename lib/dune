@@ -9,6 +9,20 @@
 (library
  (name ohcamel)
  (public_name ohcamel)
- (libraries core async incremental owl)
+ ; websocket-async brings the Alpaca market data stream; cohttp-async is the
+ ; HTTP client for FRED (and the server in Phase 3). Both reach TLS through
+ ; conduit-async, which only supports async_ssl as a backend -- hence the
+ ; explicit dependency rather than letting it be an optional extra.
+ (libraries
+  core
+  async
+  async_ssl
+  conduit-async
+  cohttp-async
+  websocket
+  websocket-async
+  yojson
+  incremental
+  owl)
  (preprocess
-  (pps ppx_jane)))
+  (pps ppx_jane ppx_yojson_conv)))

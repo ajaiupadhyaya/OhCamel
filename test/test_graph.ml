@@ -234,6 +234,75 @@ let test_covariance_matrix () =
           Alcotest.check float_eq "symmetric (2,1)" (get 1 2) (get 2 1))
     ()
 
+(* Beta of the book against the macro factor.
+
+   The portfolio return series is [base_returns] by construction, so a factor of
+   exactly twice that series gives a hand-derivable answer:
+
+     beta = cov(r, 2r) / var(2r) = 2*var(r) / 4*var(r) = 0.5
+
+   No arithmetic on the variance is needed, which is the point of choosing it. *)
+let test_portfolio_beta () =
+  with_graph
+    ~f:(fun graph _ ->
+      Graph.set_factor_returns graph (Array.map base_returns ~f:(fun r -> 2.0 *. r));
+      let s = Graph.snapshot graph in
+      Alcotest.check opt_float "beta against a 2x factor" (Some 0.5)
+        (Graph.Snapshot.portfolio_beta s);
+      (* A factor identical to the book's own returns gives exactly one. *)
+      Graph.set_factor_returns graph base_returns;
+      Alcotest.check opt_float "beta against itself" (Some 1.0)
+        (Graph.Snapshot.portfolio_beta (Graph.snapshot graph));
+      (* Inverted factor, inverted sign. *)
+      Graph.set_factor_returns graph negated_returns;
+      Alcotest.check opt_float "beta against the negation" (Some (-1.0))
+        (Graph.Snapshot.portfolio_beta (Graph.snapshot graph)))
+    ()
+
+(* The case that would otherwise take the graph down.
+
+   Risk_metrics.beta raises on a zero-variance factor, and it is right to: a
+   constant factor explains nothing, so beta is undefined rather than zero. But
+   a flat rate series is ROUTINE -- rates do not move most days -- so what is an
+   exceptional condition for a pure function is an ordinary Tuesday for a live
+   node. An exception raised inside a node body during stabilization takes the
+   whole graph with it, so this must be None and must never raise. *)
+let test_portfolio_beta_is_total () =
+  with_graph
+    ~f:(fun graph _ ->
+      Graph.set_factor_returns graph (Array.create ~len:10 0.0425);
+      Alcotest.check opt_float "a flat factor gives None, not an exception nor zero" None
+        (Graph.Snapshot.portfolio_beta (Graph.snapshot graph));
+      Graph.set_factor_returns graph [||];
+      Alcotest.check opt_float "no factor data yet" None
+        (Graph.Snapshot.portfolio_beta (Graph.snapshot graph));
+      Graph.set_factor_returns graph [| 0.01 |];
+      Alcotest.check opt_float "a single observation has no second moment" None
+        (Graph.Snapshot.portfolio_beta (Graph.snapshot graph));
+      (* And it recovers the moment the factor starts moving again. *)
+      Graph.set_factor_returns graph base_returns;
+      Alcotest.check opt_float "recovers once the factor moves" (Some 1.0)
+        (Graph.Snapshot.portfolio_beta (Graph.snapshot graph)))
+    ()
+
+(* FRED publishes daily and the book's window fills at its own rate, so the two
+   series are almost never the same length. They are trimmed to a common length
+   at the RIGHT edge -- the most recent observations -- because aligning at the
+   left would regress this week's book against last month's rates. *)
+let test_beta_aligns_at_the_recent_edge () =
+  with_graph
+    ~f:(fun graph _ ->
+      (* Ten portfolio observations against a much longer factor history whose
+         OLDEST values are garbage. If alignment took the left edge, the garbage
+         would dominate; taking the right edge, the last ten are exactly 2x the
+         book's series and beta is 0.5. *)
+      let noise = Array.create ~len:40 99.0 in
+      let recent = Array.map base_returns ~f:(fun r -> 2.0 *. r) in
+      Graph.set_factor_returns graph (Array.append noise recent);
+      Alcotest.check opt_float "only the most recent overlap is used" (Some 0.5)
+        (Graph.Snapshot.portfolio_beta (Graph.snapshot graph)))
+    ()
+
 (* ------------------------------------------------------------------------ *)
 (* 2. The architecture tests                                                 *)
 (* ------------------------------------------------------------------------ *)
@@ -248,7 +317,8 @@ let test_covariance_matrix () =
 
    Absent, and asserted absent by the set equality below: exposure:MSFT,
    exposure:XOM, sector:ENERGY, aligned_returns, covariance, limit:msft-cap,
-   limit:energy-cap. *)
+   limit:energy-cap -- and the whole feed-health branch, which a position change
+   has no business touching. *)
 let downstream_of_aapl_position =
   [
     "exposure:AAPL";
@@ -262,6 +332,7 @@ let downstream_of_aapl_position =
     "historical_var";
     "expected_shortfall";
     "parametric_var";
+    "portfolio_beta";
     "var_notional";
     "es_notional";
     "equity";
@@ -273,6 +344,15 @@ let downstream_of_aapl_position =
     "limit:dd-cap";
     "breaches";
   ]
+
+(* A tick reaches everything a position change does, plus exactly two more
+   nodes: the liveness record for that one symbol, and the aggregate that
+   summarises it.
+
+   That difference is the whole reason [apply_tick] and [set_price] are separate
+   entry points. A tick is evidence that the feed is alive; a manual reprice is
+   not, and must not be allowed to make a dead feed look healthy. *)
+let downstream_of_aapl_tick = downstream_of_aapl_position @ [ "feed:AAPL"; "feed_health" ]
 
 (* The README's test, in its own words: "changing one position only triggers
    recomputation of nodes that depend on it". *)
@@ -294,8 +374,9 @@ let test_position_change_is_local () =
             (Recorder.count recorder name)))
     ()
 
-(* A price tick has the same footprint as a position change, because exposure is
-   the product of the two and neither reaches anything the other does not. *)
+(* A price tick reaches the same risk nodes as a position change -- exposure is
+   the product of the two, and neither reaches anything the other does not --
+   plus the liveness record for that one symbol. *)
 let test_price_tick_is_local () =
   with_graph
     ~f:(fun graph recorder ->
@@ -303,7 +384,13 @@ let test_price_tick_is_local () =
         { Tick.symbol = aapl; price = Price.of_float 120.0; time = Time.epoch };
       Graph.stabilize graph;
       check_recomputed recorder ~msg:"an AAPL tick recomputes only AAPL's dependents"
-        ~expected:downstream_of_aapl_position)
+        ~expected:downstream_of_aapl_tick;
+      (* Only AAPL's liveness was touched. A tick in one name says nothing about
+         whether any other name is still printing. *)
+      Alcotest.(check int)
+        "MSFT liveness untouched" 0
+        (Recorder.count recorder "feed:MSFT");
+      Alcotest.(check int) "XOM liveness untouched" 0 (Recorder.count recorder "feed:XOM"))
     ()
 
 (* The headline claim, stated on its own: repricing the entire book does not
@@ -349,6 +436,7 @@ let test_return_push_is_local () =
             "historical_var";
             "expected_shortfall";
             "parametric_var";
+            "portfolio_beta";
             "var_notional";
             "es_notional";
             "limit:var-cap";
@@ -403,6 +491,95 @@ let test_cutoff_stops_dead_ends () =
       check_recomputed recorder
         ~msg:"a price move on a flat position stops at that instrument's exposure"
         ~expected:[ "exposure:XOM" ])
+    ()
+
+(* The staleness clock cannot reach a single risk number.
+
+   This is the newest architecture test and the one guarding the newest hazard.
+   Feed health is genuinely a function of wall-clock time -- a symbol goes stale
+   by the passage of time, not by any event. So the graph has a [now] cell that a
+   timer advances every few seconds.
+
+   That cell is a loaded gun pointed at the whole design. If ANY risk node were
+   downstream of it, the timer would recompute the book on a schedule, and this
+   engine would have quietly become the polling system it was written to
+   replace -- while still passing every other test in this file, because the
+   numbers would all be correct. Only a recomputation-set assertion catches it.
+
+   The second half of the test shows the cutoff doing real work: advancing the
+   clock inside the staleness threshold re-examines each symbol's age and stops,
+   because no symbol's status changed. The aggregate is not woken to be told
+   nothing happened. *)
+let test_clock_cannot_reach_the_risk_chain () =
+  let tick_time = Time.epoch in
+  with_graph
+    ~f:(fun graph recorder ->
+      (* Give every symbol a live print, so they are neither never-seen nor
+         stale and there is a real status for the clock to change. *)
+      List.iter [ aapl; msft; xom ] ~f:(fun symbol ->
+          Graph.apply_tick graph
+            { Tick.symbol; price = Graph.price graph symbol; time = tick_time });
+      Graph.set_now graph tick_time;
+      Graph.stabilize graph;
+      Recorder.reset recorder;
+      (* Ten seconds against a ninety-second threshold: everything ages, nothing
+         changes status. *)
+      Graph.set_now graph (Time.add tick_time (Time.Span.of_sec 10.0));
+      Graph.stabilize graph;
+      check_recomputed recorder
+        ~msg:"a clock tick inside the threshold stops at the per-symbol liveness nodes"
+        ~expected:[ "feed:AAPL"; "feed:MSFT"; "feed:XOM" ];
+      (* Now past the threshold. The statuses flip, so the aggregate does wake --
+         and still nothing else does. *)
+      Recorder.reset recorder;
+      Graph.set_now graph (Time.add tick_time (Time.Span.of_sec 120.0));
+      Graph.stabilize graph;
+      check_recomputed recorder
+        ~msg:"crossing the threshold wakes the aggregate and nothing else"
+        ~expected:[ "feed:AAPL"; "feed:MSFT"; "feed:XOM"; "feed_health" ];
+      let health = Graph.feed_health graph in
+      Alcotest.(check bool)
+        "feed is not healthy" false
+        (Graph.Feed_health.all_healthy health);
+      Alcotest.(check (list string))
+        "every symbol reported stale" [ "AAPL"; "MSFT"; "XOM" ]
+        (List.map (Graph.Feed_health.stale health) ~f:Symbol.to_string);
+      Alcotest.(check (list string))
+        "and none reported as never-seen" []
+        (List.map (Graph.Feed_health.never_seen health) ~f:Symbol.to_string))
+    ()
+
+(* "Never printed" and "printed then went quiet" are different problems and are
+   reported differently. The first is a subscription that did not take; the
+   second is a feed that dropped. A single "no data" flag would hide which. *)
+let test_never_seen_is_not_staleness () =
+  with_graph
+    ~f:(fun graph _ ->
+      (* The seed uses set_price, never apply_tick, so nothing has "printed". *)
+      Graph.set_now graph (Time.add Time.epoch (Time.Span.of_hr 1.0));
+      Graph.stabilize graph;
+      let health = Graph.feed_health graph in
+      Alcotest.(check (list string))
+        "all three never seen" [ "AAPL"; "MSFT"; "XOM" ]
+        (List.map (Graph.Feed_health.never_seen health) ~f:Symbol.to_string);
+      Alcotest.(check (list string))
+        "and none called stale -- you cannot go stale without ever being fresh" []
+        (List.map (Graph.Feed_health.stale health) ~f:Symbol.to_string);
+      Alcotest.(check bool)
+        "not healthy either way" false
+        (Graph.Feed_health.all_healthy health);
+      (* One symbol prints; it alone becomes healthy. *)
+      Graph.apply_tick graph
+        {
+          Tick.symbol = aapl;
+          price = Price.of_float 150.0;
+          time = Time.add Time.epoch (Time.Span.of_hr 1.0);
+        };
+      Graph.stabilize graph;
+      let health = Graph.feed_health graph in
+      Alcotest.(check (list string))
+        "AAPL has now been seen" [ "MSFT"; "XOM" ]
+        (List.map (Graph.Feed_health.never_seen health) ~f:Symbol.to_string))
     ()
 
 (* ------------------------------------------------------------------------ *)
@@ -673,6 +850,12 @@ let suite =
       Alcotest.test_case "exposures, sectors and weights" `Quick test_exposures;
       Alcotest.test_case "VaR, ES and parametric VaR" `Quick test_risk_numbers;
       Alcotest.test_case "covariance matrix" `Quick test_covariance_matrix;
+      Alcotest.test_case "portfolio beta against a macro factor" `Quick
+        test_portfolio_beta;
+      Alcotest.test_case "beta is total: a flat factor gives None, never raises" `Quick
+        test_portfolio_beta_is_total;
+      Alcotest.test_case "beta aligns the two series at the recent edge" `Quick
+        test_beta_aligns_at_the_recent_edge;
       Alcotest.test_case "ARCHITECTURE: a position change recomputes only its dependents"
         `Quick test_position_change_is_local;
       Alcotest.test_case "ARCHITECTURE: a price tick recomputes only its dependents"
@@ -685,6 +868,10 @@ let suite =
         test_idempotent_input_costs_nothing;
       Alcotest.test_case "ARCHITECTURE: propagation stops where values stop changing"
         `Quick test_cutoff_stops_dead_ends;
+      Alcotest.test_case "ARCHITECTURE: the staleness clock cannot reach a risk node"
+        `Quick test_clock_cannot_reach_the_risk_chain;
+      Alcotest.test_case "never-seen and stale are different states" `Quick
+        test_never_seen_is_not_staleness;
       Alcotest.test_case "limit breaches" `Quick test_breaches;
       Alcotest.test_case "drawdown circuit breaker" `Quick test_drawdown_breaker;
       Alcotest.test_case "warming up reports unknown, not zero" `Quick test_warming_up;

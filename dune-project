@@ -32,8 +32,27 @@
    (>= v0.17.0))
   (owl
    (>= 1.2))
+  ; Upper bound inherited from websocket-async 2.17, which pins
+  ; cohttp-async < 6.0.0. Phase 0 installed 6.2.2; Phase 2 downgrades to 5.3.x
+  ; to get a tested RFC 6455 client. Nothing was written against cohttp in
+  ; between, so the downgrade cost nothing. See the README for the full note.
   (cohttp-async
-   (>= 6.2.0))
+   (and
+    (>= 5.3.0)
+    (< 6.0.0)))
+  ; The Alpaca market data feed. Async-native, so it shares one scheduler with
+  ; the rest of the system rather than bridging two concurrency runtimes.
+  (websocket-async
+   (>= 2.17))
+  ; TLS for wss:// and for FRED over https. Not a free choice: conduit-async
+  ; carries async_ssl as its only TLS depopt, so tls-async (pure OCaml) would
+  ; not be picked up by cohttp-async. Needs system libffi and OpenSSL.
+  (async_ssl
+   (>= v0.17.0))
+  ; Wire formats. Both Alpaca and FRED speak JSON.
+  yojson
+  (ppx_yojson_conv
+   (>= v0.17.0))
   (alcotest
    (and
     :with-test
