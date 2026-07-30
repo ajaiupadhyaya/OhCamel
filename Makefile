@@ -79,7 +79,20 @@ build:
 	$(OPAM_ENV) && dune build
 
 run: build
-	$(OPAM_ENV) && dune exec bin/main.exe
+	$(OPAM_ENV) && dune exec bin/main.exe -- synthetic
+
+# Live mode. Needs ALPACA_API_KEY, ALPACA_SECRET_KEY and FRED_API_KEY in the
+# environment and a book.sexp (copy book.example.sexp). The engine refuses to
+# start if any key is missing rather than degrading to something that looks
+# live -- so this target does not try to be clever about locating them:
+#
+#   set -a; source /path/to/.env; set +a
+#   make run-live
+#
+# NOTE: a free Alpaca plan allows ONE concurrent market-data stream per account.
+# If another system is using the same keys, this gets error 406 and stops.
+run-live: build
+	$(OPAM_ENV) && dune exec bin/main.exe -- live
 
 test:
 	$(OPAM_ENV) && dune runtest --force

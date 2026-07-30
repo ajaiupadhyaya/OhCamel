@@ -20,6 +20,7 @@
   conduit-async
   cohttp-async
   websocket
+  mirage-crypto-rng.unix
   websocket-async
   yojson
   incremental

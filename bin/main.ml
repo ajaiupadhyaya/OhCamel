@@ -118,9 +118,17 @@ let daily_return () = gaussian ~sigma:0.012 -. 0.0008
 (* The instrumentation this whole demo exists to display. Same hook the tests
    use: it fires once per node body per recomputation. *)
 module Counter = struct
-  type t = { mutable step : int; total : int String.Table.t }
+  type t = {
+    mutable step : int;
+    (* Live mode reports work per trade, so it needs to know how many trades had
+       arrived at the previous reading. Unused in synthetic mode, which counts
+       per event instead. *)
+    mutable trades_at_last_snapshot : int;
+    total : int String.Table.t;
+  }
 
-  let create () = { step = 0; total = String.Table.create () }
+  let create () =
+    { step = 0; trades_at_last_snapshot = 0; total = String.Table.create () }
 
   let on_compute t name =
     t.step <- t.step + 1;
@@ -352,10 +360,10 @@ let scaling_report () =
     \  how large the book is.\n\n"
 
 (* ------------------------------------------------------------------------ *)
-(* The run                                                                   *)
+(* Synthetic mode                                                            *)
 (* ------------------------------------------------------------------------ *)
 
-let () =
+let run_synthetic () =
   header ();
   let counter = Counter.create () in
   let graph =
@@ -427,3 +435,256 @@ let () =
      Graph.t in the process. *)
   Graph.destroy graph;
   scaling_report ()
+
+(* ------------------------------------------------------------------------ *)
+(* Live mode                                                                 *)
+(* ------------------------------------------------------------------------ *)
+
+(* Real prices from Alpaca, a real macro series from FRED, and the book from a
+   local file.
+
+   Three concurrent activities, none of which drives the others:
+
+     the feed        writes price and last-tick cells as frames arrive
+     the FRED poller writes the factor cell every few hours
+     the clock       advances [now] every few seconds
+
+   Nothing here polls the graph to make it compute. Each of the three writes the
+   cells it owns and stabilizes; the graph decides what that implies. The
+   snapshot printer below is the only thing on a timer, and it is a DISPLAY
+   refresh -- it reads a fixed point that already exists rather than causing one.
+   That distinction is the whole project: if this loop were computing the risk
+   numbers rather than reading them, everything else would be decoration. *)
+
+let live_line what = printf "  %-30s %s\n%!" (Time_ns.to_string_utc (Time.now ())) what
+
+let print_live_snapshot ~(graph : Graph.t) ~(counter : Counter.t)
+    ~(alpaca : Alpaca_ws.Stats.t) ~(fred : Fred_client.Stats.t) =
+  let s = Graph.snapshot graph in
+  let health = Graph.Snapshot.feed_health s in
+  printf "\n  %s\n" (rule 96);
+  printf "  gross %s   net %s   equity %s   drawdown %s\n"
+    (money (Graph.Snapshot.gross_exposure s))
+    (money (Graph.Snapshot.net_exposure s))
+    (money (Graph.Snapshot.equity s))
+    (pct (Graph.Snapshot.current_drawdown s));
+  printf "  VaR95 %s   ES95 %s   beta %s%s\n"
+    (money_opt (Graph.Snapshot.value_at_risk_notional s))
+    (money_opt (Graph.Snapshot.expected_shortfall_notional s))
+    (match Graph.Snapshot.portfolio_beta s with
+    | None -> "--"
+    | Some b -> Printf.sprintf "%.3f" b)
+    (if Graph.Snapshot.warming_up s then "   [WARMING UP -- risk numbers unavailable]"
+     else "");
+  (* Feed health is printed before the breaches, not after, because it governs
+     whether the breaches mean anything. A limit that is not breached according
+     to a price from twenty minutes ago is not a limit that is not breached. *)
+  if Graph.Feed_health.all_healthy health then printf "  feed: all symbols live\n"
+  else (
+    (match Graph.Feed_health.never_seen health with
+    | [] -> ()
+    | symbols ->
+        printf "  feed: NEVER SEEN %s (subscription may not have taken)\n"
+          (String.concat ~sep:"," (List.map symbols ~f:Symbol.to_string)));
+    match Graph.Feed_health.stale health with
+    | [] -> ()
+    | symbols ->
+        printf "  feed: STALE %s -- the numbers above are computed from old prices\n"
+          (String.concat ~sep:"," (List.map symbols ~f:Symbol.to_string)));
+  List.iter (Graph.Snapshot.breached s) ~f:(fun b ->
+      printf "  !! %s\n" (Limits.to_string b));
+  List.iter (Graph.Snapshot.unevaluated_limits s) ~f:(fun name ->
+      printf "  ?? %s: input unavailable (which is not the same as passing)\n" name);
+  printf "  alpaca[%s]\n  fred[%s]\n"
+    (Alpaca_ws.Stats.to_string alpaca)
+    (Fred_client.Stats.to_string fred);
+  (* Nodes recomputed since the last snapshot, over trades applied in the same
+     window. This is the synthetic driver's headline claim, measured on live
+     data: the ratio should sit near the per-tick cost the scaling probe reports
+     and should NOT grow with the size of the book. If it climbs, something has
+     acquired a dependency it should not have. *)
+  let nodes = Counter.take_step counter in
+  let trades = alpaca.Alpaca_ws.Stats.trades - counter.Counter.trades_at_last_snapshot in
+  counter.Counter.trades_at_last_snapshot <- alpaca.Alpaca_ws.Stats.trades;
+  printf "  work[nodes=%d over %d trades%s]\n%!" nodes trades
+    (if trades > 0 then
+       Printf.sprintf ", %.1f per trade" (float_of_int nodes /. float_of_int trades)
+     else "")
+
+(* websocket-async reports handshake failures through the [logs] library, and a
+   [logs] with no reporter installed throws them away. That is how a rejected
+   HTTP upgrade surfaces as nothing but a closed pipe further downstream, which
+   is unreadable.
+
+   Off by default, because the debug level prints every frame. Set
+   OHCAMEL_LOG_LEVEL to error, warning, info or debug. *)
+let install_log_reporter () =
+  match Sys.getenv "OHCAMEL_LOG_LEVEL" with
+  | None -> ()
+  | Some level ->
+      Logs.set_reporter (Logs.format_reporter ());
+      Logs.set_level
+        (match String.lowercase level with
+        | "debug" -> Some Logs.Debug
+        | "info" -> Some Logs.Info
+        | "warning" | "warn" -> Some Logs.Warning
+        | "error" -> Some Logs.Error
+        | "none" | "off" -> None
+        | other ->
+            eprintf "ohcamel: unknown OHCAMEL_LOG_LEVEL %S, using error\n" other;
+            Some Logs.Error)
+
+let run_live ~book_path =
+  let open Async in
+  install_log_reporter ();
+  printf "\n%s\n" (rule 96);
+  printf "  OhCamel -- reactive risk and limits engine\n";
+  printf "  Phase 2: LIVE (Alpaca market data + FRED macro)\n";
+  printf "%s\n\n" (rule 96);
+  match Config.load ~book_path () with
+  | Error error ->
+      (* Refuse to start rather than degrade to something that looks live.
+         Printed to stderr and exited non-zero so a supervisor notices. *)
+      prerr_endline (Error.to_string_hum error);
+      exit 1
+  | Ok config ->
+      let book = config.Config.book in
+      let runtime = config.Config.runtime in
+      let instruments = Config.Book.instruments book in
+      let limits = Config.Book.limits book in
+      let counter = Counter.create () in
+      let graph =
+        Graph.create ~on_compute:(Counter.on_compute counter)
+          ~starting_cash:(Notional.of_float book.Config.Book.cash)
+          ~instruments ~limits ~confidence:runtime.Config.Runtime.confidence
+          ~return_window:runtime.Config.Runtime.return_window
+          ~staleness_threshold:runtime.Config.Runtime.staleness_threshold ()
+      in
+      List.iter book.Config.Book.positions ~f:(fun p ->
+          Graph.set_qty graph
+            (Symbol.of_string p.Config.Book.Position_spec.symbol)
+            (Qty.of_float p.Config.Book.Position_spec.qty));
+      Graph.stabilize graph;
+      printf "  book        %d instruments, %d limits, cash %s\n"
+        (List.length instruments) (List.length limits)
+        (money (Notional.of_float book.Config.Book.cash));
+      printf "  feed        alpaca %s\n" runtime.Config.Runtime.alpaca_feed;
+      printf "  factor      FRED %s\n\n" runtime.Config.Runtime.fred_series_id;
+      let alpaca_stats = Alpaca_ws.Stats.create () in
+      let fred_stats = Fred_client.Stats.create () in
+      (* Backfill the return windows before anything else runs.
+
+         Without this the engine has prices but no distribution to take a
+         quantile of, so VaR, ES, parametric VaR and beta all stay None and the
+         display reads WARMING UP indefinitely -- waiting for sixty daily
+         observations to arrive from the live stream would take three months.
+
+         Awaited rather than launched concurrently: the first snapshot the
+         operator sees should have real risk numbers in it, not blanks that fill
+         in later. *)
+      let%bind () =
+        match%map
+          Alpaca_rest.backfill ~graph ~credentials:config.Config.credentials ~runtime
+        with
+        | Error error ->
+            (* Not fatal. Exposure, sector limits and the drawdown breaker all
+               work without history; only the distribution-based numbers do not,
+               and the snapshot says so plainly. *)
+            live_line
+              (sprintf "backfill FAILED -- risk numbers will stay unavailable: %s"
+                 (Error.to_string_hum error))
+        | Ok counts ->
+            let short =
+              List.filter counts ~f:(fun (_, n) ->
+                  n < runtime.Config.Runtime.return_window)
+            in
+            live_line
+              (sprintf "backfill  %d symbols, %d daily returns each" (List.length counts)
+                 (List.fold counts ~init:Int.max_value ~f:(fun acc (_, n) ->
+                      Int.min acc n)));
+            List.iter short ~f:(fun (symbol, n) ->
+                live_line
+                  (sprintf
+                     "backfill  %s has only %d observations -- the common window is \
+                      capped by the shortest series"
+                     (Symbol.to_string symbol) n))
+      in
+      (* The clock. The ONLY writer of the [now] cell, and the reason
+         test_graph.ml asserts that no risk node is downstream of it: if one
+         were, this timer would be recomputing the book every few seconds and
+         the engine would have quietly become a poller. *)
+      let clock =
+        Clock_ns.every' runtime.Config.Runtime.clock_interval (fun () ->
+            Graph.set_now graph (Time.now ());
+            Graph.stabilize graph;
+            Deferred.unit);
+        Deferred.never ()
+      in
+      let display =
+        Clock_ns.every' runtime.Config.Runtime.snapshot_interval (fun () ->
+            print_live_snapshot ~graph ~counter ~alpaca:alpaca_stats ~fred:fred_stats;
+            Deferred.unit);
+        Deferred.never ()
+      in
+      let fred =
+        Fred_client.run
+          ~on_event:(fun e -> live_line ("fred    " ^ e))
+          ~graph ~credentials:config.Config.credentials ~runtime ~stats:fred_stats ()
+      in
+      let alpaca =
+        match%bind
+          Alpaca_ws.run
+            ~on_event:(fun e -> live_line ("alpaca  " ^ e))
+            ~on_control:(fun message ->
+              match message with
+              | Alpaca_ws.Message.Success msg -> live_line ("alpaca  " ^ msg)
+              | Alpaca_ws.Message.Subscription raw -> live_line ("alpaca  " ^ raw)
+              | _ -> ())
+            ~graph ~credentials:config.Config.credentials ~runtime ~stats:alpaca_stats ()
+        with
+        | Ok () -> Deferred.unit
+        | Error fatal ->
+            prerr_endline "";
+            prerr_endline fatal;
+            exit 1
+      in
+      (* The feed is the only one of the four that can finish. When it does, it
+         has hit something no retry can fix, and it has already said what. *)
+      Deferred.all_unit
+        [ alpaca; Deferred.ignore_m clock; Deferred.ignore_m display; fred ]
+
+(* ------------------------------------------------------------------------ *)
+(* Entry point                                                               *)
+(* ------------------------------------------------------------------------ *)
+
+(* Argv is parsed by hand rather than with Command: [command_unix] is not in this
+   switch, and two subcommands with one optional argument do not justify adding
+   a dependency for it. *)
+
+let usage () =
+  printf
+    "ohcamel -- reactive risk and limits engine\n\n\
+    \  ohcamel synthetic          generated ticks and fills, no network, no keys\n\
+    \  ohcamel live [book.sexp]   live Alpaca market data and FRED macro\n\n\
+     Live mode needs ALPACA_API_KEY, ALPACA_SECRET_KEY and FRED_API_KEY in the\n\
+     environment, and a book file (default %s):\n\n\
+    \  set -a; source /path/to/.env; set +a\n\
+    \  ohcamel live\n\n"
+    Config.default_book_path
+
+let () =
+  match Array.to_list (Sys.get_argv ()) with
+  | _ :: ("synthetic" | "syn") :: _ | [ _ ] -> run_synthetic ()
+  | _ :: "live" :: rest ->
+      let book_path =
+        match rest with path :: _ -> path | [] -> Config.default_book_path
+      in
+      (* Async only from here. Synthetic mode never starts the scheduler, which
+         keeps it usable as a plain program. *)
+      Async.Thread_safe.block_on_async_exn (fun () -> run_live ~book_path)
+  | _ :: ("-h" | "--help" | "help") :: _ -> usage ()
+  | _ :: unknown :: _ ->
+      printf "ohcamel: unknown mode %S\n\n" unknown;
+      usage ();
+      exit 2
+  | [] -> usage ()

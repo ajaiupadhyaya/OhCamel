@@ -114,8 +114,9 @@ Everything below this line was added while scaffolding Phase 0. The brief above 
 
 ```sh
 make build     # compile
-make run       # run bin/main.exe (the Phase 1 synthetic-feed driver)
-make test      # run the alcotest suite
+make run       # synthetic mode: generated ticks and fills, no network, no keys
+make run-live  # live mode: real Alpaca market data + FRED macro (needs keys)
+make test      # run the alcotest suite (hermetic -- never touches the network)
 make fmt       # ocamlformat, in place
 make doctor    # print installed versions -- start here when a build looks wrong
 ```
@@ -342,3 +343,120 @@ Six calls I made that a reasonable person could have made differently:
   explicit config per the brief.
 - Sector exposure is netted, not gross-within-sector. Both are defensible; say
   the word if you want the other one, or both.
+
+## Phase 2 status
+
+Complete and **verified against live market data**. `make test` passes **70/70**
+and never touches the network; `make run-live` connects to Alpaca and FRED.
+
+A real run, mid-session:
+
+```
+  2026-07-30 16:45:56Z backfill  6 symbols, 60 daily returns each
+  2026-07-30 16:45:56Z alpaca  websocket handshake complete
+  2026-07-30 16:45:56Z alpaca  authenticated; subscribing to 6 symbols
+
+  gross $458,433   net $187,551   equity $1,187,551   drawdown 0.00%
+  VaR95 $7,596   ES95 $9,081   beta -0.046
+  feed: all symbols live
+  alpaca[frames=157 trades=206 rejected=0 unknown_symbol=0 reconnects=0]
+  fred[polls=1 ok=1 observations=57 consecutive_failures=0]
+  work[nodes=693 over 59 trades, 11.7 per trade]
+```
+
+That last line is the Phase 1 claim measured on real traffic. It is *lower* than
+the ~20 nodes/tick the synthetic scaling probe reports, because a frame carrying
+several prints of the same symbol coalesces into one propagation — which is
+exactly what the set-then-stabilize split was built for.
+
+### What was added
+
+| File | What it does |
+|---|---|
+| `lib/config.ml` | Credentials from the environment behind a `Secret.t` that cannot be printed; the book (positions, cash, limits) from a sexp file |
+| `lib/feed/alpaca_ws.ml` | The v2 market-data stream: handshake state machine, price validation, error classification, exponential backoff with jitter |
+| `lib/feed/alpaca_rest.ml` | One-shot historical backfill of daily bars, so the risk numbers exist at startup |
+| `lib/feed/fred_client.ml` | FRED macro series on a slow poll, differenced into changes |
+| `test/test_feed.ml` | 27 cases over captured fixtures — mostly hostile input |
+
+Plus, in `graph.ml`: a **feed-health** branch and a **portfolio-beta** node.
+
+### Three things worth knowing
+
+**1. The staleness clock is a dead end, deliberately.** Feed health is genuinely
+a function of wall-clock time, so the graph has a `now` cell that a timer
+advances. That cell is the most dangerous thing in the codebase: if *any* risk
+node were downstream of it, the timer would recompute the book on a schedule and
+this engine would have quietly become the poller it was written to replace —
+while still passing every value-based test, because all the numbers would be
+right. Only a recomputation-set assertion catches that, so
+`test_graph.ml` has one.
+
+**2. Live mode needs a backfill, not just a stream.** The WebSocket delivers
+prices, not history, and without history there is no distribution to take a
+quantile of. Waiting for a 60-observation daily window to fill from the live feed
+would take three months, so `alpaca_rest.ml` fetches it once at startup. Daily
+bars specifically, because FRED publishes DGS10 daily and a beta between series
+at different frequencies is arithmetically fine and economically meaningless.
+
+**3. Nothing here sends a message or takes an action.** `limits.ml` still
+computes breaches as data. Alerting and the kill-switch remain Phase 4, behind
+explicit config, wired to nothing that places orders.
+
+### Two bugs the tests caught
+
+**`beta` fabricated a rates exposure.** It tested its factor for `variance = 0.0`
+exactly. Ten copies of `0.0425` have a true variance of zero but a computed one
+near `1e-33`, because `0.0425` is not representable — so `beta` divided one
+rounding residue by another and returned **-0.3**. Finite, plausible, and read on
+a dashboard it asserts the book is inversely exposed to rates. Now
+`is_effectively_constant`, which tests relative to the series' own magnitude.
+
+**The feed reconnected forever on credentials that could never work.** Error 402
+was classified fatal correctly, but Alpaca sends the error *and then* closes the
+socket, so `End_of_file` reached the supervisor first and won the race. Five
+reconnects, each faithfully printing the message explaining that reconnecting was
+pointless. A session now reports one `Outcome`, decided in one place, with the
+fatal reading taking precedence over whatever the socket did on the way down.
+
+### Running it
+
+```sh
+cp book.example.sexp book.sexp        # then edit: positions, cash, limits
+set -a; source /path/to/.env; set +a  # ALPACA_API_KEY, ALPACA_SECRET_KEY, FRED_API_KEY
+make run-live
+```
+
+Neither `.env` nor `book.sexp` is tracked. The engine reads keys from the
+environment only — it never reads a committed file — and **refuses to start** if
+one is missing rather than degrading to something that looks live.
+
+`OHCAMEL_LOG_LEVEL=debug` turns on the websocket library's own logging. Worth
+knowing it exists: `websocket-async` reports handshake failures through `logs`,
+and with no reporter installed a rejected upgrade surfaces as nothing but a
+socket that closes 80ms after opening.
+
+### Gotchas that cost time
+
+- **`websocket-async` needs `Mirage_crypto_rng` seeded** before first use, or
+  every handshake fails from inside the library. Nothing documents this.
+  `alpaca_ws.ml` does it lazily so callers need not know.
+- **A free Alpaca plan allows ONE concurrent market-data stream per account.** If
+  anything else uses the same keys, this gets error 406 and stops. Deliberately
+  fatal rather than retried.
+- **`adjustment=all` on the bars request is not optional.** Unadjusted closes
+  turn a 2-for-1 split into a -50% single-day return, which in a 60-day window at
+  95% *is* the tail — VaR would report a 50% loss and hold there for months.
+- **FRED writes `"."` for missing observations.** A lenient parser coerces that
+  to 0.0, which in a yield series is a claim that the 10-year yielded nothing
+  that day.
+
+### Not done
+
+- `lib/server.ml` is still comment-only (Phase 3).
+- Positions are configured, not live. The brief scoped Phase 2 to market data +
+  FRED, so Alpaca is the source of *marks*, not of the position set. Wiring
+  `/v2/positions` and the `trade_updates` stream is a small addition if you want
+  it — `Types.Fill` and `Graph.apply_fill` already exist and are tested.
+- The bars request does not paginate. Fine to several hundred instruments; a
+  larger book would need the `next_page_token` loop.

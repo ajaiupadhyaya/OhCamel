@@ -34,4 +34,5 @@ let () =
         ] );
       Test_risk_metrics.suite;
       Test_graph.suite;
+      Test_feed.suite;
     ]
