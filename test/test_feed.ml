@@ -480,9 +480,10 @@ let test_bars_to_returns () =
   | Ok per_symbol ->
       let find s =
         match
-          List.find per_symbol ~f:(fun (sym, _) -> String.equal (Symbol.to_string sym) s)
+          List.find per_symbol ~f:(fun (x : Alpaca_rest.Series.t) ->
+              String.equal (Symbol.to_string x.symbol) s)
         with
-        | Some (_, returns) -> returns
+        | Some x -> x.Alpaca_rest.Series.returns
         | None -> Alcotest.failf "no series for %s" s
       in
       let aapl = find "AAPL" in
@@ -502,7 +503,7 @@ let test_bars_reject_impossible_closes () =
   with
   | Error e -> Alcotest.failf "should parse: %s" (Error.to_string_hum e)
   | Ok per_symbol ->
-      let returns = snd (List.hd_exn per_symbol) in
+      let returns = (List.hd_exn per_symbol).Alpaca_rest.Series.returns in
       Alcotest.(check int) "two bad closes dropped, three usable" 2 (Array.length returns);
       Alcotest.check feq "100 -> 110" 0.10 returns.(0);
       Alcotest.check feq "110 -> 121" 0.10 returns.(1);
@@ -519,10 +520,11 @@ let test_bars_degenerate_and_errors () =
   Alcotest.(check int) "no symbols" 0 (List.length (ok {|{"bars":{}}|}));
   Alcotest.(check int)
     "a symbol with one bar has no returns" 0
-    (Array.length (snd (List.hd_exn (ok {|{"bars":{"AAPL":[{"c":100.0}]}}|}))));
+    (Array.length
+       (List.hd_exn (ok {|{"bars":{"AAPL":[{"c":100.0}]}}|})).Alpaca_rest.Series.returns);
   Alcotest.(check int)
     "a symbol with no bars at all" 0
-    (Array.length (snd (List.hd_exn (ok {|{"bars":{"AAPL":[]}}|}))));
+    (Array.length (List.hd_exn (ok {|{"bars":{"AAPL":[]}}|})).Alpaca_rest.Series.returns);
   (* Alpaca reports its own errors as {"message":"..."}; passing that through
      beats a generic complaint about the shape. *)
   match
@@ -536,6 +538,58 @@ let test_bars_degenerate_and_errors () =
       match Alpaca_rest.returns_of_body "<html>504</html>" with
       | Ok _ -> Alcotest.fail "expected an error for non-JSON"
       | Error _ -> ())
+
+(* The backfill must also carry an opening MARK, not just returns.
+
+   This is a regression test for a bug the live dashboard exposed and no unit
+   test would have. Positions come from the book file, but prices only ever
+   arrived from the tick stream -- so a symbol that had not printed yet stayed
+   at its initial zero, and a position marked at zero contributes zero to
+   exposure. Run it after the close and four of six names silently drop out of
+   the book: gross read $217,590 against a true $460,000, with nothing on the
+   page suggesting the number was wrong.
+
+   Worse than staleness, and a different kind of wrong. A stale price is a real
+   price from earlier. A zero is a price that never existed. *)
+let test_backfill_carries_a_mark () =
+  match Alpaca_rest.returns_of_body bars_body with
+  | Error e -> Alcotest.failf "should parse: %s" (Error.to_string_hum e)
+  | Ok per_symbol -> (
+      let find s =
+        match
+          List.find per_symbol ~f:(fun (x : Alpaca_rest.Series.t) ->
+              String.equal (Symbol.to_string x.symbol) s)
+        with
+        | Some x -> x
+        | None -> Alcotest.failf "no series for %s" s
+      in
+      Alcotest.check
+        (Alcotest.option (Alcotest.float 1e-9))
+        "AAPL marks at its most recent close, not its first" (Some 99.0)
+        (find "AAPL").Alpaca_rest.Series.last_close;
+      Alcotest.check
+        (Alcotest.option (Alcotest.float 1e-9))
+        "MSFT likewise" (Some 210.0) (find "MSFT").Alpaca_rest.Series.last_close;
+      (* A close of zero is not a mark. Falling back to it would reintroduce the
+         exact bug this test exists for. *)
+      (match
+         Alpaca_rest.returns_of_body {|{"bars":{"AAPL":[{"c":100.0},{"c":0.0}]}}|}
+       with
+      | Error e -> Alcotest.failf "should parse: %s" (Error.to_string_hum e)
+      | Ok [ x ] ->
+          Alcotest.check
+            (Alcotest.option (Alcotest.float 1e-9))
+            "a zero close is skipped in favour of the last real one" (Some 100.0)
+            x.Alpaca_rest.Series.last_close
+      | Ok _ -> Alcotest.fail "expected one symbol");
+      match Alpaca_rest.returns_of_body {|{"bars":{"AAPL":[]}}|} with
+      | Error e -> Alcotest.failf "should parse: %s" (Error.to_string_hum e)
+      | Ok [ x ] ->
+          Alcotest.check
+            (Alcotest.option (Alcotest.float 1e-9))
+            "no bars, no mark -- and None is the honest answer" None
+            x.Alpaca_rest.Series.last_close
+      | Ok _ -> Alcotest.fail "expected one symbol")
 
 (* The request must ask for split-adjusted closes. Unadjusted, a 2-for-1 split
    shows as a -50% single-day return; in a 60-day window at 95% confidence that
@@ -704,6 +758,8 @@ let suite =
         test_bars_reject_impossible_closes;
       Alcotest.test_case "backfill: degenerate series and error responses" `Quick
         test_bars_degenerate_and_errors;
+      Alcotest.test_case "backfill: carries an opening mark, not just returns" `Quick
+        test_backfill_carries_a_mark;
       Alcotest.test_case "backfill: the request asks for adjusted daily bars" `Quick
         test_bars_request_is_adjusted;
       Alcotest.test_case "fred: \".\" is a missing observation, not zero" `Quick

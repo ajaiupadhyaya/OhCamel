@@ -114,9 +114,11 @@ Everything below this line was added while scaffolding Phase 0. The brief above 
 
 ```sh
 make build     # compile
-make run       # synthetic mode: generated ticks and fills, no network, no keys
-make run-live  # live mode: real Alpaca market data + FRED macro (needs keys)
-make test      # run the alcotest suite (hermetic -- never touches the network)
+make run       # synthetic: generated ticks and fills, prints, exits. No keys.
+make demo      # synthetic feed + live dashboard on :8080. No keys, no network.
+make run-live  # live Alpaca + FRED, printing to the terminal (needs keys)
+make serve     # live Alpaca + FRED + dashboard on :8080 (needs keys)
+make test      # the alcotest suite (hermetic -- never touches the network)
 make fmt       # ocamlformat, in place
 make doctor    # print installed versions -- start here when a build looks wrong
 ```
@@ -451,12 +453,97 @@ socket that closes 80ms after opening.
   to 0.0, which in a yield series is a claim that the 10-year yielded nothing
   that day.
 
-### Not done
+### Not done in Phase 2
 
-- `lib/server.ml` is still comment-only (Phase 3).
 - Positions are configured, not live. The brief scoped Phase 2 to market data +
   FRED, so Alpaca is the source of *marks*, not of the position set. Wiring
   `/v2/positions` and the `trade_updates` stream is a small addition if you want
   it — `Types.Fill` and `Graph.apply_fill` already exist and are tested.
 - The bars request does not paginate. Fine to several hundred instruments; a
   larger book would need the `next_page_token` loop.
+
+## Phase 3 status
+
+Complete. `make test` passes **78/78**, still hermetic. `make demo` serves a live
+dashboard with no credentials at all; `make serve` does it against the real
+market.
+
+```
+lib/server.ml           JSON + HTTP + SSE, ~330 lines
+lib/dashboard_html.ml   the page, embedded so the binary is self-contained
+test/test_server.ml     7 cases over the wire format
+```
+
+Routes: `/` (the page), `/api/snapshot`, `/api/health`, `/api/stream` (SSE).
+
+### The stream is not a timer, and that is the point
+
+The broadcaster blocks on an `Ivar` that `Graph.on_change` fills, and
+`Graph.on_change` is wired to `Incremental.Observer.on_update_exn` on every
+published node. If nothing in the book moves, the loop is parked and not one
+byte is serialized — no wakeup, no snapshot, no frame.
+
+That closes the chain the whole project is arguing for. An engine that is
+reactive internally but *polled at its edge* has moved the timer, not removed
+it.
+
+There is an 80ms `after` in the loop and it is worth being precise about what it
+is: it runs **after** a change has already been observed, to coalesce a burst of
+ticks into one frame. It never causes a wakeup. A timer asks "has anything
+changed?"; this asks "how many more changes arrive in the next 80ms?".
+
+SSE rather than WebSocket: the traffic is one-directional, so half of what a
+WebSocket offers is unused, and `EventSource` reconnects on its own — which
+matters for a page meant to be watched all day on a laptop that sleeps.
+
+### The dashboard
+
+Three design decisions, each derived from this engine rather than from what risk
+dashboards usually look like.
+
+**The layout is the graph.** Three columns left to right: positions, book
+aggregates, limits. That is the dependency order in `graph.ml` — reading the
+page left to right is reading the graph downstream.
+
+**Changed values are marked.** Every number that moved since the last frame gets
+a brief rule under it. This is the architecture made visible, and it is real
+data: the client diffs successive snapshots, so a mark means that value actually
+changed. A tick in one name lights that instrument, its sector and the
+aggregates, and visibly does not light the others.
+
+**The numbers lose authority when the feed does.** If prices go stale the risk
+figures desaturate and pick up a hatch — and the dimming is scoped *by
+dependency*, not by page. A stale print on CVX dims CVX, the ENERGY sector, and
+everything computed downstream; the other five instruments stay at full
+strength, because their own exposures are still exactly right. Same discipline
+as the graph, expressed in CSS.
+
+Both colour schemes are authored rather than one inverted, and neither uses
+green-on-black. Monospace means data and nothing else.
+
+### The bug the dashboard found
+
+Looking at the live page after the close, four of six positions read **$0**.
+
+Live mode set quantities from the book file but took prices *only* from the tick
+stream — so any symbol that had not printed yet sat at its initial zero, and a
+position marked at zero contributes zero to exposure. Gross read **$217,590**
+against a true **$459,266**, with nothing on the page suggesting the number was
+wrong.
+
+That is worse than staleness and a different kind of wrong: a stale price is a
+real price from earlier, a zero is a price that never existed. Fixed by marking
+the book from the last close during the REST backfill, which was already being
+fetched. Deliberately via `Graph.set_price`, not `Graph.apply_tick` — a closing
+price is a real mark but it is *not* evidence the feed is alive, so feed health
+correctly goes on reporting those symbols as never-seen. That distinction is
+exactly why the two setters are separate.
+
+No unit test would have caught it. Looking at the thing did.
+
+### Not done
+
+- Phase 4: alerting and the kill-switch. Still nothing in this codebase sends a
+  message or takes an action.
+- The dashboard is read-only and unauthenticated — bind it to localhost. There is
+  no auth because there is nothing to authorise: no route mutates anything.

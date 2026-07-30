@@ -260,6 +260,8 @@ type t = {
   (* Closures that release the observers above. Held as thunks so [destroy]
        does not have to name fourteen differently-typed observers. *)
   releases : (unit -> unit) list;
+  (* Callbacks fired when any published value changes -- see [on_change]. *)
+  change_listeners : (unit -> unit) list ref;
 }
 
 let find_var (vars : 'a Inc.Var.t Symbol.Map.t) (symbol : Symbol.t) ~(what : string) :
@@ -326,9 +328,22 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      still go on observers. *)
   let note (name : string) = on_compute name in
   let releases = ref [] in
+  let change_listeners = ref [] in
   let observe node =
     let o = Inc.observe node in
     releases := (fun () -> Inc.Observer.disallow_future_use o) :: !releases;
+    (* Every published value carries an update handler, which is what lets a
+       consumer be told that something changed instead of asking. Incremental
+       fires these only when a value actually changes -- the cutoffs upstream
+       have already decided that -- so a quiet market produces no callbacks at
+       all rather than a stream of "still the same".
+
+       This is the last link in the chain the project is arguing for. Without
+       it, a dashboard would have to poll the engine, and an engine that is
+       reactive internally but polled at its edge has moved the timer rather
+       than removed it. *)
+    Inc.Observer.on_update_exn o ~f:(fun _ ->
+        List.iter !change_listeners ~f:(fun listener -> listener ()));
     o
   in
   (* Input cells carry a value-equality cutoff, so re-sending an unchanged value
@@ -758,6 +773,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
       obs_portfolio_beta = observe portfolio_beta_node;
       obs_feed_health = observe feed_health_node;
       releases = !releases;
+      change_listeners;
     }
   in
   (* Stabilize once so a freshly created graph is readable without the caller
@@ -768,7 +784,26 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
 (* Release every observer. An abandoned graph whose observers are still live
    would keep being recomputed on every stabilize of the shared state -- and
    since the state is shared, that cost lands on whoever is still using it. *)
-let destroy (t : t) : unit = List.iter t.releases ~f:(fun release -> release ())
+let destroy (t : t) : unit =
+  t.change_listeners := [];
+  List.iter t.releases ~f:(fun release -> release ())
+
+(* Be told when anything the engine publishes changes.
+
+   [f] runs INSIDE stabilization, alongside the node bodies, so it is subject to
+   the same rule as the [on_compute] hook: record the fact and return. Do not
+   compute, do not block, and above all do not write to a Var -- writing during a
+   stabilize is how a graph ends up chasing its own tail. The intended shape is
+   to set a flag or fill an Ivar and let a consumer elsewhere do the work.
+
+   Fires once per changed observer, so a single tick that moves twenty published
+   values calls [f] twenty times. Consumers are expected to coalesce; server.ml
+   does. *)
+let on_change (t : t) ~(f : unit -> unit) : unit =
+  t.change_listeners := f :: !(t.change_listeners)
+
+let sector_of (t : t) (symbol : Symbol.t) : Sector.t option =
+  Option.map (Map.find t.instruments symbol) ~f:Instrument.sector
 
 (* -------------------------------------------------------------------------
    Inputs

@@ -94,6 +94,17 @@ run: build
 run-live: build
 	$(OPAM_ENV) && dune exec bin/main.exe -- live
 
+# Live feeds plus the dashboard on http://localhost:8080. Same credentials as
+# run-live.
+serve: build
+	$(OPAM_ENV) && dune exec bin/main.exe -- serve
+
+# The dashboard driven by a synthetic feed: no credentials, no network, works
+# when the market is closed. One symbol is deliberately never ticked, so the
+# staleness path is visible rather than theoretical.
+demo: build
+	$(OPAM_ENV) && dune exec bin/main.exe -- demo
+
 test:
 	$(OPAM_ENV) && dune runtest --force
 

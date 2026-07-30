@@ -88,6 +88,7 @@ let limits =
   ]
 
 let starting_cash = dollars 1_000_000.0
+let default_port = 8080
 let confidence = 0.95
 let return_window = 60
 let steps = 60
@@ -534,7 +535,7 @@ let install_log_reporter () =
             eprintf "ohcamel: unknown OHCAMEL_LOG_LEVEL %S, using error\n" other;
             Some Logs.Error)
 
-let run_live ~book_path =
+let run_live ~book_path ~(serve_port : int option) =
   let open Async in
   install_log_reporter ();
   printf "\n%s\n" (rule 96);
@@ -648,10 +649,112 @@ let run_live ~book_path =
             prerr_endline fatal;
             exit 1
       in
-      (* The feed is the only one of the four that can finish. When it does, it
-         has hit something no retry can fix, and it has already said what. *)
+      let http =
+        match serve_port with
+        | None -> Deferred.never ()
+        | Some port ->
+            let server =
+              Server.create ~graph ~factor:runtime.Config.Runtime.fred_series_id ()
+            in
+            let%bind (_ : (_, _) Cohttp_async.Server.t) = Server.start ~port server in
+            live_line (sprintf "dashboard  http://localhost:%d" port);
+            Deferred.never ()
+      in
+      (* The feed is the only one of these that can finish. When it does, it has
+         hit something no retry can fix, and it has already said what. *)
       Deferred.all_unit
-        [ alpaca; Deferred.ignore_m clock; Deferred.ignore_m display; fred ]
+        [
+          alpaca;
+          Deferred.ignore_m clock;
+          Deferred.ignore_m display;
+          fred;
+          Deferred.ignore_m http;
+        ]
+
+(* ------------------------------------------------------------------------ *)
+(* Demo mode: the dashboard, driven synthetically                            *)
+(* ------------------------------------------------------------------------ *)
+
+(* The same six-name book as synthetic mode, ticking in real time and served
+   over HTTP, with no credentials and no network.
+
+   This exists so the dashboard can be developed and demonstrated without an
+   Alpaca account, outside market hours, and on a plane. It is also the only
+   configuration in which the stale path can be exercised deliberately: stop
+   ticking a symbol and watch the page lose confidence in its own numbers. *)
+let run_demo ~port =
+  let open Async in
+  printf "\n%s\n" (rule 96);
+  printf "  OhCamel -- reactive risk and limits engine\n";
+  printf "  Phase 3: DEMO (synthetic feed, no credentials)\n";
+  printf "%s\n\n" (rule 96);
+  let graph =
+    Graph.create ~starting_cash ~instruments ~limits ~confidence ~return_window
+      ~staleness_threshold:(Time.Span.of_sec 20.0) ()
+  in
+  let last_price = Symbol.Table.create () in
+  List.iter book ~f:(fun (symbol, _, price, qty) ->
+      Hashtbl.set last_price ~key:symbol ~data:price;
+      Graph.set_price graph symbol (Price.of_float price);
+      Graph.set_qty graph symbol (Qty.of_float qty);
+      Graph.set_returns graph symbol
+        (Array.init return_window ~f:(fun _ -> daily_return ())));
+  Graph.set_factor_returns graph
+    (Array.init return_window ~f:(fun _ -> gaussian ~sigma:0.04));
+  Graph.stabilize graph;
+  Graph.mark_equity graph;
+  (* One print each at startup, so every symbol begins LIVE. The quiet one below
+     then transitions live -> stale, which is the path worth watching; without
+     this it would sit in never-seen forever and the more interesting half of
+     feed health would never be exercised. *)
+  List.iter book ~f:(fun (symbol, _, price, _) ->
+      Graph.apply_tick graph
+        { Tick.symbol; price = Price.of_float price; time = Time.now () });
+  Graph.set_now graph (Time.now ());
+  Graph.stabilize graph;
+  let server = Server.create ~graph ~factor:"SYNTHETIC" () in
+  let%bind (_ : (_, _) Cohttp_async.Server.t) = Server.start ~port server in
+  printf "  dashboard   http://localhost:%d\n" port;
+  printf "  book        %d instruments, %d limits\n" (List.length book)
+    (List.length limits);
+  printf "  ticking     one name every 400ms, a bar every 15s\n";
+  (* One symbol is deliberately never ticked.
+
+     Feed health is the part of this engine hardest to demonstrate, because it
+     only shows itself when something goes wrong -- and "unplug the network" is
+     not a demo step. Leaving one name permanently quiet makes the stale path
+     visible on purpose: after the threshold it goes stale, the dashboard says
+     so, and the risk numbers below it visibly lose their authority. Which is
+     the behaviour worth showing, since it is the one the whole design is
+     arranged around. *)
+  let quiet, _, _, _ = List.last_exn book in
+  let tickable = List.filter book ~f:(fun (s, _, _, _) -> not (Symbol.equal s quiet)) in
+  printf "  quiet       %s is never ticked, so the stale path is visible\n\n%!"
+    (Symbol.to_string quiet);
+  (* A tick. One name reprices; the graph decides what that implies. *)
+  Clock_ns.every' (Time_ns.Span.of_ms 400.0) (fun () ->
+      let symbol, _, _, _ =
+        List.nth_exn tickable (Random.State.int rng (List.length tickable))
+      in
+      let price = Hashtbl.find_exn last_price symbol *. (1.0 +. gaussian ~sigma:0.003) in
+      Hashtbl.set last_price ~key:symbol ~data:price;
+      Graph.apply_tick graph
+        { Tick.symbol; price = Price.of_float price; time = Time.now () };
+      Graph.stabilize graph;
+      Deferred.unit);
+  (* A bar close: new returns for everyone, and an equity mark. *)
+  Clock_ns.every' (Time_ns.Span.of_sec 15.0) (fun () ->
+      List.iter book ~f:(fun (symbol, _, _, _) ->
+          Graph.push_return graph symbol (daily_return ()));
+      Graph.mark_equity graph;
+      Graph.stabilize graph;
+      Deferred.unit);
+  (* The staleness clock, exactly as in live mode. *)
+  Clock_ns.every' (Time_ns.Span.of_sec 3.0) (fun () ->
+      Graph.set_now graph (Time.now ());
+      Graph.stabilize graph;
+      Deferred.unit);
+  Deferred.never ()
 
 (* ------------------------------------------------------------------------ *)
 (* Entry point                                                               *)
@@ -664,12 +767,17 @@ let run_live ~book_path =
 let usage () =
   printf
     "ohcamel -- reactive risk and limits engine\n\n\
-    \  ohcamel synthetic          generated ticks and fills, no network, no keys\n\
-    \  ohcamel live [book.sexp]   live Alpaca market data and FRED macro\n\n\
-     Live mode needs ALPACA_API_KEY, ALPACA_SECRET_KEY and FRED_API_KEY in the\n\
-     environment, and a book file (default %s):\n\n\
+    \  ohcamel synthetic          generated ticks and fills, prints, exits\n\
+    \  ohcamel demo [port]        synthetic feed + live dashboard, NO credentials\n\
+    \  ohcamel live [book.sexp]   live Alpaca market data and FRED macro\n\
+    \  ohcamel serve [port]       live feeds + dashboard on http://localhost:PORT\n\n\
+     Live and serve need ALPACA_API_KEY, ALPACA_SECRET_KEY and FRED_API_KEY in\n\
+     the environment, and a book file (default %s):\n\n\
     \  set -a; source /path/to/.env; set +a\n\
-    \  ohcamel live\n\n"
+    \  ohcamel serve\n\n\
+     Demo needs none of that, and is the way to look at the dashboard when the\n\
+     market is closed:\n\n\
+    \  ohcamel demo\n\n"
     Config.default_book_path
 
 let () =
@@ -681,7 +789,15 @@ let () =
       in
       (* Async only from here. Synthetic mode never starts the scheduler, which
          keeps it usable as a plain program. *)
-      Async.Thread_safe.block_on_async_exn (fun () -> run_live ~book_path)
+      Async.Thread_safe.block_on_async_exn (fun () ->
+          run_live ~book_path ~serve_port:None)
+  | _ :: "serve" :: rest ->
+      let port = match rest with p :: _ -> Int.of_string p | [] -> default_port in
+      Async.Thread_safe.block_on_async_exn (fun () ->
+          run_live ~book_path:Config.default_book_path ~serve_port:(Some port))
+  | _ :: "demo" :: rest ->
+      let port = match rest with p :: _ -> Int.of_string p | [] -> default_port in
+      Async.Thread_safe.block_on_async_exn (fun () -> run_demo ~port)
   | _ :: ("-h" | "--help" | "help") :: _ -> usage ()
   | _ :: unknown :: _ ->
       printf "ohcamel: unknown mode %S\n\n" unknown;

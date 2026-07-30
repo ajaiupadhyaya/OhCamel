@@ -114,9 +114,27 @@ let returns_of_closes (closes : float list) : float array =
       in
       Array.of_list (List.rev returns)
 
-(* Whole body -> per-symbol return series. Pure, so the tests drive it with a
-   captured payload and never open a socket. *)
-let returns_of_body (body : string) : (Types.Symbol.t * float array) list Or_error.t =
+(* What one symbol's bars yield: a return series, and the most recent close.
+
+   The close matters as much as the returns, and for a reason that only became
+   obvious against the live market. Positions come from the book file but PRICES
+   only ever arrived from the tick stream, so any symbol that had not printed
+   yet was marked at its initial zero -- and a position marked at zero
+   contributes zero to exposure. Run this after the close and four of six names
+   silently vanish from the book: gross reads $217,590 against a true $460,000,
+   with nothing on the page suggesting the number is wrong.
+
+   That is worse than staleness and is exactly the failure this project is
+   arranged against. A stale price is a real price from earlier; a zero is a
+   price that never existed. The last close is a real, defensible opening mark,
+   and the live stream refines it from there. *)
+module Series = struct
+  type t = { symbol : Types.Symbol.t; returns : float array; last_close : float option }
+end
+
+(* Whole body -> per-symbol series. Pure, so the tests drive it with a captured
+   payload and never open a socket. *)
+let returns_of_body (body : string) : Series.t list Or_error.t =
   match Option.try_with (fun () -> Yojson.Safe.from_string body) with
   | None -> Or_error.error_string "alpaca_rest: response was not valid JSON"
   | Some json -> (
@@ -129,7 +147,15 @@ let returns_of_body (body : string) : (Types.Symbol.t * float array) list Or_err
       | Some (`Assoc per_symbol) ->
           Ok
             (List.map per_symbol ~f:(fun (symbol, bars) ->
-                 (Types.Symbol.of_string symbol, returns_of_closes (closes_of_bars bars))))
+                 let closes = closes_of_bars bars in
+                 let usable =
+                   List.filter closes ~f:(fun c -> Float.is_finite c && Float.( > ) c 0.0)
+                 in
+                 {
+                   Series.symbol = Types.Symbol.of_string symbol;
+                   returns = returns_of_closes closes;
+                   last_close = List.last usable;
+                 }))
       | _ ->
           (* Alpaca reports its own errors as {"message":"..."}; passing that
              through beats a generic shape complaint. *)
@@ -146,7 +172,7 @@ let returns_of_body (body : string) : (Types.Symbol.t * float array) list Or_err
 
 let fetch_daily_returns ~(credentials : Config.Credentials.t)
     ~(symbols : Types.Symbol.t list) ~(window : int) ~(feed : string) :
-    (Types.Symbol.t * float array) list Or_error.t Deferred.t =
+    Series.t list Or_error.t Deferred.t =
   if List.is_empty symbols then return (Ok [])
   else
     let uri = build_uri ~symbols ~window ~feed in
@@ -170,14 +196,22 @@ let fetch_daily_returns ~(credentials : Config.Credentials.t)
           (Cohttp.Code.string_of_status status)
           (String.prefix body 200)
 
-(* Backfill every instrument's return window, then settle once.
+(* Backfill every instrument's return window AND its opening mark, then settle
+   once.
 
-   Returns the per-symbol observation counts so the caller can say what actually
-   arrived. A symbol with an empty window is not an error -- a recently listed
-   ticker genuinely has no history -- but it does mean the common window across
-   the book is zero, and therefore that every risk number stays None. Saying
-   which symbol is short is the difference between diagnosing that in a minute
-   and in an afternoon. *)
+   The mark is set with [Graph.set_price], deliberately not [Graph.apply_tick].
+   A closing price from yesterday is a real number worth marking the book at,
+   but it is NOT evidence that the feed is alive -- so feed health must go on
+   reporting the symbol as never-seen until something actually arrives over the
+   wire. That distinction is the whole reason the two setters are separate, and
+   this is the call site that most needed it.
+
+   Returns per-symbol observation counts so the caller can say what arrived. A
+   symbol with an empty window is not an error -- a recently listed ticker
+   genuinely has no history -- but it does cap the common window across the book
+   at zero, and therefore leaves every risk number None. Saying which symbol is
+   short is the difference between diagnosing that in a minute and in an
+   afternoon. *)
 let backfill ~(graph : Graph.t) ~(credentials : Config.Credentials.t)
     ~(runtime : Config.Runtime.t) : (Types.Symbol.t * int) list Or_error.t Deferred.t =
   let symbols = Graph.symbols graph in
@@ -188,8 +222,17 @@ let backfill ~(graph : Graph.t) ~(credentials : Config.Credentials.t)
   with
   | Error _ as error -> error
   | Ok per_symbol ->
-      List.iter per_symbol ~f:(fun (symbol, returns) ->
-          if Graph.knows_symbol graph symbol then Graph.set_returns graph symbol returns);
+      List.iter per_symbol ~f:(fun { Series.symbol; returns; last_close } ->
+          if Graph.knows_symbol graph symbol then (
+            Graph.set_returns graph symbol returns;
+            (* Only if the live feed has not already produced a better mark.
+               Backfill and the first ticks race, and a close from yesterday
+               must never overwrite a print from this second. *)
+            match last_close with
+            | Some close
+              when Float.equal (Types.Price.to_float (Graph.price graph symbol)) 0.0 ->
+                Graph.set_price graph symbol (Types.Price.of_float close)
+            | _ -> ()));
       Graph.stabilize graph;
       Ok
         (List.map symbols ~f:(fun symbol ->
