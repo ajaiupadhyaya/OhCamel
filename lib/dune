@@ -1,0 +1,14 @@
+; `include_subdirs unqualified` folds lib/feed/*.ml into this library as
+; top-level modules (Alpaca_ws, Fred_client) rather than requiring a nested
+; library. The feed is not a separable component -- it exists only to push
+; values into the graph's input cells -- so it should not have its own
+; compilation unit boundary.
+
+(include_subdirs unqualified)
+
+(library
+ (name ohcamel)
+ (public_name ohcamel)
+ (libraries core async incremental owl)
+ (preprocess
+  (pps ppx_jane)))
