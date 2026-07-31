@@ -802,6 +802,27 @@ let destroy (t : t) : unit =
 let on_change (t : t) ~(f : unit -> unit) : unit =
   t.change_listeners := f :: !(t.change_listeners)
 
+(* Be told when the limit results change, specifically.
+
+   This is the hook the README's Phase 4 asks for: "when a limit-check node
+   breaches, trigger a side effect via an Incremental.Observer". Attaching to the
+   OBSERVER rather than putting the effect in the node body is the whole point,
+   and limits.ml has said why since Phase 1 -- Incremental is free to recompute a
+   node whenever it likes, so a node that sent a Slack message could send
+   several. An observer fires when a value CHANGES, which is the event an alert
+   actually cares about.
+
+   Same constraint as [on_change], and it bites harder here because the
+   temptation is greater: [f] runs inside stabilization. Record the fact and
+   return. alerts.ml writes to a pipe and lets an Async consumer do the sending,
+   which is the only shape that keeps a slow webhook from stalling the graph. *)
+let on_breaches (t : t) ~(f : Breach.t option list -> unit) : unit =
+  Inc.Observer.on_update_exn t.obs_breaches ~f:(function
+    | Inc.Observer.Update.Initialized results | Inc.Observer.Update.Changed (_, results)
+      ->
+        f results
+    | Inc.Observer.Update.Invalidated -> ())
+
 let sector_of (t : t) (symbol : Symbol.t) : Sector.t option =
   Option.map (Map.find t.instruments symbol) ~f:Instrument.sector
 

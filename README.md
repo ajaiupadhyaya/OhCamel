@@ -541,9 +541,112 @@ exactly why the two setters are separate.
 
 No unit test would have caught it. Looking at the thing did.
 
-### Not done
+### Not done in Phase 3
 
-- Phase 4: alerting and the kill-switch. Still nothing in this codebase sends a
-  message or takes an action.
 - The dashboard is read-only and unauthenticated — bind it to localhost. There is
   no auth because there is nothing to authorise: no route mutates anything.
+
+## Phase 4 status
+
+Complete. **94 tests**, still hermetic — no test posts a webhook, writes outside
+a temp path, or opens a socket.
+
+```
+lib/alerts.ml        edge detection, sinks, the kill switch
+test/test_alerts.ml  16 cases, mostly about what it does NOT send
+```
+
+### Everything is off by default
+
+`Config.Alerts.default` has `enabled = false`. A breach is computed, displayed,
+and otherwise ignored until someone writes down that they want otherwise. The
+kill switch is a **second, separate flag**, because "tell me when a limit
+breaks" and "act when a limit breaks" are different levels of trust and should
+not share a switch.
+
+The `alerts` block in `book.example.sexp` is optional — omit it entirely and the
+engine does nothing. An existing book file keeps working and keeps being inert.
+
+### What the kill switch actually does
+
+It sets a flag. `halt_new_orders` returns a bool, shown on the dashboard and in
+the API.
+
+**Nothing in this repository places, cancels or modifies an order**, and
+`lib/alerts.ml` does not import the Alpaca client — it cannot reach a trading
+endpoint even by mistake. Connecting it to execution is a deliberate later
+decision, not a default. Per your brief, I have not wired it to anything.
+
+Tripping latches until an explicit reset. A breaker that re-armed itself when
+the number came back under the line would silently un-halt a book while nobody
+was looking — worse than having none, because you would believe a decision was
+still in force.
+
+### Effects hang off an observer, never a node body
+
+`Graph.on_breaches` attaches to the breaches **observer**, which is what the
+brief asks for and what `limits.ml` has been pointing at since Phase 1:
+Incremental may recompute a node whenever it likes, so a node that sent a Slack
+message could send several. An observer fires on *change*.
+
+Even then the handler only writes to a pipe; an Async consumer does the sending,
+so a slow webhook cannot stall the graph.
+
+`limits.ml` stayed pure, which deviates from the brief's placement. The reason is
+structural: `Limits.evaluate` is called from *inside* node bodies, so if the
+sending code lived beside it an effect would be one careless call away from
+firing during a stabilize. Separating them makes the invariant something the
+module graph enforces rather than something a reader has to remember.
+
+### Three things the tracker deliberately does not do
+
+- **It does not repeat itself.** A limit breached for twenty minutes is one piece
+  of news, not twenty. A channel that fires on every tick is a channel people
+  mute, and a muted channel is worse than none because everyone believes they are
+  being watched.
+- **It does not flap.** A value oscillating across its threshold produces *one*
+  alert. Once raised, it clears only when utilisation falls back below
+  `clear_below` (default 0.95) — it has to come properly back inside the line,
+  not merely stop being outside it.
+- **It never clears because the data went away.** If a firing limit becomes
+  unevaluable, the alert stays firing. "I can no longer tell" is not "it is
+  fine", and a system that resolves an incident because it lost sight of it
+  actively reports the all-clear. This is the same principle the graph applies to
+  unevaluated limits and the dashboard applies to stale prices, at the one layer
+  where getting it wrong sends someone back to bed.
+
+### How it was verified
+
+`make demo` turns alerting on with a log-only sink and arms the kill switch on
+one limit, sized so it actually breaches:
+
+```
+ALERT  BREACH  nvda-cap [instrument:NVDA]  $54307.75 over $54200.00  (100% of limit)
+ALERT  KILL SWITCH TRIPPED by nvda-cap [instrument:NVDA] ... new orders flagged as halted
+```
+
+The dashboard then shows an inverted **NEW ORDERS HALTED** banner naming what
+tripped it — the loudest thing the page can display, outranking even the stale
+warning.
+
+The Slack sink was verified end-to-end against a **local listener on
+127.0.0.1**, never a real webhook:
+
+```
+RECEIVED POST /hook  ct=application/json
+  {"text":":rotating_light:  ohcamel: BREACH  aapl-cap [instrument:AAPL] ..."}
+RECEIVED POST /hook  ct=application/json
+  {"text":":octagonal_sign:  ohcamel: KILL SWITCH TRIPPED by aapl-cap ..."}
+```
+
+Your real `SLACK_WEBHOOK_URL` was never contacted. Use the `Dry_run` sink first
+— it prints the exact payload it *would* send and sends nothing.
+
+### Not done
+
+- The kill switch is not connected to execution, by design and per your brief.
+  Say the word and it becomes a small change; it should be a conversation, not a
+  default.
+- No alert deduplication across restarts. A restart re-raises anything still
+  breached, which is arguably correct (the new process has not told you yet) but
+  is worth knowing.

@@ -34,4 +34,39 @@
    ((name energy-cap) (scope (Sector ENERGY))    (kind (Gross_notional 150000.0)))
    ((name book-cap)   (scope Portfolio)          (kind (Gross_notional 500000.0)))
    ((name var-cap)    (scope Portfolio)          (kind (Value_at_risk 12000.0)))
-   ((name dd-cap)     (scope Portfolio)          (kind (Max_drawdown 0.02))))))
+   ((name dd-cap)     (scope Portfolio)          (kind (Max_drawdown 0.02)))))
+
+ ; ---------------------------------------------------------------------------
+ ; Phase 4: alerting and the kill switch. OPTIONAL -- omit this block entirely
+ ; and the engine computes breaches, displays them, and does nothing else.
+ ; That is the default, and it is the right one.
+ ;
+ ;   enabled                 master switch. false means nothing is ever sent.
+ ;   sinks                   Log            -> stdout
+ ;                           (File "path")  -> appended to a file
+ ;                           Dry_run        -> prints the exact payload it WOULD
+ ;                                             send, and sends nothing. Run this
+ ;                                             first.
+ ;                           Slack          -> POSTs to SLACK_WEBHOOK_URL. The
+ ;                                             only sink that leaves the machine.
+ ;   clear_below             hysteresis. Once raised, an alert clears only when
+ ;                           utilisation falls back below this fraction of the
+ ;                           limit -- otherwise a value resting on the threshold
+ ;                           flaps and trains you to ignore the channel.
+ ;   kill_switch_enabled     a SEPARATE decision from alerting. "Tell me when a
+ ;                           limit breaks" and "act when a limit breaks" are
+ ;                           different levels of trust.
+ ;   kill_switch_trips_on    which limits are hard enough to trip it. Empty
+ ;                           means none, even when enabled.
+ ;
+ ; What the kill switch actually does: sets a flag that reads
+ ; "halt_new_orders = true", shown on the dashboard and in the API. Nothing in
+ ; this system places, cancels or modifies an order -- there is no such code
+ ; here, and lib/alerts.ml does not import the Alpaca client. Connecting it to
+ ; execution is a deliberate later decision, not a default.
+ (alerts
+  ((enabled false)
+   (sinks (Log))
+   (clear_below 0.95)
+   (kill_switch_enabled false)
+   (kill_switch_trips_on ()))))

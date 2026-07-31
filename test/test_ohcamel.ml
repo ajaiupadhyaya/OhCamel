@@ -36,4 +36,5 @@ let () =
       Test_graph.suite;
       Test_feed.suite;
       Test_server.suite;
+      Test_alerts.suite;
     ]

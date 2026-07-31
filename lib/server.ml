@@ -166,6 +166,9 @@ let json_of_snapshot ~(graph : Graph.t) ~(factor : string) (s : Graph.Snapshot.t
 type t = {
   graph : Graph.t;
   factor : string;
+  (* Present only when alerting is enabled, which is not the default. The
+     dashboard reports what it finds; it does not turn anything on. *)
+  alerts : Alerts.t option;
   (* Filled by Graph.on_change. The loop below reads it and immediately swaps in
      a fresh one, so changes arriving during a send are not lost. *)
   mutable changed : unit Ivar.t;
@@ -174,9 +177,51 @@ type t = {
   coalesce : Time_ns.Span.t;
 }
 
+(* What Phase 4 is doing, for the dashboard to report.
+
+   Reports and never mutates: there is no route that arms, trips or resets
+   anything. A kill switch that could be flipped by an unauthenticated GET would
+   be a worse hazard than the one it guards against. *)
+let json_of_alerts (alerts : Alerts.t option) : Yojson.Safe.t =
+  match alerts with
+  | None -> `Assoc [ ("enabled", `Bool false); ("kill_switch", `String "off") ]
+  | Some a ->
+      let state, tripped_by =
+        match Alerts.Kill_switch.state (Alerts.kill_switch a) with
+        | Alerts.Kill_switch.Disarmed -> ("off", `Null)
+        | Alerts.Kill_switch.Armed -> ("armed", `Null)
+        | Alerts.Kill_switch.Tripped { by; _ } -> ("tripped", `String by)
+      in
+      `Assoc
+        [
+          ("enabled", `Bool true);
+          ("kill_switch", `String state);
+          ("tripped_by", tripped_by);
+          ("halt_new_orders", `Bool (Alerts.halted a));
+          ("sent", `Int (Alerts.sent a));
+          ("failed", `Int (Alerts.failed a));
+          ( "recent",
+            `List
+              (List.rev_map (Alerts.history a) ~f:(fun e ->
+                   `Assoc
+                     [
+                       ( "kind",
+                         `String
+                           (Sexp.to_string
+                              (Alerts.Event.sexp_of_kind e.Alerts.Event.kind)) );
+                       ("limit", `String e.Alerts.Event.limit_name);
+                       ("line", `String (Alerts.Event.to_line e));
+                       ("at", `String (Time_ns.to_string_utc e.Alerts.Event.at));
+                     ])) );
+        ]
+
 let render (t : t) : string =
-  Yojson.Safe.to_string
-    (json_of_snapshot ~graph:t.graph ~factor:t.factor (Graph.snapshot t.graph))
+  let snapshot = Graph.snapshot t.graph in
+  let json = json_of_snapshot ~graph:t.graph ~factor:t.factor snapshot in
+  match json with
+  | `Assoc fields ->
+      Yojson.Safe.to_string (`Assoc (fields @ [ ("alerts", json_of_alerts t.alerts) ]))
+  | other -> Yojson.Safe.to_string other
 
 (* One SSE event. The blank line terminates it; without the second newline the
    browser buffers the frame indefinitely waiting for more. *)
@@ -285,12 +330,13 @@ let handle (t : t) ~(path : string) =
 (* Starting                                                                  *)
 (* ------------------------------------------------------------------------ *)
 
-let create ?(coalesce = Time_ns.Span.of_ms 80.0) ~(graph : Graph.t) ~(factor : string) ()
-    =
+let create ?(coalesce = Time_ns.Span.of_ms 80.0) ?(alerts : Alerts.t option)
+    ~(graph : Graph.t) ~(factor : string) () =
   let t =
     {
       graph;
       factor;
+      alerts;
       changed = Ivar.create ();
       subscribers = [];
       frames_sent = 0;

@@ -102,6 +102,70 @@ end
 (* The book                                                                  *)
 (* ------------------------------------------------------------------------ *)
 
+(* ------------------------------------------------------------------------ *)
+(* Alerting and the kill switch                                              *)
+(* ------------------------------------------------------------------------ *)
+
+(* Phase 4 is the only part of this system that can act on the outside world,
+   and the brief is explicit about it: keep it behind explicit config, and do
+   not wire the kill switch to anything that places real trades.
+
+   So every default here is inert. [enabled = false] means a breach is computed,
+   displayed, and otherwise ignored. Turning alerting on is a decision someone
+   has to write down in a file, and turning the kill switch on is a second,
+   separate decision -- because "tell me when a limit breaks" and "act when a
+   limit breaks" are different levels of trust and should not share a switch. *)
+module Alerts = struct
+  module Sink = struct
+    type t =
+      | Log (* stdout, always safe *)
+      | File of string (* append to a path *)
+      | Slack (* POST to SLACK_WEBHOOK_URL, the only sink that leaves the machine *)
+      | Dry_run (* format and print exactly what WOULD be sent, send nothing *)
+    [@@deriving sexp, compare, equal]
+  end
+
+  type t = {
+    enabled : bool;
+    sinks : Sink.t list;
+    (* Hysteresis. A limit sitting exactly on its threshold would otherwise
+       oscillate breached/cleared on every tick and produce an alert storm --
+       which is how an alerting system trains its reader to ignore it. Once
+       raised, an alert clears only when utilisation falls back below this
+       fraction of the limit. 0.95 means "it has to come back 5% inside the line
+       before I will call it resolved". *)
+    clear_below : float;
+    kill_switch_enabled : bool;
+    (* Which limits are hard enough to trip the switch. Empty means none, even
+       when the switch is enabled -- so a misconfigured file cannot arm
+       something that trips on everything. *)
+    kill_switch_trips_on : string list;
+  }
+  [@@deriving sexp]
+
+  let default =
+    {
+      enabled = false;
+      sinks = [ Sink.Log ];
+      clear_below = 0.95;
+      kill_switch_enabled = false;
+      kill_switch_trips_on = [];
+    }
+
+  let validate (t : t) : unit Or_error.t =
+    if not (Float.( > ) t.clear_below 0.0 && Float.( <= ) t.clear_below 1.0) then
+      Or_error.errorf
+        "alerts: clear_below must be in (0, 1], got %f -- it is the fraction of the \
+         limit an alert must fall back inside before it is called resolved"
+        t.clear_below
+    else if t.kill_switch_enabled && List.is_empty t.kill_switch_trips_on then
+      Or_error.error_string
+        "alerts: the kill switch is enabled but trips on no limits. Name the limits it \
+         should act on, or disable it -- an armed switch with no trigger is a \
+         configuration someone will misread."
+    else Ok ()
+end
+
 module Book = struct
   module Position_spec = struct
     type t = { symbol : string; sector : string; qty : float } [@@deriving sexp]
@@ -137,7 +201,15 @@ module Book = struct
       }
   end
 
-  type t = { cash : float; positions : Position_spec.t list; limits : Limit_spec.t list }
+  type t = {
+    cash : float;
+    positions : Position_spec.t list;
+    limits : Limit_spec.t list;
+    (* Optional, and absent means inert. An existing book file keeps working and
+       keeps doing nothing, which is the right default for the one part of this
+       system that can act. *)
+    alerts : Alerts.t; [@sexp.default Alerts.default] [@sexp_drop_default.sexp]
+  }
   [@@deriving sexp]
 
   let instruments (t : t) : Types.Instrument.t list =

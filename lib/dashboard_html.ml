@@ -145,6 +145,26 @@ let page =
   }
   #warn b { font-weight: 620; }
 
+  /* ---- kill switch ----
+     The loudest thing the page can show, and the only inverted block on it.
+     A halt is a decision that is currently in force; it should not be possible
+     to glance at this page and miss one. */
+  #halt { display: none; }
+  #halt.on {
+    display: block;
+    padding: 12px 20px;
+    background: var(--over);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  #halt b { font-weight: 700; letter-spacing: 0.04em; }
+  #halt span { opacity: .85; }
+  .ks { font-size: 13px; }
+  .ks.armed { color: var(--live); }
+  .ks.tripped { color: var(--over); font-weight: 620; }
+  .ks.off { color: var(--ink-faint); }
+
   /* ---- three columns, in dependency order ---- */
   main {
     display: grid;
@@ -228,9 +248,11 @@ let page =
   <div class="stat"><span class="lbl">feed</span><span class="v" id="feed"><span class="dot idle"></span>connecting</span></div>
   <div class="stat"><span class="lbl">book</span><span class="v num" id="nsym">—</span></div>
   <div class="stat spacer"><span class="lbl">nodes recomputed</span><span class="v num" id="nodes">—</span></div>
+  <div class="stat"><span class="lbl">alerts</span><span class="v ks off" id="ks">off</span></div>
   <div class="stat"><span class="lbl">as of</span><span class="v num" id="asof">—</span></div>
 </header>
 
+<div id="halt"></div>
 <div id="warn"></div>
 
 <main id="main">
@@ -254,6 +276,7 @@ let page =
 <footer>
   <span>updates arrive when a value changes, not on a timer</span>
   <span id="conn">—</span>
+  <span id="alertstat">—</span>
 </footer>
 
 <script>
@@ -438,7 +461,37 @@ let page =
     }
   }
 
+  // Phase 4 state. The page reports it and cannot change it: no route on the
+  // server arms, trips or resets anything.
+  function renderAlerts(s) {
+    var a = s.alerts || { enabled: false, kill_switch: "off" };
+    var ks = document.getElementById("ks");
+    var halt = document.getElementById("halt");
+
+    ks.className = "v ks " + (a.kill_switch === "tripped" ? "tripped"
+                            : a.kill_switch === "armed" ? "armed" : "off");
+    ks.textContent = !a.enabled ? "off"
+      : a.kill_switch === "tripped" ? "HALTED"
+      : a.kill_switch === "armed" ? "armed"
+      : "on, no switch";
+
+    if (a.kill_switch === "tripped") {
+      halt.className = "on";
+      halt.textContent = "";
+      halt.appendChild(el("b", null, "NEW ORDERS HALTED"));
+      halt.appendChild(document.createTextNode(
+        "  \u2014 tripped by " + a.tripped_by + ". "));
+      halt.appendChild(el("span", null,
+        "This sets a flag and nothing else; no order is placed or cancelled by this system. "
+        + "It stays set until the engine is restarted or the switch is reset."));
+    } else {
+      halt.className = "";
+      halt.textContent = "";
+    }
+  }
+
   function render(s) {
+    renderAlerts(s);
     renderHealth(s);
     renderPositions(s);
     renderBook(s);
@@ -447,6 +500,10 @@ let page =
       s.positions.length + " / " + s.sectors.length + " sectors";
     document.getElementById("nodes").textContent = s.nodes_recomputed.toLocaleString("en-US");
     document.getElementById("asof").textContent = s.as_of.replace("T", " ").slice(0, 19) + "Z";
+    var a = s.alerts || {};
+    document.getElementById("alertstat").textContent =
+      a.enabled ? ("alerts sent " + a.sent + (a.failed ? ", failed " + a.failed : ""))
+                : "alerting disabled";
     firstFrame = false;
   }
 

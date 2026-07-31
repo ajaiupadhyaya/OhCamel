@@ -571,6 +571,20 @@ let run_live ~book_path ~(serve_port : int option) =
         (money (Notional.of_float book.Config.Book.cash));
       printf "  feed        alpaca %s\n" runtime.Config.Runtime.alpaca_feed;
       printf "  factor      FRED %s\n\n" runtime.Config.Runtime.fred_series_id;
+      (* Phase 4. Off unless the book file says otherwise, and a bad alerting
+         config is fatal rather than silently ignored -- someone who wrote an
+         alerts block meant to be alerted, and starting up with it quietly
+         disabled would be the worst of both. *)
+      let%bind alerts =
+        match Alerts.attach ~graph ~config:book.Config.Book.alerts with
+        | Error error ->
+            prerr_endline (Error.to_string_hum error);
+            exit 1
+        | Ok alerts -> return alerts
+      in
+      (match alerts with
+      | None -> live_line "alerts    disabled (default) -- breaches are displayed only"
+      | Some a -> live_line (sprintf "alerts    %s" (Alerts.status a)));
       let alpaca_stats = Alpaca_ws.Stats.create () in
       let fred_stats = Fred_client.Stats.create () in
       (* Backfill the return windows before anything else runs.
@@ -688,9 +702,23 @@ let run_demo ~port =
   printf "  OhCamel -- reactive risk and limits engine\n";
   printf "  Phase 3: DEMO (synthetic feed, no credentials)\n";
   printf "%s\n\n" (rule 96);
+  (* One limit is set deliberately close to its current exposure.
+
+     Same reasoning as the quiet symbol below: alerting is only demonstrable
+     when something actually breaches, and waiting for a random walk to drift
+     2% is not a demo. NVDA sits at 60 x 900 = 54,000 against a 54,200 cap, so
+     the first meaningful move crosses it -- and then the hysteresis, the
+     edge-triggering and the kill switch all become visible rather than
+     theoretical. *)
+  let demo_limits =
+    List.map limits ~f:(fun l ->
+        if String.equal (Limit.name l) "nvda-cap" then
+          { l with Limit.kind = Limit.Gross_notional (dollars 54_200.0) }
+        else l)
+  in
   let graph =
-    Graph.create ~starting_cash ~instruments ~limits ~confidence ~return_window
-      ~staleness_threshold:(Time.Span.of_sec 20.0) ()
+    Graph.create ~starting_cash ~instruments ~limits:demo_limits ~confidence
+      ~return_window ~staleness_threshold:(Time.Span.of_sec 20.0) ()
   in
   let last_price = Symbol.Table.create () in
   List.iter book ~f:(fun (symbol, _, price, qty) ->
@@ -712,7 +740,27 @@ let run_demo ~port =
         { Tick.symbol; price = Price.of_float price; time = Time.now () });
   Graph.set_now graph (Time.now ());
   Graph.stabilize graph;
-  let server = Server.create ~graph ~factor:"SYNTHETIC" () in
+  (* Demo mode turns alerting on deliberately, with the sink that cannot
+     leave the machine. The point is to exercise the Phase 4 path -- edge
+     triggering, hysteresis, the kill switch latching -- where it can be watched
+     and where it cannot page anyone. Slack is never a demo sink. *)
+  let demo_alerts =
+    {
+      Config.Alerts.enabled = true;
+      sinks = [ Config.Alerts.Sink.Log ];
+      clear_below = 0.95;
+      kill_switch_enabled = true;
+      kill_switch_trips_on = [ "nvda-cap" ];
+    }
+  in
+  let%bind alerts =
+    match Alerts.attach ~graph ~config:demo_alerts with
+    | Error error ->
+        prerr_endline (Error.to_string_hum error);
+        exit 1
+    | Ok alerts -> return alerts
+  in
+  let server = Server.create ?alerts ~graph ~factor:"SYNTHETIC" () in
   let%bind (_ : (_, _) Cohttp_async.Server.t) = Server.start ~port server in
   printf "  dashboard   http://localhost:%d\n" port;
   printf "  book        %d instruments, %d limits\n" (List.length book)
@@ -729,8 +777,12 @@ let run_demo ~port =
      arranged around. *)
   let quiet, _, _, _ = List.last_exn book in
   let tickable = List.filter book ~f:(fun (s, _, _, _) -> not (Symbol.equal s quiet)) in
-  printf "  quiet       %s is never ticked, so the stale path is visible\n\n%!"
+  printf "  quiet       %s is never ticked, so the stale path is visible\n"
     (Symbol.to_string quiet);
+  printf
+    "  alerts      on, logging to this terminal. Kill switch armed on nvda-cap --\n\
+    \              it sets a flag and nothing else. Nothing here places orders.\n\n\
+     %!";
   (* A tick. One name reprices; the graph decides what that implies. *)
   Clock_ns.every' (Time_ns.Span.of_ms 400.0) (fun () ->
       let symbol, _, _, _ =
