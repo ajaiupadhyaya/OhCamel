@@ -1,3 +1,14 @@
+> **Archived — this is the original brief, kept for provenance.**
+>
+> This document was written *to* the agent that built OhCamel, before any code
+> existed. It describes a phased build order that is now complete: all four
+> phases shipped, and the engine it specifies is the engine in `lib/`. It is
+> preserved because it records why the architecture is what it is — in
+> particular why incremental recomputation was non-negotiable — not because
+> anything here is still an instruction.
+>
+> For what the system actually is and how to run it, see [the README](../README.md).
+
 # Project brief: reactive risk & limits engine
 
 ## Who this is for
