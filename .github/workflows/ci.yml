@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Only collapse superseded PR runs. A push to main must never cancel main's
+  # own last recorded result — that is how an Actions tab ends up showing a
+  # cancellation as its newest outcome.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Owl links against OpenBLAS. The Makefile's OWL_CFLAGS/OWL_LDLIBS
+      # workarounds are deliberately NOT exported here: they exist because
+      # Apple clang 21 segfaults compiling Owl's C stubs above -O1, which is a
+      # macOS-only compiler bug. gcc builds Owl at its own -O3 fine.
+      - name: System dependencies for Owl and async_ssl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libopenblas-dev liblapacke-dev \
+                                  libffi-dev libssl-dev
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2.1"
+          dune-cache: true
+
+      - name: Install dependencies
+        run: opam install --deps-only --with-test -y .
+
+      - name: Build
+        run: opam exec -- dune build
+
+      - name: Test
+        run: opam exec -- dune runtest --force
+
+      - name: Format check
+        run: |
+          opam install -y ocamlformat.0.29.0
+          opam exec -- dune build @fmt
