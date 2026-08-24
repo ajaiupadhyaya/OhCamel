@@ -71,7 +71,7 @@ export OWL_CFLAGS := -g -O1 -funroll-loops -fno-math-errno -fno-rounding-math -f
 # Homebrew's directory for every build, so no ordering can win.
 export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 
-.PHONY: all build run test fmt clean deps doctor
+.PHONY: all build run stress backtest test fmt clean deps doctor
 
 all: build
 
@@ -80,6 +80,20 @@ build:
 
 run: build
 	$(OPAM_ENV) && dune exec bin/main.exe -- synthetic
+
+# The scenario suite against the synthetic book: what a chosen move would do to
+# exposure, equity, drawdown and every limit. No credentials, no network. Each
+# scenario runs on a fork of the engine, so the numbers come out of the same
+# nodes that produce the live ones.
+stress: build
+	$(OPAM_ENV) && dune exec bin/main.exe -- stress
+
+# VaR model validation: is the 95% number this engine reports actually a 95%
+# quantile? Kupiec coverage, Christoffersen independence, the joint test and the
+# Basel zone, over three deterministic return series chosen so the battery both
+# passes and fails in front of you. No credentials, no network.
+backtest: build
+	$(OPAM_ENV) && dune exec bin/main.exe -- backtest
 
 # Live mode. Needs ALPACA_API_KEY, ALPACA_SECRET_KEY and FRED_API_KEY in the
 # environment and a book.sexp (copy book.example.sexp). The engine refuses to

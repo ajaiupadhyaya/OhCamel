@@ -130,6 +130,17 @@ let json_of_snapshot ~(graph : Graph.t) ~(factor : string) (s : Graph.Snapshot.t
                 ("exposure", jnotional exposure);
                 ( "weight",
                   match Map.find weights symbol with None -> `Null | Some w -> jfloat w );
+                (* This name's Euler share of portfolio VaR, in dollars. Can be
+                   negative -- a position that moves against the book reduces
+                   portfolio risk -- so the client must not format it as a
+                   magnitude. [null] while warming up, which is not zero. *)
+                ( "component_var",
+                  match Graph.Snapshot.component_var_by_instrument s with
+                  | None -> `Null
+                  | Some shares -> (
+                      match Map.find shares symbol with
+                      | None -> `Null
+                      | Some share -> jnotional share) );
               ])
           (Map.to_alist (Graph.Snapshot.exposure_by_instrument s)) );
       ( "sectors",
@@ -139,6 +150,13 @@ let json_of_snapshot ~(graph : Graph.t) ~(factor : string) (s : Graph.Snapshot.t
               [
                 ("sector", jstring (Types.Sector.to_string sector));
                 ("exposure", jnotional exposure);
+                ( "component_var",
+                  match Graph.Snapshot.component_var_by_sector s with
+                  | None -> `Null
+                  | Some shares -> (
+                      match Map.find shares sector with
+                      | None -> `Null
+                      | Some share -> jnotional share) );
               ])
           (Map.to_alist (Graph.Snapshot.exposure_by_sector s)) );
       ("gross_exposure", jnotional (Graph.Snapshot.gross_exposure s));
@@ -152,11 +170,60 @@ let json_of_snapshot ~(graph : Graph.t) ~(factor : string) (s : Graph.Snapshot.t
       ( "expected_shortfall_notional",
         jopt_notional (Graph.Snapshot.expected_shortfall_notional s) );
       ("portfolio_beta", jopt_float (Graph.Snapshot.portfolio_beta s));
+      ("diversification_ratio", jopt_float (Graph.Snapshot.diversification_ratio s));
       ("warming_up", `Bool (Graph.Snapshot.warming_up s));
       ("feed", json_of_feed_health (Graph.Snapshot.feed_health s));
       ("limits", jlist json_of_breach (Graph.Snapshot.breaches s));
       ("unevaluated", jlist jstring (Graph.Snapshot.unevaluated_limits s));
       ("nodes_recomputed", `Int (Graph.total_nodes_recomputed ()));
+    ]
+
+(* The scenario suite, run against the book as it stands right now.
+
+   Each outcome reports the shocked totals and the limits the scenario would
+   move across their line in either direction -- new breaches and cleared ones.
+   The full before/after snapshots are deliberately NOT serialized: they would
+   multiply the payload by the number of scenarios to say something the client
+   can already see, and the differences are what a scenario is for. *)
+let json_of_stress (graph : Graph.t) : Yojson.Safe.t =
+  let scenarios = Stress.suite_for ~graph in
+  let outcomes = Stress.run_all ~graph ~scenarios in
+  let names bs = jlist (fun b -> jstring (Types.Limit.name (Types.Breach.limit b))) bs in
+  `Assoc
+    [
+      ("as_of", jstring (Time_ns.to_string_utc (Types.Time.now ())));
+      ( "scenarios",
+        jlist
+          (fun (o : Stress.Outcome.t) ->
+            let scenario = Stress.Outcome.scenario o in
+            let after = Stress.Outcome.after o in
+            `Assoc
+              [
+                ("name", jstring (Stress.Scenario.name scenario));
+                ("description", jstring (Stress.Scenario.description scenario));
+                ( "shocks",
+                  jlist
+                    (fun shock -> jstring (Stress.Shock.to_string shock))
+                    (Stress.Scenario.shocks scenario) );
+                ("pnl", jnotional (Stress.Outcome.pnl o));
+                ("pnl_fraction", jfloat (Stress.Outcome.pnl_fraction o));
+                ("gross_exposure", jnotional (Graph.Snapshot.gross_exposure after));
+                ("equity", jnotional (Graph.Snapshot.equity after));
+                ("current_drawdown", jfloat (Graph.Snapshot.current_drawdown after));
+                ( "value_at_risk_notional",
+                  jopt_notional (Graph.Snapshot.value_at_risk_notional after) );
+                ("new_breaches", names (Stress.Outcome.new_breaches o));
+                ("cleared_breaches", names (Stress.Outcome.cleared_breaches o));
+                ( "unestimated_betas",
+                  jlist
+                    (fun s -> jstring (Types.Symbol.to_string s))
+                    (Stress.Outcome.unestimated_betas o) );
+              ])
+          outcomes );
+      ( "worst",
+        match Stress.worst outcomes with
+        | None -> `Null
+        | Some w -> jstring (Stress.Scenario.name (Stress.Outcome.scenario w)) );
     ]
 
 (* ------------------------------------------------------------------------ *)
@@ -314,6 +381,17 @@ let handle (t : t) ~(path : string) =
         (Yojson.Safe.to_string
            (json_of_feed_health (Graph.Snapshot.feed_health (Graph.snapshot t.graph))))
   | "/api/stream" -> subscribe t
+  (* Scenarios are computed on demand rather than pushed on the stream, and the
+     reason is the cost asymmetry. A snapshot is read from observers that have
+     already settled; a scenario suite forks the engine once per scenario and
+     stabilizes each fork. Putting that behind the SSE loop would mean paying it
+     on every tick to serve a number nobody is looking at most of the time.
+
+     Still a GET with no body and no effect: stress.ml runs every scenario on a
+     fork and destroys it, so this route cannot move the live book. *)
+  | "/api/stress" ->
+      Cohttp_async.Server.respond_string ~headers:json_headers
+        (Yojson.Safe.to_string (json_of_stress t.graph))
   | _ ->
       Cohttp_async.Server.respond_string ~headers:json_headers ~status:`Not_found
         (Yojson.Safe.to_string
@@ -322,8 +400,10 @@ let handle (t : t) ~(path : string) =
                 ("error", `String "not found");
                 ( "routes",
                   `List
-                    (List.map [ "/"; "/api/snapshot"; "/api/health"; "/api/stream" ]
-                       ~f:(fun r -> `String r)) );
+                    (List.map
+                       [
+                         "/"; "/api/snapshot"; "/api/health"; "/api/stream"; "/api/stress";
+                       ] ~f:(fun r -> `String r)) );
               ]))
 
 (* ------------------------------------------------------------------------ *)

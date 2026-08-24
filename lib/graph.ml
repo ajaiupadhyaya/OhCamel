@@ -102,6 +102,10 @@ module Node_name = struct
   let historical_var = "historical_var"
   let expected_shortfall = "expected_shortfall"
   let parametric_var = "parametric_var"
+  let attribution = "attribution"
+  let component_var_map = "component_var_map"
+  let component_var_sector_map = "component_var_sector_map"
+  let diversification_ratio = "diversification_ratio"
   let var_notional = "var_notional"
   let es_notional = "es_notional"
   let equity = "equity"
@@ -198,6 +202,26 @@ module Snapshot = struct
          not moved over the window makes beta genuinely undefined rather than
          zero. Flat rate series are routine, not exceptional. *)
     portfolio_beta : float option;
+    (* Where the risk is, rather than how much of it there is.
+
+         Each instrument's Euler share of the book's parametric VaR, in dollars,
+         summing to the portfolio parametric VaR exactly. Entries can be
+         NEGATIVE: a position that moves against the rest of the book reduces
+         portfolio risk, and reporting that as a small positive number -- which
+         is what an absolute value here would do -- would hide the one thing
+         worth knowing about a hedge.
+
+         The sector map is the same numbers grouped, and it is a plain sum
+         because component risk is additive. That is the property standalone
+         VaR does not have and the reason this is the decomposition worth
+         publishing. *)
+    component_var_by_instrument : Notional.t Symbol.Map.t option;
+    component_var_by_sector : Notional.t Sector.Map.t option;
+    (* Sum of standalone position volatilities over portfolio volatility, so
+         at least 1.0. How much the book is getting from being a portfolio
+         rather than a pile of positions -- and, watched over time, the number
+         that falls toward 1.0 as correlations converge in a selloff. *)
+    diversification_ratio : float option;
     warming_up : bool;
     (* Whether the inputs the numbers above were computed from are still
          arriving. Read this before reading anything else. *)
@@ -250,6 +274,9 @@ type t = {
   obs_historical_var : float option Inc.Observer.t;
   obs_expected_shortfall : float option Inc.Observer.t;
   obs_parametric_var : float option Inc.Observer.t;
+  obs_component_var_by_instrument : Notional.t Symbol.Map.t option Inc.Observer.t;
+  obs_component_var_by_sector : Notional.t Sector.Map.t option Inc.Observer.t;
+  obs_diversification_ratio : float option Inc.Observer.t;
   obs_var_notional : Notional.t option Inc.Observer.t;
   obs_es_notional : Notional.t option Inc.Observer.t;
   obs_equity : Notional.t Inc.Observer.t;
@@ -553,6 +580,73 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
         Option.map covariance ~f:(fun covariance ->
             Risk_metrics.portfolio_parametric_var ~weights ~covariance ~confidence))
   in
+  (* --- risk attribution -------------------------------------------------- *)
+  (* WHERE the risk is, as opposed to how much of it there is.
+
+     Depends on weights and covariance -- the same two inputs as
+     [parametric_var], and for the same reason: the Euler decomposition needs a
+     differentiable closed form for portfolio risk, and only the covariance path
+     has one. attribution.ml explains why the historical quantile does not admit
+     an exact split.
+
+     Note honestly what this edge costs. Unlike [covariance], this node IS
+     downstream of price: weights move on every tick, so every tick recomputes
+     it. But it recomputes a matrix-VECTOR product, O(n^2), against the matrix
+     rebuild that a polling design would do, O(n^2 * w) for a w-day window. The
+     incrementality claim here is not "a tick does not reach it" -- it does --
+     but that the expensive thing upstream of it stays cached. *)
+  let attribution_node =
+    Inc.map2 weights_node covariance_node ~f:(fun weights covariance ->
+        note Node_name.attribution;
+        Option.bind covariance ~f:(fun covariance ->
+            Attribution.compute ~weights ~covariance))
+  in
+  (* Component VaR in dollars, per instrument.
+
+     Scaled by gross for exactly the reason [to_notional] is: the weights are
+     normalised by gross, so a return-space quantity times gross is money. The
+     entries therefore sum to the book's parametric VaR notional, which is what
+     makes an instrument-scoped component limit a limit on a real share of a
+     real total.
+
+     Keyed by symbol rather than returned as an array because the ordering is
+     load-bearing -- [weights] is [Map.data] of the same map that [symbols] is
+     [Map.keys] of -- and an array crossing a module boundary is one refactor
+     away from being silently reordered. *)
+  let component_var_node =
+    Inc.map2 attribution_node gross_node ~f:(fun attribution gross ->
+        note Node_name.component_var_map;
+        Option.map attribution ~f:(fun attribution ->
+            let gross = Notional.to_float gross in
+            let shares = Attribution.component_var attribution ~confidence in
+            Symbol.Map.of_alist_exn
+              (List.mapi symbols ~f:(fun i symbol ->
+                   (symbol, Notional.of_float (shares.(i) *. gross))))))
+  in
+  (* The same numbers grouped by sector, and it is a plain sum.
+
+     That is the whole argument for component risk over standalone risk: these
+     add. A sector's share of portfolio VaR is the sum of its members' shares,
+     with no correction for the correlation between them, because the
+     correlation is already inside each member's number. Summing standalone
+     VaRs the same way would double-count every diversification benefit in the
+     sector and report a number larger than the book's total. *)
+  let component_var_sector_node =
+    Inc.map component_var_node ~f:(fun by_instrument ->
+        note Node_name.component_var_sector_map;
+        Option.map by_instrument ~f:(fun by_instrument ->
+            Map.fold by_instrument ~init:Sector.Map.empty
+              ~f:(fun ~key:symbol ~data:share acc ->
+                let sector = (Map.find_exn instruments_map symbol).Instrument.sector in
+                Map.update acc sector ~f:(function
+                  | None -> share
+                  | Some running -> Notional.add running share))))
+  in
+  let diversification_ratio_node =
+    Inc.map attribution_node ~f:(fun attribution ->
+        note Node_name.diversification_ratio;
+        Option.map attribution ~f:Attribution.diversification_ratio)
+  in
   (* Rolling beta of the book against the macro factor series that fred_client.ml
      supplies. Depends on the book's own return series and on the factor's, and
      on nothing else -- beta is a property of two return series, so positions
@@ -666,6 +760,37 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
         Inc.map drawdown_node ~f:(fun d ->
             note name;
             Some (Limits.evaluate ~limit ~observed:d))
+    (* Component VaR limits. Note what is NOT here: [Float.abs].
+
+       [of_magnitude] above absolute-values an exposure, because a $50,000 short
+       consumes a notional cap exactly as a $50,000 long does. A component risk
+       limit is the opposite case. A negative component means the position moves
+       against the book and REDUCES portfolio risk; wrapping it in an absolute
+       value would report a hedge as consuming its risk limit, and would breach
+       a limit for the act of hedging. So the signed number goes straight in,
+       and a risk-reducing position sits comfortably under any positive
+       threshold, which is the correct answer. *)
+    | Limit.Component_var _, Limit.Instrument symbol ->
+        Inc.map component_var_node ~f:(fun shares ->
+            note name;
+            Option.map shares ~f:(fun shares ->
+                Limits.evaluate ~limit
+                  ~observed:(Notional.to_float (Map.find_exn shares symbol))))
+    | Limit.Component_var _, Limit.Sector sector ->
+        Inc.map component_var_sector_node ~f:(fun shares ->
+            note name;
+            Option.map shares ~f:(fun shares ->
+                Limits.evaluate ~limit
+                  ~observed:(Notional.to_float (Map.find_exn shares sector))))
+    (* At portfolio scope the shares sum to the whole, which by the Euler
+       identity IS the parametric VaR notional. Read from that node rather than
+       by summing the map: same number, one edge instead of n, and it cannot
+       drift from the value the dashboard prints next to it. *)
+    | Limit.Component_var _, Limit.Portfolio ->
+        Inc.map2 parametric_var_node gross_node ~f:(fun fraction gross ->
+            note name;
+            Option.map fraction ~f:(fun fraction ->
+                Limits.evaluate ~limit ~observed:(fraction *. Notional.to_float gross)))
     | (Limit.Value_at_risk _ | Limit.Max_drawdown _), (Limit.Instrument _ | Limit.Sector _)
       ->
         (* Unreachable: Limits.validate rejects these pairings above. Kept as an
@@ -765,6 +890,9 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
       obs_historical_var = observe historical_var_node;
       obs_expected_shortfall = observe expected_shortfall_node;
       obs_parametric_var = observe parametric_var_node;
+      obs_component_var_by_instrument = observe component_var_node;
+      obs_component_var_by_sector = observe component_var_sector_node;
+      obs_diversification_ratio = observe diversification_ratio_node;
       obs_var_notional = observe var_notional_node;
       obs_es_notional = observe es_notional_node;
       obs_equity = observe equity_node;
@@ -780,6 +908,55 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      having to know that observers hold no value until the first stabilize. *)
   Inc.stabilize ();
   t
+
+(* Build a second graph with the same shape and the same current inputs.
+
+   This exists so that stress.ml can answer "what would the book look like if
+   prices moved like THIS" without a second implementation of any risk
+   calculation. The scenario is not a model of the engine; it IS the engine,
+   handed different inputs. There is nothing to keep in sync and nothing to
+   drift, which matters more here than it looks: a stress number that disagreed
+   with the live number for a reason nobody could locate would be worse than no
+   stress number at all.
+
+   Everything mutable is copied, including the feed-liveness cells. A scenario
+   run on a book whose marks are twenty minutes old should say so, and it would
+   not if the fork started with a clean clock.
+
+   [limits] can be replaced, which is what lets a caller ask "what if the caps
+   were different" without rebuilding a book by hand. Defaults to the same set.
+
+   Two things the fork does NOT inherit, both deliberately. The [on_compute]
+   diagnostic hook is not carried over, because a fork's recomputations are not
+   the live graph's and merging the two counts would make the architecture tests
+   meaningless. And the change listeners are not carried over, because a fork is
+   a private calculation -- a scenario is not an event, and nothing downstream
+   should wake up because someone asked a hypothetical.
+
+   The fork does share the process-wide Incremental state, so its nodes are
+   counted by [total_nodes_recomputed]. Anything measuring recomputation should
+   not fork in the middle of the measurement. [destroy] it when done. *)
+let fork ?on_compute ?(limits : Limit.t list option) (t : t) : t =
+  let limits = Option.value limits ~default:t.limits in
+  let forked =
+    create ?on_compute ~starting_cash:(Inc.Var.value t.cash_var)
+      ~equity_history_limit:t.equity_history_limit
+      ~staleness_threshold:t.staleness_threshold ~instruments:(Map.data t.instruments)
+      ~limits ~confidence:t.confidence ~return_window:t.return_window ()
+  in
+  Map.iteri t.price_vars ~f:(fun ~key:symbol ~data:var ->
+      Inc.Var.set (Map.find_exn forked.price_vars symbol) (Inc.Var.value var));
+  Map.iteri t.qty_vars ~f:(fun ~key:symbol ~data:var ->
+      Inc.Var.set (Map.find_exn forked.qty_vars symbol) (Inc.Var.value var));
+  Map.iteri t.returns_vars ~f:(fun ~key:symbol ~data:var ->
+      Inc.Var.set (Map.find_exn forked.returns_vars symbol) (Inc.Var.value var));
+  Map.iteri t.last_tick_vars ~f:(fun ~key:symbol ~data:var ->
+      Inc.Var.set (Map.find_exn forked.last_tick_vars symbol) (Inc.Var.value var));
+  Inc.Var.set forked.factor_returns_var (Inc.Var.value t.factor_returns_var);
+  Inc.Var.set forked.equity_history_var (Inc.Var.value t.equity_history_var);
+  Inc.Var.set forked.now_var (Inc.Var.value t.now_var);
+  Inc.stabilize ();
+  forked
 
 (* Release every observer. An abandoned graph whose observers are still live
    would keep being recomputed on every stabilize of the shared state -- and
@@ -975,6 +1152,15 @@ let expected_shortfall (t : t) : float option =
 
 let parametric_var (t : t) : float option = Inc.Observer.value_exn t.obs_parametric_var
 
+let component_var_by_instrument (t : t) : Notional.t Symbol.Map.t option =
+  Inc.Observer.value_exn t.obs_component_var_by_instrument
+
+let component_var_by_sector (t : t) : Notional.t Sector.Map.t option =
+  Inc.Observer.value_exn t.obs_component_var_by_sector
+
+let diversification_ratio (t : t) : float option =
+  Inc.Observer.value_exn t.obs_diversification_ratio
+
 let value_at_risk_notional (t : t) : Notional.t option =
   Inc.Observer.value_exn t.obs_var_notional
 
@@ -1010,6 +1196,9 @@ let snapshot (t : t) : Snapshot.t =
     value_at_risk_notional = value_at_risk_notional t;
     expected_shortfall_notional = expected_shortfall_notional t;
     portfolio_beta = portfolio_beta t;
+    component_var_by_instrument = component_var_by_instrument t;
+    component_var_by_sector = component_var_by_sector t;
+    diversification_ratio = diversification_ratio t;
     warming_up = Option.is_none historical_var;
     feed_health = feed_health t;
     breaches = List.filter_map results ~f:(fun (_, breach) -> breach);

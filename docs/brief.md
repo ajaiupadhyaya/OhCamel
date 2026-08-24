@@ -7,6 +7,14 @@
 > particular why incremental recomputation was non-negotiable — not because
 > anything here is still an instruction.
 >
+> The engine has since grown a fifth part that this brief does not describe and
+> did not ask for: risk **attribution** (`lib/attribution.ml`), VaR **model
+> validation** (`lib/var_backtest.ml`) and **scenario analysis**
+> (`lib/stress.ml`). The brief specified a system that computes risk correctly;
+> those three ask where the risk is, whether the number is calibrated, and what
+> a chosen move would do to it. Read the README for them — nothing below
+> mentions them, and it should not be edited to pretend otherwise.
+>
 > For what the system actually is and how to run it, see [the README](../README.md).
 
 # Project brief: reactive risk & limits engine

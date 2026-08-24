@@ -180,7 +180,11 @@ module Book = struct
        the file boundary. *)
     type scope = Instrument of string | Sector of string | Portfolio [@@deriving sexp]
 
-    type kind = Gross_notional of float | Value_at_risk of float | Max_drawdown of float
+    type kind =
+      | Gross_notional of float
+      | Value_at_risk of float
+      | Component_var of float
+      | Max_drawdown of float
     [@@deriving sexp]
 
     type t = { name : string; scope : scope; kind : kind } [@@deriving sexp]
@@ -197,6 +201,7 @@ module Book = struct
           (match t.kind with
           | Gross_notional n -> Types.Limit.Gross_notional (Types.Notional.of_float n)
           | Value_at_risk n -> Types.Limit.Value_at_risk (Types.Notional.of_float n)
+          | Component_var n -> Types.Limit.Component_var (Types.Notional.of_float n)
           | Max_drawdown f -> Types.Limit.Max_drawdown f);
       }
   end

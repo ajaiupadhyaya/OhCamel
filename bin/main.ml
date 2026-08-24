@@ -85,6 +85,21 @@ let limits =
     limit "book-cap" Limit.Portfolio (Limit.Gross_notional (dollars 400_000.0));
     limit "var-cap" Limit.Portfolio (Limit.Value_at_risk (dollars 12_000.0));
     limit "dd-cap" Limit.Portfolio (Limit.Max_drawdown 0.02);
+    (* Two limits on risk SHARE rather than on notional, so this book exercises
+       all four limit kinds and the difference between the two is visible rather
+       than described.
+
+       NVDA already has a notional cap above. This one caps its Euler share of
+       portfolio VaR, and the two measure genuinely different things: trimming
+       an unrelated position raises NVDA's risk share without touching its
+       notional at all, and a volatility shock moves this one while leaving the
+       notional cap exactly where it was. `make stress` shows precisely that --
+       the vol-regime row has zero P&L, unchanged gross, and breaks the sector
+       one and nothing else on the page. *)
+    limit "nvda-risk"
+      (Limit.Instrument (sym "NVDA"))
+      (Limit.Component_var (dollars 900.0));
+    limit "tech-risk" (Limit.Sector (sec "TECH")) (Limit.Component_var (dollars 2_000.0));
   ]
 
 let starting_cash = dollars 1_000_000.0
@@ -232,6 +247,53 @@ let final_report (graph : Graph.t) (counter : Counter.t) =
   printf "  %s\n" (rule 50);
   Map.iteri (Graph.Snapshot.exposure_by_sector snapshot) ~f:(fun ~key:sector ~data ->
       printf "  %-8s %-14s %14s\n" "" (Sector.to_string sector) (money data));
+  (* WHERE the risk is. The exposure table above says where the MONEY is, and
+     on a book with any correlation structure at all those are different
+     questions with different answers -- which is the entire reason to compute
+     a decomposition rather than sort by position size. *)
+  (match Graph.Snapshot.component_var_by_instrument snapshot with
+  | None -> ()
+  | Some shares ->
+      let total = Notional.to_float (Notional.sum (Map.data shares)) in
+      printf "\n%s\n  WHERE THE RISK IS  (Euler decomposition of parametric VaR)\n%s\n\n"
+        (rule 106) (rule 106);
+      (* The two share columns side by side are the point. A name's share of the
+         MONEY is its weight; its share of the RISK is its Euler component. On
+         any book with correlation structure those differ, and the rightmost
+         column -- risk share over money share -- is the one that says which
+         positions are punching above their size. *)
+      printf "  %-8s %12s %14s %12s %10s\n" "symbol" "of money" "component VaR" "of risk"
+        "risk/money";
+      printf "  %s\n" (rule 62);
+      Map.iteri shares ~f:(fun ~key:symbol ~data ->
+          let risk_share =
+            if Float.equal total 0.0 then 0.0 else Notional.to_float data /. total
+          in
+          let money_share = Float.abs (Map.find_exn weights symbol) in
+          printf "  %-8s %11.1f%% %14s %11.1f%% %10s\n" (Symbol.to_string symbol)
+            (money_share *. 100.0) (money data) (risk_share *. 100.0)
+            (if Float.equal money_share 0.0 then "--"
+             else Printf.sprintf "%.2fx" (risk_share /. money_share)));
+      printf "  %s\n" (rule 62);
+      printf "  %-8s %11.1f%% %14s %11.1f%%\n" "total" 100.0
+        (money (Notional.of_float total))
+        100.0;
+      (match Graph.Snapshot.component_var_by_sector snapshot with
+      | None -> ()
+      | Some by_sector ->
+          (* Sector shares are a PLAIN SUM of their members' -- component risk
+             is additive, which standalone risk is not -- so they belong in the
+             same columns rather than in a separate table. *)
+          Map.iteri by_sector ~f:(fun ~key:sector ~data ->
+              printf "  %-21s %14s %11.1f%%\n" (Sector.to_string sector) (money data)
+                (if Float.equal total 0.0 then 0.0
+                 else 100.0 *. Notional.to_float data /. total)));
+      Option.iter (Graph.Snapshot.diversification_ratio snapshot) ~f:(fun d ->
+          printf
+            "\n\
+            \  diversification ratio %.2f -- the book carries %.0f%% of the volatility\n\
+            \  its positions would if they all moved together.\n"
+            d (100.0 /. d)));
   printf "\n%s\n  LIMITS  (sorted by utilisation)\n%s\n\n" (rule 106) (rule 106);
   Graph.Snapshot.breaches snapshot
   |> List.sort ~compare:(fun a b ->
@@ -436,6 +498,281 @@ let run_synthetic () =
      Graph.t in the process. *)
   Graph.destroy graph;
   scaling_report ()
+
+(* ------------------------------------------------------------------------ *)
+(* Stress mode                                                               *)
+(* ------------------------------------------------------------------------ *)
+
+(* The scenario suite against the same six-name book, seeded exactly as
+   synthetic mode seeds it.
+
+   No credentials, no network, and no writes to any live state: every scenario
+   runs on a fork (see stress.ml) and the graph this function builds is
+   destroyed on the way out. *)
+
+(* Rate sensitivity per sector, as a return per percentage point of yield
+   change: a 100bp rise costs a technology name 3% and pays an energy name 1%.
+
+   These are assumptions, not measurements, and they are written down here
+   rather than buried in a generator because the rate-shock scenario is only as
+   meaningful as they are. The signs are the conventional ones -- long-duration
+   growth equity discounts badly when rates rise, financials earn a wider spread
+   -- and the magnitudes are the order of a real regression rather than the
+   result of one.
+
+   In live mode nothing like this is assumed. The betas come out of
+   Risk_metrics.beta against the actual FRED series and the actual price
+   history, which is the whole point of expressing a macro move as a factor
+   shock. This exists so the synthetic book has a factor structure to shock at
+   all; a factor uncorrelated with everything would make every beta zero and
+   the scenario would truthfully report that nothing moved, which is a real
+   state and a poor demonstration. *)
+let rate_beta sector =
+  match Sector.to_string sector with
+  | "TECH" -> -0.030
+  | "FINANCIALS" -> 0.009
+  | "ENERGY" -> 0.010
+  | _ -> 0.0
+
+let seeded_demo_graph ?on_compute () =
+  let graph =
+    Graph.create ?on_compute ~starting_cash ~instruments ~limits ~confidence
+      ~return_window ()
+  in
+  (* Daily changes in a ten-year yield, in percentage points -- the units
+     fred_client.ml delivers. A standard deviation of 5bp a day is about right
+     for DGS10. *)
+  let factor = Array.init return_window ~f:(fun _ -> gaussian ~sigma:0.05) in
+  Graph.set_factor_returns graph factor;
+  List.iter book ~f:(fun (symbol, sector, price, qty) ->
+      Graph.set_price graph symbol (Price.of_float price);
+      Graph.set_qty graph symbol (Qty.of_float qty);
+      (* A common factor component plus idiosyncratic noise, so the betas the
+         scenario recovers are the ones written above rather than zero. *)
+      let beta = rate_beta sector in
+      Graph.set_returns graph symbol
+        (Array.init return_window ~f:(fun i ->
+             (beta *. factor.(i)) +. gaussian ~sigma:0.009)));
+  Graph.stabilize graph;
+  Graph.mark_equity graph;
+  Graph.stabilize graph;
+  graph
+
+let stress_row (o : Stress.Outcome.t) =
+  let scenario = Stress.Outcome.scenario o in
+  let after = Stress.Outcome.after o in
+  let names bs =
+    if List.is_empty bs then "--"
+    else String.concat ~sep:" " (List.map bs ~f:(fun b -> Limit.name (Breach.limit b)))
+  in
+  printf "  %-18s %14s %9.2f%% %14s %14s  %s\n"
+    (Stress.Scenario.name scenario)
+    (money (Stress.Outcome.pnl o))
+    (Stress.Outcome.pnl_fraction o *. 100.0)
+    (money (Graph.Snapshot.gross_exposure after))
+    (money_opt (Graph.Snapshot.value_at_risk_notional after))
+    (names (Stress.Outcome.new_breaches o))
+
+let run_stress () =
+  printf "\n  OhCamel -- reactive risk and limits engine\n";
+  printf "  STRESS (synthetic book, no credentials, no network)\n\n";
+  let graph = seeded_demo_graph () in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      let before = Graph.snapshot graph in
+      printf "  starting book   %s gross, %s equity, VaR %s\n"
+        (money (Graph.Snapshot.gross_exposure before))
+        (money (Graph.Snapshot.equity before))
+        (money_opt (Graph.Snapshot.value_at_risk_notional before));
+      printf "  starting state  %d limit%s breached\n\n"
+        (List.length (Graph.Snapshot.breached before))
+        (if List.length (Graph.Snapshot.breached before) = 1 then "" else "s");
+      let scenarios = Stress.suite_for ~graph in
+      let outcomes = Stress.run_all ~graph ~scenarios in
+      printf "%s\n  SCENARIOS\n%s\n\n" (rule 106) (rule 106);
+      printf "  %-18s %14s %10s %14s %14s  %s\n" "scenario" "P&L" "of equity" "gross"
+        "VaR" "newly breached";
+      printf "  %s\n" (rule 104);
+      List.iter outcomes ~f:stress_row;
+      printf "  %s\n" (rule 104);
+      (* The worst case gets its own block, because a row in a table is not
+         where anyone should first read that a scenario breaks the book. *)
+      (match Stress.worst outcomes with
+      | None -> ()
+      | Some w -> (
+          let scenario = Stress.Outcome.scenario w in
+          printf "\n%s\n  WORST CASE: %s\n%s\n\n" (rule 106)
+            (Stress.Scenario.name scenario)
+            (rule 106);
+          printf "  %s\n\n" (Stress.Scenario.description scenario);
+          List.iter (Stress.Scenario.shocks scenario) ~f:(fun shock ->
+              printf "  shock           %s\n" (Stress.Shock.to_string shock));
+          printf "  P&L             %s (%.2f%% of equity)\n"
+            (money (Stress.Outcome.pnl w))
+            (Stress.Outcome.pnl_fraction w *. 100.0);
+          printf "  equity          %s -> %s\n"
+            (money (Graph.Snapshot.equity (Stress.Outcome.before w)))
+            (money (Graph.Snapshot.equity (Stress.Outcome.after w)));
+          printf "  drawdown        %s -> %s\n"
+            (pct (Graph.Snapshot.current_drawdown (Stress.Outcome.before w)))
+            (pct (Graph.Snapshot.current_drawdown (Stress.Outcome.after w)));
+          (match Stress.Outcome.new_breaches w with
+          | [] -> printf "  limits          nothing new breaks\n"
+          | bs ->
+              List.iter bs ~f:(fun b ->
+                  printf "  BREACH          %s\n" (Limits.to_string b)));
+          match Stress.Outcome.unestimated_betas w with
+          | [] -> ()
+          | names ->
+              printf "  no beta         %s (did not move -- could not be moved)\n"
+                (String.concat ~sep:" " (List.map names ~f:Symbol.to_string))));
+      printf
+        "\n\
+        \  Every row above was computed by forking the engine and writing shocked\n\
+        \  prices into the fork's input cells. There is no separate scenario\n\
+        \  arithmetic anywhere in this repository -- the numbers come out of the\n\
+        \  same nodes that produce the live ones, so they cannot drift from them.\n\n")
+
+(* ------------------------------------------------------------------------ *)
+(* Backtest mode                                                             *)
+(* ------------------------------------------------------------------------ *)
+
+(* Is the VaR this engine reports actually a 95% quantile?
+
+   The three series below are chosen so the battery both passes and fails in
+   front of you. A validation suite that has never rejected anything is not
+   evidence of anything, and the one that only ever rejects is not either.
+
+     IID NORMAL     what the parametric estimator assumes. Both estimators
+                    should pass, and if they do not, something is wrong with
+                    the ENGINE rather than with the data.
+
+     VOL REGIME     calm, then sustained violence. An equal-weighted window
+                    takes as long as the window to absorb the change, and every
+                    day of that lag is a forecast built from the wrong world.
+
+     JUMPS          calm days interrupted by an identical large loss at a fixed
+                    interval. Exactly 5% of days are the tail, so a 60-day
+                    historical window always holds three of them and its 95%
+                    quantile locks onto the jump size -- after which the
+                    realised loss never strictly beats the forecast, and the
+                    model reports zero breaches forever.
+
+   All three are generated from an explicit seed, so two runs print the same
+   numbers.
+
+   Two things in the output are worth reading rather than skimming past.
+
+   The JUMPS/historical row shows zero exceptions in 940 days, a Kupiec p-value
+   that rounds to zero, and a BASEL ZONE OF GREEN. That is not an inconsistency
+   in this code. Basel's traffic light is one-sided by design -- it asks whether
+   a bank is UNDERSTATING risk, because that is the direction that threatens
+   solvency -- while a coverage test is two-sided, because a quantile that is
+   never reached is not the quantile it claims to be. A model can be
+   comprehensively wrong and still be green. The zone is a supervisor's
+   tolerance, not a verdict.
+
+   And the IID-NORMAL/parametric row usually shows an independence p-value near
+   or below 5%, on data that is independent by construction. That is a 5% test
+   doing what a 5% test does one time in twenty. It is the argument for gating
+   on the joint statistic rather than on whichever component happens to look
+   worst -- picking the smaller of two p-values and calling it the answer is
+   multiple testing, and it is the exact mistake this module is supposed to be
+   above. *)
+
+let backtest_rng = Random.State.make [| 2026_08_24 |]
+
+let backtest_gaussian ~sigma =
+  let u1 = Float.max 1e-12 (Random.State.float backtest_rng 1.0) in
+  let u2 = Random.State.float backtest_rng 1.0 in
+  sigma *. Float.sqrt (-2.0 *. Float.log u1) *. Float.cos (2.0 *. Float.pi *. u2)
+
+let backtest_length = 1000
+let backtest_window = return_window
+
+let backtest_series =
+  [
+    ( "iid-normal",
+      "Independent normal returns -- exactly what the parametric estimator assumes.",
+      Array.init backtest_length ~f:(fun _ -> backtest_gaussian ~sigma:0.011) );
+    ( "vol-regime",
+      "Calm for 600 days, then four times as volatile. The window takes 60 days to \
+       notice.",
+      Array.init backtest_length ~f:(fun i ->
+          backtest_gaussian ~sigma:(if i < 600 then 0.006 else 0.024)) );
+    ( "jumps",
+      "Quiet days with an identical -8% loss every twentieth. Exactly 5% of days are the \
+       tail.",
+      Array.init backtest_length ~f:(fun i ->
+          if i % 20 = 19 then -0.08 else backtest_gaussian ~sigma:0.004) );
+  ]
+
+let backtest_row ~name ~(estimator : Var_backtest.Estimator.t) (r : Var_backtest.report) =
+  printf "  %-12s %-12s %6d %8d %9.1f %10.4f %10.4f %10.4f  %-7s %s\n" name
+    (Var_backtest.Estimator.to_string estimator)
+    (Var_backtest.observations r) (Var_backtest.exceptions r)
+    (Var_backtest.expected_exceptions r)
+    (Var_backtest.kupiec_p r)
+    (Var_backtest.independence_p r)
+    (Var_backtest.conditional_coverage_p r)
+    (Var_backtest.Zone.to_string (Var_backtest.zone r))
+    (if Var_backtest.rejected r then "REJECTED" else "ok")
+
+let run_backtest () =
+  printf "\n  OhCamel -- reactive risk and limits engine\n";
+  printf "  BACKTEST (VaR model validation, no credentials, no network)\n\n";
+  printf "  confidence      %.0f%%\n" (confidence *. 100.0);
+  printf "  window          %d observations, rolling\n" backtest_window;
+  printf "  series length   %d, so %d forecasts each\n" backtest_length
+    (backtest_length - backtest_window);
+  printf
+    "  discipline      each forecast is built from the %d days BEFORE the day it is\n\
+    \                  scored against, and cannot see that day.\n\n"
+    backtest_window;
+  printf "%s\n  COVERAGE AND INDEPENDENCE\n%s\n\n" (rule 106) (rule 106);
+  printf "  %-12s %-12s %6s %8s %9s %10s %10s %10s  %-7s %s\n" "series" "estimator" "n"
+    "excepts" "expected" "Kupiec p" "indep p" "joint p" "Basel" "verdict";
+  printf "  %s\n" (rule 104);
+  let reports =
+    List.concat_map backtest_series ~f:(fun (name, _, returns) ->
+        List.map [ Var_backtest.Estimator.Historical; Var_backtest.Estimator.Parametric ]
+          ~f:(fun estimator ->
+            let r =
+              Var_backtest.of_returns ~returns ~window:backtest_window ~confidence
+                ~estimator
+            in
+            backtest_row ~name ~estimator r;
+            (name, estimator, r)))
+  in
+  printf "  %s\n\n" (rule 104);
+  List.iter backtest_series ~f:(fun (name, description, _) ->
+      printf "  %-12s %s\n" name description);
+  (* One report in full, and it is the WORST failure rather than the first. A
+     table of p-values is a summary; the failure is the finding, and the most
+     severe one is the finding worth printing. *)
+  (match
+     List.filter reports ~f:(fun (_, _, r) -> Var_backtest.rejected r)
+     |> List.min_elt ~compare:(fun (_, _, a) (_, _, b) ->
+         Float.compare
+           (Var_backtest.conditional_coverage_p a)
+           (Var_backtest.conditional_coverage_p b))
+   with
+  | None ->
+      printf
+        "\n\
+        \  Nothing was rejected, which on this set of series would itself be a\n\
+        \  finding: two of the three are built to break an equal-weighted window.\n\n"
+  | Some (name, _, r) ->
+      printf "\n%s\n  IN FULL: the most severe rejection (%s)\n%s\n\n" (rule 106) name
+        (rule 106);
+      printf "%s\n" (Var_backtest.to_string r));
+  printf
+    "\n\
+    \  A rejection here is the suite working. The point of a coverage test is\n\
+    \  not that the model passes it -- it is that a model which does not can be\n\
+    \  told apart from one which does, before the difference is discovered by\n\
+    \  losing money.\n\n"
 
 (* ------------------------------------------------------------------------ *)
 (* Live mode                                                                 *)
@@ -763,8 +1100,9 @@ let run_demo ~port =
   let server = Server.create ?alerts ~graph ~factor:"SYNTHETIC" () in
   let%bind (_ : (_, _) Cohttp_async.Server.t) = Server.start ~port server in
   printf "  dashboard   http://localhost:%d\n" port;
-  printf "  book        %d instruments, %d limits\n" (List.length book)
-    (List.length limits);
+  printf
+    "  book        %d instruments, %d limits (2 of them on risk SHARE, not notional)\n"
+    (List.length book) (List.length demo_limits);
   printf "  ticking     one name every 400ms, a bar every 15s\n";
   (* One symbol is deliberately never ticked.
 
@@ -820,6 +1158,8 @@ let usage () =
   printf
     "ohcamel -- reactive risk and limits engine\n\n\
     \  ohcamel synthetic          generated ticks and fills, prints, exits\n\
+    \  ohcamel stress             scenario suite against the synthetic book\n\
+    \  ohcamel backtest           VaR model validation (Kupiec, Christoffersen)\n\
     \  ohcamel demo [port]        synthetic feed + live dashboard, NO credentials\n\
     \  ohcamel live [book.sexp]   live Alpaca market data and FRED macro\n\
     \  ohcamel serve [port]       live feeds + dashboard on http://localhost:PORT\n\n\
@@ -835,6 +1175,8 @@ let usage () =
 let () =
   match Array.to_list (Sys.get_argv ()) with
   | _ :: ("synthetic" | "syn") :: _ | [ _ ] -> run_synthetic ()
+  | _ :: "stress" :: _ -> run_stress ()
+  | _ :: "backtest" :: _ -> run_backtest ()
   | _ :: "live" :: rest ->
       let book_path =
         match rest with path :: _ -> path | [] -> Config.default_book_path

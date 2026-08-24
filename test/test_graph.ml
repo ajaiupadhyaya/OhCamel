@@ -332,6 +332,16 @@ let downstream_of_aapl_position =
     "historical_var";
     "expected_shortfall";
     "parametric_var";
+    (* The attribution branch. It IS downstream of price, and deliberately so:
+       a weight is a position over a total, so repricing the book changes how
+       risk is shared out even when the covariance matrix that shapes it has
+       not moved. What stays cached is the expensive half -- see
+       [test_prices_never_reach_covariance] -- so a tick pays for a
+       matrix-vector product and not a matrix rebuild. *)
+    "attribution";
+    "component_var_map";
+    "component_var_sector_map";
+    "diversification_ratio";
     "portfolio_beta";
     "var_notional";
     "es_notional";
@@ -436,6 +446,10 @@ let test_return_push_is_local () =
             "historical_var";
             "expected_shortfall";
             "parametric_var";
+            "attribution";
+            "component_var_map";
+            "component_var_sector_map";
+            "diversification_ratio";
             "portfolio_beta";
             "var_notional";
             "es_notional";
@@ -844,12 +858,215 @@ let test_unknown_symbol_is_loud () =
       | () -> Alcotest.fail "expected an exception for an unknown symbol")
     ()
 
+(* ------------------------------------------------------------------------ *)
+(* Risk attribution                                                          *)
+(* ------------------------------------------------------------------------ *)
+
+(* The standard book is an unusually clean case for a decomposition, and that
+   is why the numbers below can be written down rather than captured.
+
+   AAPL and MSFT carry [base_returns]; XOM carries its negation. So every pair
+   is perfectly correlated in magnitude -- rho = +1 within TECH, rho = -1
+   against ENERGY -- and the covariance matrix is 0.0011 times a matrix of
+   plus and minus ones. With w = [0.3; 0.3; -0.4]:
+
+     Sigma w   = 0.0011 * [1; 1; -1]
+     w' Sigma w= 0.0011 * (0.3 + 0.3 + 0.4) = 0.0011      <- the base variance
+     sigma_p   = sqrt(0.0011) = 0.033166247903554
+     marginal  = [sigma_p; sigma_p; -sigma_p]
+     component = [0.3; 0.3; 0.4] * sigma_p
+     percent   = [0.3; 0.3; 0.4]
+
+   The percentages are the WEIGHT MAGNITUDES, exactly. That is what perfect
+   correlation means: the book is one bet, so each position's share of the risk
+   is just its share of the money. Any real book would land somewhere below
+   this, and this is the ceiling.
+
+   Two things are worth reading twice. XOM's marginal is NEGATIVE -- adding
+   dollars to a short that is perfectly anti-correlated with the longs would
+   reduce sigma_p -- while its component is POSITIVE, because the weight is
+   negative too and the two signs cancel. That is not a contradiction: the
+   marginal answers "what happens if I add to it" and the component answers
+   "how much of the current risk is it", and on a short position those have
+   different signs. Confusing the two is how a risk report ends up recommending
+   that a desk increase a position in order to reduce risk.
+
+   And the diversification ratio is exactly 1.0: standalone risks sum to
+   (0.3 + 0.3 + 0.4) * sigma_p = sigma_p. There is nothing to diversify in a
+   book whose three names are the same trade. *)
+let sigma_p = 0.033166247903554
+
+let test_attribution () =
+  with_graph
+    ~f:(fun graph _ ->
+      let s = Graph.snapshot graph in
+      let shares =
+        match Graph.Snapshot.component_var_by_instrument s with
+        | Some shares -> shares
+        | None -> Alcotest.fail "component VaR should be available on a seeded book"
+      in
+      (* Component VaR in dollars: z95 * component_fraction * gross, gross being
+         100,000. z95 * 0.3 * sigma_p * 100000 = 1636.6086946959736. *)
+      notional_eq "AAPL is 30% of the risk" 1636.6086946959736 (Map.find_exn shares aapl);
+      notional_eq "MSFT likewise" 1636.6086946959736 (Map.find_exn shares msft);
+      notional_eq "XOM's short is 40% of it, and positively so" 2182.1449262612987
+        (Map.find_exn shares xom);
+      (* The identity that makes any of this meaningful. *)
+      let total = Notional.to_float (Notional.sum (Map.data shares)) in
+      Alcotest.check float_eq "the shares sum to the parametric VaR notional"
+        (z95 *. sigma_p *. 100_000.0)
+        total;
+      let by_sector =
+        match Graph.Snapshot.component_var_by_sector s with
+        | Some by_sector -> by_sector
+        | None -> Alcotest.fail "sector attribution should be available"
+      in
+      notional_eq "TECH = AAPL + MSFT, a plain sum" 3273.217389391947
+        (Map.find_exn by_sector tech);
+      notional_eq "ENERGY = XOM" 2182.1449262612987 (Map.find_exn by_sector energy);
+      Alcotest.check opt_float "a book of one trade diversifies nothing" (Some 1.0)
+        (Graph.Snapshot.diversification_ratio s))
+    ()
+
+(* Attribution is unavailable for exactly as long as the covariance matrix is,
+   and reports [None] rather than zeros while it is.
+
+   A decomposition of zeros renders as "no position is contributing risk",
+   which is a claim, and a false one. Warming up is the absence of a claim. *)
+let test_attribution_is_none_while_warming_up () =
+  with_graph ~seed:false
+    ~f:(fun graph _ ->
+      let s = Graph.snapshot graph in
+      Alcotest.(check bool) "warming up" true (Graph.Snapshot.warming_up s);
+      Alcotest.(check bool)
+        "no instrument attribution" true
+        (Option.is_none (Graph.Snapshot.component_var_by_instrument s));
+      Alcotest.(check bool)
+        "no sector attribution" true
+        (Option.is_none (Graph.Snapshot.component_var_by_sector s));
+      Alcotest.(check bool)
+        "no diversification ratio" true
+        (Option.is_none (Graph.Snapshot.diversification_ratio s)))
+    ()
+
+(* Component VaR limits, at all three scopes.
+
+   These use their own graph rather than the standard book's limit set, because
+   adding limits to [book_limits] would change the expected node lists in every
+   architecture test above -- and those lists are the point of this file.
+
+   AAPL's share is $1,636.61 and TECH's is $3,273.22, so a $2,000 cap on AAPL
+   holds while a $3,000 cap on TECH does not. The portfolio-scope limit is set
+   at $5,000 against the $5,455.36 total, and the fact that it breaches at
+   exactly the same number the instrument shares add up to is the Euler identity
+   showing through the limit layer. *)
+let test_component_var_limits () =
+  let limits =
+    [
+      limit "aapl-risk" (Limit.Instrument aapl) (Limit.Component_var (dollars 2_000.0));
+      limit "tech-risk" (Limit.Sector tech) (Limit.Component_var (dollars 3_000.0));
+      limit "book-risk" Limit.Portfolio (Limit.Component_var (dollars 5_000.0));
+    ]
+  in
+  let graph =
+    Graph.create ~starting_cash:(dollars 100_000.0) ~instruments:book ~limits
+      ~confidence:0.95 ~return_window:10 ()
+  in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      Graph.set_price graph aapl (Price.of_float 150.0);
+      Graph.set_price graph msft (Price.of_float 300.0);
+      Graph.set_price graph xom (Price.of_float 100.0);
+      Graph.set_qty graph aapl (Qty.of_float 200.0);
+      Graph.set_qty graph msft (Qty.of_float 100.0);
+      Graph.set_qty graph xom (Qty.of_float (-400.0));
+      Graph.set_returns graph aapl base_returns;
+      Graph.set_returns graph msft base_returns;
+      Graph.set_returns graph xom negated_returns;
+      let s = Graph.snapshot graph in
+      let breach name =
+        match
+          List.find (Graph.Snapshot.breaches s) ~f:(fun b ->
+              String.equal (Limit.name (Breach.limit b)) name)
+        with
+        | Some b -> b
+        | None -> Alcotest.failf "limit %S was not evaluated" name
+      in
+      Alcotest.check float_eq "AAPL's share" 1636.6086946959736
+        (Breach.observed (breach "aapl-risk"));
+      Alcotest.(check bool)
+        "$1,636 of risk is inside a $2,000 cap" false
+        (Breach.breached (breach "aapl-risk"));
+      Alcotest.check float_eq "TECH's share" 3273.217389391947
+        (Breach.observed (breach "tech-risk"));
+      Alcotest.(check bool)
+        "$3,273 of risk is not inside a $3,000 cap" true
+        (Breach.breached (breach "tech-risk"));
+      Alcotest.check float_eq "the whole book's share is the parametric VaR"
+        (z95 *. sigma_p *. 100_000.0)
+        (Breach.observed (breach "book-risk"));
+      Alcotest.(check bool)
+        "and it breaches $5,000" true
+        (Breach.breached (breach "book-risk")))
+
+(* A limit on a position that REDUCES portfolio risk must not breach, however
+   large the position is.
+
+   XOM is flipped long, which makes it perfectly anti-correlated with the two
+   TECH names it is now held alongside, so its component contribution goes
+   negative -- holding it makes the book less volatile. A stray absolute value
+   anywhere between attribution.ml and the limit node would turn that into a
+   positive number and breach a risk limit for the act of hedging. This is the
+   test that would catch it. *)
+let test_a_hedge_does_not_breach_a_risk_limit () =
+  let limits =
+    [ limit "xom-risk" (Limit.Instrument xom) (Limit.Component_var (dollars 1_000.0)) ]
+  in
+  let graph =
+    Graph.create ~starting_cash:(dollars 100_000.0) ~instruments:book ~limits
+      ~confidence:0.95 ~return_window:10 ()
+  in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      Graph.set_price graph aapl (Price.of_float 150.0);
+      Graph.set_price graph msft (Price.of_float 300.0);
+      Graph.set_price graph xom (Price.of_float 100.0);
+      Graph.set_qty graph aapl (Qty.of_float 200.0);
+      Graph.set_qty graph msft (Qty.of_float 100.0);
+      (* Long, not short: now XOM moves against the book instead of with it. *)
+      Graph.set_qty graph xom (Qty.of_float 400.0);
+      Graph.set_returns graph aapl base_returns;
+      Graph.set_returns graph msft base_returns;
+      Graph.set_returns graph xom negated_returns;
+      let s = Graph.snapshot graph in
+      let shares = Option.value_exn (Graph.Snapshot.component_var_by_instrument s) in
+      let xom_share = Notional.to_float (Map.find_exn shares xom) in
+      Alcotest.(check bool)
+        (Printf.sprintf "XOM now contributes negative risk (%.2f)" xom_share)
+        true (Float.is_negative xom_share);
+      match Graph.Snapshot.breaches s with
+      | [ b ] ->
+          Alcotest.(check bool)
+            "a risk-reducing position does not breach a risk limit" false
+            (Breach.breached b)
+      | other -> Alcotest.failf "expected one evaluated limit, got %d" (List.length other))
+
 let suite =
   ( "graph",
     [
       Alcotest.test_case "exposures, sectors and weights" `Quick test_exposures;
       Alcotest.test_case "VaR, ES and parametric VaR" `Quick test_risk_numbers;
       Alcotest.test_case "covariance matrix" `Quick test_covariance_matrix;
+      Alcotest.test_case "risk attribution across instruments and sectors" `Quick
+        test_attribution;
+      Alcotest.test_case "attribution is unknown, not zero, while warming up" `Quick
+        test_attribution_is_none_while_warming_up;
+      Alcotest.test_case "component VaR limits at every scope" `Quick
+        test_component_var_limits;
+      Alcotest.test_case "a hedge does not breach a risk limit" `Quick
+        test_a_hedge_does_not_breach_a_risk_limit;
       Alcotest.test_case "portfolio beta against a macro factor" `Quick
         test_portfolio_beta;
       Alcotest.test_case "beta is total: a flat factor gives None, never raises" `Quick

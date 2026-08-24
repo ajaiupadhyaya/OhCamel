@@ -187,6 +187,14 @@ let page =
   td.k { color: var(--ink-soft); font-size: 13px; white-space: nowrap; }
   td.k em { font-style: normal; color: var(--ink-faint); font-size: 11px; margin-left: 6px; }
   td.v { text-align: right; white-space: nowrap; font-size: 13px; }
+  /* The risk-share column. Deliberately quieter than the exposure beside it:
+     it is a second reading of the same row, not a competing headline. The
+     column exists because "where the money is" and "where the risk is" are
+     different questions, and putting the two answers on one line is the only
+     way the difference is legible at a glance. */
+  td.risk { text-align: right; white-space: nowrap; font-size: 12px;
+            color: var(--ink-faint); width: 4.5em; padding-left: 14px; }
+  td.risk.hedge { color: var(--ok); }
   tr.total td { border-top: 1px solid var(--rule); padding-top: 9px; }
   tr.gap td { padding-top: 16px; }
   .neg { color: var(--over); }
@@ -257,7 +265,7 @@ let page =
 
 <main id="main">
   <section>
-    <span class="lbl">positions <i>— inputs</i></span>
+    <span class="lbl">positions <i>— exposure, and share of risk</i></span>
     <table id="pos"></table>
     <table id="sectors" style="margin-top:18px"></table>
   </section>
@@ -326,24 +334,65 @@ let page =
     tr.appendChild(k);
     tr.appendChild(value(key, text, cls));
     table.appendChild(tr);
+    return tr;
+  }
+
+  // A row's share of portfolio VaR, appended as a third cell.
+  //
+  // Rendered as a percentage of the total rather than in dollars, because the
+  // question it answers is comparative -- this name against the others -- and
+  // dollars invite it to be read against the exposure on the same line, which
+  // is a different quantity in different units.
+  //
+  // A NEGATIVE share is a position that moves against the book and therefore
+  // reduces portfolio risk. It gets the ok colour and a minus sign rather than
+  // being shown as a magnitude: a hedge and a risk contributor are opposite
+  // facts and must not look the same.
+  function riskCell(tr, key, share, total) {
+    var td = el("td", "risk");
+    if (share === null || share === undefined || total === null || !total) {
+      td.textContent = "—";
+    } else {
+      var f = share / total;
+      td.textContent = (f * 100).toFixed(1) + "%";
+      if (f < 0) td.classList.add("hedge");
+      var shown = td.textContent;
+      if (!firstFrame && prev[key] !== undefined && prev[key] !== shown) {
+        td.classList.add("moved");
+      }
+      prev[key] = shown;
+    }
+    tr.appendChild(td);
   }
 
   function renderPositions(s) {
+    // Component VaR is an Euler decomposition, so the shares sum to the
+    // portfolio total exactly -- which is what makes a percentage of the total
+    // a meaningful number. Summed here rather than taken from a separate field
+    // so the denominator is provably the same numbers as the numerators.
+    var total = null;
+    if (s.positions.length && s.positions[0].component_var !== null) {
+      total = 0;
+      s.positions.forEach(function (p) { total += p.component_var; });
+    }
+
     var t = document.getElementById("pos");
     t.textContent = "";
     s.positions.forEach(function (p) {
-      row(t, "pos:" + p.symbol, p.symbol, p.sector,
+      var tr = row(t, "pos:" + p.symbol, p.symbol, p.sector,
           money(p.exposure), p.exposure < 0 ? "neg" : null,
           staleSet[p.symbol] ? "rowstale" : null);
+      riskCell(tr, "risk:" + p.symbol, p.component_var, total);
     });
 
     var st = document.getElementById("sectors");
     st.textContent = "";
     s.sectors.forEach(function (x) {
       // A sector total is only as good as its worst member.
-      row(st, "sec:" + x.sector, x.sector, null,
+      var tr = row(st, "sec:" + x.sector, x.sector, null,
           money(x.exposure), x.exposure < 0 ? "neg" : null,
           staleSectors[x.sector] ? "rowstale" : null);
+      riskCell(tr, "risk:sec:" + x.sector, x.component_var, total);
     });
   }
 
@@ -364,11 +413,17 @@ let page =
         : money(s.parametric_var * s.gross_exposure));
     row(t, "beta", "beta", s.factor, s.portfolio_beta === null ? null
         : s.portfolio_beta.toFixed(3));
+    // Sum of standalone position volatilities over portfolio volatility, so at
+    // least 1.00. What the book is getting from being a portfolio rather than a
+    // pile of positions -- and the number that falls toward 1.00 as
+    // correlations converge, which is what a selloff does.
+    row(t, "dr", "diversification", "vs. standalone", s.diversification_ratio === null
+        ? null : s.diversification_ratio.toFixed(2) + "x");
 
     if (s.warming_up) {
       var tr = el("tr", "gap");
       var td = el("td", "k");
-      td.colSpan = 2;
+      td.colSpan = 3;
       td.style.color = "var(--unknown)";
       td.style.fontSize = "12px";
       td.textContent = "warming up — not enough return history to form a distribution";

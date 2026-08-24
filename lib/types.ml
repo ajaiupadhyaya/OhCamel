@@ -222,6 +222,23 @@ module Limit = struct
     | Gross_notional of Notional.t (* |exposure| may not exceed this *)
     | Value_at_risk of Notional.t (* portfolio VaR may not exceed this *)
     | Max_drawdown of float (* fraction in [0,1], e.g. 0.1 = 10% *)
+    | Component_var of Notional.t
+      (* This scope's SHARE of portfolio VaR may not exceed this.
+
+           Separate from [Value_at_risk] rather than a scope of it, because it
+           is a different measurement and not merely the same one narrowed.
+           [Value_at_risk] is a quantile of the book's own return distribution
+           and exists only at portfolio level. A component is the Euler share
+           of that quantile attributable to one instrument or sector -- see
+           attribution.ml -- and it is defined at every scope precisely because
+           the shares add up to the total.
+
+           The consequence worth understanding before writing one: this limit
+           is correlation-aware, so a position's number moves when OTHER
+           positions move. Adding a hedge can bring a name back inside its
+           component limit without trading that name at all, which is correct
+           and is the entire point, but it does mean the limit is not a
+           property of the position in isolation the way a notional cap is. *)
   [@@deriving sexp_of, compare, equal]
 
   type t = { name : string; scope : scope; kind : kind }

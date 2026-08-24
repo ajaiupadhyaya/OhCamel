@@ -29,13 +29,14 @@ let threshold (kind : Limit.kind) : float =
   match kind with
   | Limit.Gross_notional n -> Notional.to_float n
   | Limit.Value_at_risk n -> Notional.to_float n
+  | Limit.Component_var n -> Notional.to_float n
   | Limit.Max_drawdown f -> f
 
 type measure = Money | Fraction
 
 let unit_of (kind : Limit.kind) : measure =
   match kind with
-  | Limit.Gross_notional _ | Limit.Value_at_risk _ -> Money
+  | Limit.Gross_notional _ | Limit.Value_at_risk _ | Limit.Component_var _ -> Money
   | Limit.Max_drawdown _ -> Fraction
 
 let render_value (kind : Limit.kind) (v : float) : string =
@@ -46,14 +47,32 @@ let render_value (kind : Limit.kind) (v : float) : string =
 (* Which scopes each kind is meaningful over.
 
    Gross notional is well defined at every level -- one instrument, one sector,
-   or the whole book. VaR and drawdown are not: both are portfolio-level
-   statistics computed from a correlated return series and an equity curve, and
-   this engine does not maintain either per instrument. Rather than silently
-   evaluating a sector VaR limit against the portfolio number (which would read
-   as a real answer and be wrong), the pairing is rejected up front. *)
+   or the whole book -- because notional exposure is additive.
+
+   VaR and drawdown are not. Both are portfolio-level statistics: a quantile of
+   a correlated return series, and a path property of an equity curve. Neither
+   decomposes. Two names each carrying $10,000 of standalone VaR do not carry
+   $20,000 together unless they are perfectly correlated, and evaluating a
+   sector VaR limit against a standalone sector quantile would over-count the
+   book's risk by exactly the diversification between its parts. So those
+   pairings stay rejected.
+
+   Component VaR is the one that does decompose, and it is here because it
+   decomposes EXACTLY: the Euler shares in attribution.ml sum to the portfolio
+   number with no residual, so a limit on one instrument's share is a limit on
+   a real fraction of a real total. This is the correct answer to the question
+   "why can I not put a VaR limit on one name" -- you can, but it has to be the
+   share, not a standalone quantile, and the two are different numbers.
+
+   At Portfolio scope a component limit measures the whole book, which by the
+   Euler identity is the PARAMETRIC VaR -- deliberately a different estimator
+   from [Value_at_risk], which is the historical one. Writing both is not
+   redundant: the two disagreeing is the tail-fatness diagnostic the README
+   describes, and having a limit on each says which estimator you are willing
+   to be wrong about. *)
 let scope_is_valid (kind : Limit.kind) (scope : Limit.scope) : bool =
   match (kind, scope) with
-  | Limit.Gross_notional _, _ -> true
+  | (Limit.Gross_notional _ | Limit.Component_var _), _ -> true
   | (Limit.Value_at_risk _ | Limit.Max_drawdown _), Limit.Portfolio -> true
   | (Limit.Value_at_risk _ | Limit.Max_drawdown _), (Limit.Instrument _ | Limit.Sector _)
     ->
@@ -102,7 +121,7 @@ let validate ~(instruments : Instrument.t list) (limits : Limit.t list) : unit =
               (Sector.to_string sector) ()
       | Limit.Portfolio -> ());
       match kind with
-      | Limit.Gross_notional n | Limit.Value_at_risk n ->
+      | Limit.Gross_notional n | Limit.Value_at_risk n | Limit.Component_var n ->
           if Float.is_negative (Notional.to_float n) then
             invalid_argf
               "limits: limit %S has a negative threshold (%f); a notional cap is an \
