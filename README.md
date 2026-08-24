@@ -358,7 +358,7 @@ the market is closed.
 $ make demo
 
   OhCamel -- reactive risk and limits engine
-  Phase 3: DEMO (synthetic feed, no credentials)
+  DEMO (synthetic feed, no credentials, no network)
 
   dashboard   http://localhost:8080
   book        6 instruments, 9 limits (2 of them on risk SHARE, not notional)

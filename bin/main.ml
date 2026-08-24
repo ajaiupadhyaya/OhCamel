@@ -1037,7 +1037,7 @@ let run_demo ~port =
   let open Async in
   printf "\n%s\n" (rule 96);
   printf "  OhCamel -- reactive risk and limits engine\n";
-  printf "  Phase 3: DEMO (synthetic feed, no credentials)\n";
+  printf "  DEMO (synthetic feed, no credentials, no network)\n";
   printf "%s\n\n" (rule 96);
   (* One limit is set deliberately close to its current exposure.
 
