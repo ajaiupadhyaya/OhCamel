@@ -1,7 +1,7 @@
 # OhCamel
 
 [![ci](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml/badge.svg)](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml)
-[![coverage 67%](https://img.shields.io/badge/coverage-67%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
+[![coverage 69%](https://img.shields.io/badge/coverage-69%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
 
 A reactive risk and limits engine. Positions and market data go in; per-instrument
 and per-sector exposure, gross and net, VaR, expected shortfall, portfolio beta,
@@ -958,7 +958,7 @@ six properties and four example tests. `QCHECK_TRIALS=5000 make test` runs
 
 ### Coverage, and what it is not measuring
 
-`make coverage` runs the suite under `bisect_ppx` and reports **67%**. The badge
+`make coverage` runs the suite under `bisect_ppx` and reports **69%**. The badge
 above is that number; CI enforces a floor of 60% and prints the full per-file
 table into the run summary, so a drop is visible without anyone remembering to
 look.
@@ -967,17 +967,21 @@ The interesting thing about the number is that it is bimodal, and it should be
 read as two numbers rather than one:
 
 ```
- 92%  lib/graph.ml            37%  lib/alerts.ml
+ 94%  lib/history_buffer.ml   37%  lib/alerts.ml
  92%  lib/vol_estimators.ml   40%  lib/config.ml
  91%  lib/attribution.ml      39%  lib/feed/alpaca_ws.ml
- 91%  lib/limits.ml           47%  lib/feed/fred_client.ml
+ 90%  lib/graph.ml            47%  lib/feed/fred_client.ml
  90%  lib/risk_metrics.ml     50%  lib/feed/alpaca_rest.ml
- 90%  lib/crisis_data.ml      45%  lib/server.ml
- 85%  lib/stress.ml
+ 90%  lib/crisis_data.ml      50%  lib/server.ml
+ 88%  lib/limits.ml           47%  lib/types.ml
+ 85%  lib/stress.ml           77%  lib/options.ml
 ```
 
 The left column is everything that computes a risk number. The right column is
-everything that talks to a network. That split is a design decision appearing in
+everything that talks to a network — plus two that are neither and are worth
+naming rather than hiding: `types.ml` is mostly single-line accessors on abstract
+wrappers, many of which nothing calls yet, and `options.ml` carries display and
+position helpers the pricing tests do not reach. That split is a design decision appearing in
 a metric, not a backlog: every test in this project is hermetic — no network, no
 credentials, nothing waiting on a clock — so the code whose job is to hold a
 websocket open is exercised only as far as its pure parts go. Raising the right
