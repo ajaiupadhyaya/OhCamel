@@ -119,6 +119,66 @@ end = struct
   let is_zero t = Float.equal t 0.0
 end
 
+(* Standard tenor buckets, and the reason this type exists at all.
+
+   A single portfolio vega adds sensitivities to DIFFERENT volatilities. The
+   30-day implied and the 180-day implied are distinct random variables that
+   move together but not identically, so summing across expiries treats the
+   whole term structure as one number shifting in parallel. Every desk does this
+   and calls it parallel-shift vega. It is an approximation, and the case it
+   gets badly wrong is the calendar spread: long one expiry against short
+   another nets to nearly zero parallel-shift vega while carrying real exposure
+   to the term structure TWISTING.
+
+   Bucketing does not fix the approximation -- vega within a bucket is still
+   summed across the expiries inside it -- but it makes the thing being
+   approximated visible. A book whose buckets are large and opposite while its
+   total is zero is a book whose total is not telling you anything.
+
+   The boundaries are the conventional desk tenors rather than anything derived.
+   They are cut on CALENDAR days to expiry, consistent with
+   [years_to_expiry] and with Black-Scholes discounting, so a contract moves
+   between buckets as the valuation date advances -- which is correct and is why
+   graph.ml recomputes the bucketing off the valuation clock rather than
+   assigning a bucket once at construction. *)
+module Tenor_bucket = struct
+  type t =
+    | Under_week
+    | Week_to_month
+    | One_to_three
+    | Three_to_six
+    | Six_to_twelve
+    | Over_year
+  [@@deriving sexp_of, compare, equal, enumerate]
+
+  let of_days days =
+    if Float.( <= ) days 7.0 then Under_week
+    else if Float.( <= ) days 30.0 then Week_to_month
+    else if Float.( <= ) days 90.0 then One_to_three
+    else if Float.( <= ) days 180.0 then Three_to_six
+    else if Float.( <= ) days 365.0 then Six_to_twelve
+    else Over_year
+
+  let to_string = function
+    | Under_week -> "<=1w"
+    | Week_to_month -> "1w-1m"
+    | One_to_three -> "1-3m"
+    | Three_to_six -> "3-6m"
+    | Six_to_twelve -> "6-12m"
+    | Over_year -> ">1y"
+
+  (* Ordered near to far, which is the order a term structure is read in. The
+     derived [all] follows the constructor order, which is already this, but
+     relying on that implicitly would make a reordering of the type silently
+     reorder every display. *)
+  let ordered =
+    [ Under_week; Week_to_month; One_to_three; Three_to_six; Six_to_twelve; Over_year ]
+
+  include Comparable.Make_plain (struct
+    type nonrec t = t [@@deriving sexp_of, compare]
+  end)
+end
+
 module Right = struct
   type t = Call | Put [@@deriving sexp_of, compare, equal]
 

@@ -314,6 +314,41 @@ let test_invalid_inputs () =
   check_invalid_arg "negative time" (fun () -> compute ~time_to_expiry:(-0.1) ());
   check_invalid_arg "negative vol" (fun () -> compute ~implied_vol:(-0.2) ())
 
+(* Tenor bucket boundaries, checked on both sides of each cut.
+
+   Boundaries are inclusive at the top -- exactly 30 days is "1w-1m", not
+   "1-3m" -- and the off-by-one is the only thing that can be wrong here, so
+   each edge is asserted at the value and just past it. *)
+let test_tenor_bucket_boundaries () =
+  let open Options.Tenor_bucket in
+  let check days expected =
+    Alcotest.(check string)
+      (Printf.sprintf "%.1f days" days)
+      (to_string expected)
+      (to_string (of_days days))
+  in
+  check 0.0 Under_week;
+  check 7.0 Under_week;
+  check 7.5 Week_to_month;
+  check 30.0 Week_to_month;
+  check 30.5 One_to_three;
+  check 90.0 One_to_three;
+  check 90.5 Three_to_six;
+  check 180.0 Three_to_six;
+  check 180.5 Six_to_twelve;
+  check 365.0 Six_to_twelve;
+  check 365.5 Over_year;
+  check 3650.0 Over_year;
+  (* [ordered] is near to far and covers every constructor. Asserted because a
+     display iterates it, so a bucket missing from the list would silently stop
+     being shown rather than failing to compile. *)
+  Alcotest.(check int)
+    "ordered covers every bucket" (List.length all) (List.length ordered);
+  Alcotest.(check (list string))
+    "and runs near to far"
+    [ "<=1w"; "1w-1m"; "1-3m"; "3-6m"; "6-12m"; ">1y" ]
+    (List.map ordered ~f:to_string)
+
 let suite =
   ( "options",
     [
@@ -333,4 +368,5 @@ let suite =
       Alcotest.test_case "years to expiry counts calendar days" `Quick
         test_years_to_expiry;
       Alcotest.test_case "invalid inputs raise" `Quick test_invalid_inputs;
+      Alcotest.test_case "tenor bucket boundaries" `Quick test_tenor_bucket_boundaries;
     ] )

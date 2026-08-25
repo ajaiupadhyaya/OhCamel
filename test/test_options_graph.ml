@@ -432,6 +432,146 @@ let test_bad_option_books_are_rejected_at_construction () =
         ~finally:(fun () -> Graph.destroy g)
         ~f:(fun () -> Graph.advance_valuation_days g (-1.0)))
 
+(* VEGA BY TENOR BUCKET.
+
+   The portfolio vega sums sensitivities to different volatilities, so it reports
+   a calendar spread as flat. These check that the buckets say otherwise, and
+   that a contract's bucket follows the VALUATION CLOCK rather than being fixed
+   at construction -- which is the edge that would be easy to omit and would look
+   correct for about a month. *)
+
+let far_call =
+  Options.Position.create ~underlying:aapl ~id:"AAPL-100C-far"
+    ~strike:(Options.Strike.of_float 100.0)
+    ~right:Options.Right.Call ~expiry_in_days:180.0 ()
+
+let with_calendar ~f () =
+  let graph =
+    Graph.create ~instruments:book ~limits:[] ~options:[ aapl_call; far_call ] ~rate
+      ~confidence:0.95 ~return_window:10 ()
+  in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      Graph.set_price graph aapl (Price.of_float 100.0);
+      Graph.set_price graph msft (Price.of_float 200.0);
+      List.iter [ "AAPL-100C"; "AAPL-100C-far" ] ~f:(fun id ->
+          Graph.set_implied_vol graph id (Options.Implied_vol.of_float vol));
+      Graph.stabilize graph;
+      f graph)
+
+let bucket_vega graph b =
+  Option.value (Map.find (Graph.vega_by_bucket graph) b) ~default:0.0
+
+(* The buckets partition the book: they sum to the portfolio number exactly.
+   Bucketing is a regrouping, not a different measurement, and this is the
+   assertion that would fail if a contract were dropped or double-counted. *)
+let test_buckets_sum_to_the_portfolio_vega () =
+  with_calendar
+    ~f:(fun graph ->
+      Graph.set_contracts graph "AAPL-100C" (Options.Contracts.of_float 40.0);
+      Graph.set_contracts graph "AAPL-100C-far" (Options.Contracts.of_float (-15.0));
+      Graph.stabilize graph;
+      let total =
+        Map.fold (Graph.vega_by_bucket graph) ~init:0.0 ~f:(fun ~key:_ ~data acc ->
+            acc +. data)
+      in
+      Alcotest.check feq "buckets sum to portfolio vega" (Graph.portfolio_vega graph)
+        total;
+      (* Two contracts, two distinct buckets: 30 days is 1w-1m, 180 days is
+         3-6m. If both landed in one bucket the sum above would still hold and
+         the grouping would be useless, so the partition is asserted too. *)
+      Alcotest.(check int)
+        "two buckets occupied" 2
+        (Map.length (Graph.vega_by_bucket graph)))
+    ()
+
+(* THE CALENDAR SPREAD. Sized so the parallel-shift total is zero, and the
+   buckets are large and opposite -- which is the whole argument for reporting
+   them. *)
+let test_a_calendar_spread_reads_flat_in_total_and_not_in_buckets () =
+  with_calendar
+    ~f:(fun graph ->
+      (* Read the per-contract vegas out of the engine and size from them, so
+         the cancellation is exact rather than approximately right. *)
+      Graph.set_contracts graph "AAPL-100C-far" (Options.Contracts.of_float 1.0);
+      Graph.set_contracts graph "AAPL-100C" (Options.Contracts.of_float 0.0);
+      Graph.stabilize graph;
+      let far_unit = Graph.portfolio_vega graph in
+      Graph.set_contracts graph "AAPL-100C-far" (Options.Contracts.of_float 0.0);
+      Graph.set_contracts graph "AAPL-100C" (Options.Contracts.of_float 1.0);
+      Graph.stabilize graph;
+      let near_unit = Graph.portfolio_vega graph in
+      let far = 20.0 in
+      let near = -.far *. far_unit /. near_unit in
+      Graph.set_contracts graph "AAPL-100C-far" (Options.Contracts.of_float far);
+      Graph.set_contracts graph "AAPL-100C" (Options.Contracts.of_float near);
+      Graph.stabilize graph;
+      Alcotest.check (Alcotest.float 1e-6) "the parallel-shift total is zero" 0.0
+        (Graph.portfolio_vega graph);
+      let near_bucket = bucket_vega graph Options.Tenor_bucket.Week_to_month in
+      let far_bucket = bucket_vega graph Options.Tenor_bucket.Three_to_six in
+      Alcotest.(check bool)
+        "and the near bucket is materially short vol" true
+        (Float.( < ) near_bucket (-100.0));
+      Alcotest.(check bool)
+        "and the far bucket is materially long vol" true
+        (Float.( > ) far_bucket 100.0);
+      Alcotest.check (Alcotest.float 1e-6) "equal and opposite" 0.0
+        (near_bucket +. far_bucket))
+    ()
+
+(* THE EDGE THAT JUSTIFIES ITSELF.
+
+   A contract's bucket is a function of the time REMAINING, so advancing the
+   valuation clock slides a position from one bucket to the next with nothing
+   traded. A bucketing assigned once at construction would pass every other test
+   in this file and be wrong within a month.
+
+   The far call starts at 180 days (3-6m). Advance 100 days and it has 80 left,
+   which is 1-3m. Advance past 180 and it expires. *)
+let test_a_position_slides_between_buckets_as_the_clock_advances () =
+  with_calendar
+    ~f:(fun graph ->
+      Graph.set_contracts graph "AAPL-100C-far" (Options.Contracts.of_float 10.0);
+      Graph.set_contracts graph "AAPL-100C" (Options.Contracts.of_float 0.0);
+      Graph.stabilize graph;
+      let occupied () =
+        Map.to_alist (Graph.vega_by_bucket graph)
+        |> List.filter ~f:(fun (_, v) -> Float.( > ) (Float.abs v) 1e-9)
+        |> List.map ~f:(fun (b, _) -> Options.Tenor_bucket.to_string b)
+      in
+      Alcotest.(check (list string)) "starts at 3-6m" [ "3-6m" ] (occupied ());
+      Graph.advance_valuation_days graph 100.0;
+      Graph.stabilize graph;
+      Alcotest.(check (list string))
+        "80 days left, so 1-3m -- and nothing was traded" [ "1-3m" ] (occupied ());
+      Graph.advance_valuation_days graph 75.0;
+      Graph.stabilize graph;
+      Alcotest.(check (list string)) "5 days left, so <=1w" [ "<=1w" ] (occupied ());
+      (* Past expiry the contract has no vega at all, so no bucket is
+         occupied -- which is different from being in the shortest bucket with
+         zero, and the display should not draw a row for it. *)
+      Graph.advance_valuation_days graph 30.0;
+      Graph.stabilize graph;
+      Alcotest.(check (list string)) "expired, so nothing occupied" [] (occupied ()))
+    ()
+
+(* A book with no options gets an EMPTY map, not six buckets of zero. Six rows
+   of 0.00 is not information, and the display uses the absence to decide
+   whether to draw the panel at all. *)
+let test_a_book_with_no_options_has_no_buckets () =
+  let graph =
+    Graph.create ~instruments:book ~limits:[] ~confidence:0.95 ~return_window:10 ()
+  in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      Graph.set_price graph aapl (Price.of_float 100.0);
+      Graph.stabilize graph;
+      Alcotest.(check int) "no buckets" 0 (Map.length (Graph.vega_by_bucket graph));
+      Alcotest.check feq "and no vega" 0.0 (Graph.portfolio_vega graph))
+
 let suite =
   ( "options_graph",
     [
@@ -453,4 +593,12 @@ let suite =
         test_an_unmarked_underlying_is_flat_not_fatal;
       Alcotest.test_case "bad option books are rejected at construction" `Quick
         test_bad_option_books_are_rejected_at_construction;
+      Alcotest.test_case "vega buckets sum to the portfolio number" `Quick
+        test_buckets_sum_to_the_portfolio_vega;
+      Alcotest.test_case "A CALENDAR SPREAD: flat in total, not in buckets" `Quick
+        test_a_calendar_spread_reads_flat_in_total_and_not_in_buckets;
+      Alcotest.test_case "a position SLIDES between buckets as the clock advances" `Quick
+        test_a_position_slides_between_buckets_as_the_clock_advances;
+      Alcotest.test_case "no options means no buckets, not zeros" `Quick
+        test_a_book_with_no_options_has_no_buckets;
     ] )

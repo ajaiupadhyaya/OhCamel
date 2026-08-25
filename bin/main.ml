@@ -1010,6 +1010,99 @@ let options_book =
       ~right:Options.Right.Call ~expiry_in_days:options_expiry_days ();
   ]
 
+(* The case a single portfolio vega gets wrong, demonstrated rather than
+   described.
+
+   A calendar spread is long one expiry and short another on the same name. Its
+   parallel-shift vega -- the sum across expiries -- nets to nearly nothing,
+   because the two legs' sensitivities cancel. But they are sensitivities to
+   DIFFERENT volatilities: the 30-day implied and the 180-day implied move
+   together and not identically, so the position is a real bet on the term
+   structure and the total says it is flat. *)
+let calendar_near_days = 25.0
+let calendar_far_days = 180.0
+
+let calendar_book =
+  [
+    Options.Position.create ~underlying:(sym "NVDA") ~id:"NVDA-950C-far"
+      ~strike:(Options.Strike.of_float options_strike)
+      ~right:Options.Right.Call ~expiry_in_days:calendar_far_days ();
+    Options.Position.create ~underlying:(sym "NVDA") ~id:"NVDA-950C-near"
+      ~strike:(Options.Strike.of_float options_strike)
+      ~right:Options.Right.Call ~expiry_in_days:calendar_near_days ();
+  ]
+
+let run_calendar_spread () =
+  let nvda = sym "NVDA" in
+  let graph =
+    Graph.create
+      ~instruments:[ { Instrument.symbol = nvda; sector = sec "TECH" } ]
+      ~limits:[] ~options:calendar_book ~rate:0.04 ~confidence:0.95 ~return_window:10 ()
+  in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      Graph.set_price graph nvda (Price.of_float options_spot);
+      List.iter [ "NVDA-950C-far"; "NVDA-950C-near" ] ~f:(fun id ->
+          Graph.set_implied_vol graph id
+            (Options.Implied_vol.of_float
+               (synthetic_implied_vol ~spot:options_spot ~strike:options_strike)));
+      (* One contract of each, to read the per-contract vegas out of the engine
+         and size the spread from them rather than from a guess. Vega scales
+         roughly with the square root of time, so the far leg carries more of it
+         per contract and the near leg has to be the larger position. *)
+      Graph.set_contracts graph "NVDA-950C-far" (Options.Contracts.of_float 1.0);
+      Graph.set_contracts graph "NVDA-950C-near" (Options.Contracts.of_float 0.0);
+      Graph.stabilize graph;
+      let far_vega = Graph.portfolio_vega graph in
+      Graph.set_contracts graph "NVDA-950C-far" (Options.Contracts.of_float 0.0);
+      Graph.set_contracts graph "NVDA-950C-near" (Options.Contracts.of_float 1.0);
+      Graph.stabilize graph;
+      let near_vega = Graph.portfolio_vega graph in
+      let far_contracts = 50.0 in
+      let near_contracts = -.far_contracts *. far_vega /. near_vega in
+      Graph.set_contracts graph "NVDA-950C-far" (Options.Contracts.of_float far_contracts);
+      Graph.set_contracts graph "NVDA-950C-near"
+        (Options.Contracts.of_float near_contracts);
+      Graph.stabilize graph;
+      printf "%s\n  THE CALENDAR SPREAD: what one vega number hides\n%s\n\n" (rule 106)
+        (rule 106);
+      printf "  long  %5.0f NVDA %g calls, %.0f days out\n" far_contracts options_strike
+        calendar_far_days;
+      printf "  short %5.0f NVDA %g calls, %.0f days out\n\n" (Float.abs near_contracts)
+        options_strike calendar_near_days;
+      let s = Graph.snapshot graph in
+      printf "  portfolio vega          %14s   <- the parallel-shift number\n"
+        (money (Notional.of_float (Graph.Snapshot.portfolio_vega s /. 100.0)));
+      printf "  portfolio gamma         %14s\n\n"
+        (Printf.sprintf "%.1f" (Graph.Snapshot.portfolio_gamma s));
+      printf "  by tenor bucket:\n";
+      let buckets = Graph.Snapshot.vega_by_bucket s in
+      List.iter Options.Tenor_bucket.ordered ~f:(fun bucket ->
+          match Map.find buckets bucket with
+          | None -> ()
+          | Some vega ->
+              printf "    %-8s              %14s\n"
+                (Options.Tenor_bucket.to_string bucket)
+                (money (Notional.of_float (vega /. 100.0))));
+      printf
+        "\n\
+        \  The total is zero and the book is not flat. It is short near-dated\n\
+        \  volatility and long far-dated volatility in equal parallel-shift size --\n\
+        \  a bet that the TERM STRUCTURE steepens, which is a real position with real\n\
+        \  P&L and which a single vega number reports as nothing at all.\n\n\
+        \  Summing vega across expiries adds sensitivities to different\n\
+        \  volatilities: the 25-day implied and the 180-day implied move together\n\
+        \  and not identically. Bucketing does not make that sum exact -- vega\n\
+        \  within a bucket is still added across the expiries inside it -- but it\n\
+        \  makes the thing being approximated visible, which is the difference\n\
+        \  between an approximation and a blind spot.\n\n\
+        \  The buckets are cut on days REMAINING, so a position slides between them\n\
+        \  as the valuation clock advances and nothing is traded. graph.ml therefore\n\
+        \  hangs the bucketing off that clock rather than assigning a bucket once at\n\
+        \  construction, which would be wrong within a month and look right\n\
+        \  forever.\n\n")
+
 let run_options () =
   printf "\n  OhCamel -- reactive risk and limits engine\n";
   printf "  OPTIONS (Greeks-aware exposure, synthetic vol surface, no credentials)\n\n";
@@ -1140,7 +1233,8 @@ let run_options () =
         \  timer would have put the entire book on a schedule to capture a decay that\n\
         \  is invisible below a day, which is the design this project exists to\n\
         \  replace. test_options_graph.ml asserts that neither clock can do the\n\
-        \  other's job.\n\n")
+        \  other's job.\n\n");
+  run_calendar_spread ()
 
 (* ------------------------------------------------------------------------ *)
 (* Crisis backtest: the same battery, real data                              *)

@@ -215,6 +215,20 @@ let json_of_snapshot ~(graph : Graph.t) ~(factor : string) (s : Graph.Snapshot.t
          it; the /100 belongs in the renderer and is applied there. *)
       ("portfolio_gamma", jfloat (Graph.Snapshot.portfolio_gamma s));
       ("portfolio_vega", jfloat (Graph.Snapshot.portfolio_vega s));
+      (* Vega regrouped by tenor, in the same units as the total above. An
+         object rather than an array, keyed by the bucket's label, because the
+         set of occupied buckets varies with the book and a positional array
+         would make the consumer track which index means what. Absent buckets
+         are absent rather than zero -- a book with nothing in the 6-12m bucket
+         has no 6-12m exposure, which is different from having measured it to be
+         zero. *)
+      ( "vega_by_bucket",
+        `Assoc
+          (List.filter_map Options.Tenor_bucket.ordered ~f:(fun bucket ->
+               match Map.find (Graph.Snapshot.vega_by_bucket s) bucket with
+               | None -> None
+               | Some vega -> Some (Options.Tenor_bucket.to_string bucket, jfloat vega)))
+      );
       ("diversification_ratio", jopt_float (Graph.Snapshot.diversification_ratio s));
       ("warming_up", `Bool (Graph.Snapshot.warming_up s));
       ("feed", json_of_feed_health (Graph.Snapshot.feed_health s));

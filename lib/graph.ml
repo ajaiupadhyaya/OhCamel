@@ -102,6 +102,7 @@ module Node_name = struct
   let vega_map = "vega_map"
   let portfolio_gamma = "portfolio_gamma"
   let portfolio_vega = "portfolio_vega"
+  let vega_by_bucket = "vega_by_bucket"
   let sector (s : Sector.t) = "sector:" ^ Sector.to_string s
   let limit (name : string) = "limit:" ^ name
   let exposure_map = "exposure_map"
@@ -294,6 +295,14 @@ module Snapshot = struct
     vega_by_instrument : float Symbol.Map.t;
     portfolio_gamma : float;
     portfolio_vega : float;
+    (* The same vega, grouped by tenor. Empty when the book holds no options.
+
+         Read this before reading [portfolio_vega]: the total sums
+         sensitivities to different volatilities, so a book that is long one
+         expiry and short another reports near-zero total vega while carrying
+         real exposure to the term structure twisting. The buckets are where
+         that shows up. *)
+    vega_by_bucket : float Options.Tenor_bucket.Map.t;
     warming_up : bool;
     (* Whether the inputs the numbers above were computed from are still
          arriving. Read this before reading anything else. *)
@@ -395,6 +404,13 @@ type t = {
   obs_vega_by_instrument : float Symbol.Map.t Inc.Observer.t;
   obs_portfolio_gamma : float Inc.Observer.t;
   obs_portfolio_vega : float Inc.Observer.t;
+  (* Vega grouped by tenor, which is what [portfolio_vega] above is hiding.
+
+       A single portfolio vega sums sensitivities to different volatilities, so
+       it reports a calendar spread -- long one expiry against short another --
+       as carrying no vega at all. Bucketing does not make the sum exact; it
+       makes the thing being summed visible. See options.ml's Tenor_bucket. *)
+  obs_vega_by_bucket : float Options.Tenor_bucket.Map.t Inc.Observer.t;
   obs_portfolio_returns : float array option Inc.Observer.t;
   obs_covariance : Owl.Mat.mat option Inc.Observer.t;
   obs_covariance_ewma : Owl.Mat.mat option Inc.Observer.t;
@@ -776,6 +792,37 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
   in
   let portfolio_gamma_node = sum_map Node_name.portfolio_gamma gamma_map_node in
   let portfolio_vega_node = sum_map Node_name.portfolio_vega vega_map_node in
+  (* Vega by tenor bucket.
+
+     Depends on every option's vega AND on the valuation clock, and the second
+     edge is the one worth pointing at: a contract's bucket is a function of its
+     REMAINING time to expiry, so a position slides from the 3-6m bucket into
+     the 1-3m bucket as the valuation date advances, without anybody trading. A
+     bucketing assigned once at construction would be wrong within a month and
+     would look right forever.
+
+     Buckets a book with no options to an empty map rather than to zeros in
+     every bucket. Six rows of 0.00 is not information, and the display uses the
+     absence to decide whether to draw the panel at all. *)
+  let vega_by_bucket_node =
+    Inc.map2
+      (Inc.all
+         (List.map (Map.to_alist option_positions) ~f:(fun (id, position) ->
+              Inc.map (Map.find_exn option_exposure_nodes id) ~f:(fun (_, _, vega) ->
+                  (position, vega)))))
+      (Inc.Var.watch valuation_days_var)
+      ~f:(fun legs days ->
+        note Node_name.vega_by_bucket;
+        List.fold legs ~init:Options.Tenor_bucket.Map.empty
+          ~f:(fun acc (position, vega) ->
+            let remaining =
+              Float.max 0.0 (Options.Position.expiry_in_days position -. days)
+            in
+            let bucket = Options.Tenor_bucket.of_days remaining in
+            Map.update acc bucket ~f:(function
+              | None -> vega
+              | Some running -> running +. vega)))
+  in
   (* --- sector ----------------------------------------------------------- *)
   let symbols_by_sector =
     Map.fold instruments_map ~init:Sector.Map.empty
@@ -1311,6 +1358,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
       obs_vega_by_instrument = observe vega_map_node;
       obs_portfolio_gamma = observe portfolio_gamma_node;
       obs_portfolio_vega = observe portfolio_vega_node;
+      obs_vega_by_bucket = observe vega_by_bucket_node;
       obs_portfolio_returns = observe portfolio_returns_node;
       obs_covariance = observe covariance_node;
       obs_covariance_ewma = observe covariance_ewma_node;
@@ -1684,6 +1732,10 @@ let vega_by_instrument (t : t) : float Symbol.Map.t =
 
 let portfolio_gamma (t : t) : float = Inc.Observer.value_exn t.obs_portfolio_gamma
 let portfolio_vega (t : t) : float = Inc.Observer.value_exn t.obs_portfolio_vega
+
+let vega_by_bucket (t : t) : float Options.Tenor_bucket.Map.t =
+  Inc.Observer.value_exn t.obs_vega_by_bucket
+
 let feed_health (t : t) : Feed_health.t = Inc.Observer.value_exn t.obs_feed_health
 
 (* Limits paired with their result, in the order they were configured. [None]
@@ -1719,6 +1771,7 @@ let snapshot (t : t) : Snapshot.t =
     vega_by_instrument = vega_by_instrument t;
     portfolio_gamma = portfolio_gamma t;
     portfolio_vega = portfolio_vega t;
+    vega_by_bucket = vega_by_bucket t;
     warming_up = Option.is_none historical_var;
     feed_health = feed_health t;
     breaches = List.filter_map results ~f:(fun (_, breach) -> breach);

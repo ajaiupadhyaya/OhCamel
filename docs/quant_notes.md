@@ -607,14 +607,33 @@ the derivatives — exactly, by linearity, with no correlation term. This is why
 `Greek_limit` is valid at every scope where `Value_at_risk` is not.
 
 > **The caveat the arithmetic hides.** Summing $\nu$ across contracts at
-> *different expiries* adds sensitivities to different volatilities: the 30-day
+> *different expiries* adds sensitivities to different volatilities: the 25-day
 > and 180-day implieds move together but not identically. A single portfolio
-> vega therefore treats the term structure as one number shifting in parallel.
-> Every desk does this and calls it parallel-shift vega; it is a bucketed
-> approximation, not an identity, and it understates a calendar spread — long
-> one expiry against short another nets to near-zero vega while carrying real
-> exposure to the term structure twisting. Bucketing $\nu$ by expiry is the fix
-> and is not implemented.
+> vega therefore treats the term structure as one number shifting in parallel —
+> parallel-shift vega. It is an approximation, not an identity, and the case it
+> gets badly wrong is the calendar spread.
+
+**Tenor bucketing.** `Options.Tenor_bucket`, `Graph.vega_by_bucket`. Vega is
+regrouped by calendar days *remaining* to expiry into the conventional desk
+tenors — $\le$ 1w, 1w–1m, 1–3m, 3–6m, 6–12m, $>$ 1y — so
+
+$$\nu_{\text{portfolio}} \;=\; \sum_{\text{buckets}} \nu_b ,$$
+
+exactly, since bucketing is a regrouping of the same sum. It does not make the
+approximation exact: $\nu_b$ still adds across the expiries *inside* bucket $b$.
+What it does is make the approximated quantity visible. A calendar spread sized
+so $\nu_{\text{portfolio}} = 0$ reports $-12{,}559$ in the 1w–1m bucket against
+$+12{,}559$ in the 3–6m bucket, per vol point: a term-structure position the
+total calls flat.
+
+The bucket is a function of time *remaining*, so a contract migrates between
+buckets as the valuation date advances with nothing traded. The graph therefore
+hangs the bucketing off the valuation clock rather than assigning a bucket at
+construction — a choice that would look correct for about a month.
+
+Vega is **not** bucketed by strike, so skew risk — long the wings against short
+the body — is invisible within a bucket in exactly the way a calendar spread was
+invisible across them. Same idea one axis over, and not implemented.
 
 **Not modelled:** American exercise, dividends, a term structure of rates, and
 any implied-volatility solve. $\sigma$ is an input, because there is no options
@@ -662,4 +681,7 @@ looking like a defensible choice.
 | Hull's prices and Greeks | `test_options.ml` |
 | Put–call parity across a grid | `test_options.ml` |
 | Delta-hedged book: flat $\Delta$, live $\Gamma$ and $\nu$ | `test_options_graph.ml` |
+| Tenor buckets partition the vega sum exactly | `test_options_graph.ml` |
+| A calendar spread reads flat in total and opposite in buckets | `test_options_graph.ml` |
+| A position migrates between buckets as the valuation clock advances | `test_options_graph.ml` |
 | Fork isolation under random scenarios | `test_properties.ml`, `test_stress.ml` |

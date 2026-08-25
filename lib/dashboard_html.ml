@@ -452,6 +452,21 @@ let page =
           s.portfolio_gamma < 0 ? "neg" : null, "gap");
       row(t, "vega", "vega", "$ / vol pt", money(s.portfolio_vega / 100),
           s.portfolio_vega < 0 ? "neg" : null);
+      // Vega by tenor, shown only when more than one bucket is occupied.
+      //
+      // With a single expiry the total IS the bucket and a second row would be
+      // the same number twice. With two or more, the total is a parallel-shift
+      // approximation that can read zero on a book holding real term-structure
+      // risk -- which is precisely when the breakdown is worth the space.
+      var buckets = s.vega_by_bucket || {};
+      var names = Object.keys(buckets);
+      if (names.length > 1) {
+        for (var bi = 0; bi < names.length; bi++) {
+          row(t, "vega:" + names[bi], "\u00a0\u00a0" + names[bi], "of which",
+              money(buckets[names[bi]] / 100),
+              buckets[names[bi]] < 0 ? "neg" : null);
+        }
+      }
     }
     // Sum of standalone position volatilities over portfolio volatility, so at
     // least 1.00. What the book is getting from being a portfolio rather than a

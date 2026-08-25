@@ -395,15 +395,41 @@ being short convexity is the dangerous side, not the safe one. `Component_var`
 keeps the **sign**: a negative contribution there means a position is reducing
 portfolio risk, so absolute-valuing it would breach a limit for hedging.
 
-The caveat is real and is not in the numbers. Summing vega across contracts at
-different expiries adds sensitivities to *different volatilities* — the 30-day
-implied and the 180-day implied move together but not identically — so a single
-portfolio vega treats the whole term structure as one number shifting in
-parallel. Every desk does this and calls it parallel-shift vega. It is a
-bucketed approximation, not an identity, and it understates a calendar spread:
-long one expiry against short another nets to near-zero vega here while carrying
-real exposure to the term structure twisting. Bucketing vega by expiry is the
-fix and it is not implemented.
+The caveat is real, and rather than describe it the engine now shows it.
+
+Summing vega across contracts at *different expiries* adds sensitivities to
+different volatilities — the 25-day implied and the 180-day implied move
+together but not identically — so a single portfolio vega treats the whole term
+structure as one number shifting in parallel. Every desk does this and calls it
+parallel-shift vega. The case it gets badly wrong is the **calendar spread**,
+and `make options` builds one:
+
+```
+  long     50 NVDA 950 calls, 180 days out
+  short   170 NVDA 950 calls, 25 days out
+
+  portfolio vega                      $0   <- the parallel-shift number
+  portfolio gamma                  -72.5
+
+  by tenor bucket:
+    1w-1m                       $-12,559
+    3-6m                         $12,559
+```
+
+The total is zero and the book is not flat. It is short near-dated volatility
+and long far-dated volatility in equal parallel-shift size — a bet that the term
+structure steepens, with real P&L, which one vega number reports as nothing at
+all. The gamma of −72.5 is a second exposure the same number is silent about.
+
+Bucketing does not make the sum exact: vega inside a bucket is still added
+across the expiries within it. What it does is make the thing being approximated
+visible, which is the difference between an approximation and a blind spot. The
+buckets are cut on days *remaining*, so a position slides from one to the next
+as the valuation clock advances with nothing traded — which is why `graph.ml`
+hangs the bucketing off that clock rather than assigning a bucket once at
+construction, a choice that would look correct for about a month.
+`test_options_graph.ml` walks a contract from 3-6m to 1-3m to ≤1w to expired by
+advancing the clock alone.
 
 ### What the options path does not do
 
@@ -413,7 +439,10 @@ be the second half of a bridge to nowhere. Implied vol is an input.
 
 No American exercise, no dividends, no term structure of rates — Black-Scholes
 with one flat rate and one vol per contract. Each is a real simplification and
-each is named rather than left to be discovered.
+each is named rather than left to be discovered. Vega is bucketed by tenor but
+not by strike, so a book long the wings and short the body reads flat within a
+bucket the way a calendar spread used to read flat across them; a skew
+decomposition is the same idea one axis over, and is not here.
 
 And **live mode ships options risk disabled**, with a line saying so. Greeks need
 an implied vol per contract, Alpaca's free tier does not provide an options
@@ -993,7 +1022,7 @@ this codebase sends a message or takes an action on its own.
 
 ## What's verified
 
-`make test` runs 205 tests, all hermetic — no network, no credentials, and nothing
+`make test` runs 210 tests, all hermetic — no network, no credentials, and nothing
 that waits on the wall clock. They cover the numerics against hand-computed
 values, the wire format, the alerting state machine, and the recomputation counts
 that make the graph's shape an assertion rather than a claim.
@@ -1202,8 +1231,9 @@ different project with a different failure mode.
 The options path prices European contracts with Black-Scholes: no American
 exercise, no dividends, no term structure of rates, and no implied-volatility
 solve — vol is an input, because there is no chain to invert a price from.
-Portfolio vega is a parallel-shift number rather than bucketed by expiry, which
-understates a calendar spread. And options risk is **off in live mode**, stated
+Portfolio vega is a parallel-shift number, now reported alongside a tenor
+breakdown that shows what the parallel-shift sum hides — but it is not bucketed
+by strike, so skew risk is invisible. And options risk is **off in live mode**, stated
 rather than silently absent: with no options-chain source, the choice was to
 decline or to invent a surface, and an invented one produces Greeks that look
 exactly like real ones.

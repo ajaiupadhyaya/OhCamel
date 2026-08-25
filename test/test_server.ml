@@ -99,6 +99,7 @@ let test_round_trips () =
               "portfolio_beta";
               "portfolio_gamma";
               "portfolio_vega";
+              "vega_by_bucket";
               "warming_up";
               "feed";
               "limits";
