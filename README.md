@@ -436,21 +436,22 @@ uncalibrated VaR looks exactly like a calibrated one until the day it matters.
 estimators, nine verdicts:
 
 ```
- series       estimator         n  excepts  expected   Kupiec p    indep p    joint p  Basel   verdict
- -------------------------------------------------------------------------------------------------------
- iid-normal   historical      940       45      47.0     0.7631     0.3595     0.6280  green   ok
- iid-normal   parametric      940       48      47.0     0.8814     0.0229     0.0744  green   ok
- iid-normal   ewma(0.94)      940       54      47.0     0.3057     0.0102     0.0219  green   REJECTED
- vol-regime   historical      940       52      47.0     0.4616     0.9405     0.7605  green   ok
- vol-regime   parametric      940       65      47.0     0.0107     0.8028     0.0373  yellow  REJECTED
- vol-regime   ewma(0.94)      940       59      47.0     0.0836     0.6864     0.2063  yellow  ok
- jumps        historical      940        0      47.0     0.0000     1.0000     0.0000  green   REJECTED
- jumps        parametric      940       47      47.0     1.0000     0.0277     0.0886  green   ok
- jumps        ewma(0.94)      940       47      47.0     1.0000     0.0277     0.0886  green   ok
+ series       estimator         n  excepts  expected  Kupiec p   indep p   joint p      duration p  Basel   verdict
+ ---------------------------------------------------------------------------------------------------------------------
+ iid-normal   historical      940       45      47.0    0.7631    0.3595    0.6280  0.6291 b= 0.95  green   ok
+ iid-normal   parametric      940       48      47.0    0.8814    0.0229    0.0744  0.8975 b= 1.01  green   ok
+ iid-normal   ewma(0.94)      940       54      47.0    0.3057    0.0102    0.0219  0.0577 b= 1.24  green   REJECTED
+ vol-regime   historical      940       52      47.0    0.4616    0.9405    0.7605  0.9438 b= 0.99  green   ok
+ vol-regime   parametric      940       65      47.0    0.0107    0.8028    0.0373  0.9592 b= 1.00  yellow  REJECTED
+ vol-regime   ewma(0.94)      940       59      47.0    0.0836    0.6864    0.2063  0.2446 b= 1.13  yellow  ok
+ jumps        historical      940        0      47.0    0.0000    1.0000    0.0000        --        green   REJECTED
+ jumps        parametric      940       47      47.0    1.0000    0.0277    0.0886  0.0000 b=20.00  green   ok
+ jumps        ewma(0.94)      940       47      47.0    1.0000    0.0277    0.0886  0.0000 b=20.00  green   ok
 ```
 
-Three statistics, because a model can fail in two independent ways and one test
-cannot tell them apart. **Kupiec**'s proportion-of-failures test asks whether
+**Four** statistics, because a model can fail in more ways than one test can
+tell apart — and the fourth was added because the first three were caught
+missing something. Start with the three. **Kupiec**'s proportion-of-failures test asks whether
 there are the right *number* of exceedances, and it is two-sided — too few is a
 rejection too, because a VaR that is never breached is not measuring the quantile
 it claims to and every limit written against it is slack by an unknown amount.
@@ -460,6 +461,24 @@ one week, which is the signature of a model that is not tracking volatility.
 **Conditional coverage** is the joint test, reported next to its components
 rather than instead of them, because a joint rejection says the model is wrong
 and the parts say which half.
+
+And then **duration** — Christoffersen and Pelletier's test, which asks the
+independence question a different way and catches what the Markov one cannot.
+Under correct conditional coverage the *waiting times between* exceedances are
+memoryless: how long you have waited says nothing about how much longer you
+will. So fit a Weibull to those durations, whose shape parameter $b$ collapses
+to the exponential exactly at $b = 1$, and test the restriction. $b < 1$ means a
+breach makes the next one arrive sooner than chance — clustering. $b > 1$ means
+breaches are *more regular* than chance. Because it works on durations rather
+than on adjacency, a burst landing every third day is as visible as one landing
+on consecutive days.
+
+It is reported beside the joint verdict and deliberately **not folded into it**.
+Conditional coverage is Kupiec plus the *first-order* independence test, and its
+two degrees of freedom follow from exactly those two pieces; adding a third
+statistic to that sum would produce something with no distribution anyone has
+derived, and would silently change the meaning of every verdict this suite has
+already published.
 
 The whole analysis turns on one discipline, and it is enforced structurally
 rather than by care. `Var_backtest.rolling` hands the estimator
@@ -485,6 +504,29 @@ And `iid-normal`/parametric shows an independence p-value of 0.023, on data that
 is independent by construction — a 5% test doing what a 5% test does one time in
 twenty. It is the argument for gating on the joint statistic rather than on
 whichever component looks worst, which is multiple testing wearing a lab coat.
+
+### The row where the fourth test earns its place
+
+Look at `jumps`/parametric. That series is quiet days with an identical −8% loss
+**every twentieth day**, so exactly 5% of days are the tail. Kupiec is perfect:
+47 exceptions against 47 expected, p = 1.0000. The Markov independence test
+gives 0.028. The joint verdict is 0.089 — **not rejected**. Basel is green.
+Three statistics, and the model passes.
+
+The duration test rejects it at **p < 0.0001**, with the fitted shape pinned at
+the search's upper bound of 20.
+
+It is right to. A tail that arrives every twentieth day without fail is not a
+market — it is a metronome, and the waiting times have *zero variance*, which is
+as far from memoryless as a sample can get. The Weibull likelihood is increasing
+in $b$ without limit there, so the reported 20.00 is a bound rather than a fit
+and the code says so. Nothing else in the battery could see it: the count was
+right, and no two breaches were ever adjacent.
+
+The mirror case is one row up. `jumps`/historical reports **zero** exceptions, so
+there are fewer than two durations to fit anything to and the column reads `--`.
+That is "the test does not apply", which is a different statement from "no
+evidence of clustering" and is printed differently on purpose.
 
 ### What the third estimator bought, and what it cost
 
@@ -521,10 +563,12 @@ reported risk falling by a third overnight because a crash day left a
 sixty-observation window, an event in the *estimator* that looks exactly like an
 event in the market.
 
-The suite rejects three of nine configurations, and two of the three are cases
-where one estimator passes and another fails on identical data. That is the
-point. A validation battery that has never failed anything is not evidence of
-anything, and one where every estimator agrees is not telling you which to use.
+The joint verdict rejects three of nine configurations, and the duration test
+rejects two more that it passed. Two of those five are cases where one estimator
+passes and another fails on *identical* data. That is the point. A validation
+battery that has never failed anything is not evidence of anything; one where
+every estimator agrees is not telling you which to use; and one where every
+statistic agrees is not telling you what it cannot see.
 
 ## The same battery, real crises
 
@@ -557,22 +601,22 @@ own documented approximation, and it is the question a limit is actually
 asking: what would *today's* book have done through this history.
 
 ```
- window       estimator         n  excepts  expected   Kupiec p    indep p    joint p  burst  Basel   verdict
- -----------------------------------------------------------------------------------------------------------
- gfc          historical      570       25      28.5     0.4925     0.9207     0.7862      5  green   ok
- gfc          parametric      570       27      28.5     0.7713     0.5347     0.7906      5  green   ok
- gfc          ewma(0.94)      570       34      28.5     0.3043     0.9811     0.5899      5  green   ok
- covid        historical      339       18      17.0     0.7955     0.0699     0.1870      8  green   ok
- covid        parametric      339       22      17.0     0.2279     0.0521     0.0733     10  green   ok
- covid        ewma(0.94)      339       23      17.0     0.1517     0.2659     0.1928      5  green   ok
- rates-2022   historical      340       24      17.0     0.1000     0.8083     0.2511      4  yellow  ok
- rates-2022   parametric      340       22      17.0     0.2330     0.6877     0.4530      4  green   ok
- rates-2022   ewma(0.94)      340       22      17.0     0.2330     0.6877     0.4530      4  green   ok
+ window       estimator         n  excepts  expected  Kupiec p   indep p   joint p      duration p  burst  Basel   verdict
+ -------------------------------------------------------------------------------------------------------------------------
+ gfc          historical      570       25      28.5    0.4925    0.9207    0.7862  0.7483 b= 0.95      5  green   ok
+ gfc          parametric      570       27      28.5    0.7713    0.5347    0.7906  0.2265 b= 0.84      5  green   ok
+ gfc          ewma(0.94)      570       34      28.5    0.3043    0.9811    0.5899  0.2243 b= 1.20      5  green   ok
+ covid        historical      339       18      17.0    0.7955    0.0699    0.1870  0.0160 b= 0.66      8  green   ok
+ covid        parametric      339       22      17.0    0.2279    0.0521    0.0733  0.0033 b= 0.65     10  green   ok
+ covid        ewma(0.94)      339       23      17.0    0.1517    0.2659    0.1928  0.3409 b= 0.86      5  green   ok
+ rates-2022   historical      340       24      17.0    0.1000    0.8083    0.2511  0.7096 b= 1.06      4  yellow  ok
+ rates-2022   parametric      340       22      17.0    0.2330    0.6877    0.4530  0.5292 b= 1.11      4  green   ok
+ rates-2022   ewma(0.94)      340       22      17.0    0.2330    0.6877    0.4530  0.2816 b= 1.21      4  green   ok
 ```
 
-**Nothing was rejected.** Not the global financial crisis, not COVID, not 2022.
-That is the result, and the interesting part of this section is why it should
-not be read as a pass.
+**The joint verdict rejects nothing.** Not the global financial crisis, not
+COVID, not 2022. The duration column rejects two rows, and the gap between those
+two facts is what this section is about.
 
 ### Why the model survived, and why that is not reassuring
 
@@ -583,11 +627,8 @@ book's daily volatility through the GFC window is 1.6%, rising to 2.5% in the
 Lehman quarter. That is a 1.5× regime change, not the 4× one the synthetic
 `vol-regime` series inflicts, and a 60-day window absorbs 1.5× tolerably.
 
-The rest of it is the tests not seeing what is in front of them, and the
-`burst` column is there to show it. It is not a hypothesis test: it is the most
-exceptions any 21 consecutive sessions contained, against roughly 1.1 expected
-if exceedances were independent. Read it next to the independence p-value it
-qualifies.
+The rest of it is the tests not seeing what is in front of them, and this window
+is what put a fourth statistic in the battery.
 
 On the GFC window this book takes **five exceptions between 15 September and 7
 October 2008** — seventeen sessions spanning Lehman and the TARP vote — and
@@ -600,26 +641,43 @@ lands every third session is invisible to it, and a reader who takes "p = 0.92"
 to mean "the exceedances were well scattered" has read something the statistic
 never said.
 
-COVID is worse and more instructive. `covid`/`parametric` takes **10 exceptions
-in a single 21-session window** — ten times the independent expectation — with
-a joint p-value of 0.073, which does not reject at 5%. A model breaching its
-95% VaR ten times in a month is not a calibrated model. The battery as
-specified cannot say so.
+COVID is worse. `covid`/`parametric` takes **10 exceptions in a single
+21-session window** — ten times the independent expectation — with a joint
+p-value of 0.073, which does not reject at 5%. A model breaching its 95% VaR ten
+times in a month is not a calibrated model.
 
-The honest fix has a name and is not implemented here: a **duration-based**
-independence test — Christoffersen and Pelletier's, which models the *time
-between* exceedances rather than the day after each one — is the statistic that
-sees a burst regardless of spacing. `burst` is a diagnostic standing in for it,
-labelled as such in the output, and the reason it is a column rather than a
-p-value is that a number invented for a README should not be dressed as a test.
+**The duration test says so: p = 0.0033, shape 0.65.** A shape well below 1 is a
+decreasing hazard — a breach makes the next one arrive sooner than chance, which
+is the definition of clustering — and because the statistic works on waiting
+times rather than on adjacency, the three-day spacing that hid the cluster from
+the Markov test does not hide it here. `covid`/`historical` rejects too, at
+0.016 with a shape of 0.66.
+
+**And it still does not catch the GFC**, at p = 0.75 with a shape of 0.95. That
+is not a defect being glossed over; it is what the test is. It is a **global**
+fit over the whole duration distribution, and twenty-five durations spread
+across 570 days still look roughly exponential in aggregate even with five of
+them bunched around Lehman. One local burst inside a long calm series barely
+moves it.
+
+Which is why the `burst` column stays. It is not a hypothesis test and is
+labelled as such — just the most exceptions any 21 consecutive sessions
+contained, against roughly 1.1 expected under independence — and it is the only
+one of the three that sees a *local* cluster. Three instruments, three different
+blind spots: adjacency, aggregation, and no distribution theory at all. Reading
+one of them alone is how a model breaching ten times in a month gets a passing
+grade.
 
 ### What EWMA bought here
 
-The clearest thing in the table. On the COVID window the EWMA estimator cuts
-the worst burst from **10 to 5** and moves the independence p-value from 0.052
-to 0.266 — it is tracking the volatility spike the flat window is still
-averaging away, which is exactly the failure Phase A was aimed at, showing up
-on data nobody constructed.
+The clearest thing in the table, and now visible three independent ways at once.
+On the COVID window the EWMA estimator cuts the worst burst from **10 to 5**,
+moves the Markov independence p-value from 0.052 to 0.266, and moves the
+duration p-value from **0.0033 to 0.34** — from a decisive rejection to nowhere
+near one, with the fitted shape rising from 0.65 to 0.86. Three statistics that
+fail in different ways all agree: it is tracking the volatility spike the flat
+window is still averaging away, which is exactly the failure the EWMA estimator
+was added for, showing up on data nobody constructed.
 
 It is not free, and the same table says so: on the GFC window EWMA takes **34
 exceptions against 27** for equal weighting, on a window where the regime
@@ -888,7 +946,7 @@ this codebase sends a message or takes an action on its own.
 
 ## What's verified
 
-`make test` runs 192 tests, all hermetic — no network, no credentials, and nothing
+`make test` runs 198 tests, all hermetic — no network, no credentials, and nothing
 that waits on the wall clock. They cover the numerics against hand-computed
 values, the wire format, the alerting state machine, and the recomputation counts
 that make the graph's shape an assertion rather than a claim.
@@ -1111,11 +1169,13 @@ file: the VaR and ES definitions with the nearest-rank convention actually
 implemented, the Euler derivation in equations rather than prose, the EWMA
 recursion and what its effective sample size costs, the Kupiec and
 Christoffersen statistics with their degrees of freedom and their nulls stated
-explicitly, the Basel zone boundaries computed rather than quoted, and the
-Black-Scholes Greeks. Every formula names the file and function that evaluates
+explicitly, the Weibull duration test with its scale parameter profiled out and
+its censoring spelled out, the Basel zone boundaries computed rather than
+quoted, and the Black-Scholes Greeks. Every formula names the file and function that evaluates
 it, and every limitation this project found the hard way — the ε-rounding
-artefact in the tail rank, the first-order Markov blind spot in Christoffersen's
-test, the parallel-shift approximation in portfolio vega — is stated where the
+artefact in the tail rank, the first-order Markov blind spot that
+motivated adding a duration test, the duration test's own blind spot for local
+bursts, the parallel-shift approximation in portfolio vega — is stated where the
 formula is, not left for a reader to discover.
 
 ## Origin

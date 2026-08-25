@@ -336,21 +336,105 @@ $$LR_{ind} = -2\Big[(n_{00}+n_{10})\ln(1-\pi) + (n_{01}+n_{11})\ln\pi
 - n_{10}\ln(1-\pi_{11}) - n_{11}\ln\pi_{11}\Big]
 \;\xrightarrow{d}\;\chi^2_1 .$$
 
-> **A limitation this project found empirically, and it matters.** $LR_{ind}$ is
-> a **first-order Markov** test: it compares $\Pr(I_t{=}1 \mid I_{t-1}{=}1)$
-> against $\Pr(I_t{=}1 \mid I_{t-1}{=}0)$. It therefore detects exceedances
-> arriving *on consecutive days* and is blind to a burst whose members are not
-> adjacent. In `make backtest-crisis`, the standard book takes **five
-> exceedances between 15 September and 7 October 2008** — seventeen sessions
-> spanning Lehman, against 0.85 expected — and $LR_{ind}$ returns $p = 0.92$,
-> because exactly one pair in that 570-day series falls on adjacent days. The
-> test is not wrong; it is answering a narrower question than a reader assumes.
-> The fix is a **duration-based** test (Christoffersen & Pelletier, 2004), which
-> models the time *between* exceedances. It is not implemented. The `burst`
-> column in that mode's output is a labelled descriptive statistic standing in
-> for it, not a hypothesis test.
+> **A limitation this project found empirically.** $LR_{ind}$ is a **first-order
+> Markov** test: it compares $\Pr(I_t{=}1 \mid I_{t-1}{=}1)$ against
+> $\Pr(I_t{=}1 \mid I_{t-1}{=}0)$. It therefore detects exceedances arriving *on
+> consecutive days* and is blind to a burst whose members are not adjacent. In
+> `make backtest-crisis`, the standard book takes **five exceedances between 15
+> September and 7 October 2008** — seventeen sessions spanning Lehman, against
+> 0.85 expected — and $LR_{ind}$ returns $p = 0.92$, because exactly one pair in
+> that 570-day series falls on adjacent days. The test is not wrong; it is
+> answering a narrower question than a reader assumes. §7.4 is the response.
 
-### 7.4 Conditional coverage
+### 7.4 Christoffersen–Pelletier, duration-based independence
+
+`duration_independence`, `exceedance_durations`,
+`weibull_profile_log_likelihood`.
+
+Under correct conditional coverage the exceedance process is Bernoulli($p$), so
+the **durations** between exceedances are geometric — memoryless, and
+exponential in the continuous limit. Memorylessness *is* independence: how long
+you have waited says nothing about how much longer you will.
+
+Embed the exponential in a family that can express memory. The Weibull,
+
+$$f(d) = a^{b}\,b\,d^{\,b-1}\exp\!\big(-(ad)^{b}\big),
+\qquad
+S(d) = \exp\!\big(-(ad)^{b}\big),$$
+
+is exponential exactly at $b = 1$, and the shape reads directly:
+
+| $b$ | hazard | meaning |
+|---|---|---|
+| $< 1$ | decreasing | a breach makes the next arrive **sooner** than chance — clustering |
+| $= 1$ | flat | memoryless — independence |
+| $> 1$ | increasing | breaches **more regular** than chance |
+
+$H_0: b = 1$, by likelihood ratio against $\chi^2_1$. Because it consumes
+durations rather than adjacencies, a burst landing every third session is as
+visible as one landing on consecutive days.
+
+**Censoring.** With exceedances at $t_1 < \dots < t_N$ in a sample of length
+$T$, the durations are $d_0 = t_1$ (start to first hit), $d_i = t_{i+1}-t_i$ for
+$i = 1..N-1$, and $d_N = T - t_N$ (last hit to end). The two ends are **censored**
+— neither is a complete waiting time — so each contributes $\ln S(d)$ rather than
+$\ln f(d)$. Treating them as complete would bias the shape downward on any series
+that happens to begin or end quietly, which is most of them.
+
+$$\ln L \;=\; \ln S(d_0) \;+\; \sum_{i=1}^{N-1}\ln f(d_i) \;+\; \ln S(d_N).$$
+
+**Profiling out the scale.** Let $U$ be the number of uncensored durations and
+$T(b) = \sum_{\text{all }i} d_i^{\,b}$. A censored term contributes $-(ad)^b$ and
+no $\ln a$, so the first-order condition in $a$ is
+
+$$\frac{Ub}{a} \;=\; b\,a^{\,b-1}T(b)
+\qquad\Longrightarrow\qquad
+a^{b} = \frac{U}{T(b)} .$$
+
+Substituting back, $a^{b}T(b) = U$ cancels the last term and leaves a function of
+$b$ alone:
+
+$$\ell(b) \;=\; U\ln\!\frac{U}{T(b)} \;+\; U\ln b
+\;+\; (b-1)\!\!\sum_{\text{uncensored}}\!\!\ln d_i \;-\; U .$$
+
+One smooth, unimodal dimension — maximised by golden-section search, which needs
+no derivative and no initial guess. Then
+
+$$LR_{dur} = -2\big[\ell(1) - \ell(\hat b)\big] \;\xrightarrow{d}\; \chi^2_1 .$$
+
+**Two boundary cases, both real.**
+
+*Fewer than two exceedances* returns `None`, not $p = 1$. With none or one there
+is no complete duration to fit, and "the test does not apply" is a different
+statement from "no evidence of clustering".
+
+*Zero duration variance* — exceedances at perfectly regular intervals — makes
+$\ell(b)$ increasing in $b$ without limit: the MLE diverges. The search is bounded
+to $b \in [0.05, 20]$, so the reported shape is a **ceiling artefact** in that
+case rather than a fitted value. `make backtest`'s `jumps` series is exactly
+this: a −8% loss every twentieth day, which passes Kupiec at $p = 1.0000$, passes
+the Markov test, passes the joint verdict at $p = 0.089$, is Basel green — and is
+rejected here at $p < 10^{-4}$ with $\hat b$ pinned at 20. A tail that arrives on
+a schedule is a metronome, not a market, and nothing else in the battery can see
+it.
+
+**What it still cannot do.** It is a **global** fit over the whole duration
+distribution. A single localised burst inside a long otherwise-calm series moves
+$\hat b$ very little: on the GFC window it returns $\hat b = 0.95$, $p = 0.75$
+despite the five exceedances around Lehman, because twenty-five durations spread
+over 570 days still look roughly exponential in aggregate. `backtest-crisis`
+therefore also prints a plain worst-burst count, labelled a descriptive statistic
+and not a test, because it is the only one of the three that sees a local
+cluster. Three instruments, three blind spots — adjacency, aggregation, and no
+distribution theory at all.
+
+**Not folded into conditional coverage.** $LR_{cc} = LR_{uc} + LR_{ind}$ has two
+degrees of freedom because it is Christoffersen's decomposition of exactly those
+two pieces. Adding $LR_{dur}$ to that sum would produce a statistic with no
+derived distribution, and would silently change the meaning of every verdict the
+module has already published. It is reported alongside, with its own verdict.
+
+### 7.5 Conditional coverage
 
 $$LR_{cc} = LR_{uc} + LR_{ind} \;\xrightarrow{d}\; \chi^2_2 ,$$
 
@@ -363,7 +447,7 @@ twice is a multiple-comparison error.
 $\chi^2$ tail probabilities (`chi2_p`) use the regularised upper incomplete
 gamma function, $\Pr(\chi^2_k > x) = Q(k/2,\, x/2)$.
 
-### 7.5 Basel traffic light
+### 7.6 Basel traffic light
 
 `traffic_light`. Not a hypothesis test — a supervisor's decision rule. Under
 $H_0$ the exceedance count is $X \sim \mathrm{Binomial}(n, p)$, and the zone is
@@ -499,6 +583,10 @@ looking like a defensible choice.
 | Negative component for a constructed hedge | `test_properties.ml`, `test_attribution.ml` |
 | Rolling-origin lookahead isolation | `test_properties.ml`, `test_var_backtest.ml` |
 | Basel zones reproduce the 250-day table | `test_var_backtest.ml` |
+| Duration test rejects a non-adjacent burst the Markov test passes | `test_var_backtest.ml` |
+| Duration test accepts memoryless durations, rejects perfect regularity | `test_var_backtest.ml` |
+| Censored ends are treated as censored | `test_var_backtest.ml` |
+| $LR_{dur}$ stays out of the conditional-coverage sum | `test_var_backtest.ml` |
 | Hull's prices and Greeks | `test_options.ml` |
 | Put–call parity across a grid | `test_options.ml` |
 | Delta-hedged book: flat $\Delta$, live $\Gamma$ and $\nu$ | `test_options_graph.ml` |

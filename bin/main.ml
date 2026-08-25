@@ -727,6 +727,18 @@ let run_stress () =
    multiple testing, and it is the exact mistake this module is supposed to be
    above. *)
 
+(* The duration test's two numbers, rendered for a table cell.
+
+   The shape is what a reader acts on -- below 1 is clustering, above 1 is
+   over-regular -- so it is printed next to the p-value rather than left to be
+   inferred from a rejection. "--" is not applicable: with fewer than two
+   exceedances there is no duration to fit, which is a different statement from
+   "no evidence of clustering" and is printed differently. *)
+let duration_cell (r : Var_backtest.report) =
+  match (Var_backtest.duration_p r, Var_backtest.duration_shape r) with
+  | Some p, Some shape -> Printf.sprintf "%.4f b=%5.2f" p shape
+  | _ -> "     --      "
+
 let backtest_rng = Random.State.make [| 2026_08_24 |]
 
 let backtest_gaussian ~sigma =
@@ -755,13 +767,14 @@ let backtest_series =
   ]
 
 let backtest_row ~name ~(estimator : Var_backtest.Estimator.t) (r : Var_backtest.report) =
-  printf "  %-12s %-12s %6d %8d %9.1f %10.4f %10.4f %10.4f  %-7s %s\n" name
+  printf "  %-12s %-12s %6d %8d %9.1f %9.4f %9.4f %9.4f  %14s  %-7s %s\n" name
     (Var_backtest.Estimator.to_string estimator)
     (Var_backtest.observations r) (Var_backtest.exceptions r)
     (Var_backtest.expected_exceptions r)
     (Var_backtest.kupiec_p r)
     (Var_backtest.independence_p r)
     (Var_backtest.conditional_coverage_p r)
+    (duration_cell r)
     (Var_backtest.Zone.to_string (Var_backtest.zone r))
     (if Var_backtest.rejected r then "REJECTED" else "ok")
 
@@ -783,9 +796,9 @@ let run_backtest () =
     \                  scored against, and cannot see that day.\n\n"
     backtest_window;
   printf "%s\n  COVERAGE AND INDEPENDENCE\n%s\n\n" (rule 106) (rule 106);
-  printf "  %-12s %-12s %6s %8s %9s %10s %10s %10s  %-7s %s\n" "series" "estimator" "n"
-    "excepts" "expected" "Kupiec p" "indep p" "joint p" "Basel" "verdict";
-  printf "  %s\n" (rule 104);
+  printf "  %-12s %-12s %6s %8s %9s %9s %9s %9s  %14s  %-7s %s\n" "series" "estimator" "n"
+    "excepts" "expected" "Kupiec p" "indep p" "joint p" "duration p" "Basel" "verdict";
+  printf "  %s\n" (rule 116);
   let reports =
     List.concat_map backtest_series ~f:(fun (name, _, returns) ->
         List.map
@@ -807,7 +820,19 @@ let run_backtest () =
             backtest_row ~name ~estimator r;
             (name, estimator, r)))
   in
-  printf "  %s\n\n" (rule 104);
+  printf "  %s\n" (rule 116);
+  printf
+    "\n\
+    \  indep p     Christoffersen's FIRST-ORDER Markov test: does a breach yesterday\n\
+    \              predict one today. Blind to a cluster that is not on adjacent days.\n\
+    \  duration p  Christoffersen-Pelletier: fits a Weibull to the waiting times\n\
+    \              BETWEEN breaches and tests the memoryless case b = 1. b < 1 is\n\
+    \              clustering; b > 1 is more regular than chance. Sees a burst\n\
+    \              whatever its spacing. Reported beside the joint verdict rather\n\
+    \              than folded into it -- conditional coverage is Kupiec plus the\n\
+    \              Markov test and its degrees of freedom follow from exactly those\n\
+    \              two, so adding a third would give it a distribution nobody has\n\
+    \              derived.\n\n";
   List.iter backtest_series ~f:(fun (name, description, _) ->
       printf "  %-12s %s\n" name description);
   (* One report in full, and it is the WORST failure rather than the first. A
@@ -1069,14 +1094,14 @@ let burst_span = 21
 
 let crisis_row ~window_name ~(estimator : Var_backtest.Estimator.t) ~(burst : int)
     (r : Var_backtest.report) =
-  printf "  %-12s %-12s %6d %8d %9.1f %10.4f %10.4f %10.4f  %5d  %-7s %s\n" window_name
+  printf "  %-12s %-12s %6d %8d %9.1f %9.4f %9.4f %9.4f  %14s %6d  %-7s %s\n" window_name
     (Var_backtest.Estimator.to_string estimator)
     (Var_backtest.observations r) (Var_backtest.exceptions r)
     (Var_backtest.expected_exceptions r)
     (Var_backtest.kupiec_p r)
     (Var_backtest.independence_p r)
     (Var_backtest.conditional_coverage_p r)
-    burst
+    (duration_cell r) burst
     (Var_backtest.Zone.to_string (Var_backtest.zone r))
     (if Var_backtest.rejected r then "REJECTED" else "ok")
 
@@ -1129,10 +1154,10 @@ let run_backtest_crisis () =
                 (pct worst) (pct best);
               printf "  %-12s %s\n\n" "" (Crisis_data.Window.description window));
       printf "%s\n  COVERAGE AND INDEPENDENCE\n%s\n\n" (rule 106) (rule 106);
-      printf "  %-12s %-12s %6s %8s %9s %10s %10s %10s  %5s  %-7s %s\n" "window"
-        "estimator" "n" "excepts" "expected" "Kupiec p" "indep p" "joint p" "burst"
-        "Basel" "verdict";
-      printf "  %s\n" (rule 112);
+      printf "  %-12s %-12s %6s %8s %9s %9s %9s %9s  %14s %6s  %-7s %s\n" "window"
+        "estimator" "n" "excepts" "expected" "Kupiec p" "indep p" "joint p" "duration p"
+        "burst" "Basel" "verdict";
+      printf "  %s\n" (rule 126);
       let reports =
         List.concat_map series ~f:(fun (window, returns) ->
             match returns with
@@ -1156,13 +1181,18 @@ let run_backtest_crisis () =
                     crisis_row ~window_name ~estimator ~burst r;
                     (window_name, estimator, r)))
       in
-      printf "  %s\n" (rule 112);
+      printf "  %s\n" (rule 126);
       printf
         "\n\
-        \  burst  the most exceptions any %d consecutive sessions held. Expected\n\
-        \         under independence: about %.1f. It is in this table because\n\
-        \         Christoffersen's statistic is a first-order Markov test and\n\
-        \         cannot see a cluster whose members are not on adjacent days.\n"
+        \  Three instruments, three blind spots, which is why all three are here.\n\
+        \  indep p     first-order Markov: only sees breaches on ADJACENT days.\n\
+        \  duration p  Weibull on the waiting times: sees a cluster at any spacing,\n\
+        \              but it is a GLOBAL fit -- one local burst inside a long calm\n\
+        \              series barely moves it.\n\
+        \  burst       the most exceptions any %d consecutive sessions held, against\n\
+        \              about %.1f expected under independence. Not a hypothesis test\n\
+        \              and labelled as such -- it is the only one of the three that\n\
+        \              sees a LOCAL cluster.\n"
         burst_span
         (float_of_int burst_span *. (1.0 -. confidence));
       let rejected = List.count reports ~f:(fun (_, _, r) -> Var_backtest.rejected r) in

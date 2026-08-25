@@ -256,6 +256,173 @@ let christoffersen_independence ~(exceedances : bool array) : float * float =
     end
   end
 
+(* ------------------------------------------------------------------------ *)
+(* Independence again, this time without the adjacency blind spot            *)
+(* ------------------------------------------------------------------------ *)
+
+(* Christoffersen and Pelletier's duration-based independence test (2004).
+
+   WHY A SECOND INDEPENDENCE TEST EXISTS AT ALL
+
+   The Markov test above is first-order: it compares P(breach | breach
+   yesterday) against P(breach | calm yesterday). That detects exceedances
+   arriving BACK TO BACK and is blind to a cluster whose members are not on
+   adjacent days -- and the crisis backtest found exactly that case rather than
+   inventing it. Through the COVID window the standard book takes ten
+   exceedances inside twenty-one sessions, against roughly one expected, and the
+   Markov statistic returns p = 0.07. It is not wrong; it is answering a
+   narrower question than a reader assumes it answered.
+
+   THE IDEA
+
+   Under correct conditional coverage the exceedance process is Bernoulli with
+   parameter p, so the DURATIONS between exceedances are geometric -- memoryless,
+   and in continuous time exponential with mean 1/p. Memorylessness is the whole
+   content of independence: how long you have waited says nothing about how much
+   longer you will wait.
+
+   So embed the exponential in a family that can express memory, and test the
+   restriction. The Weibull, with density
+
+     f(d) = a^b b d^(b-1) exp(-(a d)^b)
+
+   is exponential exactly when b = 1. The shape parameter reads directly:
+
+     b < 1   decreasing hazard -- an exceedance makes another one SOONER than
+             chance. This is clustering, and it is what a volatility model that
+             is not keeping up looks like.
+     b = 1   memoryless. Independence.
+     b > 1   increasing hazard -- exceedances are more regular than chance. Rarer,
+             and it is what a model whose tail is mechanically periodic looks
+             like rather than a market.
+
+   H0: b = 1, tested by likelihood ratio against chi-square with one degree of
+   freedom. Crucially the durations enter as durations, so a burst landing every
+   third session is as visible as one landing on consecutive days.
+
+   CENSORING, WHICH IS NOT OPTIONAL
+
+   The first duration runs from the start of the sample to the first exceedance
+   and the last from the final exceedance to the end. Neither is a complete
+   waiting time -- we do not know when the previous exceedance was, nor when the
+   next will be -- so both contribute the survival function rather than the
+   density. Treating them as complete would bias the shape estimate downward on
+   any series that happens to start or end quietly, which is most of them.
+
+   WHAT IT STILL CANNOT DO
+
+   It is a GLOBAL test on the whole duration distribution. A single localised
+   burst inside a long otherwise-calm series moves the fitted shape very little:
+   on the GFC window this returns b = 0.95 and p = 0.75 despite the five
+   exceedances around Lehman, because twenty-five durations spread over 570 days
+   still look roughly exponential in aggregate. That is not a defect being
+   hidden -- it is why `backtest-crisis` also prints a plain worst-burst count,
+   which is the only one of the three that sees a local cluster. Three
+   instruments, three different blind spots. *)
+
+(* Waiting times between exceedances, with the two censored ends flagged.
+
+   [None] when there are fewer than two exceedances: with none or one there is
+   no complete duration to fit anything to, and the honest answer is that the
+   test does not apply rather than a p-value of 1. *)
+let exceedance_durations ~(exceedances : bool array) : (float array * bool array) option =
+  let n = Array.length exceedances in
+  let hits =
+    Array.filter_mapi exceedances ~f:(fun i hit -> if hit then Some i else None)
+  in
+  if Array.length hits < 2 then None
+  else begin
+    let interior =
+      Array.init
+        (Array.length hits - 1)
+        ~f:(fun i -> float_of_int (hits.(i + 1) - hits.(i)))
+    in
+    let durations =
+      Array.concat
+        [
+          [| float_of_int (hits.(0) + 1) |];
+          interior;
+          [| float_of_int (n - hits.(Array.length hits - 1)) |];
+        ]
+    in
+    let censored =
+      Array.concat [ [| true |]; Array.map interior ~f:(fun _ -> false); [| true |] ]
+    in
+    Some (durations, censored)
+  end
+
+(* The Weibull log-likelihood with the scale parameter PROFILED OUT.
+
+   Worth doing rather than optimising in two dimensions, because the scale has a
+   closed form given the shape. Writing U for the number of uncensored durations
+   and T(b) = sum over ALL durations of d^b, the first-order condition in a is
+
+     U b / a  =  b a^(b-1) T(b)     =>     a^b = U / T(b)
+
+   which holds with censoring too, since a censored observation contributes
+   -(a d)^b and no log-a term. Substituting back, a^b T(b) = U cancels the last
+   term and leaves a function of b alone:
+
+     l(b) = U ln(U / T(b)) + U ln b + (b - 1) * sum of ln d over uncensored - U
+
+   One smooth unimodal dimension, which a golden-section search handles without
+   derivatives or an initial guess. *)
+let weibull_profile_log_likelihood ~(durations : float array) ~(censored : bool array)
+    ~(shape : float) : float =
+  let uncensored = Array.count censored ~f:not in
+  let total = Array.fold durations ~init:0.0 ~f:(fun acc d -> acc +. (d ** shape)) in
+  let log_sum =
+    Array.foldi durations ~init:0.0 ~f:(fun i acc d ->
+        if censored.(i) then acc else acc +. Float.log d)
+  in
+  let u = float_of_int uncensored in
+  (u *. Float.log (u /. total))
+  +. (u *. Float.log shape)
+  +. ((shape -. 1.0) *. log_sum)
+  -. u
+
+(* The shape is searched over [0.05, 20] rather than over the positive reals,
+   and the bound is load-bearing at the top end.
+
+   A series whose exceedances are PERFECTLY regular -- every twentieth day, say --
+   has zero duration variance, and the Weibull likelihood is then increasing in
+   b without limit: the MLE diverges. Bounding it means the reported shape is a
+   ceiling artefact in that case rather than a fitted value, which is worth
+   knowing; the statistic is enormous either way and the verdict is not in doubt.
+   The lower bound is the mirror case and is far from anything real. *)
+let shape_bounds = (0.05, 20.0)
+
+let maximise_shape ~durations ~censored =
+  let lo, hi = shape_bounds in
+  let at shape = weibull_profile_log_likelihood ~durations ~censored ~shape in
+  let phi = (Float.sqrt 5.0 -. 1.0) /. 2.0 in
+  let rec go lo hi steps =
+    if steps = 0 then (lo +. hi) /. 2.0
+    else
+      let c1 = hi -. (phi *. (hi -. lo)) and c2 = lo +. (phi *. (hi -. lo)) in
+      if Float.( < ) (at c1) (at c2) then go c1 hi (steps - 1) else go lo c2 (steps - 1)
+  in
+  (* 120 golden-section steps shrinks the bracket by 0.618^120, which is far
+     past double precision -- the loop is bounded rather than convergence-tested
+     so that it cannot fail to terminate inside a node body's worth of time. *)
+  go lo hi 120
+
+(* Returns (fitted shape, LR statistic, p-value), or [None] when there are fewer
+   than two exceedances and the test does not apply. *)
+let duration_independence ~(exceedances : bool array) : (float * float * float) option =
+  match exceedance_durations ~exceedances with
+  | None -> None
+  | Some (durations, censored) ->
+      let restricted = weibull_profile_log_likelihood ~durations ~censored ~shape:1.0 in
+      let shape = maximise_shape ~durations ~censored in
+      let unrestricted = weibull_profile_log_likelihood ~durations ~censored ~shape in
+      (* Clamped at zero. The unrestricted maximum cannot be below the
+         restricted one in exact arithmetic -- b = 1 is inside the bracket -- but
+         the search stops at finite precision, and a statistic of -1e-14 would
+         come back from chi2_p as a p-value above 1. *)
+      let statistic = Float.max 0.0 (-2.0 *. (restricted -. unrestricted)) in
+      Some (shape, statistic, chi2_p ~statistic ~df:1)
+
 (* Basel's traffic light: the supervisor's decision rule rather than a
    hypothesis test.
 
@@ -308,6 +475,21 @@ type report = {
   independence_p : float;
   conditional_coverage_statistic : float;
   conditional_coverage_p : float;
+  (* The duration-based independence test, which sees clustering the Markov
+     statistic above is blind to. [None] when there were fewer than two
+     exceedances to measure a duration between.
+
+     Deliberately NOT folded into [conditional_coverage_statistic]. That number
+     is Christoffersen's decomposition -- coverage times FIRST-ORDER
+     independence -- and its degrees of freedom follow from exactly those two
+     pieces. Adding a third statistic to the sum would produce something with no
+     distribution anybody has derived, and would silently change the meaning of
+     every verdict this module has already published. It is reported alongside,
+     with its own verdict, which is also how the disagreement between the two
+     independence tests stays visible. *)
+  duration_shape : float option;
+  duration_statistic : float option;
+  duration_p : float option;
   zone : Zone.t;
   zone_cumulative_probability : float;
   (* The worst single realised loss, and the forecast that failed to cover it.
@@ -338,6 +520,7 @@ let run ~(observations : Observation.t list) ~(estimator : Estimator.t)
      would be a third model to keep consistent with the first two. *)
   let conditional_coverage_statistic = kupiec_statistic +. independence_statistic in
   let conditional_coverage_p = chi2_p ~statistic:conditional_coverage_statistic ~df:2 in
+  let duration = duration_independence ~exceedances:hits in
   let zone, zone_cumulative_probability = traffic_light ~n ~x ~confidence in
   let worst =
     List.min_elt observations ~compare:(fun a b ->
@@ -358,6 +541,9 @@ let run ~(observations : Observation.t list) ~(estimator : Estimator.t)
     independence_p;
     conditional_coverage_statistic;
     conditional_coverage_p;
+    duration_shape = Option.map duration ~f:(fun (shape, _, _) -> shape);
+    duration_statistic = Option.map duration ~f:(fun (_, statistic, _) -> statistic);
+    duration_p = Option.map duration ~f:(fun (_, _, p) -> p);
     zone;
     zone_cumulative_probability;
     worst_loss = -.Observation.realised worst;
@@ -410,6 +596,15 @@ let to_string (r : report) : string =
         r.independence_statistic r.independence_p;
       Printf.sprintf "  conditional coverage LR = %7.3f   p = %.4f"
         r.conditional_coverage_statistic r.conditional_coverage_p;
+      (match (r.duration_shape, r.duration_statistic, r.duration_p) with
+      | Some shape, Some statistic, Some p ->
+          Printf.sprintf
+            "  duration (ind)       LR = %7.3f   p = %.4f   Weibull shape %.3f (%s)"
+            statistic p shape
+            (if Float.( < ) shape 0.95 then "clustered"
+             else if Float.( > ) shape 1.05 then "over-regular"
+             else "memoryless")
+      | _ -> "  duration (ind)       not applicable (fewer than two exceptions)");
       Printf.sprintf "  Basel zone           %s (P[X <= %d] = %.4f)"
         (Zone.to_string r.zone) r.exceptions r.zone_cumulative_probability;
       Printf.sprintf "  verdict              %s" (verdict r);
