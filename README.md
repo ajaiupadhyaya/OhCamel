@@ -17,6 +17,11 @@ forecasts. And **what would break it**: a scenario suite that shocks prices,
 sectors, a macro factor or volatility itself and reports which limits move
 across their line.
 
+The math is written out once, densely and in standard notation, in
+[`docs/quant_notes.md`](docs/quant_notes.md) — every formula cross-referenced to
+the function that evaluates it, so a claim here can be checked against the code
+without reading OCaml. This README argues; that document states.
+
 ![The dashboard, driven by the synthetic feed](docs/media/dashboard.png)
 
 ## Why it isn't a loop
@@ -1093,6 +1098,20 @@ exactly like real ones.
 
 It is a risk and limits engine, and it stops where a risk and limits engine
 should stop.
+
+## The math, written down
+
+[`docs/quant_notes.md`](docs/quant_notes.md) is the reference companion to this
+file: the VaR and ES definitions with the nearest-rank convention actually
+implemented, the Euler derivation in equations rather than prose, the EWMA
+recursion and what its effective sample size costs, the Kupiec and
+Christoffersen statistics with their degrees of freedom and their nulls stated
+explicitly, the Basel zone boundaries computed rather than quoted, and the
+Black-Scholes Greeks. Every formula names the file and function that evaluates
+it, and every limitation this project found the hard way — the ε-rounding
+artefact in the tail rank, the first-order Markov blind spot in Christoffersen's
+test, the parallel-shift approximation in portfolio vega — is stated where the
+formula is, not left for a reader to discover.
 
 ## Origin
 
