@@ -399,6 +399,14 @@ model rather than about the book. [`lib/stress.ml`](lib/stress.ml) is the
 scenario suite, and it contains no arithmetic at all — it resolves a scenario
 into a set of input-cell writes and hands them to a fork of the engine.
 
+The tests come in two files per claim rather than one.
+[`test/test_properties.ml`](test/test_properties.ml) holds the qcheck
+generalisations of the identities; every other `test_*.ml` holds hand-derived
+values. They are kept apart because they fail differently — a property failure
+hands you a shrunk counterexample and an example failure hands you a number that
+was supposed to be 0.111803398874989 — and mixing the two styles in one file
+makes it harder to tell at a glance which kind of claim a given test is making.
+
 That outside is [`lib/alerts.ml`](lib/alerts.ml), which hangs off an observer
 rather than a node and is the only module here that can reach the world.
 [`lib/server.ml`](lib/server.ml) serves `/api/snapshot`, `/api/health` and an SSE
@@ -488,7 +496,7 @@ this codebase sends a message or takes an action on its own.
 
 ## What's verified
 
-`make test` runs 149 tests, all hermetic — no network, no credentials, and nothing
+`make test` runs 155 tests, all hermetic — no network, no credentials, and nothing
 that waits on the wall clock. They cover the numerics against hand-computed
 values, the wire format, the alerting state machine, and the recomputation counts
 that make the graph's shape an assertion rather than a claim.
@@ -501,7 +509,8 @@ the weight magnitudes exactly — `[0.3, 0.3, 0.4]`, readable without arithmetic
 A perfectly correlated book is one bet, so each position's share of the risk is
 just its share of the money, and that is the ceiling any real book sits below.
 
-Five of those tests are the ones that would catch a defect nothing else would.
+Six of them are worth knowing by name, because each catches a defect nothing
+else would.
 The **Euler residual** holds the decomposition to its own identity. The
 **hedge test** asserts a risk-reducing position does not breach a risk limit,
 which is what a stray absolute value would break. The **lookahead test** rebuilds
@@ -515,6 +524,39 @@ inserted partway through a synthetic series — the property, not the formula. A
 formula test passes on an estimator whose decay runs backwards through the
 window, because a reversed weighting is still a valid weighting; it just answers
 a question about ancient history. Only the property catches that.
+
+### The same claims, over arbitrary inputs
+
+Four of those six are *identities*, not values — and an example test can only
+say an identity held at the one point it was checked. `test/test_properties.ml`
+generalises them with [qcheck](https://github.com/c-cube/qcheck): random books,
+random weights, random scenarios, 100 cases per property by default and a whole
+suite that still runs in under a tenth of a second.
+
+The components sum to the total for **any** positive-semidefinite covariance
+matrix and **any** signed weight vector, not just the two hand-built ones. The
+forecast is built from strictly prior days at **any** window size, series length
+and estimator. The live snapshot survives **any** compounded sequence of shocks,
+not just the fixed suite. And the hedge property is constructed rather than
+picked: for a randomly generated book, take a position whose returns are the
+negation of that book's *own* return series, size it at weight `h`, and the new
+portfolio return is `(1-2h)·r_p` — so its volatility is provably lower for
+`h < 0.5` and the hedge's Euler contribution is provably negative. One
+generator, and every book is its own worked example.
+
+The generator is the part worth being careful about. A matrix of random entries
+is not a covariance matrix — it is almost never positive semidefinite, and
+feeding one to a decomposition produces failures that belong to the generator
+rather than to the code. So the properties generate random *return series* and
+run them through `Risk_metrics.covariance_matrix`, which is PSD by construction
+and is the only way this engine ever obtains a covariance matrix at all. The
+inputs are the kind the system actually sees.
+
+These tests were checked the only way a test can be: by breaking the code on
+purpose. Adding a single `Float.abs` to `Attribution.component` — the exact
+one-reflex mistake the module's header comment warns about — fails three of the
+six properties and four example tests. `QCHECK_TRIALS=5000 make test` runs
+30,000 cases in under two seconds if you want more confidence than that.
 
 The live path has been run against real Alpaca market data and real FRED series,
 which is how the most instructive bug in the project was found. Live mode set

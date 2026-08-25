@@ -119,6 +119,16 @@ serve: build
 demo: build
 	$(OPAM_ENV) && dune exec bin/main.exe -- demo
 
+# The example-based suites and the property-based ones run in the same alcotest
+# runner, so this is the only test command.
+#
+# QCHECK_TRIALS raises the number of random cases each property in
+# test/test_properties.ml is checked against. The default of 100 keeps `make
+# test` under a tenth of a second, which is what a test suite has to cost to
+# stay in the loop. 5000 takes under two seconds and is worth running before a
+# release; the properties are cheap because none of them touches IO.
+#
+#   QCHECK_TRIALS=5000 make test
 test:
 	$(OPAM_ENV) && dune runtest --force
 

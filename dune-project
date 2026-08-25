@@ -56,4 +56,16 @@
   (alcotest
    (and
     :with-test
-    (>= 1.9.0)))))
+    (>= 1.9.0)))
+  ; Property-based tests, alongside the example-based ones rather than instead
+  ; of them -- see test/test_properties.ml for why both are kept. qcheck-alcotest
+  ; is what lets a property run as an ordinary alcotest case, so there is one
+  ; runner and one `make test`.
+  (qcheck-core
+   (and
+    :with-test
+    (>= 0.21)))
+  (qcheck-alcotest
+   (and
+    :with-test
+    (>= 0.21)))))
