@@ -176,6 +176,18 @@ let json_of_snapshot ~(graph : Graph.t) ~(factor : string) (s : Graph.Snapshot.t
       ( "expected_shortfall_notional",
         jopt_notional (Graph.Snapshot.expected_shortfall_notional s) );
       ("portfolio_beta", jopt_float (Graph.Snapshot.portfolio_beta s));
+      (* The two Greeks that have no place in the exposure sum. Plain floats
+         rather than nullable, because a book with no options has a gamma of
+         exactly zero -- that is a fact, not a missing value, and it is the one
+         case where 0.0 is the honest answer rather than the dangerous one.
+
+         Vega is on the wire in the ENGINE's unit, dollars per 1.00 of
+         annualised vol, not the desk's per-vol-point. A wire format that
+         silently applied a display convention would be a hundred-fold
+         discrepancy between the API and the limit thresholds written against
+         it; the /100 belongs in the renderer and is applied there. *)
+      ("portfolio_gamma", jfloat (Graph.Snapshot.portfolio_gamma s));
+      ("portfolio_vega", jfloat (Graph.Snapshot.portfolio_vega s));
       ("diversification_ratio", jopt_float (Graph.Snapshot.diversification_ratio s));
       ("warming_up", `Bool (Graph.Snapshot.warming_up s));
       ("feed", json_of_feed_health (Graph.Snapshot.feed_health s));

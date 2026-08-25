@@ -104,6 +104,14 @@ One rule makes the whole thing work, and it is stated at the top of
                 +--> attribution --+--> component_var[S] --+--> component_var[K]
   covariance ---+                  +--> diversification_ratio
 
+  -- options: delta folds INTO exposure[S] above; convexity cannot --
+
+  contracts[o] --+
+  implied_vol[o] +--> greeks[o] --+--> delta_equivalent[o] --> (exposure[S])
+  price[S] ------+                +--> gamma[S] --> portfolio_gamma
+  valuation_days +                +--> vega[S]  --> portfolio_vega
+  rate ----------+
+
   -- and, deliberately disconnected from everything above --
 
   last_tick[S] --+
@@ -132,6 +140,12 @@ An estimator costs what its inputs cost, and its inputs move once a day.
 Each limit is its own node hanging off the single quantity it measures, so an
 instrument-scoped limit on AAPL is downstream of `exposure[AAPL]` alone and a tick
 in an unrelated name leaves it strictly untouched.
+
+The options branch has a clock of its own, and it is a *different* clock. `now`
+below drives feed staleness and ticks every few seconds; `valuation_days` drives
+theta and moves only when a caller advances it. Two cells because there are two
+questions, ticking three orders of magnitude apart — see
+[Where the risk is when it isn't linear](#where-the-risk-is-when-it-isnt-linear).
 
 The feed-health branch is a dead end on purpose. `now` is advanced by a timer, and
 if any risk node were downstream of it that timer would recompute the book on a
@@ -219,6 +233,144 @@ risk, so at least 1.0. The synthetic book runs about 2.5, meaning it carries
 around 40% of the volatility its positions would if they all moved together. It
 is the number that collapses toward 1.0 in a crisis, because correlations going
 to one is what a crisis mechanically *is*.
+
+## Where the risk is when it isn't linear
+
+Everything above measures risk in one dimension. An equity position's exposure
+is price times quantity, its P&L moves linearly with the price, and a covariance
+matrix over returns says most of what there is to say. None of that survives
+contact with an option. A position can be flat in the underlying and still lose
+money on a move in either direction, or lose money on no move at all, or lose
+money because the market changed its mind about how much the underlying *will*
+move without the underlying moving.
+
+`make options` is that argument as a program. Short 50 NVDA 950-strike calls,
+30 days out, spot $900:
+
+```
+                      delta-equiv          gamma    vega / vol pt
+  ----------------------------------------------------------------
+  options only        $-1,204,067          -23.7          $-4,246
+  + the hedge                  $0          -23.7          $-4,246
+  ----------------------------------------------------------------
+```
+
+The hedge is 1,338 shares and the engine computed the ratio — it is the option
+leg's delta-equivalent exposure over the spot. Delta goes to exactly zero.
+Gamma and vega do not move at all, because a share is linear in its own price
+and contributes precisely none of either. That is the entire content of the
+phrase *first-order hedge*, and it is why the limits then read:
+
+```
+  BREACH  141.5%  nvda-vega       $424,637 > $300,000
+  ok        5.9%  nvda-gamma      $23.72 <= $400.00
+  ok        0.0%  nvda-notional   $0.00 <= $1,000,000.00
+```
+
+The notional cap is clear because the book *is* delta flat. The vega cap is not,
+because it never was. An engine that measured only exposure would report this
+book as carrying no risk at all.
+
+### Delta folds in; convexity cannot
+
+An option's **delta-equivalent exposure** — `delta × multiplier × contracts ×
+spot` — is added into the *same* `exposure[S]` node the shares produce. Not
+alongside it, into it. Gross, net, the sector totals, the weights, equity,
+drawdown and every `Gross_notional` limit at every scope are already functions
+of that node, so all of them account for options without a line of change and,
+far more importantly, without a second definition of what "exposure" means. A
+parallel options-exposure system would be exactly the duplication `stress.ml`
+goes to some length to avoid having.
+
+Gamma and vega deliberately do **not** fold in anywhere. Delta-equivalent
+exposure is a first-order statement — "this behaves like N dollars of the
+underlying for a small move" — and gamma is precisely the statement that it
+stops being true for a large one. There is no honest way to express convexity as
+a quantity of underlying, so they get their own nodes rather than a fabricated
+column in a linear sum.
+
+`Contracts.t` is a distinct type from `Qty.t`, which is the units discipline
+earning its keep at the one place it bites hardest: one contract is a hundred
+shares, so a book holding "50" of something holds either 50 shares of delta or
+5,000 depending on which type that 50 is, and both readings produce a plausible
+exposure. The multiplier has to be applied explicitly, in one function.
+
+### Two clocks, and why they are not one
+
+Theta is genuinely time-dependent, which is a problem, because the one thing
+this architecture cannot have is a risk node downstream of a running clock. The
+staleness branch is a dead end on purpose — `now` advances every few seconds,
+and anything hanging off it would recompute the book on a timer.
+
+So options get a **second clock**: a valuation-date cell that moves in days and
+only when a caller advances it. Two clocks because there are two questions, and
+they tick three orders of magnitude apart — a contract's value changes
+immeasurably over five seconds and materially overnight. Wiring the Greeks to
+the staleness timer would have bought a decay invisible below a day at the cost
+of putting the entire options book on a five-second schedule.
+`test_options_graph.ml` asserts both directions: advancing the staleness clock
+recomputes no Greek, and advancing the valuation clock touches nothing about
+feed liveness.
+
+Advancing it twenty days shows something worth staring at:
+
+```
+                      delta-equiv          gamma    vega / vol pt
+  ----------------------------------------------------------------
+  today                        $0          -23.7          $-4,246
+  +20 days               $657,690          -25.2          $-1,502
+  ----------------------------------------------------------------
+```
+
+Nothing was traded. The share count is identical. The book is no longer delta
+flat, because the contract decayed further out of the money, its delta fell, and
+the hedge that offset it exactly now over-hedges by $657,690. A delta hedge is
+correct at an instant and stale immediately afterwards — which is why the number
+hangs off an edge instead of being stored.
+
+### Greek limits, and one caveat that the arithmetic hides
+
+`Greek_limit` caps `|gamma|` or `|vega|` and is valid at **every** scope, for a
+reason worth separating from `Component_var`'s. Gamma and vega are sums of
+derivatives, not quantiles: the book's gamma is the derivative of a sum, which
+*is* the sum of the derivatives, exactly and by linearity, with no correlation
+term and no diversification to double-count. That is precisely what fails for
+`Value_at_risk` — a quantile of a sum is not the sum of quantiles.
+
+Note the sign conventions differ, and each is argued where it is defined. A
+Greek limit takes the **magnitude**: a short option book has negative gamma, and
+being short convexity is the dangerous side, not the safe one. `Component_var`
+keeps the **sign**: a negative contribution there means a position is reducing
+portfolio risk, so absolute-valuing it would breach a limit for hedging.
+
+The caveat is real and is not in the numbers. Summing vega across contracts at
+different expiries adds sensitivities to *different volatilities* — the 30-day
+implied and the 180-day implied move together but not identically — so a single
+portfolio vega treats the whole term structure as one number shifting in
+parallel. Every desk does this and calls it parallel-shift vega. It is a
+bucketed approximation, not an identity, and it understates a calendar spread:
+long one expiry against short another nets to near-zero vega here while carrying
+real exposure to the term structure twisting. Bucketing vega by expiry is the
+fix and it is not implemented.
+
+### What the options path does not do
+
+No implied-volatility solve. Inverting Black-Scholes for sigma needs a market
+price to invert *from*, and there is no options-chain source here, so it would
+be the second half of a bridge to nowhere. Implied vol is an input.
+
+No American exercise, no dividends, no term structure of rates — Black-Scholes
+with one flat rate and one vol per contract. Each is a real simplification and
+each is named rather than left to be discovered.
+
+And **live mode ships options risk disabled**, with a line saying so. Greeks need
+an implied vol per contract, Alpaca's free tier does not provide an options
+chain, and the alternatives were to decline or to invent a surface. An invented
+surface would produce a full set of Greeks, a portfolio vega and a vega limit
+that all looked exactly like the real thing — the same failure as a book marked
+at a plausible default price, and worse than no number because nothing on the
+page would say it was fiction. `make options` runs the whole path against a
+smiled surface that is labelled synthetic in every line it appears in.
 
 ## Is the number any good
 
@@ -511,6 +663,9 @@ decay-weighted estimators, and it is a separate module rather than more function
 in the first one because the two are *alternatives to each other*: keeping them
 apart is what makes "which estimator produced this number" a question with a
 one-word answer.
+[`lib/options.ml`](lib/options.ml) is Black-Scholes and the Greeks, plus the
+contract types — `Strike`, `Implied_vol`, `Contracts` — that keep a contract
+count from ever being mistaken for a share count.
 [`lib/limits.ml`](lib/limits.ml) defines limits and evaluates a breach as *data*: a
 bool and the magnitude by which the threshold was passed. It has no side effects
 at all, which is the point — a node body may be recomputed whenever the runtime
@@ -599,8 +754,8 @@ events, the whole book after each one, a breach and its recovery in the middle,
 the risk decomposition at the end, and then it exits — without ever starting the
 Async scheduler. It is the fastest way to see the numbers without a browser.
 
-`make stress`, `make backtest` and `make backtest-crisis` are the other
-credential-free modes, and they are what the previous sections are about: the scenario suite against
+`make stress`, `make backtest`, `make backtest-crisis` and `make options` are the
+other credential-free modes, and they are what the previous sections are about: the scenario suite against
 the synthetic book, and the coverage battery against three deterministic return
 series. Both are hermetic and both are deterministic, so two runs print the same
 numbers and a change in the output means a change in the engine.
@@ -629,7 +784,7 @@ this codebase sends a message or takes an action on its own.
 
 ## What's verified
 
-`make test` runs 161 tests, all hermetic — no network, no credentials, and nothing
+`make test` runs 181 tests, all hermetic — no network, no credentials, and nothing
 that waits on the wall clock. They cover the numerics against hand-computed
 values, the wire format, the alerting state machine, and the recomputation counts
 that make the graph's shape an assertion rather than a claim.
@@ -642,7 +797,7 @@ the weight magnitudes exactly — `[0.3, 0.3, 0.4]`, readable without arithmetic
 A perfectly correlated book is one bet, so each position's share of the risk is
 just its share of the money, and that is the ceiling any real book sits below.
 
-Six of them are worth knowing by name, because each catches a defect nothing
+Eight of them are worth knowing by name, because each catches a defect nothing
 else would.
 The **Euler residual** holds the decomposition to its own identity. The
 **hedge test** asserts a risk-reducing position does not breach a risk limit,
@@ -656,7 +811,13 @@ higher volatility than the equal-weighted one after a volatility shift is
 inserted partway through a synthetic series — the property, not the formula. A
 formula test passes on an estimator whose decay runs backwards through the
 window, because a reversed weighting is still a valid weighting; it just answers
-a question about ancient history. Only the property catches that.
+a question about ancient history. Only the property catches that. The
+**delta-hedged test** builds a book that is flat in delta and asserts it still
+carries gamma and vega — the options analogue of the hedge test, and the one that
+fails if convexity were ever folded into the exposure sum. And the
+**two-clocks test** asserts that advancing the staleness clock reprices no
+option and advancing the valuation clock touches no feed-liveness node, which is
+the assertion that keeps options risk off a five-second timer.
 
 ### The same claims, over arbitrary inputs
 
@@ -821,6 +982,15 @@ regime change but does not forecast the return to normal after one. That fit is
 not here. Nothing is optimised: the engine reports where risk
 is concentrated and never suggests what the weights should be, which is a
 different project with a different failure mode.
+
+The options path prices European contracts with Black-Scholes: no American
+exercise, no dividends, no term structure of rates, and no implied-volatility
+solve — vol is an input, because there is no chain to invert a price from.
+Portfolio vega is a parallel-shift number rather than bucketed by expiry, which
+understates a calendar spread. And options risk is **off in live mode**, stated
+rather than silently absent: with no options-chain source, the choice was to
+decline or to invent a surface, and an invented one produces Greeks that look
+exactly like real ones.
 
 It is a risk and limits engine, and it stops where a risk and limits engine
 should stop.

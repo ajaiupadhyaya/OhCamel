@@ -423,6 +423,21 @@ let page =
         : money(s.parametric_var_ewma * s.gross_exposure));
     row(t, "beta", "beta", s.factor, s.portfolio_beta === null ? null
         : s.portfolio_beta.toFixed(3));
+    // Gamma and vega, shown only when the book actually holds options. A row
+    // reading "0" on an equities book is not information, and a dashboard whose
+    // every row is always present trains its reader to stop looking at rows.
+    //
+    // Vega is divided by 100 here and nowhere else: the engine and the wire
+    // format both carry it per 1.00 of annualised vol, which is the unit the
+    // limits are written in, and the desk's "per vol point" is a rendering
+    // convention. Applying it upstream would make the API and the limit
+    // thresholds disagree by a factor of a hundred.
+    if (s.portfolio_gamma !== 0 || s.portfolio_vega !== 0) {
+      row(t, "gamma", "gamma", "$ delta / 1.00 move", money(s.portfolio_gamma),
+          s.portfolio_gamma < 0 ? "neg" : null, "gap");
+      row(t, "vega", "vega", "$ / vol pt", money(s.portfolio_vega / 100),
+          s.portfolio_vega < 0 ? "neg" : null);
+    }
     // Sum of standalone position volatilities over portfolio volatility, so at
     // least 1.00. What the book is getting from being a portfolio rather than a
     // pile of positions -- and the number that falls toward 1.00 as

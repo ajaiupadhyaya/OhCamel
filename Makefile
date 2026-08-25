@@ -71,7 +71,7 @@ export OWL_CFLAGS := -g -O1 -funroll-loops -fno-math-errno -fno-rounding-math -f
 # Homebrew's directory for every build, so no ordering can win.
 export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 
-.PHONY: all build run stress backtest backtest-crisis test coverage fmt clean deps doctor
+.PHONY: all build run stress backtest backtest-crisis options test coverage fmt clean deps doctor
 
 all: build
 
@@ -109,6 +109,16 @@ backtest: build
 # generated data would print a table indistinguishable from the real one.
 backtest-crisis: build
 	$(OPAM_ENV) && dune exec bin/main.exe -- backtest-crisis
+
+# Greeks-aware exposure: what a delta hedge removes and what it leaves behind,
+# against a vol surface that is generated here and labelled synthetic in every
+# line it appears in. No credentials, no network.
+#
+# Live mode ships options risk DISABLED rather than inventing a surface --
+# there is no options-chain data source configured, and a fabricated one would
+# produce Greeks that looked exactly like real ones.
+options: build
+	$(OPAM_ENV) && dune exec bin/main.exe -- options
 
 # Live mode. Needs ALPACA_API_KEY, ALPACA_SECRET_KEY and FRED_API_KEY in the
 # environment and a book.sexp (copy book.example.sexp). The engine refuses to

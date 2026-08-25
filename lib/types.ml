@@ -207,6 +207,31 @@ module Position = struct
   let apply_fill t (fill : Fill.t) = { t with qty = Qty.add t.qty fill.Fill.qty }
 end
 
+(* Which second-order sensitivity a Greek limit caps.
+
+   Only two, and the omissions are deliberate. Delta is absent because an
+   option's delta already folds into [exposure], where a Gross_notional limit
+   caps it alongside the shares -- a separate delta limit would be a second cap
+   on one quantity, and the two would disagree the first time somebody moved
+   one. Theta is absent because a decay rate is a forecast of P&L rather than a
+   risk of loss, and capping it would tell a desk to stop collecting premium.
+   Rho is absent because this engine has one flat rate with no term structure,
+   so there is nothing to be sensitive to.
+
+   Lives here rather than in options.ml because Limit lives here, and options.ml
+   depends on this file rather than the other way round. *)
+module Greek = struct
+  type t = Gamma | Vega [@@deriving sexp_of, compare, equal]
+
+  let to_string = function Gamma -> "gamma" | Vega -> "vega"
+
+  (* What one unit of the threshold means, spelled out, because both are
+     dollars and they are dollars of different things. *)
+  let unit_of = function
+    | Gamma -> "$ of delta per 1.00 move"
+    | Vega -> "$ per 1.00 of vol"
+end
+
 module Limit = struct
   (* What a limit is measured over. *)
   type scope = Instrument of Symbol.t | Sector of Sector.t | Portfolio
@@ -222,6 +247,23 @@ module Limit = struct
     | Gross_notional of Notional.t (* |exposure| may not exceed this *)
     | Value_at_risk of Notional.t (* portfolio VaR may not exceed this *)
     | Max_drawdown of float (* fraction in [0,1], e.g. 0.1 = 10% *)
+    | Greek_limit of Greek.t * Notional.t
+      (* |gamma| or |vega| at this scope may not exceed this.
+
+           Magnitudes, like Gross_notional and unlike Component_var. A short
+           option book has negative gamma and negative vega, and the risk it
+           carries is the SIZE of those numbers, not their sign -- the whole
+           danger of being short gamma is that it is negative. Component VaR is
+           the opposite case and is signed for exactly the opposite reason: a
+           negative contribution there means a position is REDUCING portfolio
+           risk, so absolute-valuing it would report a hedge as a risk. The two
+           conventions differ because the two quantities differ, and each is
+           argued where it is defined.
+
+           Units are dollars either way, but of different things -- see
+           [Greek.unit_of]. Gamma's threshold is dollars of delta per 1.00 move
+           in the underlying; vega's is dollars per 1.00 of annualised
+           volatility, which is a hundred times the desk's "per vol point". *)
     | Component_var of Notional.t
       (* This scope's SHARE of portfolio VaR may not exceed this.
 

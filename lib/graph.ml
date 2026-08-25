@@ -96,6 +96,12 @@ module Inc = Incremental.Make ()
    design. *)
 module Node_name = struct
   let exposure (s : Symbol.t) = "exposure:" ^ Symbol.to_string s
+  let greeks (id : string) = "greeks:" ^ id
+  let option_exposure (id : string) = "option_exposure:" ^ id
+  let gamma_map = "gamma_map"
+  let vega_map = "vega_map"
+  let portfolio_gamma = "portfolio_gamma"
+  let portfolio_vega = "portfolio_vega"
   let sector (s : Sector.t) = "sector:" ^ Sector.to_string s
   let limit (name : string) = "limit:" ^ name
   let exposure_map = "exposure_map"
@@ -274,6 +280,20 @@ module Snapshot = struct
          rather than a pile of positions -- and, watched over time, the number
          that falls toward 1.0 as correlations converge in a selloff. *)
     diversification_ratio : float option;
+    (* The two Greeks that have no place in a linear exposure sum, per
+         underlying and for the book.
+
+         Plain floats and not options: unlike VaR, these are computable from the
+         first tick -- a book with no options has a gamma of exactly zero, which
+         is a fact rather than a missing value. A book WITH options whose
+         underlying has never printed also reads zero, and that is the honest
+         answer for a different reason: an unmarked contract has no measurable
+         convexity. Feed health is where "should you believe this" is
+         reported. *)
+    gamma_by_instrument : float Symbol.Map.t;
+    vega_by_instrument : float Symbol.Map.t;
+    portfolio_gamma : float;
+    portfolio_vega : float;
     warming_up : bool;
     (* Whether the inputs the numbers above were computed from are still
          arriving. Read this before reading anything else. *)
@@ -298,6 +318,12 @@ type t = {
   return_window : int;
   ewma_lambda : float;
   covariance_for_attribution : Covariance_estimator.t;
+  (* The option contracts this book may hold, by id. Structure, not state: a
+       contract's strike, right and expiry do not change, so they live here
+       rather than in an input cell. What DOES change -- how many are held and
+       what the market thinks their volatility is -- is in the two var maps
+       below. *)
+  option_positions : Options.Position.t String.Map.t;
   equity_history_limit : int;
   staleness_threshold : Time.Span.t;
   (* Inputs. These are the only mutable cells in the system; everything else
@@ -311,6 +337,38 @@ type t = {
        [returns_vars] because it is not an instrument: nothing is held in it,
        so it contributes to beta and to nothing else. *)
   factor_returns_var : float array Inc.Var.t;
+  (* Per-contract inputs, keyed by option id.
+
+       [implied_vol] is an input cell rather than a field on the position for
+       the reason every other moving quantity here is: it moves, and often
+       faster than the underlying does. A vol carried on an immutable record
+       would be a dependency Incremental could not see, so a re-mark would leave
+       every Greek downstream of it stale while looking entirely current. *)
+  contracts_vars : Options.Contracts.t Inc.Var.t String.Map.t;
+  implied_vol_vars : Options.Implied_vol.t Inc.Var.t String.Map.t;
+  (* The flat continuously compounded rate every contract discounts at. One
+       cell, because this engine has no term structure -- which is a stated
+       simplification, not an oversight. *)
+  rate_var : float Inc.Var.t;
+  (* Days elapsed since the book was constructed, which is what turns each
+       contract's fixed [expiry_in_days] into a live time to expiry.
+
+       THIS IS NOT [now_var], AND THE SEPARATION IS THE POINT. Both are clocks;
+       they answer different questions and must tick at different rates.
+       [now_var] advances every few seconds and drives feed staleness, and the
+       whole architecture depends on NO risk node being downstream of it -- a
+       risk node on that edge would recompute the book on a timer, which is the
+       design this project exists to replace.
+
+       Theta is genuinely time-dependent, so options risk needs a clock. But it
+       needs a clock that ticks in DAYS: a contract's value changes immeasurably
+       over five seconds and materially over a night. Wiring the Greeks to
+       [now_var] would have bought a decay invisible below a day at the cost of
+       putting the entire options book on a five-second timer. So this is a
+       second, deliberately slow cell, advanced by [advance_valuation_days] when
+       a caller decides a day has passed. Two clocks because there are two
+       questions, not because one was forgotten. *)
+  valuation_days_var : float Inc.Var.t;
   (* Feed liveness. [last_tick_vars] is written by [apply_tick]; [now_var] is
        advanced by a timer. Both feed the dead-end branch described at the top
        of this file and must never be read by a risk node. *)
@@ -333,6 +391,10 @@ type t = {
        series a coverage test scores is produced by the same node that produces
        the live VaR, not by a second implementation of sum(w_i r_i) living in a
        backtest module and drifting from this one. *)
+  obs_gamma_by_instrument : float Symbol.Map.t Inc.Observer.t;
+  obs_vega_by_instrument : float Symbol.Map.t Inc.Observer.t;
+  obs_portfolio_gamma : float Inc.Observer.t;
+  obs_portfolio_vega : float Inc.Observer.t;
   obs_portfolio_returns : float array option Inc.Observer.t;
   obs_covariance : Owl.Mat.mat option Inc.Observer.t;
   obs_covariance_ewma : Owl.Mat.mat option Inc.Observer.t;
@@ -378,6 +440,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
     ?(equity_history_limit = 10_000) ?(staleness_threshold = Time.Span.of_sec 90.0)
     ?(ewma_lambda = Vol_estimators.Ewma.default_lambda)
     ?(covariance_for_attribution = Covariance_estimator.Equal_weighted)
+    ?(options : Options.Position.t list = []) ?(rate = 0.04)
     ~(instruments : Instrument.t list) ~(limits : Limit.t list) ~(confidence : float)
     ~(return_window : int) () : t =
   if List.is_empty instruments then invalid_arg "graph: need at least one instrument";
@@ -390,6 +453,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
         (Symbol.to_string (Instrument.symbol dup))
         ()
   | None -> ());
+  let instrument_symbols = List.map instruments ~f:Instrument.symbol in
   if not (Float.( > ) confidence 0.0 && Float.( < ) confidence 1.0) then
     invalid_argf "graph: confidence must be strictly between 0 and 1, got %f" confidence
       ();
@@ -407,6 +471,36 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      leaves the graph in a state Incremental cannot recover -- so the same rule
      as every other argument applies: reject it before a node exists. *)
   Vol_estimators.Ewma.validate_lambda ~lambda:ewma_lambda;
+  (* Options are validated here for the same reason limits are: so that no node
+     body can raise. Black_scholes.compute rejects a non-positive strike, and an
+     exception during stabilization leaves the graph in a state Incremental
+     cannot recover from. *)
+  List.iter options ~f:(fun o ->
+      let id = Options.Position.id o in
+      if
+        not
+          (List.mem instrument_symbols
+             (Options.Position.underlying o)
+             ~equal:Symbol.equal)
+      then
+        invalid_argf
+          "graph: option %S is written on %S, which is not an instrument in this book. \
+           An option's delta has to land in some underlying's exposure bucket, and there \
+           is no bucket for a name the book does not hold."
+          id
+          (Symbol.to_string (Options.Position.underlying o))
+          ();
+      if Float.( <= ) (Options.Strike.to_float (Options.Position.strike o)) 0.0 then
+        invalid_argf "graph: option %S has a non-positive strike" id ();
+      if Float.is_negative (Options.Position.expiry_in_days o) then
+        invalid_argf "graph: option %S expires in negative days" id ());
+  (match
+     List.find_a_dup options ~compare:(fun a b ->
+         String.compare (Options.Position.id a) (Options.Position.id b))
+   with
+  | Some dup ->
+      invalid_argf "graph: option id %S appears twice" (Options.Position.id dup) ()
+  | None -> ());
   if Time.Span.( <= ) staleness_threshold Time.Span.zero then
     invalid_argf "graph: staleness_threshold must be positive, got %s"
       (Time.Span.to_string_hum staleness_threshold)
@@ -489,6 +583,105 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
       (List.map symbols ~f:(fun s -> (s, make_var ~equal:(Option.equal Time.equal) None)))
   in
   let now_var = make_var ~equal:Time.equal Time.epoch in
+  (* --- options ---------------------------------------------------------- *)
+  let option_positions =
+    String.Map.of_alist_exn (List.map options ~f:(fun o -> (Options.Position.id o, o)))
+  in
+  (* Contracts start at zero, exactly as prices start at zero and for the same
+     reason: a book holding an unspecified quantity of an option is obviously
+     unset, whereas one defaulting to "1" would produce Greeks that look real.
+     The driver writes the real counts before the first stabilize a user sees. *)
+  let contracts_vars =
+    Map.map option_positions ~f:(fun _ ->
+        make_var ~equal:Options.Contracts.equal (Options.Contracts.of_float 0.0))
+  in
+  (* Implied vol starts at zero too, which puts every contract on
+     Black_scholes' intrinsic branch until a real vol arrives: price is
+     intrinsic, delta is a step, gamma and vega are zero. That is the honest
+     unmarked state -- a contract with no vol mark has no measurable convexity
+     -- and it is far better than a plausible default like 0.20, which would
+     produce a full set of Greeks for a surface nobody supplied. *)
+  let implied_vol_vars =
+    Map.map option_positions ~f:(fun _ ->
+        make_var ~equal:Options.Implied_vol.equal (Options.Implied_vol.of_float 0.0))
+  in
+  let rate_var = make_var ~equal:Float.equal rate in
+  let valuation_days_var = make_var ~equal:Float.equal 0.0 in
+  let options_by_underlying =
+    Map.fold option_positions ~init:Symbol.Map.empty ~f:(fun ~key:id ~data:o acc ->
+        Map.add_multi acc ~key:(Options.Position.underlying o) ~data:id)
+  in
+  (* One Greeks node per contract, and its edges are the whole argument for
+     doing options this way.
+
+     It depends on the underlying's price, its own contract's implied vol, the
+     valuation clock and the rate -- four declared edges and nothing else. Note
+     which name's price is on that list: exactly one. A tick in MSFT cannot
+     reach an AAPL option's gamma, the same way it cannot reach AAPL's
+     exposure, so adding an options book does not make every tick a
+     book-wide repricing.
+
+     Note also what is NOT an edge: the covariance matrix, the return windows,
+     [now_var]. Black-Scholes is a closed form in the spot and an implied vol;
+     it does not consult history, and it must not consult the staleness
+     clock. *)
+  let greeks_nodes =
+    Map.mapi option_positions ~f:(fun ~key:id ~data:position ->
+        let underlying = Options.Position.underlying position in
+        let price = Inc.Var.watch (Map.find_exn price_vars underlying) in
+        let vol = Inc.Var.watch (Map.find_exn implied_vol_vars id) in
+        Inc.map4 price vol (Inc.Var.watch valuation_days_var) (Inc.Var.watch rate_var)
+          ~f:(fun price vol days rate ->
+            note (Node_name.greeks id);
+            let spot = Price.to_float price in
+            (* An unmarked underlying is not a zero-priced one. Black_scholes
+               rejects a non-positive spot -- correctly, since ln(0) is not a
+               number -- and a node body may not raise, so the unmarked case is
+               answered with a flat set of Greeks rather than with an
+               exception. A contract on a name that has never printed has no
+               measurable sensitivity to anything, which is the truthful
+               answer and is visibly different from a real one. *)
+            if Float.( <= ) spot 0.0 then
+              {
+                Options.Black_scholes.price = 0.0;
+                delta = 0.0;
+                gamma = 0.0;
+                vega = 0.0;
+                theta = 0.0;
+              }
+            else
+              Options.Black_scholes.compute ~spot
+                ~strike:(Options.Strike.to_float (Options.Position.strike position))
+                ~time_to_expiry:
+                  (Options.years_to_expiry
+                     ~expiry_in_days:(Options.Position.expiry_in_days position)
+                     ~days_elapsed:days)
+                ~rate
+                ~implied_vol:(Options.Implied_vol.to_float vol)
+                ~right:(Options.Position.right position)))
+  in
+  (* Per-contract delta-equivalent exposure, gamma and vega, computed together
+     because all three are the same Greeks record times the same contract count
+     and splitting them into three nodes would triple the edges to buy nothing. *)
+  let option_exposure_nodes =
+    Map.mapi option_positions ~f:(fun ~key:id ~data:position ->
+        let greeks = Map.find_exn greeks_nodes id in
+        let contracts = Inc.Var.watch (Map.find_exn contracts_vars id) in
+        let price =
+          Inc.Var.watch (Map.find_exn price_vars (Options.Position.underlying position))
+        in
+        Inc.map3 greeks contracts price ~f:(fun greeks contracts price ->
+            note (Node_name.option_exposure id);
+            ( Options.Position.delta_equivalent position ~greeks ~contracts
+                ~spot:(Price.to_float price),
+              Options.Position.gamma_exposure position ~greeks ~contracts,
+              Options.Position.vega_exposure position ~greeks ~contracts )))
+  in
+  let option_nodes_for symbol =
+    match Map.find options_by_underlying symbol with
+    | None -> []
+    | Some ids -> List.map ids ~f:(Map.find_exn option_exposure_nodes)
+  in
   (* --- exposure --------------------------------------------------------- *)
   (* Depends on exactly one instrument's price and quantity, because market
      value is price x quantity and nothing else enters into it. One node per
@@ -499,10 +692,40 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
     Map.mapi instruments_map ~f:(fun ~key:symbol ~data:_ ->
         let price = Map.find_exn price_vars symbol in
         let qty = Map.find_exn qty_vars symbol in
+        let shares =
+          Inc.map2 (Inc.Var.watch price) (Inc.Var.watch qty) ~f:(fun price qty ->
+              notional ~price ~qty)
+        in
+        (* OPTIONS FOLD IN HERE, and this single line is the design decision of
+           the options phase.
+
+           An option's delta-equivalent exposure is added into the SAME node the
+           shares produce, rather than accumulated in a parallel structure
+           alongside it. Everything downstream -- the sector totals, gross, net,
+           the weights, equity, drawdown, every Gross_notional limit at every
+           scope -- is already a function of exposure[S], so all of it accounts
+           for options with no further code and, far more importantly, with no
+           second definition of what "exposure" means. A parallel options
+           exposure would be a second implementation of the thing stress.ml goes
+           to some length to avoid having two of.
+
+           A book with no options builds this node with an empty list, and
+           [Inc.all []] is a constant, so the shape and the cost are exactly
+           what they were before this phase for every existing caller.
+
+           What deliberately does NOT fold in is gamma and vega. Delta-equivalent
+           exposure is a first-order statement -- "this behaves like N dollars of
+           the underlying for a small move" -- and gamma is precisely the
+           statement that it stops being true for a large one. There is no
+           defensible way to express convexity as a quantity of underlying, so
+           the two get their own nodes below rather than a fabricated place in a
+           linear sum. *)
+        let option_legs = Inc.all (option_nodes_for symbol) in
         cutoff ~equal:Notional.equal
-          (Inc.map2 (Inc.Var.watch price) (Inc.Var.watch qty) ~f:(fun price qty ->
+          (Inc.map2 shares option_legs ~f:(fun shares legs ->
                note (Node_name.exposure symbol);
-               notional ~price ~qty)))
+               List.fold legs ~init:shares ~f:(fun acc (delta_equivalent, _, _) ->
+                   Notional.add acc delta_equivalent))))
   in
   (* [Map.data] is ordered by key, and [symbols] is [Map.keys] of the same map,
      so the two line up. Every place below that zips a list of results back
@@ -515,6 +738,44 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
         note Node_name.exposure_map;
         Symbol.Map.of_alist_exn (List.zip_exn symbols xs))
   in
+  (* --- the Greeks that do not fold in ------------------------------------ *)
+  (* Gamma and vega per underlying, then per book.
+
+     Both are plain SUMS, and that is not an approximation the way summing
+     standalone VaRs would be. Each position's gamma is a partial derivative of
+     its own price with respect to its own underlying, and the derivative of a
+     sum is the sum of the derivatives -- exactly, by linearity, with no
+     correlation term and nothing to double-count. limits.ml argues the same
+     point where it decides a Greek limit is valid at every scope.
+
+     The honest caveat lives there too and is worth repeating: adding VEGA
+     across contracts at different expiries adds sensitivities to different
+     volatilities, so a single portfolio vega treats the whole term structure as
+     one number that shifts in parallel. Every desk does this; it is a bucketed
+     approximation, not an identity, and it understates a calendar spread. *)
+  let greek_by_instrument select name =
+    Inc.map
+      (Inc.all
+         (List.map symbols ~f:(fun symbol ->
+              Inc.map
+                (Inc.all (option_nodes_for symbol))
+                ~f:(fun legs ->
+                  List.fold legs ~init:0.0 ~f:(fun acc leg -> acc +. select leg)))))
+      ~f:(fun totals ->
+        note name;
+        Symbol.Map.of_alist_exn (List.zip_exn symbols totals))
+  in
+  let gamma_map_node =
+    greek_by_instrument (fun (_, gamma, _) -> gamma) Node_name.gamma_map
+  in
+  let vega_map_node = greek_by_instrument (fun (_, _, vega) -> vega) Node_name.vega_map in
+  let sum_map name node =
+    Inc.map node ~f:(fun m ->
+        note name;
+        Map.fold m ~init:0.0 ~f:(fun ~key:_ ~data acc -> acc +. data))
+  in
+  let portfolio_gamma_node = sum_map Node_name.portfolio_gamma gamma_map_node in
+  let portfolio_vega_node = sum_map Node_name.portfolio_vega vega_map_node in
   (* --- sector ----------------------------------------------------------- *)
   let symbols_by_sector =
     Map.fold instruments_map ~init:Sector.Map.empty
@@ -909,6 +1170,41 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
             note name;
             Option.map fraction ~f:(fun fraction ->
                 Limits.evaluate ~limit ~observed:(fraction *. Notional.to_float gross)))
+    (* Greek limits, and note that [of_magnitude]'s absolute value is BACK.
+
+       This is the opposite convention from the Component_var branch directly
+       above, and the two are worth reading together because the difference is
+       the whole reason each is written out. A negative component VaR means a
+       position reduces portfolio risk, so absolute-valuing it would breach a
+       limit for hedging. A negative gamma means a book is SHORT convexity --
+       the position that loses money whichever way the underlying moves -- and
+       its risk is the size of that number, not its sign. Being short 5,000
+       gamma is not less risky than being long 5,000 gamma; if anything it is
+       the dangerous side. So the magnitude is what a Greek limit caps. *)
+    | Limit.Greek_limit (greek, _), scope ->
+        let map_node =
+          match greek with Greek.Gamma -> gamma_map_node | Greek.Vega -> vega_map_node
+        in
+        let observed_node =
+          match scope with
+          | Limit.Instrument symbol ->
+              Inc.map map_node ~f:(fun m -> Map.find_exn m symbol)
+          | Limit.Sector sector ->
+              Inc.map map_node ~f:(fun m ->
+                  Map.fold m ~init:0.0 ~f:(fun ~key:symbol ~data acc ->
+                      if
+                        Sector.equal sector
+                          (Map.find_exn instruments_map symbol).Instrument.sector
+                      then acc +. data
+                      else acc))
+          | Limit.Portfolio -> (
+              match greek with
+              | Greek.Gamma -> portfolio_gamma_node
+              | Greek.Vega -> portfolio_vega_node)
+        in
+        Inc.map observed_node ~f:(fun v ->
+            note name;
+            Some (Limits.evaluate ~limit ~observed:(Float.abs v)))
     | (Limit.Value_at_risk _ | Limit.Max_drawdown _), (Limit.Instrument _ | Limit.Sector _)
       ->
         (* Unreachable: Limits.validate rejects these pairings above. Kept as an
@@ -991,6 +1287,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
       return_window;
       ewma_lambda;
       covariance_for_attribution;
+      option_positions;
       equity_history_limit;
       staleness_threshold;
       price_vars;
@@ -999,6 +1296,10 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
       cash_var;
       equity_history_var;
       factor_returns_var;
+      contracts_vars;
+      implied_vol_vars;
+      rate_var;
+      valuation_days_var;
       last_tick_vars;
       now_var;
       obs_exposure_by_instrument = observe exposure_map_node;
@@ -1006,6 +1307,10 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
       obs_gross = observe gross_node;
       obs_net = observe net_node;
       obs_weights = observe weights_node;
+      obs_gamma_by_instrument = observe gamma_map_node;
+      obs_vega_by_instrument = observe vega_map_node;
+      obs_portfolio_gamma = observe portfolio_gamma_node;
+      obs_portfolio_vega = observe portfolio_vega_node;
       obs_portfolio_returns = observe portfolio_returns_node;
       obs_covariance = observe covariance_node;
       obs_covariance_ewma = observe covariance_ewma_node;
@@ -1066,6 +1371,7 @@ let fork ?on_compute ?(limits : Limit.t list option) (t : t) : t =
       ~equity_history_limit:t.equity_history_limit
       ~staleness_threshold:t.staleness_threshold ~ewma_lambda:t.ewma_lambda
       ~covariance_for_attribution:t.covariance_for_attribution
+      ~options:(Map.data t.option_positions) ~rate:(Inc.Var.value t.rate_var)
       ~instruments:(Map.data t.instruments) ~limits ~confidence:t.confidence
       ~return_window:t.return_window ()
   in
@@ -1077,6 +1383,16 @@ let fork ?on_compute ?(limits : Limit.t list option) (t : t) : t =
       Inc.Var.set (Map.find_exn forked.returns_vars symbol) (Inc.Var.value var));
   Map.iteri t.last_tick_vars ~f:(fun ~key:symbol ~data:var ->
       Inc.Var.set (Map.find_exn forked.last_tick_vars symbol) (Inc.Var.value var));
+  (* The options book's mutable state, copied like everything else. A fork that
+     inherited the contracts but not the vol marks would price the same book
+     against a flat surface and report a gamma nobody holds -- internally
+     consistent, and about the wrong world, which is exactly the failure the
+     isolation test exists to catch. *)
+  Map.iteri t.contracts_vars ~f:(fun ~key:id ~data:var ->
+      Inc.Var.set (Map.find_exn forked.contracts_vars id) (Inc.Var.value var));
+  Map.iteri t.implied_vol_vars ~f:(fun ~key:id ~data:var ->
+      Inc.Var.set (Map.find_exn forked.implied_vol_vars id) (Inc.Var.value var));
+  Inc.Var.set forked.valuation_days_var (Inc.Var.value t.valuation_days_var);
   Inc.Var.set forked.factor_returns_var (Inc.Var.value t.factor_returns_var);
   Inc.Var.set forked.equity_history_var (Inc.Var.value t.equity_history_var);
   Inc.Var.set forked.now_var (Inc.Var.value t.now_var);
@@ -1152,6 +1468,54 @@ let price (t : t) (symbol : Symbol.t) : Price.t =
 
 let qty (t : t) (symbol : Symbol.t) : Qty.t =
   Inc.Var.value (find_var t.qty_vars symbol ~what:"quantity")
+
+(* --- options ----------------------------------------------------------- *)
+
+let option_ids (t : t) : string list = Map.keys t.option_positions
+
+let option_position (t : t) (id : string) : Options.Position.t option =
+  Map.find t.option_positions id
+
+let find_option_var (vars : 'a Inc.Var.t String.Map.t) (id : string) ~(what : string) :
+    'a Inc.Var.t =
+  match Map.find vars id with
+  | Some v -> v
+  | None ->
+      (* Loud, matching [find_var] for instruments. A mark arriving for a
+         contract the graph does not know means the position file and the vol
+         source have diverged, and dropping it quietly would leave a real
+         position sitting at an unmarked vol with nothing to say so. *)
+      failwithf "graph: no %s cell for unknown option %S" what id ()
+
+let set_contracts (t : t) (id : string) (contracts : Options.Contracts.t) : unit =
+  Inc.Var.set (find_option_var t.contracts_vars id ~what:"contract count") contracts
+
+let contracts (t : t) (id : string) : Options.Contracts.t =
+  Inc.Var.value (find_option_var t.contracts_vars id ~what:"contract count")
+
+let set_implied_vol (t : t) (id : string) (vol : Options.Implied_vol.t) : unit =
+  Inc.Var.set (find_option_var t.implied_vol_vars id ~what:"implied vol") vol
+
+let implied_vol (t : t) (id : string) : Options.Implied_vol.t =
+  Inc.Var.value (find_option_var t.implied_vol_vars id ~what:"implied vol")
+
+let rate (t : t) : float = Inc.Var.value t.rate_var
+let set_rate (t : t) (rate : float) : unit = Inc.Var.set t.rate_var rate
+let valuation_days (t : t) : float = Inc.Var.value t.valuation_days_var
+
+(* Move the valuation date forward, which is the only way theta is ever
+   realised in this engine.
+
+   Deliberately a caller's decision rather than a timer's. The staleness clock
+   in this same module advances itself every few seconds; this does not, and
+   must not, because the moment a risk node sits downstream of a running clock
+   the engine is recomputing the book on a schedule. See the comment on
+   [valuation_days_var]. A driver that wants a decaying book calls this once a
+   day, or once a step in a simulation, and owns the decision. *)
+let advance_valuation_days (t : t) (days : float) : unit =
+  if Float.is_negative days then
+    invalid_argf "graph: cannot advance the valuation date backwards (%f days)" days ();
+  Inc.Var.set t.valuation_days_var (Inc.Var.value t.valuation_days_var +. days)
 
 let cash (t : t) : Notional.t = Inc.Var.value t.cash_var
 let set_cash (t : t) (cash : Notional.t) : unit = Inc.Var.set t.cash_var cash
@@ -1311,6 +1675,15 @@ let expected_shortfall_notional (t : t) : Notional.t option =
 let equity (t : t) : Notional.t = Inc.Observer.value_exn t.obs_equity
 let current_drawdown (t : t) : float = Inc.Observer.value_exn t.obs_drawdown
 let portfolio_beta (t : t) : float option = Inc.Observer.value_exn t.obs_portfolio_beta
+
+let gamma_by_instrument (t : t) : float Symbol.Map.t =
+  Inc.Observer.value_exn t.obs_gamma_by_instrument
+
+let vega_by_instrument (t : t) : float Symbol.Map.t =
+  Inc.Observer.value_exn t.obs_vega_by_instrument
+
+let portfolio_gamma (t : t) : float = Inc.Observer.value_exn t.obs_portfolio_gamma
+let portfolio_vega (t : t) : float = Inc.Observer.value_exn t.obs_portfolio_vega
 let feed_health (t : t) : Feed_health.t = Inc.Observer.value_exn t.obs_feed_health
 
 (* Limits paired with their result, in the order they were configured. [None]
@@ -1342,6 +1715,10 @@ let snapshot (t : t) : Snapshot.t =
     component_var_by_instrument = component_var_by_instrument t;
     component_var_by_sector = component_var_by_sector t;
     diversification_ratio = diversification_ratio t;
+    gamma_by_instrument = gamma_by_instrument t;
+    vega_by_instrument = vega_by_instrument t;
+    portfolio_gamma = portfolio_gamma t;
+    portfolio_vega = portfolio_vega t;
     warming_up = Option.is_none historical_var;
     feed_health = feed_health t;
     breaches = List.filter_map results ~f:(fun (_, breach) -> breach);

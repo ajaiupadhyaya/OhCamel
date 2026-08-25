@@ -30,13 +30,16 @@ let threshold (kind : Limit.kind) : float =
   | Limit.Gross_notional n -> Notional.to_float n
   | Limit.Value_at_risk n -> Notional.to_float n
   | Limit.Component_var n -> Notional.to_float n
+  | Limit.Greek_limit (_, n) -> Notional.to_float n
   | Limit.Max_drawdown f -> f
 
 type measure = Money | Fraction
 
 let unit_of (kind : Limit.kind) : measure =
   match kind with
-  | Limit.Gross_notional _ | Limit.Value_at_risk _ | Limit.Component_var _ -> Money
+  | Limit.Gross_notional _ | Limit.Value_at_risk _ | Limit.Component_var _
+  | Limit.Greek_limit _ ->
+      Money
   | Limit.Max_drawdown _ -> Fraction
 
 let render_value (kind : Limit.kind) (v : float) : string =
@@ -70,9 +73,37 @@ let render_value (kind : Limit.kind) (v : float) : string =
    redundant: the two disagreeing is the tail-fatness diagnostic the README
    describes, and having a limit on each says which estimator you are willing
    to be wrong about. *)
+(* GREEK LIMITS ARE VALID AT EVERY SCOPE, and the argument is worth writing out
+   because it is the same shape as the Component_var one and reaches the same
+   conclusion for a different reason.
+
+   Gamma and vega are SUMS OF DERIVATIVES, not quantiles. Each position's gamma
+   is a partial derivative of its own price with respect to its own underlying,
+   and the book's gamma is the derivative of a sum, which is the sum of the
+   derivatives -- exactly and by linearity, with no correlation term and no
+   diversification benefit to double-count. That is what fails for
+   [Value_at_risk]: two names each with $10,000 of standalone VaR do not carry
+   $20,000 together, because a quantile of a sum is not the sum of quantiles.
+   Derivatives have no such problem. So a sector gamma limit is a limit on a
+   real sector total in a way a sector VaR limit would not be.
+
+   ONE HONEST CAVEAT, which the arithmetic hides. Adding vega across contracts
+   at DIFFERENT EXPIRIES adds sensitivities to different volatilities: the
+   30-day implied and the 180-day implied are distinct quantities that move
+   together but not identically, so a single portfolio vega treats the whole
+   term structure as one number that shifts in parallel. Every desk does this
+   and calls it a parallel-shift vega; it is a bucketed approximation, not an
+   identity, and it understates the risk of a calendar spread -- a position that
+   is long one expiry and short another nets to near zero vega here while
+   carrying real exposure to the term structure twisting.
+
+   That is a limitation of the MEASURE and not of the scope rule, which is why
+   the pairing is still accepted rather than restricted to a single expiry.
+   Bucketing vega by expiry is the fix, it is a larger change than this phase,
+   and the README names it rather than leaving a reader to discover it. *)
 let scope_is_valid (kind : Limit.kind) (scope : Limit.scope) : bool =
   match (kind, scope) with
-  | (Limit.Gross_notional _ | Limit.Component_var _), _ -> true
+  | (Limit.Gross_notional _ | Limit.Component_var _ | Limit.Greek_limit _), _ -> true
   | (Limit.Value_at_risk _ | Limit.Max_drawdown _), Limit.Portfolio -> true
   | (Limit.Value_at_risk _ | Limit.Max_drawdown _), (Limit.Instrument _ | Limit.Sector _)
     ->
@@ -121,6 +152,13 @@ let validate ~(instruments : Instrument.t list) (limits : Limit.t list) : unit =
               (Sector.to_string sector) ()
       | Limit.Portfolio -> ());
       match kind with
+      | Limit.Greek_limit (_, n) ->
+          if Float.is_negative (Notional.to_float n) then
+            invalid_argf
+              "limits: %S has a negative threshold (%f). A Greek limit caps a MAGNITUDE \
+               -- a short option book's gamma is negative and its risk is the size of \
+               that number, not its sign."
+              (Limit.name limit) (Notional.to_float n) ()
       | Limit.Gross_notional n | Limit.Value_at_risk n | Limit.Component_var n ->
           if Float.is_negative (Notional.to_float n) then
             invalid_argf

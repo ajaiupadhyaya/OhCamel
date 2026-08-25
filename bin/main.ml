@@ -837,6 +837,179 @@ let run_backtest () =
     \  losing money.\n\n"
 
 (* ------------------------------------------------------------------------ *)
+(* Options: Greeks-aware exposure                                            *)
+(* ------------------------------------------------------------------------ *)
+
+(* A separate mode rather than an overlay on the synthetic book, deliberately.
+
+   Folding options into `make run` would have changed every number in the
+   tables the README quotes -- the weights, the risk decomposition, the rigged
+   nvda-cap that exists to make a breach visible in the first ten seconds -- to
+   demonstrate something those tables are not about. This mode shows the one
+   thing worth showing, which is what a delta hedge does and does not remove. *)
+
+(* THE VOL SURFACE HERE IS INVENTED, and it is invented in a shape that at
+   least resembles a real one rather than being flat.
+
+   A smile plus a skew: vol rises as a contract moves away from the money
+   (the quadratic term) and equity puts trade richer than equity calls (the
+   linear one), which is the shape every equity index surface has had since
+   1987 and is the reason a flat surface would misprice the hedge this mode
+   demonstrates.
+
+   It is labelled synthetic everywhere it appears. Live mode does not use it --
+   see the note in run_live -- because a plausible surface presented as a real
+   one is exactly the "looks live and is showing made-up numbers" failure the
+   credentials path is arranged against. *)
+let synthetic_implied_vol ~spot ~strike =
+  let moneyness = (strike /. spot) -. 1.0 in
+  Float.max 0.05 (0.28 +. (0.9 *. moneyness *. moneyness) -. (0.25 *. moneyness))
+
+let options_spot = 900.0
+let options_strike = 950.0
+let options_expiry_days = 30.0
+let options_contracts = -50.0
+
+let options_book =
+  [
+    Options.Position.create ~underlying:(sym "NVDA") ~id:"NVDA-950C-30d"
+      ~strike:(Options.Strike.of_float options_strike)
+      ~right:Options.Right.Call ~expiry_in_days:options_expiry_days ();
+  ]
+
+let run_options () =
+  printf "\n  OhCamel -- reactive risk and limits engine\n";
+  printf "  OPTIONS (Greeks-aware exposure, synthetic vol surface, no credentials)\n\n";
+  let implied_vol = synthetic_implied_vol ~spot:options_spot ~strike:options_strike in
+  printf "  the book        short %.0f NVDA %g calls, %g days out\n"
+    (Float.abs options_contracts) options_strike options_expiry_days;
+  printf "  spot            %s\n" (money (Notional.of_float options_spot));
+  printf "  implied vol     %.1f%% -- SYNTHETIC, from a smiled surface generated here\n"
+    (implied_vol *. 100.0);
+  printf
+    "                  and labelled as such. There is no options-chain data source\n\
+    \                  configured; live mode declines to invent one rather than\n\
+    \                  showing made-up Greeks that look real.\n\n";
+  (* A vega cap that the unhedged book is already through, so the interesting
+     line -- a limit that a delta hedge does NOT clear -- is visible rather than
+     described. *)
+  (* Stated in the engine's internal unit -- dollars per 1.00 of annualised vol
+     -- which is a hundred times the desk's "per vol point". $300,000 here is a
+     $3,000-a-point cap. The display below prints the per-point figure, because
+     this conversion is exactly the one that silently makes a limit a hundred
+     times too loose. *)
+  let vega_cap = 300_000.0 in
+  let limits =
+    [
+      limit "nvda-notional"
+        (Limit.Instrument (sym "NVDA"))
+        (Limit.Gross_notional (dollars 1_000_000.0));
+      limit "nvda-vega"
+        (Limit.Instrument (sym "NVDA"))
+        (Limit.Greek_limit (Greek.Vega, dollars vega_cap));
+      limit "nvda-gamma"
+        (Limit.Instrument (sym "NVDA"))
+        (Limit.Greek_limit (Greek.Gamma, dollars 400.0));
+    ]
+  in
+  let graph =
+    Graph.create
+      ~instruments:[ { Instrument.symbol = sym "NVDA"; sector = sec "TECH" } ]
+      ~limits ~options:options_book ~rate:0.04 ~confidence:0.95 ~return_window:10 ()
+  in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      let nvda = sym "NVDA" in
+      Graph.set_price graph nvda (Price.of_float options_spot);
+      Graph.set_contracts graph "NVDA-950C-30d"
+        (Options.Contracts.of_float options_contracts);
+      Graph.set_implied_vol graph "NVDA-950C-30d"
+        (Options.Implied_vol.of_float implied_vol);
+      Graph.stabilize graph;
+      let show label =
+        let s = Graph.snapshot graph in
+        printf "  %-14s %16s %14s %16s\n" label
+          (money (Map.find_exn (Graph.Snapshot.exposure_by_instrument s) nvda))
+          (Printf.sprintf "%.1f" (Graph.Snapshot.portfolio_gamma s))
+          (* Divided by 100 for the desk convention. The engine carries vega per
+             1.00 of vol because that is its mathematical unit and the one the
+             arithmetic is done in; the /100 is a display decision and lives
+             here, which is where options.ml argues it belongs. *)
+          (money (Notional.of_float (Graph.Snapshot.portfolio_vega s /. 100.0)))
+      in
+      let columns () =
+        printf "  %-14s %16s %14s %16s\n" "" "delta-equiv" "gamma" "vega / vol pt";
+        printf "  %s\n" (rule 64)
+      in
+      printf "%s\n  WHAT A DELTA HEDGE REMOVES, AND WHAT IT LEAVES\n%s\n\n" (rule 106)
+        (rule 106);
+      columns ();
+      show "options only";
+      (* Buy the shares the short calls are short. The count is derived from the
+         engine's own delta rather than guessed, which is the point: the hedge
+         ratio is a number the risk engine produces. *)
+      let unhedged =
+        Notional.to_float
+          (Map.find_exn
+             (Graph.Snapshot.exposure_by_instrument (Graph.snapshot graph))
+             nvda)
+      in
+      let shares = -.unhedged /. options_spot in
+      Graph.set_qty graph nvda (Qty.of_float shares);
+      Graph.stabilize graph;
+      show "+ the hedge";
+      printf "  %s\n\n" (rule 64);
+      printf
+        "  The hedge is %.0f shares, and the engine computed the ratio: it is the\n\
+        \  option leg's delta-equivalent exposure divided by the spot. Delta goes to\n\
+        \  zero. Gamma and vega do not move at all -- a share is linear in its own\n\
+        \  price, so it contributes exactly none of either. That is the whole content\n\
+        \  of the phrase FIRST-ORDER hedge, and it is why gamma and vega are their own\n\
+        \  nodes instead of a column in the exposure table: there is no honest way to\n\
+        \  express convexity as a quantity of underlying.\n\n"
+        shares;
+      printf "%s\n  LIMITS\n%s\n\n" (rule 106) (rule 106);
+      Graph.Snapshot.breaches (Graph.snapshot graph)
+      |> List.sort ~compare:(fun a b ->
+          Float.descending (Limits.utilisation a) (Limits.utilisation b))
+      |> List.iter ~f:(fun breach ->
+          printf "  %-6s %6.1f%%  %s\n"
+            (if Breach.breached breach then "BREACH" else "ok")
+            (Limits.utilisation breach *. 100.0)
+            (Limits.to_string breach));
+      printf
+        "\n\
+        \  The notional cap is comfortably clear, because the book IS delta flat.\n\
+        \  The vega cap is not, because it never was: hedging the delta did not\n\
+        \  remove a dollar of it. A risk engine that only measured exposure would\n\
+        \  report this book as carrying no risk at all.\n\n";
+      printf "%s\n  THETA, AND THE SECOND CLOCK\n%s\n\n" (rule 106) (rule 106);
+      columns ();
+      show "today";
+      Graph.advance_valuation_days graph 20.0;
+      Graph.stabilize graph;
+      show "+20 days";
+      printf "  %s\n\n" (rule 64);
+      printf
+        "  Read the delta column first, because it is the one nobody expects. The\n\
+        \  share count has not changed and NOTHING HAS BEEN TRADED, and yet the book\n\
+        \  is no longer delta flat -- the contract decayed further out of the money,\n\
+        \  its delta fell, and the hedge that exactly offset it twenty days ago now\n\
+        \  over-hedges by more than half a million dollars. A delta hedge is correct\n\
+        \  at an instant and stale immediately afterwards, which is precisely why\n\
+        \  this number hangs off an edge instead of being stored.\n\n\
+        \  Vega falls as the contract runs out of time to be uncertain in, and\n\
+        \  at-the-money gamma RISES as the distribution tightens around the strike.\n\
+        \  All three moved because the VALUATION clock advanced -- a separate cell\n\
+        \  from the staleness clock that drives feed health, and separate on purpose.\n\
+        \  Theta is real and needs a clock; wiring it to the five-second staleness\n\
+        \  timer would have put the entire book on a schedule to capture a decay that\n\
+        \  is invisible below a day, which is the design this project exists to\n\
+        \  replace. test_options_graph.ml asserts that neither clock can do the\n\
+        \  other's job.\n\n")
+
+(* ------------------------------------------------------------------------ *)
 (* Crisis backtest: the same battery, real data                              *)
 (* ------------------------------------------------------------------------ *)
 
@@ -1149,7 +1322,24 @@ let run_live ~book_path ~(serve_port : int option) =
         (List.length instruments) (List.length limits)
         (money (Notional.of_float book.Config.Book.cash));
       printf "  feed        alpaca %s\n" runtime.Config.Runtime.alpaca_feed;
-      printf "  factor      FRED %s\n\n" runtime.Config.Runtime.fred_series_id;
+      printf "  factor      FRED %s\n" runtime.Config.Runtime.fred_series_id;
+      (* Options risk is OFF in live mode, and this line says so rather than
+         letting its absence be discovered.
+
+         Greeks need an implied vol per contract, and an implied vol comes from
+         an options chain. There is no options-chain source configured here --
+         Alpaca's free tier does not provide one -- and the alternatives are to
+         decline or to invent a surface. Inventing one would produce a full set
+         of Greeks, a portfolio vega, and a vega limit that all looked exactly
+         like the real thing, which is the same failure as a book marked at a
+         plausible default price: worse than no number, because nothing on the
+         page says it is fiction. `ohcamel options` runs the whole path against
+         a surface that is labelled synthetic in every line it appears in. *)
+      printf
+        "  options     DISABLED -- no options-chain data source configured, so there\n\
+        \              is no implied vol to price Greeks from. See `ohcamel options`\n\
+        \              for the same path against a clearly-labelled synthetic\n\
+        \              surface. Nothing here invents one.\n\n";
       (* Phase 4. Off unless the book file says otherwise, and a bad alerting
          config is fatal rather than silently ignored -- someone who wrote an
          alerts block meant to be alerted, and starting up with it quietly
@@ -1403,6 +1593,7 @@ let usage () =
     \  ohcamel stress             scenario suite against the synthetic book\n\
     \  ohcamel backtest           VaR model validation (Kupiec, Christoffersen)\n\
     \  ohcamel backtest-crisis    the same battery against real crisis data\n\
+    \  ohcamel options            Greeks-aware exposure, synthetic vol surface\n\
     \  ohcamel demo [port]        synthetic feed + live dashboard, NO credentials\n\
     \  ohcamel live [book.sexp]   live Alpaca market data and FRED macro\n\
     \  ohcamel serve [port]       live feeds + dashboard on http://localhost:PORT\n\n\
@@ -1421,6 +1612,7 @@ let () =
   | _ :: "stress" :: _ -> run_stress ()
   | _ :: "backtest" :: _ -> run_backtest ()
   | _ :: ("backtest-crisis" | "crisis") :: _ -> run_backtest_crisis ()
+  | _ :: ("options" | "greeks") :: _ -> run_options ()
   | _ :: "live" :: rest ->
       let book_path =
         match rest with path :: _ -> path | [] -> Config.default_book_path

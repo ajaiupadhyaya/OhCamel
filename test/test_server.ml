@@ -97,6 +97,8 @@ let test_round_trips () =
               "value_at_risk_notional";
               "expected_shortfall_notional";
               "portfolio_beta";
+              "portfolio_gamma";
+              "portfolio_vega";
               "warming_up";
               "feed";
               "limits";

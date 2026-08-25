@@ -34,6 +34,8 @@ let () =
         ] );
       Test_risk_metrics.suite;
       Test_vol_estimators.suite;
+      Test_options.suite;
+      Test_options_graph.suite;
       Test_attribution.suite;
       Test_var_backtest.suite;
       Test_crisis_data.suite;
