@@ -210,6 +210,180 @@ let test_invalid_inputs () =
   check_invalid_arg "ragged series" (fun () ->
       Ewma.covariance_matrix ~series:[| [| 1.0; 2.0 |]; [| 1.0 |] |] ~lambda:0.94)
 
+(* ------------------------------------------------------------------------ *)
+(* GARCH(1,1)                                                                 *)
+(* ------------------------------------------------------------------------ *)
+
+module Garch = Ohcamel.Vol_estimators.Garch11
+
+(* Standard normal innovations from a fixed seed, produced by Box-Muller.
+
+   Deterministic on purpose: a test whose verdict depends on an RNG seed the
+   runner controls is a test that fails one morning for no reason anybody can
+   reproduce. The seed is written down here and the same draws come out every
+   run on every machine. *)
+let innovations ~n ~seed =
+  let rng = Random.State.make [| seed |] in
+  Array.init n ~f:(fun _ ->
+      let u1 = Float.max 1e-12 (Random.State.float rng 1.0) in
+      let u2 = Random.State.float rng 1.0 in
+      Float.sqrt (-2.0 *. Float.log u1) *. Float.cos (2.0 *. Float.pi *. u2))
+
+(* Textbook daily-equity parameters: persistence 0.98, which is a shock
+   half-life of about 34 days. *)
+let true_params = Garch.{ omega = 4e-6; alpha = 0.10; beta = 0.88 }
+
+(* THE RECURSION, checked by hand.
+
+   Two steps of sigma_t^2 = omega + alpha r_{t-1}^2 + beta sigma_{t-1}^2 against
+   arithmetic done on paper. The seed is the sample variance, which under
+   variance targeting is also the long-run variance -- stated in the module and
+   worth pinning, because a port that seeded at omega instead would produce a
+   path that looks plausible and is wrong for the first several observations. *)
+let test_conditional_variance_recursion () =
+  let returns = [| 0.02; -0.03; 0.01; 0.04 |] in
+  let sample_variance = RM.variance returns in
+  let p = Garch.{ omega = 1e-5; alpha = 0.10; beta = 0.85 } in
+  let path = Garch.conditional_variances ~returns p in
+  Alcotest.check feq "seeded at the sample variance" sample_variance path.(0);
+  Alcotest.check feq "step 1: omega + alpha*0.02^2 + beta*seed"
+    (1e-5 +. (0.10 *. 0.02 *. 0.02) +. (0.85 *. sample_variance))
+    path.(1);
+  Alcotest.check feq "step 2: omega + alpha*(-0.03)^2 + beta*previous"
+    (1e-5 +. (0.10 *. 0.03 *. 0.03) +. (0.85 *. path.(1)))
+    path.(2)
+
+(* Persistence, the long-run level and the shock half-life are the three numbers
+   a fitted GARCH is read for, and each is a one-line consequence of the
+   parameters. Hand-checked so a sign or a reciprocal cannot drift. *)
+let test_derived_quantities () =
+  let p = Garch.{ omega = 4e-6; alpha = 0.10; beta = 0.88 } in
+  Alcotest.check feq "persistence is alpha + beta" 0.98 (Garch.persistence p);
+  Alcotest.check feq "long-run variance is omega / (1 - persistence)" (4e-6 /. 0.02)
+    (Garch.long_run_variance p);
+  Alcotest.check feq "long-run stddev"
+    (Float.sqrt (4e-6 /. 0.02))
+    (Garch.long_run_stddev p);
+  match Garch.shock_half_life p with
+  | None -> Alcotest.fail "a stationary process has a half-life"
+  | Some h ->
+      Alcotest.check (Alcotest.float 1e-6) "ln(0.5)/ln(0.98)"
+        (Float.log 0.5 /. Float.log 0.98)
+        h;
+      Alcotest.(check bool) "about 34 days" true (Float.( > ) h 33.0 && Float.( < ) h 35.0)
+
+(* THE ONE THAT MATTERS: the fit recovers a process it was given.
+
+   Simulate 4,000 observations from known parameters and fit them back. This is
+   the only test here that can tell a correct optimiser from one that stops on
+   the likelihood's flat ridge, and it is the reason [fit] uses a grid before
+   refining rather than a gradient step from a guess.
+
+   The tolerances are loose because 4,000 observations is a real sample and not
+   an infinite one -- the sampling standard deviation of beta at this length is
+   around 0.02, so demanding three decimals would be asserting the seed. *)
+let test_fit_recovers_a_known_process () =
+  let path =
+    Garch.simulate ~innovations:(innovations ~n:4500 ~seed:20260825) true_params
+  in
+  Alcotest.(check int) "4000 observations after burn-in" 4000 (Array.length path);
+  let fitted = Garch.fit ~returns:path () in
+  Alcotest.(check bool)
+    (Printf.sprintf "alpha near 0.10 (got %.4f)" (Garch.alpha fitted))
+    true
+    (Float.( > ) (Garch.alpha fitted) 0.05 && Float.( < ) (Garch.alpha fitted) 0.16);
+  Alcotest.(check bool)
+    (Printf.sprintf "beta near 0.88 (got %.4f)" (Garch.beta fitted))
+    true
+    (Float.( > ) (Garch.beta fitted) 0.82 && Float.( < ) (Garch.beta fitted) 0.93);
+  Alcotest.(check bool)
+    (Printf.sprintf "persistence near 0.98 (got %.4f)" (Garch.persistence fitted))
+    true
+    (Float.( > ) (Garch.persistence fitted) 0.95
+    && Float.( < ) (Garch.persistence fitted) 0.999);
+  (* Variance targeting is an identity, not an approximation: the fitted model's
+     unconditional variance must equal the sample's exactly, whatever the search
+     found. This is the assertion that catches omega being computed from the
+     wrong variance or from the wrong persistence. *)
+  Alcotest.check feq_loose "variance targeting holds exactly" (RM.variance path)
+    (Garch.long_run_variance fitted)
+
+(* The likelihood at the fitted parameters must be at least the likelihood
+   anywhere else the search could have stopped -- including at the EWMA-like
+   boundary and at the coarse grid's own corners.
+
+   A weaker but much sharper statement than "the parameters are near the truth":
+   it holds on any series, including ones with no GARCH structure at all, and it
+   fails immediately if the refinement walks downhill. *)
+let test_fit_maximises_the_likelihood_it_searched () =
+  let path = Garch.simulate ~innovations:(innovations ~n:1200 ~seed:7) true_params in
+  let fitted = Garch.fit ~returns:path () in
+  let at = Garch.log_likelihood ~returns:path in
+  let best = at fitted in
+  let sample_variance = RM.variance path in
+  List.iter
+    [ (0.02, 0.90); (0.05, 0.90); (0.10, 0.85); (0.20, 0.70); (0.30, 0.50); (0.05, 0.94) ]
+    ~f:(fun (alpha, beta) ->
+      let other = Garch.of_params ~sample_variance ~alpha ~beta in
+      Alcotest.(check bool)
+        (Printf.sprintf "no better at alpha=%.2f beta=%.2f" alpha beta)
+        true
+        (Float.( >= ) best (at other -. 1e-9)))
+
+(* The forecast is strictly one step ahead: it uses the last return and the last
+   conditional variance and nothing after them.
+
+   Checked by construction rather than by inspection -- append one more
+   observation and the previous forecast must equal the new path's final
+   conditional variance. If the recursion were off by one, these would differ. *)
+let test_forecast_is_one_step_ahead () =
+  let returns = [| 0.01; -0.02; 0.015; -0.005; 0.03; -0.01 |] in
+  let p = Garch.{ omega = 1e-5; alpha = 0.08; beta = 0.90 } in
+  let forecast = Garch.forecast_stddev ~returns p in
+  (* The seed of [conditional_variances] is the sample variance, which changes
+     when a return is appended, so the two paths are not directly comparable --
+     the check is that the forecast equals the recursion applied to the LAST
+     step of the path it was given. *)
+  let path = Garch.conditional_variances ~returns p in
+  let n = Array.length returns in
+  let expected =
+    Float.sqrt
+      (1e-5 +. (0.08 *. returns.(n - 1) *. returns.(n - 1)) +. (0.90 *. path.(n - 1)))
+  in
+  Alcotest.check feq "one step past the last observation" expected forecast
+
+(* Simulation is deterministic in its innovations, and the burn-in is real.
+
+   The second half matters: without it every simulated path would start exactly
+   at the long-run variance, which understates how far a real path wanders early
+   on and would quietly flatter the fit in the test above. *)
+let test_simulation_is_deterministic_and_burns_in () =
+  let z = innovations ~n:900 ~seed:11 in
+  let a = Garch.simulate ~innovations:z true_params in
+  let b = Garch.simulate ~innovations:z true_params in
+  Alcotest.(check bool) "same innovations, same path" true (Array.equal Float.equal a b);
+  Alcotest.(check int) "burn-in is consumed, not returned" 400 (Array.length a);
+  let short = Garch.simulate ~burn_in:0 ~innovations:z true_params in
+  Alcotest.(check int) "burn_in:0 returns everything" 900 (Array.length short);
+  (* The burn-in discards a PREFIX of the same path rather than generating a
+     different one, so the burned-in path is the tail of the unburned one
+     exactly. Worth pinning: it says the burn-in is doing what it claims -- the
+     returned observations start after the process has wandered away from its
+     seeding at the unconditional variance -- and not quietly re-seeding the
+     recursion partway through, which would produce a discontinuity no reader
+     would ever see. *)
+  Alcotest.check feq "the burned-in path is the tail of the unburned one" short.(500)
+    a.(0);
+  Alcotest.check feq "and stays aligned" short.(899) a.(399)
+
+let test_garch_invalid_inputs () =
+  check_invalid_arg "too few observations" (fun () ->
+      Garch.fit ~returns:[| 0.01; 0.02 |] ());
+  check_invalid_arg "a constant series has no variance to target" (fun () ->
+      Garch.fit ~returns:(Array.create ~len:50 0.01) ());
+  check_invalid_arg "burn-in longer than the innovations" (fun () ->
+      Garch.simulate ~burn_in:100 ~innovations:(innovations ~n:50 ~seed:1) true_params)
+
 let suite =
   ( "vol_estimators",
     [
@@ -226,4 +400,17 @@ let suite =
       Alcotest.test_case "a lower lambda forgets faster" `Quick
         test_lower_lambda_forgets_faster;
       Alcotest.test_case "invalid inputs raise" `Quick test_invalid_inputs;
+      Alcotest.test_case "GARCH: the conditional-variance recursion" `Quick
+        test_conditional_variance_recursion;
+      Alcotest.test_case "GARCH: persistence, long-run level, half-life" `Quick
+        test_derived_quantities;
+      Alcotest.test_case "GARCH: THE FIT RECOVERS A KNOWN PROCESS" `Quick
+        test_fit_recovers_a_known_process;
+      Alcotest.test_case "GARCH: the fit maximises what it searched" `Quick
+        test_fit_maximises_the_likelihood_it_searched;
+      Alcotest.test_case "GARCH: the forecast is one step ahead" `Quick
+        test_forecast_is_one_step_ahead;
+      Alcotest.test_case "GARCH: simulation is deterministic and burns in" `Quick
+        test_simulation_is_deterministic_and_burns_in;
+      Alcotest.test_case "GARCH: invalid inputs raise" `Quick test_garch_invalid_inputs;
     ] )

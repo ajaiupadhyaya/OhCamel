@@ -570,6 +570,52 @@ battery that has never failed anything is not evidence of anything; one where
 every estimator agrees is not telling you which to use; and one where every
 statistic agrees is not telling you what it cannot see.
 
+### The estimator that is implemented and deliberately not used
+
+GARCH(1,1) is the obvious next step after EWMA. It adds the one thing EWMA has
+no notion of — **mean reversion**. With a single hand-set decay factor there is
+no long-run level to revert to; GARCH has one, and `alpha + beta`, the
+*persistence*, says how much of a volatility shock survives each period and
+therefore what its half-life is. That number is the entire reason to prefer it.
+
+It is implemented in [`lib/vol_estimators.ml`](lib/vol_estimators.ml), fitted by
+maximum likelihood with Engle variance targeting, and tested against a process
+it recovers correctly. It is **not wired into the graph**, and `make garch` is
+the measurement that says why:
+
+```
+         n   alpha (mean +/- sd)    beta (mean +/- sd)     persistence (mean +/- sd)
+  --------------------------------------------------------------------------------
+        60     0.112 +/- 0.104         0.444 +/- 0.375         0.556 +/- 0.364
+       125     0.097 +/- 0.093         0.607 +/- 0.346         0.704 +/- 0.334
+       250     0.099 +/- 0.047         0.841 +/- 0.108         0.939 +/- 0.102
+       500     0.098 +/- 0.034         0.859 +/- 0.049         0.957 +/- 0.032
+      1000     0.092 +/- 0.019         0.880 +/- 0.023         0.973 +/- 0.012
+      2000     0.103 +/- 0.014         0.872 +/- 0.015         0.975 +/- 0.009
+```
+
+Simulate a known process — `alpha = 0.10`, `beta = 0.88`, persistence 0.98, a
+34-day shock half-life — fit it back, thirty replications at each length. Fixed
+seed, so the table is the same on any machine.
+
+**This engine's return window is 60 observations.** At 60 the persistence comes
+back at **0.556 ± 0.364** against a true 0.98. Read both numbers: the standard
+deviation is roughly the size of the thing being estimated, so one fit carries
+almost no information — and the mean is *biased*, not merely noisy. Sixty
+observations do not contain enough evidence of a long memory to distinguish it
+from a short one, so the fit systematically understates persistence. A model
+that cannot tell a 34-day half-life from a 2-day one is not reporting a
+half-life.
+
+The row where it becomes defensible is `n = 250` and up — a year of daily data,
+which is what a GARCH deserves. So the engine ships equal-weighted and EWMA,
+both *parameterised* rather than fitted, and therefore with no sampling
+distribution to be wrong about at this window length.
+
+It seemed worth building the thing in order to find that out, and worth keeping
+it so the finding is reproducible rather than asserted. An absence that has been
+measured is a different claim from an absence that has not.
+
 ## The same battery, real crises
 
 Everything above is scored against series whose regime was chosen by the person
@@ -914,7 +960,8 @@ events, the whole book after each one, a breach and its recovery in the middle,
 the risk decomposition at the end, and then it exits — without ever starting the
 Async scheduler. It is the fastest way to see the numbers without a browser.
 
-`make bench` is the other local-only command — a minute or two, and it is what
+`make garch` prints the measurement behind a design decision — about five
+seconds, no credentials. `make bench` is the other local-only command — a minute or two, and it is what
 produced the timing table above. `make stress`, `make backtest`,
 `make backtest-crisis` and `make options` are the
 other credential-free modes, and they are what the previous sections are about: the scenario suite against
@@ -946,7 +993,7 @@ this codebase sends a message or takes an action on its own.
 
 ## What's verified
 
-`make test` runs 198 tests, all hermetic — no network, no credentials, and nothing
+`make test` runs 205 tests, all hermetic — no network, no credentials, and nothing
 that waits on the wall clock. They cover the numerics against hand-computed
 values, the wire format, the alerting state machine, and the recomputation counts
 that make the graph's shape an assertion rather than a claim.
@@ -1146,7 +1193,9 @@ volatility estimator is equal-weighted *or* exponentially weighted and the engin
 reports both, but neither is conditional in the sense a GARCH(1,1) is: EWMA has
 one hand-set decay factor rather than a fitted mean-reversion, so it tracks a
 regime change but does not forecast the return to normal after one. That fit is
-not here. Nothing is optimised: the engine reports where risk
+not here — GARCH(1,1) *is* implemented and tested, and is deliberately not wired
+in, because `make garch` shows its persistence parameter cannot be estimated on
+a 60-observation window. Nothing is optimised: the engine reports where risk
 is concentrated and never suggests what the weights should be, which is a
 different project with a different failure mode.
 

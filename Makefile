@@ -71,7 +71,7 @@ export OWL_CFLAGS := -g -O1 -funroll-loops -fno-math-errno -fno-rounding-math -f
 # Homebrew's directory for every build, so no ordering can win.
 export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 
-.PHONY: all build run stress backtest backtest-crisis options test bench coverage fmt clean deps doctor
+.PHONY: all build run stress backtest backtest-crisis options garch test bench coverage fmt clean deps doctor
 
 all: build
 
@@ -119,6 +119,18 @@ backtest-crisis: build
 # produce Greeks that looked exactly like real ones.
 options: build
 	$(OPAM_ENV) && dune exec bin/main.exe -- options
+
+# Why GARCH(1,1) is implemented in lib/vol_estimators.ml and NOT wired into the
+# graph. Simulates a known process, fits it back at six sample sizes, and prints
+# how far the fit lands from the truth at each. Fixed seed, so the table is the
+# same on every machine. About five seconds, no credentials, no network.
+#
+# This is the unusual case of a mode whose job is to justify an ABSENCE. The
+# engine's return window is 60 observations and the persistence -- the whole
+# reason to prefer GARCH over EWMA -- comes back biased at that length, not
+# merely noisy.
+garch: build
+	$(OPAM_ENV) && dune exec bin/main.exe -- garch
 
 # Live mode. Needs ALPACA_API_KEY, ALPACA_SECRET_KEY and FRED_API_KEY in the
 # environment and a book.sexp (copy book.example.sexp). The engine refuses to

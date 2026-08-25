@@ -87,6 +87,7 @@ jobs:
           opam exec -- dune exec bin/main.exe -- backtest > /dev/null
           opam exec -- dune exec bin/main.exe -- backtest-crisis > /dev/null
           opam exec -- dune exec bin/main.exe -- options > /dev/null
+          opam exec -- dune exec bin/main.exe -- garch > /dev/null
 
       # One platform is enough: ocamlformat's output does not depend on the OS,
       # so a second run would only cost minutes and tell you the same thing.

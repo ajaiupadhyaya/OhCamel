@@ -160,9 +160,79 @@ nothing.
 
 **Not GARCH.** $\lambda$ is hand-set, not fitted, and there is no
 mean-reversion term. An EWMA tracks a regime change; it does not forecast the
-return to normal after one. A GARCH(1,1),
-$\sigma_t^2 = \omega + \alpha r_{t-1}^2 + \beta\sigma_{t-1}^2$, would, and is
-not implemented.
+return to normal after one. §3a is the model that does, why it is implemented,
+and why it is nonetheless not what the engine runs.
+
+---
+
+## 3a. GARCH(1,1), and why it is not wired in
+
+`lib/vol_estimators.ml` — `Garch11.fit`, `conditional_variances`,
+`forecast_stddev`, `simulate`.
+
+$$\sigma_t^2 \;=\; \omega \;+\; \alpha\, r_{t-1}^2 \;+\; \beta\, \sigma_{t-1}^2 .$$
+
+$\alpha$ is how hard yesterday's surprise moves today's forecast, $\beta$ how
+much of yesterday's forecast persists, and $\alpha+\beta$ the **persistence** —
+the fraction of a volatility shock surviving one period, hence its half-life
+$\ln(1/2)/\ln(\alpha+\beta)$. The unconditional variance is
+$\omega/(1-\alpha-\beta)$, which exists only for $\alpha+\beta<1$. EWMA is the
+boundary case $\alpha+\beta=1$ with $\omega=0$: shocks never decay and there is
+no long-run level, which is precisely why RiskMetrics can hand-set $\lambda$ and
+this cannot.
+
+**Variance targeting** (Engle). $\omega$ is not searched; it is pinned by
+requiring the model's unconditional variance to match the sample's:
+
+$$\omega \;=\; \hat{\sigma}^2\,(1-\alpha-\beta).$$
+
+Two reasons on short samples. It removes the parameter the likelihood is
+flattest in, and it guarantees the fitted model reproduces the observed
+volatility *level*, so a poor fit can be wrong about the dynamics without also
+being wrong about the level. A free three-parameter search can be wrong about
+both at once.
+
+**Estimation.** Gaussian log-likelihood over the conditional path, seeded at
+$\sigma_1^2 = \hat{\sigma}^2$:
+
+$$\ell(\alpha,\beta) \;=\; -\tfrac{1}{2}\sum_{t=1}^{n}
+\Big[\ln 2\pi + \ln\sigma_t^2 + \frac{r_t^2}{\sigma_t^2}\Big],
+\qquad \sigma_{t+1}^2 = \omega + \alpha r_t^2 + \beta\sigma_t^2 .$$
+
+Maximised by a coarse grid over the stationary region followed by a shrinking
+pattern search — deliberately not a gradient method, because the GARCH
+likelihood has a well-known flat ridge along $\alpha+\beta\approx1$ and a
+gradient step started in the wrong place walks along it and stops arbitrarily.
+The recursion is strictly one-step-ahead: $\sigma_t^2$ is built from information
+through $t-1$, so the estimator cannot see the observation it is scoring.
+
+### Why it is not the engine's estimator
+
+Not an omission — a measurement. `make garch` simulates a *known* process
+($\alpha=0.10$, $\beta=0.88$, persistence $0.98$, a 34-day half-life), fits it
+back, and repeats thirty times at each sample size:
+
+| $n$ | $\hat\alpha$ | $\hat\beta$ | $\widehat{\alpha+\beta}$ |
+|---|---|---|---|
+| 60 | 0.112 ± 0.104 | 0.444 ± 0.375 | **0.556 ± 0.364** |
+| 125 | 0.097 ± 0.093 | 0.607 ± 0.346 | 0.704 ± 0.334 |
+| 250 | 0.099 ± 0.047 | 0.841 ± 0.108 | 0.939 ± 0.102 |
+| 500 | 0.098 ± 0.034 | 0.859 ± 0.049 | 0.957 ± 0.032 |
+| 1000 | 0.092 ± 0.019 | 0.880 ± 0.023 | 0.973 ± 0.012 |
+| 2000 | 0.103 ± 0.014 | 0.872 ± 0.015 | 0.975 ± 0.009 |
+
+This engine's return window is $n = 60$. There the persistence — the whole
+reason to prefer GARCH over EWMA — returns $0.556 \pm 0.364$ against a true
+$0.98$. The standard deviation is of the same order as the quantity, so a single
+fit is nearly uninformative, and the mean is **biased**, not merely noisy: sixty
+observations do not contain enough evidence of a long memory to separate it from
+a short one, so the estimator systematically understates persistence. A fit that
+cannot distinguish a 34-day half-life from a 2-day one is not reporting a
+half-life.
+
+It becomes defensible around $n = 250$. The engine therefore ships the two
+estimators that are *parameterised* rather than fitted, and so have no sampling
+distribution to be wrong about at this window length.
 
 ---
 
@@ -578,6 +648,8 @@ looking like a defensible choice.
 | $\mathrm{ES}\ge\mathrm{VaR}$ | `test_risk_metrics.ml` |
 | VaR monotone in $c$ (both estimators) | `test_properties.ml` |
 | EWMA hand-derived $6\times10^{-4}$; $\lambda\to1$ reduction; regime response | `test_vol_estimators.ml` |
+| GARCH recursion by hand; fit recovers a known process; variance targeting is exact | `test_vol_estimators.ml` |
+| GARCH fit maximises what it searched; forecast is one step ahead | `test_vol_estimators.ml` |
 | Euler additivity, arbitrary PSD $\Sigma$ and $w$ | `test_properties.ml` |
 | $\sum \mathrm{CVaR}_i = \mathrm{VaR}^p_c$ | `test_properties.ml` |
 | Negative component for a constructed hedge | `test_properties.ml`, `test_attribution.ml` |
