@@ -71,7 +71,7 @@ export OWL_CFLAGS := -g -O1 -funroll-loops -fno-math-errno -fno-rounding-math -f
 # Homebrew's directory for every build, so no ordering can win.
 export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 
-.PHONY: all build run stress backtest test fmt clean deps doctor
+.PHONY: all build run stress backtest backtest-crisis test fmt clean deps doctor
 
 all: build
 
@@ -94,6 +94,21 @@ stress: build
 # passes and fails in front of you. No credentials, no network.
 backtest: build
 	$(OPAM_ENV) && dune exec bin/main.exe -- backtest
+
+# The same battery against real market data: the GFC, the COVID crash and the
+# 2022 rate shock. Reads adjusted daily closes from docs/crisis/*.csv, which are
+# committed, so this needs no credentials and no network either.
+#
+# If the cache is ever missing, repopulate it with
+#
+#     python3 tools/fetch_crisis_data.py
+#
+# and review the diff -- a changed number in a committed cache is a change to a
+# published result. This target does NOT fetch, and it does not fall back to the
+# synthetic series if the cache is gone: a crisis backtest quietly scoring
+# generated data would print a table indistinguishable from the real one.
+backtest-crisis: build
+	$(OPAM_ENV) && dune exec bin/main.exe -- backtest-crisis
 
 # Live mode. Needs ALPACA_API_KEY, ALPACA_SECRET_KEY and FRED_API_KEY in the
 # environment and a book.sexp (copy book.example.sexp). The engine refuses to

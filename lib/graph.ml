@@ -324,6 +324,16 @@ type t = {
   obs_gross : Notional.t Inc.Observer.t;
   obs_net : Notional.t Inc.Observer.t;
   obs_weights : float array Inc.Observer.t;
+  (* The book's own return series, published rather than kept internal.
+
+       It is already computed -- historical_var is downstream of it -- so
+       observing it costs nothing, and it is the one quantity an offline
+       analysis genuinely needs FROM the engine rather than alongside it.
+       crisis_data.ml feeds real per-name returns in and reads this out, so the
+       series a coverage test scores is produced by the same node that produces
+       the live VaR, not by a second implementation of sum(w_i r_i) living in a
+       backtest module and drifting from this one. *)
+  obs_portfolio_returns : float array option Inc.Observer.t;
   obs_covariance : Owl.Mat.mat option Inc.Observer.t;
   obs_covariance_ewma : Owl.Mat.mat option Inc.Observer.t;
   obs_historical_var : float option Inc.Observer.t;
@@ -996,6 +1006,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
       obs_gross = observe gross_node;
       obs_net = observe net_node;
       obs_weights = observe weights_node;
+      obs_portfolio_returns = observe portfolio_returns_node;
       obs_covariance = observe covariance_node;
       obs_covariance_ewma = observe covariance_ewma_node;
       obs_historical_var = observe historical_var_node;
@@ -1258,6 +1269,10 @@ let exposure_by_sector (t : t) : Notional.t Sector.Map.t =
 let gross_exposure (t : t) : Notional.t = Inc.Observer.value_exn t.obs_gross
 let net_exposure (t : t) : Notional.t = Inc.Observer.value_exn t.obs_net
 let weights_array (t : t) : float array = Inc.Observer.value_exn t.obs_weights
+
+let portfolio_returns (t : t) : float array option =
+  Inc.Observer.value_exn t.obs_portfolio_returns
+
 let covariance (t : t) : Owl.Mat.mat option = Inc.Observer.value_exn t.obs_covariance
 
 let covariance_ewma (t : t) : Owl.Mat.mat option =

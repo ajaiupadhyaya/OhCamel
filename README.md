@@ -321,6 +321,134 @@ where one estimator passes and another fails on identical data. That is the
 point. A validation battery that has never failed anything is not evidence of
 anything, and one where every estimator agrees is not telling you which to use.
 
+## The same battery, real crises
+
+Everything above is scored against series whose regime was chosen by the person
+writing the test. That is the right way to *build* a coverage battery — it is
+the only setting where you know in advance which tests ought to reject — and it
+is not evidence that the model survives a real tail. Synthetic tail events are
+drawn from the distribution the author had in mind. Real ones are not, and the
+gap between those two sentences is most of what goes wrong with risk models.
+
+`make backtest-crisis` changes exactly one thing: the data. Same 60-day window,
+same 95%, same three estimators, same `Var_backtest.rolling`. The method has to
+be visibly identical or the comparison says nothing.
+
+Three windows, each the crisis plus enough either side that the rolling window
+has something to warm up on — two sharp shocks and one slow grind, because a
+model that fails in a volatility *jump* is failing for a different reason than
+one that fails in a year-long drawdown, and running only jumps would hide the
+difference:
+
+| window | span | sessions | the book's worst day |
+|---|---|---|---|
+| `gfc` | 2007-07 → 2009-12 | 631 | −7.02% |
+| `covid` | 2019-06 → 2020-12 | 400 | −7.07% |
+| `rates-2022` | 2021-06 → 2022-12 | 401 | −3.81% |
+
+The book is the same six names `make run` uses — long tech and financials,
+short energy — held at constant weights across each window. That is graph.ml's
+own documented approximation, and it is the question a limit is actually
+asking: what would *today's* book have done through this history.
+
+```
+ window       estimator         n  excepts  expected   Kupiec p    indep p    joint p  burst  Basel   verdict
+ -----------------------------------------------------------------------------------------------------------
+ gfc          historical      570       25      28.5     0.4925     0.9207     0.7862      5  green   ok
+ gfc          parametric      570       27      28.5     0.7713     0.5347     0.7906      5  green   ok
+ gfc          ewma(0.94)      570       34      28.5     0.3043     0.9811     0.5899      5  green   ok
+ covid        historical      339       18      17.0     0.7955     0.0699     0.1870      8  green   ok
+ covid        parametric      339       22      17.0     0.2279     0.0521     0.0733     10  green   ok
+ covid        ewma(0.94)      339       23      17.0     0.1517     0.2659     0.1928      5  green   ok
+ rates-2022   historical      340       24      17.0     0.1000     0.8083     0.2511      4  yellow  ok
+ rates-2022   parametric      340       22      17.0     0.2330     0.6877     0.4530      4  green   ok
+ rates-2022   ewma(0.94)      340       22      17.0     0.2330     0.6877     0.4530      4  green   ok
+```
+
+**Nothing was rejected.** Not the global financial crisis, not COVID, not 2022.
+That is the result, and the interesting part of this section is why it should
+not be read as a pass.
+
+### Why the model survived, and why that is not reassuring
+
+Part of it is real. This book is genuinely hedged — long technology and
+financials against a short energy leg — and in the second half of 2008 energy
+fell harder than technology did, so the short side paid on the worst days. The
+book's daily volatility through the GFC window is 1.6%, rising to 2.5% in the
+Lehman quarter. That is a 1.5× regime change, not the 4× one the synthetic
+`vol-regime` series inflicts, and a 60-day window absorbs 1.5× tolerably.
+
+The rest of it is the tests not seeing what is in front of them, and the
+`burst` column is there to show it. It is not a hypothesis test: it is the most
+exceptions any 21 consecutive sessions contained, against roughly 1.1 expected
+if exceedances were independent. Read it next to the independence p-value it
+qualifies.
+
+On the GFC window this book takes **five exceptions between 15 September and 7
+October 2008** — seventeen sessions spanning Lehman and the TARP vote — and
+Christoffersen's independence statistic returns **p = 0.92**. The test is not
+broken and it is not lying. It is a first-order Markov test: it compares
+P(exception | exception yesterday) against P(exception | no exception
+yesterday), so it detects exceedances arriving *back to back*. Across that
+entire 570-day series exactly one pair falls on adjacent days. A burst that
+lands every third session is invisible to it, and a reader who takes "p = 0.92"
+to mean "the exceedances were well scattered" has read something the statistic
+never said.
+
+COVID is worse and more instructive. `covid`/`parametric` takes **10 exceptions
+in a single 21-session window** — ten times the independent expectation — with
+a joint p-value of 0.073, which does not reject at 5%. A model breaching its
+95% VaR ten times in a month is not a calibrated model. The battery as
+specified cannot say so.
+
+The honest fix has a name and is not implemented here: a **duration-based**
+independence test — Christoffersen and Pelletier's, which models the *time
+between* exceedances rather than the day after each one — is the statistic that
+sees a burst regardless of spacing. `burst` is a diagnostic standing in for it,
+labelled as such in the output, and the reason it is a column rather than a
+p-value is that a number invented for a README should not be dressed as a test.
+
+### What EWMA bought here
+
+The clearest thing in the table. On the COVID window the EWMA estimator cuts
+the worst burst from **10 to 5** and moves the independence p-value from 0.052
+to 0.266 — it is tracking the volatility spike the flat window is still
+averaging away, which is exactly the failure Phase A was aimed at, showing up
+on data nobody constructed.
+
+It is not free, and the same table says so: on the GFC window EWMA takes **34
+exceptions against 27** for equal weighting, on a window where the regime
+change was mild enough that the flat estimator was already adequate. That is
+the estimator-variance cost the synthetic `iid-normal` row priced, appearing
+again on real data. Responsiveness where there is nothing to respond to is
+noise, and the reason both estimators are on the dashboard is that neither
+dominates.
+
+### Where the data comes from
+
+`docs/crisis/*.csv` — adjusted daily closes, committed to the repository, so
+this table reproduces with no API key, no network and no Python. Adjusted, not
+raw: an unadjusted 2-for-1 split reads as a −50% single-day return and *becomes*
+the entire tail of a 60-day window at 95% confidence, and four of these six
+names split inside these windows or since.
+
+The cache is populated by [`tools/fetch_crisis_data.py`](tools/fetch_crisis_data.py),
+which is a script and not part of the library because it runs once and the
+engine never calls it. If the cache is missing, `make backtest-crisis` fails
+with the command that rebuilds it and **does not** fall back to the synthetic
+series — a crisis backtest quietly scoring generated data would print a table
+indistinguishable from this one under a heading claiming otherwise.
+
+One honest note about provenance. The obvious source was Alpaca, which this
+project already speaks to and which the roadmap for this work originally
+specified. Alpaca's historical stock bars begin in **2016**, so the 2008 window
+is unreachable through it at any subscription tier — the constraint was checked
+rather than assumed. The data here comes from Yahoo's public chart endpoint
+instead, which is keyless and unofficial: there is no contract and no guarantee
+it still exists next year. That is precisely why the output is cached and
+committed rather than fetched on demand. The reproducibility of this table does
+not depend on that endpoint, only its provenance does.
+
 ## What would break it
 
 Every other number here is backward-looking by construction. VaR summarises a
@@ -392,7 +520,11 @@ component and standalone risk, and the residual check that would catch the
 weights and the covariance matrix going out of alignment, which is this module's
 one failure mode that produces confident, plausible, entirely wrong answers.
 [`lib/var_backtest.ml`](lib/var_backtest.ml) holds the coverage battery and the
-rolling-origin forecast generator that keeps it point-in-time; it is offline by
+rolling-origin forecast generator that keeps it point-in-time;
+[`lib/crisis_data.ml`](lib/crisis_data.ml) feeds that same battery real crisis
+data out of a committed cache, and computes the book's return series by writing
+into a graph and reading `portfolio_returns` back out rather than by
+reimplementing `sum(w_i r_i)` next door; it is offline by
 construction and is deliberately *not* wired into the graph, because a
 calibration test needs hundreds of observations and answers a question about the
 model rather than about the book. [`lib/stress.ml`](lib/stress.ml) is the
@@ -466,8 +598,8 @@ events, the whole book after each one, a breach and its recovery in the middle,
 the risk decomposition at the end, and then it exits — without ever starting the
 Async scheduler. It is the fastest way to see the numbers without a browser.
 
-`make stress` and `make backtest` are the other two credential-free modes, and
-they are what the previous three sections are about: the scenario suite against
+`make stress`, `make backtest` and `make backtest-crisis` are the other
+credential-free modes, and they are what the previous sections are about: the scenario suite against
 the synthetic book, and the coverage battery against three deterministic return
 series. Both are hermetic and both are deterministic, so two runs print the same
 numbers and a change in the output means a change in the engine.
@@ -496,7 +628,7 @@ this codebase sends a message or takes an action on its own.
 
 ## What's verified
 
-`make test` runs 155 tests, all hermetic — no network, no credentials, and nothing
+`make test` runs 161 tests, all hermetic — no network, no credentials, and nothing
 that waits on the wall clock. They cover the numerics against hand-computed
 values, the wire format, the alerting state machine, and the recomputation counts
 that make the graph's shape an assertion rather than a claim.

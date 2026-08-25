@@ -36,6 +36,7 @@ let () =
       Test_vol_estimators.suite;
       Test_attribution.suite;
       Test_var_backtest.suite;
+      Test_crisis_data.suite;
       Test_stress.suite;
       Test_graph.suite;
       Test_feed.suite;
