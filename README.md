@@ -1,7 +1,7 @@
 # OhCamel
 
 [![ci](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml/badge.svg)](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml)
-[![coverage 69%](https://img.shields.io/badge/coverage-69%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
+[![coverage 70%](https://img.shields.io/badge/coverage-70%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
 
 A reactive risk and limits engine. Positions and market data go in; per-instrument
 and per-sector exposure, gross and net, VaR, expected shortfall, portfolio beta,
@@ -1093,7 +1093,7 @@ six properties and four example tests. `QCHECK_TRIALS=5000 make test` runs
 
 ### Coverage, and what it is not measuring
 
-`make coverage` runs the suite under `bisect_ppx` and reports **69%**. The badge
+`make coverage` runs the suite under `bisect_ppx` and reports **70%**. The badge
 above is that number; CI enforces a floor of 60% and prints the full per-file
 table into the run summary, so a drop is visible without anyone remembering to
 look.
@@ -1103,13 +1103,14 @@ read as two numbers rather than one:
 
 ```
  94%  lib/history_buffer.ml   37%  lib/alerts.ml
- 92%  lib/vol_estimators.ml   40%  lib/config.ml
- 91%  lib/attribution.ml      39%  lib/feed/alpaca_ws.ml
- 90%  lib/graph.ml            47%  lib/feed/fred_client.ml
- 90%  lib/risk_metrics.ml     50%  lib/feed/alpaca_rest.ml
- 90%  lib/crisis_data.ml      50%  lib/server.ml
- 88%  lib/limits.ml           47%  lib/types.ml
- 85%  lib/stress.ml           77%  lib/options.ml
+ 91%  lib/attribution.ml      40%  lib/config.ml
+ 91%  lib/graph.ml            39%  lib/feed/alpaca_ws.ml
+ 90%  lib/risk_metrics.ml     47%  lib/feed/fred_client.ml
+ 90%  lib/crisis_data.ml      50%  lib/feed/alpaca_rest.ml
+ 88%  lib/limits.ml           50%  lib/server.ml
+ 87%  lib/vol_estimators.ml   47%  lib/types.ml
+ 85%  lib/stress.ml           75%  lib/options.ml
+ 71%  lib/var_backtest.ml
 ```
 
 The left column is everything that computes a risk number. The right column is
