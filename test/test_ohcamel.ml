@@ -33,6 +33,7 @@ let () =
           Alcotest.test_case "async deferred round trip" `Quick test_async;
         ] );
       Test_risk_metrics.suite;
+      Test_vol_estimators.suite;
       Test_attribution.suite;
       Test_var_backtest.suite;
       Test_stress.suite;

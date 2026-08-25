@@ -79,9 +79,18 @@ end
    is not a study of VaR estimators in general, it is a check on the two numbers
    graph.ml puts on a dashboard. *)
 module Estimator = struct
-  type t = Historical | Parametric [@@deriving sexp_of, compare, equal]
+  (* [Parametric_ewma] carries its decay factor rather than reading a default,
+     because lambda is not a detail of the estimator -- it IS the estimator. A
+     report that said "parametric_ewma" without saying which lambda produced it
+     could not be compared against a report from a differently-tuned run, which
+     is exactly the comparison this module exists to make possible. *)
+  type t = Historical | Parametric | Parametric_ewma of float
+  [@@deriving sexp_of, compare, equal]
 
-  let to_string = function Historical -> "historical" | Parametric -> "parametric"
+  let to_string = function
+    | Historical -> "historical"
+    | Parametric -> "parametric"
+    | Parametric_ewma lambda -> Printf.sprintf "ewma(%.2f)" lambda
 
   let estimate t ~(window : float array) ~(confidence : float) : float =
     match t with
@@ -89,6 +98,16 @@ module Estimator = struct
     | Parametric ->
         Risk_metrics.parametric_var ~mean:(Risk_metrics.mean window)
           ~stddev:(Risk_metrics.stddev window) ~confidence
+    (* The same closed form over the same window, weighted. Note what is NOT
+       different: [rolling] below is untouched, so this estimator receives
+       exactly the strictly-prior slice the other two do. A third estimator was
+       the cheap part; the expensive part -- the point-in-time discipline -- is
+       written once and cannot be got wrong separately here. *)
+    | Parametric_ewma lambda ->
+        Risk_metrics.parametric_var
+          ~mean:(Vol_estimators.Ewma.mean ~returns:window ~lambda)
+          ~stddev:(Vol_estimators.Ewma.stddev ~returns:window ~lambda)
+          ~confidence
 end
 
 (* Walk a return series forward, forecasting each day from the days before it.

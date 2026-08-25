@@ -43,9 +43,9 @@ what the same graph would cost at three book sizes:
 ```
  instruments   nodes in graph     nodes per tick        if polled
 ------------------------------------------------------------------
-          10               56               24.6               56
-         100              335               24.2              335
-         400             1265               25.0             1265
+          10               58               25.6               58
+         100              337               25.2              337
+         400             1267               26.0             1267
 ```
 
 The middle column is flat and the right one is not. The cost of an event is set
@@ -84,12 +84,14 @@ One rule makes the whole thing work, and it is stated at the top of
   equity_history ----------------|------------------------------|-----+--> drawdown
                                  |                              |
   returns[S] --> aligned_returns +--> covariance                |
-                         |                     \               /
+                         |       +--> covariance_ewma          |
+                         |                      \             /
                          +----------------------+-> portfolio_returns
                                                  \      |
                                                   \     +--> historical_var --> var_notional
                                                    \    +--> expected_shortfall --> es_notional
                                                     +------> parametric_var
+                                                    +------> parametric_var_ewma
                                                          |
   factor_returns ----------------------------------------+--> portfolio_beta
                                                                      |
@@ -108,11 +110,23 @@ One rule makes the whole thing work, and it is stated at the top of
   now -----------+
 ```
 
+The two `covariance` rows are siblings: the same matrix under flat and under
+exponentially decaying weights, hanging off the same edge, each feeding its own
+parametric VaR. They are stacked rather than drawn separately because their
+dependency structure is identical, which is the whole reason the comparison
+between them means something.
+
 Three edges in that picture are the argument for the architecture.
 
 `covariance` hangs off `aligned_returns` and nothing else. It is the most
 expensive thing this engine computes, and a price tick does not reach it. In a
 poll-and-recompute design it would be rebuilt on every pass, for nothing.
+`covariance_ewma` is its sibling on the same edge, so the engine now computes
+that most expensive thing *twice* — and the table above prices that decision
+exactly: **two more nodes in the graph, and one more node per tick**, at every
+book size. Not two more per tick. Neither matrix is downstream of price, so what
+a tick pays for is a second matrix-vector product, never a second matrix rebuild.
+An estimator costs what its inputs cost, and its inputs move once a day.
 
 Each limit is its own node hanging off the single quantity it measures, so an
 instrument-scoped limit on AAPL is downstream of `exposure[AAPL]` alone and a tick
@@ -213,9 +227,22 @@ than bunched. An engine that reports the number and never checks the claim is
 asserting something it has no evidence for, and the failure is silent — an
 uncalibrated VaR looks exactly like a calibrated one until the day it matters.
 
-`make backtest` is the check.
+`make backtest` is the check. Three deterministic return series, three
+estimators, nine verdicts:
 
-![make backtest](docs/media/backtest.png)
+```
+ series       estimator         n  excepts  expected   Kupiec p    indep p    joint p  Basel   verdict
+ -------------------------------------------------------------------------------------------------------
+ iid-normal   historical      940       45      47.0     0.7631     0.3595     0.6280  green   ok
+ iid-normal   parametric      940       48      47.0     0.8814     0.0229     0.0744  green   ok
+ iid-normal   ewma(0.94)      940       54      47.0     0.3057     0.0102     0.0219  green   REJECTED
+ vol-regime   historical      940       52      47.0     0.4616     0.9405     0.7605  green   ok
+ vol-regime   parametric      940       65      47.0     0.0107     0.8028     0.0373  yellow  REJECTED
+ vol-regime   ewma(0.94)      940       59      47.0     0.0836     0.6864     0.2063  yellow  ok
+ jumps        historical      940        0      47.0     0.0000     1.0000     0.0000  green   REJECTED
+ jumps        parametric      940       47      47.0     1.0000     0.0277     0.0886  green   ok
+ jumps        ewma(0.94)      940       47      47.0     1.0000     0.0277     0.0886  green   ok
+```
 
 Three statistics, because a model can fail in two independent ways and one test
 cannot tell them apart. **Kupiec**'s proportion-of-failures test asks whether
@@ -249,14 +276,50 @@ wrong and still be green. The zone is a supervisor's tolerance, not a verdict.
 the published 250-day table exactly: green 0–4, yellow 5–9, red 10+. That is
 asserted as a test.)
 
-And `iid-normal`/parametric usually shows an independence p-value near or below
-5%, on data that is independent by construction — a 5% test doing what a 5% test
-does one time in twenty. It is the argument for gating on the joint statistic
-rather than on whichever component looks worst, which is multiple testing wearing
-a lab coat.
+And `iid-normal`/parametric shows an independence p-value of 0.023, on data that
+is independent by construction — a 5% test doing what a 5% test does one time in
+twenty. It is the argument for gating on the joint statistic rather than on
+whichever component looks worst, which is multiple testing wearing a lab coat.
 
-The suite rejects two of six configurations. That is the point. A validation
-battery that has never failed anything is not evidence of anything.
+### What the third estimator bought, and what it cost
+
+The `parametric` and `ewma(0.94)` rows are the same closed-form VaR over the
+same window, differing only in how quickly the past stops counting. Any
+difference in verdict between them is therefore a statement about *weighting*
+and about nothing else, which is why they are computed as siblings rather than
+one replacing the other. Two rows moved, in opposite directions.
+
+On `vol-regime` — calm for 600 days, then four times as volatile — the
+equal-weighted estimator is **rejected** (65 exceptions against 47 expected,
+joint p = 0.037) and the EWMA one is **not** (59 exceptions, joint p = 0.206).
+That is the failure the README has admitted to since the first version, fixed,
+and it is fixed in the specific way the theory predicts: Kupiec moves, because
+the number of breaches was the problem, while independence was never rejected
+for either. An equal-weighted sixty-day window does not mistime its breaches
+during a regime shift; it simply runs too small a number for sixty days.
+
+On `iid-normal` the trade runs the other way. EWMA is **rejected** (joint
+p = 0.022) where equal weighting passes, and the component that rejects it is
+independence, at p = 0.010. This is not a bug and it is worth stating plainly:
+at λ = 0.94 the effective sample size is about 31 observations against the flat
+window's 60, so on data with no regime to track, the estimator is paying its
+whole variance cost for nothing and chasing noise it should be averaging away.
+Responsiveness is not free. It is bought with estimator variance, and this table
+is what the receipt looks like.
+
+Which is why neither estimator is the default and both are on the dashboard.
+Their **ratio** carries information neither number does: EWMA above
+equal-weighted means volatility is rising faster than the flat window has
+absorbed, and EWMA below it means a shock is ageing out of that window which the
+market has already stopped pricing. That second case is the one nobody expects —
+reported risk falling by a third overnight because a crash day left a
+sixty-observation window, an event in the *estimator* that looks exactly like an
+event in the market.
+
+The suite rejects three of nine configurations, and two of the three are cases
+where one estimator passes and another fails on identical data. That is the
+point. A validation battery that has never failed anything is not evidence of
+anything, and one where every estimator agrees is not telling you which to use.
 
 ## What would break it
 
@@ -314,6 +377,11 @@ node, and a comment on each one explaining *why* it depends on what it depends o
 functions — historical and parametric VaR, expected shortfall, covariance, beta,
 portfolio standard deviation through Owl and BLAS — none of which know Incremental
 exists, so each can be unit-tested against a hand-computed value.
+[`lib/vol_estimators.ml`](lib/vol_estimators.ml) is the same contract for the
+decay-weighted estimators, and it is a separate module rather than more functions
+in the first one because the two are *alternatives to each other*: keeping them
+apart is what makes "which estimator produced this number" a question with a
+one-word answer.
 [`lib/limits.ml`](lib/limits.ml) defines limits and evaluates a breach as *data*: a
 bool and the magnitude by which the threshold was passed. It has no side effects
 at all, which is the point — a node body may be recomputed whenever the runtime
@@ -420,7 +488,7 @@ this codebase sends a message or takes an action on its own.
 
 ## What's verified
 
-`make test` runs 140 tests, all hermetic — no network, no credentials, and nothing
+`make test` runs 149 tests, all hermetic — no network, no credentials, and nothing
 that waits on the wall clock. They cover the numerics against hand-computed
 values, the wire format, the alerting state machine, and the recomputation counts
 that make the graph's shape an assertion rather than a claim.
@@ -433,15 +501,20 @@ the weight magnitudes exactly — `[0.3, 0.3, 0.4]`, readable without arithmetic
 A perfectly correlated book is one bet, so each position's share of the risk is
 just its share of the money, and that is the ceiling any real book sits below.
 
-Four of those tests are the ones that would catch a defect nothing else would.
+Five of those tests are the ones that would catch a defect nothing else would.
 The **Euler residual** holds the decomposition to its own identity. The
 **hedge test** asserts a risk-reducing position does not breach a risk limit,
 which is what a stray absolute value would break. The **lookahead test** rebuilds
 each rolling window independently and demands the forecast match, so a backtest
-cannot see the day it is forecasting. And the **isolation test** runs the whole
+cannot see the day it is forecasting. The **isolation test** runs the whole
 scenario suite and then compares the live snapshot field for field, because a
 leaking fork produces numbers that are internally consistent and about the wrong
-world.
+world. And the **regime-break test** asserts that the EWMA estimator reads a
+higher volatility than the equal-weighted one after a volatility shift is
+inserted partway through a synthetic series — the property, not the formula. A
+formula test passes on an estimator whose decay runs backwards through the
+window, because a reversed weighting is still a valid weighting; it just answers
+a question about ancient history. Only the property catches that.
 
 The live path has been run against real Alpaca market data and real FRED series,
 which is how the most instructive bug in the project was found. Live mode set
@@ -520,9 +593,11 @@ broker, Alpaca, and one macro source, FRED.
 Nor is it a research platform. There is no strategy, no signal, no backtest of
 anything that could make money — `make backtest` validates the *risk model*, not
 a trading idea, and the distinction is the whole point of the mode. The
-volatility estimator is equal-weighted, which the `vol-regime` row of that same
-output shows is its weakest assumption; EWMA or GARCH would track a regime change
-faster and neither is here. Nothing is optimised: the engine reports where risk
+volatility estimator is equal-weighted *or* exponentially weighted and the engine
+reports both, but neither is conditional in the sense a GARCH(1,1) is: EWMA has
+one hand-set decay factor rather than a fitted mean-reversion, so it tracks a
+regime change but does not forecast the return to normal after one. That fit is
+not here. Nothing is optimised: the engine reports where risk
 is concentrated and never suggests what the weights should be, which is a
 different project with a different failure mode.
 

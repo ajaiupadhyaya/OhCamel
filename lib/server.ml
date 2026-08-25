@@ -166,6 +166,12 @@ let json_of_snapshot ~(graph : Graph.t) ~(factor : string) (s : Graph.Snapshot.t
       ("historical_var", jopt_float (Graph.Snapshot.historical_var s));
       ("expected_shortfall", jopt_float (Graph.Snapshot.expected_shortfall s));
       ("parametric_var", jopt_float (Graph.Snapshot.parametric_var s));
+      (* The same quantity under an exponentially weighted covariance matrix,
+         plus the decay factor that produced it. The lambda is on the wire and
+         not assumed by the reader, because two runs at different lambdas would
+         otherwise publish different numbers under one field name. *)
+      ("parametric_var_ewma", jopt_float (Graph.Snapshot.parametric_var_ewma s));
+      ("ewma_lambda", jfloat (Graph.Snapshot.ewma_lambda s));
       ("value_at_risk_notional", jopt_notional (Graph.Snapshot.value_at_risk_notional s));
       ( "expected_shortfall_notional",
         jopt_notional (Graph.Snapshot.expected_shortfall_notional s) );

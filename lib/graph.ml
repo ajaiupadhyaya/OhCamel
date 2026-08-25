@@ -29,12 +29,14 @@
      equity_history ----------------|------------------------------|-----+--> drawdown
                                     |                              |
      returns[S] --> aligned_returns +--> covariance                |
-                            |                     \               /
+                            |       +--> covariance_ewma          |
+                            |                     \              /
                             +----------------------+-> portfolio_returns
                                                     \      |
                                                      \     +--> historical_var --> var_notional
                                                       \    +--> expected_shortfall --> es_notional
                                                        +------> parametric_var
+                                                       +------> parametric_var_ewma
                                                             |
      factor_returns ----------------------------------------+--> portfolio_beta
                                                                         |
@@ -52,7 +54,12 @@
    - [covariance] hangs off [aligned_returns] and NOTHING else. A price tick
      does not touch it. Rebuilding an n x n covariance matrix is the single most
      expensive thing this engine does, and in a poll-and-recompute design it
-     would be redone on every tick for no reason.
+     would be redone on every tick for no reason. [covariance_ewma] is its
+     sibling on the same edge -- the same matrix under exponentially decaying
+     weights -- so the engine now computes the most expensive thing it does
+     TWICE, and a tick still reaches neither. That is the clearest statement of
+     the architecture available: the cost of an estimator is paid when its
+     inputs move, not when the screen refreshes.
 
    - Each limit is its own node hanging off the one quantity it measures. An
      instrument-scoped limit on AAPL is downstream of exposure[AAPL] alone, so a
@@ -98,10 +105,12 @@ module Node_name = struct
   let weights = "weights"
   let aligned_returns = "aligned_returns"
   let covariance = "covariance"
+  let covariance_ewma = "covariance_ewma"
   let portfolio_returns = "portfolio_returns"
   let historical_var = "historical_var"
   let expected_shortfall = "expected_shortfall"
   let parametric_var = "parametric_var"
+  let parametric_var_ewma = "parametric_var_ewma"
   let attribution = "attribution"
   let component_var_map = "component_var_map"
   let component_var_sector_map = "component_var_sector_map"
@@ -114,6 +123,29 @@ module Node_name = struct
   let portfolio_beta = "portfolio_beta"
   let feed (s : Symbol.t) = "feed:" ^ Symbol.to_string s
   let feed_health = "feed_health"
+end
+
+(* Which covariance matrix the Euler decomposition reads.
+
+   The graph publishes both matrices unconditionally -- they are siblings off
+   the same edge and the comparison between them is the point -- but the
+   attribution path has to pick one, because a decomposition is a statement
+   about a single covariance structure and averaging two of them would be a
+   third thing that is neither.
+
+   This is a construction-time constant, not a runtime read. The attribution
+   node's edge is therefore still declared and still static, exactly like
+   [confidence] and [return_window]; what varies is which of two existing edges
+   it is wired to, decided once before any node exists. A node that chose its
+   input by reading a mutable cell at evaluation time would be the thing this
+   module forbids.
+
+   The default is [Equal_weighted] so that an existing caller's component-VaR
+   numbers -- and every limit written against them -- do not change under it. *)
+module Covariance_estimator = struct
+  type t = Equal_weighted | Ewma [@@deriving sexp_of, compare, equal]
+
+  let to_string = function Equal_weighted -> "equal_weighted" | Ewma -> "ewma"
 end
 
 (* Is the data arriving?
@@ -195,6 +227,26 @@ module Snapshot = struct
     historical_var : float option;
     expected_shortfall : float option;
     parametric_var : float option;
+    (* The same closed-form VaR computed from an exponentially weighted
+         covariance matrix instead of an equal-weighted one, and carried
+         alongside rather than instead of it.
+
+         Two parametric numbers rather than one, for the same reason there are
+         already two VaRs of different kinds. Historical against parametric is
+         a read on how non-normal the tail is. Equal-weighted against EWMA is a
+         read on whether the volatility REGIME is moving: the equal-weighted
+         window has to see a change accumulate before it reports it, so the
+         EWMA number rising above it is the window still catching up, and the
+         EWMA number falling below it is a shock ageing out of the window that
+         the market has already stopped pricing. Neither is visible from one
+         number. See vol_estimators.ml. *)
+    parametric_var_ewma : float option;
+    (* The decay factor the number above was computed with, carried in the
+         snapshot rather than assumed by the reader. Two runs at different
+         lambdas produce different numbers under the same field name, and a
+         wire format that does not say which is one that cannot be compared
+         against itself later. *)
+    ewma_lambda : float;
     value_at_risk_notional : Notional.t option;
     expected_shortfall_notional : Notional.t option;
     (* Rolling beta of the book against the macro factor series. [None] for the
@@ -244,6 +296,8 @@ type t = {
   limits : Limit.t list;
   confidence : float;
   return_window : int;
+  ewma_lambda : float;
+  covariance_for_attribution : Covariance_estimator.t;
   equity_history_limit : int;
   staleness_threshold : Time.Span.t;
   (* Inputs. These are the only mutable cells in the system; everything else
@@ -271,9 +325,11 @@ type t = {
   obs_net : Notional.t Inc.Observer.t;
   obs_weights : float array Inc.Observer.t;
   obs_covariance : Owl.Mat.mat option Inc.Observer.t;
+  obs_covariance_ewma : Owl.Mat.mat option Inc.Observer.t;
   obs_historical_var : float option Inc.Observer.t;
   obs_expected_shortfall : float option Inc.Observer.t;
   obs_parametric_var : float option Inc.Observer.t;
+  obs_parametric_var_ewma : float option Inc.Observer.t;
   obs_component_var_by_instrument : Notional.t Symbol.Map.t option Inc.Observer.t;
   obs_component_var_by_sector : Notional.t Sector.Map.t option Inc.Observer.t;
   obs_diversification_ratio : float option Inc.Observer.t;
@@ -310,6 +366,8 @@ let find_var (vars : 'a Inc.Var.t Symbol.Map.t) (symbol : Symbol.t) ~(what : str
 
 let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zero)
     ?(equity_history_limit = 10_000) ?(staleness_threshold = Time.Span.of_sec 90.0)
+    ?(ewma_lambda = Vol_estimators.Ewma.default_lambda)
+    ?(covariance_for_attribution = Covariance_estimator.Equal_weighted)
     ~(instruments : Instrument.t list) ~(limits : Limit.t list) ~(confidence : float)
     ~(return_window : int) () : t =
   if List.is_empty instruments then invalid_arg "graph: need at least one instrument";
@@ -334,6 +392,11 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
   if equity_history_limit < 1 then
     invalid_argf "graph: equity_history_limit must be positive, got %d"
       equity_history_limit ();
+  (* Validated here rather than left to the first stabilize. Vol_estimators
+     raises on a lambda outside (0, 1), and an exception inside a node body
+     leaves the graph in a state Incremental cannot recover -- so the same rule
+     as every other argument applies: reject it before a node exists. *)
+  Vol_estimators.Ewma.validate_lambda ~lambda:ewma_lambda;
   if Time.Span.( <= ) staleness_threshold Time.Span.zero then
     invalid_argf "graph: staleness_threshold must be positive, got %s"
       (Time.Span.to_string_hum staleness_threshold)
@@ -536,6 +599,28 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
         if Array.is_empty series || Array.length series.(0) < 2 then None
         else Some (Risk_metrics.covariance_matrix series))
   in
+  (* The same matrix under exponentially decaying weights, hanging off exactly
+     the same edge -- a SIBLING of [covariance], never a replacement for it.
+
+     Two reasons it is wired this way rather than as a swap. First, the
+     comparison is the deliverable: an equal-weighted covariance and an EWMA one
+     computed from the identical window disagree only about how quickly the past
+     stops counting, so the gap between the two parametric VaRs below is a
+     regime-change signal that neither number carries alone. Making that a
+     silent configuration choice would have deleted the signal to change a
+     number. Second, every component-VaR limit already written against the
+     equal-weighted decomposition keeps meaning what it meant.
+
+     It inherits [covariance]'s isolation for free, which is the whole reason to
+     hang it here: a price tick cannot reach either matrix, because neither is
+     downstream of price. That doubles the cost of a return-window update and
+     leaves the cost of a tick exactly where it was. test_graph.ml asserts it. *)
+  let covariance_ewma_node =
+    Inc.map aligned_returns_node ~f:(fun series ->
+        note Node_name.covariance_ewma;
+        if Array.is_empty series || Array.length series.(0) < 2 then None
+        else Some (Vol_estimators.Ewma.covariance_matrix ~series ~lambda:ewma_lambda))
+  in
   (* The book's own return series: r_p(t) = sum_i w_i * r_i(t), using current
      weights. Depends on the return windows (the r_i) and on the weights (hence
      on prices and positions), because the same market moves hurt differently
@@ -580,6 +665,19 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
         Option.map covariance ~f:(fun covariance ->
             Risk_metrics.portfolio_parametric_var ~weights ~covariance ~confidence))
   in
+  (* The same closed form against the decay-weighted matrix.
+
+     Identical arithmetic, one different input, and that is the point: the two
+     numbers differ by the weighting and by nothing else, so the difference
+     between them is interpretable. vol_estimators.ml argues that comparability
+     at length -- it is why the EWMA estimator demeans against a weighted mean
+     rather than assuming zero the way RiskMetrics does. *)
+  let parametric_var_ewma_node =
+    Inc.map2 weights_node covariance_ewma_node ~f:(fun weights covariance ->
+        note Node_name.parametric_var_ewma;
+        Option.map covariance ~f:(fun covariance ->
+            Risk_metrics.portfolio_parametric_var ~weights ~covariance ~confidence))
+  in
   (* --- risk attribution -------------------------------------------------- *)
   (* WHERE the risk is, as opposed to how much of it there is.
 
@@ -595,8 +693,18 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      rebuild that a polling design would do, O(n^2 * w) for a w-day window. The
      incrementality claim here is not "a tick does not reach it" -- it does --
      but that the expensive thing upstream of it stays cached. *)
+  (* Which of the two matrices this reads is fixed at construction, and
+     defaults to the equal-weighted one so that existing component-VaR limits
+     keep measuring what they were written against. See [Covariance_estimator].
+     The edge is chosen once and then static; the node itself reads one declared
+     input, as every node here must. *)
+  let attribution_covariance_node =
+    match covariance_for_attribution with
+    | Covariance_estimator.Equal_weighted -> covariance_node
+    | Covariance_estimator.Ewma -> covariance_ewma_node
+  in
   let attribution_node =
-    Inc.map2 weights_node covariance_node ~f:(fun weights covariance ->
+    Inc.map2 weights_node attribution_covariance_node ~f:(fun weights covariance ->
         note Node_name.attribution;
         Option.bind covariance ~f:(fun covariance ->
             Attribution.compute ~weights ~covariance))
@@ -871,6 +979,8 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
       limits;
       confidence;
       return_window;
+      ewma_lambda;
+      covariance_for_attribution;
       equity_history_limit;
       staleness_threshold;
       price_vars;
@@ -887,9 +997,11 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
       obs_net = observe net_node;
       obs_weights = observe weights_node;
       obs_covariance = observe covariance_node;
+      obs_covariance_ewma = observe covariance_ewma_node;
       obs_historical_var = observe historical_var_node;
       obs_expected_shortfall = observe expected_shortfall_node;
       obs_parametric_var = observe parametric_var_node;
+      obs_parametric_var_ewma = observe parametric_var_ewma_node;
       obs_component_var_by_instrument = observe component_var_node;
       obs_component_var_by_sector = observe component_var_sector_node;
       obs_diversification_ratio = observe diversification_ratio_node;
@@ -941,8 +1053,10 @@ let fork ?on_compute ?(limits : Limit.t list option) (t : t) : t =
   let forked =
     create ?on_compute ~starting_cash:(Inc.Var.value t.cash_var)
       ~equity_history_limit:t.equity_history_limit
-      ~staleness_threshold:t.staleness_threshold ~instruments:(Map.data t.instruments)
-      ~limits ~confidence:t.confidence ~return_window:t.return_window ()
+      ~staleness_threshold:t.staleness_threshold ~ewma_lambda:t.ewma_lambda
+      ~covariance_for_attribution:t.covariance_for_attribution
+      ~instruments:(Map.data t.instruments) ~limits ~confidence:t.confidence
+      ~return_window:t.return_window ()
   in
   Map.iteri t.price_vars ~f:(fun ~key:symbol ~data:var ->
       Inc.Var.set (Map.find_exn forked.price_vars symbol) (Inc.Var.value var));
@@ -1145,12 +1259,24 @@ let gross_exposure (t : t) : Notional.t = Inc.Observer.value_exn t.obs_gross
 let net_exposure (t : t) : Notional.t = Inc.Observer.value_exn t.obs_net
 let weights_array (t : t) : float array = Inc.Observer.value_exn t.obs_weights
 let covariance (t : t) : Owl.Mat.mat option = Inc.Observer.value_exn t.obs_covariance
+
+let covariance_ewma (t : t) : Owl.Mat.mat option =
+  Inc.Observer.value_exn t.obs_covariance_ewma
+
+let ewma_lambda (t : t) : float = t.ewma_lambda
+
+let covariance_for_attribution (t : t) : Covariance_estimator.t =
+  t.covariance_for_attribution
+
 let historical_var (t : t) : float option = Inc.Observer.value_exn t.obs_historical_var
 
 let expected_shortfall (t : t) : float option =
   Inc.Observer.value_exn t.obs_expected_shortfall
 
 let parametric_var (t : t) : float option = Inc.Observer.value_exn t.obs_parametric_var
+
+let parametric_var_ewma (t : t) : float option =
+  Inc.Observer.value_exn t.obs_parametric_var_ewma
 
 let component_var_by_instrument (t : t) : Notional.t Symbol.Map.t option =
   Inc.Observer.value_exn t.obs_component_var_by_instrument
@@ -1193,6 +1319,8 @@ let snapshot (t : t) : Snapshot.t =
     historical_var;
     expected_shortfall = expected_shortfall t;
     parametric_var = parametric_var t;
+    parametric_var_ewma = parametric_var_ewma t;
+    ewma_lambda = t.ewma_lambda;
     value_at_risk_notional = value_at_risk_notional t;
     expected_shortfall_notional = expected_shortfall_notional t;
     portfolio_beta = portfolio_beta t;

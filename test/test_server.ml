@@ -92,6 +92,8 @@ let test_round_trips () =
               "historical_var";
               "expected_shortfall";
               "parametric_var";
+              "parametric_var_ewma";
+              "ewma_lambda";
               "value_at_risk_notional";
               "expected_shortfall_notional";
               "portfolio_beta";
@@ -199,6 +201,14 @@ let test_unknown_is_not_zero () =
           "historical_var";
           "expected_shortfall";
           "parametric_var";
+          (* The EWMA sibling warms up on the same schedule, and it is asserted
+             separately because it is a separate node: an estimator that
+             returned 0.0 rather than null on an empty window would render as
+             "no risk" on the dashboard, which is the one wrong answer this
+             codebase treats as worse than no answer. [ewma_lambda] is
+             deliberately NOT in this list -- it is configuration, known before
+             any data arrives, and nulling it would be a different mistake. *)
+          "parametric_var_ewma";
           "value_at_risk_notional";
           "expected_shortfall_notional";
           "portfolio_beta";

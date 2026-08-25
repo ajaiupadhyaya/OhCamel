@@ -409,8 +409,18 @@ let page =
     // Shown in dollars like the two above it, so the three are comparable --
     // the gap between the empirical and the normal estimate is the diagnostic,
     // and it is invisible if one of them is a percentage.
-    row(t, "pvar", "parametric", "normal", s.parametric_var === null ? null
+    row(t, "pvar", "parametric", "equal-weighted", s.parametric_var === null ? null
         : money(s.parametric_var * s.gross_exposure));
+    // The same closed form over a decay-weighted covariance matrix. Sitting
+    // directly under its equal-weighted twin because the pair is the reading,
+    // not either one: they use the identical window and differ only in how
+    // fast the past stops counting, so EWMA above equal-weighted means
+    // volatility is rising faster than the flat window has absorbed, and EWMA
+    // below it means a shock is ageing out of that window which the market has
+    // already stopped pricing.
+    row(t, "pvarewma", "parametric", "EWMA " + s.ewma_lambda.toFixed(2),
+        s.parametric_var_ewma === null ? null
+        : money(s.parametric_var_ewma * s.gross_exposure));
     row(t, "beta", "beta", s.factor, s.portfolio_beta === null ? null
         : s.portfolio_beta.toFixed(3));
     // Sum of standalone position volatilities over portfolio volatility, so at

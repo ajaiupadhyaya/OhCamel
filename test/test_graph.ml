@@ -316,9 +316,9 @@ let test_beta_aligns_at_the_recent_edge () =
    five limits that measure one of those quantities.
 
    Absent, and asserted absent by the set equality below: exposure:MSFT,
-   exposure:XOM, sector:ENERGY, aligned_returns, covariance, limit:msft-cap,
-   limit:energy-cap -- and the whole feed-health branch, which a position change
-   has no business touching. *)
+   exposure:XOM, sector:ENERGY, aligned_returns, covariance, covariance_ewma,
+   limit:msft-cap, limit:energy-cap -- and the whole feed-health branch, which a
+   position change has no business touching. *)
 let downstream_of_aapl_position =
   [
     "exposure:AAPL";
@@ -332,6 +332,13 @@ let downstream_of_aapl_position =
     "historical_var";
     "expected_shortfall";
     "parametric_var";
+    (* Both parametric VaRs, because both are weights x covariance and a
+       position change moves the weights. The two MATRICES are absent from this
+       list and stay absent -- see [test_prices_never_reach_covariance] -- which
+       is the distinction that matters: adding a second estimator doubled what
+       an update to the return window costs and added nothing to what a tick
+       costs. *)
+    "parametric_var_ewma";
     (* The attribution branch. It IS downstream of price, and deliberately so:
        a weight is a position over a total, so repricing the book changes how
        risk is shared out even when the covariance matrix that shapes it has
@@ -418,6 +425,15 @@ let test_prices_never_reach_covariance () =
       Alcotest.(check int)
         "covariance untouched by any price or position change" 0
         (Recorder.count recorder "covariance");
+      (* The EWMA sibling inherits the isolation, and asserting it separately is
+         not redundant. The two matrices are independent nodes; wiring the new
+         one to [weights] instead of [aligned_returns] -- an easy mistake, since
+         everything else in the EWMA path does read weights -- would leave this
+         zero while the one above stayed zero too. The claim being defended is
+         about the node, not about the module. *)
+      Alcotest.(check int)
+        "the EWMA covariance is isolated the same way" 0
+        (Recorder.count recorder "covariance_ewma");
       Alcotest.(check int)
         "the return windows were not even re-read" 0
         (Recorder.count recorder "aligned_returns");
@@ -442,10 +458,18 @@ let test_return_push_is_local () =
           [
             "aligned_returns";
             "covariance";
+            (* A return genuinely reaches BOTH matrices, and this is where the
+               second estimator's cost actually lands: one new observation now
+               rebuilds two n x n matrices instead of one. That is the honest
+               trade and it belongs in an assertion rather than a comment --
+               the return window moves once a day, and the tick path, which
+               moves thousands of times a day, is untouched. *)
+            "covariance_ewma";
             "portfolio_returns";
             "historical_var";
             "expected_shortfall";
             "parametric_var";
+            "parametric_var_ewma";
             "attribution";
             "component_var_map";
             "component_var_sector_map";

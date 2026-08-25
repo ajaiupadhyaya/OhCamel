@@ -294,6 +294,52 @@ let final_report (graph : Graph.t) (counter : Counter.t) =
             \  diversification ratio %.2f -- the book carries %.0f%% of the volatility\n\
             \  its positions would if they all moved together.\n"
             d (100.0 /. d)));
+  (* The two closed-form VaRs, side by side.
+
+     Neither number is the finding. The RATIO is. They are computed from the
+     identical return window through the identical formula and differ only in
+     how quickly the past stops counting, so the gap between them cannot be
+     anything except a statement about how fast volatility is moving right now
+     -- which is not observable from either number on its own, and is precisely
+     what an equal-weighted window is slowest to tell you.
+
+     This is the same move the engine already makes with historical against
+     parametric VaR: two estimators of the same quantity, kept side by side,
+     with the disagreement as the diagnostic. There the gap reads on tail
+     fatness. Here it reads on regime. *)
+  (match
+     (Graph.Snapshot.parametric_var snapshot, Graph.Snapshot.parametric_var_ewma snapshot)
+   with
+  | Some equal_weighted, Some ewma ->
+      let gross = Notional.to_float (Graph.Snapshot.gross_exposure snapshot) in
+      let lambda = Graph.Snapshot.ewma_lambda snapshot in
+      printf "\n%s\n  VOLATILITY REGIME  (the same VaR, weighted two ways)\n%s\n\n"
+        (rule 106) (rule 106);
+      printf "  %-28s %14s %12s\n" "estimator" "parametric VaR" "of gross";
+      printf "  %s\n" (rule 56);
+      printf "  %-28s %14s %11.2f%%\n" "equal-weighted"
+        (money (Notional.of_float (equal_weighted *. gross)))
+        (equal_weighted *. 100.0);
+      printf "  %-28s %14s %11.2f%%\n"
+        (Printf.sprintf "EWMA, lambda = %.2f" lambda)
+        (money (Notional.of_float (ewma *. gross)))
+        (ewma *. 100.0);
+      printf "  %s\n" (rule 56);
+      let ratio =
+        if Float.equal equal_weighted 0.0 then 1.0 else ewma /. equal_weighted
+      in
+      printf "  ratio %.2fx -- %s\n" ratio
+        (if Float.( > ) ratio 1.05 then
+           "recent moves are larger than the flat window has absorbed.\n\
+           \  The equal-weighted number is still averaging in a calmer past."
+         else if Float.( < ) ratio 0.95 then
+           "a shock is ageing out of the flat window that the market\n\
+           \  has already stopped pricing. The equal-weighted number is the stale one."
+         else
+           "the two estimators agree, so the window is not currently\n\
+           \  hiding a change in regime. This is the uninformative case, and it is\n\
+           \  worth being able to see rather than infer.")
+  | _ -> ());
   printf "\n%s\n  LIMITS  (sorted by utilisation)\n%s\n\n" (rule 106) (rule 106);
   Graph.Snapshot.breaches snapshot
   |> List.sort ~compare:(fun a b ->
@@ -727,6 +773,12 @@ let run_backtest () =
   printf "  series length   %d, so %d forecasts each\n" backtest_length
     (backtest_length - backtest_window);
   printf
+    "  estimators      historical, parametric (equal-weighted), parametric (EWMA at\n\
+    \                  lambda = %.2f). The last two differ ONLY in how the window is\n\
+    \                  weighted, so a difference in verdict is a statement about\n\
+    \                  weighting and about nothing else.\n"
+    Vol_estimators.Ewma.default_lambda;
+  printf
     "  discipline      each forecast is built from the %d days BEFORE the day it is\n\
     \                  scored against, and cannot see that day.\n\n"
     backtest_window;
@@ -736,8 +788,18 @@ let run_backtest () =
   printf "  %s\n" (rule 104);
   let reports =
     List.concat_map backtest_series ~f:(fun (name, _, returns) ->
-        List.map [ Var_backtest.Estimator.Historical; Var_backtest.Estimator.Parametric ]
-          ~f:(fun estimator ->
+        List.map
+          [
+            Var_backtest.Estimator.Historical;
+            Var_backtest.Estimator.Parametric;
+            (* The third row is the argument of Phase A, and it is put in front
+               of the same battery as the other two rather than described. If
+               the equal-weighted parametric estimator is rejected on the
+               vol-regime series and the EWMA one is not, that is the claim
+               demonstrated. If EWMA is rejected too, the table says so, which
+               is what a validation suite is for. *)
+            Var_backtest.Estimator.Parametric_ewma Vol_estimators.Ewma.default_lambda;
+          ] ~f:(fun estimator ->
             let r =
               Var_backtest.of_returns ~returns ~window:backtest_window ~confidence
                 ~estimator
