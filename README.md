@@ -901,7 +901,7 @@ the weight magnitudes exactly — `[0.3, 0.3, 0.4]`, readable without arithmetic
 A perfectly correlated book is one bet, so each position's share of the risk is
 just its share of the money, and that is the ceiling any real book sits below.
 
-Eight of them are worth knowing by name, because each catches a defect nothing
+Seven of them are worth knowing by name, because each catches a defect nothing
 else would.
 The **Euler residual** holds the decomposition to its own identity. The
 **hedge test** asserts a risk-reducing position does not breach a risk limit,
@@ -910,7 +910,7 @@ each rolling window independently and demands the forecast match, so a backtest
 cannot see the day it is forecasting. The **isolation test** runs the whole
 scenario suite and then compares the live snapshot field for field, because a
 leaking fork produces numbers that are internally consistent and about the wrong
-world. And the **regime-break test** asserts that the EWMA estimator reads a
+world. The **regime-break test** asserts that the EWMA estimator reads a
 higher volatility than the equal-weighted one after a volatility shift is
 inserted partway through a synthetic series — the property, not the formula. A
 formula test passes on an estimator whose decay runs backwards through the
@@ -925,8 +925,9 @@ the assertion that keeps options risk off a five-second timer.
 
 ### The same claims, over arbitrary inputs
 
-Four of those six are *identities*, not values — and an example test can only
-say an identity held at the one point it was checked. `test/test_properties.ml`
+Four of those seven are *identities* rather than values — Euler, the hedge,
+lookahead, isolation — and an example test can only say an identity held at the
+one point it was checked. `test/test_properties.ml`
 generalises them with [qcheck](https://github.com/c-cube/qcheck): random books,
 random weights, random scenarios, 100 cases per property by default and a whole
 suite that still runs in under a tenth of a second.

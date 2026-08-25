@@ -24,6 +24,34 @@ under X" goes through `Graph.fork`.
 
 ---
 
+## Status: complete
+
+All eight phases shipped, one commit each, in the order below. What actually
+happened differed from the plan in three places and each is recorded where it
+belongs rather than quietly absorbed:
+
+- **Phase C** was re-specced before any code was written — see the conflict note
+  below. Alpaca's history begins in 2016, so the GFC window came from a keyless
+  public source instead, cached and committed. The user approved the deviation.
+- **Phase B** hit an invariant tension the plan did not anticipate: theta is
+  time-dependent, and no risk node may sit downstream of the staleness clock.
+  Resolved with a *second* clock — a valuation-date cell that moves in days and
+  only when a caller advances it — with tests asserting neither clock can do the
+  other's job.
+- **Phase D** produced a result that contradicts a natural reading of the
+  existing recomputation table: the incremental cost per tick is flat in *node
+  count* and is **not** flat in wall-clock, because the ~25 nodes a tick reaches
+  include ones that are themselves O(n) and O(n²). The README now says so.
+
+Phase G's macOS CI leg is written and **unverified** — it cannot be exercised
+without pushing. If it fails, that is information about the Owl workaround rather
+than a reason to delete the leg.
+
+Final state: 192 tests, 69% coverage, five credential-free modes, clean
+`dune build @fmt`.
+
+---
+
 ## Global Constraints
 
 These are the §2 invariants from the brief. Every task's requirements implicitly include
@@ -185,7 +213,7 @@ headline claim of this phase — "the two disagreeing is a regime-change diagnos
 be measuring two things at once. At daily horizons the drift term is second-order either
 way; what is not second-order is being able to say precisely what the disagreement means.
 
-- [ ] **Step A1: Write the failing hand-derived test**
+- [x] **Step A1: Write the failing hand-derived test**
 
 `test/test_vol_estimators.ml`. Derivation, written beside the assertion:
 
@@ -216,10 +244,10 @@ let test_ewma_covariance_hand_derived () =
     (Vol_estimators.Ewma.covariance ~xs ~ys ~lambda:0.5)
 ```
 
-- [ ] **Step A2: Run it, confirm it fails** — `make test`, expect "Unbound module
+- [x] **Step A2: Run it, confirm it fails** — `make test`, expect "Unbound module
   Vol_estimators".
 
-- [ ] **Step A3: Implement `lib/vol_estimators.ml`**
+- [x] **Step A3: Implement `lib/vol_estimators.ml`**
 
 Module header in the existing voice: name the tension (equal weighting treats a
 sixty-day-old observation and yesterday's as equally informative about tomorrow, which is
@@ -227,15 +255,15 @@ false in exactly the regime where the number is read), the choice, and what brea
 the alternative. Validate λ ∈ (0,1) strictly and raise on violation, matching
 `Risk_metrics`' "structurally invalid input raises" convention.
 
-- [ ] **Step A4: `make test` — hand-derived test passes.**
+- [x] **Step A4: `make test` — hand-derived test passes.**
 
-- [ ] **Step A5: The λ→1 reduction test**
+- [x] **Step A5: The λ→1 reduction test**
 
 The property that justifies calling these siblings. At λ = 0.999999 over a 60-point
 series, `Ewma.covariance_matrix` must match `Risk_metrics.covariance_matrix` entry-wise to
 1e-9.
 
-- [ ] **Step A6: The regime-response test — this is the actual point of the feature**
+- [x] **Step A6: The regime-response test — this is the actual point of the feature**
 
 Deterministic series, no RNG: 100 observations alternating ±0.005, then 20 alternating
 ±0.020. The true post-break σ is 0.020.
@@ -249,7 +277,7 @@ EWMA(0.94):  mass on the last 20 = 1 - 0.94²⁰ ≈ 0.710
 Assert `|σ_ewma - 0.020| < |σ_equal - 0.020|`, and assert `σ_ewma > σ_equal`. Test the
 property, not the formula — the formula is already pinned by A1.
 
-- [ ] **Step A7: Wire sibling nodes into `graph.ml`**
+- [x] **Step A7: Wire sibling nodes into `graph.ml`**
 
 - `Node_name.covariance_ewma`, `Node_name.parametric_var_ewma`.
 - `covariance_ewma_node` hangs off `aligned_returns_node` and **nothing else** — the same
@@ -267,14 +295,14 @@ property, not the formula — the formula is already pinned by A1.
   `Graph.covariance_ewma`, `Graph.parametric_var_ewma`; `Snapshot` gains
   `parametric_var_ewma` and `ewma_lambda`.
 
-- [ ] **Step A8: Recomputation test in `test_graph.ml`**
+- [x] **Step A8: Recomputation test in `test_graph.ml`**
 
 A price tick must not reach `covariance_ewma`, exactly as it must not reach `covariance`.
 Assert it as a recomputation count, in the style of the existing three architectural tests.
 Also assert the node-count deltas the existing scaling table depends on still hold, and
 update the expected counts in `test_graph.ml` that the two new nodes shift.
 
-- [ ] **Step A9: `Var_backtest.Estimator.Parametric_ewma`**
+- [x] **Step A9: `Var_backtest.Estimator.Parametric_ewma`**
 
 Add the third variant. `Estimator.estimate` gains one branch:
 
@@ -290,7 +318,7 @@ Add the third variant. `Estimator.estimate` gains one branch:
 it. `rolling` is untouched — the point-in-time discipline lives there and must not be
 duplicated.
 
-- [ ] **Step A10: `make backtest` prints the third row per series**
+- [x] **Step A10: `make backtest` prints the third row per series**
 
 Same table, one more estimator per series: 9 rows instead of 6. The expected finding is
 that `vol-regime`/`parametric` is rejected and `vol-regime`/`parametric_ewma` is not — the
@@ -298,17 +326,17 @@ whole argument for the phase, printed by the program rather than claimed in a co
 If EWMA is *also* rejected, report that honestly and say so in the README; a phase that
 only ships when the result is flattering is not a validation suite.
 
-- [ ] **Step A11: Display both**
+- [x] **Step A11: Display both**
 
 `make run`'s risk block, the dashboard, and `/api/snapshot` all carry both parametric
 numbers with the same framing the README already uses for historical-vs-parametric: the
 gap is the diagnostic. Add a `test_server.ml` case pinning the new wire fields.
 
-- [ ] **Step A12: README** — extend "Is the number any good" with the real backtest table,
+- [x] **Step A12: README** — extend "Is the number any good" with the real backtest table,
   and replace the "EWMA or GARCH would track a regime change faster and neither is here"
   sentence in "What this is not" with what is now true. GARCH is still not here; say so.
 
-- [ ] **Step A13: `make test && make fmt`, then commit**
+- [x] **Step A13: `make test && make fmt`, then commit**
 
 ```bash
 git add -A && git commit -m "Phase A: EWMA volatility as a sibling estimator"
@@ -333,7 +361,7 @@ decomposition" into "I property-tested it".
 - Modify: `test/test_ohcamel.ml`
 - Modify: `README.md`
 
-- [ ] **Step E1: Add the dependency**
+- [x] **Step E1: Add the dependency**
 
 `(qcheck-core (and :with-test (>= 0.21)))` and `(qcheck-alcotest (and :with-test (>= 0.21)))`
 in `dune-project`; `qcheck-core qcheck-alcotest` in `test/dune`. Then
@@ -341,7 +369,7 @@ in `dune-project`; `qcheck-core qcheck-alcotest` in `test/dune`. Then
 appear as an ordinary alcotest case, so both testing styles stay in one runner and both
 stay in CI.
 
-- [ ] **Step E2: A PSD covariance generator**
+- [x] **Step E2: A PSD covariance generator**
 
 The properties need random *valid* covariance matrices, and a matrix of random entries is
 not one. Generate `n × m` random returns (n ≤ 8 instruments, m ≥ n+2 observations) and run
@@ -349,19 +377,19 @@ them through `Risk_metrics.covariance_matrix` — a sample covariance matrix is 
 construction. This also keeps the generator honest: it produces the same *kind* of matrix
 the engine actually sees.
 
-- [ ] **Step E3: Property — Euler additivity**
+- [x] **Step E3: Property — Euler additivity**
 
 For random weights and random PSD covariance, `Σ component_i ≈ portfolio_stddev` to
 `1e-9 · max(1, σ_p)` (relative, because σ_p spans orders of magnitude across generated
 books). Skip the degenerate case where `Attribution.compute` returns `None` — that is a
 documented state, not a failure.
 
-- [ ] **Step E4: Property — component VaR sums to portfolio parametric VaR**
+- [x] **Step E4: Property — component VaR sums to portfolio parametric VaR**
 
 The scaled version of E3, and the one that makes an instrument-scoped `Component_var` limit
 well posed. Same tolerance discipline.
 
-- [ ] **Step E5: Property — a hedge reduces portfolio variance**
+- [x] **Step E5: Property — a hedge reduces portfolio variance**
 
 Generalises the hand-written no-`abs` test. For a random book, append a position whose
 return series is the negation of the book's own portfolio return series. Assert its
@@ -369,33 +397,33 @@ component contribution is `≤ 0`, and that portfolio σ with it is strictly les
 portfolio σ without it, at equal gross. A stray `abs` anywhere in the chain breaks this for
 almost every generated case.
 
-- [ ] **Step E6: Property — VaR monotone in confidence**
+- [x] **Step E6: Property — VaR monotone in confidence**
 
 For arbitrary return series and `c₁ < c₂`, both `historical_var` and `parametric_var` are
 non-decreasing. Historical VaR is a step function of confidence, so the assertion is `≥`,
 not `>`.
 
-- [ ] **Step E7: Property — stress-fork isolation**
+- [x] **Step E7: Property — stress-fork isolation**
 
 Generalises `test_stress.ml`'s fixed-suite isolation test. For randomly parameterised
 scenarios (random shock kinds, random magnitudes, random target symbols), the live snapshot
 is unchanged field-for-field after the run. Compare via the snapshot's own fields, not a
 sexp — a sexp comparison would pass on a snapshot that lost a field.
 
-- [ ] **Step E8: Property — backtest lookahead isolation**
+- [x] **Step E8: Property — backtest lookahead isolation**
 
 For random window sizes and series lengths, rebuild each rolling window independently and
 demand `Var_backtest.rolling`'s forecast at `t` matches an estimator fed only
 `returns[t-w .. t-1]`. Generalises the existing fixed test across shapes.
 
-- [ ] **Step E9: Trial counts**
+- [x] **Step E9: Trial counts**
 
 100 trials per property locally. If `make test` grows past a few seconds, drop the CI count
 via a `QCHECK_TRIALS` environment read *in the test file* (not in library code) with a
 comment naming the higher local number — per the brief, reduce trials before dropping a
 property.
 
-- [ ] **Step E10: `make test && make fmt`, then commit**
+- [x] **Step E10: `make test && make fmt`, then commit**
 
 ```bash
 git add -A && git commit -m "Phase E: property-test the risk identities"
@@ -416,11 +444,11 @@ both run in CI.
 - Modify: `bin/main.ml` (a `backtest-crisis` mode), `Makefile`, `README.md`
 - Create: `test/test_crisis_data.ml`
 
-- [ ] **Step C1: Confirm the re-spec with the user** — which windows, and whether to add a
+- [x] **Step C1: Confirm the re-spec with the user** — which windows, and whether to add a
   keyless historical source so the GFC window becomes reachable at all. Do not write the
   fetcher before this is settled.
 
-- [ ] **Step C2: The cache format**
+- [x] **Step C2: The cache format**
 
 CSV, one file per window per symbol set: `date,symbol,close`. Small enough to check in,
 diffable, and readable by a reviewer without running anything. `Crisis_data.load : path ->
@@ -428,32 +456,32 @@ diffable, and readable by a reviewer without running anything. `Crisis_data.load
 `Alpaca_rest.returns_of_closes`, so the return convention cannot drift between live and
 cached paths.
 
-- [ ] **Step C3: Cache population, credential-gated**
+- [x] **Step C3: Cache population, credential-gated**
 
 A `backtest-crisis --populate` path that fetches and writes the CSVs. Missing credentials
 is fatal with a message naming the variables — `Config.Credentials.load`'s existing
 behaviour, reused, not reimplemented.
 
-- [ ] **Step C4: Loud failure when the cache is absent**
+- [x] **Step C4: Loud failure when the cache is absent**
 
 `make backtest-crisis` with no cache and no credentials prints how to populate the cache
 and exits non-zero. It must never fall back to the synthetic series — that is invariant #5
 and it is the difference between a validation suite and a decoration.
 
-- [ ] **Step C5: Run the *existing* battery**
+- [x] **Step C5: Run the *existing* battery**
 
 `Var_backtest.of_returns` unchanged, over the cached windows, for all three estimators
 including Phase A's EWMA. No new backtest logic — the point of the phase is harder data
 through the validated harness.
 
-- [ ] **Step C6: README table and the honest paragraph**
+- [x] **Step C6: README table and the honest paragraph**
 
 Which windows the model failed in and why, in the register of the existing
 "The suite rejects two of six configurations. That is the point." The expected story is
 that equal-weighted vol fails during a sharp vol spike and EWMA does better; if the data
 says otherwise, the README says what the data said.
 
-- [ ] **Step C7: `make test && make fmt`, then commit**
+- [x] **Step C7: `make test && make fmt`, then commit**
 
 **Acceptance criteria:** cached CSVs checked into `docs/`; `make backtest-crisis`
 reproducible with no API keys; a written verdict per window; the GFC coverage gap stated
@@ -465,7 +493,7 @@ plainly rather than papered over.
 
 **Files:** `.github/workflows/ci.yml`, `dune-project`, `Makefile`, `README.md`
 
-- [ ] **Step G1: macOS matrix entry**
+- [x] **Step G1: macOS matrix entry**
 
 `strategy.matrix.os: [ubuntu-latest, macos-latest]`. The macOS leg exports the
 `OWL_CFLAGS`/`OWL_LDLIBS` the Makefile documents, and installs `libomp` and `openblas` via
@@ -473,14 +501,14 @@ Homebrew, so CI actually *exercises* the documented workaround instead of trusti
 prose describing it. Keep the Linux leg's comment explaining why those variables are
 deliberately absent there.
 
-- [ ] **Step G2: Coverage**
+- [x] **Step G2: Coverage**
 
 `bisect_ppx` as a test-only dependency and an `(instrumentation (backend bisect_ppx))`
 stanza in `lib/dune`, driven by a `make coverage` target. Upload the report as a CI
 artifact. Do not over-invest: wiring it up correctly and putting the number in the badge row
 is the whole deliverable.
 
-- [ ] **Step G3: Green on both legs, badge in the README**
+- [x] **Step G3: Green on both legs, badge in the README**
 
 If the macOS leg does not go green — a real possibility given the two documented Owl bugs —
 **report that rather than deleting the leg.** A red macOS leg that reproduces a known
@@ -488,7 +516,7 @@ compiler bug is more informative than no leg, and the Makefile's write-up become
 instead of assertion. Decide with the user whether to keep it required or mark it
 `continue-on-error` with a comment saying why.
 
-- [ ] **Step G4: Commit**
+- [x] **Step G4: Commit**
 
 **Acceptance criteria:** both legs run; coverage percentage visible next to the existing CI
 badge; the macOS outcome, whatever it is, is documented truthfully.
@@ -527,7 +555,7 @@ end
 multiplier between them (100, conventionally) is the one named bridge. That is invariant #3
 applied to the new quantity.
 
-- [ ] **Step B1: Hull's textbook values as the failing test**
+- [x] **Step B1: Hull's textbook values as the failing test**
 
 Price, from Hull's worked example — S=42, K=40, r=0.10, σ=0.20, T=0.5:
 
@@ -552,21 +580,21 @@ theta = -SN'(d₁)σ/(2√T) - rKe^{-rT}N(d₂) = -3.1474 - 1.1580      = -4.305
 Assert to 1e-3 — the textbook values are quoted to three or four figures, so a tighter
 tolerance would be asserting the rounding rather than the formula. Say that in a comment.
 
-- [ ] **Step B2: Implement, confirm the values.**
+- [x] **Step B2: Implement, confirm the values.**
 
-- [ ] **Step B3: Put-call parity as a property**
+- [x] **Step B3: Put-call parity as a property**
 
 `c - p = S - K e^{-rT}` across a grid of moneyness levels. Cheap, and it is the standard
 "does this pricer make sense at all" check. Also add it to `test_properties.ml` over random
 inputs once Phase E exists.
 
-- [ ] **Step B4: Vega/gamma sign and monotonicity checks**
+- [x] **Step B4: Vega/gamma sign and monotonicity checks**
 
 Gamma and vega are strictly positive for both rights; delta ∈ (0,1) for calls and (-1,0)
 for puts; deep ITM call delta → 1, deep OTM → 0. These catch a sign error that parity would
 not, because parity is symmetric in the mistake.
 
-- [ ] **Step B5: Graph integration — delta-equivalent exposure folds into `exposure[S]`**
+- [x] **Step B5: Graph integration — delta-equivalent exposure folds into `exposure[S]`**
 
 An option position's delta-equivalent exposure is `delta × multiplier × contracts × spot`,
 and it is added into the **existing** per-symbol exposure aggregation for its underlying.
@@ -575,13 +603,13 @@ notional limit inherit options exposure for free, which is the entire argument f
 this way. New input cells: contracts, strike, expiry, right, implied vol per option
 position — each a declared edge with its "why" comment.
 
-- [ ] **Step B6: `portfolio_gamma` and `portfolio_vega` as separate nodes**
+- [x] **Step B6: `portfolio_gamma` and `portfolio_vega` as separate nodes**
 
 These have no natural place inside a linear exposure sum, so they are their own nodes at
 per-instrument and portfolio level. Both are additive across positions — say why in the
 comment, because that additivity is what makes the next step's limit well posed.
 
-- [ ] **Step B7: `Greek_limit` in `limits.ml`**
+- [x] **Step B7: `Greek_limit` in `limits.ml`**
 
 Generalised over which Greek. `scope_is_valid` must be *reasoned about*, not asserted: vega
 and gamma are additive across names in the same sense exposure is (they are sums of
@@ -591,23 +619,23 @@ is worked out today. Note the one caveat honestly: summing vega across different
 adds sensitivities to *different* volatilities, so a portfolio vega number is a bucketed
 approximation and the comment should say so.
 
-- [ ] **Step B8: The delta-hedged test**
+- [x] **Step B8: The delta-hedged test**
 
 Long stock plus short calls sized to zero the delta reads ≈0 delta-equivalent exposure and
 **nonzero** gamma and vega. This is the options analogue of the existing hedge test and it
 is the one an interviewer would want to see you think to write.
 
-- [ ] **Step B9: Implied vol source — disabled in live mode, and say so**
+- [x] **Step B9: Implied vol source — disabled in live mode, and say so**
 
 The synthetic/demo book gets a plausible smiled IV surface generated alongside its price
 feed and **labelled as synthetic** in the output. Live mode ships options risk **disabled
 with a clear message** ("no options chain data source configured") rather than a faked feed.
 That is invariant #5, and it is the honest answer given a free Alpaca tier.
 
-- [ ] **Step B10: README** — a "Where the risk is: options" subsection parallel to the
+- [x] **Step B10: README** — a "Where the risk is: options" subsection parallel to the
   existing equities one, including the delta-hedged example and the vega-bucketing caveat.
 
-- [ ] **Step B11: `make test && make fmt`, then commit**
+- [x] **Step B11: `make test && make fmt`, then commit**
 
 **Acceptance criteria:** Hull values reproduced; put-call parity holds; a delta-hedged book
 reads flat delta and live gamma/vega; options exposure flows through the *existing*
@@ -620,7 +648,7 @@ aggregation; live mode declines rather than fabricates.
 **Files:** `lib/history_buffer.ml`, `test/test_history_buffer.ml`, `lib/server.ml`,
 `lib/dashboard_html.ml`, `docs/media/*`, `README.md`
 
-- [ ] **Step F1: The ring buffer, with the non-persistence stated in the header**
+- [x] **Step F1: The ring buffer, with the non-persistence stated in the header**
 
 Fixed capacity (500 points) of `(time, gross, net, var_notional, es_notional, drawdown)`.
 An **observer** hanging off `Graph.on_change`, following `alerts.ml`'s pattern — not a node,
@@ -628,22 +656,22 @@ because a node would put display state inside the dependency graph. The module h
 in as many words that this is in-memory only and resets on restart, so it cannot quietly
 become a persistence layer.
 
-- [ ] **Step F2: Eviction test** — at capacity + 1, the oldest entry is gone and the newest
+- [x] **Step F2: Eviction test** — at capacity + 1, the oldest entry is gone and the newest
   is present, and the length is exactly the capacity.
 
-- [ ] **Step F3: `/api/history`** returning JSON in the same conventions `/api/snapshot`
+- [x] **Step F3: `/api/history`** returning JSON in the same conventions `/api/snapshot`
   uses, with a `test_server.ml` case pinning the shape.
 
-- [ ] **Step F4: Sparkline, dependency-free**
+- [x] **Step F4: Sparkline, dependency-free**
 
 Server-side-generated inline SVG, or a small inline canvas snippet. No CDN, no charting
 library — `dashboard_html.ml`'s self-contained-binary property is not negotiable for a
 chart.
 
-- [ ] **Step F5: Regenerate `docs/media/dashboard.png` and `demo.png`** so the README's
+- [x] **Step F5: Regenerate `docs/media/dashboard.png` and `demo.png`** so the README's
   images match the page.
 
-- [ ] **Step F6: Commit**
+- [x] **Step F6: Commit**
 
 **Acceptance criteria:** eviction test passes; `/api/history` matches the existing wire
 conventions; no external JS dependency; screenshots regenerated.
@@ -655,27 +683,27 @@ conventions; no external JS dependency; screenshots regenerated.
 **Files:** `bench/dune`, `bench/bench_graph.ml`, `Makefile`, `.github/workflows/ci.yml`,
 `README.md`
 
-- [ ] **Step D1: `core_bench` in its own dune stanza** — `bench/` does not ship in the main
+- [x] **Step D1: `core_bench` in its own dune stanza** — `bench/` does not ship in the main
   binary. `core_bench` is Jane Street's own, which keeps the stack thematically coherent.
 
-- [ ] **Step D2: Measure three things at the three book sizes already in the `make run`
+- [x] **Step D2: Measure three things at the three book sizes already in the `make run`
   table (10 / 100 / 400 instruments):** time per tick, minor/major words allocated per tick,
   and the same two for a throwaway ~30-line "recompute everything" baseline. The baseline is
   what turns the polling-vs-incremental contrast from architectural into quantitative, and
   it is deliberately throwaway code inside `bench/` so it never becomes a second
   implementation anyone could call by accident (invariant #2).
 
-- [ ] **Step D3: `make bench`**, in the existing target style with the existing comment
+- [x] **Step D3: `make bench`**, in the existing target style with the existing comment
   voice.
 
-- [ ] **Step D4: README table directly under the recomputation-count table**, with the
+- [x] **Step D4: README table directly under the recomputation-count table**, with the
   hardware and the run-to-run variance stated — the way the Owl macOS section already
   documents environment-specific caveats.
 
-- [ ] **Step D5: CI gets a `workflow_dispatch`-only bench job.** Benchmark numbers on shared
+- [x] **Step D5: CI gets a `workflow_dispatch`-only bench job.** Benchmark numbers on shared
   runners are noise; do not gate pushes on them and do not over-engineer this.
 
-- [ ] **Step D6: Commit**
+- [x] **Step D6: Commit**
 
 **Acceptance criteria:** re-runnable with reported variance; the naive baseline is measured,
 not asserted; CI is not gated on benchmark numbers.
@@ -686,7 +714,7 @@ not asserted; CI is not gated on benchmark numbers.
 
 A writing task, done last so the math in A–C (and B) is final.
 
-- [ ] **Step H1: Write it.** Each item in under half a page, in standard notation, and each
+- [x] **Step H1: Write it.** Each item in under half a page, in standard notation, and each
   cross-referencing the exact file and function that implements it so it reads as
   documentation of *this* codebase rather than a risk-textbook summary:
 
@@ -706,10 +734,10 @@ A writing task, done last so the math in A–C (and B) is final.
     (`Var_backtest.traffic_light`).
   - If Phase B shipped: the Black-Scholes Greeks used (`Options.Black_scholes`).
 
-- [ ] **Step H2: Link it from the README** near the badge row, as the reference companion to
+- [x] **Step H2: Link it from the README** near the badge row, as the reference companion to
   the README's narrative.
 
-- [ ] **Step H3: Commit**
+- [x] **Step H3: Commit**
 
 **Acceptance criteria:** every formula checkable against Jorion or McNeil/Frey/Embrechts
 without reading the OCaml; every claim traceable to a named function in this repo.
