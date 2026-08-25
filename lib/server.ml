@@ -110,6 +110,33 @@ let json_of_breach (breach : Types.Breach.t) : Yojson.Safe.t =
       ("utilisation", jfloat (Limits.utilisation breach));
     ]
 
+(* The history, in the same wire conventions /api/snapshot uses: nulls rather
+   than zeros for a number that does not exist yet, and money as plain floats.
+
+   Column-major -- six arrays rather than an array of six-field objects. It is
+   about a third of the bytes for five hundred points, and it is the shape a
+   chart wants anyway: drawing a line means iterating one series, not
+   re-projecting a list of records. The [time] array indexes all of them. *)
+let json_of_history (h : History_buffer.t) : Yojson.Safe.t =
+  let points = History_buffer.to_list h in
+  let series f = `List (List.map points ~f) in
+  `Assoc
+    [
+      ("points", `Int (List.length points));
+      ("capacity", `Int (History_buffer.capacity h));
+      (* Total changes recorded, including the ones evicted. "500 points" and
+         "500 points out of 40,000 changes" say different things about how much
+         of the session is on screen, and only the second is honest. *)
+      ("appended", `Int (History_buffer.appended h));
+      ("time", series (fun p -> jfloat (History_buffer.Point.time_ms p)));
+      ("gross", series (fun p -> jfloat (History_buffer.Point.gross p)));
+      ("net", series (fun p -> jfloat (History_buffer.Point.net p)));
+      ("equity", series (fun p -> jfloat (History_buffer.Point.equity p)));
+      ("drawdown", series (fun p -> jfloat (History_buffer.Point.drawdown p)));
+      ("var_notional", series (fun p -> jopt_float (History_buffer.Point.var_notional p)));
+      ("es_notional", series (fun p -> jopt_float (History_buffer.Point.es_notional p)));
+    ]
+
 let json_of_snapshot ~(graph : Graph.t) ~(factor : string) (s : Graph.Snapshot.t) :
     Yojson.Safe.t =
   let weights = Graph.Snapshot.weights s in
@@ -260,6 +287,13 @@ type t = {
   mutable subscribers : string Pipe.Writer.t list;
   mutable frames_sent : int;
   coalesce : Time_ns.Span.t;
+  (* A bounded in-memory trail, for the dashboard's sparklines. Fed by an
+     observer rather than by this broadcaster, so a change is recorded whether or
+     not anyone is subscribed -- a chart that only had history for the period
+     someone was watching would be a strange thing to look at. See
+     history_buffer.ml, which also states in as many words that it is not
+     persistence. *)
+  history : History_buffer.t;
 }
 
 (* What Phase 4 is doing, for the dashboard to report.
@@ -399,6 +433,13 @@ let handle (t : t) ~(path : string) =
         (Yojson.Safe.to_string
            (json_of_feed_health (Graph.Snapshot.feed_health (Graph.snapshot t.graph))))
   | "/api/stream" -> subscribe t
+  (* Read from the buffer as it stands; nothing is computed here. The buffer is
+     filled by an observer on the graph, so this route is a read of state that
+     already exists rather than a request that causes work -- the same property
+     /api/snapshot has, and the reason neither can stall the engine. *)
+  | "/api/history" ->
+      Cohttp_async.Server.respond_string ~headers:json_headers
+        (Yojson.Safe.to_string (json_of_history t.history))
   (* Scenarios are computed on demand rather than pushed on the stream, and the
      reason is the cost asymmetry. A snapshot is read from observers that have
      already settled; a scenario suite forks the engine once per scenario and
@@ -420,7 +461,12 @@ let handle (t : t) ~(path : string) =
                   `List
                     (List.map
                        [
-                         "/"; "/api/snapshot"; "/api/health"; "/api/stream"; "/api/stress";
+                         "/";
+                         "/api/snapshot";
+                         "/api/health";
+                         "/api/stream";
+                         "/api/history";
+                         "/api/stress";
                        ] ~f:(fun r -> `String r)) );
               ]))
 
@@ -428,8 +474,8 @@ let handle (t : t) ~(path : string) =
 (* Starting                                                                  *)
 (* ------------------------------------------------------------------------ *)
 
-let create ?(coalesce = Time_ns.Span.of_ms 80.0) ?(alerts : Alerts.t option)
-    ~(graph : Graph.t) ~(factor : string) () =
+let create ?(coalesce = Time_ns.Span.of_ms 80.0) ?history_capacity
+    ?(alerts : Alerts.t option) ~(graph : Graph.t) ~(factor : string) () =
   let t =
     {
       graph;
@@ -439,6 +485,8 @@ let create ?(coalesce = Time_ns.Span.of_ms 80.0) ?(alerts : Alerts.t option)
       subscribers = [];
       frames_sent = 0;
       coalesce;
+      history =
+        History_buffer.attach ?capacity:history_capacity ~graph ~now:Types.Time.now ();
     }
   in
   (* The link that makes this reactive rather than polled. Graph.on_change fires

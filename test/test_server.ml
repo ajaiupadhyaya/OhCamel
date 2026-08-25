@@ -291,6 +291,79 @@ let test_sse_framing () =
   Alcotest.(check string) "framed" "data: {\"a\":1}\n\n" e;
   Alcotest.(check bool) "ends with a blank line" true (String.is_suffix e ~suffix:"\n\n")
 
+(* /api/history, in the same wire conventions /api/snapshot uses.
+
+   Column-major, so the shape under test is "every series is the same length as
+   [time]". A ragged response is the failure mode a chart would render as a line
+   whose points had drifted off their own timestamps -- plausible-looking and
+   entirely wrong, which is the category of bug this project's tests exist
+   for. *)
+let test_history_wire_format () =
+  let h = Ohcamel.History_buffer.create ~capacity:4 () in
+  let point n =
+    {
+      Ohcamel.History_buffer.Point.time_ms = float_of_int (n * 1000);
+      gross = float_of_int (n * 100);
+      net = float_of_int n;
+      equity = 0.0;
+      drawdown = 0.01 *. float_of_int n;
+      (* One known and one unknown, so the null path is exercised alongside the
+         numeric one in a single response. *)
+      var_notional = (if n % 2 = 0 then Some (float_of_int n) else None);
+      es_notional = None;
+    }
+  in
+  List.iter [ 1; 2; 3; 4; 5 ] ~f:(fun n -> Ohcamel.History_buffer.append h (point n));
+  let j = Ohcamel.Server.json_of_history h in
+  let field = field_exn j in
+  Alcotest.(check int)
+    "points is the number on the wire, after eviction" 4
+    (match field "points" with `Int n -> n | _ -> Alcotest.fail "points");
+  Alcotest.(check int)
+    "appended counts the evicted one too" 5
+    (match field "appended" with `Int n -> n | _ -> Alcotest.fail "appended");
+  Alcotest.(check int)
+    "capacity" 4
+    (match field "capacity" with `Int n -> n | _ -> Alcotest.fail "capacity");
+  let series name =
+    match field name with `List xs -> xs | _ -> Alcotest.failf "%s is not a list" name
+  in
+  List.iter
+    [ "time"; "gross"; "net"; "equity"; "drawdown"; "var_notional"; "es_notional" ]
+    ~f:(fun name ->
+      Alcotest.(check int)
+        (Printf.sprintf "%s has one entry per point" name)
+        4
+        (List.length (series name)));
+  (* Oldest first, and the oldest is 2 because 1 was evicted. *)
+  (match series "gross" with
+  | [ `Float a; _; _; `Float d ] ->
+      Alcotest.(check (float 1e-9)) "oldest surviving gross" 200.0 a;
+      Alcotest.(check (float 1e-9)) "newest gross" 500.0 d
+  | _ -> Alcotest.fail "gross series shape");
+  (* Unknown arrives as null, never as 0.0 -- the same rule /api/snapshot
+     follows, and for the same reason: a zero renders as "no risk". *)
+  Alcotest.(check bool)
+    "every es_notional is null" true
+    (List.for_all (series "es_notional") ~f:(function `Null -> true | _ -> false));
+  Alcotest.(check bool)
+    "var_notional carries both nulls and numbers" true
+    (List.exists (series "var_notional") ~f:(function `Null -> true | _ -> false)
+    && List.exists (series "var_notional") ~f:(function `Float _ -> true | _ -> false))
+
+let test_history_of_an_empty_buffer_is_well_formed () =
+  let h = Ohcamel.History_buffer.create ~capacity:4 () in
+  let j = Ohcamel.Server.json_of_history h in
+  Alcotest.(check int)
+    "no points" 0
+    (match field_exn j "points" with `Int n -> n | _ -> Alcotest.fail "points");
+  (* Empty arrays, not absent keys. A consumer that has to distinguish "no
+     history" from "no such field" is a consumer that will get it wrong. *)
+  List.iter [ "time"; "gross"; "drawdown" ] ~f:(fun name ->
+      match field_exn j name with
+      | `List [] -> ()
+      | _ -> Alcotest.failf "%s should be an empty list" name)
+
 let suite =
   ( "server",
     [
@@ -303,4 +376,7 @@ let suite =
       Alcotest.test_case "non-finite floats become null" `Quick
         test_non_finite_becomes_null;
       Alcotest.test_case "SSE event framing" `Quick test_sse_framing;
+      Alcotest.test_case "/api/history wire format" `Quick test_history_wire_format;
+      Alcotest.test_case "/api/history of an empty buffer" `Quick
+        test_history_of_an_empty_buffer_is_well_formed;
     ] )

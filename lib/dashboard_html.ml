@@ -179,6 +179,16 @@ let page =
     font-style: normal; color: var(--ink-faint); letter-spacing: 0;
     text-transform: none; font-size: 10px; opacity: .75;
   }
+  /* The trail spans the whole grid. Four sparklines side by side is the useful
+     arrangement -- gross, net, VaR and drawdown read against each other, and
+     the interesting moment is the one where they diverge -- and stacking them
+     in a single narrow column would hide exactly that. */
+  #histsec { grid-column: 1 / -1; }
+  #history {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 4px 28px;
+  }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
 
   /* ---- rows ---- */
@@ -278,6 +288,11 @@ let page =
   <section>
     <span class="lbl">limits <i>— downstream</i></span>
     <div id="limits"></div>
+  </section>
+
+  <section id="histsec">
+    <span class="lbl">history <i id="histnote">— in memory only, lost on restart</i></span>
+    <div id="history"></div>
   </section>
 </main>
 
@@ -570,6 +585,137 @@ let page =
     }
   }
 
+  // A sparkline, drawn as inline SVG built by hand.
+  //
+  // No charting library, and not because one would be hard to add -- because
+  // dashboard_html.ml is a single string compiled into the binary, and the
+  // whole point of that is that the dashboard has no external dependency to
+  // fetch, version, or fail to fetch. A CDN script tag would make this page
+  // stop working on a machine with no route to the internet, which is exactly
+  // the machine a risk dashboard is most likely to be pinned to.
+  //
+  // Sixty lines of SVG buys the two things a trail actually needs: the shape,
+  // and the endpoints. It does not buy axes, zoom, tooltips or a legend, and
+  // it is not trying to.
+  function sparkline(values, opts) {
+    var w = 260, h = 44, pad = 3;
+    var pts = [];
+    for (var i = 0; i < values.length; i++) {
+      if (values[i] !== null && isFinite(values[i])) pts.push([i, values[i]]);
+    }
+    if (pts.length < 2) return null;
+    var lo = pts[0][1], hi = pts[0][1];
+    for (var j = 1; j < pts.length; j++) {
+      if (pts[j][1] < lo) lo = pts[j][1];
+      if (pts[j][1] > hi) hi = pts[j][1];
+    }
+    // A dead-flat series has no range to scale against. Drawing it through the
+    // middle is the honest rendering: the line is flat because the number did
+    // not move, not because the scale collapsed.
+    var span = (hi - lo) || 1;
+    var n = values.length - 1 || 1;
+    var d = "";
+    for (var k = 0; k < pts.length; k++) {
+      var x = pad + (pts[k][0] / n) * (w - 2 * pad);
+      var y = h - pad - ((pts[k][1] - lo) / span) * (h - 2 * pad);
+      d += (k === 0 ? "M" : "L") + x.toFixed(1) + " " + y.toFixed(1);
+    }
+    var last = pts[pts.length - 1];
+    var lx = pad + (last[0] / n) * (w - 2 * pad);
+    var ly = h - pad - ((last[1] - lo) / span) * (h - 2 * pad);
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 " + w + " " + h);
+    svg.setAttribute("width", w);
+    svg.setAttribute("height", h);
+    var path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", d);
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", opts.stroke);
+    path.setAttribute("stroke-width", "1.4");
+    path.setAttribute("stroke-linejoin", "round");
+    svg.appendChild(path);
+    var dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    dot.setAttribute("cx", lx.toFixed(1));
+    dot.setAttribute("cy", ly.toFixed(1));
+    dot.setAttribute("r", "2");
+    dot.setAttribute("fill", opts.stroke);
+    svg.appendChild(dot);
+    return { svg: svg, lo: lo, hi: hi };
+  }
+
+  function renderHistory(h) {
+    var el = document.getElementById("history");
+    el.textContent = "";
+    // Two or fewer points is not a trail, and a one-pixel line implying a
+    // track record would be worse than saying so.
+    if (!h || h.points < 2) {
+      var p = document.createElement("div");
+      p.className = "k";
+      p.style.fontSize = "12px";
+      p.style.color = "var(--ink-faint)";
+      p.textContent = "collecting — a trail appears once the book has moved twice";
+      el.appendChild(p);
+      return;
+    }
+    var series = [
+      { key: "gross", label: "gross", stroke: "var(--ink)", fmt: money },
+      { key: "net", label: "net", stroke: "var(--ink-soft)", fmt: money },
+      { key: "var_notional", label: "VaR 95", stroke: "var(--mark)", fmt: money },
+      { key: "drawdown", label: "drawdown", stroke: "var(--over)", fmt: pct }
+    ];
+    for (var i = 0; i < series.length; i++) {
+      var s = series[i];
+      var drawn = sparkline(h[s.key], { stroke: s.stroke });
+      var rowEl = document.createElement("div");
+      rowEl.style.display = "flex";
+      rowEl.style.alignItems = "center";
+      rowEl.style.justifyContent = "space-between";
+      rowEl.style.gap = "10px";
+      rowEl.style.marginBottom = "2px";
+      var lbl = document.createElement("span");
+      lbl.className = "k";
+      lbl.style.whiteSpace = "nowrap";
+      lbl.textContent = s.label;
+      rowEl.appendChild(lbl);
+      if (drawn) {
+        rowEl.appendChild(drawn.svg);
+        var range = document.createElement("span");
+        range.className = "k";
+        range.style.fontSize = "11px";
+        range.style.color = "var(--ink-faint)";
+        range.textContent = s.fmt(drawn.lo) + " – " + s.fmt(drawn.hi);
+        rowEl.appendChild(range);
+      } else {
+        var none = document.createElement("span");
+        none.className = "k";
+        none.style.color = "var(--ink-faint)";
+        none.textContent = "—";
+        rowEl.appendChild(none);
+      }
+      el.appendChild(rowEl);
+    }
+    // Says how much of the session is on screen. "500 points" and "500 of
+    // 40,000 changes" are different statements and only the second is honest.
+    document.getElementById("histnote").textContent =
+      "— last " + h.points + " of " + h.appended.toLocaleString("en-US")
+      + " changes, in memory only, lost on restart";
+  }
+
+  // Fetched rather than pushed. The SSE frame carries the current state, which
+  // is what every other panel needs; shipping the whole trail on every tick
+  // would multiply the frame size by five hundred to redraw a line that moved
+  // by one point. So the stream says WHEN, and this asks for the history.
+  var historyInFlight = false;
+  function refreshHistory() {
+    if (historyInFlight) return;
+    historyInFlight = true;
+    fetch("/api/history")
+      .then(function (r) { return r.json(); })
+      .then(function (h) { renderHistory(h); })
+      .catch(function () { /* the next change will try again */ })
+      .then(function () { historyInFlight = false; });
+  }
+
   function render(s) {
     renderAlerts(s);
     renderHealth(s);
@@ -584,6 +730,7 @@ let page =
     document.getElementById("alertstat").textContent =
       a.enabled ? ("alerts sent " + a.sent + (a.failed ? ", failed " + a.failed : ""))
                 : "alerting disabled";
+    refreshHistory();
     firstFrame = false;
   }
 

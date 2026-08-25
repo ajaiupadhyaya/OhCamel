@@ -697,14 +697,64 @@ makes it harder to tell at a glance which kind of claim a given test is making.
 
 That outside is [`lib/alerts.ml`](lib/alerts.ml), which hangs off an observer
 rather than a node and is the only module here that can reach the world.
-[`lib/server.ml`](lib/server.ml) serves `/api/snapshot`, `/api/health` and an SSE
-stream at `/api/stream`; [`lib/dashboard_html.ml`](lib/dashboard_html.ml) is the
+[`lib/history_buffer.ml`](lib/history_buffer.ml) is the bounded in-memory trail
+behind those sparklines, hanging off an observer rather than living in the graph.
+[`lib/server.ml`](lib/server.ml) serves `/api/snapshot`, `/api/health`,
+`/api/history` and an SSE stream at `/api/stream`; [`lib/dashboard_html.ml`](lib/dashboard_html.ml) is the
 page itself, embedded as a string so the binary is self-contained. The feed lives
 in [`lib/feed/`](lib/feed) — the Alpaca websocket, an Alpaca REST backfill for
 history, and a FRED client for the factor series — and is folded into the library
 as top-level modules by `include_subdirs unqualified` in [`lib/dune`](lib/dune),
 because it is not a separable component. Its entire job is to write into input
 cells.
+
+### A trail, and not a database
+
+The dashboard used to show one number per metric, and one number is a state
+rather than a story. Gross exposure of $316,819 says nothing about whether it
+has been flat since the open or moved twice in the last minute, and drawdown is
+the clearest case: 0.05% is unremarkable if it has been 0.05% all session and is
+the only thing on the page worth looking at if it was zero four minutes ago.
+
+So there is a bounded trail — `/api/history`, four sparklines at the foot of the
+page, and a header that reads *"last 500 of 1,263 changes, in memory only, lost
+on restart."* Both halves of that line are load-bearing. The first says how much
+of the session is on screen, because "500 points" and "500 of 1,263 changes" are
+different statements and only the second is honest. The second says what this is
+not.
+
+Because it is emphatically **not persistence**. `lib/history_buffer.ml` is a
+fixed-capacity ring in memory: it writes nothing to disk, it is not restored on
+startup, and it drops its oldest entry rather than growing. A restart empties it,
+which is correct — the numbers in it are about a process that is no longer
+running. The README says this engine has no persistence and that remains true; if
+a future change makes this durable, that change is *adding persistence to the
+project* and should be argued as such rather than arriving as a side effect of
+wanting a longer chart. The module header says so too, in the file, where someone
+about to make that change would read it.
+
+It is an **observer, not a node** — the same seam `lib/alerts.ml` uses, and for
+the same reason. A node body may be recomputed whenever the runtime likes, so a
+node that appended to a buffer would append an unpredictable number of times.
+Appending is an effect and effects live outside the graph. A useful consequence:
+the trail is driven by the same signal the SSE stream is, so a flat line means
+the book genuinely did not move rather than that a sampler was asleep. Re-sending
+an unchanged price appends nothing, and there is a test that asserts exactly that.
+
+Writing it turned up a real constraint worth recording. The first version called
+`Graph.snapshot` from inside the change handler, which is wrong: `snapshot`
+stabilizes, `Graph.on_change` fires from *inside* an Incremental update handler,
+and Incremental refuses to stabilize re-entrantly — `cannot stabilize during
+on-update handlers`. It was not caught by reasoning about it; it was caught by a
+test that drove the observer. The fix reads the already-settled observers
+directly, which is both correct and cheaper.
+
+The chart is inline SVG built by hand, about sixty lines, with no charting
+library. Not because one would be hard to add — because `dashboard_html.ml` is a
+single string compiled into the binary, and the point of that is a dashboard with
+nothing to fetch, version, or fail to fetch. A CDN script tag would make the page
+stop working on a machine with no route to the internet, which is exactly the
+machine a risk dashboard is most likely to be pinned to.
 
 The stream is not a timer either. The broadcaster parks on an `Ivar` that
 `Graph.on_change` fills, so when nothing in the book moves, not one byte is
@@ -784,7 +834,7 @@ this codebase sends a message or takes an action on its own.
 
 ## What's verified
 
-`make test` runs 181 tests, all hermetic — no network, no credentials, and nothing
+`make test` runs 192 tests, all hermetic — no network, no credentials, and nothing
 that waits on the wall clock. They cover the numerics against hand-computed
 values, the wire format, the alerting state machine, and the recomputation counts
 that make the graph's shape an assertion rather than a claim.

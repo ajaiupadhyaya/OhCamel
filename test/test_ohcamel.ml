@@ -42,6 +42,7 @@ let () =
       Test_stress.suite;
       Test_graph.suite;
       Test_feed.suite;
+      Test_history_buffer.suite;
       Test_server.suite;
       Test_alerts.suite;
       Test_properties.suite;
