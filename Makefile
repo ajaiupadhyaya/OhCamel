@@ -71,7 +71,7 @@ export OWL_CFLAGS := -g -O1 -funroll-loops -fno-math-errno -fno-rounding-math -f
 # Homebrew's directory for every build, so no ordering can win.
 export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 
-.PHONY: all build run stress backtest backtest-crisis test fmt clean deps doctor
+.PHONY: all build run stress backtest backtest-crisis test coverage fmt clean deps doctor
 
 all: build
 
@@ -147,12 +147,33 @@ demo: build
 test:
 	$(OPAM_ENV) && dune runtest --force
 
+# Line coverage, via bisect_ppx.
+#
+# Instrumentation is off in every other target -- lib/dune declares the backend
+# but dune only applies it when asked -- so the build whose tests you normally
+# read is not the instrumented one.
+#
+# Expect a bimodal number, and read it that way rather than as one figure. The
+# pure numeric core (graph, attribution, limits, risk_metrics, vol_estimators,
+# crisis_data, stress) sits above 85%. The IO edges (the Alpaca websocket, the
+# FRED client, the HTTP server, the alert sinks) sit near 40%, because
+# exercising them needs a network and every test in this project is hermetic.
+# That gap is a design decision showing up in a metric, not a backlog.
+coverage: build
+	@rm -rf _coverage && mkdir -p _coverage
+	$(OPAM_ENV) && BISECT_FILE=$(CURDIR)/_coverage/ohcamel 	  dune runtest --force --instrument-with bisect_ppx
+	$(OPAM_ENV) && bisect-ppx-report html --coverage-path _coverage -o _coverage/html
+	$(OPAM_ENV) && bisect-ppx-report summary --per-file --coverage-path _coverage
+	@echo
+	@echo "  HTML report: _coverage/html/index.html"
+
 # Reformat in place with ocamlformat (config in .ocamlformat).
 fmt:
 	$(OPAM_ENV) && dune fmt
 
 clean:
 	$(OPAM_ENV) && dune clean
+	rm -rf _coverage
 
 # Re-install dependencies from dune-project into the local switch.
 deps:

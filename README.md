@@ -1,6 +1,7 @@
 # OhCamel
 
 [![ci](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml/badge.svg)](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml)
+[![coverage 67%](https://img.shields.io/badge/coverage-67%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
 
 A reactive risk and limits engine. Positions and market data go in; per-instrument
 and per-sector exposure, gross and net, VaR, expected shortfall, portfolio beta,
@@ -689,6 +690,52 @@ purpose. Adding a single `Float.abs` to `Attribution.component` — the exact
 one-reflex mistake the module's header comment warns about — fails three of the
 six properties and four example tests. `QCHECK_TRIALS=5000 make test` runs
 30,000 cases in under two seconds if you want more confidence than that.
+
+### Coverage, and what it is not measuring
+
+`make coverage` runs the suite under `bisect_ppx` and reports **67%**. The badge
+above is that number; CI enforces a floor of 60% and prints the full per-file
+table into the run summary, so a drop is visible without anyone remembering to
+look.
+
+The interesting thing about the number is that it is bimodal, and it should be
+read as two numbers rather than one:
+
+```
+ 92%  lib/graph.ml            37%  lib/alerts.ml
+ 92%  lib/vol_estimators.ml   40%  lib/config.ml
+ 91%  lib/attribution.ml      39%  lib/feed/alpaca_ws.ml
+ 91%  lib/limits.ml           47%  lib/feed/fred_client.ml
+ 90%  lib/risk_metrics.ml     50%  lib/feed/alpaca_rest.ml
+ 90%  lib/crisis_data.ml      45%  lib/server.ml
+ 85%  lib/stress.ml
+```
+
+The left column is everything that computes a risk number. The right column is
+everything that talks to a network. That split is a design decision appearing in
+a metric, not a backlog: every test in this project is hermetic — no network, no
+credentials, nothing waiting on a clock — so the code whose job is to hold a
+websocket open is exercised only as far as its pure parts go. Raising the right
+column would mean testing the Alpaca client against a mock Alpaca, which moves
+the number up and establishes nothing about the real one. The bug that mattered
+in this codebase was found by pointing it at the actual market, and it is
+written up two sections down.
+
+So the floor exists to make deleting tests noticeable, and that is all it is
+for. A coverage target would be an instruction to write the tests that raise it.
+
+### CI runs on both platforms
+
+The [`Makefile`](Makefile) carries two long write-ups of Owl bugs that appear
+only on arm64 macOS — a clang segfault at any optimisation level above `-O1`,
+and OpenMP code that Owl compiles but never links a runtime for — with the
+bisection that found each and the cost of each workaround. Prose describing a
+workaround that nothing runs is a claim. So CI builds on `ubuntu-latest` *and*
+`macos-latest`, and the macOS leg exports exactly the two variables the Makefile
+sets, which makes a green run evidence that the documented workaround still
+works on a machine that is not the author's. Both legs also run the four
+credential-free modes end to end, because a `printf` format string that only
+fails at run time is invisible to `make test`.
 
 The live path has been run against real Alpaca market data and real FRED series,
 which is how the most instructive bug in the project was found. Live mode set

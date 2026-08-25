@@ -68,4 +68,11 @@
   (qcheck-alcotest
    (and
     :with-test
-    (>= 0.21)))))
+    (>= 0.21)))
+  ; Line coverage. Declared as a backend in lib/dune but applied only when dune
+  ; is invoked with --instrument-with, which only `make coverage` does -- so an
+  ; ordinary build compiles exactly the code it did before.
+  (bisect_ppx
+   (and
+    :with-test
+    (>= 2.8.0)))))

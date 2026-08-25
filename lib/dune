@@ -26,4 +26,12 @@
   incremental
   owl)
  (preprocess
-  (pps ppx_jane ppx_yojson_conv)))
+  (pps ppx_jane ppx_yojson_conv))
+ ; Coverage instrumentation, OFF unless dune is invoked with
+ ; --instrument-with bisect_ppx (which only `make coverage` does). An ordinary
+ ; build and an ordinary `make test` compile exactly the code they did before,
+ ; which matters more than it looks: a coverage tool that is always on is a
+ ; second compilation mode that the numbers everyone actually reads were not
+ ; produced under.
+ (instrumentation
+  (backend bisect_ppx)))

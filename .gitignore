@@ -1,6 +1,10 @@
 # Dune build output
 _build/
 
+# Coverage output from `make coverage`. Regenerated, never reviewed as a diff.
+_coverage/
+*.coverage
+
 # Project-local opam switch (the compiler + all deps live here; ~2 GB)
 _opam/
 

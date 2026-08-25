@@ -15,20 +15,52 @@ concurrency:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Two platforms, and the second one is not decoration. The Makefile carries
+    # two long write-ups of Owl bugs that only appear on arm64 macOS — a clang
+    # segfault above -O1, and OpenMP code compiled against a runtime Owl never
+    # links — with a workaround for each. Prose describing a workaround that
+    # nothing runs is a claim, not a fact. The macOS leg below exports exactly
+    # the two variables the Makefile sets, so a run of this workflow is evidence
+    # that the documented workaround still works on a machine that is not the
+    # author's.
+    strategy:
+      # A macOS failure must not cancel the Linux leg. If the Owl workaround
+      # stops working, the useful information is "Linux is fine and macOS is
+      # not", which fail-fast would destroy.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    # Generous, because Owl is built from source on both platforms and it is
+    # slow. The default 360 would hide a genuine hang; 60 will not.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
       # Owl links against OpenBLAS. The Makefile's OWL_CFLAGS/OWL_LDLIBS
-      # workarounds are deliberately NOT exported here: they exist because
-      # Apple clang 21 segfaults compiling Owl's C stubs above -O1, which is a
+      # workarounds are deliberately NOT exported on Linux: they exist because
+      # Apple clang segfaults compiling Owl's C stubs above -O1, which is a
       # macOS-only compiler bug. gcc builds Owl at its own -O3 fine.
-      - name: System dependencies for Owl and async_ssl
+      - name: System dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libopenblas-dev liblapacke-dev \
                                   libffi-dev libssl-dev
+
+      - name: System dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install pkg-config openblas libomp
+
+      # Written into GITHUB_ENV rather than the job's `env:` block because
+      # these must apply to exactly one leg of the matrix, and `env:` has no
+      # conditional form. The values are copied from the Makefile; if they ever
+      # diverge, this leg stops testing the thing it exists to test.
+      - name: Owl workarounds (macOS only — see the Makefile for why)
+        if: runner.os == 'macOS'
+        run: |
+          echo "OWL_CFLAGS=-g -O1 -funroll-loops -fno-math-errno -fno-rounding-math -fno-signaling-nans -fexcess-precision=fast -DSFMT_MEXP=19937 -fno-strict-aliasing" >> "$GITHUB_ENV"
+          echo "OWL_LDLIBS=-lm -L/opt/homebrew/opt/libomp/lib -lomp" >> "$GITHUB_ENV"
 
       - uses: ocaml/setup-ocaml@v3
         with:
@@ -44,7 +76,84 @@ jobs:
       - name: Test
         run: opam exec -- dune runtest --force
 
+      # The credential-free modes, end to end. `make test` covers the units;
+      # this covers the four things a reader is actually told to run, and it is
+      # the step that would catch a committed crisis cache going missing or a
+      # printf format string that only fails at run time.
+      - name: The credential-free modes run
+        run: |
+          opam exec -- dune exec bin/main.exe -- synthetic > /dev/null
+          opam exec -- dune exec bin/main.exe -- stress > /dev/null
+          opam exec -- dune exec bin/main.exe -- backtest > /dev/null
+          opam exec -- dune exec bin/main.exe -- backtest-crisis > /dev/null
+
+      # One platform is enough: ocamlformat's output does not depend on the OS,
+      # so a second run would only cost minutes and tell you the same thing.
       - name: Format check
+        if: runner.os == 'Linux'
         run: |
           opam install -y ocamlformat.0.29.0
           opam exec -- dune build @fmt
+
+  coverage:
+    # Separate from the matrix because instrumentation changes what is compiled,
+    # and the build whose tests everyone reads should not be the instrumented
+    # one. Linux only — coverage is a property of the tests, not the platform.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libopenblas-dev liblapacke-dev \
+                                  libffi-dev libssl-dev
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2.1"
+          dune-cache: true
+
+      - name: Install dependencies
+        run: |
+          opam install --deps-only --with-test -y .
+          opam install -y bisect_ppx
+
+      - name: Measure
+        run: |
+          mkdir -p _coverage
+          BISECT_FILE=$PWD/_coverage/ohcamel \
+            opam exec -- dune runtest --force --instrument-with bisect_ppx
+          opam exec -- bisect-ppx-report html \
+            --coverage-path _coverage -o _coverage/html
+          opam exec -- bisect-ppx-report summary --per-file \
+            --coverage-path _coverage | tee _coverage/summary.txt
+
+      - name: Report
+        run: |
+          {
+            echo '### Coverage'
+            echo '```'
+            cat _coverage/summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # A floor, not a target. The README explains why the number is bimodal —
+      # the pure numeric core sits above 90% and the IO edges sit near 40%,
+      # because exercising them needs a network and this project declines to
+      # fake one. The floor exists so that deleting tests is noticed; chasing
+      # the number upward by testing the feed against a mock would make it go
+      # up and mean less.
+      - name: Coverage floor
+        run: |
+          percent=$(opam exec -- bisect-ppx-report summary --coverage-path _coverage \
+                    | grep -oE '[0-9]+\.[0-9]+%' | tr -d '%')
+          echo "measured ${percent}%"
+          awk -v p="$percent" 'BEGIN { exit !(p >= 60) }' \
+            || { echo "coverage ${percent}% is below the 60% floor"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: _coverage/html
