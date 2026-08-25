@@ -86,6 +86,7 @@ jobs:
           opam exec -- dune exec bin/main.exe -- stress > /dev/null
           opam exec -- dune exec bin/main.exe -- backtest > /dev/null
           opam exec -- dune exec bin/main.exe -- backtest-crisis > /dev/null
+          opam exec -- dune exec bin/main.exe -- options > /dev/null
 
       # One platform is enough: ocamlformat's output does not depend on the OS,
       # so a second run would only cost minutes and tell you the same thing.
@@ -94,6 +95,47 @@ jobs:
         run: |
           opam install -y ocamlformat.0.29.0
           opam exec -- dune build @fmt
+
+  # Benchmarks, on demand only.
+  #
+  # Never on push or PR. A shared runner's timings are noise -- the hardware is
+  # unspecified, the neighbours are unknown, and a 3x swing between runs would
+  # turn a green build red for reasons that have nothing to do with the code.
+  # The README quotes a local run and names the machine.
+  #
+  # This job exists so the benchmark is proven to still COMPILE and RUN, which
+  # is the part that rots silently. Its numbers are for reading, not gating.
+  bench:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libopenblas-dev liblapacke-dev \
+                                  libffi-dev libssl-dev
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2.1"
+          dune-cache: true
+
+      - name: Install dependencies
+        run: |
+          opam install --deps-only --with-test -y .
+          opam install -y core_bench
+
+      - name: Run
+        run: |
+          {
+            echo '### Benchmarks (shared runner — indicative only)'
+            echo '```'
+            opam exec -- dune exec bench/bench_graph.exe
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   coverage:
     # Separate from the matrix because instrumentation changes what is compiled,

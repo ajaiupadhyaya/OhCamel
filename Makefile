@@ -71,7 +71,7 @@ export OWL_CFLAGS := -g -O1 -funroll-loops -fno-math-errno -fno-rounding-math -f
 # Homebrew's directory for every build, so no ordering can win.
 export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 
-.PHONY: all build run stress backtest backtest-crisis options test coverage fmt clean deps doctor
+.PHONY: all build run stress backtest backtest-crisis options test bench coverage fmt clean deps doctor
 
 all: build
 
@@ -156,6 +156,19 @@ demo: build
 #   QCHECK_TRIALS=5000 make test
 test:
 	$(OPAM_ENV) && dune runtest --force
+
+# What a tick costs, in seconds and in words, against a throwaway
+# poll-and-recompute baseline. `make run` counts NODES; this counts time and
+# allocation, which is the number a latency-conscious reader actually wants.
+#
+# Takes a minute or two. NOT run by `make test` and NOT gated in CI --
+# benchmark numbers from a shared runner are noise. The README quotes a local
+# run and names the hardware.
+#
+# core_bench's own flags can be passed through:
+#   dune exec bench/bench_graph.exe -- -quota 10
+bench:
+	$(OPAM_ENV) && dune exec bench/bench_graph.exe
 
 # Line coverage, via bisect_ppx.
 #

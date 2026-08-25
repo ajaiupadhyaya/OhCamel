@@ -75,4 +75,12 @@
   (bisect_ppx
    (and
     :with-test
-    (>= 2.8.0)))))
+    (>= 2.8.0)))
+  ; Benchmarks only. Jane Street's own harness, which is thematically
+  ; consistent with the rest of the stack and, more usefully, reports a
+  ; confidence interval -- a hand-rolled timing loop gives a number and no
+  ; sense of how much to trust it. bench/ does not ship in the binary.
+  (core_bench
+   (and
+    :with-test
+    (>= v0.17.0)))))

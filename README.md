@@ -52,6 +52,53 @@ what the same graph would cost at three book sizes:
 The middle column is flat and the right one is not. The cost of an event is set
 by what the event touches, not by how large the book is.
 
+### What that costs in seconds
+
+A node count is the right proof of the *design* and it is not a proof of
+anything a latency-conscious reader cares about — it says nothing about whether
+a node costs a nanosecond or a millisecond. `make bench` measures the two
+numbers that do, against a throwaway poll-and-recompute baseline implemented in
+[`bench/bench_graph.ml`](bench/bench_graph.ml) using the *same* pure functions
+the graph does, so the difference is incrementality and not one side having a
+slower covariance routine.
+
+```
+  Name                 Time/Run       mWd/Run    mjWd/Run   Percentage
+ ----------------- ------------- ------------- ----------- ------------
+  incremental/10        19.5us         9.08kw      27.3w         0.04%
+  incremental/100       89.1us        44.52kw     603.2w         0.17%
+  incremental/400      492.7us       180.69kw   9_212.2w         0.92%
+  polled/10             51.7us        47.94kw       9.8w         0.10%
+  polled/100         3_387.7us      3_756.06kw    325.8w         6.34%
+  polled/400        53_426.8us     59_345.84kw  3_948.8w       100.00%
+```
+
+Apple M2 Pro, macOS 26.5, OCaml 5.2.1, Owl's C kernels at `-O1` because of the
+clang bug the Makefile documents. Run-to-run variance is 3–5% on time and
+essentially zero on allocation. Numbers from your machine will differ; the
+ratios should not.
+
+At 400 names a full recompute costs **53 milliseconds**, which is not a slow
+number so much as a disqualifying one: it caps the engine at about nineteen
+events a second before it falls behind the market it is supposed to be watching.
+The incremental path is **108× faster** and allocates **330× fewer words**.
+
+And now the honest part, which the node-count table above hides. **The
+incremental engine's cost per tick is not flat in wall-clock** — 19.5µs, 89µs,
+493µs across the three sizes — even though the node count is (25.6, 25.2, 26.0).
+Both are true and the second does not imply the first. A tick reaches about
+twenty-five nodes at every book size, but *those* nodes are not all O(1): the
+weights are O(n), the portfolio return series is O(n·w), and the Euler
+decomposition is a matrix-vector product at O(n²). What incrementality buys is
+that the covariance matrix — O(n²·w), the single most expensive thing here — is
+not among them. The polling baseline scales as n² because it rebuilds that
+matrix on every event; this one scales as the *cheap* part of n², which is why
+the gap widens from 2.7× to 108× as the book grows rather than staying constant.
+
+CI does not run this. Benchmark numbers from a shared runner are noise wearing a
+lab coat, so `make bench` is a local command and the table above is a quoted run
+rather than a gate.
+
 The runtime is [Incremental](https://github.com/janestreet/incremental), Jane
 Street's self-adjusting computation library, and it is the reason this is an OCaml
 project. Incremental is the mature implementation of this idea and it does not
@@ -804,7 +851,9 @@ events, the whole book after each one, a breach and its recovery in the middle,
 the risk decomposition at the end, and then it exits — without ever starting the
 Async scheduler. It is the fastest way to see the numbers without a browser.
 
-`make stress`, `make backtest`, `make backtest-crisis` and `make options` are the
+`make bench` is the other local-only command — a minute or two, and it is what
+produced the timing table above. `make stress`, `make backtest`,
+`make backtest-crisis` and `make options` are the
 other credential-free modes, and they are what the previous sections are about: the scenario suite against
 the synthetic book, and the coverage battery against three deterministic return
 series. Both are hermetic and both are deterministic, so two runs print the same
