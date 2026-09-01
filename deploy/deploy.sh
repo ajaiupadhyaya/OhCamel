@@ -39,6 +39,23 @@ say "Pulling"
 git -C "$REPO" pull --ff-only
 
 # ---------------------------------------------------------------------------
+say "Book"
+#
+# book.sexp is gitignored, so a fresh clone does not have one, and the compose
+# file bind-mounts ../book.sexp into both engines. Docker's behaviour when a
+# bind-mount source is missing is to CREATE it -- as a directory -- and a
+# directory mounted over a file makes the container fail to start with an
+# error that names neither the book nor the mount. So the file is created
+# here, from the committed example, before anything can go looking for it.
+# An existing book.sexp is the owner's and is never touched.
+if [ ! -f book.sexp ]; then
+	cp book.example.sexp book.sexp
+	echo "  book.sexp created from book.example.sexp -- edit it and redeploy to change the book"
+else
+	echo "  book.sexp present, leaving it alone"
+fi
+
+# ---------------------------------------------------------------------------
 say "Building"
 #
 # On the droplet, natively. This is the whole reason the build happens here

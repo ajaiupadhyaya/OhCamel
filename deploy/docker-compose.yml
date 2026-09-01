@@ -20,9 +20,11 @@ x-engine: &engine
   # process -- turning every deploy into an unclean shutdown.
   init: true
   # The book is mounted rather than baked so that editing book.sexp and
-  # restarting does not mean a twenty-minute rebuild. The image carries a copy
-  # as a fallback, so a missing mount degrades to the committed book instead of
-  # a crash.
+  # restarting does not mean a twenty-minute rebuild. The image carries the
+  # committed EXAMPLE book as a fallback, so a missing mount degrades to that
+  # instead of a crash. The mount source must exist, though: Docker creates a
+  # missing bind-mount source as a directory, and a directory over a file
+  # fails the container. deploy.sh creates book.sexp from the example first.
   volumes:
     - ../book.sexp:/app/book.sexp:ro
   # A read-only root filesystem: the engine writes nothing to disk. Anything

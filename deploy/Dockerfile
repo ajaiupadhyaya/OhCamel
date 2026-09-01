@@ -111,8 +111,14 @@ RUN ldd /usr/local/bin/ohcamel > /tmp/ldd.txt 2>&1 \
 # resolved against the working directory. Baked in as a default; docker-compose
 # mounts the repository's copy over it, so editing the book and restarting does
 # not require a rebuild.
+#
+# The source is the EXAMPLE book, not book.sexp. book.sexp is gitignored -- it
+# is the owner's private book -- so a fresh clone has no such file, and a COPY
+# of it fails the build in its first second, before a line of OCaml compiles.
+# The first deploy on a clean droplet found this; the local harness never
+# could, because the author's tree always has one.
 WORKDIR /app
-COPY --chown=ohcamel:ohcamel book.sexp /app/book.sexp
+COPY --chown=ohcamel:ohcamel book.example.sexp /app/book.sexp
 
 USER ohcamel
 
