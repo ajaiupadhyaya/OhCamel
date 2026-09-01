@@ -183,15 +183,26 @@ Six variables, three of them required:
 | `OHCAMEL_FRED_SERIES` | no | defaults to `DGS10` |
 | `OHCAMEL_LOG_LEVEL` | no | |
 
-**An open question, and it is the owner's to answer.** These are the same Alpaca
-keys the quant-trading system uses on the M4. Alpaca does not issue
-market-data-only credentials: a key that can read bars can place orders on that
-paper account. Putting them on an internet-facing host widens their exposure and
-splits their rotation across two machines. Three ways out — reuse them (it is a
-paper account, and the blast radius is paper), open a second Alpaca paper
-account with its own pair (clean, and the recommendation), or ship live mode
-with FRED only and let Alpaca stay home. This is deferred to Phase 4; Phases 1–3
-do not touch it.
+**A question that was open, and how the owner answered it.** As first written,
+these were the same Alpaca keys the quant-trading system used on the M4, and
+that was the concern: Alpaca does not issue market-data-only credentials, so a
+key that can read bars can place orders on that paper account, and sharing one
+pair across an internet-facing host and a laptop widens exposure and splits
+rotation. Three ways out were offered — reuse the keys, open a second paper
+account with its own pair, or ship live mode with FRED only.
+
+**Decided 2026-09-01: reuse them.** The other system is no longer active, so
+the keys now serve exactly one consumer and the two objections dissolve with
+it. There is no second machine to split rotation across, and the free tier's
+one-stream-per-account limit — which would have made the two systems fight
+over the feed and 406 the loser — has nothing left to contend with. The blast
+radius remains paper. If that other system is ever revived, this decision
+should be revisited before it reconnects, because the contention comes back
+with it.
+
+The domain is likewise settled: `ajaiupadhyaya.com` is the owner's, hosts
+their portfolio site at the apex, and takes two new A records for the
+subdomains above. Nothing about the apex or `www` is touched.
 
 ## Sizing
 
@@ -235,7 +246,7 @@ stack trace.
 | 1 | `Dockerfile`, `docker-compose.yml`, `Caddyfile`, `.dockerignore`, `smoke.sh`, Makefile targets — verified against local Docker | nothing |
 | 2 | Droplet created and provisioned | a DigitalOcean API token |
 | 3 | DNS records, TLS issuance, the demo host live | a droplet IP |
-| 4 | The live service and its secrets | the Alpaca key decision above |
+| 4 | The live service and its secrets | ~~the Alpaca key decision above~~ — decided, reuse; see §Secrets |
 | 5 | Smoke suite green against production, README section, ops notes | 1–4 |
 
 Phase 1 is the majority of the work and needs nothing from anyone.
