@@ -1,0 +1,115 @@
+# OhCamel on one droplet.
+#
+#   caddy         TLS termination and the only service with a host port
+#   ohcamel-demo  the synthetic engine, public
+#   ohcamel-live  the same image against Alpaca and FRED, password-gated
+#
+# The two engines have no published ports -- they are reachable only from
+# caddy, over the internal network. That is what makes the basic-auth on the
+# live host meaningful: without it, anyone could skip the proxy by asking the
+# droplet for :8081 directly, and the password would be decoration.
+
+name: ohcamel
+
+x-engine: &engine
+  image: ohcamel:latest
+  restart: unless-stopped
+  # Docker's own init as PID 1. Async installs signal handlers, but PID 1 in a
+  # container does not get the default SIGTERM disposition, so without an init
+  # a `docker compose down` waits the full ten seconds and then kills the
+  # process -- turning every deploy into an unclean shutdown.
+  init: true
+  # The book is mounted rather than baked so that editing book.sexp and
+  # restarting does not mean a twenty-minute rebuild. The image carries a copy
+  # as a fallback, so a missing mount degrades to the committed book instead of
+  # a crash.
+  volumes:
+    - ../book.sexp:/app/book.sexp:ro
+  # A read-only root filesystem: the engine writes nothing to disk. Anything
+  # that suddenly needs to is a change worth noticing at review time rather
+  # than discovering in production.
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  networks: [ohcamel]
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    init: true
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile.snippets:/etc/caddy/Caddyfile.snippets:ro
+      # Named volumes, not bind mounts: caddy_data holds the issued
+      # certificates and the ACME account key. Losing it means re-issuing on
+      # every restart, and Let's Encrypt rate-limits that (five per week per
+      # hostname) -- a restart loop could lock the domain out for days.
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      OHCAMEL_ACME_EMAIL: ${OHCAMEL_ACME_EMAIL:?set it in deploy/deploy.env}
+      OHCAMEL_DEMO_HOST: ${OHCAMEL_DEMO_HOST:?set it in deploy/deploy.env}
+      OHCAMEL_LIVE_HOST: ${OHCAMEL_LIVE_HOST:?set it in deploy/deploy.env}
+      OHCAMEL_LIVE_USER: ${OHCAMEL_LIVE_USER:?set it in deploy/deploy.env}
+      OHCAMEL_LIVE_HASH: ${OHCAMEL_LIVE_HASH:?run `caddy hash-password`}
+    depends_on:
+      ohcamel-demo:
+        condition: service_healthy
+    networks: [ohcamel]
+
+  ohcamel-demo:
+    <<: *engine
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["demo", "8080"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # The engine builds its graph and runs a first stabilization before it
+      # listens. Twenty seconds is generous for that; the cost of being
+      # generous is a slower first deploy, and the cost of being tight is a
+      # container killed while it was starting correctly.
+      start_period: 20s
+
+  # Behind a profile, so `docker compose up -d` brings up only the public demo
+  # and `docker compose --profile live up -d` adds this. Phases 1-3 of the
+  # deployment never start it, which means they never need a credential.
+  ohcamel-live:
+    <<: *engine
+    profiles: ["live"]
+    command: ["serve", "8081"]
+    # Root-owned, 0600, outside the repository, and mounted rather than copied.
+    # Nothing about these three keys should ever be able to reach an image
+    # layer or a git object.
+    env_file:
+      - path: /etc/ohcamel/live.env
+        required: true
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  ohcamel:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

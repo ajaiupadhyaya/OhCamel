@@ -71,7 +71,8 @@ export OWL_CFLAGS := -g -O1 -funroll-loops -fno-math-errno -fno-rounding-math -f
 # Homebrew's directory for every build, so no ordering can win.
 export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 
-.PHONY: all build run stress backtest backtest-crisis options garch test bench coverage fmt clean deps doctor
+.PHONY: all build run stress backtest backtest-crisis options garch test bench coverage fmt clean deps doctor \
+        deploy-build deploy-up deploy-down deploy-verify deploy-logs deploy-smoke
 
 all: build
 
@@ -224,3 +225,50 @@ doctor:
 	  && echo "openblas: $$(pkg-config --modversion openblas 2>/dev/null || echo 'NOT FOUND')" \
 	  && echo "--- key packages ---" \
 	  && opam list --installed --columns=name,version core async incremental owl cohttp-async alcotest
+
+# ---------------------------------------------------------------------------
+# Deployment
+# ---------------------------------------------------------------------------
+#
+# These targets drive the LOCAL harness -- the containerised engine behind the
+# same Caddy configuration production uses, on localhost, without TLS. They
+# exist so the deployment can be broken and fixed on a laptop instead of on a
+# droplet.
+#
+# Deploying for real is deploy/deploy.sh, run on the droplet. There is no
+# `make deploy` on purpose: a target that silently reaches a production host
+# is a target somebody eventually runs by accident.
+
+LOCAL_COMPOSE := docker compose --env-file deploy/local.env \
+                  -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml
+
+# Build the image. Twenty minutes cold; about one after an edit to lib/,
+# because the Dockerfile installs dependencies before it copies source.
+deploy-build:
+	docker build -f deploy/Dockerfile -t ohcamel:latest .
+
+# The demo engine behind Caddy on http://localhost:8000.
+deploy-up: deploy-build
+	$(LOCAL_COMPOSE) up -d
+	@echo
+	@echo "  dashboard  http://localhost:8000"
+	@echo "  verify     make deploy-verify"
+
+deploy-down:
+	$(LOCAL_COMPOSE) down
+
+deploy-logs:
+	$(LOCAL_COMPOSE) logs -f --tail 100
+
+# The assertion the whole deployment turns on: frames must arrive SPREAD OVER
+# the window, not delivered in a pile at the end. See the comment above the
+# stream check in deploy/smoke.sh for why counting frames is not enough.
+deploy-smoke:
+	deploy/smoke.sh http://localhost:8000
+
+# Up, verify, down. What CI would run if this were wired into CI.
+deploy-verify: deploy-up
+	@sleep 5
+	@deploy/smoke.sh http://localhost:8000; status=$$?; \
+	  $(LOCAL_COMPOSE) down >/dev/null 2>&1; \
+	  exit $$status

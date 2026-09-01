@@ -29,3 +29,13 @@ book.sexp
 # An earlier copy of the brief, kept for provenance but not part of the repo
 # (README.md is the canonical version).
 Untitled
+
+# Deployment. deploy/.env holds hostnames and a bcrypt hash and is written on
+# the droplet, never here; deploy/local.env is committed on purpose because it
+# holds nothing worth protecting. Alpaca and FRED credentials never live in
+# this tree at all -- they are /etc/ohcamel/live.env on the server, root-owned.
+deploy/.env
+deploy/*.env
+!deploy/local.env
+!deploy/deploy.env.example
+!deploy/live.env.example

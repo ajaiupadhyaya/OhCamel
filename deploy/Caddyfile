@@ -1,0 +1,55 @@
+# OhCamel behind Caddy, in production.
+#
+# Two hosts, one image, one difference between them: the public one runs the
+# synthetic demo and the gated one runs the engine against Alpaca and FRED.
+#
+# Hostnames, the ACME contact and the basic-auth credential arrive as
+# environment variables (Caddy's {$VAR} syntax) rather than being written here,
+# so this file is safe in a public repository. docker-compose.yml passes them
+# in; deploy/deploy.env.example lists them.
+#
+# The streaming configuration lives in Caddyfile.snippets, which the localhost
+# harness imports too -- read the comments there before changing anything about
+# how /api/stream is proxied.
+{
+	email {$OHCAMEL_ACME_EMAIL}
+}
+
+import Caddyfile.snippets
+
+# ---------------------------------------------------------------------------
+# Public -- the synthetic demo
+# ---------------------------------------------------------------------------
+{$OHCAMEL_DEMO_HOST} {
+	import ohcamel_common
+
+	# Only in production: HSTS is a promise that this host will keep speaking
+	# HTTPS, and it must not be made by the localhost harness, which cannot.
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+	reverse_proxy ohcamel-demo:8080 {
+		import ohcamel_stream_proxy
+	}
+}
+
+# ---------------------------------------------------------------------------
+# Gated -- the live engine
+# ---------------------------------------------------------------------------
+#
+# The password is why this host exists separately. Live mode holds Alpaca and
+# FRED credentials and shows a real book; the demo holds nothing and shows a
+# generated one. OHCAMEL_LIVE_HASH is a bcrypt hash from `caddy hash-password`,
+# never a plaintext password -- see deploy/deploy.env.example.
+{$OHCAMEL_LIVE_HOST} {
+	import ohcamel_common
+
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+	basic_auth {
+		{$OHCAMEL_LIVE_USER} {$OHCAMEL_LIVE_HASH}
+	}
+
+	reverse_proxy ohcamel-live:8081 {
+		import ohcamel_stream_proxy
+	}
+}

@@ -118,21 +118,51 @@ Layer caching is ordered so that `dune-project` and `ohcamel.opam` are copied
 and `opam install --deps-only` runs *before* the source is copied. Editing
 `lib/graph.ml` then rebuilds in a minute rather than twenty.
 
-### The failure mode this design is most afraid of
+### The failure mode this design was most afraid of, and what testing it found
 
-Caddy buffers proxied responses by default. A buffered SSE stream produces a
-dashboard that loads correctly, renders one snapshot from `/api/snapshot`, and
-then never moves again. It looks exactly like an engine bug. It is not one, and
-the whole architectural claim of the project — that the stream is reactive —
-becomes unfalsifiable from the outside precisely when it is most visible.
+The fear, as written before any of this was built: Caddy buffers proxied
+response bodies by default, and a buffered SSE stream produces a dashboard that
+loads correctly, renders one snapshot from `/api/snapshot`, and then never moves
+again. It looks exactly like an engine bug. It is not one, and the whole
+architectural claim of the project becomes unfalsifiable from the outside
+precisely where it is most visible.
 
-`flush_interval -1` on both `reverse_proxy` blocks disables that buffering. But
-a configuration line is a claim, and this project's habit is to test its claims:
-`smoke.sh` holds `/api/stream` open and asserts that **at least two distinct
-frames arrive within thirty seconds**. A deployment that serves a beautiful,
-frozen dashboard fails the smoke test.
+`flush_interval -1` on both `reverse_proxy` blocks was the answer, plus an
+exclusion keeping the stream out of `encode`.
 
-The health route returning 200 is necessary and proves almost nothing.
+**Both turned out to be unnecessary, and finding that out was worth the hour.**
+Three deliberate misconfigurations were run against the local stack with the
+smoke suite watching:
+
+| Deliberate break | Result |
+|---|---|
+| `flush_interval 30s` — longer than the entire probe window | still streamed, 52 frames over 20s |
+| `encode` applied to `/api/stream`, client requesting gzip | still streamed, 52 frames over 20s |
+| nginx with `proxy_buffering on` substituted for Caddy | still streamed, 51 frames over 20s |
+
+Caddy special-cases responses whose `Content-Type` is `text/event-stream` and
+flushes them immediately regardless of `flush_interval`; its `encode` module
+does the same; nginx forwards available data rather than waiting for a full
+buffer. The directives stay as defence in depth — the auto-detection keys off
+the Content-Type, so a future route streaming something that is not
+`text/event-stream` would get no protection, and an explicit `-1` documents the
+requirement for anyone who swaps the proxy for one less careful. But the spec
+should not go on claiming they are what holds the dashboard up.
+
+Correcting this mattered for the smoke suite too. The probe originally did not
+send `Accept-Encoding`, which a browser always does — so it was not exercising
+the compression path it was written to protect. It now runs `--compressed`.
+
+**What the stream assertion does catch**, verified by pausing the engine
+container mid-run: an engine that has died, wedged, or stopped ticking. All four
+assertions failed and the suite exited 1. That is the outcome that matters — a
+deploy must never report success while serving a dashboard that never moves —
+and it is the reason `deploy.sh` treats a smoke failure as a failed deploy
+rather than a warning.
+
+The health route returning 200 remains necessary and proves almost nothing;
+`nodes_recomputed` advancing between two reads is the assertion that proves the
+graph is alive.
 
 ## Secrets
 
@@ -180,13 +210,20 @@ while serving is a server that is already wrong.
 Deployment has no unit tests worth writing; what it has is verification that
 runs against the real thing after every deploy. `smoke.sh` asserts, in order:
 
-1. Port 80 redirects to 443.
-2. The certificate is valid and matches the host.
-3. `/api/health` returns 200.
-4. `/api/snapshot` parses as JSON and carries a non-null `gross_notional`.
-5. `/api/stream` delivers ≥2 distinct frames inside 30 seconds. *(the one that matters)*
-6. The live host returns 401 without credentials.
-7. `:8080` and `:8081` are not reachable from outside.
+1. `/` renders.
+2. `/api/health` returns 200.
+3. `/api/snapshot` parses, has positions and a numeric `gross_exposure`, and
+   its `nodes_recomputed` **advances** across two reads two seconds apart —
+   a frozen graph serves valid JSON forever, so the counter is the real test.
+4. `/api/stream` delivers ≥2 *distinct* frames **spread across** the window,
+   with the client requesting compression as a browser does.
+5. Port 80 redirects to 443, and the certificate is valid. *(production only)*
+6. `:8080` and `:8081` are unreachable from outside. *(production only)*
+7. The live host returns 401 without credentials. *(production only)*
+
+Note the field name: the engine emits `gross_exposure`, not `gross_notional`.
+The first draft of the suite asserted on the latter and failed against a
+perfectly healthy engine.
 
 Exit non-zero on any failure, and print which assertion failed rather than a
 stack trace.
