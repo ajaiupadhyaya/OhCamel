@@ -291,6 +291,16 @@ and it introduces a mutating route, which the deployment spec's non-goals
 excluded only *as a side effect of deploying*. It has not been designed; it
 starts with a spec, not code.
 
+**Where that work now lives (2026-09-02).** The standalone direction became
+its own repository, [`ohcamel-alpha`](https://github.com/ajaiupadhyaya/ohcamel-alpha):
+OhCamel linked as a library and left exactly as it is, Five Dollar Quant's
+validation battery as a package, and an OCaml core between them that enforces
+a signal contract, will run pre-trade checks on a fork of this engine's graph,
+and simulates fills. Its Phase 0 is done; its spec records why paper execution
+lives there and not here. What this repository will gain, when that project
+reaches its Phase 2, is one pure function: proposed fill in, breached limits
+out, through `Graph.fork` — the read-only calculation invariant 6 permits.
+
 **After that, in rough order of leverage:**
 - Reading positions from the owner's Alpaca account, and a *pre-trade check*
   — post a proposed fill, fork the graph, report which limits it would breach,
