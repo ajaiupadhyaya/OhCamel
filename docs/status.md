@@ -15,17 +15,17 @@ short enough to read in ten minutes and dated so its staleness is visible.
 ## What it is
 
 A reactive risk and limits engine, written in OCaml on Jane Street's
-Incremental, a library for self-adjusting computation. Positions and market data go in; exposure, VaR, expected
-shortfall, beta, drawdown, Greeks and limit breaches come out, and keep coming
-out as the market moves. The thesis is that risk is a dependency graph, not a
-polling loop: a tick recomputes exactly what is downstream of it and nothing
-else, so the cost of an event is set by what the event touches rather than by
-the size of the book. The engine also answers the three questions a risk
-number invites — *where* the risk is (an Euler decomposition: an additive
-split of total risk across positions that sums back exactly), *whether
-the number is any good* (a coverage battery run over point-in-time forecasts,
-including against real crisis windows), and *what would break it* (a scenario
-suite that shocks a fork of the live graph).
+Incremental, a library for self-adjusting computation. Positions and market
+data go in; exposure, VaR, expected shortfall, beta, drawdown, Greeks and limit
+breaches come out, and keep coming out as the market moves. The thesis is that
+risk is a dependency graph, not a polling loop: a tick recomputes exactly what
+is downstream of it and nothing else, so the cost of an event is set by what
+the event touches rather than by the size of the book. The engine also answers
+the three questions a risk number invites — *where* the risk is (an Euler
+decomposition: an additive split of total risk across positions that sums back
+exactly), *whether the number is any good* (a coverage battery run over point-
+in-time forecasts, including against real crisis windows), and *what would
+break it* (a scenario suite that shocks a fork of the live graph).
 
 It computes and reports. It never places, cancels or simulates an order, and
 that is a design invariant rather than a missing feature.
@@ -66,10 +66,9 @@ return window (nearest-rank convention, with the ε-rounding artefact in the
 tail rank found and documented); parametric variance–covariance VaR from an
 equal-weighted covariance *and*, as a sibling node rather than a replacement,
 from an exponentially weighted covariance at λ = 0.94, the RiskMetrics daily
-convention. The two parametric numbers
-disagreeing is the regime-change diagnostic; historical and parametric
-disagreeing is the tail-fatness diagnostic. Portfolio beta to a single macro
-factor series.
+convention. The two parametric numbers disagreeing is the regime-change
+diagnostic; historical and parametric disagreeing is the tail-fatness
+diagnostic. Portfolio beta to a single macro factor series.
 
 **Attribution.** An exact Euler decomposition of portfolio volatility into
 marginal, component and standalone risk, per instrument and per sector, signs
