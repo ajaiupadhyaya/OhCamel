@@ -1307,3 +1307,5 @@ formula is, not left for a reader to discover.
 
 This was built from a written brief, which is archived with provenance at
 [`docs/brief.md`](docs/brief.md).
+What it is *now* — built, deployed, and next — is kept current, and dated, in
+[`docs/status.md`](docs/status.md).

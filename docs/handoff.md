@@ -1,3 +1,13 @@
+> **Archived — the roadmap in §4 is complete.** This brief was written to the
+> agent that extended OhCamel, before any of that work existed. All eight
+> phases shipped by 2026-08-25; the plan that executed them, with its three
+> recorded deviations, is
+> [`superpowers/plans/2026-08-25-risk-engine-roadmap.md`](superpowers/plans/2026-08-25-risk-engine-roadmap.md).
+> §1 below describes the engine as it was *before* those phases and its counts
+> are stale. §2, the invariants, remains in force and is the part still worth
+> reading. For what the project is now — built, deployed, and next — see
+> [`status.md`](status.md).
+
 # OhCamel — Handoff Brief for Claude Code
 
 **Repo:** `ajaiupadhyaya/OhCamel` — a reactive risk-and-limits engine in OCaml, built on
