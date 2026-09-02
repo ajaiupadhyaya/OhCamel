@@ -35,12 +35,12 @@ that is a design invariant rather than a missing feature.
 | | |
 |---|---|
 | Public demo | **https://ohcamel.ajaiupadhyaya.com** — synthetic feed, no credentials, always on |
-| Live host | `https://live.ohcamel.ajaiupadhyaya.com` — same image against Alpaca and FRED, basic-auth. Caddy serves it and demands a password; **the engine container behind it is not started yet** (see *Next*) |
+| Live host | `https://live.ohcamel.ajaiupadhyaya.com` — same image against Alpaca (IEX) and FRED, behind basic-auth. Up since 2026-09-02; the owner holds the password |
 | Host | One DigitalOcean droplet, `s-2vcpu-4gb`, Ubuntu 24.04, nyc3, at `138.197.116.165` |
 | Cost | $24/month, metered hourly, capped |
 | Proxy / TLS | Caddy, Let's Encrypt, HTTP→HTTPS 308, HSTS. Only Caddy has a host port; the engines are on an internal Docker network |
 | DNS | Porkbun. Two A records, `ohcamel` and `live.ohcamel`, on a domain whose apex is unrelated (the owner's portfolio site) |
-| Deployed | 2026-09-02, verified by the production smoke suite: 8 passed, 0 failed, live host skipped |
+| Deployed | 2026-09-02, both hosts, verified by the production smoke suite: 9 passed, 0 failed |
 
 Resource use at rest is small enough to be worth stating so nobody adds a
 bigger box for the wrong reason: the engine sits at about 41 MB and six percent
