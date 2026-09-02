@@ -3,6 +3,9 @@
 [![ci](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml/badge.svg)](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml)
 [![coverage 70%](https://img.shields.io/badge/coverage-70%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
 
+**Live:** [ohcamel.ajaiupadhyaya.com](https://ohcamel.ajaiupadhyaya.com) — the
+synthetic demo, no credentials, always on. [How it is deployed](#watching-it).
+
 A reactive risk and limits engine. Positions and market data go in; per-instrument
 and per-sector exposure, gross and net, VaR, expected shortfall, portfolio beta,
 drawdown and limit breaches come out — and keep coming out, updated as the market
@@ -1019,6 +1022,48 @@ if anything else is using the same keys, this gets a 406 and stops.
 The dashboard is read-only and unauthenticated, and should be bound to localhost.
 There is nothing to authorise because no route mutates anything, and nothing in
 this codebase sends a message or takes an action on its own.
+
+## Watching it
+
+None of the above is required to see it move. The demo is deployed:
+
+**https://ohcamel.ajaiupadhyaya.com**
+
+That is `make demo` — the synthetic feed, no credentials, CVX going stale on
+schedule — on one small droplet behind Caddy with a Let's Encrypt certificate,
+restarting on its own after a crash or a reboot. It is up at three in the
+morning on a Sunday because the feed is generated rather than received. A second
+host, `live.ohcamel.ajaiupadhyaya.com`, is the same image against Alpaca and
+FRED. It sits behind a password, because it holds credentials and shows a real
+book, and it comes up with `deploy/deploy.sh --live` once those credentials are
+installed on the box.
+
+The deployment is [`deploy/`](deploy/): a two-stage Dockerfile that fails the
+*build* if the runtime image is missing a shared object, a compose file in which
+only Caddy has a host port, and a smoke suite that runs after every deploy and
+turns a failure into a failed deploy rather than a warning. The assertion in
+that suite worth naming is not the health route returning 200, which proves
+almost nothing. It is that `nodes_recomputed` in `/api/snapshot` *advances*
+between two reads two seconds apart — 234 nodes, in the run that verified this
+paragraph — and that `/api/stream` delivers distinct frames spread across a
+twenty-second window rather than piled up at its end: 52 of them. A frozen
+graph serves valid JSON forever. Those two checks are what distinguish a
+dashboard that is watching the market from one that rendered once and stopped.
+
+The first production deploy failed twice, and both failures were the
+deployment's own. A fresh clone has no `book.sexp` — it is gitignored, being the
+owner's — so the image now bakes in the committed example instead. And
+`deploy.sh` sourced its env file into bash, which reads the `$$` that compose
+requires in a bcrypt hash as its own process id; Caddy was handed the result and
+refused to start while the engine behind it sat healthy. Neither could have been
+caught on the laptop, and both are written up in
+[the spec](docs/superpowers/specs/2026-08-31-server-side-deployment-design.md)
+next to the failure the design had actually prepared for, which never happened.
+
+Redeploying is one command on the droplet, `deploy/deploy.sh`: pull, rebuild —
+about a minute, since the dependency layer is cached — restart, verify. Live-mode
+credentials live in a root-owned file outside the repository and reach the
+container as a mount, never as a layer.
 
 ## What's verified
 
