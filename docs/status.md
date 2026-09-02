@@ -272,14 +272,16 @@ recorded), and the deployment design.
 
 ## Next
 
-**Immediately, and blocked only on the owner:** the live host. Install the
-three credentials at `/etc/ohcamel/live.env` on the droplet, root-owned,
-0640, group `ohcamel`, per `deploy/live.env.example`, then
-`deploy/deploy.sh --live`. The
-Alpaca keys are the owner's existing pair. Another project of the owner's used
-to share them, which mattered because a free account allows one stream; that
-project is inactive, so there is no contention. Then the production smoke suite
-with `--live`, which closes the deployment spec.
+**The deployment is complete.** Both hosts are up and the spec's five phases
+are done; the production smoke suite passes nine of nine with `--live`. The
+live host's credentials sit at `/etc/ohcamel/live.env` on the droplet,
+root-owned, 0640, group `ohcamel`. The Alpaca keys are the owner's existing
+pair; another project of the owner's used to share them, which mattered
+because a free account allows one stream, and that project is inactive. The
+first live deploy found the spec's third production bug — a 0600 secrets file
+the deploy user's compose could not read — and the spec records it beside the
+other two. The live book is the committed example until `book.sexp` on the
+droplet is edited and the live container restarted.
 
 **Direction, decided 2026-09-01:** a *standalone* tool first — something a
 person other than the author can point at *their* book — then integration

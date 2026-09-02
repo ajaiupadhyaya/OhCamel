@@ -1034,9 +1034,8 @@ schedule — on one small droplet behind Caddy with a Let's Encrypt certificate,
 restarting on its own after a crash or a reboot. It is up at three in the
 morning on a Sunday because the feed is generated rather than received. A second
 host, `live.ohcamel.ajaiupadhyaya.com`, is the same image against Alpaca and
-FRED. It sits behind a password, because it holds credentials and shows a real
-book, and it comes up with `deploy/deploy.sh --live` once those credentials are
-installed on the box.
+FRED: real prints, the real ten-year yield, real staleness. It sits behind a
+password, because it holds credentials and shows a real book.
 
 The deployment is [`deploy/`](deploy/): a two-stage Dockerfile that fails the
 *build* if the runtime image is missing a shared object, a compose file in which
@@ -1050,13 +1049,15 @@ twenty-second window rather than piled up at its end: 52 of them. A frozen
 graph serves valid JSON forever. Those two checks are what distinguish a
 dashboard that is watching the market from one that rendered once and stopped.
 
-The first production deploy failed twice, and both failures were the
-deployment's own. A fresh clone has no `book.sexp` — it is gitignored, being the
+The first production deploy failed twice, the first live deploy once more,
+and all three failures were the deployment's own. A fresh clone has no `book.sexp` — it is gitignored, being the
 owner's — so the image now bakes in the committed example instead. And
 `deploy.sh` sourced its env file into bash, which reads the `$$` that compose
 requires in a bcrypt hash as its own process id; Caddy was handed the result and
-refused to start while the engine behind it sat healthy. Neither could have been
-caught on the laptop, and both are written up in
+refused to start while the engine behind it sat healthy. And the live host's
+secrets file was root-only, as specified, which is precisely why the deploy
+user's compose could not read it. None could have been caught on the laptop,
+and all three are written up in
 [the spec](docs/superpowers/specs/2026-08-31-server-side-deployment-design.md)
 next to the failure the design had actually prepared for, which never happened.
 
