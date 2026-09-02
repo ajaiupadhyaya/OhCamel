@@ -26,8 +26,28 @@ say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 	exit 1
 }
 
-# shellcheck disable=SC1091
-set -a; . deploy/.env; set +a
+# Read the two hostnames the smoke suite needs WITHOUT sourcing the file.
+#
+# deploy/.env is written for docker compose, whose parser treats `$$` as a
+# literal `$` -- which is why deploy.env.example says to double every dollar in
+# the bcrypt hash. Bash has a different opinion: `$$` is the shell's own process
+# id. Sourcing the file turned `$2a$14$...` into `<pid>2a<pid>14<pid>...`, and
+# because compose lets an exported variable override the .env file, that is the
+# value Caddy received. Its basic_auth module could not parse it, and Caddy
+# crash-looped on the first production deploy while the engine behind it sat
+# healthy. The local harness never saw this: Caddyfile.local has no basic_auth,
+# and `make deploy-verify` hands the file to compose with --env-file rather than
+# sourcing it into a shell.
+#
+# So: pull the two values out with sed, and let compose read the file itself.
+# Nothing here may ever export OHCAMEL_LIVE_HASH into the environment.
+env_value() { sed -n "s/^$1=//p" deploy/.env | tail -n1; }
+OHCAMEL_DEMO_HOST=$(env_value OHCAMEL_DEMO_HOST)
+OHCAMEL_LIVE_HOST=$(env_value OHCAMEL_LIVE_HOST)
+[ -n "$OHCAMEL_DEMO_HOST" ] && [ -n "$OHCAMEL_LIVE_HOST" ] || {
+	echo "deploy: OHCAMEL_DEMO_HOST and OHCAMEL_LIVE_HOST must be set in deploy/.env" >&2
+	exit 1
+}
 
 if [ ${#PROFILE[@]} -gt 0 ] && [ ! -r /etc/ohcamel/live.env ]; then
 	echo "deploy: --live needs /etc/ohcamel/live.env (see deploy/live.env.example)" >&2

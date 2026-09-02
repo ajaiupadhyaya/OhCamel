@@ -164,6 +164,21 @@ The health route returning 200 remains necessary and proves almost nothing;
 `nodes_recomputed` advancing between two reads is the assertion that proves the
 graph is alive.
 
+### And the one it was not afraid of, which production found
+
+The first deploy to the droplet ended with Caddy crash-looping and the engine
+behind it healthy. Nothing in Caddy, the engine or the network was wrong. The
+cause was `deploy.sh` sourcing `deploy/.env` into its own shell to learn the
+two hostnames the smoke suite needs. That file doubles every `$` in the bcrypt
+hash because compose's parser wants it so; bash reads `$$` as its process id,
+and compose prefers an exported variable to the file, so Caddy was handed
+`<pid>2a<pid>14<pid>…` and its basic-auth provider refused to load it. The
+local harness could not have caught this: `Caddyfile.local` has no basic-auth
+and `make deploy-verify` passes the file with `--env-file` rather than sourcing
+it. The fix is that `deploy.sh` no longer sources the file at all and reads the
+two names with `sed`. The lesson worth keeping is that a file written for one
+parser must not be fed to another, however convenient the shape.
+
 ## Secrets
 
 `live.env` lives at `/etc/ohcamel/live.env`, root-owned, mode `0600`, mounted
