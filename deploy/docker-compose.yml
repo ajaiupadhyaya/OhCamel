@@ -95,9 +95,10 @@ services:
     <<: *engine
     profiles: ["live"]
     command: ["serve", "8081"]
-    # Root-owned, 0600, outside the repository, and mounted rather than copied.
-    # Nothing about these three keys should ever be able to reach an image
-    # layer or a git object.
+    # Root-owned, 0640 and group-readable by the deploy user (compose reads
+    # env_file as the invoking user, not as root), outside the repository, and
+    # passed as environment rather than copied. Nothing about these three keys
+    # should ever be able to reach an image layer or a git object.
     env_file:
       - path: /etc/ohcamel/live.env
         required: true

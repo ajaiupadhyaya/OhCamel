@@ -49,8 +49,10 @@ OHCAMEL_LIVE_HOST=$(env_value OHCAMEL_LIVE_HOST)
 	exit 1
 }
 
+# Readable BY THIS USER: compose reads env_file on the client side, so a file
+# root can read and the deploy user cannot is a file the container never sees.
 if [ ${#PROFILE[@]} -gt 0 ] && [ ! -r /etc/ohcamel/live.env ]; then
-	echo "deploy: --live needs /etc/ohcamel/live.env (see deploy/live.env.example)" >&2
+	echo "deploy: --live needs /etc/ohcamel/live.env, readable by $(id -un) -- 0640 root:$(id -un); see deploy/live.env.example" >&2
 	exit 1
 fi
 

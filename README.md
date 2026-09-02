@@ -1062,8 +1062,8 @@ next to the failure the design had actually prepared for, which never happened.
 
 Redeploying is one command on the droplet, `deploy/deploy.sh`: pull, rebuild —
 about a minute, since the dependency layer is cached — restart, verify. Live-mode
-credentials live in a root-owned file outside the repository and reach the
-container as a mount, never as a layer.
+credentials live in a root-owned file outside the repository, readable by the
+deploy user alone, and reach the container as environment, never as a layer.
 
 ## What's verified
 

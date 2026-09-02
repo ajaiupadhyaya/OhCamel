@@ -273,8 +273,9 @@ recorded), and the deployment design.
 ## Next
 
 **Immediately, and blocked only on the owner:** the live host. Install the
-three credentials at `/etc/ohcamel/live.env` on the droplet, root-owned and
-0600, per `deploy/live.env.example`, then `deploy/deploy.sh --live`. The
+three credentials at `/etc/ohcamel/live.env` on the droplet, root-owned,
+0640, group `ohcamel`, per `deploy/live.env.example`, then
+`deploy/deploy.sh --live`. The
 Alpaca keys are the owner's existing pair. Another project of the owner's used
 to share them, which mattered because a free account allows one stream; that
 project is inactive, so there is no contention. Then the production smoke suite

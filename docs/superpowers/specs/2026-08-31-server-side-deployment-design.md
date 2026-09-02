@@ -181,8 +181,16 @@ parser must not be fed to another, however convenient the shape.
 
 ## Secrets
 
-`live.env` lives at `/etc/ohcamel/live.env`, root-owned, mode `0600`, mounted
-read-only into the live container only. It is never in git, never in the Docker
+`live.env` lives at `/etc/ohcamel/live.env`, root-owned, mode `0640` with the
+deploy user's group, and reaches the live container as environment via
+compose's `env_file`. The first draft said `0600` in a `0700` directory and
+"mounted": both were wrong in the same way. Compose reads `env_file` on the
+client side, as the user running `docker compose up`, and passes the values
+into the container's environment; it is not a mount, and a file only root
+can read is a file the deploy user's compose cannot open. The first live
+deploy stopped on exactly that check. The deploy user is in the docker
+group, which is root-equivalent on this box, so group-readable conceals
+nothing from anyone who could not already read it. It is never in git, never in the Docker
 build context (`.dockerignore` excludes `.env*`), and never baked into a layer —
 an image layer is forever, and a leaked key in layer three survives every
 subsequent `rm`.

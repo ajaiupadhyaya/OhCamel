@@ -90,7 +90,16 @@ say "Secrets directory"
 #
 # Created empty and locked down now, so that when the live credentials arrive
 # in Phase 4 there is no window in which they sit somewhere world-readable.
-install -d -m 0700 -o root -g root /etc/ohcamel
+#
+# Root-owned, but GROUP-readable by the deploy user, and this is not a
+# loosening: docker compose reads an env_file on the CLIENT side, as whoever
+# runs `docker compose up` -- the deploy user -- and not in the daemon. A
+# 0700 directory with a 0600 file inside, which the first draft specified,
+# is unreadable to that user and the live deploy refuses to start. The deploy
+# user is in the docker group, which is root-equivalent on this box anyway
+# (see the note above), so 0640 root:$DEPLOY_USER hides nothing from anyone
+# who could not already read it, and it hides everything from everyone else.
+install -d -m 0750 -o root -g "$DEPLOY_USER" /etc/ohcamel
 
 # ---------------------------------------------------------------------------
 say "Firewall"
