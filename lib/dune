@@ -132,7 +132,9 @@
 ; environment: a backslash inside one would be reinterpreted, silently under
 ; --profile release, which only warns on the unknown-escape case. A quoted
 ; string processes no escapes at all, so the value that went in is the value
-; that comes out.
+; that comes out. %{profile} is dune's own, not an environment value, so it
+; stays an ordinary "..." literal -- a dev build cannot claim to be a release
+; one.
 
 (rule
  (targets build_info.ml)
@@ -140,4 +142,4 @@
   (with-stdout-to
    build_info.ml
    (echo
-    "let git_sha = {ohcamel_build|%{env:OHCAMEL_GIT_SHA=unknown}|ohcamel_build}\nlet built_at = {ohcamel_build|%{env:OHCAMEL_BUILT_AT=unknown}|ohcamel_build}\nlet architecture = \"%{ocaml-config:architecture}\"\nlet system = \"%{ocaml-config:system}\"\n"))))
+    "let git_sha = {ohcamel_build|%{env:OHCAMEL_GIT_SHA=unknown}|ohcamel_build}\nlet built_at = {ohcamel_build|%{env:OHCAMEL_BUILT_AT=unknown}|ohcamel_build}\nlet profile = \"%{profile}\"\nlet architecture = \"%{ocaml-config:architecture}\"\nlet system = \"%{ocaml-config:system}\"\n"))))

@@ -365,9 +365,50 @@ let test_history_of_an_empty_buffer_is_well_formed () =
       | `List [] -> ()
       | _ -> Alcotest.failf "%s should be an empty list" name)
 
+(* The build stamp is either the truth or the word "unknown", and never
+   anything in between.
+
+   This is the field /api/ops exists for: the smoke suite compares it to the
+   sha deploy.sh just built from, and `docker compose up -d` is a no-op when
+   the image digest has not changed, so a deploy that silently kept the old
+   container is otherwise indistinguishable from one that worked. A plausible
+   default here -- today's date, a short hash of nothing -- would make that
+   comparison pass while being a lie, which is worse than the absence it
+   replaced. So: forty hex characters or the word `unknown`, an ISO-8601 UTC
+   instant or the word `unknown`, and nothing else. *)
+let test_build_stamp_is_honest () =
+  let sha = Ohcamel.Build_info.git_sha in
+  Alcotest.(check bool)
+    "git_sha is `unknown` or forty hex characters" true
+    (String.equal sha "unknown"
+    || String.length sha = 40
+       && String.for_all sha ~f:(fun c ->
+           Char.is_digit c || Char.between c ~low:'a' ~high:'f'));
+  (* `date -u +%FT%TZ` is exactly "2026-09-03T12:34:56Z": twenty characters,
+     T at index 10, Z at index 19. *)
+  let built = Ohcamel.Build_info.built_at in
+  Alcotest.(check bool)
+    "built_at is `unknown` or an ISO-8601 UTC instant" true
+    (String.equal built "unknown"
+    || (String.length built = 20 && Char.equal built.[10] 'T' && Char.equal built.[19] 'Z')
+    );
+  (* These three come from dune itself and cannot be absent. An empty one would
+     render as a blank cell on the page, which reads as "not measured" rather
+     than as "this build is broken". *)
+  List.iter
+    [
+      ("profile", Ohcamel.Build_info.profile);
+      ("architecture", Ohcamel.Build_info.architecture);
+      ("system", Ohcamel.Build_info.system);
+    ]
+    ~f:(fun (name, value) ->
+      Alcotest.(check bool) (name ^ " is not empty") true (not (String.is_empty value)))
+
 let suite =
   ( "server",
     [
+      Alcotest.test_case "the build stamp is honest or absent" `Quick
+        test_build_stamp_is_honest;
       Alcotest.test_case "the snapshot parses back as JSON" `Quick test_round_trips;
       Alcotest.test_case "values and positions" `Quick test_values;
       Alcotest.test_case "each limit carries its unit" `Quick test_limit_units;
