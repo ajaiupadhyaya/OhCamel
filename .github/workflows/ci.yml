@@ -37,6 +37,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The two pages, the three crisis CSVs and the quoted tables are OCaml
+      # quoted string literals: lib/dune cats web/* and docs/crisis/*.csv into
+      # generated modules between {ohcamel_html|…|ohcamel_html}, {ohcamel_csv|…}
+      # and {ohcamel_json|…}. A CLOSING delimiter inside one of those sources
+      # ends the literal early. In practice the trailing bytes are then not valid
+      # OCaml and the build fails — but it fails inside a GENERATED file, at a
+      # line number nobody can map back to the file they edited, and "in
+      # practice" is not a guarantee. This names the real file, costs a second,
+      # and runs before the forty-minute Owl build rather than after it.
+      #
+      # One platform is enough, for the same reason the format check is Linux
+      # only: the answer does not depend on the OS.
+      - name: No stray quoted-string delimiters in the embedded sources
+        if: runner.os == 'Linux'
+        run: |
+          if grep -rn -e '|ohcamel_html}' -e '|ohcamel_csv}' -e '|ohcamel_json}' \
+               web docs/crisis; then
+            echo "a closing quoted-string delimiter appears in an embedded source."
+            echo "rename it, or change the delimiter in lib/dune."
+            exit 1
+          fi
+          echo "no stray delimiters in web/ or docs/crisis/"
+
       # Owl links against OpenBLAS. The Makefile's OWL_CFLAGS/OWL_LDLIBS
       # workarounds are deliberately NOT exported on Linux: they exist because
       # Apple clang segfaults compiling Owl's C stubs above -O1, which is a
