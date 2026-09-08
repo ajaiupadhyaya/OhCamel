@@ -11,10 +11,12 @@
    [Book.load], and for the same reason: a parser that can only be reached
    through the filesystem tends not to get tested at its edges at all.
 
-   The one test that is not about parsing is the last. It checks that the
-   portfolio return series comes out of the ENGINE rather than out of arithmetic
-   in crisis_data.ml, using a two-name book whose weights are +0.5 and -0.5 so
-   the expected returns can be read off the page. *)
+   Two tests are not about parsing. One checks that the portfolio return series
+   comes out of the ENGINE rather than out of arithmetic in crisis_data.ml,
+   using a two-name book whose weights are +0.5 and -0.5 so the expected returns
+   can be read off the page. The other, last, checks that the three windows
+   compiled into the binary are the three files in docs/crisis -- the assertion
+   that keeps lib/dune's embedding rule honest. *)
 
 open Core
 module Crisis_data = Ohcamel.Crisis_data
@@ -221,6 +223,51 @@ let test_the_committed_cache_loads () =
                 true
                 (Float.( < ) (Float.abs r) 0.60))))
 
+(* The embedded windows and the files on disk are the same data by construction:
+   a rule in lib/dune cats docs/crisis/*.csv into crisis_csv.ml. "By
+   construction" is exactly the kind of claim that stops being true the first
+   time somebody edits a rule, so it is asserted rather than assumed.
+
+   This is the only test in this file that needs the repository on disk, because
+   comparing the binary against the disk requires the disk. Phase 3 removes the
+   OTHER two cwd-walking tests when the CLI switches to load_all_embedded; this
+   one keeps the walk, because the walk is half of what it is comparing.
+
+   Float equality is exact, with no tolerance, on purpose: the same bytes through
+   the same parser must produce the same floats, or one of those two statements
+   is false. A tolerance here would hide the failure the test exists to catch. *)
+let test_the_embedded_windows_are_the_files_on_disk () =
+  Alcotest.(check (list string))
+    "the embedded names, paired in window_names' order" Crisis_data.window_names
+    (List.map Crisis_data.embedded ~f:fst);
+  let on_disk = get "load_all" (Crisis_data.load_all ~dir:(crisis_dir ()) ()) in
+  let embedded = Crisis_data.load_all_embedded () in
+  Alcotest.(check int)
+    "one embedded window per window on disk" (List.length on_disk) (List.length embedded);
+  List.iter2_exn on_disk embedded ~f:(fun disk built_in ->
+      let name = Crisis_data.Window.name disk in
+      Alcotest.(check string) "the window's name" name (Crisis_data.Window.name built_in);
+      Alcotest.(check string)
+        (name ^ ": description -- the first # line, printed as the table's heading")
+        (Crisis_data.Window.description disk)
+        (Crisis_data.Window.description built_in);
+      Alcotest.(check (list string))
+        (name ^ ": every session date, in order")
+        (Array.to_list (Crisis_data.Window.dates disk))
+        (Array.to_list (Crisis_data.Window.dates built_in));
+      let disk_closes = Crisis_data.Window.closes disk in
+      let built_in_closes = Crisis_data.Window.closes built_in in
+      Alcotest.(check (list string))
+        (name ^ ": the same six symbols")
+        (List.map (Map.keys disk_closes) ~f:Symbol.to_string)
+        (List.map (Map.keys built_in_closes) ~f:Symbol.to_string);
+      Map.iteri disk_closes ~f:(fun ~key:symbol ~data ->
+          Alcotest.(check (list (float 0.0)))
+            (Printf.sprintf "%s/%s: every adjusted close, exactly" name
+               (Symbol.to_string symbol))
+            (Array.to_list data)
+            (Array.to_list (Map.find_exn built_in_closes symbol))))
+
 let suite =
   ( "crisis_data",
     [
@@ -235,4 +282,6 @@ let suite =
         test_a_missing_cache_is_fatal_and_says_how_to_fix_it;
       Alcotest.test_case "the committed cache loads and is the right shape" `Quick
         test_the_committed_cache_loads;
+      Alcotest.test_case "THE EMBEDDED WINDOWS ARE THE FILES ON DISK" `Quick
+        test_the_embedded_windows_are_the_files_on_disk;
     ] )

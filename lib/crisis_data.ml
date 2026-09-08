@@ -223,6 +223,49 @@ let load_all ?dir () : Window.t list Or_error.t =
   List.rev reversed
 
 (* ------------------------------------------------------------------------ *)
+(* The same three windows, compiled in                                       *)
+(* ------------------------------------------------------------------------ *)
+
+(* [load_all] reads docs/crisis relative to the working directory, which is an
+   honest description of how the CLI is run -- from the repository root, as every
+   Makefile target does -- and is exactly wrong in the two places this data now
+   has to work. The image does not carry docs/ at all (.dockerignore), and the
+   served process's working directory is /app; `ohcamel backtest-crisis` run from
+   any other directory fails for a reason that has nothing to do with the
+   analysis.
+
+   So the same three files are also compiled in, by a rule in lib/dune that cats
+   docs/crisis/*.csv into crisis_csv.ml. One source of data, two ways in: the
+   files on disk stay the thing a reviewer reads and tools/fetch_crisis_data.py
+   rewrites, and the strings below are those files byte for byte at the moment
+   the binary was built. test_crisis_data.ml asserts the two agree.
+
+   This list is the one place the two spellings of a window meet: `rates-2022` is
+   the filename and the Window.name, `rates_2022` is the OCaml identifier. *)
+let embedded : (string * string) list =
+  [
+    ("gfc", Crisis_csv.gfc);
+    ("covid", Crisis_csv.covid);
+    ("rates-2022", Crisis_csv.rates_2022);
+  ]
+
+(* Raises rather than returning an [Or_error.t], which is the opposite of [load]
+   and is right for the opposite reason. [load]'s failure is a real runtime
+   condition -- a working tree can genuinely be missing the cache -- and the
+   caller can act on it, so it gets a named, actionable error naming the script
+   that repopulates it. A parse failure HERE is a build that shipped malformed
+   bytes: the data is inside the executable, there is nothing to repopulate at
+   run time, and no behaviour a caller could choose is better than stopping.
+   Threading an [Or_error.t] through every report for a case that cannot occur
+   without a broken build would be error handling as decoration.
+
+   The order is [window_names]' order, which is the order the crisis table
+   prints its rows in. *)
+let load_all_embedded () : Window.t list =
+  List.map embedded ~f:(fun (name, contents) ->
+      Or_error.ok_exn (of_string ~name contents))
+
+(* ------------------------------------------------------------------------ *)
 (* From closes to a book's return series                                     *)
 (* ------------------------------------------------------------------------ *)
 
