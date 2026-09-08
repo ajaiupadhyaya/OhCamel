@@ -8,6 +8,18 @@
 
 OPAM_ENV := eval $$(opam env --switch=$(CURDIR) --set-switch)
 
+# The build stamp, so a locally built binary says which commit it is. Absent
+# a git checkout it says `unknown`, which is the point: an invented date on
+# /api/ops would be indistinguishable from a real one.
+#
+# A fresh OHCAMEL_BUILT_AT on every invocation relinks the binary, because
+# dune tracks %{env:...} as a dependency. That costs a couple of seconds and
+# buys a built_at that is not a lie. `make test` deliberately does NOT stamp,
+# so alternating test and build relinks once each way -- annoying, cheap, and
+# preferable to a test suite whose inputs change every second.
+BUILD_STAMP := OHCAMEL_GIT_SHA=$$(git rev-parse HEAD 2>/dev/null || echo unknown) \
+               OHCAMEL_BUILT_AT=$$(date -u +%FT%TZ)
+
 # Owl workarounds -- only relevant when (re)installing dependencies.
 # Two separate problems, two variables. Both are required; owl 1.2 does not
 # build on this machine without them.
@@ -77,7 +89,7 @@ export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 all: build
 
 build:
-	$(OPAM_ENV) && dune build
+	$(OPAM_ENV) && $(BUILD_STAMP) dune build
 
 run: build
 	$(OPAM_ENV) && dune exec bin/main.exe -- synthetic
@@ -155,7 +167,7 @@ serve: build
 # when the market is closed. One symbol is deliberately never ticked, so the
 # staleness path is visible rather than theoretical.
 demo: build
-	$(OPAM_ENV) && dune exec bin/main.exe -- demo
+	$(OPAM_ENV) && $(BUILD_STAMP) dune exec bin/main.exe -- demo
 
 # The example-based suites and the property-based ones run in the same alcotest
 # runner, so this is the only test command.
@@ -245,7 +257,10 @@ LOCAL_COMPOSE := docker compose --env-file deploy/local.env \
 # Build the image. Twenty minutes cold; about one after an edit to lib/,
 # because the Dockerfile installs dependencies before it copies source.
 deploy-build:
-	docker build -f deploy/Dockerfile -t ohcamel:latest .
+	docker build -f deploy/Dockerfile \
+	  --build-arg OHCAMEL_GIT_SHA=$$(git rev-parse HEAD 2>/dev/null || echo unknown) \
+	  --build-arg OHCAMEL_BUILT_AT=$$(date -u +%FT%TZ) \
+	  -t ohcamel:latest .
 
 # The demo engine behind Caddy on http://localhost:8000.
 deploy-up: deploy-build
