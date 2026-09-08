@@ -35,3 +35,48 @@
  ; produced under.
  (instrumentation
   (backend bisect_ppx)))
+
+; ---------------------------------------------------------------------------
+; Generated modules: the two pages, the crisis cache, the README's quoted
+; tables, and the build stamp.
+;
+; Each of these is a string that a program has to carry but a human has to
+; author. dashboard_html.ml was 767 lines of OCaml holding 29 KB of HTML, CSS
+; and JavaScript, with editor support for none of the three -- no highlighting,
+; no formatter, no linter, and a one-line diff for any change to the page. The
+; sources now live in web/ and docs/crisis/ as the files they are, and dune
+; concatenates them at build time. What is NOT given up is the property that
+; made the literal worth having in the first place: the binary stays
+; self-contained, so there is no asset path to get wrong, nothing to forget to
+; deploy, and `ohcamel serve` still works from any working directory.
+;
+; The delimiters are {ohcamel_html|...|ohcamel_html}, {ohcamel_csv|...} and
+; {ohcamel_json|...}. A CLOSING delimiter inside a source file ends the literal
+; early. In practice the trailing bytes are then not valid OCaml and the build
+; fails -- but it fails inside a GENERATED file, at a line number nobody can
+; map back to the file they actually edited. CI therefore greps web/ and
+; docs/crisis/ for the three closing delimiters and names the real file, and
+; that check does not depend on the trailing bytes happening to be ill-formed.
+;
+; These modules are outside `dune build @fmt` (they are build artefacts, not
+; sources) and inside bisect instrumentation, which costs nothing: a string
+; literal has no branch to cover.
+; ---------------------------------------------------------------------------
+
+(rule
+ (targets dashboard_html.ml)
+ (deps
+  (glob_files ../web/*))
+ (action
+  (with-stdout-to
+   dashboard_html.ml
+   (progn
+    (echo "let page = {ohcamel_html|")
+    (cat ../web/head.html)
+    (echo "<style>\n")
+    (cat ../web/page.css)
+    (echo "</style>\n</head>\n<body>\n")
+    (cat ../web/index.html)
+    (echo "<script>\n")
+    (cat ../web/dashboard.js)
+    (echo "</script>\n</body>\n</html>\n|ohcamel_html}\n")))))
