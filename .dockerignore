@@ -23,6 +23,16 @@ _coverage/
 .superpowers/
 
 docs/
+# ...except the crisis cache. lib/dune's crisis_csv.ml rule cats these three
+# files into the binary at build time, so they are a BUILD input rather than
+# documentation, and the builder's `COPY . .` has to see them. Excluding a
+# directory and then re-including files under it does work: verified against
+# this repository's own context with BuildKit, where `find . -type f` inside the
+# builder listed exactly these three files out of docs/. If it ever stops
+# working, the failure is loud -- `dune build` cannot find a declared dependency
+# and the image never builds -- rather than an image that serves a page with an
+# empty crisis table.
+!docs/crisis/*.csv
 bench/
 test/
 *.md
