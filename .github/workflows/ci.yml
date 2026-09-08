@@ -65,13 +65,20 @@ jobs:
       - name: No stray quoted-string delimiters in the embedded sources
         if: runner.os == 'Linux'
         run: |
-          patterns=$(grep -o '|ohcamel_[a-z_]*}' lib/dune | sort -u)
+          # GitHub runs an unqualified `run:` block as `bash -eo pipefail`, so a
+          # bare `var=$(cmd)` assignment whose command fails (grep exiting 1 for
+          # "no match", or 2 for "no such directory") kills the step right there,
+          # before its exit status can be read -- silently, since -e prints
+          # nothing of its own. Both fallible assignments below are therefore the
+          # left side of an explicit `... && status=0 || status=$?` (or `|| true`
+          # for the one whose value, not status, is what matters), so -e sees a
+          # command whose failure is being tested rather than left to propagate.
+          patterns=$(grep -o '|ohcamel_[a-z_]*}' lib/dune | sort -u) || true
           if [ -z "$patterns" ]; then
             echo "no {ohcamel_*|...|ohcamel_*} delimiters found in lib/dune -- the rule moved, or the delimiters were renamed, and this check has nothing left to guard."
             exit 1
           fi
-          matches=$(grep -rnF -f <(printf '%s\n' "$patterns") web docs/crisis)
-          status=$?
+          matches=$(grep -rnF -f <(printf '%s\n' "$patterns") web docs/crisis) && status=0 || status=$?
           case "$status" in
             0)
               echo "$matches"
