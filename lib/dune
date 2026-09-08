@@ -125,3 +125,11 @@
     (echo "|ohcamel_csv}\n\nlet rates_2022 = {ohcamel_csv|")
     (cat ../docs/crisis/rates-2022.csv)
     (echo "|ohcamel_csv}\n")))))
+
+(rule
+ (targets build_info.ml)
+ (action
+  (with-stdout-to
+   build_info.ml
+   (echo
+    "let git_sha = \"%{env:OHCAMEL_GIT_SHA=unknown}\"\nlet built_at = \"%{env:OHCAMEL_BUILT_AT=unknown}\"\nlet architecture = \"%{ocaml-config:architecture}\"\nlet system = \"%{ocaml-config:system}\"\n"))))

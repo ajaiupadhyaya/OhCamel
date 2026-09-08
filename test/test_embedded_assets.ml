@@ -260,6 +260,43 @@ let test_the_crisis_windows_are_in_the_binary () =
         (name ^ ": no pipe, so the quoted-string delimiter cannot be ended by the data")
         false (String.mem contents '|'))
 
+module Build_info = Ohcamel.Build_info
+
+(* The build stamp. Four strings, and the only interesting question about each is
+   whether it can lie.
+
+   [git_sha] and [built_at] come from build arguments, and a plain local build
+   has none -- so the honest value is the literal "unknown". Not an invented
+   date, and not the empty string: the page has to be able to say "this build
+   does not know which commit it is", and an empty string renders as an absent
+   field rather than as ignorance. Phase 6 reads a `git_sha` of "unknown" on the
+   droplet as proof that the args did not reach the container, which only works
+   if the default is a word rather than a blank.
+
+   [architecture] and [system] come from %{ocaml-config:...} and are always
+   known. They are asserted non-empty and space-free rather than pinned to this
+   laptop's `arm64`/`macosx`, because CI runs this suite on ubuntu as well and a
+   test that pins the author's machine fails on the Linux leg for a reason that
+   has nothing to do with the code. *)
+let test_the_build_stamp_can_say_it_does_not_know () =
+  let sha = Build_info.git_sha in
+  Alcotest.(check bool)
+    "git_sha is either the literal \"unknown\" or a 40-character lowercase hex sha" true
+    (String.equal sha "unknown"
+    || (String.length sha = 40 && String.for_all sha ~f:Char.is_hex_digit_lower));
+  Alcotest.(check bool)
+    "built_at is non-empty, so an absent build argument reads as ignorance not absence"
+    true
+    (not (String.is_empty Build_info.built_at));
+  List.iter
+    [ ("architecture", Build_info.architecture); ("system", Build_info.system) ]
+    ~f:(fun (name, value) ->
+      Alcotest.(check bool) (name ^ " is non-empty") true (not (String.is_empty value));
+      Alcotest.(check bool)
+        (name ^ " is one word, so a build line can print it without quoting")
+        false
+        (String.exists value ~f:Char.is_whitespace))
+
 let suite =
   ( "embedded_assets",
     [
@@ -277,4 +314,6 @@ let suite =
         test_the_pinned_cells_match_the_readme;
       Alcotest.test_case "the three crisis windows are in the binary" `Quick
         test_the_crisis_windows_are_in_the_binary;
+      Alcotest.test_case "the build stamp can say it does not know" `Quick
+        test_the_build_stamp_can_say_it_does_not_know;
     ] )
