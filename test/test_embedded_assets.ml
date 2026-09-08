@@ -118,6 +118,105 @@ let test_both_pages_share_one_head_and_one_stylesheet () =
     (head_and_style ~name:"dashboard" Dashboard_html.page)
     (head_and_style ~name:"ops" Ops_html.html)
 
+module Quoted = Ohcamel.Quoted
+module U = Yojson.Safe.Util
+
+(* Parsed once. The string is 8 KB and every case below reads it. *)
+let quoted = lazy (Yojson.Safe.from_string Quoted.json)
+let rows table = U.to_list (U.member "rows" (U.member table (Lazy.force quoted)))
+
+let row_of table ~key ~value ~estimator =
+  match
+    List.find (rows table) ~f:(fun r ->
+        String.equal (U.to_string (U.member key r)) value
+        && String.equal (U.to_string (U.member "estimator" r)) estimator)
+  with
+  | Some r -> r
+  | None ->
+      Alcotest.failf "%s: no row for %s = %S, estimator %S" table key value estimator
+
+(* Hand-typed JSON that nothing parses until it is on a web page is hand-typed
+   JSON that ships broken. This is the parse. *)
+let test_quoted_parses_and_holds_the_four_tables () =
+  let json = Lazy.force quoted in
+  Alcotest.(check (slist string String.compare))
+    "the four quoted tables, and where they were quoted from"
+    [ "battery"; "crisis"; "garch"; "machine"; "note"; "quoted_on"; "scaling"; "source" ]
+    (U.keys json);
+  Alcotest.(check int) "scaling: three book sizes" 3 (List.length (rows "scaling"));
+  Alcotest.(check int)
+    "battery: three series x three estimators" 9
+    (List.length (rows "battery"));
+  Alcotest.(check int)
+    "crisis: three windows x three estimators" 9
+    (List.length (rows "crisis"));
+  Alcotest.(check int) "garch: six sample sizes" 6 (List.length (rows "garch"))
+
+(* A row that lost a field renders as a blank cell rather than as a failure, so
+   the uniformity of the key sets is asserted rather than the presence of any
+   one key. *)
+let test_the_quoted_rows_are_uniform () =
+  List.iter [ "battery"; "crisis"; "garch"; "scaling" ] ~f:(fun table ->
+      let all = rows table in
+      let keys r = List.sort (U.keys r) ~compare:String.compare in
+      let first = keys (List.hd_exn all) in
+      List.iteri all ~f:(fun i r ->
+          Alcotest.(check (list string))
+            (Printf.sprintf "%s row %d carries the same fields as row 0" table i)
+            first (keys r)))
+
+(* PINS, NOT DERIVATIONS. Every value below was transcribed by hand out of
+   README.md and is held so that a slip in the transcription is a red test
+   rather than a wrong number on a public page.
+
+   The jumps/historical row is the one worth pinning by hand, because it is the
+   row where four columns disagree on purpose: zero exceptions in 940 days, a
+   Kupiec p that rounds to zero, a duration column that reads `--` because two
+   exceptions are needed before a duration exists, and a GREEN Basel zone --
+   green because Basel's light is one-sided and only asks about too MANY
+   breaches. A transcription that quietly "fixed" any one of those four would
+   destroy the argument the fourth test exists to make. *)
+let test_the_pinned_cells_match_the_readme () =
+  let jh = row_of "battery" ~key:"series" ~value:"jumps" ~estimator:"historical" in
+  Alcotest.(check int)
+    "jumps/historical: exceptions" 0
+    (U.to_int (U.member "exceptions" jh));
+  Alcotest.(check (float 1e-12))
+    "jumps/historical: Kupiec p" 0.0
+    (U.to_number (U.member "kupiec_p" jh));
+  Alcotest.(check bool)
+    "jumps/historical: the duration test does not apply, and that is null not zero" true
+    (match U.member "duration_p" jh with `Null -> true | _ -> false);
+  Alcotest.(check string)
+    "jumps/historical: Basel zone" "green"
+    (U.to_string (U.member "zone" jh));
+  Alcotest.(check string)
+    "jumps/historical: verdict" "REJECTED"
+    (U.to_string (U.member "verdict" jh));
+  let cp = row_of "crisis" ~key:"window" ~value:"covid" ~estimator:"parametric" in
+  Alcotest.(check int)
+    "covid/parametric: worst 21-session burst" 10
+    (U.to_int (U.member "burst" cp));
+  let garch_60 = List.hd_exn (rows "garch") in
+  Alcotest.(check int)
+    "the first GARCH row is n = 60, this engine's own return window" 60
+    (U.to_int (U.member "n" garch_60));
+  Alcotest.(check (float 1e-12))
+    "n = 60: persistence mean" 0.556
+    (U.to_number (U.member "persistence_mean" garch_60));
+  Alcotest.(check (float 1e-12))
+    "n = 60: persistence sd -- two thirds of the mean, which is the whole verdict" 0.364
+    (U.to_number (U.member "persistence_sd" garch_60));
+  Alcotest.(check (float 1e-12))
+    "the persistence the study fits back" 0.98
+    (U.to_number
+       (U.member "persistence" (U.member "truth" (U.member "garch" (Lazy.force quoted)))));
+  (* Stale on purpose; see the note in the scaling block. Phase 3 corrects
+     README.md, docs/status.md and this file together, and moves this pin. *)
+  Alcotest.(check int)
+    "scaling at 400 names: nodes in graph, AS THE README STILL SAYS" 1267
+    (U.to_int (U.member "nodes_in_graph" (List.last_exn (rows "scaling"))))
+
 let suite =
   ( "embedded_assets",
     [
@@ -127,4 +226,10 @@ let suite =
         test_the_ops_page_is_assembled_in_order;
       Alcotest.test_case "both pages share one head and one stylesheet" `Quick
         test_both_pages_share_one_head_and_one_stylesheet;
+      Alcotest.test_case "web/quoted.json parses and holds the four tables" `Quick
+        test_quoted_parses_and_holds_the_four_tables;
+      Alcotest.test_case "the quoted rows are uniform" `Quick
+        test_the_quoted_rows_are_uniform;
+      Alcotest.test_case "PINS: the transcribed cells match README.md" `Quick
+        test_the_pinned_cells_match_the_readme;
     ] )

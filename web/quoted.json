@@ -1,0 +1,69 @@
+{
+  "note": "The numbers this repository publishes but did not compute in this process. Everything here is transcribed by hand out of README.md. The page sets it in --ink-soft and tags it QUOTED, so a laptop's figures cannot pass for the droplet's, and Phase 5 prints the same table computed here beside each of these with one line saying whether they agree.",
+  "source": "README.md",
+  "quoted_on": "2026-09-02",
+  "machine": "Apple M2 Pro, macOS, arm64",
+
+  "scaling": {
+    "note": "README.md, the closing table of `make run`. STALE ON PURPOSE: this transcribes the README as it stands today. The current node set is 63 / 342 / 1272 -- the five option singletons landed after this table was recorded -- and Phase 3 corrects README.md, docs/status.md and this block in one change. Until then the page's computed-vs-quoted line for this table will honestly report the cells that differ, which is the mechanism working rather than failing.",
+    "columns": ["instruments", "nodes_in_graph", "nodes_per_tick", "if_polled"],
+    "rows": [
+      { "instruments": 10,  "nodes_in_graph": 58,   "nodes_per_tick": 25.6, "if_polled": 58 },
+      { "instruments": 100, "nodes_in_graph": 337,  "nodes_per_tick": 25.2, "if_polled": 337 },
+      { "instruments": 400, "nodes_in_graph": 1267, "nodes_per_tick": 26.0, "if_polled": 1267 }
+    ]
+  },
+
+  "battery": {
+    "note": "README.md, `make backtest`. Three synthetic series against three estimators. The `--` the CLI prints in the duration column means `does not apply -- fewer than two exceptions`, and is null here rather than zero, because the two are not the same claim.",
+    "confidence": 0.95,
+    "window": 60,
+    "seed": "2026_08_24",
+    "rows": [
+      { "series": "iid-normal", "estimator": "historical", "n": 940, "exceptions": 45, "expected": 47.0, "kupiec_p": 0.7631, "independence_p": 0.3595, "joint_p": 0.6280, "duration_p": 0.6291, "duration_shape": 0.95, "zone": "green",  "verdict": "ok" },
+      { "series": "iid-normal", "estimator": "parametric", "n": 940, "exceptions": 48, "expected": 47.0, "kupiec_p": 0.8814, "independence_p": 0.0229, "joint_p": 0.0744, "duration_p": 0.8975, "duration_shape": 1.01, "zone": "green",  "verdict": "ok" },
+      { "series": "iid-normal", "estimator": "ewma(0.94)", "n": 940, "exceptions": 54, "expected": 47.0, "kupiec_p": 0.3057, "independence_p": 0.0102, "joint_p": 0.0219, "duration_p": 0.0577, "duration_shape": 1.24, "zone": "green",  "verdict": "REJECTED" },
+      { "series": "vol-regime", "estimator": "historical", "n": 940, "exceptions": 52, "expected": 47.0, "kupiec_p": 0.4616, "independence_p": 0.9405, "joint_p": 0.7605, "duration_p": 0.9438, "duration_shape": 0.99, "zone": "green",  "verdict": "ok" },
+      { "series": "vol-regime", "estimator": "parametric", "n": 940, "exceptions": 65, "expected": 47.0, "kupiec_p": 0.0107, "independence_p": 0.8028, "joint_p": 0.0373, "duration_p": 0.9592, "duration_shape": 1.00, "zone": "yellow", "verdict": "REJECTED" },
+      { "series": "vol-regime", "estimator": "ewma(0.94)", "n": 940, "exceptions": 59, "expected": 47.0, "kupiec_p": 0.0836, "independence_p": 0.6864, "joint_p": 0.2063, "duration_p": 0.2446, "duration_shape": 1.13, "zone": "yellow", "verdict": "ok" },
+      { "series": "jumps",      "estimator": "historical", "n": 940, "exceptions": 0,  "expected": 47.0, "kupiec_p": 0.0000, "independence_p": 1.0000, "joint_p": 0.0000, "duration_p": null,   "duration_shape": null, "zone": "green",  "verdict": "REJECTED" },
+      { "series": "jumps",      "estimator": "parametric", "n": 940, "exceptions": 47, "expected": 47.0, "kupiec_p": 1.0000, "independence_p": 0.0277, "joint_p": 0.0886, "duration_p": 0.0000, "duration_shape": 20.00, "zone": "green", "verdict": "ok" },
+      { "series": "jumps",      "estimator": "ewma(0.94)", "n": 940, "exceptions": 47, "expected": 47.0, "kupiec_p": 1.0000, "independence_p": 0.0277, "joint_p": 0.0886, "duration_p": 0.0000, "duration_shape": 20.00, "zone": "green", "verdict": "ok" }
+    ]
+  },
+
+  "crisis": {
+    "note": "README.md, `make backtest-crisis`. The same battery over three real windows from docs/crisis/*.csv, at today's book held at constant weights. `burst` is the largest number of exceptions in any 21 consecutive sessions -- about 1.1 expected under independence -- and is descriptive, not a test.",
+    "confidence": 0.95,
+    "window": 60,
+    "burst_span": 21,
+    "rows": [
+      { "window": "gfc",        "estimator": "historical", "n": 570, "exceptions": 25, "expected": 28.5, "kupiec_p": 0.4925, "independence_p": 0.9207, "joint_p": 0.7862, "duration_p": 0.7483, "duration_shape": 0.95, "burst": 5,  "zone": "green",  "verdict": "ok" },
+      { "window": "gfc",        "estimator": "parametric", "n": 570, "exceptions": 27, "expected": 28.5, "kupiec_p": 0.7713, "independence_p": 0.5347, "joint_p": 0.7906, "duration_p": 0.2265, "duration_shape": 0.84, "burst": 5,  "zone": "green",  "verdict": "ok" },
+      { "window": "gfc",        "estimator": "ewma(0.94)", "n": 570, "exceptions": 34, "expected": 28.5, "kupiec_p": 0.3043, "independence_p": 0.9811, "joint_p": 0.5899, "duration_p": 0.2243, "duration_shape": 1.20, "burst": 5,  "zone": "green",  "verdict": "ok" },
+      { "window": "covid",      "estimator": "historical", "n": 339, "exceptions": 18, "expected": 17.0, "kupiec_p": 0.7955, "independence_p": 0.0699, "joint_p": 0.1870, "duration_p": 0.0160, "duration_shape": 0.66, "burst": 8,  "zone": "green",  "verdict": "ok" },
+      { "window": "covid",      "estimator": "parametric", "n": 339, "exceptions": 22, "expected": 17.0, "kupiec_p": 0.2279, "independence_p": 0.0521, "joint_p": 0.0733, "duration_p": 0.0033, "duration_shape": 0.65, "burst": 10, "zone": "green",  "verdict": "ok" },
+      { "window": "covid",      "estimator": "ewma(0.94)", "n": 339, "exceptions": 23, "expected": 17.0, "kupiec_p": 0.1517, "independence_p": 0.2659, "joint_p": 0.1928, "duration_p": 0.3409, "duration_shape": 0.86, "burst": 5,  "zone": "green",  "verdict": "ok" },
+      { "window": "rates-2022", "estimator": "historical", "n": 340, "exceptions": 24, "expected": 17.0, "kupiec_p": 0.1000, "independence_p": 0.8083, "joint_p": 0.2511, "duration_p": 0.7096, "duration_shape": 1.06, "burst": 4,  "zone": "yellow", "verdict": "ok" },
+      { "window": "rates-2022", "estimator": "parametric", "n": 340, "exceptions": 22, "expected": 17.0, "kupiec_p": 0.2330, "independence_p": 0.6877, "joint_p": 0.4530, "duration_p": 0.5292, "duration_shape": 1.11, "burst": 4,  "zone": "green",  "verdict": "ok" },
+      { "window": "rates-2022", "estimator": "ewma(0.94)", "n": 340, "exceptions": 22, "expected": 17.0, "kupiec_p": 0.2330, "independence_p": 0.6877, "joint_p": 0.4530, "duration_p": 0.2816, "duration_shape": 1.21, "burst": 4,  "zone": "green",  "verdict": "ok" }
+    ]
+  },
+
+  "garch": {
+    "note": "README.md, `make garch`. A known GARCH(1,1) simulated and fitted back, thirty replications at each sample size. The row that matters is the first: at n = 60, this engine's own return window, the persistence standard deviation is two thirds of the mean, which is the measured reason GARCH is implemented and not wired in.",
+    "seed": "2026_08_25",
+    "replications": 30,
+    "burn_in": 500,
+    "engine_window": 60,
+    "truth": { "omega": 4e-6, "alpha": 0.10, "beta": 0.88, "persistence": 0.98, "half_life": 34 },
+    "rows": [
+      { "n": 60,   "alpha_mean": 0.112, "alpha_sd": 0.104, "beta_mean": 0.444, "beta_sd": 0.375, "persistence_mean": 0.556, "persistence_sd": 0.364 },
+      { "n": 125,  "alpha_mean": 0.097, "alpha_sd": 0.093, "beta_mean": 0.607, "beta_sd": 0.346, "persistence_mean": 0.704, "persistence_sd": 0.334 },
+      { "n": 250,  "alpha_mean": 0.099, "alpha_sd": 0.047, "beta_mean": 0.841, "beta_sd": 0.108, "persistence_mean": 0.939, "persistence_sd": 0.102 },
+      { "n": 500,  "alpha_mean": 0.098, "alpha_sd": 0.034, "beta_mean": 0.859, "beta_sd": 0.049, "persistence_mean": 0.957, "persistence_sd": 0.032 },
+      { "n": 1000, "alpha_mean": 0.092, "alpha_sd": 0.019, "beta_mean": 0.880, "beta_sd": 0.023, "persistence_mean": 0.973, "persistence_sd": 0.012 },
+      { "n": 2000, "alpha_mean": 0.103, "alpha_sd": 0.014, "beta_mean": 0.872, "beta_sd": 0.015, "persistence_mean": 0.975, "persistence_sd": 0.009 }
+    ]
+  }
+}

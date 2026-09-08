@@ -98,3 +98,14 @@
     (echo "<script>\n")
     (cat ../web/ops.js)
     (echo "</script>\n</body>\n</html>\n|ohcamel_html}\n")))))
+
+(rule
+ (targets quoted.ml)
+ (deps ../web/quoted.json)
+ (action
+  (with-stdout-to
+   quoted.ml
+   (progn
+    (echo "let json = {ohcamel_json|")
+    (cat ../web/quoted.json)
+    (echo "|ohcamel_json}\n")))))
