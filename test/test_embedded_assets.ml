@@ -217,6 +217,49 @@ let test_the_pinned_cells_match_the_readme () =
     "scaling at 400 names: nodes in graph, AS THE README STILL SAYS" 1267
     (U.to_int (U.member "nodes_in_graph" (List.last_exn (rows "scaling"))))
 
+module Crisis_csv = Ohcamel.Crisis_csv
+
+(* Three facts about the embedded CSVs, each of which is a way the rule can go
+   wrong without failing to compile.
+
+   The first line is load-bearing: crisis_data.ml's [of_string] takes the first
+   `#` line as the window's description and the crisis table prints it as a
+   heading, so a rule that stripped comments or catted the wrong file would
+   retitle a window rather than break.
+
+   The absence of `|` is why the {ohcamel_csv|...|ohcamel_csv} delimiter is safe
+   for this data at all: a file of ISO dates and decimal closes has no reason to
+   contain a pipe, and if one ever appears the check here is cheaper to read
+   than a syntax error inside a generated 104 KB literal. *)
+let test_the_crisis_windows_are_in_the_binary () =
+  let cases =
+    [
+      ( "gfc",
+        Crisis_csv.gfc,
+        "# Global financial crisis: the quant quake, Bear Stearns, Lehman, and the March \
+         2009 bottom." );
+      ( "covid",
+        Crisis_csv.covid,
+        "# COVID crash: the fastest 30% drawdown on record, and the recovery." );
+      ( "rates_2022",
+        Crisis_csv.rates_2022,
+        "# 2022 rate shock: a slow grind rather than a spike -- the useful contrast to \
+         the other two." );
+    ]
+  in
+  List.iter cases ~f:(fun (name, contents, first_line) ->
+      Alcotest.(check string)
+        (name ^ ": the first comment line, which becomes the window's description")
+        first_line
+        (List.hd_exn (String.split_lines contents));
+      Alcotest.(check string)
+        (name ^ ": the header row, six names inner-joined on their common sessions")
+        "date,AAPL,CVX,JPM,MSFT,NVDA,XOM"
+        (List.nth_exn (String.split_lines contents) 3);
+      Alcotest.(check bool)
+        (name ^ ": no pipe, so the quoted-string delimiter cannot be ended by the data")
+        false (String.mem contents '|'))
+
 let suite =
   ( "embedded_assets",
     [
@@ -232,4 +275,6 @@ let suite =
         test_the_quoted_rows_are_uniform;
       Alcotest.test_case "PINS: the transcribed cells match README.md" `Quick
         test_the_pinned_cells_match_the_readme;
+      Alcotest.test_case "the three crisis windows are in the binary" `Quick
+        test_the_crisis_windows_are_in_the_binary;
     ] )

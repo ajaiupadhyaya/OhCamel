@@ -109,3 +109,19 @@
     (echo "let json = {ohcamel_json|")
     (cat ../web/quoted.json)
     (echo "|ohcamel_json}\n")))))
+
+(rule
+ (targets crisis_csv.ml)
+ (deps
+  (glob_files ../docs/crisis/*.csv))
+ (action
+  (with-stdout-to
+   crisis_csv.ml
+   (progn
+    (echo "let gfc = {ohcamel_csv|")
+    (cat ../docs/crisis/gfc.csv)
+    (echo "|ohcamel_csv}\n\nlet covid = {ohcamel_csv|")
+    (cat ../docs/crisis/covid.csv)
+    (echo "|ohcamel_csv}\n\nlet rates_2022 = {ohcamel_csv|")
+    (cat ../docs/crisis/rates-2022.csv)
+    (echo "|ohcamel_csv}\n")))))
