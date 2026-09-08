@@ -1,3 +1,81 @@
+<!--
+Phase 3. The dashboard page, served from memory by server.ml.
+
+   Embedded as a string rather than read from disk so the binary is
+   self-contained: no asset path to get wrong, nothing to forget to deploy, and
+   `ohcamel serve` works from any working directory.
+
+   ------------------------------------------------------------------------
+   THE DESIGN, AND WHY IT IS THIS AND NOT A TRADING TERMINAL PASTICHE
+
+   Three decisions, each derived from something true about this engine rather
+   than from what risk dashboards usually look like.
+
+   1. THE LAYOUT IS THE GRAPH. Three columns, left to right: positions, then
+      book aggregates, then limits. That is the dependency order in graph.ml --
+      exposure feeds gross feeds VaR feeds the limits that read them. Reading
+      the page left to right is reading the graph downstream. A conventional
+      dashboard would group by "what the user wants to see"; this one groups by
+      what depends on what, because that is the thing this project is about.
+
+   2. CHANGED VALUES ARE MARKED. Every number that moved since the previous
+      frame gets a brief underline. This is the architecture made visible: a
+      tick in one name lights that instrument, its sector and the aggregates,
+      and visibly does NOT light the others. It is real data, not decoration --
+      the client diffs successive snapshots, so a mark means that value actually
+      changed.
+
+   3. THE NUMBERS LOSE AUTHORITY WHEN THE FEED DOES. If prices go stale, the
+      risk figures desaturate and pick up a hatch. This is the one deliberately
+      aggressive move on the page, and it is the whole thesis of the project
+      expressed in CSS: a limit reading "not breached" from a twenty-minute-old
+      mark is not information, and it should not look like information.
+
+   Monospace is used for data and nothing else -- no monospace prose, no
+   monospace headings. Labels are a plain grotesque, small and letter-spaced.
+   With no web fonts available (the page must be self-contained, and a CDN
+   request would be a dependency on the network for a page whose job is to work
+   when the network is misbehaving), personality has to come from the setting
+   rather than the faces, so it comes from scale, tracking and colour instead.
+
+   Both colour schemes are authored, not one inverted. Light is a cool paper for
+   reading over a long session; dark is for a dim room. Neither uses the
+   green-on-black that would make this look like every other market display.
+
+   Palette semantics, which are three states and not two: within limit, over
+   limit, and CANNOT BE EVALUATED. That third state gets a real colour rather
+   than a grey, because "unknown" quietly rendered as "fine" is the failure
+   mode this whole engine is built against.
+-->
+
+<!--
+   THE SUCCESSOR, 2026-09-02
+
+   The essay above describes the page this file replaced, and it is kept rather
+   than rewritten because its three moves are kept. The layout is still the
+   dependency order, changed values are still marked, and the numbers still lose
+   their authority when the feed does. What changes is one level of remove. The
+   old page asserted the graph by column order and inferred what had moved by
+   diffing successive snapshots: the engine knew exactly which node bodies had
+   run, and the client was guessing from the values. The successor draws the
+   graph itself, taken from Incremental's own node table, and lights the
+   recomputation set the engine reports. The same three moves, done by the thing
+   they were always about.
+
+   Two of them get sharper in the process. "Changed values are marked" becomes
+   "the engine states what ran", which is a fact rather than an inference. And
+   staleness stops being scoped by column and starts being scoped by dependency:
+   the downstream closure of price[S] and nothing beside it, which leaves
+   limit:aapl-cap at full authority while CVX is quiet. That is the one place the
+   CSS above over-dims, and it is corrected by applying the rule the essay
+   already states rather than by changing the rule.
+
+   The design is docs/superpowers/specs/2026-09-02-the-page-design.md. This file
+   is the body of the document at /; web/page.css is the styling; web/head.html
+   is the head both pages share; the client is the .js files beside them. A rule
+   in lib/dune concatenates them into lib/dashboard_html.ml at build time, so the
+   binary is still self-contained and there is still nothing to fetch.
+-->
 
 <header>
   <h1>OhCamel<span>reactive risk &amp; limits</span></h1>
