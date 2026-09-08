@@ -39,3 +39,6 @@ deploy/*.env
 !deploy/local.env
 !deploy/deploy.env.example
 !deploy/live.env.example
+
+# subagent-driven-development scratch (ledger, briefs, review packages)
+.superpowers/
