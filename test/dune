@@ -4,4 +4,4 @@
  ; an ordinary alcotest case, which is what keeps the example-based and
  ; property-based suites in ONE runner. Two runners would mean two things to
  ; remember to run, and the one that gets forgotten is the one that fails.
- (libraries ohcamel alcotest qcheck-core qcheck-alcotest))
+ (libraries ohcamel alcotest qcheck-core qcheck-alcotest yojson))

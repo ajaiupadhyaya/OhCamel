@@ -15,9 +15,10 @@
 
    THE QUOTED CELLS ARE PINS, NOT DERIVATIONS. The `quoted` cases added in a
    later task check numbers transcribed by hand out of README.md. They are
-   reproducibility pins in the sense of invariant 7's exception -- values
-   captured from a published run and held so a transcription slip is noticed --
-   and they are not hand-derived. They do not count among this project's
+   reproducibility pins in the sense of the amendment to invariant 7 recorded
+   in docs/superpowers/specs/2026-09-02-the-page-design.md -- values captured
+   from a published run and held so a transcription slip is noticed -- and
+   they are not hand-derived. They do not count among this project's
    hand-derived tests. *)
 
 open Core
@@ -37,12 +38,7 @@ let markers_in_order page ~name ~markers =
         match String.substr_index page ~pos:(previous + 1) ~pattern:marker with
         | None ->
             Alcotest.failf "%s: %S does not appear after %s" name marker previous_name
-        | Some i ->
-            Alcotest.(check bool)
-              (Printf.sprintf "%s: %S at %d follows %s at %d" name marker i previous_name
-                 previous)
-              true (i > previous);
-            (i, Printf.sprintf "%S" marker))
+        | Some i -> (i, Printf.sprintf "%S" marker))
   in
   ()
 

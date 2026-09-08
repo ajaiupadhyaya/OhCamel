@@ -39,26 +39,54 @@ jobs:
 
       # The two pages, the three crisis CSVs and the quoted tables are OCaml
       # quoted string literals: lib/dune cats web/* and docs/crisis/*.csv into
-      # generated modules between {ohcamel_html|…|ohcamel_html}, {ohcamel_csv|…}
-      # and {ohcamel_json|…}. A CLOSING delimiter inside one of those sources
-      # ends the literal early. In practice the trailing bytes are then not valid
-      # OCaml and the build fails — but it fails inside a GENERATED file, at a
-      # line number nobody can map back to the file they edited, and "in
-      # practice" is not a guarantee. This names the real file, costs a second,
-      # and runs before the forty-minute Owl build rather than after it.
+      # generated modules using delimiters of the form
+      # {ohcamel_NAME|...|ohcamel_NAME}. A CLOSING delimiter inside one of
+      # those sources ends the literal early. In practice the trailing bytes
+      # are then not valid OCaml and the build fails — but it fails inside a
+      # GENERATED file, at a line number nobody can map back to the file they
+      # edited, and "in practice" is not a guarantee. This names the real
+      # file, costs a second, and runs before the forty-minute Owl build
+      # rather than after it.
+      #
+      # The pattern list is derived from lib/dune itself, not retyped by hand
+      # here: lib/dune currently defines four such delimiters (the fourth,
+      # {ohcamel_build|...}, wraps the build stamp's env-sourced strings, and
+      # is included even though it cannot be reached from web/ or
+      # docs/crisis/, so a fifth delimiter added anywhere in lib/dune is
+      # guarded automatically instead of silently unguarded). And the check
+      # only trusts grep's two documented outcomes — 0 (found, so fail loud
+      # naming the file) and 1 (not found, so pass) — because a grep exit
+      # code of 2 (a missing or unreadable directory, e.g. web/ absent from
+      # the checkout) means the check itself never ran, which is not the same
+      # thing as a clean pass and must not be reported as one.
       #
       # One platform is enough, for the same reason the format check is Linux
       # only: the answer does not depend on the OS.
       - name: No stray quoted-string delimiters in the embedded sources
         if: runner.os == 'Linux'
         run: |
-          if grep -rn -e '|ohcamel_html}' -e '|ohcamel_csv}' -e '|ohcamel_json}' \
-               web docs/crisis; then
-            echo "a closing quoted-string delimiter appears in an embedded source."
-            echo "rename it, or change the delimiter in lib/dune."
+          patterns=$(grep -o '|ohcamel_[a-z_]*}' lib/dune | sort -u)
+          if [ -z "$patterns" ]; then
+            echo "no {ohcamel_*|...|ohcamel_*} delimiters found in lib/dune -- the rule moved, or the delimiters were renamed, and this check has nothing left to guard."
             exit 1
           fi
-          echo "no stray delimiters in web/ or docs/crisis/"
+          matches=$(grep -rnF -f <(printf '%s\n' "$patterns") web docs/crisis)
+          status=$?
+          case "$status" in
+            0)
+              echo "$matches"
+              echo "a closing quoted-string delimiter appears in an embedded source."
+              echo "rename it, or change the delimiter in lib/dune."
+              exit 1
+              ;;
+            1)
+              echo "no stray delimiters in web/ or docs/crisis/"
+              ;;
+            *)
+              echo "grep failed (exit $status) — the check did not run"
+              exit 1
+              ;;
+          esac
 
       # Owl links against OpenBLAS. The Makefile's OWL_CFLAGS/OWL_LDLIBS
       # workarounds are deliberately NOT exported on Linux: they exist because

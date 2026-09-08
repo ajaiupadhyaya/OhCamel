@@ -126,10 +126,18 @@
     (cat ../docs/crisis/rates-2022.csv)
     (echo "|ohcamel_csv}\n")))))
 
+; git_sha and built_at are OCaml quoted-string literals -- {ohcamel_build|...|ohcamel_build},
+; a fourth delimiter -- rather than ordinary "..." literals, because ordinary
+; strings process backslash escapes and these two values come from the
+; environment: a backslash inside one would be reinterpreted, silently under
+; --profile release, which only warns on the unknown-escape case. A quoted
+; string processes no escapes at all, so the value that went in is the value
+; that comes out.
+
 (rule
  (targets build_info.ml)
  (action
   (with-stdout-to
    build_info.ml
    (echo
-    "let git_sha = \"%{env:OHCAMEL_GIT_SHA=unknown}\"\nlet built_at = \"%{env:OHCAMEL_BUILT_AT=unknown}\"\nlet architecture = \"%{ocaml-config:architecture}\"\nlet system = \"%{ocaml-config:system}\"\n"))))
+    "let git_sha = {ohcamel_build|%{env:OHCAMEL_GIT_SHA=unknown}|ohcamel_build}\nlet built_at = {ohcamel_build|%{env:OHCAMEL_BUILT_AT=unknown}|ohcamel_build}\nlet architecture = \"%{ocaml-config:architecture}\"\nlet system = \"%{ocaml-config:system}\"\n"))))

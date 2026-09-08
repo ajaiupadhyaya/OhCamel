@@ -73,8 +73,9 @@ Phase 3. The dashboard page, served from memory by server.ml.
    The design is docs/superpowers/specs/2026-09-02-the-page-design.md. This file
    is the body of the document at /; web/page.css is the styling; web/head.html
    is the head both pages share; the client is the .js files beside them. A rule
-   in lib/dune concatenates them into lib/dashboard_html.ml at build time, so the
-   binary is still self-contained and there is still nothing to fetch.
+   in lib/dune concatenates them into _build/default/lib/dashboard_html.ml at
+   build time, so the binary is still self-contained and there is still
+   nothing to fetch.
 -->
 
 <header>
