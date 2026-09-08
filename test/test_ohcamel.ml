@@ -32,6 +32,7 @@ let () =
           Alcotest.test_case "owl reaches LAPACK (inv)" `Quick test_owl_lapack;
           Alcotest.test_case "async deferred round trip" `Quick test_async;
         ] );
+      Test_embedded_assets.suite;
       Test_risk_metrics.suite;
       Test_vol_estimators.suite;
       Test_options.suite;

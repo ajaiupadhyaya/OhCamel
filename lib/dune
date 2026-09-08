@@ -80,3 +80,21 @@
     (echo "<script>\n")
     (cat ../web/dashboard.js)
     (echo "</script>\n</body>\n</html>\n|ohcamel_html}\n")))))
+
+(rule
+ (targets ops_html.ml)
+ (deps
+  (glob_files ../web/*))
+ (action
+  (with-stdout-to
+   ops_html.ml
+   (progn
+    (echo "let html = {ohcamel_html|")
+    (cat ../web/head.html)
+    (echo "<style>\n")
+    (cat ../web/page.css)
+    (echo "</style>\n</head>\n<body>\n")
+    (cat ../web/ops.html)
+    (echo "<script>\n")
+    (cat ../web/ops.js)
+    (echo "</script>\n</body>\n</html>\n|ohcamel_html}\n")))))
