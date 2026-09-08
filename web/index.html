@@ -1,0 +1,42 @@
+
+<header>
+  <h1>OhCamel<span>reactive risk &amp; limits</span></h1>
+  <div class="stat"><span class="lbl">feed</span><span class="v" id="feed"><span class="dot idle"></span>connecting</span></div>
+  <div class="stat"><span class="lbl">book</span><span class="v num" id="nsym">—</span></div>
+  <div class="stat spacer"><span class="lbl">nodes recomputed</span><span class="v num" id="nodes">—</span></div>
+  <div class="stat"><span class="lbl">alerts</span><span class="v ks off" id="ks">off</span></div>
+  <div class="stat"><span class="lbl">as of</span><span class="v num" id="asof">—</span></div>
+</header>
+
+<div id="halt"></div>
+<div id="warn"></div>
+
+<main id="main">
+  <section>
+    <span class="lbl">positions <i>— exposure, and share of risk</i></span>
+    <table id="pos"></table>
+    <table id="sectors" style="margin-top:18px"></table>
+  </section>
+
+  <section>
+    <span class="lbl">book <i>— aggregates</i></span>
+    <table id="book"></table>
+  </section>
+
+  <section>
+    <span class="lbl">limits <i>— downstream</i></span>
+    <div id="limits"></div>
+  </section>
+
+  <section id="histsec">
+    <span class="lbl">history <i id="histnote">— in memory only, lost on restart</i></span>
+    <div id="history"></div>
+  </section>
+</main>
+
+<footer>
+  <span>updates arrive when a value changes, not on a timer</span>
+  <span id="conn">—</span>
+  <span id="alertstat">—</span>
+</footer>
+
