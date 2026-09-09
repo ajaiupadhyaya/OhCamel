@@ -463,6 +463,41 @@ let test_a_demo_server_has_no_peer () =
         (List.map (Server.quiet server) ~f:Symbol.to_string))
     ()
 
+(* The one header that is not the same on both hosts.
+
+   /ops on the live origin fills its second column by fetching the PUBLIC
+   engine's /api/ops cross-origin, which a browser allows only if that engine
+   says so. The demo engine says so; the live engine says nothing, and the
+   Caddyfile says nothing on either -- the gate is not weakened, it is simply
+   not the thing being asked.
+
+   Two rules make it safe rather than merely convenient. It is on JSON only,
+   never on the pages and never on the stream, so nothing that carries a book
+   into a document context is readable from elsewhere. And it is on the host
+   whose entire book is already public: the day this appears in live mode, a
+   page on any origin can read the owner's positions. *)
+let test_cors_is_demo_json_only () =
+  let cors headers = Cohttp.Header.get headers "Access-Control-Allow-Origin" in
+  Alcotest.(check (option string))
+    "demo JSON is readable cross-origin" (Some "*")
+    (cors (Server.json_headers ~mode:`Demo));
+  Alcotest.(check (option string))
+    "live JSON is not" None
+    (cors (Server.json_headers ~mode:`Live));
+  Alcotest.(check (option string))
+    "the stream never is, in either mode" None (cors Server.sse_headers);
+  Alcotest.(check (option string))
+    "and neither are the pages" None (cors Server.html_headers);
+  (* What was already there stays there in both modes. A cached snapshot is a
+     stale snapshot wearing a fresh timestamp. *)
+  List.iter [ `Demo; `Live ] ~f:(fun mode ->
+      Alcotest.(check (option string))
+        "no-store" (Some "no-store")
+        (Cohttp.Header.get (Server.json_headers ~mode) "Cache-Control");
+      Alcotest.(check (option string))
+        "application/json" (Some "application/json")
+        (Cohttp.Header.get (Server.json_headers ~mode) "Content-Type"))
+
 let suite =
   ( "server",
     [
@@ -482,4 +517,6 @@ let suite =
         test_history_of_an_empty_buffer_is_well_formed;
       Alcotest.test_case "the server knows what it is" `Quick test_server_knows_what_it_is;
       Alcotest.test_case "a demo server has no peer" `Quick test_a_demo_server_has_no_peer;
+      Alcotest.test_case "CORS is on the demo host's JSON and nothing else" `Quick
+        test_cors_is_demo_json_only;
     ] )

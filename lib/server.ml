@@ -431,9 +431,28 @@ let rec run_broadcaster (t : t) =
 (* Routes                                                                    *)
 (* ------------------------------------------------------------------------ *)
 
-let json_headers =
+let json_header_fields =
+  [ ("Content-Type", "application/json"); ("Cache-Control", "no-store") ]
+
+(* The demo host's JSON is readable from anywhere; the live host's is not.
+
+   /ops on the live origin draws BOTH hosts, and the only way to do that from
+   one page is to fetch the public engine's JSON cross-origin. The alternative
+   the design rejected was a CORS rule in the Caddyfile or a counts-only route
+   outside the password, and both of those widen the gate for a convenience
+   the owner can get by opening the other tab. This does not touch the gate at
+   all: it is one header, emitted by the engine that is already public, on the
+   routes that already return the whole book to anyone who asks.
+
+   Never on [html_headers] and never on [sse_headers]. A document is not a
+   datum, and the stream carries the same book at a higher rate; if either
+   carried this header the rule would be "the demo host is open", which is a
+   larger claim than the one being made. *)
+let json_headers ~(mode : mode) =
   Cohttp.Header.of_list
-    [ ("Content-Type", "application/json"); ("Cache-Control", "no-store") ]
+    (match mode with
+    | `Demo -> ("Access-Control-Allow-Origin", "*") :: json_header_fields
+    | `Live -> json_header_fields)
 
 let html_headers =
   Cohttp.Header.of_list
@@ -480,9 +499,10 @@ let handle (t : t) ~(path : string) =
   match path with
   | "/" | "/index.html" ->
       Cohttp_async.Server.respond_string ~headers:html_headers Dashboard_html.page
-  | "/api/snapshot" -> Cohttp_async.Server.respond_string ~headers:json_headers (render t)
+  | "/api/snapshot" ->
+      Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode) (render t)
   | "/api/health" ->
-      Cohttp_async.Server.respond_string ~headers:json_headers
+      Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
         (Yojson.Safe.to_string
            (json_of_feed_health (Graph.Snapshot.feed_health (Graph.snapshot t.graph))))
   | "/api/stream" -> subscribe t
@@ -491,7 +511,7 @@ let handle (t : t) ~(path : string) =
      already exists rather than a request that causes work -- the same property
      /api/snapshot has, and the reason neither can stall the engine. *)
   | "/api/history" ->
-      Cohttp_async.Server.respond_string ~headers:json_headers
+      Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
         (Yojson.Safe.to_string (json_of_history t.history))
   (* Scenarios are computed on demand rather than pushed on the stream, and the
      reason is the cost asymmetry. A snapshot is read from observers that have
@@ -502,10 +522,11 @@ let handle (t : t) ~(path : string) =
      Still a GET with no body and no effect: stress.ml runs every scenario on a
      fork and destroys it, so this route cannot move the live book. *)
   | "/api/stress" ->
-      Cohttp_async.Server.respond_string ~headers:json_headers
+      Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
         (Yojson.Safe.to_string (json_of_stress t.graph))
   | _ ->
-      Cohttp_async.Server.respond_string ~headers:json_headers ~status:`Not_found
+      Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
+        ~status:`Not_found
         (Yojson.Safe.to_string
            (`Assoc
               [
