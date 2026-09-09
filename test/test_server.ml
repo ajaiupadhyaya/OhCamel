@@ -942,6 +942,167 @@ let test_ops_feed_source_comes_from_the_closure () =
         (match field_exn j "peer" with `Null -> true | _ -> false))
     ()
 
+(* One table, two readers, and this is the test that keeps them one.
+
+   Before this phase the dispatcher was a seven-arm match and the 404 body was
+   a list of six strings, written separately -- which is how a route can be
+   served for weeks while the 404 body tells a caller it does not exist. Now
+   both are generated from Server.routes, and this asserts the generation
+   rather than trusting it: the 404 body parsed back must list exactly the
+   table's paths in the table's order, every listed path must dispatch, and a
+   path that is not listed must not. The eight paths are written out because
+   a route added to the table without being added here is the one change
+   this test exists to make somebody look at. Phase 5 adds two. *)
+let test_the_404_lists_exactly_the_routes () =
+  let listed =
+    match Yojson.Safe.from_string Server.not_found_body with
+    | `Assoc fields -> (
+        match List.Assoc.find fields "routes" ~equal:String.equal with
+        | Some (`List xs) -> List.map xs ~f:(function `String s -> s | _ -> "?")
+        | _ -> Alcotest.fail "the 404 body has no routes list")
+    | _ -> Alcotest.fail "the 404 body is not an object"
+  in
+  Alcotest.(check (list string))
+    "the 404 body lists the table, in the table's order" (Server.route_paths ()) listed;
+  Alcotest.(check (list string))
+    "the routes this phase ships"
+    [
+      "/";
+      "/ops";
+      "/api/snapshot";
+      "/api/health";
+      "/api/stream";
+      "/api/history";
+      "/api/stress";
+      "/api/ops";
+    ]
+    (Server.route_paths ());
+  List.iter (Server.route_paths ()) ~f:(fun path ->
+      Alcotest.(check bool)
+        (path ^ " dispatches") true
+        (Option.is_some (Server.lookup path)));
+  (* The one alias, kept because it has answered since Phase 3 and a bookmark
+     must not start 404ing; it is not in the table because it is not a route,
+     it is a spelling of one. *)
+  Alcotest.(check bool)
+    "/index.html is the one alias" true
+    (Option.is_some (Server.lookup "/index.html"));
+  Alcotest.(check bool)
+    "an unknown path does not dispatch" false
+    (Option.is_some (Server.lookup "/api/nope"));
+  (* Every route carries a purpose. The 404 body prints them, and a route whose
+     purpose is the empty string is a route nobody described. *)
+  List.iter Server.routes ~f:(fun (path, purpose, _) ->
+      Alcotest.(check bool) (path ^ " has a purpose") true (not (String.is_empty purpose)))
+
+(* A route's answer, read without a socket.
+
+   respond_string is `return (response, body)` -- an already-determined
+   Deferred -- so Deferred.peek reads it with no scheduler running, exactly as
+   the `async deferred round trip` link test does. The body of a string
+   response is the `String constructor and is matched directly rather than
+   through Body.to_string, which would hand back another Deferred. *)
+let respond server path =
+  match Server.lookup path with
+  | None -> Alcotest.failf "%s is not routed" path
+  | Some handler -> (
+      match Async.Deferred.peek (handler server) with
+      | None -> Alcotest.failf "%s did not answer without the scheduler" path
+      | Some (response, body) -> (
+          let status = Cohttp.Code.code_of_status (Cohttp.Response.status response) in
+          let content_type =
+            Cohttp.Header.get (Cohttp.Response.headers response) "Content-Type"
+          in
+          match body with
+          | `String s -> (status, content_type, s)
+          | `Empty -> (status, content_type, "")
+          | `Strings ss -> (status, content_type, String.concat ss)
+          | `Pipe _ -> Alcotest.failf "%s answered with a pipe" path))
+
+let test_the_two_new_routes_answer () =
+  with_server
+    ~f:(fun server _graph ->
+      let status, content_type, body = respond server "/api/ops" in
+      Alcotest.(check int) "/api/ops is 200" 200 status;
+      Alcotest.(check (option string))
+        "and is JSON" (Some "application/json") content_type;
+      Alcotest.(check string)
+        "and says which host it is" "demo"
+        (match field_exn (Yojson.Safe.from_string body) "mode" with
+        | `String s -> s
+        | _ -> "?");
+      let status, content_type, body = respond server "/ops" in
+      Alcotest.(check int) "/ops is 200" 200 status;
+      Alcotest.(check (option string))
+        "and is HTML" (Some "text/html; charset=utf-8") content_type;
+      Alcotest.(check bool)
+        "and is the operations page" true
+        (String.is_substring body ~substring:"OhCamel<span>operations</span>");
+      (* The 404 goes out with the JSON headers, so a demo host's 404 is
+         readable cross-origin like its other JSON. Read through handle, which
+         is the only caller lookup has. *)
+      match Async.Deferred.peek (Server.handle server ~path:"/api/nope") with
+      | Some (response, `String s) ->
+          Alcotest.(check int)
+            "an unknown path is 404" 404
+            (Cohttp.Code.code_of_status (Cohttp.Response.status response));
+          Alcotest.(check string) "with the generated body" Server.not_found_body s
+      | _ -> Alcotest.fail "the 404 did not answer as a string")
+    ()
+
+(* Task 9's CORS test (above, [test_cors_is_demo_json_only]) proved
+   json_headers / sse_headers / html_headers in isolation: three header
+   values, built and inspected without ever being attached to a response.
+   That leaves open the possibility a route is wired to the wrong header
+   value -- the constructor is right and the table entry names the other
+   one -- and nothing would catch it. This reads the header off what a real
+   dispatch actually returns, through the same lookup + Deferred.peek
+   [respond] uses, so it is the CORS claim proven through the table rather
+   than through the function that builds one header on its own.
+
+   /api/stream's handler is [subscribe], which answers through
+   respond_with_pipe -- itself `respond`, so `return (resp, body)`, an
+   already-determined Deferred exactly like every other route's. It is
+   peekable here for the same reason [respond] above can peek /api/ops and
+   /ops; the only difference is this reads the header and never touches the
+   body, so the `Pipe body respond`'s body-match would fail on is never
+   reached. subscribe's don't_wait_for calls (the initial frame, the
+   keepalive loop) never run without a scheduler -- as the [with_server]
+   comment notes, don't_wait_for is `let don't_wait_for (_ : unit t) = ()`
+   here -- so peeking it costs nothing and leaves nothing scheduled. *)
+let cors_header server path =
+  match Server.lookup path with
+  | None -> Alcotest.failf "%s is not routed" path
+  | Some handler -> (
+      match Async.Deferred.peek (handler server) with
+      | None -> Alcotest.failf "%s did not answer without the scheduler" path
+      | Some (response, _body) ->
+          Cohttp.Header.get
+            (Cohttp.Response.headers response)
+            "access-control-allow-origin")
+
+let test_cors_survives_being_read_through_the_table_and_not_just_built () =
+  with_server ~mode:`Demo
+    ~f:(fun server _graph ->
+      Alcotest.(check (option string))
+        "a demo host's /api/health dispatches with the open header" (Some "*")
+        (cors_header server "/api/health");
+      Alcotest.(check (option string))
+        "and so does /api/ops" (Some "*")
+        (cors_header server "/api/ops");
+      Alcotest.(check (option string))
+        "but / is a document, not data" None (cors_header server "/");
+      Alcotest.(check (option string))
+        "and /api/stream is the same book at a higher rate, not data" None
+        (cors_header server "/api/stream"))
+    ();
+  with_server ~mode:`Live
+    ~f:(fun server _graph ->
+      Alcotest.(check (option string))
+        "a live host's JSON dispatches with no such header at all" None
+        (cors_header server "/api/health"))
+    ()
+
 let suite =
   ( "server",
     [
@@ -970,4 +1131,10 @@ let suite =
       Alcotest.test_case "/api/ops shape, and what it must not say" `Quick test_ops_shape;
       Alcotest.test_case "/api/ops takes its feed source from the closure" `Quick
         test_ops_feed_source_comes_from_the_closure;
+      Alcotest.test_case "the 404 body lists exactly the routes table" `Quick
+        test_the_404_lists_exactly_the_routes;
+      Alcotest.test_case "/api/ops and /ops answer through the table" `Quick
+        test_the_two_new_routes_answer;
+      Alcotest.test_case "CORS survives being read through the table, not just built"
+        `Quick test_cors_survives_being_read_through_the_table_and_not_just_built;
     ] )

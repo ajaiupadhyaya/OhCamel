@@ -739,54 +739,116 @@ let subscribe (t : t) =
            `Repeat ()));
   Cohttp_async.Server.respond_with_pipe ~flush:true ~headers:sse_headers reader
 
-let handle (t : t) ~(path : string) =
-  match path with
-  | "/" | "/index.html" ->
-      Cohttp_async.Server.respond_string ~headers:html_headers Dashboard_html.page
-  | "/api/snapshot" ->
-      Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode) (render t)
-  | "/api/health" ->
-      Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
-        (Yojson.Safe.to_string
-           (json_of_feed_health (Graph.Snapshot.feed_health (Graph.snapshot t.graph))))
-  | "/api/stream" -> subscribe t
-  (* Read from the buffer as it stands; nothing is computed here. The buffer is
-     filled by an observer on the graph, so this route is a read of state that
-     already exists rather than a request that causes work -- the same property
-     /api/snapshot has, and the reason neither can stall the engine. *)
-  | "/api/history" ->
-      Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
-        (Yojson.Safe.to_string (json_of_history t.history))
-  (* Scenarios are computed on demand rather than pushed on the stream, and the
-     reason is the cost asymmetry. A snapshot is read from observers that have
-     already settled; a scenario suite forks the engine once per scenario and
-     stabilizes each fork. Putting that behind the SSE loop would mean paying it
-     on every tick to serve a number nobody is looking at most of the time.
+(* ------------------------------------------------------------------------ *)
+(* The routes table                                                          *)
+(* ------------------------------------------------------------------------ *)
 
-     Still a GET with no body and no effect: stress.ml runs every scenario on a
-     fork and destroys it, so this route cannot move the live book. *)
-  | "/api/stress" ->
+(* One table, two readers.
+
+   [handle] dispatches from it and the 404 body lists it, and until now the
+   two were separate literals -- a match with seven arms and a list of six
+   strings -- which is how a route can be served for weeks while the 404 body
+   tells a caller it does not exist. A route that is in one and not the other
+   is now a compile-time impossibility rather than a review-time hope, and the
+   test in test_server.ml that compares the two is there for the day someone
+   reintroduces the second literal.
+
+   The purpose is one line, in this repository's voice, and goes on the 404
+   body beside the path: an unknown route is the one moment a caller is
+   reading the API by hand, and a bare list of paths answers "what exists"
+   without answering "which one did I mean".
+
+   Handlers take [t] and nothing else. Every route is a GET whose method is
+   ignored and whose query string is ignored, and that is the whole contract:
+   a handler that wanted the request would be a handler that could be asked to
+   do something, and no route here does anything. *)
+type handler = t -> Cohttp_async.Server.response Deferred.t
+
+let routes : (string * string * handler) list =
+  [
+    ( "/",
+      "the dashboard: the book, its limits and the trail, over the stream",
+      fun _ ->
+        Cohttp_async.Server.respond_string ~headers:html_headers Dashboard_html.page );
+    ( "/ops",
+      "the operations page: which build, how long, and what the process is doing",
+      fun _ -> Cohttp_async.Server.respond_string ~headers:html_headers Ops_html.html );
+    ( "/api/snapshot",
+      "the whole book as JSON, with the counter that proves the graph is alive",
+      fun t ->
+        Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode) (render t)
+    );
+    ( "/api/health",
+      "feed liveness per symbol; healthy is false when anything is stale",
+      fun t ->
+        Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
+          (Yojson.Safe.to_string
+             (json_of_feed_health (Graph.Snapshot.feed_health (Graph.snapshot t.graph))))
+    );
+    ( "/api/stream",
+      "server-sent events, one frame per graph change, coalesced over 80 ms",
+      subscribe );
+    (* Read from the buffer as it stands; nothing is computed here. The buffer
+       is filled by an observer on the graph, so this route is a read of state
+       that already exists rather than a request that causes work -- the same
+       property /api/snapshot has, and the reason neither can stall the
+       engine. *)
+    ( "/api/history",
+      "the in-memory trail, column-major, lost on restart",
+      fun t ->
+        Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
+          (Yojson.Safe.to_string (json_of_history t.history)) );
+    (* Scenarios are computed on demand rather than pushed on the stream, and
+       the reason is the cost asymmetry. A snapshot is read from observers
+       that have already settled; a scenario suite forks the engine once per
+       scenario and stabilizes each fork. Putting that behind the SSE loop
+       would mean paying it on every tick to serve a number nobody is looking
+       at most of the time.
+
+       Still a GET with no body and no effect: stress.ml runs every scenario
+       on a fork and destroys it, so this route cannot move the live book. *)
+    ( "/api/stress",
+      "the scenario suite, run on a fork of the book as it stands",
+      fun t ->
+        Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
+          (Yojson.Safe.to_string (json_of_stress t.graph)) );
+    ( "/api/ops",
+      "what this process is: build, uptime, counters, stream, feed, alerts, heap",
+      fun t ->
+        Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
+          (Yojson.Safe.to_string (json_of_ops t)) );
+  ]
+
+let route_paths () : string list = List.map routes ~f:(fun (path, _, _) -> path)
+
+(* The 404 body, generated from the table and rendered once: the table does
+   not change after the module is initialised, and an unknown route is not a
+   reason to serialise anything. *)
+let not_found_body : string =
+  Yojson.Safe.to_string
+    (`Assoc
+       [
+         ("error", `String "not found");
+         ("routes", jlist jstring (route_paths ()));
+         ( "purposes",
+           `Assoc (List.map routes ~f:(fun (path, purpose, _) -> (path, `String purpose)))
+         );
+       ])
+
+(* /index.html is the one alias. It has been answered since Phase 3 and a
+   bookmark to it must not start 404ing; it is not in the table because it is
+   not a route, it is a spelling of one, and the 404 body should not offer a
+   caller two names for the same page. *)
+let lookup (path : string) : handler option =
+  let path = if String.equal path "/index.html" then "/" else path in
+  List.find_map routes ~f:(fun (p, _, h) -> if String.equal p path then Some h else None)
+
+let handle (t : t) ~(path : string) =
+  match lookup path with
+  | Some handler -> handler t
+  | None ->
       Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
-        (Yojson.Safe.to_string (json_of_stress t.graph))
-  | _ ->
-      Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
-        ~status:`Not_found
-        (Yojson.Safe.to_string
-           (`Assoc
-              [
-                ("error", `String "not found");
-                ( "routes",
-                  `List
-                    (List.map
-                       [
-                         "/";
-                         "/api/snapshot";
-                         "/api/health";
-                         "/api/stream";
-                         "/api/history";
-                         "/api/stress";
-                       ] ~f:(fun r -> `String r)) );
-              ]))
+        ~status:`Not_found not_found_body
 
 (* ------------------------------------------------------------------------ *)
 (* Starting                                                                  *)
