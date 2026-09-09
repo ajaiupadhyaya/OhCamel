@@ -148,6 +148,16 @@ module Tracker = struct
   let state t name = Option.value (Hashtbl.find t.states name) ~default:Ok_
   let firing t name = equal_state (state t name) Firing
 
+  (* Every limit currently in the Firing state, sorted.
+
+     Sorted because this list goes on a page: an unsorted Hashtbl.keys would
+     reorder itself between two polls and every row would look like it had
+     changed, which is the one thing a monitoring page must not do. *)
+  let firing_names t : string list =
+    Hashtbl.fold t.states ~init:[] ~f:(fun ~key ~data acc ->
+        match data with Firing -> key :: acc | Ok_ -> acc)
+    |> List.sort ~compare:String.compare
+
   (* Feed the current results; get back the events worth sending.
 
      [results] pairs each configured limit with its evaluation, [None] meaning
@@ -388,6 +398,23 @@ let halted t = Kill_switch.halt_new_orders t.kill_switch
 let history t = Queue.to_list t.history
 let sent t = t.sent
 let failed t = t.failed
+
+(* Three readers for the wire, added because /api/snapshot could report that
+   something had tripped and not which limits were still over the line.
+
+   [firing_limits] is the TRACKER's state, not the breach list: hysteresis
+   means a limit back under its threshold but above clear_below is not
+   breached and is still firing, and the two are different facts about the
+   same limit. [tripped_at] is on the switch rather than derived from the
+   event history, because the history is a bounded queue and the trip is the
+   thing an operator most wants to still be there after fifty events. *)
+let config t = t.config
+let firing_limits t = Tracker.firing_names t.tracker
+
+let tripped_at t =
+  match Kill_switch.state t.kill_switch with
+  | Kill_switch.Tripped { at; _ } -> Some at
+  | Kill_switch.Armed | Kill_switch.Disarmed -> None
 
 let status t =
   Printf.sprintf "sinks=%s sent=%d failed=%d kill_switch=%s"

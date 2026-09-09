@@ -358,6 +358,63 @@ let test_book_with_alerts_parses () =
       Alcotest.(check (list string))
         "trips on" [ "dd-cap" ] a.Config.Alerts.kill_switch_trips_on
 
+(* What the wire could not say before.
+
+   /api/snapshot has reported `enabled` and a kill-switch word since Phase 4,
+   and nothing else -- so an operator could see that something had tripped and
+   not which limits were still over the line, nor when. Worse, the tracker's
+   hysteresis means "breached" and "still firing" are different states: a limit
+   back under its threshold but above clear_below is not breached and is still
+   firing, and only the tracker knows. These three accessors put that state on
+   the wire. *)
+let test_firing_and_tripped_at_are_readable () =
+  let graph =
+    Graph.create
+      ~instruments:[ { Instrument.symbol = aapl; sector = tech } ]
+      ~limits:[ cap ] ~confidence:0.95 ~return_window:10 ()
+  in
+  Exn.protect
+    ~f:(fun () ->
+      match
+        Alerts.attach ~graph
+          ~config:(alerts_config ~kill:true ~trips_on:[ "aapl-cap" ] ())
+      with
+      | Error e -> Alcotest.failf "attach: %s" (Error.to_string_hum e)
+      | Ok None -> Alcotest.fail "an enabled config must produce a notifier"
+      | Ok (Some a) ->
+          (* Nothing has been evaluated yet. Empty, and armed but not tripped. *)
+          Graph.stabilize graph;
+          Alcotest.(check (list string)) "nothing firing yet" [] (Alerts.firing_limits a);
+          Alcotest.(check bool)
+            "and nothing has tripped" true
+            (Option.is_none (Alerts.tripped_at a));
+          (* aapl-cap is a 100 gross-notional cap. 150 x 1 = 150, so
+             utilisation is 1.5 and the limit is breached. *)
+          Graph.set_price graph aapl (Price.of_float 150.0);
+          Graph.set_qty graph aapl (Qty.of_float 1.0);
+          Graph.stabilize graph;
+          Alcotest.(check (list string))
+            "the breached limit is firing" [ "aapl-cap" ] (Alerts.firing_limits a);
+          Alcotest.(check bool)
+            "and the switch it trips on has a time" true
+            (Option.is_some (Alerts.tripped_at a));
+          (* Back under the line but INSIDE the hysteresis band: 96 x 1 = 96,
+             utilisation 0.96, which is above clear_below = 0.95. Not breached,
+             still firing -- which is exactly the distinction the page needs
+             and the one a `breached` list cannot express. *)
+          Graph.set_price graph aapl (Price.of_float 96.0);
+          Graph.stabilize graph;
+          Alcotest.(check (list string))
+            "inside the band it is still firing" [ "aapl-cap" ] (Alerts.firing_limits a);
+          (* The config travels too, so the page can print the hysteresis it is
+             looking at rather than assuming the default. *)
+          Alcotest.(check (float 1e-9))
+            "clear_below is readable" 0.95 (Alerts.config a).Config.Alerts.clear_below;
+          Alcotest.(check (list string))
+            "and so is what the switch trips on" [ "aapl-cap" ]
+            (Alerts.config a).Config.Alerts.kill_switch_trips_on)
+    ~finally:(fun () -> Graph.destroy graph)
+
 let suite =
   ( "alerts",
     [
@@ -387,4 +444,6 @@ let suite =
         test_book_without_alerts_is_inert;
       Alcotest.test_case "a book with an alerts block parses" `Quick
         test_book_with_alerts_parses;
+      Alcotest.test_case "firing limits and the trip time are readable" `Quick
+        test_firing_and_tripped_at_are_readable;
     ] )
