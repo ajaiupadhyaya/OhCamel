@@ -670,6 +670,154 @@ let test_alerts_json_when_firing () =
             (Yojson.Safe.to_string other))
     ()
 
+(* /api/ops is the route the owner reads at two in the morning, so what is
+   asserted here is mostly about what it must NOT say.
+
+   It must not name a symbol: the live host's book is behind a password and the
+   counts are the whole reason a counts-only object exists. It must not count a
+   subscriber whose pipe has closed. It must not report a graph.named count or
+   a reports state this build cannot produce. And uptime has to be a number,
+   because the smoke suite compares it to 300 and a string would pass every
+   naive check while proving nothing. *)
+let test_ops_shape () =
+  with_server ~mode:`Live ~peer:"https://ohcamel.example.com" ~quiet:[ xom ]
+    ~f:(fun server _graph ->
+      let j = Server.json_of_ops server in
+      Alcotest.(check string)
+        "the mode is a word the client can switch on" "live"
+        (match field_exn j "mode" with `String s -> s | _ -> "?");
+      Alcotest.(check bool)
+        "uptime is a number and not negative" true
+        (Float.( >= ) (num j "uptime_s") 0.0);
+      Alcotest.(check bool)
+        "pid is an int" true
+        (match field_exn j "pid" with `Int _ -> true | _ -> false);
+      (* The build stamp, threaded from the droplet's checkout. git_short is
+         seven characters of a real sha and the whole word when there is not
+         one, because "unknow" would look like a sha that had been truncated. *)
+      let build = field_exn j "build" in
+      let sha = match field_exn build "git_sha" with `String s -> s | _ -> "?" in
+      let short = match field_exn build "git_short" with `String s -> s | _ -> "?" in
+      Alcotest.(check bool)
+        "git_short is seven of a real sha, or the whole word unknown" true
+        (if String.equal sha "unknown" then String.equal short "unknown"
+         else String.equal short (String.prefix sha 7));
+      List.iter [ "built_at"; "profile"; "architecture"; "system"; "executable" ]
+        ~f:(fun key ->
+          match field_exn build key with
+          | `String s when not (String.is_empty s) -> ()
+          | other ->
+              Alcotest.failf "build.%s should be a non-empty string, got %s" key
+                (Yojson.Safe.to_string other));
+      (* Incremental's counters for the WHOLE process, which is why the page
+         labels them so. Direction only -- another test in this runner moves
+         them. *)
+      let process = field_exn j "process" in
+      List.iter
+        [
+          "nodes_recomputed";
+          "stabilizes";
+          "nodes_created";
+          "var_sets";
+          "active_observers";
+        ] ~f:(fun key ->
+          match field_exn process key with
+          | `Int n when n >= 0 -> ()
+          | other ->
+              Alcotest.failf "process.%s should be a non-negative int, got %s" key
+                (Yojson.Safe.to_string other));
+      (* Phase 4 fills this from the recompute log. Until then it is null and
+         never a zero: "no named node ran" is the alarm, and a build that
+         cannot tell must not raise it. *)
+      Alcotest.(check bool)
+        "graph.named is null until the recompute log exists" true
+        (match field_exn (field_exn j "graph") "named" with `Null -> true | _ -> false);
+      (* Phase 5 fills these. `absent` rather than `ready`, for the same
+         reason. *)
+      let reports = field_exn j "reports" in
+      List.iter [ "static"; "garch" ] ~f:(fun key ->
+          Alcotest.(check string)
+            ("reports." ^ key ^ " is absent until Phase 5")
+            "absent"
+            (match field_exn reports key with `String s -> s | _ -> "?"));
+      (* Counts, never names. This is the assertion that keeps the live book
+         off a page the owner might open on a phone in a coffee shop. *)
+      let feed = field_exn j "feed" in
+      List.iter [ "symbols"; "stale"; "never_seen"; "quiet" ] ~f:(fun key ->
+          match field_exn feed key with
+          | `Int _ -> ()
+          | other ->
+              Alcotest.failf "feed.%s must be a count, got %s" key
+                (Yojson.Safe.to_string other));
+      Alcotest.(check int)
+        "the quiet list is counted, not listed" 1
+        (Int.of_float (num feed "quiet"));
+      Alcotest.(check bool)
+        "no symbol name appears anywhere in the object" false
+        (String.is_substring (Yojson.Safe.to_string j) ~substring:"AAPL"
+        || String.is_substring (Yojson.Safe.to_string j) ~substring:"XOM");
+      (* The threshold the ages are measured against travels with them. *)
+      Alcotest.(check (float 1e-9))
+        "the default threshold" 90.0
+        (num feed "staleness_threshold_s");
+      (* No feed_stats closure was given, so this is the synthetic feed saying
+         so in words rather than four nulls the client has to interpret. *)
+      Alcotest.(check string)
+        "no closure means the synthetic feed" "synthetic"
+        (match field_exn (field_exn j "feed_source") "kind" with
+        | `String s -> s
+        | _ -> "?");
+      (* Open pipes only. A browser that closed its tab must not keep counting
+         as a subscriber, because "someone is watching" is the one thing this
+         row is for. *)
+      let stream = field_exn j "stream" in
+      Alcotest.(check int) "no subscribers" 0 (Int.of_float (num stream "subscribers"));
+      Alcotest.(check (float 1e-9))
+        "the coalesce window is on the wire" 80.0 (num stream "coalesce_ms");
+      Alcotest.(check (float 1e-9))
+        "and so is the keepalive" 20.0 (num stream "keepalive_s");
+      (* Linux only, and null everywhere else -- not zero, which would read as
+         a process using no memory. *)
+      (match field_exn j "rss_bytes" with
+      | `Null | `Int _ -> ()
+      | other ->
+          Alcotest.failf "rss_bytes should be null or an int, got %s"
+            (Yojson.Safe.to_string other));
+      Alcotest.(check (option string))
+        "the peer travels" (Some "https://ohcamel.example.com")
+        (match field_exn j "peer" with `String s -> Some s | _ -> None);
+      (* And the whole thing survives a real parser, like every other route. *)
+      Alcotest.(check bool)
+        "it parses back" true
+        (Option.is_some
+           (Option.try_with (fun () -> Yojson.Safe.from_string (Yojson.Safe.to_string j)))))
+    ()
+
+(* The demo host's own reading: no peer, and a feed_source that names its
+   closure's answer rather than the synthetic default. *)
+let test_ops_feed_source_comes_from_the_closure () =
+  with_server
+    ~feed_stats:(fun () ->
+      `Assoc
+        [
+          ("kind", `String "alpaca");
+          ("alpaca_feed", `String "iex");
+          ("fred_series", `String "DGS10");
+          ("alpaca", `Assoc [ ("frames", `Int 3) ]);
+          ("fred", `Assoc [ ("polls", `Int 1) ]);
+        ])
+    ~f:(fun server _graph ->
+      let j = Server.json_of_ops server in
+      Alcotest.(check string)
+        "the closure's answer is used verbatim" "alpaca"
+        (match field_exn (field_exn j "feed_source") "kind" with
+        | `String s -> s
+        | _ -> "?");
+      Alcotest.(check bool)
+        "and the demo host has no peer" true
+        (match field_exn j "peer" with `Null -> true | _ -> false))
+    ()
+
 let suite =
   ( "server",
     [
@@ -695,4 +843,7 @@ let suite =
         test_alerts_json_when_off;
       Alcotest.test_case "the alerts object when a limit is firing" `Quick
         test_alerts_json_when_firing;
+      Alcotest.test_case "/api/ops shape, and what it must not say" `Quick test_ops_shape;
+      Alcotest.test_case "/api/ops takes its feed source from the closure" `Quick
+        test_ops_feed_source_comes_from_the_closure;
     ] )

@@ -525,6 +525,198 @@ let sse_headers =
       ("X-Accel-Buffering", "no");
     ]
 
+(* The SSE keepalive interval, named rather than written inline in [subscribe].
+
+   /api/ops publishes it, and a published value that had drifted from the timer
+   would be a lie about the one number a reader uses to tell `parked` from
+   `dead`: a stream with no frame for longer than this and no keepalive either
+   is a dropped connection, and a stream with keepalives and no frames is a
+   market that is closed. *)
+let keepalive = Time_ns.Span.of_sec 20.0
+
+(* ------------------------------------------------------------------------ *)
+(* /api/ops                                                                  *)
+(* ------------------------------------------------------------------------ *)
+
+(* Which build this is.
+
+   The field the deployment did not have and could not do without: `docker
+   compose up -d` is a no-op when the image digest has not changed, so a build
+   that silently failed to replace the container serves a healthy old dashboard
+   forever, and none of the original nine smoke assertions could tell. Absent
+   arguments read `unknown` all the way through -- never a date this process
+   invented, which would make the comparison pass while being false. *)
+let build_json () : Yojson.Safe.t =
+  let sha = Build_info.git_sha in
+  `Assoc
+    [
+      ("git_sha", jstring sha);
+      (* Seven characters of a real sha, or the whole word. "unknow" would read
+         as a sha that had been truncated rather than as an absence. *)
+      ("git_short", jstring (if String.length sha = 40 then String.prefix sha 7 else sha));
+      ("built_at", jstring Build_info.built_at);
+      ("profile", jstring Build_info.profile);
+      ("architecture", jstring Build_info.architecture);
+      ("system", jstring Build_info.system);
+      ("executable", jstring Stdlib.Sys.executable_name);
+    ]
+
+(* The heap, as the runtime sees it.
+
+   quick_stat rather than stat: stat walks the major heap, and a monitoring
+   route that triggers a full collection to report on collections is a route
+   that changes what it measures. Words rather than bytes, because that is what
+   the runtime counts; the page multiplies by the word size and says so. *)
+let gc_json () : Yojson.Safe.t =
+  let s = Gc.quick_stat () in
+  `Assoc
+    [
+      ("heap_words", `Int (Gc.Stat.heap_words s));
+      ("top_heap_words", `Int (Gc.Stat.top_heap_words s));
+      ("minor_collections", `Int (Gc.Stat.minor_collections s));
+      ("major_collections", `Int (Gc.Stat.major_collections s));
+      ("compactions", `Int (Gc.Stat.compactions s));
+      ("minor_words", jfloat (Gc.Stat.minor_words s));
+      ("promoted_words", jfloat (Gc.Stat.promoted_words s));
+      ("major_words", jfloat (Gc.Stat.major_words s));
+    ]
+
+(* Resident set size, or nothing.
+
+   The heap above is what the runtime believes; this is what the kernel
+   charges, and the gap between them is the answer to "is 41 MB the engine or
+   the engine plus OpenBLAS". /proc/self/statm exists on Linux and nowhere
+   else, so on macOS this is null -- not zero, which would render as a process
+   using no memory at all.
+
+   Read synchronously. The file is forty bytes the kernel materialises on read
+   and never blocks on, so a blocking read costs less than making this whole
+   encoder deferred would; the page size is 4096 on the amd64 Debian this image
+   is built for, and any platform where it is not never reaches this line. *)
+let rss_bytes () : int option =
+  match Option.try_with (fun () -> Core.In_channel.read_all "/proc/self/statm") with
+  | None -> None
+  | Some contents -> (
+      match String.split (String.strip contents) ~on:' ' with
+      | _ :: resident :: _ ->
+          Option.map
+            (Option.try_with (fun () -> Int.of_string resident))
+            ~f:(fun pages -> pages * 4096)
+      | _ -> None)
+
+(* Where the numbers came from, from the caller rather than from here.
+
+   server.ml must not learn an Alpaca type: it is linked into every mode,
+   including the six that have no credentials, and a broker's record reaching
+   this module would put the feed's vocabulary in the middle of the wire
+   format. So bin/main.ml closes over its two Stats records and hands back the
+   whole object. None is the synthetic feed, and it says so in a word rather
+   than as four nulls the client has to interpret. *)
+let feed_source_json (t : t) : Yojson.Safe.t =
+  match t.feed_stats with
+  | Some stats -> stats ()
+  | None ->
+      `Assoc
+        [
+          ("kind", jstring "synthetic");
+          ("alpaca_feed", `Null);
+          ("fred_series", `Null);
+          ("alpaca", `Null);
+          ("fred", `Null);
+        ]
+
+(* The operations object.
+
+   Nothing here stabilizes, and that is the one design decision in this
+   function. [Graph.feed_health] reads an observer; [Graph.snapshot] would
+   settle the graph first, and a route that reported nodes_recomputed after
+   advancing it would be measuring itself -- the liveness pulse on /ops would
+   then show a flat line of ones whether or not the engine was alive, which is
+   worse than no pulse. /api/health may stabilize because its job is the
+   current answer; this one's job is the current state.
+
+   Every count is a count and no list of names appears: the live host's book is
+   behind a password, the owner reads this page on a phone, and "six symbols,
+   one stale" is the whole of what the row is for. *)
+let json_of_ops (t : t) : Yojson.Safe.t =
+  let health = Graph.feed_health t.graph in
+  `Assoc
+    [
+      ("mode", jstring (mode_to_string t.mode));
+      ("started_at", jstring (Time_ns.to_string_utc t.started_at));
+      (* A difference, not a percentage. Nothing persists, so there is no
+         history to compute availability from and the page says so instead of
+         inventing one. *)
+      ( "uptime_s",
+        jfloat (Time_ns.Span.to_sec (Time_ns.diff (Types.Time.now ()) t.started_at)) );
+      ("port", `Int t.port);
+      ("pid", `Int (Pid.to_int (Unix.getpid ())));
+      (* The CONTAINER id, not the droplet's name, and the page says which. *)
+      ("hostname", jstring (Unix.gethostname ()));
+      ("ocaml_version", jstring Stdlib.Sys.ocaml_version);
+      ("build", build_json ());
+      (* Incremental's counters for the whole process: inflated by the startup
+         probe and by every fork /api/stress makes. Published because "is it
+         alive" is answered by the direction, and labelled on the page because
+         a reader who takes nodes_created for the graph's size concludes the
+         engine is enormous. *)
+      ( "process",
+        `Assoc
+          [
+            ("nodes_recomputed", `Int (Graph.total_nodes_recomputed ()));
+            ("stabilizes", `Int (Graph.total_stabilizes ()));
+            ("nodes_created", `Int (Graph.total_nodes_created ()));
+            ("var_sets", `Int (Graph.total_var_sets ()));
+            ("active_observers", `Int (Graph.active_observers ()));
+          ] );
+      (* The per-graph counts, which forks never reach. Phase 4 fills this from
+         the recompute log; until then it is null, because a zero here would
+         say "no named node ran", which is the alarm. *)
+      ("graph", `Assoc [ ("named", `Null) ]);
+      ( "stream",
+        `Assoc
+          [
+            ("frames_sent", `Int t.frames_sent);
+            (* Open pipes only. A browser that vanished without closing is
+               dropped on the next broadcast, so this can lag by one frame and
+               never by a session. *)
+            ( "subscribers",
+              `Int (List.count t.subscribers ~f:(fun w -> not (Pipe.is_closed w))) );
+            ("coalesce_ms", jfloat (Time_ns.Span.to_ms t.coalesce));
+            ("keepalive_s", jfloat (Time_ns.Span.to_sec keepalive));
+          ] );
+      ( "history",
+        `Assoc
+          [
+            ("appended", `Int (History_buffer.appended t.history));
+            ("points", `Int (List.length (History_buffer.to_list t.history)));
+            ("capacity", `Int (History_buffer.capacity t.history));
+          ] );
+      ("alerts", json_of_alerts t.alerts);
+      ( "feed",
+        `Assoc
+          [
+            ("healthy", `Bool (Graph.Feed_health.all_healthy health));
+            ("symbols", `Int (List.length (Graph.symbols t.graph)));
+            ("stale", `Int (List.length (Graph.Feed_health.stale health)));
+            ("never_seen", `Int (List.length (Graph.Feed_health.never_seen health)));
+            (* Quiet ON PURPOSE. Without this the demo host's deliberate stale
+               name reads as a broken feed, which is the opposite of the
+               demonstration. *)
+            ("quiet", `Int (List.length t.quiet));
+            ( "staleness_threshold_s",
+              jfloat (Time_ns.Span.to_sec (Graph.staleness_threshold t.graph)) );
+          ] );
+      ("feed_source", feed_source_json t);
+      ("gc", gc_json ());
+      ("rss_bytes", match rss_bytes () with None -> `Null | Some b -> `Int b);
+      (* Phase 5 fills these from Reports.compute and the GARCH domain. Until
+         then, absent -- a freshly deployed engine reading `ready` beside an
+         empty figure would be the wrong kind of surprise. *)
+      ("reports", `Assoc [ ("static", jstring "absent"); ("garch", jstring "absent") ]);
+      ("peer", match t.peer with None -> `Null | Some url -> jstring url);
+    ]
+
 let subscribe (t : t) =
   let reader, writer = Pipe.create () in
   t.subscribers <- writer :: t.subscribers;
@@ -540,9 +732,7 @@ let subscribe (t : t) =
      it is transport plumbing rather than a polling loop. *)
   don't_wait_for
     (Deferred.repeat_until_finished () (fun () ->
-         let%bind () =
-           after (Time_ns.Span.to_span_float_round_nearest (Time_ns.Span.of_sec 20.0))
-         in
+         let%bind () = after (Time_ns.Span.to_span_float_round_nearest keepalive) in
          if Pipe.is_closed writer then return (`Finished ())
          else
            let%map () = Pipe.write writer ": keepalive\n\n" in
