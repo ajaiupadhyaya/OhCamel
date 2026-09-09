@@ -39,9 +39,9 @@ if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then
 fi
 while [[ $# -gt 0 ]]; do
 	case "$1" in
-	--live) LIVE="${2:-}"; shift 2 ;;
-	--sse-window) SSE_WINDOW="${2:-20}"; shift 2 ;;
-	--expect-sha) EXPECT_SHA="${2:-}"; shift 2 ;;
+	--live) [ $# -ge 2 ] || { echo "smoke: --live requires a value" >&2; exit 2; }; LIVE="$2"; shift 2 ;;
+	--sse-window) [ $# -ge 2 ] || { echo "smoke: --sse-window requires a value" >&2; exit 2; }; SSE_WINDOW="$2"; shift 2 ;;
+	--expect-sha) [ $# -ge 2 ] || { echo "smoke: --expect-sha requires a value" >&2; exit 2; }; EXPECT_SHA="$2"; shift 2 ;;
 	*) echo "smoke: unknown argument $1" >&2; exit 2 ;;
 	esac
 done
