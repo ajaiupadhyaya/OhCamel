@@ -931,6 +931,57 @@ let test_peer_origin_parsing () =
   Alcotest.(check (option string))
     "no peer by default" None Config.Runtime.default.Config.Runtime.peer_origin
 
+(* The closure run_live hands the server, and the one property it must have.
+
+   It reads the two records when it is CALLED, not when it is built. Both
+   Stats records are mutable and climb for the life of the process; a closure
+   that captured their values at startup would report, forever, a socket that
+   never received a frame -- which is precisely the failure /ops is meant to
+   make visible, arriving disguised as a measurement. The key set is the one
+   server.ml's synthetic branch emits with nulls, so the page can read either
+   host's feed_source without first asking which host it is. *)
+let test_feed_source_reads_at_call_time () =
+  let alpaca = Alpaca.Stats.create () in
+  let fred = Fred.Stats.create () in
+  let source =
+    Ohcamel.Feed_source.live ~alpaca_feed:"iex" ~fred_series:"DGS10" ~alpaca ~fred
+  in
+  let field j key =
+    match j with
+    | `Assoc fields -> (
+        match List.Assoc.find fields key ~equal:String.equal with
+        | Some v -> v
+        | None -> Alcotest.failf "missing key %S" key)
+    | _ -> Alcotest.fail "not an object"
+  in
+  let str j key = match field j key with `String s -> s | _ -> "?" in
+  let int j key = match field j key with `Int n -> n | _ -> -1 in
+  let first = source () in
+  Alcotest.(check string) "kind" "alpaca" (str first "kind");
+  Alcotest.(check string) "the feed name travels" "iex" (str first "alpaca_feed");
+  Alcotest.(check string) "and the series id" "DGS10" (str first "fred_series");
+  Alcotest.(check int) "no frames yet" 0 (int (field first "alpaca") "frames");
+  Alcotest.(check int) "no polls yet" 0 (int (field first "fred") "polls");
+  (* The records move, as they do for the life of the process ... *)
+  alpaca.Alpaca.Stats.frames <- 12;
+  alpaca.Alpaca.Stats.reconnects <- 1;
+  fred.Fred.Stats.polls <- 3;
+  (* ... and the SAME closure reports the new values. *)
+  let second = source () in
+  Alcotest.(check int)
+    "frames, read at call time" 12
+    (int (field second "alpaca") "frames");
+  Alcotest.(check int)
+    "reconnects, read at call time" 1
+    (int (field second "alpaca") "reconnects");
+  Alcotest.(check int) "polls, read at call time" 3 (int (field second "fred") "polls");
+  (* Exactly the five keys, in this order: a client that switches on `kind`
+     and then reads the other four must find them on both hosts. *)
+  Alcotest.(check (list string))
+    "the five keys, in order"
+    [ "kind"; "alpaca_feed"; "fred_series"; "alpaca"; "fred" ]
+    (match second with `Assoc fields -> List.map fields ~f:fst | _ -> [])
+
 let suite =
   ( "feed",
     [
@@ -983,6 +1034,8 @@ let suite =
         test_missing_credential_names_the_variable;
       Alcotest.test_case "config: an empty peer origin is an absent one" `Quick
         test_peer_origin_parsing;
+      Alcotest.test_case "feed_source: the live closure reads its records at call time"
+        `Quick test_feed_source_reads_at_call_time;
       Alcotest.test_case "book: parses and is acceptable to the graph" `Quick
         test_book_parsing;
       Alcotest.test_case "book: malformed files are rejected" `Quick

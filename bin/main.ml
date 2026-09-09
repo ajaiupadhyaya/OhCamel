@@ -1571,7 +1571,7 @@ let run_live ~book_path ~(serve_port : int option) =
         "  options     DISABLED -- no options-chain data source configured, so there\n\
         \              is no implied vol to price Greeks from. See `ohcamel options`\n\
         \              for the same path against a clearly-labelled synthetic\n\
-        \              surface. Nothing here invents one.\n\n";
+        \              surface. Nothing here invents one for the live book.\n\n";
       (* Phase 4. Off unless the book file says otherwise, and a bad alerting
          config is fatal rather than silently ignored -- someone who wrote an
          alerts block meant to be alerted, and starting up with it quietly
@@ -1668,9 +1668,18 @@ let run_live ~book_path ~(serve_port : int option) =
         match serve_port with
         | None -> Deferred.never ()
         | Some port ->
+            (* Everything the process knows about itself, handed over once.
+               ?alerts was omitted before this phase, so the live dashboard
+               could not report the state the switch always had; the peer is
+               the public demo host, when compose says where it is; the feed
+               closure is read on every /api/ops, not captured here. *)
             let server =
-              Server.create ~mode:`Live ~graph
-                ~factor:runtime.Config.Runtime.fred_series_id ()
+              Server.create ?alerts ~mode:`Live ?peer:runtime.Config.Runtime.peer_origin
+                ~feed_stats:
+                  (Feed_source.live ~alpaca_feed:runtime.Config.Runtime.alpaca_feed
+                     ~fred_series:runtime.Config.Runtime.fred_series_id
+                     ~alpaca:alpaca_stats ~fred:fred_stats)
+                ~graph ~factor:runtime.Config.Runtime.fred_series_id ()
             in
             let%bind (_ : (_, _) Cohttp_async.Server.t) = Server.start ~port server in
             live_line (sprintf "dashboard  http://localhost:%d" port);
@@ -1762,7 +1771,14 @@ let run_demo ~port =
         exit 1
     | Ok alerts -> return alerts
   in
-  let server = Server.create ?alerts ~mode:`Demo ~graph ~factor:"SYNTHETIC" () in
+  (* The one symbol that is never ticked -- the comment above [tickable] says
+     why. Named here, above Server.create, because the server has to be TOLD
+     it is quiet on purpose: without that, /api/ops counts it as a broken feed
+     and the demonstration reads as an outage. *)
+  let quiet, _, _, _ = List.last_exn book in
+  let server =
+    Server.create ?alerts ~mode:`Demo ~quiet:[ quiet ] ~graph ~factor:"SYNTHETIC" ()
+  in
   let%bind (_ : (_, _) Cohttp_async.Server.t) = Server.start ~port server in
   printf "  dashboard   http://localhost:%d\n" port;
   printf
@@ -1778,7 +1794,6 @@ let run_demo ~port =
      so, and the risk numbers below it visibly lose their authority. Which is
      the behaviour worth showing, since it is the one the whole design is
      arranged around. *)
-  let quiet, _, _, _ = List.last_exn book in
   let tickable = List.filter book ~f:(fun (s, _, _, _) -> not (Symbol.equal s quiet)) in
   printf "  quiet       %s is never ticked, so the stale path is visible\n"
     (Symbol.to_string quiet);
