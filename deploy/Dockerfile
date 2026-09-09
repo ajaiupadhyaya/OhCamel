@@ -61,6 +61,19 @@ RUN opam update -y \
 
 COPY --chown=opam:opam . .
 
+# The build stamp, and it sits HERE for a reason. An ARG invalidates every
+# layer below it, so putting the sha above `opam install` would throw away the
+# twenty-minute dependency layer on every commit. Below the COPY it costs only
+# the one-minute dune build, which is being re-run anyway because the source
+# changed.
+#
+# ENV as well as ARG: dune reads these through %{env:...}, which is the
+# process environment, not the build arguments.
+ARG OHCAMEL_GIT_SHA=unknown
+ARG OHCAMEL_BUILT_AT=unknown
+ENV OHCAMEL_GIT_SHA=$OHCAMEL_GIT_SHA
+ENV OHCAMEL_BUILT_AT=$OHCAMEL_BUILT_AT
+
 # The release profile, not the default dev one: no debug assertions, and dune
 # stops treating warnings as errors -- which matters because a warning that is
 # fatal on the author's compiler can be merely a warning on someone else's, and

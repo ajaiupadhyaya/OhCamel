@@ -84,7 +84,15 @@ say "Building"
 # rather than on a laptop: the laptop is arm64 and this is amd64, and running
 # an OCaml build of this size through emulation is slow enough that the deploy
 # step stops being one anybody runs.
-"${COMPOSE[@]}" build
+#
+# A per-command prefix, never an export. The rule is the one at the top of this
+# file: nothing here may put a value into the environment that compose would
+# then prefer over deploy/.env. These two are harmless to export and the next
+# pair after them would not be, so the habit is kept rather than the exception
+# made.
+OHCAMEL_GIT_SHA="$(git -C "$REPO" rev-parse HEAD)" \
+OHCAMEL_BUILT_AT="$(date -u +%FT%TZ)" \
+	"${COMPOSE[@]}" build
 
 # ---------------------------------------------------------------------------
 say "Starting"

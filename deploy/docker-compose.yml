@@ -76,6 +76,14 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      # Passed through to dune's %{env:...} inside the builder stage. Absent,
+      # the image honestly says `unknown` rather than carrying a date nobody
+      # set. ohcamel-live has no build block -- it runs this same image, so
+      # both hosts always report the same sha, and a disagreement would mean
+      # one of them did not restart.
+      args:
+        OHCAMEL_GIT_SHA: "${OHCAMEL_GIT_SHA:-unknown}"
+        OHCAMEL_BUILT_AT: "${OHCAMEL_BUILT_AT:-unknown}"
     command: ["demo", "8080"]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/health"]
@@ -94,6 +102,13 @@ services:
   ohcamel-live:
     <<: *engine
     profiles: ["live"]
+    # Where the OTHER host is. /ops on the live origin fills its second column
+    # from the public demo engine, which is possible only in this direction:
+    # the demo engine publishes a CORS header on its JSON in demo mode, and the
+    # live host publishes none and stays behind the password. The demo service
+    # deliberately gets no peer -- nothing crosses the other way.
+    environment:
+      OHCAMEL_PEER_ORIGIN: "https://${OHCAMEL_DEMO_HOST}"
     command: ["serve", "8081"]
     # Root-owned, 0640 and group-readable by the deploy user (compose reads
     # env_file as the invoking user, not as root), outside the repository, and
