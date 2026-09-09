@@ -255,6 +255,25 @@ module Stats = struct
     sprintf "frames=%d trades=%d rejected=%d unknown_symbol=%d reconnects=%d%s" t.frames
       t.trades t.rejected t.unknown_symbol t.reconnects
       (match t.last_error with None -> "" | Some e -> sprintf " last_error=%S" e)
+
+  (* The same counters as [to_string], for /api/ops rather than for a log line.
+
+     Written out by hand rather than derived, for the reason server.ml gives at
+     the head of its encoders: a derived encoder would emit last_error's sexp
+     form, and "the last reason the socket dropped" is a sentence a person
+     reads. An absent reason is null and never the empty string -- a socket
+     that has never errored and one whose error was blank are different
+     states, and only one of them is fine. *)
+  let to_json t : Yojson.Safe.t =
+    `Assoc
+      [
+        ("frames", `Int t.frames);
+        ("trades", `Int t.trades);
+        ("rejected", `Int t.rejected);
+        ("unknown_symbol", `Int t.unknown_symbol);
+        ("reconnects", `Int t.reconnects);
+        ("last_error", match t.last_error with None -> `Null | Some e -> `String e);
+      ]
 end
 
 (* ------------------------------------------------------------------------ *)

@@ -727,6 +727,79 @@ let test_book_rejects_malformed_files () =
     {|((cash 1.0) (positions ()) (limits (((name a) (scope (Nonsense X)) (kind (Max_drawdown 0.1))))))|};
   rejected "cash is not a number" "((cash lots) (positions ()) (limits ()))"
 
+(* The feed's own counters, on the wire.
+
+   Two rules, and they are the wire rules the snapshot already follows. An
+   unknown is null and never a zero: `last_success: null` means FRED has not
+   answered once, and a 0 there would render as the epoch. And an error string
+   is carried as text rather than as a flag, because "the socket reconnected
+   four times" and "the socket reconnected four times and the last reason was
+   403" want different actions. *)
+let test_alpaca_stats_json () =
+  let s = Ohcamel.Alpaca_ws.Stats.create () in
+  let field j key =
+    match j with
+    | `Assoc fields -> (
+        match List.Assoc.find fields key ~equal:String.equal with
+        | Some v -> v
+        | None -> Alcotest.failf "missing key %S" key)
+    | _ -> Alcotest.fail "not an object"
+  in
+  let fresh = Ohcamel.Alpaca_ws.Stats.to_json s in
+  Alcotest.(check bool)
+    "a socket that has never errored says null, not \"\"" true
+    (match field fresh "last_error" with `Null -> true | _ -> false);
+  Alcotest.(check int)
+    "no frames yet" 0
+    (match field fresh "frames" with `Int n -> n | _ -> Alcotest.fail "frames");
+  s.Ohcamel.Alpaca_ws.Stats.frames <- 7;
+  s.Ohcamel.Alpaca_ws.Stats.reconnects <- 2;
+  s.Ohcamel.Alpaca_ws.Stats.last_error <- Some "connection reset";
+  let used = Ohcamel.Alpaca_ws.Stats.to_json s in
+  Alcotest.(check int)
+    "frames" 7
+    (match field used "frames" with `Int n -> n | _ -> Alcotest.fail "frames");
+  Alcotest.(check int)
+    "reconnects" 2
+    (match field used "reconnects" with `Int n -> n | _ -> Alcotest.fail "reconnects");
+  Alcotest.(check string)
+    "the last reason survives" "connection reset"
+    (match field used "last_error" with `String e -> e | _ -> "?")
+
+let test_fred_stats_json () =
+  let s = Ohcamel.Fred_client.Stats.create () in
+  let field j key =
+    match j with
+    | `Assoc fields -> (
+        match List.Assoc.find fields key ~equal:String.equal with
+        | Some v -> v
+        | None -> Alcotest.failf "missing key %S" key)
+    | _ -> Alcotest.fail "not an object"
+  in
+  let fresh = Ohcamel.Fred_client.Stats.to_json s in
+  Alcotest.(check bool)
+    "never polled successfully is null, not the epoch" true
+    (match field fresh "last_success" with `Null -> true | _ -> false);
+  s.Ohcamel.Fred_client.Stats.polls <- 3;
+  s.Ohcamel.Fred_client.Stats.successes <- 2;
+  s.Ohcamel.Fred_client.Stats.observations <- 61;
+  s.Ohcamel.Fred_client.Stats.consecutive_failures <- 1;
+  s.Ohcamel.Fred_client.Stats.last_success <- Some Time.epoch;
+  let used = Ohcamel.Fred_client.Stats.to_json s in
+  Alcotest.(check int)
+    "polls" 3
+    (match field used "polls" with `Int n -> n | _ -> Alcotest.fail "polls");
+  Alcotest.(check int)
+    "observations" 61
+    (match field used "observations" with
+    | `Int n -> n
+    | _ -> Alcotest.fail "observations");
+  (* UTC, and the same rendering /api/snapshot uses for as_of, so two
+     timestamps on one page can be compared without a second convention. *)
+  Alcotest.(check string)
+    "last_success is a UTC instant" "1970-01-01 00:00:00.000000000Z"
+    (match field used "last_success" with `String t -> t | _ -> "?")
+
 let suite =
   ( "feed",
     [
@@ -771,6 +844,8 @@ let suite =
       Alcotest.test_case "fred: error responses" `Quick test_fred_error_responses;
       Alcotest.test_case "fred: the api key never reaches a log" `Quick
         test_fred_uri_redaction;
+      Alcotest.test_case "alpaca: the stats record is JSON" `Quick test_alpaca_stats_json;
+      Alcotest.test_case "fred: the stats record is JSON" `Quick test_fred_stats_json;
       Alcotest.test_case "config: secrets cannot be printed" `Quick
         test_secrets_are_redacted;
       Alcotest.test_case "config: a missing credential names the variable" `Quick

@@ -230,6 +230,26 @@ module Stats = struct
     sprintf "polls=%d ok=%d observations=%d consecutive_failures=%d%s" t.polls t.successes
       t.observations t.consecutive_failures
       (match t.last_error with None -> "" | Some e -> sprintf " last_error=%S" e)
+
+  (* As in alpaca_ws.ml: hand-written, and the unknowns are null.
+
+     [last_success] especially. A FRED client that has never answered has no
+     last success, and rendering that as the epoch would put 1970 on the page
+     beside a live number -- which is not "unknown", it is a wrong answer with
+     a plausible shape. UTC, in the same form /api/snapshot renders as_of. *)
+  let to_json t : Yojson.Safe.t =
+    `Assoc
+      [
+        ("polls", `Int t.polls);
+        ("successes", `Int t.successes);
+        ("observations", `Int t.observations);
+        ("consecutive_failures", `Int t.consecutive_failures);
+        ( "last_success",
+          match t.last_success with
+          | None -> `Null
+          | Some at -> `String (Time_ns.to_string_utc at) );
+        ("last_error", match t.last_error with None -> `Null | Some e -> `String e);
+      ]
 end
 
 (* Poll forever, writing each successful fetch into the graph's factor cell.
