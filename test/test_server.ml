@@ -569,6 +569,17 @@ let check_alert_key_set j =
     (List.sort ~compare:String.compare alert_keys)
     (List.sort ~compare:String.compare (assoc_keys j))
 
+(* The general form of [check_alert_key_set], for every nesting level of
+   /api/ops's object. Compared as a SET (sorted) rather than probed key by
+   key, so a rename or a dropped key fails HERE -- at the one place that
+   speaks for the whole object -- rather than silently passing every
+   [field_exn] a test happened to ask for and never asking about the rest. *)
+let check_key_set ~what expected json =
+  Alcotest.(check (list string))
+    (Printf.sprintf "exactly the %s keys, no more and no fewer" what)
+    (List.sort ~compare:String.compare expected)
+    (List.sort ~compare:String.compare (assoc_keys json))
+
 (* Off is a state with facts in it, not an absence of fields.
 
    Both branches emit the same keys so the page never has to ask whether a
@@ -683,19 +694,71 @@ let test_ops_shape () =
   with_server ~mode:`Live ~peer:"https://ohcamel.example.com" ~quiet:[ xom ]
     ~f:(fun server _graph ->
       let j = Server.json_of_ops server in
+      (* Every key /api/ops promises, and no others. A rename or a dropped key
+         hides from every [field_exn] below -- each proves only the one key it
+         was given -- but not from this: the set is compared whole, sorted,
+         against the brief's list. *)
+      check_key_set ~what:"top-level ops"
+        [
+          "mode";
+          "started_at";
+          "uptime_s";
+          "port";
+          "pid";
+          "hostname";
+          "ocaml_version";
+          "build";
+          "process";
+          "graph";
+          "stream";
+          "history";
+          "alerts";
+          "feed";
+          "feed_source";
+          "gc";
+          "rss_bytes";
+          "reports";
+          "peer";
+        ]
+        j;
       Alcotest.(check string)
         "the mode is a word the client can switch on" "live"
         (match field_exn j "mode" with `String s -> s | _ -> "?");
       Alcotest.(check bool)
+        "started_at is a string" true
+        (match field_exn j "started_at" with `String _ -> true | _ -> false);
+      Alcotest.(check bool)
         "uptime is a number and not negative" true
         (Float.( >= ) (num j "uptime_s") 0.0);
       Alcotest.(check bool)
+        "port is an int" true
+        (match field_exn j "port" with `Int _ -> true | _ -> false);
+      Alcotest.(check bool)
         "pid is an int" true
         (match field_exn j "pid" with `Int _ -> true | _ -> false);
+      Alcotest.(check bool)
+        "hostname is a non-empty string" true
+        (match field_exn j "hostname" with
+        | `String s -> not (String.is_empty s)
+        | _ -> false);
+      Alcotest.(check bool)
+        "ocaml_version is a string" true
+        (match field_exn j "ocaml_version" with `String _ -> true | _ -> false);
       (* The build stamp, threaded from the droplet's checkout. git_short is
          seven characters of a real sha and the whole word when there is not
          one, because "unknow" would look like a sha that had been truncated. *)
       let build = field_exn j "build" in
+      check_key_set ~what:"build"
+        [
+          "git_sha";
+          "git_short";
+          "built_at";
+          "profile";
+          "architecture";
+          "system";
+          "executable";
+        ]
+        build;
       let sha = match field_exn build "git_sha" with `String s -> s | _ -> "?" in
       let short = match field_exn build "git_short" with `String s -> s | _ -> "?" in
       Alcotest.(check bool)
@@ -713,6 +776,15 @@ let test_ops_shape () =
          labels them so. Direction only -- another test in this runner moves
          them. *)
       let process = field_exn j "process" in
+      check_key_set ~what:"process"
+        [
+          "nodes_recomputed";
+          "stabilizes";
+          "nodes_created";
+          "var_sets";
+          "active_observers";
+        ]
+        process;
       List.iter
         [
           "nodes_recomputed";
@@ -729,12 +801,15 @@ let test_ops_shape () =
       (* Phase 4 fills this from the recompute log. Until then it is null and
          never a zero: "no named node ran" is the alarm, and a build that
          cannot tell must not raise it. *)
+      let ops_graph = field_exn j "graph" in
+      check_key_set ~what:"graph" [ "named" ] ops_graph;
       Alcotest.(check bool)
         "graph.named is null until the recompute log exists" true
-        (match field_exn (field_exn j "graph") "named" with `Null -> true | _ -> false);
+        (match field_exn ops_graph "named" with `Null -> true | _ -> false);
       (* Phase 5 fills these. `absent` rather than `ready`, for the same
          reason. *)
       let reports = field_exn j "reports" in
+      check_key_set ~what:"reports" [ "static"; "garch" ] reports;
       List.iter [ "static"; "garch" ] ~f:(fun key ->
           Alcotest.(check string)
             ("reports." ^ key ^ " is absent until Phase 5")
@@ -743,6 +818,9 @@ let test_ops_shape () =
       (* Counts, never names. This is the assertion that keeps the live book
          off a page the owner might open on a phone in a coffee shop. *)
       let feed = field_exn j "feed" in
+      check_key_set ~what:"feed"
+        [ "healthy"; "symbols"; "stale"; "never_seen"; "quiet"; "staleness_threshold_s" ]
+        feed;
       List.iter [ "symbols"; "stale"; "never_seen"; "quiet" ] ~f:(fun key ->
           match field_exn feed key with
           | `Int _ -> ()
@@ -762,20 +840,66 @@ let test_ops_shape () =
         (num feed "staleness_threshold_s");
       (* No feed_stats closure was given, so this is the synthetic feed saying
          so in words rather than four nulls the client has to interpret. *)
+      let feed_source = field_exn j "feed_source" in
+      check_key_set ~what:"feed_source"
+        [ "kind"; "alpaca_feed"; "fred_series"; "alpaca"; "fred" ]
+        feed_source;
       Alcotest.(check string)
         "no closure means the synthetic feed" "synthetic"
-        (match field_exn (field_exn j "feed_source") "kind" with
-        | `String s -> s
-        | _ -> "?");
+        (match field_exn feed_source "kind" with `String s -> s | _ -> "?");
       (* Open pipes only. A browser that closed its tab must not keep counting
          as a subscriber, because "someone is watching" is the one thing this
          row is for. *)
       let stream = field_exn j "stream" in
+      check_key_set ~what:"stream"
+        [ "frames_sent"; "subscribers"; "coalesce_ms"; "keepalive_s" ]
+        stream;
+      Alcotest.(check bool)
+        "frames_sent is an int" true
+        (match field_exn stream "frames_sent" with `Int _ -> true | _ -> false);
       Alcotest.(check int) "no subscribers" 0 (Int.of_float (num stream "subscribers"));
       Alcotest.(check (float 1e-9))
         "the coalesce window is on the wire" 80.0 (num stream "coalesce_ms");
       Alcotest.(check (float 1e-9))
         "and so is the keepalive" 20.0 (num stream "keepalive_s");
+      (* The bounded trail. Nothing has appended in this test (no observer
+         tick, no scheduler cycle), so appended = points = 0 here -- but the
+         invariant asserted is the general one: capacity is never smaller
+         than what the buffer is actually holding. *)
+      let history = field_exn j "history" in
+      check_key_set ~what:"history" [ "appended"; "points"; "capacity" ] history;
+      let history_int key =
+        match field_exn history key with
+        | `Int n -> n
+        | other ->
+            Alcotest.failf "history.%s should be an int, got %s" key
+              (Yojson.Safe.to_string other)
+      in
+      let points = history_int "points" in
+      let capacity = history_int "capacity" in
+      ignore (history_int "appended" : int);
+      Alcotest.(check bool)
+        "history.capacity is never smaller than history.points" true (capacity >= points);
+      (* The alerts object's own twelve-key contract, reused rather than
+         retyped -- Task 10's helper already proves it, at this nesting
+         level too. *)
+      check_alert_key_set (field_exn j "alerts");
+      (* The heap counters: presence and shape only. Their values are the
+         runtime's, and this test asserting a specific heap size would pin a
+         number the GC is free to change between OCaml releases. *)
+      let gc = field_exn j "gc" in
+      check_key_set ~what:"gc"
+        [
+          "heap_words";
+          "top_heap_words";
+          "minor_collections";
+          "major_collections";
+          "compactions";
+          "minor_words";
+          "promoted_words";
+          "major_words";
+        ]
+        gc;
       (* Linux only, and null everywhere else -- not zero, which would read as
          a process using no memory. *)
       (match field_exn j "rss_bytes" with
