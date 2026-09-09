@@ -5,6 +5,8 @@
 #   ./smoke.sh                              # the localhost harness on :8000
 #   ./smoke.sh https://ohcamel.example.com  # production
 #   ./smoke.sh https://ohcamel.example.com --live https://live.ohcamel.example.com
+#   ./smoke.sh https://ohcamel.example.com --live https://live.ohcamel.example.com \
+#              --expect-sha "$(git rev-parse HEAD)"      # what deploy.sh runs
 #
 # Deployment has no unit tests worth writing. What it has is a handful of
 # assertions run against the real thing after every deploy, and one of them
@@ -18,6 +20,15 @@ set -uo pipefail
 BASE="http://localhost:8000"
 LIVE=""
 SSE_WINDOW=20
+EXPECT_SHA=""
+
+# The routes table, as this suite knows it. lib/server.ml's `routes` is the
+# one table the dispatcher and the 404 body are both generated from, and this
+# string is its shadow: a shell script cannot read OCaml, so it carries the
+# list and asserts the 404 body equals it, in order. Adding a route means
+# adding it here in the same commit -- the assertion fails until you do,
+# which is the point of having it.
+EXPECTED_ROUTES="/ /ops /api/snapshot /api/health /api/stream /api/history /api/stress /api/ops"
 
 # The first bare argument is the base URL; everything else is a flag. Written
 # out rather than clever, because a smoke script that misparses its own
@@ -30,6 +41,7 @@ while [[ $# -gt 0 ]]; do
 	case "$1" in
 	--live) LIVE="${2:-}"; shift 2 ;;
 	--sse-window) SSE_WINDOW="${2:-20}"; shift 2 ;;
+	--expect-sha) EXPECT_SHA="${2:-}"; shift 2 ;;
 	*) echo "smoke: unknown argument $1" >&2; exit 2 ;;
 	esac
 done
@@ -177,6 +189,109 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 4a. Which build this is, the page that says so, and the 404 that lists it
+#
+# Before this block the suite could pass against yesterday's container: `up -d`
+# is a no-op when the image did not change, and a build that failed left the
+# old image serving, so "9 passed" said nothing about whether the commit just
+# pushed was the one answering. /api/ops carries the sha dune was given at
+# build time, deploy.sh hands this suite the sha it built from, and the two
+# must agree; and uptime must be under five minutes, because a matching sha
+# on a container that has been up for a week means the deploy replaced
+# nothing. Neither check needs the page; both are what the page would show a
+# human, made mechanical.
+# ---------------------------------------------------------------------------
+ops_sha=""; ops_up=""
+if command -v python3 >/dev/null 2>&1; then
+	ops=$(curl -sS --max-time 15 "$BASE/api/ops" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    o = json.load(sys.stdin)
+except Exception as e:
+    print("NOTJSON %s" % e); raise SystemExit
+mode = o.get("mode"); up = o.get("uptime_s"); b = o.get("build") or {}
+if mode not in ("demo", "live"):
+    print("NOMODE mode=%r" % (mode,)); raise SystemExit
+if not isinstance(up, (int, float)):
+    print("NOUPTIME uptime_s=%r" % (up,)); raise SystemExit
+if not isinstance(b.get("git_sha"), str) or not b.get("git_sha"):
+    print("NOSHA build.git_sha=%r" % (b.get("git_sha"),)); raise SystemExit
+print("OK %s %s %d" % (mode, b["git_sha"], up))
+' 2>/dev/null)
+	case "$ops" in
+	OK*)
+		read -r _ ops_mode ops_sha ops_up <<<"$ops"
+		ok "GET /api/ops                mode $ops_mode, build ${ops_sha:0:7}, up ${ops_up} s"
+		;;
+	*) no "GET /api/ops                malformed" "${ops:-no response}" ;;
+	esac
+
+	if [ -n "$EXPECT_SHA" ]; then
+		if [ -n "$ops_sha" ] && [ "$ops_sha" = "$EXPECT_SHA" ]; then
+			ok "build.git_sha               matches ${EXPECT_SHA:0:7}"
+		else
+			no "build.git_sha               ${ops_sha:-unreadable}, expected ${EXPECT_SHA:0:7}" \
+				"the image answering was not built from this checkout: the build failed, or up -d kept the old image"
+		fi
+		if [ -n "$ops_up" ] && [ "$ops_up" -lt 300 ]; then
+			ok "uptime_s                    ${ops_up} s, under 300: this deploy's container"
+		else
+			no "uptime_s                    ${ops_up:-unreadable} s, expected under 300" \
+				"a container this old was not replaced by this deploy"
+		fi
+	else
+		meh "build sha                  not given (--expect-sha SHA), skipping"
+	fi
+else
+	meh "GET /api/ops                python3 unavailable for a real parse; build sha and uptime not checked"
+fi
+
+# The page exists and is the page: both host columns are in the body, which
+# is the DOM contract ops.js fills. No python needed; the two ids are literal.
+page=$(curl -sS --max-time 15 -w '\n%{http_code}' "$BASE/ops" 2>/dev/null)
+page_code="${page##*$'\n'}"
+case "$page_code:$page" in
+200:*'id="this-host"'*'id="peer"'*) ok "GET /ops                    200, both host columns present" ;;
+200:*) no "GET /ops                    200, but not the ops page" "the body has no #this-host / #peer" ;;
+*)     no "GET /ops                    ${page_code:-no response}" ;;
+esac
+
+# The 404 body is generated from the same table `handle` dispatches on, and
+# EXPECTED_ROUTES is that table's shadow. Equality in order, not membership: a
+# route that is served and not listed is the exact drift the table was
+# introduced to make impossible, and a suite that only asked "is /api/ops in
+# there" would wave it through.
+if command -v python3 >/dev/null 2>&1; then
+	listed=$(curl -sS --max-time 15 -w '\n%{http_code}' "$BASE/api/nope" 2>/dev/null | python3 -c '
+import json, sys
+raw = sys.stdin.read().rsplit("\n", 1)
+try:
+    body = json.loads(raw[0]); code = raw[1]
+except Exception as e:
+    print("NOTJSON %s" % e); raise SystemExit
+if code != "404":
+    print("CODE %s, expected 404" % code); raise SystemExit
+if body.get("error") != "not found":
+    print("ERROR error=%r" % (body.get("error"),)); raise SystemExit
+print("OK " + " ".join(body.get("routes") or []))
+' 2>/dev/null)
+	case "$listed" in
+	OK*)
+		if [ "${listed#OK }" = "$EXPECTED_ROUTES" ]; then
+			ok "GET /api/nope               404, lists the $(echo "$EXPECTED_ROUTES" | wc -w | tr -d ' ') routes in the table's order"
+		else
+			no "GET /api/nope               404, but its routes are not EXPECTED_ROUTES" "served:   ${listed#OK }"
+			printf '        %s\n' "expected: $EXPECTED_ROUTES"
+		fi
+		;;
+	*) no "GET /api/nope               malformed" "${listed:-no response}" ;;
+	esac
+else
+	meh "GET /api/nope               python3 unavailable for a real parse; the 404 route list not checked"
+fi
+# -- Phase 5's block 4b (the routes the page reads) is inserted immediately below this line --
+
+# ---------------------------------------------------------------------------
 # 5. TLS, and the redirect onto it (production only)
 # ---------------------------------------------------------------------------
 case "$BASE" in
@@ -215,9 +330,17 @@ esac
 # 6. The live host refuses anonymous callers
 # ---------------------------------------------------------------------------
 if [ -n "$LIVE" ]; then
-	code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$LIVE/" 2>/dev/null)
-	[ "$code" = "401" ] && ok "GET $LIVE/  401 without credentials" \
-		|| no "GET $LIVE/  $code, expected 401" "the live host is not gated"
+	# Five paths, not one. The gate is Caddy's basic_auth on the whole host,
+	# and the tempting way to fill the ops page's peer column from the public
+	# origin is a matcher that exempts /api/ops from it. That hole would show
+	# up here as a 200 on one path while / still said 401. The page fills its
+	# peer column the other way round -- the live origin reads the demo, over
+	# the demo engine's own CORS header -- so the live host never needs one.
+	for path in / /ops /api/ops /api/snapshot /api/health; do
+		code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$LIVE$path" 2>/dev/null)
+		[ "$code" = "401" ] && ok "GET $LIVE$path  401 without credentials" \
+			|| no "GET $LIVE$path  $code, expected 401" "the live host is not gated on $path"
+	done
 else
 	meh "live host                  not given (--live URL), skipping"
 fi

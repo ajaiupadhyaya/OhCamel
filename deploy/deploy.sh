@@ -108,7 +108,10 @@ say "Settling"
 
 # ---------------------------------------------------------------------------
 say "Verifying"
-SMOKE_ARGS=("https://${OHCAMEL_DEMO_HOST}")
+# The sha this script just built from, read from the checkout and not from
+# the container: the assertion is that the two agree, and one side of an
+# agreement has to come from somewhere the other side cannot reach.
+SMOKE_ARGS=("https://${OHCAMEL_DEMO_HOST}" --expect-sha "$(git -C "$REPO" rev-parse HEAD)")
 [ ${#PROFILE[@]} -gt 0 ] && SMOKE_ARGS+=(--live "https://${OHCAMEL_LIVE_HOST}")
 
 if deploy/smoke.sh "${SMOKE_ARGS[@]}"; then
