@@ -540,6 +540,35 @@ let with_alerts ~f () =
           f a)
     ~finally:(fun () -> Graph.destroy graph)
 
+(* The twelve keys the brief names, in the order [json_of_alerts] writes
+   them. Compared as a SET (sorted) against the object's own keys, so an
+   extra key or a dropped one fails here rather than in whichever field
+   [field_exn] happened to be asked for -- [field_exn] proves a key it is
+   given is present, never that no other key is missing. *)
+let alert_keys =
+  [
+    "enabled";
+    "kill_switch";
+    "tripped_by";
+    "tripped_at";
+    "halt_new_orders";
+    "firing";
+    "sent";
+    "failed";
+    "sinks";
+    "trips_on";
+    "clear_below";
+    "recent";
+  ]
+
+let assoc_keys json = match json with `Assoc fields -> List.map fields ~f:fst | _ -> []
+
+let check_alert_key_set j =
+  Alcotest.(check (list string))
+    "exactly the twelve alert keys, no more and no fewer"
+    (List.sort ~compare:String.compare alert_keys)
+    (List.sort ~compare:String.compare (assoc_keys j))
+
 (* Off is a state with facts in it, not an absence of fields.
 
    Both branches emit the same keys so the page never has to ask whether a
@@ -550,6 +579,7 @@ let with_alerts ~f () =
    the failure this whole wire format is arranged against. *)
 let test_alerts_json_when_off () =
   let j = Server.json_of_alerts None in
+  check_alert_key_set j;
   Alcotest.(check bool)
     "not enabled" true
     (match field_exn j "enabled" with `Bool b -> not b | _ -> false);
@@ -562,6 +592,14 @@ let test_alerts_json_when_off () =
       | other ->
           Alcotest.failf "%s should be null with no notifier, got %s" key
             (Yojson.Safe.to_string other));
+  Alcotest.(check bool)
+    "orders are not flagged halted" false
+    (match field_exn j "halt_new_orders" with `Bool b -> b | _ -> true);
+  List.iter [ "sent"; "failed" ] ~f:(fun key ->
+      Alcotest.(check int)
+        (key ^ " is zero with no notifier")
+        0
+        (match field_exn j key with `Int i -> i | _ -> -1));
   List.iter [ "firing"; "sinks"; "trips_on"; "recent" ] ~f:(fun key ->
       match field_exn j key with
       | `List [] -> ()
@@ -573,6 +611,10 @@ let test_alerts_json_when_firing () =
   with_alerts
     ~f:(fun a ->
       let j = Server.json_of_alerts (Some a) in
+      check_alert_key_set j;
+      Alcotest.(check bool)
+        "enabled, because there is a notifier" true
+        (match field_exn j "enabled" with `Bool b -> b | _ -> false);
       Alcotest.(check (list string))
         "one limit, and it is the one over its line" [ "aapl-cap" ]
         (match field_exn j "firing" with
@@ -604,7 +646,28 @@ let test_alerts_json_when_firing () =
         | `List xs -> List.map xs ~f:(function `String s -> s | _ -> "?")
         | _ -> []);
       Alcotest.(check (float 1e-9))
-        "the hysteresis is on the wire, not assumed" 0.95 (num j "clear_below"))
+        "the hysteresis is on the wire, not assumed" 0.95 (num j "clear_below");
+      (* [sent] and [failed] are counted by [deliver], which runs off the
+         reader end of a Pipe under [don't_wait_for] -- an Async job that
+         needs the scheduler to turn a cycle. This test calls [Graph.stabilize]
+         and reads the notifier synchronously, inside a plain (non-Async)
+         Alcotest case that never starts the scheduler, so that job never
+         runs: no sink has actually delivered anything yet. 0 is the real,
+         honest count of what has been sent so far, not a stand-in for
+         "untested" -- the wire format must not lie about that either. The
+         same absence of a scheduler tick is why [history] -- and so
+         [recent] -- is still empty here, even though a limit has fired. *)
+      Alcotest.(check int)
+        "nothing has been delivered yet" 0
+        (match field_exn j "sent" with `Int i -> i | _ -> -1);
+      Alcotest.(check int)
+        "and so nothing has failed to deliver" 0
+        (match field_exn j "failed" with `Int i -> i | _ -> -1);
+      match field_exn j "recent" with
+      | `List [] -> ()
+      | other ->
+          Alcotest.failf "recent should still be empty (no scheduler tick): got %s"
+            (Yojson.Safe.to_string other))
     ()
 
 let suite =
