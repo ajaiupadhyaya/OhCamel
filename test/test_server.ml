@@ -498,6 +498,115 @@ let test_cors_is_demo_json_only () =
         "application/json" (Some "application/json")
         (Cohttp.Header.get (Server.json_headers ~mode) "Content-Type"))
 
+(* A graph with exactly one limit, so the firing list is derivable by hand
+   rather than by running the thing and writing down what came out.
+
+   AAPL at 150 x 200 = 30,000 against a 25,000 cap: utilisation 1.2, breached.
+   Nothing else is configured, so the tracker can be firing on one name and
+   only one. Dry_run is the sink because it formats what would be sent and
+   sends nothing; no test in this project may reach a network. *)
+let alerted_limit =
+  {
+    Limit.name = "aapl-cap";
+    scope = Limit.Instrument aapl;
+    kind = Limit.Gross_notional (Notional.of_float 25_000.0);
+  }
+
+let with_alerts ~f () =
+  let graph =
+    Graph.create ~starting_cash:(Notional.of_float 100_000.0)
+      ~instruments:[ { Instrument.symbol = aapl; sector = tech } ]
+      ~limits:[ alerted_limit ] ~confidence:0.95 ~return_window:10 ()
+  in
+  Exn.protect
+    ~f:(fun () ->
+      match
+        Ohcamel.Alerts.attach ~graph
+          ~config:
+            {
+              Ohcamel.Config.Alerts.enabled = true;
+              sinks = [ Ohcamel.Config.Alerts.Sink.Dry_run ];
+              clear_below = 0.95;
+              kill_switch_enabled = true;
+              kill_switch_trips_on = [ "aapl-cap" ];
+            }
+      with
+      | Error e -> Alcotest.failf "attach: %s" (Error.to_string_hum e)
+      | Ok None -> Alcotest.fail "an enabled config must produce a notifier"
+      | Ok (Some a) ->
+          Graph.set_price graph aapl (Price.of_float 150.0);
+          Graph.set_qty graph aapl (Qty.of_float 200.0);
+          Graph.stabilize graph;
+          f a)
+    ~finally:(fun () -> Graph.destroy graph)
+
+(* Off is a state with facts in it, not an absence of fields.
+
+   Both branches emit the same keys so the page never has to ask whether a
+   field exists before asking what it says -- a client that branches on shape
+   is a client that renders `undefined` the first time the other branch
+   ships. clear_below is null rather than 0.95 when there is no notifier:
+   there is no hysteresis to report, and a default printed as a measurement is
+   the failure this whole wire format is arranged against. *)
+let test_alerts_json_when_off () =
+  let j = Server.json_of_alerts None in
+  Alcotest.(check bool)
+    "not enabled" true
+    (match field_exn j "enabled" with `Bool b -> not b | _ -> false);
+  Alcotest.(check string)
+    "the switch is off" "off"
+    (match field_exn j "kill_switch" with `String s -> s | _ -> "?");
+  List.iter [ "tripped_by"; "tripped_at"; "clear_below" ] ~f:(fun key ->
+      match field_exn j key with
+      | `Null -> ()
+      | other ->
+          Alcotest.failf "%s should be null with no notifier, got %s" key
+            (Yojson.Safe.to_string other));
+  List.iter [ "firing"; "sinks"; "trips_on"; "recent" ] ~f:(fun key ->
+      match field_exn j key with
+      | `List [] -> ()
+      | other ->
+          Alcotest.failf "%s should be an empty list, got %s" key
+            (Yojson.Safe.to_string other))
+
+let test_alerts_json_when_firing () =
+  with_alerts
+    ~f:(fun a ->
+      let j = Server.json_of_alerts (Some a) in
+      Alcotest.(check (list string))
+        "one limit, and it is the one over its line" [ "aapl-cap" ]
+        (match field_exn j "firing" with
+        | `List xs -> List.map xs ~f:(function `String s -> s | _ -> "?")
+        | _ -> []);
+      Alcotest.(check string)
+        "the switch latched" "tripped"
+        (match field_exn j "kill_switch" with `String s -> s | _ -> "?");
+      Alcotest.(check string)
+        "and named what did it" "aapl-cap"
+        (match field_exn j "tripped_by" with `String s -> s | _ -> "?");
+      Alcotest.(check bool)
+        "with a time, because a bounded event queue will forget the event" true
+        (match field_exn j "tripped_at" with `String _ -> true | _ -> false);
+      Alcotest.(check bool)
+        "and orders are flagged halted" true
+        (match field_exn j "halt_new_orders" with `Bool b -> b | _ -> false);
+      (* The sink is a WORD, not the sexp of its constructor. A File sink
+         carries a path, /api/ops is public on the demo host, and a filesystem
+         path is information about the machine that nothing on the page needs. *)
+      Alcotest.(check (list string))
+        "the sink is named, never described" [ "dry_run" ]
+        (match field_exn j "sinks" with
+        | `List xs -> List.map xs ~f:(function `String s -> s | _ -> "?")
+        | _ -> []);
+      Alcotest.(check (list string))
+        "and so is what the switch trips on" [ "aapl-cap" ]
+        (match field_exn j "trips_on" with
+        | `List xs -> List.map xs ~f:(function `String s -> s | _ -> "?")
+        | _ -> []);
+      Alcotest.(check (float 1e-9))
+        "the hysteresis is on the wire, not assumed" 0.95 (num j "clear_below"))
+    ()
+
 let suite =
   ( "server",
     [
@@ -519,4 +628,8 @@ let suite =
       Alcotest.test_case "a demo server has no peer" `Quick test_a_demo_server_has_no_peer;
       Alcotest.test_case "CORS is on the demo host's JSON and nothing else" `Quick
         test_cors_is_demo_json_only;
+      Alcotest.test_case "the alerts object when nothing is armed" `Quick
+        test_alerts_json_when_off;
+      Alcotest.test_case "the alerts object when a limit is firing" `Quick
+        test_alerts_json_when_firing;
     ] )

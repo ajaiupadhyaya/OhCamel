@@ -349,15 +349,58 @@ type t = {
   history : History_buffer.t;
 }
 
-(* What Phase 4 is doing, for the dashboard to report.
+(* A sink is named, never described.
+
+   Config.Alerts.Sink.sexp_of_t renders `File "/var/log/ohcamel.log"` as
+   `(File /var/log/ohcamel.log)`, and this object is served unauthenticated on
+   the demo host. A filesystem path is information about the machine that
+   nothing on the page needs, and "which kinds of sink are configured" is the
+   whole question a reader is asking. *)
+let sink_name (sink : Config.Alerts.Sink.t) : string =
+  match sink with
+  | Config.Alerts.Sink.Log -> "log"
+  | Config.Alerts.Sink.File _ -> "file"
+  | Config.Alerts.Sink.Slack -> "slack"
+  | Config.Alerts.Sink.Dry_run -> "dry_run"
+
+(* What Phase 4 is doing, for the dashboard and for /ops to report.
 
    Reports and never mutates: there is no route that arms, trips or resets
-   anything. A kill switch that could be flipped by an unauthenticated GET would
-   be a worse hazard than the one it guards against. *)
+   anything. A kill switch that could be flipped by an unauthenticated GET
+   would be a worse hazard than the one it guards against.
+
+   Both branches emit the same keys. A client that has to test for a field's
+   existence before reading it is a client that renders `undefined` the first
+   time the other branch ships, and the two branches here are two hosts. What
+   differs is the VALUES: with no notifier there is no hysteresis to report, so
+   clear_below is null rather than the default it would have had -- a default
+   printed as a measurement is the one thing this wire format exists to
+   prevent.
+
+   [firing] is the tracker's state and not the breach list, and the difference
+   is the hysteresis: a limit back under its threshold but above clear_below is
+   not breached and is still firing. Only one of those two facts is in
+   /api/snapshot's `limits`, and it is not the one an operator wants at 3am. *)
 let json_of_alerts (alerts : Alerts.t option) : Yojson.Safe.t =
   match alerts with
-  | None -> `Assoc [ ("enabled", `Bool false); ("kill_switch", `String "off") ]
+  | None ->
+      `Assoc
+        [
+          ("enabled", `Bool false);
+          ("kill_switch", `String "off");
+          ("tripped_by", `Null);
+          ("tripped_at", `Null);
+          ("halt_new_orders", `Bool false);
+          ("firing", `List []);
+          ("sent", `Int 0);
+          ("failed", `Int 0);
+          ("sinks", `List []);
+          ("trips_on", `List []);
+          ("clear_below", `Null);
+          ("recent", `List []);
+        ]
   | Some a ->
+      let config = Alerts.config a in
       let state, tripped_by =
         match Alerts.Kill_switch.state (Alerts.kill_switch a) with
         | Alerts.Kill_switch.Disarmed -> ("off", `Null)
@@ -369,9 +412,20 @@ let json_of_alerts (alerts : Alerts.t option) : Yojson.Safe.t =
           ("enabled", `Bool true);
           ("kill_switch", `String state);
           ("tripped_by", tripped_by);
+          (* On the switch rather than dug out of the event history, because
+             the history is a bounded queue of fifty and the trip is the event
+             most likely to still matter after it has been evicted. *)
+          ( "tripped_at",
+            match Alerts.tripped_at a with
+            | None -> `Null
+            | Some at -> jstring (Time_ns.to_string_utc at) );
           ("halt_new_orders", `Bool (Alerts.halted a));
+          ("firing", jlist jstring (Alerts.firing_limits a));
           ("sent", `Int (Alerts.sent a));
           ("failed", `Int (Alerts.failed a));
+          ("sinks", jlist jstring (List.map config.Config.Alerts.sinks ~f:sink_name));
+          ("trips_on", jlist jstring config.Config.Alerts.kill_switch_trips_on);
+          ("clear_below", jfloat config.Config.Alerts.clear_below);
           ( "recent",
             `List
               (List.rev_map (Alerts.history a) ~f:(fun e ->
