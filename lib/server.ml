@@ -289,12 +289,51 @@ let json_of_stress (graph : Graph.t) : Yojson.Safe.t =
 (* The broadcaster                                                           *)
 (* ------------------------------------------------------------------------ *)
 
+(* Which host this process is.
+
+   The two deployed engines run the same image with different arguments, and
+   until now nothing in the process could tell them apart -- so the live host's
+   page could not say `live · Alpaca + FRED`, and the demo host could not
+   publish a CORS header without the live host publishing one too. A closed
+   variant rather than a string: there are two hosts, there will not quietly be
+   a third, and a typo in a string would have shipped as a mode nobody
+   matched. *)
+type mode = [ `Demo | `Live ]
+
+let mode_to_string = function `Demo -> "demo" | `Live -> "live"
+
 type t = {
   graph : Graph.t;
   factor : string;
   (* Present only when alerting is enabled, which is not the default. The
      dashboard reports what it finds; it does not turn anything on. *)
   alerts : Alerts.t option;
+  (* What this process is, for /api/ops and for the CORS decision below. *)
+  mode : mode;
+  (* When it became this process. Nothing persists, so uptime is a difference
+     against this and there is no uptime percentage anywhere -- that would need
+     history nobody keeps. Read beside the build sha it is the "did up -d
+     actually replace the container" check the smoke suite never had. *)
+  started_at : Types.Time.t;
+  (* Filled by [start]. 0 until then, and 0 is not a port: a reader who sees it
+     is looking at a process that never bound, which is worth being able to see
+     rather than a default that claims 8080. *)
+  mutable port : int;
+  (* The other host's origin, or None. Set only on the live container. /ops on
+     the live origin fills its second column from the public demo engine, and
+     nothing goes the other way. *)
+  peer : string option;
+  (* The feed's own counters, as a closure rather than as Alpaca and FRED
+     records. This module must not learn a broker type -- it would then be
+     linked into every mode including the ones that have no credentials -- so
+     bin/main.ml closes over its two Stats records and hands back the object.
+     None is the synthetic feed, and /api/ops says so in words. *)
+  feed_stats : (unit -> Yojson.Safe.t) option;
+  (* Symbols that are quiet ON PURPOSE. The demo book never ticks its last
+     name so the stale path is visible; without this the page would report a
+     working demonstration as a broken feed. Empty on the live host, where a
+     quiet name means what it says. *)
+  quiet : Types.Symbol.t list;
   (* Filled by Graph.on_change. The loop below reads it and immediately swaps in
      a fresh one, so changes arriving during a send are not lost. *)
   mutable changed : unit Ivar.t;
@@ -489,12 +528,20 @@ let handle (t : t) ~(path : string) =
 (* ------------------------------------------------------------------------ *)
 
 let create ?(coalesce = Time_ns.Span.of_ms 80.0) ?history_capacity
-    ?(alerts : Alerts.t option) ~(graph : Graph.t) ~(factor : string) () =
+    ?(alerts : Alerts.t option) ?(peer : string option)
+    ?(feed_stats : (unit -> Yojson.Safe.t) option) ?(quiet : Types.Symbol.t list = [])
+    ~(mode : mode) ~(graph : Graph.t) ~(factor : string) () =
   let t =
     {
       graph;
       factor;
       alerts;
+      mode;
+      started_at = Types.Time.now ();
+      port = 0;
+      peer;
+      feed_stats;
+      quiet;
       changed = Ivar.create ();
       subscribers = [];
       frames_sent = 0;
@@ -512,6 +559,10 @@ let create ?(coalesce = Time_ns.Span.of_ms 80.0) ?history_capacity
   t
 
 let start ?(port = 8080) (t : t) =
+  (* Recorded here rather than passed to [create], because the port is the
+     caller's decision at listen time and /api/ops must report the one actually
+     bound rather than the one someone intended. *)
+  t.port <- port;
   Cohttp_async.Server.create
     ~on_handler_error:
       (`Call
@@ -526,3 +577,8 @@ let start ?(port = 8080) (t : t) =
 
 let frames_sent (t : t) = t.frames_sent
 let subscriber_count (t : t) = List.length t.subscribers
+let mode (t : t) = t.mode
+let port (t : t) = t.port
+let started_at (t : t) = t.started_at
+let peer (t : t) = t.peer
+let quiet (t : t) = t.quiet

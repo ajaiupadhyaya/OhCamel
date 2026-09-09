@@ -404,6 +404,65 @@ let test_build_stamp_is_honest () =
     ~f:(fun (name, value) ->
       Alcotest.(check bool) (name ^ " is not empty") true (not (String.is_empty value)))
 
+(* A server over the seeded graph.
+
+   Constructing one inside a test is safe with no Async scheduler running:
+   [create] fills no Ivar, and Async's don't_wait_for is literally
+   `let don't_wait_for (_ : unit t) = ()`, so the broadcaster is built, parks
+   on an Ivar nobody fills, and costs nothing. Nothing here opens a socket. *)
+let with_server ?(mode = `Demo) ?alerts ?peer ?feed_stats ?quiet ~f () =
+  with_graph
+    ~f:(fun graph ->
+      let server =
+        Server.create ?alerts ?peer ?feed_stats ?quiet ~mode ~graph ~factor:"SYNTHETIC" ()
+      in
+      f server graph)
+    ()
+
+(* What the process is, as opposed to what the book is.
+
+   None of this existed before: the live host could not say it was the live
+   host, nothing recorded a start time, and the port was known only to the
+   caller. Each of the five is a row on /ops and an assertion in the smoke
+   suite, and each is a field rather than a computation because a monitoring
+   page that derives its own facts is a page that can be wrong on its own. *)
+let test_server_knows_what_it_is () =
+  with_server ~mode:`Live ~peer:"https://ohcamel.example.com" ~quiet:[ xom ]
+    ~f:(fun server _graph ->
+      Alcotest.(check bool)
+        "it is the live host" true
+        (match Server.mode server with `Live -> true | `Demo -> false);
+      Alcotest.(check (option string))
+        "and it knows where the other one is" (Some "https://ohcamel.example.com")
+        (Server.peer server);
+      Alcotest.(check (list string))
+        "the deliberately quiet names travel" [ "XOM" ]
+        (List.map (Server.quiet server) ~f:Symbol.to_string);
+      (* 0 until [start] binds. 0 is not a port, so a reader who sees it is
+         looking at a process that never listened -- which is a fact worth
+         being able to see rather than a default that lies about 8080. *)
+      Alcotest.(check int) "no port until start" 0 (Server.port server);
+      Alcotest.(check bool)
+        "started_at is not in the future" true
+        (Float.( >= )
+           (Time_ns.Span.to_sec (Time_ns.diff (Time.now ()) (Server.started_at server)))
+           0.0))
+    ()
+
+let test_a_demo_server_has_no_peer () =
+  with_server
+    ~f:(fun server _graph ->
+      Alcotest.(check bool)
+        "demo" true
+        (match Server.mode server with `Demo -> true | `Live -> false);
+      (* Nothing crosses from the gated host to the public one, so the public
+         one is given no peer at all rather than a peer it may not fetch. *)
+      Alcotest.(check (option string)) "no peer" None (Server.peer server);
+      Alcotest.(check (list string))
+        "and nothing is quiet unless said so" []
+        (List.map (Server.quiet server) ~f:Symbol.to_string))
+    ()
+
 let suite =
   ( "server",
     [
@@ -421,4 +480,6 @@ let suite =
       Alcotest.test_case "/api/history wire format" `Quick test_history_wire_format;
       Alcotest.test_case "/api/history of an empty buffer" `Quick
         test_history_of_an_empty_buffer_is_well_formed;
+      Alcotest.test_case "the server knows what it is" `Quick test_server_knows_what_it_is;
+      Alcotest.test_case "a demo server has no peer" `Quick test_a_demo_server_has_no_peer;
     ] )

@@ -1669,7 +1669,8 @@ let run_live ~book_path ~(serve_port : int option) =
         | None -> Deferred.never ()
         | Some port ->
             let server =
-              Server.create ~graph ~factor:runtime.Config.Runtime.fred_series_id ()
+              Server.create ~mode:`Live ~graph
+                ~factor:runtime.Config.Runtime.fred_series_id ()
             in
             let%bind (_ : (_, _) Cohttp_async.Server.t) = Server.start ~port server in
             live_line (sprintf "dashboard  http://localhost:%d" port);
@@ -1761,7 +1762,7 @@ let run_demo ~port =
         exit 1
     | Ok alerts -> return alerts
   in
-  let server = Server.create ?alerts ~graph ~factor:"SYNTHETIC" () in
+  let server = Server.create ?alerts ~mode:`Demo ~graph ~factor:"SYNTHETIC" () in
   let%bind (_ : (_, _) Cohttp_async.Server.t) = Server.start ~port server in
   printf "  dashboard   http://localhost:%d\n" port;
   printf
