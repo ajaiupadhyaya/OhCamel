@@ -745,20 +745,67 @@ let test_alpaca_stats_json () =
         | None -> Alcotest.failf "missing key %S" key)
     | _ -> Alcotest.fail "not an object"
   in
+  let keys j =
+    match j with
+    | `Assoc fields -> List.sort (List.map fields ~f:fst) ~compare:String.compare
+    | _ -> Alcotest.fail "not an object"
+  in
+  (* The key SET, not just the values a couple of tests happen to look at:
+     an extra, missing, or renamed key must fail here even though every
+     assertion below it would still pass. *)
+  let expected_keys =
+    List.sort ~compare:String.compare
+      [ "frames"; "trades"; "rejected"; "unknown_symbol"; "reconnects"; "last_error" ]
+  in
   let fresh = Ohcamel.Alpaca_ws.Stats.to_json s in
+  Alcotest.(check (list string))
+    "alpaca: exactly six keys, fresh" expected_keys (keys fresh);
   Alcotest.(check bool)
     "a socket that has never errored says null, not \"\"" true
     (match field fresh "last_error" with `Null -> true | _ -> false);
   Alcotest.(check int)
     "no frames yet" 0
     (match field fresh "frames" with `Int n -> n | _ -> Alcotest.fail "frames");
+  Alcotest.(check int)
+    "no trades yet" 0
+    (match field fresh "trades" with `Int n -> n | _ -> Alcotest.fail "trades");
+  Alcotest.(check int)
+    "no rejects yet" 0
+    (match field fresh "rejected" with `Int n -> n | _ -> Alcotest.fail "rejected");
+  Alcotest.(check int)
+    "no unknown symbols yet" 0
+    (match field fresh "unknown_symbol" with
+    | `Int n -> n
+    | _ -> Alcotest.fail "unknown_symbol");
+  Alcotest.(check int)
+    "no reconnects yet" 0
+    (match field fresh "reconnects" with `Int n -> n | _ -> Alcotest.fail "reconnects");
+  (* Every counter set to a DISTINCT non-zero value, so a swapped pair (e.g.
+     trades and reconnects trading places) fails a specific assertion rather
+     than passing by coincidence. *)
   s.Ohcamel.Alpaca_ws.Stats.frames <- 7;
+  s.Ohcamel.Alpaca_ws.Stats.trades <- 11;
+  s.Ohcamel.Alpaca_ws.Stats.rejected <- 3;
+  s.Ohcamel.Alpaca_ws.Stats.unknown_symbol <- 5;
   s.Ohcamel.Alpaca_ws.Stats.reconnects <- 2;
   s.Ohcamel.Alpaca_ws.Stats.last_error <- Some "connection reset";
   let used = Ohcamel.Alpaca_ws.Stats.to_json s in
+  Alcotest.(check (list string))
+    "alpaca: exactly six keys, mutated" expected_keys (keys used);
   Alcotest.(check int)
     "frames" 7
     (match field used "frames" with `Int n -> n | _ -> Alcotest.fail "frames");
+  Alcotest.(check int)
+    "trades" 11
+    (match field used "trades" with `Int n -> n | _ -> Alcotest.fail "trades");
+  Alcotest.(check int)
+    "rejected" 3
+    (match field used "rejected" with `Int n -> n | _ -> Alcotest.fail "rejected");
+  Alcotest.(check int)
+    "unknown_symbol" 5
+    (match field used "unknown_symbol" with
+    | `Int n -> n
+    | _ -> Alcotest.fail "unknown_symbol");
   Alcotest.(check int)
     "reconnects" 2
     (match field used "reconnects" with `Int n -> n | _ -> Alcotest.fail "reconnects");
@@ -776,29 +823,87 @@ let test_fred_stats_json () =
         | None -> Alcotest.failf "missing key %S" key)
     | _ -> Alcotest.fail "not an object"
   in
+  let keys j =
+    match j with
+    | `Assoc fields -> List.sort (List.map fields ~f:fst) ~compare:String.compare
+    | _ -> Alcotest.fail "not an object"
+  in
+  (* The key SET, not just the values a couple of tests happen to look at:
+     an extra, missing, or renamed key must fail here even though every
+     assertion below it would still pass. *)
+  let expected_keys =
+    List.sort ~compare:String.compare
+      [
+        "polls";
+        "successes";
+        "observations";
+        "consecutive_failures";
+        "last_success";
+        "last_error";
+      ]
+  in
   let fresh = Ohcamel.Fred_client.Stats.to_json s in
+  Alcotest.(check (list string))
+    "fred: exactly six keys, fresh" expected_keys (keys fresh);
   Alcotest.(check bool)
     "never polled successfully is null, not the epoch" true
     (match field fresh "last_success" with `Null -> true | _ -> false);
+  Alcotest.(check bool)
+    "never errored says null, not \"\"" true
+    (match field fresh "last_error" with `Null -> true | _ -> false);
+  Alcotest.(check int)
+    "no polls yet" 0
+    (match field fresh "polls" with `Int n -> n | _ -> Alcotest.fail "polls");
+  Alcotest.(check int)
+    "no successes yet" 0
+    (match field fresh "successes" with `Int n -> n | _ -> Alcotest.fail "successes");
+  Alcotest.(check int)
+    "no observations yet" 0
+    (match field fresh "observations" with
+    | `Int n -> n
+    | _ -> Alcotest.fail "observations");
+  Alcotest.(check int)
+    "no consecutive failures yet" 0
+    (match field fresh "consecutive_failures" with
+    | `Int n -> n
+    | _ -> Alcotest.fail "consecutive_failures");
+  (* Every counter set to a DISTINCT non-zero value, so a swapped pair fails
+     a specific assertion rather than passing by coincidence. Both optionals
+     set too, so [last_error] is finally exercised in the used state and
+     [last_success] is checked against its exact rendered form. *)
   s.Ohcamel.Fred_client.Stats.polls <- 3;
   s.Ohcamel.Fred_client.Stats.successes <- 2;
   s.Ohcamel.Fred_client.Stats.observations <- 61;
   s.Ohcamel.Fred_client.Stats.consecutive_failures <- 1;
   s.Ohcamel.Fred_client.Stats.last_success <- Some Time.epoch;
+  s.Ohcamel.Fred_client.Stats.last_error <- Some "429 too many requests";
   let used = Ohcamel.Fred_client.Stats.to_json s in
+  Alcotest.(check (list string))
+    "fred: exactly six keys, mutated" expected_keys (keys used);
   Alcotest.(check int)
     "polls" 3
     (match field used "polls" with `Int n -> n | _ -> Alcotest.fail "polls");
+  Alcotest.(check int)
+    "successes" 2
+    (match field used "successes" with `Int n -> n | _ -> Alcotest.fail "successes");
   Alcotest.(check int)
     "observations" 61
     (match field used "observations" with
     | `Int n -> n
     | _ -> Alcotest.fail "observations");
+  Alcotest.(check int)
+    "consecutive_failures" 1
+    (match field used "consecutive_failures" with
+    | `Int n -> n
+    | _ -> Alcotest.fail "consecutive_failures");
   (* UTC, and the same rendering /api/snapshot uses for as_of, so two
      timestamps on one page can be compared without a second convention. *)
   Alcotest.(check string)
     "last_success is a UTC instant" "1970-01-01 00:00:00.000000000Z"
-    (match field used "last_success" with `String t -> t | _ -> "?")
+    (match field used "last_success" with `String t -> t | _ -> "?");
+  Alcotest.(check string)
+    "the last reason survives" "429 too many requests"
+    (match field used "last_error" with `String e -> e | _ -> "?")
 
 let suite =
   ( "feed",
