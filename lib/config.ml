@@ -265,6 +265,14 @@ module Runtime = struct
     confidence : float;
     return_window : int;
     snapshot_interval : Time_ns.Span.t;
+    (* The origin of the other host, when there is one. Set only on the live
+         container: /ops on the live origin fills its second column from the
+         public demo engine, which is possible only in that direction, because
+         the demo engine publishes a CORS header on its JSON in demo mode and
+         the live one publishes none and stays behind the password. None here
+         is not a failure -- it is the demo host, and its /ops says where to
+         look for both. *)
+    peer_origin : string option;
   }
   [@@deriving sexp_of]
 
@@ -278,7 +286,17 @@ module Runtime = struct
       confidence = 0.95;
       return_window = 60;
       snapshot_interval = Time_ns.Span.of_sec 10.0;
+      peer_origin = None;
     }
+
+  (* Split out of [of_env] so the "empty means absent" rule can be tested
+     without a test that mutates the process environment. Same rule as
+     Credentials.required, and for the same reason: `export FOO=` is how
+     people end up without a value. *)
+  let peer_origin_of (raw : string option) : string option =
+    match raw with
+    | Some v when not (String.is_empty (String.strip v)) -> Some (String.strip v)
+    | Some _ | None -> None
 
   (* Environment overrides for the two knobs most likely to need changing
      without a rebuild. Everything else is edited in source, on the grounds that
@@ -293,6 +311,7 @@ module Runtime = struct
       default with
       alpaca_feed = string_var "OHCAMEL_ALPACA_FEED" default.alpaca_feed;
       fred_series_id = string_var "OHCAMEL_FRED_SERIES" default.fred_series_id;
+      peer_origin = peer_origin_of (Sys.getenv "OHCAMEL_PEER_ORIGIN");
     }
 end
 

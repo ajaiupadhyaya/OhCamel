@@ -905,6 +905,32 @@ let test_fred_stats_json () =
     "the last reason survives" "429 too many requests"
     (match field used "last_error" with `String e -> e | _ -> "?")
 
+(* Where the OTHER host is, if anywhere.
+
+   Parsed through a pure function rather than tested by setting the variable,
+   because putenv in one test leaks into every other test in the same binary
+   and a suite whose result depends on execution order is a suite nobody
+   trusts. What is asserted is the rule the rest of config.ml already follows:
+   an empty variable is an absent variable. `export OHCAMEL_PEER_ORIGIN=` is a
+   far more common way to end up without a peer than never setting it, and the
+   failure it would otherwise produce is /ops trying to fetch "" and rendering
+   `unreachable from this browser` about nothing. *)
+let test_peer_origin_parsing () =
+  let check name expected raw =
+    Alcotest.(check (option string)) name expected (Config.Runtime.peer_origin_of raw)
+  in
+  check "unset" None None;
+  check "empty" None (Some "");
+  check "whitespace only" None (Some "   ");
+  check "a real origin" (Some "https://ohcamel.example.com")
+    (Some "https://ohcamel.example.com");
+  check "trimmed" (Some "https://ohcamel.example.com")
+    (Some "  https://ohcamel.example.com\n");
+  (* And the default is no peer at all: the demo host is given none, and
+     nothing crosses from the gated host to the public one. *)
+  Alcotest.(check (option string))
+    "no peer by default" None Config.Runtime.default.Config.Runtime.peer_origin
+
 let suite =
   ( "feed",
     [
@@ -955,6 +981,8 @@ let suite =
         test_secrets_are_redacted;
       Alcotest.test_case "config: a missing credential names the variable" `Quick
         test_missing_credential_names_the_variable;
+      Alcotest.test_case "config: an empty peer origin is an absent one" `Quick
+        test_peer_origin_parsing;
       Alcotest.test_case "book: parses and is acceptable to the graph" `Quick
         test_book_parsing;
       Alcotest.test_case "book: malformed files are rejected" `Quick
