@@ -1503,6 +1503,11 @@ let sector_of (t : t) (symbol : Symbol.t) : Sector.t option =
 
 let stabilize (_ : t) : unit = Inc.stabilize ()
 let symbols (t : t) : Symbol.t list = Map.keys t.instruments
+
+(* Configuration, read back out. The demo host runs at 20 s and the live host
+   at 90, and age is the reader's to compute (see Feed_health above), so the
+   threshold it computes against has to be on the wire beside the ages. *)
+let staleness_threshold (t : t) : Time.Span.t = t.staleness_threshold
 let knows_symbol (t : t) (symbol : Symbol.t) : bool = Map.mem t.instruments symbol
 
 let set_price (t : t) (symbol : Symbol.t) (price : Price.t) : unit =
@@ -1789,3 +1794,23 @@ let snapshot (t : t) : Snapshot.t =
    something is recomputing that nobody has a name for. *)
 let total_nodes_recomputed () : int = Inc.State.num_nodes_recomputed Inc.State.t
 let total_stabilizes () : int = Inc.State.num_stabilizes Inc.State.t
+
+(* Three more of Incremental's constant-time counters, for the operations page.
+
+   Every one of them is PROCESS-wide and none of them is this graph's: one
+   Incremental state serves the served graph, the startup probe, and every fork
+   /api/stress makes and destroys, so [total_nodes_created] reads in the
+   thousands for a fifty-node graph. That is not a defect to be corrected by
+   filtering -- it is the honest number for "how much work has this process
+   done" -- but it has to be LABELLED, because a reader who takes it for the
+   graph's size will conclude the engine is enormous. /api/ops puts these under
+   `process` and the page says `includes forks and the startup probe` beside
+   them. The per-graph counts come from the on_compute hook instead. *)
+let total_nodes_created () : int = Inc.State.num_nodes_created Inc.State.t
+let total_var_sets () : int = Inc.State.num_var_sets Inc.State.t
+
+(* Created and not yet disallowed -- a gauge, not a total, which is why it is
+   not called total_. A number that stops falling after a stress run would mean
+   a fork was not destroyed, and an undestroyed graph recomputes on every
+   stabilize forever. *)
+let active_observers () : int = Inc.State.num_active_observers Inc.State.t

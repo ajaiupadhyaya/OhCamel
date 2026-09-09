@@ -1077,6 +1077,54 @@ let test_a_hedge_does_not_breach_a_risk_limit () =
             (Breach.breached b)
       | other -> Alcotest.failf "expected one evaluated limit, got %d" (List.length other))
 
+(* ------------------------------------------------------------------------ *)
+(* Incremental's own counters, for the operations page                       *)
+(* ------------------------------------------------------------------------ *)
+
+(* These are PROCESS-wide: one Incremental state serves every graph this binary
+   ever builds, including the ones stress.ml forks and destroys. So nothing
+   here asserts an absolute value -- another test in this same runner would
+   change it -- only the direction, which is all these wrappers promise and all
+   /api/ops claims. The page says the same thing in words. *)
+let test_process_counters_move () =
+  let created_before = Graph.total_nodes_created () in
+  let observers_before = Graph.active_observers () in
+  let graph =
+    Graph.create ~starting_cash:(dollars 100_000.0) ~instruments:book ~limits:book_limits
+      ~confidence:0.95 ~return_window:10 ()
+  in
+  Exn.protect
+    ~f:(fun () ->
+      Alcotest.(check bool)
+        "building a graph creates nodes" true
+        (Graph.total_nodes_created () > created_before);
+      Alcotest.(check bool)
+        "and makes observers active" true
+        (Graph.active_observers () > observers_before);
+      (* set_price is exactly one Inc.Var.set (graph.ml:1508), so this one is
+         an equality rather than a direction: if it ever costs two, something
+         is writing a cell nobody asked it to. *)
+      let sets_before = Graph.total_var_sets () in
+      Graph.set_price graph aapl (Price.of_float 150.0);
+      Alcotest.(check int)
+        "one set_price is one var set" (sets_before + 1) (Graph.total_var_sets ()))
+    ~finally:(fun () -> Graph.destroy graph)
+
+(* The threshold is configuration, not state, and /api/ops publishes it so a
+   reader can tell 40 s of silence from stale. It has to come back out of the
+   graph it went into: the demo host runs at 20 s and the live host at 90, and
+   a page that assumed one of them would call the other host broken. *)
+let test_staleness_threshold_round_trips () =
+  let graph =
+    Graph.create ~starting_cash:(dollars 100_000.0) ~instruments:book ~limits:book_limits
+      ~confidence:0.95 ~return_window:10 ~staleness_threshold:(Time.Span.of_sec 20.0) ()
+  in
+  Exn.protect
+    ~f:(fun () ->
+      Alcotest.check float_eq "20 s in, 20 s out" 20.0
+        (Time.Span.to_sec (Graph.staleness_threshold graph)))
+    ~finally:(fun () -> Graph.destroy graph)
+
 let suite =
   ( "graph",
     [
@@ -1123,4 +1171,8 @@ let suite =
         test_set_returns_keeps_the_recent_tail;
       Alcotest.test_case "construction-time validation" `Quick test_validation;
       Alcotest.test_case "an unknown symbol is loud" `Quick test_unknown_symbol_is_loud;
+      Alcotest.test_case "Incremental's process counters move" `Quick
+        test_process_counters_move;
+      Alcotest.test_case "the staleness threshold comes back out" `Quick
+        test_staleness_threshold_round_trips;
     ] )
