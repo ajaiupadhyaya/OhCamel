@@ -1,23 +1,78 @@
 
+<style>
+  /* The ops page's own rules. page.css is shared byte for byte with the
+     dashboard -- test_embedded_assets asserts it -- so the few things this page
+     needs that the ledger does not are scoped under main.ops and live here,
+     inside the body, rather than forking the shared sheet or moving the
+     dashboard's bytes. Two equal columns; one on a phone, this host first. */
+  main.ops { grid-template-columns: 1fr 1fr; }
+  @media (max-width: 900px) { main.ops { grid-template-columns: 1fr; } }
+  main.ops #cannot { grid-column: 1 / -1; }
+  main.ops #cannot p { max-width: 68ch; font-size: 13px; color: var(--ink-soft); margin: 0 0 10px; }
+  main.ops #cannot code { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+  .grp { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--rule); }
+  .grp:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+  .grp > .lbl { display: block; margin-bottom: 6px; }
+  td.v.unknown, .unknown { color: var(--unknown); }
+  td.v.over, .over { color: var(--over); }
+  td.v.live, .live { color: var(--live); }
+  /* Three strips. Inline SVG, sized by the column, drawn by ops.js. */
+  .strip { margin: 8px 0 2px; }
+  .strip svg { display: block; width: 100%; max-width: 360px; height: 26px; }
+  .strip .cap { display: block; font-size: 11px; color: var(--ink-faint); margin-top: 3px; }
+  /* The peer column's three fixed sentences: a cannot-evaluate, in the
+     unknown wash, because none of them may look like fine or like failure. */
+  .note { font-size: 13px; color: var(--unknown); background: var(--unknown-wash); padding: 10px 12px; margin: 6px 0 10px; }
+  .note b { font-weight: 620; }
+  section.host > .lbl i { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; }
+</style>
+
 <header>
   <h1>OhCamel<span>operations</span></h1>
-  <div class="stat"><span class="lbl">this page</span><span class="v">placeholder</span></div>
+  <div class="stat"><span class="lbl">this host</span><span class="v" id="h-mode">—</span></div>
+  <div class="stat"><span class="lbl">build</span><span class="v num" id="h-build">—</span></div>
+  <div class="stat"><span class="lbl">up</span><span class="v num" id="h-up">—</span></div>
+  <div class="stat spacer"><span class="lbl">last poll</span><span class="v num" id="h-poll">—</span></div>
+  <div class="stat"><a href="/">dashboard</a></div>
 </header>
 
-<main id="main">
-  <section>
-    <span class="lbl">ops <i>— not built yet</i></span>
-    <p>this page is not built yet. Phase 2 of the page design fills it in: two
-    columns, this host and its peer, in the ledger's key/value style, with the
-    liveness pulse under the engine rows and, last, the paragraph on what the
-    engine cannot see.</p>
-    <p>Nothing routes here in Phase 1 — <code>lib/server.ml</code> has no
-    <code>/ops</code> case. The module exists first so that the rule which
-    builds it, and the head and stylesheet it shares with <code>/</code>, are
-    proven before there is anything on the page to blame.</p>
+<main id="main" class="ops">
+  <section id="this-host" class="host">
+    <span class="lbl">this host <i id="this-origin"></i></span>
+    <div id="this-rows"><p class="cap">asking /api/ops…</p></div>
+  </section>
+
+  <section id="peer" class="host">
+    <span class="lbl">peer <i id="peer-origin"></i></span>
+    <div id="peer-rows"><p class="cap">waiting for this host to say whether it has one</p></div>
+  </section>
+
+  <section id="cannot">
+    <span class="lbl">what this page cannot see</span>
+    <p>Nothing persists, so there is no uptime percentage and no record of the
+    last smoke run; its two load-bearing assertions — the counter advancing
+    across two seconds and frames spread across a window rather than piled at
+    its end — are re-run in this browser instead, in the strips above.</p>
+    <p>CPU share, Caddy's memory, request counts per route and the
+    certificate's expiry are not engine-observable; <code>docker stats</code>
+    and Caddy's stdout have them. <code>hostname</code> is the container id,
+    not the droplet.</p>
+    <p>From the public origin the live book is not visible, by name or by
+    number: it is gated, and this page does not route around the password.
+    The peer column is filled only from the live origin, over the demo
+    engine's own CORS header, and nothing crosses the other way.</p>
+    <p>The stream state is this browser's reading. A proxy that dropped the
+    stream silently would read as <code>parked</code> until the browser
+    reconnected; what separates <code>parked</code> from dead is that
+    <code>/api/ops</code> still answers, and that is the reading used.</p>
+    <p>The counters under <em>process</em> are Incremental's for the whole
+    process — the startup probe and every fork <code>/api/stress</code> makes —
+    and are not this graph's size. <em>book moving</em> is the one rate a fork
+    cannot inflate.</p>
   </section>
 </main>
 
 <footer>
-  <span>ops — placeholder</span>
+  <span>this is the one page that asks on a timer, because a process's uptime is not a graph change</span>
+  <span id="cadence">polls /api/ops every 10 s while this tab is visible · sixty polls is ten minutes</span>
 </footer>

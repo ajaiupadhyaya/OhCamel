@@ -90,11 +90,27 @@ let test_the_ops_page_is_assembled_in_order () =
   Alcotest.(check bool)
     "closes with </html> and exactly one newline" true
     (String.is_suffix Ops_html.html ~suffix:"</html>\n");
-  (* Phase 1 builds this module and no route reaches it. Asserting the
-     placeholder's own words here is what makes Phase 2's job "replace the body"
-     rather than "first find out whether the rule works at all". *)
+  (* The built page, by its load-bearing markup: the two host columns, the
+     cannot-see section, the stream it opens, and the two sentences the peer
+     column must be able to say. Substrings rather than a retyped page, for the
+     reason at the head of this file. The placeholder's own sentence must be
+     GONE: a page that says it is not built while serving is the kind of lie
+     this page exists against. *)
+  List.iter
+    [
+      "id=\"this-host\"";
+      "id=\"peer\"";
+      "id=\"cannot\"";
+      "the live host is behind a password";
+      "unreachable from this browser";
+      "new EventSource(\"/api/stream\")";
+    ] ~f:(fun needle ->
+      Alcotest.(check bool)
+        ("the ops page carries " ^ needle)
+        true
+        (String.is_substring Ops_html.html ~substring:needle));
   Alcotest.(check bool)
-    "says, in the page, that it is not built yet" true
+    "and no longer says it is not built" false
     (String.is_substring Ops_html.html ~substring:"this page is not built yet")
 
 (* The head and the stylesheet are authored once in web/ and catted into both
