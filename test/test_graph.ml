@@ -371,6 +371,38 @@ let downstream_of_aapl_position =
    not, and must not be allowed to make a dead feed look healthy. *)
 let downstream_of_aapl_tick = downstream_of_aapl_position @ [ "feed:AAPL"; "feed_health" ]
 
+(* The pinned set for one new return observation, lifted out of
+   [test_return_push_is_local] so the topology test below can assert the
+   DRAWING's closure of [returns[MSFT]] is this exact list. One copy, two
+   readers: the recorder pins what ran, the topology pins what is wired, and
+   the two must be the same list or one of them is lying. *)
+let downstream_of_a_return =
+  [
+    "aligned_returns";
+    "covariance";
+    (* A return genuinely reaches BOTH matrices, and this is where the second
+       estimator's cost actually lands: one new observation now rebuilds two
+       n x n matrices instead of one. That is the honest trade and it belongs
+       in an assertion rather than a comment -- the return window moves once a
+       day, and the tick path, which moves thousands of times a day, is
+       untouched. *)
+    "covariance_ewma";
+    "portfolio_returns";
+    "historical_var";
+    "expected_shortfall";
+    "parametric_var";
+    "parametric_var_ewma";
+    "attribution";
+    "component_var_map";
+    "component_var_sector_map";
+    "diversification_ratio";
+    "portfolio_beta";
+    "var_notional";
+    "es_notional";
+    "limit:var-cap";
+    "breaches";
+  ]
+
 (* ------------------------------------------------------------------------ *)
 (* 2a. Node names and their units                                            *)
 (* ------------------------------------------------------------------------ *)
@@ -647,6 +679,141 @@ let test_reading_labels_costs_nothing () =
         (Graph.total_nodes_recomputed ()))
     ()
 
+(* ------------------------------------------------------------------------ *)
+(* 2c. The topology: the drawing is the graph, taken from the graph          *)
+(* ------------------------------------------------------------------------ *)
+
+let sorted xs = List.sort xs ~compare:String.compare
+let set_to_list s = Set.to_list s
+
+(* The three edges graph.ml's header says are worth staring at, as
+   assertions on the CONTRACTED graph rather than on the recorder.
+
+   The recorder pins what ran on a tick. The topology says what is wired. If
+   the two agree, the drawing the page makes from the topology is a drawing
+   of the thing the tests measure, and lighting the recorder's set on it lights
+   exactly the nodes that are downstream of the cell that moved. If they
+   disagree, either an edge exists the hook never saw run (a dependency with
+   a cutoff nobody meant), or a node ran that no edge explains (impossible in
+   Incremental, and worth being told about). *)
+let test_topology_closures_match_the_pinned_sets () =
+  with_graph
+    ~f:(fun graph _ ->
+      let topo = Graph.topology graph in
+      let down names = sorted (set_to_list (Graph.Topology.closure topo names `Down)) in
+      Alcotest.(check (list string))
+        "downstream of {price[AAPL], last_tick[AAPL]} is the pinned tick set"
+        (sorted downstream_of_aapl_tick)
+        (down [ Graph.Node_name.Input.price aapl; Graph.Node_name.Input.last_tick aapl ]);
+      Alcotest.(check (list string))
+        "downstream of returns[MSFT] is the pinned push_return set"
+        (sorted downstream_of_a_return)
+        (down [ Graph.Node_name.Input.returns msft ]);
+      (* The expensive half is upstream of no price. This is the
+         [test_prices_never_reach_covariance] fact, stated structurally. *)
+      List.iter [ aapl; msft; xom ] ~f:(fun s ->
+          let reach =
+            Graph.Topology.closure topo [ Graph.Node_name.Input.price s ] `Down
+          in
+          List.iter [ "aligned_returns"; "covariance"; "covariance_ewma" ] ~f:(fun m ->
+              Alcotest.(check bool)
+                (Printf.sprintf "%s is not downstream of price[%s]" m (Symbol.to_string s))
+                false (Set.mem reach m))))
+    ()
+
+(* Every edge joins two named nodes, and the node list is the label table. The
+   contraction must invent nothing and lose nothing: an edge whose endpoint is
+   not a node would be a dangling stroke on the page, and a labelled node the
+   topology dropped would be a name the frame can light and the drawing cannot
+   find. *)
+let test_topology_is_closed_over_its_names () =
+  with_graph
+    ~f:(fun graph _ ->
+      let topo = Graph.topology graph in
+      let names = String.Set.of_list (Graph.Topology.names topo) in
+      Alcotest.(check (list string))
+        "the topology's nodes are the label table"
+        (List.map (Graph.labelled_nodes graph) ~f:fst)
+        (sorted (Set.to_list names));
+      List.iter (Graph.Topology.edges topo) ~f:(fun (from, into) ->
+          Alcotest.(check bool)
+            (from ^ " -> " ^ into ^ ": both ends are nodes")
+            true
+            (Set.mem names from && Set.mem names into));
+      Alcotest.(check bool)
+        "there is at least one edge per non-input node" true
+        (List.length (Graph.Topology.edges topo)
+        >= Graph.Topology.Counts.named (Graph.Topology.counts topo));
+      (* The one edge the whole design is about: the decomposition reads the
+         equal-weighted matrix, and which one is on the wire beside it. *)
+      Alcotest.(check (list string))
+        "attribution reads weights and covariance, nothing else"
+        [ "covariance"; "weights" ]
+        (sorted (Graph.Topology.inputs_of topo "attribution"));
+      Alcotest.(check string)
+        "and the topology says which matrix" "equal_weighted"
+        (Graph.Covariance_estimator.to_string
+           (Graph.Topology.attribution_covariance topo)))
+    ()
+
+(* Families from the shape of the name, and the typed fields beside them. A
+   per-symbol node carries its symbol as a Symbol.t the graph recognises, a
+   limit node carries the Limit.t it evaluates, so the page can put the
+   instrument-scoped cap on the instrument's row without parsing a string. *)
+let test_topology_families () =
+  with_graph
+    ~f:(fun graph _ ->
+      let topo = Graph.topology graph in
+      let node name =
+        Option.value_exn (Graph.Topology.find topo name) ~message:("no node " ^ name)
+      in
+      let family name =
+        Graph.Topology.Family.to_string (Graph.Topology.Node.family (node name))
+      in
+      Alcotest.(check string) "price[AAPL] is an input" "input" (family "price[AAPL]");
+      Alcotest.(check string) "cash is an input" "input" (family "cash");
+      Alcotest.(check string)
+        "exposure:AAPL is per-symbol" "per_symbol" (family "exposure:AAPL");
+      Alcotest.(check string) "feed:XOM is per-symbol" "per_symbol" (family "feed:XOM");
+      Alcotest.(check string)
+        "sector:TECH is per-sector" "per_sector" (family "sector:TECH");
+      Alcotest.(check string)
+        "limit:dd-cap is per-limit" "per_limit" (family "limit:dd-cap");
+      Alcotest.(check string)
+        "covariance is a singleton" "singleton" (family "covariance");
+      Alcotest.(check (option string))
+        "price[AAPL] knows its symbol" (Some "AAPL")
+        (Option.map (Graph.Topology.Node.symbol (node "price[AAPL]")) ~f:Symbol.to_string);
+      Alcotest.(check (option string))
+        "sector:ENERGY knows its sector" (Some "ENERGY")
+        (Option.map
+           (Graph.Topology.Node.sector (node "sector:ENERGY"))
+           ~f:Sector.to_string);
+      (match Graph.Topology.Node.limit (node "limit:aapl-cap") with
+      | Some l ->
+          Alcotest.(check string)
+            "limit:aapl-cap carries its limit" "aapl-cap" (Limit.name l);
+          Alcotest.(check string)
+            "and its kind" "gross_notional"
+            (Graph.Topology.limit_kind_to_string (Limit.kind l))
+      | None -> Alcotest.fail "limit:aapl-cap has no limit");
+      Alcotest.(check string)
+        "an input cell is a Var" "Var"
+        (Graph.Topology.Node.kind (node "qty[XOM]"));
+      Alcotest.(check string)
+        "and carries the value-equality cutoff" "Equal"
+        (Graph.Topology.Node.cutoff (node "qty[XOM]"));
+      Alcotest.(check int)
+        "a cell has rank 0" 0
+        (Graph.Topology.Node.rank (node "qty[XOM]"));
+      Alcotest.(check int)
+        "exposure:XOM is one step in" 1
+        (Graph.Topology.Node.rank (node "exposure:XOM"));
+      Alcotest.(check string)
+        "every node has the unit Task 1 gave it" "usd"
+        (Graph.Topology.Node.unit (node "exposure:XOM")))
+    ()
+
 (* The README's test, in its own words: "changing one position only triggers
    recomputation of nodes that depend on it". *)
 let test_position_change_is_local () =
@@ -730,32 +897,7 @@ let test_return_push_is_local () =
       Graph.push_return graph msft (-0.10);
       Graph.stabilize graph;
       check_recomputed recorder ~msg:"a new return recomputes only the statistical side"
-        ~expected:
-          [
-            "aligned_returns";
-            "covariance";
-            (* A return genuinely reaches BOTH matrices, and this is where the
-               second estimator's cost actually lands: one new observation now
-               rebuilds two n x n matrices instead of one. That is the honest
-               trade and it belongs in an assertion rather than a comment --
-               the return window moves once a day, and the tick path, which
-               moves thousands of times a day, is untouched. *)
-            "covariance_ewma";
-            "portfolio_returns";
-            "historical_var";
-            "expected_shortfall";
-            "parametric_var";
-            "parametric_var_ewma";
-            "attribution";
-            "component_var_map";
-            "component_var_sector_map";
-            "diversification_ratio";
-            "portfolio_beta";
-            "var_notional";
-            "es_notional";
-            "limit:var-cap";
-            "breaches";
-          ])
+        ~expected:downstream_of_a_return)
     ()
 
 (* Re-sending a value that has not changed costs nothing at all.
@@ -1570,6 +1712,12 @@ let suite =
         test_every_node_is_labelled;
       Alcotest.test_case "reading the label table runs nothing" `Quick
         test_reading_labels_costs_nothing;
+      Alcotest.test_case "TOPOLOGY: closures equal the pinned recomputation sets" `Quick
+        test_topology_closures_match_the_pinned_sets;
+      Alcotest.test_case "TOPOLOGY: edges join named nodes and nothing is lost" `Quick
+        test_topology_is_closed_over_its_names;
+      Alcotest.test_case "TOPOLOGY: families and the typed fields beside them" `Quick
+        test_topology_families;
       Alcotest.test_case "ARCHITECTURE: a position change recomputes only its dependents"
         `Quick test_position_change_is_local;
       Alcotest.test_case "ARCHITECTURE: a price tick recomputes only its dependents"

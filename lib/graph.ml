@@ -1828,6 +1828,362 @@ let labelled_nodes (t : t) : (string * bool) list =
       Option.map r.Raw.name ~f:(fun name -> (name, r.Raw.observed)))
   |> List.sort ~compare:(fun (a, _) (b, _) -> String.compare a b)
 
+(* -------------------------------------------------------------------------
+   The topology: named nodes, named-to-named edges, ranks
+   ------------------------------------------------------------------------- *)
+
+module Topology = struct
+  (* Six families, from the SHAPE of the name and nothing else. Brackets are a
+     cell (Task 1 chose that on purpose), a colon prefix is a per-something
+     node, and the rest are the singleton spine. Classifying from the name
+     rather than from a second table means a node added tomorrow is drawn in
+     the right column the day it is named. *)
+  module Family = struct
+    type t = Input | Per_symbol | Per_sector | Per_limit | Per_option | Singleton
+    [@@deriving sexp_of, compare, equal]
+
+    let to_string = function
+      | Input -> "input"
+      | Per_symbol -> "per_symbol"
+      | Per_sector -> "per_sector"
+      | Per_limit -> "per_limit"
+      | Per_option -> "per_option"
+      | Singleton -> "singleton"
+  end
+
+  module Node = struct
+    type t = {
+      name : string;
+      family : Family.t;
+      kind : string;
+      cutoff : string;
+      (* Longest path from an input cell. A cell is 0; every other node is one
+         more than the deepest of its inputs. Longest rather than shortest so
+         that an edge never runs backwards on the page: a node's inputs are all
+         strictly to its left, whatever route they took to get there. *)
+      rank : int;
+      observed : bool;
+      unit : string;
+      (* The instrument this node is about, when it is about one -- and for
+         an option node, its UNDERLYING, so the page has one field to put a
+         row on. *)
+      symbol : Symbol.t option;
+      sector : Sector.t option;
+      limit : Limit.t option;
+      (* (id, underlying). On the wire as [option]. *)
+      contract : (string * Symbol.t) option;
+    }
+    [@@deriving sexp_of, fields ~getters]
+  end
+
+  (* What reads the graph from outside it. Not nodes -- they have no children
+     Incremental knows about -- but the page draws them, and it draws them from
+     this list rather than inventing them. *)
+  module Outside = struct
+    type t = {
+      name : string;
+      reads : string list;
+      present : bool;
+      wired_to : string option;
+    }
+    [@@deriving sexp_of, fields ~getters]
+  end
+
+  module Counts = struct
+    type t = {
+      instruments : int;
+      sectors : int;
+      limits : int;
+      options : int;
+      (* Non-input named nodes: the ones with a body the hook can name. *)
+      named : int;
+      inputs : int;
+      observed : int;
+      (* Counted inside the traverse, so it is THIS graph's node count and not
+         the process's -- State.num_nodes_created is cumulative across every
+         probe and fork and reads in the thousands for a sixty-node book. *)
+      incremental_nodes : int;
+    }
+    [@@deriving sexp_of, fields ~getters]
+  end
+
+  type t = {
+    nodes : Node.t list;
+    edges : (string * string) list;
+    outside : Outside.t list;
+    attribution_covariance : Covariance_estimator.t;
+    counts : Counts.t;
+  }
+  [@@deriving sexp_of, fields ~getters]
+
+  let limit_kind_to_string : Limit.kind -> string = function
+    | Limit.Gross_notional _ -> "gross_notional"
+    | Limit.Value_at_risk _ -> "value_at_risk"
+    | Limit.Max_drawdown _ -> "max_drawdown"
+    | Limit.Greek_limit (greek, _) -> "greek:" ^ Greek.to_string greek
+    | Limit.Component_var _ -> "component_var"
+
+  let names (t : t) : string list = List.map t.nodes ~f:Node.name
+
+  let find (t : t) (name : string) : Node.t option =
+    List.find t.nodes ~f:(fun n -> String.equal n.Node.name name)
+
+  let inputs_of (t : t) (name : string) : string list =
+    List.filter_map t.edges ~f:(fun (from, into) ->
+        if String.equal into name then Some from else None)
+
+  let outputs_of (t : t) (name : string) : string list =
+    List.filter_map t.edges ~f:(fun (from, into) ->
+        if String.equal from name then Some into else None)
+
+  (* Everything strictly reachable from the seeds. The seeds are not in the
+     result unless another seed reaches them, which is what lets the test
+     compare it against a recorder set that never contains the cell that was
+     written. Lists rather than an adjacency table: sixty nodes, called from
+     tests and once per /api/graph, never on the tick path. *)
+  let closure (t : t) (seeds : string list) (direction : [ `Down | `Up ]) : String.Set.t =
+    let step = match direction with `Down -> outputs_of t | `Up -> inputs_of t in
+    let rec go seen = function
+      | [] -> seen
+      | name :: rest ->
+          let fresh = List.filter (step name) ~f:(fun m -> not (Set.mem seen m)) in
+          go (Set.union seen (String.Set.of_list fresh)) (fresh @ rest)
+    in
+    go String.Set.empty seeds
+end
+
+(* The graph, contracted to its names.
+
+   [walk] hands back every node Incremental holds, plumbing included: the
+   [Inc.all] that gathers exposures, the [map2] that multiplies a price by a
+   quantity, the [map] that picks one symbol out of a Greek map. None of those
+   has a name, and none should -- they are how a named node is built, not what
+   it is. So each named node's INPUTS are its nearest named ancestors, found
+   by walking through whatever unnamed nodes sit between; every edge then runs
+   named-to-named and the drawing has one stroke per dependency a reader can
+   name. Nothing here is hand-written that could drift from the wiring. *)
+let topology ?(alerts = false) (t : t) : Topology.t =
+  let raw = walk t in
+  let by_id = Int.Table.of_alist_exn (List.map raw ~f:(fun r -> (r.Raw.id, r))) in
+  let node_exn id =
+    match Hashtbl.find by_id id with
+    | Some r -> r
+    | None ->
+        failwithf "graph: node %d is read by a visited node and was not visited" id ()
+  in
+  (* Memoised by id: the exposure fold is read by gross, net, weights and the
+     map, and walking it four times would be four times the work for the same
+     answer. *)
+  let memo = Int.Table.create () in
+  let rec named_inputs (id : int) : string list =
+    match Hashtbl.find memo id with
+    | Some xs -> xs
+    | None ->
+        let xs =
+          List.concat_map (node_exn id).Raw.children ~f:(fun child ->
+              match (node_exn child).Raw.name with
+              | Some name -> [ name ]
+              | None -> named_inputs child)
+          |> List.dedup_and_sort ~compare:String.compare
+        in
+        Hashtbl.set memo ~key:id ~data:xs;
+        xs
+  in
+  let named = List.filter raw ~f:(fun r -> Option.is_some r.Raw.name) in
+  let inputs_by_name = String.Table.create () in
+  List.iter named ~f:(fun r ->
+      Hashtbl.set inputs_by_name ~key:(Option.value_exn r.Raw.name)
+        ~data:(named_inputs r.Raw.id));
+  let edges =
+    List.concat_map named ~f:(fun r ->
+        let into = Option.value_exn r.Raw.name in
+        List.map (Hashtbl.find_exn inputs_by_name into) ~f:(fun from -> (from, into)))
+    |> List.dedup_and_sort ~compare:[%compare: string * string]
+  in
+  let ranks = String.Table.create () in
+  let rec rank name =
+    match Hashtbl.find ranks name with
+    | Some r -> r
+    | None ->
+        let r =
+          match Hashtbl.find_exn inputs_by_name name with
+          | [] -> 0
+          | inputs -> 1 + List.fold inputs ~init:0 ~f:(fun acc i -> Int.max acc (rank i))
+        in
+        Hashtbl.set ranks ~key:name ~data:r;
+        r
+  in
+  (* Family and the typed fields, from the name's shape and this graph's own
+     maps. A symbol parsed out of a name is checked against [instruments]
+     rather than trusted: the name came from this graph, so a miss is a bug in
+     [Node_name], and it should be loud here rather than a blank row on a page. *)
+  let symbol_exn s =
+    let symbol = Symbol.of_string s in
+    if Map.mem t.instruments symbol then symbol
+    else
+      failwithf "graph: topology names instrument %S, which this book does not hold" s ()
+  in
+  let contract_exn id =
+    match Map.find t.option_positions id with
+    | Some o -> (id, Options.Position.underlying o)
+    | None ->
+        failwithf "graph: topology names option %S, which this book does not hold" id ()
+  in
+  let limit_exn name =
+    match List.find t.limits ~f:(fun l -> String.equal (Limit.name l) name) with
+    | Some l -> l
+    | None -> failwithf "graph: topology names limit %S, which is not configured" name ()
+  in
+  let bracketed prefix name =
+    match String.chop_prefix name ~prefix:(prefix ^ "[") with
+    | Some rest -> String.chop_suffix rest ~suffix:"]"
+    | None -> None
+  in
+  let classify name =
+    let none = (None, None, None, None) in
+    match
+      List.find_map [ "price"; "qty"; "returns"; "last_tick" ] ~f:(fun p ->
+          bracketed p name)
+    with
+    | Some s -> (Topology.Family.Input, (Some (symbol_exn s), None, None, None))
+    | None -> (
+        match
+          List.find_map [ "contracts"; "implied_vol" ] ~f:(fun p -> bracketed p name)
+        with
+        | Some id ->
+            let id, underlying = contract_exn id in
+            (Topology.Family.Input, (Some underlying, None, None, Some (id, underlying)))
+        | None -> (
+            match name with
+            | "cash" | "equity_history" | "factor_returns" | "rate" | "valuation_days"
+            | "now" ->
+                (Topology.Family.Input, none)
+            | _ -> (
+                match String.chop_prefix name ~prefix:"exposure:" with
+                | Some s ->
+                    (Topology.Family.Per_symbol, (Some (symbol_exn s), None, None, None))
+                | None -> (
+                    match String.chop_prefix name ~prefix:"feed:" with
+                    | Some s ->
+                        ( Topology.Family.Per_symbol,
+                          (Some (symbol_exn s), None, None, None) )
+                    | None -> (
+                        match String.chop_prefix name ~prefix:"sector:" with
+                        | Some k ->
+                            ( Topology.Family.Per_sector,
+                              (None, Some (Sector.of_string k), None, None) )
+                        | None -> (
+                            match String.chop_prefix name ~prefix:"limit:" with
+                            | Some l ->
+                                ( Topology.Family.Per_limit,
+                                  (None, None, Some (limit_exn l), None) )
+                            | None -> (
+                                match
+                                  List.find_map [ "greeks:"; "option_exposure:" ]
+                                    ~f:(fun p -> String.chop_prefix name ~prefix:p)
+                                with
+                                | Some id ->
+                                    let id, underlying = contract_exn id in
+                                    ( Topology.Family.Per_option,
+                                      (Some underlying, None, None, Some (id, underlying))
+                                    )
+                                | None -> (Topology.Family.Singleton, none))))))))
+  in
+  let nodes =
+    List.map named ~f:(fun r ->
+        let name = Option.value_exn r.Raw.name in
+        let family, (symbol, sector, limit, contract) = classify name in
+        {
+          Topology.Node.name;
+          family;
+          kind = r.Raw.kind;
+          cutoff = r.Raw.cutoff;
+          rank = rank name;
+          observed = r.Raw.observed;
+          unit = Node_name.unit_of name;
+          symbol;
+          sector;
+          limit;
+          contract;
+        })
+    |> List.sort ~compare:(fun a b ->
+        match Int.compare a.Topology.Node.rank b.Topology.Node.rank with
+        | 0 -> String.compare a.Topology.Node.name b.Topology.Node.name
+        | c -> c)
+  in
+  let observed_names =
+    List.filter_map nodes ~f:(fun n ->
+        if n.Topology.Node.observed then Some n.Topology.Node.name else None)
+  in
+  let is_input n = Topology.Family.equal n.Topology.Node.family Topology.Family.Input in
+  let sectors =
+    Map.data t.instruments |> List.map ~f:Instrument.sector
+    |> List.dedup_and_sort ~compare:Sector.compare
+    |> List.length
+  in
+  (* The readers outside the graph, as facts rather than drawing instructions.
+     history_buffer.ml reads six published values (its Point is those six
+     beside a timestamp);
+     the stream reads every observed value; the alerts tracker hangs off
+     [breaches] and is present only when the caller attached one; the kill
+     switch reads the tracker and is wired to nothing -- [wired_to = None] is
+     the invariant on the wire. *)
+  let outside =
+    [
+      {
+        Topology.Outside.name = "alerts";
+        reads = [ Node_name.breaches ];
+        present = alerts;
+        wired_to = None;
+      };
+      {
+        Topology.Outside.name = "history";
+        reads =
+          [
+            Node_name.gross;
+            Node_name.net;
+            Node_name.equity;
+            Node_name.drawdown;
+            Node_name.var_notional;
+            Node_name.es_notional;
+          ];
+        present = true;
+        wired_to = None;
+      };
+      {
+        Topology.Outside.name = "stream";
+        reads = observed_names;
+        present = true;
+        wired_to = None;
+      };
+      {
+        Topology.Outside.name = "kill_switch";
+        reads = [ "alerts" ];
+        present = alerts;
+        wired_to = None;
+      };
+    ]
+  in
+  let counts =
+    {
+      Topology.Counts.instruments = Map.length t.instruments;
+      sectors;
+      limits = List.length t.limits;
+      options = Map.length t.option_positions;
+      named = List.count nodes ~f:(fun n -> not (is_input n));
+      inputs = List.count nodes ~f:is_input;
+      observed = List.length observed_names;
+      incremental_nodes = List.length raw;
+    }
+  in
+  {
+    Topology.nodes;
+    edges;
+    outside;
+    attribution_covariance = t.covariance_for_attribution;
+    counts;
+  }
+
 (* Be told when anything the engine publishes changes.
 
    [f] runs INSIDE stabilization, alongside the node bodies, so it is subject to
