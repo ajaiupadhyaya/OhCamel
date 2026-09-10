@@ -5,12 +5,12 @@
   "machine": "Apple M2 Pro, macOS, arm64",
 
   "scaling": {
-    "note": "README.md, the closing table of `make run`. STALE ON PURPOSE: this transcribes the README as it stands today. The current node set is 63 / 342 / 1272 -- the five option singletons landed after this table was recorded -- and Phase 3 corrects README.md, docs/status.md and this block in one change. Until then the page's computed-vs-quoted line for this table will honestly report the cells that differ, which is the mechanism working rather than failing.",
+    "note": "README.md, the closing table of `make run`. The node set is 63 / 342 / 1272: the five option singletons are built into every graph, whether or not it holds options, and Phase 3 corrected README.md, docs/status.md and this block together. The per-tick column is the CLI's shared-state draws; the served host's probe draws from its own seed and lands within the drawdown node's coin flips of it, which is what the computed-vs-quoted line beside this table shows.",
     "columns": ["instruments", "nodes_in_graph", "nodes_per_tick", "if_polled"],
     "rows": [
-      { "instruments": 10,  "nodes_in_graph": 58,   "nodes_per_tick": 25.6, "if_polled": 58 },
-      { "instruments": 100, "nodes_in_graph": 337,  "nodes_per_tick": 25.2, "if_polled": 337 },
-      { "instruments": 400, "nodes_in_graph": 1267, "nodes_per_tick": 26.0, "if_polled": 1267 }
+      { "instruments": 10,  "nodes_in_graph": 63,   "nodes_per_tick": 25.6, "if_polled": 63 },
+      { "instruments": 100, "nodes_in_graph": 342,  "nodes_per_tick": 25.2, "if_polled": 342 },
+      { "instruments": 400, "nodes_in_graph": 1272, "nodes_per_tick": 26.0, "if_polled": 1272 }
     ]
   },
 

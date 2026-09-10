@@ -223,10 +223,11 @@ let test_the_pinned_cells_match_the_readme () =
     "the persistence the study fits back" 0.98
     (U.to_number
        (U.member "persistence" (U.member "truth" (U.member "garch" (Lazy.force quoted)))));
-  (* Stale on purpose; see the note in the scaling block. Phase 3 corrects
-     README.md, docs/status.md and this file together, and moves this pin. *)
+  (* Moved here by Phase 3, which corrected README.md, docs/status.md and
+     web/quoted.json together: 1272 is the current node set at 400 names, the
+     five option singletons included. *)
   Alcotest.(check int)
-    "scaling at 400 names: nodes in graph, AS THE README STILL SAYS" 1267
+    "scaling at 400 names: nodes in graph" 1272
     (U.to_int (U.member "nodes_in_graph" (List.last_exn (rows "scaling"))))
 
 module Crisis_csv = Ohcamel.Crisis_csv

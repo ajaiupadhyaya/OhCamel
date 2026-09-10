@@ -83,10 +83,12 @@ Weibull duration-based independence test (added because the Markov test has a
 blind spot for clustered exceptions at lags beyond one), and the Basel
 traffic-light zones computed from the binomial rather than looked up. Runs
 against deterministic synthetic series (`make backtest`) and against real
-crisis windows from a committed cache (`make backtest-crisis`): the COVID crash
-(2020-02 → 2020-04) and the 2022 rate shock. **The 2008 window is not there**
-— Alpaca's history begins in 2016 — and the README says so rather than
-substituting anything.
+crisis windows from a committed cache (`make backtest-crisis`): the 2008
+financial crisis (2007-07 → 2009-12), the COVID crash (2019-06 → 2020-12) and
+the 2022 rate shock (2021-06 → 2022-12) — adjusted daily closes from Yahoo
+Finance via `tools/fetch_crisis_data.py`, committed under `docs/crisis/` and
+compiled into the binary, so the mode runs from any directory and inside the
+image. Alpaca's own history begins in 2016, which is why the cache exists.
 
 **Options.** Black-Scholes European pricing with delta, gamma, vega and theta,
 tested against Hull's textbook values and put-call parity. Delta-equivalent
@@ -173,10 +175,14 @@ would be the first that does.
 | `/api/stream` | Server-sent events, emitted only on an actual graph change (parked on an `Ivar`, not a timer), coalesced over 80 ms |
 | `/api/history` | The in-memory trail |
 | `/api/stress` | The scenario suite, run on a fork |
+| `/ops` | The operator's view: what the process is, how long it has been up, what it has recomputed |
+| `/api/ops` | The same as JSON, including the recompute log's distinct and total counts and its hottest nodes |
+
+The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/dashboard_html.ml` no longer exists. The 47-line design essay that headed it is archived verbatim, as an HTML comment, at the head of `web/index.html`, with the successor paragraphs beneath it.
 
 ## What is verified
 
-- **210 hermetic tests** — no network, no credentials, nothing waiting on a
+- **272 hermetic tests** — no network, no credentials, nothing waiting on a
   clock. Expected values are derived by hand with the derivation beside the
   assertion. Seven are worth knowing by name: Euler residual, hedge (no stray
   `abs`), lookahead, stress-fork isolation, regime-break, delta-hedged, and
@@ -184,7 +190,7 @@ would be the first that does.
 - **Property tests** (qcheck) generalise the identities over random inputs:
   Euler additivity, component VaR summing to portfolio VaR, a hedge reducing
   variance, VaR monotone in confidence, fork isolation, backtest lookahead.
-- **Coverage 70.4%**, with a 60% floor in CI that exists to make deleting
+- **Coverage 78.2%**, with a 60% floor in CI that exists to make deleting
   tests noticeable, not as a target. The number is bimodal by design: the pure
   numeric core is above 90% and the network edges near 40%, because exercising
   them means mocking a broker, which raises the number and establishes nothing.
@@ -208,9 +214,14 @@ From `make run`, the architectural claim:
 
 | instruments | nodes in graph | nodes per tick | if polled |
 |---|---|---|---|
-| 10 | 58 | 25.6 | 58 |
-| 100 | 337 | 25.2 | 337 |
-| 400 | 1267 | 26.0 | 1267 |
+| 10 | 63 | 25.6 | 63 |
+| 100 | 342 | 25.2 | 342 |
+| 400 | 1272 | 26.0 | 1272 |
+
+(The node counts were 58 / 337 / 1267 until the five option singletons —
+`gamma_map`, `vega_map`, `portfolio_gamma`, `portfolio_vega`,
+`vega_by_bucket` — were added to every graph, whether or not it holds
+options. The per-tick column did not move, which is the point of the table.)
 
 From `make bench` on an M2 Pro, the honest version of it — node count per tick
 is flat, wall-clock is not, because the ~25 nodes reached include O(n) and
@@ -251,7 +262,7 @@ breaking one is a regression even if the tests pass.
 - Nothing is optimised: the engine reports concentration and never suggests weights.
 - Options: European only, one flat rate, one vol per contract, no dividends, no implied-vol solve, vega not bucketed by strike, and off in live mode.
 - Volatility: equal-weighted or EWMA; GARCH is present but not wired in, for a measured reason.
-- Validation windows: COVID and 2022 only. No 2008.
+- Validation windows: three US equity episodes, scored at TODAY's six names held at constant weights — what this book would have done, not what the book of the day did.
 - Positions are a static file. Only prices are live.
 - Single droplet, no replica, by design: a second copy of an in-memory graph is a second, differently aged truth.
 

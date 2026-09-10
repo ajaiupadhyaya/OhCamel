@@ -52,9 +52,9 @@ what the same graph would cost at three book sizes:
 ```
  instruments   nodes in graph     nodes per tick        if polled
 ------------------------------------------------------------------
-          10               58               25.6               58
-         100              337               25.2              337
-         400             1267               26.0             1267
+          10               63               25.6               63
+         100              342               25.2              342
+         400             1272               26.0             1272
 ```
 
 The middle column is flat and the right one is not. The cost of an event is set
@@ -1068,7 +1068,7 @@ deploy user alone, and reach the container as environment, never as a layer.
 
 ## What's verified
 
-`make test` runs 210 tests, all hermetic — no network, no credentials, and nothing
+`make test` runs 272 tests, all hermetic — no network, no credentials, and nothing
 that waits on the wall clock. They cover the numerics against hand-computed
 values, the wire format, the alerting state machine, and the recomputation counts
 that make the graph's shape an assertion rather than a claim.
