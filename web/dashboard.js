@@ -4,6 +4,89 @@
   var prev = {};          // last rendered value per key, for change marks
   var firstFrame = true;  // do not mark everything as "moved" on load
 
+  // ---- Figure 1, and the header's two clocks ----
+  // The topology is fetched once: it cannot change after construction. The
+  // handle lights the same names the ledger underlines, from the same frame,
+  // because it is the same fact; the stale closure dims the same rows for the
+  // same reason.
+  var topology = null, graph = null, ops = null, pendingFrame = null;
+  var staleNodes = new Set();          // downstream closure of every stale price, by node name
+  var lastFrameAt = null, lastPrintAt = null;
+  var NODE_OF_ROW = {
+    gross: "gross_exposure", net: "net_exposure", equity: "equity", dd: "current_drawdown",
+    var: "var_notional", es: "es_notional", pvar: "parametric_var", pvarewma: "parametric_var_ewma",
+    beta: "portfolio_beta", gamma: "portfolio_gamma", vega: "portfolio_vega", dr: "diversification_ratio"
+  };
+  function nodeOfRow(key) {
+    if (NODE_OF_ROW[key]) return NODE_OF_ROW[key];
+    if (key.indexOf("pos:") === 0) return "exposure:" + key.slice(4);
+    if (key.indexOf("sec:") === 0) return "sector:" + key.slice(4);
+    return null;
+  }
+  function renderGraphFrame(s) {
+    pendingFrame = s;
+    // Set here rather than in render, so a frame that arrived before the
+    // topology gets its denominator when the topology does.
+    document.getElementById("ran").textContent =
+      (s.recomputed ? s.recomputed.length : "—") + " of " + (topology ? topology.counts.named : "—");
+    if (!graph) return;
+    graph.setValues(s.by_node || {});
+    var over = 0; s.limits.forEach(function (l) { if (l.breached) over++; });
+    graph.setNote("breaches", over + " of " + (s.limits.length + s.unevaluated.length));
+    graph.light(s.recomputed || []);
+  }
+  // A frame that arrived before the topology (or, on the live host, before
+  // /api/ops) was set without it: stale rows by symbol rather than by closure,
+  // no limit dimmed, no options line. Set the ledger again from that same frame
+  // when it arrives, rather than waiting for the next frame, which a parked host
+  // may not send for hours. The same frame twice marks nothing as moved.
+  function resetLedger() {
+    var s = pendingFrame;
+    if (!s) return;
+    renderHealth(s); renderPositions(s); renderBook(s); renderLimits(s);
+  }
+  function loadGraph() {
+    var box = document.getElementById("graphbox");
+    if (!box || !window.OhCamelGraph) return;
+    fetch("/api/graph").then(function (r) { return r.json(); }).then(function (t) {
+      topology = t;
+      graph = window.OhCamelGraph.render(box, topology, { inspector: true });
+      if (pendingFrame) { resetLedger(); renderGraphFrame(pendingFrame); }
+    }).catch(function () { /* the figure stays empty; the ledger does not depend on it */ });
+  }
+  function loadOps() {
+    fetch("/api/ops").then(function (r) { return r.json(); }).then(function (o) {
+      var first = ops === null;
+      ops = o;
+      document.getElementById("mode").textContent =
+        o.mode === "live" ? "live · Alpaca + FRED" : "demo · synthetic feed";
+      if (first && o.mode === "live") resetLedger();
+    }).catch(function () { /* the header keeps its default word */ });
+  }
+  // Time_ns.to_string_utc prints nanoseconds and a space; Date.parse wants
+  // milliseconds and a T.
+  function parseUtc(s) { return Date.parse(s.replace(" ", "T").replace(/(\.\d{1,3})\d*Z$/, "$1Z")); }
+  function age(ms) { return ms < 60000 ? (ms / 1000).toFixed(1) + " s" : Math.round(ms / 60000) + " min"; }
+  function clocks() {
+    var now = Date.now();
+    var lf = document.getElementById("lastframe"), lp = document.getElementById("lastprint");
+    if (lastFrameAt !== null) {
+      var f = now - lastFrameAt;
+      lf.textContent = age(f) + (f > 60000 ? " parked" : "");
+      lf.className = "v num" + (f > 60000 ? " parked" : "");
+    }
+    if (lastPrintAt !== null) {
+      // A print is stamped by the host's clock and aged by this browser's; a
+      // host a second ahead would otherwise show a print from the future.
+      var p = Math.max(0, now - lastPrintAt), threshold = ((ops && ops.feed && ops.feed.staleness_threshold_s) || 90) * 1000;
+      lp.textContent = age(p);
+      lp.className = "v num" + (p > threshold ? " over" : p > threshold / 2 ? " warm" : "");
+    }
+  }
+  // A display clock, not a poll: it reads two timestamps and asks the server nothing.
+  setInterval(clocks, 250);
+  loadOps(); loadGraph();
+
   function money(x) {
     if (x === null || x === undefined) return null;
     var s = Math.abs(Math.round(x)).toLocaleString("en-US");
@@ -38,6 +121,8 @@
 
   function row(table, key, label, note, text, cls, rowCls) {
     var tr = el("tr", rowCls || null);
+    var node = nodeOfRow(key);
+    if (node && staleNodes.has(node)) tr.classList.add("rowstale");
     var k = el("td", "k");
     k.appendChild(document.createTextNode(label));
     if (note) k.appendChild(el("em", null, note));
@@ -47,52 +132,42 @@
     return tr;
   }
 
-  // A row's share of portfolio VaR, appended as a third cell.
+  // A row's share of portfolio VaR, and that share over its share of money.
   //
-  // Rendered as a percentage of the total rather than in dollars, because the
-  // question it answers is comparative -- this name against the others -- and
-  // dollars invite it to be read against the exposure on the same line, which
-  // is a different quantity in different units.
-  //
-  // A NEGATIVE share is a position that moves against the book and therefore
-  // reduces portfolio risk. It gets the ok colour and a minus sign rather than
-  // being shown as a magnitude: a hedge and a risk contributor are opposite
-  // facts and must not look the same.
-  function riskCell(tr, key, share, total) {
+  // Both come from the encoder (risk_share, risk_over_money): invariant 2
+  // applied to a division. This page used to sum the components and divide
+  // here; it no longer does arithmetic on risk. A NEGATIVE share is a hedge:
+  // it gets the ok colour and keeps its sign.
+  function riskCell(tr, key, share, ratio) {
     var td = el("td", "risk");
-    if (share === null || share === undefined || total === null || !total) {
+    if (share === null || share === undefined) {
       td.textContent = "—";
     } else {
-      var f = share / total;
-      td.textContent = (f * 100).toFixed(1) + "%";
-      if (f < 0) td.classList.add("hedge");
-      var shown = td.textContent;
-      if (!firstFrame && prev[key] !== undefined && prev[key] !== shown) {
-        td.classList.add("moved");
-      }
+      var shown = (share * 100).toFixed(1) + "%";
+      td.appendChild(document.createTextNode(shown));
+      if (share < 0) td.classList.add("hedge");
+      if (!firstFrame && prev[key] !== undefined && prev[key] !== shown) td.classList.add("moved");
       prev[key] = shown;
     }
+    if (ratio !== undefined) td.appendChild(el("span", "rm", ratio === null ? "--" : ratio.toFixed(2) + "×"));
     tr.appendChild(td);
   }
 
   function renderPositions(s) {
-    // Component VaR is an Euler decomposition, so the shares sum to the
-    // portfolio total exactly -- which is what makes a percentage of the total
-    // a meaningful number. Summed here rather than taken from a separate field
-    // so the denominator is provably the same numbers as the numerators.
-    var total = null;
-    if (s.positions.length && s.positions[0].component_var !== null) {
-      total = 0;
-      s.positions.forEach(function (p) { total += p.component_var; });
-    }
-
+    var quiet = s.quiet || [];
     var t = document.getElementById("pos");
     t.textContent = "";
     s.positions.forEach(function (p) {
       var tr = row(t, "pos:" + p.symbol, p.symbol, p.sector,
           money(p.exposure), p.exposure < 0 ? "neg" : null,
           staleSet[p.symbol] ? "rowstale" : null);
-      riskCell(tr, "risk:" + p.symbol, p.component_var, total);
+      // Stale on schedule is not a broken feed. The demo never ticks one name
+      // so the stale path can be watched, and the frame says which one.
+      if (quiet.indexOf(p.symbol) >= 0) {
+        tr.classList.add("quiet");
+        tr.firstChild.appendChild(el("em", "quietlbl", "quiet by design"));
+      }
+      riskCell(tr, "risk:" + p.symbol, p.risk_share, p.risk_over_money);
     });
 
     var st = document.getElementById("sectors");
@@ -102,7 +177,7 @@
       var tr = row(st, "sec:" + x.sector, x.sector, null,
           money(x.exposure), x.exposure < 0 ? "neg" : null,
           staleSectors[x.sector] ? "rowstale" : null);
-      riskCell(tr, "risk:sec:" + x.sector, x.component_var, total);
+      riskCell(tr, "risk:sec:" + x.sector, x.risk_share);
     });
   }
 
@@ -163,6 +238,12 @@
         }
       }
     }
+    else if (ops && ops.mode === "live") {
+      // Said in the place the rows would be, rather than left to be
+      // discovered: the live host has no options-chain source, so the options
+      // branch of the graph is built and never fed.
+      row(t, "optoff", "options", "DISABLED — no options-chain source", "off", null, "gap").id = "optoff";
+    }
     // Sum of standalone position volatilities over portfolio volatility, so at
     // least 1.00. What the book is getting from being a portfolio rather than a
     // pile of positions -- and the number that falls toward 1.00 as
@@ -188,6 +269,7 @@
 
     s.limits.forEach(function (l) {
       var d = el("div", "lim" + (l.breached ? " over" : ""));
+      if (staleNodes.has("limit:" + l.name)) d.classList.add("stale");
       var top = el("div", "top");
       top.appendChild(el("span", "name", l.name));
       top.appendChild(el("span", "scope", l.scope));
@@ -233,6 +315,26 @@
     h.stale.concat(h.never_seen).forEach(function (sym) { staleSet[sym] = true; });
     s.positions.forEach(function (p) {
       if (staleSet[p.symbol] && p.sector) staleSectors[p.sector] = true;
+    });
+    // Staleness follows the edges, not the column: the downstream closure of
+    // each stale price, from the served topology, on the drawing and on the
+    // ledger's rows alike. Until the topology has arrived the rows fall back
+    // to the symbol match above.
+    staleNodes = new Set();
+    var staleSyms = h.stale.concat(h.never_seen);
+    if (topology && window.OhCamelGraph) {
+      staleSyms.forEach(function (sym) {
+        var cell = "price[" + sym + "]";
+        staleNodes.add(cell);
+        window.OhCamelGraph.closure(topology, [cell], "down").forEach(function (n) { staleNodes.add(n); });
+      });
+    }
+    if (graph) graph.dim(staleSyms);
+    lastPrintAt = null;
+    (h.symbols || []).forEach(function (st) {
+      if (!st.last_tick) return;
+      var t = parseUtc(st.last_tick);
+      if (!isNaN(t) && (lastPrintAt === null || t > lastPrintAt)) lastPrintAt = t;
     });
     var feed = document.getElementById("feed");
     feed.textContent = "";
@@ -432,6 +534,9 @@
     renderPositions(s);
     renderBook(s);
     renderLimits(s);
+    renderGraphFrame(s);
+    lastFrameAt = Date.now();
+    clocks();
     document.getElementById("nsym").textContent =
       s.positions.length + " / " + s.sectors.length + " sectors";
     document.getElementById("nodes").textContent = s.nodes_recomputed.toLocaleString("en-US");

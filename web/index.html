@@ -79,16 +79,24 @@ Phase 3. The dashboard page, served from memory by server.ml.
 -->
 
 <header>
-  <h1>OhCamel<span>reactive risk &amp; limits</span></h1>
+  <h1>OhCamel<span id="mode">reactive risk &amp; limits</span></h1>
   <div class="stat"><span class="lbl">feed</span><span class="v" id="feed"><span class="dot idle"></span>connecting</span></div>
+  <div class="stat"><span class="lbl">last print</span><span class="v num" id="lastprint">—</span></div>
+  <div class="stat"><span class="lbl">last frame</span><span class="v num" id="lastframe">—</span></div>
+  <div class="stat"><span class="lbl">named nodes</span><span class="v num" id="ran">—</span></div>
   <div class="stat"><span class="lbl">book</span><span class="v num" id="nsym">—</span></div>
-  <div class="stat spacer"><span class="lbl">nodes recomputed</span><span class="v num" id="nodes">—</span></div>
-  <div class="stat"><span class="lbl">alerts</span><span class="v ks off" id="ks">off</span></div>
+  <div class="stat spacer"><span class="lbl">alerts</span><span class="v ks off" id="ks">off</span></div>
   <div class="stat"><span class="lbl">as of</span><span class="v num" id="asof">—</span></div>
+  <a class="stat" id="opslink" href="/ops">ops</a>
 </header>
 
 <div id="halt"></div>
 <div id="warn"></div>
+
+<figure id="graph" class="fig">
+  <span class="lbl">figure 1 <i>— the graph, taken from the graph</i></span>
+  <div id="graphbox"></div>
+</figure>
 
 <main id="main">
   <section>
@@ -115,6 +123,7 @@ Phase 3. The dashboard page, served from memory by server.ml.
 
 <footer>
   <span>updates arrive when a value changes, not on a timer</span>
+  <span>nodes recomputed <span class="num" id="nodes">—</span> <i>— process-wide: includes forks and the startup probe</i></span>
   <span id="conn">—</span>
   <span id="alertstat">—</span>
 </footer>
