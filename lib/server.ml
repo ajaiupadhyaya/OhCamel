@@ -137,9 +137,10 @@ let json_of_history (h : History_buffer.t) : Yojson.Safe.t =
       ("es_notional", series (fun p -> jopt_float (History_buffer.Point.es_notional p)));
     ]
 
-let json_of_snapshot ~(graph : Graph.t) ~(factor : string) (s : Graph.Snapshot.t) :
-    Yojson.Safe.t =
+let json_of_snapshot ?recomputed ?stabilizes_delta ?nodes_recomputed_delta
+    ~(graph : Graph.t) ~(factor : string) (s : Graph.Snapshot.t) : Yojson.Safe.t =
   let weights = Graph.Snapshot.weights s in
+  let jopt_int = function None -> `Null | Some n -> `Int n in
   `Assoc
     [
       ("as_of", jstring (Time_ns.to_string_utc (Types.Time.now ())));
@@ -235,6 +236,22 @@ let json_of_snapshot ~(graph : Graph.t) ~(factor : string) (s : Graph.Snapshot.t
       ("limits", jlist json_of_breach (Graph.Snapshot.breaches s));
       ("unevaluated", jlist jstring (Graph.Snapshot.unevaluated_limits s));
       ("nodes_recomputed", `Int (Graph.total_nodes_recomputed ()));
+      ("stabilizes", `Int (Graph.total_stabilizes ()));
+      (* What ran since the previous frame, by name, from the hook the tests
+         pin. [null] on /api/snapshot and on a welcome frame: only the stream
+         knows what ran between two of its frames, and a poller that could
+         drain the set would leave the next frame saying nothing ran. [n] is
+         greater than one when a node ran in more than one stabilize inside
+         the coalesce window. *)
+      ( "recomputed",
+        match recomputed with
+        | None -> `Null
+        | Some entries ->
+            jlist
+              (fun (name, n) -> `Assoc [ ("name", jstring name); ("n", `Int n) ])
+              entries );
+      ("stabilizes_delta", jopt_int stabilizes_delta);
+      ("nodes_recomputed_delta", jopt_int nodes_recomputed_delta);
     ]
 
 (* The scenario suite, run against the book as it stands right now.
@@ -352,6 +369,12 @@ type t = {
      hook (the tests do), and it must then say [null] rather than drain an
      empty table and report that nothing ran. *)
   recompute_log : Recompute_log.t option;
+  (* The two process-wide counters as they stood when the previous frame was
+     taken. Deltas are computed against these, in the broadcaster only, so a
+     frame's delta means "since the frame before it" and a poll in between
+     cannot reset them. *)
+  mutable last_stabilizes : int;
+  mutable last_nodes_recomputed : int;
 }
 
 (* A sink is named, never described.
@@ -462,13 +485,47 @@ let json_of_alerts ?(recent = true) (alerts : Alerts.t option) : Yojson.Safe.t =
         `Assoc (List.filter fields ~f:(fun (key, _) -> not (String.equal key "recent")))
     | other -> other
 
-let render (t : t) : string =
+(* One serialised frame.
+
+   [recomputed] is a DRAIN, not a list, and it is called here between the
+   snapshot and the encoder because that is the only order in which the set is
+   the frame's: [Graph.snapshot] stabilizes, and a node body that runs inside
+   that stabilize must be credited to this frame and not to the next. Called
+   with no drain by /api/snapshot and by every subscriber's welcome frame,
+   which then say [null] -- neither is allowed to take the stream's set. *)
+let render ?recomputed (t : t) : string =
   let snapshot = Graph.snapshot t.graph in
-  let json = json_of_snapshot ~graph:t.graph ~factor:t.factor snapshot in
+  let json =
+    match recomputed with
+    | None -> json_of_snapshot ~graph:t.graph ~factor:t.factor snapshot
+    | Some drain ->
+        let entries = drain () in
+        let stabilizes = Graph.total_stabilizes () in
+        let nodes = Graph.total_nodes_recomputed () in
+        let stabilizes_delta = stabilizes - t.last_stabilizes in
+        let nodes_recomputed_delta = nodes - t.last_nodes_recomputed in
+        t.last_stabilizes <- stabilizes;
+        t.last_nodes_recomputed <- nodes;
+        json_of_snapshot ~recomputed:entries ~stabilizes_delta ~nodes_recomputed_delta
+          ~graph:t.graph ~factor:t.factor snapshot
+  in
   match json with
   | `Assoc fields ->
       Yojson.Safe.to_string (`Assoc (fields @ [ ("alerts", json_of_alerts t.alerts) ]))
   | other -> Yojson.Safe.to_string other
+
+(* The frame the broadcaster sends: the snapshot, then the drain. With no log
+   -- a server over a graph that was given no hook -- the three keys stay
+   [null] on every frame, which is "this process is not counting" and is
+   different from [] , "nothing ran". *)
+let next_frame (t : t) : string =
+  match t.recompute_log with
+  | None -> render t
+  | Some log -> render ~recomputed:(fun () -> Recompute_log.drain log) t
+
+(* Whether a change has been observed since the last frame was taken. The
+   test for the follow-up frame reads it; nothing else does. *)
+let pending_frame (t : t) : bool = Ivar.is_full t.changed
 
 (* One SSE event. The blank line terminates it; without the second newline the
    browser buffers the frame indefinitely waiting for more. *)
@@ -498,7 +555,18 @@ let rec run_broadcaster (t : t) =
      being the reason a frame is produced. *)
   let%bind () = after (Time_ns.Span.to_span_float_round_nearest t.coalesce) in
   let%bind () =
-    if List.is_empty t.subscribers then Deferred.unit else broadcast t (render t)
+    if List.is_empty t.subscribers then (
+      (* Nobody to send to, but the window still closes: the set is dropped
+         and the counters advanced, so a subscriber arriving after an hour of
+         quiet gets a welcome frame and then frames about what happens NEXT,
+         not one frame carrying an hour of history. No snapshot is taken --
+         the point of the empty-subscriber branch was never to serialise. *)
+      Option.iter t.recompute_log ~f:(fun log ->
+          ignore (Recompute_log.drain log : (string * int) list));
+      t.last_stabilizes <- Graph.total_stabilizes ();
+      t.last_nodes_recomputed <- Graph.total_nodes_recomputed ();
+      Deferred.unit)
+    else broadcast t (next_frame t)
   in
   run_broadcaster t
 
@@ -914,6 +982,8 @@ let create ?(coalesce = Time_ns.Span.of_ms 80.0) ?history_capacity
       history =
         History_buffer.attach ?capacity:history_capacity ~graph ~now:Types.Time.now ();
       recompute_log;
+      last_stabilizes = Graph.total_stabilizes ();
+      last_nodes_recomputed = Graph.total_nodes_recomputed ();
     }
   in
   (* The link that makes this reactive rather than polled. Graph.on_change fires

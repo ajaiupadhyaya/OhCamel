@@ -1162,6 +1162,104 @@ let test_the_server_holds_the_log () =
         (Option.is_none (Server.recompute_log server)))
     ()
 
+let parse s = Yojson.Safe.from_string s
+
+let names_of (json : Yojson.Safe.t) : string list =
+  match json with
+  | `List entries ->
+      List.map entries ~f:(fun e ->
+          match field_exn e "name" with
+          | `String s -> s
+          | _ -> Alcotest.fail "name is not a string")
+  | other -> Alcotest.failf "recomputed is not a list: %s" (Yojson.Safe.to_string other)
+
+(* A poller cannot steal the stream's set.
+
+   /api/snapshot renders, and rendering stabilizes; if it also drained the
+   log, a curl between two frames would leave the next frame saying nothing
+   ran. So the snapshot path says [null] -- "the stream knows, ask it" -- and
+   the set is still there for the frame that follows. *)
+let test_a_poller_cannot_steal_the_streams_set () =
+  with_logged_server
+    ~f:(fun server graph log ->
+      ignore (Ohcamel.Recompute_log.drain log : (string * int) list);
+      ignore (Server.next_frame server : string);
+      Graph.apply_tick graph
+        { Tick.symbol = aapl; price = Price.of_float 151.0; time = Time.epoch };
+      Graph.stabilize graph;
+      let poll = parse (Server.render server) in
+      Alcotest.(check bool)
+        "/api/snapshot carries recomputed: null" true
+        (match field_exn poll "recomputed" with `Null -> true | _ -> false);
+      Alcotest.(check bool)
+        "and no deltas" true
+        (match
+           (field_exn poll "stabilizes_delta", field_exn poll "nodes_recomputed_delta")
+         with
+        | `Null, `Null -> true
+        | _ -> false);
+      Alcotest.(check bool)
+        "but the process-wide stabilizes total" true
+        (Float.( > ) (num poll "stabilizes") 0.0);
+      let frame = parse (Server.next_frame server) in
+      let ran = names_of (field_exn frame "recomputed") in
+      Alcotest.(check bool)
+        "the frame after the poll still carries the tick's set" true
+        (List.mem ran "exposure:AAPL" ~equal:String.equal
+        && List.mem ran "feed:AAPL" ~equal:String.equal);
+      Alcotest.(check bool)
+        "and only the tick's set" false
+        (List.mem ran "covariance" ~equal:String.equal
+        || List.mem ran "exposure:XOM" ~equal:String.equal);
+      (match field_exn frame "recomputed" with
+      | `List entries ->
+          List.iter entries ~f:(fun e ->
+              Alcotest.(check bool)
+                "each ran once inside one coalesce window" true
+                (Float.equal (num e "n") 1.0))
+      | _ -> Alcotest.fail "recomputed is not a list");
+      Alcotest.(check bool)
+        "the deltas are numbers on a frame" true
+        (Float.( >= ) (num frame "stabilizes_delta") 1.0
+        && Float.( > ) (num frame "nodes_recomputed_delta") 0.0))
+    ()
+
+(* The follow-up frame. A render-time stabilize that changes something fires
+   on_change INSIDE Graph.snapshot, which fills the next Ivar; the broadcaster
+   wakes again, coalesces, and takes another frame. That frame's set is empty
+   -- the work was credited to the frame whose stabilize did it -- and it is
+   sent as [recomputed: []] rather than suppressed, because a frame that
+   arrives and says "nothing" is a fact about the engine and dropping it would
+   make the frame-arrival strip lie. *)
+let test_a_render_time_stabilize_produces_an_empty_follow_up () =
+  with_logged_server
+    ~f:(fun server graph log ->
+      ignore (Ohcamel.Recompute_log.drain log : (string * int) list);
+      ignore (Server.next_frame server : string);
+      Alcotest.(check bool) "quiet: no frame pending" false (Server.pending_frame server);
+      (* A write with NO stabilize: the broadcaster's own snapshot will be the
+         first stabilize to see it. *)
+      Graph.set_price graph aapl (Price.of_float 152.0);
+      Alcotest.(check bool)
+        "a bare Var.set observes nothing yet" false (Server.pending_frame server);
+      let first = parse (Server.next_frame server) in
+      Alcotest.(check bool)
+        "the frame whose stabilize did the work carries it" true
+        (List.mem
+           (names_of (field_exn first "recomputed"))
+           "exposure:AAPL" ~equal:String.equal);
+      Alcotest.(check bool)
+        "and that stabilize filled the next Ivar" true (Server.pending_frame server);
+      let follow_up = parse (Server.next_frame server) in
+      Alcotest.(check (list string))
+        "the follow-up carries recomputed: []" []
+        (names_of (field_exn follow_up "recomputed"));
+      Alcotest.(check bool)
+        "one stabilize, zero node bodies" true
+        (Float.equal (num follow_up "stabilizes_delta") 1.0
+        && Float.equal (num follow_up "nodes_recomputed_delta") 0.0))
+    ()
+
 let suite =
   ( "server",
     [
@@ -1198,4 +1296,8 @@ let suite =
         `Quick test_cors_survives_being_read_through_the_table_and_not_just_built;
       Alcotest.test_case "the server holds the recompute log" `Quick
         test_the_server_holds_the_log;
+      Alcotest.test_case "a poller cannot steal the stream's recomputed set" `Quick
+        test_a_poller_cannot_steal_the_streams_set;
+      Alcotest.test_case "a render-time stabilize produces an empty follow-up frame"
+        `Quick test_a_render_time_stabilize_produces_an_empty_follow_up;
     ] )
