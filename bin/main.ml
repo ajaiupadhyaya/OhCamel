@@ -588,36 +588,15 @@ let duration_cell (r : Var_backtest.report) =
   | Some p, Some shape -> Printf.sprintf "%.4f b=%5.2f" p shape
   | _ -> "     --      "
 
-let backtest_rng = Random.State.make [| 2026_08_24 |]
-
-let backtest_gaussian ~sigma =
-  let u1 = Float.max 1e-12 (Random.State.float backtest_rng 1.0) in
-  let u2 = Random.State.float backtest_rng 1.0 in
-  sigma *. Float.sqrt (-2.0 *. Float.log u1) *. Float.cos (2.0 *. Float.pi *. u2)
-
-let backtest_length = 1000
 let backtest_window = return_window
 
-let backtest_series =
-  [
-    ( "iid-normal",
-      "Independent normal returns -- exactly what the parametric estimator assumes.",
-      Array.init backtest_length ~f:(fun _ -> backtest_gaussian ~sigma:0.011) );
-    ( "vol-regime",
-      "Calm for 600 days, then four times as volatile. The window takes 60 days to \
-       notice.",
-      Array.init backtest_length ~f:(fun i ->
-          backtest_gaussian ~sigma:(if i < 600 then 0.006 else 0.024)) );
-    ( "jumps",
-      "Quiet days with an identical -8% loss every twentieth. Exactly 5% of days are the \
-       tail.",
-      Array.init backtest_length ~f:(fun i ->
-          if i % 20 = 19 then -0.08 else backtest_gaussian ~sigma:0.004) );
-  ]
-
-let backtest_row ~name ~(estimator : Var_backtest.Estimator.t) (r : Var_backtest.report) =
-  printf "  %-12s %-12s %6d %8d %9.1f %9.4f %9.4f %9.4f  %14s  %-7s %s\n" name
-    (Var_backtest.Estimator.to_string estimator)
+(* The battery is lib/validation_report.ml now; this is its printer. Every
+   number below is read out of the record, and the prose is the prose. *)
+let backtest_row (row : Validation_report.Row.t) =
+  let r = row.Validation_report.Row.report in
+  printf "  %-12s %-12s %6d %8d %9.1f %9.4f %9.4f %9.4f  %14s  %-7s %s\n"
+    row.Validation_report.Row.label
+    (Var_backtest.Estimator.to_string (Var_backtest.estimator r))
     (Var_backtest.observations r) (Var_backtest.exceptions r)
     (Var_backtest.expected_exceptions r)
     (Var_backtest.kupiec_p r)
@@ -628,47 +607,28 @@ let backtest_row ~name ~(estimator : Var_backtest.Estimator.t) (r : Var_backtest
     (if Var_backtest.rejected r then "REJECTED" else "ok")
 
 let run_backtest () =
+  let report = Validation_report.synthetic () in
   printf "\n  OhCamel -- reactive risk and limits engine\n";
   printf "  BACKTEST (VaR model validation, no credentials, no network)\n\n";
-  printf "  confidence      %.0f%%\n" (confidence *. 100.0);
-  printf "  window          %d observations, rolling\n" backtest_window;
-  printf "  series length   %d, so %d forecasts each\n" backtest_length
-    (backtest_length - backtest_window);
+  printf "  confidence      %.0f%%\n" (report.Validation_report.confidence *. 100.0);
+  printf "  window          %d observations, rolling\n" report.Validation_report.window;
+  printf "  series length   %d, so %d forecasts each\n" Validation_report.length
+    (Validation_report.length - report.Validation_report.window);
   printf
     "  estimators      historical, parametric (equal-weighted), parametric (EWMA at\n\
     \                  lambda = %.2f). The last two differ ONLY in how the window is\n\
     \                  weighted, so a difference in verdict is a statement about\n\
     \                  weighting and about nothing else.\n"
-    Vol_estimators.Ewma.default_lambda;
+    report.Validation_report.ewma_lambda;
   printf
     "  discipline      each forecast is built from the %d days BEFORE the day it is\n\
     \                  scored against, and cannot see that day.\n\n"
-    backtest_window;
+    report.Validation_report.window;
   printf "%s\n  COVERAGE AND INDEPENDENCE\n%s\n\n" (rule 106) (rule 106);
   printf "  %-12s %-12s %6s %8s %9s %9s %9s %9s  %14s  %-7s %s\n" "series" "estimator" "n"
     "excepts" "expected" "Kupiec p" "indep p" "joint p" "duration p" "Basel" "verdict";
   printf "  %s\n" (rule 116);
-  let reports =
-    List.concat_map backtest_series ~f:(fun (name, _, returns) ->
-        List.map
-          [
-            Var_backtest.Estimator.Historical;
-            Var_backtest.Estimator.Parametric;
-            (* The third row is the argument of Phase A, and it is put in front
-               of the same battery as the other two rather than described. If
-               the equal-weighted parametric estimator is rejected on the
-               vol-regime series and the EWMA one is not, that is the claim
-               demonstrated. If EWMA is rejected too, the table says so, which
-               is what a validation suite is for. *)
-            Var_backtest.Estimator.Parametric_ewma Vol_estimators.Ewma.default_lambda;
-          ] ~f:(fun estimator ->
-            let r =
-              Var_backtest.of_returns ~returns ~window:backtest_window ~confidence
-                ~estimator
-            in
-            backtest_row ~name ~estimator r;
-            (name, estimator, r)))
-  in
+  List.iter report.Validation_report.rows ~f:backtest_row;
   printf "  %s\n" (rule 116);
   printf
     "\n\
@@ -682,27 +642,20 @@ let run_backtest () =
     \              Markov test and its degrees of freedom follow from exactly those\n\
     \              two, so adding a third would give it a distribution nobody has\n\
     \              derived.\n\n";
-  List.iter backtest_series ~f:(fun (name, description, _) ->
-      printf "  %-12s %s\n" name description);
-  (* One report in full, and it is the WORST failure rather than the first. A
-     table of p-values is a summary; the failure is the finding, and the most
-     severe one is the finding worth printing. *)
-  (match
-     List.filter reports ~f:(fun (_, _, r) -> Var_backtest.rejected r)
-     |> List.min_elt ~compare:(fun (_, _, a) (_, _, b) ->
-         Float.compare
-           (Var_backtest.conditional_coverage_p a)
-           (Var_backtest.conditional_coverage_p b))
-   with
+  List.iter report.Validation_report.series ~f:(fun s ->
+      printf "  %-12s %s\n" s.Validation_report.Series.name
+        s.Validation_report.Series.description);
+  (* One report in full, and it is the WORST failure rather than the first. *)
+  (match report.Validation_report.most_severe with
   | None ->
       printf
         "\n\
         \  Nothing was rejected, which on this set of series would itself be a\n\
         \  finding: two of the three are built to break an equal-weighted window.\n\n"
-  | Some (name, _, r) ->
-      printf "\n%s\n  IN FULL: the most severe rejection (%s)\n%s\n\n" (rule 106) name
-        (rule 106);
-      printf "%s\n" (Var_backtest.to_string r));
+  | Some row ->
+      printf "\n%s\n  IN FULL: the most severe rejection (%s)\n%s\n\n" (rule 106)
+        row.Validation_report.Row.label (rule 106);
+      printf "%s\n" (Var_backtest.to_string row.Validation_report.Row.report));
   printf
     "\n\
     \  A rejection here is the suite working. The point of a coverage test is\n\
