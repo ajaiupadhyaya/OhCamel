@@ -78,7 +78,7 @@
     (echo "</style>\n</head>\n<body>\n")
     (cat ../web/index.html)
     (echo "<script>\n")
-    (cat ../web/dashboard.js)
+    (cat ../web/format.js ../web/graph.js ../web/dashboard.js)
     (echo "</script>\n</body>\n</html>\n|ohcamel_html}\n")))))
 
 (rule

@@ -310,6 +310,14 @@ let test_the_build_stamp_can_say_it_does_not_know () =
         false
         (String.exists value ~f:Char.is_whitespace))
 
+(* Script order is load order. graph.js reads window.OhCamelFormat at load
+   and dashboard.js will call window.OhCamelGraph on its first frame, so the
+   three must be in the page in this order, and a rule that catted them
+   differently would fail here rather than in a browser console. *)
+let test_the_page_scripts_are_in_order () =
+  markers_in_order Dashboard_html.page ~name:"dashboard"
+    ~markers:[ "window.OhCamelFormat ="; "window.OhCamelGraph ="; "new EventSource(" ]
+
 let suite =
   ( "embedded_assets",
     [
@@ -329,4 +337,6 @@ let suite =
         test_the_crisis_windows_are_in_the_binary;
       Alcotest.test_case "the build stamp can say it does not know" `Quick
         test_the_build_stamp_can_say_it_does_not_know;
+      Alcotest.test_case "format.js, graph.js, dashboard.js, in that order" `Quick
+        test_the_page_scripts_are_in_order;
     ] )
