@@ -675,28 +675,17 @@ let run_backtest () =
    and see how close the fit lands. Repeat at several sample sizes. Everything
    is deterministic given the seed below, so the table reproduces exactly. *)
 
-let garch_seed = 2026_08_25
-let garch_replications = 30
-let garch_sample_sizes = [ 60; 125; 250; 500; 1000; 2000 ]
-
-(* Textbook daily-equity parameters. Persistence 0.98 is a shock half-life of
-   about 34 days, which is what an equity index actually looks like. *)
-let garch_truth = Vol_estimators.Garch11.{ omega = 4e-6; alpha = 0.10; beta = 0.88 }
-
-let garch_innovations ~rng ~n =
-  Array.init n ~f:(fun _ ->
-      let u1 = Float.max 1e-12 (Random.State.float rng 1.0) in
-      let u2 = Random.State.float rng 1.0 in
-      Float.sqrt (-2.0 *. Float.log u1) *. Float.cos (2.0 *. Float.pi *. u2))
-
-let mean_sd xs =
-  let n = float_of_int (List.length xs) in
-  let mean = List.fold xs ~init:0.0 ~f:( +. ) /. n in
-  let var = List.fold xs ~init:0.0 ~f:(fun acc x -> acc +. ((x -. mean) ** 2.0)) /. n in
-  (mean, Float.sqrt var)
-
+(* The experiment is lib/garch_study.ml; this is its printer. No progress
+   callback: the CLI prints the table when it is done, as it always has. *)
 let run_garch () =
   let module G = Vol_estimators.Garch11 in
+  let study =
+    Garch_study.run ~seed:Garch_study.default_seed
+      ~replications:Garch_study.default_replications
+      ~sample_sizes:Garch_study.default_sample_sizes ~truth:Garch_study.default_truth
+      ~burn_in:Garch_study.default_burn_in ()
+  in
+  let truth = study.Garch_study.truth in
   printf "\n  OhCamel -- reactive risk and limits engine\n";
   printf "  GARCH(1,1) -- why it is implemented and NOT wired into the engine\n\n";
   printf
@@ -709,35 +698,27 @@ let run_garch () =
     \  it can be estimated on the window this engine actually has.\n\n";
   printf "%s\n  THE EXPERIMENT\n%s\n\n" (rule 106) (rule 106);
   printf "  Simulate a KNOWN process, fit it back, repeat %d times at each sample size.\n"
-    garch_replications;
+    study.Garch_study.replications;
   printf
     "  Truth: alpha = %.2f, beta = %.2f, persistence = %.2f (shock half-life %s).\n\n"
-    (G.alpha garch_truth) (G.beta garch_truth) (G.persistence garch_truth)
-    (match G.shock_half_life garch_truth with
+    (G.alpha truth) (G.beta truth) (G.persistence truth)
+    (match G.shock_half_life truth with
     | Some h -> Printf.sprintf "%.0f periods" h
     | None -> "infinite");
   printf "  %8s   %-22s %-22s %-22s\n" "n" "alpha (mean +/- sd)" "beta (mean +/- sd)"
     "persistence (mean +/- sd)";
   printf "  %s\n" (rule 80);
-  let rng = Random.State.make [| garch_seed |] in
-  let rows =
-    List.map garch_sample_sizes ~f:(fun n ->
-        let fits =
-          List.init garch_replications ~f:(fun _ ->
-              let innovations = garch_innovations ~rng ~n:(n + 500) in
-              let path = G.simulate ~innovations garch_truth in
-              G.fit ~returns:path ())
-        in
-        let alpha_m, alpha_sd = mean_sd (List.map fits ~f:G.alpha) in
-        let beta_m, beta_sd = mean_sd (List.map fits ~f:G.beta) in
-        let pers_m, pers_sd = mean_sd (List.map fits ~f:G.persistence) in
-        printf "  %8d   %7.3f +/- %-11.3f %7.3f +/- %-11.3f %7.3f +/- %-11.3f\n" n alpha_m
-          alpha_sd beta_m beta_sd pers_m pers_sd;
-        (n, pers_m, pers_sd))
-  in
+  List.iter study.Garch_study.rows ~f:(fun (row : Garch_study.Row.t) ->
+      let open Garch_study.Row in
+      printf "  %8d   %7.3f +/- %-11.3f %7.3f +/- %-11.3f %7.3f +/- %-11.3f\n" row.n
+        row.alpha_mean row.alpha_sd row.beta_mean row.beta_sd row.persistence_mean
+        row.persistence_sd);
   printf "  %s\n\n" (rule 80);
-  (match List.find rows ~f:(fun (n, _, _) -> n = return_window) with
-  | Some (_, pers_m, pers_sd) ->
+  (match
+     List.find study.Garch_study.rows ~f:(fun row ->
+         row.Garch_study.Row.n = return_window)
+   with
+  | Some row ->
       printf
         "%s\n\
         \  THE VERDICT\n\
@@ -758,8 +739,9 @@ let run_garch () =
         \  distribution to be wrong about at this window length.\n\n\
         \  The row that says when it WOULD be defensible is n = 250 and up. That is a\n\
         \  year of daily data, and it is what a GARCH deserves.\n\n"
-        (rule 106) (rule 106) return_window return_window pers_m pers_sd
-        (G.persistence garch_truth)
+        (rule 106) (rule 106) return_window return_window
+        row.Garch_study.Row.persistence_mean row.Garch_study.Row.persistence_sd
+        (G.persistence truth)
   | None -> ());
   printf
     "  Nothing above touches the network or a credential, and the seed is fixed, so\n\
