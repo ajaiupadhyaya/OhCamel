@@ -38,10 +38,10 @@ let limits =
 let returns = [| -0.05; -0.04; -0.03; -0.02; -0.01; 0.01; 0.02; 0.03; 0.04; 0.05 |]
 
 (* AAPL 150 x 200 = +30,000 ; XOM 100 x -400 = -40,000. gross 70,000. *)
-let with_graph ?(seed = true) ~f () =
+let with_graph ?(seed = true) ?on_compute ~f () =
   let graph =
-    Graph.create ~starting_cash:(Notional.of_float 100_000.0) ~instruments:book ~limits
-      ~confidence:0.95 ~return_window:10 ()
+    Graph.create ?on_compute ~starting_cash:(Notional.of_float 100_000.0)
+      ~instruments:book ~limits ~confidence:0.95 ~return_window:10 ()
   in
   if seed then (
     Graph.set_price graph aapl (Price.of_float 150.0);
@@ -410,13 +410,28 @@ let test_build_stamp_is_honest () =
    [create] fills no Ivar, and Async's don't_wait_for is literally
    `let don't_wait_for (_ : unit t) = ()`, so the broadcaster is built, parks
    on an Ivar nobody fills, and costs nothing. Nothing here opens a socket. *)
-let with_server ?(mode = `Demo) ?alerts ?peer ?feed_stats ?quiet ~f () =
+let with_server ?(mode = `Demo) ?alerts ?peer ?feed_stats ?quiet ?recompute_log ~f () =
   with_graph
     ~f:(fun graph ->
       let server =
-        Server.create ?alerts ?peer ?feed_stats ?quiet ~mode ~graph ~factor:"SYNTHETIC" ()
+        Server.create ?alerts ?peer ?feed_stats ?quiet ?recompute_log ~mode ~graph
+          ~factor:"SYNTHETIC" ()
       in
       f server graph)
+    ()
+
+(* A server over a graph whose hook writes into the log the server holds --
+   the shape run_demo and run_live build. The seeding runs BEFORE the log is
+   read by anything, so a test that wants a clean frame drains once first. *)
+let with_logged_server ~f () =
+  let log = Ohcamel.Recompute_log.create () in
+  with_graph
+    ~on_compute:(Ohcamel.Recompute_log.note log)
+    ~f:(fun graph ->
+      let server =
+        Server.create ~recompute_log:log ~mode:`Demo ~graph ~factor:"SYNTHETIC" ()
+      in
+      f server graph log)
     ()
 
 (* What the process is, as opposed to what the book is.
@@ -1128,6 +1143,25 @@ let test_cors_survives_being_read_through_the_table_and_not_just_built () =
         (cors_header server "/api/health"))
     ()
 
+(* The server holds the log it was given, and nothing when it was given none.
+   An option rather than a default-constructed log, because a server with no
+   hook wired into its graph would drain an empty table forever and publish
+   [recomputed: []] on every frame -- "nothing ran", which is the alarm, said
+   about a graph that simply was not asked. *)
+let test_the_server_holds_the_log () =
+  with_logged_server
+    ~f:(fun server _graph log ->
+      match Server.recompute_log server with
+      | Some held -> Alcotest.(check bool) "the same log" true (phys_equal held log)
+      | None -> Alcotest.fail "the log was dropped")
+    ();
+  with_server
+    ~f:(fun server _graph ->
+      Alcotest.(check bool)
+        "absent when none was given" true
+        (Option.is_none (Server.recompute_log server)))
+    ()
+
 let suite =
   ( "server",
     [
@@ -1162,4 +1196,6 @@ let suite =
         test_the_two_new_routes_answer;
       Alcotest.test_case "CORS survives being read through the table, not just built"
         `Quick test_cors_survives_being_read_through_the_table_and_not_just_built;
+      Alcotest.test_case "the server holds the recompute log" `Quick
+        test_the_server_holds_the_log;
     ] )

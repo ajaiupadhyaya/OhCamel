@@ -347,6 +347,11 @@ type t = {
      history_buffer.ml, which also states in as many words that it is not
      persistence. *)
   history : History_buffer.t;
+  (* The hook's tally for THIS graph, drained by the broadcaster and nowhere
+     else. An option: a server can be built over a graph that was given no
+     hook (the tests do), and it must then say [null] rather than drain an
+     empty table and report that nothing ran. *)
+  recompute_log : Recompute_log.t option;
 }
 
 (* A sink is named, never described.
@@ -889,7 +894,8 @@ let handle (t : t) ~(path : string) =
 let create ?(coalesce = Time_ns.Span.of_ms 80.0) ?history_capacity
     ?(alerts : Alerts.t option) ?(peer : string option)
     ?(feed_stats : (unit -> Yojson.Safe.t) option) ?(quiet : Types.Symbol.t list = [])
-    ~(mode : mode) ~(graph : Graph.t) ~(factor : string) () =
+    ?(recompute_log : Recompute_log.t option) ~(mode : mode) ~(graph : Graph.t)
+    ~(factor : string) () =
   let t =
     {
       graph;
@@ -907,6 +913,7 @@ let create ?(coalesce = Time_ns.Span.of_ms 80.0) ?history_capacity
       coalesce;
       history =
         History_buffer.attach ?capacity:history_capacity ~graph ~now:Types.Time.now ();
+      recompute_log;
     }
   in
   (* The link that makes this reactive rather than polled. Graph.on_change fires
@@ -941,3 +948,4 @@ let port (t : t) = t.port
 let started_at (t : t) = t.started_at
 let peer (t : t) = t.peer
 let quiet (t : t) = t.quiet
+let recompute_log (t : t) = t.recompute_log

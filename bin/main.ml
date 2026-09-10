@@ -1080,9 +1080,32 @@ let run_live ~book_path ~(serve_port : int option) =
       let runtime = config.Config.runtime in
       let instruments = Config.Book.instruments book in
       let limits = Config.Book.limits book in
+      (* The probe runs before the served graph exists.
+
+         It builds three graphs of ten, a hundred and four hundred names and ticks
+         each fifty times, and Incremental's counters are process-wide. Run after
+         the engine were up, its tail would sit inside the two-second window
+         smoke.sh reads "the counter advances" over, and the one assertion that
+         carries a deploy's weight would be measuring the probe instead of the
+         pulse. The rows are dropped here; Phase 5 keeps them for /api/reports. *)
+      (* Phase 5 replaces this with Reports.compute, which runs the same probe. *)
+      let (_ : Scaling_probe.row list) =
+        Scaling_probe.rows ~seed:2026_07_30 ~sizes:Scaling_probe.default_sizes
+          ~ticks:Scaling_probe.default_ticks
+      in
+      printf
+        "  probe       10 / 100 / 400 names, 50 ticks each, before the served graph\n";
+      (* Two readers of one hook. The terminal's per-trade column drains the
+         Counter's log, and the page's per-frame set drains this one; a single
+         log would let each steal the other's set. Two increments per node body
+         instead of one, on a path that does thirty of them per tick. *)
+      let log = Recompute_log.create () in
       let counter = Counter.create () in
       let graph =
-        Graph.create ~on_compute:(Counter.on_compute counter)
+        Graph.create
+          ~on_compute:(fun name ->
+            Counter.on_compute counter name;
+            Recompute_log.note log name)
           ~starting_cash:(Notional.of_float book.Config.Book.cash)
           ~instruments ~limits ~confidence:runtime.Config.Runtime.confidence
           ~return_window:runtime.Config.Runtime.return_window
@@ -1222,7 +1245,7 @@ let run_live ~book_path ~(serve_port : int option) =
                   (Feed_source.live ~alpaca_feed:runtime.Config.Runtime.alpaca_feed
                      ~fred_series:runtime.Config.Runtime.fred_series_id
                      ~alpaca:alpaca_stats ~fred:fred_stats)
-                ~graph ~factor:runtime.Config.Runtime.fred_series_id ()
+                ~recompute_log:log ~graph ~factor:runtime.Config.Runtime.fred_series_id ()
             in
             let%bind (_ : (_, _) Cohttp_async.Server.t) = Server.start ~port server in
             live_line (sprintf "dashboard  http://localhost:%d" port);
@@ -1270,9 +1293,28 @@ let run_demo ~port =
           { l with Limit.kind = Limit.Gross_notional (dollars 54_200.0) }
         else l)
   in
+  (* The probe runs before the served graph exists.
+
+     It builds three graphs of ten, a hundred and four hundred names and ticks
+     each fifty times, and Incremental's counters are process-wide. Run after
+     the engine were up, its tail would sit inside the two-second window
+     smoke.sh reads "the counter advances" over, and the one assertion that
+     carries a deploy's weight would be measuring the probe instead of the
+     pulse. The rows are dropped here; Phase 5 keeps them for /api/reports. *)
+  (* Phase 5 replaces this with Reports.compute, which runs the same probe. *)
+  let (_ : Scaling_probe.row list) =
+    Scaling_probe.rows ~seed:2026_07_30 ~sizes:Scaling_probe.default_sizes
+      ~ticks:Scaling_probe.default_ticks
+  in
+  printf "  probe       10 / 100 / 400 names, 50 ticks each, before the served graph\n";
+  (* The served graph's hook. Every named node body notes into this log; the
+     server drains it once per frame, and a fork -- which does not inherit the
+     hook -- can never reach it. *)
+  let log = Recompute_log.create () in
   let graph =
-    Graph.create ~starting_cash ~instruments ~limits:demo_limits ~confidence
-      ~return_window ~staleness_threshold:(Time.Span.of_sec 20.0) ()
+    Graph.create ~on_compute:(Recompute_log.note log) ~starting_cash ~instruments
+      ~limits:demo_limits ~confidence ~return_window
+      ~staleness_threshold:(Time.Span.of_sec 20.0) ()
   in
   let last_price = Symbol.Table.create () in
   List.iter book ~f:(fun (symbol, _, price, qty) ->
@@ -1324,7 +1366,8 @@ let run_demo ~port =
      and the demonstration reads as an outage. *)
   let quiet, _, _, _ = List.last_exn book in
   let server =
-    Server.create ?alerts ~mode:`Demo ~quiet:[ quiet ] ~graph ~factor:"SYNTHETIC" ()
+    Server.create ?alerts ~recompute_log:log ~mode:`Demo ~quiet:[ quiet ] ~graph
+      ~factor:"SYNTHETIC" ()
   in
   let%bind (_ : (_, _) Cohttp_async.Server.t) = Server.start ~port server in
   printf "  dashboard   http://localhost:%d\n" port;
