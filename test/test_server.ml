@@ -1260,6 +1260,57 @@ let test_a_render_time_stabilize_produces_an_empty_follow_up () =
         && Float.equal (num follow_up "nodes_recomputed_delta") 0.0))
     ()
 
+(* A subscriber that stops reading does not hold up one that reads.
+
+   Phase 2's final review measured the stall: frames were written with
+   pushback and the broadcaster waited on every write, so one stream that
+   stopped reading delayed the next frame for all of them. What [broadcast]
+   returns must now already be determined -- the loop waits on nobody -- and
+   the subscriber that fell [subscriber_backlog] frames behind is closed and
+   dropped, while the one that reads has every frame.
+
+   No socket and no scheduler. [subscribe] answers with an already-determined
+   response whose body is the subscriber's reader (the CORS test above peeks
+   the same route), so both ends of both pipes are in hand, and
+   [Pipe.read_now'] is the reading subscriber reading. *)
+let test_a_stalled_subscriber_does_not_stall_a_reading_one () =
+  with_logged_server
+    ~f:(fun server _graph _log ->
+      let open_stream () =
+        match Async.Deferred.peek (Server.subscribe server) with
+        | Some (_, `Pipe reader) -> reader
+        | _ -> Alcotest.fail "/api/stream did not answer with a pipe"
+      in
+      let reading = open_stream () in
+      let stalled = open_stream () in
+      let read_all () =
+        match Async.Pipe.read_now' reading with
+        | `Ok frames -> Queue.length frames
+        | `Nothing_available | `Eof -> 0
+      in
+      (* The welcome frame. *)
+      let received = ref (read_all ()) in
+      let never_waited = ref true in
+      let frames = Server.subscriber_backlog + 3 in
+      for i = 1 to frames do
+        let sent = Server.broadcast server (Printf.sprintf "{\"frame\":%d}" i) in
+        if not (Async.Deferred.is_determined sent) then never_waited := false;
+        received := !received + read_all ()
+      done;
+      Alcotest.(check bool) "no broadcast waited on a reader" true !never_waited;
+      Alcotest.(check int)
+        "the reader has the welcome frame and every frame" (frames + 1) !received;
+      Alcotest.(check bool)
+        "the stalled subscriber was let go" true
+        (Async.Pipe.is_closed stalled);
+      Alcotest.(check bool)
+        "holding no more than its budget" true
+        (Async.Pipe.length stalled <= Server.subscriber_backlog);
+      Alcotest.(check int)
+        "and only the reader is still subscribed" 1
+        (Server.subscriber_count server))
+    ()
+
 let suite =
   ( "server",
     [
@@ -1300,4 +1351,6 @@ let suite =
         test_a_poller_cannot_steal_the_streams_set;
       Alcotest.test_case "a render-time stabilize produces an empty follow-up frame"
         `Quick test_a_render_time_stabilize_produces_an_empty_follow_up;
+      Alcotest.test_case "a subscriber that stops reading does not stall one that reads"
+        `Quick test_a_stalled_subscriber_does_not_stall_a_reading_one;
     ] )

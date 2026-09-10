@@ -531,6 +531,20 @@ let pending_frame (t : t) : bool = Ivar.is_full t.changed
    browser buffers the frame indefinitely waiting for more. *)
 let sse_event (payload : string) = "data: " ^ payload ^ "\n\n"
 
+(* How many unread frames one subscriber may hold before it is let go.
+
+   Phase 2's final review measured what waiting cost: every frame was written
+   with pushback and the broadcaster waited on ALL of the writes, so a single
+   stream that stopped reading delayed the next frame for every other stream.
+   The write below waits on nobody, and this is what keeps that from turning
+   into unbounded memory instead. A subscriber this far behind is CLOSED, not
+   skipped: a skipped frame would thin that page's per-frame tallies without a
+   word, while a closed stream is one the page reports as lost and reopens
+   onto a welcome frame. Sixty-four frames is seconds of the fastest the
+   coalesce window allows, on top of whatever the socket buffers already
+   hold, and a few hundred kilobytes at most. *)
+let subscriber_backlog = 64
+
 let broadcast (t : t) (payload : string) =
   let live, closed =
     List.partition_tf t.subscribers ~f:(fun w -> not (Pipe.is_closed w))
@@ -538,13 +552,18 @@ let broadcast (t : t) (payload : string) =
   List.iter closed ~f:(fun w -> Pipe.close w);
   t.subscribers <- live;
   if not (List.is_empty live) then t.frames_sent <- t.frames_sent + 1;
-  Deferred.List.iter live ~how:`Parallel ~f:(fun w ->
+  let event = sse_event payload in
+  List.iter live ~f:(fun w ->
       (* A subscriber that has stopped reading must not hold up the others, and
-         must not let this loop accumulate unbounded backlog. Pipe.write blocks
-         on pushback, so the write is bounded by whether the pipe is still
-         open -- a browser that vanished without closing the socket is dropped
-         on the next pass by the partition above. *)
-      if Pipe.is_closed w then Deferred.unit else Pipe.write w (sse_event payload))
+         must not let this loop accumulate unbounded backlog. So nothing here
+         waits on a reader: the frame is queued on every open pipe without
+         pushback, and a pipe already holding [subscriber_backlog] unread
+         frames is closed instead of written to. A browser that vanished
+         without closing the socket is dropped on the next pass by the
+         partition above. *)
+      if Pipe.length w >= subscriber_backlog then Pipe.close w
+      else Pipe.write_without_pushback_if_open w event);
+  Deferred.unit
 
 (* Blocks until something changes. Never wakes on its own. *)
 let rec run_broadcaster (t : t) =
