@@ -588,8 +588,6 @@ let duration_cell (r : Var_backtest.report) =
   | Some p, Some shape -> Printf.sprintf "%.4f b=%5.2f" p shape
   | _ -> "     --      "
 
-let backtest_window = return_window
-
 (* The battery is lib/validation_report.ml now; this is its printer. Every
    number below is read out of the record, and the prose is the prose. *)
 let backtest_row (row : Validation_report.Row.t) =
@@ -1042,186 +1040,86 @@ let run_options () =
 (* Crisis backtest: the same battery, real data                              *)
 (* ------------------------------------------------------------------------ *)
 
-(* Everything above this line is validated against series whose regime the
-   author chose. That is the right way to BUILD a coverage battery -- it is the
-   only setting where you know in advance which tests ought to reject -- and it
-   is not evidence that the model survives a real tail.
-
-   This mode changes exactly one thing: the data. Same window, same confidence,
-   same three estimators, same Var_backtest.rolling. The method has to be
-   visibly identical or the comparison says nothing. *)
-
-let crisis_estimators =
-  [
-    Var_backtest.Estimator.Historical;
-    Var_backtest.Estimator.Parametric;
-    Var_backtest.Estimator.Parametric_ewma Vol_estimators.Ewma.default_lambda;
-  ]
-
-(* The most exceptions any [span] consecutive sessions contained.
-
-   This is a descriptive statistic over Var_backtest's own exported exceedance
-   array, not a new test and not a second implementation of anything -- but it
-   is here because the real data exposed a gap the synthetic series never did.
-
-   Christoffersen's independence statistic is a FIRST-ORDER MARKOV test: it
-   compares P(exception | exception yesterday) against P(exception | none
-   yesterday). That catches exceptions arriving back to back and is blind to
-   exceptions arriving in a burst that is not literally consecutive. On the GFC
-   window this book takes five exceptions between 15 September and 7 October
-   2008 -- seventeen sessions, against 0.85 expected at 95% -- and because only
-   one pair anywhere in that series falls on adjacent days, the independence
-   test returns p = 0.92. It is not wrong. It is answering a narrower question
-   than the one a reader assumes it answered.
-
-   So the burst count sits in the table next to the p-value it qualifies. A
-   proper fix is a duration-based test (Christoffersen-Pelletier), which models
-   the time BETWEEN exceptions rather than the day after each one; that is not
-   implemented here and the README says so rather than leaving the reader to
-   assume the column is a hypothesis test. *)
-let worst_burst ~(span : int) (hits : bool array) : int =
-  let n = Array.length hits in
-  if n = 0 then 0
-  else begin
-    let worst = ref 0 in
-    let running = ref 0 in
-    Array.iteri hits ~f:(fun i hit ->
-        if hit then incr running;
-        if i >= span && hits.(i - span) then decr running;
-        worst := Int.max !worst !running);
-    !worst
-  end
-
-(* One month of sessions. Short enough that a burst inside it is a burst rather
-   than a season, long enough that a single bad week does not fill it. *)
-let burst_span = 21
-
-let crisis_row ~window_name ~(estimator : Var_backtest.Estimator.t) ~(burst : int)
-    (r : Var_backtest.report) =
-  printf "  %-12s %-12s %6d %8d %9.1f %9.4f %9.4f %9.4f  %14s %6d  %-7s %s\n" window_name
-    (Var_backtest.Estimator.to_string estimator)
+(* The crisis battery is lib/validation_report.ml's [crisis]; this is its
+   printer. The windows come from the binary (Crisis_data.load_all_embedded),
+   so the mode runs from any working directory and inside the image, where
+   there is no docs/. The files on disk are still the source -- lib/dune
+   embeds them at build time and test_crisis_data.ml asserts the two agree. *)
+let crisis_row (row : Validation_report.Row.t) =
+  let r = row.Validation_report.Row.report in
+  printf "  %-12s %-12s %6d %8d %9.1f %9.4f %9.4f %9.4f  %14s %6d  %-7s %s\n"
+    row.Validation_report.Row.label
+    (Var_backtest.Estimator.to_string (Var_backtest.estimator r))
     (Var_backtest.observations r) (Var_backtest.exceptions r)
     (Var_backtest.expected_exceptions r)
     (Var_backtest.kupiec_p r)
     (Var_backtest.independence_p r)
     (Var_backtest.conditional_coverage_p r)
-    (duration_cell r) burst
+    (duration_cell r)
+    (Option.value_map row.Validation_report.Row.burst ~default:0 ~f:fst)
     (Var_backtest.Zone.to_string (Var_backtest.zone r))
     (if Var_backtest.rejected r then "REJECTED" else "ok")
 
 let run_backtest_crisis () =
+  let report = Validation_report.crisis (Crisis_data.load_all_embedded ()) in
+  let burst_span = Validation_report.burst_span in
   printf "\n  OhCamel -- reactive risk and limits engine\n";
   printf "  CRISIS BACKTEST (real market data, cached, no credentials, no network)\n\n";
-  match Crisis_data.load_all () with
-  | Error e ->
-      (* Loud, named, and NOT a fallback to the synthetic series. A crisis
-         backtest quietly scoring generated data would print a table
-         indistinguishable from the real one under a heading claiming
-         otherwise. *)
-      printf "%s\n\n" (Error.to_string_hum e);
-      exit 1
-  | Ok windows ->
-      printf "  book            the same six names as `make run`: long TECH and\n";
-      printf "                  FINANCIALS, short ENERGY, %s gross.\n"
-        (money (Notional.of_float 316_000.0));
-      printf
-        "  weights         held constant across each window, which is graph.ml's own\n\
-        \                  approximation. The question is what TODAY's book would have\n\
-        \                  done through that history, not what the book of the day did.\n";
-      printf "  confidence      %.0f%%\n" (confidence *. 100.0);
-      printf "  window          %d observations, rolling\n" backtest_window;
-      printf
-        "  data            docs/crisis/*.csv -- adjusted daily closes, committed, so\n\
-        \                  this table reproduces with no API key and no network.\n\n";
-      printf "%s\n  THE WINDOWS\n%s\n\n" (rule 106) (rule 106);
-      let series =
-        List.map windows ~f:(fun window ->
-            let returns =
-              Crisis_data.portfolio_returns_of_book ~instruments
-                ~positions:(List.map book ~f:(fun (s, _, _, q) -> (s, Qty.of_float q)))
-                ~marks:(List.map book ~f:(fun (s, _, p, _) -> (s, Price.of_float p)))
-                window
-            in
-            (window, returns))
-      in
-      List.iter series ~f:(fun (window, returns) ->
-          let name = Crisis_data.Window.name window in
-          match returns with
-          | None -> printf "  %-12s too short to form a return series\n" name
-          | Some returns ->
-              let worst = Array.fold returns ~init:0.0 ~f:Float.min in
-              let best = Array.fold returns ~init:0.0 ~f:Float.max in
-              printf "  %-12s %d sessions, %d forecasts. Book's worst day %s, best %s.\n"
-                name
-                (Crisis_data.Window.sessions window)
-                (Array.length returns - backtest_window)
-                (pct worst) (pct best);
-              printf "  %-12s %s\n\n" "" (Crisis_data.Window.description window));
-      printf "%s\n  COVERAGE AND INDEPENDENCE\n%s\n\n" (rule 106) (rule 106);
-      printf "  %-12s %-12s %6s %8s %9s %9s %9s %9s  %14s %6s  %-7s %s\n" "window"
-        "estimator" "n" "excepts" "expected" "Kupiec p" "indep p" "joint p" "duration p"
-        "burst" "Basel" "verdict";
-      printf "  %s\n" (rule 126);
-      let reports =
-        List.concat_map series ~f:(fun (window, returns) ->
-            match returns with
-            | None -> []
-            | Some returns ->
-                let window_name = Crisis_data.Window.name window in
-                List.map crisis_estimators ~f:(fun estimator ->
-                    (* [rolling] then [run], rather than [of_returns], only so
-                       the exceedance array is in hand for the burst column.
-                       var_backtest.ml exports both steps and composes them the
-                       same way, so this is the same path and not a second
-                       one. *)
-                    let observations =
-                      Var_backtest.rolling ~returns ~window:backtest_window ~confidence
-                        ~estimator
-                    in
-                    let r = Var_backtest.run ~observations ~estimator ~confidence in
-                    let burst =
-                      worst_burst ~span:burst_span (Var_backtest.exceedances observations)
-                    in
-                    crisis_row ~window_name ~estimator ~burst r;
-                    (window_name, estimator, r)))
-      in
-      printf "  %s\n" (rule 126);
-      printf
-        "\n\
-        \  Three instruments, three blind spots, which is why all three are here.\n\
-        \  indep p     first-order Markov: only sees breaches on ADJACENT days.\n\
-        \  duration p  Weibull on the waiting times: sees a cluster at any spacing,\n\
-        \              but it is a GLOBAL fit -- one local burst inside a long calm\n\
-        \              series barely moves it.\n\
-        \  burst       the most exceptions any %d consecutive sessions held, against\n\
-        \              about %.1f expected under independence. Not a hypothesis test\n\
-        \              and labelled as such -- it is the only one of the three that\n\
-        \              sees a LOCAL cluster.\n"
-        burst_span
-        (float_of_int burst_span *. (1.0 -. confidence));
-      let rejected = List.count reports ~f:(fun (_, _, r) -> Var_backtest.rejected r) in
-      printf "\n  %d of %d configurations rejected at 5%%.\n" rejected
-        (List.length reports);
-      (match
-         List.filter reports ~f:(fun (_, _, r) -> Var_backtest.rejected r)
-         |> List.min_elt ~compare:(fun (_, _, a) (_, _, b) ->
-             Float.compare
-               (Var_backtest.conditional_coverage_p a)
-               (Var_backtest.conditional_coverage_p b))
-       with
-      | None -> ()
-      | Some (name, _, r) ->
-          printf "\n%s\n  IN FULL: the most severe rejection (%s)\n%s\n\n" (rule 106) name
-            (rule 106);
-          printf "%s\n" (Var_backtest.to_string r));
-      printf
-        "\n\
-        \  Read the two sharp windows against the slow one. An equal-weighted\n\
-        \  volatility window fails in a specific way when volatility JUMPS -- it\n\
-        \  under-forecasts for as long as the window takes to absorb the change --\n\
-        \  and 2022 is the control: a large drawdown with no single day over 10%%.\n\
-        \  A model that fails there is failing for a different reason than one that\n\
-        \  fails in 2008, and the point of running all three is to be able to tell.\n\n"
+  printf "  book            the same six names as `make run`: long TECH and\n";
+  printf "                  FINANCIALS, short ENERGY, %s gross.\n"
+    (money (Notional.of_float 316_000.0));
+  printf
+    "  weights         held constant across each window, which is graph.ml's own\n\
+    \                  approximation. The question is what TODAY's book would have\n\
+    \                  done through that history, not what the book of the day did.\n";
+  printf "  confidence      %.0f%%\n" (report.Validation_report.confidence *. 100.0);
+  printf "  window          %d observations, rolling\n" report.Validation_report.window;
+  printf
+    "  data            docs/crisis/*.csv -- adjusted daily closes, committed, so\n\
+    \                  this table reproduces with no API key and no network.\n\n";
+  printf "%s\n  THE WINDOWS\n%s\n\n" (rule 106) (rule 106);
+  List.iter report.Validation_report.windows ~f:(fun w ->
+      let open Validation_report.Window_facts in
+      printf "  %-12s %d sessions, %d forecasts. Book's worst day %s, best %s.\n" w.name
+        w.sessions w.forecasts (pct w.worst_day) (pct w.best_day);
+      printf "  %-12s %s\n\n" "" w.description);
+  printf "%s\n  COVERAGE AND INDEPENDENCE\n%s\n\n" (rule 106) (rule 106);
+  printf "  %-12s %-12s %6s %8s %9s %9s %9s %9s  %14s %6s  %-7s %s\n" "window" "estimator"
+    "n" "excepts" "expected" "Kupiec p" "indep p" "joint p" "duration p" "burst" "Basel"
+    "verdict";
+  printf "  %s\n" (rule 126);
+  List.iter report.Validation_report.rows ~f:crisis_row;
+  printf "  %s\n" (rule 126);
+  printf
+    "\n\
+    \  Three instruments, three blind spots, which is why all three are here.\n\
+    \  indep p     first-order Markov: only sees breaches on ADJACENT days.\n\
+    \  duration p  Weibull on the waiting times: sees a cluster at any spacing,\n\
+    \              but it is a GLOBAL fit -- one local burst inside a long calm\n\
+    \              series barely moves it.\n\
+    \  burst       the most exceptions any %d consecutive sessions held, against\n\
+    \              about %.1f expected under independence. Not a hypothesis test\n\
+    \              and labelled as such -- it is the only one of the three that\n\
+    \              sees a LOCAL cluster.\n"
+    burst_span
+    (float_of_int burst_span *. (1.0 -. report.Validation_report.confidence));
+  printf "\n  %d of %d configurations rejected at 5%%.\n"
+    report.Validation_report.rejected
+    (List.length report.Validation_report.rows);
+  (match report.Validation_report.most_severe with
+  | None -> ()
+  | Some row ->
+      printf "\n%s\n  IN FULL: the most severe rejection (%s)\n%s\n\n" (rule 106)
+        row.Validation_report.Row.label (rule 106);
+      printf "%s\n" (Var_backtest.to_string row.Validation_report.Row.report));
+  printf
+    "\n\
+    \  Read the two sharp windows against the slow one. An equal-weighted\n\
+    \  volatility window fails in a specific way when volatility JUMPS -- it\n\
+    \  under-forecasts for as long as the window takes to absorb the change --\n\
+    \  and 2022 is the control: a large drawdown with no single day over 10%%.\n\
+    \  A model that fails there is failing for a different reason than one that\n\
+    \  fails in 2008, and the point of running all three is to be able to tell.\n\n"
 
 (* ------------------------------------------------------------------------ *)
 (* Live mode                                                                 *)

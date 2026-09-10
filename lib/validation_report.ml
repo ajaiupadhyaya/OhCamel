@@ -17,6 +17,7 @@
    demo stream must never be touched by it. *)
 
 open Core
+open Types
 
 module Series = struct
   type t = { name : string; description : string; length : int; forecasts : int }
@@ -124,12 +125,70 @@ let synthetic_series ~(rng : Random.State.t) : (string * string * float array) l
       jumps );
   ]
 
+(* One month of sessions. Short enough that a burst inside it is a burst rather
+   than a season, long enough that a single bad week does not fill it. *)
+let burst_span = 21
+
+(* The most exceptions any [span] consecutive observations contained, and where
+   that run starts.
+
+   This is a descriptive statistic over Var_backtest's own exported exceedance
+   array, not a new test and not a second implementation of anything -- but it
+   is here because the real data exposed a gap the synthetic series never did.
+
+   Christoffersen's independence statistic is a FIRST-ORDER MARKOV test: it
+   compares P(exception | exception yesterday) against P(exception | none
+   yesterday). That catches exceptions arriving back to back and is blind to
+   exceptions arriving in a burst that is not literally consecutive. On the GFC
+   window this book takes five exceptions between 15 September and 7 October
+   2008 -- seventeen sessions, against 0.85 expected at 95% -- and because only
+   one pair anywhere in that series falls on adjacent days, the independence
+   test returns p = 0.92. It is not wrong. It is answering a narrower question
+   than the one a reader assumes it answered.
+
+   The duration-based test (Christoffersen-Pelletier) IS implemented --
+   Var_backtest.duration_independence, the duration p column -- and it sees a
+   cluster at any spacing, but it is a GLOBAL fit: one local burst inside a
+   long calm series barely moves it. So the burst count sits in the table next
+   to both p-values as the only one of the three that sees a LOCAL cluster.
+   Not a hypothesis test, and labelled as such wherever it is shown.
+
+   The start index is for the page, which shades the run; the CLI prints the
+   count alone, exactly as it did. The count is attained at the first index
+   where the running total reaches its maximum, and the run is the [span]
+   observations ending there, floored at 0. *)
+let worst_burst ~(span : int) (hits : bool array) : int * int =
+  let n = Array.length hits in
+  if n = 0 then (0, 0)
+  else begin
+    let worst = ref 0 in
+    let worst_end = ref 0 in
+    let running = ref 0 in
+    Array.iteri hits ~f:(fun i hit ->
+        if hit then incr running;
+        if i >= span && hits.(i - span) then decr running;
+        if !running > !worst then begin
+          worst := !running;
+          worst_end := i
+        end);
+    (!worst, Int.max 0 (!worst_end - span + 1))
+  end
+
 (* [rolling] then [run], rather than [of_returns], so the observations are in
-   hand for the hit indices and the two series. var_backtest.ml exports both
-   steps and composes them the same way, so this is the same path and not a
-   second one. *)
-let row ~(label : string) ~(returns : float array) ~(estimator : Var_backtest.Estimator.t)
-    : Row.t =
+   hand for the hit indices, the two series and the burst. var_backtest.ml
+   exports both steps and composes them the same way, so this is the same path
+   and not a second one.
+
+   [@warning "-16"]: the documented signature is `?burst_span:int -> label:...
+   -> returns:... -> estimator:... -> Row.t`, with no trailing positional
+   argument, so the compiler cannot prove [burst_span] is erasable and (16)
+   unerasable-optional-argument is fatal under this project's dev profile.
+   Every call site either supplies [~burst_span] explicitly (crisis) or
+   forwards the option explicitly with [?burst_span:None] (synthetic) rather
+   than omitting the label, so the argument is never actually left ambiguous
+   at a call site -- only the general function type is. *)
+let[@warning "-16"] row ?burst_span ~(label : string) ~(returns : float array)
+    ~(estimator : Var_backtest.Estimator.t) : Row.t =
   let observations =
     Var_backtest.rolling ~returns ~window:Synthetic_book.return_window
       ~confidence:Synthetic_book.confidence ~estimator
@@ -137,16 +196,16 @@ let row ~(label : string) ~(returns : float array) ~(estimator : Var_backtest.Es
   let report =
     Var_backtest.run ~observations ~estimator ~confidence:Synthetic_book.confidence
   in
+  let exceedances = Var_backtest.exceedances observations in
   let hits =
-    Array.foldi (Var_backtest.exceedances observations) ~init:[] ~f:(fun i acc hit ->
-        if hit then i :: acc else acc)
+    Array.foldi exceedances ~init:[] ~f:(fun i acc hit -> if hit then i :: acc else acc)
     |> List.rev
   in
   {
     Row.label;
     report;
     hits;
-    burst = None;
+    burst = Option.map burst_span ~f:(fun span -> worst_burst ~span exceedances);
     var_series = Array.of_list_map observations ~f:Var_backtest.Observation.var;
     realised_series = Array.of_list_map observations ~f:Var_backtest.Observation.realised;
   }
@@ -167,7 +226,8 @@ let synthetic () : t =
   let generated = synthetic_series ~rng in
   let rows =
     List.concat_map generated ~f:(fun (label, _, returns) ->
-        List.map estimators ~f:(fun estimator -> row ~label ~returns ~estimator))
+        List.map estimators ~f:(fun estimator ->
+            row ~label ~returns ~estimator ?burst_span:None))
   in
   {
     rows;
@@ -184,6 +244,94 @@ let synthetic () : t =
     windows = [];
     confidence = Synthetic_book.confidence;
     window = Synthetic_book.return_window;
+    alpha;
+    ewma_lambda = Vol_estimators.Ewma.default_lambda;
+  }
+
+(* The same battery, real data.
+
+   Everything in [synthetic] is validated against series whose regime the
+   author chose. That is the right way to BUILD a coverage battery -- it is the
+   only setting where you know in advance which tests ought to reject -- and it
+   is not evidence that the model survives a real tail. This changes exactly one
+   thing: the data. Same window, same confidence, same three estimators, same
+   Var_backtest.rolling. The method has to be visibly identical or the
+   comparison says nothing.
+
+   The book's return series comes out of the ENGINE, through
+   Crisis_data.portfolio_returns_of_book, at today's book held at constant
+   weights -- graph.ml's own approximation, and the question a limit asks.
+
+   A window too short to form a series is a raise, not a skipped row. The
+   windows are compiled into the binary and are hundreds of sessions long; the
+   only way to get here is a broken build, and a report that quietly scored two
+   windows under a heading promising three is the outcome this module exists
+   to make impossible.
+
+   DATE ALIGNMENT. returns.(k) is the return realised on dates.(k + 1), and
+   Var_backtest.rolling's observation j scores returns.(window + j), so
+   forecast j belongs to session window + 1 + j -- dates.(61 + j) at this
+   engine's window. [Window_facts.dates] and [Window_facts.realised] are laid
+   out in that forecast space, one entry per observation, so a chart draws
+   every row's [var_series] over them without re-deriving the offset. *)
+let crisis (windows : Crisis_data.Window.t list) : t =
+  let window = Synthetic_book.return_window in
+  let scored =
+    List.map windows ~f:(fun w ->
+        match
+          Crisis_data.portfolio_returns_of_book ~instruments:Synthetic_book.instruments
+            ~positions:
+              (List.map Synthetic_book.book ~f:(fun (s, _, _, q) -> (s, Qty.of_float q)))
+            ~marks:
+              (List.map Synthetic_book.book ~f:(fun (s, _, p, _) -> (s, Price.of_float p)))
+            w
+        with
+        | Some returns when Array.length returns > window -> (w, returns)
+        | Some returns ->
+            invalid_argf
+              "validation_report: window %s has %d returns, fewer than the %d a rolling \
+               forecast needs"
+              (Crisis_data.Window.name w) (Array.length returns) window ()
+        | None ->
+            invalid_argf
+              "validation_report: window %s is too short to form a return series"
+              (Crisis_data.Window.name w) ())
+  in
+  let rows =
+    List.concat_map scored ~f:(fun (w, returns) ->
+        List.map estimators ~f:(fun estimator ->
+            row ~burst_span ~label:(Crisis_data.Window.name w) ~returns ~estimator))
+  in
+  let facts =
+    List.map scored ~f:(fun (w, returns) ->
+        let dates = Crisis_data.Window.dates w in
+        let sessions = Crisis_data.Window.sessions w in
+        let forecasts = Array.length returns - window in
+        {
+          Window_facts.name = Crisis_data.Window.name w;
+          description = Crisis_data.Window.description w;
+          first = dates.(0);
+          last = dates.(sessions - 1);
+          sessions;
+          forecasts;
+          symbols = List.map (Crisis_data.Window.symbols w) ~f:Symbol.to_string;
+          (* Folded from 0.0, as the CLI folded: the worst day is at most flat
+             and the best at least flat, which is a fact about the fold and is
+             kept because the printed line is a published figure. *)
+          worst_day = Array.fold returns ~init:0.0 ~f:Float.min;
+          best_day = Array.fold returns ~init:0.0 ~f:Float.max;
+          dates = Array.init forecasts ~f:(fun j -> dates.(window + 1 + j));
+          realised = Array.sub returns ~pos:window ~len:forecasts;
+        })
+  in
+  {
+    rows;
+    rejected = List.count rows ~f:(fun r -> Var_backtest.rejected ~alpha r.Row.report);
+    most_severe = most_severe rows;
+    series = [];
+    windows = facts;
+    confidence = Synthetic_book.confidence;
+    window;
     alpha;
     ewma_lambda = Vol_estimators.Ewma.default_lambda;
   }

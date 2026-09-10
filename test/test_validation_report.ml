@@ -237,6 +237,146 @@ let test_the_generator_reads_one_stream_jumps_first () =
     (Synthetic_book.gaussian ~rng:replay ~sigma:0.011)
     iid_normal.(1)
 
+module Crisis_data = Ohcamel.Crisis_data
+
+let crisis = lazy (Validation_report.crisis (Crisis_data.load_all_embedded ()))
+
+let test_the_nine_crisis_rows_are_the_readmes () =
+  let t = Lazy.force crisis in
+  Alcotest.(check (list (pair string string)))
+    "nine rows, window-major, in the README's order"
+    [
+      ("gfc", "historical");
+      ("gfc", "parametric");
+      ("gfc", "ewma(0.94)");
+      ("covid", "historical");
+      ("covid", "parametric");
+      ("covid", "ewma(0.94)");
+      ("rates-2022", "historical");
+      ("rates-2022", "parametric");
+      ("rates-2022", "ewma(0.94)");
+    ]
+    (labels t.Validation_report.rows);
+  List.iter t.Validation_report.rows ~f:(fun row ->
+      check_row_against_quoted ~table:"crisis" ~key:"window" row;
+      let r = row.Validation_report.Row.report in
+      let estimator = Var_backtest.Estimator.to_string (Var_backtest.estimator r) in
+      let q =
+        quoted_row "crisis" ~key:"window" ~value:row.Validation_report.Row.label
+          ~estimator
+      in
+      Alcotest.(check int)
+        (Printf.sprintf "%s/%s: burst" row.Validation_report.Row.label estimator)
+        (U.to_int (U.member "burst" q))
+        (Option.value_map row.Validation_report.Row.burst ~default:(-1) ~f:fst));
+  Alcotest.(check int)
+    "no synthetic series on the crisis report" 0
+    (List.length t.Validation_report.series)
+
+(* Read off the quoted table: every crisis verdict is "ok". *)
+let test_crisis_rejects_nothing_so_there_is_no_most_severe () =
+  let t = Lazy.force crisis in
+  Alcotest.(check int) "none rejected" 0 t.Validation_report.rejected;
+  Alcotest.(check bool)
+    "so no most-severe row" true
+    (Option.is_none t.Validation_report.most_severe)
+
+(* Hand-traced. Span 3 over F T T F F T T T F:
+
+     i   hit   +hit   -hits.(i-3)   running   worst (end)
+     0   F                            0        0
+     1   T     1                      1        1 (1)
+     2   T     1                      2        2 (2)
+     3   F           hits.(0)=F       2
+     4   F           hits.(1)=T  -1   1
+     5   T     1     hits.(2)=T  -1   1
+     6   T     1     hits.(3)=F       2
+     7   T     1     hits.(4)=F       3        3 (7)
+     8   F           hits.(5)=T  -1   2
+
+   worst 3, first attained at i = 7, so the run starts at 7 - 3 + 1 = 5.
+   The count is exactly what bin/main.ml's worst_burst returned (the README's
+   burst column); the start is new. *)
+let test_worst_burst_on_hand_built_indicators () =
+  let t = true and f = false in
+  Alcotest.(check (pair int int))
+    "F T T F F T T T F, span 3" (3, 5)
+    (Validation_report.worst_burst ~span:3 [| f; t; t; f; f; t; t; t; f |]);
+  (* Two hits further apart than the span never share a window: the count is 1
+     and the run is the first hit's own window, floored at index 0. *)
+  Alcotest.(check (pair int int))
+    "T F F F T, span 3" (1, 0)
+    (Validation_report.worst_burst ~span:3 [| t; f; f; f; t |]);
+  (* A span wider than the series holds everything. *)
+  Alcotest.(check (pair int int))
+    "five hits, span 21" (5, 0)
+    (Validation_report.worst_burst ~span:21 [| t; t; t; t; t |]);
+  Alcotest.(check (pair int int))
+    "no hits" (0, 0)
+    (Validation_report.worst_burst ~span:21 [| f; f; f |]);
+  Alcotest.(check (pair int int))
+    "empty" (0, 0)
+    (Validation_report.worst_burst ~span:21 [||])
+
+(* The window facts come from the CSV headers: "631 sessions common to all six
+   names" (gfc), 400 (covid), 401 (rates-2022). Returns are one per session
+   gap, so 630 / 399 / 400 of them, and a 60-day rolling window leaves
+   570 / 339 / 340 forecasts -- the n column of the README's crisis table. *)
+let test_window_facts () =
+  let t = Lazy.force crisis in
+  Alcotest.(check (list (pair string (pair int int))))
+    "sessions and forecasts per window"
+    [ ("gfc", (631, 570)); ("covid", (400, 339)); ("rates-2022", (401, 340)) ]
+    (List.map t.Validation_report.windows ~f:(fun w ->
+         Validation_report.Window_facts.(w.name, (w.sessions, w.forecasts))));
+  List.iter t.Validation_report.windows ~f:(fun w ->
+      let open Validation_report.Window_facts in
+      Alcotest.(check (list string))
+        (w.name ^ ": the six names")
+        [ "AAPL"; "CVX"; "JPM"; "MSFT"; "NVDA"; "XOM" ]
+        w.symbols;
+      Alcotest.(check bool)
+        (w.name ^ ": worst day is a loss")
+        true (Float.( < ) w.worst_day 0.0);
+      Alcotest.(check bool)
+        (w.name ^ ": best day is a gain")
+        true (Float.( > ) w.best_day 0.0);
+      Alcotest.(check int)
+        (w.name ^ ": one date per forecast")
+        w.forecasts (Array.length w.dates);
+      Alcotest.(check int)
+        (w.name ^ ": one realised return per forecast")
+        w.forecasts (Array.length w.realised))
+
+(* DATE ALIGNMENT, derived by hand. returns.(k) is close.(k+1) / close.(k) - 1:
+   the return REALISED on dates.(k+1). Var_backtest.rolling's observation j
+   forecasts from returns.(j .. j+59) and scores returns.(60 + j), which is the
+   return realised on dates.(61 + j). So forecast j belongs to session 61 + j,
+   the first forecast to dates.(61), and the last to dates.(sessions - 1). *)
+let test_forecast_j_is_session_61_plus_j () =
+  let t = Lazy.force crisis in
+  let gfc =
+    List.find_exn (Crisis_data.load_all_embedded ()) ~f:(fun w ->
+        String.equal (Crisis_data.Window.name w) "gfc")
+  in
+  let facts =
+    List.find_exn t.Validation_report.windows ~f:(fun w ->
+        String.equal w.Validation_report.Window_facts.name "gfc")
+  in
+  let sessions = Crisis_data.Window.dates gfc in
+  let open Validation_report.Window_facts in
+  Alcotest.(check string) "first session" sessions.(0) facts.first;
+  Alcotest.(check string) "last session" sessions.(630) facts.last;
+  Alcotest.(check string) "forecast 0 is session 61" sessions.(61) facts.dates.(0);
+  Alcotest.(check string) "forecast 569 is session 630" sessions.(630) facts.dates.(569);
+  (* And every gfc row's realised series IS the window's, so a chart can draw
+     the three estimators' VaR over one realised line. *)
+  List.iter t.Validation_report.rows ~f:(fun row ->
+      if String.equal row.Validation_report.Row.label "gfc" then
+        Alcotest.(check (array (float 0.0)))
+          "row realised = window realised" facts.realised
+          row.Validation_report.Row.realised_series)
+
 let suite =
   ( "validation_report",
     [
@@ -249,4 +389,13 @@ let suite =
       Alcotest.test_case "series facts" `Quick test_series_facts;
       Alcotest.test_case "the generator reads one stream, jumps first" `Quick
         test_the_generator_reads_one_stream_jumps_first;
+      Alcotest.test_case "THE NINE CRISIS ROWS ARE THE README'S" `Quick
+        test_the_nine_crisis_rows_are_the_readmes;
+      Alcotest.test_case "crisis rejects nothing, so there is no most-severe" `Quick
+        test_crisis_rejects_nothing_so_there_is_no_most_severe;
+      Alcotest.test_case "worst_burst on hand-built indicators" `Quick
+        test_worst_burst_on_hand_built_indicators;
+      Alcotest.test_case "window facts" `Quick test_window_facts;
+      Alcotest.test_case "forecast j is session 61 + j" `Quick
+        test_forecast_j_is_session_61_plus_j;
     ] )

@@ -28,14 +28,14 @@ let get name = function
   | Ok x -> x
   | Error e -> Alcotest.failf "%s: expected Ok, got %s" name (Error.to_string_hum e)
 
-(* dune runs tests from inside _build, so the repository-relative cache path the
-   binary uses does not resolve here. Walk up to the directory holding
+(* dune runs tests from inside _build, so the repository-relative cache path
+   [load] uses does not resolve here. Walk up to the directory holding
    dune-project and point the loader at its docs/crisis.
 
-   Worth doing rather than skipping these two tests: the committed CSVs are part
-   of a published result, and "the cache is present, has six columns and enough
-   sessions to be worth scoring" is exactly the assertion that fails when
-   somebody deletes a window or truncates a file. *)
+   One test still needs this: the one that compares the windows compiled into
+   the binary against the files on disk, which cannot be done without the disk.
+   The shape checks used to walk too; they now read the embedded windows, which
+   is what the CLI and the served process read, and need no directory at all. *)
 let repo_root =
   let rec up dir depth =
     if depth > 8 then None
@@ -176,7 +176,10 @@ let test_malformed_input_is_an_error () =
    it had been run against a real crisis. That is the single worst thing this
    module could do, so it gets a test rather than a comment. *)
 let test_a_missing_cache_is_fatal_and_says_how_to_fix_it () =
-  match Crisis_data.load ~dir:(crisis_dir ()) ~name:"no-such-window-exists" () with
+  match
+    Crisis_data.load ~dir:"/nonexistent/ohcamel-crisis-cache"
+      ~name:"no-such-window-exists" ()
+  with
   | Ok _ -> Alcotest.fail "a missing cache must not load"
   | Error e ->
       let message = Error.to_string_hum e in
@@ -187,13 +190,19 @@ let test_a_missing_cache_is_fatal_and_says_how_to_fix_it () =
         "names the command that repopulates it" true
         (String.is_substring message ~substring:"tools/fetch_crisis_data.py")
 
-(* The committed cache is part of the repository's published result, so its
+(* The three windows are part of the repository's published result, so their
    presence and shape are asserted rather than assumed. This is the test that
    fails if somebody deletes a window, renames a column, or commits a file with
-   two rows in it. *)
-let test_the_committed_cache_loads () =
-  List.iter Crisis_data.window_names ~f:(fun name ->
-      let w = get name (Crisis_data.load ~dir:(crisis_dir ()) ~name ()) in
+   two rows in it -- read through the binary, because that is where the CLI and
+   the served process read them from; the embedded-equals-disk test below is
+   what makes reading here equivalent to reading the files. *)
+let test_the_embedded_windows_are_the_right_shape () =
+  let windows = Crisis_data.load_all_embedded () in
+  Alcotest.(check (list string))
+    "the three windows, in window_names order" Crisis_data.window_names
+    (List.map windows ~f:Crisis_data.Window.name);
+  List.iter windows ~f:(fun w ->
+      let name = Crisis_data.Window.name w in
       Alcotest.(check (list string))
         (name ^ ": the six names of the synthetic book")
         [ "AAPL"; "CVX"; "JPM"; "MSFT"; "NVDA"; "XOM" ]
@@ -280,8 +289,8 @@ let suite =
         test_malformed_input_is_an_error;
       Alcotest.test_case "a missing cache is fatal and says how to fix it" `Quick
         test_a_missing_cache_is_fatal_and_says_how_to_fix_it;
-      Alcotest.test_case "the committed cache loads and is the right shape" `Quick
-        test_the_committed_cache_loads;
+      Alcotest.test_case "the embedded windows are the right shape" `Quick
+        test_the_embedded_windows_are_the_right_shape;
       Alcotest.test_case "THE EMBEDDED WINDOWS ARE THE FILES ON DISK" `Quick
         test_the_embedded_windows_are_the_files_on_disk;
     ] )
