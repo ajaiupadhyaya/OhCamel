@@ -18,11 +18,17 @@ let tiny ?progress () =
   Garch_study.run ?progress ~seed:2026_09_02 ~replications:2 ~sample_sizes:[ 60; 125 ]
     ~truth:Garch_study.default_truth ~burn_in:100 ()
 
+(* All seven Row.t fields, not just the three means: the determinism and
+   spawned-domain tests below compare whole rows, so a divergence in a
+   standard deviation alone -- which the means-only version of this function
+   let through -- is caught too. *)
 let shape (r : Garch_study.result) =
   List.map r.Garch_study.rows ~f:(fun (row : Garch_study.Row.t) ->
       ( row.Garch_study.Row.n,
-        Printf.sprintf "%.12f %.12f %.12f" row.Garch_study.Row.alpha_mean
-          row.Garch_study.Row.beta_mean row.Garch_study.Row.persistence_mean ))
+        Printf.sprintf "%.12f %.12f %.12f %.12f %.12f %.12f"
+          row.Garch_study.Row.alpha_mean row.Garch_study.Row.alpha_sd
+          row.Garch_study.Row.beta_mean row.Garch_study.Row.beta_sd
+          row.Garch_study.Row.persistence_mean row.Garch_study.Row.persistence_sd ))
 
 (* 2 replications x 2 sizes = 4 fits, so the callback sees 1, 2, 3, 4 -- once
    after each fit, in order, and never a count it has already passed. The
