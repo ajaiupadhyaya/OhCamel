@@ -44,6 +44,7 @@ let () =
       Test_synthetic_book.suite;
       Test_scaling_probe.suite;
       Test_validation_report.suite;
+      Test_options_walk.suite;
       Test_stress.suite;
       Test_graph.suite;
       Test_feed.suite;

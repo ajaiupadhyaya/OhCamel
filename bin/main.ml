@@ -46,8 +46,6 @@ let rule width = String.make width '-'
 (* The synthetic book                                                        *)
 (* ------------------------------------------------------------------------ *)
 
-let sym = Symbol.of_string
-let sec = Sector.of_string
 let dollars = Notional.of_float
 
 (* The book lives in lib/synthetic_book.ml now, because the served process
@@ -56,7 +54,6 @@ let dollars = Notional.of_float
    values: every printer below reads through them exactly as it did. *)
 let book = Synthetic_book.book
 let instruments = Synthetic_book.instruments
-let limit = Synthetic_book.limit
 let limits = Synthetic_book.limits
 let starting_cash = Synthetic_book.starting_cash
 let confidence = Synthetic_book.confidence
@@ -781,260 +778,124 @@ let run_garch () =
    demonstrate something those tables are not about. This mode shows the one
    thing worth showing, which is what a delta hedge does and does not remove. *)
 
-(* THE VOL SURFACE HERE IS INVENTED, and it is invented in a shape that at
-   least resembles a real one rather than being flat.
-
-   A smile plus a skew: vol rises as a contract moves away from the money
-   (the quadratic term) and equity puts trade richer than equity calls (the
-   linear one), which is the shape every equity index surface has had since
-   1987 and is the reason a flat surface would misprice the hedge this mode
-   demonstrates.
-
-   It is labelled synthetic everywhere it appears. Live mode does not use it --
-   see the note in run_live -- because a plausible surface presented as a real
-   one is exactly the "looks live and is showing made-up numbers" failure the
-   credentials path is arranged against. *)
-let synthetic_implied_vol ~spot ~strike =
-  let moneyness = (strike /. spot) -. 1.0 in
-  Float.max 0.05 (0.28 +. (0.9 *. moneyness *. moneyness) -. (0.25 *. moneyness))
-
-let options_spot = 900.0
-let options_strike = 950.0
-let options_expiry_days = 30.0
-let options_contracts = -50.0
-
-let options_book =
-  [
-    Options.Position.create ~underlying:(sym "NVDA") ~id:"NVDA-950C-30d"
-      ~strike:(Options.Strike.of_float options_strike)
-      ~right:Options.Right.Call ~expiry_in_days:options_expiry_days ();
-  ]
-
-(* The case a single portfolio vega gets wrong, demonstrated rather than
-   described.
-
-   A calendar spread is long one expiry and short another on the same name. Its
-   parallel-shift vega -- the sum across expiries -- nets to nearly nothing,
-   because the two legs' sensitivities cancel. But they are sensitivities to
-   DIFFERENT volatilities: the 30-day implied and the 180-day implied move
-   together and not identically, so the position is a real bet on the term
-   structure and the total says it is flat. *)
-let calendar_near_days = 25.0
-let calendar_far_days = 180.0
-
-let calendar_book =
-  [
-    Options.Position.create ~underlying:(sym "NVDA") ~id:"NVDA-950C-far"
-      ~strike:(Options.Strike.of_float options_strike)
-      ~right:Options.Right.Call ~expiry_in_days:calendar_far_days ();
-    Options.Position.create ~underlying:(sym "NVDA") ~id:"NVDA-950C-near"
-      ~strike:(Options.Strike.of_float options_strike)
-      ~right:Options.Right.Call ~expiry_in_days:calendar_near_days ();
-  ]
-
-let run_calendar_spread () =
-  let nvda = sym "NVDA" in
-  let graph =
-    Graph.create
-      ~instruments:[ { Instrument.symbol = nvda; sector = sec "TECH" } ]
-      ~limits:[] ~options:calendar_book ~rate:0.04 ~confidence:0.95 ~return_window:10 ()
-  in
-  Exn.protect
-    ~finally:(fun () -> Graph.destroy graph)
-    ~f:(fun () ->
-      Graph.set_price graph nvda (Price.of_float options_spot);
-      List.iter [ "NVDA-950C-far"; "NVDA-950C-near" ] ~f:(fun id ->
-          Graph.set_implied_vol graph id
-            (Options.Implied_vol.of_float
-               (synthetic_implied_vol ~spot:options_spot ~strike:options_strike)));
-      (* One contract of each, to read the per-contract vegas out of the engine
-         and size the spread from them rather than from a guess. Vega scales
-         roughly with the square root of time, so the far leg carries more of it
-         per contract and the near leg has to be the larger position. *)
-      Graph.set_contracts graph "NVDA-950C-far" (Options.Contracts.of_float 1.0);
-      Graph.set_contracts graph "NVDA-950C-near" (Options.Contracts.of_float 0.0);
-      Graph.stabilize graph;
-      let far_vega = Graph.portfolio_vega graph in
-      Graph.set_contracts graph "NVDA-950C-far" (Options.Contracts.of_float 0.0);
-      Graph.set_contracts graph "NVDA-950C-near" (Options.Contracts.of_float 1.0);
-      Graph.stabilize graph;
-      let near_vega = Graph.portfolio_vega graph in
-      let far_contracts = 50.0 in
-      let near_contracts = -.far_contracts *. far_vega /. near_vega in
-      Graph.set_contracts graph "NVDA-950C-far" (Options.Contracts.of_float far_contracts);
-      Graph.set_contracts graph "NVDA-950C-near"
-        (Options.Contracts.of_float near_contracts);
-      Graph.stabilize graph;
-      printf "%s\n  THE CALENDAR SPREAD: what one vega number hides\n%s\n\n" (rule 106)
-        (rule 106);
-      printf "  long  %5.0f NVDA %g calls, %.0f days out\n" far_contracts options_strike
-        calendar_far_days;
-      printf "  short %5.0f NVDA %g calls, %.0f days out\n\n" (Float.abs near_contracts)
-        options_strike calendar_near_days;
-      let s = Graph.snapshot graph in
-      printf "  portfolio vega          %14s   <- the parallel-shift number\n"
-        (money (Notional.of_float (Graph.Snapshot.portfolio_vega s /. 100.0)));
-      printf "  portfolio gamma         %14s\n\n"
-        (Printf.sprintf "%.1f" (Graph.Snapshot.portfolio_gamma s));
-      printf "  by tenor bucket:\n";
-      let buckets = Graph.Snapshot.vega_by_bucket s in
-      List.iter Options.Tenor_bucket.ordered ~f:(fun bucket ->
-          match Map.find buckets bucket with
-          | None -> ()
-          | Some vega ->
-              printf "    %-8s              %14s\n"
-                (Options.Tenor_bucket.to_string bucket)
-                (money (Notional.of_float (vega /. 100.0))));
-      printf
-        "\n\
-        \  The total is zero and the book is not flat. It is short near-dated\n\
-        \  volatility and long far-dated volatility in equal parallel-shift size --\n\
-        \  a bet that the TERM STRUCTURE steepens, which is a real position with real\n\
-        \  P&L and which a single vega number reports as nothing at all.\n\n\
-        \  Summing vega across expiries adds sensitivities to different\n\
-        \  volatilities: the 25-day implied and the 180-day implied move together\n\
-        \  and not identically. Bucketing does not make that sum exact -- vega\n\
-        \  within a bucket is still added across the expiries inside it -- but it\n\
-        \  makes the thing being approximated visible, which is the difference\n\
-        \  between an approximation and a blind spot.\n\n\
-        \  The buckets are cut on days REMAINING, so a position slides between them\n\
-        \  as the valuation clock advances and nothing is traded. graph.ml therefore\n\
-        \  hangs the bucketing off that clock rather than assigning a bucket once at\n\
-        \  construction, which would be wrong within a month and look right\n\
-        \  forever.\n\n")
+(* The walks are lib/options_walk.ml's; this is their printer. The /100 on
+   every vega is here and only here: the engine carries vega per 1.00 of vol
+   because that is its mathematical unit and the one the arithmetic is done
+   in, and the desk's per-point figure is a display decision, which is where
+   options.ml argues it belongs. *)
+let print_calendar ~(strike : float) (c : Options_walk.Calendar.t) =
+  let open Options_walk.Calendar in
+  printf "%s\n  THE CALENDAR SPREAD: what one vega number hides\n%s\n\n" (rule 106)
+    (rule 106);
+  printf "  long  %5.0f NVDA %g calls, %.0f days out\n" c.far.Options_walk.Leg.contracts
+    strike c.far.Options_walk.Leg.days;
+  printf "  short %5.0f NVDA %g calls, %.0f days out\n\n"
+    (Float.abs c.near.Options_walk.Leg.contracts)
+    strike c.near.Options_walk.Leg.days;
+  printf "  portfolio vega          %14s   <- the parallel-shift number\n"
+    (money (Notional.of_float (c.portfolio_vega /. 100.0)));
+  printf "  portfolio gamma         %14s\n\n" (Printf.sprintf "%.1f" c.portfolio_gamma);
+  printf "  by tenor bucket:\n";
+  (* The record carries all six slots; the engine's map, and the old printer,
+     carried only the occupied ones. A slot is occupied here exactly when its
+     vega is non-zero -- two legs of opposite sign in different buckets -- so
+     printing the non-zero slots prints the lines the map would have. *)
+  List.iter c.buckets ~f:(fun (bucket, vega) ->
+      if Float.( <> ) vega 0.0 then
+        printf "    %-8s              %14s\n" bucket
+          (money (Notional.of_float (vega /. 100.0))));
+  printf
+    "\n\
+    \  The total is zero and the book is not flat. It is short near-dated\n\
+    \  volatility and long far-dated volatility in equal parallel-shift size --\n\
+    \  a bet that the TERM STRUCTURE steepens, which is a real position with real\n\
+    \  P&L and which a single vega number reports as nothing at all.\n\n\
+    \  Summing vega across expiries adds sensitivities to different\n\
+    \  volatilities: the 25-day implied and the 180-day implied move together\n\
+    \  and not identically. Bucketing does not make that sum exact -- vega\n\
+    \  within a bucket is still added across the expiries inside it -- but it\n\
+    \  makes the thing being approximated visible, which is the difference\n\
+    \  between an approximation and a blind spot.\n\n\
+    \  The buckets are cut on days REMAINING, so a position slides between them\n\
+    \  as the valuation clock advances and nothing is traded. graph.ml therefore\n\
+    \  hangs the bucketing off that clock rather than assigning a bucket once at\n\
+    \  construction, which would be wrong within a month and look right\n\
+    \  forever.\n\n"
 
 let run_options () =
+  let w = Options_walk.run () in
+  let s = w.Options_walk.setup in
   printf "\n  OhCamel -- reactive risk and limits engine\n";
   printf "  OPTIONS (Greeks-aware exposure, synthetic vol surface, no credentials)\n\n";
-  let implied_vol = synthetic_implied_vol ~spot:options_spot ~strike:options_strike in
   printf "  the book        short %.0f NVDA %g calls, %g days out\n"
-    (Float.abs options_contracts) options_strike options_expiry_days;
-  printf "  spot            %s\n" (money (Notional.of_float options_spot));
+    (Float.abs s.Options_walk.Setup.contracts)
+    s.Options_walk.Setup.strike s.Options_walk.Setup.expiry_days;
+  printf "  spot            %s\n" (money (Notional.of_float s.Options_walk.Setup.spot));
   printf "  implied vol     %.1f%% -- SYNTHETIC, from a smiled surface generated here\n"
-    (implied_vol *. 100.0);
+    (s.Options_walk.Setup.implied_vol *. 100.0);
   printf
     "                  and labelled as such. There is no options-chain data source\n\
     \                  configured; live mode declines to invent one rather than\n\
     \                  showing made-up Greeks that look real.\n\n";
-  (* A vega cap that the unhedged book is already through, so the interesting
-     line -- a limit that a delta hedge does NOT clear -- is visible rather than
-     described. *)
-  (* Stated in the engine's internal unit -- dollars per 1.00 of annualised vol
-     -- which is a hundred times the desk's "per vol point". $300,000 here is a
-     $3,000-a-point cap. The display below prints the per-point figure, because
-     this conversion is exactly the one that silently makes a limit a hundred
-     times too loose. *)
-  let vega_cap = 300_000.0 in
-  let limits =
-    [
-      limit "nvda-notional"
-        (Limit.Instrument (sym "NVDA"))
-        (Limit.Gross_notional (dollars 1_000_000.0));
-      limit "nvda-vega"
-        (Limit.Instrument (sym "NVDA"))
-        (Limit.Greek_limit (Greek.Vega, dollars vega_cap));
-      limit "nvda-gamma"
-        (Limit.Instrument (sym "NVDA"))
-        (Limit.Greek_limit (Greek.Gamma, dollars 400.0));
-    ]
+  let show (st : Options_walk.State.t) =
+    printf "  %-14s %16s %14s %16s\n" st.Options_walk.State.label
+      (money (Notional.of_float st.Options_walk.State.delta_equivalent))
+      (Printf.sprintf "%.1f" st.Options_walk.State.gamma)
+      (money (Notional.of_float (st.Options_walk.State.vega /. 100.0)))
   in
-  let graph =
-    Graph.create
-      ~instruments:[ { Instrument.symbol = sym "NVDA"; sector = sec "TECH" } ]
-      ~limits ~options:options_book ~rate:0.04 ~confidence:0.95 ~return_window:10 ()
+  let columns () =
+    printf "  %-14s %16s %14s %16s\n" "" "delta-equiv" "gamma" "vega / vol pt";
+    printf "  %s\n" (rule 64)
   in
-  Exn.protect
-    ~finally:(fun () -> Graph.destroy graph)
-    ~f:(fun () ->
-      let nvda = sym "NVDA" in
-      Graph.set_price graph nvda (Price.of_float options_spot);
-      Graph.set_contracts graph "NVDA-950C-30d"
-        (Options.Contracts.of_float options_contracts);
-      Graph.set_implied_vol graph "NVDA-950C-30d"
-        (Options.Implied_vol.of_float implied_vol);
-      Graph.stabilize graph;
-      let show label =
-        let s = Graph.snapshot graph in
-        printf "  %-14s %16s %14s %16s\n" label
-          (money (Map.find_exn (Graph.Snapshot.exposure_by_instrument s) nvda))
-          (Printf.sprintf "%.1f" (Graph.Snapshot.portfolio_gamma s))
-          (* Divided by 100 for the desk convention. The engine carries vega per
-             1.00 of vol because that is its mathematical unit and the one the
-             arithmetic is done in; the /100 is a display decision and lives
-             here, which is where options.ml argues it belongs. *)
-          (money (Notional.of_float (Graph.Snapshot.portfolio_vega s /. 100.0)))
-      in
-      let columns () =
-        printf "  %-14s %16s %14s %16s\n" "" "delta-equiv" "gamma" "vega / vol pt";
-        printf "  %s\n" (rule 64)
-      in
-      printf "%s\n  WHAT A DELTA HEDGE REMOVES, AND WHAT IT LEAVES\n%s\n\n" (rule 106)
-        (rule 106);
-      columns ();
-      show "options only";
-      (* Buy the shares the short calls are short. The count is derived from the
-         engine's own delta rather than guessed, which is the point: the hedge
-         ratio is a number the risk engine produces. *)
-      let unhedged =
-        Notional.to_float
-          (Map.find_exn
-             (Graph.Snapshot.exposure_by_instrument (Graph.snapshot graph))
-             nvda)
-      in
-      let shares = -.unhedged /. options_spot in
-      Graph.set_qty graph nvda (Qty.of_float shares);
-      Graph.stabilize graph;
-      show "+ the hedge";
-      printf "  %s\n\n" (rule 64);
-      printf
-        "  The hedge is %.0f shares, and the engine computed the ratio: it is the\n\
-        \  option leg's delta-equivalent exposure divided by the spot. Delta goes to\n\
-        \  zero. Gamma and vega do not move at all -- a share is linear in its own\n\
-        \  price, so it contributes exactly none of either. That is the whole content\n\
-        \  of the phrase FIRST-ORDER hedge, and it is why gamma and vega are their own\n\
-        \  nodes instead of a column in the exposure table: there is no honest way to\n\
-        \  express convexity as a quantity of underlying.\n\n"
-        shares;
-      printf "%s\n  LIMITS\n%s\n\n" (rule 106) (rule 106);
-      Graph.Snapshot.breaches (Graph.snapshot graph)
-      |> List.sort ~compare:(fun a b ->
-          Float.descending (Limits.utilisation a) (Limits.utilisation b))
-      |> List.iter ~f:(fun breach ->
-          printf "  %-6s %6.1f%%  %s\n"
-            (if Breach.breached breach then "BREACH" else "ok")
-            (Limits.utilisation breach *. 100.0)
-            (Limits.to_string breach));
-      printf
-        "\n\
-        \  The notional cap is comfortably clear, because the book IS delta flat.\n\
-        \  The vega cap is not, because it never was: hedging the delta did not\n\
-        \  remove a dollar of it. A risk engine that only measured exposure would\n\
-        \  report this book as carrying no risk at all.\n\n";
-      printf "%s\n  THETA, AND THE SECOND CLOCK\n%s\n\n" (rule 106) (rule 106);
-      columns ();
-      show "today";
-      Graph.advance_valuation_days graph 20.0;
-      Graph.stabilize graph;
-      show "+20 days";
-      printf "  %s\n\n" (rule 64);
-      printf
-        "  Read the delta column first, because it is the one nobody expects. The\n\
-        \  share count has not changed and NOTHING HAS BEEN TRADED, and yet the book\n\
-        \  is no longer delta flat -- the contract decayed further out of the money,\n\
-        \  its delta fell, and the hedge that exactly offset it twenty days ago now\n\
-        \  over-hedges by more than half a million dollars. A delta hedge is correct\n\
-        \  at an instant and stale immediately afterwards, which is precisely why\n\
-        \  this number hangs off an edge instead of being stored.\n\n\
-        \  Vega falls as the contract runs out of time to be uncertain in, and\n\
-        \  at-the-money gamma RISES as the distribution tightens around the strike.\n\
-        \  All three moved because the VALUATION clock advanced -- a separate cell\n\
-        \  from the staleness clock that drives feed health, and separate on purpose.\n\
-        \  Theta is real and needs a clock; wiring it to the five-second staleness\n\
-        \  timer would have put the entire book on a schedule to capture a decay that\n\
-        \  is invisible below a day, which is the design this project exists to\n\
-        \  replace. test_options_graph.ml asserts that neither clock can do the\n\
-        \  other's job.\n\n");
-  run_calendar_spread ()
+  let hedge, clock = List.split_n w.Options_walk.states 2 in
+  printf "%s\n  WHAT A DELTA HEDGE REMOVES, AND WHAT IT LEAVES\n%s\n\n" (rule 106)
+    (rule 106);
+  columns ();
+  List.iter hedge ~f:show;
+  printf "  %s\n\n" (rule 64);
+  printf
+    "  The hedge is %.0f shares, and the engine computed the ratio: it is the\n\
+    \  option leg's delta-equivalent exposure divided by the spot. Delta goes to\n\
+    \  zero. Gamma and vega do not move at all -- a share is linear in its own\n\
+    \  price, so it contributes exactly none of either. That is the whole content\n\
+    \  of the phrase FIRST-ORDER hedge, and it is why gamma and vega are their own\n\
+    \  nodes instead of a column in the exposure table: there is no honest way to\n\
+    \  express convexity as a quantity of underlying.\n\n"
+    w.Options_walk.hedge_shares;
+  printf "%s\n  LIMITS\n%s\n\n" (rule 106) (rule 106);
+  List.iter w.Options_walk.breaches ~f:(fun breach ->
+      printf "  %-6s %6.1f%%  %s\n"
+        (if Breach.breached breach then "BREACH" else "ok")
+        (Limits.utilisation breach *. 100.0)
+        (Limits.to_string breach));
+  printf
+    "\n\
+    \  The notional cap is comfortably clear, because the book IS delta flat.\n\
+    \  The vega cap is not, because it never was: hedging the delta did not\n\
+    \  remove a dollar of it. A risk engine that only measured exposure would\n\
+    \  report this book as carrying no risk at all.\n\n";
+  printf "%s\n  THETA, AND THE SECOND CLOCK\n%s\n\n" (rule 106) (rule 106);
+  columns ();
+  List.iter clock ~f:show;
+  printf "  %s\n\n" (rule 64);
+  printf
+    "  Read the delta column first, because it is the one nobody expects. The\n\
+    \  share count has not changed and NOTHING HAS BEEN TRADED, and yet the book\n\
+    \  is no longer delta flat -- the contract decayed further out of the money,\n\
+    \  its delta fell, and the hedge that exactly offset it twenty days ago now\n\
+    \  over-hedges by more than half a million dollars. A delta hedge is correct\n\
+    \  at an instant and stale immediately afterwards, which is precisely why\n\
+    \  this number hangs off an edge instead of being stored.\n\n\
+    \  Vega falls as the contract runs out of time to be uncertain in, and\n\
+    \  at-the-money gamma RISES as the distribution tightens around the strike.\n\
+    \  All three moved because the VALUATION clock advanced -- a separate cell\n\
+    \  from the staleness clock that drives feed health, and separate on purpose.\n\
+    \  Theta is real and needs a clock; wiring it to the five-second staleness\n\
+    \  timer would have put the entire book on a schedule to capture a decay that\n\
+    \  is invisible below a day, which is the design this project exists to\n\
+    \  replace. test_options_graph.ml asserts that neither clock can do the\n\
+    \  other's job.\n\n";
+  print_calendar ~strike:s.Options_walk.Setup.strike w.Options_walk.calendar
 
 (* ------------------------------------------------------------------------ *)
 (* Crisis backtest: the same battery, real data                              *)
