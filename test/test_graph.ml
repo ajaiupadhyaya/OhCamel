@@ -21,6 +21,7 @@
 open Core
 module Graph = Ohcamel.Graph
 module Limits = Ohcamel.Limits
+module Options = Ohcamel.Options
 open Ohcamel.Types
 
 let float_eq = Alcotest.float 1e-9
@@ -812,6 +813,223 @@ let test_topology_families () =
       Alcotest.(check string)
         "every node has the unit Task 1 gave it" "usd"
         (Graph.Topology.Node.unit (node "exposure:XOM")))
+    ()
+
+(* An instrument cap hangs off ONE exposure, and that exposure off one price
+   and one quantity. This is why the page can leave limit:aapl-cap at full
+   authority while CVX is quiet: its whole upstream is three nodes, none of
+   them CVX's. *)
+let test_a_limit_has_one_input () =
+  with_graph
+    ~f:(fun graph _ ->
+      let topo = Graph.topology graph in
+      Alcotest.(check (list string))
+        "limit:aapl-cap reads exposure:AAPL and nothing else" [ "exposure:AAPL" ]
+        (Graph.Topology.inputs_of topo "limit:aapl-cap");
+      Alcotest.(check (list string))
+        "and its whole upstream is three nodes"
+        [ "exposure:AAPL"; "price[AAPL]"; "qty[AAPL]" ]
+        (sorted (set_to_list (Graph.Topology.closure topo [ "limit:aapl-cap" ] `Up))))
+    ()
+
+(* The clock's dead end, structurally. [test_clock_cannot_reach_the_risk_chain]
+   shows it by running the clock; this shows there is no edge to run along.
+   The two sets must agree with each other and with graph.ml's diagram. *)
+let test_no_risk_node_is_downstream_of_now () =
+  with_graph
+    ~f:(fun graph _ ->
+      let topo = Graph.topology graph in
+      Alcotest.(check (list string))
+        "downstream of now: the liveness branch, whole and alone"
+        [ "feed:AAPL"; "feed:MSFT"; "feed:XOM"; "feed_health" ]
+        (sorted (set_to_list (Graph.Topology.closure topo [ "now" ] `Down)));
+      (* And from the other side: nothing upstream of feed_health is a price,
+         a quantity or a return. The branch shares no edge with the book. *)
+      let up = Graph.Topology.closure topo [ "feed_health" ] `Up in
+      Alcotest.(check (list string))
+        "upstream of feed_health: three cells, three feed nodes, the clock"
+        [
+          "feed:AAPL";
+          "feed:MSFT";
+          "feed:XOM";
+          "last_tick[AAPL]";
+          "last_tick[MSFT]";
+          "last_tick[XOM]";
+          "now";
+        ]
+        (sorted (set_to_list up)))
+    ()
+
+(* The count as a formula in the book's shape. Hand-derived:
+
+     per symbol   exposure:S feed:S                                   2|S|
+     per sector   sector:K                                             |K|
+     per limit    limit:name                                           |L|
+     per option   greeks:ID option_exposure:ID                        2|O|
+     singletons   the 29 derived names Task 3 lists                     29
+                                                             named = 2|S| + |K| + |L| + 2|O| + 29
+     cells        price qty returns last_tick  x |S|                  4|S|
+                  cash equity_history factor_returns valuation_days now  5
+                  contracts implied_vol  x |O|                        2|O|
+                  rate -- reachable only once a contract reads it       [|O| > 0]
+
+   Standard book: 3, 2, 7, 0 -> named 44, inputs 17, total 61 (Task 3's count).
+   With one call on AAPL: 3, 2, 7, 1 -> named 46, inputs 20, total 66. *)
+let aapl_call_for_topology =
+  Options.Position.create ~underlying:aapl ~id:"AAPL-100C"
+    ~strike:(Options.Strike.of_float 100.0)
+    ~right:Options.Right.Call ~expiry_in_days:30.0 ()
+
+let test_named_node_count_formula () =
+  let formula ~symbols ~sectors ~limits ~options =
+    ( (2 * symbols) + sectors + limits + (2 * options) + 29,
+      (4 * symbols) + 5 + (2 * options) + if options > 0 then 1 else 0 )
+  in
+  with_graph
+    ~f:(fun graph _ ->
+      let c = Graph.Topology.counts (Graph.topology graph) in
+      let named, inputs = formula ~symbols:3 ~sectors:2 ~limits:7 ~options:0 in
+      Alcotest.(check int)
+        "named on the standard book" named
+        (Graph.Topology.Counts.named c);
+      Alcotest.(check int)
+        "inputs on the standard book" inputs
+        (Graph.Topology.Counts.inputs c);
+      Alcotest.(check int) "instruments" 3 (Graph.Topology.Counts.instruments c);
+      Alcotest.(check int) "sectors" 2 (Graph.Topology.Counts.sectors c);
+      Alcotest.(check int) "limits" 7 (Graph.Topology.Counts.limits c);
+      Alcotest.(check int) "options" 0 (Graph.Topology.Counts.options c);
+      Alcotest.(check int) "observed" 28 (Graph.Topology.Counts.observed c);
+      (* The traverse's own count is strictly larger than the named count: the
+         plumbing exists, it is just not drawn. *)
+      Alcotest.(check bool)
+        (Printf.sprintf "incremental_nodes (%d) > named + inputs (%d)"
+           (Graph.Topology.Counts.incremental_nodes c)
+           (named + inputs))
+        true
+        (Graph.Topology.Counts.incremental_nodes c > named + inputs))
+    ();
+  let graph =
+    Graph.create ~starting_cash:(dollars 100_000.0) ~instruments:book ~limits:book_limits
+      ~confidence:0.95 ~return_window:10 ~options:[ aapl_call_for_topology ] ()
+  in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      let topo = Graph.topology graph in
+      let c = Graph.Topology.counts topo in
+      let named, inputs = formula ~symbols:3 ~sectors:2 ~limits:7 ~options:1 in
+      Alcotest.(check int) "named with one contract" named (Graph.Topology.Counts.named c);
+      Alcotest.(check int)
+        "inputs with one contract" inputs
+        (Graph.Topology.Counts.inputs c);
+      Alcotest.(check bool)
+        "rate joined the graph" true
+        (Option.is_some (Graph.Topology.find topo "rate"));
+      (* The four declared edges of a Greeks node, and no fifth. *)
+      Alcotest.(check (list string))
+        "greeks reads price, vol, the slow clock and the rate"
+        [ "implied_vol[AAPL-100C]"; "price[AAPL]"; "rate"; "valuation_days" ]
+        (Graph.Topology.inputs_of topo "greeks:AAPL-100C");
+      Alcotest.(check (list string))
+        "option_exposure reads the Greeks, the count and the spot"
+        [ "contracts[AAPL-100C]"; "greeks:AAPL-100C"; "price[AAPL]" ]
+        (Graph.Topology.inputs_of topo "option_exposure:AAPL-100C");
+      Alcotest.(check bool)
+        "and folds into the underlying's exposure" true
+        (List.mem
+           (Graph.Topology.inputs_of topo "exposure:AAPL")
+           "option_exposure:AAPL-100C" ~equal:String.equal);
+      match Graph.Topology.find topo "greeks:AAPL-100C" with
+      | Some n ->
+          Alcotest.(check (option string))
+            "the option node rows under its underlying" (Some "AAPL")
+            (Option.map (Graph.Topology.Node.symbol n) ~f:Symbol.to_string);
+          Alcotest.(check (option string))
+            "and names its contract" (Some "AAPL-100C")
+            (Option.map (Graph.Topology.Node.contract n) ~f:fst)
+      | None -> Alcotest.fail "greeks:AAPL-100C is not in the topology")
+
+(* The observed flags are the label table's, and ranks never run backwards. *)
+let test_observed_flags_and_ranks () =
+  with_graph
+    ~f:(fun graph _ ->
+      let topo = Graph.topology graph in
+      Alcotest.(check (list string))
+        "the twenty-eight observed, by name" expected_observed
+        (* Sorted, because the topology's nodes come in (rank, name) order and
+           [expected_observed] is by name alone. *)
+        (sorted
+           (List.filter_map (Graph.Topology.nodes topo) ~f:(fun n ->
+                if Graph.Topology.Node.observed n then Some (Graph.Topology.Node.name n)
+                else None)));
+      let rank name =
+        Graph.Topology.Node.rank
+          (Option.value_exn (Graph.Topology.find topo name) ~message:("no node " ^ name))
+      in
+      List.iter (Graph.Topology.edges topo) ~f:(fun (from, into) ->
+          Alcotest.(check bool)
+            (Printf.sprintf "%s (rank %d) -> %s (rank %d) runs left to right" from
+               (rank from) into (rank into))
+            true
+            (rank from < rank into));
+      (* Two anchors, derived by hand along the longest path:
+           price -> exposure:S -> gross -> weights -> portfolio_returns -> historical_var
+           -> var_notional -> limit:var-cap -> breaches  is 8 steps, and nothing
+           into breaches is longer. *)
+      Alcotest.(check int) "breaches is the deepest node" 8 (rank "breaches");
+      Alcotest.(check int)
+        "limit:aapl-cap sits beside the aggregates, not in a limits column" 2
+        (rank "limit:aapl-cap"))
+    ()
+
+(* Asking for the drawing runs nothing and changes no pinned set. *)
+let test_topology_costs_nothing () =
+  with_graph
+    ~f:(fun graph recorder ->
+      let before = Graph.total_nodes_recomputed () in
+      ignore (Graph.topology graph : Graph.Topology.t);
+      Alcotest.(check int)
+        "no node ran for the topology" before
+        (Graph.total_nodes_recomputed ());
+      (* Same tick [test_price_tick_is_local] pins, not a fresh one: a price
+         RISE leaves drawdown at 0.0 under its cutoff, so [limit:dd-cap] would
+         legitimately sit out and the assertion would be testing that cutoff
+         rather than the cost of asking for the topology. *)
+      Graph.apply_tick graph
+        { Tick.symbol = aapl; price = Price.of_float 120.0; time = Time.epoch };
+      Graph.stabilize graph;
+      check_recomputed recorder ~msg:"and the next tick recomputes exactly the pinned set"
+        ~expected:downstream_of_aapl_tick)
+    ()
+
+(* A fork's observers come and go with the fork. [walk] starts from THIS
+   graph's observers, so a fork alive in the same process is invisible to the
+   served topology; and [destroy] releases the fork's twenty-eight, so
+   /api/stress's twelve forks leave the process with the observer count it
+   had. Both halves matter: the first is what makes the drawing this book's,
+   the second is what keeps a scenario from costing every later stabilize. *)
+let test_a_forks_observers_are_released () =
+  with_graph
+    ~f:(fun graph _ ->
+      let before = Graph.active_observers () in
+      let served = Graph.topology graph in
+      let forked = Graph.fork graph in
+      Alcotest.(check int)
+        "a fork adds exactly its twenty-eight observers" (before + 28)
+        (Graph.active_observers ());
+      let fork_topology = Graph.topology forked in
+      Alcotest.(check int)
+        "the fork has its own copy of every node"
+        (List.length (Graph.Topology.nodes served))
+        (List.length (Graph.Topology.nodes fork_topology));
+      Alcotest.(check int)
+        "and the served topology did not grow"
+        (List.length (Graph.Topology.nodes served))
+        (List.length (Graph.Topology.nodes (Graph.topology graph)));
+      Graph.destroy forked;
+      Alcotest.(check int)
+        "destroy releases all twenty-eight" before (Graph.active_observers ()))
     ()
 
 (* The README's test, in its own words: "changing one position only triggers
@@ -1718,6 +1936,18 @@ let suite =
         test_topology_is_closed_over_its_names;
       Alcotest.test_case "TOPOLOGY: families and the typed fields beside them" `Quick
         test_topology_families;
+      Alcotest.test_case "TOPOLOGY: an instrument cap has one input" `Quick
+        test_a_limit_has_one_input;
+      Alcotest.test_case "TOPOLOGY: no risk node is downstream of now" `Quick
+        test_no_risk_node_is_downstream_of_now;
+      Alcotest.test_case "TOPOLOGY: the named-node count is a formula in the book" `Quick
+        test_named_node_count_formula;
+      Alcotest.test_case "TOPOLOGY: observed flags and monotone ranks" `Quick
+        test_observed_flags_and_ranks;
+      Alcotest.test_case "TOPOLOGY: asking for it costs nothing" `Quick
+        test_topology_costs_nothing;
+      Alcotest.test_case "TOPOLOGY: a fork's observers are released by destroy" `Quick
+        test_a_forks_observers_are_released;
       Alcotest.test_case "ARCHITECTURE: a position change recomputes only its dependents"
         `Quick test_position_change_is_local;
       Alcotest.test_case "ARCHITECTURE: a price tick recomputes only its dependents"
