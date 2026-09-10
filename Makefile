@@ -92,7 +92,7 @@ build:
 	$(OPAM_ENV) && $(BUILD_STAMP) dune build
 
 run: build
-	$(OPAM_ENV) && dune exec bin/main.exe -- synthetic
+	$(OPAM_ENV) && $(BUILD_STAMP) dune exec bin/main.exe -- synthetic
 
 # The scenario suite against the synthetic book: what a chosen move would do to
 # exposure, equity, drawdown and every limit. No credentials, no network. Each
@@ -156,12 +156,12 @@ garch: build
 # NOTE: a free Alpaca plan allows ONE concurrent market-data stream per account.
 # If another system is using the same keys, this gets error 406 and stops.
 run-live: build
-	$(OPAM_ENV) && dune exec bin/main.exe -- live
+	$(OPAM_ENV) && $(BUILD_STAMP) dune exec bin/main.exe -- live
 
 # Live feeds plus the dashboard on http://localhost:8080. Same credentials as
 # run-live.
 serve: build
-	$(OPAM_ENV) && dune exec bin/main.exe -- serve
+	$(OPAM_ENV) && $(BUILD_STAMP) dune exec bin/main.exe -- serve
 
 # The dashboard driven by a synthetic feed: no credentials, no network, works
 # when the market is closed. One symbol is deliberately never ticked, so the

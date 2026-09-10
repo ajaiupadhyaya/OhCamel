@@ -241,15 +241,27 @@
     pulse(rows, "Δ nodes_recomputed per poll", st.deltas, "nodes");
     pulse(rows, "Δ frames_sent per poll", st.deltas, "frames");
 
+    // Quiet names are stale by design (the demo's own CVX, never ticked on
+    // purpose), and the server does not net them out of stale/never_seen --
+    // it publishes what Feed_health says. So "over" here means more names are
+    // stale than are accounted for by quiet: a difference of served fields,
+    // no arithmetic beyond it. When every stale/never-seen name is a quiet
+    // one, the rows stay plain and a caption says so, rather than showing a
+    // permanent alarm beside "quiet by design" for the one demonstration the
+    // page exists to draw honestly.
+    var staleOver = f.stale + f.never_seen > f.quiet;
     group(rows, "feed", [
       ["source", fs.kind],
       ["threshold", f.staleness_threshold_s + " s"],
       ["symbols", f.symbols],
-      ["healthy", f.healthy ? "yes" : "no", f.healthy ? "" : "over"],
-      ["stale", f.stale, f.stale > 0 ? "over" : ""],
+      ["healthy", f.healthy ? "yes" : "no", (!f.healthy && staleOver) ? "over" : ""],
+      ["stale", f.stale, (f.stale > 0 && staleOver) ? "over" : ""],
       ["never seen", f.never_seen, f.never_seen > 0 ? "unknown" : ""],
       ["quiet by design", f.quiet, "", "counted, not named"]
     ]);
+    if (!f.healthy && !staleOver) {
+      note(rows, "by design", "stale names are the quiet ones");
+    }
     if (health) {
       ageStrip(rows, health, f.staleness_threshold_s, now);
     } else {
@@ -349,7 +361,9 @@
 
   function renderHeader(ops) {
     document.getElementById("h-mode").textContent = ops.mode;
-    document.getElementById("h-build").textContent = ops.build.git_short;
+    var build = document.getElementById("h-build");
+    build.textContent = ops.build.git_short;
+    build.classList.toggle("unknown", ops.build.git_sha === "unknown");
     document.getElementById("h-up").textContent = duration(ops.uptime_s) || "—";
   }
 

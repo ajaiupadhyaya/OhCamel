@@ -243,7 +243,12 @@ print("OK %s %s %d" % (mode, b["git_sha"], up))
 		meh "build sha                  not given (--expect-sha SHA), skipping"
 	fi
 else
-	meh "GET /api/ops                python3 unavailable for a real parse; build sha and uptime not checked"
+	if [ -n "$EXPECT_SHA" ]; then
+		no "build sha                  python3 missing, cannot verify" \
+			"--expect-sha ${EXPECT_SHA:0:7} was given but there is no python3 on this host to parse /api/ops"
+	else
+		meh "GET /api/ops                python3 unavailable for a real parse; build sha and uptime not checked"
+	fi
 fi
 
 # The page exists and is the page: both host columns are in the body, which

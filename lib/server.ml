@@ -380,66 +380,82 @@ let sink_name (sink : Config.Alerts.Sink.t) : string =
    [firing] is the tracker's state and not the breach list, and the difference
    is the hysteresis: a limit back under its threshold but above clear_below is
    not breached and is still firing. Only one of those two facts is in
-   /api/snapshot's `limits`, and it is not the one an operator wants at 3am. *)
-let json_of_alerts (alerts : Alerts.t option) : Yojson.Safe.t =
-  match alerts with
-  | None ->
-      `Assoc
-        [
-          ("enabled", `Bool false);
-          ("kill_switch", `String "off");
-          ("tripped_by", `Null);
-          ("tripped_at", `Null);
-          ("halt_new_orders", `Bool false);
-          ("firing", `List []);
-          ("sent", `Int 0);
-          ("failed", `Int 0);
-          ("sinks", `List []);
-          ("trips_on", `List []);
-          ("clear_below", `Null);
-          ("recent", `List []);
-        ]
-  | Some a ->
-      let config = Alerts.config a in
-      let state, tripped_by =
-        match Alerts.Kill_switch.state (Alerts.kill_switch a) with
-        | Alerts.Kill_switch.Disarmed -> ("off", `Null)
-        | Alerts.Kill_switch.Armed -> ("armed", `Null)
-        | Alerts.Kill_switch.Tripped { by; _ } -> ("tripped", `String by)
-      in
-      `Assoc
-        [
-          ("enabled", `Bool true);
-          ("kill_switch", `String state);
-          ("tripped_by", tripped_by);
-          (* On the switch rather than dug out of the event history, because
+   /api/snapshot's `limits`, and it is not the one an operator wants at 3am.
+
+   [~recent] governs the thirteenth-turned-twelfth key, [recent]: true (the
+   default) for /api/snapshot, which has always carried the event history;
+   false for the ops object, whose entries are [Alerts.Event.to_line] and so
+   carry a symbol name (`Instrument AAPL`) -- the one place a name could reach
+   the live host's /api/ops, which the spec's ops `alerts` list omits on
+   purpose. Filtered off the built object rather than never built, so the two
+   branches above stay the single source of what "off" and "on" say. *)
+let json_of_alerts ?(recent = true) (alerts : Alerts.t option) : Yojson.Safe.t =
+  let full =
+    match alerts with
+    | None ->
+        `Assoc
+          [
+            ("enabled", `Bool false);
+            ("kill_switch", `String "off");
+            ("tripped_by", `Null);
+            ("tripped_at", `Null);
+            ("halt_new_orders", `Bool false);
+            ("firing", `List []);
+            ("sent", `Int 0);
+            ("failed", `Int 0);
+            ("sinks", `List []);
+            ("trips_on", `List []);
+            ("clear_below", `Null);
+            ("recent", `List []);
+          ]
+    | Some a ->
+        let config = Alerts.config a in
+        let state, tripped_by =
+          match Alerts.Kill_switch.state (Alerts.kill_switch a) with
+          | Alerts.Kill_switch.Disarmed -> ("off", `Null)
+          | Alerts.Kill_switch.Armed -> ("armed", `Null)
+          | Alerts.Kill_switch.Tripped { by; _ } -> ("tripped", `String by)
+        in
+        `Assoc
+          [
+            ("enabled", `Bool true);
+            ("kill_switch", `String state);
+            ("tripped_by", tripped_by);
+            (* On the switch rather than dug out of the event history, because
              the history is a bounded queue of fifty and the trip is the event
              most likely to still matter after it has been evicted. *)
-          ( "tripped_at",
-            match Alerts.tripped_at a with
-            | None -> `Null
-            | Some at -> jstring (Time_ns.to_string_utc at) );
-          ("halt_new_orders", `Bool (Alerts.halted a));
-          ("firing", jlist jstring (Alerts.firing_limits a));
-          ("sent", `Int (Alerts.sent a));
-          ("failed", `Int (Alerts.failed a));
-          ("sinks", jlist jstring (List.map config.Config.Alerts.sinks ~f:sink_name));
-          ("trips_on", jlist jstring config.Config.Alerts.kill_switch_trips_on);
-          ("clear_below", jfloat config.Config.Alerts.clear_below);
-          ( "recent",
-            `List
-              (List.rev_map (Alerts.history a) ~f:(fun e ->
-                   `Assoc
-                     [
-                       ( "kind",
-                         `String
-                           (Sexp.to_string
-                              (Alerts.Event.sexp_of_kind e.Alerts.Event.kind)) );
-                       ("limit", `String e.Alerts.Event.limit_name);
-                       ("line", `String (Alerts.Event.to_line e));
-                       ("at", `String (Time_ns.to_string_utc e.Alerts.Event.at));
-                     ])) );
-        ]
+            ( "tripped_at",
+              match Alerts.tripped_at a with
+              | None -> `Null
+              | Some at -> jstring (Time_ns.to_string_utc at) );
+            ("halt_new_orders", `Bool (Alerts.halted a));
+            ("firing", jlist jstring (Alerts.firing_limits a));
+            ("sent", `Int (Alerts.sent a));
+            ("failed", `Int (Alerts.failed a));
+            ("sinks", jlist jstring (List.map config.Config.Alerts.sinks ~f:sink_name));
+            ("trips_on", jlist jstring config.Config.Alerts.kill_switch_trips_on);
+            ("clear_below", jfloat config.Config.Alerts.clear_below);
+            ( "recent",
+              `List
+                (List.rev_map (Alerts.history a) ~f:(fun e ->
+                     `Assoc
+                       [
+                         ( "kind",
+                           `String
+                             (Sexp.to_string
+                                (Alerts.Event.sexp_of_kind e.Alerts.Event.kind)) );
+                         ("limit", `String e.Alerts.Event.limit_name);
+                         ("line", `String (Alerts.Event.to_line e));
+                         ("at", `String (Time_ns.to_string_utc e.Alerts.Event.at));
+                       ])) );
+          ]
+  in
+  if recent then full
+  else
+    match full with
+    | `Assoc fields ->
+        `Assoc (List.filter fields ~f:(fun (key, _) -> not (String.equal key "recent")))
+    | other -> other
 
 let render (t : t) : string =
   let snapshot = Graph.snapshot t.graph in
@@ -585,24 +601,36 @@ let gc_json () : Yojson.Safe.t =
 
    The heap above is what the runtime believes; this is what the kernel
    charges, and the gap between them is the answer to "is 41 MB the engine or
-   the engine plus OpenBLAS". /proc/self/statm exists on Linux and nowhere
+   the engine plus OpenBLAS". /proc/self/status exists on Linux and nowhere
    else, so on macOS this is null -- not zero, which would render as a process
    using no memory at all.
 
-   Read synchronously. The file is forty bytes the kernel materialises on read
-   and never blocks on, so a blocking read costs less than making this whole
-   encoder deferred would; the page size is 4096 on the amd64 Debian this image
-   is built for, and any platform where it is not never reaches this line. *)
+   Read synchronously. The file is a few hundred bytes the kernel materialises
+   on read and never blocks on, so a blocking read costs less than making this
+   whole encoder deferred would. VmRSS: is read in kB rather than
+   /proc/self/statm's resident PAGE count, because a page count needs the
+   platform's page size to convert and that size is not this process's to
+   assume -- the amd64 Debian this image is built for happens to use 4096, but
+   an arm64 build with 16 K pages would silently overstate RSS 4x on the same
+   code. kB has no such hazard: the kernel reports it directly. *)
 let rss_bytes () : int option =
-  match Option.try_with (fun () -> Core.In_channel.read_all "/proc/self/statm") with
+  match Option.try_with (fun () -> Core.In_channel.read_all "/proc/self/status") with
   | None -> None
-  | Some contents -> (
-      match String.split (String.strip contents) ~on:' ' with
-      | _ :: resident :: _ ->
-          Option.map
-            (Option.try_with (fun () -> Int.of_string resident))
-            ~f:(fun pages -> pages * 4096)
-      | _ -> None)
+  | Some contents ->
+      List.find_map (String.split_lines contents) ~f:(fun line ->
+          match String.chop_prefix line ~prefix:"VmRSS:" with
+          | None -> None
+          | Some rest -> (
+              match
+                List.filter
+                  (String.split (String.strip rest) ~on:' ')
+                  ~f:(fun s -> not (String.is_empty s))
+              with
+              | kb :: _ ->
+                  Option.map
+                    (Option.try_with (fun () -> Int.of_string kb))
+                    ~f:(fun k -> k * 1024)
+              | [] -> None))
 
 (* Where the numbers came from, from the caller rather than from here.
 
@@ -692,7 +720,11 @@ let json_of_ops (t : t) : Yojson.Safe.t =
             ("points", `Int (List.length (History_buffer.to_list t.history)));
             ("capacity", `Int (History_buffer.capacity t.history));
           ] );
-      ("alerts", json_of_alerts t.alerts);
+      (* recent:false: /api/ops omits the event history, which is the one
+         place a symbol name could reach this object (Alerts.Event.to_line
+         prints the scope, e.g. "Instrument AAPL"). /api/snapshot's alerts
+         object, built by [render] above, keeps all twelve keys. *)
+      ("alerts", json_of_alerts ~recent:false t.alerts);
       ( "feed",
         `Assoc
           [

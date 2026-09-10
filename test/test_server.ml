@@ -569,6 +569,20 @@ let check_alert_key_set j =
     (List.sort ~compare:String.compare alert_keys)
     (List.sort ~compare:String.compare (assoc_keys j))
 
+(* /api/ops's alerts object omits [recent]: the event history's lines are
+   [Alerts.Event.to_line], which carries a symbol scope (e.g. "Instrument
+   AAPL"), and the spec's ops `alerts` list deliberately does not have this
+   key. Eleven keys, not check_alert_key_set's twelve -- /api/snapshot's
+   alerts object (built by [render], via the default [~recent:true]) is what
+   still owns the twelve-key contract. *)
+let ops_alert_keys = List.filter alert_keys ~f:(fun k -> not (String.equal k "recent"))
+
+let check_ops_alert_key_set j =
+  Alcotest.(check (list string))
+    "exactly the eleven ops alert keys (no recent), no more and no fewer"
+    (List.sort ~compare:String.compare ops_alert_keys)
+    (List.sort ~compare:String.compare (assoc_keys j))
+
 (* The general form of [check_alert_key_set], for every nesting level of
    /api/ops's object. Compared as a SET (sorted) rather than probed key by
    key, so a rename or a dropped key fails HERE -- at the one place that
@@ -880,10 +894,14 @@ let test_ops_shape () =
       ignore (history_int "appended" : int);
       Alcotest.(check bool)
         "history.capacity is never smaller than history.points" true (capacity >= points);
-      (* The alerts object's own twelve-key contract, reused rather than
-         retyped -- Task 10's helper already proves it, at this nesting
-         level too. *)
-      check_alert_key_set (field_exn j "alerts");
+      (* The alerts object's contract at THIS nesting level is eleven keys,
+         not Task 10's twelve: /api/ops omits [recent] so no symbol name can
+         reach this object through the event history. See
+         [check_ops_alert_key_set] and the comment on [json_of_alerts]. *)
+      check_ops_alert_key_set (field_exn j "alerts");
+      Alcotest.(check bool)
+        "recent does not appear in the ops alerts object at all" false
+        (List.mem (assoc_keys (field_exn j "alerts")) "recent" ~equal:String.equal);
       (* The heap counters: presence and shape only. Their values are the
          runtime's, and this test asserting a specific heap size would pin a
          number the GC is free to change between OCaml releases. *)
@@ -1081,20 +1099,27 @@ let cors_header server path =
             (Cohttp.Response.headers response)
             "access-control-allow-origin")
 
+(* A route is JSON iff it is under /api/ and is not the stream: /api/stream is
+   the same book at a higher rate served through respond_with_pipe, not data,
+   and never carries this header (see the comment on [json_headers]). Named
+   here rather than read off Content-Type, because the point of this test is
+   that every entry in [Server.routes] -- not just the four the previous
+   version of this test named by hand -- gets the header its own route type
+   promises, including the three JSON routes (/api/snapshot, /api/history,
+   /api/stress) that used to be proven only by [test_cors_is_demo_json_only]
+   in isolation from the table. *)
+let is_json_route path =
+  String.is_prefix path ~prefix:"/api/" && not (String.equal path "/api/stream")
+
 let test_cors_survives_being_read_through_the_table_and_not_just_built () =
   with_server ~mode:`Demo
     ~f:(fun server _graph ->
-      Alcotest.(check (option string))
-        "a demo host's /api/health dispatches with the open header" (Some "*")
-        (cors_header server "/api/health");
-      Alcotest.(check (option string))
-        "and so does /api/ops" (Some "*")
-        (cors_header server "/api/ops");
-      Alcotest.(check (option string))
-        "but / is a document, not data" None (cors_header server "/");
-      Alcotest.(check (option string))
-        "and /api/stream is the same book at a higher rate, not data" None
-        (cors_header server "/api/stream"))
+      List.iter Server.routes ~f:(fun (path, _, _) ->
+          let expected = if is_json_route path then Some "*" else None in
+          Alcotest.(check (option string))
+            (Printf.sprintf "%s dispatches with %s" path
+               (if is_json_route path then "the open header" else "no CORS header"))
+            expected (cors_header server path)))
     ();
   with_server ~mode:`Live
     ~f:(fun server _graph ->
