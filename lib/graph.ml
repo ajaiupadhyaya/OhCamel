@@ -365,6 +365,41 @@ module Snapshot = struct
          rather than a pile of positions -- and, watched over time, the number
          that falls toward 1.0 as correlations converge in a selloff. *)
     diversification_ratio : float option;
+    (* The two Euler quantities the decomposition produces alongside the
+         component shares, keyed by symbol here rather than left as the arrays
+         attribution.ml returns.
+
+         [Attribution.t] carries them positionally, aligned to [weights], which
+         is aligned to [Map.keys instruments]. That alignment is a fact this
+         file guarantees and no consumer can check -- get it wrong and the page
+         reports NVDA's risk under XOM's name, internally consistent and about
+         the wrong book. Zipping them here, once, beside the code that
+         established the order, is what turns the convention into a fact.
+
+         Read the two together and the difference matters: marginal is a RATE
+         (how portfolio risk moves per unit of weight -- "should I add or
+         trim") and standalone is an AMOUNT (|w_i| sigma_i, what the position
+         would contribute if it moved with everything else). The product of the
+         weight and the marginal is the component, already published in dollars
+         as [component_var_by_instrument]; these two are in return space, as
+         attribution.ml computes them, and the encoder converts nothing. *)
+    marginal_by_instrument : float Symbol.Map.t option;
+    standalone_by_instrument : float Symbol.Map.t option;
+    (* Sum of the components minus portfolio sigma. Exact in real arithmetic by
+         Euler's theorem, so anything here beyond float accumulation error means
+         the covariance matrix and the weights have gone out of alignment --
+         the one failure of attribution.ml that produces confident, plausible,
+         entirely wrong numbers. Published rather than only asserted in a test,
+         because a self-check that runs at run time on the real book is worth
+         more than one that runs at build time on a seeded one. *)
+    euler_residual : float option;
+    (* Which of the two matrices the decomposition above read. Fixed at
+         construction, and carried in the snapshot rather than assumed by the
+         reader for exactly the reason [ewma_lambda] is: two runs under
+         different choices publish different numbers under one field name, and
+         a wire format that does not say which is one that cannot be compared
+         against itself later. *)
+    covariance_for_attribution : Covariance_estimator.t;
     (* The two Greeks that have no place in a linear exposure sum, per
          underlying and for the book.
 
@@ -398,6 +433,18 @@ module Snapshot = struct
          Listed explicitly rather than omitted, because a limit missing from a
          list of breaches reads as a limit that is fine. *)
     unevaluated_limits : string list;
+    (* The marks and the positions every exposure above was computed from.
+
+         Here rather than read back through [Graph.price] and [Graph.qty] by the
+         encoder, and the reason is the one stated at the head of this module: a
+         snapshot is a consistent read of ONE fixed point of the graph, and a
+         getter called afterwards reads whatever the cells hold then. The page
+         prints price and quantity on the same row as the exposure they
+         multiply out to; a row whose three numbers came from two different
+         moments is the kind of inconsistency that makes a risk display
+         untrustworthy in exactly the minute it matters. *)
+    prices : Price.t Symbol.Map.t;
+    quantities : Qty.t Symbol.Map.t;
   }
   [@@deriving sexp_of, fields ~getters]
 
@@ -505,6 +552,13 @@ type t = {
   obs_component_var_by_instrument : Notional.t Symbol.Map.t option Inc.Observer.t;
   obs_component_var_by_sector : Notional.t Sector.Map.t option Inc.Observer.t;
   obs_diversification_ratio : float option Inc.Observer.t;
+  (* The decomposition itself, not just the two numbers taken out of it.
+
+       Created through [observe_silent], so it is released by [destroy] like
+       every other observer and carries no update handler -- see the note
+       there. It adds no node: [attribution] was already necessary, because
+       [component_var_map] reads it. *)
+  obs_attribution : Attribution.t option Inc.Observer.t;
   obs_var_notional : Notional.t option Inc.Observer.t;
   obs_es_notional : Notional.t option Inc.Observer.t;
   obs_equity : Notional.t Inc.Observer.t;
@@ -623,9 +677,23 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
   let note (name : string) = on_compute name in
   let releases = ref [] in
   let change_listeners = ref [] in
-  let observe node =
+  (* Observe a node and remember how to let it go.
+
+     Split from [observe] below because the attribution node needs the first
+     half and must not have the second. A bare [Inc.observe] would survive
+     [destroy] entirely: the observer would stay live, the node would stay
+     necessary, and every stress fork and every report graph in this process
+     would keep recomputing an abandoned book's attribution on every stabilize,
+     forever. The releases list is the only thing that prevents that, so
+     nothing in this module may create an observer outside these two
+     functions. *)
+  let observe_silent node =
     let o = Inc.observe node in
     releases := (fun () -> Inc.Observer.disallow_future_use o) :: !releases;
+    o
+  in
+  let observe node =
+    let o = observe_silent node in
     (* Every published value carries an update handler, which is what lets a
        consumer be told that something changed instead of asking. Incremental
        fires these only when a value actually changes -- the cutoffs upstream
@@ -635,7 +703,14 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
        This is the last link in the chain the project is arguing for. Without
        it, a dashboard would have to poll the engine, and an engine that is
        reactive internally but polled at its edge has moved the timer rather
-       than removed it. *)
+       than removed it.
+
+       [observe_silent] is the deliberate exception and there is exactly one
+       user of it: [attribution] is observed so its arrays can be read out, and
+       it is observed WITHOUT a handler because [component_var_map] is already
+       observed, changes whenever attribution does, and already wakes the same
+       listeners. A second handler on the same event would double the history
+       ring's append rate to publish nothing new. *)
     Inc.Observer.on_update_exn o ~f:(fun _ ->
         List.iter !change_listeners ~f:(fun listener -> listener ()));
     o
@@ -1452,6 +1527,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
       obs_parametric_var_ewma = observe parametric_var_ewma_node;
       obs_component_var_by_instrument = observe component_var_node;
       obs_component_var_by_sector = observe component_var_sector_node;
+      obs_attribution = observe_silent attribution_node;
       obs_diversification_ratio = observe diversification_ratio_node;
       obs_var_notional = observe var_notional_node;
       obs_es_notional = observe es_notional_node;
@@ -1832,10 +1908,24 @@ let feed_health (t : t) : Feed_health.t = Inc.Observer.value_exn t.obs_feed_heal
 let limit_results (t : t) : (Limit.t * Breach.t option) list =
   List.zip_exn t.limits (Inc.Observer.value_exn t.obs_breaches)
 
+(* The Euler decomposition as attribution.ml returns it: arrays in the order of
+   [weights], which is [Map.keys instruments]. [Snapshot] zips them against the
+   symbols; this is here for a caller that wants the record. *)
+let attribution (t : t) : Attribution.t option = Inc.Observer.value_exn t.obs_attribution
+
 let snapshot (t : t) : Snapshot.t =
   Inc.stabilize ();
   let results = limit_results t in
   let historical_var = historical_var t in
+  let attribution = attribution t in
+  (* One zip, used twice. [symbols t] is [Map.keys t.instruments] and the
+     arrays came from [weights], which is [Map.data] of the same map, so the
+     two line up -- the alignment the whole risk chain rests on, asserted here
+     by [List.zip_exn] raising rather than by a comment. *)
+  let by_symbol (field : Attribution.t -> float array) =
+    Option.map attribution ~f:(fun a ->
+        Symbol.Map.of_alist_exn (List.zip_exn (symbols t) (Array.to_list (field a))))
+  in
   {
     Snapshot.exposure_by_instrument = exposure_by_instrument t;
     exposure_by_sector = exposure_by_sector t;
@@ -1856,6 +1946,12 @@ let snapshot (t : t) : Snapshot.t =
     component_var_by_instrument = component_var_by_instrument t;
     component_var_by_sector = component_var_by_sector t;
     diversification_ratio = diversification_ratio t;
+    marginal_by_instrument = by_symbol Attribution.marginal;
+    standalone_by_instrument = by_symbol Attribution.standalone;
+    euler_residual = Option.map attribution ~f:Attribution.euler_residual;
+    covariance_for_attribution = t.covariance_for_attribution;
+    prices = Map.map t.price_vars ~f:Inc.Var.value;
+    quantities = Map.map t.qty_vars ~f:Inc.Var.value;
     gamma_by_instrument = gamma_by_instrument t;
     vega_by_instrument = vega_by_instrument t;
     portfolio_gamma = portfolio_gamma t;

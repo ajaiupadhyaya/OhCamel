@@ -1091,6 +1091,142 @@ let test_attribution_is_none_while_warming_up () =
    at $5,000 against the $5,455.36 total, and the fact that it breaches at
    exactly the same number the instrument shares add up to is the Euler identity
    showing through the limit layer. *)
+(* The decomposition, finally observed.
+
+   [attribution] has been recomputed on every tick since Phase 5 and nothing
+   read it: two downstream nodes each took one field and the rest was
+   discarded. These are the fields §02 of the page is made of, and the
+   residual is the cheap self-check attribution.ml exposes precisely so it can
+   stay true at run time rather than only in a test.
+
+   Hand-derived from the standard book. The weights are 0.3, 0.3, -0.4 and the
+   covariance is built from [base_returns] with XOM's series negated, so every
+   pair is perfectly +/-1 correlated and sigma_i = sqrt(0.0011) for all three.
+   Perfect correlation makes the book behave like a single asset:
+     sigma_p = |0.3 + 0.3 + 0.4| * sqrt(0.0011) = sqrt(0.0011)
+   because XOM's -0.4 weight against a -1 correlated series adds rather than
+   cancels. So each marginal is +/- sqrt(0.0011) with the sign of the name's
+   own co-movement, each standalone is |w_i| * sqrt(0.0011), and the
+   standalones sum to exactly sigma_p -- a diversification ratio of 1.00,
+   which is what "correlations at one" means and is the degenerate case worth
+   pinning because every other ratio is a departure from it. *)
+let test_attribution_fields () =
+  with_graph
+    ~f:(fun graph _ ->
+      let s = Graph.snapshot graph in
+      let sigma = Float.sqrt base_variance in
+      let marginal =
+        Option.value_exn
+          (Graph.Snapshot.marginal_by_instrument s)
+          ~message:"marginal is present on a seeded book"
+      in
+      let standalone =
+        Option.value_exn
+          (Graph.Snapshot.standalone_by_instrument s)
+          ~message:"standalone is present on a seeded book"
+      in
+      Alcotest.(check (list string))
+        "keyed by every symbol, none missing" [ "AAPL"; "MSFT"; "XOM" ]
+        (List.map (Map.keys marginal) ~f:Symbol.to_string);
+      Alcotest.(check (list string))
+        "and the standalone map the same" [ "AAPL"; "MSFT"; "XOM" ]
+        (List.map (Map.keys standalone) ~f:Symbol.to_string);
+      Alcotest.check float_eq "marginal(AAPL) = sigma_p" sigma
+        (Map.find_exn marginal aapl);
+      (* XOM's series is the negation, and its weight is negative, so its
+         marginal is negative and its COMPONENT -- weight times marginal -- is
+         positive. A hedge is the case where those two signs differ; this book
+         does not have one, and test_a_hedge_does_not_breach_a_risk_limit is
+         where that case lives. *)
+      Alcotest.check float_eq "marginal(XOM) = -sigma_p" (-.sigma)
+        (Map.find_exn marginal xom);
+      Alcotest.check float_eq "standalone(AAPL) = |w| sigma" (0.3 *. sigma)
+        (Map.find_exn standalone aapl);
+      Alcotest.check float_eq "standalone(XOM) = 0.4 sigma" (0.4 *. sigma)
+        (Map.find_exn standalone xom);
+      (* Euler is exact in real arithmetic; anything beyond accumulation error
+         means the matrix and the weights have gone out of alignment, which is
+         the one failure of that module that produces confident, plausible,
+         entirely wrong attributions. *)
+      let residual =
+        Option.value_exn
+          (Graph.Snapshot.euler_residual s)
+          ~message:"the residual is present on a seeded book"
+      in
+      Alcotest.(check bool)
+        (Printf.sprintf "|Euler residual| < 1e-9 (got %g)" residual)
+        true
+        (Float.( < ) (Float.abs residual) 1e-9);
+      Alcotest.(check string)
+        "the snapshot says which matrix was decomposed" "equal_weighted"
+        (Graph.Covariance_estimator.to_string
+           (Graph.Snapshot.covariance_for_attribution s));
+      (* The marks and positions the exposures above came from, read out of the
+         same fixed point rather than fetched afterwards through a getter. *)
+      Alcotest.check float_eq "price[AAPL] on the snapshot" 150.0
+        (Price.to_float (Map.find_exn (Graph.Snapshot.prices s) aapl));
+      Alcotest.check float_eq "qty[XOM] keeps its sign" (-400.0)
+        (Qty.to_float (Map.find_exn (Graph.Snapshot.quantities s) xom)))
+    ()
+
+(* Unknown, never zero. A book with no return history has no covariance to
+   decompose, and a marginal of 0.0 renders on a page as "this position
+   contributes no risk" -- the single most dangerous wrong answer this system
+   can give, which risk_metrics.ml names in as many words. *)
+let test_attribution_fields_are_none_while_warming_up () =
+  with_graph ~seed:false
+    ~f:(fun graph _ ->
+      Graph.set_price graph aapl (Price.of_float 150.0);
+      Graph.set_qty graph aapl (Qty.of_float 200.0);
+      let s = Graph.snapshot graph in
+      Alcotest.(check bool)
+        "marginal is None" true
+        (Option.is_none (Graph.Snapshot.marginal_by_instrument s));
+      Alcotest.(check bool)
+        "standalone is None" true
+        (Option.is_none (Graph.Snapshot.standalone_by_instrument s));
+      Alcotest.(check bool)
+        "and so is the residual" true
+        (Option.is_none (Graph.Snapshot.euler_residual s)))
+    ()
+
+(* The new observer must be invisible to everything that was already measured.
+
+   It adds no named node -- [attribution] was already named and already ran --
+   and it carries NO update handler, so it does not wake the change listeners.
+   That second half is the one worth a test: server.ml's broadcaster and
+   history_buffer.ml both hang off those listeners, and an extra one firing per
+   tick would move the history ring's appended count and the frame rate without
+   anything on the book having changed. *)
+let test_the_attribution_observer_is_silent () =
+  with_graph
+    ~f:(fun graph recorder ->
+      let wakeups = ref 0 in
+      Graph.on_change graph ~f:(fun () -> incr wakeups);
+      (* Same tick [test_price_tick_is_local] pins, not a fresh one: a price
+         RISE leaves drawdown at 0.0 under its cutoff, so [limit:dd-cap] would
+         legitimately sit out and an upward tick would end up testing that
+         cutoff instead of the observer added here. *)
+      Graph.apply_tick graph
+        { Tick.symbol = aapl; price = Price.of_float 120.0; time = Time.epoch };
+      Graph.stabilize graph;
+      (* The pinned set, unchanged. This is the assertion that says the new
+         observer bought a value on the wire and cost nothing on the tick
+         path. *)
+      check_recomputed recorder
+        ~msg:"a tick recomputes exactly what it did before the attribution observer"
+        ~expected:downstream_of_aapl_tick;
+      (* One wakeup per observer whose VALUE changed. The attribution observer
+         has no update handler at all, so it contributes none -- and the count
+         is the same as it was for the same tick before this task. *)
+      Alcotest.(check bool)
+        (Printf.sprintf "the tick woke listeners (%d) and the count is >0" !wakeups)
+        true (!wakeups > 0);
+      Alcotest.(check bool)
+        "the attribution observer is readable all the same" true
+        (Option.is_some (Graph.attribution graph)))
+    ()
+
 let test_component_var_limits () =
   let limits =
     [
@@ -1242,6 +1378,11 @@ let suite =
         test_attribution;
       Alcotest.test_case "attribution is unknown, not zero, while warming up" `Quick
         test_attribution_is_none_while_warming_up;
+      Alcotest.test_case "the attribution snapshot fields" `Quick test_attribution_fields;
+      Alcotest.test_case "attribution fields are None while warming up" `Quick
+        test_attribution_fields_are_none_while_warming_up;
+      Alcotest.test_case "the attribution observer adds no node and no listener" `Quick
+        test_the_attribution_observer_is_silent;
       Alcotest.test_case "component VaR limits at every scope" `Quick
         test_component_var_limits;
       Alcotest.test_case "a hedge does not breach a risk limit" `Quick
