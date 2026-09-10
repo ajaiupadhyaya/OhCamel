@@ -1,7 +1,7 @@
 # OhCamel
 
 [![ci](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml/badge.svg)](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml)
-[![coverage 70%](https://img.shields.io/badge/coverage-70%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
+[![coverage 78%](https://img.shields.io/badge/coverage-78%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
 
 **Live:** [ohcamel.ajaiupadhyaya.com](https://ohcamel.ajaiupadhyaya.com) — the
 synthetic demo, no credentials, always on. [How it is deployed](#watching-it).
@@ -1139,7 +1139,7 @@ six properties and four example tests. `QCHECK_TRIALS=5000 make test` runs
 
 ### Coverage, and what it is not measuring
 
-`make coverage` runs the suite under `bisect_ppx` and reports **70%**. The badge
+`make coverage` runs the suite under `bisect_ppx` and reports **78%**. The badge
 above is that number; CI enforces a floor of 60% and prints the full per-file
 table into the run summary, so a drop is visible without anyone remembering to
 look.

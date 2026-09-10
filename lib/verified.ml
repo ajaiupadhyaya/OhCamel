@@ -9,8 +9,9 @@
    5 pins web/quoted.json's copy to [coverage_pct] the same way.
 
    [coverage_pct] is the published rounding, not the quotient: 2,765 / 3,534
-   is 78.240%, published as 78.2 -- README.md's badge and docs/status.md
-   carry that same one-decimal figure, so a page that printed 78.240 would
+   is 78.240%, published as 78.2 -- README.md's badge rounds further to the
+   whole percent (78%) and docs/status.md carries the one-decimal figure
+   (78.2%), so a page that printed 78.240 would
    be claiming a precision `make coverage` did not measure (bisect_ppx
    counts visited points, not lines, and the number moves with the
    instrumentation). The fraction is kept beside it so the rounding is
