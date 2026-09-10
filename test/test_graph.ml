@@ -371,6 +371,113 @@ let downstream_of_aapl_position =
    not, and must not be allowed to make a dead feed look healthy. *)
 let downstream_of_aapl_tick = downstream_of_aapl_position @ [ "feed:AAPL"; "feed_health" ]
 
+(* ------------------------------------------------------------------------ *)
+(* 2a. Node names and their units                                            *)
+(* ------------------------------------------------------------------------ *)
+
+(* The input cells are named with BRACKETS and the derived per-symbol nodes
+   with a COLON, and the difference is load-bearing rather than cosmetic: the
+   drawing puts cells in their own column, and deriving that from the name
+   means there is no second table saying which names are cells for a refactor
+   to leave behind. *)
+let test_input_names () =
+  Alcotest.(check string) "price cell" "price[AAPL]" (Graph.Node_name.Input.price aapl);
+  Alcotest.(check string) "qty cell" "qty[AAPL]" (Graph.Node_name.Input.qty aapl);
+  Alcotest.(check string)
+    "return window" "returns[MSFT]"
+    (Graph.Node_name.Input.returns msft);
+  Alcotest.(check string)
+    "liveness cell" "last_tick[XOM]"
+    (Graph.Node_name.Input.last_tick xom);
+  Alcotest.(check string)
+    "contract count" "contracts[NVDA-950C]"
+    (Graph.Node_name.Input.contracts "NVDA-950C");
+  Alcotest.(check string)
+    "vol mark" "implied_vol[NVDA-950C]"
+    (Graph.Node_name.Input.implied_vol "NVDA-950C");
+  Alcotest.(check string) "cash" "cash" Graph.Node_name.Input.cash;
+  Alcotest.(check string) "now" "now" Graph.Node_name.Input.now;
+  (* The two clocks are two names. graph.ml keeps them apart because they tick
+     at different rates and only one of them is allowed upstream of a risk
+     node; a page that called both "clock" would erase the distinction the
+     module spends thirty lines defending. *)
+  Alcotest.(check string)
+    "the slow clock" "valuation_days" Graph.Node_name.Input.valuation_days
+
+(* A unit for every name, and no unit invented for a name that does not exist.
+
+   [unit_of] is what the drawing formats a value with -- dollars get a dollar
+   sign, a fraction gets a percent, a matrix gets a run count instead of a
+   number. Getting one wrong renders a fraction as dollars, which is the exact
+   failure server.ml's json_of_breach ships a unit alongside every threshold to
+   prevent. *)
+let test_units () =
+  let unit_is expected name =
+    Alcotest.(check string)
+      (name ^ " is " ^ expected)
+      expected
+      (Graph.Node_name.unit_of name)
+  in
+  unit_is "usd" "gross_exposure";
+  unit_is "usd" "net_exposure";
+  unit_is "usd" "equity";
+  unit_is "usd" "var_notional";
+  unit_is "usd" "es_notional";
+  unit_is "usd" (Graph.Node_name.exposure aapl);
+  unit_is "usd" (Graph.Node_name.sector tech);
+  unit_is "usd" "cash";
+  (* Vega is dollars per 1.00 of annualised vol -- server.ml says so where it
+     refuses to divide by a hundred on the wire -- so it is money and formats
+     as money. Gamma is not: it is delta-equivalent shares per unit move, and
+     the only word in this vocabulary that prints a bare number for a quantity
+     of shares is [qty]. *)
+  unit_is "usd" "portfolio_vega";
+  unit_is "qty" "portfolio_gamma";
+  unit_is "fraction" "current_drawdown";
+  unit_is "fraction" "historical_var";
+  unit_is "fraction" "parametric_var_ewma";
+  unit_is "fraction" "rate";
+  unit_is "ratio" "portfolio_beta";
+  unit_is "ratio" "diversification_ratio";
+  unit_is "price" (Graph.Node_name.Input.price aapl);
+  unit_is "qty" (Graph.Node_name.Input.qty aapl);
+  unit_is "count" (Graph.Node_name.Input.contracts "NVDA-950C");
+  unit_is "fraction" (Graph.Node_name.Input.implied_vol "NVDA-950C");
+  unit_is "time" "valuation_days";
+  (* [now] and [last_tick[S]] hold a timestamp, not a quantity, and this file
+     already argues (Feed_health's note on [age]) that publishing a clock
+     reading as a node value is a stale number wearing a fresh timestamp. They
+     are [state]: the drawing prints a run count under them, never a number. *)
+  unit_is "state" "now";
+  unit_is "state" (Graph.Node_name.Input.last_tick aapl);
+  unit_is "state" "feed_health";
+  unit_is "state" (Graph.Node_name.feed aapl);
+  unit_is "state" (Graph.Node_name.limit "aapl-cap");
+  unit_is "matrix" "covariance";
+  unit_is "matrix" "covariance_ewma";
+  unit_is "matrix" "aligned_returns";
+  unit_is "array" "weights";
+  unit_is "array" "portfolio_returns";
+  unit_is "array" "breaches";
+  unit_is "array" (Graph.Node_name.Input.returns aapl);
+  unit_is "map" "exposure_map";
+  unit_is "map" "component_var_map";
+  unit_is "map" "vega_by_bucket";
+  unit_is "state" "attribution";
+  unit_is "state" (Graph.Node_name.greeks "NVDA-950C");
+  (* Loud on a name nobody declared. A silent default would let a new node
+     reach the page with a plausible unit nobody chose, which is how a
+     fraction ends up rendered as dollars. *)
+  Alcotest.check_raises "an undeclared name has no unit"
+    (Failure "graph: no unit declared for node \"invented\"") (fun () ->
+      ignore (Graph.Node_name.unit_of "invented" : string))
+
+let test_scalar_units () =
+  List.iter [ "usd"; "fraction"; "ratio"; "count"; "price"; "qty"; "time" ] ~f:(fun u ->
+      Alcotest.(check bool) (u ^ " is scalar") true (Graph.Node_name.is_scalar u));
+  List.iter [ "matrix"; "array"; "map"; "state" ] ~f:(fun u ->
+      Alcotest.(check bool) (u ^ " is not scalar") false (Graph.Node_name.is_scalar u))
+
 (* The README's test, in its own words: "changing one position only triggers
    recomputation of nodes that depend on it". *)
 let test_position_change_is_local () =
@@ -1145,6 +1252,10 @@ let suite =
         test_portfolio_beta_is_total;
       Alcotest.test_case "beta aligns the two series at the recent edge" `Quick
         test_beta_aligns_at_the_recent_edge;
+      Alcotest.test_case "input cells are named with brackets" `Quick test_input_names;
+      Alcotest.test_case "every node name has a unit" `Quick test_units;
+      Alcotest.test_case "scalar units are the ones with a number" `Quick
+        test_scalar_units;
       Alcotest.test_case "ARCHITECTURE: a position change recomputes only its dependents"
         `Quick test_position_change_is_local;
       Alcotest.test_case "ARCHITECTURE: a price tick recomputes only its dependents"

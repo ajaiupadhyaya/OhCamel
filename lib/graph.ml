@@ -130,6 +130,90 @@ module Node_name = struct
   let portfolio_beta = "portfolio_beta"
   let feed (s : Symbol.t) = "feed:" ^ Symbol.to_string s
   let feed_health = "feed_health"
+
+  (* The input cells, named the same way the derived nodes are and for the same
+     reason: the drawing takes its labels from the graph, so a cell that had no
+     name would be a node the reader can see an edge into and cannot read.
+
+     Brackets rather than the colon the derived per-symbol nodes use. A drawing
+     has to put cells in their own column and everything else downstream of
+     them, and deriving that from the shape of the name means the classifier is
+     one function over strings rather than a second list of which names are
+     cells -- which is a list that goes stale the first time a node is added. *)
+  module Input = struct
+    let price (s : Symbol.t) = "price[" ^ Symbol.to_string s ^ "]"
+    let qty (s : Symbol.t) = "qty[" ^ Symbol.to_string s ^ "]"
+    let returns (s : Symbol.t) = "returns[" ^ Symbol.to_string s ^ "]"
+    let last_tick (s : Symbol.t) = "last_tick[" ^ Symbol.to_string s ^ "]"
+    let contracts (id : string) = "contracts[" ^ id ^ "]"
+    let implied_vol (id : string) = "implied_vol[" ^ id ^ "]"
+    let cash = "cash"
+    let equity_history = "equity_history"
+    let factor_returns = "factor_returns"
+    let rate = "rate"
+    let valuation_days = "valuation_days"
+    let now = "now"
+  end
+
+  (* What a node's value is measured in.
+
+     The drawing prints a value under every scalar node and a run count under
+     every other, so this is the function that decides which -- and, for the
+     scalars, how the number is formatted. It exists here rather than as a
+     table in the client because a client-side map from node name to unit would
+     be a second description of the encoder, one refactor away from silently
+     labelling a fraction as dollars. json_of_snapshot emits the values; this
+     says what they are; the test in test_server.ml asserts the two agree.
+
+     Seven scalar words and four that are not. [state] is the one worth
+     explaining: it covers a node whose value is a record or a variant -- a
+     limit result, a Greeks record, feed health -- and also the two CLOCK
+     cells. A clock reading is a number, but publishing it as a node value is
+     what Feed_health's note on [age] refuses: age changes continuously, so a
+     node holding it would wake everything downstream on every tick, and a node
+     reporting it after cutting off would be a stale number wearing a fresh
+     timestamp. The drawing shows a run count for both instead. *)
+  let unit_of (name : string) : string =
+    let has prefix = String.is_prefix name ~prefix in
+    if has "exposure:" || has "sector:" then "usd"
+    else if has "limit:" || has "feed:" || has "greeks:" || has "option_exposure:" then
+      "state"
+    else if has "price[" then "price"
+    else if has "qty[" then "qty"
+    else if has "contracts[" then "count"
+    else if has "implied_vol[" then "fraction"
+    else if has "returns[" then "array"
+    else if has "last_tick[" then "state"
+    else
+      match name with
+      | "gross_exposure" | "net_exposure" | "equity" | "var_notional" | "es_notional"
+      | "cash" | "portfolio_vega" ->
+          "usd"
+      | "current_drawdown" | "historical_var" | "expected_shortfall" | "parametric_var"
+      | "parametric_var_ewma" | "rate" ->
+          "fraction"
+      | "portfolio_beta" | "diversification_ratio" -> "ratio"
+      | "portfolio_gamma" -> "qty"
+      | "valuation_days" -> "time"
+      | "aligned_returns" | "covariance" | "covariance_ewma" -> "matrix"
+      | "weights" | "portfolio_returns" | "equity_history" | "factor_returns" | "breaches"
+        ->
+          "array"
+      | "exposure_map" | "sector_map" | "gamma_map" | "vega_map" | "vega_by_bucket"
+      | "component_var_map" | "component_var_sector_map" ->
+          "map"
+      | "attribution" | "feed_health" | "now" -> "state"
+      | other -> failwithf "graph: no unit declared for node %S" other ()
+
+  (* The units whose value is a number the wire can carry and the drawing can
+     print. Everything else gets a run count instead -- "ran 1x since you
+     opened this page" -- which is the honest rendering of a covariance matrix
+     and is also, for [covariance] sitting at 1 while [exposure:NVDA] passes
+     forty, the whole thesis as a number. *)
+  let is_scalar (unit : string) : bool =
+    List.mem
+      [ "usd"; "fraction"; "ratio"; "count"; "price"; "qty"; "time" ]
+      unit ~equal:String.equal
 end
 
 (* Which covariance matrix the Euler decomposition reads.
