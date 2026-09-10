@@ -86,38 +86,26 @@ let daily_return () = Synthetic_book.daily_return ~rng
 (* Recompute accounting                                                      *)
 (* ------------------------------------------------------------------------ *)
 
-(* The instrumentation this whole demo exists to display. Same hook the tests
-   use: it fires once per node body per recomputation. *)
+(* The tally moved to lib/recompute_log.ml, because the page needs the same
+   fact and a second implementation of it would be free to disagree with the
+   one the terminal prints. What stays here is the one field that is a
+   PROPERTY OF THE DISPLAY rather than of the graph: live mode reports work per
+   trade, so it has to remember how many trades had arrived at the previous
+   snapshot. The graph has no opinion about trades. *)
 module Counter = struct
-  type t = {
-    mutable step : int;
-    (* Live mode reports work per trade, so it needs to know how many trades had
-       arrived at the previous reading. Unused in synthetic mode, which counts
-       per event instead. *)
-    mutable trades_at_last_snapshot : int;
-    total : int String.Table.t;
-  }
+  type t = { log : Recompute_log.t; mutable trades_at_last_snapshot : int }
 
-  let create () =
-    { step = 0; trades_at_last_snapshot = 0; total = String.Table.create () }
+  let create () = { log = Recompute_log.create (); trades_at_last_snapshot = 0 }
+  let on_compute t name = Recompute_log.note t.log name
 
-  let on_compute t name =
-    t.step <- t.step + 1;
-    Hashtbl.incr t.total name
-
+  (* Node bodies since the previous reading. The log reports which nodes ran;
+     this column only ever wanted how many, so it sums the drained counts. *)
   let take_step t =
-    let n = t.step in
-    t.step <- 0;
-    n
+    List.fold (Recompute_log.drain t.log) ~init:0 ~f:(fun acc (_, n) -> acc + n)
 
-  let distinct_nodes t = Hashtbl.length t.total
-  let grand_total t = Hashtbl.fold t.total ~init:0 ~f:(fun ~key:_ ~data acc -> acc + data)
-
-  let hottest t ~n =
-    Hashtbl.to_alist t.total
-    |> List.sort ~compare:(fun (name_a, a) (name_b, b) ->
-        match Int.descending a b with 0 -> String.compare name_a name_b | c -> c)
-    |> fun sorted -> List.take sorted n
+  let distinct_nodes t = Recompute_log.distinct t.log
+  let grand_total t = Recompute_log.total t.log
+  let hottest t ~n = Recompute_log.hottest t.log ~n
 end
 
 (* ------------------------------------------------------------------------ *)
