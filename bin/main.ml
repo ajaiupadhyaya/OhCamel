@@ -323,88 +323,23 @@ let final_report (graph : Graph.t) (counter : Counter.t) =
 (* How the saving scales                                                     *)
 (* ------------------------------------------------------------------------ *)
 
-(* The percentage above is a floor, and a small book is the worst case for it:
-   with six names the portfolio-level nodes -- gross, net, weights, the three
-   risk numbers -- genuinely depend on everything, so they dominate the tally
-   and there is not much left to skip.
-
-   The interesting quantity is how the cost of ONE tick moves as the book grows.
-   In a poll-and-recompute engine it grows with the book, because everything is
-   redone. Here it does not move at all: a tick still touches one instrument,
-   one sector, the aggregates, and the limits that read them. This probe
-   measures exactly that, at three book sizes. *)
-
-let probe ~(instrument_count : int) ~(ticks : int) =
-  let counter = Counter.create () in
-  let symbols =
-    List.init instrument_count ~f:(fun i -> Symbol.of_string (Printf.sprintf "SYM%04d" i))
-  in
-  let instruments =
-    List.map symbols ~f:(fun symbol ->
-        (* Ten names per sector, so the sector nodes are neither degenerate (one
-         member each) nor a single bucket holding the whole book. *)
-        {
-          Instrument.symbol;
-          sector =
-            Sector.of_string
-              (Printf.sprintf "SEC%03d"
-                 (Int.of_string (String.drop_prefix (Symbol.to_string symbol) 3) / 10));
-        })
-  in
-  (* One cap per name, as a real book has, plus the three portfolio limits. The
-     per-name limits are the part that a polling engine re-evaluates in full on
-     every tick and that this one leaves untouched. *)
-  let limits =
-    List.map symbols ~f:(fun symbol ->
-        limit
-          ("cap-" ^ Symbol.to_string symbol)
-          (Limit.Instrument symbol)
-          (Limit.Gross_notional (dollars 100_000.0)))
-    @ [
-        limit "book-cap" Limit.Portfolio (Limit.Gross_notional (dollars 1e9));
-        limit "var-cap" Limit.Portfolio (Limit.Value_at_risk (dollars 1e9));
-        limit "dd-cap" Limit.Portfolio (Limit.Max_drawdown 0.5);
-      ]
-  in
-  let graph =
-    Graph.create ~on_compute:(Counter.on_compute counter) ~starting_cash ~instruments
-      ~limits ~confidence ~return_window ()
-  in
-  let prices = Symbol.Table.create () in
-  List.iter symbols ~f:(fun symbol ->
-      Hashtbl.set prices ~key:symbol ~data:100.0;
-      Graph.set_price graph symbol (Price.of_float 100.0);
-      Graph.set_qty graph symbol (Qty.of_float 100.0);
-      Graph.set_returns graph symbol
-        (Array.init return_window ~f:(fun _ -> daily_return ())));
-  Graph.stabilize graph;
-  Graph.mark_equity graph;
-  Graph.stabilize graph;
-  (* Every node has now run at least once, so this is the size of the graph --
-     and therefore what a polling engine would redo per event. *)
-  let graph_size = Counter.distinct_nodes counter in
-  ignore (Counter.take_step counter : int);
-  let total = ref 0 in
-  let ring = Array.of_list symbols in
-  for i = 1 to ticks do
-    let symbol = ring.(i % Array.length ring) in
-    let price = Hashtbl.find_exn prices symbol *. (1.0 +. gaussian ~sigma:0.004) in
-    Hashtbl.set prices ~key:symbol ~data:price;
-    Graph.set_price graph symbol (Price.of_float price);
-    Graph.stabilize graph;
-    total := !total + Counter.take_step counter
-  done;
-  Graph.destroy graph;
-  (graph_size, float_of_int !total /. float_of_int ticks)
-
+(* The probe itself is lib/scaling_probe.ml, because the served process runs
+   the same measurement at startup. What stays here is the table, and the one
+   thing that is a property of THIS program rather than of the probe: it draws
+   from the shared state, after the sixty events above, so the README's
+   per-tick column is this stream's and the gate holds it. *)
 let scaling_report () =
   printf "%s\n  HOW THAT SCALES\n%s\n\n" (rule 106) (rule 106);
   printf "  %12s %16s %18s %16s\n" "instruments" "nodes in graph" "nodes per tick"
     "if polled";
   printf "  %s\n" (rule 66);
-  List.iter [ 10; 100; 400 ] ~f:(fun instrument_count ->
-      let graph_size, per_tick = probe ~instrument_count ~ticks:50 in
-      printf "  %12d %16d %18.1f %16d\n" instrument_count graph_size per_tick graph_size);
+  List.iter Scaling_probe.default_sizes ~f:(fun instrument_count ->
+      let row =
+        Scaling_probe.probe ~rng ~instrument_count ~ticks:Scaling_probe.default_ticks
+      in
+      printf "  %12d %16d %18.1f %16d\n" row.Scaling_probe.instrument_count
+        row.Scaling_probe.named_nodes row.Scaling_probe.nodes_per_tick
+        row.Scaling_probe.named_nodes);
   printf
     "\n\
     \  The middle column is flat and the right one is not. That is the whole\n\

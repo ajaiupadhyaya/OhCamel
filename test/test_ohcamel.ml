@@ -42,6 +42,7 @@ let () =
       Test_crisis_data.suite;
       Test_recompute_log.suite;
       Test_synthetic_book.suite;
+      Test_scaling_probe.suite;
       Test_stress.suite;
       Test_graph.suite;
       Test_feed.suite;
