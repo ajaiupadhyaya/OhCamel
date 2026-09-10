@@ -40,7 +40,7 @@ that is a design invariant rather than a missing feature.
 | Cost | $24/month, metered hourly, capped |
 | Proxy / TLS | Caddy, Let's Encrypt, HTTP→HTTPS 308, HSTS. Only Caddy has a host port; the engines are on an internal Docker network |
 | DNS | Porkbun. Two A records, `ohcamel` and `live.ohcamel`, on a domain whose apex is unrelated (the owner's portfolio site) |
-| Deployed | 2026-09-02, both hosts, verified by the production smoke suite: 9 passed, 0 failed |
+| Deployed | 2026-09-09, both hosts, from `91424da` — both origins report it as `build.git_sha` on `/api/ops` — verified by the production smoke suite: 18 passed, 0 failed |
 
 Resource use at rest is small enough to be worth stating so nobody adds a
 bigger box for the wrong reason: the engine sits at about 41 MB and six percent
@@ -334,7 +334,8 @@ git pull --ff-only && deploy/deploy.sh --live   # plus the live host
 # look
 docker compose -f deploy/docker-compose.yml ps
 docker compose -f deploy/docker-compose.yml logs --tail 100 [caddy|ohcamel-demo|ohcamel-live]
-deploy/smoke.sh https://ohcamel.ajaiupadhyaya.com [--live https://live.ohcamel.ajaiupadhyaya.com]
+deploy/smoke.sh https://ohcamel.ajaiupadhyaya.com [--live https://live.ohcamel.ajaiupadhyaya.com] [--expect-sha "$(git rev-parse HEAD)"]
+open https://ohcamel.ajaiupadhyaya.com/ops       # which build, how long, what the process is doing; the live host's /ops draws both
 
 # change the book without a rebuild: edit book.sexp, then
 docker compose -f deploy/docker-compose.yml restart ohcamel-demo
