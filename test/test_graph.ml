@@ -478,6 +478,175 @@ let test_scalar_units () =
   List.iter [ "matrix"; "array"; "map"; "state" ] ~f:(fun u ->
       Alcotest.(check bool) (u ^ " is not scalar") false (Graph.Node_name.is_scalar u))
 
+(* ------------------------------------------------------------------------ *)
+(* 2b. The label table                                                       *)
+(* ------------------------------------------------------------------------ *)
+
+(* Every node the hook can name is also named ON the node, and the two lists
+   are the same list.
+
+   This is the first half of "the drawing is the graph, taken from the graph".
+   graph.ml has called [note Node_name.x] inside every node body since Phase 1;
+   what is new is that the same string now sits in Incremental's own node
+   record, where For_analyzer can read it back beside the node's children. If
+   a site is named in the body and not on the node, the page draws an edge into
+   a node it cannot label; if it is named on the node and not in the body, the
+   page lights a node the tests never counted. Both are caught here, by name.
+
+   Hand-counted on the standard book -- three names, two sectors, seven limits,
+   no options:
+
+     inputs    cash equity_history factor_returns valuation_days now       5
+               price[S] qty[S] returns[S] last_tick[S]  x 3                12
+     derived   exposure:S feed:S  x 3                                       6
+               sector:K  x 2                                                2
+               limit:name  x 7                                              7
+               singletons                                                  29
+                                                                           --
+                                                                           61
+
+   [rate] is NOT in the list, and that is the traverse being honest rather
+   than a bug: on a book with no options nothing reads the rate cell, so it is
+   reachable from no observer and is not part of this graph. It joins the
+   moment a contract does. *)
+let expected_labels =
+  [
+    "aligned_returns";
+    "attribution";
+    "breaches";
+    "cash";
+    "component_var_map";
+    "component_var_sector_map";
+    "covariance";
+    "covariance_ewma";
+    "current_drawdown";
+    "diversification_ratio";
+    "equity";
+    "equity_history";
+    "es_notional";
+    "expected_shortfall";
+    "exposure:AAPL";
+    "exposure:MSFT";
+    "exposure:XOM";
+    "exposure_map";
+    "factor_returns";
+    "feed:AAPL";
+    "feed:MSFT";
+    "feed:XOM";
+    "feed_health";
+    "gamma_map";
+    "gross_exposure";
+    "historical_var";
+    "last_tick[AAPL]";
+    "last_tick[MSFT]";
+    "last_tick[XOM]";
+    "limit:aapl-cap";
+    "limit:book-cap";
+    "limit:dd-cap";
+    "limit:energy-cap";
+    "limit:msft-cap";
+    "limit:tech-cap";
+    "limit:var-cap";
+    "net_exposure";
+    "now";
+    "parametric_var";
+    "parametric_var_ewma";
+    "portfolio_beta";
+    "portfolio_gamma";
+    "portfolio_returns";
+    "portfolio_vega";
+    "price[AAPL]";
+    "price[MSFT]";
+    "price[XOM]";
+    "qty[AAPL]";
+    "qty[MSFT]";
+    "qty[XOM]";
+    "returns[AAPL]";
+    "returns[MSFT]";
+    "returns[XOM]";
+    "sector:ENERGY";
+    "sector:TECH";
+    "sector_map";
+    "valuation_days";
+    "var_notional";
+    "vega_by_bucket";
+    "vega_map";
+    "weights";
+  ]
+
+(* The 27 observers of Phase 1-5 plus Task 2's attribution observer. Every
+   published value and nothing else. *)
+let expected_observed =
+  [
+    "attribution";
+    "breaches";
+    "component_var_map";
+    "component_var_sector_map";
+    "covariance";
+    "covariance_ewma";
+    "current_drawdown";
+    "diversification_ratio";
+    "equity";
+    "es_notional";
+    "expected_shortfall";
+    "exposure_map";
+    "feed_health";
+    "gamma_map";
+    "gross_exposure";
+    "historical_var";
+    "net_exposure";
+    "parametric_var";
+    "parametric_var_ewma";
+    "portfolio_beta";
+    "portfolio_gamma";
+    "portfolio_returns";
+    "portfolio_vega";
+    "sector_map";
+    "var_notional";
+    "vega_by_bucket";
+    "vega_map";
+    "weights";
+  ]
+
+let test_every_node_is_labelled () =
+  with_graph
+    ~f:(fun graph _ ->
+      let labels = Graph.labelled_nodes graph in
+      Alcotest.(check int)
+        "sixty-one named nodes on the standard book" 61 (List.length labels);
+      Alcotest.(check (list string))
+        "the names, and no others" expected_labels (List.map labels ~f:fst);
+      Alcotest.(check (list string))
+        "the twenty-eight observed" expected_observed
+        (List.filter_map labels ~f:(fun (name, observed) ->
+             if observed then Some name else None));
+      (* The marker is a label, never a name. *)
+      Alcotest.(check bool)
+        "the observed marker is not itself a node" false
+        (List.exists labels ~f:(fun (name, _) -> String.equal name Graph.observed_marker));
+      (* Every derived name has a unit, which Task 1 made a total function
+         over this graph's vocabulary; a name that raises here is a node
+         someone added without deciding what it is measured in. *)
+      List.iter labels ~f:(fun (name, _) ->
+          ignore (Graph.Node_name.unit_of name : string)))
+    ()
+
+(* Reading the table is free. Labels are metadata on nodes that already
+   exist; walking them must not stabilize, must not observe and must not run a
+   single node body. The recorder is the witness. *)
+let test_reading_labels_costs_nothing () =
+  with_graph
+    ~f:(fun graph recorder ->
+      let before = Graph.total_nodes_recomputed () in
+      ignore (Graph.labelled_nodes graph : (string * bool) list);
+      ignore (Graph.walk graph : Graph.Raw.t list);
+      Graph.stabilize graph;
+      check_recomputed recorder ~msg:"no node body ran" ~expected:[];
+      Alcotest.(check int)
+        "Incremental's own counter did not move either" before
+        (Graph.total_nodes_recomputed ()))
+    ()
+
 (* The README's test, in its own words: "changing one position only triggers
    recomputation of nodes that depend on it". *)
 let test_position_change_is_local () =
@@ -1397,6 +1566,10 @@ let suite =
       Alcotest.test_case "every node name has a unit" `Quick test_units;
       Alcotest.test_case "scalar units are the ones with a number" `Quick
         test_scalar_units;
+      Alcotest.test_case "every node the hook names is named on the node" `Quick
+        test_every_node_is_labelled;
+      Alcotest.test_case "reading the label table runs nothing" `Quick
+        test_reading_labels_costs_nothing;
       Alcotest.test_case "ARCHITECTURE: a position change recomputes only its dependents"
         `Quick test_position_change_is_local;
       Alcotest.test_case "ARCHITECTURE: a price tick recomputes only its dependents"

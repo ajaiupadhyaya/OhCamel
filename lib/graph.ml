@@ -216,6 +216,15 @@ module Node_name = struct
       unit ~equal:String.equal
 end
 
+(* The second label an observed node carries, beside its name.
+
+   Not a node name and never returned as one: it rides in the same label set
+   [append_user_info_graphviz] unions, so the traverse in [walk] can tell an
+   observed node from an interior one without a second table saying which
+   twenty-eight names have observers -- a table that would be wrong the day a
+   twenty-ninth is added and nobody updates it. *)
+let observed_marker = "@observed"
+
 (* Which covariance matrix the Euler decomposition reads.
 
    The graph publishes both matrices unconditionally -- they are siblings off
@@ -688,6 +697,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      nothing in this module may create an observer outside these two
      functions. *)
   let observe_silent node =
+    Inc.append_user_info_graphviz node ~label:[ observed_marker ] ~attrs:String.Map.empty;
     let o = Inc.observe node in
     releases := (fun () -> Inc.Observer.disallow_future_use o) :: !releases;
     o
@@ -720,10 +730,26 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      republishes the same last-trade price constantly, and under the default
      physical-equality cutoff every one of those would boxed-float its way into
      a full VaR recomputation. *)
-  let make_var ~equal init =
+  let make_var ~name ~equal init =
     let v = Inc.Var.create init in
-    Inc.set_cutoff (Inc.Var.watch v) (Inc.Cutoff.of_equal equal);
+    let watch = Inc.Var.watch v in
+    Inc.set_cutoff watch (Inc.Cutoff.of_equal equal);
+    (* The cell's name goes on its WATCH node, which is the node the graph
+       reads and For_analyzer reports as a child; the Var itself is not a
+       node. Var.watch returns the same node every time, so this is done once
+       here rather than at every read site. *)
+    Inc.append_user_info_graphviz watch ~label:[ name ] ~attrs:String.Map.empty;
     v
+  in
+  (* Name a derived node on the node. The same string the body passes to
+     [note], put where Incremental's own table can return it. Returns the node
+     so it wraps a construction site without moving anything. A locally
+     abstract type rather than ['a]: a named type variable in an annotation is
+     scoped to all of [create], so ['a] would be one type shared by every
+     call site and the second, differently-typed node would not compile. *)
+  let named (type a) (name : string) (node : a Inc.t) : a Inc.t =
+    Inc.append_user_info_graphviz node ~label:[ name ] ~attrs:String.Map.empty;
+    node
   in
   let cutoff ~equal node =
     Inc.set_cutoff node (Inc.Cutoff.of_equal equal);
@@ -737,27 +763,42 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
   let price_vars =
     Symbol.Map.of_alist_exn
       (List.map symbols ~f:(fun s ->
-           (s, make_var ~equal:Price.equal (Price.of_float 0.0))))
+           ( s,
+             make_var ~name:(Node_name.Input.price s) ~equal:Price.equal
+               (Price.of_float 0.0) )))
   in
   let qty_vars =
     Symbol.Map.of_alist_exn
-      (List.map symbols ~f:(fun s -> (s, make_var ~equal:Qty.equal Qty.zero)))
+      (List.map symbols ~f:(fun s ->
+           (s, make_var ~name:(Node_name.Input.qty s) ~equal:Qty.equal Qty.zero)))
   in
   let returns_vars =
     Symbol.Map.of_alist_exn
-      (List.map symbols ~f:(fun s -> (s, make_var ~equal:(Array.equal Float.equal) [||])))
+      (List.map symbols ~f:(fun s ->
+           ( s,
+             make_var ~name:(Node_name.Input.returns s) ~equal:(Array.equal Float.equal)
+               [||] )))
   in
-  let cash_var = make_var ~equal:Notional.equal starting_cash in
-  let equity_history_var = make_var ~equal:(Array.equal Float.equal) [||] in
-  let factor_returns_var = make_var ~equal:(Array.equal Float.equal) [||] in
+  let cash_var =
+    make_var ~name:Node_name.Input.cash ~equal:Notional.equal starting_cash
+  in
+  let equity_history_var =
+    make_var ~name:Node_name.Input.equity_history ~equal:(Array.equal Float.equal) [||]
+  in
+  let factor_returns_var =
+    make_var ~name:Node_name.Input.factor_returns ~equal:(Array.equal Float.equal) [||]
+  in
   (* [None] rather than the epoch for "never seen". The epoch would make a
      symbol that has never printed look like one that printed in 1970, which is
      a difference the feed-health node exists to report. *)
   let last_tick_vars =
     Symbol.Map.of_alist_exn
-      (List.map symbols ~f:(fun s -> (s, make_var ~equal:(Option.equal Time.equal) None)))
+      (List.map symbols ~f:(fun s ->
+           ( s,
+             make_var ~name:(Node_name.Input.last_tick s) ~equal:(Option.equal Time.equal)
+               None )))
   in
-  let now_var = make_var ~equal:Time.equal Time.epoch in
+  let now_var = make_var ~name:Node_name.Input.now ~equal:Time.equal Time.epoch in
   (* --- options ---------------------------------------------------------- *)
   let option_positions =
     String.Map.of_alist_exn (List.map options ~f:(fun o -> (Options.Position.id o, o)))
@@ -767,8 +808,11 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      unset, whereas one defaulting to "1" would produce Greeks that look real.
      The driver writes the real counts before the first stabilize a user sees. *)
   let contracts_vars =
-    Map.map option_positions ~f:(fun _ ->
-        make_var ~equal:Options.Contracts.equal (Options.Contracts.of_float 0.0))
+    Map.mapi option_positions ~f:(fun ~key:id ~data:_ ->
+        make_var
+          ~name:(Node_name.Input.contracts id)
+          ~equal:Options.Contracts.equal
+          (Options.Contracts.of_float 0.0))
   in
   (* Implied vol starts at zero too, which puts every contract on
      Black_scholes' intrinsic branch until a real vol arrives: price is
@@ -777,11 +821,16 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      -- and it is far better than a plausible default like 0.20, which would
      produce a full set of Greeks for a surface nobody supplied. *)
   let implied_vol_vars =
-    Map.map option_positions ~f:(fun _ ->
-        make_var ~equal:Options.Implied_vol.equal (Options.Implied_vol.of_float 0.0))
+    Map.mapi option_positions ~f:(fun ~key:id ~data:_ ->
+        make_var
+          ~name:(Node_name.Input.implied_vol id)
+          ~equal:Options.Implied_vol.equal
+          (Options.Implied_vol.of_float 0.0))
   in
-  let rate_var = make_var ~equal:Float.equal rate in
-  let valuation_days_var = make_var ~equal:Float.equal 0.0 in
+  let rate_var = make_var ~name:Node_name.Input.rate ~equal:Float.equal rate in
+  let valuation_days_var =
+    make_var ~name:Node_name.Input.valuation_days ~equal:Float.equal 0.0
+  in
   let options_by_underlying =
     Map.fold option_positions ~init:Symbol.Map.empty ~f:(fun ~key:id ~data:o acc ->
         Map.add_multi acc ~key:(Options.Position.underlying o) ~data:id)
@@ -805,35 +854,36 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
         let underlying = Options.Position.underlying position in
         let price = Inc.Var.watch (Map.find_exn price_vars underlying) in
         let vol = Inc.Var.watch (Map.find_exn implied_vol_vars id) in
-        Inc.map4 price vol (Inc.Var.watch valuation_days_var) (Inc.Var.watch rate_var)
-          ~f:(fun price vol days rate ->
-            note (Node_name.greeks id);
-            let spot = Price.to_float price in
-            (* An unmarked underlying is not a zero-priced one. Black_scholes
+        named (Node_name.greeks id)
+          (Inc.map4 price vol (Inc.Var.watch valuation_days_var) (Inc.Var.watch rate_var)
+             ~f:(fun price vol days rate ->
+               note (Node_name.greeks id);
+               let spot = Price.to_float price in
+               (* An unmarked underlying is not a zero-priced one. Black_scholes
                rejects a non-positive spot -- correctly, since ln(0) is not a
                number -- and a node body may not raise, so the unmarked case is
                answered with a flat set of Greeks rather than with an
                exception. A contract on a name that has never printed has no
                measurable sensitivity to anything, which is the truthful
                answer and is visibly different from a real one. *)
-            if Float.( <= ) spot 0.0 then
-              {
-                Options.Black_scholes.price = 0.0;
-                delta = 0.0;
-                gamma = 0.0;
-                vega = 0.0;
-                theta = 0.0;
-              }
-            else
-              Options.Black_scholes.compute ~spot
-                ~strike:(Options.Strike.to_float (Options.Position.strike position))
-                ~time_to_expiry:
-                  (Options.years_to_expiry
-                     ~expiry_in_days:(Options.Position.expiry_in_days position)
-                     ~days_elapsed:days)
-                ~rate
-                ~implied_vol:(Options.Implied_vol.to_float vol)
-                ~right:(Options.Position.right position)))
+               if Float.( <= ) spot 0.0 then
+                 {
+                   Options.Black_scholes.price = 0.0;
+                   delta = 0.0;
+                   gamma = 0.0;
+                   vega = 0.0;
+                   theta = 0.0;
+                 }
+               else
+                 Options.Black_scholes.compute ~spot
+                   ~strike:(Options.Strike.to_float (Options.Position.strike position))
+                   ~time_to_expiry:
+                     (Options.years_to_expiry
+                        ~expiry_in_days:(Options.Position.expiry_in_days position)
+                        ~days_elapsed:days)
+                   ~rate
+                   ~implied_vol:(Options.Implied_vol.to_float vol)
+                   ~right:(Options.Position.right position))))
   in
   (* Per-contract delta-equivalent exposure, gamma and vega, computed together
      because all three are the same Greeks record times the same contract count
@@ -845,12 +895,14 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
         let price =
           Inc.Var.watch (Map.find_exn price_vars (Options.Position.underlying position))
         in
-        Inc.map3 greeks contracts price ~f:(fun greeks contracts price ->
-            note (Node_name.option_exposure id);
-            ( Options.Position.delta_equivalent position ~greeks ~contracts
-                ~spot:(Price.to_float price),
-              Options.Position.gamma_exposure position ~greeks ~contracts,
-              Options.Position.vega_exposure position ~greeks ~contracts )))
+        named
+          (Node_name.option_exposure id)
+          (Inc.map3 greeks contracts price ~f:(fun greeks contracts price ->
+               note (Node_name.option_exposure id);
+               ( Options.Position.delta_equivalent position ~greeks ~contracts
+                   ~spot:(Price.to_float price),
+                 Options.Position.gamma_exposure position ~greeks ~contracts,
+                 Options.Position.vega_exposure position ~greeks ~contracts ))))
   in
   let option_nodes_for symbol =
     match Map.find options_by_underlying symbol with
@@ -896,11 +948,12 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
            the two get their own nodes below rather than a fabricated place in a
            linear sum. *)
         let option_legs = Inc.all (option_nodes_for symbol) in
-        cutoff ~equal:Notional.equal
-          (Inc.map2 shares option_legs ~f:(fun shares legs ->
-               note (Node_name.exposure symbol);
-               List.fold legs ~init:shares ~f:(fun acc (delta_equivalent, _, _) ->
-                   Notional.add acc delta_equivalent))))
+        named (Node_name.exposure symbol)
+          (cutoff ~equal:Notional.equal
+             (Inc.map2 shares option_legs ~f:(fun shares legs ->
+                  note (Node_name.exposure symbol);
+                  List.fold legs ~init:shares ~f:(fun acc (delta_equivalent, _, _) ->
+                      Notional.add acc delta_equivalent)))))
   in
   (* [Map.data] is ordered by key, and [symbols] is [Map.keys] of the same map,
      so the two line up. Every place below that zips a list of results back
@@ -909,9 +962,10 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      parametric VaR silently computes the risk of a portfolio nobody holds. *)
   let exposure_list = Inc.all (Map.data exposure_nodes) in
   let exposure_map_node =
-    Inc.map exposure_list ~f:(fun xs ->
-        note Node_name.exposure_map;
-        Symbol.Map.of_alist_exn (List.zip_exn symbols xs))
+    named Node_name.exposure_map
+      (Inc.map exposure_list ~f:(fun xs ->
+           note Node_name.exposure_map;
+           Symbol.Map.of_alist_exn (List.zip_exn symbols xs)))
   in
   (* --- the Greeks that do not fold in ------------------------------------ *)
   (* Gamma and vega per underlying, then per book.
@@ -929,25 +983,27 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      one number that shifts in parallel. Every desk does this; it is a bucketed
      approximation, not an identity, and it understates a calendar spread. *)
   let greek_by_instrument select name =
-    Inc.map
-      (Inc.all
-         (List.map symbols ~f:(fun symbol ->
-              Inc.map
-                (Inc.all (option_nodes_for symbol))
-                ~f:(fun legs ->
-                  List.fold legs ~init:0.0 ~f:(fun acc leg -> acc +. select leg)))))
-      ~f:(fun totals ->
-        note name;
-        Symbol.Map.of_alist_exn (List.zip_exn symbols totals))
+    named name
+      (Inc.map
+         (Inc.all
+            (List.map symbols ~f:(fun symbol ->
+                 Inc.map
+                   (Inc.all (option_nodes_for symbol))
+                   ~f:(fun legs ->
+                     List.fold legs ~init:0.0 ~f:(fun acc leg -> acc +. select leg)))))
+         ~f:(fun totals ->
+           note name;
+           Symbol.Map.of_alist_exn (List.zip_exn symbols totals)))
   in
   let gamma_map_node =
     greek_by_instrument (fun (_, gamma, _) -> gamma) Node_name.gamma_map
   in
   let vega_map_node = greek_by_instrument (fun (_, _, vega) -> vega) Node_name.vega_map in
   let sum_map name node =
-    Inc.map node ~f:(fun m ->
-        note name;
-        Map.fold m ~init:0.0 ~f:(fun ~key:_ ~data acc -> acc +. data))
+    named name
+      (Inc.map node ~f:(fun m ->
+           note name;
+           Map.fold m ~init:0.0 ~f:(fun ~key:_ ~data acc -> acc +. data)))
   in
   let portfolio_gamma_node = sum_map Node_name.portfolio_gamma gamma_map_node in
   let portfolio_vega_node = sum_map Node_name.portfolio_vega vega_map_node in
@@ -964,23 +1020,24 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      every bucket. Six rows of 0.00 is not information, and the display uses the
      absence to decide whether to draw the panel at all. *)
   let vega_by_bucket_node =
-    Inc.map2
-      (Inc.all
-         (List.map (Map.to_alist option_positions) ~f:(fun (id, position) ->
-              Inc.map (Map.find_exn option_exposure_nodes id) ~f:(fun (_, _, vega) ->
-                  (position, vega)))))
-      (Inc.Var.watch valuation_days_var)
-      ~f:(fun legs days ->
-        note Node_name.vega_by_bucket;
-        List.fold legs ~init:Options.Tenor_bucket.Map.empty
-          ~f:(fun acc (position, vega) ->
-            let remaining =
-              Float.max 0.0 (Options.Position.expiry_in_days position -. days)
-            in
-            let bucket = Options.Tenor_bucket.of_days remaining in
-            Map.update acc bucket ~f:(function
-              | None -> vega
-              | Some running -> running +. vega)))
+    named Node_name.vega_by_bucket
+      (Inc.map2
+         (Inc.all
+            (List.map (Map.to_alist option_positions) ~f:(fun (id, position) ->
+                 Inc.map (Map.find_exn option_exposure_nodes id) ~f:(fun (_, _, vega) ->
+                     (position, vega)))))
+         (Inc.Var.watch valuation_days_var)
+         ~f:(fun legs days ->
+           note Node_name.vega_by_bucket;
+           List.fold legs ~init:Options.Tenor_bucket.Map.empty
+             ~f:(fun acc (position, vega) ->
+               let remaining =
+                 Float.max 0.0 (Options.Position.expiry_in_days position -. days)
+               in
+               let bucket = Options.Tenor_bucket.of_days remaining in
+               Map.update acc bucket ~f:(function
+                 | None -> vega
+                 | Some running -> running +. vega))))
   in
   (* --- sector ----------------------------------------------------------- *)
   let symbols_by_sector =
@@ -995,18 +1052,20 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
   let sector_nodes =
     Map.mapi symbols_by_sector ~f:(fun ~key:sector ~data:members ->
         let member_nodes = List.map members ~f:(Map.find_exn exposure_nodes) in
-        cutoff ~equal:Notional.equal
-          (Inc.map (Inc.all member_nodes) ~f:(fun exposures ->
-               note (Node_name.sector sector);
-               Notional.sum exposures)))
+        named (Node_name.sector sector)
+          (cutoff ~equal:Notional.equal
+             (Inc.map (Inc.all member_nodes) ~f:(fun exposures ->
+                  note (Node_name.sector sector);
+                  Notional.sum exposures))))
   in
   let sectors = Map.keys sector_nodes in
   let sector_map_node =
-    Inc.map
-      (Inc.all (Map.data sector_nodes))
-      ~f:(fun xs ->
-        note Node_name.sector_map;
-        Sector.Map.of_alist_exn (List.zip_exn sectors xs))
+    named Node_name.sector_map
+      (Inc.map
+         (Inc.all (Map.data sector_nodes))
+         ~f:(fun xs ->
+           note Node_name.sector_map;
+           Sector.Map.of_alist_exn (List.zip_exn sectors xs)))
   in
   (* --- book-level exposure ---------------------------------------------- *)
   (* Both depend on every instrument, which is not a design failure -- a total
@@ -1015,16 +1074,18 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      name re-adds n numbers instead of re-fetching and re-multiplying n
      positions. *)
   let gross_node =
-    cutoff ~equal:Notional.equal
-      (Inc.map exposure_list ~f:(fun xs ->
-           note Node_name.gross;
-           Notional.sum (List.map xs ~f:Notional.abs)))
+    named Node_name.gross
+      (cutoff ~equal:Notional.equal
+         (Inc.map exposure_list ~f:(fun xs ->
+              note Node_name.gross;
+              Notional.sum (List.map xs ~f:Notional.abs))))
   in
   let net_node =
-    cutoff ~equal:Notional.equal
-      (Inc.map exposure_list ~f:(fun xs ->
-           note Node_name.net;
-           Notional.sum xs))
+    named Node_name.net
+      (cutoff ~equal:Notional.equal
+         (Inc.map exposure_list ~f:(fun xs ->
+              note Node_name.net;
+              Notional.sum xs)))
   in
   (* Signed portfolio weights, normalised by gross so their absolute values sum
      to one. Depends on the per-instrument exposures and on the gross total,
@@ -1034,12 +1095,13 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      answer there because they make every downstream risk number zero, which is
      true of a book holding nothing. *)
   let weights_node =
-    cutoff ~equal:(Array.equal Float.equal)
-      (Inc.map2 exposure_list gross_node ~f:(fun xs gross ->
-           note Node_name.weights;
-           let gross = Notional.to_float gross in
-           if Float.equal gross 0.0 then Array.create ~len:(List.length xs) 0.0
-           else Array.of_list_map xs ~f:(fun x -> Notional.to_float x /. gross)))
+    named Node_name.weights
+      (cutoff ~equal:(Array.equal Float.equal)
+         (Inc.map2 exposure_list gross_node ~f:(fun xs gross ->
+              note Node_name.weights;
+              let gross = Notional.to_float gross in
+              if Float.equal gross 0.0 then Array.create ~len:(List.length xs) 0.0
+              else Array.of_list_map xs ~f:(fun x -> Notional.to_float x /. gross))))
   in
   (* --- returns and covariance ------------------------------------------- *)
   (* Depends on the return windows only. Instruments accumulate history at
@@ -1049,16 +1111,17 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      one instrument's Monday with another's Wednesday and produce a covariance
      matrix of pure fiction. *)
   let aligned_returns_node =
-    Inc.map
-      (Inc.all (List.map (Map.data returns_vars) ~f:Inc.Var.watch))
-      ~f:(fun series ->
-        note Node_name.aligned_returns;
-        let common =
-          List.fold series ~init:Int.max_value ~f:(fun acc s ->
-              Int.min acc (Array.length s))
-        in
-        Array.of_list_map series ~f:(fun s ->
-            Array.sub s ~pos:(Array.length s - common) ~len:common))
+    named Node_name.aligned_returns
+      (Inc.map
+         (Inc.all (List.map (Map.data returns_vars) ~f:Inc.Var.watch))
+         ~f:(fun series ->
+           note Node_name.aligned_returns;
+           let common =
+             List.fold series ~init:Int.max_value ~f:(fun acc s ->
+                 Int.min acc (Array.length s))
+           in
+           Array.of_list_map series ~f:(fun s ->
+               Array.sub s ~pos:(Array.length s - common) ~len:common)))
   in
   (* Depends on the aligned return windows and NOTHING ELSE.
 
@@ -1069,12 +1132,13 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      would be rebuilt on every tick. Here a price change cannot reach it, and
      test_graph.ml asserts exactly that. *)
   let covariance_node =
-    Inc.map aligned_returns_node ~f:(fun series ->
-        note Node_name.covariance;
-        (* Two observations is the minimum that admits a non-degenerate second
+    named Node_name.covariance
+      (Inc.map aligned_returns_node ~f:(fun series ->
+           note Node_name.covariance;
+           (* Two observations is the minimum that admits a non-degenerate second
          moment. One gives a zero matrix, which is not "low risk". *)
-        if Array.is_empty series || Array.length series.(0) < 2 then None
-        else Some (Risk_metrics.covariance_matrix series))
+           if Array.is_empty series || Array.length series.(0) < 2 then None
+           else Some (Risk_metrics.covariance_matrix series)))
   in
   (* The same matrix under exponentially decaying weights, hanging off exactly
      the same edge -- a SIBLING of [covariance], never a replacement for it.
@@ -1093,10 +1157,11 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      downstream of price. That doubles the cost of a return-window update and
      leaves the cost of a tick exactly where it was. test_graph.ml asserts it. *)
   let covariance_ewma_node =
-    Inc.map aligned_returns_node ~f:(fun series ->
-        note Node_name.covariance_ewma;
-        if Array.is_empty series || Array.length series.(0) < 2 then None
-        else Some (Vol_estimators.Ewma.covariance_matrix ~series ~lambda:ewma_lambda))
+    named Node_name.covariance_ewma
+      (Inc.map aligned_returns_node ~f:(fun series ->
+           note Node_name.covariance_ewma;
+           if Array.is_empty series || Array.length series.(0) < 2 then None
+           else Some (Vol_estimators.Ewma.covariance_matrix ~series ~lambda:ewma_lambda)))
   in
   (* The book's own return series: r_p(t) = sum_i w_i * r_i(t), using current
      weights. Depends on the return windows (the r_i) and on the weights (hence
@@ -1108,28 +1173,31 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      is the question a limit is asking, rather than "what did the book that
      existed then actually do". *)
   let portfolio_returns_node =
-    Inc.map2 aligned_returns_node weights_node ~f:(fun series weights ->
-        note Node_name.portfolio_returns;
-        let periods = if Array.is_empty series then 0 else Array.length series.(0) in
-        if periods = 0 then None
-        else
-          Some
-            (Array.init periods ~f:(fun t ->
-                 Array.foldi series ~init:0.0 ~f:(fun i acc s ->
-                     acc +. (weights.(i) *. s.(t))))))
+    named Node_name.portfolio_returns
+      (Inc.map2 aligned_returns_node weights_node ~f:(fun series weights ->
+           note Node_name.portfolio_returns;
+           let periods = if Array.is_empty series then 0 else Array.length series.(0) in
+           if periods = 0 then None
+           else
+             Some
+               (Array.init periods ~f:(fun t ->
+                    Array.foldi series ~init:0.0 ~f:(fun i acc s ->
+                        acc +. (weights.(i) *. s.(t)))))))
   in
   (* --- risk numbers ------------------------------------------------------ *)
   let historical_var_node =
-    Inc.map portfolio_returns_node ~f:(fun returns ->
-        note Node_name.historical_var;
-        Option.map returns ~f:(fun returns ->
-            Risk_metrics.historical_var ~returns ~confidence))
+    named Node_name.historical_var
+      (Inc.map portfolio_returns_node ~f:(fun returns ->
+           note Node_name.historical_var;
+           Option.map returns ~f:(fun returns ->
+               Risk_metrics.historical_var ~returns ~confidence)))
   in
   let expected_shortfall_node =
-    Inc.map portfolio_returns_node ~f:(fun returns ->
-        note Node_name.expected_shortfall;
-        Option.map returns ~f:(fun returns ->
-            Risk_metrics.expected_shortfall ~returns ~confidence))
+    named Node_name.expected_shortfall
+      (Inc.map portfolio_returns_node ~f:(fun returns ->
+           note Node_name.expected_shortfall;
+           Option.map returns ~f:(fun returns ->
+               Risk_metrics.expected_shortfall ~returns ~confidence)))
   in
   (* Depends on weights and covariance -- the closed-form path, which never
      touches the return series directly. Reported alongside the historical
@@ -1137,10 +1205,11 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      an empirical one is a read on how non-normal the book's tail currently is,
      and it is only visible if both are computed. *)
   let parametric_var_node =
-    Inc.map2 weights_node covariance_node ~f:(fun weights covariance ->
-        note Node_name.parametric_var;
-        Option.map covariance ~f:(fun covariance ->
-            Risk_metrics.portfolio_parametric_var ~weights ~covariance ~confidence))
+    named Node_name.parametric_var
+      (Inc.map2 weights_node covariance_node ~f:(fun weights covariance ->
+           note Node_name.parametric_var;
+           Option.map covariance ~f:(fun covariance ->
+               Risk_metrics.portfolio_parametric_var ~weights ~covariance ~confidence)))
   in
   (* The same closed form against the decay-weighted matrix.
 
@@ -1150,10 +1219,11 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      at length -- it is why the EWMA estimator demeans against a weighted mean
      rather than assuming zero the way RiskMetrics does. *)
   let parametric_var_ewma_node =
-    Inc.map2 weights_node covariance_ewma_node ~f:(fun weights covariance ->
-        note Node_name.parametric_var_ewma;
-        Option.map covariance ~f:(fun covariance ->
-            Risk_metrics.portfolio_parametric_var ~weights ~covariance ~confidence))
+    named Node_name.parametric_var_ewma
+      (Inc.map2 weights_node covariance_ewma_node ~f:(fun weights covariance ->
+           note Node_name.parametric_var_ewma;
+           Option.map covariance ~f:(fun covariance ->
+               Risk_metrics.portfolio_parametric_var ~weights ~covariance ~confidence)))
   in
   (* --- risk attribution -------------------------------------------------- *)
   (* WHERE the risk is, as opposed to how much of it there is.
@@ -1181,10 +1251,11 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
     | Covariance_estimator.Ewma -> covariance_ewma_node
   in
   let attribution_node =
-    Inc.map2 weights_node attribution_covariance_node ~f:(fun weights covariance ->
-        note Node_name.attribution;
-        Option.bind covariance ~f:(fun covariance ->
-            Attribution.compute ~weights ~covariance))
+    named Node_name.attribution
+      (Inc.map2 weights_node attribution_covariance_node ~f:(fun weights covariance ->
+           note Node_name.attribution;
+           Option.bind covariance ~f:(fun covariance ->
+               Attribution.compute ~weights ~covariance)))
   in
   (* Component VaR in dollars, per instrument.
 
@@ -1199,14 +1270,15 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      [Map.keys] of -- and an array crossing a module boundary is one refactor
      away from being silently reordered. *)
   let component_var_node =
-    Inc.map2 attribution_node gross_node ~f:(fun attribution gross ->
-        note Node_name.component_var_map;
-        Option.map attribution ~f:(fun attribution ->
-            let gross = Notional.to_float gross in
-            let shares = Attribution.component_var attribution ~confidence in
-            Symbol.Map.of_alist_exn
-              (List.mapi symbols ~f:(fun i symbol ->
-                   (symbol, Notional.of_float (shares.(i) *. gross))))))
+    named Node_name.component_var_map
+      (Inc.map2 attribution_node gross_node ~f:(fun attribution gross ->
+           note Node_name.component_var_map;
+           Option.map attribution ~f:(fun attribution ->
+               let gross = Notional.to_float gross in
+               let shares = Attribution.component_var attribution ~confidence in
+               Symbol.Map.of_alist_exn
+                 (List.mapi symbols ~f:(fun i symbol ->
+                      (symbol, Notional.of_float (shares.(i) *. gross)))))))
   in
   (* The same numbers grouped by sector, and it is a plain sum.
 
@@ -1217,20 +1289,22 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      VaRs the same way would double-count every diversification benefit in the
      sector and report a number larger than the book's total. *)
   let component_var_sector_node =
-    Inc.map component_var_node ~f:(fun by_instrument ->
-        note Node_name.component_var_sector_map;
-        Option.map by_instrument ~f:(fun by_instrument ->
-            Map.fold by_instrument ~init:Sector.Map.empty
-              ~f:(fun ~key:symbol ~data:share acc ->
-                let sector = (Map.find_exn instruments_map symbol).Instrument.sector in
-                Map.update acc sector ~f:(function
-                  | None -> share
-                  | Some running -> Notional.add running share))))
+    named Node_name.component_var_sector_map
+      (Inc.map component_var_node ~f:(fun by_instrument ->
+           note Node_name.component_var_sector_map;
+           Option.map by_instrument ~f:(fun by_instrument ->
+               Map.fold by_instrument ~init:Sector.Map.empty
+                 ~f:(fun ~key:symbol ~data:share acc ->
+                   let sector = (Map.find_exn instruments_map symbol).Instrument.sector in
+                   Map.update acc sector ~f:(function
+                     | None -> share
+                     | Some running -> Notional.add running share)))))
   in
   let diversification_ratio_node =
-    Inc.map attribution_node ~f:(fun attribution ->
-        note Node_name.diversification_ratio;
-        Option.map attribution ~f:Attribution.diversification_ratio)
+    named Node_name.diversification_ratio
+      (Inc.map attribution_node ~f:(fun attribution ->
+           note Node_name.diversification_ratio;
+           Option.map attribution ~f:Attribution.diversification_ratio))
   in
   (* Rolling beta of the book against the macro factor series that fred_client.ml
      supplies. Depends on the book's own return series and on the factor's, and
@@ -1257,33 +1331,36 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      Every node body in this module is total; this is the one where that
      property took real thought. *)
   let portfolio_beta_node =
-    Inc.map2 portfolio_returns_node (Inc.Var.watch factor_returns_var)
-      ~f:(fun portfolio factor ->
-        note Node_name.portfolio_beta;
-        match portfolio with
-        | None -> None
-        | Some portfolio ->
-            let common = Int.min (Array.length portfolio) (Array.length factor) in
-            if common < 2 then None
-            else
-              let tail xs = Array.sub xs ~pos:(Array.length xs - common) ~len:common in
-              (* [Risk_metrics.beta] raises on a factor that does not move.
+    named Node_name.portfolio_beta
+      (Inc.map2 portfolio_returns_node (Inc.Var.watch factor_returns_var)
+         ~f:(fun portfolio factor ->
+           note Node_name.portfolio_beta;
+           match portfolio with
+           | None -> None
+           | Some portfolio ->
+               let common = Int.min (Array.length portfolio) (Array.length factor) in
+               if common < 2 then None
+               else
+                 let tail xs = Array.sub xs ~pos:(Array.length xs - common) ~len:common in
+                 (* [Risk_metrics.beta] raises on a factor that does not move.
                  Testing the same predicate here rather than catching the
                  exception keeps the reason for [None] explicit at the call site
                  -- a bare try-with would also swallow a genuine bug in the
                  metric, which is the last thing a risk number should do. *)
-              let factor = tail factor in
-              if Risk_metrics.is_effectively_constant factor then None
-              else Some (Risk_metrics.beta ~asset:(tail portfolio) ~factor))
+                 let factor = tail factor in
+                 if Risk_metrics.is_effectively_constant factor then None
+                 else Some (Risk_metrics.beta ~asset:(tail portfolio) ~factor)))
   in
   (* Return-space risk is a fraction; a limit is written in dollars. Because the
      weights are normalised by gross, r_p * gross is the book's P&L, so gross is
      exactly the right multiplier -- and it is a graph edge rather than a
      constant, so the dollar figure moves when the book does. *)
   let to_notional name fraction_node =
-    Inc.map2 fraction_node gross_node ~f:(fun fraction gross ->
-        note name;
-        Option.map fraction ~f:(fun f -> Notional.of_float (f *. Notional.to_float gross)))
+    named name
+      (Inc.map2 fraction_node gross_node ~f:(fun fraction gross ->
+           note name;
+           Option.map fraction ~f:(fun f ->
+               Notional.of_float (f *. Notional.to_float gross))))
   in
   let var_notional_node = to_notional Node_name.var_notional historical_var_node in
   let es_notional_node = to_notional Node_name.es_notional expected_shortfall_node in
@@ -1293,10 +1370,11 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      the point -- a drawdown breaker that only noticed at fill time would be
      watching the wrong thing. *)
   let equity_node =
-    cutoff ~equal:Notional.equal
-      (Inc.map2 (Inc.Var.watch cash_var) net_node ~f:(fun cash net ->
-           note Node_name.equity;
-           Notional.add cash net))
+    named Node_name.equity
+      (cutoff ~equal:Notional.equal
+         (Inc.map2 (Inc.Var.watch cash_var) net_node ~f:(fun cash net ->
+              note Node_name.equity;
+              Notional.add cash net)))
   in
   (* Depends on the recorded equity history and on live equity, with the live
      value appended as the final point. The history holds closed marks only, so
@@ -1307,11 +1385,13 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      historical maximum would latch on forever after one bad morning and could
      never be cleared by recovery. risk_metrics.ml makes the same point. *)
   let drawdown_node =
-    cutoff ~equal:Float.equal
-      (Inc.map2 (Inc.Var.watch equity_history_var) equity_node ~f:(fun history equity ->
-           note Node_name.drawdown;
-           Risk_metrics.current_drawdown
-             ~equity:(Array.append history [| Notional.to_float equity |])))
+    named Node_name.drawdown
+      (cutoff ~equal:Float.equal
+         (Inc.map2 (Inc.Var.watch equity_history_var) equity_node
+            ~f:(fun history equity ->
+              note Node_name.drawdown;
+              Risk_metrics.current_drawdown
+                ~equity:(Array.append history [| Notional.to_float equity |]))))
   in
   (* --- limits ------------------------------------------------------------ *)
   (* One node per limit, hanging off the single quantity that limit measures.
@@ -1330,22 +1410,23 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
           note name;
           Some (Limits.evaluate ~limit ~observed:(Float.abs (Notional.to_float v))))
     in
-    match (Limit.kind limit, Limit.scope limit) with
-    | Limit.Gross_notional _, Limit.Instrument symbol ->
-        of_magnitude (Map.find_exn exposure_nodes symbol)
-    | Limit.Gross_notional _, Limit.Sector sector ->
-        of_magnitude (Map.find_exn sector_nodes sector)
-    | Limit.Gross_notional _, Limit.Portfolio -> of_magnitude gross_node
-    | Limit.Value_at_risk _, Limit.Portfolio ->
-        Inc.map var_notional_node ~f:(fun v ->
-            note name;
-            Option.map v ~f:(fun v ->
-                Limits.evaluate ~limit ~observed:(Notional.to_float v)))
-    | Limit.Max_drawdown _, Limit.Portfolio ->
-        Inc.map drawdown_node ~f:(fun d ->
-            note name;
-            Some (Limits.evaluate ~limit ~observed:d))
-    (* Component VaR limits. Note what is NOT here: [Float.abs].
+    named name
+      (match (Limit.kind limit, Limit.scope limit) with
+      | Limit.Gross_notional _, Limit.Instrument symbol ->
+          of_magnitude (Map.find_exn exposure_nodes symbol)
+      | Limit.Gross_notional _, Limit.Sector sector ->
+          of_magnitude (Map.find_exn sector_nodes sector)
+      | Limit.Gross_notional _, Limit.Portfolio -> of_magnitude gross_node
+      | Limit.Value_at_risk _, Limit.Portfolio ->
+          Inc.map var_notional_node ~f:(fun v ->
+              note name;
+              Option.map v ~f:(fun v ->
+                  Limits.evaluate ~limit ~observed:(Notional.to_float v)))
+      | Limit.Max_drawdown _, Limit.Portfolio ->
+          Inc.map drawdown_node ~f:(fun d ->
+              note name;
+              Some (Limits.evaluate ~limit ~observed:d))
+      (* Component VaR limits. Note what is NOT here: [Float.abs].
 
        [of_magnitude] above absolute-values an exposure, because a $50,000 short
        consumes a notional cap exactly as a $50,000 long does. A component risk
@@ -1355,28 +1436,28 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
        a limit for the act of hedging. So the signed number goes straight in,
        and a risk-reducing position sits comfortably under any positive
        threshold, which is the correct answer. *)
-    | Limit.Component_var _, Limit.Instrument symbol ->
-        Inc.map component_var_node ~f:(fun shares ->
-            note name;
-            Option.map shares ~f:(fun shares ->
-                Limits.evaluate ~limit
-                  ~observed:(Notional.to_float (Map.find_exn shares symbol))))
-    | Limit.Component_var _, Limit.Sector sector ->
-        Inc.map component_var_sector_node ~f:(fun shares ->
-            note name;
-            Option.map shares ~f:(fun shares ->
-                Limits.evaluate ~limit
-                  ~observed:(Notional.to_float (Map.find_exn shares sector))))
-    (* At portfolio scope the shares sum to the whole, which by the Euler
+      | Limit.Component_var _, Limit.Instrument symbol ->
+          Inc.map component_var_node ~f:(fun shares ->
+              note name;
+              Option.map shares ~f:(fun shares ->
+                  Limits.evaluate ~limit
+                    ~observed:(Notional.to_float (Map.find_exn shares symbol))))
+      | Limit.Component_var _, Limit.Sector sector ->
+          Inc.map component_var_sector_node ~f:(fun shares ->
+              note name;
+              Option.map shares ~f:(fun shares ->
+                  Limits.evaluate ~limit
+                    ~observed:(Notional.to_float (Map.find_exn shares sector))))
+      (* At portfolio scope the shares sum to the whole, which by the Euler
        identity IS the parametric VaR notional. Read from that node rather than
        by summing the map: same number, one edge instead of n, and it cannot
        drift from the value the dashboard prints next to it. *)
-    | Limit.Component_var _, Limit.Portfolio ->
-        Inc.map2 parametric_var_node gross_node ~f:(fun fraction gross ->
-            note name;
-            Option.map fraction ~f:(fun fraction ->
-                Limits.evaluate ~limit ~observed:(fraction *. Notional.to_float gross)))
-    (* Greek limits, and note that [of_magnitude]'s absolute value is BACK.
+      | Limit.Component_var _, Limit.Portfolio ->
+          Inc.map2 parametric_var_node gross_node ~f:(fun fraction gross ->
+              note name;
+              Option.map fraction ~f:(fun fraction ->
+                  Limits.evaluate ~limit ~observed:(fraction *. Notional.to_float gross)))
+      (* Greek limits, and note that [of_magnitude]'s absolute value is BACK.
 
        This is the opposite convention from the Component_var branch directly
        above, and the two are worth reading together because the difference is
@@ -1387,45 +1468,46 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
        its risk is the size of that number, not its sign. Being short 5,000
        gamma is not less risky than being long 5,000 gamma; if anything it is
        the dangerous side. So the magnitude is what a Greek limit caps. *)
-    | Limit.Greek_limit (greek, _), scope ->
-        let map_node =
-          match greek with Greek.Gamma -> gamma_map_node | Greek.Vega -> vega_map_node
-        in
-        let observed_node =
-          match scope with
-          | Limit.Instrument symbol ->
-              Inc.map map_node ~f:(fun m -> Map.find_exn m symbol)
-          | Limit.Sector sector ->
-              Inc.map map_node ~f:(fun m ->
-                  Map.fold m ~init:0.0 ~f:(fun ~key:symbol ~data acc ->
-                      if
-                        Sector.equal sector
-                          (Map.find_exn instruments_map symbol).Instrument.sector
-                      then acc +. data
-                      else acc))
-          | Limit.Portfolio -> (
-              match greek with
-              | Greek.Gamma -> portfolio_gamma_node
-              | Greek.Vega -> portfolio_vega_node)
-        in
-        Inc.map observed_node ~f:(fun v ->
-            note name;
-            Some (Limits.evaluate ~limit ~observed:(Float.abs v)))
-    | (Limit.Value_at_risk _ | Limit.Max_drawdown _), (Limit.Instrument _ | Limit.Sector _)
-      ->
-        (* Unreachable: Limits.validate rejects these pairings above. Kept as an
+      | Limit.Greek_limit (greek, _), scope ->
+          let map_node =
+            match greek with Greek.Gamma -> gamma_map_node | Greek.Vega -> vega_map_node
+          in
+          let observed_node =
+            match scope with
+            | Limit.Instrument symbol ->
+                Inc.map map_node ~f:(fun m -> Map.find_exn m symbol)
+            | Limit.Sector sector ->
+                Inc.map map_node ~f:(fun m ->
+                    Map.fold m ~init:0.0 ~f:(fun ~key:symbol ~data acc ->
+                        if
+                          Sector.equal sector
+                            (Map.find_exn instruments_map symbol).Instrument.sector
+                        then acc +. data
+                        else acc))
+            | Limit.Portfolio -> (
+                match greek with
+                | Greek.Gamma -> portfolio_gamma_node
+                | Greek.Vega -> portfolio_vega_node)
+          in
+          Inc.map observed_node ~f:(fun v ->
+              note name;
+              Some (Limits.evaluate ~limit ~observed:(Float.abs v)))
+      | ( (Limit.Value_at_risk _ | Limit.Max_drawdown _),
+          (Limit.Instrument _ | Limit.Sector _) ) ->
+          (* Unreachable: Limits.validate rejects these pairings above. Kept as an
          explicit failure rather than a wildcard so that adding a new scope to
          Types.Limit makes the compiler point here. *)
-        failwithf
-          "graph: limit %S has a kind/scope pairing that Limits.validate should have \
-           rejected"
-          (Limit.name limit) ()
+          failwithf
+            "graph: limit %S has a kind/scope pairing that Limits.validate should have \
+             rejected"
+            (Limit.name limit) ())
   in
   let breach_nodes = List.map limits ~f:breach_node in
   let breaches_node =
-    Inc.map (Inc.all breach_nodes) ~f:(fun results ->
-        note Node_name.breaches;
-        results)
+    named Node_name.breaches
+      (Inc.map (Inc.all breach_nodes) ~f:(fun results ->
+           note Node_name.breaches;
+           results))
   in
   (* --- feed health ------------------------------------------------------- *)
   (* A separate branch of the graph that shares no edge with anything above.
@@ -1447,22 +1529,24 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
            holds no continuously-changing field -- see the note on [age] in
            Feed_health. So a clock tick that leaves every status alone genuinely
            produces the same value, and stops here. *)
-        cutoff ~equal:Feed_health.Symbol_state.equal
-          (Inc.map2 (Inc.Var.watch last_tick_var) (Inc.Var.watch now_var)
-             ~f:(fun last_tick now ->
-               note (Node_name.feed symbol);
-               {
-                 Feed_health.Symbol_state.symbol;
-                 last_tick;
-                 never_seen = Option.is_none last_tick;
-                 stale =
-                   (match last_tick with
-                   (* Never seen is its own state, not staleness. A symbol that
+        named (Node_name.feed symbol)
+          (cutoff ~equal:Feed_health.Symbol_state.equal
+             (Inc.map2 (Inc.Var.watch last_tick_var) (Inc.Var.watch now_var)
+                ~f:(fun last_tick now ->
+                  note (Node_name.feed symbol);
+                  {
+                    Feed_health.Symbol_state.symbol;
+                    last_tick;
+                    never_seen = Option.is_none last_tick;
+                    stale =
+                      (match last_tick with
+                      (* Never seen is its own state, not staleness. A symbol that
                       has never printed is a subscription that did not take; one
                       that printed and stopped is a feed that dropped. *)
-                   | None -> false
-                   | Some tick -> Time.Span.( > ) (Time.diff now tick) staleness_threshold);
-               })))
+                      | None -> false
+                      | Some tick ->
+                          Time.Span.( > ) (Time.diff now tick) staleness_threshold);
+                  }))))
   in
   (* Depends on the per-symbol states and NOT on [now] directly, so it changes
      only when some symbol's status actually flips. That makes feed health
@@ -1471,19 +1555,20 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      panel that re-rendered every five seconds to say the same thing is how a
      status display becomes something people stop looking at. *)
   let feed_health_node =
-    Inc.map
-      (Inc.all (Map.data feed_nodes))
-      ~f:(fun states ->
-        note Node_name.feed_health;
-        {
-          Feed_health.symbols = states;
-          stale =
-            List.filter_map states ~f:(fun s ->
-                if s.Feed_health.Symbol_state.stale then Some s.symbol else None);
-          never_seen =
-            List.filter_map states ~f:(fun s ->
-                if s.Feed_health.Symbol_state.never_seen then Some s.symbol else None);
-        })
+    named Node_name.feed_health
+      (Inc.map
+         (Inc.all (Map.data feed_nodes))
+         ~f:(fun states ->
+           note Node_name.feed_health;
+           {
+             Feed_health.symbols = states;
+             stale =
+               List.filter_map states ~f:(fun s ->
+                   if s.Feed_health.Symbol_state.stale then Some s.symbol else None);
+             never_seen =
+               List.filter_map states ~f:(fun s ->
+                   if s.Feed_health.Symbol_state.never_seen then Some s.symbol else None);
+           }))
   in
   let t =
     {
@@ -1613,6 +1698,135 @@ let fork ?on_compute ?(limits : Limit.t list option) (t : t) : t =
 let destroy (t : t) : unit =
   t.change_listeners := [];
   List.iter t.releases ~f:(fun release -> release ())
+
+(* -------------------------------------------------------------------------
+   The graph, read back out of Incremental
+   ------------------------------------------------------------------------- *)
+
+(* One packed root per observer -- THIS graph's, not the state's.
+
+   For_analyzer.directly_observed would hand back every observer in the
+   process, which includes a stress fork alive in a request handler and the
+   startup probe's abandoned observers until their next stabilize. Starting
+   from the observers held in [t] is what makes the walk a walk of this book:
+   a fork's nodes are reachable from a fork's observers and from nothing
+   here. Twenty-eight roots, differently typed, so they are packed one by one;
+   [destroy] releases the same twenty-eight, and the two lists must be kept
+   together. *)
+let observed_roots (t : t) : Inc.Packed.t list =
+  let root o = Inc.pack (Inc.Observer.observing o) in
+  [
+    root t.obs_exposure_by_instrument;
+    root t.obs_exposure_by_sector;
+    root t.obs_gross;
+    root t.obs_net;
+    root t.obs_weights;
+    root t.obs_gamma_by_instrument;
+    root t.obs_vega_by_instrument;
+    root t.obs_portfolio_gamma;
+    root t.obs_portfolio_vega;
+    root t.obs_vega_by_bucket;
+    root t.obs_portfolio_returns;
+    root t.obs_covariance;
+    root t.obs_covariance_ewma;
+    root t.obs_historical_var;
+    root t.obs_expected_shortfall;
+    root t.obs_parametric_var;
+    root t.obs_parametric_var_ewma;
+    root t.obs_component_var_by_instrument;
+    root t.obs_component_var_by_sector;
+    root t.obs_diversification_ratio;
+    root t.obs_attribution;
+    root t.obs_var_notional;
+    root t.obs_es_notional;
+    root t.obs_equity;
+    root t.obs_drawdown;
+    root t.obs_breaches;
+    root t.obs_portfolio_beta;
+    root t.obs_feed_health;
+  ]
+
+(* A node as Incremental reports it, before any contraction. [children] are
+   the nodes this one READS -- For_analyzer's word for an input -- by
+   Incremental's own id. [name] is the label [named] or [make_var] put on it,
+   None for the plumbing this module never named (an [Inc.all] fold, an
+   intermediate [map2]). *)
+module Raw = struct
+  type t = {
+    id : int;
+    kind : string;
+    cutoff : string;
+    children : int list;
+    name : string option;
+    observed : bool;
+  }
+  [@@deriving sexp_of, fields ~getters]
+end
+
+(* The label set, read out of the dot form. A node carries at most one name
+   and possibly the observed marker; two names on one node is a construction
+   bug and is loud rather than resolved by picking the first. *)
+let name_of_user_info (info : Incremental.For_analyzer.Dot_user_info.t option) :
+    string option * bool =
+  match info with
+  | None -> (None, false)
+  | Some info -> (
+      let dot = Incremental.For_analyzer.Dot_user_info.to_dot info in
+      let labels = Set.to_list dot.Incremental.For_analyzer.Dot_user_info.label in
+      let observed =
+        List.exists labels ~f:(fun l -> List.equal String.equal l [ observed_marker ])
+      in
+      let names =
+        List.filter_map labels ~f:(function
+          | [ name ] when not (String.equal name observed_marker) -> Some name
+          | _ -> None)
+      in
+      match names with
+      | [] -> (None, observed)
+      | [ name ] -> (Some name, observed)
+      | many ->
+          failwithf "graph: a node carries %d names (%s)" (List.length many)
+            (String.concat ~sep:", " many)
+            ())
+
+(* Every node reachable from this graph's observers, once each, exactly as
+   Incremental holds it. Costs nothing on the tick path: it reads node records
+   and never stabilizes, observes or evaluates. test_graph.ml asserts that
+   with the recorder. *)
+let walk (t : t) : Raw.t list =
+  let acc = ref [] in
+  Incremental.For_analyzer.traverse (observed_roots t)
+    ~add_node:(fun
+        ~id
+        ~kind
+        ~cutoff
+        ~children
+        ~bind_children:_
+        ~user_info
+        ~recomputed_at:_
+        ~changed_at:_
+        ~height:_
+      ->
+      let name, observed = name_of_user_info user_info in
+      acc :=
+        {
+          Raw.id = Incremental.For_analyzer.Node_id.to_int id;
+          kind = Incremental.For_analyzer.Kind.to_string kind;
+          cutoff = Incremental.For_analyzer.Cutoff.to_string cutoff;
+          children = List.map children ~f:Incremental.For_analyzer.Node_id.to_int;
+          name;
+          observed;
+        }
+        :: !acc);
+  List.rev !acc
+
+(* The named nodes and whether each is observed, by name. The flat form of
+   the table; [topology] below it is the contracted one. *)
+let labelled_nodes (t : t) : (string * bool) list =
+  walk t
+  |> List.filter_map ~f:(fun r ->
+      Option.map r.Raw.name ~f:(fun name -> (name, r.Raw.observed)))
+  |> List.sort ~compare:(fun (a, _) (b, _) -> String.compare a b)
 
 (* Be told when anything the engine publishes changes.
 
