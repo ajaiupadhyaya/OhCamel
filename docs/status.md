@@ -199,6 +199,11 @@ The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/da
   evidence they still work. Both legs run all six credential-free modes end to
   end. Benchmarks run only on manual dispatch, because shared-runner timings
   are noise.
+  Since the extraction phase both legs also run the README-value pins — the
+  nine synthetic and nine crisis validation rows, the delta-hedge walk and the
+  GARCH truth — so the tables are reproduced on amd64/linux, the droplet's
+  platform, as well as on the arm64 macOS the README quotes, to the four
+  decimals it prints (run 34488696654, 2026-09-10).
 - **Recomputation counts are asserted**, not claimed: `test_graph.ml` pins
   how many nodes a tick reaches.
 - **Production smoke suite** after every deploy: the dashboard renders,
