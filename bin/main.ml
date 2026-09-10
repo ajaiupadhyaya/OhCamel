@@ -50,62 +50,18 @@ let sym = Symbol.of_string
 let sec = Sector.of_string
 let dollars = Notional.of_float
 
-(* Long technology and financials, short energy: a book with real sector
-   structure and a genuine short leg, so gross and net differ and the sector
-   limits have something to say. *)
-let book =
-  [
-    (sym "AAPL", sec "TECH", 150.00, 400.0);
-    (sym "MSFT", sec "TECH", 300.00, 200.0);
-    (sym "NVDA", sec "TECH", 900.00, 60.0);
-    (sym "JPM", sec "FINANCIALS", 200.00, 250.0);
-    (sym "XOM", sec "ENERGY", 100.00, -500.0);
-    (sym "CVX", sec "ENERGY", 140.00, -300.0);
-  ]
-
-let instruments =
-  List.map book ~f:(fun (symbol, sector, _, _) -> { Instrument.symbol; sector })
-
-let limit name scope kind = { Limit.name; scope; kind }
-
-let limits =
-  [
-    limit "nvda-cap"
-      (Limit.Instrument (sym "NVDA"))
-      (Limit.Gross_notional (dollars 55_000.0));
-    limit "aapl-cap"
-      (Limit.Instrument (sym "AAPL"))
-      (Limit.Gross_notional (dollars 80_000.0));
-    limit "tech-cap"
-      (Limit.Sector (sec "TECH"))
-      (Limit.Gross_notional (dollars 200_000.0));
-    limit "energy-cap"
-      (Limit.Sector (sec "ENERGY"))
-      (Limit.Gross_notional (dollars 100_000.0));
-    limit "book-cap" Limit.Portfolio (Limit.Gross_notional (dollars 400_000.0));
-    limit "var-cap" Limit.Portfolio (Limit.Value_at_risk (dollars 12_000.0));
-    limit "dd-cap" Limit.Portfolio (Limit.Max_drawdown 0.02);
-    (* Two limits on risk SHARE rather than on notional, so this book exercises
-       all four limit kinds and the difference between the two is visible rather
-       than described.
-
-       NVDA already has a notional cap above. This one caps its Euler share of
-       portfolio VaR, and the two measure genuinely different things: trimming
-       an unrelated position raises NVDA's risk share without touching its
-       notional at all, and a volatility shock moves this one while leaving the
-       notional cap exactly where it was. `make stress` shows precisely that --
-       the vol-regime row has zero P&L, unchanged gross, and breaks the sector
-       one and nothing else on the page. *)
-    limit "nvda-risk"
-      (Limit.Instrument (sym "NVDA"))
-      (Limit.Component_var (dollars 900.0));
-    limit "tech-risk" (Limit.Sector (sec "TECH")) (Limit.Component_var (dollars 2_000.0));
-  ]
-
-let starting_cash = dollars 1_000_000.0
+(* The book lives in lib/synthetic_book.ml now, because the served process
+   needs the same six names, the same nine limits and the same seeding rule the
+   CLI prints, and two copies of a book are two books. These are aliases, not
+   values: every printer below reads through them exactly as it did. *)
+let book = Synthetic_book.book
+let instruments = Synthetic_book.instruments
+let limit = Synthetic_book.limit
+let limits = Synthetic_book.limits
+let starting_cash = Synthetic_book.starting_cash
+let confidence = Synthetic_book.confidence
+let return_window = Synthetic_book.return_window
 let default_port = 8080
-let confidence = 0.95
-let return_window = 60
 let steps = 60
 let bar_every = 10
 
@@ -115,17 +71,16 @@ let bar_every = 10
 
 (* Seeded explicitly so two runs print the same numbers. A demo whose output
    changes every time cannot be compared against itself, and the first question
-   anyone asks of a risk figure is "what did it say last time". *)
+   anyone asks of a risk figure is "what did it say last time".
+
+   This is the ONE state every credential-free mode draws from, in program
+   order. The generator itself moved to Synthetic_book with the book; what
+   stays here is its binding to this process's stream, because the printed
+   tables depend on which draw each mode gets and that is a property of the
+   program, not of the book. *)
 let rng = Random.State.make [| 2026_07_30 |]
-
-(* Box-Muller. Returns are drawn as normal noise with a small negative drift, so
-   the book tends to bleed and the drawdown breaker has something to do. *)
-let gaussian ~sigma =
-  let u1 = Float.max 1e-12 (Random.State.float rng 1.0) in
-  let u2 = Random.State.float rng 1.0 in
-  sigma *. Float.sqrt (-2.0 *. Float.log u1) *. Float.cos (2.0 *. Float.pi *. u2)
-
-let daily_return () = gaussian ~sigma:0.012 -. 0.0008
+let gaussian ~sigma = Synthetic_book.gaussian ~rng ~sigma
+let daily_return () = Synthetic_book.daily_return ~rng
 
 (* ------------------------------------------------------------------------ *)
 (* Recompute accounting                                                      *)
@@ -556,49 +511,20 @@ let run_synthetic () =
    runs on a fork (see stress.ml) and the graph this function builds is
    destroyed on the way out. *)
 
-(* Rate sensitivity per sector, as a return per percentage point of yield
-   change: a 100bp rise costs a technology name 3% and pays an energy name 1%.
-
-   These are assumptions, not measurements, and they are written down here
-   rather than buried in a generator because the rate-shock scenario is only as
-   meaningful as they are. The signs are the conventional ones -- long-duration
-   growth equity discounts badly when rates rise, financials earn a wider spread
-   -- and the magnitudes are the order of a real regression rather than the
-   result of one.
-
-   In live mode nothing like this is assumed. The betas come out of
-   Risk_metrics.beta against the actual FRED series and the actual price
-   history, which is the whole point of expressing a macro move as a factor
-   shock. This exists so the synthetic book has a factor structure to shock at
-   all; a factor uncorrelated with everything would make every beta zero and
-   the scenario would truthfully report that nothing moved, which is a real
-   state and a poor demonstration. *)
-let rate_beta sector =
-  match Sector.to_string sector with
-  | "TECH" -> -0.030
-  | "FINANCIALS" -> 0.009
-  | "ENERGY" -> 0.010
-  | _ -> 0.0
-
 let seeded_demo_graph ?on_compute () =
   let graph =
     Graph.create ?on_compute ~starting_cash ~instruments ~limits ~confidence
       ~return_window ()
   in
-  (* Daily changes in a ten-year yield, in percentage points -- the units
-     fred_client.ml delivers. A standard deviation of 5bp a day is about right
-     for DGS10. *)
-  let factor = Array.init return_window ~f:(fun _ -> gaussian ~sigma:0.05) in
-  Graph.set_factor_returns graph factor;
-  List.iter book ~f:(fun (symbol, sector, price, qty) ->
+  List.iter book ~f:(fun (symbol, _, price, qty) ->
       Graph.set_price graph symbol (Price.of_float price);
-      Graph.set_qty graph symbol (Qty.of_float qty);
-      (* A common factor component plus idiosyncratic noise, so the betas the
-         scenario recovers are the ones written above rather than zero. *)
-      let beta = rate_beta sector in
-      Graph.set_returns graph symbol
-        (Array.init return_window ~f:(fun i ->
-             (beta *. factor.(i)) +. gaussian ~sigma:0.009)));
+      Graph.set_qty graph symbol (Qty.of_float qty));
+  (* The factor and the six windows, drawn from the shared state in exactly the
+     order the inline version drew them -- factor first, then one window per
+     name in book order. Prices and quantities draw nothing, so setting them
+     first changes no draw. The stress table is a printed figure and it must
+     not move. *)
+  Synthetic_book.seed_returns ~rng ~graph;
   Graph.stabilize graph;
   Graph.mark_equity graph;
   Graph.stabilize graph;
@@ -1735,11 +1661,15 @@ let run_demo ~port =
   List.iter book ~f:(fun (symbol, _, price, qty) ->
       Hashtbl.set last_price ~key:symbol ~data:price;
       Graph.set_price graph symbol (Price.of_float price);
-      Graph.set_qty graph symbol (Qty.of_float qty);
-      Graph.set_returns graph symbol
-        (Array.init return_window ~f:(fun _ -> daily_return ())));
-  Graph.set_factor_returns graph
-    (Array.init return_window ~f:(fun _ -> gaussian ~sigma:0.04));
+      Graph.set_qty graph symbol (Qty.of_float qty));
+  (* Spec §07, amended. The windows and the factor used to be independent
+     draws, so every beta the public host's rate-shock scenario recovered was
+     fitted to noise and its P&L was a real computation on a meaningless input.
+     Each window is now rate_beta x factor + noise -- the structure the CLI's
+     stress table has had all along. Bar closes below keep drawing plain
+     returns; the structure is in the seed, and the seed is what a beta is
+     fitted to. *)
+  Synthetic_book.seed_returns ~rng ~graph;
   Graph.stabilize graph;
   Graph.mark_equity graph;
   (* One print each at startup, so every symbol begins LIVE. The quiet one below
