@@ -576,8 +576,16 @@ type t = {
   obs_portfolio_beta : float option Inc.Observer.t;
   obs_feed_health : Feed_health.t Inc.Observer.t;
   (* Closures that release the observers above. Held as thunks so [destroy]
-       does not have to name fourteen differently-typed observers. *)
-  releases : (unit -> unit) list;
+       does not have to name fourteen differently-typed observers.
+
+       The ref itself, not its contents. The observers are created INSIDE
+       [create]'s record literal, and OCaml evaluates a literal's fields in an
+       unspecified order -- in practice last-declared first -- so a
+       [releases = !releases] field was read before a single observer had
+       pushed onto the list, and [destroy] released nothing: every stress fork
+       stayed observed for the life of the process. Dereferenced when
+       [destroy] runs, the list is whole. *)
+  releases : (unit -> unit) list ref;
   (* Callbacks fired when any published value changes -- see [on_change]. *)
   change_listeners : (unit -> unit) list ref;
 }
@@ -1621,7 +1629,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
       obs_breaches = observe breaches_node;
       obs_portfolio_beta = observe portfolio_beta_node;
       obs_feed_health = observe feed_health_node;
-      releases = !releases;
+      releases;
       change_listeners;
     }
   in
@@ -1697,7 +1705,7 @@ let fork ?on_compute ?(limits : Limit.t list option) (t : t) : t =
    since the state is shared, that cost lands on whoever is still using it. *)
 let destroy (t : t) : unit =
   t.change_listeners := [];
-  List.iter t.releases ~f:(fun release -> release ())
+  List.iter !(t.releases) ~f:(fun release -> release ())
 
 (* -------------------------------------------------------------------------
    The graph, read back out of Incremental
