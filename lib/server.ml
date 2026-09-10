@@ -137,10 +137,100 @@ let json_of_history (h : History_buffer.t) : Yojson.Safe.t =
       ("es_notional", series (fun p -> jopt_float (History_buffer.Point.es_notional p)));
     ]
 
+(* Every scalar named node's value, in its own unit, keyed by the Node_name
+   string.
+
+   Emitted by the encoder rather than assembled by the client from the other
+   fields, because a client-side map from node name to snapshot field would be
+   a second description of this encoder -- one refactor from labelling a
+   fraction as dollars. Node_name.unit_of says what each value is measured in,
+   the topology carries that unit beside the node, and test_server.ml asserts
+   that every scalar node in the topology has a key here. Map-, array- and
+   state-valued nodes are absent on purpose: the drawing prints a run count
+   under those, never a number.
+
+   The three cells read through getters -- cash, rate, valuation_days -- are
+   read after the snapshot, and that is safe for exactly the reason the
+   Snapshot module's note on [prices] says it is not safe in general: nothing
+   writes these three between a stabilize and the encoder in a single Async
+   job, whereas prices and quantities are what every tick writes. *)
+let by_node ~(graph : Graph.t) (s : Graph.Snapshot.t) : Yojson.Safe.t =
+  let module N = Graph.Node_name in
+  let per_symbol =
+    List.concat_map
+      (Map.to_alist (Graph.Snapshot.exposure_by_instrument s))
+      ~f:(fun (symbol, exposure) ->
+        [
+          (N.exposure symbol, jnotional exposure);
+          ( N.Input.price symbol,
+            jfloat (Types.Price.to_float (Map.find_exn (Graph.Snapshot.prices s) symbol))
+          );
+          ( N.Input.qty symbol,
+            jfloat
+              (Types.Qty.to_float (Map.find_exn (Graph.Snapshot.quantities s) symbol)) );
+        ])
+  in
+  let per_sector =
+    List.map
+      (Map.to_alist (Graph.Snapshot.exposure_by_sector s))
+      ~f:(fun (sector, exposure) -> (N.sector sector, jnotional exposure))
+  in
+  let per_option =
+    List.concat_map (Graph.option_ids graph) ~f:(fun id ->
+        [
+          ( N.Input.contracts id,
+            jfloat (Options.Contracts.to_float (Graph.contracts graph id)) );
+          ( N.Input.implied_vol id,
+            jfloat (Options.Implied_vol.to_float (Graph.implied_vol graph id)) );
+        ])
+  in
+  let singletons =
+    [
+      (N.gross, jnotional (Graph.Snapshot.gross_exposure s));
+      (N.net, jnotional (Graph.Snapshot.net_exposure s));
+      (N.equity, jnotional (Graph.Snapshot.equity s));
+      (N.drawdown, jfloat (Graph.Snapshot.current_drawdown s));
+      (N.historical_var, jopt_float (Graph.Snapshot.historical_var s));
+      (N.expected_shortfall, jopt_float (Graph.Snapshot.expected_shortfall s));
+      (N.parametric_var, jopt_float (Graph.Snapshot.parametric_var s));
+      (N.parametric_var_ewma, jopt_float (Graph.Snapshot.parametric_var_ewma s));
+      (N.var_notional, jopt_notional (Graph.Snapshot.value_at_risk_notional s));
+      (N.es_notional, jopt_notional (Graph.Snapshot.expected_shortfall_notional s));
+      (N.portfolio_beta, jopt_float (Graph.Snapshot.portfolio_beta s));
+      (N.diversification_ratio, jopt_float (Graph.Snapshot.diversification_ratio s));
+      (N.portfolio_gamma, jfloat (Graph.Snapshot.portfolio_gamma s));
+      (N.portfolio_vega, jfloat (Graph.Snapshot.portfolio_vega s));
+      (N.Input.cash, jnotional (Graph.cash graph));
+      (N.Input.rate, jfloat (Graph.rate graph));
+      (N.Input.valuation_days, jfloat (Graph.valuation_days graph));
+    ]
+  in
+  `Assoc (per_symbol @ per_sector @ per_option @ singletons)
+
 let json_of_snapshot ?recomputed ?stabilizes_delta ?nodes_recomputed_delta
-    ~(graph : Graph.t) ~(factor : string) (s : Graph.Snapshot.t) : Yojson.Safe.t =
+    ?(quiet : Types.Symbol.t list = []) ~(graph : Graph.t) ~(factor : string)
+    (s : Graph.Snapshot.t) : Yojson.Safe.t =
   let weights = Graph.Snapshot.weights s in
   let jopt_int = function None -> `Null | Some n -> `Int n in
+  (* The Euler total every share is taken over: the sum of the instrument
+     components, which by construction is the parametric VaR notional. Summed
+     from the same map the numerators come from, so the denominator is
+     provably the same numbers -- the reason the old client summed it too.
+     None while warming up; None at exactly zero, because a share of nothing
+     is not a number. *)
+  let component_total =
+    Option.bind (Graph.Snapshot.component_var_by_instrument s) ~f:(fun shares ->
+        let total =
+          Map.fold shares ~init:0.0 ~f:(fun ~key:_ ~data acc ->
+              acc +. Types.Notional.to_float data)
+        in
+        if Float.equal total 0.0 then None else Some total)
+  in
+  let share_of (component : Types.Notional.t option) : float option =
+    Option.both component component_total
+    |> Option.map ~f:(fun (c, total) -> Types.Notional.to_float c /. total)
+  in
+  let lookup map key = Option.bind map ~f:(fun m -> Map.find m key) in
   `Assoc
     [
       ("as_of", jstring (Time_ns.to_string_utc (Types.Time.now ())));
@@ -148,6 +238,14 @@ let json_of_snapshot ?recomputed ?stabilizes_delta ?nodes_recomputed_delta
       ( "positions",
         jlist
           (fun (symbol, exposure) ->
+            (* Share of the Euler total, and that share over the share of
+               money. Computed HERE and not in the browser: invariant 2
+               applied to a division. A hedge's share is negative and its
+               ratio is negative; the client must not take a magnitude. Bound
+               once, because the ratio below is this same share divided. *)
+            let risk_share =
+              share_of (lookup (Graph.Snapshot.component_var_by_instrument s) symbol)
+            in
             `Assoc
               [
                 ("symbol", jstring (Types.Symbol.to_string symbol));
@@ -169,6 +267,31 @@ let json_of_snapshot ?recomputed ?stabilizes_delta ?nodes_recomputed_delta
                       match Map.find shares symbol with
                       | None -> `Null
                       | Some share -> jnotional share) );
+                (* The marks and the position the exposure above multiplies
+                   out to, read from the same fixed point (Snapshot.prices). *)
+                ( "price",
+                  jfloat
+                    (Types.Price.to_float (Map.find_exn (Graph.Snapshot.prices s) symbol))
+                );
+                ( "qty",
+                  jfloat
+                    (Types.Qty.to_float
+                       (Map.find_exn (Graph.Snapshot.quantities s) symbol)) );
+                (* The Euler pair, in return space as attribution.ml computes
+                   them: marginal is a RATE (portfolio sigma per unit of
+                   weight), standalone an AMOUNT (|w| sigma_i). null while
+                   warming up. *)
+                ( "marginal",
+                  jopt_float (lookup (Graph.Snapshot.marginal_by_instrument s) symbol) );
+                ( "standalone",
+                  jopt_float (lookup (Graph.Snapshot.standalone_by_instrument s) symbol)
+                );
+                ("risk_share", jopt_float risk_share);
+                ( "risk_over_money",
+                  match (risk_share, Map.find weights symbol) with
+                  | Some share, Some w when not (Float.equal w 0.0) ->
+                      jfloat (share /. Float.abs w)
+                  | _ -> `Null );
               ])
           (Map.to_alist (Graph.Snapshot.exposure_by_instrument s)) );
       ( "sectors",
@@ -185,6 +308,10 @@ let json_of_snapshot ?recomputed ?stabilizes_delta ?nodes_recomputed_delta
                       match Map.find shares sector with
                       | None -> `Null
                       | Some share -> jnotional share) );
+                ( "risk_share",
+                  jopt_float
+                    (share_of (lookup (Graph.Snapshot.component_var_by_sector s) sector))
+                );
               ])
           (Map.to_alist (Graph.Snapshot.exposure_by_sector s)) );
       ("gross_exposure", jnotional (Graph.Snapshot.gross_exposure s));
@@ -231,6 +358,18 @@ let json_of_snapshot ?recomputed ?stabilizes_delta ?nodes_recomputed_delta
                | Some vega -> Some (Options.Tenor_bucket.to_string bucket, jfloat vega)))
       );
       ("diversification_ratio", jopt_float (Graph.Snapshot.diversification_ratio s));
+      (* Sum of the components minus portfolio sigma. Exact in real arithmetic;
+         published so the self-check runs on the real book, not only on a
+         seeded one in a test. *)
+      ("euler_residual", jopt_float (Graph.Snapshot.euler_residual s));
+      ( "attribution_covariance",
+        jstring
+          (Graph.Covariance_estimator.to_string
+             (Graph.Snapshot.covariance_for_attribution s)) );
+      ("by_node", by_node ~graph s);
+      (* Names that are stale on purpose -- the demo's never-ticked symbol --
+         so the page can label them rather than report a broken feed. *)
+      ("quiet", jlist (fun sym -> jstring (Types.Symbol.to_string sym)) quiet);
       ("warming_up", `Bool (Graph.Snapshot.warming_up s));
       ("feed", json_of_feed_health (Graph.Snapshot.feed_health s));
       ("limits", jlist json_of_breach (Graph.Snapshot.breaches s));
@@ -497,7 +636,7 @@ let render ?recomputed (t : t) : string =
   let snapshot = Graph.snapshot t.graph in
   let json =
     match recomputed with
-    | None -> json_of_snapshot ~graph:t.graph ~factor:t.factor snapshot
+    | None -> json_of_snapshot ~quiet:t.quiet ~graph:t.graph ~factor:t.factor snapshot
     | Some drain ->
         let entries = drain () in
         let stabilizes = Graph.total_stabilizes () in
@@ -507,7 +646,7 @@ let render ?recomputed (t : t) : string =
         t.last_stabilizes <- stabilizes;
         t.last_nodes_recomputed <- nodes;
         json_of_snapshot ~recomputed:entries ~stabilizes_delta ~nodes_recomputed_delta
-          ~graph:t.graph ~factor:t.factor snapshot
+          ~quiet:t.quiet ~graph:t.graph ~factor:t.factor snapshot
   in
   match json with
   | `Assoc fields ->
@@ -755,9 +894,12 @@ let feed_source_json (t : t) : Yojson.Safe.t =
    worse than no pulse. /api/health may stabilize because its job is the
    current answer; this one's job is the current state.
 
-   Every count is a count and no list of names appears: the live host's book is
-   behind a password, the owner reads this page on a phone, and "six symbols,
-   one stale" is the whole of what the row is for. *)
+   Every feed figure is a count and no list of symbols appears: the live host's
+   book is behind a password, the owner reads this page on a phone, and "six
+   symbols, one stale" is the whole of what the row is for. The one list of
+   names is graph.named's [hottest], which the spec asks for, and it is worth
+   knowing what it carries: NODE names, and a per-symbol node's name includes
+   its symbol (exposure:NVDA). *)
 let json_of_ops (t : t) : Yojson.Safe.t =
   let health = Graph.feed_health t.graph in
   `Assoc
@@ -789,10 +931,27 @@ let json_of_ops (t : t) : Yojson.Safe.t =
             ("var_sets", `Int (Graph.total_var_sets ()));
             ("active_observers", `Int (Graph.active_observers ()));
           ] );
-      (* The per-graph counts, which forks never reach. Phase 4 fills this from
-         the recompute log; until then it is null, because a zero here would
-         say "no named node ran", which is the alarm. *)
-      ("graph", `Assoc [ ("named", `Null) ]);
+      (* The per-graph counts, from the log the served graph's hook writes and
+         a fork never reaches. null when this server holds no log, which is
+         "not counting" and is not the zero that would mean "nothing ran". *)
+      ( "graph",
+        `Assoc
+          [
+            ( "named",
+              match t.recompute_log with
+              | None -> `Null
+              | Some log ->
+                  `Assoc
+                    [
+                      ("distinct", `Int (Recompute_log.distinct log));
+                      ("total", `Int (Recompute_log.total log));
+                      ( "hottest",
+                        jlist
+                          (fun (name, n) ->
+                            `Assoc [ ("name", jstring name); ("n", `Int n) ])
+                          (Recompute_log.hottest log ~n:10) );
+                    ] );
+          ] );
       ( "stream",
         `Assoc
           [

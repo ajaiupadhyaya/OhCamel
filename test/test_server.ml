@@ -827,13 +827,14 @@ let test_ops_shape () =
           | other ->
               Alcotest.failf "process.%s should be a non-negative int, got %s" key
                 (Yojson.Safe.to_string other));
-      (* Phase 4 fills this from the recompute log. Until then it is null and
-         never a zero: "no named node ran" is the alarm, and a build that
-         cannot tell must not raise it. *)
+      (* Filled from the recompute log when the server holds one (see
+         test_ops_reports_the_named_log). This server was given none, so it is
+         null and never a zero: "no named node ran" is the alarm, and a server
+         that is not counting must not raise it. *)
       let ops_graph = field_exn j "graph" in
       check_key_set ~what:"graph" [ "named" ] ops_graph;
       Alcotest.(check bool)
-        "graph.named is null until the recompute log exists" true
+        "graph.named is null when the server holds no recompute log" true
         (match field_exn ops_graph "named" with `Null -> true | _ -> false);
       (* Phase 5 fills these. `absent` rather than `ready`, for the same
          reason. *)
@@ -1311,6 +1312,314 @@ let test_a_stalled_subscriber_does_not_stall_a_reading_one () =
         (Server.subscriber_count server))
     ()
 
+(* Every scalar node has a value, and the values are the snapshot's.
+
+   The topology says which nodes have a unit a number can carry; the encoder
+   says what the numbers are; this is the assertion that the two agree, so
+   the drawing can never point at a scalar node and find nothing under it.
+   [rate] is the one key allowed to exist without a node: on a book with no
+   contracts nothing reads the rate cell, so it is not in the graph, but the
+   cell is real and its value is emitted anyway. *)
+let test_every_scalar_node_has_a_by_node_value () =
+  with_graph
+    ~f:(fun graph ->
+      let s = Graph.snapshot graph in
+      let json = Server.json_of_snapshot ~graph ~factor:"SYNTHETIC" s in
+      let by_node = field_exn json "by_node" in
+      let keys =
+        match by_node with
+        | `Assoc kv -> List.map kv ~f:fst
+        | _ -> Alcotest.fail "by_node is not an object"
+      in
+      let topo = Graph.topology graph in
+      let names = String.Set.of_list (Graph.Topology.names topo) in
+      List.iter (Graph.Topology.nodes topo) ~f:(fun n ->
+          if Graph.Node_name.is_scalar (Graph.Topology.Node.unit n) then
+            Alcotest.(check bool)
+              (Graph.Topology.Node.name n ^ " has a by_node value")
+              true
+              (List.mem keys (Graph.Topology.Node.name n) ~equal:String.equal));
+      List.iter keys ~f:(fun key ->
+          Alcotest.(check bool)
+            (key ^ " is a scalar node of this graph, or the rate cell")
+            true
+            (String.equal key "rate"
+            || Set.mem names key
+               && Graph.Node_name.is_scalar (Graph.Node_name.unit_of key)));
+      Alcotest.(check (float 1e-9)) "exposure:AAPL" 30_000.0 (num by_node "exposure:AAPL");
+      Alcotest.(check (float 1e-9)) "price[AAPL]" 150.0 (num by_node "price[AAPL]");
+      Alcotest.(check (float 1e-9))
+        "qty[XOM] keeps its sign" (-400.0) (num by_node "qty[XOM]");
+      Alcotest.(check (float 1e-9)) "cash" 100_000.0 (num by_node "cash");
+      Alcotest.(check (float 1e-9))
+        "gross_exposure" 70_000.0
+        (num by_node "gross_exposure");
+      Alcotest.(check bool)
+        "historical_var is a number once warm" true
+        (match field_exn by_node "historical_var" with `Float _ -> true | _ -> false);
+      (* The rest by hand where the book makes it arithmetic, and every
+         singleton against the field the snapshot already publishes under its
+         own name: the same number, compared as the bytes on the wire, so a
+         null has to be a null on both sides. *)
+      Alcotest.(check (float 1e-9))
+        "exposure:XOM" (-40_000.0) (num by_node "exposure:XOM");
+      Alcotest.(check (float 1e-9)) "price[XOM]" 100.0 (num by_node "price[XOM]");
+      Alcotest.(check (float 1e-9)) "qty[AAPL]" 200.0 (num by_node "qty[AAPL]");
+      Alcotest.(check (float 1e-9)) "sector:TECH" 30_000.0 (num by_node "sector:TECH");
+      Alcotest.(check (float 1e-9))
+        "sector:ENERGY" (-40_000.0) (num by_node "sector:ENERGY");
+      Alcotest.(check (float 1e-9))
+        "net_exposure" (-10_000.0) (num by_node "net_exposure");
+      Alcotest.(check (float 1e-9)) "equity" 90_000.0 (num by_node "equity");
+      Alcotest.(check (float 1e-9))
+        "rate is the cell's" (Graph.rate graph) (num by_node "rate");
+      Alcotest.(check (float 1e-9))
+        "valuation_days is the cell's" (Graph.valuation_days graph)
+        (num by_node "valuation_days");
+      let wire j key = Yojson.Safe.to_string (field_exn j key) in
+      List.iter
+        [
+          ("gross_exposure", "gross_exposure");
+          ("net_exposure", "net_exposure");
+          ("equity", "equity");
+          ("current_drawdown", "current_drawdown");
+          ("historical_var", "historical_var");
+          ("expected_shortfall", "expected_shortfall");
+          ("parametric_var", "parametric_var");
+          ("parametric_var_ewma", "parametric_var_ewma");
+          ("var_notional", "value_at_risk_notional");
+          ("es_notional", "expected_shortfall_notional");
+          ("portfolio_beta", "portfolio_beta");
+          ("diversification_ratio", "diversification_ratio");
+          ("portfolio_gamma", "portfolio_gamma");
+          ("portfolio_vega", "portfolio_vega");
+        ]
+        ~f:(fun (node, top) ->
+          Alcotest.(check string)
+            (node ^ " is the snapshot's " ^ top)
+            (wire json top) (wire by_node node));
+      (match field_exn json "positions" with
+      | `List rows ->
+          List.iter rows ~f:(fun row ->
+              let symbol =
+                match field_exn row "symbol" with `String x -> x | _ -> "?"
+              in
+              List.iter
+                [
+                  ("exposure:" ^ symbol, "exposure");
+                  ("price[" ^ symbol ^ "]", "price");
+                  ("qty[" ^ symbol ^ "]", "qty");
+                ]
+                ~f:(fun (node, key) ->
+                  Alcotest.(check string)
+                    (node ^ " is the row's " ^ key)
+                    (wire row key) (wire by_node node)))
+      | _ -> Alcotest.fail "positions");
+      match field_exn json "sectors" with
+      | `List rows ->
+          List.iter rows ~f:(fun row ->
+              let sector =
+                match field_exn row "sector" with `String x -> x | _ -> "?"
+              in
+              Alcotest.(check string)
+                ("sector:" ^ sector ^ " is the row's exposure")
+                (wire row "exposure")
+                (wire by_node ("sector:" ^ sector)))
+      | _ -> Alcotest.fail "sectors")
+    ()
+
+(* The shares and the ratio, hand-derived on this file's two-name book.
+
+   AAPL 30,000 and XOM -40,000 on returns r and -r: weights 3/7 and -4/7,
+   every pair perfectly correlated, so the book behaves as one asset with
+   sigma_p = sigma. marginal(AAPL) = sigma, marginal(XOM) = -sigma;
+   component = weight x marginal = 3/7 sigma and 4/7 sigma; they sum to
+   sigma_p. So risk_share is 3/7 and 4/7, and risk over money -- share over
+   |weight| -- is exactly 1.0 for both: with correlations at one, every
+   dollar carries the same risk. The interesting books are the ones where it
+   is not 1.0, and this is the reference they are read against. *)
+let test_risk_share_and_risk_over_money () =
+  with_graph
+    ~f:(fun graph ->
+      let json = encode graph in
+      let positions =
+        match field_exn json "positions" with
+        | `List ps -> ps
+        | _ -> Alcotest.fail "positions"
+      in
+      let by_symbol s =
+        List.find_exn positions ~f:(fun p ->
+            match field_exn p "symbol" with `String x -> String.equal x s | _ -> false)
+      in
+      let a = by_symbol "AAPL" and x = by_symbol "XOM" in
+      Alcotest.(check (float 1e-9)) "AAPL risk_share" (3.0 /. 7.0) (num a "risk_share");
+      Alcotest.(check (float 1e-9)) "XOM risk_share" (4.0 /. 7.0) (num x "risk_share");
+      Alcotest.(check (float 1e-9)) "AAPL risk over money" 1.0 (num a "risk_over_money");
+      Alcotest.(check (float 1e-9)) "XOM risk over money" 1.0 (num x "risk_over_money");
+      Alcotest.(check (float 1e-9)) "price rides on the row" 100.0 (num x "price");
+      Alcotest.(check (float 1e-9)) "and qty, signed" (-400.0) (num x "qty");
+      Alcotest.(check bool)
+        "marginal(XOM) is negative" true
+        (Float.( < ) (num x "marginal") 0.0);
+      Alcotest.(check bool)
+        "standalone(XOM) is positive" true
+        (Float.( > ) (num x "standalone") 0.0);
+      (* The exact row, and the rest of the derivation above: with sigma =
+         marginal(AAPL), marginal(XOM) is -sigma and the standalones are 3/7
+         and 4/7 of it. *)
+      List.iter positions ~f:(fun p ->
+          check_key_set ~what:"position row"
+            [
+              "symbol";
+              "sector";
+              "exposure";
+              "weight";
+              "component_var";
+              "price";
+              "qty";
+              "marginal";
+              "standalone";
+              "risk_share";
+              "risk_over_money";
+            ]
+            p);
+      Alcotest.(check (float 1e-9)) "AAPL price" 150.0 (num a "price");
+      Alcotest.(check (float 1e-9)) "AAPL qty" 200.0 (num a "qty");
+      let sigma = num a "marginal" in
+      Alcotest.(check bool) "sigma is positive" true (Float.( > ) sigma 0.0);
+      Alcotest.(check (float 1e-12)) "marginal(XOM) = -sigma" (-.sigma) (num x "marginal");
+      Alcotest.(check (float 1e-12))
+        "standalone(AAPL) = 3/7 sigma"
+        (3.0 /. 7.0 *. sigma)
+        (num a "standalone");
+      Alcotest.(check (float 1e-12))
+        "standalone(XOM) = 4/7 sigma"
+        (4.0 /. 7.0 *. sigma)
+        (num x "standalone");
+      let sectors =
+        match field_exn json "sectors" with
+        | `List ss -> ss
+        | _ -> Alcotest.fail "sectors"
+      in
+      let shares = List.map sectors ~f:(fun k -> num k "risk_share") in
+      Alcotest.(check (float 1e-9))
+        "sector shares sum to one" 1.0
+        (List.fold shares ~init:0.0 ~f:( +. ));
+      List.iter sectors ~f:(fun k ->
+          check_key_set ~what:"sector row"
+            [ "sector"; "exposure"; "component_var"; "risk_share" ]
+            k;
+          (* One name per sector, so each sector's share is its name's. *)
+          let expected =
+            match field_exn k "sector" with
+            | `String "TECH" -> 3.0 /. 7.0
+            | `String "ENERGY" -> 4.0 /. 7.0
+            | other -> Alcotest.failf "unexpected sector %s" (Yojson.Safe.to_string other)
+          in
+          Alcotest.(check (float 1e-9)) "sector risk_share" expected (num k "risk_share"));
+      Alcotest.(check bool)
+        "the Euler residual is on the wire and tiny" true
+        (Float.( < ) (Float.abs (num json "euler_residual")) 1e-9);
+      Alcotest.(check bool)
+        "and which matrix was decomposed" true
+        (match field_exn json "attribution_covariance" with
+        | `String "equal_weighted" -> true
+        | _ -> false))
+    ()
+
+(* Unknown stays unknown: a share of a total that does not exist yet is null,
+   not zero, on every row. *)
+let test_risk_share_is_null_while_warming_up () =
+  with_graph ~seed:false
+    ~f:(fun graph ->
+      Graph.set_price graph aapl (Price.of_float 150.0);
+      Graph.set_qty graph aapl (Qty.of_float 200.0);
+      let json = encode graph in
+      (match field_exn json "positions" with
+      | `List ps ->
+          List.iter ps ~f:(fun p ->
+              List.iter [ "marginal"; "standalone"; "risk_share"; "risk_over_money" ]
+                ~f:(fun k ->
+                  Alcotest.(check bool)
+                    (k ^ " is null while warming up")
+                    true
+                    (match field_exn p k with `Null -> true | _ -> false)))
+      | _ -> Alcotest.fail "positions");
+      (match field_exn json "sectors" with
+      | `List ks ->
+          List.iter ks ~f:(fun k ->
+              Alcotest.(check bool)
+                "a sector's risk_share is null while warming up" true
+                (match field_exn k "risk_share" with `Null -> true | _ -> false))
+      | _ -> Alcotest.fail "sectors");
+      Alcotest.(check bool)
+        "euler_residual is null too" true
+        (match field_exn json "euler_residual" with `Null -> true | _ -> false))
+    ()
+
+(* The demo's quiet name travels on the frame, so a stale symbol that is stale
+   ON PURPOSE can be labelled as such by the page instead of reading as a
+   broken feed. Empty on a live server, which has no such name. *)
+let test_quiet_is_on_the_wire () =
+  with_server ~quiet:[ xom ]
+    ~f:(fun server _graph ->
+      let json = parse (Server.render server) in
+      Alcotest.(check (list string))
+        "quiet: [XOM]" [ "XOM" ]
+        (match field_exn json "quiet" with
+        | `List xs -> List.map xs ~f:(function `String s -> s | _ -> "?")
+        | _ -> Alcotest.fail "quiet"))
+    ();
+  with_server
+    ~f:(fun server _graph ->
+      let json = parse (Server.render server) in
+      Alcotest.(check (list string))
+        "quiet: [] by default" []
+        (match field_exn json "quiet" with
+        | `List xs -> List.map xs ~f:(fun _ -> "x")
+        | _ -> [ "?" ]))
+    ()
+
+(* /api/ops says which named nodes are hot, from the log forks never reach. *)
+let test_ops_reports_the_named_log () =
+  with_logged_server
+    ~f:(fun server graph log ->
+      Graph.apply_tick graph
+        { Tick.symbol = aapl; price = Price.of_float 151.0; time = Time.epoch };
+      Graph.stabilize graph;
+      let _, _, body = respond server "/api/ops" in
+      let named = field_exn (field_exn (parse body) "graph") "named" in
+      Alcotest.(check bool) "distinct > 0" true (Float.( > ) (num named "distinct") 0.0);
+      Alcotest.(check bool)
+        "total >= distinct" true
+        (Float.( >= ) (num named "total") (num named "distinct"));
+      (* The exact object, and every number in it is the log's own. *)
+      check_key_set ~what:"graph.named" [ "distinct"; "total"; "hottest" ] named;
+      Alcotest.(check int)
+        "distinct is the log's"
+        (Ohcamel.Recompute_log.distinct log)
+        (Int.of_float (num named "distinct"));
+      Alcotest.(check int)
+        "total is the log's"
+        (Ohcamel.Recompute_log.total log)
+        (Int.of_float (num named "total"));
+      match field_exn named "hottest" with
+      | `List entries ->
+          Alcotest.(check bool) "at most ten hottest" true (List.length entries <= 10);
+          List.iter entries ~f:(fun e ->
+              ignore (field_exn e "name" : Yojson.Safe.t);
+              ignore (num e "n" : float));
+          List.iter entries ~f:(fun e ->
+              check_key_set ~what:"hottest entry" [ "name"; "n" ] e);
+          Alcotest.(check (list (pair string int)))
+            "the log's ten hottest, in the log's order"
+            (Ohcamel.Recompute_log.hottest log ~n:10)
+            (List.map entries ~f:(fun e ->
+                 ( (match field_exn e "name" with `String s -> s | _ -> "?"),
+                   Int.of_float (num e "n") )))
+      | _ -> Alcotest.fail "hottest is not a list")
+    ()
+
 let suite =
   ( "server",
     [
@@ -1353,4 +1662,13 @@ let suite =
         `Quick test_a_render_time_stabilize_produces_an_empty_follow_up;
       Alcotest.test_case "a subscriber that stops reading does not stall one that reads"
         `Quick test_a_stalled_subscriber_does_not_stall_a_reading_one;
+      Alcotest.test_case "every scalar node has a by_node value" `Quick
+        test_every_scalar_node_has_a_by_node_value;
+      Alcotest.test_case "risk_share and risk over money are the encoder's" `Quick
+        test_risk_share_and_risk_over_money;
+      Alcotest.test_case "risk_share is null while warming up" `Quick
+        test_risk_share_is_null_while_warming_up;
+      Alcotest.test_case "the quiet list is on the wire" `Quick test_quiet_is_on_the_wire;
+      Alcotest.test_case "/api/ops reports the named log" `Quick
+        test_ops_reports_the_named_log;
     ] )
