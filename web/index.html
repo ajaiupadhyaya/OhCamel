@@ -123,8 +123,14 @@ Phase 3. The dashboard page, served from memory by server.ml.
 
 <footer>
   <span>updates arrive when a value changes, not on a timer</span>
-  <span>nodes recomputed <span class="num" id="nodes">—</span> <i>— process-wide: includes forks and the startup probe</i></span>
   <span id="conn">—</span>
+  <span>nodes recomputed <span class="num" id="nodes">—</span> · stabilizes <span class="num" id="stabilizes">—</span> <i>— process-wide: includes forks and the startup probe</i></span>
+  <span>frames sent <span class="num" id="frames">—</span> · open subscribers <span class="num" id="subs">—</span> · coalesce <span class="num" id="coalesce">—</span></span>
+  <span>history <span class="num" id="hist">—</span></span>
   <span id="alertstat">—</span>
+  <span>pid <span class="num" id="pid">—</span> · <span id="host">—</span> <i>— the container id, not the droplet</i></span>
+  <span>GC heap <span class="num" id="gcheap">—</span> · major collections <span class="num" id="gcmajor">—</span> · RSS <span class="num" id="rss">—</span></span>
+  <span id="feedstats" hidden></span>
+  <span class="cannot">CPU share, Caddy and the certificate are not engine-observable; <code>docker stats</code> has them.</span>
 </footer>
 

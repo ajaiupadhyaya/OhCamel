@@ -253,3 +253,7 @@
   td.risk .rm { color: var(--ink-faint); margin-left: 8px; }
   em.quietlbl { color: var(--unknown); }
   em.quietlbl::before { content: " · "; }
+/* The footer: the process's own account of itself, one poll every 30 s. */
+footer span i { font-style: italic; color: var(--ink-faint); }
+footer span[hidden] { display: none; }
+footer .cannot { display: block; margin-top: 4px; color: var(--ink-soft); }

@@ -54,15 +54,56 @@
       if (pendingFrame) { resetLedger(); renderGraphFrame(pendingFrame); }
     }).catch(function () { /* the figure stays empty; the ledger does not depend on it */ });
   }
+  // ---- The footer: what /api/ops knows, every 30 s while the tab is visible ----
+  // The only poll on this page. Everything above the footer arrives on the
+  // stream because it is a graph change; a process's pid, uptime and heap are
+  // not, so the page asks for them on a timer and the footer's first line says
+  // so. Stopped while the tab is hidden, as /ops does, because a hundred
+  // background tabs asking every 30 s is a load the engine did not sign up for.
+  function opsNum(x) { return x === null || x === undefined ? "—" : Number(x).toLocaleString("en-US"); }
+  function opsMb(bytes) { return bytes === null || bytes === undefined ? "—" : (bytes / 1048576).toFixed(1) + " MB"; }
+  function renderOps(o) {
+    var $ = function (id) { return document.getElementById(id); };
+    $("mode").textContent = o.mode === "live" ? "live · Alpaca + FRED" : "demo · synthetic feed";
+    var p = o.process || {}, st = o.stream || {}, h = o.history || {}, gc = o.gc || {};
+    $("stabilizes").textContent = opsNum(p.stabilizes);
+    $("frames").textContent = opsNum(st.frames_sent);
+    $("subs").textContent = opsNum(st.subscribers);
+    $("coalesce").textContent = st.coalesce_ms === undefined ? "—" : opsNum(Math.round(st.coalesce_ms)) + " ms";
+    $("hist").textContent = h.capacity === undefined ? "—"
+      : opsNum(h.appended) + " appended / " + opsNum(h.points) + " points / " + opsNum(h.capacity) + " capacity";
+    // A pid is an identifier, not a quantity: no thousands separator, so it greps.
+    $("pid").textContent = o.pid === undefined || o.pid === null ? "—" : String(o.pid);
+    $("host").textContent = o.hostname || "—";
+    // OCaml words are 8 bytes on every platform this runs on.
+    $("gcheap").textContent = gc.heap_words === undefined ? "—" : opsMb(gc.heap_words * 8);
+    $("gcmajor").textContent = opsNum(gc.major_collections);
+    $("rss").textContent = opsMb(o.rss_bytes);
+    var fs = o.feed_source || {}, f = $("feedstats");
+    if (fs.kind === "alpaca" && fs.alpaca && fs.fred) {
+      f.hidden = false;
+      f.textContent = "Alpaca frames " + opsNum(fs.alpaca.frames) + " · trades " + opsNum(fs.alpaca.trades)
+        + " · rejected " + opsNum(fs.alpaca.rejected) + " · reconnects " + opsNum(fs.alpaca.reconnects)
+        + " · last error " + (fs.alpaca.last_error || "none")
+        + " — FRED polls " + opsNum(fs.fred.polls) + " · last success " + (fs.fred.last_success || "never");
+    } else {
+      f.hidden = true;
+    }
+  }
   function loadOps() {
     fetch("/api/ops").then(function (r) { return r.json(); }).then(function (o) {
       var first = ops === null;
       ops = o;
-      document.getElementById("mode").textContent =
-        o.mode === "live" ? "live · Alpaca + FRED" : "demo · synthetic feed";
+      renderOps(o);
       if (first && o.mode === "live") resetLedger();
-    }).catch(function () { /* the header keeps its default word */ });
+    }).catch(function () { /* the header keeps its word and the footer its dashes */ });
   }
+  var opsTimer = null;
+  function startOps() { if (opsTimer === null) { loadOps(); opsTimer = setInterval(loadOps, 30000); } }
+  function stopOps() { if (opsTimer !== null) { clearInterval(opsTimer); opsTimer = null; } }
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") startOps(); else stopOps();
+  });
   // Time_ns.to_string_utc prints nanoseconds and a space; Date.parse wants
   // milliseconds and a T.
   function parseUtc(s) { return Date.parse(s.replace(" ", "T").replace(/(\.\d{1,3})\d*Z$/, "$1Z")); }
@@ -85,7 +126,8 @@
   }
   // A display clock, not a poll: it reads two timestamps and asks the server nothing.
   setInterval(clocks, 250);
-  loadOps(); loadGraph();
+  if (document.visibilityState !== "hidden") startOps();
+  loadGraph();
 
   function money(x) {
     if (x === null || x === undefined) return null;
@@ -540,6 +582,8 @@
     document.getElementById("nsym").textContent =
       s.positions.length + " / " + s.sectors.length + " sectors";
     document.getElementById("nodes").textContent = s.nodes_recomputed.toLocaleString("en-US");
+    if (s.stabilizes !== undefined && s.stabilizes !== null)
+      document.getElementById("stabilizes").textContent = s.stabilizes.toLocaleString("en-US");
     document.getElementById("asof").textContent = s.as_of.replace("T", " ").slice(0, 19) + "Z";
     var a = s.alerts || {};
     document.getElementById("alertstat").textContent =
