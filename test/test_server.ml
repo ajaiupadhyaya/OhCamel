@@ -1830,6 +1830,262 @@ let test_api_graph () =
         body)
     ()
 
+(* The stress body, hand-derived on this file's book.
+
+   AAPL 150 x 200 = +30,000; XOM 100 x -400 = -40,000; cash 100,000; net
+   -10,000; equity 90,000. Before any fork: aapl-cap (25,000) is already over
+   at 30,000, and var-cap (3,000) is over at 0.05 x 70,000 = 3,500 -- the
+   historical VaR at 95% over ten observations is the single worst return.
+   So [before.breached] = [aapl-cap; var-cap], in configured order.
+
+   broad-selloff, everything -10%: AAPL 27,000, XOM -36,000, net -9,000,
+   equity 91,000 -> P&L +1,000: a short book makes money when everything
+   falls, and the suite must be allowed to say so.
+   energy-squeeze, XOM +20%: XOM -48,000, net -18,000, equity 82,000 ->
+   P&L -8,000, the worst of the ten.
+   tech-selloff, AAPL -20%: AAPL 24,000, under its 25,000 cap -> aapl-cap
+   is CLEARED; var-cap stays over (0.05 x 64,000 = 3,200). *)
+let test_stress_shape () =
+  with_graph
+    ~f:(fun graph ->
+      let counter_before = Graph.total_nodes_recomputed () in
+      let json = Server.json_of_stress graph in
+      let str j k = match field_exn j k with `String s -> s | _ -> "<not a string>" in
+      let strings j k =
+        match field_exn j k with
+        | `List xs -> List.map xs ~f:(function `String s -> s | _ -> "?")
+        | _ -> Alcotest.failf "%s is not a list" k
+      in
+      let before = field_exn json "before" in
+      Alcotest.(check (float 1e-9)) "before.gross" 70_000.0 (num before "gross_exposure");
+      Alcotest.(check (float 1e-9)) "before.equity" 90_000.0 (num before "equity");
+      Alcotest.(check (float 1e-9))
+        "before.var_notional" 3_500.0
+        (num before "value_at_risk_notional");
+      Alcotest.(check (list string))
+        "before.breached" [ "aapl-cap"; "var-cap" ] (strings before "breached");
+      let scenarios =
+        match field_exn json "scenarios" with
+        | `List ss -> ss
+        | _ -> Alcotest.fail "scenarios"
+      in
+      Alcotest.(check int)
+        "six standard + two per sector, two sectors" 10 (List.length scenarios);
+      let by name =
+        List.find_exn scenarios ~f:(fun s -> String.equal (str s "name") name)
+      in
+      let selloff = by "broad-selloff" in
+      (match field_exn selloff "shocks" with
+      | `List [ shock ] ->
+          Alcotest.(check string) "kind" "all" (str shock "kind");
+          Alcotest.(check (float 1e-12)) "move" (-0.10) (num shock "move");
+          Alcotest.(check string) "text" "everything -10.0%" (str shock "text")
+      | _ -> Alcotest.fail "broad-selloff has one shock");
+      Alcotest.(check (float 1e-6)) "selloff P&L" 1_000.0 (num selloff "pnl");
+      Alcotest.(check (float 1e-9))
+        "selloff P&L fraction" (1_000.0 /. 90_000.0) (num selloff "pnl_fraction");
+      Alcotest.(check (float 1e-6)) "equity_before" 90_000.0 (num selloff "equity_before");
+      Alcotest.(check (float 1e-6)) "equity_after" 91_000.0 (num selloff "equity_after");
+      Alcotest.(check (float 1e-6)) "gross after" 63_000.0 (num selloff "gross_exposure");
+      List.iter [ "drawdown_before"; "drawdown_after"; "value_at_risk_notional" ]
+        ~f:(fun k -> ignore (num selloff k : float));
+      Alcotest.(check string) "worst is a name" "energy-squeeze" (str json "worst");
+      Alcotest.(check (float 1e-6))
+        "and its P&L" (-8_000.0)
+        (num (by "energy-squeeze") "pnl");
+      (match field_exn (by "tech-selloff") "cleared_breaches" with
+      | `List [ b ] ->
+          Alcotest.(check string) "tech-selloff clears aapl-cap" "aapl-cap" (str b "name");
+          (* A cleared breach is carried as the breach it WAS: stress.ml
+             filters [cleared_breaches] out of the snapshot before the fork,
+             exactly as it takes [new_breaches] from the one after, so both
+             lists hold records that are breached. Its utilisation is the 1.2
+             the scenario clears (30,000 over 25,000), not the 0.96 after. *)
+          Alcotest.(check bool)
+            "as a record with its utilisation: the 1.2 it clears" true
+            (Float.( > ) (num b "utilisation") 1.0);
+          Alcotest.(check bool)
+            "and the engine's own sentence" true
+            (String.is_substring (str b "text") ~substring:"aapl-cap")
+      | _ -> Alcotest.fail "tech-selloff clears exactly one breach");
+      Alcotest.(check (list string))
+        "rate-shock: no factor history, no beta, both named" [ "AAPL"; "XOM" ]
+        (strings (by "rate-shock") "unestimated_betas");
+      Alcotest.(check bool)
+        "counter_cost is the forks' work" true
+        (Float.( > ) (num json "counter_cost") 0.0
+        && Float.( <= ) (num json "counter_cost")
+             (Float.of_int (Graph.total_nodes_recomputed () - counter_before)));
+      Alcotest.(check bool)
+        "duration_ms is a non-negative number" true
+        (Float.( >= ) (num json "duration_ms") 0.0);
+      (* The exact objects, and every value the book determines.
+
+         Both legs hold r -- AAPL long r, XOM short -r -- so under any price
+         shock the book's return is r and the historical VaR fraction stays at
+         the worst return, 0.05; only a volatility shock scales it (x2 for
+         vol-regime, x3 for panic). VaR notional is that fraction of gross.
+         The equity history is empty, so drawdown is 0 on both sides of every
+         scenario and dd-cap never breaches: no scenario on this book makes a
+         NEW breach, and two of them clear one. *)
+      check_key_set ~what:"/api/stress"
+        [ "as_of"; "before"; "scenarios"; "worst"; "counter_cost"; "duration_ms" ]
+        json;
+      check_key_set ~what:"before"
+        [ "gross_exposure"; "equity"; "value_at_risk_notional"; "breached" ]
+        before;
+      Alcotest.(check bool)
+        "as_of is a string" true
+        (match field_exn json "as_of" with `String _ -> true | _ -> false);
+      Alcotest.(check bool)
+        "counter_cost is an int" true
+        (match field_exn json "counter_cost" with `Int _ -> true | _ -> false);
+      Alcotest.(check (list string))
+        "the suite, in the suite's order"
+        [
+          "broad-selloff";
+          "crash";
+          "melt-up";
+          "vol-regime";
+          "panic";
+          "rate-shock";
+          "energy-selloff";
+          "energy-squeeze";
+          "tech-selloff";
+          "tech-squeeze";
+        ]
+        (List.map scenarios ~f:(fun s -> str s "name"));
+      List.iter2_exn (Ohcamel.Stress.suite_for ~graph) scenarios ~f:(fun scenario s ->
+          check_key_set ~what:"scenario"
+            [
+              "name";
+              "description";
+              "shocks";
+              "pnl";
+              "pnl_fraction";
+              "equity_before";
+              "equity_after";
+              "drawdown_before";
+              "drawdown_after";
+              "gross_exposure";
+              "value_at_risk_notional";
+              "new_breaches";
+              "cleared_breaches";
+              "unestimated_betas";
+            ]
+            s;
+          Alcotest.(check string)
+            (str s "name" ^ ": the suite's description")
+            (Ohcamel.Stress.Scenario.description scenario)
+            (str s "description");
+          Alcotest.(check string)
+            (str s "name" ^ ": each shock is Shock.to_json")
+            (Yojson.Safe.to_string
+               (`List
+                  (List.map
+                     (Ohcamel.Stress.Scenario.shocks scenario)
+                     ~f:Ohcamel.Stress.Shock.to_json)))
+            (Yojson.Safe.to_string (field_exn s "shocks")));
+      let limit_named name =
+        List.find_exn limits ~f:(fun l -> String.equal (Limit.name l) name)
+      in
+      let check_cleared b ~name ~scope ~observed ~threshold =
+        check_key_set ~what:"breach record"
+          [
+            "name";
+            "scope";
+            "unit";
+            "observed";
+            "threshold";
+            "excess";
+            "breached";
+            "utilisation";
+            "text";
+          ]
+          b;
+        Alcotest.(check string) (name ^ ": scope") scope (str b "scope");
+        Alcotest.(check string) (name ^ ": unit") "money" (str b "unit");
+        Alcotest.(check (float 1e-6)) (name ^ ": observed") observed (num b "observed");
+        Alcotest.(check (float 1e-6)) (name ^ ": threshold") threshold (num b "threshold");
+        Alcotest.(check (float 1e-6))
+          (name ^ ": excess") (observed -. threshold) (num b "excess");
+        Alcotest.(check (float 1e-9))
+          (name ^ ": utilisation") (observed /. threshold) (num b "utilisation");
+        Alcotest.(check bool)
+          (name ^ ": the record is the breach before the fork")
+          true
+          (match field_exn b "breached" with `Bool x -> x | _ -> false);
+        Alcotest.(check string)
+          (name ^ ": the text is Limits.to_string of the same breach")
+          (Ohcamel.Limits.to_string
+             (Ohcamel.Limits.evaluate ~limit:(limit_named name)
+                ~observed:(num b "observed")))
+          (str b "text")
+      in
+      List.iter
+        [
+          (* name, P&L, gross after, VaR notional after, cleared breaches as
+             (limit, scope, observed BEFORE the fork, threshold): a cleared
+             breach is the record of the breach it was *)
+          ("broad-selloff", 1_000.0, 63_000.0, 3_150.0, []);
+          ( "crash",
+            2_000.0,
+            56_000.0,
+            2_800.0,
+            [
+              ("aapl-cap", "instrument:AAPL", 30_000.0, 25_000.0);
+              ("var-cap", "portfolio", 3_500.0, 3_000.0);
+            ] );
+          ("melt-up", -1_500.0, 80_500.0, 4_025.0, []);
+          ("vol-regime", 0.0, 70_000.0, 7_000.0, []);
+          ("panic", 1_200.0, 61_600.0, 9_240.0, []);
+          ("rate-shock", 0.0, 70_000.0, 3_500.0, []);
+          ("energy-selloff", 8_000.0, 62_000.0, 3_100.0, []);
+          ("energy-squeeze", -8_000.0, 78_000.0, 3_900.0, []);
+          ( "tech-selloff",
+            -6_000.0,
+            64_000.0,
+            3_200.0,
+            [ ("aapl-cap", "instrument:AAPL", 30_000.0, 25_000.0) ] );
+          ("tech-squeeze", 6_000.0, 76_000.0, 3_800.0, []);
+        ]
+        ~f:(fun (name, pnl, gross, var, cleared) ->
+          let s = by name in
+          Alcotest.(check (float 1e-6)) (name ^ ": pnl") pnl (num s "pnl");
+          Alcotest.(check (float 1e-9))
+            (name ^ ": pnl_fraction") (pnl /. 90_000.0) (num s "pnl_fraction");
+          Alcotest.(check (float 1e-6))
+            (name ^ ": equity_before") 90_000.0 (num s "equity_before");
+          Alcotest.(check (float 1e-6))
+            (name ^ ": equity_after") (90_000.0 +. pnl) (num s "equity_after");
+          Alcotest.(check (float 1e-12))
+            (name ^ ": drawdown_before") 0.0 (num s "drawdown_before");
+          Alcotest.(check (float 1e-12))
+            (name ^ ": drawdown_after") 0.0 (num s "drawdown_after");
+          Alcotest.(check (float 1e-6))
+            (name ^ ": gross after") gross (num s "gross_exposure");
+          Alcotest.(check (float 1e-6))
+            (name ^ ": VaR notional after")
+            var
+            (num s "value_at_risk_notional");
+          Alcotest.(check int)
+            (name ^ ": no new breach") 0
+            (match field_exn s "new_breaches" with `List bs -> List.length bs | _ -> -1);
+          Alcotest.(check (list string))
+            (name ^ ": unestimated betas")
+            (if String.equal name "rate-shock" then [ "AAPL"; "XOM" ] else [])
+            (strings s "unestimated_betas");
+          match field_exn s "cleared_breaches" with
+          | `List bs ->
+              Alcotest.(check (list string))
+                (name ^ ": cleared breaches")
+                (List.map cleared ~f:(fun (limit, _, _, _) -> limit))
+                (List.map bs ~f:(fun b -> str b "name"));
+              List.iter2_exn bs cleared ~f:(fun b (limit, scope, observed, threshold) ->
+                  check_cleared b ~name:limit ~scope ~observed ~threshold)
+          | _ -> Alcotest.failf "%s: cleared_breaches is not a list" name))
+    ()
+
 let suite =
   ( "server",
     [
@@ -1882,4 +2138,6 @@ let suite =
       Alcotest.test_case "/api/ops reports the named log" `Quick
         test_ops_reports_the_named_log;
       Alcotest.test_case "/api/graph is the topology, memoised" `Quick test_api_graph;
+      Alcotest.test_case "/api/stress in the new shape, hand-derived" `Quick
+        test_stress_shape;
     ] )

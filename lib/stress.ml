@@ -97,6 +97,33 @@ module Shock = struct
     | Sector (s, f) -> Printf.sprintf "%s %+.1f%%" (Sector.to_string s) (f *. 100.0)
     | Factor f -> Printf.sprintf "factor %+.2f (through each name's beta)" f
     | Volatility k -> Printf.sprintf "volatility x%.2f" k
+
+  (* The same shock as structure, with the sentence beside it. Beside
+     [to_string] rather than in server.ml so that what a shock IS is decided in
+     one place: a page that drew the structure and printed the sentence from
+     two encoders could show a sector move over a factor sentence. [move] is
+     never converted -- a factor shock's move is in the series' own units, and
+     the sentence says so. *)
+  let to_json (t : t) : Yojson.Safe.t =
+    let kind, symbol, sector, move =
+      match t with
+      | All f -> ("all", None, None, f)
+      | Instrument (s, f) -> ("instrument", Some (Symbol.to_string s), None, f)
+      | Sector (s, f) -> ("sector", None, Some (Sector.to_string s), f)
+      | Factor f -> ("factor", None, None, f)
+      | Volatility k -> ("volatility", None, None, k)
+    in
+    let opt = function None -> `Null | Some s -> `String s in
+    `Assoc
+      [
+        ("kind", `String kind);
+        ("symbol", opt symbol);
+        ("sector", opt sector);
+        (* Finite by construction (a literal or a validated scale), but the
+           wire rule is server.ml's and it is cheap to keep here too. *)
+        ("move", if Float.is_finite move then `Float move else `Null);
+        ("text", `String (to_string t));
+      ]
 end
 
 module Scenario = struct

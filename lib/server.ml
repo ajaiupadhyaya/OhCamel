@@ -395,50 +395,84 @@ let json_of_snapshot ?recomputed ?stabilizes_delta ?nodes_recomputed_delta
 
 (* The scenario suite, run against the book as it stands right now.
 
-   Each outcome reports the shocked totals and the limits the scenario would
-   move across their line in either direction -- new breaches and cleared ones.
-   The full before/after snapshots are deliberately NOT serialized: they would
-   multiply the payload by the number of scenarios to say something the client
-   can already see, and the differences are what a scenario is for. *)
+   [before] is one snapshot taken here, not the per-outcome one stress.ml
+   carries: a page that prints "equity before -> after" wants one before, and
+   twelve copies of the same object would be twelve chances for a reader to
+   wonder whether they differ. Breaches travel as the ledger's record plus
+   the engine's own sentence. [counter_cost] and [duration_ms] are the two
+   facts that make the point that a scenario is real work on a fork -- the
+   process-wide counter moves for a reason that is not a tick -- and the
+   recompute log does not move at all, because a fork has no hook.
+
+   [before] is taken FIRST, and the clock and the counter start after it. A
+   snapshot stabilizes, so a write the live graph had not yet settled would
+   otherwise be credited to the forks, and the two numbers would stop being
+   only the forks' work. *)
 let json_of_stress (graph : Graph.t) : Yojson.Safe.t =
+  let before = Graph.snapshot graph in
+  let started = Types.Time.now () in
+  let counter_before = Graph.total_nodes_recomputed () in
   let scenarios = Stress.suite_for ~graph in
   let outcomes = Stress.run_all ~graph ~scenarios in
-  let names bs = jlist (fun b -> jstring (Types.Limit.name (Types.Breach.limit b))) bs in
+  let counter_cost = Graph.total_nodes_recomputed () - counter_before in
+  let duration_ms = Time_ns.Span.to_ms (Types.Time.diff (Types.Time.now ()) started) in
+  let breach_with_text (b : Types.Breach.t) =
+    match json_of_breach b with
+    | `Assoc fields -> `Assoc (fields @ [ ("text", jstring (Limits.to_string b)) ])
+    | other -> other
+  in
+  let breached_names (s : Graph.Snapshot.t) =
+    Graph.Snapshot.breaches s
+    |> List.filter ~f:Types.Breach.breached
+    |> jlist (fun b -> jstring (Types.Limit.name (Types.Breach.limit b)))
+  in
   `Assoc
     [
       ("as_of", jstring (Time_ns.to_string_utc (Types.Time.now ())));
+      ( "before",
+        `Assoc
+          [
+            ("gross_exposure", jnotional (Graph.Snapshot.gross_exposure before));
+            ("equity", jnotional (Graph.Snapshot.equity before));
+            ( "value_at_risk_notional",
+              jopt_notional (Graph.Snapshot.value_at_risk_notional before) );
+            ("breached", breached_names before);
+          ] );
       ( "scenarios",
         jlist
           (fun (o : Stress.Outcome.t) ->
             let scenario = Stress.Outcome.scenario o in
-            let after = Stress.Outcome.after o in
+            let b = Stress.Outcome.before o and a = Stress.Outcome.after o in
             `Assoc
               [
                 ("name", jstring (Stress.Scenario.name scenario));
                 ("description", jstring (Stress.Scenario.description scenario));
-                ( "shocks",
-                  jlist
-                    (fun shock -> jstring (Stress.Shock.to_string shock))
-                    (Stress.Scenario.shocks scenario) );
+                ("shocks", jlist Stress.Shock.to_json (Stress.Scenario.shocks scenario));
                 ("pnl", jnotional (Stress.Outcome.pnl o));
                 ("pnl_fraction", jfloat (Stress.Outcome.pnl_fraction o));
-                ("gross_exposure", jnotional (Graph.Snapshot.gross_exposure after));
-                ("equity", jnotional (Graph.Snapshot.equity after));
-                ("current_drawdown", jfloat (Graph.Snapshot.current_drawdown after));
+                ("equity_before", jnotional (Graph.Snapshot.equity b));
+                ("equity_after", jnotional (Graph.Snapshot.equity a));
+                ("drawdown_before", jfloat (Graph.Snapshot.current_drawdown b));
+                ("drawdown_after", jfloat (Graph.Snapshot.current_drawdown a));
+                ("gross_exposure", jnotional (Graph.Snapshot.gross_exposure a));
                 ( "value_at_risk_notional",
-                  jopt_notional (Graph.Snapshot.value_at_risk_notional after) );
-                ("new_breaches", names (Stress.Outcome.new_breaches o));
-                ("cleared_breaches", names (Stress.Outcome.cleared_breaches o));
+                  jopt_notional (Graph.Snapshot.value_at_risk_notional a) );
+                ("new_breaches", jlist breach_with_text (Stress.Outcome.new_breaches o));
+                ( "cleared_breaches",
+                  jlist breach_with_text (Stress.Outcome.cleared_breaches o) );
                 ( "unestimated_betas",
                   jlist
                     (fun s -> jstring (Types.Symbol.to_string s))
                     (Stress.Outcome.unestimated_betas o) );
               ])
           outcomes );
+      (* A name, not a copy of the object: the client finds it in [scenarios]. *)
       ( "worst",
         match Stress.worst outcomes with
         | None -> `Null
         | Some w -> jstring (Stress.Scenario.name (Stress.Outcome.scenario w)) );
+      ("counter_cost", `Int counter_cost);
+      ("duration_ms", jfloat duration_ms);
     ]
 
 (* The topology, in the spec's field list. Optional fields are null rather

@@ -386,6 +386,73 @@ let test_a_scenario_cannot_shock_what_the_book_does_not_hold () =
       check "non-positive volatility scale" [ Shock.Volatility 0.0 ])
     ()
 
+(* A shock as structure and as its own sentence, side by side, so the page can
+   draw the one and print the other and a reader can check them against each
+   other. [move] for a factor shock is in the factor series' units -- 100bp is
+   1.0 -- and the sentence says so; the JSON does not convert. *)
+let test_shock_to_json () =
+  let get j k =
+    match j with `Assoc kv -> List.Assoc.find_exn kv k ~equal:String.equal | _ -> `Null
+  in
+  let all = Stress.Shock.to_json (Stress.Shock.All (-0.10)) in
+  Alcotest.(check bool)
+    "all: kind" true
+    (match get all "kind" with `String "all" -> true | _ -> false);
+  Alcotest.(check bool)
+    "all: move" true
+    (match get all "move" with `Float f -> Float.equal f (-0.10) | _ -> false);
+  Alcotest.(check bool)
+    "all: no symbol, no sector" true
+    (match (get all "symbol", get all "sector") with `Null, `Null -> true | _ -> false);
+  Alcotest.(check bool)
+    "all: text is to_string" true
+    (match get all "text" with
+    | `String s -> String.equal s "everything -10.0%"
+    | _ -> false);
+  let sector =
+    Stress.Shock.to_json (Stress.Shock.Sector (Sector.of_string "TECH", 0.2))
+  in
+  Alcotest.(check bool)
+    "sector: named" true
+    (match get sector "sector" with `String "TECH" -> true | _ -> false);
+  let factor = Stress.Shock.to_json (Stress.Shock.Factor 1.0) in
+  Alcotest.(check bool)
+    "factor: move is in the series' units" true
+    (match get factor "move" with `Float f -> Float.equal f 1.0 | _ -> false);
+  let vol = Stress.Shock.to_json (Stress.Shock.Volatility 3.0) in
+  Alcotest.(check bool)
+    "volatility: kind and scale" true
+    (match (get vol "kind", get vol "move") with
+    | `String "volatility", `Float f -> Float.equal f 3.0
+    | _ -> false);
+  (* Every variant whole, as the bytes on the wire: the exact five keys in
+     order, every value, and the one variant above does not reach -- a single
+     name, which is the only shock that carries a symbol. The text is
+     [to_string]'s, so the sentence and the structure cannot disagree. *)
+  List.iter
+    [
+      ( Stress.Shock.All (-0.10),
+        {|{"kind":"all","symbol":null,"sector":null,"move":-0.1,"text":"everything -10.0%"}|}
+      );
+      ( Stress.Shock.Instrument (Symbol.of_string "AAPL", 0.05),
+        {|{"kind":"instrument","symbol":"AAPL","sector":null,"move":0.05,"text":"AAPL +5.0%"}|}
+      );
+      ( Stress.Shock.Sector (Sector.of_string "TECH", 0.2),
+        {|{"kind":"sector","symbol":null,"sector":"TECH","move":0.2,"text":"TECH +20.0%"}|}
+      );
+      ( Stress.Shock.Factor 1.0,
+        {|{"kind":"factor","symbol":null,"sector":null,"move":1.0,"text":"factor +1.00 (through each name's beta)"}|}
+      );
+      ( Stress.Shock.Volatility 3.0,
+        {|{"kind":"volatility","symbol":null,"sector":null,"move":3.0,"text":"volatility x3.00"}|}
+      );
+    ]
+    ~f:(fun (shock, expected) ->
+      Alcotest.(check string)
+        (Stress.Shock.to_string shock ^ " on the wire")
+        expected
+        (Yojson.Safe.to_string (Stress.Shock.to_json shock)))
+
 let suite =
   ( "stress",
     [
@@ -410,4 +477,5 @@ let suite =
         test_the_suite_covers_both_directions;
       Alcotest.test_case "a scenario cannot shock what is not held" `Quick
         test_a_scenario_cannot_shock_what_the_book_does_not_hold;
+      Alcotest.test_case "a shock is JSON beside its sentence" `Quick test_shock_to_json;
     ] )
