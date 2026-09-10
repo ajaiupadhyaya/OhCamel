@@ -984,9 +984,10 @@ let test_ops_feed_source_comes_from_the_closure () =
    both are generated from Server.routes, and this asserts the generation
    rather than trusting it: the 404 body parsed back must list exactly the
    table's paths in the table's order, every listed path must dispatch, and a
-   path that is not listed must not. The eight paths are written out because
+   path that is not listed must not. The nine paths are written out because
    a route added to the table without being added here is the one change
-   this test exists to make somebody look at. Phase 5 adds two. *)
+   this test exists to make somebody look at. Phase 4 added /api/graph;
+   Phase 5 adds two. *)
 let test_the_404_lists_exactly_the_routes () =
   let listed =
     match Yojson.Safe.from_string Server.not_found_body with
@@ -1008,6 +1009,7 @@ let test_the_404_lists_exactly_the_routes () =
       "/api/stream";
       "/api/history";
       "/api/stress";
+      "/api/graph";
       "/api/ops";
     ]
     (Server.route_paths ());
@@ -1620,6 +1622,214 @@ let test_ops_reports_the_named_log () =
       | _ -> Alcotest.fail "hottest is not a list")
     ()
 
+(* /api/graph is the topology, once, as a string. Two reads are the same
+   bytes and cost the engine nothing; every edge endpoint is a served node;
+   the counts are the formula Task 5 pinned, on this file's two-name book:
+   named = 2*2 + 2 + 3 + 0 + 29 = 38, inputs = 4*2 + 5 = 13, 51 nodes. *)
+let test_api_graph () =
+  with_server
+    ~f:(fun server graph ->
+      let before = Graph.total_nodes_recomputed () in
+      let status, content_type, body = respond server "/api/graph" in
+      Alcotest.(check int) "200" 200 status;
+      Alcotest.(check (option string)) "JSON" (Some "application/json") content_type;
+      let _, _, again = respond server "/api/graph" in
+      Alcotest.(check bool)
+        "memoised: the same string object" true (phys_equal body again);
+      Alcotest.(check int)
+        "and no node ran to serve it" before
+        (Graph.total_nodes_recomputed ());
+      let json = parse body in
+      let nodes =
+        match field_exn json "nodes" with `List ns -> ns | _ -> Alcotest.fail "nodes"
+      in
+      let names =
+        String.Set.of_list
+          (List.map nodes ~f:(fun n ->
+               match field_exn n "name" with `String s -> s | _ -> Alcotest.fail "name"))
+      in
+      Alcotest.(check int) "51 nodes on the two-name book" 51 (List.length nodes);
+      let counts = field_exn json "counts" in
+      Alcotest.(check (float 0.0)) "counts.named" 38.0 (num counts "named");
+      Alcotest.(check (float 0.0)) "counts.inputs" 13.0 (num counts "inputs");
+      Alcotest.(check (float 0.0)) "counts.observed" 28.0 (num counts "observed");
+      Alcotest.(check (float 0.0)) "counts.instruments" 2.0 (num counts "instruments");
+      (match field_exn json "edges" with
+      | `List edges ->
+          Alcotest.(check bool) "there are edges" true (not (List.is_empty edges));
+          List.iter edges ~f:(function
+            | `List [ `String from; `String into ] ->
+                Alcotest.(check bool)
+                  (from ^ " -> " ^ into ^ " joins served nodes")
+                  true
+                  (Set.mem names from && Set.mem names into)
+            | other ->
+                Alcotest.failf "edge is not a pair: %s" (Yojson.Safe.to_string other))
+      | _ -> Alcotest.fail "edges");
+      (* One node of each shape, field by field. *)
+      let node name =
+        List.find_exn nodes ~f:(fun n ->
+            match field_exn n "name" with `String s -> String.equal s name | _ -> false)
+      in
+      let str n key =
+        match field_exn n key with `String s -> s | _ -> "<not a string>"
+      in
+      let cell = node "price[AAPL]" in
+      Alcotest.(check string) "family" "input" (str cell "family");
+      Alcotest.(check string) "kind" "Var" (str cell "kind");
+      Alcotest.(check string) "cutoff" "Equal" (str cell "cutoff");
+      Alcotest.(check string) "unit" "price" (str cell "unit");
+      Alcotest.(check string) "symbol" "AAPL" (str cell "symbol");
+      Alcotest.(check (float 0.0)) "rank" 0.0 (num cell "rank");
+      Alcotest.(check bool)
+        "not observed" false
+        (match field_exn cell "observed" with `Bool b -> b | _ -> true);
+      Alcotest.(check bool)
+        "limit and option are null on a cell" true
+        (match (field_exn cell "limit", field_exn cell "option") with
+        | `Null, `Null -> true
+        | _ -> false);
+      let cap = node "limit:aapl-cap" in
+      Alcotest.(check string) "per_limit" "per_limit" (str cap "family");
+      let l = field_exn cap "limit" in
+      Alcotest.(check string) "limit.name" "aapl-cap" (str l "name");
+      Alcotest.(check string) "limit.kind" "gross_notional" (str l "kind");
+      Alcotest.(check string) "limit.scope" "instrument:AAPL" (str l "scope");
+      Alcotest.(check string)
+        "the matrix the decomposition reads" "equal_weighted"
+        (str json "attribution_covariance");
+      (* The outside, as facts. No alerts were attached to this server. *)
+      (match field_exn json "outside" with
+      | `List outs ->
+          Alcotest.(check (list string))
+            "four readers, in order"
+            [ "alerts"; "history"; "stream"; "kill_switch" ]
+            (List.map outs ~f:(fun o -> str o "name"));
+          let by name =
+            List.find_exn outs ~f:(fun o -> String.equal (str o "name") name)
+          in
+          Alcotest.(check bool)
+            "alerts absent" false
+            (match field_exn (by "alerts") "present" with `Bool b -> b | _ -> true);
+          Alcotest.(check bool)
+            "the kill switch is wired to nothing" true
+            (match field_exn (by "kill_switch") "wired_to" with
+            | `Null -> true
+            | _ -> false);
+          Alcotest.(check (list string))
+            "history reads six"
+            [
+              "gross_exposure";
+              "net_exposure";
+              "equity";
+              "current_drawdown";
+              "var_notional";
+              "es_notional";
+            ]
+            (match field_exn (by "history") "reads" with
+            | `List xs -> List.map xs ~f:(function `String s -> s | _ -> "?")
+            | _ -> []);
+          Alcotest.(check int)
+            "the stream reads every observed node" 28
+            (match field_exn (by "stream") "reads" with
+            | `List xs -> List.length xs
+            | _ -> 0);
+          (* Every reader, whole: the exact object, what it reads, whether it
+             is there, and that nothing outside the graph is wired onward. *)
+          List.iter outs ~f:(fun o ->
+              check_key_set ~what:"outside reader"
+                [ "name"; "reads"; "present"; "wired_to" ]
+                o;
+              Alcotest.(check bool)
+                (str o "name" ^ " is wired to nothing")
+                true
+                (match field_exn o "wired_to" with `Null -> true | _ -> false));
+          List.iter
+            [
+              ("alerts", false);
+              ("history", true);
+              ("stream", true);
+              ("kill_switch", false);
+            ]
+            ~f:(fun (name, present) ->
+              Alcotest.(check bool)
+                (name ^ " present") present
+                (match field_exn (by name) "present" with
+                | `Bool b -> b
+                | _ -> not present));
+          List.iter
+            [ ("alerts", [ "breaches" ]); ("kill_switch", [ "alerts" ]) ]
+            ~f:(fun (name, reads) ->
+              Alcotest.(check (list string))
+                (name ^ " reads") reads
+                (match field_exn (by name) "reads" with
+                | `List xs -> List.map xs ~f:(function `String s -> s | _ -> "?")
+                | _ -> []))
+      | _ -> Alcotest.fail "outside");
+      Alcotest.(check (list string))
+        "the route sits immediately before /api/ops" [ "/api/graph"; "/api/ops" ]
+        (List.drop (Server.route_paths ()) (List.length (Server.route_paths ()) - 2));
+      (* The exact objects at every level, the rest of the counts and limits,
+         and the whole body against the topology the graph reports now: the
+         memo is that topology, encoded, and nothing else. *)
+      check_key_set ~what:"/api/graph"
+        [ "nodes"; "edges"; "outside"; "attribution_covariance"; "counts" ]
+        json;
+      List.iter nodes ~f:(fun n ->
+          check_key_set ~what:"graph node"
+            [
+              "name";
+              "family";
+              "kind";
+              "rank";
+              "observed";
+              "cutoff";
+              "unit";
+              "symbol";
+              "sector";
+              "limit";
+              "option";
+            ]
+            n;
+          (match field_exn n "limit" with
+          | `Null -> ()
+          | limit -> check_key_set ~what:"node limit" [ "name"; "kind"; "scope" ] limit);
+          Alcotest.(check bool)
+            (str n "name" ^ ": no option on a book with no contracts")
+            true
+            (match field_exn n "option" with `Null -> true | _ -> false));
+      check_key_set ~what:"counts"
+        [
+          "instruments";
+          "sectors";
+          "limits";
+          "options";
+          "named";
+          "inputs";
+          "observed";
+          "incremental_nodes";
+        ]
+        counts;
+      Alcotest.(check (float 0.0)) "counts.sectors" 2.0 (num counts "sectors");
+      Alcotest.(check (float 0.0)) "counts.limits" 3.0 (num counts "limits");
+      Alcotest.(check (float 0.0)) "counts.options" 0.0 (num counts "options");
+      List.iter
+        [
+          ("aapl-cap", "gross_notional", "instrument:AAPL");
+          ("var-cap", "value_at_risk", "portfolio");
+          ("dd-cap", "max_drawdown", "portfolio");
+        ]
+        ~f:(fun (name, kind, scope) ->
+          let l = field_exn (node ("limit:" ^ name)) "limit" in
+          Alcotest.(check (list string))
+            ("limit:" ^ name) [ name; kind; scope ]
+            [ str l "name"; str l "kind"; str l "scope" ]);
+      Alcotest.(check string)
+        "the memo is the topology, encoded"
+        (Yojson.Safe.to_string (Server.json_of_graph (Graph.topology graph)))
+        body)
+    ()
+
 let suite =
   ( "server",
     [
@@ -1671,4 +1881,5 @@ let suite =
       Alcotest.test_case "the quiet list is on the wire" `Quick test_quiet_is_on_the_wire;
       Alcotest.test_case "/api/ops reports the named log" `Quick
         test_ops_reports_the_named_log;
+      Alcotest.test_case "/api/graph is the topology, memoised" `Quick test_api_graph;
     ] )

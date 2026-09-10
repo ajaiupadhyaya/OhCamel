@@ -441,6 +441,80 @@ let json_of_stress (graph : Graph.t) : Yojson.Safe.t =
         | Some w -> jstring (Stress.Scenario.name (Stress.Outcome.scenario w)) );
     ]
 
+(* The topology, in the spec's field list. Optional fields are null rather
+   than absent, so a client reads [n.symbol] on every node and never tests for
+   a key. The limit's kind and scope are strings a reader can print; the
+   thresholds are not here, because the ledger already carries them with
+   their units and a drawing that repeated them would be a second place for
+   them to be wrong. *)
+let json_of_graph (topo : Graph.Topology.t) : Yojson.Safe.t =
+  let module T = Graph.Topology in
+  let jopt f = function None -> `Null | Some x -> f x in
+  let node (n : T.Node.t) =
+    `Assoc
+      [
+        ("name", jstring (T.Node.name n));
+        ("family", jstring (T.Family.to_string (T.Node.family n)));
+        ("kind", jstring (T.Node.kind n));
+        ("rank", `Int (T.Node.rank n));
+        ("observed", `Bool (T.Node.observed n));
+        ("cutoff", jstring (T.Node.cutoff n));
+        ("unit", jstring (T.Node.unit n));
+        ("symbol", jopt (fun s -> jstring (Types.Symbol.to_string s)) (T.Node.symbol n));
+        ("sector", jopt (fun k -> jstring (Types.Sector.to_string k)) (T.Node.sector n));
+        ( "limit",
+          jopt
+            (fun (l : Types.Limit.t) ->
+              `Assoc
+                [
+                  ("name", jstring (Types.Limit.name l));
+                  ("kind", jstring (T.limit_kind_to_string (Types.Limit.kind l)));
+                  ("scope", jstring (Types.Limit.scope_to_string (Types.Limit.scope l)));
+                ])
+            (T.Node.limit n) );
+        ( "option",
+          jopt
+            (fun (id, underlying) ->
+              `Assoc
+                [
+                  ("id", jstring id);
+                  ("underlying", jstring (Types.Symbol.to_string underlying));
+                ])
+            (T.Node.contract n) );
+      ]
+  in
+  let outside (o : T.Outside.t) =
+    `Assoc
+      [
+        ("name", jstring (T.Outside.name o));
+        ("reads", jlist jstring (T.Outside.reads o));
+        ("present", `Bool (T.Outside.present o));
+        ("wired_to", jopt jstring (T.Outside.wired_to o));
+      ]
+  in
+  let c = T.counts topo in
+  `Assoc
+    [
+      ("nodes", jlist node (T.nodes topo));
+      ( "edges",
+        jlist (fun (from, into) -> `List [ jstring from; jstring into ]) (T.edges topo) );
+      ("outside", jlist outside (T.outside topo));
+      ( "attribution_covariance",
+        jstring (Graph.Covariance_estimator.to_string (T.attribution_covariance topo)) );
+      ( "counts",
+        `Assoc
+          [
+            ("instruments", `Int (T.Counts.instruments c));
+            ("sectors", `Int (T.Counts.sectors c));
+            ("limits", `Int (T.Counts.limits c));
+            ("options", `Int (T.Counts.options c));
+            ("named", `Int (T.Counts.named c));
+            ("inputs", `Int (T.Counts.inputs c));
+            ("observed", `Int (T.Counts.observed c));
+            ("incremental_nodes", `Int (T.Counts.incremental_nodes c));
+          ] );
+    ]
+
 (* ------------------------------------------------------------------------ *)
 (* The broadcaster                                                           *)
 (* ------------------------------------------------------------------------ *)
@@ -514,6 +588,10 @@ type t = {
      cannot reset them. *)
   mutable last_stabilizes : int;
   mutable last_nodes_recomputed : int;
+  (* The topology, encoded once. It cannot change after construction -- every
+     edge is declared when the graph is built -- so serving it is a string
+     copy, and the drawing on a thousand tabs costs the engine nothing. *)
+  graph_json : string;
 }
 
 (* A sink is named, never described.
@@ -1095,6 +1173,13 @@ let routes : (string * string * handler) list =
       fun t ->
         Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
           (Yojson.Safe.to_string (json_of_stress t.graph)) );
+    (* Memoised at [create]: the topology is a fact about the construction of
+       the graph and cannot change afterwards, so this is a string copy. *)
+    ( "/api/graph",
+      "the dependency graph as Incremental holds it: named nodes, edges, ranks",
+      fun t ->
+        Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
+          t.graph_json );
     ( "/api/ops",
       "what this process is: build, uptime, counters, stream, feed, alerts, heap",
       fun t ->
@@ -1162,6 +1247,9 @@ let create ?(coalesce = Time_ns.Span.of_ms 80.0) ?history_capacity
       recompute_log;
       last_stabilizes = Graph.total_stabilizes ();
       last_nodes_recomputed = Graph.total_nodes_recomputed ();
+      graph_json =
+        Yojson.Safe.to_string
+          (json_of_graph (Graph.topology ~alerts:(Option.is_some alerts) graph));
     }
   in
   (* The link that makes this reactive rather than polled. Graph.on_change fires
