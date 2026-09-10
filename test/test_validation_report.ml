@@ -174,19 +174,60 @@ let test_series_facts () =
    table is the table of THAT order. Two uniforms per gaussian, always. jumps
    draws on 950 of its 1000 days (every twentieth is a literal -0.08), and
    vol-regime on all 1000: the first iid-normal value is therefore gaussian draw
-   number 1951 of a fresh state, whatever sigma the 1950 before it used. *)
+   number 1951 of a fresh state, whatever sigma the 1950 before it used.
+
+   The 1951 check alone pins where iid-normal STARTS but not which of the
+   other two series went first between them -- jumps-then-vol-regime and
+   vol-regime-then-jumps both hand iid-normal exactly 1950 prior draws, so a
+   test that only checks draw 1951 would still pass with those two swapped.
+   The two checks below close that gap directly, one per series, each
+   against a fresh state rather than against each other:
+
+     jumps.(0) is draw 1 of a totally fresh state. Index 0 is not itself a
+     jump day (0 mod 20 = 0, not 19), so no jump-day branching is needed to
+     predict it -- it is simply the first gaussian a fresh stream produces,
+     at jumps' sigma. If vol-regime were drawn first, jumps.(0) would need
+     1000 prior draws instead of zero, and this check would fail.
+
+     vol_regime.(0) is draw 951 -- after jumps' 950 (1000 days, 50 of them
+     literal jump days that draw nothing) and none of iid-normal's, because
+     vol-regime is the SECOND series drawn. If vol-regime were drawn first,
+     this would need 0 prior draws instead of 950, and this check would fail
+     too. Its sigma is 0.006 because index 0 is in the calm regime (i < 600).
+
+   Between them, the three checks pin all three relative positions: jumps
+   first (0 prior draws), vol-regime second (950 prior draws), iid-normal
+   third (1950 prior draws). Swapping any two of the three lets in
+   [synthetic_series] moves at least one series off its pinned draw index. *)
 let test_the_generator_reads_one_stream_jumps_first () =
   let rng = Random.State.make [| Validation_report.seed |] in
   let generated = Validation_report.synthetic_series ~rng in
-  let iid_normal =
+  let series name =
     List.Assoc.find_exn
       (List.map generated ~f:(fun (n, _, r) -> (n, r)))
-      ~equal:String.equal "iid-normal"
+      ~equal:String.equal name
   in
+  let jumps = series "jumps" in
+  let vol_regime = series "vol-regime" in
+  let iid_normal = series "iid-normal" in
+  let advance replay n =
+    for _ = 1 to n do
+      ignore (Synthetic_book.gaussian ~rng:replay ~sigma:1.0 : float)
+    done
+  in
+  let jumps_replay = Random.State.make [| Validation_report.seed |] in
+  Alcotest.(check (float 0.0))
+    "jumps.(0) is draw 1 (jumps drawn first)"
+    (Synthetic_book.gaussian ~rng:jumps_replay ~sigma:0.004)
+    jumps.(0);
+  let vol_regime_replay = Random.State.make [| Validation_report.seed |] in
+  advance vol_regime_replay 950;
+  Alcotest.(check (float 0.0))
+    "vol-regime.(0) is draw 951 (after jumps' 950, before iid-normal's)"
+    (Synthetic_book.gaussian ~rng:vol_regime_replay ~sigma:0.006)
+    vol_regime.(0);
   let replay = Random.State.make [| Validation_report.seed |] in
-  for _ = 1 to 950 + 1000 do
-    ignore (Synthetic_book.gaussian ~rng:replay ~sigma:1.0 : float)
-  done;
+  advance replay (950 + 1000);
   Alcotest.(check (float 0.0))
     "iid-normal.(0) is draw 1951"
     (Synthetic_book.gaussian ~rng:replay ~sigma:0.011)
