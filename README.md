@@ -1,7 +1,7 @@
 # OhCamel
 
 [![ci](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml/badge.svg)](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml)
-[![coverage 78%](https://img.shields.io/badge/coverage-78%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
+[![coverage 82%](https://img.shields.io/badge/coverage-82%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
 
 **Live:** [ohcamel.ajaiupadhyaya.com](https://ohcamel.ajaiupadhyaya.com) — the
 synthetic demo, no credentials, always on. [How it is deployed](#watching-it).
@@ -1037,6 +1037,19 @@ host, `live.ohcamel.ajaiupadhyaya.com`, is the same image against Alpaca and
 FRED: real prints, the real ten-year yield, real staleness. It sits behind a
 password, because it holds credentials and shows a real book.
 
+The page at that address is the engine drawn from itself. Figure 1 is the
+dependency graph taken from Incremental's own node table, with each frame's
+recomputation set lit on it: a print in AAPL lights its exposure, the
+aggregates, the estimators and the limits that read them, and visibly leaves
+`covariance` dark until a bar closes. Below the ledger, this README's argument
+runs again under the same headings, except that the tables are *computed by
+the deployed process at startup* — the scaling probe, both backtest batteries,
+the options walk, and the GARCH study on a second domain — and each is checked
+against the numbers quoted in this file, cell by cell, with one printed line
+saying whether they agree. The droplet is Linux on amd64 and this README was
+written on macOS on arm64, so that line is a second platform reproducing every
+table here, or naming the cell where it does not.
+
 The deployment is [`deploy/`](deploy/): a two-stage Dockerfile that fails the
 *build* if the runtime image is missing a shared object, a compose file in which
 only Caddy has a host port, and a smoke suite that runs after every deploy and
@@ -1068,7 +1081,7 @@ deploy user alone, and reach the container as environment, never as a layer.
 
 ## What's verified
 
-`make test` runs 272 tests, all hermetic — no network, no credentials, and nothing
+`make test` runs 309 tests, all hermetic — no network, no credentials, and nothing
 that waits on the wall clock. They cover the numerics against hand-computed
 values, the wire format, the alerting state machine, and the recomputation counts
 that make the graph's shape an assertion rather than a claim.
@@ -1139,7 +1152,7 @@ six properties and four example tests. `QCHECK_TRIALS=5000 make test` runs
 
 ### Coverage, and what it is not measuring
 
-`make coverage` runs the suite under `bisect_ppx` and reports **78%**. The badge
+`make coverage` runs the suite under `bisect_ppx` and reports **82%**. The badge
 above is that number; CI enforces a floor of 60% and prints the full per-file
 table into the run summary, so a drop is visible without anyone remembering to
 look.
@@ -1148,15 +1161,17 @@ The interesting thing about the number is that it is bimodal, and it should be
 read as two numbers rather than one:
 
 ```
- 94%  lib/history_buffer.ml   37%  lib/alerts.ml
- 91%  lib/attribution.ml      40%  lib/config.ml
- 91%  lib/graph.ml            39%  lib/feed/alpaca_ws.ml
- 90%  lib/risk_metrics.ml     47%  lib/feed/fred_client.ml
- 90%  lib/crisis_data.ml      50%  lib/feed/alpaca_rest.ml
- 88%  lib/limits.ml           50%  lib/server.ml
- 87%  lib/vol_estimators.ml   47%  lib/types.ml
- 85%  lib/stress.ml           75%  lib/options.ml
- 71%  lib/var_backtest.ml
+ 95%  lib/history_buffer.ml   52%  lib/alerts.ml
+ 95%  lib/crisis_data.ml      43%  lib/config.ml
+ 92%  lib/graph.ml            40%  lib/feed/alpaca_ws.ml
+ 91%  lib/attribution.ml      51%  lib/feed/fred_client.ml
+ 90%  lib/risk_metrics.ml     50%  lib/feed/alpaca_rest.ml
+ 90%  lib/stress.ml           48%  lib/types.ml
+ 89%  lib/limits.ml           75%  lib/options.ml
+ 89%  lib/reports.ml
+ 88%  lib/server.ml
+ 87%  lib/vol_estimators.ml
+ 85%  lib/var_backtest.ml
 ```
 
 The left column is everything that computes a risk number. The right column is

@@ -169,12 +169,15 @@ would be the first that does.
 
 | Route | |
 |---|---|
-| `/` | The dashboard, a single embedded HTML string with inline SVG and no external assets |
+| `/` | The page: Figure 1 (the graph from Incremental's node table, lit per frame), the ledger, and the README's argument with every reproducible table computed here and checked against the README. One embedded HTML string, inline SVG, no external assets |
 | `/api/snapshot` | The whole book as JSON, including `nodes_recomputed` — the counter that proves the graph is alive |
 | `/api/health` | Feed liveness per symbol; `healthy: false` when anything is stale |
 | `/api/stream` | Server-sent events, emitted only on an actual graph change (parked on an `Ivar`, not a timer), coalesced over 80 ms |
 | `/api/history` | The in-memory trail |
-| `/api/stress` | The scenario suite, run on a fork |
+| `/api/stress` | The scenario suite, run on forks of the live book: structured shocks, before and after, breaches with their text, the counter's cost |
+| `/api/graph` | The topology: named nodes, edges, ranks, the readers outside the graph. Memoised at startup |
+| `/api/reports` | The CLI's reports computed by this process before it listened: scaling probe, synthetic and crisis batteries, options walk. One cached string, about 86 KB |
+| `/api/reports/garch` | The 180-fit GARCH study, run on a second domain after listen: `computing` with a count, then `done` with its rows (about 5 s on an M-series laptop) |
 | `/ops` | The operator's view: what the process is, how long it has been up, what it has recomputed |
 | `/api/ops` | The same as JSON, including the recompute log's distinct and total counts and its hottest nodes |
 
@@ -182,7 +185,7 @@ The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/da
 
 ## What is verified
 
-- **272 hermetic tests** — no network, no credentials, nothing waiting on a
+- **309 hermetic tests** — no network, no credentials, nothing waiting on a
   clock. Expected values are derived by hand with the derivation beside the
   assertion. Seven are worth knowing by name: Euler residual, hedge (no stray
   `abs`), lookahead, stress-fork isolation, regime-break, delta-hedged, and
@@ -190,7 +193,7 @@ The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/da
 - **Property tests** (qcheck) generalise the identities over random inputs:
   Euler additivity, component VaR summing to portfolio VaR, a hedge reducing
   variance, VaR monotone in confidence, fork isolation, backtest lookahead.
-- **Coverage 78.2%**, with a 60% floor in CI that exists to make deleting
+- **Coverage 82.2%** (3,713 / 4,516 lines, measured 2026-09-10), with a 60% floor in CI that exists to make deleting
   tests noticeable, not as a target. The number is bimodal by design: the pure
   numeric core is above 90% and the network edges near 40%, because exercising
   them means mocking a broker, which raises the number and establishes nothing.
@@ -346,6 +349,10 @@ ssh root@DROPLET 'bash -s' < deploy/provision.sh
 # the old text; pulling first means the version that runs is the one you meant
 git pull --ff-only && deploy/deploy.sh          # public demo
 git pull --ff-only && deploy/deploy.sh --live   # plus the live host
+
+# roll back: deploy.sh always builds origin/main, so a rollback is a revert on
+# main, pushed, then the redeploy above -- not a checkout on the droplet, which
+# the next deploy's pull would undo
 
 # look
 docker compose -f deploy/docker-compose.yml ps

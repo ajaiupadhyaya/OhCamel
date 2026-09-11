@@ -1,5 +1,7 @@
 # OhCamel — the page
 
+*Status, 2026-09-10: built and merged to `main`, with the cuts listed in `docs/superpowers/plans/2026-09-10-the-page-finish-line.md` — §08 is text rather than an in-browser smoke run, there is no frame-arrival strip, the quoted bench is a table, and the GARCH column fills when the study finishes rather than row by row. Where it is deployed, and from which sha, is `docs/status.md` § Where it runs.*
+
 *Design, 2026-09-02. This succeeds the dashboard described in the essay at the head of `lib/dashboard_html.ml`. That essay is kept — archived verbatim at the head of `web/index.html`, where the successor is — and its three moves are kept with it. What follows is what the page becomes when the graph itself is drawn on it.*
 
 *How it was made: five readers mapped the subsystems a page would draw on; three designers proposed from three angles (an argument, a console, the graph); three judges scored them (the graph won two lenses, the argument won the interviewer's); one synthesis; one completeness critic. Four choices were the owner's and were made on 2026-09-02: one document at `/` plus `/ops`; `/ops` and `/api/ops` public on the demo host with a CORS header on the demo engine's JSON routes; the GARCH study computed by this process on a second domain; an observer on the attribution node. The critic's corrections are folded in where they land and marked* amended.
