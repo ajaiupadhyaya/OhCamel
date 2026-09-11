@@ -1,5 +1,7 @@
 # The page — Phase 6: deploy and measure — Implementation Plan
 
+> **Superseded 2026-09-10.** Not executed as written. Deploying and closing out are items 9–10 of `2026-09-10-the-page-finish-line.md`, with the cuts listed there.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Put Phases 1–5 on both droplet hosts, measure on the s-2vcpu box every number the page and the docs assert, and re-date `docs/status.md`, `README.md`, `lib/verified.ml` and the two stale spec lines so nothing in the repository is carried forward unmeasured.

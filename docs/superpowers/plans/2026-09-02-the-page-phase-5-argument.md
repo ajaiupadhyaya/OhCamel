@@ -1,5 +1,7 @@
 # The page — Phase 5: the reports and the argument — Implementation Plan
 
+> **Superseded 2026-09-10.** Not executed as written. Its scope is folded into items 4–9 of `2026-09-10-the-page-finish-line.md`, with the cuts listed there. This file stays as a parts bin for the encoders, routes and GARCH domain.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Put every report the CLI prints — the scaling probe, both validation batteries, the options walk and the GARCH study — on the wire as records the engine computed at startup, and build the nine-section argument below the graph that reads them, each section saying in one of three fixed ways where its numbers came from.
