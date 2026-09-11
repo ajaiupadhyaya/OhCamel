@@ -395,23 +395,36 @@ module Garch = struct
   let start (t : t) : unit Async.Deferred.t =
     let started = Time_ns.now () in
     t.status <- Computing;
-    let domain =
-      Stdlib.Domain.spawn (fun () ->
-          let result = Result.try_with (fun () -> run_study t) in
-          Stdlib.Atomic.set t.finished true;
-          result)
-    in
-    let rec wait () =
-      if Stdlib.Atomic.get t.finished then (
-        (match Stdlib.Domain.join domain with
-        | Ok result ->
-            t.status <-
-              Done (result, Time_ns.Span.to_ms (Time_ns.diff (Time_ns.now ()) started))
-        | Error exn -> t.status <- Failed (Exn.to_string exn));
-        Async.Deferred.unit)
-      else Async.Deferred.bind (Async.Clock_ns.after (Time_ns.Span.of_sec 1.0)) ~f:wait
-    in
-    wait ()
+    (* The finish time is read on the study's own domain, when the last fit
+       returns: read when the poll notices, it would carry up to a second of
+       polling into the wall time the page prints. A clock read touches
+       nothing shared. *)
+    match
+      Result.try_with (fun () ->
+          Stdlib.Domain.spawn (fun () ->
+              let result = Result.try_with (fun () -> run_study t) in
+              let finished_at = Time_ns.now () in
+              Stdlib.Atomic.set t.finished true;
+              (result, finished_at)))
+    with
+    | Error exn ->
+        (* No second domain (a process limit, say): the study is reported as
+           failed and the engine keeps serving, rather than dying after listen. *)
+        t.status <- Failed ("could not start a domain: " ^ Exn.to_string exn);
+        Async.Deferred.unit
+    | Ok domain ->
+        let rec wait () =
+          if Stdlib.Atomic.get t.finished then (
+            (match Stdlib.Domain.join domain with
+            | Ok result, finished_at ->
+                t.status <-
+                  Done (result, Time_ns.Span.to_ms (Time_ns.diff finished_at started))
+            | Error exn, _ -> t.status <- Failed (Exn.to_string exn));
+            Async.Deferred.unit)
+          else
+            Async.Deferred.bind (Async.Clock_ns.after (Time_ns.Span.of_sec 1.0)) ~f:wait
+        in
+        wait ()
 
   (* For tests: the same study on the calling domain, to completion. *)
   let run_here (t : t) : unit =

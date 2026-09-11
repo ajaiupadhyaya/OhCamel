@@ -60,8 +60,10 @@
     function typical(xs) { if (!xs.length) return null; var s = xs.slice().sort(function (a, b) { return a - b; }); return s[Math.floor(s.length / 2)]; }
     var t = typical(st.ticks), b = typical(st.bars);
     if (t === null) return;
-    set("frames-line", "Measured while you watched: " + (st.ticks.length + st.bars.length) + " frames since this page opened. A tick recomputed a median of " + t + " of 53 named nodes" +
-      (b === null ? ", and no bar has closed yet (one every 15 s)." : ", and a bar " + b + ", because a bar is the only thing that reaches covariance."));
+    set("frames-line", "Measured while you watched: " + (st.ticks.length + st.bars.length) + " frames since this page opened. A tick recomputed a median of " + t + " of " + (st.named || "the") + " named nodes" +
+      (b !== null ? ", and a bar " + b + ", because a bar is the only thing that reaches covariance."
+        : st.mode === "live" ? ". No bar runs on this host: its return windows are set once, at backfill, so covariance does not run again."
+        : ", and no bar has closed yet (one every 15 s)."));
   }
   function renderScaling(r) {
     C.scaling(clear($("c-scaling")), r.scaling.rows);
@@ -94,7 +96,7 @@
 
   // ---- §03 ----
   function renderOptions(o) {
-    set("opt-synthetic", "SYNTHETIC. The implied vol comes from a smile invented in the CLI and found nowhere in the library, " + o.surface.formula + ". Neither deployed book holds options.");
+    set("opt-synthetic", "SYNTHETIC. The implied vol comes from a smile invented for this demonstration in lib/options_walk.ml, which no served graph reads: " + o.surface.formula + ". Neither deployed book holds options.");
     set("opt-contracts", String(Math.abs(o.setup.contracts))); set("opt-strike", String(o.setup.strike));
     set("opt-days", String(o.setup.expiry_days)); set("opt-spot", String(o.setup.spot));
     var t = clear($("t-walk"));
@@ -198,7 +200,12 @@
 
   // ---- §05 ----
   function renderGarch(g) {
-    var done = g.status === "done";
+    if (g.status === "absent" || !g.truth) {
+      set("garch-prov", "not run by this process");
+      set("q-garch", "This process did not run the study, so only the README's figures could be shown.");
+      return true;
+    }
+    var done = g.status === "done", failed = g.status === "failed";
     set("garch-prov", done ? "computed · on a second domain · " + (g.computed_in_ms / 1000).toFixed(1) + " s" : g.status === "failed" ? "the study failed: " + g.error : g.status + " · " + g.done + " of " + g.of + " fits, on a second domain");
     C.garch(clear($("c-garch")), done ? g.rows : [], g.truth.persistence, g.window, quoted ? quoted.garch.rows : null);
     var t = clear($("t-garch"));
@@ -208,7 +215,7 @@
       var c = done ? g.rows.filter(function (x) { return x.n === q.n; })[0] : null, tr = el("tr");
       tr.appendChild(el("td", "l", String(q.n)));
       tr.appendChild(el("td", "quoted", qrows.length ? q.persistence_mean.toFixed(3) + " ± " + q.persistence_sd.toFixed(3) : "—"));
-      tr.appendChild(el("td", c ? null : "na", c ? c.persistence_mean.toFixed(3) + " ± " + c.persistence_sd.toFixed(3) : "computing"));
+      tr.appendChild(el("td", c ? null : "na", c ? c.persistence_mean.toFixed(3) + " ± " + c.persistence_sd.toFixed(3) : failed ? "failed" : "computing"));
       tr.appendChild(el("td", c ? null : "na", c ? c.alpha_mean.toFixed(3) + " ± " + c.alpha_sd.toFixed(3) : ""));
       tr.appendChild(el("td", c ? null : "na", c ? c.beta_mean.toFixed(3) + " ± " + c.beta_sd.toFixed(3) : ""));
       t.appendChild(tr);
@@ -220,7 +227,7 @@
         ["alpha_mean", "alpha_sd", "beta_mean", "beta_sd", "persistence_mean", "persistence_sd"].forEach(function (k) { checks.push(["n=" + r.n + " " + k, r[k], q[k], 3]); });
       });
       agreement("q-garch", checks, "GARCH table");
-    } else set("q-garch", "The README's run is drawn now. This process's fills in when its study finishes.");
+    } else set("q-garch", failed ? "This process's study failed (" + g.error + "), so only the README's run is drawn." : "The README's run is drawn now. This process's fills in when its study finishes.");
     var v = done ? g.verdict_row : (quoted ? quoted.garch.rows[0] : null);
     if (v) set("garch-verdict", "At this engine's " + g.window + "-observation window the persistence comes back at " + v.persistence_mean.toFixed(3) + " ± " + v.persistence_sd.toFixed(3) +
       " against a true " + g.truth.persistence.toFixed(2) + (done ? "" : " (the README's figure, while this process computes its own)") +
@@ -255,7 +262,7 @@
 
   // ---- §08 ----
   function renderVerified(v) {
-    set("vf-tests", "Quoted, dated " + v.dated + ": " + v.tests + " hermetic tests, pinned by a test that counts the registered suites · line coverage " + v.coverage_pct.toFixed(1) + "% = " + comma(v.coverage_covered) + " / " + comma(v.coverage_lines) + " lines (bisect). Neither is computed by this host.");
+    set("vf-tests", "Quoted, dated " + v.dated + ": " + v.tests + " hermetic tests, pinned by a test that counts the registered suites · coverage " + v.coverage_pct.toFixed(1) + "% = " + comma(v.coverage_covered) + " / " + comma(v.coverage_lines) + " points (bisect_ppx counts instrumented points, not lines). Neither is computed by this host.");
   }
   function renderBuild(o) {
     var b = o.build, up = o.uptime_s, u = up < 3600 ? Math.round(up / 60) + " min" : up < 86400 ? (up / 3600).toFixed(1) + " h" : (up / 86400).toFixed(1) + " d";
@@ -266,6 +273,7 @@
   function fragments() {
     if (!G) return;
     fetch("/api/graph").then(function (r) { return r.json(); }).then(function (topo) {
+      st.named = topo.counts && topo.counts.named;
       [["f-attr", ["weights", "covariance", "attribution", "component_var_map", "component_var_sector_map", "diversification_ratio"]],
        ["f-est", ["aligned_returns", "covariance", "covariance_ewma", "portfolio_returns", "historical_var", "expected_shortfall", "parametric_var", "parametric_var_ewma"]],
        ["f-garch", ["aligned_returns", "covariance_ewma", "parametric_var_ewma"]]].forEach(function (f) {
@@ -291,6 +299,7 @@
       var bar = s.recomputed.some(function (x) { return x.name === "covariance"; });
       (bar ? st.bars : st.ticks).push(s.recomputed.length);
       if (st.ticks.length > 2000) st.ticks.shift();
+      if (st.bars.length > 2000) st.bars.shift();
       framesLine();
     }
     st.snapshot = s;
