@@ -297,6 +297,76 @@ fi
 # -- Phase 5's block 4b (the routes the page reads) is inserted immediately below this line --
 
 # ---------------------------------------------------------------------------
+# 4b. The reports the page reads
+#
+# The argument below the ledger is filled from three routes, and each has a
+# way to be present and empty that a 200 alone would wave through: a reports
+# object computed on nothing, a GARCH study that never finishes, a stress
+# suite that forked no scenarios. So each is read for its substance. GARCH is
+# polled, because it runs on a second domain after listen and a fresh container
+# is honestly still computing; it gets two minutes.
+# ---------------------------------------------------------------------------
+if command -v python3 >/dev/null 2>&1; then
+	rep=$(curl -sS --compressed --max-time 20 "$BASE/api/reports" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    r = json.load(sys.stdin)
+except Exception as e:
+    print("NOTJSON %s" % e); raise SystemExit
+v = r.get("validation") or {}
+n = len((v.get("synthetic") or {}).get("rows") or []) + len((v.get("crisis") or {}).get("rows") or [])
+s = len((r.get("scaling") or {}).get("rows") or [])
+o = len((r.get("options") or {}).get("states") or [])
+if n != 18 or s != 3 or o != 4:
+    print("SHAPE validation rows %d (18), scaling rows %d (3), option states %d (4)" % (n, s, o)); raise SystemExit
+print("OK %d %s" % (n, r.get("computed_in_ms")))
+' 2>/dev/null)
+	case "$rep" in
+	OK*) read -r _ rep_rows rep_ms <<<"$rep"; ok "GET /api/reports            $rep_rows validation rows, 3 scaling, options; computed in ${rep_ms%.*} ms" ;;
+	*)   no "GET /api/reports            malformed" "${rep:-no response}" ;;
+	esac
+
+	stress=$(curl -sS --max-time 20 "$BASE/api/stress" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    x = json.load(sys.stdin)
+except Exception as e:
+    print("NOTJSON %s" % e); raise SystemExit
+sc = x.get("scenarios") or []
+if len(sc) != 12 or not x.get("worst"):
+    print("SHAPE %d scenarios, worst=%r" % (len(sc), x.get("worst"))); raise SystemExit
+print("OK %s %s" % (x["worst"], x.get("counter_cost")))
+' 2>/dev/null)
+	case "$stress" in
+	OK*) read -r _ worst cost <<<"$stress"; ok "GET /api/stress             12 scenarios on forks, worst $worst, counter cost $cost" ;;
+	*)   no "GET /api/stress             malformed" "${stress:-no response}" ;;
+	esac
+
+	garch_state=""
+	for _ in $(seq 1 24); do
+		garch_state=$(curl -sS --max-time 10 "$BASE/api/reports/garch" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    g = json.load(sys.stdin)
+except Exception:
+    print("NOTJSON"); raise SystemExit
+if g.get("status") == "done":
+    print("DONE %d %s" % (len(g.get("rows") or []), g.get("computed_in_ms")))
+else:
+    print("%s %s/%s" % (str(g.get("status")).upper(), g.get("done"), g.get("of")))
+' 2>/dev/null)
+		case "$garch_state" in DONE*|FAILED*|ABSENT*) break ;; esac
+		/bin/sleep 5
+	done
+	case "$garch_state" in
+	"DONE 6 "*) read -r _ _ garch_ms <<<"$garch_state"; ok "GET /api/reports/garch      done, 6 rows, ${garch_ms%.*} ms on a second domain" ;;
+	*)          no "GET /api/reports/garch      not done within 120 s" "${garch_state:-no response}" ;;
+	esac
+else
+	meh "GET /api/reports            python3 unavailable; the report routes not checked"
+fi
+
+# ---------------------------------------------------------------------------
 # 5. TLS, and the redirect onto it (production only)
 # ---------------------------------------------------------------------------
 case "$BASE" in
