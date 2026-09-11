@@ -40,7 +40,7 @@ that is a design invariant rather than a missing feature.
 | Cost | $24/month, metered hourly, capped |
 | Proxy / TLS | Caddy, Let's Encrypt, HTTP→HTTPS 308, HSTS. Only Caddy has a host port; the engines are on an internal Docker network |
 | DNS | Porkbun. Two A records, `ohcamel` and `live.ohcamel`, on a domain whose apex is unrelated (the owner's portfolio site) |
-| Deployed | 2026-09-09, both hosts, from `91424da` — both origins report it as `build.git_sha` on `/api/ops` — verified by the production smoke suite: 18 passed, 0 failed |
+| Deployed | 2026-09-10, both hosts, from `36fc84f` (the page: the graph and the argument) — both origins report it as `build.git_sha` on `/api/ops` — verified by the production smoke suite: 21 passed, 0 failed. On the droplet (Linux, amd64) every computed table on the page agrees with the README written on macOS/arm64: battery 63/63 cells, crisis 72/72, GARCH 36/36, node counts 6/6. The reports take 1.3 s before listen; the GARCH study 20.6 s on the second domain, with the stream serving throughout. Previous deploy, and the rollback reference: `91424da` |
 
 Resource use at rest is small enough to be worth stating so nobody adds a
 bigger box for the wrong reason: the engine sits at about 41 MB and six percent

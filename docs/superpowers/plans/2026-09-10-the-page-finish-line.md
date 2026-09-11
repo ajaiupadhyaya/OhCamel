@@ -1,5 +1,7 @@
 # The page — the finish line
 
+> **Done, 2026-09-10: 10 of 10.** Deployed to both hosts from `36fc84f`; production smoke 21 passed, 0 failed; the page's computed tables agree with the README on the droplet in every cell.
+
 *2026-09-10. This replaces everything that was left of the page redesign: the Phase 4 wrap-up and all
 of Phases 5 and 6, which came to 29 plan tasks plus a review and a fix wave per phase. The owner asked
 for ten things and for results, not a longer list. The spec
