@@ -42,6 +42,15 @@ let markers_in_order page ~name ~markers =
   in
   ()
 
+(* web/quoted.json is embedded inside <script type="application/json">, and
+   an HTML parser ends that element at the first "</script" whatever the JSON
+   around it says. A quoted note that ever contains one would cut the block
+   short and argument.js would silently compare nothing. *)
+let test_the_quoted_block_cannot_end_early () =
+  Alcotest.(check bool)
+    "no </script in web/quoted.json" false
+    (String.Caseless.is_substring Ohcamel.Quoted.json ~substring:"</script")
+
 let test_the_document_is_assembled_in_order () =
   markers_in_order Dashboard_html.page ~name:"dashboard"
     ~markers:
@@ -56,9 +65,14 @@ let test_the_document_is_assembled_in_order () =
         "THE SUCCESSOR, 2026-09-02";
         "<header>";
         "<table id=\"pos\"></table>";
+        "<article id=\"argument\">";
         "</footer>";
+        "<script id=\"quoted\" type=\"application/json\">";
+        "\"quoted_on\"";
         "<script>";
         "\"use strict\"";
+        "window.OhCamelCharts";
+        "window.OhCamelArgument";
         "</script>";
         "</html>";
       ];
@@ -316,7 +330,14 @@ let test_the_build_stamp_can_say_it_does_not_know () =
    differently would fail here rather than in a browser console. *)
 let test_the_page_scripts_are_in_order () =
   markers_in_order Dashboard_html.page ~name:"dashboard"
-    ~markers:[ "window.OhCamelFormat ="; "window.OhCamelGraph ="; "new EventSource(" ]
+    ~markers:
+      [
+        "window.OhCamelFormat =";
+        "window.OhCamelGraph =";
+        "window.OhCamelCharts =";
+        "new EventSource(";
+        "window.OhCamelArgument =";
+      ]
 
 let suite =
   ( "embedded_assets",
@@ -337,6 +358,8 @@ let suite =
         test_the_crisis_windows_are_in_the_binary;
       Alcotest.test_case "the build stamp can say it does not know" `Quick
         test_the_build_stamp_can_say_it_does_not_know;
-      Alcotest.test_case "format.js, graph.js, dashboard.js, in that order" `Quick
-        test_the_page_scripts_are_in_order;
+      Alcotest.test_case "format, graph, charts, dashboard, argument, in that order"
+        `Quick test_the_page_scripts_are_in_order;
+      Alcotest.test_case "the quoted block cannot be ended early" `Quick
+        test_the_quoted_block_cannot_end_early;
     ] )

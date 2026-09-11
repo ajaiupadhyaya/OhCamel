@@ -63,6 +63,7 @@
   function opsNum(x) { return x === null || x === undefined ? "—" : Number(x).toLocaleString("en-US"); }
   function opsMb(bytes) { return bytes === null || bytes === undefined ? "—" : (bytes / 1048576).toFixed(1) + " MB"; }
   function renderOps(o) {
+    if (window.OhCamelArgument) window.OhCamelArgument.ops(o);
     var $ = function (id) { return document.getElementById(id); };
     $("mode").textContent = o.mode === "live" ? "live · Alpaca + FRED" : "demo · synthetic feed";
     var p = o.process || {}, st = o.stream || {}, h = o.history || {}, gc = o.gc || {};
@@ -591,17 +592,34 @@
                 : "alerting disabled";
     refreshHistory();
     firstFrame = false;
+    // The argument below reads the same frame: attribution and the recompute tally.
+    if (window.OhCamelArgument) window.OhCamelArgument.frame(s);
   }
 
   var conn = document.getElementById("conn");
-  var src = new EventSource("/api/stream");
-  src.onmessage = function (e) {
-    conn.textContent = "stream connected";
-    try { render(JSON.parse(e.data)); }
-    catch (err) { conn.textContent = "bad frame: " + err.message; }
-  };
-  src.onerror = function () {
-    conn.textContent = "stream lost — the browser will retry";
-    document.getElementById("feed").innerHTML = '<span class="dot idle"></span>disconnected';
-  };
+  // The browser retries a dropped stream by itself, unless the retry gets an
+  // error status: during a redeploy the proxy answers 502 for a few seconds,
+  // and EventSource then closes for good while the page says it will retry.
+  // So a closed source is replaced here, after a pause that grows to 30 s.
+  var retryMs = 1000;
+  function connect() {
+    var src = new EventSource("/api/stream");
+    src.onmessage = function (e) {
+      retryMs = 1000;
+      conn.textContent = "stream connected";
+      try { render(JSON.parse(e.data)); }
+      catch (err) { conn.textContent = "bad frame: " + err.message; }
+    };
+    src.onerror = function () {
+      document.getElementById("feed").innerHTML = '<span class="dot idle"></span>disconnected';
+      if (src.readyState === EventSource.CLOSED) {
+        conn.textContent = "stream lost — reconnecting in " + Math.round(retryMs / 1000) + " s";
+        setTimeout(connect, retryMs);
+        retryMs = Math.min(30000, retryMs * 2);
+      } else {
+        conn.textContent = "stream lost — the browser will retry";
+      }
+    };
+  }
+  connect();
 })();

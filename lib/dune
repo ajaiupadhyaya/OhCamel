@@ -77,8 +77,15 @@
     (cat ../web/page.css)
     (echo "</style>\n</head>\n<body>\n")
     (cat ../web/index.html)
-    (echo "<script>\n")
-    (cat ../web/format.js ../web/graph.js ../web/dashboard.js)
+    (echo "<script id=\"quoted\" type=\"application/json\">\n")
+    (cat ../web/quoted.json)
+    (echo "</script>\n<script>\n")
+    (cat
+     ../web/format.js
+     ../web/graph.js
+     ../web/charts.js
+     ../web/dashboard.js
+     ../web/argument.js)
     (echo "</script>\n</body>\n</html>\n|ohcamel_html}\n")))))
 
 (rule

@@ -321,6 +321,16 @@ let to_json (t : t) : Yojson.Safe.t =
               | other -> other );
           ] );
       ("options", json_of_options t.options);
+      (* Dated constants, not computed here: the page sets them as quoted. *)
+      ( "verified",
+        `Assoc
+          [
+            ("tests", jint Verified.tests);
+            ("coverage_pct", jfloat Verified.coverage_pct);
+            ("coverage_covered", jint Verified.coverage_covered);
+            ("coverage_lines", jint Verified.coverage_lines);
+            ("dated", jstr Verified.dated);
+          ] );
     ]
 
 let to_string (t : t) : string = Yojson.Safe.to_string (to_json t)

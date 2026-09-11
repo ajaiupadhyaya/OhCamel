@@ -121,6 +121,183 @@ Phase 3. The dashboard page, served from memory by server.ml.
   </section>
 </main>
 
+<!--
+  The argument: the README's sections, in its order and under its headings,
+  with every table this process can reproduce reproduced. Each figure says in
+  its caption where its numbers came from -- LIVE (this host, this frame),
+  COMPUTED (this process, at startup) or QUOTED (the README, with its
+  hardware and date) -- and each computed table is checked against the
+  README's copy in web/quoted.json in one printed line. The prose is cut
+  from the README; the numbers inside it are filled from the same JSON as the
+  figure beside it, so the two cannot disagree.
+-->
+<article id="argument">
+
+  <section class="arg" id="s01">
+    <h2><span class="lbl">01</span>Why it isn't a loop</h2>
+    <div class="prose">
+      <p>Most real-time risk systems poll. A timer fires, the whole book is recomputed and rendered, and the process sleeps. The number on screen is then as old as the timer's last tick rather than the market's, and a print in one name pays for a covariance matrix that no price could have changed, because covariance is computed from a return window a mid-session print does not touch.</p>
+      <p>Here risk is a dependency graph. A tick sets one input cell and Incremental recomputes exactly what is downstream of it. Figure 1 is that graph, and every frame lights what ran. The rest of the graph is never visited, which is different from being recomputed and found unchanged.</p>
+    </div>
+    <p class="line" id="frames-line">Waiting for the first frames.</p>
+    <figure class="fig">
+      <figcaption><span>Nodes in the graph, and nodes a tick recomputes, at three book sizes.</span><span class="prov" data-prov="computed"></span></figcaption>
+      <div id="c-scaling" class="chart-box"></div>
+      <p class="cvq" id="q-scaling"></p>
+    </figure>
+    <figure class="fig">
+      <figcaption><span>What that costs in seconds: one tick, against a poll-and-recompute baseline built from the same pure functions.</span><span class="prov">quoted · README · M2 Pro · 2026-08</span></figcaption>
+      <div class="twrap"><table class="t quoted">
+        <tr><th class="l">book</th><th>incremental</th><th>polled</th><th>faster</th></tr>
+        <tr><td class="l">10 names</td><td>19.5 µs</td><td>51.7 µs</td><td>2.7×</td></tr>
+        <tr><td class="l">100 names</td><td>89.1 µs</td><td>3.39 ms</td><td>38×</td></tr>
+        <tr><td class="l">400 names</td><td>492.7 µs</td><td>53.4 ms</td><td>108×</td></tr>
+      </table></div>
+      <p class="cvq">bench/ is not in the image, so this host cannot reproduce these numbers and does not pretend to.</p>
+    </figure>
+    <div class="prose">
+      <p>The node count is flat and the wall clock is not. A tick reaches about twenty-six nodes at every book size, but some of those nodes are O(n), and the Euler decomposition is O(n²). What incrementality removes is the O(n²·w) covariance rebuild, the most expensive thing in the engine. That is why the gap widens from 2.7× to 108× as the book grows instead of staying constant.</p>
+    </div>
+  </section>
+
+  <section class="arg" id="s02">
+    <h2><span class="lbl">02</span>Where the risk is</h2>
+    <div class="prose">
+      <p>A portfolio VaR is a fact about the book, not an instruction. Sorting positions by size answers a different question, because money and risk are not the same distribution. Portfolio volatility is homogeneous of degree one in the weights, so Euler's theorem splits it exactly. Each name's contribution sums with the others to the whole, over any partition of the book, which is what makes a limit on one name's <em>share</em> of VaR well posed.</p>
+    </div>
+    <div class="frag" id="f-attr"></div>
+    <figure class="fig">
+      <figcaption><span>Each position's share of the money, and its share of the parametric VaR.</span><span class="prov live" data-prov="live"></span></figcaption>
+      <div id="c-attr" class="chart-box"></div>
+      <p class="line" id="attr-div">—</p>
+      <p class="cvq" id="attr-note">—</p>
+    </figure>
+    <div class="prose">
+      <p>A contribution can be negative, because a position that moves against the book reduces its volatility, so a hedge uses none of its risk limit however large it is. <code>test_graph.ml</code> asserts that directly. A stray absolute value anywhere in the chain would breach a risk limit for the act of hedging.</p>
+    </div>
+  </section>
+
+  <section class="arg" id="s03">
+    <h2><span class="lbl">03</span>Where the risk is when it isn't linear</h2>
+    <p class="synthetic" id="opt-synthetic">SYNTHETIC.</p>
+    <div class="prose">
+      <p>An option position can be flat in the underlying and still lose money on a move in either direction, or on no move at all. Take a book short <data id="opt-contracts">50</data> NVDA <data id="opt-strike">950</data> calls, <data id="opt-days">30</data> days out, spot $<data id="opt-spot">900</data>:</p>
+    </div>
+    <figure class="fig">
+      <figcaption><span>The hedge, then the clock.</span><span class="prov" data-prov="computed"></span></figcaption>
+      <div class="twrap"><table class="t" id="t-walk"></table></div>
+      <p class="line" id="opt-hedge">—</p>
+      <div id="opt-limits" class="lims"></div>
+    </figure>
+    <div class="prose">
+      <p>The hedge brings delta to exactly zero and leaves gamma and vega untouched, because a share contributes none of either. The notional cap is clear because the book is delta-flat. The vega cap is not, because it never was. An engine that measured only exposure would report this book as carrying no risk.</p>
+      <p>Vega is bucketed by tenor, because a calendar spread (long the far leg, short the near one) has zero parallel-shift vega and is not flat:</p>
+    </div>
+    <figure class="fig">
+      <figcaption><span>A calendar spread's vega by days remaining, and the parallel-shift total that hides it.</span><span class="prov" data-prov="computed"></span></figcaption>
+      <div id="c-tenor" class="chart-box"></div>
+    </figure>
+    <p class="line" id="opt-live">—</p>
+  </section>
+
+  <section class="arg" id="s04">
+    <h2><span class="lbl">04</span>Is the number any good</h2>
+    <div class="prose">
+      <p>“95% VaR” is a testable claim. The loss should exceed it on about 5% of days, and those days should be scattered rather than bunched. Three series, three estimators and four tests. Kupiec asks whether there are the right number of exceptions. Christoffersen asks whether they arrive back to back. Conditional coverage joins the two. The duration test asks whether the waiting times between exceptions are memoryless, which catches clustering that is not on adjacent days. Every forecast uses a window that ends the day before the day it scores.</p>
+    </div>
+    <p class="line" id="bt-config">—</p>
+    <div class="frag" id="f-est"></div>
+    <figure class="fig">
+      <figcaption><span>Nine configurations. Under each row, one tick per exception across the 940 forecasts.</span><span class="prov" data-prov="computed"></span></figcaption>
+      <div class="twrap"><table class="t" id="t-battery"></table></div>
+      <p class="cvq" id="q-battery"></p>
+    </figure>
+    <div class="prose">
+      <p>A rejection here is the suite working. On <code>jumps</code>, the parametric row has exactly 47 exceptions against 47 expected and passes three tests. The duration test rejects it, because a −8% loss every twentieth day is a metronome and not a market. Its strip reads as a comb.</p>
+    </div>
+    <figure class="fig">
+      <figcaption><span>The most severe rejection, in full.</span><span class="prov">the engine's own text</span></figcaption>
+      <pre class="engine" id="bt-severe">—</pre>
+    </figure>
+    <p class="line soft">The live host's own track record is not here. The engine does not persist forecasts, so there is no coverage test of the live VaR. That needs persistence, which is a separate argument.</p>
+  </section>
+
+  <section class="arg" id="s05">
+    <h2><span class="lbl">05</span>The estimator that is implemented and deliberately not used</h2>
+    <div class="prose">
+      <p>GARCH(1,1) adds what EWMA has no notion of: a long-run level to revert to. Its persistence, α + β, says how much of a volatility shock survives each period, and that number is the whole reason to prefer it. It is implemented and tested in <code>lib/vol_estimators.ml</code>, and it is not wired into the graph. This process simulates a known GARCH with persistence 0.98 and a 34-day half-life, fits it back thirty times at each sample size, and draws where the fits land.</p>
+    </div>
+    <div class="frag" id="f-garch"></div>
+    <figure class="fig">
+      <figcaption><span>Fitted persistence, mean ± sd. Soft dots are the README's run, dark dots are this process's.</span><span class="prov" id="garch-prov">computing</span></figcaption>
+      <div id="c-garch" class="chart-box"></div>
+      <div class="twrap"><table class="t" id="t-garch"></table></div>
+      <p class="cvq" id="q-garch"></p>
+    </figure>
+    <div class="prose">
+      <p id="garch-verdict">At this engine's 60-observation window, a fit carries almost no information about persistence.</p>
+    </div>
+  </section>
+
+  <section class="arg" id="s06">
+    <h2><span class="lbl">06</span>The same battery, real crises</h2>
+    <div class="prose">
+      <p>Synthetic tails are drawn from the distribution the author had in mind, and real ones are not. So the same battery runs over three real windows (the global financial crisis, COVID and the 2022 rate shock), using adjusted closes committed to the repository and compiled into this binary. Today's six-name book is held at constant weights: what today's book would have done through each window.</p>
+    </div>
+    <p class="line" id="cr-book">—</p>
+    <p class="line selector" id="cr-select"></p>
+    <figure class="fig">
+      <figcaption><span>The book's daily return (bars), each estimator's −VaR (lines) and the selected estimator's exceptions (dots). The worst 21 sessions are shaded.</span><span class="prov" data-prov="computed"></span></figcaption>
+      <div id="c-crisis"></div>
+    </figure>
+    <figure class="fig">
+      <figcaption><span>The nine rows, with the worst 21-session burst.</span><span class="prov" data-prov="computed"></span></figcaption>
+      <div class="twrap"><table class="t" id="t-crisis"></table></div>
+      <p class="cvq" id="q-crisis"></p>
+    </figure>
+    <div class="prose">
+      <p><span id="cr-rejected">—</span> Survival is not reassurance. On COVID the parametric row takes ten exceptions in a single 21-session window with a joint p of 0.073, which is no rejection. The duration test catches it. The five exceptions around Lehman are caught only by the burst count, which is not a test and is labelled as such. Three instruments have three different blind spots, and reading any one alone is how a model breaching ten times in a month gets a passing grade.</p>
+    </div>
+  </section>
+
+  <section class="arg" id="s07">
+    <h2><span class="lbl">07</span>What would break it</h2>
+    <div class="prose">
+      <p>VaR and limits can only speak about moves that are already in the return window, and a scenario asks the other question. There is no scenario arithmetic in this repository. <code>Graph.fork</code> copies the engine, the shocks are written into the fork's input cells, and the answer is read by the same nodes that produce the live one. The scenario is the engine fed different inputs, not a model of it.</p>
+    </div>
+    <p class="line" id="st-before">—</p>
+    <figure class="fig">
+      <figcaption><span>Profit and loss under twelve scenarios, in suite order. Worst case in red.</span><span class="prov live" id="st-prov">live · this host's book</span></figcaption>
+      <div id="c-stress" class="chart-box"></div>
+      <p class="line" id="st-worst">—</p>
+      <p class="cvq"><a id="st-again" href="#s07">run it again on a fork</a> <span id="st-cost"></span></p>
+    </figure>
+  </section>
+
+  <section class="arg" id="s08">
+    <h2><span class="lbl">08</span>What's verified</h2>
+    <p class="line" id="vf-build">—</p>
+    <div class="prose">
+      <p>Every deploy runs a smoke suite, and a failure fails the deploy. The assertion worth naming is not the health route returning 200, which proves almost nothing. It is that <code>nodes_recomputed</code> advances between two reads two seconds apart, and that the stream delivers distinct frames spread across twenty seconds rather than piled up at the end. A frozen graph serves valid JSON forever.</p>
+    </div>
+    <p class="line quotedline" id="vf-tests">—</p>
+    <div class="prose">
+      <p>The tests are hermetic: no network, no credentials, and nothing that waits on the wall clock. Seven are worth knowing by name. <b>Euler residual</b> holds the decomposition to its identity. <b>Hedge</b> checks that a risk-reducing position does not breach a risk limit. <b>Lookahead</b> rebuilds every rolling window independently, so a backtest cannot see the day it forecasts. <b>Isolation</b> compares the live snapshot field for field after the scenario suite. <b>Regime break</b> checks that EWMA reads higher volatility after a shift. <b>Delta-hedged</b> checks that a delta-flat book still carries gamma and vega. <b>Two clocks</b> checks that the staleness clock reprices no option.</p>
+      <p><code>Price</code>, <code>Qty</code> and <code>Notional</code> are abstract and mutually incompatible, so <code>price + qty</code> is a compile error rather than a plausible-looking number. Every formula is cross-referenced to the function that evaluates it in <code>docs/quant_notes.md</code>.</p>
+    </div>
+  </section>
+
+  <section class="arg" id="s09">
+    <h2><span class="lbl">09</span>What this is not</h2>
+    <div class="prose">
+      <p>There is no order routing and no execution. Nothing here places, cancels or simulates a trade, and the kill switch sets a flag that is wired to nothing. There is no persistence: state lives in the running process, and a restart rebuilds the book from its file and the feed. It is not a research platform either. The backtests validate the risk model, not a trading idea, and nothing is optimised.</p>
+      <p>This page does not show the last smoke run's result, because nothing persists. It shows no uptime percentage, no CPU share and no certificate expiry, which the engine cannot observe. It shows no microsecond timings from this host and no options Greeks on either deployed book. It never shows the live book, which stays behind a password. And there is no market calendar: outside market hours the live host reads <em>parked</em> and says nothing more.</p>
+      <p>It is a risk and limits engine, and it stops where a risk and limits engine should stop.</p>
+    </div>
+  </section>
+
+</article>
+
 <footer>
   <span>updates arrive when a value changes, not on a timer</span>
   <span id="conn">—</span>

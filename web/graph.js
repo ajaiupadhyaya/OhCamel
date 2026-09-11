@@ -280,7 +280,9 @@
     var st = { runs: {}, values: null, notes: {}, lit: [], litCount: 0, stale: [], staleSet: new Set(), partial: {}, open: null, hover: null, dead: false, L: null, svg: null, cap: null, insp: null };
     var maxRank = 0; topo.nodes.forEach(function (n) { if (n.rank > maxRank) maxRank = n.rank; });
 
-    function nodeGroup(name) { return st.svg ? st.svg.querySelector('g.node[data-name="' + name + '"]') : null; }
+    // Escaped: a limit's name comes from the owner's book, and a quote in one
+    // would otherwise throw here on every frame.
+    function nodeGroup(name) { return st.svg ? st.svg.querySelector('g.node[data-name="' + (window.CSS && CSS.escape ? CSS.escape(name) : name) + '"]') : null; }
     // A value under a scalar cell or singleton; a run count under everything
     // else. Per-symbol, per-sector and per-limit nodes carry only the count --
     // the ledger has their numbers, and one place per number is the rule. A
