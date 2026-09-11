@@ -232,6 +232,8 @@
   .ohcamel-graph g.node.stale { opacity: .38; }
   .ohcamel-graph g.node.over text.name { fill: var(--over); }
   .ohcamel-graph g.node.over line.rule { stroke: var(--over); }
+  .ohcamel-graph text.val tspan.partial { fill: var(--unknown); }
+  .ohcamel-graph text.val tspan.partial.over { fill: var(--over); }
   /* the two absences */
   .ohcamel-graph g.absent rect.slot { fill: none; stroke: var(--ink-faint); stroke-width: .75; stroke-dasharray: 2 2; }
   .ohcamel-graph g.absent text { fill: var(--ink-faint); }

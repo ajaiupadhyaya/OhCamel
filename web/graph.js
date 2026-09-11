@@ -19,14 +19,25 @@
   function text(x, y, s, cls) { var t = svgEl("text", { x: x, y: y }, cls); t.textContent = s; return t; }
   function byNameOrder(a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; }
 
-  // ---- geometry: Task 11's rules, with a second line under every node ----
-  var COL0 = 320, COL = 150, LINE = 24, GAP = 22, LEFT = 24, TOP = 34, CHAR = 6.6, OBS_GAP = 40, OBS_W = 240;
-  // A band's caption takes a line of its own above the band. The prototype set
-  // it 8 px over the band's first row, where it ran into last_tick[AAPL].
+  // ---- geometry ----
+  // A node is two lines, its name and under it a value or a run count. A
+  // column is as wide as the widest thing it can ever hold, plus one gutter
+  // for the edges -- one width for every column drew the figure 1824 px wide
+  // on a six-name book, and it has to fit a laptop's first screen.
+  var LINE = 24, GAP = 12, GUT = 26, LEFT = 24, TOP = 30, CHAR = 6.6, DOT = 9;
+  // A caption that finds no room beside its band takes a line of its own above it.
   var CAP = 14;
-  // The width of one character on a node's second line (8.5 px monospace),
-  // as CHAR is on its first (11 px).
-  var VAL_CHAR = 5.1;
+  // The width of one character on a node's second line (8.5 px monospace), as
+  // CHAR is on its first (11 px), and of a head (10 px, tracked .14em).
+  var VAL_CHAR = 5.1, HEAD_CHAR = 7.4;
+  // The observers hang under breaches, in its column, this wide.
+  var OBS_W = 130;
+  // Below this the drawing stops shrinking to its container and scrolls in it.
+  var MIN_FIT = 1100;
+  // The widest a node's second line gets, in characters: a dollar value, a
+  // percentage, a run count that has been climbing all afternoon, and on a
+  // band the count of its stale members after that.
+  var VAL_CHARS = { usd: 11, fraction: 7, ratio: 6, price: 8, qty: 7, time: 7, count: 7 };
   var OPTION_SINGLETONS = ["gamma_map", "vega_map", "portfolio_gamma", "portfolio_vega", "vega_by_bucket"];
   // graph.ml's own sentences, for the five nodes whose comments are the argument.
   var SENTENCES = {
@@ -61,7 +72,12 @@
     var i = name.indexOf("["); if (i > 0) return name.slice(0, i) + "[S]";
     i = name.indexOf(":"); return i > 0 ? name.slice(0, i) + ":S" : name;
   }
-  function colX(rank) { return rank === 0 ? LEFT : LEFT + COL0 + (rank - 1) * COL; }
+  function shownValue(n) { return SCALAR[n.unit] && (n.family === "input" || n.family === "singleton"); }
+  function nodeWidth(n) {
+    var name = n.label.length * CHAR + (n.observed ? DOT : 0);
+    var val = n.absent ? n.note.length : n.band ? 18 : shownValue(n) ? (VAL_CHARS[n.unit] || 8) : 10;
+    return Math.max(name, val * VAL_CHAR);
+  }
   function unitFormat(unit, v, name) {
     if (v === null || v === undefined) return "—";
     switch (unit) {
@@ -111,18 +127,25 @@
   }
 
   // ---- layout ----
-  // Bands in page order: the symbol rows, sector rows, the spine (singletons
-  // stacked per column), one row per limit, and the feed branch under a gap.
-  // Column 0 of a symbol row lays its cells side by side.
+  // Bands in page order: the symbol rows with the sectors beside them, the
+  // spine (singletons stacked per column), the limits, and the feed branch
+  // under a gap. A band is rows laid one under the next, plus floats -- the
+  // sectors -- that belong to no row and stack in their column below whatever
+  // the rows put there, so exposure reads into sector along one line.
   //
   // Compact -- the default, because Task 11 drew this book one row per name
   // and no single name's path to breaches could be followed by eye -- folds
   // each per-symbol family into one band (`exposure:S × 6`) and unfolds the
   // name a frame ticked into a row directly under the bands, with its feed row
   // under the feed bands. Both of those rows keep their height while nothing
-  // is open, so the frame that unfolds a name and the quiet frame that folds it
-  // move nothing below the figure.
-  function layout(topo, compact, open) {
+  // is open, and every column is measured for every name a frame could open,
+  // so the frame that unfolds a name and the quiet frame that folds it move
+  // nothing, below the figure or beside it.
+  //
+  // The limits share one band, each limit in the column of its rank, stacked
+  // in configured order -- a staircase of one row per limit was a third of the
+  // figure's height for nine limits.
+  function layout(topo, compact, open, observers) {
     var byName = {}, symbols = [], sectors = [], limits = [];
     topo.nodes.forEach(function (n) {
       byName[n.name] = n;
@@ -146,8 +169,9 @@
       alias[n.name] = n.name; drawn.push(n);
     });
     drawn.forEach(function (n) { n.label = n.band ? n.name + " × " + n.members.length : n.name; });
-    // The first absence: a slot beside covariance_ewma with no edge into it.
-    if (byName["covariance_ewma"]) drawn.push({ name: "covariance_ewma~garch", label: "garch", note: "— implemented, not wired in", rank: byName["covariance_ewma"].rank, absent: true, unit: "state", family: "singleton" });
+    // The first absence: a slot beside covariance_ewma with no edge into it,
+    // on a line of its own in that column.
+    if (byName["covariance_ewma"]) drawn.push({ name: "covariance_ewma~garch", label: "garch —", note: "implemented, not wired in", rank: byName["covariance_ewma"].rank, absent: true, unit: "state", family: "singleton" });
     var edges = [], seenEdge = {};
     topo.edges.forEach(function (e) {
       var a = alias[e[0]], b = alias[e[1]];
@@ -156,52 +180,87 @@
       if (!seenEdge[k]) { seenEdge[k] = true; edges.push([a, b]); }
     });
     var maxRank = 0; drawn.forEach(function (n) { if (n.rank > maxRank) maxRank = n.rank; });
-    function row() { var r = []; for (var i = 0; i <= maxRank; i++) r.push([]); return r; }
+    // Column widths, from what is drawn and, folded, from every name a frame
+    // could open; the observers widen the last column they hang in.
+    var colW = [];
+    function widen(n) { colW[n.rank] = Math.max(colW[n.rank] || 0, nodeWidth(n)); }
+    drawn.forEach(widen);
+    if (compact) topo.nodes.forEach(function (n) { if (n.symbol && collapsed.indexOf(n.name) < 0) widen({ label: n.name, observed: n.observed, rank: n.rank, unit: n.unit, family: n.family }); });
+    if (observers) colW[maxRank] = Math.max(colW[maxRank] || 0, OBS_W);
+    var colXs = [], x = LEFT;
+    for (var r = 0; r <= maxRank; r++) { colXs.push(x); if (colW[r]) x += colW[r] + GUT; }
+    function colX(rank) { return colXs[rank]; }
+    function cols() { var c = []; for (var i = 0; i <= maxRank; i++) c.push([]); return c; }
     // Compact: row 0 of the symbol and feed bands holds the folded families,
     // row 1 the open name. Per name: one row per symbol, then the feed's
     // unsymbolled row (now, feed_health).
     var B = {
-      symbols: compact ? [row(), row()] : symbols.map(row),
-      sectors: sectors.map(row), spine: [row()], limits: limits.map(row),
-      feed: compact ? [row(), row()] : symbols.map(row).concat([row()])
+      symbols: { rows: compact ? [cols(), cols()] : symbols.map(cols), floats: cols() },
+      spine: { rows: [cols()], floats: cols() },
+      limits: { rows: [cols()], floats: cols() },
+      feed: { rows: compact ? [cols(), cols()] : symbols.map(cols).concat([cols()]), floats: cols() }
     };
     drawn.forEach(function (n) {
       var t;
-      if (n.band) t = n.feed ? B.feed[0] : B.symbols[0];
-      else if (isFeed(n)) t = compact ? B.feed[n.symbol ? 1 : 0] : B.feed[n.symbol ? symbols.indexOf(n.symbol) : symbols.length];
-      else if (n.limit) t = B.limits[limits.indexOf(n.name)];
-      else if (n.symbol) t = compact ? B.symbols[1] : B.symbols[symbols.indexOf(n.symbol)];
-      else if (n.sector) t = B.sectors[sectors.indexOf(n.sector)];
-      else t = B.spine[0];
+      if (n.band) t = n.feed ? B.feed.rows[0] : B.symbols.rows[0];
+      else if (isFeed(n)) t = compact ? B.feed.rows[n.symbol ? 1 : 0] : B.feed.rows[n.symbol ? symbols.indexOf(n.symbol) : symbols.length];
+      else if (n.limit) t = B.limits.rows[0];
+      else if (n.symbol) t = compact ? B.symbols.rows[1] : B.symbols.rows[symbols.indexOf(n.symbol)];
+      else if (n.sector) t = B.symbols.floats;
+      else t = B.spine.rows[0];
       t[n.rank].push(n);
     });
-    var sections = [["symbols", B.symbols], ["sectors", B.sectors], ["spine", B.spine], ["limits", B.limits], ["feed", B.feed]];
-    var pos = {}, y = TOP, tops = {};
-    sections.forEach(function (s) {
-      var name = s[0], any = false, side0 = name === "symbols";
-      var holds = s[1].some(function (r) { return r.some(function (col) { return col.length > 0; }); });
-      if (!holds) return;
-      s[1].forEach(function (r, ri) {
-        var h = 0;
-        r.forEach(function (col, rank) {
-          col.sort(byNameOrder);
-          h = Math.max(h, rank === 0 && side0 ? (col.length ? 1 : 0) : col.length);
+    function byConfigured(a, b) { return limits.indexOf(a.name) - limits.indexOf(b.name); }
+    function any(c) { return c.some(function (col) { return col.length > 0; }); }
+    function ranksHeld(band) {
+      var rs = [];
+      band.rows.concat([band.floats]).forEach(function (row) { row.forEach(function (col, rank) { if (col.length) rs.push(rank); }); });
+      return rs;
+    }
+    // Each band caption sits beside its band where the band leaves room --
+    // the limits start two columns in, the feed stops three columns in -- and
+    // takes a line above the band only where it does not.
+    var CAPTIONS = { limits: ["limits —", "at the rank of what each reads"], feed: ["deliberately disconnected"] };
+    var pos = {}, y = TOP, tops = {}, lines = {}, caps = [];
+    ["symbols", "spine", "limits", "feed"].forEach(function (name) {
+      var band = B[name];
+      if (!band.rows.some(any) && !any(band.floats)) return;
+      var line = 0, used = [], cap = CAPTIONS[name], capAt = null, minLines = 1;
+      if (cap) {
+        var held = ranksHeld(band), lo = Math.min.apply(null, held), hi = Math.max.apply(null, held);
+        var capW = Math.max.apply(null, cap.map(function (s) { return s.length * HEAD_CHAR; }));
+        if (name === "limits" && colX(lo) - LEFT - 16 >= capW) capAt = LEFT;
+        else if (name === "feed" && hi < maxRank) capAt = colX(hi + 1);
+        if (capAt === null) { y += CAP; caps.push({ lines: cap, x: LEFT, y: y - CAP - 4 }); }
+        else { caps.push({ lines: cap, x: capAt, y: y }); minLines = cap.length; }
+      }
+      band.rows.forEach(function (row, ri) {
+        row.forEach(function (col) { col.sort(name === "limits" ? byConfigured : byNameOrder); });
+        var h = 0, claims = row.map(function (col) { return col.length > 0; });
+        row.forEach(function (col) { h = Math.max(h, col.length); });
+        // The open row is as tall as the folded row above it, whether or not a name is open.
+        if (compact && ri === 1 && (name === "symbols" || name === "feed")) band.rows[0].forEach(function (col, rank) {
+          var k = col.filter(function (n) { return n.band; }).length;
+          if (k) { h = Math.max(h, k); claims[rank] = true; }
         });
-        var reserved = compact && ri === 1 && (name === "symbols" || name === "feed");
-        if (!h && !reserved) return;
-        h = Math.max(h, 1);
-        if (!any) { if (name === "limits" || name === "feed") y += CAP; tops[name] = y; any = true; }
-        r.forEach(function (col, rank) {
-          col.forEach(function (n, i) {
-            var side = rank === 0 && side0;
-            pos[n.name] = { x: colX(rank) + (side ? i * 104 : 0), y: y + (side ? 0 : i * LINE), w: n.label.length * CHAR };
-          });
-        });
-        y += h * LINE + 4;
+        if (!h) return;
+        row.forEach(function (col, rank) { col.forEach(function (n, i) { pos[n.name] = { x: colX(rank), y: y + (line + i) * LINE, w: n.label.length * CHAR }; }); });
+        claims.forEach(function (c, rank) { if (c) used[rank] = line + h; });
+        line += h;
       });
-      if (any) y += GAP;
+      band.floats.forEach(function (col, rank) {
+        col.sort(byNameOrder);
+        var s = used[rank] || 0;
+        col.forEach(function (n, i) { pos[n.name] = { x: colX(rank), y: y + (s + i) * LINE, w: n.label.length * CHAR }; });
+        if (col.length) line = Math.max(line, s + col.length);
+      });
+      line = Math.max(line, minLines);
+      tops[name] = y; lines[name] = line;
+      y += line * LINE + GAP;
     });
-    return { drawn: drawn, edges: edges, pos: pos, height: y, maxRank: maxRank, symbols: symbols, limits: limits, tops: tops, alias: alias, byName: byName, collapsed: collapsed };
+    // The last band's last line, its value line, and a margin.
+    var height = y - GAP - LINE + 22;
+    return { drawn: drawn, edges: edges, pos: pos, height: height, maxRank: maxRank, symbols: symbols, limits: limits, tops: tops, lines: lines, caps: caps, alias: alias, byName: byName, collapsed: collapsed, colX: colX, colW: colW };
   }
 
   // ---- render ----
@@ -218,7 +277,7 @@
     // per-name one.
     var compact = opts.compact === undefined ? true : !!opts.compact;
     var inspector = !!opts.inspector;
-    var st = { runs: {}, values: null, notes: {}, lit: [], litCount: 0, stale: [], staleSet: new Set(), open: null, hover: null, dead: false, L: null, svg: null, cap: null, insp: null };
+    var st = { runs: {}, values: null, notes: {}, lit: [], litCount: 0, stale: [], staleSet: new Set(), partial: {}, open: null, hover: null, dead: false, L: null, svg: null, cap: null, insp: null };
     var maxRank = 0; topo.nodes.forEach(function (n) { if (n.rank > maxRank) maxRank = n.rank; });
 
     function nodeGroup(name) { return st.svg ? st.svg.querySelector('g.node[data-name="' + name + '"]') : null; }
@@ -236,9 +295,21 @@
       return "ran " + (st.runs[n.name] || 0) + "×";
     }
     function captionText() { var c = topo.counts || {}; return "The Incremental graph, taken from Incremental. " + c.named + " named nodes, " + c.observed + " observed. This frame: " + st.litCount + " ran."; }
+    // A band with some stale members and some fresh ones says how many after
+    // its value, in the cannot-evaluate ink (the feed's own band in --over).
+    function writeVal(g, n) {
+      var v = g.querySelector("text.val"); if (!v) return;
+      var base = valueText(n), p = n.band && st.partial[n.name];
+      v.textContent = base;
+      if (p && p.n) {
+        var t = svgEl("tspan", {}, "partial" + (p.over ? " over" : ""));
+        t.textContent = (base ? " · " : "") + p.n + " stale";
+        v.appendChild(t);
+      }
+    }
     function applyValues() {
       if (!st.svg) return;
-      st.L.drawn.forEach(function (n) { var g = nodeGroup(n.name); if (!g) return; var v = g.querySelector("text.val"); if (v) v.textContent = valueText(n); });
+      st.L.drawn.forEach(function (n) { var g = nodeGroup(n.name); if (g) writeVal(g, n); });
     }
     function drawnSet(names) { var s = new Set(); names.forEach(function (m) { var a = st.L.alias[m]; if (a) s.add(a); }); return s; }
     function applyLit() {
@@ -250,12 +321,26 @@
       Array.prototype.forEach.call(st.svg.querySelectorAll("path.edge"), function (p) { if (lit.has(p.getAttribute("data-to"))) p.classList.add("lit"); });
       if (st.cap) st.cap.querySelector(".cap-title").textContent = captionText();
     }
+    // A band dims only when every name it holds is dimmed. Dimming price[S] × 5
+    // because one of five is quiet would say four fresh prices are stale, which
+    // is more than the engine knows.
     function applyStale() {
       if (!st.svg) return;
-      var stale = drawnSet(Array.from(st.staleSet)), over = new Set();
-      st.stale.forEach(function (s) { var a = st.L.alias["feed:" + s]; if (a) over.add(a); });
-      if (st.stale.length && st.L.alias["feed_health"]) over.add("feed_health");
-      Array.prototype.forEach.call(st.svg.querySelectorAll("g.node"), function (g) { var name = g.getAttribute("data-name"); g.classList.toggle("stale", stale.has(name)); g.classList.toggle("over", over.has(name)); });
+      var over = new Set(st.stale.map(function (s) { return "feed:" + s; }));
+      if (st.stale.length) over.add("feed_health");
+      st.partial = {};
+      st.L.drawn.forEach(function (n) {
+        var g = nodeGroup(n.name); if (!g) return;
+        var dim, red;
+        if (n.band) {
+          var k = n.members.filter(function (m) { return st.staleSet.has(m); }).length;
+          var o = n.members.filter(function (m) { return over.has(m); }).length;
+          dim = k > 0 && k === n.members.length; red = o > 0 && o === n.members.length;
+          st.partial[n.name] = { n: dim || red ? 0 : Math.max(k, o), over: o > k };
+          writeVal(g, n);
+        } else { dim = st.staleSet.has(n.name); red = over.has(n.name); }
+        g.classList.toggle("stale", dim); g.classList.toggle("over", red);
+      });
     }
     function inspectorLine(n) {
       var ins = topo.edges.filter(function (e) { return e[1] === n.name; }).map(function (e) { return e[0]; });
@@ -296,17 +381,22 @@
     }
     function edgePath(a, b) { var x1 = a.x + a.w + 8, y1 = a.y - 4, x2 = b.x - 4, y2 = b.y - 4, mx = (x1 + x2) / 2; return "M" + x1 + "," + y1 + " C" + mx + "," + y1 + " " + mx + "," + y2 + " " + x2 + "," + y2; }
     function drawSvg() {
-      var L = st.L = layout(topo, compact, st.open);
-      // The observers column belongs to the whole graph; a filtered fragment
-      // is a piece of the risk chain and does not carry it. A fragment also
-      // starts at its own first column rather than at rank 0, so a fragment of
-      // the estimators does not open on half a screen of nothing.
-      var observers = !filtered, r0 = 0;
-      if (filtered) { r0 = L.maxRank; L.drawn.forEach(function (n) { if (n.rank < r0) r0 = n.rank; }); }
-      var dx = colX(r0) - LEFT;
-      if (dx) Object.keys(L.pos).forEach(function (k) { L.pos[k].x -= dx; });
-      var obsX = colX(L.maxRank) + COL + OBS_GAP, width = observers ? obsX + OBS_W : obsX - dx, height = L.height + (L.collapsed.length ? 18 : 0);
+      // The observers belong to the whole graph; a filtered fragment is a
+      // piece of the risk chain and does not carry them. A column holding
+      // nothing takes no width, so a fragment of the estimators starts at its
+      // own first column rather than on half a screen of nothing.
+      var observers = !filtered;
+      var L = st.L = layout(topo, compact, st.open, observers), colX = L.colX, r0 = L.maxRank;
+      L.drawn.forEach(function (n) { if (n.rank < r0) r0 = n.rank; });
+      var ox = colX(L.maxRank), bp = L.pos[L.alias["breaches"]], obsBottom = 0;
+      if (observers) obsBottom = (bp ? bp.y : TOP) + 172;
+      var width = Math.round(colX(L.maxRank) + (L.colW[L.maxRank] || 0) + 16);
+      var height = Math.max(L.height, obsBottom) + (L.collapsed.length ? 16 : 0);
       var svg = st.svg = svgEl("svg", { width: width, height: height, viewBox: "0 0 " + width + " " + height, role: "img", "aria-label": "the dependency graph" });
+      // Natural size at most; shrinks with its container down to MIN_FIT, and
+      // below that keeps MIN_FIT and scrolls inside it.
+      svg.style.width = "100%"; svg.style.height = "auto";
+      svg.style.maxWidth = width + "px"; svg.style.minWidth = Math.min(width, MIN_FIT) + "px";
       var prev = null, order = ["inputs"].concat(STAGES.map(function (s) { return s[0]; })).concat(["spine"]);
       for (var r = r0; r <= L.maxRank; r++) {
         var votes = {}, best = null;
@@ -317,11 +407,14 @@
         order.forEach(function (s) { if (votes[s] && (!best || votes[s] > votes[best])) best = s; });
         if (!best) best = L.drawn.some(function (n) { return n.rank === r && n.limit; }) ? "limits" : "";
         if (!best) continue; // a column holding nothing that votes gets no head
-        svg.appendChild(text(colX(r) - dx, 14, best === prev ? "·" : best, "head"));
+        svg.appendChild(text(colX(r), 14, best === prev ? "·" : best, "head"));
         prev = best;
       }
-      if (L.tops.limits !== undefined) svg.appendChild(text(LEFT, L.tops.limits - CAP - 4, "limits — one row each, at the rank of what it reads", "head"));
-      if (L.tops.feed !== undefined) svg.appendChild(text(LEFT, L.tops.feed - CAP - 4, "deliberately disconnected", "head"));
+      L.caps.forEach(function (c) {
+        var t = svgEl("text", { x: c.x, y: c.y }, "head");
+        c.lines.forEach(function (s, i) { var sp = svgEl("tspan", { x: c.x, dy: i ? 13 : 0 }); sp.textContent = s; t.appendChild(sp); });
+        svg.appendChild(t);
+      });
       L.edges.forEach(function (e) {
         var a = L.pos[e[0]], b = L.pos[e[1]]; if (!a || !b) return;
         svg.appendChild(svgEl("path", { d: edgePath(a, b), "data-from": e[0], "data-to": e[1] }, "edge"));
@@ -349,33 +442,41 @@
         }
         svg.appendChild(g);
       });
-      if (L.collapsed.length) svg.appendChild(text(LEFT, height - 6, "greeks · option_exposure · gamma_map · vega_map · portfolio_gamma · portfolio_vega · vega_by_bucket — no options in this book; the five singletons exist and ran once", "head collapsed"));
-      // The readers outside the graph, from the served list; the kill switch's
-      // dotted edge to a bar is the second absence.
+      if (L.collapsed.length) svg.appendChild(text(LEFT, height - 5,"greeks · option_exposure · gamma_map · vega_map · portfolio_gamma · portfolio_vega · vega_by_bucket — no options in this book; the five singletons exist and ran once", "head collapsed"));
+      // The readers outside the graph, from the served list, hung under
+      // breaches below a rule: the chain ends at breaches, and what reads it
+      // from outside is set beneath it. The kill switch's dotted edge to a bar
+      // is the second absence.
       if (observers) {
-        var go = svgEl("g", {}, "observers"), oy = TOP, entries = {};
-        go.appendChild(svgEl("line", { x1: obsX - 20, y1: 6, x2: obsX - 20, y2: height }, "rule"));
-        go.appendChild(text(obsX, 14, "observers — outside the graph", "head"));
-        (topo.outside || []).forEach(function (o) {
-          if (o.name === "kill_switch") return;
-          var label = o.name === "history" ? "history · reads " + o.reads.length + " · 500 points"
-            : o.name === "stream" ? "stream · reads " + o.reads.length
-            : "alerts · reads " + o.reads.join(", ") + (o.present ? "" : " · not attached");
-          var g = svgEl("g", { "data-outside": o.name, transform: "translate(" + obsX + "," + oy + ")" }, "outside" + (o.present ? "" : " missing"));
-          g.appendChild(text(0, 0, label, "name"));
-          g.appendChild(svgEl("line", { x1: 0, y1: 3, x2: label.length * CHAR, y2: 3 }, "rule"));
-          go.appendChild(g); entries[o.name] = oy;
-          if (o.name === "alerts") o.reads.forEach(function (r) { var a = L.pos[L.alias[r]]; if (a) go.appendChild(svgEl("path", { d: edgePath(a, { x: obsX, y: oy }), "data-from": r, "data-to": "alerts" }, "reads")); });
-          oy += LINE;
-        });
-        var ks = (topo.outside || []).filter(function (o) { return o.name === "kill_switch"; })[0];
-        if (ks) {
-          var ky = oy + 4, gk = svgEl("g", {}, "absent kill");
-          gk.appendChild(svgEl("path", { d: "M" + (obsX + 20) + "," + ((entries.alerts !== undefined ? entries.alerts : oy - LINE) + 6) + " L" + (obsX + 20) + "," + ky }, "dotted"));
-          gk.appendChild(svgEl("line", { x1: obsX + 12, y1: ky, x2: obsX + 28, y2: ky }, "bar"));
-          gk.appendChild(text(obsX + 34, ky + 4, "kill switch — wired to " + (ks.wired_to === null ? "nothing" : ks.wired_to), "name"));
-          go.appendChild(gk);
+        var by = bp ? bp.y : TOP, sep = by + 22, go = svgEl("g", {}, "observers"), oy = sep + 44, entries = {};
+        go.appendChild(svgEl("line", { x1: ox - 6, y1: sep, x2: ox + OBS_W, y2: sep }, "rule"));
+        go.appendChild(text(ox, sep + 13, "observers", "head"));
+        go.appendChild(text(ox, sep + 25, "outside the graph", "head"));
+        var outside = topo.outside || [], ks = outside.filter(function (o) { return o.name === "kill_switch"; })[0];
+        function entry(o, name, sub) {
+          var g = svgEl("g", { "data-outside": o.name, transform: "translate(" + ox + "," + oy + ")" }, "outside" + (o.present === false ? " missing" : ""));
+          g.appendChild(text(0, 0, name, "name"));
+          g.appendChild(svgEl("line", { x1: 0, y1: 3, x2: name.length * CHAR, y2: 3 }, "rule"));
+          g.appendChild(text(0, 13, sub, "val"));
+          go.appendChild(g); entries[o.name] = oy; oy += LINE;
         }
+        outside.forEach(function (o) {
+          if (o.name !== "alerts") return;
+          entry(o, "alerts", "reads " + o.reads.join(", ") + (o.present ? "" : " · not attached"));
+          o.reads.forEach(function (r) { var a = L.pos[L.alias[r]]; if (a) go.appendChild(svgEl("path", { d: "M" + (ox + 4) + "," + (a.y + 18) + " L" + (ox + 4) + "," + (entries.alerts - 13), "data-from": r, "data-to": "alerts" }, "reads")); });
+          if (ks) {
+            var ky = oy + 6, gk = svgEl("g", {}, "absent kill");
+            gk.appendChild(svgEl("path", { d: "M" + (ox + 6) + "," + (entries.alerts + 17) + " L" + (ox + 6) + "," + ky }, "dotted"));
+            gk.appendChild(svgEl("line", { x1: ox - 2, y1: ky, x2: ox + 14, y2: ky }, "bar"));
+            gk.appendChild(text(ox + 20, ky + 4, "kill switch —", "name"));
+            gk.appendChild(text(ox + 20, ky + 17, "wired to " + (ks.wired_to === null ? "nothing" : ks.wired_to), "val"));
+            go.appendChild(gk); oy = ky + LINE + 10;
+          }
+        });
+        outside.forEach(function (o) {
+          if (o.name === "history") entry(o, "history", "reads " + o.reads.length + " · 500 points");
+          else if (o.name === "stream") entry(o, "stream", "reads " + o.reads.length);
+        });
         svg.appendChild(go);
       }
       container.appendChild(svg);
