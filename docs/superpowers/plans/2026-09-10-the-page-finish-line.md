@@ -44,8 +44,8 @@ the process, or the scope.
   `OhCamelGraph.filter` produces them without new layout work. Otherwise a section names its nodes in text.
 - **Phase 5 Task 9's GARCH completion log line**, which only existed for the deploy to grep. The
   smoke suite polls the route instead.
-- **Phase 6's rollback runbook** (rollback is one line: check out the last good sha on the droplet
-  and rerun `deploy.sh --live`), the first-five-minutes log read, the separate `.dockerignore` check (a
+- **Phase 6's rollback runbook** (rollback is one line in `docs/status.md`: revert on `main`, push, and
+  redeploy, since `deploy.sh` always pulls `origin/main`), the first-five-minutes log read, the separate `.dockerignore` check (a
   successful build on the droplet is that check), a measurement study of startup cost and GARCH wall
   time on the droplet (what the deploy prints gets recorded), the stale-lines task, and the redeploy
   that only verified the docs.
