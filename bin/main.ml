@@ -1080,21 +1080,21 @@ let run_live ~book_path ~(serve_port : int option) =
       let runtime = config.Config.runtime in
       let instruments = Config.Book.instruments book in
       let limits = Config.Book.limits book in
-      (* The probe runs before the served graph exists.
+      (* The reports run before the served graph exists.
 
-         It builds three graphs of ten, a hundred and four hundred names and ticks
-         each fifty times, and Incremental's counters are process-wide. Run after
-         the engine were up, its tail would sit inside the two-second window
-         smoke.sh reads "the counter advances" over, and the one assertion that
-         carries a deploy's weight would be measuring the probe instead of the
-         pulse. The rows are dropped here; Phase 5 keeps them for /api/reports. *)
-      (* Phase 5 replaces this with Reports.compute, which runs the same probe. *)
-      let (_ : Scaling_probe.row list) =
-        Scaling_probe.rows ~seed:2026_07_30 ~sizes:Scaling_probe.default_sizes
-          ~ticks:Scaling_probe.default_ticks
-      in
+         The scaling probe inside them builds three graphs of ten, a hundred and
+         four hundred names and ticks each fifty times, and Incremental's
+         counters are process-wide. Run after the engine were up, its tail would
+         sit inside the two-second window smoke.sh reads "the counter advances"
+         over, and the one assertion that carries a deploy's weight would be
+         measuring the probe instead of the pulse. The reports are computed on
+         the CLI's synthetic book and seeds, not on this book, and the page says
+         so. *)
+      let reports = Reports.compute () in
+      let garch = Reports.Garch.create () in
       printf
-        "  probe       10 / 100 / 400 names, 50 ticks each, before the served graph\n";
+        "  reports     scaling, both batteries, options: %.0f ms, before the served graph\n"
+        reports.Reports.computed_in_ms;
       (* Two readers of one hook. The terminal's per-trade column drains the
          Counter's log, and the page's per-frame set drains this one; a single
          log would let each steal the other's set. Two increments per node body
@@ -1245,10 +1245,18 @@ let run_live ~book_path ~(serve_port : int option) =
                   (Feed_source.live ~alpaca_feed:runtime.Config.Runtime.alpaca_feed
                      ~fred_series:runtime.Config.Runtime.fred_series_id
                      ~alpaca:alpaca_stats ~fred:fred_stats)
-                ~recompute_log:log ~graph ~factor:runtime.Config.Runtime.fred_series_id ()
+                ~recompute_log:log ~reports ~garch ~graph
+                ~factor:runtime.Config.Runtime.fred_series_id ()
             in
             let%bind (_ : (_, _) Cohttp_async.Server.t) = Server.start ~port server in
             live_line (sprintf "dashboard  http://localhost:%d" port);
+            (* After listen, on its own domain: the smoke suite never waits on it. *)
+            don't_wait_for
+              (let%map () = Reports.Garch.start garch in
+               live_line
+                 (sprintf "garch      %s, %d fits"
+                    (Reports.Garch.status_word garch)
+                    (Reports.Garch.fits_total garch)));
             Deferred.never ()
       in
       (* The feed is the only one of these that can finish. When it does, it has
@@ -1293,20 +1301,15 @@ let run_demo ~port =
           { l with Limit.kind = Limit.Gross_notional (dollars 54_200.0) }
         else l)
   in
-  (* The probe runs before the served graph exists.
-
-     It builds three graphs of ten, a hundred and four hundred names and ticks
-     each fifty times, and Incremental's counters are process-wide. Run after
-     the engine were up, its tail would sit inside the two-second window
-     smoke.sh reads "the counter advances" over, and the one assertion that
-     carries a deploy's weight would be measuring the probe instead of the
-     pulse. The rows are dropped here; Phase 5 keeps them for /api/reports. *)
-  (* Phase 5 replaces this with Reports.compute, which runs the same probe. *)
-  let (_ : Scaling_probe.row list) =
-    Scaling_probe.rows ~seed:2026_07_30 ~sizes:Scaling_probe.default_sizes
-      ~ticks:Scaling_probe.default_ticks
-  in
-  printf "  probe       10 / 100 / 400 names, 50 ticks each, before the served graph\n";
+  (* The reports run before the served graph exists: the scaling probe inside
+     them builds graphs of up to four hundred names, Incremental's counters are
+     process-wide, and a probe's tail inside smoke.sh's two-second window would
+     be read as the engine's pulse. *)
+  let reports = Reports.compute () in
+  let garch = Reports.Garch.create () in
+  printf
+    "  reports     scaling, both batteries, options: %.0f ms, before the served graph\n"
+    reports.Reports.computed_in_ms;
   (* The served graph's hook. Every named node body notes into this log; the
      server drains it once per frame, and a fork -- which does not inherit the
      hook -- can never reach it. *)
@@ -1366,11 +1369,17 @@ let run_demo ~port =
      and the demonstration reads as an outage. *)
   let quiet, _, _, _ = List.last_exn book in
   let server =
-    Server.create ?alerts ~recompute_log:log ~mode:`Demo ~quiet:[ quiet ] ~graph
-      ~factor:"SYNTHETIC" ()
+    Server.create ?alerts ~recompute_log:log ~reports ~garch ~mode:`Demo ~quiet:[ quiet ]
+      ~graph ~factor:"SYNTHETIC" ()
   in
   let%bind (_ : (_, _) Cohttp_async.Server.t) = Server.start ~port server in
   printf "  dashboard   http://localhost:%d\n" port;
+  (* After listen, on its own domain: the smoke suite never waits on it. *)
+  don't_wait_for
+    (let%map () = Reports.Garch.start garch in
+     printf "  garch       %s, %d fits on a second domain\n%!"
+       (Reports.Garch.status_word garch)
+       (Reports.Garch.fits_total garch));
   printf
     "  book        %d instruments, %d limits (2 of them on risk SHARE, not notional)\n"
     (List.length book) (List.length demo_limits);

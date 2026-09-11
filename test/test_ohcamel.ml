@@ -52,6 +52,7 @@ let suites =
     Test_feed.suite;
     Test_history_buffer.suite;
     Test_server.suite;
+    Test_reports.suite;
     Test_alerts.suite;
     Test_properties.suite;
   ]

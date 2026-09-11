@@ -616,6 +616,12 @@ type t = {
      hook (the tests do), and it must then say [null] rather than drain an
      empty table and report that nothing ran. *)
   recompute_log : Recompute_log.t option;
+  (* The CLI's reports, computed before the socket bound and encoded once. None
+     on a server built without them (the tests), which /api/reports says as a
+     503 rather than an empty object that would read as a report of nothing. *)
+  reports_json : string option;
+  (* The GARCH study, running on its own domain after listen; polled here. *)
+  garch : Reports.Garch.t option;
   (* The two process-wide counters as they stood when the previous frame was
      taken. Deltas are computed against these, in the broadcaster only, so a
      frame's delta means "since the frame before it" and a poll in between
@@ -1108,7 +1114,17 @@ let json_of_ops (t : t) : Yojson.Safe.t =
       (* Phase 5 fills these from Reports.compute and the GARCH domain. Until
          then, absent -- a freshly deployed engine reading `ready` beside an
          empty figure would be the wrong kind of surprise. *)
-      ("reports", `Assoc [ ("static", jstring "absent"); ("garch", jstring "absent") ]);
+      ( "reports",
+        `Assoc
+          [
+            ( "static",
+              jstring (if Option.is_some t.reports_json then "ready" else "absent") );
+            ( "garch",
+              jstring
+                (match t.garch with
+                | None -> "absent"
+                | Some g -> Reports.Garch.status_word g) );
+          ] );
       ("peer", match t.peer with None -> `Null | Some url -> jstring url);
     ]
 
@@ -1214,6 +1230,27 @@ let routes : (string * string * handler) list =
       fun t ->
         Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
           t.graph_json );
+    (* Computed before the socket bound, served as the string it was encoded
+       to. Nothing here runs a probe or a backtest on request. *)
+    ( "/api/reports",
+      "the CLI's reports, computed by this process at startup: scaling, both batteries, \
+       options",
+      fun t ->
+        match t.reports_json with
+        | Some body ->
+            Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode) body
+        | None ->
+            Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
+              ~status:`Service_unavailable
+              {|{"error":"reports were not computed in this process"}|} );
+    (* 200 in every state: computing is an answer, not an error. *)
+    ( "/api/reports/garch",
+      "the GARCH sample-size study, running on a second domain after listen",
+      fun t ->
+        Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
+          (match t.garch with
+          | Some g -> Yojson.Safe.to_string (Reports.Garch.to_json g)
+          | None -> {|{"status":"absent"}|}) );
     ( "/api/ops",
       "what this process is: build, uptime, counters, stream, feed, alerts, heap",
       fun t ->
@@ -1259,8 +1296,9 @@ let handle (t : t) ~(path : string) =
 let create ?(coalesce = Time_ns.Span.of_ms 80.0) ?history_capacity
     ?(alerts : Alerts.t option) ?(peer : string option)
     ?(feed_stats : (unit -> Yojson.Safe.t) option) ?(quiet : Types.Symbol.t list = [])
-    ?(recompute_log : Recompute_log.t option) ~(mode : mode) ~(graph : Graph.t)
-    ~(factor : string) () =
+    ?(recompute_log : Recompute_log.t option) ?(reports : Reports.t option)
+    ?(garch : Reports.Garch.t option) ~(mode : mode) ~(graph : Graph.t) ~(factor : string)
+    () =
   let t =
     {
       graph;
@@ -1279,6 +1317,8 @@ let create ?(coalesce = Time_ns.Span.of_ms 80.0) ?history_capacity
       history =
         History_buffer.attach ?capacity:history_capacity ~graph ~now:Types.Time.now ();
       recompute_log;
+      reports_json = Option.map reports ~f:Reports.to_string;
+      garch;
       last_stabilizes = Graph.total_stabilizes ();
       last_nodes_recomputed = Graph.total_nodes_recomputed ();
       graph_json =

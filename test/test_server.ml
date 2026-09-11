@@ -842,7 +842,7 @@ let test_ops_shape () =
       check_key_set ~what:"reports" [ "static"; "garch" ] reports;
       List.iter [ "static"; "garch" ] ~f:(fun key ->
           Alcotest.(check string)
-            ("reports." ^ key ^ " is absent until Phase 5")
+            ("reports." ^ key ^ " is absent on a server built without them")
             "absent"
             (match field_exn reports key with `String s -> s | _ -> "?"));
       (* Counts, never names. This is the assertion that keeps the live book
@@ -1010,6 +1010,8 @@ let test_the_404_lists_exactly_the_routes () =
       "/api/history";
       "/api/stress";
       "/api/graph";
+      "/api/reports";
+      "/api/reports/garch";
       "/api/ops";
     ]
     (Server.route_paths ());
@@ -1767,8 +1769,9 @@ let test_api_graph () =
                 | _ -> []))
       | _ -> Alcotest.fail "outside");
       Alcotest.(check (list string))
-        "the route sits immediately before /api/ops" [ "/api/graph"; "/api/ops" ]
-        (List.drop (Server.route_paths ()) (List.length (Server.route_paths ()) - 2));
+        "the route sits before the two report routes and /api/ops"
+        [ "/api/graph"; "/api/reports"; "/api/reports/garch"; "/api/ops" ]
+        (List.drop (Server.route_paths ()) (List.length (Server.route_paths ()) - 4));
       (* The exact objects at every level, the rest of the counts and limits,
          and the whole body against the topology the graph reports now: the
          memo is that topology, encoded, and nothing else. *)

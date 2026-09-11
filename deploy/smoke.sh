@@ -28,7 +28,7 @@ EXPECT_SHA=""
 # list and asserts the 404 body equals it, in order. Adding a route means
 # adding it here in the same commit -- the assertion fails until you do,
 # which is the point of having it.
-EXPECTED_ROUTES="/ /ops /api/snapshot /api/health /api/stream /api/history /api/stress /api/graph /api/ops"
+EXPECTED_ROUTES="/ /ops /api/snapshot /api/health /api/stream /api/history /api/stress /api/graph /api/reports /api/reports/garch /api/ops"
 
 # The first bare argument is the base URL; everything else is a flag. Written
 # out rather than clever, because a smoke script that misparses its own
