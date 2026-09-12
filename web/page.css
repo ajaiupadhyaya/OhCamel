@@ -217,17 +217,80 @@
   .ohcamel-graph rect.cell { fill: none; stroke: var(--ink); stroke-width: 1; }
   .ohcamel-graph circle.obs { fill: var(--ink); }
   .ohcamel-graph g.band text.name { fill: var(--ink-soft); }
-  /* the mark: the same 0.75 s fade the ledger's underline uses, because it is the same fact */
+  /* the mark: the same fade the ledger's underline uses, because it is the same
+     fact -- now in rank order. graph.js sets --d on every lit node and edge,
+     STEP ms a rank from the first thing the frame ran, so a tick is seen
+     travelling from its cell toward the limits, and seen not reaching what it
+     does not reach. */
   @keyframes graphmark { from { stroke: var(--mark); } to { stroke: var(--rule); } }
   @keyframes graphmarkink { from { fill: var(--mark); } to { fill: var(--ink); } }
-  .ohcamel-graph g.node.lit text.name { animation: graphmarkink .75s ease-out forwards; }
-  .ohcamel-graph g.node.lit line.rule { animation: graphmark .75s ease-out forwards; stroke-width: 1.5; }
-  .ohcamel-graph path.edge.lit { animation: graphmark .75s ease-out forwards; }
-  @media (prefers-reduced-motion: reduce) {
-    .ohcamel-graph g.node.lit text.name, .ohcamel-graph g.node.lit line.rule, .ohcamel-graph path.edge.lit { animation: none; }
-    .ohcamel-graph g.node.lit text.name { fill: var(--mark); }
-    .ohcamel-graph g.node.lit line.rule, .ohcamel-graph path.edge.lit { stroke: var(--mark); }
+  .ohcamel-graph path.edge { transition: stroke-width .6s ease, stroke-opacity .6s ease; }
+  .ohcamel-graph g.node.lit text.name { animation: graphmarkink .95s ease-out var(--d, 0ms) forwards; }
+  .ohcamel-graph g.node.lit line.rule { animation: graphmark .95s ease-out var(--d, 0ms) forwards; }
+  /* An edge draws itself along its own length (--len, measured once when the
+     figure is drawn), then fades as a node does. */
+  .ohcamel-graph path.edge.lit {
+    stroke-dasharray: var(--len) var(--len);
+    animation: edgedraw .36s cubic-bezier(.25, .7, .25, 1) var(--d, 0ms) forwards,
+               graphmark .9s ease-out calc(var(--d, 0ms) + 360ms) forwards;
   }
+  @keyframes edgedraw { from { stroke-dashoffset: var(--len); stroke: var(--mark); } to { stroke-dashoffset: 0; stroke: var(--mark); } }
+  /* Ran, and a cutoff held the value: the name dims instead of lighting, its
+     rule breaks into gold dots, and the edge that reached it arrives dotted.
+     Solid gold is "this moved"; dotted gold is "this ran and stopped here". */
+  .ohcamel-graph g.node.cut text.name { animation: graphghost 1.2s ease-out var(--d, 0ms) forwards; }
+  .ohcamel-graph g.node.cut line.rule { stroke-dasharray: 1 2.5; stroke-width: 1.6 !important; animation: graphmark 1.2s ease-out var(--d, 0ms) forwards; }
+  @keyframes graphghost { 0% { fill: var(--ink-faint); } 70% { fill: var(--ink-faint); } 100% { fill: var(--ink); } }
+  .ohcamel-graph path.edge.cut { stroke-dasharray: 1 3 !important; animation: graphmark 1.1s ease-out var(--d, 0ms) forwards; }
+  /* The cell a frame set fills with the mark and empties. */
+  .ohcamel-graph rect.cell.pulse { animation: cellpulse 1s ease-out forwards; }
+  @keyframes cellpulse { 0% { fill: var(--mark); stroke: var(--mark); } 35% { fill: var(--mark); } 100% { fill: transparent; stroke: var(--ink); } }
+  @media (prefers-color-scheme: dark) {
+    .ohcamel-graph g.node.lit text.name { filter: drop-shadow(0 0 2px rgba(226, 173, 74, .55)); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ohcamel-graph g.node.lit text.name, .ohcamel-graph g.node.lit line.rule, .ohcamel-graph path.edge.lit,
+    .ohcamel-graph g.node.cut text.name, .ohcamel-graph g.node.cut line.rule, .ohcamel-graph path.edge.cut,
+    .ohcamel-graph rect.cell.pulse { animation: none; }
+    .ohcamel-graph path.edge.lit { stroke-dasharray: none; stroke: var(--mark); }
+    .ohcamel-graph g.node.lit text.name { fill: var(--mark); }
+    .ohcamel-graph g.node.lit line.rule { stroke: var(--mark); }
+    .ohcamel-graph g.node.cut text.name { fill: var(--ink-faint); }
+  }
+  /* The legend: what each mark on the drawing means, drawn with the marks. */
+  .ohcamel-graph .graph-legend { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 10px 0 2px; font-size: 11px; color: var(--ink-soft); }
+  .ohcamel-graph .graph-legend .lg-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .ohcamel-graph svg.sw { min-width: 0 !important; display: inline-block; }
+  .ohcamel-graph svg.sw rect.cell { fill: none; stroke: var(--ink); stroke-width: 1; }
+  .ohcamel-graph svg.sw circle.obs { fill: var(--ink); }
+  .ohcamel-graph svg.sw line.lit { stroke: var(--mark); stroke-width: 1.6; }
+  .ohcamel-graph svg.sw line.cut { stroke: var(--mark); stroke-width: 1.2; stroke-dasharray: 1 3; }
+  .ohcamel-graph svg.sw line.cold { stroke: var(--rule); stroke-width: .5; }
+  .ohcamel-graph svg.sw line.hot { stroke: var(--ink-soft); stroke-width: 2; }
+  .ohcamel-graph svg.sw line.c1 { stroke: var(--ink-soft); stroke-width: .75; }
+  .ohcamel-graph svg.sw line.c3 { stroke: var(--ink-soft); stroke-width: 3.4; }
+  .ohcamel-graph svg.sw rect.slot { fill: none; stroke: var(--ink-faint); stroke-width: .75; stroke-dasharray: 2 2; }
+  /* The caption is a figure's title and is set as one: a system serif, so
+     there is no font file to fetch, license or fail to load. */
+  #graph > .lbl { font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif; font-size: 17px; letter-spacing: 0; text-transform: none; color: var(--ink); font-weight: 600; }
+  #graph > .lbl i { font-weight: 400; color: var(--ink-soft); }
+  .ohcamel-graph figcaption.graph-cap .cap-title { font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif; font-size: 14px; color: var(--ink-soft); }
+  .ohcamel-graph .cap-right { display: inline-flex; gap: 14px; align-items: baseline; }
+  .ohcamel-graph .poster-btn { font: 10px ui-monospace, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-soft); background: none; border: 1px solid var(--rule); border-radius: 2px; padding: 3px 8px; cursor: pointer; }
+  .ohcamel-graph .poster-btn:hover { color: var(--ink); border-color: var(--ink-soft); }
+  /* Poster mode: the figure alone, on its own dark ground, as wide as the
+     screen. The palette is set on the figure, so every token under it follows
+     whichever scheme the page is in. */
+  figure.fig.poster {
+    position: fixed; inset: 0; z-index: 100; margin: 0; overflow: auto; padding: 30px 40px 24px;
+    --ground: #0a0c0e; --panel: #101316; --ink: #eceeed; --ink-soft: #9aa29e; --ink-faint: #59615d; --rule: #252b2f;
+    --mark: #e6b04c; --over: #ec6c4f; --unknown: #8e9de3; --live: #53c08f;
+    background: radial-gradient(ellipse at 30% 20%, #13171b 0%, #0a0c0e 70%); color: var(--ink); border: 0;
+  }
+  figure.fig.poster .ohcamel-graph svg { min-width: 0 !important; max-width: none !important; width: 100% !important; }
+  figure.fig.poster .ohcamel-graph g.node.lit text.name { filter: drop-shadow(0 0 3px rgba(230, 176, 76, .6)); }
+  figure.fig.poster .graph-note { display: none; }
+  html.poster-open { overflow: hidden; }
   /* staleness by closure: the ledger's opacity, on exactly these nodes */
   .ohcamel-graph g.node.stale { opacity: .38; }
   .ohcamel-graph g.node.over text.name { fill: var(--over); }

@@ -33,7 +33,9 @@
     graph.setValues(s.by_node || {});
     var over = 0; s.limits.forEach(function (l) { if (l.breached) over++; });
     graph.setNote("breaches", over + " of " + (s.limits.length + s.unevaluated.length));
-    graph.light(s.recomputed || []);
+    // What changed rides beside what ran: the drawing lights the first and
+    // ghosts the difference, which is where a cutoff held.
+    graph.light(s.recomputed || [], s.changed || null);
   }
   // A frame that arrived before the topology (or, on the live host, before
   // /api/ops) was set without it: stale rows by symbol rather than by closure,
@@ -51,6 +53,10 @@
     fetch("/api/graph").then(function (r) { return r.json(); }).then(function (t) {
       topology = t;
       graph = window.OhCamelGraph.render(box, topology, { inspector: true });
+      // The heat starts from the process's history, not from this tab's.
+      fetch("/api/heat").then(function (r) { return r.json(); }).then(function (h) {
+        if (graph && h && h.nodes) graph.heat(h.nodes);
+      }).catch(function () { /* the heat builds from this tab's frames instead */ });
       if (pendingFrame) { resetLedger(); renderGraphFrame(pendingFrame); }
     }).catch(function () { /* the figure stays empty; the ledger does not depend on it */ });
   }
