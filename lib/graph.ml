@@ -205,6 +205,40 @@ module Node_name = struct
       | "attribution" | "feed_health" | "now" -> "state"
       | other -> failwithf "graph: no unit declared for node %S" other ()
 
+  (* What one recomputation of a named node costs, in the README's own terms:
+     n instruments, w observations in a return window, h equity marks, L
+     limits. From the code, not a measurement -- the drawing weights a node's
+     rule by it and the inspector prints it -- and kept beside [unit_of] so a
+     node is classified the day it is named. Unclassified is None, and the
+     topology test fails on a named node that is None. *)
+  let cost_of (name : string) : string option =
+    let starts p = String.is_prefix name ~prefix:p in
+    if String.is_suffix name ~suffix:"]" then None
+    else if
+      starts "exposure:" || starts "feed:" || starts "greeks:"
+      || starts "option_exposure:" || starts "limit:"
+    then Some "O(1)"
+    else if starts "sector:" then Some "O(n)"
+    else
+      match name with
+      | "cash" | "equity_history" | "factor_returns" | "rate" | "valuation_days" | "now"
+        ->
+          None
+      | "equity" | "var_notional" | "es_notional" -> Some "O(1)"
+      | "portfolio_beta" -> Some "O(w)"
+      | "current_drawdown" -> Some "O(h)"
+      | "breaches" -> Some "O(L)"
+      | "historical_var" | "expected_shortfall" -> Some "O(w log w)"
+      | "aligned_returns" | "portfolio_returns" -> Some "O(n·w)"
+      | "parametric_var" | "parametric_var_ewma" | "attribution" -> Some "O(n²)"
+      | "covariance" | "covariance_ewma" -> Some "O(n²·w)"
+      | "exposure_map" | "sector_map" | "gross_exposure" | "net_exposure" | "weights"
+      | "component_var_map" | "component_var_sector_map" | "diversification_ratio"
+      | "feed_health" | "gamma_map" | "vega_map" | "portfolio_gamma" | "portfolio_vega"
+      | "vega_by_bucket" ->
+          Some "O(n)"
+      | _ -> None
+
   (* The units whose value is a number the wire can carry and the drawing can
      print. Everything else gets a run count instead -- "ran 1x since you
      opened this page" -- which is the honest rendering of a covariance matrix
@@ -1893,6 +1927,11 @@ module Topology = struct
       rank : int;
       observed : bool;
       unit : string;
+      (* What one recomputation of this node costs, in [Node_name.cost_of]'s
+         vocabulary. [None] for an input cell -- a [Var.set] has no rule to
+         cost -- and for nothing else, which is the invariant Task 3's test
+         checks over the whole topology. *)
+      cost : string option;
       (* The instrument this node is about, when it is about one -- and for
          an option node, its UNDERLYING, so the page has one field to put a
          row on. *)
@@ -2130,6 +2169,7 @@ let topology ?(alerts = false) (t : t) : Topology.t =
           rank = rank name;
           observed = r.Raw.observed;
           unit = Node_name.unit_of name;
+          cost = Node_name.cost_of name;
           symbol;
           sector;
           limit;

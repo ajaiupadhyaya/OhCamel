@@ -500,6 +500,7 @@ let json_of_graph (topo : Graph.Topology.t) : Yojson.Safe.t =
         ("observed", `Bool (T.Node.observed n));
         ("cutoff", jstring (T.Node.cutoff n));
         ("unit", jstring (T.Node.unit n));
+        ("cost", jopt jstring (T.Node.cost n));
         ("symbol", jopt (fun s -> jstring (Types.Symbol.to_string s)) (T.Node.symbol n));
         ("sector", jopt (fun k -> jstring (Types.Sector.to_string k)) (T.Node.sector n));
         ( "limit",

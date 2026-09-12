@@ -1800,6 +1800,7 @@ let test_api_graph () =
               "observed";
               "cutoff";
               "unit";
+              "cost";
               "symbol";
               "sector";
               "limit";
