@@ -65,11 +65,25 @@ let query t ~what sql params ~(row : Data.t array -> 'a) : 'a list =
       | rc, _ -> failed t ~what rc)
 
 (* One transaction, one write on the counter. The page asks for /api/desk when
-   the counter moves; three marks written together are one change to it. *)
+   the counter moves; three marks written together are one change to it.
+
+   A COMMIT can still fail: a deferred foreign key is checked here, not at
+   the statement that will violate it, so this is a second place -- besides
+   [f] raising -- that a transaction ends badly. SQLite's own rule for a
+   failed COMMIT is that the transaction is left open; the caller rolls it
+   back, not SQLite. Skip that and the connection is still inside this
+   transaction when the next write's BEGIN IMMEDIATE runs, which fails with
+   "cannot start a transaction within a transaction" -- one bad write taking
+   down every write after it. *)
 let write t ~what (f : unit -> unit) =
   exec t ~what:(what ^ ": begin") "BEGIN IMMEDIATE";
   (match f () with
-  | () -> exec t ~what:(what ^ ": commit") "COMMIT"
+  | () -> (
+      match Sqlite3.exec t.db "COMMIT" with
+      | Rc.OK -> ()
+      | rc ->
+          ignore (Sqlite3.exec t.db "ROLLBACK" : Rc.t);
+          failed t ~what:(what ^ ": commit") rc)
   | exception e ->
       ignore (Sqlite3.exec t.db "ROLLBACK" : Rc.t);
       raise e);
@@ -154,7 +168,9 @@ let open_ ~(path : string) : t Or_error.t =
             "journal: %s is at schema version %s and this build knows version %d; it \
              will not guess at a layout it has never seen"
             path v schema_version ()
-      | _ -> failwith "journal: meta holds more than one schema version");
+      | _ ->
+          ignore (Sqlite3.db_close t.db : bool);
+          failwith "journal: meta holds more than one schema version");
       List.iter (List.tl_exn schema) ~f:(exec t ~what:"schema");
       run t ~what:"schema version"
         "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)"

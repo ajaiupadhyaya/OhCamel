@@ -181,6 +181,44 @@ let test_rfc3339_round_trips_to_the_nanosecond () =
     (Option.map ~f:Date.to_string
        (Ohcamel_desk.Desk_time.local_date "2026-09-11T16:00:00-04:00"))
 
+(* A deferred foreign key is checked at COMMIT, not at the INSERT that will
+   violate it -- the one path that puts a failure on the far side of "BEGIN
+   IMMEDIATE ... COMMIT" instead of inside it, where the ordinary exception
+   path already runs. SQLite's own rule for a COMMIT that fails this way is
+   that the transaction is left open: the caller rolls it back, not SQLite
+   (https://sqlite.org/lang_transaction.html). Skip that rollback and the
+   connection is still inside the aborted transaction when the next caller's
+   BEGIN IMMEDIATE runs, which fails with "cannot start a transaction within
+   a transaction" -- one bad write taking down every write after it. *)
+let test_a_failed_commit_rolls_back_before_the_next_write () =
+  let j = open_exn ":memory:" in
+  ignore (Sqlite3.exec j.Journal.db "PRAGMA foreign_keys = ON" : Sqlite3.Rc.t);
+  ignore
+    (Sqlite3.exec j.Journal.db "CREATE TABLE parent (id INTEGER PRIMARY KEY)"
+      : Sqlite3.Rc.t);
+  ignore
+    (Sqlite3.exec j.Journal.db
+       "CREATE TABLE child (id INTEGER PRIMARY KEY, parent INTEGER REFERENCES parent(id) \
+        DEFERRABLE INITIALLY DEFERRED)"
+      : Sqlite3.Rc.t);
+  (match
+     Journal.write j ~what:"child" (fun () ->
+         Journal.run j ~what:"child insert"
+           "INSERT INTO child (id, parent) VALUES (1, 99)" [])
+   with
+  | () ->
+      Alcotest.fail
+        "a deferred foreign key violation should fail the commit, not the insert"
+  | exception Failure _ -> ()
+  | exception e -> Alcotest.failf "expected Failure, got %s" (Exn.to_string e));
+  Alcotest.(check int) "the failed commit did not move the version" 0 (Journal.version j);
+  (* Before the fix: this BEGIN IMMEDIATE fails with "cannot start a
+     transaction within a transaction", because nothing rolled back the one
+     the aborted COMMIT above left open. *)
+  Journal.record_session j (session "2026-09-11");
+  Alcotest.(check int)
+    "an ordinary write afterwards still counts as one" 1 (Journal.version j)
+
 let suite =
   ( "journal",
     [
@@ -200,4 +238,6 @@ let suite =
         test_a_file_from_a_newer_build_is_refused;
       Alcotest.test_case "RFC 3339 round-trips to the nanosecond" `Quick
         test_rfc3339_round_trips_to_the_nanosecond;
+      Alcotest.test_case "a failed commit rolls back before the next write" `Quick
+        test_a_failed_commit_rolls_back_before_the_next_write;
     ] )
