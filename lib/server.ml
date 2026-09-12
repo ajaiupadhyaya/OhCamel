@@ -1440,11 +1440,16 @@ let body_too_large (headers : Cohttp.Header.t) : bool =
    So the only way left to bound it is to count what actually arrives, and
    stop the moment the count passes the limit rather than after the fact.
 
-   Once either refusal fires, whatever the client has left to send is drained
-   without being waited on: the response goes out now, and the drain -- itself
-   bounded by the same running total -- leaves the connection in the state
-   cohttp-async's keep-alive expects rather than wedged on bytes this route
-   decided not to read. *)
+   A refused body is not read to its end, and its connection is not kept:
+   [Pipe.drain] finishes only once the client has sent everything or hung
+   up, which is exactly the wait a 413 or 408 exists to avoid, and
+   cohttp-async will not read this connection's next request until this
+   body's pipe is closed (server.ml, [handle_client]'s
+   [last_body_pipe_drained]) -- so draining here would trade the memory this
+   refusal already prevents for a held socket instead. [Pipe.close_read]
+   fires that close at once: [start] answers with [connection: close] on
+   both refusals besides, so cohttp-async does not try to read a next
+   request off whatever the client sends next on this connection. *)
 let read_bounded_body (body : Cohttp_async.Body.t) :
     [ `Body of string | `Too_large | `Timeout ] Deferred.t =
   let pipe = Cohttp_async.Body.to_pipe body in
@@ -1456,7 +1461,7 @@ let read_bounded_body (body : Cohttp_async.Body.t) :
         | `Ok chunk ->
             Buffer.add_string buffer chunk;
             if Buffer.length buffer > max_extension_body_bytes then (
-              don't_wait_for (Pipe.drain pipe);
+              Pipe.close_read pipe;
               return (`Finished `Too_large))
             else return (`Repeat ()))
   in
@@ -1469,8 +1474,28 @@ let read_bounded_body (body : Cohttp_async.Body.t) :
   with
   | `Result answer -> answer
   | `Timeout ->
-      don't_wait_for (Pipe.drain pipe);
+      (* The counting read above is still pending on [Pipe.read pipe] -- this
+         is the only place it is abandoned rather than reaching its own
+         [`Eof] or [`Too_large]. [close_read] resolves that pending read with
+         [`Eof] immediately (pipe.mli: "all subsequent reads will get
+         [`Eof]"), rather than leaving a second, unread reader parked on the
+         same pipe after this function has already answered. *)
+      Pipe.close_read pipe;
       `Timeout
+
+(* The headers a refusal answers with: this server's own JSON headers, so a
+   413 or 408 is still readable the same way every other JSON response is,
+   plus [connection: close]. Not folded into [respond_json] -- whose
+   signature Tasks 9 and 10 depend on, and which every other response keeps
+   using to stay on a reusable connection -- because only a body this process
+   decided not to finish reading needs the second half of that promise: a
+   [connection: close] header alone tells a compliant client to stop, but
+   with [read_bounded_body] having already closed the read side of a body
+   that was not fully consumed, the safer position is to also say so on the
+   wire rather than let a client that ignores headers assume otherwise. Pure,
+   so it is tested without the scheduler. *)
+let refusal_headers (t : t) : Cohttp.Header.t =
+  Cohttp.Header.add (json_headers ~mode:t.mode) "connection" "close"
 
 let start ?(port = 8080) (t : t) =
   (* Recorded here rather than passed to [create], because the port is the
@@ -1507,16 +1532,19 @@ let start ?(port = 8080) (t : t) =
          public host. *)
       | None -> (
           if body_too_large headers then
-            respond_json ~status:`Request_entity_too_large t
+            Cohttp_async.Server.respond_string ~headers:(refusal_headers t)
+              ~status:`Request_entity_too_large
               {|{"error":"body exceeds the 64 KiB limit"}|}
           else
             match%bind read_bounded_body body with
             | `Body body -> dispatch t { Request.meth; path; headers; body }
             | `Too_large ->
-                respond_json ~status:`Request_entity_too_large t
+                Cohttp_async.Server.respond_string ~headers:(refusal_headers t)
+                  ~status:`Request_entity_too_large
                   {|{"error":"body exceeds the 64 KiB limit"}|}
             | `Timeout ->
-                respond_json ~status:`Request_timeout t
+                Cohttp_async.Server.respond_string ~headers:(refusal_headers t)
+                  ~status:`Request_timeout
                   {|{"error":"body did not finish arriving within 10s"}|}))
 
 let frames_sent (t : t) = t.frames_sent

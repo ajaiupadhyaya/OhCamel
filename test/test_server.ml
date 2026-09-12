@@ -2242,6 +2242,39 @@ let test_body_too_large () =
     "a non-number header: undecided here, so false" false
     (Server.body_too_large (headers [ ("Content-Length", "banana") ]))
 
+(* [refusal_headers] is what a 413 or 408 answers with: this server's own
+   JSON headers -- so a refusal reads on the wire the same way every other
+   JSON response does -- plus [connection: close], the header
+   [read_bounded_body]'s [Pipe.close_read] fix depends on: a body already
+   abandoned mid-read must not look, to a client that ignores headers or
+   one that does not, like a connection still worth reusing. Pure in [t],
+   so it is checked without the scheduler, on both hosts -- the demo host's
+   CORS rule must still ride along; a gated live refusal carries no such
+   rule, same as every other live response. *)
+let test_refusal_headers_add_connection_close () =
+  with_server ~mode:`Demo
+    ~f:(fun server _graph ->
+      let h = Server.refusal_headers server in
+      Alcotest.(check (option string))
+        "connection: close" (Some "close")
+        (Cohttp.Header.get h "connection");
+      Alcotest.(check (option string))
+        "still this server's JSON content type" (Some "application/json")
+        (Cohttp.Header.get h "Content-Type");
+      Alcotest.(check (option string))
+        "and the demo host's CORS rule" (Some "*")
+        (Cohttp.Header.get h "Access-Control-Allow-Origin"))
+    ();
+  with_server ~mode:`Live
+    ~f:(fun server _graph ->
+      Alcotest.(check (option string))
+        "connection: close on the gated host too" (Some "close")
+        (Cohttp.Header.get (Server.refusal_headers server) "connection");
+      Alcotest.(check (option string))
+        "and still no CORS rule there" None
+        (Cohttp.Header.get (Server.refusal_headers server) "Access-Control-Allow-Origin"))
+    ()
+
 let suite =
   ( "server",
     [
@@ -2305,4 +2338,6 @@ let suite =
       Alcotest.test_case "notify asks for a frame" `Quick test_notify_asks_for_a_frame;
       Alcotest.test_case "body_too_large decides only what Content-Length proves" `Quick
         test_body_too_large;
+      Alcotest.test_case "refusal_headers add connection: close to this server's own"
+        `Quick test_refusal_headers_add_connection_close;
     ] )
