@@ -976,6 +976,33 @@ let test_ops_feed_source_comes_from_the_closure () =
         (match field_exn j "peer" with `Null -> true | _ -> false))
     ()
 
+(* A route's answer, read through [Server.dispatch] rather than a socket.
+   [Server.dispatch] answers with an already-determined Deferred exactly as
+   the built-in handlers do (see the [respond] comment below for why that is
+   safe with no scheduler), so [Deferred.peek] reads it synchronously. Defined
+   here, ahead of [test_the_404_lists_exactly_the_routes], because that test
+   and [test_the_two_new_routes_answer] both used to read the top-level
+   [Server.not_found_body] this phase replaced with a per-server body -- there
+   is no longer a body to read except through a dispatch. Task 8's own tests
+   (below, near [echo]) use this same helper for the seams it exists to
+   prove. *)
+let dispatched server ?(meth = `GET) ?(body = "") path =
+  match
+    Async.Deferred.peek
+      (Server.dispatch server
+         { Server.Request.meth; path; headers = Cohttp.Header.init (); body })
+  with
+  | None -> Alcotest.failf "%s did not answer without the scheduler" path
+  | Some (response, b) ->
+      let text =
+        match b with
+        | `String s -> s
+        | `Empty -> ""
+        | `Strings ss -> String.concat ss
+        | `Pipe _ -> Alcotest.failf "%s answered with a pipe" path
+      in
+      (Cohttp.Code.code_of_status (Cohttp.Response.status response), text)
+
 (* One table, two readers, and this is the test that keeps them one.
 
    Before this phase the dispatcher was a seven-arm match and the 404 body was
@@ -987,18 +1014,27 @@ let test_ops_feed_source_comes_from_the_closure () =
    path that is not listed must not. The nine paths are written out because
    a route added to the table without being added here is the one change
    this test exists to make somebody look at. Phase 4 added /api/graph;
-   Phase 5 adds two. *)
+   Phase 5 adds two. Task 8 moved the body's source from the top-level
+   [not_found_body] (removed: the body is now per-server, built from a
+   server's own extension list) to a server built with none, so this test's
+   claim is unchanged -- the assertion is still that the list equals
+   [Server.route_paths ()] -- only where the body comes from has moved. *)
 let test_the_404_lists_exactly_the_routes () =
-  let listed =
-    match Yojson.Safe.from_string Server.not_found_body with
-    | `Assoc fields -> (
-        match List.Assoc.find fields "routes" ~equal:String.equal with
-        | Some (`List xs) -> List.map xs ~f:(function `String s -> s | _ -> "?")
-        | _ -> Alcotest.fail "the 404 body has no routes list")
-    | _ -> Alcotest.fail "the 404 body is not an object"
-  in
-  Alcotest.(check (list string))
-    "the 404 body lists the table, in the table's order" (Server.route_paths ()) listed;
+  with_server
+    ~f:(fun server _graph ->
+      let _, body = dispatched server "/api/nope" in
+      let listed =
+        match Yojson.Safe.from_string body with
+        | `Assoc fields -> (
+            match List.Assoc.find fields "routes" ~equal:String.equal with
+            | Some (`List xs) -> List.map xs ~f:(function `String s -> s | _ -> "?")
+            | _ -> Alcotest.fail "the 404 body has no routes list")
+        | _ -> Alcotest.fail "the 404 body is not an object"
+      in
+      Alcotest.(check (list string))
+        "the 404 body lists the table, in the table's order" (Server.route_paths ())
+        listed)
+    ();
   Alcotest.(check (list string))
     "the routes this phase ships"
     [
@@ -1077,14 +1113,18 @@ let test_the_two_new_routes_answer () =
         "and is the operations page" true
         (String.is_substring body ~substring:"OhCamel<span>operations</span>");
       (* The 404 goes out with the JSON headers, so a demo host's 404 is
-         readable cross-origin like its other JSON. Read through handle, which
-         is the only caller lookup has. *)
+         readable cross-origin like its other JSON. Read through [handle],
+         which is [dispatch] with a synthesised GET -- the same body
+         [dispatched] gets from [dispatch] directly, so the two entry points
+         agree on what an unknown path answers with. *)
       match Async.Deferred.peek (Server.handle server ~path:"/api/nope") with
       | Some (response, `String s) ->
           Alcotest.(check int)
             "an unknown path is 404" 404
             (Cohttp.Code.code_of_status (Cohttp.Response.status response));
-          Alcotest.(check string) "with the generated body" Server.not_found_body s
+          let _, dispatched_body = dispatched server "/api/nope" in
+          Alcotest.(check string)
+            "the same body [dispatch] gives directly" dispatched_body s
       | _ -> Alcotest.fail "the 404 did not answer as a string")
     ()
 
@@ -2089,6 +2129,94 @@ let test_stress_shape () =
           | _ -> Alcotest.failf "%s: cleared_breaches is not a list" name))
     ()
 
+(* The three seams the desk plugs into, tested with no desk at all.
+
+   server.ml must not learn a desk type -- it is linked into every mode, and
+   the desk's vocabulary in the middle of the wire format is the coupling the
+   feed_stats closure was written to avoid. So the seams are generic: a route
+   that receives its request, fields appended to every frame, and a way to ask
+   for a frame when something outside the graph changed. *)
+
+let echo : Server.extension =
+  {
+    Server.path = "/api/echo";
+    purpose = "echoes the method and the body, for the seam's own test";
+    handle =
+      (fun server (r : Server.Request.t) ->
+        Server.respond_json server
+          (Yojson.Safe.to_string
+             (`Assoc
+                [
+                  ("meth", `String (Cohttp.Code.string_of_method r.Server.Request.meth));
+                  ("body", `String r.Server.Request.body);
+                ])));
+  }
+
+let test_an_extension_is_routed_receives_its_request_and_is_listed () =
+  with_graph
+    ~f:(fun graph ->
+      let server =
+        Server.create ~extensions:[ echo ] ~mode:`Demo ~graph ~factor:"SYNTHETIC" ()
+      in
+      let code, body = dispatched server ~meth:`POST ~body:"hello" "/api/echo" in
+      Alcotest.(check int) "200" 200 code;
+      Alcotest.(check string)
+        "the method and the body arrived" {|{"meth":"POST","body":"hello"}|} body;
+      let code, body = dispatched server "/api/nope" in
+      Alcotest.(check int) "404" 404 code;
+      let routes =
+        match field_exn (Yojson.Safe.from_string body) "routes" with
+        | `List xs -> List.map xs ~f:Yojson.Safe.Util.to_string
+        | _ -> []
+      in
+      Alcotest.(check (list string))
+        "the built-ins in table order, then the extension"
+        (Server.route_paths () @ [ "/api/echo" ])
+        routes;
+      Alcotest.(check (list string))
+        "listed_paths agrees with the 404" routes (Server.listed_paths server))
+    ()
+
+let test_an_extension_may_not_shadow_a_route () =
+  with_graph
+    ~f:(fun graph ->
+      match
+        Server.create
+          ~extensions:[ { echo with Server.path = "/api/snapshot" } ]
+          ~mode:`Demo ~graph ~factor:"SYNTHETIC" ()
+      with
+      | _ -> Alcotest.fail "an extension replaced /api/snapshot"
+      | exception Invalid_argument _ -> ())
+    ()
+
+let test_frame_extra_rides_on_every_frame_after_alerts () =
+  with_graph
+    ~f:(fun graph ->
+      let server =
+        Server.create
+          ~frame_extra:(fun () -> [ ("desk", `Assoc [ ("venue", `String "simulated") ]) ])
+          ~mode:`Demo ~graph ~factor:"SYNTHETIC" ()
+      in
+      let keys = assoc_keys (Yojson.Safe.from_string (Server.render server)) in
+      Alcotest.(check (list string))
+        "the last two keys" [ "alerts"; "desk" ]
+        (List.drop keys (List.length keys - 2));
+      Alcotest.(check string)
+        "and the value is the closure's" {|{"venue":"simulated"}|}
+        (Yojson.Safe.to_string
+           (field_exn (Yojson.Safe.from_string (Server.render server)) "desk")))
+    ()
+
+let test_notify_asks_for_a_frame () =
+  with_graph
+    ~f:(fun graph ->
+      let server = Server.create ~mode:`Demo ~graph ~factor:"SYNTHETIC" () in
+      Alcotest.(check bool)
+        "no frame pending after create" false (Server.pending_frame server);
+      Server.notify server;
+      Alcotest.(check bool) "one pending after notify" true (Server.pending_frame server))
+    ()
+
 let suite =
   ( "server",
     [
@@ -2143,4 +2271,11 @@ let suite =
       Alcotest.test_case "/api/graph is the topology, memoised" `Quick test_api_graph;
       Alcotest.test_case "/api/stress in the new shape, hand-derived" `Quick
         test_stress_shape;
+      Alcotest.test_case "an extension is routed, receives its request, and is listed"
+        `Quick test_an_extension_is_routed_receives_its_request_and_is_listed;
+      Alcotest.test_case "an extension may not shadow a route" `Quick
+        test_an_extension_may_not_shadow_a_route;
+      Alcotest.test_case "frame_extra rides on every frame, after alerts" `Quick
+        test_frame_extra_rides_on_every_frame_after_alerts;
+      Alcotest.test_case "notify asks for a frame" `Quick test_notify_asks_for_a_frame;
     ] )

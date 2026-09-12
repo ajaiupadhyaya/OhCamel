@@ -566,6 +566,18 @@ type mode = [ `Demo | `Live ]
 
 let mode_to_string = function `Demo -> "demo" | `Live -> "live"
 
+(* A request as an extension sees it: enough to decide what was asked, with
+   the body already read. Built-in routes never look at it -- every one of them
+   is a GET whose method is ignored -- and that stays true. *)
+module Request = struct
+  type t = {
+    meth : Cohttp.Code.meth;
+    path : string;
+    headers : Cohttp.Header.t;
+    body : string;
+  }
+end
+
 type t = {
   graph : Graph.t;
   factor : string;
@@ -632,6 +644,24 @@ type t = {
      edge is declared when the graph is built -- so serving it is a string
      copy, and the drawing on a thousand tabs costs the engine nothing. *)
   graph_json : string;
+  (* Routes another library adds, the desk above all. The server dispatches to
+     them and lists them; it never learns what they are. *)
+  extensions : extension list;
+  (* Fields appended to every frame and snapshot, after alerts. A closure, for
+     the reason feed_stats is one: this module cannot hold the type the fields
+     are made from. *)
+  frame_extra : unit -> (string * Yojson.Safe.t) list;
+  (* The 404 body, built once at create from the table and the extensions. *)
+  not_found_body : string;
+}
+
+(* An extension's handler receives the server as well as the request, so it
+   can answer with this server's JSON headers -- the demo host's CORS rule
+   included -- without the desk re-deciding what a host publishes. *)
+and extension = {
+  path : string;
+  purpose : string;
+  handle : t -> Request.t -> Cohttp_async.Server.response Deferred.t;
 }
 
 (* A sink is named, never described.
@@ -768,7 +798,8 @@ let render ?recomputed (t : t) : string =
   in
   match json with
   | `Assoc fields ->
-      Yojson.Safe.to_string (`Assoc (fields @ [ ("alerts", json_of_alerts t.alerts) ]))
+      Yojson.Safe.to_string
+        (`Assoc (fields @ [ ("alerts", json_of_alerts t.alerts) ] @ t.frame_extra ()))
   | other -> Yojson.Safe.to_string other
 
 (* The frame the broadcaster sends: the snapshot, then the drain. With no log
@@ -1260,18 +1291,23 @@ let routes : (string * string * handler) list =
 
 let route_paths () : string list = List.map routes ~f:(fun (path, _, _) -> path)
 
-(* The 404 body, generated from the table and rendered once: the table does
-   not change after the module is initialised, and an unknown route is not a
-   reason to serialise anything. *)
-let not_found_body : string =
+(* The 404 body, generated from the table AND the extensions, and rendered once
+   per server at [create]: the table does not change after the module is
+   initialised, but the extension list is a per-server choice (Task 9's desk
+   passes one, the tests here mostly pass none), so this can no longer be a
+   single top-level constant the way it was before extensions existed. *)
+let build_not_found_body (extensions : extension list) : string =
+  let listed =
+    List.map routes ~f:(fun (path, purpose, _) -> (path, purpose))
+    @ List.map extensions ~f:(fun e -> (e.path, e.purpose))
+  in
   Yojson.Safe.to_string
     (`Assoc
        [
          ("error", `String "not found");
-         ("routes", jlist jstring (route_paths ()));
+         ("routes", jlist jstring (List.map listed ~f:fst));
          ( "purposes",
-           `Assoc (List.map routes ~f:(fun (path, purpose, _) -> (path, `String purpose)))
-         );
+           `Assoc (List.map listed ~f:(fun (path, purpose) -> (path, `String purpose))) );
        ])
 
 (* /index.html is the one alias. It has been answered since Phase 3 and a
@@ -1282,23 +1318,61 @@ let lookup (path : string) : handler option =
   let path = if String.equal path "/index.html" then "/" else path in
   List.find_map routes ~f:(fun (p, _, h) -> if String.equal p path then Some h else None)
 
-let handle (t : t) ~(path : string) =
-  match lookup path with
+let respond_json ?(status = `OK) (t : t) (body : string) =
+  Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode) ~status body
+
+(* Built-ins first, in table order, then extensions in the order given -- the
+   same order [build_not_found_body] lists them in, so a 404's [routes] and
+   this agree without either being derived from the other. *)
+let listed_paths (t : t) : string list =
+  route_paths () @ List.map t.extensions ~f:(fun e -> e.path)
+
+(* The one place a request is routed: built-ins by path (method ignored, as
+   every built-in always has been), then an extension by path, then the 404.
+   [handle] below and [start]'s listener both go through here, so a route
+   dispatches the same way whether it is asked for by a test or by a socket. *)
+let dispatch (t : t) (request : Request.t) =
+  match lookup request.Request.path with
   | Some handler -> handler t
-  | None ->
-      Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
-        ~status:`Not_found not_found_body
+  | None -> (
+      match
+        List.find t.extensions ~f:(fun e -> String.equal e.path request.Request.path)
+      with
+      | Some e -> e.handle t request
+      | None -> respond_json ~status:`Not_found t t.not_found_body)
+
+let handle (t : t) ~(path : string) =
+  dispatch t { Request.meth = `GET; path; headers = Cohttp.Header.init (); body = "" }
+
+(* A frame for a change the graph cannot see -- an order acknowledged, a
+   cancel confirmed. The broadcaster cannot tell the two apart and does not
+   need to: it wakes, coalesces and sends. *)
+let notify (t : t) : unit = Ivar.fill_if_empty t.changed ()
 
 (* ------------------------------------------------------------------------ *)
 (* Starting                                                                  *)
 (* ------------------------------------------------------------------------ *)
 
-let create ?(coalesce = Time_ns.Span.of_ms 80.0) ?history_capacity
-    ?(alerts : Alerts.t option) ?(peer : string option)
-    ?(feed_stats : (unit -> Yojson.Safe.t) option) ?(quiet : Types.Symbol.t list = [])
-    ?(recompute_log : Recompute_log.t option) ?(reports : Reports.t option)
-    ?(garch : Reports.Garch.t option) ~(mode : mode) ~(graph : Graph.t) ~(factor : string)
-    () =
+let create ?(extensions : extension list = []) ?(frame_extra = fun () -> [])
+    ?(coalesce = Time_ns.Span.of_ms 80.0) ?history_capacity ?(alerts : Alerts.t option)
+    ?(peer : string option) ?(feed_stats : (unit -> Yojson.Safe.t) option)
+    ?(quiet : Types.Symbol.t list = []) ?(recompute_log : Recompute_log.t option)
+    ?(reports : Reports.t option) ?(garch : Reports.Garch.t option) ~(mode : mode)
+    ~(graph : Graph.t) ~(factor : string) () =
+  (* An extension that claimed a built-in's path would be served sometimes and
+     shadowed other times, depending on table order nobody chose on purpose;
+     two extensions claiming the same path would settle it by [List.find]'s
+     iteration order, which is not a decision either caller made either. Both
+     are caught here, at construction, rather than discovered the first time
+     a request for the shadowed path arrives. *)
+  List.iter extensions ~f:(fun e ->
+      if Option.is_some (lookup e.path) then
+        invalid_argf "server: extension %s would shadow a built-in route" e.path ());
+  (match
+     List.find_a_dup extensions ~compare:(fun a b -> String.compare a.path b.path)
+   with
+  | Some e -> invalid_argf "server: two extensions claim %s" e.path ()
+  | None -> ());
   let t =
     {
       graph;
@@ -1324,6 +1398,9 @@ let create ?(coalesce = Time_ns.Span.of_ms 80.0) ?history_capacity
       graph_json =
         Yojson.Safe.to_string
           (json_of_graph (Graph.topology ~alerts:(Option.is_some alerts) graph));
+      extensions;
+      frame_extra;
+      not_found_body = build_not_found_body extensions;
     }
   in
   (* The link that makes this reactive rather than polled. Graph.on_change fires
@@ -1348,8 +1425,15 @@ let start ?(port = 8080) (t : t) =
              dashboard, because the operator believes they are being watched. *)
            eprintf "ohcamel/server: %s\n%!" (Exn.to_string exn)))
     (Tcp.Where_to_listen.of_port port)
-    (fun ~body:_ _address request ->
-      handle t ~path:(Uri.path (Cohttp.Request.uri request)))
+    (fun ~body _address request ->
+      let%bind body = Cohttp_async.Body.to_string body in
+      dispatch t
+        {
+          Request.meth = Cohttp.Request.meth request;
+          path = Uri.path (Cohttp.Request.uri request);
+          headers = Cohttp.Request.headers request;
+          body;
+        })
 
 let frames_sent (t : t) = t.frames_sent
 let subscriber_count (t : t) = List.length t.subscribers
