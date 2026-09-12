@@ -169,13 +169,14 @@ would be the first that does.
 
 | Route | |
 |---|---|
-| `/` | The page: Figure 1 (the graph from Incremental's node table, lit per frame), the ledger, and the README's argument with every reproducible table computed here and checked against the README. One embedded HTML string, inline SVG, no external assets |
+| `/` | The page: Figure 1 (the graph from Incremental's node table, lit per frame, drawn rank by rank with cutoffs, heat and cost classes), the ledger, and the README's argument with every reproducible table computed here and checked against the README. One embedded HTML string, inline SVG, no external assets |
 | `/api/snapshot` | The whole book as JSON, including `nodes_recomputed` — the counter that proves the graph is alive |
 | `/api/health` | Feed liveness per symbol; `healthy: false` when anything is stale |
 | `/api/stream` | Server-sent events, emitted only on an actual graph change (parked on an `Ivar`, not a timer), coalesced over 80 ms |
 | `/api/history` | The in-memory trail |
 | `/api/stress` | The scenario suite, run on forks of the live book: structured shocks, before and after, breaches with their text, the counter's cost |
 | `/api/graph` | The topology: named nodes, edges, ranks, the readers outside the graph. Memoised at startup |
+| `/api/heat` | How often each named node has run since the process started; the drawing's heat |
 | `/api/reports` | The CLI's reports computed by this process before it listened: scaling probe, synthetic and crisis batteries, options walk. One cached string, about 86 KB |
 | `/api/reports/garch` | The 180-fit GARCH study, run on a second domain after listen: `computing` with a count, then `done` with its rows (about 5 s on an M-series laptop) |
 | `/ops` | The operator's view: what the process is, how long it has been up, what it has recomputed |

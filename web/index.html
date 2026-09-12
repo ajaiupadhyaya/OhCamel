@@ -137,7 +137,7 @@ Phase 3. The dashboard page, served from memory by server.ml.
     <h2><span class="lbl">01</span>Why it isn't a loop</h2>
     <div class="prose">
       <p>Most real-time risk systems poll. A timer fires, the whole book is recomputed and rendered, and the process sleeps. The number on screen is then as old as the timer's last tick rather than the market's, and a print in one name pays for a covariance matrix that no price could have changed, because covariance is computed from a return window a mid-session print does not touch.</p>
-      <p>Here risk is a dependency graph. A tick sets one input cell and Incremental recomputes exactly what is downstream of it. Figure 1 is that graph, and every frame lights what ran. The rest of the graph is never visited, which is different from being recomputed and found unchanged.</p>
+      <p>Here risk is a dependency graph. A tick sets one input cell and Incremental recomputes exactly what is downstream of it. Figure 1 is that graph, and every frame lights what ran, in the order it ran, and dims what ran and was stopped by a cutoff. The rest of the graph is never visited, which is different from being recomputed and found unchanged.</p>
     </div>
     <p class="line" id="frames-line">Waiting for the first frames.</p>
     <figure class="fig">
