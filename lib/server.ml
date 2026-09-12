@@ -1291,16 +1291,21 @@ let routes : (string * string * handler) list =
 
 let route_paths () : string list = List.map routes ~f:(fun (path, _, _) -> path)
 
+(* Built-ins, in table order, then extensions in the order given: the one
+   list [build_not_found_body] and [listed_paths] both read, so a 404's
+   [routes] and what [listed_paths] reports about the same server cannot
+   drift into two answers by being assembled twice. *)
+let listed_routes (extensions : extension list) : (string * string) list =
+  List.map routes ~f:(fun (path, purpose, _) -> (path, purpose))
+  @ List.map extensions ~f:(fun e -> (e.path, e.purpose))
+
 (* The 404 body, generated from the table AND the extensions, and rendered once
    per server at [create]: the table does not change after the module is
    initialised, but the extension list is a per-server choice (Task 9's desk
    passes one, the tests here mostly pass none), so this can no longer be a
    single top-level constant the way it was before extensions existed. *)
 let build_not_found_body (extensions : extension list) : string =
-  let listed =
-    List.map routes ~f:(fun (path, purpose, _) -> (path, purpose))
-    @ List.map extensions ~f:(fun e -> (e.path, e.purpose))
-  in
+  let listed = listed_routes extensions in
   Yojson.Safe.to_string
     (`Assoc
        [
@@ -1321,11 +1326,7 @@ let lookup (path : string) : handler option =
 let respond_json ?(status = `OK) (t : t) (body : string) =
   Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode) ~status body
 
-(* Built-ins first, in table order, then extensions in the order given -- the
-   same order [build_not_found_body] lists them in, so a 404's [routes] and
-   this agree without either being derived from the other. *)
-let listed_paths (t : t) : string list =
-  route_paths () @ List.map t.extensions ~f:(fun e -> e.path)
+let listed_paths (t : t) : string list = List.map (listed_routes t.extensions) ~f:fst
 
 (* The one place a request is routed: built-ins by path (method ignored, as
    every built-in always has been), then an extension by path, then the 404.
@@ -1411,6 +1412,66 @@ let create ?(extensions : extension list = []) ?(frame_extra = fun () -> [])
   don't_wait_for (run_broadcaster t);
   t
 
+(* An extension takes small JSON bodies -- the desk's own routes never need
+   more than an order request -- and this process is the public demo host as
+   well as the gated live one, answering anyone who asks. A body is bounded
+   in both dimensions a client controls: how much it claims to send, and how
+   slowly it sends it. *)
+let max_extension_body_bytes = 64 * 1024
+let extension_body_timeout = Time_ns.Span.of_sec 10.0
+
+(* Whether Content-Length alone already proves the body is too large, before a
+   single byte is read. A header that is absent, or is not a number, answers
+   [false] -- not "small", but "undecided": those two cases are exactly what
+   the counting read below exists to decide, by watching what arrives rather
+   than trusting a header the client wrote. Pure and total, so it is tested
+   without starting the scheduler. *)
+let body_too_large (headers : Cohttp.Header.t) : bool =
+  match Cohttp.Header.get headers "Content-Length" with
+  | None -> false
+  | Some s -> (
+      match Option.try_with (fun () -> Int.of_string s) with
+      | Some n -> n > max_extension_body_bytes
+      | None -> false)
+
+(* Read a body nobody has bounded yet: no Content-Length over the limit (that
+   case never reaches here -- [body_too_large] answers it before a byte is
+   read), and no Content-Length at all is the common case for a chunked POST.
+   So the only way left to bound it is to count what actually arrives, and
+   stop the moment the count passes the limit rather than after the fact.
+
+   Once either refusal fires, whatever the client has left to send is drained
+   without being waited on: the response goes out now, and the drain -- itself
+   bounded by the same running total -- leaves the connection in the state
+   cohttp-async's keep-alive expects rather than wedged on bytes this route
+   decided not to read. *)
+let read_bounded_body (body : Cohttp_async.Body.t) :
+    [ `Body of string | `Too_large | `Timeout ] Deferred.t =
+  let pipe = Cohttp_async.Body.to_pipe body in
+  let buffer = Buffer.create 4096 in
+  let counted =
+    Deferred.repeat_until_finished () (fun () ->
+        match%bind Pipe.read pipe with
+        | `Eof -> return (`Finished (`Body (Buffer.contents buffer)))
+        | `Ok chunk ->
+            Buffer.add_string buffer chunk;
+            if Buffer.length buffer > max_extension_body_bytes then (
+              don't_wait_for (Pipe.drain pipe);
+              return (`Finished `Too_large))
+            else return (`Repeat ()))
+  in
+  (* [with_timeout] here is Async_unix's, over [Time.Span.t] (float seconds),
+     not Async_kernel's ns-precision one -- the same shadowing [run_broadcaster]
+     already converts around for [after], so the conversion is applied the
+     same way rather than introduced as a new idiom. *)
+  match%map
+    with_timeout (Time_ns.Span.to_span_float_round_nearest extension_body_timeout) counted
+  with
+  | `Result answer -> answer
+  | `Timeout ->
+      don't_wait_for (Pipe.drain pipe);
+      `Timeout
+
 let start ?(port = 8080) (t : t) =
   (* Recorded here rather than passed to [create], because the port is the
      caller's decision at listen time and /api/ops must report the one actually
@@ -1426,14 +1487,37 @@ let start ?(port = 8080) (t : t) =
            eprintf "ohcamel/server: %s\n%!" (Exn.to_string exn)))
     (Tcp.Where_to_listen.of_port port)
     (fun ~body _address request ->
-      let%bind body = Cohttp_async.Body.to_string body in
-      dispatch t
-        {
-          Request.meth = Cohttp.Request.meth request;
-          path = Uri.path (Cohttp.Request.uri request);
-          headers = Cohttp.Request.headers request;
-          body;
-        })
+      let path = Uri.path (Cohttp.Request.uri request) in
+      let headers = Cohttp.Request.headers request in
+      let meth = Cohttp.Request.meth request in
+      match lookup path with
+      | Some _ ->
+          (* A built-in never consults the body -- every one of them is a GET
+             whose method is ignored, and that was true before this task and
+             stays true -- so the request is dispatched at once, with the
+             empty body every built-in already expected. What the client sent
+             is drained without being waited on, so the socket is left ready
+             for the connection's next request rather than holding bytes no
+             route here was ever going to read. *)
+          don't_wait_for (Cohttp_async.Body.drain body);
+          dispatch t { Request.meth; path; headers; body = "" }
+      (* Only an extension or the 404 reaches here, and both are the one place
+         this process reads a client-supplied body at all -- so this is the
+         one place it has to be bounded, in size and in time, against a
+         public host. *)
+      | None -> (
+          if body_too_large headers then
+            respond_json ~status:`Request_entity_too_large t
+              {|{"error":"body exceeds the 64 KiB limit"}|}
+          else
+            match%bind read_bounded_body body with
+            | `Body body -> dispatch t { Request.meth; path; headers; body }
+            | `Too_large ->
+                respond_json ~status:`Request_entity_too_large t
+                  {|{"error":"body exceeds the 64 KiB limit"}|}
+            | `Timeout ->
+                respond_json ~status:`Request_timeout t
+                  {|{"error":"body did not finish arriving within 10s"}|}))
 
 let frames_sent (t : t) = t.frames_sent
 let subscriber_count (t : t) = List.length t.subscribers

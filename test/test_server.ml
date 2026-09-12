@@ -2217,6 +2217,31 @@ let test_notify_asks_for_a_frame () =
       Alcotest.(check bool) "one pending after notify" true (Server.pending_frame server))
     ()
 
+(* [body_too_large] decides only what Content-Length alone can prove before a
+   byte is read: a value already over the limit. A missing header and one
+   that is not a number are both left [false] -- not "small", "undecided" --
+   because those two cases are exactly what the counting read in
+   [read_bounded_body] exists to settle from what actually arrives, and this
+   function is not asked to duplicate that. So the only real boundary this
+   proves is 64 KiB itself: equal to the limit is fine, one byte over is not. *)
+let test_body_too_large () =
+  let headers kv = Cohttp.Header.of_list kv in
+  Alcotest.(check bool)
+    "no header: undecided here, so false" false
+    (Server.body_too_large (headers []));
+  Alcotest.(check bool)
+    "100 bytes is well under the limit" false
+    (Server.body_too_large (headers [ ("Content-Length", "100") ]));
+  Alcotest.(check bool)
+    "65536 is exactly 64 KiB, not over it" false
+    (Server.body_too_large (headers [ ("Content-Length", "65536") ]));
+  Alcotest.(check bool)
+    "65537 is one byte over" true
+    (Server.body_too_large (headers [ ("Content-Length", "65537") ]));
+  Alcotest.(check bool)
+    "a non-number header: undecided here, so false" false
+    (Server.body_too_large (headers [ ("Content-Length", "banana") ]))
+
 let suite =
   ( "server",
     [
@@ -2278,4 +2303,6 @@ let suite =
       Alcotest.test_case "frame_extra rides on every frame, after alerts" `Quick
         test_frame_extra_rides_on_every_frame_after_alerts;
       Alcotest.test_case "notify asks for a frame" `Quick test_notify_asks_for_a_frame;
+      Alcotest.test_case "body_too_large decides only what Content-Length proves" `Quick
+        test_body_too_large;
     ] )
