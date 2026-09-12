@@ -26,18 +26,31 @@
    shared state. That number is worth printing and is labelled as what it is.
    This one is the named node bodies of ONE graph, because Graph.fork does not
    inherit the on_compute hook -- which is what makes "26 of 53 ran this frame"
-   a statement about the book rather than about the process. *)
+   a statement about the book rather than about the process.
+
+   WHY A CHANGED TABLE TOO. A body that ran is not a value that changed: a
+   cutoff can hold a recomputed value equal to the old one, and then nothing
+   downstream runs because of it. The drawing shows those two apart -- gold for
+   a change, a ghost for a cutoff that held -- so the log keeps the frame's
+   changed names beside its ran counts. A set, not a count: Incremental reports
+   a change at most once per stabilization, and a frame that spans several
+   only needs to know whether it moved. *)
 
 open Core
 
 type t = {
-  (* Cleared by [drain]. What ran since the last frame was emitted. *)
   frame : int String.Table.t;
-  (* Never cleared. What has ever run, for [distinct], [total] and [hottest]. *)
   lifetime : int String.Table.t;
+  (* Cleared by [drain_changed]. The names whose value changed since the last frame. *)
+  changed : unit String.Table.t;
 }
 
-let create () = { frame = String.Table.create (); lifetime = String.Table.create () }
+let create () =
+  {
+    frame = String.Table.create ();
+    lifetime = String.Table.create ();
+    changed = String.Table.create ();
+  }
 
 (* Called from inside a node body, once per recomputation. Two hashtable
    increments and nothing else: no formatting, no allocation of a list, no
@@ -58,6 +71,14 @@ let drain (t : t) : (string * int) list =
   in
   Hashtbl.clear t.frame;
   entries
+
+(* Called from an on_update handler, inside stabilization. Total, like [note]. *)
+let note_change (t : t) (name : string) : unit = Hashtbl.set t.changed ~key:name ~data:()
+
+let drain_changed (t : t) : string list =
+  let names = Hashtbl.keys t.changed |> List.sort ~compare:String.compare in
+  Hashtbl.clear t.changed;
+  names
 
 let distinct (t : t) : int = Hashtbl.length t.lifetime
 

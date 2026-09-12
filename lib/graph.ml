@@ -607,8 +607,9 @@ let find_var (vars : 'a Inc.Var.t Symbol.Map.t) (symbol : Symbol.t) ~(what : str
    Construction
    ------------------------------------------------------------------------- *)
 
-let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zero)
-    ?(equity_history_limit = 10_000) ?(staleness_threshold = Time.Span.of_sec 90.0)
+let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
+    ?(starting_cash = Notional.zero) ?(equity_history_limit = 10_000)
+    ?(staleness_threshold = Time.Span.of_sec 90.0)
     ?(ewma_lambda = Vol_estimators.Ewma.default_lambda)
     ?(covariance_for_attribution = Covariance_estimator.Equal_weighted)
     ?(options : Options.Position.t list = []) ?(rate = 0.04)
@@ -733,6 +734,24 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
         List.iter !change_listeners ~f:(fun listener -> listener ()));
     o
   in
+  (* The second diagnostic hook, and the one a drawing needs to show a
+     cutoff. [on_compute] says a body RAN. This says a value CHANGED, after its
+     cutoff had its say: Incremental's own on_update [Changed]. A node that ran
+     and did not change is a node whose cutoff held, and nothing downstream of
+     it ran on its account.
+
+     Registered only when a hook is given. An on_update handler costs little,
+     but the forks stress.ml builds, the scaling probe's graphs and every test
+     graph have no use for one, so they pay nothing. Like [on_compute], it runs
+     inside stabilization and must only record. *)
+  let watch_change (type a) (name : string) (node : a Inc.t) : unit =
+    match on_value_change with
+    | None -> ()
+    | Some f ->
+        Inc.on_update node ~f:(function
+          | Inc.Update.Changed _ -> f name
+          | Inc.Update.Necessary _ | Inc.Update.Invalidated | Inc.Update.Unnecessary -> ())
+  in
   (* Input cells carry a value-equality cutoff, so re-sending an unchanged value
      costs nothing downstream. This matters more than it looks: a real feed
      republishes the same last-trade price constantly, and under the default
@@ -747,6 +766,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
        node. Var.watch returns the same node every time, so this is done once
        here rather than at every read site. *)
     Inc.append_user_info_graphviz watch ~label:[ name ] ~attrs:String.Map.empty;
+    watch_change name watch;
     v
   in
   (* Name a derived node on the node. The same string the body passes to
@@ -757,6 +777,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      call site and the second, differently-typed node would not compile. *)
   let named (type a) (name : string) (node : a Inc.t) : a Inc.t =
     Inc.append_user_info_graphviz node ~label:[ name ] ~attrs:String.Map.empty;
+    watch_change name node;
     node
   in
   let cutoff ~equal node =
