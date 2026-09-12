@@ -213,8 +213,10 @@
   /* A label an edge crosses stays legible because the text is drawn over a
      stroke of the ground colour, so a line behind a name breaks around it;
      idle labels only, because under the dark-mode glow on a lit name the
-     halo's outline would draw in gold. */
-  .ohcamel-graph g.node:not(.lit):not(.cut) text.name, .ohcamel-graph g.node text.val { paint-order: stroke; stroke: var(--ground); stroke-width: 3.5px; stroke-linejoin: round; }
+     halo's outline would draw in gold. A node that is present and not wired
+     in has a label an edge can cross too. */
+  .ohcamel-graph g.node:not(.lit):not(.cut) text.name, .ohcamel-graph g.node text.val,
+  .ohcamel-graph g.absent text.name, .ohcamel-graph g.absent text.val { paint-order: stroke; stroke: var(--ground); stroke-width: 3.5px; stroke-linejoin: round; }
   .ohcamel-graph line.rule { stroke: var(--rule); stroke-width: .75; }
   .ohcamel-graph path.edge, .ohcamel-graph path.reads { stroke: var(--rule); stroke-width: .75; fill: none; }
   .ohcamel-graph path.edge.up { stroke: var(--ink); }
