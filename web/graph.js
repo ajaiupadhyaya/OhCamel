@@ -319,6 +319,13 @@
       if (!st.svg) return;
       st.L.drawn.forEach(function (n) { var g = nodeGroup(n.name); if (g) writeVal(g, n); });
     }
+    // Folded through the alias, a band here lights (and, below, is marked
+    // changed or cut) the moment any one member is in the set passed in --
+    // a change anywhere in a family is a change the reader should see.
+    // applyStale, further down, asks the opposite question of the same
+    // members and answers it the other way: a band dims only when every
+    // member is stale, because a claim that a family is stale must hold for
+    // all of it.
     function drawnSet(names) { var s = new Set(); names.forEach(function (m) { var a = st.L.alias[m]; if (a) s.add(a); }); return s; }
     function applyLit() {
       if (!st.svg) return;
@@ -328,7 +335,7 @@
       if (r0 === Infinity) r0 = 1;
       // rank 0 is a cell; the first thing a frame RUNS is rank 1 at the earliest
       r0 = Math.max(0, r0 - 1);
-      Array.prototype.forEach.call(st.svg.querySelectorAll("g.node, path.edge, rect.cell"), function (e) { e.classList.remove("lit", "cut", "pulse", "origin"); });
+      Array.prototype.forEach.call(st.svg.querySelectorAll("g.node, path.edge, rect.cell"), function (e) { e.classList.remove("lit", "cut", "pulse"); });
       void st.svg.getBoundingClientRect(); // restart the fade for anything lit on consecutive frames
       var cut = 0;
       Array.prototype.forEach.call(st.svg.querySelectorAll("g.node"), function (g) {
@@ -349,7 +356,6 @@
       });
       if (st.origins) drawnSet(st.origins).forEach(function (m) {
         var g = nodeGroup(m); if (!g) return;
-        g.classList.add("origin");
         var cell = g.querySelector("rect.cell"); if (cell) cell.classList.add("pulse");
       });
       if (st.cap) st.cap.querySelector(".cap-title").textContent = captionText();
@@ -357,7 +363,7 @@
     // Session heat: an edge's weight and ink grow with how often its target
     // has run, base (from the process) plus what this page has watched.
     function runsOf(name) {
-      var n = st.L && st.L.drawn.filter(function (d) { return d.name === name; })[0];
+      var n = st.L && st.L.drawnBy && st.L.drawnBy[name];
       if (n && n.band) { var s = 0; n.members.forEach(function (m) { s += (st.base[m] || 0) + (st.runs[m] || 0); }); return s; }
       return (st.base[name] || 0) + (st.runs[name] || 0);
     }
@@ -479,7 +485,9 @@
         c.lines.forEach(function (s, i) { var sp = svgEl("tspan", { x: c.x, dy: i ? 13 : 0 }); sp.textContent = s; t.appendChild(sp); });
         svg.appendChild(t);
       });
-      var drawnBy = {}; L.drawn.forEach(function (n) { drawnBy[n.name] = n; });
+      // Built once per draw, and kept on L for runsOf to read by name instead
+      // of scanning L.drawn per edge, per frame.
+      var drawnBy = L.drawnBy = {}; L.drawn.forEach(function (n) { drawnBy[n.name] = n; });
       L.edges.forEach(function (e) {
         var a = L.pos[e[0]], b = L.pos[e[1]]; if (!a || !b) return;
         svg.appendChild(svgEl("path", { d: edgePath(a, b, drawnBy[e[0]], drawnBy[e[1]], L), "data-from": e[0], "data-to": e[1] }, "edge"));
@@ -559,6 +567,7 @@
         right.appendChild(el("span", "cap-prov", "LIVE · THIS HOST"));
         var pb = el("button", "poster-btn", st.poster ? "close ✕" : "poster ⤢");
         pb.type = "button";
+        pb.setAttribute("aria-pressed", st.poster ? "true" : "false");
         pb.addEventListener("click", function () { togglePoster(); });
         right.appendChild(pb);
         st.cap.appendChild(right);
@@ -611,13 +620,20 @@
     }
     function setValues(byNode) { st.values = byNode || {}; if (!st.dead) applyValues(); }
     function setNote(name, t) { st.notes[name] = t; if (!st.dead) applyValues(); }
-    function destroy() { st.dead = true; st.hover = null; container.textContent = ""; container.classList.remove("ohcamel-graph"); st.svg = null; st.cap = null; st.insp = null; }
+    function destroy() {
+      // A poster this handle opened outlives the handle otherwise: it is
+      // fixed on the whole page, not inside container, so clearing container
+      // below would leave it stuck open with no button left to close it.
+      if (st.poster) togglePoster(false);
+      if (escHandler) { document.removeEventListener("keydown", escHandler); escHandler = null; }
+      st.dead = true; st.hover = null; container.textContent = ""; container.classList.remove("ohcamel-graph"); st.svg = null; st.cap = null; st.insp = null;
+    }
     draw();
     function heat(counts) { st.base = counts || {}; if (!st.dead) applyHeat(); }
     function legend() {
       var box = el("div", "graph-legend");
       function sw(kind) {
-        var s = svgEl("svg", { width: 26, height: 12, viewBox: "0 0 26 12" }, "sw " + kind);
+        var s = svgEl("svg", { width: 26, height: 12, viewBox: "0 0 26 12", "aria-hidden": "true" }, "sw " + kind);
         if (kind === "cell") s.appendChild(svgEl("rect", { x: 8, y: 2, width: 8, height: 8 }, "cell"));
         else if (kind === "obs") s.appendChild(svgEl("circle", { cx: 13, cy: 6, r: 2.5 }, "obs"));
         else if (kind === "lit") s.appendChild(svgEl("line", { x1: 1, y1: 6, x2: 25, y2: 6 }, "lit"));
@@ -639,9 +655,24 @@
       st.poster = force === undefined ? !st.poster : force;
       fig.classList.toggle("poster", st.poster);
       document.documentElement.classList.toggle("poster-open", st.poster);
+      // A poster covers the page, so it is a dialog to anyone not reading it
+      // by eye -- the three attributes exist only while it does.
+      if (st.poster) { fig.setAttribute("role", "dialog"); fig.setAttribute("aria-modal", "true"); fig.setAttribute("aria-label", "Figure 1, full screen"); }
+      else { fig.removeAttribute("role"); fig.removeAttribute("aria-modal"); fig.removeAttribute("aria-label"); }
       draw(); applyValues();
+      // draw() just rebuilt the caption, button included, so the element a
+      // click or Escape started from no longer exists -- find its
+      // replacement and keep the keyboard there, open or closed.
+      var btn = st.cap ? st.cap.querySelector(".poster-btn") : null;
+      if (btn) btn.focus();
     }
-    document.addEventListener("keydown", function (e) { if (e.key === "Escape" && st.poster) togglePoster(false); });
+    // Escape only ever has a poster to close where a poster can open, and
+    // destroy() above must be able to find this same listener to remove it.
+    var escHandler = null;
+    if (inspector) {
+      escHandler = function (e) { if (e.key === "Escape" && st.poster) togglePoster(false); };
+      document.addEventListener("keydown", escHandler);
+    }
     return { light: light, dim: dim, setValues: setValues, setNote: setNote, heat: heat, destroy: destroy, redraw: draw, poster: togglePoster };
   }
 

@@ -210,6 +210,11 @@
   .ohcamel-graph text { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; fill: var(--ink); }
   .ohcamel-graph text.head { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; fill: var(--ink-faint); }
   .ohcamel-graph text.val { font-size: 8.5px; fill: var(--ink-soft); font-variant-numeric: tabular-nums; }
+  /* A label an edge crosses stays legible because the text is drawn over a
+     stroke of the ground colour, so a line behind a name breaks around it;
+     idle labels only, because under the dark-mode glow on a lit name the
+     halo's outline would draw in gold. */
+  .ohcamel-graph g.node:not(.lit):not(.cut) text.name, .ohcamel-graph g.node text.val { paint-order: stroke; stroke: var(--ground); stroke-width: 3.5px; stroke-linejoin: round; }
   .ohcamel-graph line.rule { stroke: var(--rule); stroke-width: .75; }
   .ohcamel-graph path.edge, .ohcamel-graph path.reads { stroke: var(--rule); stroke-width: .75; fill: none; }
   .ohcamel-graph path.edge.up { stroke: var(--ink); }
@@ -256,6 +261,13 @@
     .ohcamel-graph g.node.lit text.name { fill: var(--mark); }
     .ohcamel-graph g.node.lit line.rule { stroke: var(--mark); }
     .ohcamel-graph g.node.cut text.name { fill: var(--ink-faint); }
+    /* With no animation to carry them, a cut's dotted rule and edge (the dash
+       pattern is set outside this block and stands regardless) take the faint
+       ink instead of fading toward it, and a pulsed cell stays filled with
+       the mark instead of emptying back out -- every state above still shows,
+       just without the motion that otherwise carries it. */
+    .ohcamel-graph g.node.cut line.rule, .ohcamel-graph path.edge.cut { stroke: var(--ink-faint); }
+    .ohcamel-graph rect.cell.pulse { fill: var(--mark); stroke: var(--mark); }
   }
   /* The legend: what each mark on the drawing means, drawn with the marks. */
   .ohcamel-graph .graph-legend { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 10px 0 2px; font-size: 11px; color: var(--ink-soft); }
