@@ -1,0 +1,203 @@
+(* The journal: the one thing in this project that writes to disk.
+
+   What is checked is what persistence is FOR (spec §3.5): a record survives
+   the process, a date recorded twice is one record, an unknown stays unknown,
+   and a file this build does not understand is refused rather than guessed
+   at. The file-backed cases use a temp file and remove it and its WAL
+   siblings afterwards. *)
+
+open Core
+open Ohcamel.Types
+module Journal = Ohcamel_desk.Journal
+
+let date = Date.of_string
+let at = Time_ns.of_string_with_utc_offset "2026-09-11T20:05:00Z"
+
+let with_temp_path ~f =
+  let path = Stdlib.Filename.temp_file "ohcamel-journal-" ".db" in
+  let cleanup () =
+    List.iter
+      [ path; path ^ "-wal"; path ^ "-shm" ]
+      ~f:(fun p -> if Stdlib.Sys.file_exists p then Stdlib.Sys.remove p)
+  in
+  Exn.protect ~f:(fun () -> f path) ~finally:cleanup
+
+let open_exn path = Or_error.ok_exn (Journal.open_ ~path)
+
+let session ?(equity = 100_000.0) d =
+  {
+    Journal.Session.date = date d;
+    equity_close = equity;
+    cash_close = 40_000.0;
+    gross_close = 90_000.0;
+    net_close = 60_000.0;
+    recorded_at = at;
+  }
+
+let sessions_t =
+  Alcotest.testable
+    (fun ppf s -> Sexp.pp_hum ppf (Journal.Session.sexp_of_t s))
+    Journal.Session.equal
+
+let test_a_session_survives_a_restart () =
+  with_temp_path ~f:(fun path ->
+      let j = open_exn path in
+      List.iter [ "2026-09-09"; "2026-09-10"; "2026-09-11" ] ~f:(fun d ->
+          Journal.record_session j (session d));
+      Journal.close j;
+      let j = open_exn path in
+      Alcotest.(check (list sessions_t))
+        "the three sessions, as written"
+        [ session "2026-09-09"; session "2026-09-10"; session "2026-09-11" ]
+        (Journal.sessions j);
+      Journal.close j)
+
+let test_a_date_recorded_twice_is_one_session () =
+  let j = open_exn ":memory:" in
+  Journal.record_session j (session ~equity:100_000.0 "2026-09-11");
+  Journal.record_session j (session ~equity:101_000.0 "2026-09-11");
+  Alcotest.(check (list sessions_t))
+    "the second write replaced the first"
+    [ session ~equity:101_000.0 "2026-09-11" ]
+    (Journal.sessions j)
+
+let test_sessions_come_back_in_date_order () =
+  let j = open_exn ":memory:" in
+  List.iter [ "2026-09-11"; "2026-09-09"; "2026-09-10" ] ~f:(fun d ->
+      Journal.record_session j (session d));
+  Alcotest.(check (list string))
+    "ascending"
+    [ "2026-09-09"; "2026-09-10"; "2026-09-11" ]
+    (List.map (Journal.sessions j) ~f:(fun s -> Date.to_string s.Journal.Session.date))
+
+let test_an_unknown_forecast_stays_unknown () =
+  let j = open_exn ":memory:" in
+  let known =
+    {
+      Journal.Forecast.date = date "2026-09-11";
+      estimator = "historical";
+      confidence = 0.95;
+      var_fraction = Some 0.0123;
+      var_notional = Some 1_107.0;
+      es_notional = Some 1_530.5;
+    }
+  in
+  let warming =
+    {
+      known with
+      estimator = "ewma";
+      var_fraction = None;
+      var_notional = None;
+      es_notional = None;
+    }
+  in
+  Journal.record_forecasts j [ known; warming ];
+  let back = Journal.forecasts j in
+  Alcotest.(check (list string))
+    "ordered by estimator within a date" [ "ewma"; "historical" ]
+    (List.map back ~f:(fun f -> f.Journal.Forecast.estimator));
+  let ewma = List.hd_exn back and historical = List.nth_exn back 1 in
+  Alcotest.(check (option (float 0.0)))
+    "a warming-up estimator reads None, not 0.0" None ewma.Journal.Forecast.var_fraction;
+  Alcotest.(check (option (float 1e-12)))
+    "a known fraction round-trips" (Some 0.0123) historical.Journal.Forecast.var_fraction;
+  Alcotest.(check (option (float 1e-9)))
+    "and its notional" (Some 1_107.0) historical.Journal.Forecast.var_notional
+
+let test_marks_round_trip_in_symbol_order () =
+  let j = open_exn ":memory:" in
+  let mark s close qty =
+    { Journal.Mark.date = date "2026-09-11"; symbol = Symbol.of_string s; close; qty }
+  in
+  Journal.record_marks j [ mark "XOM" 101.25 (-500.0); mark "AAPL" 227.5 400.0 ];
+  Alcotest.(check (list string))
+    "AAPL before XOM"
+    [ "AAPL 227.5 400"; "XOM 101.25 -500" ]
+    (List.map
+       (Journal.marks j (date "2026-09-11"))
+       ~f:(fun m ->
+         sprintf "%s %s %s"
+           (Symbol.to_string m.Journal.Mark.symbol)
+           (Float.to_string_hum ~strip_zero:true m.Journal.Mark.close)
+           (Float.to_string_hum ~strip_zero:true m.Journal.Mark.qty)));
+  Alcotest.(check int)
+    "another date holds nothing" 0
+    (List.length (Journal.marks j (date "2026-09-10")))
+
+let test_the_version_counts_writes_and_a_transaction_is_one () =
+  let j = open_exn ":memory:" in
+  Alcotest.(check int) "a fresh journal" 0 (Journal.version j);
+  Journal.record_session j (session "2026-09-11");
+  Alcotest.(check int) "one session" 1 (Journal.version j);
+  Journal.record_marks j
+    (List.map [ "A"; "B"; "C" ] ~f:(fun s ->
+         {
+           Journal.Mark.date = date "2026-09-11";
+           symbol = Symbol.of_string s;
+           close = 1.0;
+           qty = 1.0;
+         }));
+  Alcotest.(check int)
+    "three marks in one transaction are one write" 2 (Journal.version j);
+  Journal.record_alert j
+    {
+      Journal.Alert.at;
+      kind = "raised";
+      limit_name = "tech-cap";
+      line = "tech-cap breached";
+    };
+  Alcotest.(check int) "an alert" 3 (Journal.version j)
+
+let test_a_file_from_a_newer_build_is_refused () =
+  with_temp_path ~f:(fun path ->
+      (* Written with the raw binding, as a future build would have left it. *)
+      let db = Sqlite3.db_open path in
+      ignore
+        (Sqlite3.exec db "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+          : Sqlite3.Rc.t);
+      ignore
+        (Sqlite3.exec db "INSERT INTO meta VALUES ('schema_version', '2')" : Sqlite3.Rc.t);
+      ignore (Sqlite3.db_close db : bool);
+      match Journal.open_ ~path with
+      | Ok _ ->
+          Alcotest.fail "a journal at schema version 2 was opened by a build that knows 1"
+      | Error e ->
+          Alcotest.(check bool)
+            "the error names both versions" true
+            (String.is_substring (Error.to_string_hum e) ~substring:"schema version 2"
+            && String.is_substring (Error.to_string_hum e) ~substring:"version 1"))
+
+let test_rfc3339_round_trips_to_the_nanosecond () =
+  let t = Time_ns.of_string_with_utc_offset "2026-09-11T20:05:00.123456789Z" in
+  let s = Ohcamel_desk.Desk_time.rfc3339 t in
+  Alcotest.(check string) "a T, not a space" "2026-09-11T20:05:00.123456789Z" s;
+  Alcotest.(check bool)
+    "parses back to the same instant" true
+    (Option.equal Time_ns.equal (Some t) (Ohcamel_desk.Desk_time.parse s));
+  (* 16:00 at -04:00 is 20:00Z on the same date; the date Alpaca means is the
+     exchange's, which is the prefix. *)
+  Alcotest.(check (option string))
+    "the exchange-local date" (Some "2026-09-11")
+    (Option.map ~f:Date.to_string
+       (Ohcamel_desk.Desk_time.local_date "2026-09-11T16:00:00-04:00"))
+
+let suite =
+  ( "journal",
+    [
+      Alcotest.test_case "a session survives a restart" `Quick
+        test_a_session_survives_a_restart;
+      Alcotest.test_case "a date recorded twice is one session" `Quick
+        test_a_date_recorded_twice_is_one_session;
+      Alcotest.test_case "sessions come back in date order" `Quick
+        test_sessions_come_back_in_date_order;
+      Alcotest.test_case "an unknown forecast stays unknown" `Quick
+        test_an_unknown_forecast_stays_unknown;
+      Alcotest.test_case "marks round-trip in symbol order" `Quick
+        test_marks_round_trip_in_symbol_order;
+      Alcotest.test_case "the version counts writes, and a transaction is one" `Quick
+        test_the_version_counts_writes_and_a_transaction_is_one;
+      Alcotest.test_case "a file from a newer build is refused" `Quick
+        test_a_file_from_a_newer_build_is_refused;
+      Alcotest.test_case "RFC 3339 round-trips to the nanosecond" `Quick
+        test_rfc3339_round_trips_to_the_nanosecond;
+    ] )
