@@ -2405,6 +2405,19 @@ let mark_equity (t : t) : unit =
        (Inc.Var.value t.equity_history_var)
        now ~limit:t.equity_history_limit)
 
+(* The recorded equity marks, set wholesale.
+
+   For restoring what a restart would otherwise lose. The desk's journal keeps
+   one equity close per session, and this writes them back into the cell
+   [mark_equity] appends to, so a drawdown after a restart is measured from the
+   same peak as before it. Trimmed from the old end to the same limit
+   [mark_equity] keeps. An input setter like the others: it writes a cell and
+   computes nothing. *)
+let set_equity_history (t : t) (history : float array) : unit =
+  let len = Array.length history in
+  let keep = Int.min len t.equity_history_limit in
+  Inc.Var.set t.equity_history_var (Array.sub history ~pos:(len - keep) ~len:keep)
+
 (* -------------------------------------------------------------------------
    Outputs
 
