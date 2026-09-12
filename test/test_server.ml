@@ -1010,6 +1010,7 @@ let test_the_404_lists_exactly_the_routes () =
       "/api/history";
       "/api/stress";
       "/api/graph";
+      "/api/heat";
       "/api/reports";
       "/api/reports/garch";
       "/api/ops";
@@ -1781,9 +1782,9 @@ let test_api_graph () =
                 | _ -> []))
       | _ -> Alcotest.fail "outside");
       Alcotest.(check (list string))
-        "the route sits before the two report routes and /api/ops"
-        [ "/api/graph"; "/api/reports"; "/api/reports/garch"; "/api/ops" ]
-        (List.drop (Server.route_paths ()) (List.length (Server.route_paths ()) - 4));
+        "the route sits before /api/heat, the two report routes and /api/ops"
+        [ "/api/graph"; "/api/heat"; "/api/reports"; "/api/reports/garch"; "/api/ops" ]
+        (List.drop (Server.route_paths ()) (List.length (Server.route_paths ()) - 5));
       (* The exact objects at every level, the rest of the counts and limits,
          and the whole body against the topology the graph reports now: the
          memo is that topology, encoded, and nothing else. *)
@@ -2134,6 +2135,43 @@ let test_a_frame_carries_what_changed_and_a_poll_does_not () =
         (List.mem changed "exposure:XOM" ~equal:String.equal))
     ()
 
+(* The heat the drawing starts from is the log's lifetime table, served as it
+   stands -- the same table a frame's drain never clears -- and a server with
+   no log says null rather than an empty object that reads as "nothing ran". *)
+let test_heat_is_the_lifetime_table () =
+  let log = Ohcamel.Recompute_log.create () in
+  with_graph
+    ~on_compute:(Ohcamel.Recompute_log.note log)
+    ~f:(fun graph ->
+      let server =
+        Server.create ~recompute_log:log ~mode:`Demo ~graph ~factor:"SYNTHETIC" ()
+      in
+      Graph.set_price graph aapl (Price.of_float 151.0);
+      Graph.stabilize graph;
+      ignore (Server.next_frame server : string);
+      let status, _, body = respond server "/api/heat" in
+      Alcotest.(check int) "200" 200 status;
+      let nodes = field_exn (Yojson.Safe.from_string body) "nodes" in
+      let served =
+        match nodes with
+        | `Assoc kv -> List.map kv ~f:(fun (k, v) -> (k, Yojson.Safe.Util.to_int v))
+        | _ -> []
+      in
+      Alcotest.(check (list (pair string int)))
+        "exactly the lifetime table, drained frame or not"
+        (Ohcamel.Recompute_log.lifetime log)
+        served)
+    ()
+
+let test_heat_without_a_log_is_null () =
+  with_server
+    ~f:(fun server _ ->
+      let _, _, body = respond server "/api/heat" in
+      Alcotest.(check bool)
+        "nodes null" true
+        (Poly.equal (field_exn (Yojson.Safe.from_string body) "nodes") `Null))
+    ()
+
 let suite =
   ( "server",
     [
@@ -2190,4 +2228,8 @@ let suite =
         test_stress_shape;
       Alcotest.test_case "a frame carries what changed, and a poll does not" `Quick
         test_a_frame_carries_what_changed_and_a_poll_does_not;
+      Alcotest.test_case "/api/heat is the log's lifetime table" `Quick
+        test_heat_is_the_lifetime_table;
+      Alcotest.test_case "/api/heat is null with no recompute log" `Quick
+        test_heat_without_a_log_is_null;
     ] )

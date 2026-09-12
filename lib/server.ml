@@ -1248,6 +1248,28 @@ let routes : (string * string * handler) list =
       fun t ->
         Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
           t.graph_json );
+    (* Lifetime run counts, for the drawing's heat. The log's lifetime table,
+       which a frame's drain never clears, so a page opened after an hour
+       starts from the hour and not from nothing. A read of a table; nothing
+       here stabilizes. *)
+    ( "/api/heat",
+      "how often each named node has run since this process started, for the drawing's \
+       heat",
+      fun t ->
+        Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
+          (Yojson.Safe.to_string
+             (`Assoc
+                [
+                  ("started_at", jstring (Time_ns.to_string_utc t.started_at));
+                  ("stabilizes", `Int (Graph.total_stabilizes ()));
+                  ( "nodes",
+                    match t.recompute_log with
+                    | None -> `Null
+                    | Some log ->
+                        `Assoc
+                          (List.map (Recompute_log.lifetime log) ~f:(fun (k, n) ->
+                               (k, `Int n))) );
+                ])) );
     (* Computed before the socket bound, served as the string it was encoded
        to. Nothing here runs a probe or a backtest on request. *)
     ( "/api/reports",

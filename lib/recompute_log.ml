@@ -82,6 +82,16 @@ let drain_changed (t : t) : string list =
   Hashtbl.clear t.changed;
   names
 
+(* Every name ever noted, with its count -- the log's whole history, sorted by
+   name for the same reason [drain] is: this goes to /api/heat, and an
+   unsorted hashtable order would make two runs of the same process report the
+   wire in different byte order for no reason. Unlike [drain], nothing here
+   clears: the whole point of the route this feeds is that a tab opened an
+   hour into the process sees the hour, not the moment it connected. *)
+let lifetime (t : t) : (string * int) list =
+  Hashtbl.to_alist t.lifetime
+  |> List.sort ~compare:(fun (a, _) (b, _) -> String.compare a b)
+
 let distinct (t : t) : int = Hashtbl.length t.lifetime
 
 let total (t : t) : int =
