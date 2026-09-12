@@ -171,6 +171,83 @@ let test_a_recorded_date_rolls_nothing_twice () =
         "the window did not roll again" window (Graph.returns graph aapl);
       Alcotest.(check int) "nothing was written" version (Journal.version journal))
 
+(* The defect a review caught in this file's own first version: [record]
+   pushed returns and marked equity on the LIVE graph before writing the
+   journal. A write that then raised -- here, a trigger standing in for a
+   disk error or a locked file -- left the graph a day ahead of a journal that
+   still had no session row for that date, so [Journal.session] still
+   answered [None] and the retry that followed rolled the same day's return a
+   second time on top of the first. [record] now computes on a fork and
+   applies to the live graph only once every write has committed, so this
+   proves two things: a failed write leaves the graph exactly where it found
+   it, and a retry after the failure rolls the day exactly once -- checked by
+   running the same close on an untouched twin and comparing. *)
+let test_a_failed_write_leaves_the_graph_untouched_and_a_retry_rolls_once () =
+  with_book ~f:(fun a ja ->
+      with_book ~f:(fun b jb ->
+          let before = Graph.snapshot a in
+          ignore
+            (Sqlite3.exec ja.Journal.db
+               "CREATE TRIGGER fail_session BEFORE INSERT ON sessions BEGIN SELECT \
+                RAISE(ABORT, 'the test refuses this session'); END"
+              : Sqlite3.Rc.t);
+          (match record a ja with
+          | (_ : [ `Recorded | `Already_recorded ]) ->
+              Alcotest.fail "the trigger should have made the session write fail"
+          | exception Failure _ -> ()
+          | exception e -> Alcotest.failf "expected Failure, got %s" (Exn.to_string e));
+          let after = Graph.snapshot a in
+          Alcotest.(check (float 0.0))
+            "equity: untouched by the failed write"
+            (Notional.to_float (Graph.Snapshot.equity before))
+            (Notional.to_float (Graph.Snapshot.equity after));
+          Alcotest.(check (float 0.0))
+            "gross: untouched"
+            (Notional.to_float (Graph.Snapshot.gross_exposure before))
+            (Notional.to_float (Graph.Snapshot.gross_exposure after));
+          Alcotest.(check (option (float 0.0)))
+            "historical VaR: untouched"
+            (Graph.Snapshot.historical_var before)
+            (Graph.Snapshot.historical_var after);
+          Alcotest.(check (option (float 0.0)))
+            "parametric VaR: untouched"
+            (Graph.Snapshot.parametric_var before)
+            (Graph.Snapshot.parametric_var after);
+          Alcotest.(check (option (float 0.0)))
+            "EWMA VaR: untouched"
+            (Graph.Snapshot.parametric_var_ewma before)
+            (Graph.Snapshot.parametric_var_ewma after);
+          Alcotest.(check (float 0.0))
+            "drawdown: untouched"
+            (Graph.Snapshot.current_drawdown before)
+            (Graph.Snapshot.current_drawdown after);
+          Alcotest.(check (array (float 0.0)))
+            "the window did not roll on the failed attempt" (Graph.returns a aapl)
+            (Graph.returns b aapl);
+          ignore (Sqlite3.exec ja.Journal.db "DROP TRIGGER fail_session" : Sqlite3.Rc.t);
+          Alcotest.(check bool)
+            "recorded on retry" true
+            (Poly.equal (record a ja) `Recorded);
+          Alcotest.(check bool)
+            "recorded once on the untouched twin" true
+            (Poly.equal (record b jb) `Recorded);
+          let sa = Graph.snapshot a and sb = Graph.snapshot b in
+          Alcotest.(check (array (float 0.0)))
+            "A's window rolled exactly once, matching B's single roll"
+            (Graph.returns b aapl) (Graph.returns a aapl);
+          Alcotest.(check (float 1e-9))
+            "A's equity == B's"
+            (Notional.to_float (Graph.Snapshot.equity sb))
+            (Notional.to_float (Graph.Snapshot.equity sa));
+          Alcotest.(check (option (float 1e-9)))
+            "A's historical VaR == B's, not a window rolled twice"
+            (Graph.Snapshot.historical_var sb)
+            (Graph.Snapshot.historical_var sa);
+          Alcotest.(check (option (float 1e-9)))
+            "A's parametric VaR == B's"
+            (Graph.Snapshot.parametric_var sb)
+            (Graph.Snapshot.parametric_var sa)))
+
 let test_drawdown_survives_a_restart () =
   with_book ~f:(fun graph journal ->
       List.iter
@@ -215,6 +292,9 @@ let suite =
         test_the_close_rolls_then_marks_then_records;
       Alcotest.test_case "a recorded date rolls nothing twice" `Quick
         test_a_recorded_date_rolls_nothing_twice;
+      Alcotest.test_case
+        "a failed write leaves the graph untouched, and a retry rolls once" `Quick
+        test_a_failed_write_leaves_the_graph_untouched_and_a_retry_rolls_once;
       Alcotest.test_case "drawdown survives a restart" `Quick
         test_drawdown_survives_a_restart;
     ] )

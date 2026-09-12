@@ -101,26 +101,48 @@ let marks ~(date : Date.t) (s : Graph.Snapshot.t) : Journal.Mark.t list =
         qty = Qty.to_float (Map.find_exn (Graph.Snapshot.quantities s) symbol);
       })
 
+(* The journal is the record, and the live graph must never be ahead of it.
+   Roll and mark a FORK, not the live graph -- the fork shares the same code,
+   so what it computes is exactly what the live graph would have computed --
+   and write the journal from what the fork saw. Only once every write has
+   committed does the live graph get the same returns and the same mark.
+
+   A write can raise (a disk error, a locked file). Before this, that raised
+   AFTER the live graph had already rolled: Journal.session for the date still
+   answered None, so whatever retried the close rolled the same day's return a
+   second time on top of the first, with nothing in the journal to show even
+   the first roll had happened. Computing on a fork means a raise here leaves
+   the live graph exactly where it found it -- still one roll behind, same as
+   the journal -- so a retry after a failed write records the session, and
+   rolls its windows, exactly once. *)
 let record ~(graph : Graph.t) ~(journal : Journal.t) ~(date : Date.t)
     ~(returns : (Symbol.t * float) list) ~(mark_equity : bool) ~(confidence : float)
     ~(recorded_at : Time_ns.t) =
   match Journal.session journal date with
   | Some _ -> `Already_recorded
   | None ->
-      List.iter returns ~f:(fun (symbol, r) -> Graph.push_return graph symbol r);
-      if mark_equity then Graph.mark_equity graph;
-      let s = Graph.snapshot graph in
-      Journal.record_marks journal (marks ~date s);
-      Journal.record_forecasts journal (forecasts ~date ~confidence s);
-      Journal.record_session journal
-        {
-          Journal.Session.date;
-          equity_close = Notional.to_float (Graph.Snapshot.equity s);
-          cash_close = Notional.to_float (Graph.cash graph);
-          gross_close = Notional.to_float (Graph.Snapshot.gross_exposure s);
-          net_close = Notional.to_float (Graph.Snapshot.net_exposure s);
-          recorded_at;
-        };
+      let apply (g : Graph.t) =
+        List.iter returns ~f:(fun (symbol, r) -> Graph.push_return g symbol r);
+        if mark_equity then Graph.mark_equity g
+      in
+      let fork = Graph.fork graph in
+      Exn.protect
+        ~finally:(fun () -> Graph.destroy fork)
+        ~f:(fun () ->
+          apply fork;
+          let s = Graph.snapshot fork in
+          Journal.record_marks journal (marks ~date s);
+          Journal.record_forecasts journal (forecasts ~date ~confidence s);
+          Journal.record_session journal
+            {
+              Journal.Session.date;
+              equity_close = Notional.to_float (Graph.Snapshot.equity s);
+              cash_close = Notional.to_float (Graph.cash fork);
+              gross_close = Notional.to_float (Graph.Snapshot.gross_exposure s);
+              net_close = Notional.to_float (Graph.Snapshot.net_exposure s);
+              recorded_at;
+            });
+      apply graph;
       `Recorded
 
 let restore ~(graph : Graph.t) ~(journal : Journal.t) : int =
@@ -170,22 +192,54 @@ let run_forever ~(read : Venue.Read.t) ~(graph : Graph.t) ~(journal : Journal.t)
           | Ok r -> (r, sprintf "%d windows rolled" (List.length r))
           | Error why -> ([], "windows NOT rolled: " ^ why)
         in
-        (match
-           Or_error.try_with (fun () ->
-               record ~graph ~journal ~date ~returns ~mark_equity:true ~confidence
-                 ~recorded_at:(Time_ns.now ()))
-         with
-        | Ok `Recorded ->
-            on_event (sprintf "session %s recorded, %s" (Date.to_string date) how)
-        | Ok `Already_recorded ->
-            on_event (sprintf "session %s was already recorded" (Date.to_string date))
-        | Error e ->
-            on_event
-              (sprintf "session %s: the record FAILED: %s" (Date.to_string date)
-                 (Error.to_string_hum e)));
-        (* Past this close before the clock is asked again, so its answer is the
-           next session's close and not this one's. *)
+        record_until_journaled date returns how
+  (* A write failing here (Session_close.record's own comment: the journal is
+     the record) leaves the live graph untouched, so the safe thing to do is
+     exactly what the journal is still waiting for: try the same close again.
+     There is no attempt cap, unlike the bar retry above -- a transient disk
+     error should not cost a session -- but there is a reason to stop: once
+     the venue says a LATER session's close is due, this date has been
+     unrecorded long enough that holding onto it is chasing a session nobody
+     is still trading, so it is logged lost and the loop moves on to the one
+     the venue is now asking about. *)
+  and record_until_journaled date returns how =
+    match
+      Or_error.try_with (fun () ->
+          record ~graph ~journal ~date ~returns ~mark_equity:true ~confidence
+            ~recorded_at:(Time_ns.now ()))
+    with
+    | Ok `Recorded ->
+        on_event (sprintf "session %s recorded, %s" (Date.to_string date) how);
+        (* Past this close before the clock is asked again, so its answer is
+           the next session's close and not this one's. *)
         let%bind () = Clock_ns.after (Time_ns.Span.of_min 1.0) in
         wait_for_close ()
+    | Ok `Already_recorded ->
+        on_event (sprintf "session %s was already recorded" (Date.to_string date));
+        let%bind () = Clock_ns.after (Time_ns.Span.of_min 1.0) in
+        wait_for_close ()
+    | Error e -> (
+        on_event
+          (sprintf
+             "session %s: the record FAILED (%s); the live graph was not touched, \
+              retrying in 10 min"
+             (Date.to_string date) (Error.to_string_hum e));
+        let%bind () = Clock_ns.after retry_every in
+        match%bind read.Venue.Read.clock () with
+        | Error e ->
+            on_event
+              (sprintf
+                 "session close: the venue's clock is unavailable (%s); retrying %s's \
+                  record anyway"
+                 (Error.to_string_hum e) (Date.to_string date));
+            record_until_journaled date returns how
+        | Ok clock when Date.( > ) clock.Venue.Session_clock.next_close_date date ->
+            on_event
+              (sprintf
+                 "session %s: never recorded, and %s's close is now due; giving up on it"
+                 (Date.to_string date)
+                 (Date.to_string clock.Venue.Session_clock.next_close_date));
+            wait_for_close ()
+        | Ok _ -> record_until_journaled date returns how)
   in
   wait_for_close ()
