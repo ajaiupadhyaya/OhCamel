@@ -38,9 +38,9 @@ let limits =
 let returns = [| -0.05; -0.04; -0.03; -0.02; -0.01; 0.01; 0.02; 0.03; 0.04; 0.05 |]
 
 (* AAPL 150 x 200 = +30,000 ; XOM 100 x -400 = -40,000. gross 70,000. *)
-let with_graph ?(seed = true) ?on_compute ~f () =
+let with_graph ?(seed = true) ?on_compute ?on_value_change ~f () =
   let graph =
-    Graph.create ?on_compute ~starting_cash:(Notional.of_float 100_000.0)
+    Graph.create ?on_compute ?on_value_change ~starting_cash:(Notional.of_float 100_000.0)
       ~instruments:book ~limits ~confidence:0.95 ~return_window:10 ()
   in
   if seed then (
@@ -1178,6 +1178,18 @@ let names_of (json : Yojson.Safe.t) : string list =
           | _ -> Alcotest.fail "name is not a string")
   | other -> Alcotest.failf "recomputed is not a list: %s" (Yojson.Safe.to_string other)
 
+(* [names_of]'s sibling for a field that is a plain list of strings rather
+   than a list of {name, n} objects -- [changed] is a set of names with no
+   count beside them, so there is nothing here to unwrap a second field
+   from. *)
+let strings_of (json : Yojson.Safe.t) : string list =
+  match json with
+  | `List entries ->
+      List.map entries ~f:(function
+        | `String s -> s
+        | other -> Alcotest.failf "not a string: %s" (Yojson.Safe.to_string other))
+  | other -> Alcotest.failf "changed is not a list: %s" (Yojson.Safe.to_string other)
+
 (* A poller cannot steal the stream's set.
 
    /api/snapshot renders, and rendering stabilizes; if it also drained the
@@ -2089,6 +2101,38 @@ let test_stress_shape () =
           | _ -> Alcotest.failf "%s: cleared_breaches is not a list" name))
     ()
 
+(* The frame's changed set: what moved, drained with what ran, and never
+   stolen by a poll. With the price of AAPL moved from 150 to 151 the cell
+   changed and so did the exposure it feeds (151 x 200 = 30,200, was 30,000). *)
+let test_a_frame_carries_what_changed_and_a_poll_does_not () =
+  let log = Ohcamel.Recompute_log.create () in
+  with_graph
+    ~on_compute:(Ohcamel.Recompute_log.note log)
+    ~on_value_change:(Ohcamel.Recompute_log.note_change log)
+    ~f:(fun graph ->
+      let server =
+        Server.create ~recompute_log:log ~mode:`Demo ~graph ~factor:"SYNTHETIC" ()
+      in
+      ignore (Server.next_frame server : string);
+      Graph.set_price graph aapl (Price.of_float 151.0);
+      Graph.stabilize graph;
+      let poll = Yojson.Safe.from_string (Server.render server) in
+      Alcotest.(check bool)
+        "a poll says null" true
+        (Poly.equal (field_exn poll "changed") `Null);
+      let frame = Yojson.Safe.from_string (Server.next_frame server) in
+      let changed = strings_of (field_exn frame "changed") in
+      Alcotest.(check bool)
+        "price[AAPL] changed" true
+        (List.mem changed "price[AAPL]" ~equal:String.equal);
+      Alcotest.(check bool)
+        "exposure:AAPL changed" true
+        (List.mem changed "exposure:AAPL" ~equal:String.equal);
+      Alcotest.(check bool)
+        "XOM's exposure did not" false
+        (List.mem changed "exposure:XOM" ~equal:String.equal))
+    ()
+
 let suite =
   ( "server",
     [
@@ -2143,4 +2187,6 @@ let suite =
       Alcotest.test_case "/api/graph is the topology, memoised" `Quick test_api_graph;
       Alcotest.test_case "/api/stress in the new shape, hand-derived" `Quick
         test_stress_shape;
+      Alcotest.test_case "a frame carries what changed, and a poll does not" `Quick
+        test_a_frame_carries_what_changed_and_a_poll_does_not;
     ] )
