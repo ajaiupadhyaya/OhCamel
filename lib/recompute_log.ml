@@ -39,7 +39,9 @@
 open Core
 
 type t = {
+  (* Cleared by [drain]. What ran since the last frame was emitted. *)
   frame : int String.Table.t;
+  (* Never cleared. What has ever run, for [distinct], [total] and [hottest]. *)
   lifetime : int String.Table.t;
   (* Cleared by [drain_changed]. The names whose value changed since the last frame. *)
   changed : unit String.Table.t;
