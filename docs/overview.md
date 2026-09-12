@@ -1,0 +1,242 @@
+# OhCamel, in brief
+
+*Written 2026-09-12. The [README](../README.md) argues the design at length,
+[`quant_notes.md`](quant_notes.md) writes out the math, and
+[`status.md`](status.md) is the operator's inventory. This is the short
+version: what the project is, what it can do, and where its edges are, for
+someone deciding whether to read the rest.*
+
+---
+
+## What it is
+
+OhCamel is a real-time risk and limits engine written in OCaml. You give it a
+book (positions, cash and a set of limits) and a market data feed. It gives
+back the numbers a risk desk watches: exposure by instrument and sector, VaR
+and expected shortfall, beta to a macro factor, drawdown, and which limits are
+breached. The numbers stay current as prices move.
+
+The unusual part is *how* they stay current. Most systems like this poll: a
+timer fires and the whole book is recomputed. OhCamel treats risk as a
+dependency graph, built on Jane Street's
+[Incremental](https://github.com/janestreet/incremental) library. A price tick
+updates one input, and only what depends on that input is recomputed. A tick
+reaches about 25 nodes whether the book holds 10 names or 400. At 400 names
+that is about half a millisecond per update, against 53 ms to recompute
+everything (`make bench`, M2 Pro).
+
+On top of the headline numbers it answers the three questions a risk number
+invites. **Where is the risk?** An exact Euler decomposition across names and
+sectors. **Is the VaR any good?** A battery of statistical coverage tests,
+run on real crisis data as well as generated data. **What would break the
+book?** A scenario suite that runs on a copy of the live graph.
+
+It computes and reports. It never trades.
+
+## Is the data real?
+
+The prices are real. The portfolio is not.
+
+| Input | Source | Real? |
+|---|---|---|
+| Stock prices (live host) | Alpaca's market-data websocket on the IEX feed, with a REST backfill for history | Yes |
+| Macro factor | FRED: the daily change in the 10-year Treasury yield (`DGS10`) | Yes |
+| Crisis backtests | Adjusted daily closes from Yahoo Finance, committed under [`crisis/`](crisis/) | Yes |
+| Positions | [`book.example.sexp`](../book.example.sexp): long AAPL, MSFT, NVDA and JPM, short XOM and CVX, $1M cash | No. It is an example book |
+| Public demo | A generated feed, so it runs with no keys and outside market hours | No, on purpose |
+| Options | A generated volatility surface, labelled synthetic wherever it prints | No, and switched off in live mode |
+
+Checked on 2026-09-12: the live host's last session delivered 80,679 trades
+from Alpaca with none rejected and no reconnects, and the ticks stopped at the
+4 pm close. IEX is a single exchange with a small share of US volume, so a
+mark is the last IEX print rather than the consolidated tape.
+
+Positions come from a file by design: Alpaca supplies the marks, and the book
+file says what is held. Reading positions from a brokerage account is the
+first item under *Next* in [`status.md`](status.md).
+
+## What it computes
+
+| Area | What you get | Code |
+|---|---|---|
+| Exposure | Per-instrument and per-sector exposure, gross and net, weights, equity, drawdown from peak | [`graph.ml`](../lib/graph.ml) |
+| Risk measures | Historical VaR and expected shortfall at 95%; parametric VaR from an equal-weighted *and* an EWMA (λ = 0.94) covariance, side by side; portfolio beta to the macro factor | [`risk_metrics.ml`](../lib/risk_metrics.ml), [`vol_estimators.ml`](../lib/vol_estimators.ml) |
+| Attribution | Marginal, component and standalone risk per name and sector. Contributions are signed, so a hedge shows negative, and component VaRs sum exactly to portfolio VaR. Also a diversification ratio and a residual check | [`attribution.ml`](../lib/attribution.ml) |
+| Validation | Kupiec, Christoffersen independence, conditional coverage, a Weibull duration test, the Basel traffic light and a 21-session burst count, all over rolling point-in-time forecasts | [`var_backtest.ml`](../lib/var_backtest.ml), [`validation_report.ml`](../lib/validation_report.ml) |
+| Scenarios | Six standard shocks run on a fork of the live graph, reporting P&L and which limits each one breaks | [`stress.ml`](../lib/stress.ml) |
+| Options | Black-Scholes European pricing with delta, gamma, vega and theta; delta folded into exposure; vega broken out by tenor | [`options.ml`](../lib/options.ml), [`options_walk.ml`](../lib/options_walk.ml) |
+| Limits and alerts | Breaches computed as data; edge-triggered alerts; a kill-switch flag | [`limits.ml`](../lib/limits.ml), [`alerts.ml`](../lib/alerts.ml) |
+| Staleness | Last tick per symbol. A stale name is flagged, along with everything computed from it | [`graph.ml`](../lib/graph.ml) |
+
+A few of these deserve more than a table row.
+
+**Limits** are written in the book file at instrument, sector or portfolio
+scope, and there are four kinds. *Gross notional* works at any scope. *VaR*
+and *max drawdown* are portfolio-only, because neither adds up across names.
+*Component VaR* caps a scope's share of total risk and works at any scope,
+because that share does add up. An impossible combination, such as a VaR
+limit on one stock, is rejected at startup. The engine also has a fifth kind,
+a cap on |gamma| or |vega|, which the options book uses. It can't be written
+in a book file yet.
+
+**Alerts and the kill switch.** Alerting is off unless the book turns it on.
+When on, an alert fires once when a limit is crossed and clears only after the
+value falls back below a set fraction of the limit, so a number resting on the
+line doesn't flap. Sinks are the log, a file, a dry run that prints the
+payload, or Slack. The kill switch is a separate setting. It trips on limits
+you name and sets `halt_new_orders = true`, and nothing else happens. There is
+no order code anywhere in the repository for it to stop, and that is
+intentional.
+
+**Scenarios.** The standard suite:
+
+| Scenario | Shock |
+|---|---|
+| `broad-selloff` | Everything down 10% |
+| `crash` | Everything down 20% |
+| `melt-up` | Everything up 15%, because the short leg loses in a rally |
+| `vol-regime` | Prices unchanged, volatility doubled |
+| `panic` | Everything down 12%, volatility tripled |
+| `rate-shock` | The 10-year yield up 100 bp, passed through each name's own beta |
+
+Custom scenarios combine five shock kinds: every name, one name, one sector,
+the macro factor, and volatility. Each scenario runs on `Graph.fork`, a copy of
+the engine with the shocks written into its inputs. That means there is no
+second copy of the exposure or limit arithmetic to drift, and a test checks
+that the live book is untouched afterwards.
+
+**Validation on real crises.** The same battery runs over the 2008 financial
+crisis (631 sessions), the COVID crash (400) and the 2022 rate shock (401),
+with three estimators on each. The joint coverage test rejects none of the
+nine. The duration test rejects two, both in COVID, and in 2020 the parametric
+model breached ten times in one 21-session stretch. A single passing test is
+not reassurance, which is why the battery reports four tests and a burst
+count rather than one verdict.
+
+**GARCH, measured and left out.** GARCH(1,1) is implemented and tested but not
+used. On the engine's 60-day window its persistence comes back 0.556 ± 0.364
+against a true 0.98, which is biased as well as noisy. It becomes defensible at
+around 250 observations. `make garch` reproduces the measurement.
+
+**Options.** The Greeks are tested against Hull's textbook values and
+put-call parity. Gamma and vega are reported separately from exposure, because
+convexity doesn't fold into a dollar number. Vega is also split by time to
+expiry, so a calendar spread no longer reads as flat. Theta needed a second
+clock: a valuation date that moves only when told to, kept apart from the
+staleness clock. Options are European only, with one flat rate, no dividends,
+no implied-vol solve and no strike buckets, and they are off on the live host
+because there is no options-chain source.
+
+## Running it
+
+It's one binary, and the mode is its first argument. Each mode has a `make`
+target, and every target enters the project-local opam switch itself
+(`make deps` installs it the first time).
+
+| `make` | Keys? | What you see |
+|---|---|---|
+| `demo` | No | The web page at `localhost:8080` on a generated feed, which is what the public site runs. One name ticks every 400 ms, CVX never ticks so it goes stale, and one limit is rigged to breach at startup |
+| `run` | No | In the terminal: 60 events over a generated book, a breach and recovery, the risk decomposition and the recompute-count table. Then it exits |
+| `stress` | No | The scenario suite |
+| `backtest` | No | The coverage battery on three generated return series |
+| `backtest-crisis` | No | The same battery on the three real crisis windows |
+| `options` | No | The options book, its Greeks, the tenor buckets and the two clocks |
+| `garch` | No | The measurement behind leaving GARCH out, in about 5 seconds |
+| `serve` | Alpaca + FRED | Real prices, with the web page on `localhost:8080` |
+| `run-live` | Alpaca + FRED | Real prices, in the terminal |
+
+Also: `make test`, `make coverage`, `make bench` (local only), `make fmt` and
+`make doctor`. The live modes read `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` and
+`FRED_API_KEY` from the environment and refuse to start without them, rather
+than falling back to generated data. Positions come from `book.sexp`: copy the
+example and edit it. A free Alpaca account allows one data stream at a time.
+
+## The page and the API
+
+`/` is one page compiled into the binary, with no external assets. Figure 1 at
+the top is the dependency graph, drawn from Incremental's own node table, and
+each update lights the nodes it recomputed. Below the ledger of positions and
+limits are nine sections that follow the README's argument. Their tables are
+computed by the running process and checked cell by cell against the numbers
+the README quotes, so the deployed Linux host reproduces results written on a
+Mac. `/ops` shows which build is running, its uptime, and how much the graph
+has recomputed.
+
+| Route | What it returns |
+|---|---|
+| `/api/snapshot` | The whole book as JSON, including the recompute counter |
+| `/api/health` | Feed liveness per symbol |
+| `/api/stream` | Server-sent events, sent only when the graph actually changes |
+| `/api/history` | The last 500 changes, in memory only |
+| `/api/stress` | The scenario suite, run on forks of the current book |
+| `/api/graph` | The graph's topology |
+| `/api/reports` | The backtest, options and scaling reports, computed at startup |
+| `/api/reports/garch` | The GARCH study, computed in parallel after startup |
+| `/api/ops` | What `/ops` shows, as JSON |
+
+No route changes anything.
+
+## Where it runs
+
+- **Public demo:** [ohcamel.ajaiupadhyaya.com](https://ohcamel.ajaiupadhyaya.com),
+  on the generated feed and always on.
+- **Live host:** `live.ohcamel.ajaiupadhyaya.com`, the same image on Alpaca and
+  FRED, behind a password.
+- **Infrastructure:** one DigitalOcean droplet (2 vCPU, 4 GB, $24/month), Docker
+  Compose, and Caddy for TLS. Last deployed 2026-09-10 from `36fc84f`.
+- **Deploy check:** a smoke suite runs after every deploy, and a failure fails
+  the deploy. The checks that matter are that the recompute counter *advances*
+  between two reads and that the stream delivers frames spread over 20 seconds.
+  A frozen graph would still serve valid JSON.
+
+## How it's checked
+
+- **309 tests**, all hermetic: no network, no credentials, no waiting on a
+  clock. Expected values are derived by hand beside each assertion, and the
+  suite checks its own count against [`verified.ml`](../lib/verified.ml).
+- **Property tests** (QCheck) cover the identities over random inputs: Euler
+  additivity, component VaR summing to the total, a hedge reducing variance,
+  fork isolation, and no lookahead in the backtest.
+- **Architecture tests** pin how many nodes a tick recomputes, and fail if the
+  staleness clock ever feeds a risk number. That test is the guard against the
+  engine quietly becoming a poller.
+- **82.2% coverage** (measured 2026-09-10). The pure numeric core is above 90%
+  and the network edges are lower, because the tests never touch a network.
+- **CI on Ubuntu and macOS** for every push: the build, the tests, a formatting
+  check, every credential-free mode run end to end, and the README's quoted
+  tables reproduced on both platforms.
+
+## What it doesn't do
+
+- **No trading.** Nothing places, cancels or simulates an order, and the kill
+  switch is a flag wired to nothing.
+- **No persistence.** State lives in the running process, and a restart starts
+  from the book file and the feed.
+- **Static positions.** Positions are a file; only prices are live.
+- **One of each source:** one broker (Alpaca, IEX feed), one macro source
+  (FRED) and one macro factor.
+- **Limited options:** European only, and off in live mode.
+- **Not a strategy platform.** The backtests validate the risk model, not a
+  trading idea, and nothing is optimised.
+- **One server,** with no replica.
+
+## Built with
+
+OCaml 5.2.1; Jane Street's Core, Async and Incremental; Owl over BLAS and LAPACK
+for the linear algebra; cohttp-async, websocket-async and async_ssl for HTTP and
+the Alpaca stream; yojson; Alcotest and QCheck; bisect_ppx; core_bench. The
+front end is hand-written JavaScript and inline SVG with no libraries. It is
+deployed with Docker, Caddy and DigitalOcean.
+
+As of 2026-09-12 that comes to about 10,800 lines of OCaml in `lib/`, 1,500 in
+`bin/`, 11,300 in `test/`, and 3,000 lines of JavaScript, HTML and CSS in
+`web/`.
+
+## Reading further
+
+- [README](../README.md): the full argument, with the tables and the reasoning
+  behind each design choice.
+- [`quant_notes.md`](quant_notes.md): every formula, and the function that
+  computes it.
+- [`status.md`](status.md): where it runs, how to operate it, and what's next.
+- [`brief.md`](brief.md): the original brief the project was built from.

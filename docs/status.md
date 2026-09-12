@@ -9,6 +9,8 @@ states: every formula in standard notation, cross-referenced to the function
 that evaluates it. This file does neither. It is an inventory — what exists,
 where it runs, how to drive it, what it will not do, and what comes next — kept
 short enough to read in ten minutes and dated so its staleness is visible.
+[`overview.md`](overview.md) is the short summary of what the project is and
+can do.
 
 ---
 

@@ -23,7 +23,9 @@ across their line.
 The math is written out once, densely and in standard notation, in
 [`docs/quant_notes.md`](docs/quant_notes.md) — every formula cross-referenced to
 the function that evaluates it, so a claim here can be checked against the code
-without reading OCaml. This README argues; that document states.
+without reading OCaml. This README argues; that document states. A short
+summary of what it does, without the argument, is
+[`docs/overview.md`](docs/overview.md).
 
 ![The dashboard, driven by the synthetic feed](docs/media/dashboard.png)
 
