@@ -783,8 +783,9 @@ let render ?recomputed ?changed (t : t) : string =
   | other -> Yojson.Safe.to_string other
 
 (* The frame the broadcaster sends: the snapshot, then the drain. With no log
-   -- a server over a graph that was given no hook -- the three keys stay
-   [null] on every frame, which is "this process is not counting" and is
+   -- a server over a graph that was given no hook -- the four keys
+   [recomputed], [changed], [stabilizes_delta] and [nodes_recomputed_delta]
+   stay [null] on every frame, which is "this process is not counting" and is
    different from [] , "nothing ran". *)
 let next_frame (t : t) : string =
   match t.recompute_log with
@@ -847,7 +848,7 @@ let rec run_broadcaster (t : t) =
   let%bind () = after (Time_ns.Span.to_span_float_round_nearest t.coalesce) in
   let%bind () =
     if List.is_empty t.subscribers then (
-      (* Nobody to send to, but the window still closes: the set is dropped
+      (* Nobody to send to, but the window still closes: the sets are dropped
          and the counters advanced, so a subscriber arriving after an hour of
          quiet gets a welcome frame and then frames about what happens NEXT,
          not one frame carrying an hour of history. No snapshot is taken --
