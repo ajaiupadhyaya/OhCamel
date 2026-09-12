@@ -44,6 +44,10 @@
   ; the rest of the system rather than bridging two concurrency runtimes.
   (websocket-async
    (>= 2.17))
+  ; The desk's journal (desk/journal.ml): one file, one writer, which is the
+  ; case SQLite exists for. Needs the system library (conf-sqlite3).
+  (sqlite3
+   (>= 5.4.0))
   ; TLS for wss:// and for FRED over https. Not a free choice: conduit-async
   ; carries async_ssl as its only TLS depopt, so tls-async (pure OCaml) would
   ; not be picked up by cohttp-async. Needs system libffi and OpenSSL.

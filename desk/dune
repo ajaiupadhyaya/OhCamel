@@ -1,0 +1,14 @@
+; The desk: everything the risk kernel refuses to be.
+;
+; This library depends on ohcamel, and nothing in lib/ may depend on it. dune
+; enforces the direction -- naming ohcamel_desk in lib/dune would be a cycle
+; and the build would refuse it -- and CI greps lib/ for the trading host, the
+; orders path and Sqlite3, because a cycle catches a dependency and not a
+; pasted string. That boundary is invariant 6 now: the kernel cannot place an
+; order because it cannot name anything that does.
+
+(library
+ (name ohcamel_desk)
+ (libraries ohcamel core async cohttp cohttp-async uri sqlite3 yojson)
+ (preprocess
+  (pps ppx_jane)))

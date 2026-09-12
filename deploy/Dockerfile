@@ -30,6 +30,7 @@ USER root
 #   libgmp-dev, m4                   zarith, under mirage-crypto-rng
 #   libev-dev                        conf-libev, pulled transitively by the
 #                                    websocket stack on some resolutions
+#   libsqlite3-dev                   sqlite3 (conf-sqlite3) -- the desk's journal
 #   pkg-config                       how conf-* packages find any of the above
 RUN apt-get update && apt-get install -y --no-install-recommends \
       pkg-config \
@@ -40,6 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libffi-dev \
       libgmp-dev \
       libev-dev \
+      libsqlite3-dev \
       zlib1g-dev \
  && rm -rf /var/lib/apt/lists/*
 
@@ -97,6 +99,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libffi8 \
       libgmp10 \
       libev4 \
+      libsqlite3-0 \
       zlib1g \
       ca-certificates \
       curl \

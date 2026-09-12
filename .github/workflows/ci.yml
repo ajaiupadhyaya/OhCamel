@@ -95,6 +95,22 @@ jobs:
               ;;
           esac
 
+      # Invariant 6, as a grep. dune refuses lib/ depending on the desk
+      # library, because that would be a cycle; it does not refuse a pasted
+      # string. The risk kernel may not name the trading host, the orders
+      # path, the journal's database binding or the desk library, and grep's
+      # exit code is trusted only for its two documented outcomes -- 0 found,
+      # 1 not found -- because 2 means the check never ran.
+      - name: The risk kernel names nothing that trades
+        if: runner.os == 'Linux'
+        run: |
+          matches=$(grep -rnE 'paper-api\.alpaca\.markets|/v2/orders|Sqlite3|ohcamel_desk' lib) && status=0 || status=$?
+          case "$status" in
+            0) echo "$matches"; echo "lib/ names something that trades; it belongs in desk/."; exit 1 ;;
+            1) echo "lib/ names nothing that trades" ;;
+            *) echo "grep failed (exit $status) -- the check did not run"; exit 1 ;;
+          esac
+
       # Owl links against OpenBLAS. The Makefile's OWL_CFLAGS/OWL_LDLIBS
       # workarounds are deliberately NOT exported on Linux: they exist because
       # Apple clang segfaults compiling Owl's C stubs above -O1, which is a
@@ -104,11 +120,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libopenblas-dev liblapacke-dev \
-                                  libffi-dev libssl-dev
+                                  libffi-dev libssl-dev libsqlite3-dev
 
       - name: System dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install pkg-config openblas libomp
+        run: brew install pkg-config openblas libomp sqlite
 
       # Written into GITHUB_ENV rather than the job's `env:` block because
       # these must apply to exactly one leg of the matrix, and `env:` has no
@@ -175,7 +191,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libopenblas-dev liblapacke-dev \
-                                  libffi-dev libssl-dev
+                                  libffi-dev libssl-dev libsqlite3-dev
 
       - uses: ocaml/setup-ocaml@v3
         with:
@@ -209,7 +225,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libopenblas-dev liblapacke-dev \
-                                  libffi-dev libssl-dev
+                                  libffi-dev libssl-dev libsqlite3-dev
 
       - uses: ocaml/setup-ocaml@v3
         with:

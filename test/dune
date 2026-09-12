@@ -5,4 +5,12 @@
  ; property-based suites in ONE runner. Two runners would mean two things to
  ; remember to run, and the one that gets forgotten is the one that fails.
  ; yojson: the reproducibility pins parse web/quoted.json (Quoted.json).
- (libraries ohcamel alcotest qcheck-core qcheck-alcotest yojson))
+ ; ohcamel_desk and sqlite3: the desk's suites, and the journal test that writes a file with a schema version this build refuses.
+ (libraries
+  ohcamel
+  ohcamel_desk
+  sqlite3
+  alcotest
+  qcheck-core
+  qcheck-alcotest
+  yojson))
