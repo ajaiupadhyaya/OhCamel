@@ -40,7 +40,7 @@ that is a design invariant rather than a missing feature.
 | Cost | $24/month, metered hourly, capped |
 | Proxy / TLS | Caddy, Let's Encrypt, HTTP→HTTPS 308, HSTS. Only Caddy has a host port; the engines are on an internal Docker network |
 | DNS | Porkbun. Two A records, `ohcamel` and `live.ohcamel`, on a domain whose apex is unrelated (the owner's portfolio site) |
-| Deployed | 2026-09-10, both hosts, from `36fc84f` (the page: the graph and the argument) — both origins report it as `build.git_sha` on `/api/ops` — verified by the production smoke suite: 21 passed, 0 failed. On the droplet (Linux, amd64) every computed table on the page agrees with the README written on macOS/arm64: battery 63/63 cells, crisis 72/72, GARCH 36/36, node counts 6/6. The reports take 1.3 s before listen; the GARCH study 20.6 s on the second domain, with the stream serving throughout. Previous deploy, and the rollback reference: `91424da` |
+| Deployed | 2026-09-12, both hosts, from `eb891eb` (phase W1: Figure 1 draws a frame's work rank by rank, a dotted rule where a cutoff held, edge weight from `/api/heat`'s run counts and rule weight from each node's cost class) — both origins report it as `build.git_sha` on `/api/ops` — verified by the production smoke suite: 21 passed, 0 failed, 0 skipped. The reports take 1.3 s before listen; the GARCH study 21.8 s on the second domain. Previous deploy, and the rollback reference: `36fc84f` (2026-09-10, when the page's computed tables were last checked against the README on the droplet) |
 
 Resource use at rest is small enough to be worth stating so nobody adds a
 bigger box for the wrong reason: the engine sits at about 41 MB and six percent
@@ -285,6 +285,7 @@ breaking one is a regression even if the tests pass.
 | After the roadmap | The Weibull duration test; GARCH(1,1) implemented and measured out; vega by tenor bucket |
 | 2026-08-31 | The server-side spec; the engine containerised behind the proxy it ships behind, verified against a local harness |
 | 2026-09-01 → 02 | Droplet provisioned, DNS, first production deploy. Two bugs found and fixed: a fresh clone has no `book.sexp` (gitignored), and `deploy.sh` sourced its env file into bash, which turned the `$$` in the bcrypt hash into process IDs. Smoke suite green. README gained *Watching it* |
+| 2026-09-12 | The desk design approved: paper trading around the risk kernel, in phases, with its spec and first backend phase on the `desk/a1-record` branch until they merge. Phase W1 deployed: Figure 1 draws a frame's work rank by rank, a dotted rule where a cutoff held, edge weight from lifetime run counts and rule weight from each node's cost class, with a legend and a poster mode |
 
 Plans and specs live under [`superpowers/`](superpowers/): the readable-front-door
 design (the README rewrite), the eight-phase roadmap (marked complete, with its three deviations
