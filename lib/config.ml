@@ -171,6 +171,51 @@ module Book = struct
     type t = { symbol : string; sector : string; qty : float } [@@deriving sexp]
   end
 
+  (* The desk's rules and the spread table its cost analysis compares against
+     (design §3.3, §3.7, §3.9). Configuration only: plain numbers the desk
+     library reads. Nothing here trades, and the defaults trade nothing --
+     [trading] is Disabled unless a book says otherwise, for the same reason
+     alerting is off unless a book says otherwise. *)
+  module Desk_spec = struct
+    type trading = Enabled | Disabled [@@deriving sexp, compare, equal]
+
+    type t = {
+      trading : trading; [@sexp.default Disabled]
+      max_order_notional : float; [@sexp.default 25_000.0]
+      max_adv_participation : float; [@sexp.default 0.01]
+      price_collar : float; [@sexp.default 0.05]
+      duplicate_window_s : float; [@sexp.default 10.0]
+      max_open_orders : int; [@sexp.default 20]
+      spread_bps_default : float; [@sexp.default 5.0]
+      spread_bps : (string * float) list; [@sexp.default []]
+    }
+    [@@deriving sexp, compare, equal]
+
+    let default = t_of_sexp (Sexp.List [])
+
+    let validate (t : t) : unit Or_error.t =
+      let fail field why value = Or_error.errorf "desk: %s %s, got %g" field why value in
+      if Float.( <= ) t.max_order_notional 0.0 then
+        fail "max_order_notional" "must be positive" t.max_order_notional
+      else if
+        not
+          (Float.( > ) t.max_adv_participation 0.0
+          && Float.( <= ) t.max_adv_participation 1.0)
+      then fail "max_adv_participation" "must be in (0, 1]" t.max_adv_participation
+      else if not (Float.( > ) t.price_collar 0.0 && Float.( < ) t.price_collar 1.0) then
+        fail "price_collar" "must be in (0, 1)" t.price_collar
+      else if Float.( < ) t.duplicate_window_s 0.0 then
+        fail "duplicate_window_s" "may not be negative" t.duplicate_window_s
+      else if t.max_open_orders < 1 then
+        fail "max_open_orders" "must be at least 1" (Float.of_int t.max_open_orders)
+      else if Float.( < ) t.spread_bps_default 0.0 then
+        fail "spread_bps_default" "may not be negative" t.spread_bps_default
+      else
+        match List.find t.spread_bps ~f:(fun (_, b) -> Float.( < ) b 0.0) with
+        | Some (symbol, b) -> fail ("spread_bps for " ^ symbol) "may not be negative" b
+        | None -> Ok ()
+  end
+
   module Limit_spec = struct
     (* Mirrors Types.Limit but in plain strings and floats, with round-trip sexp
        conversion. Types.Limit has sexp_of but no of_sexp (its Symbol and Sector
@@ -214,6 +259,10 @@ module Book = struct
        keeps doing nothing, which is the right default for the one part of this
        system that can act. *)
     alerts : Alerts.t; [@sexp.default Alerts.default] [@sexp_drop_default.sexp]
+    (* Optional, and absent means no trading -- see Desk_spec's comment above.
+       An existing book file keeps parsing and the desk it feeds keeps its
+       venue read-only. *)
+    desk : Desk_spec.t; [@sexp.default Desk_spec.default] [@sexp_drop_default.sexp]
   }
   [@@deriving sexp]
 
@@ -227,7 +276,10 @@ module Book = struct
   let limits (t : t) : Types.Limit.t list = List.map t.limits ~f:Limit_spec.to_limit
 
   let of_string (contents : string) : t Or_error.t =
-    Or_error.try_with (fun () -> t_of_sexp (Sexp.of_string contents))
+    let open Or_error.Let_syntax in
+    let%bind book = Or_error.try_with (fun () -> t_of_sexp (Sexp.of_string contents)) in
+    let%map () = Desk_spec.validate book.desk in
+    book
 
   let load (path : string) : t Or_error.t =
     Or_error.tag_arg

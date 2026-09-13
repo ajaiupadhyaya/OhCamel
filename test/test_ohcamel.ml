@@ -62,6 +62,7 @@ let suites =
     Test_alpaca_paper.suite;
     Test_book_sync.suite;
     Test_session_close.suite;
+    Test_desk.suite;
   ]
 
 (* The registry counts itself against lib/verified.ml.
