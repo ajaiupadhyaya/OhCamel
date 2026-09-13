@@ -1010,7 +1010,10 @@ numbers and a change in the output means a change in the engine.
 **The rest of this section needs API keys.** `make run-live` takes real Alpaca
 market data and the FRED factor series; `make serve` does the same with the
 dashboard on `http://localhost:8080`. Both read positions from `book.sexp` — copy
-[`book.example.sexp`](book.example.sexp) and edit it — and both expect
+[`book.example.sexp`](book.example.sexp) and edit it — unless the Alpaca key they
+run with is a paper key, one beginning `PK`; then the paper account's quantities
+and cash replace the file's every minute. Both write their journal to
+`OHCAMEL_JOURNAL`, by default `desk.db` in the working directory, and both expect
 `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` and `FRED_API_KEY` in the environment:
 
 ```
@@ -1286,12 +1289,13 @@ for that detail than here. OCaml 5.1.0 or newer is required; this switch is on
 
 There is no order routing and no execution — nothing here places, cancels or
 simulates a trade. Persistence is one journal, `desk/journal.ml`: a session's
-close, its marks and a VaR forecast per estimator, written to `/data/desk.db` on
-the live host and kept only in memory on the demo host, with the drawdown trail
-restored from it at startup. The book itself still rebuilds from `book.sexp` and
-the feed on every restart, except on the live host, where the desk resyncs its
-quantities and cash from the Alpaca paper account every minute. There is one
-broker, Alpaca, and one macro source, FRED.
+close, its marks and a VaR forecast per estimator. `run-live` and `serve` keep it
+in a file, `/data/desk.db` on the live host, and restore the drawdown trail from
+it at startup; the demo keeps it in memory, so it starts empty each run. The book
+itself still rebuilds from `book.sexp` and the feed on every restart; when
+`run-live` or `serve` runs with an Alpaca paper key, the desk then resyncs its
+quantities and cash from that account every minute. There is one broker, Alpaca,
+and one macro source, FRED.
 
 Nor is it a research platform. There is no strategy, no signal, no backtest of
 anything that could make money — `make backtest` validates the *risk model*, not

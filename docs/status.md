@@ -160,8 +160,12 @@ OCaml numerics library underneath the covariance math), and the
 
 Live modes read `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` and `FRED_API_KEY` from
 the environment and refuse to start without them. Positions come from
-`book.sexp`, which is gitignored; copy `book.example.sexp`. A free Alpaca
-account allows one concurrent market-data stream.
+`book.sexp`, which is gitignored; copy `book.example.sexp`. When the Alpaca key
+they run with is a paper key, one beginning `PK` (`ALPACA_TRADING_API_KEY` if
+that pair is set, else `ALPACA_API_KEY`), the account's quantities and cash
+replace the file's every minute. Their journal is written to `OHCAMEL_JOURNAL`,
+by default `desk.db` in the working directory, which is also gitignored. A free
+Alpaca account allows one concurrent market-data stream.
 
 ## The interface
 
@@ -267,14 +271,14 @@ breaking one is a regression even if the tests pass.
 ## What it is not, and known limits
 
 - No order routing, no execution, no simulated fills.
-- Persistence is one journal (`desk/journal.ml`, SQLite): each session's close, its marks and a VaR forecast per estimator, at `/data/desk.db` on the live host and in memory on the demo host; the drawdown trail restores from it at startup. Nothing else — the graph, the rest of the book — survives a restart.
+- Persistence is one journal (`desk/journal.ml`, SQLite): each session's close, its marks and a VaR forecast per estimator. `run-live` and `serve` keep it in a file (`/data/desk.db` on the live host) and restore the drawdown trail from it at startup; the demo's is in memory and starts empty each run. Nothing else — the graph, the rest of the book — survives a restart.
 - One broker (Alpaca, IEX feed on the free tier), one macro source (FRED, `DGS10` by default), one macro factor.
 - Not a research platform: no signals, no strategy, no backtest of anything that could make money. `make backtest` validates the *risk model*.
 - Nothing is optimised: the engine reports concentration and never suggests weights.
 - Options: European only, one flat rate, one vol per contract, no dividends, no implied-vol solve, vega not bucketed by strike, and off in live mode.
 - Volatility: equal-weighted or EWMA; GARCH is present but not wired in, for a measured reason.
 - Validation windows: three US equity episodes, scored at TODAY's six names held at constant weights — what this book would have done, not what the book of the day did.
-- Positions are a static file everywhere except the live host, where the desk reads the Alpaca paper account every minute for quantities and cash; the book file still declares the universe, the limits and the alerts, and names the account holds outside it show as unmanaged.
+- Positions are a static file unless `run-live` or `serve` runs with an Alpaca paper key, when the desk reads that account every minute for quantities and cash; the book file still declares the universe, the limits and the alerts, and names the account holds outside it show as unmanaged.
 - Single droplet, no replica, by design: a second copy of an in-memory graph is a second, differently aged truth.
 
 ## How it got here
@@ -287,7 +291,7 @@ breaking one is a regression even if the tests pass.
 | After the roadmap | The Weibull duration test; GARCH(1,1) implemented and measured out; vega by tenor bucket |
 | 2026-08-31 | The server-side spec; the engine containerised behind the proxy it ships behind, verified against a local harness |
 | 2026-09-01 → 02 | Droplet provisioned, DNS, first production deploy. Two bugs found and fixed: a fresh clone has no `book.sexp` (gitignored), and `deploy.sh` sourced its env file into bash, which turned the `$$` in the bcrypt hash into process IDs. Smoke suite green. README gained *Watching it* |
-| 2026-09-12 | The desk design approved: paper trading around the risk kernel, in phases, with its spec and first backend phase on the `desk/a1-record` branch until they merge. Phase W1 deployed: Figure 1 draws a frame's work rank by rank, a dotted rule where a cutoff held, edge weight from lifetime run counts and rule weight from each node's cost class, with a legend and a poster mode. Phase A1 landed on that branch: the desk library (`ohcamel_desk`, which the kernel cannot depend on), a SQLite journal recording each session's close, its marks and a VaR forecast per estimator, the live book's quantities and cash synced from the Alpaca paper account every minute, and the live return windows rolling at each session's close |
+| 2026-09-12 | The desk design approved: paper trading around the risk kernel, in phases, with its spec and first backend phase on the `desk/a1-record` branch until they merge. Phase W1 deployed: Figure 1 draws a frame's work rank by rank, a dotted rule where a cutoff held, edge weight from lifetime run counts and rule weight from each node's cost class, with a legend and a poster mode. Phase A1 landed on that branch: the desk library (`ohcamel_desk`, which the kernel cannot depend on), a SQLite journal recording each session's close, its marks and a VaR forecast per estimator, and, when `run-live` or `serve` runs with a paper key, the book's quantities and cash synced from the Alpaca paper account every minute and the return windows rolling at each session's close |
 
 Plans and specs live under [`superpowers/`](superpowers/): the readable-front-door
 design (the README rewrite), the eight-phase roadmap (marked complete, with its three deviations

@@ -51,11 +51,11 @@ from Alpaca with none rejected and no reconnects, and the ticks stopped at the
 4 pm close. IEX is a single exchange with a small share of US volume, so a
 mark is the last IEX print rather than the consolidated tape.
 
-Positions come from a file by design, except on the live host: there the desk
-reads the Alpaca paper account once a minute and treats its quantities and
-cash as the book's, while the file still declares the universe, the limits
-and the alerts. Elsewhere, Alpaca supplies only the marks and the file says
-what is held.
+Positions come from a file by design, unless `serve` or `run-live` runs with
+an Alpaca paper key: then the desk reads the paper account once a minute and
+treats its quantities and cash as the book's, while the file still declares
+the universe, the limits and the alerts. Otherwise, Alpaca supplies only the
+marks and the file says what is held.
 
 ## What it computes
 
@@ -150,8 +150,11 @@ target, and every target enters the project-local opam switch itself
 Also: `make test`, `make coverage`, `make bench` (local only), `make fmt` and
 `make doctor`. The live modes read `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` and
 `FRED_API_KEY` from the environment and refuse to start without them, rather
-than falling back to generated data. Positions come from `book.sexp`: copy the
-example and edit it. A free Alpaca account allows one data stream at a time.
+than falling back to generated data. Positions come from `book.sexp` (copy the
+example and edit it) unless the Alpaca key they run with is a paper key; then
+the account's quantities and cash replace the file's every minute. The live
+modes write their journal to `OHCAMEL_JOURNAL`, by default `desk.db` in the
+working directory. A free Alpaca account allows one data stream at a time.
 
 ## The page and the API
 
@@ -213,15 +216,16 @@ No route changes anything.
 
 - **No trading.** Nothing places, cancels or simulates an order, and the kill
   switch is a flag wired to nothing.
-- **One journal.** A SQLite journal (`desk/journal.ml`) records each session's
-  close, its marks and a VaR forecast per estimator, and the drawdown trail
-  restores from it at startup. It lives at `/data/desk.db` on the live host
-  and only in memory on the demo host; nothing else survives a restart.
-- **Positions.** Positions are a file, and only prices are live — except on
-  the live host, where the desk syncs quantities and cash from the Alpaca
-  paper account every minute; the book file still declares the universe, the
-  limits and the alerts, and anything the account holds outside it shows as
-  unmanaged.
+- **One journal.** A SQLite journal (`desk/journal.ml`) holds each session's
+  close, its marks and a VaR forecast per estimator. `serve` and `run-live`
+  keep it in a file (`/data/desk.db` on the live host) and restore the
+  drawdown trail from it at startup; the demo keeps it in memory, empty at
+  each start. Nothing else survives a restart.
+- **Positions.** Positions are a file, and only prices are live — unless
+  `serve` or `run-live` runs with an Alpaca paper key, when the desk syncs
+  quantities and cash from that account every minute; the book file still
+  declares the universe, the limits and the alerts, and anything the account
+  holds outside it shows as unmanaged.
 - **One of each source:** one broker (Alpaca, IEX feed), one macro source
   (FRED) and one macro factor.
 - **Limited options:** European only, and off in live mode.
