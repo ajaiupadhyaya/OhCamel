@@ -262,13 +262,16 @@
     .ohcamel-graph path.edge.lit { stroke-dasharray: none; stroke: var(--mark); }
     .ohcamel-graph g.node.lit text.name { fill: var(--mark); }
     .ohcamel-graph g.node.lit line.rule { stroke: var(--mark); }
-    .ohcamel-graph g.node.cut text.name { fill: var(--ink-faint); }
-    /* With no animation to carry them, a cut's dotted rule and edge (the dash
-       pattern is set outside this block and stands regardless) take the faint
-       ink instead of fading toward it, and a pulsed cell stays filled with
-       the mark instead of emptying back out -- every state above still shows,
-       just without the motion that otherwise carries it. */
-    .ohcamel-graph g.node.cut line.rule, .ohcamel-graph path.edge.cut { stroke: var(--ink-faint); }
+    /* A lit node holds the mark, because where its fade ends it looks like a
+       node that did not run. A cut is left where its animation ends --
+       graphghost returns the name to the ink, a band's name included, and
+       graphmark leaves the rule and the edge in the rule's colour with their
+       dots, which are set outside this block and stand regardless -- because
+       there it still differs from an idle node, and the legend draws it the
+       same way. A pulsed cell stays filled with the mark instead of emptying
+       back out. Every state above still shows, just without the motion that
+       otherwise carries it. */
+    .ohcamel-graph g.node.cut text.name { fill: var(--ink); }
     .ohcamel-graph rect.cell.pulse { fill: var(--mark); stroke: var(--mark); }
   }
   /* The legend: what each mark on the drawing means, drawn with the marks. */
@@ -278,7 +281,9 @@
   .ohcamel-graph svg.sw rect.cell { fill: none; stroke: var(--ink); stroke-width: 1; }
   .ohcamel-graph svg.sw circle.obs { fill: var(--ink); }
   .ohcamel-graph svg.sw line.lit { stroke: var(--mark); stroke-width: 1.6; }
-  .ohcamel-graph svg.sw line.cut { stroke: var(--mark); stroke-width: 1.2; stroke-dasharray: 1 3; }
+  /* A cut rule as its animation leaves it, which is also how reduced motion
+     draws it: dotted, in the rule's colour, at the cut's weight. */
+  .ohcamel-graph svg.sw line.cut { stroke: var(--rule); stroke-width: 1.6; stroke-dasharray: 1 2.5; }
   .ohcamel-graph svg.sw line.cold { stroke: var(--rule); stroke-width: .5; }
   .ohcamel-graph svg.sw line.hot { stroke: var(--ink-soft); stroke-width: 2; }
   .ohcamel-graph svg.sw line.c1 { stroke: var(--ink-soft); stroke-width: .75; }
@@ -288,7 +293,7 @@
      there is no font file to fetch, license or fail to load. */
   #graph > .lbl { font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif; font-size: 17px; letter-spacing: 0; text-transform: none; color: var(--ink); font-weight: 600; }
   #graph > .lbl i { font-weight: 400; color: var(--ink-soft); }
-  .ohcamel-graph figcaption.graph-cap .cap-title { font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif; font-size: 14px; color: var(--ink-soft); }
+  .ohcamel-graph figcaption.graph-cap .cap-title { font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif; font-size: 14px; color: var(--ink-soft); }
   .ohcamel-graph .cap-right { display: inline-flex; gap: 14px; align-items: baseline; }
   .ohcamel-graph .poster-btn { font: 10px ui-monospace, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-soft); background: none; border: 1px solid var(--rule); border-radius: 2px; padding: 3px 8px; cursor: pointer; }
   .ohcamel-graph .poster-btn:hover { color: var(--ink); border-color: var(--ink-soft); }

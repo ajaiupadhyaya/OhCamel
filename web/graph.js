@@ -62,9 +62,14 @@
   // The wave: a frame lights its nodes in rank order, STEP ms a rank, so a
   // tick is seen travelling from its cell to the limits.
   var STEP = 36;
-  // A node's rule weight is its cost class, from the topology.
-  var COST_W = { "O(1)": 0.75, "O(w)": 1.15, "O(n)": 1.15, "O(n·w)": 1.7, "O(w log w)": 1.7, "O(n²)": 2.4, "O(n²·w)": 3.4 };
-  var COST_ORDER = ["O(1)", "O(w)", "O(n)", "O(w log w)", "O(n·w)", "O(n²)", "O(n²·w)"];
+  // A node's rule weight is its cost class, from the topology: all nine of
+  // Node_name.cost_of's, since a class missing here drew at the O(1) weight.
+  // Classes in different variables do not order strictly; O(L) and O(h) sit
+  // by what they scan per run on the demo's book -- 9 limits beside 6 names,
+  // and an equity history level with n·w's 360 returns ninety minutes in,
+  // though it grows a mark every 15 s bar to 10,000 and its weight stays.
+  var COST_W = { "O(1)": 0.75, "O(w)": 1.15, "O(n)": 1.15, "O(L)": 1.15, "O(n·w)": 1.7, "O(w log w)": 1.7, "O(h)": 1.7, "O(n²)": 2.4, "O(n²·w)": 3.4 };
+  var COST_ORDER = ["O(1)", "O(w)", "O(n)", "O(L)", "O(w log w)", "O(n·w)", "O(h)", "O(n²)", "O(n²·w)"];
   function isFeed(n) { return n.name === "now" || n.name === "feed_health" || n.name.indexOf("feed:") === 0 || n.name.indexOf("last_tick[") === 0; }
   function stageOf(n) {
     if (n.family === "input") return "inputs";
@@ -337,16 +342,12 @@
       r0 = Math.max(0, r0 - 1);
       Array.prototype.forEach.call(st.svg.querySelectorAll("g.node, path.edge, rect.cell"), function (e) { e.classList.remove("lit", "cut", "pulse"); });
       void st.svg.getBoundingClientRect(); // restart the fade for anything lit on consecutive frames
-      var cut = 0;
       Array.prototype.forEach.call(st.svg.querySelectorAll("g.node"), function (g) {
         var name = g.getAttribute("data-name");
         if (!lit.has(name)) return;
         g.style.setProperty("--d", ((rankOf[name] - r0) * STEP) + "ms");
-        var c = changed && !changed.has(name);
-        if (c) cut++;
-        g.classList.add(c ? "cut" : "lit");
+        g.classList.add(changed && !changed.has(name) ? "cut" : "lit");
       });
-      st.cutCount = cut;
       Array.prototype.forEach.call(st.svg.querySelectorAll("path.edge"), function (p) {
         var to = p.getAttribute("data-to"), from = p.getAttribute("data-from");
         if (!lit.has(to)) return;
@@ -360,19 +361,29 @@
       });
       if (st.cap) st.cap.querySelector(".cap-title").textContent = captionText();
     }
-    // Session heat: an edge's weight and ink grow with how often its target
-    // has run, base (from the process) plus what this page has watched.
+    // Session heat: an edge's weight and ink grow with how often both its ends
+    // have run, base (from the process) plus what this page has watched. The
+    // lesser of the two counts, because a target runs on an edge's account
+    // only when the edge's source ran too: weighted by its target alone, every
+    // edge out of covariance drew hot, its targets running tick after tick
+    // while covariance runs once a bar. A cell is set and never run, so an
+    // edge out of one takes its target's count alone.
     function runsOf(name) {
       var n = st.L && st.L.drawnBy && st.L.drawnBy[name];
       if (n && n.band) { var s = 0; n.members.forEach(function (m) { s += (st.base[m] || 0) + (st.runs[m] || 0); }); return s; }
       return (st.base[name] || 0) + (st.runs[name] || 0);
+    }
+    function edgeRuns(p) {
+      var from = p.getAttribute("data-from"), to = runsOf(p.getAttribute("data-to"));
+      var src = st.L && st.L.drawnBy && st.L.drawnBy[from];
+      return src && src.family === "input" ? to : Math.min(runsOf(from), to);
     }
     function applyHeat() {
       // The main figure only: a fragment in the essay is not lit by frames,
       // and heat with no runs behind it would fade every edge to its floor.
       if (!st.svg || !inspector) return;
       var paths = st.svg.querySelectorAll("path.edge"), runs = [], max = 1;
-      Array.prototype.forEach.call(paths, function (p, i) { runs[i] = runsOf(p.getAttribute("data-to")); if (runs[i] > max) max = runs[i]; });
+      Array.prototype.forEach.call(paths, function (p, i) { runs[i] = edgeRuns(p); if (runs[i] > max) max = runs[i]; });
       Array.prototype.forEach.call(paths, function (p, i) {
         var h = Math.sqrt(runs[i] / max);
         p.style.strokeWidth = (0.45 + 1.25 * h).toFixed(2);
@@ -555,6 +566,12 @@
         });
         svg.appendChild(go);
       }
+      // Heat goes on before the drawing is in the document, so each path's
+      // first style is already its heat and the width transition has nothing
+      // to run from. Applied after, the measuring below had already styled
+      // every path at the stylesheet's .75, and every edge of a rebuild --
+      // most frames, folded -- grew to its heat over 0.6 s.
+      applyHeat();
       container.appendChild(svg);
       Array.prototype.forEach.call(svg.querySelectorAll("path.edge"), function (p) { p.style.setProperty("--len", Math.ceil(p.getTotalLength()) + "px"); });
       if (inspector) {
@@ -575,7 +592,7 @@
         container.appendChild(el("div", "graph-note", "nodes recomputed (footer) is Incremental's process-wide count and includes watch nodes, plumbing, every stress fork and the startup probe; the number above is named node bodies, from the hook the tests pin."));
         if (compact) container.appendChild(el("div", "graph-note", "per-symbol families are drawn as one band each (" + L.symbols.length + " names); the name a frame ticked opens its own row, and a frame without a tick folds it again"));
       }
-      applyHeat(); applyLit(); applyStale();
+      applyLit(); applyStale();
       if (st.hover) hover(L.pos[st.hover.name] ? st.hover : null);
     }
     function draw() {
@@ -606,6 +623,11 @@
         if (open === null && node && node.symbol && !isFeed(node)) open = node.symbol;
       });
       st.lit = lit; st.litCount = lit.length;
+      // Counted in names, from the server's two lists, as "ran" is. Counted
+      // from the drawing, five feed:S cutoffs in one clock frame folded into
+      // one band and the caption said 1.
+      var ch = new Set(st.changed || []);
+      st.cutCount = st.changed ? lit.filter(function (m) { return !ch.has(m); }).length : 0;
       if (compact && open !== st.open) { st.open = open; draw(); applyValues(); return; }
       if (!st.svg) { draw(); return; }
       applyHeat(); applyLit(); applyValues();
@@ -625,6 +647,9 @@
       // fixed on the whole page, not inside container, so clearing container
       // below would leave it stuck open with no button left to close it.
       if (st.poster) togglePoster(false);
+      // And whatever it made inert is released, even where togglePoster found
+      // no figure to close.
+      inertBehind(null);
       if (escHandler) { document.removeEventListener("keydown", escHandler); escHandler = null; }
       st.dead = true; st.hover = null; container.textContent = ""; container.classList.remove("ohcamel-graph"); st.svg = null; st.cap = null; st.insp = null;
     }
@@ -644,10 +669,24 @@
         return s;
       }
       [["cell", "an input cell"], ["obs", "observed by the stream"], ["lit", "ran, and its value changed"], ["cut", "ran, and a cutoff held its value"],
-       ["heat", "edge weight: how often it has carried work"], ["cost", "rule weight: the node's cost class"], ["absent", "present, and not wired in"]].forEach(function (x) {
+       ["heat", "edge weight: how often both its ends have run"], ["cost", "rule weight: the node's cost class"], ["absent", "present, and not wired in"]].forEach(function (x) {
         var item = el("span", "lg-item"); item.appendChild(sw(x[0])); item.appendChild(el("span", "lg-text", x[1])); box.appendChild(item);
       });
       return box;
+    }
+    // aria-modal tells a screen reader that the page behind a poster is out
+    // of reach; inert makes it so for Tab too, on every sibling of the figure
+    // and of each element above it up to body. Only what this handle set is
+    // released, so an element that was inert before the poster opened stays
+    // inert after it closes.
+    var inerted = [];
+    function inertBehind(fig) {
+      inerted.forEach(function (e) { e.removeAttribute("inert"); });
+      inerted = [];
+      for (var n = fig; n && n.parentElement && n !== document.body; n = n.parentElement)
+        Array.prototype.forEach.call(n.parentElement.children, function (sib) {
+          if (sib !== n && !sib.hasAttribute("inert")) { sib.setAttribute("inert", ""); inerted.push(sib); }
+        });
     }
     function togglePoster(force) {
       var fig = container.closest ? container.closest("figure") : null;
@@ -659,6 +698,7 @@
       // by eye -- the three attributes exist only while it does.
       if (st.poster) { fig.setAttribute("role", "dialog"); fig.setAttribute("aria-modal", "true"); fig.setAttribute("aria-label", "Figure 1, full screen"); }
       else { fig.removeAttribute("role"); fig.removeAttribute("aria-modal"); fig.removeAttribute("aria-label"); }
+      inertBehind(st.poster ? fig : null);
       draw(); applyValues();
       // draw() just rebuilt the caption, button included, so the element a
       // click or Escape started from no longer exists -- find its
