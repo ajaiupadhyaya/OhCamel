@@ -1253,13 +1253,23 @@ let run_live ~book_path ~(serve_port : int option) =
         Ohcamel_desk.Desk.create ~graph ~journal ~venue ~spec:book.Config.Book.desk
           ~on_change:(fun () -> !notify ())
       in
+      (* Awaited, so the first frame shows the account rather than the file; and
+         bounded, because a paper host that never answers would otherwise hold
+         the listener, and with it the healthcheck, for as long as a request can
+         hang. A sync past the bound still lands when it answers. *)
       let%bind () =
-        match%map Ohcamel_desk.Desk.sync desk with
-        | Ok () -> ()
-        | Error e ->
+        match%map
+          Clock_ns.with_timeout (Time_ns.Span.of_sec 20.0) (Ohcamel_desk.Desk.sync desk)
+        with
+        | `Result (Ok ()) -> ()
+        | `Result (Error e) ->
             live_line
               ("desk      first sync FAILED, the file's quantities stand until one \
                 succeeds: " ^ Error.to_string_hum e)
+        | `Timeout ->
+            live_line
+              "desk      first sync did not answer in 20 s; the file's quantities stand, \
+               and the minute sync will try again"
       in
       (match venue with
       | Ohcamel_desk.Desk.Reads read ->

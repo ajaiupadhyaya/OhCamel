@@ -579,9 +579,11 @@
 
   // ---- the desk: the venue's account, from the frame's desk object ----
   // The frame carries thirteen fields and nothing a table needs a second
-  // request for, except the names the venue holds outside the book; those are
-  // fetched from /api/desk when the journal's version moves, not on every frame.
-  var deskVersion = null;
+  // request for, except the names the venue holds outside the book. Those are
+  // fetched from /api/desk when a sync lands -- the count or last_sync moves --
+  // and not on every frame. The journal's version is not that signal: a sync
+  // writes nothing to the journal, so a list keyed on it stayed the first one.
+  var deskHeldKey = null, deskHeldWant = null, deskHeldInFlight = false;
   function renderDesk(s) {
     var d = s.desk, t = document.getElementById("desk"), note = document.getElementById("desknote");
     if (!t || !note) return;
@@ -612,15 +614,31 @@
       t.appendChild(tr);
     }
     var u = document.getElementById("deskunmanaged");
-    if (d.unmanaged === 0) { u.hidden = true; return; }
-    if (d.version === deskVersion) return;
-    deskVersion = d.version;
+    if (d.unmanaged === 0) {
+      // Cleared as well as hidden, so a count that comes back fetches afresh.
+      u.hidden = true; u.textContent = ""; deskHeldKey = null; deskHeldWant = null;
+      return;
+    }
+    deskHeldWant = d.unmanaged + "|" + d.last_sync;
+    // One request at a time, as the history's; the key is taken only once a
+    // fetch has drawn the list, so a failed one is asked again by a later frame.
+    if (deskHeldWant === deskHeldKey || deskHeldInFlight) return;
+    var asked = deskHeldWant;
+    deskHeldInFlight = true;
     fetch("/api/desk").then(function (r) { return r.json(); }).then(function (b) {
-      u.hidden = false;
-      u.textContent = "held by the venue, not in the book: " + b.unmanaged_positions.map(function (p) {
+      // A frame that moved the key while this was in flight asks for its own
+      // list; this answer is dropped rather than shown under the newer count.
+      if (asked !== deskHeldWant) return;
+      var held = b && b.unmanaged_positions;
+      if (!Array.isArray(held)) return;
+      if (held.length === 0) { u.hidden = true; return; }
+      u.textContent = "held by the venue, not in the book: " + held.map(function (p) {
         return p.symbol + " " + p.qty;
       }).join(", ");
-    }).catch(function () { /* the count above still says how many */ });
+      u.hidden = false;
+      deskHeldKey = asked;
+    }).catch(function () { /* the count above still says how many */ })
+      .then(function () { deskHeldInFlight = false; });
   }
 
   function render(s) {

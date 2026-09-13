@@ -22,12 +22,13 @@ LIVE=""
 SSE_WINDOW=20
 EXPECT_SHA=""
 
-# The routes table, as this suite knows it. lib/server.ml's `routes` is the
-# one table the dispatcher and the 404 body are both generated from, and this
-# string is its shadow: a shell script cannot read OCaml, so it carries the
-# list and asserts the 404 body equals it, in order. Adding a route means
-# adding it here in the same commit -- the assertion fails until you do,
-# which is the point of having it.
+# The routes, as this suite knows them. The 404 body lists lib/server.ml's
+# `routes` table, the one the dispatcher is generated from, and then the
+# extensions the process was created with, in the order given -- the desk's
+# /api/desk, on both hosts. This string is that list's shadow: a shell script
+# cannot read OCaml, so it carries the list and asserts the 404 body equals it,
+# in order. Adding a route or an extension means adding it here in the same
+# commit -- the assertion fails until you do, which is the point of having it.
 EXPECTED_ROUTES="/ /ops /api/snapshot /api/health /api/stream /api/history /api/stress /api/graph /api/heat /api/reports /api/reports/garch /api/ops /api/desk"
 
 # The first bare argument is the base URL; everything else is a flag. Written
@@ -294,13 +295,15 @@ print("OK " + " ".join(body.get("routes") or []))
 else
 	meh "GET /api/nope               python3 unavailable for a real parse; the 404 route list not checked"
 fi
-# -- Phase 5's block 4b (the routes the page reads) is inserted immediately below this line --
 # ---------------------------------------------------------------------------
 # 4a'. The desk
 #
-# The desk rides on both hosts: the simulated venue on the demo, Alpaca paper
-# on the live host. A status and a venue name are asserted, not an equity: a
-# paper account can be empty, and "the desk said what it is" is the claim.
+# Both hosts attach a desk -- the simulated venue on the demo, Alpaca paper on
+# the live host -- but this block reads $BASE only, which is the demo host when
+# deploy.sh runs the suite; the live host stays behind its password, and
+# section 6 asks of its /api/desk only that it refuses an anonymous caller. A
+# status and a venue name are asserted, not an equity: a paper account can be
+# empty, and "the desk said what it is" is the claim.
 # ---------------------------------------------------------------------------
 if command -v python3 >/dev/null 2>&1; then
 	desk=$(curl -sS --max-time 15 "$BASE/api/desk" 2>/dev/null | python3 -c '

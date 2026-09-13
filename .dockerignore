@@ -21,6 +21,8 @@ _coverage/
 .github/
 .DS_Store
 .superpowers/
+# The desk's default local journal and its WAL/SHM files: never copied into an image.
+desk.db*
 
 docs/
 # ...except the crisis cache. lib/dune's crisis_csv.ml rule cats these three
