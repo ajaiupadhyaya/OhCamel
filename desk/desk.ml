@@ -14,7 +14,13 @@
    A DESK WITH NO VENUE is a state with a reason, printed. On the live host
    that is a trading key the paper host would refuse; the risk engine goes on
    running on its own credentials, and the page says in a sentence that the
-   book is still the file's. *)
+   book is still the file's.
+
+   THE FIRST READ APPLIED IS WHEN THE ACCOUNT ARRIVES. Until then the graph
+   holds the book file's quantities and cash, so anything that belongs to the
+   account -- the journal's equity trail, a session close -- waits for it:
+   [on_first_sync] runs once, at that read, and [book_is_current] says whether
+   the last one is recent enough to record a close from. *)
 
 open Core
 open Async
@@ -31,6 +37,8 @@ type t = {
   venue : venue;
   spec : Desk_spec.t;
   on_change : unit -> unit;
+  on_first_sync : unit -> unit;
+  mutable synced : bool;
   mutable account : Venue.Account.t option;
   mutable positions : Venue.Position.t list;
   mutable unmanaged : Venue.Position.t list;
@@ -42,13 +50,15 @@ type t = {
   mutable sessions_seen : int * int;
 }
 
-let create ~graph ~journal ~venue ~spec ~on_change =
+let create ~graph ~journal ~venue ~spec ~on_change ~on_first_sync =
   {
     graph;
     journal;
     venue;
     spec;
     on_change;
+    on_first_sync;
+    synced = false;
     account = None;
     positions = [];
     unmanaged = [];
@@ -60,6 +70,16 @@ let create ~graph ~journal ~venue ~spec ~on_change =
 
 let venue_name t =
   match t.venue with Reads r -> r.Venue.Read.name | Unavailable { name; _ } -> name
+
+(* [last_sync] is when the read the book came from started (see [sync]). A desk
+   whose last applied read is older than [within] -- the caller's sync
+   interval, doubled -- has a sync that is failing or stalled, and a desk that
+   never applied one still holds the book file's; a session close records
+   neither. *)
+let book_is_current t ~now ~within =
+  match t.last_sync with
+  | None -> false
+  | Some at -> Time_ns.Span.( <= ) (Time_ns.diff now at) within
 
 let sync_with t ~account ~positions ~at =
   match t.last_sync with
@@ -92,7 +112,18 @@ let sync_with t ~account ~positions ~at =
               (Notional.to_float (Graph.equity t.graph)
               -. Notional.to_float account.Venue.Account.equity);
           t.last_sync <- Some at;
-          t.last_error <- None
+          t.last_error <- None;
+          (* The first moment the graph's book is the account's, and so the
+             first moment the journal's closes -- the account's equity -- can
+             go back into the trail beside it. [Book_sync.apply] has already
+             stabilized on the account's book, so no stabilize sees those
+             closes beside the file's. Once only: a second restore would
+             replace the trail again and drop every mark made since. The flag
+             is set first, so a callback that raises is not run again by the
+             next read. *)
+          if not t.synced then (
+            t.synced <- true;
+            t.on_first_sync ())
       | Error e, _ | _, Error e -> t.last_error <- Some (Error.to_string_hum e));
       t.on_change ()
 
@@ -127,7 +158,7 @@ let sessions_count t =
   let seen_version, count = t.sessions_seen in
   if version = seen_version then count
   else
-    let count = List.length (Journal.sessions t.journal) in
+    let count = Journal.session_count t.journal in
     t.sessions_seen <- (version, count);
     count
 
@@ -161,12 +192,8 @@ let summary_json t : Yojson.Safe.t = `Assoc (summary_fields t)
 
 let body_json t : Yojson.Safe.t =
   let snapshot_exposure = Graph.exposure_by_instrument t.graph in
-  let sessions = Journal.sessions t.journal in
-  let recent = List.drop sessions (Int.max 0 (List.length sessions - 30)) in
-  let forecasts = Journal.forecasts t.journal in
-  let last_date =
-    List.last forecasts |> Option.map ~f:(fun f -> f.Journal.Forecast.date)
-  in
+  let recent = Journal.recent_sessions t.journal ~limit:30 in
+  let forecasts = Journal.latest_forecasts t.journal in
   `Assoc
     (summary_fields t
     @ [
@@ -226,18 +253,15 @@ let body_json t : Yojson.Safe.t =
                    ])) );
         ( "last_forecasts",
           `List
-            (List.filter_map forecasts ~f:(fun f ->
-                 if Option.equal Date.equal (Some f.Journal.Forecast.date) last_date then
-                   Some
-                     (`Assoc
-                        [
-                          ("estimator", `String f.Journal.Forecast.estimator);
-                          ("confidence", jnum f.Journal.Forecast.confidence);
-                          ("var_fraction", jopt jnum f.Journal.Forecast.var_fraction);
-                          ("var_notional", jopt jnum f.Journal.Forecast.var_notional);
-                          ("es_notional", jopt jnum f.Journal.Forecast.es_notional);
-                        ])
-                 else None)) );
+            (List.map forecasts ~f:(fun f ->
+                 `Assoc
+                   [
+                     ("estimator", `String f.Journal.Forecast.estimator);
+                     ("confidence", jnum f.Journal.Forecast.confidence);
+                     ("var_fraction", jopt jnum f.Journal.Forecast.var_fraction);
+                     ("var_notional", jopt jnum f.Journal.Forecast.var_notional);
+                     ("es_notional", jopt jnum f.Journal.Forecast.es_notional);
+                   ])) );
       ])
 
 let extensions t : Server.extension list =

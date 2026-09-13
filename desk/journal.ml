@@ -225,6 +225,26 @@ let sessions t =
     ("SELECT " ^ session_columns ^ " FROM sessions ORDER BY date")
     [] ~row:session_of_row
 
+(* The page's count and its last thirty sessions are asked of SQLite rather
+   than read out of the whole table. The demo host closes a session every five
+   minutes, 288 a day, and /api/desk answers anyone who asks. *)
+let session_count t =
+  match
+    query t ~what:"session count" "SELECT COUNT(*) FROM sessions" [] ~row:(fun r ->
+        Data.to_int_exn r.(0))
+  with
+  | [ n ] -> n
+  | _ -> failwith "journal: COUNT(*) did not answer with one row"
+
+(* Newest first from SQLite, so LIMIT keeps the newest; oldest first to the
+   caller, the order [sessions] answers in. *)
+let recent_sessions t ~limit =
+  List.rev
+    (query t ~what:"recent sessions"
+       ("SELECT " ^ session_columns ^ " FROM sessions ORDER BY date DESC LIMIT ?")
+       [ Data.INT (Int64.of_int limit) ]
+       ~row:session_of_row)
+
 let session t d =
   List.hd
     (query t ~what:"session"
@@ -283,19 +303,31 @@ let record_forecasts t (fs : Forecast.t list) =
               opt_real f.es_notional;
             ]))
 
+let forecast_columns =
+  "date, estimator, confidence, var_fraction, var_notional, es_notional"
+
+let forecast_of_row r =
+  {
+    Forecast.date = col_date r 0;
+    estimator = col_text r 1;
+    confidence = col_real r 2;
+    var_fraction = col_opt_real r 3;
+    var_notional = col_opt_real r 4;
+    es_notional = col_opt_real r 5;
+  }
+
 let forecasts t =
   query t ~what:"forecasts"
-    "SELECT date, estimator, confidence, var_fraction, var_notional, es_notional FROM \
-     forecasts ORDER BY date, estimator"
-    [] ~row:(fun r ->
-      {
-        Forecast.date = col_date r 0;
-        estimator = col_text r 1;
-        confidence = col_real r 2;
-        var_fraction = col_opt_real r 3;
-        var_notional = col_opt_real r 4;
-        es_notional = col_opt_real r 5;
-      })
+    ("SELECT " ^ forecast_columns ^ " FROM forecasts ORDER BY date, estimator")
+    [] ~row:forecast_of_row
+
+(* The latest date's forecasts only: three rows a session, and the page shows
+   one session's. Dates are YYYY-MM-DD text, so the greatest is the latest. *)
+let latest_forecasts t =
+  query t ~what:"latest forecasts"
+    ("SELECT " ^ forecast_columns
+   ^ " FROM forecasts WHERE date = (SELECT MAX(date) FROM forecasts) ORDER BY estimator")
+    [] ~row:forecast_of_row
 
 module Alert = struct
   type t = { at : Time_ns.t; kind : string; limit_name : string; line : string }

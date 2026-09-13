@@ -43,6 +43,74 @@ let test_the_close_is_recorded_five_minutes_after_the_venue_closes () =
     "20:05Z" "2026-09-11T20:05:00.000000000Z"
     (Ohcamel_desk.Desk_time.rfc3339 (Close.due clock))
 
+(* A failed journal write is retried until the session is recorded or a LATER
+   close is due (Task 7's ruling). Every venue clock read after a close already
+   names the next session, so a later date on the clock is not the signal; the
+   later close's due time is. *)
+let decision =
+  Alcotest.testable
+    (fun ppf d ->
+      Format.pp_print_string ppf
+        (match d with `Retry -> "retry" | `Give_up -> "give up"))
+    Poly.equal
+
+let alpaca_clock body =
+  Or_error.ok_exn (Ohcamel_desk.Alpaca_paper.clock_of_json (Yojson.Safe.from_string body))
+
+let utc = Time_ns.of_string_with_utc_offset
+let friday = date "2026-09-11"
+
+(* Friday's clock as Alpaca answers it at 16:15 New York, fifteen minutes after
+   the close: the market is shut and next_close is already Monday the 14th's. *)
+let friday_after_the_close =
+  alpaca_clock
+    {|{"is_open":false,"next_close":"2026-09-14T16:00:00-04:00","next_open":"2026-09-14T09:30:00-04:00","timestamp":"2026-09-11T16:15:00-04:00"}|}
+
+let test_a_failed_write_seen_fifteen_minutes_after_the_close_is_retried () =
+  Alcotest.(check string)
+    "the clock already names Monday" "2026-09-14"
+    (Date.to_string friday_after_the_close.Venue.Session_clock.next_close_date);
+  (* 16:15 at -04:00 is 20:15Z on the 11th. Monday's close is 16:00 at -04:00,
+     20:00Z on the 14th, due five minutes later at 20:05Z: nearly three days
+     after 20:15Z Friday, so Friday's record is tried again. *)
+  Alcotest.check decision "retry" `Retry
+    (Close.retry_or_give_up ~now:(utc "2026-09-11T20:15:00Z") ~date:friday
+       friday_after_the_close)
+
+let test_a_failed_write_is_given_up_once_the_next_close_is_due () =
+  (* Monday's close, 16:00 at -04:00, is 20:00Z on the 14th; plus the five
+     minute delay, it is due at 20:05:00Z. *)
+  Alcotest.check decision "20:04:59Z Monday, one second before it is due: retry" `Retry
+    (Close.retry_or_give_up ~now:(utc "2026-09-14T20:04:59Z") ~date:friday
+       friday_after_the_close);
+  Alcotest.check decision "20:05:00Z Monday, the moment it is due: give up" `Give_up
+    (Close.retry_or_give_up ~now:(utc "2026-09-14T20:05:00Z") ~date:friday
+       friday_after_the_close);
+  (* The same instant, asked of the venue afresh. Monday has closed, so the
+     clock names Tuesday: 16:00 at -04:00 on the 15th is 20:00Z, due 20:05Z,
+     a day after 20:05Z Monday. A loop that re-read the clock at every retry
+     would therefore never give up, which is why run_forever decides on the
+     clock it read after the failure. *)
+  let monday_after_its_close =
+    alpaca_clock
+      {|{"is_open":false,"next_close":"2026-09-15T16:00:00-04:00","next_open":"2026-09-15T09:30:00-04:00","timestamp":"2026-09-14T16:05:00-04:00"}|}
+  in
+  Alcotest.check decision "a fresh read at 20:05Z Monday names Tuesday: retry" `Retry
+    (Close.retry_or_give_up ~now:(utc "2026-09-14T20:05:00Z") ~date:friday
+       monday_after_its_close)
+
+let test_a_clock_that_still_names_the_session_is_retried () =
+  (* Read at 15:55 at -04:00, before Friday's close: next_close is the 11th's
+     own 16:00, 20:00Z, due 20:05Z. At 20:15Z that time has passed, but the
+     clock names no later session, so there is nothing to give Friday up for. *)
+  let friday_before_the_close =
+    alpaca_clock
+      {|{"is_open":true,"next_close":"2026-09-11T16:00:00-04:00","next_open":"2026-09-14T09:30:00-04:00","timestamp":"2026-09-11T15:55:00-04:00"}|}
+  in
+  Alcotest.check decision "retry" `Retry
+    (Close.retry_or_give_up ~now:(utc "2026-09-11T20:15:00Z") ~date:friday
+       friday_before_the_close)
+
 let test_a_session's_return_needs_the_session's_own_bar () =
   (* 102 / 100 - 1 = 0.02 *)
   Alcotest.(check (option (float 1e-12)))
@@ -284,6 +352,12 @@ let suite =
     [
       Alcotest.test_case "the close is recorded five minutes after the venue closes"
         `Quick test_the_close_is_recorded_five_minutes_after_the_venue_closes;
+      Alcotest.test_case "a failed write seen fifteen minutes after the close is retried"
+        `Quick test_a_failed_write_seen_fifteen_minutes_after_the_close_is_retried;
+      Alcotest.test_case "a failed write is given up once the next close is due" `Quick
+        test_a_failed_write_is_given_up_once_the_next_close_is_due;
+      Alcotest.test_case "a clock that still names the session is retried" `Quick
+        test_a_clock_that_still_names_the_session_is_retried;
       Alcotest.test_case "a session's return needs the session's own bar" `Quick
         test_a_session's_return_needs_the_session's_own_bar;
       Alcotest.test_case "a missing name rolls no name" `Quick

@@ -1222,10 +1222,26 @@ let run_live ~book_path ~(serve_port : int option) =
                       capped by the shortest series"
                      (Symbol.to_string symbol) n))
       in
-      let restored = Ohcamel_desk.Session_close.restore ~graph ~journal in
+      (* Not restored here. The journal's closes are the account's equity, and
+         the graph still holds the book file's quantities and cash: restored
+         now, the next stabilize would measure the file's equity against the
+         account's peak. The desk restores them at the first read it applies,
+         below; this line says what is waiting, and names the latest recorded
+         date, so a session missed by a restart near a close shows in the log. *)
       live_line
-        (sprintf "journal   %s, %d session closes restored into the equity trail"
-           journal_path restored);
+        (match Ohcamel_desk.Journal.recent_sessions journal ~limit:1 with
+        | [] ->
+            sprintf
+              "journal   %s, no session closes recorded yet; the equity trail is \
+               restored from it at the first successful sync"
+              journal_path
+        | latest :: _ ->
+            sprintf
+              "journal   %s, %d session closes recorded, the latest %s; they are \
+               restored into the equity trail at the first successful sync"
+              journal_path
+              (Ohcamel_desk.Journal.session_count journal)
+              (Date.to_string latest.Ohcamel_desk.Journal.Session.date));
       (* The desk's venue. A trading key the paper host would refuse leaves the
          desk disabled, in words; the risk engine keeps running on its own
          credentials, which have their own fatal rule. *)
@@ -1252,11 +1268,19 @@ let run_live ~book_path ~(serve_port : int option) =
       let desk =
         Ohcamel_desk.Desk.create ~graph ~journal ~venue ~spec:book.Config.Book.desk
           ~on_change:(fun () -> !notify ())
+          ~on_first_sync:(fun () ->
+            let restored = Ohcamel_desk.Session_close.restore ~graph ~journal in
+            live_line
+              (sprintf
+                 "journal   the first sync succeeded, so %d session closes are restored \
+                  into the equity trail"
+                 restored))
       in
       (* Awaited, so the first frame shows the account rather than the file; and
          bounded, because a paper host that never answers would otherwise hold
          the listener, and with it the healthcheck, for as long as a request can
-         hang. A sync past the bound still lands when it answers. *)
+         hang. A sync past the bound still lands when it answers, and restores
+         the equity trail then. *)
       let%bind () =
         match%map
           Clock_ns.with_timeout (Time_ns.Span.of_sec 20.0) (Ohcamel_desk.Desk.sync desk)
@@ -1273,14 +1297,24 @@ let run_live ~book_path ~(serve_port : int option) =
       in
       (match venue with
       | Ohcamel_desk.Desk.Reads read ->
+          let sync_every = Time_ns.Span.of_min 1.0 in
           don't_wait_for
-            (Ohcamel_desk.Desk.sync_forever desk ~every:(Time_ns.Span.of_min 1.0)
-               ~on_event:live_line);
+            (Ohcamel_desk.Desk.sync_forever desk ~every:sync_every ~on_event:live_line);
+          (* Two intervals, so a close that lands between two good syncs is not
+             refused; a book older than that has a sync that is failing or
+             stalled, and is not recorded as the account's. *)
           don't_wait_for
             (Ohcamel_desk.Session_close.run_forever ~read ~graph ~journal
-               ~confidence:runtime.Config.Runtime.confidence ~on_event:live_line)
+               ~confidence:runtime.Config.Runtime.confidence
+               ~book_is_current:(fun () ->
+                 Ohcamel_desk.Desk.book_is_current desk ~now:(Time_ns.now ())
+                   ~within:(Time_ns.Span.scale sync_every 2.0))
+               ~on_event:live_line)
       | Ohcamel_desk.Desk.Unavailable _ ->
-          live_line "session   no venue clock, so no session close is recorded");
+          live_line "session   no venue clock, so no session close is recorded";
+          live_line
+            "journal   no venue to sync from, so the equity trail is not restored from \
+             the journal");
       (* The clock. The ONLY writer of the [now] cell, and the reason
          test_graph.ml asserts that no risk node is downstream of it: if one
          were, this timer would be recomputing the book every few seconds and
@@ -1458,6 +1492,9 @@ let run_demo ~port =
       ~venue:(Ohcamel_desk.Desk.Reads (Ohcamel_desk.Sim_venue.read venue))
       ~spec:Ohcamel.Config.Book.Desk_spec.default
       ~on_change:(fun () -> !notify ())
+        (* Nothing to restore: the journal is in memory and empty when the first
+           sync lands, and the trail is the graph's own startup mark. *)
+      ~on_first_sync:(fun () -> ())
   in
   let%bind (_ : unit Or_error.t) = Ohcamel_desk.Desk.sync desk in
   (* Demo mode turns alerting on deliberately, with the sink that cannot

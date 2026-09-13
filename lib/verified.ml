@@ -19,7 +19,7 @@
    [tests] changes; a stale coverage under a fresh test count is the
    failure a single [dated] exists to prevent. *)
 
-let tests = 374
+let tests = 381
 let coverage_covered = 3_873
 let coverage_lines = 4_743
 let coverage_pct = 81.7

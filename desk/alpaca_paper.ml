@@ -248,28 +248,65 @@ let bars_of_json (json : Yojson.Safe.t) :
 (* Transport                                                                *)
 (* ---------------------------------------------------------------------- *)
 
+(* Every request to either host is bounded, reading its body included. One
+   that never answers -- a connection held open by something between here and
+   Alpaca -- would otherwise park the minute sync or the session close on a
+   single Deferred for the life of the process, with no error to log and
+   nothing to retry.
+
+   [f] is handed [abandon], filled when the bound passes. An abandoned request
+   is not cancelled by being ignored: its connection stays open until something
+   closes it, and a desk that abandoned one a minute would leak a socket a
+   minute. *)
+let request_timeout = Time_ns.Span.of_sec 30.0
+
+let within ~(span : Time_ns.Span.t) ~(what : string)
+    (f : abandon:unit Deferred.t -> 'a Or_error.t Deferred.t) : 'a Or_error.t Deferred.t =
+  let abandoned = Ivar.create () in
+  match%map Clock_ns.with_timeout span (f ~abandon:(Ivar.read abandoned)) with
+  | `Result r -> r
+  | `Timeout ->
+      Ivar.fill_if_empty abandoned ();
+      Or_error.errorf "alpaca_paper: %s did not answer within %s" what
+        (Time_ns.Span.to_string_hum span)
+
 (* The URI carries no credential -- the keys go in headers -- so its path is
-   safe to name in an error. *)
+   safe to name in an error.
+
+   cohttp closes a client connection in only two ways, so [abandon] goes to
+   both: [~interrupt] aborts a connect still in progress, which is all
+   Tcp.connect does with it, and closing the body's pipe is what closes a
+   connection that has answered. A connection that opened and never sent its
+   status line is out of reach of either, and lasts until the peer or the
+   kernel ends it. [~rest:`Log] because an abandoned request can still raise
+   after its answer was thrown away, and raised to the main monitor that would
+   end the process this bound exists to keep running. *)
 let get_json ~credentials (uri : Uri.t) : Yojson.Safe.t Or_error.t Deferred.t =
-  match%map
-    Monitor.try_with ~extract_exn:true (fun () ->
-        let%bind response, body =
-          Cohttp_async.Client.get ~headers:(Credentials.headers credentials) uri
-        in
-        let%map body = Cohttp_async.Body.to_string body in
-        (Cohttp.Response.status response, body))
-  with
-  | Error exn ->
-      Or_error.errorf "alpaca_paper: GET %s failed: %s" (Uri.path uri) (Exn.to_string exn)
-  | Ok (`OK, body) -> (
-      match Yojson.Safe.from_string body with
-      | json -> Ok json
-      | exception Yojson.Json_error msg ->
-          Or_error.errorf "alpaca_paper: GET %s was not JSON: %s" (Uri.path uri) msg)
-  | Ok (status, body) ->
-      Or_error.errorf "alpaca_paper: GET %s returned %s (%s)" (Uri.path uri)
-        (Cohttp.Code.string_of_status status)
-        (String.prefix body 200)
+  let path = Uri.path uri in
+  within ~span:request_timeout ~what:("GET " ^ path) (fun ~abandon ->
+      match%map
+        Monitor.try_with ~extract_exn:true ~rest:`Log (fun () ->
+            let%bind response, body =
+              Cohttp_async.Client.get ~interrupt:abandon
+                ~headers:(Credentials.headers credentials)
+                uri
+            in
+            upon abandon (fun () ->
+                match body with `Pipe pipe -> Pipe.close_read pipe | _ -> ());
+            let%map body = Cohttp_async.Body.to_string body in
+            (Cohttp.Response.status response, body))
+      with
+      | Error exn ->
+          Or_error.errorf "alpaca_paper: GET %s failed: %s" path (Exn.to_string exn)
+      | Ok (`OK, body) -> (
+          match Yojson.Safe.from_string body with
+          | json -> Ok json
+          | exception Yojson.Json_error msg ->
+              Or_error.errorf "alpaca_paper: GET %s was not JSON: %s" path msg)
+      | Ok (status, body) ->
+          Or_error.errorf "alpaca_paper: GET %s returned %s (%s)" path
+            (Cohttp.Code.string_of_status status)
+            (String.prefix body 200))
 
 let read ~(credentials : Credentials.t) ~(feed : string) : Venue.Read.t =
   let get uri parse =
