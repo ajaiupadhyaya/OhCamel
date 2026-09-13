@@ -67,10 +67,18 @@ let sync_with t ~account ~positions ~at =
       let plan = Book_sync.plan ~universe:(Graph.symbols t.graph) ~positions ~account in
       Book_sync.apply t.graph plan;
       t.account <- Some account;
+      (* Design §3.3's own definition of "managed": a name in the book's
+         universe. Read here rather than recovered from [plan.unmanaged] by
+         subtraction -- that would agree with [plan] only because
+         [Book_sync.plan] happens to build [unmanaged] as an untransformed
+         filter of [positions], which is Book_sync's implementation and not a
+         fact desk.ml is entitled to lean on. [t.unmanaged] still comes from
+         the plan, because Book_sync owns that decision; the two now agree by
+         definition, not by construction. *)
+      let universe = Symbol.Set.of_list (Graph.symbols t.graph) in
       t.unmanaged <- plan.Book_sync.Plan.unmanaged;
       t.positions <-
-        List.filter positions ~f:(fun p ->
-            not (List.exists plan.Book_sync.Plan.unmanaged ~f:(Venue.Position.equal p)));
+        List.filter positions ~f:(fun p -> Set.mem universe p.Venue.Position.symbol);
       t.equity_gap <-
         Some
           (Notional.to_float (Graph.equity t.graph)

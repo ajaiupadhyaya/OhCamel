@@ -149,7 +149,27 @@ let test_a_sync_sets_the_book_and_names_what_it_cannot_hold () =
         "TSLA named" [ "TSLA" ]
         (List.map
            (Yojson.Safe.Util.to_list (field b "unmanaged_positions"))
-           ~f:(fun p -> Yojson.Safe.Util.(to_string (member "symbol" p)))))
+           ~f:(fun p -> Yojson.Safe.Util.(to_string (member "symbol" p))));
+      (* A managed position is one in the book's universe (design §3.3):
+         AAPL and MSFT, in symbol order -- TSLA, held by the venue but
+         outside the universe, is unmanaged and does not appear here. *)
+      let positions = Yojson.Safe.Util.to_list (field b "positions") in
+      Alcotest.(check (list string))
+        "the universe, in symbol order" [ "AAPL"; "MSFT" ]
+        (List.map positions ~f:(fun p -> Yojson.Safe.Util.(to_string (member "symbol" p))));
+      let aapl_row = List.nth_exn positions 0 and msft_row = List.nth_exn positions 1 in
+      Alcotest.(check (float 1e-9))
+        "AAPL venue_qty: what the venue reported" 10.0
+        (Yojson.Safe.Util.to_number (Yojson.Safe.Util.member "venue_qty" aapl_row));
+      Alcotest.(check (float 1e-9))
+        "AAPL graph_qty: what the sync wrote" 10.0
+        (Yojson.Safe.Util.to_number (Yojson.Safe.Util.member "graph_qty" aapl_row));
+      Alcotest.(check bool)
+        "MSFT venue_qty is null: the venue holds none" true
+        (Poly.equal (Yojson.Safe.Util.member "venue_qty" msft_row) `Null);
+      Alcotest.(check (float 0.0))
+        "MSFT graph_qty is 0: the sync zeroed a universe name the venue does not hold" 0.0
+        (Yojson.Safe.Util.to_number (Yojson.Safe.Util.member "graph_qty" msft_row)))
     ()
 
 let test_a_failed_read_keeps_the_last_good_account_and_says_what_failed () =
