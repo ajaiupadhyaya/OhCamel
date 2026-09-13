@@ -190,7 +190,7 @@ No route changes anything.
 - **Live host:** `live.ohcamel.ajaiupadhyaya.com`, the same image on Alpaca and
   FRED, behind a password.
 - **Infrastructure:** one DigitalOcean droplet (2 vCPU, 4 GB, $24/month), Docker
-  Compose, and Caddy for TLS. Last deployed 2026-09-10 from `36fc84f`.
+  Compose, and Caddy for TLS. Last deployed 2026-09-13 from `cf79764`.
 - **Deploy check:** a smoke suite runs after every deploy, and a failure fails
   the deploy. The checks that matter are that the recompute counter *advances*
   between two reads and that the stream delivers frames spread over 20 seconds.
