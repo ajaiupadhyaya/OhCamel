@@ -2160,7 +2160,24 @@ let test_heat_is_the_lifetime_table () =
       Alcotest.(check (list (pair string int)))
         "exactly the lifetime table, drained frame or not"
         (Ohcamel.Recompute_log.lifetime log)
-        served)
+        served;
+      (* The same table by hand, because the check above asks [lifetime] for
+         both sides: if it read the frame table, next_frame's drain would leave
+         both sides [] and that check would pass. Graph.create ends in a
+         stabilize of its own, before any price is set, and every exposure
+         node is necessary, so each first runs there. exposure:AAPL: create's
+         stabilize, with_graph's seeding stabilize, and the stabilize after
+         AAPL moved to 151 -- 3. exposure:XOM: create's and the seeding's, and
+         nothing since moved XOM's price or quantity -- 2. Server.create and
+         next_frame run no body: the topology is read from Incremental's own
+         table, and the snapshot's stabilize finds nothing stale. *)
+      Alcotest.(check bool) "nodes is not empty" false (List.is_empty served);
+      Alcotest.(check (option int))
+        "exposure:AAPL: created, seeded, then 151" (Some 3)
+        (List.Assoc.find served ~equal:String.equal "exposure:AAPL");
+      Alcotest.(check (option int))
+        "exposure:XOM: created and seeded" (Some 2)
+        (List.Assoc.find served ~equal:String.equal "exposure:XOM"))
     ()
 
 let test_heat_without_a_log_is_null () =

@@ -389,11 +389,12 @@ let json_of_snapshot ?recomputed ?changed ?stabilizes_delta ?nodes_recomputed_de
             jlist
               (fun (name, n) -> `Assoc [ ("name", jstring name); ("n", `Int n) ])
               entries );
-      (* The names whose VALUE changed since the previous frame -- a subset of
-         [recomputed], because a cutoff can hold a recomputed value equal to
-         the old one. Drained beside [recomputed] for the same reason: only
-         the stream may take this set, so it is [null] wherever [recomputed]
-         is. *)
+      (* The names whose VALUE changed since the previous frame: the named
+         nodes among [recomputed] whose value moved -- a cutoff can hold a
+         recomputed value equal to the old one -- plus the cells set to a new
+         value, which are never run and so are never in [recomputed]. Drained
+         beside [recomputed] for the same reason: only the stream may take
+         this set, so it is [null] wherever [recomputed] is. *)
       ("changed", match changed with None -> `Null | Some names -> jlist jstring names);
       ("stabilizes_delta", jopt_int stabilizes_delta);
       ("nodes_recomputed_delta", jopt_int nodes_recomputed_delta);
@@ -1251,7 +1252,11 @@ let routes : (string * string * handler) list =
     (* Lifetime run counts, for the drawing's heat. The log's lifetime table,
        which a frame's drain never clears, so a page opened after an hour
        starts from the hour and not from nothing. A read of a table; nothing
-       here stabilizes. *)
+       here stabilizes. [stabilizes] is Incremental's process-wide count, the
+       same one the snapshot carries: every stress fork and the startup
+       scaling probe stabilize that shared state too, so it is not a count of
+       the stabilizes behind [nodes], which are this graph's named bodies
+       alone. *)
     ( "/api/heat",
       "how often each named node has run since this process started, for the drawing's \
        heat",
