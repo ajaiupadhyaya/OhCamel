@@ -205,6 +205,43 @@ module Node_name = struct
       | "attribution" | "feed_health" | "now" -> "state"
       | other -> failwithf "graph: no unit declared for node %S" other ()
 
+  (* What one recomputation of a named node costs, in the README's own terms:
+     n instruments, w observations in a return window, h equity marks, L
+     limits. From the code, not a measurement -- the drawing weights a node's
+     rule by it and the inspector prints it -- and kept beside [unit_of] so a
+     node is classified the day it is named. Unclassified is None, and the
+     topology test fails on a named node that is None. *)
+  let cost_of (name : string) : string option =
+    let starts p = String.is_prefix name ~prefix:p in
+    (* The prefixes before the bracket, in the order [unit_of] and [classify]
+       check them: a limit is named by the owner's book, and a limit called
+       cap[tech] is still a limit, not a cell. *)
+    if
+      starts "exposure:" || starts "feed:" || starts "greeks:"
+      || starts "option_exposure:" || starts "limit:"
+    then Some "O(1)"
+    else if starts "sector:" then Some "O(n)"
+    else if String.is_suffix name ~suffix:"]" then None
+    else
+      match name with
+      | "cash" | "equity_history" | "factor_returns" | "rate" | "valuation_days" | "now"
+        ->
+          None
+      | "equity" | "var_notional" | "es_notional" -> Some "O(1)"
+      | "portfolio_beta" -> Some "O(w)"
+      | "current_drawdown" -> Some "O(h)"
+      | "breaches" -> Some "O(L)"
+      | "historical_var" | "expected_shortfall" -> Some "O(w log w)"
+      | "aligned_returns" | "portfolio_returns" -> Some "O(n·w)"
+      | "parametric_var" | "parametric_var_ewma" | "attribution" -> Some "O(n²)"
+      | "covariance" | "covariance_ewma" -> Some "O(n²·w)"
+      | "exposure_map" | "sector_map" | "gross_exposure" | "net_exposure" | "weights"
+      | "component_var_map" | "component_var_sector_map" | "diversification_ratio"
+      | "feed_health" | "gamma_map" | "vega_map" | "portfolio_gamma" | "portfolio_vega"
+      | "vega_by_bucket" ->
+          Some "O(n)"
+      | _ -> None
+
   (* The units whose value is a number the wire can carry and the drawing can
      print. Everything else gets a run count instead -- "ran 1x since you
      opened this page" -- which is the honest rendering of a covariance matrix
@@ -607,8 +644,9 @@ let find_var (vars : 'a Inc.Var.t Symbol.Map.t) (symbol : Symbol.t) ~(what : str
    Construction
    ------------------------------------------------------------------------- *)
 
-let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zero)
-    ?(equity_history_limit = 10_000) ?(staleness_threshold = Time.Span.of_sec 90.0)
+let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
+    ?(starting_cash = Notional.zero) ?(equity_history_limit = 10_000)
+    ?(staleness_threshold = Time.Span.of_sec 90.0)
     ?(ewma_lambda = Vol_estimators.Ewma.default_lambda)
     ?(covariance_for_attribution = Covariance_estimator.Equal_weighted)
     ?(options : Options.Position.t list = []) ?(rate = 0.04)
@@ -733,6 +771,24 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
         List.iter !change_listeners ~f:(fun listener -> listener ()));
     o
   in
+  (* The second diagnostic hook, and the one a drawing needs to show a
+     cutoff. [on_compute] says a body RAN. This says a value CHANGED, after its
+     cutoff had its say: Incremental's own on_update [Changed]. A node that ran
+     and did not change is a node whose cutoff held, and nothing downstream of
+     it ran on its account.
+
+     Registered only when a hook is given. An on_update handler costs little,
+     but the forks stress.ml builds, the scaling probe's graphs and every test
+     graph have no use for one, so they pay nothing. Like [on_compute], it runs
+     inside stabilization and must only record. *)
+  let watch_change (type a) (name : string) (node : a Inc.t) : unit =
+    match on_value_change with
+    | None -> ()
+    | Some f ->
+        Inc.on_update node ~f:(function
+          | Inc.Update.Changed _ -> f name
+          | Inc.Update.Necessary _ | Inc.Update.Invalidated | Inc.Update.Unnecessary -> ())
+  in
   (* Input cells carry a value-equality cutoff, so re-sending an unchanged value
      costs nothing downstream. This matters more than it looks: a real feed
      republishes the same last-trade price constantly, and under the default
@@ -747,6 +803,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
        node. Var.watch returns the same node every time, so this is done once
        here rather than at every read site. *)
     Inc.append_user_info_graphviz watch ~label:[ name ] ~attrs:String.Map.empty;
+    watch_change name watch;
     v
   in
   (* Name a derived node on the node. The same string the body passes to
@@ -757,6 +814,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?(starting_cash = Notional.zer
      call site and the second, differently-typed node would not compile. *)
   let named (type a) (name : string) (node : a Inc.t) : a Inc.t =
     Inc.append_user_info_graphviz node ~label:[ name ] ~attrs:String.Map.empty;
+    watch_change name node;
     node
   in
   let cutoff ~equal node =
@@ -1872,6 +1930,11 @@ module Topology = struct
       rank : int;
       observed : bool;
       unit : string;
+      (* What one recomputation of this node costs, in [Node_name.cost_of]'s
+         vocabulary. [None] for an input cell -- a [Var.set] has no rule to
+         cost -- and for nothing else, which is the invariant Task 3's test
+         checks over the whole topology. *)
+      cost : string option;
       (* The instrument this node is about, when it is about one -- and for
          an option node, its UNDERLYING, so the page has one field to put a
          row on. *)
@@ -2109,6 +2172,7 @@ let topology ?(alerts = false) (t : t) : Topology.t =
           rank = rank name;
           observed = r.Raw.observed;
           unit = Node_name.unit_of name;
+          cost = Node_name.cost_of name;
           symbol;
           sector;
           limit;

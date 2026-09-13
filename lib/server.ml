@@ -207,7 +207,7 @@ let by_node ~(graph : Graph.t) (s : Graph.Snapshot.t) : Yojson.Safe.t =
   in
   `Assoc (per_symbol @ per_sector @ per_option @ singletons)
 
-let json_of_snapshot ?recomputed ?stabilizes_delta ?nodes_recomputed_delta
+let json_of_snapshot ?recomputed ?changed ?stabilizes_delta ?nodes_recomputed_delta
     ?(quiet : Types.Symbol.t list = []) ~(graph : Graph.t) ~(factor : string)
     (s : Graph.Snapshot.t) : Yojson.Safe.t =
   let weights = Graph.Snapshot.weights s in
@@ -389,6 +389,13 @@ let json_of_snapshot ?recomputed ?stabilizes_delta ?nodes_recomputed_delta
             jlist
               (fun (name, n) -> `Assoc [ ("name", jstring name); ("n", `Int n) ])
               entries );
+      (* The names whose VALUE changed since the previous frame: the named
+         nodes among [recomputed] whose value moved -- a cutoff can hold a
+         recomputed value equal to the old one -- plus the cells set to a new
+         value, which are never run and so are never in [recomputed]. Drained
+         beside [recomputed] for the same reason: only the stream may take
+         this set, so it is [null] wherever [recomputed] is. *)
+      ("changed", match changed with None -> `Null | Some names -> jlist jstring names);
       ("stabilizes_delta", jopt_int stabilizes_delta);
       ("nodes_recomputed_delta", jopt_int nodes_recomputed_delta);
     ]
@@ -494,6 +501,7 @@ let json_of_graph (topo : Graph.Topology.t) : Yojson.Safe.t =
         ("observed", `Bool (T.Node.observed n));
         ("cutoff", jstring (T.Node.cutoff n));
         ("unit", jstring (T.Node.unit n));
+        ("cost", jopt jstring (T.Node.cost n));
         ("symbol", jopt (fun s -> jstring (Types.Symbol.to_string s)) (T.Node.symbol n));
         ("sector", jopt (fun k -> jstring (Types.Sector.to_string k)) (T.Node.sector n));
         ( "limit",
@@ -774,27 +782,32 @@ let json_of_alerts ?(recent = true) (alerts : Alerts.t option) : Yojson.Safe.t =
 
 (* One serialised frame.
 
-   [recomputed] is a DRAIN, not a list, and it is called here between the
-   snapshot and the encoder because that is the only order in which the set is
-   the frame's: [Graph.snapshot] stabilizes, and a node body that runs inside
-   that stabilize must be credited to this frame and not to the next. Called
-   with no drain by /api/snapshot and by every subscriber's welcome frame,
-   which then say [null] -- neither is allowed to take the stream's set. *)
-let render ?recomputed (t : t) : string =
+   [recomputed] and [changed] are both DRAINS, not lists, and each is called
+   here between the snapshot and the encoder because that is the only order in
+   which the set is the frame's: [Graph.snapshot] stabilizes, and a node body
+   or a value change inside that stabilize must be credited to this frame and
+   not to the next. Called with no drain by /api/snapshot and by every
+   subscriber's welcome frame, which then say [null] for both -- neither is
+   allowed to take the stream's sets. *)
+let render ?recomputed ?changed (t : t) : string =
   let snapshot = Graph.snapshot t.graph in
   let json =
     match recomputed with
     | None -> json_of_snapshot ~quiet:t.quiet ~graph:t.graph ~factor:t.factor snapshot
     | Some drain ->
         let entries = drain () in
+        (* Drained here, beside [recomputed], for the same reason: this is the
+           one place a frame's changed set is assembled, and a poller that
+           passes no [recomputed] never reaches this branch to steal it. *)
+        let changed_names = Option.map changed ~f:(fun drain -> drain ()) in
         let stabilizes = Graph.total_stabilizes () in
         let nodes = Graph.total_nodes_recomputed () in
         let stabilizes_delta = stabilizes - t.last_stabilizes in
         let nodes_recomputed_delta = nodes - t.last_nodes_recomputed in
         t.last_stabilizes <- stabilizes;
         t.last_nodes_recomputed <- nodes;
-        json_of_snapshot ~recomputed:entries ~stabilizes_delta ~nodes_recomputed_delta
-          ~quiet:t.quiet ~graph:t.graph ~factor:t.factor snapshot
+        json_of_snapshot ~recomputed:entries ?changed:changed_names ~stabilizes_delta
+          ~nodes_recomputed_delta ~quiet:t.quiet ~graph:t.graph ~factor:t.factor snapshot
   in
   match json with
   | `Assoc fields ->
@@ -803,13 +816,18 @@ let render ?recomputed (t : t) : string =
   | other -> Yojson.Safe.to_string other
 
 (* The frame the broadcaster sends: the snapshot, then the drain. With no log
-   -- a server over a graph that was given no hook -- the three keys stay
-   [null] on every frame, which is "this process is not counting" and is
+   -- a server over a graph that was given no hook -- the four keys
+   [recomputed], [changed], [stabilizes_delta] and [nodes_recomputed_delta]
+   stay [null] on every frame, which is "this process is not counting" and is
    different from [] , "nothing ran". *)
 let next_frame (t : t) : string =
   match t.recompute_log with
   | None -> render t
-  | Some log -> render ~recomputed:(fun () -> Recompute_log.drain log) t
+  | Some log ->
+      render
+        ~recomputed:(fun () -> Recompute_log.drain log)
+        ~changed:(fun () -> Recompute_log.drain_changed log)
+        t
 
 (* Whether a change has been observed since the last frame was taken. The
    test for the follow-up frame reads it; nothing else does. *)
@@ -863,13 +881,14 @@ let rec run_broadcaster (t : t) =
   let%bind () = after (Time_ns.Span.to_span_float_round_nearest t.coalesce) in
   let%bind () =
     if List.is_empty t.subscribers then (
-      (* Nobody to send to, but the window still closes: the set is dropped
+      (* Nobody to send to, but the window still closes: the sets are dropped
          and the counters advanced, so a subscriber arriving after an hour of
          quiet gets a welcome frame and then frames about what happens NEXT,
          not one frame carrying an hour of history. No snapshot is taken --
          the point of the empty-subscriber branch was never to serialise. *)
       Option.iter t.recompute_log ~f:(fun log ->
-          ignore (Recompute_log.drain log : (string * int) list));
+          ignore (Recompute_log.drain log : (string * int) list);
+          ignore (Recompute_log.drain_changed log : string list));
       t.last_stabilizes <- Graph.total_stabilizes ();
       t.last_nodes_recomputed <- Graph.total_nodes_recomputed ();
       Deferred.unit)
@@ -1261,6 +1280,32 @@ let routes : (string * string * handler) list =
       fun t ->
         Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
           t.graph_json );
+    (* Lifetime run counts, for the drawing's heat. The log's lifetime table,
+       which a frame's drain never clears, so a page opened after an hour
+       starts from the hour and not from nothing. A read of a table; nothing
+       here stabilizes. [stabilizes] is Incremental's process-wide count, the
+       same one the snapshot carries: every stress fork and the startup
+       scaling probe stabilize that shared state too, so it is not a count of
+       the stabilizes behind [nodes], which are this graph's named bodies
+       alone. *)
+    ( "/api/heat",
+      "how often each named node has run since this process started, for the drawing's \
+       heat",
+      fun t ->
+        Cohttp_async.Server.respond_string ~headers:(json_headers ~mode:t.mode)
+          (Yojson.Safe.to_string
+             (`Assoc
+                [
+                  ("started_at", jstring (Time_ns.to_string_utc t.started_at));
+                  ("stabilizes", `Int (Graph.total_stabilizes ()));
+                  ( "nodes",
+                    match t.recompute_log with
+                    | None -> `Null
+                    | Some log ->
+                        `Assoc
+                          (List.map (Recompute_log.lifetime log) ~f:(fun (k, n) ->
+                               (k, `Int n))) );
+                ])) );
     (* Computed before the socket bound, served as the string it was encoded
        to. Nothing here runs a probe or a backtest on request. *)
     ( "/api/reports",

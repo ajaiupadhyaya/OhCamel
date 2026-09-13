@@ -1897,6 +1897,60 @@ let test_staleness_threshold_round_trips () =
         (Time.Span.to_sec (Graph.staleness_threshold graph)))
     ~finally:(fun () -> Graph.destroy graph)
 
+(* Every named node's cost class, in the README's terms: n instruments, w
+   observations per window, h equity marks, L limits.
+
+   The two the README argues from are pinned by name: covariance rebuilds an
+   n-by-n matrix over w observations, O(n²·w), and is the thing a tick never
+   reaches; weights divides n exposures by gross, O(n), and is reached by every
+   tick. The rest are pinned as a set: every non-input node has a class, from
+   the vocabulary, so a node added tomorrow without one fails here. *)
+let test_every_named_node_has_a_cost_class () =
+  let vocabulary =
+    [ "O(1)"; "O(w)"; "O(h)"; "O(n)"; "O(L)"; "O(w log w)"; "O(n·w)"; "O(n²)"; "O(n²·w)" ]
+  in
+  let module N = Graph.Node_name in
+  Alcotest.(check (option string)) "covariance" (Some "O(n²·w)") (N.cost_of "covariance");
+  Alcotest.(check (option string)) "weights" (Some "O(n)") (N.cost_of "weights");
+  Alcotest.(check (option string)) "an exposure" (Some "O(1)") (N.cost_of "exposure:AAPL");
+  (* The book the topology below is built on holds no options, so the two
+     per-contract families are pinned here by name. greeks:ID is one
+     Black-Scholes evaluation of one contract, a closed form in its four inputs
+     (spot, vol, days, rate); option_exposure:ID is three exposures from that
+     one Greeks record, its contract count and the spot. Neither reads n, w, h
+     or L: O(1) each. *)
+  Alcotest.(check (option string))
+    "a contract's Greeks" (Some "O(1)")
+    (N.cost_of "greeks:AAPL-100C");
+  Alcotest.(check (option string))
+    "a contract's exposure" (Some "O(1)")
+    (N.cost_of "option_exposure:AAPL-100C");
+  (* A limit is named by the owner's book and may end in a bracket; the prefix
+     still decides, as it does in [unit_of]. *)
+  Alcotest.(check (option string))
+    "a limit named like a cell" (Some "O(1)") (N.cost_of "limit:cap[tech]");
+  Alcotest.(check (option string))
+    "a cell costs nothing to name" None (N.cost_of "price[AAPL]");
+  Alcotest.(check (option string))
+    "the option aggregates" (Some "O(n)") (N.cost_of "portfolio_vega");
+  with_graph
+    ~f:(fun graph _ ->
+      List.iter
+        (Graph.Topology.nodes (Graph.topology graph))
+        ~f:(fun n ->
+          let name = Graph.Topology.Node.name n in
+          match (Graph.Topology.Node.family n, Graph.Topology.Node.cost n) with
+          | Graph.Topology.Family.Input, None -> ()
+          | Graph.Topology.Family.Input, Some c ->
+              Alcotest.failf "%s is a cell and has a cost %s" name c
+          | _, None -> Alcotest.failf "%s has no cost class" name
+          | _, Some c ->
+              Alcotest.(check bool)
+                (name ^ " is in the vocabulary")
+                true
+                (List.mem vocabulary c ~equal:String.equal)))
+    ()
+
 let suite =
   ( "graph",
     [
@@ -1926,6 +1980,8 @@ let suite =
       Alcotest.test_case "every node name has a unit" `Quick test_units;
       Alcotest.test_case "scalar units are the ones with a number" `Quick
         test_scalar_units;
+      Alcotest.test_case "every named node has a cost class" `Quick
+        test_every_named_node_has_a_cost_class;
       Alcotest.test_case "every node the hook names is named on the node" `Quick
         test_every_node_is_labelled;
       Alcotest.test_case "reading the label table runs nothing" `Quick

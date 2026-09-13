@@ -170,6 +170,7 @@ has recomputed.
 | `/api/history` | The last 500 changes, in memory only |
 | `/api/stress` | The scenario suite, run on forks of the current book |
 | `/api/graph` | The graph's topology |
+| `/api/heat` | How often each named node has run since the process started; the drawing's heat |
 | `/api/reports` | The backtest, options and scaling reports, computed at startup |
 | `/api/reports/garch` | The GARCH study, computed in parallel after startup |
 | `/api/ops` | What `/ops` shows, as JSON |
@@ -191,7 +192,7 @@ No route changes anything.
 
 ## How it's checked
 
-- **309 tests**, all hermetic: no network, no credentials, no waiting on a
+- **373 tests**, all hermetic: no network, no credentials, no waiting on a
   clock. Expected values are derived by hand beside each assertion, and the
   suite checks its own count against [`verified.ml`](../lib/verified.ml).
 - **Property tests** (QCheck) cover the identities over random inputs: Euler

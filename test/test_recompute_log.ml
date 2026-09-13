@@ -90,9 +90,14 @@ let downstream_of_aapl_tick_on_the_demo_book =
     "feed_health";
   ]
 
+(* With both hooks, as run_demo attaches them, so the set pinned above is the
+   served graph's and not only a bare graph's. The change hook registers
+   handlers and creates no node, so it must not change which bodies run; the
+   set passing unchanged with it attached is that check. *)
 let seeded_graph log =
   let graph =
     Graph.create ~on_compute:(Recompute_log.note log)
+      ~on_value_change:(Recompute_log.note_change log)
       ~starting_cash:Synthetic_book.starting_cash ~instruments:Synthetic_book.instruments
       ~limits:Synthetic_book.limits ~confidence:Synthetic_book.confidence
       ~return_window:Synthetic_book.return_window ()
@@ -105,6 +110,7 @@ let seeded_graph log =
   Graph.mark_equity graph;
   Graph.stabilize graph;
   ignore (Recompute_log.drain log : (string * int) list);
+  ignore (Recompute_log.drain_changed log : string list);
   graph
 
 (* AAPL is marked DOWN, from 150 to 140, deliberately. Equity falls below the
@@ -178,6 +184,109 @@ let test_a_fork_never_reaches_the_parents_log () =
         "and the lifetime table is unchanged by the stress run too" lifetime_before_stress
         (Recompute_log.total log))
 
+(* A cutoff, made visible.
+
+   [note] says a body ran; [note_change] says its value moved, after the
+   cutoff had its say. The two differ exactly where a cutoff held, and the
+   drawing's ghost is that difference. The book: one share of AAPL, no cash,
+   one drawdown limit. Equity is the share's price.
+
+   At 100 the trail is marked, so the history is [100] and the drawdown is
+   (100 - 100) / 100 = 0. Moving the price to 110 makes a new peak: the
+   drawdown over [100; 110] is (110 - 110) / 110 = 0 again. Its body RAN,
+   because equity moved, and its value did not CHANGE, because Float.equal
+   0.0 0.0 -- so limit:dd-cap, which reads only the drawdown, did not run at
+   all. The same price sent again changes the cell by nothing, so the cell's
+   own cutoff holds and nothing runs. *)
+let test_a_cutoff_is_a_node_that_ran_and_did_not_change () =
+  let log = Recompute_log.create () in
+  let graph =
+    Graph.create ~on_compute:(Recompute_log.note log)
+      ~on_value_change:(Recompute_log.note_change log)
+      ~instruments:[ { Instrument.symbol = aapl; sector = Sector.of_string "TECH" } ]
+      ~limits:
+        [
+          {
+            Limit.name = "dd-cap";
+            scope = Limit.Portfolio;
+            kind = Limit.Max_drawdown 0.10;
+          };
+        ]
+      ~confidence:0.95 ~return_window:10 ()
+  in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      Graph.set_price graph aapl (Price.of_float 100.0);
+      Graph.set_qty graph aapl (Qty.of_float 1.0);
+      Graph.stabilize graph;
+      Graph.mark_equity graph;
+      Graph.stabilize graph;
+      ignore (Recompute_log.drain log : (string * int) list);
+      ignore (Recompute_log.drain_changed log : string list);
+      Graph.set_price graph aapl (Price.of_float 110.0);
+      Graph.stabilize graph;
+      let ran = List.map (Recompute_log.drain log) ~f:fst
+      and changed = Recompute_log.drain_changed log in
+      let has xs x = List.mem xs x ~equal:String.equal in
+      Alcotest.(check bool) "current_drawdown ran" true (has ran "current_drawdown");
+      Alcotest.(check bool) "and did not change" false (has changed "current_drawdown");
+      Alcotest.(check bool) "so limit:dd-cap did not run" false (has ran "limit:dd-cap");
+      Alcotest.(check (list string))
+        "what did change, in order"
+        [
+          "equity";
+          "exposure:AAPL";
+          "exposure_map";
+          "gross_exposure";
+          "net_exposure";
+          "price[AAPL]";
+          "sector:TECH";
+          "sector_map";
+        ]
+        (List.filter changed ~f:(fun n ->
+             List.mem
+               [
+                 "equity";
+                 "exposure:AAPL";
+                 "exposure_map";
+                 "gross_exposure";
+                 "net_exposure";
+                 "price[AAPL]";
+                 "sector:TECH";
+                 "sector_map";
+               ]
+               n ~equal:String.equal));
+      Graph.set_price graph aapl (Price.of_float 110.0);
+      Graph.stabilize graph;
+      Alcotest.(check (list (pair string int)))
+        "the same price again runs nothing" [] (Recompute_log.drain log);
+      Alcotest.(check (list string))
+        "and changes nothing" []
+        (Recompute_log.drain_changed log))
+
+let test_a_fork's_changes_never_reach_the_parent's_log () =
+  let log = Recompute_log.create () in
+  let graph =
+    Graph.create ~on_compute:(Recompute_log.note log)
+      ~on_value_change:(Recompute_log.note_change log)
+      ~starting_cash:Synthetic_book.starting_cash ~instruments:Synthetic_book.instruments
+      ~limits:Synthetic_book.limits ~confidence:Synthetic_book.confidence
+      ~return_window:Synthetic_book.return_window ()
+  in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      Synthetic_book.seed_returns ~rng:(Random.State.make [| 1 |]) ~graph;
+      Graph.stabilize graph;
+      ignore (Recompute_log.drain_changed log : string list);
+      ignore
+        (Stress.run_all ~graph ~scenarios:(Stress.suite_for ~graph)
+          : Stress.Outcome.t list);
+      Alcotest.(check (list string))
+        "twelve forked scenarios changed nothing the live log can see" []
+        (Recompute_log.drain_changed log))
+
 let suite =
   ( "recompute_log",
     [
@@ -190,4 +299,8 @@ let suite =
         test_an_unchanged_write_drains_empty;
       Alcotest.test_case "A FORK NEVER REACHES THE PARENT'S LOG" `Quick
         test_a_fork_never_reaches_the_parents_log;
+      Alcotest.test_case "a cutoff is a node that ran and did not change" `Quick
+        test_a_cutoff_is_a_node_that_ran_and_did_not_change;
+      Alcotest.test_case "A FORK'S CHANGES NEVER REACH THE PARENT'S LOG" `Quick
+        test_a_fork's_changes_never_reach_the_parent's_log;
     ] )

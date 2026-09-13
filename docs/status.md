@@ -42,7 +42,7 @@ that is a design invariant rather than a missing feature.
 | Cost | $24/month, metered hourly, capped |
 | Proxy / TLS | Caddy, Let's Encrypt, HTTP→HTTPS 308, HSTS. Only Caddy has a host port; the engines are on an internal Docker network |
 | DNS | Porkbun. Two A records, `ohcamel` and `live.ohcamel`, on a domain whose apex is unrelated (the owner's portfolio site) |
-| Deployed | 2026-09-10, both hosts, from `36fc84f` (the page: the graph and the argument) — both origins report it as `build.git_sha` on `/api/ops` — verified by the production smoke suite: 21 passed, 0 failed. On the droplet (Linux, amd64) every computed table on the page agrees with the README written on macOS/arm64: battery 63/63 cells, crisis 72/72, GARCH 36/36, node counts 6/6. The reports take 1.3 s before listen; the GARCH study 20.6 s on the second domain, with the stream serving throughout. Previous deploy, and the rollback reference: `91424da` |
+| Deployed | 2026-09-12, both hosts, from `eb891eb` (phase W1: Figure 1 draws a frame's work rank by rank, a dotted rule where a cutoff held, edge weight from `/api/heat`'s run counts and rule weight from each node's cost class) — both origins report it as `build.git_sha` on `/api/ops` — verified by the production smoke suite: 21 passed, 0 failed, 0 skipped. The reports take 1.3 s before listen; the GARCH study 21.8 s on the second domain. Previous deploy, and the rollback reference: `36fc84f` (2026-09-10, when the page's computed tables were last checked against the README on the droplet) |
 
 Resource use at rest is small enough to be worth stating so nobody adds a
 bigger box for the wrong reason: the engine sits at about 41 MB and six percent
@@ -171,13 +171,14 @@ would be the first that does.
 
 | Route | |
 |---|---|
-| `/` | The page: Figure 1 (the graph from Incremental's node table, lit per frame), the ledger, and the README's argument with every reproducible table computed here and checked against the README. One embedded HTML string, inline SVG, no external assets |
+| `/` | The page: Figure 1 (the graph from Incremental's node table, lit per frame, drawn rank by rank with cutoffs, heat and cost classes), the ledger, and the README's argument with every reproducible table computed here and checked against the README. One embedded HTML string, inline SVG, no external assets |
 | `/api/snapshot` | The whole book as JSON, including `nodes_recomputed` — the counter that proves the graph is alive |
 | `/api/health` | Feed liveness per symbol; `healthy: false` when anything is stale |
 | `/api/stream` | Server-sent events, emitted only on an actual graph change (parked on an `Ivar`, not a timer), coalesced over 80 ms |
 | `/api/history` | The in-memory trail |
 | `/api/stress` | The scenario suite, run on forks of the live book: structured shocks, before and after, breaches with their text, the counter's cost |
 | `/api/graph` | The topology: named nodes, edges, ranks, the readers outside the graph. Memoised at startup |
+| `/api/heat` | How often each named node has run since the process started; the drawing's heat |
 | `/api/reports` | The CLI's reports computed by this process before it listened: scaling probe, synthetic and crisis batteries, options walk. One cached string, about 86 KB |
 | `/api/reports/garch` | The 180-fit GARCH study, run on a second domain after listen: `computing` with a count, then `done` with its rows (about 5 s on an M-series laptop) |
 | `/ops` | The operator's view: what the process is, how long it has been up, what it has recomputed |
@@ -187,7 +188,7 @@ The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/da
 
 ## What is verified
 
-- **309 hermetic tests** — no network, no credentials, nothing waiting on a
+- **373 hermetic tests** — no network, no credentials, nothing waiting on a
   clock. Expected values are derived by hand with the derivation beside the
   assertion. Seven are worth knowing by name: Euler residual, hedge (no stray
   `abs`), lookahead, stress-fork isolation, regime-break, delta-hedged, and
@@ -195,7 +196,7 @@ The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/da
 - **Property tests** (qcheck) generalise the identities over random inputs:
   Euler additivity, component VaR summing to portfolio VaR, a hedge reducing
   variance, VaR monotone in confidence, fork isolation, backtest lookahead.
-- **Coverage 82.2%** (3,713 / 4,516 instrumented points, measured 2026-09-10), with a 60% floor in CI that exists to make deleting
+- **Coverage 81.7%** (3,873 / 4,743 instrumented points, measured 2026-09-13), with a 60% floor in CI that exists to make deleting
   tests noticeable, not as a target. The number is bimodal by design: the pure
   numeric core is above 90% and the network edges near 40%, because exercising
   them means mocking a broker, which raises the number and establishes nothing.
@@ -286,6 +287,7 @@ breaking one is a regression even if the tests pass.
 | After the roadmap | The Weibull duration test; GARCH(1,1) implemented and measured out; vega by tenor bucket |
 | 2026-08-31 | The server-side spec; the engine containerised behind the proxy it ships behind, verified against a local harness |
 | 2026-09-01 → 02 | Droplet provisioned, DNS, first production deploy. Two bugs found and fixed: a fresh clone has no `book.sexp` (gitignored), and `deploy.sh` sourced its env file into bash, which turned the `$$` in the bcrypt hash into process IDs. Smoke suite green. README gained *Watching it* |
+| 2026-09-12 | The desk design approved: paper trading around the risk kernel, in phases, with its spec and first backend phase on the `desk/a1-record` branch until they merge. Phase W1 deployed: Figure 1 draws a frame's work rank by rank, a dotted rule where a cutoff held, edge weight from lifetime run counts and rule weight from each node's cost class, with a legend and a poster mode |
 
 Plans and specs live under [`superpowers/`](superpowers/): the readable-front-door
 design (the README rewrite), the eight-phase roadmap (marked complete, with its three deviations

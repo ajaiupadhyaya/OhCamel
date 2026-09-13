@@ -59,6 +59,17 @@
     ["exposure", ["exposure:", "option_exposure:", "greeks:"]]
   ];
   var SCALAR = { usd: 1, fraction: 1, ratio: 1, count: 1, price: 1, qty: 1, time: 1 };
+  // The wave: a frame lights its nodes in rank order, STEP ms a rank, so a
+  // tick is seen travelling from its cell to the limits.
+  var STEP = 36;
+  // A node's rule weight is its cost class, from the topology: all nine of
+  // Node_name.cost_of's, since a class missing here drew at the O(1) weight.
+  // Classes in different variables do not order strictly; O(L) and O(h) sit
+  // by what they scan per run on the demo's book -- 9 limits beside 6 names,
+  // and an equity history level with n·w's 360 returns ninety minutes in,
+  // though it grows a mark every 15 s bar to 10,000 and its weight stays.
+  var COST_W = { "O(1)": 0.75, "O(w)": 1.15, "O(n)": 1.15, "O(L)": 1.15, "O(n·w)": 1.7, "O(w log w)": 1.7, "O(h)": 1.7, "O(n²)": 2.4, "O(n²·w)": 3.4 };
+  var COST_ORDER = ["O(1)", "O(w)", "O(n)", "O(L)", "O(w log w)", "O(n·w)", "O(h)", "O(n²)", "O(n²·w)"];
   function isFeed(n) { return n.name === "now" || n.name === "feed_health" || n.name.indexOf("feed:") === 0 || n.name.indexOf("last_tick[") === 0; }
   function stageOf(n) {
     if (n.family === "input") return "inputs";
@@ -277,7 +288,7 @@
     // per-name one.
     var compact = opts.compact === undefined ? true : !!opts.compact;
     var inspector = !!opts.inspector;
-    var st = { runs: {}, values: null, notes: {}, lit: [], litCount: 0, stale: [], staleSet: new Set(), partial: {}, open: null, hover: null, dead: false, L: null, svg: null, cap: null, insp: null };
+    var st = { runs: {}, base: {}, changed: null, origins: null, cutCount: 0, poster: false, values: null, notes: {}, lit: [], litCount: 0, stale: [], staleSet: new Set(), partial: {}, open: null, hover: null, dead: false, L: null, svg: null, cap: null, insp: null };
     var maxRank = 0; topo.nodes.forEach(function (n) { if (n.rank > maxRank) maxRank = n.rank; });
 
     // Escaped: a limit's name comes from the owner's book, and a quote in one
@@ -296,7 +307,7 @@
       if (SCALAR[n.unit] && (n.family === "input" || n.family === "singleton")) return st.values ? unitFormat(n.unit, st.values[n.name], n.name) : "—";
       return "ran " + (st.runs[n.name] || 0) + "×";
     }
-    function captionText() { var c = topo.counts || {}; return "The Incremental graph, taken from Incremental. " + c.named + " named nodes, " + c.observed + " observed. This frame: " + st.litCount + " ran."; }
+    function captionText() { var c = topo.counts || {}; return c.named + " named nodes, " + c.observed + " observed. This frame: " + st.litCount + " ran" + (st.changed ? ", " + st.cutCount + " stopped at a cutoff" : "") + "."; }
     // A band with some stale members and some fresh ones says how many after
     // its value, in the cannot-evaluate ink (the feed's own band in --over).
     function writeVal(g, n) {
@@ -313,15 +324,71 @@
       if (!st.svg) return;
       st.L.drawn.forEach(function (n) { var g = nodeGroup(n.name); if (g) writeVal(g, n); });
     }
+    // Folded through the alias, a band here lights (and, below, is marked
+    // changed or cut) the moment any one member is in the set passed in --
+    // a change anywhere in a family is a change the reader should see.
+    // applyStale, further down, asks the opposite question of the same
+    // members and answers it the other way: a band dims only when every
+    // member is stale, because a claim that a family is stale must hold for
+    // all of it.
     function drawnSet(names) { var s = new Set(); names.forEach(function (m) { var a = st.L.alias[m]; if (a) s.add(a); }); return s; }
     function applyLit() {
       if (!st.svg) return;
-      var lit = drawnSet(st.lit);
-      Array.prototype.forEach.call(st.svg.querySelectorAll("g.node, path.edge"), function (e) { e.classList.remove("lit"); });
-      void st.svg.getBoundingClientRect(); // restart the 0.75 s fade for a node lit on consecutive frames
-      Array.prototype.forEach.call(st.svg.querySelectorAll("g.node"), function (g) { if (lit.has(g.getAttribute("data-name"))) g.classList.add("lit"); });
-      Array.prototype.forEach.call(st.svg.querySelectorAll("path.edge"), function (p) { if (lit.has(p.getAttribute("data-to"))) p.classList.add("lit"); });
+      var lit = drawnSet(st.lit), changed = st.changed ? drawnSet(st.changed) : null;
+      var rankOf = {}; st.L.drawn.forEach(function (n) { rankOf[n.name] = n.rank; });
+      var r0 = Infinity; lit.forEach(function (m) { if (rankOf[m] !== undefined && rankOf[m] < r0) r0 = rankOf[m]; });
+      if (r0 === Infinity) r0 = 1;
+      // rank 0 is a cell; the first thing a frame RUNS is rank 1 at the earliest
+      r0 = Math.max(0, r0 - 1);
+      Array.prototype.forEach.call(st.svg.querySelectorAll("g.node, path.edge, rect.cell"), function (e) { e.classList.remove("lit", "cut", "pulse"); });
+      void st.svg.getBoundingClientRect(); // restart the fade for anything lit on consecutive frames
+      Array.prototype.forEach.call(st.svg.querySelectorAll("g.node"), function (g) {
+        var name = g.getAttribute("data-name");
+        if (!lit.has(name)) return;
+        g.style.setProperty("--d", ((rankOf[name] - r0) * STEP) + "ms");
+        g.classList.add(changed && !changed.has(name) ? "cut" : "lit");
+      });
+      Array.prototype.forEach.call(st.svg.querySelectorAll("path.edge"), function (p) {
+        var to = p.getAttribute("data-to"), from = p.getAttribute("data-from");
+        if (!lit.has(to)) return;
+        var dr = rankOf[from] !== undefined ? Math.max(0, rankOf[from] - r0) : 0;
+        p.style.setProperty("--d", (dr * STEP) + "ms");
+        p.classList.add(changed && !changed.has(to) ? "cut" : "lit");
+      });
+      if (st.origins) drawnSet(st.origins).forEach(function (m) {
+        var g = nodeGroup(m); if (!g) return;
+        var cell = g.querySelector("rect.cell"); if (cell) cell.classList.add("pulse");
+      });
       if (st.cap) st.cap.querySelector(".cap-title").textContent = captionText();
+    }
+    // Session heat: an edge's weight and ink grow with how often both its ends
+    // have run, base (from the process) plus what this page has watched. The
+    // lesser of the two counts, because a target runs on an edge's account
+    // only when the edge's source ran too: weighted by its target alone, every
+    // edge out of covariance drew hot, its targets running tick after tick
+    // while covariance runs once a bar. A cell is set and never run, so an
+    // edge out of one takes its target's count alone.
+    function runsOf(name) {
+      var n = st.L && st.L.drawnBy && st.L.drawnBy[name];
+      if (n && n.band) { var s = 0; n.members.forEach(function (m) { s += (st.base[m] || 0) + (st.runs[m] || 0); }); return s; }
+      return (st.base[name] || 0) + (st.runs[name] || 0);
+    }
+    function edgeRuns(p) {
+      var from = p.getAttribute("data-from"), to = runsOf(p.getAttribute("data-to"));
+      var src = st.L && st.L.drawnBy && st.L.drawnBy[from];
+      return src && src.family === "input" ? to : Math.min(runsOf(from), to);
+    }
+    function applyHeat() {
+      // The main figure only: a fragment in the essay is not lit by frames,
+      // and heat with no runs behind it would fade every edge to its floor.
+      if (!st.svg || !inspector) return;
+      var paths = st.svg.querySelectorAll("path.edge"), runs = [], max = 1;
+      Array.prototype.forEach.call(paths, function (p, i) { runs[i] = edgeRuns(p); if (runs[i] > max) max = runs[i]; });
+      Array.prototype.forEach.call(paths, function (p, i) {
+        var h = Math.sqrt(runs[i] / max);
+        p.style.strokeWidth = (0.45 + 1.25 * h).toFixed(2);
+        p.style.strokeOpacity = (0.3 + 0.7 * h).toFixed(2);
+      });
     }
     // A band dims only when every name it holds is dimmed. Dimming price[S] × 5
     // because one of five is quiet would say four fresh prices are stale, which
@@ -351,6 +418,7 @@
         "inputs: " + (ins.length ? ins.join(", ") : "none"), "outputs: " + (outs.length ? outs.join(", ") : "none"),
         "upstream " + closure(topo, [n.name], "up").size + " / downstream " + closure(topo, [n.name], "down").size,
         "ran " + (st.runs[n.name] || 0) + "× since you opened this page"];
+      if (n.cost) parts.splice(3, 0, "cost " + n.cost);
       if (SENTENCES[n.name]) parts.push(SENTENCES[n.name]);
       return parts.join(" · ");
     }
@@ -381,7 +449,18 @@
       container.appendChild(ol);
       if (inspector) container.appendChild(el("div", "graph-note", "The drawing reads best on a laptop. Here are its node names by rank, with the ones this frame ran marked."));
     }
-    function edgePath(a, b) { var x1 = a.x + a.w + 8, y1 = a.y - 4, x2 = b.x - 4, y2 = b.y - 4, mx = (x1 + x2) / 2; return "M" + x1 + "," + y1 + " C" + mx + "," + y1 + " " + mx + "," + y2 + " " + x2 + "," + y2; }
+    // Bundled: an edge leaves its node along a stub into its column's gutter,
+    // crosses as one curve, and arrives along a stub from the target's gutter,
+    // so the fans out of a node and into a node share a trunk.
+    function edgePath(a, b, na, nb, L) {
+      var x1 = a.x + a.w + 8, y1 = a.y - 4, x2 = b.x - 4, y2 = b.y - 4;
+      if (!na || !nb || !L || nb.rank <= na.rank) { var m0 = (x1 + x2) / 2; return "M" + x1 + "," + y1 + " C" + m0 + "," + y1 + " " + m0 + "," + y2 + " " + x2 + "," + y2; }
+      var g1 = Math.max(x1, L.colX(na.rank) + (L.colW[na.rank] || 0) + GUT * 0.4);
+      var g2 = Math.min(x2, L.colX(nb.rank) - GUT * 0.4);
+      if (g2 < g1) g2 = g1;
+      var mx = (g1 + g2) / 2;
+      return "M" + x1 + "," + y1 + " H" + g1.toFixed(1) + " C" + mx.toFixed(1) + "," + y1 + " " + mx.toFixed(1) + "," + y2 + " " + g2.toFixed(1) + "," + y2 + " H" + x2;
+    }
     function drawSvg() {
       // The observers belong to the whole graph; a filtered fragment is a
       // piece of the risk chain and does not carry them. A column holding
@@ -417,9 +496,12 @@
         c.lines.forEach(function (s, i) { var sp = svgEl("tspan", { x: c.x, dy: i ? 13 : 0 }); sp.textContent = s; t.appendChild(sp); });
         svg.appendChild(t);
       });
+      // Built once per draw, and kept on L for runsOf to read by name instead
+      // of scanning L.drawn per edge, per frame.
+      var drawnBy = L.drawnBy = {}; L.drawn.forEach(function (n) { drawnBy[n.name] = n; });
       L.edges.forEach(function (e) {
         var a = L.pos[e[0]], b = L.pos[e[1]]; if (!a || !b) return;
-        svg.appendChild(svgEl("path", { d: edgePath(a, b), "data-from": e[0], "data-to": e[1] }, "edge"));
+        svg.appendChild(svgEl("path", { d: edgePath(a, b, drawnBy[e[0]], drawnBy[e[1]], L), "data-from": e[0], "data-to": e[1] }, "edge"));
       });
       L.drawn.forEach(function (n) {
         var p = L.pos[n.name];
@@ -435,7 +517,10 @@
         var g = svgEl("g", { "data-name": n.name, "data-family": n.family, transform: "translate(" + p.x + "," + p.y + ")" }, "node" + (n.band ? " band" : ""));
         if (n.family === "input" && !n.band) g.appendChild(svgEl("rect", { x: -13, y: -10, width: 8, height: 8 }, "cell"));
         g.appendChild(text(0, 0, n.label, "name"));
-        g.appendChild(svgEl("line", { x1: 0, y1: 3, x2: p.w, y2: 3 }, "rule"));
+        var rule = svgEl("line", { x1: 0, y1: 3, x2: p.w, y2: 3 }, "rule");
+        var cost = n.band ? n.members.map(function (m) { return (byName[m] || {}).cost; }).sort(function (x, y) { return COST_ORDER.indexOf(y) - COST_ORDER.indexOf(x); })[0] : n.cost;
+        if (cost && COST_W[cost]) { rule.style.strokeWidth = COST_W[cost]; g.setAttribute("data-cost", cost); }
+        g.appendChild(rule);
         if (n.observed) g.appendChild(svgEl("circle", { cx: p.w + 5, cy: -3, r: 2.5 }, "obs"));
         g.appendChild(text(0, 13, valueText(n), "val"));
         if (inspector && !n.band) {
@@ -481,12 +566,28 @@
         });
         svg.appendChild(go);
       }
+      // Heat goes on before the drawing is in the document, so each path's
+      // first style is already its heat and the width transition has nothing
+      // to run from. Applied after, the measuring below had already styled
+      // every path at the stylesheet's .75, and every edge of a rebuild --
+      // most frames, folded -- grew to its heat over 0.6 s.
+      applyHeat();
       container.appendChild(svg);
+      Array.prototype.forEach.call(svg.querySelectorAll("path.edge"), function (p) { p.style.setProperty("--len", Math.ceil(p.getTotalLength()) + "px"); });
       if (inspector) {
         st.insp = el("div", "inspector", ""); container.appendChild(st.insp);
+        container.appendChild(legend());
         st.cap = el("figcaption", "graph-cap");
-        st.cap.appendChild(el("span", "cap-title", captionText()));
-        st.cap.appendChild(el("span", "cap-prov", "LIVE · THIS HOST"));
+        var capTitle = el("span", "cap-title", captionText());
+        st.cap.appendChild(capTitle);
+        var right = el("span", "cap-right");
+        right.appendChild(el("span", "cap-prov", "LIVE · THIS HOST"));
+        var pb = el("button", "poster-btn", st.poster ? "close ✕" : "poster ⤢");
+        pb.type = "button";
+        pb.setAttribute("aria-pressed", st.poster ? "true" : "false");
+        pb.addEventListener("click", function () { togglePoster(); });
+        right.appendChild(pb);
+        st.cap.appendChild(right);
         container.appendChild(st.cap);
         container.appendChild(el("div", "graph-note", "nodes recomputed (footer) is Incremental's process-wide count and includes watch nodes, plumbing, every stress fork and the startup probe; the number above is named node bodies, from the hook the tests pin."));
         if (compact) container.appendChild(el("div", "graph-note", "per-symbol families are drawn as one band each (" + L.symbols.length + " names); the name a frame ticked opens its own row, and a frame without a tick folds it again"));
@@ -508,8 +609,10 @@
         drawList();
       }
     }
-    function light(names) {
+    function light(names, changed) {
       if (st.dead) return;
+      st.changed = changed ? changed.slice() : null;
+      st.origins = changed ? changed.filter(function (m) { var n = byName[m]; return n && n.family === "input"; }) : null;
       var lit = [], open = null;
       (names || []).forEach(function (x) {
         var name = typeof x === "string" ? x : x.name, n = typeof x === "string" ? 1 : (x.n || 1);
@@ -520,9 +623,14 @@
         if (open === null && node && node.symbol && !isFeed(node)) open = node.symbol;
       });
       st.lit = lit; st.litCount = lit.length;
+      // Counted in names, from the server's two lists, as "ran" is. Counted
+      // from the drawing, five feed:S cutoffs in one clock frame folded into
+      // one band and the caption said 1.
+      var ch = new Set(st.changed || []);
+      st.cutCount = st.changed ? lit.filter(function (m) { return !ch.has(m); }).length : 0;
       if (compact && open !== st.open) { st.open = open; draw(); applyValues(); return; }
       if (!st.svg) { draw(); return; }
-      applyLit(); applyValues();
+      applyHeat(); applyLit(); applyValues();
       if (st.hover && st.insp) st.insp.textContent = inspectorLine(st.hover);
     }
     function dim(staleSymbols) {
@@ -534,9 +642,78 @@
     }
     function setValues(byNode) { st.values = byNode || {}; if (!st.dead) applyValues(); }
     function setNote(name, t) { st.notes[name] = t; if (!st.dead) applyValues(); }
-    function destroy() { st.dead = true; st.hover = null; container.textContent = ""; container.classList.remove("ohcamel-graph"); st.svg = null; st.cap = null; st.insp = null; }
+    function destroy() {
+      // A poster this handle opened outlives the handle otherwise: it is
+      // fixed on the whole page, not inside container, so clearing container
+      // below would leave it stuck open with no button left to close it.
+      if (st.poster) togglePoster(false);
+      // And whatever it made inert is released, even where togglePoster found
+      // no figure to close.
+      inertBehind(null);
+      if (escHandler) { document.removeEventListener("keydown", escHandler); escHandler = null; }
+      st.dead = true; st.hover = null; container.textContent = ""; container.classList.remove("ohcamel-graph"); st.svg = null; st.cap = null; st.insp = null;
+    }
     draw();
-    return { light: light, dim: dim, setValues: setValues, setNote: setNote, destroy: destroy, redraw: draw };
+    function heat(counts) { st.base = counts || {}; if (!st.dead) applyHeat(); }
+    function legend() {
+      var box = el("div", "graph-legend");
+      function sw(kind) {
+        var s = svgEl("svg", { width: 26, height: 12, viewBox: "0 0 26 12", "aria-hidden": "true" }, "sw " + kind);
+        if (kind === "cell") s.appendChild(svgEl("rect", { x: 8, y: 2, width: 8, height: 8 }, "cell"));
+        else if (kind === "obs") s.appendChild(svgEl("circle", { cx: 13, cy: 6, r: 2.5 }, "obs"));
+        else if (kind === "lit") s.appendChild(svgEl("line", { x1: 1, y1: 6, x2: 25, y2: 6 }, "lit"));
+        else if (kind === "cut") s.appendChild(svgEl("line", { x1: 1, y1: 6, x2: 25, y2: 6 }, "cut"));
+        else if (kind === "heat") { s.appendChild(svgEl("line", { x1: 1, y1: 9, x2: 25, y2: 9 }, "cold")); s.appendChild(svgEl("line", { x1: 1, y1: 3, x2: 25, y2: 3 }, "hot")); }
+        else if (kind === "cost") { s.appendChild(svgEl("line", { x1: 1, y1: 3, x2: 25, y2: 3 }, "c1")); s.appendChild(svgEl("line", { x1: 1, y1: 9, x2: 25, y2: 9 }, "c3")); }
+        else if (kind === "absent") s.appendChild(svgEl("rect", { x: 2, y: 2, width: 22, height: 8, rx: 1.5 }, "slot"));
+        return s;
+      }
+      [["cell", "an input cell"], ["obs", "observed by the stream"], ["lit", "ran, and its value changed"], ["cut", "ran, and a cutoff held its value"],
+       ["heat", "edge weight: how often both its ends have run"], ["cost", "rule weight: the node's cost class"], ["absent", "present, and not wired in"]].forEach(function (x) {
+        var item = el("span", "lg-item"); item.appendChild(sw(x[0])); item.appendChild(el("span", "lg-text", x[1])); box.appendChild(item);
+      });
+      return box;
+    }
+    // aria-modal tells a screen reader that the page behind a poster is out
+    // of reach; inert makes it so for Tab too, on every sibling of the figure
+    // and of each element above it up to body. Only what this handle set is
+    // released, so an element that was inert before the poster opened stays
+    // inert after it closes.
+    var inerted = [];
+    function inertBehind(fig) {
+      inerted.forEach(function (e) { e.removeAttribute("inert"); });
+      inerted = [];
+      for (var n = fig; n && n.parentElement && n !== document.body; n = n.parentElement)
+        Array.prototype.forEach.call(n.parentElement.children, function (sib) {
+          if (sib !== n && !sib.hasAttribute("inert")) { sib.setAttribute("inert", ""); inerted.push(sib); }
+        });
+    }
+    function togglePoster(force) {
+      var fig = container.closest ? container.closest("figure") : null;
+      if (!fig) return;
+      st.poster = force === undefined ? !st.poster : force;
+      fig.classList.toggle("poster", st.poster);
+      document.documentElement.classList.toggle("poster-open", st.poster);
+      // A poster covers the page, so it is a dialog to anyone not reading it
+      // by eye -- the three attributes exist only while it does.
+      if (st.poster) { fig.setAttribute("role", "dialog"); fig.setAttribute("aria-modal", "true"); fig.setAttribute("aria-label", "Figure 1, full screen"); }
+      else { fig.removeAttribute("role"); fig.removeAttribute("aria-modal"); fig.removeAttribute("aria-label"); }
+      inertBehind(st.poster ? fig : null);
+      draw(); applyValues();
+      // draw() just rebuilt the caption, button included, so the element a
+      // click or Escape started from no longer exists -- find its
+      // replacement and keep the keyboard there, open or closed.
+      var btn = st.cap ? st.cap.querySelector(".poster-btn") : null;
+      if (btn) btn.focus();
+    }
+    // Escape only ever has a poster to close where a poster can open, and
+    // destroy() above must be able to find this same listener to remove it.
+    var escHandler = null;
+    if (inspector) {
+      escHandler = function (e) { if (e.key === "Escape" && st.poster) togglePoster(false); };
+      document.addEventListener("keydown", escHandler);
+    }
+    return { light: light, dim: dim, setValues: setValues, setNote: setNote, heat: heat, destroy: destroy, redraw: draw, poster: togglePoster };
   }
 
   window.OhCamelGraph = { render: render, filter: filter, closure: closure };

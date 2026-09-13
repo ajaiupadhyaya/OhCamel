@@ -1136,6 +1136,7 @@ let run_live ~book_path ~(serve_port : int option) =
           ~on_compute:(fun name ->
             Counter.on_compute counter name;
             Recompute_log.note log name)
+          ~on_value_change:(Recompute_log.note_change log)
           ~starting_cash:(Notional.of_float book.Config.Book.cash)
           ~instruments ~limits ~confidence:runtime.Config.Runtime.confidence
           ~return_window:runtime.Config.Runtime.return_window
@@ -1398,8 +1399,9 @@ let run_demo ~port =
      hook -- can never reach it. *)
   let log = Recompute_log.create () in
   let graph =
-    Graph.create ~on_compute:(Recompute_log.note log) ~starting_cash ~instruments
-      ~limits:demo_limits ~confidence ~return_window
+    Graph.create ~on_compute:(Recompute_log.note log)
+      ~on_value_change:(Recompute_log.note_change log)
+      ~starting_cash ~instruments ~limits:demo_limits ~confidence ~return_window
       ~staleness_threshold:(Time.Span.of_sec 20.0) ()
   in
   let last_price = Symbol.Table.create () in

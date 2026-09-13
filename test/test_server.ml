@@ -38,9 +38,9 @@ let limits =
 let returns = [| -0.05; -0.04; -0.03; -0.02; -0.01; 0.01; 0.02; 0.03; 0.04; 0.05 |]
 
 (* AAPL 150 x 200 = +30,000 ; XOM 100 x -400 = -40,000. gross 70,000. *)
-let with_graph ?(seed = true) ?on_compute ~f () =
+let with_graph ?(seed = true) ?on_compute ?on_value_change ~f () =
   let graph =
-    Graph.create ?on_compute ~starting_cash:(Notional.of_float 100_000.0)
+    Graph.create ?on_compute ?on_value_change ~starting_cash:(Notional.of_float 100_000.0)
       ~instruments:book ~limits ~confidence:0.95 ~return_window:10 ()
   in
   if seed then (
@@ -1046,6 +1046,7 @@ let test_the_404_lists_exactly_the_routes () =
       "/api/history";
       "/api/stress";
       "/api/graph";
+      "/api/heat";
       "/api/reports";
       "/api/reports/garch";
       "/api/ops";
@@ -1217,6 +1218,18 @@ let names_of (json : Yojson.Safe.t) : string list =
           | `String s -> s
           | _ -> Alcotest.fail "name is not a string")
   | other -> Alcotest.failf "recomputed is not a list: %s" (Yojson.Safe.to_string other)
+
+(* [names_of]'s sibling for a field that is a plain list of strings rather
+   than a list of {name, n} objects -- [changed] is a set of names with no
+   count beside them, so there is nothing here to unwrap a second field
+   from. *)
+let strings_of (json : Yojson.Safe.t) : string list =
+  match json with
+  | `List entries ->
+      List.map entries ~f:(function
+        | `String s -> s
+        | other -> Alcotest.failf "not a string: %s" (Yojson.Safe.to_string other))
+  | other -> Alcotest.failf "changed is not a list: %s" (Yojson.Safe.to_string other)
 
 (* A poller cannot steal the stream's set.
 
@@ -1809,9 +1822,9 @@ let test_api_graph () =
                 | _ -> []))
       | _ -> Alcotest.fail "outside");
       Alcotest.(check (list string))
-        "the route sits before the two report routes and /api/ops"
-        [ "/api/graph"; "/api/reports"; "/api/reports/garch"; "/api/ops" ]
-        (List.drop (Server.route_paths ()) (List.length (Server.route_paths ()) - 4));
+        "the route sits before /api/heat, the two report routes and /api/ops"
+        [ "/api/graph"; "/api/heat"; "/api/reports"; "/api/reports/garch"; "/api/ops" ]
+        (List.drop (Server.route_paths ()) (List.length (Server.route_paths ()) - 5));
       (* The exact objects at every level, the rest of the counts and limits,
          and the whole body against the topology the graph reports now: the
          memo is that topology, encoded, and nothing else. *)
@@ -1828,6 +1841,7 @@ let test_api_graph () =
               "observed";
               "cutoff";
               "unit";
+              "cost";
               "symbol";
               "sector";
               "limit";
@@ -2275,6 +2289,92 @@ let test_refusal_headers_add_connection_close () =
         (Cohttp.Header.get (Server.refusal_headers server) "Access-Control-Allow-Origin"))
     ()
 
+(* The frame's changed set: what moved, drained with what ran, and never
+   stolen by a poll. With the price of AAPL moved from 150 to 151 the cell
+   changed and so did the exposure it feeds (151 x 200 = 30,200, was 30,000). *)
+let test_a_frame_carries_what_changed_and_a_poll_does_not () =
+  let log = Ohcamel.Recompute_log.create () in
+  with_graph
+    ~on_compute:(Ohcamel.Recompute_log.note log)
+    ~on_value_change:(Ohcamel.Recompute_log.note_change log)
+    ~f:(fun graph ->
+      let server =
+        Server.create ~recompute_log:log ~mode:`Demo ~graph ~factor:"SYNTHETIC" ()
+      in
+      ignore (Server.next_frame server : string);
+      Graph.set_price graph aapl (Price.of_float 151.0);
+      Graph.stabilize graph;
+      let poll = Yojson.Safe.from_string (Server.render server) in
+      Alcotest.(check bool)
+        "a poll says null" true
+        (Poly.equal (field_exn poll "changed") `Null);
+      let frame = Yojson.Safe.from_string (Server.next_frame server) in
+      let changed = strings_of (field_exn frame "changed") in
+      Alcotest.(check bool)
+        "price[AAPL] changed" true
+        (List.mem changed "price[AAPL]" ~equal:String.equal);
+      Alcotest.(check bool)
+        "exposure:AAPL changed" true
+        (List.mem changed "exposure:AAPL" ~equal:String.equal);
+      Alcotest.(check bool)
+        "XOM's exposure did not" false
+        (List.mem changed "exposure:XOM" ~equal:String.equal))
+    ()
+
+(* The heat the drawing starts from is the log's lifetime table, served as it
+   stands -- the same table a frame's drain never clears -- and a server with
+   no log says null rather than an empty object that reads as "nothing ran". *)
+let test_heat_is_the_lifetime_table () =
+  let log = Ohcamel.Recompute_log.create () in
+  with_graph
+    ~on_compute:(Ohcamel.Recompute_log.note log)
+    ~f:(fun graph ->
+      let server =
+        Server.create ~recompute_log:log ~mode:`Demo ~graph ~factor:"SYNTHETIC" ()
+      in
+      Graph.set_price graph aapl (Price.of_float 151.0);
+      Graph.stabilize graph;
+      ignore (Server.next_frame server : string);
+      let status, _, body = respond server "/api/heat" in
+      Alcotest.(check int) "200" 200 status;
+      let nodes = field_exn (Yojson.Safe.from_string body) "nodes" in
+      let served =
+        match nodes with
+        | `Assoc kv -> List.map kv ~f:(fun (k, v) -> (k, Yojson.Safe.Util.to_int v))
+        | _ -> []
+      in
+      Alcotest.(check (list (pair string int)))
+        "exactly the lifetime table, drained frame or not"
+        (Ohcamel.Recompute_log.lifetime log)
+        served;
+      (* The same table by hand, because the check above asks [lifetime] for
+         both sides: if it read the frame table, next_frame's drain would leave
+         both sides [] and that check would pass. Graph.create ends in a
+         stabilize of its own, before any price is set, and every exposure
+         node is necessary, so each first runs there. exposure:AAPL: create's
+         stabilize, with_graph's seeding stabilize, and the stabilize after
+         AAPL moved to 151 -- 3. exposure:XOM: create's and the seeding's, and
+         nothing since moved XOM's price or quantity -- 2. Server.create and
+         next_frame run no body: the topology is read from Incremental's own
+         table, and the snapshot's stabilize finds nothing stale. *)
+      Alcotest.(check bool) "nodes is not empty" false (List.is_empty served);
+      Alcotest.(check (option int))
+        "exposure:AAPL: created, seeded, then 151" (Some 3)
+        (List.Assoc.find served ~equal:String.equal "exposure:AAPL");
+      Alcotest.(check (option int))
+        "exposure:XOM: created and seeded" (Some 2)
+        (List.Assoc.find served ~equal:String.equal "exposure:XOM"))
+    ()
+
+let test_heat_without_a_log_is_null () =
+  with_server
+    ~f:(fun server _ ->
+      let _, _, body = respond server "/api/heat" in
+      Alcotest.(check bool)
+        "nodes null" true
+        (Poly.equal (field_exn (Yojson.Safe.from_string body) "nodes") `Null))
+    ()
+
 let suite =
   ( "server",
     [
@@ -2340,4 +2440,10 @@ let suite =
         test_body_too_large;
       Alcotest.test_case "refusal_headers add connection: close to this server's own"
         `Quick test_refusal_headers_add_connection_close;
+      Alcotest.test_case "a frame carries what changed, and a poll does not" `Quick
+        test_a_frame_carries_what_changed_and_a_poll_does_not;
+      Alcotest.test_case "/api/heat is the log's lifetime table" `Quick
+        test_heat_is_the_lifetime_table;
+      Alcotest.test_case "/api/heat is null with no recompute log" `Quick
+        test_heat_without_a_log_is_null;
     ] )

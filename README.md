@@ -1040,10 +1040,18 @@ FRED: real prints, the real ten-year yield, real staleness. It sits behind a
 password, because it holds credentials and shows a real book.
 
 The page at that address is the engine drawn from itself. Figure 1 is the
-dependency graph taken from Incremental's own node table, with each frame's
-recomputation set lit on it: a print in AAPL lights its exposure, the
-aggregates, the estimators and the limits that read them, and visibly leaves
-`covariance` dark until a bar closes. Below the ledger, this README's argument
+dependency graph taken from Incremental's own node table, and each frame's
+work travels across it rank by rank: a print in AAPL pulses its price cell,
+lights its exposure, the aggregates, the estimators and the limits that read
+them, and visibly leaves `covariance` dark until a bar closes. A node that ran
+and whose cutoff held its value is drawn with a dotted rule rather than
+lit, so the place a change stopped is on the page. An edge's weight is how
+often both its ends have run since the process started (`/api/heat`) — the
+lesser of the two counts, or its target's alone where it leaves an input cell,
+which is set and never run — and a node's rule weight is its cost class, from
+O(1) for an exposure to O(n²·w) for the covariance. The figure opens
+full-screen as a poster. Below the ledger,
+this README's argument
 runs again under the same headings, except that the tables are *computed by
 the deployed process at startup* — the scaling probe, both backtest batteries,
 the options walk, and the GARCH study on a second domain — and each is checked
@@ -1083,7 +1091,7 @@ deploy user alone, and reach the container as environment, never as a layer.
 
 ## What's verified
 
-`make test` runs 309 tests, all hermetic — no network, no credentials, and nothing
+`make test` runs 373 tests, all hermetic — no network, no credentials, and nothing
 that waits on the wall clock. They cover the numerics against hand-computed
 values, the wire format, the alerting state machine, and the recomputation counts
 that make the graph's shape an assertion rather than a claim.
