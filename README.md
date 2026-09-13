@@ -1096,7 +1096,7 @@ deploy user alone, and reach the container as environment, never as a layer.
 
 ## What's verified
 
-`make test` runs 374 tests, all hermetic — no network, no credentials, and nothing
+`make test` runs 381 tests, all hermetic — no network, no credentials, and nothing
 that waits on the wall clock. They cover the numerics against hand-computed
 values, the wire format, the alerting state machine, and the recomputation counts
 that make the graph's shape an assertion rather than a claim.
@@ -1291,7 +1291,8 @@ There is no order routing and no execution — nothing here places, cancels or
 simulates a trade. Persistence is one journal, `desk/journal.ml`: a session's
 close, its marks and a VaR forecast per estimator. `run-live` and `serve` keep it
 in a file, `/data/desk.db` on the live host, and restore the drawdown trail from
-it at startup; the demo keeps it in memory, so it starts empty each run. The book
+it at the first successful sync after startup; the demo keeps it in memory, so it
+starts empty each run. The book
 itself still rebuilds from `book.sexp` and the feed on every restart; when
 `run-live` or `serve` runs with an Alpaca paper key, the desk then resyncs its
 quantities and cash from that account every minute. There is one broker, Alpaca,

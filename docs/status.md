@@ -187,12 +187,13 @@ would be the first that does.
 | `/api/reports/garch` | The 180-fit GARCH study, run on a second domain after listen: `computing` with a count, then `done` with its rows (about 5 s on an M-series laptop) |
 | `/ops` | The operator's view: what the process is, how long it has been up, what it has recomputed |
 | `/api/ops` | The same as JSON, including the recompute log's distinct and total counts and its hottest nodes |
+| `/api/desk` | The desk, served as an extension route: `enabled` with its venue or `disabled` with the reason, the account as last read with `last_sync` and `last_error`, each universe name's venue and graph quantity, the names the account holds outside the universe, the gap between the graph's equity and the venue's, and the journal's newest 30 sessions and latest forecasts, read with bounded queries |
 
 The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/dashboard_html.ml` no longer exists. The 47-line design essay that headed it is archived verbatim, as an HTML comment, at the head of `web/index.html`, with the successor paragraphs beneath it.
 
 ## What is verified
 
-- **374 hermetic tests** — no network, no credentials, nothing waiting on a
+- **381 hermetic tests** — no network, no credentials, nothing waiting on a
   clock. Expected values are derived by hand with the derivation beside the
   assertion. Seven are worth knowing by name: Euler residual, hedge (no stray
   `abs`), lookahead, stress-fork isolation, regime-break, delta-hedged, and
@@ -255,23 +256,25 @@ Size: about 8,200 lines in `lib/`, 6,600 in `test/`.
 
 ## The invariants
 
-Stated in full in [`handoff.md` §2](handoff.md); listed here because they are
-the part of that document still in force. A change that ships faster by
-breaking one is a regression even if the tests pass.
+The binding list is §2 of the desk design,
+[`superpowers/specs/2026-09-12-the-desk-design.md`](superpowers/specs/2026-09-12-the-desk-design.md):
+the eight from [`handoff.md` §2](handoff.md) stay in force with 6 rewritten,
+and five are added. A change that ships faster by breaking one is a
+regression even if the tests pass. The rewritten one and the five new ones, a
+line each (10 to 12 bind the order path phase A2 builds; nothing in the
+repository places, cancels or simulates an order today):
 
-1. Every dependency is a graph edge. No node reads a global, a ref, or the network.
-2. No second implementation of exposure/equity/limit arithmetic. Counterfactuals go through `Graph.fork`.
-3. Units stay abstract. New money- or risk-shaped quantities get their own types with one named bridge.
-4. Pure numerics stay pure. Risk math lives in modules that do not know Incremental exists.
-5. A missing credential is fatal, not degraded. Never fall back to synthetic data in a mode that claims to be live.
-6. No order routing, ever. The kill switch stays a bool wired to nothing.
-7. Every new numeric module gets hand-derived test values. "Returns a number" is not a test.
-8. Comments explain *why*: the tension, the choice, and what breaks under the alternative.
+- **6. The risk kernel cannot place an order.** `lib/` holds no trading client, no order state, no journal and no persistence; execution lives in `desk/`, which depends on `lib/`, dune rejects the reverse edge as a cycle, and CI greps `lib/` for the trading host and the orders path.
+- **9. Paper only, by construction.** The trading host is the constant `paper-api.alpaca.markets`, a trading key that does not begin `PK` is refused before any request is made, and nothing can point the desk at a live-money endpoint.
+- **10. Journal before wire.** An order is in the journal as `Pending_submit` before the request that submits it is sent, and a submission whose outcome is unknown becomes `Submit_unknown`, resolved by asking the venue for its client order id, never by sending it again.
+- **11. Fills are facts.** A fill is recorded even when it arrives in a state that makes the transition illegal, with the anomaly beside it, and a position is set from the venue's reported position, not incremented.
+- **12. Every trade passes the engine first.** Every order is checked by the rules and then against the limits on a fork of the live graph before it exists at a venue, and one that creates a breach or worsens one is rejected naming the limits.
+- **13. Persistence is the journal, and only the journal.** One SQLite file; the engine's root filesystem stays read-only, the in-memory trail stays in memory, and nothing else writes to disk.
 
 ## What it is not, and known limits
 
 - No order routing, no execution, no simulated fills.
-- Persistence is one journal (`desk/journal.ml`, SQLite): each session's close, its marks and a VaR forecast per estimator. `run-live` and `serve` keep it in a file (`/data/desk.db` on the live host) and restore the drawdown trail from it at startup; the demo's is in memory and starts empty each run. Nothing else — the graph, the rest of the book — survives a restart.
+- Persistence is one journal (`desk/journal.ml`, SQLite): each session's close, its marks and a VaR forecast per estimator. `run-live` and `serve` keep it in a file (`/data/desk.db` on the live host) and restore the drawdown trail from it at the first successful sync after startup; the demo's is in memory and starts empty each run. Nothing else — the graph, the rest of the book — survives a restart.
 - One broker (Alpaca, IEX feed on the free tier), one macro source (FRED, `DGS10` by default), one macro factor.
 - Not a research platform: no signals, no strategy, no backtest of anything that could make money. `make backtest` validates the *risk model*.
 - Nothing is optimised: the engine reports concentration and never suggests weights.
@@ -291,7 +294,7 @@ breaking one is a regression even if the tests pass.
 | After the roadmap | The Weibull duration test; GARCH(1,1) implemented and measured out; vega by tenor bucket |
 | 2026-08-31 | The server-side spec; the engine containerised behind the proxy it ships behind, verified against a local harness |
 | 2026-09-01 → 02 | Droplet provisioned, DNS, first production deploy. Two bugs found and fixed: a fresh clone has no `book.sexp` (gitignored), and `deploy.sh` sourced its env file into bash, which turned the `$$` in the bcrypt hash into process IDs. Smoke suite green. README gained *Watching it* |
-| 2026-09-12 | The desk design approved: paper trading around the risk kernel, in phases, with its spec and first backend phase on the `desk/a1-record` branch until they merge. Phase W1 deployed: Figure 1 draws a frame's work rank by rank, a dotted rule where a cutoff held, edge weight from lifetime run counts and rule weight from each node's cost class, with a legend and a poster mode. Phase A1 landed on that branch: the desk library (`ohcamel_desk`, which the kernel cannot depend on), a SQLite journal recording each session's close, its marks and a VaR forecast per estimator, and, when `run-live` or `serve` runs with a paper key, the book's quantities and cash synced from the Alpaca paper account every minute and the return windows rolling at each session's close |
+| 2026-09-12 | The desk design approved: paper trading around the risk kernel, in phases, with its spec and first backend phase on the `desk/a1-record` branch until they merge. Phase W1 deployed: Figure 1 draws a frame's work rank by rank, a dotted rule where a cutoff held, edge weight from lifetime run counts and rule weight from each node's cost class, with a legend and a poster mode. Phase A1 landed on that branch: the desk library (`ohcamel_desk`, which the kernel cannot depend on); a SQLite journal of each session's close, its marks and a VaR forecast per estimator, recorded by `run-live` or `serve` when they run with a paper key, and in memory by the demo; and, in those paper-key runs, the book's quantities and cash synced from the Alpaca paper account every minute and the return windows rolling at each session's close |
 
 Plans and specs live under [`superpowers/`](superpowers/): the readable-front-door
 design (the README rewrite), the eight-phase roadmap (marked complete, with its three deviations

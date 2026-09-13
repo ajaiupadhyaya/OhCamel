@@ -87,8 +87,8 @@ value falls back below a set fraction of the limit, so a number resting on the
 line doesn't flap. Sinks are the log, a file, a dry run that prints the
 payload, or Slack. The kill switch is a separate setting. It trips on limits
 you name and sets `halt_new_orders = true`, and nothing else happens. There is
-no order code anywhere in the repository for it to stop, and that is
-intentional.
+no order-placement code anywhere in the repository for it to stop, and that
+is intentional.
 
 **Scenarios.** The standard suite:
 
@@ -179,6 +179,7 @@ has recomputed.
 | `/api/reports` | The backtest, options and scaling reports, computed at startup |
 | `/api/reports/garch` | The GARCH study, computed in parallel after startup |
 | `/api/ops` | What `/ops` shows, as JSON |
+| `/api/desk` | The desk: its venue and whether it could reach it, the account as last read, each book name's quantity at the venue and in the graph, names held outside the book, and the last 30 recorded sessions with the latest forecasts |
 
 No route changes anything.
 
@@ -197,7 +198,7 @@ No route changes anything.
 
 ## How it's checked
 
-- **374 tests**, all hermetic: no network, no credentials, no waiting on a
+- **381 tests**, all hermetic: no network, no credentials, no waiting on a
   clock. Expected values are derived by hand beside each assertion, and the
   suite checks its own count against [`verified.ml`](../lib/verified.ml).
 - **Property tests** (QCheck) cover the identities over random inputs: Euler
@@ -219,8 +220,8 @@ No route changes anything.
 - **One journal.** A SQLite journal (`desk/journal.ml`) holds each session's
   close, its marks and a VaR forecast per estimator. `serve` and `run-live`
   keep it in a file (`/data/desk.db` on the live host) and restore the
-  drawdown trail from it at startup; the demo keeps it in memory, empty at
-  each start. Nothing else survives a restart.
+  drawdown trail from it at the first successful sync after startup; the demo
+  keeps it in memory, empty at each start. Nothing else survives a restart.
 - **Positions.** Positions are a file, and only prices are live — unless
   `serve` or `run-live` runs with an Alpaca paper key, when the desk syncs
   quantities and cash from that account every minute; the book file still
@@ -243,7 +244,8 @@ deployed with Docker, Caddy and DigitalOcean.
 
 As of 2026-09-12 that comes to about 10,800 lines of OCaml in `lib/`, 1,500 in
 `bin/`, 11,300 in `test/`, and 3,000 lines of JavaScript, HTML and CSS in
-`web/`.
+`web/`. The desk library, `desk/`, counted on 2026-09-13, adds about 2,000
+lines of OCaml.
 
 ## Reading further
 
