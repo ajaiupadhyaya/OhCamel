@@ -1913,6 +1913,22 @@ let test_every_named_node_has_a_cost_class () =
   Alcotest.(check (option string)) "covariance" (Some "O(n²·w)") (N.cost_of "covariance");
   Alcotest.(check (option string)) "weights" (Some "O(n)") (N.cost_of "weights");
   Alcotest.(check (option string)) "an exposure" (Some "O(1)") (N.cost_of "exposure:AAPL");
+  (* The book the topology below is built on holds no options, so the two
+     per-contract families are pinned here by name. greeks:ID is one
+     Black-Scholes evaluation of one contract, a closed form in its four inputs
+     (spot, vol, days, rate); option_exposure:ID is three exposures from that
+     one Greeks record, its contract count and the spot. Neither reads n, w, h
+     or L: O(1) each. *)
+  Alcotest.(check (option string))
+    "a contract's Greeks" (Some "O(1)")
+    (N.cost_of "greeks:AAPL-100C");
+  Alcotest.(check (option string))
+    "a contract's exposure" (Some "O(1)")
+    (N.cost_of "option_exposure:AAPL-100C");
+  (* A limit is named by the owner's book and may end in a bracket; the prefix
+     still decides, as it does in [unit_of]. *)
+  Alcotest.(check (option string))
+    "a limit named like a cell" (Some "O(1)") (N.cost_of "limit:cap[tech]");
   Alcotest.(check (option string))
     "a cell costs nothing to name" None (N.cost_of "price[AAPL]");
   Alcotest.(check (option string))

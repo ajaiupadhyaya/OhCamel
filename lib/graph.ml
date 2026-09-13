@@ -213,12 +213,15 @@ module Node_name = struct
      topology test fails on a named node that is None. *)
   let cost_of (name : string) : string option =
     let starts p = String.is_prefix name ~prefix:p in
-    if String.is_suffix name ~suffix:"]" then None
-    else if
+    (* The prefixes before the bracket, in the order [unit_of] and [classify]
+       check them: a limit is named by the owner's book, and a limit called
+       cap[tech] is still a limit, not a cell. *)
+    if
       starts "exposure:" || starts "feed:" || starts "greeks:"
       || starts "option_exposure:" || starts "limit:"
     then Some "O(1)"
     else if starts "sector:" then Some "O(n)"
+    else if String.is_suffix name ~suffix:"]" then None
     else
       match name with
       | "cash" | "equity_history" | "factor_returns" | "rate" | "valuation_days" | "now"

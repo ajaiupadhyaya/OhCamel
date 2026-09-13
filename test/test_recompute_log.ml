@@ -90,9 +90,14 @@ let downstream_of_aapl_tick_on_the_demo_book =
     "feed_health";
   ]
 
+(* With both hooks, as run_demo attaches them, so the set pinned above is the
+   served graph's and not only a bare graph's. The change hook registers
+   handlers and creates no node, so it must not change which bodies run; the
+   set passing unchanged with it attached is that check. *)
 let seeded_graph log =
   let graph =
     Graph.create ~on_compute:(Recompute_log.note log)
+      ~on_value_change:(Recompute_log.note_change log)
       ~starting_cash:Synthetic_book.starting_cash ~instruments:Synthetic_book.instruments
       ~limits:Synthetic_book.limits ~confidence:Synthetic_book.confidence
       ~return_window:Synthetic_book.return_window ()
@@ -105,6 +110,7 @@ let seeded_graph log =
   Graph.mark_equity graph;
   Graph.stabilize graph;
   ignore (Recompute_log.drain log : (string * int) list);
+  ignore (Recompute_log.drain_changed log : string list);
   graph
 
 (* AAPL is marked DOWN, from 150 to 140, deliberately. Equity falls below the
