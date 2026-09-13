@@ -157,12 +157,16 @@ module Anomaly = struct
     | Overfill of { filled : float; ordered : int }
   [@@deriving sexp_of, compare, equal]
 
+  (* The journal writes this text (order_events.anomaly), and the journal is
+     the record: an overfill's figure is printed with every digit its float
+     has, not the six "%g" keeps. "%.17g" still drops trailing zeros, so a
+     whole number of shares prints as one. *)
   let to_string = function
     | Illegal { event; state } ->
         sprintf "illegal: %s in %s" event (State.to_string state)
     | Fill_after_terminal state -> sprintf "fill after %s" (State.to_string state)
     | Overfill { filled; ordered } ->
-        sprintf "overfill: %g filled against %d ordered" filled ordered
+        sprintf "overfill: %.17g filled against %d ordered" filled ordered
 end
 
 type t = {
@@ -231,6 +235,24 @@ let apply_fill (t : t) (f : Fill.t) : t * Anomaly.t option =
 let illegal t event =
   (t, Some (Anomaly.Illegal { event = Event.name event; state = t.state }))
 
+(* A venue's id for an order, arriving after the order has moved on. The
+   trade-updates stream can deliver a fill before the desk reads the POST's
+   200, and a reconciliation's lookup can land after the stream accepted or
+   filled the order. The venue cancels by this id, so it is kept whatever
+   state the order reached, and a race this ordinary is no anomaly. Three
+   answers are contradictions and say so:
+   - a different id from the one the order holds;
+   - any id for an order refused before the wire, which no venue has;
+   - an id for an order the lookups declared failed. That id is kept anyway,
+     because it is how a person finds the order the venue does have. *)
+let keep_venue_id (t : t) (event : Event.t) (id : string) : t * Anomaly.t option =
+  match (t.state, t.venue_order_id) with
+  | State.Rejected_pre_trade, _ -> illegal t event
+  | _, Some known when String.equal known id -> (t, None)
+  | _, Some _ -> illegal t event
+  | State.Failed, None -> ({ t with venue_order_id = Some id }, snd (illegal t event))
+  | _, None -> ({ t with venue_order_id = Some id }, None)
+
 let apply (t : t) (event : Event.t) : t * Anomaly.t option =
   let move state = ({ t with state }, None) in
   match (t.state, event) with
@@ -242,16 +264,14 @@ let apply (t : t) (event : Event.t) : t * Anomaly.t option =
           reason = Some (String.concat ~sep:"; " reasons);
         },
         None )
-  | (State.Pending_submit | State.Submit_unknown), Event.Acknowledged id ->
+  | (State.Pending_submit | State.Submit_unknown), (Event.Acknowledged id | Event.Found id)
+    ->
       ({ t with state = State.Submitted; venue_order_id = Some id }, None)
-  | (State.Submitted | State.Accepted), Event.Acknowledged _ -> (t, None)
+  | _, (Event.Acknowledged id | Event.Found id) -> keep_venue_id t event id
   | State.Pending_submit, Event.Venue_rejected_submission why ->
       ({ t with state = State.Rejected_by_venue; reason = Some why }, None)
   | State.Pending_submit, Event.Outcome_unknown why ->
       ({ t with state = State.Submit_unknown; reason = Some why }, None)
-  | State.Submit_unknown, Event.Found id ->
-      ({ t with state = State.Submitted; venue_order_id = Some id }, None)
-  | State.Submitted, Event.Found _ -> (t, None)
   | State.Submit_unknown, Event.Not_found -> move State.Failed
   | (State.Pending_submit | State.Submit_unknown | State.Submitted), Event.Venue_accepted
     ->

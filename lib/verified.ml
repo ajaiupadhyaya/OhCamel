@@ -23,7 +23,7 @@
    stanza yet, so the desk's tests raise this figure only where they reach
    the kernel, and it says nothing about the desk's own code. *)
 
-let tests = 381
+let tests = 384
 let coverage_covered = 3_891
 let coverage_lines = 4_743
 let coverage_pct = 82.0
