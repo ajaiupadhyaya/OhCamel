@@ -261,6 +261,39 @@ let test_api_desk_answers_through_the_server () =
             "/api/desk did not answer with a string body without the scheduler")
     ()
 
+(* Two syncs overlap: the first, whose read started at 14:00, times out and
+   answers late; the minute sync, whose read started at 14:01, answers first.
+   The late answer is the older book and must not land on the newer one. *)
+let test_a_read_that_started_before_the_last_applied_one_changes_nothing () =
+  with_desk
+    ~f:(fun desk graph _ ->
+      (* 14:00:00 + 60 s = 14:01:00 *)
+      let newer = Time_ns.add at (Time_ns.Span.of_sec 60.0) in
+      (* graph equity: 80,000 + 20 x 150 = 83,000, given as the venue's too *)
+      Desk.sync_with desk
+        ~account:(Ok (account ~cash:80_000.0 ~equity:83_000.0))
+        ~positions:(Ok [ position aapl 20.0 ])
+        ~at:newer;
+      (* 14:00:00 is strictly before 14:01:00, the last applied read *)
+      Desk.sync_with desk
+        ~account:(Ok (account ~cash:90_000.0 ~equity:91_500.0))
+        ~positions:(Ok [ position aapl 10.0 ])
+        ~at;
+      (* the newer read's 20 stands; the older read's 10 was not applied *)
+      Alcotest.(check (float 0.0))
+        "AAPL is still the newer read's 20" 20.0
+        (Qty.to_float (Graph.qty graph aapl));
+      let s = Desk.summary_json desk in
+      (* the newer read's 80,000 stands; the older read's 90,000 was not applied *)
+      Alcotest.(check (float 1e-9))
+        "cash is still the newer read's" 80_000.0
+        (Yojson.Safe.Util.to_number (field s "cash"));
+      (* 14:01:00, the newer read's start, printed by Desk_time.rfc3339 *)
+      Alcotest.(check string)
+        "last_sync is still the newer read's start" "2026-09-14T14:01:00.000000000Z"
+        (Yojson.Safe.Util.to_string (field s "last_sync")))
+    ()
+
 let suite =
   ( "desk",
     [
@@ -276,4 +309,6 @@ let suite =
         test_the_frame's_desk_object_has_exactly_these_keys;
       Alcotest.test_case "/api/desk answers through the server" `Quick
         test_api_desk_answers_through_the_server;
+      Alcotest.test_case "a read that started before the last applied one changes nothing"
+        `Quick test_a_read_that_started_before_the_last_applied_one_changes_nothing;
     ] )

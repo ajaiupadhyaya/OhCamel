@@ -62,39 +62,50 @@ let venue_name t =
   match t.venue with Reads r -> r.Venue.Read.name | Unavailable { name; _ } -> name
 
 let sync_with t ~account ~positions ~at =
-  (match (account, positions) with
-  | Ok account, Ok positions ->
-      let plan = Book_sync.plan ~universe:(Graph.symbols t.graph) ~positions ~account in
-      Book_sync.apply t.graph plan;
-      t.account <- Some account;
-      (* Design §3.3's own definition of "managed": a name in the book's
-         universe. Read here rather than recovered from [plan.unmanaged] by
-         subtraction -- that would agree with [plan] only because
-         [Book_sync.plan] happens to build [unmanaged] as an untransformed
-         filter of [positions], which is Book_sync's implementation and not a
-         fact desk.ml is entitled to lean on. [t.unmanaged] still comes from
-         the plan, because Book_sync owns that decision; the two now agree by
-         definition, not by construction. *)
-      let universe = Symbol.Set.of_list (Graph.symbols t.graph) in
-      t.unmanaged <- plan.Book_sync.Plan.unmanaged;
-      t.positions <-
-        List.filter positions ~f:(fun p -> Set.mem universe p.Venue.Position.symbol);
-      t.equity_gap <-
-        Some
-          (Notional.to_float (Graph.equity t.graph)
-          -. Notional.to_float account.Venue.Account.equity);
-      t.last_sync <- Some at;
-      t.last_error <- None
-  | Error e, _ | _, Error e -> t.last_error <- Some (Error.to_string_hum e));
-  t.on_change ()
+  match t.last_sync with
+  | Some last when Time_ns.( < ) at last ->
+      (* A read that started before the last applied read is older than what
+         the book already holds, and applying it would move the book backwards. *)
+      ()
+  | _ ->
+      (match (account, positions) with
+      | Ok account, Ok positions ->
+          let plan =
+            Book_sync.plan ~universe:(Graph.symbols t.graph) ~positions ~account
+          in
+          Book_sync.apply t.graph plan;
+          t.account <- Some account;
+          (* Design §3.3's own definition of "managed": a name in the book's
+             universe. Read here rather than recovered from [plan.unmanaged] by
+             subtraction -- that would agree with [plan] only because
+             [Book_sync.plan] happens to build [unmanaged] as an untransformed
+             filter of [positions], which is Book_sync's implementation and not a
+             fact desk.ml is entitled to lean on. [t.unmanaged] still comes from
+             the plan, because Book_sync owns that decision; the two now agree by
+             definition, not by construction. *)
+          let universe = Symbol.Set.of_list (Graph.symbols t.graph) in
+          t.unmanaged <- plan.Book_sync.Plan.unmanaged;
+          t.positions <-
+            List.filter positions ~f:(fun p -> Set.mem universe p.Venue.Position.symbol);
+          t.equity_gap <-
+            Some
+              (Notional.to_float (Graph.equity t.graph)
+              -. Notional.to_float account.Venue.Account.equity);
+          t.last_sync <- Some at;
+          t.last_error <- None
+      | Error e, _ | _, Error e -> t.last_error <- Some (Error.to_string_hum e));
+      t.on_change ()
 
 let sync t : unit Or_error.t Deferred.t =
   match t.venue with
   | Unavailable _ -> return (Ok ())
   | Reads read -> (
+      (* Stamped when the read starts, not when it answers: two syncs can
+         overlap, and [sync_with] orders them by what each one read. *)
+      let started = Time_ns.now () in
       let%bind account = read.Venue.Read.account () in
       let%map positions = read.Venue.Read.positions () in
-      sync_with t ~account ~positions ~at:(Time_ns.now ());
+      sync_with t ~account ~positions ~at:started;
       match (account, positions) with
       | Ok _, Ok _ -> Ok ()
       | Error e, _ | _, Error e -> Error e)
