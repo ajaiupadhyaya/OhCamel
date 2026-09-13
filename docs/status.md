@@ -186,7 +186,7 @@ The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/da
 
 ## What is verified
 
-- **309 hermetic tests** — no network, no credentials, nothing waiting on a
+- **315 hermetic tests** — no network, no credentials, nothing waiting on a
   clock. Expected values are derived by hand with the derivation beside the
   assertion. Seven are worth knowing by name: Euler residual, hedge (no stray
   `abs`), lookahead, stress-fork isolation, regime-break, delta-hedged, and
@@ -194,7 +194,7 @@ The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/da
 - **Property tests** (qcheck) generalise the identities over random inputs:
   Euler additivity, component VaR summing to portfolio VaR, a hedge reducing
   variance, VaR monotone in confidence, fork isolation, backtest lookahead.
-- **Coverage 82.2%** (3,713 / 4,516 instrumented points, measured 2026-09-10), with a 60% floor in CI that exists to make deleting
+- **Coverage 82.5%** (3,803 / 4,612 instrumented points, measured 2026-09-12), with a 60% floor in CI that exists to make deleting
   tests noticeable, not as a target. The number is bimodal by design: the pure
   numeric core is above 90% and the network edges near 40%, because exercising
   them means mocking a broker, which raises the number and establishes nothing.
