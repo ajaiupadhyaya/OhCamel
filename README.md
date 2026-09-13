@@ -917,11 +917,13 @@ Because it is emphatically **not persistence**. `lib/history_buffer.ml` is a
 fixed-capacity ring in memory: it writes nothing to disk, it is not restored on
 startup, and it drops its oldest entry rather than growing. A restart empties it,
 which is correct — the numbers in it are about a process that is no longer
-running. The README says this engine has no persistence and that remains true; if
-a future change makes this durable, that change is *adding persistence to the
-project* and should be argued as such rather than arriving as a side effect of
-wanting a longer chart. The module header says so too, in the file, where someone
-about to make that change would read it.
+running. This specific trail has none, and that remains true regardless of what
+else in the project now does: the desk's journal (`desk/journal.ml`) persists a
+session's close, its marks and a forecast per estimator, and it exists because it
+was argued for on its own terms in the desk's design doc, not because someone
+wanted a longer chart. Making this trail durable too would need that same kind of
+argument. The module header says so too, in the file, where someone about to make
+that change would read it.
 
 It is an **observer, not a node** — the same seam `lib/alerts.ml` uses, and for
 the same reason. A node body may be recomputed whenever the runtime likes, so a
@@ -1091,7 +1093,7 @@ deploy user alone, and reach the container as environment, never as a layer.
 
 ## What's verified
 
-`make test` runs 373 tests, all hermetic — no network, no credentials, and nothing
+`make test` runs 374 tests, all hermetic — no network, no credentials, and nothing
 that waits on the wall clock. They cover the numerics against hand-computed
 values, the wire format, the alerting state machine, and the recomputation counts
 that make the graph's shape an assertion rather than a claim.
@@ -1283,8 +1285,12 @@ for that detail than here. OCaml 5.1.0 or newer is required; this switch is on
 ## What this is not
 
 There is no order routing and no execution — nothing here places, cancels or
-simulates a trade. There is no persistence: state lives in the running process,
-and a restart rebuilds the book from `book.sexp` and the feed. There is one
+simulates a trade. Persistence is one journal, `desk/journal.ml`: a session's
+close, its marks and a VaR forecast per estimator, written to `/data/desk.db` on
+the live host and kept only in memory on the demo host, with the drawdown trail
+restored from it at startup. The book itself still rebuilds from `book.sexp` and
+the feed on every restart, except on the live host, where the desk resyncs its
+quantities and cash from the Alpaca paper account every minute. There is one
 broker, Alpaca, and one macro source, FRED.
 
 Nor is it a research platform. There is no strategy, no signal, no backtest of

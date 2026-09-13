@@ -51,9 +51,11 @@ from Alpaca with none rejected and no reconnects, and the ticks stopped at the
 4 pm close. IEX is a single exchange with a small share of US volume, so a
 mark is the last IEX print rather than the consolidated tape.
 
-Positions come from a file by design: Alpaca supplies the marks, and the book
-file says what is held. Reading positions from a brokerage account is the
-first item under *Next* in [`status.md`](status.md).
+Positions come from a file by design, except on the live host: there the desk
+reads the Alpaca paper account once a minute and treats its quantities and
+cash as the book's, while the file still declares the universe, the limits
+and the alerts. Elsewhere, Alpaca supplies only the marks and the file says
+what is held.
 
 ## What it computes
 
@@ -192,7 +194,7 @@ No route changes anything.
 
 ## How it's checked
 
-- **373 tests**, all hermetic: no network, no credentials, no waiting on a
+- **374 tests**, all hermetic: no network, no credentials, no waiting on a
   clock. Expected values are derived by hand beside each assertion, and the
   suite checks its own count against [`verified.ml`](../lib/verified.ml).
 - **Property tests** (QCheck) cover the identities over random inputs: Euler
@@ -211,9 +213,15 @@ No route changes anything.
 
 - **No trading.** Nothing places, cancels or simulates an order, and the kill
   switch is a flag wired to nothing.
-- **No persistence.** State lives in the running process, and a restart starts
-  from the book file and the feed.
-- **Static positions.** Positions are a file; only prices are live.
+- **One journal.** A SQLite journal (`desk/journal.ml`) records each session's
+  close, its marks and a VaR forecast per estimator, and the drawdown trail
+  restores from it at startup. It lives at `/data/desk.db` on the live host
+  and only in memory on the demo host; nothing else survives a restart.
+- **Positions.** Positions are a file, and only prices are live — except on
+  the live host, where the desk syncs quantities and cash from the Alpaca
+  paper account every minute; the book file still declares the universe, the
+  limits and the alerts, and anything the account holds outside it shows as
+  unmanaged.
 - **One of each source:** one broker (Alpaca, IEX feed), one macro source
   (FRED) and one macro factor.
 - **Limited options:** European only, and off in live mode.

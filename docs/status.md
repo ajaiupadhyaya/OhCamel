@@ -188,7 +188,7 @@ The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/da
 
 ## What is verified
 
-- **373 hermetic tests** — no network, no credentials, nothing waiting on a
+- **374 hermetic tests** — no network, no credentials, nothing waiting on a
   clock. Expected values are derived by hand with the derivation beside the
   assertion. Seven are worth knowing by name: Euler residual, hedge (no stray
   `abs`), lookahead, stress-fork isolation, regime-break, delta-hedged, and
@@ -267,14 +267,14 @@ breaking one is a regression even if the tests pass.
 ## What it is not, and known limits
 
 - No order routing, no execution, no simulated fills.
-- No persistence. State is the running process; a restart rebuilds from `book.sexp` and the feed.
+- Persistence is one journal (`desk/journal.ml`, SQLite): each session's close, its marks and a VaR forecast per estimator, at `/data/desk.db` on the live host and in memory on the demo host; the drawdown trail restores from it at startup. Nothing else — the graph, the rest of the book — survives a restart.
 - One broker (Alpaca, IEX feed on the free tier), one macro source (FRED, `DGS10` by default), one macro factor.
 - Not a research platform: no signals, no strategy, no backtest of anything that could make money. `make backtest` validates the *risk model*.
 - Nothing is optimised: the engine reports concentration and never suggests weights.
 - Options: European only, one flat rate, one vol per contract, no dividends, no implied-vol solve, vega not bucketed by strike, and off in live mode.
 - Volatility: equal-weighted or EWMA; GARCH is present but not wired in, for a measured reason.
 - Validation windows: three US equity episodes, scored at TODAY's six names held at constant weights — what this book would have done, not what the book of the day did.
-- Positions are a static file. Only prices are live.
+- Positions are a static file everywhere except the live host, where the desk reads the Alpaca paper account every minute for quantities and cash; the book file still declares the universe, the limits and the alerts, and names the account holds outside it show as unmanaged.
 - Single droplet, no replica, by design: a second copy of an in-memory graph is a second, differently aged truth.
 
 ## How it got here
@@ -287,7 +287,7 @@ breaking one is a regression even if the tests pass.
 | After the roadmap | The Weibull duration test; GARCH(1,1) implemented and measured out; vega by tenor bucket |
 | 2026-08-31 | The server-side spec; the engine containerised behind the proxy it ships behind, verified against a local harness |
 | 2026-09-01 → 02 | Droplet provisioned, DNS, first production deploy. Two bugs found and fixed: a fresh clone has no `book.sexp` (gitignored), and `deploy.sh` sourced its env file into bash, which turned the `$$` in the bcrypt hash into process IDs. Smoke suite green. README gained *Watching it* |
-| 2026-09-12 | The desk design approved: paper trading around the risk kernel, in phases, with its spec and first backend phase on the `desk/a1-record` branch until they merge. Phase W1 deployed: Figure 1 draws a frame's work rank by rank, a dotted rule where a cutoff held, edge weight from lifetime run counts and rule weight from each node's cost class, with a legend and a poster mode |
+| 2026-09-12 | The desk design approved: paper trading around the risk kernel, in phases, with its spec and first backend phase on the `desk/a1-record` branch until they merge. Phase W1 deployed: Figure 1 draws a frame's work rank by rank, a dotted rule where a cutoff held, edge weight from lifetime run counts and rule weight from each node's cost class, with a legend and a poster mode. Phase A1 landed on that branch: the desk library (`ohcamel_desk`, which the kernel cannot depend on), a SQLite journal recording each session's close, its marks and a VaR forecast per estimator, the live book's quantities and cash synced from the Alpaca paper account every minute, and the live return windows rolling at each session's close |
 
 Plans and specs live under [`superpowers/`](superpowers/): the readable-front-door
 design (the README rewrite), the eight-phase roadmap (marked complete, with its three deviations
@@ -295,50 +295,24 @@ recorded), and the deployment design.
 
 ## Next
 
-**The deployment is complete.** Both hosts are up and the spec's five phases
-are done; the production smoke suite passes nine of nine with `--live`. The
-live host's credentials sit at `/etc/ohcamel/live.env` on the droplet,
-root-owned, 0640, group `ohcamel`. The Alpaca keys are the owner's existing
-pair; another project of the owner's used to share them, which mattered
-because a free account allows one stream, and that project is inactive. The
-first live deploy found the spec's third production bug — a 0600 secrets file
-the deploy user's compose could not read — and the spec records it beside the
-other two. The live book is the committed example until `book.sexp` on the
-droplet is edited and the live container restarted.
+**The desk's remaining phases**, in the order the design lays out
+(`docs/superpowers/specs/2026-09-12-the-desk-design.md` §5):
 
-**Direction, decided 2026-09-01:** a *standalone* tool first — something a
-person other than the author can point at *their* book — then integration
-into the owner's own trading stack later. The first design is therefore
-*submit a book, get a report*: post positions, receive the full report (VaR
-and ES under each estimator, the Euler decomposition, the scenario suite,
-validation) against real market data using the operator's keys, with nothing
-persisted. It is architectural — one graph per request instead of one graph —
-and it introduces a mutating route, which the deployment spec's non-goals
-excluded only *as a side effect of deploying*. It has not been designed; it
-starts with a spec, not code.
-
-**Where that work now lives (2026-09-02).** The standalone direction became
-its own repository, [`ohcamel-alpha`](https://github.com/ajaiupadhyaya/ohcamel-alpha):
-OhCamel linked as a library and left exactly as it is, Five Dollar Quant's
-validation battery as a package, and an OCaml core between them that enforces
-a signal contract, will run pre-trade checks on a fork of this engine's graph,
-and simulates fills. Its Phase 0 is done; its spec records why paper execution
-lives there and not here. What this repository will gain, when that project
-reaches its Phase 2, is one pure function: proposed fill in, breached limits
-out, through `Graph.fork` — the read-only calculation invariant 6 permits.
-
-**After that, in rough order of leverage:**
-- Reading positions from the owner's Alpaca account, and a *pre-trade check*
-  — post a proposed fill, fork the graph, report which limits it would breach,
-  discard the fork. The desk-realistic function, inside every invariant.
-- Live options risk, if Alpaca's options snapshots (implied vol and Greeks)
-  are available on the account's tier. Verify before planning on it.
-- The engine validating *itself*: persist daily forecasts and realised P&L,
-  run the coverage battery on the live track record, show the Basel zone on
-  the dashboard. Needs persistence, which is a separate argument to have first.
-- Build the image in GitHub Actions and push to a registry so the droplet only
-  pulls: deploys drop from a minute to seconds, and the box can shrink to the
-  $12 plan.
+- **A2** — the order manager: rules, the gate, an order-management state
+  machine, trade updates, reconciliation, the kill switch wired to it at
+  last, the mutating routes and their protection, a pre-trade preview, TCA,
+  the ticket and the blotter.
+- **W2** — the site becomes a desk: the full navigation (Desk, Risk,
+  Research, Execution, Argument, Ops) and Figure 1's remaining items.
+- **A3** — signals: Alpha's contract and rules R1–R7 move in, a research
+  service, EXP-A01 pre-registered and run, intake and sizing.
+- **A4** — risk depth: the long return window, the factor model, liquidity
+  and impact, indicative option marks from Alpaca, GARCH wired in as a third
+  estimator, Cornish–Fisher VaR.
+- **A5** — self-validation: the coverage battery run on the live VaR record
+  from the journal, the Basel zone shown on the page.
+- **A6** — operations: the image built and pushed in CI so the droplet only
+  pulls, a nightly journal backup, the desk added to the smoke suite.
 
 ## Operating it
 

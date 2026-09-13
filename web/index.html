@@ -225,7 +225,7 @@ Phase 3. The dashboard page, served from memory by server.ml.
       <figcaption><span>The most severe rejection, in full.</span><span class="prov">the engine's own text</span></figcaption>
       <pre class="engine" id="bt-severe">—</pre>
     </figure>
-    <p class="line soft">The live host's own track record is not here. The engine does not persist forecasts, so there is no coverage test of the live VaR. That needs persistence, which is a separate argument.</p>
+    <p class="line soft">The live host's own track record is not here yet. The journal records a VaR forecast per estimator every session from the deploy date, but running this coverage battery on it needs sessions that do not exist yet — that's phase A5.</p>
   </section>
 
   <section class="arg" id="s05">
@@ -296,8 +296,8 @@ Phase 3. The dashboard page, served from memory by server.ml.
   <section class="arg" id="s09">
     <h2><span class="lbl">09</span>What this is not</h2>
     <div class="prose">
-      <p>There is no order routing and no execution. Nothing here places, cancels or simulates a trade, and the kill switch sets a flag that is wired to nothing. There is no persistence: state lives in the running process, and a restart rebuilds the book from its file and the feed. It is not a research platform either. The backtests validate the risk model, not a trading idea, and nothing is optimised.</p>
-      <p>This page does not show the last smoke run's result, because nothing persists. It shows no uptime percentage, no CPU share and no certificate expiry, which the engine cannot observe. It shows no microsecond timings from this host and no options Greeks on either deployed book. It never shows the live book, which stays behind a password. And there is no market calendar: outside market hours the live host reads <em>parked</em> and says nothing more.</p>
+      <p>There is no order routing and no execution. Nothing here places, cancels or simulates a trade, and the kill switch sets a flag that is wired to nothing. Persistence is one journal: each session's close, its marks and a VaR forecast per estimator, kept on the live host and in memory on the demo host, with the drawdown trail restored from it at startup. The rest of the book still rebuilds from its file and the feed on a restart — except on the live host, where the desk resyncs quantities and cash from the Alpaca paper account every minute. It is not a research platform either. The backtests validate the risk model, not a trading idea, and nothing is optimised.</p>
+      <p>This page does not show the last smoke run's result; that isn't part of what the journal keeps. It shows no uptime percentage, no CPU share and no certificate expiry, which the engine cannot observe. It shows no microsecond timings from this host and no options Greeks on either deployed book. It never shows the live book, which stays behind a password. And there is no market calendar: outside market hours the live host reads <em>parked</em> and says nothing more.</p>
       <p>It is a risk and limits engine, and it stops where a risk and limits engine should stop.</p>
     </div>
   </section>
