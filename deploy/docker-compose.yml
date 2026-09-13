@@ -27,9 +27,10 @@ x-engine: &engine
   # fails the container. deploy.sh creates book.sexp from the example first.
   volumes:
     - ../book.sexp:/app/book.sexp:ro
-  # A read-only root filesystem: the engine writes nothing to disk. Anything
-  # that suddenly needs to is a change worth noticing at review time rather
-  # than discovering in production.
+  # A read-only root filesystem: the engine writes nothing to disk except the
+  # live engine's journal, on its own volume. Anything else that suddenly needs
+  # to is a change worth noticing at review time rather than discovering in
+  # production.
   read_only: true
   tmpfs:
     - /tmp
@@ -109,6 +110,13 @@ services:
     # deliberately gets no peer -- nothing crosses the other way.
     environment:
       OHCAMEL_PEER_ORIGIN: "https://${OHCAMEL_DEMO_HOST}"
+      OHCAMEL_JOURNAL: /data/desk.db
+    # The book, as for every engine, and the journal: the one writable mount
+    # (design §3.5). A named volume, so a rebuild or a `down` keeps the record;
+    # deleting the volume deletes it.
+    volumes:
+      - ../book.sexp:/app/book.sexp:ro
+      - desk_data:/data
     command: ["serve", "8081"]
     # Root-owned, 0640 and group-readable by the deploy user (compose reads
     # env_file as the invoking user, not as root), outside the repository, and
@@ -131,3 +139,4 @@ networks:
 volumes:
   caddy_data:
   caddy_config:
+  desk_data:

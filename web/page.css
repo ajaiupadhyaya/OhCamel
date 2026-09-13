@@ -179,6 +179,10 @@
   .lim.na .name, .lim.na .pct { color: var(--unknown); }
   .lim.na { background: var(--unknown-wash); margin: 0 -20px; padding-left: 20px; padding-right: 20px; }
 
+  /* ---- the desk ---- */
+  .desk-unmanaged { font-size: 11px; color: var(--unknown); margin-top: 8px; }
+  td.v.desk-error { color: var(--over); white-space: normal; font-size: 12px; }
+
   /* ---- stale: data that should not be trusted stops looking trustworthy ----
      Scoped by DEPENDENCY, not by page. A stale print on one symbol compromises
      the aggregates and every limit computed from them -- but it says nothing

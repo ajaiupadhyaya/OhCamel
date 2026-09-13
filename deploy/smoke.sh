@@ -28,7 +28,7 @@ EXPECT_SHA=""
 # list and asserts the 404 body equals it, in order. Adding a route means
 # adding it here in the same commit -- the assertion fails until you do,
 # which is the point of having it.
-EXPECTED_ROUTES="/ /ops /api/snapshot /api/health /api/stream /api/history /api/stress /api/graph /api/reports /api/reports/garch /api/ops"
+EXPECTED_ROUTES="/ /ops /api/snapshot /api/health /api/stream /api/history /api/stress /api/graph /api/reports /api/reports/garch /api/ops /api/desk"
 
 # The first bare argument is the base URL; everything else is a flag. Written
 # out rather than clever, because a smoke script that misparses its own
@@ -295,6 +295,31 @@ else
 	meh "GET /api/nope               python3 unavailable for a real parse; the 404 route list not checked"
 fi
 # -- Phase 5's block 4b (the routes the page reads) is inserted immediately below this line --
+# ---------------------------------------------------------------------------
+# 4a'. The desk
+#
+# The desk rides on both hosts: the simulated venue on the demo, Alpaca paper
+# on the live host. A status and a venue name are asserted, not an equity: a
+# paper account can be empty, and "the desk said what it is" is the claim.
+# ---------------------------------------------------------------------------
+if command -v python3 >/dev/null 2>&1; then
+	desk=$(curl -sS --max-time 15 "$BASE/api/desk" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception as e:
+    print("NOTJSON %s" % e); raise SystemExit
+if d.get("status") not in ("enabled", "disabled") or not d.get("venue"):
+    print("SHAPE status=%r venue=%r" % (d.get("status"), d.get("venue"))); raise SystemExit
+print("OK %s %s %s" % (d["venue"], d["status"], d.get("sessions")))
+' 2>/dev/null)
+	case "$desk" in
+	OK*) read -r _ dvenue dstatus dsessions <<<"$desk"; ok "GET /api/desk               venue $dvenue, $dstatus, $dsessions sessions recorded" ;;
+	*)   no "GET /api/desk               malformed" "${desk:-no response}" ;;
+	esac
+else
+	meh "GET /api/desk               python3 unavailable; the desk not checked"
+fi
 
 # ---------------------------------------------------------------------------
 # 4b. The reports the page reads
@@ -405,13 +430,13 @@ esac
 # 6. The live host refuses anonymous callers
 # ---------------------------------------------------------------------------
 if [ -n "$LIVE" ]; then
-	# Five paths, not one. The gate is Caddy's basic_auth on the whole host,
+	# Six paths, not one. The gate is Caddy's basic_auth on the whole host,
 	# and the tempting way to fill the ops page's peer column from the public
 	# origin is a matcher that exempts /api/ops from it. That hole would show
 	# up here as a 200 on one path while / still said 401. The page fills its
 	# peer column the other way round -- the live origin reads the demo, over
 	# the demo engine's own CORS header -- so the live host never needs one.
-	for path in / /ops /api/ops /api/snapshot /api/health; do
+	for path in / /ops /api/ops /api/snapshot /api/health /api/desk; do
 		code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$LIVE$path" 2>/dev/null)
 		[ "$code" = "401" ] && ok "GET $LIVE$path  401 without credentials" \
 			|| no "GET $LIVE$path  $code, expected 401" "the live host is not gated on $path"

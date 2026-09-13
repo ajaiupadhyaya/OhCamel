@@ -1080,6 +1080,36 @@ let run_live ~book_path ~(serve_port : int option) =
       let runtime = config.Config.runtime in
       let instruments = Config.Book.instruments book in
       let limits = Config.Book.limits book in
+      (* Alpaca's free plan streams at most 30 symbols. A larger book would
+         subscribe, be told no for the excess, and watch a fraction of itself
+         while the page drew all of it. Refused here, with the number. *)
+      let universe_cap = 30 in
+      (* Both refusals below exit through Async's [exit], bound, rather than
+         [Stdlib.exit]. Under [open Async], [prerr_endline] writes to a buffered
+         writer that only Async's shutdown flushes: followed by Stdlib.exit, the
+         process exited 1 with nothing on stderr, a refusal that never said what
+         it refused. *)
+      let%bind () =
+        if List.length instruments > universe_cap then (
+          prerr_endline
+            (sprintf
+               "ohcamel: the book declares %d names and the free Alpaca plan streams at \
+                most %d. Remove names, or move to a paid feed and raise the cap in \
+                bin/main.ml."
+               (List.length instruments) universe_cap);
+          exit 1)
+        else return ()
+      in
+      (* The journal (design §3.5). Fatal when it cannot open: a live desk whose
+         record silently went nowhere is the failure persistence exists to end. *)
+      let journal_path = Option.value (Sys.getenv "OHCAMEL_JOURNAL") ~default:"desk.db" in
+      let%bind journal =
+        match Ohcamel_desk.Journal.open_ ~path:journal_path with
+        | Ok j -> return j
+        | Error e ->
+            prerr_endline (Error.to_string_hum e);
+            exit 1
+      in
       (* The reports run before the served graph exists.
 
          The scaling probe inside them builds three graphs of ten, a hundred and
@@ -1191,6 +1221,55 @@ let run_live ~book_path ~(serve_port : int option) =
                       capped by the shortest series"
                      (Symbol.to_string symbol) n))
       in
+      let restored = Ohcamel_desk.Session_close.restore ~graph ~journal in
+      live_line
+        (sprintf "journal   %s, %d session closes restored into the equity trail"
+           journal_path restored);
+      (* The desk's venue. A trading key the paper host would refuse leaves the
+         desk disabled, in words; the risk engine keeps running on its own
+         credentials, which have their own fatal rule. *)
+      let venue =
+        match
+          Ohcamel_desk.Alpaca_paper.Credentials.load ~data:config.Config.credentials
+        with
+        | Ok credentials ->
+            live_line
+              "desk      Alpaca paper, read side: the book's quantities and cash come \
+               from the account";
+            Ohcamel_desk.Desk.Reads
+              (Ohcamel_desk.Alpaca_paper.read ~credentials
+                 ~feed:runtime.Config.Runtime.alpaca_feed)
+        | Error e ->
+            let reason = Error.to_string_hum e in
+            live_line
+              ("desk      DISABLED -- " ^ reason
+             ^ " The book's quantities stay the file's.");
+            Ohcamel_desk.Desk.Unavailable
+              { name = Ohcamel_desk.Alpaca_paper.name; reason }
+      in
+      let notify = ref (fun () -> ()) in
+      let desk =
+        Ohcamel_desk.Desk.create ~graph ~journal ~venue ~spec:book.Config.Book.desk
+          ~on_change:(fun () -> !notify ())
+      in
+      let%bind () =
+        match%map Ohcamel_desk.Desk.sync desk with
+        | Ok () -> ()
+        | Error e ->
+            live_line
+              ("desk      first sync FAILED, the file's quantities stand until one \
+                succeeds: " ^ Error.to_string_hum e)
+      in
+      (match venue with
+      | Ohcamel_desk.Desk.Reads read ->
+          don't_wait_for
+            (Ohcamel_desk.Desk.sync_forever desk ~every:(Time_ns.Span.of_min 1.0)
+               ~on_event:live_line);
+          don't_wait_for
+            (Ohcamel_desk.Session_close.run_forever ~read ~graph ~journal
+               ~confidence:runtime.Config.Runtime.confidence ~on_event:live_line)
+      | Ohcamel_desk.Desk.Unavailable _ ->
+          live_line "session   no venue clock, so no session close is recorded");
       (* The clock. The ONLY writer of the [now] cell, and the reason
          test_graph.ml asserts that no risk node is downstream of it: if one
          were, this timer would be recomputing the book every few seconds and
@@ -1246,8 +1325,12 @@ let run_live ~book_path ~(serve_port : int option) =
                      ~fred_series:runtime.Config.Runtime.fred_series_id
                      ~alpaca:alpaca_stats ~fred:fred_stats)
                 ~recompute_log:log ~reports ~garch ~graph
-                ~factor:runtime.Config.Runtime.fred_series_id ()
+                ~factor:runtime.Config.Runtime.fred_series_id
+                ~extensions:(Ohcamel_desk.Desk.extensions desk)
+                ~frame_extra:(fun () -> [ ("desk", Ohcamel_desk.Desk.summary_json desk) ])
+                ()
             in
+            (notify := fun () -> Server.notify server);
             let%bind (_ : (_, _) Cohttp_async.Server.t) = Server.start ~port server in
             live_line (sprintf "dashboard  http://localhost:%d" port);
             (* After listen, on its own domain: the smoke suite never waits on it. *)
@@ -1343,6 +1426,28 @@ let run_demo ~port =
         { Tick.symbol; price = Price.of_float price; time = Time.now () });
   Graph.set_now graph (Time.now ());
   Graph.stabilize graph;
+  (* The desk, on the simulated venue: the demo's positions and cash, marked
+     from the same last prices the ticks write, and a journal in memory that
+     the page labels as such. *)
+  let journal = Or_error.ok_exn (Ohcamel_desk.Journal.open_ ~path:":memory:") in
+  let venue =
+    Ohcamel_desk.Sim_venue.create ~opened_at:(Time_ns.now ())
+      ~marks:(fun s -> Option.map (Hashtbl.find last_price s) ~f:Price.of_float)
+      ~now:Time_ns.now
+      ~half_spread_bps:(fun _ -> 5.0)
+      ~cash:starting_cash
+      ~positions:
+        (List.map book ~f:(fun (symbol, _, _, qty) -> (symbol, Qty.of_float qty)))
+      ()
+  in
+  let notify = ref (fun () -> ()) in
+  let desk =
+    Ohcamel_desk.Desk.create ~graph ~journal
+      ~venue:(Ohcamel_desk.Desk.Reads (Ohcamel_desk.Sim_venue.read venue))
+      ~spec:Ohcamel.Config.Book.Desk_spec.default
+      ~on_change:(fun () -> !notify ())
+  in
+  let%bind (_ : unit Or_error.t) = Ohcamel_desk.Desk.sync desk in
   (* Demo mode turns alerting on deliberately, with the sink that cannot
      leave the machine. The point is to exercise the Phase 4 path -- edge
      triggering, hysteresis, the kill switch latching -- where it can be watched
@@ -1370,8 +1475,11 @@ let run_demo ~port =
   let quiet, _, _, _ = List.last_exn book in
   let server =
     Server.create ?alerts ~recompute_log:log ~reports ~garch ~mode:`Demo ~quiet:[ quiet ]
+      ~extensions:(Ohcamel_desk.Desk.extensions desk)
+      ~frame_extra:(fun () -> [ ("desk", Ohcamel_desk.Desk.summary_json desk) ])
       ~graph ~factor:"SYNTHETIC" ()
   in
+  (notify := fun () -> Server.notify server);
   let%bind (_ : (_, _) Cohttp_async.Server.t) = Server.start ~port server in
   printf "  dashboard   http://localhost:%d\n" port;
   (* After listen, on its own domain: the smoke suite never waits on it. *)
@@ -1384,6 +1492,8 @@ let run_demo ~port =
     "  book        %d instruments, %d limits (2 of them on risk SHARE, not notional)\n"
     (List.length book) (List.length demo_limits);
   printf "  ticking     one name every 400ms, a bar every 15s\n";
+  printf
+    "  desk        simulated venue, read side; journal in memory; a session every 5 min\n";
   (* One symbol is deliberately never ticked.
 
      Feed health is the part of this engine hardest to demonstrate, because it
@@ -1411,13 +1521,31 @@ let run_demo ~port =
         { Tick.symbol; price = Price.of_float price; time = Time.now () };
       Graph.stabilize graph;
       Deferred.unit);
-  (* A bar close: new returns for everyone, and an equity mark. *)
+  (* A bar close: new returns for everyone, and an equity mark. Every twentieth
+     bar -- five minutes -- a synthetic session closes and is recorded, dated
+     from the simulated venue's calendar. The windows were already rolled by
+     the bars, so the close rolls nothing and marks nothing a second time. *)
+  let bars = ref 0 and sessions = ref 0 in
   Clock_ns.every' (Time_ns.Span.of_sec 15.0) (fun () ->
       List.iter book ~f:(fun (symbol, _, _, _) ->
           Graph.push_return graph symbol (daily_return ()));
       Graph.mark_equity graph;
       Graph.stabilize graph;
+      incr bars;
+      if !bars % 20 = 0 then (
+        incr sessions;
+        match
+          Or_error.try_with (fun () ->
+              Ohcamel_desk.Session_close.record ~graph ~journal
+                ~date:(Date.add_days Ohcamel_desk.Sim_venue.base_date (!sessions - 1))
+                ~returns:[] ~mark_equity:false ~confidence ~recorded_at:(Time_ns.now ()))
+        with
+        | Ok _ -> ()
+        | Error e ->
+            eprintf "demo: the session close failed: %s\n%!" (Error.to_string_hum e));
       Deferred.unit);
+  Clock_ns.every' (Time_ns.Span.of_sec 15.0) (fun () ->
+      Deferred.ignore_m (Ohcamel_desk.Desk.sync desk));
   (* The staleness clock, exactly as in live mode. *)
   Clock_ns.every' (Time_ns.Span.of_sec 3.0) (fun () ->
       Graph.set_now graph (Time.now ());

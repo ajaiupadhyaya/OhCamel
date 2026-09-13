@@ -571,12 +571,59 @@
       .then(function () { historyInFlight = false; });
   }
 
+  // ---- the desk: the venue's account, from the frame's desk object ----
+  // The frame carries thirteen fields and nothing a table needs a second
+  // request for, except the names the venue holds outside the book; those are
+  // fetched from /api/desk when the journal's version moves, not on every frame.
+  var deskVersion = null;
+  function renderDesk(s) {
+    var d = s.desk, t = document.getElementById("desk"), note = document.getElementById("desknote");
+    if (!t || !note) return;
+    var F = window.OhCamelFormat;
+    if (!d) { t.textContent = ""; note.textContent = "— no desk in this process"; return; }
+    note.textContent = d.status === "enabled"
+      ? "— " + d.venue + (d.venue === "simulated" ? ", in this process" : ", read side")
+      : "— disabled: " + (d.reason || "no reason given");
+    var rows = [
+      ["equity", d.equity === null ? "—" : F.money(d.equity)],
+      ["cash", d.cash === null ? "—" : F.money(d.cash)],
+      ["session P&L", d.session_pnl === null ? "—" : F.money(d.session_pnl)],
+      ["sessions recorded", String(d.sessions) + (d.journal === "memory" ? " · in memory" : "")],
+      ["last sync", d.last_sync ? d.last_sync.replace("T", " ").slice(0, 19) + "Z" : (d.last_error ? "failed" : "never")],
+      ["unmanaged", d.unmanaged === 0 ? "none" : d.unmanaged + " held outside the book"]
+    ];
+    t.textContent = "";
+    rows.forEach(function (r) {
+      var tr = document.createElement("tr");
+      tr.appendChild(F.el("td", "k", r[0]));
+      tr.appendChild(F.el("td", "v num", r[1]));
+      t.appendChild(tr);
+    });
+    if (d.last_error) {
+      var tr = document.createElement("tr");
+      tr.appendChild(F.el("td", "k", "last error"));
+      tr.appendChild(F.el("td", "v desk-error", d.last_error));
+      t.appendChild(tr);
+    }
+    var u = document.getElementById("deskunmanaged");
+    if (d.unmanaged === 0) { u.hidden = true; return; }
+    if (d.version === deskVersion) return;
+    deskVersion = d.version;
+    fetch("/api/desk").then(function (r) { return r.json(); }).then(function (b) {
+      u.hidden = false;
+      u.textContent = "held by the venue, not in the book: " + b.unmanaged_positions.map(function (p) {
+        return p.symbol + " " + p.qty;
+      }).join(", ");
+    }).catch(function () { /* the count above still says how many */ });
+  }
+
   function render(s) {
     renderAlerts(s);
     renderHealth(s);
     renderPositions(s);
     renderBook(s);
     renderLimits(s);
+    renderDesk(s);
     renderGraphFrame(s);
     lastFrameAt = Date.now();
     clocks();

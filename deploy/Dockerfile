@@ -110,6 +110,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # somewhere boring.
 RUN useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin ohcamel
 
+# The journal's directory, and the one path in this image the engine writes.
+# A named volume mounted here for the first time is populated from the image,
+# ownership included, so it starts writable by the unprivileged user rather
+# than by root -- which matters because the engine never runs as root.
+RUN mkdir -p /data && chown ohcamel:ohcamel /data
+
 COPY --from=builder /home/opam/ohcamel.exe /usr/local/bin/ohcamel
 
 # Fail the BUILD, not the first container start. Without this, a forgotten
