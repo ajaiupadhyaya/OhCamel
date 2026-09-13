@@ -194,14 +194,16 @@ The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/da
 ## What is verified
 
 - **381 hermetic tests** — no network, no credentials, nothing waiting on a
-  clock. Expected values are derived by hand with the derivation beside the
+  clock except one test that lets a 5 ms request timeout expire. Expected values are derived by hand with the derivation beside the
   assertion. Seven are worth knowing by name: Euler residual, hedge (no stray
   `abs`), lookahead, stress-fork isolation, regime-break, delta-hedged, and
   two-clocks.
 - **Property tests** (qcheck) generalise the identities over random inputs:
   Euler additivity, component VaR summing to portfolio VaR, a hedge reducing
   variance, VaR monotone in confidence, fork isolation, backtest lookahead.
-- **Coverage 81.7%** (3,873 / 4,743 instrumented points, measured 2026-09-13), with a 60% floor in CI that exists to make deleting
+- **Coverage 82.0%** (3,891 / 4,743 instrumented points in the risk kernel,
+  `lib/`, measured 2026-09-13; the desk library in `desk/` is not instrumented
+  yet), with a 60% floor in CI that exists to make deleting
   tests noticeable, not as a target. The number is bimodal by design: the pure
   numeric core is above 90% and the network edges near 40%, because exercising
   them means mocking a broker, which raises the number and establishes nothing.
@@ -252,7 +254,8 @@ O(n²) ones; what incrementality removes is the O(n²·w) covariance rebuild:
 From the production smoke run that verified the deployment: 234 nodes
 recomputed across a two-second gap, 52 distinct SSE frames over twenty seconds.
 
-Size: about 8,200 lines in `lib/`, 6,600 in `test/`.
+Size, counted on 2026-09-13: about 11,300 lines of OCaml in `lib/`, 2,000 in
+`desk/`, 1,700 in `bin/` and 13,700 in `test/`.
 
 ## The invariants
 

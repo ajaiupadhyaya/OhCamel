@@ -1097,7 +1097,8 @@ deploy user alone, and reach the container as environment, never as a layer.
 ## What's verified
 
 `make test` runs 381 tests, all hermetic — no network, no credentials, and nothing
-that waits on the wall clock. They cover the numerics against hand-computed
+that waits on the wall clock except one test, which lets a 5 ms request timeout
+expire. They cover the numerics against hand-computed
 values, the wire format, the alerting state machine, and the recomputation counts
 that make the graph's shape an assertion rather than a claim.
 
@@ -1167,25 +1168,27 @@ six properties and four example tests. `QCHECK_TRIALS=5000 make test` runs
 
 ### Coverage, and what it is not measuring
 
-`make coverage` runs the suite under `bisect_ppx` and reports **82%**. The badge
-above is that number; CI enforces a floor of 60% and prints the full per-file
-table into the run summary, so a drop is visible without anyone remembering to
-look.
+`make coverage` runs the suite under `bisect_ppx` and reports **82%** (measured
+2026-09-13). The badge above is that number; CI enforces a floor of 60% and
+prints the full per-file table into the run summary, so a drop is visible
+without anyone remembering to look. The number is the risk kernel's, library
+`ohcamel` in `lib/`. The desk library in `desk/` is not instrumented yet, so its
+code is in neither the figure nor the table below.
 
 The interesting thing about the number is that it is bimodal, and it should be
 read as two numbers rather than one:
 
 ```
- 95%  lib/history_buffer.ml   52%  lib/alerts.ml
- 95%  lib/crisis_data.ml      43%  lib/config.ml
- 92%  lib/graph.ml            40%  lib/feed/alpaca_ws.ml
+ 95%  lib/history_buffer.ml   59%  lib/alerts.ml
+ 95%  lib/crisis_data.ml      45%  lib/config.ml
+ 93%  lib/graph.ml            40%  lib/feed/alpaca_ws.ml
  91%  lib/attribution.ml      51%  lib/feed/fred_client.ml
  90%  lib/risk_metrics.ml     50%  lib/feed/alpaca_rest.ml
- 90%  lib/stress.ml           48%  lib/types.ml
+ 90%  lib/stress.ml           49%  lib/types.ml
  89%  lib/limits.ml           75%  lib/options.ml
- 89%  lib/reports.ml
- 88%  lib/server.ml
+ 88%  lib/reports.ml
  87%  lib/vol_estimators.ml
+ 86%  lib/server.ml
  85%  lib/var_backtest.ml
 ```
 
@@ -1195,7 +1198,8 @@ naming rather than hiding: `types.ml` is mostly single-line accessors on abstrac
 wrappers, many of which nothing calls yet, and `options.ml` carries display and
 position helpers the pricing tests do not reach. That split is a design decision appearing in
 a metric, not a backlog: every test in this project is hermetic — no network, no
-credentials, nothing waiting on a clock — so the code whose job is to hold a
+credentials, nothing waiting on a clock beyond one 5 ms request timeout — so the
+code whose job is to hold a
 websocket open is exercised only as far as its pure parts go. Raising the right
 column would mean testing the Alpaca client against a mock Alpaca, which moves
 the number up and establishes nothing about the real one. The bug that mattered
