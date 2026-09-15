@@ -27,6 +27,12 @@ module Message = struct
        session logs it: an update lost in silence is a fill the desk does not
        hear of until the next reconciliation, with nothing to say why. *)
     | Unreadable of string
+    (* A trade update for an order this desk did not place -- one placed by
+       hand in Alpaca's own interface, which the paper account may also hold
+       -- in words naming the event and the venue's order id. Recognised
+       before any of its numbers are read: it is not the desk's to apply, and
+       a notional order's null qty is not an unreadable fill. *)
+    | Not_ours of string
     | Stream_error of string
     | Other
 
@@ -88,16 +94,17 @@ module Message = struct
     | Some "trade_updates", Some d -> (
         let event = str (member "event" d) in
         let order_json = member "order" d in
-        let unreadable reason =
-          Unreadable
-            (sprintf "trade update%s%s: %s"
-               (Option.value_map event ~default:"" ~f:(sprintf " %S"))
-               (Option.value_map
-                  (Option.bind order_json ~f:(fun o -> str (member "id" o)))
-                  ~default:"" ~f:(sprintf " for order %S"))
-               reason)
+        let about =
+          sprintf "trade update%s%s"
+            (Option.value_map event ~default:"" ~f:(sprintf " %S"))
+            (Option.value_map
+               (Option.bind order_json ~f:(fun o -> str (member "id" o)))
+               ~default:"" ~f:(sprintf " for order %S"))
         in
+        let unreadable reason = Unreadable (about ^ ": " ^ reason) in
         match (event, order_json) with
+        | _, Some o when not (Alpaca_paper.is_desk_order o) ->
+            Not_ours (about ^ ": not an order this desk placed")
         | None, _ -> unreadable "no event"
         | _, None -> unreadable "no order"
         | Some event, Some order_json -> (
@@ -227,6 +234,11 @@ let run_session ~credentials ~(writer : Venue.Update.t Pipe.Writer.t) ~on_connec
                   Deferred.unit
               | Message.Unreadable why ->
                   on_event ("not applied: " ^ why);
+                  Deferred.unit
+              | Message.Not_ours why ->
+                  (* One quiet line: nothing was wrong with it, it is simply
+                     someone else's order. *)
+                  on_event ("ignored: " ^ why);
                   Deferred.unit
               | Message.Stream_error why ->
                   on_event ("stream error: " ^ why);

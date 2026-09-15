@@ -91,7 +91,9 @@ let trade ~(credentials : Alpaca_paper.Credentials.t)
         match json_of ~what body with
         | Error e -> Error e
         | Ok (`List items) ->
-            Or_error.all (List.map items ~f:Alpaca_paper.venue_order_of_json)
+            (* Only the desk's orders, each read in full; the account's others
+               are skipped unread (see [Alpaca_paper.desk_orders]). *)
+            Alpaca_paper.desk_orders items
         | Ok _ -> Or_error.errorf "alpaca_paper: %s is not a list" what)
     | Ok (status, body) -> unexpected ~what status body
   in

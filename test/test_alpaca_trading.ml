@@ -98,6 +98,16 @@ let test_the_three_answers_to_a_submission () =
       match Alpaca.classify_submission ~status ~body with
       | Venue.Submission.Unknown _ -> ()
       | _ -> Alcotest.failf "%d %S was not an unknown" status body);
+  (* Float.of_string reads "1_0" as 10, "0x10" as 16 and "1e5" as 100000, and Alpaca writes none of them. *)
+  List.iter [ "1_0"; "0x10"; "1e5" ] ~f:(fun s ->
+      match Alpaca.decimal ~what:"order" (`Assoc [ ("qty", `String s) ]) "qty" with
+      | Ok x -> Alcotest.failf "%S was read as the number %g" s x
+      | Error e ->
+          (* The refusal names the field, so the log says which number was malformed. *)
+          Alcotest.(check bool)
+            (sprintf "%S names order.qty" (Error.to_string_hum e))
+            true
+            (String.is_substring (Error.to_string_hum e) ~substring:"order.qty"));
   (* JSON, but no readable order in it: the venue said 200, so it may hold the order (invariant 10). *)
   match
     Alpaca.classify_submission ~status:200
@@ -134,6 +144,20 @@ let test_trade_update_messages () =
   (match of_string {|{"stream":"listening","data":{"streams":["trade_updates"]}}|} with
   | Updates.Message.Listening [ "trade_updates" ] -> ()
   | _ -> Alcotest.fail "listening");
+  (* Yojson reads a bare Infinity as a float; an infinite bid has no mid, so AAPL has no quote. *)
+  (match
+     Alpaca.quotes_of_json
+       (Yojson.Safe.from_string
+          {|{"quotes":{"AAPL":{"ap":172.7,"bp":Infinity,"t":"2022-08-17T10:07:40.286587431Z"}}}|})
+   with
+  | Ok quotes -> (
+      match Map.find quotes (Symbol.of_string "AAPL") with
+      | Some None -> ()
+      | Some (Some q) ->
+          Alcotest.failf "an infinite bid became a quote, bid %g"
+            (Price.to_float q.Venue.Quote.bid)
+      | None -> Alcotest.fail "AAPL was dropped rather than read as having no quote")
+  | Error e -> Alcotest.failf "the quotes were refused whole: %s" (Error.to_string_hum e));
   let fill_update ~order ~numbers =
     sprintf {|{"stream":"trade_updates","data":{"event":"fill","order":%s,%s}}|} order
       numbers
@@ -166,6 +190,40 @@ let test_trade_update_messages () =
     (fill_update
        ~order:(order_json ~extra:{|,"filled_avg_price":NaN|} ())
        ~numbers:{|"execution_id":"e1","price":"105.9","qty":"30"|});
+  (* An order placed by hand for a dollar amount: qty null, and a client order id Alpaca minted. *)
+  let notional ~client_order_id =
+    sprintf
+      {|{"id":"61e69015-8549-4bfd-b9c3-01e75843f47d","client_order_id":"%s","symbol":"AAPL","side":"buy","qty":null,"notional":"500","filled_qty":"0","status":"new"}|}
+      client_order_id
+  in
+  let hand_placed = notional ~client_order_id:"b0b6dd9d-8b9b-48a9-ba46-b9d54906e415" in
+  (* Not the desk's, so skipped before its null qty is read, and the desk's order beside it is still read. *)
+  (match
+     Alpaca.desk_orders
+       [ Yojson.Safe.from_string hand_placed; Yojson.Safe.from_string accepted_body ]
+   with
+  | Ok orders ->
+      Alcotest.(check (list string))
+        "only the desk's order"
+        [ "7b08df51-c1ac-453c-99f9-323a5f075f0d" ]
+        (List.map orders ~f:(fun o -> o.Venue.Venue_order.id))
+  | Error e ->
+      Alcotest.failf "a hand-placed notional order failed the read: %s"
+        (Error.to_string_hum e));
+  (* The same null qty on an ohc- order fails the whole read: the desk's own orders fail closed. *)
+  (match
+     Alpaca.desk_orders [ Yojson.Safe.from_string (notional ~client_order_id:cid) ]
+   with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "a desk order with a null qty was read");
+  (* Its trade update is ignored as not the desk's before the "NaN" price is read, not called unreadable. *)
+  (match
+     of_string (fill_update ~order:hand_placed ~numbers:{|"price":"NaN","qty":"1"|})
+   with
+  | Updates.Message.Not_ours _ -> ()
+  | _ ->
+      Alcotest.fail
+        "an update for an order the desk did not place was not ignored as such");
   (match
      of_string
        (fill_update ~order:(order_json ()) ~numbers:{|"price":"105.9","qty":"30"|})

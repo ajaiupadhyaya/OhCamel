@@ -90,10 +90,26 @@ let field (json : Yojson.Safe.t) key =
   | `Assoc fields -> List.Assoc.find fields key ~equal:String.equal
   | _ -> None
 
+(* A plain decimal and nothing else: an optional "-", one or more digits, and
+   an optional "." followed by one or more digits, which is how Alpaca writes
+   every price and quantity. Float.of_string reads far more -- "1_0" as 10,
+   "0x10" as 16, "1e5", "nan", "inf" -- and a field holding one of those holds
+   something other than the number it names. *)
+let is_plain_decimal (s : string) : bool =
+  let digits part =
+    (not (String.is_empty part)) && String.for_all part ~f:Char.is_digit
+  in
+  let unsigned = Option.value (String.chop_prefix s ~prefix:"-") ~default:s in
+  match String.lsplit2 unsigned ~on:'.' with
+  | None -> digits unsigned
+  | Some (whole, fraction) -> digits whole && digits fraction
+
 let decimal ~what (json : Yojson.Safe.t) key : float Or_error.t =
   match field json key with
   | Some (`String s) -> (
-      match Float.of_string_opt s with
+      (* Finite as well as plain: four hundred digits are a plain decimal and
+         an infinite float. *)
+      match if is_plain_decimal s then Float.of_string_opt s else None with
       | Some x when Float.is_finite x -> Ok x
       | _ -> Or_error.errorf "alpaca_paper: %s.%s is not a number: %S" what key s)
   (* Yojson reads a bare NaN or Infinity as a float, so the float is held to
@@ -196,7 +212,14 @@ let clock_of_json (json : Yojson.Safe.t) : Venue.Session_clock.t Or_error.t =
   in
   { Venue.Session_clock.now; is_open; next_open; next_close; next_close_date }
 
-let number = function `Float x -> Some x | `Int n -> Some (Float.of_int n) | _ -> None
+(* A bare NaN or Infinity is a float to Yojson, and is read here as the field
+   being absent, which the callers already make None: a quote with an infinite
+   side has no mid, and a bar with an infinite field is no bar. It never
+   becomes a price. *)
+let number = function
+  | `Float x when Float.is_finite x -> Some x
+  | `Int n -> Some (Float.of_int n)
+  | _ -> None
 
 (* A price of 0 is Alpaca saying "no active bid" or "no active ask". A quote
    missing a side has no mid, and an arrival price taken from half a quote
@@ -306,6 +329,28 @@ let venue_order_of_json (json : Yojson.Safe.t) : Venue.Venue_order.t Or_error.t 
     status;
     limit_price;
   }
+
+(* Whether an order, as the venue sends it, is one this desk placed: its
+   client_order_id begins with the prefix every id the desk mints carries
+   (Ids.Client_order_id). Read before anything else in the order, because the
+   paper account can also hold orders placed by hand in Alpaca's own
+   interface, and one of those -- a notional order, whose qty is null -- must
+   not make the desk's own orders unreadable. Only the prefix is checked: an
+   order carrying it is the desk's whatever else is wrong with it, so reading
+   it fails closed. *)
+let is_desk_order (json : Yojson.Safe.t) : bool =
+  match field json "client_order_id" with
+  | Some (`String id) -> String.is_prefix id ~prefix:Ids.Client_order_id.prefix
+  | _ -> false
+
+(* The desk's orders out of a venue's list, each read in full, the others
+   skipped unread. One of the desk's own that cannot be read fails the whole
+   list: a reconciliation that quietly lost one of its own orders would
+   compare the journal with a venue that is missing it. *)
+let desk_orders (items : Yojson.Safe.t list) : Venue.Venue_order.t list Or_error.t =
+  Or_error.all
+    (List.filter_map items ~f:(fun order ->
+         if is_desk_order order then Some (venue_order_of_json order) else None))
 
 (* A refusal is a status the venue uses to say "I did not take this order" --
    the request was bad, the account cannot afford it, it was rate limited.
