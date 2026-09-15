@@ -48,6 +48,7 @@ let suites =
     Test_options_walk.suite;
     Test_garch_study.suite;
     Test_stress.suite;
+    Test_gate.suite;
     Test_graph.suite;
     Test_feed.suite;
     Test_history_buffer.suite;
