@@ -23,7 +23,15 @@
    stanza yet, so the desk's tests raise this figure only where they reach
    the kernel, and it says nothing about the desk's own code. *)
 
-let tests = 387
+let tests = 386
+
+(* The scheduler suite's count: test/desk_async, the executable whose cases run
+   with Async's scheduler on clocks of their own. It asserts this against its
+   own registry, as test_ohcamel.ml asserts [tests], so neither count can
+   drift. Counted apart because the main suite's promise is that it never
+   starts the scheduler. Not served on /api/reports: the page's dated block
+   prints [tests], and reports.ml names its keys one by one. *)
+let scheduler_tests = 2
 let coverage_covered = 3_891
 let coverage_lines = 4_743
 let coverage_pct = 82.0

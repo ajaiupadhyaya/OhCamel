@@ -257,13 +257,19 @@ let bars_of_json (json : Yojson.Safe.t) :
    [f] is handed [abandon], filled when the bound passes. An abandoned request
    is not cancelled by being ignored: its connection stays open until something
    closes it, and a desk that abandoned one a minute would leak a socket a
-   minute. *)
+   minute.
+
+   [time_source] is the wall clock everywhere but the test that pins the bound,
+   which advances a clock of its own, so no test waits on the wall's. *)
 let request_timeout = Time_ns.Span.of_sec 30.0
 
-let within ~(span : Time_ns.Span.t) ~(what : string)
-    (f : abandon:unit Deferred.t -> 'a Or_error.t Deferred.t) : 'a Or_error.t Deferred.t =
+let within ?(time_source = Time_source.wall_clock ()) ~(span : Time_ns.Span.t)
+    ~(what : string) (f : abandon:unit Deferred.t -> 'a Or_error.t Deferred.t) :
+    'a Or_error.t Deferred.t =
   let abandoned = Ivar.create () in
-  match%map Clock_ns.with_timeout span (f ~abandon:(Ivar.read abandoned)) with
+  match%map
+    Time_source.with_timeout time_source span (f ~abandon:(Ivar.read abandoned))
+  with
   | `Result r -> r
   | `Timeout ->
       Ivar.fill_if_empty abandoned ();

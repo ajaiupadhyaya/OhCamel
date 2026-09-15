@@ -194,7 +194,7 @@ The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/da
 ## What is verified
 
 - **381 hermetic tests** — no network, no credentials, nothing waiting on a
-  clock except one test that lets a 5 ms request timeout expire. Expected values are derived by hand with the derivation beside the
+  clock. Expected values are derived by hand with the derivation beside the
   assertion. Seven are worth knowing by name: Euler residual, hedge (no stray
   `abs`), lookahead, stress-fork isolation, regime-break, delta-hedged, and
   two-clocks.

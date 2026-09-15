@@ -1,6 +1,6 @@
 (* Alpaca paper's read side, against payloads copied from Alpaca's own API
-   reference. No socket is opened: the parsers are pure, and the transport is
-   four lines that the live host exercises.
+   reference. No socket is opened: the parsers are pure, and the transport's
+   bound is pinned in test/desk_async, on a clock that test advances.
 
    What matters here is not the JSON library. It is the four places a paper
    account's numbers can be misread: money that arrives as a string, a short
@@ -161,46 +161,6 @@ let test_the_trading_host_is_the_paper_host () =
     "data" (Some "data.alpaca.markets")
     (Uri.host (Alpaca.data_uri "/v2/stocks/bars"))
 
-(* A request that never answers ends as an error naming what was asked and
-   the bound, and the request is told it has been abandoned, which is what the
-   transport closes its connection on. No socket: the request is a Deferred
-   that never fills, and the scheduler's cycles run on this thread, each one
-   moving Async's clock up to the wall's, so the bound fires once that much
-   wall time has passed. *)
-let test_a_request_that_never_answers_is_an_error_at_its_bound () =
-  let abandoned = ref None in
-  let never =
-    Alpaca.within ~span:(Time_ns.Span.of_ms 5.0) ~what:"GET /v2/account" (fun ~abandon ->
-        abandoned := Some abandon;
-        Async.Deferred.never ())
-  in
-  let answered =
-    Alpaca.within ~span:Alpaca.request_timeout ~what:"GET /v2/clock" (fun ~abandon:_ ->
-        Async.return (Ok 42))
-  in
-  (* Cycle until the 5 ms bound fires. The 5 s ceiling only keeps a bound that
-     never fires from hanging the suite. *)
-  let ceiling = Time_ns.add (Time_ns.now ()) (Time_ns.Span.of_sec 5.0) in
-  while
-    (not (Async.Deferred.is_determined never)) && Time_ns.( < ) (Time_ns.now ()) ceiling
-  do
-    Async.Scheduler.Expert.run_cycles_until_no_jobs_remain ()
-  done;
-  (match Async.Deferred.peek never with
-  | Some (Error e) ->
-      (* the bound, 5 ms, as Time_ns.Span.to_string_hum prints it *)
-      Alcotest.(check string)
-        "the request and the bound, and nothing else"
-        "alpaca_paper: GET /v2/account did not answer within 5ms" (Error.to_string_hum e)
-  | Some (Ok _) -> Alcotest.fail "a Deferred that never fills answered"
-  | None -> Alcotest.fail "the 5 ms bound had not fired after 5 s");
-  Alcotest.(check bool)
-    "the request was told it is abandoned" true
-    (Option.value_map !abandoned ~default:false ~f:Async.Deferred.is_determined);
-  Alcotest.(check (option int))
-    "an answer inside the bound is that answer, the 42 given" (Some 42)
-    (Option.bind (Async.Deferred.peek answered) ~f:Result.ok)
-
 let suite =
   ( "alpaca_paper",
     [
@@ -218,6 +178,4 @@ let suite =
         `Quick test_only_a_paper_key_can_trade_and_the_error_never_echoes_it;
       Alcotest.test_case "the trading host is the paper host" `Quick
         test_the_trading_host_is_the_paper_host;
-      Alcotest.test_case "a request that never answers is an error at its bound" `Quick
-        test_a_request_that_never_answers_is_an_error_at_its_bound;
     ] )

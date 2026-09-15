@@ -1097,8 +1097,7 @@ deploy user alone, and reach the container as environment, never as a layer.
 ## What's verified
 
 `make test` runs 381 tests, all hermetic — no network, no credentials, and nothing
-that waits on the wall clock except one test, which lets a 5 ms request timeout
-expire. They cover the numerics against hand-computed
+that waits on the wall clock. They cover the numerics against hand-computed
 values, the wire format, the alerting state machine, and the recomputation counts
 that make the graph's shape an assertion rather than a claim.
 
@@ -1198,8 +1197,7 @@ naming rather than hiding: `types.ml` is mostly single-line accessors on abstrac
 wrappers, many of which nothing calls yet, and `options.ml` carries display and
 position helpers the pricing tests do not reach. That split is a design decision appearing in
 a metric, not a backlog: every test in this project is hermetic — no network, no
-credentials, nothing waiting on a clock beyond one 5 ms request timeout — so the
-code whose job is to hold a
+credentials, nothing waiting on a clock — so the code whose job is to hold a
 websocket open is exercised only as far as its pure parts go. Raising the right
 column would mean testing the Alpaca client against a mock Alpaca, which moves
 the number up and establishes nothing about the real one. The bug that mattered

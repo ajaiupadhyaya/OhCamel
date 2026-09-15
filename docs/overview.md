@@ -199,7 +199,7 @@ No route changes anything.
 ## How it's checked
 
 - **381 tests**, all hermetic: no network, no credentials, no waiting on a
-  clock except one test's 5 ms request timeout. Expected values are derived by hand beside each assertion, and the
+  clock. Expected values are derived by hand beside each assertion, and the
   suite checks its own count against [`verified.ml`](../lib/verified.ml).
 - **Property tests** (QCheck) cover the identities over random inputs: Euler
   additivity, component VaR summing to the total, a hedge reducing variance,
