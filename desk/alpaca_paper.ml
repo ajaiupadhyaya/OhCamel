@@ -1,4 +1,5 @@
-(* Alpaca's paper account, read side.
+(* Alpaca's paper account: the read side, and the trading half's pure parts and
+   transport (assembled with the order-update stream in alpaca_trade.ml).
 
    INVARIANT 9 LIVES HERE. The trading host is a constant, and the only
    function that builds a trading URI puts that constant in it. There is no
@@ -72,6 +73,12 @@ module Credentials = struct
         ("APCA-API-KEY-ID", Secret.to_string t.key);
         ("APCA-API-SECRET-KEY", Secret.to_string t.secret);
       ]
+
+  (* The trade_updates stream authenticates in a frame, not in headers, so the
+     two strings leave [Secret] here as well, each at one call site a grep for
+     its name finds. Neither belongs in an error or a log line. *)
+  let key_string t = Secret.to_string t.key
+  let secret_string t = Secret.to_string t.secret
 end
 
 (* ---------------------------------------------------------------------- *)
@@ -245,6 +252,85 @@ let bars_of_json (json : Yojson.Safe.t) :
   | _ -> Or_error.error_string "alpaca_paper: no bars object"
 
 (* ---------------------------------------------------------------------- *)
+(* The trading half: pure parts                                             *)
+(* ---------------------------------------------------------------------- *)
+
+(* Quantities and prices go as strings, as Alpaca's reference writes them. A
+   limit price goes with two decimals: the rules refused a sub-penny limit on
+   a stock above a dollar before this was reached (Rule 612), so formatting
+   here rounds nothing that mattered. *)
+let order_request_json (r : Order.Request.t) : Yojson.Safe.t =
+  `Assoc
+    ([
+       ("symbol", `String (Symbol.to_string r.Order.Request.symbol));
+       ("qty", `String (Int.to_string r.Order.Request.qty));
+       ("side", `String (Order.Side.to_string r.Order.Request.side));
+       ("type", `String (Order.Kind.to_string r.Order.Request.kind));
+       ("time_in_force", `String "day");
+       ( "client_order_id",
+         `String (Ids.Client_order_id.to_string r.Order.Request.client_order_id) );
+     ]
+    @ Option.value_map (Order.Kind.limit_price r.Order.Request.kind) ~default:[]
+        ~f:(fun p -> [ ("limit_price", `String (sprintf "%.2f" (Price.to_float p))) ]))
+
+let venue_order_of_json (json : Yojson.Safe.t) : Venue.Venue_order.t Or_error.t =
+  let open Or_error.Let_syntax in
+  let what = "order" in
+  let%bind id = string_field ~what json "id" in
+  let%bind client_order_id = string_field ~what json "client_order_id" in
+  let%bind symbol = string_field ~what json "symbol" in
+  let%bind side_text = string_field ~what json "side" in
+  let%bind side =
+    match Order.Side.of_string side_text with
+    | Some s -> Ok s
+    | None -> Or_error.errorf "alpaca_paper: order %s has side %S" id side_text
+  in
+  let%bind qty = decimal ~what json "qty" in
+  let%bind filled_qty = decimal ~what json "filled_qty" in
+  let%bind filled_avg_price = optional_decimal ~what json "filled_avg_price" in
+  let%bind limit_price = optional_decimal ~what json "limit_price" in
+  let%map status = string_field ~what json "status" in
+  {
+    Venue.Venue_order.id;
+    client_order_id;
+    symbol = Symbol.of_string symbol;
+    side;
+    qty;
+    filled_qty;
+    filled_avg_price;
+    status;
+    limit_price;
+  }
+
+(* A refusal is a status the venue uses to say "I did not take this order" --
+   the request was bad, the account cannot afford it, it was rate limited.
+   Anything else that is not a readable 200 is Unknown: a 5xx can arrive after
+   the order was accepted, and treating it as a refusal would invite the one
+   thing invariant 10 forbids, sending the order again. *)
+let classify_submission ~(status : int) ~(body : string) : Venue.Submission.t =
+  let message () =
+    match Option.try_with (fun () -> Yojson.Safe.from_string body) with
+    | Some json -> (
+        match field json "message" with
+        | Some (`String m) -> m
+        | _ -> String.prefix body 120)
+    | None -> String.prefix body 120
+  in
+  match status with
+  | 200 -> (
+      match Option.try_with (fun () -> Yojson.Safe.from_string body) with
+      | None -> Venue.Submission.Unknown "200 with a body that is not JSON"
+      | Some json -> (
+          match venue_order_of_json json with
+          | Ok o -> Venue.Submission.Accepted o
+          | Error e ->
+              Venue.Submission.Unknown
+                ("200 with an unreadable order: " ^ Error.to_string_hum e)))
+  | 400 | 401 | 403 | 404 | 409 | 422 | 429 ->
+      Venue.Submission.Rejected (sprintf "%d: %s" status (message ()))
+  | other -> Venue.Submission.Unknown (sprintf "%d: %s" other (message ()))
+
+(* ---------------------------------------------------------------------- *)
 (* Transport                                                                *)
 (* ---------------------------------------------------------------------- *)
 
@@ -313,6 +399,53 @@ let get_json ~credentials (uri : Uri.t) : Yojson.Safe.t Or_error.t Deferred.t =
           Or_error.errorf "alpaca_paper: GET %s returned %s (%s)" path
             (Cohttp.Code.string_of_status status)
             (String.prefix body 200))
+
+(* The trading half's transport: any method, a body when there is one, and the
+   answer as its status code and text, for the caller to judge.
+
+   Bounded by [within], and closed as [get_json] is, because cohttp's one-shot
+   calls close a connection in only two ways: [~interrupt] aborts a connect
+   still in progress, and closing the body's pipe closes a connection that has
+   answered. A connection that opened and never sent its status line is out of
+   reach of both, and lasts until the peer or the kernel ends it.
+   [Client.Connection] reaches it no better: closing one kills its sequencer,
+   and a killed sequencer cleans a connection only once the request holding it
+   returns (async_kernel's throttle.ml, [kill] and [start_job]).
+
+   [~rest:`Log], as in [get_json]: an abandoned request can still raise after
+   its answer was thrown away, and raised to the main monitor that would end
+   the process this bound exists to keep running.
+
+   The URI carries no credential -- the keys go in headers -- so its path is
+   safe to name in an error. *)
+let request_json ?(span = request_timeout) ~(meth : Cohttp.Code.meth)
+    ?(body : string option) ~(credentials : Credentials.t) (uri : Uri.t) :
+    (int * string) Or_error.t Deferred.t =
+  let what = Cohttp.Code.string_of_method meth ^ " " ^ Uri.path uri in
+  within ~span ~what (fun ~abandon ->
+      match%map
+        Monitor.try_with ~extract_exn:true ~rest:`Log (fun () ->
+            let headers =
+              match body with
+              | None -> Credentials.headers credentials
+              | Some _ ->
+                  Cohttp.Header.add
+                    (Credentials.headers credentials)
+                    "Content-Type" "application/json"
+            in
+            let%bind response, answer =
+              Cohttp_async.Client.call ~interrupt:abandon ~headers ~chunked:false
+                ?body:(Option.map body ~f:Cohttp_async.Body.of_string)
+                meth uri
+            in
+            upon abandon (fun () ->
+                match answer with `Pipe pipe -> Pipe.close_read pipe | _ -> ());
+            let%map text = Cohttp_async.Body.to_string answer in
+            (Cohttp.Code.code_of_status (Cohttp.Response.status response), text))
+      with
+      | Error exn ->
+          Or_error.errorf "alpaca_paper: %s failed: %s" what (Exn.to_string exn)
+      | Ok answer -> Ok answer)
 
 let read ~(credentials : Credentials.t) ~(feed : string) : Venue.Read.t =
   let get uri parse =

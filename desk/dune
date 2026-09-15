@@ -9,7 +9,20 @@
 
 (library
  (name ohcamel_desk)
- (libraries ohcamel core async cohttp cohttp-async uri sqlite3 yojson)
+ ; websocket and websocket-async: the trade_updates stream, framed by the
+ ; libraries lib/dune lists for the market-data stream and opened over that
+ ; client's TLS connection.
+ (libraries
+  ohcamel
+  core
+  async
+  cohttp
+  cohttp-async
+  uri
+  sqlite3
+  yojson
+  websocket
+  websocket-async)
  (preprocess
   (pps ppx_jane))
  ; Coverage instrumentation, declared as lib/dune declares it: OFF unless dune
