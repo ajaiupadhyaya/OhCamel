@@ -1,7 +1,7 @@
 # OhCamel
 
 [![ci](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml/badge.svg)](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml)
-[![coverage 82%](https://img.shields.io/badge/coverage-82%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
+[![coverage 77%](https://img.shields.io/badge/coverage-77%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
 
 **Live:** [ohcamel.ajaiupadhyaya.com](https://ohcamel.ajaiupadhyaya.com) — the
 synthetic demo, no credentials, always on. [How it is deployed](#watching-it).
@@ -1167,35 +1167,40 @@ six properties and four example tests. `QCHECK_TRIALS=5000 make test` runs
 
 ### Coverage, and what it is not measuring
 
-`make coverage` runs the suite under `bisect_ppx` and reports **82%** (measured
-2026-09-13). The badge above is that number; CI enforces a floor of 60% and
+`make coverage` runs the suite under `bisect_ppx` and reports **77%** (measured
+2026-09-15). The badge above is that number; CI enforces a floor of 60% and
 prints the full per-file table into the run summary, so a drop is visible
-without anyone remembering to look. The number is the risk kernel's, library
-`ohcamel` in `lib/`. The desk library in `desk/` is not instrumented yet, so its
-code is in neither the figure nor the table below.
+without anyone remembering to look. The number covers both libraries: the risk
+kernel, `ohcamel` in `lib/`, and the desk, `ohcamel_desk` in `desk/`.
 
 The interesting thing about the number is that it is bimodal, and it should be
 read as two numbers rather than one:
 
 ```
- 95%  lib/history_buffer.ml   59%  lib/alerts.ml
- 95%  lib/crisis_data.ml      45%  lib/config.ml
- 93%  lib/graph.ml            40%  lib/feed/alpaca_ws.ml
- 91%  lib/attribution.ml      51%  lib/feed/fred_client.ml
- 90%  lib/risk_metrics.ml     50%  lib/feed/alpaca_rest.ml
- 90%  lib/stress.ml           49%  lib/types.ml
- 89%  lib/limits.ml           75%  lib/options.ml
- 88%  lib/reports.ml
- 87%  lib/vol_estimators.ml
- 86%  lib/server.ml
- 85%  lib/var_backtest.ml
+ 95%  lib/history_buffer.ml   80%  desk/desk.ml
+ 95%  lib/crisis_data.ml      75%  lib/options.ml
+ 93%  lib/graph.ml            70%  desk/journal.ml
+ 91%  lib/attribution.ml      64%  desk/book_sync.ml
+ 90%  lib/stress.ml           57%  desk/alpaca_paper.ml
+ 90%  desk/desk_time.ml       57%  desk/order.ml
+ 90%  lib/risk_metrics.ml     52%  lib/alerts.ml
+ 89%  lib/limits.ml           51%  lib/feed/fred_client.ml
+ 88%  lib/reports.ml          51%  desk/session_close.ml
+ 87%  lib/vol_estimators.ml   50%  lib/feed/alpaca_rest.ml
+ 85%  lib/server.ml           49%  lib/types.ml
+ 85%  lib/var_backtest.ml     45%  lib/config.ml
+ 82%  desk/ids.ml             40%  lib/feed/alpaca_ws.ml
+ 81%  desk/sim_venue.ml        4%  desk/venue.ml
 ```
 
-The left column is everything that computes a risk number. The right column is
-everything that talks to a network — plus two that are neither and are worth
-naming rather than hiding: `types.ml` is mostly single-line accessors on abstract
-wrappers, many of which nothing calls yet, and `options.ml` carries display and
-position helpers the pricing tests do not reach. That split is a design decision appearing in
+The left column is everything that computes a risk number or decides what the
+desk does. The right column is everything that talks to a network — plus three
+that are neither and are worth naming rather than hiding: `types.ml` is mostly
+single-line accessors on abstract wrappers, many of which nothing calls yet,
+`options.ml` carries display and position helpers the pricing tests do not
+reach, and `desk/venue.ml` is mostly record types for the venue's read
+interface, whose derived `sexp_of`/`compare`/`equal` nothing but a handful of
+tests calls. That split is a design decision appearing in
 a metric, not a backlog: every test in this project is hermetic — no network, no
 credentials, nothing waiting on a clock — so the code whose job is to hold a
 websocket open is exercised only as far as its pure parts go. Raising the right

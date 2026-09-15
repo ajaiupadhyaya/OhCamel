@@ -8,10 +8,10 @@
    against the registry it runs, so the count cannot drift silently, and Phase
    5 serves them on /api/reports beside the numbers the process did compute.
 
-   [coverage_pct] is the published rounding, not the quotient: 3,891 / 4,743
-   is 82.037%, published as 82.0 -- README.md's badge rounds further to the
-   whole percent (82%) and docs/status.md carries the one-decimal figure
-   (82.0%), so a page that printed 82.037 would
+   [coverage_pct] is the published rounding, not the quotient: 4,617 / 5,972
+   is 77.311%, published as 77.3 -- README.md's badge rounds further to the
+   whole percent (77%) and docs/status.md carries the one-decimal figure
+   (77.3%), so a page that printed 77.311 would
    be claiming a precision `make coverage` did not measure (bisect_ppx
    counts visited points, not lines, and the number moves with the
    instrumentation). The fraction is kept beside it so the rounding is
@@ -19,9 +19,10 @@
    [tests] changes; a stale coverage under a fresh test count is the
    failure a single [dated] exists to prevent.
 
-   The points are library [ohcamel]'s alone. desk/ has no instrumentation
-   stanza yet, so the desk's tests raise this figure only where they reach
-   the kernel, and it says nothing about the desk's own code. *)
+   The points are both libraries': the kernel's in lib/ and the desk's in
+   desk/, whose dune file declares the same instrumentation backend. The desk
+   is named here by its directory, because CI's grep refuses the desk
+   library's name anywhere in lib/. *)
 
 let tests = 386
 
@@ -32,7 +33,10 @@ let tests = 386
    starts the scheduler. Not served on /api/reports: the page's dated block
    prints [tests], and reports.ml names its keys one by one. *)
 let scheduler_tests = 2
-let coverage_covered = 3_891
-let coverage_lines = 4_743
-let coverage_pct = 82.0
-let dated = "2026-09-13"
+
+(* The coverage figures: dated and re-measured together, never adjusted
+   alone -- see the comment above [tests] for why. *)
+let coverage_covered = 4_617
+let coverage_lines = 5_972
+let coverage_pct = 77.3
+let dated = "2026-09-15"

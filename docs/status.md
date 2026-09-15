@@ -201,9 +201,8 @@ The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/da
 - **Property tests** (qcheck) generalise the identities over random inputs:
   Euler additivity, component VaR summing to portfolio VaR, a hedge reducing
   variance, VaR monotone in confidence, fork isolation, backtest lookahead.
-- **Coverage 82.0%** (3,891 / 4,743 instrumented points in the risk kernel,
-  `lib/`, measured 2026-09-13; the desk library in `desk/` is not instrumented
-  yet), with a 60% floor in CI that exists to make deleting
+- **Coverage 77.3%** (4,617 / 5,972 instrumented points in `lib/` and `desk/`,
+  measured 2026-09-15), with a 60% floor in CI that exists to make deleting
   tests noticeable, not as a target. The number is bimodal by design: the pure
   numeric core is above 90% and the network edges near 40%, because exercising
   them means mocking a broker, which raises the number and establishes nothing.

@@ -207,8 +207,8 @@ No route changes anything.
 - **Architecture tests** pin how many nodes a tick recomputes, and fail if the
   staleness clock ever feeds a risk number. That test is the guard against the
   engine quietly becoming a poller.
-- **82.0% coverage** of the risk kernel in `lib/` (measured 2026-09-13; `desk/`
-  is not instrumented yet). The pure numeric core is above 90%
+- **77.3% coverage** of `lib/` and `desk/` together (measured 2026-09-15). The
+  pure numeric core is above 90%
   and the network edges are lower, because the tests never touch a network.
 - **CI on Ubuntu and macOS** for every push: the build, the tests, a formatting
   check, every credential-free mode run end to end, and the README's quoted

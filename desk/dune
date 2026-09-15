@@ -11,4 +11,11 @@
  (name ohcamel_desk)
  (libraries ohcamel core async cohttp cohttp-async uri sqlite3 yojson)
  (preprocess
-  (pps ppx_jane)))
+  (pps ppx_jane))
+ ; Coverage instrumentation, declared as lib/dune declares it: OFF unless dune
+ ; is invoked with --instrument-with bisect_ppx, which only `make coverage` and
+ ; CI's coverage job do. Without it the published figure was the kernel's
+ ; alone and said nothing about the code that writes the journal and sends
+ ; orders.
+ (instrumentation
+  (backend bisect_ppx)))
