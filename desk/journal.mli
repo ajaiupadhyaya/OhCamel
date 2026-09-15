@@ -81,6 +81,69 @@ end
 val record_alert : t -> Alert.t -> unit
 val recent_alerts : t -> limit:int -> Alert.t list
 
+(** A journaled order, rebuilt: the request and state from its row, the filled quantity,
+    notional and executions from its fills, the reason from its latest event that carries
+    one. *)
+module Order_row : sig
+  type t = {
+    order : Order.t;
+    source : string;
+    decision_price : Price.t;
+    arrival : (Price.t * Price.t) option;
+    verdict : Yojson.Safe.t;
+    created_at : Time_ns.t;
+    updated_at : Time_ns.t;
+  }
+end
+
+(** A fill, with its order's decision price and arrival quote joined in. *)
+module Fill_row : sig
+  type t = {
+    client_order_id : Ids.Client_order_id.t;
+    symbol : Symbol.t;
+    side : Order.Side.t;
+    fill : Order.Fill.t;
+    decision_price : Price.t;
+    arrival : (Price.t * Price.t) option;
+  }
+end
+
+val insert_order :
+  t ->
+  Order.t ->
+  source:string ->
+  decision_price:Price.t ->
+  arrival:(Price.t * Price.t) option ->
+  verdict:Yojson.Safe.t ->
+  at:Time_ns.t ->
+  unit
+(** One transaction: the orders row and its [created] event. The order manager calls this
+    before the request that submits the order is sent. *)
+
+val update_order :
+  t ->
+  Order.t ->
+  event:Order.Event.t ->
+  anomaly:Order.Anomaly.t option ->
+  at:Time_ns.t ->
+  unit
+(** One transaction: the row's state, venue id, filled quantity and average price, and one
+    order_events row. *)
+
+val record_fill : t -> Order.t -> Order.Fill.t -> bool
+(** [INSERT OR IGNORE]: true when the execution id is new. *)
+
+val load_order : t -> Ids.Client_order_id.t -> Order_row.t option
+
+val open_orders : t -> Order_row.t list
+(** Non-terminal states, oldest first. *)
+
+val recent_orders : t -> limit:int -> Order_row.t list
+(** Newest first. *)
+
+val recent_fills : t -> limit:int -> Fill_row.t list
+(** Newest first. *)
+
 module For_testing : sig
   val db : t -> Sqlite3.db
   (** The raw handle, for a test that must make SQLite fail on purpose -- a trigger, a

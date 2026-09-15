@@ -108,6 +108,14 @@ let col_opt_real (r : Data.t array) i =
   | Data.INT n -> Some (Int64.to_float n)
   | other -> Data.to_float other
 
+(* NULL is None. [col_text]'s NULL-to-"" coercion cannot tell a venue id that
+   has not arrived yet from an order whose venue id is, somehow, the empty
+   string -- this one distinguishes them. *)
+let col_opt_text (r : Data.t array) i =
+  match r.(i) with
+  | Data.NULL | Data.NONE -> None
+  | other -> Some (Data.to_string_coerce other)
+
 let col_date r i = Date.of_string (col_text r i)
 
 let col_time r i =
@@ -392,6 +400,321 @@ let recent_alerts t ~limit =
         kind = col_text r 1;
         limit_name = col_text r 2;
         line = col_text r 3;
+      })
+
+(* Orders, their events and their fills: A2's addition to the record.
+
+   [Order_row.t] and [Fill_row.t] carry [Order.t] and [Order.Fill.t] whole
+   rather than duplicating their shape -- the state machine already knows how
+   to hold an order, and a second definition of it here would be a second
+   thing to keep in sync with the first. *)
+
+module Order_row = struct
+  type t = {
+    order : Order.t;
+    source : string;
+    decision_price : Price.t;
+    arrival : (Price.t * Price.t) option;
+    verdict : Yojson.Safe.t;
+    created_at : Time_ns.t;
+    updated_at : Time_ns.t;
+  }
+end
+
+module Fill_row = struct
+  type t = {
+    client_order_id : Ids.Client_order_id.t;
+    symbol : Symbol.t;
+    side : Order.Side.t;
+    fill : Order.Fill.t;
+    decision_price : Price.t;
+    arrival : (Price.t * Price.t) option;
+  }
+end
+
+let client_order_id_of_text s =
+  Option.value_exn ~message:"journal: unparsable client order id"
+    (Ids.Client_order_id.of_string s)
+
+let side_of_text s =
+  Option.value_exn ~message:"journal: unknown side" (Order.Side.of_string s)
+
+let state_of_text s =
+  Option.value_exn ~message:"journal: unknown order state" (Order.State.of_string s)
+
+let arrival_of_row r ~bid ~ask =
+  match (col_opt_real r bid, col_opt_real r ask) with
+  | Some b, Some a -> Some (Price.of_float b, Price.of_float a)
+  | _ -> None
+
+(* The JSON object order_events.detail holds: the order's OWN reason (never
+   the event's -- an illegal event that carried a reason must not become the
+   reason a restart reads back), the venue id an Acknowledged or Found
+   carried, or a fill's execution id. None -- written as SQL NULL, not "{}"
+   -- when none of the three applies, so [load_order]'s reason lookup can
+   filter on the text "reason" appearing at all. *)
+let order_event_detail (o : Order.t) (event : Order.Event.t) : string option =
+  let fields =
+    match o.Order.reason with Some r -> [ ("reason", `String r) ] | None -> []
+  in
+  let fields =
+    match event with
+    | Order.Event.Acknowledged id | Order.Event.Found id ->
+        ("venue_order_id", `String id) :: fields
+    | Order.Event.Venue_fill f ->
+        ("execution_id", `String f.Order.Fill.execution_id) :: fields
+    | _ -> fields
+  in
+  match fields with [] -> None | fields -> Some (Yojson.Safe.to_string (`Assoc fields))
+
+let reason_of_detail (detail : string) : string option =
+  match Yojson.Safe.from_string detail with
+  | `Assoc fields -> (
+      match List.Assoc.find fields "reason" ~equal:String.equal with
+      | Some (`String r) -> Some r
+      | _ -> None)
+  | _ -> None
+
+(* One transaction: the row -- pending_submit, no venue id, no fills -- and
+   the [created] event. The order manager calls this before the request that
+   submits the order is sent: invariant 10, the journal before the wire. *)
+let insert_order t (o : Order.t) ~source ~decision_price ~arrival ~verdict ~at =
+  write t ~what:"insert order" (fun () ->
+      let request = o.Order.request in
+      let cid = Ids.Client_order_id.to_string request.Order.Request.client_order_id in
+      let bid, ask =
+        match arrival with
+        | None -> (Data.NULL, Data.NULL)
+        | Some (b, a) -> (real (Price.to_float b), real (Price.to_float a))
+      in
+      run t ~what:"order"
+        "INSERT INTO orders (client_order_id, venue_order_id, source, symbol, side, qty, \
+         kind, limit_price, tif, state, filled_qty, avg_fill_price, decision_price, \
+         arrival_bid, arrival_ask, verdict, created_at, updated_at) VALUES (?, NULL, ?, \
+         ?, ?, ?, ?, ?, 'day', ?, 0, NULL, ?, ?, ?, ?, ?, ?)"
+        [
+          text cid;
+          text source;
+          text (Symbol.to_string request.Order.Request.symbol);
+          text (Order.Side.to_string request.Order.Request.side);
+          real (Float.of_int request.Order.Request.qty);
+          text (Order.Kind.to_string request.Order.Request.kind);
+          opt_real
+            (Option.map
+               (Order.Kind.limit_price request.Order.Request.kind)
+               ~f:Price.to_float);
+          text (Order.State.to_string o.Order.state);
+          real (Price.to_float decision_price);
+          bid;
+          ask;
+          text (Yojson.Safe.to_string verdict);
+          time at;
+          time at;
+        ];
+      run t ~what:"order created event"
+        "INSERT INTO order_events (client_order_id, at, event, state_after, anomaly, \
+         detail) VALUES (?, ?, 'created', ?, NULL, NULL)"
+        [ text cid; time at; text (Order.State.to_string o.Order.state) ])
+
+(* One transaction: the row's state, venue id, filled quantity and average
+   price -- a cache for a reader that would rather not pay [load_order]'s
+   three queries -- and one order_events row. [load_order] itself never reads
+   filled_qty or avg_fill_price back: both are rebuilt from the fills table,
+   which is the ledger the cache is a cache of. *)
+let update_order t (o : Order.t) ~event ~anomaly ~at =
+  write t ~what:"update order" (fun () ->
+      let cid =
+        Ids.Client_order_id.to_string o.Order.request.Order.Request.client_order_id
+      in
+      run t ~what:"order"
+        "UPDATE orders SET venue_order_id = ?, state = ?, filled_qty = ?, avg_fill_price \
+         = ?, updated_at = ? WHERE client_order_id = ?"
+        [
+          (match o.Order.venue_order_id with None -> Data.NULL | Some id -> text id);
+          text (Order.State.to_string o.Order.state);
+          real o.Order.filled_qty;
+          opt_real (Order.avg_fill_price o);
+          time at;
+          text cid;
+        ];
+      run t ~what:"order event"
+        "INSERT INTO order_events (client_order_id, at, event, state_after, anomaly, \
+         detail) VALUES (?, ?, ?, ?, ?, ?)"
+        [
+          text cid;
+          time at;
+          text (Order.Event.name event);
+          text (Order.State.to_string o.Order.state);
+          (match anomaly with
+          | None -> Data.NULL
+          | Some a -> text (Order.Anomaly.to_string a));
+          (match order_event_detail o event with None -> Data.NULL | Some s -> text s);
+        ])
+
+(* INSERT OR IGNORE: true when the execution id is new. [Sqlite3.changes]
+   answers for the statement just stepped, whether or not the surrounding
+   transaction has committed yet -- [run] has already driven it to DONE. *)
+let record_fill t (o : Order.t) (f : Order.Fill.t) : bool =
+  let inserted = ref false in
+  write t ~what:"fill" (fun () ->
+      run t ~what:"fill"
+        "INSERT OR IGNORE INTO fills (execution_id, client_order_id, symbol, side, qty, \
+         price, at, position_qty) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        [
+          text f.Order.Fill.execution_id;
+          text
+            (Ids.Client_order_id.to_string o.Order.request.Order.Request.client_order_id);
+          text (Symbol.to_string o.Order.request.Order.Request.symbol);
+          text (Order.Side.to_string o.Order.request.Order.Request.side);
+          real f.Order.Fill.qty;
+          real (Price.to_float f.Order.Fill.price);
+          time f.Order.Fill.at;
+          opt_real f.Order.Fill.position_qty;
+        ];
+      inserted := Sqlite3.changes t.db = 1);
+  !inserted
+
+let fill_of_fills_row r =
+  {
+    Order.Fill.execution_id = col_text r 0;
+    qty = col_real r 1;
+    price = Price.of_float (col_real r 2);
+    at = col_time r 3;
+    position_qty = col_opt_real r 4;
+  }
+
+(* Rebuilt, not looked up: [state] comes from the row, but [filled_qty],
+   [filled_notional] and [execution_ids] are summed from the fills table
+   itself, and [reason] from the latest event whose detail carries one. A
+   restart that trusted the row's own filled_qty/avg_fill_price would be
+   trusting update_order's cache instead of the ledger it caches. *)
+let load_order t (id : Ids.Client_order_id.t) : Order_row.t option =
+  let cid = Ids.Client_order_id.to_string id in
+  match
+    query t ~what:"order"
+      "SELECT client_order_id, venue_order_id, source, symbol, side, qty, kind, \
+       limit_price, state, decision_price, arrival_bid, arrival_ask, verdict, \
+       created_at, updated_at FROM orders WHERE client_order_id = ?"
+      [ text cid ]
+      ~row:Fn.id
+  with
+  | [] -> None
+  | row :: _ ->
+      let symbol = Symbol.of_string (col_text row 3) in
+      let side = side_of_text (col_text row 4) in
+      let qty = Float.iround_nearest_exn (col_real row 5) in
+      let kind_text = col_text row 6 in
+      let kind =
+        if String.equal kind_text "limit" then
+          Order.Kind.Limit
+            (Price.of_float
+               (Option.value_exn ~message:"journal: a limit order with no limit price"
+                  (col_opt_real row 7)))
+        else Order.Kind.Market
+      in
+      let fills =
+        query t ~what:"order fills"
+          "SELECT execution_id, qty, price, at, position_qty FROM fills WHERE \
+           client_order_id = ? ORDER BY at, execution_id"
+          [ text cid ]
+          ~row:fill_of_fills_row
+      in
+      let filled_qty = List.sum (module Float) fills ~f:(fun f -> f.Order.Fill.qty) in
+      let filled_notional =
+        List.sum
+          (module Float)
+          fills
+          ~f:(fun f -> f.Order.Fill.qty *. Price.to_float f.Order.Fill.price)
+      in
+      let execution_ids =
+        String.Set.of_list (List.map fills ~f:(fun f -> f.Order.Fill.execution_id))
+      in
+      let reason =
+        match
+          query t ~what:"order reason"
+            "SELECT detail FROM order_events WHERE client_order_id = ? AND detail LIKE \
+             '%\"reason\"%' ORDER BY seq DESC LIMIT 1"
+            [ text cid ]
+            ~row:(fun r -> col_text r 0)
+        with
+        | [] -> None
+        | detail :: _ -> reason_of_detail detail
+      in
+      let order : Order.t =
+        {
+          Order.request =
+            {
+              Order.Request.client_order_id = client_order_id_of_text (col_text row 0);
+              symbol;
+              side;
+              qty;
+              kind;
+            };
+          state = state_of_text (col_text row 8);
+          venue_order_id = col_opt_text row 1;
+          filled_qty;
+          filled_notional;
+          execution_ids;
+          reason;
+        }
+      in
+      Some
+        {
+          Order_row.order;
+          source = col_text row 2;
+          decision_price = Price.of_float (col_real row 9);
+          arrival = arrival_of_row row ~bid:10 ~ask:11;
+          verdict = Yojson.Safe.from_string (col_text row 12);
+          created_at = col_time row 13;
+          updated_at = col_time row 14;
+        }
+
+let orders_of_ids t ids =
+  List.filter_map ids ~f:(fun cid -> load_order t (client_order_id_of_text cid))
+
+(* Non-terminal states, oldest first: created_at, then client_order_id to
+   break a tie between orders journaled at the same instant -- every test in
+   this file that inserts more than one order does exactly that. *)
+let open_orders t : Order_row.t list =
+  query t ~what:"open orders"
+    "SELECT client_order_id FROM orders WHERE state NOT IN \
+     ('rejected_pre_trade','filled','cancelled','expired','rejected_by_venue','failed') \
+     ORDER BY created_at, client_order_id"
+    [] ~row:(fun r -> col_text r 0)
+  |> orders_of_ids t
+
+let recent_orders t ~limit : Order_row.t list =
+  query t ~what:"recent orders"
+    "SELECT client_order_id FROM orders ORDER BY created_at DESC, client_order_id DESC \
+     LIMIT ?"
+    [ Data.INT (Int64.of_int limit) ]
+    ~row:(fun r -> col_text r 0)
+  |> orders_of_ids t
+
+let recent_fills t ~limit : Fill_row.t list =
+  query t ~what:"recent fills"
+    "SELECT f.execution_id, f.client_order_id, f.symbol, f.side, f.qty, f.price, f.at, \
+     f.position_qty, o.decision_price, o.arrival_bid, o.arrival_ask FROM fills f JOIN \
+     orders o ON o.client_order_id = f.client_order_id ORDER BY f.at DESC, \
+     f.execution_id DESC LIMIT ?"
+    [ Data.INT (Int64.of_int limit) ]
+    ~row:(fun r ->
+      let fill : Order.Fill.t =
+        {
+          execution_id = col_text r 0;
+          qty = col_real r 4;
+          price = Price.of_float (col_real r 5);
+          at = col_time r 6;
+          position_qty = col_opt_real r 7;
+        }
+      in
+      {
+        Fill_row.client_order_id = client_order_id_of_text (col_text r 1);
+        symbol = Symbol.of_string (col_text r 2);
+        side = side_of_text (col_text r 3);
+        fill;
+        decision_price = Price.of_float (col_real r 8);
+        arrival = arrival_of_row r ~bid:9 ~ask:10;
       })
 
 module For_testing = struct
