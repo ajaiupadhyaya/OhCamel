@@ -51,13 +51,17 @@ let trade ~(credentials : Alpaca_paper.Credentials.t)
     | Ok (status, body) -> Alpaca_paper.classify_submission ~status ~body
     | Error e -> Venue.Submission.Unknown (Error.to_string_hum e)
   in
+  (* An id [Alpaca_paper.cancel_uri] refuses is an error before anything is
+     sent: a malformed id's path could name every order or every position. *)
   let cancel id =
-    let uri = Alpaca_paper.trading_uri ("/v2/orders/" ^ id) in
-    match%map request `DELETE uri with
-    | Error e -> Error e
-    | Ok (204, _) -> Ok ()
-    | Ok (422, body) -> Or_error.errorf "not cancelable: %s" (excerpt body)
-    | Ok (status, body) -> unexpected ~what:("DELETE " ^ Uri.path uri) status body
+    match Alpaca_paper.cancel_uri id with
+    | Error e -> return (Error e)
+    | Ok uri -> (
+        match%map request `DELETE uri with
+        | Error e -> Error e
+        | Ok (204, _) -> Ok ()
+        | Ok (422, body) -> Or_error.errorf "not cancelable: %s" (excerpt body)
+        | Ok (status, body) -> unexpected ~what:("DELETE " ^ Uri.path uri) status body)
   in
   let find_order (id : Ids.Client_order_id.t) =
     let uri =

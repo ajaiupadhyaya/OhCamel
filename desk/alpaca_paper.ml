@@ -96,7 +96,12 @@ let decimal ~what (json : Yojson.Safe.t) key : float Or_error.t =
       match Float.of_string_opt s with
       | Some x when Float.is_finite x -> Ok x
       | _ -> Or_error.errorf "alpaca_paper: %s.%s is not a number: %S" what key s)
-  | Some (`Float x) -> Ok x
+  (* Yojson reads a bare NaN or Infinity as a float, so the float is held to
+     the rule the string is: a NaN that got past here would make every limit
+     comparison it reached false. *)
+  | Some (`Float x) when Float.is_finite x -> Ok x
+  | Some (`Float x) ->
+      Or_error.errorf "alpaca_paper: %s.%s is not a finite number: %g" what key x
   | Some (`Int n) -> Ok (Float.of_int n)
   | _ -> Or_error.errorf "alpaca_paper: %s.%s is missing" what key
 
@@ -329,6 +334,24 @@ let classify_submission ~(status : int) ~(body : string) : Venue.Submission.t =
   | 400 | 401 | 403 | 404 | 409 | 422 | 429 ->
       Venue.Submission.Rejected (sprintf "%d: %s" status (message ()))
   | other -> Venue.Submission.Unknown (sprintf "%d: %s" other (message ()))
+
+(* A venue order id goes into a DELETE's path, so it is checked before a path
+   is built. Uri.make escapes "?", "#" and spaces and nothing else: an empty id
+   would send DELETE /v2/orders/, and "../positions" DELETE
+   /v2/orders/../positions -- cancel every open order, or close every
+   position, wherever the host or a proxy normalizes the path. Alpaca's ids
+   are UUIDs, so a non-empty run of letters, digits and hyphens admits every
+   id it issues and none that can leave its own order's path. *)
+let cancel_uri (id : string) : Uri.t Or_error.t =
+  if
+    (not (String.is_empty id))
+    && String.for_all id ~f:(fun c -> Char.is_alphanum c || Char.equal c '-')
+  then Ok (trading_uri ("/v2/orders/" ^ id))
+  else
+    Or_error.errorf
+      "alpaca_paper: a venue order id must be a non-empty run of letters, digits and \
+       hyphens; %S is not, so no cancel was sent"
+      id
 
 (* ---------------------------------------------------------------------- *)
 (* Transport                                                                *)

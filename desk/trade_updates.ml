@@ -22,6 +22,11 @@ module Message = struct
     | Unauthorized
     | Listening of string list
     | Update of Venue.Update.t
+    (* A trade update that arrived and could not be read, in words naming the
+       event and the order's id when they are there, and what was wrong. The
+       session logs it: an update lost in silence is a fill the desk does not
+       hear of until the next reconciliation, with nothing to say why. *)
+    | Unreadable of string
     | Stream_error of string
     | Other
 
@@ -30,12 +35,43 @@ module Message = struct
     | _ -> None
 
   let str = function Some (`String s) -> Some s | _ -> None
+  let what = "trade_update"
 
-  let num = function
-    | Some (`String s) -> Float.of_string_opt s
-    | Some (`Float f) -> Some f
-    | Some (`Int n) -> Some (Float.of_int n)
-    | _ -> None
+  (* A fill's shares and its price. Read by [Alpaca_paper.decimal], which
+     refuses a non-finite number whether it came as "NaN", "inf" or a bare
+     NaN, and then refused unless positive: an execution of no shares, or at
+     no price, is not one a position or a cost can be built from. *)
+  let positive d key =
+    Or_error.bind (Alpaca_paper.decimal ~what d key) ~f:(fun x ->
+        if Float.( > ) x 0.0 then Ok x
+        else Or_error.errorf "alpaca_paper: %s.%s is not positive: %.17g" what key x)
+
+  (* The fill a fill or partial_fill event describes. [position_qty] is signed
+     -- short is negative, flat is zero -- so it is only refused when present
+     and not finite; absent, it is None, as A1 reads an absent number.
+
+     The execution id is the venue's when it sends one. Without it, the
+     event's timestamp names the execution, and without that, the order's
+     cumulative filled quantity does: the arrival clock would give a
+     redelivered copy a new id, and the copy would be counted as a second
+     fill. *)
+  let fill ~(order : Venue.Venue_order.t) ~timestamp ~at d : Order.Fill.t Or_error.t =
+    let open Or_error.Let_syntax in
+    let%bind qty = positive d "qty" in
+    let%bind price = positive d "price" in
+    let%map position_qty = Alpaca_paper.optional_decimal ~what d "position_qty" in
+    let id = order.Venue.Venue_order.id in
+    {
+      Order.Fill.execution_id =
+        (match (str (member "execution_id" d), timestamp) with
+        | Some execution_id, _ -> execution_id
+        | None, Some t -> id ^ ":" ^ Desk_time.rfc3339 t
+        | None, None -> sprintf "%s:%.17g" id order.Venue.Venue_order.filled_qty);
+      qty;
+      price = Price.of_float price;
+      at;
+      position_qty;
+    }
 
   let of_json (json : Yojson.Safe.t) : t =
     let data = member "data" json in
@@ -50,35 +86,37 @@ module Message = struct
             Listening (List.filter_map xs ~f:(function `String s -> Some s | _ -> None))
         | _ -> Listening [])
     | Some "trade_updates", Some d -> (
-        match
-          ( str (member "event" d),
-            Option.map (member "order" d) ~f:Alpaca_paper.venue_order_of_json )
-        with
-        | Some event, Some (Ok order) ->
-            let at =
-              Option.value ~default:(Time_ns.now ())
-                (Option.bind (str (member "timestamp" d)) ~f:Desk_time.parse)
-            in
-            let fill =
-              match (num (member "qty" d), num (member "price" d)) with
-              | Some qty, Some price
-                when List.mem [ "fill"; "partial_fill" ] event ~equal:String.equal ->
-                  Some
-                    {
-                      Order.Fill.execution_id =
-                        Option.value
-                          (str (member "execution_id" d))
-                          ~default:
-                            (order.Venue.Venue_order.id ^ ":" ^ Desk_time.rfc3339 at);
-                      qty;
-                      price = Price.of_float price;
-                      at;
-                      position_qty = num (member "position_qty" d);
-                    }
-              | _ -> None
-            in
-            Update { Venue.Update.event; order; fill; at }
-        | _ -> Other)
+        let event = str (member "event" d) in
+        let order_json = member "order" d in
+        let unreadable reason =
+          Unreadable
+            (sprintf "trade update%s%s: %s"
+               (Option.value_map event ~default:"" ~f:(sprintf " %S"))
+               (Option.value_map
+                  (Option.bind order_json ~f:(fun o -> str (member "id" o)))
+                  ~default:"" ~f:(sprintf " for order %S"))
+               reason)
+        in
+        match (event, order_json) with
+        | None, _ -> unreadable "no event"
+        | _, None -> unreadable "no order"
+        | Some event, Some order_json -> (
+            match Alpaca_paper.venue_order_of_json order_json with
+            | Error e -> unreadable (Error.to_string_hum e)
+            | Ok order ->
+                let timestamp =
+                  Option.bind (str (member "timestamp" d)) ~f:Desk_time.parse
+                in
+                let at = Option.value timestamp ~default:(Time_ns.now ()) in
+                if List.mem [ "fill"; "partial_fill" ] event ~equal:String.equal then
+                  (* A fill whose numbers cannot be read is not an update with
+                     no fill: the state machine would take it for an event
+                     naming no execution, and the shares would be lost. *)
+                  match fill ~order ~timestamp ~at d with
+                  | Ok f -> Update { Venue.Update.event; order; fill = Some f; at }
+                  | Error e -> unreadable (Error.to_string_hum e)
+                else Update { Venue.Update.event; order; fill = None; at }))
+    | Some "trade_updates", None -> Unreadable "trade update with no data"
     | _ -> (
         match (str (member "action" json), data) with
         | Some "error", Some d ->
@@ -120,7 +158,9 @@ let listen_frame =
 (* One connection, handshake to disconnect, folded into the market-data
    client's [Outcome.t] -- for the reason alpaca_ws.ml gives beside that type:
    a refused key and the socket closing behind it arrive together, and the
-   refusal is the reading that says what to do.
+   refusal is the reading that says what to do. Returned beside it: how long
+   the stream stayed listening, if it ever did, which is what decides whether
+   the next reconnect counts as a first failure.
 
    [~rest:`Log], as in [Alpaca_paper.get_json]: a job this session started can
    still raise after its verdict is in, and raised to the main monitor that
@@ -130,7 +170,7 @@ let listen_frame =
 let run_session ~credentials ~(writer : Venue.Update.t Pipe.Writer.t) ~on_connected
     ~on_event =
   let fatal = ref None in
-  let listening = ref false in
+  let listening_since = ref None in
   let handshake_error = ref None in
   let%map connection =
     Monitor.try_with ~extract_exn:true ~rest:`Log (fun () ->
@@ -164,12 +204,20 @@ let run_session ~credentials ~(writer : Venue.Update.t Pipe.Writer.t) ~on_connec
                   Deferred.unit
               | Message.Listening streams
                 when List.mem streams "trade_updates" ~equal:String.equal ->
-                  listening := true;
+                  listening_since := Some (Time_ns.now ());
                   on_event "listening to trade_updates; reconciling with the venue";
                   (* Not awaited: a read loop that waited on a reconciliation
                      would stop answering pings while it ran, and the venue
-                     would drop the socket. *)
-                  don't_wait_for (on_connected ());
+                     would drop the socket. And under a monitor of its own: a
+                     reconciliation that raised into the session's monitor
+                     would end a healthy session, which would reconnect and
+                     raise again at the backoff's pace. *)
+                  don't_wait_for
+                    (match%map
+                       Monitor.try_with ~extract_exn:true ~rest:`Log on_connected
+                     with
+                    | Ok () -> ()
+                    | Error exn -> on_event ("reconciliation raised: " ^ Exn.to_string exn));
                   Deferred.unit
               | Message.Listening _ -> Deferred.unit
               | Message.Update update ->
@@ -177,14 +225,18 @@ let run_session ~credentials ~(writer : Venue.Update.t Pipe.Writer.t) ~on_connec
                      the updates must not stall the socket's replies. *)
                   Pipe.write_without_pushback_if_open writer update;
                   Deferred.unit
+              | Message.Unreadable why ->
+                  on_event ("not applied: " ^ why);
+                  Deferred.unit
               | Message.Stream_error why ->
                   on_event ("stream error: " ^ why);
                   Deferred.unit
               | Message.Other -> Deferred.unit
             in
             (* Frames arrive as Binary on this host, and are read exactly as
-               Text is. A frame that is not JSON is skipped, as the market-data
-               client skips one: one malformed frame must not end the stream. *)
+               Text is. A frame that is not JSON is logged and skipped: one
+               malformed frame must not end the stream, and it may have been an
+               update. Venue frames carry no key, so an excerpt is safe to log. *)
             let read_loop () =
               Pipe.iter received_frames ~f:(fun (frame : Websocket.Frame.t) ->
                   match frame.Websocket.Frame.opcode with
@@ -201,7 +253,11 @@ let run_session ~credentials ~(writer : Venue.Update.t Pipe.Writer.t) ~on_connec
                             Yojson.Safe.from_string frame.Websocket.Frame.content)
                       with
                       | Some json -> handle (Message.of_json json)
-                      | None -> Deferred.unit)
+                      | None ->
+                          on_event
+                            (sprintf "skipped a frame that is not JSON: %S"
+                               (String.prefix frame.Websocket.Frame.content 120));
+                          Deferred.unit)
                   | Websocket.Frame.Opcode.Pong | _ -> Deferred.unit)
             in
             don't_wait_for (read_loop ());
@@ -217,17 +273,26 @@ let run_session ~credentials ~(writer : Venue.Update.t Pipe.Writer.t) ~on_connec
             | Ok () -> ()
             | Error error -> handshake_error := Some (Error.to_string_hum error)))
   in
-  match !fatal with
-  | Some detail -> Alpaca_ws.Outcome.Fatal detail
-  | None ->
-      let context = if !listening then "" else " before the stream was listening" in
-      let reason =
-        match (!handshake_error, connection) with
-        | Some detail, _ -> detail
-        | None, Error exn -> Exn.to_string exn
-        | None, Ok () -> "stream closed"
-      in
-      Alpaca_ws.Outcome.Disconnected (reason ^ context)
+  let listened_for =
+    Option.map !listening_since ~f:(fun since -> Time_ns.diff (Time_ns.now ()) since)
+  in
+  let outcome =
+    match !fatal with
+    | Some detail -> Alpaca_ws.Outcome.Fatal detail
+    | None ->
+        let context =
+          if Option.is_some !listening_since then ""
+          else " before the stream was listening"
+        in
+        let reason =
+          match (!handshake_error, connection) with
+          | Some detail, _ -> detail
+          | None, Error exn -> Exn.to_string exn
+          | None, Ok () -> "stream closed"
+        in
+        Alpaca_ws.Outcome.Disconnected (reason ^ context)
+  in
+  (outcome, listened_for)
 
 (* Reconnects on every disconnect, on the market-data client's schedule, and
    returns only when the paper host refuses the key. The random generator the
@@ -237,16 +302,26 @@ let run ~(credentials : Alpaca_paper.Credentials.t)
     ~(writer : Venue.Update.t Pipe.Writer.t) ~(on_connected : unit -> unit Deferred.t)
     ~(on_event : string -> unit) : unit Deferred.t =
   Lazy.force Alpaca_ws.rng_initialized;
+  let backoff = Alpaca_ws.Backoff.default in
   let rec attempt n =
     on_event (sprintf "connecting to %s (attempt %d)" (Uri.to_string stream_uri) n);
     match%bind run_session ~credentials ~writer ~on_connected ~on_event with
-    | Alpaca_ws.Outcome.Fatal detail ->
+    | Alpaca_ws.Outcome.Fatal detail, _ ->
         on_event (sprintf "STOPPING: %s" detail);
         Deferred.unit
-    | Alpaca_ws.Outcome.Disconnected reason ->
-        (* [attempt] is 1-based, as Backoff counts: the first retry waits the
-           base delay. *)
-        let delay = Alpaca_ws.Backoff.delay Alpaca_ws.Backoff.default ~attempt:n in
+    | Alpaca_ws.Outcome.Disconnected reason, listened_for ->
+        (* [n] is 1-based, as Backoff counts: the first retry waits the base
+           delay. It restarts at 1 after a session that stayed listening longer
+           than the backoff's cap, so a stream that held and then dropped is a
+           first failure rather than the latest of a lifetime's; and only
+           then, or a host that accepts a listen and drops at once would be
+           retried every second. *)
+        let n =
+          match listened_for with
+          | Some held when Time_ns.Span.( > ) held backoff.Alpaca_ws.Backoff.cap -> 1
+          | _ -> n
+        in
+        let delay = Alpaca_ws.Backoff.delay backoff ~attempt:n in
         on_event
           (sprintf "disconnected (%s); reconnecting in %s" reason
              (Time_ns.Span.to_string_hum delay));

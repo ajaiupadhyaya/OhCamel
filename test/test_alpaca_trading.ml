@@ -46,7 +46,18 @@ let test_an_order_is_sent_as_strings () =
     "limit, two decimals"
     {|{"symbol":"AAPL","qty":"2","side":"buy","type":"limit","time_in_force":"day","client_order_id":"ohc-01M2B0CWJ0ZZZZZZZZZZZZZZZ1","limit_price":"150.00"}|}
     (Yojson.Safe.to_string
-       (Alpaca.order_request_json (request (Order.Kind.Limit (Price.of_float 150.0)))))
+       (Alpaca.order_request_json (request (Order.Kind.Limit (Price.of_float 150.0)))));
+  (* "" would send DELETE /v2/orders/, and ".." and "a/b" would leave the order's own path. *)
+  List.iter [ ""; ".."; "a/b" ] ~f:(fun id ->
+      match Alpaca.cancel_uri id with
+      | Error _ -> ()
+      | Ok uri -> Alcotest.failf "cancel id %S was accepted as %s" id (Uri.to_string uri));
+  (* A UUID, the shape of every id Alpaca issues, is its own order's path on the paper host. *)
+  Alcotest.(check string)
+    "a UUID's cancel URI"
+    "https://paper-api.alpaca.markets/v2/orders/7b08df51-c1ac-453c-99f9-323a5f075f0d"
+    (Uri.to_string
+       (Or_error.ok_exn (Alpaca.cancel_uri "7b08df51-c1ac-453c-99f9-323a5f075f0d")))
 
 let accepted_body =
   {|{"asset_class":"us_equity","client_order_id":"ohc-01M2B0CWJ0ZZZZZZZZZZZZZZZ1","filled_avg_price":null,"filled_qty":"0","id":"7b08df51-c1ac-453c-99f9-323a5f075f0d","limit_price":"150","qty":"2","side":"buy","status":"accepted","symbol":"AAPL","time_in_force":"day","type":"limit"}|}
@@ -72,9 +83,9 @@ let test_the_three_answers_to_a_submission () =
       Alcotest.(check string)
         "a refusal, with Alpaca's words" "403: insufficient buying power" why
   | _ -> Alcotest.fail "a 403 was not a refusal");
-  (* 422 is a request the venue could not process and 429 a request it rate
-     limited: in both it did not take the order, so each is a refusal. *)
-  List.iter [ 422; 429 ] ~f:(fun status ->
+  (* 400 a bad request, 409 a conflict, 422 unprocessable, 429 rate limited:
+     in each the venue did not take the order, so each is a refusal. *)
+  List.iter [ 400; 409; 422; 429 ] ~f:(fun status ->
       match Alpaca.classify_submission ~status ~body:"{}" with
       | Venue.Submission.Rejected _ -> ()
       | _ -> Alcotest.failf "%d was not a refusal" status);
@@ -86,7 +97,21 @@ let test_the_three_answers_to_a_submission () =
     ~f:(fun (status, body) ->
       match Alpaca.classify_submission ~status ~body with
       | Venue.Submission.Unknown _ -> ()
-      | _ -> Alcotest.failf "%d %S was not an unknown" status body)
+      | _ -> Alcotest.failf "%d %S was not an unknown" status body);
+  (* JSON, but no readable order in it: the venue said 200, so it may hold the order (invariant 10). *)
+  match
+    Alpaca.classify_submission ~status:200
+      ~body:{|{"id":"7b08df51-c1ac-453c-99f9-323a5f075f0d","status":"accepted"}|}
+  with
+  | Venue.Submission.Unknown _ -> ()
+  | _ -> Alcotest.fail "a JSON 200 whose order cannot be read was not an unknown"
+
+(* An order as trade_updates carries it, with only the fields the parser
+   requires, and [extra] spliced in before the closing brace. *)
+let order_json ?(extra = "") () =
+  sprintf
+    {|{"id":"a5be8f5e-fdfa-41f5-a644-7a74fe947a8f","client_order_id":"ohc-01M2B0CWJ0ZZZZZZZZZZZZZZZ1","symbol":"XOM","side":"sell","qty":"30","filled_qty":"30","status":"filled"%s}|}
+    extra
 
 let test_trade_update_messages () =
   let of_string s = Updates.Message.of_json (Yojson.Safe.from_string s) in
@@ -109,6 +134,48 @@ let test_trade_update_messages () =
   (match of_string {|{"stream":"listening","data":{"streams":["trade_updates"]}}|} with
   | Updates.Message.Listening [ "trade_updates" ] -> ()
   | _ -> Alcotest.fail "listening");
+  let fill_update ~order ~numbers =
+    sprintf {|{"stream":"trade_updates","data":{"event":"fill","order":%s,%s}}|} order
+      numbers
+  in
+  let refused ~field message =
+    match of_string message with
+    | Updates.Message.Unreadable why ->
+        (* The field, so the log line says which number the venue sent wrong. *)
+        Alcotest.(check bool)
+          (sprintf "%S names %s" why field)
+          true
+          (String.is_substring why ~substring:field);
+        (* The order's id, so the order the lost update belongs to can be found. *)
+        Alcotest.(check bool)
+          (sprintf "%S names the order" why)
+          true
+          (String.is_substring why ~substring:"a5be8f5e-fdfa-41f5-a644-7a74fe947a8f")
+    | _ -> Alcotest.failf "an update with an unreadable %s was not refused" field
+  in
+  (* "NaN" parses as a float, and a NaN price would make every cost it touches a NaN. *)
+  refused ~field:"trade_update.price"
+    (fill_update ~order:(order_json ())
+       ~numbers:{|"execution_id":"e1","price":"NaN","qty":"30"|});
+  (* "inf" parses as a float too, and an infinite quantity sets no position. *)
+  refused ~field:"trade_update.qty"
+    (fill_update ~order:(order_json ())
+       ~numbers:{|"execution_id":"e1","price":"105.9","qty":"inf"|});
+  (* Yojson reads a bare NaN as a float, which the order's parser refuses as it refuses "NaN". *)
+  refused ~field:"order.filled_avg_price"
+    (fill_update
+       ~order:(order_json ~extra:{|,"filled_avg_price":NaN|} ())
+       ~numbers:{|"execution_id":"e1","price":"105.9","qty":"30"|});
+  (match
+     of_string
+       (fill_update ~order:(order_json ()) ~numbers:{|"price":"105.9","qty":"30"|})
+   with
+  | Updates.Message.Update { Venue.Update.fill = Some f; _ } ->
+      (* No execution id or timestamp: the order's id and its cumulative "30", the same for a redelivered copy. *)
+      Alcotest.(check string)
+        "the fallback execution id" "a5be8f5e-fdfa-41f5-a644-7a74fe947a8f:30"
+        f.Order.Fill.execution_id
+  | _ -> Alcotest.fail "a fill with no execution id or timestamp was not read");
   match
     of_string
       {|{"stream":"trade_updates","data":{"event":"fill","execution_id":"2f63ea93-423d-4169-b3f6-3fdafc10c418","order":{"client_order_id":"ohc-01M2B0CWJ0ZZZZZZZZZZZZZZZ1","filled_avg_price":"105.8988475","filled_qty":"30","id":"a5be8f5e-fdfa-41f5-a644-7a74fe947a8f","limit_price":null,"qty":"30","side":"sell","status":"filled","symbol":"XOM","type":"market"},"position_qty":"-30","price":"105.8988475","qty":"30","timestamp":"2022-04-19T17:45:05.024916716Z"}}|}
