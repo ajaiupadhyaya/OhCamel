@@ -192,18 +192,20 @@ let test_rfc3339_round_trips_to_the_nanosecond () =
    a transaction" -- one bad write taking down every write after it. *)
 let test_a_failed_commit_rolls_back_before_the_next_write () =
   let j = open_exn ":memory:" in
-  ignore (Sqlite3.exec j.Journal.db "PRAGMA foreign_keys = ON" : Sqlite3.Rc.t);
   ignore
-    (Sqlite3.exec j.Journal.db "CREATE TABLE parent (id INTEGER PRIMARY KEY)"
+    (Sqlite3.exec (Journal.For_testing.db j) "PRAGMA foreign_keys = ON" : Sqlite3.Rc.t);
+  ignore
+    (Sqlite3.exec (Journal.For_testing.db j)
+       "CREATE TABLE parent (id INTEGER PRIMARY KEY)"
       : Sqlite3.Rc.t);
   ignore
-    (Sqlite3.exec j.Journal.db
+    (Sqlite3.exec (Journal.For_testing.db j)
        "CREATE TABLE child (id INTEGER PRIMARY KEY, parent INTEGER REFERENCES parent(id) \
         DEFERRABLE INITIALLY DEFERRED)"
       : Sqlite3.Rc.t);
   (match
-     Journal.write j ~what:"child" (fun () ->
-         Journal.run j ~what:"child insert"
+     Journal.For_testing.write j ~what:"child" (fun () ->
+         Journal.For_testing.run j ~what:"child insert"
            "INSERT INTO child (id, parent) VALUES (1, 99)" [])
    with
   | () ->
@@ -218,6 +220,23 @@ let test_a_failed_commit_rolls_back_before_the_next_write () =
   Journal.record_session j (session "2026-09-11");
   Alcotest.(check int)
     "an ordinary write afterwards still counts as one" 1 (Journal.version j)
+
+(* Spec §3.5: a file journal runs in WAL mode. SQLite answers PRAGMA
+   journal_mode with the mode it actually set, and open_ now refuses any
+   answer but wal; this pins the answer on a real file. An in-memory database
+   has no file for WAL to mean anything, and SQLite reports it as "memory". *)
+let test_a_file_journal_runs_in_wal_mode () =
+  with_temp_path ~f:(fun path ->
+      let j = open_exn path in
+      Alcotest.(check string)
+        "a file: wal, as SQLite reports it" "wal"
+        (Journal.For_testing.journal_mode j);
+      Journal.close j);
+  let m = open_exn ":memory:" in
+  Alcotest.(check string)
+    "in memory: memory" "memory"
+    (Journal.For_testing.journal_mode m);
+  Journal.close m
 
 let suite =
   ( "journal",
@@ -240,4 +259,6 @@ let suite =
         test_rfc3339_round_trips_to_the_nanosecond;
       Alcotest.test_case "a failed commit rolls back before the next write" `Quick
         test_a_failed_commit_rolls_back_before_the_next_write;
+      Alcotest.test_case "a file journal runs in WAL mode" `Quick
+        test_a_file_journal_runs_in_wal_mode;
     ] )

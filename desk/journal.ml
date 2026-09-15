@@ -143,39 +143,66 @@ let schema =
      NOT NULL, kind TEXT NOT NULL, limit_name TEXT NOT NULL, line TEXT NOT NULL)";
   ]
 
+(* Everything [open_] does once the handle exists. Each refusal raises, and
+   [open_] closes the handle.
+
+   A second connection to the same file (sqlite3 .backup, a person reading
+   it) waits up to five seconds instead of failing at once. WAL lets a reader
+   and the one writer proceed together; an in-memory database has no file for
+   either to mean anything.
+
+   SQLite answers PRAGMA journal_mode=WAL with the mode it actually set. On a
+   filesystem without shared memory it stays in its rollback journal and says
+   so. A journal that only asked would run on unnoticed, and a .backup reader
+   could then block the one writer (A1's final review, M2). *)
+let set_up t ~path =
+  Sqlite3.busy_timeout t.db 5_000;
+  if not (String.equal path ":memory:") then (
+    (match
+       query t ~what:"journal_mode" "PRAGMA journal_mode=WAL" [] ~row:(fun r ->
+           col_text r 0)
+     with
+    | [ mode ] when String.equal (String.lowercase mode) "wal" -> ()
+    | modes ->
+        failwithf
+          "journal: %s answered journal_mode %s, not wal; this journal runs only in WAL \
+           mode"
+          path
+          (String.concat ~sep:"," modes)
+          ());
+    exec t ~what:"synchronous" "PRAGMA synchronous=NORMAL");
+  exec t ~what:"meta" (List.hd_exn schema);
+  (match
+     query t ~what:"schema version" "SELECT value FROM meta WHERE key = 'schema_version'"
+       [] ~row:(fun r -> col_text r 0)
+   with
+  | [] -> ()
+  | [ v ] when String.equal v (Int.to_string schema_version) -> ()
+  | [ v ] ->
+      failwithf
+        "journal: %s is at schema version %s and this build knows version %d; it will \
+         not guess at a layout it has never seen"
+        path v schema_version ()
+  | _ -> failwith "journal: meta holds more than one schema version");
+  List.iter (List.tl_exn schema) ~f:(exec t ~what:"schema");
+  run t ~what:"schema version"
+    "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)"
+    [ text (Int.to_string schema_version) ]
+
+(* A refusal after the handle opened closes it, once, here. Before, only the
+   two schema-version refusals did, and a failed pragma, a file that is not a
+   database, or a failed insert left the handle open behind the error (A1's
+   final review, M1): a caller that tried again would leak one per try. The
+   schema-version branches no longer close the handle themselves, so it is
+   never closed twice. *)
 let open_ ~(path : string) : t Or_error.t =
   Or_error.try_with (fun () ->
       let t = { db = Sqlite3.db_open path; location = path; version = 0 } in
-      Sqlite3.busy_timeout t.db 5_000;
-      (* A second connection to the same file (sqlite3 .backup, a person
-         reading it) waits up to five seconds instead of failing at once. WAL
-         lets a reader and the one writer proceed together; an in-memory
-         database has no file for either to mean anything. *)
-      if not (String.equal path ":memory:") then (
-        exec t ~what:"journal_mode" "PRAGMA journal_mode=WAL";
-        exec t ~what:"synchronous" "PRAGMA synchronous=NORMAL");
-      exec t ~what:"meta" (List.hd_exn schema);
-      (match
-         query t ~what:"schema version"
-           "SELECT value FROM meta WHERE key = 'schema_version'" [] ~row:(fun r ->
-             col_text r 0)
-       with
-      | [] -> ()
-      | [ v ] when String.equal v (Int.to_string schema_version) -> ()
-      | [ v ] ->
+      match set_up t ~path with
+      | () -> t
+      | exception e ->
           ignore (Sqlite3.db_close t.db : bool);
-          failwithf
-            "journal: %s is at schema version %s and this build knows version %d; it \
-             will not guess at a layout it has never seen"
-            path v schema_version ()
-      | _ ->
-          ignore (Sqlite3.db_close t.db : bool);
-          failwith "journal: meta holds more than one schema version");
-      List.iter (List.tl_exn schema) ~f:(exec t ~what:"schema");
-      run t ~what:"schema version"
-        "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)"
-        [ text (Int.to_string schema_version) ];
-      t)
+          raise e)
 
 let close t = ignore (Sqlite3.db_close t.db : bool)
 
@@ -351,3 +378,16 @@ let recent_alerts t ~limit =
         limit_name = col_text r 2;
         line = col_text r 3;
       })
+
+module For_testing = struct
+  let db t = t.db
+  let write = write
+  let run = run
+
+  let journal_mode t =
+    match
+      query t ~what:"journal_mode" "PRAGMA journal_mode" [] ~row:(fun r -> col_text r 0)
+    with
+    | [ mode ] -> mode
+    | _ -> failwith "journal: PRAGMA journal_mode did not answer with one row"
+end

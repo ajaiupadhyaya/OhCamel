@@ -255,7 +255,7 @@ let test_a_failed_write_leaves_the_graph_untouched_and_a_retry_rolls_once () =
       with_book ~f:(fun b jb ->
           let before = Graph.snapshot a in
           ignore
-            (Sqlite3.exec ja.Journal.db
+            (Sqlite3.exec (Journal.For_testing.db ja)
                "CREATE TRIGGER fail_session BEFORE INSERT ON sessions BEGIN SELECT \
                 RAISE(ABORT, 'the test refuses this session'); END"
               : Sqlite3.Rc.t);
@@ -292,7 +292,9 @@ let test_a_failed_write_leaves_the_graph_untouched_and_a_retry_rolls_once () =
           Alcotest.(check (array (float 0.0)))
             "the window did not roll on the failed attempt" (Graph.returns a aapl)
             (Graph.returns b aapl);
-          ignore (Sqlite3.exec ja.Journal.db "DROP TRIGGER fail_session" : Sqlite3.Rc.t);
+          ignore
+            (Sqlite3.exec (Journal.For_testing.db ja) "DROP TRIGGER fail_session"
+              : Sqlite3.Rc.t);
           Alcotest.(check bool)
             "recorded on retry" true
             (Poly.equal (record a ja) `Recorded);
