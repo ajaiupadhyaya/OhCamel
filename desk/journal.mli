@@ -92,4 +92,11 @@ module For_testing : sig
   val journal_mode : t -> string
   (** SQLite's answer to PRAGMA journal_mode: "wal" for a file journal, "memory" for
       ":memory:". *)
+
+  val wal_check : path:string -> string list -> (unit, string) Result.t
+  (** The refusal's decision alone, with no SQLite and no IO: [Ok ()] only for a single
+      answer equal to "wal", ignoring case, else an [Error] naming [path] and the modes
+      answered. Exported so the refusal can be tested against an answer of our own
+      choosing -- this build's own test filesystem always enters WAL for real, so a case
+      that only opens a real file can never tell a working refusal from a deleted one. *)
 end

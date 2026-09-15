@@ -143,6 +143,26 @@ let schema =
      NOT NULL, kind TEXT NOT NULL, limit_name TEXT NOT NULL, line TEXT NOT NULL)";
   ]
 
+(* The refusal's decision alone, with no SQLite and no IO: [modes] is
+   whatever PRAGMA journal_mode=WAL answered (zero, one, or -- if SQLite ever
+   surprised us -- more than one row). Ok only for the single, unambiguous
+   answer "wal", any case, since that is the one thing this build can trust
+   the file to behave like. Pulled out of [set_up] so the refusal can be
+   driven directly with an answer of our own choosing: this build's own test
+   filesystem always enters WAL for real, so a case that only opened a real
+   file could never tell a working refusal from a deleted one (a review's
+   finding on this file's first version). *)
+let wal_check ~path (modes : string list) : (unit, string) Result.t =
+  match modes with
+  | [ mode ] when String.equal (String.lowercase mode) "wal" -> Ok ()
+  | modes ->
+      Error
+        (sprintf
+           "journal: %s answered journal_mode %s, not wal; this journal runs only in WAL \
+            mode"
+           path
+           (String.concat ~sep:"," modes))
+
 (* Everything [open_] does once the handle exists. Each refusal raises, and
    [open_] closes the handle.
 
@@ -159,17 +179,12 @@ let set_up t ~path =
   Sqlite3.busy_timeout t.db 5_000;
   if not (String.equal path ":memory:") then (
     (match
-       query t ~what:"journal_mode" "PRAGMA journal_mode=WAL" [] ~row:(fun r ->
-           col_text r 0)
+       wal_check ~path
+         (query t ~what:"journal_mode" "PRAGMA journal_mode=WAL" [] ~row:(fun r ->
+              col_text r 0))
      with
-    | [ mode ] when String.equal (String.lowercase mode) "wal" -> ()
-    | modes ->
-        failwithf
-          "journal: %s answered journal_mode %s, not wal; this journal runs only in WAL \
-           mode"
-          path
-          (String.concat ~sep:"," modes)
-          ());
+    | Ok () -> ()
+    | Error msg -> failwith msg);
     exec t ~what:"synchronous" "PRAGMA synchronous=NORMAL");
   exec t ~what:"meta" (List.hd_exn schema);
   (match
@@ -383,6 +398,7 @@ module For_testing = struct
   let db t = t.db
   let write = write
   let run = run
+  let wal_check = wal_check
 
   let journal_mode t =
     match

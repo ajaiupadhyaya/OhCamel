@@ -236,7 +236,44 @@ let test_a_file_journal_runs_in_wal_mode () =
   Alcotest.(check string)
     "in memory: memory" "memory"
     (Journal.For_testing.journal_mode m);
-  Journal.close m
+  Journal.close m;
+  (* wal_check is the refusal's decision alone, with no SQLite: this
+     filesystem always answers "wal" for real, so without driving the
+     decision directly with an answer of our own choosing, the refusal
+     branch could be deleted and the two checks above would stay green --
+     exactly what a review found the plan's own RED attempt could not catch. *)
+  let path = "/journal-test.db" in
+  let ok modes = Result.is_ok (Journal.For_testing.wal_check ~path modes) in
+  let refused modes = Result.is_error (Journal.For_testing.wal_check ~path modes) in
+  (* SQLite reports the mode it set in lowercase; the check should not depend
+     on that never changing. *)
+  Alcotest.(check bool) "wal is accepted" true (ok [ "wal" ]);
+  Alcotest.(check bool) "WAL, any case, is accepted" true (ok [ "WAL" ]);
+  (* memory is what :memory: answers -- a file journal must never accept it. *)
+  Alcotest.(check bool) "memory is refused" true (refused [ "memory" ]);
+  (* delete is SQLite's default rollback journal, the mode WAL replaces. *)
+  Alcotest.(check bool) "delete is refused" true (refused [ "delete" ]);
+  (* No row at all is not "wal" either. *)
+  Alcotest.(check bool) "no answer is refused" true (refused []);
+  (* More than one row is not the single, unambiguous "wal" this checks for. *)
+  Alcotest.(check bool) "two answers are refused" true (refused [ "wal"; "wal" ]);
+  let error_names_the_path modes =
+    match Journal.For_testing.wal_check ~path modes with
+    | Ok () -> false
+    | Error msg -> String.is_substring msg ~substring:path
+  in
+  (* Every refusal should let a reader find which file was rejected. *)
+  Alcotest.(check bool)
+    "memory's refusal names the path" true
+    (error_names_the_path [ "memory" ]);
+  Alcotest.(check bool)
+    "delete's refusal names the path" true
+    (error_names_the_path [ "delete" ]);
+  Alcotest.(check bool)
+    "no-answer's refusal names the path" true (error_names_the_path []);
+  Alcotest.(check bool)
+    "two-answers' refusal names the path" true
+    (error_names_the_path [ "wal"; "wal" ])
 
 let suite =
   ( "journal",
