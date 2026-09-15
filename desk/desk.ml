@@ -45,6 +45,15 @@ type t = {
   mutable equity_gap : float option;
   mutable last_sync : Time_ns.t option;
   mutable last_error : string option;
+  (* Reads are numbered as they start. [applied_seq] is the number of the read
+     the book came from; [raced_through] is the highest number taken before
+     the desk's latest fill. Zero is "none". *)
+  mutable reads_started : int;
+  mutable applied_seq : int;
+  mutable raced_through : int;
+  (* The read [after_fill] starts: none out, one out, or one out and one more
+     owed, because a fill landed while it was out. *)
+  mutable fill_read : [ `Idle | `Running | `Owed ];
   (* The session count, re-read only when the journal has been written since:
      this object rides on every frame, and a frame is not a reason to query. *)
   mutable sessions_seen : int * int;
@@ -65,6 +74,10 @@ let create ~graph ~journal ~venue ~spec ~on_change ~on_first_sync =
     equity_gap = None;
     last_sync = None;
     last_error = None;
+    reads_started = 0;
+    applied_seq = 0;
+    raced_through = 0;
+    fill_read = `Idle;
     sessions_seen = (-1, 0);
   }
 
@@ -81,65 +94,114 @@ let book_is_current t ~now ~within =
   | None -> false
   | Some at -> Time_ns.Span.( <= ) (Time_ns.diff now at) within
 
-let sync_with t ~account ~positions ~at =
-  match t.last_sync with
-  | Some last when Time_ns.( < ) at last ->
-      (* A read that started before the last applied read is older than what
-         the book already holds, and applying it would move the book backwards. *)
-      ()
-  | _ ->
-      (match (account, positions) with
-      | Ok account, Ok positions ->
-          let plan =
-            Book_sync.plan ~universe:(Graph.symbols t.graph) ~positions ~account
-          in
-          Book_sync.apply t.graph plan;
-          t.account <- Some account;
-          (* Design §3.3's own definition of "managed": a name in the book's
-             universe. Read here rather than recovered from [plan.unmanaged] by
-             subtraction -- that would agree with [plan] only because
-             [Book_sync.plan] happens to build [unmanaged] as an untransformed
-             filter of [positions], which is Book_sync's implementation and not a
-             fact desk.ml is entitled to lean on. [t.unmanaged] still comes from
-             the plan, because Book_sync owns that decision; the two now agree by
-             definition, not by construction. *)
-          let universe = Symbol.Set.of_list (Graph.symbols t.graph) in
-          t.unmanaged <- plan.Book_sync.Plan.unmanaged;
-          t.positions <-
-            List.filter positions ~f:(fun p -> Set.mem universe p.Venue.Position.symbol);
-          t.equity_gap <-
-            Some
-              (Notional.to_float (Graph.equity t.graph)
-              -. Notional.to_float account.Venue.Account.equity);
-          t.last_sync <- Some at;
-          t.last_error <- None;
-          (* The first moment the graph's book is the account's, and so the
-             first moment the journal's closes -- the account's equity -- can
-             go back into the trail beside it. [Book_sync.apply] has already
-             stabilized on the account's book, so no stabilize sees those
-             closes beside the file's. Once only: a second restore would
-             replace the trail again and drop every mark made since. The flag
-             is set first, so a callback that raises is not run again by the
-             next read. *)
-          if not t.synced then (
-            t.synced <- true;
-            t.on_first_sync ())
-      | Error e, _ | _, Error e -> t.last_error <- Some (Error.to_string_hum e));
-      t.on_change ()
+(* A read's place in the order this desk started its reads. The order is by
+   number and not by [at], because the wall clock can step backwards -- an
+   NTP correction, a resumed VM -- and a guard on time would then refuse every
+   read until the clock passed the old stamp, silently, with the book frozen
+   (A1's ledger, line 128). *)
+let start_read t =
+  t.reads_started <- t.reads_started + 1;
+  t.reads_started
+
+(* The desk's own fill has moved the graph's book: the order manager applied
+   it and set the venue's position_qty, so positions follow fills. A read
+   that started before the fill carries the account from before it -- cash
+   without the trade, or quantities with it beside cash without -- and
+   applying it would move the book backwards by the fill's notional until the
+   next read (A1's final review, M4). So every read already started is
+   refused, and the read [after_fill] starts is the correction. *)
+let fill_applied t = t.raced_through <- t.reads_started
+
+let sync_with t ~account ~positions ~at ~seq =
+  if seq <= t.applied_seq || seq <= t.raced_through then
+    (* Older than what the book already holds: a read started before the last
+       applied one, or before one of the desk's own fills. *)
+    ()
+  else (
+    (match (account, positions) with
+    | Ok account, Ok positions ->
+        let plan = Book_sync.plan ~universe:(Graph.symbols t.graph) ~positions ~account in
+        Book_sync.apply t.graph plan;
+        t.account <- Some account;
+        (* Design §3.3's own definition of "managed": a name in the book's
+           universe. Read here rather than recovered from [plan.unmanaged] by
+           subtraction -- that would agree with [plan] only because
+           [Book_sync.plan] happens to build [unmanaged] as an untransformed
+           filter of [positions], which is Book_sync's implementation and not a
+           fact desk.ml is entitled to lean on. [t.unmanaged] still comes from
+           the plan, because Book_sync owns that decision; the two now agree by
+           definition, not by construction. *)
+        let universe = Symbol.Set.of_list (Graph.symbols t.graph) in
+        t.unmanaged <- plan.Book_sync.Plan.unmanaged;
+        t.positions <-
+          List.filter positions ~f:(fun p -> Set.mem universe p.Venue.Position.symbol);
+        t.equity_gap <-
+          Some
+            (Notional.to_float (Graph.equity t.graph)
+            -. Notional.to_float account.Venue.Account.equity);
+        t.last_sync <- Some at;
+        t.applied_seq <- seq;
+        t.last_error <- None;
+        (* The first moment the graph's book is the account's, and so the
+           first moment the journal's closes -- the account's equity -- can go
+           back into the trail beside it. [Book_sync.apply] has already
+           stabilized on the account's book, so no stabilize sees those closes
+           beside the file's. Once only: a second restore would replace the
+           trail again and drop every mark made since.
+
+           A restore that raises is caught neither here nor by either caller
+           (bin/main.ml's first sync, [sync_forever]). It leaves [sync] through
+           the enclosing monitor and ends the process, as the startup restore
+           it replaced did; there is no next read. The flag is set first only
+           so that a caller which did catch the exception would not restore a
+           second time. *)
+        if not t.synced then (
+          t.synced <- true;
+          t.on_first_sync ())
+    | Error e, _ | _, Error e -> t.last_error <- Some (Error.to_string_hum e));
+    t.on_change ())
 
 let sync t : unit Or_error.t Deferred.t =
   match t.venue with
   | Unavailable _ -> return (Ok ())
   | Reads read -> (
-      (* Stamped when the read starts, not when it answers: two syncs can
-         overlap, and [sync_with] orders them by what each one read. *)
+      (* Numbered and stamped when the read starts, not when it answers: two
+         syncs can overlap, and [sync_with] orders them by the number. *)
+      let seq = start_read t in
       let started = Time_ns.now () in
       let%bind account = read.Venue.Read.account () in
       let%map positions = read.Venue.Read.positions () in
-      sync_with t ~account ~positions ~at:started;
+      sync_with t ~account ~positions ~at:started ~seq;
       match (account, positions) with
       | Ok _, Ok _ -> Ok ()
       | Error e, _ | _, Error e -> Error e)
+
+(* What the order manager calls once one of the desk's fills is in the graph:
+   the reads in flight are refused, and a new one starts, so the account
+   catches up with the fill -- the sync corrects the book the fills drive.
+   Not awaited: the manager's one-at-a-time jobs must not wait on the
+   venue's account.
+
+   One such read at a time, and one owed. A read is two requests, the account
+   and the positions, and Alpaca allows 200 a minute for everything the desk
+   sends. A rebalance that fills thirty names, or a stream of partial fills,
+   would otherwise spend that budget on reads the next fill refuses, and it is
+   the budget a submit, a cancel and a kill's cancels need; a 429 on a submit
+   is a refusal. A fill that lands while the read is out refuses it, as any
+   fill does, and is owed a read that starts when that one answers. So the
+   read that finally applies started after the last fill. *)
+let rec after_fill t =
+  fill_applied t;
+  match t.fill_read with
+  | `Running | `Owed -> t.fill_read <- `Owed
+  | `Idle ->
+      t.fill_read <- `Running;
+      upon (sync t) (fun (_ : unit Or_error.t) ->
+          match t.fill_read with
+          | `Owed ->
+              t.fill_read <- `Idle;
+              after_fill t
+          | _ -> t.fill_read <- `Idle)
 
 let rec sync_forever t ~every ~on_event =
   let%bind () = Clock_ns.after every in

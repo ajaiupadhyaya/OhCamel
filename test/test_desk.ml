@@ -127,7 +127,7 @@ let test_a_sync_sets_the_book_and_names_what_it_cannot_hold () =
       Desk.sync_with desk
         ~account:(Ok (account ~cash:90_000.0 ~equity:91_500.0))
         ~positions:(Ok [ position aapl 10.0; position tsla 5.0 ])
-        ~at;
+        ~at ~seq:1;
       Alcotest.(check (float 0.0))
         "AAPL 10 in the graph" 10.0
         (Qty.to_float (Graph.qty graph aapl));
@@ -180,10 +180,10 @@ let test_a_failed_read_keeps_the_last_good_account_and_says_what_failed () =
       Desk.sync_with desk
         ~account:(Ok (account ~cash:90_000.0 ~equity:91_500.0))
         ~positions:(Ok [ position aapl 10.0 ])
-        ~at;
+        ~at ~seq:1;
       Desk.sync_with desk
         ~account:(Error (Error.of_string "GET /v2/account timed out"))
-        ~positions:(Ok []) ~at;
+        ~positions:(Ok []) ~at ~seq:2;
       let s = Desk.summary_json desk in
       Alcotest.(check (float 1e-9))
         "the last good equity stands" 91_500.0
@@ -263,9 +263,10 @@ let test_api_desk_answers_through_the_server () =
             "/api/desk did not answer with a string body without the scheduler")
     ()
 
-(* Two syncs overlap: the first, whose read started at 14:00, times out and
-   answers late; the minute sync, whose read started at 14:01, answers first.
-   The late answer is the older book and must not land on the newer one. *)
+(* Two syncs overlap: the first, read 1, whose read started at 14:00, times out
+   and answers late; the minute sync, read 2, whose read started at 14:01,
+   answers first. The late answer is the older book and must not land on the
+   newer one. *)
 let test_a_read_that_started_before_the_last_applied_one_changes_nothing () =
   with_desk
     ~f:(fun desk graph _ ->
@@ -275,12 +276,12 @@ let test_a_read_that_started_before_the_last_applied_one_changes_nothing () =
       Desk.sync_with desk
         ~account:(Ok (account ~cash:80_000.0 ~equity:83_000.0))
         ~positions:(Ok [ position aapl 20.0 ])
-        ~at:newer;
-      (* 14:00:00 is strictly before 14:01:00, the last applied read *)
+        ~at:newer ~seq:2;
+      (* The older read is read 1, numbered before read 2, the last applied. *)
       Desk.sync_with desk
         ~account:(Ok (account ~cash:90_000.0 ~equity:91_500.0))
         ~positions:(Ok [ position aapl 10.0 ])
-        ~at;
+        ~at ~seq:1;
       (* the newer read's 20 stands; the older read's 10 was not applied *)
       Alcotest.(check (float 0.0))
         "AAPL is still the newer read's 20" 20.0
@@ -338,13 +339,13 @@ let test_the_trail_is_restored_at_the_first_applied_read_and_only_then () =
           ~positions:[ (aapl, Qty.of_float 10.0) ]
           ()
       in
-      let read ~at =
+      let read ~at ~seq =
         Desk.sync_with desk
           ~account:(Ohcamel_desk.Sim_venue.account venue)
           ~positions:(Ok (Ohcamel_desk.Sim_venue.positions venue))
-          ~at
+          ~at ~seq
       in
-      read ~at;
+      read ~at ~seq:1;
       Alcotest.(check int) "a failed read restores nothing" 0 !restores;
       Alcotest.(check (array (float 0.0)))
         "the trail is still the file book's one mark" [| 50_000.0 |]
@@ -356,7 +357,7 @@ let test_the_trail_is_restored_at_the_first_applied_read_and_only_then () =
         (Graph.current_drawdown graph);
       Hashtbl.set marks ~key:aapl ~data:(Price.of_float 150.0);
       (* 14:00:00 + 60 s *)
-      read ~at:(Time_ns.add at (Time_ns.Span.of_sec 60.0));
+      read ~at:(Time_ns.add at (Time_ns.Span.of_sec 60.0)) ~seq:2;
       Alcotest.(check int) "the first applied read restores" 1 !restores;
       Alcotest.(check (array (float 0.0)))
         "the trail is the journal's three closes"
@@ -369,7 +370,7 @@ let test_the_trail_is_restored_at_the_first_applied_read_and_only_then () =
         (Graph.current_drawdown graph);
       Graph.mark_equity graph;
       (* 14:00:00 + 120 s *)
-      read ~at:(Time_ns.add at (Time_ns.Span.of_sec 120.0));
+      read ~at:(Time_ns.add at (Time_ns.Span.of_sec 120.0)) ~seq:3;
       Alcotest.(check int) "a later read restores nothing" 1 !restores;
       (* the three restored closes, then the 102,000 marked since *)
       Alcotest.(check (array (float 0.0)))
@@ -410,7 +411,7 @@ let test_a_close_with_no_current_book_records_nothing () =
       Desk.sync_with desk
         ~account:(Ok (account ~cash:90_000.0 ~equity:91_500.0))
         ~positions:(Ok [ position aapl 10.0 ])
-        ~at;
+        ~at ~seq:1;
       (* The read started at 14:00:00; 14:02:00 and one nanosecond is 120 s and
          1 ns after it, past two intervals. *)
       Alcotest.check outcome "a read 120 s and 1 ns old: not recorded" `Book_not_current
@@ -497,6 +498,108 @@ let test_api_desk_shows_the_last_thirty_sessions_and_the_latest_forecasts () =
                (to_string (member "estimator" f), to_number (member "var_fraction" f)))))
     ()
 
+(* A1's ledger, line 128. The guard ordered reads by wall-clock time, so a
+   clock stepped back by more than a sync interval -- an NTP correction, a
+   resumed VM -- refused every read until the clock passed the old stamp, with
+   the book frozen and nothing logged. Reads are numbered now, and read 2 is
+   the newer read whatever its stamp says. Started after the clock stepped
+   back two minutes, its stamp of 13:59 is before read 1's 14:01, and it
+   applies. *)
+let test_a_newer_read_applies_after_the_clock_steps_back () =
+  with_desk
+    ~f:(fun desk graph _ ->
+      let first = Desk.start_read desk in
+      (* 14:00:00 + 60 s = 14:01:00 *)
+      Desk.sync_with desk
+        ~account:(Ok (account ~cash:80_000.0 ~equity:83_000.0))
+        ~positions:(Ok [ position aapl 20.0 ])
+        ~at:(Time_ns.add at (Time_ns.Span.of_sec 60.0))
+        ~seq:first;
+      let second = Desk.start_read desk in
+      (* 14:00:00 - 60 s = 13:59:00 *)
+      Desk.sync_with desk
+        ~account:(Ok (account ~cash:90_000.0 ~equity:91_500.0))
+        ~positions:(Ok [ position aapl 10.0 ])
+        ~at:(Time_ns.sub at (Time_ns.Span.of_sec 60.0))
+        ~seq:second;
+      (* a fresh desk has taken no number, so its first is 0 + 1 = 1 and the
+         next 1 + 1 = 2 *)
+      Alcotest.(check (list int))
+        "numbered 1 and 2, in the order they started" [ 1; 2 ] [ first; second ];
+      (* read 2 held AAPL 10, over read 1's 20 *)
+      Alcotest.(check (float 0.0))
+        "AAPL is read 2's 10" 10.0
+        (Qty.to_float (Graph.qty graph aapl));
+      let s = Desk.summary_json desk in
+      (* read 2's cash, over read 1's 80,000 *)
+      Alcotest.(check (float 1e-9))
+        "cash is read 2's 90,000" 90_000.0
+        (Yojson.Safe.Util.to_number (field s "cash"));
+      (* 14:00:00 - 60 s, printed by Desk_time.rfc3339 *)
+      Alcotest.(check string)
+        "last_sync is read 2's stamp, 13:59:00" "2026-09-14T13:59:00.000000000Z"
+        (Yojson.Safe.Util.to_string (field s "last_sync")))
+    ()
+
+(* A1's final review, M4: a read that raced one of the desk's own fills. The
+   book holds AAPL 0 and 100,000 of cash from read 1. Read 2 starts; the
+   desk's fill of 10 AAPL at 150 lands while it is out; read 2 then answers
+   with the account from before the fill. Applied, it would put AAPL back to 0
+   and cash back to 100,000, leaving the book ten shares short and 1,500 of
+   cash over until the next minute's read. It is refused, and read 3, started
+   after the fill, applies. *)
+let test_a_read_that_raced_a_fill_changes_nothing_and_the_next_one_applies () =
+  with_desk
+    ~f:(fun desk graph _ ->
+      let first = Desk.start_read desk in
+      Desk.sync_with desk
+        ~account:(Ok (account ~cash:100_000.0 ~equity:100_000.0))
+        ~positions:(Ok []) ~at ~seq:first;
+      let raced = Desk.start_read desk in
+      Graph.apply_fill graph
+        {
+          Fill.symbol = aapl;
+          qty = Qty.of_float 10.0;
+          price = Price.of_float 150.0;
+          time = Time.epoch;
+        };
+      Graph.stabilize graph;
+      Desk.fill_applied desk;
+      (* read 2 answers at 14:00:30 with the account from before the fill *)
+      Desk.sync_with desk
+        ~account:(Ok (account ~cash:100_000.0 ~equity:100_000.0))
+        ~positions:(Ok [])
+        ~at:(Time_ns.add at (Time_ns.Span.of_sec 30.0))
+        ~seq:raced;
+      (* read 1's 0 + the fill's 10 = 10 *)
+      Alcotest.(check (float 0.0))
+        "AAPL is the fill's 10" 10.0
+        (Qty.to_float (Graph.qty graph aapl));
+      (* 100,000 - 10 x 150 = 98,500 *)
+      Alcotest.(check (float 1e-9))
+        "cash is the fill's 98,500" 98_500.0
+        (Notional.to_float (Graph.cash graph));
+      (* read 1 started at 14:00:00, and read 2 was not applied *)
+      Alcotest.(check string)
+        "last_sync is still read 1's 14:00:00" "2026-09-14T14:00:00.000000000Z"
+        (Yojson.Safe.Util.to_string (field (Desk.summary_json desk) "last_sync"));
+      let after = Desk.start_read desk in
+      (* read 3, at 14:00:45, sees the fill: cash 98,500, equity 98,500 + 10 x 150 = 100,000 *)
+      Desk.sync_with desk
+        ~account:(Ok (account ~cash:98_500.0 ~equity:100_000.0))
+        ~positions:(Ok [ position aapl 10.0 ])
+        ~at:(Time_ns.add at (Time_ns.Span.of_sec 45.0))
+        ~seq:after;
+      (* 14:00:00 + 45 s = 14:00:45 *)
+      Alcotest.(check string)
+        "read 3 applies: last_sync 14:00:45" "2026-09-14T14:00:45.000000000Z"
+        (Yojson.Safe.Util.to_string (field (Desk.summary_json desk) "last_sync"));
+      (* graph 98,500 + 10 x 150 + MSFT 0 x 300 = 100,000; venue 100,000 *)
+      Alcotest.(check (float 1e-9))
+        "and the ledgers agree" 0.0
+        (Yojson.Safe.Util.to_number (field (Desk.body_json desk) "equity_gap")))
+    ()
+
 let suite =
   ( "desk",
     [
@@ -521,4 +624,9 @@ let suite =
       Alcotest.test_case
         "/api/desk shows the last thirty sessions and the latest forecasts" `Quick
         test_api_desk_shows_the_last_thirty_sessions_and_the_latest_forecasts;
+      Alcotest.test_case "a newer read applies after the clock steps back" `Quick
+        test_a_newer_read_applies_after_the_clock_steps_back;
+      Alcotest.test_case
+        "a read that raced a fill changes nothing, and the next one applies" `Quick
+        test_a_read_that_raced_a_fill_changes_nothing_and_the_next_one_applies;
     ] )
