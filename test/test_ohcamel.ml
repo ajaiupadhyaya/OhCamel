@@ -65,6 +65,7 @@ let suites =
     Test_session_close.suite;
     Test_desk.suite;
     Test_rules.suite;
+    Test_sim_trade.suite;
   ]
 
 (* The registry counts itself against lib/verified.ml.

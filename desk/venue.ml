@@ -82,6 +82,67 @@ module Bar = struct
   [@@deriving sexp_of, compare, equal]
 end
 
+(* The trading half (design §3.4). Kept apart from [Read] so a desk that can
+   read an account and not trade it is a value, not a stub that answers "not
+   yet": [Trade.t option] is None, and the rules say why. *)
+module Venue_order = struct
+  type t = {
+    id : string;
+    client_order_id : string;
+    symbol : Symbol.t;
+    side : Order.Side.t;
+    qty : float;
+    filled_qty : float;
+    filled_avg_price : float option;
+    status : string;
+    limit_price : float option;
+  }
+  [@@deriving sexp_of, compare, equal]
+end
+
+module Submission = struct
+  (* Three answers, because a request has three outcomes: the venue has the
+     order, the venue refused it, or nobody knows. The third is not an error to
+     retry; it is invariant 10's unknown, resolved only by asking. *)
+  type t = Accepted of Venue_order.t | Rejected of string | Unknown of string
+  [@@deriving sexp_of]
+end
+
+module Update = struct
+  type t = {
+    event : string;
+    order : Venue_order.t;
+    fill : Order.Fill.t option;
+    at : Time_ns.t;
+  }
+  [@@deriving sexp_of]
+
+  (* Alpaca's trade_updates vocabulary, onto the state machine's. Events that
+     change nothing the machine models -- done_for_day, pending_cancel,
+     calculated -- map to None and are logged by the caller, not dropped
+     silently. A fill event without a fill is None too: the machine counts
+     executions, and an event that names one without describing it has
+     nothing to count. *)
+  let to_event (t : t) : Order.Event.t option =
+    match (t.event, t.fill) with
+    | ("new" | "accepted" | "pending_new"), _ -> Some Order.Event.Venue_accepted
+    | ("fill" | "partial_fill"), Some f -> Some (Order.Event.Venue_fill f)
+    | "canceled", _ -> Some Order.Event.Venue_cancelled
+    | "expired", _ -> Some Order.Event.Venue_expired
+    | "rejected", _ -> Some (Order.Event.Venue_rejected "rejected by the venue")
+    | _ -> None
+end
+
+module Trade = struct
+  type t = {
+    submit : Order.Request.t -> Submission.t Deferred.t;
+    cancel : string -> unit Or_error.t Deferred.t;
+    find_order : Ids.Client_order_id.t -> Venue_order.t option Or_error.t Deferred.t;
+    open_orders : unit -> Venue_order.t list Or_error.t Deferred.t;
+    updates : Update.t Pipe.Reader.t;
+  }
+end
+
 module Read = struct
   type t = {
     name : string;
