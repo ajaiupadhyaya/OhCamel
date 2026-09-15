@@ -1194,20 +1194,43 @@ read as two numbers rather than one:
 ```
 
 The left column is everything that computes a risk number or decides what the
-desk does. The right column is everything that talks to a network — plus three
-that are neither and are worth naming rather than hiding: `types.ml` is mostly
-single-line accessors on abstract wrappers, many of which nothing calls yet,
+desk does. The split sits at 80% of each file's unrounded figure —
+`desk/desk.ml` prints 80% above but measured 79.73%, so it is in the right
+column, not the left.
+
+The right column is not one thing. Five files in it perform network IO
+themselves — `lib/feed/alpaca_ws.ml`, `lib/feed/alpaca_rest.ml`,
+`lib/feed/fred_client.ml`, `lib/alerts.ml`'s Slack sink, and
+`desk/alpaca_paper.ml`, the desk's own Alpaca transport — and that group is
+the design decision worth keeping as a metric, not a backlog: every test in
+this project is hermetic — no network, no credentials, nothing waiting on a
+clock — so a websocket or an HTTP client is exercised only as far as its pure
+parts go. Raising these five would mean testing them against a mock broker,
+which moves the number up and establishes nothing about the real one. The bug
+that mattered in this codebase was found by pointing it at the actual market,
+and it is written up two sections down.
+
+The rest of the right column touches no network and is worth naming rather
+than hiding, each with why its figure is lower: `types.ml` is mostly
+single-line accessors on abstract wrappers, many of which nothing calls yet;
 `options.ml` carries display and position helpers the pricing tests do not
-reach, and `desk/venue.ml` is mostly record types for the venue's read
-interface, whose derived `sexp_of`/`compare`/`equal` nothing but a handful of
-tests calls. That split is a design decision appearing in
-a metric, not a backlog: every test in this project is hermetic — no network, no
-credentials, nothing waiting on a clock — so the code whose job is to hold a
-websocket open is exercised only as far as its pure parts go. Raising the right
-column would mean testing the Alpaca client against a mock Alpaca, which moves
-the number up and establishes nothing about the real one. The bug that mattered
-in this codebase was found by pointing it at the actual market, and it is
-written up two sections down.
+reach; `lib/config.ml` loads credentials and the book file, and most of what
+is untested is the missing-or-malformed-input error messages a hermetic run
+has no reason to trigger; `desk/venue.ml` is mostly record types for the
+venue's read interface, whose derived `sexp_of`/`compare`/`equal` only a
+handful of tests call; `desk/order.ml` is a pure state machine — tests drive
+its transitions, not the per-variant `to_string` conversions and derived
+boilerplate on its state and event types; `desk/book_sync.ml` is pure too,
+and its gap is that same derived boilerplate plus a comparator that only
+sorts when a sync leaves two or more unmanaged positions, which no test has
+done yet; `desk/journal.ml` is local SQLite, not network — its gaps are the
+write-failure and rollback paths a healthy database never takes, plus
+derived boilerplate on its own record types; and `desk/desk.ml` and
+`desk/session_close.ml` call the venue's injected closures but perform no
+network IO themselves, so what is unexercised is the recurring background
+loops (`sync_forever`, `run_forever`) and the read-queuing state that only a
+scheduler-driven test reaches — the main suite never starts the scheduler;
+that suite lives apart, in `test/desk_async`.
 
 So the floor exists to make deleting tests noticeable, and that is all it is
 for. A coverage target would be an instruction to write the tests that raise it.

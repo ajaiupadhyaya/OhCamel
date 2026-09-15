@@ -203,11 +203,12 @@ bench:
 #
 # Expect a bimodal number, and read it that way rather than as one figure. The
 # pure numeric core (graph, attribution, limits, risk_metrics, vol_estimators,
-# crisis_data, stress) sits above 85%. The IO edges (the Alpaca websocket, the
-# FRED client, the HTTP server, the alert sinks, the desk's Alpaca transport)
-# sit near 40%, because exercising them needs a network and every test in this
-# project is hermetic. That gap is a design decision showing up in a metric,
-# not a backlog.
+# crisis_data, stress) sits above 85%. The IO edges that actually reach a
+# network -- the Alpaca websocket, the FRED client, the alert sinks' Slack
+# post, and the desk's own Alpaca transport -- sit in the 40s to high 50s,
+# because exercising them needs a network and every test in this project is
+# hermetic. That gap is a design decision showing up in a metric, not a
+# backlog.
 coverage: build
 	@rm -rf _coverage && mkdir -p _coverage
 	$(OPAM_ENV) && BISECT_FILE=$(CURDIR)/_coverage/ohcamel 	  dune runtest --force --instrument-with bisect_ppx
