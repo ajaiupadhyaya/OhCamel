@@ -294,8 +294,11 @@ let preview t (ticket : Ticket.t) : Preview.t =
   { Preview.request; failures = Rules.check ctx request; verdict; decision_price }
 
 (* One event, all the way down: the machine; the journal, the fill first when
-   there is one; the open set; the page. Task 15 adds the switch's clause. *)
-let record t (o : Order.t) (event : Order.Event.t) : Order.t =
+   there is one; the open set; the page. And the switch: an order the venue
+   first gives an id while the switch is not clear -- a kill that landed while
+   its request was in flight, an unknown found after a trip -- is cancelled at
+   once, by that id. *)
+let rec record t (o : Order.t) (event : Order.Event.t) : Order.t =
   let o', anomaly = Order.apply o event in
   (match event with
   | Order.Event.Venue_fill f -> ignore (Journal.record_fill t.journal o' f : bool)
@@ -307,7 +310,55 @@ let record t (o : Order.t) (event : Order.Event.t) : Order.t =
     (if Order.State.is_terminal o'.Order.state then Map.remove t.open_ (key o')
      else Map.set t.open_ ~key:(key o') ~data:o');
   t.on_change ();
+  (* Only the event that first gives the order a venue id: every later
+     transition of the same order would queue another cancel for an order
+     already pending_cancel, which the venue refuses and the log would print
+     in the middle of a kill. *)
+  if
+    Option.is_some (Halt.reason t.halt)
+    && Option.is_none o.Order.venue_order_id
+    && Option.is_some o'.Order.venue_order_id
+    && not (Order.State.is_terminal o'.Order.state)
+  then
+    don't_wait_for
+      (Deferred.ignore_m (cancel t o'.Order.request.Order.Request.client_order_id));
   o'
+
+(* A cancel is never a resend: the only request it can make is
+   [Venue.Trade.cancel], by the venue's own id, and an order the venue has not
+   named yet has no cancel to send -- [record] above sends it the moment the id
+   arrives. Whether an ambiguous refusal from the venue is an Unknown rather
+   than a refusal is settled in the adapter (Task 11); here an error leaves the
+   order pending_cancel and says so. *)
+and cancel t (client : Ids.Client_order_id.t) : (Order.t, string) Result.t Deferred.t =
+  enqueue t (fun () ->
+      match (Map.find t.open_ (Ids.Client_order_id.to_string client), t.trade) with
+      | None, _ -> return (Error "no open order has that id")
+      | Some _, Error why -> return (Error why)
+      | Some o, Ok trade -> (
+          match o.Order.venue_order_id with
+          | None ->
+              return
+                (Error
+                   (sprintf
+                      "the order is %s, and the venue has not given it an id to cancel \
+                       by yet"
+                      (Order.State.to_string o.Order.state)))
+          | Some id -> (
+              let o =
+                if Order.State.equal o.Order.state Order.State.Pending_cancel then o
+                else record t o Order.Event.Cancel_requested
+              in
+              match%map trade.Venue.Trade.cancel id with
+              | Ok () -> Ok o
+              | Error e ->
+                  (* The order stays pending_cancel: the venue's next update --
+                     a fill, most likely, if it could not be cancelled -- says
+                     what became of it. *)
+                  t.on_event
+                    (sprintf "desk      the venue did not cancel %s: %s" (key o)
+                       (Error.to_string_hum e));
+                  Error (Error.to_string_hum e))))
 
 (* A refusal is an order too: journaled, with its reasons, in a state that
    says it never reached a venue. *)
@@ -587,3 +638,133 @@ let costs t (rows : Journal.Fill_row.t list) : (Tca.Inputs.t * Tca.Costs.t) list
         Tca.of_fill
           ~model_half_spread_bps:(model_half_spread_bps t r.Journal.Fill_row.symbol)
           inputs ))
+
+let changed t = t.on_change ()
+
+(* Every open order the venue has an id for. One without an id yet is
+   cancelled by [record] the moment the venue gives it one. The set is
+   [t.open_], which is the journal's open orders held -- [reconcile] re-seeds
+   it from [Journal.open_orders] -- and not the venue's [open_orders], which is
+   a different set: the desk's own orders as the VENUE has them, which cannot
+   include one the desk journaled and never managed to send. *)
+let cancel_all t : unit Deferred.t =
+  Deferred.List.iter ~how:`Sequential (Map.data t.open_) ~f:(fun o ->
+      match o.Order.venue_order_id with
+      | None -> Deferred.unit
+      | Some _ ->
+          Deferred.ignore_m (cancel t o.Order.request.Order.Request.client_order_id))
+
+let kill t ~why : unit Deferred.t =
+  Halt.halt t.halt ~why ~at:(t.now ());
+  t.on_event ("desk      HALTED by hand: " ^ why);
+  t.on_change ();
+  cancel_all t
+
+(* The other half of §3.8. The switch already refuses new orders through
+   [Halt.reason]; a trip must also cancel the open ones. The handler runs
+   inside stabilization, so it only schedules. *)
+let watch_alerts t (alerts : Ohcamel.Alerts.t) =
+  Ohcamel.Alerts.on_trip alerts ~f:(fun event ->
+      upon Deferred.unit (fun () ->
+          t.on_event
+            (sprintf
+               "desk      the kill switch tripped on %s: cancelling every open order"
+               event.Ohcamel.Alerts.Event.limit_name);
+          t.on_change ();
+          don't_wait_for (cancel_all t)))
+
+(* On start, and after every reconnection of the venue's update stream: the
+   journal's open orders, each looked up by client order id and told what the
+   venue knows (Reconcile.events_for). Then the account is re-read, because
+   fills nobody heard about moved it. *)
+let reconcile t : unit Deferred.t =
+  enqueue t (fun () ->
+      let rows = Journal.open_orders t.journal in
+      t.open_ <-
+        String.Map.of_alist_reduce
+          (List.map rows ~f:(fun r ->
+               (key r.Journal.Order_row.order, r.Journal.Order_row.order)))
+          ~f:(fun _ latest -> latest);
+      match t.trade with
+      | Error _ -> Deferred.unit
+      | Ok trade ->
+          let%map () =
+            Deferred.List.iter ~how:`Sequential rows ~f:(fun r ->
+                let o = r.Journal.Order_row.order in
+                match%map
+                  trade.Venue.Trade.find_order
+                    o.Order.request.Order.Request.client_order_id
+                with
+                | Error e ->
+                    t.on_event
+                      (sprintf "desk      reconcile: %s could not be looked up: %s"
+                         (key o) (Error.to_string_hum e))
+                | Ok venue ->
+                    let events = Reconcile.events_for o venue ~at:(t.now ()) in
+                    if Option.is_none venue && Option.is_some o.Order.venue_order_id then
+                      t.on_event
+                        (sprintf
+                           "desk      reconcile: the venue has no order %s, which it \
+                            once acknowledged"
+                           (key o));
+                    let o = List.fold events ~init:o ~f:(record t) in
+                    (* An order nobody has found yet is decided by the lookups
+                       a timed-out submission gets, not by this one miss. *)
+                    if Order.State.equal o.Order.state Order.State.Submit_unknown then
+                      don't_wait_for
+                        (resolve t o.Order.request.Order.Request.client_order_id
+                           ~delays:t.resolve_delays))
+          in
+          if not (List.is_empty rows) then t.after_fill ();
+          t.on_event
+            (sprintf "desk      reconciled %d open order%s against the venue"
+               (List.length rows)
+               (if List.length rows = 1 then "" else "s")))
+
+let refresh ?(bars = true) t : unit Deferred.t =
+  match t.read with
+  | None -> Deferred.unit
+  | Some read ->
+      let%bind () =
+        match%map read.Venue.Read.clock () with
+        | Ok c -> t.session_open <- c.Venue.Session_clock.is_open
+        | Error e ->
+            t.session_open <- false;
+            t.on_event
+              ("desk      the venue's clock is unavailable, so the session reads closed: "
+             ^ Error.to_string_hum e)
+      in
+      let%map () =
+        match t.adv with
+        | Adv.Fixed _ -> Deferred.unit
+        | Adv.From_venue when not bars -> Deferred.unit
+        | Adv.From_venue -> (
+            match%map read.Venue.Read.daily_bars (Graph.symbols t.graph) ~days:20 with
+            | Error e ->
+                t.on_event
+                  ("desk      twenty-day volume unavailable: " ^ Error.to_string_hum e)
+            | Ok by_symbol ->
+                (* Fewer than ten sessions is not a twenty-day average; the adv
+                   rule then refuses the name, which is its job. *)
+                t.adv20 <-
+                  Map.filter_map by_symbol ~f:(fun bars ->
+                      let recent = List.drop bars (Int.max 0 (List.length bars - 20)) in
+                      if List.length recent < 10 then None
+                      else
+                        Some
+                          (List.sum (module Float) recent ~f:(fun b -> b.Venue.Bar.volume)
+                          /. Float.of_int (List.length recent))))
+      in
+      t.on_change ()
+
+(* The manager's own time source, never the wall clock: a test advances its
+   clock and the session and the volumes follow. Bars once an hour at the
+   caller's minute interval -- 60 turns of the loop -- because twenty-day
+   volume moves by the day and the session's open or closed by the minute. *)
+let refresh_forever t ~every : unit Deferred.t =
+  let rec loop n =
+    let%bind () = refresh t ~bars:(n % 60 = 0) in
+    let%bind () = Time_source.after t.time_source every in
+    loop (n + 1)
+  in
+  loop 0

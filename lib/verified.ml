@@ -32,7 +32,7 @@ let tests = 433
    drift. Counted apart because the main suite's promise is that it never
    starts the scheduler. Not served on /api/reports: the page's dated block
    prints [tests], and reports.ml names its keys one by one. *)
-let scheduler_tests = 4
+let scheduler_tests = 7
 
 (* The coverage figures: dated and re-measured together, never adjusted
    alone -- see the comment above [tests] for why. *)

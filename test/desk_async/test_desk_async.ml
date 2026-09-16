@@ -95,6 +95,15 @@ let fixture ?(limits = [ tech_cap ]) () =
       mark f s p);
   f
 
+(* Every manager this suite builds gets a seed of its own, in the order they
+   are built. A client order id is 48 bits of millisecond and 80 bits from
+   this rng (desk/ids.ml), so two managers over one journal built from the
+   same seed -- the restart case builds three -- mint the SAME id for two
+   orders proposed inside one millisecond, and the journal's unique index on
+   client_order_id refuses the second. Counted rather than randomised: the
+   cases run in the registry's order, so the ids are the same on every run. *)
+let managers_built = ref 0
+
 (* A manager over the fixture. [trade] replaces the venue's trading half with
    one a case has wrapped; without it the manager trades the venue directly.
    Its lookups keep production's schedule -- 2, 10 and 30 s -- on the
@@ -103,12 +112,15 @@ let manager ?trade ?(halt = D.Halt.create D.Halt.Source.none) f =
   let trade =
     match trade with Some t -> t | None -> D.Sim_venue.trade ~auto:false f.venue
   in
+  incr managers_built;
   let oms =
     D.Oms.create ~graph:f.graph ~journal:f.journal
       ~spec:{ Desk_spec.default with Desk_spec.trading = Desk_spec.Enabled }
       ~read:(Some (D.Sim_venue.read f.venue))
       ~trade:(Ok trade) ~halt ~accepts_tickets:true ~adv:(D.Oms.Adv.Fixed 1_000_000.0)
-      ~now:Time_ns.now ~rng:(Random.State.make [| 7 |]) ~on_change:ignore
+      ~now:Time_ns.now
+      ~rng:(Random.State.make [| 7; !managers_built |])
+      ~on_change:ignore
       ~on_event:(fun e -> Queue.enqueue f.events e)
       ~after_fill:ignore
       ~book_is_current:(fun () -> true)
@@ -273,6 +285,150 @@ let test_a_request_that_never_answers_is_an_error_at_its_bound () =
     "a request that answered is never abandoned, even past its bound" false
     (Option.value_map !answered_abandon ~default:true ~f:Deferred.is_determined)
 
+let limit_at_99 = D.Order.Kind.Limit (Price.of_float 99.0)
+
+let rules (p : D.Oms.Preview.t) =
+  List.map p.D.Oms.Preview.failures ~f:(fun x -> x.D.Rules.Failure.rule)
+
+(* A limit buy at 99 rests: the ask is 100 x 1.0005 = 100.05, above it, and
+   99 is 1% from the mark, inside the 5% collar. A halt by hand cancels it at
+   the venue; the next proposal is refused, naming only the switch; after a
+   reset a proposal goes through. *)
+let test_a_halt_refuses_and_cancels () =
+  let f = fixture () in
+  let oms = manager f in
+  let%bind _, resting =
+    D.Oms.propose oms (ticket ~kind:limit_at_99 aapl D.Order.Side.Buy 50)
+  in
+  let%bind () = pump f in
+  Alcotest.(check string) "resting" "accepted" (state f resting);
+  let%bind () = D.Oms.kill oms ~why:"testing the switch" in
+  let%bind () = pump f in
+  Alcotest.(check string) "cancelled at the venue" "cancelled" (state f resting);
+  let%bind p, refused = D.Oms.propose oms (ticket aapl D.Order.Side.Buy 1) in
+  Alcotest.(check string) "refused" "rejected_pre_trade" (state f refused);
+  Alcotest.(check (list string)) "by the switch alone" [ "kill_switch" ] (rules p);
+  D.Halt.reset (D.Oms.halt oms);
+  let%bind _, placed = D.Oms.propose oms (ticket aapl D.Order.Side.Buy 2) in
+  let%bind () = pump f in
+  Alcotest.(check string) "after a reset, filled" "filled" (state f placed);
+  Graph.destroy f.graph;
+  return ()
+
+(* The kernel's switch, armed on aapl-cap at 20,000. A resting buy of 50 at
+   99 is 4,950, well inside it. Then the book's AAPL is set to 300 x 100 =
+   30,000, over the cap, and the trip cancels the order with nobody asking. *)
+let test_a_limit's_trip_cancels_the_open_orders () =
+  let aapl_cap =
+    {
+      Limit.name = "aapl-cap";
+      scope = Limit.Instrument aapl;
+      kind = Limit.Gross_notional (Notional.of_float 20_000.0);
+    }
+  in
+  let f = fixture ~limits:[ aapl_cap ] () in
+  let config =
+    {
+      Ohcamel.Config.Alerts.default with
+      Ohcamel.Config.Alerts.enabled = true;
+      sinks = [];
+      kill_switch_enabled = true;
+      kill_switch_trips_on = [ "aapl-cap" ];
+    }
+  in
+  let alerts =
+    Option.value_exn (Or_error.ok_exn (Ohcamel.Alerts.attach ~graph:f.graph ~config))
+  in
+  let oms = manager ~halt:(D.Halt.create (D.Halt.Source.of_alerts alerts)) f in
+  D.Oms.watch_alerts oms alerts;
+  let%bind _, resting =
+    D.Oms.propose oms (ticket ~kind:limit_at_99 aapl D.Order.Side.Buy 50)
+  in
+  let%bind () = pump f in
+  Alcotest.(check string) "resting" "accepted" (state f resting);
+  Graph.set_qty f.graph aapl (Qty.of_float 300.0);
+  Graph.stabilize f.graph;
+  let%bind () = pump f in
+  Alcotest.(check string) "cancelled by the trip" "cancelled" (state f resting);
+  Alcotest.(check string)
+    "and the switch reads tripped" "tripped"
+    (D.Halt.State.name (D.Halt.state (D.Oms.halt oms)));
+  Graph.destroy f.graph;
+  return ()
+
+(* A process killed mid-order. Two managers over one journal and one venue
+   never hear back: the venue received the first's order, and never the
+   second's. A third manager -- the restart -- reconciles: the first order is
+   found and then fills; the second becomes an unknown and fails when the
+   restart's lookups all miss -- 2, 10 and 30 s apart on the fixture's clock,
+   42 s in all, and not a moment sooner; nothing was sent twice. The two that
+   never hear back get update pipes of their own that are already closed, so
+   neither can take the venue's updates from the restart. *)
+let test_a_restart_reconciles () =
+  let f = fixture () in
+  let sim = D.Sim_venue.trade ~auto:false f.venue in
+  let answer_lost =
+    {
+      sim with
+      D.Venue.Trade.submit =
+        (fun r ->
+          don't_wait_for (Deferred.ignore_m (sim.D.Venue.Trade.submit r));
+          Deferred.never ());
+      updates = Pipe.empty ();
+    }
+  in
+  let never_sent =
+    { answer_lost with D.Venue.Trade.submit = (fun _ -> Deferred.never ()) }
+  in
+  let first = manager ~trade:answer_lost f and second = manager ~trade:never_sent f in
+  don't_wait_for
+    (Deferred.ignore_m (D.Oms.propose first (ticket aapl D.Order.Side.Buy 10)));
+  don't_wait_for
+    (Deferred.ignore_m (D.Oms.propose second (ticket msft D.Order.Side.Buy 5)));
+  let%bind () = settle () in
+  let states () =
+    D.Journal.recent_orders f.journal ~limit:10
+    |> List.map ~f:(fun r ->
+        let o = r.D.Journal.Order_row.order in
+        ( Symbol.to_string o.D.Order.request.D.Order.Request.symbol,
+          D.Order.State.to_string o.D.Order.state ))
+    |> List.sort ~compare:(Tuple2.compare ~cmp1:String.compare ~cmp2:String.compare)
+  in
+  Alcotest.(check (list (pair string string)))
+    "both journaled before the wire, neither answered"
+    [ ("AAPL", "pending_submit"); ("MSFT", "pending_submit") ]
+    (states ());
+  Alcotest.(check int) "the venue received one" 1 (D.Sim_venue.received f.venue);
+  let restarted = manager f in
+  let%bind () = D.Oms.reconcile restarted in
+  let%bind () = pump f in
+  (* The reconciliation's own lookup ran at the clock's start, t0, and missed
+     MSFT. Its scheduled lookups follow at t0 + 2 s, t0 + 2 + 10 = 12 s and
+     t0 + 12 + 30 = 42 s. advance_by_alarms stops at each alarm's own time and
+     runs its jobs (wait_for) before it moves on, so each delay is measured
+     from the lookup before it. *)
+  let%bind () =
+    Time_source.advance_by_alarms ~wait_for:settle f.clock
+      ~to_:(Time_ns.add t0 (Time_ns.Span.of_sec 41.0))
+  in
+  let%bind () = settle () in
+  Alcotest.(check (list (pair string string)))
+    "at 41 s: found and filled; the other still unknown, one lookup to go"
+    [ ("AAPL", "filled"); ("MSFT", "submit_unknown") ]
+    (states ());
+  let%bind () =
+    Time_source.advance_by_alarms ~wait_for:settle f.clock
+      ~to_:(Time_ns.add t0 (Time_ns.Span.of_sec 42.0))
+  in
+  let%bind () = settle () in
+  Alcotest.(check (list (pair string string)))
+    "at 42 s the last lookup misses: failed"
+    [ ("AAPL", "filled"); ("MSFT", "failed") ]
+    (states ());
+  Alcotest.(check int) "and nothing was sent again" 1 (D.Sim_venue.received f.venue);
+  Graph.destroy f.graph;
+  return ()
+
 let suites =
   [
     ( "transport",
@@ -285,6 +441,11 @@ let suites =
         case "three fills, priced and costed by hand" test_three_fills;
         case "an unknown answer is resolved, and never resent"
           test_an_unknown_answer_is_resolved_and_never_resent;
+        case "a halt refuses new orders and cancels the open ones"
+          test_a_halt_refuses_and_cancels;
+        case "a limit's trip cancels the open orders"
+          test_a_limit's_trip_cancels_the_open_orders;
+        case "a restart reconciles against the venue" test_a_restart_reconciles;
       ] );
   ]
 
