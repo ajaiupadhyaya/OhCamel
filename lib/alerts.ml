@@ -15,12 +15,12 @@
       separate flag, because "tell me when a limit breaks" and "act when a limit
       breaks" are different levels of trust.
 
-   2. THE KILL SWITCH SETS A FLAG AND NOTHING ELSE. There is no order-placement
-      code anywhere in this repository, and this module does not import the
-      Alpaca client -- it cannot reach a trading endpoint even by mistake. What
-      [Kill_switch.halt_new_orders] returns is a bool for a human or a future
-      execution layer to read. Wiring it to anything that trades is a decision
-      for a later conversation, not a default.
+   2. THE KILL SWITCH SETS A FLAG, AND THE KERNEL DOES NOTHING ELSE WITH IT.
+      This module does not import the Alpaca client -- it cannot reach a
+      trading endpoint even by mistake. What [Kill_switch.halt_new_orders]
+      returns, and what [on_trip] announces, are for a reader outside the
+      kernel to act on: the desk refuses new orders and cancels open ones on
+      them, and nothing in lib/ places, cancels or modifies an order.
 
    3. EFFECTS HANG OFF AN OBSERVER, NEVER A NODE BODY. limits.ml has said why
       since Phase 1: Incremental may recompute a node whenever it likes, so a
@@ -195,10 +195,11 @@ end
 
 (* A flag. That is the entire mechanism, and it is the entire point.
 
-   [halt_new_orders] returns a bool. Nothing in this repository reads it to
-   place, cancel or modify an order, because nothing in this repository places,
-   cancels or modifies orders. This module does not depend on Alpaca_ws or
-   Alpaca_rest and cannot reach a trading endpoint.
+   [halt_new_orders] returns a bool, and [on_trip] calls back once per trip.
+   Nothing in the kernel reads either to place, cancel or modify an order,
+   because nothing in the kernel can: this module does not depend on
+   Alpaca_ws or Alpaca_rest and cannot reach a trading endpoint. The desk,
+   outside the kernel, is what obeys it.
 
    Tripping is one-way until someone calls [reset]. A breaker that re-armed
    itself when the number came back under the line would be a breaker that
@@ -291,6 +292,8 @@ type t = {
   history : Event.t Queue.t;
   mutable sent : int;
   mutable failed : int;
+  (* Readers that must act on a trip rather than report it. See [on_trip]. *)
+  mutable trip_handlers : (Event.t -> unit) list;
 }
 
 let history_limit = 50
@@ -377,6 +380,7 @@ let attach ~(graph : Graph.t) ~(config : Config.Alerts.t) : t option Or_error.t 
         history = Queue.create ();
         sent = 0;
         failed = 0;
+        trip_handlers = [];
       }
     in
     (* The observer hook the brief asks for. Everything it does is enqueue. *)
@@ -389,7 +393,8 @@ let attach ~(graph : Graph.t) ~(config : Config.Alerts.t) : t option Or_error.t 
             | None -> ()
             | Some tripped ->
                 if not (Pipe.is_closed writer) then
-                  Pipe.write_without_pushback writer tripped));
+                  Pipe.write_without_pushback writer tripped;
+                List.iter t.trip_handlers ~f:(fun f -> f tripped)));
     don't_wait_for (Pipe.iter reader ~f:(fun event -> deliver t event));
     Some t
 
@@ -398,6 +403,13 @@ let halted t = Kill_switch.halt_new_orders t.kill_switch
 let history t = Queue.to_list t.history
 let sent t = t.sent
 let failed t = t.failed
+
+(* A reader that must act on a trip rather than report it. Called inside
+   stabilization, once, on the transition into Tripped; a handler may only
+   schedule work, for the reason the writer above only enqueues. The kernel
+   still acts on nothing: what a handler does is its own library's business,
+   and this module does not know that library exists. *)
+let on_trip t ~f = t.trip_handlers <- t.trip_handlers @ [ f ]
 
 (* Three readers for the wire, added because /api/snapshot could report that
    something had tripped and not which limits were still over the line.
