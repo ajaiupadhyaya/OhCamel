@@ -37,10 +37,11 @@
    it (A1's final review, M4). That is the whole of the answer to a REST read
    lagging the stream: this module starts no read of its own.
 
-   ITS OWN CLOCK, WHEN A TEST GIVES ONE. Every wait here -- the lookups and
-   the arrival quote's bound -- is on [time_source], the wall clock unless the
-   caller passes another, so the scheduler suite crosses 42 s of lookups
-   without waiting on the wall's. *)
+   ITS OWN CLOCK, WHEN A TEST GIVES ONE. Every wait here -- the lookups, a
+   cancel's retries under the switch, the arrival quote's bound and the refresh
+   loop -- is on [time_source], the wall clock unless the caller passes
+   another, so the scheduler suite crosses 42 s of lookups without waiting on
+   the wall's. *)
 
 open Core
 open Async
@@ -80,6 +81,10 @@ type t = {
   mutable open_ : Order.t String.Map.t;
   mutable recent : Rules.Recent.t list;
   mutable adv20 : float Symbol.Map.t;
+  (* When the last daily bars that answered were asked for, on [time_source]:
+     [refresh_forever] asks again once an hour has passed since, whatever its
+     own interval and however long each refresh's requests take. *)
+  mutable bars_fetched_at : Time_ns.t option;
   mutable session_open : bool;
 }
 
@@ -109,6 +114,7 @@ let create ~graph ~journal ~spec ~read ~trade ~halt ~accepts_tickets ~adv ~now ~
     open_ = String.Map.empty;
     recent = [];
     adv20 = Symbol.Map.empty;
+    bars_fetched_at = None;
     session_open = false;
   }
 
@@ -293,6 +299,49 @@ let preview t (ticket : Ticket.t) : Preview.t =
   in
   { Preview.request; failures = Rules.check ctx request; verdict; decision_price }
 
+(* A DELETE whose answer was not a confirmation, sent again while the switch
+   is not clear. desk/alpaca_trade.ml answers a timeout, a 5xx and a 422 with
+   the same error, and a timeout may never have reached the venue: under a
+   halt the only safe reading is that the order may still be resting there.
+   A retry resends the DELETE for the same venue id and nothing else, and only
+   while the order is still open, still pending_cancel under that id, and the
+   switch still not clear -- the venue's update that settles the order, or a
+   reset, ends the retries. The delays are the lookups' (2, 10 and 30 s by
+   default), so they are bounded: after the last the order is left
+   pending_cancel, and that is said aloud. *)
+let rec retry_cancel t (client : Ids.Client_order_id.t) ~(id : string)
+    ~(delays : Time_ns.Span.t list) : unit Deferred.t =
+  let name = Ids.Client_order_id.to_string client in
+  match delays with
+  | [] ->
+      t.on_event
+        (sprintf
+           "desk      stopped sending the cancel of %s again; it stays pending_cancel \
+            and may still be resting at the venue until the venue reports"
+           name);
+      Deferred.unit
+  | delay :: rest ->
+      let%bind () = Time_source.after t.time_source delay in
+      let%bind again =
+        enqueue t (fun () ->
+            match (Map.find t.open_ name, t.trade) with
+            | Some o, Ok trade
+              when Order.State.equal o.Order.state Order.State.Pending_cancel
+                   && Option.equal String.equal o.Order.venue_order_id (Some id)
+                   && Option.is_some (Halt.reason t.halt) -> (
+                match%map trade.Venue.Trade.cancel id with
+                | Ok () -> false
+                | Error e ->
+                    t.on_event
+                      (sprintf
+                         "desk      the venue's answer to cancelling %s again was not a \
+                          confirmation either: %s"
+                         name (Error.to_string_hum e));
+                    true)
+            | _ -> return false)
+      in
+      if again then retry_cancel t client ~id ~delays:rest else Deferred.unit
+
 (* One event, all the way down: the machine; the journal, the fill first when
    there is one; the open set; the page. And the switch: an order the venue
    first gives an id while the switch is not clear -- a kill that landed while
@@ -327,9 +376,11 @@ let rec record t (o : Order.t) (event : Order.Event.t) : Order.t =
 (* A cancel is never a resend: the only request it can make is
    [Venue.Trade.cancel], by the venue's own id, and an order the venue has not
    named yet has no cancel to send -- [record] above sends it the moment the id
-   arrives. Whether an ambiguous refusal from the venue is an Unknown rather
-   than a refusal is settled in the adapter (Task 11); here an error leaves the
-   order pending_cancel and says so. *)
+   arrives. An error is not a refusal, and nothing here can tell it from one:
+   desk/alpaca_trade.ml answers a timeout, a 5xx and a 422 with the same error,
+   and the first two may or may not have reached the venue. So the order stays
+   pending_cancel until the venue reports, and while the switch is not clear
+   the DELETE is sent again on a bounded schedule ([retry_cancel]). *)
 and cancel t (client : Ids.Client_order_id.t) : (Order.t, string) Result.t Deferred.t =
   enqueue t (fun () ->
       match (Map.find t.open_ (Ids.Client_order_id.to_string client), t.trade) with
@@ -353,12 +404,27 @@ and cancel t (client : Ids.Client_order_id.t) : (Order.t, string) Result.t Defer
               | Ok () -> Ok o
               | Error e ->
                   (* The order stays pending_cancel: the venue's next update --
-                     a fill, most likely, if it could not be cancelled -- says
-                     what became of it. *)
+                     the cancel, or a fill if it could not be cancelled -- says
+                     what became of it. Under the switch that update cannot be
+                     waited for, because a DELETE that never arrived brings
+                     none. *)
+                  let halted = Option.is_some (Halt.reason t.halt) in
                   t.on_event
-                    (sprintf "desk      the venue did not cancel %s: %s" (key o)
-                       (Error.to_string_hum e));
-                  Error (Error.to_string_hum e))))
+                    (sprintf
+                       "desk      the venue's answer to cancelling %s was not a \
+                        confirmation (%s); it stays pending_cancel until the venue \
+                        reports%s"
+                       (key o) (Error.to_string_hum e)
+                       (if halted then
+                          ", and the desk is halted, so the cancel will be sent again"
+                        else ""));
+                  if halted then
+                    don't_wait_for (retry_cancel t client ~id ~delays:t.resolve_delays);
+                  Error
+                    (sprintf
+                       "the venue's answer was not a confirmation (%s); the order stays \
+                        pending_cancel until the venue reports"
+                       (Error.to_string_hum e)))))
 
 (* A refusal is an order too: journaled, with its reasons, in a state that
    says it never reached a venue. *)
@@ -691,29 +757,46 @@ let reconcile t : unit Deferred.t =
           let%map () =
             Deferred.List.iter ~how:`Sequential rows ~f:(fun r ->
                 let o = r.Journal.Order_row.order in
-                match%map
+                let%map looked_up =
                   trade.Venue.Trade.find_order
                     o.Order.request.Order.Request.client_order_id
-                with
-                | Error e ->
-                    t.on_event
-                      (sprintf "desk      reconcile: %s could not be looked up: %s"
-                         (key o) (Error.to_string_hum e))
-                | Ok venue ->
-                    let events = Reconcile.events_for o venue ~at:(t.now ()) in
-                    if Option.is_none venue && Option.is_some o.Order.venue_order_id then
+                in
+                let o =
+                  match looked_up with
+                  | Error e ->
+                      (* A lookup that errors decides no more than one that
+                         misses. A pending order becomes what it was, an outcome
+                         nobody learned, so the schedule below takes it; an
+                         order that stayed pending would never be asked about
+                         again, and with no venue id no kill could cancel it. *)
                       t.on_event
-                        (sprintf
-                           "desk      reconcile: the venue has no order %s, which it \
-                            once acknowledged"
-                           (key o));
-                    let o = List.fold events ~init:o ~f:(record t) in
-                    (* An order nobody has found yet is decided by the lookups
-                       a timed-out submission gets, not by this one miss. *)
-                    if Order.State.equal o.Order.state Order.State.Submit_unknown then
-                      don't_wait_for
-                        (resolve t o.Order.request.Order.Request.client_order_id
-                           ~delays:t.resolve_delays))
+                        (sprintf "desk      reconcile: %s could not be looked up: %s"
+                           (key o) (Error.to_string_hum e));
+                      if Order.State.equal o.Order.state Order.State.Pending_submit then
+                        record t o
+                          (Order.Event.Outcome_unknown
+                             "the process stopped before the venue answered, and the \
+                              restart's lookup failed")
+                      else o
+                  | Ok venue ->
+                      let events = Reconcile.events_for o venue ~at:(t.now ()) in
+                      if Option.is_none venue && Option.is_some o.Order.venue_order_id
+                      then
+                        t.on_event
+                          (sprintf
+                             "desk      reconcile: the venue has no order %s, which it \
+                              once acknowledged"
+                             (key o));
+                      List.fold events ~init:o ~f:(record t)
+                in
+                (* An order nobody has found yet -- this lookup missed it or
+                   failed -- is decided by the lookups a timed-out submission
+                   gets, not by this one question. [resolve] asks again after a
+                   lookup that errors, as it does after one that misses. *)
+                if Order.State.equal o.Order.state Order.State.Submit_unknown then
+                  don't_wait_for
+                    (resolve t o.Order.request.Order.Request.client_order_id
+                       ~delays:t.resolve_delays))
           in
           if not (List.is_empty rows) then t.after_fill ();
           t.on_event
@@ -739,11 +822,15 @@ let refresh ?(bars = true) t : unit Deferred.t =
         | Adv.Fixed _ -> Deferred.unit
         | Adv.From_venue when not bars -> Deferred.unit
         | Adv.From_venue -> (
+            (* When they were asked for, not when they answered: the hour
+               [refresh_forever] waits is not lengthened by this request. *)
+            let asked_at = Time_source.now t.time_source in
             match%map read.Venue.Read.daily_bars (Graph.symbols t.graph) ~days:20 with
             | Error e ->
                 t.on_event
                   ("desk      twenty-day volume unavailable: " ^ Error.to_string_hum e)
             | Ok by_symbol ->
+                t.bars_fetched_at <- Some asked_at;
                 (* Fewer than ten sessions is not a twenty-day average; the adv
                    rule then refuses the name, which is its job. *)
                 t.adv20 <-
@@ -758,13 +845,26 @@ let refresh ?(bars = true) t : unit Deferred.t =
       t.on_change ()
 
 (* The manager's own time source, never the wall clock: a test advances its
-   clock and the session and the volumes follow. Bars once an hour at the
-   caller's minute interval -- 60 turns of the loop -- because twenty-day
-   volume moves by the day and the session's open or closed by the minute. *)
+   clock and the session and the volumes follow. The session every [every],
+   because it opens and closes by the minute; the bars once an hour has passed
+   on that clock since the last bars that answered were asked for, because
+   twenty-day volume moves by the day. Measured by the clock and not by turns
+   of the loop: a count of turns is an hour at one interval only, and drifts by
+   every refresh's own requests. Bars that failed are asked for again on the
+   next turn, not an hour later: until they answer, a name with no volume is
+   refused by the adv rule and one with volume is sized against an older
+   average. *)
 let refresh_forever t ~every : unit Deferred.t =
-  let rec loop n =
-    let%bind () = refresh t ~bars:(n % 60 = 0) in
+  let hour = Time_ns.Span.of_hr 1.0 in
+  let rec loop () =
+    let bars =
+      match t.bars_fetched_at with
+      | None -> true
+      | Some at ->
+          Time_ns.Span.( >= ) (Time_ns.diff (Time_source.now t.time_source) at) hour
+    in
+    let%bind () = refresh t ~bars in
     let%bind () = Time_source.after t.time_source every in
-    loop (n + 1)
+    loop ()
   in
-  loop 0
+  loop ()
