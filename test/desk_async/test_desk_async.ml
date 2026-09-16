@@ -3,16 +3,214 @@
    A case that needs time to pass creates a clock of its own (Time_source.create)
    and advances it, so a bound of thirty seconds is crossed in no time at all.
    A case sees only its own timers: moving its clock fires nothing an earlier
-   case left behind, and nothing here depends on which case ran first. *)
+   case left behind, and nothing here depends on which case ran first.
+
+   The order manager's cases each build their own book, journal, venue and
+   clock. The venue has no latency and fills only when the test pumps it, so
+   every fill happens where the test says; [settle] then lets the pipe and the
+   sequencer finish. Three names: AAPL 100 and MSFT 200 in TECH, XOM 50 in
+   ENERGY, nothing held, a million in cash, a half-spread of 5 bps, and
+   twenty-day volume fixed at a million shares. *)
 
 open Core
 open Async
+open Ohcamel.Types
+module Graph = Ohcamel.Graph
+module Desk_spec = Ohcamel.Config.Book.Desk_spec
 module D = Ohcamel_desk
 
 let t0 = Time_ns.of_string_with_utc_offset "2026-09-14T14:00:00Z"
 
 let case name test =
   Alcotest.test_case name `Quick (fun () -> Thread_safe.block_on_async_exn test)
+
+let aapl = Symbol.of_string "AAPL"
+let msft = Symbol.of_string "MSFT"
+let xom = Symbol.of_string "XOM"
+let tech = Sector.of_string "TECH"
+
+type fixture = {
+  graph : Graph.t;
+  journal : D.Journal.t;
+  venue : D.Sim_venue.t;
+  marks : float Symbol.Table.t;
+  events : string Queue.t;
+  (* The case's clock: the manager's lookups wait on it, and fire only when
+     the case advances it. *)
+  clock : Time_source.Read_write.t;
+}
+
+(* A print: the venue's mark and the graph's price move together, and the
+   feed is fresh. *)
+let mark f symbol price =
+  Hashtbl.set f.marks ~key:symbol ~data:price;
+  Graph.apply_tick f.graph
+    { Tick.symbol; price = Price.of_float price; time = Time.now () };
+  Graph.set_now f.graph (Time.now ());
+  Graph.stabilize f.graph
+
+let tech_cap =
+  {
+    Limit.name = "tech-cap";
+    scope = Limit.Sector tech;
+    kind = Limit.Gross_notional (Notional.of_float 100_000.0);
+  }
+
+let fixture ?(limits = [ tech_cap ]) () =
+  let graph =
+    Graph.create
+      ~starting_cash:(Notional.of_float 1_000_000.0)
+      ~instruments:
+        [
+          { Instrument.symbol = aapl; sector = tech };
+          { Instrument.symbol = msft; sector = tech };
+          { Instrument.symbol = xom; sector = Sector.of_string "ENERGY" };
+        ]
+      ~limits ~confidence:0.95 ~return_window:10 ()
+  in
+  let marks = Symbol.Table.create () in
+  let venue =
+    D.Sim_venue.create ~latency:Time_ns.Span.zero ~opened_at:(Time_ns.now ())
+      ~marks:(fun s -> Option.map (Hashtbl.find marks s) ~f:Price.of_float)
+      ~now:Time_ns.now
+      ~half_spread_bps:(fun _ -> 5.0)
+      ~cash:(Notional.of_float 1_000_000.0)
+      ~positions:[] ()
+  in
+  let f =
+    {
+      graph;
+      journal = Or_error.ok_exn (D.Journal.open_ ~path:":memory:");
+      venue;
+      marks;
+      events = Queue.create ();
+      clock = Time_source.create ~now:t0 ();
+    }
+  in
+  List.iter
+    [ (aapl, 100.0); (msft, 200.0); (xom, 50.0) ]
+    ~f:(fun (s, p) ->
+      Graph.set_returns graph s
+        [| -0.02; -0.01; 0.0; 0.01; 0.02; -0.02; -0.01; 0.0; 0.01; 0.02 |];
+      mark f s p);
+  f
+
+(* A manager over the fixture. [trade] replaces the venue's trading half with
+   one a case has wrapped; without it the manager trades the venue directly.
+   Its lookups keep production's schedule -- 2, 10 and 30 s -- on the
+   fixture's clock, so they fire only when a case advances it. *)
+let manager ?trade ?(halt = D.Halt.create D.Halt.Source.none) f =
+  let trade =
+    match trade with Some t -> t | None -> D.Sim_venue.trade ~auto:false f.venue
+  in
+  let oms =
+    D.Oms.create ~graph:f.graph ~journal:f.journal
+      ~spec:{ Desk_spec.default with Desk_spec.trading = Desk_spec.Enabled }
+      ~read:(Some (D.Sim_venue.read f.venue))
+      ~trade:(Ok trade) ~halt ~accepts_tickets:true ~adv:(D.Oms.Adv.Fixed 1_000_000.0)
+      ~now:Time_ns.now ~rng:(Random.State.make [| 7 |]) ~on_change:ignore
+      ~on_event:(fun e -> Queue.enqueue f.events e)
+      ~after_fill:ignore
+      ~book_is_current:(fun () -> true)
+      ~time_source:(Time_source.read_only f.clock)
+      ()
+  in
+  D.Oms.set_market oms ~session_open:true ~adv20:[];
+  don't_wait_for (D.Oms.run oms);
+  oms
+
+(* Every job the last step queued -- the pipe, the sequencer, the journal's
+   writes -- run to the end. Nothing here waits on the wall clock. *)
+let settle () = Scheduler.yield_until_no_jobs_remain ()
+
+let pump f =
+  D.Sim_venue.pump f.venue;
+  settle ()
+
+let journaled f (o : D.Order.t) =
+  (Option.value_exn
+     (D.Journal.load_order f.journal o.D.Order.request.D.Order.Request.client_order_id))
+    .D.Journal.Order_row.order
+
+let state f o = D.Order.State.to_string (journaled f o).D.Order.state
+
+let ticket ?(kind = D.Order.Kind.Market) symbol side qty =
+  { D.Ticket.symbol; side; qty; kind }
+
+(* Buy 100 AAPL at a mark of 100, sell 40 at 101, sell 60 at 102; every fill
+   half a spread of 5 bps from the mark.
+
+     buy  100 at 100 x 1.0005 = 100.05     cash  - 10,005.00
+     sell  40 at 101 x 0.9995 = 100.9495   cash  +  4,037.98
+     sell  60 at 102 x 0.9995 = 101.949    cash  +  6,116.94
+                                           net   +    149.92
+
+   At the marks alone the trades make 40 x 1 + 60 x 2 = 160; the spreads cost
+   100 x 0.05 + 40 x 0.0505 + 60 x 0.051 = 5 + 2.02 + 3.06 = 10.08; and
+   160 - 10.08 = 149.92. Each fill's shortfall is 5 bps of its decision mark;
+   the arrival quote's mid is the mark, so delay is 0 and slippage is 5; and
+   against the book's modelled 5 bps the difference is 0. *)
+let test_three_fills () =
+  let f = fixture () in
+  let oms = manager f in
+  let%bind _, buy = D.Oms.propose oms (ticket aapl D.Order.Side.Buy 100) in
+  let%bind () = pump f in
+  mark f aapl 101.0;
+  let%bind _, sell40 = D.Oms.propose oms (ticket aapl D.Order.Side.Sell 40) in
+  let%bind () = pump f in
+  mark f aapl 102.0;
+  let%bind _, sell60 = D.Oms.propose oms (ticket aapl D.Order.Side.Sell 60) in
+  let%bind () = pump f in
+  List.iter [ buy; sell40; sell60 ] ~f:(fun o ->
+      Alcotest.(check string) "filled" "filled" (state f o));
+  Alcotest.(check (float 1e-9)) "flat" 0.0 (Qty.to_float (Graph.qty f.graph aapl));
+  Alcotest.(check (float 1e-6))
+    "cash 1,000,000 + 149.92" 1_000_149.92
+    (Notional.to_float (Graph.cash f.graph));
+  let fills = D.Journal.recent_fills f.journal ~limit:10 in
+  Alcotest.(check int) "three fills" 3 (List.length fills);
+  let costs = D.Oms.costs oms fills in
+  let s = D.Tca.summarize costs in
+  Alcotest.(check (option (float 1e-6)))
+    "shortfall, quantity-weighted" (Some 5.0) s.D.Tca.Summary.weighted_shortfall_bps;
+  Alcotest.(check (option (float 1e-6)))
+    "versus the model" (Some 0.0) s.D.Tca.Summary.mean_versus_model_bps;
+  List.iter costs ~f:(fun (_, c) ->
+      Alcotest.(check (option (float 1e-6)))
+        "no delay: the quote's mid is the mark" (Some 0.0) c.D.Tca.Costs.delay_bps);
+  Graph.destroy f.graph;
+  return ()
+
+(* Invariant 10. The venue receives the order and the answer is lost. The
+   manager must learn the order's fate by its client order id -- here from the
+   venue's own update, which answers as well as a lookup -- and the venue must
+   have received it exactly once. *)
+let test_an_unknown_answer_is_resolved_and_never_resent () =
+  let f = fixture () in
+  let sim = D.Sim_venue.trade ~auto:false f.venue in
+  let lost =
+    {
+      sim with
+      D.Venue.Trade.submit =
+        (fun r ->
+          let%map (_ : D.Venue.Submission.t) = sim.D.Venue.Trade.submit r in
+          D.Venue.Submission.Unknown "timed out after 10 s");
+    }
+  in
+  let oms = manager ~trade:lost f in
+  let%bind _, o = D.Oms.propose oms (ticket aapl D.Order.Side.Buy 10) in
+  Alcotest.(check string)
+    "unknown at first" "submit_unknown"
+    (D.Order.State.to_string o.D.Order.state);
+  let%bind () = settle () in
+  Alcotest.(check (option string))
+    "found, with the venue's id" (Some "sim-1") (journaled f o).D.Order.venue_order_id;
+  Alcotest.(check string) "and accepted" "accepted" (state f o);
+  let%bind () = pump f in
+  Alcotest.(check string) "then filled" "filled" (state f o);
+  Alcotest.(check int) "and the venue received it once" 1 (D.Sim_venue.received f.venue);
+  Graph.destroy f.graph;
+  return ()
 
 (* The transport's bound (A1's final review, I3), at the production span. A
    request that never answers ends as an error naming what was asked and the
@@ -30,9 +228,12 @@ let test_a_request_that_never_answers_is_an_error_at_its_bound () =
         abandoned := Some abandon;
         Deferred.never ())
   in
+  let answered_abandon = ref None in
   let%bind answered =
     D.Alpaca_paper.within ~time_source ~span:D.Alpaca_paper.request_timeout
-      ~what:"GET /v2/clock" (fun ~abandon:_ -> return (Ok 42))
+      ~what:"GET /v2/clock" (fun ~abandon ->
+        answered_abandon := Some abandon;
+        return (Ok 42))
   in
   Alcotest.(check (option int))
     "an answer inside the bound is that answer, the 42 given" (Some 42)
@@ -63,7 +264,14 @@ let test_a_request_that_never_answers_is_an_error_at_its_bound () =
   | None -> Alcotest.fail "the bound had not fired at 30 s on the test's clock");
   Alcotest.(check bool)
     "the request was told it is abandoned" true
-    (Option.value_map !abandoned ~default:false ~f:Deferred.is_determined)
+    (Option.value_map !abandoned ~default:false ~f:Deferred.is_determined);
+  (* And the other half of the bound: [within] fills [abandon] only where it
+     times out, so the request that answered at 42 is never told to close a
+     connection it already finished with -- not even now, past 30 s. A
+     [default] of true would let a missing ref pass as a success, so it fails. *)
+  Alcotest.(check bool)
+    "a request that answered is never abandoned, even past its bound" false
+    (Option.value_map !answered_abandon ~default:true ~f:Deferred.is_determined)
 
 let suites =
   [
@@ -71,6 +279,12 @@ let suites =
       [
         case "a request that never answers is an error at its bound"
           test_a_request_that_never_answers_is_an_error_at_its_bound;
+      ] );
+    ( "orders",
+      [
+        case "three fills, priced and costed by hand" test_three_fills;
+        case "an unknown answer is resolved, and never resent"
+          test_an_unknown_answer_is_resolved_and_never_resent;
       ] );
   ]
 
