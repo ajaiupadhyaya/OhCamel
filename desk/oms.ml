@@ -868,3 +868,73 @@ let refresh_forever t ~every : unit Deferred.t =
     loop ()
   in
   loop ()
+
+let venue_name t = Option.value_map t.read ~default:"none" ~f:(fun r -> r.Venue.Read.name)
+
+let fills_json t (rows : Journal.Fill_row.t list) : Yojson.Safe.t =
+  `List
+    (List.map2_exn rows (costs t rows)
+       ~f:(fun (r : Journal.Fill_row.t) (_, (c : Tca.Costs.t)) ->
+         let f = r.Journal.Fill_row.fill in
+         let opt = Option.value_map ~default:`Null ~f:jnum in
+         `Assoc
+           [
+             ("execution_id", `String f.Order.Fill.execution_id);
+             ( "client_order_id",
+               `String (Ids.Client_order_id.to_string r.Journal.Fill_row.client_order_id)
+             );
+             ("symbol", `String (Symbol.to_string r.Journal.Fill_row.symbol));
+             ("side", `String (Order.Side.to_string r.Journal.Fill_row.side));
+             ("qty", jnum f.Order.Fill.qty);
+             ("price", jnum (Price.to_float f.Order.Fill.price));
+             ("at", `String (Desk_time.rfc3339 f.Order.Fill.at));
+             ("decision_price", jnum (Price.to_float r.Journal.Fill_row.decision_price));
+             ( "arrival_bid",
+               opt
+                 (Option.map r.Journal.Fill_row.arrival ~f:(fun (b, _) ->
+                      Price.to_float b)) );
+             ( "arrival_ask",
+               opt
+                 (Option.map r.Journal.Fill_row.arrival ~f:(fun (_, a) ->
+                      Price.to_float a)) );
+             ("shortfall_bps", jnum c.Tca.Costs.shortfall_bps);
+             ("delay_bps", opt c.Tca.Costs.delay_bps);
+             ("slippage_bps", opt c.Tca.Costs.slippage_bps);
+             ("half_spread_bps", opt c.Tca.Costs.half_spread_bps);
+             ("versus_model_bps", opt c.Tca.Costs.versus_model_bps);
+           ]))
+
+(* Design §7: say whose fills these are. On the paper account a cost measures
+   Alpaca's simulator against one venue's quote; on the demo it is the
+   simulated half-spread, by construction. *)
+let tca_note t =
+  match venue_name t with
+  | "simulated" ->
+      "The demo's venue fills every order half a spread from the mark, so these costs \
+       are that half-spread, by construction."
+  | _ ->
+      "On the paper account every cost here measures Alpaca's fill simulator, against \
+       IEX's quote -- one venue's, not the national best."
+
+let tca_json t : Yojson.Safe.t =
+  let rows = costs t (Journal.recent_fills t.journal ~limit:500) in
+  let opt = Option.value_map ~default:`Null ~f:jnum in
+  let summary (s : Tca.Summary.t) =
+    `Assoc
+      [
+        ("count", `Int s.Tca.Summary.count);
+        ("mean_shortfall_bps", opt s.Tca.Summary.mean_shortfall_bps);
+        ("median_shortfall_bps", opt s.Tca.Summary.median_shortfall_bps);
+        ("weighted_shortfall_bps", opt s.Tca.Summary.weighted_shortfall_bps);
+        ("mean_versus_model_bps", opt s.Tca.Summary.mean_versus_model_bps);
+      ]
+  in
+  `Assoc
+    [
+      ("note", `String (tca_note t));
+      ("overall", summary (Tca.summarize rows));
+      ( "by_symbol",
+        `Assoc
+          (List.map (Tca.by_symbol rows) ~f:(fun (s, x) ->
+               (Symbol.to_string s, summary x))) );
+    ]

@@ -73,6 +73,7 @@ let suites =
     Test_ticket.suite;
     Test_reconcile.suite;
     Test_oms.suite;
+    Test_desk_routes.suite;
   ]
 
 (* The registry counts itself against lib/verified.ml.
