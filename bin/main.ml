@@ -1391,6 +1391,21 @@ let run_live ~book_path ~(serve_port : int option) =
          before it would cancel nothing a previous process left open. The
          routes, and with them the kill, are built in [http] below, after this. *)
       Option.iter alerts ~f:(Ohcamel_desk.Oms.watch_alerts oms);
+      (* A trip that came before the wiring is caught up here. [on_trip] hears
+         only the trips after it, and a restart onto a book already in breach
+         is likeliest to trip at the first sync, when the account's quantities
+         land -- above. The switch refuses new orders either way, but the
+         orders a previous process left open would otherwise stay at the venue
+         and could fill into the breach. The open set is the reconciliation's,
+         filled from the journal as its job starts, so this holds even when
+         that job ran past its bound. *)
+      (match Ohcamel_desk.Halt.state halt with
+      | Ohcamel_desk.Halt.State.Tripped { limit; _ } ->
+          live_line
+            ("desk      the kill switch tripped on " ^ limit
+           ^ " before it was wired: cancelling every open order");
+          don't_wait_for (Ohcamel_desk.Oms.cancel_all oms)
+      | Ohcamel_desk.Halt.State.Clear | Ohcamel_desk.Halt.State.Halted _ -> ());
       (* The venue's order updates end only when the stream has given up for
          good -- the paper host refused the key, and nothing reconnects. After
          that no fill is heard, so no order may go out whose fill nothing would
