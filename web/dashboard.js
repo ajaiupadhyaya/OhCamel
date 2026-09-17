@@ -1,17 +1,17 @@
 (function () {
   "use strict";
 
-  var prev = {};          // last rendered value per key, for change marks
-  var firstFrame = true;  // do not mark everything as "moved" on load
+  // The frame state every section shares (the change marks and the stale
+  // sets) and the one connection that drives them. Both are catted in above:
+  // web/shared.js and web/stream.js.
+  var S = window.OhCamelShared;
 
-  // ---- Figure 1, and the header's two clocks ----
-  // The topology is fetched once: it cannot change after construction. The
-  // handle lights the same names the ledger underlines, from the same frame,
-  // because it is the same fact; the stale closure dims the same rows for the
-  // same reason.
-  var topology = null, graph = null, ops = null, pendingFrame = null;
-  var staleNodes = new Set();          // downstream closure of every stale price, by node name
-  var lastFrameAt = null, lastPrintAt = null;
+  // ---- Figure 1 ----
+  // The topology is fetched once, by the stream -- it cannot change after
+  // construction -- and handed here when it arrives. The handle lights the
+  // same names the ledger underlines, from the same frame, because it is the
+  // same fact; the stale closure dims the same rows for the same reason.
+  var graph = null;
   var NODE_OF_ROW = {
     gross: "gross_exposure", net: "net_exposure", equity: "equity", dd: "current_drawdown",
     var: "var_notional", es: "es_notional", pvar: "parametric_var", pvarewma: "parametric_var_ewma",
@@ -24,12 +24,12 @@
     return null;
   }
   function renderGraphFrame(s) {
-    pendingFrame = s;
-    // Set here rather than in render, so a frame that arrived before the
-    // topology gets its denominator when the topology does.
-    document.getElementById("ran").textContent =
-      (s.recomputed ? s.recomputed.length : "—") + " of " + (topology ? topology.counts.named : "—");
     if (!graph) return;
+    // Dimmed before it is lit, as it was when the feed's health drew first:
+    // the two are separate state on the drawing, and the order is kept rather
+    // than reasoned about. The list is the stale set this frame computed, so
+    // the drawing dims exactly the names the rows mark.
+    graph.dim(S.staleSymbols());
     graph.setValues(s.by_node || {});
     var over = 0; s.limits.forEach(function (l) { if (l.breached) over++; });
     graph.setNote("breaches", over + " of " + (s.limits.length + s.unevaluated.length));
@@ -37,41 +37,26 @@
     // ghosts the difference, which is where a cutoff held.
     graph.light(s.recomputed || [], s.changed || null);
   }
-  // A frame that arrived before the topology (or, on the live host, before
-  // /api/ops) was set without it: stale rows by symbol rather than by closure,
-  // no limit dimmed, no options line. Set the ledger again from that same frame
-  // when it arrives, rather than waiting for the next frame, which a parked host
-  // may not send for hours. The same frame twice marks nothing as moved.
-  function resetLedger() {
-    var s = pendingFrame;
-    if (!s) return;
-    renderHealth(s); renderPositions(s); renderBook(s); renderLimits(s);
-  }
-  function loadGraph() {
+  // Built when the stream's one /api/graph fetch answers. The stream then
+  // replays the frame already in hand, so the drawing must exist before it
+  // returns -- which is why this is a topology subscriber and not a fetch.
+  function buildFigure(topology) {
     var box = document.getElementById("graphbox");
     if (!box || !window.OhCamelGraph) return;
-    fetch("/api/graph").then(function (r) { return r.json(); }).then(function (t) {
-      topology = t;
-      graph = window.OhCamelGraph.render(box, topology, { inspector: true });
-      // The heat starts from the process's history, not from this tab's.
-      fetch("/api/heat").then(function (r) { return r.json(); }).then(function (h) {
-        if (graph && h && h.nodes) graph.heat(h.nodes);
-      }).catch(function () { /* the heat builds from this tab's frames instead */ });
-      if (pendingFrame) { resetLedger(); renderGraphFrame(pendingFrame); }
-    }).catch(function () { /* the figure stays empty; the ledger does not depend on it */ });
+    graph = window.OhCamelGraph.render(box, topology, { inspector: true });
+    // The heat starts from the process's history, not from this tab's.
+    fetch("/api/heat").then(function (r) { return r.json(); }).then(function (h) {
+      if (graph && h && h.nodes) graph.heat(h.nodes);
+    }).catch(function () { /* the heat builds from this tab's frames instead */ });
   }
-  // ---- The footer: what /api/ops knows, every 30 s while the tab is visible ----
-  // The only poll on this page. Everything above the footer arrives on the
-  // stream because it is a graph change; a process's pid, uptime and heap are
-  // not, so the page asks for them on a timer and the footer's first line says
-  // so. Stopped while the tab is hidden, as /ops does, because a hundred
-  // background tabs asking every 30 s is a load the engine did not sign up for.
+  // ---- The footer: what /api/ops knows ----
+  // The stream owns the poll and the masthead's #mode; these are the footer's
+  // own fields, which belong to this page, so they are drawn from each answer
+  // here.
   function opsNum(x) { return x === null || x === undefined ? "—" : Number(x).toLocaleString("en-US"); }
   function opsMb(bytes) { return bytes === null || bytes === undefined ? "—" : (bytes / 1048576).toFixed(1) + " MB"; }
   function renderOps(o) {
-    if (window.OhCamelArgument) window.OhCamelArgument.ops(o);
     var $ = function (id) { return document.getElementById(id); };
-    $("mode").textContent = o.mode === "live" ? "live · Alpaca + FRED" : "demo · synthetic feed";
     var p = o.process || {}, st = o.stream || {}, h = o.history || {}, gc = o.gc || {};
     $("stabilizes").textContent = opsNum(p.stabilizes);
     $("frames").textContent = opsNum(st.frames_sent);
@@ -97,45 +82,6 @@
       f.hidden = true;
     }
   }
-  function loadOps() {
-    fetch("/api/ops").then(function (r) { return r.json(); }).then(function (o) {
-      var first = ops === null;
-      ops = o;
-      renderOps(o);
-      if (first && o.mode === "live") resetLedger();
-    }).catch(function () { /* the header keeps its word and the footer its dashes */ });
-  }
-  var opsTimer = null;
-  function startOps() { if (opsTimer === null) { loadOps(); opsTimer = setInterval(loadOps, 30000); } }
-  function stopOps() { if (opsTimer !== null) { clearInterval(opsTimer); opsTimer = null; } }
-  document.addEventListener("visibilitychange", function () {
-    if (document.visibilityState === "visible") startOps(); else stopOps();
-  });
-  // Time_ns.to_string_utc prints nanoseconds and a space; Date.parse wants
-  // milliseconds and a T.
-  function parseUtc(s) { return Date.parse(s.replace(" ", "T").replace(/(\.\d{1,3})\d*Z$/, "$1Z")); }
-  function age(ms) { return ms < 60000 ? (ms / 1000).toFixed(1) + " s" : Math.round(ms / 60000) + " min"; }
-  function clocks() {
-    var now = Date.now();
-    var lf = document.getElementById("lastframe"), lp = document.getElementById("lastprint");
-    if (lastFrameAt !== null) {
-      var f = now - lastFrameAt;
-      lf.textContent = age(f) + (f > 60000 ? " parked" : "");
-      lf.className = "v num" + (f > 60000 ? " parked" : "");
-    }
-    if (lastPrintAt !== null) {
-      // A print is stamped by the host's clock and aged by this browser's; a
-      // host a second ahead would otherwise show a print from the future.
-      var p = Math.max(0, now - lastPrintAt), threshold = ((ops && ops.feed && ops.feed.staleness_threshold_s) || 90) * 1000;
-      lp.textContent = age(p);
-      lp.className = "v num" + (p > threshold ? " over" : p > threshold / 2 ? " warm" : "");
-    }
-  }
-  // A display clock, not a poll: it reads two timestamps and asks the server nothing.
-  setInterval(clocks, 250);
-  if (document.visibilityState !== "hidden") startOps();
-  loadGraph();
-
   function money(x) {
     if (x === null || x === undefined) return null;
     var s = Math.abs(Math.round(x)).toLocaleString("en-US");
@@ -152,54 +98,20 @@
     return e;
   }
 
-  // A value cell. Marks itself if this key's text differs from last frame --
-  // which is the page's one piece of ornament and is entirely data-driven.
-  function value(key, text, extraClass) {
-    var td = el("td", "v num" + (extraClass ? " " + extraClass : ""));
-    var shown = (text === null || text === undefined) ? "—" : text;
-    td.textContent = shown;
-    if (!firstFrame && prev[key] !== undefined && prev[key] !== shown) {
-      td.classList.add("moved");
-    }
-    prev[key] = shown;
-    return td;
-  }
-
-  var staleSet = {};       // symbols with no recent print
-  var staleSectors = {};   // sectors holding at least one of them
-
+  // The value cell, the risk cell and the stale sets are OhCamelShared's: they
+  // are the frame's state rather than this section's, and three of the four
+  // pages need them without needing anything else in this file.
   function row(table, key, label, note, text, cls, rowCls) {
     var tr = el("tr", rowCls || null);
     var node = nodeOfRow(key);
-    if (node && staleNodes.has(node)) tr.classList.add("rowstale");
+    if (node && S.staleNode(node)) tr.classList.add("rowstale");
     var k = el("td", "k");
     k.appendChild(document.createTextNode(label));
     if (note) k.appendChild(el("em", null, note));
     tr.appendChild(k);
-    tr.appendChild(value(key, text, cls));
+    tr.appendChild(S.value(key, text, cls));
     table.appendChild(tr);
     return tr;
-  }
-
-  // A row's share of portfolio VaR, and that share over its share of money.
-  //
-  // Both come from the encoder (risk_share, risk_over_money): invariant 2
-  // applied to a division. This page used to sum the components and divide
-  // here; it no longer does arithmetic on risk. A NEGATIVE share is a hedge:
-  // it gets the ok colour and keeps its sign.
-  function riskCell(tr, key, share, ratio) {
-    var td = el("td", "risk");
-    if (share === null || share === undefined) {
-      td.textContent = "—";
-    } else {
-      var shown = (share * 100).toFixed(1) + "%";
-      td.appendChild(document.createTextNode(shown));
-      if (share < 0) td.classList.add("hedge");
-      if (!firstFrame && prev[key] !== undefined && prev[key] !== shown) td.classList.add("moved");
-      prev[key] = shown;
-    }
-    if (ratio !== undefined) td.appendChild(el("span", "rm", ratio === null ? "--" : ratio.toFixed(2) + "×"));
-    tr.appendChild(td);
   }
 
   function renderPositions(s) {
@@ -209,14 +121,14 @@
     s.positions.forEach(function (p) {
       var tr = row(t, "pos:" + p.symbol, p.symbol, p.sector,
           money(p.exposure), p.exposure < 0 ? "neg" : null,
-          staleSet[p.symbol] ? "rowstale" : null);
+          S.staleSymbol(p.symbol) ? "rowstale" : null);
       // Stale on schedule is not a broken feed. The demo never ticks one name
       // so the stale path can be watched, and the frame says which one.
       if (quiet.indexOf(p.symbol) >= 0) {
         tr.classList.add("quiet");
         tr.firstChild.appendChild(el("em", "quietlbl", "quiet by design"));
       }
-      riskCell(tr, "risk:" + p.symbol, p.risk_share, p.risk_over_money);
+      S.riskCell(tr, "risk:" + p.symbol, p.risk_share, p.risk_over_money);
     });
 
     var st = document.getElementById("sectors");
@@ -225,8 +137,8 @@
       // A sector total is only as good as its worst member.
       var tr = row(st, "sec:" + x.sector, x.sector, null,
           money(x.exposure), x.exposure < 0 ? "neg" : null,
-          staleSectors[x.sector] ? "rowstale" : null);
-      riskCell(tr, "risk:sec:" + x.sector, x.risk_share);
+          S.staleSector(x.sector) ? "rowstale" : null);
+      S.riskCell(tr, "risk:sec:" + x.sector, x.risk_share);
     });
   }
 
@@ -287,7 +199,7 @@
         }
       }
     }
-    else if (ops && ops.mode === "live") {
+    else if (window.OhCamelStream.mode() === "live") {
       // Said in the place the rows would be, rather than left to be
       // discovered: the live host has no options-chain source, so the options
       // branch of the graph is built and never fed.
@@ -318,7 +230,7 @@
 
     s.limits.forEach(function (l) {
       var d = el("div", "lim" + (l.breached ? " over" : ""));
-      if (staleNodes.has("limit:" + l.name)) d.classList.add("stale");
+      if (S.staleNode("limit:" + l.name)) d.classList.add("stale");
       var top = el("div", "top");
       top.appendChild(el("span", "name", l.name));
       top.appendChild(el("span", "scope", l.scope));
@@ -326,8 +238,10 @@
       var key = "lim:" + l.name;
       var shown = (l.utilisation * 100).toFixed(0) + "%";
       var q = el("span", "q", shown);
-      if (!firstFrame && prev[key] !== undefined && prev[key] !== shown) q.classList.add("moved");
-      prev[key] = shown;
+      // The same mark the value cells get, from the same map: this one is a
+      // span inside a bar rather than a whole cell, so it asks for the mark
+      // directly instead of going through value().
+      S.mark(q, key, shown);
       p.appendChild(q);
       top.appendChild(p);
       d.appendChild(top);
@@ -355,96 +269,6 @@
       d.appendChild(el("div", "detail", "input unavailable — not the same as passing"));
       box.appendChild(d);
     });
-  }
-
-  function renderHealth(s) {
-    var h = s.feed;
-    staleSet = {};
-    staleSectors = {};
-    h.stale.concat(h.never_seen).forEach(function (sym) { staleSet[sym] = true; });
-    s.positions.forEach(function (p) {
-      if (staleSet[p.symbol] && p.sector) staleSectors[p.sector] = true;
-    });
-    // Staleness follows the edges, not the column: the downstream closure of
-    // each stale price, from the served topology, on the drawing and on the
-    // ledger's rows alike. Until the topology has arrived the rows fall back
-    // to the symbol match above.
-    staleNodes = new Set();
-    var staleSyms = h.stale.concat(h.never_seen);
-    if (topology && window.OhCamelGraph) {
-      staleSyms.forEach(function (sym) {
-        var cell = "price[" + sym + "]";
-        staleNodes.add(cell);
-        window.OhCamelGraph.closure(topology, [cell], "down").forEach(function (n) { staleNodes.add(n); });
-      });
-    }
-    if (graph) graph.dim(staleSyms);
-    lastPrintAt = null;
-    (h.symbols || []).forEach(function (st) {
-      if (!st.last_tick) return;
-      var t = parseUtc(st.last_tick);
-      if (!isNaN(t) && (lastPrintAt === null || t > lastPrintAt)) lastPrintAt = t;
-    });
-    var feed = document.getElementById("feed");
-    feed.textContent = "";
-    var dot = el("span", "dot" + (h.healthy ? "" : " bad"));
-    feed.appendChild(dot);
-
-    var warn = document.getElementById("warn");
-    var main = document.getElementById("main");
-
-    if (h.healthy) {
-      feed.appendChild(document.createTextNode("live"));
-      warn.className = "";
-      warn.textContent = "";
-      main.classList.remove("stale");
-    } else if (h.stale.length) {
-      feed.appendChild(document.createTextNode(h.stale.length + " stale"));
-      warn.className = "on";
-      warn.textContent = "";
-      warn.appendChild(el("b", null, "Prices are stale: " + h.stale.join(", ") + ". "));
-      warn.appendChild(document.createTextNode(
-        "Everything below was computed from old marks. A limit that is not breached on a stale price is not information."));
-      main.classList.add("stale");
-    } else {
-      feed.appendChild(document.createTextNode("no prints"));
-      warn.className = "on";
-      warn.textContent = "";
-      warn.appendChild(el("b", null, "No prints yet for " + h.never_seen.join(", ") + ". "));
-      warn.appendChild(document.createTextNode(
-        "The subscription may not have taken, or the market may be closed."));
-      main.classList.remove("stale");
-    }
-  }
-
-  // Phase 4 state, and the desk's switch. The kernel's alerts are reported
-  // here; the desk's own routes halt and reset the desk (renderSwitch), on the
-  // live host only.
-  function renderAlerts(s) {
-    var a = s.alerts || { enabled: false, kill_switch: "off" };
-    var ks = document.getElementById("ks");
-    var halt = document.getElementById("halt");
-
-    ks.className = "v ks " + (a.kill_switch === "tripped" ? "tripped"
-                            : a.kill_switch === "armed" ? "armed" : "off");
-    ks.textContent = !a.enabled ? "off"
-      : a.kill_switch === "tripped" ? "HALTED"
-      : a.kill_switch === "armed" ? "armed"
-      : "on, no switch";
-
-    if (a.kill_switch === "tripped") {
-      halt.className = "on";
-      halt.textContent = "";
-      halt.appendChild(el("b", null, "NEW ORDERS HALTED"));
-      halt.appendChild(document.createTextNode(
-        "  \u2014 tripped by " + a.tripped_by + ". "));
-      halt.appendChild(el("span", null,
-        "New orders are refused and every open order is cancelled; positions are not touched. "
-        + "It stays set until the engine is restarted or the switch is reset."));
-    } else {
-      halt.className = "";
-      halt.textContent = "";
-    }
   }
 
   // A sparkline, drawn as inline SVG built by hand.
@@ -885,56 +709,26 @@
       : "") + (tca && tca.note ? tca.note : "");
   }
 
+  // This page's sections, from a frame the stream has already begun: the
+  // masthead, the banners and the two clocks are its, and the stale sets and
+  // the change marks are already computed when this runs.
   function render(s) {
-    renderAlerts(s);
-    renderHealth(s);
     renderPositions(s);
     renderBook(s);
     renderLimits(s);
     renderDesk(s);
     renderGraphFrame(s);
-    lastFrameAt = Date.now();
-    clocks();
-    document.getElementById("nsym").textContent =
-      s.positions.length + " / " + s.sectors.length + " sectors";
     document.getElementById("nodes").textContent = s.nodes_recomputed.toLocaleString("en-US");
     if (s.stabilizes !== undefined && s.stabilizes !== null)
       document.getElementById("stabilizes").textContent = s.stabilizes.toLocaleString("en-US");
-    document.getElementById("asof").textContent = s.as_of.replace("T", " ").slice(0, 19) + "Z";
     var a = s.alerts || {};
     document.getElementById("alertstat").textContent =
       a.enabled ? ("alerts sent " + a.sent + (a.failed ? ", failed " + a.failed : ""))
                 : "alerting disabled";
     refreshHistory();
-    firstFrame = false;
-    // The argument below reads the same frame: attribution and the recompute tally.
-    if (window.OhCamelArgument) window.OhCamelArgument.frame(s);
   }
 
-  var conn = document.getElementById("conn");
-  // The browser retries a dropped stream by itself, unless the retry gets an
-  // error status: during a redeploy the proxy answers 502 for a few seconds,
-  // and EventSource then closes for good while the page says it will retry.
-  // So a closed source is replaced here, after a pause that grows to 30 s.
-  var retryMs = 1000;
-  function connect() {
-    var src = new EventSource("/api/stream");
-    src.onmessage = function (e) {
-      retryMs = 1000;
-      conn.textContent = "stream connected";
-      try { render(JSON.parse(e.data)); }
-      catch (err) { conn.textContent = "bad frame: " + err.message; }
-    };
-    src.onerror = function () {
-      document.getElementById("feed").innerHTML = '<span class="dot idle"></span>disconnected';
-      if (src.readyState === EventSource.CLOSED) {
-        conn.textContent = "stream lost — reconnecting in " + Math.round(retryMs / 1000) + " s";
-        setTimeout(connect, retryMs);
-        retryMs = Math.min(30000, retryMs * 2);
-      } else {
-        conn.textContent = "stream lost — the browser will retry";
-      }
-    };
-  }
-  connect();
+  window.OhCamelStream.onFrame(render);
+  window.OhCamelStream.onOps(renderOps);
+  window.OhCamelStream.onTopology(buildFigure);
 })();

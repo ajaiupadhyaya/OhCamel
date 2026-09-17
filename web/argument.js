@@ -293,7 +293,7 @@
     renderVerified(r.verified);
   }
 
-  // The stream's frames, handed over by dashboard.js after it renders one.
+  // The stream's frames. Subscribed at the end of this file.
   function frame(s) {
     if (s.recomputed && s.recomputed.length) {
       var bar = s.recomputed.some(function (x) { return x.name === "covariance"; });
@@ -307,7 +307,7 @@
     renderOptionsLive(s);
   }
 
-  // /api/ops is dashboard.js's to poll, every 30 s; it hands each answer here.
+  // /api/ops is the stream's to poll, every 30 s; each answer arrives here.
   function ops(o) { st.mode = o.mode; renderBuild(o); stamp(); }
   // GARCH is polled once the static reports are in, so its agreement line can
   // name the platform they were computed on.
@@ -319,4 +319,13 @@
   $("st-again").addEventListener("click", function (ev) { ev.preventDefault(); loadStress(); });
 
   window.OhCamelArgument = { frame: frame, ops: ops };
+
+  /* The essay drives itself. Until the site became five pages, dashboard.js
+     called frame() and ops() -- which meant the essay only lived on a page
+     that also carried the dashboard's renderers. It subscribes here instead,
+     so the page at /argument needs nothing but this file. */
+  if (window.OhCamelStream) {
+    OhCamelStream.onFrame(frame);
+    OhCamelStream.onOps(ops);
+  }
 })();

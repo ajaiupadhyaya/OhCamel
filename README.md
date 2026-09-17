@@ -1102,7 +1102,7 @@ deploy user alone, and reach the container as environment, never as a layer.
 
 ## What's verified
 
-`make test` runs 442 tests, plus seven in `test/desk_async` that run with the
+`make test` runs 443 tests, plus seven in `test/desk_async` that run with the
 scheduler -- the order manager's cases, the transport's bound and that
 suite's own count -- all hermetic — no network, no credentials, and nothing
 that waits on the wall clock: the scheduler's cases move a clock of their

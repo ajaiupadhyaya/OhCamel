@@ -331,19 +331,42 @@ let test_the_build_stamp_can_say_it_does_not_know () =
         false
         (String.exists value ~f:Char.is_whitespace))
 
-(* Script order is load order. graph.js reads window.OhCamelFormat at load
-   and dashboard.js will call window.OhCamelGraph on its first frame, so the
-   three must be in the page in this order, and a rule that catted them
-   differently would fail here rather than in a browser console. *)
+(* Script order is load order. graph.js reads window.OhCamelFormat at load,
+   shared.js formats with it and walks graph.js's closure on every frame,
+   stream.js drives shared.js, and dashboard.js and argument.js subscribe to
+   stream.js at load -- so the seven must be in the page in this order, and a
+   rule that catted them differently would fail here rather than in a browser
+   console. The connection is opened by the last statement in the block, after
+   every subscriber, which is the assertion the case below this one makes. *)
 let test_the_page_scripts_are_in_order () =
   markers_in_order Dashboard_html.page ~name:"dashboard"
     ~markers:
       [
         "window.OhCamelFormat =";
+        "window.OhCamelShared =";
+        "new EventSource(";
+        "window.OhCamelStream =";
         "window.OhCamelGraph =";
         "window.OhCamelCharts =";
-        "new EventSource(";
         "window.OhCamelArgument =";
+      ]
+
+(* The shared client, in the order a page must load it: the formatters before
+   the state that formats with them, the state before the stream that drives
+   it, the stream before the renderer that subscribes, and start() last. A
+   script that called OhCamelStream.onFrame before the object existed would
+   throw on load, and the page would be blank with one line in a console
+   nobody has open. *)
+let test_the_shared_client_loads_in_order () =
+  markers_in_order Dashboard_html.page ~name:"the dashboard"
+    ~markers:
+      [
+        "function markCurrentNavLink";
+        "window.OhCamelFormat";
+        "window.OhCamelShared";
+        "window.OhCamelStream";
+        "OhCamelStream.onFrame(";
+        "OhCamelStream.start()";
       ]
 
 (* The shell. The masthead and the banners are one partial, catted into the
@@ -404,8 +427,11 @@ let suite =
         test_the_crisis_windows_are_in_the_binary;
       Alcotest.test_case "the build stamp can say it does not know" `Quick
         test_the_build_stamp_can_say_it_does_not_know;
-      Alcotest.test_case "format, graph, charts, dashboard, argument, in that order"
-        `Quick test_the_page_scripts_are_in_order;
+      Alcotest.test_case
+        "format, shared, stream, graph, charts, dashboard, argument, in that order" `Quick
+        test_the_page_scripts_are_in_order;
+      Alcotest.test_case "the shared client loads in order" `Quick
+        test_the_shared_client_loads_in_order;
       Alcotest.test_case "the dashboard carries the shell" `Quick
         test_the_dashboard_carries_the_shell;
       Alcotest.test_case "the ops page carries the nav and keeps its masthead" `Quick
