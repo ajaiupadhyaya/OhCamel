@@ -597,7 +597,9 @@
       ["equity", d.equity === null ? "—" : F.money(d.equity)],
       ["cash", d.cash === null ? "—" : F.money(d.cash)],
       ["session P&L", d.session_pnl === null ? "—" : F.money(d.session_pnl)],
-      ["trading", d.trading ? "on" : "off"],
+      // "on" beside a tripped or halted switch would read as orders going
+      // out; the switch refuses every one, so the row says so.
+      ["trading", !d.trading ? "off" : d.kill_switch === "clear" ? "on" : "on, but the switch refuses new orders"],
       ["kill switch", typeof d.kill_switch === "string" ? d.kill_switch : "—"],
       // With no order manager attached the server sends 0 for want of a count;
       // nothing is counting, so the page says it does not know.
@@ -778,11 +780,22 @@
       var b = res.body || {}, p = (placing ? b.preview : b) || {};
       out.textContent = "";
       if (b.error) { out.appendChild(F.el("div", "ticket-bad", b.error)); return; }
-      var ok = placing ? b.state !== "rejected_pre_trade" : p.passed === true;
+      // A placement the venue refused, or one the desk declared failed, is no
+      // working order as far as the desk knows: it reads as a failure, with the
+      // server's reason as text beneath it.
+      var venueRefused = placing && b.state === "rejected_by_venue";
+      var failed = placing && b.state === "failed";
+      var ok = placing
+        ? b.state !== "rejected_pre_trade" && !venueRefused && !failed
+        : p.passed === true;
       var head = placing
-        ? (ok ? "sent: " + String(b.state).replace(/_/g, " ") : "refused before the venue")
+        ? (ok ? "sent: " + String(b.state).replace(/_/g, " ")
+          : venueRefused ? "refused by the venue"
+          : failed ? "failed"
+          : "refused before the venue")
         : (ok ? "would pass the rules and the limits" : "would be refused");
       out.appendChild(F.el("div", ok ? "ticket-ok" : "ticket-bad", head));
+      if ((venueRefused || failed) && b.reason) out.appendChild(F.el("div", "ticket-reason", b.reason));
       (p.reasons || []).forEach(function (r) { out.appendChild(F.el("div", "ticket-reason", r)); });
       if (p.gate) {
         out.appendChild(F.el("div", "ticket-gate",
