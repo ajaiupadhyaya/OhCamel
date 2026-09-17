@@ -1084,7 +1084,7 @@ let run_live ~book_path ~(serve_port : int option) =
          subscribe, be told no for the excess, and watch a fraction of itself
          while the page drew all of it. Refused here, with the number. *)
       let universe_cap = 30 in
-      (* Both refusals below exit through Async's [exit], bound, rather than
+      (* Every refusal below exits through Async's [exit], bound, rather than
          [Stdlib.exit]. Under [open Async], [prerr_endline] writes to a buffered
          writer that only Async's shutdown flushes: followed by Stdlib.exit, the
          process exited 1 with nothing on stderr, a refusal that never said what
@@ -1097,6 +1097,20 @@ let run_live ~book_path ~(serve_port : int option) =
                 most %d. Remove names, or move to a paid feed and raise the cap in \
                 bin/main.ml."
                (List.length instruments) universe_cap);
+          exit 1)
+        else return ()
+      in
+      (* With COHTTP_DEBUG set, to any value, cohttp-async logs every buffer it
+         writes, and a request's buffer carries the Alpaca key headers. Refused
+         here, before the first request, naming the variable and never its
+         value: a log that holds a trading key is a key handed to whoever reads
+         the log. *)
+      let%bind () =
+        if Option.is_some (Sys.getenv "COHTTP_DEBUG") then (
+          prerr_endline
+            "ohcamel: COHTTP_DEBUG is set, and with it cohttp-async logs every request \
+             it writes, key headers included. Unset COHTTP_DEBUG to start the live \
+             engine.";
           exit 1)
         else return ()
       in
@@ -1245,10 +1259,11 @@ let run_live ~book_path ~(serve_port : int option) =
       (* The desk's venue. A trading key the paper host would refuse leaves the
          desk disabled, in words; the risk engine keeps running on its own
          credentials, which have their own fatal rule. *)
+      let trading_credentials =
+        Ohcamel_desk.Alpaca_paper.Credentials.load ~data:config.Config.credentials
+      in
       let venue =
-        match
-          Ohcamel_desk.Alpaca_paper.Credentials.load ~data:config.Config.credentials
-        with
+        match trading_credentials with
         | Ok credentials ->
             live_line
               "desk      Alpaca paper, read side: the book's quantities and cash come \
@@ -1295,9 +1310,109 @@ let run_live ~book_path ~(serve_port : int option) =
               "desk      first sync did not answer in 20 s; the file's quantities stand, \
                and the minute sync will try again"
       in
+      (* The minute sync's interval, bound here rather than in the venue match
+         below, because the order manager measures the book against it as the
+         session close does: an order is refused while the last applied read
+         of the account is older than two intervals. *)
+      let sync_every = Time_ns.Span.of_min 1.0 in
+      (* The order manager (design §3.6-§3.8). Trading needs a book that
+         enables it, a paper key pair the paper host accepts, and a graph that
+         holds the account's book; without the first two, the manager still
+         previews, and the page says in a sentence why nothing can be sent.
+         The trade-update stream reconciles every time it reconnects: an update
+         sent while it was down is an update it will never deliver. A fill the
+         manager applies goes to Desk.after_fill, which refuses an account read
+         already out when the fill landed and starts one that sees it. *)
+      let module Desk_spec = Config.Book.Desk_spec in
+      let halt =
+        Ohcamel_desk.Halt.create
+          (match alerts with
+          | Some a -> Ohcamel_desk.Halt.Source.of_alerts a
+          | None -> Ohcamel_desk.Halt.Source.none)
+      in
+      let reconcile_on_connect = ref (fun () -> Deferred.unit) in
+      let trade =
+        match (book.Config.Book.desk.Desk_spec.trading, trading_credentials) with
+        | Desk_spec.Disabled, _ ->
+            Error
+              "the book does not enable trading; add (desk ((trading enabled))) to \
+               book.sexp"
+        | Desk_spec.Enabled, Error e -> Error (Error.to_string_hum e)
+        | Desk_spec.Enabled, Ok credentials ->
+            Ok
+              (Ohcamel_desk.Alpaca_trade.trade ~credentials
+                 ~on_connected:(fun () -> !reconcile_on_connect ())
+                 ~on_event:(fun e -> live_line ("trade     " ^ e)))
+      in
+      let oms =
+        Ohcamel_desk.Oms.create ~graph ~journal ~spec:book.Config.Book.desk
+          ~read:
+            (match venue with
+            | Ohcamel_desk.Desk.Reads r -> Some r
+            | Ohcamel_desk.Desk.Unavailable _ -> None)
+          ~trade ~halt ~accepts_tickets:true ~adv:Ohcamel_desk.Oms.Adv.From_venue
+          ~now:Time_ns.now
+          ~rng:(Random.State.make_self_init ())
+          ~on_change:(fun () -> !notify ())
+          ~on_event:live_line
+          ~after_fill:(fun () -> Ohcamel_desk.Desk.after_fill desk)
+          ~book_is_current:(fun () ->
+            Ohcamel_desk.Desk.book_is_current desk ~now:(Time_ns.now ())
+              ~within:(Time_ns.Span.scale sync_every 2.0))
+          ()
+      in
+      (reconcile_on_connect := fun () -> Ohcamel_desk.Oms.reconcile oms);
+      Ohcamel_desk.Desk.set_oms desk oms;
+      live_line
+        (match trade with
+        | Ok _ ->
+            "desk      trading ON -- Alpaca paper; every order passes the rules and the \
+             limits before the venue"
+        | Error why -> "desk      trading off -- " ^ why);
+      (* Awaited, so the first blotter is the venue's; and bounded, as the
+         first sync is, because a paper host that hangs costs ten seconds a
+         lookup and the listener, with the healthcheck, is not up until this
+         returns. A reconciliation past the bound goes on in the order
+         manager's queue: proposals are enqueued behind it in the same
+         sequencer, so none is sent before it finishes. *)
+      let%bind () =
+        match%map
+          Clock_ns.with_timeout (Time_ns.Span.of_sec 20.0)
+            (Ohcamel_desk.Oms.reconcile oms)
+        with
+        | `Result () -> ()
+        | `Timeout ->
+            live_line
+              "desk      reconciliation did not finish in 20 s; it goes on in the order \
+               manager's queue, and orders wait behind it"
+      in
+      (* The switch is wired only now. The manager's open orders start empty
+         and a reconciliation fills them from the journal, so a trip wired
+         before it would cancel nothing a previous process left open. The
+         routes, and with them the kill, are built in [http] below, after this. *)
+      Option.iter alerts ~f:(Ohcamel_desk.Oms.watch_alerts oms);
+      (* The venue's order updates end only when the stream has given up for
+         good -- the paper host refused the key, and nothing reconnects. After
+         that no fill is heard, so no order may go out whose fill nothing would
+         apply: the desk halts, and the reason says why. A manager with no
+         trading half has no stream to lose, and its [run] returns at once;
+         halting it would show a desk that cannot trade as one halted by hand. *)
+      don't_wait_for
+        (let%map () = Ohcamel_desk.Oms.run oms in
+         match trade with
+         | Error _ -> ()
+         | Ok _ ->
+             let why =
+               "the venue's order updates stopped, so no fill would be heard; restart \
+                the engine to reconnect and reconcile"
+             in
+             Ohcamel_desk.Halt.halt halt ~why ~at:(Time_ns.now ());
+             live_line ("desk      HALTED: " ^ why);
+             !notify ());
+      don't_wait_for
+        (Ohcamel_desk.Oms.refresh_forever oms ~every:(Time_ns.Span.of_min 1.0));
       (match venue with
       | Ohcamel_desk.Desk.Reads read ->
-          let sync_every = Time_ns.Span.of_min 1.0 in
           don't_wait_for
             (Ohcamel_desk.Desk.sync_forever desk ~every:sync_every ~on_event:live_line);
           (* Two intervals, so a close that lands between two good syncs is not
@@ -1371,7 +1486,10 @@ let run_live ~book_path ~(serve_port : int option) =
                      ~alpaca:alpaca_stats ~fred:fred_stats)
                 ~recompute_log:log ~reports ~garch ~graph
                 ~factor:runtime.Config.Runtime.fred_series_id
-                ~extensions:(Ohcamel_desk.Desk.extensions desk)
+                ~extensions:
+                  (Ohcamel_desk.Desk.extensions desk
+                  @ Ohcamel_desk.Desk_routes.extensions ~host:`Live ~oms)
+                ~kill_switch_wired_to:"desk.submit"
                 ~frame_extra:(fun () -> [ ("desk", Ohcamel_desk.Desk.summary_json desk) ])
                 ()
             in
@@ -1475,6 +1593,12 @@ let run_demo ~port =
   (* The desk, on the simulated venue: the demo's positions and cash, marked
      from the same last prices the ticks write, and a journal in memory that
      the page labels as such. *)
+  let demo_desk_spec =
+    {
+      Config.Book.Desk_spec.default with
+      Config.Book.Desk_spec.trading = Config.Book.Desk_spec.Enabled;
+    }
+  in
   let journal = Or_error.ok_exn (Ohcamel_desk.Journal.open_ ~path:":memory:") in
   let venue =
     Ohcamel_desk.Sim_venue.create ~opened_at:(Time_ns.now ())
@@ -1490,7 +1614,7 @@ let run_demo ~port =
   let desk =
     Ohcamel_desk.Desk.create ~graph ~journal
       ~venue:(Ohcamel_desk.Desk.Reads (Ohcamel_desk.Sim_venue.read venue))
-      ~spec:Ohcamel.Config.Book.Desk_spec.default
+      ~spec:demo_desk_spec
       ~on_change:(fun () -> !notify ())
         (* Nothing to restore: the journal is in memory and empty when the first
            sync lands, and the trail is the graph's own startup mark. *)
@@ -1517,6 +1641,49 @@ let run_demo ~port =
         exit 1
     | Ok alerts -> return alerts
   in
+  (* The order manager, on the simulated venue. Trading is on, because the
+     venue is in this process; tickets are not, because this host is public --
+     the page previews, and the demo's own trader below places the orders.
+     The switch resets itself ninety seconds after nvda-cap clears, which the
+     page says happens only here. *)
+  let halt =
+    Ohcamel_desk.Halt.create ~auto_reset_after:(Time_ns.Span.of_sec 90.0)
+      (match alerts with
+      | Some a -> Ohcamel_desk.Halt.Source.of_alerts a
+      | None -> Ohcamel_desk.Halt.Source.none)
+  in
+  let oms =
+    Ohcamel_desk.Oms.create ~graph ~journal ~spec:demo_desk_spec
+      ~read:(Some (Ohcamel_desk.Sim_venue.read venue))
+      ~trade:(Ok (Ohcamel_desk.Sim_venue.trade venue))
+      ~halt ~accepts_tickets:false ~adv:(Ohcamel_desk.Oms.Adv.Fixed 2_000_000.0)
+      ~now:Time_ns.now
+      ~rng:(Random.State.make_self_init ())
+      ~on_change:(fun () -> !notify ())
+      ~on_event:(fun e -> printf "  %s\n%!" e)
+      ~after_fill:(fun () -> Ohcamel_desk.Desk.after_fill desk)
+        (* Two of the demo's fifteen-second syncs. The first sync was awaited
+           above, so the trader's first proposal finds a current book. *)
+      ~book_is_current:(fun () ->
+        Ohcamel_desk.Desk.book_is_current desk ~now:(Time_ns.now ())
+          ~within:(Time_ns.Span.of_sec 30.0))
+      ()
+  in
+  Ohcamel_desk.Desk.set_oms desk oms;
+  (* No reconciliation first, as the live host has: the journal is in memory
+     and was opened empty above, so no earlier process left an order open for
+     a trip to miss. *)
+  Option.iter alerts ~f:(Ohcamel_desk.Oms.watch_alerts oms);
+  (* The simulated venue's updates never end while this process runs; if they
+     did, the desk would halt as the live host's does, and say why. *)
+  don't_wait_for
+    (let%map () = Ohcamel_desk.Oms.run oms in
+     let why = "the venue's order updates stopped, so no fill would be heard" in
+     Ohcamel_desk.Halt.halt halt ~why ~at:(Time_ns.now ());
+     printf "  desk      HALTED: %s\n%!" why;
+     !notify ());
+  let%bind () = Ohcamel_desk.Oms.refresh oms ~bars:false in
+  don't_wait_for (Ohcamel_desk.Oms.refresh_forever oms ~every:(Time_ns.Span.of_min 1.0));
   (* The one symbol that is never ticked -- the comment above [tickable] says
      why. Named here, above Server.create, because the server has to be TOLD
      it is quiet on purpose: without that, /api/ops counts it as a broken feed
@@ -1524,7 +1691,10 @@ let run_demo ~port =
   let quiet, _, _, _ = List.last_exn book in
   let server =
     Server.create ?alerts ~recompute_log:log ~reports ~garch ~mode:`Demo ~quiet:[ quiet ]
-      ~extensions:(Ohcamel_desk.Desk.extensions desk)
+      ~extensions:
+        (Ohcamel_desk.Desk.extensions desk
+        @ Ohcamel_desk.Desk_routes.extensions ~host:`Demo ~oms)
+      ~kill_switch_wired_to:"desk.submit"
       ~frame_extra:(fun () -> [ ("desk", Ohcamel_desk.Desk.summary_json desk) ])
       ~graph ~factor:"SYNTHETIC" ()
   in
@@ -1542,7 +1712,8 @@ let run_demo ~port =
     (List.length book) (List.length demo_limits);
   printf "  ticking     one name every 400ms, a bar every 15s\n";
   printf
-    "  desk        simulated venue, read side; journal in memory; a session every 5 min\n";
+    "  desk        simulated venue; journal in memory; a session every 5 min; its own \
+     trader every 45 s; tickets preview only\n";
   (* One symbol is deliberately never ticked.
 
      Feed health is the part of this engine hardest to demonstrate, because it
@@ -1557,7 +1728,8 @@ let run_demo ~port =
     (Symbol.to_string quiet);
   printf
     "  alerts      on, logging to this terminal. Kill switch armed on nvda-cap --\n\
-    \              it sets a flag and nothing else. Nothing here places orders.\n\n\
+    \              a trip refuses new orders and cancels open ones, and resets 90 s \
+     after the limit clears.\n\n\
      %!";
   (* A tick. One name reprices; the graph decides what that implies. *)
   Clock_ns.every' (Time_ns.Span.of_ms 400.0) (fun () ->
@@ -1600,6 +1772,47 @@ let run_demo ~port =
       Graph.set_now graph (Time.now ());
       Graph.stabilize graph;
       Deferred.unit);
+  (* The demo's switch resets itself; this is the clock it resets by. *)
+  Clock_ns.every' (Time_ns.Span.of_sec 1.0) (fun () ->
+      if Ohcamel_desk.Halt.tick halt ~now:(Time_ns.now ()) then (
+        printf
+          "  desk      the switch reset itself: its limit has been clear for 90 s (the \
+           demo only)\n\
+           %!";
+        !notify ());
+      Deferred.unit);
+  (* The demo's own trader. Nobody can place an order on the public host, so
+     without this the blotter would stay empty. Every forty-five seconds it
+     proposes a small market order through exactly the rules and the limits a
+     ticket passes. Every fourth is a buy of ten NVDA, whose cap sits 200
+     dollars above its exposure, so the page regularly shows the limits
+     refusing a trade and naming the limit. *)
+  let proposals = ref 0 in
+  let nvda = Symbol.of_string "NVDA" in
+  Clock_ns.every' (Time_ns.Span.of_sec 45.0) (fun () ->
+      incr proposals;
+      let symbol, side, qty =
+        if
+          !proposals % 4 = 0
+          && List.exists tickable ~f:(fun (s, _, _, _) -> Symbol.equal s nvda)
+        then (nvda, Ohcamel_desk.Order.Side.Buy, 10)
+        else
+          let symbol, _, _, _ =
+            List.nth_exn tickable (Random.State.int rng (List.length tickable))
+          in
+          ( symbol,
+            (if Random.State.bool rng then Ohcamel_desk.Order.Side.Buy
+             else Ohcamel_desk.Order.Side.Sell),
+            1 + Random.State.int rng 20 )
+      in
+      Deferred.ignore_m
+        (Ohcamel_desk.Oms.propose oms ~source:"demo"
+           {
+             Ohcamel_desk.Ticket.symbol;
+             side;
+             qty;
+             kind = Ohcamel_desk.Order.Kind.Market;
+           }));
   Deferred.never ()
 
 (* ------------------------------------------------------------------------ *)

@@ -29,7 +29,7 @@ EXPECT_SHA=""
 # cannot read OCaml, so it carries the list and asserts the 404 body equals it,
 # in order. Adding a route or an extension means adding it here in the same
 # commit -- the assertion fails until you do, which is the point of having it.
-EXPECTED_ROUTES="/ /ops /api/snapshot /api/health /api/stream /api/history /api/stress /api/graph /api/heat /api/reports /api/reports/garch /api/ops /api/desk"
+EXPECTED_ROUTES="/ /ops /api/snapshot /api/health /api/stream /api/history /api/stress /api/graph /api/heat /api/reports /api/reports/garch /api/ops /api/desk /api/desk/tca /api/desk/sessions /api/desk/preview /api/desk/orders /api/desk/cancel /api/desk/kill /api/desk/kill/reset"
 
 # The first bare argument is the base URL; everything else is a flag. Written
 # out rather than clever, because a smoke script that misparses its own
@@ -325,6 +325,39 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 4a''. The desk's routes, as each host allows them
+#
+# The preview answers on the demo and creates nothing; an order is refused
+# there with a 405. On the live host this suite has no password and sends no
+# order: section 6 asserts the host refuses anonymous callers on the orders
+# route with the rest.
+# ---------------------------------------------------------------------------
+if command -v python3 >/dev/null 2>&1 && [ "${ops_mode:-}" = "demo" ]; then
+	ticket='{"symbol":"AAPL","side":"buy","qty":1}'
+	code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 -X POST -H 'Content-Type: application/json' -d "$ticket" "$BASE/api/desk/orders" 2>/dev/null)
+	[ "$code" = "405" ] && ok "POST /api/desk/orders        405 on the demo host" \
+		|| no "POST /api/desk/orders        $code, expected 405" "the public demo did not refuse an order"
+	preview=$(curl -sS --max-time 15 -X POST -H 'Content-Type: application/json' -d "$ticket" "$BASE/api/desk/preview" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    p = json.load(sys.stdin)
+except Exception as e:
+    print("NOTJSON %s" % e); raise SystemExit
+if not isinstance(p.get("passed"), bool) or not isinstance(p.get("rules"), list) or "gate" not in p:
+    print("SHAPE keys=%r" % sorted(p.keys())); raise SystemExit
+print("OK %s %d" % ("passes" if p["passed"] else "refused", len(p.get("reasons") or [])))
+' 2>/dev/null)
+	case "$preview" in
+	OK*) read -r _ pverdict preasons <<<"$preview"; ok "POST /api/desk/preview       $pverdict, $preasons reasons, nothing created" ;;
+	*)   no "POST /api/desk/preview       malformed" "${preview:-no response}" ;;
+	esac
+elif [ "${ops_mode:-}" = "live" ]; then
+	meh "POST /api/desk/*             the live host's desk routes sit behind its password; section 6 covers them"
+else
+	meh "POST /api/desk/*             python3 unavailable or the mode unknown; the desk's routes not checked"
+fi
+
+# ---------------------------------------------------------------------------
 # 4b. The reports the page reads
 #
 # The argument below the ledger is filled from three routes, and each has a
@@ -433,13 +466,13 @@ esac
 # 6. The live host refuses anonymous callers
 # ---------------------------------------------------------------------------
 if [ -n "$LIVE" ]; then
-	# Six paths, not one. The gate is Caddy's basic_auth on the whole host,
+	# Seven paths, not one. The gate is Caddy's basic_auth on the whole host,
 	# and the tempting way to fill the ops page's peer column from the public
 	# origin is a matcher that exempts /api/ops from it. That hole would show
 	# up here as a 200 on one path while / still said 401. The page fills its
 	# peer column the other way round -- the live origin reads the demo, over
 	# the demo engine's own CORS header -- so the live host never needs one.
-	for path in / /ops /api/ops /api/snapshot /api/health /api/desk; do
+	for path in / /ops /api/ops /api/snapshot /api/health /api/desk /api/desk/orders; do
 		code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$LIVE$path" 2>/dev/null)
 		[ "$code" = "401" ] && ok "GET $LIVE$path  401 without credentials" \
 			|| no "GET $LIVE$path  $code, expected 401" "the live host is not gated on $path"
