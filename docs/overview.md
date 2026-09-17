@@ -203,7 +203,7 @@ may send one); on the public demo each answers 405.
 - **Live host:** `live.ohcamel.ajaiupadhyaya.com`, the same image on Alpaca and
   FRED, behind a password.
 - **Infrastructure:** one DigitalOcean droplet (2 vCPU, 4 GB, $24/month), Docker
-  Compose, and Caddy for TLS. Last deployed 2026-09-13 from `cf79764`.
+  Compose, and Caddy for TLS. Last deployed 2026-09-17 from `e0f5a71`.
 - **Deploy check:** a smoke suite runs after every deploy, and a failure fails
   the deploy. The checks that matter are that the recompute counter *advances*
   between two reads and that the stream delivers frames spread over 20 seconds.
