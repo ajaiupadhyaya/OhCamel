@@ -70,7 +70,7 @@ marks and the file says what is held.
 | Options | Black-Scholes European pricing with delta, gamma, vega and theta; delta folded into exposure; vega broken out by tenor | [`options.ml`](../lib/options.ml), [`options_walk.ml`](../lib/options_walk.ml) |
 | Limits and alerts | Breaches computed as data; edge-triggered alerts; a kill switch the desk obeys | [`limits.ml`](../lib/limits.ml), [`alerts.ml`](../lib/alerts.ml) |
 | Staleness | Last tick per symbol. A stale name is flagged, along with everything computed from it | [`graph.ml`](../lib/graph.ml) |
-| Orders | The rules, then the book's limits on a fork of the live graph; the journal before the wire; reconciliation against the venue on restart; each fill's cost in basis points. The public demo previews and never takes an order | [`rules.ml`](../desk/rules.ml), [`gate.ml`](../lib/gate.ml), [`oms.ml`](../desk/oms.ml), [`tca.ml`](../desk/tca.ml) |
+| Orders | The rules, then the book's limits on a fork of the live graph; the journal before the wire; reconciliation against the venue on restart; each fill's cost in basis points. The public demo previews and takes no order from a visitor | [`rules.ml`](../desk/rules.ml), [`gate.ml`](../lib/gate.ml), [`oms.ml`](../desk/oms.ml), [`tca.ml`](../desk/tca.ml) |
 
 A few of these deserve more than a table row.
 
@@ -191,8 +191,10 @@ has recomputed.
 | `POST /api/desk/kill/reset` | Lift the halt; the body must say `{"confirm":"reset"}` (live host only) |
 
 Four routes change the desk -- orders, cancel, kill and its reset -- on the
-live host only, and only for a request the page itself sends; on the public
-demo each answers 405.
+live host only, and only for a request carrying the page's header and the
+browser's same-site label, which a cross-site page cannot forge (the
+password decides who else may send one); on the public demo each answers
+405.
 
 ## Where it runs
 
