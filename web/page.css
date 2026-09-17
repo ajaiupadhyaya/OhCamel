@@ -76,6 +76,38 @@
   .dot.idle { background: var(--ink-faint); }
   header .spacer { margin-left: auto; }
 
+  /* The navigation: a row under the masthead, ruled off from the page, scrolling
+     sideways on a phone rather than wrapping into a second row that pushes the
+     content down. The current page is marked by weight and an underline as well
+     as colour, because colour alone fails the reader who cannot see it. */
+  nav.sitenav {
+    display: flex;
+    gap: 18px;
+    align-items: baseline;
+    padding: 0 0 8px;
+    margin: 0 0 18px;
+    border-bottom: 1px solid var(--rule);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  nav.sitenav::-webkit-scrollbar { display: none; }
+  nav.sitenav a {
+    color: var(--ink-soft);
+    text-decoration: none;
+    font-size: 13px;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    padding: 6px 0;
+    border-bottom: 2px solid transparent;
+  }
+  nav.sitenav a:hover { color: var(--ink); }
+  nav.sitenav a:focus-visible { outline: 2px solid var(--second); outline-offset: 2px; }
+  nav.sitenav a[aria-current="page"] {
+    color: var(--ink);
+    font-weight: 600;
+    border-bottom-color: var(--ink);
+  }
+
   /* ---- the stale banner: the one loud thing on the page ---- */
   #warn { display: none; }
   #warn.on {

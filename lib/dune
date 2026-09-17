@@ -76,11 +76,14 @@
     (echo "<style>\n")
     (cat ../web/page.css)
     (echo "</style>\n</head>\n<body>\n")
+    (cat ../web/header.html)
+    (cat ../web/nav.html)
     (cat ../web/index.html)
     (echo "<script id=\"quoted\" type=\"application/json\">\n")
     (cat ../web/quoted.json)
     (echo "</script>\n<script>\n")
     (cat
+     ../web/shell.js
      ../web/format.js
      ../web/graph.js
      ../web/charts.js
@@ -101,9 +104,10 @@
     (echo "<style>\n")
     (cat ../web/page.css)
     (echo "</style>\n</head>\n<body>\n")
+    (cat ../web/nav.html)
     (cat ../web/ops.html)
     (echo "<script>\n")
-    (cat ../web/ops.js)
+    (cat ../web/shell.js ../web/ops.js)
     (echo "</script>\n</body>\n</html>\n|ohcamel_html}\n")))))
 
 (rule

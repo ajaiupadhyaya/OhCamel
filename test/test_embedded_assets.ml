@@ -61,9 +61,15 @@ let test_the_document_is_assembled_in_order () =
         "--ground:";
         "</style>";
         "<body>";
+        (* The masthead partial is now catted before web/index.html, so
+           <header> and its banner precede the essay's comments, which live in
+           index.html and moved down with it -- a real reordering, not a
+           weaker marker. *)
+        "<header>";
+        "id=\"halt\"";
+        "<nav class=\"sitenav\"";
         "THE DESIGN, AND WHY IT IS THIS AND NOT A TRADING TERMINAL PASTICHE";
         "THE SUCCESSOR, 2026-09-02";
-        "<header>";
         "<table id=\"pos\"></table>";
         "<article id=\"argument\">";
         "</footer>";
@@ -92,6 +98,7 @@ let test_the_ops_page_is_assembled_in_order () =
         "--ground:";
         "</style>";
         "<body>";
+        "<nav class=\"sitenav\"";
         "OhCamel<span>operations</span>";
         "<script>";
         "\"use strict\"";
@@ -339,6 +346,45 @@ let test_the_page_scripts_are_in_order () =
         "window.OhCamelArgument =";
       ]
 
+(* The shell. The masthead and the banners are one partial, catted into the
+   pages whose client writes into them; the nav is catted into every page,
+   including the ops page, which has a masthead of its own and keeps it. A rule
+   that forgot the nav still compiles and still serves -- a page with no way to
+   leave it. *)
+let nav_markers =
+  [
+    "<nav class=\"sitenav\"";
+    "href=\"/\"";
+    "href=\"/risk\"";
+    "href=\"/execution\"";
+    "href=\"/argument\"";
+    "href=\"/ops\"";
+  ]
+
+let test_the_dashboard_carries_the_shell () =
+  markers_in_order Dashboard_html.page ~name:"the dashboard"
+    ~markers:
+      ([ "<header>"; "id=\"mode\""; "id=\"halt\""; "id=\"warn\"" ]
+      @ nav_markers
+      @ [ "function markCurrentNavLink" ])
+
+(* The ops page takes the nav and nothing else: it has its own masthead, with
+   its own ids, and its own stream. One page deliberately not sharing is
+   cheaper than two mastheads or two connections. *)
+let test_the_ops_page_carries_the_nav_and_keeps_its_masthead () =
+  (* Scripts are catted after all body markup on both pages, so shell.js's
+     function always comes after ops.html's own masthead, not before it --
+     the nav sits above the masthead, and the shell script sits below both. *)
+  markers_in_order Ops_html.html ~name:"the ops page"
+    ~markers:(nav_markers @ [ "id=\"h-mode\""; "function markCurrentNavLink" ]);
+  match String.substr_index Ops_html.html ~pattern:"id=\"halt\"" with
+  | None -> ()
+  | Some i ->
+      Alcotest.failf
+        "the ops page carries the engine pages' banner at byte %d, which nothing on it \
+         fills"
+        i
+
 let suite =
   ( "embedded_assets",
     [
@@ -360,6 +406,10 @@ let suite =
         test_the_build_stamp_can_say_it_does_not_know;
       Alcotest.test_case "format, graph, charts, dashboard, argument, in that order"
         `Quick test_the_page_scripts_are_in_order;
+      Alcotest.test_case "the dashboard carries the shell" `Quick
+        test_the_dashboard_carries_the_shell;
+      Alcotest.test_case "the ops page carries the nav and keeps its masthead" `Quick
+        test_the_ops_page_carries_the_nav_and_keeps_its_masthead;
       Alcotest.test_case "the quoted block cannot be ended early" `Quick
         test_the_quoted_block_cannot_end_early;
     ] )
