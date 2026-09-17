@@ -14,8 +14,34 @@
    handed to the page would be handed to anyone past the password, and would
    stop nothing this does not (§8.1).
 
+   HOST IS A SECOND SOURCE OF TRUTH, AND THE TWO MUST AGREE. [extensions] is
+   given [host] once, at construction, separately from the [Server.t] it is
+   handed on every request; nothing stops a caller from building one with the
+   other host's argument. A mismatch is refused before [Protection.check]
+   ever runs -- failing closed rather than trusting either side alone is what
+   stops a wiring mistake (the demo built with [`Live]) from turning every
+   visitor into someone who can halt or reset the desk.
+
    On the demo host each of those routes answers 405, with a sentence saying
-   what can be done instead. *)
+   what can be done instead.
+
+   A CAUGHT EXCEPTION NEVER SPEAKS IN ITS OWN WORDS, AND NEVER GOES UNANSWERED.
+   cohttp-async writes a response only for a `Response; lib/server.ml's
+   [on_handler_error] only logs. So a raise that reached neither would leave
+   the caller a closed socket with no status -- on /orders, unable to tell
+   whether an order exists. Every route here is guarded: the four that never
+   await anything (tca, sessions, preview, kill/reset) by a plain try/with,
+   which never touches the scheduler and keeps them peekable in the main
+   suite; the parse step common to orders, cancel and kill by the same plain
+   try/with, because nothing has reached the journal or the venue yet at that
+   point; and the asynchronous rest of those three by [Monitor.try_with],
+   because a raise inside a job run through Oms's own sequencer surfaces
+   through its monitor, not as a synchronous exception a try/with would see.
+   Every guard answers a fixed sentence -- never [Exn.to_string], which can
+   carry a query fragment or a path -- and logs the real text through
+   [Oms.on_event], the one line every other error in the order manager
+   already prints through. The desk keeps running either way: the guard
+   answers the request that failed, and the next one still dispatches. *)
 
 open Core
 open Async
@@ -46,16 +72,25 @@ module Protection = struct
           let same_origin =
             Option.equal String.equal (get "sec-fetch-site") (Some "same-origin")
           in
+          (* M2: the scheme must be http or https and the host must be
+             non-empty. No browser ever sends "Origin: null", a
+             protocol-relative "//host", or a scheme-only "https://" with
+             nothing after it, but nothing stops another client from
+             sending exactly that, and none of the three names a site this
+             request came from. *)
           let origin_is_host =
             match (get "origin", get "host") with
             | Some origin, Some host -> (
                 let uri = Uri.of_string origin in
-                match Uri.host uri with
-                | Some h ->
-                    String.equal
-                      (String.lowercase (authority h (Uri.port uri)))
-                      (String.lowercase host)
-                | None -> false)
+                match Option.map (Uri.scheme uri) ~f:String.lowercase with
+                | Some ("http" | "https") -> (
+                    match Uri.host uri with
+                    | Some h when not (String.is_empty h) ->
+                        String.equal
+                          (String.lowercase (authority h (Uri.port uri)))
+                          (String.lowercase host)
+                    | _ -> false)
+                | _ -> false)
             | _ -> false
           in
           if same_origin || origin_is_host then Ok ()
@@ -77,18 +112,104 @@ let field (r : Server.Request.t) name =
   | Some (`Assoc fields) -> List.Assoc.find fields name ~equal:String.equal
   | _ -> None
 
-let with_ticket server r ~f =
-  match body_json r with
-  | None -> respond_error server `Bad_request "the body is not JSON"
-  | Some json -> (
-      match Ticket.of_json json with
-      | Ok ticket -> f ticket
-      | Error why -> respond_error server `Bad_request why)
+(* Fixed sentences a caught exception answers with -- never the exception's
+   own text, which can carry a query fragment, a file path, or a fragment of
+   SQL. The real text still reaches the process's log, through [log_exn]
+   below. Two, not one: a read (tca, sessions, a malformed body) has sent
+   nothing anywhere, so it can say so; the asynchronous half of orders,
+   cancel and kill may already have reached the journal or the venue by the
+   time it raises, so it must not. *)
+let read_error_sentence =
+  "the desk hit an internal error and could not answer this request"
 
+let mutation_error_sentence =
+  "the desk hit an internal error partway through; the outcome is unknown -- look this \
+   order up, or check /api/desk, before trying again"
+
+let log_exn oms ~route exn =
+  Oms.on_event oms (sprintf "desk      %s raised: %s" route (Exn.to_string exn))
+
+(* Guards a handler that never awaits anything: tca, sessions, preview and
+   kill/reset. A plain try/with, not [Monitor.try_with] -- the latter always
+   schedules a job to collect its result, which is exactly the scheduler
+   boundary these four routes must not cross to stay peekable in the main
+   suite (test_desk_routes.ml's own header comment). *)
+let guard_sync oms ~route server (f : unit -> Cohttp_async.Server.response Deferred.t) :
+    Cohttp_async.Server.response Deferred.t =
+  try f ()
+  with exn ->
+    log_exn oms ~route exn;
+    respond_error server `Internal_server_error read_error_sentence
+
+(* The synchronous half of orders, cancel and kill: turning the body into
+   what Oms needs. A field the rules reject ("side: buy or sell") is not an
+   exception -- [parse] answers it as [Error] and this guard turns that into
+   its own 400, same as ever. Nothing has reached the journal or the venue
+   yet at this point, so a raise here is answered by [read_error_sentence]:
+   the "nothing was sent" a route this far could still claim is exactly what
+   [guard_async] below may no longer say once [k] has started. *)
+let guard_parse oms ~route server (parse : unit -> ('a, string) Result.t)
+    ~(k : 'a -> Cohttp_async.Server.response Deferred.t) :
+    Cohttp_async.Server.response Deferred.t =
+  match try Ok (parse ()) with exn -> Error exn with
+  | Error exn ->
+      log_exn oms ~route exn;
+      respond_error server `Internal_server_error read_error_sentence
+  | Ok (Error why) -> respond_error server `Bad_request why
+  | Ok (Ok x) -> k x
+
+(* The asynchronous half: the sequencer, the journal write before the wire,
+   and the venue. [Monitor.try_with] is what actually catches a raise here --
+   a job run through Oms's own sequencer that raises surfaces through its
+   monitor, not as a synchronous OCaml exception, so a plain try/with placed
+   here would never see it. *)
+let guard_async oms ~route server (f : unit -> Cohttp_async.Server.response Deferred.t) :
+    Cohttp_async.Server.response Deferred.t =
+  match%bind Monitor.try_with ~extract_exn:true f with
+  | Ok response -> return response
+  | Error exn ->
+      log_exn oms ~route exn;
+      respond_error server `Internal_server_error mutation_error_sentence
+
+let parse_ticket (r : Server.Request.t) : (Ticket.t, string) Result.t =
+  match body_json r with
+  | None -> Error "the body is not JSON"
+  | Some json -> Ticket.of_json json
+
+let with_ticket server r ~f =
+  match parse_ticket r with
+  | Ok ticket -> f ticket
+  | Error why -> respond_error server `Bad_request why
+
+let parse_cancel_id (r : Server.Request.t) : (Ids.Client_order_id.t, string) Result.t =
+  match field r "client_order_id" with
+  | Some (`String s) -> (
+      match Ids.Client_order_id.of_string s with
+      | Some id -> Ok id
+      | None -> Error "client_order_id: one of this desk's order ids")
+  | _ -> Error "client_order_id: one of this desk's order ids"
+
+let parse_kill_reason (r : Server.Request.t) : (string, string) Result.t =
+  Ok
+    (match field r "why" with
+    | Some (`String s) when not (String.is_empty (String.strip s)) ->
+        String.prefix (String.strip s) 200
+    | _ -> "no reason given")
+
+(* M5: [host] is a second source of truth, given once at construction and
+   never checked against the [Server.t] a request actually arrives on. A
+   mismatch is refused before [Protection.check] runs at all -- failing
+   closed rather than letting a wiring mistake (the demo built with [`Live])
+   run the header check on a server whose [mode] says otherwise. *)
 let protected ~host ~f server r =
-  match Protection.check ~host r with
-  | Ok () -> f server r
-  | Error (status, why) -> respond_error server status why
+  if not (Poly.equal host (Server.mode server)) then
+    respond_error server `Forbidden
+      "the desk's own host does not match this server; refusing rather than trusting \
+       either"
+  else
+    match Protection.check ~host r with
+    | Ok () -> f server r
+    | Error (status, why) -> respond_error server status why
 
 (* The newest 250 session closes, oldest first: a year of sessions, the
    window phase A5 validates over. Bounded, because this route answers anyone
@@ -113,12 +234,17 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
     {
       Server.path = "/api/desk/tca";
       purpose = "what each fill cost in basis points, overall and by symbol";
-      handle = (fun server _ -> respond server (Oms.tca_json oms));
+      handle =
+        (fun server _ ->
+          guard_sync oms ~route:"tca" server (fun () -> respond server (Oms.tca_json oms)));
     };
     {
       Server.path = "/api/desk/sessions";
       purpose = "the newest 250 session closes, oldest first";
-      handle = (fun server _ -> respond server (sessions_json (Oms.journal oms)));
+      handle =
+        (fun server _ ->
+          guard_sync oms ~route:"sessions" server (fun () ->
+              respond server (sessions_json (Oms.journal oms))));
     };
     {
       Server.path = "/api/desk/preview";
@@ -127,11 +253,12 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
          hosts)";
       handle =
         (fun server r ->
-          if not (Poly.equal r.Server.Request.meth `POST) then
-            respond_error server `Method_not_allowed "POST a ticket to preview it"
-          else
-            with_ticket server r ~f:(fun ticket ->
-                respond server (Oms.Preview.to_json (Oms.preview oms ticket))));
+          guard_sync oms ~route:"preview" server (fun () ->
+              if not (Poly.equal r.Server.Request.meth `POST) then
+                respond_error server `Method_not_allowed "POST a ticket to preview it"
+              else
+                with_ticket server r ~f:(fun ticket ->
+                    respond server (Oms.Preview.to_json (Oms.preview oms ticket)))));
     };
     {
       Server.path = "/api/desk/orders";
@@ -139,46 +266,45 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
         "POST a ticket: the rules, the limits, the journal, the venue (live host only)";
       handle =
         protected ~host ~f:(fun server r ->
-            with_ticket server r ~f:(fun ticket ->
-                let%bind p, order = Oms.propose oms ~source:"ticket" ticket in
-                let refused =
-                  Order.State.equal order.Order.state Order.State.Rejected_pre_trade
-                in
-                Server.respond_json server
-                  ~status:(if refused then `Unprocessable_entity else `OK)
-                  (Yojson.Safe.to_string
-                     (`Assoc
-                        [
-                          ( "client_order_id",
-                            `String
-                              (Ids.Client_order_id.to_string
-                                 order.Order.request.Order.Request.client_order_id) );
-                          ("state", `String (Order.State.to_string order.Order.state));
-                          ( "reason",
-                            Option.value_map order.Order.reason ~default:`Null
-                              ~f:(fun s -> `String s) );
-                          ("preview", Oms.Preview.to_json p);
-                        ]))));
+            guard_parse oms ~route:"orders" server
+              (fun () -> parse_ticket r)
+              ~k:(fun ticket ->
+                guard_async oms ~route:"orders" server (fun () ->
+                    let%bind p, order = Oms.propose oms ~source:"ticket" ticket in
+                    let refused =
+                      Order.State.equal order.Order.state Order.State.Rejected_pre_trade
+                    in
+                    Server.respond_json server
+                      ~status:(if refused then `Unprocessable_entity else `OK)
+                      (Yojson.Safe.to_string
+                         (`Assoc
+                            [
+                              ( "client_order_id",
+                                `String
+                                  (Ids.Client_order_id.to_string
+                                     order.Order.request.Order.Request.client_order_id) );
+                              ("state", `String (Order.State.to_string order.Order.state));
+                              ( "reason",
+                                Option.value_map order.Order.reason ~default:`Null
+                                  ~f:(fun s -> `String s) );
+                              ("preview", Oms.Preview.to_json p);
+                            ])))));
     };
     {
       Server.path = "/api/desk/cancel";
       purpose = "POST {client_order_id}: cancel one open order (live host only)";
       handle =
         protected ~host ~f:(fun server r ->
-            match
-              Option.bind (field r "client_order_id") ~f:(function
-                | `String s -> Ids.Client_order_id.of_string s
-                | _ -> None)
-            with
-            | None ->
-                respond_error server `Bad_request
-                  "client_order_id: one of this desk's order ids"
-            | Some id -> (
-                match%bind Oms.cancel oms id with
-                | Ok o ->
-                    respond server
-                      (`Assoc [ ("state", `String (Order.State.to_string o.Order.state)) ])
-                | Error why -> respond_error server `Conflict why));
+            guard_parse oms ~route:"cancel" server
+              (fun () -> parse_cancel_id r)
+              ~k:(fun id ->
+                guard_async oms ~route:"cancel" server (fun () ->
+                    match%bind Oms.cancel oms id with
+                    | Ok o ->
+                        respond server
+                          (`Assoc
+                             [ ("state", `String (Order.State.to_string o.Order.state)) ])
+                    | Error why -> respond_error server `Conflict why)));
     };
     {
       Server.path = "/api/desk/kill";
@@ -187,27 +313,29 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
          touched (live host only)";
       handle =
         protected ~host ~f:(fun server r ->
-            let why =
-              match field r "why" with
-              | Some (`String s) when not (String.is_empty (String.strip s)) ->
-                  String.prefix (String.strip s) 200
-              | _ -> "no reason given"
-            in
-            let%bind () = Oms.kill oms ~why in
-            respond server (switch ()));
+            guard_parse oms ~route:"kill" server
+              (fun () -> parse_kill_reason r)
+              ~k:(fun why ->
+                guard_async oms ~route:"kill" server (fun () ->
+                    let%bind () = Oms.kill oms ~why in
+                    respond server (switch ()))));
     };
     {
       Server.path = "/api/desk/kill/reset";
       purpose = {|POST {"confirm":"reset"}: lift the halt (live host only)|};
       handle =
         protected ~host ~f:(fun server r ->
-            match field r "confirm" with
-            | Some (`String "reset") ->
-                Halt.reset (Oms.halt oms);
-                Oms.changed oms;
-                respond server (switch ())
-            | _ ->
-                respond_error server `Bad_request
-                  {|a reset must say so: {"confirm":"reset"}|});
+            guard_sync oms ~route:"kill/reset" server (fun () ->
+                match field r "confirm" with
+                | Some (`String "reset") ->
+                    Halt.reset (Oms.halt oms);
+                    (* M6: a reset is exactly as deliberate a change as a
+                       kill, and gets the same line kill already writes. *)
+                    Oms.on_event oms "desk      the switch was reset by request";
+                    Oms.changed oms;
+                    respond server (switch ())
+                | _ ->
+                    respond_error server `Bad_request
+                      {|a reset must say so: {"confirm":"reset"}|}));
     };
   ]

@@ -123,6 +123,12 @@ let journal t = t.journal
 let accepts_tickets t = t.accepts_tickets
 let open_count t = Map.length t.open_
 
+(* The one line every error in this module already prints through, so a
+   caller outside it -- the routes, catching an exception that must not
+   reach the wire in its own words -- can still say what happened, on the
+   process's own log rather than in the response body. *)
+let on_event t = t.on_event
+
 (* Whether an order could go now: the book enables trading, there is a
    trading half, and the graph holds the account's book. The frame's
    [trading] is this, so the page cannot read "on" while the trading rule

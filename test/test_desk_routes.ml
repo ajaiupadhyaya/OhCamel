@@ -122,10 +122,50 @@ let test_who_may_change_the_desk () =
          ]
        p);
   check "live, cross-site: 403" 403 ~host:`Live
-    (request ~headers:[ ("X-OhCamel-Desk", "1"); ("Sec-Fetch-Site", "cross-site") ] p)
+    (request ~headers:[ ("X-OhCamel-Desk", "1"); ("Sec-Fetch-Site", "cross-site") ] p);
+  (* Fix round 1, M2: hostile edges the opus security review asked to be
+     pinned down as tests, not left to a one-off probe. *)
+  check "live, same-site (not same-origin): 403" 403 ~host:`Live
+    (request ~headers:[ ("X-OhCamel-Desk", "1"); ("Sec-Fetch-Site", "same-site") ] p);
+  check "live, Origin: null: 403" 403 ~host:`Live
+    (request
+       ~headers:
+         [ ("X-OhCamel-Desk", "1"); ("Origin", "null"); ("Host", "live.example.com") ]
+       p);
+  check "live, a look-alike suffix host: 403" 403 ~host:`Live
+    (request
+       ~headers:
+         [
+           ("X-OhCamel-Desk", "1");
+           ("Origin", "https://live.example.com.evil.com");
+           ("Host", "live.example.com");
+         ]
+       p);
+  check "live, a port mismatch: 403" 403 ~host:`Live
+    (request
+       ~headers:
+         [
+           ("X-OhCamel-Desk", "1");
+           ("Origin", "http://localhost:8099");
+           ("Host", "localhost:9000");
+         ]
+       p);
+  check "live, an Origin with no Host: 403" 403 ~host:`Live
+    (request
+       ~headers:[ ("X-OhCamel-Desk", "1"); ("Origin", "https://live.example.com") ]
+       p);
+  check "live, a non-http(s) scheme: 403" 403 ~host:`Live
+    (request
+       ~headers:
+         [
+           ("X-OhCamel-Desk", "1");
+           ("Origin", "ftp://live.example.com");
+           ("Host", "live.example.com");
+         ]
+       p)
 
 let test_the_demo_refuses_orders_and_answers_previews () =
-  with_routes ~host:`Demo ~f:(fun server _ ->
+  with_routes ~host:`Demo ~f:(fun server oms ->
       let body = {|{"symbol":"AAPL","side":"buy","qty":10}|} in
       let code, text = dispatched server (request ~body "/api/desk/orders") in
       Alcotest.(check int) "an order: 405" 405 code;
@@ -142,7 +182,43 @@ let test_the_demo_refuses_orders_and_answers_previews () =
         Yojson.Safe.Util.(to_bool (member "passed" json));
       Alcotest.(check (float 1e-9))
         "priced at the mark" 150.0
-        Yojson.Safe.Util.(to_number (member "decision_price" json)))
+        Yojson.Safe.Util.(to_number (member "decision_price" json));
+      (* Fix round 1: the demo's 405 through dispatch, for every mutating
+         route, not only /orders (Protection.check's Demo branch is
+         unconditional, but this exercises it through [protected] and the
+         actual dispatch table). *)
+      let code, _ =
+        dispatched server
+          (request ~body:{|{"client_order_id":"ohc-1"}|} "/api/desk/cancel")
+      in
+      Alcotest.(check int) "a cancel: 405" 405 code;
+      let code, _ =
+        dispatched server (request ~body:{|{"why":"test"}|} "/api/desk/kill")
+      in
+      Alcotest.(check int) "a kill: 405" 405 code;
+      let code, _ =
+        dispatched server (request ~body:{|{"confirm":"reset"}|} "/api/desk/kill/reset")
+      in
+      Alcotest.(check int) "a reset: 405" 405 code;
+      (* sessions is bounded at 250 (Journal.recent_sessions ~limit:250) --
+         nothing to bound yet on an empty journal, but this is the route's
+         only test through an actual dispatch. *)
+      let code, text = dispatched server (request ~meth:`GET "/api/desk/sessions") in
+      Alcotest.(check int) "sessions: 200" 200 code;
+      Alcotest.(check string) "no sessions recorded yet" "[]" text;
+      (* Fix round 1, I1: a raised exception inside a handler answers a
+         fixed sentence -- never Exn.to_string, never a closed socket -- and
+         the desk keeps running. Closing the journal makes the very next
+         read raise ("A DATABASE ERROR RAISES", desk/journal.ml's own
+         header comment; empirically Sqlite3.Error "... called with closed
+         database"). *)
+      D.Journal.close (D.Oms.journal oms);
+      let code, text = dispatched server (request ~meth:`GET "/api/desk/tca") in
+      Alcotest.(check int) "a journal failure still answers, not a closed socket" 500 code;
+      Alcotest.(check string)
+        "the fixed sentence, never the exception's own text"
+        {|{"error":"the desk hit an internal error and could not answer this request"}|}
+        text)
 
 let test_a_ticket_that_cannot_be_read_is_a_400_naming_the_field () =
   with_routes ~host:`Demo ~f:(fun server _ ->
@@ -174,6 +250,12 @@ let test_a_reset_must_say_so () =
         dispatched server (request ~body:{|{"confirm":"reset"}|} "/api/desk/kill/reset")
       in
       Alcotest.(check int) "confirmed, but not from this site: 403" 403 code;
+      (* Fix round 1: a refused reset must not have reset anything -- the
+         403 above comes from Protection.check, before guard_sync's body
+         (and Halt.reset) ever runs. *)
+      Alcotest.(check string)
+        "still halted after the 403" "halted"
+        (D.Halt.State.name (D.Halt.state halt));
       let code, text =
         dispatched server
           (request ~headers:from_this_site ~body:{|{"confirm":"reset"}|}
