@@ -17,20 +17,36 @@ let request ?(meth = `POST) ?(headers = []) ?(body = "") path =
 
 let from_this_site = [ ("X-OhCamel-Desk", "1"); ("Sec-Fetch-Site", "same-origin") ]
 
-let dispatched server (r : Server.Request.t) =
-  match Async.Deferred.peek (Server.dispatch server r) with
-  | None -> Alcotest.failf "%s did not answer without the scheduler" r.Server.Request.path
+(* Shared by [dispatched] (through the server's own table) and, in fix round
+   2, a handler looked up from a DIFFERENT extension list and called on this
+   server directly -- an extension takes the server as its own argument
+   (lib/server.ml's [extension.handle]), so no mismatched [Server.t] needs
+   building to test what a mismatched [host] does. *)
+let answer_of path (d : Cohttp_async.Server.response Async.Deferred.t) =
+  match Async.Deferred.peek d with
+  | None -> Alcotest.failf "%s did not answer without the scheduler" path
   | Some (response, body) ->
       let text =
         match body with
         | `String s -> s
         | `Empty -> ""
         | `Strings ss -> String.concat ss
-        | `Pipe _ -> Alcotest.failf "%s answered with a pipe" r.Server.Request.path
+        | `Pipe _ -> Alcotest.failf "%s answered with a pipe" path
       in
       (Cohttp.Code.code_of_status (Cohttp.Response.status response), text)
 
-let with_routes ~(host : D.Desk_routes.host) ~f =
+let dispatched server (r : Server.Request.t) =
+  answer_of r.Server.Request.path (Server.dispatch server r)
+
+let find_handle extensions path =
+  match
+    List.find extensions ~f:(fun (e : Server.extension) ->
+        String.equal e.Server.path path)
+  with
+  | Some e -> e.Server.handle
+  | None -> Alcotest.failf "no extension for %s" path
+
+let with_routes ?(on_event = ignore) ~(host : D.Desk_routes.host) ~f =
   let graph =
     Graph.create
       ~starting_cash:(Notional.of_float 1_000_000.0)
@@ -62,8 +78,8 @@ let with_routes ~(host : D.Desk_routes.host) ~f =
           ~trade:(Ok (D.Sim_venue.trade ~auto:false venue))
           ~halt:(D.Halt.create D.Halt.Source.none)
           ~accepts_tickets:(Poly.equal host `Live) ~adv:(D.Oms.Adv.Fixed 1_000_000.0)
-          ~now:Time_ns.now ~rng:(Random.State.make [| 11 |]) ~on_change:ignore
-          ~on_event:ignore ~after_fill:ignore
+          ~now:Time_ns.now ~rng:(Random.State.make [| 11 |]) ~on_change:ignore ~on_event
+          ~after_fill:ignore
           ~book_is_current:(fun () -> true)
           ()
       in
@@ -162,10 +178,31 @@ let test_who_may_change_the_desk () =
            ("Origin", "ftp://live.example.com");
            ("Host", "live.example.com");
          ]
+       p);
+  (* Fix round 2, minor: the two inputs M2 actually named, each pinning one
+     of the two checks on its own -- "null" and "ftp://..." above both fail
+     the scheme check already, so neither would notice the host check being
+     deleted, and vice versa. *)
+  check "live, Origin: https:// (a scheme, an empty host): 403" 403 ~host:`Live
+    (request
+       ~headers:
+         [ ("X-OhCamel-Desk", "1"); ("Origin", "https://"); ("Host", "live.example.com") ]
+       p);
+  check "live, Origin: //live.example.com (a host, no scheme): 403" 403 ~host:`Live
+    (request
+       ~headers:
+         [
+           ("X-OhCamel-Desk", "1");
+           ("Origin", "//live.example.com");
+           ("Host", "live.example.com");
+         ]
        p)
 
 let test_the_demo_refuses_orders_and_answers_previews () =
-  with_routes ~host:`Demo ~f:(fun server oms ->
+  let events = ref [] in
+  with_routes ~host:`Demo
+    ~on_event:(fun line -> events := line :: !events)
+    ~f:(fun server oms ->
       let body = {|{"symbol":"AAPL","side":"buy","qty":10}|} in
       let code, text = dispatched server (request ~body "/api/desk/orders") in
       Alcotest.(check int) "an order: 405" 405 code;
@@ -200,12 +237,73 @@ let test_the_demo_refuses_orders_and_answers_previews () =
         dispatched server (request ~body:{|{"confirm":"reset"}|} "/api/desk/kill/reset")
       in
       Alcotest.(check int) "a reset: 405" 405 code;
-      (* sessions is bounded at 250 (Journal.recent_sessions ~limit:250) --
-         nothing to bound yet on an empty journal, but this is the route's
-         only test through an actual dispatch. *)
+      (* Fix round 2, Open 1 (M5): [extension.handle] takes the server as
+         its own argument (lib/server.ml), so a mismatched Server.t is not
+         needed to test a mismatched host -- a Live-built extension list,
+         called directly on THIS Demo server, is exactly the wiring mistake
+         [protected]'s host check exists to catch. The check must run before
+         Protection.check's own Live logic, or a same-site, correctly
+         headered Live request would be let through onto the public demo. *)
+      let live_ext = D.Desk_routes.extensions ~host:`Live ~oms in
+      let live_handle path = find_handle live_ext path in
+      let code, _ =
+        answer_of "/api/desk/kill/reset"
+          (live_handle "/api/desk/kill/reset" server
+             (request ~headers:from_this_site ~body:{|{"confirm":"reset"}|}
+                "/api/desk/kill/reset"))
+      in
+      Alcotest.(check int)
+        "a Live-built reset handler, called on this Demo server: 403, not 200" 403 code;
+      let code, _ =
+        answer_of "/api/desk/kill"
+          (live_handle "/api/desk/kill" server
+             (request ~headers:from_this_site ~body:{|{"why":"test"}|} "/api/desk/kill"))
+      in
+      Alcotest.(check int)
+        "a Live-built kill handler, called on this Demo server: 403, not 200" 403 code;
+      Alcotest.(check string)
+        "the desk was never halted -- Oms.kill was never reached" "clear"
+        (D.Halt.State.name (D.Halt.state (D.Oms.halt oms)));
+      Alcotest.(check bool)
+        "the mismatch is logged, not only answered with a 403" true
+        (List.exists !events ~f:(fun line ->
+             String.is_substring line ~substring:"believing it is on"));
+      (* Fix round 2, Open 2: the dispatch check added in round 1 ran on an
+         empty journal and expected [], which any limit would answer -- it
+         tested that the route dispatches, not that it is bounded. 251
+         sessions, day i = first + i for i = 0..250, oldest to newest;
+         written newest first (test_desk.ml's own shape for this exact
+         query, test_desk.ml:441-452) so the order checked is the query's,
+         not the insertion's. *)
+      let first = Date.of_string "2025-01-01" in
+      let at = Time_ns.now () in
+      List.iter
+        (List.rev (List.init 251 ~f:Fn.id))
+        ~f:(fun i ->
+          D.Journal.record_session (D.Oms.journal oms)
+            {
+              D.Journal.Session.date = Date.add_days first i;
+              equity_close = 100_000.0 +. Float.of_int i;
+              cash_close = 0.0;
+              gross_close = 0.0;
+              net_close = 0.0;
+              recorded_at = at;
+            });
       let code, text = dispatched server (request ~meth:`GET "/api/desk/sessions") in
       Alcotest.(check int) "sessions: 200" 200 code;
-      Alcotest.(check string) "no sessions recorded yet" "[]" text;
+      let shown = Yojson.Safe.Util.to_list (Yojson.Safe.from_string text) in
+      (* 251 recorded, 250 shown: day 0 -- the single oldest -- is dropped. *)
+      Alcotest.(check int)
+        "251 recorded, but the route is bounded at 250" 250 (List.length shown);
+      let date_of s = Yojson.Safe.Util.(to_string (member "date" s)) in
+      Alcotest.(check string)
+        "the oldest of the 250 kept is day 1's (day 0 dropped)"
+        (Date.to_string (Date.add_days first 1))
+        (date_of (List.hd_exn shown));
+      Alcotest.(check string)
+        "the newest is day 250's"
+        (Date.to_string (Date.add_days first 250))
+        (date_of (List.last_exn shown));
       (* Fix round 1, I1: a raised exception inside a handler answers a
          fixed sentence -- never Exn.to_string, never a closed socket -- and
          the desk keeps running. Closing the journal makes the very next
@@ -221,7 +319,7 @@ let test_the_demo_refuses_orders_and_answers_previews () =
         text)
 
 let test_a_ticket_that_cannot_be_read_is_a_400_naming_the_field () =
-  with_routes ~host:`Demo ~f:(fun server _ ->
+  with_routes ~host:`Demo ~on_event:ignore ~f:(fun server _ ->
       let code, text =
         dispatched server
           (request ~body:{|{"symbol":"AAPL","side":"sideways","qty":10}|}
@@ -235,7 +333,7 @@ let test_a_ticket_that_cannot_be_read_is_a_400_naming_the_field () =
       Alcotest.(check int) "a GET: 405" 405 code)
 
 let test_a_reset_must_say_so () =
-  with_routes ~host:`Live ~f:(fun server oms ->
+  with_routes ~host:`Live ~on_event:ignore ~f:(fun server oms ->
       let halt = D.Oms.halt oms in
       D.Halt.halt halt ~why:"a test" ~at:(Time_ns.now ());
       let code, _ =
@@ -264,7 +362,36 @@ let test_a_reset_must_say_so () =
       Alcotest.(check int) "confirmed: 200" 200 code;
       Alcotest.(check string)
         "clear" "clear"
-        Yojson.Safe.Util.(to_string (member "state" (Yojson.Safe.from_string text))))
+        Yojson.Safe.Util.(to_string (member "state" (Yojson.Safe.from_string text))));
+  (* Fix round 2, minor: kill/reset's own [guard_sync] must answer the
+     mutation sentence, not the read one, because [Halt.reset] runs before
+     the event line that is made to raise here -- by the time the guard
+     answers 500 the switch is already clear, so "nothing was sent" would be
+     false about the one thing this route did. [on_event] raises only once,
+     so [log_exn]'s own call (after the catch) still succeeds and the guard
+     can answer normally instead of a second, uncaught raise. *)
+  let boomed = ref false in
+  with_routes ~host:`Live
+    ~on_event:(fun _ ->
+      if not !boomed then (
+        boomed := true;
+        failwith "boom"))
+    ~f:(fun server oms ->
+      let halt = D.Oms.halt oms in
+      let code, text =
+        dispatched server
+          (request ~headers:from_this_site ~body:{|{"confirm":"reset"}|}
+             "/api/desk/kill/reset")
+      in
+      Alcotest.(check int)
+        "a raise partway through a reset: 500, not a closed socket" 500 code;
+      Alcotest.(check string)
+        "the mutation sentence, because Halt.reset already ran"
+        {|{"error":"the desk hit an internal error partway through; the outcome is unknown -- look this order up, or check /api/desk, before trying again"}|}
+        text;
+      Alcotest.(check string)
+        "the halt really was reset before the raise" "clear"
+        (D.Halt.State.name (D.Halt.state halt)))
 
 let suite =
   ( "desk_routes",

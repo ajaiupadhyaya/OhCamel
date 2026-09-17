@@ -133,13 +133,18 @@ let log_exn oms ~route exn =
    kill/reset. A plain try/with, not [Monitor.try_with] -- the latter always
    schedules a job to collect its result, which is exactly the scheduler
    boundary these four routes must not cross to stay peekable in the main
-   suite (test_desk_routes.ml's own header comment). *)
-let guard_sync oms ~route server (f : unit -> Cohttp_async.Server.response Deferred.t) :
+   suite (test_desk_routes.ml's own header comment). [sentence] is the
+   caller's to choose: tca, sessions and preview have sent nothing anywhere
+   by the time they could raise, but kill/reset's [Halt.reset] may already
+   have run before a later step (the event line, say) raises, so that one
+   route passes [mutation_error_sentence] instead. *)
+let guard_sync oms ~route ~sentence server
+    (f : unit -> Cohttp_async.Server.response Deferred.t) :
     Cohttp_async.Server.response Deferred.t =
   try f ()
   with exn ->
     log_exn oms ~route exn;
-    respond_error server `Internal_server_error read_error_sentence
+    respond_error server `Internal_server_error sentence
 
 (* The synchronous half of orders, cancel and kill: turning the body into
    what Oms needs. A field the rules reject ("side: buy or sell") is not an
@@ -200,12 +205,20 @@ let parse_kill_reason (r : Server.Request.t) : (string, string) Result.t =
    never checked against the [Server.t] a request actually arrives on. A
    mismatch is refused before [Protection.check] runs at all -- failing
    closed rather than letting a wiring mistake (the demo built with [`Live])
-   run the header check on a server whose [mode] says otherwise. *)
-let protected ~host ~f server r =
-  if not (Poly.equal host (Server.mode server)) then
+   run the header check on a server whose [mode] says otherwise. Logged, not
+   only answered: a 403 alone leaves no trace that the reason was a wiring
+   mistake rather than an ordinary refusal. *)
+let protected ~host ~oms ~f server r =
+  let mode = Server.mode server in
+  if not (Poly.equal host mode) then (
+    Oms.on_event oms
+      (sprintf
+         "desk      a route built believing it is on the %s host was asked to answer as \
+          %s; refusing rather than trusting either"
+         (Server.mode_to_string host) (Server.mode_to_string mode));
     respond_error server `Forbidden
       "the desk's own host does not match this server; refusing rather than trusting \
-       either"
+       either")
   else
     match Protection.check ~host r with
     | Ok () -> f server r
@@ -236,14 +249,15 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
       purpose = "what each fill cost in basis points, overall and by symbol";
       handle =
         (fun server _ ->
-          guard_sync oms ~route:"tca" server (fun () -> respond server (Oms.tca_json oms)));
+          guard_sync oms ~route:"tca" ~sentence:read_error_sentence server (fun () ->
+              respond server (Oms.tca_json oms)));
     };
     {
       Server.path = "/api/desk/sessions";
       purpose = "the newest 250 session closes, oldest first";
       handle =
         (fun server _ ->
-          guard_sync oms ~route:"sessions" server (fun () ->
+          guard_sync oms ~route:"sessions" ~sentence:read_error_sentence server (fun () ->
               respond server (sessions_json (Oms.journal oms))));
     };
     {
@@ -253,7 +267,7 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
          hosts)";
       handle =
         (fun server r ->
-          guard_sync oms ~route:"preview" server (fun () ->
+          guard_sync oms ~route:"preview" ~sentence:read_error_sentence server (fun () ->
               if not (Poly.equal r.Server.Request.meth `POST) then
                 respond_error server `Method_not_allowed "POST a ticket to preview it"
               else
@@ -265,7 +279,7 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
       purpose =
         "POST a ticket: the rules, the limits, the journal, the venue (live host only)";
       handle =
-        protected ~host ~f:(fun server r ->
+        protected ~host ~oms ~f:(fun server r ->
             guard_parse oms ~route:"orders" server
               (fun () -> parse_ticket r)
               ~k:(fun ticket ->
@@ -294,7 +308,7 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
       Server.path = "/api/desk/cancel";
       purpose = "POST {client_order_id}: cancel one open order (live host only)";
       handle =
-        protected ~host ~f:(fun server r ->
+        protected ~host ~oms ~f:(fun server r ->
             guard_parse oms ~route:"cancel" server
               (fun () -> parse_cancel_id r)
               ~k:(fun id ->
@@ -312,7 +326,7 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
         "POST {why}: halt the desk and cancel every open order; positions are not \
          touched (live host only)";
       handle =
-        protected ~host ~f:(fun server r ->
+        protected ~host ~oms ~f:(fun server r ->
             guard_parse oms ~route:"kill" server
               (fun () -> parse_kill_reason r)
               ~k:(fun why ->
@@ -324,8 +338,9 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
       Server.path = "/api/desk/kill/reset";
       purpose = {|POST {"confirm":"reset"}: lift the halt (live host only)|};
       handle =
-        protected ~host ~f:(fun server r ->
-            guard_sync oms ~route:"kill/reset" server (fun () ->
+        protected ~host ~oms ~f:(fun server r ->
+            guard_sync oms ~route:"kill/reset" ~sentence:mutation_error_sentence server
+              (fun () ->
                 match field r "confirm" with
                 | Some (`String "reset") ->
                     Halt.reset (Oms.halt oms);
