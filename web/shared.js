@@ -115,7 +115,11 @@
     beginFrame: beginFrame,
     endFrame: endFrame,
     setTopology: setTopology,
-    topology: function () { return topology; },
+    // There is deliberately no topology() accessor. The stream hands the
+    // topology to every page that wants it through onTopology, and a second
+    // door onto the same fact invites a later section to poll for it instead
+    // of subscribing -- which is the one of the two that can run before it
+    // has arrived and quietly draw an empty closure.
     value: value,
     riskCell: riskCell,
     mark: mark,

@@ -199,7 +199,7 @@
         }
       }
     }
-    else if (window.OhCamelStream.mode() === "live") {
+    else if (window.OhCamelStream && window.OhCamelStream.mode() === "live") {
       // Said in the place the rows would be, rather than left to be
       // discovered: the live host has no options-chain source, so the options
       // branch of the graph is built and never fed.

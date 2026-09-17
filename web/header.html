@@ -9,10 +9,23 @@
   #halt and #warn are empty until something is wrong -- the halt is the desk's
   switch, the warn is the kernel's staleness. An empty div here is the absence
   of a condition, and page.css gives it no box until it has text.
+
+  #conn was the footer's until the stream became shared, and it moved here for
+  the reason this partial exists: only stream.js can know whether this
+  browser's subscription is up, it writes that line on four pages, and three
+  of them have no footer of their own to put it in. It is also the one line
+  that matters most when the page has stopped updating, and the masthead is
+  sticky while a footer is not. It says something #feed cannot: #feed is the
+  engine's prints, #conn is this tab's connection, and a healthy feed with a
+  dropped stream is exactly the case where the two disagree. It carries no
+  label, as it carried none in the footer: its value is a sentence that names
+  itself ("stream connected", "stream lost -- reconnecting in 4 s"), and a
+  "stream" label in front of it would only stutter.
 -->
 <header>
   <h1>OhCamel<span id="mode">reactive risk &amp; limits</span></h1>
   <div class="stat"><span class="lbl">feed</span><span class="v" id="feed"><span class="dot idle"></span>connecting</span></div>
+  <div class="stat"><span class="v" id="conn">—</span></div>
   <div class="stat"><span class="lbl">last print</span><span class="v num" id="lastprint">—</span></div>
   <div class="stat"><span class="lbl">last frame</span><span class="v num" id="lastframe">—</span></div>
   <div class="stat"><span class="lbl">named nodes</span><span class="v num" id="ran">—</span></div>

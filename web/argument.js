@@ -294,8 +294,18 @@
   }
 
   // The stream's frames. Subscribed at the end of this file.
-  function frame(s) {
-    if (s.recomputed && s.recomputed.length) {
+  //
+  // `replayed` is the stream fanning out a frame it has already delivered,
+  // because the topology or /api/ops arrived after it. The figures below are
+  // drawn again from it happily -- the same frame draws the same thing -- but
+  // the TALLY must not count it. It is one frame the engine sent once, and
+  // counting it twice would put "frames since this page opened" one ahead of
+  // the truth and the same recompute count into the histogram twice. On the
+  // live host that replay fires after the first /api/ops answer, by which
+  // time frames have been arriving for seconds, so it is not a rounding
+  // error on an empty page.
+  function frame(s, replayed) {
+    if (!replayed && s.recomputed && s.recomputed.length) {
       var bar = s.recomputed.some(function (x) { return x.name === "covariance"; });
       (bar ? st.bars : st.ticks).push(s.recomputed.length);
       if (st.ticks.length > 2000) st.ticks.shift();
@@ -318,12 +328,12 @@
   loadStress();
   $("st-again").addEventListener("click", function (ev) { ev.preventDefault(); loadStress(); });
 
-  window.OhCamelArgument = { frame: frame, ops: ops };
-
   /* The essay drives itself. Until the site became five pages, dashboard.js
-     called frame() and ops() -- which meant the essay only lived on a page
-     that also carried the dashboard's renderers. It subscribes here instead,
-     so the page at /argument needs nothing but this file. */
+     called frame() and ops() through a window.OhCamelArgument this file
+     exported -- which meant the essay only lived on a page that also carried
+     the dashboard's renderers. It subscribes here instead, so the page at
+     /argument needs nothing but this file, and the export is gone with its
+     one caller rather than left as a global nobody reads. */
   if (window.OhCamelStream) {
     OhCamelStream.onFrame(frame);
     OhCamelStream.onOps(ops);

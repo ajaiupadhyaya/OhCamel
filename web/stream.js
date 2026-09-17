@@ -10,10 +10,13 @@
 // it -- deliberately, because that page's stream shows what a subscriber
 // looks like from the inside.
 //
-// It also owns everything in web/header.html, for the same reason the partial
-// exists: a page carrying the masthead's ids and no writer for them would
-// show eight dashes that never change, which reads as an engine with nothing
-// to say rather than as a page missing a script. And it keeps the /api/graph
+// It also owns everything in web/header.html -- the eight masthead fields,
+// the two banners and #conn -- for the same reason the partial exists: a page
+// carrying the masthead's ids and no writer for them would show dashes that
+// never change, which reads as an engine with nothing to say rather than as a
+// page missing a script. #conn is in that partial rather than a footer
+// because this file is the only thing that can know whether the subscription
+// is up, and it has to say so on four pages. And it keeps the /api/graph
 // fetch, because the staleness closure in shared.js needs the topology on
 // every page, whether or not that page draws Figure 1.
 //
@@ -38,12 +41,17 @@
   // throws takes its own panel down and the rest of the frame still draws.
   // The error is not swallowed -- it goes to the console, because a section
   // that silently stopped updating is the hardest kind of page to debug.
-  function fan(subs, arg) {
+  //
+  // The second argument is passed on to each handler. For a frame it is the
+  // replay flag, which a subscriber that COUNTS frames rather than drawing
+  // them has to see; the ops and topology fan-outs have nothing to say there
+  // and pass nothing.
+  function fan(subs, arg, replayed) {
     for (var i = 0; i < subs.length; i++) {
       try {
-        subs[i](arg);
+        subs[i](arg, replayed);
       } catch (e) {
-        if (window.console) console.error("OhCamelStream: a subscriber threw", e);
+        if (window.console) console.error("OhCamelStream: a handler threw and was skipped", e);
       }
     }
   }
@@ -160,16 +168,30 @@
 
   // ---- the frame, and the replay ----
 
+  // The masthead's three renderers are furniture rather than sections, but
+  // they read the frame like sections and they go through the same fan-out for
+  // the same reason. renderCounts alone dereferences s.recomputed,
+  // s.positions, s.sectors and s.as_of: a frame missing any one of them would
+  // otherwise throw past the fan-out AND past endFrame(), leaving firstFrame
+  // true for the rest of the session -- so nothing on the page would ever be
+  // marked as moved again, from one malformed frame. Hence the isolation here
+  // and the finally below.
+  var masthead = [renderAlerts, renderFeed, renderCounts];
+
   function deliver(s, replayed) {
     last = s;
-    if (S) S.beginFrame(s);
-    renderAlerts(s);
-    renderFeed(s);
-    renderCounts(s);
-    if (!replayed) lastFrameAt = Date.now();
-    clocks();
-    fan(frameSubs, s);
-    if (S) S.endFrame();
+    try {
+      if (S) S.beginFrame(s);
+      fan(masthead, s);
+      if (!replayed) lastFrameAt = Date.now();
+      clocks();
+      fan(frameSubs, s, replayed);
+    } finally {
+      // On every path, including one where beginFrame itself threw: the flag
+      // that says "this is the first frame" must be false once a frame has
+      // been through, however badly it went.
+      if (S) S.endFrame();
+    }
   }
 
   // A frame that arrived before the topology (or, on the live host, before

@@ -78,7 +78,12 @@ let test_the_document_is_assembled_in_order () =
         "<script>";
         "\"use strict\"";
         "window.OhCamelCharts";
-        "window.OhCamelArgument";
+        (* The essay's own subscription, which is the last thing its file does
+           and the only marker in it that something still calls. It exported a
+           window.OhCamelArgument until the stream became shared; nothing read
+           that export afterwards, so it went rather than being kept alive to
+           be found here. *)
+        "OhCamelStream.onFrame(frame)";
         "</script>";
         "</html>";
       ];
@@ -337,7 +342,12 @@ let test_the_build_stamp_can_say_it_does_not_know () =
    stream.js at load -- so the seven must be in the page in this order, and a
    rule that catted them differently would fail here rather than in a browser
    console. The connection is opened by the last statement in the block, after
-   every subscriber, which is the assertion the case below this one makes. *)
+   every subscriber, which is the assertion the case below this one makes.
+
+   argument.js is pinned by the subscription it makes rather than by an export,
+   because it no longer has one: the stream calls frame() and ops() now, and
+   a global kept alive only so this list could find it would be a test
+   steering the source. *)
 let test_the_page_scripts_are_in_order () =
   markers_in_order Dashboard_html.page ~name:"dashboard"
     ~markers:
@@ -348,7 +358,7 @@ let test_the_page_scripts_are_in_order () =
         "window.OhCamelStream =";
         "window.OhCamelGraph =";
         "window.OhCamelCharts =";
-        "window.OhCamelArgument =";
+        "OhCamelStream.onFrame(frame)";
       ]
 
 (* The shared client, in the order a page must load it: the formatters before
