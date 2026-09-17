@@ -4,9 +4,12 @@
 ; and edit. Live mode reads book.sexp by default, or a path given as the second
 ; argument:  ohcamel live /path/to/other-book.sexp
 ;
-; Positions are set here and only PRICES are live. Alpaca is the source of
-; marks, not of the position set -- so this file is the answer to "what do I
-; hold", and the feed is the answer to "what is it worth".
+; Positions are set here, and the feed answers what they are worth. With an
+; Alpaca paper key in the environment, `live` and `serve` go one step further:
+; the desk reads the paper account every minute and takes its quantities and
+; cash as the book's, while this file still declares the universe, the limits,
+; the alerts and the desk. Without such a key, this file is the whole answer to
+; "what do I hold".
 ;
 ; Quantities are signed: positive is long, negative is short.
 ;
@@ -59,14 +62,55 @@
  ;   kill_switch_trips_on    which limits are hard enough to trip it. Empty
  ;                           means none, even when enabled.
  ;
- ; What the kill switch actually does: sets a flag that reads
- ; "halt_new_orders = true", shown on the dashboard and in the API. Nothing in
- ; this system places, cancels or modifies an order -- there is no such code
- ; here, and lib/alerts.ml does not import the Alpaca client. Connecting it to
- ; execution is a deliberate later decision, not a default.
+ ; What the kill switch actually does: it halts the desk. Every new order is
+ ; refused, every open order the desk owns is cancelled, and positions are left
+ ; exactly as they are -- it never liquidates. On the live host a person can
+ ; also halt the desk by hand from the dashboard, and a halt stays until someone
+ ; resets it there. The switch only exists when (enabled true) below: the whole
+ ; alerting block, this switch included, is inert while alerting is off.
  (alerts
   ((enabled false)
    (sinks (Log))
    (clear_below 0.95)
    (kill_switch_enabled false)
-   (kill_switch_trips_on ()))))
+   (kill_switch_trips_on ())))
+
+ ; ---------------------------------------------------------------------------
+ ; Phase A2: the desk. OPTIONAL -- omit this block, or leave trading disabled,
+ ; and the desk previews an order and places none. That is the default.
+ ;
+ ; With (trading enabled), an Alpaca PAPER key pair in the environment and a
+ ; book that is current, the dashboard's ticket can send an order. Nothing else
+ ; can: this engine runs no automatic trader on the live host, and the public
+ ; demo answers 405 to every route that would place, cancel or halt. Paper is
+ ; the only venue there is -- the host is a compiled-in constant, and a key that
+ ; does not begin PK is refused before the first request.
+ ;
+ ; Every order passes, in this order: the rules named below, then the book's own
+ ; limits re-evaluated on a fork of the live graph (an order that would create
+ ; or worsen a breach is refused), then the journal, and only then the wire.
+ ;
+ ;   trading                 enabled | disabled. Disabled previews only.
+ ;   max_order_notional      |quantity x mark| may not exceed this, per order.
+ ;   max_adv_participation   the order's share of the name's twenty-day volume.
+ ;                           0.01 = 1%. Unknown volume refuses the order.
+ ;   price_collar            how far a limit price may sit from the mark.
+ ;                           0.05 = 5%.
+ ;   duplicate_window_s      a same-name, same-side, same-quantity order inside
+ ;                           this window is refused as a double-click.
+ ;   max_open_orders         how many of the desk's own orders may rest at once.
+ ;   spread_bps_default      the half-spread assumed when costing a fill, in
+ ;                           basis points, for a name not named below.
+ ;   spread_bps              per-name half-spreads, e.g. ((AAPL 2.0) (XOM 8.0)).
+ ;
+ ; The values below are the engine's own defaults, written out so that turning
+ ; the desk on is one word rather than a guess.
+ (desk
+  ((trading disabled)
+   (max_order_notional 25000.0)
+   (max_adv_participation 0.01)
+   (price_collar 0.05)
+   (duplicate_window_s 10.0)
+   (max_open_orders 20)
+   (spread_bps_default 5.0)
+   (spread_bps ()))))

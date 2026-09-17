@@ -1,7 +1,7 @@
 # OhCamel
 
 [![ci](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml/badge.svg)](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml)
-[![coverage 76%](https://img.shields.io/badge/coverage-76%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
+[![coverage 77%](https://img.shields.io/badge/coverage-77%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
 
 **Live:** [ohcamel.ajaiupadhyaya.com](https://ohcamel.ajaiupadhyaya.com) — the
 synthetic demo, no credentials, always on. [How it is deployed](#watching-it).
@@ -1102,7 +1102,7 @@ deploy user alone, and reach the container as environment, never as a layer.
 
 ## What's verified
 
-`make test` runs 439 tests, plus seven in `test/desk_async` that run with the
+`make test` runs 440 tests, plus seven in `test/desk_async` that run with the
 scheduler -- the order manager's cases, the transport's bound and that
 suite's own count -- all hermetic — no network, no credentials, and nothing
 that waits on the wall clock: the scheduler's cases move a clock of their
@@ -1176,7 +1176,7 @@ six properties and four example tests. `QCHECK_TRIALS=5000 make test` runs
 
 ### Coverage, and what it is not measuring
 
-`make coverage` runs the suite under `bisect_ppx` and reports **76%** (measured
+`make coverage` runs the suite under `bisect_ppx` and reports **77%** (measured
 2026-09-17). The badge above is that number; CI enforces a floor of 60% and
 prints the full per-file table into the run summary, so a drop is visible
 without anyone remembering to look. The number covers both libraries: the risk
@@ -1199,7 +1199,7 @@ read as two numbers rather than one:
  88%  lib/reports.ml            51%  desk/session_close.ml
  87%  lib/vol_estimators.ml     50%  lib/feed/alpaca_rest.ml
  87%  desk/reconcile.ml         49%  lib/types.ml
- 86%  lib/server.ml             45%  lib/config.ml
+ 86%  lib/server.ml             48%  lib/config.ml
  85%  lib/var_backtest.ml       40%  lib/feed/alpaca_ws.ml
  83%  desk/desk.ml              36%  desk/trade_updates.ml
  83%  desk/journal.ml           12%  desk/venue.ml

@@ -1,5 +1,8 @@
 (test
  (name test_ohcamel)
+ ; test_example_book parses the committed example book, which the image bakes in
+ ; as its fallback and deploy.sh copies onto a fresh host.
+ (deps ../book.example.sexp)
  ; qcheck-core supplies the generators and qcheck-alcotest turns a property into
  ; an ordinary alcotest case, which is what keeps the example-based and
  ; property-based suites in ONE runner. Two runners would mean two things to

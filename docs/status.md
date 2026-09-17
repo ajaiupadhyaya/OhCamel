@@ -205,7 +205,7 @@ The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/da
 
 ## What is verified
 
-- **439 hermetic tests**, plus seven scheduler cases in `test/desk_async` —
+- **440 hermetic tests**, plus seven scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler
@@ -214,7 +214,7 @@ The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/da
 - **Property tests** (qcheck) generalise the identities over random inputs:
   Euler additivity, component VaR summing to portfolio VaR, a hedge reducing
   variance, VaR monotone in confidence, fork isolation, backtest lookahead.
-- **Coverage 76.4%** (5,927 / 7,753 instrumented points in `lib/` and `desk/`,
+- **Coverage 76.5%** (5,933 / 7,753 instrumented points in `lib/` and `desk/`,
   measured 2026-09-17), with a 60% floor in CI that exists to make deleting
   tests noticeable, not as a target. The number is bimodal by design: the pure
   numeric core is above 85% and the network-IO files run 36% to 64%, because
