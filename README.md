@@ -1030,10 +1030,11 @@ if anything else is using the same keys, this gets a 406 and stops.
 The dashboard is unauthenticated at the engine, and should be bound to
 localhost or put behind a password, as the live host's proxy does. Four
 routes change the desk -- orders, cancel, kill and its reset -- and each
-refuses a request without the page's header and the browser's `same-origin`
-label, which a cross-site page cannot forge (the password, not this check,
-decides who else may send one; see *Orders*); on the public demo each
-answers 405.
+refuses a request without the page's header, and one that carries neither
+the browser's `Sec-Fetch-Site: same-origin` label nor an `Origin` equal to
+its `Host`, which a cross-site page cannot forge (the password, not this
+check, decides who else may send one; see *Orders*); on the public demo
+each answers 405.
 
 ## Watching it
 
@@ -1207,11 +1208,11 @@ read as two numbers rather than one:
  81%  desk/halt.ml
 ```
 
-The left column is the numeric core, the wire format it is checked against
-(`lib/server.ml`), and the desk's simpler pieces — a rule, a ticket, the
-switch, a reconciliation — each tested directly against a hand-computed
-value or a fixed scenario. `desk.ml` and `journal.ml` join
-it here, both above 80% for the first time since this table was written.
+The left column is the numeric core, the HTTP, JSON and server-sent-events
+layer that serves it (`lib/server.ml`), and the desk's simpler pieces — a
+rule, a ticket, the switch, a reconciliation — each tested directly against a
+hand-computed value or a fixed scenario. `desk.ml` and `journal.ml` join it
+here, both above 80% for the first time since this table was written.
 That is not every file that *decides* something: `lib/gate.ml` answers what
 an order would do to the book, and the order manager and its routes decide
 the rest of what the desk does, and all three sit in the right column below,
@@ -1256,7 +1257,9 @@ through `reasons`, its only caller: `reasons` maps only `created` and
 `worsened`, and both hold only moves whose `after` is `Some` (gate.ml:62-63,
 89-98). `breached`'s, `worsened`'s and `cleared`'s `None`/fallback arms are
 reachable but untested -- no test proposes a fill against a limit still
-warming up. Every arm of those four that decides created, worsened or
+warming up, and `cleared`'s asks for more than that: a limit the live book
+could evaluate and breaches (`before` is `Some`), which the fork then
+cannot. Every arm of those four that decides created, worsened or
 cleared for a limit the fork *could* evaluate does run. `desk/tca.ml`'s
 whole gap is the same kind of thing at smaller scale: the derived `sexp_of`
 on `Inputs.t`, `Costs.t` and `Summary.t` is the only unvisited code — every
@@ -1266,8 +1269,9 @@ the loop that waits for the close, rolls the windows and retries a failed
 record: neither suite starts it, so the function that would run in
 production every session close has not run in a test yet. (`desk/desk.ml`'s
 own `after_fill` and its async `sync` are likewise untouched by any test --
-every test constructs its desk with `~after_fill:ignore` -- but that is a
-gap in `desk.ml`, not in this file.)
+every test builds its order manager with
+`Oms.create ~after_fill:ignore` -- but that is a gap in `desk.ml`, not in
+this file.)
 
 `desk/desk_routes.ml`'s guard against a host that does not match the server
 it answers on, and `guard_sync`'s own exception branch, are both covered.
@@ -1280,26 +1284,30 @@ well-formed ticket, cancel or kill request past protection and into the
 sequencer, and that path needs Async, which is `test/desk_async`'s job and
 not yet done there.
 
-`desk/oms.ml` sits highest of the five just named, at 71%, and still has
-the largest gap by far, for a mix of reasons bisect's line data gives
-separately rather than one story: `resolve`'s one-minute fallback once its
+`desk/oms.ml`, at 71%, sits above the four files just explained --
+`lib/gate.ml` at 68%, `desk/tca.ml` at 70%, `desk/session_close.ml` at 51%
+and `desk/desk_routes.ml` at 66% -- and still has the largest gap by far,
+for a mix of reasons bisect's line data gives separately rather than one
+story: `resolve`'s one-minute fallback once its
 2/10/30 s schedule is exhausted, and its own lookup-error branch;
 `on_update`'s branch for a fill that arrives after this desk already
-declared the order failed (the comment there at oms.ml:604 calls this
+declared the order failed (the comment there at oms.ml:693 calls this
 "fills after failed"), its already-counted-execution branch, and its
 lookup for an order this desk holds no record of; `propose`'s re-checks
 after the arrival quote, for the switch tripping or the book aging stale
 while the quote was in flight; and, larger than all of those together, the
 `refresh_forever` loop and the `refresh` call it makes each turn -- which
-reads the session clock every time and, once an hour, the twenty-day volume
--- and `fills_json`'s row-building body, neither of which any test calls
-directly. The scheduler suite's seven cases are not all order-manager
-scenarios either: two are Task 4's, the transport bound and the suite's own
+reads the session clock every time, and the twenty-day volume on its first
+turn, on each turn after a read that failed, and an hour after one that
+answered, but never when the volume is fixed, as the demo's is -- and
+`fills_json`'s row-building body, neither of which any test calls directly.
+The scheduler suite's seven cases are not all order-manager scenarios
+either: two are Task 4's, the transport bound and the suite's own
 count assertion; the five that do exercise `oms.ml` -- three fills, an
 unresent unknown answer, a halt, a limit's trip, and a restart -- record
 zero visits on every branch just named. None of them proposes past a
-tripped switch or a stale book, none forces a lookup error or a fill after
-failed, and none runs `refresh` at all.
+tripped switch or a stale book, none makes `resolve`'s own lookup fail or
+delivers a fill after failed, and none runs `refresh` at all.
 
 So the floor exists to make deleting tests noticeable, and that is all it is
 for. A coverage target would be an instruction to write the tests that raise it.
@@ -1364,7 +1372,7 @@ Every order the desk sends has passed two checks, in this order, and the page sh
 - the book enables trading, the desk has a trading half, and the book is the account's -- read within the last two sync intervals;
 - the kill switch is clear, and the regular session is open;
 - the name has a mark that is not stale;
-- a limit price is a whole cent (Rule 612) and within the book's collar of the mark;
+- a limit price is a whole cent at every price -- finer than Rule 612 asks below a dollar, because the order goes to the venue with two decimals -- and within the book's collar of the mark;
 - quantity × mark is within the order cap;
 - the quantity is within the book's share of twenty-day volume, and unknown volume refuses;
 - the same order was not proposed within the duplicate window;
@@ -1374,7 +1382,7 @@ Every order the desk sends has passed two checks, in this order, and the page sh
 
 Then the order is written to the journal as `pending_submit` **before** the request that sends it. An answer that never comes is resolved by looking the client order id up, never by sending the order again. The request is bounded at ten seconds. The bound closes a connection that is still connecting or has answered; one held open before its status line lasts until the peer or the kernel ends it. Fills are journaled whatever state their order is in. The book's position follows each fill and is set from the venue's own figure, and the account is read again after it; a read that was already out when the fill landed is refused, so it cannot undo the fill. A restart reconciles every open order against the venue before it sends another order; startup waits up to 20 s for it.
 
-**The kill switch** refuses every new order and cancels every open one when a limit it trips on is breached, or when someone halts the desk by hand. It does not flatten positions. On the live host only a deliberate reset lifts it. On the demo it resets itself 90 s after its limit clears, and the page says that only the demo does this.
+**The kill switch** refuses every new order and cancels every open one when a limit it trips on is breached, or when someone halts the desk by hand. It does not flatten positions. A halt by hand is answered as soon as the desk is halted; the cancels go on behind the answer, one at a time, and the log says when the last has been asked for. Under the switch, a cancel whose answer is not a confirmation is sent again, 2, 10 and 30 s apart, while the order is still open, and a partial fill in between does not end that. Each order has at most one schedule of cancel retries and one of lookups at a time, however many kills, trips or reconciliations ask for one. On the live host only a deliberate reset lifts the switch. On the demo it resets itself 90 s after its limit clears, and the page says that only the demo does this.
 
 **Costs** (`desk/tca.ml`, after Perold 1988) are measured per fill from the decision price. Each is split into delay (the market's move before the order arrived) and slippage against the arrival quote's mid, shown beside the quoted half-spread and the difference from the book's modelled half-spread. On the paper account every cost measures Alpaca's fill simulator against IEX's quote -- one venue's, not the national best.
 
@@ -1385,13 +1393,14 @@ Then the order is written to the journal as `pending_submit` **before** the requ
 | `POST /api/desk/preview` | both | the rules' and the limits' answer to a ticket; creates nothing |
 | `POST /api/desk/orders` | live | a ticket through the rules, the limits, the journal and the venue |
 | `POST /api/desk/cancel` | live | cancel one open order |
-| `POST /api/desk/kill` | live | halt the desk and cancel every open order |
+| `POST /api/desk/kill` | live | halt the desk, answer, then cancel every open order |
 | `POST /api/desk/kill/reset` | live | lift the halt; the body must say `{"confirm":"reset"}` |
 
 The live routes require the header `X-OhCamel-Desk: 1` and a request the browser labels as from this site (`Sec-Fetch-Site: same-origin`, or an `Origin` equal to the `Host`), behind the host's password. The demo answers each with 405 and a sentence. Its own trader proposes a small order every 45 seconds, so the blotter has something to show, including refusals.
 
 Limits, stated:
 - whole shares; market and limit orders; day orders; regular hours;
+- the gate forks the live book with the proposal's own fills only, not what orders already resting would add: several resting limit orders can each pass and together breach a limit, which the switch catches only after they fill, and only for a limit it trips on;
 - Alpaca paper only, by construction: the trading host is a constant, and a key that does not begin `PK` is refused before a request is sent.
 
 ## Building it

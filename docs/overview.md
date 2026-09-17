@@ -187,14 +187,14 @@ has recomputed.
 | `POST /api/desk/preview` | The rules' and the limits' answer to a ticket; creates nothing |
 | `POST /api/desk/orders` | A ticket through the rules, the limits, the journal and the venue (live host only) |
 | `POST /api/desk/cancel` | Cancel one open order (live host only) |
-| `POST /api/desk/kill` | Halt the desk and cancel every open order (live host only) |
+| `POST /api/desk/kill` | Halt the desk, answer, then cancel every open order (live host only) |
 | `POST /api/desk/kill/reset` | Lift the halt; the body must say `{"confirm":"reset"}` (live host only) |
 
 Four routes change the desk -- orders, cancel, kill and its reset -- on the
-live host only, and only for a request carrying the page's header and the
-browser's `same-origin` label, which a cross-site page cannot forge (the
-password decides who else may send one); on the public demo each answers
-405.
+live host only, and only for a request carrying the page's header and either
+the browser's `Sec-Fetch-Site: same-origin` label or an `Origin` equal to its
+`Host`, which a cross-site page cannot forge (the password decides who else
+may send one); on the public demo each answers 405.
 
 ## Where it runs
 

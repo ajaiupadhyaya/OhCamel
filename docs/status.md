@@ -174,8 +174,9 @@ Alpaca account allows one concurrent market-data stream.
 Unauthenticated at the engine, gated at the proxy for the live host. Four
 routes change the desk -- `/api/desk/orders`, `/api/desk/cancel`,
 `/api/desk/kill`, `/api/desk/kill/reset` -- on the live host only, and only
-for a request carrying `X-OhCamel-Desk: 1` that the browser labels as from
-this site; on the public demo each answers 405.
+for a request carrying `X-OhCamel-Desk: 1` and either `Sec-Fetch-Site:
+same-origin` or an `Origin` equal to its `Host`; on the public demo each
+answers 405.
 
 | Route | |
 |---|---|
@@ -197,7 +198,7 @@ this site; on the public demo each answers 405.
 | `POST /api/desk/preview` | The rules' and the limits' answer to a ticket; creates nothing (both hosts) |
 | `POST /api/desk/orders` | A ticket through the rules, the limits, the journal and the venue (live host only) |
 | `POST /api/desk/cancel` | Cancel one open order (live host only) |
-| `POST /api/desk/kill` | Halt the desk and cancel every open order (live host only) |
+| `POST /api/desk/kill` | Halt the desk, answer, then cancel every open order (live host only) |
 | `POST /api/desk/kill/reset` | Lift the halt; the body must say `{"confirm":"reset"}` (live host only) |
 
 The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/dashboard_html.ml` no longer exists. The 47-line design essay that headed it is archived verbatim, as an HTML comment, at the head of `web/index.html`, with the successor paragraphs beneath it.
