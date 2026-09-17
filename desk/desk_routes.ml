@@ -338,7 +338,8 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
                        the person who pressed the button for minutes. So they
                        go on without the response, under a monitor of their
                        own, so a raise among them reaches the log and not the
-                       process; each cancel's own outcome is already logged. *)
+                       process. A cancel the venue does not confirm logs its own
+                       line; the run's end, or its raise, is logged below. *)
                     don't_wait_for
                       (match%map
                          Monitor.try_with ~extract_exn:true ~rest:`Log (fun () ->

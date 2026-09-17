@@ -1,7 +1,7 @@
 # OhCamel
 
 [![ci](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml/badge.svg)](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml)
-[![coverage 77%](https://img.shields.io/badge/coverage-77%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
+[![coverage 76%](https://img.shields.io/badge/coverage-76%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
 
 **Live:** [ohcamel.ajaiupadhyaya.com](https://ohcamel.ajaiupadhyaya.com) — the
 synthetic demo, no credentials, always on. [How it is deployed](#watching-it).
@@ -1176,7 +1176,7 @@ six properties and four example tests. `QCHECK_TRIALS=5000 make test` runs
 
 ### Coverage, and what it is not measuring
 
-`make coverage` runs the suite under `bisect_ppx` and reports **77%** (measured
+`make coverage` runs the suite under `bisect_ppx` and reports **76%** (measured
 2026-09-17). The badge above is that number; CI enforces a floor of 60% and
 prints the full per-file table into the run summary, so a drop is visible
 without anyone remembering to look. The number covers both libraries: the risk
@@ -1190,9 +1190,9 @@ read as two numbers rather than one:
  95%  lib/crisis_data.ml        71%  desk/oms.ml
  94%  desk/ticket.ml            70%  desk/tca.ml
  93%  lib/graph.ml              68%  lib/gate.ml
- 91%  lib/attribution.ml        66%  desk/desk_routes.ml
- 91%  desk/rules.ml             64%  desk/alpaca_paper.ml
- 90%  lib/stress.ml             64%  desk/book_sync.ml
+ 91%  lib/attribution.ml        65%  desk/desk_routes.ml
+ 90%  lib/stress.ml             64%  desk/alpaca_paper.ml
+ 90%  desk/rules.ml             64%  desk/book_sync.ml
  90%  desk/desk_time.ml         64%  desk/order.ml
  90%  lib/risk_metrics.ml       56%  lib/alerts.ml
  89%  lib/limits.ml             51%  lib/feed/fred_client.ml
@@ -1286,7 +1286,7 @@ not yet done there.
 
 `desk/oms.ml`, at 71%, sits above the four files just explained --
 `lib/gate.ml` at 68%, `desk/tca.ml` at 70%, `desk/session_close.ml` at 51%
-and `desk/desk_routes.ml` at 66% -- and still has the largest gap by far,
+and `desk/desk_routes.ml` at 65% -- and still has the largest gap by far,
 for a mix of reasons bisect's line data gives separately rather than one
 story: `resolve`'s one-minute fallback once its
 2/10/30 s schedule is exhausted, and its own lookup-error branch;
@@ -1372,7 +1372,7 @@ Every order the desk sends has passed two checks, in this order, and the page sh
 - the book enables trading, the desk has a trading half, and the book is the account's -- read within the last two sync intervals;
 - the kill switch is clear, and the regular session is open;
 - the name has a mark that is not stale;
-- a limit price is a whole cent at every price -- finer than Rule 612 asks below a dollar, because the order goes to the venue with two decimals -- and within the book's collar of the mark;
+- a limit price is a whole cent at every price -- stricter than Rule 612 asks below a dollar, because the order goes to the venue with two decimals -- and within the book's collar of the mark;
 - quantity × mark is within the order cap;
 - the quantity is within the book's share of twenty-day volume, and unknown volume refuses;
 - the same order was not proposed within the duplicate window;
