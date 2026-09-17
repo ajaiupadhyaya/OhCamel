@@ -2033,7 +2033,7 @@ end
    by walking through whatever unnamed nodes sit between; every edge then runs
    named-to-named and the drawing has one stroke per dependency a reader can
    name. Nothing here is hand-written that could drift from the wiring. *)
-let topology ?(alerts = false) (t : t) : Topology.t =
+let topology ?(alerts = false) ?kill_switch_wired_to (t : t) : Topology.t =
   let raw = walk t in
   let by_id = Int.Table.of_alist_exn (List.map raw ~f:(fun r -> (r.Raw.id, r))) in
   let node_exn id =
@@ -2198,8 +2198,9 @@ let topology ?(alerts = false) (t : t) : Topology.t =
      beside a timestamp);
      the stream reads every observed value; the alerts tracker hangs off
      [breaches] and is present only when the caller attached one; the kill
-     switch reads the tracker and is wired to nothing -- [wired_to = None] is
-     the invariant on the wire. *)
+     switch reads the tracker and is wired to what the caller names: nothing,
+     unless a desk that obeys it is attached -- the kernel still acts on
+     nothing itself. *)
   let outside =
     [
       {
@@ -2232,7 +2233,7 @@ let topology ?(alerts = false) (t : t) : Topology.t =
         Topology.Outside.name = "kill_switch";
         reads = [ "alerts" ];
         present = alerts;
-        wired_to = None;
+        wired_to = kill_switch_wired_to;
       };
     ]
   in

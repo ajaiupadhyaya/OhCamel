@@ -2375,6 +2375,32 @@ let test_heat_without_a_log_is_null () =
         (Poly.equal (field_exn (Yojson.Safe.from_string body) "nodes") `Null))
     ()
 
+(* §3.8 of the desk design: with a desk attached, the kill switch is wired to
+   the desk's submit path, and the topology says so. Every other reader stays
+   wired to nothing. *)
+let test_with_a_desk_the_switch_is_wired_to_desk_submit () =
+  with_graph
+    ~f:(fun graph ->
+      let str j k = match field_exn j k with `String s -> s | _ -> "<not a string>" in
+      let server =
+        Server.create ~kill_switch_wired_to:"desk.submit" ~mode:`Demo ~graph
+          ~factor:"SYNTHETIC" ()
+      in
+      let _, body = dispatched server "/api/graph" in
+      match field_exn (Yojson.Safe.from_string body) "outside" with
+      | `List outs ->
+          List.iter outs ~f:(fun o ->
+              let expected =
+                if String.equal (str o "name") "kill_switch" then `String "desk.submit"
+                else `Null
+              in
+              Alcotest.(check string)
+                (str o "name" ^ " is wired to")
+                (Yojson.Safe.to_string expected)
+                (Yojson.Safe.to_string (field_exn o "wired_to")))
+      | _ -> Alcotest.fail "no outside list")
+    ()
+
 let suite =
   ( "server",
     [
@@ -2446,4 +2472,6 @@ let suite =
         test_heat_is_the_lifetime_table;
       Alcotest.test_case "/api/heat is null with no recompute log" `Quick
         test_heat_without_a_log_is_null;
+      Alcotest.test_case "with a desk the switch is wired to desk.submit" `Quick
+        test_with_a_desk_the_switch_is_wired_to_desk_submit;
     ] )

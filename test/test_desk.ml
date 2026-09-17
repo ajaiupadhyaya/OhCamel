@@ -211,27 +211,102 @@ let test_a_desk_without_a_venue_says_why () =
         (Poly.equal (field s "equity") `Null))
     ()
 
-let test_the_frame's_desk_object_has_exactly_these_keys () =
+let test_the_frame's_desk_object_has_exactly_these_sixteen_keys () =
   with_desk
     ~f:(fun desk _ _ ->
       Alcotest.(check (list string))
-        "thirteen, in order"
+        "sixteen, in order"
         [
           "status";
           "reason";
           "venue";
           "trading";
+          "kill_switch";
+          "tickets";
           "journal";
           "version";
           "equity";
           "cash";
           "session_pnl";
+          "open_orders";
           "unmanaged";
           "sessions";
           "last_sync";
           "last_error";
         ]
         (Yojson.Safe.Util.keys (Desk.summary_json desk)))
+    ()
+
+(* With an order manager attached the desk says whether it can trade, what the
+   switch reads and whether this host takes tickets; /api/desk lists the
+   journal's orders. The order is journaled directly, as pending_submit --
+   the manager's open set does not hold it, which is why the frame's count
+   stays 0 while /api/desk's list, which reads the journal, holds one. *)
+let test_with_a_manager_the_desk_says_what_it_can_do () =
+  with_desk
+    ~f:(fun desk graph journal ->
+      let venue =
+        Ohcamel_desk.Sim_venue.create ~opened_at:at
+          ~marks:(fun _ -> None)
+          ~now:(fun () -> at)
+          ~half_spread_bps:(fun _ -> 5.0)
+          ~cash:Notional.zero ~positions:[] ()
+      in
+      let oms =
+        Ohcamel_desk.Oms.create ~graph ~journal
+          ~spec:
+            {
+              Config.Book.Desk_spec.default with
+              Config.Book.Desk_spec.trading = Config.Book.Desk_spec.Enabled;
+            }
+          ~read:(Some (Ohcamel_desk.Sim_venue.read venue))
+          ~trade:(Ok (Ohcamel_desk.Sim_venue.trade ~auto:false venue))
+          ~halt:(Ohcamel_desk.Halt.create Ohcamel_desk.Halt.Source.none)
+          ~accepts_tickets:false ~adv:(Ohcamel_desk.Oms.Adv.Fixed 1_000_000.0)
+          ~now:(fun () -> at)
+          ~rng:(Random.State.make [| 5 |]) ~on_change:ignore ~on_event:ignore
+          ~after_fill:ignore
+          ~book_is_current:(fun () -> true)
+          ()
+      in
+      Desk.set_oms desk oms;
+      let s = Desk.summary_json desk in
+      Alcotest.(check bool) "trading" true (Yojson.Safe.Util.to_bool (field s "trading"));
+      Alcotest.(check string)
+        "the switch" "clear"
+        (Yojson.Safe.Util.to_string (field s "kill_switch"));
+      Alcotest.(check string)
+        "tickets" "preview only"
+        (Yojson.Safe.Util.to_string (field s "tickets"));
+      Ohcamel_desk.Halt.halt (Ohcamel_desk.Oms.halt oms) ~why:"a test" ~at;
+      Alcotest.(check string)
+        "halted" "halted"
+        (Yojson.Safe.Util.to_string (field (Desk.summary_json desk) "kill_switch"));
+      let request =
+        {
+          Ohcamel_desk.Order.Request.client_order_id =
+            Option.value_exn
+              (Ohcamel_desk.Ids.Client_order_id.of_string "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZZ1");
+          symbol = aapl;
+          side = Ohcamel_desk.Order.Side.Buy;
+          qty = 10;
+          kind = Ohcamel_desk.Order.Kind.Market;
+        }
+      in
+      Journal.insert_order journal
+        (Ohcamel_desk.Order.create request)
+        ~source:"manual" ~decision_price:(Price.of_float 150.0) ~arrival:None
+        ~verdict:`Null ~at;
+      let b = Desk.body_json desk in
+      Alcotest.(check int)
+        "the frame's count is the manager's" 0
+        (Yojson.Safe.Util.to_int (field (Desk.summary_json desk) "open_orders"));
+      Alcotest.(check int)
+        "/api/desk lists the journal's open order" 1
+        (List.length (Yojson.Safe.Util.to_list (field (field b "orders") "open")));
+      Alcotest.(check string)
+        "and the switch, whole" "halted"
+        (Yojson.Safe.Util.to_string (field (field b "switch") "state")))
     ()
 
 let test_api_desk_answers_through_the_server () =
@@ -611,8 +686,10 @@ let suite =
         `Quick test_a_failed_read_keeps_the_last_good_account_and_says_what_failed;
       Alcotest.test_case "a desk without a venue says why" `Quick
         test_a_desk_without_a_venue_says_why;
-      Alcotest.test_case "the frame's desk object has exactly these keys" `Quick
-        test_the_frame's_desk_object_has_exactly_these_keys;
+      Alcotest.test_case "the frame's desk object has exactly these sixteen keys" `Quick
+        test_the_frame's_desk_object_has_exactly_these_sixteen_keys;
+      Alcotest.test_case "with a manager the desk says what it can do" `Quick
+        test_with_a_manager_the_desk_says_what_it_can_do;
       Alcotest.test_case "/api/desk answers through the server" `Quick
         test_api_desk_answers_through_the_server;
       Alcotest.test_case "a read that started before the last applied one changes nothing"

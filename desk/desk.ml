@@ -51,6 +51,11 @@ type t = {
   mutable reads_started : int;
   mutable applied_seq : int;
   mutable raced_through : int;
+  (* The order manager, handed back once it exists (bin/main.ml builds it
+     after the desk, since its fills re-read the account through this desk's
+     [sync]). None until then, and for any desk this task's tests build
+     without one -- the frame still owes an honest answer, not a crash. *)
+  mutable oms : Oms.t option;
   (* The read [after_fill] starts: none out, one out, or one out and one more
      owed, because a fill landed while it was out. *)
   mutable fill_read : [ `Idle | `Running | `Owed ];
@@ -77,9 +82,15 @@ let create ~graph ~journal ~venue ~spec ~on_change ~on_first_sync =
     reads_started = 0;
     applied_seq = 0;
     raced_through = 0;
+    oms = None;
     fill_read = `Idle;
     sessions_seen = (-1, 0);
   }
+
+(* The order manager is made after the desk -- its fills re-read the account
+   through [sync] -- and handed back here, so the frame can say what the desk
+   can do. *)
+let set_oms t oms = t.oms <- Some oms
 
 let venue_name t =
   match t.venue with Reads r -> r.Venue.Read.name | Unavailable { name; _ } -> name
@@ -231,7 +242,17 @@ let summary_fields t =
     ( "reason",
       match t.venue with Reads _ -> `Null | Unavailable { reason; _ } -> `String reason );
     ("venue", `String (venue_name t));
-    ("trading", `Bool false);
+    ("trading", `Bool (match t.oms with Some o -> Oms.can_trade o | None -> false));
+    ( "kill_switch",
+      match t.oms with
+      | Some o -> `String (Halt.State.name (Halt.state (Oms.halt o)))
+      | None -> `Null );
+    ( "tickets",
+      `String
+        (match t.oms with
+        | Some o when Oms.accepts_tickets o -> "accepted"
+        | Some _ -> "preview only"
+        | None -> "none") );
     ( "journal",
       `String
         (if String.equal (Journal.location t.journal) ":memory:" then "memory" else "file")
@@ -244,6 +265,7 @@ let summary_fields t =
       | Some { Venue.Account.equity; last_equity = Some last; _ } ->
           jnum (Notional.to_float equity -. Notional.to_float last)
       | _ -> `Null );
+    ("open_orders", `Int (match t.oms with Some o -> Oms.open_count o | None -> 0));
     ("unmanaged", `Int (List.length t.unmanaged));
     ("sessions", `Int (sessions_count t));
     ("last_sync", jopt (fun at -> `String (Desk_time.rfc3339 at)) t.last_sync);
@@ -324,6 +346,24 @@ let body_json t : Yojson.Safe.t =
                      ("var_notional", jopt jnum f.Journal.Forecast.var_notional);
                      ("es_notional", jopt jnum f.Journal.Forecast.es_notional);
                    ])) );
+        ( "switch",
+          match t.oms with
+          | Some o -> Halt.to_json (Oms.halt o) ~now:(Time_ns.now ())
+          | None -> `Null );
+        ( "orders",
+          `Assoc
+            [
+              ("open", `List (List.map (Journal.open_orders t.journal) ~f:Oms.order_json));
+              ( "recent",
+                `List
+                  (List.map (Journal.recent_orders t.journal ~limit:20) ~f:Oms.order_json)
+              );
+            ] );
+        ( "fills",
+          match t.oms with
+          | Some o -> Oms.fills_json o (Journal.recent_fills t.journal ~limit:20)
+          | None -> `List [] );
+        ("tca", match t.oms with Some o -> Oms.tca_json o | None -> `Null);
       ])
 
 let extensions t : Server.extension list =
@@ -331,8 +371,8 @@ let extensions t : Server.extension list =
     {
       Server.path = "/api/desk";
       purpose =
-        "the desk: its venue, the account, positions held and unmanaged, recorded \
-         sessions";
+        "the desk: its venue, the account, positions held and unmanaged, orders, fills \
+         and their costs, the switch, recorded sessions";
       handle =
         (fun server _request ->
           Server.respond_json server (Yojson.Safe.to_string (body_json t)));
