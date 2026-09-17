@@ -119,6 +119,21 @@ Phase 3. The dashboard page, served from memory by server.ml.
     <span class="lbl">desk <i id="desknote">— the venue's account</i></span>
     <table id="desk"></table>
     <div id="deskunmanaged" class="desk-unmanaged" hidden></div>
+    <div id="deskswitch" class="desk-switch" hidden></div>
+    <form id="ticket" class="ticket" autocomplete="off" hidden>
+      <span class="lbl">ticket <i id="ticketnote">— the rules, then the limits</i></span>
+      <select id="tsym" aria-label="symbol"></select>
+      <select id="tside" aria-label="side"><option value="buy">buy</option><option value="sell">sell</option></select>
+      <input id="tqty" type="number" min="1" step="1" value="10" aria-label="shares">
+      <select id="ttype" aria-label="order type"><option value="market">market</option><option value="limit">limit</option></select>
+      <input id="tlimit" type="number" min="0" step="0.01" placeholder="limit" aria-label="limit price" disabled>
+      <button type="button" id="tpreview">preview</button>
+      <button type="button" id="tplace" hidden>place</button>
+      <div id="ticketout" class="ticket-out" aria-live="polite"></div>
+    </form>
+    <table id="blotter" class="blotter"></table>
+    <table id="fills" class="fills"></table>
+    <p id="tcanote" class="desk-note"></p>
   </section>
 
   <section id="histsec">

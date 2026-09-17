@@ -188,6 +188,26 @@
   /* ---- the desk ---- */
   .desk-unmanaged { font-size: 11px; color: var(--unknown); margin-top: 8px; }
   td.v.desk-error { color: var(--over); white-space: normal; font-size: 12px; }
+  .desk-switch { margin: 10px 0; font-size: 12px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .desk-switch.tripped .desk-switch-line, .desk-switch.halted .desk-switch-line { color: var(--over); font-weight: 600; }
+  .desk-switch-note, .ticket-reason, .ticket-gate, .desk-note { color: var(--unknown); }
+  .desk-switch button, .ticket button { font: inherit; font-size: 12px; padding: 2px 10px; border: 1px solid currentColor; background: transparent; color: inherit; cursor: pointer; }
+  .ticket { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 12px 0 6px; }
+  .ticket .lbl, .ticket-out { width: 100%; }
+  .ticket select, .ticket input { font: inherit; font-size: 12px; padding: 2px 4px; max-width: 7em; }
+  .ticket-out { font-size: 12px; }
+  .ticket-bad { color: var(--over); }
+  /* display: flex outranks the browser's own [hidden] rule, so a hidden
+     switch line or ticket would still show without this. */
+  .desk-switch[hidden], .ticket[hidden] { display: none; }
+  table.blotter, table.fills { margin-top: 10px; font-size: 12px; }
+  table.blotter th, table.fills th { text-align: left; font-weight: 400; color: var(--unknown); }
+  /* A cell here has no side padding of its own, so a right-aligned number
+     ran into the word beside it: "18market", "149.93the demo's trader". */
+  table.blotter td, table.blotter th, table.fills td, table.fills th { padding-right: 12px; }
+  tr.order.rejected_pre_trade td.state, tr.order.rejected_by_venue td.state, tr.order.failed td.state { color: var(--over); }
+  td.k.reason { white-space: normal; max-width: 28em; }
+  .desk-note { font-size: 11px; margin-top: 6px; }
 
   /* ---- stale: data that should not be trusted stops looking trustworthy ----
      Scoped by DEPENDENCY, not by page. A stale print on one symbol compromises

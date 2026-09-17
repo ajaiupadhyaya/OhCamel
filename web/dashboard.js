@@ -417,8 +417,9 @@
     }
   }
 
-  // Phase 4 state. The page reports it and cannot change it: no route on the
-  // server arms, trips or resets anything.
+  // Phase 4 state, and the desk's switch. The kernel's alerts are reported
+  // here; the desk's own routes halt and reset the desk (renderSwitch), on the
+  // live host only.
   function renderAlerts(s) {
     var a = s.alerts || { enabled: false, kill_switch: "off" };
     var ks = document.getElementById("ks");
@@ -438,7 +439,7 @@
       halt.appendChild(document.createTextNode(
         "  \u2014 tripped by " + a.tripped_by + ". "));
       halt.appendChild(el("span", null,
-        "This sets a flag and nothing else; no order is placed or cancelled by this system. "
+        "New orders are refused and every open order is cancelled; positions are not touched. "
         + "It stays set until the engine is restarted or the switch is reset."));
     } else {
       halt.className = "";
@@ -578,24 +579,29 @@
   }
 
   // ---- the desk: the venue's account, from the frame's desk object ----
-  // The frame carries thirteen fields and nothing a table needs a second
-  // request for, except the names the venue holds outside the book. Those are
-  // fetched from /api/desk when a sync lands -- the count or last_sync moves --
-  // and not on every frame. The journal's version is not that signal: a sync
-  // writes nothing to the journal, so a list keyed on it stayed the first one.
-  var deskHeldKey = null, deskHeldWant = null, deskHeldInFlight = false;
+  // The frame carries sixteen fields and nothing a table needs a second
+  // request for, except what /api/desk lists: the names the venue holds
+  // outside the book, the switch whole, the blotter and the fills. Those are
+  // fetched when something they show has moved -- the key built at the end of
+  // renderDesk -- and not on every frame.
+  var deskKey = null, deskWant = null, deskInFlight = false;
   function renderDesk(s) {
     var d = s.desk, t = document.getElementById("desk"), note = document.getElementById("desknote");
     if (!t || !note) return;
     var F = window.OhCamelFormat;
     if (!d) { t.textContent = ""; note.textContent = "— no desk in this process"; return; }
     note.textContent = d.status === "enabled"
-      ? "— " + d.venue + (d.venue === "simulated" ? ", in this process" : ", read side")
+      ? "— " + d.venue + (d.venue === "simulated" ? ", in this process" : (d.trading ? ", trading" : ", read side"))
       : "— disabled: " + (d.reason || "no reason given");
     var rows = [
       ["equity", d.equity === null ? "—" : F.money(d.equity)],
       ["cash", d.cash === null ? "—" : F.money(d.cash)],
       ["session P&L", d.session_pnl === null ? "—" : F.money(d.session_pnl)],
+      ["trading", d.trading ? "on" : "off"],
+      ["kill switch", typeof d.kill_switch === "string" ? d.kill_switch : "—"],
+      // With no order manager attached the server sends 0 for want of a count;
+      // nothing is counting, so the page says it does not know.
+      ["open orders", d.tickets === "none" || typeof d.open_orders !== "number" ? "—" : String(d.open_orders)],
       ["sessions recorded", String(d.sessions) + (d.journal === "memory" ? " · in memory" : "")],
       ["last sync", d.last_sync ? d.last_sync.replace("T", " ").slice(0, 19) + "Z" : (d.last_error ? "failed" : "never")],
       ["unmanaged", d.unmanaged === 0 ? "none" : d.unmanaged + " held outside the book"]
@@ -613,32 +619,257 @@
       tr.appendChild(F.el("td", "v desk-error", d.last_error));
       t.appendChild(tr);
     }
+    renderTicketControls(d, s);
+    // /api/desk is asked again when anything it draws has moved: a sync (the
+    // unmanaged count, last_sync), a journal write (the version: an order, a
+    // fill, a session), the switch, or the open-order count. The last two live
+    // in memory, not the journal, so the version alone would miss a trip; and
+    // a sync writes nothing to the journal, so the version alone would miss
+    // that too (A1's reason for its key). One request at a time; the key is
+    // taken only once a fetch has drawn, so a failed one is asked again by a
+    // later frame; an answer a newer frame overtook is dropped.
+    deskWant = [d.unmanaged, d.last_sync, d.version, d.kill_switch, d.open_orders].join("|");
+    if (deskWant === deskKey || deskInFlight) return;
+    var asked = deskWant;
+    deskInFlight = true;
+    fetch("/api/desk").then(function (r) {
+      // An error status carries {"error": ...}, not the desk: drawn, it would
+      // say "no orders yet" about a desk that could not be read.
+      if (!r.ok) throw new Error("status " + r.status);
+      return r.json();
+    }).then(function (b) {
+      if (asked !== deskWant || !b) return;
+      renderDeskBody(b);
+      deskKey = asked;
+    }).catch(function () { /* the frame's fields above still stand */ })
+      .then(function () { deskInFlight = false; });
+  }
+
+  function renderDeskBody(b) {
     var u = document.getElementById("deskunmanaged");
-    if (d.unmanaged === 0) {
-      // Cleared as well as hidden, so a count that comes back fetches afresh.
-      u.hidden = true; u.textContent = ""; deskHeldKey = null; deskHeldWant = null;
-      return;
-    }
-    deskHeldWant = d.unmanaged + "|" + d.last_sync;
-    // One request at a time, as the history's; the key is taken only once a
-    // fetch has drawn the list, so a failed one is asked again by a later frame.
-    if (deskHeldWant === deskHeldKey || deskHeldInFlight) return;
-    var asked = deskHeldWant;
-    deskHeldInFlight = true;
-    fetch("/api/desk").then(function (r) { return r.json(); }).then(function (b) {
-      // A frame that moved the key while this was in flight asks for its own
-      // list; this answer is dropped rather than shown under the newer count.
-      if (asked !== deskHeldWant) return;
-      var held = b && b.unmanaged_positions;
-      if (!Array.isArray(held)) return;
-      if (held.length === 0) { u.hidden = true; return; }
+    var held = b.unmanaged_positions;
+    if (!Array.isArray(held) || held.length === 0) { u.hidden = true; u.textContent = ""; }
+    else {
+      // The text first, then shown, as A1's page did.
       u.textContent = "held by the venue, not in the book: " + held.map(function (p) {
-        return p.symbol + " " + p.qty;
+        return p.symbol + " " + (typeof p.qty === "number" ? p.qty : "—");
       }).join(", ");
       u.hidden = false;
-      deskHeldKey = asked;
-    }).catch(function () { /* the count above still says how many */ })
-      .then(function () { deskHeldInFlight = false; });
+    }
+    renderSwitch(b);
+    renderBlotter(b.orders || { open: [], recent: [] });
+    renderFills(b.fills || [], b.tca);
+  }
+
+  // Every number below can arrive as null -- the server sends null for a
+  // figure it could not compute -- and an unknown is drawn as a dash, never
+  // as 0 or as the word null.
+  function known(x) { return typeof x === "number" && isFinite(x); }
+  function fixed2(x) { return known(x) ? x.toFixed(2) : "—"; }
+  function dollars(x) { return known(x) ? window.OhCamelFormat.money(x) : "—"; }
+
+  // The header a cross-site form cannot set. The browser adds Sec-Fetch-Site
+  // and Origin itself, and the live host refuses a request without them.
+  function deskPost(path, body, protectedRoute) {
+    var headers = { "Content-Type": "application/json" };
+    if (protectedRoute) headers["X-OhCamel-Desk"] = "1";
+    return fetch(path, { method: "POST", headers: headers, body: JSON.stringify(body) })
+      .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); });
+  }
+
+  // A halt or a reset the server refused says why, in the server's sentence;
+  // alert() shows it as text. Either way the desk is asked again, so the line
+  // shows what the switch reads now rather than what was pressed.
+  function switchPost(path, body) {
+    deskPost(path, body, true).then(function (res) {
+      deskKey = null;
+      if (res.body && res.body.error) window.alert(res.body.error);
+    }).catch(function (e) { deskKey = null; window.alert("no answer: " + e.message); });
+  }
+
+  function renderSwitch(b) {
+    var box = document.getElementById("deskswitch"), sw = b.switch, F = window.OhCamelFormat;
+    if (!box) return;
+    if (!sw) { box.hidden = true; box.textContent = ""; return; }
+    box.textContent = "";
+    box.className = "desk-switch " + sw.state;
+    var line = sw.state === "clear" ? "kill switch clear: orders may be sent"
+      : sw.state === "tripped" ? "kill switch TRIPPED by " + sw.limit + ": new orders refused, open orders cancelled, positions untouched"
+      : "desk HALTED by hand (" + sw.why + "): new orders refused, open orders cancelled, positions untouched";
+    box.appendChild(F.el("span", "desk-switch-line", line));
+    if (sw.state === "tripped" && known(sw.auto_reset_s))
+      box.appendChild(F.el("span", "desk-switch-note", known(sw.resets_in_s)
+        ? "· resets itself in " + Math.ceil(sw.resets_in_s) + " s — the demo only"
+        : "· resets itself " + sw.auto_reset_s + " s after " + sw.limit + " clears — the demo only"));
+    // The buttons only where tickets are accepted: the demo host answers 405
+    // to both routes, and a button that can only be refused is not offered.
+    if (b.tickets === "accepted") {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      if (sw.state === "clear") {
+        btn.textContent = "halt the desk";
+        btn.onclick = function () {
+          var why = window.prompt("Why halt the desk? Every open order will be cancelled; positions stay.");
+          if (why === null) return;
+          switchPost("/api/desk/kill", { why: why });
+        };
+      } else {
+        btn.textContent = "reset";
+        btn.onclick = function () {
+          if (!window.confirm("Reset the kill switch? New orders will be allowed again.")) return;
+          switchPost("/api/desk/kill/reset", { confirm: "reset" });
+        };
+      }
+      box.appendChild(btn);
+    }
+    // The line is built before it is shown, as A1's list is.
+    box.hidden = false;
+  }
+
+  var ticketReady = false;
+  function renderTicketControls(d, s) {
+    var form = document.getElementById("ticket");
+    if (!form) return;
+    // Place is offered only where tickets are accepted; preview wherever an
+    // order manager exists to answer it.
+    var place = document.getElementById("tplace");
+    place.hidden = d.tickets !== "accepted";
+    document.getElementById("ticketnote").textContent = d.tickets === "accepted"
+      ? "— the rules, then the limits, then the venue"
+      : "— preview only on this host: the rules and the limits answer, and nothing is sent";
+    if (!ticketReady) {
+      ticketReady = true;
+      var sym = document.getElementById("tsym");
+      s.positions.forEach(function (p) {
+        var o = document.createElement("option");
+        o.value = p.symbol; o.textContent = p.symbol;
+        sym.appendChild(o);
+      });
+      var type = document.getElementById("ttype"), limit = document.getElementById("tlimit");
+      type.onchange = function () { limit.disabled = type.value !== "limit"; };
+      // Enter in a field must not submit the form: a form with no action
+      // reloads the page, and nothing here is meant to leave by that road.
+      form.onsubmit = function (e) { e.preventDefault(); };
+      document.getElementById("tpreview").onclick = function () { sendTicket(false); };
+      place.onclick = function () {
+        if (!window.confirm("Send this order to the venue? It passes the rules and the limits first.")) return;
+        sendTicket(true);
+      };
+    }
+    // Shown last, once its note and its symbols are in.
+    form.hidden = d.status !== "enabled" || d.tickets === "none";
+  }
+
+  function ticketBody() {
+    var body = {
+      symbol: document.getElementById("tsym").value,
+      side: document.getElementById("tside").value,
+      qty: Number(document.getElementById("tqty").value),
+      type: document.getElementById("ttype").value
+    };
+    if (body.type === "limit") body.limit_price = Number(document.getElementById("tlimit").value);
+    return body;
+  }
+
+  function sendTicket(placing) {
+    var out = document.getElementById("ticketout"), F = window.OhCamelFormat;
+    out.textContent = placing ? "sending…" : "asking…";
+    deskPost(placing ? "/api/desk/orders" : "/api/desk/preview", ticketBody(), placing).then(function (res) {
+      var b = res.body || {}, p = (placing ? b.preview : b) || {};
+      out.textContent = "";
+      if (b.error) { out.appendChild(F.el("div", "ticket-bad", b.error)); return; }
+      var ok = placing ? b.state !== "rejected_pre_trade" : p.passed === true;
+      var head = placing
+        ? (ok ? "sent: " + String(b.state).replace(/_/g, " ") : "refused before the venue")
+        : (ok ? "would pass the rules and the limits" : "would be refused");
+      out.appendChild(F.el("div", ok ? "ticket-ok" : "ticket-bad", head));
+      (p.reasons || []).forEach(function (r) { out.appendChild(F.el("div", "ticket-reason", r)); });
+      if (p.gate) {
+        out.appendChild(F.el("div", "ticket-gate",
+          "gross " + dollars(p.gate.gross_before) + " → " + dollars(p.gate.gross_after) +
+          " · equity " + dollars(p.gate.equity_before) + " → " + dollars(p.gate.equity_after) +
+          ((p.gate.cleared || []).length ? " · clears " + p.gate.cleared.map(function (m) { return m.limit; }).join(", ") : "")));
+      }
+      if (placing) deskKey = null;
+    }).catch(function (e) {
+      out.textContent = "no answer: " + e.message;
+      // A placed order whose answer was lost may still exist; the blotter is
+      // asked again so it says.
+      if (placing) deskKey = null;
+    });
+  }
+
+  function renderBlotter(orders) {
+    var t = document.getElementById("blotter"), F = window.OhCamelFormat;
+    if (!t) return;
+    t.textContent = "";
+    var seen = {};
+    var rows = (orders.open || []).concat(orders.recent || []).filter(function (o) {
+      if (seen[o.client_order_id]) return false;
+      seen[o.client_order_id] = true;
+      return true;
+    }).slice(0, 20);
+    if (rows.length === 0) {
+      var empty = document.createElement("tr");
+      empty.appendChild(F.el("td", "k", "no orders yet"));
+      t.appendChild(empty);
+      return;
+    }
+    var head = document.createElement("tr");
+    ["time", "symbol", "side", "qty", "type", "state", "filled", "avg", "why"].forEach(function (h) {
+      head.appendChild(F.el("th", "", h));
+    });
+    t.appendChild(head);
+    rows.forEach(function (o) {
+      var tr = document.createElement("tr");
+      tr.className = "order " + o.state;
+      tr.appendChild(F.el("td", "k", String(o.created_at).slice(11, 19)));
+      tr.appendChild(F.el("td", "k", o.symbol));
+      tr.appendChild(F.el("td", "k", o.side));
+      tr.appendChild(F.el("td", "v num", known(o.qty) ? String(o.qty) : "—"));
+      tr.appendChild(F.el("td", "k", o.type === "limit" ? "limit " + fixed2(o.limit_price) : "market"));
+      tr.appendChild(F.el("td", "k state", String(o.state).replace(/_/g, " ")));
+      tr.appendChild(F.el("td", "v num", known(o.filled_qty) ? String(o.filled_qty) : "—"));
+      tr.appendChild(F.el("td", "v num", fixed2(o.avg_fill_price)));
+      // A reason is the rules', the gate's or the venue's own words; it is
+      // set as text, never parsed as markup.
+      tr.appendChild(F.el("td", "k reason", o.reason || (o.source === "demo" ? "the demo's trader" : "")));
+      t.appendChild(tr);
+    });
+  }
+
+  // A cost that rounds to nothing is 0.0, not the -0.0 toFixed gives it.
+  function bps(x) {
+    if (!known(x)) return "—";
+    var t = x.toFixed(1);
+    return t === "-0.0" ? "0.0" : t;
+  }
+
+  function renderFills(fills, tca) {
+    var t = document.getElementById("fills"), note = document.getElementById("tcanote"), F = window.OhCamelFormat;
+    if (!t || !note) return;
+    t.textContent = "";
+    if (fills.length === 0) { note.textContent = ""; return; }
+    var head = document.createElement("tr");
+    ["time", "symbol", "side", "qty", "price", "shortfall", "delay", "slippage", "½ spread", "vs model"].forEach(function (h) {
+      head.appendChild(F.el("th", "", h));
+    });
+    t.appendChild(head);
+    fills.forEach(function (f) {
+      var tr = document.createElement("tr");
+      [String(f.at).slice(11, 19), f.symbol, f.side].forEach(function (x) { tr.appendChild(F.el("td", "k", x)); });
+      tr.appendChild(F.el("td", "v num", known(f.qty) ? String(f.qty) : "—"));
+      tr.appendChild(F.el("td", "v num", fixed2(f.price)));
+      [f.shortfall_bps, f.delay_bps, f.slippage_bps, f.half_spread_bps, f.versus_model_bps].forEach(function (x) {
+        tr.appendChild(F.el("td", "v num", bps(x)));
+      });
+      t.appendChild(tr);
+    });
+    var o = tca && tca.overall;
+    note.textContent = (o
+      ? "Basis points; positive is cost. " + o.count + " fills: shortfall mean " + bps(o.mean_shortfall_bps) +
+        ", median " + bps(o.median_shortfall_bps) + ", quantity-weighted " + bps(o.weighted_shortfall_bps) + ". "
+      : "") + (tca && tca.note ? tca.note : "");
   }
 
   function render(s) {
