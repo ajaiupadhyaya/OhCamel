@@ -29,8 +29,9 @@ exactly), *whether the number is any good* (a coverage battery run over point-
 in-time forecasts, including against real crisis windows), and *what would
 break it* (a scenario suite that shocks a fork of the live graph).
 
-It computes and reports. It never places, cancels or simulates an order, and
-that is a design invariant rather than a missing feature.
+It computes and reports, and a desk built around it places paper orders:
+every one passes the rules and the book's limits first, and the kernel
+itself still cannot place one -- a library boundary, invariant 6.
 
 ## Where it runs
 
@@ -118,7 +119,8 @@ name is rejected because VaR is not additive; component VaR is valid
 everywhere because it is additive by construction. A breach is computed as
 data (a bool and a magnitude), never as an effect. Alerting is an observer
 outside the graph: edge-triggered, with hysteresis on the way back down, off
-by default, and a kill switch that sets a flag and does nothing else.
+by default, and a kill switch the desk obeys: a trip refuses new orders and
+cancels open ones.
 
 **Staleness.** Each symbol carries the time of its last tick. A name that has
 not printed within the threshold is stale, and the dashboard desaturates it
@@ -169,9 +171,11 @@ Alpaca account allows one concurrent market-data stream.
 
 ## The interface
 
-Read-only, unauthenticated at the engine, gated at the proxy for the live
-host. No route mutates anything today; the first planned feature (see *Next*)
-would be the first that does.
+Unauthenticated at the engine, gated at the proxy for the live host. Four
+routes change the desk -- `/api/desk/orders`, `/api/desk/cancel`,
+`/api/desk/kill`, `/api/desk/kill/reset` -- on the live host only, and only
+for a request carrying `X-OhCamel-Desk: 1` that the browser labels as from
+this site; on the public demo each answers 405.
 
 | Route | |
 |---|---|
@@ -188,21 +192,29 @@ would be the first that does.
 | `/ops` | The operator's view: what the process is, how long it has been up, what it has recomputed |
 | `/api/ops` | The same as JSON, including the recompute log's distinct and total counts and its hottest nodes |
 | `/api/desk` | The desk, served as an extension route: `enabled` with its venue or `disabled` with the reason, the account as last read with `last_sync` and `last_error`, each universe name's venue and graph quantity, the names the account holds outside the universe, the gap between the graph's equity and the venue's, and the journal's newest 30 sessions and latest forecasts, read with bounded queries |
+| `GET /api/desk/tca` | Costs per fill, overall and by symbol (both hosts) |
+| `GET /api/desk/sessions` | The newest 250 recorded session closes (both hosts) |
+| `POST /api/desk/preview` | The rules' and the limits' answer to a ticket; creates nothing (both hosts) |
+| `POST /api/desk/orders` | A ticket through the rules, the limits, the journal and the venue (live host only) |
+| `POST /api/desk/cancel` | Cancel one open order (live host only) |
+| `POST /api/desk/kill` | Halt the desk and cancel every open order (live host only) |
+| `POST /api/desk/kill/reset` | Lift the halt; the body must say `{"confirm":"reset"}` (live host only) |
 
 The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/dashboard_html.ml` no longer exists. The 47-line design essay that headed it is archived verbatim, as an HTML comment, at the head of `web/index.html`, with the successor paragraphs beneath it.
 
 ## What is verified
 
-- **381 hermetic tests** — no network, no credentials, nothing waiting on a
-  clock. Expected values are derived by hand with the derivation beside the
-  assertion. Seven are worth knowing by name: Euler residual, hedge (no stray
-  `abs`), lookahead, stress-fork isolation, regime-break, delta-hedged, and
-  two-clocks.
+- **439 hermetic tests**, plus seven scheduler cases in `test/desk_async` —
+  no network, no credentials, nothing waiting on a clock: the scheduler's
+  cases move a clock of their own. Expected values are derived by hand with
+  the derivation beside the assertion. Seven are worth knowing by name: Euler
+  residual, hedge (no stray `abs`), lookahead, stress-fork isolation,
+  regime-break, delta-hedged, and two-clocks.
 - **Property tests** (qcheck) generalise the identities over random inputs:
   Euler additivity, component VaR summing to portfolio VaR, a hedge reducing
   variance, VaR monotone in confidence, fork isolation, backtest lookahead.
-- **Coverage 77.3%** (4,617 / 5,972 instrumented points in `lib/` and `desk/`,
-  measured 2026-09-15), with a 60% floor in CI that exists to make deleting
+- **Coverage 76.5%** (5,903 / 7,714 instrumented points in `lib/` and `desk/`,
+  measured 2026-09-17), with a 60% floor in CI that exists to make deleting
   tests noticeable, not as a target. The number is bimodal by design: the pure
   numeric core is above 90% and the network edges near 40%, because exercising
   them means mocking a broker, which raises the number and establishes nothing.
@@ -263,8 +275,7 @@ The binding list is §2 of the desk design,
 the eight from [`handoff.md` §2](handoff.md) stay in force with 6 rewritten,
 and five are added. A change that ships faster by breaking one is a
 regression even if the tests pass. The rewritten one and the five new ones, a
-line each (10 to 12 bind the order path phase A2 builds; nothing in the
-repository places, cancels or simulates an order today):
+line each (10 to 12 bind the order path, `desk/oms.ml`):
 
 - **6. The risk kernel cannot place an order.** `lib/` holds no trading client, no order state, no journal and no persistence; execution lives in `desk/`, which depends on `lib/`, dune rejects the reverse edge as a cycle, and CI greps `lib/` for the trading host and the orders path.
 - **9. Paper only, by construction.** The trading host is the constant `paper-api.alpaca.markets`, a trading key that does not begin `PK` is refused before any request is made, and nothing can point the desk at a live-money endpoint.
@@ -275,8 +286,8 @@ repository places, cancels or simulates an order today):
 
 ## What it is not, and known limits
 
-- No order routing, no execution, no simulated fills.
-- Persistence is one journal (`desk/journal.ml`, SQLite): each session's close, its marks and a VaR forecast per estimator. `run-live` and `serve` keep it in a file (`/data/desk.db` on the live host) and restore the drawdown trail from it at the first successful sync after startup; the demo's is in memory and starts empty each run. Nothing else — the graph, the rest of the book — survives a restart.
+- Paper orders only, to Alpaca's paper account; the demo's venue is simulated in this process. Whole shares, market and limit orders, day orders, regular hours.
+- Persistence is one journal (`desk/journal.ml`, SQLite): every order, its events and its fills, and each session's close, marks and VaR forecasts. `run-live` and `serve` keep it in a file (`/data/desk.db` on the live host) and restore the drawdown trail from it at the first successful sync after startup; the demo's is in memory and starts empty each run. Nothing else — the graph, the rest of the book — survives a restart.
 - One broker (Alpaca, IEX feed on the free tier), one macro source (FRED, `DGS10` by default), one macro factor.
 - Not a research platform: no signals, no strategy, no backtest of anything that could make money. `make backtest` validates the *risk model*.
 - Nothing is optimised: the engine reports concentration and never suggests weights.
@@ -298,6 +309,7 @@ repository places, cancels or simulates an order today):
 | 2026-09-01 → 02 | Droplet provisioned, DNS, first production deploy. Two bugs found and fixed: a fresh clone has no `book.sexp` (gitignored), and `deploy.sh` sourced its env file into bash, which turned the `$$` in the bcrypt hash into process IDs. Smoke suite green. README gained *Watching it* |
 | 2026-09-12 | The desk design approved: paper trading around the risk kernel, in phases, with its spec and first backend phase on the `desk/a1-record` branch until they merge. Phase W1 deployed: Figure 1 draws a frame's work rank by rank, a dotted rule where a cutoff held, edge weight from lifetime run counts and rule weight from each node's cost class, with a legend and a poster mode. Phase A1 landed on that branch: the desk library (`ohcamel_desk`, which the kernel cannot depend on); a SQLite journal of each session's close, its marks and a VaR forecast per estimator, recorded by `run-live` or `serve` when they run with a paper key, and in memory by the demo; and, in those paper-key runs, the book's quantities and cash synced from the Alpaca paper account every minute and the return windows rolling at each session's close |
 | 2026-09-13 | Phase A1 merged to main and deployed to both hosts from `cf79764`, after its whole-branch review and one fix wave: a record whose write fails is retried until the next session's close is due, a close and the equity trail wait for a current account book so a file book is never journaled, and every request to the paper host is bounded by a timeout. The live engine opened its journal on the `desk_data` volume, read its Alpaca paper account, and its first sync succeeded. Coverage was measured again at 82.0% of the kernel's instrumented points; the desk library is not instrumented yet |
+| 2026-09-17 | Phase A2 merged: the rules and the pre-trade gate on a fork of the live graph; the order manager (the journal before the wire, a timed-out submission resolved by lookup, reconciliation on restart, and no order while the book is not the account's); Alpaca paper's trading half behind a ten-second bound on every request (it closes a request still connecting or already answered; a peer that never sends its status line keeps its socket until the peer or the kernel ends it); the kill switch wired to the desk; previews for anyone and orders only from the live host's own page; costs per fill; the ticket and the blotter. Acceptance on the live host -- one paper order filled -- waits for the owner: the basic-auth password and market hours |
 
 Plans and specs live under [`superpowers/`](superpowers/): the readable-front-door
 design (the README rewrite), the eight-phase roadmap (marked complete, with its three deviations
@@ -308,10 +320,6 @@ recorded), and the deployment design.
 **The desk's remaining phases**, in the order the design lays out
 (`docs/superpowers/specs/2026-09-12-the-desk-design.md` §5):
 
-- **A2** — the order manager: rules, the gate, an order-management state
-  machine, trade updates, reconciliation, the kill switch wired to it at
-  last, the mutating routes and their protection, a pre-trade preview, TCA,
-  the ticket and the blotter.
 - **W2** — the site becomes a desk: the full navigation (Desk, Risk,
   Research, Execution, Argument, Ops) and Figure 1's remaining items.
 - **A3** — signals: Alpha's contract and rules R1–R7 move in, a research

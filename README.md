@@ -971,7 +971,8 @@ $ make demo
   ticking     one name every 400ms, a bar every 15s
   quiet       CVX is never ticked, so the stale path is visible
   alerts      on, logging to this terminal. Kill switch armed on nvda-cap --
-              it sets a flag and nothing else. Nothing here places orders.
+              a trip refuses new orders and cancels open ones, and resets 90 s
+              after the limit clears.
 ```
 
 ![make demo](docs/media/demo.png)
@@ -1026,9 +1027,11 @@ degrading into something that looks live and is showing made-up numbers. Note al
 that a free Alpaca plan allows **one concurrent market-data stream per account**;
 if anything else is using the same keys, this gets a 406 and stops.
 
-The dashboard is read-only and unauthenticated, and should be bound to localhost.
-There is nothing to authorise because no route mutates anything, and nothing in
-this codebase sends a message or takes an action on its own.
+The dashboard is unauthenticated at the engine, and should be bound to
+localhost or put behind a password, as the live host's proxy does. Four
+routes change the desk -- orders, cancel, kill and its reset -- and each
+refuses a request the page itself did not send (see *Orders*); on the public
+demo each answers 405.
 
 ## Watching it
 
@@ -1096,8 +1099,11 @@ deploy user alone, and reach the container as environment, never as a layer.
 
 ## What's verified
 
-`make test` runs 381 tests, all hermetic — no network, no credentials, and nothing
-that waits on the wall clock. They cover the numerics against hand-computed
+`make test` runs 439 tests, plus seven in `test/desk_async` that run with the
+scheduler -- the order manager's cases, the transport's bound and that
+suite's own count -- all hermetic — no network, no credentials, and nothing
+that waits on the wall clock: the scheduler's cases move a clock of their own.
+They cover the numerics against hand-computed
 values, the wire format, the alerting state machine, and the recomputation counts
 that make the graph's shape an assertion rather than a claim.
 
@@ -1168,7 +1174,7 @@ six properties and four example tests. `QCHECK_TRIALS=5000 make test` runs
 ### Coverage, and what it is not measuring
 
 `make coverage` runs the suite under `bisect_ppx` and reports **77%** (measured
-2026-09-15). The badge above is that number; CI enforces a floor of 60% and
+2026-09-17). The badge above is that number; CI enforces a floor of 60% and
 prints the full per-file table into the run summary, so a drop is visible
 without anyone remembering to look. The number covers both libraries: the risk
 kernel, `ohcamel` in `lib/`, and the desk, `ohcamel_desk` in `desk/`.
@@ -1177,38 +1183,46 @@ The interesting thing about the number is that it is bimodal, and it should be
 read as two numbers rather than one:
 
 ```
- 95%  lib/history_buffer.ml   80%  desk/desk.ml
- 95%  lib/crisis_data.ml      75%  lib/options.ml
- 93%  lib/graph.ml            70%  desk/journal.ml
- 91%  lib/attribution.ml      64%  desk/book_sync.ml
- 90%  lib/stress.ml           57%  desk/alpaca_paper.ml
- 90%  desk/desk_time.ml       57%  desk/order.ml
- 90%  lib/risk_metrics.ml     52%  lib/alerts.ml
- 89%  lib/limits.ml           51%  lib/feed/fred_client.ml
- 88%  lib/reports.ml          51%  desk/session_close.ml
- 87%  lib/vol_estimators.ml   50%  lib/feed/alpaca_rest.ml
- 85%  lib/server.ml           49%  lib/types.ml
- 85%  lib/var_backtest.ml     45%  lib/config.ml
- 82%  desk/ids.ml             40%  lib/feed/alpaca_ws.ml
- 81%  desk/sim_venue.ml        4%  desk/venue.ml
+ 95%  lib/history_buffer.ml     75%  lib/options.ml
+ 95%  lib/crisis_data.ml        71%  desk/oms.ml
+ 94%  desk/ticket.ml            70%  desk/tca.ml
+ 93%  lib/graph.ml              66%  desk/desk_routes.ml
+ 91%  lib/attribution.ml        64%  desk/alpaca_paper.ml
+ 91%  desk/rules.ml             64%  desk/book_sync.ml
+ 90%  lib/stress.ml             64%  desk/order.ml
+ 90%  desk/desk_time.ml         56%  lib/alerts.ml
+ 90%  lib/risk_metrics.ml       51%  lib/feed/fred_client.ml
+ 89%  lib/limits.ml             51%  desk/session_close.ml
+ 88%  lib/reports.ml            50%  lib/feed/alpaca_rest.ml
+ 87%  lib/vol_estimators.ml     49%  lib/types.ml
+ 87%  desk/reconcile.ml         45%  lib/config.ml
+ 86%  lib/server.ml             40%  lib/feed/alpaca_ws.ml
+ 85%  lib/var_backtest.ml       36%  desk/trade_updates.ml
+ 83%  desk/desk.ml              12%  desk/venue.ml
+ 83%  desk/journal.ml
+ 82%  desk/ids.ml
+ 82%  desk/sim_venue.ml
+ 81%  desk/halt.ml
 ```
 
 The left column is everything that computes a risk number or decides what the
-desk does. The split sits at 80% of each file's unrounded figure —
-`desk/desk.ml` prints 80% above but measured 79.73%, so it is in the right
-column, not the left.
+desk does — the order manager's own rules, ticket, halt and reconcile join it
+here, and so now do `desk.ml` and `journal.ml`, both above 80% for the first
+time since this table was written. The split sits at 80% of each file's
+unrounded figure.
 
-The right column is not one thing. Five files in it perform network IO
+The right column is not one thing. Six files in it perform network IO
 themselves — `lib/feed/alpaca_ws.ml`, `lib/feed/alpaca_rest.ml`,
-`lib/feed/fred_client.ml`, `lib/alerts.ml`'s Slack sink, and
-`desk/alpaca_paper.ml`, the desk's own Alpaca transport — and that group is
-the design decision worth keeping as a metric, not a backlog: every test in
-this project is hermetic — no network, no credentials, nothing waiting on a
-clock — so a websocket or an HTTP client is exercised only as far as its pure
-parts go. Raising these five would mean testing them against a mock broker,
-which moves the number up and establishes nothing about the real one. The bug
-that mattered in this codebase was found by pointing it at the actual market,
-and it is written up two sections down.
+`lib/feed/fred_client.ml`, `lib/alerts.ml`'s Slack sink, `desk/alpaca_paper.ml`
+(the desk's own Alpaca transport), and `desk/trade_updates.ml` (the venue's
+trade-updates socket, a second connection from the market-data stream) — and
+that group is the design decision worth keeping as a metric, not a backlog:
+every test in this project is hermetic — no network, no credentials, nothing
+waiting on a clock — so a websocket or an HTTP client is exercised only as
+far as its pure parts go. Raising these six would mean testing them against a
+mock broker, which moves the number up and establishes nothing about the real
+one. The bug that mattered in this codebase was found by pointing it at the
+actual market, and it is written up two sections down.
 
 The rest of the right column touches no network and is worth naming rather
 than hiding, each with why its figure is lower: `types.ml` is mostly
@@ -1217,20 +1231,27 @@ single-line accessors on abstract wrappers, many of which nothing calls yet;
 reach; `lib/config.ml` loads credentials and the book file, and most of what
 is untested is the missing-or-malformed-input error messages a hermetic run
 has no reason to trigger; `desk/venue.ml` is mostly record types for the
-venue's read interface, whose derived `sexp_of`/`compare`/`equal` only a
-handful of tests call; `desk/order.ml` is a pure state machine — tests drive
-its transitions, not the per-variant `to_string` conversions and derived
-boilerplate on its state and event types; `desk/book_sync.ml` is pure too,
-and its gap is that same derived boilerplate plus a comparator that only
+venue's read and trade interfaces, whose derived `sexp_of`/`compare`/`equal`
+only a handful of tests call; `desk/order.ml` is a pure state machine — tests
+drive its transitions, not the per-variant `to_string` conversions and
+derived boilerplate on its state and event types; `desk/book_sync.ml` is pure
+too, and its gap is that same derived boilerplate plus a comparator that only
 sorts when a sync leaves two or more unmanaged positions, which no test has
-done yet; `desk/journal.ml` is local SQLite, not network — its gaps are the
-write-failure and rollback paths a healthy database never takes, plus
-derived boilerplate on its own record types; and `desk/desk.ml` and
-`desk/session_close.ml` call the venue's injected closures but perform no
-network IO themselves, so what is unexercised is the recurring background
-loops (`sync_forever`, `run_forever`) and the read-queuing state that only a
-scheduler-driven test reaches — the main suite never starts the scheduler;
-that suite lives apart, in `test/desk_async`.
+done yet; `desk/session_close.ml` calls the venue's injected closures but
+performs no network IO itself, so what is unexercised is the read-queuing
+state that only a scheduler-driven test reaches — the main suite never
+starts the scheduler; that suite lives apart, in `test/desk_async`.
+`desk/oms.ml`, the order manager, sits low for the same reason at far larger
+scale: the lookup-retry schedule (2 s, 10 s, 30 s), the reconciliation path
+and the anomaly branches invariant 11 names (a fill after failed, an
+id mismatch) are each one shape the scheduler suite's seven cases exercise
+once, not the many the module is written to handle. `desk/tca.ml`'s gap is
+its own fallback — a fill whose quote had no usable bid and ask — and the
+summary functions' empty-list and non-positive-quantity branches, none of
+which a run with real quotes and real fills takes. `desk/desk_routes.ml`'s
+gap is the host-mismatch guard a correctly wired server never trips, and the
+per-route exception guards a hermetic run's well-formed requests never raise
+into.
 
 So the floor exists to make deleting tests noticeable, and that is all it is
 for. A coverage target would be an instruction to write the tests that raise it.
@@ -1284,14 +1305,46 @@ oscillating across a threshold does not produce a stream of pages, and lost data
 never clears an alert. The sending happens in an Async consumer downstream of an
 observer, never inside a node body, so a slow webhook cannot stall the graph.
 
-The kill switch sets a flag and is wired to nothing. There is no order-placement
-code anywhere in this repository, and `lib/alerts.ml` does not import the Alpaca
-client, so it could not reach a trading endpoint by mistake. What
-`Kill_switch.halt_new_orders` returns is a bool for a human or a future execution
-layer to read. This is not an unfinished feature. A risk system that can flatten a
-book by itself is a different and far more dangerous project than this one, and
-the flag is the seam where that decision would get made deliberately, by someone
-who meant it.
+The kill switch is still a flag in the kernel. `lib/alerts.ml` does not import the Alpaca client and could not reach a trading endpoint by mistake. But something now obeys the flag: the desk, outside the kernel. A trip refuses every new order and cancels every open one, and it never flattens a position. A risk system that closes a book by itself is a different and far more dangerous project than this one; the switch stops the desk adding risk and leaves what is held to a person. On the live host only a deliberate reset lifts it.
+
+## Orders
+
+Every order the desk sends has passed two checks, in this order, and the page shows both answers.
+
+**The rules** (`desk/rules.ml`) ask whether the order should exist. Every failing rule is reported, not only the first:
+- the symbol is in the book's universe, and the quantity is a positive whole number;
+- the book enables trading, the desk has a trading half, and the book is the account's -- read within the last two sync intervals;
+- the kill switch is clear, and the regular session is open;
+- the name has a mark that is not stale;
+- a limit price is a whole cent (Rule 612) and within the book's collar of the mark;
+- quantity × mark is within the order cap;
+- the quantity is within the book's share of twenty-day volume, and unknown volume refuses;
+- the same order was not proposed within the duplicate window;
+- fewer orders are open than the cap.
+
+**The limits** (`lib/gate.ml`) answer what the order would do to the book, on a fork of the live graph with the fill applied -- so no second implementation of exposure or of any limit exists to drift. An order that takes a clear limit over its line, or leaves a breached limit further over, is refused naming the limit. One that brings a breached limit closer to its line passes: a desk must be able to trade out of a breach.
+
+Then the order is written to the journal as `pending_submit` **before** the request that sends it. An answer that never comes is resolved by looking the client order id up, never by sending the order again. The request is bounded at ten seconds. The bound closes a connection that is still connecting or has answered; one held open before its status line lasts until the peer or the kernel ends it. Fills are journaled whatever state their order is in. The book's position follows each fill and is set from the venue's own figure, and the account is read again after it; a read that was already out when the fill landed is refused, so it cannot undo the fill. A restart reconciles every open order against the venue before serving.
+
+**The kill switch** refuses every new order and cancels every open one when a limit it trips on is breached, or when someone halts the desk by hand. It does not flatten positions. On the live host only a deliberate reset lifts it. On the demo it resets itself 90 s after its limit clears, and the page says that only the demo does this.
+
+**Costs** (`desk/tca.ml`, after Perold 1988) are measured per fill from the decision price. Each is split into delay (the market's move before the order arrived) and slippage against the arrival quote's mid, shown beside the quoted half-spread and the difference from the book's modelled half-spread. On the paper account every cost measures Alpaca's fill simulator against IEX's quote -- one venue's, not the national best.
+
+| Route | Host | What it does |
+|---|---|---|
+| `GET /api/desk/tca` | both | costs per fill, overall and by symbol |
+| `GET /api/desk/sessions` | both | the newest 250 recorded session closes |
+| `POST /api/desk/preview` | both | the rules' and the limits' answer to a ticket; creates nothing |
+| `POST /api/desk/orders` | live | a ticket through the rules, the limits, the journal and the venue |
+| `POST /api/desk/cancel` | live | cancel one open order |
+| `POST /api/desk/kill` | live | halt the desk and cancel every open order |
+| `POST /api/desk/kill/reset` | live | lift the halt; the body must say `{"confirm":"reset"}` |
+
+The live routes require the header `X-OhCamel-Desk: 1` and a request the browser labels as from this site (`Sec-Fetch-Site: same-origin`, or an `Origin` equal to the `Host`), behind the host's password. The demo answers each with 405 and a sentence. Its own trader proposes a small order every 45 seconds, so the blotter has something to show, including refusals.
+
+Limits, stated:
+- whole shares; market and limit orders; day orders; regular hours;
+- Alpaca paper only, by construction: the trading host is a constant, and a key that does not begin `PK` is refused before a request is sent.
 
 ## Building it
 
@@ -1317,9 +1370,12 @@ for that detail than here. OCaml 5.1.0 or newer is required; this switch is on
 
 ## What this is not
 
-There is no order routing and no execution — nothing here places, cancels or
-simulates a trade. Persistence is one journal, `desk/journal.ml`: a session's
-close, its marks and a VaR forecast per estimator. `run-live` and `serve` keep it
+Orders go to one place, Alpaca's paper account, and only after the rules and
+the book's limits pass them (see *Orders*). Nothing here can reach a
+live-money endpoint, and the public demo trades a venue simulated in this
+process. Persistence is one journal, `desk/journal.ml`: every order, its
+events and its fills, and each session's close, marks and VaR forecasts.
+`run-live` and `serve` keep it
 in a file, `/data/desk.db` on the live host, and restore the drawdown trail from
 it at the first successful sync after startup; the demo keeps it in memory, so it
 starts empty each run. The book

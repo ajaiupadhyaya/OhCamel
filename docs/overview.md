@@ -31,7 +31,8 @@ sectors. **Is the VaR any good?** A battery of statistical coverage tests,
 run on real crisis data as well as generated data. **What would break the
 book?** A scenario suite that runs on a copy of the live graph.
 
-It computes and reports. It never trades.
+It computes and reports, and a desk built around it places paper orders, each
+one judged by the engine first.
 
 ## Is the data real?
 
@@ -67,8 +68,9 @@ marks and the file says what is held.
 | Validation | Kupiec, Christoffersen independence, conditional coverage, a Weibull duration test, the Basel traffic light and a 21-session burst count, all over rolling point-in-time forecasts | [`var_backtest.ml`](../lib/var_backtest.ml), [`validation_report.ml`](../lib/validation_report.ml) |
 | Scenarios | Six standard shocks run on a fork of the live graph, reporting P&L and which limits each one breaks | [`stress.ml`](../lib/stress.ml) |
 | Options | Black-Scholes European pricing with delta, gamma, vega and theta; delta folded into exposure; vega broken out by tenor | [`options.ml`](../lib/options.ml), [`options_walk.ml`](../lib/options_walk.ml) |
-| Limits and alerts | Breaches computed as data; edge-triggered alerts; a kill-switch flag | [`limits.ml`](../lib/limits.ml), [`alerts.ml`](../lib/alerts.ml) |
+| Limits and alerts | Breaches computed as data; edge-triggered alerts; a kill switch the desk obeys | [`limits.ml`](../lib/limits.ml), [`alerts.ml`](../lib/alerts.ml) |
 | Staleness | Last tick per symbol. A stale name is flagged, along with everything computed from it | [`graph.ml`](../lib/graph.ml) |
+| Orders | The rules, then the book's limits on a fork of the live graph; the journal before the wire; reconciliation against the venue on restart; each fill's cost in basis points. The public demo previews and never takes an order | [`rules.ml`](../desk/rules.ml), [`gate.ml`](../lib/gate.ml), [`oms.ml`](../desk/oms.ml), [`tca.ml`](../desk/tca.ml) |
 
 A few of these deserve more than a table row.
 
@@ -86,9 +88,9 @@ When on, an alert fires once when a limit is crossed and clears only after the
 value falls back below a set fraction of the limit, so a number resting on the
 line doesn't flap. Sinks are the log, a file, a dry run that prints the
 payload, or Slack. The kill switch is a separate setting. It trips on limits
-you name and sets `halt_new_orders = true`, and nothing else happens. There is
-no order-placement code anywhere in the repository for it to stop, and that
-is intentional.
+you name; the desk then refuses every new order and cancels every open one,
+and leaves positions alone. On the live host a person can also halt the desk
+by hand.
 
 **Scenarios.** The standard suite:
 
@@ -180,8 +182,17 @@ has recomputed.
 | `/api/reports/garch` | The GARCH study, computed in parallel after startup |
 | `/api/ops` | What `/ops` shows, as JSON |
 | `/api/desk` | The desk: its venue and whether it could reach it, the account as last read, each book name's quantity at the venue and in the graph, names held outside the book, and the last 30 recorded sessions with the latest forecasts |
+| `GET /api/desk/tca` | Costs per fill, overall and by symbol |
+| `GET /api/desk/sessions` | The newest 250 recorded session closes |
+| `POST /api/desk/preview` | The rules' and the limits' answer to a ticket; creates nothing |
+| `POST /api/desk/orders` | A ticket through the rules, the limits, the journal and the venue (live host only) |
+| `POST /api/desk/cancel` | Cancel one open order (live host only) |
+| `POST /api/desk/kill` | Halt the desk and cancel every open order (live host only) |
+| `POST /api/desk/kill/reset` | Lift the halt; the body must say `{"confirm":"reset"}` (live host only) |
 
-No route changes anything.
+Four routes change the desk -- orders, cancel, kill and its reset -- on the
+live host only, and only for a request the page itself sends; on the public
+demo each answers 405.
 
 ## Where it runs
 
@@ -198,16 +209,18 @@ No route changes anything.
 
 ## How it's checked
 
-- **381 tests**, all hermetic: no network, no credentials, no waiting on a
-  clock. Expected values are derived by hand beside each assertion, and the
-  suite checks its own count against [`verified.ml`](../lib/verified.ml).
+- **439 tests**, plus seven scheduler cases in `test/desk_async`, all
+  hermetic: no network, no credentials, no waiting on a clock -- the
+  scheduler's cases move a clock of their own. Expected values are derived by
+  hand beside each assertion, and each suite checks its own count against
+  [`verified.ml`](../lib/verified.ml).
 - **Property tests** (QCheck) cover the identities over random inputs: Euler
   additivity, component VaR summing to the total, a hedge reducing variance,
   fork isolation, and no lookahead in the backtest.
 - **Architecture tests** pin how many nodes a tick recomputes, and fail if the
   staleness clock ever feeds a risk number. That test is the guard against the
   engine quietly becoming a poller.
-- **77.3% coverage** of `lib/` and `desk/` together (measured 2026-09-15). The
+- **76.5% coverage** of `lib/` and `desk/` together (measured 2026-09-17). The
   pure numeric core is above 90%
   and the network edges are lower, because the tests never touch a network.
 - **CI on Ubuntu and macOS** for every push: the build, the tests, a formatting
@@ -216,10 +229,12 @@ No route changes anything.
 
 ## What it doesn't do
 
-- **No trading.** Nothing places, cancels or simulates an order, and the kill
-  switch is a flag wired to nothing.
-- **One journal.** A SQLite journal (`desk/journal.ml`) holds each session's
-  close, its marks and a VaR forecast per estimator. `serve` and `run-live`
+- **Paper trading only.** Orders go to Alpaca's paper account, after the
+  rules and the limits; the demo trades a venue simulated in this process
+  and takes orders only from its own trader.
+- **One journal.** A SQLite journal (`desk/journal.ml`) holds every order,
+  its events and its fills, and each session's close, marks and VaR
+  forecasts. `serve` and `run-live`
   keep it in a file (`/data/desk.db` on the live host) and restore the
   drawdown trail from it at the first successful sync after startup; the demo
   keeps it in memory, empty at each start. Nothing else survives a restart.

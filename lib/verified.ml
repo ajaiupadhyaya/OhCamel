@@ -8,10 +8,10 @@
    against the registry it runs, so the count cannot drift silently, and Phase
    5 serves them on /api/reports beside the numbers the process did compute.
 
-   [coverage_pct] is the published rounding, not the quotient: 4,617 / 5,972
-   is 77.311%, published as 77.3 -- README.md's badge rounds further to the
+   [coverage_pct] is the published rounding, not the quotient: 5,903 / 7,714
+   is 76.523%, published as 76.5 -- README.md's badge rounds further to the
    whole percent (77%) and docs/status.md carries the one-decimal figure
-   (77.3%), so a page that printed 77.311 would
+   (76.5%), so a page that printed 76.523 would
    be claiming a precision `make coverage` did not measure (bisect_ppx
    counts visited points, not lines, and the number moves with the
    instrumentation). The fraction is kept beside it so the rounding is
@@ -36,7 +36,7 @@ let scheduler_tests = 7
 
 (* The coverage figures: dated and re-measured together, never adjusted
    alone -- see the comment above [tests] for why. *)
-let coverage_covered = 4_617
-let coverage_lines = 5_972
-let coverage_pct = 77.3
-let dated = "2026-09-15"
+let coverage_covered = 5_903
+let coverage_lines = 7_714
+let coverage_pct = 76.5
+let dated = "2026-09-17"

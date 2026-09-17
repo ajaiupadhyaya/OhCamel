@@ -4,6 +4,10 @@
  ; an ordinary alcotest case, which is what keeps the example-based and
  ; property-based suites in ONE runner. Two runners would mean two things to
  ; remember to run, and the one that gets forgotten is the one that fails.
+ ; test/desk_async is a second runner, for the cases that need the scheduler --
+ ; this suite's own promise is that it never starts one. `dune runtest` runs
+ ; both, so forgetting one still isn't possible; it is two things to read, not
+ ; two things to remember to run.
  ; yojson: the reproducibility pins parse web/quoted.json (Quoted.json).
  ; ohcamel_desk and sqlite3: the desk's suites, and the journal test that writes a file with a schema version this build refuses.
  (libraries
