@@ -182,12 +182,12 @@ let test_who_may_change_the_desk () =
   (* Fix round 2, minor: the two inputs M2 actually named, each pinning one
      of the two checks on its own -- "null" and "ftp://..." above both fail
      the scheme check already, so neither would notice the host check being
-     deleted, and vice versa. *)
-  check "live, Origin: https:// (a scheme, an empty host): 403" 403 ~host:`Live
-    (request
-       ~headers:
-         [ ("X-OhCamel-Desk", "1"); ("Origin", "https://"); ("Host", "live.example.com") ]
-       p);
+     deleted, and vice versa. The empty host is sent with an empty Host
+     header: an empty Origin host equals an empty Host, so only the
+     non-empty-host guard refuses it. Against a non-empty Host the two would
+     differ, and the case would pass with the guard deleted. *)
+  check "live, Origin: https:// and an empty Host (both hosts empty): 403" 403 ~host:`Live
+    (request ~headers:[ ("X-OhCamel-Desk", "1"); ("Origin", "https://"); ("Host", "") ] p);
   check "live, Origin: //live.example.com (a host, no scheme): 403" 403 ~host:`Live
     (request
        ~headers:
@@ -378,6 +378,14 @@ let test_a_reset_must_say_so () =
         failwith "boom"))
     ~f:(fun server oms ->
       let halt = D.Oms.halt oms in
+      (* Halted first, through the switch itself and not [Oms.kill], whose own
+         event line would spend the one raise: a switch that was never halted
+         reads clear whether or not the reset ran, and the last check below
+         could not tell. *)
+      D.Halt.halt halt ~why:"a test" ~at:(Time_ns.now ());
+      Alcotest.(check string)
+        "halted before the reset" "halted"
+        (D.Halt.State.name (D.Halt.state halt));
       let code, text =
         dispatched server
           (request ~headers:from_this_site ~body:{|{"confirm":"reset"}|}

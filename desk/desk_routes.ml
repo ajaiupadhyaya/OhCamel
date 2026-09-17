@@ -331,7 +331,24 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
               (fun () -> parse_kill_reason r)
               ~k:(fun why ->
                 guard_async oms ~route:"kill" server (fun () ->
-                    let%bind () = Oms.kill oms ~why in
+                    (* The answer is the halt, not the cancels. [Oms.kill] halts
+                       before it returns, and its cancels then go one at a
+                       time behind the order manager's other jobs, each bounded
+                       at 10 s: twenty open orders on a slow venue would hold
+                       the person who pressed the button for minutes. So they
+                       go on without the response, under a monitor of their
+                       own, so a raise among them reaches the log and not the
+                       process; each cancel's own outcome is already logged. *)
+                    don't_wait_for
+                      (match%map
+                         Monitor.try_with ~extract_exn:true ~rest:`Log (fun () ->
+                             Oms.kill oms ~why)
+                       with
+                      | Ok () ->
+                          Oms.on_event oms
+                            "desk      the kill has asked the venue to cancel every open \
+                             order it has an id for"
+                      | Error exn -> log_exn oms ~route:"kill's cancels" exn);
                     respond server (switch ()))));
     };
     {

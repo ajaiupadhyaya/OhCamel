@@ -160,12 +160,20 @@ let sync_with t ~account ~positions ~at ~seq =
            beside the file's. Once only: a second restore would replace the
            trail again and drop every mark made since.
 
-           A restore that raises is caught neither here nor by either caller
-           (bin/main.ml's first sync, [sync_forever]). It leaves [sync] through
-           the enclosing monitor and ends the process, as the startup restore
-           it replaced did; there is no next read. The flag is set first only
-           so that a caller which did catch the exception would not restore a
-           second time. *)
+           A restore that raises is caught neither here nor by any of the
+           three callers of [sync]: bin/main.ml's first sync, [sync_forever],
+           and [after_fill]. The last is the order manager's, after a fill and
+           at the end of a reconciliation that found open orders, so the
+           startup reconciliation reaches it whenever the first sync timed
+           out. The exception leaves [sync] through the monitor of whoever
+           started the read. From the first two that is the process's own, and
+           it ends the process, as the startup restore it replaced did. From
+           [after_fill] it is the monitor of the manager's job, which has
+           finished by the time the venue answers; the manager's sequencer
+           logs an exception that arrives after its job, so the process goes
+           on with the trail unrestored. Either way there is no second
+           restore: the flag is set first, so no read after this one tries
+           again. *)
         if not t.synced then (
           t.synced <- true;
           t.on_first_sync ())

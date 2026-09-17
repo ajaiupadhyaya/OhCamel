@@ -39,17 +39,55 @@ let sessions_t =
     (fun ppf s -> Sexp.pp_hum ppf (Journal.Session.sexp_of_t s))
     Journal.Session.equal
 
+(* The indexes the journal makes itself, by name: SQLite's own for a primary
+   key or a UNIQUE column have no SQL, and are not what this reads. *)
+let own_indexes j =
+  let names = ref [] in
+  ignore
+    (Sqlite3.exec_not_null_no_headers (Journal.For_testing.db j)
+       ~cb:(fun row -> names := row.(0) :: !names)
+       "SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL ORDER BY \
+        name"
+      : Sqlite3.Rc.t);
+  List.rev !names
+
+let journal_indexes =
+  [ "fills_by_order"; "order_events_by_order"; "orders_by_created"; "orders_open" ]
+
+(* A restart is also how a journal written before the indexes existed meets
+   them: the file below has none when it is closed, as a file from that build
+   would, and opening it again adds all four without touching a row or the
+   schema version. *)
 let test_a_session_survives_a_restart () =
   with_temp_path ~f:(fun path ->
       let j = open_exn path in
       List.iter [ "2026-09-09"; "2026-09-10"; "2026-09-11" ] ~f:(fun d ->
           Journal.record_session j (session d));
+      List.iter journal_indexes ~f:(fun name ->
+          ignore
+            (Sqlite3.exec (Journal.For_testing.db j) ("DROP INDEX IF EXISTS " ^ name)
+              : Sqlite3.Rc.t));
+      Alcotest.(check (list string)) "no indexes, as it is closed" [] (own_indexes j);
       Journal.close j;
       let j = open_exn path in
       Alcotest.(check (list sessions_t))
         "the three sessions, as written"
         [ session "2026-09-09"; session "2026-09-10"; session "2026-09-11" ]
         (Journal.sessions j);
+      Alcotest.(check (list string))
+        "reopened: the four indexes, added at open" journal_indexes (own_indexes j);
+      let version = ref [] in
+      ignore
+        (Sqlite3.exec_not_null_no_headers (Journal.For_testing.db j)
+           ~cb:(fun row -> version := row.(0) :: !version)
+           "SELECT value FROM meta WHERE key = 'schema_version'"
+          : Sqlite3.Rc.t);
+      Alcotest.(check (list string)) "and the file is still version 1" [ "1" ] !version;
+      Journal.close j;
+      (* and a third open, onto a file that has them, changes nothing *)
+      let j = open_exn path in
+      Alcotest.(check (list string))
+        "opened again: the same four, and no error" journal_indexes (own_indexes j);
       Journal.close j)
 
 let test_a_date_recorded_twice_is_one_session () =

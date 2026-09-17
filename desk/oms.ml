@@ -86,6 +86,9 @@ type t = {
      own interval and however long each refresh's requests take. *)
   mutable bars_fetched_at : Time_ns.t option;
   mutable session_open : bool;
+  (* The [resolve] and [retry_cancel] loops running now, each as its loop's
+     name and the client order id ([one_loop]). *)
+  live_loops : String.Hash_set.t;
 }
 
 let create ~graph ~journal ~spec ~read ~trade ~halt ~accepts_tickets ~adv ~now ~rng
@@ -116,6 +119,7 @@ let create ~graph ~journal ~spec ~read ~trade ~halt ~accepts_tickets ~adv ~now ~
     adv20 = Symbol.Map.empty;
     bars_fetched_at = None;
     session_open = false;
+    live_loops = String.Hash_set.create ();
   }
 
 let halt t = t.halt
@@ -305,48 +309,41 @@ let preview t (ticket : Ticket.t) : Preview.t =
   in
   { Preview.request; failures = Rules.check ctx request; verdict; decision_price }
 
-(* A DELETE whose answer was not a confirmation, sent again while the switch
-   is not clear. desk/alpaca_trade.ml answers a timeout, a 5xx and a 422 with
-   the same error, and a timeout may never have reached the venue: under a
-   halt the only safe reading is that the order may still be resting there.
-   A retry resends the DELETE for the same venue id and nothing else, and only
-   while the order is still open, still pending_cancel under that id, and the
-   switch still not clear -- the venue's update that settles the order, or a
-   reset, ends the retries. The delays are the lookups' (2, 10 and 30 s by
-   default), so they are bounded: after the last the order is left
-   pending_cancel, and that is said aloud. *)
-let rec retry_cancel t (client : Ids.Client_order_id.t) ~(id : string)
-    ~(delays : Time_ns.Span.t list) : unit Deferred.t =
-  let name = Ids.Client_order_id.to_string client in
-  match delays with
-  | [] ->
-      t.on_event
-        (sprintf
-           "desk      stopped sending the cancel of %s again; it stays pending_cancel \
-            and may still be resting at the venue until the venue reports"
-           name);
-      Deferred.unit
-  | delay :: rest ->
-      let%bind () = Time_source.after t.time_source delay in
-      let%bind again =
-        enqueue t (fun () ->
-            match (Map.find t.open_ name, t.trade) with
-            | Some o, Ok trade
-              when Order.State.equal o.Order.state Order.State.Pending_cancel
-                   && Option.equal String.equal o.Order.venue_order_id (Some id)
-                   && Option.is_some (Halt.reason t.halt) -> (
-                match%map trade.Venue.Trade.cancel id with
-                | Ok () -> false
-                | Error e ->
-                    t.on_event
-                      (sprintf
-                         "desk      the venue's answer to cancelling %s again was not a \
-                          confirmation either: %s"
-                         name (Error.to_string_hum e));
-                    true)
-            | _ -> return false)
-      in
-      if again then retry_cancel t client ~id ~delays:rest else Deferred.unit
+(* At most one loop of each kind per order, however many callers start one.
+   [reconcile] runs at every live start and again each time the update stream
+   connects, and each run would otherwise start another [resolve] for an order
+   still unknown -- and a lookup that errors for good is asked once a minute
+   without end, by every one of them, from the 200 requests a minute the desk
+   has. A kill by hand and then a trip each cancel every open order, and would
+   otherwise start two [retry_cancel] loops for one DELETE. A start while a
+   loop of the same kind runs for the order is skipped.
+
+   The key is the loop's name with the client order id, not the id alone: a
+   [resolve] still waiting out its delay on an order the stream has since
+   named must not keep the switch's retries from starting for it.
+
+   A loop that ends calls [stop] inside the sequencer job that decided so, so
+   the next job -- the only place a loop is started -- can start another at
+   once. A loop that raises never reaches it, and [finally] takes the key out
+   instead; [stop] runs once per loop, so a late [finally] cannot take out the
+   key of a loop started after it. *)
+let one_loop t ~(loop : string) (client : Ids.Client_order_id.t)
+    (body : stop:(unit -> unit) -> unit Deferred.t) : unit Deferred.t =
+  let k = loop ^ " " ^ Ids.Client_order_id.to_string client in
+  if Hash_set.mem t.live_loops k then Deferred.unit
+  else (
+    Hash_set.add t.live_loops k;
+    let stopped = ref false in
+    let stop () =
+      if not !stopped then (
+        stopped := true;
+        Hash_set.remove t.live_loops k)
+    in
+    Monitor.protect
+      (fun () -> body ~stop)
+      ~finally:(fun () ->
+        stop ();
+        Deferred.unit))
 
 (* One event, all the way down: the machine; the journal, the fill first when
    there is one; the open set; the page. And the switch: an order the venue
@@ -432,6 +429,87 @@ and cancel t (client : Ids.Client_order_id.t) : (Order.t, string) Result.t Defer
                         pending_cancel until the venue reports"
                        (Error.to_string_hum e)))))
 
+(* A DELETE whose answer was not a confirmation, sent again while the switch
+   is not clear. desk/alpaca_trade.ml answers a timeout, a 5xx and a 422 with
+   the same error, and a timeout may never have reached the venue: under a
+   halt the only safe reading is that the order may still be resting there.
+   A retry resends the DELETE for the same venue id and nothing else, and only
+   while the order is still open under that id, pending_cancel or partially
+   filled, and the switch still not clear -- the venue's update that settles
+   the order, or a reset, ends the retries. The delays are the lookups' (2, 10
+   and 30 s by default), so they are bounded: after the last the order is left
+   pending_cancel.
+
+   A partial fill does not end them. It moves a pending_cancel order to
+   partially_filled, and the rest of it is still resting at the venue if the
+   DELETE never arrived; so the retry asks for the cancel again, journaled as
+   one, before it resends. Every end under the switch but the order leaving
+   the open set is said aloud -- a confirmation, the last retry, an order this
+   retry does not cancel -- because until the venue reports, the order may
+   still be working there. *)
+and retry_cancel t (client : Ids.Client_order_id.t) ~(id : string)
+    ~(delays : Time_ns.Span.t list) : unit Deferred.t =
+  let name = Ids.Client_order_id.to_string client in
+  let ended why =
+    t.on_event (sprintf "desk      stopped sending the cancel of %s again: %s" name why)
+  in
+  let exhausted =
+    "no retry is left; it stays pending_cancel and may still be resting at the venue \
+     until the venue reports"
+  in
+  one_loop t ~loop:"retry_cancel" client (fun ~stop ->
+      let rec go = function
+        | [] ->
+            ended exhausted;
+            stop ();
+            Deferred.unit
+        | delay :: rest ->
+            let%bind () = Time_source.after t.time_source delay in
+            let%bind again =
+              enqueue t (fun () ->
+                  match (Map.find t.open_ name, t.trade, Halt.reason t.halt) with
+                  | None, _, _ | _, _, None ->
+                      stop ();
+                      return false
+                  | Some o, Ok trade, Some _
+                    when Option.equal String.equal o.Order.venue_order_id (Some id)
+                         && (Order.State.equal o.Order.state Order.State.Pending_cancel
+                            || Order.State.equal o.Order.state
+                                 Order.State.Partially_filled) -> (
+                      if Order.State.equal o.Order.state Order.State.Partially_filled then
+                        ignore (record t o Order.Event.Cancel_requested : Order.t);
+                      match%map trade.Venue.Trade.cancel id with
+                      | Ok () ->
+                          ended
+                            "the venue confirmed it, and the order stays pending_cancel \
+                             until the venue reports";
+                          stop ();
+                          false
+                      | Error e ->
+                          t.on_event
+                            (sprintf
+                               "desk      the venue's answer to cancelling %s again was \
+                                not a confirmation either: %s"
+                               name (Error.to_string_hum e));
+                          if List.is_empty rest then (
+                            ended exhausted;
+                            stop ();
+                            false)
+                          else true)
+                  | Some o, _, Some _ ->
+                      ended
+                        (sprintf
+                           "it is %s under venue id %s, which is not an order this retry \
+                            cancels"
+                           (Order.State.to_string o.Order.state)
+                           (Option.value o.Order.venue_order_id ~default:"(none)"));
+                      stop ();
+                      return false)
+            in
+            if again then go rest else Deferred.unit
+      in
+      go delays)
+
 (* A refusal is an order too: journaled, with its reasons, in a state that
    says it never reached a venue. *)
 let refuse t (p : Preview.t) ~source =
@@ -446,34 +524,45 @@ let refuse t (p : Preview.t) ~source =
    the next lookup and nothing else -- never a second request for the same
    order, because the first may be arriving at the venue as this one is
    asked. *)
-let rec resolve t (client : Ids.Client_order_id.t) ~(delays : Time_ns.Span.t list) :
+let resolve t (client : Ids.Client_order_id.t) ~(delays : Time_ns.Span.t list) :
     unit Deferred.t =
-  let delay, rest =
-    match delays with d :: rest -> (d, rest) | [] -> (Time_ns.Span.of_min 1.0, [])
-  in
-  let%bind () = Time_source.after t.time_source delay in
-  let%bind again =
-    enqueue t (fun () ->
-        match (Map.find t.open_ (Ids.Client_order_id.to_string client), t.trade) with
-        | Some o, Ok trade when Order.State.equal o.Order.state Order.State.Submit_unknown
-          -> (
-            match%map trade.Venue.Trade.find_order client with
-            | Ok (Some v) ->
-                ignore (record t o (Order.Event.Found v.Venue.Venue_order.id) : Order.t);
-                false
-            | Ok None when List.is_empty rest ->
-                ignore (record t o Order.Event.Not_found : Order.t);
-                false
-            | Ok None -> true
-            | Error e ->
-                t.on_event
-                  (sprintf "desk      %s is still unknown; the lookup failed: %s"
-                     (Ids.Client_order_id.to_string client)
-                     (Error.to_string_hum e));
-                true)
-        | _ -> return false)
-  in
-  if again then resolve t client ~delays:rest else Deferred.unit
+  one_loop t ~loop:"resolve" client (fun ~stop ->
+      let rec go delays =
+        let delay, rest =
+          match delays with d :: rest -> (d, rest) | [] -> (Time_ns.Span.of_min 1.0, [])
+        in
+        let%bind () = Time_source.after t.time_source delay in
+        let%bind again =
+          enqueue t (fun () ->
+              match
+                (Map.find t.open_ (Ids.Client_order_id.to_string client), t.trade)
+              with
+              | Some o, Ok trade
+                when Order.State.equal o.Order.state Order.State.Submit_unknown -> (
+                  match%map trade.Venue.Trade.find_order client with
+                  | Ok (Some v) ->
+                      ignore
+                        (record t o (Order.Event.Found v.Venue.Venue_order.id) : Order.t);
+                      stop ();
+                      false
+                  | Ok None when List.is_empty rest ->
+                      ignore (record t o Order.Event.Not_found : Order.t);
+                      stop ();
+                      false
+                  | Ok None -> true
+                  | Error e ->
+                      t.on_event
+                        (sprintf "desk      %s is still unknown; the lookup failed: %s"
+                           (Ids.Client_order_id.to_string client)
+                           (Error.to_string_hum e));
+                      true)
+              | _ ->
+                  stop ();
+                  return false)
+        in
+        if again then go rest else Deferred.unit
+      in
+      go delays)
 
 let propose t ?(source = "manual") (ticket : Ticket.t) : (Preview.t * Order.t) Deferred.t
     =

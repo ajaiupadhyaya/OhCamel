@@ -299,11 +299,15 @@ let rules (p : D.Oms.Preview.t) =
    adapter answers both with the same error. The resting order's first DELETE
    never reaches the venue. The flying order has no venue id when the kill
    lands, so the kill skips it and [record] cancels it the moment its id
-   arrives; that DELETE does reach the venue, and its answer is lost. Under the
-   halt each is sent again on the lookups' schedule, first at t0 + 2 s: the
-   resting order's retry cancels it, and the flying order's finds it already
-   cancelled and sends nothing. The venue numbers orders as it receives them,
-   so the resting order is sim-1 and the flying one sim-2. *)
+   arrives; that DELETE does reach the venue, and its answer is lost. Before
+   any retry, the venue reports 20 of the resting order's 50 filled, which
+   moves it from pending_cancel to partially_filled: a fill must not end the
+   cancel's retries, or the other 30 rest at the venue through the halt. Under
+   the halt each is sent again on the lookups' schedule, first at t0 + 2 s:
+   the resting order's retry cancels what is left of it, and the flying
+   order's finds it already cancelled and sends nothing. The venue numbers
+   orders as it receives them, so the resting order is sim-1 and the flying
+   one sim-2. *)
 let test_a_halt_refuses_and_cancels () =
   let f = fixture () in
   let sim = D.Sim_venue.trade ~auto:false f.venue in
@@ -364,6 +368,40 @@ let test_a_halt_refuses_and_cancels () =
   let%bind p, refused = D.Oms.propose oms (ticket aapl D.Order.Side.Buy 1) in
   Alcotest.(check string) "refused" "rejected_pre_trade" (state f refused);
   Alcotest.(check (list string)) "by the switch alone" [ "kill_switch" ] (rules p);
+  (* The venue's word, on its own stream: 20 of sim-1's 50 at its limit of
+     99. The simulated venue fills whole orders only, so the partial fill is
+     written onto its stream by hand; its own book still reads the order as
+     new, as Alpaca's reads a partly filled order it will still cancel. *)
+  let sim_1 =
+    Option.value_exn
+      (D.Sim_venue.find_now f.venue
+         resting.D.Order.request.D.Order.Request.client_order_id)
+  in
+  D.Sim_venue.emit f.venue
+    {
+      D.Venue.Update.event = "partial_fill";
+      order =
+        {
+          sim_1 with
+          D.Venue.Venue_order.status = "partially_filled";
+          filled_qty = 20.0;
+          filled_avg_price = Some 99.0;
+        };
+      fill =
+        Some
+          {
+            D.Order.Fill.execution_id = "sim-1-partial";
+            qty = 20.0;
+            price = Price.of_float 99.0;
+            at = Time_ns.now ();
+            (* nothing held before, so the 20 bought are the position *)
+            position_qty = Some 20.0;
+          };
+      at = Time_ns.now ();
+    };
+  let%bind () = settle () in
+  Alcotest.(check string)
+    "a fill under the halt: partially_filled" "partially_filled" (state f resting);
   (* 14:00:00 + 2 s - 1 ns: the first retry is not yet due *)
   let%bind () =
     Time_source.advance_by_alarms ~wait_for:settle f.clock
@@ -371,14 +409,33 @@ let test_a_halt_refuses_and_cancels () =
   in
   let%bind () = settle () in
   Alcotest.(check string)
-    "1 ns short of 2 s, still pending_cancel" "pending_cancel" (state f resting);
+    "1 ns short of 2 s, still partially_filled" "partially_filled" (state f resting);
   (* 14:00:00 + 2 s, the first of the 2, 10 and 30 s delays *)
   let%bind () =
     Time_source.advance_by_alarms ~wait_for:settle f.clock
       ~to_:(Time_ns.add t0 (Time_ns.Span.of_sec 2.0))
   in
   let%bind () = settle () in
-  Alcotest.(check string) "at 2 s the retry cancels it" "cancelled" (state f resting);
+  Alcotest.(check string)
+    "at 2 s the retry cancels the rest of it" "cancelled" (state f resting);
+  (* the 20 the venue reported stay filled; the other 50 - 20 = 30 were
+     cancelled *)
+  Alcotest.(check (float 1e-9))
+    "20 filled, kept" 20.0 (journaled f resting).D.Order.filled_qty;
+  (* A retry that ends under the switch says so, unless its order left the
+     open set: one line for sim-1, whose retry the venue confirmed, and none
+     for sim-2, whose retry found it already cancelled. *)
+  let stopped o =
+    Queue.count f.events ~f:(fun line ->
+        String.is_substring line ~substring:"stopped sending the cancel of"
+        && String.is_substring line
+             ~substring:
+               (D.Ids.Client_order_id.to_string
+                  o.D.Order.request.D.Order.Request.client_order_id))
+  in
+  Alcotest.(check (pair int int))
+    "the lines saying a retry stopped, for sim-1 and sim-2" (1, 0)
+    (stopped resting, stopped flying);
   (* sim-1: the lost one, then the retry = 2. sim-2: still 1, because its
      retry found the order out of the open set and sent nothing. *)
   Alcotest.(check (pair int int))
@@ -448,8 +505,11 @@ let test_a_limit's_trip_cancels_the_open_orders () =
    fixture's clock, 42 s in all, and not a moment sooner. The third, a limit
    buy of 20 XOM at 49 that rests (the ask is 50 x 1.0005 = 50.025, above it;
    49 is 2% from the mark, inside the collar), is the lookup that FAILS: the
-   restart's first question about it errors, and it goes onto the same
-   schedule, whose first lookup finds it. Nothing was sent twice. The three
+   restart's questions about it error, and it goes onto the same schedule,
+   whose first lookup finds it. The restart reconciles twice, as a live start
+   does -- once at start and once when the update stream connects -- and the
+   second starts no second schedule for an order already on one. Nothing was
+   sent twice. The three
    that never hear back get update pipes of their own that are already
    closed, so none can take the venue's updates from the restart. *)
 let test_a_restart_reconciles () =
@@ -497,7 +557,8 @@ let test_a_restart_reconciles () =
   (* AAPL and XOM; MSFT's request never left *)
   Alcotest.(check int) "the venue received two" 2 (D.Sim_venue.received f.venue);
   (* The restart's socket, and every lookup it makes counted by the order's
-     symbol. XOM's first lookup errors, as a request that timed out would. *)
+     symbol. XOM's first two lookups -- the two reconciliations' -- error, as a
+     request that timed out would. *)
   let venue = D.Sim_venue.trade ~auto:false f.venue in
   let lookups = Symbol.Table.create () in
   let lookups_of s = Option.value (Hashtbl.find lookups s) ~default:0 in
@@ -513,7 +574,7 @@ let test_a_restart_reconciles () =
               .D.Order.Request.symbol
           in
           Hashtbl.incr lookups symbol;
-          if Symbol.equal symbol xom && lookups_of xom = 1 then
+          if Symbol.equal symbol xom && lookups_of xom <= 2 then
             return (Or_error.error_string "timed out after 10 s")
           else venue.D.Venue.Trade.find_order c);
     }
@@ -530,6 +591,17 @@ let test_a_restart_reconciles () =
     [ ("AAPL", "filled"); ("MSFT", "submit_unknown"); ("XOM", "submit_unknown") ]
     (states ());
   Alcotest.(check (triple int int int)) "lookups at t0" (1, 1, 1) (looked_up ());
+  (* The second reconciliation, the stream's: AAPL is filled and out of the
+     open set, so it asks about MSFT and XOM once each -- a miss and an error
+     again -- and both are already on the schedule, so it starts no more. *)
+  let%bind () = D.Oms.reconcile restarted in
+  let%bind () = settle () in
+  Alcotest.(check (list (pair string string)))
+    "a second reconciliation changes no state"
+    [ ("AAPL", "filled"); ("MSFT", "submit_unknown"); ("XOM", "submit_unknown") ]
+    (states ());
+  Alcotest.(check (triple int int int))
+    "lookups after the second, at t0" (1, 2, 2) (looked_up ());
   (* The scheduled lookups follow at t0 + 2 s, t0 + 2 + 10 = 12 s and
      t0 + 12 + 30 = 42 s. advance_by_alarms stops at each alarm's own time and
      runs its jobs (wait_for) before it moves on, so each delay is measured
@@ -543,10 +615,11 @@ let test_a_restart_reconciles () =
     "at 41 s: MSFT still unknown, one lookup to go; XOM found at 2 s"
     [ ("AAPL", "filled"); ("MSFT", "submit_unknown"); ("XOM", "submitted") ]
     (states ());
-  (* AAPL 1: found at t0, never scheduled. MSFT 1 + 2: t0, 2 s, 12 s.
-     XOM 1 + 1: t0 (the error), 2 s (found), and a found order leaves the
-     schedule. *)
-  Alcotest.(check (triple int int int)) "lookups at 41 s" (1, 3, 2) (looked_up ());
+  (* AAPL 1: found at t0, never scheduled. MSFT 2 + 2: t0 twice, then one
+     schedule's 2 s and 12 s -- a second schedule would have asked at each
+     again. XOM 2 + 1: t0 twice (the errors), 2 s (found), and a found order
+     leaves the schedule. *)
+  Alcotest.(check (triple int int int)) "lookups at 41 s" (1, 4, 3) (looked_up ());
   let%bind () =
     Time_source.advance_by_alarms ~wait_for:settle f.clock
       ~to_:(Time_ns.add t0 (Time_ns.Span.of_sec 42.0))
@@ -556,8 +629,8 @@ let test_a_restart_reconciles () =
     "at 42 s the last lookup misses: failed"
     [ ("AAPL", "filled"); ("MSFT", "failed"); ("XOM", "submitted") ]
     (states ());
-  (* MSFT 1 + 3: t0, 2 s, 12 s, 42 s; the others unchanged *)
-  Alcotest.(check (triple int int int)) "lookups at 42 s" (1, 4, 2) (looked_up ());
+  (* MSFT 2 + 3: t0 twice, 2 s, 12 s, 42 s; the others unchanged *)
+  Alcotest.(check (triple int int int)) "lookups at 42 s" (1, 5, 3) (looked_up ());
   (* still AAPL and XOM alone *)
   Alcotest.(check int) "and nothing was sent again" 2 (D.Sim_venue.received f.venue);
   Graph.destroy f.graph;

@@ -40,8 +40,8 @@ let test_an_order_is_sent_as_strings () =
     {|{"symbol":"AAPL","qty":"2","side":"buy","type":"market","time_in_force":"day","client_order_id":"ohc-01M2B0CWJ0ZZZZZZZZZZZZZZZ1"}|}
     (Yojson.Safe.to_string (Alpaca.order_request_json (request Order.Kind.Market)));
   (* The same six, then the limit: 150.0 printed "%.2f" is "150.00", two
-     decimals because a sub-penny limit above a dollar was refused by the rules
-     before an order reached this function (Rule 612). *)
+     decimals because a limit that is not a whole cent, at any price, was
+     refused by the rules' tick before an order reached this function. *)
   Alcotest.(check string)
     "limit, two decimals"
     {|{"symbol":"AAPL","qty":"2","side":"buy","type":"limit","time_in_force":"day","client_order_id":"ohc-01M2B0CWJ0ZZZZZZZZZZZZZZZ1","limit_price":"150.00"}|}

@@ -284,9 +284,9 @@ let bars_of_json (json : Yojson.Safe.t) :
 (* ---------------------------------------------------------------------- *)
 
 (* Quantities and prices go as strings, as Alpaca's reference writes them. A
-   limit price goes with two decimals: the rules refused a sub-penny limit on
-   a stock above a dollar before this was reached (Rule 612), so formatting
-   here rounds nothing that mattered. *)
+   limit price goes with two decimals: the rules' tick refused any limit that
+   is not a whole cent, at every price, before this was reached, so formatting
+   here rounds nothing. *)
 let order_request_json (r : Order.Request.t) : Yojson.Safe.t =
   `Assoc
     ([

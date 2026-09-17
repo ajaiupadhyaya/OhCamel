@@ -121,6 +121,23 @@ let col_date r i = Date.of_string (col_text r i)
 let col_time r i =
   Option.value_exn ~message:"journal: unreadable time" (Desk_time.parse (col_text r i))
 
+(* The states an order does not leave, as SQL: [open_orders] asks for every
+   order not in one, and the index that answers it is declared over the same
+   words, because SQLite uses a partial index only for a query whose WHERE
+   contains the index's own. One string, so the two cannot drift apart. *)
+let terminal_states =
+  "('rejected_pre_trade','filled','cancelled','expired','rejected_by_venue','failed')"
+
+(* The indexes at the end are for /api/desk, which every open page asks for
+   again after each journal write, and which anyone may ask for on the demo.
+   Without them every order it loads scans the whole of fills and
+   order_events, [recent_orders] sorts every order, and [open_orders] reads
+   them all -- synchronously, on the scheduler that serves the page and runs
+   the desk, and in the demo's in-memory journal, which gains an order every
+   45 s for as long as the process lives. They change no table, so a journal
+   written before them is still schema version 1: CREATE INDEX IF NOT EXISTS
+   adds them the first time this build opens it, and is nothing on every open
+   after. *)
 let schema =
   [
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)";
@@ -149,6 +166,12 @@ let schema =
      TEXT, detail TEXT, document TEXT NOT NULL, PRIMARY KEY (strategy, sequence))";
     "CREATE TABLE IF NOT EXISTS alerts (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT \
      NOT NULL, kind TEXT NOT NULL, limit_name TEXT NOT NULL, line TEXT NOT NULL)";
+    "CREATE INDEX IF NOT EXISTS order_events_by_order ON order_events (client_order_id, \
+     seq)";
+    "CREATE INDEX IF NOT EXISTS fills_by_order ON fills (client_order_id)";
+    "CREATE INDEX IF NOT EXISTS orders_by_created ON orders (created_at, client_order_id)";
+    "CREATE INDEX IF NOT EXISTS orders_open ON orders (created_at, client_order_id) \
+     WHERE state NOT IN " ^ terminal_states;
   ]
 
 (* The refusal's decision alone, with no SQLite and no IO: [modes] is
@@ -677,10 +700,10 @@ let orders_of_ids t ids =
    this file that inserts more than one order does exactly that. *)
 let open_orders t : Order_row.t list =
   query t ~what:"open orders"
-    "SELECT client_order_id FROM orders WHERE state NOT IN \
-     ('rejected_pre_trade','filled','cancelled','expired','rejected_by_venue','failed') \
-     ORDER BY created_at, client_order_id"
-    [] ~row:(fun r -> col_text r 0)
+    ("SELECT client_order_id FROM orders WHERE state NOT IN " ^ terminal_states
+   ^ " ORDER BY created_at, client_order_id")
+    []
+    ~row:(fun r -> col_text r 0)
   |> orders_of_ids t
 
 let recent_orders t ~limit : Order_row.t list =

@@ -98,12 +98,15 @@ let check (c : Context.t) (r : Order.Request.t) : Failure.t list =
       | None, _ -> fail "mark" (sprintf "%s has no mark" sym)
       | Some _, true -> fail "mark" (sprintf "%s's mark is stale" sym)
       | Some _, false -> None);
+      (* A whole cent at every price. Rule 612 allows four decimals below a
+         dollar, but desk/alpaca_paper.ml sends a limit with two, so a finer
+         limit would be journaled and gated at one price and reach the venue
+         at another. *)
       (match limit with
       | Some p
-        when Float.( >= ) p 1.0
-             && Float.( > )
-                  (Float.abs ((p *. 100.0) -. Float.round_nearest (p *. 100.0)))
-                  1e-6 ->
+        when Float.( > )
+               (Float.abs ((p *. 100.0) -. Float.round_nearest (p *. 100.0)))
+               1e-6 ->
           fail "tick" (sprintf "a limit of %g is not a whole cent" p)
       | _ -> None);
       (match (limit, priced) with

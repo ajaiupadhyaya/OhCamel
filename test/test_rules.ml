@@ -78,6 +78,20 @@ let test_the_tick_and_the_collar () =
   check_rules "a whole-cent limit" [] context (request ~kind:(limit 149.5) 10);
   check_rules "a sub-penny limit on a $150 stock" [ "tick" ] context
     (request ~kind:(limit 149.505) 10);
+  (* Below a dollar too. The wire sends a limit with two decimals, so a limit
+     of 0.1234 would be journaled and gated at 0.1234 and reach the venue as
+     0.12. Against a mark of 0.12 both are inside the collar (0.0034 / 0.12 is
+     2.8%, under 5%) and 10 shares are 1.20, so the tick is the only line
+     either could cross. *)
+  let sub_dollar = { context with mark = Some (Price.of_float 0.12) } in
+  Alcotest.(check (list (pair string string)))
+    "0.1234 under a dollar: refused, 12.34 cents not being whole"
+    [ ("tick", "a limit of 0.1234 is not a whole cent") ]
+    (List.map
+       (Rules.check sub_dollar (request ~kind:(limit 0.1234) 10))
+       ~f:(fun f -> (f.Rules.Failure.rule, f.Rules.Failure.why)));
+  check_rules "0.12 under a dollar: passes, 12 cents being whole" [] sub_dollar
+    (request ~kind:(limit 0.12) 10);
   (* collar 5% of 150 = 7.50: 157.50 is on the line, 157.51 is past it *)
   check_rules "exactly 5% away" [] context (request ~kind:(limit 157.5) 10);
   check_rules "just past 5%" [ "collar" ] context (request ~kind:(limit 157.51) 10)
