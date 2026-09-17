@@ -216,7 +216,7 @@ The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/da
 - **Coverage 76.5%** (5,903 / 7,714 instrumented points in `lib/` and `desk/`,
   measured 2026-09-17), with a 60% floor in CI that exists to make deleting
   tests noticeable, not as a target. The number is bimodal by design: the pure
-  numeric core is above 90% and the network-IO files run 36% to 64%, because
+  numeric core is above 85% and the network-IO files run 36% to 64%, because
   exercising them means mocking a broker, which raises the number and
   establishes nothing.
 - **CI** on every push, `ubuntu-latest` and `macos-latest`. The macOS leg

@@ -1030,7 +1030,7 @@ if anything else is using the same keys, this gets a 406 and stops.
 The dashboard is unauthenticated at the engine, and should be bound to
 localhost or put behind a password, as the live host's proxy does. Four
 routes change the desk -- orders, cancel, kill and its reset -- and each
-refuses a request without the page's header and the browser's same-site
+refuses a request without the page's header and the browser's `same-origin`
 label, which a cross-site page cannot forge (the password, not this check,
 decides who else may send one; see *Orders*); on the public demo each
 answers 405.
@@ -1207,9 +1207,10 @@ read as two numbers rather than one:
  81%  desk/halt.ml
 ```
 
-The left column is the numeric core, plus the desk's simpler pieces — a
-rule, a ticket, the switch, a reconciliation — each tested directly against
-a hand-computed value or a fixed scenario. `desk.ml` and `journal.ml` join
+The left column is the numeric core, the wire format it is checked against
+(`lib/server.ml`), and the desk's simpler pieces — a rule, a ticket, the
+switch, a reconciliation — each tested directly against a hand-computed
+value or a fixed scenario. `desk.ml` and `journal.ml` join
 it here, both above 80% for the first time since this table was written.
 That is not every file that *decides* something: `lib/gate.ml` answers what
 an order would do to the book, and the order manager and its routes decide
@@ -1250,18 +1251,23 @@ done yet.
 `lib/gate.ml`'s whole gap is the derived `sexp_of` on its three record types
 (`Fill.t`, `Move.t`, `Verdict.t`) and the `None`, or fallback, arm of four
 functions that answer a limit the fork could not evaluate -- `describe`,
-`breached`, `worsened` and `cleared` -- because no test proposes a fill
-against a limit still warming up; every arm of those four that decides
-created, worsened or cleared for a limit the fork *could* evaluate does run.
-`desk/tca.ml`'s whole gap is the same kind
-of thing at smaller scale: the derived `sexp_of` on `Inputs.t`, `Costs.t`
-and `Summary.t` is the only unvisited code — every branch of `of_fill`,
-`mean`, `median` and `weighted_shortfall_bps` runs. `desk/session_close.ml`
-is tested everywhere except inside `run_forever`, the loop that waits for
-the close, rolls the windows and retries a failed record: neither suite
-starts it, so the function that would run in production every session close
-has not run in a test yet — the read-queuing state a scheduler-driven test
-does reach belongs to `desk.ml`'s `after_fill`, not to this file.
+`breached`, `worsened` and `cleared`. `describe`'s `None` arm is unreachable
+through `reasons`, its only caller: `reasons` maps only `created` and
+`worsened`, and both hold only moves whose `after` is `Some` (gate.ml:62-63,
+89-98). `breached`'s, `worsened`'s and `cleared`'s `None`/fallback arms are
+reachable but untested -- no test proposes a fill against a limit still
+warming up. Every arm of those four that decides created, worsened or
+cleared for a limit the fork *could* evaluate does run. `desk/tca.ml`'s
+whole gap is the same kind of thing at smaller scale: the derived `sexp_of`
+on `Inputs.t`, `Costs.t` and `Summary.t` is the only unvisited code — every
+branch of `of_fill`, `mean`, `median` and `weighted_shortfall_bps` runs.
+`desk/session_close.ml` is tested everywhere except inside `run_forever`,
+the loop that waits for the close, rolls the windows and retries a failed
+record: neither suite starts it, so the function that would run in
+production every session close has not run in a test yet. (`desk/desk.ml`'s
+own `after_fill` and its async `sync` are likewise untouched by any test --
+every test constructs its desk with `~after_fill:ignore` -- but that is a
+gap in `desk.ml`, not in this file.)
 
 `desk/desk_routes.ml`'s guard against a host that does not match the server
 it answers on, and `guard_sync`'s own exception branch, are both covered.
@@ -1274,23 +1280,26 @@ well-formed ticket, cancel or kill request past protection and into the
 sequencer, and that path needs Async, which is `test/desk_async`'s job and
 not yet done there.
 
-`desk/oms.ml` sits lowest of the four, and at far larger scale, for a mix of
-reasons bisect's line data gives separately rather than one story:
-`resolve`'s one-minute fallback once its 2/10/30 s schedule is exhausted,
-and its own lookup-error branch; `on_update`'s branch for a fill that
-arrives after this desk already declared the order failed (invariant 11's
+`desk/oms.ml` sits highest of the five just named, at 71%, and still has
+the largest gap by far, for a mix of reasons bisect's line data gives
+separately rather than one story: `resolve`'s one-minute fallback once its
+2/10/30 s schedule is exhausted, and its own lookup-error branch;
+`on_update`'s branch for a fill that arrives after this desk already
+declared the order failed (the comment there at oms.ml:604 calls this
 "fills after failed"), its already-counted-execution branch, and its
 lookup for an order this desk holds no record of; `propose`'s re-checks
 after the arrival quote, for the switch tripping or the book aging stale
 while the quote was in flight; and, larger than all of those together, the
-two background loops `refresh` and `refresh_forever` (the twenty-day-volume
-refresh) and `fills_json`'s row-building body, neither of which any test
-calls directly. The scheduler suite's seven cases are not all
-order-manager scenarios either: two are Task 4's, the transport bound and
-the suite's own count assertion; the five that do exercise `oms.ml` — three
-fills, an unresent unknown answer, a halt, a limit's trip, and a restart —
-hit each of the shapes above once, not the many the module is written to
-handle.
+`refresh_forever` loop and the `refresh` call it makes each turn -- which
+reads the session clock every time and, once an hour, the twenty-day volume
+-- and `fills_json`'s row-building body, neither of which any test calls
+directly. The scheduler suite's seven cases are not all order-manager
+scenarios either: two are Task 4's, the transport bound and the suite's own
+count assertion; the five that do exercise `oms.ml` -- three fills, an
+unresent unknown answer, a halt, a limit's trip, and a restart -- record
+zero visits on every branch just named. None of them proposes past a
+tripped switch or a stale book, none forces a lookup error or a fill after
+failed, and none runs `refresh` at all.
 
 So the floor exists to make deleting tests noticeable, and that is all it is
 for. A coverage target would be an instruction to write the tests that raise it.

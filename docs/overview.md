@@ -192,7 +192,7 @@ has recomputed.
 
 Four routes change the desk -- orders, cancel, kill and its reset -- on the
 live host only, and only for a request carrying the page's header and the
-browser's same-site label, which a cross-site page cannot forge (the
+browser's `same-origin` label, which a cross-site page cannot forge (the
 password decides who else may send one); on the public demo each answers
 405.
 
@@ -223,8 +223,8 @@ password decides who else may send one); on the public demo each answers
   staleness clock ever feeds a risk number. That test is the guard against the
   engine quietly becoming a poller.
 - **76.5% coverage** of `lib/` and `desk/` together (measured 2026-09-17). The
-  pure numeric core is above 90%
-  and the network edges are lower, because the tests never touch a network.
+  pure numeric core is above 85% and the network edges are lower, because
+  the tests never touch a network.
 - **CI on Ubuntu and macOS** for every push: the build, the tests, a formatting
   check, every credential-free mode run end to end, and the README's quoted
   tables reproduced on both platforms.
