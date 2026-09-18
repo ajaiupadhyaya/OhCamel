@@ -51,7 +51,15 @@
   }
 
   /* The costs. A summary over no fills prints dashes, not zeros: the mean of
-     nothing is not nought, and a zero here would read as a free fill. */
+     nothing is not nought, and a zero here would read as a free fill. A cost
+     that rounds to nothing is 0.0, not the -0.0 toFixed gives it -- the same
+     rounding as desk.js's bps(). */
+  function bps(v) {
+    if (v === null || v === undefined) return null;
+    var t = Number(v).toFixed(1);
+    return t === "-0.0" ? "0.0" : t;
+  }
+
   function summaryRow(t, label, s) {
     if (!s) return;
     var r = document.createElement("tr");
@@ -59,7 +67,7 @@
     cell(r, s.count, "num");
     [s.mean_shortfall_bps, s.median_shortfall_bps, s.weighted_shortfall_bps, s.mean_versus_model_bps]
       .forEach(function (v) {
-        cell(r, v === null || v === undefined ? null : Number(v).toFixed(1), "num");
+        cell(r, bps(v), "num");
       });
     t.appendChild(r);
   }
@@ -71,7 +79,7 @@
     t.textContent = "";
     var tca = d.tca;
     if (!tca) {
-      if (note) note.textContent = "no desk in this process, so there are no costs to report";
+      if (note) note.textContent = "no order manager, so there are no costs to report";
       return;
     }
     head(t, ["", "fills", "mean", "median", "weighted", "vs model"]);

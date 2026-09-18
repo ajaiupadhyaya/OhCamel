@@ -633,7 +633,7 @@
           // the names of the next one.
           var ga = svgEl("g", { transform: "translate(" + p.x + "," + p.y + ")" }, "absent");
           ga.appendChild(svgEl("rect", { x: -4, y: -10, width: Math.max(p.w, n.note.length * VAL_CHAR) + 8, height: 24, rx: 2 }, "slot"));
-          var a = svgEl("a", { href: "#s05" }); a.appendChild(text(0, 0, n.label, "name")); a.appendChild(text(0, 13, n.note, "val")); ga.appendChild(a);
+          var a = svgEl("a", { href: "/argument#s05" }); a.appendChild(text(0, 0, n.label, "name")); a.appendChild(text(0, 13, n.note, "val")); ga.appendChild(a);
           svg.appendChild(ga); return;
         }
         var g = svgEl("g", { "data-name": n.name, "data-family": n.family, transform: "translate(" + p.x + "," + p.y + ")" }, "node" + (n.band ? " band" : ""));

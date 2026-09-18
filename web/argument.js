@@ -115,7 +115,7 @@
   }
   function renderOptionsLive(s) {
     if (s.portfolio_gamma === undefined) return;
-    set("opt-live", "Live: the book in the ledger above holds " + (Math.abs(s.portfolio_gamma || 0) < 1e-9 && Math.abs(s.portfolio_vega || 0) < 1e-9 ? "no options (gamma 0, vega 0)." : "options: gamma " + num(s.portfolio_gamma, 1) + ", vega " + F.money((s.portfolio_vega || 0) / 100) + " per vol point."));
+    set("opt-live", "Live: the book on the Desk holds " + (Math.abs(s.portfolio_gamma || 0) < 1e-9 && Math.abs(s.portfolio_vega || 0) < 1e-9 ? "no options (gamma 0, vega 0)." : "options: gamma " + num(s.portfolio_gamma, 1) + ", vega " + F.money((s.portfolio_vega || 0) / 100) + " per vol point."));
   }
 
   // ---- §04 and §06: the battery tables ----
@@ -256,7 +256,7 @@
         (w.new_breaches.length ? ". New breaches: " + w.new_breaches.map(function (n) { return n.text; }).join("; ") : ". No new breach") +
         (w.unestimated_betas.length ? ". No beta for " + w.unestimated_betas.join(", ") : "") + ".");
       set("st-prov", "live · this host's book · as of " + x.as_of.replace(/^.* (\d{2}:\d{2}:\d{2}).*$/, "$1Z"));
-      set("st-cost", "· " + x.scenarios.length + " forks in " + x.duration_ms.toFixed(0) + " ms; the process-wide counter in the footer moved by " + x.counter_cost.toLocaleString("en-US") + " for a reason that is not a tick. Not the README's table, which ran on the CLI's seeded book.");
+      set("st-cost", "· " + x.scenarios.length + " forks in " + x.duration_ms.toFixed(0) + " ms; the process-wide counter in the Desk's footer and on /ops moved by " + x.counter_cost.toLocaleString("en-US") + " for a reason that is not a tick. Not the README's table, which ran on the CLI's seeded book.");
     }).catch(function () { set("st-before", "The scenario suite did not answer."); });
   }
 

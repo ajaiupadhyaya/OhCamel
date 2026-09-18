@@ -171,7 +171,7 @@
      the interesting moment is the one where they diverge -- and stacking them
      in a single narrow column would hide exactly that. */
   #histsec { grid-column: 1 / -1; }
-  /* Today's orders and fills take a row of their own, as the trail does:
+  /* The recent orders and fills take a row of their own, as the trail does:
      two tables that read left to right, not a third step squeezed into one
      cell of three beside positions and the book. This is what #desksec used
      to do for the same two tables before the desk moved above the grid. */

@@ -1229,7 +1229,8 @@ type handler = t -> Cohttp_async.Server.response Deferred.t
 let routes : (string * string * handler) list =
   [
     ( "/",
-      "the dashboard: the book, its limits and the trail, over the stream",
+      "the desk: the account and its ticket, Figure 1, positions, the book, the recent \
+       orders and fills, and the trail, over the stream",
       fun _ ->
         Cohttp_async.Server.respond_string ~headers:html_headers Dashboard_html.page );
     ( "/ops",

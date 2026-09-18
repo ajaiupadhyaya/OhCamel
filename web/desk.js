@@ -635,13 +635,15 @@
     return t === "-0.0" ? "0.0" : t;
   }
 
-  function renderFills(fills, tca) {
-    var t = document.getElementById("fills"), note = document.getElementById("tcanote"), F = window.OhCamelFormat;
+  /* The fills, one row each. The summary and the engine's note on what it
+     could not cost are the Execution page's (execution.js), so this draws the
+     table and nothing under it; renderDeskBody still passes b.tca, which this
+     ignores. */
+  function renderFills(fills) {
+    var t = document.getElementById("fills"), F = window.OhCamelFormat;
     if (!t) return;
-    /* The note is the Execution page's; a page that has the fills without it
-       renders the table and says nothing about what could not be costed. */
     t.textContent = "";
-    if (fills.length === 0) { if (note) note.textContent = ""; return; }
+    if (fills.length === 0) return;
     var head = document.createElement("tr");
     ["time", "symbol", "side", "qty", "price", "shortfall", "delay", "slippage", "½ spread", "vs model"].forEach(function (h) {
       head.appendChild(F.el("th", "", h));
@@ -657,13 +659,6 @@
       });
       t.appendChild(tr);
     });
-    if (note) {
-      var o = tca && tca.overall;
-      note.textContent = (o
-        ? "Basis points; positive is cost. " + o.count + " fills: shortfall mean " + bps(o.mean_shortfall_bps) +
-          ", median " + bps(o.median_shortfall_bps) + ", quantity-weighted " + bps(o.weighted_shortfall_bps) + ". "
-        : "") + (tca && tca.note ? tca.note : "");
-    }
   }
 
   // This page's sections, from a frame the stream has already begun: the

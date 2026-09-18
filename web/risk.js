@@ -25,10 +25,11 @@
     table.appendChild(tr);
   }
 
-  // Moved from desk.js, pointed at #ledger. The dimming rule and the
-  // title it puts on a dimmed limit are unchanged; el/pct/money are
-  // OhCamelFormat's, and the stale mark and the change mark are
-  // OhCamelShared's, per Task 2's contract.
+  // Moved from desk.js, pointed at #ledger. The dimming rule is unchanged:
+  // a limit whose node has gone stale takes the stale class, and nothing
+  // else -- it carries no title. el/pct/money are OhCamelFormat's, and the
+  // stale mark and the change mark are OhCamelShared's, per Task 2's
+  // contract.
   function renderLedger(s) {
     var box = document.getElementById("ledger");
     if (!box) return;
@@ -94,19 +95,34 @@
       });
   }
 
-  /* Gamma and vega. Zero is a real answer here -- a book with no options has no
-     convexity -- so these print 0.00 rather than a dash. */
+  /* Gamma and vega, in the Desk's units and under the Desk's labels, so the
+     two pages never show one name with numbers a hundred apart: gamma as
+     dollars of delta per 1.00 move, vega divided by 100 into dollars per vol
+     point (the wire carries it per 1.00 of vol; desk.js says why the division
+     happens only on the page). Zero is a real answer on the demo -- a book with
+     no options has no convexity -- so it prints $0 rather than a dash. On the
+     live host a zero pair is not an answer but an unfed branch, so this says
+     what the Desk says in the same place. */
+  function greek(t, label, unit, text, neg) {
+    var tr = document.createElement("tr");
+    var k = F.el("td", "k", label);
+    k.appendChild(F.el("em", null, unit));
+    tr.appendChild(k);
+    cell(tr, text, "v num" + (neg ? " neg" : ""));
+    t.appendChild(tr);
+  }
   function renderGreeks(s) {
     var t = document.getElementById("greeks");
     if (!t) return;
     t.textContent = "";
-    [["portfolio gamma", s.portfolio_gamma], ["portfolio vega", s.portfolio_vega]]
-      .forEach(function (r) {
-        var tr = document.createElement("tr");
-        cell(tr, r[0], "lbl");
-        cell(tr, r[1] === null || r[1] === undefined ? null : Number(r[1]).toFixed(2), "v num");
-        t.appendChild(tr);
-      });
+    var g = s.portfolio_gamma, v = s.portfolio_vega;
+    var known = function (x) { return x !== null && x !== undefined; };
+    if (window.OhCamelStream && OhCamelStream.mode() === "live" && g === 0 && v === 0) {
+      greek(t, "options", "DISABLED — no options-chain source", "off", false);
+      return;
+    }
+    greek(t, "gamma", "$ delta / 1.00 move", known(g) ? F.money(g) : null, g < 0);
+    greek(t, "vega", "$ / vol pt", known(v) ? F.money(v / 100) : null, v < 0);
   }
 
   var running = false;
@@ -126,7 +142,9 @@
       cell(tr, F.money(sc.equity_after), "num");
       cell(tr, F.pct(sc.drawdown_after), "num");
       var names = (sc.new_breaches || []).map(function (b) { return b.name; });
-      cell(tr, names.length === 0 ? "—" : names.join(", "), names.length ? "over" : "");
+      // An empty list is known, not unknown: "none", as the Desk's blotter says
+      // "no orders yet", and the dash stays the page's word for unknown.
+      cell(tr, names.length === 0 ? "none" : names.join(", "), names.length ? "over" : "");
       if (sc.description) tr.title = sc.description;
       table.appendChild(tr);
     });
