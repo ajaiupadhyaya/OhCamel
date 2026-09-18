@@ -548,7 +548,9 @@ let test_the_dashboard_no_longer_carries_the_ledger () =
    journal recorded, moved off the Desk page and given its own route. The
    blotter and the fills stay on the Desk page -- see the pair of tests below
    -- and what moves here is the analysis: open orders, the TCA summary and
-   note, the sessions the journal closed, and the last VaR forecasts. *)
+   note, the sessions the journal closed, and the last VaR forecasts. The
+   subscription is execution.js's own line, so a rule that stopped catting the
+   script -- four empty tables under their headings -- fails here too. *)
 let test_the_execution_page_has_its_sections () =
   markers_in_order Execution_html.page ~name:"the execution page"
     ~markers:
@@ -558,6 +560,7 @@ let test_the_execution_page_has_its_sections () =
         "id=\"tca\"";
         "id=\"sessions\"";
         "id=\"forecasts\"";
+        "OhCamelStream.onFrame(poll)";
         "OhCamelStream.start()";
       ]
 

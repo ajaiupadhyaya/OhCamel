@@ -270,37 +270,28 @@ case "$page_code:$ops_ctype:$page" in
 *)       no "GET /ops                    ${page_code:-no response}" ;;
 esac
 
-# The essay's own page, moved off the dashboard in this phase. Content-Type is
-# asserted because this route is a document rather than an API endpoint, and
-# the two share a Content-Type header, so a rule that pointed /argument at a
-# JSON handler by mistake would still answer 200.
-arg_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$BASE/argument" 2>/dev/null)
-arg_ctype=$(curl -sS -o /dev/null -w '%{content_type}' --max-time 15 "$BASE/argument" 2>/dev/null)
-case "$arg_code:$arg_ctype" in
-200:text/html*) ok "GET /argument               200, text/html" ;;
-*)             no "GET /argument               ${arg_code:-no response} ${arg_ctype:-}" "expected 200, text/html" ;;
-esac
-
-# The risk page: the ledger, the scenario suite, the factor and the Greeks,
-# moved off the Desk page in this phase. Same Content-Type assertion as
-# /argument, for the same reason.
-risk_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$BASE/risk" 2>/dev/null)
-risk_ctype=$(curl -sS -o /dev/null -w '%{content_type}' --max-time 15 "$BASE/risk" 2>/dev/null)
-case "$risk_code:$risk_ctype" in
-200:text/html*) ok "GET /risk                   200, text/html" ;;
-*)             no "GET /risk                   ${risk_code:-no response} ${risk_ctype:-}" "expected 200, text/html" ;;
-esac
-
-# Execution: the TCA, the open orders and the journal's sessions and
-# forecasts, moved off the Desk page in this phase. The blotter and the
-# fills stay there -- see the Desk probe above -- so this route is the same
-# Content-Type assertion as /argument and /risk, and nothing more.
-exec_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$BASE/execution" 2>/dev/null)
-exec_ctype=$(curl -sS -o /dev/null -w '%{content_type}' --max-time 15 "$BASE/execution" 2>/dev/null)
-case "$exec_code:$exec_ctype" in
-200:text/html*) ok "GET /execution              200, text/html" ;;
-*)             no "GET /execution              ${exec_code:-no response} ${exec_ctype:-}" "expected 200, text/html" ;;
-esac
+# The three pages W2 added. Each is a document rather than an API endpoint,
+# and every page answers 200 text/html, so status and Content-Type alone would
+# pass two handlers swapped in the routes table. Each body is therefore
+# matched on an id only its own page carries -- the essay's <article>, the
+# ledger, the open orders -- as the /ops probe above matches its two columns.
+# The ledger is the one section that moved to /risk; the open orders are one of
+# the new renderings /execution adds from the journal.
+page_probe() {
+	local path="$1" marker="$2" what="$3" body code ctype label
+	label=$(printf 'GET %-23s' "$path")
+	body=$(curl -sS --max-time 15 -w '\n%{http_code}' "$BASE$path" 2>/dev/null)
+	code="${body##*$'\n'}"
+	ctype=$(curl -sS -o /dev/null -w '%{content_type}' --max-time 15 "$BASE$path" 2>/dev/null)
+	case "$code:$ctype:$body" in
+	200:text/html*:*"$marker"*) ok "$label 200, text/html, $what present" ;;
+	200:text/html*:*) no "$label 200, text/html, but not its page" "the body has no $marker" ;;
+	*) no "$label ${code:-no response} ${ctype:-}" "expected 200, text/html" ;;
+	esac
+}
+page_probe /argument '<article id="argument"' "the essay"
+page_probe /risk 'id="ledger"' "the ledger"
+page_probe /execution 'id="openorders"' "the open orders"
 
 # The 404 body is generated from the same table `handle` dispatches on, and
 # EXPECTED_ROUTES is that table's shadow. Equality in order, not membership: a
@@ -400,7 +391,7 @@ fi
 # ---------------------------------------------------------------------------
 # 4b. The reports the page reads
 #
-# The argument below the ledger is filled from three routes, and each has a
+# The argument on /argument is filled from three routes, and each has a
 # way to be present and empty that a 200 alone would wave through: a reports
 # object computed on nothing, a GARCH study that never finishes, a stress
 # suite that forked no scenarios. So each is read for its substance. GARCH is

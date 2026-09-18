@@ -1132,6 +1132,38 @@ let test_the_two_new_routes_answer () =
       | _ -> Alcotest.fail "the 404 did not answer as a string")
     ()
 
+(* The three pages W2 added, each read through the table and matched on an id
+   only its own page carries. The route listing and the smoke suite check
+   paths, status and Content-Type, all of which two swapped handlers would
+   still pass: every page is 200 text/html. What they would not pass is this,
+   because the Risk page is the only one with the ledger, the Execution page
+   the only one with the open orders, and the Argument page the only one with
+   the essay. *)
+let test_each_new_page_answers_with_its_own_body () =
+  let pages =
+    [
+      ("/risk", "id=\"ledger\"");
+      ("/execution", "id=\"openorders\"");
+      ("/argument", "<article id=\"argument\"");
+    ]
+  in
+  with_server
+    ~f:(fun server _graph ->
+      List.iter pages ~f:(fun (path, own) ->
+          let status, content_type, body = respond server path in
+          Alcotest.(check int) (path ^ " is 200") 200 status;
+          Alcotest.(check (option string))
+            (path ^ " is HTML") (Some "text/html; charset=utf-8") content_type;
+          List.iter pages ~f:(fun (_, marker) ->
+              let expected = String.equal marker own in
+              Alcotest.(check bool)
+                (sprintf "%s %s %s" path
+                   (if expected then "carries" else "does not carry")
+                   marker)
+                expected
+                (String.is_substring body ~substring:marker))))
+    ()
+
 (* Task 9's CORS test (above, [test_cors_is_demo_json_only]) proved
    json_headers / sse_headers / html_headers in isolation: three header
    values, built and inspected without ever being attached to a response.
@@ -2464,6 +2496,8 @@ let suite =
         test_the_404_lists_exactly_the_routes;
       Alcotest.test_case "/api/ops and /ops answer through the table" `Quick
         test_the_two_new_routes_answer;
+      Alcotest.test_case "/risk, /execution and /argument each answer with their own page"
+        `Quick test_each_new_page_answers_with_its_own_body;
       Alcotest.test_case "CORS survives being read through the table, not just built"
         `Quick test_cors_survives_being_read_through_the_table_and_not_just_built;
       Alcotest.test_case "the server holds the recompute log" `Quick
