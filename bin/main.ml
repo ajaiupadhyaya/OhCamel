@@ -1504,7 +1504,7 @@ let run_live ~book_path ~(serve_port : int option) =
                 ~extensions:
                   (Ohcamel_desk.Desk.extensions desk
                   @ Ohcamel_desk.Desk_routes.extensions ~host:`Live ~oms)
-                ~kill_switch_wired_to:"desk.submit"
+                ~kill_switch_wired_to:"desk.submit" ~desk:true
                 ~frame_extra:(fun () -> [ ("desk", Ohcamel_desk.Desk.summary_json desk) ])
                 ()
             in
@@ -1709,7 +1709,7 @@ let run_demo ~port =
       ~extensions:
         (Ohcamel_desk.Desk.extensions desk
         @ Ohcamel_desk.Desk_routes.extensions ~host:`Demo ~oms)
-      ~kill_switch_wired_to:"desk.submit"
+      ~kill_switch_wired_to:"desk.submit" ~desk:true
       ~frame_extra:(fun () -> [ ("desk", Ohcamel_desk.Desk.summary_json desk) ])
       ~graph ~factor:"SYNTHETIC" ()
   in

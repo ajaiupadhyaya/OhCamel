@@ -1032,6 +1032,68 @@ let test_a_forks_observers_are_released () =
         "destroy releases all twenty-eight" before (Graph.active_observers ()))
     ()
 
+(* The desk's two bands. A topology built without a desk has neither entry,
+   which is what a backtest's graph should say: there is no desk in that
+   process, and a band drawn for one would be a picture of something that is
+   not there.
+
+   `writes` is the field that makes the drawing possible: alerts reads
+   breaches, and a fill writes a quantity. Without the distinction the client
+   would have to know which names are writers, which is the knowledge the
+   topology exists to carry. *)
+let test_the_desk_bands_are_absent_without_a_desk () =
+  with_graph
+    ~f:(fun graph _recorder ->
+      let names =
+        List.map
+          (Graph.Topology.outside (Graph.topology graph))
+          ~f:Graph.Topology.Outside.name
+      in
+      Alcotest.(check bool)
+        "no orders band" false
+        (List.mem names "orders" ~equal:String.equal);
+      Alcotest.(check bool)
+        "no fills band" false
+        (List.mem names "fills" ~equal:String.equal))
+    ()
+
+let test_the_desk_bands_say_which_way_they_point () =
+  with_graph
+    ~f:(fun graph _recorder ->
+      let topo = Graph.topology ~desk:true graph in
+      let find name =
+        List.find_exn (Graph.Topology.outside topo) ~f:(fun o ->
+            String.equal (Graph.Topology.Outside.name o) name)
+      in
+      let orders = find "orders" and fills = find "fills" in
+      (* Orders leave: nothing in this graph changes when one is sent, which is
+         the point of the dotted line the switch draws to it. *)
+      Alcotest.(check (list string))
+        "orders write nothing" []
+        (Graph.Topology.Outside.writes orders);
+      Alcotest.(check (list string))
+        "orders read nothing" []
+        (Graph.Topology.Outside.reads orders);
+      (* A fill comes back the other way and lands on a quantity, which is an
+         input cell, one per instrument in the book. *)
+      let written = Graph.Topology.Outside.writes fills in
+      Alcotest.(check int) "one quantity per instrument" 3 (List.length written);
+      Alcotest.(check bool)
+        "and they are the quantity cells" true
+        (List.for_all written ~f:(fun n -> String.is_prefix n ~prefix:"qty"));
+      (* Names the page can resolve: each is a node of this same topology, and
+         an input cell, which is what the drawing looks it up as. *)
+      Alcotest.(check bool)
+        "each is an input cell of this topology" true
+        (List.for_all written ~f:(fun n ->
+             match Graph.Topology.find topo n with
+             | Some node ->
+                 Graph.Topology.Family.equal
+                   (Graph.Topology.Node.family node)
+                   Graph.Topology.Family.Input
+             | None -> false)))
+    ()
+
 (* The README's test, in its own words: "changing one position only triggers
    recomputation of nodes that depend on it". *)
 let test_position_change_is_local () =
@@ -2004,6 +2066,10 @@ let suite =
         test_topology_costs_nothing;
       Alcotest.test_case "TOPOLOGY: a fork's observers are released by destroy" `Quick
         test_a_forks_observers_are_released;
+      Alcotest.test_case "TOPOLOGY: without a desk there are no desk bands" `Quick
+        test_the_desk_bands_are_absent_without_a_desk;
+      Alcotest.test_case "TOPOLOGY: the desk bands say which way they point" `Quick
+        test_the_desk_bands_say_which_way_they_point;
       Alcotest.test_case "ARCHITECTURE: a position change recomputes only its dependents"
         `Quick test_position_change_is_local;
       Alcotest.test_case "ARCHITECTURE: a price tick recomputes only its dependents"

@@ -469,73 +469,17 @@
       var observers = !filtered;
       var L = st.L = layout(topo, compact, st.open, observers), colX = L.colX, r0 = L.maxRank;
       L.drawn.forEach(function (n) { if (n.rank < r0) r0 = n.rank; });
-      var ox = colX(L.maxRank), bp = L.pos[L.alias["breaches"]], obsBottom = 0;
-      if (observers) obsBottom = (bp ? bp.y : TOP) + 172;
-      var width = Math.round(colX(L.maxRank) + (L.colW[L.maxRank] || 0) + 16);
-      var height = Math.max(L.height, obsBottom) + (L.collapsed.length ? 16 : 0);
-      var svg = st.svg = svgEl("svg", { width: width, height: height, viewBox: "0 0 " + width + " " + height, role: "img", "aria-label": "the dependency graph" });
-      // Natural size at most; shrinks with its container down to MIN_FIT, and
-      // below that keeps MIN_FIT and scrolls inside it.
-      svg.style.width = "100%"; svg.style.height = "auto";
-      svg.style.maxWidth = width + "px"; svg.style.minWidth = Math.min(width, MIN_FIT) + "px";
-      var prev = null, order = ["inputs"].concat(STAGES.map(function (s) { return s[0]; })).concat(["spine"]);
-      for (var r = r0; r <= L.maxRank; r++) {
-        var votes = {}, best = null;
-        L.drawn.forEach(function (n) {
-          if (n.rank !== r || n.absent || n.limit || isFeed(n) || (n.band && n.feed)) return;
-          var s = stageOf(n); votes[s] = (votes[s] || 0) + (n.band ? n.members.length : 1);
-        });
-        order.forEach(function (s) { if (votes[s] && (!best || votes[s] > votes[best])) best = s; });
-        if (!best) best = L.drawn.some(function (n) { return n.rank === r && n.limit; }) ? "limits" : "";
-        if (!best) continue; // a column holding nothing that votes gets no head
-        svg.appendChild(text(colX(r), 14, best === prev ? "·" : best, "head"));
-        prev = best;
-      }
-      L.caps.forEach(function (c) {
-        var t = svgEl("text", { x: c.x, y: c.y }, "head");
-        c.lines.forEach(function (s, i) { var sp = svgEl("tspan", { x: c.x, dy: i ? 13 : 0 }); sp.textContent = s; t.appendChild(sp); });
-        svg.appendChild(t);
-      });
-      // Built once per draw, and kept on L for runsOf to read by name instead
-      // of scanning L.drawn per edge, per frame.
-      var drawnBy = L.drawnBy = {}; L.drawn.forEach(function (n) { drawnBy[n.name] = n; });
-      L.edges.forEach(function (e) {
-        var a = L.pos[e[0]], b = L.pos[e[1]]; if (!a || !b) return;
-        svg.appendChild(svgEl("path", { d: edgePath(a, b, drawnBy[e[0]], drawnBy[e[1]], L), "data-from": e[0], "data-to": e[1] }, "edge"));
-      });
-      L.drawn.forEach(function (n) {
-        var p = L.pos[n.name];
-        if (n.absent) {
-          // Set the way a node is set -- its name, and under it what it is --
-          // so the sentence stays inside its column instead of running into
-          // the names of the next one.
-          var ga = svgEl("g", { transform: "translate(" + p.x + "," + p.y + ")" }, "absent");
-          ga.appendChild(svgEl("rect", { x: -4, y: -10, width: Math.max(p.w, n.note.length * VAL_CHAR) + 8, height: 24, rx: 2 }, "slot"));
-          var a = svgEl("a", { href: "#s05" }); a.appendChild(text(0, 0, n.label, "name")); a.appendChild(text(0, 13, n.note, "val")); ga.appendChild(a);
-          svg.appendChild(ga); return;
-        }
-        var g = svgEl("g", { "data-name": n.name, "data-family": n.family, transform: "translate(" + p.x + "," + p.y + ")" }, "node" + (n.band ? " band" : ""));
-        if (n.family === "input" && !n.band) g.appendChild(svgEl("rect", { x: -13, y: -10, width: 8, height: 8 }, "cell"));
-        g.appendChild(text(0, 0, n.label, "name"));
-        var rule = svgEl("line", { x1: 0, y1: 3, x2: p.w, y2: 3 }, "rule");
-        var cost = n.band ? n.members.map(function (m) { return (byName[m] || {}).cost; }).sort(function (x, y) { return COST_ORDER.indexOf(y) - COST_ORDER.indexOf(x); })[0] : n.cost;
-        if (cost && COST_W[cost]) { rule.style.strokeWidth = COST_W[cost]; g.setAttribute("data-cost", cost); }
-        g.appendChild(rule);
-        if (n.observed) g.appendChild(svgEl("circle", { cx: p.w + 5, cy: -3, r: 2.5 }, "obs"));
-        g.appendChild(text(0, 13, valueText(n), "val"));
-        if (inspector && !n.band) {
-          g.addEventListener("mouseenter", function () { hover(n); });
-          g.addEventListener("mouseleave", function () { hover(null); });
-        }
-        svg.appendChild(g);
-      });
-      if (L.collapsed.length) svg.appendChild(text(LEFT, height - 5,"greeks · option_exposure · gamma_map · vega_map · portfolio_gamma · portfolio_vega · vega_by_bucket — no options in this book; the five singletons exist and ran once", "head collapsed"));
+      var ox = colX(L.maxRank), bp = L.pos[L.alias["breaches"]], obsBottom = 0, go = null, gin = null, arrows = false;
       // The readers outside the graph, from the served list, hung under
       // breaches below a rule: the chain ends at breaches, and what reads it
       // from outside is set beneath it. The kill switch's dotted edge to a bar
-      // is the second absence.
+      // is the second absence. Built before the svg rather than after the
+      // nodes, because the figure is as tall as the last row drawn here, and
+      // that is a count of the served list rather than a constant: a desk
+      // adds two rows. Appended where it always was, after the nodes.
       if (observers) {
-        var by = bp ? bp.y : TOP, sep = by + 22, go = svgEl("g", {}, "observers"), oy = sep + 44, entries = {};
+        var by = bp ? bp.y : TOP, sep = by + 22, oy = sep + 44, entries = {};
+        go = svgEl("g", {}, "observers");
         go.appendChild(svgEl("line", { x1: ox - 6, y1: sep, x2: ox + OBS_W, y2: sep }, "rule"));
         go.appendChild(text(ox, sep + 13, "observers", "head"));
         go.appendChild(text(ox, sep + 25, "outside the graph", "head"));
@@ -564,8 +508,115 @@
           if (o.name === "history") entry(o, "history", "reads " + o.reads.length + " · 500 points");
           else if (o.name === "stream") entry(o, "stream", "reads " + o.reads.length);
         });
-        svg.appendChild(go);
+        // The desk's bands, present only where the process has a desk. Orders
+        // leave: a stub pointing out of the picture with nothing at its end,
+        // because nothing in the graph changes when one is sent. Fills arrive,
+        // so their paths run INTO the quantity cells with an arrow head -- the
+        // only edges in this figure that point at an input from outside. They
+        // are drawn under the nodes, as the edges are, so a label a path
+        // crosses breaks it rather than being struck through. In compact mode
+        // every qty[S] resolves to the one band, and the paths are one per
+        // drawn key, so the band takes one arrow and an open name its own:
+        // one fill moves one name's quantity, and the band is all of them.
+        // The sub-lines are short on purpose: the column is OBS_W wide.
+        outside.forEach(function (o) {
+          if (o.name !== "orders" && o.name !== "fills") return;
+          var writes = o.writes || [];
+          arrows = true;
+          if (o.name === "orders") {
+            entry(o, "orders", "sent out · writes nothing");
+            var sy = entries.orders - 4, sx = ox + o.name.length * CHAR + 6;
+            go.appendChild(svgEl("path", { d: "M" + sx + "," + sy + " L" + (sx + 22) + "," + sy, "data-from": "orders", "marker-end": "url(#arrowin)" }, "deskin out"));
+            return;
+          }
+          entry(o, "fills", "writes " + writes.length + " · quantities");
+          if (!gin) gin = svgEl("g", {}, "desk-in");
+          var seen = {};
+          writes.forEach(function (w) {
+            var key = L.alias[w];
+            if (!key || seen[key]) return;
+            seen[key] = true;
+            var a = L.pos[key];
+            if (!a) return;
+            gin.appendChild(svgEl("path", { d: "M" + (ox - 4) + "," + (entries.fills - 4) + " L" + (a.x - 8) + "," + a.y, "data-from": "fills", "data-to": key, "marker-end": "url(#arrowin)" }, "deskin"));
+          });
+        });
+        // The last row's baseline, its value line and a margin: 18 below that
+        // baseline, which is what the fixed 172 left under the fourth row it
+        // was written for. Four rows give the same height as before.
+        obsBottom = oy - LINE + 18;
       }
+      var width = Math.round(colX(L.maxRank) + (L.colW[L.maxRank] || 0) + 16);
+      var height = Math.max(L.height, obsBottom) + (L.collapsed.length ? 16 : 0);
+      var svg = st.svg = svgEl("svg", { width: width, height: height, viewBox: "0 0 " + width + " " + height, role: "img", "aria-label": "the dependency graph" });
+      // Natural size at most; shrinks with its container down to MIN_FIT, and
+      // below that keeps MIN_FIT and scrolls inside it.
+      svg.style.width = "100%"; svg.style.height = "auto";
+      svg.style.maxWidth = width + "px"; svg.style.minWidth = Math.min(width, MIN_FIT) + "px";
+      // One arrow head, for the desk's bands, which are the only strokes here
+      // that carry a direction the reader cannot take from rank order. The
+      // figure had no <defs>; it gets one only where a band will use it.
+      if (arrows) {
+        var defs = svgEl("defs", {}, "");
+        var head = svgEl("marker", { id: "arrowin", viewBox: "0 0 8 8", refX: "7", refY: "4", markerWidth: "6", markerHeight: "6", orient: "auto" }, "");
+        head.appendChild(svgEl("path", { d: "M0,0 L8,4 L0,8 z" }, "arrowhead"));
+        defs.appendChild(head);
+        svg.appendChild(defs);
+      }
+      var prev = null, order = ["inputs"].concat(STAGES.map(function (s) { return s[0]; })).concat(["spine"]);
+      for (var r = r0; r <= L.maxRank; r++) {
+        var votes = {}, best = null;
+        L.drawn.forEach(function (n) {
+          if (n.rank !== r || n.absent || n.limit || isFeed(n) || (n.band && n.feed)) return;
+          var s = stageOf(n); votes[s] = (votes[s] || 0) + (n.band ? n.members.length : 1);
+        });
+        order.forEach(function (s) { if (votes[s] && (!best || votes[s] > votes[best])) best = s; });
+        if (!best) best = L.drawn.some(function (n) { return n.rank === r && n.limit; }) ? "limits" : "";
+        if (!best) continue; // a column holding nothing that votes gets no head
+        svg.appendChild(text(colX(r), 14, best === prev ? "·" : best, "head"));
+        prev = best;
+      }
+      L.caps.forEach(function (c) {
+        var t = svgEl("text", { x: c.x, y: c.y }, "head");
+        c.lines.forEach(function (s, i) { var sp = svgEl("tspan", { x: c.x, dy: i ? 13 : 0 }); sp.textContent = s; t.appendChild(sp); });
+        svg.appendChild(t);
+      });
+      // Built once per draw, and kept on L for runsOf to read by name instead
+      // of scanning L.drawn per edge, per frame.
+      var drawnBy = L.drawnBy = {}; L.drawn.forEach(function (n) { drawnBy[n.name] = n; });
+      L.edges.forEach(function (e) {
+        var a = L.pos[e[0]], b = L.pos[e[1]]; if (!a || !b) return;
+        svg.appendChild(svgEl("path", { d: edgePath(a, b, drawnBy[e[0]], drawnBy[e[1]], L), "data-from": e[0], "data-to": e[1] }, "edge"));
+      });
+      if (gin) svg.appendChild(gin);
+      L.drawn.forEach(function (n) {
+        var p = L.pos[n.name];
+        if (n.absent) {
+          // Set the way a node is set -- its name, and under it what it is --
+          // so the sentence stays inside its column instead of running into
+          // the names of the next one.
+          var ga = svgEl("g", { transform: "translate(" + p.x + "," + p.y + ")" }, "absent");
+          ga.appendChild(svgEl("rect", { x: -4, y: -10, width: Math.max(p.w, n.note.length * VAL_CHAR) + 8, height: 24, rx: 2 }, "slot"));
+          var a = svgEl("a", { href: "#s05" }); a.appendChild(text(0, 0, n.label, "name")); a.appendChild(text(0, 13, n.note, "val")); ga.appendChild(a);
+          svg.appendChild(ga); return;
+        }
+        var g = svgEl("g", { "data-name": n.name, "data-family": n.family, transform: "translate(" + p.x + "," + p.y + ")" }, "node" + (n.band ? " band" : ""));
+        if (n.family === "input" && !n.band) g.appendChild(svgEl("rect", { x: -13, y: -10, width: 8, height: 8 }, "cell"));
+        g.appendChild(text(0, 0, n.label, "name"));
+        var rule = svgEl("line", { x1: 0, y1: 3, x2: p.w, y2: 3 }, "rule");
+        var cost = n.band ? n.members.map(function (m) { return (byName[m] || {}).cost; }).sort(function (x, y) { return COST_ORDER.indexOf(y) - COST_ORDER.indexOf(x); })[0] : n.cost;
+        if (cost && COST_W[cost]) { rule.style.strokeWidth = COST_W[cost]; g.setAttribute("data-cost", cost); }
+        g.appendChild(rule);
+        if (n.observed) g.appendChild(svgEl("circle", { cx: p.w + 5, cy: -3, r: 2.5 }, "obs"));
+        g.appendChild(text(0, 13, valueText(n), "val"));
+        if (inspector && !n.band) {
+          g.addEventListener("mouseenter", function () { hover(n); });
+          g.addEventListener("mouseleave", function () { hover(null); });
+        }
+        svg.appendChild(g);
+      });
+      if (L.collapsed.length) svg.appendChild(text(LEFT, height - 5,"greeks · option_exposure · gamma_map · vega_map · portfolio_gamma · portfolio_vega · vega_by_bucket — no options in this book; the five singletons exist and ran once", "head collapsed"));
+      if (go) svg.appendChild(go);
       // Heat goes on before the drawing is in the document, so each path's
       // first style is already its heat and the width transition has nothing
       // to run from. Applied after, the measuring below had already styled

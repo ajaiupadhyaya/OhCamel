@@ -530,6 +530,7 @@ let json_of_graph (topo : Graph.Topology.t) : Yojson.Safe.t =
       [
         ("name", jstring (T.Outside.name o));
         ("reads", jlist jstring (T.Outside.reads o));
+        ("writes", jlist jstring (T.Outside.writes o));
         ("present", `Bool (T.Outside.present o));
         ("wired_to", jopt jstring (T.Outside.wired_to o));
       ]
@@ -1412,7 +1413,7 @@ let notify (t : t) : unit = Ivar.fill_if_empty t.changed ()
 
 let create ?(extensions : extension list = []) ?(frame_extra = fun () -> [])
     ?(coalesce = Time_ns.Span.of_ms 80.0) ?history_capacity ?(alerts : Alerts.t option)
-    ?(kill_switch_wired_to : string option) ?(peer : string option)
+    ?(kill_switch_wired_to : string option) ?(desk = false) ?(peer : string option)
     ?(feed_stats : (unit -> Yojson.Safe.t) option) ?(quiet : Types.Symbol.t list = [])
     ?(recompute_log : Recompute_log.t option) ?(reports : Reports.t option)
     ?(garch : Reports.Garch.t option) ~(mode : mode) ~(graph : Graph.t) ~(factor : string)
@@ -1456,7 +1457,8 @@ let create ?(extensions : extension list = []) ?(frame_extra = fun () -> [])
       graph_json =
         Yojson.Safe.to_string
           (json_of_graph
-             (Graph.topology ~alerts:(Option.is_some alerts) ?kill_switch_wired_to graph));
+             (Graph.topology ~alerts:(Option.is_some alerts) ?kill_switch_wired_to ~desk
+                graph));
       extensions;
       frame_extra;
       not_found_body = build_not_found_body extensions;

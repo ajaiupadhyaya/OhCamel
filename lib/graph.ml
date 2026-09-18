@@ -1954,6 +1954,11 @@ module Topology = struct
     type t = {
       name : string;
       reads : string list;
+      (* The node names this one writes INTO. Empty for a reader, which is all
+         of them until the desk: alerts, history and the stream observe and
+         change nothing. A fill is the first thing outside the graph that moves
+         an input cell, and the client needs to know which way to draw it. *)
+      writes : string list;
       present : bool;
       wired_to : string option;
     }
@@ -2033,7 +2038,8 @@ end
    by walking through whatever unnamed nodes sit between; every edge then runs
    named-to-named and the drawing has one stroke per dependency a reader can
    name. Nothing here is hand-written that could drift from the wiring. *)
-let topology ?(alerts = false) ?kill_switch_wired_to (t : t) : Topology.t =
+let topology ?(alerts = false) ?kill_switch_wired_to ?(desk = false) (t : t) : Topology.t
+    =
   let raw = walk t in
   let by_id = Int.Table.of_alist_exn (List.map raw ~f:(fun r -> (r.Raw.id, r))) in
   let node_exn id =
@@ -2200,12 +2206,13 @@ let topology ?(alerts = false) ?kill_switch_wired_to (t : t) : Topology.t =
      [breaches] and is present only when the caller attached one; the kill
      switch reads the tracker and is wired to what the caller names: nothing,
      unless a desk that obeys it is attached -- the kernel still acts on
-     nothing itself. *)
+     nothing itself. None of the four writes anything. *)
   let outside =
     [
       {
         Topology.Outside.name = "alerts";
         reads = [ Node_name.breaches ];
+        writes = [];
         present = alerts;
         wired_to = None;
       };
@@ -2220,22 +2227,49 @@ let topology ?(alerts = false) ?kill_switch_wired_to (t : t) : Topology.t =
             Node_name.var_notional;
             Node_name.es_notional;
           ];
+        writes = [];
         present = true;
         wired_to = None;
       };
       {
         Topology.Outside.name = "stream";
         reads = observed_names;
+        writes = [];
         present = true;
         wired_to = None;
       };
       {
         Topology.Outside.name = "kill_switch";
         reads = [ "alerts" ];
+        writes = [];
         present = alerts;
         wired_to = kill_switch_wired_to;
       };
     ]
+    (* The desk's two bands, present only when the caller says this process
+       has a desk; a backtest's topology carries neither. Orders leave and
+       change nothing here. A fill comes back and sets a quantity cell, one per
+       instrument, named by the function [create] named the cell with, so the
+       page resolves them as it resolves any other node. *)
+    @
+    if desk then
+      [
+        {
+          Topology.Outside.name = "orders";
+          reads = [];
+          writes = [];
+          present = true;
+          wired_to = None;
+        };
+        {
+          Topology.Outside.name = "fills";
+          reads = [];
+          writes = List.map (Map.keys t.instruments) ~f:Node_name.Input.qty;
+          present = true;
+          wired_to = None;
+        };
+      ]
+    else []
   in
   let counts =
     {

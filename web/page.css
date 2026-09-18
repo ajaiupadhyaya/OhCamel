@@ -387,7 +387,7 @@
   figure.fig.poster {
     position: fixed; inset: 0; z-index: 100; margin: 0; overflow: auto; padding: 30px 40px 24px;
     --ground: #0a0c0e; --panel: #101316; --ink: #eceeed; --ink-soft: #9aa29e; --ink-faint: #59615d; --rule: #252b2f;
-    --mark: #e6b04c; --over: #ec6c4f; --unknown: #8e9de3; --live: #53c08f;
+    --mark: #e6b04c; --over: #ec6c4f; --unknown: #8e9de3; --live: #53c08f; --second: #7fa3c2;
     background: radial-gradient(ellipse at 30% 20%, #13171b 0%, #0a0c0e 70%); color: var(--ink); border: 0;
   }
   figure.fig.poster .ohcamel-graph svg { min-width: 0 !important; max-width: none !important; width: 100% !important; }
@@ -406,6 +406,13 @@
   .ohcamel-graph g.absent path.dotted { stroke: var(--ink-faint); stroke-width: .75; stroke-dasharray: 2 2; fill: none; }
   .ohcamel-graph g.absent line.bar { stroke: var(--ink); stroke-width: 1.5; }
   .ohcamel-graph g.outside.missing text { fill: var(--ink-faint); }
+  /* the desk's bands: orders leaving and fills arriving are edges of another
+     kind than a dependency, so they are stroked in the second ink rather than
+     the rule's, and carry the figure's one arrow head. --second is set for
+     both schemes with the argument's tokens below, and for the poster with
+     its palette. */
+  .ohcamel-graph path.deskin { stroke: var(--second); stroke-width: 1; fill: none; }
+  .ohcamel-graph .arrowhead { fill: var(--second); stroke: none; }
   .ohcamel-graph .inspector { min-height: 16px; margin-top: 8px; font-size: 11px; color: var(--ink-soft); font-family: ui-monospace, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ohcamel-graph figcaption.graph-cap { display: flex; justify-content: space-between; gap: 20px; margin-top: 6px; font-size: 12px; }
   .ohcamel-graph .cap-prov { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); white-space: nowrap; }

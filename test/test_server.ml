@@ -1796,12 +1796,19 @@ let test_api_graph () =
              is there, and that nothing outside the graph is wired onward. *)
           List.iter outs ~f:(fun o ->
               check_key_set ~what:"outside reader"
-                [ "name"; "reads"; "present"; "wired_to" ]
+                [ "name"; "reads"; "writes"; "present"; "wired_to" ]
                 o;
               Alcotest.(check bool)
                 (str o "name" ^ " is wired to nothing")
                 true
-                (match field_exn o "wired_to" with `Null -> true | _ -> false));
+                (match field_exn o "wired_to" with `Null -> true | _ -> false);
+              (* Every entry carries the direction field, as an array of
+                 names; with no desk attached every one of them is a reader
+                 and writes nothing. *)
+              Alcotest.(check bool)
+                (str o "name" ^ " carries a writes array, and it is empty")
+                true
+                (match field_exn o "writes" with `List [] -> true | _ -> false));
           List.iter
             [
               ("alerts", false);
@@ -2380,13 +2387,18 @@ let test_heat_without_a_log_is_null () =
 
 (* §3.8 of the desk design: with a desk attached, the kill switch is wired to
    the desk's submit path, and the topology says so. Every other reader stays
-   wired to nothing. *)
+   wired to nothing.
+
+   Created as both hosts create it, with [~desk:true] beside the wiring, so
+   this is also where [Server.create] is seen passing [desk] through: the
+   served list gains the two bands, and the fills band writes this book's
+   quantity cells by the names the topology serves for them. *)
 let test_with_a_desk_the_switch_is_wired_to_desk_submit () =
   with_graph
     ~f:(fun graph ->
       let str j k = match field_exn j k with `String s -> s | _ -> "<not a string>" in
       let server =
-        Server.create ~kill_switch_wired_to:"desk.submit" ~mode:`Demo ~graph
+        Server.create ~kill_switch_wired_to:"desk.submit" ~desk:true ~mode:`Demo ~graph
           ~factor:"SYNTHETIC" ()
       in
       let _, body = dispatched server "/api/graph" in
@@ -2400,7 +2412,23 @@ let test_with_a_desk_the_switch_is_wired_to_desk_submit () =
               Alcotest.(check string)
                 (str o "name" ^ " is wired to")
                 (Yojson.Safe.to_string expected)
-                (Yojson.Safe.to_string (field_exn o "wired_to")))
+                (Yojson.Safe.to_string (field_exn o "wired_to")));
+          Alcotest.(check (list string))
+            "the four readers, then the desk's two bands"
+            [ "alerts"; "history"; "stream"; "kill_switch"; "orders"; "fills" ]
+            (List.map outs ~f:(fun o -> str o "name"));
+          let writes name =
+            match
+              List.find outs ~f:(fun o -> String.equal (str o "name") name)
+              |> Option.map ~f:(fun o -> field_exn o "writes")
+            with
+            | Some (`List xs) -> List.map xs ~f:(function `String s -> s | _ -> "?")
+            | _ -> [ "<no writes array>" ]
+          in
+          Alcotest.(check (list string)) "orders write nothing" [] (writes "orders");
+          Alcotest.(check (list string))
+            "fills write the two quantity cells" [ "qty[AAPL]"; "qty[XOM]" ]
+            (writes "fills")
       | _ -> Alcotest.fail "no outside list")
     ()
 
