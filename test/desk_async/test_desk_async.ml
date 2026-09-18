@@ -105,25 +105,27 @@ let fixture ?(limits = [ tech_cap ]) () =
 let managers_built = ref 0
 
 (* A manager over the fixture. [trade] replaces the venue's trading half with
-   one a case has wrapped; without it the manager trades the venue directly.
-   Its lookups keep production's schedule -- 2, 10 and 30 s -- on the
-   fixture's clock, so they fire only when a case advances it. *)
-let manager ?trade ?(halt = D.Halt.create D.Halt.Source.none) f =
+   one a case has wrapped, and [read] its read half; without them the manager
+   uses the venue directly. [now] is the wall clock unless a case gives the
+   manager its own, and the book is the account's unless a case says when it
+   stops being so. Its lookups keep production's schedule -- 2, 10 and 30 s --
+   on the fixture's clock, so they fire only when a case advances it. *)
+let manager ?trade ?read ?(now = Time_ns.now) ?(book_is_current = fun () -> true)
+    ?(halt = D.Halt.create D.Halt.Source.none) f =
   let trade =
     match trade with Some t -> t | None -> D.Sim_venue.trade ~auto:false f.venue
   in
+  let read = match read with Some r -> r | None -> D.Sim_venue.read f.venue in
   incr managers_built;
   let oms =
     D.Oms.create ~graph:f.graph ~journal:f.journal
       ~spec:{ Desk_spec.default with Desk_spec.trading = Desk_spec.Enabled }
-      ~read:(Some (D.Sim_venue.read f.venue))
-      ~trade:(Ok trade) ~halt ~accepts_tickets:true ~adv:(D.Oms.Adv.Fixed 1_000_000.0)
-      ~now:Time_ns.now
+      ~read:(Some read) ~trade:(Ok trade) ~halt ~accepts_tickets:true
+      ~adv:(D.Oms.Adv.Fixed 1_000_000.0) ~now
       ~rng:(Random.State.make [| 7; !managers_built |])
       ~on_change:ignore
       ~on_event:(fun e -> Queue.enqueue f.events e)
-      ~after_fill:ignore
-      ~book_is_current:(fun () -> true)
+      ~after_fill:ignore ~book_is_current
       ~time_source:(Time_source.read_only f.clock)
       ()
   in
@@ -636,6 +638,220 @@ let test_a_restart_reconciles () =
   Graph.destroy f.graph;
   return ()
 
+(* Invariant 12, after the arrival quote. [propose] runs the rules and the
+   gate, then fetches the quote while it holds the sequencer, and a book that
+   was the account's when the rules ran can age past the sync window before
+   the quote answers. So the book is asked again once the quote is in. Here it
+   is current when the proposal starts -- the rules pass, which is the only
+   way the quote is asked for at all -- and stops being so while the quote is
+   in flight. The order is refused by the trading rule, and nothing reaches
+   the venue. *)
+let test_a_book_that_goes_stale_while_the_quote_is_fetched_is_refused () =
+  let f = fixture () in
+  let current = ref true in
+  let asked = Ivar.create () and answer = Ivar.create () in
+  let venue_read = D.Sim_venue.read f.venue in
+  let read =
+    {
+      venue_read with
+      D.Venue.Read.latest_quote =
+        (fun symbol ->
+          Ivar.fill_if_empty asked ();
+          let%bind () = Ivar.read answer in
+          venue_read.D.Venue.Read.latest_quote symbol);
+    }
+  in
+  let sim = D.Sim_venue.trade ~auto:false f.venue in
+  let submitted = ref 0 in
+  let counted =
+    {
+      sim with
+      D.Venue.Trade.submit =
+        (fun r ->
+          incr submitted;
+          sim.D.Venue.Trade.submit r);
+    }
+  in
+  let oms = manager ~trade:counted ~read ~book_is_current:(fun () -> !current) f in
+  let proposal = D.Oms.propose oms (ticket aapl D.Order.Side.Buy 10) in
+  let%bind () = Ivar.read asked in
+  current := false;
+  Ivar.fill_exn answer ();
+  let%bind p, o = proposal in
+  let%bind () = settle () in
+  Alcotest.(check string) "refused" "rejected_pre_trade" (state f o);
+  Alcotest.(check (list string)) "by the trading rule" [ "trading" ] (rules p);
+  Alcotest.(check bool)
+    "saying the book may not be the account's" true
+    (List.exists (D.Oms.Preview.reasons p)
+       ~f:(String.is_substring ~substring:"recent read of the account"));
+  Alcotest.(check (pair int int))
+    "nothing submitted, and the venue received nothing" (0, 0)
+    (!submitted, D.Sim_venue.received f.venue);
+  Graph.destroy f.graph;
+  return ()
+
+(* An order the desk declared failed, which the venue holds. The venue takes
+   two limit buys that rest -- AAPL 10 at 99 (the ask is 100 x 1.0005 =
+   100.05) and XOM 20 at 49 (the ask is 50 x 1.0005 = 50.025) -- but both
+   answers are lost and every lookup misses, so at t0 + 2 + 10 + 30 = 42 s
+   the desk declares both failed. Then the venue speaks: AAPL's order is
+   reported resting on the stream with the switch clear, and XOM's is found
+   resting by a reconciliation under a halt by hand. The desk has given up on
+   both, so nothing else would ever manage them; each is cancelled at once by
+   the venue's id, whatever the switch reads, and the log says so. A cancel
+   is not a resend: the venue received two orders and still has two. A late
+   copy of XOM's report on the stream, still saying new, and a second
+   reconciliation send nothing more -- exactly one DELETE each. The venue
+   numbers orders as it receives them, so AAPL's is sim-1 and XOM's sim-2.
+   The desk hears only what the case writes on its stream: the venue's own
+   updates go to a pipe nobody reads. *)
+let test_a_failed_order_the_venue_reports_resting_is_cancelled () =
+  let f = fixture () in
+  let sim = D.Sim_venue.trade ~auto:false f.venue in
+  let stream, to_desk = Pipe.create () in
+  let deletes = ref [] in
+  let sent id = List.count !deletes ~f:(String.equal id) in
+  let blind =
+    {
+      sim with
+      D.Venue.Trade.submit =
+        (fun r ->
+          let%map (_ : D.Venue.Submission.t) = sim.D.Venue.Trade.submit r in
+          D.Venue.Submission.Unknown "timed out after 10 s");
+      find_order = (fun _ -> return (Ok None));
+      cancel =
+        (fun id ->
+          deletes := id :: !deletes;
+          sim.D.Venue.Trade.cancel id);
+      updates = stream;
+    }
+  in
+  let oms = manager ~trade:blind f in
+  let%bind _, a = D.Oms.propose oms (ticket ~kind:limit_at_99 aapl D.Order.Side.Buy 10) in
+  let%bind _, x =
+    D.Oms.propose oms
+      (ticket ~kind:(D.Order.Kind.Limit (Price.of_float 49.0)) xom D.Order.Side.Buy 20)
+  in
+  (* 14:00:00 + 42 s: the last of the 2, 10 and 30 s lookups misses *)
+  let%bind () =
+    Time_source.advance_by_alarms ~wait_for:settle f.clock
+      ~to_:(Time_ns.add t0 (Time_ns.Span.of_sec 42.0))
+  in
+  let%bind () = settle () in
+  Alcotest.(check (pair string string))
+    "both declared failed" ("failed", "failed")
+    (state f a, state f x);
+  Alcotest.(check int) "though the venue received both" 2 (D.Sim_venue.received f.venue);
+  let at_venue o =
+    Option.value_exn
+      (D.Sim_venue.find_now f.venue o.D.Order.request.D.Order.Request.client_order_id)
+  in
+  let report (v : D.Venue.Venue_order.t) =
+    Pipe.write_without_pushback to_desk
+      { D.Venue.Update.event = "new"; order = v; fill = None; at = Time_ns.now () }
+  in
+  let deletes_of_both () = (sent "sim-1", sent "sim-2") in
+  (* AAPL's, on the stream, the switch clear *)
+  report (at_venue a);
+  let%bind () = settle () in
+  Alcotest.(check (pair int int)) "one DELETE, for sim-1" (1, 0) (deletes_of_both ());
+  Alcotest.(check (option string))
+    "by the venue id the desk kept" (Some "sim-1") (journaled f a).D.Order.venue_order_id;
+  Alcotest.(check string) "still failed on the desk" "failed" (state f a);
+  Alcotest.(check string)
+    "and cancelled at the venue" "canceled" (at_venue a).D.Venue.Venue_order.status;
+  (* XOM's, by a reconciliation, under a halt by hand. Its report as the venue
+     made it before the cancel is kept for the late copy below. *)
+  let before_the_cancel = at_venue x in
+  let%bind () = D.Oms.kill oms ~why:"testing the switch" in
+  let%bind () = D.Oms.reconcile oms in
+  let%bind () = settle () in
+  Alcotest.(check (pair int int)) "one DELETE, for sim-2" (1, 1) (deletes_of_both ());
+  Alcotest.(check (option string))
+    "by the venue id the desk kept" (Some "sim-2") (journaled f x).D.Order.venue_order_id;
+  Alcotest.(check string)
+    "and cancelled at the venue" "canceled" (at_venue x).D.Venue.Venue_order.status;
+  report before_the_cancel;
+  let%bind () = settle () in
+  let%bind () = D.Oms.reconcile oms in
+  let%bind () = settle () in
+  Alcotest.(check (pair int int))
+    "a late report and a second reconciliation send nothing more" (1, 1)
+    (deletes_of_both ());
+  Alcotest.(check int) "and nothing was sent again" 2 (D.Sim_venue.received f.venue);
+  Alcotest.(check int)
+    "one line for each, saying the desk cancels what it declared failed" 2
+    (Queue.count f.events ~f:(fun line ->
+         String.is_substring line ~substring:"declared failed"
+         && String.is_substring line ~substring:"cancelling it"));
+  Graph.destroy f.graph;
+  return ()
+
+(* The session rule reads the venue's clock at the order's own time (the main
+   suite's cases), so a time past the close the clock named reads closed
+   until the clock is read again: past it, the clock says nothing about the
+   session after. So the manager reads the clock again as the session it
+   described ends, not up to a minute later. The simulated venue's sessions
+   follow one another with no gap -- without this the demo would refuse its
+   own orders between each close and the next refresh. This venue opened its
+   first five-minute session 270 s before t0, so that session closes at
+   t0 + 30 s and the next at t0 + 330 s; the manager refreshes every minute,
+   on the case's clock, and reads the time from it too. *)
+let test_the_clock_is_read_again_when_its_session_ends () =
+  let f = fixture () in
+  let now () = Time_source.now f.clock in
+  let venue =
+    D.Sim_venue.create ~latency:Time_ns.Span.zero
+      ~opened_at:(Time_ns.sub t0 (Time_ns.Span.of_sec 270.0))
+      ~marks:(fun s -> Option.map (Hashtbl.find f.marks s) ~f:Price.of_float)
+      ~now
+      ~half_spread_bps:(fun _ -> 5.0)
+      ~cash:(Notional.of_float 1_000_000.0)
+      ~positions:[] ()
+  in
+  let reads = ref 0 in
+  let venue_read = D.Sim_venue.read venue in
+  let read =
+    {
+      venue_read with
+      D.Venue.Read.clock =
+        (fun () ->
+          incr reads;
+          venue_read.D.Venue.Read.clock ());
+    }
+  in
+  let oms = manager ~read ~now f in
+  let refused () = rules (D.Oms.preview oms (ticket aapl D.Order.Side.Buy 1)) in
+  let at span =
+    Time_source.advance_by_alarms ~wait_for:settle f.clock ~to_:(Time_ns.add t0 span)
+  in
+  don't_wait_for (D.Oms.refresh_forever oms ~every:(Time_ns.Span.of_min 1.0));
+  let%bind () = settle () in
+  Alcotest.(check (pair int (list string)))
+    "t0: one read, open" (1, [])
+    (!reads, refused ());
+  (* 14:00:30 - 1 ns: the first session has not closed *)
+  let%bind () = at Time_ns.Span.(of_sec 30.0 - nanosecond) in
+  let%bind () = settle () in
+  Alcotest.(check (pair int (list string)))
+    "1 ns short of its close: still one read, open" (1, [])
+    (!reads, refused ());
+  (* 14:00:30: the close, and the clock read again at once *)
+  let%bind () = at (Time_ns.Span.of_sec 30.0) in
+  let%bind () = settle () in
+  Alcotest.(check (pair int (list string)))
+    "at the close: read again, and the next session open" (2, [])
+    (!reads, refused ());
+  (* 14:01:30: a minute after, as every minute -- not a read per cycle *)
+  let%bind () = at (Time_ns.Span.of_sec 90.0) in
+  let%bind () = settle () in
+  Alcotest.(check (pair int (list string)))
+    "a minute later: the third read" (3, [])
+    (!reads, refused ());
+  Graph.destroy f.graph;
+  return ()
+
 let suites =
   [
     ( "transport",
@@ -653,6 +869,12 @@ let suites =
         case "a limit's trip cancels the open orders"
           test_a_limit's_trip_cancels_the_open_orders;
         case "a restart reconciles against the venue" test_a_restart_reconciles;
+        case "a book that goes stale while the quote is fetched is refused"
+          test_a_book_that_goes_stale_while_the_quote_is_fetched_is_refused;
+        case "a failed order the venue reports resting is cancelled, once"
+          test_a_failed_order_the_venue_reports_resting_is_cancelled;
+        case "the clock is read again when its session ends"
+          test_the_clock_is_read_again_when_its_session_ends;
       ] );
   ]
 

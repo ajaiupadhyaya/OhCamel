@@ -98,6 +98,22 @@ module Venue_order = struct
     limit_price : float option;
   }
   [@@deriving sexp_of, compare, equal]
+
+  (* Whether the venue still works the order: it can still fill, and a DELETE
+     would stop it. Alpaca's statuses for a resting order; the simulated venue
+     uses new and partially_filled. Not pending_cancel, done_for_day or a
+     terminal status: a cancel of any of those stops nothing. *)
+  let rests t =
+    List.mem
+      [
+        "new";
+        "accepted";
+        "pending_new";
+        "accepted_for_bidding";
+        "partially_filled";
+        "held";
+      ]
+      t.status ~equal:String.equal
 end
 
 module Submission = struct

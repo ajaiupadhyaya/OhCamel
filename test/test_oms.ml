@@ -24,7 +24,7 @@ let limit name scope n = { Limit.name; scope; kind = Limit.Gross_notional (money
    gates an order against a book the account holds. The trailing unit is what
    lets that default be taken, as test_gate.ml's [with_book] takes its own:
    an optional argument before the last labelled one is never erased. *)
-let with_oms ?(book_is_current = true) ~f () =
+let with_oms ?(book_is_current = true) ?(now = Time_ns.now) ~f () =
   let graph =
     Graph.create ~starting_cash:(money 1_000_000.0)
       ~instruments:
@@ -68,7 +68,7 @@ let with_oms ?(book_is_current = true) ~f () =
           ~read:(Some (D.Sim_venue.read venue))
           ~trade:(Ok (D.Sim_venue.trade ~auto:false venue))
           ~halt:(D.Halt.create D.Halt.Source.none)
-          ~accepts_tickets:false ~adv:(D.Oms.Adv.Fixed 1_000_000.0) ~now:Time_ns.now
+          ~accepts_tickets:false ~adv:(D.Oms.Adv.Fixed 1_000_000.0) ~now
           ~rng:(Random.State.make [| 3 |]) ~on_change:ignore ~on_event:ignore
           ~after_fill:ignore
           ~book_is_current:(fun () -> book_is_current)
@@ -173,6 +173,43 @@ let test_a_book_that_is_not_the_account's_is_refused_by_the_trading_rule () =
         "and the frame's trading reads off" false (D.Oms.can_trade oms))
     ()
 
+(* The manager keeps the venue's clock, and the session rule reads it when an
+   order is previewed, not when the clock was read. The clock as Alpaca
+   answers it at 15:59:30 EDT on Monday 2026-09-14: open, the close at 16:00
+   (20:00Z), the next open Tuesday at 09:30 (13:30Z). XOM 10 x 100 = 1,000
+   passes every other rule and every limit. At 15:59:59 it passes; at
+   16:00:30, on the same clock with no read between -- inside the minute a
+   flag read once a minute still said open -- the session rule refuses it,
+   alone. *)
+let test_an_order_after_the_close_is_refused_on_the_clock_last_read () =
+  let at = Time_ns.of_string_with_utc_offset in
+  let now = ref (at "2026-09-14T19:59:30Z") in
+  with_oms
+    ~now:(fun () -> !now)
+    ~f:(fun oms _ ->
+      D.Oms.set_clock oms
+        (Some
+           {
+             D.Venue.Session_clock.now = !now;
+             is_open = true;
+             next_open = at "2026-09-15T13:30:00Z";
+             next_close = at "2026-09-14T20:00:00Z";
+             next_close_date = Date.of_string "2026-09-14";
+           });
+      let preview_at s =
+        now := at s;
+        D.Oms.preview oms (ticket xom D.Order.Side.Buy 10)
+      in
+      let before = preview_at "2026-09-14T19:59:59Z" in
+      Alcotest.(check (pair bool (list string)))
+        "15:59:59: passed, no rule" (true, [])
+        (D.Oms.Preview.passed before, rules before);
+      let after = preview_at "2026-09-14T20:00:30Z" in
+      Alcotest.(check (pair bool (list string)))
+        "16:00:30: refused by the session alone" (false, [ "session" ])
+        (D.Oms.Preview.passed after, rules after))
+    ()
+
 let suite =
   ( "oms",
     [
@@ -185,4 +222,6 @@ let suite =
         test_a_preview's_json_has_exactly_these_keys;
       Alcotest.test_case "a book that is not the account's is refused by the trading rule"
         `Quick test_a_book_that_is_not_the_account's_is_refused_by_the_trading_rule;
+      Alcotest.test_case "an order after the close is refused on the clock last read"
+        `Quick test_an_order_after_the_close_is_refused_on_the_clock_last_read;
     ] )

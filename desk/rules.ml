@@ -35,13 +35,42 @@ module Recent = struct
   [@@deriving sexp_of]
 end
 
+(* The venue's clock as last read: the two times it named, and nothing decided
+   from them until an order asks. A flag read once a minute let an order
+   through for up to a minute after the close; the times are the venue's own,
+   so the rule is right at the order's own instant.
+
+   Alpaca names the NEXT of each. While the market is open, next_close is this
+   session's close and next_open the one after it, so the close comes first;
+   while it is shut, the open comes first. So at [now] the market is open when
+   [now] is before the next close and either the close came first when the
+   clock was read -- it was open then -- or the open has come since. Both
+   times ahead of [now] is not enough: read overnight, the next close is ahead
+   and so is the next open. Past next_close the clock no longer says when the
+   session after it ends, so it reads closed until the clock is read again,
+   which [Oms.refresh_forever] does at that moment. *)
+module Session = struct
+  type t = { next_open : Time_ns.t; next_close : Time_ns.t }
+
+  let is_open t ~now =
+    Time_ns.( < ) now t.next_close
+    && (Time_ns.( <= ) t.next_close t.next_open || Time_ns.( >= ) now t.next_open)
+
+  (* The nearer of the two times still ahead of [now]: the next moment the
+     clock's answer can change, or stop being an answer. *)
+  let next_change t ~now =
+    List.filter [ t.next_open; t.next_close ] ~f:(fun at -> Time_ns.( > ) at now)
+    |> List.min_elt ~compare:Time_ns.compare
+end
+
 module Context = struct
   type t = {
     spec : Desk_spec.t;
     universe : Symbol.Set.t;
     can_trade : (unit, string) Result.t;
     halted : string option;
-    session_open : bool;
+    (* None: no clock has answered, or the last read failed -- closed. *)
+    session : Session.t option;
     mark : Price.t option;
     stale : bool;
     adv20 : float option;
@@ -93,7 +122,9 @@ let check (c : Context.t) (r : Order.Request.t) : Failure.t list =
       | Desk_spec.Enabled, Error why -> fail "trading" why
       | Desk_spec.Enabled, Ok () -> None);
       Option.map c.halted ~f:(fun why -> { Failure.rule = "kill_switch"; why });
-      (if c.session_open then None else fail "session" "the regular session is closed");
+      (match c.session with
+      | Some s when Session.is_open s ~now:c.now -> None
+      | Some _ | None -> fail "session" "the regular session is closed");
       (match (c.mark, c.stale) with
       | None, _ -> fail "mark" (sprintf "%s has no mark" sym)
       | Some _, true -> fail "mark" (sprintf "%s's mark is stale" sym)

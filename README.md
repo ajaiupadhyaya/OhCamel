@@ -1112,7 +1112,7 @@ deploy user alone, and reach the container as environment, never as a layer.
 
 ## What's verified
 
-`make test` runs 454 tests, plus seven in `test/desk_async` that run with the
+`make test` runs 456 tests, plus ten in `test/desk_async` that run with the
 scheduler -- the order manager's cases, the transport's bound and that
 suite's own count -- all hermetic — no network, no credentials, and nothing
 that waits on the wall clock: the scheduler's cases move a clock of their
@@ -1301,7 +1301,7 @@ for a mix of reasons bisect's line data gives separately rather than one
 story: `resolve`'s one-minute fallback once its
 2/10/30 s schedule is exhausted, and its own lookup-error branch;
 `on_update`'s branch for a fill that arrives after this desk already
-declared the order failed (the comment there at oms.ml:693 calls this
+declared the order failed (the comment there at oms.ml:758 calls this
 "fills after failed"), its already-counted-execution branch, and its
 lookup for an order this desk holds no record of; `propose`'s re-checks
 after the arrival quote, for the switch tripping or the book aging stale
@@ -1311,13 +1311,17 @@ reads the session clock every time, and the twenty-day volume on its first
 turn, on each turn after a read that failed, and an hour after one that
 answered, but never when the volume is fixed, as the demo's is -- and
 `fills_json`'s row-building body, neither of which any test calls directly.
-The scheduler suite's seven cases are not all order-manager scenarios
+The scheduler suite's ten cases are not all order-manager scenarios
 either: two are Task 4's, the transport bound and the suite's own
-count assertion; the five that do exercise `oms.ml` -- three fills, an
-unresent unknown answer, a halt, a limit's trip, and a restart -- record
-zero visits on every branch just named. None of them proposes past a
-tripped switch or a stale book, none makes `resolve`'s own lookup fail or
-delivers a fill after failed, and none runs `refresh` at all.
+count assertion. The five that exercised `oms.ml` when that figure was
+measured -- three fills, an unresent unknown answer, a halt, a limit's
+trip, and a restart -- record zero visits on every branch just named.
+None of them proposes past a tripped switch or a stale book, none makes
+`resolve`'s own lookup fail or delivers a fill after failed, and none
+runs `refresh` at all. The three added since, which the figure predates,
+reach two of those: a book that goes stale while the arrival quote is
+fetched, and `refresh_forever` reading the clock again as a session ends
+-- beside a failed order the venue reports resting, which is cancelled.
 
 So the floor exists to make deleting tests noticeable, and that is all it is
 for. A coverage target would be an instruction to write the tests that raise it.
@@ -1380,7 +1384,7 @@ Every order the desk sends has passed two checks, in this order, and the page sh
 **The rules** (`desk/rules.ml`) ask whether the order should exist. Every failing rule is reported, not only the first:
 - the symbol is in the book's universe, and the quantity is a positive whole number;
 - the book enables trading, the desk has a trading half, and the book is the account's -- read within the last two sync intervals;
-- the kill switch is clear, and the regular session is open;
+- the kill switch is clear, and the regular session is open at the order's own instant, on the venue's clock as last read -- its next open and next close, not a flag read a minute ago;
 - the name has a mark that is not stale;
 - a limit price is a whole cent at every price -- stricter than Rule 612 asks below a dollar, because the order goes to the venue with two decimals -- and within the book's collar of the mark;
 - quantity × mark is within the order cap;
@@ -1390,7 +1394,7 @@ Every order the desk sends has passed two checks, in this order, and the page sh
 
 **The limits** (`lib/gate.ml`) answer what the order would do to the book, on a fork of the live graph with the fill applied -- so no second implementation of exposure or of any limit exists to drift. An order that takes a clear limit over its line, or leaves a breached limit further over, is refused naming the limit. One that brings a breached limit closer to its line passes: a desk must be able to trade out of a breach.
 
-Then the order is written to the journal as `pending_submit` **before** the request that sends it. An answer that never comes is resolved by looking the client order id up, never by sending the order again. The request is bounded at ten seconds. The bound closes a connection that is still connecting or has answered; one held open before its status line lasts until the peer or the kernel ends it. Fills are journaled whatever state their order is in. The book's position follows each fill and is set from the venue's own figure, and the account is read again after it; a read that was already out when the fill landed is refused, so it cannot undo the fill. A restart reconciles every open order against the venue before it sends another order; startup waits up to 20 s for it.
+Then the order is written to the journal as `pending_submit` **before** the request that sends it. An answer that never comes is resolved by looking the client order id up, never by sending the order again. An order declared failed because every lookup missed, which the venue later reports it still works, is cancelled by the venue's id whatever the switch reads, because nothing else would manage it. The request is bounded at ten seconds. The bound closes a connection that is still connecting or has answered; one held open before its status line lasts until the peer or the kernel ends it. Fills are journaled whatever state their order is in. The book's position follows each fill and is set from the venue's own figure, and the account is read again after it; a read that was already out when the fill landed is refused, so it cannot undo the fill. A restart reconciles every open order against the venue before it sends another order; startup waits up to 20 s for it.
 
 **The kill switch** refuses every new order and cancels every open one when a limit it trips on is breached, or when someone halts the desk by hand. It does not flatten positions. A halt by hand is answered as soon as the desk is halted; the cancels go on behind the answer, one at a time, and the log says when the last has been asked for. Under the switch, a cancel whose answer is not a confirmation is sent again, 2, 10 and 30 s apart, while the order is still open, and a partial fill in between does not end that. Each order has at most one schedule of cancel retries and one of lookups at a time, however many kills, trips or reconciliations ask for one. On the live host only a deliberate reset lifts the switch. On the demo it resets itself 90 s after its limit clears, and the page says that only the demo does this.
 

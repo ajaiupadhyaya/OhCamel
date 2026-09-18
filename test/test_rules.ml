@@ -1,10 +1,11 @@
 (* The rules, each on both sides of its line.
 
    The base context is an order that passes everything: AAPL in the universe,
-   trading enabled, no halt, the session open, a fresh mark of 150, twenty-day
-   volume of 16,600 shares, nothing recent, no open orders. Each case moves one
-   thing and names the rule that must fail -- except the last, which moves
-   three and requires all three named. *)
+   trading enabled, no halt, the session open -- Monday 2026-09-14 at 10:00
+   EDT, on a clock that names the close at 16:00 and Tuesday's open at 09:30
+   -- a fresh mark of 150, twenty-day volume of 16,600 shares, nothing recent,
+   no open orders. Each case moves one thing and names the rule that must
+   fail -- except the last, which moves three and requires all three named. *)
 
 open Core
 open Ohcamel.Types
@@ -13,7 +14,18 @@ module Order = Ohcamel_desk.Order
 module Desk_spec = Ohcamel.Config.Book.Desk_spec
 
 let aapl = Symbol.of_string "AAPL"
-let now = Time_ns.of_string_with_utc_offset "2026-09-14T14:00:00Z"
+let at = Time_ns.of_string_with_utc_offset
+let now = at "2026-09-14T14:00:00Z"
+
+(* The venue's clock as Alpaca answers it during Monday's session: the close
+   at 16:00 EDT (20:00Z), and the next open Tuesday at 09:30 EDT (13:30Z). *)
+let during_monday =
+  Some
+    {
+      Rules.Session.next_open = at "2026-09-15T13:30:00Z";
+      next_close = at "2026-09-14T20:00:00Z";
+    }
+
 let spec = { Desk_spec.default with Desk_spec.trading = Desk_spec.Enabled }
 
 let context =
@@ -22,7 +34,7 @@ let context =
     universe = Symbol.Set.of_list [ aapl; Symbol.of_string "MSFT" ];
     can_trade = Ok ();
     halted = None;
-    session_open = true;
+    session = during_monday;
     mark = Some (Price.of_float 150.0);
     stale = false;
     adv20 = Some 16_600.0;
@@ -63,9 +75,43 @@ let test_the_book_and_the_desk_decide_whether_to_trade_at_all () =
   check_rules "a tripped switch" [ "kill_switch" ]
     { context with halted = Some "tripped by nvda-cap" }
     (request 10);
-  check_rules "a closed session" [ "session" ]
-    { context with session_open = false }
+  check_rules "no clock read, a closed session" [ "session" ]
+    { context with session = None }
     (request 10)
+
+(* The session, read at the order's own time from the clock's two times,
+   and never from a flag set when the clock was read. On Monday's clock an
+   order a nanosecond before 16:00 passes; one at 16:00 is refused, and so is
+   one at 16:00:30, inside the minute a flag read at 15:59:30 still said open.
+   A clock read overnight names Tuesday's open first: an order at 04:00 or a
+   nanosecond before 09:30 is refused, one at 09:30 passes with no second
+   read, and Tuesday's own close ends it. A clock whose two times are both
+   still ahead is not "open" for that alone: read overnight, the next close
+   is in the future and so is the next open. *)
+let test_the_session_is_read_at_the_order's_own_time () =
+  let overnight =
+    Some
+      {
+        Rules.Session.next_open = at "2026-09-15T13:30:00Z";
+        next_close = at "2026-09-15T20:00:00Z";
+      }
+  in
+  let nanosecond_before s = Time_ns.sub (at s) Time_ns.Span.nanosecond in
+  let check what expected session now =
+    check_rules what expected { context with session; now } (request 10)
+  in
+  check "Monday 15:59:59.999999999" [] during_monday
+    (nanosecond_before "2026-09-14T20:00:00Z");
+  check "Monday 16:00, the close" [ "session" ] during_monday (at "2026-09-14T20:00:00Z");
+  check "Monday 16:00:30, the minute a flag would have missed" [ "session" ] during_monday
+    (at "2026-09-14T20:00:30Z");
+  check "Tuesday 04:00, both times ahead" [ "session" ] overnight
+    (at "2026-09-15T08:00:00Z");
+  check "Tuesday 09:29:59.999999999" [ "session" ] overnight
+    (nanosecond_before "2026-09-15T13:30:00Z");
+  check "Tuesday 09:30, the open" [] overnight (at "2026-09-15T13:30:00Z");
+  check "Tuesday 16:00, that session's close" [ "session" ] overnight
+    (at "2026-09-15T20:00:00Z")
 
 let test_an_order_needs_a_live_mark () =
   (* With no mark there is nothing to price the notional or the collar
@@ -137,7 +183,7 @@ let test_open_orders () =
 let test_every_failure_is_reported_in_rule_order () =
   check_rules "three at once"
     [ "universe"; "kill_switch"; "session" ]
-    { context with halted = Some "halted by hand"; session_open = false }
+    { context with halted = Some "halted by hand"; session = None }
     (request ~symbol:(Symbol.of_string "TSLA") 10)
 
 let suite =
@@ -147,6 +193,8 @@ let suite =
         test_an_order_inside_every_line_passes;
       Alcotest.test_case "the book and the desk decide whether to trade at all" `Quick
         test_the_book_and_the_desk_decide_whether_to_trade_at_all;
+      Alcotest.test_case "the session is read at the order's own time" `Quick
+        test_the_session_is_read_at_the_order's_own_time;
       Alcotest.test_case "an order needs a live mark" `Quick
         test_an_order_needs_a_live_mark;
       Alcotest.test_case "the tick and the collar" `Quick test_the_tick_and_the_collar;
