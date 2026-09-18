@@ -73,6 +73,7 @@
    (progn
     (echo "let page = {ohcamel_html|")
     (cat ../web/head.html)
+    (echo "<title>OhCamel — Desk</title>\n")
     (echo "<style>\n")
     (cat ../web/page.css)
     (echo "</style>\n</head>\n<body>\n")
@@ -109,6 +110,7 @@
    (progn
     (echo "let html = {ohcamel_html|")
     (cat ../web/head.html)
+    (echo "<title>OhCamel — Ops</title>\n")
     (echo "<style>\n")
     (cat ../web/page.css)
     (echo "</style>\n</head>\n<body>\n")
@@ -128,6 +130,7 @@
    (progn
     (echo "let page = {ohcamel_html|")
     (cat ../web/head.html)
+    (echo "<title>OhCamel — Argument</title>\n")
     (echo "<style>\n")
     (cat ../web/page.css)
     (echo "</style>\n</head>\n<body>\n")
@@ -163,6 +166,7 @@
    (progn
     (echo "let page = {ohcamel_html|")
     (cat ../web/head.html)
+    (echo "<title>OhCamel — Risk</title>\n")
     (echo "<style>\n")
     (cat ../web/page.css)
     (echo "</style>\n</head>\n<body>\n")
@@ -194,6 +198,7 @@
    (progn
     (echo "let page = {ohcamel_html|")
     (cat ../web/head.html)
+    (echo "<title>OhCamel — Execution</title>\n")
     (echo "<style>\n")
     (cat ../web/page.css)
     (echo "</style>\n</head>\n<body>\n")

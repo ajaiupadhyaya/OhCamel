@@ -15,8 +15,6 @@
   var ARRIVAL_MS = 60000;  // the frame-arrival strip's axis
   var SPREAD_MS = 20000;   // the smoke suite's window, shaded on that axis
 
-  document.title = "OhCamel — operations";
-
   // ---- helpers ------------------------------------------------------------
   function el(tag, cls, text) {
     var e = document.createElement(tag);

@@ -141,28 +141,74 @@ let test_the_ops_page_is_assembled_in_order () =
     "and no longer says it is not built" false
     (String.is_substring Ops_html.html ~substring:"this page is not built yet")
 
+(* Five pages, five titles. One title for five pages is a history and a set of
+   bookmarks that cannot tell them apart, and a screen reader that announces the
+   same name on arrival at each. *)
+let test_each_page_names_itself () =
+  List.iter
+    [
+      (Dashboard_html.page, "<title>OhCamel — Desk</title>", "the desk page");
+      (Risk_html.page, "<title>OhCamel — Risk</title>", "the risk page");
+      (Execution_html.page, "<title>OhCamel — Execution</title>", "the execution page");
+      (Argument_html.page, "<title>OhCamel — Argument</title>", "the argument page");
+      (Ops_html.html, "<title>OhCamel — Ops</title>", "the ops page");
+    ]
+    ~f:(fun (page, title, name) ->
+      match String.substr_index page ~pattern:title with
+      | Some _ -> ()
+      | None -> Alcotest.failf "%s does not carry %S" name title)
+
 (* The head and the stylesheet are authored once in web/ and catted into every
-   rule -- three now that argument_html.ml has one of its own. If someone
-   forks them -- a second <style> block on one page, a different <title> --
-   the pages stop sharing a design and nothing fails, because each page still
+   rule -- five now that every page has its own route. If someone forks them --
+   a second <style> block on one page, a stray rule only one page gets -- the
+   pages stop sharing a design and nothing fails, because each page still
    renders. Comparing the prefixes is the cheapest way to see the divergence.
-   The boundary string is the one every rule echoes. *)
-let test_all_three_pages_share_one_head_and_one_stylesheet () =
+   The boundary string is the one every rule echoes.
+
+   The one line every rule is now ALLOWED to differ on is its own <title>: each
+   page echoes that immediately after (cat ../web/head.html), so it sits inside
+   this very prefix. It is stripped out by name before the comparison, so the
+   assertion stays "the rest of the head and the whole stylesheet are shared
+   byte for byte" rather than silently passing because five titles happen to
+   make five different strings. *)
+let test_all_five_pages_share_one_head_and_one_stylesheet () =
   let boundary = "</style>\n</head>\n<body>\n" in
   let head_and_style ~name page =
     match String.substr_index page ~pattern:boundary with
     | Some i -> String.sub page ~pos:0 ~len:(i + String.length boundary)
     | None -> Alcotest.failf "%s: no </style></head><body> boundary in the page" name
   in
-  let dashboard = head_and_style ~name:"dashboard" Dashboard_html.page in
-  let ops = head_and_style ~name:"ops" Ops_html.html in
-  let argument = head_and_style ~name:"argument" Argument_html.page in
-  Alcotest.(check string)
-    "the dashboard and the ops page carry byte-for-byte the same head and stylesheet"
-    dashboard ops;
-  Alcotest.(check string)
-    "the dashboard and the argument page carry byte-for-byte the same head and stylesheet"
-    dashboard argument
+  let strip_title ~name ~title prefix =
+    match String.substr_index prefix ~pattern:title with
+    | Some i ->
+        String.sub prefix ~pos:0 ~len:i
+        ^ String.sub prefix
+            ~pos:(i + String.length title)
+            ~len:(String.length prefix - i - String.length title)
+    | None -> Alcotest.failf "%s: does not carry %S" name title
+  in
+  let pages =
+    [
+      (Dashboard_html.page, "<title>OhCamel — Desk</title>\n", "dashboard");
+      (Risk_html.page, "<title>OhCamel — Risk</title>\n", "risk");
+      (Execution_html.page, "<title>OhCamel — Execution</title>\n", "execution");
+      (Argument_html.page, "<title>OhCamel — Argument</title>\n", "argument");
+      (Ops_html.html, "<title>OhCamel — Ops</title>\n", "ops");
+    ]
+  in
+  let stripped =
+    List.map pages ~f:(fun (page, title, name) ->
+        let prefix = head_and_style ~name page in
+        (name, strip_title ~name ~title prefix))
+  in
+  let _, reference = List.hd_exn stripped in
+  List.iter stripped ~f:(fun (name, prefix) ->
+      Alcotest.(check string)
+        (Printf.sprintf
+           "%s carries byte-for-byte the same head and stylesheet as the rest, apart \
+            from its own <title>"
+           name)
+        reference prefix)
 
 module Quoted = Ohcamel.Quoted
 module U = Yojson.Safe.Util
@@ -553,8 +599,9 @@ let suite =
         test_the_document_is_assembled_in_order;
       Alcotest.test_case "the ops page is assembled in the rule's order" `Quick
         test_the_ops_page_is_assembled_in_order;
-      Alcotest.test_case "all three pages share one head and one stylesheet" `Quick
-        test_all_three_pages_share_one_head_and_one_stylesheet;
+      Alcotest.test_case "each page names itself" `Quick test_each_page_names_itself;
+      Alcotest.test_case "all five pages share one head and one stylesheet" `Quick
+        test_all_five_pages_share_one_head_and_one_stylesheet;
       Alcotest.test_case "web/quoted.json parses and holds the four tables" `Quick
         test_quoted_parses_and_holds_the_four_tables;
       Alcotest.test_case "the quoted rows are uniform" `Quick

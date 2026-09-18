@@ -93,7 +93,7 @@ The Desk page, served from memory by server.ml at /.
 
 <section id="desksec">
   <span class="lbl">desk <i id="desknote">— the venue's account</i></span>
-  <table id="desk"></table>
+  <div class="twrap"><table id="desk"></table></div>
   <div id="deskunmanaged" class="desk-unmanaged" hidden></div>
   <div id="deskswitch" class="desk-switch" hidden></div>
   <form id="ticket" class="ticket" autocomplete="off" hidden>
@@ -128,8 +128,8 @@ The Desk page, served from memory by server.ml at /.
 
   <section id="tradesec">
     <span class="lbl">today <i>— the orders sent and what came back</i></span>
-    <table id="blotter" class="blotter"></table>
-    <table id="fills" class="fills"></table>
+    <div class="twrap"><table id="blotter" class="blotter"></table></div>
+    <div class="twrap"><table id="fills" class="fills"></table></div>
   </section>
 
   <section id="histsec">

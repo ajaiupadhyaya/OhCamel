@@ -79,11 +79,20 @@
   /* The navigation: a row under the masthead, ruled off from the page, scrolling
      sideways on a phone rather than wrapping into a second row that pushes the
      content down. The current page is marked by weight and an underline as well
-     as colour, because colour alone fails the reader who cannot see it. */
+     as colour, because colour alone fails the reader who cannot see it.
+
+     Each link's own touch target is 44px tall -- min-height plus flex
+     centring on the anchor itself, rather than padding alone, so every link
+     is the same height regardless of how the text within it sets its own
+     line box. The row does not get visually heavier for it: font-size,
+     colour and weight are unchanged, only the quiet space around the label
+     grows, and align-items moves from baseline to stretch on the row so
+     every link fills that same 44px rather than sitting baseline-aligned
+     inside a taller box than its neighbours. */
   nav.sitenav {
     display: flex;
     gap: 18px;
-    align-items: baseline;
+    align-items: stretch;
     padding: 0 0 8px;
     margin: 0 0 18px;
     border-bottom: 1px solid var(--rule);
@@ -92,6 +101,9 @@
   }
   nav.sitenav::-webkit-scrollbar { display: none; }
   nav.sitenav a {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
     color: var(--ink-soft);
     text-decoration: none;
     font-size: 13px;
@@ -419,11 +431,10 @@
   .ohcamel-graph .graph-note { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
   .ohcamel-graph ol.graph-list { font-family: ui-monospace, Menlo, monospace; font-size: 11px; padding-left: 20px; }
   .ohcamel-graph ol.graph-list b { color: var(--mark); }
-  /* the header's two clocks and its one link */
+  /* the header's two clocks */
   header .v.warm { color: var(--mark); }
   header .v.over { color: var(--over); }
   header .v.parked { color: var(--unknown); }
-  header a.stat { color: var(--ink-faint); text-decoration: none; font-size: 12px; }
   /* the ledger's additions */
   td.risk .rm { color: var(--ink-faint); margin-left: 8px; }
   em.quietlbl { color: var(--unknown); }
@@ -459,7 +470,13 @@ footer .cannot { display: block; margin-top: 4px; color: var(--ink-soft); }
 #argument .cvq { font-size: 12px; color: var(--ink-faint); margin: 10px 0 0; max-width: 110ch; }
 #argument .cvq.agrees { color: var(--ink-soft); }
 #argument .cvq.differs { color: var(--unknown); }
-#argument .twrap { overflow-x: auto; }
+/* A horizontally scrolling wrapper for a table too wide for a phone -- the
+   page itself never scrolls sideways, only the table's own container does.
+   Introduced for the argument page's tables, shared here (unscoped, unlike
+   the #argument-prefixed rules around it) because the Desk page's blotter and
+   fills, and the same nowrap columns on Execution, need exactly this and
+   nothing page-specific about it. */
+.twrap { overflow-x: auto; }
 #argument table.t { width: auto; min-width: 60%; border-collapse: collapse; font-size: 12.5px; }
 #argument table.t th { text-align: right; font-weight: 500; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); padding: 4px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
 #argument table.t td { text-align: right; padding: 5px 10px; white-space: nowrap; font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
