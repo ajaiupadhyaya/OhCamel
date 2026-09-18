@@ -26,6 +26,7 @@ module Dashboard_html = Ohcamel.Dashboard_html
 module Ops_html = Ohcamel.Ops_html
 module Argument_html = Ohcamel.Argument_html
 module Risk_html = Ohcamel.Risk_html
+module Execution_html = Ohcamel.Execution_html
 
 (* Each marker must occur AFTER the previous one, so the search starts past the
    previous hit rather than at zero. That makes the assertion "these appear in
@@ -497,6 +498,30 @@ let test_the_dashboard_no_longer_carries_the_ledger () =
   | None -> ()
   | Some i -> Alcotest.failf "the dashboard still carries the limits table at byte %d" i
 
+(* The execution page: what is working, what the fills cost, and what the
+   journal recorded, moved off the Desk page and given its own route. The
+   blotter and the fills stay on the Desk page -- see the pair of tests below
+   -- and what moves here is the analysis: open orders, the TCA summary and
+   note, the sessions the journal closed, and the last VaR forecasts. *)
+let test_the_execution_page_has_its_sections () =
+  markers_in_order Execution_html.page ~name:"the execution page"
+    ~markers:
+      [
+        "<nav class=\"sitenav\"";
+        "id=\"openorders\"";
+        "id=\"tca\"";
+        "id=\"sessions\"";
+        "id=\"forecasts\"";
+        "OhCamelStream.start()";
+      ]
+
+(* The blotter and the fills stay where §4 puts them, on the Desk page. *)
+let test_the_desk_keeps_the_blotter_and_the_fills () =
+  List.iter [ "id=\"blotter\""; "id=\"fills\"" ] ~f:(fun marker ->
+      match String.substr_index Dashboard_html.page ~pattern:marker with
+      | Some _ -> ()
+      | None -> Alcotest.failf "the desk page lost %S" marker)
+
 let suite =
   ( "embedded_assets",
     [
@@ -536,4 +561,8 @@ let suite =
         test_the_risk_page_has_its_sections;
       Alcotest.test_case "the dashboard no longer carries the ledger" `Quick
         test_the_dashboard_no_longer_carries_the_ledger;
+      Alcotest.test_case "the execution page has its sections" `Quick
+        test_the_execution_page_has_its_sections;
+      Alcotest.test_case "the desk keeps the blotter and the fills" `Quick
+        test_the_desk_keeps_the_blotter_and_the_fills;
     ] )

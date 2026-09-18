@@ -182,6 +182,13 @@
   /* A breach the suite finds, read the same way the ledger's over state is. */
   .over { color: var(--over); }
 
+  /* ---- /execution: 2x2, four independent reports rather than one wide one ----
+     Open orders, costs, sessions and forecasts are four separate questions
+     with four separate tables; none of them is a continuation of another, so
+     no section spans the way #stresssec does on /risk. */
+  main.exec { grid-template-columns: 1fr 1fr; }
+  @media (max-width: 900px) { main.exec { grid-template-columns: 1fr; } }
+
   /* ---- rows ---- */
   table { width: 100%; border-collapse: collapse; }
   td { padding: 5px 0; vertical-align: baseline; }

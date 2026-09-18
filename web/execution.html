@@ -1,0 +1,40 @@
+<!--
+  Execution: what the desk's fills cost, and what the journal recorded.
+
+  The blotter and the fills themselves are on the Desk page, where whoever sent
+  an order can watch it fill without changing pages. This page is the analysis
+  of those fills and the record behind them: what is still working at the venue,
+  what the fills cost against the price each decision was made at, and what the
+  journal wrote at each session close.
+
+  The costs are Perold's implementation shortfall, per fill, decomposed into
+  delay, slippage, the half spread and the distance from the model price;
+  desk/tca.ml states the decomposition and its sign convention, and the note
+  under the table is the engine's own sentence about what it could not cost.
+
+  Everything here is journal-backed and survives a restart, which is why this
+  page and not the Desk page answers "what happened before lunch".
+-->
+
+<main id="main" class="exec">
+  <section>
+    <span class="lbl">open <i>— still working at the venue</i></span>
+    <table id="openorders"></table>
+  </section>
+
+  <section>
+    <span class="lbl">costs <i>— implementation shortfall, in basis points</i></span>
+    <table id="tca"></table>
+    <p id="tcanote" class="desk-note"></p>
+  </section>
+
+  <section>
+    <span class="lbl">sessions <i>— what the journal recorded at each close</i></span>
+    <table id="sessions"></table>
+  </section>
+
+  <section>
+    <span class="lbl">forecasts <i>— the VaR each estimator wrote at the last close</i></span>
+    <table id="forecasts"></table>
+  </section>
+</main>

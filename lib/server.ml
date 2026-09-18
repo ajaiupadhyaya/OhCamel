@@ -1241,6 +1241,10 @@ let routes : (string * string * handler) list =
     ( "/risk",
       "the risk page: the ledger, the scenario suite, the factor and the Greeks",
       fun _ -> Cohttp_async.Server.respond_string ~headers:html_headers Risk_html.page );
+    ( "/execution",
+      "execution: what is working, what the fills cost, and what the journal recorded",
+      fun _ ->
+        Cohttp_async.Server.respond_string ~headers:html_headers Execution_html.page );
     ( "/api/snapshot",
       "the whole book as JSON, with the counter that proves the graph is alive",
       fun t ->
