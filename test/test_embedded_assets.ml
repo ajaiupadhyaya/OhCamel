@@ -24,6 +24,7 @@
 open Core
 module Dashboard_html = Ohcamel.Dashboard_html
 module Ops_html = Ohcamel.Ops_html
+module Argument_html = Ohcamel.Argument_html
 
 (* Each marker must occur AFTER the previous one, so the search starts past the
    previous hit rather than at zero. That makes the assertion "these appear in
@@ -62,28 +63,27 @@ let test_the_document_is_assembled_in_order () =
         "</style>";
         "<body>";
         (* The masthead partial is now catted before web/index.html, so
-           <header> and its banner precede the essay's comments, which live in
-           index.html and moved down with it -- a real reordering, not a
-           weaker marker. *)
+           <header> and its banner precede index.html's own comments. *)
         "<header>";
         "id=\"halt\"";
         "<nav class=\"sitenav\"";
         "THE DESIGN, AND WHY IT IS THIS AND NOT A TRADING TERMINAL PASTICHE";
         "THE SUCCESSOR, 2026-09-02";
         "<table id=\"pos\"></table>";
-        "<article id=\"argument\">";
+        (* The essay, its comment and its quoted-JSON pin all left with it in
+           this phase: the dashboard's own markup now runs straight from the
+           positions table to its footer, with no article and no script#quoted
+           in between. *)
         "</footer>";
-        "<script id=\"quoted\" type=\"application/json\">";
-        "\"quoted_on\"";
         "<script>";
         "\"use strict\"";
-        "window.OhCamelCharts";
-        (* The essay's own subscription, which is the last thing its file does
-           and the only marker in it that something still calls. It exported a
-           window.OhCamelArgument until the stream became shared; nothing read
-           that export afterwards, so it went rather than being kept alive to
-           be found here. *)
-        "OhCamelStream.onFrame(frame)";
+        (* dashboard.js's own subscription -- the last thing its file does,
+           and the one marker here that only it still makes. charts.js and
+           argument.js, and the marker that used to name argument.js's own
+           subscription, moved to the argument page with the essay they
+           serve; window.OhCamelCharts is no longer catted into this page at
+           all. *)
+        "window.OhCamelStream.onTopology(buildFigure)";
         "</script>";
         "</html>";
       ];
@@ -139,22 +139,28 @@ let test_the_ops_page_is_assembled_in_order () =
     "and no longer says it is not built" false
     (String.is_substring Ops_html.html ~substring:"this page is not built yet")
 
-(* The head and the stylesheet are authored once in web/ and catted into both
-   rules. If someone forks them -- a second <style> block on one page, a
-   different <title> -- the two pages stop sharing a design and nothing fails,
-   because each page still renders. Comparing the prefixes is the cheapest way
-   to see the divergence. The boundary string is the one the two rules echo. *)
-let test_both_pages_share_one_head_and_one_stylesheet () =
+(* The head and the stylesheet are authored once in web/ and catted into every
+   rule -- three now that argument_html.ml has one of its own. If someone
+   forks them -- a second <style> block on one page, a different <title> --
+   the pages stop sharing a design and nothing fails, because each page still
+   renders. Comparing the prefixes is the cheapest way to see the divergence.
+   The boundary string is the one every rule echoes. *)
+let test_all_three_pages_share_one_head_and_one_stylesheet () =
   let boundary = "</style>\n</head>\n<body>\n" in
   let head_and_style ~name page =
     match String.substr_index page ~pattern:boundary with
     | Some i -> String.sub page ~pos:0 ~len:(i + String.length boundary)
     | None -> Alcotest.failf "%s: no </style></head><body> boundary in the page" name
   in
+  let dashboard = head_and_style ~name:"dashboard" Dashboard_html.page in
+  let ops = head_and_style ~name:"ops" Ops_html.html in
+  let argument = head_and_style ~name:"argument" Argument_html.page in
   Alcotest.(check string)
-    "the two pages carry byte-for-byte the same head and stylesheet"
-    (head_and_style ~name:"dashboard" Dashboard_html.page)
-    (head_and_style ~name:"ops" Ops_html.html)
+    "the dashboard and the ops page carry byte-for-byte the same head and stylesheet"
+    dashboard ops;
+  Alcotest.(check string)
+    "the dashboard and the argument page carry byte-for-byte the same head and stylesheet"
+    dashboard argument
 
 module Quoted = Ohcamel.Quoted
 module U = Yojson.Safe.Util
@@ -338,16 +344,25 @@ let test_the_build_stamp_can_say_it_does_not_know () =
 
 (* Script order is load order. graph.js reads window.OhCamelFormat at load,
    shared.js formats with it and walks graph.js's closure on every frame,
-   stream.js drives shared.js, and dashboard.js and argument.js subscribe to
-   stream.js at load -- so the seven must be in the page in this order, and a
-   rule that catted them differently would fail here rather than in a browser
-   console. The connection is opened by the last statement in the block, after
-   every subscriber, which is the assertion the case below this one makes.
+   stream.js drives shared.js, and each page's own renderer subscribes to
+   stream.js at load -- so the markers below must be in the page in this
+   order, and a rule that catted them differently would fail here rather than
+   in a browser console.
 
-   argument.js is pinned by the subscription it makes rather than by an export,
-   because it no longer has one: the stream calls frame() and ops() now, and
-   a global kept alive only so this list could find it would be a test
-   steering the source. *)
+   charts.js and argument.js moved to the argument page with the essay in
+   this phase, so the dashboard's list now ends with its own subscription --
+   the last thing dashboard.js's file does -- rather than with a marker from a
+   script it no longer loads.
+
+   The argument page gets its own arm: its shared client loads in the same
+   order, then graph.js (its first figure draws the graph), then charts.js,
+   then argument.js, which is pinned by the subscription it makes rather than
+   by an export, because it no longer has one -- the stream calls frame() and
+   ops() now, and a global kept alive only so this list could find it would be
+   a test steering the source. The quoted JSON pin is asserted first because
+   argument.js reads it at load, before making that subscription; and
+   OhCamelStream.start() is last, opening the connection only after every
+   subscriber on the page has registered. *)
 let test_the_page_scripts_are_in_order () =
   markers_in_order Dashboard_html.page ~name:"dashboard"
     ~markers:
@@ -357,8 +372,20 @@ let test_the_page_scripts_are_in_order () =
         "new EventSource(";
         "window.OhCamelStream =";
         "window.OhCamelGraph =";
+        "window.OhCamelStream.onTopology(buildFigure)";
+      ];
+  markers_in_order Argument_html.page ~name:"the argument page"
+    ~markers:
+      [
+        "<script id=\"quoted\"";
+        "window.OhCamelFormat =";
+        "window.OhCamelShared =";
+        "new EventSource(";
+        "window.OhCamelStream =";
+        "window.OhCamelGraph =";
         "window.OhCamelCharts =";
         "OhCamelStream.onFrame(frame)";
+        "OhCamelStream.start()";
       ]
 
 (* The shared client, in the order a page must load it: the formatters before
@@ -418,6 +445,31 @@ let test_the_ops_page_carries_the_nav_and_keeps_its_masthead () =
          fills"
         i
 
+(* The essay's own page. The quoted JSON has to arrive before the script that
+   reads it: argument.js fills each figure from that pin and prints one line
+   saying whether the two agree, and a script that ran first would fill nothing
+   and report no disagreement -- which is the one failure this page exists to
+   catch. *)
+let test_the_argument_page_is_the_essay () =
+  markers_in_order Argument_html.page ~name:"the argument page"
+    ~markers:
+      ([ "<nav class=\"sitenav\""; "<article id=\"argument\"" ]
+      @ List.init 9 ~f:(fun i -> Printf.sprintf "id=\"s%02d\"" (i + 1))
+      @ [ "<script id=\"quoted\""; "window.OhCamelStream"; "OhCamelStream.start()" ])
+
+(* And the Desk page is not still carrying it. A move that copied would leave
+   both pages green on every other assertion in this file. *)
+let test_the_dashboard_no_longer_carries_the_essay () =
+  List.iter [ "<article id=\"argument\""; "id=\"s01\""; "<script id=\"quoted\"" ]
+    ~f:(fun marker ->
+      match String.substr_index Dashboard_html.page ~pattern:marker with
+      | None -> ()
+      | Some i ->
+          Alcotest.failf
+            "the dashboard still carries %S at byte %d, so the essay was copied rather \
+             than moved"
+            marker i)
+
 let suite =
   ( "embedded_assets",
     [
@@ -425,8 +477,8 @@ let suite =
         test_the_document_is_assembled_in_order;
       Alcotest.test_case "the ops page is assembled in the rule's order" `Quick
         test_the_ops_page_is_assembled_in_order;
-      Alcotest.test_case "both pages share one head and one stylesheet" `Quick
-        test_both_pages_share_one_head_and_one_stylesheet;
+      Alcotest.test_case "all three pages share one head and one stylesheet" `Quick
+        test_all_three_pages_share_one_head_and_one_stylesheet;
       Alcotest.test_case "web/quoted.json parses and holds the four tables" `Quick
         test_quoted_parses_and_holds_the_four_tables;
       Alcotest.test_case "the quoted rows are uniform" `Quick
@@ -438,8 +490,9 @@ let suite =
       Alcotest.test_case "the build stamp can say it does not know" `Quick
         test_the_build_stamp_can_say_it_does_not_know;
       Alcotest.test_case
-        "format, shared, stream, graph, charts, dashboard, argument, in that order" `Quick
-        test_the_page_scripts_are_in_order;
+        "dashboard: format, shared, stream, graph, in that order; argument page: format, \
+         shared, stream, graph, charts, argument, in that order"
+        `Quick test_the_page_scripts_are_in_order;
       Alcotest.test_case "the shared client loads in order" `Quick
         test_the_shared_client_loads_in_order;
       Alcotest.test_case "the dashboard carries the shell" `Quick
@@ -448,4 +501,8 @@ let suite =
         test_the_ops_page_carries_the_nav_and_keeps_its_masthead;
       Alcotest.test_case "the quoted block cannot be ended early" `Quick
         test_the_quoted_block_cannot_end_early;
+      Alcotest.test_case "the argument page is the essay" `Quick
+        test_the_argument_page_is_the_essay;
+      Alcotest.test_case "the dashboard no longer carries the essay" `Quick
+        test_the_dashboard_no_longer_carries_the_essay;
     ] )

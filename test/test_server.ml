@@ -1040,6 +1040,7 @@ let test_the_404_lists_exactly_the_routes () =
     [
       "/";
       "/ops";
+      "/argument";
       "/api/snapshot";
       "/api/health";
       "/api/stream";

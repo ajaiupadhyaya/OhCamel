@@ -1234,6 +1234,10 @@ let routes : (string * string * handler) list =
     ( "/ops",
       "the operations page: which build, how long, and what the process is doing",
       fun _ -> Cohttp_async.Server.respond_string ~headers:html_headers Ops_html.html );
+    ( "/argument",
+      "the argument: the README's case, with every table this process can reproduce",
+      fun _ -> Cohttp_async.Server.respond_string ~headers:html_headers Argument_html.page
+    );
     ( "/api/snapshot",
       "the whole book as JSON, with the counter that proves the graph is alive",
       fun t ->

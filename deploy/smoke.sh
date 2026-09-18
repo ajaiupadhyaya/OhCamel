@@ -32,7 +32,7 @@ EXPECT_SHA=""
 # body equals it, in order. Adding a route or an extension means adding it here
 # in the same commit -- the assertion fails until you do, which is the point of
 # having it.
-EXPECTED_ROUTES="/ /ops /api/snapshot /api/health /api/stream /api/history /api/stress /api/graph /api/heat /api/reports /api/reports/garch /api/ops /api/desk /api/desk/tca /api/desk/sessions /api/desk/preview /api/desk/orders /api/desk/cancel /api/desk/kill /api/desk/kill/reset"
+EXPECTED_ROUTES="/ /ops /argument /api/snapshot /api/health /api/stream /api/history /api/stress /api/graph /api/heat /api/reports /api/reports/garch /api/ops /api/desk /api/desk/tca /api/desk/sessions /api/desk/preview /api/desk/orders /api/desk/cancel /api/desk/kill /api/desk/kill/reset"
 
 # The first bare argument is the base URL; everything else is a flag. Written
 # out rather than clever, because a smoke script that misparses its own
@@ -265,6 +265,17 @@ case "$page_code:$page" in
 *)     no "GET /ops                    ${page_code:-no response}" ;;
 esac
 
+# The essay's own page, moved off the dashboard in this phase. Content-Type is
+# asserted because this route is a document rather than an API endpoint, and
+# the two share a Content-Type header, so a rule that pointed /argument at a
+# JSON handler by mistake would still answer 200.
+arg_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$BASE/argument" 2>/dev/null)
+arg_ctype=$(curl -sS -o /dev/null -w '%{content_type}' --max-time 15 "$BASE/argument" 2>/dev/null)
+case "$arg_code:$arg_ctype" in
+200:text/html*) ok "GET /argument               200, text/html" ;;
+*)             no "GET /argument               ${arg_code:-no response} ${arg_ctype:-}" "expected 200, text/html" ;;
+esac
+
 # The 404 body is generated from the same table `handle` dispatches on, and
 # EXPECTED_ROUTES is that table's shadow. Equality in order, not membership: a
 # route that is served and not listed is the exact drift the table was
@@ -475,7 +486,7 @@ if [ -n "$LIVE" ]; then
 	# up here as a 200 on one path while / still said 401. The page fills its
 	# peer column the other way round -- the live origin reads the demo, over
 	# the demo engine's own CORS header -- so the live host never needs one.
-	for path in / /ops /api/ops /api/snapshot /api/health /api/desk /api/desk/orders; do
+	for path in / /ops /argument /api/ops /api/snapshot /api/health /api/desk /api/desk/orders; do
 		code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$LIVE$path" 2>/dev/null)
 		[ "$code" = "401" ] && ok "GET $LIVE$path  401 without credentials" \
 			|| no "GET $LIVE$path  $code, expected 401" "the live host is not gated on $path"
