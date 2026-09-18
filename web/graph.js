@@ -528,7 +528,7 @@
           if (o.name === "orders") {
             entry(o, "orders", "sent out · writes nothing");
             var sy = entries.orders - 4, sx = r1(ox + o.name.length * CHAR + 6);
-            go.appendChild(svgEl("path", { d: "M" + sx + "," + sy + " L" + (sx + 22) + "," + sy, "data-from": "orders", "marker-end": "url(#arrowin)" }, "deskin out"));
+            go.appendChild(svgEl("path", { d: "M" + sx + "," + sy + " L" + (sx + 22) + "," + sy, "data-from": "orders", "marker-end": "url(#arrowband)" }, "deskin out"));
             return;
           }
           var writes = o.writes || [], seen = {};
@@ -554,7 +554,7 @@
       // figure's own routing: out of its entry by a stub into its column's
       // gutter, down that gutter to a bottom gutter one band gap below
       // everything drawn (the last band's value line, or the observers'), left
-      // along it to a trunk one stub outside the leftmost arrival, up the
+      // along it to a trunk one stub outside the leftmost square, up the
       // trunk, and in by a stub. The stubs share the trunk, so as names tick
       // in compact mode only the open name's stub moves. Every coordinate is
       // taken from the drawing's extent; the figure grows by the gutter at the
@@ -565,14 +565,21 @@
       var bottom = Math.max(L.height, obsBottom), margin = 0;
       if (targets.length) {
         var stub = GUT * 0.4, gx = r1(ox - stub), gy = bottom + GAP;
-        var tx = r1(Math.min.apply(null, targets.map(function (t) { return t.x; })) - stub);
+        // The trunk is placed from the leftmost arrival ANY frame can have --
+        // a square in column 0, which every book draws for its unsymbolled
+        // cells and every name a frame opens draws for its own -- not from
+        // this frame's targets. A folded frame's only target is the band, and
+        // a trunk taken from it would graze the squares and shift the whole
+        // figure sideways each time a name opened or folded, which layout()
+        // promises never happens. So the margin is the same in every frame.
+        var tx = r1(Math.min.apply(null, targets.map(function (t) { return t.x; }).concat([LEFT + CELL_X - 4])) - stub);
         var ty = Math.min.apply(null, targets.map(function (t) { return t.y; }));
         margin = Math.max(0, Math.ceil(stub - tx));
         bottom = gy + GAP;
         gin = svgEl("g", {}, "desk-in");
         gin.appendChild(svgEl("path", { d: "M" + r1(ox - 4) + "," + (fillsY - 4) + " H" + gx + " V" + gy + " H" + tx + " V" + ty, "data-from": "fills" }, "deskin"));
         targets.forEach(function (t) {
-          gin.appendChild(svgEl("path", { d: "M" + tx + "," + t.y + " H" + r1(t.x), "data-from": "fills", "data-to": t.key, "marker-end": "url(#arrowin)" }, "deskin"));
+          gin.appendChild(svgEl("path", { d: "M" + tx + "," + t.y + " H" + r1(t.x), "data-from": "fills", "data-to": t.key, "marker-end": "url(#arrowband)" }, "deskin"));
         });
       }
       var width = Math.round(colX(L.maxRank) + (L.colW[L.maxRank] || 0) + 16) + margin;
@@ -587,7 +594,7 @@
       // figure had no <defs>; it gets one only where a band will use it.
       if (arrows) {
         var defs = svgEl("defs", {}, "");
-        var head = svgEl("marker", { id: "arrowin", viewBox: "0 0 8 8", refX: "7", refY: "4", markerWidth: "6", markerHeight: "6", orient: "auto" }, "");
+        var head = svgEl("marker", { id: "arrowband", viewBox: "0 0 8 8", refX: "7", refY: "4", markerWidth: "6", markerHeight: "6", orient: "auto" }, "");
         head.appendChild(svgEl("path", { d: "M0,0 L8,4 L0,8 z" }, "arrowhead"));
         defs.appendChild(head);
         svg.appendChild(defs);
