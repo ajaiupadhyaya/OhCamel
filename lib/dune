@@ -154,6 +154,37 @@
     (echo "</script>\n</body>\n</html>\n|ohcamel_html}\n")))))
 
 (rule
+ (targets risk_html.ml)
+ (deps
+  (glob_files ../web/*))
+ (action
+  (with-stdout-to
+   risk_html.ml
+   (progn
+    (echo "let page = {ohcamel_html|")
+    (cat ../web/head.html)
+    (echo "<style>\n")
+    (cat ../web/page.css)
+    (echo "</style>\n</head>\n<body>\n")
+    (cat ../web/header.html)
+    (cat ../web/nav.html)
+    (cat ../web/risk.html)
+    (echo "<script>\n")
+    ; graph.js is here although this page draws no figure: the ledger's
+    ; dimming needs the downstream closure of a stale cell, and that function
+    ; is window.OhCamelGraph.closure -- the same one dashboard.js calls. No
+    ; charts.js: nothing here plots.
+    (cat
+     ../web/shell.js
+     ../web/format.js
+     ../web/shared.js
+     ../web/stream.js
+     ../web/graph.js
+     ../web/risk.js)
+    (echo "OhCamelStream.start();\n")
+    (echo "</script>\n</body>\n</html>\n|ohcamel_html}\n")))))
+
+(rule
  (targets quoted.ml)
  (deps ../web/quoted.json)
  (action

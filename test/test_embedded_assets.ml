@@ -25,6 +25,7 @@ open Core
 module Dashboard_html = Ohcamel.Dashboard_html
 module Ops_html = Ohcamel.Ops_html
 module Argument_html = Ohcamel.Argument_html
+module Risk_html = Ohcamel.Risk_html
 
 (* Each marker must occur AFTER the previous one, so the search starts past the
    previous hit rather than at zero. That makes the assertion "these appear in
@@ -470,6 +471,32 @@ let test_the_dashboard_no_longer_carries_the_essay () =
              than moved"
             marker i)
 
+(* The risk page: the ledger, the factor, the Greeks and the suite, moved off
+   the Desk page and given their own route. Pinned by the same shell every
+   other page carries, plus the four sections' own ids, plus the marker that
+   says its own frame subscriber has registered before start() opens the
+   connection. *)
+let test_the_risk_page_has_its_sections () =
+  markers_in_order Risk_html.page ~name:"the risk page"
+    ~markers:
+      [
+        "<nav class=\"sitenav\"";
+        "id=\"ledger\"";
+        "id=\"factor\"";
+        "id=\"greeks\"";
+        "id=\"stress\"";
+        "window.OhCamelShared";
+        "OhCamelStream.onFrame(";
+        "OhCamelStream.start()";
+      ]
+
+(* The ledger left the Desk page. Two renderings of one ledger would be one
+   rendering nobody looks at, and that is the one that rots. *)
+let test_the_dashboard_no_longer_carries_the_ledger () =
+  match String.substr_index Dashboard_html.page ~pattern:"id=\"limits\"" with
+  | None -> ()
+  | Some i -> Alcotest.failf "the dashboard still carries the limits table at byte %d" i
+
 let suite =
   ( "embedded_assets",
     [
@@ -505,4 +532,8 @@ let suite =
         test_the_argument_page_is_the_essay;
       Alcotest.test_case "the dashboard no longer carries the essay" `Quick
         test_the_dashboard_no_longer_carries_the_essay;
+      Alcotest.test_case "the risk page has its sections" `Quick
+        test_the_risk_page_has_its_sections;
+      Alcotest.test_case "the dashboard no longer carries the ledger" `Quick
+        test_the_dashboard_no_longer_carries_the_ledger;
     ] )

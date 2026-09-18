@@ -1238,6 +1238,9 @@ let routes : (string * string * handler) list =
       "the argument: the README's case, with every table this process can reproduce",
       fun _ -> Cohttp_async.Server.respond_string ~headers:html_headers Argument_html.page
     );
+    ( "/risk",
+      "the risk page: the ledger, the scenario suite, the factor and the Greeks",
+      fun _ -> Cohttp_async.Server.respond_string ~headers:html_headers Risk_html.page );
     ( "/api/snapshot",
       "the whole book as JSON, with the counter that proves the graph is alive",
       fun t ->

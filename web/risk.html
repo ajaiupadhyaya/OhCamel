@@ -1,0 +1,42 @@
+<!--
+  The risk page: what the book is carrying, and what would break it.
+
+  Four sections, in the order a reader asks them: which limits are close (the
+  ledger, live, the same breach records the engine computes and dims the same
+  way when an input has gone quiet), what the book is exposed to besides itself
+  (the macro series and the portfolio's beta to it), the convexity the exposure
+  sum cannot carry (gamma and vega), and what a shock would do (the suite).
+
+  The suite is a button, not a subscription. /api/stress runs every scenario on
+  a fork of the live graph at the moment it is asked -- real work, on a real
+  copy -- and a page that re-ran it on every frame would spend the process's
+  afternoon on it.
+
+  A4 adds the factor model and liquidity to this page; the headings for them
+  are not written here, because a heading over a number that does not exist is
+  a promise this repository treats as a defect.
+-->
+
+<main id="main" class="risk">
+  <section>
+    <span class="lbl">limits <i>— the ledger, live</i></span>
+    <div id="ledger"></div>
+  </section>
+
+  <section>
+    <span class="lbl">factor <i>— the macro series, and the book's beta to it</i></span>
+    <table id="factor"></table>
+  </section>
+
+  <section>
+    <span class="lbl">greeks <i>— convexity the exposure sum cannot carry</i></span>
+    <table id="greeks"></table>
+  </section>
+
+  <section id="stresssec">
+    <span class="lbl">scenarios <i>— run on a fork of this book</i></span>
+    <button type="button" id="stressrun">run the suite</button>
+    <div id="stress"></div>
+    <p id="stressnote" class="desk-note"></p>
+  </section>
+</main>

@@ -224,53 +224,6 @@
     }
   }
 
-  function renderLimits(s) {
-    var box = document.getElementById("limits");
-    box.textContent = "";
-
-    s.limits.forEach(function (l) {
-      var d = el("div", "lim" + (l.breached ? " over" : ""));
-      if (S.staleNode("limit:" + l.name)) d.classList.add("stale");
-      var top = el("div", "top");
-      top.appendChild(el("span", "name", l.name));
-      top.appendChild(el("span", "scope", l.scope));
-      var p = el("span", "pct num");
-      var key = "lim:" + l.name;
-      var shown = (l.utilisation * 100).toFixed(0) + "%";
-      var q = el("span", "q", shown);
-      // The same mark the value cells get, from the same map: this one is a
-      // span inside a bar rather than a whole cell, so it asks for the mark
-      // directly instead of going through value().
-      S.mark(q, key, shown);
-      p.appendChild(q);
-      top.appendChild(p);
-      d.appendChild(top);
-
-      var bar = el("div", "bar");
-      var fill = el("i");
-      fill.style.width = Math.max(0, Math.min(100, l.utilisation * 100)) + "%";
-      bar.appendChild(fill);
-      d.appendChild(bar);
-
-      var fmt = l.unit === "fraction" ? function (x) { return pct(x); } : money;
-      d.appendChild(el("div", "detail",
-        l.breached
-          ? fmt(l.observed) + " over " + fmt(l.threshold) + " by " + fmt(l.excess)
-          : fmt(l.observed) + " of " + fmt(l.threshold) + ", " + fmt(-l.excess) + " to spare"));
-      box.appendChild(d);
-    });
-
-    s.unevaluated.forEach(function (name) {
-      var d = el("div", "lim na");
-      var top = el("div", "top");
-      top.appendChild(el("span", "name", name));
-      top.appendChild(el("span", "pct num", "n/a"));
-      d.appendChild(top);
-      d.appendChild(el("div", "detail", "input unavailable — not the same as passing"));
-      box.appendChild(d);
-    });
-  }
-
   // A sparkline, drawn as inline SVG built by hand.
   //
   // No charting library, and not because one would be hard to add -- because
@@ -715,7 +668,6 @@
   function render(s) {
     renderPositions(s);
     renderBook(s);
-    renderLimits(s);
     renderDesk(s);
     renderGraphFrame(s);
     document.getElementById("nodes").textContent = s.nodes_recomputed.toLocaleString("en-US");

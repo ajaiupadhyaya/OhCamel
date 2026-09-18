@@ -172,6 +172,16 @@
   }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
 
+  /* ---- /risk: two equal columns, the suite spanning both ----
+     Shared here rather than as a page-local block, unlike main.ops: this rule
+     is small enough that a second copy would not be worth the fork, and this
+     file is already the one page.css a fourth page reads byte for byte. */
+  main.risk { grid-template-columns: 1fr 1fr; }
+  #stresssec { grid-column: 1 / -1; }
+  @media (max-width: 900px) { main.risk { grid-template-columns: 1fr; } }
+  /* A breach the suite finds, read the same way the ledger's over state is. */
+  .over { color: var(--over); }
+
   /* ---- rows ---- */
   table { width: 100%; border-collapse: collapse; }
   td { padding: 5px 0; vertical-align: baseline; }
