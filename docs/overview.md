@@ -211,7 +211,7 @@ may send one); on the public demo each answers 405.
 
 ## How it's checked
 
-- **449 tests**, plus seven scheduler cases in `test/desk_async`, all
+- **450 tests**, plus seven scheduler cases in `test/desk_async`, all
   hermetic: no network, no credentials, no waiting on a clock -- the
   scheduler's cases move a clock of their own. Expected values are derived by
   hand beside each assertion, and each suite checks its own count against

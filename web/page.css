@@ -159,11 +159,16 @@
      the interesting moment is the one where they diverge -- and stacking them
      in a single narrow column would hide exactly that. */
   #histsec { grid-column: 1 / -1; }
-  /* The desk takes a row of its own, as the trail does: it is the account the
-     columns above are read from, not a fourth step in their dependency order,
-     and in one cell of three it left two empty ones beside it. Its table keeps
-     its content's width, so a value sits by its key rather than a row away. */
-  #desksec { grid-column: 1 / -1; }
+  /* Today's orders and fills take a row of their own, as the trail does:
+     two tables that read left to right, not a third step squeezed into one
+     cell of three beside positions and the book. This is what #desksec used
+     to do for the same two tables before the desk moved above the grid. */
+  #tradesec { grid-column: 1 / -1; }
+  /* The desk is no longer a grid row: it sits above <main>, alongside Figure
+     1, at the page's full width -- the account and its ticket are read
+     before the graph, not as a fourth step in the dependency order below it.
+     Its table keeps its content's width, so a value sits by its key rather
+     than a row away. */
   #desk { width: auto; min-width: 320px; }
   #history {
     display: grid;
@@ -265,7 +270,7 @@
      right. Dimming those too would be the same overreach the engine avoids
      internally, where a tick in one name leaves the others untouched. */
   tr.rowstale .num, tr.rowstale td.k { opacity: .38; }
-  /* By dependency, now literally: dashboard.js takes the downstream closure of
+  /* By dependency, now literally: desk.js takes the downstream closure of
      each stale price from /api/graph and marks exactly those rows. The hatch
      stays as the sign of "computed from old marks"; it lands on a row, never a
      column, so limit:aapl-cap keeps its authority while CVX is quiet. */

@@ -83,7 +83,7 @@
     ; Load order, and it is load-bearing. shared.js formats with format.js's
     ; el; stream.js drives shared.js's frame state; graph.js reads
     ; window.OhCamelFormat at load and shared.js walks its closure at frame
-    ; time; and dashboard.js subscribes to stream.js at load, so the object
+    ; time; and desk.js subscribes to stream.js at load, so the object
     ; has to exist by then. start() opens the connection, and it is the last
     ; statement in the block so that every section has registered before the
     ; first frame can arrive. charts.js and argument.js moved to
@@ -95,7 +95,7 @@
      ../web/shared.js
      ../web/stream.js
      ../web/graph.js
-     ../web/dashboard.js)
+     ../web/desk.js)
     (echo "OhCamelStream.start();\n")
     (echo "</script>\n</body>\n</html>\n|ohcamel_html}\n")))))
 
@@ -172,7 +172,7 @@
     (echo "<script>\n")
     ; graph.js is here although this page draws no figure: the ledger's
     ; dimming needs the downstream closure of a stale cell, and that function
-    ; is window.OhCamelGraph.closure -- the same one dashboard.js calls. No
+    ; is window.OhCamelGraph.closure -- the same one desk.js calls. No
     ; charts.js: nothing here plots.
     (cat
      ../web/shell.js

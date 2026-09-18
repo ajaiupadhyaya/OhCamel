@@ -79,7 +79,7 @@ let test_the_document_is_assembled_in_order () =
         "</footer>";
         "<script>";
         "\"use strict\"";
-        (* dashboard.js's own subscription -- the last thing its file does,
+        (* desk.js's own subscription -- the last thing its file does,
            and the one marker here that only it still makes. charts.js and
            argument.js, and the marker that used to name argument.js's own
            subscription, moved to the argument page with the essay they
@@ -353,7 +353,7 @@ let test_the_build_stamp_can_say_it_does_not_know () =
 
    charts.js and argument.js moved to the argument page with the essay in
    this phase, so the dashboard's list now ends with its own subscription --
-   the last thing dashboard.js's file does -- rather than with a marker from a
+   the last thing desk.js's file does -- rather than with a marker from a
    script it no longer loads.
 
    The argument page gets its own arm: its shared client loads in the same
@@ -522,6 +522,30 @@ let test_the_desk_keeps_the_blotter_and_the_fills () =
       | Some _ -> ()
       | None -> Alcotest.failf "the desk page lost %S" marker)
 
+(* The Desk page in reading order: what the account is worth, whether the desk
+   may trade and a ticket to act on it, then the picture of the engine, then
+   what is held, then what the desk did, then the trail. The ticket sits with
+   the account because it is the account's control; the blotter and the fills
+   sit after the positions because they are the record of acting on them.
+   #ticket, #blotter and #fills are asserted as markers in their own right, so
+   a later edit that moved one back inside another section would fail here. *)
+let test_the_desk_page_is_in_reading_order () =
+  markers_in_order Dashboard_html.page ~name:"the desk page"
+    ~markers:
+      [
+        "<nav class=\"sitenav\"";
+        "id=\"desksec\"";
+        "id=\"desk\"";
+        "id=\"ticket\"";
+        "id=\"graph\"";
+        "id=\"pos\"";
+        "id=\"book\"";
+        "id=\"tradesec\"";
+        "id=\"blotter\"";
+        "id=\"fills\"";
+        "id=\"histsec\"";
+      ]
+
 let suite =
   ( "embedded_assets",
     [
@@ -565,4 +589,6 @@ let suite =
         test_the_execution_page_has_its_sections;
       Alcotest.test_case "the desk keeps the blotter and the fills" `Quick
         test_the_desk_keeps_the_blotter_and_the_fills;
+      Alcotest.test_case "the desk page is in reading order" `Quick
+        test_the_desk_page_is_in_reading_order;
     ] )

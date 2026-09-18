@@ -25,7 +25,7 @@
     table.appendChild(tr);
   }
 
-  // Moved from dashboard.js, pointed at #ledger. The dimming rule and the
+  // Moved from desk.js, pointed at #ledger. The dimming rule and the
   // title it puts on a dimmed limit are unchanged; el/pct/money are
   // OhCamelFormat's, and the stale mark and the change mark are
   // OhCamelShared's, per Task 2's contract.

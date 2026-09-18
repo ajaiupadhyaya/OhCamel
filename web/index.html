@@ -1,5 +1,18 @@
 <!--
-Phase 3. The dashboard page, served from memory by server.ml.
+The Desk page, served from memory by server.ml at /.
+
+   What is left here, in reading order: the account and its ticket (so a
+   reader sees what the desk is worth and whether it may trade before
+   anything else), Figure 1 (the graph, taken from the graph), the positions
+   with their share of risk, the book's aggregates, the blotter and the fills
+   (what the desk did, kept together in their own section after what it
+   holds), and the equity trail. Four sections that used to live here left in
+   this phase, each to its own route: the essay to /argument, the ledger, the
+   factor and the Greeks to /risk, the open orders, the cost analysis and the
+   sessions to /execution, and the operator's own page stayed put at /ops.
+   The file that renders this page is desk.js, renamed from what it used to
+   be called, because the site is five pages now and its script should say
+   which one it draws.
 
    Embedded as a string rather than read from disk so the binary is
    self-contained: no asset path to get wrong, nothing to forget to deploy, and
@@ -78,6 +91,24 @@ Phase 3. The dashboard page, served from memory by server.ml.
    nothing to fetch.
 -->
 
+<section id="desksec">
+  <span class="lbl">desk <i id="desknote">— the venue's account</i></span>
+  <table id="desk"></table>
+  <div id="deskunmanaged" class="desk-unmanaged" hidden></div>
+  <div id="deskswitch" class="desk-switch" hidden></div>
+  <form id="ticket" class="ticket" autocomplete="off" hidden>
+    <span class="lbl">ticket <i id="ticketnote">— the rules, then the limits</i></span>
+    <select id="tsym" aria-label="symbol"></select>
+    <select id="tside" aria-label="side"><option value="buy">buy</option><option value="sell">sell</option></select>
+    <input id="tqty" type="number" min="1" step="1" value="10" aria-label="shares">
+    <select id="ttype" aria-label="order type"><option value="market">market</option><option value="limit">limit</option></select>
+    <input id="tlimit" type="number" min="0" step="0.01" placeholder="limit" aria-label="limit price" disabled>
+    <button type="button" id="tpreview">preview</button>
+    <button type="button" id="tplace" hidden>place</button>
+    <div id="ticketout" class="ticket-out" aria-live="polite"></div>
+  </form>
+</section>
+
 <figure id="graph" class="fig">
   <span class="lbl">Figure 1. <i>The graph, taken from the graph.</i></span>
   <div id="graphbox"></div>
@@ -95,22 +126,8 @@ Phase 3. The dashboard page, served from memory by server.ml.
     <table id="book"></table>
   </section>
 
-  <section id="desksec">
-    <span class="lbl">desk <i id="desknote">— the venue's account</i></span>
-    <table id="desk"></table>
-    <div id="deskunmanaged" class="desk-unmanaged" hidden></div>
-    <div id="deskswitch" class="desk-switch" hidden></div>
-    <form id="ticket" class="ticket" autocomplete="off" hidden>
-      <span class="lbl">ticket <i id="ticketnote">— the rules, then the limits</i></span>
-      <select id="tsym" aria-label="symbol"></select>
-      <select id="tside" aria-label="side"><option value="buy">buy</option><option value="sell">sell</option></select>
-      <input id="tqty" type="number" min="1" step="1" value="10" aria-label="shares">
-      <select id="ttype" aria-label="order type"><option value="market">market</option><option value="limit">limit</option></select>
-      <input id="tlimit" type="number" min="0" step="0.01" placeholder="limit" aria-label="limit price" disabled>
-      <button type="button" id="tpreview">preview</button>
-      <button type="button" id="tplace" hidden>place</button>
-      <div id="ticketout" class="ticket-out" aria-live="polite"></div>
-    </form>
+  <section id="tradesec">
+    <span class="lbl">today <i>— the orders sent and what came back</i></span>
     <table id="blotter" class="blotter"></table>
     <table id="fills" class="fills"></table>
   </section>

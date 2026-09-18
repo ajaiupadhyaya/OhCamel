@@ -123,13 +123,13 @@
     renderForecasts(d);
   }
 
-  /* The /api/desk fetch discipline, copied from dashboard.js's renderDesk
+  /* The /api/desk fetch discipline, copied from desk.js's renderDesk
      rather than shared with it -- the Desk page keeps its own copy for the
      blotter and the fills it still draws, and two ten-line copies are cheaper
      than a module that would have to be catted into both. One request in
      flight; the key is taken only once a fetch has drawn, so a failed one is
      asked again by a later frame; an answer a newer frame overtook is
-     dropped. The key is the same five fields dashboard.js watches: a sync
+     dropped. The key is the same five fields desk.js watches: a sync
      (unmanaged, last_sync), a journal write (version: an order, a fill, a
      session) or the switch and the open-order count, which live in memory
      and not the journal. */

@@ -205,7 +205,7 @@ The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/da
 
 ## What is verified
 
-- **449 hermetic tests**, plus seven scheduler cases in `test/desk_async` —
+- **450 hermetic tests**, plus seven scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler

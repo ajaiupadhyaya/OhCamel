@@ -1,5 +1,5 @@
 // web/format.js -- the three formatters every script on the page shares.
-// The bodies are dashboard.js's, copied verbatim; dashboard.js keeps its own
+// The bodies are desk.js's, copied verbatim; desk.js keeps its own
 // private copies until the reconcile pass removes them.
 (function () {
   "use strict";

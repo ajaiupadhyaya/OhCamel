@@ -328,7 +328,7 @@
   loadStress();
   $("st-again").addEventListener("click", function (ev) { ev.preventDefault(); loadStress(); });
 
-  /* The essay drives itself. Until the site became five pages, dashboard.js
+  /* The essay drives itself. Until the site became five pages, desk.js
      called frame() and ops() through a window.OhCamelArgument this file
      exported -- which meant the essay only lived on a page that also carried
      the dashboard's renderers. It subscribes here instead, so the page at
