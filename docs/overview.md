@@ -168,8 +168,8 @@ their share of risk, the book's aggregates, the blotter and fills, and the
 equity trail. `/risk` holds the limits ledger, the macro factor and the
 book's beta to it, the option Greeks, and the scenario suite behind a button.
 `/execution` holds the open orders, the cost analysis overall and by symbol,
-the session record and the VaR forecasts. `/argument` is this README's case,
-moved byte for byte, under the same headings; its tables are computed by the
+the session record and the VaR forecasts. `/argument` is the README's case,
+moved intact, under the same headings; its tables are computed by the
 running process and checked cell by cell against the numbers the README
 quotes, so the deployed Linux host reproduces results written on a Mac.
 `/ops` shows which build is running, its uptime, and how much the graph has

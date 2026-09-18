@@ -514,3 +514,8 @@ change deliberately where §3.8 says.
    clears, so the public page shows trading and halting both.
 7. **The daily roll** (§3.10) was not in the proposal; the defect it fixes was
    found while writing this.
+8. **W2 shipped five pages, and A3 owns the sixth.** §4's Research page
+   (strategies, manifests, gates, advisory signals, backtest against live) is
+   A3's deliverable in every part, so W2 wrote no page and no nav link for
+   it; A3 adds both, with Figure 1's signals band. Risk's factor-model and
+   liquidity sections likewise arrive with A4, which computes them.

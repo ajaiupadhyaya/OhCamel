@@ -180,9 +180,11 @@ The site is five pages, one binary, one shared shell and client:
   beta to it, the option Greeks, and the scenario suite behind a button.
 - **Execution** (`/execution`) — the open orders, the cost analysis overall
   and by symbol, the session record and the VaR forecasts.
-- **Argument** (`/argument`) — the README's case, moved byte for byte.
-- **Ops** (`/ops`) — unchanged: which build is running, its uptime, and what
-  the process has recomputed, with its own masthead and its own stream.
+- **Argument** (`/argument`) — the README's case, moved intact.
+- **Ops** (`/ops`) — which build is running, its uptime, and what the
+  process has recomputed, with its own masthead and its own stream; W2 gave
+  it the site's navigation and its own title, and left its readings as they
+  were.
 
 Unauthenticated at the engine, gated at the proxy for the live host. Four
 routes change the desk -- `/api/desk/orders`, `/api/desk/cancel`,
@@ -194,7 +196,7 @@ answers 405.
 | Route | |
 |---|---|
 | `/` | The Desk: the account and its ticket, Figure 1 (the graph from Incremental's node table, lit per frame, drawn rank by rank with cutoffs, heat and cost classes, with the orders and fills bands the desk writes), positions and their share of risk, the book's aggregates, the blotter and fills, and the equity trail. One embedded HTML string, inline SVG, no external assets |
-| `/argument` | The README's argument, moved byte for byte: the same headings, the same tables, computed by this process and checked against the README |
+| `/argument` | The README's argument, moved intact: the same headings, the same tables, computed by this process and checked against the README |
 | `/risk` | The limits ledger, the macro factor and the book's beta to it, the option Greeks, and the scenario suite behind a button |
 | `/execution` | The open orders, the cost analysis overall and by symbol, the session record and the VaR forecasts |
 | `/api/snapshot` | The whole book as JSON, including `nodes_recomputed` — the counter that proves the graph is alive |
@@ -328,6 +330,7 @@ line each (10 to 12 bind the order path, `desk/oms.ml`):
 | 2026-09-12 | The desk design approved: paper trading around the risk kernel, in phases, with its spec and first backend phase on the `desk/a1-record` branch until they merge. Phase W1 deployed: Figure 1 draws a frame's work rank by rank, a dotted rule where a cutoff held, edge weight from lifetime run counts and rule weight from each node's cost class, with a legend and a poster mode. Phase A1 landed on that branch: the desk library (`ohcamel_desk`, which the kernel cannot depend on); a SQLite journal of each session's close, its marks and a VaR forecast per estimator, recorded by `run-live` or `serve` when they run with a paper key, and in memory by the demo; and, in those paper-key runs, the book's quantities and cash synced from the Alpaca paper account every minute and the return windows rolling at each session's close |
 | 2026-09-13 | Phase A1 merged to main and deployed to both hosts from `cf79764`, after its whole-branch review and one fix wave: a record whose write fails is retried until the next session's close is due, a close and the equity trail wait for a current account book so a file book is never journaled, and every request to the paper host is bounded by a timeout. The live engine opened its journal on the `desk_data` volume, read its Alpaca paper account, and its first sync succeeded. Coverage was measured again at 82.0% of the kernel's instrumented points; the desk library is not instrumented yet |
 | 2026-09-17 | Phase A2 merged to main and deployed to both hosts from `e0f5a71`, after twenty reviewed tasks, a whole-branch review and one fix wave: the rules and the pre-trade gate on a fork of the live graph; the order manager (the journal before the wire, a timed-out submission resolved by lookup, reconciliation on restart, and no order while the book is not the account's); Alpaca paper's trading half behind a ten-second bound on every request; the kill switch wired to the desk, which refuses new orders and cancels open ones, including one that was already resting when a partial fill arrived; previews for anyone and orders only from the live host's own page; costs per fill; the ticket and the blotter. The fix wave also indexed the journal, because `/api/desk` had been scanning whole tables on the scheduler thread. Acceptance on the live host -- one paper order filled -- waits for the owner: the `desk` block in `book.sexp`, the basic-auth password, and market hours |
+| 2026-09-18 | Phase W2 finished on the `desk/w2-site` branch after nine reviewed tasks, a whole-branch review and one fix wave: the site became five pages under one navigation -- the Desk at `/`, Risk, Execution, the Argument and Ops -- with one shared head and stylesheet and one stream connection per page. The limits ledger moved to `/risk`, which added the macro factor, the option Greeks and the scenario suite behind a button; `/execution` added the open orders, the costs, the session record and the VaR forecasts from the journal; the README's argument moved to `/argument` intact. Figure 1 draws the desk's two bands, orders leaving the engine and fills arriving at `qty[S]`, routed through the figure's own gutters. The Research page was deferred to A3, because everything §4 of the design assigns it is A3's deliverable; the factor model and liquidity stay with A4 |
 
 Plans and specs live under [`superpowers/`](superpowers/): the readable-front-door
 design (the README rewrite), the eight-phase roadmap (marked complete, with its three deviations
@@ -338,10 +341,12 @@ recorded), and the deployment design.
 **The desk's remaining phases**, in the order the design lays out
 (`docs/superpowers/specs/2026-09-12-the-desk-design.md` §5):
 
-- **W2** — the site becomes a desk: the full navigation (Desk, Risk,
-  Research, Execution, Argument, Ops) and Figure 1's remaining items.
 - **A3** — signals: Alpha's contract and rules R1–R7 move in, a research
-  service, EXP-A01 pre-registered and run, intake and sizing.
+  service, EXP-A01 pre-registered and run, intake and sizing; and the
+  Research page and its nav link, with Figure 1's signals band. W2 deferred
+  the page here because everything §4 assigns it -- strategies, manifests,
+  gates, advisory signals, backtest against live -- is this phase's
+  deliverable, and a page before it could only have promised them.
 - **A4** — risk depth: the long return window, the factor model, liquidity
   and impact, indicative option marks from Alpaca, GARCH wired in as a third
   estimator, Cornish–Fisher VaR.

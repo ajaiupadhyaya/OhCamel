@@ -890,8 +890,9 @@ rather than a node and is the only module here that can reach the world.
 [`lib/history_buffer.ml`](lib/history_buffer.ml) is the bounded in-memory trail
 behind those sparklines, hanging off an observer rather than living in the graph.
 [`lib/server.ml`](lib/server.ml) serves `/api/snapshot`, `/api/health`,
-`/api/history` and an SSE stream at `/api/stream`; [`lib/dashboard_html.ml`](lib/dashboard_html.ml) is the
-page itself, embedded as a string so the binary is self-contained. The feed lives
+`/api/history` and an SSE stream at `/api/stream`; the five pages are authored
+in [`web/`](web/) and concatenated into string modules at build time by the
+rules in [`lib/dune`](lib/dune), so the binary is self-contained. The feed lives
 in [`lib/feed/`](lib/feed) — the Alpaca websocket, an Alpaca REST backfill for
 history, and a FRED client for the factor series — and is folded into the library
 as top-level modules by `include_subdirs unqualified` in [`lib/dune`](lib/dune),
@@ -1062,15 +1063,20 @@ edge's weight is how often both its ends have run since the process started
 leaves an input cell, which is set and never run — and a node's rule weight
 is its cost class, from O(1) for an exposure to O(n²·w) for the covariance.
 The figure opens full-screen as a poster, and it also draws two more bands
-now: orders, and fills, whose arrow lands on the quantity row. Four sections
-that used to sit below the Desk's ledger left it in this phase, each to its
-own route: the ledger, the macro factor and the Greeks to `/risk`; the open
-orders, the cost analysis and the session record to `/execution`; and this
-README's argument to `/argument`, byte for byte, under the same headings,
-except that its tables are *computed by the deployed process at startup* —
-the scaling probe, both backtest batteries, the options walk, and the GARCH
-study on a second domain — and each is checked against the numbers quoted in
-this file, cell by cell, with one printed line saying whether they agree. The
+now: orders, and fills, whose arrow lands on the quantity row. Three things
+left the Desk in this phase, each for a route of its own: the limits ledger
+went to `/risk`, the engine's note on what it could not cost went to
+`/execution`, and this README's argument went to `/argument`. The two new
+routes also draw what the Desk never did. `/risk` renders the macro factor
+and the book's beta to it, and the option Greeks, as tables of their own,
+and runs the scenario suite behind a button; `/execution` reads the journal
+for the orders still working at the venue, the costs overall and by symbol,
+the session record and the VaR each estimator wrote at the last close. The
+argument moved intact, under the same headings, except that its tables are
+*computed by the deployed process at startup* — the scaling probe, both
+backtest batteries, the options walk, and the GARCH study on a second domain
+— and each is checked against the numbers quoted in this file, cell by cell,
+with one printed line saying whether they agree. The
 droplet is Linux on amd64 and this README was written on macOS on arm64, so
 that line is a second platform reproducing every table here, or naming the
 cell where it does not.
