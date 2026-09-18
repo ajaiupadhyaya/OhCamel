@@ -171,6 +171,19 @@ Alpaca account allows one concurrent market-data stream.
 
 ## The interface
 
+The site is five pages, one binary, one shared shell and client:
+
+- **Desk** (`/`) — the account and its ticket, Figure 1 (with the orders and
+  fills bands the desk writes), positions and their share of risk, the
+  book's aggregates, the blotter and fills, and the equity trail.
+- **Risk** (`/risk`) — the limits ledger, the macro factor and the book's
+  beta to it, the option Greeks, and the scenario suite behind a button.
+- **Execution** (`/execution`) — the open orders, the cost analysis overall
+  and by symbol, the session record and the VaR forecasts.
+- **Argument** (`/argument`) — the README's case, moved byte for byte.
+- **Ops** (`/ops`) — unchanged: which build is running, its uptime, and what
+  the process has recomputed, with its own masthead and its own stream.
+
 Unauthenticated at the engine, gated at the proxy for the live host. Four
 routes change the desk -- `/api/desk/orders`, `/api/desk/cancel`,
 `/api/desk/kill`, `/api/desk/kill/reset` -- on the live host only, and only
@@ -180,7 +193,10 @@ answers 405.
 
 | Route | |
 |---|---|
-| `/` | The page: Figure 1 (the graph from Incremental's node table, lit per frame, drawn rank by rank with cutoffs, heat and cost classes), the ledger, and the README's argument with every reproducible table computed here and checked against the README. One embedded HTML string, inline SVG, no external assets |
+| `/` | The Desk: the account and its ticket, Figure 1 (the graph from Incremental's node table, lit per frame, drawn rank by rank with cutoffs, heat and cost classes, with the orders and fills bands the desk writes), positions and their share of risk, the book's aggregates, the blotter and fills, and the equity trail. One embedded HTML string, inline SVG, no external assets |
+| `/argument` | The README's argument, moved byte for byte: the same headings, the same tables, computed by this process and checked against the README |
+| `/risk` | The limits ledger, the macro factor and the book's beta to it, the option Greeks, and the scenario suite behind a button |
+| `/execution` | The open orders, the cost analysis overall and by symbol, the session record and the VaR forecasts |
 | `/api/snapshot` | The whole book as JSON, including `nodes_recomputed` — the counter that proves the graph is alive |
 | `/api/health` | Feed liveness per symbol; `healthy: false` when anything is stale |
 | `/api/stream` | Server-sent events, emitted only on an actual graph change (parked on an `Ivar`, not a timer), coalesced over 80 ms |
@@ -201,7 +217,7 @@ answers 405.
 | `POST /api/desk/kill` | Halt the desk, answer, then cancel every open order (live host only) |
 | `POST /api/desk/kill/reset` | Lift the halt; the body must say `{"confirm":"reset"}` (live host only) |
 
-The page is assembled at build time from `web/` by a rule in `lib/dune`; `lib/dashboard_html.ml` no longer exists. The 47-line design essay that headed it is archived verbatim, as an HTML comment, at the head of `web/index.html`, with the successor paragraphs beneath it.
+Each page is assembled at build time from `web/` by its own rule in `lib/dune`; none of the five generated `*_html.ml` modules (`dashboard_html`, `ops_html`, `argument_html`, `risk_html`, `execution_html`) is a committed source file. The 47-line design essay that headed the Desk page is archived verbatim, as an HTML comment, at the head of `web/index.html`, with the successor paragraphs beneath it.
 
 ## What is verified
 

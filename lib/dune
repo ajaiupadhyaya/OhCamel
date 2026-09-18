@@ -37,8 +37,9 @@
   (backend bisect_ppx)))
 
 ; ---------------------------------------------------------------------------
-; Generated modules: the two pages, the crisis cache, the README's quoted
-; tables, and the build stamp.
+; Generated modules: the five pages (dashboard_html.ml, ops_html.ml,
+; argument_html.ml, risk_html.ml, execution_html.ml), the crisis cache, the
+; README's quoted tables, and the build stamp.
 ;
 ; Each of these is a string that a program has to carry but a human has to
 ; author. dashboard_html.ml was 767 lines of OCaml holding 29 KB of HTML, CSS

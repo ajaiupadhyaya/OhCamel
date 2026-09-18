@@ -61,11 +61,14 @@ meh()  { printf '  \033[33mSKIP\033[0m  %s\n' "$1"; skip=$((skip + 1)); }
 printf '\nOhCamel smoke -- %s\n\n' "$BASE"
 
 # ---------------------------------------------------------------------------
-# 1. The dashboard itself
+# 1. The Desk itself, at /
 # ---------------------------------------------------------------------------
 code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$BASE/" 2>/dev/null)
-[ "$code" = "200" ] && ok "GET /                       200" \
-	|| no "GET /                       $code" "the dashboard did not render"
+ctype=$(curl -sS -o /dev/null -w '%{content_type}' --max-time 15 "$BASE/" 2>/dev/null)
+case "$code:$ctype" in
+200:text/html*) ok "GET /                       200, text/html" ;;
+*)             no "GET /                       ${code:-no response} ${ctype:-}" "the Desk did not render" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 2. Health
@@ -259,10 +262,12 @@ fi
 # is the DOM contract ops.js fills. No python needed; the two ids are literal.
 page=$(curl -sS --max-time 15 -w '\n%{http_code}' "$BASE/ops" 2>/dev/null)
 page_code="${page##*$'\n'}"
-case "$page_code:$page" in
-200:*'id="this-host"'*'id="peer"'*) ok "GET /ops                    200, both host columns present" ;;
-200:*) no "GET /ops                    200, but not the ops page" "the body has no #this-host / #peer" ;;
-*)     no "GET /ops                    ${page_code:-no response}" ;;
+ops_ctype=$(curl -sS -o /dev/null -w '%{content_type}' --max-time 15 "$BASE/ops" 2>/dev/null)
+case "$page_code:$ops_ctype:$page" in
+200:text/html*:*'id="this-host"'*'id="peer"'*) ok "GET /ops                    200, text/html, both host columns present" ;;
+200:*:*'id="this-host"'*'id="peer"'*) no "GET /ops                    200, but not text/html ($ops_ctype)" ;;
+200:*:*) no "GET /ops                    200, but not the ops page" "the body has no #this-host / #peer" ;;
+*)       no "GET /ops                    ${page_code:-no response}" ;;
 esac
 
 # The essay's own page, moved off the dashboard in this phase. Content-Type is
@@ -501,7 +506,7 @@ esac
 # 6. The live host refuses anonymous callers
 # ---------------------------------------------------------------------------
 if [ -n "$LIVE" ]; then
-	# Seven paths, not one. The gate is Caddy's basic_auth on the whole host,
+	# Every path below, not just one. The gate is Caddy's basic_auth on the whole host,
 	# and the tempting way to fill the ops page's peer column from the public
 	# origin is a matcher that exempts /api/ops from it. That hole would show
 	# up here as a 200 on one path while / still said 401. The page fills its

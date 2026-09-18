@@ -158,16 +158,22 @@ the account's quantities and cash replace the file's every minute. The live
 modes write their journal to `OHCAMEL_JOURNAL`, by default `desk.db` in the
 working directory. A free Alpaca account allows one data stream at a time.
 
-## The page and the API
+## The pages and the API
 
-`/` is one page compiled into the binary, with no external assets. Figure 1 at
-the top is the dependency graph, drawn from Incremental's own node table, and
-each update lights the nodes it recomputed. Below the ledger of positions and
-limits are nine sections that follow the README's argument. Their tables are
-computed by the running process and checked cell by cell against the numbers
-the README quotes, so the deployed Linux host reproduces results written on a
-Mac. `/ops` shows which build is running, its uptime, and how much the graph
-has recomputed.
+The site is five pages compiled into one binary, with no external assets. `/`
+is the Desk: the account and its ticket, Figure 1 (the dependency graph,
+drawn from Incremental's own node table, lighting the nodes each update
+recomputed, with the orders and fills bands the desk writes), positions and
+their share of risk, the book's aggregates, the blotter and fills, and the
+equity trail. `/risk` holds the limits ledger, the macro factor and the
+book's beta to it, the option Greeks, and the scenario suite behind a button.
+`/execution` holds the open orders, the cost analysis overall and by symbol,
+the session record and the VaR forecasts. `/argument` is this README's case,
+moved byte for byte, under the same headings; its tables are computed by the
+running process and checked cell by cell against the numbers the README
+quotes, so the deployed Linux host reproduces results written on a Mac.
+`/ops` shows which build is running, its uptime, and how much the graph has
+recomputed.
 
 | Route | What it returns |
 |---|---|

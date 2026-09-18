@@ -1050,26 +1050,30 @@ host, `live.ohcamel.ajaiupadhyaya.com`, is the same image against Alpaca and
 FRED: real prints, the real ten-year yield, real staleness. It sits behind a
 password, because it holds credentials and shows a real book.
 
-The page at that address is the engine drawn from itself. Figure 1 is the
-dependency graph taken from Incremental's own node table, and each frame's
-work travels across it rank by rank: a print in AAPL pulses its price cell,
-lights its exposure, the aggregates, the estimators and the limits that read
-them, and visibly leaves `covariance` dark until a bar closes. A node that ran
-and whose cutoff held its value is drawn with a dotted rule rather than
-lit, so the place a change stopped is on the page. An edge's weight is how
-often both its ends have run since the process started (`/api/heat`) — the
-lesser of the two counts, or its target's alone where it leaves an input cell,
-which is set and never run — and a node's rule weight is its cost class, from
-O(1) for an exposure to O(n²·w) for the covariance. The figure opens
-full-screen as a poster. Below the ledger,
-this README's argument
-runs again under the same headings, except that the tables are *computed by
-the deployed process at startup* — the scaling probe, both backtest batteries,
-the options walk, and the GARCH study on a second domain — and each is checked
-against the numbers quoted in this file, cell by cell, with one printed line
-saying whether they agree. The droplet is Linux on amd64 and this README was
-written on macOS on arm64, so that line is a second platform reproducing every
-table here, or naming the cell where it does not.
+The page at that address is the Desk, and it is the engine drawn from itself.
+Figure 1 is the dependency graph taken from Incremental's own node table, and
+each frame's work travels across it rank by rank: a print in AAPL pulses its
+price cell, lights its exposure, the aggregates, the estimators and the
+limits that read them, and visibly leaves `covariance` dark until a bar
+closes. A node that ran and whose cutoff held its value is drawn with a
+dotted rule rather than lit, so the place a change stopped is on the page. An
+edge's weight is how often both its ends have run since the process started
+(`/api/heat`) — the lesser of the two counts, or its target's alone where it
+leaves an input cell, which is set and never run — and a node's rule weight
+is its cost class, from O(1) for an exposure to O(n²·w) for the covariance.
+The figure opens full-screen as a poster, and it also draws two more bands
+now: orders, and fills, whose arrow lands on the quantity row. Four sections
+that used to sit below the Desk's ledger left it in this phase, each to its
+own route: the ledger, the macro factor and the Greeks to `/risk`; the open
+orders, the cost analysis and the session record to `/execution`; and this
+README's argument to `/argument`, byte for byte, under the same headings,
+except that its tables are *computed by the deployed process at startup* —
+the scaling probe, both backtest batteries, the options walk, and the GARCH
+study on a second domain — and each is checked against the numbers quoted in
+this file, cell by cell, with one printed line saying whether they agree. The
+droplet is Linux on amd64 and this README was written on macOS on arm64, so
+that line is a second platform reproducing every table here, or naming the
+cell where it does not.
 
 The deployment is [`deploy/`](deploy/): a two-stage Dockerfile that fails the
 *build* if the runtime image is missing a shared object, a compose file in which
