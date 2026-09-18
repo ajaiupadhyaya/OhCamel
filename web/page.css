@@ -93,7 +93,9 @@
     display: flex;
     gap: 18px;
     align-items: stretch;
-    padding: 0 0 8px;
+    /* The same 20 px inset as the masthead above it, so the first link sits
+       under the name rather than against the edge of the page. */
+    padding: 0 20px 8px;
     margin: 0 0 18px;
     border-bottom: 1px solid var(--rule);
     overflow-x: auto;

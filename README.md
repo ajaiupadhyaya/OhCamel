@@ -1187,7 +1187,7 @@ six properties and four example tests. `QCHECK_TRIALS=5000 make test` runs
 ### Coverage, and what it is not measuring
 
 `make coverage` runs the suite under `bisect_ppx` and reports **77%** (measured
-2026-09-17). The badge above is that number; CI enforces a floor of 60% and
+2026-09-18). The badge above is that number; CI enforces a floor of 60% and
 prints the full per-file table into the run summary, so a drop is visible
 without anyone remembering to look. The number covers both libraries: the risk
 kernel, `ohcamel` in `lib/`, and the desk, `ohcamel_desk` in `desk/`.
