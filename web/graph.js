@@ -17,6 +17,8 @@
     return e;
   }
   function text(x, y, s, cls) { var t = svgEl("text", { x: x, y: y }, cls); t.textContent = s; return t; }
+  // A coordinate to a tenth of a pixel, so a computed path reads as one.
+  function r1(v) { return Math.round(v * 10) / 10; }
   function byNameOrder(a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; }
 
   // ---- geometry ----
@@ -32,6 +34,9 @@
   var VAL_CHAR = 5.1, HEAD_CHAR = 7.4;
   // The observers hang under breaches, in its column, this wide.
   var OBS_W = 130;
+  // An input cell's square: left of its name, on its first line. Named
+  // because the fills band arrives at it as well as the node drawing it.
+  var CELL_X = -13, CELL_Y = -10, CELL_W = 8;
   // Below this the drawing stops shrinking to its container and scrolls in it.
   var MIN_FIT = 1100;
   // The widest a node's second line gets, in characters: a dollar value, a
@@ -469,7 +474,7 @@
       var observers = !filtered;
       var L = st.L = layout(topo, compact, st.open, observers), colX = L.colX, r0 = L.maxRank;
       L.drawn.forEach(function (n) { if (n.rank < r0) r0 = n.rank; });
-      var ox = colX(L.maxRank), bp = L.pos[L.alias["breaches"]], obsBottom = 0, go = null, gin = null, arrows = false;
+      var ox = colX(L.maxRank), bp = L.pos[L.alias["breaches"]], obsBottom = 0, go = null, gin = null, arrows = false, fillsY = null, targets = [];
       // The readers outside the graph, from the served list, hung under
       // breaches below a rule: the chain ends at breaches, and what reads it
       // from outside is set beneath it. The kill switch's dotted edge to a bar
@@ -511,34 +516,33 @@
         // The desk's bands, present only where the process has a desk. Orders
         // leave: a stub pointing out of the picture with nothing at its end,
         // because nothing in the graph changes when one is sent. Fills arrive,
-        // so their paths run INTO the quantity cells with an arrow head -- the
-        // only edges in this figure that point at an input from outside. They
-        // are drawn under the nodes, as the edges are, so a label a path
-        // crosses breaks it rather than being struck through. In compact mode
-        // every qty[S] resolves to the one band, and the paths are one per
-        // drawn key, so the band takes one arrow and an open name its own:
-        // one fill moves one name's quantity, and the band is all of them.
-        // The sub-lines are short on purpose: the column is OBS_W wide.
+        // and are the only edges here that point at an input from outside, so
+        // they carry the figure's one arrow head. Their targets resolve
+        // through the alias, one per drawn key: in compact mode the band takes
+        // one and an open name its own. They are routed once the observers'
+        // bottom is known, below. The sub-lines are short on purpose: the
+        // column is OBS_W wide.
         outside.forEach(function (o) {
           if (o.name !== "orders" && o.name !== "fills") return;
-          var writes = o.writes || [];
           arrows = true;
           if (o.name === "orders") {
             entry(o, "orders", "sent out · writes nothing");
-            var sy = entries.orders - 4, sx = ox + o.name.length * CHAR + 6;
+            var sy = entries.orders - 4, sx = r1(ox + o.name.length * CHAR + 6);
             go.appendChild(svgEl("path", { d: "M" + sx + "," + sy + " L" + (sx + 22) + "," + sy, "data-from": "orders", "marker-end": "url(#arrowin)" }, "deskin out"));
             return;
           }
+          var writes = o.writes || [], seen = {};
           entry(o, "fills", "writes " + writes.length + " · quantities");
-          if (!gin) gin = svgEl("g", {}, "desk-in");
-          var seen = {};
+          fillsY = entries.fills;
           writes.forEach(function (w) {
             var key = L.alias[w];
             if (!key || seen[key]) return;
             seen[key] = true;
-            var a = L.pos[key];
-            if (!a) return;
-            gin.appendChild(svgEl("path", { d: "M" + (ox - 4) + "," + (entries.fills - 4) + " L" + (a.x - 8) + "," + a.y, "data-from": "fills", "data-to": key, "marker-end": "url(#arrowin)" }, "deskin"));
+            var a = L.pos[key], n = L.drawn.filter(function (d) { return d.name === key; })[0];
+            if (!a || !n) return;
+            // Arrived at as an edge arrives, 4 px short: of a cell's square
+            // where one is drawn, of the name where it is a band and has none.
+            targets.push(n.band ? { key: key, x: a.x - 4, y: a.y - 4 } : { key: key, x: a.x + CELL_X - 4, y: a.y + CELL_Y + CELL_W / 2 });
           });
         });
         // The last row's baseline, its value line and a margin: 18 below that
@@ -546,9 +550,34 @@
         // was written for. Four rows give the same height as before.
         obsBottom = oy - LINE + 18;
       }
-      var width = Math.round(colX(L.maxRank) + (L.colW[L.maxRank] || 0) + 16);
-      var height = Math.max(L.height, obsBottom) + (L.collapsed.length ? 16 : 0);
-      var svg = st.svg = svgEl("svg", { width: width, height: height, viewBox: "0 0 " + width + " " + height, role: "img", "aria-label": "the dependency graph" });
+      // The fills band goes AROUND the engine rather than through it, in the
+      // figure's own routing: out of its entry by a stub into its column's
+      // gutter, down that gutter to a bottom gutter one band gap below
+      // everything drawn (the last band's value line, or the observers'), left
+      // along it to a trunk one stub outside the leftmost arrival, up the
+      // trunk, and in by a stub. The stubs share the trunk, so as names tick
+      // in compact mode only the open name's stub moves. Every coordinate is
+      // taken from the drawing's extent; the figure grows by the gutter at the
+      // bottom, with the caption of collapsed singletons below it, and on the
+      // left by as much margin as puts the trunk one stub inside the edge. It
+      // is drawn under the nodes, as the edges are. No band, no gutter, no
+      // margin: the height and the viewBox are as they were.
+      var bottom = Math.max(L.height, obsBottom), margin = 0;
+      if (targets.length) {
+        var stub = GUT * 0.4, gx = r1(ox - stub), gy = bottom + GAP;
+        var tx = r1(Math.min.apply(null, targets.map(function (t) { return t.x; })) - stub);
+        var ty = Math.min.apply(null, targets.map(function (t) { return t.y; }));
+        margin = Math.max(0, Math.ceil(stub - tx));
+        bottom = gy + GAP;
+        gin = svgEl("g", {}, "desk-in");
+        gin.appendChild(svgEl("path", { d: "M" + r1(ox - 4) + "," + (fillsY - 4) + " H" + gx + " V" + gy + " H" + tx + " V" + ty, "data-from": "fills" }, "deskin"));
+        targets.forEach(function (t) {
+          gin.appendChild(svgEl("path", { d: "M" + tx + "," + t.y + " H" + r1(t.x), "data-from": "fills", "data-to": t.key, "marker-end": "url(#arrowin)" }, "deskin"));
+        });
+      }
+      var width = Math.round(colX(L.maxRank) + (L.colW[L.maxRank] || 0) + 16) + margin;
+      var height = bottom + (L.collapsed.length ? 16 : 0);
+      var svg = st.svg = svgEl("svg", { width: width, height: height, viewBox: (margin ? -margin : 0) + " 0 " + width + " " + height, role: "img", "aria-label": "the dependency graph" });
       // Natural size at most; shrinks with its container down to MIN_FIT, and
       // below that keeps MIN_FIT and scrolls inside it.
       svg.style.width = "100%"; svg.style.height = "auto";
@@ -601,7 +630,7 @@
           svg.appendChild(ga); return;
         }
         var g = svgEl("g", { "data-name": n.name, "data-family": n.family, transform: "translate(" + p.x + "," + p.y + ")" }, "node" + (n.band ? " band" : ""));
-        if (n.family === "input" && !n.band) g.appendChild(svgEl("rect", { x: -13, y: -10, width: 8, height: 8 }, "cell"));
+        if (n.family === "input" && !n.band) g.appendChild(svgEl("rect", { x: CELL_X, y: CELL_Y, width: CELL_W, height: CELL_W }, "cell"));
         g.appendChild(text(0, 0, n.label, "name"));
         var rule = svgEl("line", { x1: 0, y1: 3, x2: p.w, y2: 3 }, "rule");
         var cost = n.band ? n.members.map(function (m) { return (byName[m] || {}).cost; }).sort(function (x, y) { return COST_ORDER.indexOf(y) - COST_ORDER.indexOf(x); })[0] : n.cost;
