@@ -1224,6 +1224,92 @@ let test_preview_and_propose_agree_about_a_resting_order () =
   Graph.destroy f.graph;
   return ()
 
+(* Task 4. [Desk.after_fill]'s read is [Desk.sync], and [sync_with] calls
+   [on_first_sync] -- the restore, in production -- once, the first time a
+   read answers. A restore that raises used to leave fill_read `Running` for
+   the rest of the process: [upon (sync t) f] never runs [f] when [sync t]'s
+   own deferred fails partway through its bind chain, so nothing ever set the
+   flag back, and no fill after that one could ever start a read of its own.
+   Monitor.protect's [finally] now runs on that path too.
+
+   A bare desk, no order manager: [account] is gated on an Ivar so a second
+   [after_fill] can land while the first read is still out, coalescing to
+   `Owed` exactly as it would under an ordinary, non-raising read (Task 2's
+   own promise, kept here under a raise as well). Releasing the gate lets
+   the read finish, [on_first_sync] raise once, and Monitor.protect's
+   [finally] see `Owed`: it idles fill_read and starts the coalesced read at
+   once, which -- [synced] having already been set to true before the raise
+   -- runs [on_first_sync] no second time and so does not raise again. A
+   third, ordinary [after_fill] afterwards is the plainest form of "a read
+   after a raising restore still runs". *)
+let bare_account () =
+  {
+    D.Venue.Account.equity = Notional.of_float 1_000_000.0;
+    cash = Notional.of_float 1_000_000.0;
+    buying_power = Notional.of_float 1_000_000.0;
+    last_equity = Some (Notional.of_float 1_000_000.0);
+    status = "ACTIVE";
+    trading_blocked = false;
+    shorting_enabled = true;
+  }
+
+let test_a_raising_restore_idles_fill_read_and_a_later_read_still_runs () =
+  let f = fixture () in
+  let gate = Ivar.create () in
+  let reads = ref 0 in
+  let read : D.Venue.Read.t =
+    {
+      name = "test";
+      account =
+        (fun () ->
+          incr reads;
+          let%map () = Ivar.read gate in
+          Ok (bare_account ()));
+      positions = (fun () -> return (Ok []));
+      clock = (fun () -> return (Or_error.error_string "unused in this test"));
+      latest_quote = (fun _ -> return (Or_error.error_string "unused in this test"));
+      daily_bars = (fun _ ~days:_ -> return (Or_error.error_string "unused in this test"));
+    }
+  in
+  let armed = ref true in
+  let desk =
+    D.Desk.create ~graph:f.graph ~journal:f.journal ~venue:(D.Desk.Reads read)
+      ~spec:Desk_spec.default ~on_change:ignore ~on_first_sync:(fun () ->
+        if !armed then (
+          armed := false;
+          failwith "boom: the restore raised"))
+  in
+  let owed_while_out = ref false in
+  let%bind raised =
+    Monitor.try_with ~extract_exn:true (fun () ->
+        D.Desk.after_fill desk;
+        (* the fill this read was for; landing again while it is still out *)
+        D.Desk.after_fill desk;
+        owed_while_out := Poly.equal desk.D.Desk.fill_read `Owed;
+        Ivar.fill_exn gate ();
+        Scheduler.yield_until_no_jobs_remain ())
+  in
+  Alcotest.(check bool)
+    "a fill during the raising read is coalesced to Owed, same as any other read" true
+    !owed_while_out;
+  (match raised with
+  | Error exn ->
+      Alcotest.(check bool)
+        "the restore's own exception reached here, not swallowed" true
+        (String.is_substring (Exn.to_string exn) ~substring:"boom: the restore raised")
+  | Ok () -> Alcotest.fail "the raising restore did not raise");
+  Alcotest.(check bool)
+    "fill_read is idle, not stuck Running for the life of the process" true
+    (Poly.equal desk.D.Desk.fill_read `Idle);
+  Alcotest.(check int)
+    "the read that raised, and the one the coalesced fill was owed" 2 !reads;
+  D.Desk.after_fill desk;
+  let%bind () = Scheduler.yield_until_no_jobs_remain () in
+  Alcotest.(check int) "an ordinary read afterwards still runs" 3 !reads;
+  Alcotest.(check bool) "and idles again" true (Poly.equal desk.D.Desk.fill_read `Idle);
+  Graph.destroy f.graph;
+  return ()
+
 let suites =
   [
     ( "transport",
@@ -1259,6 +1345,11 @@ let suites =
           test_the_clock_is_read_again_when_its_session_ends;
         case "preview and propose agree about a resting order"
           test_preview_and_propose_agree_about_a_resting_order;
+      ] );
+    ( "desk",
+      [
+        case "a raising restore idles fill_read, and a later read still runs"
+          test_a_raising_restore_idles_fill_read_and_a_later_read_still_runs;
       ] );
   ]
 

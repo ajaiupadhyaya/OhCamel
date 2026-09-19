@@ -52,11 +52,17 @@ let own_indexes j =
   List.rev !names
 
 let journal_indexes =
-  [ "fills_by_order"; "order_events_by_order"; "orders_by_created"; "orders_open" ]
+  [
+    "fills_by_at";
+    "fills_by_order";
+    "order_events_by_order";
+    "orders_by_created";
+    "orders_open";
+  ]
 
 (* A restart is also how a journal written before the indexes existed meets
    them: the file below has none when it is closed, as a file from that build
-   would, and opening it again adds all four without touching a row or the
+   would, and opening it again adds all five without touching a row or the
    schema version. *)
 let test_a_session_survives_a_restart () =
   with_temp_path ~f:(fun path ->
@@ -75,7 +81,7 @@ let test_a_session_survives_a_restart () =
         [ session "2026-09-09"; session "2026-09-10"; session "2026-09-11" ]
         (Journal.sessions j);
       Alcotest.(check (list string))
-        "reopened: the four indexes, added at open" journal_indexes (own_indexes j);
+        "reopened: the five indexes, added at open" journal_indexes (own_indexes j);
       let version = ref [] in
       ignore
         (Sqlite3.exec_not_null_no_headers (Journal.For_testing.db j)
@@ -87,8 +93,26 @@ let test_a_session_survives_a_restart () =
       (* and a third open, onto a file that has them, changes nothing *)
       let j = open_exn path in
       Alcotest.(check (list string))
-        "opened again: the same four, and no error" journal_indexes (own_indexes j);
+        "opened again: the same five, and no error" journal_indexes (own_indexes j);
       Journal.close j)
+
+(* /api/desk's last query that grew with the journal: SQLite's own plan for
+   [recent_fills], asked of the file this build actually opens, must read
+   fills_by_at backwards for the ORDER BY and never sort. Asked before any
+   fill is written -- the plan is a fact about the schema and the index, not
+   about how many rows are in the table. *)
+let test_recent_fills_reads_by_the_index_not_a_sort () =
+  let j = open_exn ":memory:" in
+  let plan =
+    Journal.For_testing.query_plan j Journal.For_testing.recent_fills_sql
+      [ Sqlite3.Data.INT 20L ]
+  in
+  Alcotest.(check bool)
+    "walks fills_by_at" true
+    (List.exists plan ~f:(fun step -> String.is_substring step ~substring:"fills_by_at"));
+  Alcotest.(check bool)
+    "no separate sort for the ORDER BY" false
+    (List.exists plan ~f:(fun step -> String.is_substring step ~substring:"B-TREE"))
 
 let test_a_date_recorded_twice_is_one_session () =
   let j = open_exn ":memory:" in
@@ -351,6 +375,8 @@ let suite =
     [
       Alcotest.test_case "a session survives a restart" `Quick
         test_a_session_survives_a_restart;
+      Alcotest.test_case "recent fills reads by the index, not a sort" `Quick
+        test_recent_fills_reads_by_the_index_not_a_sort;
       Alcotest.test_case "a date recorded twice is one session" `Quick
         test_a_date_recorded_twice_is_one_session;
       Alcotest.test_case "sessions come back in date order" `Quick

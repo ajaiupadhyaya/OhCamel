@@ -131,12 +131,17 @@ let terminal_states =
 (* The indexes at the end are for /api/desk, which every open page asks for
    again after each journal write, and which anyone may ask for on the demo.
    Without them every order it loads scans the whole of fills and
-   order_events, [recent_orders] sorts every order, and [open_orders] reads
-   them all -- synchronously, on the scheduler that serves the page and runs
-   the desk, and in the demo's in-memory journal, which gains an order every
-   45 s for as long as the process lives. They change no table, so a journal
-   written before them is still schema version 1: CREATE INDEX IF NOT EXISTS
-   adds them the first time this build opens it, and is nothing on every open
+   order_events, [recent_orders] sorts every order, [open_orders] reads them
+   all, and [recent_fills] -- the last of /api/desk's queries that still grew
+   with the journal -- sorts the whole of fills, every time: synchronously,
+   on the scheduler that serves the page and runs the desk, and in the demo's
+   in-memory journal, which gains an order every 45 s for as long as the
+   process lives. fills_by_at is ordered exactly as [recent_fills]'s own
+   ORDER BY, so SQLite walks it backwards instead of sorting (checked by
+   EXPLAIN QUERY PLAN in test/test_journal.ml, against the query
+   [recent_fills] itself runs). They change no table, so a journal written
+   before them is still schema version 1: CREATE INDEX IF NOT EXISTS adds
+   them the first time this build opens it, and is nothing on every open
    after. *)
 let schema =
   [
@@ -169,6 +174,7 @@ let schema =
     "CREATE INDEX IF NOT EXISTS order_events_by_order ON order_events (client_order_id, \
      seq)";
     "CREATE INDEX IF NOT EXISTS fills_by_order ON fills (client_order_id)";
+    "CREATE INDEX IF NOT EXISTS fills_by_at ON fills (at, execution_id)";
     "CREATE INDEX IF NOT EXISTS orders_by_created ON orders (created_at, client_order_id)";
     "CREATE INDEX IF NOT EXISTS orders_open ON orders (created_at, client_order_id) \
      WHERE state NOT IN " ^ terminal_states;
@@ -760,12 +766,17 @@ let recent_orders t ~limit : Order_row.t list =
     ~row:(fun r -> col_text r 0)
   |> orders_of_ids t
 
+(* Named so a test can ask SQLite's own planner about the exact query
+   [recent_fills] runs (EXPLAIN QUERY PLAN, in [For_testing]), rather than a
+   copy of it that could drift from what actually executes. *)
+let recent_fills_sql =
+  "SELECT f.execution_id, f.client_order_id, f.symbol, f.side, f.qty, f.price, f.at, \
+   f.position_qty, o.decision_price, o.arrival_bid, o.arrival_ask FROM fills f JOIN \
+   orders o ON o.client_order_id = f.client_order_id ORDER BY f.at DESC, f.execution_id \
+   DESC LIMIT ?"
+
 let recent_fills t ~limit : Fill_row.t list =
-  query t ~what:"recent fills"
-    "SELECT f.execution_id, f.client_order_id, f.symbol, f.side, f.qty, f.price, f.at, \
-     f.position_qty, o.decision_price, o.arrival_bid, o.arrival_ask FROM fills f JOIN \
-     orders o ON o.client_order_id = f.client_order_id ORDER BY f.at DESC, \
-     f.execution_id DESC LIMIT ?"
+  query t ~what:"recent fills" recent_fills_sql
     [ Data.INT (Int64.of_int limit) ]
     ~row:(fun r ->
       let fill : Order.Fill.t =
@@ -791,6 +802,7 @@ module For_testing = struct
   let write = write
   let run = run
   let wal_check = wal_check
+  let recent_fills_sql = recent_fills_sql
 
   let journal_mode t =
     match
@@ -798,4 +810,12 @@ module For_testing = struct
     with
     | [ mode ] -> mode
     | _ -> failwith "journal: PRAGMA journal_mode did not answer with one row"
+
+  (* SQLite's own answer for a query's plan, one line per step, exactly as
+     `sqlite3`'s CLI prints EXPLAIN QUERY PLAN's "detail" column -- "SCAN f
+     USING INDEX fills_by_at", not "USE TEMP B-TREE FOR ORDER BY", once
+     fills_by_at exists and matches [recent_fills_sql]'s own ORDER BY. *)
+  let query_plan t sql params =
+    query t ~what:"query plan" ("EXPLAIN QUERY PLAN " ^ sql) params ~row:(fun r ->
+        col_text r 3)
 end

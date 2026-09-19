@@ -160,20 +160,21 @@ let sync_with t ~account ~positions ~at ~seq =
            beside the file's. Once only: a second restore would replace the
            trail again and drop every mark made since.
 
-           A restore that raises is caught neither here nor by any of the
-           three callers of [sync]: bin/main.ml's first sync, [sync_forever],
-           and [after_fill]. The last is the order manager's, after a fill and
-           at the end of a reconciliation that found open orders, so the
-           startup reconciliation reaches it whenever the first sync timed
-           out. The exception leaves [sync] through the monitor of whoever
-           started the read. From the first two that is the process's own, and
-           it ends the process, as the startup restore it replaced did. From
-           [after_fill] it is the monitor of the manager's job, which has
-           finished by the time the venue answers; the manager's sequencer
-           logs an exception that arrives after its job, so the process goes
-           on with the trail unrestored. Either way there is no second
-           restore: the flag is set first, so no read after this one tries
-           again. *)
+           A restore that raises is caught neither here nor by [sync]'s other
+           two callers, bin/main.ml's first sync and [sync_forever]: the
+           exception leaves [sync] through the monitor of whoever started the
+           read, which for those two is the process's own, and it ends the
+           process, as the startup restore it replaced did. The third caller,
+           [after_fill] -- the order manager's, after a fill and at the end of
+           a reconciliation that found open orders, so the startup
+           reconciliation reaches it whenever the first sync timed out --
+           does not await [sync], and wraps it in Monitor.protect instead so
+           that fill_read is idled (see [after_fill]) before the exception
+           goes on to the manager's sequencer, which logs it once it arrives,
+           after the job that ran this read has already finished, and the
+           process goes on with the trail unrestored. Either way there is no
+           second restore: the flag is set first, so no read after this one
+           tries again. *)
         if not t.synced then (
           t.synced <- true;
           t.on_first_sync ())
@@ -208,19 +209,34 @@ let sync t : unit Or_error.t Deferred.t =
    the budget a submit, a cancel and a kill's cancels need; a 429 on a submit
    is a refusal. A fill that lands while the read is out refuses it, as any
    fill does, and is owed a read that starts when that one answers. So the
-   read that finally applies started after the last fill. *)
+   read that finally applies started after the last fill.
+
+   [sync t] can raise -- the first sync's restore, called from inside
+   [sync_with] above -- and a raise partway through a bind chain never drives
+   [upon]'s own continuation, so a plain [upon (sync t) f] would leave
+   fill_read `Running` for the rest of the process: [f] never runs, so
+   nothing ever sets it back, and every fill after this one finds a read
+   already "running" and starts none of its own. Monitor.protect's [finally]
+   runs on that path too, so fill_read is idled -- and, if a fill landed
+   while this read was out, immediately restarted -- before the exception
+   goes on to whatever catches it today (see the comment on [sync_with]'s
+   restore). *)
 let rec after_fill t =
   fill_applied t;
   match t.fill_read with
   | `Running | `Owed -> t.fill_read <- `Owed
   | `Idle ->
       t.fill_read <- `Running;
-      upon (sync t) (fun (_ : unit Or_error.t) ->
-          match t.fill_read with
-          | `Owed ->
-              t.fill_read <- `Idle;
-              after_fill t
-          | _ -> t.fill_read <- `Idle)
+      don't_wait_for
+        (Monitor.protect
+           (fun () -> Deferred.ignore_m (sync t))
+           ~finally:(fun () ->
+             (match t.fill_read with
+             | `Owed ->
+                 t.fill_read <- `Idle;
+                 after_fill t
+             | _ -> t.fill_read <- `Idle);
+             Deferred.unit))
 
 let rec sync_forever t ~every ~on_event =
   let%bind () = Clock_ns.after every in

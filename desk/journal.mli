@@ -170,4 +170,13 @@ module For_testing : sig
       answered. Exported so the refusal can be tested against an answer of our own
       choosing -- this build's own test filesystem always enters WAL for real, so a case
       that only opens a real file can never tell a working refusal from a deleted one. *)
+
+  val recent_fills_sql : string
+  (** The exact SQL [recent_fills] runs, so a test can ask SQLite's own planner about it
+      rather than a copy that could drift from what actually executes. *)
+
+  val query_plan : t -> string -> Sqlite3.Data.t list -> string list
+  (** [EXPLAIN QUERY PLAN sql], bound with [params]: one line per step, in the words
+      SQLite's own planner uses ("SCAN f USING INDEX fills_by_at", "USE TEMP B-TREE FOR
+      ORDER BY"). *)
 end
