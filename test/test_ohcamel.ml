@@ -36,6 +36,7 @@ let suites =
     Test_embedded_assets.suite;
     Test_risk_metrics.suite;
     Test_vol_estimators.suite;
+    Test_liquidity.suite;
     Test_options.suite;
     Test_options_graph.suite;
     Test_attribution.suite;
