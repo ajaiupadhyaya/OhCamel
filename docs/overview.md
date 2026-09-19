@@ -71,6 +71,7 @@ marks and the file says what is held.
 | Limits and alerts | Breaches computed as data; edge-triggered alerts; a kill switch the desk obeys | [`limits.ml`](../lib/limits.ml), [`alerts.ml`](../lib/alerts.ml) |
 | Staleness | Last tick per symbol. A stale name is flagged, along with everything computed from it | [`graph.ml`](../lib/graph.ml) |
 | Orders | The rules, then the book's limits on a fork of the live graph; the journal before the wire; reconciliation against the venue on restart; each fill's cost in basis points. The public demo previews and takes no order from a visitor | [`rules.ml`](../desk/rules.ml), [`gate.ml`](../lib/gate.ml), [`oms.ml`](../desk/oms.ml), [`tca.ml`](../desk/tca.ml) |
+| Signals and research | A contract (R1-R7; R8 not enforced) that judges each signal file against the desk's own session clock; a research service that emits one weight a strategy a trading day from a validated manifest; EXP-A01, the one battery run so far -- both its strategies fail and stay `advisory` | [`contract.ml`](../desk/contract.ml), [`intake.ml`](../desk/intake.ml), [`research/`](../research/) |
 
 A few of these deserve more than a table row.
 
@@ -160,20 +161,24 @@ working directory. A free Alpaca account allows one data stream at a time.
 
 ## The pages and the API
 
-The site is five pages compiled into one binary, with no external assets. `/`
+The site is six pages compiled into one binary, with no external assets. `/`
 is the Desk: the account and its ticket, Figure 1 (the dependency graph,
 drawn from Incremental's own node table, lighting the nodes each update
-recomputed, with the orders and fills bands the desk writes), positions and
-their share of risk, the book's aggregates, the blotter and fills, and the
-equity trail. `/risk` holds the limits ledger, the macro factor and the
-book's beta to it, the option Greeks, and the scenario suite behind a button.
-`/execution` holds the open orders, the cost analysis overall and by symbol,
-the session record and the VaR forecasts. `/argument` is the README's case,
-moved intact, under the same headings; its tables are computed by the
-running process and checked cell by cell against the numbers the README
-quotes, so the deployed Linux host reproduces results written on a Mac.
-`/ops` shows which build is running, its uptime, and how much the graph has
-recomputed.
+recomputed, with the orders, fills and signals bands the desk writes),
+positions and their share of risk, the book's aggregates, the blotter and
+fills, and the equity trail. `/risk` holds the limits ledger, the macro
+factor and the book's beta to it, the option Greeks, and the scenario suite
+behind a button. `/execution` holds the open orders, the cost analysis
+overall and by symbol, the session record and the VaR forecasts. `/research`
+(added in phase A3) leads with each registered strategy's backtest verdict
+and its gates, read from the committed EXP-A01 manifests, then its latest
+signal and how the desk judged it -- on the public demo no strategy is
+registered, and the page says so, showing the evidence regardless.
+`/argument` is the README's case, moved intact, under the same headings; its
+tables are computed by the running process and checked cell by cell against
+the numbers the README quotes, so the deployed Linux host reproduces results
+written on a Mac. `/ops` shows which build is running, its uptime, and how
+much the graph has recomputed.
 
 | Route | What it returns |
 |---|---|
@@ -195,7 +200,8 @@ recomputed.
 | `POST /api/desk/cancel` | Cancel one open order (live host only) |
 | `POST /api/desk/kill` | Halt the desk, answer, then cancel every open order (live host only) |
 | `POST /api/desk/kill/reset` | Lift the halt; the body must say `{"confirm":"reset"}` (live host only) |
-| `GET /api/research` | The registered signal strategies, each one's latest judgement, and that R8 (data hash) is not enforced; the demo registers none |
+| `GET /api/research` | The registered signal strategies with their sizing and capital fraction, each one's latest judgement, and that R8 (data hash) is not enforced; the demo registers none |
+| `GET /api/research/evidence` | EXP-A01's two manifests, embedded at build time and served byte for byte |
 
 Four routes change the desk -- orders, cancel, kill and its reset -- on the
 live host only, and only for a request carrying the page's header and either
@@ -235,6 +241,10 @@ may send one); on the public demo each answers 405.
 - **CI on Ubuntu and macOS** for every push: the build, the tests, a formatting
   check, every credential-free mode run end to end, and the README's quoted
   tables reproduced on both platforms.
+- **`make research-test`** runs the research layer's own suite separately:
+  355 Python tests, hermetic and offline, checked with `ruff`. Not folded
+  into [`lib/verified.ml`](../lib/verified.ml)'s counts, which cover the
+  OCaml suites only.
 
 ## What it doesn't do
 
@@ -255,8 +265,13 @@ may send one); on the public demo each answers 405.
 - **One of each source:** one broker (Alpaca, IEX feed), one macro source
   (FRED) and one macro factor.
 - **Limited options:** European only, and off in live mode.
-- **Not a strategy platform.** The backtests validate the risk model, not a
-  trading idea, and nothing is optimised.
+- **Not a strategy platform, on purpose.** `make backtest` validates the risk
+  model, not a trading idea, and nothing is optimised. `research/` does
+  validate trading ideas now (phase A3), against the charter's gates, but
+  validating and trading are kept apart: every strategy ships `(sizing
+  advisory)` by default and no task has ever set one `live`. EXP-A01, the
+  one battery run so far, tested two strategies and both fail -- see
+  [`research/experiments/EXP-A01/report.md`](../research/experiments/EXP-A01/report.md).
 - **One server,** with no replica.
 
 ## Built with

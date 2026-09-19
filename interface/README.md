@@ -1,6 +1,7 @@
 # The signal contract
 
-One JSON document per signal, written by `research/` and enforced by `core/`.
+One JSON document per signal, written by `research/` and enforced by
+OhCamel's desk (`desk/contract.ml`).
 [`signal.schema.json`](signal.schema.json) is the shape; this file is the
 meaning, and in particular the eight rules the core applies before a target
 weight can become an order. The rules are numbered so that a rejection can name
@@ -39,9 +40,11 @@ fails R2 and R6 is reported as R2.
   came from different strategies, whatever their slugs say.
 - `data_hash` is `sha256:` over the canonical bar text the strategy read: one
   line per bar, `symbol,date,open,high,low,close,volume`, sorted by
-  `(date, symbol)`, floats formatted with `repr`. Both sides compute it the
-  same way; `research/src/alpha/contract.py` and `core/lib/bars.ml` are the two
-  implementations and the tests hold them to the same fixture.
+  `(date, symbol)`, floats formatted with `repr`.
+  `research/src/ohcamel_research/contract.py` computes it. R8, the rule that
+  would check it against the core's own bars, is not enforced in OhCamel
+  (§3.12 of the desk's design; ruling 3), so `desk/contract.ml` does not
+  compute a second copy to check it against.
 - `validation` is written by the code that ran the battery, from its manifest,
   never by hand. `gates_version` is the date of the charter whose gates were
   applied.

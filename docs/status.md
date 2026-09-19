@@ -31,7 +31,11 @@ break it* (a scenario suite that shocks a fork of the live graph).
 
 It computes and reports, and a desk built around it places paper orders:
 every one passes the rules and the book's limits first, and the kernel
-itself still cannot place one -- a library boundary, invariant 6.
+itself still cannot place one -- a library boundary, invariant 6. Since
+phase A3 the desk can also read signals a separate research layer
+validates, but only ever as `advisory`: EXP-A01, the one battery run so
+far, tested two strategies and both fail their gates, so nothing has been
+promoted and no strategy is `live` anywhere in this repository.
 
 ## Where it runs
 
@@ -137,6 +141,26 @@ likelihood and tested. `make garch` prints why it stays out: on a 60-observation
 window the persistence parameter cannot be estimated, and an estimator that
 cannot be estimated should not be producing a VaR.
 
+**Signals and research (phase A3).** A contract (`desk/contract.ml`, ported
+from Alpha and documented at [`interface/README.md`](../interface/README.md))
+judges each signal file against rules R1 through R7, using the desk's own
+session clock and never wall-clock time; R8, a repeat data-hash check, is not
+enforced (ruling 3) -- the sentence "R8 (data hash) is not enforced; see the
+design §3.12" is what `/api/research` and the Research page say. Every
+registered strategy carries `(sizing advisory)` or `(sizing live)` in
+`book.sexp`, default `advisory`, and a `capital_fraction`; a signal is sized
+only when it passes every rule and its strategy is `live`, and no task has
+ever set one so. `research/` runs the validation battery
+([`ohcamel_research`](../research/)) and `research/src/ohcamel_research/service.py`
+(Docker Compose's `ohcamel-research`, `live` profile only) emits one weight a
+strategy a trading day at 19:15 America/New_York, from a manifest's own
+`selected_params`, refusing to write anything unless the fetched bars carry
+an Alpaca provenance sidecar and accepting only `ma_crossover`. EXP-A01, the
+first and only battery run, tested two strategies against ten years of
+Alpaca bars and both **fail**; the verdict, quoted rather than paraphrased,
+and its gates are in [`README.md`](../README.md#signals-and-research) and in
+[`research/experiments/EXP-A01/report.md`](../research/experiments/EXP-A01/report.md).
+
 ## How to drive it
 
 One binary, `ohcamel`, with a mode as its first argument. Every `make` target
@@ -171,15 +195,20 @@ Alpaca account allows one concurrent market-data stream.
 
 ## The interface
 
-The site is five pages, one binary, one shared shell and client:
+The site is six pages, one binary, one shared shell and client:
 
-- **Desk** (`/`) — the account and its ticket, Figure 1 (with the orders and
-  fills bands the desk writes), positions and their share of risk, the
-  book's aggregates, the blotter and fills, and the equity trail.
+- **Desk** (`/`) — the account and its ticket, Figure 1 (with the orders,
+  fills and signals bands the desk writes), positions and their share of
+  risk, the book's aggregates, the blotter and fills, and the equity trail.
 - **Risk** (`/risk`) — the limits ledger, the macro factor and the book's
   beta to it, the option Greeks, and the scenario suite behind a button.
 - **Execution** (`/execution`) — the open orders, the cost analysis overall
   and by symbol, the session record and the VaR forecasts.
+- **Research** (`/research`) — added in phase A3: each registered strategy's
+  backtest verdict and its gates, read from the committed EXP-A01 manifests,
+  first; then its latest signal and how the desk judged it; how many files
+  the intake is holding; and the R8 sentence. On the public demo no strategy
+  is registered, and the page says so, showing the evidence all the same.
 - **Argument** (`/argument`) — the README's case, moved intact.
 - **Ops** (`/ops`) — which build is running, its uptime, and what the
   process has recomputed, with its own masthead and its own stream; W2 gave
@@ -199,6 +228,7 @@ answers 405.
 | `/argument` | The README's argument, moved intact: the same headings, the same tables, computed by this process and checked against the README |
 | `/risk` | The limits ledger, the macro factor and the book's beta to it, the option Greeks, and the scenario suite behind a button |
 | `/execution` | The open orders, the cost analysis overall and by symbol, the session record and the VaR forecasts |
+| `/research` | Each registered strategy's backtest verdict and its gates first, read from the committed EXP-A01 manifests, then its latest signal and how the desk judged it. On the demo no strategy is registered, and the page says so, showing the evidence all the same |
 | `/api/snapshot` | The whole book as JSON, including `nodes_recomputed` — the counter that proves the graph is alive |
 | `/api/health` | Feed liveness per symbol; `healthy: false` when anything is stale |
 | `/api/stream` | Server-sent events, emitted only on an actual graph change (parked on an `Ivar`, not a timer), coalesced over 80 ms |
@@ -219,6 +249,7 @@ answers 405.
 | `POST /api/desk/kill` | Halt the desk, answer, then cancel every open order (live host only) |
 | `POST /api/desk/kill/reset` | Lift the halt; the body must say `{"confirm":"reset"}` (live host only) |
 | `GET /api/research` | The registered signal strategies with their sizing and capital fraction, each one's latest judgement (verdict, rule, detail, `as_of`, weights, validation block), how many files the intake is holding, and the sentence "R8 (data hash) is not enforced; see the design §3.12". The demo registers no strategy and says so |
+| `GET /api/research/evidence` | EXP-A01's two manifests, embedded at build time and served byte for byte, on both hosts |
 
 Each page is assembled at build time from `web/` by its own rule in `lib/dune`; none of the five generated `*_html.ml` modules (`dashboard_html`, `ops_html`, `argument_html`, `risk_html`, `execution_html`) is a committed source file. The 47-line design essay that headed the Desk page is archived verbatim, as an HTML comment, at the head of `web/index.html`, with the successor paragraphs beneath it.
 
@@ -251,12 +282,36 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
   decimals it prints (run 34488696654, 2026-09-10).
 - **Recomputation counts are asserted**, not claimed: `test_graph.ml` pins
   how many nodes a tick reaches.
+- **`make research-test`** runs the research layer's own suite separately:
+  355 Python tests, hermetic and offline, checked with `ruff`. Reported
+  here rather than folded into `lib/verified.ml`, which counts the OCaml
+  suites only.
 - **Production smoke suite** after every deploy: the dashboard renders,
   `nodes_recomputed` *advances* across two reads two seconds apart, the SSE
   stream delivers distinct frames *spread over* a twenty-second window, HTTP
   redirects, the certificate validates, the engine ports are unreachable from
   outside, and the live host returns 401 without credentials. A failure is a
   failed deploy, not a warning.
+
+## The spec's acceptance: "an advisory signal shown with its rule"
+
+The desk design's acceptance line holds in three separate places, not one:
+
+- **Hermetically:** a test renders an `advisory` judgement with its rule or
+  its sizing named, through `/api/research` and the Research page. Met, and
+  checked on every `make test`.
+- **On the demo:** the demo registers no strategy -- its synthetic book
+  holds neither SPY nor TLT -- so `/research` cannot show "both strategies
+  advisory" literally. What it shows instead: the EXP-A01 evidence (both
+  verdicts **fail**), and the sentence "no strategy is registered on the
+  demo". That is what the plan's acceptance line reads as here, and it is
+  what ships.
+- **On the live host:** after the owner deploys with SPY and TLT in
+  `book.sexp` and the `live` profile running `ohcamel-research`, that
+  service's first post-close run at 19:15 America/New_York writes a real
+  signal, and the desk shows it as `advisory` with its reason. No task in
+  this repository can demonstrate this one -- it needs a deploy and a real
+  close -- so it is the owner's to see, on `/research`, after both happen.
 
 ## Numbers worth knowing
 
@@ -312,7 +367,9 @@ line each (10 to 12 bind the order path, `desk/oms.ml`):
 - Market-on-open needs the America/New_York zone from the tz database (the image installs `tzdata`); where it cannot be loaded, every market-on-open order is refused with that reason. Between midnight and 19:00 ET on a weekend or a holiday the window refuses an order Alpaca would take, because the venue's clock cannot tell that day from a trading day's evening before 19:00 -- failing closed, at hours the research service never sends at.
 - Persistence is one journal (`desk/journal.ml`, SQLite): every order, its events and its fills, and each session's close, marks and VaR forecasts. `run-live` and `serve` keep it in a file (`/data/desk.db` on the live host) and restore the drawdown trail from it at the first successful sync after startup; the demo's is in memory and starts empty each run. Nothing else — the graph, the rest of the book — survives a restart.
 - One broker (Alpaca, IEX feed on the free tier), one macro source (FRED, `DGS10` by default), one macro factor.
-- Not a research platform: no signals, no strategy, no backtest of anything that could make money. `make backtest` validates the *risk model*.
+- Not a strategy platform, on purpose: `make backtest` validates the *risk model*, never a trading idea, and nothing here is optimised. `research/` does validate trading ideas now (phase A3), against the charter's gates, but validating and trading stay apart -- every strategy ships `(sizing advisory)` by default and no task has ever set one `live`. EXP-A01, the one battery run so far, tested two strategies (`exp_a01_spy`, `exp_a01_tlt`) and both **fail**: see the quoted verdict in [`README.md`](../README.md#signals-and-research) and [`research/experiments/EXP-A01/report.md`](../research/experiments/EXP-A01/report.md).
+- A departure from the charter, disclosed in the report: `docs/CHARTER.md`'s Data section says the bars come from "Alpaca (IEX, daily)"; EXP-A01's actual ten-year history is consolidated (SIP) volume, unadjusted, so returns exclude distributions -- a bias against a rule passing, not for it. `docs/CHARTER.md` is a verbatim port and does not carry the correction, so it is stated here and in the README instead.
+- The research image (`deploy/research.Dockerfile`) runs its process as root, deliberately: the named `signals` volume it shares with `ohcamel-live` is seeded by whichever container starts first, compose declares no ordering between them, and a non-root user here could end up unable to write into a volume the other image's uid had already seeded. Recorded as a known departure because it has never been verified against a real build -- see *What the owner must do on the live host*, below.
 - Nothing is optimised: the engine reports concentration and never suggests weights.
 - Options: European only, one flat rate, one vol per contract, no dividends, no implied-vol solve, vega not bucketed by strike, and off in live mode.
 - Volatility: equal-weighted or EWMA; GARCH is present but not wired in, for a measured reason.
@@ -344,19 +401,53 @@ recorded), and the deployment design.
 **The desk's remaining phases**, in the order the design lays out
 (`docs/superpowers/specs/2026-09-12-the-desk-design.md` §5):
 
-- **A3** — signals: Alpha's contract and rules R1–R7 move in, a research
-  service, EXP-A01 pre-registered and run, intake and sizing; and the
-  Research page and its nav link, with Figure 1's signals band. W2 deferred
-  the page here because everything §4 assigns it -- strategies, manifests,
-  gates, advisory signals, backtest against live -- is this phase's
-  deliverable, and a page before it could only have promised them.
 - **A4** — risk depth: the long return window, the factor model, liquidity
   and impact, indicative option marks from Alpaca, GARCH wired in as a third
   estimator, Cornish–Fisher VaR.
 - **A5** — self-validation: the coverage battery run on the live VaR record
-  from the journal, the Basel zone shown on the page.
+  from the journal, the Basel zone shown on the page, and the desk's own
+  record compared against EXP-A01's backtest once enough sessions exist
+  (the Research page's "against live" section is a placeholder sentence
+  until then). A candidate to add to the battery: a buy-and-hold benchmark
+  for SPY and TLT -- EXP-A01's battery computes none, so its hypothesis's
+  drawdown claim (that the rule reduces drawdown relative to holding the
+  index) was never tested by any gate.
 - **A6** — operations: the image built and pushed in CI so the droplet only
   pulls, a nightly journal backup, the desk added to the smoke suite.
+
+## What the owner must do on the live host
+
+No task in this phase may touch the owner's `book.sexp`, so none of this
+happened by itself, and none of it will until the owner does it by hand:
+
+- **Add SPY and TLT to the live book.** Copying the new
+  `book.example.sexp` does this, along with the `signals` block that
+  registers `exp_a01_spy` and `exp_a01_tlt`, both `(sizing advisory)`.
+- **Leave both strategies `advisory`** until the owner has read
+  `research/experiments/EXP-A01/report.md` and its manifests. With status
+  `fail`, R6 already refuses to size either signal no matter what
+  `book.sexp` says -- but the switch is still the owner's to set, not a
+  side effect of deploying.
+- **Before promoting either one,** raise `max_order_notional` (in the
+  book's `desk` block) to at least that strategy's largest target order.
+  Left at its default, the `notional` rule refuses every rebalance,
+  visibly, in the journal and on `/execution`.
+- **Redeploy with the `live` profile** (`deploy/deploy.sh --live`, which
+  passes `--profile live` to compose), so that `ohcamel-research` actually
+  runs. Two things about that redeploy the owner should expect, not be
+  surprised by:
+  - **the research image has never been built.** The local Docker daemon
+    was unhealthy for the whole of this phase, so `deploy/research.Dockerfile`
+    has only been read, never run. Its first real build is at deploy, where
+    the staleness step baked into the image (`RUN` at build time, over the
+    committed manifests) fails the build loudly if anything about the
+    battery, the manifests or the dependency lock has drifted since.
+  - **the live host's first post-close run of the service**, at 19:15
+    America/New_York, is the first time a *real* signal exists anywhere in
+    this project. It will show on `/research` as `advisory` with its
+    reason, which is the live-host half of the spec's acceptance line that
+    no task here could demonstrate ahead of time -- see *The spec's
+    acceptance*, above.
 
 ## Operating it
 

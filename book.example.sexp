@@ -87,8 +87,9 @@
  ; With (trading enabled), an Alpaca PAPER key pair in the environment and a
  ; book that is current, the dashboard's ticket can send an order. The only
  ; other sender is a strategy in the signals block below that the owner has
- ; set (sizing live) -- none is, as shipped -- whose accepted signal becomes
- ; one rebalance of market-on-open orders through the same rules and limits.
+ ; promoted to live sizing -- none is, as shipped -- whose accepted signal
+ ; becomes one rebalance of market-on-open orders through the same rules and
+ ; limits.
  ; The public demo answers 405 to every route that would place, cancel or halt. Paper is
  ; the only venue there is -- the host is a compiled-in constant, and a key that
  ; does not begin PK is refused before the first request.

@@ -64,3 +64,8 @@ __pycache__/
 # not inside it, so this pattern does not touch them; they are the record of
 # what ran and stay committed.
 research/experiments/*/results/
+
+# Alpha's example generator writes this scratch file when the oracle's
+# interface/ is borrowed for a local run; it is not one of the committed
+# examples and carries no fixture content.
+interface/examples/.clock.jsonl

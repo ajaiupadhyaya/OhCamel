@@ -890,7 +890,7 @@ rather than a node and is the only module here that can reach the world.
 [`lib/history_buffer.ml`](lib/history_buffer.ml) is the bounded in-memory trail
 behind those sparklines, hanging off an observer rather than living in the graph.
 [`lib/server.ml`](lib/server.ml) serves `/api/snapshot`, `/api/health`,
-`/api/history` and an SSE stream at `/api/stream`; the five pages are authored
+`/api/history` and an SSE stream at `/api/stream`; the six pages are authored
 in [`web/`](web/) and concatenated into string modules at build time by the
 rules in [`lib/dune`](lib/dune), so the binary is self-contained. The feed lives
 in [`lib/feed/`](lib/feed) — the Alpaca websocket, an Alpaca REST backfill for
@@ -1310,7 +1310,8 @@ while the quote was in flight; and, larger than all of those together, the
 reads the session clock every time, and the twenty-day volume on its first
 turn, on each turn after a read that failed, and an hour after one that
 answered, but never when the volume is fixed, as the demo's is -- and
-`fills_json`'s row-building body, neither of which any test calls directly.
+`fills_json`'s row-building body, which no test calls directly (the nine
+cases added since, described next, narrow `refresh_forever`'s own gap).
 The scheduler suite's sixteen cases are not all order-manager scenarios
 either: two are Task 4's, the transport bound and the suite's own
 count assertion. The five that exercised `oms.ml` when that figure was
@@ -1416,7 +1417,8 @@ Then the order is written to the journal as `pending_submit` **before** the requ
 | `POST /api/desk/cancel` | live | cancel one open order |
 | `POST /api/desk/kill` | live | halt the desk, answer, then cancel every open order |
 | `POST /api/desk/kill/reset` | live | lift the halt; the body must say `{"confirm":"reset"}` |
-| `GET /api/research` | both | the registered signal strategies, each one's latest judgement, the files the intake is holding, and that R8 (data hash) is not enforced; the demo registers none |
+| `GET /api/research` | both | the registered signal strategies with their sizing and capital fraction, each one's latest judgement, the files the intake is holding, and that R8 (data hash) is not enforced; the demo registers none |
+| `GET /api/research/evidence` | both | EXP-A01's two manifests, embedded at build time and served byte for byte as committed |
 
 The live routes require the header `X-OhCamel-Desk: 1` and a request the browser labels as from this site (`Sec-Fetch-Site: same-origin`, or an `Origin` equal to the `Host`), behind the host's password. The demo answers each with 405 and a sentence. Its own trader proposes a small order every 45 seconds, so the blotter has something to show, including refusals.
 
@@ -1424,6 +1426,161 @@ Limits, stated:
 - whole shares; market and limit orders; day orders; regular hours;
 - the gate judges each proposal on at most five forks of the live book, after deduplication, because nobody knows which resting orders will fill: with none of them filled; with every resting buy filled; with every resting sell filled; with, for each name the proposal itself trades, that name's resting buys if the proposal's own quantity there is positive and its resting sells if negative (and, for every other name, whichever of its resting buys or resting sells takes its position further from zero); and with all of them filled. The proposal passes only if it passes on every one -- created or worsened fails, reduced passes, each judged against that fork's own book, so a breach the resting orders alone would make refuses only a proposal that makes it worse. For per-name and sector notional caps these are the worst cases; for gross notional, exactly so for a proposal that trades one name, and only an approximate bound for one that trades several (a rebalance); VaR and the Greek limits are not linear in the positions either, so for them too the five bound it only approximately. A resting order counts at its remaining quantity, priced no better than the mark (a buy at the higher of its limit and the mark, a sell at the lower), which moves equity and drawdown only, never a notional cap. An order the desk declared failed after every lookup missed still counts, at what remains of it, until the venue reports it filled, cancelled, expired or rejected, or it was created before the date of the latest session close recorded in the journal, since a day order cannot outlive its session. A resting order the desk cannot price, or in a name the book does not hold, is not gated as zero: the proposal is refused, naming that order;
 - Alpaca paper only, by construction: the trading host is a constant, and a key that does not begin `PK` is refused before a request is sent.
+
+## Signals and research
+
+A3 added a research layer beside the desk, and a contract neither side can
+bypass keeps them apart: [`research/`](research/) runs backtests and writes
+JSON documents; `desk/contract.ml` decides whether one is ever acted on, and
+it trusts nothing about *when* except the bars it has itself recorded.
+[`interface/README.md`](interface/README.md) states the rules, ported from
+Alpha's original contract, now enforced by OhCamel's own `desk/`.
+
+**The contract, R1 through R7.** A signal names a strategy, an `as_of` date,
+target weights and a `validation` block. `desk/intake.ml` reads at most a
+bounded number of signal files per pass from `OHCAMEL_SIGNALS_DIR`, judges
+each against the desk's own session clock — never wall-clock time or the
+file's own `computed_at` — and records the outcome in the journal: accepted,
+rejected naming the first rule it failed, or advisory when every rule but R6
+(`validation.status == pass`) passes. A signal from the future is refused
+(R3); one older than `max_age` trading days, counted in bars the desk has
+actually seen, is refused (R4); a duplicate or out-of-order sequence number
+is refused (R5); a symbol outside the universe, a symbol named twice in the
+same document, an over-levered target or a NaN weight is refused (R7) — and,
+once R7 passes, a document naming a symbol outside its own strategy's
+declared set is refused separately, so a strategy can only ever move the
+names it declares. A first-seen stale file is deferred
+rather than rejected outright, and that deferral is persisted in the journal
+keyed by strategy and sequence, so a restart or a file rename cannot reset
+its clock and let a year-old file read as fresh; a weekday bound closes the
+remaining gap by failing R4 closed once more weekdays than `max_age` have
+passed with nothing recorded, rather than waiting on a file that may never
+arrive. A duplicate document — the same strategy and sequence, different
+body — is refused rather than silently accepted. Malformed files (bad JSON,
+non-UTF-8, a schema violation) are recorded once and not re-parsed until they
+change on disk. **R8**, which would re-check a signal's own hash of the bars
+it read against the desk's, is not enforced (ruling 3): its recipe depends on
+how two languages print a float, and until that is fixed, the sentence
+"R8 (data hash) is not enforced; see the design §3.12" is what `/api/research`
+and the Research page say, verbatim — `interface/README.md` still lists R8 in
+its table because it is a verbatim port of Alpha's own contract, not this
+project's.
+
+**Sizing is the owner's, and defaults off.** Every registered strategy
+carries `(sizing advisory)` or `(sizing live)` in `book.sexp`, default
+`advisory`, and a `capital_fraction` of equity its weights would apply to if
+it were ever promoted. A signal is sized only when it passes every rule
+**and** its strategy is `live`; on an `advisory` strategy the desk shows the
+signal's weights and prices nothing from them. No task in this project sets
+a strategy `live` — that switch is the owner's alone, made in `book.sexp`
+after reading a strategy's report, never inferred from a verdict.
+
+**The rebalance, for a strategy the owner has set `live`.** A validated
+signal becomes one market-on-open rebalance, sent between 19:00 ET after a
+close and two minutes before the next open — inside Alpaca's opening-auction
+window and after the day's close is on record, so a weekend or a holiday
+before 19:00 refuses rather than guesses, because the venue's clock cannot
+yet tell that evening from a trading one. Nothing is sized unless the
+signal's `as_of`, the priced close and the newest recorded session are the
+same day, and no weekday has closed since unrecorded. The rebalance is
+proposed and gated as one unit: the legs that shrink a position go out
+first, and the whole unit is judged as if only the legs that grow a position
+fill, so a short strategy's own rebalance cannot leave a limit breached on
+the strength of a leg the venue never acknowledged. It stops at the first
+leg the venue does not acknowledge. Every leg reaches the venue through one
+function, `Wire.submit`, whose `permit` type is abstract outside
+`desk/wire.ml`: nothing else can construct one, so a call written against the
+venue's own record field, or an adapter typed at a weaker permit, does not
+compile. Which module actually calls `Wire.submit` — today, the order
+manager alone — is held by a test that fails if any other file in `desk/` or
+`bin/` names the module for anything but its permit type.
+
+**The research service**
+([`research/src/ohcamel_research/service.py`](research/src/ohcamel_research/service.py),
+Docker Compose's `ohcamel-research`, `live` profile only) computes each
+registered strategy's weight once a trading day at 19:15 America/New_York,
+after the desk's own close is on record and inside the OPG window for the
+next session, from the strategy's manifest and `selected_params` alone. It
+calls the same `signal.emit`/fdq class the battery ran to produce that
+manifest, never a second implementation of "is the close above its SMA", so
+the live signal and the backtest that validated it cannot drift apart by one
+of them keeping its own copy of the rule. It refuses to write anything
+unless the fetched bars' own provenance sidecar reads `source: alpaca` —
+`fdq`'s fetcher falls back to Yahoo Finance silently on an Alpaca failure,
+and a signal computed on another vendor's bars with no trace of it is
+exactly the kind of drift this project exists to prevent. It accepts only
+`ma_crossover`: Donchian's signal is history-dependent and the service's bar
+window is truncated to a lookback margin, which would be wrong for a channel
+rule, so nothing else is accepted. The write is atomic — temp file, fsync,
+rename — and the live engine only ever reads what is already on the shared
+volume; the image had never been built as of this phase (the local Docker
+daemon was unhealthy throughout it), so its first build is at deploy, where
+its own staleness check fails loudly if anything about it is off.
+
+**EXP-A01.** The first and only battery run against this contract. Its
+pre-registration
+([`hypothesis.md`](research/experiments/EXP-A01/hypothesis.md),
+[`config.yaml`](research/experiments/EXP-A01/config.yaml)) was committed
+before a line of the battery existed; its two manifests
+(`manifest.exp_a01_spy.json`, `manifest.exp_a01_tlt.json`) are what
+`/api/research/evidence` serves, byte for byte, and what the report below is
+built from. The full report is
+[`research/experiments/EXP-A01/report.md`](research/experiments/EXP-A01/report.md);
+its verdict, quoted rather than paraphrased:
+
+> | Strategy | Verdict | Sizing | verdict_line |
+> |---|---|---|---|
+> | `exp_a01_spy` (SPY) | **fail** | advisory | fail: 1 of 5 gates failed (regimes_positive); PBO 0.786, above 0.5 |
+> | `exp_a01_tlt` (TLT) | **fail** | advisory | fail: 5 of 5 gates failed (holdout_positive, dsr, psr, bootstrap_sharpe_lower5, regimes_positive); PBO 0.981, above 0.5 |
+>
+> Both strategies fail. The pre-registration's kill criterion is "any charter
+> gate failing is a fail", and each strategy fails at least one gate.
+
+SPY passed the holdout (+0.526 compounded), the Deflated Sharpe Ratio (0.399
+against a ≥0.30 line, deflated by 56 fold-trials: EXP-002's 44 prior trend
+fold-trials on this same selection window, recovered by re-running its two
+SPY grids, plus EXP-A01's own 12), the Probabilistic Sharpe Ratio (0.977) and
+the bootstrap lower bound (0.120), and failed only the regime gate — positive
+in exactly the two calm bull years the owner named before the run, 2023 and
+2024, negative in the 2018 Q4 selloff, the 2020 COVID crash and the 2022 rate
+shock. TLT failed every decided gate, deflated by 12 fold-trials, negative
+even at zero spread. Both PBOs are above 0.5 — 0.786 and 0.981 — against an
+expected value near 2/3 for a set with no skill at three configurations, so
+"pass, fragile" was never on the table for either. **With status `fail`,
+neither signal can be sized under R6, whatever `book.sexp` says.** Both
+strategies ship `advisory`; promotion, if it ever happens, is the owner's
+decision alone, made after reading the report.
+
+Two disclosures the report states, repeated here because they touch claims
+made elsewhere in this file: the charter's Data section
+([`docs/CHARTER.md`](docs/CHARTER.md)) says the bars come from "Alpaca (IEX,
+daily)"; the ten-year history EXP-A01 actually reads is consolidated (SIP)
+volume, unadjusted, so returns exclude distributions — a bias against the
+rule passing, not for it, and one the charter does not carry because it is a
+verbatim port. And `fdq` 1.0.0 books an exit's half-spread to its cost ledger
+but never to equity, so every round trip paid half the stated spread until
+the runner doubled it, under one named constant (ruling 11b); the same run
+also settles which of two PBO implementations' figures is trusted when they
+diverge, by taking the higher one, so neither tool's own defect can flatter a
+verdict (ruling 11c). Both are one sentence here; the report has the
+arithmetic.
+
+**The Research page**, `/research` — the sixth page, between Execution and
+Argument — reads `/api/research` (the registered strategies with their
+sizing and capital fraction, each one's latest judgement, how many files the
+intake is holding, and the R8 sentence) and `/api/research/evidence` (the
+two manifests above) and computes nothing itself. On the public demo no
+strategy is registered — its synthetic book holds neither SPY nor TLT — so
+the page says exactly that, and shows the EXP-A01 evidence regardless,
+because the evidence is a fact about the build and not about which book is
+loaded. Figure 1 draws a signals band into the orders band only where an
+intake actually runs, so the demo's own figure, which has none, stays
+byte-identical to the one before this phase.
+
+`research/` has its own test suite, run by `make research-test`: 355 Python
+tests, hermetic, offline, seeded, checked with `ruff`. `lib/verified.ml`
+and this file's counts cover only the OCaml suites; the Python count is
+reported here and in `docs/status.md`, never folded into either.
 
 ## Building it
 
@@ -1462,10 +1619,21 @@ itself still rebuilds from `book.sexp` and the feed on every restart; when
 quantities and cash from that account every minute. There is one broker, Alpaca,
 and one macro source, FRED.
 
-Nor is it a research platform. There is no strategy, no signal, no backtest of
-anything that could make money — `make backtest` validates the *risk model*, not
-a trading idea, and the distinction is the whole point of the mode. The
-volatility estimator is equal-weighted *or* exponentially weighted and the engine
+It is still not a strategy platform, and A3 drew that line rather than erased
+it. [`research/`](research/) now runs a walk-forward, cost-swept,
+multiple-testing-corrected battery against ten years of Alpaca bars and writes
+a validated verdict as a JSON manifest — but validating a signal and trading on
+it are kept apart on purpose. `desk/contract.ml` reads that verdict under rules
+R1 through R7 (see *Signals and research*, above, and
+[`interface/README.md`](interface/README.md)), and every registered strategy
+carries `(sizing advisory)` or `(sizing live)` in `book.sexp`, default
+`advisory`, with no task in this project ever setting one `live`. A passing
+signal on an advisory strategy is shown, never sized. EXP-A01, the only
+battery run so far, tested two strategies and both fail their gates, so
+nothing here has ever been promoted. `make backtest` is a different thing
+entirely: it validates the *risk model* against synthetic and crisis return
+series, never a trading idea, and that distinction is the whole point of the
+mode. The volatility estimator is equal-weighted *or* exponentially weighted and the engine
 reports both, but neither is conditional in the sense a GARCH(1,1) is: EWMA has
 one hand-set decay factor rather than a fitted mean-reversion, so it tracks a
 regime change but does not forecast the return to normal after one. That fit is
