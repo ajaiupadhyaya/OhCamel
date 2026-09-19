@@ -48,7 +48,9 @@ from ohcamel_research.battery.data import load_bars, load_macro, wide
 from ohcamel_research.battery.run import (
     FDQ_EXIT_SPREAD_CORRECTION,
     NONE_MEASURED,
+    PBO_NOTE,
     SPREAD_NOTES,
+    SWEEP_NOTE,
     RunRefused,
     describe_measure,
     evaluate_fixed,
@@ -116,6 +118,7 @@ class Backtest:
     friction: FrictionConfig
     start: date | None
     end: date | None
+    macro: Any
 
 
 @dataclass
@@ -124,12 +127,21 @@ class Recorded:
     exp: Path
     manifests: list[Manifest] = field(default_factory=list)
     order: list[str] = field(default_factory=list)
+    macro_loaded: Any = None
+    macros: list[Any] = field(default_factory=list)
     wf_calls: list[dict[str, Any]] = field(default_factory=list)
+    is_calls: list[dict[str, Any]] = field(default_factory=list)
     is_frictions: list[FrictionConfig] = field(default_factory=list)
     selection_spans: list[tuple[pd.Timestamp, pd.Timestamp]] = field(default_factory=list)
     inner_frictions: list[FrictionConfig] = field(default_factory=list)
     backtests: list[Backtest] = field(default_factory=list)
+    pbo_matrices: list[np.ndarray] = field(default_factory=list)
     dsr_calls: list[tuple[pd.Series, np.ndarray]] = field(default_factory=list)
+    psr_series: list[pd.Series] = field(default_factory=list)
+    bootstrap_calls: list[tuple[pd.Series, tuple[Any, ...], dict[str, Any]]] = field(
+        default_factory=list
+    )
+    regime_series: list[pd.Series] = field(default_factory=list)
     verdict_calls: list[tuple[list[dict[str, Any]], float]] = field(default_factory=list)
 
 
@@ -141,11 +153,16 @@ def recorded(tmp_path_factory, mirror_builder) -> Recorded:
 
     real_commit = run_mod.assert_battery_committed
     real_load = run_mod.load_experiment_config
+    real_macro = run_mod.load_macro
     real_wf = run_mod.walk_forward
     real_is = run_mod.in_sample_return_matrix
     real_inner = walkforward_mod.run_backtest
     real_bt = run_mod.run_backtest
+    real_pbo = run_mod.probability_backtest_overfitting
     real_dsr = gates_mod.deflated_sharpe
+    real_psr = run_mod.psr_gate
+    real_boot = run_mod.bootstrap_gate
+    real_regime = run_mod.regime_gate
     real_verdict = run_mod.compute_verdict
 
     def commit(r):
@@ -156,30 +173,67 @@ def recorded(tmp_path_factory, mirror_builder) -> Recorded:
         rec.order.append("load_experiment_config")
         return real_load(*a, **k)
 
+    def macro_loaded(path):
+        rec.macro_loaded = real_macro(path)
+        return rec.macro_loaded
+
     def wf(name, base, grid, bars, tier, friction, macro, **kw):
         rec.selection_spans.append((bars.index.min(), bars.index.max()))
+        rec.macros.append(macro)
         res = real_wf(name, base, grid, bars, tier, friction, macro, **kw)
         rec.wf_calls.append(
             {"name": name, "base": dict(base), "grid": grid, "friction": friction, "result": res}
         )
         return res
 
-    def in_sample(name, base, grid, bars, tier, friction, *a, **k):
+    def in_sample(name, base, grid, bars, tier, friction, macro, is_start, is_end, seed):
         rec.selection_spans.append((bars.index.min(), bars.index.max()))
         rec.is_frictions.append(friction)
-        return real_is(name, base, grid, bars, tier, friction, *a, **k)
+        rec.macros.append(macro)
+        matrix, sharpes = real_is(
+            name, base, grid, bars, tier, friction, macro, is_start, is_end, seed
+        )
+        rec.is_calls.append(
+            {
+                "name": name,
+                "symbol": base["symbol"],
+                "grid": grid,
+                "span": (is_start, is_end),
+                "matrix": matrix,
+                "sharpes": sharpes,
+            }
+        )
+        return matrix, sharpes
 
     def inner(strategy, bars, config, macro=None, start=None, end=None):
         rec.inner_frictions.append(config.friction)
+        rec.macros.append(macro)
         return real_inner(strategy, bars, config, macro, start, end)
 
     def backtest(strategy, bars, config, macro=None, start=None, end=None):
-        rec.backtests.append(Backtest(dict(strategy.params), config.friction, start, end))
+        rec.backtests.append(Backtest(dict(strategy.params), config.friction, start, end, macro))
+        rec.macros.append(macro)
         return real_bt(strategy, bars, config, macro, start, end)
+
+    def pbo(matrix, *a, **k):
+        rec.pbo_matrices.append(np.array(matrix, copy=True))
+        return real_pbo(matrix, *a, **k)
 
     def dsr(returns, trial_sharpes):
         rec.dsr_calls.append((returns.copy(), np.array(trial_sharpes, copy=True)))
         return real_dsr(returns, trial_sharpes)
+
+    def psr(returns, *a, **k):
+        rec.psr_series.append(returns.copy())
+        return real_psr(returns, *a, **k)
+
+    def boot(returns, *a, **k):
+        rec.bootstrap_calls.append((returns.copy(), a, dict(k)))
+        return real_boot(returns, *a, **k)
+
+    def regime(returns, *a, **k):
+        rec.regime_series.append(returns.copy())
+        return real_regime(returns, *a, **k)
 
     def verdict(gates, pbo):
         rec.verdict_calls.append((list(gates), pbo))
@@ -189,11 +243,16 @@ def recorded(tmp_path_factory, mirror_builder) -> Recorded:
         mp.setattr(run_mod, "compute_verdict", verdict)
         mp.setattr(run_mod, "assert_battery_committed", commit)
         mp.setattr(run_mod, "load_experiment_config", load)
+        mp.setattr(run_mod, "load_macro", macro_loaded)
         mp.setattr(run_mod, "walk_forward", wf)
         mp.setattr(run_mod, "in_sample_return_matrix", in_sample)
         mp.setattr(walkforward_mod, "run_backtest", inner)
         mp.setattr(run_mod, "run_backtest", backtest)
+        mp.setattr(run_mod, "probability_backtest_overfitting", pbo)
         mp.setattr(gates_mod, "deflated_sharpe", dsr)
+        mp.setattr(run_mod, "psr_gate", psr)
+        mp.setattr(run_mod, "bootstrap_gate", boot)
+        mp.setattr(run_mod, "regime_gate", regime)
         rec.manifests = run(exp, write=True, repo_root=root)
     return rec
 
@@ -207,9 +266,12 @@ def _own_wf(rec: Recorded, symbol: str) -> WalkForwardResult:
     return call["result"]
 
 
+def _folds(symbol: str):
+    return make_folds(pd.DatetimeIndex(_fixture_days(symbol, "2018-01-02", "2019-12-31")), 2)
+
+
 def _fold_spans(symbol: str) -> set[tuple[date, date]]:
-    days = pd.DatetimeIndex(_fixture_days(symbol, "2018-01-02", "2019-12-31"))
-    return {(f.test_start, f.test_end) for f in make_folds(days, 2)}
+    return {(f.test_start, f.test_end) for f in _folds(symbol)}
 
 
 def test_one_manifest_per_strategy_in_the_configs_order_and_shape(recorded):
@@ -237,10 +299,12 @@ def test_one_manifest_per_strategy_in_the_configs_order_and_shape(recorded):
         assert m.capacity is None or m.capacity > 0.0
         assert m.python_version == platform.python_version()
         assert all(note in m.notes for note in SPREAD_NOTES)
+        assert PBO_NOTE in m.notes and SWEEP_NOTE in m.notes
         sweep = m.gates[GATE_ORDER.index("cost_sweep")]["detail"]
         assert set(sweep["sharpe_by_bps"]) == {"0.0", "5.0", "15.0", "30.0"}
         assert set(sweep["total_return_by_bps"]) == {"0.0", "5.0", "15.0", "30.0"}
         assert set(sweep["holdout_total_return_by_bps"]) == {"0.0", "5.0", "15.0", "30.0"}
+        assert set(sweep["holdout_sharpe_by_bps"]) == {"0.0", "5.0", "15.0", "30.0"}
         assert sweep["exit_spread_correction"] == FDQ_EXIT_SPREAD_CORRECTION == 2.0
 
 
@@ -387,26 +451,41 @@ def test_the_cost_sweep_re_evaluates_the_selected_params_and_never_re_selects(re
 
     sweep = [b for b in recorded.backtests if not b.friction.spread_bps_by_symbol]
     assert len(sweep) == 2 * 4 * (2 + 1)  # strategies x levels x (folds + holdout)
+    holdout_span = (date(2020, 1, 2), date(2020, 12, 31))
     for m in recorded.manifests:
+        wf = _own_wf(recorded, m.symbol)
+        folds = _folds(m.symbol)
         mine = [b for b in sweep if b.params["symbol"] == m.symbol]
-        assert all(b.params == m.selected_params for b in mine)
-        # Each round-trip level L reaches fdq as 2L (FDQ_EXIT_SPREAD_CORRECTION).
+        # Each fold's span ran that fold's own fold_params -- the series the
+        # gates read -- and the holdout ran selected_params: all chosen at
+        # the base friction, none chosen at a sweep level.
+        for b in mine:
+            span = (b.start, b.end)
+            if span == holdout_span:
+                assert b.params == m.selected_params
+            else:
+                i = [(f.test_start, f.test_end) for f in folds].index(span)
+                assert b.params == dict(wf.fold_params[i])
         assert Counter(b.friction.spread_bps_default for b in mine) == {
             0.0: 3,
             10.0: 3,
             30.0: 3,
             60.0: 3,
-        }
-        spans = {(b.start, b.end) for b in mine}
-        assert spans == _fold_spans(m.symbol) | {(date(2020, 1, 2), date(2020, 12, 31))}
+        }  # each round-trip level L reaches fdq as 2L (FDQ_EXIT_SPREAD_CORRECTION)
+        assert Counter((b.start, b.end) for b in mine) == Counter(
+            {**{(f.test_start, f.test_end): 4 for f in folds}, holdout_span: 4}
+        )
         for b in mine:
             assert b.friction == replace(
-                BASE,
+                DOUBLED,
                 spread_bps_default=b.friction.spread_bps_default,
                 spread_bps_by_symbol={},
             )
         detail = m.gates[GATE_ORDER.index("cost_sweep")]["detail"]
-        assert detail["params"] == m.selected_params
+        assert detail["params"] == {
+            "folds": [dict(p) for p in wf.fold_params],
+            "holdout": m.selected_params,
+        }
         assert detail["reselected"] is False
 
 
@@ -437,6 +516,80 @@ def test_turnover_and_capacity_come_from_each_folds_own_params(recorded):
         ]
         assert [b.params for b in base_fold_runs] == [dict(p) for p in fold_params]
         assert sorted((b.start, b.end) for b in base_fold_runs) == sorted(spans)
+
+
+def test_psr_the_bootstrap_and_the_regimes_read_the_series_the_dsr_reads(recorded):
+    n = len(recorded.manifests)
+    assert len(recorded.psr_series) == len(recorded.bootstrap_calls) == n
+    assert len(recorded.regime_series) == len(recorded.dsr_calls) == n
+    for i, (dsr_returns, _) in enumerate(recorded.dsr_calls):
+        for series in (
+            recorded.psr_series[i],
+            recorded.bootstrap_calls[i][0],
+            recorded.regime_series[i],
+        ):
+            assert list(series.index) == list(dsr_returns.index)
+            np.testing.assert_array_equal(series.to_numpy(), dsr_returns.to_numpy())
+
+
+def test_the_bootstrap_receives_the_configs_seed_and_resamples(recorded):
+    # The smoke config's seed is 7, not a default anyone would type.
+    for _, args, kwargs in recorded.bootstrap_calls:
+        assert args == ()
+        assert kwargs == {"n_samples": 1000, "seed": 7}
+    for m in recorded.manifests:
+        detail = m.gates[GATE_ORDER.index("bootstrap_sharpe_lower5")]["detail"]
+        assert (detail["n_samples"], detail["seed"]) == (1000, 7)
+
+
+def test_every_call_into_fdq_reads_the_loaded_macro_series(recorded):
+    loaded = recorded.macro_loaded
+    assert loaded is not None and "vix" in loaded.columns
+    assert len(recorded.macros) > 20
+    assert all(m is loaded for m in recorded.macros)
+    holdouts = [
+        b for b in recorded.backtests if (b.start, b.end) == (date(2020, 1, 2), date(2020, 12, 31))
+    ]
+    assert len(holdouts) == 2 * (1 + 4)  # per strategy: the verdict's, then one per level
+    assert all(b.macro is loaded for b in holdouts)
+
+
+def test_selected_params_is_the_selection_rule_over_the_recorded_in_sample_sharpes(recorded):
+    for m in recorded.manifests:
+        (call,) = [c for c in recorded.is_calls if c["symbol"] == m.symbol]
+        spec = GridSpec("ma_crossover", m.symbol, call["grid"])
+        assert m.selected_params == select_params(spec, call["sharpes"])
+    # On this slice the whole-window choice is not the last fold's, so a
+    # runner that took fold_params[-1] fails the assertion above.
+    spy = recorded.manifests[0]
+    assert spy.selected_params != dict(_own_wf(recorded, "SPY").fold_params[-1])
+
+
+def test_pbo_reads_the_whole_selection_windows_matrix(recorded):
+    days = _fixture_days("SPY", "2018-01-02", "2019-12-31")
+    assert len(recorded.pbo_matrices) == len(recorded.is_calls) == 2
+    for matrix, call in zip(recorded.pbo_matrices, recorded.is_calls, strict=True):
+        assert call["span"] == (date(2018, 1, 2), date(2019, 12, 31))
+        assert matrix.shape == (len(days), 2)
+        np.testing.assert_array_equal(matrix, call["matrix"])
+
+
+def test_the_out_of_sample_dates_are_the_union_of_the_folds_test_spans(recorded):
+    for m in recorded.manifests:
+        days = pd.DatetimeIndex(_fixture_days(m.symbol, "2018-01-02", "2019-12-31"))
+        spans = _folds(m.symbol)
+        covered = [d for d in days if any(f.test_start <= d.date() <= f.test_end for f in spans)]
+        assert list(_own_wf(recorded, m.symbol).oos_returns.index) == covered
+        # 503 bars in 3 blocks of 167: the first block only trains, and the
+        # last 2 bars fall in no fold's test span.
+        assert len(days) == 503
+        assert covered[0] == days[167] and covered[-1] == days[500]
+        assert (
+            "walk-forward coverage: 503 selection bars in 3 blocks of 167; the first 167 "
+            "(2018-01-02..2018-08-29) only train, and the last 2 (2019-12-30..2019-12-31) fall "
+            "in no fold's test span; each fold's out-of-sample backtest restarts in cash and "
+            "re-enters"
+        ) in m.notes
 
 
 # --------------------------------------------------------------------------
@@ -517,6 +670,7 @@ def test_macro_none_is_refused_by_every_runner_entry():
     with pytest.raises(ValueError, match="macro is None"):
         evaluate_fixed(
             "ma_crossover",
+            [],
             {"symbol": "SPY", "fast": 1, "slow": 50},
             SPY,
             [],
@@ -951,11 +1105,24 @@ def test_the_cli_passes_only_the_experiment_directory(tmp_path, monkeypatch):
     assert [p.name for p in command.params] == ["experiment_dir"]
 
 
-def test_the_cli_reports_a_refusal_as_an_error(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("error", "line"),
+    [
+        (RunRefused("the run stops"), "Error: refused: the run stops"),
+        (ConfigError("macro: is null"), "Error: refused: macro: is null"),
+        (ValueError("macro is None"), "Error: refused: macro is None"),
+        (
+            RuntimeError("battery is not clean:\n?? a.py\n M b.py"),
+            "Error: refused: battery is not clean:; ?? a.py; M b.py",
+        ),
+    ],
+)
+def test_the_cli_states_a_refusal_in_one_line_and_exits_1(tmp_path, monkeypatch, error, line):
     def refuse(experiment_dir, **kwargs):
-        raise RunRefused("the run stops")
+        raise error
 
     monkeypatch.setattr(run_mod, "run", refuse)
     result = CliRunner().invoke(cli, ["battery", "run", str(tmp_path)])
     assert result.exit_code == 1
-    assert "the run stops" in result.output
+    assert result.output.splitlines() == [line]
+    assert "Traceback" not in result.output

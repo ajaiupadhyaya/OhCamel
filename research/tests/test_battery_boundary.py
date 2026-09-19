@@ -21,36 +21,59 @@ BATTERY = REPO_ROOT / BATTERY_REL
 ALLOWED_OUTSIDE = {"ohcamel_research.manifest"}
 
 
+# Machinery that can load or run code this AST scan could not see through.
+DYNAMIC_MODULES = ("importlib", "runpy")
+DYNAMIC_CALLS = ("exec", "eval", "__import__", "import_module")
+
+
+def _dynamic_module(name: str) -> bool:
+    return any(name == m or name.startswith(m + ".") for m in DYNAMIC_MODULES)
+
+
 def violations(source: str, where: str) -> list[str]:
-    """Every import in ``source`` (a module under ``battery/``) that reaches
-    ``ohcamel_research`` outside ``battery/``, other than the judge: an
-    absolute import of any other ``ohcamel_research`` module (the package
-    root included), a relative import climbing out of ``battery/``, or any
-    dynamic import at all, which this check could not see through."""
+    """Every way ``source`` (a module under ``battery/``) could reach code
+    outside ``battery/`` other than the judge:
+    - an absolute import of any other ``ohcamel_research`` module (the
+      package root included);
+    - a relative import climbing out of ``battery/``;
+    - dynamic loading this scan cannot see through: importing ``importlib``
+      (``importlib.util`` included) or ``runpy``, calling ``exec``,
+      ``eval``, ``__import__`` or ``import_module``, or touching
+      ``sys.modules`` (as ``sys.modules`` or ``from sys import modules``)."""
     found = []
     for node in ast.walk(ast.parse(source)):
+        line = f"{where}:{getattr(node, 'lineno', 0)}"
         if isinstance(node, ast.Import):
             names = [a.name for a in node.names]
         elif isinstance(node, ast.ImportFrom):
             if node.level > 1:
-                found.append(f"{where}:{node.lineno}: relative import climbs out of battery/")
+                found.append(f"{line}: relative import climbs out of battery/")
                 continue
             if node.level == 1:
                 continue  # from .x import y: inside battery/
             names = [node.module or ""]
+            if node.module == "sys" and any(a.name == "modules" for a in node.names):
+                found.append(f"{line}: sys.modules")
         elif isinstance(node, ast.Call):
             f = node.func
             name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
-            if name in ("import_module", "__import__"):
-                found.append(f"{where}:{node.lineno}: dynamic import")
+            if name in DYNAMIC_CALLS:
+                found.append(f"{line}: dynamic code ({name})")
+            continue
+        elif isinstance(node, ast.Attribute):
+            if node.attr == "modules" and getattr(node.value, "id", None) == "sys":
+                found.append(f"{line}: sys.modules")
             continue
         else:
             continue
         for n in names:
+            if _dynamic_module(n):
+                found.append(f"{line}: dynamic import machinery ({n})")
+                continue
             inside = n == "ohcamel_research.battery" or n.startswith("ohcamel_research.battery.")
             ours = n == "ohcamel_research" or n.startswith("ohcamel_research.")
             if ours and not inside and n not in ALLOWED_OUTSIDE:
-                found.append(f"{where}:{node.lineno}: imports {n}")
+                found.append(f"{line}: imports {n}")
     return found
 
 
@@ -75,8 +98,24 @@ def test_the_check_catches_every_way_out():
         "x:1: relative import climbs out of battery/"
     ]
     assert violations("import importlib\nimportlib.import_module('m')\n", "x") == [
-        "x:2: dynamic import"
+        "x:1: dynamic import machinery (importlib)",
+        "x:2: dynamic code (import_module)",
     ]
+    assert violations("import importlib.util\n", "x") == [
+        "x:1: dynamic import machinery (importlib.util)"
+    ]
+    assert violations("from importlib import util\n", "x") == [
+        "x:1: dynamic import machinery (importlib)"
+    ]
+    assert violations("from importlib.util import spec_from_file_location\n", "x") == [
+        "x:1: dynamic import machinery (importlib.util)"
+    ]
+    assert violations("import runpy\n", "x") == ["x:1: dynamic import machinery (runpy)"]
+    assert violations("exec('x = 1')\n", "x") == ["x:1: dynamic code (exec)"]
+    assert violations("y = eval('1')\n", "x") == ["x:1: dynamic code (eval)"]
+    assert violations("m = __import__('os')\n", "x") == ["x:1: dynamic code (__import__)"]
+    assert violations("import sys\nm = sys.modules['x']\n", "x") == ["x:2: sys.modules"]
+    assert violations("from sys import modules\n", "x") == ["x:1: sys.modules"]
     assert violations("from ohcamel_research.manifest import compute_verdict\n", "x") == []
     assert violations("from ohcamel_research.battery.gates import THRESHOLDS\n", "x") == []
     assert violations("from .gates import THRESHOLDS\n", "x") == []

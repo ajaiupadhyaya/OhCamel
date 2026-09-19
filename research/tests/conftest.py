@@ -48,7 +48,7 @@ holdout_window: {start: "2020-01-02", end: "2020-12-31"}
 stress_multipliers: [1, 2, 5]
 cost_sweep_bps_round_trip: [0, 5, 15, 30]
 bootstrap: {resamples: 1000, method: stationary_block}
-seed: 42
+seed: 7
 """
 
 # One strategy, no prior: the cheapest config the runner accepts.

@@ -27,10 +27,13 @@ and nothing earlier: ``holdout_returns`` refuses any other set of dates.
 **The gates.** DSR (fdq's ``deflated_sharpe``, unchanged), PSR, the
 bootstrap and the regimes read the walk-forward's out-of-sample series
 concatenated with the holdout series. PBO is fdq's CSCV over the selection
-window's configurations. The cost sweep re-evaluates ``selected_params`` at
-each round-trip level over the folds' test spans and the holdout, and never
-re-selects. Turnover and capacity come from each fold's own ``fold_params``
-backtest. The verdict is ``manifest.compute_verdict``'s, never a second copy.
+window's configurations, ported into ``pbo.py`` so that a flat column's
+Sharpe is 0 rather than a NaN ranked best (ruling 11c). The cost sweep
+re-evaluates, at each round-trip level, the series the gates read -- each
+fold's own ``fold_params`` over its test span, then ``selected_params`` over
+the holdout -- and never re-selects (ruling 11d). Turnover and capacity come
+from each fold's own ``fold_params`` backtest. The verdict is
+``manifest.compute_verdict``'s, never a second copy.
 
 **Every spread handed to fdq is doubled** (``FDQ_EXIT_SPREAD_CORRECTION``):
 fdq 1.0.0 books a full exit's half-spread to the ledger but not to equity,
@@ -56,7 +59,6 @@ from fdq.backtest.engine import BacktestConfig, BacktestResult, run_backtest
 from fdq.frictions.config import FrictionConfig, load_friction_config
 from fdq.strategies.benchmarks import build_strategy
 from fdq.validation.metrics import max_drawdown, sharpe
-from fdq.validation.pbo import probability_backtest_overfitting
 from fdq.validation.walkforward import (
     Fold,
     WalkForwardResult,
@@ -95,6 +97,7 @@ from ohcamel_research.battery.gates import (
     regime_gate,
     turnover,
 )
+from ohcamel_research.battery.pbo import probability_backtest_overfitting
 from ohcamel_research.manifest import (
     BATTERY_REL,
     DsrRecord,
@@ -153,6 +156,21 @@ SPREAD_NOTES = (
     "a round trip, halved per fill; the pre-registration governs",
     "the VIX widening (x1.5 above 25) on the whole round trip's spread is read on the entry "
     "day, not the exit day",
+)
+
+
+PBO_NOTE = (
+    "PBO: fdq's CSCV ported into battery/pbo.py with one change -- a zero-variance "
+    "column's Sharpe is 0.0, never NaN, in and out of sample (fdq's NaN sorted above every "
+    "number, so a configuration flat out of sample ranked best and read as not overfit)"
+)
+
+SWEEP_NOTE = (
+    "cost sweep: at each level, each fold's own fold_params over its test span and "
+    "selected_params over the holdout -- the series the gates read, re-evaluated with "
+    "parameters chosen at the base friction, never re-selected; sharpe_by_bps and "
+    "total_return_by_bps cover the joined series, holdout_sharpe_by_bps and "
+    "holdout_total_return_by_bps the holdout alone"
 )
 
 
@@ -576,7 +594,8 @@ def sweep_friction(base: FrictionConfig, level_bps: float) -> FrictionConfig:
 
 def evaluate_fixed(
     key: str,
-    params: Mapping[str, Any],
+    fold_params: Sequence[Mapping[str, Any]],
+    holdout_params: Mapping[str, Any],
     sel_bars: pd.DataFrame,
     folds: Sequence[Fold],
     hold_bars: pd.DataFrame,
@@ -586,23 +605,24 @@ def evaluate_fixed(
     macro: pd.DataFrame | None,
     seed: int,
 ) -> tuple[pd.Series, pd.Series]:
-    """``params`` -- already chosen, never chosen here -- re-run over each
-    fold's test span and over the holdout at ``friction``. Nothing in this
-    function compares configurations: it has one set of parameters and runs
-    it."""
+    """The series the gates read, rebuilt at ``friction`` from parameters
+    already chosen at the base friction and never chosen here: each fold's
+    own ``fold_params`` over its own test span (walk_forward's out-of-sample
+    construction), then ``holdout_params`` (``selected_params``) over the
+    holdout. Nothing in this function compares configurations."""
     macro = _require_macro(macro)
     parts = [
         run_backtest(
-            build_strategy(key, dict(params)),
+            build_strategy(key, dict(p)),
             sel_bars,
             BacktestConfig(starting_capital=tier, friction=friction, seed=seed),
             macro,
             f.test_start,
             f.test_end,
         ).returns
-        for f in folds
+        for f, p in zip(folds, fold_params, strict=True)
     ]
-    hold = holdout_returns(key, params, hold_bars, holdout, tier, friction, macro, seed)
+    hold = holdout_returns(key, holdout_params, hold_bars, holdout, tier, friction, macro, seed)
     return concat_oos(parts), hold
 
 
@@ -619,6 +639,7 @@ def _cost_sweep_gate(
     def at(level: float) -> pd.Series:
         oos, hold = evaluate_fixed(
             spec.key,
+            sel.wf.fold_params,
             sel.selected_params,
             sel.sel_bars,
             folds,
@@ -634,20 +655,34 @@ def _cost_sweep_gate(
 
     g = cost_sweep(at, cfg.cost_levels)
     total_by: dict[str, float] = {}
+    holdout_sharpe_by: dict[str, float] = {}
     holdout_by: dict[str, float] = {}
     for level, (oos, hold) in seen.items():
         joined = join_series(oos, hold, cfg.holdout.start)
         total_by[str(level)] = _compounded(joined)
+        holdout_sharpe_by[str(level)] = float(sharpe(hold))
         holdout_by[str(level)] = _compounded(hold)
     return replace(
         g,
         detail={
             **g.detail,
             "total_return_by_bps": total_by,
+            "holdout_sharpe_by_bps": holdout_sharpe_by,
             "holdout_total_return_by_bps": holdout_by,
-            "params": sel.selected_params,
+            "params": {
+                "folds": [dict(p) for p in sel.wf.fold_params],
+                "holdout": sel.selected_params,
+            },
             "reselected": False,
-            "spans": "each walk-forward fold's test span, then the holdout",
+            "covers": (
+                "sharpe_by_bps and total_return_by_bps: the joined series the gates read, "
+                "walk_forward_oos+holdout; holdout_sharpe_by_bps and "
+                "holdout_total_return_by_bps: the holdout alone"
+            ),
+            "spans": (
+                "each walk-forward fold's own fold_params over its test span, then "
+                "selected_params over the holdout; all chosen at the base friction"
+            ),
             "conversion": (
                 "spread_bps_default = the level in bps round trip x FDQ_EXIT_SPREAD_CORRECTION, "
                 "per-symbol table cleared, so the entry fill pays the whole level; "
@@ -797,6 +832,9 @@ def _manifest(
         "on a tie) over the whole selection window; each fold's own choice is in the dsr "
         "gate's detail as fold_params",
         *SPREAD_NOTES,
+        PBO_NOTE,
+        SWEEP_NOTE,
+        _coverage_note(sel.sel_bars.index, cfg.n_folds),
     ]
     if cfg.stress_multipliers is not None:
         notes.append(
@@ -869,6 +907,28 @@ def _plain(x: Any) -> Any:
 
 def _num(x: float) -> float | int:
     return int(x) if float(x).is_integer() else x
+
+
+def _coverage_note(index: pd.Index, n_folds: int) -> str:
+    """What walk_forward's out-of-sample series leaves out, stated from the
+    selection window's own bars: ``make_folds`` cuts ``n`` bars into
+    ``n_folds + 1`` blocks of ``n // (n_folds + 1)``; the first block only
+    ever trains, and the ``n mod (n_folds + 1)`` bars after the last block
+    fall in no fold's test span."""
+    idx = pd.DatetimeIndex(index)
+    n = len(idx)
+    block = n // (n_folds + 1)
+    left = n - (n_folds + 1) * block
+    if left:
+        tail = f"{idx[-left].date()}..{idx[-1].date()}" if left > 1 else f"{idx[-1].date()}"
+        tail_words = f"the last {left} ({tail}) fall in no fold's test span"
+    else:
+        tail_words = "no bar at the end is left out"
+    return (
+        f"walk-forward coverage: {n} selection bars in {n_folds + 1} blocks of {block}; the "
+        f"first {block} ({idx[0].date()}..{idx[block - 1].date()}) only train, and "
+        f"{tail_words}; each fold's out-of-sample backtest restarts in cash and re-enters"
+    )
 
 
 def _summary(s: pd.Series) -> dict[str, Any]:
@@ -973,8 +1033,10 @@ __all__ = [
     "DSR_UNIT",
     "FDQ_EXIT_SPREAD_CORRECTION",
     "NONE_MEASURED",
+    "PBO_NOTE",
     "RETURNS_SERIES",
     "SPREAD_NOTES",
+    "SWEEP_NOTE",
     "Evaluation",
     "RunRefused",
     "Selection",

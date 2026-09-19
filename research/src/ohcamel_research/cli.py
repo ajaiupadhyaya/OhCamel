@@ -130,14 +130,18 @@ def battery_run(experiment_dir: Path) -> None:
     everything else from battery/, so every line the verdict depends on is
     hashed into the manifests. Refuses to start on an uncommitted battery.
     """
-    from ohcamel_research.battery.config import ConfigError  # fdq import is slow
-    from ohcamel_research.battery.run import describe_measure, run
+    from ohcamel_research.battery.run import describe_measure, run  # fdq import is slow
     from ohcamel_research.manifest import manifest_path
 
     try:
         manifests = run(experiment_dir, write=True)
-    except (ConfigError, ProvenanceError, RuntimeError) as e:
-        raise click.ClickException(str(e)) from e
+    except (ValueError, RuntimeError) as e:
+        # A refusal (ConfigError is a ValueError; RunRefused, ProvenanceError
+        # and the committed-battery check are RuntimeErrors) is one clean
+        # line and exit status 1, never a traceback. Anything else is a bug,
+        # and keeps its traceback.
+        lines = [line.strip() for line in str(e).splitlines() if line.strip()]
+        raise click.ClickException("refused: " + "; ".join(lines or [type(e).__name__])) from e
     for m in manifests:
         click.echo(f"{m.slug}: {m.verdict_line}")
         click.echo(
