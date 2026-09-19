@@ -278,18 +278,59 @@ let test_cornish_fisher_three_term () =
   Alcotest.check (Alcotest.float 1e-12) "matches the library's formula" expected_z_cf
     (RM.cornish_fisher_z ~z ~skew:g1 ~excess_kurtosis:g2)
 
-(* Heavy positive skew with no offsetting kurtosis breaks monotonicity: the
-   -g1^2 term grows as z^3 while the g1 term only grows as z^2, so past some
-   |z| the expansion's derivative turns negative. The derivative is
-     1 + z*g1/3 + (z^2-1)*g2/8 - (6z^2-5)*g1^2/36
-   which at z = 4, g1 = 3, g2 = 0 is
-     1 + 4*3/3 + 0 - (6*16-5)*9/36 = 1 + 4 - 91*9/36 = 5 - 22.75 = -17.75
-   sharply negative, so the sampled expansion must fail to rise between its
-   last two of the 801 points (z = 3.99 and z = 4.0). *)
+(* Zero skew and kurtosis: the closed-form quadratic A*z^2+B*z+C collapses to
+   A=0, B=0, C=1, a constant 1 at every z, so the minimum over [-4,4] is 1,
+   strictly positive -- monotone. *)
+let test_cornish_fisher_monotone_at_zero () =
+  Alcotest.(check bool)
+    "zero skew and kurtosis is monotone" true
+    (RM.cornish_fisher_is_monotone ~skew:0.0 ~excess_kurtosis:0.0)
+
+(* Heavy positive skew with no offsetting kurtosis breaks monotonicity.
+   g1 = 3, g2 = 0:
+     A = g2/8 - g1^2/6 = 0 - 9/6       = -1.5     (<= 0, minimum at an endpoint)
+     B = g1/3           = 1
+     C = 1 - g2/8 + 5g1^2/36 = 1 + 45/36 = 2.25
+     f(-4) = 16A - 4B + C = -24 - 4 + 2.25  = -25.75
+     f(4)  = 16A + 4B + C = -24 + 4 + 2.25  = -17.75
+   both negative, so the minimum over [-4, 4] is negative and the expansion
+   is not monotone there. *)
 let test_cornish_fisher_not_monotone () =
   Alcotest.(check bool)
     "skew 3, excess kurtosis 0 is not monotone on [-4, 4]" false
     (RM.cornish_fisher_is_monotone ~skew:3.0 ~excess_kurtosis:0.0)
+
+(* The reviewer's counterexample. A grid sampled every 0.01 across [-4, 4]
+   called this monotone, because the violation is a shallow dip -- on the
+   order of 1e-5 deep -- far smaller than a value difference that grid can
+   resolve reliably against floating-point noise. The closed form finds it
+   exactly, by locating the quadratic's actual vertex rather than sampling
+   near it.
+     g1 = 1.6896, g2 = 10.40274.  g1^2 = 1.6896^2 = 2.85474816 exactly
+     (1.6896 has 4 decimal digits, so its square is an exact 8-digit decimal).
+     A = g2/8 - g1^2/6 = 1.3003425 - 0.47579136 = 0.82455114      (> 0)
+     B = g1/3 = 0.5632
+     C = 1 - g2/8 + 5*g1^2/36 = 1 - 1.3003425 + 0.3964928 = 0.0961503
+     vertex = -B/(2A) = -0.5632 / 1.64910228 ~= -0.341519, inside [-4, 4]
+     minimum = C - B^2/(4A) = 0.0961503 - 0.31719424/3.29820456
+             ~= 0.0961503 - 0.0961718 ~= -0.0000215
+   negative (on the order of -1e-5, as the reviewer found), so the closed
+   form must reject monotonicity here even though it barely misses. *)
+let test_cornish_fisher_reviewer_counterexample () =
+  let g1 = 1.6896 and g2 = 10.40274 in
+  let a = (g2 /. 8.0) -. (g1 *. g1 /. 6.0) in
+  let b = g1 /. 3.0 in
+  let c = 1.0 -. (g2 /. 8.0) +. (5.0 *. g1 *. g1 /. 36.0) in
+  Alcotest.(check bool) "the quadratic opens upward here" true (Float.( > ) a 0.0);
+  let vertex = -.b /. (2.0 *. a) in
+  if not (Float.( >= ) vertex (-4.0) && Float.( <= ) vertex 4.0) then
+    Alcotest.failf "expected the vertex %f to fall inside [-4, 4]" vertex;
+  let minimum = c -. (b *. b /. (4.0 *. a)) in
+  if not (Float.( < ) minimum 0.0) then
+    Alcotest.failf "expected a negative minimum derivative, got %.9f" minimum;
+  Alcotest.(check bool)
+    "the closed form rejects a violation a coarse grid would miss" false
+    (RM.cornish_fisher_is_monotone ~skew:g1 ~excess_kurtosis:g2)
 
 (* Below 120 observations there is not enough data to trust a third and
    fourth moment estimate at all, so the function refuses outright. This
@@ -341,6 +382,82 @@ let test_cornish_fisher_var_matches_parametric_when_normal () =
   | Ok v ->
       Alcotest.check (Alcotest.float 1e-12) "matches the parametric estimate" expected v
 
+(* A single non-finite observation must never reach a mean, moment or
+   quantile computation: nan and infinity both propagate through arithmetic
+   silently rather than raising, so without an explicit check
+   cornish_fisher_var would otherwise return [Ok nan] here -- a number that
+   looks like an ordinary, if strange, VaR figure. 130 observations
+   (comfortably above the 120 floor) alternating so the series is
+   unambiguously not flat, with one swapped to nan: the refusal is solely
+   about finiteness. *)
+let test_cornish_fisher_var_refuses_non_finite () =
+  let xs = Array.init 130 ~f:(fun i -> if i % 2 = 0 then 0.01 else -0.01) in
+  xs.(64) <- Float.nan;
+  (match RM.cornish_fisher_var ~returns:xs ~confidence:0.95 with
+  | Error msg ->
+      if not (String.is_substring msg ~substring:"1 of 130") then
+        Alcotest.failf
+          "expected the Error to name 1 of 130 non-finite observations, got %s" msg
+  | Ok v -> Alcotest.failf "expected Error for a nan observation, got Ok %f" v);
+  (* The count is genuinely counted, not merely "is there one" -- a nan and
+     two infinities together must be named as three. *)
+  let ys = Array.init 130 ~f:(fun i -> if i % 2 = 0 then 0.01 else -0.01) in
+  ys.(10) <- Float.nan;
+  ys.(20) <- Float.infinity;
+  ys.(30) <- Float.neg_infinity;
+  match RM.cornish_fisher_var ~returns:ys ~confidence:0.95 with
+  | Error msg ->
+      if not (String.is_substring msg ~substring:"3 of 130") then
+        Alcotest.failf
+          "expected the Error to name 3 of 130 non-finite observations, got %s" msg
+  | Ok v -> Alcotest.failf "expected Error for non-finite observations, got Ok %f" v
+
+(* cornish_fisher_var's non-monotone refusal, tested end to end from a real
+   returns series rather than from hand-picked (skew, kurtosis) parameters --
+   using the already-derived [1;2;3;10] moments (g1 = 1.018234, g2 = -0.7696),
+   tiled 30 times to reach the 120-observation floor with the population
+   moments unchanged (see test_skewness_and_kurtosis and
+   test_cornish_fisher_var_matches_parametric_when_normal for why tiling
+   preserves them).
+
+   Correct assignment (skew = g1, excess_kurtosis = g2):
+     A = g2/8 - g1^2/6 = -0.0962 - 0.172800 = -0.269000      (<= 0)
+     B = g1/3 = 0.339411
+     C = 1 - g2/8 + 5g1^2/36 = 1.0962 + 0.144000 = 1.240200
+     f(-4) = 16A - 4B + C = -4.304 - 1.357644 + 1.2402 = -4.421444
+     f(4)  = 16A + 4B + C = -4.304 + 1.357644 + 1.2402 = -1.706156
+   both negative: not monotone.
+
+   This series is chosen, not merely skewed, so that this test kills a
+   mutant that swaps g1 and g2 at cornish_fisher_var's call site. Swapped
+   (skew = g2, excess_kurtosis = g1) evaluates a *different*, and here
+   monotone, quadratic:
+     A' = g1/8 - g2^2/6 = 0.127279 - 0.098699 = 0.028580     (> 0)
+     B' = g2/3 = -0.256533
+     C' = 1 - g1/8 + 5g2^2/36 = 0.872721 + 0.082249 = 0.954970
+     vertex' = -B'/(2A') ~= 4.489, outside [-4, 4], so the minimum on the
+     interval is at z = 4:
+     f'(4) = 16A' + 4B' + C' = 0.45728 - 1.026132 + 0.954970 = 0.386118
+   positive: monotone. So a mutant swap would make cornish_fisher_var return
+   Ok here instead of Error, and the assertions below catch that directly:
+   first on the pure function with the real computed moments in both
+   orders, then end to end through cornish_fisher_var itself. *)
+let test_cornish_fisher_var_not_monotone () =
+  let pattern = [| 1.; 2.; 3.; 10. |] in
+  let returns = Array.concat (List.init 30 ~f:(fun _ -> pattern)) in
+  let g1 = RM.skewness returns and g2 = RM.excess_kurtosis returns in
+  Alcotest.(check bool)
+    "the correct assignment (skew, excess kurtosis) is not monotone" false
+    (RM.cornish_fisher_is_monotone ~skew:g1 ~excess_kurtosis:g2);
+  Alcotest.(check bool)
+    "the swapped assignment (excess kurtosis as skew, skew as excess kurtosis) stays \
+     monotone"
+    true
+    (RM.cornish_fisher_is_monotone ~skew:g2 ~excess_kurtosis:g1);
+  match RM.cornish_fisher_var ~returns ~confidence:0.95 with
+  | Error _ -> ()
+  | Ok v -> Alcotest.failf "expected Error for a non-monotone expansion, got Ok %f" v
+
 let suite =
   ( "risk_metrics",
     [
@@ -374,12 +491,22 @@ let suite =
         test_cornish_fisher_z_no_correction;
       Alcotest.test_case "cornish-fisher z three-term case" `Quick
         test_cornish_fisher_three_term;
+      Alcotest.test_case "cornish-fisher expansion is monotone at zero skew and kurtosis"
+        `Quick test_cornish_fisher_monotone_at_zero;
       Alcotest.test_case "cornish-fisher expansion rejects heavy skew" `Quick
         test_cornish_fisher_not_monotone;
+      Alcotest.test_case
+        "cornish-fisher closed form catches the reviewer's counterexample" `Quick
+        test_cornish_fisher_reviewer_counterexample;
       Alcotest.test_case "cornish-fisher VaR refuses too few observations" `Quick
         test_cornish_fisher_var_too_few_observations;
       Alcotest.test_case "cornish-fisher VaR refuses a flat series" `Quick
         test_cornish_fisher_var_flat_series;
       Alcotest.test_case "cornish-fisher VaR matches the parametric estimate when normal"
         `Quick test_cornish_fisher_var_matches_parametric_when_normal;
+      Alcotest.test_case "cornish-fisher VaR refuses non-finite observations" `Quick
+        test_cornish_fisher_var_refuses_non_finite;
+      Alcotest.test_case
+        "cornish-fisher VaR non-monotone refusal through the VaR function" `Quick
+        test_cornish_fisher_var_not_monotone;
     ] )

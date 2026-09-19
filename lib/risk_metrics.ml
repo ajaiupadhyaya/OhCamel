@@ -288,35 +288,66 @@ let cornish_fisher_z ~z ~skew ~excess_kurtosis =
 (* The expansion is a valid quantile transform only where it strictly
    increases in z: past that point, a larger standard-normal quantile could
    map to a *smaller* Cornish-Fisher one, which is incoherent for anything
-   read as a quantile. Checked at 801 evenly spaced points across [-4, 4] --
-   comfortably past where any confidence level used here lands -- by
-   confirming the sampled values themselves rise from each point to the
-   next. A skew/kurtosis combination that turns the cubic non-monotone
-   inside that band is caught here rather than silently inverting a tail. *)
+   read as a quantile.
+
+   Decided in closed form, not by sampling a grid: a grid can miss a
+   violation narrower than its spacing, and the reviewer's counterexample
+   test below is exactly such a case. The derivative of [cornish_fisher_z]
+   with respect to z is
+     1 + z*g1/3 + (z^2-1)*g2/8 - (6z^2-5)*g1^2/36
+   Expanding (z^2-1)*g2/8 as z^2*g2/8 - g2/8, and -(6z^2-5)*g1^2/36 as
+   -z^2*g1^2/6 + 5*g1^2/36, and collecting powers of z, this is the
+   quadratic A*z^2 + B*z + C with
+     A = g2/8 - g1^2/6
+     B = g1/3
+     C = 1 - g2/8 + 5*g1^2/36
+
+   The expansion is strictly increasing on [-4, 4] iff this quadratic's
+   minimum over that interval is strictly positive. A downward-opening or
+   linear quadratic (A <= 0) attains its minimum over a closed interval at
+   an endpoint, never in the interior. An upward-opening one (A > 0) is
+   minimised at its vertex -B/(2A) when that vertex falls inside the
+   interval; otherwise it is monotonic across the interval and, like every
+   A <= 0 case, its minimum there is at an endpoint. Evaluating both
+   endpoints, plus the vertex when A > 0 and the vertex lies in [-4, 4],
+   covers every case exactly. *)
 let cornish_fisher_is_monotone ~skew ~excess_kurtosis =
-  let n = 801 in
+  let g1 = skew and g2 = excess_kurtosis in
+  let a = (g2 /. 8.0) -. (g1 *. g1 /. 6.0) in
+  let b = g1 /. 3.0 in
+  let c = 1.0 -. (g2 /. 8.0) +. (5.0 *. g1 *. g1 /. 36.0) in
+  let f z = (a *. z *. z) +. (b *. z) +. c in
   let lo = -4.0 and hi = 4.0 in
-  let step = (hi -. lo) /. float_of_int (n - 1) in
-  let z_at i = lo +. (float_of_int i *. step) in
-  let rec loop i previous =
-    if i >= n then true
-    else
-      let value = cornish_fisher_z ~z:(z_at i) ~skew ~excess_kurtosis in
-      if Float.( <= ) value previous then false else loop (i + 1) value
+  let candidates = [ f lo; f hi ] in
+  let candidates =
+    if Float.( > ) a 0.0 then
+      let vertex = -.b /. (2.0 *. a) in
+      if Float.( >= ) vertex lo && Float.( <= ) vertex hi then f vertex :: candidates
+      else candidates
+    else candidates
   in
-  loop 1 (cornish_fisher_z ~z:(z_at 0) ~skew ~excess_kurtosis)
+  Float.( > ) (List.fold candidates ~init:Float.infinity ~f:Float.min) 0.0
 
 (* Cornish-Fisher VaR for a single return series: the same zero-mean,
    population-sigma convention [portfolio_parametric_var] uses, with the
    normal quantile replaced by its skew/kurtosis-corrected counterpart.
-   [Error], never a number that merely looks plausible, in the three cases
-   the expansion cannot be trusted: too little data to estimate a third and
-   fourth moment at all, a series with no variation to standardise by, or a
-   moment combination that makes the expansion non-monotone. *)
+   [Error], never a number that merely looks plausible, in the four cases
+   the expansion cannot be trusted: a non-finite observation (which would
+   otherwise poison every downstream moment silently, since nan and
+   infinity propagate through arithmetic without raising), too little data
+   to estimate a third and fourth moment at all, a series with no variation
+   to standardise by, or a moment combination that makes the expansion
+   non-monotone. *)
 let cornish_fisher_var ~returns ~confidence =
   validate_confidence ~confidence;
   let n = Array.length returns in
-  if n < 120 then
+  let non_finite = Array.count returns ~f:(fun x -> not (Float.is_finite x)) in
+  if non_finite > 0 then
+    Error
+      (Printf.sprintf
+         "risk_metrics: cornish_fisher_var: %d of %d observations are not finite"
+         non_finite n)
+  else if n < 120 then
     Error
       (Printf.sprintf
          "risk_metrics: cornish_fisher_var needs at least 120 observations, got %d" n)
