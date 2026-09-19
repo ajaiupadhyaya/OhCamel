@@ -79,9 +79,9 @@ type t = {
    That made the module correct only alongside the one process that read the
    replay file and called [of_dates] -- fine for Alpha's single core binary,
    wrong for a module that must stay pure here. So [Clock.t] here holds
-   exactly the two projections R3 and R4 read -- the latest bar date, and a
-   function counting how many recorded bars fall after a given date -- and
-   nothing else. Task 14 builds it from the journal's [sessions] table, whose
+   exactly the three facts R3 and R4 read -- the earliest and latest bar
+   dates, and a function counting how many recorded bars fall after a given
+   date -- and nothing else. Task 14 builds it from the journal's [sessions] table, whose
    rows are the closes the desk has recorded; this module never needs to know
    that table, or a raw date list, exists.
 
@@ -233,11 +233,12 @@ let r7 (universe : universe) s =
   let outside =
     List.find s.targets ~f:(fun t -> not (List.mem universe t.symbol ~equal:symbol_equal))
   in
-  (* Written positively -- "not (<= 1.0)" rather than "> 1.0" -- because
-     every ordering comparison against NaN is false: a NaN or infinite
-     weight satisfies neither [<= 1.0] nor [> 1.0], so the negative form is
-     the one that still catches it. |w| <= 1 is R7's rule as
-     interface/README.md states it, and NaN is not <= anything. *)
+  (* Both bounds are written as "not (x <= bound)" rather than "x > bound",
+     because every ordering comparison against NaN is false: "NaN > 1" is
+     false and would accept it, while "not (NaN <= 1)" is true and rejects
+     it. Either check alone rejects a NaN weight (the per-weight one first);
+     an infinite weight fails the per-weight check too. |w| <= 1 is R7's
+     rule as interface/README.md states it, and NaN is not <= anything. *)
   let over = List.find s.targets ~f:(fun t -> not Float.(abs t.weight <= 1.0)) in
   match (outside, over) with
   | Some t, _ ->

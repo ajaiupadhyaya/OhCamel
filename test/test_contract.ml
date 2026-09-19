@@ -10,8 +10,8 @@
      test_rules.ml) rather than opening the desk library wholesale.
    - Alpha's "clock" group tested Clock.of_dates/age/length directly -- an
      API this module no longer has, since the clock is now a parameter built
-     from just the two projections (latest_bar, bars_after) that R3 and R4
-     read (see contract.mli). That group is dropped; [clock] below builds
+     from the three facts (earliest_bar, latest_bar, bars_after) that R3 and
+     R4 read (see contract.mli). That group is dropped; [clock] below builds
      the same four-date clock through the new Clock.create, and the R4
      boundary and staleness cases already ported below exercise
      [bars_after] exactly as Alpha's "clock" group exercised [age].
@@ -78,6 +78,29 @@ let clock =
   Contract.Clock.create ~earliest_bar:(List.hd_exn clock_dates)
     ~latest_bar:(List.last_exn clock_dates) ~bars_after:(fun d ->
       List.count clock_dates ~f:(fun x -> Date.( > ) x d))
+
+(* A longer clock, so R4's age check is reached: with [clock] above, every
+   as_of older than max_age is also before its earliest bar and fails there
+   first. Eight trading days around Christmas 2020 (the 25th is a holiday):
+   the 24th has four bars after it (28, 29, 30, 31), one past max_age = 3;
+   the 28th has three, exactly max_age. *)
+let long_clock_dates =
+  List.map ~f:Date.of_string
+    [
+      "2020-12-21";
+      "2020-12-22";
+      "2020-12-23";
+      "2020-12-24";
+      "2020-12-28";
+      "2020-12-29";
+      "2020-12-30";
+      "2020-12-31";
+    ]
+
+let long_clock =
+  Contract.Clock.create ~earliest_bar:(List.hd_exn long_clock_dates)
+    ~latest_bar:(List.last_exn long_clock_dates) ~bars_after:(fun d ->
+      List.count long_clock_dates ~f:(fun x -> Date.( > ) x d))
 
 let registry : Contract.registry =
   { strategies = [ "ma_crossover" ]; last_sequence = [ ("ma_crossover", 5) ] }
@@ -264,8 +287,20 @@ let suite =
           expect_rule Contract.Rule.R2 (judge (doc ~strategy:"nobody" ())));
       t "R3: as_of after the latest bar" (fun () ->
           expect_rule Contract.Rule.R3 (judge (doc ~as_of:"2021-01-04" ())));
-      t "R4: one bar past max_age" (fun () ->
+      t "R4: an as_of before the clock's history" (fun () ->
           expect_rule Contract.Rule.R4 (judge (doc ~as_of:"2020-12-24" ())));
+      t "R4: one bar past max_age, inside the clock's history" (fun () ->
+          match judge_with_clock long_clock (doc ~as_of:"2020-12-24" ()) with
+          | Contract.Rejected (Contract.Rule.R4, why) ->
+              Alcotest.(check bool)
+                (sprintf "the age check, not the history check: %s" why)
+                true
+                (String.is_substring why ~substring:"is 4 bars old")
+          | Contract.Rejected (r, why) ->
+              Alcotest.failf "expected R4, got %s: %s" (Contract.Rule.to_string r) why
+          | Contract.Accepted _ -> Alcotest.fail "expected R4, got ACCEPT");
+      t "R4 boundary: exactly max_age bars old, inside the clock's history" (fun () ->
+          expect_accept (judge_with_clock long_clock (doc ~as_of:"2020-12-28" ())));
       t "R5: a replayed sequence" (fun () ->
           expect_rule Contract.Rule.R5 (judge (doc ~seq:5 ())));
       t "R5: an ancient sequence" (fun () ->
