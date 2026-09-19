@@ -29,7 +29,12 @@
    ((symbol NVDA) (sector TECH)       (qty 60.0))
    ((symbol JPM)  (sector FINANCIALS) (qty 250.0))
    ((symbol XOM)  (sector ENERGY)     (qty -500.0))
-   ((symbol CVX)  (sector ENERGY)     (qty -300.0))))
+   ((symbol CVX)  (sector ENERGY)     (qty -300.0))
+   ; SPY and TLT are here, at zero, because the signals block below trades
+   ; nothing else: a signal may name only a symbol the book declares (R7).
+   ; On a host with a paper key the account says what is held; here, nothing.
+   ((symbol SPY)  (sector INDEX)      (qty 0.0))
+   ((symbol TLT)  (sector TREASURIES) (qty 0.0))))
  (limits
   (((name aapl-cap)   (scope (Instrument AAPL))  (kind (Gross_notional 150000.0)))
    ((name nvda-cap)   (scope (Instrument NVDA))  (kind (Gross_notional 60000.0)))
@@ -113,4 +118,41 @@
    (duplicate_window_s 10.0)
    (max_open_orders 20)
    (spread_bps_default 5.0)
-   (spread_bps ()))))
+   (spread_bps ())))
+
+ ; ---------------------------------------------------------------------------
+ ; Phase A3: signals. OPTIONAL -- omit this block and the desk registers no
+ ; strategy and reads no signal file. That is the default.
+ ;
+ ; With this block present and OHCAMEL_SIGNALS_DIR naming a directory, the
+ ; desk reads that directory's *.json files once a minute, judges each against
+ ; the signal contract's rules R1-R7 (interface/README.md), and records every
+ ; judgement in its journal: accepted, advisory, or rejected with the rule
+ ; named. R8, the data hash, is not enforced. The research service writes the
+ ; files; the desk trusts none of their timing.
+ ;
+ ;   name              the signal's `strategy` slug, as the research service
+ ;                     writes it: ^[a-z][a-z0-9_]{1,63}$
+ ;   symbols           the only names this strategy may target, each one in
+ ;                     the positions above. A signal naming any other is
+ ;                     rejected.
+ ;   max_age           R4: how many recorded sessions old a signal may be.
+ ;   sizing            advisory | live. Advisory, the default, shows a passing
+ ;                     signal with its weights and never sizes it. Only live
+ ;                     is sized.
+ ;   capital_fraction  the share of equity the strategy's weights apply to, in
+ ;                     (0, 1]. The live strategies' fractions may sum to at
+ ;                     most 1.
+ ;
+ ; Both strategies ship advisory. Promoting one to live is the owner's
+ ; decision, made after reading its manifest
+ ; (research/experiments/EXP-A01/manifest.<name>.json), and no code makes it.
+ ; Promotion also needs the desk's max_order_notional to be at least the
+ ; strategy's largest target order: at $100k of equity and a fraction of 0.5
+ ; that is about $50k, against the default of $25k above. Leave it lower and
+ ; the notional rule refuses every rebalance -- visibly, on the page, but
+ ; every one.
+ (signals
+  ((strategies
+    (((name exp_a01_spy) (symbols (SPY)) (max_age 3) (sizing advisory) (capital_fraction 0.5))
+     ((name exp_a01_tlt) (symbols (TLT)) (max_age 3) (sizing advisory) (capital_fraction 0.5)))))))

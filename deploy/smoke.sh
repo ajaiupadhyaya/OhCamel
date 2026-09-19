@@ -25,14 +25,15 @@ EXPECT_SHA=""
 # The routes, as this suite knows them. The 404 body lists lib/server.ml's
 # `routes` table, the one the dispatcher is generated from, and then the
 # extensions the process was created with, in the order given -- the desk's
-# eight routes, on both hosts: /api/desk, then tca, sessions, preview, orders,
+# nine routes, on both hosts: /api/desk, then tca, sessions, preview, orders,
 # cancel, kill and kill/reset under it (the last four answer 405 on the demo
-# host, and are listed there all the same). This string is that list's shadow:
+# host, and are listed there all the same), then /api/research, the signal
+# intake's strategies and judgements. This string is that list's shadow:
 # a shell script cannot read OCaml, so it carries the list and asserts the 404
 # body equals it, in order. Adding a route or an extension means adding it here
 # in the same commit -- the assertion fails until you do, which is the point of
 # having it.
-EXPECTED_ROUTES="/ /ops /argument /risk /execution /api/snapshot /api/health /api/stream /api/history /api/stress /api/graph /api/heat /api/reports /api/reports/garch /api/ops /api/desk /api/desk/tca /api/desk/sessions /api/desk/preview /api/desk/orders /api/desk/cancel /api/desk/kill /api/desk/kill/reset"
+EXPECTED_ROUTES="/ /ops /argument /risk /execution /api/snapshot /api/health /api/stream /api/history /api/stress /api/graph /api/heat /api/reports /api/reports/garch /api/ops /api/desk /api/desk/tca /api/desk/sessions /api/desk/preview /api/desk/orders /api/desk/cancel /api/desk/kill /api/desk/kill/reset /api/research"
 
 # The first bare argument is the base URL; everything else is a flag. Written
 # out rather than clever, because a smoke script that misparses its own

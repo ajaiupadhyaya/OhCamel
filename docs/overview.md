@@ -43,7 +43,7 @@ The prices are real. The portfolio is not.
 | Stock prices (live host) | Alpaca's market-data websocket on the IEX feed, with a REST backfill for history | Yes |
 | Macro factor | FRED: the daily change in the 10-year Treasury yield (`DGS10`) | Yes |
 | Crisis backtests | Adjusted daily closes from Yahoo Finance, committed under [`crisis/`](crisis/) | Yes |
-| Positions | [`book.example.sexp`](../book.example.sexp): long AAPL, MSFT, NVDA and JPM, short XOM and CVX, $1M cash | No. It is an example book |
+| Positions | [`book.example.sexp`](../book.example.sexp): long AAPL, MSFT, NVDA and JPM, short XOM and CVX, SPY and TLT held at zero for the signal strategies, $1M cash | No. It is an example book |
 | Public demo | A generated feed, so it runs with no keys and outside market hours | No, on purpose |
 | Options | A generated volatility surface, labelled synthetic wherever it prints | No, and switched off in live mode |
 
@@ -195,6 +195,7 @@ recomputed.
 | `POST /api/desk/cancel` | Cancel one open order (live host only) |
 | `POST /api/desk/kill` | Halt the desk, answer, then cancel every open order (live host only) |
 | `POST /api/desk/kill/reset` | Lift the halt; the body must say `{"confirm":"reset"}` (live host only) |
+| `GET /api/research` | The registered signal strategies, each one's latest judgement, and that R8 (data hash) is not enforced; the demo registers none |
 
 Four routes change the desk -- orders, cancel, kill and its reset -- on the
 live host only, and only for a request carrying the page's header and either
@@ -217,7 +218,7 @@ may send one); on the public demo each answers 405.
 
 ## How it's checked
 
-- **521 tests**, plus seventeen scheduler cases in `test/desk_async`, all
+- **544 tests**, plus eighteen scheduler cases in `test/desk_async`, all
   hermetic: no network, no credentials, no waiting on a clock -- the
   scheduler's cases move a clock of their own. Expected values are derived by
   hand beside each assertion, and each suite checks its own count against

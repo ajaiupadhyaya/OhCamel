@@ -1310,6 +1310,87 @@ let test_a_raising_restore_idles_fill_read_and_a_later_read_still_runs () =
   Graph.destroy f.graph;
   return ()
 
+(* The intake's minute loop: a pass that raises is logged, and the next one
+   still runs. The signals directory is removed before the first pass, so
+   listing it raises -- the real failure of a volume that goes away -- and
+   restored, with a signal in it, before the second. The loop waits on the
+   case's clock: at t0 the first pass, at t0 + 60 s the second. *)
+let test_a_raising_pass_is_logged_and_the_next_still_runs () =
+  let clock = Time_source.create ~now:t0 () in
+  let journal = Or_error.ok_exn (D.Journal.open_ ~path:":memory:") in
+  D.Journal.record_session journal
+    {
+      D.Journal.Session.date = Date.of_string "2026-09-11";
+      equity_close = 100_000.0;
+      cash_close = 100_000.0;
+      gross_close = 0.0;
+      net_close = 0.0;
+      recorded_at = t0;
+    };
+  let dir = Filename_unix.temp_dir "ohcamel-signals-" "" in
+  let events = Queue.create () in
+  let intake =
+    D.Intake.create ~journal ~dir
+      ~strategies:
+        [
+          {
+            Ohcamel.Config.Book.Signals_spec.Strategy.name = "exp_a01_spy";
+            symbols = [ "SPY" ];
+            max_age = 3;
+            sizing = Ohcamel.Config.Book.Signals_spec.Advisory;
+            capital_fraction = 0.5;
+          };
+        ]
+      ~universe:[ Symbol.of_string "SPY" ]
+      ~on_event:(Queue.enqueue events)
+      ~now:(fun () -> Time_source.now clock)
+  in
+  Core_unix.rmdir dir;
+  don't_wait_for (D.Intake.run ~time_source:(Time_source.read_only clock) intake);
+  let%bind () = settle () in
+  Alcotest.(check int)
+    "the first pass raised, and said so" 1
+    (Queue.count events ~f:(String.is_substring ~substring:"a pass raised"));
+  Alcotest.(check bool)
+    "and completed nothing" true
+    (Option.is_none (D.Intake.last_pass intake));
+  Core_unix.mkdir dir;
+  let zeros = "sha256:" ^ String.make 64 '0' in
+  Out_channel.write_all
+    (Filename.concat dir "exp_a01_spy-2026-09-11.json")
+    ~data:
+      (sprintf
+         {|{"schema_version":1,"strategy":"exp_a01_spy","params_hash":"%s","as_of":"2026-09-11","computed_at":"2026-09-11T23:15:00Z","data_hash":"%s","sequence":20260911,"validation":{"status":"pass","gates_version":"2026-09-02"},"targets":[{"symbol":"SPY","weight":1.0}]}|}
+         zeros zeros);
+  (* 14:00:00 + 60 s - 1 ns: the second pass has not run *)
+  let%bind () =
+    Time_source.advance_by_alarms ~wait_for:settle clock
+      ~to_:(Time_ns.add t0 Time_ns.Span.(of_sec 60.0 - nanosecond))
+  in
+  let%bind () = settle () in
+  Alcotest.(check bool)
+    "1 ns short of a minute: not yet judged" true
+    (Option.is_none (D.Journal.signal journal ~strategy:"exp_a01_spy" ~sequence:20260911));
+  (* 14:01:00 *)
+  let%bind () =
+    Time_source.advance_by_alarms ~wait_for:settle clock
+      ~to_:(Time_ns.add t0 (Time_ns.Span.of_sec 60.0))
+  in
+  let%bind () = settle () in
+  Alcotest.(check (option string))
+    "a minute on, the loop ran again and judged the file" (Some "advisory")
+    (Option.map (D.Journal.signal journal ~strategy:"exp_a01_spy" ~sequence:20260911)
+       ~f:(fun s -> D.Journal.Signal.Verdict.to_string s.D.Journal.Signal.verdict));
+  Alcotest.(check (option string))
+    "and its pass completed at 14:01"
+    (Some (D.Desk_time.rfc3339 (Time_ns.add t0 (Time_ns.Span.of_sec 60.0))))
+    (Option.map (D.Intake.last_pass intake) ~f:D.Desk_time.rfc3339);
+  Array.iter (Sys_unix.readdir dir) ~f:(fun name ->
+      Core_unix.unlink (Filename.concat dir name));
+  Core_unix.rmdir dir;
+  D.Journal.close journal;
+  return ()
+
 let suites =
   [
     ( "transport",
@@ -1350,6 +1431,11 @@ let suites =
       [
         case "a raising restore idles fill_read, and a later read still runs"
           test_a_raising_restore_idles_fill_read_and_a_later_read_still_runs;
+      ] );
+    ( "intake",
+      [
+        case "a raising pass is logged, and the next still runs"
+          test_a_raising_pass_is_logged_and_the_next_still_runs;
       ] );
   ]
 

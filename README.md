@@ -1112,11 +1112,11 @@ deploy user alone, and reach the container as environment, never as a layer.
 
 ## What's verified
 
-`make test` runs 521 tests, plus seventeen in `test/desk_async` that run with the
-scheduler -- the order manager's cases, the transport's bound and that
-suite's own count -- all hermetic — no network, no credentials, and nothing
-that waits on the wall clock: the scheduler's cases move a clock of their
-own. They cover the numerics against hand-computed values, the wire format,
+`make test` runs 544 tests, plus eighteen in `test/desk_async` that run with the
+scheduler -- the order manager's cases, the transport's bound, the signal
+intake's minute loop and that suite's own count -- all hermetic — no network,
+no credentials, and nothing that waits on the wall clock: the scheduler's cases
+move a clock of their own. They cover the numerics against hand-computed values, the wire format,
 the alerting state machine, and the recomputation counts that make the
 graph's shape an assertion rather than a claim.
 
@@ -1416,6 +1416,7 @@ Then the order is written to the journal as `pending_submit` **before** the requ
 | `POST /api/desk/cancel` | live | cancel one open order |
 | `POST /api/desk/kill` | live | halt the desk, answer, then cancel every open order |
 | `POST /api/desk/kill/reset` | live | lift the halt; the body must say `{"confirm":"reset"}` |
+| `GET /api/research` | both | the registered signal strategies, each one's latest judgement, the files the intake is holding, and that R8 (data hash) is not enforced; the demo registers none |
 
 The live routes require the header `X-OhCamel-Desk: 1` and a request the browser labels as from this site (`Sec-Fetch-Site: same-origin`, or an `Origin` equal to the `Host`), behind the host's password. The demo answers each with 405 and a sentence. Its own trader proposes a small order every 45 seconds, so the blotter has something to show, including refusals.
 

@@ -1114,6 +1114,17 @@ let run_live ~book_path ~(serve_port : int option) =
           exit 1)
         else return ()
       in
+      (* The signal intake's directory (design §3.12), checked before anything
+         starts: unset is no intake, and set but empty or unreadable refuses to
+         start, naming the variable -- an intake quietly reading nothing would
+         look exactly like a research service that wrote nothing. *)
+      let%bind signals_dir =
+        match Ohcamel_desk.Intake.directory (Sys.getenv Ohcamel_desk.Intake.env_var) with
+        | Ok dir -> return dir
+        | Error why ->
+            prerr_endline why;
+            exit 1
+      in
       (* The journal (design §3.5). Fatal when it cannot open: a live desk whose
          record silently went nowhere is the failure persistence exists to end. *)
       let journal_path = Option.value (Sys.getenv "OHCAMEL_JOURNAL") ~default:"desk.db" in
@@ -1418,6 +1429,28 @@ let run_live ~book_path ~(serve_port : int option) =
       don't_wait_for (Ohcamel_desk.Oms.run oms);
       don't_wait_for
         (Ohcamel_desk.Oms.refresh_forever oms ~every:(Time_ns.Span.of_min 1.0));
+      (* The signal intake: the directory above and the book's signals block,
+         both, or none. It judges and records; it sizes nothing. *)
+      let strategies =
+        Option.value_map book.Config.Book.signals ~default:[] ~f:(fun s ->
+            s.Config.Book.Signals_spec.strategies)
+      in
+      let intake =
+        Ohcamel_desk.Intake.setup ~journal
+          ~universe:(List.map instruments ~f:(fun i -> i.Instrument.symbol))
+          ~signals:book.Config.Book.signals ~dir:signals_dir ~on_event:live_line
+          ~now:Time_ns.now
+      in
+      (match intake with
+      | Ohcamel_desk.Intake.Running t ->
+          live_line
+            (sprintf
+               "intake    %d strategies registered; reading %s once a minute, judging \
+                R1-R7 and recording every judgement. R8 is not enforced."
+               (List.length strategies)
+               (Option.value signals_dir ~default:""));
+          don't_wait_for (Ohcamel_desk.Intake.run t)
+      | Ohcamel_desk.Intake.Off why -> live_line ("intake    off -- " ^ why));
       (match venue with
       | Ohcamel_desk.Desk.Reads read ->
           don't_wait_for
@@ -1495,7 +1528,9 @@ let run_live ~book_path ~(serve_port : int option) =
                 ~factor:runtime.Config.Runtime.fred_series_id
                 ~extensions:
                   (Ohcamel_desk.Desk.extensions desk
-                  @ Ohcamel_desk.Desk_routes.extensions ~host:`Live ~oms)
+                  @ Ohcamel_desk.Desk_routes.extensions ~host:`Live ~oms
+                  @ Ohcamel_desk.Desk.research_extensions ~journal ~strategies ~intake
+                      ~on_event:live_line)
                 ~kill_switch_wired_to:"desk.submit" ~desk:true
                 ~frame_extra:(fun () -> [ ("desk", Ohcamel_desk.Desk.summary_json desk) ])
                 ()
@@ -1695,7 +1730,13 @@ let run_demo ~port =
     Server.create ?alerts ~recompute_log:log ~reports ~garch ~mode:`Demo ~quiet:[ quiet ]
       ~extensions:
         (Ohcamel_desk.Desk.extensions desk
-        @ Ohcamel_desk.Desk_routes.extensions ~host:`Demo ~oms)
+        @ Ohcamel_desk.Desk_routes.extensions ~host:`Demo ~oms
+        (* The demo registers no strategy: its synthetic book holds neither
+           SPY nor TLT, and adding them would move Figure 1. So its
+           /api/research lists none, and says why. *)
+        @ Ohcamel_desk.Desk.research_extensions ~journal ~strategies:[]
+            ~intake:Ohcamel_desk.Intake.demo_status ~on_event:(fun e ->
+              printf "  %s\n%!" e))
       ~kill_switch_wired_to:"desk.submit" ~desk:true
       ~frame_extra:(fun () -> [ ("desk", Ohcamel_desk.Desk.summary_json desk) ])
       ~graph ~factor:"SYNTHETIC" ()

@@ -19,7 +19,9 @@
    The orders, order_events, fills and signals tables are created here, in
    schema version 1, and written by later phases: a second migration a week
    from now would be the same schema with a version bump and a code path that
-   runs once. *)
+   runs once. signal_files, phase A3's, is a table beside them rather than a
+   change to one, so it is created IF NOT EXISTS like the indexes and the
+   version stays 1. *)
 
 open Core
 open Ohcamel.Types
@@ -171,6 +173,10 @@ let schema =
      TEXT, detail TEXT, document TEXT NOT NULL, PRIMARY KEY (strategy, sequence))";
     "CREATE TABLE IF NOT EXISTS alerts (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT \
      NOT NULL, kind TEXT NOT NULL, limit_name TEXT NOT NULL, line TEXT NOT NULL)";
+    (* A signal file the intake could not read as a signal, by its name: recorded
+       once and never read again (see desk/intake.ml). *)
+    "CREATE TABLE IF NOT EXISTS signal_files (name TEXT PRIMARY KEY, received_at TEXT \
+     NOT NULL, error TEXT NOT NULL)";
     "CREATE INDEX IF NOT EXISTS order_events_by_order ON order_events (client_order_id, \
      seq)";
     "CREATE INDEX IF NOT EXISTS fills_by_order ON fills (client_order_id)";
@@ -178,6 +184,10 @@ let schema =
     "CREATE INDEX IF NOT EXISTS orders_by_created ON orders (created_at, client_order_id)";
     "CREATE INDEX IF NOT EXISTS orders_open ON orders (created_at, client_order_id) \
      WHERE state NOT IN " ^ terminal_states;
+    (* /api/research's latest judgement per strategy: every index ends in the
+       rowid, so this one holds a strategy's judgements in the order they were
+       recorded, and [latest_signal] reads its last entry without a sort. *)
+    "CREATE INDEX IF NOT EXISTS signals_by_strategy ON signals (strategy)";
   ]
 
 (* The refusal's decision alone, with no SQLite and no IO: [modes] is
@@ -331,6 +341,13 @@ let session t d =
        [ date d ]
        ~row:session_of_row)
 
+(* The dates alone, oldest first, in ONE statement: the intake's clock takes
+   its earliest bar, its latest and every count from this one list, so no
+   close recorded between two reads can make them disagree. *)
+let session_dates t =
+  query t ~what:"session dates" "SELECT date FROM sessions ORDER BY date" []
+    ~row:(fun r -> col_date r 0)
+
 module Mark = struct
   type t = { date : Date.t; symbol : Symbol.t; close : float; qty : float }
   [@@deriving sexp_of, compare, equal]
@@ -430,6 +447,147 @@ let recent_alerts t ~limit =
         limit_name = col_text r 2;
         line = col_text r 3;
       })
+
+(* Signals: A3's addition to the record. Every judgement the intake makes is
+   one row of [signals], keyed by (strategy, sequence) -- the table schema
+   version 1 has always declared -- with the whole document beside it; every
+   file it could not read as a signal is one row of [signal_files], by name.
+   Neither is ever updated or deleted here: a judgement is a fact about what
+   the desk decided, when. *)
+
+module Signal = struct
+  module Verdict = struct
+    type t = Accepted | Advisory | Rejected [@@deriving sexp_of, compare, equal]
+
+    let to_string = function
+      | Accepted -> "accepted"
+      | Advisory -> "advisory"
+      | Rejected -> "rejected"
+
+    let of_string = function
+      | "accepted" -> Some Accepted
+      | "advisory" -> Some Advisory
+      | "rejected" -> Some Rejected
+      | _ -> None
+  end
+
+  type t = {
+    strategy : string;
+    sequence : int;
+    as_of : Date.t;
+    received_at : Time_ns.t;
+    verdict : Verdict.t;
+    rule : string option;
+    detail : string;
+    document : string;
+  }
+  [@@deriving sexp_of, compare, equal]
+end
+
+(* A plain INSERT, not OR REPLACE or OR IGNORE: the intake asks
+   [signal_judged] first, so a second judgement of one (strategy, sequence) is
+   a bug, and a bug here should raise rather than overwrite the first. *)
+let record_signal t (s : Signal.t) =
+  write t ~what:"signal" (fun () ->
+      run t ~what:"signal"
+        "INSERT INTO signals (strategy, sequence, as_of, received_at, verdict, rule, \
+         detail, document) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        [
+          text s.strategy;
+          Data.INT (Int64.of_int s.sequence);
+          date s.as_of;
+          time s.received_at;
+          text (Signal.Verdict.to_string s.verdict);
+          (match s.rule with None -> Data.NULL | Some r -> text r);
+          text s.detail;
+          text s.document;
+        ])
+
+(* The primary key's own lookup. *)
+let signal_judged t ~strategy ~sequence =
+  not
+    (List.is_empty
+       (query t ~what:"signal judged"
+          "SELECT 1 FROM signals WHERE strategy = ? AND sequence = ?"
+          [ text strategy; Data.INT (Int64.of_int sequence) ]
+          ~row:(fun _ -> ())))
+
+(* The highest sequence among [strategy]'s judgements whose verdict is one of
+   [verdicts]; None when there is none. Which verdicts count is the caller's
+   rule (R5's baseline, in desk/intake.ml), not this module's. *)
+let highest_sequence t ~strategy ~(verdicts : Signal.Verdict.t list) =
+  match verdicts with
+  | [] -> None
+  | _ :: _ -> (
+      let marks = String.concat ~sep:", " (List.map verdicts ~f:(fun _ -> "?")) in
+      match
+        query t ~what:"highest sequence"
+          ("SELECT MAX(sequence) FROM signals WHERE strategy = ? AND verdict IN (" ^ marks
+         ^ ")")
+          (text strategy
+          :: List.map verdicts ~f:(fun v -> text (Signal.Verdict.to_string v)))
+          ~row:(fun r ->
+            match r.(0) with Data.INT n -> Some (Int64.to_int_exn n) | _ -> None)
+      with
+      | [ n ] -> n
+      | _ -> None)
+
+let signal_of_row r =
+  {
+    Signal.strategy = col_text r 0;
+    sequence = Data.to_int_exn r.(1);
+    as_of = col_date r 2;
+    received_at = col_time r 3;
+    verdict =
+      Option.value_exn ~message:"journal: unknown signal verdict"
+        (Signal.Verdict.of_string (col_text r 4));
+    rule = col_opt_text r 5;
+    detail = col_text r 6;
+    document = col_text r 7;
+  }
+
+(* The judgement recorded last for [strategy]: the highest rowid, which SQLite
+   gives each row as one more than the largest before it, and nothing here
+   ever deletes one -- so it is the order of recording, which the wall clock
+   in received_at need not be. Read through signals_by_strategy, whose
+   entries are (strategy, rowid): one index seek, no sort, however long the
+   table grows. Named so a test can ask SQLite's planner about it. *)
+let latest_signal_sql =
+  "SELECT strategy, sequence, as_of, received_at, verdict, rule, detail, document FROM \
+   signals WHERE strategy = ? ORDER BY rowid DESC LIMIT 1"
+
+let latest_signal t ~strategy =
+  List.hd
+    (query t ~what:"latest signal" latest_signal_sql [ text strategy ] ~row:signal_of_row)
+
+let signal t ~strategy ~sequence =
+  List.hd
+    (query t ~what:"signal"
+       "SELECT strategy, sequence, as_of, received_at, verdict, rule, detail, document \
+        FROM signals WHERE strategy = ? AND sequence = ?"
+       [ text strategy; Data.INT (Int64.of_int sequence) ]
+       ~row:signal_of_row)
+
+(* OR IGNORE: the intake asks [signal_file_recorded] first, and a name
+   recorded twice is still one file that could not be read. *)
+let record_signal_file t ~name ~received_at ~error =
+  write t ~what:"signal file" (fun () ->
+      run t ~what:"signal file"
+        "INSERT OR IGNORE INTO signal_files (name, received_at, error) VALUES (?, ?, ?)"
+        [ text name; time received_at; text error ])
+
+let signal_file_recorded t ~name =
+  not
+    (List.is_empty
+       (query t ~what:"signal file recorded" "SELECT 1 FROM signal_files WHERE name = ?"
+          [ text name ]
+          ~row:(fun _ -> ())))
+
+let signal_file_error t ~name =
+  List.hd
+    (query t ~what:"signal file error" "SELECT error FROM signal_files WHERE name = ?"
+       [ text name ]
+       ~row:(fun r -> col_text r 0))
 
 (* Orders, their events and their fills: A2's addition to the record.
 
@@ -803,6 +961,7 @@ module For_testing = struct
   let run = run
   let wal_check = wal_check
   let recent_fills_sql = recent_fills_sql
+  let latest_signal_sql = latest_signal_sql
 
   let journal_mode t =
     match

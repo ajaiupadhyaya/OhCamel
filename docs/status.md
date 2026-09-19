@@ -218,12 +218,13 @@ answers 405.
 | `POST /api/desk/cancel` | Cancel one open order (live host only) |
 | `POST /api/desk/kill` | Halt the desk, answer, then cancel every open order (live host only) |
 | `POST /api/desk/kill/reset` | Lift the halt; the body must say `{"confirm":"reset"}` (live host only) |
+| `GET /api/research` | The registered signal strategies with their sizing and capital fraction, each one's latest judgement (verdict, rule, detail, `as_of`, weights, validation block), how many files the intake is holding, and the sentence "R8 (data hash) is not enforced; see the design §3.12". The demo registers no strategy and says so |
 
 Each page is assembled at build time from `web/` by its own rule in `lib/dune`; none of the five generated `*_html.ml` modules (`dashboard_html`, `ops_html`, `argument_html`, `risk_html`, `execution_html`) is a committed source file. The 47-line design essay that headed the Desk page is archived verbatim, as an HTML comment, at the head of `web/index.html`, with the successor paragraphs beneath it.
 
 ## What is verified
 
-- **521 hermetic tests**, plus seventeen scheduler cases in `test/desk_async` —
+- **544 hermetic tests**, plus eighteen scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler

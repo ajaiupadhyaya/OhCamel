@@ -402,3 +402,39 @@ let extensions t : Server.extension list =
           Server.respond_json server (Yojson.Safe.to_string (body_json t)));
     };
   ]
+
+(* /api/research (design §3.12, ruling 4): the registered strategies with
+   their sizing and capital fraction, each one's latest judgement, how many
+   files are waiting, and the sentence saying R8 is not enforced. The kernel
+   serves it as it serves every extension, without learning what it is.
+
+   Bounded by the book, not the journal: one indexed seek per registered
+   strategy, and the intake's deferred count from memory. Appended after the
+   desk's own routes, so the 404's list -- and deploy/smoke.sh's shadow of
+   it -- ends with it. A raise is answered with a fixed sentence and logged
+   with its own text, as desk_routes.ml's read routes are: the exception's
+   words can carry a path or a fragment of SQL, and this route answers anyone
+   on the demo. *)
+let research_error_sentence =
+  "the desk hit an internal error and could not answer this request"
+
+let research_extensions ~(journal : Journal.t)
+    ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
+    ~(intake : Intake.status) ~(on_event : string -> unit) : Server.extension list =
+  [
+    {
+      Server.path = "/api/research";
+      purpose =
+        "the registered strategies, each one's latest signal and its judgement, the \
+         files the intake is holding, and that R8 is not enforced";
+      handle =
+        (fun server _request ->
+          match Intake.research_json ~journal ~strategies intake with
+          | json -> Server.respond_json server (Yojson.Safe.to_string json)
+          | exception exn ->
+              on_event ("research  /api/research raised: " ^ Exn.to_string exn);
+              Server.respond_json ~status:`Internal_server_error server
+                (Yojson.Safe.to_string
+                   (`Assoc [ ("error", `String research_error_sentence) ])));
+    };
+  ]

@@ -216,6 +216,103 @@ module Book = struct
         | None -> Ok ()
   end
 
+  (* The strategies whose signals the desk reads (design §3.12). Configuration
+     only, like Desk_spec: the desk library reads these names and numbers, and
+     nothing here reads a file or judges a signal.
+
+     SIZING DEFAULTS TO ADVISORY (ruling 2). A signal that passes R1-R7 is
+     sized only when its strategy says (sizing live), and promoting one is the
+     owner's decision, written into the book by hand -- a model does not
+     promote itself, so an absent field can only ever mean the safer of the
+     two.
+
+     Validated against the book's own universe, because a strategy that names
+     a symbol the book does not hold could never pass R7 and would only ever
+     be a typo discovered one signal at a time. *)
+  module Signals_spec = struct
+    type sizing = Advisory | Live [@@deriving sexp, compare, equal]
+
+    let sizing_to_string = function Advisory -> "advisory" | Live -> "live"
+
+    module Strategy = struct
+      type t = {
+        name : string;
+        symbols : string list;
+        (* R4's bound, in recorded sessions: interface/README.md's default. *)
+        max_age : int; [@sexp.default 3]
+        sizing : sizing; [@sexp.default Advisory]
+        capital_fraction : float;
+      }
+      [@@deriving sexp, compare, equal]
+    end
+
+    type t = { strategies : Strategy.t list } [@@deriving sexp, compare, equal]
+
+    (* interface/signal.schema.json's pattern for [strategy], ^[a-z][a-z0-9_]{1,63}$,
+       written out: a name the schema would refuse can never arrive in a
+       signal, so registering one is a book that can never be fed. *)
+    let name_ok name =
+      let n = String.length name in
+      n >= 2 && n <= 64
+      && Char.between name.[0] ~low:'a' ~high:'z'
+      && String.for_all name ~f:(fun c ->
+          Char.between c ~low:'a' ~high:'z' || Char.is_digit c || Char.equal c '_')
+
+    (* Written positively, as contract.ml's R7 is: every comparison with NaN is
+       false, so "not (f > 0 && f <= 1)" refuses a NaN fraction where
+       "f <= 0 || f > 1" would let it through. The live sum carries R7's own
+       1e-9, so that fractions like 0.1 x 10 are not refused for the last bit
+       of a float. *)
+    let validate ~(universe : string list) (t : t) : unit Or_error.t =
+      let fail name fmt =
+        Printf.ksprintf (fun s -> Or_error.errorf "signals: %s: %s" name s) fmt
+      in
+      let names = List.map t.strategies ~f:(fun s -> s.Strategy.name) in
+      let check (s : Strategy.t) =
+        let open Strategy in
+        if not (name_ok s.name) then
+          fail s.name "the name must match ^[a-z][a-z0-9_]{1,63}$, the schema's pattern"
+        else if List.is_empty s.symbols then fail s.name "symbols is empty"
+        else
+          match
+            ( List.find s.symbols ~f:(fun sym ->
+                  not (List.mem universe sym ~equal:String.equal)),
+              List.find_a_dup s.symbols ~compare:String.compare )
+          with
+          | Some sym, _ -> fail s.name "%s is not in the book's universe" sym
+          | None, Some sym -> fail s.name "symbols lists %s twice" sym
+          | None, None ->
+              if s.max_age < 0 then
+                fail s.name "max_age may not be negative, got %d" s.max_age
+              else if not Float.(s.capital_fraction > 0.0 && s.capital_fraction <= 1.0)
+              then
+                fail s.name "capital_fraction must be in (0, 1], got %g"
+                  s.capital_fraction
+              else Ok ()
+      in
+      match List.find_a_dup names ~compare:String.compare with
+      | Some name -> fail name "two strategies have this name"
+      | None -> (
+          match List.find_map t.strategies ~f:(fun s -> Result.error (check s)) with
+          | Some e -> Error e
+          | None ->
+              let live =
+                List.sum
+                  (module Float)
+                  t.strategies
+                  ~f:(fun s ->
+                    match s.Strategy.sizing with
+                    | Live -> s.Strategy.capital_fraction
+                    | Advisory -> 0.0)
+              in
+              if not Float.(live <= 1.0 +. 1e-9) then
+                Or_error.errorf
+                  "signals: the live strategies' capital_fraction values sum to %g, more \
+                   than 1"
+                  live
+              else Ok ())
+  end
+
   module Limit_spec = struct
     (* Mirrors Types.Limit but in plain strings and floats, with round-trip sexp
        conversion. Types.Limit has sexp_of but no of_sexp (its Symbol and Sector
@@ -263,6 +360,9 @@ module Book = struct
        An existing book file keeps parsing and the desk it feeds keeps its
        venue read-only. *)
     desk : Desk_spec.t; [@sexp.default Desk_spec.default] [@sexp_drop_default.sexp]
+    (* Optional, and absent means no intake: the desk registers no strategy and
+       reads no signal file. An existing book keeps parsing unchanged. *)
+    signals : Signals_spec.t option; [@sexp.option]
   }
   [@@deriving sexp]
 
@@ -278,7 +378,15 @@ module Book = struct
   let of_string (contents : string) : t Or_error.t =
     let open Or_error.Let_syntax in
     let%bind book = Or_error.try_with (fun () -> t_of_sexp (Sexp.of_string contents)) in
-    let%map () = Desk_spec.validate book.desk in
+    let%bind () = Desk_spec.validate book.desk in
+    let%map () =
+      match book.signals with
+      | None -> Ok ()
+      | Some signals ->
+          Signals_spec.validate
+            ~universe:(List.map book.positions ~f:(fun p -> p.Position_spec.symbol))
+            signals
+    in
     book
 
   let load (path : string) : t Or_error.t =

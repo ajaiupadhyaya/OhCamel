@@ -58,11 +58,12 @@ let journal_indexes =
     "order_events_by_order";
     "orders_by_created";
     "orders_open";
+    "signals_by_strategy";
   ]
 
 (* A restart is also how a journal written before the indexes existed meets
    them: the file below has none when it is closed, as a file from that build
-   would, and opening it again adds all five without touching a row or the
+   would, and opening it again adds all six without touching a row or the
    schema version. *)
 let test_a_session_survives_a_restart () =
   with_temp_path ~f:(fun path ->
@@ -81,7 +82,7 @@ let test_a_session_survives_a_restart () =
         [ session "2026-09-09"; session "2026-09-10"; session "2026-09-11" ]
         (Journal.sessions j);
       Alcotest.(check (list string))
-        "reopened: the five indexes, added at open" journal_indexes (own_indexes j);
+        "reopened: the six indexes, added at open" journal_indexes (own_indexes j);
       let version = ref [] in
       ignore
         (Sqlite3.exec_not_null_no_headers (Journal.For_testing.db j)
@@ -93,7 +94,7 @@ let test_a_session_survives_a_restart () =
       (* and a third open, onto a file that has them, changes nothing *)
       let j = open_exn path in
       Alcotest.(check (list string))
-        "opened again: the same five, and no error" journal_indexes (own_indexes j);
+        "opened again: the same six, and no error" journal_indexes (own_indexes j);
       Journal.close j)
 
 (* /api/desk's last query that grew with the journal: SQLite's own plan for

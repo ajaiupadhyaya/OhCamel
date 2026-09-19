@@ -47,6 +47,10 @@ val recent_sessions : t -> limit:int -> Session.t list
 
 val session : t -> Date.t -> Session.t option
 
+val session_dates : t -> Date.t list
+(** Every recorded session's date, oldest first, from one statement: the intake's clock
+    takes its earliest bar, its latest and its counts from this one list. *)
+
 module Mark : sig
   type t = { date : Date.t; symbol : Symbol.t; close : float; qty : float }
   [@@deriving sexp_of, compare, equal]
@@ -80,6 +84,56 @@ end
 
 val record_alert : t -> Alert.t -> unit
 val recent_alerts : t -> limit:int -> Alert.t list
+
+(** One judgement of one signal document (desk/intake.ml): the [signals] table's row. *)
+module Signal : sig
+  module Verdict : sig
+    type t = Accepted | Advisory | Rejected [@@deriving sexp_of, compare, equal]
+
+    val to_string : t -> string
+    (** "accepted", "advisory", "rejected": the words the table holds and the page reads.
+    *)
+
+    val of_string : string -> t option
+  end
+
+  type t = {
+    strategy : string;
+    sequence : int;
+    as_of : Date.t;
+    received_at : Time_ns.t;
+    verdict : Verdict.t;
+    rule : string option;
+        (** The rule that decided it -- "R1".."R7", "strategy", or "sizing" -- or None for
+            an accepted signal. *)
+    detail : string;
+    document : string;  (** The file's text, whole. *)
+  }
+  [@@deriving sexp_of, compare, equal]
+end
+
+val record_signal : t -> Signal.t -> unit
+(** A plain INSERT: a (strategy, sequence) already recorded raises rather than overwrite
+    the first judgement. *)
+
+val signal_judged : t -> strategy:string -> sequence:int -> bool
+
+val highest_sequence :
+  t -> strategy:string -> verdicts:Signal.Verdict.t list -> int option
+(** The highest sequence among [strategy]'s judgements with one of [verdicts]. *)
+
+val latest_signal : t -> strategy:string -> Signal.t option
+(** The judgement recorded last for [strategy], by recording order (rowid), not by the
+    wall clock; one seek on signals_by_strategy. *)
+
+val signal : t -> strategy:string -> sequence:int -> Signal.t option
+(** One judgement, by the primary key. *)
+
+val record_signal_file : t -> name:string -> received_at:Time_ns.t -> error:string -> unit
+(** A file that could not be read as a signal, by name, once. *)
+
+val signal_file_recorded : t -> name:string -> bool
+val signal_file_error : t -> name:string -> string option
 
 (** A journaled order, rebuilt: the request and state from its row, the filled quantity,
     notional and executions from its fills, the reason from its latest event that carries
@@ -174,6 +228,9 @@ module For_testing : sig
   val recent_fills_sql : string
   (** The exact SQL [recent_fills] runs, so a test can ask SQLite's own planner about it
       rather than a copy that could drift from what actually executes. *)
+
+  val latest_signal_sql : string
+  (** The exact SQL [latest_signal] runs, for the same reason. *)
 
   val query_plan : t -> string -> Sqlite3.Data.t list -> string list
   (** [EXPLAIN QUERY PLAN sql], bound with [params]: one line per step, in the words
