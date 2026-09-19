@@ -637,6 +637,23 @@ let test_a_file_dated_too_far_ahead_is_rejected_at_r3_at_once () =
       Alcotest.(check int) "one waits" 1 (Intake.deferred f.intake))
     ()
 
+(* The last date a document can carry: 9999-12-31 is rejected at R3 by the
+   cap without adding a day to it (which raises), and the valid document
+   after it in sequence order is still judged in the same pass. *)
+let test_a_document_dated_9999_12_31_holds_nothing_back () =
+  with_intake ~sessions:week
+    ~f:(fun f ->
+      write f.dir "far.json" (doc ~sequence:1 "9999-12-31");
+      write f.dir "next.json" (doc ~sequence:2 "2026-09-18");
+      Intake.pass f.intake;
+      Alcotest.check judgement "9999-12-31: rejected at R3"
+        (Some ("rejected", Some "R3"))
+        (judged f "exp_a01_spy" 1);
+      Alcotest.check judgement "the next document: judged, and accepted"
+        (Some ("accepted", None))
+        (judged f "exp_a01_spy" 2))
+    ()
+
 (* The contract's own R4 limit on history: an as_of before the earliest
    recorded session has no age this clock can state. *)
 let test_an_as_of_before_the_earliest_session_fails_r4 () =
@@ -1177,6 +1194,8 @@ let suite =
         test_a_renamed_file_keeps_its_wait;
       Alcotest.test_case "a file dated too far ahead is rejected at R3 at once" `Quick
         test_a_file_dated_too_far_ahead_is_rejected_at_r3_at_once;
+      Alcotest.test_case "a document dated 9999-12-31 holds nothing back" `Quick
+        test_a_document_dated_9999_12_31_holds_nothing_back;
       Alcotest.test_case "an as_of before the earliest session fails R4" `Quick
         test_an_as_of_before_the_earliest_session_fails_r4;
       Alcotest.test_case "a five-week outage cannot make a stale signal fresh" `Quick

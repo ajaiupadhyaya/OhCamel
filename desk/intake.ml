@@ -351,10 +351,14 @@ let clock_of_dates (dates : Date.t list) : clock option =
         }
 
 (* Weekdays d with as_of < d <= latest: bars_after's own interval, counted on
-   the calendar instead of the record. diff_weekdays counts [t2, t1), so both
-   ends move one day on. *)
+   the calendar instead of the record. diff_weekdays counts [t2, t1); moving
+   that to (t2, t1] by adding and subtracting the two ends, rather than by
+   Date.add_days, keeps it total for every date a document can parse -- a day
+   added to 9999-12-31 raises, and one such file would stop every pass. *)
 let weekdays_after ~as_of ~latest =
-  Date.diff_weekdays (Date.add_days latest 1) (Date.add_days as_of 1)
+  Date.diff_weekdays latest as_of
+  - Bool.to_int (Date.is_weekday as_of)
+  + Bool.to_int (Date.is_weekday latest)
 
 let weekday_bound ~as_of ~latest ~bars ~max_age : (unit, string) Result.t =
   let weekdays = weekdays_after ~as_of ~latest in
@@ -406,9 +410,8 @@ let decide ~(latest : Date.t) ~(bars_after : Date.t -> int)
             `Judged
               (rejected "R3"
                  (sprintf
-                    "%s, %d weekdays past it: %d less a slack of %d is more than \
-                     max_age                      %d, so no wait for its session can end \
-                     with it fresh"
+                    "%s, %d weekdays past it: %d less a slack of %d is more than max_age \
+                     %d, so no wait for its session can end with it fresh"
                     why ahead ahead weekday_slack s.max_age))
           else `Defer why)
   | Rejected (((R1 | R2 | R4) as rule), why) ->
@@ -635,7 +638,11 @@ let pass t =
                 incr reads;
                 match read path ident with
                 | Gone -> None
-                | Unreadable why -> io_error why
+                | Unreadable why ->
+                    (* A file that cannot be opened is not a read the cap should
+                       spend: a hundred of them would hold every new file back. *)
+                    decr reads;
+                    io_error why
                 | Changed ->
                     once t ~kind:"changed" ~name (fun () ->
                         log t "%S changed while it was read; it is read again next pass"
@@ -688,57 +695,65 @@ let pass t =
       in
       let registered = List.map t.strategies ~f:(fun s -> s.Signals_spec.Strategy.name) in
       List.iter parsed ~f:(fun (name, ident, text, (doc : Contract.t)) ->
-          (* Asked again here, not only in [candidates]: two files in one pass
+          (* One document that raises is logged and left unjudged, and the
+             pass goes on: it must not hold back every document after it. *)
+          try
+            (* Asked again here, not only in [candidates]: two files in one pass
              can carry the same (strategy, sequence), and the first judged is
              the one judgement. *)
-          if not (already_judged t ~name ~ident ~text doc) then
-            let spec =
-              List.find t.strategies ~f:(fun s ->
-                  String.equal s.Signals_spec.Strategy.name doc.strategy)
-            in
-            let baseline =
-              Journal.highest_sequence t.journal ~strategy:doc.strategy
-                ~verdicts:[ Accepted; Advisory ]
-            in
-            let registry =
-              {
-                Contract.strategies = registered;
-                last_sequence =
-                  Option.value_map baseline ~default:[] ~f:(fun n ->
-                      [ (doc.strategy, n) ]);
-              }
-            in
-            (* An unregistered strategy fails R2 before max_age is read. *)
-            let max_age = Option.value_map spec ~default:0 ~f:(fun s -> s.max_age) in
-            let verdict =
-              Contract.validate ~clock ~registry ~universe:t.universe ~max_age doc
-            in
-            match decide ~latest ~bars_after ~spec doc verdict with
-            | `Judged j -> record t ~name ~ident ~text doc j
-            | `Defer why ->
-                (* The first sighting is the journal's, by the document's key:
+            if not (already_judged t ~name ~ident ~text doc) then
+              let spec =
+                List.find t.strategies ~f:(fun s ->
+                    String.equal s.Signals_spec.Strategy.name doc.strategy)
+              in
+              let baseline =
+                Journal.highest_sequence t.journal ~strategy:doc.strategy
+                  ~verdicts:[ Accepted; Advisory ]
+              in
+              let registry =
+                {
+                  Contract.strategies = registered;
+                  last_sequence =
+                    Option.value_map baseline ~default:[] ~f:(fun n ->
+                        [ (doc.strategy, n) ]);
+                }
+              in
+              (* An unregistered strategy fails R2 before max_age is read. *)
+              let max_age = Option.value_map spec ~default:0 ~f:(fun s -> s.max_age) in
+              let verdict =
+                Contract.validate ~clock ~registry ~universe:t.universe ~max_age doc
+              in
+              match decide ~latest ~bars_after ~spec doc verdict with
+              | `Judged j -> record t ~name ~ident ~text doc j
+              | `Defer why ->
+                  (* The first sighting is the journal's, by the document's key:
                    a restart or a rename finds it where it was left. *)
-                let since =
-                  match
-                    Journal.deferral_since t.journal ~strategy:doc.strategy
-                      ~sequence:doc.sequence
-                  with
-                  | Some since -> since
-                  | None ->
-                      Journal.record_deferral t.journal ~strategy:doc.strategy
-                        ~sequence:doc.sequence ~first_latest:latest;
-                      latest
-                in
-                let passed = bars_after since in
-                if passed >= max_age then
-                  record t ~name ~ident ~text doc
-                    (rejected "R3"
-                       (sprintf
-                          "%s; first deferred when the latest session was %s, and %d \
-                           sessions have been recorded since with none on or after its \
-                           as_of (max_age %d)"
-                          why (Date.to_string since) passed max_age))
-                else incr deferred));
+                  let since =
+                    match
+                      Journal.deferral_since t.journal ~strategy:doc.strategy
+                        ~sequence:doc.sequence
+                    with
+                    | Some since -> since
+                    | None ->
+                        Journal.record_deferral t.journal ~strategy:doc.strategy
+                          ~sequence:doc.sequence ~first_latest:latest;
+                        latest
+                  in
+                  let passed = bars_after since in
+                  if passed >= max_age then
+                    record t ~name ~ident ~text doc
+                      (rejected "R3"
+                         (sprintf
+                            "%s; first deferred when the latest session was %s, and %d \
+                             sessions have been recorded since with none on or after its \
+                             as_of (max_age %d)"
+                            why (Date.to_string since) passed max_age))
+                  else incr deferred
+          with exn ->
+            incr deferred;
+            once t ~kind:"raised" ~name (fun () ->
+                log t "%S could not be judged, and is left unjudged: %s" name
+                  (Exn.to_string exn))));
   t.unsettled <- !unsettled;
   t.deferred <- !deferred;
   t.last_pass <- Some (t.now ())
