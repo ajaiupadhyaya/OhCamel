@@ -67,6 +67,7 @@ __all__ = [
     "ServiceConfig",
     "ServiceError",
     "StrategyConfig",
+    "VendorMismatchError",
     "load_service_config",
     "main",
     "run_forever",
@@ -104,6 +105,20 @@ LOOKBACK_MARGIN_BARS = 30
 # would refuse anyway.
 _SLUG_PATTERN = re.compile(load_schema()["properties"]["strategy"]["pattern"])
 _SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9]{0,9}$")
+
+# fdq_strategy values this service will actually run, out of everything
+# signal.REGISTRY knows. Donchian's _desired reads a rolling high/low
+# channel AND -- when the price is inside it -- falls back to self._current,
+# its own carried-forward state (fdq.strategies.trend.Donchian._desired):
+# unlike MACrossover, whose terminal state depends only on the final day's
+# own comparison (see LOOKBACK_MARGIN_BARS above), Donchian's terminal state
+# can depend on how far back the walk-forward in signal.emit actually
+# started. This service's lookback window is sized to cover the longest
+# moving average plus a margin, not "however far back a channel's carried
+# state might trace" -- a truncated lookback would compute Donchian's state
+# wrongly, silently. Refused until that window is anchored to enough
+# history for Donchian specifically.
+_SUPPORTED_FDQ_STRATEGIES = ("ma_crossover",)
 
 _SERVICE_CONFIG_REQUIRED = ("strategies",)
 _STRATEGY_REQUIRED = ("slug", "fdq_strategy", "symbol", "manifest")
@@ -156,6 +171,50 @@ def _to_long_form(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     return out[["date", "symbol", *cols]].sort_values("date").reset_index(drop=True)
 
 
+class VendorMismatchError(ServiceError):
+    """fdq did not answer this fetch from Alpaca -- see
+    ``_require_alpaca_provenance``. Never worked around: a strategy this
+    hits is skipped for the day, and nothing is written for it."""
+
+
+def _require_alpaca_provenance(cache_parquet: Path, symbol: str) -> None:
+    """Refuse a fetch that did not come from Alpaca.
+
+    At the pinned commit, ``fdq.data.bars.fetch_symbol`` falls back to
+    yfinance -- silently, from this function's point of view -- whenever
+    the Alpaca call itself fails or comes back empty for the requested
+    range (``fdq/data/bars.py``, ``fetch_symbol``, roughly lines 176-186).
+    The ``DataFrame`` it returns carries no marker of which vendor actually
+    answered; the one place fdq *does* record that, for this exact call, is
+    the provenance sidecar its own cache write leaves behind
+    (``fdq.data.provenance.write_provenance``, at
+    ``<cache_parquet>.meta.json``) -- its ``"source"`` field is exactly what
+    this call just wrote to disk, because ``fetch_symbol`` always rewrites
+    the sidecar after a successful fetch, cache hit or not.
+
+    A source other than ``"alpaca"``, or no sidecar at all (unreadable,
+    missing, malformed), means this fetch cannot be trusted to be Alpaca's
+    own data -- refused here, before a single bar reaches ``emit``, rather
+    than silently computing a live weight from whatever fdq happened to
+    fall back to. Never reads or logs a credential: nothing here touches
+    ``ALPACA_API_KEY``/``ALPACA_SECRET_KEY`` or fdq's ``Settings`` at all.
+    """
+    from fdq.data.provenance import read_provenance as fdq_read_provenance
+
+    try:
+        doc = fdq_read_provenance(cache_parquet)
+    except Exception as e:  # noqa: BLE001 -- any failure to read means "not provably alpaca"
+        raise VendorMismatchError(
+            f"{symbol}: no readable provenance sidecar after fetch "
+            f"({type(e).__name__}: {e}); refusing rather than risk an unmarked vendor"
+        ) from e
+    source = doc.get("source")
+    if source != "alpaca":
+        raise VendorMismatchError(
+            f"{symbol}: fdq answered this fetch from {source!r}, not alpaca; refusing"
+        )
+
+
 class AlpacaBarSource:
     """Production: fdq's own Alpaca-backed daily-bar fetcher
     (``fdq.data.bars.fetch_symbol``), which reads ``ALPACA_API_KEY`` and
@@ -171,13 +230,18 @@ class AlpacaBarSource:
     data-quality report, not something a once-a-day weight computation
     needs, and it is one more network call and one more place a fetch that
     would otherwise have succeeded can fail.
+
+    Every fetch is checked with ``_require_alpaca_provenance`` before its
+    bars are handed back -- see that function for why.
     """
 
     def fetch(self, symbol: str, start: date, end: date) -> pd.DataFrame:
         from fdq.data.bars import fetch_symbol
         from fdq.util.settings import Settings
 
-        df = fetch_symbol(symbol, start, end, settings=Settings(), cross_validate=False)
+        settings = Settings()
+        df = fetch_symbol(symbol, start, end, settings=settings, cross_validate=False)
+        _require_alpaca_provenance(settings.raw_dir / f"{symbol}.parquet", symbol)
         return _to_long_form(df, symbol)
 
 
@@ -246,6 +310,13 @@ def _strategy_config(entry: Any, where: str) -> StrategyConfig:
     if fdq_strategy not in REGISTRY:
         raise ServiceError(
             f"{where}.fdq_strategy: {fdq_strategy!r} is not one of {sorted(REGISTRY)}"
+        )
+    if fdq_strategy not in _SUPPORTED_FDQ_STRATEGIES:
+        raise ServiceError(
+            f"{where}.fdq_strategy: {fdq_strategy!r} is a real fdq strategy but not yet "
+            f"supported by this service -- only {_SUPPORTED_FDQ_STRATEGIES!r} is, until "
+            "donchian's window is anchored to enough history (its state can depend on "
+            "history a truncated lookback would compute wrongly)"
         )
 
     symbol = _str(e["symbol"], f"{where}.symbol")

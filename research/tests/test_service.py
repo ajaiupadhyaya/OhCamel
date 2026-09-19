@@ -45,6 +45,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import pytest
 
 from ohcamel_research import REPO_ROOT
@@ -67,9 +68,11 @@ from ohcamel_research.service import (
     ServiceConfig,
     ServiceError,
     StrategyConfig,
+    VendorMismatchError,
     _due,
     _lookback_period,
     _lookback_start,
+    _require_alpaca_provenance,
     _to_long_form,
     load_service_config,
     run_once,
@@ -501,6 +504,132 @@ def test_an_unloadable_manifest_refuses_to_emit_and_does_not_sink_other_strategi
 
 
 # ---------------------------------------------------------------------------
+# Vendor provenance: refuse anything fdq did not fetch from Alpaca.
+#
+# fdq.data.bars.fetch_symbol falls back to yfinance -- silently, so far as
+# the returned DataFrame is concerned -- when Alpaca's own call fails or
+# comes back empty. _require_alpaca_provenance is what AlpacaBarSource.fetch
+# calls after every fetch to catch that; these tests drive it directly
+# (against a hand-built "cache" -- a bare directory with just a sidecar,
+# never a real parquet or a real fdq call) and then through a fake BarSource
+# that raises exactly what AlpacaBarSource would, to prove run_once treats
+# it as this one strategy's problem: no file written, and a clear line in
+# the log naming the vendor (or the missing sidecar) -- never a credential,
+# because nothing here ever touches one.
+# ---------------------------------------------------------------------------
+
+
+def test_require_alpaca_provenance_refuses_a_yfinance_sidecar(tmp_path: Path):
+    cache = tmp_path / "raw" / "SPY.parquet"
+    sidecar = cache.with_name(cache.name + ".meta.json")
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    sidecar.write_text(json.dumps({"source": "yfinance", "data_kind": "historical"}))
+
+    with pytest.raises(VendorMismatchError, match="yfinance"):
+        _require_alpaca_provenance(cache, "SPY")
+
+
+def test_require_alpaca_provenance_refuses_a_missing_sidecar(tmp_path: Path):
+    cache = tmp_path / "raw" / "SPY.parquet"  # no sidecar written at all
+
+    with pytest.raises(VendorMismatchError, match="no readable provenance sidecar"):
+        _require_alpaca_provenance(cache, "SPY")
+
+
+def test_require_alpaca_provenance_accepts_an_alpaca_sidecar(tmp_path: Path):
+    cache = tmp_path / "raw" / "SPY.parquet"
+    sidecar = cache.with_name(cache.name + ".meta.json")
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    sidecar.write_text(json.dumps({"source": "alpaca", "data_kind": "historical"}))
+
+    _require_alpaca_provenance(cache, "SPY")  # does not raise
+
+
+class _FakeAlpacaLikeBarSource:
+    """What ``AlpacaBarSource.fetch`` does, without fdq or the network: it
+    writes (or withholds) a sidecar of the test's choosing at fdq's own
+    cache layout (``<cache_dir>/raw/<symbol>.parquet[.meta.json]``), then
+    runs the exact same ``_require_alpaca_provenance`` check
+    ``AlpacaBarSource`` does. A refusal here is indistinguishable, from
+    ``run_once``'s point of view, from a real Alpaca-call-fell-back-to-
+    yfinance refusal -- which is the point."""
+
+    def __init__(self, cache_dir: Path, sidecar_doc: dict[str, Any] | None) -> None:
+        self._raw_dir = cache_dir / "raw"
+        self._sidecar_doc = sidecar_doc
+
+    def fetch(self, symbol: str, start: date, end: date) -> Any:
+        cache_parquet = self._raw_dir / f"{symbol}.parquet"
+        if self._sidecar_doc is not None:
+            sidecar = cache_parquet.with_name(cache_parquet.name + ".meta.json")
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            sidecar.write_text(json.dumps(self._sidecar_doc))
+        _require_alpaca_provenance(cache_parquet, symbol)
+        raise AssertionError("unreachable: _require_alpaca_provenance should have refused")
+
+
+def test_a_yfinance_fallback_refuses_to_emit_and_writes_nothing(tmp_path: Path):
+    manifest_file, paths = _spy_manifest_file(tmp_path)
+    config = ServiceConfig(
+        strategies=(
+            StrategyConfig(
+                slug="exp_test_spy",
+                fdq_strategy="ma_crossover",
+                symbol="SPY",
+                manifest=str(manifest_file.relative_to(paths["root"])),
+            ),
+        )
+    )
+    bar_source = _FakeAlpacaLikeBarSource(
+        tmp_path / "cache", {"source": "yfinance", "data_kind": "historical"}
+    )
+    events: list[str] = []
+
+    written = run_once(
+        config,
+        bar_source=bar_source,
+        today=TODAY,
+        signals_dir=tmp_path / "signals",
+        repo_root=paths["root"],
+        on_event=events.append,
+    )
+
+    assert written == []
+    assert not (tmp_path / "signals").exists() or list((tmp_path / "signals").iterdir()) == []
+    assert any("yfinance" in e for e in events)
+    assert any("not alpaca" in e for e in events)
+
+
+def test_a_missing_provenance_sidecar_refuses_to_emit_and_writes_nothing(tmp_path: Path):
+    manifest_file, paths = _spy_manifest_file(tmp_path)
+    config = ServiceConfig(
+        strategies=(
+            StrategyConfig(
+                slug="exp_test_spy",
+                fdq_strategy="ma_crossover",
+                symbol="SPY",
+                manifest=str(manifest_file.relative_to(paths["root"])),
+            ),
+        )
+    )
+    bar_source = _FakeAlpacaLikeBarSource(tmp_path / "cache", None)
+    events: list[str] = []
+
+    written = run_once(
+        config,
+        bar_source=bar_source,
+        today=TODAY,
+        signals_dir=tmp_path / "signals",
+        repo_root=paths["root"],
+        on_event=events.append,
+    )
+
+    assert written == []
+    assert not (tmp_path / "signals").exists() or list((tmp_path / "signals").iterdir()) == []
+    assert any("no readable provenance sidecar" in e for e in events)
+
+
+# ---------------------------------------------------------------------------
 # Orphaned temp files, swept on start.
 # ---------------------------------------------------------------------------
 
@@ -566,6 +695,20 @@ def test_service_config_refuses_an_unknown_fdq_strategy(tmp_path: Path):
     )
     (tmp_path / "manifest.exp_x_spy.json").write_text("{}")
     with pytest.raises(ServiceError, match="not one of"):
+        load_service_config(p, tmp_path)
+
+
+def test_service_config_refuses_donchian_until_its_window_is_anchored(tmp_path: Path):
+    # donchian IS a real signal.REGISTRY key (unlike "not_a_rule" above), so
+    # this exercises the second, service-specific refusal: Donchian's state
+    # can depend on history a truncated lookback would compute wrongly.
+    p = _write_yaml(
+        tmp_path / "service.yaml",
+        "strategies:\n  - {slug: exp_x_spy, fdq_strategy: donchian, symbol: SPY, "
+        "manifest: manifest.exp_x_spy.json}\n",
+    )
+    (tmp_path / "manifest.exp_x_spy.json").write_text("{}")
+    with pytest.raises(ServiceError, match="not yet supported"):
         load_service_config(p, tmp_path)
 
 
@@ -680,3 +823,92 @@ def test_due_is_false_once_already_run_today_no_matter_how_late():
 def test_due_is_true_again_the_next_day():
     now = datetime.combine(date(2026, 1, 6), RUN_AT, tzinfo=ZONE)
     assert _due(now, last_run=date(2026, 1, 5)) is True
+
+
+# ---------------------------------------------------------------------------
+# The off-by-one guard: the last bar must actually reach emit().
+#
+# A hand-built frame, engineered so the LAST bar is exactly what flips the
+# weight: with it, the 5-day SMA crossover says long; without it (as an
+# off-by-one bug dropping the newest bar before emit, or miscomputing
+# as_of, would produce), it says flat. This was verified as a real guard,
+# not just a tautology, by mutation: temporarily changing _run_strategy to
+# call emit with bars_long.iloc[:-1] instead of bars_long turned this
+# test's assertion from a pass into a failure (targets [] instead of
+# [{"symbol": "XYZ", "weight": 1.0}]) -- the mutation was made, observed to
+# fail this test, and reverted; it is not part of the committed code.
+# ---------------------------------------------------------------------------
+
+# fast=1, slow=5. Hand-computed:
+#   including day 9 (close 110) -> SMA5 over days 5-9 = mean(100,100,100,100,110)
+#                                    = 102; fast_ma (day 9's own close) = 110 > 102
+#                                    -> long.
+#   dropping day 9               -> "last" becomes day 8, SMA5 over days 4-8
+#                                    (all 100s) = 100; fast_ma (day 8's close) =
+#                                    100, not > 100 -> flat.
+_OFF_BY_ONE_CLOSES = [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 110.0]
+_OFF_BY_ONE_PARAMS = {"symbol": "XYZ", "fast": 1, "slow": 5}
+
+
+def _off_by_one_bars() -> pd.DataFrame:
+    dates = [date(2024, 1, 1) + timedelta(days=i) for i in range(len(_OFF_BY_ONE_CLOSES))]
+    return pd.DataFrame(
+        [
+            {
+                "date": d,
+                "symbol": "XYZ",
+                "open": c,
+                "high": c,
+                "low": c,
+                "close": c,
+                "volume": 1000.0,
+            }
+            for d, c in zip(dates, _OFF_BY_ONE_CLOSES, strict=True)
+        ]
+    )
+
+
+class _FixedFrameBarSource:
+    """Returns the same hand-built frame regardless of the range asked -- a
+    fake, not a slice of fixtures/bars/, because this scenario needs
+    numbers engineered to cross exactly on the last bar."""
+
+    def __init__(self, bars: pd.DataFrame) -> None:
+        self._bars = bars
+
+    def fetch(self, symbol: str, start: date, end: date) -> pd.DataFrame:
+        return self._bars
+
+
+def test_the_last_bar_participates_in_the_weight(tmp_path: Path):
+    paths = _build_repo(tmp_path)
+    manifest = _manifest(
+        paths, slug="exp_test_xyz", symbol="XYZ", selected_params=dict(_OFF_BY_ONE_PARAMS)
+    )
+    manifest_file = paths["root"] / "manifest.exp_test_xyz.json"
+    manifest.dump(manifest_file)
+    config = ServiceConfig(
+        strategies=(
+            StrategyConfig(
+                slug="exp_test_xyz",
+                fdq_strategy="ma_crossover",
+                symbol="XYZ",
+                manifest=str(manifest_file.relative_to(paths["root"])),
+            ),
+        )
+    )
+    bars = _off_by_one_bars()
+    last_date = bars["date"].max()
+
+    written = run_once(
+        config,
+        bar_source=_FixedFrameBarSource(bars),
+        today=last_date,
+        signals_dir=tmp_path / "signals",
+        repo_root=paths["root"],
+    )
+
+    assert len(written) == 1
+    doc = json.loads(written[0].read_text())
+    assert doc["as_of"] == last_date.isoformat()
+    assert doc["targets"] == [{"symbol": "XYZ", "weight": 1.0}]
