@@ -108,13 +108,16 @@ type t = {
 [@@deriving sexp_of]
 
 let validate_participation ~participation =
-  if not (Float.( > ) participation 0.0 && Float.( <= ) participation 1.0) then
-    invalid_argf "liquidity: participation must lie in (0, 1], got %f" participation ()
+  if
+    not
+      (Float.is_finite participation && Float.( > ) participation 0.0
+      && Float.( <= ) participation 1.0)
+  then invalid_argf "liquidity: participation must lie in (0, 1], got %f" participation ()
 
 let validate_impact_coefficient ~impact_coefficient =
-  if Float.( < ) impact_coefficient 0.0 then
-    invalid_argf "liquidity: impact_coefficient must be >= 0, got %f" impact_coefficient
-      ()
+  if not (Float.is_finite impact_coefficient && Float.( >= ) impact_coefficient 0.0) then
+    invalid_argf "liquidity: impact_coefficient must be finite and >= 0, got %f"
+      impact_coefficient ()
 
 (* One position's line.
 
@@ -130,8 +133,17 @@ let line ~participation ~impact_coefficient (p : position) : Line.t =
   let days_to_liquidate, impact_fraction, impact_cost =
     if Float.equal p.qty 0.0 then (Some 0.0, Some 0.0, Some 0.0)
     else
+      (* Present is not enough: an ADV of 0 or below, a sigma that is not a
+         finite non-negative number, or a price that is not a finite positive
+         number would turn a division or a square root into infinity or nan,
+         and an infinity is not a liquidation horizon. Each is an unknown, and
+         unknown is not zero -- so it takes the None branch, and poisons the
+         totals exactly as a missing ADV does. *)
       match (p.adv20, p.daily_stddev) with
-      | Some adv, Some sigma ->
+      | Some adv, Some sigma
+        when Float.is_finite adv && Float.( > ) adv 0.0 && Float.is_finite sigma
+             && Float.( >= ) sigma 0.0 && Float.is_finite p.price
+             && Float.( > ) p.price 0.0 ->
           let aq = Float.abs p.qty in
           let days = aq /. (participation *. adv) in
           let fraction = impact_coefficient *. sigma *. Float.sqrt (aq /. adv) in

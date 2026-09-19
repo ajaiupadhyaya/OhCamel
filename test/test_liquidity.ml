@@ -308,6 +308,32 @@ let check_invalid_arg name f =
       Alcotest.failf "%s: expected Invalid_argument, got %s" name (Exn.to_string e)
   | _ -> Alcotest.failf "%s: expected Invalid_argument, got a value" name
 
+(* An ADV of 0 or below, a sigma that is nan or infinite, and a price of 0
+   are each unknown, not a figure: without the guard, |q| / (p x 0) is
+   infinity and sqrt of a negative ratio is nan, and either would reach the
+   totals as Some infinity or Some nan. Each must read None for its line and
+   for the totals, as a missing ADV does. *)
+let test_degenerate_inputs_are_unknown () =
+  List.iter
+    [
+      ("adv 0", { one_position with L.adv20 = Some 0.0 });
+      ("adv negative", { one_position with L.adv20 = Some (-500_000.0) });
+      ("sigma nan", { one_position with L.daily_stddev = Some Float.nan });
+      ("sigma infinite", { one_position with L.daily_stddev = Some Float.infinity });
+      ("price 0", { one_position with L.price = 0.0 });
+    ]
+    ~f:(fun (label, p) ->
+      let t = L.compute ~participation:0.10 ~impact_coefficient:1.0 [ p ] in
+      let line = List.hd_exn t.L.lines in
+      Alcotest.(check (option (float 0.0)))
+        (label ^ ": days") None line.L.Line.days_to_liquidate;
+      Alcotest.(check (option (float 0.0)))
+        (label ^ ": impact") None line.L.Line.impact_cost;
+      Alcotest.(check (option (float 0.0)))
+        (label ^ ": total impact") None t.L.impact_cost;
+      Alcotest.(check (option (float 0.0)))
+        (label ^ ": max days") None t.L.max_days_to_liquidate)
+
 let test_invalid_inputs () =
   check_invalid_arg "participation = 0" (fun () ->
       L.compute ~participation:0.0 ~impact_coefficient:1.0 [ one_position ]);
@@ -317,6 +343,10 @@ let test_invalid_inputs () =
       L.compute ~participation:1.5 ~impact_coefficient:1.0 [ one_position ]);
   check_invalid_arg "impact_coefficient negative" (fun () ->
       L.compute ~participation:0.10 ~impact_coefficient:(-1.0) [ one_position ]);
+  check_invalid_arg "impact_coefficient nan" (fun () ->
+      L.compute ~participation:0.10 ~impact_coefficient:Float.nan [ one_position ]);
+  check_invalid_arg "participation nan" (fun () ->
+      L.compute ~participation:Float.nan ~impact_coefficient:1.0 [ one_position ]);
   (* Boundaries are valid, not refused: participation = 1.0 (full ADV
      participation) and impact_coefficient = 0.0 (impact switched off) both
      compute without raising. *)
@@ -340,6 +370,8 @@ let suite =
         test_missing_sigma_nulls_the_line_and_the_totals;
       Alcotest.test_case "a zero position with missing data is not None" `Quick
         test_zero_qty_with_missing_data_is_not_none;
+      Alcotest.test_case "an ADV of 0, a nan sigma and a zero price are unknown" `Quick
+        test_degenerate_inputs_are_unknown;
       Alcotest.test_case "refused arguments raise Invalid_argument" `Quick
         test_invalid_inputs;
     ] )
