@@ -149,9 +149,15 @@ module Update = struct
     | _ -> None
 end
 
+(* ['permit t]: the submit takes a permit, and only the wire module can make
+   one (desk/wire.mli). An adapter builds its submit for any permit, and
+   ignores it; the order manager holds the wire module's permit type and
+   submits through it in one place (Oms.submit_journaled). So a second call
+   of the venue's submit anywhere else does not compile: it has no permit to
+   pass. *)
 module Trade = struct
-  type t = {
-    submit : Order.Request.t -> Submission.t Deferred.t;
+  type 'permit t = {
+    submit : 'permit -> Order.Request.t -> Submission.t Deferred.t;
     cancel : string -> unit Or_error.t Deferred.t;
     find_order : Ids.Client_order_id.t -> Venue_order.t option Or_error.t Deferred.t;
     open_orders : unit -> Venue_order.t list Or_error.t Deferred.t;

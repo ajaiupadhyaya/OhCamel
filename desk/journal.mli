@@ -179,6 +179,8 @@ module Fill_row : sig
     fill : Order.Fill.t;
     decision_price : Price.t;
     arrival : (Price.t * Price.t) option;
+    tif : Order.Tif.t;
+        (** Its order's: a market-on-open order's arrival quote was read after hours. *)
   }
 end
 

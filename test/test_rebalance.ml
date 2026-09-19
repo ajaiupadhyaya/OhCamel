@@ -35,9 +35,16 @@ let evening = at "2026-09-14T23:15:00Z"
 (* The targets, by hand                                                      *)
 (* ------------------------------------------------------------------------ *)
 
+(* The account holds whatever the strategy does unless a case says otherwise:
+   [account] defaults to the strategy's own position. *)
 let plan ?(symbols = [ spy ]) ?(capital_fraction = 0.5) ?(equity = Ok 100_000.0)
-    ?(current = Ok Symbol.Map.empty) ~price weights =
-  D.Rebalance.plan ~symbols ~weights ~capital_fraction ~equity
+    ?(current = Ok Symbol.Map.empty) ?account ~price weights =
+  let account =
+    match account with
+    | Some a -> a
+    | None -> Result.ok current |> Option.value ~default:Symbol.Map.empty
+  in
+  D.Rebalance.plan ~symbols ~weights ~capital_fraction ~equity ~account
     ~marks:(Symbol.Map.of_alist_exn (List.map symbols ~f:(fun s -> (s, Ok price))))
     ~current
 
@@ -100,7 +107,7 @@ let test_every_unknown_makes_no_targets_and_says_why () =
   refused "no price" ~substring:"SPY has no recorded session close"
     (D.Rebalance.plan ~symbols:[ spy ]
        ~weights:[ (spy, 1.0) ]
-       ~capital_fraction:0.5 ~equity:(Ok 100_000.0)
+       ~capital_fraction:0.5 ~equity:(Ok 100_000.0) ~account:Symbol.Map.empty
        ~marks:(Symbol.Map.singleton spy (Error "SPY has no recorded session close"))
        ~current:(Ok Symbol.Map.empty));
   refused "a price of zero" ~substring:"not a positive number"
@@ -120,7 +127,10 @@ let test_every_unknown_makes_no_targets_and_says_why () =
 let limit name scope n =
   { Limit.name; scope; kind = Limit.Gross_notional (Notional.of_float n) }
 
-let with_oms ?(now = evening) ~f () =
+let with_oms ?(now = evening) ?(session_date = "2026-09-14")
+    ?(closes = [ (aapl, 149.0); (msft, 299.0); (xom, 100.0) ])
+    ?(spec = { Desk_spec.default with Desk_spec.trading = Desk_spec.Enabled })
+    ?(book_is_current = true) ~f () =
   let graph =
     Graph.create
       ~starting_cash:(Notional.of_float 1_000_000.0)
@@ -152,18 +162,16 @@ let with_oms ?(now = evening) ~f () =
       Graph.stabilize graph;
       let journal = Or_error.ok_exn (D.Journal.open_ ~path:":memory:") in
       D.Journal.record_marks journal
-        (List.map
-           [ (aapl, 150.0); (msft, 300.0); (xom, 100.0) ]
-           ~f:(fun (symbol, close) ->
+        (List.map closes ~f:(fun (symbol, close) ->
              {
-               D.Journal.Mark.date = Date.of_string "2026-09-14";
+               D.Journal.Mark.date = Date.of_string session_date;
                symbol;
                close;
                qty = 0.0;
              }));
       D.Journal.record_session journal
         {
-          D.Journal.Session.date = Date.of_string "2026-09-14";
+          D.Journal.Session.date = Date.of_string session_date;
           equity_close = 1_060_000.0;
           cash_close = 1_000_000.0;
           gross_close = 110_000.0;
@@ -179,8 +187,7 @@ let with_oms ?(now = evening) ~f () =
           ~positions:[] ()
       in
       let oms =
-        D.Oms.create ~graph ~journal
-          ~spec:{ Desk_spec.default with Desk_spec.trading = Desk_spec.Enabled }
+        D.Oms.create ~graph ~journal ~spec
           ~read:(Some (D.Sim_venue.read venue))
           ~trade:(Ok (D.Sim_venue.trade ~auto:false venue))
           ~halt:(D.Halt.create D.Halt.Source.none)
@@ -188,7 +195,7 @@ let with_oms ?(now = evening) ~f () =
           ~now:(fun () -> now)
           ~rng:(Random.State.make [| 15 |]) ~on_change:ignore ~on_event:ignore
           ~after_fill:ignore
-          ~book_is_current:(fun () -> true)
+          ~book_is_current:(fun () -> book_is_current)
           ()
       in
       D.Oms.set_clock oms
@@ -205,7 +212,12 @@ let with_oms ?(now = evening) ~f () =
 let leg symbol side qty =
   { Leg.symbol; weight = 0.0; price = 0.0; target = 0; current = 0; side; qty }
 
-let source = { D.Rebalance.Source.strategy = "exp_a01_tech"; sequence = 2 }
+let source =
+  {
+    D.Rebalance.Source.strategy = "exp_a01_tech";
+    sequence = 2;
+    as_of = Date.of_string "2026-09-14";
+  }
 
 let refusal = function
   | Ok _ -> Alcotest.fail "the rebalance was not refused"
@@ -225,7 +237,9 @@ let journaled journal = List.length (D.Journal.recent_orders journal ~limit:10)
    they take it to 102,000, so the second order breaches it only beside the
    first, and the ONE gate call for the rebalance refuses the whole, naming
    tech-cap and each order. A rule failure refuses the whole as well, naming
-   the order and the rule: MSFT +100 at 300 is 30,000, over the 25,000 cap.
+   the order and the rule: MSFT +100 at its close of 299 is 29,900, over the
+   25,000 cap. (The gate values TECH at the live marks; each order's price,
+   named in the refusal, is its recorded close.)
    Nothing is journaled by either: [propose_rebalance] returns its refusal
    from this check, before its first write. *)
 let test_a_rebalance_is_refused_as_a_unit_when_its_second_order_breaches_a_limit () =
@@ -244,12 +258,12 @@ let test_a_rebalance_is_refused_as_a_unit_when_its_second_order_breaches_a_limit
       contains "as a unit" ~substring:"the gate refuses the rebalance as a unit" why;
       contains "naming the limit" ~substring:"tech-cap would be breached" why;
       contains "naming the second order"
-        ~substring:"order 2 of 2 (MSFT buy 30 market-on-open) at 300.00" why;
+        ~substring:"order 2 of 2 (MSFT buy 30 market-on-open) at 299.00" why;
       let why =
         refusal (check [ leg aapl D.Order.Side.Buy 20; leg msft D.Order.Side.Buy 100 ])
       in
       contains "a rule, naming the order"
-        ~substring:"order 2 of 2 (MSFT buy 100 market-on-open): notional: 100 x 300.00"
+        ~substring:"order 2 of 2 (MSFT buy 100 market-on-open): notional: 100 x 299.00"
         why;
       Alcotest.(check int) "and nothing journaled" 0 (journaled journal))
     ()
@@ -387,38 +401,298 @@ let test_a_strategy_with_an_order_that_may_still_fill_is_not_sized () =
            (D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[ (aapl, 1.0) ])))
     ()
 
-(* Invariant 10's other half: one submit site. The venue's submit is CALLED
-   in exactly one place in desk/ -- Oms.submit_journaled -- so a ticket and a
-   rebalance reach the wire through the same journal-first path. Every other
-   mention is the field's declaration (venue.ml) or an adapter defining it
-   (sim_venue.ml, alpaca_trade.ml). *)
+(* ------------------------------------------------------------------------ *)
+(* Task 15's review: the calendar, the buys, the account, the cap            *)
+(* ------------------------------------------------------------------------ *)
+
+let new_york = Timezone.find "America/New_York"
+
+(* C2, pure. The signal, the close and the newest recorded session must be
+   one date, and no weekday may have closed since it with no session
+   recorded: D_ref is New York's date now when its time is 16:00 or later,
+   else the day before, and a weekday in (latest, D_ref] refuses.
+   - The review's case: the newest session is Friday 28 August, a signal of
+     that day is read on Monday 14 September at 19:15 EDT. Eleven weekdays
+     have closed since (31 Aug-4 Sep, 7-11 Sep, and the 14th; Labor Day is a
+     weekday with no session, and can only make this refuse): refused.
+   - Friday 18 September's signal at 19:15 EDT that Friday: passes. Read on
+     Saturday at 10:00 EDT (D_ref Friday), or Monday at 06:00 or at 12:00
+     EDT -- 16:00Z, past 16:00 only in UTC (D_ref Sunday): passes.
+   - Wednesday 16 September's session and signal, read on Thursday at 19:15
+     EDT with Thursday's close not recorded: one weekday: refused.
+   - Friday 30 October's, read on Monday 2 November at 08:30 EST, the week
+     the clocks go back (D_ref Sunday): passes; at 16:00 EST that Monday
+     (21:00Z; D_ref Monday) with Monday unrecorded: refused.
+   - A signal of another day than the newest session, a close of another
+     day, no session, and no zone: each refused, saying which. *)
+let test_the_calendar_ties_the_signal_and_the_close_to_the_newest_session () =
+  let d = Date.of_string in
+  let refusal ?(zone = new_york) ?(closes = []) ~now ~as_of latest =
+    D.Rebalance.calendar_refusal ~zone ~now:(at now) ~as_of:(d as_of)
+      ~latest:(Option.map latest ~f:d) ~closes:(List.map closes ~f:d)
+  in
+  let passes what r = Alcotest.(check (option string)) what None r in
+  let refused what ~substring r =
+    match r with
+    | None -> Alcotest.failf "%s: not refused" what
+    | Some why ->
+        Alcotest.(check bool)
+          (sprintf "%s: %S says %S" what why substring)
+          true
+          (String.is_substring why ~substring)
+  in
+  refused "an outage: 28 Aug's signal on 14 Sep"
+    ~substring:
+      "11 weekdays after the newest recorded session (2026-08-28) have closed by \
+       2026-09-14"
+    (refusal ~now:"2026-09-14T23:15:00Z" ~as_of:"2026-08-28" (Some "2026-08-28"));
+  passes "Friday's signal, Friday 19:15 EDT"
+    (refusal ~now:"2026-09-18T23:15:00Z" ~as_of:"2026-09-18" (Some "2026-09-18"));
+  passes "Friday's signal, Saturday 10:00 EDT"
+    (refusal ~now:"2026-09-19T14:00:00Z" ~as_of:"2026-09-18" (Some "2026-09-18"));
+  passes "Friday's signal, Monday 06:00 EDT"
+    (refusal ~now:"2026-09-21T10:00:00Z" ~as_of:"2026-09-18" (Some "2026-09-18"));
+  (* 16:00Z is noon in New York: Monday's close has not come, whatever UTC's
+     clock says, so D_ref is Sunday. *)
+  passes "Friday's signal, Monday 12:00 EDT (16:00Z)"
+    (refusal ~now:"2026-09-21T16:00:00Z" ~as_of:"2026-09-18" (Some "2026-09-18"));
+  refused "Wednesday's, on Thursday evening with Thursday unrecorded"
+    ~substring:
+      "1 weekday after the newest recorded session (2026-09-16) has closed by 2026-09-17"
+    (refusal ~now:"2026-09-17T23:15:00Z" ~as_of:"2026-09-16" (Some "2026-09-16"));
+  passes "Friday 30 Oct's, Monday 2 Nov 08:30 EST"
+    (refusal ~now:"2026-11-02T13:30:00Z" ~as_of:"2026-10-30" (Some "2026-10-30"));
+  refused "Friday 30 Oct's, Monday 2 Nov 16:00 EST, Monday unrecorded"
+    ~substring:"has closed by 2026-11-02"
+    (refusal ~now:"2026-11-02T21:00:00Z" ~as_of:"2026-10-30" (Some "2026-10-30"));
+  refused "a signal of the day before the newest session"
+    ~substring:
+      "the signal is as of 2026-09-17, but the newest recorded session is 2026-09-18"
+    (refusal ~now:"2026-09-18T23:15:00Z" ~as_of:"2026-09-17" (Some "2026-09-18"));
+  refused "a close of another day" ~substring:"is 2026-09-17's, not the newest session's"
+    (refusal ~closes:[ "2026-09-17" ] ~now:"2026-09-18T23:15:00Z" ~as_of:"2026-09-18"
+       (Some "2026-09-18"));
+  refused "no session" ~substring:"no session is recorded"
+    (refusal ~now:"2026-09-18T23:15:00Z" ~as_of:"2026-09-18" None);
+  refused "no zone" ~substring:"time zone could not be loaded"
+    (refusal ~zone:None ~now:"2026-09-18T23:15:00Z" ~as_of:"2026-09-18"
+       (Some "2026-09-18"))
+
+(* C2, where the rebalance is checked: the review's case end to end. The
+   newest recorded session is 28 August, the signal is of that day, and it is
+   14 September at 19:15 EDT. Refused, naming the eleven weekdays, and
+   nothing journaled. *)
+let test_a_signal_from_before_an_outage_is_not_sized_at_a_weeks_old_close () =
+  with_oms ~session_date:"2026-08-28"
+    ~f:(fun oms journal ->
+      let why =
+        refusal
+          (D.Oms.check_rebalance oms
+             ~source:
+               { source with D.Rebalance.Source.as_of = Date.of_string "2026-08-28" }
+             ~legs:[ leg aapl D.Order.Side.Buy 10 ])
+      in
+      contains "the weekdays"
+        ~substring:"11 weekdays after the newest recorded session (2026-08-28)" why;
+      Alcotest.(check int) "nothing journaled" 0 (journaled journal))
+    ()
+
+(* C1, the gate: a sell can go unfilled at the auction, or be refused, and
+   leave its buy alone, so a rebalance is gated as if only its buys fill as
+   well as whole. AAPL -160 and MSFT +80, each under the 25,000 order cap at
+   its close (23,840 and 23,920):
+     whole:      AAPL 240 x 150 + MSFT 180 x 300 = 36,000 + 54,000 =  90,000  passes
+     buys only:  AAPL 400 x 150 + MSFT 180 x 300 = 60,000 + 54,000 = 114,000  over tech-cap
+   Refused, naming the buys-only gate and tech-cap. The legs were given buy
+   first and are checked sells first: order 1 of 2 is the sell. With MSFT +30
+   instead, the buys alone come to 60,000 + 39,000 = 99,000, and it passes. *)
+let test_a_rebalance_is_gated_as_if_only_its_buys_fill () =
+  with_oms
+    ~f:(fun oms journal ->
+      let why =
+        refusal
+          (D.Oms.check_rebalance oms ~source
+             ~legs:[ leg msft D.Order.Side.Buy 80; leg aapl D.Order.Side.Sell 160 ])
+      in
+      contains "the buys-only gate"
+        ~substring:"the gate refuses the rebalance if only its buys fill" why;
+      contains "tech-cap" ~substring:"tech-cap would be breached" why;
+      contains "sells first"
+        ~substring:"order 2 of 2 (MSFT buy 80 market-on-open) at 299.00" why;
+      Alcotest.(check bool)
+        "MSFT +30 beside the sell: passes" true
+        (Result.is_ok
+           (D.Oms.check_rebalance oms ~source
+              ~legs:[ leg aapl D.Order.Side.Sell 160; leg msft D.Order.Side.Buy 30 ]));
+      Alcotest.(check int) "nothing journaled" 0 (journaled journal))
+    ()
+
+(* Each order of a rebalance counts the rebalance's orders before it against
+   the open-order cap: with a cap of 1 and nothing open, one order passes and
+   the second of two is refused, naming the rule. *)
+let test_each_order_counts_the_ones_before_it_against_the_open_order_cap () =
+  with_oms
+    ~spec:
+      {
+        Desk_spec.default with
+        Desk_spec.trading = Desk_spec.Enabled;
+        max_open_orders = 1;
+      }
+    ~f:(fun oms _ ->
+      Alcotest.(check bool)
+        "one order: passes" true
+        (Result.is_ok
+           (D.Oms.check_rebalance oms ~source ~legs:[ leg aapl D.Order.Side.Buy 1 ]));
+      contains "the second of two"
+        ~substring:
+          "order 2 of 2 (MSFT buy 1 market-on-open): open_orders: 1 orders are already \
+           open; the cap is 1"
+        (refusal
+           (D.Oms.check_rebalance oms ~source
+              ~legs:[ leg aapl D.Order.Side.Buy 1; leg msft D.Order.Side.Buy 1 ])))
+    ()
+
+(* E is the book's equity only while the book is the account's: with no
+   recent read applied, no targets, and the trading rule's own words. *)
+let test_no_targets_while_the_book_is_not_the_account's () =
+  with_oms ~book_is_current:false
+    ~f:(fun oms _ ->
+      contains "equity unknown"
+        ~substring:
+          "the book's equity is unknown: the desk has not applied a recent read of the \
+           account"
+        (refusal
+           (D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[ (aapl, 1.0) ])))
+    ()
+
+(* I2: the account must hold at least the strategy's own position in its
+   direction. The strategy holds SPY 100 and the account only 60 -- a hand
+   sale, a reverse split, a fill the desk missed -- so a flat signal would
+   sell 100 where 60 are held: no targets. Short 50 against an account short
+   only 20, the same. An account holding 100, or 300 with a hand lot beside
+   the strategy's, sells exactly the strategy's 100. *)
+let test_no_targets_when_the_account_holds_less_than_the_strategy's_own () =
+  let current q = Ok (Symbol.Map.singleton spy q) in
+  let account q = Symbol.Map.singleton spy q in
+  (match plan ~current:(current 100.0) ~account:(account 60.0) ~price:500.0 [] with
+  | Ok _ -> Alcotest.fail "a flat signal sold what the account does not hold"
+  | Error why ->
+      contains "long"
+        ~substring:"the account holds 60 SPY, less than the strategy's own 100" why);
+  (match plan ~current:(current (-50.0)) ~account:(account (-20.0)) ~price:500.0 [] with
+  | Ok _ -> Alcotest.fail "a short the account does not hold was bought back"
+  | Error why ->
+      contains "short"
+        ~substring:"the account holds -20 SPY, less than the strategy's own -50" why);
+  List.iter [ 100.0; 300.0 ] ~f:(fun held ->
+      Alcotest.(check (list (triple string int int)))
+        (sprintf "the account holds %g: sell exactly 100" held)
+        [ ("sell", 100, 0) ]
+        (legs (plan ~current:(current 100.0) ~account:(account held) ~price:500.0 [])))
+
+(* The recorded close, never the live mark. E is 1,000,000 + 400 x 150 +
+   100 x 300 - 200 x 100 = 1,070,000 at the live book; at a weight of 1 and a
+   fraction of 0.1 that is 107,000 of AAPL. At the recorded close of 149 it
+   is 107,000 / 149 = 718.12 -> 718 shares; at the live mark of 150 it would
+   be 713.33 -> 713. And the order is checked and journaled at 149. *)
+let test_a_rebalance_is_sized_and_priced_at_the_close_not_the_live_mark () =
+  with_oms
+    ~f:(fun oms _ ->
+      (match
+         D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[ (aapl, 1.0) ]
+       with
+      | Error why -> Alcotest.failf "no targets: %s" why
+      | Ok ls ->
+          Alcotest.(check (list (triple string int int)))
+            "718 at 149, not 713 at 150"
+            [ ("buy", 718, 718) ]
+            (List.map ls ~f:(fun (l : Leg.t) ->
+                 (D.Order.Side.to_string l.Leg.side, l.Leg.qty, l.Leg.target))));
+      match D.Oms.check_rebalance oms ~source ~legs:[ leg aapl D.Order.Side.Buy 10 ] with
+      | Error why -> Alcotest.failf "refused: %s" why
+      | Ok checked ->
+          Alcotest.(check (list (float 0.0)))
+            "the decision price is the close" [ 149.0 ]
+            (List.map checked.D.Oms.Checked_rebalance.orders ~f:(fun (_, p) ->
+                 Price.to_float p)))
+    ()
+
+(* Invariant 10's other half: one submit site, made structural. The venue's
+   submit takes a permit (Venue.Trade.t's parameter), and only desk/wire.ml
+   can make one, so a call written straight against the field -- under any
+   alias, type-directed or not -- does not compile. What remains is the wire
+   module's one function, and this case holds its callers to one: across
+   desk/ and bin/, the module is named only in wire.ml and wire.mli
+   themselves and in oms.ml, where every mention is its permit TYPE except
+   one, the call in submit_journaled. An alias of the module (module W =
+   ..., open, include) or of its function names it again, and fails here. *)
 let test_the_venue's_submit_is_called_in_one_place () =
-  let dir = "../desk" in
-  let hits =
+  let files dir =
     Sys_unix.readdir dir |> Array.to_list
-    |> List.filter ~f:(String.is_suffix ~suffix:".ml")
+    (* The sources, not the preprocessed copies the build keeps beside them. *)
+    |> List.filter ~f:(fun f ->
+        (String.is_suffix f ~suffix:".ml" || String.is_suffix f ~suffix:".mli")
+        && not (String.is_substring f ~substring:".pp."))
     |> List.sort ~compare:String.compare
-    |> List.concat_map ~f:(fun file ->
+    |> List.map ~f:(fun f -> (dir, f))
+  in
+  let mentions line =
+    (* Every occurrence of the module's name as a word, with what follows it:
+       "Wire.permit", "Wire.submit", or "Wire" alone. *)
+    let n = String.length line in
+    let rec go i acc =
+      match String.substr_index line ~pattern:"Wire" ~pos:i with
+      | None -> List.rev acc
+      | Some j ->
+          let before_ok =
+            j = 0 || not (Char.is_alphanum line.[j - 1] || Char.equal line.[j - 1] '_')
+          in
+          let k = j + 4 in
+          let after_ok =
+            k >= n
+            || not
+                 (Char.is_alphanum line.[k]
+                 || Char.equal line.[k] '_'
+                 || Char.equal line.[k] '\'')
+          in
+          if before_ok && after_ok then
+            let rest = String.drop_prefix line k in
+            let what =
+              if String.is_prefix rest ~prefix:".permit" then "Wire.permit"
+              else if String.is_prefix rest ~prefix:".submit" then "Wire.submit"
+              else "Wire"
+            in
+            go k (what :: acc)
+          else go k acc
+    in
+    go 0 []
+  in
+  let found =
+    files "../desk" @ files "../bin"
+    |> List.concat_map ~f:(fun (dir, file) ->
         In_channel.read_lines (Filename.concat dir file)
-        |> List.filter_map ~f:(fun line ->
-            if String.is_substring line ~substring:"Trade.submit" then
-              Some (file, String.strip line)
-            else None))
+        |> List.concat_map ~f:(fun line ->
+            List.map (mentions line) ~f:(fun what ->
+                (dir ^ "/" ^ file, what, String.strip line))))
   in
-  let calls, definitions =
-    List.partition_tf hits ~f:(fun (_, line) ->
-        not
-          (String.is_suffix line ~suffix:"Venue.Trade.submit ="
-          || String.is_substring line ~substring:"{ Venue.Trade.submit;"))
+  let outside_the_module =
+    List.filter found ~f:(fun (file, _, _) ->
+        not (List.mem [ "../desk/wire.ml"; "../desk/wire.mli" ] file ~equal:String.equal))
   in
-  Alcotest.(check (list (pair string string)))
-    "one call, in oms.ml"
-    [ ("oms.ml", "let%map submission = trade.Venue.Trade.submit request in") ]
-    calls;
+  Alcotest.(check (list (triple string string string)))
+    "outside wire.ml(i): one call, in oms.ml's submit_journaled"
+    [
+      ( "../desk/oms.ml",
+        "Wire.submit",
+        "let%map submission = Wire.submit trade request in" );
+    ]
+    (List.filter outside_the_module ~f:(fun (_, what, _) ->
+         not (String.equal what "Wire.permit")));
   Alcotest.(check (list string))
-    "the two adapters that define it"
-    [ "alpaca_trade.ml"; "sim_venue.ml" ]
-    (List.map definitions ~f:fst)
+    "and the permit type is named in oms.ml alone" [ "../desk/oms.ml" ]
+    (List.filter_map outside_the_module ~f:(fun (file, what, _) ->
+         Option.some_if (String.equal what "Wire.permit") file)
+    |> List.dedup_and_sort ~compare:String.compare)
 
 let suite =
   ( "rebalance",
@@ -441,4 +715,20 @@ let suite =
         `Quick test_a_strategy_with_an_order_that_may_still_fill_is_not_sized;
       Alcotest.test_case "the venue's submit is called in one place" `Quick
         test_the_venue's_submit_is_called_in_one_place;
+      Alcotest.test_case
+        "the calendar ties the signal and the close to the newest session" `Quick
+        test_the_calendar_ties_the_signal_and_the_close_to_the_newest_session;
+      Alcotest.test_case
+        "a signal from before an outage is not sized at a weeks-old close" `Quick
+        test_a_signal_from_before_an_outage_is_not_sized_at_a_weeks_old_close;
+      Alcotest.test_case "a rebalance is gated as if only its buys fill" `Quick
+        test_a_rebalance_is_gated_as_if_only_its_buys_fill;
+      Alcotest.test_case "each order counts the ones before it against the open-order cap"
+        `Quick test_each_order_counts_the_ones_before_it_against_the_open_order_cap;
+      Alcotest.test_case "no targets while the book is not the account's" `Quick
+        test_no_targets_while_the_book_is_not_the_account's;
+      Alcotest.test_case "no targets when the account holds less than the strategy's own"
+        `Quick test_no_targets_when_the_account_holds_less_than_the_strategy's_own;
+      Alcotest.test_case "a rebalance is sized and priced at the close, not the live mark"
+        `Quick test_a_rebalance_is_sized_and_priced_at_the_close_not_the_live_mark;
     ] )

@@ -712,6 +712,7 @@ module Fill_row = struct
     fill : Order.Fill.t;
     decision_price : Price.t;
     arrival : (Price.t * Price.t) option;
+    tif : Order.Tif.t;
   }
 end
 
@@ -1106,9 +1107,9 @@ let recent_orders t ~limit : Order_row.t list =
    copy of it that could drift from what actually executes. *)
 let recent_fills_sql =
   "SELECT f.execution_id, f.client_order_id, f.symbol, f.side, f.qty, f.price, f.at, \
-   f.position_qty, o.decision_price, o.arrival_bid, o.arrival_ask FROM fills f JOIN \
-   orders o ON o.client_order_id = f.client_order_id ORDER BY f.at DESC, f.execution_id \
-   DESC LIMIT ?"
+   f.position_qty, o.decision_price, o.arrival_bid, o.arrival_ask, o.tif FROM fills f \
+   JOIN orders o ON o.client_order_id = f.client_order_id ORDER BY f.at DESC, \
+   f.execution_id DESC LIMIT ?"
 
 let recent_fills t ~limit : Fill_row.t list =
   query t ~what:"recent fills" recent_fills_sql
@@ -1130,6 +1131,9 @@ let recent_fills t ~limit : Fill_row.t list =
         fill;
         decision_price = Price.of_float (col_real r 8);
         arrival = arrival_of_row r ~bid:9 ~ask:10;
+        tif =
+          Option.value_exn ~message:"journal: unknown time in force"
+            (Order.Tif.of_string (col_text r 11));
       })
 
 module For_testing = struct

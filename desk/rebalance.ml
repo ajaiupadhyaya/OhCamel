@@ -27,7 +27,17 @@
    EVERY DOUBT IS NO TARGETS AND A REASON, never a guess: an unknown equity,
    an unknown or unusable price, an unknown fill history, a weight for a name
    the strategy does not own, a position in one it no longer owns, a position
-   that is not a whole number of shares, or a target too large to be one. *)
+   that is not a whole number of shares, a target too large to be one, or an
+   account that holds less than the strategy's own position in the same
+   direction -- a hand sale, a reverse split or a fill the desk never heard
+   of, after which selling the strategy's shares would sell what is not
+   there.
+
+   AND NOTHING IS SIZED OFF THE CALENDAR ([calendar_refusal]). The signal,
+   the close it is priced at and the newest recorded session must all be the
+   same day, and no weekday may have passed since that day with no session
+   recorded: after an outage, a signal from before it would otherwise be
+   sized at a close weeks old and sent to the next open. *)
 
 open Core
 open Ohcamel.Types
@@ -37,9 +47,11 @@ open Ohcamel.Types
    it holds no colon, and [prefix] -- which ends in one -- begins every source
    a strategy's rebalances carry and nobody else's. *)
 module Source = struct
-  type t = { strategy : string; sequence : int } [@@deriving sexp_of, compare, equal]
+  type t = { strategy : string; sequence : int; as_of : Date.t }
+  [@@deriving sexp_of, compare, equal]
 
-  let to_string t = sprintf "signal:%s:%d" t.strategy t.sequence
+  let name ~strategy ~sequence = sprintf "signal:%s:%d" strategy sequence
+  let to_string t = name ~strategy:t.strategy ~sequence:t.sequence
   let prefix ~strategy = sprintf "signal:%s:" strategy
 end
 
@@ -65,6 +77,76 @@ end
 
 let positive_finite x = Float.is_finite x && Float.( > ) x 0.0
 
+(* A sell before a buy, then by name: were anything to stop a rebalance
+   between two submits -- the switch, or a venue that does not acknowledge an
+   order -- what went out first takes risk off rather than on. *)
+let sells_first (a : Order.Side.t * Symbol.t) (b : Order.Side.t * Symbol.t) =
+  let rank = function Order.Side.Sell -> 0 | Order.Side.Buy -> 1 in
+  [%compare: int * Symbol.t] (rank (fst a), snd a) (rank (fst b), snd b)
+
+(* The regular session's close in New York. Before it, today's close has not
+   happened, so the last date whose close should be recorded is yesterday's. *)
+let regular_close = Time_ns.Ofday.create ~hr:16 ()
+
+(* Weekdays d with a < d <= b: diff_weekdays counts [a, b), moved to (a, b]
+   by its two ends, as desk/intake.ml's weekday bound does. *)
+let weekdays_between a b =
+  if Date.( <= ) b a then 0
+  else
+    Date.diff_weekdays b a
+    - Bool.to_int (Date.is_weekday a)
+    + Bool.to_int (Date.is_weekday b)
+
+(* Whether a rebalance may be sized off the calendar, and why not:
+   (a) the signal's as_of, every close it is priced at, and the newest
+       recorded session are one date;
+   (b) no weekday lies after that date and on or before D_ref -- New York's
+       date now if its time is 16:00 or later, else the day before -- so the
+       newest recorded session is the last one that has closed.
+   A holiday is a weekday with no session, so it can only make (b) refuse,
+   never pass: an owner who sees that refusal the day after a holiday reads
+   why. The zone is the tz database's; none refuses. *)
+let calendar_refusal ~(zone : Timezone.t option) ~(now : Time_ns.t) ~(as_of : Date.t)
+    ~(latest : Date.t option) ~(closes : Date.t list) : string option =
+  match (zone, latest) with
+  | None, _ ->
+      Some
+        "the America/New_York time zone could not be loaded, so the desk cannot tell \
+         whether the newest recorded session is the last one to close"
+  | _, None -> Some "no session is recorded, so there is no close to size at"
+  | Some zone, Some latest -> (
+      match List.find closes ~f:(fun d -> not (Date.equal d latest)) with
+      | _ when not (Date.equal as_of latest) ->
+          Some
+            (sprintf
+               "the signal is as of %s, but the newest recorded session is %s: a \
+                rebalance is sized only on the close of the signal's own day"
+               (Date.to_string as_of) (Date.to_string latest))
+      | Some d ->
+          Some
+            (sprintf
+               "a close it would be priced at is %s's, not the newest session's (%s)"
+               (Date.to_string d) (Date.to_string latest))
+      | None ->
+          let today, ofday = Time_ns.to_date_ofday now ~zone in
+          let reference =
+            if Time_ns.Ofday.( >= ) ofday regular_close then today
+            else Date.add_days today (-1)
+          in
+          let missed = weekdays_between latest reference in
+          if missed = 0 then None
+          else
+            Some
+              (sprintf
+                 "%d weekday%s after the newest recorded session (%s) %s closed by %s \
+                  with no session recorded -- an outage, or a holiday -- so %s's close \
+                  may not be the last, and nothing is sized on it"
+                 missed
+                 (if missed = 1 then "" else "s")
+                 (Date.to_string latest)
+                 (if missed = 1 then "has" else "have")
+                 (Date.to_string reference) (Date.to_string latest)))
+
 (* A position counted from fills is a sum of decimal quantities; one that is
    not within this of a whole number is not a position whole-share orders
    made, and is not sized against. *)
@@ -72,7 +154,7 @@ let whole_tolerance = 1e-6
 
 let plan ~(symbols : Symbol.t list) ~(weights : (Symbol.t * float) list)
     ~(capital_fraction : float) ~(equity : (float, string) Result.t)
-    ~(marks : (float, string) Result.t Symbol.Map.t)
+    ~(account : float Symbol.Map.t) ~(marks : (float, string) Result.t Symbol.Map.t)
     ~(current : (float Symbol.Map.t, string) Result.t) : (Leg.t list, string) Result.t =
   let open Result.Let_syntax in
   let owned s = List.mem symbols s ~equal:Symbol.equal in
@@ -162,6 +244,25 @@ let plan ~(symbols : Symbol.t list) ~(weights : (Symbol.t * float) list)
                   the desk will not size against it"
                  name held)
         in
+        (* The account's holding, from the book the gate reads, must cover
+           the strategy's own in its direction: a hand sale or a reverse
+           split can leave it short of it, and then selling the strategy's
+           shares sells what is not there. *)
+        let%bind () =
+          let held = Option.value (Map.find account symbol) ~default:0.0 in
+          let short_of_it =
+            (current > 0 && Float.( < ) held (Float.of_int current -. whole_tolerance))
+            || (current < 0 && Float.( > ) held (Float.of_int current +. whole_tolerance))
+          in
+          if short_of_it then
+            Error
+              (sprintf
+                 "the account holds %.17g %s, less than the strategy's own %d: a hand \
+                  sale, a split or a fill the desk never heard of; nothing is sized \
+                  until a person settles it"
+                 held name current)
+          else Ok ()
+        in
         let order = target - current in
         Ok
           (Option.some_if (order <> 0)
@@ -176,10 +277,6 @@ let plan ~(symbols : Symbol.t list) ~(weights : (Symbol.t * float) list)
              }))
     |> Result.all
   in
-  (* Sells before buys, then by name: were a halt to land between two
-     submits, what went out first takes risk off rather than on. *)
   List.filter_opt legs
   |> List.sort ~compare:(fun (a : Leg.t) b ->
-      [%compare: int * Symbol.t]
-        ((match a.side with Order.Side.Sell -> 0 | Order.Side.Buy -> 1), a.symbol)
-        ((match b.side with Order.Side.Sell -> 0 | Order.Side.Buy -> 1), b.symbol))
+      sells_first (a.side, a.symbol) (b.side, b.symbol))

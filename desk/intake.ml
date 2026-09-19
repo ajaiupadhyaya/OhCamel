@@ -565,10 +565,15 @@ let once t ~kind ~name f =
     f ())
 
 (* The rebalance column of an accepted judgement until its outcome replaces
-   it. A crash between the two leaves this in place for good, and it says so. *)
-let pending =
-  "pending: the judgement is recorded and its rebalance not yet proposed; if this never \
-   changes, the desk stopped in between, and the signal is not sized again"
+   it. It names the orders' source, because a crash can come after some were
+   sent: the journal's orders with that source are then the record of what
+   went, and the signal is never sized again. *)
+let pending ~strategy ~sequence =
+  sprintf
+    "pending: the judgement is recorded, and what its rebalance came to is not; if this \
+     never changes, the desk stopped while proposing it, the journal's orders whose \
+     source is %s are the record of anything sent, and the signal is not sized again"
+    (Rebalance.Source.name ~strategy ~sequence)
 
 let record t ~name ~ident ~text (doc : Contract.t) (j : Judgement.t) =
   Journal.record_signal t.journal
@@ -583,7 +588,7 @@ let record t ~name ~ident ~text (doc : Contract.t) (j : Judgement.t) =
       document = text;
       rebalance =
         (match j.verdict with
-        | Verdict.Accepted -> Some pending
+        | Verdict.Accepted -> Some (pending ~strategy:doc.strategy ~sequence:doc.sequence)
         | Advisory | Rejected -> None);
     };
   Hashtbl.set t.judged ~key:name ~data:ident;
@@ -801,7 +806,13 @@ let pass t = ignore (judge_pass t : Accepted.t list)
 (* One accepted document's rebalance, as the sentence recorded beside it. *)
 let rebalance ~oms (a : Accepted.t) : string Deferred.t =
   let doc = a.Accepted.doc in
-  let source = { Rebalance.Source.strategy = doc.strategy; sequence = doc.sequence } in
+  let source =
+    {
+      Rebalance.Source.strategy = doc.strategy;
+      sequence = doc.sequence;
+      as_of = doc.as_of;
+    }
+  in
   match
     Oms.plan_rebalance oms ~strategy:a.Accepted.strategy
       ~targets:
@@ -824,7 +835,11 @@ let size t ~(oms : Oms.t option) (accepted : Accepted.t list) : unit Deferred.t 
   Deferred.List.iter ~how:`Sequential accepted ~f:(fun (a : Accepted.t) ->
       let doc = a.Accepted.doc in
       let source =
-        { Rebalance.Source.strategy = doc.strategy; sequence = doc.sequence }
+        {
+          Rebalance.Source.strategy = doc.strategy;
+          sequence = doc.sequence;
+          as_of = doc.as_of;
+        }
       in
       let later =
         List.find accepted ~f:(fun (b : Accepted.t) ->
@@ -853,7 +868,9 @@ let size t ~(oms : Oms.t option) (accepted : Accepted.t list) : unit Deferred.t 
       match
         Or_error.try_with (fun () ->
             Journal.record_rebalance t.journal ~strategy:doc.strategy
-              ~sequence:doc.sequence ~from:pending ~outcome)
+              ~sequence:doc.sequence
+              ~from:(pending ~strategy:doc.strategy ~sequence:doc.sequence)
+              ~outcome)
       with
       | Ok () -> log t "%S %d: rebalance %S" doc.strategy doc.sequence outcome
       | Error e ->

@@ -211,8 +211,8 @@ let test_an_unknown_answer_is_resolved_and_never_resent () =
     {
       sim with
       D.Venue.Trade.submit =
-        (fun r ->
-          let%map (_ : D.Venue.Submission.t) = sim.D.Venue.Trade.submit r in
+        (fun permit r ->
+          let%map (_ : D.Venue.Submission.t) = sim.D.Venue.Trade.submit permit r in
           D.Venue.Submission.Unknown "timed out after 10 s");
     }
   in
@@ -325,12 +325,12 @@ let test_a_halt_refuses_and_cancels () =
     {
       sim with
       D.Venue.Trade.submit =
-        (fun r ->
+        (fun permit r ->
           match !hold with
-          | None -> sim.D.Venue.Trade.submit r
+          | None -> sim.D.Venue.Trade.submit permit r
           | Some gate ->
               let%bind () = Ivar.read gate in
-              sim.D.Venue.Trade.submit r);
+              sim.D.Venue.Trade.submit permit r);
       cancel =
         (fun id ->
           deletes := id :: !deletes;
@@ -577,7 +577,7 @@ let test_a_raise_inside_the_kill_still_sends_the_cancels () =
 (* The venue's own updates, forwarded to a pipe the case closes: closing it
    is the stream giving up for good, as the paper host's does when it refuses
    the key, and whatever the venue says after that reaches no one. *)
-let forwarded (sim : D.Venue.Trade.t) =
+let forwarded (sim : _ D.Venue.Trade.t) =
   let stream, to_desk = Pipe.create () in
   don't_wait_for
     (Pipe.iter_without_pushback sim.D.Venue.Trade.updates ~f:(fun u ->
@@ -830,15 +830,15 @@ let test_a_restart_reconciles () =
     {
       sim with
       D.Venue.Trade.submit =
-        (fun r ->
-          don't_wait_for (Deferred.ignore_m (sim.D.Venue.Trade.submit r));
+        (fun permit r ->
+          don't_wait_for (Deferred.ignore_m (sim.D.Venue.Trade.submit permit r));
           Deferred.never ());
     }
   in
   let never_sent =
-    { answer_lost with D.Venue.Trade.submit = (fun _ -> Deferred.never ()) }
+    { answer_lost with D.Venue.Trade.submit = (fun _ _ -> Deferred.never ()) }
   in
-  let quiet (trade : D.Venue.Trade.t) =
+  let quiet (trade : _ D.Venue.Trade.t) =
     { trade with D.Venue.Trade.updates = fst (Pipe.create ()) }
   in
   let first = manager ~trade:(quiet answer_lost) f
@@ -978,9 +978,9 @@ let test_a_book_that_goes_stale_while_the_quote_is_fetched_is_refused () =
     {
       sim with
       D.Venue.Trade.submit =
-        (fun r ->
+        (fun permit r ->
           incr submitted;
-          sim.D.Venue.Trade.submit r);
+          sim.D.Venue.Trade.submit permit r);
     }
   in
   let oms = manager ~trade:counted ~read ~book_is_current:(fun () -> !current) f in
@@ -1027,8 +1027,8 @@ let test_a_failed_order_the_venue_reports_resting_is_cancelled () =
     {
       sim with
       D.Venue.Trade.submit =
-        (fun r ->
-          let%map (_ : D.Venue.Submission.t) = sim.D.Venue.Trade.submit r in
+        (fun permit r ->
+          let%map (_ : D.Venue.Submission.t) = sim.D.Venue.Trade.submit permit r in
           D.Venue.Submission.Unknown "timed out after 10 s");
       find_order = (fun _ -> return (Ok None));
       cancel =
@@ -1437,7 +1437,12 @@ let rebalance_leg symbol side qty =
     qty;
   }
 
-let aapl_source = { D.Rebalance.Source.strategy = "exp_a01_aapl"; sequence = 1 }
+let aapl_source =
+  {
+    D.Rebalance.Source.strategy = "exp_a01_aapl";
+    sequence = 1;
+    as_of = Date.of_string "2026-09-14";
+  }
 
 (* A rebalance of one market-on-open order, AAPL +50 at Monday's close of
    100, proposed at 19:15 EDT. The venue's submit asks the journal, as it is
@@ -1456,14 +1461,14 @@ let test_a_rebalance_journals_before_the_wire_and_fills_when_the_session_opens (
     {
       sim with
       D.Venue.Trade.submit =
-        (fun r ->
+        (fun permit r ->
           at_the_wire :=
             Option.map (D.Journal.load_order f.journal r.D.Order.Request.client_order_id)
               ~f:(fun row ->
                 ( D.Order.State.to_string row.D.Journal.Order_row.order.D.Order.state,
                   row.D.Journal.Order_row.source ))
             :: !at_the_wire;
-          sim.D.Venue.Trade.submit r);
+          sim.D.Venue.Trade.submit permit r);
     }
   in
   let oms = manager ~trade:watched ~now:(fun () -> evening) f in
@@ -1507,6 +1512,18 @@ let test_a_rebalance_journals_before_the_wire_and_fills_when_the_session_opens (
     (List.map (D.Journal.source_fills f.journal ~prefix:"signal:exp_a01_aapl:")
        ~f:(fun (s, q) -> (Symbol.to_string s, q)));
   Alcotest.(check int) "sent once" 1 (D.Sim_venue.received f.venue);
+  (* Its costs say their arrival quote was an after-hours one. *)
+  let fill_json = D.Oms.fills_json oms (D.Journal.recent_fills f.journal ~limit:1) in
+  Alcotest.(check string)
+    "the fill is marked arrival_after_hours" "true"
+    (Yojson.Safe.to_string
+       (Yojson.Safe.Util.member "arrival_after_hours"
+          (List.hd_exn (Yojson.Safe.Util.to_list fill_json))));
+  Alcotest.(check bool)
+    "and the costs' note says why" true
+    (String.is_substring
+       (Yojson.Safe.Util.to_string (Yojson.Safe.Util.member "note" (D.Oms.tca_json oms)))
+       ~substring:"arrival quote was read after hours");
   Graph.destroy f.graph;
   return ()
 
@@ -1527,9 +1544,9 @@ let test_a_halt_between_two_submits_leaves_the_second_unsent () =
     {
       sim with
       D.Venue.Trade.submit =
-        (fun r ->
+        (fun permit r ->
           incr submits;
-          let answer = sim.D.Venue.Trade.submit r in
+          let answer = sim.D.Venue.Trade.submit permit r in
           D.Halt.halt halt ~why:"halted by hand, between two submits" ~at:evening;
           answer);
     }
@@ -1748,6 +1765,150 @@ let test_an_accepted_signal_on_a_live_strategy_becomes_one_rebalance () =
   Graph.destroy f.graph;
   return ()
 
+(* The review's case (C1). AAPL -200 and MSFT +120, sells first, pass both
+   gates on this empty book (whole: |-20,000| + 24,000 = 44,000 of TECH;
+   buys only: 24,000). The venue refuses the sell. The buy, gated beside it,
+   is a different trade without it, so it is moved to rejected_pre_trade
+   naming the sell, and never sent: the venue received nothing. Then the same
+   with a sell whose answer is lost: it reached the venue and its outcome is
+   unknown, and the buy is again not sent -- the venue received one order. *)
+let test_a_leg_the_venue_does_not_acknowledge_stops_the_legs_after_it () =
+  let run ~answer =
+    let f = fixture () in
+    record_close f;
+    let sim = D.Sim_venue.trade ~auto:false f.venue in
+    let submits = ref [] in
+    let refusing =
+      {
+        sim with
+        D.Venue.Trade.submit =
+          (fun permit r ->
+            submits := Symbol.to_string r.D.Order.Request.symbol :: !submits;
+            match answer with
+            | `Refused ->
+                return (D.Venue.Submission.Rejected "insufficient qty available")
+            | `Lost ->
+                let%map (_ : D.Venue.Submission.t) = sim.D.Venue.Trade.submit permit r in
+                D.Venue.Submission.Unknown "timed out after 10 s");
+      }
+    in
+    let oms = manager ~trade:refusing ~now:(fun () -> evening) f in
+    after_the_close f oms;
+    let%bind outcome =
+      D.Oms.propose_rebalance oms ~source:aapl_source
+        ~legs:
+          [
+            rebalance_leg aapl D.Order.Side.Sell 200;
+            rebalance_leg msft D.Order.Side.Buy 120;
+          ]
+    in
+    let%map () = settle () in
+    (f, outcome, List.rev !submits)
+  in
+  let check what (f, outcome, submits) ~sell_state ~received =
+    (match outcome with
+    | D.Oms.Rebalance_outcome.Stopped { sent = [ sell ]; unsent = [ buy ]; why } ->
+        Alcotest.(check (pair string string))
+          (what ^ ": the sell went, and stands as the venue left it")
+          ("AAPL", sell_state)
+          (Symbol.to_string sell.D.Order.request.D.Order.Request.symbol, state f sell);
+        Alcotest.(check (pair string string))
+          (what ^ ": the buy was never sent")
+          ("MSFT", "rejected_pre_trade")
+          (Symbol.to_string buy.D.Order.request.D.Order.Request.symbol, state f buy);
+        Alcotest.(check bool)
+          (sprintf "%s: its reason names the sell: %s" what why)
+          true
+          (String.is_substring why
+             ~substring:"order 1 of 2 (AAPL sell 200 market-on-open) was not acknowledged"
+          && Option.equal String.equal (journaled f buy).D.Order.reason (Some why))
+    | other -> Alcotest.failf "%s: %s" what (D.Oms.Rebalance_outcome.to_string other));
+    Alcotest.(check (pair (list string) int))
+      (what ^ ": one submit, the sell's")
+      ([ "AAPL" ], received)
+      (submits, D.Sim_venue.received f.venue);
+    Graph.destroy f.graph
+  in
+  let%bind refused = run ~answer:`Refused in
+  check "refused" refused ~sell_state:"rejected_by_venue" ~received:0;
+  let%map lost = run ~answer:`Lost in
+  check "unknown" lost ~sell_state:"accepted" ~received:1
+
+(* [run], given an order manager, sizes what ITS OWN pass accepted, and
+   nothing it reads back (I4). A crash is left behind first: an intake judges
+   sequence 1 accepted and records it pending, and is never sized. A
+   restarted intake's loop, with the order manager, then passes at once: the
+   file is judged already, so nothing is accepted and nothing is proposed,
+   and 1 stays pending. A minute later a new signal, sequence 2, is in the
+   directory; that pass accepts it and sizes it -- one order, from 2 -- and 1
+   is still pending, never sized. *)
+let test_run_sizes_only_what_its_own_pass_accepted () =
+  let f = fixture () in
+  record_close ~sessions:[ "2026-09-11"; "2026-09-14" ] f;
+  let oms = manager ~now:(fun () -> evening) f in
+  after_the_close f oms;
+  let dir = Filename_unix.temp_dir "ohcamel-signals-" "" in
+  let strategies =
+    [
+      {
+        Ohcamel.Config.Book.Signals_spec.Strategy.name = "exp_a01_aapl";
+        symbols = [ "AAPL" ];
+        max_age = 3;
+        sizing = Ohcamel.Config.Book.Signals_spec.Live;
+        capital_fraction = 0.01;
+      };
+    ]
+  in
+  let intake () =
+    D.Intake.create ~journal:f.journal ~dir ~strategies ~universe:[ aapl; msft; xom ]
+      ~on_event:ignore ~now:(fun () -> evening)
+  in
+  let zeros = "sha256:" ^ String.make 64 '0' in
+  let signal sequence =
+    Out_channel.write_all
+      (Filename.concat dir (sprintf "exp_a01_aapl-%d.json" sequence))
+      ~data:
+        (sprintf
+           {|{"schema_version":1,"strategy":"exp_a01_aapl","params_hash":"%s","as_of":"2026-09-14","computed_at":"2026-09-14T23:15:00Z","data_hash":"%s","sequence":%d,"validation":{"status":"pass","gates_version":"2026-09-02"},"targets":[{"symbol":"AAPL","weight":1.0}]}|}
+           zeros zeros sequence)
+  in
+  signal 1;
+  Alcotest.(check int)
+    "the crash: sequence 1 accepted, and never sized" 1
+    (List.length (D.Intake.judge_pass (intake ())));
+  let clock = Time_source.create ~now:evening () in
+  don't_wait_for
+    (D.Intake.run ~time_source:(Time_source.read_only clock) ~oms (intake ()));
+  let%bind () = settle () in
+  let orders () =
+    List.map (D.Journal.recent_orders f.journal ~limit:10) ~f:(fun r ->
+        r.D.Journal.Order_row.source)
+  in
+  let pending sequence =
+    Option.equal String.equal
+      (Option.bind (D.Journal.signal f.journal ~strategy:"exp_a01_aapl" ~sequence)
+         ~f:(fun s -> s.D.Journal.Signal.rebalance))
+      (Some (D.Intake.pending ~strategy:"exp_a01_aapl" ~sequence))
+  in
+  Alcotest.(check (pair (list string) bool))
+    "the restarted loop's first pass: no order, and 1 still pending" ([], true)
+    (orders (), pending 1);
+  signal 2;
+  let%bind () =
+    Time_source.advance_by_alarms ~wait_for:settle clock
+      ~to_:(Time_ns.add evening (Time_ns.Span.of_sec 60.0))
+  in
+  let%bind () = settle () in
+  Alcotest.(check (pair (list string) bool))
+    "a minute on: one order, from sequence 2, and 1 still pending"
+    ([ "signal:exp_a01_aapl:2" ], true)
+    (orders (), pending 1);
+  Array.iter (Sys_unix.readdir dir) ~f:(fun name ->
+      Core_unix.unlink (Filename.concat dir name));
+  Core_unix.rmdir dir;
+  Graph.destroy f.graph;
+  return ()
+
 let suites =
   [
     ( "transport",
@@ -1796,6 +1957,10 @@ let suites =
           test_a_rebalance_whose_window_closes_while_its_quotes_are_fetched_is_refused;
         case "an accepted signal on a live strategy becomes one rebalance"
           test_an_accepted_signal_on_a_live_strategy_becomes_one_rebalance;
+        case "a leg the venue does not acknowledge stops the legs after it"
+          test_a_leg_the_venue_does_not_acknowledge_stops_the_legs_after_it;
+        case "run sizes only what its own pass accepted"
+          test_run_sizes_only_what_its_own_pass_accepted;
       ] );
     ( "desk",
       [

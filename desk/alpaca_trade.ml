@@ -28,8 +28,8 @@ let json_of ~what body : Yojson.Safe.t Or_error.t =
       Or_error.errorf "alpaca_paper: %s was not JSON: %s" what msg
 
 let trade ~(credentials : Alpaca_paper.Credentials.t)
-    ~(on_connected : unit -> unit Deferred.t) ~(on_event : string -> unit) : Venue.Trade.t
-    =
+    ~(on_connected : unit -> unit Deferred.t) ~(on_event : string -> unit) :
+    _ Venue.Trade.t =
   let request ?body meth uri =
     Alpaca_paper.request_json ~span ~meth ?body ~credentials uri
   in
@@ -41,7 +41,7 @@ let trade ~(credentials : Alpaca_paper.Credentials.t)
   (* An [Error] here is the bound passing or the transport raising. Either way
      the order may be at the venue, so it is invariant 10's unknown: looked up
      by its client order id, never sent again. *)
-  let submit (r : Order.Request.t) =
+  let submit _permit (r : Order.Request.t) =
     match%map
       request
         ~body:(Yojson.Safe.to_string (Alpaca_paper.order_request_json r))

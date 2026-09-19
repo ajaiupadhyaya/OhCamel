@@ -308,13 +308,13 @@ let pump (t : t) = List.iter (step t) ~f:(emit t)
 (* [auto] is false only in tests, which pump by hand so every fill happens
    where the test says: a global constraint of this plan is that no test
    waits on the wall clock, and [Clock_ns.every] below runs on it. *)
-let trade ?(auto = true) (t : t) : Venue.Trade.t =
+let trade ?(auto = true) (t : t) : _ Venue.Trade.t =
   let reader, writer = Pipe.create () in
   t.updates <- Some writer;
   if auto then Clock_ns.every (Time_ns.Span.of_ms 100.0) (fun () -> pump t);
   {
     Venue.Trade.submit =
-      (fun r ->
+      (fun _permit r ->
         let s = submit_now t r in
         (match s with
         | Venue.Submission.Accepted o ->

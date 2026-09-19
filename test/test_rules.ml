@@ -330,6 +330,65 @@ let test_an_opening_auction_order_is_priced_at_the_recorded_close () =
     { ctx with close = Some (Date.of_string "2026-09-14", Price.of_float 0.0) }
     (opg 1)
 
+(* The two weeks the clocks change in 2026, where an hour's offset decides
+   which side of 19:00 or of the open an instant is. Each clock names the
+   session after the last close; each time is written in UTC with its New
+   York reading, and the reading a fixed offset would give where it differs.
+
+   The week the clocks go back: Friday 30 October closes at 16:00 EDT, and
+   the next open is Monday 2 November at 09:30 EST (14:30Z).
+   - Friday 18:59:59.999999999 EDT refused, 19:00 EDT passes.
+   - Saturday 19:00 EDT passes.
+   - Sunday 18:30 EST (23:30Z; a fixed -4 reads 19:30) refused, and Sunday
+     19:00 EST (00:00Z Monday) passes.
+   - Monday 08:30 EST (13:30Z) passes -- the open is today's -- as does
+     09:27:59.999999999 EST, and 09:28 EST (14:28Z) is refused.
+   The week they go forward: Friday 6 March closes at 16:00 EST, and the next
+   open is Monday 9 March at 09:30 EDT (13:30Z).
+   - Friday 18:59:59.999999999 EST (23:59:59Z) refused, 19:00 EST (00:00Z
+     Saturday) passes.
+   - Sunday 18:30 EDT (22:30Z) refused, and Sunday 19:00 EDT (23:00Z; a fixed
+     -5 reads 18:00) passes.
+   - Monday 08:30 EDT (12:30Z) passes, 09:27:59.999999999 EDT passes, and
+     09:28 EDT (13:28Z) is refused. *)
+let test_the_window_in_the_weeks_the_clocks_change () =
+  let clock next_open next_close =
+    Some { Rules.Session.next_open = at next_open; next_close = at next_close }
+  in
+  let fall = clock "2026-11-02T14:30:00Z" "2026-11-02T21:00:00Z" in
+  let spring = clock "2026-03-09T13:30:00Z" "2026-03-09T20:00:00Z" in
+  let check what expected session now =
+    check_rules what expected
+      {
+        evening with
+        session;
+        now;
+        close = Some (Date.of_string "2026-10-30", Price.of_float 150.0);
+      }
+      (opg 100)
+  in
+  check "Fri 30 Oct 18:59:59.999999999 EDT" [ "session" ] fall
+    (nanosecond_before "2026-10-30T23:00:00Z");
+  check "Fri 30 Oct 19:00 EDT" [] fall (at "2026-10-30T23:00:00Z");
+  check "Sat 31 Oct 19:00 EDT" [] fall (at "2026-10-31T23:00:00Z");
+  check "Sun 1 Nov 18:30 EST (a fixed -4 reads 19:30)" [ "session" ] fall
+    (at "2026-11-01T23:30:00Z");
+  check "Sun 1 Nov 19:00 EST" [] fall (at "2026-11-02T00:00:00Z");
+  check "Mon 2 Nov 08:30 EST" [] fall (at "2026-11-02T13:30:00Z");
+  check "Mon 2 Nov 09:27:59.999999999 EST" [] fall
+    (nanosecond_before "2026-11-02T14:28:00Z");
+  check "Mon 2 Nov 09:28 EST" [ "session" ] fall (at "2026-11-02T14:28:00Z");
+  check "Fri 6 Mar 18:59:59.999999999 EST" [ "session" ] spring
+    (nanosecond_before "2026-03-07T00:00:00Z");
+  check "Fri 6 Mar 19:00 EST" [] spring (at "2026-03-07T00:00:00Z");
+  check "Sun 8 Mar 18:30 EDT" [ "session" ] spring (at "2026-03-08T22:30:00Z");
+  check "Sun 8 Mar 19:00 EDT (a fixed -5 reads 18:00)" [] spring
+    (at "2026-03-08T23:00:00Z");
+  check "Mon 9 Mar 08:30 EDT" [] spring (at "2026-03-09T12:30:00Z");
+  check "Mon 9 Mar 09:27:59.999999999 EDT" [] spring
+    (nanosecond_before "2026-03-09T13:28:00Z");
+  check "Mon 9 Mar 09:28 EDT" [ "session" ] spring (at "2026-03-09T13:28:00Z")
+
 let suite =
   ( "rules",
     [
@@ -361,4 +420,6 @@ let suite =
         test_an_opening_auction_order_needs_a_closed_session_a_clock_and_the_zone;
       Alcotest.test_case "an opening-auction order is priced at the recorded close" `Quick
         test_an_opening_auction_order_is_priced_at_the_recorded_close;
+      Alcotest.test_case "the opening auction's window in the weeks the clocks change"
+        `Quick test_the_window_in_the_weeks_the_clocks_change;
     ] )

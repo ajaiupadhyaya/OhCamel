@@ -24,7 +24,7 @@
    is named here by its directory, because CI's grep refuses the desk
    library's name anywhere in lib/. *)
 
-let tests = 576
+let tests = 584
 
 (* The scheduler suite's count: test/desk_async, the executable whose cases run
    with Async's scheduler on clocks of their own. It asserts this against its
@@ -32,7 +32,7 @@ let tests = 576
    drift. Counted apart because the main suite's promise is that it never
    starts the scheduler. Not served on /api/reports: the page's dated block
    prints [tests], and reports.ml names its keys one by one. *)
-let scheduler_tests = 23
+let scheduler_tests = 25
 
 (* The coverage figures: dated and re-measured together, never adjusted
    alone -- see the comment above [tests] for why. *)

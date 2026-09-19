@@ -224,7 +224,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **576 hermetic tests**, plus twenty-three scheduler cases in `test/desk_async` —
+- **584 hermetic tests**, plus twenty-five scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler
@@ -307,7 +307,7 @@ line each (10 to 12 bind the order path, `desk/oms.ml`):
 
 ## What it is not, and known limits
 
-- Paper orders only, to Alpaca's paper account; the demo's venue is simulated in this process. Whole shares, market and limit orders, day orders, regular hours -- and, for a strategy the owner has set `(sizing live)` in `book.sexp` (none is, as shipped), one rebalance per accepted signal of market-on-open orders, sent only from 19:00 ET after a close until two minutes before the next open, priced at the last recorded close and passed through the same rules, gate and journal as a ticket.
+- Paper orders only, to Alpaca's paper account; the demo's venue is simulated in this process. Whole shares, market and limit orders, day orders, regular hours -- and, for a strategy the owner has set `(sizing live)` in `book.sexp` (none is, as shipped), one rebalance per accepted signal of market-on-open orders, sent only from 19:00 ET after a close until two minutes before the next open, priced at the last recorded close and passed through the same rules, gate and journal as a ticket. Nothing is sized unless the signal, its close and the newest recorded session are the same day and no weekday has closed since unrecorded; a rebalance is gated whole and as if only its buys fill, its sells go first, and it stops at the first order the venue does not acknowledge.
 - **A departure from one cost configuration, on the demo only.** The book's `spread_bps` for SPY and TLT is fdq friction v1's spread halved (1.0 and 1.5 bps, per fill; `test/test_example_book.ml` holds the two files to it), so the live desk's cost model is the backtest's. The demo's simulated venue does not follow it: it fills every name a flat 5 bps half-spread from the mark. The demo is never evidence, and its costs page says it fills by construction.
 - Market-on-open needs the America/New_York zone from the tz database (the image installs `tzdata`); where it cannot be loaded, every market-on-open order is refused with that reason. Between midnight and 19:00 ET on a weekend or a holiday the window refuses an order Alpaca would take, because the venue's clock cannot tell that day from a trading day's evening before 19:00 -- failing closed, at hours the research service never sends at.
 - Persistence is one journal (`desk/journal.ml`, SQLite): every order, its events and its fills, and each session's close, marks and VaR forecasts. `run-live` and `serve` keep it in a file (`/data/desk.db` on the live host) and restore the drawdown trail from it at the first successful sync after startup; the demo's is in memory and starts empty each run. Nothing else — the graph, the rest of the book — survives a restart.

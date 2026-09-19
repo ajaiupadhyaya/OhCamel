@@ -5,12 +5,15 @@
  ; reads interface/examples/*.json against expected.json (ruling 6's
  ; cross-language check), so its glob is a dep the same way.
  ; research/config/friction_v1.yaml: the one-cost-configuration test holds the
- ; example book's half-spreads to it. desk/*.ml: the one-submit-site test reads
- ; the source for the venue's submit, which it may call in one place only.
+ ; example book's half-spreads to it. desk/ and bin/: the one-submit-site test
+ ; reads every source file there for a mention of the wire module, which only
+ ; the order manager's one submit may make.
  (deps
   ../book.example.sexp
   ../research/config/friction_v1.yaml
   (glob_files ../desk/*.ml)
+  (glob_files ../desk/*.mli)
+  (glob_files ../bin/*.ml)
   (glob_files ../interface/examples/*.json))
  ; qcheck-core supplies the generators and qcheck-alcotest turns a property into
  ; an ordinary alcotest case, which is what keeps the example-based and

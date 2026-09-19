@@ -370,7 +370,8 @@ let test_an_advisory_strategy_produces_no_order () =
         [ ("exp_a01_spy", 5) ]
         (accepted_keys accepted);
       Alcotest.(check (option string))
-        "SPY: recorded, and its rebalance pending" (Some Intake.pending)
+        "SPY: recorded, and its rebalance pending"
+        (Some (Intake.pending ~strategy:"exp_a01_spy" ~sequence:5))
         (rebalance_of f "exp_a01_spy" 5);
       Alcotest.(check int)
         "and no order anywhere" 0
@@ -402,8 +403,16 @@ let test_a_crash_between_judging_and_proposing_does_not_re_size () =
         "nor does a restarted intake" []
         (accepted_keys (Intake.judge_pass restarted));
       Alcotest.(check (option string))
-        "the judgement still says pending" (Some Intake.pending)
+        "the judgement still says pending"
+        (Some (Intake.pending ~strategy:"exp_a01_spy" ~sequence:5))
         (rebalance_of f "exp_a01_spy" 5);
+      (* I1: pending cannot say "not yet proposed" -- a crash can come after
+         orders went -- so it names the journal's record of them. *)
+      contains "the pending sentence names the orders' source"
+        ~substring:
+          "the journal's orders whose source is signal:exp_a01_spy:5 are the record of \
+           anything sent"
+        (Option.value_exn (rebalance_of f "exp_a01_spy" 5));
       Alcotest.(check int)
         "and nothing was ever proposed" 0
         (List.length (Journal.recent_orders f.journal ~limit:10)))

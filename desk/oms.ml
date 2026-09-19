@@ -32,7 +32,10 @@
    that finds nothing while a delay remains only schedules the next one.
 
    ONE SUBMIT SITE. [submit_journaled] is the only place in this module, and
-   so in the desk, that calls the venue's submit (a test counts it). A ticket
+   so in the desk, that calls the venue's submit. The venue's submit takes a
+   permit that only desk/wire.ml can make, and that module's one call is
+   used here and nowhere else (test/test_rebalance.ml reads desk/ and bin/
+   for any other mention of it), so a second call does not compile. A ticket
    ([propose]) and a live strategy's rebalance ([propose_rebalance]) both
    journal first and then hand each order to it, and it asks, at that
    instant, what time can change since the rules ran -- the switch, the
@@ -73,7 +76,7 @@ type t = {
   journal : Journal.t;
   spec : Desk_spec.t;
   read : Venue.Read.t option;
-  trade : (Venue.Trade.t, string) Result.t;
+  trade : (Wire.permit Venue.Trade.t, string) Result.t;
   halt : Halt.t;
   accepts_tickets : bool;
   adv : Adv.t;
@@ -942,7 +945,8 @@ let resolve t (client : Ids.Client_order_id.t) ~(delays : Time_ns.Span.t list) :
    can age past its window), and the session -- a day order's regular
    session, a market-on-open order's window (Rules.session_refusal, the rules'
    own function). The first that fails is the refusal, in the rules' words. *)
-let pre_wire t ~(tif : Order.Tif.t) : (Venue.Trade.t, Rules.Failure.t) Result.t =
+let pre_wire t ~(tif : Order.Tif.t) :
+    (Wire.permit Venue.Trade.t, Rules.Failure.t) Result.t =
   let fail rule why = Error { Rules.Failure.rule; why } in
   match (Halt.reason t.halt, t.trade) with
   | Some why, _ -> fail "kill_switch" why
@@ -1001,28 +1005,33 @@ let admit t (orders : Journal.Insert.t list) =
    is journaled pending_submit already ([admit]). [pre_wire] is asked at this
    instant; if it fails, the order is moved to rejected_pre_trade with the
    reason -- a legal move from pending_submit -- and nothing is sent.
-   Otherwise the order goes, and the venue's answer is recorded: acknowledged,
-   refused, or unknown -- which is resolved by lookups, never by sending it
-   again. *)
+   Otherwise the order goes, and the venue's answer is recorded and returned
+   as what it was: acknowledged, or not -- refused, or unknown, which is
+   resolved by lookups and never by sending it again. A rebalance goes on to
+   its next order only after an acknowledgement. *)
 let submit_journaled t (o : Order.t) :
-    [ `Sent of Order.t | `Stopped of Rules.Failure.t * Order.t ] Deferred.t =
+    [ `Acknowledged of Order.t
+    | `Not_acknowledged of Order.t * string
+    | `Stopped of Rules.Failure.t * Order.t ]
+    Deferred.t =
   let request = o.Order.request in
   match pre_wire t ~tif:request.Order.Request.tif with
   | Error f ->
       return (`Stopped (f, record t o (Order.Event.Pre_trade_rejected [ reason f ])))
-  | Ok trade ->
-      let%map submission = trade.Venue.Trade.submit request in
-      `Sent
-        (match submission with
-        | Venue.Submission.Accepted v ->
-            record t o (Order.Event.Acknowledged v.Venue.Venue_order.id)
-        | Venue.Submission.Rejected why ->
-            record t o (Order.Event.Venue_rejected_submission why)
-        | Venue.Submission.Unknown why ->
-            let o = record t o (Order.Event.Outcome_unknown why) in
-            don't_wait_for
-              (resolve t request.Order.Request.client_order_id ~delays:t.resolve_delays);
-            o)
+  | Ok trade -> (
+      let%map submission = Wire.submit trade request in
+      match submission with
+      | Venue.Submission.Accepted v ->
+          `Acknowledged (record t o (Order.Event.Acknowledged v.Venue.Venue_order.id))
+      | Venue.Submission.Rejected why ->
+          `Not_acknowledged
+            ( record t o (Order.Event.Venue_rejected_submission why),
+              "the venue refused it: " ^ why )
+      | Venue.Submission.Unknown why ->
+          let o = record t o (Order.Event.Outcome_unknown why) in
+          don't_wait_for
+            (resolve t request.Order.Request.client_order_id ~delays:t.resolve_delays);
+          `Not_acknowledged (o, "its outcome is unknown: " ^ why))
 
 let propose t ?(source = "manual") (ticket : Ticket.t) : (Preview.t * Order.t) Deferred.t
     =
@@ -1053,7 +1062,7 @@ let propose t ?(source = "manual") (ticket : Ticket.t) : (Preview.t * Order.t) D
                 };
               ];
             match%map submit_journaled t o with
-            | `Sent o -> (p, o)
+            | `Acknowledged o | `Not_acknowledged (o, _) -> (p, o)
             | `Stopped (f, o) -> ({ p with Preview.failures = [ f ] }, o)))
 
 (* ------------------------------------------------------------------------ *)
@@ -1141,8 +1150,18 @@ let plan_rebalance t ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
                  Error (sprintf "%s has no recorded session close" (Symbol.to_string s))
              | Ok (Some (_, p)) -> Ok (Price.to_float p) )))
   in
+  (* The account's holdings as the gate reads them: the graph's book, which
+     is the account's while [sizing_equity] answers at all. *)
+  let account =
+    Symbol.Map.of_alist_reduce
+      ~f:(fun first _ -> first)
+      (List.filter_map symbols ~f:(fun s ->
+           Option.some_if
+             (Graph.knows_symbol t.graph s)
+             (s, Qty.to_float (Graph.qty t.graph s))))
+  in
   Rebalance.plan ~symbols ~weights:targets ~capital_fraction:strategy.S.capital_fraction
-    ~equity:(sizing_equity t) ~marks
+    ~equity:(sizing_equity t) ~account ~marks
     ~current:(strategy_position t ~strategy:strategy.S.name)
 
 (* What a rebalance came to, in the words the intake records beside the
@@ -1196,16 +1215,29 @@ module Checked_rebalance = struct
 end
 
 (* Everything a rebalance must pass before anything is written, and nothing
-   written: synchronous, so the main suite can ask it. The strategy's fill
-   history must be settled ([strategy_position]); then THE RULES, PER ORDER,
-   each as a market-on-open order priced at the newest recorded close, and
-   each counting the rebalance's earlier orders against the open-order cap;
-   then ONE GATE CALL with every order's fill and the resting orders, so a
-   rebalance is gated as a unit. Any failure refuses the whole, naming the
-   order and its rules, or the limits. *)
+   written: synchronous, so the main suite can ask it. In order:
+   - the strategy's fill history must be settled ([strategy_position]);
+   - THE CALENDAR (Rebalance.calendar_refusal): the signal's as_of, the
+     closes and the newest recorded session are one date, and no weekday
+     has closed since it unrecorded;
+   - THE RULES, PER ORDER, sells first, each as a market-on-open order
+     priced at the newest recorded close, each counting the rebalance's
+     earlier orders against the open-order cap;
+   - THE GATE, as a unit: one call with every order's fill and the resting
+     orders -- and one more AS IF ONLY ITS BUYS FILL, because a sell can go
+     unfilled at the auction, or be refused, and leave its buys alone. It
+     passes only if both pass.
+   Any failure refuses the whole, naming the order and its rules, or the
+   limits. *)
 let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t list) :
     (Checked_rebalance.t, string) Result.t =
   let open Result.Let_syntax in
+  let legs =
+    List.stable_sort legs ~compare:(fun (a : Rebalance.Leg.t) b ->
+        Rebalance.sells_first
+          (a.Rebalance.Leg.side, a.Rebalance.Leg.symbol)
+          (b.Rebalance.Leg.side, b.Rebalance.Leg.symbol))
+  in
   let n = List.length legs in
   let%bind () = if n = 0 then Error "the rebalance has no order" else Ok () in
   let%bind (_ : float Symbol.Map.t) =
@@ -1213,6 +1245,22 @@ let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t li
       ~f:(fun why -> "the strategy's fill history is unknown: " ^ why)
   in
   let now = t.now () in
+  let%bind () =
+    match
+      Rebalance.calendar_refusal
+        ~zone:(Lazy.force Desk_time.new_york)
+        ~now ~as_of:source.Rebalance.Source.as_of
+        ~latest:
+          (Option.map
+             (List.hd (Journal.recent_sessions t.journal ~limit:1))
+             ~f:(fun s -> s.Journal.Session.date))
+        ~closes:
+          (List.filter_map legs ~f:(fun (l : Rebalance.Leg.t) ->
+               Option.map (opening_price t l.Rebalance.Leg.symbol) ~f:fst))
+    with
+    | None -> Ok ()
+    | Some why -> Error why
+  in
   let judged =
     List.mapi legs ~f:(fun i (leg : Rebalance.Leg.t) ->
         let request =
@@ -1248,16 +1296,35 @@ let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t li
             | None -> Error (sprintf "%s has no recorded close" (name_leg ~i ~n r)))
         |> Result.all
   in
-  match gate_orders t priced with
-  | Error why -> Error why
-  | Ok s when Scenarios.passed s -> Ok { Checked_rebalance.orders = priced; gate = s }
-  | Ok s ->
-      Error
-        (sprintf "the gate refuses the rebalance as a unit (%s): %s"
-           (String.concat ~sep:"; "
-              (List.mapi priced ~f:(fun i (r, p) ->
-                   sprintf "%s at %.2f" (name_leg ~i ~n r) (Price.to_float p))))
-           (String.concat ~sep:"; " (Scenarios.reasons s)))
+  let named orders =
+    String.concat ~sep:"; "
+      (List.map orders ~f:(fun (i, (r, p)) ->
+           sprintf "%s at %.2f" (name_leg ~i ~n r) (Price.to_float p)))
+  in
+  let indexed = List.mapi priced ~f:(fun i o -> (i, o)) in
+  let buys =
+    List.filter indexed ~f:(fun (_, ((r : Order.Request.t), _)) ->
+        Order.Side.equal r.Order.Request.side Order.Side.Buy)
+  in
+  let gate what orders =
+    match gate_orders t (List.map orders ~f:snd) with
+    | Error why -> Error why
+    | Ok s when Scenarios.passed s -> Ok s
+    | Ok s ->
+        Error
+          (sprintf "the gate refuses the rebalance %s (%s): %s" what (named orders)
+             (String.concat ~sep:"; " (Scenarios.reasons s)))
+  in
+  let%bind whole = gate "as a unit" indexed in
+  let%map () =
+    (* With no buy, or nothing but buys, this is the unit's own gate again. *)
+    if List.is_empty buys || List.length buys = n then Ok ()
+    else
+      Result.map
+        (gate "if only its buys fill, as an unfilled or refused sell would leave them"
+           buys) ~f:(fun (_ : Scenarios.t) -> ())
+  in
+  { Checked_rebalance.orders = priced; gate = whole }
 
 (* A live strategy's rebalance, through the machinery a ticket goes through,
    in ONE sequencer job: [check_rebalance] (the rules per order, one gate
@@ -1313,11 +1380,38 @@ let propose_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t 
                              decision_price = Some price;
                            };
                      }));
-              let rec go sent = function
+              (* On only after an acknowledgement. An order the venue refused,
+                 or left unknown, stops the ones after it: they were gated with
+                 it, and without it they are a different trade -- a buy whose
+                 sell never happened. Each is moved to rejected_pre_trade,
+                 naming the order that stopped it. *)
+              let stop_after ~i o ~sent ~rest why =
+                let because =
+                  sprintf
+                    "rebalance: %s was not acknowledged (%s), so no order after it is \
+                     sent"
+                    (name_leg ~i ~n o.Order.request)
+                    why
+                in
+                match rest with
+                | [] -> Rebalance_outcome.Sent (List.rev (o :: sent))
+                | _ :: _ ->
+                    Rebalance_outcome.Stopped
+                      {
+                        sent = List.rev (o :: sent);
+                        unsent =
+                          List.map rest ~f:(fun o ->
+                              record t o (Order.Event.Pre_trade_rejected [ because ]));
+                        why = because;
+                      }
+              in
+              let rec go i sent = function
                 | [] -> return (Rebalance_outcome.Sent (List.rev sent))
                 | o :: rest -> (
                     match%bind submit_journaled t o with
-                    | `Sent o -> go (o :: sent) rest
+                    | `Acknowledged o -> go (i + 1) (o :: sent) rest
+                    | `Not_acknowledged (o, why) ->
+                        return (stop_after ~i o ~sent ~rest why)
                     | `Stopped (f, o) ->
                         let unsent =
                           o
@@ -1328,7 +1422,7 @@ let propose_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t 
                           (Rebalance_outcome.Stopped
                              { sent = List.rev sent; unsent; why = reason f }))
               in
-              go [] created))
+              go 0 [] created))
 
 let apply_to_graph t (o : Order.t) (f : Order.Fill.t) =
   let symbol = o.Order.request.Order.Request.symbol in
@@ -1359,8 +1453,8 @@ let apply_to_graph t (o : Order.t) (f : Order.Fill.t) =
    the same order, and a report written before the venue took the DELETE
    still says it rests. A DELETE whose answer was not a confirmation is sent
    again the next time the venue reports the order resting, and not before. *)
-let cancel_failed t (trade : Venue.Trade.t) ~(client : string) (v : Venue.Venue_order.t) :
-    unit Deferred.t =
+let cancel_failed t (trade : Wire.permit Venue.Trade.t) ~(client : string)
+    (v : Venue.Venue_order.t) : unit Deferred.t =
   let id = v.Venue.Venue_order.id in
   if Hash_set.mem t.failed_cancels id then Deferred.unit
   else (
@@ -1621,8 +1715,8 @@ let watch_alerts t (alerts : Ohcamel.Alerts.t) =
    twice, and a report written before the venue acts on a DELETE still says
    the order rests. A DELETE whose answer was not a confirmation is sent again
    the next time a reconciliation finds the order resting, and not before. *)
-let resend_cancel t (trade : Venue.Trade.t) (o : Order.t) (v : Venue.Venue_order.t) :
-    unit Deferred.t =
+let resend_cancel t (trade : Wire.permit Venue.Trade.t) (o : Order.t)
+    (v : Venue.Venue_order.t) : unit Deferred.t =
   let id = v.Venue.Venue_order.id in
   if Hash_set.mem t.resent_cancels id then Deferred.unit
   else (
@@ -1650,7 +1744,7 @@ let resend_cancel t (trade : Venue.Trade.t) (o : Order.t) (v : Venue.Venue_order
 (* The failed orders the venue still works, found in the venue's own list of
    its open orders: the journal's open set cannot name them, failed being
    terminal. Each gets the venue's id, if it had none, and [cancel_failed]. *)
-let reconcile_failed t (trade : Venue.Trade.t) : unit Deferred.t =
+let reconcile_failed t (trade : Wire.permit Venue.Trade.t) : unit Deferred.t =
   match%bind trade.Venue.Trade.open_orders () with
   | Error e ->
       t.on_event
@@ -1866,22 +1960,42 @@ let fills_json t (rows : Journal.Fill_row.t list) : Yojson.Safe.t =
              ("slippage_bps", opt c.Tca.Costs.slippage_bps);
              ("half_spread_bps", opt c.Tca.Costs.half_spread_bps);
              ("versus_model_bps", opt c.Tca.Costs.versus_model_bps);
+             (* A market-on-open order's arrival quote is read when it is
+                proposed, after 19:00 ET, from a thin after-hours book: its
+                delay and slippage are noisy, and say so. *)
+             ( "arrival_after_hours",
+               `Bool (Order.Tif.equal r.Journal.Fill_row.tif Order.Tif.Opg) );
            ]))
 
 (* Design §7: say whose fills these are. On the paper account a cost measures
    Alpaca's simulator against one venue's quote; on the demo it is the
-   simulated half-spread, by construction. *)
-let tca_note t =
-  match venue_name t with
-  | "simulated" ->
-      "The demo's venue fills every order half a spread from the mark, so these costs \
-       are that half-spread, by construction."
-  | _ ->
-      "On the paper account every cost here measures Alpaca's fill simulator, against \
-       IEX's quote -- one venue's, not the national best."
+   simulated half-spread, by construction. And when any of them is a
+   market-on-open order's, say that its arrival quote was an after-hours one:
+   read at 19:15 ET from a thin book, so the delay and slippage it gives are
+   noise more than cost. *)
+let tca_note t (rows : Journal.Fill_row.t list) =
+  let venue =
+    match venue_name t with
+    | "simulated" ->
+        "The demo's venue fills every order half a spread from the mark, so these costs \
+         are that half-spread, by construction."
+    | _ ->
+        "On the paper account every cost here measures Alpaca's fill simulator, against \
+         IEX's quote -- one venue's, not the national best."
+  in
+  if
+    List.exists rows ~f:(fun (r : Journal.Fill_row.t) ->
+        Order.Tif.equal r.Journal.Fill_row.tif Order.Tif.Opg)
+  then
+    venue
+    ^ " A market-on-open fill's arrival quote was read after hours, when its order was \
+       proposed after 19:00 ET, from a thin book: its delay and slippage are noisy, and \
+       each such fill is marked arrival_after_hours."
+  else venue
 
 let tca_json t : Yojson.Safe.t =
-  let rows = costs t (Journal.recent_fills t.journal ~limit:500) in
+  let fills = Journal.recent_fills t.journal ~limit:500 in
+  let rows = costs t fills in
   let opt = Option.value_map ~default:`Null ~f:jnum in
   let summary (s : Tca.Summary.t) =
     `Assoc
@@ -1895,7 +2009,7 @@ let tca_json t : Yojson.Safe.t =
   in
   `Assoc
     [
-      ("note", `String (tca_note t));
+      ("note", `String (tca_note t fills));
       ("overall", summary (Tca.summarize rows));
       ( "by_symbol",
         `Assoc
