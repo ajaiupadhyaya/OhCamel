@@ -238,6 +238,14 @@ def test_bootstrap_gate_is_seeded_and_reproducible():
     assert gates.bootstrap_gate(r, seed=7).value != gates.bootstrap_gate(r, seed=8).value
 
 
+def test_bootstrap_gate_defaults_to_the_charters_resample_count_and_block():
+    # The defaults are the table's, never a literal of their own.
+    r = daily(list(np.random.default_rng(3).normal(0.0005, 0.005, 60)))
+    d = gates.bootstrap_gate(r, seed=7).detail
+    assert d["n_samples"] == THRESHOLDS.bootstrap_resamples
+    assert d["block"] == THRESHOLDS.bootstrap_block
+
+
 # ---------------------------------------------------------------------------
 # regime_gate
 # ---------------------------------------------------------------------------
@@ -426,6 +434,14 @@ def test_turnover_counts_a_new_position_entering_from_nan_as_a_change():
     assert turnover(weights) == pytest.approx(25.2, abs=1e-9)
 
 
+def test_turnover_is_none_for_fewer_than_two_rows():
+    # One row gives no Delta-weight term, so the rate is undefined; 0.0 would
+    # read as "never traded". Empty is the same.
+    dates = pd.bdate_range("2021-01-04", periods=1)
+    assert turnover(pd.DataFrame({"SPY": [0.5]}, index=dates)) is None
+    assert turnover(pd.DataFrame({"SPY": []})) is None
+
+
 # ---------------------------------------------------------------------------
 # capacity
 # ---------------------------------------------------------------------------
@@ -485,6 +501,28 @@ def test_capacity_names_the_first_traded_date_with_unknown_adv():
     trades = pd.Series([0.0, 0.10, 0.05, 0.20], index=dates)
     adv = pd.Series([np.nan, np.nan, 10_000_000.0, np.nan], index=dates)
     with pytest.raises(ValueError, match=str(dates[1].date())):
+        capacity(trades, adv)
+
+
+def test_capacity_raises_on_a_traded_day_absent_from_the_adv_series():
+    # An ADV built with rolling(20).mean().dropna() omits its warm-up days;
+    # a trade on an omitted day is an unknown ADV, not a row to skip. Trades
+    # on day0 and day1, ADV only for day0: without the reindex the median
+    # would quietly read 1,000,000 from day0 alone.
+    dates = pd.bdate_range("2021-01-04", periods=2)
+    trades = pd.Series([0.10, 0.05], index=dates)
+    adv = pd.Series([10_000_000.0], index=dates[:1])
+    with pytest.raises(ValueError, match=str(dates[1].date())):
+        capacity(trades, adv)
+
+
+def test_capacity_raises_on_an_unknown_trade():
+    # NaN > 0 is False, so without the check a NaN Delta-weight would read as
+    # "no trade" -- the same skip turnover's fillna(0) exists to prevent.
+    dates = pd.bdate_range("2021-01-04", periods=3)
+    trades = pd.Series([np.nan, 0.10, 0.20], index=dates)
+    adv = pd.Series([10_000_000.0] * 3, index=dates)
+    with pytest.raises(ValueError, match=str(dates[0].date())):
         capacity(trades, adv)
 
 

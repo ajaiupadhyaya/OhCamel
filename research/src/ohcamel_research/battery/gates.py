@@ -207,7 +207,7 @@ def cost_sweep(
     )
 
 
-def turnover(weights: pd.DataFrame) -> float:
+def turnover(weights: pd.DataFrame) -> float | None:
     """Annualised one-way turnover: half the sum of absolute day-over-day
     weight changes (summed across symbols), scaled by 252 / (N-1), where N-1
     is the number of Delta-weight terms actually summed -- the first of N
@@ -216,9 +216,16 @@ def turnover(weights: pd.DataFrame) -> float:
     `fillna(0)` runs before `.diff()`, not after: a symbol's first recorded
     weight, entering from no prior position (NaN, not 0.0), is itself counted
     as a change from 0 rather than silently skipped as "no change" when its
-    NaN predecessor is dropped by `skipna=True`."""
-    if weights.empty or len(weights) < 2:
-        return 0.0
+    NaN predecessor is dropped by `skipna=True`.
+
+    Row 0 is the starting book, not a trade: its weights have nothing before
+    them in the series, so a position already held on the first row is never
+    counted. A backtest must start flat (a warm-up of zero weights) for its
+    first entry to be counted. Fewer than two rows give no Delta-weight term
+    at all, so the rate is undefined and the answer is `None` -- never 0.0,
+    which would read as "never traded", the same convention as `capacity`."""
+    if len(weights) < 2:
+        return None
     daily_abs_change = weights.fillna(0.0).diff().abs().sum(axis=1, skipna=True).iloc[1:]
     one_way = float(daily_abs_change.sum()) / 2.0
     days = len(weights)
@@ -241,7 +248,17 @@ def capacity(trades: pd.Series, adv_dollars: pd.Series) -> float | None:
     closed the same way on an unknown ADV: `Config.adv20 = None` refuses the
     order outright (`desk/rules.ml` around line 166, `fail "adv" "%s's
     twenty-day volume is unknown"`); this function's median must not treat
-    an unknown ADV as if it simply were not there."""
+    an unknown ADV as if it simply were not there.
+
+    A traded day absent from `adv_dollars` altogether is an unknown ADV too:
+    the series is reindexed onto the trades' days first, so an ADV built with
+    `rolling(20).mean().dropna()` cannot drop a trade by omission. A NaN
+    `trades` value is an unknown trade, not "no trade", and raises as well:
+    trades must be `weights.fillna(0).diff()`, as `turnover` computes them."""
+    if trades.isna().any():
+        first = trades[trades.isna()].index[0]
+        raise ValueError(f"capacity: the trade on {first} is unknown (NaN)")
+    adv_dollars = adv_dollars.reindex(trades.index)
     delta = trades.abs()
     traded = delta > 0
     if not traded.any():
