@@ -12,74 +12,46 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from datetime import date
 from pathlib import Path
 
 import pandas as pd
 
 from ohcamel_research import REPO_ROOT
 
+# The loader, the slicer and the provenance check live under battery/, where
+# the manifest's hash can see them (the battery's verdict reads bars through
+# exactly these), and are imported back here so replay's behaviour is
+# unchanged. The names are re-exported for every existing caller.
+from ohcamel_research.battery.data import (
+    FIELDS,
+    ProvenanceError,
+    read_provenance,
+    slice_bars,
+)
+from ohcamel_research.battery.data import load_bars as _load_bars
+
+__all__ = [
+    "DEFAULT_FIXTURES",
+    "FIELDS",
+    "ProvenanceError",
+    "iter_bars",
+    "load_bars",
+    "read_provenance",
+    "slice_bars",
+    "to_jsonl",
+]
+
 DEFAULT_FIXTURES = REPO_ROOT / "fixtures" / "bars"
-FIELDS = ["open", "high", "low", "close", "volume"]
-
-
-class ProvenanceError(RuntimeError):
-    """A bar file without acceptable provenance. Refused, never worked around."""
-
-
-def read_provenance(parquet: Path) -> dict[str, object]:
-    sidecar = parquet.with_name(parquet.name + ".meta.json")
-    if not sidecar.exists():
-        raise ProvenanceError(f"{parquet.name}: no provenance sidecar ({sidecar.name}); refusing")
-    doc = json.loads(sidecar.read_text())
-    if doc.get("synthetic", True) is not False:
-        raise ProvenanceError(f"{parquet.name}: sidecar does not say synthetic=false; refusing")
-    if doc.get("data_kind") != "historical":
-        raise ProvenanceError(
-            f"{parquet.name}: data_kind is {doc.get('data_kind')!r}, not historical"
-        )
-    if doc.get("symbol") not in (None, parquet.stem):
-        raise ProvenanceError(f"{parquet.name}: sidecar is for {doc.get('symbol')!r}")
-    return doc
 
 
 def load_bars(fixtures: Path = DEFAULT_FIXTURES) -> pd.DataFrame:
     """All bars under ``fixtures`` in long form, sorted by (date, symbol).
 
     Columns: date (datetime.date), symbol, open, high, low, close, volume.
-    Every file is checked for provenance before it is read.
+    Every file is checked for provenance before it is read. The work is
+    ``battery.data.load_bars``'s; this keeps replay's default directory.
     """
-    frames = []
-    for path in sorted(fixtures.glob("*.parquet")):
-        read_provenance(path)
-        df = pd.read_parquet(path)[FIELDS].copy()
-        df.index = pd.to_datetime(df.index)
-        df.index.name = "date"
-        df["symbol"] = path.stem
-        frames.append(df.reset_index())
-    if not frames:
-        raise ProvenanceError(f"no bar files under {fixtures}")
-    out = pd.concat(frames, ignore_index=True)
-    out["date"] = out["date"].dt.date
-    # mergesort is stable, so equal dates keep the alphabetical symbol order
-    # the sorted() glob produced: the replay is deterministic.
-    return out.sort_values(["date", "symbol"], kind="mergesort").reset_index(drop=True)
-
-
-def slice_bars(
-    bars: pd.DataFrame,
-    start: date | None = None,
-    end: date | None = None,
-    symbols: list[str] | None = None,
-) -> pd.DataFrame:
-    m = pd.Series(True, index=bars.index)
-    if start is not None:
-        m &= bars["date"] >= start
-    if end is not None:
-        m &= bars["date"] <= end
-    if symbols:
-        m &= bars["symbol"].isin(symbols)
-    return bars.loc[m].reset_index(drop=True)
+    return _load_bars(fixtures)
 
 
 def iter_bars(bars: pd.DataFrame) -> Iterator[dict[str, object]]:

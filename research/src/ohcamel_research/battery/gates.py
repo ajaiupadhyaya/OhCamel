@@ -6,9 +6,11 @@ Every number a function here is compared against comes from `THRESHOLDS`
 below -- the charter's gates (`docs/CHARTER.md`), applied literally, in
 exactly one place. No other threshold literal appears in this module, so a
 gate here and the report that reads its verdict can never disagree about the
-line. DSR and PBO are computed by `fdq` (Task 11's job), not here, but their
-thresholds live in this same table for the same reason: one place, read by
-both the code that gates and the prose that reports.
+line. DSR and PBO are computed by `fdq`, not here: `dsr_gate` calls fdq's
+`deflated_sharpe` unchanged and only compares its answer with the table's
+line, and PBO is reported, never gated (its fragility line is the manifest's
+verdict rule's). `holdout_gate` is Alpha's "holdout positive", read from the
+holdout series alone.
 
 `capacity` additionally assumes a fixed 1% ADV participation cap
 (`MAX_ADV_PARTICIPATION` below), the same default the desk itself holds for
@@ -28,7 +30,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from fdq.validation.dsr import probabilistic_sharpe
+from fdq.validation.dsr import deflated_sharpe, probabilistic_sharpe
 from fdq.validation.metrics import sharpe
 
 
@@ -82,6 +84,47 @@ class GateResult:
     passed: bool | None  # None: reported, not gated (the cost sweep)
     value: float | None
     detail: dict[str, Any] = field(default_factory=dict)
+
+
+def holdout_gate(returns: pd.Series) -> GateResult:
+    """Alpha's "holdout positive": the compounded cumulative return of the
+    holdout series, and only the holdout series, is strictly greater than
+    zero. A flat holdout (all cash) is not a positive one. An empty series is
+    a runner bug, not a result, and raises."""
+    if len(returns) == 0:
+        raise ValueError("holdout_gate: the holdout series is empty")
+    cum = float((1.0 + returns).prod() - 1.0)
+    idx = pd.DatetimeIndex(returns.index)
+    return GateResult(
+        "holdout_positive",
+        cum > 0.0,
+        cum,
+        {
+            "sharpe": float(sharpe(returns)),
+            "bars": len(returns),
+            "first": idx[0].date().isoformat(),
+            "last": idx[-1].date().isoformat(),
+        },
+    )
+
+
+def dsr_gate(
+    returns: pd.Series,
+    trial_sharpes: np.ndarray,
+    threshold: float = THRESHOLDS.dsr_min,
+) -> GateResult:
+    """fdq's Deflated Sharpe Ratio, `deflated_sharpe(returns, trial_sharpes)`,
+    called unchanged, against the charter's `dsr_min` (at or above passes).
+    fdq takes the actual trial Sharpes, not a count: the number of trials is
+    their length and the deflation reads their variance. No trials at all is
+    refused -- fdq would answer 0.0, which reads as a result."""
+    trials = np.asarray(trial_sharpes, dtype=float)
+    if trials.size == 0:
+        raise ValueError("dsr_gate: no trial Sharpes; a DSR deflated by nothing is not a DSR")
+    dsr = float(deflated_sharpe(returns, trials))
+    return GateResult(
+        "dsr", dsr >= threshold, dsr, {"threshold": threshold, "trial_count": int(trials.size)}
+    )
 
 
 def psr_gate(returns: pd.Series, threshold: float = THRESHOLDS.psr_min) -> GateResult:

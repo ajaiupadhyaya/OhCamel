@@ -18,9 +18,20 @@ import pandas as pd
 from jsonschema import Draft202012Validator
 
 from ohcamel_research import REPO_ROOT
+from ohcamel_research.battery import GATES_VERSION  # the date of docs/CHARTER.md
+
+__all__ = [
+    "GATES_VERSION",
+    "SCHEMA_PATH",
+    "canonical_json",
+    "check",
+    "data_hash",
+    "load_schema",
+    "params_hash",
+    "sha256",
+]
 
 SCHEMA_PATH = REPO_ROOT / "interface" / "signal.schema.json"
-GATES_VERSION = "2026-09-02"  # the date of docs/CHARTER.md whose gates apply
 
 
 def load_schema() -> dict[str, Any]:

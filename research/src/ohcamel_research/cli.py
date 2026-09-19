@@ -11,15 +11,14 @@ from pathlib import Path
 import click
 
 from ohcamel_research import REPO_ROOT
-from ohcamel_research.contract import check as check_doc
-from ohcamel_research.replay import (
-    DEFAULT_FIXTURES,
+from ohcamel_research.battery.data import (
     ProvenanceError,
     load_bars,
     read_provenance,
     slice_bars,
-    to_jsonl,
 )
+from ohcamel_research.contract import check as check_doc
+from ohcamel_research.replay import DEFAULT_FIXTURES, to_jsonl
 
 EXAMPLES = REPO_ROOT / "interface" / "examples"
 
@@ -114,6 +113,38 @@ def signal_check(path: Path) -> None:
             click.echo(f"  {p}")
         raise click.ClickException(f"{path.name}: {len(problems)} problem(s)")
     click.echo(f"  ok   {path.name}")
+
+
+@cli.group()
+def battery() -> None:
+    """The validation battery."""
+
+
+@battery.command("run")
+@click.argument("experiment_dir", type=click.Path(path_type=Path, exists=True, file_okay=False))
+def battery_run(experiment_dir: Path) -> None:
+    """Run the pre-registered experiment in EXPERIMENT_DIR and write one manifest per strategy.
+
+    The experiment directory is the only input: the bars, the friction, the
+    macro series, the windows and the seed all come from its config.yaml, and
+    everything else from battery/, so every line the verdict depends on is
+    hashed into the manifests. Refuses to start on an uncommitted battery.
+    """
+    from ohcamel_research.battery.config import ConfigError  # fdq import is slow
+    from ohcamel_research.battery.run import describe_measure, run
+    from ohcamel_research.manifest import manifest_path
+
+    try:
+        manifests = run(experiment_dir, write=True)
+    except (ConfigError, ProvenanceError, RuntimeError) as e:
+        raise click.ClickException(str(e)) from e
+    for m in manifests:
+        click.echo(f"{m.slug}: {m.verdict_line}")
+        click.echo(
+            f"  turnover {describe_measure(m.turnover, '{:.2f} a year, one-way')}; "
+            f"capacity {describe_measure(m.capacity, '${:,.0f}')}; "
+            f"-> {manifest_path(experiment_dir, m.slug)}"
+        )
 
 
 @cli.group()

@@ -19,7 +19,10 @@ from typing import Any
 import pandas as pd
 from fdq.strategies.trend import Donchian, MACrossover
 
+from ohcamel_research.battery.data import wide
 from ohcamel_research.contract import GATES_VERSION, check, data_hash, params_hash
+
+__all__ = ["REGISTRY", "UNVALIDATED", "emit", "wide"]
 
 REGISTRY: dict[str, type] = {"ma_crossover": MACrossover, "donchian": Donchian}
 
@@ -31,15 +34,6 @@ UNVALIDATED: dict[str, Any] = {
     "pbo": None,
     "manifest": None,
 }
-
-
-def wide(bars_long: pd.DataFrame) -> pd.DataFrame:
-    """fdq's bar frame: a Timestamp index and (symbol, field) columns."""
-    df = bars_long.copy()
-    df["date"] = pd.to_datetime(df["date"])
-    w = df.pivot(index="date", columns="symbol", values=["open", "high", "low", "close", "volume"])
-    w.columns = w.columns.swaplevel(0, 1)
-    return w.sort_index(axis=1)
 
 
 def emit(

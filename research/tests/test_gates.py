@@ -26,6 +26,8 @@ from ohcamel_research.battery.gates import (
     Thresholds,
     capacity,
     cost_sweep,
+    dsr_gate,
+    holdout_gate,
     psr_gate,
     regime_gate,
     turnover,
@@ -557,3 +559,83 @@ def test_exp_a01_config_agrees_with_thresholds():
         THRESHOLDS.cost_sweep_bps_round_trip
     )
     assert config["bootstrap"]["resamples"] == THRESHOLDS.bootstrap_resamples
+
+
+# ---------------------------------------------------------------------------
+# holdout_gate: Alpha's "holdout positive", on the holdout series alone.
+# ---------------------------------------------------------------------------
+
+
+def test_holdout_gate_passes_on_a_positive_compounded_return():
+    # 1.10 x 0.95 - 1 = 0.045 > 0.
+    g = holdout_gate(daily([0.10, -0.05], start="2022-06-01"))
+    assert g.name == "holdout_positive"
+    assert g.value == pytest.approx(0.045)
+    assert g.passed is True
+    assert (g.detail["first"], g.detail["last"], g.detail["bars"]) == (
+        "2022-06-01",
+        "2022-06-02",
+        2,
+    )
+
+
+def test_holdout_gate_compounds_rather_than_sums():
+    # Sum 0.10 - 0.095 = +0.005, but 1.10 x 0.905 - 1 = -0.0045: a fail.
+    g = holdout_gate(daily([0.10, -0.095]))
+    assert g.value == pytest.approx(-0.0045)
+    assert g.passed is False
+
+
+def test_holdout_gate_fails_a_flat_holdout():
+    # All cash: a cumulative return of exactly 0 is not a positive one.
+    g = holdout_gate(daily([0.0, 0.0, 0.0]))
+    assert g.value == 0.0
+    assert g.passed is False
+
+
+def test_holdout_gate_refuses_an_empty_series():
+    with pytest.raises(ValueError, match="empty"):
+        holdout_gate(pd.Series([], dtype=float))
+
+
+# ---------------------------------------------------------------------------
+# dsr_gate: fdq's deflated_sharpe, unchanged, against the charter's line.
+# ---------------------------------------------------------------------------
+
+
+def test_dsr_gate_passes_at_exactly_the_threshold(monkeypatch):
+    monkeypatch.setattr(gates, "deflated_sharpe", lambda *a, **k: 0.30)
+    g = dsr_gate(daily([0.01, -0.01, 0.02]), np.array([0.1, 0.2]))
+    assert (g.name, g.value, g.passed) == ("dsr", 0.30, True)
+    monkeypatch.setattr(gates, "deflated_sharpe", lambda *a, **k: 0.2999)
+    assert dsr_gate(daily([0.01, -0.01, 0.02]), np.array([0.1, 0.2])).passed is False
+
+
+def test_dsr_gate_hands_fdq_the_returns_and_every_trial_sharpe_unchanged(monkeypatch):
+    seen = {}
+
+    def capture(returns, trial_sharpes):
+        seen["returns"], seen["trials"] = returns, trial_sharpes
+        return 0.5
+
+    monkeypatch.setattr(gates, "deflated_sharpe", capture)
+    r = daily([0.01, -0.01, 0.02])
+    trials = np.array([0.03, -0.01, 0.0, 0.02])
+    g = dsr_gate(r, trials)
+    assert seen["returns"] is r
+    np.testing.assert_array_equal(seen["trials"], trials)
+    assert g.detail == {"threshold": THRESHOLDS.dsr_min, "trial_count": 4}
+
+
+def test_dsr_gate_is_fdqs_number():
+    # Unpatched: the gate's value is exactly fdq's deflated_sharpe.
+    from fdq.validation.dsr import deflated_sharpe
+
+    r = daily([0.01, -0.005, 0.02, 0.0, -0.01, 0.015])
+    trials = np.array([0.05, 0.1, -0.02])
+    assert dsr_gate(r, trials).value == deflated_sharpe(r, trials)
+
+
+def test_dsr_gate_refuses_no_trials():
+    with pytest.raises(ValueError, match="no trial Sharpes"):
+        dsr_gate(daily([0.01, -0.01]), np.array([]))
