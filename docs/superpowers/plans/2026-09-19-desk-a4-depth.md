@@ -123,7 +123,7 @@ Every number is derived by hand in a test, and every identity holds to 1e-9.
      - z_cf = z + (z² − 1)g₁/6 + (z³ − 3z)g₂/24 − (2z³ − 5z)g₁²/36;
      - g₁ is the skewness m₃ ÷ m₂^1.5, and g₂ the excess kurtosis m₄ ÷ m₂² − 3, both with population moments (divisor n, demeaned);
      - σ is the population standard deviation, the convention `Risk_metrics.covariance` uses;
-     - when the expansion is not strictly increasing on z ∈ [−4, 4] (801 points), the figure is `None`, "outside the expansion's valid region".
+     - when the expansion is not strictly increasing on z ∈ [−4, 4], the figure is `None`, "outside the expansion's valid region". Monotonicity is decided in closed form: the derivative is quadratic in z, so its minimum over the interval is at an endpoint or the vertex. A sampled grid can miss a violation narrower than its spacing (amended after Task 7a's review).
    - **The `make garch` sentence changes.** The line it prints saying GARCH is "NOT wired into the engine", and every copy of that claim, become true statements: GARCH is wired, on the 250-observation window, beside this finding. The table rows stay byte-identical.
 8. **Options: quantities from the book, marks from the indicative feed.**
    - The desk does not trade options. The venue's option positions stay unmanaged.
