@@ -39,6 +39,7 @@ let suites =
     Test_options.suite;
     Test_options_graph.suite;
     Test_attribution.suite;
+    Test_factor_model.suite;
     Test_var_backtest.suite;
     Test_crisis_data.suite;
     Test_recompute_log.suite;

@@ -24,7 +24,7 @@
    is named here by its directory, because CI's grep refuses the desk
    library's name anywhere in lib/. *)
 
-let tests = 600
+let tests = 610
 
 (* The scheduler suite's count: test/desk_async, the executable whose cases run
    with Async's scheduler on clocks of their own. It asserts this against its
