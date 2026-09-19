@@ -1511,10 +1511,14 @@ manager alone — is held by a test that fails if any other file in `desk/` or
 **The research service**
 ([`research/src/ohcamel_research/service.py`](research/src/ohcamel_research/service.py),
 Docker Compose's `ohcamel-research`, `live` profile only) computes each
-registered strategy's weight once a trading day at 19:15 America/New_York,
-after the desk's own close is on record and inside the OPG window for the
-next session, from the strategy's manifest and `selected_params` alone. It
-calls the same `signal.emit`/fdq class the battery ran to produce that
+registered strategy's weight once a trading day, from 19:15 America/New_York
+once that day's bar can be fetched (00:16 UTC: fdq sends its end date as
+23:59:59 UTC and SIP's last 15 minutes are restricted, so 20:16 New York in
+summer and 19:16 in winter), after the desk's own close is on record and
+inside the OPG window for the next session. The weight is 0.9 when the rule
+is on -- the fraction the evidence held invested, fdq's `cash_buffer_pct`
+0.10 -- and 0 when it is off, computed from the strategy's manifest and
+`selected_params` alone. It calls the same `signal.emit`/fdq class the battery ran to produce that
 manifest, never a second implementation of "is the close above its SMA", so
 the live signal and the backtest that validated it cannot drift apart by one
 of them keeping its own copy of the rule. It refuses to write anything

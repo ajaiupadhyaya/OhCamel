@@ -152,15 +152,19 @@ starts cleanly on a freshly created, empty `OHCAMEL_SIGNALS_DIR`: reading an
 empty directory succeeds, and `desk/intake.ml`'s own check of that variable
 refuses only a value set to the empty string or a path that is not a
 readable directory -- so the live engine can start before
-`ohcamel-research`'s first 19:15 run has written anything. Every
+`ohcamel-research`'s first evening run has written anything. Every
 registered strategy carries `(sizing advisory)` or `(sizing live)` in
 `book.sexp`, default `advisory`, and a `capital_fraction`; a signal is sized
 only when it passes every rule and its strategy is `live`, and no task has
 ever set one so. `research/` runs the validation battery
 ([`ohcamel_research`](../research/)) and `research/src/ohcamel_research/service.py`
 (Docker Compose's `ohcamel-research`, `live` profile only) emits one weight a
-strategy a trading day at 19:15 America/New_York, from a manifest's own
-`selected_params`, refusing to write anything unless the fetched bars carry
+strategy a trading day -- 0.9 when the rule is on, the fraction the evidence
+held invested (fdq's `cash_buffer_pct` 0.10), and 0 when it is off -- from
+19:15 America/New_York, once that day's bar can be fetched: fdq sends its end
+date as 23:59:59 UTC and SIP's last 15 minutes are restricted, so the bar
+qualifies at 00:16 UTC, which is 20:16 New York in summer and 19:16 in winter.
+It works from a manifest's own `selected_params`, refusing to write anything unless the fetched bars carry
 an Alpaca provenance sidecar and accepting only `ma_crossover`. EXP-A01, the
 first and only battery run, tested two strategies against ten years of
 Alpaca bars and both **fail**; the verdict, quoted rather than paraphrased,
@@ -321,7 +325,8 @@ The desk design's acceptance line holds in three separate places, not one:
   what ships.
 - **On the live host:** after the owner deploys with SPY and TLT in
   `book.sexp` and the `live` profile running `ohcamel-research`, that
-  service's first post-close run at 19:15 America/New_York writes a real
+  service's first post-close run (from 19:15 America/New_York, once the day's
+  bar can be fetched) writes a real
   signal, and the desk shows it as `advisory` with its reason. No task in
   this repository can demonstrate this one -- it needs a deploy and a real
   close -- so it is the owner's to see, on `/research`, after both happen.
@@ -460,8 +465,8 @@ happened by itself, and none of it will until the owner does it by hand:
     the staleness step baked into the image (`RUN` at build time, over the
     committed manifests) fails the build loudly if anything about the
     battery, the manifests or the dependency lock has drifted since.
-  - **the live host's first post-close run of the service**, at 19:15
-    America/New_York, is the first time a *real* signal exists anywhere in
+  - **the live host's first post-close run of the service**, in the
+    evening New York time (00:16 UTC at the earliest), is the first time a *real* signal exists anywhere in
     this project. It will show on `/research` as `advisory` with its
     reason, which is the live-host half of the spec's acceptance line that
     no task here could demonstrate ahead of time -- see *The spec's
