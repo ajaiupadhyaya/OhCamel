@@ -364,7 +364,7 @@ Alpha Task 4 builds a `Manifest` dataclass with load and dump. **Its staleness r
   - `selection_window` and `holdout_window`;
   - `dsr`: its unit, its trial count, its trial-Sharpe sources, and the return series it reads;
   - `verdict` and `verdict_line` — one sentence, which Task 17 embeds, so no image needs `report.md`;
-  - `hashes`: the SHA-256 of every file under `research/src/ohcamel_research/battery/`, of `config.yaml`, of the friction file, of `fixtures/macro/macro.parquet`, and of every fixture it read.
+  - `hashes`: the SHA-256 of every file under `research/src/ohcamel_research/battery/`, of `config.yaml`, of the friction file, of `fixtures/macro/macro.parquet`, of every fixture it read, and of `research/uv.lock`, so a dependency change stales the evidence too.
 - **Stale** means any recorded hash differs from the same file now. The check needs no git, so it runs in the image.
 - **The runner refuses to start** if `battery/` has uncommitted changes (`git status --porcelain -- research/src/ohcamel_research/battery/` is non-empty). This is checked at run time, never in the image.
 - **`battery/` is frozen after Task 13 for the rest of this phase.** Any later change to it makes the manifests stale, and re-running would evaluate the holdout a second time. That is a new experiment with a new id, disclosed as a second look, never a silent re-run.
