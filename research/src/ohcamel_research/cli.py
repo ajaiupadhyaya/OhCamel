@@ -122,22 +122,21 @@ def signal_emit(
 
     --validation-from is the only way to get a validation status other than
     "unvalidated": it is built from a manifest by
-    ohcamel_research.signal.validation_from_manifest, which is the one place
-    a "pass" can come from. There is no flag to set the status by hand.
+    ohcamel_research.signal.validation_from_manifest, which emit() itself
+    calls -- there is no flag to set the status by hand, and no way to pass
+    emit() a ready-made validation dict either.
     """
-    from ohcamel_research.signal import (  # fdq import is slow; keep replay fast
-        emit,
-        validation_from_manifest,
-        write_signal,
-    )
+    from ohcamel_research.signal import emit, write_signal  # fdq import is slow; keep replay fast
 
-    validation = (
-        validation_from_manifest(validation_from, REPO_ROOT)
-        if validation_from is not None
-        else None
-    )
     doc = emit(
-        strategy, fdq_strategy, json.loads(params), as_of, load_bars(fixtures), sequence, validation
+        strategy,
+        fdq_strategy,
+        json.loads(params),
+        as_of,
+        load_bars(fixtures),
+        sequence,
+        validation_from=validation_from,
+        repo_root=REPO_ROOT,
     )
     write_signal(doc, out)
     status = doc["validation"]["status"]

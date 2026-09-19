@@ -22,14 +22,18 @@ both jobs would make both documents say ``"strategy": "ma_crossover"``,
 colliding on file name, on sequence, and on the desk's R5/R2 bookkeeping,
 which is keyed by the slug alone.
 
-**The validation block comes only from a manifest.** ``validation_from_manifest``
-is the one function that may set ``status`` to anything but
-``"unvalidated"``, and it does so only by reading a fresh manifest whose own
-verdict says so (see its docstring). ``emit`` accepts whatever
-``validation`` dict it is handed and re-validates the whole document against
-the schema before returning, so a hand-written ``{"status": "pass", ...}``
-still has to satisfy the schema's shape, but nothing in this module can
-manufacture a ``"pass"`` on its own account.
+**The validation block comes only from a manifest, and ``emit`` never takes
+one as a dict.** ``validation_from_manifest`` is the one function that may
+set ``status`` to anything but ``"unvalidated"``, and it does so only by
+reading a fresh manifest whose own verdict says so (see its docstring).
+``emit`` takes ``validation_from``, a path to a manifest (or ``None``), and
+calls ``validation_from_manifest`` on it itself; there is no parameter here
+that accepts a ready-made ``dict``. This is not merely a CLI-level
+convention -- Task 16's research service calls ``emit`` directly, in
+Python, where a CLI's refusal to expose a ``--status`` flag would not have
+reached at all -- so the refusal has to live in this function's own
+signature. Passing anything but a path (or ``None``) as ``validation_from``,
+by keyword or by position, is a ``TypeError``.
 """
 
 from __future__ import annotations
@@ -43,6 +47,7 @@ from typing import Any
 import pandas as pd
 from fdq.strategies.trend import Donchian, MACrossover
 
+from ohcamel_research import REPO_ROOT
 from ohcamel_research.battery.data import wide
 from ohcamel_research.contract import GATES_VERSION, check, data_hash, params_hash
 from ohcamel_research.manifest import Manifest, is_stale
@@ -139,8 +144,32 @@ def emit(
     as_of: date,
     bars_long: pd.DataFrame,
     sequence: int,
-    validation: dict[str, Any] | None = None,
+    validation_from: Path | None = None,
+    repo_root: Path = REPO_ROOT,
 ) -> dict[str, Any]:
+    """Emit one signal document. See the module docstring for ``strategy``
+    vs. ``fdq_strategy``.
+
+    ``validation_from`` is a path to a battery manifest, or ``None``. When
+    given, the validation block is built by calling
+    ``validation_from_manifest(validation_from, repo_root)`` right here, so
+    it can only ever be ``pass``, ``fail`` or ``unvalidated`` by that
+    function's own rules. When ``None``, the document is unvalidated
+    (``UNVALIDATED``). There has never been, and is not now, any argument
+    that accepts a ready-made validation ``dict`` -- passing one (by
+    keyword, where it lands on no parameter at all, or positionally, where
+    it would land on ``validation_from``) is refused with ``TypeError``.
+    ``repo_root`` defaults to this repository's own root so most callers
+    never pass it; it exists as a parameter so a caller -- the research
+    service, a test -- can validate a manifest against a filesystem other
+    than the one this package lives in.
+    """
+    if validation_from is not None and not isinstance(validation_from, (str, Path)):
+        raise TypeError(
+            "emit: validation_from must be a path to a manifest, or None -- "
+            f"not {type(validation_from).__name__}; there is no way to hand emit() "
+            "a ready-made validation dict"
+        )
     if fdq_strategy not in REGISTRY:
         raise KeyError(f"unknown fdq strategy {fdq_strategy!r}; known: {sorted(REGISTRY)}")
     hist = bars_long.loc[bars_long["date"] <= as_of].reset_index(drop=True)
@@ -154,6 +183,11 @@ def emit(
     targets = [
         {"symbol": str(sym), "weight": float(x)} for sym, x in weights.items() if float(x) != 0.0
     ]
+    validation = (
+        validation_from_manifest(Path(validation_from), repo_root)
+        if validation_from is not None
+        else dict(UNVALIDATED)
+    )
     doc = {
         "schema_version": 1,
         "strategy": strategy,
@@ -162,7 +196,7 @@ def emit(
         "computed_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "data_hash": data_hash(hist),
         "sequence": int(sequence),
-        "validation": dict(validation) if validation is not None else dict(UNVALIDATED),
+        "validation": validation,
         "targets": targets,
     }
     problems = check(doc)

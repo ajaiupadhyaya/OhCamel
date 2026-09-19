@@ -7,8 +7,13 @@
   whose status is anything but "unvalidated": fresh pass, fresh
   "pass, fragile" (also "pass"), fresh fail, a stale manifest, and a
   manifest that cannot even be loaded -- each case as its own test.
-- the CLI's ``signal emit`` has no flag to set the status by hand; every
-  route but ``--validation-from`` a fresh, passing manifest yields
+- ``emit`` itself only ever reaches ``validation_from_manifest`` through its
+  own ``validation_from`` path argument, which it calls internally -- there
+  is no parameter, at the Python level, that accepts a ready-made
+  validation dict. This is checked at the Python API, not just the CLI,
+  because Task 16's research service calls ``emit`` directly.
+- the CLI's ``signal emit`` has no flag to set the status by hand either;
+  every route but ``--validation-from`` a fresh, passing manifest yields
   "unvalidated".
 - signals are written atomically, and a NaN weight refuses to be written.
 - every emitted document validates against ``interface/signal.schema.json``
@@ -21,6 +26,9 @@ Manifests are built in ``tmp_path`` repos mirroring the paths
 ``test_manifest.py`` uses for the same purpose (``_build_repo``/``_manifest``
 below are a trimmed, local copy, kept independent of that module's own
 helpers so this file does not depend on another test file's internals).
+``emit``'s own ``repo_root`` parameter is what lets these tests check
+freshness against that tmp repo directly, with no monkeypatching of
+anything in ``ohcamel_research.cli``.
 """
 
 from __future__ import annotations
@@ -34,7 +42,7 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
-import ohcamel_research.cli as cli_module
+from ohcamel_research import REPO_ROOT
 from ohcamel_research.cli import cli
 from ohcamel_research.contract import check, data_hash
 from ohcamel_research.manifest import (
@@ -212,6 +220,66 @@ def test_two_slugs_on_the_same_fdq_strategy_emit_two_distinct_documents():
     assert check(tlt) == []
 
 
+def test_emit_has_no_parameter_that_accepts_a_ready_made_validation_dict():
+    """A raw ``validation`` dict is refused, not merely discouraged: there is
+    no keyword named ``validation`` for it to land on at all."""
+    raw = {
+        "status": "pass",
+        "gates_version": "2026-09-02",
+        "dsr": None,
+        "psr": None,
+        "pbo": None,
+        "manifest": None,
+    }
+    with pytest.raises(TypeError):
+        emit(  # type: ignore[call-arg]
+            "exp_a01_spy",
+            "ma_crossover",
+            {"symbol": "SPY", "fast": 1, "slow": 200},
+            date(2020, 12, 31),
+            load_bars(),
+            1,
+            validation=raw,
+        )
+
+
+def test_emit_refuses_a_dict_passed_positionally_where_validation_from_goes():
+    """The same dict, passed positionally instead of by (nonexistent)
+    keyword, lands on ``validation_from`` -- which refuses anything that
+    is not a path or ``None``, so this is refused too, just later."""
+    raw = {
+        "status": "pass",
+        "gates_version": "2026-09-02",
+        "dsr": None,
+        "psr": None,
+        "pbo": None,
+        "manifest": None,
+    }
+    with pytest.raises(TypeError):
+        emit(
+            "exp_a01_spy",
+            "ma_crossover",
+            {"symbol": "SPY", "fast": 1, "slow": 200},
+            date(2020, 12, 31),
+            load_bars(),
+            1,
+            raw,
+        )
+
+
+def test_emit_with_no_validation_from_is_unvalidated():
+    doc = emit(
+        "exp_a01_spy",
+        "ma_crossover",
+        {"symbol": "SPY", "fast": 1, "slow": 200},
+        date(2020, 12, 31),
+        load_bars(),
+        1,
+    )
+    assert doc["validation"] == UNVALIDATED
+    assert check(doc) == []
+
+
 # --------------------------------------------------------------------------
 # validation_from_manifest: the only source of a status other than
 # "unvalidated" -- fresh pass, fresh "pass, fragile", fresh fail, stale, and
@@ -345,7 +413,8 @@ def test_validation_from_manifest_never_raises_and_a_document_built_from_it_stil
     m.dump(manifest_file)
     paths["friction"].write_bytes(b"spread_bps_default: 999.0\n")  # make it stale
 
-    v = validation_from_manifest(manifest_file, paths["root"])
+    # emit() calls validation_from_manifest itself; there is no dict to
+    # thread through by hand any more (see the "emit" tests below).
     doc = emit(
         "exp_a01_spy",
         "ma_crossover",
@@ -353,15 +422,83 @@ def test_validation_from_manifest_never_raises_and_a_document_built_from_it_stil
         date(2020, 12, 31),
         load_bars(),
         1,
-        v,
+        validation_from=manifest_file,
+        repo_root=paths["root"],
     )
     assert check(doc) == []
     assert doc["validation"]["status"] == "unvalidated"
 
 
 # --------------------------------------------------------------------------
+# emit's own validation_from + repo_root: the Python API, which is what
+# Task 16's research service actually calls -- not the CLI.
+# --------------------------------------------------------------------------
+
+
+def test_emit_with_a_fresh_passing_manifest_is_pass(tmp_path: Path):
+    paths = _build_repo(tmp_path)
+    m = _manifest(
+        paths, gates=({"name": "psr", "passed": True, "value": 0.9, "detail": {}},), pbo=0.1
+    )
+    assert m.verdict == "pass"
+    manifest_file = paths["root"] / "manifest.exp_test_spy.json"
+    m.dump(manifest_file)
+
+    doc = emit(
+        "exp_a01_spy",
+        "ma_crossover",
+        {"symbol": "SPY", "fast": 1, "slow": 200},
+        date(2020, 12, 31),
+        load_bars(),
+        1,
+        validation_from=manifest_file,
+        repo_root=paths["root"],
+    )
+
+    assert doc["validation"]["status"] == "pass"
+    assert doc["validation"]["manifest"] == str(manifest_file)
+    assert check(doc) == []
+
+
+def test_emit_with_a_stale_manifest_is_unvalidated(tmp_path: Path):
+    paths = _build_repo(tmp_path)
+    m = _manifest(paths)
+    manifest_file = paths["root"] / "manifest.exp_test_spy.json"
+    m.dump(manifest_file)
+    paths["friction"].write_bytes(b"spread_bps_default: 999.0\n")  # make it stale
+
+    doc = emit(
+        "exp_a01_spy",
+        "ma_crossover",
+        {"symbol": "SPY", "fast": 1, "slow": 200},
+        date(2020, 12, 31),
+        load_bars(),
+        1,
+        validation_from=manifest_file,
+        repo_root=paths["root"],
+    )
+
+    assert doc["validation"]["status"] == "unvalidated"
+    assert "stale" in doc["validation"]["manifest"]
+    assert "friction" in doc["validation"]["manifest"]
+    assert check(doc) == []
+
+
+def test_emit_defaults_repo_root_to_the_real_repository():
+    """No ``repo_root`` given: freshness is checked against this actual
+    checkout, which is what every real caller (the CLI, eventually the
+    research service) wants without having to say so."""
+    import inspect
+
+    assert inspect.signature(emit).parameters["repo_root"].default == REPO_ROOT
+
+
+# --------------------------------------------------------------------------
 # The CLI: no flag sets the status by hand; --validation-from is the only
-# route to anything but "unvalidated".
+# route to anything but "unvalidated". Freshness itself is exercised at the
+# emit() level above, against a tmp repo_root -- the actual CLI command
+# always passes the real REPO_ROOT, so a CLI-level freshness test would
+# only be able to check staleness/freshness against this real checkout.
 # --------------------------------------------------------------------------
 
 
@@ -411,54 +548,6 @@ def test_cli_emit_without_validation_from_is_unvalidated(tmp_path: Path):
     doc = json.loads(out.read_text())
     assert doc["validation"]["status"] == "unvalidated"
     assert doc["strategy"] == "exp_a01_spy"
-    assert check(doc) == []
-
-
-def test_cli_emit_with_validation_from_a_stale_manifest_is_unvalidated(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    paths = _build_repo(tmp_path)
-    m = _manifest(paths)
-    manifest_file = paths["root"] / "manifest.exp_test_spy.json"
-    m.dump(manifest_file)
-    paths["friction"].write_bytes(b"spread_bps_default: 999.0\n")
-    # The CLI's validation_from_manifest checks freshness against its own
-    # REPO_ROOT; point it at this test's tmp repo instead of the real one,
-    # so staleness here is the friction edit above and nothing else.
-    monkeypatch.setattr(cli_module, "REPO_ROOT", paths["root"])
-
-    out = tmp_path / "out" / "exp_a01_spy-1.json"
-    result = CliRunner().invoke(
-        cli,
-        _emit_args("exp_a01_spy", "ma_crossover", out, validation_from=str(manifest_file)),
-    )
-    assert result.exit_code == 0, result.output
-    doc = json.loads(out.read_text())
-    assert doc["validation"]["status"] == "unvalidated"
-    assert "friction" in doc["validation"]["manifest"]
-    assert check(doc) == []
-
-
-def test_cli_emit_with_validation_from_a_fresh_passing_manifest_is_pass(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    paths = _build_repo(tmp_path)
-    m = _manifest(
-        paths, gates=({"name": "psr", "passed": True, "value": 0.9, "detail": {}},), pbo=0.1
-    )
-    manifest_file = paths["root"] / "manifest.exp_test_spy.json"
-    m.dump(manifest_file)
-    monkeypatch.setattr(cli_module, "REPO_ROOT", paths["root"])
-
-    out = tmp_path / "out" / "exp_a01_spy-1.json"
-    result = CliRunner().invoke(
-        cli,
-        _emit_args("exp_a01_spy", "ma_crossover", out, validation_from=str(manifest_file)),
-    )
-    assert result.exit_code == 0, result.output
-    doc = json.loads(out.read_text())
-    assert doc["validation"]["status"] == "pass"
-    assert doc["validation"]["manifest"] == str(manifest_file)
     assert check(doc) == []
 
 
