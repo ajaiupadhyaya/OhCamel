@@ -274,3 +274,24 @@ jobs:
         with:
           name: coverage-html
           path: _coverage/html
+
+  research-test:
+    # The research layer (research/) is a separate uv project over `fdq`, not
+    # gated by the opam switch the jobs above use. Ubuntu only: the answer
+    # does not depend on the OS, and this job needs no OCaml toolchain at all.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.10.4"
+
+      # --locked (inside the target) refuses to run if research/uv.lock has
+      # drifted from pyproject.toml, rather than silently re-resolving it --
+      # so a stale lockfile fails loudly here instead of only on someone's
+      # machine.
+      - name: research-test
+        run: make research-test

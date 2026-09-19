@@ -1,0 +1,9 @@
+{
+  "source": "alpaca",
+  "data_kind": "historical",
+  "fetched_at": "2026-09-02T01:38:10.295179+00:00",
+  "synthetic": false,
+  "symbol": "IEF",
+  "start": "2018-01-01",
+  "end": "2020-12-31"
+}

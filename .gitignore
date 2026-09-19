@@ -45,3 +45,22 @@ deploy/*.env
 
 # subagent-driven-development scratch (ledger, briefs, review packages)
 .superpowers/
+
+# The research layer (research/) is its own uv project; its virtualenv is
+# never committed, same as _opam/ above for the OCaml switch.
+research/.venv/
+
+# Python caches. Unprefixed because they can appear anywhere a .py file is
+# imported or checked (research/ today, tools/ potentially).
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Per-strategy experiment output. Only research/experiments/<strategy>/results/
+# is ignored -- the raw run artifacts underneath it. The per-strategy
+# manifest.*.json files and report.md live one level up, alongside results/,
+# not inside it, so this pattern does not touch them; they are the record of
+# what ran and stay committed.
+research/experiments/*/results/
