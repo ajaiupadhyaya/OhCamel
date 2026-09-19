@@ -233,6 +233,138 @@ let covariance_matrix (series : float array array) =
   done;
   m
 
+(* Cornish-Fisher expansion: a normal-quantile correction built from a
+   series' own skewness and excess kurtosis, so a VaR estimate can respond to
+   a fat or skewed tail without either assuming the empirical history already
+   contains its worst case (as [historical_var] does) or discarding the third
+   and fourth moments entirely (as [parametric_var] does).
+
+   Population moments throughout -- same divide-by-n convention as
+   [variance] and everywhere else in this module, never n-1. *)
+
+(* The population 2nd, 3rd and 4th central moments in one pass, sharing the
+   demeaning step and the squared deviation between the 3rd and 4th powers.
+   Built from explicit multiplications rather than [Float.( ** )]: these are
+   only ever a square and a cube, which a multiply chain computes exactly,
+   with no call into a general pow routine. *)
+let central_moments xs =
+  let m = mean xs in
+  let n = float_of_int (Array.length xs) in
+  let s2 = ref 0.0 and s3 = ref 0.0 and s4 = ref 0.0 in
+  Array.iter xs ~f:(fun x ->
+      let d = x -. m in
+      let d2 = d *. d in
+      s2 := !s2 +. d2;
+      s3 := !s3 +. (d2 *. d);
+      s4 := !s4 +. (d2 *. d2));
+  (!s2 /. n, !s3 /. n, !s4 /. n)
+
+(* g1 = m3 / m2^1.5, written as [m2 *. sqrt m2] rather than a general
+   exponentiation to 1.5 -- the same value, but computed as "times its own
+   square root" instead of through a pow routine meant for arbitrary
+   exponents. *)
+let skewness xs =
+  let m2, m3, _ = central_moments xs in
+  m3 /. (m2 *. Float.sqrt m2)
+
+let excess_kurtosis xs =
+  let m2, _, m4 = central_moments xs in
+  (m4 /. (m2 *. m2)) -. 3.0
+
+(* The Cornish-Fisher quantile correction, given a standard normal quantile z
+   and a series' population skew and excess kurtosis. Zero skew and zero
+   excess kurtosis leave z untouched: every correction term carries a g1 or a
+   g2 factor, so the expansion collapses to the identity exactly, not merely
+   in the limit. *)
+let cornish_fisher_z ~z ~skew ~excess_kurtosis =
+  let g1 = skew and g2 = excess_kurtosis in
+  let z2 = z *. z in
+  let z3 = z2 *. z in
+  z
+  +. ((z2 -. 1.0) *. g1 /. 6.0)
+  +. ((z3 -. (3.0 *. z)) *. g2 /. 24.0)
+  -. (((2.0 *. z3) -. (5.0 *. z)) *. g1 *. g1 /. 36.0)
+
+(* The expansion is a valid quantile transform only where it strictly
+   increases in z: past that point, a larger standard-normal quantile could
+   map to a *smaller* Cornish-Fisher one, which is incoherent for anything
+   read as a quantile.
+
+   Decided in closed form, not by sampling a grid: a grid can miss a
+   violation narrower than its spacing, and the reviewer's counterexample
+   test below is exactly such a case. The derivative of [cornish_fisher_z]
+   with respect to z is
+     1 + z*g1/3 + (z^2-1)*g2/8 - (6z^2-5)*g1^2/36
+   Expanding (z^2-1)*g2/8 as z^2*g2/8 - g2/8, and -(6z^2-5)*g1^2/36 as
+   -z^2*g1^2/6 + 5*g1^2/36, and collecting powers of z, this is the
+   quadratic A*z^2 + B*z + C with
+     A = g2/8 - g1^2/6
+     B = g1/3
+     C = 1 - g2/8 + 5*g1^2/36
+
+   The expansion is strictly increasing on [-4, 4] iff this quadratic's
+   minimum over that interval is strictly positive. A downward-opening or
+   linear quadratic (A <= 0) attains its minimum over a closed interval at
+   an endpoint, never in the interior. An upward-opening one (A > 0) is
+   minimised at its vertex -B/(2A) when that vertex falls inside the
+   interval; otherwise it is monotonic across the interval and, like every
+   A <= 0 case, its minimum there is at an endpoint. Evaluating both
+   endpoints, plus the vertex when A > 0 and the vertex lies in [-4, 4],
+   covers every case exactly. *)
+let cornish_fisher_is_monotone ~skew ~excess_kurtosis =
+  let g1 = skew and g2 = excess_kurtosis in
+  let a = (g2 /. 8.0) -. (g1 *. g1 /. 6.0) in
+  let b = g1 /. 3.0 in
+  let c = 1.0 -. (g2 /. 8.0) +. (5.0 *. g1 *. g1 /. 36.0) in
+  let f z = (a *. z *. z) +. (b *. z) +. c in
+  let lo = -4.0 and hi = 4.0 in
+  let candidates = [ f lo; f hi ] in
+  let candidates =
+    if Float.( > ) a 0.0 then
+      let vertex = -.b /. (2.0 *. a) in
+      if Float.( >= ) vertex lo && Float.( <= ) vertex hi then f vertex :: candidates
+      else candidates
+    else candidates
+  in
+  Float.( > ) (List.fold candidates ~init:Float.infinity ~f:Float.min) 0.0
+
+(* Cornish-Fisher VaR for a single return series: the same zero-mean,
+   population-sigma convention [portfolio_parametric_var] uses, with the
+   normal quantile replaced by its skew/kurtosis-corrected counterpart.
+   [Error], never a number that merely looks plausible, in the four cases
+   the expansion cannot be trusted: a non-finite observation (which would
+   otherwise poison every downstream moment silently, since nan and
+   infinity propagate through arithmetic without raising), too little data
+   to estimate a third and fourth moment at all, a series with no variation
+   to standardise by, or a moment combination that makes the expansion
+   non-monotone. *)
+let cornish_fisher_var ~returns ~confidence =
+  validate_confidence ~confidence;
+  let n = Array.length returns in
+  let non_finite = Array.count returns ~f:(fun x -> not (Float.is_finite x)) in
+  if non_finite > 0 then
+    Error
+      (Printf.sprintf
+         "risk_metrics: cornish_fisher_var: %d of %d observations are not finite"
+         non_finite n)
+  else if n < 120 then
+    Error
+      (Printf.sprintf
+         "risk_metrics: cornish_fisher_var needs at least 120 observations, got %d" n)
+  else if is_effectively_constant returns then
+    Error
+      "risk_metrics: cornish_fisher_var: series is effectively constant, skewness and \
+       kurtosis are undefined"
+  else
+    let g1 = skewness returns in
+    let g2 = excess_kurtosis returns in
+    if not (cornish_fisher_is_monotone ~skew:g1 ~excess_kurtosis:g2) then
+      Error "risk_metrics: cornish_fisher_var: outside the expansion's valid region"
+    else
+      let z = normal_ppf ~p:(1.0 -. confidence) in
+      let z_cf = cornish_fisher_z ~z ~skew:g1 ~excess_kurtosis:g2 in
+      Ok (-.(z_cf *. stddev returns))
+
 (* Peak-to-trough decline as a positive fraction of the peak.
 
    [max_drawdown] is the worst such decline anywhere in the series; it is a

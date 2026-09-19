@@ -72,6 +72,53 @@ end = struct
   let to_string = Fn.id
 end
 
+(* Which return-space factor an exposure, a regression loading or a limit is
+   measured against -- the five-factor model of A4's risk depth (ruling 3):
+
+     market   = r(SPY)
+     size     = r(IWM) - r(SPY)
+     value    = r(IWD) - r(IWF)
+     momentum = r(MTUM) - r(SPY)
+     rates    = change in DGS10, in percentage points
+
+   [etfs] names the five tickers those definitions read from, in the order
+   ruling 3 first names each one -- lib/long_panel.ml is the only reader,
+   since the model itself is built from spreads and differences of these five
+   series rather than from the ETFs directly.
+
+   Lives here, beside [Sector], rather than in long_panel.ml or
+   factor_model.ml: a later task adds a [Factor_exposure] case to
+   [Limit.kind] below, naming a [Factor.t], and a limit's kind cannot name a
+   type that has not been declared yet. *)
+module Factor : sig
+  type t = Market | Size | Value | Momentum | Rates
+  [@@deriving sexp, compare, equal, enumerate]
+
+  val to_string : t -> string
+  val of_string : string -> t Or_error.t
+  val etfs : Symbol.t list
+end = struct
+  type t = Market | Size | Value | Momentum | Rates
+  [@@deriving sexp, compare, equal, enumerate]
+
+  let to_string = function
+    | Market -> "market"
+    | Size -> "size"
+    | Value -> "value"
+    | Momentum -> "momentum"
+    | Rates -> "rates"
+
+  let of_string = function
+    | "market" -> Ok Market
+    | "size" -> Ok Size
+    | "value" -> Ok Value
+    | "momentum" -> Ok Momentum
+    | "rates" -> Ok Rates
+    | s -> Or_error.errorf "Factor.of_string: %S is not a factor" s
+
+  let etfs = List.map ~f:Symbol.of_string [ "SPY"; "IWM"; "IWD"; "IWF"; "MTUM" ]
+end
+
 (* A quantity of an instrument, signed: positive is long, negative is short.
 
    Floats rather than integers because this engine is not the system of record
