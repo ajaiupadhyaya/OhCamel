@@ -105,14 +105,17 @@ def validation_from_manifest(manifest_path: Path, repo_root: Path) -> dict[str, 
     manifest_str = str(manifest_path)
     try:
         manifest = Manifest.load(manifest_path)
-    except (OSError, ValueError) as e:
+    except Exception as e:  # noqa: BLE001 -- any failure to load is "unvalidated", never a raise
+        # Broad on purpose: a top-level 42, null or [] reaches the loader's
+        # field checks as a non-mapping and raises TypeError, and whatever a
+        # corrupt manifest raises, the only honest answer is "unvalidated".
         return {
             "status": "unvalidated",
             "gates_version": GATES_VERSION,
             "dsr": None,
             "psr": None,
             "pbo": None,
-            "manifest": f"{manifest_str}: cannot be loaded ({e})",
+            "manifest": f"{manifest_str}: cannot be loaded ({type(e).__name__}: {e})",
         }
 
     reasons = is_stale(manifest, repo_root)
@@ -224,7 +227,10 @@ def write_signal(doc: dict[str, Any], out: Path) -> None:
     text = json.dumps(doc, indent=2, allow_nan=False) + "\n"
     tmp = out.with_name(f".{out.name}.tmp")
     try:
-        tmp.write_text(text, encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, out)
     except BaseException:
         tmp.unlink(missing_ok=True)

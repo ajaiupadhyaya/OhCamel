@@ -389,6 +389,23 @@ def test_validation_from_manifest_is_unvalidated_when_the_json_is_malformed(tmp_
     assert "cannot be loaded" in v["manifest"]
 
 
+@pytest.mark.parametrize("body", ["42", "null", "[]", "true", '"a string"'])
+def test_validation_from_manifest_is_unvalidated_when_the_top_level_is_not_an_object(
+    tmp_path: Path, body: str
+):
+    # A corrupt manifest whose top level is not a JSON object reaches the
+    # loader's field checks as a non-mapping; it must read "unvalidated",
+    # never raise out of emit.
+    paths = _build_repo(tmp_path)
+    manifest_file = paths["root"] / "manifest.scalar.json"
+    manifest_file.write_text(body)
+
+    v = validation_from_manifest(manifest_file, paths["root"])
+
+    assert v["status"] == "unvalidated"
+    assert "cannot be loaded" in v["manifest"]
+
+
 def test_validation_from_manifest_is_unvalidated_when_it_fails_its_own_validation(tmp_path: Path):
     paths = _build_repo(tmp_path)
     m = _manifest(paths)
