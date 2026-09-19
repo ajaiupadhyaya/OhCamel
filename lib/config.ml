@@ -282,8 +282,11 @@ module Book = struct
           | Some sym, _ -> fail s.name "%s is not in the book's universe" sym
           | None, Some sym -> fail s.name "symbols lists %s twice" sym
           | None, None ->
-              if s.max_age < 0 then
-                fail s.name "max_age may not be negative, got %d" s.max_age
+              (* At least 1: with 0 no signal could ever be deferred -- the one
+                 the service writes before its close is recorded would be
+                 rejected at R3 on its first look. *)
+              if s.max_age < 1 then
+                fail s.name "max_age must be at least 1, got %d" s.max_age
               else if not Float.(s.capital_fraction > 0.0 && s.capital_fraction <= 1.0)
               then
                 fail s.name "capital_fraction must be in (0, 1], got %g"

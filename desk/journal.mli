@@ -133,6 +133,12 @@ val record_signal_file : t -> name:string -> received_at:Time_ns.t -> error:stri
 (** A file that could not be read as a signal, by name, once. *)
 
 val signal_file_recorded : t -> name:string -> bool
+
+val record_deferral : t -> strategy:string -> sequence:int -> first_latest:Date.t -> unit
+(** The first sighting of a signal dated after the latest session: that session's date, by
+    the signal's (strategy, sequence). [INSERT OR IGNORE]: the first one stands. *)
+
+val deferral_since : t -> strategy:string -> sequence:int -> Date.t option
 val signal_file_error : t -> name:string -> string option
 
 (** A journaled order, rebuilt: the request and state from its row, the filled quantity,

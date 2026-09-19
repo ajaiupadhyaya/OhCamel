@@ -19,9 +19,9 @@
    The orders, order_events, fills and signals tables are created here, in
    schema version 1, and written by later phases: a second migration a week
    from now would be the same schema with a version bump and a code path that
-   runs once. signal_files, phase A3's, is a table beside them rather than a
-   change to one, so it is created IF NOT EXISTS like the indexes and the
-   version stays 1. *)
+   runs once. signal_files and signal_deferrals, phase A3's, are tables
+   beside them rather than changes to one, so they are created IF NOT EXISTS
+   like the indexes and the version stays 1. *)
 
 open Core
 open Ohcamel.Types
@@ -177,6 +177,12 @@ let schema =
        once and never read again (see desk/intake.ml). *)
     "CREATE TABLE IF NOT EXISTS signal_files (name TEXT PRIMARY KEY, received_at TEXT \
      NOT NULL, error TEXT NOT NULL)";
+    (* When a signal dated after the latest session was first seen, by its
+       (strategy, sequence): the latest session then, from which its wait is
+       counted. In the journal, so neither a restart nor a rename of the file
+       starts that count again. *)
+    "CREATE TABLE IF NOT EXISTS signal_deferrals (strategy TEXT NOT NULL, sequence \
+     INTEGER NOT NULL, first_latest TEXT NOT NULL, PRIMARY KEY (strategy, sequence))";
     "CREATE INDEX IF NOT EXISTS order_events_by_order ON order_events (client_order_id, \
      seq)";
     "CREATE INDEX IF NOT EXISTS fills_by_order ON fills (client_order_id)";
@@ -582,6 +588,22 @@ let signal_file_recorded t ~name =
        (query t ~what:"signal file recorded" "SELECT 1 FROM signal_files WHERE name = ?"
           [ text name ]
           ~row:(fun _ -> ())))
+
+(* OR IGNORE: the first sighting is the one that counts, and a second
+   insert of the same key is the same document seen again. *)
+let record_deferral t ~strategy ~sequence ~first_latest =
+  write t ~what:"signal deferral" (fun () ->
+      run t ~what:"signal deferral"
+        "INSERT OR IGNORE INTO signal_deferrals (strategy, sequence, first_latest) \
+         VALUES (?, ?, ?)"
+        [ text strategy; Data.INT (Int64.of_int sequence); date first_latest ])
+
+let deferral_since t ~strategy ~sequence =
+  List.hd
+    (query t ~what:"signal deferral"
+       "SELECT first_latest FROM signal_deferrals WHERE strategy = ? AND sequence = ?"
+       [ text strategy; Data.INT (Int64.of_int sequence) ]
+       ~row:(fun r -> col_date r 0))
 
 let signal_file_error t ~name =
   List.hd

@@ -187,7 +187,10 @@ let test_a_signals_block_is_refused_when_it_cannot_be_fed () =
   refused "a NaN fraction" (s "nan") ~naming:"capital_fraction must be in (0, 1]";
   refused "a negative max_age"
     (s ~extra:" (max_age -1)" "0.5")
-    ~naming:"max_age may not be negative";
+    ~naming:"max_age must be at least 1, got -1";
+  refused "a max_age of 0"
+    (s ~extra:" (max_age 0)" "0.5")
+    ~naming:"max_age must be at least 1, got 0";
   refused "two strategies of one name"
     (s "0.1" ^ " " ^ s ~symbols:"(TLT)" "0.1")
     ~naming:"two strategies have this name";
@@ -368,7 +371,10 @@ let test_r5_rejects_a_lower_sequence_and_the_same_one_is_skipped () =
         (judged f "exp_a01_spy" 6);
       Alcotest.(check int)
         "one line per judgement: 5, then 4 and 7, then 6" 4
-        (Queue.count f.events ~f:(String.is_substring ~substring:"exp_a01_spy "));
+        (Queue.count f.events ~f:(String.is_substring ~substring:", as_of "));
+      Alcotest.(check int)
+        "and one each for the two files that claim 5 with another body" 2
+        (Queue.count f.events ~f:(String.is_substring ~substring:"different document"));
       Alcotest.(check int) "nothing waits" 0 (Intake.deferred f.intake))
     ()
 
@@ -390,9 +396,10 @@ let test_one_pass_judges_in_sequence_order_not_file_order () =
     ()
 
 (* Two files, two kinds of failure: not JSON at all, and JSON without a
-   sequence. Each is recorded once in signal_files and never read again: the
-   second pass logs nothing about either, and the error recorded is the
-   first pass's. *)
+   sequence. The first pass sees each once and waits -- a file caught
+   half-written is not thrown away -- and the second, finding each unchanged,
+   records it in signal_files. After that neither is read again: later passes
+   log nothing about either, and the error recorded is the one first seen. *)
 let test_a_malformed_file_and_a_parse_failure_are_each_recorded_once () =
   with_intake ~sessions:week
     ~f:(fun f ->
@@ -407,12 +414,20 @@ let test_a_malformed_file_and_a_parse_failure_are_each_recorded_once () =
       in
       write f.dir "missing.json" without_sequence;
       Intake.pass f.intake;
-      contains "not JSON" ~substring:"not JSON"
-        (Option.value ~default:""
-           (Journal.signal_file_error f.journal ~name:"garbage.json"));
-      Alcotest.(check bool)
-        "a missing field is recorded" true
-        (Journal.signal_file_recorded f.journal ~name:"missing.json");
+      Alcotest.(check (pair bool bool))
+        "the first look records neither" (false, false)
+        ( Journal.signal_file_recorded f.journal ~name:"garbage.json",
+          Journal.signal_file_recorded f.journal ~name:"missing.json" );
+      Alcotest.(check int) "both wait" 2 (Intake.deferred f.intake);
+      Intake.pass f.intake;
+      (* Yojson reads "this" as a bare key, then wants ':' at bytes 7-18. *)
+      Alcotest.(check (option string))
+        "not JSON, with where" (Some "not JSON at line 1, bytes 7-18")
+        (Journal.signal_file_error f.journal ~name:"garbage.json");
+      Alcotest.(check (option string))
+        "a missing field, by name"
+        (Some "not a signal: sequence is absent, or not what the contract reads")
+        (Journal.signal_file_error f.journal ~name:"missing.json");
       write f.dir "garbage.json" (doc "2026-09-18");
       Intake.pass f.intake;
       Intake.pass f.intake;
@@ -420,15 +435,16 @@ let test_a_malformed_file_and_a_parse_failure_are_each_recorded_once () =
         (Option.value ~default:""
            (Journal.signal_file_error f.journal ~name:"garbage.json"));
       Alcotest.(check int)
-        "one line each, across three passes" 2
+        "one line each, across four passes" 2
         (Queue.count f.events ~f:(String.is_substring ~substring:"is not a signal"));
       Alcotest.check judgement "and its later content is never judged" None
         (judged f "exp_a01_spy" 1))
     ()
 
-(* Never followed, never read past a signal's length: a symlink to a valid
-   signal, a directory named like one, and a file one byte over the bound are
-   each recorded as refused. A file of exactly the bound is read. *)
+(* Never read, never past a signal's length: a symlink to a valid signal, a
+   directory named like one, and a file one byte over the bound are each
+   recorded as refused at the first look. A file of exactly the bound is
+   read. *)
 let test_what_is_not_a_regular_file_or_is_too_large_is_refused () =
   with_intake ~sessions:week
     ~f:(fun f ->
@@ -439,6 +455,9 @@ let test_what_is_not_a_regular_file_or_is_too_large_is_refused () =
       Core_unix.mkdir (Filename.concat f.dir "dir.json");
       write f.dir "large.json" (String.make (Intake.max_file_bytes + 1) ' ');
       write f.dir "exact.json" (String.make Intake.max_file_bytes ' ');
+      Intake.pass f.intake;
+      (* The others are refused at the first look; exact.json only failed to
+         parse, and is recorded when a second finds it unchanged. *)
       Intake.pass f.intake;
       contains "a file of exactly the bound is read, and is not JSON"
         ~substring:"not JSON"
@@ -503,13 +522,14 @@ let test_r3_defers_and_judges_once_a_session_appears () =
       Alcotest.(check int) "nothing waits" 0 (Intake.deferred f.intake))
     ()
 
-(* as_of 2026-09-25, first seen with the latest session 2026-09-14. max_age is
-   3: after 15, 16 and 17 -- three sessions, none on or after the 25th -- it
-   is rejected at R3. After two it still waits. *)
+(* as_of 2026-09-21, first seen with the latest session 2026-09-14: 5
+   weekdays ahead (15-18 and 21), and 5 - 2 = 3 is not more than max_age 3,
+   so it waits. After 15, 16 and 17 -- three sessions, none on or after the
+   21st -- it is rejected at R3. After two it still waits. *)
 let test_r3_deferral_ends_rejected_after_max_age_sessions () =
   with_intake ~sessions:[ "2026-09-14" ]
     ~f:(fun f ->
-      write f.dir "future.json" (doc ~sequence:1 "2026-09-25");
+      write f.dir "future.json" (doc ~sequence:1 "2026-09-21");
       Intake.pass f.intake;
       List.iter [ "2026-09-15"; "2026-09-16" ] ~f:(fun d ->
           session f.journal d;
@@ -527,26 +547,94 @@ let test_r3_deferral_ends_rejected_after_max_age_sessions () =
       Alcotest.(check int) "nothing waits" 0 (Intake.deferred f.intake))
     ()
 
-(* A deferred file is never recorded, so a restart reads it again and its
-   count of sessions starts again from the latest one then. *)
-let test_a_restart_reads_a_deferred_file_again_and_its_wait_restarts () =
+let restart f =
+  Intake.create ~journal:f.journal ~dir:f.dir ~strategies:[ spy_live; tlt_advisory ]
+    ~universe ~on_event:ignore ~now:(fun () -> at)
+
+(* The review's case. A live strategy's file dated 18 September, first seen
+   when the latest session is the 14th, and the engine restarted every two
+   sessions. The wait is counted from the journal's first sighting, so after
+   15, 16 and 17 -- the third since the 14th, across two restarts -- it is
+   rejected at R3, and when the 18th is recorded it is still rejected, never
+   accepted at age 0. (4 weekdays ahead, 4 - 2 <= 3: not the cap's case.) *)
+let test_restarts_every_two_sessions_cannot_make_a_file_dated_ahead_fresh () =
   with_intake ~sessions:[ "2026-09-14" ]
     ~f:(fun f ->
-      write f.dir "future.json" (doc ~sequence:1 "2026-09-25");
-      Intake.pass f.intake;
-      session f.journal "2026-09-15";
-      session f.journal "2026-09-16";
-      Intake.pass f.intake;
-      let restarted =
-        Intake.create ~journal:f.journal ~dir:f.dir ~strategies:[ spy_live; tlt_advisory ]
-          ~universe ~on_event:ignore ~now:(fun () -> at)
+      write f.dir "exp_a01_spy-2026-09-18.json" (doc ~sequence:20260918 "2026-09-18");
+      let never_accepted what intake =
+        Intake.pass intake;
+        Alcotest.(check bool)
+          (what ^ ": never accepted") false
+          (Poly.equal (judged f "exp_a01_spy" 20260918) (Some ("accepted", None)))
       in
+      never_accepted "first look, the 14th" f.intake;
+      session f.journal "2026-09-15";
+      never_accepted "the 15th" f.intake;
+      session f.journal "2026-09-16";
+      never_accepted "the 16th" f.intake;
+      Alcotest.check judgement "two sessions on: waiting" None
+        (judged f "exp_a01_spy" 20260918);
+      let second = restart f in
+      never_accepted "restarted" second;
+      Alcotest.(check int) "restarted, still waiting" 1 (Intake.deferred second);
       session f.journal "2026-09-17";
-      Intake.pass restarted;
-      Alcotest.(check int)
-        "three since the first look, one since the restart's: waiting" 1
-        (Intake.deferred restarted);
-      Alcotest.check judgement "not recorded" None (judged f "exp_a01_spy" 1))
+      never_accepted "the 17th" second;
+      Alcotest.check judgement "the third session since the first look: rejected at R3"
+        (Some ("rejected", Some "R3"))
+        (judged f "exp_a01_spy" 20260918);
+      contains "counted from the journal's first sighting"
+        ~substring:"latest session was 2026-09-14, and 3 sessions"
+        (detail f "exp_a01_spy" 20260918);
+      let third = restart f in
+      session f.journal "2026-09-18";
+      never_accepted "restarted again, the 18th recorded" third;
+      Alcotest.check judgement "still the one judgement: rejected at R3"
+        (Some ("rejected", Some "R3"))
+        (judged f "exp_a01_spy" 20260918))
+    ()
+
+(* The same wait, with the file renamed each session instead: the first
+   sighting is the document's (strategy, sequence), not the file's name. *)
+let test_a_renamed_file_keeps_its_wait () =
+  with_intake ~sessions:[ "2026-09-14" ]
+    ~f:(fun f ->
+      write f.dir "a.json" (doc ~sequence:1 "2026-09-18");
+      Intake.pass f.intake;
+      List.iter
+        [ ("2026-09-15", "a.json", "b.json"); ("2026-09-16", "b.json", "c.json") ]
+        ~f:(fun (d, from, to_) ->
+          session f.journal d;
+          Core_unix.rename ~src:(Filename.concat f.dir from)
+            ~dst:(Filename.concat f.dir to_);
+          Intake.pass f.intake;
+          Alcotest.(check int)
+            ("renamed to " ^ to_ ^ ": waiting")
+            1 (Intake.deferred f.intake));
+      session f.journal "2026-09-17";
+      Core_unix.rename
+        ~src:(Filename.concat f.dir "c.json")
+        ~dst:(Filename.concat f.dir "d.json");
+      Intake.pass f.intake;
+      Alcotest.check judgement "renamed three times, three sessions: rejected at R3"
+        (Some ("rejected", Some "R3"))
+        (judged f "exp_a01_spy" 1))
+    ()
+
+(* The cap, with the latest session the 14th and max_age 3: the 21st is 5
+   weekdays ahead (15-18, 21), 5 - 2 = 3, and waits; the 22nd is 6, 6 - 2 = 4
+   > 3, and is rejected at R3 at the first look. *)
+let test_a_file_dated_too_far_ahead_is_rejected_at_r3_at_once () =
+  with_intake ~sessions:[ "2026-09-14" ]
+    ~f:(fun f ->
+      write f.dir "near.json" (doc ~sequence:1 "2026-09-21");
+      write f.dir "far.json" (doc ~sequence:2 "2026-09-22");
+      Intake.pass f.intake;
+      Alcotest.check judgement "5 weekdays ahead: waiting" None (judged f "exp_a01_spy" 1);
+      Alcotest.check judgement "6 weekdays ahead: rejected at R3"
+        (Some ("rejected", Some "R3"))
+        (judged f "exp_a01_spy" 2);
+      contains "the detail" ~substring:"6 weekdays past it" (detail f "exp_a01_spy" 2);
+      Alcotest.(check int) "one waits" 1 (Intake.deferred f.intake))
     ()
 
 (* The contract's own R4 limit on history: an as_of before the earliest
@@ -645,7 +733,7 @@ let test_a_target_outside_the_strategy's_symbols_is_rejected () =
       Alcotest.check judgement "TLT under exp_a01_spy: rejected, rule strategy"
         (Some ("rejected", Some "strategy"))
         (judged f "exp_a01_spy" 1);
-      contains "the detail" ~substring:"TLT is not one of exp_a01_spy's symbols (SPY)"
+      contains "the detail" ~substring:"\"TLT\" is not one of exp_a01_spy's symbols (SPY)"
         (detail f "exp_a01_spy" 1);
       Alcotest.check judgement "one name of two outside: rejected, rule strategy"
         (Some ("rejected", Some "strategy"))
@@ -665,10 +753,227 @@ let test_a_symbol_named_twice_is_rejected_at_r7 () =
       Alcotest.check judgement "rejected at R7"
         (Some ("rejected", Some "R7"))
         (judged f "exp_a01_spy" 1);
-      contains "the detail" ~substring:"SPY is named twice" (detail f "exp_a01_spy" 1);
+      contains "the detail" ~substring:"\"SPY\" is named twice" (detail f "exp_a01_spy" 1);
       Alcotest.check judgement "failing R6 first: advisory at R6"
         (Some ("advisory", Some "R6"))
         (judged f "exp_a01_spy" 2))
+    ()
+
+(* The strategy's own symbols bind an advisory strategy too: exp_a01_tlt is
+   advisory, and an SPY target under it is rejected, rule strategy, not shown
+   as advisory. *)
+let test_an_advisory_strategy's_foreign_target_is_rejected () =
+  with_intake ~sessions:week
+    ~f:(fun f ->
+      write f.dir "a.json"
+        (doc ~strategy:"exp_a01_tlt" ~sequence:1 ~targets:[ ("SPY", 1.0) ] "2026-09-18");
+      Intake.pass f.intake;
+      Alcotest.check judgement "rejected, rule strategy"
+        (Some ("rejected", Some "strategy"))
+        (judged f "exp_a01_tlt" 1))
+    ()
+
+(* ------------------------------------------------------------------------ *)
+(* What the intake reads, and what it writes down                           *)
+(* ------------------------------------------------------------------------ *)
+
+(* lstat sees a.json, a regular file; before the open, a.json becomes a
+   symlink to a valid signal elsewhere. open(2) follows it, fstat names
+   another inode, and nothing is read. Without the swap, a.json is read. *)
+let test_a_symlink_swapped_in_after_lstat_is_never_read () =
+  with_dir ~f:(fun dir ->
+      let path = Filename.concat dir "a.json" in
+      let target = Filename.concat dir "elsewhere.txt" in
+      write dir "elsewhere.txt" (doc ~sequence:9 "2026-09-18");
+      write dir "a.json" (doc ~sequence:1 "2026-09-18");
+      match Intake.look path with
+      | Intake.Regular seen -> (
+          (match Intake.read path seen with
+          | Intake.Text text ->
+              Alcotest.(check string)
+                "unswapped: a.json itself"
+                (doc ~sequence:1 "2026-09-18")
+                text
+          | _ -> Alcotest.fail "a.json was not read");
+          let swap () =
+            Core_unix.unlink path;
+            Core_unix.symlink ~target ~link_name:path
+          in
+          match Intake.read ~between:swap path seen with
+          | Intake.Changed -> ()
+          | Intake.Text _ -> Alcotest.fail "the symlink's target was read"
+          | _ -> Alcotest.fail "neither read nor refused as changed")
+      | _ -> Alcotest.fail "a.json is a regular file")
+
+(* A parser's message quotes the token it stopped at. A file that is not JSON
+   because of a secret-looking token, and a JSON document whose sequence is
+   one, are recorded -- and logged -- without it: where, or which field. *)
+let test_a_parse_failure_never_records_the_file's_content () =
+  with_intake ~sessions:week
+    ~f:(fun f ->
+      let token = "sk-live-SECRETtokenDoNotLog" in
+      let content = "{ " ^ token ^ " }" in
+      (match Yojson.Safe.from_string content with
+      | exception Yojson.Json_error msg ->
+          contains "the parser's own message quotes it" ~substring:"SECRET" msg
+      | _ -> Alcotest.fail "the token parsed");
+      write f.dir "token.json" content;
+      write f.dir "field.json"
+        (String.substr_replace_first (doc "2026-09-18") ~pattern:"\"sequence\":1"
+           ~with_:(sprintf "\"sequence\":%S" token));
+      Intake.pass f.intake;
+      Intake.pass f.intake;
+      Alcotest.(check (option string))
+        "not JSON: where, and nothing else" (Some "not JSON at line 1, bytes 4-31")
+        (Journal.signal_file_error f.journal ~name:"token.json");
+      Alcotest.(check (option string))
+        "not a signal: which field, and nothing else"
+        (Some "not a signal: sequence is absent, or not what the contract reads")
+        (Journal.signal_file_error f.journal ~name:"field.json");
+      Alcotest.(check int)
+        "and no log line carries it" 0
+        (Queue.count f.events ~f:(String.is_substring ~substring:"SECRET")))
+    ()
+
+(* A name and a strategy each carrying a newline and a forged prefix: every
+   line logged is one line, with the name and the strategy quoted. *)
+let test_a_newline_in_a_name_or_a_strategy_cannot_forge_a_log_line () =
+  with_intake ~sessions:week
+    ~f:(fun f ->
+      write f.dir "evil\nintake    forged.json" "nope";
+      write f.dir "b.json" (doc ~strategy:"x\nintake    forged" ~sequence:1 "2026-09-18");
+      Intake.pass f.intake;
+      Intake.pass f.intake;
+      Alcotest.(check bool)
+        "something was logged about each" true
+        (Queue.length f.events >= 2);
+      Queue.iter f.events ~f:(fun line ->
+          Alcotest.(check bool) (sprintf "one line: %S" line) false (String.mem line '\n'));
+      Alcotest.(check bool)
+        "the name, quoted" true
+        (Queue.exists f.events
+           ~f:(String.is_substring ~substring:{|"evil\nintake    forged.json"|}));
+      Alcotest.(check bool)
+        "the strategy, quoted" true
+        (Queue.exists f.events
+           ~f:(String.is_substring ~substring:{|"x\nintake    forged"|})))
+    ()
+
+(* A byte that is not UTF-8 inside an otherwise valid document: JSON's parser
+   takes it, the page could not. Refused, recorded once, never judged. *)
+let test_a_file_that_is_not_valid_utf8_is_refused () =
+  with_intake ~sessions:week
+    ~f:(fun f ->
+      write f.dir "bytes.json"
+        (String.substr_replace_first (doc "2026-09-18") ~pattern:"2026-09-02"
+           ~with_:"2026-09-02\xff");
+      Intake.pass f.intake;
+      Intake.pass f.intake;
+      Intake.pass f.intake;
+      Alcotest.(check (option string))
+        "recorded" (Some "not valid UTF-8")
+        (Journal.signal_file_error f.journal ~name:"bytes.json");
+      Alcotest.(check int)
+        "once" 1
+        (Queue.count f.events ~f:(String.is_substring ~substring:"is not a signal"));
+      Alcotest.check judgement "never judged" None (judged f "exp_a01_spy" 1))
+    ()
+
+(* A file caught half-written: invalid in one pass, whole in the next. It is
+   judged, and never recorded as malformed. *)
+let test_a_file_caught_half_written_is_judged_once_whole () =
+  with_intake ~sessions:week
+    ~f:(fun f ->
+      let whole = doc ~sequence:1 "2026-09-18" in
+      write f.dir "a.json" (String.prefix whole 40);
+      Intake.pass f.intake;
+      Alcotest.(check int) "half: waiting" 1 (Intake.deferred f.intake);
+      write f.dir "a.json" whole;
+      Intake.pass f.intake;
+      Alcotest.check judgement "whole: judged"
+        (Some ("accepted", None))
+        (judged f "exp_a01_spy" 1);
+      Alcotest.(check bool)
+        "never recorded as malformed" false
+        (Journal.signal_file_recorded f.journal ~name:"a.json"))
+    ()
+
+(* A file whose (strategy, sequence) is judged, with another body: said once,
+   by name, and skipped. An identical copy is skipped without a word. *)
+let test_a_judged_key_with_another_body_is_said_once_and_skipped () =
+  with_intake ~sessions:week
+    ~f:(fun f ->
+      let original = doc ~sequence:5 "2026-09-18" in
+      write f.dir "a.json" original;
+      Intake.pass f.intake;
+      write f.dir "b.json" (doc ~sequence:5 ~status:"fail" "2026-09-18");
+      write f.dir "c.json" original;
+      Intake.pass f.intake;
+      Intake.pass f.intake;
+      let differs =
+        Queue.filter f.events ~f:(String.is_substring ~substring:"different document")
+      in
+      Alcotest.(check int) "one line" 1 (Queue.length differs);
+      contains "naming b.json" ~substring:{|"b.json" carries "exp_a01_spy" 5|}
+        (Queue.peek_exn differs);
+      Alcotest.check judgement "the first judgement stands"
+        (Some ("accepted", None))
+        (judged f "exp_a01_spy" 5))
+    ()
+
+(* A judged file is not read again while lstat sees it unchanged: made
+   unreadable after its judgement, it costs no read and no line. The next
+   file, never judged, is read and said to be unreadable. *)
+let test_a_judged_file_is_not_read_again () =
+  with_intake ~sessions:week
+    ~f:(fun f ->
+      if Core_unix.getuid () <> 0 then (
+        write f.dir "a.json" (doc ~sequence:1 "2026-09-18");
+        Intake.pass f.intake;
+        Core_unix.chmod (Filename.concat f.dir "a.json") ~perm:0o000;
+        write f.dir "b.json" (doc ~sequence:2 "2026-09-18");
+        Core_unix.chmod (Filename.concat f.dir "b.json") ~perm:0o000;
+        Exn.protect
+          ~f:(fun () ->
+            Intake.pass f.intake;
+            Alcotest.(check int)
+              "only b.json was read, and could not be" 1
+              (Queue.count f.events
+                 ~f:(String.is_substring ~substring:"could not be read"));
+            contains "b.json" ~substring:{|"b.json"|}
+              (Option.value ~default:""
+                 (Queue.find f.events
+                    ~f:(String.is_substring ~substring:"could not be read"))))
+          ~finally:(fun () ->
+            List.iter [ "a.json"; "b.json" ] ~f:(fun n ->
+                Core_unix.chmod (Filename.concat f.dir n) ~perm:0o600))))
+    ()
+
+(* 105 files, s-001 to s-105, sequences 1 to 105: a pass reads the first 100
+   by name and says 5 wait; the next reads those 5; the one after reads
+   nothing and says nothing. *)
+let test_a_pass_reads_at_most_100_files_first_by_name () =
+  with_intake ~sessions:week
+    ~f:(fun f ->
+      for i = 1 to 105 do
+        write f.dir (sprintf "s-%03d.json" i) (doc ~sequence:i "2026-09-18")
+      done;
+      Intake.pass f.intake;
+      Alcotest.(check (pair judgement judgement))
+        "100 judged, the 101st not yet"
+        (Some ("accepted", None), None)
+        (judged f "exp_a01_spy" 100, judged f "exp_a01_spy" 101);
+      Alcotest.(check int)
+        "and the wait said" 1
+        (Queue.count f.events ~f:(String.is_substring ~substring:"5 files wait"));
+      Intake.pass f.intake;
+      Alcotest.check judgement "the next pass: the 105th"
+        (Some ("accepted", None))
+        (judged f "exp_a01_spy" 105);
+      let lines = Queue.length f.events in
+      Intake.pass f.intake;
+      Alcotest.(check int)
+        "then nothing to read, and nothing said" lines (Queue.length f.events))
     ()
 
 (* ------------------------------------------------------------------------ *)
@@ -865,8 +1170,13 @@ let suite =
         test_r3_defers_and_judges_once_a_session_appears;
       Alcotest.test_case "R3's deferral ends rejected after max_age sessions" `Quick
         test_r3_deferral_ends_rejected_after_max_age_sessions;
-      Alcotest.test_case "a restart reads a deferred file again, and its wait restarts"
-        `Quick test_a_restart_reads_a_deferred_file_again_and_its_wait_restarts;
+      Alcotest.test_case
+        "restarts every two sessions cannot make a file dated ahead fresh" `Quick
+        test_restarts_every_two_sessions_cannot_make_a_file_dated_ahead_fresh;
+      Alcotest.test_case "a renamed file keeps its wait" `Quick
+        test_a_renamed_file_keeps_its_wait;
+      Alcotest.test_case "a file dated too far ahead is rejected at R3 at once" `Quick
+        test_a_file_dated_too_far_ahead_is_rejected_at_r3_at_once;
       Alcotest.test_case "an as_of before the earliest session fails R4" `Quick
         test_an_as_of_before_the_earliest_session_fails_r4;
       Alcotest.test_case "a five-week outage cannot make a stale signal fresh" `Quick
@@ -877,6 +1187,24 @@ let suite =
         test_a_target_outside_the_strategy's_symbols_is_rejected;
       Alcotest.test_case "a symbol named twice is rejected at R7" `Quick
         test_a_symbol_named_twice_is_rejected_at_r7;
+      Alcotest.test_case "an advisory strategy's foreign target is rejected" `Quick
+        test_an_advisory_strategy's_foreign_target_is_rejected;
+      Alcotest.test_case "a symlink swapped in after lstat is never read" `Quick
+        test_a_symlink_swapped_in_after_lstat_is_never_read;
+      Alcotest.test_case "a parse failure never records the file's content" `Quick
+        test_a_parse_failure_never_records_the_file's_content;
+      Alcotest.test_case "a newline in a name or a strategy cannot forge a log line"
+        `Quick test_a_newline_in_a_name_or_a_strategy_cannot_forge_a_log_line;
+      Alcotest.test_case "a file that is not valid UTF-8 is refused" `Quick
+        test_a_file_that_is_not_valid_utf8_is_refused;
+      Alcotest.test_case "a file caught half-written is judged once whole" `Quick
+        test_a_file_caught_half_written_is_judged_once_whole;
+      Alcotest.test_case "a judged key with another body is said once and skipped" `Quick
+        test_a_judged_key_with_another_body_is_said_once_and_skipped;
+      Alcotest.test_case "a judged file is not read again" `Quick
+        test_a_judged_file_is_not_read_again;
+      Alcotest.test_case "a pass reads at most 100 files, first by name" `Quick
+        test_a_pass_reads_at_most_100_files_first_by_name;
       Alcotest.test_case "/api/research's shape" `Quick test_api_research's_shape;
       Alcotest.test_case "/api/research on the demo" `Quick test_api_research_on_the_demo;
       Alcotest.test_case "the latest judgement is one index seek" `Quick
