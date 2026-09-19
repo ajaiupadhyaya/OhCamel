@@ -126,6 +126,24 @@ let mutation_error_sentence =
   "the desk hit an internal error partway through; the outcome is unknown -- look this \
    order up, or check /api/desk, before trying again"
 
+(* A kill whose halt is set but whose next step raised -- the log line, the
+   page's nudge. It answers 200 anyway, with the switch as it reads beside
+   this, because the halt is what was asked for and the person who pressed it
+   is the one who has to know the rest went wrong; the cancels are sent
+   either way. *)
+let kill_error_sentence =
+  "the desk hit an internal error while halting; the switch in this answer is what is in \
+   force, and the open orders are still being cancelled -- check the blotter before \
+   trusting that each one was"
+
+(* A reset asked for while the engine has stopped the desk (Halt's own
+   header): 409, because the request is well formed and the desk's state is
+   what refuses it. *)
+let stopped_sentence =
+  "the engine stopped this desk, and a reset cannot lift that: what stopped it has not \
+   recovered -- only a restart of the engine clears it, reconnecting to the venue and \
+   reconciling"
+
 let log_exn oms ~route exn =
   Oms.on_event oms (sprintf "desk      %s raised: %s" route (Exn.to_string exn))
 
@@ -331,42 +349,75 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
               (fun () -> parse_kill_reason r)
               ~k:(fun why ->
                 guard_async oms ~route:"kill" server (fun () ->
-                    (* The answer is the halt, not the cancels. [Oms.kill] halts
-                       before it returns, and its cancels then go one at a
-                       time behind the order manager's other jobs, each bounded
-                       at 10 s: twenty open orders on a slow venue would hold
-                       the person who pressed the button for minutes. So they
-                       go on without the response, under a monitor of their
-                       own, so a raise among them reaches the log and not the
-                       process. A cancel the venue does not confirm logs its own
-                       line; the run's end, or its raise, is logged below. *)
+                    (* The answer is the halt, not the cancels. The halt is set
+                       first and synchronously, by [Oms.halt_by_hand]; a raise
+                       after it -- the log line, the page's nudge -- is caught
+                       here and answered as [kill_error_sentence] beside the
+                       switch, because the person who pressed halt is the one
+                       who needs to know, and the log alone would not tell
+                       them. The cancels go whatever raised: the halt is set,
+                       and orders left open under it could still fill. They go
+                       one at a time behind the order manager's other jobs,
+                       each bounded at 10 s -- twenty open orders on a slow
+                       venue would hold the person who pressed the button for
+                       minutes -- so they go on without the response, under a
+                       monitor of their own, so a raise among them reaches the
+                       log and not the process. A cancel the venue does not
+                       confirm logs its own line; the run's end, or its raise,
+                       is logged below. The raise is logged only after the
+                       cancels are started, so a log that itself raises cannot
+                       stop them. *)
+                    let raised =
+                      try
+                        Oms.halt_by_hand oms ~why;
+                        None
+                      with exn -> Some exn
+                    in
                     don't_wait_for
                       (match%map
                          Monitor.try_with ~extract_exn:true ~rest:`Log (fun () ->
-                             Oms.kill oms ~why)
+                             Oms.cancel_all oms)
                        with
                       | Ok () ->
                           Oms.on_event oms
                             "desk      the kill has asked the venue to cancel every open \
                              order it has an id for"
                       | Error exn -> log_exn oms ~route:"kill's cancels" exn);
-                    respond server (switch ()))));
+                    Option.iter raised ~f:(log_exn oms ~route:"kill");
+                    respond server
+                      (`Assoc
+                         [
+                           ("switch", switch ());
+                           ( "error",
+                             match raised with
+                             | None -> `Null
+                             | Some _ -> `String kill_error_sentence );
+                         ]))));
     };
     {
       Server.path = "/api/desk/kill/reset";
-      purpose = {|POST {"confirm":"reset"}: lift the halt (live host only)|};
+      purpose =
+        {|POST {"confirm":"reset"}: lift the halt, or 409 while the engine has stopped the desk (live host only)|};
       handle =
         protected ~host ~oms ~f:(fun server r ->
             guard_sync oms ~route:"kill/reset" ~sentence:mutation_error_sentence server
               (fun () ->
                 match field r "confirm" with
-                | Some (`String "reset") ->
-                    Halt.reset (Oms.halt oms);
-                    (* M6: a reset is exactly as deliberate a change as a
-                       kill, and gets the same line kill already writes. *)
-                    Oms.on_event oms "desk      the switch was reset by request";
-                    Oms.changed oms;
-                    respond server (switch ())
+                | Some (`String "reset") -> (
+                    match Halt.state (Oms.halt oms) with
+                    | Halt.State.Stopped _ ->
+                        (* Refused, and said so in the log as a reset is. *)
+                        Oms.on_event oms
+                          "desk      a reset was refused: the engine stopped the desk, \
+                           and only a restart clears that";
+                        respond_error server `Conflict stopped_sentence
+                    | Halt.State.Clear | Halt.State.Tripped _ | Halt.State.Halted _ ->
+                        Halt.reset (Oms.halt oms);
+                        (* M6: a reset is exactly as deliberate a change as a
+                           kill, and gets the same line kill already writes. *)
+                        Oms.on_event oms "desk      the switch was reset by request";
+                        Oms.changed oms;
+                        respond server (switch ()))
                 | _ ->
                     respond_error server `Bad_request
                       {|a reset must say so: {"confirm":"reset"}|}));

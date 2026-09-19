@@ -885,10 +885,17 @@ let cancel_all t : unit Deferred.t =
       | Some _ ->
           Deferred.ignore_m (cancel t o.Order.request.Order.Request.client_order_id))
 
-let kill t ~why : unit Deferred.t =
+(* A kill's first half, synchronous: the halt, its line in the log, and the
+   page told. The halt comes first, so anything that raises after it raises
+   with the switch already set -- which is what lets the kill route answer
+   the person who pressed it, and still send the cancels. *)
+let halt_by_hand t ~why =
   Halt.halt t.halt ~why ~at:(t.now ());
   t.on_event ("desk      HALTED by hand: " ^ why);
-  t.on_change ();
+  t.on_change ()
+
+let kill t ~why : unit Deferred.t =
+  halt_by_hand t ~why;
   cancel_all t
 
 (* The other half of §3.8. The switch already refuses new orders through

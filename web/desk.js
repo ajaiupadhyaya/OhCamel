@@ -374,8 +374,8 @@
       ["equity", d.equity === null ? "—" : F.money(d.equity)],
       ["cash", d.cash === null ? "—" : F.money(d.cash)],
       ["session P&L", d.session_pnl === null ? "—" : F.money(d.session_pnl)],
-      // "on" beside a tripped or halted switch would read as orders going
-      // out; the switch refuses every one, so the row says so.
+      // "on" beside a tripped, halted or stopped switch would read as orders
+      // going out; the switch refuses every one, so the row says so.
       ["trading", !d.trading ? "off" : d.kill_switch === "clear" ? "on" : "on, but the switch refuses new orders"],
       ["kill switch", typeof d.kill_switch === "string" ? d.kill_switch : "—"],
       // With no order manager attached the server sends 0 for want of a count;
@@ -457,13 +457,27 @@
   }
 
   // A halt or a reset the server refused says why, in the server's sentence;
-  // alert() shows it as text. Either way the desk is asked again, so the line
-  // shows what the switch reads now rather than what was pressed.
+  // alert() shows it as text. A kill the server answered 200 has set the
+  // halt, but may carry an error: something after the halt failed. That one
+  // is kept and drawn beside the switch, as text, until the next press or
+  // until the switch reads clear. Either way the desk is asked again, so the
+  // line shows what the switch reads now rather than what was pressed.
+  var switchError = null;
   function switchPost(path, body) {
     deskPost(path, body, true).then(function (res) {
       deskKey = null;
-      if (res.body && res.body.error) window.alert(res.body.error);
-    }).catch(function (e) { deskKey = null; window.alert("no answer: " + e.message); });
+      var b = res.body || {};
+      switchError = res.status === 200 && typeof b.error === "string" ? b.error : null;
+      if (res.status !== 200 && b.error) window.alert(b.error);
+    }).catch(function (e) { deskKey = null; switchError = null; window.alert("no answer: " + e.message); });
+  }
+
+  // What became of the open orders. The switch is set before its cancels are
+  // answered, so "cancelled" is said only once the count the frame carries
+  // reaches zero; until then the line says how many are still being cancelled.
+  function openOrdersWords(n) {
+    if (!known(n) || n <= 0) return "open orders cancelled";
+    return "cancelling " + n + (n === 1 ? " open order" : " open orders");
   }
 
   function renderSwitch(b) {
@@ -472,17 +486,29 @@
     if (!sw) { box.hidden = true; box.textContent = ""; return; }
     box.textContent = "";
     box.className = "desk-switch " + sw.state;
+    if (sw.state === "clear") switchError = null;
+    var n = b.open_orders;
+    // The engine's stop cancels nothing: it refuses new orders because no
+    // fill would be heard, and says what is still open.
     var line = sw.state === "clear" ? "kill switch clear: orders may be sent"
-      : sw.state === "tripped" ? "kill switch TRIPPED by " + sw.limit + ": new orders refused, open orders cancelled, positions untouched"
-      : "desk HALTED by hand (" + sw.why + "): new orders refused, open orders cancelled, positions untouched";
+      : sw.state === "tripped" ? "kill switch TRIPPED by " + sw.limit + ": new orders refused, " + openOrdersWords(n) + ", positions untouched"
+      : sw.state === "stopped" ? "desk STOPPED by the engine (" + sw.why + "): new orders refused"
+        + (known(n) && n > 0 ? ", " + n + (n === 1 ? " open order" : " open orders") + " not cancelled" : "")
+        + ", positions untouched"
+      : "desk HALTED by hand (" + sw.why + "): new orders refused, " + openOrdersWords(n) + ", positions untouched";
     box.appendChild(F.el("span", "desk-switch-line", line));
+    if (sw.state === "stopped")
+      box.appendChild(F.el("span", "desk-switch-note",
+        "· a reset cannot lift this, because what stopped has not recovered — only a restart of the engine clears it, reconnecting to the venue and reconciling"));
     if (sw.state === "tripped" && known(sw.auto_reset_s))
       box.appendChild(F.el("span", "desk-switch-note", known(sw.resets_in_s)
         ? "· resets itself in " + Math.ceil(sw.resets_in_s) + " s — the demo only"
         : "· resets itself " + sw.auto_reset_s + " s after " + sw.limit + " clears — the demo only"));
+    if (switchError) box.appendChild(F.el("span", "desk-switch-error", switchError));
     // The buttons only where tickets are accepted: the demo host answers 405
-    // to both routes, and a button that can only be refused is not offered.
-    if (b.tickets === "accepted") {
+    // to both routes, and a button that can only be refused is not offered --
+    // which is why a stopped switch has none: a reset would be refused (409).
+    if (b.tickets === "accepted" && sw.state !== "stopped") {
       var btn = document.createElement("button");
       btn.type = "button";
       if (sw.state === "clear") {

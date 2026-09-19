@@ -1112,7 +1112,7 @@ deploy user alone, and reach the container as environment, never as a layer.
 
 ## What's verified
 
-`make test` runs 456 tests, plus ten in `test/desk_async` that run with the
+`make test` runs 460 tests, plus eleven in `test/desk_async` that run with the
 scheduler -- the order manager's cases, the transport's bound and that
 suite's own count -- all hermetic — no network, no credentials, and nothing
 that waits on the wall clock: the scheduler's cases move a clock of their
@@ -1311,17 +1311,19 @@ reads the session clock every time, and the twenty-day volume on its first
 turn, on each turn after a read that failed, and an hour after one that
 answered, but never when the volume is fixed, as the demo's is -- and
 `fills_json`'s row-building body, neither of which any test calls directly.
-The scheduler suite's ten cases are not all order-manager scenarios
+The scheduler suite's eleven cases are not all order-manager scenarios
 either: two are Task 4's, the transport bound and the suite's own
 count assertion. The five that exercised `oms.ml` when that figure was
 measured -- three fills, an unresent unknown answer, a halt, a limit's
 trip, and a restart -- record zero visits on every branch just named.
 None of them proposes past a tripped switch or a stale book, none makes
 `resolve`'s own lookup fail or delivers a fill after failed, and none
-runs `refresh` at all. The three added since, which the figure predates,
+runs `refresh` at all. The four added since, which the figure predates,
 reach two of those: a book that goes stale while the arrival quote is
 fetched, and `refresh_forever` reading the clock again as a session ends
--- beside a failed order the venue reports resting, which is cancelled.
+-- beside a failed order the venue reports resting, which is cancelled,
+and a raise just after a kill's halt, which is answered and does not stop
+the cancels.
 
 So the floor exists to make deleting tests noticeable, and that is all it is
 for. A coverage target would be an instruction to write the tests that raise it.
@@ -1396,7 +1398,7 @@ Every order the desk sends has passed two checks, in this order, and the page sh
 
 Then the order is written to the journal as `pending_submit` **before** the request that sends it. An answer that never comes is resolved by looking the client order id up, never by sending the order again. An order declared failed because every lookup missed, which the venue later reports it still works, is cancelled by the venue's id whatever the switch reads, because nothing else would manage it. The request is bounded at ten seconds. The bound closes a connection that is still connecting or has answered; one held open before its status line lasts until the peer or the kernel ends it. Fills are journaled whatever state their order is in. The book's position follows each fill and is set from the venue's own figure, and the account is read again after it; a read that was already out when the fill landed is refused, so it cannot undo the fill. A restart reconciles every open order against the venue before it sends another order; startup waits up to 20 s for it.
 
-**The kill switch** refuses every new order and cancels every open one when a limit it trips on is breached, or when someone halts the desk by hand. It does not flatten positions. A halt by hand is answered as soon as the desk is halted; the cancels go on behind the answer, one at a time, and the log says when the last has been asked for. Under the switch, a cancel whose answer is not a confirmation is sent again, 2, 10 and 30 s apart, while the order is still open, and a partial fill in between does not end that. Each order has at most one schedule of cancel retries and one of lookups at a time, however many kills, trips or reconciliations ask for one. On the live host only a deliberate reset lifts the switch. On the demo it resets itself 90 s after its limit clears, and the page says that only the demo does this.
+**The kill switch** refuses every new order and cancels every open one when a limit it trips on is breached, or when someone halts the desk by hand. It does not flatten positions. A halt by hand is answered as soon as the desk is halted; the cancels go on behind the answer, one at a time, and the log says when the last has been asked for. If something raises just after the halt is set, the answer still carries the switch, with a fixed sentence beside it that the page shows, and the cancels still go. Until the open orders reach zero the page says it is cancelling them, and only then that they are cancelled. Under the switch, a cancel whose answer is not a confirmation is sent again, 2, 10 and 30 s apart, while the order is still open, and a partial fill in between does not end that. Each order has at most one schedule of cancel retries and one of lookups at a time, however many kills, trips or reconciliations ask for one. On the live host only a deliberate reset lifts the switch -- except when the engine has stopped the desk itself, because the venue's order updates ended and no fill would be heard: the switch reads `stopped`, never "halted by hand", a reset is refused with 409, and only a restart, which reconnects and reconciles, clears it. On the demo it resets itself 90 s after its limit clears, and the page says that only the demo does this.
 
 **Costs** (`desk/tca.ml`, after Perold 1988) are measured per fill from the decision price. Each is split into delay (the market's move before the order arrived) and slippage against the arrival quote's mid, shown beside the quoted half-spread and the difference from the book's modelled half-spread. On the paper account every cost measures Alpaca's fill simulator against IEX's quote -- one venue's, not the national best.
 

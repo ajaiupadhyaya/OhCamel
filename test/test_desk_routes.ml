@@ -401,6 +401,52 @@ let test_a_reset_must_say_so () =
         "the halt really was reset before the raise" "clear"
         (D.Halt.State.name (D.Halt.state halt)))
 
+(* The engine's stop: what stopped -- the venue's order updates -- has not
+   recovered, so a confirmed reset from this site is refused with 409 and a
+   fixed sentence, and changes nothing. The order path refuses in the stop's
+   own words, never a hand's. *)
+let test_a_reset_is_409_while_the_engine_has_stopped_the_desk () =
+  let events = ref [] in
+  with_routes ~host:`Live
+    ~on_event:(fun line -> events := line :: !events)
+    ~f:(fun server oms ->
+      let halt = D.Oms.halt oms in
+      D.Halt.stop halt ~why:"the venue's order updates stopped" ~at:(Time_ns.now ());
+      let code, text =
+        dispatched server
+          (request ~headers:from_this_site ~body:{|{"confirm":"reset"}|}
+             "/api/desk/kill/reset")
+      in
+      Alcotest.(check int) "a confirmed reset from this site: 409" 409 code;
+      Alcotest.(check string)
+        "a fixed sentence saying a restart clears it"
+        {|{"error":"the engine stopped this desk, and a reset cannot lift that: what stopped it has not recovered -- only a restart of the engine clears it, reconnecting to the venue and reconciling"}|}
+        text;
+      Alcotest.(check string)
+        "still stopped" "stopped"
+        (D.Halt.State.name (D.Halt.state halt));
+      Alcotest.(check bool)
+        "no line saying the switch was reset" false
+        (List.exists !events ~f:(fun line ->
+             String.is_substring line ~substring:"reset by request"));
+      let code, text =
+        dispatched server
+          (request ~body:{|{"symbol":"AAPL","side":"buy","qty":10}|} "/api/desk/preview")
+      in
+      Alcotest.(check int) "a preview: 200" 200 code;
+      let json = Yojson.Safe.from_string text in
+      let rules = Yojson.Safe.Util.(to_list (member "rules" json)) in
+      Alcotest.(check (list string))
+        "refused by the switch alone" [ "kill_switch" ]
+        (List.map rules ~f:(fun r -> Yojson.Safe.Util.(to_string (member "rule" r))));
+      let why = Yojson.Safe.Util.(to_string (member "why" (List.hd_exn rules))) in
+      Alcotest.(check bool)
+        "in the stop's own words" true
+        (String.is_substring why ~substring:"stopped by the engine");
+      Alcotest.(check bool)
+        "never a hand's" false
+        (String.is_substring why ~substring:"by hand"))
+
 let suite =
   ( "desk_routes",
     [
@@ -410,4 +456,6 @@ let suite =
       Alcotest.test_case "a ticket that cannot be read is a 400 naming the field" `Quick
         test_a_ticket_that_cannot_be_read_is_a_400_naming_the_field;
       Alcotest.test_case "a reset must say so" `Quick test_a_reset_must_say_so;
+      Alcotest.test_case "a reset is 409 while the engine has stopped the desk" `Quick
+        test_a_reset_is_409_while_the_engine_has_stopped_the_desk;
     ] )

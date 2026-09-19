@@ -89,6 +89,70 @@ let test_nothing_resets_by_time_on_the_live_host_or_after_a_hand () =
     (Halt.tick demo ~now:(at 3600.0));
   Alcotest.(check string) "still halted" "halted" (state demo)
 
+(* The engine's own stop: set by bin/main.ml when the venue's order updates
+   end for good. What stopped has not recovered, so nothing a reset or the
+   demo's clock does lifts it -- not even the hand's halt or the limit's trip
+   beneath it -- and the kernel's switch is not reset either. Only a restart,
+   which builds a new switch, clears it. *)
+let test_a_reset_leaves_the_engine's_stop_in_force () =
+  let source, tripped, firing, resets = fake () in
+  let t = Halt.create ~auto_reset_after:(Time_ns.Span.of_sec 90.0) source in
+  tripped := Some ("nvda-cap", t0);
+  Halt.stop t ~why:"the venue's order updates stopped" ~at:(at 5.0);
+  Alcotest.(check string) "stopped, over a limit's trip" "stopped" (state t);
+  Halt.reset t;
+  Alcotest.(check string) "a reset leaves it stopped" "stopped" (state t);
+  Alcotest.(check int) "and resets nothing beneath it" 0 !resets;
+  firing := [];
+  ignore (Halt.tick t ~now:(at 10.0) : bool);
+  Alcotest.(check bool)
+    "the demo's clock, 90 s after the limit cleared: no reset" false
+    (Halt.tick t ~now:(at 100.0));
+  Alcotest.(check string) "still stopped" "stopped" (state t);
+  Alcotest.(check int) "the kernel's switch untouched" 0 !resets;
+  Halt.halt t ~why:"by hand" ~at:(at 101.0);
+  Halt.reset t;
+  Alcotest.(check string)
+    "a hand pressed and reset beneath it: stopped" "stopped" (state t);
+  let restarted = Halt.create source in
+  Alcotest.(check string)
+    "a restart's switch reads only the limit" "tripped" (state restarted)
+
+let test_the_engine's_stop_refuses_new_orders_in_its_own_words () =
+  let source, _, _, _ = fake () in
+  let t = Halt.create source in
+  Halt.stop t ~why:"the venue's order updates stopped" ~at:(at 5.0);
+  Halt.stop t ~why:"a second stop" ~at:(at 9.0);
+  Alcotest.(check bool)
+    "a reason: new orders are refused" true
+    (Option.is_some (Halt.reason t));
+  Alcotest.(check bool)
+    "it says the engine stopped the desk" true
+    (says t "stopped by the engine: the venue's order updates stopped");
+  Alcotest.(check bool) "never that a hand did" false (says t "by hand");
+  Alcotest.(check bool) "the first stop's words stand" false (says t "a second stop");
+  let json = Halt.to_json t ~now:(at 10.0) in
+  let field name = Yojson.Safe.Util.member name json in
+  Alcotest.(check string)
+    "the page reads stopped" "stopped"
+    (Yojson.Safe.Util.to_string (field "state"));
+  Alcotest.(check string)
+    "and why" "the venue's order updates stopped"
+    (Yojson.Safe.Util.to_string (field "why"))
+
+let test_a_hand's_halt_still_resets () =
+  let source, _, _, resets = fake () in
+  let t = Halt.create source in
+  Halt.halt t ~why:"the feed is lying" ~at:(at 5.0);
+  Alcotest.(check bool) "it says a hand halted it" true (says t "halted by hand");
+  Alcotest.(check bool)
+    "and not that the engine did" false
+    (says t "stopped by the engine");
+  Halt.reset t;
+  Alcotest.(check string) "a reset clears it" "clear" (state t);
+  Alcotest.(check (option string)) "and nothing is refused" None (Halt.reason t);
+  Alcotest.(check int) "the kernel's switch reset with it" 1 !resets
+
 (* The kernel's half. aapl-cap is 100 dollars; 1 share at 150 is over it, so
    the first stabilize trips the switch and on_trip is called once; 2 shares
    keep it tripped and call nothing. Source.of_alerts reads that switch and
@@ -155,4 +219,10 @@ let suite =
         test_nothing_resets_by_time_on_the_live_host_or_after_a_hand;
       Alcotest.test_case "alerts call on_trip once, and the desk reads the switch" `Quick
         test_alerts_call_on_trip_once_and_the_desk_reads_the_switch;
+      Alcotest.test_case "a reset leaves the engine's stop in force" `Quick
+        test_a_reset_leaves_the_engine's_stop_in_force;
+      Alcotest.test_case "the engine's stop refuses new orders in its own words" `Quick
+        test_the_engine's_stop_refuses_new_orders_in_its_own_words;
+      Alcotest.test_case "a hand's halt still resets" `Quick
+        test_a_hand's_halt_still_resets;
     ] )

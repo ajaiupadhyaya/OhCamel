@@ -108,10 +108,11 @@ let managers_built = ref 0
    one a case has wrapped, and [read] its read half; without them the manager
    uses the venue directly. [now] is the wall clock unless a case gives the
    manager its own, and the book is the account's unless a case says when it
-   stops being so. Its lookups keep production's schedule -- 2, 10 and 30 s --
+   stops being so. [on_change] is the page's nudge, a no-op unless a case
+   makes it raise. Its lookups keep production's schedule -- 2, 10 and 30 s --
    on the fixture's clock, so they fire only when a case advances it. *)
 let manager ?trade ?read ?(now = Time_ns.now) ?(book_is_current = fun () -> true)
-    ?(halt = D.Halt.create D.Halt.Source.none) f =
+    ?(halt = D.Halt.create D.Halt.Source.none) ?(on_change = ignore) f =
   let trade =
     match trade with Some t -> t | None -> D.Sim_venue.trade ~auto:false f.venue
   in
@@ -123,7 +124,7 @@ let manager ?trade ?read ?(now = Time_ns.now) ?(book_is_current = fun () -> true
       ~read:(Some read) ~trade:(Ok trade) ~halt ~accepts_tickets:true
       ~adv:(D.Oms.Adv.Fixed 1_000_000.0) ~now
       ~rng:(Random.State.make [| 7; !managers_built |])
-      ~on_change:ignore
+      ~on_change
       ~on_event:(fun e -> Queue.enqueue f.events e)
       ~after_fill:ignore ~book_is_current
       ~time_source:(Time_source.read_only f.clock)
@@ -455,6 +456,76 @@ let test_a_halt_refuses_and_cancels () =
   in
   let%bind () = settle () in
   Alcotest.(check (pair int int)) "and no more DELETEs" (2, 1) (sent "sim-1", sent "sim-2");
+  Graph.destroy f.graph;
+  return ()
+
+(* A raise after the halt, through the kill route itself. A limit buy of 50
+   AAPL at 99 rests; then the page's nudge raises -- once, the first time it
+   is called after the order rests, which is inside the kill, just after the
+   halt is set. The person who pressed halt is answered 200 with the switch
+   as it reads and a fixed sentence, never the exception's own words, which
+   go to the log; and the open order is still cancelled. *)
+let test_a_raise_after_the_halt_is_answered_and_the_cancels_still_go () =
+  let f = fixture () in
+  let armed = ref false in
+  let on_change () =
+    if !armed then (
+      armed := false;
+      failwith "boom at /var/lib/ohcamel/secret")
+  in
+  let oms = manager ~on_change f in
+  let%bind _, resting =
+    D.Oms.propose oms (ticket ~kind:limit_at_99 aapl D.Order.Side.Buy 50)
+  in
+  let%bind () = pump f in
+  Alcotest.(check string) "resting" "accepted" (state f resting);
+  let server =
+    Ohcamel.Server.create
+      ~extensions:(D.Desk_routes.extensions ~host:`Live ~oms)
+      ~mode:`Live ~graph:f.graph ~factor:"SYNTHETIC" ()
+  in
+  armed := true;
+  let%bind response, body =
+    Ohcamel.Server.dispatch server
+      {
+        Ohcamel.Server.Request.meth = `POST;
+        path = "/api/desk/kill";
+        headers =
+          Cohttp.Header.of_list
+            [ ("X-OhCamel-Desk", "1"); ("Sec-Fetch-Site", "same-origin") ];
+        body = {|{"why":"testing the switch"}|};
+      }
+  in
+  let text =
+    match body with
+    | `String s -> s
+    | `Strings ss -> String.concat ss
+    | `Empty -> ""
+    | `Pipe _ -> Alcotest.fail "the kill answered with a pipe"
+  in
+  Alcotest.(check bool) "the nudge did raise" false !armed;
+  Alcotest.(check int)
+    "answered 200: the halt is set" 200
+    (Cohttp.Code.code_of_status (Cohttp.Response.status response));
+  let json = Yojson.Safe.from_string text in
+  Alcotest.(check (option string))
+    "the error, a fixed sentence" (Some D.Desk_routes.kill_error_sentence)
+    Yojson.Safe.Util.(to_string_option (member "error" json));
+  Alcotest.(check string)
+    "beside the switch as it reads" "halted"
+    Yojson.Safe.Util.(to_string (member "state" (member "switch" json)));
+  Alcotest.(check bool)
+    "never the exception's own words" false
+    (String.is_substring text ~substring:"boom"
+    || String.is_substring text ~substring:"/var/lib");
+  Alcotest.(check bool)
+    "which reach the log" true
+    (Queue.exists f.events ~f:(fun line ->
+         String.is_substring line ~substring:"raised"
+         && String.is_substring line ~substring:"boom"));
+  let%bind () = pump f in
+  Alcotest.(check string)
+    "and the open order is still cancelled" "cancelled" (state f resting);
   Graph.destroy f.graph;
   return ()
 
@@ -866,6 +937,8 @@ let suites =
           test_an_unknown_answer_is_resolved_and_never_resent;
         case "a halt refuses new orders and cancels the open ones"
           test_a_halt_refuses_and_cancels;
+        case "a raise after the halt is answered, and the cancels still go"
+          test_a_raise_after_the_halt_is_answered_and_the_cancels_still_go;
         case "a limit's trip cancels the open orders"
           test_a_limit's_trip_cancels_the_open_orders;
         case "a restart reconciles against the venue" test_a_restart_reconciles;

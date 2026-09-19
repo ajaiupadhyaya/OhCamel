@@ -306,7 +306,18 @@ let test_with_a_manager_the_desk_says_what_it_can_do () =
         (List.length (Yojson.Safe.Util.to_list (field (field b "orders") "open")));
       Alcotest.(check string)
         "and the switch, whole" "halted"
-        (Yojson.Safe.Util.to_string (field (field b "switch") "state")))
+        (Yojson.Safe.Util.to_string (field (field b "switch") "state"));
+      (* The engine's stop outranks the hand's halt, in the frame's name and
+         in the switch /api/desk draws. *)
+      Ohcamel_desk.Halt.stop (Ohcamel_desk.Oms.halt oms)
+        ~why:"the venue's order updates stopped" ~at;
+      Alcotest.(check string)
+        "stopped" "stopped"
+        (Yojson.Safe.Util.to_string (field (Desk.summary_json desk) "kill_switch"));
+      Alcotest.(check string)
+        "and the switch, whole, says so" "stopped"
+        (Yojson.Safe.Util.to_string
+           (field (field (Desk.body_json desk) "switch") "state")))
     ()
 
 let test_api_desk_answers_through_the_server () =
