@@ -411,12 +411,40 @@ let extensions t : Server.extension list =
    Bounded by the book, not the journal: one indexed seek per registered
    strategy, and the intake's deferred count from memory. Appended after the
    desk's own routes, so the 404's list -- and deploy/smoke.sh's shadow of
-   it -- ends with it. A raise is answered with a fixed sentence and logged
-   with its own text, as desk_routes.ml's read routes are: the exception's
-   words can carry a path or a fragment of SQL, and this route answers anyone
-   on the demo. *)
+   it -- ends with it and then /api/research/evidence. A raise is answered
+   with a fixed sentence and logged with its own text, as desk_routes.ml's
+   read routes are: the exception's words can carry a path or a fragment of
+   SQL, and this route answers anyone on the demo. *)
 let research_error_sentence =
   "the desk hit an internal error and could not answer this request"
+
+(* /api/research/evidence: EXP-A01's two manifests, byte for byte as they are
+   committed, inside one object -- embedded at build time by desk/dune, so
+   the page reads the evidence and not a summary of it, and nothing here
+   parses, rounds or re-encodes a number.
+
+   A route of its own rather than a field of /api/research, for three
+   reasons. The evidence is a fact about the build and /api/research is a
+   fact about the journal: that route can fail, and answers 500 when it does,
+   and the verdicts and gates must not vanish with it. The page asks
+   /api/research again each time the journal moves, and 22 KB of constant
+   text on each of those reads would be sent to be thrown away. And the demo
+   registers no strategy, so there the evidence is the page, and it is served
+   the same on both hosts.
+
+   The body is concatenated once, at module initialisation. Each manifest
+   was written by `json.dumps(..., allow_nan=False)`, so the whole is strict
+   JSON; test_intake.ml parses it, and checks each manifest appears in it
+   exactly. *)
+let research_evidence_body =
+  String.concat
+    [
+      {|{"experiment":"EXP-A01","manifests":[|};
+      Research_manifests.exp_a01_spy;
+      ",";
+      Research_manifests.exp_a01_tlt;
+      "]}";
+    ]
 
 let research_extensions ~(journal : Journal.t)
     ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
@@ -436,5 +464,12 @@ let research_extensions ~(journal : Journal.t)
               Server.respond_json ~status:`Internal_server_error server
                 (Yojson.Safe.to_string
                    (`Assoc [ ("error", `String research_error_sentence) ])));
+    };
+    {
+      Server.path = "/api/research/evidence";
+      purpose =
+        "EXP-A01's two manifests as committed: each strategy's verdict and gates, its \
+         cost sweep, turnover, capacity and the trials its Sharpe was deflated by";
+      handle = (fun server _request -> Server.respond_json server research_evidence_body);
     };
   ]

@@ -1094,6 +1094,59 @@ let test_the_desk_bands_say_which_way_they_point () =
              | None -> false)))
     ()
 
+(* The signals band. Where the desk reads signal files, the served list gains
+   one entry, ahead of orders: it reads nothing in the graph and writes
+   nothing in it -- a signal is judged outside, and becomes orders only when
+   its strategy is live -- and its one fact is the entry it is wired to,
+   orders, which is what the page draws its stub into. Without a desk there
+   is no order path to enter, so [~signals] alone adds nothing, and the
+   topology it gives is, compared as a whole, the one given without it. *)
+let test_the_signals_band_enters_the_order_path () =
+  with_graph
+    ~f:(fun graph _recorder ->
+      let names topo =
+        List.map (Graph.Topology.outside topo) ~f:Graph.Topology.Outside.name
+      in
+      let topo = Graph.topology ~desk:true ~signals:true graph in
+      Alcotest.(check (list string))
+        "the four readers, then signals, orders and fills"
+        [ "alerts"; "history"; "stream"; "kill_switch"; "signals"; "orders"; "fills" ]
+        (names topo);
+      let signals =
+        List.find_exn (Graph.Topology.outside topo) ~f:(fun o ->
+            String.equal (Graph.Topology.Outside.name o) "signals")
+      in
+      Alcotest.(check (list string))
+        "signals read nothing in the graph" []
+        (Graph.Topology.Outside.reads signals);
+      Alcotest.(check (list string))
+        "and write nothing in it" []
+        (Graph.Topology.Outside.writes signals);
+      Alcotest.(check (option string))
+        "wired to the orders entry, which is served beside it" (Some "orders")
+        (Graph.Topology.Outside.wired_to signals);
+      Alcotest.(check bool) "present" true (Graph.Topology.Outside.present signals);
+      let same what a b =
+        Alcotest.(check string)
+          what
+          (Sexp.to_string (Graph.Topology.sexp_of_t a))
+          (Sexp.to_string (Graph.Topology.sexp_of_t b))
+      in
+      same "signals without a desk: the topology without them, whole"
+        (Graph.topology graph)
+        (Graph.topology ~signals:true graph);
+      (* And the entry is the whole of what [~signals] adds to a desk's: less
+         that one entry, the topology is the desk's without it. *)
+      same "with signals, less their entry: the desk's topology, whole"
+        (Graph.topology ~desk:true graph)
+        {
+          topo with
+          Graph.Topology.outside =
+            List.filter (Graph.Topology.outside topo) ~f:(fun o ->
+                not (String.equal (Graph.Topology.Outside.name o) "signals"));
+        })
+    ()
+
 (* The README's test, in its own words: "changing one position only triggers
    recomputation of nodes that depend on it". *)
 let test_position_change_is_local () =
@@ -2070,6 +2123,8 @@ let suite =
         test_the_desk_bands_are_absent_without_a_desk;
       Alcotest.test_case "TOPOLOGY: the desk bands say which way they point" `Quick
         test_the_desk_bands_say_which_way_they_point;
+      Alcotest.test_case "TOPOLOGY: the signals band enters the order path" `Quick
+        test_the_signals_band_enters_the_order_path;
       Alcotest.test_case "ARCHITECTURE: a position change recomputes only its dependents"
         `Quick test_position_change_is_local;
       Alcotest.test_case "ARCHITECTURE: a price tick recomputes only its dependents"

@@ -1,6 +1,6 @@
 // web/shared.js -- the frame state every section shares.
 //
-// Four pages draw from one frame, and three things about that frame are not a
+// Five pages draw from one frame, and three things about that frame are not a
 // section's to own. Which symbols have no recent print, which sectors hold one
 // and which nodes are downstream of one: the positions table marks rows from
 // the first two, the ledger dims limits from the third, and Figure 1 dims the

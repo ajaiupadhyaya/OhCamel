@@ -1247,6 +1247,16 @@ let routes : (string * string * handler) list =
       "execution: what is working, what the fills cost, and what the journal recorded",
       fun _ ->
         Cohttp_async.Server.respond_string ~headers:html_headers Execution_html.page );
+    (* A document like the four before it. Everything it shows comes from two
+       routes the desk adds, /api/research (the strategies this host registers
+       and their judgements) and /api/research/evidence (the committed
+       manifests); a server built without them serves the page, and the page
+       says it found nothing to read. *)
+    ( "/research",
+      "research: each strategy's backtest verdict and its gates first, then its latest \
+       signal and how the desk judged it",
+      fun _ -> Cohttp_async.Server.respond_string ~headers:html_headers Research_html.page
+    );
     ( "/api/snapshot",
       "the whole book as JSON, with the counter that proves the graph is alive",
       fun t ->
@@ -1414,11 +1424,11 @@ let notify (t : t) : unit = Ivar.fill_if_empty t.changed ()
 
 let create ?(extensions : extension list = []) ?(frame_extra = fun () -> [])
     ?(coalesce = Time_ns.Span.of_ms 80.0) ?history_capacity ?(alerts : Alerts.t option)
-    ?(kill_switch_wired_to : string option) ?(desk = false) ?(peer : string option)
-    ?(feed_stats : (unit -> Yojson.Safe.t) option) ?(quiet : Types.Symbol.t list = [])
-    ?(recompute_log : Recompute_log.t option) ?(reports : Reports.t option)
-    ?(garch : Reports.Garch.t option) ~(mode : mode) ~(graph : Graph.t) ~(factor : string)
-    () =
+    ?(kill_switch_wired_to : string option) ?(desk = false) ?(signals = false)
+    ?(peer : string option) ?(feed_stats : (unit -> Yojson.Safe.t) option)
+    ?(quiet : Types.Symbol.t list = []) ?(recompute_log : Recompute_log.t option)
+    ?(reports : Reports.t option) ?(garch : Reports.Garch.t option) ~(mode : mode)
+    ~(graph : Graph.t) ~(factor : string) () =
   (* An extension that claimed a built-in's path would be served sometimes and
      shadowed other times, depending on table order nobody chose on purpose;
      two extensions claiming the same path would settle it by [List.find]'s
@@ -1459,7 +1469,7 @@ let create ?(extensions : extension list = []) ?(frame_extra = fun () -> [])
         Yojson.Safe.to_string
           (json_of_graph
              (Graph.topology ~alerts:(Option.is_some alerts) ?kill_switch_wired_to ~desk
-                graph));
+                ~signals graph));
       extensions;
       frame_extra;
       not_found_body = build_not_found_body extensions;

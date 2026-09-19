@@ -2038,8 +2038,8 @@ end
    by walking through whatever unnamed nodes sit between; every edge then runs
    named-to-named and the drawing has one stroke per dependency a reader can
    name. Nothing here is hand-written that could drift from the wiring. *)
-let topology ?(alerts = false) ?kill_switch_wired_to ?(desk = false) (t : t) : Topology.t
-    =
+let topology ?(alerts = false) ?kill_switch_wired_to ?(desk = false) ?(signals = false)
+    (t : t) : Topology.t =
   let raw = walk t in
   let by_id = Int.Table.of_alist_exn (List.map raw ~f:(fun r -> (r.Raw.id, r))) in
   let node_exn id =
@@ -2250,7 +2250,27 @@ let topology ?(alerts = false) ?kill_switch_wired_to ?(desk = false) (t : t) : T
        has a desk; a backtest's topology carries neither. Orders leave and
        change nothing here. A fill comes back and sets a quantity cell, one per
        instrument, named by the function [create] named the cell with, so the
-       page resolves them as it resolves any other node. *)
+       page resolves them as it resolves any other node.
+
+       Signals, a third band, ahead of orders: present only when the desk also
+       reads signal files, which the caller says with [signals]. Without a
+       desk there is no order path for a signal to enter, so [signals] alone
+       adds nothing, and a topology built without it is the one it always
+       was. A signal reads nothing here and writes nothing here -- it is
+       judged outside the graph and becomes orders only when its strategy is
+       live -- so its one fact is where it goes: [wired_to] the orders entry,
+       which is what the page draws its stub into. *)
+    @ (if desk && signals then
+         [
+           {
+             Topology.Outside.name = "signals";
+             reads = [];
+             writes = [];
+             present = true;
+             wired_to = Some "orders";
+           };
+         ]
+       else [])
     @
     if desk then
       [

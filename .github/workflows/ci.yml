@@ -46,7 +46,9 @@ jobs:
       # GENERATED file, at a line number nobody can map back to the file they
       # edited, and "in practice" is not a guarantee. This names the real
       # file, costs a second, and runs before the forty-minute Owl build
-      # rather than after it.
+      # rather than after it. desk/dune does the same with EXP-A01's two
+      # manifests (research_manifests.ml, for /api/research/evidence), so its
+      # delimiters are read too and the two files are searched beside web/.
       #
       # The pattern list is derived from lib/dune itself, not retyped by hand
       # here: lib/dune currently defines four such delimiters (the fourth,
@@ -73,21 +75,21 @@ jobs:
           # left side of an explicit `... && status=0 || status=$?` (or `|| true`
           # for the one whose value, not status, is what matters), so -e sees a
           # command whose failure is being tested rather than left to propagate.
-          patterns=$(grep -o '|ohcamel_[a-z_]*}' lib/dune | sort -u) || true
+          patterns=$(grep -ho '|ohcamel_[a-z_]*}' lib/dune desk/dune | sort -u) || true
           if [ -z "$patterns" ]; then
             echo "no {ohcamel_*|...|ohcamel_*} delimiters found in lib/dune -- the rule moved, or the delimiters were renamed, and this check has nothing left to guard."
             exit 1
           fi
-          matches=$(grep -rnF -f <(printf '%s\n' "$patterns") web docs/crisis) && status=0 || status=$?
+          matches=$(grep -rnF -f <(printf '%s\n' "$patterns") web docs/crisis research/experiments/EXP-A01/manifest.exp_a01_spy.json research/experiments/EXP-A01/manifest.exp_a01_tlt.json) && status=0 || status=$?
           case "$status" in
             0)
               echo "$matches"
               echo "a closing quoted-string delimiter appears in an embedded source."
-              echo "rename it, or change the delimiter in lib/dune."
+              echo "rename it, or change the delimiter in lib/dune or desk/dune."
               exit 1
               ;;
             1)
-              echo "no stray delimiters in web/ or docs/crisis/"
+              echo "no stray delimiters in web/, docs/crisis/ or EXP-A01's manifests"
               ;;
             *)
               echo "grep failed (exit $status) — the check did not run"

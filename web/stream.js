@@ -5,7 +5,7 @@
 // EventSource from the same browser would make that number say two where one
 // reader is looking, and a number that does not mean what it says is worse
 // than no number. So this file owns the single source, and every section on
-// the page subscribes to it. It is catted into the four engine pages; the ops
+// the page subscribes to it. It is catted into the five engine pages; the ops
 // page keeps its own masthead and its own connection, and this file is not on
 // it -- deliberately, because that page's stream shows what a subscriber
 // looks like from the inside.
@@ -16,13 +16,13 @@
 // never change, which reads as an engine with nothing to say rather than as a
 // page missing a script. #conn is in that partial rather than a footer
 // because this file is the only thing that can know whether the subscription
-// is up, and it has to say so on four pages. And it keeps the /api/graph
+// is up, and it has to say so on five pages. And it keeps the /api/graph
 // fetch, because the staleness closure in shared.js needs the topology on
 // every page, whether or not that page draws Figure 1.
 //
-// Every element lookup here returns early when the element is absent: three
-// of the four pages carry none of the Desk's sections, and two of them may not
-// carry the footer either.
+// Every element lookup here returns early when the element is absent: four
+// of the five pages carry none of the Desk's sections, and none of those four
+// carries the Desk's footer either.
 (function () {
   "use strict";
 

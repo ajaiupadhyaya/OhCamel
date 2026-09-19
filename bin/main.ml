@@ -1520,6 +1520,15 @@ let run_live ~book_path ~(serve_port : int option) =
         match serve_port with
         | None -> Deferred.never ()
         | Some port ->
+            (* Figure 1's signals band: drawn only where the intake runs,
+               which needs both OHCAMEL_SIGNALS_DIR and the book's signals
+               block. With either missing no file is read, and a band into the
+               orders would draw a path nothing takes. *)
+            let signals =
+              match intake with
+              | Ohcamel_desk.Intake.Running _ -> true
+              | Ohcamel_desk.Intake.Off _ -> false
+            in
             (* Everything the process knows about itself, handed over once.
                ?alerts was omitted before this phase, so the live dashboard
                could not report the state the switch always had; the peer is
@@ -1538,7 +1547,7 @@ let run_live ~book_path ~(serve_port : int option) =
                   @ Ohcamel_desk.Desk_routes.extensions ~host:`Live ~oms
                   @ Ohcamel_desk.Desk.research_extensions ~journal ~strategies ~intake
                       ~on_event:live_line)
-                ~kill_switch_wired_to:"desk.submit" ~desk:true
+                ~kill_switch_wired_to:"desk.submit" ~desk:true ~signals
                 ~frame_extra:(fun () -> [ ("desk", Ohcamel_desk.Desk.summary_json desk) ])
                 ()
             in
@@ -1740,7 +1749,10 @@ let run_demo ~port =
         @ Ohcamel_desk.Desk_routes.extensions ~host:`Demo ~oms
         (* The demo registers no strategy: its synthetic book holds neither
            SPY nor TLT, and adding them would move Figure 1. So its
-           /api/research lists none, and says why. *)
+           /api/research lists none, and says why; /api/research/evidence
+           serves EXP-A01's manifests here as on the live host; and no
+           ~signals below, because no intake runs here, so Figure 1 draws no
+           signals band and stays the figure it was. *)
         @ Ohcamel_desk.Desk.research_extensions ~journal ~strategies:[]
             ~intake:Ohcamel_desk.Intake.demo_status ~on_event:(fun e ->
               printf "  %s\n%!" e))

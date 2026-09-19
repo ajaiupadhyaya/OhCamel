@@ -1,5 +1,5 @@
 <!--
-  The masthead and the two banners, catted into the four pages whose client
+  The masthead and the two banners, catted into the five pages whose client
   fills them. They were the top of the dashboard until the site became five
   pages; they are shared because the stream that fills them is shared, and a
   page carrying the stream without these ids would take its first frame into
@@ -12,7 +12,7 @@
 
   #conn was the footer's until the stream became shared, and it moved here for
   the reason this partial exists: only stream.js can know whether this
-  browser's subscription is up, it writes that line on four pages, and three
+  browser's subscription is up, it writes that line on five pages, and four
   of them have no footer of their own to put it in. It is also the one line
   that matters most when the page has stopped updating, and the masthead is
   sticky while a footer is not. It says something #feed cannot: #feed is the

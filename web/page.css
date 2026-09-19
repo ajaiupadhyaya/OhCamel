@@ -208,6 +208,53 @@
   main.exec { grid-template-columns: 1fr 1fr; }
   @media (max-width: 900px) { main.exec { grid-template-columns: 1fr; } }
 
+  /* ---- /research: the strategies and their latest signals side by side,
+     the evidence under them at the page's width, then two closing sentences.
+     The evidence spans because it is two manifests read against each other,
+     gate by gate; on a narrow screen they stack, and every table scrolls in
+     its own .twrap rather than the page sideways.
+
+     No rule here uses --live. A verdict is a record, and the page's one
+     colour for a word is the over colour, for a fail, a rejection and a high
+     PBO; advisory takes the unknown colour it has on the Desk. Tokens only,
+     so both schemes follow the palette at the top of this file. */
+  main.research { grid-template-columns: 1fr 1fr; }
+  #evidencesec { grid-column: 1 / -1; }
+  @media (max-width: 900px) { main.research { grid-template-columns: 1fr; } }
+  .rs-line { font-size: 13px; color: var(--ink-soft); max-width: 72ch; margin: 0 0 10px; }
+  .rs-note { font-size: 11px; color: var(--ink-faint); max-width: 90ch; margin: 4px 0 8px; }
+  .rs-quiet { color: var(--ink-faint); }
+  .rs-fail { color: var(--over); }
+  .rs-advisory { color: var(--unknown); }
+  table.rs-t { font-size: 12px; margin: 2px 0 10px; }
+  table.rs-t th { text-align: left; font-weight: 500; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); padding: 4px 14px 4px 0; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  table.rs-t td { padding: 5px 14px 5px 0; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  table.rs-t td.rs-l { white-space: normal; min-width: 11em; }
+  @media (max-width: 500px) { table.rs-t td.rs-l { min-width: 8.5em; } }
+  table.rs-t td.rs-v { font-weight: 600; }
+  table.rs-t td.rs-v.rs-quiet { font-weight: 400; }
+  table.rs-t tr.rs-failed td { background: var(--over-wash); }
+  .rs-evidence { display: grid; grid-template-columns: 1fr 1fr; gap: 0 40px; }
+  @media (max-width: 1100px) { .rs-evidence { grid-template-columns: 1fr; } }
+  .rs-manifest { min-width: 0; padding: 0 0 18px; }
+  @media (max-width: 1100px) { .rs-manifest + .rs-manifest { border-top: 1px solid var(--rule); padding-top: 18px; } }
+  .rs-name { margin: 0 0 4px; font-size: 15px; font-weight: 620; letter-spacing: -0.01em; }
+  .rs-name .rs-sub { display: inline-block; margin-left: 10px; font-size: 12px; font-weight: 400; color: var(--ink-soft); letter-spacing: 0; }
+  .rs-verdict { margin: 6px 0 2px; }
+  .rs-verdict b { font-size: 22px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+  .rs-verdict-said { margin: 0 0 12px; font-size: 13px; color: var(--ink); max-width: 72ch; }
+  .rs-h { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint); font-weight: 500; margin: 16px 0 4px; }
+  dl.rs-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 14px; margin: 2px 0 8px; font-size: 12px; }
+  dl.rs-kv dt { color: var(--ink-soft); max-width: 22em; }
+  dl.rs-kv dd { margin: 0; overflow-wrap: anywhere; }
+  .rs-sig { padding: 0 0 10px; margin: 0 0 10px; border-bottom: 1px solid var(--rule); }
+  .rs-sig:last-child { border-bottom: 0; }
+  .rs-sig-name { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .rs-verdict-line { margin: 0; font-size: 13px; font-weight: 600; }
+  details.rs-notes { margin-top: 12px; font-size: 11px; color: var(--ink-soft); }
+  details.rs-notes summary { cursor: pointer; }
+  details.rs-notes li { margin: 4px 0; max-width: 90ch; }
+
   /* ---- rows ---- */
   table { width: 100%; border-collapse: collapse; }
   td { padding: 5px 0; vertical-align: baseline; }

@@ -27,6 +27,7 @@ module Ops_html = Ohcamel.Ops_html
 module Argument_html = Ohcamel.Argument_html
 module Risk_html = Ohcamel.Risk_html
 module Execution_html = Ohcamel.Execution_html
+module Research_html = Ohcamel.Research_html
 
 (* Each marker must occur AFTER the previous one, so the search starts past the
    previous hit rather than at zero. That makes the assertion "these appear in
@@ -141,7 +142,7 @@ let test_the_ops_page_is_assembled_in_order () =
     "and no longer says it is not built" false
     (String.is_substring Ops_html.html ~substring:"this page is not built yet")
 
-(* Five pages, five titles. One title for five pages is a history and a set of
+(* Six pages, six titles. One title for six pages is a history and a set of
    bookmarks that cannot tell them apart, and a screen reader that announces the
    same name on arrival at each. *)
 let test_each_page_names_itself () =
@@ -150,6 +151,7 @@ let test_each_page_names_itself () =
       (Dashboard_html.page, "<title>OhCamel — Desk</title>", "the desk page");
       (Risk_html.page, "<title>OhCamel — Risk</title>", "the risk page");
       (Execution_html.page, "<title>OhCamel — Execution</title>", "the execution page");
+      (Research_html.page, "<title>OhCamel — Research</title>", "the research page");
       (Argument_html.page, "<title>OhCamel — Argument</title>", "the argument page");
       (Ops_html.html, "<title>OhCamel — Ops</title>", "the ops page");
     ]
@@ -159,7 +161,7 @@ let test_each_page_names_itself () =
       | None -> Alcotest.failf "%s does not carry %S" name title)
 
 (* The head and the stylesheet are authored once in web/ and catted into every
-   rule -- five now that every page has its own route. If someone forks them --
+   rule -- six now that every page has its own route. If someone forks them --
    a second <style> block on one page, a stray rule only one page gets -- the
    pages stop sharing a design and nothing fails, because each page still
    renders. Comparing the prefixes is the cheapest way to see the divergence.
@@ -169,9 +171,9 @@ let test_each_page_names_itself () =
    page echoes that immediately after (cat ../web/head.html), so it sits inside
    this very prefix. It is stripped out by name before the comparison, so the
    assertion stays "the rest of the head and the whole stylesheet are shared
-   byte for byte" rather than silently passing because five titles happen to
-   make five different strings. *)
-let test_all_five_pages_share_one_head_and_one_stylesheet () =
+   byte for byte" rather than silently passing because six titles happen to
+   make six different strings. *)
+let test_all_six_pages_share_one_head_and_one_stylesheet () =
   let boundary = "</style>\n</head>\n<body>\n" in
   let head_and_style ~name page =
     match String.substr_index page ~pattern:boundary with
@@ -192,6 +194,7 @@ let test_all_five_pages_share_one_head_and_one_stylesheet () =
       (Dashboard_html.page, "<title>OhCamel — Desk</title>\n", "dashboard");
       (Risk_html.page, "<title>OhCamel — Risk</title>\n", "risk");
       (Execution_html.page, "<title>OhCamel — Execution</title>\n", "execution");
+      (Research_html.page, "<title>OhCamel — Research</title>\n", "research");
       (Argument_html.page, "<title>OhCamel — Argument</title>\n", "argument");
       (Ops_html.html, "<title>OhCamel — Ops</title>\n", "ops");
     ]
@@ -465,6 +468,7 @@ let nav_markers =
     "href=\"/\"";
     "href=\"/risk\"";
     "href=\"/execution\"";
+    "href=\"/research\"";
     "href=\"/argument\"";
     "href=\"/ops\"";
   ]
@@ -564,6 +568,85 @@ let test_the_execution_page_has_its_sections () =
         "OhCamelStream.start()";
       ]
 
+(* The research page: the sixth, between Execution and Argument in the nav.
+   Its five sections in the order the page promises -- the strategies with
+   their backtest verdicts, the latest signal, the evidence, the sentence
+   that says the comparison with live is A5's, and R8 -- then its own
+   subscription, and start() last. No graph.js: nothing here draws a figure
+   or reads a stale closure, and a page that carried it would be paying for a
+   script it never calls. *)
+let test_the_research_page_has_its_sections () =
+  markers_in_order Research_html.page ~name:"the research page"
+    ~markers:
+      [
+        "<nav class=\"sitenav\"";
+        "href=\"/execution\"";
+        "href=\"/research\"";
+        "href=\"/argument\"";
+        "id=\"strategiessec\"";
+        "id=\"strategies\"";
+        "id=\"signalsec\"";
+        "id=\"signals\"";
+        "id=\"deferred\"";
+        "id=\"evidencesec\"";
+        "id=\"evidence\"";
+        "id=\"livesec\"";
+        "phase A5";
+        "id=\"r8sec\"";
+        "id=\"r8\"";
+        "window.OhCamelFormat =";
+        "window.OhCamelShared =";
+        "window.OhCamelStream =";
+        "\"/api/research/evidence\"";
+        "\"/api/research\"";
+        "OhCamelStream.onFrame(onFrame)";
+        "OhCamelStream.start()";
+      ];
+  match String.substr_index Research_html.page ~pattern:"window.OhCamelGraph =" with
+  | None -> ()
+  | Some i -> Alcotest.failf "the research page carries graph.js at byte %d" i
+
+(* Text only, never markup: every string on this page came from a server --
+   a strategy's name, a judgement's detail, a manifest's notes -- and the
+   manifests are files a research run writes. So research.js, from its first
+   line to the start() that ends the page, names none of the ways a string
+   becomes markup. stream.js, earlier on the page, writes one constant into
+   #feed with innerHTML; that is its own, fixed, and before this script. *)
+let test_the_research_script_writes_no_markup () =
+  let page = Research_html.page in
+  let from =
+    match String.substr_index page ~pattern:"/* Research: /api/research" with
+    | Some i -> i
+    | None -> Alcotest.fail "the research page does not carry research.js"
+  in
+  let script = String.drop_prefix page from in
+  List.iter [ "innerHTML"; "outerHTML"; "insertAdjacentHTML"; "document.write"; "eval(" ]
+    ~f:(fun needle ->
+      match String.substr_index script ~pattern:needle with
+      | None -> ()
+      | Some i ->
+          Alcotest.failf "research.js writes markup: %S at byte %d" needle (from + i))
+
+(* The acceptance's "an advisory signal shown with its rule", as far as a test
+   that runs no browser can hold it: /api/research serves an advisory
+   judgement's rule -- "R6", or "sizing" when it passed everything and its
+   strategy is advisory, pinned in test_intake.ml -- and research.js has a
+   sentence for each, so neither reaches the page as a bare word, and an
+   accepted one's rebalance is printed when it is present. Checked in a
+   browser against all four, in Task 17's report. *)
+let test_the_research_page_names_an_advisory_judgements_rule () =
+  List.iter
+    [
+      "\"advisory at \" + rule";
+      "advisory: its strategy's sizing is advisory";
+      "\"rejected at \" + rule";
+      "kv(dl, \"rebalance\", rb)";
+    ] ~f:(fun needle ->
+      Alcotest.(check bool)
+        ("research.js carries " ^ needle)
+        true
+        (String.is_substring Research_html.page ~substring:needle))
+
 (* The blotter and the fills stay where §4 puts them, on the Desk page. *)
 let test_the_desk_keeps_the_blotter_and_the_fills () =
   List.iter [ "id=\"blotter\""; "id=\"fills\"" ] ~f:(fun marker ->
@@ -603,8 +686,8 @@ let suite =
       Alcotest.test_case "the ops page is assembled in the rule's order" `Quick
         test_the_ops_page_is_assembled_in_order;
       Alcotest.test_case "each page names itself" `Quick test_each_page_names_itself;
-      Alcotest.test_case "all five pages share one head and one stylesheet" `Quick
-        test_all_five_pages_share_one_head_and_one_stylesheet;
+      Alcotest.test_case "all six pages share one head and one stylesheet" `Quick
+        test_all_six_pages_share_one_head_and_one_stylesheet;
       Alcotest.test_case "web/quoted.json parses and holds the four tables" `Quick
         test_quoted_parses_and_holds_the_four_tables;
       Alcotest.test_case "the quoted rows are uniform" `Quick
@@ -641,4 +724,10 @@ let suite =
         test_the_desk_keeps_the_blotter_and_the_fills;
       Alcotest.test_case "the desk page is in reading order" `Quick
         test_the_desk_page_is_in_reading_order;
+      Alcotest.test_case "the research page has its sections" `Quick
+        test_the_research_page_has_its_sections;
+      Alcotest.test_case "the research script writes no markup" `Quick
+        test_the_research_script_writes_no_markup;
+      Alcotest.test_case "the research page names an advisory judgement's rule" `Quick
+        test_the_research_page_names_an_advisory_judgements_rule;
     ] )

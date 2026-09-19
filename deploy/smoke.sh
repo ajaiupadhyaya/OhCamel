@@ -25,15 +25,17 @@ EXPECT_SHA=""
 # The routes, as this suite knows them. The 404 body lists lib/server.ml's
 # `routes` table, the one the dispatcher is generated from, and then the
 # extensions the process was created with, in the order given -- the desk's
-# nine routes, on both hosts: /api/desk, then tca, sessions, preview, orders,
+# ten routes, on both hosts: /api/desk, then tca, sessions, preview, orders,
 # cancel, kill and kill/reset under it (the last four answer 405 on the demo
 # host, and are listed there all the same), then /api/research, the signal
-# intake's strategies and judgements. This string is that list's shadow:
+# intake's strategies and judgements, and /api/research/evidence, EXP-A01's
+# committed manifests. The table itself carries the six pages, /research
+# after /execution. This string is that list's shadow:
 # a shell script cannot read OCaml, so it carries the list and asserts the 404
 # body equals it, in order. Adding a route or an extension means adding it here
 # in the same commit -- the assertion fails until you do, which is the point of
 # having it.
-EXPECTED_ROUTES="/ /ops /argument /risk /execution /api/snapshot /api/health /api/stream /api/history /api/stress /api/graph /api/heat /api/reports /api/reports/garch /api/ops /api/desk /api/desk/tca /api/desk/sessions /api/desk/preview /api/desk/orders /api/desk/cancel /api/desk/kill /api/desk/kill/reset /api/research"
+EXPECTED_ROUTES="/ /ops /argument /risk /execution /research /api/snapshot /api/health /api/stream /api/history /api/stress /api/graph /api/heat /api/reports /api/reports/garch /api/ops /api/desk /api/desk/tca /api/desk/sessions /api/desk/preview /api/desk/orders /api/desk/cancel /api/desk/kill /api/desk/kill/reset /api/research /api/research/evidence"
 
 # The first bare argument is the base URL; everything else is a flag. Written
 # out rather than clever, because a smoke script that misparses its own
@@ -271,13 +273,14 @@ case "$page_code:$ops_ctype:$page" in
 *)       no "GET /ops                    ${page_code:-no response}" ;;
 esac
 
-# The three pages W2 added. Each is a document rather than an API endpoint,
-# and every page answers 200 text/html, so status and Content-Type alone would
-# pass two handlers swapped in the routes table. Each body is therefore
-# matched on an id only its own page carries -- the essay's <article>, the
-# ledger, the open orders -- as the /ops probe above matches its two columns.
-# The ledger is the one section that moved to /risk; the open orders are one of
-# the new renderings /execution adds from the journal.
+# The three pages W2 added, and /research, A3's. Each is a document rather
+# than an API endpoint, and every page answers 200 text/html, so status and
+# Content-Type alone would pass two handlers swapped in the routes table. Each
+# body is therefore matched on an id only its own page carries -- the essay's
+# <article>, the ledger, the open orders, the evidence -- as the /ops probe
+# above matches its two columns. The ledger is the one section that moved to
+# /risk; the open orders are one of the new renderings /execution adds from
+# the journal; the evidence is where /research draws EXP-A01's manifests.
 page_probe() {
 	local path="$1" marker="$2" what="$3" body code ctype label
 	label=$(printf 'GET %-23s' "$path")
@@ -293,6 +296,34 @@ page_probe() {
 page_probe /argument '<article id="argument"' "the essay"
 page_probe /risk 'id="ledger"' "the ledger"
 page_probe /execution 'id="openorders"' "the open orders"
+page_probe /research 'id="evidence"' "the evidence"
+
+# The evidence /research draws: EXP-A01's two committed manifests, served the
+# same on both hosts. 200 and JSON would pass an empty object, so the answer
+# is parsed and each manifest's slug and verdict are read out of it -- both
+# say fail, and a probe that printed them is how a deploy shows it.
+if command -v python3 >/dev/null 2>&1; then
+	evidence=$(curl -sS --max-time 15 -w '\n%{http_code}' "$BASE/api/research/evidence" 2>/dev/null | python3 -c '
+import json, sys
+raw = sys.stdin.read().rsplit("\n", 1)
+try:
+    body = json.loads(raw[0]); code = raw[1]
+except Exception as e:
+    print("NOTJSON %s" % e); raise SystemExit
+if code != "200":
+    print("CODE %s, expected 200" % code); raise SystemExit
+ms = [m for m in (body.get("manifests") or []) if isinstance(m, dict)]
+if body.get("experiment") != "EXP-A01" or len(ms) != 2:
+    print("SHAPE experiment=%r, %d manifests" % (body.get("experiment"), len(ms))); raise SystemExit
+print("OK EXP-A01, " + ", ".join("%s %s" % (m.get("slug"), m.get("verdict")) for m in ms))
+' 2>/dev/null)
+	case "$evidence" in
+	OK*) ok "GET /api/research/evidence 200, ${evidence#OK }" ;;
+	*)   no "GET /api/research/evidence malformed" "${evidence:-no response}" ;;
+	esac
+else
+	meh "GET /api/research/evidence python3 unavailable for a real parse; not checked"
+fi
 
 # The 404 body is generated from the same table `handle` dispatches on, and
 # EXPECTED_ROUTES is that table's shadow. Equality in order, not membership: a
@@ -504,7 +535,7 @@ if [ -n "$LIVE" ]; then
 	# up here as a 200 on one path while / still said 401. The page fills its
 	# peer column the other way round -- the live origin reads the demo, over
 	# the demo engine's own CORS header -- so the live host never needs one.
-	for path in / /ops /argument /risk /execution /api/ops /api/snapshot /api/health /api/desk /api/desk/orders; do
+	for path in / /ops /argument /risk /execution /research /api/ops /api/snapshot /api/health /api/desk /api/desk/orders /api/research/evidence; do
 		code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$LIVE$path" 2>/dev/null)
 		[ "$code" = "401" ] && ok "GET $LIVE$path  401 without credentials" \
 			|| no "GET $LIVE$path  $code, expected 401" "the live host is not gated on $path"

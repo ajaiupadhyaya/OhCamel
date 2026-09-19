@@ -481,7 +481,8 @@
       // is the second absence. Built before the svg rather than after the
       // nodes, because the figure is as tall as the last row drawn here, and
       // that is a count of the served list rather than a constant: a desk
-      // adds two rows. Appended where it always was, after the nodes.
+      // adds two rows, and a third where it reads signals. Appended where it
+      // always was, after the nodes.
       if (observers) {
         var by = bp ? bp.y : TOP, sep = by + 22, oy = sep + 44, entries = {};
         go = svgEl("g", {}, "observers");
@@ -521,10 +522,16 @@
         // through the alias, one per drawn key: in compact mode the band takes
         // one and an open name its own. They are routed once the observers'
         // bottom is known, below. The sub-lines are short on purpose: the
-        // column is OBS_W wide.
+        // column is OBS_W wide. Signals, where the desk reads them, are a
+        // third band, served just ahead of orders and so drawn just above
+        // them; their stub is drawn once both rows are placed, below.
         outside.forEach(function (o) {
-          if (o.name !== "orders" && o.name !== "fills") return;
+          if (o.name !== "signals" && o.name !== "orders" && o.name !== "fills") return;
           arrows = true;
+          if (o.name === "signals") {
+            entry(o, "signals", "judged · sized if live");
+            return;
+          }
           if (o.name === "orders") {
             entry(o, "orders", "sent out · writes nothing");
             var sy = entries.orders - 4, sx = r1(ox + o.name.length * CHAR + 6);
@@ -544,6 +551,20 @@
             // where one is drawn, of the name where it is a band and has none.
             targets.push(n.band ? { key: key, x: a.x - 4, y: a.y - 4 } : { key: key, x: a.x + CELL_X - 4, y: a.y + CELL_Y + CELL_W / 2 });
           });
+        });
+        // The signals stub: a short stroke from the signals entry into the
+        // entry the topology says it is wired to -- orders -- in the orders
+        // stub's own stroke and arrow. It leaves its name's left edge as the
+        // fills band leaves its own, turns down the gutter for one row, and
+        // arrives 4 px short of the orders name, as an edge arrives. Nothing
+        // is drawn when either end is not: no signals entry, no stub, and a
+        // figure without one is the figure it was.
+        outside.forEach(function (o) {
+          if (o.name !== "signals" || typeof o.wired_to !== "string") return;
+          var from = entries.signals, to = Object.prototype.hasOwnProperty.call(entries, o.wired_to) ? entries[o.wired_to] : undefined;
+          if (typeof from !== "number" || typeof to !== "number") return;
+          var bx = r1(ox - 12), ex = r1(ox - 4);
+          go.appendChild(svgEl("path", { d: "M" + ex + "," + (from - 4) + " H" + bx + " V" + (to - 4) + " H" + ex, "data-from": "signals", "data-to": o.wired_to, "marker-end": "url(#arrowband)" }, "deskin"));
         });
         // The last row's baseline, its value line and a margin: 18 below that
         // baseline, which is what the fixed 172 left under the fourth row it

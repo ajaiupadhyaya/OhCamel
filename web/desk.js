@@ -99,7 +99,7 @@
   }
 
   // The value cell, the risk cell and the stale sets are OhCamelShared's: they
-  // are the frame's state rather than this section's, and three of the four
+  // are the frame's state rather than this section's, and four of the five
   // pages need them without needing anything else in this file.
   function row(table, key, label, note, text, cls, rowCls) {
     var tr = el("tr", rowCls || null);

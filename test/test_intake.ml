@@ -1247,6 +1247,192 @@ let test_the_latest_judgement_is_one_index_seek () =
          s.Journal.Signal.sequence));
   Journal.close journal
 
+(* ------------------------------------------------------------------------ *)
+(* /api/research/evidence                                                    *)
+(* ------------------------------------------------------------------------ *)
+
+(* The evidence route, read as the page reads it: the answer, its headers,
+   and the paths the server lists, which end with the two research routes in
+   that order -- deploy/smoke.sh's EXPECTED_ROUTES shadows the same list. The
+   route is the same on both hosts, so the demo's extensions serve it. *)
+let with_evidence ~f =
+  let journal = Or_error.ok_exn (Journal.open_ ~path:":memory:") in
+  let graph =
+    Graph.create ~starting_cash:(Notional.of_float 100_000.0)
+      ~instruments:[ { Instrument.symbol = spy; sector = Sector.of_string "INDEX" } ]
+      ~limits:[] ~confidence:0.95 ~return_window:10 ()
+  in
+  Exn.protect
+    ~finally:(fun () ->
+      Graph.destroy graph;
+      Journal.close journal)
+    ~f:(fun () ->
+      let server =
+        Server.create
+          ~extensions:
+            (D.Desk.research_extensions ~journal ~strategies:[] ~intake:Intake.demo_status
+               ~on_event:ignore)
+          ~mode:`Demo ~graph ~factor:"SYNTHETIC" ()
+      in
+      match
+        Async.Deferred.peek
+          (Server.dispatch server
+             {
+               Server.Request.meth = `GET;
+               path = "/api/research/evidence";
+               headers = Cohttp.Header.init ();
+               body = "";
+             })
+      with
+      | Some (response, `String body) ->
+          f
+            ~status:(Cohttp.Code.code_of_status (Cohttp.Response.status response))
+            ~content_type:
+              (Cohttp.Header.get (Cohttp.Response.headers response) "Content-Type")
+            ~listed:(Server.listed_paths server) body
+      | _ -> Alcotest.fail "/api/research/evidence did not answer without the scheduler")
+
+let manifests_of body =
+  Yojson.Safe.Util.to_list
+    (Yojson.Safe.Util.member "manifests" (Yojson.Safe.from_string body))
+
+let gate_detail manifest name =
+  match
+    List.find
+      (Yojson.Safe.Util.to_list (field manifest "gates"))
+      ~f:(fun g -> String.equal (Yojson.Safe.Util.to_string (field g "name")) name)
+  with
+  | Some g -> field g "detail"
+  | None -> Alcotest.failf "no %s gate" name
+
+(* EXP-A01's two manifests, byte for byte as committed: each embedded string
+   is in the answer whole, so nothing between the file and the page parsed,
+   rounded or re-encoded a number. The whole is strict JSON -- every number
+   finite, which Yojson would let through and a browser's JSON.parse would
+   not -- and the two verdicts are the manifests' own words: both fail. *)
+let test_the_evidence_is_both_manifests_as_committed () =
+  with_evidence ~f:(fun ~status ~content_type ~listed body ->
+      Alcotest.(check int) "200" 200 status;
+      Alcotest.(check (option string)) "JSON" (Some "application/json") content_type;
+      Alcotest.(check (list string))
+        "listed last, after /api/research"
+        [ "/api/research"; "/api/research/evidence" ]
+        (List.drop listed (List.length listed - 2));
+      List.iter
+        [
+          ("exp_a01_spy", D.Research_manifests.exp_a01_spy);
+          ("exp_a01_tlt", D.Research_manifests.exp_a01_tlt);
+        ]
+        ~f:(fun (name, text) ->
+          Alcotest.(check bool)
+            (name ^ ": the committed manifest is in the answer, whole")
+            true
+            (String.is_substring body ~substring:text));
+      let rec finite = function
+        | `Float f -> Float.is_finite f
+        | `List xs -> List.for_all xs ~f:finite
+        | `Assoc kvs -> List.for_all kvs ~f:(fun (_, v) -> finite v)
+        | _ -> true
+      in
+      let json = Yojson.Safe.from_string body in
+      Alcotest.(check bool) "every number is finite: strict JSON" true (finite json);
+      Alcotest.(check (list string))
+        "the top level" [ "experiment"; "manifests" ] (keys json);
+      Alcotest.(check string)
+        "EXP-A01" "EXP-A01"
+        (Yojson.Safe.Util.to_string (field json "experiment"));
+      Alcotest.(check (list (triple string string string)))
+        "each manifest's slug, verdict and verdict_line, as committed"
+        [
+          ( "exp_a01_spy",
+            "fail",
+            "fail: 1 of 5 gates failed (regimes_positive); PBO 0.786, above 0.5" );
+          ( "exp_a01_tlt",
+            "fail",
+            "fail: 5 of 5 gates failed (holdout_positive, dsr, psr, \
+             bootstrap_sharpe_lower5, regimes_positive); PBO 0.981, above 0.5" );
+        ]
+        (List.map (manifests_of body) ~f:(fun m ->
+             let s k = Yojson.Safe.Util.to_string (field m k) in
+             (s "slug", s "verdict", s "verdict_line"))))
+
+(* The page states each gate's line from the manifest -- the number beside
+   ">=" is the gate detail's own -- so that no copy of battery/gates.py's
+   THRESHOLDS lives in the JavaScript. That only works if every manifest
+   carries every number the page reads, so this pins that it does, at the
+   values docs/CHARTER.md's gates table states: DSR 0.30, PSR 0.70, the
+   bootstrap's lower 5th percentile of 1,000 resamples, 3 regimes, PBO named
+   above 0.5, and the sweep at 0 / 5 / 15 / 30 bps with both of its Sharpe
+   series and both of its return series at each level. A manifest regenerated
+   under a loosened gate fails here, where the page would have printed the
+   loosened line faithfully. And the DSR's unit and its sources: fold-trials,
+   56 for SPY and 12 for TLT (ruling 1b), each source's count summing to the
+   total. *)
+let test_the_manifests_carry_every_line_the_page_reads () =
+  with_evidence ~f:(fun ~status:_ ~content_type:_ ~listed:_ body ->
+      List.iter (manifests_of body) ~f:(fun m ->
+          let slug = Yojson.Safe.Util.to_string (field m "slug") in
+          let num v = Yojson.Safe.Util.to_number v in
+          let check_num what expected v =
+            Alcotest.(check (float 0.0)) (slug ^ ": " ^ what) expected (num v)
+          in
+          Alcotest.(check (list string))
+            (slug ^ ": the gates, in the battery's order")
+            [
+              "holdout_positive";
+              "dsr";
+              "psr";
+              "bootstrap_sharpe_lower5";
+              "regimes_positive";
+              "pbo";
+              "cost_sweep";
+            ]
+            (List.map
+               (Yojson.Safe.Util.to_list (field m "gates"))
+               ~f:(fun g -> Yojson.Safe.Util.to_string (field g "name")));
+          check_num "DSR at or above" 0.30 (field (gate_detail m "dsr") "threshold");
+          check_num "PSR at or above" 0.70 (field (gate_detail m "psr") "threshold");
+          let boot = gate_detail m "bootstrap_sharpe_lower5" in
+          check_num "the bootstrap's lower percentile" 5.0 (field boot "lower_percentile");
+          check_num "its resamples" 1000.0 (field boot "n_samples");
+          check_num "regimes positive, at least" 3.0
+            (field (gate_detail m "regimes_positive") "min_positive");
+          check_num "PBO named above" 0.5 (field (gate_detail m "pbo") "fragile_above");
+          let sweep = gate_detail m "cost_sweep" in
+          Alcotest.(check (list (float 0.0)))
+            (slug ^ ": the sweep's levels")
+            [ 0.0; 5.0; 15.0; 30.0 ]
+            (List.map (Yojson.Safe.Util.to_list (field sweep "bps_levels")) ~f:num);
+          List.iter
+            [
+              "sharpe_by_bps";
+              "holdout_sharpe_by_bps";
+              "total_return_by_bps";
+              "holdout_total_return_by_bps";
+            ] ~f:(fun series ->
+              Alcotest.(check (list string))
+                (slug ^ ": " ^ series ^ " at every level")
+                [ "0.0"; "15.0"; "30.0"; "5.0" ]
+                (List.sort (keys (field sweep series)) ~compare:String.compare));
+          let dsr = field m "dsr" in
+          Alcotest.(check string)
+            (slug ^ ": the DSR's unit") "fold_trials"
+            (Yojson.Safe.Util.to_string (field dsr "unit"));
+          let total = Yojson.Safe.Util.to_int (field dsr "trial_count") in
+          Alcotest.(check int)
+            (slug ^ ": its trials, ruling 1b's count")
+            (if String.equal slug "exp_a01_spy" then 56 else 12)
+            total;
+          Alcotest.(check int)
+            (slug ^ ": each source's count, summing to the total")
+            total
+            (List.sum
+               (module Int)
+               (match field dsr "trial_sharpe_sources" with
+               | `Assoc kvs -> kvs
+               | _ -> Alcotest.fail "no sources")
+               ~f:(fun (_, v) -> Yojson.Safe.Util.to_int v))))
+
 let suite =
   ( "intake",
     [
@@ -1320,4 +1506,8 @@ let suite =
       Alcotest.test_case "/api/research on the demo" `Quick test_api_research_on_the_demo;
       Alcotest.test_case "the latest judgement is one index seek" `Quick
         test_the_latest_judgement_is_one_index_seek;
+      Alcotest.test_case "/api/research/evidence is both manifests as committed" `Quick
+        test_the_evidence_is_both_manifests_as_committed;
+      Alcotest.test_case "the manifests carry every line the page reads" `Quick
+        test_the_manifests_carry_every_line_the_page_reads;
     ] )

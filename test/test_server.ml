@@ -1043,6 +1043,7 @@ let test_the_404_lists_exactly_the_routes () =
       "/argument";
       "/risk";
       "/execution";
+      "/research";
       "/api/snapshot";
       "/api/health";
       "/api/stream";
@@ -1132,18 +1133,20 @@ let test_the_two_new_routes_answer () =
       | _ -> Alcotest.fail "the 404 did not answer as a string")
     ()
 
-(* The three pages W2 added, each read through the table and matched on an id
-   only its own page carries. The route listing and the smoke suite check
-   paths, status and Content-Type, all of which two swapped handlers would
-   still pass: every page is 200 text/html. What they would not pass is this,
-   because the Risk page is the only one with the ledger, the Execution page
-   the only one with the open orders, and the Argument page the only one with
+(* The three pages W2 added and the one A3 adds, each read through the table
+   and matched on an id only its own page carries. The route listing and the
+   smoke suite check paths, status and Content-Type, all of which two swapped
+   handlers would still pass: every page is 200 text/html. What they would
+   not pass is this, because the Risk page is the only one with the ledger,
+   the Execution page the only one with the open orders, the Research page
+   the only one with the evidence, and the Argument page the only one with
    the essay. *)
 let test_each_new_page_answers_with_its_own_body () =
   let pages =
     [
       ("/risk", "id=\"ledger\"");
       ("/execution", "id=\"openorders\"");
+      ("/research", "id=\"evidence\"");
       ("/argument", "<article id=\"argument\"");
     ]
   in
@@ -2464,6 +2467,39 @@ let test_with_a_desk_the_switch_is_wired_to_desk_submit () =
       | _ -> Alcotest.fail "no outside list")
     ()
 
+(* Figure 1 is drawn from /api/graph and from nothing else, so the figure a
+   host drew before the signals band is the figure it draws now exactly when
+   these bytes are unchanged -- which is the byte-identity this test holds.
+   Servers over one graph: [~signals] alone, with no desk, serves the bytes a
+   server with neither serves, because there is no order path for a signal
+   to enter; a desk that reads signals serves one entry more, immediately
+   before orders, the entry the page draws its stub into; and less that
+   entry its bytes are the desk's, character for character. The demo is a
+   desk that reads no signals, so its figure is the second of these. *)
+let test_the_signals_band_leaves_every_other_byte_alone () =
+  with_graph
+    ~f:(fun graph ->
+      let served ?(desk = false) ?(signals = false) () =
+        let server =
+          Server.create ~kill_switch_wired_to:"desk.submit" ~desk ~signals ~mode:`Demo
+            ~graph ~factor:"SYNTHETIC" ()
+        in
+        snd (dispatched server "/api/graph")
+      in
+      Alcotest.(check string)
+        "no desk: ~signals changes not one byte" (served ()) (served ~signals:true ());
+      let desk = served ~desk:true () and both = served ~desk:true ~signals:true () in
+      let entry =
+        {|{"name":"signals","reads":[],"writes":[],"present":true,"wired_to":"orders"},|}
+      in
+      Alcotest.(check bool)
+        "a desk that reads signals serves the entry, immediately before orders" true
+        (String.is_substring both ~substring:(entry ^ {|{"name":"orders",|}));
+      Alcotest.(check string)
+        "and less that entry, the desk's bytes exactly" desk
+        (String.substr_replace_first both ~pattern:entry ~with_:""))
+    ()
+
 let suite =
   ( "server",
     [
@@ -2496,7 +2532,8 @@ let suite =
         test_the_404_lists_exactly_the_routes;
       Alcotest.test_case "/api/ops and /ops answer through the table" `Quick
         test_the_two_new_routes_answer;
-      Alcotest.test_case "/risk, /execution and /argument each answer with their own page"
+      Alcotest.test_case
+        "/risk, /execution, /research and /argument each answer with their own page"
         `Quick test_each_new_page_answers_with_its_own_body;
       Alcotest.test_case "CORS survives being read through the table, not just built"
         `Quick test_cors_survives_being_read_through_the_table_and_not_just_built;
@@ -2539,4 +2576,6 @@ let suite =
         test_heat_without_a_log_is_null;
       Alcotest.test_case "with a desk the switch is wired to desk.submit" `Quick
         test_with_a_desk_the_switch_is_wired_to_desk_submit;
+      Alcotest.test_case "the signals band leaves every other byte of /api/graph alone"
+        `Quick test_the_signals_band_leaves_every_other_byte_alone;
     ] )
