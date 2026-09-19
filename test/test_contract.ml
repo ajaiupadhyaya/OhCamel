@@ -18,14 +18,35 @@
    - "R3: no bars seen means nothing is current", which built
      Contract.Clock.empty, has no port: Clock.create's [latest_bar] is
      mandatory here, so an "empty" clock is not representable. This is a
-     concern for whoever wires the journal-backed clock (Task 13) before any
+     concern for whoever wires the journal-backed clock (Task 14) before any
      session exists -- see the Task 5 report.
    - Everything else (accept, reject, order, parse) is copied with only the
      module qualification changed.
    - "oracle": new. Loads every interface/examples/*.json against
      interface/examples/expected.json and checks the core's verdict on each,
      which is ruling 6's cross-language check -- Task 6's Python suite reads
-     the same expected.json and checks schema_valid instead. *)
+     the same expected.json and checks schema_valid instead.
+
+   Fix round (four holes a reviewer found in the port above):
+   - R7's two NaN/Infinity cases: every ordering comparison against NaN is
+     false, so the old ">" tests in contract.ml let a NaN or infinite weight
+     through. Two new cases build one from a raw JSON string, since %.6f
+     cannot print "NaN".
+   - The oracle now asserts, not just uses, that interface/examples/*.json
+     (minus expected.json) is exactly the set of expected.json's case keys,
+     and that the set is non-empty -- an oracle that silently checked zero
+     examples, or skipped a file nobody added to "cases", used to pass. A
+     missing file is now a named failure in the list the others come back
+     as, not an uncaught exception that aborts before they run.
+   - Four new order cases (R1, R3, R4, R5 each before R6) alongside the
+     ported R2-before-R6 and R6-before-R7, so a first failure at R6 pins
+     that R1 through R5 all passed -- the property Task 14's intake relies
+     on when it reports an R6 rejection as "advisory, otherwise sound".
+   - Clock.create takes a third fact, [earliest_bar]: an [as_of] before it
+     has an age this clock cannot state, and R4 now rejects it outright
+     instead of asking [bars_after] for a number it was never built to
+     answer for a date that old. Four new cases below (the boundary, the
+     day before it, and the two ways [create] now raises). *)
 
 open Core
 module Contract = Ohcamel_desk.Contract
@@ -54,7 +75,8 @@ let clock_dates =
   List.map ~f:Date.of_string [ "2020-12-28"; "2020-12-29"; "2020-12-30"; "2020-12-31" ]
 
 let clock =
-  Contract.Clock.create ~latest_bar:(List.last_exn clock_dates) ~bars_after:(fun d ->
+  Contract.Clock.create ~earliest_bar:(List.hd_exn clock_dates)
+    ~latest_bar:(List.last_exn clock_dates) ~bars_after:(fun d ->
       List.count clock_dates ~f:(fun x -> Date.( > ) x d))
 
 let registry : Contract.registry =
@@ -67,6 +89,31 @@ let judge s =
   match Contract.parse_string s with
   | Ok s -> Contract.validate ~clock ~registry ~universe ~max_age s
   | Error e -> failwithf "test document did not parse: %s" e ()
+
+let judge_with_clock c s =
+  match Contract.parse_string s with
+  | Ok s -> Contract.validate ~clock:c ~registry ~universe ~max_age s
+  | Error e -> failwithf "test document did not parse: %s" e ()
+
+(* I4: a clock whose [bars_after] was clearly written with only recent dates
+   in mind -- it answers "1 bar old" for any date it does not otherwise
+   recognise, including one from long before its own history. A caller that
+   judged a signal's age from [bars_after] alone, without also checking
+   [earliest_bar], would call a year-old signal "1 bar old" and accept it;
+   that is the exact bug this task closes. [bars_after latest_bar] is still
+   0, so [create] accepts this clock -- the bug is not in [create]'s two
+   invariants, it is in trusting [bars_after] outside the range it was ever
+   asked to be right about. *)
+let clock_naive_before_its_own_history =
+  Contract.Clock.create ~earliest_bar:(Date.of_string "2020-12-28")
+    ~latest_bar:(Date.of_string "2020-12-31") ~bars_after:(fun d ->
+      if Date.( >= ) d (Date.of_string "2020-12-31") then 0 else 1)
+
+let expect_clock_create_raises ~earliest_bar ~latest_bar ~bars_after =
+  match Contract.Clock.create ~earliest_bar ~latest_bar ~bars_after with
+  | _ -> Alcotest.fail "expected Clock.create to raise, it returned a clock"
+  | exception Failure _ -> ()
+  | exception exn -> Alcotest.failf "expected Failure, got %s" (Exn.to_string exn)
 
 let expect_accept v =
   match v with
@@ -92,6 +139,13 @@ let expect_rule rule v =
 
 let examples_dir = "../interface/examples/"
 
+(* I4: expected.json's earliest bar_dates entry is the oracle's
+   [earliest_bar], the same way its max was already [latest_bar]. Checked
+   against every example below (see the header comment and the fix report):
+   only r4_stale.json's as_of (2020-12-24) falls before it (2020-12-28), and
+   its core verdict was already REJECT R4 -- unchanged, since a signal older
+   than the clock's history still fails R4, just for the more specific
+   reason now. *)
 let oracle_clock_and_config () =
   let expected = Yojson.Safe.from_file (examples_dir ^ "expected.json") in
   let open Yojson.Safe.Util in
@@ -103,6 +157,7 @@ let oracle_clock_and_config () =
   let max_age = member "max_age" clock_json |> to_int in
   let clock =
     Contract.Clock.create
+      ~earliest_bar:(List.min_elt bar_dates ~compare:Date.compare |> Option.value_exn)
       ~latest_bar:(List.max_elt bar_dates ~compare:Date.compare |> Option.value_exn)
       ~bars_after:(fun d -> List.count bar_dates ~f:(fun x -> Date.( > ) x d))
   in
@@ -127,23 +182,64 @@ let core_label = function
   | Contract.Accepted _ -> "ACCEPT"
   | Contract.Rejected (r, _) -> sprintf "REJECT %s" (Contract.Rule.to_string r)
 
+(* I2: the set of *.json files actually in interface/examples/, minus
+   expected.json itself -- the set the oracle ought to be checking, as
+   opposed to whatever subset expected.json's "cases" happens to name. *)
+let example_files_on_disk () =
+  Sys_unix.ls_dir examples_dir
+  |> List.filter ~f:(fun f ->
+      String.is_suffix f ~suffix:".json" && not (String.equal f "expected.json"))
+  |> String.Set.of_list
+
+let case_keys cases = String.Set.of_list (List.map cases ~f:fst)
+
+(* I2: an oracle that only ever iterates expected.json's "cases" can pass
+   while checking nothing -- a case whose file was never committed, or a
+   file nobody added to "cases", is invisible to it, and an empty "cases"
+   would make it pass vacuously. This asserts both directions of the set
+   equality, and that the set is not empty, before
+   [test_every_example_matches_the_shared_oracle] below trusts it. *)
+let test_the_oracle_checks_every_file_and_only_real_files () =
+  let _, _, _, _, cases = oracle_clock_and_config () in
+  let keys = case_keys cases in
+  let files = example_files_on_disk () in
+  Alcotest.(check bool)
+    "expected.json names at least one case" true
+    (not (Set.is_empty keys));
+  if Set.equal files keys then ()
+  else
+    let only_on_disk = Set.to_list (Set.diff files keys) in
+    let only_in_cases = Set.to_list (Set.diff keys files) in
+    Alcotest.failf
+      "interface/examples/*.json and expected.json's cases disagree -- on disk but not a \
+       case: [%s]; a case but no file on disk: [%s]"
+      (String.concat ~sep:", " only_on_disk)
+      (String.concat ~sep:", " only_in_cases)
+
 let test_every_example_matches_the_shared_oracle () =
   let clock, registry, universe, max_age, cases = oracle_clock_and_config () in
   let open Yojson.Safe.Util in
   let failures =
     List.filter_map cases ~f:(fun (name, spec) ->
         let expected_core = member "core" spec |> to_string in
-        let text = In_channel.read_all (examples_dir ^ name) in
-        match Contract.parse_string text with
-        | Error e -> Some (sprintf "%s: did not parse: %s" name e)
-        | Ok doc ->
-            let got =
-              core_label (Contract.validate ~clock ~registry ~universe ~max_age doc)
-            in
-            if String.equal got expected_core then None
-            else
-              Some
-                (sprintf "%s: expected.json says %s, core says %s" name expected_core got))
+        (* I2: a row naming a file that is not there is reported here, by
+           name, alongside whatever else disagrees -- not an uncaught
+           exception that stops the other rows from being checked at all. *)
+        match In_channel.read_all (examples_dir ^ name) with
+        | exception exn ->
+            Some (sprintf "%s: could not be read: %s" name (Exn.to_string exn))
+        | text -> (
+            match Contract.parse_string text with
+            | Error e -> Some (sprintf "%s: did not parse: %s" name e)
+            | Ok doc ->
+                let got =
+                  core_label (Contract.validate ~clock ~registry ~universe ~max_age doc)
+                in
+                if String.equal got expected_core then None
+                else
+                  Some
+                    (sprintf "%s: expected.json says %s, core says %s" name expected_core
+                       got)))
   in
   match failures with [] -> () | fs -> Alcotest.failf "%s" (String.concat ~sep:"; " fs)
 
@@ -213,6 +309,63 @@ let suite =
           match Contract.parse_string "not json" with
           | Error _ -> ()
           | Ok _ -> Alcotest.fail "parsed garbage");
+      (* I1: every ordering comparison against NaN is false, so R7's old
+         "> 1.0" test let a NaN weight through -- it satisfies neither
+         "<= 1.0" nor "> 1.0". %.6f cannot print "NaN" or "Infinity", so
+         these substitute the raw JSON token directly; Yojson.Safe parses
+         both as a float (confirmed against this build, not assumed), so
+         [judge] reaches r7 rather than failing to parse. *)
+      t "R7: a NaN weight is rejected, not silently accepted" (fun () ->
+          let s =
+            String.substr_replace_first (doc ()) ~pattern:{|"weight":1.000000|}
+              ~with_:{|"weight":NaN|}
+          in
+          expect_rule Contract.Rule.R7 (judge s));
+      t "R7: an infinite weight is rejected, not silently accepted" (fun () ->
+          let s =
+            String.substr_replace_first (doc ()) ~pattern:{|"weight":1.000000|}
+              ~with_:{|"weight":Infinity|}
+          in
+          expect_rule Contract.Rule.R7 (judge s));
+      (* I3: the intake (Task 14) reports an R6 rejection as "advisory, and
+         everything else about the signal is otherwise sound" -- true only
+         if a first failure at R6 means R1 through R5 all passed. Each case
+         below fails both its named rule and R6; if the named rule were not
+         checked first, R6 would be reported instead and the test would
+         fail. R2-before-R6 and R6-before-R7 are already ported above. *)
+      t "R1 before R6" (fun () ->
+          expect_rule Contract.Rule.R1 (judge (doc ~version:2 ~status:"unvalidated" ())));
+      t "R3 before R6" (fun () ->
+          expect_rule Contract.Rule.R3
+            (judge (doc ~as_of:"2021-01-04" ~status:"unvalidated" ())));
+      t "R4 before R6" (fun () ->
+          expect_rule Contract.Rule.R4
+            (judge (doc ~as_of:"2020-12-24" ~status:"unvalidated" ())));
+      t "R5 before R6" (fun () ->
+          expect_rule Contract.Rule.R5 (judge (doc ~seq:5 ~status:"unvalidated" ())));
+      (* I4: a signal dated before the clock's earliest recorded bar has an
+         age this clock cannot state, and must fail R4 regardless of what
+         [bars_after] answers for it -- a desk a few sessions into its life
+         must not call a year-old signal fresh. *)
+      t
+        "R4: one day before earliest_bar is rejected even though bars_after says 1 bar \
+         old" (fun () ->
+          expect_rule Contract.Rule.R4
+            (judge_with_clock clock_naive_before_its_own_history
+               (doc ~as_of:"2020-12-27" ())));
+      t "R4: as_of equal to earliest_bar is judged on its age, not rejected outright"
+        (fun () ->
+          expect_accept
+            (judge_with_clock clock_naive_before_its_own_history
+               (doc ~as_of:"2020-12-28" ())));
+      t "Clock.create raises when earliest_bar is after latest_bar" (fun () ->
+          expect_clock_create_raises ~earliest_bar:(Date.of_string "2021-01-01")
+            ~latest_bar:(Date.of_string "2020-12-31") ~bars_after:(fun _ -> 0));
+      t "Clock.create raises when bars_after latest_bar is not 0" (fun () ->
+          expect_clock_create_raises ~earliest_bar:(Date.of_string "2020-12-28")
+            ~latest_bar:(Date.of_string "2020-12-31") ~bars_after:(fun _ -> 1));
+      t "the oracle checks every example on disk, and only real files"
+        test_the_oracle_checks_every_file_and_only_real_files;
       t "every example matches interface/examples/expected.json's core verdict"
         test_every_example_matches_the_shared_oracle;
     ] )

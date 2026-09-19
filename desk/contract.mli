@@ -10,29 +10,46 @@
 
     This module is pure: it parses JSON and evaluates rules against a [Clock.t] handed to
     it. It does no IO and reads no bar store itself, so every rule can be tested with a
-    hand-built document and a hand-built clock. Task 13 builds the real [Clock.t] from the
+    hand-built document and a hand-built clock. Task 14 builds the real [Clock.t] from the
     journal's [sessions] table, whose rows are the closes the desk has recorded; this
     module never knows that table exists. *)
 
 open Core
 
-(** The only clock this module believes: not a wall clock and not a calendar, but two
-    facts the caller derives from the bars it holds. [t] is opaque so that neither fact
-    can be faked separately from the other, and so a future caller cannot reach past the
-    interface for a raw date list this module no longer keeps (see the note on Alpha's
-    [Clock.of_dates] below). *)
+(** The only clock this module believes: not a wall clock and not a calendar, but three
+    facts the caller derives from the bars it holds. [t] is opaque so that a future caller
+    cannot reach past the interface for a raw date list this module no longer keeps (see
+    the note on Alpha's [Clock.of_dates] below). *)
 module Clock : sig
   type t
 
-  val create : latest_bar:Date.t -> bars_after:(Date.t -> int) -> t
-  (** [latest_bar]: the newest trading date the desk holds a close for -- what R3 compares
-      [as_of] against. [bars_after d]: how many of the desk's trading dates fall strictly
-      after [d] -- what R4 calls a signal's age, so age is counted in bars actually seen,
-      not calendar days. A signal dated on [latest_bar] has age 0.
+  val create : earliest_bar:Date.t -> latest_bar:Date.t -> bars_after:(Date.t -> int) -> t
+  (** [earliest_bar]: the oldest trading date the desk holds a close for. [latest_bar]:
+      the newest -- what R3 compares [as_of] against. [bars_after d]: how many of the
+      desk's trading dates fall strictly after [d] -- what R4 calls a signal's age, so age
+      is counted in bars actually seen, not calendar days. A signal dated on [latest_bar]
+      has age 0. [bars_after] is a lookup over dates the caller has already loaded, never
+      a query of its own -- this module stays pure.
+
+      A signal dated before [earliest_bar] has an age this clock cannot state (it never
+      saw a bar that old to count backward from), so R4 rejects it outright rather than
+      reporting whatever [bars_after] happens to return for a date outside its own record.
+      A signal dated exactly on [earliest_bar] is judged normally.
+
+      There is no empty clock: a caller with no sessions recorded yet has no [latest_bar]
+      to give, and defers every signal instead of calling [create] -- never with a
+      placeholder date, and never with wall-clock "today" standing in for a bar the desk
+      has not seen.
+
+      [create] raises (a programming error, not a rule the intake can trigger by
+      construction) when [earliest_bar] is after [latest_bar], or when
+      [bars_after latest_bar] is not [0] -- i.e. when [latest_bar] is not itself the
+      newest date [bars_after] counts. The intake that builds this from the journal's
+      [sessions] table guarantees both by construction.
 
       Unlike Alpha's [core/lib/contract.ml], which built its [Clock.t] from the full list
       of bar dates it had parsed itself (an [of_dates], exposing [age] and [length] as
-      derived queries over that list), this module takes only the two projections R3 and
+      derived queries over that list), this module takes only the three projections R3 and
       R4 actually read. The full list belonged to Alpha's [bars.ml], one process reading
       one replay file; the desk's bars live in a SQLite table another module owns, and
       handing this pure module the whole table so it could recompute what the caller
@@ -87,18 +104,23 @@ end
     failed. Rules are applied in order R1 through R7, and only the first failure is
     reported -- so a document that fails several rules is described by the earliest, which
     is also the most fundamental one. R8, the [data_hash] check, is deliberately absent:
-    [interface/README.md] §3.12 (and this project's ruling 3) hold it back until its hash
-    recipe stops depending on how two languages print a float. Nothing here reads
-    [data_hash]; R7 is the last rule applied. Task 14 depends on this order: a first
-    failure of R6 means R1 through R5 passed and R7 was never reached, which is exactly
-    what makes an R6 rejection "advisory, and everything else about the signal is
-    otherwise sound". *)
+    §3.12 of the desk's design (docs/superpowers/specs/2026-09-12-the-desk-design.md) is
+    where R8 is described, and this project's ruling 3 withholds it until its hash recipe
+    stops depending on how two languages print a float. [interface/README.md], ported here
+    verbatim from Alpha, still lists R8 in its table and still says "after R1-R8" -- it
+    describes Alpha's contract, not this module's; this module implements R1 through R7
+    only. Nothing here reads [data_hash]; R7 is the last rule applied. Task 14 depends on
+    this order: a first failure of R6 means R1 through R5 passed and R7 was never reached,
+    which is exactly what makes an R6 rejection "advisory, and everything else about the
+    signal is otherwise sound". *)
 type verdict = Accepted of t | Rejected of Rule.t * string
 
 val parse : Yojson.Safe.t -> (t, string) Result.t
 (** Lenient about nothing: a missing or mistyped required field is a parse error, not a
-    default. A weight or hash JSON writes as an integer is accepted where the schema wants
-    a number, because that is what any JSON serialiser emits for a whole value. *)
+    default. A weight, [dsr], [psr] or [pbo] JSON writes as an integer is accepted where
+    the schema wants a number, because that is what any JSON serialiser emits for a whole
+    value. Hashes ([params_hash], [data_hash]) are strings, not numbers, and are not
+    affected by this leniency. *)
 
 val parse_string : string -> (t, string) Result.t
 

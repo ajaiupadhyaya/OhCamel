@@ -81,18 +81,37 @@ type t = {
    wrong for a module that must stay pure here. So [Clock.t] here holds
    exactly the two projections R3 and R4 read -- the latest bar date, and a
    function counting how many recorded bars fall after a given date -- and
-   nothing else. Task 13 builds it from the journal's [sessions] table, whose
+   nothing else. Task 14 builds it from the journal's [sessions] table, whose
    rows are the closes the desk has recorded; this module never needs to know
-   that table, or a raw date list, exists. *)
-module Clock = struct
-  type t = { latest_bar : Date.t; bars_after : Date.t -> int }
+   that table, or a raw date list, exists.
 
-  let create ~latest_bar ~bars_after = { latest_bar; bars_after }
+   [earliest_bar] is the third fact this module needs: without it, an [as_of]
+   before every session the desk has ever recorded reads as "0 bars old" --
+   [bars_after] counts recorded bars after a date it never saw either, so a
+   desk three sessions into its life would call a year-old signal fresh.
+   [create] rejects the two shapes that cannot come from a real intake: an
+   [earliest_bar] after [latest_bar], and a [latest_bar] that is not itself
+   the newest date [bars_after] counts. *)
+module Clock = struct
+  type t = { earliest_bar : Date.t; latest_bar : Date.t; bars_after : Date.t -> int }
+
+  let create ~earliest_bar ~latest_bar ~bars_after =
+    if Date.( > ) earliest_bar latest_bar then
+      failwith
+        (sprintf "Clock.create: earliest_bar %s is after latest_bar %s"
+           (Date.to_string earliest_bar) (Date.to_string latest_bar))
+    else if bars_after latest_bar <> 0 then
+      failwith
+        (sprintf
+           "Clock.create: bars_after latest_bar = %d, not 0 -- %s is not the newest date \
+            bars_after counts"
+           (bars_after latest_bar) (Date.to_string latest_bar))
+    else { earliest_bar; latest_bar; bars_after }
 end
 
 (* What the core has been configured to accept: which strategies exist, and
-   the last sequence number it accepted from each. Phase 0 keeps this in
-   memory for the duration of one command; Phase 2 persists it. *)
+   the last sequence number it accepted from each. A3 keeps this in memory
+   for the duration of one command; a later phase persists it. *)
 type registry = { strategies : string list; last_sequence : (string * int) list }
 type universe = Ohcamel.Types.Symbol.t list
 type verdict = Accepted of t | Rejected of Rule.t * string
@@ -175,13 +194,20 @@ let r3 (clock : Clock.t) s =
   else Ok ()
 
 let r4 (clock : Clock.t) ~max_age s =
-  let age = clock.bars_after s.as_of in
-  if age > max_age then
+  if Date.( < ) s.as_of clock.earliest_bar then
     Error
       ( Rule.R4,
-        sprintf "as_of %s is %d bars old; max_age is %d" (Date.to_string s.as_of) age
-          max_age )
-  else Ok ()
+        sprintf "as_of %s is older than the clock's history (earliest recorded bar is %s)"
+          (Date.to_string s.as_of)
+          (Date.to_string clock.earliest_bar) )
+  else
+    let age = clock.bars_after s.as_of in
+    if age > max_age then
+      Error
+        ( Rule.R4,
+          sprintf "as_of %s is %d bars old; max_age is %d" (Date.to_string s.as_of) age
+            max_age )
+    else Ok ()
 
 let r5 registry s =
   let last =
@@ -207,7 +233,12 @@ let r7 (universe : universe) s =
   let outside =
     List.find s.targets ~f:(fun t -> not (List.mem universe t.symbol ~equal:symbol_equal))
   in
-  let over = List.find s.targets ~f:(fun t -> Float.( > ) (Float.abs t.weight) 1.0) in
+  (* Written positively -- "not (<= 1.0)" rather than "> 1.0" -- because
+     every ordering comparison against NaN is false: a NaN or infinite
+     weight satisfies neither [<= 1.0] nor [> 1.0], so the negative form is
+     the one that still catches it. |w| <= 1 is R7's rule as
+     interface/README.md states it, and NaN is not <= anything. *)
+  let over = List.find s.targets ~f:(fun t -> not Float.(abs t.weight <= 1.0)) in
   match (outside, over) with
   | Some t, _ ->
       Error
@@ -220,7 +251,7 @@ let r7 (universe : universe) s =
             (Ohcamel.Types.Symbol.to_string t.symbol)
             (Float.abs t.weight) )
   | None, None ->
-      if Float.( > ) sum_abs (1.0 +. 1e-9) then
+      if not Float.(sum_abs <= 1.0 +. 1e-9) then
         Error (Rule.R7, sprintf "sum |weight| = %g > 1" sum_abs)
       else Ok ()
 
