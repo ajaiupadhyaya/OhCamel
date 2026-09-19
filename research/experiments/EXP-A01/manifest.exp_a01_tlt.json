@@ -1,0 +1,286 @@
+{
+  "capacity": 12726280.438233335,
+  "dsr": {
+    "returns_series": "walk_forward_oos+holdout",
+    "trial_count": 12,
+    "trial_sharpe_sources": {
+      "EXP-A01 exp_a01_tlt walk_forward": 12
+    },
+    "unit": "fold_trials",
+    "value": 0.0027679370078420164
+  },
+  "experiment": "EXP-A01",
+  "gates": [
+    {
+      "detail": {
+        "bars": 1003,
+        "first": "2022-06-01",
+        "last": "2026-06-01",
+        "params": {
+          "fast": 1,
+          "slow": 200,
+          "symbol": "TLT"
+        },
+        "sharpe": -1.4043496961012636,
+        "warm_up_from": "2016-06-01"
+      },
+      "name": "holdout_positive",
+      "passed": false,
+      "value": -0.271924194058365
+    },
+    {
+      "detail": {
+        "fold_params": [
+          {
+            "fast": 1,
+            "slow": 150,
+            "symbol": "TLT"
+          },
+          {
+            "fast": 1,
+            "slow": 150,
+            "symbol": "TLT"
+          },
+          {
+            "fast": 1,
+            "slow": 250,
+            "symbol": "TLT"
+          },
+          {
+            "fast": 1,
+            "slow": 150,
+            "symbol": "TLT"
+          }
+        ],
+        "prior_fold_params": {},
+        "returns_series": "walk_forward_oos+holdout",
+        "series": {
+          "holdout": {
+            "bars": 1003,
+            "first": "2022-06-01",
+            "last": "2026-06-01",
+            "max_drawdown": -0.2719448757198377,
+            "sharpe": -1.4043496961012636,
+            "total_return": -0.271924194058365
+          },
+          "walk_forward_oos": {
+            "bars": 1208,
+            "first": "2017-08-11",
+            "last": "2022-05-27",
+            "max_drawdown": -0.1622413254983781,
+            "sharpe": 0.2095587110504904,
+            "total_return": 0.08646200528690628
+          },
+          "walk_forward_oos+holdout": {
+            "bars": 2211,
+            "first": "2017-08-11",
+            "last": "2026-06-01",
+            "max_drawdown": -0.3900481778776361,
+            "sharpe": -0.24625476880389294,
+            "total_return": -0.20897329987577118
+          }
+        },
+        "sources": {
+          "EXP-A01 exp_a01_tlt walk_forward": 12
+        },
+        "threshold": 0.3,
+        "trial_count": 12,
+        "unit": "fold_trials"
+      },
+      "name": "dsr",
+      "passed": false,
+      "value": 0.0027679370078420164
+    },
+    {
+      "detail": {
+        "threshold": 0.7
+      },
+      "name": "psr",
+      "passed": false,
+      "value": 0.23385235491306616
+    },
+    {
+      "detail": {
+        "block": 21,
+        "lower_percentile": 5.0,
+        "n_samples": 1000,
+        "p50": -0.25819221176985185,
+        "p95": 0.24822593079336755,
+        "seed": 42
+      },
+      "name": "bootstrap_sharpe_lower5",
+      "passed": false,
+      "value": -0.8326362105985292
+    },
+    {
+      "detail": {
+        "bar_counts": {
+          "2018_q4_selloff": 63,
+          "2020_covid": 93,
+          "2022_rate_shock": 250,
+          "2023_recovery": 250,
+          "2024": 252
+        },
+        "by_regime": {
+          "2018_q4_selloff": 0.027356127951693177,
+          "2020_covid": 0.11431579837309314,
+          "2022_rate_shock": -0.027847204790844682,
+          "2023_recovery": -0.0639085721473942,
+          "2024": -0.1584929995876213
+        },
+        "covered": [
+          "2018_q4_selloff",
+          "2020_covid",
+          "2022_rate_shock",
+          "2023_recovery",
+          "2024"
+        ],
+        "min_positive": 3
+      },
+      "name": "regimes_positive",
+      "passed": false,
+      "value": 2.0
+    },
+    {
+      "detail": {
+        "configurations": 3,
+        "fragile_above": 0.5,
+        "high": true,
+        "pbo_fdq": 0.9813519813519813,
+        "pbo_fdq_error": null,
+        "pbo_port": 0.9813519813519813,
+        "rule": "max(port, fdq)",
+        "splits": 12870,
+        "splits_fdq_overfit_only": 0,
+        "splits_port_overfit_only": 0,
+        "window": {
+          "end": "2022-05-31",
+          "start": "2016-06-01"
+        }
+      },
+      "name": "pbo",
+      "passed": null,
+      "value": 0.9813519813519813
+    },
+    {
+      "detail": {
+        "bps_levels": [
+          0.0,
+          5.0,
+          15.0,
+          30.0
+        ],
+        "conversion": "spread_bps_default = the level in bps round trip x FDQ_EXIT_SPREAD_CORRECTION, per-symbol table cleared, so the entry fill pays the whole level; fees and the VIX widening kept",
+        "covers": "sharpe_by_bps and total_return_by_bps: the joined series the gates read, walk_forward_oos+holdout; holdout_sharpe_by_bps and holdout_total_return_by_bps: the holdout alone",
+        "exit_spread_correction": 2.0,
+        "holdout_sharpe_by_bps": {
+          "0.0": -1.3704527727470122,
+          "15.0": -1.53681424025628,
+          "30.0": -1.6943458475154933,
+          "5.0": -1.4267833305627884
+        },
+        "holdout_total_return_by_bps": {
+          "0.0": -0.2663081586619751,
+          "15.0": -0.29394336158528833,
+          "30.0": -0.32049353644763057,
+          "5.0": -0.27564326720374055
+        },
+        "params": {
+          "folds": [
+            {
+              "fast": 1,
+              "slow": 150,
+              "symbol": "TLT"
+            },
+            {
+              "fast": 1,
+              "slow": 150,
+              "symbol": "TLT"
+            },
+            {
+              "fast": 1,
+              "slow": 250,
+              "symbol": "TLT"
+            },
+            {
+              "fast": 1,
+              "slow": 150,
+              "symbol": "TLT"
+            }
+          ],
+          "holdout": {
+            "fast": 1,
+            "slow": 200,
+            "symbol": "TLT"
+          }
+        },
+        "reselected": false,
+        "sharpe_by_bps": {
+          "0.0": -0.22945533933977974,
+          "15.0": -0.3131934858613057,
+          "30.0": -0.3961027105437629,
+          "5.0": -0.25744151840511315
+        },
+        "spans": "each walk-forward fold's own fold_params over its test span, then selected_params over the holdout; all chosen at the base friction",
+        "total_return_by_bps": {
+          "0.0": -0.19823001212241476,
+          "15.0": -0.2504917241914313,
+          "30.0": -0.2992667470696254,
+          "5.0": -0.21605340038893994
+        }
+      },
+      "name": "cost_sweep",
+      "passed": null,
+      "value": null
+    }
+  ],
+  "gates_version": "2026-09-02",
+  "hashes": {
+    "fixtures/history/TLT.parquet": "sha256:d749ba34cfb00152e8b0ed1edd02ef0f3e6d44897a6fe238e577593daa38c7f2",
+    "fixtures/history/TLT.parquet.meta.json": "sha256:e9bf893212b42024a2c59506cf6b2ab0151aaa3f25f0d06796cf814b80c9436c",
+    "fixtures/macro/macro.parquet": "sha256:4b05a2b74d89c6f987754ea9112aa9f69fad96d93feab18590f0753c78416cf0",
+    "fixtures/macro/macro.parquet.meta.json": "sha256:f8d591f35fd7346bf5578a1f784017edf9a155e69495d32e9034c8a37a1c40d9",
+    "research/config/friction_v1.yaml": "sha256:1c09f884a55487ca7bc228efc285b69a865d1df59ee4ea367d9b4c09dc1d4cc9",
+    "research/experiments/EXP-A01/config.yaml": "sha256:1e3c52bbaae5576f01e555195c266ebfc62f57320fcac4433b8bece79d9c5b0a",
+    "research/src/ohcamel_research/battery/__init__.py": "sha256:2b0d5667f50e223d29954344e677755420db1ef23b8d444f8ddc0e7af02a8216",
+    "research/src/ohcamel_research/battery/config.py": "sha256:2e452f75d56dc48f50a757199553a4ecd5dd1c3912c90fe44f0338094fd8e6a1",
+    "research/src/ohcamel_research/battery/data.py": "sha256:dbce0c249012dc62ddfd1979cd3d28477a881816bf7c400a6630234f7c6db6f7",
+    "research/src/ohcamel_research/battery/gates.py": "sha256:f224ca8574bb4c7fc8f32c858ffa950b0386d51789f1c96adc617d182965553f",
+    "research/src/ohcamel_research/battery/pbo.py": "sha256:ccab3973ddcb2b1a87d4300c50762c9da99342ba1ce70d07f7545558acb74d24",
+    "research/src/ohcamel_research/battery/run.py": "sha256:c0578a8e8624421a1a26f3b960e36bc70b225ebfbb7f859c49d0676ca80a8e07",
+    "research/uv.lock": "sha256:83d4802a6c029197f776f7865ea755a89a1d9faf6c2fd9b5f089622384dd8b21"
+  },
+  "holdout_window": {
+    "end": "2026-06-01",
+    "start": "2022-06-01"
+  },
+  "notes": [
+    "selected_params: walk_forward's rule (highest per-bar Sharpe, first in grid order on a tie) over the whole selection window; each fold's own choice is in the dsr gate's detail as fold_params",
+    "spread correction: fdq 1.0.0 books a full exit's half-spread to the ledger but not to equity (engine.py::_execute_rebalance credits the mid less fees), so every spread the runner hands fdq -- the friction file's, per symbol and default, and each cost sweep level -- is multiplied by FDQ_EXIT_SPREAD_CORRECTION = 2.0 and the entry fill carries the whole round trip",
+    "friction_v1.yaml calls its spreads 'Half-spread in basis points'; fdq's code treats the value as the whole spread and halves it per fill, and the pre-registration states it as a round trip, halved per fill; the pre-registration governs",
+    "the VIX widening (x1.5 above 25) on the whole round trip's spread is read on the entry day, not the exit day",
+    "PBO is max(port, fdq): fdq's CSCV gives a flat column a NaN Sharpe that sorts above every number, and battery/pbo.py's port gives it 0.0; each can come out lower -- fdq when an in-sample winner goes flat out of sample and ranks best, the port when a flat column fdq had ranked above the best ranks below it, or when its 0 is picked in sample over losing columns -- so the fragile label reads the higher; where fdq raises (an in-sample half all flat) the port's figure alone; the pbo gate's detail has both, and how many splits each alone calls overfit",
+    "cost sweep: at each level, each fold's own fold_params over its test span and selected_params over the holdout -- the series the gates read, re-evaluated with parameters chosen at the base friction, never re-selected; sharpe_by_bps and total_return_by_bps cover the joined series, holdout_sharpe_by_bps and holdout_total_return_by_bps the holdout alone",
+    "walk-forward coverage: 1511 selection bars in 5 blocks of 302; the first 302 (2016-06-01..2017-08-10) only train, and the last 1 (2022-05-31) fall in no fold's test span; each fold's out-of-sample backtest restarts in cash and re-enters",
+    "stress_multipliers [1, 2, 5] are not read: the cost sweep is cost_sweep_bps_round_trip, in bps round trip"
+  ],
+  "pbo": 0.9813519813519813,
+  "psr": 0.23385235491306616,
+  "python_version": "3.13.12",
+  "ran_at": "2026-09-19T04:12:20Z",
+  "selected_params": {
+    "fast": 1,
+    "slow": 200,
+    "symbol": "TLT"
+  },
+  "selection_window": {
+    "end": "2022-05-31",
+    "start": "2016-06-01"
+  },
+  "slug": "exp_a01_tlt",
+  "strategy": "ma_crossover",
+  "symbol": "TLT",
+  "turnover": 3.8612076665282933,
+  "verdict": "fail",
+  "verdict_line": "fail: 5 of 5 gates failed (holdout_positive, dsr, psr, bootstrap_sharpe_lower5, regimes_positive); PBO 0.981, above 0.5"
+}
