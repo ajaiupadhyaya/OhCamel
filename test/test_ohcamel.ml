@@ -57,6 +57,7 @@ let suites =
     Test_alerts.suite;
     Test_properties.suite;
     Test_desk_ids.suite;
+    Test_contract.suite;
     Test_desk_order.suite;
     Test_journal.suite;
     Test_sim_venue.suite;

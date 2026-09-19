@@ -1,8 +1,12 @@
 (test
  (name test_ohcamel)
  ; test_example_book parses the committed example book, which the image bakes in
- ; as its fallback and deploy.sh copies onto a fresh host.
- (deps ../book.example.sexp)
+ ; as its fallback and deploy.sh copies onto a fresh host. test_contract's oracle
+ ; reads interface/examples/*.json against expected.json (ruling 6's
+ ; cross-language check), so its glob is a dep the same way.
+ (deps
+  ../book.example.sexp
+  (glob_files ../interface/examples/*.json))
  ; qcheck-core supplies the generators and qcheck-alcotest turns a property into
  ; an ordinary alcotest case, which is what keeps the example-based and
  ; property-based suites in ONE runner. Two runners would mean two things to
