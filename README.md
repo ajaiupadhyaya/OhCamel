@@ -1312,7 +1312,7 @@ turn, on each turn after a read that failed, and an hour after one that
 answered, but never when the volume is fixed, as the demo's is -- and
 `fills_json`'s row-building body, which no test calls directly (the nine
 cases added since, described next, narrow `refresh_forever`'s own gap).
-The scheduler suite's sixteen cases are not all order-manager scenarios
+The scheduler suite's cases are not all order-manager scenarios
 either: two are Task 4's, the transport bound and the suite's own
 count assertion. The five that exercised `oms.ml` when that figure was
 measured -- three fills, an unresent unknown answer, a halt, a limit's
@@ -1449,22 +1449,35 @@ is refused (R5); a symbol outside the universe, a symbol named twice in the
 same document, an over-levered target or a NaN weight is refused (R7) — and,
 once R7 passes, a document naming a symbol outside its own strategy's
 declared set is refused separately, so a strategy can only ever move the
-names it declares. A first-seen stale file is deferred
-rather than rejected outright, and that deferral is persisted in the journal
-keyed by strategy and sequence, so a restart or a file rename cannot reset
-its clock and let a year-old file read as fresh; a weekday bound closes the
-remaining gap by failing R4 closed once more weekdays than `max_age` have
-passed with nothing recorded, rather than waiting on a file that may never
-arrive. A duplicate document — the same strategy and sequence, different
-body — is refused rather than silently accepted. Malformed files (bad JSON,
-non-UTF-8, a schema violation) are recorded once and not re-parsed until they
-change on disk. **R8**, which would re-check a signal's own hash of the bars
+names it declares. A signal dated after the latest recorded session — not a
+stale one — is deferred rather than rejected: the close it needs may not
+have landed yet, so it is judged again each minute until a session on or
+after its `as_of` exists, and its first sighting is written to the journal's
+deferrals, keyed by strategy and sequence, so neither a restart nor a file
+rename resets its clock and lets a wait already under way start over from
+age zero — the fix for a real failure: a review found that restarting every
+two sessions let a file dated ahead of its data get accepted at age 0. A
+document so far ahead that no wait could end well is rejected at R3 at once.
+Because the sessions record itself can have gaps — no close is recorded
+while the desk is down — R4's own weekday bound catches what a session
+count alone would call fresher than it is: a document is also measured in
+weekdays from its `as_of` to the latest session, less a slack of two, and
+rejected at R4 when that count exceeds `max_age`, so an outage cannot make a
+stale signal look young. Malformed files — bad JSON, non-UTF-8, a schema
+violation — are recorded by name and never read again, unless the file is
+still changing: one caught half-written, whose identity differs from the
+last attempt, is read again next pass rather than given up on. A file whose
+(strategy, sequence) the journal has already judged is skipped even when its
+body differs from what was judged; that is logged once, by name, and the
+first judgement stands. **R8**, which would re-check a signal's own hash of the bars
 it read against the desk's, is not enforced (ruling 3): its recipe depends on
 how two languages print a float, and until that is fixed, the sentence
 "R8 (data hash) is not enforced; see the design §3.12" is what `/api/research`
 and the Research page say, verbatim — `interface/README.md` still lists R8 in
-its table because it is a verbatim port of Alpha's own contract, not this
-project's.
+its table because it is ported from Alpha's own contract, with two noted
+edits (the enforcer's name, and the `data_hash` paragraph, since OhCamel does
+not implement R8's second computation the way Alpha's `core/lib/bars.ml`
+did), not rewritten to drop a rule OhCamel itself does not enforce.
 
 **Sizing is the owner's, and defaults off.** Every registered strategy
 carries `(sizing advisory)` or `(sizing live)` in `book.sexp`, default
@@ -1536,20 +1549,29 @@ its verdict, quoted rather than paraphrased:
 > Both strategies fail. The pre-registration's kill criterion is "any charter
 > gate failing is a fail", and each strategy fails at least one gate.
 
-SPY passed the holdout (+0.526 compounded), the Deflated Sharpe Ratio (0.399
-against a ≥0.30 line, deflated by 56 fold-trials: EXP-002's 44 prior trend
-fold-trials on this same selection window, recovered by re-running its two
-SPY grids, plus EXP-A01's own 12), the Probabilistic Sharpe Ratio (0.977) and
-the bootstrap lower bound (0.120), and failed only the regime gate — positive
-in exactly the two calm bull years the owner named before the run, 2023 and
-2024, negative in the 2018 Q4 selloff, the 2020 COVID crash and the 2022 rate
-shock. TLT failed every decided gate, deflated by 12 fold-trials, negative
-even at zero spread. Both PBOs are above 0.5 — 0.786 and 0.981 — against an
-expected value near 2/3 for a set with no skill at three configurations, so
-"pass, fragile" was never on the table for either. **With status `fail`,
-neither signal can be sized under R6, whatever `book.sexp` says.** Both
-strategies ship `advisory`; promotion, if it ever happens, is the owner's
-decision alone, made after reading the report.
+`report.md` states, gate by gate, why each failed, in its own words:
+
+> - **SPY fails one gate, the regimes.** It was positive in 2 of the 5 regimes. Those
+>   two are 2023 and 2024, the calm bull years the owner named before the run. It was
+>   negative in all three stress regimes: the 2018 Q4 selloff, the 2020 COVID crash and
+>   the 2022 rate shock. SPY passes the holdout, DSR, PSR and bootstrap gates. Had its
+>   regime gate passed, its verdict would have been "pass, fragile", because its PBO is
+>   0.786, and under the kill criteria it would still not have been promoted without a
+>   second, independent window.
+> - **TLT fails every decided gate.** Its holdout is negative. Its DSR, PSR and
+>   bootstrap lower bound are far below their lines. It was positive in 2 of 5 regimes,
+>   the 2018 Q4 selloff and the 2020 COVID crash, and negative in 2022, 2023 and 2024.
+>
+> **PBO with three configurations.** With 3 configurations, a set with no skill at all
+> scores a PBO of about 2/3, since the in-sample best lands at or below the
+> out-of-sample median about two times in three by chance. "Pass, fragile" (PBO above
+> 0.5) was therefore the expected label for a passing strategy here, not evidence
+> against it. The hypothesis said so before the run. Both figures here, 0.786 and
+> 0.981, are above 2/3.
+
+**With status `fail`, neither signal can be sized under R6, whatever `book.sexp`
+says.** Both strategies ship `advisory`; promotion, if it ever happens, is the
+owner's decision alone, made after reading the report.
 
 Two disclosures the report states, repeated here because they touch claims
 made elsewhere in this file: the charter's Data section
@@ -1622,7 +1644,7 @@ and one macro source, FRED.
 It is still not a strategy platform, and A3 drew that line rather than erased
 it. [`research/`](research/) now runs a walk-forward, cost-swept,
 multiple-testing-corrected battery against ten years of Alpaca bars and writes
-a validated verdict as a JSON manifest — but validating a signal and trading on
+the verdict as a JSON manifest — but validating a signal and trading on
 it are kept apart on purpose. `desk/contract.ml` reads that verdict under rules
 R1 through R7 (see *Signals and research*, above, and
 [`interface/README.md`](interface/README.md)), and every registered strategy

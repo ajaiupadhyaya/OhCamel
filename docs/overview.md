@@ -71,7 +71,7 @@ marks and the file says what is held.
 | Limits and alerts | Breaches computed as data; edge-triggered alerts; a kill switch the desk obeys | [`limits.ml`](../lib/limits.ml), [`alerts.ml`](../lib/alerts.ml) |
 | Staleness | Last tick per symbol. A stale name is flagged, along with everything computed from it | [`graph.ml`](../lib/graph.ml) |
 | Orders | The rules, then the book's limits on a fork of the live graph; the journal before the wire; reconciliation against the venue on restart; each fill's cost in basis points. The public demo previews and takes no order from a visitor | [`rules.ml`](../desk/rules.ml), [`gate.ml`](../lib/gate.ml), [`oms.ml`](../desk/oms.ml), [`tca.ml`](../desk/tca.ml) |
-| Signals and research | A contract (R1-R7; R8 not enforced) that judges each signal file against the desk's own session clock; a research service that emits one weight a strategy a trading day from a validated manifest; EXP-A01, the one battery run so far -- both its strategies fail and stay `advisory` | [`contract.ml`](../desk/contract.ml), [`intake.ml`](../desk/intake.ml), [`research/`](../research/) |
+| Signals and research | A contract (R1-R7; R8 not enforced) that judges each signal file against the desk's own session clock; a research service that emits one weight a strategy a trading day from its committed manifest; EXP-A01, the one battery run so far -- both its strategies fail and stay `advisory` | [`contract.ml`](../desk/contract.ml), [`intake.ml`](../desk/intake.ml), [`research/`](../research/) |
 
 A few of these deserve more than a table row.
 
@@ -170,10 +170,11 @@ fills, and the equity trail. `/risk` holds the limits ledger, the macro
 factor and the book's beta to it, the option Greeks, and the scenario suite
 behind a button. `/execution` holds the open orders, the cost analysis
 overall and by symbol, the session record and the VaR forecasts. `/research`
-(added in phase A3) leads with each registered strategy's backtest verdict
-and its gates, read from the committed EXP-A01 manifests, then its latest
-signal and how the desk judged it -- on the public demo no strategy is
-registered, and the page says so, showing the evidence regardless.
+(added in phase A3) leads with each registered strategy's backtest verdict,
+read from the committed EXP-A01 manifests, then its latest signal and how the
+desk judged it, then the manifest's own gates -- on the public demo no
+strategy is registered, and the page says so, showing the evidence
+regardless.
 `/argument` is the README's case, moved intact, under the same headings; its
 tables are computed by the running process and checked cell by cell against
 the numbers the README quotes, so the deployed Linux host reproduces results

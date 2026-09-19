@@ -30,7 +30,7 @@
    ((symbol JPM)  (sector FINANCIALS) (qty 250.0))
    ((symbol XOM)  (sector ENERGY)     (qty -500.0))
    ((symbol CVX)  (sector ENERGY)     (qty -300.0))
-   ; SPY and TLT are here, at zero, because the signals block below trades
+   ; SPY and TLT are here, at zero, because the signals block below names
    ; nothing else: a signal may name only a symbol the book declares (R7).
    ; On a host with a paper key the account says what is held; here, nothing.
    ((symbol SPY)  (sector INDEX)      (qty 0.0))

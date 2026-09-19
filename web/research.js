@@ -410,7 +410,7 @@
     var reg = gate(m, "regimes_positive");
     var rt = reg && regimesTable(reg);
     if (rt) {
-      art.appendChild(el("div", "rs-h", "regimes: the compounded return of the joined series inside each"));
+      art.appendChild(el("div", "rs-h", "regimes: the compounded return of the joined series inside each regime"));
       art.appendChild(el("div", "twrap")).appendChild(rt);
     }
     var boot = gate(m, "bootstrap_sharpe_lower5");

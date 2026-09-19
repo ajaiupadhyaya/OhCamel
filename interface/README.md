@@ -3,8 +3,9 @@
 One JSON document per signal, written by `research/` and enforced by
 OhCamel's desk (`desk/contract.ml`).
 [`signal.schema.json`](signal.schema.json) is the shape; this file is the
-meaning, and in particular the eight rules the core applies before a target
-weight can become an order. The rules are numbered so that a rejection can name
+meaning, and in particular the rules the core applies before a target weight
+can become an order: R1 through R7. R8 is listed below for completeness but is
+not enforced (ruling 3). The rules are numbered so that a rejection can name
 one and a test can be written against one.
 
 The principle behind all of them: **the core never trusts Python's timing, only
@@ -49,7 +50,8 @@ fails R2 and R6 is reported as R2.
   never by hand. `gates_version` is the date of the charter whose gates were
   applied.
 - `targets` are portfolio weights, not orders. Turning them into orders is the
-  core's job, after R1–R8 and after OhCamel's pre-trade check.
+  core's job, after R1–R7 (R8 is not enforced, ruling 3) and after OhCamel's
+  pre-trade check.
 
 ## Examples
 

@@ -1,6 +1,6 @@
 # OhCamel — state of the project
 
-*As of 2026-09-02. This is the document to read first when coming back to the
+*As of 2026-09-19. This is the document to read first when coming back to the
 repository after time away, and the one to update when the facts in it change.*
 
 The [README](../README.md) argues: it makes the case for the design with real
@@ -33,9 +33,10 @@ It computes and reports, and a desk built around it places paper orders:
 every one passes the rules and the book's limits first, and the kernel
 itself still cannot place one -- a library boundary, invariant 6. Since
 phase A3 the desk can also read signals a separate research layer
-validates, but only ever as `advisory`: EXP-A01, the one battery run so
-far, tested two strategies and both fail their gates, so nothing has been
-promoted and no strategy is `live` anywhere in this repository.
+validates; as shipped, it reads them only as `advisory`, because no
+strategy is `live`. EXP-A01, the one battery run so far, tested two
+strategies and both fail their gates, so nothing has been promoted and no
+strategy is `live` anywhere in this repository.
 
 ## Where it runs
 
@@ -146,7 +147,12 @@ from Alpha and documented at [`interface/README.md`](../interface/README.md))
 judges each signal file against rules R1 through R7, using the desk's own
 session clock and never wall-clock time; R8, a repeat data-hash check, is not
 enforced (ruling 3) -- the sentence "R8 (data hash) is not enforced; see the
-design §3.12" is what `/api/research` and the Research page say. Every
+design §3.12" is what `/api/research` and the Research page say. The intake
+starts cleanly on a freshly created, empty `OHCAMEL_SIGNALS_DIR`: reading an
+empty directory succeeds, and `desk/intake.ml`'s own check of that variable
+refuses only a value set to the empty string or a path that is not a
+readable directory -- so the live engine can start before
+`ohcamel-research`'s first 19:15 run has written anything. Every
 registered strategy carries `(sizing advisory)` or `(sizing live)` in
 `book.sexp`, default `advisory`, and a `capital_fraction`; a signal is sized
 only when it passes every rule and its strategy is `live`, and no task has
@@ -205,10 +211,11 @@ The site is six pages, one binary, one shared shell and client:
 - **Execution** (`/execution`) — the open orders, the cost analysis overall
   and by symbol, the session record and the VaR forecasts.
 - **Research** (`/research`) — added in phase A3: each registered strategy's
-  backtest verdict and its gates, read from the committed EXP-A01 manifests,
-  first; then its latest signal and how the desk judged it; how many files
-  the intake is holding; and the R8 sentence. On the public demo no strategy
-  is registered, and the page says so, showing the evidence all the same.
+  backtest verdict, read from the committed EXP-A01 manifests, first; then
+  its latest signal and how the desk judged it; then the manifest's own
+  gates; how many files the intake is holding; and the R8 sentence. On the
+  public demo no strategy is registered, and the page says so, showing the
+  evidence all the same.
 - **Argument** (`/argument`) — the README's case, moved intact.
 - **Ops** (`/ops`) — which build is running, its uptime, and what the
   process has recomputed, with its own masthead and its own stream; W2 gave
@@ -228,7 +235,7 @@ answers 405.
 | `/argument` | The README's argument, moved intact: the same headings, the same tables, computed by this process and checked against the README |
 | `/risk` | The limits ledger, the macro factor and the book's beta to it, the option Greeks, and the scenario suite behind a button |
 | `/execution` | The open orders, the cost analysis overall and by symbol, the session record and the VaR forecasts |
-| `/research` | Each registered strategy's backtest verdict and its gates first, read from the committed EXP-A01 manifests, then its latest signal and how the desk judged it. On the demo no strategy is registered, and the page says so, showing the evidence all the same |
+| `/research` | Each registered strategy's backtest verdict first, read from the committed EXP-A01 manifests, then its latest signal and how the desk judged it, then the manifest's own gates. On the demo no strategy is registered, and the page says so, showing the evidence all the same |
 | `/api/snapshot` | The whole book as JSON, including `nodes_recomputed` — the counter that proves the graph is alive |
 | `/api/health` | Feed liveness per symbol; `healthy: false` when anything is stale |
 | `/api/stream` | Server-sent events, emitted only on an actual graph change (parked on an `Ivar`, not a timer), coalesced over 80 ms |
@@ -251,7 +258,7 @@ answers 405.
 | `GET /api/research` | The registered signal strategies with their sizing and capital fraction, each one's latest judgement (verdict, rule, detail, `as_of`, weights, validation block), how many files the intake is holding, and the sentence "R8 (data hash) is not enforced; see the design §3.12". The demo registers no strategy and says so |
 | `GET /api/research/evidence` | EXP-A01's two manifests, embedded at build time and served byte for byte, on both hosts |
 
-Each page is assembled at build time from `web/` by its own rule in `lib/dune`; none of the five generated `*_html.ml` modules (`dashboard_html`, `ops_html`, `argument_html`, `risk_html`, `execution_html`) is a committed source file. The 47-line design essay that headed the Desk page is archived verbatim, as an HTML comment, at the head of `web/index.html`, with the successor paragraphs beneath it.
+Each page is assembled at build time from `web/` by its own rule in `lib/dune`; none of the six generated `*_html.ml` modules (`dashboard_html`, `ops_html`, `argument_html`, `risk_html`, `execution_html`, `research_html`) is a committed source file. The 47-line design essay that headed the Desk page is archived verbatim, as an HTML comment, at the head of `web/index.html`, with the successor paragraphs beneath it.
 
 ## What is verified
 
@@ -297,9 +304,15 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 The desk design's acceptance line holds in three separate places, not one:
 
-- **Hermetically:** a test renders an `advisory` judgement with its rule or
-  its sizing named, through `/api/research` and the Research page. Met, and
-  checked on every `make test`.
+- **Hermetically:** two tests, each proving a different half. `test_embedded_assets.ml`
+  proves the page carries the code to say it: it checks that the compiled
+  Research page's own `research.js` contains the literal strings that name
+  an advisory judgement's rule or its sizing (`"advisory at " + rule`,
+  `"advisory: its strategy's sizing is advisory"`), never that the string
+  appears on screen. `test_intake.ml`'s test of `/api/research`'s shape
+  proves the data that code would read: an advisory judgement's verdict,
+  rule, detail, weights and validation block, as the JSON the route serves.
+  Neither test renders a page in a browser. Both checked on every `make test`.
 - **On the demo:** the demo registers no strategy -- its synthetic book
   holds neither SPY nor TLT -- so `/research` cannot show "both strategies
   advisory" literally. What it shows instead: the EXP-A01 evidence (both
@@ -391,6 +404,7 @@ line each (10 to 12 bind the order path, `desk/oms.ml`):
 | 2026-09-13 | Phase A1 merged to main and deployed to both hosts from `cf79764`, after its whole-branch review and one fix wave: a record whose write fails is retried until the next session's close is due, a close and the equity trail wait for a current account book so a file book is never journaled, and every request to the paper host is bounded by a timeout. The live engine opened its journal on the `desk_data` volume, read its Alpaca paper account, and its first sync succeeded. Coverage was measured again at 82.0% of the kernel's instrumented points; the desk library is not instrumented yet |
 | 2026-09-17 | Phase A2 merged to main and deployed to both hosts from `e0f5a71`, after twenty reviewed tasks, a whole-branch review and one fix wave: the rules and the pre-trade gate on a fork of the live graph; the order manager (the journal before the wire, a timed-out submission resolved by lookup, reconciliation on restart, and no order while the book is not the account's); Alpaca paper's trading half behind a ten-second bound on every request; the kill switch wired to the desk, which refuses new orders and cancels open ones, including one that was already resting when a partial fill arrived; previews for anyone and orders only from the live host's own page; costs per fill; the ticket and the blotter. The fix wave also indexed the journal, because `/api/desk` had been scanning whole tables on the scheduler thread. Acceptance on the live host -- one paper order filled -- waits for the owner: the `desk` block in `book.sexp`, the basic-auth password, and market hours |
 | 2026-09-18 | Phase W2 merged to main after nine reviewed tasks, a whole-branch review and one fix wave: the site became five pages under one navigation -- the Desk at `/`, Risk, Execution, the Argument and Ops -- with one shared head and stylesheet and one stream connection per page. The limits ledger moved to `/risk`, which added the macro factor, the option Greeks and the scenario suite behind a button; `/execution` added the open orders, the costs, the session record and the VaR forecasts from the journal; the README's argument moved to `/argument` intact. Figure 1 draws the desk's two bands, orders leaving the engine and fills arriving at `qty[S]`, routed through the figure's own gutters. The Research page was deferred to A3, because everything §4 of the design assigns it is A3's deliverable; the factor model and liquidity stay with A4. 454 tests and seven scheduler cases, coverage 76.6%. Not yet deployed: the live host still serves A2's `e0f5a71` until the owner redeploys |
+| 2026-09-19 | Phase A3 merged to main after its reviewed tasks, a whole-branch review and one fix wave (merged at <sha>, coverage re-measured): `desk/contract.ml` enforces the signal contract ported from Alpha (R1 through R7; R8 not enforced, ruling 3), `desk/intake.ml` reads and judges signal files against the desk's own session clock, and a `live` strategy's validated signal becomes one gated market-on-open rebalance -- but no task in this project sets a strategy `live`, so every signal ships `(sizing advisory)`. `research/` ran EXP-A01, the first battery, against ten years of Alpaca bars and wrote two manifests; its own report states, verbatim: 'Both strategies fail. The pre-registration's kill criterion is "any charter gate failing is a fail", and each strategy fails at least one gate.' The site gained a sixth page, Research, reading `/api/research` and the committed manifests -- verdict, then latest signal, then gates -- and Figure 1 draws a signals band where an intake runs |
 
 Plans and specs live under [`superpowers/`](superpowers/): the readable-front-door
 design (the README rewrite), the eight-phase roadmap (marked complete, with its three deviations
@@ -420,18 +434,22 @@ recorded), and the deployment design.
 No task in this phase may touch the owner's `book.sexp`, so none of this
 happened by itself, and none of it will until the owner does it by hand:
 
-- **Add SPY and TLT to the live book.** Copying the new
-  `book.example.sexp` does this, along with the `signals` block that
-  registers `exp_a01_spy` and `exp_a01_tlt`, both `(sizing advisory)`.
+- **Add SPY and TLT to the live book.** Merge the SPY and TLT positions and
+  the `signals` block -- which registers `exp_a01_spy` and `exp_a01_tlt`,
+  both `(sizing advisory)` -- from the new `book.example.sexp` into the
+  owner's own `book.sexp` by hand; copying the example file over it would
+  discard whatever the live book already holds.
 - **Leave both strategies `advisory`** until the owner has read
   `research/experiments/EXP-A01/report.md` and its manifests. With status
   `fail`, R6 already refuses to size either signal no matter what
   `book.sexp` says -- but the switch is still the owner's to set, not a
   side effect of deploying.
 - **Before promoting either one,** raise `max_order_notional` (in the
-  book's `desk` block) to at least that strategy's largest target order.
-  Left at its default, the `notional` rule refuses every rebalance,
-  visibly, in the journal and on `/execution`.
+  book's `desk` block) to at least that strategy's largest target order,
+  and confirm `(trading enabled)` is set in that same block. Left at its
+  default, the `notional` rule refuses every rebalance, visibly, in the
+  journal and on `/execution`; without `(trading enabled)`, the live desk
+  previews and places nothing at all, signal or ticket alike.
 - **Redeploy with the `live` profile** (`deploy/deploy.sh --live`, which
   passes `--profile live` to compose), so that `ohcamel-research` actually
   runs. Two things about that redeploy the owner should expect, not be
