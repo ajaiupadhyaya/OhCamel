@@ -12,20 +12,26 @@ here, or by `bootstrap_gate`'s own seeded `np.random.default_rng`.
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
 
 from ohcamel_research.battery import gates
 from ohcamel_research.battery.gates import (
+    REGIMES,
     THRESHOLDS,
+    Thresholds,
     capacity,
     cost_sweep,
     psr_gate,
     regime_gate,
     turnover,
 )
+
+EXP_A01_CONFIG = Path(__file__).resolve().parents[1] / "experiments" / "EXP-A01" / "config.yaml"
 
 
 def daily(values: list[float], start: str = "2018-01-01") -> pd.Series:
@@ -97,6 +103,18 @@ def test_psr_gate_passes_a_hand_derived_positive_series():
     assert g.passed is True
 
 
+def test_psr_gate_passes_at_exactly_the_threshold(monkeypatch):
+    # Pins strictness: the gate is `psr >= threshold`, so a PSR of exactly
+    # 0.70 must pass. Monkeypatching the `probabilistic_sharpe` name
+    # `gates.py` calls (rather than constructing a series that happens to
+    # land on 0.70) isolates the comparison itself -- a `>=` -> `>` flip
+    # fails this test regardless of what the real PSR formula does.
+    monkeypatch.setattr(gates, "probabilistic_sharpe", lambda *a, **k: 0.70)
+    g = psr_gate(daily([0.01, -0.01, 0.02, -0.02, 0.03]))
+    assert g.value == pytest.approx(0.70, abs=1e-12)
+    assert g.passed is True
+
+
 # ---------------------------------------------------------------------------
 # bootstrap_gate / _block_bootstrap_sharpes
 # ---------------------------------------------------------------------------
@@ -127,6 +145,48 @@ def test_block_bootstrap_sharpes_follows_a_scripted_resample_by_hand():
     assert out[0] == pytest.approx(3.812933455813454, abs=1e-9)
 
 
+def test_block_bootstrap_sharpes_scripts_a_restart_and_a_continuation():
+    # block=2's restart probability is 1/2, the same as its complement
+    # (1 - 1/2), so it cannot tell a geometric block from a fixed one or from
+    # p=1-1/block. block=4 can: p = 1/4 = 0.25, distinct from 1-1/4=0.75.
+    # returns = [0.01, -0.02, 0.03] (n=3), so the loop only needs draws at
+    # t=1 and t=2 (t=0 only draws the initial position).
+    #
+    # Scripted rng, one resample (n_samples=1):
+    #   pos = rng.integers(3) -> 1                        (idx[0]=1, pos->2)
+    #   t=1: rng.random() -> 0.2 (< 0.25, restart)
+    #        pos = rng.integers(3) -> 0                    (idx[1]=0, pos->1)
+    #   t=2: rng.random() -> 0.3 (>= 0.25, no restart)      (idx[2]=1, pos->2)
+    # idx = [1, 0, 1] -> resample = returns[idx] = [-0.02, 0.01, -0.02]
+    #
+    # This distinguishes the geometric bootstrap from two mutations:
+    # - Fixed-length blocks of length 4 (>= n=3) would never restart inside
+    #   a 3-long sample, giving idx=[1,2,0] instead and consuming only the
+    #   initial integers() draw -- no random() draws at all.
+    # - p=1-1/block=0.75 would also restart at t=2 (0.3 < 0.75), consuming a
+    #   third integers() draw this script does not provide.
+    # Both were tried by hand against this exact script in a scratch copy of
+    # gates.py: the fixed-block mutant leaves random_seq entirely unconsumed,
+    # and the p=1-1/block mutant raises IndexError pulling a third integers()
+    # value. Both fail this test.
+    #
+    # mean = (-0.02+0.01-0.02)/3 = -0.03/3 = -0.01 exactly
+    # deviations: -0.01, 0.02, -0.01; squared: 0.0001, 0.0004, 0.0001 -> 0.0006
+    # variance (ddof=1) = 0.0006/2 = 0.0003; std = sqrt(0.0003) = sqrt(3)/100
+    # sharpe = mean/std * sqrt(252) = (-1/100)/(sqrt(3)/100) * 6*sqrt(7)
+    #        = -6*sqrt(7)/sqrt(3) = -6*sqrt(7/3) = -2*sqrt(21)
+    #        = -9.16515138991168
+    returns = np.array([0.01, -0.02, 0.03])
+    rng = ScriptedRng(integers_seq=[1, 0], random_seq=[0.2, 0.3])
+    out = gates._block_bootstrap_sharpes(returns, n_samples=1, block=4, rng=rng)
+    assert out.shape == (1,)
+    assert out[0] == pytest.approx(-9.16515138991168, abs=1e-9)
+    # Exactly two integers() draws (the initial position, plus one restart)
+    # and two random() draws (checked at t=1 and t=2) -- no more, no fewer.
+    assert rng._i == 2
+    assert rng._r == 2
+
+
 def test_bootstrap_gate_computes_the_lower_5th_percentile_and_passes(monkeypatch):
     # Stand in for the 1000 bootstrapped Sharpes with 5 fixed values, so the
     # percentile arithmetic (numpy's default linear interpolation,
@@ -139,7 +199,7 @@ def test_bootstrap_gate_computes_the_lower_5th_percentile_and_passes(monkeypatch
     #                           = 2.0 + 0.8*(3.0-2.0) = 2.8
     fixed = np.array([-1.0, 0.5, 1.0, 2.0, 3.0])
     monkeypatch.setattr(gates, "_block_bootstrap_sharpes", lambda *a, **k: fixed)
-    g = gates.bootstrap_gate(daily([0.0] * 30), n_samples=5)
+    g = gates.bootstrap_gate(daily([0.0] * 30), n_samples=5, seed=0)
     assert g.value == pytest.approx(-0.7, abs=1e-9)
     assert g.detail["p50"] == pytest.approx(1.0, abs=1e-9)
     assert g.detail["p95"] == pytest.approx(2.8, abs=1e-9)
@@ -152,11 +212,23 @@ def test_bootstrap_gate_passes_when_the_lower_5th_percentile_is_positive(monkeyp
     # p5: rank=0.2 -> 0.2 + 0.2*(0.6-0.2) = 0.2 + 0.08 = 0.28
     fixed = np.array([0.2, 0.6, 1.0, 2.0, 3.0])
     monkeypatch.setattr(gates, "_block_bootstrap_sharpes", lambda *a, **k: fixed)
-    g = gates.bootstrap_gate(daily([0.0] * 30), n_samples=5)
+    g = gates.bootstrap_gate(daily([0.0] * 30), n_samples=5, seed=0)
     assert g.value == pytest.approx(0.28, abs=1e-9)
     assert g.passed is True
     assert g.detail["n_samples"] == 5
     assert g.detail["block"] == THRESHOLDS.bootstrap_block
+
+
+def test_bootstrap_gate_fails_when_the_lower_5th_percentile_is_exactly_zero(monkeypatch):
+    # Pins strictness the other way: the gate is `lo > 0.0`, so a lower 5th
+    # percentile of exactly 0.0 must fail. Scripting the sampler to return a
+    # percentile of exactly 0.0 isolates the comparison -- a `>` -> `>=` flip
+    # is the only way this test can pass.
+    fixed = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+    monkeypatch.setattr(gates, "_block_bootstrap_sharpes", lambda *a, **k: fixed)
+    g = gates.bootstrap_gate(daily([0.0] * 30), n_samples=5, seed=0)
+    assert g.value == pytest.approx(0.0, abs=1e-12)
+    assert g.passed is False  # 0.0 is not > 0.0
 
 
 def test_bootstrap_gate_is_seeded_and_reproducible():
@@ -201,6 +273,67 @@ def test_regime_gate_skips_regimes_the_series_does_not_cover():
     assert g.detail["min_positive"] == THRESHOLDS.regime_min_positive == 3
 
 
+def test_regime_gate_reports_bar_counts_including_zero_for_skipped_regimes():
+    # M5 is disclosure only -- no coverage threshold -- but the verdict must
+    # show coverage: every regime in the input dict gets a bar count, 0 for
+    # one the series never reaches.
+    r = daily([0.0001] * 250, start="2023-01-02")  # inside 2023_recovery only
+    g = regime_gate(r)
+    assert set(g.detail["bar_counts"]) == set(REGIMES)
+    assert g.detail["bar_counts"]["2023_recovery"] == 250
+    for name in REGIMES:
+        if name != "2023_recovery":
+            assert g.detail["bar_counts"][name] == 0
+
+
+def test_regime_gate_excludes_regimes_that_are_not_truly_positive():
+    # Three regimes built so that counting "positive" by cum >= 0, by a
+    # majority of up days, or by the arithmetic sum of daily returns would
+    # each wrongly call one of them positive, while genuine compounding
+    # (strictly > 0) correctly calls none of them positive.
+    regimes = {
+        "cash": (date(2021, 3, 1), date(2021, 3, 3)),
+        "mostly_up_days_net_down": (date(2021, 4, 1), date(2021, 4, 5)),
+        "sum_positive_compounds_negative": (date(2021, 5, 3), date(2021, 5, 4)),
+    }
+    idx = pd.to_datetime(
+        [
+            "2021-03-01",
+            "2021-03-02",
+            "2021-03-03",  # cash: flat all regime
+            "2021-04-01",
+            "2021-04-02",
+            "2021-04-05",  # 2 of 3 days up, net down
+            "2021-05-03",
+            "2021-05-04",  # daily sum positive, compounds negative
+        ]
+    )
+    r = pd.Series(
+        [0.0, 0.0, 0.0, 0.01, 0.01, -0.03, 0.10, -0.095],
+        index=idx,
+    )
+    g = regime_gate(r, regimes=regimes, min_positive=1)
+
+    # cash: cum = 0.0 exactly. Cash through a whole regime is not a positive
+    # one -- "cum >= 0" would wrongly count it, "cum > 0" correctly does not.
+    assert g.detail["by_regime"]["cash"] == pytest.approx(0.0, abs=1e-12)
+
+    # mostly_up_days_net_down: (1.01*1.01*0.97) - 1 = -0.010503. Two of the
+    # three days are up, so "majority of day signs" would wrongly count this
+    # as positive; compounding correctly does not.
+    assert g.detail["by_regime"]["mostly_up_days_net_down"] == pytest.approx(-0.010503, abs=1e-9)
+
+    # sum_positive_compounds_negative: 1.10*0.905 - 1 = -0.0045, while the
+    # arithmetic sum 0.10 + (-0.095) = +0.005 is positive. "Arithmetic sum"
+    # would wrongly count this as positive; compounding correctly does not.
+    assert g.detail["by_regime"]["sum_positive_compounds_negative"] == pytest.approx(
+        -0.0045, abs=1e-12
+    )
+
+    assert g.value == 0.0  # none of the three genuinely compounds positive
+    assert g.passed is False  # 0 < min_positive=1
+
+
 # ---------------------------------------------------------------------------
 # cost_sweep
 # ---------------------------------------------------------------------------
@@ -234,6 +367,17 @@ def test_cost_sweep_reports_every_bps_level_and_never_gates():
     assert by["30.0"] < by["15.0"] < by["5.0"] < by["0.0"]
 
 
+def test_cost_sweep_normalises_integer_levels_to_the_same_keys_as_floats():
+    # EXP-A01's config.yaml stores its levels as YAML integers ([0, 5, 15,
+    # 30]); THRESHOLDS' default is floats. Both must key the sweep the same
+    # way, or a report reading one against the other misses every level.
+    def run(level: float) -> pd.Series:
+        return daily([0.02, -0.01])
+
+    g = cost_sweep(run, bps_levels=(0, 5, 15, 30))
+    assert list(g.detail["sharpe_by_bps"]) == ["0.0", "5.0", "15.0", "30.0"]
+
+
 # ---------------------------------------------------------------------------
 # turnover
 # ---------------------------------------------------------------------------
@@ -248,18 +392,38 @@ def test_turnover_annualises_the_half_sum_of_absolute_weight_changes():
     # day3:  0.2   0.3   |0.2-0.5| + |0.3-0.3| = 0.3
     # sum of daily absolute changes = 0.5 + 0.3 + 0.3 = 1.1
     # one-way turnover = 1.1 / 2 = 0.55
-    # annualised = 0.55 * 252 / 4 (four days in the sample) = 0.55 * 63 = 34.65
+    # annualised = 0.55 * 252 / (4-1): N-1=3 is the number of Delta-weight
+    # terms actually summed (day0 is dropped, leaving days 1-3) -- not N=4.
+    #            = 0.55 * 252/3 = 0.55 * 84 = 46.2
     dates = pd.bdate_range("2021-01-04", periods=4)
-    weights = pd.DataFrame(
-        {"SPY": [0.0, 0.5, 0.5, 0.2], "TLT": [0.0, 0.0, 0.3, 0.3]}, index=dates
-    )
-    assert turnover(weights) == pytest.approx(34.65, abs=1e-9)
+    weights = pd.DataFrame({"SPY": [0.0, 0.5, 0.5, 0.2], "TLT": [0.0, 0.0, 0.3, 0.3]}, index=dates)
+    assert turnover(weights) == pytest.approx(46.2, abs=1e-9)
 
 
 def test_turnover_is_zero_when_weights_never_change():
     dates = pd.bdate_range("2021-01-04", periods=5)
     weights = pd.DataFrame({"SPY": [0.3] * 5}, index=dates)
     assert turnover(weights) == 0.0
+
+
+def test_turnover_counts_a_new_position_entering_from_nan_as_a_change():
+    # A second symbol only starts trading on day2: its earlier weight is NaN
+    # (no position held yet), not 0.0. `fillna(0)` must run before `.diff()`
+    # so that entry is counted as a change from 0 -- not dropped as "no
+    # change" the way `skipna=True` would drop a genuine NaN-vs-NaN diff.
+    #        SPY   NEW
+    # day0:  0.5   NaN   (no prior day -> excluded from the diff sum)
+    # day1:  0.5   NaN   |0.5-0.5| + |0-0| = 0.0            (NEW: NaN->NaN filled to 0->0)
+    # day2:  0.5   0.4   |0.5-0.5| + |0.4-0| = 0.4           (NEW enters at 0.4, from 0)
+    # sum of daily absolute changes = 0.0 + 0.4 = 0.4; one-way = 0.4/2 = 0.2
+    # annualised = 0.2 * 252/(3-1) = 0.2 * 126 = 25.2
+    #
+    # Without fillna(0) before diff, NEW's day1 and day2 diffs are both
+    # NaN-vs-something-that-was-NaN, which `.sum(axis=1, skipna=True)` drops
+    # entirely -- the entry vanishes and turnover reads 0.0 instead of 25.2.
+    dates = pd.bdate_range("2021-01-04", periods=3)
+    weights = pd.DataFrame({"SPY": [0.5, 0.5, 0.5], "NEW": [np.nan, np.nan, 0.4]}, index=dates)
+    assert turnover(weights) == pytest.approx(25.2, abs=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -295,3 +459,63 @@ def test_capacity_averages_the_two_middle_values_for_an_even_count():
     trades = pd.Series([0.10, -0.05, 0.20, 0.25])
     adv = pd.Series([10_000_000.0, 4_000_000.0, 1_000_000.0, 2_000_000.0])
     assert capacity(trades, adv) == pytest.approx(440_000.0, abs=1e-6)
+
+
+def test_capacity_returns_none_when_nothing_traded():
+    # 0.0 would read as "zero capacity" (nothing could be traded); the true
+    # answer for an untraded frame is "no trades to measure capacity from".
+    dates = pd.bdate_range("2021-01-04", periods=3)
+    trades = pd.Series([0.0, 0.0, 0.0], index=dates)
+    adv = pd.Series([10_000_000.0, 4_000_000.0, 1_000_000.0], index=dates)
+    assert capacity(trades, adv) is None
+
+
+def test_capacity_raises_on_a_nan_adv_for_a_traded_day():
+    dates = pd.bdate_range("2021-01-04", periods=3)
+    trades = pd.Series([0.10, 0.05, 0.20], index=dates)
+    adv = pd.Series([10_000_000.0, np.nan, 1_000_000.0], index=dates)
+    with pytest.raises(ValueError, match=str(dates[1].date())):
+        capacity(trades, adv)
+
+
+def test_capacity_names_the_first_traded_date_with_unknown_adv():
+    dates = pd.bdate_range("2021-01-04", periods=4)
+    # day0 is untraded, so its NaN ADV must not matter; day1 is the first
+    # traded day with an unknown ADV, and must be the one named.
+    trades = pd.Series([0.0, 0.10, 0.05, 0.20], index=dates)
+    adv = pd.Series([np.nan, np.nan, 10_000_000.0, np.nan], index=dates)
+    with pytest.raises(ValueError, match=str(dates[1].date())):
+        capacity(trades, adv)
+
+
+# ---------------------------------------------------------------------------
+# THRESHOLDS: one table, pinned to the charter, read by EXP-A01's config too
+# ---------------------------------------------------------------------------
+
+
+def test_thresholds_matches_the_charter_exactly():
+    # docs/CHARTER.md's gate table, literally. Changing any of these values
+    # is the owner's decision, argued before a result -- not a passing test's
+    # to loosen quietly by drifting one field.
+    assert THRESHOLDS == Thresholds(
+        psr_min=0.70,
+        dsr_min=0.30,
+        bootstrap_resamples=1000,
+        bootstrap_block=21,
+        bootstrap_lower_percentile=5.0,
+        regime_min_positive=3,
+        cost_sweep_bps_round_trip=(0.0, 5.0, 15.0, 30.0),
+        pbo_fragile_above=0.5,
+    )
+
+
+def test_exp_a01_config_agrees_with_thresholds():
+    # The pre-registration is not this module's to edit (it is EXP-A01's own
+    # frozen decision), but it must agree with the same table this module
+    # gates by -- otherwise the report and the run it describes could read
+    # different cost sweeps or a different bootstrap resample count.
+    config = yaml.safe_load(EXP_A01_CONFIG.read_text())
+    assert tuple(float(b) for b in config["cost_sweep_bps_round_trip"]) == (
+        THRESHOLDS.cost_sweep_bps_round_trip
+    )
+    assert config["bootstrap"]["resamples"] == THRESHOLDS.bootstrap_resamples
