@@ -59,6 +59,9 @@ from fdq.backtest.engine import BacktestConfig, BacktestResult, run_backtest
 from fdq.frictions.config import FrictionConfig, load_friction_config
 from fdq.strategies.benchmarks import build_strategy
 from fdq.validation.metrics import max_drawdown, sharpe
+from fdq.validation.pbo import (
+    probability_backtest_overfitting as fdq_probability_backtest_overfitting,
+)
 from fdq.validation.walkforward import (
     Fold,
     WalkForwardResult,
@@ -68,8 +71,9 @@ from fdq.validation.walkforward import (
     walk_forward,
 )
 
-from ohcamel_research.battery import GATES_VERSION
+from ohcamel_research.battery import GATES_VERSION, Refused
 from ohcamel_research.battery.config import (
+    ConfigError,
     ExperimentConfig,
     GridSpec,
     Strategy,
@@ -97,7 +101,7 @@ from ohcamel_research.battery.gates import (
     regime_gate,
     turnover,
 )
-from ohcamel_research.battery.pbo import probability_backtest_overfitting
+from ohcamel_research.battery.pbo import overfit_by_split, probability_backtest_overfitting
 from ohcamel_research.manifest import (
     BATTERY_REL,
     DsrRecord,
@@ -160,9 +164,13 @@ SPREAD_NOTES = (
 
 
 PBO_NOTE = (
-    "PBO: fdq's CSCV ported into battery/pbo.py with one change -- a zero-variance "
-    "column's Sharpe is 0.0, never NaN, in and out of sample (fdq's NaN sorted above every "
-    "number, so a configuration flat out of sample ranked best and read as not overfit)"
+    "PBO is max(port, fdq): fdq's CSCV gives a flat column a NaN Sharpe that sorts above "
+    "every number, and battery/pbo.py's port gives it 0.0; each can come out lower -- fdq "
+    "when an in-sample winner goes flat out of sample and ranks best, the port when a flat "
+    "column fdq had ranked above the best ranks below it, or when its 0 is picked in sample "
+    "over losing columns -- so the fragile label reads the higher; where fdq raises (an "
+    "in-sample half all flat) the port's figure alone; the pbo gate's detail has both, and "
+    "how many splits each alone calls overfit"
 )
 
 SWEEP_NOTE = (
@@ -174,7 +182,7 @@ SWEEP_NOTE = (
 )
 
 
-class RunRefused(RuntimeError):
+class RunRefused(Refused, RuntimeError):
     """The run cannot produce honest evidence and stops, writing nothing."""
 
 
@@ -204,6 +212,7 @@ class Selection:
     prior_fold_params: dict[str, list[dict[str, Any]]]
     selected_params: dict[str, Any]
     pbo: float
+    pbo_detail: dict[str, Any]
     configurations: int
 
 
@@ -236,7 +245,10 @@ def run(
     byte-identical to the battery running, or the manifest would hash other
     code than the code that judged."""
     root = (repo_root if repo_root is not None else default_repo_root()).resolve()
-    assert_battery_committed(root)
+    try:
+        assert_battery_committed(root)
+    except RuntimeError as e:
+        raise RunRefused(str(e)) from e
     _require_running_battery_is_hashed(root)
 
     config_path = (experiment_dir / "config.yaml").resolve()
@@ -350,7 +362,7 @@ def select_strategy(
         cfg.seed,
     )
     selected = select_params(spec, is_sharpes)
-    pbo = float(probability_backtest_overfitting(matrix))
+    pbo, pbo_detail = pbo_for_verdict(matrix)
 
     return Selection(
         strategy=strategy,
@@ -364,6 +376,7 @@ def select_strategy(
         prior_fold_params=prior_fold_params,
         selected_params=selected,
         pbo=pbo,
+        pbo_detail=pbo_detail,
         configurations=int(matrix.shape[1]),
     )
 
@@ -425,6 +438,7 @@ def judge_strategy(
         None,
         sel.pbo,
         {
+            **sel.pbo_detail,
             "fragile_above": THRESHOLDS.pbo_fragile_above,
             "high": sel.pbo > THRESHOLDS.pbo_fragile_above,
             "configurations": sel.configurations,
@@ -484,6 +498,49 @@ def judge_strategy(
 # --------------------------------------------------------------------------
 # Selection, the holdout, and the series the gates read.
 # --------------------------------------------------------------------------
+
+
+def pbo_for_verdict(matrix: np.ndarray) -> tuple[float, dict[str, Any]]:
+    """PBO as the verdict reads it (ruling 11c, amended): the higher of the
+    port's (``battery/pbo.py``, a flat column's Sharpe 0) and fdq's own
+    (``fdq.validation.pbo``, a flat column's Sharpe NaN), because each
+    tool's treatment of a flat column can flatter the figure in one
+    direction, and the fragile label must not rest on either defect. Where
+    fdq raises (an in-sample half with every column flat), its figure falls
+    back to the port's, and the reason is recorded.
+
+    The detail records both figures and how many splits each calls overfit
+    that the other does not; fdq's per-split outcomes are the port's rule
+    with ``flat_as_nan``, checked to average to fdq's own figure exactly."""
+    port = float(probability_backtest_overfitting(matrix))
+    ours = overfit_by_split(matrix)
+    try:
+        fdq: float | None = float(fdq_probability_backtest_overfitting(matrix))
+        fdq_error = None
+    except ValueError as e:
+        fdq, fdq_error = None, f"{type(e).__name__}: {e}"
+    if fdq is None:
+        return port, {
+            "pbo_port": port,
+            "pbo_fdq": None,
+            "pbo_fdq_error": fdq_error,
+            "rule": "max(port, fdq); fdq raised, so the port's figure alone",
+            "splits": len(ours),
+            "splits_port_overfit_only": None,
+            "splits_fdq_overfit_only": None,
+        }
+    theirs = overfit_by_split(matrix, flat_as_nan=True)
+    if float(np.mean(np.array(theirs))) != fdq:
+        raise RunRefused("PBO: fdq's rule split by split does not average to fdq's own figure")
+    return max(port, fdq), {
+        "pbo_port": port,
+        "pbo_fdq": fdq,
+        "pbo_fdq_error": None,
+        "rule": "max(port, fdq)",
+        "splits": len(ours),
+        "splits_port_overfit_only": sum(o and not t for o, t in zip(ours, theirs, strict=True)),
+        "splits_fdq_overfit_only": sum(t and not o for o, t in zip(ours, theirs, strict=True)),
+    }
 
 
 def select_params(spec: GridSpec, sharpes: Sequence[float] | np.ndarray) -> dict[str, Any]:
@@ -770,7 +827,10 @@ def pooled_capacity(
     trades = pd.concat(parts)
     if trades.index.has_duplicates:
         raise RunRefused("pooled_capacity: two folds share a day")
-    return capacity(trades, adv_dollars)
+    try:
+        return capacity(trades, adv_dollars)
+    except ValueError as e:  # an unknown ADV on a traded day: the honest answer is to stop
+        raise RunRefused(str(e)) from e
 
 
 # --------------------------------------------------------------------------
@@ -971,11 +1031,11 @@ def _require_count(name: str, wf: WalkForwardResult, expected: int) -> None:
 
 def _require_macro(macro: pd.DataFrame | None) -> pd.DataFrame:
     if macro is None:
-        raise ValueError(
+        raise ConfigError(
             "macro is None: fdq would drop the VIX spread widening EXP-002 ran with; refused"
         )
     if "vix" not in macro.columns:
-        raise ValueError("macro has no 'vix' column: the VIX widening cannot run; refused")
+        raise ConfigError("macro has no 'vix' column: the VIX widening cannot run; refused")
     return macro
 
 
@@ -1048,6 +1108,7 @@ __all__ = [
     "join_series",
     "judge_strategy",
     "load_friction",
+    "pbo_for_verdict",
     "pooled_capacity",
     "pooled_turnover",
     "run",

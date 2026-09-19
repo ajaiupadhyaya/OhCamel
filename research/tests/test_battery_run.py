@@ -10,6 +10,7 @@ one. No test runs EXP-A01's own configuration (Task 13's job).
 
 from __future__ import annotations
 
+import inspect
 import platform
 import subprocess
 from collections import Counter
@@ -31,20 +32,23 @@ from fdq.frictions.emulator import BrokerEmulator
 from fdq.strategies.base import Strategy as FdqStrategy
 from fdq.strategies.base import StrategySpec
 from fdq.strategies.trend import MACrossover
+from fdq.validation import pbo as fdq_pbo_mod
 from fdq.validation import walkforward as walkforward_mod
+from fdq.validation.metrics import sharpe as fdq_sharpe
 from fdq.validation.walkforward import WalkForwardResult, grid_combos, make_folds
 
 import ohcamel_research.battery.gates as gates_mod
+import ohcamel_research.battery.pbo as pbo_mod
 import ohcamel_research.battery.run as run_mod
 from ohcamel_research import REPO_ROOT
-from ohcamel_research.battery import GATES_VERSION
+from ohcamel_research.battery import GATES_VERSION, Refused
 from ohcamel_research.battery.config import (
     ConfigError,
     GridSpec,
     Window,
     validate_config,
 )
-from ohcamel_research.battery.data import load_bars, load_macro, wide
+from ohcamel_research.battery.data import ProvenanceError, load_bars, load_macro, wide
 from ohcamel_research.battery.run import (
     FDQ_EXIT_SPREAD_CORRECTION,
     NONE_MEASURED,
@@ -136,6 +140,11 @@ class Recorded:
     inner_frictions: list[FrictionConfig] = field(default_factory=list)
     backtests: list[Backtest] = field(default_factory=list)
     pbo_matrices: list[np.ndarray] = field(default_factory=list)
+    pbo_port: list[tuple[np.ndarray, float]] = field(default_factory=list)
+    pbo_fdq: list[tuple[np.ndarray, float]] = field(default_factory=list)
+    sweep_calls: list[tuple[tuple[Any, ...], dict[str, Any], tuple[pd.Series, pd.Series]]] = field(
+        default_factory=list
+    )
     dsr_calls: list[tuple[pd.Series, np.ndarray]] = field(default_factory=list)
     psr_series: list[pd.Series] = field(default_factory=list)
     bootstrap_calls: list[tuple[pd.Series, tuple[Any, ...], dict[str, Any]]] = field(
@@ -159,6 +168,8 @@ def recorded(tmp_path_factory, mirror_builder) -> Recorded:
     real_inner = walkforward_mod.run_backtest
     real_bt = run_mod.run_backtest
     real_pbo = run_mod.probability_backtest_overfitting
+    real_fdq_pbo = run_mod.fdq_probability_backtest_overfitting
+    real_eval = run_mod.evaluate_fixed
     real_dsr = gates_mod.deflated_sharpe
     real_psr = run_mod.psr_gate
     real_boot = run_mod.bootstrap_gate
@@ -217,7 +228,19 @@ def recorded(tmp_path_factory, mirror_builder) -> Recorded:
 
     def pbo(matrix, *a, **k):
         rec.pbo_matrices.append(np.array(matrix, copy=True))
-        return real_pbo(matrix, *a, **k)
+        out = real_pbo(matrix, *a, **k)
+        rec.pbo_port.append((np.array(matrix, copy=True), out))
+        return out
+
+    def fdq_pbo(matrix, *a, **k):
+        out = real_fdq_pbo(matrix, *a, **k)
+        rec.pbo_fdq.append((np.array(matrix, copy=True), out))
+        return out
+
+    def evaluate(*a, **k):
+        out = real_eval(*a, **k)
+        rec.sweep_calls.append((a, dict(k), out))
+        return out
 
     def dsr(returns, trial_sharpes):
         rec.dsr_calls.append((returns.copy(), np.array(trial_sharpes, copy=True)))
@@ -249,6 +272,8 @@ def recorded(tmp_path_factory, mirror_builder) -> Recorded:
         mp.setattr(walkforward_mod, "run_backtest", inner)
         mp.setattr(run_mod, "run_backtest", backtest)
         mp.setattr(run_mod, "probability_backtest_overfitting", pbo)
+        mp.setattr(run_mod, "fdq_probability_backtest_overfitting", fdq_pbo)
+        mp.setattr(run_mod, "evaluate_fixed", evaluate)
         mp.setattr(gates_mod, "deflated_sharpe", dsr)
         mp.setattr(run_mod, "psr_gate", psr)
         mp.setattr(run_mod, "bootstrap_gate", boot)
@@ -572,6 +597,64 @@ def test_pbo_reads_the_whole_selection_windows_matrix(recorded):
         assert call["span"] == (date(2018, 1, 2), date(2019, 12, 31))
         assert matrix.shape == (len(days), 2)
         np.testing.assert_array_equal(matrix, call["matrix"])
+
+
+def test_the_verdicts_pbo_is_the_higher_of_the_port_and_fdq(recorded):
+    # The runner holds both functions, by identity...
+    assert run_mod.probability_backtest_overfitting is pbo_mod.probability_backtest_overfitting
+    assert (
+        run_mod.fdq_probability_backtest_overfitting is fdq_pbo_mod.probability_backtest_overfitting
+    )
+    # ...calls each once per strategy on the whole-window matrix, and the
+    # manifest's pbo (which sets the fragile label) is the higher.
+    assert len(recorded.pbo_port) == len(recorded.pbo_fdq) == len(recorded.manifests)
+    for m, (pm, port), (fm, fdq), call in zip(
+        recorded.manifests, recorded.pbo_port, recorded.pbo_fdq, recorded.is_calls, strict=True
+    ):
+        np.testing.assert_array_equal(pm, call["matrix"])
+        np.testing.assert_array_equal(fm, call["matrix"])
+        assert m.pbo == max(port, fdq)
+        detail = m.gates[GATE_ORDER.index("pbo")]["detail"]
+        assert (detail["pbo_port"], detail["pbo_fdq"], detail["pbo_fdq_error"]) == (port, fdq, None)
+        assert detail["rule"] == "max(port, fdq)"
+        assert m.gates[GATE_ORDER.index("pbo")]["value"] == m.pbo
+        assert m.verdict == compute_verdict(m.gates, max(port, fdq))
+
+
+def _rerun_at_base_friction(call) -> tuple[pd.Series, pd.Series]:
+    args, kwargs, _ = call
+    bound = inspect.signature(evaluate_fixed).bind(*args, **kwargs)
+    bound.arguments["friction"] = BASE
+    return evaluate_fixed(*bound.args, **bound.kwargs)
+
+
+def test_the_sweep_at_the_base_friction_is_exactly_the_series_the_gates_read(recorded):
+    # Every sweep call, re-run with the very arguments the sweep passed but
+    # at the base friction, rebuilds the DSR's series bar for bar: the same
+    # fold params over the same fold bars (warm-up included), the same
+    # holdout params over the same holdout bars (warm-up included).
+    assert len(recorded.sweep_calls) == 2 * 4
+    for m, (dsr_returns, _) in zip(recorded.manifests, recorded.dsr_calls, strict=True):
+        mine = [c for c in recorded.sweep_calls if c[0][2]["symbol"] == m.symbol]
+        assert len(mine) == 4
+        for call in mine:
+            joined = join_series(*_rerun_at_base_friction(call), date(2020, 1, 2))
+            assert list(joined.index) == list(dsr_returns.index)
+            np.testing.assert_array_equal(joined.to_numpy(), dsr_returns.to_numpy())
+
+
+def test_each_sweep_number_covers_the_series_it_names(recorded):
+    for m in recorded.manifests:
+        detail = m.gates[GATE_ORDER.index("cost_sweep")]["detail"]
+        mine = [c for c in recorded.sweep_calls if c[0][2]["symbol"] == m.symbol]
+        for args, _, (oos, hold) in mine:
+            friction = args[8]
+            key = str(friction.spread_bps_default / FDQ_EXIT_SPREAD_CORRECTION)
+            joined = join_series(oos, hold, date(2020, 1, 2))
+            assert detail["holdout_sharpe_by_bps"][key] == float(fdq_sharpe(hold))
+            assert detail["sharpe_by_bps"][key] == float(fdq_sharpe(joined))
+            assert detail["holdout_total_return_by_bps"][key] == float((1.0 + hold).prod() - 1.0)
+            assert detail["total_return_by_bps"][key] == float((1.0 + joined).prod() - 1.0)
 
 
 def test_the_out_of_sample_dates_are_the_union_of_the_folds_test_spans(recorded):
@@ -1028,7 +1111,8 @@ def test_pooled_capacity_reads_each_trade_against_its_days_adv():
 def test_pooled_capacity_refuses_a_traded_day_whose_adv_is_unknown():
     a = _frame([0.0, 0.9, 0.9], "2019-01-01")
     adv = pd.Series([1.0e9, np.nan, 1.0e9], index=a.index)
-    with pytest.raises(ValueError, match="ADV is unknown"):
+    # gates.capacity's ValueError, named a refusal so the CLI states it in one line.
+    with pytest.raises(RunRefused, match="ADV is unknown"):
         pooled_capacity([a], adv, "SPY")
 
 
@@ -1110,9 +1194,9 @@ def test_the_cli_passes_only_the_experiment_directory(tmp_path, monkeypatch):
     [
         (RunRefused("the run stops"), "Error: refused: the run stops"),
         (ConfigError("macro: is null"), "Error: refused: macro: is null"),
-        (ValueError("macro is None"), "Error: refused: macro is None"),
+        (ProvenanceError("SPY.parquet: no sidecar"), "Error: refused: SPY.parquet: no sidecar"),
         (
-            RuntimeError("battery is not clean:\n?? a.py\n M b.py"),
+            RunRefused("battery is not clean:\n?? a.py\n M b.py"),
             "Error: refused: battery is not clean:; ?? a.py; M b.py",
         ),
     ],
@@ -1126,3 +1210,18 @@ def test_the_cli_states_a_refusal_in_one_line_and_exits_1(tmp_path, monkeypatch,
     assert result.exit_code == 1
     assert result.output.splitlines() == [line]
     assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize("error", [ValueError("a bug"), RuntimeError("a bug"), KeyError("a bug")])
+def test_the_cli_lets_anything_but_a_refusal_keep_its_traceback(tmp_path, monkeypatch, error):
+    def broken(experiment_dir, **kwargs):
+        raise error
+
+    monkeypatch.setattr(run_mod, "run", broken)
+    result = CliRunner().invoke(cli, ["battery", "run", str(tmp_path)])
+    assert result.exception is error  # not caught, not turned into a refusal
+    assert "refused" not in result.output
+
+
+def test_the_runners_own_errors_are_refusals():
+    assert all(issubclass(e, Refused) for e in (RunRefused, ConfigError, ProvenanceError))

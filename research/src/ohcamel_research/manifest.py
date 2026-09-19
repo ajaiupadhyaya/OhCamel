@@ -29,14 +29,13 @@ part of what gets hashed.** ``compute_hashes`` only ever reaches into
 is only sound if every piece of code whose *behaviour* a verdict actually
 depends on lives inside ``battery/``: Task 11's runner itself, and every
 loader and slicer that runner uses to turn ``fixtures/history/*.parquet``
-into the return series a gate is computed from (``replay``'s
-``load_bars``/``slice_bars`` today; Task 11 is expected to move them into
-``battery/`` and have ``replay.py`` import them from there, plus add a test
-that fails if anything under ``battery/`` imports ``ohcamel_research.*``
-from outside it). Until that move happens, a bug fixed in a loader that
-lives outside ``battery/`` could change what a rerun would find without
-moving a single hash this manifest recorded -- the exact failure mode this
-module exists to prevent for ``battery/``'s own contents. ``python_version``
+into the return series a gate is computed from. They do: ``load_bars``,
+``slice_bars``, ``read_provenance`` and ``wide`` live in ``battery/data.py``
+(``replay.py`` and ``signal.py`` import them back from there), and
+``tests/test_battery_boundary.py`` fails if anything under ``battery/``
+imports ``ohcamel_research.*`` from outside it, this module excepted -- so a
+bug fixed in a loader cannot change what a rerun would find without moving a
+hash this manifest recorded. ``python_version``
 (below) is recorded for the same reason a `uv.lock` hash is: disclosed, so a
 reader can see what interpreter produced a result, but never itself a
 staleness condition -- the image and a workstation can legitimately run

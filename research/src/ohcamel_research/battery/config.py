@@ -21,6 +21,7 @@ from typing import Any
 
 import yaml
 
+from ohcamel_research.battery import Refused
 from ohcamel_research.battery.gates import THRESHOLDS
 
 # The bars the runner reads when a config names none: the ten-year history
@@ -56,7 +57,7 @@ _REQUIRED = (
 _OPTIONAL = ("prior", "stress_multipliers", "bars")
 
 
-class ConfigError(ValueError):
+class ConfigError(Refused, ValueError):
     """A config the runner refuses to run."""
 
 

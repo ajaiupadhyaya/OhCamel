@@ -17,3 +17,12 @@ from __future__ import annotations
 # where the manifest's hash can see it. This module imports nothing heavy, so
 # reading the constant costs the signal path nothing.
 GATES_VERSION = "2026-09-02"
+
+
+class Refused(Exception):
+    """The battery will not produce evidence from this input, and says why.
+    Every refusal it raises on purpose is one of these -- ``ConfigError``
+    (a config it cannot honour), ``ProvenanceError`` (data without
+    provenance) and ``RunRefused`` (anything the run itself stops on) -- so
+    the CLI can state a refusal in one line, by name, and let every other
+    exception, which is a bug, keep its traceback."""

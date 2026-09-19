@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from ohcamel_research.battery import Refused
+
 FIELDS = ["open", "high", "low", "close", "volume"]
 
 # The "20-day dollar ADV" of ``gates.capacity``'s definition (the desk's own
@@ -32,7 +34,7 @@ FIELDS = ["open", "high", "low", "close", "volume"]
 ADV_WINDOW_DAYS = 20
 
 
-class ProvenanceError(RuntimeError):
+class ProvenanceError(Refused, RuntimeError):
     """A bar or macro file without acceptable provenance. Refused, never worked around."""
 
 

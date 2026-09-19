@@ -9,7 +9,12 @@ import numpy as np
 import pytest
 from fdq.validation import pbo as fdq_pbo
 
-from ohcamel_research.battery.pbo import probability_backtest_overfitting, sharpe_cols
+from ohcamel_research.battery.pbo import (
+    overfit_by_split,
+    probability_backtest_overfitting,
+    sharpe_cols,
+)
+from ohcamel_research.battery.run import pbo_for_verdict
 
 
 def _random_matrix(seed: int, t: int, n: int) -> np.ndarray:
@@ -91,3 +96,69 @@ def test_a_non_finite_return_is_refused():
     m[5, 1] = np.nan
     with pytest.raises(ValueError, match="non-finite"):
         probability_backtest_overfitting(m)
+
+
+# ---------------------------------------------------------------------------
+# Ruling 11c, amended: the verdict reads max(port, fdq).
+# ---------------------------------------------------------------------------
+
+
+def _alternating(rows: int, mean: float, amplitude: float) -> np.ndarray:
+    # Blocks of 10 rows hold five +1 and five -1: every union of blocks has
+    # exactly this mean, so its Sharpe is fixed and positive.
+    return mean + amplitude * np.where(np.arange(rows) % 2 == 0, 1.0, -1.0)
+
+
+def test_where_the_port_is_lower_the_verdict_reads_fdqs_figure():
+    """A (Sharpe about 0.1 in every union) beside F, flat throughout. Both
+    pick A in sample. Out of sample fdq's NaN for F sorts above A, so A ranks
+    worst in every split: fdq 1.0. The port's 0 for F sorts below A: 0.0."""
+    m = np.column_stack([_alternating(160, 0.001, 0.01), np.zeros(160)])
+    assert fdq_pbo.probability_backtest_overfitting(m) == 1.0
+    assert probability_backtest_overfitting(m) == 0.0
+    pbo, detail = pbo_for_verdict(m)
+    assert pbo == 1.0
+    assert (detail["pbo_port"], detail["pbo_fdq"], detail["pbo_fdq_error"]) == (0.0, 1.0, None)
+    assert detail["splits"] == comb(16, 8)
+    assert (detail["splits_port_overfit_only"], detail["splits_fdq_overfit_only"]) == (
+        0,
+        comb(16, 8),
+    )
+
+
+def test_where_the_port_is_higher_the_verdict_reads_the_ports_figure():
+    m = _flat_out_of_sample_matrix()  # fdq 1/12870, port 2/12870 (derived above)
+    pbo, detail = pbo_for_verdict(m)
+    assert pbo == detail["pbo_port"] == pytest.approx(2 / comb(16, 8), abs=1e-15)
+    assert detail["pbo_fdq"] == pytest.approx(1 / comb(16, 8), abs=1e-15)
+    assert (detail["splits_port_overfit_only"], detail["splits_fdq_overfit_only"]) == (1, 0)
+
+
+def test_where_fdq_raises_the_verdict_reads_the_ports_figure_and_records_why():
+    """Both columns flat through blocks 0-7: in the split whose in-sample
+    half is exactly those blocks, every in-sample Sharpe is NaN to fdq and
+    its nanargmax raises. The port ranks the split (both 0: the first)."""
+    rows = np.arange(160)
+    a = np.where(rows < 80, 0.0, _alternating(160, 0.01, 0.001))
+    b = np.where(rows < 80, 0.0, _alternating(160, 0.001, 0.01))
+    m = np.column_stack([a, b])
+    with pytest.raises(ValueError, match="All-NaN"):
+        fdq_pbo.probability_backtest_overfitting(m)
+    pbo, detail = pbo_for_verdict(m)
+    assert pbo == detail["pbo_port"] == probability_backtest_overfitting(m)
+    assert detail["pbo_fdq"] is None
+    assert "All-NaN" in detail["pbo_fdq_error"]
+    assert detail["splits_port_overfit_only"] is None
+    assert detail["splits_fdq_overfit_only"] is None
+    assert "fdq raised" in detail["rule"]
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_fdqs_rule_split_by_split_averages_to_fdqs_figure(seed):
+    # The per-split emulation the runner counts disagreements with, including
+    # on matrices with flat stretches, against fdq's own function.
+    rng = np.random.default_rng(seed)
+    m = rng.normal(0.0002, 0.01, size=(160, 3))
+    m[: 40 * (1 + seed % 3), seed % 3] = 0.0  # a column flat for a while
+    theirs = overfit_by_split(m, flat_as_nan=True)
+    assert float(np.mean(theirs)) == fdq_pbo.probability_backtest_overfitting(m)
