@@ -94,7 +94,7 @@ Every number is derived by hand in a test, and every identity holds to 1e-9.
    - OLS with intercept, one regression per instrument, on that instrument's non-`nan` observations. Solve with Owl's QR, not the normal equations.
    - Refuse, with a reason, in two cases:
      - fewer than **120** observations;
-     - σ_min ÷ σ_max of the standardised design matrix below 1e-8, taken from Owl's `svdvals` (columns centred and scaled to unit variance).
+     - σ_min ÷ σ_max of the standardised design matrix below 0.01, taken from Owl's `svdvals` (columns centred and scaled to unit variance). That bounds variance inflation at 10⁴; below it the betas describe collinearity, not exposure (amended after Task 3's review; 1e-8 accepted betas of ±9,000).
    - A row with `nan` in y or in any factor is dropped.
    - Factor covariance: population divisor T (the `Risk_metrics` convention), over the rows where every factor is present.
    - Residual variance: RSS ÷ (Tᵢ − K − 1).
