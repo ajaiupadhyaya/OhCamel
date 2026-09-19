@@ -83,7 +83,7 @@ export OWL_CFLAGS := -g -O1 -funroll-loops -fno-math-errno -fno-rounding-math -f
 # Homebrew's directory for every build, so no ordering can win.
 export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 
-.PHONY: all build run stress backtest backtest-crisis options garch test bench coverage fmt clean deps doctor \
+.PHONY: all build run stress backtest backtest-crisis options garch test research-test bench coverage fmt clean deps doctor \
         deploy-build deploy-up deploy-down deploy-verify deploy-logs deploy-smoke
 
 all: build
@@ -181,6 +181,16 @@ demo: build
 #   QCHECK_TRIALS=5000 make test
 test:
 	$(OPAM_ENV) && dune runtest --force
+
+# The research layer's own suite: a separate uv project (research/pyproject.toml),
+# not the opam switch above, so this target never touches $(OPAM_ENV).
+#
+# --locked refuses to run if research/uv.lock is out of date with
+# pyproject.toml, rather than silently rewriting it -- so CI fails loudly on a
+# drifted lockfile instead of quietly resolving a different one than what was
+# committed.
+research-test:
+	cd research && uv sync --locked --extra dev && uv run pytest && uv run ruff check
 
 # What a tick costs, in seconds and in words, against a throwaway
 # poll-and-recompute baseline. `make run` counts NODES; this counts time and
