@@ -1112,7 +1112,7 @@ deploy user alone, and reach the container as environment, never as a layer.
 
 ## What's verified
 
-`make test` runs 463 tests, plus sixteen in `test/desk_async` that run with the
+`make test` runs 480 tests, plus sixteen in `test/desk_async` that run with the
 scheduler -- the order manager's cases, the transport's bound and that
 suite's own count -- all hermetic — no network, no credentials, and nothing
 that waits on the wall clock: the scheduler's cases move a clock of their
@@ -1264,8 +1264,8 @@ done yet.
 functions that answer a limit the fork could not evaluate -- `describe`,
 `breached`, `worsened` and `cleared`. `describe`'s `None` arm is unreachable
 through `reasons`, its only caller: `reasons` maps only `created` and
-`worsened`, and both hold only moves whose `after` is `Some` (gate.ml:62-63,
-89-98). `breached`'s, `worsened`'s and `cleared`'s `None`/fallback arms are
+`worsened`, and both hold only moves whose `after` is `Some` (gate.ml:73-74,
+112-121). `breached`'s, `worsened`'s and `cleared`'s `None`/fallback arms are
 reachable but untested -- no test proposes a fill against a limit still
 warming up, and `cleared`'s asks for more than that: a limit the live book
 could evaluate and breaches (`before` is `Some`), which the fork then
@@ -1301,7 +1301,7 @@ for a mix of reasons bisect's line data gives separately rather than one
 story: `resolve`'s one-minute fallback once its
 2/10/30 s schedule is exhausted, and its own lookup-error branch;
 `on_update`'s branch for a fill that arrives after this desk already
-declared the order failed (the comment there at oms.ml:758 calls this
+declared the order failed (the comment there at oms.ml:1027 calls this
 "fills after failed"), its already-counted-execution branch, and its
 lookup for an order this desk holds no record of; `propose`'s re-checks
 after the arrival quote, for the switch tripping or the book aging stale
@@ -1326,8 +1326,9 @@ a raise just after a kill's halt, through the route and through
 `Oms.kill`, which does not stop the cancels; the engine's stop, whose
 cancels are asked for when the stream ends, sent again under it when the
 venue refuses them, and sent again by a restart's reconciliation; and a
-resting order the gate now counts as if it fills, which `propose` refuses
-under a real, submitted order the same way `preview` does.
+resting order the gate now counts, which `propose` refuses under a real,
+submitted order the same way `preview` does, journaling the limit and the
+way of filling it fails under.
 
 So the floor exists to make deleting tests noticeable, and that is all it is
 for. A coverage target would be an instruction to write the tests that raise it.
@@ -1420,7 +1421,7 @@ The live routes require the header `X-OhCamel-Desk: 1` and a request the browser
 
 Limits, stated:
 - whole shares; market and limit orders; day orders; regular hours;
-- the gate forks the live book with every order the desk still owns, at its remaining quantity, priced at its limit or (absent one) the live mark, plus the proposal's own fill, so several resting orders that would together breach a limit are refused before any of them fill; a resting order priced at neither is not gated as zero, and refuses the proposal instead; an order this desk has declared failed that the venue still works is not counted here, because by then only its venue id survives, not a live quantity to price -- `cancel_failed` and reconciliation's `resend_cancel` are what manage it;
+- the gate judges each proposal on five forks of the live book, because nobody knows which resting orders will fill: with none of them filled; with every resting buy filled; with every resting sell filled; with each name's resting buys or its resting sells filled, whichever takes that name's position further from zero; and with all of them filled. The proposal passes only if it passes on every one -- created or worsened fails, reduced passes, each judged against that fork's own book, so a breach the resting orders alone would make refuses only a proposal that makes it worse. For per-name, sector and gross notional caps these are the worst cases; VaR and the Greek limits are not linear in the positions, so for them the five bound it only approximately. A resting order counts at its remaining quantity, priced no better than the mark (a buy at the higher of its limit and the mark, a sell at the lower), which moves equity and drawdown only, never a notional cap. An order the desk declared failed after every lookup missed still counts, at what remains of it, until the venue reports it filled, cancelled, expired or rejected, or a session close is recorded after it, since a day order cannot outlive its session. A resting order the desk cannot price, or in a name the book does not hold, is not gated as zero: the proposal is refused, naming that order;
 - Alpaca paper only, by construction: the trading host is a constant, and a key that does not begin `PK` is refused before a request is sent.
 
 ## Building it

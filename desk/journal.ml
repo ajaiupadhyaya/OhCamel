@@ -706,6 +706,37 @@ let open_orders t : Order_row.t list =
     ~row:(fun r -> col_text r 0)
   |> orders_of_ids t
 
+(* The events by which a venue says it has finished with an order that is
+   not a fill: its cancel, its expiry, its rejection. For an order already
+   failed the machine keeps the state and journals the event beside an
+   anomaly (Order.apply), so the event row is the record that the venue
+   finished it. The names are the machine's own, so they cannot drift from
+   what [update_order] writes. *)
+let finishing_events =
+  sprintf "(%s)"
+    (String.concat ~sep:","
+       (List.map
+          [
+            Order.Event.Venue_cancelled;
+            Order.Event.Venue_expired;
+            Order.Event.Venue_rejected "";
+          ] ~f:(fun e -> sprintf "'%s'" (Order.Event.name e))))
+
+(* Failed orders journaled after [since] -- every one, when None -- with no
+   finishing event since: the ones a venue has not said it is done with.
+   created_at is RFC 3339 UTC at a fixed width, so text order is time order,
+   as [open_orders] already relies on. Oldest first. *)
+let unfinished_failed_orders t ~(since : Time_ns.t option) : Order_row.t list =
+  let since = match since with None -> Data.NULL | Some at -> time at in
+  query t ~what:"unfinished failed orders"
+    ("SELECT client_order_id FROM orders WHERE state = 'failed' AND (? IS NULL OR \
+      created_at > ?) AND NOT EXISTS (SELECT 1 FROM order_events e WHERE \
+      e.client_order_id = orders.client_order_id AND e.event IN " ^ finishing_events
+   ^ ") ORDER BY created_at, client_order_id")
+    [ since; since ]
+    ~row:(fun r -> col_text r 0)
+  |> orders_of_ids t
+
 let recent_orders t ~limit : Order_row.t list =
   query t ~what:"recent orders"
     "SELECT client_order_id FROM orders ORDER BY created_at DESC, client_order_id DESC \

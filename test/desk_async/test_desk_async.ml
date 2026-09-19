@@ -1199,15 +1199,28 @@ let test_preview_and_propose_agree_about_a_resting_order () =
     (not (D.Order.State.is_terminal resting.D.Order.state));
   let ticket2 = ticket ~kind:limit_200 msft D.Order.Side.Buy 110 in
   let preview = D.Oms.preview oms ticket2 in
+  let if_buys = D.Oms.Scenario.describe D.Oms.Scenario.Resting_buys in
   Alcotest.(check (list string))
-    "preview: by tech-cap, counting the resting order" [ "tech-cap" ]
-    (match preview.D.Oms.Preview.verdict with
-    | Some v ->
-        List.map v.Ohcamel.Gate.Verdict.created ~f:(fun m -> m.Ohcamel.Gate.Move.limit)
-    | None -> []);
+    "preview: by tech-cap, if the resting buy fills" [ "tech-cap" ]
+    (match preview.D.Oms.Preview.gate with
+    | Some (Ok s) -> (
+        match D.Oms.Scenarios.first_failure s with
+        | Some (scenario, v)
+          when D.Oms.Scenario.equal scenario D.Oms.Scenario.Resting_buys ->
+            List.map v.Ohcamel.Gate.Verdict.created ~f:(fun m ->
+                m.Ohcamel.Gate.Move.limit)
+        | Some _ | None -> [])
+    | Some (Error _) | None -> []);
   Alcotest.(check bool) "preview refuses it" false (D.Oms.Preview.passed preview);
   let%bind _, o = D.Oms.propose oms ticket2 in
   Alcotest.(check string) "propose refuses it too" "rejected_pre_trade" (state f o);
+  (* The refusal journaled by [propose] says why, as the preview did: the
+     limit, and the scenario it fails under. *)
+  let reason = Option.value (journaled f o).D.Order.reason ~default:"" in
+  Alcotest.(check bool)
+    "and its journaled reason names tech-cap, if the resting buy fills" true
+    (String.is_substring reason ~substring:"tech-cap would be breached"
+    && String.is_substring reason ~substring:(sprintf "(%s)" if_buys));
   Graph.destroy f.graph;
   return ()
 

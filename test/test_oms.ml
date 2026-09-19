@@ -25,7 +25,8 @@ let limit name scope n = { Limit.name; scope; kind = Limit.Gross_notional (money
    gates an order against a book the account holds. The trailing unit is what
    lets that default be taken, as test_gate.ml's [with_book] takes its own:
    an optional argument before the last labelled one is never erased. *)
-let with_oms ?(book_is_current = true) ?(now = Time_ns.now) ~f () =
+let with_oms ?(book_is_current = true) ?(now = Time_ns.now) ?(extra_limits = [])
+    ?equity_history ~f () =
   let graph =
     Graph.create ~starting_cash:(money 1_000_000.0)
       ~instruments:
@@ -35,11 +36,12 @@ let with_oms ?(book_is_current = true) ?(now = Time_ns.now) ~f () =
           { Instrument.symbol = xom; sector = Sector.of_string "ENERGY" };
         ]
       ~limits:
-        [
-          limit "aapl-cap" (Limit.Instrument aapl) 80_000.0;
-          limit "tech-cap" (Limit.Sector (Sector.of_string "TECH")) 100_000.0;
-          limit "book-cap" Limit.Portfolio 200_000.0;
-        ]
+        ([
+           limit "aapl-cap" (Limit.Instrument aapl) 80_000.0;
+           limit "tech-cap" (Limit.Sector (Sector.of_string "TECH")) 100_000.0;
+           limit "book-cap" Limit.Portfolio 200_000.0;
+         ]
+        @ extra_limits)
       ~confidence:0.95 ~return_window:10 ()
   in
   Exn.protect
@@ -53,6 +55,7 @@ let with_oms ?(book_is_current = true) ?(now = Time_ns.now) ~f () =
             [| -0.02; -0.01; 0.0; 0.01; 0.02; -0.02; -0.01; 0.0; 0.01; 0.02 |];
           Graph.apply_tick graph
             { Tick.symbol = s; price = Price.of_float p; time = Time.now () });
+      Option.iter equity_history ~f:(Graph.set_equity_history graph);
       Graph.set_now graph (Time.now ());
       Graph.stabilize graph;
       let journal = Or_error.ok_exn (D.Journal.open_ ~path:":memory:") in
@@ -84,11 +87,40 @@ let ticket ?(kind = D.Order.Kind.Market) symbol side qty =
 let rules (p : D.Oms.Preview.t) =
   List.map p.D.Oms.Preview.failures ~f:(fun x -> x.D.Rules.Failure.rule)
 
+let limits moves = List.map moves ~f:(fun m -> m.Ohcamel.Gate.Move.limit)
+
+(* What the proposal does to the book as it stands: with nothing resting, the
+   only scenario there is. *)
 let created (p : D.Oms.Preview.t) =
-  match p.D.Oms.Preview.verdict with
-  | Some v ->
-      List.map v.Ohcamel.Gate.Verdict.created ~f:(fun m -> m.Ohcamel.Gate.Move.limit)
-  | None -> []
+  match p.D.Oms.Preview.gate with
+  | Some (Ok s) -> limits (D.Oms.Scenarios.as_it_stands s).Ohcamel.Gate.Verdict.created
+  | Some (Error _) | None -> []
+
+(* The first scenario the proposal fails under, as its description and the
+   limits it created and worsened there; None when it fails under none. *)
+let failing (p : D.Oms.Preview.t) =
+  match p.D.Oms.Preview.gate with
+  | Some (Ok s) ->
+      Option.map (D.Oms.Scenarios.first_failure s) ~f:(fun (scenario, v) ->
+          ( D.Oms.Scenario.describe scenario,
+            limits v.Ohcamel.Gate.Verdict.created,
+            limits v.Ohcamel.Gate.Verdict.worsened ))
+  | Some (Error _) | None -> None
+
+(* The scenarios the proposal was judged under, deduplicated, in order. *)
+let scenarios (p : D.Oms.Preview.t) =
+  match p.D.Oms.Preview.gate with
+  | Some (Ok s) -> List.map s ~f:(fun (scenario, _) -> D.Oms.Scenario.describe scenario)
+  | Some (Error _) | None -> []
+
+let says (p : D.Oms.Preview.t) substring =
+  List.exists (D.Oms.Preview.reasons p) ~f:(String.is_substring ~substring)
+
+let as_it_stands = D.Oms.Scenario.describe D.Oms.Scenario.As_it_stands
+let if_buys = D.Oms.Scenario.describe D.Oms.Scenario.Resting_buys
+let if_sells = D.Oms.Scenario.describe D.Oms.Scenario.Resting_sells
+let if_growing = D.Oms.Scenario.describe D.Oms.Scenario.Growing_side
+let if_every = D.Oms.Scenario.describe D.Oms.Scenario.Every_resting
 
 (* A resting order, injected exactly as [Oms.propose] leaves one once the
    venue has acknowledged it: journaled first (invariant 10, [Journal.insert_order]),
@@ -234,18 +266,23 @@ let test_an_order_after_the_close_is_refused_on_the_clock_last_read () =
         (D.Oms.Preview.passed after, rules after))
     ()
 
-(* The gate now counts a resting order as if it fills (Task 3): several
-   resting orders can each pass alone and only breach a limit once they are
-   all counted together, which nothing would see until they actually filled.
+(* The gate counts a resting order (Task 3): several resting orders can each
+   pass alone and only breach a limit once they are counted together, which
+   nothing would see until they actually filled.
 
    TECH's weight is AAPL 400 x 150 = 60,000 plus MSFT 100 x 300 = 30,000 =
    90,000; tech-cap is 100,000, so 10,000 of room is left. Order 1, MSFT buy
    20 @ $300 = $6,000, rests: alone it would leave TECH at 96,000, under the
    cap. Order 2, MSFT buy 15 @ $300 = $4,500 -- a different quantity, so the
    duplicate rule does not speak -- would by itself also leave TECH at
-   94,500, under the cap: that was the bug, each one judged alone. Counting
-   order 1 as resting, the gate now sees 90,000 + 6,000 + 4,500 = 100,500,
-   over the 100,000 cap, and refuses order 2, naming tech-cap. *)
+   94,500, under the cap: that was the bug, each one judged alone. If the
+   resting buy fills, the gate sees 90,000 + 6,000 + 4,500 = 100,500, over the
+   100,000 cap, and refuses order 2, naming tech-cap and that scenario.
+
+   A buy is all that rests, so there are two distinct bases: nothing, and the
+   buy. The resting sells are none (the book as it stands), and the side that
+   grows MSFT -- 100 + 15 + 20 = 135 against 115 -- and every resting order
+   are the buy again. *)
 let test_a_resting_order_the_gate_now_counts_pushes_a_second_over_tech_cap () =
   with_oms
     ~f:(fun oms journal ->
@@ -263,11 +300,14 @@ let test_a_resting_order_the_gate_now_counts_pushes_a_second_over_tech_cap () =
       Alcotest.(check bool) "the second is refused" false (D.Oms.Preview.passed p);
       Alcotest.(check (list string)) "by no rule of its own" [] (rules p);
       Alcotest.(check (list string))
-        "by tech-cap, counting the resting order" [ "tech-cap" ] (created p);
+        "two distinct bases" [ as_it_stands; if_buys ] (scenarios p);
+      Alcotest.(check (option (triple string (list string) (list string))))
+        "by tech-cap, if the resting buy fills"
+        (Some (if_buys, [ "tech-cap" ], []))
+        (failing p);
       Alcotest.(check bool)
-        "and the reasons name it" true
-        (List.exists (D.Oms.Preview.reasons p)
-           ~f:(String.is_substring ~substring:"tech-cap")))
+        "and the reasons name the limit and the scenario" true
+        (says p "tech-cap would be breached" && says p (sprintf "(%s)" if_buys)))
     ()
 
 (* Cancelling the resting order gives its room back. Same book and orders as
@@ -299,15 +339,17 @@ let test_cancelling_the_resting_order_frees_the_room_again () =
     ()
 
 (* A resting order the gate cannot price is not dropped from the count --
-   doing so would let it pass for zero. AAPL is repriced to 0, "a cell nobody
-   has written, not a price" in [Oms.live_mark]'s own words, so the AAPL
-   market order resting below has neither a limit (it is a market order) nor
-   a mark. [Oms.preview] then runs no gate at all for an unrelated ticket,
-   XOM sell 10 -- which passes every rule of its own and, judged alone, every
-   limit too (XOM -200 -> -190, as in the book-is-not-current case above) --
-   failing closed exactly as a proposal with no decision price of its own
-   already does: no verdict is a proposal that is not passed. *)
-let test_a_resting_market_order_with_no_mark_fails_the_gate_closed () =
+   doing so would let it pass for zero -- and the refusal says which order it
+   is. AAPL is repriced to 0, "a cell nobody has written, not a price" in
+   [Oms.live_mark]'s own words, so the AAPL market order resting below has
+   neither a limit (it is a market order) nor a mark. A preview of an
+   unrelated ticket, XOM buy 10 -- which passes every rule of its own and,
+   judged alone, every limit too (XOM -200 -> -190, as in the
+   book-is-not-current case above) -- is refused, and the reason names the
+   resting order by its client id, symbol, side, remaining quantity and kind.
+   [Oms.refuse], which [propose] calls for every refusal, journals it with
+   that reason. *)
+let test_a_resting_order_with_no_price_refuses_naming_it_and_is_journaled () =
   with_oms
     ~f:(fun oms journal ->
       let resting =
@@ -323,9 +365,459 @@ let test_a_resting_market_order_with_no_mark_fails_the_gate_closed () =
       Alcotest.(check (list string)) "no rule of its own fails" [] (rules p);
       Alcotest.(check bool)
         "the gate could not be run, so it is not passed" false (D.Oms.Preview.passed p);
+      let why =
+        sprintf
+          "the resting order %s (submitted: AAPL buy, 50 remaining, market) has no limit \
+           price and no mark, so the gate cannot count it"
+          (D.Oms.key resting)
+      in
+      Alcotest.(check bool) "the reason names the order" true (says p why);
+      let refused = D.Oms.refuse oms p ~source:"test" in
+      Alcotest.(check string)
+        "refused before the venue" "rejected_pre_trade"
+        (D.Order.State.to_string refused.D.Order.state);
+      let row =
+        Option.value_exn
+          (D.Journal.load_order journal
+             refused.D.Order.request.D.Order.Request.client_order_id)
+      in
       Alcotest.(check bool)
-        "no verdict at all -- fail closed" true
-        (Option.is_none p.D.Oms.Preview.verdict))
+        "and the journal holds the reason" true
+        (String.is_substring
+           (Option.value row.D.Journal.Order_row.order.D.Order.reason ~default:"")
+           ~substring:why))
+    ()
+
+(* A resting order in a symbol the book does not hold -- a journal written
+   against another book -- cannot be counted either: [Graph.apply_fill] would
+   raise on it, on every preview. The symbol is checked first, and the
+   proposal (XOM buy 10, which passes everything of its own) is refused with a
+   reason naming the order, without raising. *)
+let test_a_resting_order_outside_the_book_refuses_and_does_not_raise () =
+  with_oms
+    ~f:(fun oms journal ->
+      let resting =
+        rest oms journal ~seed:104 (Symbol.of_string "ZZZ") D.Order.Side.Buy 10
+          (D.Order.Kind.Limit (price 50.0))
+      in
+      let p = D.Oms.preview oms (ticket xom D.Order.Side.Buy 10) in
+      Alcotest.(check (list string)) "no rule of its own fails" [] (rules p);
+      Alcotest.(check bool) "refused" false (D.Oms.Preview.passed p);
+      Alcotest.(check bool)
+        "the reason names the order and why" true
+        (says p
+           (sprintf
+              "the resting order %s (submitted: ZZZ buy, 10 remaining, limit 50.00) is \
+               in a symbol this book does not hold"
+              (D.Oms.key resting))))
+    ()
+
+(* Task 3's review, C1, its first probe, as a regression. TECH is 90,000 of
+   100,000. AAPL buy 100 at the 150 mark is 15,000: alone, TECH would be
+   105,000, and the gate refuses it. A resting MSFT sell of 20 at 300 (6,000)
+   assumed filled took TECH to 99,000 and let the buy through. Now the book as
+   it stands is one of the scenarios, and it refuses the buy, naming tech-cap.
+   The bases: nothing; the sell (the resting sells, and every resting order);
+   the resting buys are none, and MSFT's growing side is its buys -- 100
+   against 80 -- which are none too. *)
+let test_a_resting_sell_makes_no_room_for_a_buy_the_book_cannot_take () =
+  with_oms
+    ~f:(fun oms journal ->
+      ignore
+        (rest oms journal ~seed:105 msft D.Order.Side.Sell 20
+           (D.Order.Kind.Limit (price 300.0))
+          : D.Order.t);
+      let p = D.Oms.preview oms (ticket aapl D.Order.Side.Buy 100) in
+      Alcotest.(check (list string)) "by no rule" [] (rules p);
+      Alcotest.(check bool) "refused" false (D.Oms.Preview.passed p);
+      Alcotest.(check (list string))
+        "two distinct bases" [ as_it_stands; if_sells ] (scenarios p);
+      Alcotest.(check (option (triple string (list string) (list string))))
+        "by tech-cap, on the book as it stands"
+        (Some (as_it_stands, [ "tech-cap" ], []))
+        (failing p);
+      Alcotest.(check bool)
+        "the reason names it" true
+        (says p "tech-cap would be breached" && says p (sprintf "(%s)" as_it_stands)))
+    ()
+
+(* The review's second probe. AAPL buy 160 limit 150 is 24,000 (under the
+   25,000 order cap): alone, AAPL 560 x 150 = 84,000 > 80,000 and TECH 84,000
+   + 30,000 = 114,000 > 100,000. A resting AAPL sell of 100 assumed filled
+   took AAPL to 460 x 150 = 69,000 and TECH to 99,000, and let it through.
+   Now it is refused on the book as it stands, naming both. AAPL's growing
+   side is its buys (560 against 460), which are none. *)
+let test_a_resting_sell_of_the_same_name_makes_no_room_either () =
+  with_oms
+    ~f:(fun oms journal ->
+      ignore
+        (rest oms journal ~seed:106 aapl D.Order.Side.Sell 100
+           (D.Order.Kind.Limit (price 150.0))
+          : D.Order.t);
+      let p =
+        D.Oms.preview oms
+          (ticket ~kind:(D.Order.Kind.Limit (price 150.0)) aapl D.Order.Side.Buy 160)
+      in
+      Alcotest.(check (list string)) "by no rule" [] (rules p);
+      Alcotest.(check bool) "refused" false (D.Oms.Preview.passed p);
+      Alcotest.(check (option (triple string (list string) (list string))))
+        "by aapl-cap and tech-cap, on the book as it stands"
+        (Some (as_it_stands, [ "aapl-cap"; "tech-cap" ], []))
+        (failing p);
+      Alcotest.(check bool)
+        "the reasons name both" true
+        (says p "aapl-cap would be breached" && says p "tech-cap would be breached"))
+    ()
+
+(* Only the resting buys catch it. A sector's notional is the absolute value
+   of a sum, so it is largest when every buy in it fills or when every sell
+   does -- not necessarily when all fill, nor on each name's growing side.
+   Resting: AAPL buy 20 @ 150, MSFT buy 20 @ 300, MSFT sell 300 @ 300 (each at
+   the mark, so priced there). Proposed: AAPL buy 10 at the mark (1,500).
+     as it stands:  AAPL 410 (61,500) + MSFT 30,000 = TECH 91,500
+     resting buys:  base AAPL 420 (63,000) + MSFT 120 (36,000) = 99,000, clear;
+                    with the proposal AAPL 430 (64,500): 100,500 -- created
+     resting sells: AAPL 410 (61,500) + MSFT -200 (-60,000) = 1,500
+     growing side:  AAPL's buys (430 against 410), MSFT's sells (|-200| against
+                    120): 64,500 - 60,000 = 4,500; gross 64,500 + 60,000 +
+                    20,000 = 144,500
+     every order:   AAPL 430 (64,500) + MSFT -180 (-54,000) = 10,500; gross
+                    138,500
+   aapl-cap is at most 64,500 and book-cap at most 144,500 anywhere, so the
+   one refusal is tech-cap, if the resting buys fill. *)
+let test_only_the_resting_buys_catch_a_sector_breach () =
+  with_oms
+    ~f:(fun oms journal ->
+      let at p = D.Order.Kind.Limit (price p) in
+      ignore (rest oms journal ~seed:107 aapl D.Order.Side.Buy 20 (at 150.0) : D.Order.t);
+      ignore (rest oms journal ~seed:108 msft D.Order.Side.Buy 20 (at 300.0) : D.Order.t);
+      ignore
+        (rest oms journal ~seed:109 msft D.Order.Side.Sell 300 (at 300.0) : D.Order.t);
+      let p = D.Oms.preview oms (ticket aapl D.Order.Side.Buy 10) in
+      Alcotest.(check (list string)) "by no rule" [] (rules p);
+      Alcotest.(check (list string))
+        "five distinct bases"
+        [ as_it_stands; if_buys; if_sells; if_growing; if_every ]
+        (scenarios p);
+      Alcotest.(check (option (triple string (list string) (list string))))
+        "tech-cap, if the resting buys fill"
+        (Some (if_buys, [ "tech-cap" ], []))
+        (failing p);
+      Alcotest.(check bool)
+        "refused, the reason naming the scenario" true
+        ((not (D.Oms.Preview.passed p)) && says p (sprintf "(%s)" if_buys)))
+    ()
+
+(* Only the resting sells catch it: the mirror, a sector driven through its
+   line on the short side. Resting: AAPL sell 900 @ 150, AAPL buy 110 @ 150,
+   MSFT sell 170 @ 300. Proposed: MSFT sell 20 at the mark (6,000).
+     as it stands:  AAPL 60,000 + MSFT 80 (24,000) = TECH 84,000
+     resting buys:  base AAPL 510 (76,500) + MSFT 30,000 = 106,500, over by
+                    6,500; with the proposal 100,500, over by 500 -- reduced,
+                    which passes
+     resting sells: base AAPL -500 (-75,000) + MSFT -70 (-21,000) = -96,000,
+                    clear; with the proposal MSFT -90 (-27,000): -102,000 --
+                    created
+     growing side:  AAPL's buys (510 against |-500|), MSFT's sells (|80 - 170|
+                    = 90 against 80): 76,500 - 27,000 = 49,500
+     every order:   AAPL -390 (-58,500) + MSFT -90 (-27,000) = -85,500
+   aapl-cap is at most 76,500 (under 80,000) and book-cap at most 123,500. *)
+let test_only_the_resting_sells_catch_a_sector_breach () =
+  with_oms
+    ~f:(fun oms journal ->
+      let at p = D.Order.Kind.Limit (price p) in
+      ignore
+        (rest oms journal ~seed:110 aapl D.Order.Side.Sell 900 (at 150.0) : D.Order.t);
+      ignore (rest oms journal ~seed:111 aapl D.Order.Side.Buy 110 (at 150.0) : D.Order.t);
+      ignore
+        (rest oms journal ~seed:112 msft D.Order.Side.Sell 170 (at 300.0) : D.Order.t);
+      let p = D.Oms.preview oms (ticket msft D.Order.Side.Sell 20) in
+      Alcotest.(check (list string)) "by no rule" [] (rules p);
+      Alcotest.(check (list string))
+        "five distinct bases"
+        [ as_it_stands; if_buys; if_sells; if_growing; if_every ]
+        (scenarios p);
+      Alcotest.(check (option (triple string (list string) (list string))))
+        "tech-cap, if the resting sells fill"
+        (Some (if_sells, [ "tech-cap" ], []))
+        (failing p);
+      Alcotest.(check bool) "refused" false (D.Oms.Preview.passed p))
+    ()
+
+(* Only each name's growing side catches it: portfolio gross, a sum of
+   per-name absolute values, is largest when every name moves away from zero.
+   Long AAPL with a resting buy of AAPL, short XOM with a resting sell of XOM
+   -- and, beside each, a resting order the other way, so that every resting
+   order filling nets to nothing. Resting: AAPL buy 60 and sell 60 @ 150, XOM
+   sell 800 and buy 800 @ 100. Proposed: XOM sell 50 at the mark (5,000).
+   book-cap is 200,000 of gross.
+     as it stands:  60,000 + 30,000 + XOM -250 (25,000) = 115,000
+     resting buys:  AAPL 460 (69,000) + 30,000 + XOM 550 (55,000) = 154,000
+     resting sells: AAPL 340 (51,000) + 30,000 + XOM -1,050 (105,000) = 186,000
+     growing side:  AAPL's buys (460 against 340), XOM's sells (|-250 - 800| =
+                    1,050 against |-250 + 800| = 550): base 69,000 + 30,000 +
+                    100,000 = 199,000, clear; with the proposal 204,000 --
+                    created
+     every order:   115,000, as it stands
+   TECH is at most 99,000 (resting buys and growing side) and aapl-cap at
+   most 69,000. *)
+let test_only_the_growing_side_catches_a_gross_breach () =
+  with_oms
+    ~f:(fun oms journal ->
+      let at p = D.Order.Kind.Limit (price p) in
+      ignore (rest oms journal ~seed:113 aapl D.Order.Side.Buy 60 (at 150.0) : D.Order.t);
+      ignore (rest oms journal ~seed:114 aapl D.Order.Side.Sell 60 (at 150.0) : D.Order.t);
+      ignore (rest oms journal ~seed:115 xom D.Order.Side.Sell 800 (at 100.0) : D.Order.t);
+      ignore (rest oms journal ~seed:116 xom D.Order.Side.Buy 800 (at 100.0) : D.Order.t);
+      let p = D.Oms.preview oms (ticket xom D.Order.Side.Sell 50) in
+      Alcotest.(check (list string)) "by no rule" [] (rules p);
+      Alcotest.(check (list string))
+        "five distinct bases"
+        [ as_it_stands; if_buys; if_sells; if_growing; if_every ]
+        (scenarios p);
+      Alcotest.(check (option (triple string (list string) (list string))))
+        "book-cap, if each name grows"
+        (Some (if_growing, [ "book-cap" ], []))
+        (failing p);
+      Alcotest.(check bool)
+        "refused, naming book-cap" true
+        ((not (D.Oms.Preview.passed p)) && says p "book-cap would be breached"))
+    ()
+
+(* Resting orders alone can take a limit over its line (the review's minor
+   a). They are a base, not part of the proposal, so a proposal is charged
+   only with what it does to them. Resting: AAPL buy 100 @ 150. If it fills,
+   AAPL is 500 x 150 = 75,000 and TECH 105,000, 5,000 over.
+   - AAPL sell 20 at the mark takes TECH to 102,000 there, 2,000 over:
+     reduced, which passes (and 87,000 as it stands). Judged the first way --
+     every fill from the live 90,000 -- it read as a breach created.
+   - MSFT buy 10 at the mark, an add the breached limit covers, takes it to
+     108,000, 8,000 over: worsened, refused, if the resting buy fills.
+   - XOM sell 10, an add the breached limit does not cover, leaves TECH where
+     the resting buy puts it and gross at 126,000: neither created nor
+     worsened, which passes -- where it too read as a breach created. *)
+let test_a_breach_the_resting_orders_make_is_theirs_not_the_proposal's () =
+  with_oms
+    ~f:(fun oms journal ->
+      ignore
+        (rest oms journal ~seed:117 aapl D.Order.Side.Buy 100
+           (D.Order.Kind.Limit (price 150.0))
+          : D.Order.t);
+      let sell = D.Oms.preview oms (ticket aapl D.Order.Side.Sell 20) in
+      Alcotest.(check (list string))
+        "the sell: two distinct bases" [ as_it_stands; if_buys ] (scenarios sell);
+      Alcotest.(check bool) "the sell passes" true (D.Oms.Preview.passed sell);
+      let add = D.Oms.preview oms (ticket msft D.Order.Side.Buy 10) in
+      Alcotest.(check bool) "the MSFT add is refused" false (D.Oms.Preview.passed add);
+      Alcotest.(check (option (triple string (list string) (list string))))
+        "as worsening tech-cap, if the resting buy fills"
+        (Some (if_buys, [], [ "tech-cap" ]))
+        (failing add);
+      Alcotest.(check bool)
+        "the reason says further over" true
+        (says add "tech-cap would be further over its line");
+      Alcotest.(check bool)
+        "the XOM add passes" true
+        (D.Oms.Preview.passed (D.Oms.preview oms (ticket xom D.Order.Side.Sell 10))))
+    ()
+
+(* A partly filled resting order counts at what remains. MSFT buy 30 @ 300
+   rests and 20 fill: the fill is recorded and applied to the book as
+   [on_update] does it, so MSFT is 120 (36,000) and TECH 96,000, and 10
+   remain (3,000).
+   - AAPL buy 5 at the mark (750): 96,000 + 3,000 + 750 = 99,750, which
+     passes. Counted at the whole 30 it would be 105,750, and refused.
+   - AAPL buy 10 (1,500): 100,500 -- refused, if the resting buy fills. *)
+let test_a_partly_filled_resting_order_counts_at_what_remains () =
+  with_oms
+    ~f:(fun oms journal ->
+      let o =
+        rest oms journal ~seed:118 msft D.Order.Side.Buy 30
+          (D.Order.Kind.Limit (price 300.0))
+      in
+      let f =
+        {
+          D.Order.Fill.execution_id = "exec-118";
+          qty = 20.0;
+          price = price 300.0;
+          at = Time_ns.now ();
+          position_qty = None;
+        }
+      in
+      let o = D.Oms.record oms o (D.Order.Event.Venue_fill f) in
+      D.Oms.apply_to_graph oms o f;
+      Alcotest.(check (pair string int))
+        "partly filled, and still open" ("partially_filled", 1)
+        (D.Order.State.to_string o.D.Order.state, D.Oms.open_count oms);
+      Alcotest.(check (float 1e-9))
+        "MSFT is 120" 120.0
+        (Qty.to_float (Graph.qty oms.D.Oms.graph msft));
+      Alcotest.(check bool)
+        "AAPL buy 5 passes against the 10 that remain" true
+        (D.Oms.Preview.passed (D.Oms.preview oms (ticket aapl D.Order.Side.Buy 5)));
+      let p = D.Oms.preview oms (ticket aapl D.Order.Side.Buy 10) in
+      Alcotest.(check (option (triple string (list string) (list string))))
+        "AAPL buy 10 does not"
+        (Some (if_buys, [ "tech-cap" ], []))
+        (failing p))
+    ()
+
+(* A resting sell is a sell. MSFT sell 40 @ 300 rests; AAPL buy 20 at the mark
+   (3,000) is proposed: 93,000 as it stands, 90,000 - 12,000 + 3,000 = 81,000
+   if the sell fills, and MSFT's growing side is its buys (100 against 60),
+   which are none. It passes. Were the side ignored, the sell would count as
+   a buy of 40: 90,000 + 12,000 + 3,000 = 105,000, refused. *)
+let test_a_resting_sell_counts_as_a_sell () =
+  with_oms
+    ~f:(fun oms journal ->
+      ignore
+        (rest oms journal ~seed:119 msft D.Order.Side.Sell 40
+           (D.Order.Kind.Limit (price 300.0))
+          : D.Order.t);
+      let p = D.Oms.preview oms (ticket aapl D.Order.Side.Buy 20) in
+      Alcotest.(check (list string))
+        "two distinct bases" [ as_it_stands; if_sells ] (scenarios p);
+      Alcotest.(check bool) "passes" true (D.Oms.Preview.passed p))
+    ()
+
+(* A resting fill is priced no better than the mark, so none books equity it
+   has not earned. The book's peak equity is 1,100,000 and it stands at
+   1,070,000, a drawdown of 30,000 / 1,100,000 = 2.7273%; the limit is 2.75%,
+   so equity may fall to 1,100,000 x 0.9725 = 1,069,750. Resting: XOM buy 40
+   limit 105, above the 100 mark, priced at its limit (it pays 200 more than
+   the shares are worth), and XOM buy 20 limit 95, below the mark, priced AT
+   the mark (0 -- at its own limit it would book 100 nobody has earned).
+   Proposed: XOM buy 25 limit 104 (inside the 5% collar), which pays 100 over
+   the mark.
+     as it stands:  1,070,000 - 100 = 1,069,900, 2.7364%, clear
+     resting buys:  base 1,070,000 - 200 = 1,069,800 (2.7455%, clear); with
+                    the proposal 1,069,700, 2.7545% -- created
+   XOM's growing side is its sells (|-175| against |-175 + 60|), which are
+   none. Priced at its own limit, the passive buy would lift the base to
+   1,069,900, the proposal would leave 1,069,800 (2.7455%), and it would
+   pass. *)
+let test_a_resting_fill_is_priced_no_better_than_the_mark () =
+  with_oms
+    ~extra_limits:
+      [
+        {
+          Limit.name = "drawdown";
+          scope = Limit.Portfolio;
+          kind = Limit.Max_drawdown 0.0275;
+        };
+      ]
+    ~equity_history:[| 1_100_000.0 |]
+    ~f:(fun oms journal ->
+      let at p = D.Order.Kind.Limit (price p) in
+      ignore (rest oms journal ~seed:120 xom D.Order.Side.Buy 40 (at 105.0) : D.Order.t);
+      ignore (rest oms journal ~seed:121 xom D.Order.Side.Buy 20 (at 95.0) : D.Order.t);
+      let p = D.Oms.preview oms (ticket ~kind:(at 104.0) xom D.Order.Side.Buy 25) in
+      Alcotest.(check (list string)) "by no rule" [] (rules p);
+      Alcotest.(check (list string))
+        "two distinct bases" [ as_it_stands; if_buys ] (scenarios p);
+      Alcotest.(check (option (triple string (list string) (list string))))
+        "the drawdown, if the resting buys fill"
+        (Some (if_buys, [ "drawdown" ], []))
+        (failing p))
+    ()
+
+(* An order this desk declared failed, as [resolve] leaves one: journaled at
+   [at], its submission's answer unknown, and every lookup missing. It is out
+   of the open set, as every terminal order is. *)
+let fail oms journal ~seed ~at symbol side qty kind =
+  let client_order_id =
+    D.Ids.Client_order_id.generate ~now:at ~rng:(Random.State.make [| seed |])
+  in
+  let request = { D.Order.Request.client_order_id; symbol; side; qty; kind } in
+  let o = D.Order.create request in
+  D.Journal.insert_order journal o ~source:"test" ~decision_price:(price 0.0)
+    ~arrival:None ~verdict:`Null ~at;
+  let o = D.Oms.record oms o (D.Order.Event.Outcome_unknown "the venue did not answer") in
+  D.Oms.record oms o D.Order.Event.Not_found
+
+(* A failed order the venue may still work counts until the venue finishes
+   it. MSFT buy 20 @ 300 fails: every lookup missed, and it is out of the
+   open set, but nothing says the venue never took it. MSFT buy 15 @ 300 is
+   then refused exactly as beside a resting order (90,000 + 6,000 + 4,500 =
+   100,500). The venue then reports the failed order cancelled: the machine
+   keeps it failed and journals the report beside an anomaly, and that report
+   ends its count -- 94,500, passed. *)
+let test_a_failed_order_counts_until_the_venue_finishes_it () =
+  with_oms
+    ~f:(fun oms journal ->
+      let o =
+        fail oms journal ~seed:122 ~at:(Time_ns.now ()) msft D.Order.Side.Buy 20
+          (D.Order.Kind.Limit (price 300.0))
+      in
+      Alcotest.(check (pair string int))
+        "failed, and not open" ("failed", 0)
+        (D.Order.State.to_string o.D.Order.state, D.Oms.open_count oms);
+      let order2 () =
+        D.Oms.preview oms
+          (ticket ~kind:(D.Order.Kind.Limit (price 300.0)) msft D.Order.Side.Buy 15)
+      in
+      Alcotest.(check (option (triple string (list string) (list string))))
+        "counted: tech-cap, if the resting buy fills"
+        (Some (if_buys, [ "tech-cap" ], []))
+        (failing (order2 ()));
+      let o = D.Oms.record oms o D.Order.Event.Venue_cancelled in
+      Alcotest.(check string)
+        "the machine keeps it failed" "failed"
+        (D.Order.State.to_string o.D.Order.state);
+      Alcotest.(check bool)
+        "the venue's report ends its count" true
+        (D.Oms.Preview.passed (order2 ())))
+    ()
+
+(* A failed order is a day order, and a day order does not outlive its
+   session: once the close after it is recorded in the journal, it no longer
+   counts. MSFT buy 20 @ 300 failed an hour ago and is refused against as
+   above; a session close recorded half an hour ago, after it, ends that --
+   the same proposal passes. *)
+let test_a_failed_order_from_a_closed_session_does_not_count () =
+  with_oms
+    ~f:(fun oms journal ->
+      let now = Time_ns.now () in
+      let ago m = Time_ns.sub now (Time_ns.Span.of_min m) in
+      ignore
+        (fail oms journal ~seed:123 ~at:(ago 60.0) msft D.Order.Side.Buy 20
+           (D.Order.Kind.Limit (price 300.0))
+          : D.Order.t);
+      let order2 () =
+        D.Oms.preview oms
+          (ticket ~kind:(D.Order.Kind.Limit (price 300.0)) msft D.Order.Side.Buy 15)
+      in
+      Alcotest.(check bool)
+        "counted while its session lasts" false
+        (D.Oms.Preview.passed (order2 ()));
+      D.Journal.record_session journal
+        {
+          D.Journal.Session.date = Date.today ~zone:Time_float.Zone.utc;
+          equity_close = 1_070_000.0;
+          cash_close = 1_000_000.0;
+          gross_close = 110_000.0;
+          net_close = 70_000.0;
+          recorded_at = ago 30.0;
+        };
+      Alcotest.(check bool)
+        "not once the close after it is recorded" true
+        (D.Oms.Preview.passed (order2 ())))
+    ()
+
+(* The failed orders are read from the journal on every preview, so a journal
+   that cannot be read cannot count them -- and a preview must still answer.
+   With the journal's handle closed, XOM buy 10 (which passes everything of
+   its own) is refused, saying why, and nothing raises. *)
+let test_a_journal_that_cannot_be_read_refuses_and_does_not_raise () =
+  with_oms
+    ~f:(fun oms journal ->
+      D.Journal.close journal;
+      let p = D.Oms.preview oms (ticket xom D.Order.Side.Buy 10) in
+      Alcotest.(check (list string)) "no rule of its own fails" [] (rules p);
+      Alcotest.(check bool) "refused" false (D.Oms.Preview.passed p);
+      Alcotest.(check bool)
+        "saying why" true
+        (says p "the journal's failed orders could not be read"))
     ()
 
 let suite =
@@ -347,6 +839,33 @@ let suite =
         test_a_resting_order_the_gate_now_counts_pushes_a_second_over_tech_cap;
       Alcotest.test_case "cancelling the resting order frees the room again" `Quick
         test_cancelling_the_resting_order_frees_the_room_again;
-      Alcotest.test_case "a resting market order with no mark fails the gate closed"
-        `Quick test_a_resting_market_order_with_no_mark_fails_the_gate_closed;
+      Alcotest.test_case
+        "a resting order with no price refuses, naming it, and is journaled" `Quick
+        test_a_resting_order_with_no_price_refuses_naming_it_and_is_journaled;
+      Alcotest.test_case "a resting order outside the book refuses and does not raise"
+        `Quick test_a_resting_order_outside_the_book_refuses_and_does_not_raise;
+      Alcotest.test_case "a resting sell makes no room for a buy the book cannot take"
+        `Quick test_a_resting_sell_makes_no_room_for_a_buy_the_book_cannot_take;
+      Alcotest.test_case "a resting sell of the same name makes no room either" `Quick
+        test_a_resting_sell_of_the_same_name_makes_no_room_either;
+      Alcotest.test_case "only the resting buys catch a sector breach" `Quick
+        test_only_the_resting_buys_catch_a_sector_breach;
+      Alcotest.test_case "only the resting sells catch a sector breach" `Quick
+        test_only_the_resting_sells_catch_a_sector_breach;
+      Alcotest.test_case "only the growing side catches a gross breach" `Quick
+        test_only_the_growing_side_catches_a_gross_breach;
+      Alcotest.test_case "a breach the resting orders make is theirs, not the proposal's"
+        `Quick test_a_breach_the_resting_orders_make_is_theirs_not_the_proposal's;
+      Alcotest.test_case "a partly filled resting order counts at what remains" `Quick
+        test_a_partly_filled_resting_order_counts_at_what_remains;
+      Alcotest.test_case "a resting sell counts as a sell" `Quick
+        test_a_resting_sell_counts_as_a_sell;
+      Alcotest.test_case "a resting fill is priced no better than the mark" `Quick
+        test_a_resting_fill_is_priced_no_better_than_the_mark;
+      Alcotest.test_case "a failed order counts until the venue finishes it" `Quick
+        test_a_failed_order_counts_until_the_venue_finishes_it;
+      Alcotest.test_case "a failed order from a closed session does not count" `Quick
+        test_a_failed_order_from_a_closed_session_does_not_count;
+      Alcotest.test_case "a journal that cannot be read refuses and does not raise" `Quick
+        test_a_journal_that_cannot_be_read_refuses_and_does_not_raise;
     ] )

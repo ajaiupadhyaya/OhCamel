@@ -22,7 +22,17 @@
    fork cannot evaluate -- a VaR still warming up -- is reported as
    unevaluable and does not fail the proposal: unknown is not a breach, and it
    is not a pass either, which is why it is reported rather than folded into
-   one. *)
+   one.
+
+   THE BASE. A caller may pass [base], fills applied to the fork before
+   anything is read: the book as it would stand if resting orders filled.
+   "Before" is then that book, not the live one, and created, worsened and
+   reduced are all judged relative to it -- so a breach the base alone makes
+   is not charged to a proposal that leaves it where it is or brings it
+   back, and a proposal that takes it further over fails as worsened. With no base, "before" is the live graph itself, read
+   exactly as it was before the base existed. The base is still a
+   hypothetical on a fork: which resting orders to assume fill, and at what
+   price, is the caller's to decide, and nothing here knows an order exists. *)
 
 open Core
 open Types
@@ -65,26 +75,38 @@ end
 
 let breached = function Some b -> Breach.breached b | None -> false
 
-let check (graph : Graph.t) ~(fills : Fill.t list) : Verdict.t =
+let apply (graph : Graph.t) (fills : Fill.t list) =
+  List.iter fills ~f:(fun (f : Fill.t) ->
+      Graph.apply_fill graph
+        { Types.Fill.symbol = f.symbol; qty = f.qty; price = f.price; time = Time.epoch })
+
+(* [base] is optional and comes first so that it is erased by the graph
+   argument: every call without one reads exactly as it did before it
+   existed. *)
+let check ?(base : Fill.t list = []) (graph : Graph.t) ~(fills : Fill.t list) : Verdict.t
+    =
   (* The live snapshot first: it stabilizes, so any write the live graph had
      not settled is settled before the fork copies its cells. *)
-  let before = Graph.snapshot graph in
+  let live = Graph.snapshot graph in
   let fork = Graph.fork graph in
   Exn.protect
     ~finally:(fun () -> Graph.destroy fork)
     ~f:(fun () ->
-      List.iter fills ~f:(fun (f : Fill.t) ->
-          Graph.apply_fill fork
-            {
-              Types.Fill.symbol = f.symbol;
-              qty = f.qty;
-              price = f.price;
-              time = Time.epoch;
-            });
+      (* One fork: the base first, "before" read from it, then the fills. With
+         no base, "before" is the live graph's, as it always was. *)
+      let before, limits_before =
+        match base with
+        | [] -> (live, Graph.limit_results graph)
+        | base ->
+            apply fork base;
+            let s = Graph.snapshot fork in
+            (s, Graph.limit_results fork)
+      in
+      apply fork fills;
       let after = Graph.snapshot fork in
       let moves =
-        List.map2_exn (Graph.limit_results graph) (Graph.limit_results fork)
-          ~f:(fun (l, b) (_, a) -> { Move.limit = Limit.name l; before = b; after = a })
+        List.map2_exn limits_before (Graph.limit_results fork) ~f:(fun (l, b) (_, a) ->
+            { Move.limit = Limit.name l; before = b; after = a })
       in
       let created =
         List.filter moves ~f:(fun m -> breached m.after && not (breached m.before))

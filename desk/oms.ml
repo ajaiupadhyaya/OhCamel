@@ -188,9 +188,9 @@ let enqueue t f = Throttle.enqueue t.sequencer f
 (* The live mark for a symbol the book holds: a price of zero is a cell
    nobody has written, not a price, and a symbol outside the universe has
    none either. [context] uses this for a ticket's own symbol; [resting_fills]
-   below uses it for every open order priced by the mark rather than its own
-   limit -- one function, so neither can answer differently for the same
-   symbol at the same moment. *)
+   below uses it for every resting order, a market order's price and the mark
+   a limit is priced no better than -- one function, so neither can answer
+   differently for the same symbol at the same moment. *)
 let live_mark t symbol =
   if
     List.mem (Graph.symbols t.graph) symbol ~equal:Symbol.equal
@@ -236,22 +236,88 @@ let context t ~(symbol : Symbol.t) : Rules.Context.t =
     now;
   }
 
+(* The ways the orders already resting might fill, each a base the gate
+   applies before the proposal ([Gate.check]'s [base]). Nobody knows which
+   resting orders will fill, so a proposal is judged against every one of
+   these and passes only if it passes under each: assuming they all fill is
+   one guess among several, and on its own it loosens the gate -- a resting
+   sell assumed filled makes room for a buy the book as it stands cannot
+   take (Task 3's review, C1).
+
+   - [As_it_stands]: no base. The check before resting orders counted, so the
+     gate is never looser than it was.
+   - [Resting_buys], [Resting_sells]: every resting buy, or every resting
+     sell. A per-name or sector notional is the absolute value of a sum whose
+     coefficients (the marks) are all positive, so over any subset of resting
+     fills it is largest at one of these two.
+   - [Growing_side]: name by name, whichever of that name's resting buys or
+     resting sells takes |position now + the proposal + that side| further
+     from zero. Gross is a sum of per-name absolute values, so this is where
+     it is largest.
+   - [Every_resting]: all of them. Each resting fill is priced no better than
+     the mark ([resting_fills]), so each can only lower equity, and this is
+     where drawdown is deepest.
+
+   VaR and the Greek limits are not linear in the positions, so for them the
+   five are a bound only approximately. *)
+module Scenario = struct
+  type t = As_it_stands | Resting_buys | Resting_sells | Growing_side | Every_resting
+  [@@deriving equal, enumerate]
+
+  let describe = function
+    | As_it_stands -> "on the book as it stands"
+    | Resting_buys -> "if the resting buys fill"
+    | Resting_sells -> "if the resting sells fill"
+    | Growing_side -> "if each name's resting orders fill on the side that grows it"
+    | Every_resting -> "if every resting order fills"
+end
+
+(* Every distinct scenario's verdict, in [Scenario.all]'s order, so the book
+   as it stands is always first. Two scenarios with the same base are gated
+   once, under the first one's name: with nothing resting there is one. *)
+module Scenarios = struct
+  type t = (Scenario.t * Gate.Verdict.t) list
+
+  let passed (t : t) = List.for_all t ~f:(fun (_, v) -> v.Gate.Verdict.passed)
+  let as_it_stands (t : t) = snd (List.hd_exn t)
+  let first_failure (t : t) = List.find t ~f:(fun (_, v) -> not v.Gate.Verdict.passed)
+
+  (* The first failing scenario's reasons, each naming it. *)
+  let reasons (t : t) =
+    match first_failure t with
+    | None -> []
+    | Some (s, v) ->
+        List.map (Gate.Verdict.reasons v) ~f:(fun r ->
+            sprintf "%s (%s)" r (Scenario.describe s))
+end
+
 module Preview = struct
   type t = {
     request : Order.Request.t;
     failures : Rules.Failure.t list;
-    verdict : Gate.Verdict.t option;
+    (* None: no gate was run -- there was no price to run it at, or the
+       ticket names a symbol outside the book, which a rule already refuses.
+       Error: an order already resting could not be counted, and why; the
+       proposal is refused for it ([resting_fills]). *)
+    gate : (Scenarios.t, string) Result.t option;
     decision_price : Price.t option;
   }
 
   let passed t =
     List.is_empty t.failures
-    && match t.verdict with Some v -> v.Gate.Verdict.passed | None -> false
+    &&
+    match t.gate with
+    | Some (Ok s) -> Scenarios.passed s
+    | Some (Error _) | None -> false
 
   let reasons t =
     List.map t.failures ~f:(fun f ->
         sprintf "%s: %s" f.Rules.Failure.rule f.Rules.Failure.why)
-    @ Option.value_map t.verdict ~default:[] ~f:Gate.Verdict.reasons
+    @
+    match t.gate with
+    | Some (Ok s) -> Scenarios.reasons s
+    | Some (Error why) -> [ why ]
+    | None -> []
 
   let jnum x = if Float.is_finite x then `Float x else `Null
   let money n = jnum (Notional.to_float n)
@@ -300,13 +366,19 @@ module Preview = struct
                      ("rule", `String f.Rules.Failure.rule);
                      ("why", `String f.Rules.Failure.why);
                    ])) );
+        (* [passed] is every scenario's; the moves and the figures beside it
+           are the book as it stands -- the live book the page shows, and
+           what this order alone does to it -- and [scenarios] says how the
+           order fares under each way the resting orders might fill. A gate
+           that could not be run is null, and the reasons say why. *)
         ( "gate",
-          match t.verdict with
-          | None -> `Null
-          | Some v ->
+          match t.gate with
+          | None | Some (Error _) -> `Null
+          | Some (Ok s) ->
+              let v = Scenarios.as_it_stands s in
               `Assoc
                 [
-                  ("passed", `Bool v.Gate.Verdict.passed);
+                  ("passed", `Bool (Scenarios.passed s));
                   ("created", moves_json v.Gate.Verdict.created);
                   ("worsened", moves_json v.Gate.Verdict.worsened);
                   ("cleared", moves_json v.Gate.Verdict.cleared);
@@ -315,68 +387,192 @@ module Preview = struct
                   ("gross_after", money v.Gate.Verdict.gross_after);
                   ("equity_before", money v.Gate.Verdict.equity_before);
                   ("equity_after", money v.Gate.Verdict.equity_after);
+                  ( "scenarios",
+                    `List
+                      (List.map s ~f:(fun (scenario, v) ->
+                           `Assoc
+                             [
+                               ("scenario", `String (Scenario.describe scenario));
+                               ("passed", `Bool v.Gate.Verdict.passed);
+                               ("created", moves_json v.Gate.Verdict.created);
+                               ("worsened", moves_json v.Gate.Verdict.worsened);
+                             ])) );
                 ] );
         ("reasons", `List (List.map (reasons t) ~f:(fun s -> `String s)));
       ]
 end
 
-(* Every order the desk still owns, as if each fills: its remaining quantity
-   (Order.remaining_qty), signed by side, priced at its limit if it has one
-   and at the live mark otherwise. This is invariant 12 read conservatively --
-   several resting orders can each pass the gate alone and only breach a
-   limit once they are all counted, which nothing would see until they
-   actually filled -- so [preview] gates every proposal against this list
-   plus the proposal's own fill, in that order, and [propose] gates through
-   the very same call, by calling [preview] for its verdict.
+(* Failed orders the venue may still be working. A Failed order is one every
+   lookup missed, and a lookup that misses does not mean the venue never took
+   the order: it may still hold it, and the first thing the desk hears of it
+   may be a fill. So the gate counts it, at its remaining quantity -- ordered
+   less filled, the fills rebuilt from the journal -- until a venue report
+   finishes it: a fill of the whole of it, or its cancel, expiry or rejection,
+   which [on_update] journals against the failed order (Order.apply keeps the
+   state and records the event beside an anomaly), so the journal is the
+   record that the venue is done with it.
 
-   The source is [t.open_], the journal's open orders held -- the same set
-   [open_count] and [cancel_all] read -- so the page's open-order count, what
-   a kill or a trip actually cancels, and what the gate assumes is resting can
-   never disagree about which orders are open. That set already excludes
-   every terminal state, [Failed] among them: an order this desk gave up on
-   is not read here. A failed order the venue still reports resting is a
-   known anomaly the desk is already cancelling by its venue id
-   ([cancel_failed], [resend_cancel]) the moment either the stream or a
-   reconciliation reports it, not a quantity this list has a live remaining
-   size or price for -- by the time an order is [Failed], every lookup for it
-   has already missed, and only [failed_cancels]' venue ids survive, not the
-   order's own record.
+   And only while its session lasts. Every order this desk sends is a day
+   order, and a day order does not outlive its session's close; the desk
+   records each close in the journal a few minutes after it happens
+   (Session_close), so a failed order journaled before the latest recorded
+   close is over, whatever the venue said or did not say. A close that went
+   unrecorded -- a book not current, an engine down at the close -- leaves
+   the order counted until the next one is recorded: longer than it lives,
+   never shorter. [failed_cancels] is not the test: a DELETE the venue took is
+   not the venue saying the order is done, and until it says so the order may
+   fill. [reconcile_failed] cancels one it finds still resting; the venue's
+   answer to that cancel is the report that ends its count.
 
-   A resting order priced at neither its own limit nor a mark -- a market
-   order resting before the open, whose symbol has not printed at all -- is
-   not dropped: dropping it would undercount exactly the exposure this list
-   exists to catch. This returns None instead, and the caller runs no gate at
-   all, exactly as [preview] below runs none for a proposal with no decision
-   price of its own: an unevaluable gate is not a pass. *)
-let resting_fills t : Gate.Fill.t list option =
-  Map.data t.open_
+   A journal that cannot be read is an Error, as an order that cannot be
+   priced is ([resting_fills]): the proposal is refused, saying so, and
+   [preview] does not raise. *)
+let failed_still_working t : (Order.t list, string) Result.t =
+  match
+    Or_error.try_with (fun () ->
+        let since =
+          Option.map
+            (List.hd (Journal.recent_sessions t.journal ~limit:1))
+            ~f:(fun s -> s.Journal.Session.recorded_at)
+        in
+        Journal.unfinished_failed_orders t.journal ~since)
+  with
+  | Error e ->
+      Error
+        (sprintf
+           "the journal's failed orders could not be read (%s), so the gate cannot count \
+            any the venue may still be working; the proposal is refused rather than \
+            judged without them"
+           (Error.to_string_hum e))
+  | Ok rows ->
+      Ok
+        (List.map rows ~f:(fun r -> r.Journal.Order_row.order)
+        |> List.filter ~f:(fun o ->
+            Float.( > ) (Order.remaining_qty o) Order.epsilon
+            && not (Map.mem t.open_ (key o))))
+
+(* An order as a refusal names it: its client id, its state, and what of it
+   rests. *)
+let describe_resting (o : Order.t) =
+  let r = o.Order.request in
+  sprintf "%s (%s: %s %s, %.17g remaining, %s)" (key o)
+    (Order.State.to_string o.Order.state)
+    (Symbol.to_string r.Order.Request.symbol)
+    (Order.Side.to_string r.Order.Request.side)
+    (Order.remaining_qty o)
+    (match r.Order.Request.kind with
+    | Order.Kind.Market -> "market"
+    | Order.Kind.Limit p -> sprintf "limit %.2f" (Price.to_float p))
+
+(* Every order that may still fill, as the fill it would be: the open orders
+   ([t.open_], the set [open_count] and [cancel_all] read) and the failed
+   ones the venue may still work ([failed_still_working]), each at its
+   remaining quantity (Order.remaining_qty), signed by side.
+
+   PRICED NO BETTER THAN THE MARK: a buy at the higher of its limit and the
+   mark, a sell at the lower; at its limit alone when there is no mark; a
+   market order at the mark. A passive limit priced at its own limit would
+   book as equity the difference between that limit and the mark, which
+   nobody has earned -- and the gate's drawdown would read it. A notional
+   limit measures quantity times the fork's mark, so the price moves equity
+   and drawdown and nothing else.
+
+   FAILING CLOSED, WITH A REASON. An order that cannot be priced -- a market
+   order in a name that has not printed -- or whose symbol the book does not
+   hold (a journal written against another book) cannot be counted, and is
+   not dropped: dropping it would judge the proposal as if it were not there.
+   The whole list is an Error instead, naming the order, and the proposal is
+   refused for it, journaled with that reason like any other refusal. The
+   symbol is checked before anything reads the graph, which raises for a
+   name it does not hold. *)
+let resting_fills t : (Gate.Fill.t list, string) Result.t =
+  let%bind.Result failed = failed_still_working t in
+  Map.data t.open_ @ failed
   |> List.map ~f:(fun (o : Order.t) ->
-      let symbol = o.Order.request.Order.Request.symbol in
-      let price =
-        match Order.Kind.limit_price o.Order.request.Order.Request.kind with
-        | Some p -> Some p
-        | None -> live_mark t symbol
+      let r = o.Order.request in
+      let symbol = r.Order.Request.symbol in
+      let cannot why =
+        Error
+          (sprintf
+             "the resting order %s %s, so the gate cannot count it; the proposal is \
+              refused rather than judged as if that order were not there"
+             (describe_resting o) why)
       in
-      match price with
-      | Some price ->
-          Some
-            {
-              Gate.Fill.symbol;
-              qty =
-                Qty.of_float
-                  (Order.Side.sign o.Order.request.Order.Request.side
-                  *. Order.remaining_qty o);
-              price;
-            }
-      | None ->
-          t.on_event
-            (sprintf
-               "desk      %s has no limit price and no mark, so the gate cannot count it \
-                as resting; the proposal is refused rather than undercounting what is \
-                open"
-               (key o));
-          None)
-  |> Option.all
+      if not (Graph.knows_symbol t.graph symbol) then
+        cannot "is in a symbol this book does not hold"
+      else
+        let limit =
+          Option.map (Order.Kind.limit_price r.Order.Request.kind) ~f:Price.to_float
+        in
+        let mark = Option.map (live_mark t symbol) ~f:Price.to_float in
+        let price =
+          match (limit, mark) with
+          | Some l, Some m ->
+              Some
+                (match r.Order.Request.side with
+                | Order.Side.Buy -> Float.max l m
+                | Order.Side.Sell -> Float.min l m)
+          | Some l, None -> Some l
+          | None, m -> m
+        in
+        match price with
+        | None -> cannot "has no limit price and no mark"
+        | Some p ->
+            Ok
+              {
+                Gate.Fill.symbol;
+                qty =
+                  Qty.of_float
+                    (Order.Side.sign r.Order.Request.side *. Order.remaining_qty o);
+                price = Price.of_float p;
+              })
+  |> Result.all
+
+(* The gate as the desk runs it: [fills] -- a proposal's own -- judged under
+   every scenario ([Scenario]) of what already rests, each a fork of its own.
+   The one function [preview] gates through, and so [propose], which takes
+   its verdict from [preview]. Every symbol in [fills] must be one the book
+   holds; [preview] runs no gate for a ticket that names another. *)
+let gate_scenarios t ~(fills : Gate.Fill.t list) : (Scenarios.t, string) Result.t =
+  Result.map (resting_fills t) ~f:(fun resting ->
+      let by_symbol fs =
+        List.fold fs ~init:Symbol.Map.empty ~f:(fun acc (f : Gate.Fill.t) ->
+            Map.update acc f.Gate.Fill.symbol ~f:(fun q ->
+                Option.value q ~default:0.0 +. Qty.to_float f.Gate.Fill.qty))
+      in
+      let buy (f : Gate.Fill.t) = Float.( > ) (Qty.to_float f.Gate.Fill.qty) 0.0 in
+      let sell (f : Gate.Fill.t) = Float.( < ) (Qty.to_float f.Gate.Fill.qty) 0.0 in
+      let proposed = by_symbol fills in
+      let buys = by_symbol (List.filter resting ~f:buy) in
+      let sells = by_symbol (List.filter resting ~f:sell) in
+      let total m symbol = Option.value (Map.find m symbol) ~default:0.0 in
+      (* Whether a name's resting buys take |q0 + proposal + side| at least as
+         far from zero as its resting sells, q0 being the position now. *)
+      let buys_grow symbol =
+        let q = Qty.to_float (Graph.qty t.graph symbol) +. total proposed symbol in
+        Float.( >= )
+          (Float.abs (q +. total buys symbol))
+          (Float.abs (q +. total sells symbol))
+      in
+      let takes (scenario : Scenario.t) (f : Gate.Fill.t) =
+        match scenario with
+        | Scenario.As_it_stands -> false
+        | Scenario.Resting_buys -> buy f
+        | Scenario.Resting_sells -> sell f
+        | Scenario.Growing_side -> if buys_grow f.Gate.Fill.symbol then buy f else sell f
+        | Scenario.Every_resting -> true
+      in
+      List.fold Scenario.all ~init:[] ~f:(fun seen scenario ->
+          let taken = List.map resting ~f:(takes scenario) in
+          if List.exists seen ~f:(fun (_, t') -> List.equal Bool.equal t' taken) then seen
+          else (scenario, taken) :: seen)
+      |> List.rev
+      |> List.map ~f:(fun (scenario, taken) ->
+          let base =
+            List.filter_map (List.zip_exn resting taken) ~f:(fun (f, took) ->
+                Option.some_if took f)
+          in
+          (scenario, Gate.check t.graph ~base ~fills)))
 
 (* The rules and the gate, and nothing created. The gate runs whenever there
    is a price to run it at, even after a rule has failed: someone fixing a
@@ -395,7 +591,7 @@ let preview t (ticket : Ticket.t) : Preview.t =
     | Order.Kind.Limit p -> Some p
     | Order.Kind.Market -> ctx.Rules.Context.mark
   in
-  let verdict =
+  let gate =
     match decision_price with
     | Some price
       when Set.mem ctx.Rules.Context.universe ticket.Ticket.symbol
@@ -404,13 +600,12 @@ let preview t (ticket : Ticket.t) : Preview.t =
           Qty.of_float
             (Order.Side.sign ticket.Ticket.side *. Float.of_int ticket.Ticket.qty)
         in
-        Option.map (resting_fills t) ~f:(fun resting ->
-            Gate.check t.graph
-              ~fills:
-                (resting @ [ { Gate.Fill.symbol = ticket.Ticket.symbol; qty; price } ]))
+        Some
+          (gate_scenarios t
+             ~fills:[ { Gate.Fill.symbol = ticket.Ticket.symbol; qty; price } ])
     | _ -> None
   in
-  { Preview.request; failures = Rules.check ctx request; verdict; decision_price }
+  { Preview.request; failures = Rules.check ctx request; gate; decision_price }
 
 (* At most one loop of each kind per order, however many callers start one.
    [reconcile] runs at every live start and again each time the update stream

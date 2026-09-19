@@ -148,6 +148,117 @@ let test_the_live_book_does_not_move () =
         (Notional.to_float (Graph.gross_exposure graph)))
     ()
 
+(* THE BASE (Task 3's fix). A base is applied to the fork before "before" is
+   read, and created, worsened and reduced are judged against it. *)
+
+let verdict_sexp v = Sexp.to_string (Gate.Verdict.sexp_of_t v)
+
+(* With no base, "before" is the live book, read as it always was: an explicit
+   empty base is the same verdict, field for field, for a proposal that
+   creates a breach, one that reduces, and a pair. A base that nets to
+   nothing -- 10 AAPL bought and sold at the 150 mark, so AAPL is 400 and cash
+   1,000,000 again -- reads "before" from the fork instead, and still gives
+   the same verdict, which is what lets the fork stand in for the live book.
+   Gross before is the live 110,000 and equity before the live 1,070,000
+   throughout. *)
+let test_an_empty_base_is_the_check_without_one () =
+  with_book
+    ~f:(fun graph ->
+      List.iter
+        [
+          [ fill aapl 100.0 150.0 ];
+          [ fill aapl (-100.0) 150.0 ];
+          [ fill aapl 100.0 150.0; fill msft (-100.0) 300.0 ];
+        ]
+        ~f:(fun fills ->
+          let without = Gate.check graph ~fills in
+          Alcotest.(check string)
+            "an explicit empty base" (verdict_sexp without)
+            (verdict_sexp (Gate.check ~base:[] graph ~fills));
+          Alcotest.(check string)
+            "a base that nets to nothing" (verdict_sexp without)
+            (verdict_sexp
+               (Gate.check
+                  ~base:[ fill aapl 10.0 150.0; fill aapl (-10.0) 150.0 ]
+                  graph ~fills));
+          Alcotest.(check (float 1e-9))
+            "gross before is the live 110,000" 110_000.0
+            (Notional.to_float without.Gate.Verdict.gross_before);
+          Alcotest.(check (float 1e-6))
+            "equity before is the live 1,070,000" 1_070_000.0
+            (Notional.to_float without.Gate.Verdict.equity_before)))
+    ()
+
+(* A base that breaches, and a proposal that brings the breach back: it
+   passes. The base buys 100 AAPL at the mark: AAPL 500 x 150 = 75,000 (under
+   80,000), TECH 75,000 + 30,000 = 105,000, 5,000 over. Selling 20 AAPL takes
+   TECH to 102,000, 2,000 over: still breached, and reduced. The same two
+   fills as ONE list, judged from the live book (TECH 90,000, clear), would
+   read as a breach created -- the base is why they do not. *)
+let test_a_base_that_breaches_and_a_proposal_that_reduces_it_passes () =
+  with_book
+    ~f:(fun graph ->
+      let base = [ fill aapl 100.0 150.0 ] and fills = [ fill aapl (-20.0) 150.0 ] in
+      let v = Gate.check ~base graph ~fills in
+      Alcotest.(check bool) "passes" true v.Gate.Verdict.passed;
+      Alcotest.(check (list string)) "nothing created" [] (names v.Gate.Verdict.created);
+      Alcotest.(check (list string)) "nothing worsened" [] (names v.Gate.Verdict.worsened);
+      Alcotest.(check (list string))
+        "not cleared: 2,000 over is still over" []
+        (names v.Gate.Verdict.cleared);
+      Alcotest.(check (float 1e-9))
+        "gross before is the base's: 110,000 + 15,000" 125_000.0
+        (Notional.to_float v.Gate.Verdict.gross_before);
+      Alcotest.(check (float 1e-9))
+        "gross after: 125,000 - 3,000" 122_000.0
+        (Notional.to_float v.Gate.Verdict.gross_after);
+      let flat = Gate.check graph ~fills:(base @ fills) in
+      Alcotest.(check (list string))
+        "from the live book the same fills create it" [ "tech-cap" ]
+        (names flat.Gate.Verdict.created))
+    ()
+
+(* A base that breaches, and a proposal that takes it further over: it fails
+   as worsened, not created. Base as above, TECH 105,000, 5,000 over; buying
+   10 MSFT at 300 takes it to 108,000, 8,000 over. *)
+let test_a_base_that_breaches_and_a_proposal_that_worsens_it_fails () =
+  with_book
+    ~f:(fun graph ->
+      let v =
+        Gate.check ~base:[ fill aapl 100.0 150.0 ] graph ~fills:[ fill msft 10.0 300.0 ]
+      in
+      Alcotest.(check bool) "fails" false v.Gate.Verdict.passed;
+      Alcotest.(check (list string))
+        "worsened: tech-cap" [ "tech-cap" ]
+        (names v.Gate.Verdict.worsened);
+      Alcotest.(check (list string)) "not created" [] (names v.Gate.Verdict.created);
+      Alcotest.(check bool)
+        "the reason says further over" true
+        (List.exists (Gate.Verdict.reasons v)
+           ~f:(String.is_substring ~substring:"tech-cap would be further over its line")))
+    ()
+
+(* A clear base, and a proposal that breaches on it though it would not on
+   the live book: it fails as created. The base buys 50 AAPL: AAPL 450 x 150
+   = 67,500, TECH 97,500, 2,500 of room. Buying 10 MSFT at 300 (3,000) takes
+   TECH to 100,500 on the base; on the live book it would be 93,000. *)
+let test_a_clear_base_and_a_proposal_that_breaches_on_it_fails () =
+  with_book
+    ~f:(fun graph ->
+      let fills = [ fill msft 10.0 300.0 ] in
+      let v = Gate.check ~base:[ fill aapl 50.0 150.0 ] graph ~fills in
+      Alcotest.(check bool) "fails" false v.Gate.Verdict.passed;
+      Alcotest.(check (list string))
+        "created: tech-cap" [ "tech-cap" ]
+        (names v.Gate.Verdict.created);
+      Alcotest.(check (float 1e-9))
+        "gross before: 110,000 + 7,500" 117_500.0
+        (Notional.to_float v.Gate.Verdict.gross_before);
+      Alcotest.(check bool)
+        "the live book alone would take it" true
+        (Gate.check graph ~fills).Gate.Verdict.passed)
+    ()
+
 (* Isolation over arbitrary proposals: whatever is proposed, the live book's
    quantities and cash are what they were. *)
 let prop_the_gate_never_moves_the_live_book =
@@ -233,6 +344,14 @@ let suite =
         test_a_price_away_from_the_mark_moves_equity_by_exactly_the_difference;
       Alcotest.test_case "the live book does not move" `Quick
         test_the_live_book_does_not_move;
+      Alcotest.test_case "an empty base is the check without one" `Quick
+        test_an_empty_base_is_the_check_without_one;
+      Alcotest.test_case "a base that breaches and a proposal that reduces it passes"
+        `Quick test_a_base_that_breaches_and_a_proposal_that_reduces_it_passes;
+      Alcotest.test_case "a base that breaches and a proposal that worsens it fails"
+        `Quick test_a_base_that_breaches_and_a_proposal_that_worsens_it_fails;
+      Alcotest.test_case "a clear base and a proposal that breaches on it fails" `Quick
+        test_a_clear_base_and_a_proposal_that_breaches_on_it_fails;
       prop_the_gate_never_moves_the_live_book;
       prop_what_the_gate_passes_creates_no_breach_when_traded;
     ] )
