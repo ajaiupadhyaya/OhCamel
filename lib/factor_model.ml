@@ -46,12 +46,18 @@
    of Z -- precisely the ratio the refusal bounds. A fit this module returns
    was solved on a system whose conditioning it measured.
 
+   At the 0.01 floor below that condition number is at most 100, so the normal
+   equations would square it to 10^4 and lose about four digits QR keeps:
+   near the floor they miss betas of order one by about 1e-11, where QR misses
+   by about 1e-14. test_factor_model.ml's near-collinear case pins the solve
+   at 1e-12, between the two.
+
    TWO REFUSALS, WITH A REASON EACH
 
    - Fewer than [min_observations] (120) rows. A five-factor regression on a
      few dozen days fits noise and reports it as exposure; the refusal reads
      as "unknown", which is the honest figure.
-   - sigma_min / sigma_max of the standardised design below 1e-8, from Owl's
+   - sigma_min / sigma_max of the standardised design below 0.01, from Owl's
      [svdvals]. Two factors that move together over the rows used cannot be
      told apart, and a regression that is asked to anyway returns a pair of
      large, opposite, confident betas whose sum is the only real number in
@@ -61,8 +67,19 @@
      scale alone. A factor that does not move at all over the rows used cannot
      be standardised, and is the extreme case of the same refusal.
 
+     Why 0.01 (ruling 5, as amended): it is a variance-inflation bound. Z'Z/T
+     is the factors' correlation matrix C, whose eigenvalues are
+     lambda_i = sigma_i^2 / T and average 1, so lambda_max >= 1. A ratio of
+     at least 0.01 means lambda_min >= 1e-4 lambda_max >= 1e-4, and every
+     beta's variance-inflation factor, (C^-1)_kk <= 1 / lambda_min, is then
+     at most 10^4 -- its standard error at most 100 times what orthogonal
+     factors would give. The first floor, 1e-8, bounded nothing a reader
+     could use: it accepted betas of plus and minus nine thousand.
+
    Both are Errors, never exceptions, because the caller runs every name and
-   one thin name must not stop the rest.
+   one thin name must not stop the rest. So is an infinite input: nan is
+   dropped as missing, but inf is a data error (a zero close upstream), and
+   LAPACK raises on it rather than returning.
 
    THE DIVISORS
 
@@ -104,8 +121,9 @@ open Core
 (* Ruling 5's floor: the fewest observations a name may be fitted on. *)
 let min_observations = 120
 
-(* sigma_min / sigma_max of the standardised design below this is refused. *)
-let condition_floor = 1e-8
+(* sigma_min / sigma_max of the standardised design below this is refused: the
+   variance-inflation bound of 10^4 derived in the header. *)
+let condition_floor = 0.01
 
 module Fit = struct
   type t = {
@@ -162,13 +180,33 @@ let fit ~enforce_minimum ~(y : float array) ~(factors : float array array) :
     if n < k + 2 then
       Error
         (sprintf
-           "factor model: %d observations cannot fit %d factors and an intercept with a \
-            residual degree of freedom left"
+           "factor model: %d observations cannot fit an intercept and K = %d factors \
+            with a residual degree of freedom left"
            n k)
     else Ok ()
   in
   let y = take ~rows y in
   let f = Array.map factors ~f:(take ~rows) in
+  (* nan was dropped as missing; anything still not finite is infinite, a data
+     error rather than a gap, and LAPACK's svdvals raises on it instead of
+     returning. Refused here, naming the column and the caller's row, so one
+     bad name cannot abort the fit of every other. *)
+  let%bind () =
+    let first_infinite column =
+      Array.findi column ~f:(fun _ v -> not (Float.is_finite v))
+      |> Option.map ~f:(fun (t, v) -> (rows.(t), v))
+    in
+    match first_infinite y with
+    | Some (row, v) -> Error (sprintf "factor model: y is %g at row %d" v row)
+    | None -> (
+        match
+          Array.find_mapi f ~f:(fun i c ->
+              Option.map (first_infinite c) ~f:(fun (row, v) -> (i, row, v)))
+        with
+        | Some (i, row, v) ->
+            Error (sprintf "factor model: factor %d is %g at row %d" i v row)
+        | None -> Ok ())
+  in
   let%bind () =
     match Array.findi f ~f:(fun _ c -> Risk_metrics.is_effectively_constant c) with
     | Some (i, _) ->
@@ -189,7 +227,8 @@ let fit ~enforce_minimum ~(y : float array) ~(factors : float array array) :
       Error
         (sprintf
            "factor model: the standardised design is ill-conditioned over the %d rows \
-            used: sigma_min / sigma_max = %.3g, below %g"
+            used: sigma_min / sigma_max = %.4g, below %g, the floor that bounds every \
+            beta's variance inflation at 10^4"
            n ratio condition_floor)
     else Ok ()
   in
@@ -216,10 +255,9 @@ let fit ~enforce_minimum ~(y : float array) ~(factors : float array array) :
         acc +. (e *. e))
   in
   let residual_variance = rss /. float_of_int (n - k - 1) in
-  (* A guard, not a refusal anyone should meet: every input that reaches here
-     is finite and the design is well conditioned. But an infinite y (a zero
-     close upstream) is not a nan and is not dropped, and nan never reaches a
-     figure. *)
+  (* Every input that reaches here is finite and the design is well
+     conditioned, but finite inputs can still overflow: a y of order 1e200
+     leaves residuals whose squares are infinite. nan never reaches a figure. *)
   if
     Float.is_finite alpha
     && Array.for_all betas ~f:Float.is_finite
@@ -227,8 +265,8 @@ let fit ~enforce_minimum ~(y : float array) ~(factors : float array array) :
   then Ok { Fit.alpha; betas; residual_variance; observations = n }
   else
     Error
-      (sprintf "factor model: the fit over %d rows is not finite (is an input infinite?)"
-         n)
+      (sprintf
+         "factor model: the fit over %d rows is not finite (does an input overflow?)" n)
 
 let fit_one ~y ~factors = fit ~enforce_minimum:true ~y ~factors
 
@@ -274,7 +312,8 @@ module Risk = struct
     contributions : float array;
     (* -z sqrt(total_variance), dollars; a positive number is a loss. *)
     model_var : float;
-    (* x' A x, when an asset covariance was given. *)
+    (* x' A x over the held names (x_i <> 0), when an asset covariance was
+       given. *)
     sample_variance : float option;
   }
   [@@deriving sexp]
@@ -332,8 +371,8 @@ let risk ~(fits : Fit.t option array) ~(exposures : float array)
         | None ->
             Error
               (sprintf
-                 "factor model: instrument %d has a nonzero exposure (%.2f) and no fit, \
-                  so the book's factor risk is unknown"
+                 "factor model: instrument %d has a nonzero exposure (%g) and no fit, so \
+                  the book's factor risk is unknown"
                  i exposures.(i)))
   in
   let%bind () =
@@ -373,12 +412,43 @@ let risk ~(fits : Fit.t option array) ~(exposures : float array)
      only be rounding on a book whose variance is zero; clamp rather than take
      the square root of it. *)
   let model_var = -.z *. Float.sqrt (Float.max 0.0 total_variance) in
-  let sample_variance =
-    Option.map asset_covariance ~f:(fun a ->
-        let x = Owl.Mat.of_array exposures n 1 in
-        Owl.Mat.get (Owl.Mat.dot (Owl.Mat.transpose x) (Owl.Mat.dot a x)) 0 0)
+  (* x'Ax over the HELD names only. A name the book does not hold may have no
+     column worth the name -- nan where it has no observations on the common
+     rows -- and 0 * nan is nan, so summing over every name would let a name
+     with no position turn the book's figure into nan. Over the held names,
+     every entry is one the figure needs, so a non-finite one is an Error
+     naming it. *)
+  let%bind sample_variance =
+    match asset_covariance with
+    | None -> Ok None
+    | Some a -> (
+        let held =
+          Array.filter (Array.init n ~f:Fn.id) ~f:(fun i ->
+              not (Float.equal exposures.(i) 0.0))
+        in
+        let m = Array.length held in
+        let bad =
+          Array.find_map held ~f:(fun i ->
+              Array.find_map held ~f:(fun j ->
+                  let v = Owl.Mat.get a i j in
+                  if Float.is_finite v then None else Some (i, j, v)))
+        in
+        match bad with
+        | Some (i, j, v) ->
+            Error
+              (sprintf
+                 "factor model: the asset covariance's entry (%d, %d) is %g, and \
+                  instruments %d and %d are both held"
+                 i j v i j)
+        | None when m = 0 -> Ok (Some 0.0)
+        | None ->
+            let x = Owl.Mat.of_array (Array.map held ~f:(fun i -> exposures.(i))) m 1 in
+            let a = Owl.Mat.init_2d m m (fun p q -> Owl.Mat.get a held.(p) held.(q)) in
+            Ok
+              (Some
+                 (Owl.Mat.get (Owl.Mat.dot (Owl.Mat.transpose x) (Owl.Mat.dot a x)) 0 0)))
   in
-  Ok
+  let risk =
     {
       Risk.exposures = b;
       systematic_variance;
@@ -388,3 +458,21 @@ let risk ~(fits : Fit.t option array) ~(exposures : float array)
       model_var;
       sample_variance;
     }
+  in
+  (* The last word: never Ok with a nan in it. Nothing above checks the factor
+     covariance's entries or a fit's residual variance, and a nan in either
+     reaches every figure downstream of it. *)
+  let finite = Float.is_finite in
+  if
+    Array.for_all risk.exposures ~f:finite
+    && finite risk.systematic_variance
+    && finite risk.idiosyncratic_variance
+    && finite risk.total_variance
+    && Array.for_all risk.contributions ~f:finite
+    && finite risk.model_var
+    && Option.for_all risk.sample_variance ~f:finite
+  then Ok risk
+  else
+    Error
+      "factor model: the book's factor risk is not finite (is an entry of the factor \
+       covariance, or a fit's residual variance, nan?)"

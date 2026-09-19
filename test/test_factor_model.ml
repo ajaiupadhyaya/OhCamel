@@ -1,6 +1,6 @@
 (* Unit tests for factor_model.ml.
 
-   Four kinds of test.
+   Five kinds of test.
 
      BY HAND         a four-row, one-factor regression whose alpha, beta and
                      residual variance can be read off the page, and a
@@ -15,13 +15,21 @@
                      exactly the planted column as the residual. No RNG, no
                      tolerance chosen to make a noisy estimate pass.
 
-     IDENTITIES      on that case, at 1e-9: residuals orthogonal to the
+     THE SOLVE       a near-collinear design just inside the conditioning
+                     floor, where QR recovers the betas to 1e-12 and the
+                     normal equations do not.
+
+     IDENTITIES      on the exact case, at 1e-9: residuals orthogonal to the
                      intercept and every factor, fitted plus residual equal to
                      y, contributions summing to the systematic variance, and
                      systematic plus idiosyncratic equal to the total.
 
-     REFUSALS        a duplicated factor (the conditioning check), lengths that
-                     differ, too few rows, and a held name with no fit.
+     REFUSALS        a duplicated factor and a near-collinear one (the
+                     conditioning check), lengths that differ, too few rows,
+                     no factors, no residual degree of freedom, an infinite
+                     input, a held name with no fit, and every way a nan could
+                     reach a risk figure. A refusal is an Error, never an
+                     exception and never an Ok with a nan in it.
 
    Variances in dollars squared run to 1e8 and beyond, where an absolute 1e-9
    is below one ulp; those identities are checked at 1e-9 RELATIVE, via
@@ -46,6 +54,15 @@ let expect_error ~substring = function
         (String.is_substring reason ~substring)
 
 let ok_exn = function Ok x -> x | Error reason -> Alcotest.fail reason
+
+let expect_invalid_arg ~substring f =
+  match f () with
+  | _ -> Alcotest.failf "expected Invalid_argument naming %S, got a result" substring
+  | exception Invalid_argument reason ->
+      Alcotest.(check bool)
+        (sprintf "%S names %S" reason substring)
+        true
+        (String.is_substring reason ~substring)
 
 (* BY HAND: one factor, four rows.
 
@@ -93,11 +110,16 @@ let test_one_factor_by_hand () =
    column 0 is all ones (the intercept), and every other column holds 128 of
    +1 and 128 of -1, so it sums to zero: orthogonal to the intercept too.
 
-   Factors are columns 1..5, scaled to daily sizes:
+   Factors are columns 1..5, offset and scaled to daily sizes,
+   f_k = m_k + s_k H(., k+1):
 
-     market 0.010, size 0.006, value 0.005, momentum 0.007, rates 0.060 (pp)
+     market    m  0.0004   s 0.010
+     size         -0.0002    0.006
+     value         0.0001    0.005
+     momentum      0.0003    0.007
+     rates        -0.002     0.060 (pp)
 
-   so factor k has mean 0 and population variance s_k^2 exactly, and the
+   so factor k has mean m_k and population variance s_k^2 exactly, and the
    standardised design is the +/-1 columns themselves: Z'Z = 256 I, every
    singular value 16, sigma_min / sigma_max = 1.
 
@@ -109,12 +131,28 @@ let test_one_factor_by_hand () =
    residual is exactly the planted column, and
 
      RSS_A = 256 * 0.012^2 = 0.036864     / (256 - 5 - 1) = 1.47456e-4
-     RSS_B = 256 * 0.020^2 = 0.1024       / 250           = 4.096e-4 *)
+     RSS_B = 256 * 0.020^2 = 0.1024       / 250           = 4.096e-4
+
+   The offsets are there for alpha. The solve returns the intercept of the
+   CENTRED design, mean(y), and alpha = mean(y) - sum_k beta_k m_k. For A the
+   centring term is
+
+     1.1(0.0004) + 0.3(-0.0002) - 0.2(0.0001) + 0.15(0.0003) - 0.02(-0.002)
+       = 0.00044 - 0.00006 - 0.00002 + 0.000045 + 0.00004 = 0.000445,
+
+   spread over all five factors, so a centring that dropped a factor, or all
+   of them, would miss alpha by up to 4.45e-4. *)
 let rows = 256
 let hadamard ~row ~col = if Int.popcount (row land col) % 2 = 0 then 1.0 else -1.0
-let column ~col ~scale = Array.init rows ~f:(fun row -> scale *. hadamard ~row ~col)
+
+let column ~col ~offset ~scale =
+  Array.init rows ~f:(fun row -> offset +. (scale *. hadamard ~row ~col))
+
+let offsets = [| 0.0004; -0.0002; 0.0001; 0.0003; -0.002 |]
 let scales = [| 0.010; 0.006; 0.005; 0.007; 0.060 |]
-let wh_factors () = Array.mapi scales ~f:(fun k scale -> column ~col:(k + 1) ~scale)
+
+let wh_factors () =
+  Array.mapi scales ~f:(fun k scale -> column ~col:(k + 1) ~offset:offsets.(k) ~scale)
 
 let planted ~alpha ~betas ~residual_col ~residual_scale =
   let factors = wh_factors () in
@@ -181,9 +219,67 @@ let test_walsh_hadamard_fit_identities () =
   Alcotest.check ident "RSS / (T - K - 1) is the residual variance" fit.residual_variance
     (Array.fold residual ~init:0.0 ~f:(fun acc r -> acc +. (r *. r)) /. 250.0)
 
+(* THE SOLVE: a near-collinear design, pinned to QR.
+
+   Three factors from Sylvester columns H1, H2, H3, with y exactly linear in
+   them -- no residual at all:
+
+     a = 0.0004 + 0.01 H1
+     b = -0.0002 + 0.01 (H1 + eps H2)
+     c = 0.006 H3
+     y = 0.0002 + 1.1 a - 0.3 b + 0.5 c
+
+   Standardised, z_a = H1, z_b = (H1 + eps H2) / sqrt(1 + eps^2) and z_c = H3,
+   so Z'Z / 256 is the correlation matrix [[1, rho, 0], [rho, 1, 0], [0, 0, 1]]
+   with rho = 1 / sqrt(1 + eps^2). Its eigenvalues are 1 + rho, 1 - rho and 1,
+   and with rho = cos theta, tan theta = eps,
+
+     sigma_min / sigma_max = sqrt((1 - rho) / (1 + rho)) = tan(theta / 2).
+
+   The ratio is exactly 0.01 at eps = tan(2 arctan 0.01) = 0.020002. So
+
+     eps = 0.02     theta/2 = 0.0099987, ratio = 0.0099990   refused
+     eps = 0.02001  theta/2 = 0.0100037, ratio = 0.0100040   accepted
+
+   and the accepted design's betas for a and b have a variance-inflation
+   factor of 1 + 1/eps^2 = 2,498.5, inside the 10^4 bound.
+
+   WHY 1e-12 AND NOT 1e-9. Inside the 0.01 floor cond([1 | Z]) <= 100, so the
+   normal equations square it to at most 10^4 and lose about four digits:
+   swept over sixty eps from 0.02001 to 0.0206, they missed these betas by
+   4e-13 to 3e-11 -- never by 1e-9 -- while QR missed by 1e-15 to 3e-14. No
+   accepted design can separate the two at 1e-9. At 1e-12 they separate: at
+   eps = 0.02001 QR misses by about 1e-14 and the normal equations (LU, an
+   explicit inverse, or Cholesky, on the standardised or the raw design) by
+   1.2e-11 to 2.1e-11. Replacing the QR solve with the normal equations makes
+   this test fail; that was checked by mutation. *)
+let near_collinear ~eps =
+  let h col = Array.init rows ~f:(fun row -> hadamard ~row ~col) in
+  let h1 = h 1 and h2 = h 2 and h3 = h 3 in
+  let a = Array.init rows ~f:(fun t -> 0.0004 +. (0.01 *. h1.(t))) in
+  let b =
+    Array.init rows ~f:(fun t -> -0.0002 +. (0.01 *. (h1.(t) +. (eps *. h2.(t)))))
+  in
+  let c = Array.init rows ~f:(fun t -> 0.006 *. h3.(t)) in
+  let y =
+    Array.init rows ~f:(fun t ->
+        0.0002 +. (1.1 *. a.(t)) -. (0.3 *. b.(t)) +. (0.5 *. c.(t)))
+  in
+  (y, [| a; b; c |])
+
+let test_a_near_collinear_design_is_solved_by_qr () =
+  let pin = Alcotest.float 1e-12 in
+  let y, factors = near_collinear ~eps:0.02001 in
+  let fit = ok_exn (FM.fit_one ~y ~factors) in
+  Alcotest.check pin "alpha = 0.0002" 0.0002 fit.alpha;
+  Alcotest.check pin "beta_a = 1.1" 1.1 fit.betas.(0);
+  Alcotest.check pin "beta_b = -0.3" (-0.3) fit.betas.(1);
+  Alcotest.check pin "beta_c = 0.5" 0.5 fit.betas.(2)
+
 (* The factor covariance of the Walsh-Hadamard factors, by hand: every
-   column has mean 0 and mean square s_k^2, and every pair is orthogonal, so
-   with the population divisor
+   column's deviations from its mean m_k are +/-s_k, and every pair of +/-1
+   columns is orthogonal -- the offsets do not enter a covariance -- so with
+   the population divisor
 
      Sigma_f = diag(0.010^2, 0.006^2, 0.005^2, 0.007^2, 0.060^2)
              = diag(1e-4, 3.6e-5, 2.5e-5, 4.9e-5, 3.6e-3)
@@ -228,9 +324,10 @@ let test_walsh_hadamard_factor_covariance () =
    A diagonal covariance would let a wrong split -- b_k^2 Sigma_kk, say -- pass
    the sum. So the split is checked again on a covariance with off-diagonal
    terms: the factor covariance over rows 0..100 only, where the columns are no
-   longer orthogonal. Over those 101 rows columns 1 and 2 each sum to 1 (the
-   last five rows, 96..100, run + - + - + and + + - - +), and their product,
-   column 3, sums to 1 too (+ - - + +), so
+   longer orthogonal. Over those 101 rows H(., 1) and H(., 2) each sum to 1
+   (the last five rows, 96..100, run + - + - + and + + - - +), and their
+   product, H(., 3), sums to 1 too (+ - - + +); the offsets drop out of a
+   covariance, so
 
      Sigma[0][1] = 0.010 * 0.006 * (1/101 - 1/101^2) = 6e-5 * 100 / 10201
 
@@ -287,12 +384,14 @@ let test_walsh_hadamard_risk_identities () =
 
    [factor_covariance] drops the three rates rows and nothing else (the y
    nans are not its business), so it equals the covariance of rows 0..252,
-   whose diagonal is known by hand. Column 1 over rows 0..252 holds 127 of
-   +0.010 and 126 of -0.010, so its mean is 0.010 / 253 and
+   whose diagonal is known by hand. The offset shifts the mean and not the
+   variance, so only the +/-1 column matters. H(., 1) over rows 0..252 holds
+   127 of +1 and 126 of -1, so market's deviations are +/-0.010 around a mean
+   0.0004 + 0.010 / 253, and
 
      var = 1e-4 - (0.010 / 253)^2 = 1e-4 (1 - 1/253^2)
 
-   Column 5 (rates) repeats + - + - - + - + every 8 rows; 253 = 31 * 8 + 5,
+   H(., 5) (rates) repeats + - + - - + - + every 8 rows; 253 = 31 * 8 + 5,
    and the last five rows run + - + - -, so its sum is -1 and
 
      var = 3.6e-3 (1 - 1/253^2)
@@ -343,8 +442,12 @@ let test_nan_rows_are_dropped () =
 
    Factor 2 is a copy of factor 0, so the standardised design has two
    identical columns, rank 2 of 3, and sigma_min is zero up to rounding: far
-   below 1e-8 of sigma_max. 256 rows clear the minimum, so this is the
+   below 0.01 of sigma_max. 256 rows clear the minimum, so this is the
    conditioning check refusing and not the row count.
+
+   The near-collinear design above at eps = 0.02 has a ratio of 0.0099990,
+   just under the floor, and is refused; at eps = 0.02001 (0.0100040) the
+   test above accepts it. Together they put the floor at 0.01, not 1e-8.
 
    A factor that never moves is the extreme case: it cannot be standardised
    at all (its standard deviation is zero), and is refused as a singular
@@ -353,8 +456,49 @@ let test_refuses_an_ill_conditioned_design () =
   let factors = wh_factors () in
   expect_error ~substring:"ill-conditioned over the 256 rows used: sigma_min / sigma_max"
     (FM.fit_one ~y:(y_a ()) ~factors:[| factors.(0); factors.(1); factors.(0) |]);
+  let y, factors_near = near_collinear ~eps:0.02 in
+  expect_error ~substring:"sigma_min / sigma_max = 0.009999, below 0.01"
+    (FM.fit_one ~y ~factors:factors_near);
   expect_error ~substring:"factor 1 does not move"
     (FM.fit_one ~y:(y_a ()) ~factors:[| factors.(0); Array.create ~len:rows 0.001 |])
+
+(* REFUSAL: an infinite input is an Error, never an exception.
+
+   nan is missing and dropped; inf is a data error (a zero close upstream),
+   and LAPACK's svdvals raises Invalid_argument on it. Uncaught, that would
+   abort the fit of every name in the panel. So:
+
+   - factor 2 = +inf at row 50 is refused, naming factor 2 and row 50;
+   - y = -inf at row 77 is refused, naming y and row 77 -- the CALLER's row:
+     y is also nan at row 3, so row 77 sits at index 76 of the rows kept, and
+     the message must say 77;
+   - a y that is finite but of order 1e200 is refused by the last guard: its
+     residuals are about 1.2e198, whose squares overflow to inf, so the
+     residual variance is not a number the fit can return. *)
+let test_an_infinite_input_is_an_error () =
+  let factors = wh_factors () in
+  factors.(2).(50) <- Float.infinity;
+  expect_error ~substring:"factor 2 is inf at row 50" (FM.fit_one ~y:(y_a ()) ~factors);
+  let y = y_a () in
+  y.(3) <- Float.nan;
+  y.(77) <- Float.neg_infinity;
+  expect_error ~substring:"y is -inf at row 77" (FM.fit_one ~y ~factors:(wh_factors ()));
+  let huge = Array.map (y_a ()) ~f:(fun v -> v *. 1e200) in
+  expect_error ~substring:"is not finite" (FM.fit_one ~y:huge ~factors:(wh_factors ()))
+
+(* REFUSAL, through For_testing: no factors. K = 0 is not a factor model, and
+   fit_unchecked, which skips only the minimum-observations rule, still
+   raises. *)
+let test_fit_unchecked_refuses_no_factors () =
+  expect_invalid_arg ~substring:"there are no factors" (fun () ->
+      FM.For_testing.fit_unchecked ~y:one_y ~factors:[||])
+
+(* REFUSAL, through For_testing: no residual degree of freedom. Two rows and
+   one factor: n = K + 1 = 2, so RSS / (n - K - 1) would divide by zero. *)
+let test_fit_unchecked_refuses_no_residual_degree_of_freedom () =
+  expect_invalid_arg ~substring:"2 observations cannot fit an intercept and K = 1"
+    (fun () ->
+      FM.For_testing.fit_unchecked ~y:[| 0.01; 0.03 |] ~factors:[| [| 0.01; 0.02 |] |])
 
 (* REFUSAL: lengths that differ. y has 256 rows and factor 1 has 255, and the
    error names the factor. *)
@@ -393,6 +537,59 @@ let test_refuses_a_held_name_with_no_fit () =
   check_rel "systematic = 1e12 * 2e-4" 2e8 r.systematic_variance;
   check_rel "idiosyncratic = 1e12 * 1e-4" 1e8 r.idiosyncratic_variance;
   check_rel "total = 3e8" 3e8 r.total_variance
+
+(* nan NEVER REACHES THE SAMPLE VARIANCE: it reads only the held names.
+
+   The asset covariance has nan throughout row 2 (and so, by symmetry, in
+   column 2): instrument 1 had no observation on the common rows. With
+   x = (1e6, 0) the book does not hold it, and summing over every name would
+   give 0 * nan = nan. Over the held names alone,
+
+     x'Ax = 1e12 * 3e-4 = 3e8,
+
+   and the model's figures are the flat case's above: total 3e8.
+
+   Hold instrument 1 as well, x = (1e6, 2e6), and entry (0, 1) is one the
+   figure needs, so the answer is an Error naming it, not a nan. *)
+let test_the_sample_variance_reads_only_held_names () =
+  let a = Owl.Mat.of_array [| 3e-4; Float.nan; Float.nan; Float.nan |] 2 2 in
+  let r =
+    ok_exn
+      (FM.risk ~fits:[| Some one_name; None |] ~exposures:[| 1e6; 0.0 |] ~covariance:var_f
+         ~asset_covariance:a ~confidence:0.99 ())
+  in
+  (match r.sample_variance with
+  | Some v -> check_rel "x'Ax over the one held name = 1e12 * 3e-4" 3e8 v
+  | None -> Alcotest.fail "an asset covariance was given, so x'Ax is known");
+  check_rel "total = 3e8, as flat" 3e8 r.total_variance;
+  let half =
+    {
+      FM.Fit.alpha = 0.0;
+      betas = [| 0.5 |];
+      residual_variance = 4e-4;
+      observations = 250;
+    }
+  in
+  expect_error ~substring:"entry (0, 1) is nan, and instruments 0 and 1 are both held"
+    (FM.risk
+       ~fits:[| Some one_name; Some half |]
+       ~exposures:[| 1e6; 2e6 |] ~covariance:var_f ~asset_covariance:a ~confidence:0.99 ())
+
+(* NEVER Ok WITH A nan IN IT.
+
+   Nothing before the last guard reads the factor covariance's entries or a
+   fit's residual variance. A nan factor variance makes b' Sigma b nan; a nan
+   residual variance makes the idiosyncratic term nan; either would reach the
+   total and the model VaR. Both are Errors. *)
+let test_a_nan_figure_is_an_error () =
+  expect_error ~substring:"factor risk is not finite"
+    (FM.risk ~fits:[| Some one_name |] ~exposures:[| 1e6 |]
+       ~covariance:(Owl.Mat.of_array [| Float.nan |] 1 1)
+       ~confidence:0.99 ());
+  expect_error ~substring:"factor risk is not finite"
+    (FM.risk
+       ~fits:[| Some { one_name with residual_variance = Float.nan } |]
+       ~exposures:[| 1e6 |] ~covariance:var_f ~confidence:0.99 ())
 
 (* BY HAND: the risk of a two-asset, one-factor book.
 
@@ -460,6 +657,8 @@ let suite =
         test_walsh_hadamard_recovers_every_coefficient;
       Alcotest.test_case "Walsh-Hadamard: residuals orthogonal, fitted + residual = y"
         `Quick test_walsh_hadamard_fit_identities;
+      Alcotest.test_case "a near-collinear design is solved by QR, to 1e-12" `Quick
+        test_a_near_collinear_design_is_solved_by_qr;
       Alcotest.test_case "Walsh-Hadamard: the factor covariance by hand" `Quick
         test_walsh_hadamard_factor_covariance;
       Alcotest.test_case "Walsh-Hadamard: the Euler split sums; sys + idio = total" `Quick
@@ -470,7 +669,17 @@ let suite =
         test_refuses_an_ill_conditioned_design;
       Alcotest.test_case "refuses lengths that differ" `Quick
         test_refuses_lengths_that_differ;
+      Alcotest.test_case "an infinite input is an Error, not an exception" `Quick
+        test_an_infinite_input_is_an_error;
+      Alcotest.test_case "fit_unchecked refuses no factors" `Quick
+        test_fit_unchecked_refuses_no_factors;
+      Alcotest.test_case "fit_unchecked refuses no residual degree of freedom" `Quick
+        test_fit_unchecked_refuses_no_residual_degree_of_freedom;
       Alcotest.test_case "refuses a held name with no fit" `Quick
         test_refuses_a_held_name_with_no_fit;
+      Alcotest.test_case "the sample variance reads only held names" `Quick
+        test_the_sample_variance_reads_only_held_names;
+      Alcotest.test_case "a nan figure is an Error, never Ok" `Quick
+        test_a_nan_figure_is_an_error;
       Alcotest.test_case "two assets, one factor, by hand" `Quick test_risk_by_hand;
     ] )
