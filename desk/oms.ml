@@ -185,6 +185,19 @@ let key (o : Order.t) =
 
 let enqueue t f = Throttle.enqueue t.sequencer f
 
+(* The live mark for a symbol the book holds: a price of zero is a cell
+   nobody has written, not a price, and a symbol outside the universe has
+   none either. [context] uses this for a ticket's own symbol; [resting_fills]
+   below uses it for every open order priced by the mark rather than its own
+   limit -- one function, so neither can answer differently for the same
+   symbol at the same moment. *)
+let live_mark t symbol =
+  if
+    List.mem (Graph.symbols t.graph) symbol ~equal:Symbol.equal
+    && Float.( > ) (Price.to_float (Graph.price t.graph symbol)) 0.0
+  then Some (Graph.price t.graph symbol)
+  else None
+
 let context t ~(symbol : Symbol.t) : Rules.Context.t =
   let now = t.now () in
   let universe = Symbol.Set.of_list (Graph.symbols t.graph) in
@@ -205,11 +218,7 @@ let context t ~(symbol : Symbol.t) : Rules.Context.t =
       | Ok _ -> Ok ());
     halted = Halt.reason t.halt;
     session = t.session;
-    (* A price of zero is a cell nobody has written, not a price. *)
-    mark =
-      (if held && Float.( > ) (Price.to_float (Graph.price t.graph symbol)) 0.0 then
-         Some (Graph.price t.graph symbol)
-       else None);
+    mark = live_mark t symbol;
     stale =
       held
       && (listed health.Graph.Feed_health.stale
@@ -311,6 +320,64 @@ module Preview = struct
       ]
 end
 
+(* Every order the desk still owns, as if each fills: its remaining quantity
+   (Order.remaining_qty), signed by side, priced at its limit if it has one
+   and at the live mark otherwise. This is invariant 12 read conservatively --
+   several resting orders can each pass the gate alone and only breach a
+   limit once they are all counted, which nothing would see until they
+   actually filled -- so [preview] gates every proposal against this list
+   plus the proposal's own fill, in that order, and [propose] gates through
+   the very same call, by calling [preview] for its verdict.
+
+   The source is [t.open_], the journal's open orders held -- the same set
+   [open_count] and [cancel_all] read -- so the page's open-order count, what
+   a kill or a trip actually cancels, and what the gate assumes is resting can
+   never disagree about which orders are open. That set already excludes
+   every terminal state, [Failed] among them: an order this desk gave up on
+   is not read here. A failed order the venue still reports resting is a
+   known anomaly the desk is already cancelling by its venue id
+   ([cancel_failed], [resend_cancel]) the moment either the stream or a
+   reconciliation reports it, not a quantity this list has a live remaining
+   size or price for -- by the time an order is [Failed], every lookup for it
+   has already missed, and only [failed_cancels]' venue ids survive, not the
+   order's own record.
+
+   A resting order priced at neither its own limit nor a mark -- a market
+   order resting before the open, whose symbol has not printed at all -- is
+   not dropped: dropping it would undercount exactly the exposure this list
+   exists to catch. This returns None instead, and the caller runs no gate at
+   all, exactly as [preview] below runs none for a proposal with no decision
+   price of its own: an unevaluable gate is not a pass. *)
+let resting_fills t : Gate.Fill.t list option =
+  Map.data t.open_
+  |> List.map ~f:(fun (o : Order.t) ->
+      let symbol = o.Order.request.Order.Request.symbol in
+      let price =
+        match Order.Kind.limit_price o.Order.request.Order.Request.kind with
+        | Some p -> Some p
+        | None -> live_mark t symbol
+      in
+      match price with
+      | Some price ->
+          Some
+            {
+              Gate.Fill.symbol;
+              qty =
+                Qty.of_float
+                  (Order.Side.sign o.Order.request.Order.Request.side
+                  *. Order.remaining_qty o);
+              price;
+            }
+      | None ->
+          t.on_event
+            (sprintf
+               "desk      %s has no limit price and no mark, so the gate cannot count it \
+                as resting; the proposal is refused rather than undercounting what is \
+                open"
+               (key o));
+          None)
+  |> Option.all
+
 (* The rules and the gate, and nothing created. The gate runs whenever there
    is a price to run it at, even after a rule has failed: someone fixing a
    ticket wants to know what the trade would do to the limits as well as why
@@ -337,9 +404,10 @@ let preview t (ticket : Ticket.t) : Preview.t =
           Qty.of_float
             (Order.Side.sign ticket.Ticket.side *. Float.of_int ticket.Ticket.qty)
         in
-        Some
-          (Gate.check t.graph
-             ~fills:[ { Gate.Fill.symbol = ticket.Ticket.symbol; qty; price } ])
+        Option.map (resting_fills t) ~f:(fun resting ->
+            Gate.check t.graph
+              ~fills:
+                (resting @ [ { Gate.Fill.symbol = ticket.Ticket.symbol; qty; price } ]))
     | _ -> None
   in
   { Preview.request; failures = Rules.check ctx request; verdict; decision_price }

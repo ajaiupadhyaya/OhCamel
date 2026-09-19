@@ -1112,7 +1112,7 @@ deploy user alone, and reach the container as environment, never as a layer.
 
 ## What's verified
 
-`make test` runs 460 tests, plus fifteen in `test/desk_async` that run with the
+`make test` runs 463 tests, plus sixteen in `test/desk_async` that run with the
 scheduler -- the order manager's cases, the transport's bound and that
 suite's own count -- all hermetic — no network, no credentials, and nothing
 that waits on the wall clock: the scheduler's cases move a clock of their
@@ -1311,21 +1311,23 @@ reads the session clock every time, and the twenty-day volume on its first
 turn, on each turn after a read that failed, and an hour after one that
 answered, but never when the volume is fixed, as the demo's is -- and
 `fills_json`'s row-building body, neither of which any test calls directly.
-The scheduler suite's fifteen cases are not all order-manager scenarios
+The scheduler suite's sixteen cases are not all order-manager scenarios
 either: two are Task 4's, the transport bound and the suite's own
 count assertion. The five that exercised `oms.ml` when that figure was
 measured -- three fills, an unresent unknown answer, a halt, a limit's
 trip, and a restart -- record zero visits on every branch just named.
 None of them proposes past a tripped switch or a stale book, none makes
 `resolve`'s own lookup fail or delivers a fill after failed, and none
-runs `refresh` at all. The eight added since, which the figure predates,
+runs `refresh` at all. The nine added since, which the figure predates,
 reach two of those: a book that goes stale while the arrival quote is
 fetched, and `refresh_forever` reading the clock again as a session ends
 -- beside a failed order the venue reports resting, which is cancelled;
 a raise just after a kill's halt, through the route and through
-`Oms.kill`, which does not stop the cancels; and the engine's stop, whose
+`Oms.kill`, which does not stop the cancels; the engine's stop, whose
 cancels are asked for when the stream ends, sent again under it when the
-venue refuses them, and sent again by a restart's reconciliation.
+venue refuses them, and sent again by a restart's reconciliation; and a
+resting order the gate now counts as if it fills, which `propose` refuses
+under a real, submitted order the same way `preview` does.
 
 So the floor exists to make deleting tests noticeable, and that is all it is
 for. A coverage target would be an instruction to write the tests that raise it.
@@ -1418,7 +1420,7 @@ The live routes require the header `X-OhCamel-Desk: 1` and a request the browser
 
 Limits, stated:
 - whole shares; market and limit orders; day orders; regular hours;
-- the gate forks the live book with the proposal's own fills only, not what orders already resting would add: several resting limit orders can each pass and together breach a limit, which the switch catches only after they fill, and only for a limit it trips on;
+- the gate forks the live book with every order the desk still owns, at its remaining quantity, priced at its limit or (absent one) the live mark, plus the proposal's own fill, so several resting orders that would together breach a limit are refused before any of them fill; a resting order priced at neither is not gated as zero, and refuses the proposal instead; an order this desk has declared failed that the venue still works is not counted here, because by then only its venue id survives, not a live quantity to price -- `cancel_failed` and reconciliation's `resend_cancel` are what manage it;
 - Alpaca paper only, by construction: the trading host is a constant, and a key that does not begin `PK` is refused before a request is sent.
 
 ## Building it

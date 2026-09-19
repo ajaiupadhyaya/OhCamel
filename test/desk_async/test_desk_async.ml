@@ -1163,6 +1163,54 @@ let test_the_clock_is_read_again_when_its_session_ends () =
   Graph.destroy f.graph;
   return ()
 
+(* Preview and propose share one function for the gate's verdict --
+   [propose] computes it by calling [preview], and refuses whenever
+   [Preview.passed] does not hold -- so a resting order the gate must now
+   count (Task 3) cannot make the two disagree: this checks that under a real
+   order, actually submitted and resting at the venue, not merely one
+   fixture-injected.
+
+   tech-cap is lowered to 40,000 for this case: the fixture's own 100,000 is
+   too wide for two orders to breach without either alone crossing the desk's
+   25,000 per-order notional cap. AAPL 220 x $100 = $22,000 is proposed and
+   rests (the venue is never pumped, so nothing here fills): alone, TECH
+   would be 22,000, under both the order cap and tech-cap. MSFT 110 x $200 =
+   $22,000 is proposed next: alone it would also be 22,000, under both caps,
+   but with the resting AAPL order counted the gate sees 44,000, over the
+   40,000 cap. A fresh [preview] of that same ticket refuses it first,
+   naming tech-cap, and [propose] refuses it exactly the same way. *)
+let test_preview_and_propose_agree_about_a_resting_order () =
+  let tech_cap_40k =
+    {
+      Limit.name = "tech-cap";
+      scope = Limit.Sector tech;
+      kind = Limit.Gross_notional (Notional.of_float 40_000.0);
+    }
+  in
+  let f = fixture ~limits:[ tech_cap_40k ] () in
+  let oms = manager f in
+  let limit_100 = D.Order.Kind.Limit (Price.of_float 100.0) in
+  let limit_200 = D.Order.Kind.Limit (Price.of_float 200.0) in
+  let%bind _, resting =
+    D.Oms.propose oms (ticket ~kind:limit_100 aapl D.Order.Side.Buy 220)
+  in
+  Alcotest.(check bool)
+    "the first rests" true
+    (not (D.Order.State.is_terminal resting.D.Order.state));
+  let ticket2 = ticket ~kind:limit_200 msft D.Order.Side.Buy 110 in
+  let preview = D.Oms.preview oms ticket2 in
+  Alcotest.(check (list string))
+    "preview: by tech-cap, counting the resting order" [ "tech-cap" ]
+    (match preview.D.Oms.Preview.verdict with
+    | Some v ->
+        List.map v.Ohcamel.Gate.Verdict.created ~f:(fun m -> m.Ohcamel.Gate.Move.limit)
+    | None -> []);
+  Alcotest.(check bool) "preview refuses it" false (D.Oms.Preview.passed preview);
+  let%bind _, o = D.Oms.propose oms ticket2 in
+  Alcotest.(check string) "propose refuses it too" "rejected_pre_trade" (state f o);
+  Graph.destroy f.graph;
+  return ()
+
 let suites =
   [
     ( "transport",
@@ -1196,6 +1244,8 @@ let suites =
           test_a_failed_order_the_venue_reports_resting_is_cancelled;
         case "the clock is read again when its session ends"
           test_the_clock_is_read_again_when_its_session_ends;
+        case "preview and propose agree about a resting order"
+          test_preview_and_propose_agree_about_a_resting_order;
       ] );
   ]
 

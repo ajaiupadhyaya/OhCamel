@@ -18,6 +18,7 @@ let aapl = Symbol.of_string "AAPL"
 let msft = Symbol.of_string "MSFT"
 let xom = Symbol.of_string "XOM"
 let money = Notional.of_float
+let price = Price.of_float
 let limit name scope n = { Limit.name; scope; kind = Limit.Gross_notional (money n) }
 
 (* [book_is_current] is true unless a case says otherwise: every case but one
@@ -88,6 +89,29 @@ let created (p : D.Oms.Preview.t) =
   | Some v ->
       List.map v.Ohcamel.Gate.Verdict.created ~f:(fun m -> m.Ohcamel.Gate.Move.limit)
   | None -> []
+
+(* A resting order, injected exactly as [Oms.propose] leaves one once the
+   venue has acknowledged it: journaled first (invariant 10, [Journal.insert_order]),
+   then run through [Oms.record]'s own [Acknowledged], which is what moves an
+   order into [oms.open_]. No venue call is made -- these tests are about what
+   the gate does with an order already resting, not about getting one there --
+   but the two functions doing the work are the ones production calls. *)
+let rest oms journal ~seed symbol side qty kind =
+  let client_order_id =
+    D.Ids.Client_order_id.generate ~now:(Time_ns.now ())
+      ~rng:(Random.State.make [| seed |])
+  in
+  let request = { D.Order.Request.client_order_id; symbol; side; qty; kind } in
+  let o = D.Order.create request in
+  D.Journal.insert_order journal o ~source:"test" ~decision_price:(price 0.0)
+    ~arrival:None ~verdict:`Null ~at:(Time_ns.now ());
+  D.Oms.record oms o (D.Order.Event.Acknowledged (sprintf "venue-%d" seed))
+
+(* The venue confirming a cancel: pending_cancel, then cancelled -- the same
+   two steps [cancel] and its confirmation leave behind. *)
+let cancel_resting oms o =
+  let o = D.Oms.record oms o D.Order.Event.Cancel_requested in
+  D.Oms.record oms o D.Order.Event.Venue_cancelled
 
 let test_a_preview_that_takes_tech_over_its_cap_names_it_and_creates_nothing () =
   with_oms
@@ -210,6 +234,100 @@ let test_an_order_after_the_close_is_refused_on_the_clock_last_read () =
         (D.Oms.Preview.passed after, rules after))
     ()
 
+(* The gate now counts a resting order as if it fills (Task 3): several
+   resting orders can each pass alone and only breach a limit once they are
+   all counted together, which nothing would see until they actually filled.
+
+   TECH's weight is AAPL 400 x 150 = 60,000 plus MSFT 100 x 300 = 30,000 =
+   90,000; tech-cap is 100,000, so 10,000 of room is left. Order 1, MSFT buy
+   20 @ $300 = $6,000, rests: alone it would leave TECH at 96,000, under the
+   cap. Order 2, MSFT buy 15 @ $300 = $4,500 -- a different quantity, so the
+   duplicate rule does not speak -- would by itself also leave TECH at
+   94,500, under the cap: that was the bug, each one judged alone. Counting
+   order 1 as resting, the gate now sees 90,000 + 6,000 + 4,500 = 100,500,
+   over the 100,000 cap, and refuses order 2, naming tech-cap. *)
+let test_a_resting_order_the_gate_now_counts_pushes_a_second_over_tech_cap () =
+  with_oms
+    ~f:(fun oms journal ->
+      let resting =
+        rest oms journal ~seed:101 msft D.Order.Side.Buy 20
+          (D.Order.Kind.Limit (price 300.0))
+      in
+      Alcotest.(check string)
+        "the first rests" "submitted"
+        (D.Order.State.to_string resting.D.Order.state);
+      let p =
+        D.Oms.preview oms
+          (ticket ~kind:(D.Order.Kind.Limit (price 300.0)) msft D.Order.Side.Buy 15)
+      in
+      Alcotest.(check bool) "the second is refused" false (D.Oms.Preview.passed p);
+      Alcotest.(check (list string)) "by no rule of its own" [] (rules p);
+      Alcotest.(check (list string))
+        "by tech-cap, counting the resting order" [ "tech-cap" ] (created p);
+      Alcotest.(check bool)
+        "and the reasons name it" true
+        (List.exists (D.Oms.Preview.reasons p)
+           ~f:(String.is_substring ~substring:"tech-cap")))
+    ()
+
+(* Cancelling the resting order gives its room back. Same book and orders as
+   above: order 1 rests, order 2 is refused by tech-cap; then order 1 is
+   cancelled (pending_cancel, then the venue's confirmation -- the two steps
+   [Oms.cancel] and its answer leave), which takes it out of [oms.open_], and
+   order 2's own 4,500 alone -- 90,000 + 4,500 = 94,500 -- is under the
+   100,000 cap again. *)
+let test_cancelling_the_resting_order_frees_the_room_again () =
+  with_oms
+    ~f:(fun oms journal ->
+      let resting =
+        rest oms journal ~seed:102 msft D.Order.Side.Buy 20
+          (D.Order.Kind.Limit (price 300.0))
+      in
+      let order2 () =
+        D.Oms.preview oms
+          (ticket ~kind:(D.Order.Kind.Limit (price 300.0)) msft D.Order.Side.Buy 15)
+      in
+      Alcotest.(check bool)
+        "refused while the first rests" false
+        (D.Oms.Preview.passed (order2 ()));
+      let cancelled = cancel_resting oms resting in
+      Alcotest.(check string)
+        "cancelled" "cancelled"
+        (D.Order.State.to_string cancelled.D.Order.state);
+      Alcotest.(check int) "and out of the open set" 0 (D.Oms.open_count oms);
+      Alcotest.(check bool) "the room is back" true (D.Oms.Preview.passed (order2 ())))
+    ()
+
+(* A resting order the gate cannot price is not dropped from the count --
+   doing so would let it pass for zero. AAPL is repriced to 0, "a cell nobody
+   has written, not a price" in [Oms.live_mark]'s own words, so the AAPL
+   market order resting below has neither a limit (it is a market order) nor
+   a mark. [Oms.preview] then runs no gate at all for an unrelated ticket,
+   XOM sell 10 -- which passes every rule of its own and, judged alone, every
+   limit too (XOM -200 -> -190, as in the book-is-not-current case above) --
+   failing closed exactly as a proposal with no decision price of its own
+   already does: no verdict is a proposal that is not passed. *)
+let test_a_resting_market_order_with_no_mark_fails_the_gate_closed () =
+  with_oms
+    ~f:(fun oms journal ->
+      let resting =
+        rest oms journal ~seed:103 aapl D.Order.Side.Buy 50 D.Order.Kind.Market
+      in
+      Alcotest.(check string)
+        "still resting" "submitted"
+        (D.Order.State.to_string resting.D.Order.state);
+      Graph.apply_tick oms.D.Oms.graph
+        { Tick.symbol = aapl; price = price 0.0; time = Time.now () };
+      Graph.stabilize oms.D.Oms.graph;
+      let p = D.Oms.preview oms (ticket xom D.Order.Side.Buy 10) in
+      Alcotest.(check (list string)) "no rule of its own fails" [] (rules p);
+      Alcotest.(check bool)
+        "the gate could not be run, so it is not passed" false (D.Oms.Preview.passed p);
+      Alcotest.(check bool)
+        "no verdict at all -- fail closed" true
+        (Option.is_none p.D.Oms.Preview.verdict))
+    ()
+
 let suite =
   ( "oms",
     [
@@ -224,4 +342,11 @@ let suite =
         `Quick test_a_book_that_is_not_the_account's_is_refused_by_the_trading_rule;
       Alcotest.test_case "an order after the close is refused on the clock last read"
         `Quick test_an_order_after_the_close_is_refused_on_the_clock_last_read;
+      Alcotest.test_case
+        "a resting order the gate now counts pushes a second over tech-cap" `Quick
+        test_a_resting_order_the_gate_now_counts_pushes_a_second_over_tech_cap;
+      Alcotest.test_case "cancelling the resting order frees the room again" `Quick
+        test_cancelling_the_resting_order_frees_the_room_again;
+      Alcotest.test_case "a resting market order with no mark fails the gate closed"
+        `Quick test_a_resting_market_order_with_no_mark_fails_the_gate_closed;
     ] )
