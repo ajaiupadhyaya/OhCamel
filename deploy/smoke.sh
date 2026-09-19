@@ -421,6 +421,36 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 4a'''. Research (Task 16)
+#
+# The demo registers no strategies (its book has no signals block), so this
+# only asserts the route answers and has the shape desk/intake.ml's
+# research_json always produces -- intake off-or-running, a strategies list
+# (empty here), and the fixed R8 sentence -- not that any strategy or signal
+# is present. The live host's own /api/research, gated behind its password
+# like every other route there, is covered by section 6 below.
+# ---------------------------------------------------------------------------
+if command -v python3 >/dev/null 2>&1; then
+	research=$(curl -sS --max-time 15 "$BASE/api/research" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    r = json.load(sys.stdin)
+except Exception as e:
+    print("NOTJSON %s" % e); raise SystemExit
+if r.get("intake") not in ("running", "off") or not isinstance(r.get("strategies"), list) \
+        or not r.get("r8"):
+    print("SHAPE keys=%r" % sorted(r.keys())); raise SystemExit
+print("OK %s %d" % (r["intake"], len(r["strategies"])))
+' 2>/dev/null)
+	case "$research" in
+	OK*) read -r _ rintake rstrategies <<<"$research"; ok "GET /api/research           intake $rintake, $rstrategies strategies registered" ;;
+	*)   no "GET /api/research           malformed" "${research:-no response}" ;;
+	esac
+else
+	meh "GET /api/research           python3 unavailable; research not checked"
+fi
+
+# ---------------------------------------------------------------------------
 # 4b. The reports the page reads
 #
 # The argument on /argument is filled from three routes, and each has a
@@ -535,7 +565,7 @@ if [ -n "$LIVE" ]; then
 	# up here as a 200 on one path while / still said 401. The page fills its
 	# peer column the other way round -- the live origin reads the demo, over
 	# the demo engine's own CORS header -- so the live host never needs one.
-	for path in / /ops /argument /risk /execution /research /api/ops /api/snapshot /api/health /api/desk /api/desk/orders /api/research/evidence; do
+	for path in / /ops /argument /risk /execution /research /api/ops /api/snapshot /api/health /api/desk /api/desk/orders /api/research /api/research/evidence; do
 		code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$LIVE$path" 2>/dev/null)
 		[ "$code" = "401" ] && ok "GET $LIVE$path  401 without credentials" \
 			|| no "GET $LIVE$path  $code, expected 401" "the live host is not gated on $path"

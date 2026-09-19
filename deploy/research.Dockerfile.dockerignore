@@ -1,0 +1,74 @@
+# deploy/research.Dockerfile's own ignore file. Docker looks for
+# <dockerfile-path>.dockerignore next to the Dockerfile and, when present,
+# uses it INSTEAD of the repository's own .dockerignore for that build --
+# so this file, not the top-level one (which excludes *.md wholesale, among
+# other engine-only concerns), is what actually governs what reaches
+# ohcamel-research's image.
+#
+# research.Dockerfile copies exactly four repo-relative trees: research/,
+# interface/, fixtures/macro/ and fixtures/history/. Everything below either
+# trims what those COPYs pull in, or drops trees none of them ever touch (kept
+# out mainly to keep the build context this Dockerfile sends to the daemon
+# small; no COPY here could reach them regardless).
+
+# Never baked into any image: an image layer is permanent, and live mode's
+# secrets reach the container through an env_file mount at runtime, never a
+# COPY (see docker-compose.yml's ohcamel-research entry).
+.env
+.env.*
+*.env
+
+# Local, regenerated, or otherwise dev-only trees under research/ itself.
+research/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Uncommitted battery run artifacts. research/experiments/ is otherwise
+# copied whole, so its manifest.*.json files and each experiment's
+# config.yaml -- both required for the staleness check below to run at all --
+# reach the image with no pattern of their own.
+research/experiments/*/results/
+
+# Every markdown file, dropped by default (mirrors the top-level
+# .dockerignore's own *.md/!README.md pair for the engine image) -- except
+# the one research/ itself needs: research/pyproject.toml's `readme =
+# "README.md"` makes hatchling refuse to build/install the project without
+# it present (`uv sync --locked` in research.Dockerfile). Nothing else
+# under research/experiments/ (hypothesis.md, report.md) or interface/ is
+# read by the service or by is_stale -- see manifest.py: "no image needs
+# report.md to show a strategy's evidence".
+*.md
+!research/README.md
+
+# The manifests themselves are *.json, never touched by the *.md pattern
+# above -- named here anyway, so this file says outright, not by omission,
+# that research/experiments/*/manifest.*.json must reach the image.
+!research/experiments/*/manifest.*.json
+
+# Everything outside the four trees research.Dockerfile actually copies.
+desk/
+lib/
+web/
+bin/
+test/
+bench/
+docs/
+deploy/
+.git/
+.github/
+.superpowers/
+_build/
+_opam/
+_coverage/
+book.sexp
+book.example.sexp
+desk.db*
+Untitled
+notes.txt
+claudecodehandoff.md
+*.pdf
+.claude/
+.playwright-mcp/

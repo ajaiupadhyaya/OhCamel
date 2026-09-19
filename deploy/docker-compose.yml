@@ -111,12 +111,25 @@ services:
     environment:
       OHCAMEL_PEER_ORIGIN: "https://${OHCAMEL_DEMO_HOST}"
       OHCAMEL_JOURNAL: /data/desk.db
+      # Task 16: where ohcamel-research writes one signal a strategy a
+      # trading day. Read-only here -- the engine only ever lists and opens
+      # what is already there (desk/intake.ml); ohcamel-research below is the
+      # only writer, on the same named volume mounted read-write at /signals.
+      # A fresh volume starts empty, and Intake.directory (desk/intake.ml)
+      # only refuses a set-but-EMPTY-STRING variable or an unreadable/
+      # non-directory path -- Sys_unix.readdir succeeds on an empty
+      # directory -- so the live engine starts cleanly before the first
+      # 19:15 run has written anything (see docs/status.md and this task's
+      # report for the empty-directory finding this line depends on).
+      OHCAMEL_SIGNALS_DIR: /data/signals
     # The book, as for every engine, and the journal: the one writable mount
     # (design §3.5). A named volume, so a rebuild or a `down` keeps the record;
-    # deleting the volume deletes it.
+    # deleting the volume deletes it. signals is read-only here on purpose --
+    # see OHCAMEL_SIGNALS_DIR above.
     volumes:
       - ../book.sexp:/app/book.sexp:ro
       - desk_data:/data
+      - signals:/data/signals:ro
     command: ["serve", "8081"]
     # Root-owned, 0640 and group-readable by the deploy user (compose reads
     # env_file as the invoking user, not as root), outside the repository, and
@@ -132,6 +145,50 @@ services:
       retries: 3
       start_period: 20s
 
+  # Task 16: computes each registered strategy's weight once a trading day
+  # at 19:15 America/New_York, from its manifest's selected_params, and
+  # writes it where ohcamel-live reads it (above). Behind the same "live"
+  # profile as ohcamel-live -- it has nothing to compute for the demo
+  # engine, which registers no strategies -- and never started, and no
+  # credential needed, in phases 1-3 of the deployment (same reasoning as
+  # ohcamel-live's own profile comment).
+  ohcamel-research:
+    build:
+      context: ..
+      dockerfile: deploy/research.Dockerfile
+    image: ohcamel-research:latest
+    restart: unless-stopped
+    init: true
+    profiles: ["live"]
+    # The live engine's own env_file (its trading keys are simply never
+    # read by this service -- fdq's Settings reads only ALPACA_API_KEY and
+    # ALPACA_SECRET_KEY, the *data* keys; recorded as a known Minor in the
+    # plan). One file, one place credentials are granted from, rather than a
+    # second copy of the same three lines maintained here.
+    env_file:
+      - path: /etc/ohcamel/live.env
+        required: true
+    environment:
+      # fdq's own bar cache and its yfinance cross-validation log both
+      # default to ./data (fdq.util.settings.Settings), which a read-only
+      # root filesystem (below) would refuse to create. Redirected to the
+      # tmpfs: the cache is disposable -- every run re-fetches through
+      # Alpaca regardless -- so losing it on a restart costs nothing.
+      FDQ_DATA_DIR: /tmp/fdq-data
+    volumes:
+      - signals:/signals
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks: [ohcamel]
+
 networks:
   ohcamel:
     driver: bridge
@@ -140,3 +197,8 @@ volumes:
   caddy_data:
   caddy_config:
   desk_data:
+  # Task 16: one JSON signal a strategy a trading day, written by
+  # ohcamel-research (read-write, above) and read by ohcamel-live
+  # (read-only, above). Named, not a bind mount, for the same reason
+  # desk_data is: a rebuild or a `down` keeps every signal ever written.
+  signals:
