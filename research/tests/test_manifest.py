@@ -675,7 +675,7 @@ def test_python_version_defaults_to_the_running_interpreter(tmp_path: Path):
         "pbo": 0.2,
         "turnover": None,
         "capacity": None,
-        "verdict": "pass",
+        "verdict": "fail",  # no decided gate: never a pass
         "verdict_line": "ok",
         "hashes": compute_hashes(paths["root"], paths["config"], read_fixtures=[paths["fixture"]]),
         "ran_at": "2026-09-18T00:00:00Z",
@@ -713,6 +713,21 @@ def test_compute_verdict_ignores_undecided_gates():
         {"name": "g2", "passed": None, "value": None, "detail": {}},
     )
     assert compute_verdict(gates, pbo=0.1) == "pass"
+
+
+def test_compute_verdict_fails_with_no_decided_gate():
+    # An empty gate list, or one where every gate is report-only, has no
+    # evidence behind it: never "pass".
+    assert compute_verdict((), pbo=0.2) == "fail"
+    undecided = ({"name": "cost_sweep", "passed": None, "value": None, "detail": {}},)
+    assert compute_verdict(undecided, pbo=0.2) == "fail"
+
+
+def test_compute_verdict_refuses_a_non_finite_pbo():
+    gates = ({"name": "psr", "passed": True, "value": 0.9, "detail": {}},)
+    for bad in (float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            compute_verdict(gates, pbo=bad)
 
 
 # --------------------------------------------------------------------------
@@ -811,4 +826,28 @@ def test_assert_battery_committed_raises_on_symlinked_directory(tmp_path: Path):
     _git(repo, "add", str(BATTERY_REL / "linked"))
     _git(repo, "commit", "-q", "-m", "add symlink")
     with pytest.raises(ValueError):
+        assert_battery_committed(repo)
+
+
+def test_assert_battery_committed_sees_untracked_files_under_show_untracked_no(tmp_path: Path):
+    # The owner's git config may set status.showUntrackedFiles=no; the check
+    # passes --untracked-files=all, which must override it.
+    repo = _init_git_repo_with_battery(tmp_path)
+    _git(repo, "config", "status.showUntrackedFiles", "no")
+    _write(repo / BATTERY_REL / "new_gate.py", b"new\n")
+    with pytest.raises(RuntimeError):
+        assert_battery_committed(repo)
+
+
+def test_assert_battery_committed_parity_catches_what_git_status_hides(tmp_path: Path):
+    # assume-unchanged hides a deleted tracked file from git status; only the
+    # tracked-versus-hashed parity check sees that battery/ no longer holds it.
+    repo = _init_git_repo_with_battery(tmp_path)
+    _write(repo / BATTERY_REL / "extra.py", b"# extra\n")
+    _git(repo, "add", str(BATTERY_REL / "extra.py"))
+    _git(repo, "commit", "-q", "-m", "extra")
+    _git(repo, "update-index", "--assume-unchanged", str(BATTERY_REL / "extra.py"))
+    (repo / BATTERY_REL / "extra.py").unlink()
+    assert _git(repo, "status", "--porcelain").stdout == ""
+    with pytest.raises(RuntimeError):
         assert_battery_committed(repo)

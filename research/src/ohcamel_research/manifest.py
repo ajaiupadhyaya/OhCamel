@@ -491,10 +491,15 @@ def compute_verdict(gates: Iterable[Mapping[str, Any]], pbo: float) -> str:
     - otherwise ``"pass"``.
 
     A gate with ``passed is None`` (reported but not gated, e.g. the cost
-    sweep) is skipped -- never counted as passing.
+    sweep) is skipped -- never counted as passing. No decided gate at all is
+    ``"fail"``: a verdict with nothing behind it is not a pass. A PBO that is
+    not a finite number raises -- fragility cannot be judged from it, and a
+    runner that produced one has a bug, not a verdict.
     """
+    if not math.isfinite(pbo):
+        raise ValueError(f"compute_verdict: pbo {pbo!r} is not a finite number")
     decided = [g["passed"] for g in gates if g["passed"] is not None]
-    if any(p is False for p in decided):
+    if not decided or any(p is False for p in decided):
         return "fail"
     if pbo > THRESHOLDS.pbo_fragile_above:
         return "pass, fragile"
