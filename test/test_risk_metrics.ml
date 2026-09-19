@@ -233,6 +233,114 @@ let test_invalid_inputs () =
         ~covariance:(Owl.Mat.of_arrays [| [| 0.04 |] |]));
   check_invalid_arg "empty equity" (fun () -> RM.max_drawdown ~equity:[||])
 
+(* Population moments of [1;2;3;10]: mean 16/4 = 4, deviations -3,-2,-1,6.
+     m2 = (9+4+1+36)/4    = 50/4    = 12.5
+     m3 = (-27-8-1+216)/4 = 180/4   = 45
+     m4 = (81+16+1+1296)/4 = 1394/4 = 348.5
+   g1 = m3 / m2^1.5 = 45 / (12.5 * sqrt 12.5) = 45 / 44.194174 = 1.018234
+   g2 = m4 / m2^2 - 3 = 348.5 / 156.25 - 3 = 2.2304 - 3 = -0.7696 *)
+let test_skewness_and_kurtosis () =
+  let xs = [| 1.; 2.; 3.; 10. |] in
+  Alcotest.check (Alcotest.float 1e-6) "skewness" 1.018234 (RM.skewness xs);
+  Alcotest.check (Alcotest.float 1e-6) "excess kurtosis" (-0.7696) (RM.excess_kurtosis xs)
+
+(* With skew and excess kurtosis both zero, every correction term in the
+   expansion carries a g1 or a g2 factor and vanishes exactly -- the result
+   is z itself, not merely close to it. *)
+let test_cornish_fisher_z_no_correction () =
+  Alcotest.check feq "z unchanged at zero skew and kurtosis" (-1.6448536269514722)
+    (RM.cornish_fisher_z ~z:(-1.6448536269514722) ~skew:0.0 ~excess_kurtosis:0.0)
+
+(* z = normal_ppf(0.01) = -2.3263478740408408 (a standard tabulated
+   constant), skew g1 = -0.5, excess kurtosis g2 = 3. From the formula
+   z + (z^2-1)g1/6 + (z^3-3z)g2/24 - (2z^3-5z)g1^2/36:
+     z^2 = 5.411894...   ->  (z^2-1)*g1/6       = 4.411894*(-0.5)/6  = -0.367658
+     z^3 = -12.589950...  -> (z^3-3z)*g2/24     = -5.610906*3/24     = -0.701363
+                          -> -(2z^3-5z)*g1^2/36 = -(-13.548159)*0.25/36 = +0.094084
+     z_cf = z + (-0.367658) + (-0.701363) + 0.094084 = -3.301284
+   The 1e-12 check below recomputes the same formula independently in this
+   test (not by calling the library) and compares it to what the library
+   returns, so it catches a coding error in the implementation rather than a
+   duplicated error in the hand arithmetic. *)
+let test_cornish_fisher_three_term () =
+  let z = -2.3263478740408408 in
+  let g1 = -0.5 and g2 = 3.0 in
+  let z2 = z *. z in
+  let z3 = z2 *. z in
+  let term1 = (z2 -. 1.0) *. g1 /. 6.0 in
+  let term2 = (z3 -. (3.0 *. z)) *. g2 /. 24.0 in
+  let term3 = -.(((2.0 *. z3) -. (5.0 *. z)) *. g1 *. g1) /. 36.0 in
+  let expected_z_cf = z +. term1 +. term2 +. term3 in
+  Alcotest.check (Alcotest.float 1e-6) "(z^2-1)g1/6" (-0.367658) term1;
+  Alcotest.check (Alcotest.float 1e-6) "(z^3-3z)g2/24" (-0.701363) term2;
+  Alcotest.check (Alcotest.float 1e-6) "-(2z^3-5z)g1^2/36" 0.094084 term3;
+  Alcotest.check (Alcotest.float 1e-6) "z_cf" (-3.301284) expected_z_cf;
+  Alcotest.check (Alcotest.float 1e-12) "matches the library's formula" expected_z_cf
+    (RM.cornish_fisher_z ~z ~skew:g1 ~excess_kurtosis:g2)
+
+(* Heavy positive skew with no offsetting kurtosis breaks monotonicity: the
+   -g1^2 term grows as z^3 while the g1 term only grows as z^2, so past some
+   |z| the expansion's derivative turns negative. The derivative is
+     1 + z*g1/3 + (z^2-1)*g2/8 - (6z^2-5)*g1^2/36
+   which at z = 4, g1 = 3, g2 = 0 is
+     1 + 4*3/3 + 0 - (6*16-5)*9/36 = 1 + 4 - 91*9/36 = 5 - 22.75 = -17.75
+   sharply negative, so the sampled expansion must fail to rise between its
+   last two of the 801 points (z = 3.99 and z = 4.0). *)
+let test_cornish_fisher_not_monotone () =
+  Alcotest.(check bool)
+    "skew 3, excess kurtosis 0 is not monotone on [-4, 4]" false
+    (RM.cornish_fisher_is_monotone ~skew:3.0 ~excess_kurtosis:0.0)
+
+(* Below 120 observations there is not enough data to trust a third and
+   fourth moment estimate at all, so the function refuses outright. This
+   series alternates so it is unambiguously not "flat" -- the refusal here is
+   solely about the observation count, not the other refusal condition. *)
+let test_cornish_fisher_var_too_few_observations () =
+  let xs = Array.init 119 ~f:(fun i -> if i % 2 = 0 then 0.01 else -0.01) in
+  match RM.cornish_fisher_var ~returns:xs ~confidence:0.95 with
+  | Error _ -> ()
+  | Ok v -> Alcotest.failf "expected Error below 120 observations, got Ok %f" v
+
+(* A flat series (150 observations, above the floor) has no variation to
+   standardise by: skewness and kurtosis are both undefined for it, so the
+   function refuses rather than divide zero by zero. *)
+let test_cornish_fisher_var_flat_series () =
+  let xs = Array.create ~len:150 0.0425 in
+  match RM.cornish_fisher_var ~returns:xs ~confidence:0.95 with
+  | Error _ -> ()
+  | Ok v -> Alcotest.failf "expected Error for a flat series, got Ok %f" v
+
+(* A symmetric, mesokurtic 120-point series built so skewness and excess
+   kurtosis are exactly zero, not merely close. The base pattern
+   [1;1;-1;-1;2;-2;0;0;0;0;0;0] (12 points) gives, by hand:
+     sum            = 1+1-1-1+2-2+0*6       = 0    -> mean = 0/12 = 0
+     sum of squares = 1+1+1+1+4+4+0*6       = 12   -> m2 = 12/12 = 1
+     sum of cubes   = 1+1-1-1+8-8+0*6       = 0    -> m3 = 0/12  = 0
+     sum of 4th pow = 1+1+1+1+16+16+0*6     = 36   -> m4 = 36/12 = 3
+     g1 = m3/m2^1.5 = 0/1 = 0
+     g2 = m4/m2^2 - 3 = 3/1 - 3 = 0
+   every one of those divisions is an exact integer ratio (0/12, 12/12,
+   36/12), not a floating approximation, so g1 and g2 come out exactly zero.
+   Repeating the pattern ten times (120 points, meeting the 120-observation
+   floor) leaves every population moment unchanged -- replaying a
+   population's whole history again does not move its mean, variance, skew
+   or kurtosis -- while the sums above simply scale by 10 and cancel in the
+   division by n. With g1 = g2 = 0, cornish_fisher_z reduces to the identity
+   (see test_cornish_fisher_z_no_correction), so cornish_fisher_var here must
+   equal the ordinary parametric estimate -(z * population sigma) to 1e-12. *)
+let test_cornish_fisher_var_matches_parametric_when_normal () =
+  let pattern = [| 1.; 1.; -1.; -1.; 2.; -2.; 0.; 0.; 0.; 0.; 0.; 0. |] in
+  let returns = Array.concat (List.init 10 ~f:(fun _ -> pattern)) in
+  Alcotest.check feq "skewness is exactly zero" 0.0 (RM.skewness returns);
+  Alcotest.check feq "excess kurtosis is exactly zero" 0.0 (RM.excess_kurtosis returns);
+  let confidence = 0.95 in
+  let z = RM.normal_ppf ~p:(1.0 -. confidence) in
+  let expected = -.(z *. RM.stddev returns) in
+  match RM.cornish_fisher_var ~returns ~confidence with
+  | Error e -> Alcotest.failf "expected Ok, got Error %s" e
+  | Ok v ->
+      Alcotest.check (Alcotest.float 1e-12) "matches the parametric estimate" expected v
+
 let suite =
   ( "risk_metrics",
     [
@@ -260,4 +368,18 @@ let suite =
       Alcotest.test_case "drawdown" `Quick test_drawdown;
       Alcotest.test_case "drawdown on a monotonic curve" `Quick test_drawdown_monotonic;
       Alcotest.test_case "invalid inputs raise" `Quick test_invalid_inputs;
+      Alcotest.test_case "skewness and excess kurtosis of [1;2;3;10]" `Quick
+        test_skewness_and_kurtosis;
+      Alcotest.test_case "cornish-fisher z is unchanged at zero skew and kurtosis" `Quick
+        test_cornish_fisher_z_no_correction;
+      Alcotest.test_case "cornish-fisher z three-term case" `Quick
+        test_cornish_fisher_three_term;
+      Alcotest.test_case "cornish-fisher expansion rejects heavy skew" `Quick
+        test_cornish_fisher_not_monotone;
+      Alcotest.test_case "cornish-fisher VaR refuses too few observations" `Quick
+        test_cornish_fisher_var_too_few_observations;
+      Alcotest.test_case "cornish-fisher VaR refuses a flat series" `Quick
+        test_cornish_fisher_var_flat_series;
+      Alcotest.test_case "cornish-fisher VaR matches the parametric estimate when normal"
+        `Quick test_cornish_fisher_var_matches_parametric_when_normal;
     ] )
