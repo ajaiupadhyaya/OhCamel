@@ -83,7 +83,10 @@ let positive_finite x = Float.is_finite x && Float.( > ) x 0.0
    when the new one is smaller. An order that brings a position toward zero,
    to zero at most, SHRINKS it. For a long-only strategy the buys grow and
    the sells shrink; for a short one a sell opens risk and a buy closes it.
-   [position] is the book's, as the gate reads it. *)
+   [position] is the book's, as the gate reads it. It decides the send order
+   ([shrinking_first]), not what is gated: the gate takes every combination
+   of the orders ([fill_sets]), since an order that shrinks one name can
+   still take a sector over its line on its own. *)
 let grows ~(position : float) ~(side : Order.Side.t) ~(qty : int) =
   let after = position +. (Order.Side.sign side *. Float.of_int qty) in
   Float.( <> ) after 0.0
@@ -94,7 +97,9 @@ let grows ~(position : float) ~(side : Order.Side.t) ~(qty : int) =
 (* The order a rebalance's orders go in: those that shrink a position first,
    those that grow one last, then by name. Were anything to stop a rebalance
    between two submits -- the switch, or a venue that does not acknowledge an
-   order -- what went out first takes risk off rather than on. *)
+   order -- what went out first takes risk off rather than on. The gate does
+   not lean on it: every combination of the orders is gated ([fill_sets]).
+   It decides which orders reach the venue when the loop stops. *)
 let shrinking_first ~(position : Symbol.t -> float)
     ((a_side, a_symbol, a_qty) : Order.Side.t * Symbol.t * int)
     ((b_side, b_symbol, b_qty) : Order.Side.t * Symbol.t * int) =
@@ -102,6 +107,36 @@ let shrinking_first ~(position : Symbol.t -> float)
     (Bool.to_int (grows ~position:(position symbol) ~side ~qty), symbol)
   in
   [%compare: int * Symbol.t] (key a_side a_symbol a_qty) (key b_side b_symbol b_qty)
+
+(* The most orders a rebalance may have: every combination of them is gated
+   ([fill_sets]), 2^n - 1 gate calls, so six orders are 63, each under every
+   resting-order scenario. EXP-A01's strategies have one order each. *)
+let max_legs = 6
+
+(* Which of a rebalance's n orders, by their places 0..n-1 in the send
+   order, could be all of it that fills: EVERY NON-EMPTY SUBSET. The orders
+   go out in the send order and the loop stops at the first the venue does
+   not acknowledge, or when the switch, the book or the session fails
+   between two submits, so what reaches the venue is a prefix; and any order
+   that reached it can still go unfilled at the opening auction, or be
+   refused at the open after it was acknowledged. So the fills can be any
+   subset of the orders. A sector's notional is the size of a net sum: an
+   order that shrinks one name's position can take a sector over its line
+   without the order that offsets it -- a cover of a short in one name
+   leaves a long in another uncovered -- whichever of the two went first.
+   The unit first, then the rest by size, smallest first, each size in send
+   order. *)
+let fill_sets n : int list list =
+  let rec choose k = function
+    | _ when k = 0 -> [ [] ]
+    | [] -> []
+    | x :: rest -> List.map (choose (k - 1) rest) ~f:(fun c -> x :: c) @ choose k rest
+  in
+  let all = List.init n ~f:Fn.id in
+  if n <= 0 then []
+  else
+    all
+    :: List.concat_map (List.init (n - 1) ~f:(fun k -> k + 1)) ~f:(fun k -> choose k all)
 
 (* The regular session's close in New York. Before it, today's close has not
    happened, so the last date whose close should be recorded is yesterday's. *)

@@ -1998,9 +1998,10 @@ let test_an_accepted_signal_on_a_live_strategy_becomes_one_rebalance () =
   Graph.destroy f.graph;
   return ()
 
-(* The review's case (C1). AAPL -200 and MSFT +120, sells first, pass both
-   gates on this empty book (whole: |-20,000| + 24,000 = 44,000 of TECH;
-   buys only: 24,000). The venue refuses the sell. The buy, gated beside it,
+(* The review's case (C1). AAPL -200 and MSFT +120, sells first, pass the
+   gate on every subset on this empty book (TECH is a net sum: whole
+   |-20,000 + 24,000| = 4,000; the sell alone 20,000; the buy alone 24,000).
+   The venue refuses the sell. The buy, gated beside it,
    is a different trade without it, so it is moved to rejected_pre_trade
    naming the sell, and never sent: the venue received nothing. Then the same
    with a sell whose answer is lost: it reached the venue and its outcome is

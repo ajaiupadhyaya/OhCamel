@@ -990,10 +990,11 @@ let test_a_failed_order's_delete_is_journaled_before_it_is_sent () =
 
 (* Which of the venue's statuses mean it still works the order -- it can
    still fill, and a DELETE would stop it -- and which do not. Alpaca's
-   resting statuses, of which the simulator uses new and partially_filled;
-   then pending_cancel, done_for_day, the terminal ones and the rest of
-   Alpaca's list, none of which a DELETE stops, and two that are not
-   statuses at all: the test is exact, not a prefix or a case-folding. *)
+   resting statuses, of which the simulator uses new and partially_filled,
+   and stopped: guaranteed a fill that has not happened yet; then
+   pending_cancel, done_for_day, the terminal ones and the rest of Alpaca's
+   list, none of which a DELETE stops, and two that are not statuses at
+   all: the test is exact, not a prefix or a case-folding. *)
 let test_which_venue_statuses_rest () =
   let rests status =
     D.Venue.Venue_order.rests
@@ -1011,7 +1012,13 @@ let test_which_venue_statuses_rest () =
   in
   let resting =
     [
-      "new"; "accepted"; "pending_new"; "accepted_for_bidding"; "partially_filled"; "held";
+      "new";
+      "accepted";
+      "pending_new";
+      "accepted_for_bidding";
+      "partially_filled";
+      "held";
+      "stopped";
     ]
   and not_resting =
     [
@@ -1023,7 +1030,6 @@ let test_which_venue_statuses_rest () =
       "rejected";
       "replaced";
       "pending_replace";
-      "stopped";
       "suspended";
       "calculated";
       "NEW";

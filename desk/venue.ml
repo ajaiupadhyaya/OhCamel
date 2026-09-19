@@ -101,8 +101,10 @@ module Venue_order = struct
 
   (* Whether the venue still works the order: it can still fill, and a DELETE
      would stop it. Alpaca's statuses for a resting order; the simulated venue
-     uses new and partially_filled. Not pending_cancel, done_for_day or a
-     terminal status: a cancel of any of those stops nothing. *)
+     uses new and partially_filled. Stopped among them: Alpaca's stopped
+     order is guaranteed a fill that has not happened yet, so it is still
+     working. Not pending_cancel, done_for_day or a terminal status: a cancel
+     of any of those stops nothing. *)
   let rests t =
     List.mem
       [
@@ -112,6 +114,7 @@ module Venue_order = struct
         "accepted_for_bidding";
         "partially_filled";
         "held";
+        "stopped";
       ]
       t.status ~equal:String.equal
 end

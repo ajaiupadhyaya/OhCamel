@@ -648,8 +648,8 @@ let gate_scenarios t ~(fills : Gate.Fill.t list) : (Scenarios.t, string) Result.
 
 (* The gate for orders at their decision prices, each signed by its side:
    what [preview] runs for a ticket's one order and [check_rebalance] for a
-   rebalance's many, one call for each set of them that can reach the book
-   -- the unit, its growing orders, every prefix of its send order. *)
+   rebalance's many, one call for each combination of them that could be
+   its fills (Rebalance.fill_sets). *)
 let gate_orders t (priced : (Order.Request.t * Price.t) list) =
   gate_scenarios t
     ~fills:
@@ -1252,27 +1252,24 @@ end
      reads), each as a market-on-open order priced at the newest recorded
      close, each counting the rebalance's earlier orders against the
      open-order cap;
-   - THE GATE, on every set of the orders that can be all that reaches the
-     book, each one call with those orders' fills and the resting orders
-     (every scenario of [gate_scenarios]):
-     . the unit, every order filled;
-     . AS IF ONLY THE ORDERS THAT GROW A POSITION FILL, because an order that
-       shrinks one can go unfilled at the auction, or be refused, and leave
-       the others alone. For a long-only strategy those are its buys; for a
-       short one, its sells;
-     . EVERY PREFIX OF THE SEND ORDER: the orders go out in this order and
-       the loop stops at the first the venue does not acknowledge, or when
-       the switch, the book or the session fails between two submits
-       ([propose_rebalance]), so what reaches the venue is always a prefix.
-       An order that shrinks one name's position can still take a sector
-       over its line -- a sector's notional is the size of a net sum, and a
-       buy that covers a short in one name leaves a long in another
-       uncovered -- so the shrinking orders sent first are gated as sent
-       alone too.
-     A set met twice is gated once, and the empty set not at all: a single
-     order's only prefix is the unit. It passes only if every one passes.
+   - THE GATE, ON EVERY COMBINATION OF THE ORDERS THAT COULD BE THE FILLS
+     (Rebalance.fill_sets): every non-empty subset, each one call with
+     those orders' fills and the resting orders (every scenario of
+     [gate_scenarios]). What reaches the venue is a prefix of the send order
+     -- the loop stops at the first order the venue does not acknowledge, or
+     when the switch, the book or the session fails between two submits
+     ([propose_rebalance]) -- and any order that reached it can still go
+     unfilled at the auction, or be refused at the open after it was
+     acknowledged, so the fills can be any subset. A sector's notional is
+     the size of a net sum, so an order can take a sector over its line
+     without the order that offsets it, whether it shrinks its own name's
+     position or grows it. The unit first, then the rest smallest first;
+     a fill set met twice is gated once, and a single order's only subset is
+     the unit. It passes only if every one passes. Hence at most
+     Rebalance.max_legs orders (six: 63 calls), refused before anything
+     else with the reason.
    Any failure refuses the whole, naming the order and its rules, or the
-   limits and the set that breached them. *)
+   limits and the subset that breached them. *)
 let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t list) :
     (Checked_rebalance.t, string) Result.t =
   let open Result.Let_syntax in
@@ -1282,11 +1279,6 @@ let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t li
     if Graph.knows_symbol t.graph symbol then Qty.to_float (Graph.qty t.graph symbol)
     else 0.0
   in
-  let grows (r : Order.Request.t) =
-    Rebalance.grows
-      ~position:(position r.Order.Request.symbol)
-      ~side:r.Order.Request.side ~qty:r.Order.Request.qty
-  in
   let legs =
     List.stable_sort legs ~compare:(fun (a : Rebalance.Leg.t) b ->
         Rebalance.shrinking_first ~position
@@ -1295,6 +1287,20 @@ let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t li
   in
   let n = List.length legs in
   let%bind () = if n = 0 then Error "the rebalance has no order" else Ok () in
+  let%bind () =
+    if n <= Rebalance.max_legs then Ok ()
+    else
+      Error
+        (sprintf
+           "the rebalance has %d orders, and the desk takes at most %d: it gates every \
+            combination of a rebalance's orders that could be its fills, %d for %d \
+            orders and %d for %d"
+           n Rebalance.max_legs
+           (Int.pow 2 n - 1)
+           n
+           (Int.pow 2 Rebalance.max_legs - 1)
+           Rebalance.max_legs)
+  in
   let%bind () =
     match
       List.find_a_dup legs ~compare:(fun (a : Rebalance.Leg.t) b ->
@@ -1379,45 +1385,68 @@ let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t li
       (List.map orders ~f:(fun (i, (r, p)) ->
            sprintf "%s at %.2f" (name_leg ~i ~n r) (Price.to_float p)))
   in
-  let indexed = List.mapi priced ~f:(fun i o -> (i, o)) in
-  let gate what orders =
+  let by_place = Array.of_list priced in
+  (* A subset as the refusal names it: the unit, or which orders alone
+     fill, the others refused, never sent or left unfilled. *)
+  let describe ids =
+    let k = List.length ids in
+    if k = n then "as a unit"
+    else
+      let places = List.map ids ~f:(fun i -> Int.to_string (i + 1)) in
+      let listed =
+        match List.rev places with
+        | [] | [ _ ] -> String.concat places
+        | last :: rest -> String.concat ~sep:", " (List.rev rest) ^ " and " ^ last
+      in
+      sprintf
+        "if only %s %s of %d fill%s, as when the other%s %s refused, never sent or left \
+         unfilled at the auction"
+        (if k = 1 then "order" else "orders")
+        listed n
+        (if k = 1 then "s" else "")
+        (if n - k = 1 then "" else "s")
+        (if n - k = 1 then "is" else "are")
+  in
+  let gate ids =
+    let orders = List.map ids ~f:(fun i -> (i, by_place.(i))) in
     match gate_orders t (List.map orders ~f:snd) with
     | Error why -> Error why
     | Ok s when Scenarios.passed s -> Ok s
     | Ok s ->
         Error
-          (sprintf "the gate refuses the rebalance %s (%s): %s" what (named orders)
+          (sprintf "the gate refuses the rebalance %s (%s): %s" (describe ids)
+             (named orders)
              (String.concat ~sep:"; " (Scenarios.reasons s)))
   in
-  let%bind whole = gate "as a unit" indexed in
-  (* The other sets, each named for the refusal, in the order they are
-     gated: the growing orders alone, then the prefixes, shortest first. *)
-  let others =
-    ( "if only the orders that grow a position fill, as an unfilled or refused order \
-       that shrinks one would leave them",
-      List.filter indexed ~f:(fun (_, (r, _)) -> grows r) )
-    :: List.init (n - 1) ~f:(fun k ->
-        ( sprintf
-            "if it stops after order %d of %d, as an order the venue does not \
-             acknowledge, or the switch, the book or the session failing between two \
-             submits, would leave it"
-            (k + 1) n,
-          List.take indexed (k + 1) ))
+  (* A subset's fills, as the gate is handed them: two subsets with the same
+     fills are one gate call. The names are distinct, so today no two are. *)
+  let fills ids =
+    List.map ids ~f:(fun i ->
+        let r, p = by_place.(i) in
+        sprintf "%s %s %d %.17g"
+          (Symbol.to_string r.Order.Request.symbol)
+          (Order.Side.to_string r.Order.Request.side)
+          r.Order.Request.qty (Price.to_float p))
+    |> List.sort ~compare:String.compare
   in
-  let%map (_ : int list list) =
-    List.fold_result others
-      ~init:[ List.map indexed ~f:fst ]
-      ~f:(fun seen (what, orders) ->
-        let ids = List.map orders ~f:fst in
-        if List.is_empty ids || List.mem seen ids ~equal:[%equal: int list] then Ok seen
-        else Result.map (gate what orders) ~f:(fun (_ : Scenarios.t) -> ids :: seen))
-  in
-  { Checked_rebalance.orders = priced; gate = whole }
+  match Rebalance.fill_sets n with
+  | [] -> Error "the rebalance has no order"
+  | unit :: subsets ->
+      let%bind whole = gate unit in
+      let%map (_ : string list list) =
+        List.fold_result subsets
+          ~init:[ fills unit ]
+          ~f:(fun seen ids ->
+            let these = fills ids in
+            if List.mem seen these ~equal:[%equal: string list] then Ok seen
+            else Result.map (gate ids) ~f:(fun (_ : Scenarios.t) -> these :: seen))
+      in
+      { Checked_rebalance.orders = priced; gate = whole }
 
 (* A live strategy's rebalance, through the machinery a ticket goes through,
-   in ONE sequencer job: [check_rebalance] (what the plan read, asked again;
-   the rules per order; the gate on the unit, its growing orders and every
-   prefix of the send order); the arrival quotes; [pre_wire] again for every order, because the
+   in ONE sequencer job: [check_rebalance] (at most six orders; what the plan
+   read, asked again; the rules per order; the gate on every combination of
+   the orders that could be the fills); the arrival quotes; [pre_wire] again for every order, because the
    quotes took time; then every order journaled in one transaction ([admit])
    before any is sent; then each handed to [submit_journaled], which asks
    [pre_wire] once more at its own instant -- a kill sets the switch outside

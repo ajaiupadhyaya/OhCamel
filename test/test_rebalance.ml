@@ -506,14 +506,16 @@ let test_a_signal_from_before_an_outage_is_not_sized_at_a_weeks_old_close () =
     ()
 
 (* C1, the gate: a sell can go unfilled at the auction, or be refused, and
-   leave its buy alone, so a rebalance is gated as if only its buys fill as
-   well as whole. AAPL -160 and MSFT +80, each under the 25,000 order cap at
-   its close (23,840 and 23,920):
-     whole:      AAPL 240 x 150 + MSFT 180 x 300 = 36,000 + 54,000 =  90,000  passes
-     buys only:  AAPL 400 x 150 + MSFT 180 x 300 = 60,000 + 54,000 = 114,000  over tech-cap
-   Refused, naming the buys-only gate and tech-cap. The legs were given buy
-   first and are checked sells first: order 1 of 2 is the sell. With MSFT +30
-   instead, the buys alone come to 60,000 + 39,000 = 99,000, and it passes. *)
+   leave its buy alone, so a rebalance is gated on the buy alone as well as
+   whole -- one of the subsets every rebalance is gated on. AAPL -160 and
+   MSFT +80, each under the 25,000 order cap at its close (23,840 and
+   23,920):
+     whole:          AAPL 240 x 150 + MSFT 180 x 300 = 36,000 + 54,000 =  90,000  passes
+     the sell alone: AAPL 240 x 150 + MSFT 100 x 300 = 36,000 + 30,000 =  66,000  passes
+     the buy alone:  AAPL 400 x 150 + MSFT 180 x 300 = 60,000 + 54,000 = 114,000  over tech-cap
+   Refused, naming the buy alone and tech-cap. The legs were given buy first
+   and are checked sells first: order 1 of 2 is the sell. With MSFT +30
+   instead, the buy alone comes to 60,000 + 39,000 = 99,000, and it passes. *)
 let test_a_rebalance_is_gated_as_if_only_its_buys_fill () =
   with_oms
     ~f:(fun oms journal ->
@@ -522,13 +524,14 @@ let test_a_rebalance_is_gated_as_if_only_its_buys_fill () =
           (D.Oms.check_rebalance oms ~source
              ~legs:[ leg msft D.Order.Side.Buy 80; leg aapl D.Order.Side.Sell 160 ])
       in
-      contains "the buys-only gate"
+      contains "the buy alone"
         ~substring:
-          "the gate refuses the rebalance if only the orders that grow a position fill"
+          "the gate refuses the rebalance if only order 2 of 2 fills, as when the other \
+           is refused, never sent or left unfilled at the auction"
         why;
       contains "tech-cap" ~substring:"tech-cap would be breached" why;
       contains "sells first"
-        ~substring:"order 2 of 2 (MSFT buy 80 market-on-open) at 299.00" why;
+        ~substring:"(order 2 of 2 (MSFT buy 80 market-on-open) at 299.00): tech-cap" why;
       Alcotest.(check bool)
         "MSFT +30 beside the sell: passes" true
         (Result.is_ok
@@ -565,9 +568,10 @@ let test_which_orders_grow_a_position () =
    rebalance covers AAPL 150 and shorts MSFT 80 more. For a short, the buy
    shrinks and the sell grows, so the cover goes first -- and the gate asks
    what the book is if only the sell fills:
-     whole:          AAPL 180 x 150 + MSFT 180 x 300 = 27,000 + 54,000 =  81,000
-     the sell alone: AAPL 330 x 150 + MSFT 180 x 300 = 49,500 + 54,000 = 103,500
-   which is over tech-cap's 100,000: refused, naming the growing-only gate.
+     whole:           AAPL 180 x 150 + MSFT 180 x 300 = 27,000 + 54,000 =  81,000
+     the cover alone: AAPL 180 x 150 + MSFT 100 x 300 = 27,000 + 30,000 =  57,000
+     the sell alone:  AAPL 330 x 150 + MSFT 180 x 300 = 49,500 + 54,000 = 103,500
+   which is over tech-cap's 100,000: refused, naming the sell alone.
    Shorting MSFT 20 instead, the sell alone is 49,500 + 36,000 = 85,500, and it
    passes, the cover first whatever order the legs came in. *)
 let test_a_short_strategy's_rebalance_covers_first_and_is_gated_on_its_sells () =
@@ -579,10 +583,8 @@ let test_a_short_strategy's_rebalance_covers_first_and_is_gated_on_its_sells () 
           (D.Oms.check_rebalance oms ~source
              ~legs:[ leg msft D.Order.Side.Sell 80; leg aapl D.Order.Side.Buy 150 ])
       in
-      contains "the growing-only gate"
-        ~substring:
-          "the gate refuses the rebalance if only the orders that grow a position fill"
-        why;
+      contains "the sell alone"
+        ~substring:"the gate refuses the rebalance if only order 2 of 2 fills" why;
       contains "tech-cap" ~substring:"tech-cap would be breached" why;
       contains "the cover first, the short last"
         ~substring:"(order 2 of 2 (MSFT sell 80 market-on-open) at 299.00): tech-cap" why;
@@ -636,9 +638,9 @@ let test_an_order_that_crosses_zero_is_ordered_and_gated_as_growing () =
       in
       contains "the flip, gated as growing"
         ~substring:
-          "if only the orders that grow a position fill, as an unfilled or refused order \
-           that shrinks one would leave them (order 2 of 2 (AAPL buy 160 market-on-open) \
-           at 149.00): tech-cap"
+          "if only order 2 of 2 fills, as when the other is refused, never sent or left \
+           unfilled at the auction (order 2 of 2 (AAPL buy 160 market-on-open) at \
+           149.00): tech-cap"
         why;
       contains "a name twice" ~substring:"the rebalance names AAPL twice"
         (refusal
@@ -736,24 +738,23 @@ let test_a_rebalance_is_sized_and_priced_at_the_close_not_the_live_mark () =
                  Price.to_float p)))
     ()
 
-(* The final review's probe: every prefix of the send order is gated. The
+(* The final review's probe: a prefix of the send order is gated. The
    account holds AAPL -500 by hand and MSFT +350, the strategy's own (one
    fill, journaled); a long-only two-symbol strategy buys AAPL 500 and sells
    MSFT 350. Both orders shrink a position -- AAPL -500 to 0, MSFT 350 to 0
-   -- so the growing-only gate has nothing to gate, and by name the AAPL buy
-   goes first. The order cap is raised to 200,000 for this case, so no rule
-   stands in front of the gate (74,500 and 104,650 at the closes). TECH is
-   the size of a net sum:
+   -- and by name the AAPL buy goes first. The order cap is raised to
+   200,000 for this case, so no rule stands in front of the gate (74,500 and
+   104,650 at the closes). TECH is the size of a net sum:
      the unit:           AAPL 0 x 150 + MSFT   0 x 300 =       0  passes
      the AAPL buy alone: AAPL 0 x 150 + MSFT 350 x 300 = 105,000  over tech-cap
    and the AAPL buy alone is what reaches the book when the venue does not
    acknowledge the MSFT sell, or the switch is set before it. Refused, naming
-   the prefix, its order and tech-cap, and nothing journaled. With MSFT 300
-   held instead, the AAPL buy alone is 90,000, and the rebalance passes, the
-   buy first: the prefixes refuse what breaches and nothing else. (A single
-   order's only prefix is the rebalance itself, gated once: the cases above
-   are judged as they were.) *)
-let test_every_prefix_of_the_send_order_is_gated () =
+   that subset, its order and tech-cap, and nothing journaled. With MSFT 300
+   held instead, the AAPL buy alone is 90,000 and the MSFT sell alone 75,000,
+   and the rebalance passes, the buy first: the subsets refuse what breaches
+   and nothing else. (A single order's only subset is the rebalance itself,
+   gated once: the one-order cases above are judged as they were.) *)
+let test_a_prefix_of_the_send_order_is_gated () =
   let spec =
     {
       Desk_spec.default with
@@ -770,8 +771,8 @@ let test_every_prefix_of_the_send_order_is_gated () =
       journal_order journal ~n:7 ~source:"signal:exp_a01_tech:1" ~symbol:msft
         ~state:D.Order.State.Filled ~fills:[ 350.0 ] 350;
       let why = refusal (D.Oms.check_rebalance oms ~source ~legs:(legs 350)) in
-      contains "the prefix"
-        ~substring:"the gate refuses the rebalance if it stops after order 1 of 2" why;
+      contains "the prefix, as a subset"
+        ~substring:"the gate refuses the rebalance if only order 1 of 2 fills" why;
       contains "its one order, and tech-cap"
         ~substring:"(order 1 of 2 (AAPL buy 500 market-on-open) at 149.00): tech-cap" why;
       Alcotest.(check int)
@@ -787,6 +788,76 @@ let test_every_prefix_of_the_send_order_is_gated () =
             "MSFT 300: passes, the AAPL buy first" [ "AAPL"; "MSFT" ]
             (List.map checked.D.Oms.Checked_rebalance.orders ~f:(fun (r, _) ->
                  Symbol.to_string r.D.Order.Request.symbol)))
+    ()
+
+(* A later order alone is gated too: an order the venue took can still go
+   unfilled at the opening auction, or be refused at the open, so the fills
+   can be any subset of the orders, not only a prefix. The account holds
+   AAPL +700 and MSFT -300 (aapl-cap is already over its line, and nothing
+   here moves AAPL past where it is); the rebalance sells AAPL 700 and buys
+   MSFT 300. Both shrink a position, so by name the AAPL sell goes first.
+   The order cap is raised to 200,000 (104,300 and 89,700 at the closes):
+     the unit:            AAPL   0 x 150 + MSFT    0 x 300 =       0  passes
+     the AAPL sell alone: AAPL   0 x 150 + MSFT -300 x 300 =  90,000  passes (the one prefix)
+     the MSFT buy alone:  AAPL 700 x 150 + MSFT    0 x 300 = 105,000  over tech-cap
+   The MSFT buy alone is the book when the AAPL sell goes unfilled. Refused,
+   naming that subset and tech-cap. *)
+let test_a_later_order_alone_is_gated () =
+  with_oms
+    ~spec:
+      {
+        Desk_spec.default with
+        Desk_spec.trading = Desk_spec.Enabled;
+        max_order_notional = 200_000.0;
+      }
+    ~held:[ (aapl, 700.0); (msft, -300.0); (xom, -200.0) ]
+    ~f:(fun oms journal ->
+      let why =
+        refusal
+          (D.Oms.check_rebalance oms ~source
+             ~legs:[ leg aapl D.Order.Side.Sell 700; leg msft D.Order.Side.Buy 300 ])
+      in
+      contains "the MSFT buy alone"
+        ~substring:"the gate refuses the rebalance if only order 2 of 2 fills" why;
+      contains "and tech-cap"
+        ~substring:
+          "(order 2 of 2 (MSFT buy 300 market-on-open) at 299.00): tech-cap would be \
+           breached"
+        why;
+      Alcotest.(check int) "nothing journaled" 0 (journaled journal))
+    ()
+
+(* At most six orders: every combination of a rebalance's orders is gated,
+   2^n - 1 of them, and six make 63. Seven are refused before anything else
+   is asked -- the names here are not even the book's -- saying why, and
+   nothing is journaled. The combinations themselves: for three orders, the
+   unit, then each alone, then each pair, in send order; for six, 63
+   distinct non-empty sets. *)
+let test_a_rebalance_of_more_than_six_orders_is_refused () =
+  Alcotest.(check (list (list int)))
+    "three orders: seven sets, the unit first"
+    [ [ 0; 1; 2 ]; [ 0 ]; [ 1 ]; [ 2 ]; [ 0; 1 ]; [ 0; 2 ]; [ 1; 2 ] ]
+    (D.Rebalance.fill_sets 3);
+  let six = D.Rebalance.fill_sets 6 in
+  Alcotest.(check (pair int int))
+    "six orders: 63 sets, all distinct and non-empty" (63, 63)
+    ( List.length
+        (List.dedup_and_sort six ~compare:(List.compare Int.compare)
+        |> List.filter ~f:(Fn.non List.is_empty)),
+      List.length six );
+  with_oms
+    ~f:(fun oms journal ->
+      let seven =
+        List.map [ "AAPL"; "AMZN"; "GOOG"; "META"; "MSFT"; "NVDA"; "XOM" ] ~f:(fun s ->
+            leg (Symbol.of_string s) D.Order.Side.Buy 1)
+      in
+      contains "seven orders"
+        ~substring:
+          "the rebalance has 7 orders, and the desk takes at most 6: it gates every \
+           combination of a rebalance's orders that could be its fills, 127 for 7 orders \
+           and 63 for 6"
+        (refusal (D.Oms.check_rebalance oms ~source ~legs:seven));
+      Alcotest.(check int) "nothing journaled" 0 (journaled journal))
     ()
 
 (* [plan_rebalance] runs outside the order manager's queue, and
@@ -967,8 +1038,12 @@ let suite =
         `Quick test_no_targets_when_the_account_holds_less_than_the_strategy's_own;
       Alcotest.test_case "a rebalance is sized and priced at the close, not the live mark"
         `Quick test_a_rebalance_is_sized_and_priced_at_the_close_not_the_live_mark;
-      Alcotest.test_case "every prefix of the send order is gated" `Quick
-        test_every_prefix_of_the_send_order_is_gated;
+      Alcotest.test_case "a prefix of the send order is gated" `Quick
+        test_a_prefix_of_the_send_order_is_gated;
+      Alcotest.test_case "a later order alone is gated" `Quick
+        test_a_later_order_alone_is_gated;
+      Alcotest.test_case "a rebalance of more than six orders is refused" `Quick
+        test_a_rebalance_of_more_than_six_orders_is_refused;
       Alcotest.test_case "the rebalance asks again what its plan read" `Quick
         test_the_rebalance_asks_again_what_its_plan_read;
     ] )
