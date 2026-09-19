@@ -16,11 +16,13 @@
 ; Limit scopes:   (Instrument SYM) | (Sector NAME) | Portfolio
 ; Limit kinds:    (Gross_notional DOLLARS)   |exposure| may not exceed this
 ;                 (Value_at_risk DOLLARS)    portfolio VaR, Portfolio scope only
+;                 (Component_var DOLLARS)    a name's or sector's share of portfolio VaR
 ;                 (Max_drawdown FRACTION)    0.02 = 2%, Portfolio scope only
 ;
 ; Value_at_risk and Max_drawdown are portfolio statistics and this engine keeps
 ; no per-name version of either, so a sector- or instrument-scoped one is
 ; rejected at startup rather than answered with the book-level number.
+; Component_var is additive by construction, so it is valid at every scope.
 
 ((cash 1000000.0)
  (positions

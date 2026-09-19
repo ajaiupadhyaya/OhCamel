@@ -110,8 +110,11 @@ module Clock = struct
 end
 
 (* What the core has been configured to accept: which strategies exist, and
-   the last sequence number it accepted from each. A3 keeps this in memory
-   for the duration of one command; a later phase persists it. *)
+   the last sequence number it accepted from each. The registry itself is
+   assembled fresh per document, but [last_sequence] is not in-memory state:
+   `desk/intake.ml` rebuilds it from `Journal.highest_sequence`, so R5 is
+   already checked against the journal, across restarts, not against
+   anything held only for one command. *)
 type registry = { strategies : string list; last_sequence : (string * int) list }
 type universe = Ohcamel.Types.Symbol.t list
 type verdict = Accepted of t | Rejected of Rule.t * string

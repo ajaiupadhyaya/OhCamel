@@ -24,7 +24,7 @@ received.
 | **R5** | `sequence` is greater than the last accepted sequence for that strategy | a replayed, duplicated, or out-of-order file |
 | **R6** | `validation.status` is `pass` | an unvalidated or failed strategy. These are **advisory**: the core logs them with the reason and never sizes them |
 | **R7** | every symbol is in the universe; each \|weight\| ≤ 1; Σ\|weight\| ≤ 1 + 1e-9 | malformed or over-levered targets |
-| **R8** | `data_hash` equals the core's own hash of its bars up to `as_of` | a signal computed on different data than the core holds. *Phase 2*, when the core keeps a bar store |
+| **R8** | `data_hash` equals the core's own hash of its bars up to `as_of` | a signal computed on different data than the core holds. Not yet enforced (ruling 3); the finish plan's Stage 5 decides, from evidence, whether the research service's bars and the core's agree, and only then builds and enforces the check (ruling 16) |
 
 Rules are applied in order and the first failure is reported. A document that
 fails R2 and R6 is reported as R2.

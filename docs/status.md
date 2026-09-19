@@ -48,7 +48,7 @@ strategy is `live` anywhere in this repository.
 | Cost | $24/month, metered hourly, capped |
 | Proxy / TLS | Caddy, Let's Encrypt, HTTP→HTTPS 308, HSTS. Only Caddy has a host port; the engines are on an internal Docker network |
 | DNS | Porkbun. Two A records, `ohcamel` and `live.ohcamel`, on a domain whose apex is unrelated (the owner's portfolio site) |
-| Deployed | 2026-09-17, both hosts, from `e0f5a71` (phase A2: the order manager -- the twelve pre-trade rules, the book's own limits re-evaluated on a fork of the live graph, the journal before the wire, reconciliation on restart, the kill switch the desk obeys, costs per fill, and the page's switch, ticket and blotter) -- the demo reports it as `build.git_sha` on `/api/ops`, built `2026-09-17T17:55:08Z` -- verified by the production smoke suite: 26 passed, 0 failed, 0 skipped, and both engines report healthy. On the live host the engine opened `/data/desk.db` with three session closes recorded (the latest 2026-09-16), read the paper account, and its first sync succeeded, which restored those three into the equity trail; it logs `Alpaca paper, read side` and `trading off -- the book does not enable trading`, so the live desk previews and places nothing until `book.sexp` gains a `desk` block with `(trading enabled)`. The public demo serves the whole desk against its simulated venue: its own trader's orders and fills, the costs of each, and a switch that trips on `nvda-cap` and resets itself 90 s after the limit clears. Not yet deployed: `4e04b29`, the documented `desk` block in `book.example.sexp` and the test that parses it. Previous deploy, and the rollback reference: `cf79764` (2026-09-13, phase A1: the journal and the paper-account sync) |
+| Deployed | 2026-09-17, both hosts, from `e0f5a71` (phase A2: the order manager -- the twelve pre-trade rules, the book's own limits re-evaluated on a fork of the live graph, the journal before the wire, reconciliation on restart, the kill switch the desk obeys, costs per fill, and the page's switch, ticket and blotter) -- the demo reports it as `build.git_sha` on `/api/ops`, built `2026-09-17T17:55:08Z` -- verified by the production smoke suite: 26 passed, 0 failed, 0 skipped, and both engines report healthy. On the live host the engine opened `/data/desk.db` with three session closes recorded (the latest 2026-09-16), read the paper account, and its first sync succeeded, which restored those three into the equity trail; it logs `Alpaca paper, read side` and `trading off -- the book does not enable trading`, so the live desk previews and places nothing until `book.sexp` gains a `desk` block with `(trading enabled)`. The public demo serves the whole desk against its simulated venue: its own trader's orders and fills, the costs of each, and a switch that trips on `nvda-cap` and resets itself 90 s after the limit clears. Not yet deployed: `main` at `b6132c6` -- phase W2 (`b9471da`: the five-page site navigation and Figure 1's two bands) and phase A3 (the signal contract, the intake, and the Research page), including the documented `desk` block in `book.example.sexp` (`4e04b29`) and the test that parses it -- until the owner redeploys with the `live` profile. Previous deploy, and the rollback reference: `cf79764` (2026-09-13, phase A1: the journal and the paper-account sync) |
 
 Resource use at rest is small enough to be worth stating so nobody adds a
 bigger box for the wrong reason: the engine sits at about 41 MB and six percent
@@ -181,7 +181,7 @@ below re-enters the project-local opam switch, so they work from a clean shell.
 | `synthetic` (default) | `run` | nothing | The fastest way to see the numbers without a browser. Sixty events over a generated book; prints the whole book after each, a breach and recovery, the decomposition, and the recomputation-count table. Never starts Async |
 | `stress` | `stress` | nothing | The scenario suite against the synthetic book |
 | `backtest` | `backtest` | nothing | The coverage battery over three deterministic series, three estimators each |
-| `backtest-crisis` | `backtest-crisis` | nothing (committed cache) | The same battery over COVID and 2022 |
+| `backtest-crisis` | `backtest-crisis` | nothing (committed cache) | The same battery over the GFC, COVID and the 2022 rate shock -- three windows |
 | `options` | `options` | nothing | The options book, Greeks, tenor buckets, and the two-clocks walk |
 | `garch` | `garch` | nothing | The measurement behind not wiring GARCH in |
 | `demo [port]` | `demo` | nothing | The dashboard on a synthetic feed. This is what the public URL runs |
@@ -359,8 +359,9 @@ O(n²) ones; what incrementality removes is the O(n²·w) covariance rebuild:
 From the production smoke run that verified the deployment: 234 nodes
 recomputed across a two-second gap, 52 distinct SSE frames over twenty seconds.
 
-Size, counted on 2026-09-13: about 11,300 lines of OCaml in `lib/`, 2,000 in
-`desk/`, 1,700 in `bin/` and 13,700 in `test/`.
+Size, counted on 2026-09-19 (`find DIR -name '*.ml' -o -name '*.mli' | xargs cat
+| wc -l`): about 11,600 lines of OCaml in `lib/`, 9,650 in `desk/` (five
+`.mli` files included), 1,940 in `bin/` and 23,900 in `test/`.
 
 ## The invariants
 
@@ -417,22 +418,47 @@ recorded), and the deployment design.
 
 ## Next
 
-**The desk's remaining phases**, in the order the design lays out
-(`docs/superpowers/specs/2026-09-12-the-desk-design.md` §5):
+**The remaining work**, under the plan that supersedes the A4/A5/A6 phases
+named in earlier revisions of this file:
+[`docs/superpowers/specs/2026-09-19-the-finish.md`](superpowers/specs/2026-09-19-the-finish.md),
+staged so each stage ships, merges to `main`, and deploys before the next
+begins:
 
-- **A4** — risk depth: the long return window, the factor model, liquidity
-  and impact, indicative option marks from Alpaca, GARCH wired in as a third
-  estimator, Cornish–Fisher VaR.
-- **A5** — self-validation: the coverage battery run on the live VaR record
-  from the journal, the Basel zone shown on the page, and the desk's own
-  record compared against EXP-A01's backtest once enough sessions exist
-  (the Research page's "against live" section is a placeholder sentence
-  until then). A candidate to add to the battery: a buy-and-hold benchmark
-  for SPY and TLT -- EXP-A01's battery computes none, so its hypothesis's
-  drawdown claim (that the rule reduces drawdown relative to holding the
-  index) was never tested by any gate.
-- **A6** — operations: the image built and pushed in CI so the droplet only
-  pulls, a nightly journal backup, the desk added to the smoke suite.
+- **Stage 0 — Baseline** (`final/s0-baseline`, cut from `main` at `b6132c6`):
+  the earlier phases' kernel commits cherry-picked in, this document's own
+  stale facts corrected, and a `lint` CI job running `make check-counts`.
+- **Stage 1 — Operations** (`desk/a6-ops`, design §3.15): the journal-backup
+  CLI and its retention, `check-book`, the market clock read onto the wire,
+  the host watchdog that reads it, and CI building and publishing both
+  images so the droplet only pulls.
+- **Stage 2A — the long window and the estimators** (`desk/a4-long`): the
+  long return window, GARCH wired in as a third estimator, and
+  Cornish–Fisher VaR -- the stage whose deploy starts the `garch` and
+  `cornish_fisher` forecast rows accruing on the live host.
+- **Stage 2B — the factor model and liquidity** (`desk/a4-depth`): the
+  factor model, the factor-exposure limit, liquidity and impact, and the
+  Risk page's remaining sections.
+- **Stage 3 — Correctness**: fixes across `bin/main.ml`, `web/execution.js`,
+  `desk/sim_venue.ml` and the embedded-assets tests, found by the earlier
+  phases' own whole-branch reviews.
+- **Stage 4 — Two lanes** (`desk/a4-options` then `desk/a5-validation`):
+  indicative option marks from Alpaca, and self-validation -- the coverage
+  battery run on the live VaR record from the journal, the Basel zone shown
+  on the page, and the desk's own record compared against EXP-A01's
+  backtest once enough sessions exist (the Research page's "against live"
+  section is a placeholder sentence until then). Buy-and-hold for SPY and
+  TLT is added as a report-only benchmark, never a gate (ruling 17) --
+  EXP-A01's battery computes none today, so its hypothesis's drawdown claim
+  was never tested by any gate.
+- **Stage 5 — Research completion** (`final/s5-research`): R8, the repeat
+  data-hash check, decided by evidence and, if the sources agree, enforced
+  only after it has been observed (ruling 16).
+- **Stage 6 — Finish** (`final/s6-finish`): the documents brought into
+  agreement with the code -- correcting this file's own stale facts is part
+  of that -- and the plan's own closing audit.
+
+Owner steps (`O1` through `O25`) interleave between the stages above; the
+ones outstanding as this file was last edited are listed next.
 
 ## What the owner must do on the live host
 
@@ -471,6 +497,14 @@ happened by itself, and none of it will until the owner does it by hand:
     reason, which is the live-host half of the spec's acceptance line that
     no task here could demonstrate ahead of time -- see *The spec's
     acceptance*, above.
+- **The three README screenshots are stale** (`docs/media/dashboard.png`,
+  `demo.png`, `stress.png`), last captured 2026-09-10, before W1, W2, phase
+  A2 and phase A3, so they predate the site's navigation, Figure 1's orders
+  and signals bands, and the Research page entirely. No task before Stage 6
+  can retake them -- they are pixels from a running browser at a finished
+  site, not a fact a document can state today -- so they stay as they are
+  until the finish plan's own closing audit recaptures them from the
+  finished demo.
 
 ## Operating it
 

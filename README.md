@@ -899,6 +899,45 @@ as top-level modules by `include_subdirs unqualified` in [`lib/dune`](lib/dune),
 because it is not a separable component. Its entire job is to write into input
 cells.
 
+**`desk/`** is a second library the kernel cannot depend on -- invariant 6,
+checked by CI, which greps `lib/` for the trading host and the orders path.
+[`desk/oms.ml`](desk/oms.ml) is the order manager: it journals an order as
+`Pending_submit` before the request that submits it is sent (invariant 10),
+asks [`lib/gate.ml`](lib/gate.ml) (the pre-trade check, read on a fork of the
+live graph so there is no second implementation of a limit to drift from the
+live one) and [`desk/rules.ml`](desk/rules.ml) before an order exists at a
+venue (invariant 12), and turns a venue's answer into an event for
+[`desk/order.ml`](desk/order.ml), a pure state machine that does no IO, reads
+no clock and knows no venue. [`desk/venue.ml`](desk/venue.ml) is the
+interface a venue satisfies, as a record of closures chosen at run time:
+[`desk/sim_venue.ml`](desk/sim_venue.ml) on the demo host and in tests,
+[`desk/alpaca_paper.ml`](desk/alpaca_paper.ml) and
+[`desk/alpaca_trade.ml`](desk/alpaca_trade.ml) (assembled with the
+order-updates socket in [`desk/trade_updates.ml`](desk/trade_updates.ml)) on
+the live host, where invariant 9 -- paper only, by construction -- is
+enforced. [`desk/journal.ml`](desk/journal.ml) is the one SQLite file that is
+this project's persistence (invariant 13): every order, its events and
+fills, and each session's close, marks and VaR forecasts;
+[`desk/reconcile.ml`](desk/reconcile.ml) reads it back at restart and asks
+the venue what a process that stopped mid-order missed. Rounding out the
+order path: [`desk/halt.ml`](desk/halt.ml), the kill switch the desk obeys;
+[`desk/tca.ml`](desk/tca.ml), which turns a fill into shortfall, delay and
+slippage in basis points against the decision price; and
+[`desk/book_sync.ml`](desk/book_sync.ml), which reconciles the book file's
+declared universe against what the venue actually holds.
+[`desk/desk.ml`](desk/desk.ml) and [`desk/desk_routes.ml`](desk/desk_routes.ml)
+are the read side and the HTTP routes an extension of the kernel's server
+serves.
+
+Since phase A3, [`desk/contract.ml`](desk/contract.ml) (rules R1 through R7,
+ported from Alpha) and [`desk/intake.ml`](desk/intake.ml) judge each signal
+file `research/` writes against the desk's own session clock, never
+wall-clock time, and [`desk/rebalance.ml`](desk/rebalance.ml) turns an
+accepted `live` signal's weights into whole shares --
+`trunc(weight × capital_fraction × equity / price)`, toward zero -- which
+`desk/oms.ml`'s `propose_rebalance` sends as one gated market-on-open
+rebalance through the same rules, gate and journal as a ticket.
+
 ### A trail, and not a database
 
 The dashboard used to show one number per metric, and one number is a state

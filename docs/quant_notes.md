@@ -659,7 +659,95 @@ looking like a defensible choice.
 
 ---
 
-## 10. Where each of these is asserted
+## 10. Execution: transaction costs, the gate and sizing
+
+### 10.1 Transaction cost analysis (TCA)
+
+`desk/tca.ml` — `Costs.t`, `of_fill`, `Summary.t`, `summarize`, `by_symbol`.
+
+Cost is measured from the **decision price** $P_d$, the graph's mark when the
+order was proposed, not from the venue's mark at submission -- $P_d$ is the
+only price the desk chose at. With side sign $s = +1$ for a buy, $-1$ for a
+sell, and fill price $P_f$:
+
+$$\text{shortfall}_{bps} = s \cdot \frac{P_f - P_d}{P_d} \cdot 10^4$$
+
+Perold's (1988) implementation-shortfall decomposition splits it in two when
+a bid/ask quote is available at submission ($P_b < P_a$, mid
+$P_m = (P_a+P_b)/2$):
+
+$$\text{delay}_{bps} = s \cdot \frac{P_m - P_d}{P_d}\cdot 10^4 \qquad
+\text{slippage}_{bps} = s \cdot \frac{P_f - P_m}{P_m}\cdot 10^4$$
+
+Delay and slippage add to shortfall only to first order, because each is
+normalised by a different denominator ($P_d$ and $P_m$); both are reported
+rather than one derived from the other. The realised half-spread at
+submission, $(P_a - P_b)/(2 P_m) \cdot 10^4$, is compared against the book's
+own modelled half-spread (`spread_bps`) to give `versus_model_bps` -- how
+much of the slippage the cost model already priced in. Without a quote, only
+shortfall is reported.
+
+`summarize` reduces a list of fills to count, mean, median and the
+**quantity-weighted mean** of shortfall,
+$\sum_i q_i\,\text{shortfall}_i \big/ \sum_i q_i$, plus the mean of
+`versus_model_bps`; `by_symbol` groups the same reduction per symbol.
+Per-fill rows stay on the wire as detail (ruling 15): the order is the
+primary unit, and a fill is what a reader can drill into from it.
+
+### 10.2 The pre-trade gate: created, worsened, cleared
+
+`lib/gate.ml` — `check`, `Verdict.t`.
+
+Design §3.7 and invariant 12: a proposed set of fills is read against a
+**fork** of the live graph, never against a second implementation of a
+limit. Write $B$ for a limit's breach state before the fills and $A$ for the
+same limit after (each is `None` when the fork cannot evaluate it, else a
+bool and an excess magnitude). A limit is:
+
+- **created** when $A$ is breached and $B$ was not;
+- **worsened** when both are breached and
+  $\text{excess}(A) > \text{excess}(B) + \varepsilon$, with
+  $\varepsilon = 10^{-9}$ absorbing float rounding in a limit the fills did
+  not touch;
+- **cleared** when $B$ was breached and $A$ is evaluable and not breached;
+- **unevaluable** when $A$ is `None` (a VaR still warming up, say) --
+  reported, and counted as neither a pass nor a fail.
+
+The proposal **passes** iff `created` and `worsened` are both empty: a
+proposal that reduces a breach still passes, breached, because a desk must
+be able to trade *out of* a breach without the gate holding it exactly
+where it should not stay. An optional `base` -- fills applied to the fork
+before the proposal's own -- lets a caller judge a proposal against the book
+as it would stand if a resting order filled first; with no base, "before"
+is the live graph exactly as it was.
+
+### 10.3 Sizing a live signal into whole shares
+
+`desk/rebalance.ml` — the module's own header states this formula;
+`desk/oms.ml`'s `propose_rebalance` sends the result as one gated,
+market-on-open rebalance.
+
+For a strategy with capital fraction $f \in (0, 1]$, book equity $E$, a
+symbol's signal weight $w$ (0 when the signal does not name that symbol) and
+its opening-auction price $p$ (the last recorded session close):
+
+$$\text{target (shares)} = \operatorname{trunc}\!\left(\frac{w \cdot f \cdot E}{p}\right)
+\qquad \text{order} = \text{target} - \text{current}$$
+
+truncated **toward zero**, so a target never asks for more than the
+weight's own share of capital. `current` is the strategy's *own* position --
+the net of the desk's fills whose source is `signal:<slug>:*` -- never the
+account's whole position in that symbol, so going flat sells exactly what
+the strategy bought and never a share the owner holds by hand. `order = 0`
+emits no order. Every input that cannot be trusted -- an unknown equity or
+price, a fill history the desk cannot reconstruct, a strategy position that
+is not a whole number of shares, a target too large to represent, or an
+account holding less than the strategy's own position in the same direction
+-- yields no target and a stated reason, never a guess.
+
+---
+
+## 11. Where each of these is asserted
 
 | Result | Test |
 |---|---|
@@ -685,3 +773,6 @@ looking like a defensible choice.
 | A calendar spread reads flat in total and opposite in buckets | `test_options_graph.ml` |
 | A position migrates between buckets as the valuation clock advances | `test_options_graph.ml` |
 | Fork isolation under random scenarios | `test_properties.ml`, `test_stress.ml` |
+| TCA: shortfall/delay/slippage hand values; quantity-weighted mean | `test_tca.ml` |
+| Gate: created/worsened/cleared/unevaluable classification; base semantics | `test_gate.ml` |
+| Sizing: trunc-toward-zero target; every "no target" refusal reason | `test_rebalance.ml` |

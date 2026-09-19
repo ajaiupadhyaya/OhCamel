@@ -229,7 +229,7 @@ jobs:
         run: opam exec -- dune runtest --force
 
       # The credential-free modes, end to end. `make test` covers the units;
-      # this covers the four things a reader is actually told to run, and it is
+      # this covers the six things a reader is actually told to run, and it is
       # the step that would catch a committed crisis cache going missing or a
       # printf format string that only fails at run time.
       - name: The credential-free modes run
@@ -335,11 +335,11 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # A floor, not a target. The README explains why the number is bimodal —
-      # the pure numeric core sits above 90% and the IO edges sit near 40%,
-      # because exercising them needs a network and this project declines to
-      # fake one. The floor exists so that deleting tests is noticed; chasing
-      # the number upward by testing the feed against a mock would make it go
-      # up and mean less.
+      # the split sits at 80% of each file's unrounded figure, and the lowest
+      # files in the IO column run down to 13%, because exercising them needs
+      # a network and this project declines to fake one. The floor exists so
+      # that deleting tests is noticed; chasing the number upward by testing
+      # the feed against a mock would make it go up and mean less.
       - name: Coverage floor
         run: |
           percent=$(opam exec -- bisect-ppx-report summary --coverage-path _coverage \
