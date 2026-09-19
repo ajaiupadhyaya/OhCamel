@@ -21,6 +21,7 @@ let order ?(events = []) qty =
       side = Order.Side.Buy;
       qty;
       kind = Order.Kind.Market;
+      tif = Order.Tif.Day;
     }
   in
   List.fold events ~init:(Order.create request) ~f:(fun o e -> fst (Order.apply o e))

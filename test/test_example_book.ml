@@ -79,6 +79,51 @@ let test_the_example_book_registers_two_advisory_strategies () =
         "max_age 3, as written" [ 3; 3 ]
         (List.map strategies ~f:(fun s -> s.S.Strategy.max_age))
 
+(* One cost configuration (Task 15). research/config/friction_v1.yaml is the
+   file the backtest was costed with, and EXP-A01's pre-registration reads its
+   spreads as the whole round-trip spread, "halved per fill". The book's
+   spread_bps is a per-fill half-spread -- what one fill pays from the mid
+   (Oms.model_half_spread_bps) -- so for each name the strategies trade, the
+   book's number is the file's divided by 2: SPY 2.0 / 2 = 1.0 and TLT 3.0 /
+   2 = 1.5. The file's own comment calls its numbers half-spreads; it
+   contradicts both fdq's code and the hypothesis, and the hypothesis
+   governs (the ledger's ruling 11b). The file is read as the lines under
+   spread_bps_by_symbol, "  SYM: number", which is its whole shape there. The
+   demo's simulated venue keeps a flat 5 bps: a departure docs/status.md
+   records, because the demo is never evidence. *)
+let friction_path = "../research/config/friction_v1.yaml"
+
+let friction_spreads () =
+  let lines = In_channel.read_lines friction_path in
+  match
+    List.drop_while lines ~f:(fun l ->
+        not (String.equal (String.rstrip l) "spread_bps_by_symbol:"))
+  with
+  | [] -> Alcotest.failf "%s has no spread_bps_by_symbol" friction_path
+  | _ :: rest ->
+      List.take_while rest ~f:(String.is_prefix ~prefix:"  ")
+      |> List.map ~f:(fun l ->
+          match String.lsplit2 (String.strip l) ~on:':' with
+          | Some (sym, v) -> (sym, Float.of_string (String.strip v))
+          | None -> Alcotest.failf "%s: unreadable line %S" friction_path l)
+
+let test_the_book's_half_spreads_are_friction_v1's_halved () =
+  let book = load () in
+  let file = friction_spreads () in
+  List.iter
+    [ ("SPY", 2.0); ("TLT", 3.0) ]
+    ~f:(fun (sym, full) ->
+      Alcotest.(check (option (float 0.0)))
+        (sprintf "friction v1's %s round-trip spread, as the file says" sym)
+        (Some full)
+        (List.Assoc.find file sym ~equal:String.equal));
+  List.iter [ "SPY"; "TLT" ] ~f:(fun sym ->
+      let file_bps = List.Assoc.find_exn file sym ~equal:String.equal in
+      Alcotest.(check (option (float 0.0)))
+        (sprintf "the book's %s half-spread is the file's / 2" sym)
+        (Some (file_bps /. 2.0))
+        (List.Assoc.find book.Book.desk.Desk_spec.spread_bps sym ~equal:String.equal))
+
 let suite =
   ( "example book",
     [
@@ -86,4 +131,6 @@ let suite =
         test_the_example_book_parses_and_ships_inert;
       Alcotest.test_case "the example book registers two advisory strategies" `Quick
         test_the_example_book_registers_two_advisory_strategies;
+      Alcotest.test_case "the book's half-spreads are friction v1's, halved" `Quick
+        test_the_book's_half_spreads_are_friction_v1's_halved;
     ] )

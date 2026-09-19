@@ -1112,11 +1112,11 @@ deploy user alone, and reach the container as environment, never as a layer.
 
 ## What's verified
 
-`make test` runs 556 tests, plus eighteen in `test/desk_async` that run with the
-scheduler -- the order manager's cases, the transport's bound, the signal
-intake's minute loop and that suite's own count -- all hermetic — no network,
-no credentials, and nothing that waits on the wall clock: the scheduler's cases
-move a clock of their own. They cover the numerics against hand-computed values, the wire format,
+`make test` runs 576 tests, plus twenty-three in `test/desk_async` that run with
+the scheduler -- the order manager's cases, a live strategy's rebalance, the
+transport's bound, the signal intake's minute loop and that suite's own count --
+all hermetic — no network, no credentials, and nothing that waits on the wall
+clock: the scheduler's cases move a clock of their own. They cover the numerics against hand-computed values, the wire format,
 the alerting state machine, and the recomputation counts that make the
 graph's shape an assertion rather than a claim.
 

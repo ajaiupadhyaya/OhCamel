@@ -21,6 +21,20 @@ open Ohcamel.Types
 let name = "simulated"
 let base_date = Date.create_exn ~y:2026 ~m:Month.Jan ~d:1
 
+(* The session the venue's clock reports. [Rolling] is the demo's: always
+   open, one session of [session_length] after another. A test sets the other
+   two with [set_session] (Task 15), to put the venue after a close -- where a
+   market-on-open order is taken and held -- and then into the session that
+   opens, where it fills. [Closed] names the next open and the close after it;
+   [Open] names this session's close and the next open, as a venue's clock
+   does. *)
+module Session = struct
+  type t =
+    | Rolling
+    | Closed of { next_open : Time_ns.t; next_close : Time_ns.t }
+    | Open of { next_close : Time_ns.t; next_open : Time_ns.t }
+end
+
 type t = {
   opened_at : Time_ns.t;
   session_length : Time_ns.Span.t;
@@ -38,6 +52,7 @@ type t = {
   mutable by_client : string String.Map.t;
   (* None until [trade] is called; see [emit]. *)
   mutable updates : Venue.Update.t Pipe.Writer.t option;
+  mutable session : Session.t;
 }
 
 let create ?(session_length = Time_ns.Span.of_min 5.0)
@@ -58,7 +73,10 @@ let create ?(session_length = Time_ns.Span.of_min 5.0)
     orders = String.Map.empty;
     by_client = String.Map.empty;
     updates = None;
+    session = Session.Rolling;
   }
+
+let set_session t session = t.session <- session
 
 let positions (t : t) : Venue.Position.t list =
   Map.to_alist t.positions
@@ -104,25 +122,41 @@ let quote (t : t) (symbol : Symbol.t) : Venue.Quote.t option =
         at = t.now ();
       })
 
-(* The k-th session (k >= 1) closes at opened_at + k x length and is dated
-   base_date + (k - 1) days; the next close is the first strictly after now. *)
+(* A session a test set is reported as set, dated by its close's UTC date:
+   the test chooses the times, and nothing here pretends to know the
+   exchange's calendar. [Rolling]: the k-th session (k >= 1) closes at
+   opened_at + k x length and is dated base_date + (k - 1) days; the next
+   close is the first strictly after now. *)
 let clock (t : t) : Venue.Session_clock.t =
   let now = t.now () in
-  let elapsed = Time_ns.diff now t.opened_at in
-  let k =
-    if Time_ns.Span.( < ) elapsed Time_ns.Span.zero then 1
-    else Float.iround_down_exn (Time_ns.Span.( // ) elapsed t.session_length) + 1
+  let set ~is_open ~next_open ~next_close =
+    {
+      Venue.Session_clock.now;
+      is_open;
+      next_open;
+      next_close;
+      next_close_date = Time_ns.to_date next_close ~zone:Timezone.utc;
+    }
   in
-  let next_close =
-    Time_ns.add t.opened_at (Time_ns.Span.scale t.session_length (Float.of_int k))
-  in
-  {
-    Venue.Session_clock.now;
-    is_open = true;
-    next_open = now;
-    next_close;
-    next_close_date = Date.add_days base_date (k - 1);
-  }
+  match t.session with
+  | Session.Closed { next_open; next_close } -> set ~is_open:false ~next_open ~next_close
+  | Session.Open { next_close; next_open } -> set ~is_open:true ~next_open ~next_close
+  | Session.Rolling ->
+      let elapsed = Time_ns.diff now t.opened_at in
+      let k =
+        if Time_ns.Span.( < ) elapsed Time_ns.Span.zero then 1
+        else Float.iround_down_exn (Time_ns.Span.( // ) elapsed t.session_length) + 1
+      in
+      let next_close =
+        Time_ns.add t.opened_at (Time_ns.Span.scale t.session_length (Float.of_int k))
+      in
+      {
+        Venue.Session_clock.now;
+        is_open = true;
+        next_open = now;
+        next_close;
+        next_close_date = Date.add_days base_date (k - 1);
+      }
 
 let read (t : t) : Venue.Read.t =
   {
@@ -195,7 +229,14 @@ let step (t : t) : Venue.Update.t list =
   let now = t.now () in
   Map.to_alist t.orders
   |> List.filter_map ~f:(fun (id, (o, r, due)) ->
-      if (not (String.equal o.Venue.Venue_order.status "new")) || Time_ns.( < ) now due
+      (* Nothing trades while a set session is closed: a market-on-open order
+         taken after the close waits there for the session a test opens, and
+         then fills as a market order does, half a spread from the mark --
+         every fill here pays the spread, the opening auction's included. *)
+      let closed = match t.session with Session.Closed _ -> true | _ -> false in
+      if
+        (not (String.equal o.Venue.Venue_order.status "new"))
+        || Time_ns.( < ) now due || closed
       then None
       else
         match t.marks o.Venue.Venue_order.symbol with

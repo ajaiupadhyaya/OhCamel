@@ -51,6 +51,20 @@ module Kind = struct
   let limit_price = function Market -> None | Limit p -> Some p
 end
 
+(* How long an order is good for. Day is every order a person sends: it works
+   in the regular session and dies at its close. Opg is market-on-open: sent
+   after a close, it waits for the next session's opening auction and is
+   worked there or not at all. Only a live strategy's rebalance sends one
+   (desk/oms.ml, [propose_rebalance]), because a signal computed at the close
+   is actionable at the next open and not before (the charter's no-lookahead
+   rule). The strings are the journal's and Alpaca's own words. *)
+module Tif = struct
+  type t = Day | Opg [@@deriving sexp, compare, equal, enumerate]
+
+  let to_string = function Day -> "day" | Opg -> "opg"
+  let of_string s = List.find all ~f:(fun t -> String.equal (to_string t) s)
+end
+
 module State = struct
   type t =
     | Rejected_pre_trade
@@ -92,14 +106,16 @@ module State = struct
 end
 
 module Request = struct
-  (* Whole shares, day orders, regular hours (spec §3.6): an int makes a
-     fractional quantity unrepresentable rather than merely rejected. *)
+  (* Whole shares (spec §3.6): an int makes a fractional quantity
+     unrepresentable rather than merely rejected. Day orders in the regular
+     session, unless [tif] says Opg -- which only a rebalance sets. *)
   type t = {
     client_order_id : Ids.Client_order_id.t;
     symbol : Symbol.t;
     side : Side.t;
     qty : int;
     kind : Kind.t;
+    tif : Tif.t;
   }
   [@@deriving sexp_of, compare, equal]
 end

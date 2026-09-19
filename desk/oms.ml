@@ -31,6 +31,14 @@
    ONE miss is not the answer: a request can still be arriving, so a lookup
    that finds nothing while a delay remains only schedules the next one.
 
+   ONE SUBMIT SITE. [submit_journaled] is the only place in this module, and
+   so in the desk, that calls the venue's submit (a test counts it). A ticket
+   ([propose]) and a live strategy's rebalance ([propose_rebalance]) both
+   journal first and then hand each order to it, and it asks, at that
+   instant, what time can change since the rules ran -- the switch, the
+   trading half, the book's currency and the session ([pre_wire]) -- before
+   the wire.
+
    FILLS ARE FACTS (invariant 11). A fill is journaled whatever state its
    order is in. The graph's position is then set from the venue's
    position_qty when the venue gives one, and the account is re-read
@@ -198,7 +206,20 @@ let live_mark t symbol =
   then Some (Graph.price t.graph symbol)
   else None
 
-let context t ~(symbol : Symbol.t) : Rules.Context.t =
+(* The newest recorded session's close for [symbol]: a market-on-open
+   order's price, for the rules, the gate and the sizing alike. *)
+let opening_price t symbol =
+  Option.map (Journal.latest_close t.journal symbol) ~f:(fun (date, close) ->
+      (date, Price.of_float close))
+
+(* The orders proposed within the duplicate rule's window, as of [now]. *)
+let recent_within t ~now =
+  List.filter t.recent ~f:(fun r ->
+      Float.( < )
+        (Time_ns.Span.to_sec (Time_ns.diff now r.Rules.Recent.at))
+        t.spec.Desk_spec.duplicate_window_s)
+
+let context ?(tif = Order.Tif.Day) t ~(symbol : Symbol.t) : Rules.Context.t =
   let now = t.now () in
   let universe = Symbol.Set.of_list (Graph.symbols t.graph) in
   let held = Set.mem universe symbol in
@@ -219,6 +240,11 @@ let context t ~(symbol : Symbol.t) : Rules.Context.t =
     halted = Halt.reason t.halt;
     session = t.session;
     mark = live_mark t symbol;
+    (* Read only for an order that is priced at it: a ticket's context is
+       built on every preview, and needs no journal read. *)
+    close =
+      (match tif with Order.Tif.Opg -> opening_price t symbol | Order.Tif.Day -> None);
+    new_york = Lazy.force Desk_time.new_york;
     stale =
       held
       && (listed health.Graph.Feed_health.stale
@@ -227,11 +253,7 @@ let context t ~(symbol : Symbol.t) : Rules.Context.t =
       (match t.adv with
       | Adv.Fixed n -> Some n
       | Adv.From_venue -> Map.find t.adv20 symbol);
-    recent =
-      List.filter t.recent ~f:(fun r ->
-          Float.( < )
-            (Time_ns.Span.to_sec (Time_ns.diff now r.Rules.Recent.at))
-            t.spec.Desk_spec.duplicate_window_s);
+    recent = recent_within t ~now;
     open_orders = Map.length t.open_;
     now;
   }
@@ -428,8 +450,10 @@ end
    state and records the event beside an anomaly), so the journal is the
    record that the venue is done with it.
 
-   And only while its session lasts. Every order this desk sends is a day
-   order, and a day order does not outlive its session's close. The bound is
+   And only while its session lasts. A day order does not outlive its
+   session's close, and a market-on-open order, sent after one close, is
+   worked at the next open and not after it -- before the next close either
+   way. The bound is
    the latest recorded session's DATE, not when that row was RECORDED
    (Session_close writes it a few minutes after the close): a close recorded
    late, during the following session -- Session_close missed one and caught
@@ -614,6 +638,21 @@ let gate_scenarios t ~(fills : Gate.Fill.t list) : (Scenarios.t, string) Result.
           in
           (scenario, Gate.check t.graph ~base ~fills)))
 
+(* The gate for orders at their decision prices, each signed by its side:
+   what [preview] runs for a ticket's one order and [check_rebalance] for a
+   rebalance's many, in one call, so a rebalance is gated as a unit. *)
+let gate_orders t (priced : (Order.Request.t * Price.t) list) =
+  gate_scenarios t
+    ~fills:
+      (List.map priced ~f:(fun ((r : Order.Request.t), price) ->
+           {
+             Gate.Fill.symbol = r.Order.Request.symbol;
+             qty =
+               Qty.of_float
+                 (Order.Side.sign r.Order.Request.side *. Float.of_int r.Order.Request.qty);
+             price;
+           }))
+
 (* The rules and the gate, and nothing created. The gate runs whenever there
    is a price to run it at, even after a rule has failed: someone fixing a
    ticket wants to know what the trade would do to the limits as well as why
@@ -636,13 +675,7 @@ let preview t (ticket : Ticket.t) : Preview.t =
     | Some price
       when Set.mem ctx.Rules.Context.universe ticket.Ticket.symbol
            && ticket.Ticket.qty > 0 ->
-        let qty =
-          Qty.of_float
-            (Order.Side.sign ticket.Ticket.side *. Float.of_int ticket.Ticket.qty)
-        in
-        Some
-          (gate_scenarios t
-             ~fills:[ { Gate.Fill.symbol = ticket.Ticket.symbol; qty; price } ])
+        Some (gate_orders t [ (request, price) ])
     | _ -> None
   in
   { Preview.request; failures = Rules.check ctx request; gate; decision_price }
@@ -902,6 +935,95 @@ let resolve t (client : Ids.Client_order_id.t) ~(delays : Time_ns.Span.t list) :
       in
       go delays)
 
+(* What time can change between the rules and the wire, asked again at the
+   instant an order is about to leave: the switch (a kill sets it outside the
+   sequencer, so it can land while a quote or an earlier submit is awaited),
+   the trading half, the book's currency (a book current when the rules ran
+   can age past its window), and the session -- a day order's regular
+   session, a market-on-open order's window (Rules.session_refusal, the rules'
+   own function). The first that fails is the refusal, in the rules' words. *)
+let pre_wire t ~(tif : Order.Tif.t) : (Venue.Trade.t, Rules.Failure.t) Result.t =
+  let fail rule why = Error { Rules.Failure.rule; why } in
+  match (Halt.reason t.halt, t.trade) with
+  | Some why, _ -> fail "kill_switch" why
+  | None, Error why -> fail "trading" why
+  | None, Ok _ when not (t.book_is_current ()) -> fail "trading" Session_close.not_current
+  | None, Ok trade -> (
+      match
+        Rules.session_refusal ~tif
+          ~zone:(Lazy.force Desk_time.new_york)
+          ~session:t.session ~now:(t.now ())
+      with
+      | None -> Ok trade
+      | Some why -> fail "session" why)
+
+let reason (f : Rules.Failure.t) =
+  sprintf "%s: %s" f.Rules.Failure.rule f.Rules.Failure.why
+
+(* Two seconds for an arrival quote. The sequencer is held while it is
+   fetched, and an order is better sent without a quote than held while a
+   request hangs; its costs then carry shortfall alone. *)
+let arrival_quote t symbol =
+  match t.read with
+  | None -> return None
+  | Some read -> (
+      match%map
+        Time_source.with_timeout t.time_source (Time_ns.Span.of_sec 2.0)
+          (read.Venue.Read.latest_quote symbol)
+      with
+      | `Result (Ok (Some q)) -> Some (q.Venue.Quote.bid, q.Venue.Quote.ask)
+      | `Result (Ok None) | `Result (Error _) | `Timeout -> None)
+
+(* The journal, and only then the wire (invariant 10): every order written
+   pending_submit in ONE transaction, then held open and remembered for the
+   duplicate rule. The write raises if the record cannot be made, and a raise
+   here is before any submit, so nothing leaves for an order the record does
+   not hold -- and, the transaction being one, no rebalance is left half
+   journaled. *)
+let admit t (orders : Journal.Insert.t list) =
+  let now = t.now () in
+  Journal.insert_orders t.journal orders ~at:now;
+  List.iter orders ~f:(fun (i : Journal.Insert.t) ->
+      let o = i.Journal.Insert.order in
+      let r = o.Order.request in
+      t.open_ <- Map.set t.open_ ~key:(key o) ~data:o;
+      t.recent <-
+        {
+          Rules.Recent.symbol = r.Order.Request.symbol;
+          side = r.Order.Request.side;
+          qty = r.Order.Request.qty;
+          at = now;
+        }
+        :: recent_within t ~now);
+  t.on_change ()
+
+(* THE ONE SUBMIT SITE: the only call of the venue's submit in the desk. [o]
+   is journaled pending_submit already ([admit]). [pre_wire] is asked at this
+   instant; if it fails, the order is moved to rejected_pre_trade with the
+   reason -- a legal move from pending_submit -- and nothing is sent.
+   Otherwise the order goes, and the venue's answer is recorded: acknowledged,
+   refused, or unknown -- which is resolved by lookups, never by sending it
+   again. *)
+let submit_journaled t (o : Order.t) :
+    [ `Sent of Order.t | `Stopped of Rules.Failure.t * Order.t ] Deferred.t =
+  let request = o.Order.request in
+  match pre_wire t ~tif:request.Order.Request.tif with
+  | Error f ->
+      return (`Stopped (f, record t o (Order.Event.Pre_trade_rejected [ reason f ])))
+  | Ok trade ->
+      let%map submission = trade.Venue.Trade.submit request in
+      `Sent
+        (match submission with
+        | Venue.Submission.Accepted v ->
+            record t o (Order.Event.Acknowledged v.Venue.Venue_order.id)
+        | Venue.Submission.Rejected why ->
+            record t o (Order.Event.Venue_rejected_submission why)
+        | Venue.Submission.Unknown why ->
+            let o = record t o (Order.Event.Outcome_unknown why) in
+            don't_wait_for
+              (resolve t request.Order.Request.client_order_id ~delays:t.resolve_delays);
+            o)
+
 let propose t ?(source = "manual") (ticket : Ticket.t) : (Preview.t * Order.t) Deferred.t
     =
   enqueue t (fun () ->
@@ -909,79 +1031,304 @@ let propose t ?(source = "manual") (ticket : Ticket.t) : (Preview.t * Order.t) D
       if not (Preview.passed p) then return (p, refuse t p ~source)
       else
         let request = p.Preview.request in
-        let symbol = request.Order.Request.symbol in
-        (* Two seconds for the arrival quote. The sequencer is held while it
-           is fetched, and an order is better sent without a quote than held
-           while a request hangs; its costs then carry shortfall alone. *)
-        let%bind arrival =
-          match t.read with
-          | None -> return None
-          | Some read -> (
-              match%map
-                Time_source.with_timeout t.time_source (Time_ns.Span.of_sec 2.0)
-                  (read.Venue.Read.latest_quote symbol)
-              with
-              | `Result (Ok (Some q)) -> Some (q.Venue.Quote.bid, q.Venue.Quote.ask)
-              | `Result (Ok None) | `Result (Error _) | `Timeout -> None)
-        in
-        (* The switch may have tripped while the quote was fetched, and the
-           book's last applied read may have aged past the window. *)
-        match (Halt.reason t.halt, t.trade) with
-        | Some why, _ ->
-            let p =
-              {
-                p with
-                Preview.failures =
-                  p.Preview.failures @ [ { Rules.Failure.rule = "kill_switch"; why } ];
-              }
-            in
+        let%bind arrival = arrival_quote t request.Order.Request.symbol in
+        (* Time passed while the quote was fetched: the switch may have
+           tripped, the book's last applied read may have aged past the
+           window, and the session may have closed (Task 1's carried item).
+           A refusal here is journaled with its reason, as any refusal is. *)
+        match pre_wire t ~tif:request.Order.Request.tif with
+        | Error f ->
+            let p = { p with Preview.failures = [ f ] } in
             return (p, refuse t p ~source)
-        | None, Error why ->
-            let p =
-              { p with Preview.failures = [ { Rules.Failure.rule = "trading"; why } ] }
-            in
-            return (p, refuse t p ~source)
-        | None, Ok _ when not (t.book_is_current ()) ->
-            let p =
-              {
-                p with
-                Preview.failures =
-                  [ { Rules.Failure.rule = "trading"; why = Session_close.not_current } ];
-              }
-            in
-            return (p, refuse t p ~source)
-        | None, Ok trade ->
+        | Ok _ -> (
             let o = Order.create request in
-            (* The journal, and only then the wire. This write raises if the
-               record cannot be made, which stops the send below. *)
-            Journal.insert_order t.journal o ~source
-              ~decision_price:(Option.value_exn p.Preview.decision_price)
-              ~arrival ~verdict:(Preview.to_json p) ~at:(t.now ());
-            t.open_ <- Map.set t.open_ ~key:(key o) ~data:o;
-            t.recent <-
-              {
-                Rules.Recent.symbol;
-                side = request.Order.Request.side;
-                qty = request.Order.Request.qty;
-                at = t.now ();
-              }
-              :: (context t ~symbol).Rules.Context.recent;
-            t.on_change ();
-            let%map submission = trade.Venue.Trade.submit request in
-            let o =
-              match submission with
-              | Venue.Submission.Accepted v ->
-                  record t o (Order.Event.Acknowledged v.Venue.Venue_order.id)
-              | Venue.Submission.Rejected why ->
-                  record t o (Order.Event.Venue_rejected_submission why)
-              | Venue.Submission.Unknown why ->
-                  let o = record t o (Order.Event.Outcome_unknown why) in
-                  don't_wait_for
-                    (resolve t request.Order.Request.client_order_id
-                       ~delays:t.resolve_delays);
-                  o
-            in
-            (p, o))
+            admit t
+              [
+                {
+                  Journal.Insert.order = o;
+                  source;
+                  decision_price = Option.value_exn p.Preview.decision_price;
+                  arrival;
+                  verdict = Preview.to_json p;
+                };
+              ];
+            match%map submit_journaled t o with
+            | `Sent o -> (p, o)
+            | `Stopped (f, o) -> ({ p with Preview.failures = [ f ] }, o)))
+
+(* ------------------------------------------------------------------------ *)
+(* A live strategy's rebalance (Task 15)                                     *)
+(* ------------------------------------------------------------------------ *)
+
+(* E, the equity a rebalance is sized on: the book's equity as the gate reads
+   it -- a snapshot of the live graph -- and only when that graph is the
+   account's book as of a recent read, which is the condition the trading
+   rule holds every order to. A held name with no price makes equity a
+   number about a book that does not exist, so it is unknown too. *)
+let sizing_equity t : (float, string) Result.t =
+  if not (t.book_is_current ()) then Error Session_close.not_current
+  else
+    match
+      List.find (Graph.symbols t.graph) ~f:(fun s ->
+          (not (Qty.is_zero (Graph.qty t.graph s)))
+          && not (Float.( > ) (Price.to_float (Graph.price t.graph s)) 0.0))
+    with
+    | Some s ->
+        Error
+          (sprintf "%s is held and has no price, so the book's equity is not known"
+             (Symbol.to_string s))
+    | None ->
+        let e = Notional.to_float (Graph.Snapshot.equity (Graph.snapshot t.graph)) in
+        if Float.is_finite e && Float.( > ) e 0.0 then Ok e
+        else Error (sprintf "the book's equity reads %g" e)
+
+(* The strategy's OWN position: the net of the desk's fills of orders whose
+   source is signal:<slug>:*, from the journal through orders_by_source --
+   never the account's, so a lot bought by hand is never the strategy's to
+   sell. Known only when nothing of the strategy's may still fill: an open
+   order, or a failed one the venue may still work ([failed_still_working]'s
+   rule). Sizing on top of such an order would count its shares once as
+   resting and again as the target, and buy them twice. *)
+let strategy_position t ~(strategy : string) : (float Symbol.Map.t, string) Result.t =
+  let prefix = Rebalance.Source.prefix ~strategy in
+  match
+    Or_error.try_with (fun () ->
+        let since =
+          Option.map
+            (List.hd (Journal.recent_sessions t.journal ~limit:1))
+            ~f:(fun s -> s.Journal.Session.date)
+        in
+        let unsettled =
+          Journal.source_orders_unsettled t.journal ~prefix ~since
+          |> List.filter ~f:(fun (r : Journal.Order_row.t) ->
+              let o = r.Journal.Order_row.order in
+              (not (Order.State.equal o.Order.state Order.State.Failed))
+              || Float.( > ) (Order.remaining_qty o) Order.epsilon)
+        in
+        (unsettled, Journal.source_fills t.journal ~prefix))
+  with
+  | Error e ->
+      Error (sprintf "the journal could not be read (%s)" (Error.to_string_hum e))
+  | Ok ((_ :: _ as unsettled), _) ->
+      Error
+        (sprintf
+           "%d of its orders may still fill (%s), so its position is not yet known, and \
+            nothing is sized on top of them"
+           (List.length unsettled)
+           (String.concat ~sep:"; "
+              (List.map unsettled ~f:(fun r -> describe_resting r.Journal.Order_row.order))))
+  | Ok ([], fills) -> Ok (Symbol.Map.of_alist_reduce fills ~f:( +. ))
+
+(* The targets for an accepted signal, as legs, or no targets and why: E from
+   [sizing_equity], each price from the newest recorded close
+   ([opening_price], the price the rules and the gate will read), and the
+   strategy's own position from [strategy_position]. Rebalance.plan decides. *)
+let plan_rebalance t ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
+    ~(targets : (Symbol.t * float) list) : (Rebalance.Leg.t list, string) Result.t =
+  let module S = Ohcamel.Config.Book.Signals_spec.Strategy in
+  let symbols = List.map strategy.S.symbols ~f:Symbol.of_string in
+  let marks =
+    Symbol.Map.of_alist_reduce
+      ~f:(fun first _ -> first)
+      (List.map symbols ~f:(fun s ->
+           ( s,
+             match Or_error.try_with (fun () -> opening_price t s) with
+             | Error e ->
+                 Error
+                   (sprintf "%s's recorded close could not be read (%s)"
+                      (Symbol.to_string s) (Error.to_string_hum e))
+             | Ok None ->
+                 Error (sprintf "%s has no recorded session close" (Symbol.to_string s))
+             | Ok (Some (_, p)) -> Ok (Price.to_float p) )))
+  in
+  Rebalance.plan ~symbols ~weights:targets ~capital_fraction:strategy.S.capital_fraction
+    ~equity:(sizing_equity t) ~marks
+    ~current:(strategy_position t ~strategy:strategy.S.name)
+
+(* What a rebalance came to, in the words the intake records beside the
+   judgement. [Refused]: nothing was journaled and nothing sent. [Sent]:
+   every order was journaled and handed to the wire, each in the state the
+   venue's answer left it. [Stopped]: the switch, the book or the session
+   failed between two submits; what went out went, and every order after it
+   was moved to rejected_pre_trade and never sent. *)
+module Rebalance_outcome = struct
+  type t =
+    | Refused of string
+    | Sent of Order.t list
+    | Stopped of { sent : Order.t list; unsent : Order.t list; why : string }
+
+  let describe_order (o : Order.t) =
+    let r = o.Order.request in
+    sprintf "%s %s %s %d %s" (key o)
+      (Symbol.to_string r.Order.Request.symbol)
+      (Order.Side.to_string r.Order.Request.side)
+      r.Order.Request.qty
+      (match o.Order.reason with
+      | Some why -> sprintf "(%s: %s)" (Order.State.to_string o.Order.state) why
+      | None -> sprintf "(%s)" (Order.State.to_string o.Order.state))
+
+  let orders os = String.concat ~sep:"; " (List.map os ~f:describe_order)
+
+  let to_string = function
+    | Refused why -> "refused, and nothing journaled or sent: " ^ why
+    | Sent os ->
+        sprintf "%d market-on-open order%s journaled, then sent: %s" (List.length os)
+          (if List.length os = 1 then "" else "s")
+          (orders os)
+    | Stopped { sent; unsent; why } ->
+        sprintf
+          "stopped between submits (%s): sent %s; journaled and never sent, now \
+           rejected_pre_trade: %s"
+          why
+          (if List.is_empty sent then "none" else orders sent)
+          (orders unsent)
+end
+
+(* A leg as a refusal names it: its place in the rebalance and its order. *)
+let name_leg ~i ~n (r : Order.Request.t) =
+  sprintf "order %d of %d (%s %s %d market-on-open)" (i + 1) n
+    (Symbol.to_string r.Order.Request.symbol)
+    (Order.Side.to_string r.Order.Request.side)
+    r.Order.Request.qty
+
+module Checked_rebalance = struct
+  type t = { orders : (Order.Request.t * Price.t) list; gate : Scenarios.t }
+end
+
+(* Everything a rebalance must pass before anything is written, and nothing
+   written: synchronous, so the main suite can ask it. The strategy's fill
+   history must be settled ([strategy_position]); then THE RULES, PER ORDER,
+   each as a market-on-open order priced at the newest recorded close, and
+   each counting the rebalance's earlier orders against the open-order cap;
+   then ONE GATE CALL with every order's fill and the resting orders, so a
+   rebalance is gated as a unit. Any failure refuses the whole, naming the
+   order and its rules, or the limits. *)
+let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t list) :
+    (Checked_rebalance.t, string) Result.t =
+  let open Result.Let_syntax in
+  let n = List.length legs in
+  let%bind () = if n = 0 then Error "the rebalance has no order" else Ok () in
+  let%bind (_ : float Symbol.Map.t) =
+    Result.map_error (strategy_position t ~strategy:source.Rebalance.Source.strategy)
+      ~f:(fun why -> "the strategy's fill history is unknown: " ^ why)
+  in
+  let now = t.now () in
+  let judged =
+    List.mapi legs ~f:(fun i (leg : Rebalance.Leg.t) ->
+        let request =
+          {
+            Order.Request.client_order_id = Ids.Client_order_id.generate ~now ~rng:t.rng;
+            symbol = leg.Rebalance.Leg.symbol;
+            side = leg.Rebalance.Leg.side;
+            qty = leg.Rebalance.Leg.qty;
+            kind = Order.Kind.Market;
+            tif = Order.Tif.Opg;
+          }
+        in
+        let ctx = context ~tif:Order.Tif.Opg t ~symbol:leg.Rebalance.Leg.symbol in
+        let ctx =
+          { ctx with Rules.Context.open_orders = ctx.Rules.Context.open_orders + i }
+        in
+        (i, request, ctx.Rules.Context.close, Rules.check ctx request))
+  in
+  let%bind priced =
+    match
+      List.filter judged ~f:(fun (_, _, _, failures) -> not (List.is_empty failures))
+    with
+    | _ :: _ as failed ->
+        Error
+          (String.concat ~sep:"; "
+             (List.map failed ~f:(fun (i, r, _, failures) ->
+                  sprintf "%s: %s" (name_leg ~i ~n r)
+                    (String.concat ~sep:"; " (List.map failures ~f:reason)))))
+    | [] ->
+        List.map judged ~f:(fun (i, r, close, _) ->
+            match close with
+            | Some (_, p) -> Ok (r, p)
+            | None -> Error (sprintf "%s has no recorded close" (name_leg ~i ~n r)))
+        |> Result.all
+  in
+  match gate_orders t priced with
+  | Error why -> Error why
+  | Ok s when Scenarios.passed s -> Ok { Checked_rebalance.orders = priced; gate = s }
+  | Ok s ->
+      Error
+        (sprintf "the gate refuses the rebalance as a unit (%s): %s"
+           (String.concat ~sep:"; "
+              (List.mapi priced ~f:(fun i (r, p) ->
+                   sprintf "%s at %.2f" (name_leg ~i ~n r) (Price.to_float p))))
+           (String.concat ~sep:"; " (Scenarios.reasons s)))
+
+(* A live strategy's rebalance, through the machinery a ticket goes through,
+   in ONE sequencer job: [check_rebalance] (the rules per order, one gate
+   call); the arrival quotes; [pre_wire] again for every order, because the
+   quotes took time; then every order journaled in one transaction ([admit])
+   before any is sent; then each handed to [submit_journaled], which asks
+   [pre_wire] once more at its own instant -- a kill sets the switch outside
+   the sequencer, so it can land between two submits. When that fails, the
+   order it was asked for and every order after it move from pending_submit
+   to rejected_pre_trade with the reason, and none of them is sent.
+
+   All or nothing up to the journal: a refusal before it journals nothing and
+   sends nothing. After it, what the venue has taken it has; an order already
+   acknowledged when the switch is set is cancelled by the switch's own
+   machinery ([record], [cancel_all]), as any open order is. *)
+let propose_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t list) :
+    Rebalance_outcome.t Deferred.t =
+  enqueue t (fun () ->
+      match check_rebalance t ~source ~legs with
+      | Error why -> return (Rebalance_outcome.Refused why)
+      | Ok { Checked_rebalance.orders; gate } -> (
+          let n = List.length orders in
+          let%bind arrivals =
+            Deferred.List.map ~how:`Sequential orders ~f:(fun (r, _) ->
+                arrival_quote t r.Order.Request.symbol)
+          in
+          match
+            List.find_mapi orders ~f:(fun i (r, _) ->
+                match pre_wire t ~tif:r.Order.Request.tif with
+                | Ok _ -> None
+                | Error f -> Some (i, r, f))
+          with
+          | Some (i, r, f) ->
+              return
+                (Rebalance_outcome.Refused
+                   (sprintf "after the arrival quotes, %s: %s" (name_leg ~i ~n r)
+                      (reason f)))
+          | None ->
+              let created = List.map orders ~f:(fun (r, _) -> Order.create r) in
+              admit t
+                (List.map3_exn created orders arrivals ~f:(fun o (r, price) arrival ->
+                     {
+                       Journal.Insert.order = o;
+                       source = Rebalance.Source.to_string source;
+                       decision_price = price;
+                       arrival;
+                       verdict =
+                         Preview.to_json
+                           {
+                             Preview.request = r;
+                             failures = [];
+                             gate = Some (Ok gate);
+                             decision_price = Some price;
+                           };
+                     }));
+              let rec go sent = function
+                | [] -> return (Rebalance_outcome.Sent (List.rev sent))
+                | o :: rest -> (
+                    match%bind submit_journaled t o with
+                    | `Sent o -> go (o :: sent) rest
+                    | `Stopped (f, o) ->
+                        let unsent =
+                          o
+                          :: List.map rest ~f:(fun o ->
+                              record t o (Order.Event.Pre_trade_rejected [ reason f ]))
+                        in
+                        return
+                          (Rebalance_outcome.Stopped
+                             { sent = List.rev sent; unsent; why = reason f }))
+              in
+              go [] created))
 
 let apply_to_graph t (o : Order.t) (f : Order.Fill.t) =
   let symbol = o.Order.request.Order.Request.symbol in
@@ -1120,6 +1467,7 @@ let order_json (r : Journal.Order_row.t) : Yojson.Safe.t =
       ( "limit_price",
         Option.value_map (Order.Kind.limit_price q.Order.Request.kind) ~default:`Null
           ~f:(fun p -> jnum (Price.to_float p)) );
+      ("time_in_force", `String (Order.Tif.to_string q.Order.Request.tif));
       ("state", `String (Order.State.to_string o.Order.state));
       ("filled_qty", jnum o.Order.filled_qty);
       ("avg_fill_price", Option.value_map (Order.avg_fill_price o) ~default:`Null ~f:jnum);

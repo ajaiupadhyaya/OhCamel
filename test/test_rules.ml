@@ -37,13 +37,16 @@ let context =
     session = during_monday;
     mark = Some (Price.of_float 150.0);
     stale = false;
+    close = None;
+    new_york = None;
     adv20 = Some 16_600.0;
     recent = [];
     open_orders = 0;
     now;
   }
 
-let request ?(symbol = aapl) ?(side = Order.Side.Buy) ?(kind = Order.Kind.Market) qty =
+let request ?(symbol = aapl) ?(side = Order.Side.Buy) ?(kind = Order.Kind.Market)
+    ?(tif = Order.Tif.Day) qty =
   {
     Order.Request.client_order_id =
       Option.value_exn
@@ -52,6 +55,7 @@ let request ?(symbol = aapl) ?(side = Order.Side.Buy) ?(kind = Order.Kind.Market
     side;
     qty;
     kind;
+    tif;
   }
 
 let failed ctx req = List.map (Rules.check ctx req) ~f:(fun f -> f.Rules.Failure.rule)
@@ -186,6 +190,146 @@ let test_every_failure_is_reported_in_rule_order () =
     { context with halted = Some "halted by hand"; session = None }
     (request ~symbol:(Symbol.of_string "TSLA") 10)
 
+(* ------------------------------------------------------------------------ *)
+(* A market-on-open order (Order.Tif.Opg): the window and the close          *)
+(* ------------------------------------------------------------------------ *)
+
+let new_york = Timezone.find "America/New_York"
+
+(* After Monday's close, as the research service sees it at 19:15 EDT
+   (23:15Z): the clock names Tuesday's open at 09:30 EDT (13:30Z) and its
+   close at 16:00 EDT (20:00Z). The feed stopped printing hours ago, so the
+   mark is stale; the price is Monday's recorded close of 150. *)
+let after_monday =
+  Some
+    {
+      Rules.Session.next_open = at "2026-09-15T13:30:00Z";
+      next_close = at "2026-09-15T20:00:00Z";
+    }
+
+let evening =
+  {
+    context with
+    session = after_monday;
+    now = at "2026-09-14T23:15:00Z";
+    stale = true;
+    close = Some (Date.of_string "2026-09-14", Price.of_float 150.0);
+    new_york;
+  }
+
+let opg = request ~tif:Order.Tif.Opg
+
+let why ctx req =
+  List.map (Rules.check ctx req) ~f:(fun f ->
+      f.Rules.Failure.rule ^ ": " ^ f.Rules.Failure.why)
+
+let says what ~substring ctx req =
+  Alcotest.(check bool)
+    (sprintf "%s: %s" what (String.concat ~sep:" | " (why ctx req)))
+    true
+    (List.exists (why ctx req) ~f:(String.is_substring ~substring))
+
+let nanosecond_before s = Time_ns.sub (at s) Time_ns.Span.nanosecond
+
+(* 19:00 in New York is 23:00Z under daylight saving and 00:00Z the next
+   day under standard time, so the rule is tried on both sides of it in each:
+   Monday 14 September 2026 (EDT, UTC-4) and Monday 7 December 2026 (EST,
+   UTC-5). A fixed offset of -4 would read 23:00Z in December as 19:00 and
+   let an order through at 18:00 EST; the zone refuses it. *)
+let test_the_window_on_both_sides_of_19_00_in_both_seasons () =
+  check_rules "EDT, 18:59:59.999999999" [ "session" ]
+    { evening with now = nanosecond_before "2026-09-14T23:00:00Z" }
+    (opg 100);
+  says "EDT, the refusal names the hour and the boundary"
+    ~substring:"it is 2026-09-14 18:59 ET, before 19:00 ET"
+    { evening with now = nanosecond_before "2026-09-14T23:00:00Z" }
+    (opg 100);
+  check_rules "EDT, 19:00:00" []
+    { evening with now = at "2026-09-14T23:00:00Z" }
+    (opg 100);
+  let after_december_monday =
+    Some
+      {
+        Rules.Session.next_open = at "2026-12-08T14:30:00Z";
+        next_close = at "2026-12-08T21:00:00Z";
+      }
+  in
+  let december now =
+    {
+      evening with
+      session = after_december_monday;
+      now;
+      close = Some (Date.of_string "2026-12-07", Price.of_float 150.0);
+    }
+  in
+  check_rules "EST, 18:00 -- 23:00Z, which a fixed -4 would call 19:00" [ "session" ]
+    (december (at "2026-12-07T23:00:00Z"))
+    (opg 100);
+  check_rules "EST, 18:59:59.999999999" [ "session" ]
+    (december (nanosecond_before "2026-12-08T00:00:00Z"))
+    (opg 100);
+  check_rules "EST, 19:00:00 -- 00:00Z the next day" []
+    (december (at "2026-12-08T00:00:00Z"))
+    (opg 100)
+
+(* Alpaca stops taking opening-auction orders at 09:28 for a 09:30 open. At
+   09:27:59.999999999 EDT on Tuesday the order passes -- the next open is
+   today, so the last close was Monday's and its 19:00 has passed -- and at
+   09:28 it is refused, naming the boundary. So is Monday at 17:00 EDT, after
+   the close and before 19:00; and Tuesday at 00:00 EDT passes. *)
+let test_the_window_on_both_sides_of_two_minutes_before_the_open () =
+  check_rules "Tuesday 09:27:59.999999999 EDT" []
+    { evening with now = nanosecond_before "2026-09-15T13:28:00Z" }
+    (opg 100);
+  check_rules "Tuesday 09:28 EDT" [ "session" ]
+    { evening with now = at "2026-09-15T13:28:00Z" }
+    (opg 100);
+  says "the refusal names two minutes before the open"
+    ~substring:"not before 2026-09-15 09:28 ET, two minutes before the next open"
+    { evening with now = at "2026-09-15T13:28:00Z" }
+    (opg 100);
+  check_rules "Tuesday 00:00 EDT" []
+    { evening with now = at "2026-09-15T04:00:00Z" }
+    (opg 100);
+  check_rules "Monday 17:00 EDT, after the close" [ "session" ]
+    { evening with now = at "2026-09-14T21:00:00Z" }
+    (opg 100)
+
+let test_an_opening_auction_order_needs_a_closed_session_a_clock_and_the_zone () =
+  says "during the session" ~substring:"the regular session is open"
+    { evening with session = during_monday; now }
+    (opg 100);
+  says "no clock" ~substring:"no venue clock has answered"
+    { evening with session = None }
+    (opg 100);
+  says "no zone" ~substring:"America/New_York time zone could not be loaded"
+    { evening with new_york = None }
+    (opg 100);
+  (* A day order in the same evening is refused by the session it needs, and
+     by its stale mark: the window is the opening auction's alone. *)
+  check_rules "a day order at 19:15" [ "session"; "mark" ] evening (request 100)
+
+(* The price of a market-on-open order is Monday's recorded close, 150 --
+   never the feed's mark, which is stale in the evening and here set to 10 to
+   show it is not read. The notional cap is computed on the close: 166 x 150 =
+   24,900 passes and 167 x 150 = 25,050 fails, naming 150.00 (at the feed's
+   10 it would be 1,670 and pass). No close, or a close of zero -- a cell
+   nobody wrote, recorded at a close -- is no price: the mark rule refuses,
+   and the notional and collar that need a price are not asked. *)
+let test_an_opening_auction_order_is_priced_at_the_recorded_close () =
+  let ctx =
+    { evening with mark = Some (Price.of_float 10.0); adv20 = Some 1_000_000.0 }
+  in
+  check_rules "166 at the close of 150" [] ctx (opg 166);
+  check_rules "167 at the close of 150" [ "notional" ] ctx (opg 167);
+  says "computed on the close" ~substring:"167 x 150.00 = 25050.00" ctx (opg 167);
+  check_rules "no recorded close" [ "mark" ] { ctx with close = None } (opg 167);
+  says "saying so" ~substring:"AAPL has no recorded session close"
+    { ctx with close = None } (opg 1);
+  check_rules "a close of zero" [ "mark" ]
+    { ctx with close = Some (Date.of_string "2026-09-14", Price.of_float 0.0) }
+    (opg 1)
+
 let suite =
   ( "rules",
     [
@@ -206,4 +350,15 @@ let suite =
       Alcotest.test_case "open orders" `Quick test_open_orders;
       Alcotest.test_case "every failure is reported, in rule order" `Quick
         test_every_failure_is_reported_in_rule_order;
+      Alcotest.test_case
+        "the opening auction's window on both sides of 19:00 ET, in EDT and in EST" `Quick
+        test_the_window_on_both_sides_of_19_00_in_both_seasons;
+      Alcotest.test_case
+        "the opening auction's window on both sides of two minutes before the open" `Quick
+        test_the_window_on_both_sides_of_two_minutes_before_the_open;
+      Alcotest.test_case
+        "an opening-auction order needs a closed session, a clock and the zone" `Quick
+        test_an_opening_auction_order_needs_a_closed_session_a_clock_and_the_zone;
+      Alcotest.test_case "an opening-auction order is priced at the recorded close" `Quick
+        test_an_opening_auction_order_is_priced_at_the_recorded_close;
     ] )

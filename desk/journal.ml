@@ -21,7 +21,15 @@
    from now would be the same schema with a version bump and a code path that
    runs once. signal_files and signal_deferrals, phase A3's, are tables
    beside them rather than changes to one, so they are created IF NOT EXISTS
-   like the indexes and the version stays 1. *)
+   like the indexes and the version stays 1.
+
+   Two columns arrived after files existed: orders.tif and signals.rebalance
+   (Task 15). ALTER TABLE ADD COLUMN is not idempotent -- a second run fails
+   on the duplicate -- so [ensure_column] asks the table what it has first
+   and adds only what is missing, with a default every older row can take.
+   The version stays 1: a file written before them reads the same, and one
+   written after is readable by nothing older than this build, which is
+   true of every table this phase added. *)
 
 open Core
 open Ohcamel.Types
@@ -170,7 +178,8 @@ let schema =
      PRIMARY KEY (date, estimator))";
     "CREATE TABLE IF NOT EXISTS signals (strategy TEXT NOT NULL, sequence INTEGER NOT \
      NULL, as_of TEXT NOT NULL, received_at TEXT NOT NULL, verdict TEXT NOT NULL, rule \
-     TEXT, detail TEXT, document TEXT NOT NULL, PRIMARY KEY (strategy, sequence))";
+     TEXT, detail TEXT, document TEXT NOT NULL, rebalance TEXT, PRIMARY KEY (strategy, \
+     sequence))";
     "CREATE TABLE IF NOT EXISTS alerts (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT \
      NOT NULL, kind TEXT NOT NULL, limit_name TEXT NOT NULL, line TEXT NOT NULL)";
     (* A signal file the intake could not read as a signal, by its name: recorded
@@ -194,7 +203,20 @@ let schema =
        rowid, so this one holds a strategy's judgements in the order they were
        recorded, and [latest_signal] reads its last entry without a sort. *)
     "CREATE INDEX IF NOT EXISTS signals_by_strategy ON signals (strategy)";
+    (* A strategy's own orders, by the source every one of them carries
+       (signal:<slug>:<sequence>): its position is the net of their fills,
+       and a rebalance waits while one of them may still fill. Read as a
+       range over this index ([source_range]), so the question costs the
+       strategy's own orders and not the whole table. *)
+    "CREATE INDEX IF NOT EXISTS orders_by_source ON orders (source, client_order_id)";
   ]
+
+(* The columns added after files existed, each with the declaration an older
+   row takes: an order journaled before [tif] was recorded was a day order,
+   because every order was; a judgement recorded before [rebalance] existed
+   proposed nothing, which NULL says. *)
+let added_columns =
+  [ ("orders", "tif", "TEXT NOT NULL DEFAULT 'day'"); ("signals", "rebalance", "TEXT") ]
 
 (* The refusal's decision alone, with no SQLite and no IO: [modes] is
    whatever PRAGMA journal_mode=WAL answered (zero, one, or -- if SQLite ever
@@ -215,6 +237,21 @@ let wal_check ~path (modes : string list) : (unit, string) Result.t =
             mode"
            path
            (String.concat ~sep:"," modes))
+
+(* The guard ALTER TABLE ADD COLUMN needs: SQLite has no ADD COLUMN IF NOT
+   EXISTS, and adding one that exists fails. So the table is asked for its
+   columns first (PRAGMA table_info answers one row per column, the name
+   second), and the column is added only when it is not among them. The names
+   are this module's constants, never input. *)
+let columns t ~table =
+  query t ~what:"table info" (sprintf "PRAGMA table_info(%s)" table) [] ~row:(fun r ->
+      col_text r 1)
+
+let ensure_column t ~table ~column ~decl =
+  if not (List.mem (columns t ~table) column ~equal:String.equal) then
+    exec t
+      ~what:(sprintf "add %s.%s" table column)
+      (sprintf "ALTER TABLE %s ADD COLUMN %s %s" table column decl)
 
 (* Everything [open_] does once the handle exists. Each refusal raises, and
    [open_] closes the handle.
@@ -253,6 +290,8 @@ let set_up t ~path =
         path v schema_version ()
   | _ -> failwith "journal: meta holds more than one schema version");
   List.iter (List.tl_exn schema) ~f:(exec t ~what:"schema");
+  List.iter added_columns ~f:(fun (table, column, decl) ->
+      ensure_column t ~table ~column ~decl);
   run t ~what:"schema version"
     "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)"
     [ text (Int.to_string schema_version) ]
@@ -365,6 +404,21 @@ let record_marks t (marks : Mark.t list) =
           run t ~what:"mark"
             "INSERT OR REPLACE INTO marks (date, symbol, close, qty) VALUES (?, ?, ?, ?)"
             [ date m.date; text (Symbol.to_string m.symbol); real m.close; real m.qty ]))
+
+(* The newest recorded session's close for [symbol], with that session's
+   date: the price an opening-auction order is judged and sized at (Task 15).
+   The session is the newest row of [sessions], not of [marks]: a close is
+   recorded marks first and the session row last (desk/session_close.ml), so
+   marks without their session are a close that did not finish, and are not
+   read. None when no session is recorded or it holds no mark for [symbol].
+   Two primary-key seeks: MAX over the sessions key, then (date, symbol). *)
+let latest_close t (symbol : Symbol.t) : (Date.t * float) option =
+  List.hd
+    (query t ~what:"latest close"
+       "SELECT m.date, m.close FROM marks m WHERE m.date = (SELECT MAX(date) FROM \
+        sessions) AND m.symbol = ?"
+       [ text (Symbol.to_string symbol) ]
+       ~row:(fun r -> (col_date r 0, col_real r 1)))
 
 let marks t d =
   query t ~what:"marks"
@@ -486,6 +540,7 @@ module Signal = struct
     rule : string option;
     detail : string;
     document : string;
+    rebalance : string option;
   }
   [@@deriving sexp_of, compare, equal]
 end
@@ -497,7 +552,7 @@ let record_signal t (s : Signal.t) =
   write t ~what:"signal" (fun () ->
       run t ~what:"signal"
         "INSERT INTO signals (strategy, sequence, as_of, received_at, verdict, rule, \
-         detail, document) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+         detail, document, rebalance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
         [
           text s.strategy;
           Data.INT (Int64.of_int s.sequence);
@@ -507,7 +562,25 @@ let record_signal t (s : Signal.t) =
           (match s.rule with None -> Data.NULL | Some r -> text r);
           text s.detail;
           text s.document;
+          (match s.rebalance with None -> Data.NULL | Some r -> text r);
         ])
+
+(* The rebalance's outcome, written over the sentence the judgement was
+   recorded with ([from]) and only over that: the intake records an accepted
+   judgement with a pending sentence before it proposes anything, and this
+   replaces it once, with what happened. The judgement's own verdict, rule and
+   detail are never touched. A row that no longer holds [from] -- an outcome
+   already written, or no such accepted judgement -- raises, because a second
+   outcome for one signal would mean it was sized twice. *)
+let record_rebalance t ~strategy ~sequence ~from ~outcome =
+  write t ~what:"signal rebalance" (fun () ->
+      run t ~what:"signal rebalance"
+        "UPDATE signals SET rebalance = ? WHERE strategy = ? AND sequence = ? AND \
+         verdict = 'accepted' AND rebalance = ?"
+        [ text outcome; text strategy; Data.INT (Int64.of_int sequence); text from ];
+      if Sqlite3.changes t.db <> 1 then
+        failwithf "journal: %s %d holds no pending rebalance to record an outcome over"
+          strategy sequence ())
 
 (* The primary key's own lookup. *)
 let signal_judged t ~strategy ~sequence =
@@ -550,6 +623,7 @@ let signal_of_row r =
     rule = col_opt_text r 5;
     detail = col_text r 6;
     document = col_text r 7;
+    rebalance = col_opt_text r 8;
   }
 
 (* The judgement recorded last for [strategy]: the highest rowid, which SQLite
@@ -559,8 +633,8 @@ let signal_of_row r =
    entries are (strategy, rowid): one index seek, no sort, however long the
    table grows. Named so a test can ask SQLite's planner about it. *)
 let latest_signal_sql =
-  "SELECT strategy, sequence, as_of, received_at, verdict, rule, detail, document FROM \
-   signals WHERE strategy = ? ORDER BY rowid DESC LIMIT 1"
+  "SELECT strategy, sequence, as_of, received_at, verdict, rule, detail, document, \
+   rebalance FROM signals WHERE strategy = ? ORDER BY rowid DESC LIMIT 1"
 
 let latest_signal t ~strategy =
   List.hd
@@ -569,8 +643,8 @@ let latest_signal t ~strategy =
 let signal t ~strategy ~sequence =
   List.hd
     (query t ~what:"signal"
-       "SELECT strategy, sequence, as_of, received_at, verdict, rule, detail, document \
-        FROM signals WHERE strategy = ? AND sequence = ?"
+       "SELECT strategy, sequence, as_of, received_at, verdict, rule, detail, document, \
+        rebalance FROM signals WHERE strategy = ? AND sequence = ?"
        [ text strategy; Data.INT (Int64.of_int sequence) ]
        ~row:signal_of_row)
 
@@ -687,43 +761,64 @@ let reason_of_detail (detail : string) : string option =
 (* One transaction: the row -- pending_submit, no venue id, no fills -- and
    the [created] event. The order manager calls this before the request that
    submits the order is sent: invariant 10, the journal before the wire. *)
+let insert_order_rows t (o : Order.t) ~source ~decision_price ~arrival ~verdict ~at =
+  let request = o.Order.request in
+  let cid = Ids.Client_order_id.to_string request.Order.Request.client_order_id in
+  let bid, ask =
+    match arrival with
+    | None -> (Data.NULL, Data.NULL)
+    | Some (b, a) -> (real (Price.to_float b), real (Price.to_float a))
+  in
+  run t ~what:"order"
+    "INSERT INTO orders (client_order_id, venue_order_id, source, symbol, side, qty, \
+     kind, limit_price, tif, state, filled_qty, avg_fill_price, decision_price, \
+     arrival_bid, arrival_ask, verdict, created_at, updated_at) VALUES (?, NULL, ?, ?, \
+     ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)"
+    [
+      text cid;
+      text source;
+      text (Symbol.to_string request.Order.Request.symbol);
+      text (Order.Side.to_string request.Order.Request.side);
+      real (Float.of_int request.Order.Request.qty);
+      text (Order.Kind.to_string request.Order.Request.kind);
+      opt_real
+        (Option.map (Order.Kind.limit_price request.Order.Request.kind) ~f:Price.to_float);
+      text (Order.Tif.to_string request.Order.Request.tif);
+      text (Order.State.to_string o.Order.state);
+      real (Price.to_float decision_price);
+      bid;
+      ask;
+      text (Yojson.Safe.to_string verdict);
+      time at;
+      time at;
+    ];
+  run t ~what:"order created event"
+    "INSERT INTO order_events (client_order_id, at, event, state_after, anomaly, detail) \
+     VALUES (?, ?, 'created', ?, NULL, NULL)"
+    [ text cid; time at; text (Order.State.to_string o.Order.state) ]
+
 let insert_order t (o : Order.t) ~source ~decision_price ~arrival ~verdict ~at =
   write t ~what:"insert order" (fun () ->
-      let request = o.Order.request in
-      let cid = Ids.Client_order_id.to_string request.Order.Request.client_order_id in
-      let bid, ask =
-        match arrival with
-        | None -> (Data.NULL, Data.NULL)
-        | Some (b, a) -> (real (Price.to_float b), real (Price.to_float a))
-      in
-      run t ~what:"order"
-        "INSERT INTO orders (client_order_id, venue_order_id, source, symbol, side, qty, \
-         kind, limit_price, tif, state, filled_qty, avg_fill_price, decision_price, \
-         arrival_bid, arrival_ask, verdict, created_at, updated_at) VALUES (?, NULL, ?, \
-         ?, ?, ?, ?, ?, 'day', ?, 0, NULL, ?, ?, ?, ?, ?, ?)"
-        [
-          text cid;
-          text source;
-          text (Symbol.to_string request.Order.Request.symbol);
-          text (Order.Side.to_string request.Order.Request.side);
-          real (Float.of_int request.Order.Request.qty);
-          text (Order.Kind.to_string request.Order.Request.kind);
-          opt_real
-            (Option.map
-               (Order.Kind.limit_price request.Order.Request.kind)
-               ~f:Price.to_float);
-          text (Order.State.to_string o.Order.state);
-          real (Price.to_float decision_price);
-          bid;
-          ask;
-          text (Yojson.Safe.to_string verdict);
-          time at;
-          time at;
-        ];
-      run t ~what:"order created event"
-        "INSERT INTO order_events (client_order_id, at, event, state_after, anomaly, \
-         detail) VALUES (?, ?, 'created', ?, NULL, NULL)"
-        [ text cid; time at; text (Order.State.to_string o.Order.state) ])
+      insert_order_rows t o ~source ~decision_price ~arrival ~verdict ~at)
+
+module Insert = struct
+  type t = {
+    order : Order.t;
+    source : string;
+    decision_price : Price.t;
+    arrival : (Price.t * Price.t) option;
+    verdict : Yojson.Safe.t;
+  }
+end
+
+(* A rebalance's orders, all or none: one transaction, so a write that fails
+   part-way leaves no order of the rebalance journaled -- and so none sent,
+   because the wire comes after this returns. *)
+let insert_orders t (orders : Insert.t list) ~at =
+  write t ~what:"insert orders" (fun () ->
+      List.iter orders ~f:(fun (i : Insert.t) ->
+          insert_order_rows t i.order ~source:i.source ~decision_price:i.decision_price
+            ~arrival:i.arrival ~verdict:i.verdict ~at))
 
 (* One transaction: the row's state, venue id, filled quantity and average
    price -- a cache for a reader that would rather not pay [load_order]'s
@@ -803,7 +898,7 @@ let load_order t (id : Ids.Client_order_id.t) : Order_row.t option =
     query t ~what:"order"
       "SELECT client_order_id, venue_order_id, source, symbol, side, qty, kind, \
        limit_price, state, decision_price, arrival_bid, arrival_ask, verdict, \
-       created_at, updated_at FROM orders WHERE client_order_id = ?"
+       created_at, updated_at, tif FROM orders WHERE client_order_id = ?"
       [ text cid ]
       ~row:Fn.id
   with
@@ -858,6 +953,9 @@ let load_order t (id : Ids.Client_order_id.t) : Order_row.t option =
               side;
               qty;
               kind;
+              tif =
+                Option.value_exn ~message:"journal: unknown time in force"
+                  (Order.Tif.of_string (col_text row 15));
             };
           state = state_of_text (col_text row 8);
           venue_order_id = col_opt_text row 1;
@@ -938,6 +1036,63 @@ let unfinished_failed_orders t ~(since : Date.t option) : Order_row.t list =
     ~row:(fun r -> col_text r 0)
   |> orders_of_ids t
 
+(* Every source that begins with [prefix], as a range an index can walk: from
+   [prefix] itself up to, not including, [prefix] with its last byte moved one
+   on. A LIKE would read the same rows only under settings this module does
+   not control (SQLite uses an index for LIKE only when it is case-sensitive),
+   and the prefix ends in a colon, whose successor is a semicolon, so nothing
+   that merely starts with the same letters -- signal:exp_a01_spy_2: beside
+   signal:exp_a01_spy: -- falls inside it. *)
+let source_range prefix =
+  match String.length prefix with
+  | 0 -> failwith "journal: an empty source prefix names every order"
+  | n ->
+      let last = prefix.[n - 1] in
+      if Char.to_int last >= 255 then failwith "journal: a source prefix ending in 0xFF"
+      else
+        ( text prefix,
+          text
+            (String.prefix prefix (n - 1)
+            ^ String.of_char (Char.of_int_exn (Char.to_int last + 1))) )
+
+(* Named so a test can ask SQLite's planner about the exact query. *)
+let source_fills_sql =
+  "SELECT o.symbol, o.side, f.qty FROM orders o JOIN fills f ON f.client_order_id = \
+   o.client_order_id WHERE o.source >= ? AND o.source < ? ORDER BY o.symbol, \
+   f.execution_id"
+
+(* The net quantity of the fills of every order whose source begins with
+   [prefix], by symbol: a strategy's own position, counted from the desk's
+   fills of its own orders and never from the account, so a lot the owner
+   bought by hand is never the strategy's to sell. A fill counts whatever
+   state its order reached -- fills are facts (invariant 11). A symbol whose
+   fills net to zero is still listed, at zero. *)
+let source_fills t ~prefix : (Symbol.t * float) list =
+  let lo, hi = source_range prefix in
+  query t ~what:"source fills" source_fills_sql [ lo; hi ] ~row:(fun r ->
+      ( Symbol.of_string (col_text r 0),
+        Order.Side.sign (side_of_text (col_text r 1)) *. col_real r 2 ))
+  |> List.fold ~init:Symbol.Map.empty ~f:(fun acc (symbol, q) ->
+      Map.update acc symbol ~f:(fun x -> Option.value x ~default:0.0 +. q))
+  |> Map.to_alist
+
+(* The orders whose source begins with [prefix] that may still fill: every
+   one not in a terminal state, and every failed one [unfinished_failed_orders]
+   would count -- created at or after [since], with no venue report since that
+   finished it. Oldest first. *)
+let source_orders_unsettled t ~prefix ~(since : Date.t option) : Order_row.t list =
+  let lo, hi = source_range prefix in
+  let since = match since with None -> "" | Some d -> Date.to_string d in
+  query t ~what:"unsettled source orders"
+    ("SELECT client_order_id FROM orders WHERE source >= ? AND source < ? AND (state NOT \
+      IN " ^ terminal_states
+   ^ " OR (state = 'failed' AND created_at >= ? AND NOT EXISTS (SELECT 1 FROM \
+      order_events e WHERE e.client_order_id = orders.client_order_id AND e.event IN "
+   ^ finishing_events ^ "))) ORDER BY created_at, client_order_id")
+    [ lo; hi; text since ]
+    ~row:(fun r -> col_text r 0)
+  |> orders_of_ids t
+
 let recent_orders t ~limit : Order_row.t list =
   query t ~what:"recent orders"
     "SELECT client_order_id FROM orders ORDER BY created_at DESC, client_order_id DESC \
@@ -984,6 +1139,9 @@ module For_testing = struct
   let wal_check = wal_check
   let recent_fills_sql = recent_fills_sql
   let latest_signal_sql = latest_signal_sql
+  let source_fills_sql = source_fills_sql
+  let source_range prefix = source_range prefix
+  let columns = columns
 
   let journal_mode t =
     match

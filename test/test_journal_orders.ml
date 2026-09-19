@@ -25,6 +25,7 @@ let request n qty =
     side = Order.Side.Buy;
     qty;
     kind = Order.Kind.Market;
+    tif = Order.Tif.Day;
   }
 
 let open_journal () = Or_error.ok_exn (Journal.open_ ~path:":memory:")

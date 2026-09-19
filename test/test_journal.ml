@@ -57,14 +57,16 @@ let journal_indexes =
     "fills_by_order";
     "order_events_by_order";
     "orders_by_created";
+    "orders_by_source";
     "orders_open";
     "signals_by_strategy";
   ]
 
 (* A restart is also how a journal written before the indexes existed meets
    them: the file below has none when it is closed, as a file from that build
-   would, and opening it again adds all six without touching a row or the
-   schema version. *)
+   would, and opening it again adds all seven without touching a row or the
+   schema version. orders_by_source is Task 15's: a strategy's own orders, by
+   the source signal:<slug>:<sequence> they carry. *)
 let test_a_session_survives_a_restart () =
   with_temp_path ~f:(fun path ->
       let j = open_exn path in
@@ -82,7 +84,7 @@ let test_a_session_survives_a_restart () =
         [ session "2026-09-09"; session "2026-09-10"; session "2026-09-11" ]
         (Journal.sessions j);
       Alcotest.(check (list string))
-        "reopened: the six indexes, added at open" journal_indexes (own_indexes j);
+        "reopened: the seven indexes, added at open" journal_indexes (own_indexes j);
       let version = ref [] in
       ignore
         (Sqlite3.exec_not_null_no_headers (Journal.For_testing.db j)
@@ -94,7 +96,7 @@ let test_a_session_survives_a_restart () =
       (* and a third open, onto a file that has them, changes nothing *)
       let j = open_exn path in
       Alcotest.(check (list string))
-        "opened again: the same six, and no error" journal_indexes (own_indexes j);
+        "opened again: the same seven, and no error" journal_indexes (own_indexes j);
       Journal.close j)
 
 (* /api/desk's last query that grew with the journal: SQLite's own plan for
@@ -371,6 +373,156 @@ let test_the_failed_order_query_is_a_bounded_search_not_a_scan () =
     (String.is_substring plan ~substring:"SCAN orders");
   Journal.close j
 
+(* Task 15's two columns, onto a file written before them. The file is made
+   by hand in the shape an older build wrote -- orders with no tif, signals
+   with no rebalance -- with one order and one judgement in it. Opening it
+   adds both columns, once: the old order reads back as a day order, which
+   every order then was, and the old judgement as having no rebalance. A new
+   market-on-open order round-trips its tif. Opening it again finds both
+   columns there and adds nothing -- ALTER TABLE ADD COLUMN twice would fail
+   -- and the file is still schema version 1. *)
+let test_the_migration_adds_tif_and_rebalance_to_an_existing_file () =
+  with_temp_path ~f:(fun path ->
+      let db = Sqlite3.db_open path in
+      let exec sql =
+        match Sqlite3.exec db sql with
+        | Sqlite3.Rc.OK -> ()
+        | rc -> Alcotest.failf "%s: %s" (Sqlite3.Rc.to_string rc) sql
+      in
+      List.iter
+        [
+          "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)";
+          "INSERT INTO meta VALUES ('schema_version', '1')";
+          "CREATE TABLE orders (client_order_id TEXT PRIMARY KEY, venue_order_id TEXT, \
+           source TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL, qty REAL NOT \
+           NULL, kind TEXT NOT NULL, limit_price REAL, state TEXT NOT NULL, filled_qty \
+           REAL NOT NULL DEFAULT 0, avg_fill_price REAL, decision_price REAL NOT NULL, \
+           arrival_bid REAL, arrival_ask REAL, verdict TEXT NOT NULL, created_at TEXT \
+           NOT NULL, updated_at TEXT NOT NULL)";
+          "INSERT INTO orders (client_order_id, source, symbol, side, qty, kind, state, \
+           decision_price, verdict, created_at, updated_at) VALUES \
+           ('ohc-01M2B0CWJ0ZZZZZZZZZZZZZZZ1', 'manual', 'AAPL', 'buy', 10, 'market', \
+           'rejected_pre_trade', 150, 'null', '2026-09-11T14:00:00.000000000Z', \
+           '2026-09-11T14:00:00.000000000Z')";
+          "CREATE TABLE signals (strategy TEXT NOT NULL, sequence INTEGER NOT NULL, \
+           as_of TEXT NOT NULL, received_at TEXT NOT NULL, verdict TEXT NOT NULL, rule \
+           TEXT, detail TEXT, document TEXT NOT NULL, PRIMARY KEY (strategy, sequence))";
+          "INSERT INTO signals VALUES ('exp_a01_spy', 1, '2026-09-11', \
+           '2026-09-11T23:16:00.000000000Z', 'advisory', 'sizing', 'shown', '{}')";
+        ]
+        ~f:exec;
+      ignore (Sqlite3.db_close db : bool);
+      let j = open_exn path in
+      let has j table column =
+        List.count (Journal.For_testing.columns j ~table) ~f:(String.equal column)
+      in
+      Alcotest.(check (pair int int))
+        "orders.tif and signals.rebalance, each once" (1, 1)
+        (has j "orders" "tif", has j "signals" "rebalance");
+      let old =
+        Option.value_exn
+          (Journal.load_order j
+             (Option.value_exn
+                (Ohcamel_desk.Ids.Client_order_id.of_string
+                   "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZZ1")))
+      in
+      Alcotest.(check string)
+        "the old order is a day order" "day"
+        (Ohcamel_desk.Order.Tif.to_string
+           old.Journal.Order_row.order.Ohcamel_desk.Order.request
+             .Ohcamel_desk.Order.Request.tif);
+      Alcotest.(check (option string))
+        "the old judgement has no rebalance" None
+        (Option.bind (Journal.signal j ~strategy:"exp_a01_spy" ~sequence:1) ~f:(fun s ->
+             s.Journal.Signal.rebalance));
+      let opg =
+        Ohcamel_desk.Order.create
+          {
+            Ohcamel_desk.Order.Request.client_order_id =
+              Option.value_exn
+                (Ohcamel_desk.Ids.Client_order_id.of_string
+                   "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZZ2");
+            symbol = Symbol.of_string "SPY";
+            side = Ohcamel_desk.Order.Side.Buy;
+            qty = 3;
+            kind = Ohcamel_desk.Order.Kind.Market;
+            tif = Ohcamel_desk.Order.Tif.Opg;
+          }
+      in
+      Journal.insert_order j opg ~source:"signal:exp_a01_spy:2"
+        ~decision_price:(Price.of_float 500.0) ~arrival:None ~verdict:`Null ~at;
+      Alcotest.(check (option string))
+        "a market-on-open order round-trips" (Some "opg")
+        (Option.map
+           (Journal.load_order j
+              opg.Ohcamel_desk.Order.request.Ohcamel_desk.Order.Request.client_order_id)
+           ~f:(fun r ->
+             Ohcamel_desk.Order.Tif.to_string
+               r.Journal.Order_row.order.Ohcamel_desk.Order.request
+                 .Ohcamel_desk.Order.Request.tif));
+      Journal.close j;
+      let j = open_exn path in
+      Alcotest.(check (pair int int))
+        "opened again: still once each, and no error" (1, 1)
+        (has j "orders" "tif", has j "signals" "rebalance");
+      let version = ref [] in
+      ignore
+        (Sqlite3.exec_not_null_no_headers (Journal.For_testing.db j)
+           ~cb:(fun row -> version := row.(0) :: !version)
+           "SELECT value FROM meta WHERE key = 'schema_version'"
+          : Sqlite3.Rc.t);
+      Alcotest.(check (list string)) "and the file is still version 1" [ "1" ] !version;
+      Journal.close j)
+
+(* A market-on-open order's price: the newest SESSION's close. Marks for the
+   16th with no session row are a close that never finished -- the session
+   row is written last -- and are not read; the 15th's are. A name with no
+   mark that session, or a journal with no session, has no close. *)
+let test_the_latest_close_is_the_newest_session's () =
+  let j = open_exn ":memory:" in
+  let spy = Symbol.of_string "SPY" and tlt = Symbol.of_string "TLT" in
+  Alcotest.(check bool)
+    "no session, no close" true
+    (Option.is_none (Journal.latest_close j spy));
+  let mark d symbol close = { Journal.Mark.date = date d; symbol; close; qty = 0.0 } in
+  Journal.record_marks j [ mark "2026-09-14" spy 500.0; mark "2026-09-14" tlt 90.0 ];
+  Journal.record_session j (session "2026-09-14");
+  Journal.record_marks j [ mark "2026-09-15" spy 501.25 ];
+  Journal.record_session j (session "2026-09-15");
+  Journal.record_marks j [ mark "2026-09-16" spy 999.0 ];
+  Alcotest.(check (option (pair string (float 0.0))))
+    "SPY: the 15th's close, not the unfinished 16th's"
+    (Some ("2026-09-15", 501.25))
+    (Option.map (Journal.latest_close j spy) ~f:(fun (d, c) -> (Date.to_string d, c)));
+  Alcotest.(check bool)
+    "TLT: no mark on the newest session, so no close" true
+    (Option.is_none (Journal.latest_close j tlt))
+
+(* A strategy's own fills: the source range selects signal:exp_a01_spy:*
+   and nothing else -- not a hand order, not signal:exp_a01_spy_2:*, whose
+   slug merely begins the same way -- and SQLite reads it through
+   orders_by_source rather than scanning orders. *)
+let test_a_strategy's_fills_are_read_through_orders_by_source () =
+  let j = open_exn ":memory:" in
+  let lo, hi = Journal.For_testing.source_range "signal:exp_a01_spy:" in
+  Alcotest.(check (pair string string))
+    "the range: its prefix, to the prefix with ':' moved on to ';'"
+    ("signal:exp_a01_spy:", "signal:exp_a01_spy;")
+    (Sqlite3.Data.to_string_coerce lo, Sqlite3.Data.to_string_coerce hi);
+  let plan =
+    String.concat ~sep:" | "
+      (Journal.For_testing.query_plan j Journal.For_testing.source_fills_sql [ lo; hi ])
+  in
+  Alcotest.(check bool)
+    (sprintf "orders_by_source (plan: %s)" plan)
+    true
+    (String.is_substring plan ~substring:"orders_by_source");
+  Alcotest.(check bool)
+    (sprintf "not a SCAN of orders (plan: %s)" plan)
+    false
+    (String.is_substring plan ~substring:"SCAN o ");
+  Journal.close j
+
 let suite =
   ( "journal",
     [
@@ -398,4 +550,10 @@ let suite =
         test_a_file_journal_runs_in_wal_mode;
       Alcotest.test_case "the failed-order query is a bounded search, not a scan" `Quick
         test_the_failed_order_query_is_a_bounded_search_not_a_scan;
+      Alcotest.test_case "the migration adds tif and rebalance to an existing file" `Quick
+        test_the_migration_adds_tif_and_rebalance_to_an_existing_file;
+      Alcotest.test_case "the latest close is the newest session's" `Quick
+        test_the_latest_close_is_the_newest_session's;
+      Alcotest.test_case "a strategy's fills are read through orders_by_source" `Quick
+        test_a_strategy's_fills_are_read_through_orders_by_source;
     ] )

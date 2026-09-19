@@ -1391,6 +1391,363 @@ let test_a_raising_pass_is_logged_and_the_next_still_runs () =
   D.Journal.close journal;
   return ()
 
+(* ------------------------------------------------------------------------ *)
+(* Task 15: the rebalance, market-on-open, and the re-check after the quote  *)
+(* ------------------------------------------------------------------------ *)
+
+(* Monday 14 September 2026's close, recorded at the fixture's prints --
+   AAPL 100, MSFT 200, XOM 50 -- and the evening after it at 19:15 EDT
+   (23:15Z), when the opening auction's window is open until Tuesday 09:28
+   EDT (13:28Z). *)
+let evening = Time_ns.of_string_with_utc_offset "2026-09-14T23:15:00Z"
+let tuesday_open = Time_ns.of_string_with_utc_offset "2026-09-15T13:30:00Z"
+let tuesday_close = Time_ns.of_string_with_utc_offset "2026-09-15T20:00:00Z"
+
+let record_close ?(sessions = [ "2026-09-14" ]) f =
+  List.iter sessions ~f:(fun d ->
+      D.Journal.record_marks f.journal
+        (List.map
+           [ (aapl, 100.0); (msft, 200.0); (xom, 50.0) ]
+           ~f:(fun (symbol, close) ->
+             { D.Journal.Mark.date = Date.of_string d; symbol; close; qty = 0.0 }));
+      D.Journal.record_session f.journal
+        {
+          D.Journal.Session.date = Date.of_string d;
+          equity_close = 1_000_000.0;
+          cash_close = 1_000_000.0;
+          gross_close = 0.0;
+          net_close = 0.0;
+          recorded_at = Time_ns.add evening (Time_ns.Span.of_hr (-3.0));
+        })
+
+(* The venue after Monday's close, and the manager reading its clock. *)
+let after_the_close f oms =
+  D.Sim_venue.set_session f.venue
+    (D.Sim_venue.Session.Closed { next_open = tuesday_open; next_close = tuesday_close });
+  D.Oms.set_clock oms (Some (D.Sim_venue.clock f.venue))
+
+let rebalance_leg symbol side qty =
+  {
+    D.Rebalance.Leg.symbol;
+    weight = 0.0;
+    price = 0.0;
+    target = 0;
+    current = 0;
+    side;
+    qty;
+  }
+
+let aapl_source = { D.Rebalance.Source.strategy = "exp_a01_aapl"; sequence = 1 }
+
+(* A rebalance of one market-on-open order, AAPL +50 at Monday's close of
+   100, proposed at 19:15 EDT. The venue's submit asks the journal, as it is
+   called, what it holds for the order: pending_submit, with its source and
+   its tif -- the journal before the wire. The venue takes it and holds it
+   while the session is closed: an hour's pumping fills nothing. Then the
+   session opens and one pump fills it as a market order, half a spread from
+   the mark: 100 x 1.0005 = 100.05. The strategy's own fills then read AAPL
+   50, which is what the next rebalance will count as its position. *)
+let test_a_rebalance_journals_before_the_wire_and_fills_when_the_session_opens () =
+  let f = fixture () in
+  record_close f;
+  let sim = D.Sim_venue.trade ~auto:false f.venue in
+  let at_the_wire = ref [] in
+  let watched =
+    {
+      sim with
+      D.Venue.Trade.submit =
+        (fun r ->
+          at_the_wire :=
+            Option.map (D.Journal.load_order f.journal r.D.Order.Request.client_order_id)
+              ~f:(fun row ->
+                ( D.Order.State.to_string row.D.Journal.Order_row.order.D.Order.state,
+                  row.D.Journal.Order_row.source ))
+            :: !at_the_wire;
+          sim.D.Venue.Trade.submit r);
+    }
+  in
+  let oms = manager ~trade:watched ~now:(fun () -> evening) f in
+  after_the_close f oms;
+  let%bind outcome =
+    D.Oms.propose_rebalance oms ~source:aapl_source
+      ~legs:[ rebalance_leg aapl D.Order.Side.Buy 50 ]
+  in
+  let%bind () = settle () in
+  let o =
+    match outcome with
+    | D.Oms.Rebalance_outcome.Sent [ o ] -> o
+    | other ->
+        Alcotest.failf "not one order sent: %s" (D.Oms.Rebalance_outcome.to_string other)
+  in
+  Alcotest.(check (list (option (pair string string))))
+    "at the wire, the journal already held it pending_submit, from its signal"
+    [ Some ("pending_submit", "signal:exp_a01_aapl:1") ]
+    !at_the_wire;
+  Alcotest.(check string)
+    "journaled as market-on-open" "opg"
+    (D.Order.Tif.to_string (journaled f o).D.Order.request.D.Order.Request.tif);
+  Alcotest.(check string) "the venue took it" "accepted" (state f o);
+  D.Sim_venue.pump f.venue;
+  let%bind () = settle () in
+  Alcotest.(check string) "held while the session is closed" "accepted" (state f o);
+  D.Sim_venue.set_session f.venue
+    (D.Sim_venue.Session.Open
+       {
+         next_close = tuesday_close;
+         next_open = Time_ns.add tuesday_open (Time_ns.Span.of_day 1.0);
+       });
+  let%bind () = pump f in
+  Alcotest.(check string) "filled once the session opens" "filled" (state f o);
+  Alcotest.(check (option (float 1e-9)))
+    "at 100 x 1.0005" (Some 100.05)
+    (D.Order.avg_fill_price (journaled f o));
+  Alcotest.(check (list (pair string (float 0.0))))
+    "the strategy's own position: AAPL 50"
+    [ ("AAPL", 50.0) ]
+    (List.map (D.Journal.source_fills f.journal ~prefix:"signal:exp_a01_aapl:")
+       ~f:(fun (s, q) -> (Symbol.to_string s, q)));
+  Alcotest.(check int) "sent once" 1 (D.Sim_venue.received f.venue);
+  Graph.destroy f.graph;
+  return ()
+
+(* A kill sets the switch outside the sequencer, so it can land between two
+   submits. Here it lands inside the first: AAPL +10 goes, and the switch is
+   set while the venue answers it. Before MSFT +10 is sent the switch is
+   asked again, and MSFT and XOM +10 after it, journaled pending_submit with
+   AAPL, both move to rejected_pre_trade naming the switch, and neither is
+   sent: the venue received one order. AAPL, given its venue id under the
+   switch, is cancelled by the switch's own machinery. *)
+let test_a_halt_between_two_submits_leaves_the_second_unsent () =
+  let f = fixture () in
+  record_close f;
+  let halt = D.Halt.create D.Halt.Source.none in
+  let sim = D.Sim_venue.trade ~auto:false f.venue in
+  let submits = ref 0 in
+  let halting =
+    {
+      sim with
+      D.Venue.Trade.submit =
+        (fun r ->
+          incr submits;
+          let answer = sim.D.Venue.Trade.submit r in
+          D.Halt.halt halt ~why:"halted by hand, between two submits" ~at:evening;
+          answer);
+    }
+  in
+  let oms = manager ~trade:halting ~halt ~now:(fun () -> evening) f in
+  after_the_close f oms;
+  let%bind outcome =
+    D.Oms.propose_rebalance oms ~source:aapl_source
+      ~legs:
+        [
+          rebalance_leg aapl D.Order.Side.Buy 10;
+          rebalance_leg msft D.Order.Side.Buy 10;
+          rebalance_leg xom D.Order.Side.Buy 10;
+        ]
+  in
+  let%bind () = settle () in
+  match outcome with
+  | D.Oms.Rebalance_outcome.Stopped { sent = [ first ]; unsent = [ second; third ]; why }
+    ->
+      Alcotest.(check string)
+        "the first was sent" "AAPL"
+        (Symbol.to_string first.D.Order.request.D.Order.Request.symbol);
+      Alcotest.(check (pair string string))
+        "the second: MSFT, rejected before the wire"
+        ("MSFT", "rejected_pre_trade")
+        (Symbol.to_string second.D.Order.request.D.Order.Request.symbol, state f second);
+      let reason =
+        "kill_switch: the desk was halted by hand at 2026-09-14T23:15:00.000000000Z: \
+         halted by hand, between two submits"
+      in
+      Alcotest.(check (option string))
+        "with the switch's reason" (Some reason) (journaled f second).D.Order.reason;
+      Alcotest.(check string) "and the outcome says the same" reason why;
+      Alcotest.(check (triple string string (option string)))
+        "the third: XOM, rejected before the wire, for the same reason"
+        ("XOM", "rejected_pre_trade", Some reason)
+        ( Symbol.to_string third.D.Order.request.D.Order.Request.symbol,
+          state f third,
+          (journaled f third).D.Order.reason );
+      Alcotest.(check (pair int int))
+        "one submit, and the venue received one" (1, 1)
+        (!submits, D.Sim_venue.received f.venue);
+      Alcotest.(check string)
+        "and the first, named under the switch, was cancelled" "cancelled" (state f first);
+      Graph.destroy f.graph;
+      return ()
+  | other ->
+      Alcotest.failf "not stopped after one: %s" (D.Oms.Rebalance_outcome.to_string other)
+
+(* The session rule, asked again once the arrival quote is in (Task 1's
+   carried item). The clock names this session's close one second after the
+   proposal starts; the rules pass, the quote is asked for, and while it is
+   in flight the close passes. The order is refused by the session rule,
+   journaled rejected_pre_trade, and nothing reaches the venue. *)
+let test_a_session_that_closes_while_the_quote_is_fetched_is_refused () =
+  let f = fixture () in
+  let now = ref t0 in
+  let asked = Ivar.create () and answer = Ivar.create () in
+  let venue_read = D.Sim_venue.read f.venue in
+  let read =
+    {
+      venue_read with
+      D.Venue.Read.latest_quote =
+        (fun symbol ->
+          Ivar.fill_if_empty asked ();
+          let%bind () = Ivar.read answer in
+          venue_read.D.Venue.Read.latest_quote symbol);
+    }
+  in
+  let oms = manager ~read ~now:(fun () -> !now) f in
+  D.Oms.set_clock oms
+    (Some
+       {
+         D.Venue.Session_clock.now = t0;
+         is_open = true;
+         next_open = Time_ns.add t0 (Time_ns.Span.of_day 1.0);
+         next_close = Time_ns.add t0 (Time_ns.Span.of_sec 1.0);
+         next_close_date = Date.of_string "2026-09-14";
+       });
+  let proposal = D.Oms.propose oms (ticket aapl D.Order.Side.Buy 10) in
+  let%bind () = Ivar.read asked in
+  now := Time_ns.add t0 (Time_ns.Span.of_sec 2.0);
+  Ivar.fill_exn answer ();
+  let%bind p, o = proposal in
+  let%bind () = settle () in
+  Alcotest.(check string) "refused" "rejected_pre_trade" (state f o);
+  Alcotest.(check (list string)) "by the session rule" [ "session" ] (rules p);
+  Alcotest.(check int) "and the venue received nothing" 0 (D.Sim_venue.received f.venue);
+  Graph.destroy f.graph;
+  return ()
+
+(* The same for a rebalance, and for the opening auction's own window. At
+   09:27:59 EDT on Tuesday the rules pass -- the window closes at 09:28 --
+   and the arrival quote is asked for; while it is in flight 09:28 comes. The
+   rebalance is refused, naming the boundary, before anything is written:
+   the journal holds no order, and the venue received none. *)
+let test_a_rebalance_whose_window_closes_while_its_quotes_are_fetched_is_refused () =
+  let f = fixture () in
+  record_close f;
+  let now = ref (Time_ns.of_string_with_utc_offset "2026-09-15T13:27:59Z") in
+  let asked = Ivar.create () and answer = Ivar.create () in
+  let venue_read = D.Sim_venue.read f.venue in
+  let read =
+    {
+      venue_read with
+      D.Venue.Read.latest_quote =
+        (fun symbol ->
+          Ivar.fill_if_empty asked ();
+          let%bind () = Ivar.read answer in
+          venue_read.D.Venue.Read.latest_quote symbol);
+    }
+  in
+  let oms = manager ~read ~now:(fun () -> !now) f in
+  after_the_close f oms;
+  let proposal =
+    D.Oms.propose_rebalance oms ~source:aapl_source
+      ~legs:[ rebalance_leg aapl D.Order.Side.Buy 10 ]
+  in
+  let%bind () = Ivar.read asked in
+  now := Time_ns.of_string_with_utc_offset "2026-09-15T13:28:00Z";
+  Ivar.fill_exn answer ();
+  let%bind outcome = proposal in
+  let%bind () = settle () in
+  (match outcome with
+  | D.Oms.Rebalance_outcome.Refused why ->
+      Alcotest.(check bool)
+        (sprintf "naming the order and the boundary: %s" why)
+        true
+        (String.is_substring why
+           ~substring:
+             "after the arrival quotes, order 1 of 1 (AAPL buy 10 market-on-open): \
+              session: it is 2026-09-15 09:28 ET, not before 2026-09-15 09:28 ET")
+  | other -> Alcotest.failf "not refused: %s" (D.Oms.Rebalance_outcome.to_string other));
+  Alcotest.(check (pair int int))
+    "nothing journaled, nothing sent" (0, 0)
+    ( List.length (D.Journal.recent_orders f.journal ~limit:10),
+      D.Sim_venue.received f.venue );
+  Graph.destroy f.graph;
+  return ()
+
+(* The whole path, from files to the venue. A LIVE strategy, exp_a01_aapl,
+   on AAPL at a capital fraction of 0.01; the book holds nothing and a
+   million in cash, so E is 1,000,000 and the target is 1.0 x 0.01 x
+   1,000,000 / 100 = 100 shares (10,000, under the order cap and tech-cap).
+   Two of its signals are accepted in one pass, sequence 1 and sequence 2:
+   only 2 is sized -- 1's orders would rest beside it until the open, and the
+   position counts fills -- and 1's judgement says so. 2 becomes one
+   rebalance: one market-on-open order, AAPL +100, journaled with source
+   signal:exp_a01_aapl:2 and sent, and the outcome is written over 2's
+   pending sentence. *)
+let test_an_accepted_signal_on_a_live_strategy_becomes_one_rebalance () =
+  let f = fixture () in
+  record_close ~sessions:[ "2026-09-11"; "2026-09-14" ] f;
+  let oms = manager ~now:(fun () -> evening) f in
+  after_the_close f oms;
+  let dir = Filename_unix.temp_dir "ohcamel-signals-" "" in
+  let intake =
+    D.Intake.create ~journal:f.journal ~dir
+      ~strategies:
+        [
+          {
+            Ohcamel.Config.Book.Signals_spec.Strategy.name = "exp_a01_aapl";
+            symbols = [ "AAPL" ];
+            max_age = 3;
+            sizing = Ohcamel.Config.Book.Signals_spec.Live;
+            capital_fraction = 0.01;
+          };
+        ]
+      ~universe:[ aapl; msft; xom ] ~on_event:ignore
+      ~now:(fun () -> evening)
+  in
+  let zeros = "sha256:" ^ String.make 64 '0' in
+  List.iter
+    [ (1, "2026-09-11"); (2, "2026-09-14") ]
+    ~f:(fun (sequence, as_of) ->
+      Out_channel.write_all
+        (Filename.concat dir (sprintf "exp_a01_aapl-%s.json" as_of))
+        ~data:
+          (sprintf
+             {|{"schema_version":1,"strategy":"exp_a01_aapl","params_hash":"%s","as_of":"%s","computed_at":"%sT23:15:00Z","data_hash":"%s","sequence":%d,"validation":{"status":"pass","gates_version":"2026-09-02"},"targets":[{"symbol":"AAPL","weight":1.0}]}|}
+             zeros as_of as_of zeros sequence));
+  let accepted = D.Intake.judge_pass intake in
+  Alcotest.(check (list int))
+    "both accepted in one pass" [ 1; 2 ]
+    (List.map accepted ~f:(fun a -> a.D.Intake.Accepted.doc.sequence));
+  let%bind () = D.Intake.size intake ~oms:(Some oms) accepted in
+  let%bind () = settle () in
+  let rebalance sequence =
+    Option.value_exn
+      (Option.bind (D.Journal.signal f.journal ~strategy:"exp_a01_aapl" ~sequence)
+         ~f:(fun s -> s.D.Journal.Signal.rebalance))
+  in
+  let says what ~substring s =
+    Alcotest.(check bool)
+      (sprintf "%s: %S" what s) true
+      (String.is_substring s ~substring)
+  in
+  says "1 is not sized" ~substring:"not sized: sequence 2 of the same strategy"
+    (rebalance 1);
+  says "2 was sent" ~substring:"1 market-on-open order journaled, then sent" (rebalance 2);
+  says "as AAPL +100"
+    ~substring:"AAPL buy 100 (target 100 at 100.00, weight 1; the strategy holds 0)"
+    (rebalance 2);
+  Alcotest.(check (list (triple string string int)))
+    "one order in the journal, from sequence 2"
+    [ ("signal:exp_a01_aapl:2", "AAPL", 100) ]
+    (List.map (D.Journal.recent_orders f.journal ~limit:10) ~f:(fun r ->
+         let q = r.D.Journal.Order_row.order.D.Order.request in
+         ( r.D.Journal.Order_row.source,
+           Symbol.to_string q.D.Order.Request.symbol,
+           q.D.Order.Request.qty )));
+  Alcotest.(check int) "sent once" 1 (D.Sim_venue.received f.venue);
+  Array.iter (Sys_unix.readdir dir) ~f:(fun name ->
+      Core_unix.unlink (Filename.concat dir name));
+  Core_unix.rmdir dir;
+  Graph.destroy f.graph;
+  return ()
+
 let suites =
   [
     ( "transport",
@@ -1426,6 +1783,19 @@ let suites =
           test_the_clock_is_read_again_when_its_session_ends;
         case "preview and propose agree about a resting order"
           test_preview_and_propose_agree_about_a_resting_order;
+        case "a session that closes while the quote is fetched is refused"
+          test_a_session_that_closes_while_the_quote_is_fetched_is_refused;
+      ] );
+    ( "rebalance",
+      [
+        case "a rebalance journals before the wire, and fills when the session opens"
+          test_a_rebalance_journals_before_the_wire_and_fills_when_the_session_opens;
+        case "a halt between two submits leaves the second rejected_pre_trade and unsent"
+          test_a_halt_between_two_submits_leaves_the_second_unsent;
+        case "a rebalance whose window closes while its quotes are fetched is refused"
+          test_a_rebalance_whose_window_closes_while_its_quotes_are_fetched_is_refused;
+        case "an accepted signal on a live strategy becomes one rebalance"
+          test_an_accepted_signal_on_a_live_strategy_becomes_one_rebalance;
       ] );
     ( "desk",
       [

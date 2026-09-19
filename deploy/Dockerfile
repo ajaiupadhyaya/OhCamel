@@ -89,9 +89,12 @@ RUN opam exec -- dune build --profile release bin/main.exe \
 FROM debian:12-slim AS runtime
 
 # The runtime halves of the -dev packages above, plus ca-certificates (live
-# mode verifies Alpaca's and FRED's certificates and cannot without them) and
+# mode verifies Alpaca's and FRED's certificates and cannot without them),
 # curl (the compose healthcheck calls /api/health; a healthcheck that needs a
-# tool the image lacks reports unhealthy forever).
+# tool the image lacks reports unhealthy forever), and tzdata: a rebalance's
+# market-on-open orders may go only from 19:00 America/New_York, read from the
+# tz database (desk/desk_time.ml), and without the zone the desk refuses every
+# one of them.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libopenblas0 \
       liblapacke \
@@ -103,7 +106,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       zlib1g \
       ca-certificates \
       curl \
- && rm -rf /var/lib/apt/lists/*
+      tzdata \
+ && rm -rf /var/lib/apt/lists/* \
+ && test -f /usr/share/zoneinfo/America/New_York
 
 # Unprivileged, and with no login shell. The process reads market data and
 # serves HTML; nothing it does wants root, and a container escape should land

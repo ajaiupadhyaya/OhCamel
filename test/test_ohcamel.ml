@@ -76,6 +76,7 @@ let suites =
     Test_oms.suite;
     Test_desk_routes.suite;
     Test_intake.suite;
+    Test_rebalance.suite;
     Test_example_book.suite;
   ]
 

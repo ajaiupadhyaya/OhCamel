@@ -335,6 +335,80 @@ let test_an_advisory_strategy's_passing_signal_is_advisory_by_sizing () =
         (judged f "exp_a01_spy" 4))
     ()
 
+(* ------------------------------------------------------------------------ *)
+(* What reaches sizing (Task 15)                                             *)
+(* ------------------------------------------------------------------------ *)
+
+let rebalance_of f strategy sequence =
+  Option.bind (Journal.signal f.journal ~strategy ~sequence) ~f:(fun s ->
+      s.Journal.Signal.rebalance)
+
+let accepted_keys (a : Intake.Accepted.t list) =
+  List.map a ~f:(fun a ->
+      (a.Intake.Accepted.doc.strategy, a.Intake.Accepted.doc.sequence))
+
+(* Ruling 2: an advisory strategy's passing signal is shown and never sized.
+   The pass hands nothing on to sizing, its judgement carries no rebalance,
+   and the journal holds no order. The live strategy's passing signal, in the
+   same pass, is handed on -- the only document that is -- with its
+   judgement already recorded and its rebalance pending. *)
+let test_an_advisory_strategy_produces_no_order () =
+  with_intake ~sessions:week
+    ~f:(fun f ->
+      write f.dir "spy.json" (doc ~sequence:5 "2026-09-18");
+      write f.dir "tlt.json"
+        (doc ~strategy:"exp_a01_tlt" ~sequence:5 ~targets:[ ("TLT", 1.0) ] "2026-09-18");
+      let accepted = Intake.judge_pass f.intake in
+      Alcotest.check judgement "TLT: advisory by sizing"
+        (Some ("advisory", Some "sizing"))
+        (judged f "exp_a01_tlt" 5);
+      Alcotest.(check (option string))
+        "TLT: no rebalance" None
+        (rebalance_of f "exp_a01_tlt" 5);
+      Alcotest.(check (list (pair string int)))
+        "only SPY's accepted document is handed to sizing"
+        [ ("exp_a01_spy", 5) ]
+        (accepted_keys accepted);
+      Alcotest.(check (option string))
+        "SPY: recorded, and its rebalance pending" (Some Intake.pending)
+        (rebalance_of f "exp_a01_spy" 5);
+      Alcotest.(check int)
+        "and no order anywhere" 0
+        (List.length (Journal.recent_orders f.journal ~limit:10)))
+    ()
+
+(* A crash between recording an accepted judgement and proposing its
+   rebalance, simulated: the pass records it and hands it on, and nothing
+   sizes it. The next pass -- and a restarted intake, with nothing in memory,
+   over the same journal -- finds its (strategy, sequence) judged and hands
+   nothing on: the signal is never re-judged and never re-sized, and its
+   pending sentence stays to say what happened. *)
+let test_a_crash_between_judging_and_proposing_does_not_re_size () =
+  with_intake ~sessions:week
+    ~f:(fun f ->
+      write f.dir "spy.json" (doc ~sequence:5 "2026-09-18");
+      Alcotest.(check (list (pair string int)))
+        "the first pass hands it on"
+        [ ("exp_a01_spy", 5) ]
+        (accepted_keys (Intake.judge_pass f.intake));
+      Alcotest.(check (list (pair string int)))
+        "the next pass does not" []
+        (accepted_keys (Intake.judge_pass f.intake));
+      let restarted =
+        Intake.create ~journal:f.journal ~dir:f.dir ~strategies:[ spy_live; tlt_advisory ]
+          ~universe ~on_event:ignore ~now:(fun () -> at)
+      in
+      Alcotest.(check (list (pair string int)))
+        "nor does a restarted intake" []
+        (accepted_keys (Intake.judge_pass restarted));
+      Alcotest.(check (option string))
+        "the judgement still says pending" (Some Intake.pending)
+        (rebalance_of f "exp_a01_spy" 5);
+      Alcotest.(check int)
+        "and nothing was ever proposed" 0
+        (List.length (Journal.recent_orders f.journal ~limit:10)))
+    ()
+
 (* R5's baseline is the highest accepted-or-advisory sequence: 5, accepted.
    Two files carry 5 in the first pass, and only the first is judged. A lower
    4 is rejected at R5. A third file carrying 5 is skipped -- no second row,
@@ -1079,6 +1153,7 @@ let test_api_research's_shape () =
                   "verdict";
                   "rule";
                   "detail";
+                  "rebalance";
                   "sequence";
                   "as_of";
                   "received_at";
@@ -1095,6 +1170,9 @@ let test_api_research's_shape () =
                   Int.to_string (Yojson.Safe.Util.to_int (field latest "sequence"));
                   Yojson.Safe.Util.to_string (field latest "as_of");
                 ];
+              Alcotest.(check string)
+                "an advisory judgement has no rebalance" "null"
+                (Yojson.Safe.to_string (field latest "rebalance"));
               Alcotest.(check string)
                 "the weights" {|[{"symbol":"SPY","weight":1.0}]|}
                 (Yojson.Safe.to_string (field latest "targets"));
@@ -1145,6 +1223,7 @@ let test_the_latest_judgement_is_one_index_seek () =
       rule = Some (if sequence = 2 then "R6" else "R5");
       detail = "";
       document = "{}";
+      rebalance = None;
     }
   in
   Journal.record_signal journal (row 2 at);
@@ -1224,6 +1303,10 @@ let suite =
         test_a_judged_file_is_not_read_again;
       Alcotest.test_case "a pass reads at most 100 files, first by name" `Quick
         test_a_pass_reads_at_most_100_files_first_by_name;
+      Alcotest.test_case "an advisory strategy produces no order" `Quick
+        test_an_advisory_strategy_produces_no_order;
+      Alcotest.test_case "a crash between judging and proposing does not re-size" `Quick
+        test_a_crash_between_judging_and_proposing_does_not_re_size;
       Alcotest.test_case "/api/research's shape" `Quick test_api_research's_shape;
       Alcotest.test_case "/api/research on the demo" `Quick test_api_research_on_the_demo;
       Alcotest.test_case "the latest judgement is one index seek" `Quick

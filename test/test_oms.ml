@@ -133,7 +133,9 @@ let rest oms journal ~seed symbol side qty kind =
     D.Ids.Client_order_id.generate ~now:(Time_ns.now ())
       ~rng:(Random.State.make [| seed |])
   in
-  let request = { D.Order.Request.client_order_id; symbol; side; qty; kind } in
+  let request =
+    { D.Order.Request.client_order_id; symbol; side; qty; kind; tif = D.Order.Tif.Day }
+  in
   let o = D.Order.create request in
   D.Journal.insert_order journal o ~source:"test" ~decision_price:(price 0.0)
     ~arrival:None ~verdict:`Null ~at:(Time_ns.now ());
@@ -775,7 +777,9 @@ let fail oms journal ~seed ~at symbol side qty kind =
   let client_order_id =
     D.Ids.Client_order_id.generate ~now:at ~rng:(Random.State.make [| seed |])
   in
-  let request = { D.Order.Request.client_order_id; symbol; side; qty; kind } in
+  let request =
+    { D.Order.Request.client_order_id; symbol; side; qty; kind; tif = D.Order.Tif.Day }
+  in
   let o = D.Order.create request in
   D.Journal.insert_order journal o ~source:"test" ~decision_price:(price 0.0)
     ~arrival:None ~verdict:`Null ~at;

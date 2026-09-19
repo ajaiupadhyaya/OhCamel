@@ -85,9 +85,11 @@
  ; and the desk previews an order and places none. That is the default.
  ;
  ; With (trading enabled), an Alpaca PAPER key pair in the environment and a
- ; book that is current, the dashboard's ticket can send an order. Nothing else
- ; can: this engine runs no automatic trader on the live host, and the public
- ; demo answers 405 to every route that would place, cancel or halt. Paper is
+ ; book that is current, the dashboard's ticket can send an order. The only
+ ; other sender is a strategy in the signals block below that the owner has
+ ; set (sizing live) -- none is, as shipped -- whose accepted signal becomes
+ ; one rebalance of market-on-open orders through the same rules and limits.
+ ; The public demo answers 405 to every route that would place, cancel or halt. Paper is
  ; the only venue there is -- the host is a compiled-in constant, and a key that
  ; does not begin PK is refused before the first request.
  ;
@@ -118,7 +120,12 @@
    (duplicate_window_s 10.0)
    (max_open_orders 20)
    (spread_bps_default 5.0)
-   (spread_bps ())))
+   ; SPY and TLT are research/config/friction_v1.yaml's spreads, halved: that
+   ; file's 2.0 and 3.0 are the full round-trip spread EXP-A01 was tested at
+   ; ("per-symbol spread, halved per fill", its pre-registration), and this is
+   ; a per-fill half-spread. One cost configuration for the backtest and the
+   ; desk; test/test_example_book.ml reads both files and holds them to it.
+   (spread_bps ((SPY 1.0) (TLT 1.5)))))
 
  ; ---------------------------------------------------------------------------
  ; Phase A3: signals. OPTIONAL -- omit this block and the desk registers no

@@ -59,6 +59,11 @@ end
 val record_marks : t -> Mark.t list -> unit
 val marks : t -> Date.t -> Mark.t list
 
+val latest_close : t -> Symbol.t -> (Date.t * float) option
+(** The newest recorded session's close for the symbol, with that session's date: the
+    newest row of [sessions], and that date's mark. None when no session is recorded or it
+    holds no mark for the symbol. An opening-auction order is judged and sized at this. *)
+
 module Forecast : sig
   type t = {
     date : Date.t;
@@ -108,6 +113,10 @@ module Signal : sig
             an accepted signal. *)
     detail : string;
     document : string;  (** The file's text, whole. *)
+    rebalance : string option;
+        (** An accepted judgement's rebalance: the pending sentence it is recorded with,
+            then, once, what the rebalance came to. None for any other verdict, and for a
+            judgement recorded before the column existed. *)
   }
   [@@deriving sexp_of, compare, equal]
 end
@@ -115,6 +124,11 @@ end
 val record_signal : t -> Signal.t -> unit
 (** A plain INSERT: a (strategy, sequence) already recorded raises rather than overwrite
     the first judgement. *)
+
+val record_rebalance :
+  t -> strategy:string -> sequence:int -> from:string -> outcome:string -> unit
+(** Replaces an accepted judgement's rebalance, when it still reads [from], with
+    [outcome]; raises when no such row holds [from], so an outcome is written once. *)
 
 val signal_judged : t -> strategy:string -> sequence:int -> bool
 
@@ -180,6 +194,19 @@ val insert_order :
 (** One transaction: the orders row and its [created] event. The order manager calls this
     before the request that submits the order is sent. *)
 
+module Insert : sig
+  type t = {
+    order : Order.t;
+    source : string;
+    decision_price : Price.t;
+    arrival : (Price.t * Price.t) option;
+    verdict : Yojson.Safe.t;
+  }
+end
+
+val insert_orders : t -> Insert.t list -> at:Time_ns.t -> unit
+(** Several orders in ONE transaction, all or none: a rebalance's, before any is sent. *)
+
 val update_order :
   t ->
   Order.t ->
@@ -205,6 +232,17 @@ val unfinished_failed_orders : t -> since:Date.t option -> Order_row.t list
     reads what remains from the order's filled quantity. [since] is a session's date, not
     when its close was recorded, so a close recorded late does not drop an order still
     live in the session after it. Oldest first. *)
+
+val source_fills : t -> prefix:string -> (Symbol.t * float) list
+(** The net signed quantity of the fills of every order whose source begins with [prefix],
+    by symbol, read through orders_by_source: a strategy's own position when [prefix] is
+    its "signal:<slug>:". *)
+
+val source_orders_unsettled :
+  t -> prefix:string -> since:Date.t option -> Order_row.t list
+(** The orders whose source begins with [prefix] that may still fill: non-terminal, or
+    failed with no finishing venue report and created at or after [since] (every one, when
+    None). Oldest first. *)
 
 val recent_orders : t -> limit:int -> Order_row.t list
 (** Newest first. *)
@@ -237,6 +275,15 @@ module For_testing : sig
 
   val latest_signal_sql : string
   (** The exact SQL [latest_signal] runs, for the same reason. *)
+
+  val source_fills_sql : string
+  (** The exact SQL [source_fills] runs, for the same reason. *)
+
+  val source_range : string -> Sqlite3.Data.t * Sqlite3.Data.t
+  (** The two bounds [source_fills] binds for a prefix. *)
+
+  val columns : t -> table:string -> string list
+  (** PRAGMA table_info's column names, in order: what the added-column guard reads. *)
 
   val query_plan : t -> string -> Sqlite3.Data.t list -> string list
   (** [EXPLAIN QUERY PLAN sql], bound with [params]: one line per step, in the words

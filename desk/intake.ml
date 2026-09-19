@@ -4,9 +4,22 @@
    the desk can read and never writes. Once a minute this reads that
    directory, judges each new document against the contract's rules R1-R7
    (contract.ml) and three checks of the desk's own, and records every
-   judgement in the journal with the whole document beside it. It sizes
-   nothing: an accepted signal is recorded as accepted, and Task 15 attaches
-   the rebalance to that verdict.
+   judgement in the journal with the whole document beside it.
+
+   AN ACCEPTED SIGNAL IS SIZED ONCE, AND ONLY FROM THIS PASS (Task 15). Only
+   a document judged accepted in the pass that is running is sized -- never
+   a row read back from the journal, which could be an R6-first advisory
+   that never saw R7, the duplicate rule or the strategy's own symbols. Its
+   judgement is recorded FIRST, with a pending sentence in the signal's
+   rebalance column, and only then is anything proposed: a crash between the
+   two leaves the document judged, so the next pass skips it and never sizes
+   it again, and the pending sentence says what happened. [size] then plans
+   the targets (Oms.plan_rebalance), proposes them as one rebalance
+   (Oms.propose_rebalance), and writes what came of it over the pending
+   sentence, once. The judgement's own verdict, rule and detail are never
+   rewritten. Of several documents of one strategy accepted in the same
+   pass, only the highest sequence is sized: the others' orders would rest
+   beside it until the open, and the strategy's position counts only fills.
 
    THIS IS A TRUST BOUNDARY, AND EVERY DOUBT IS A REFUSAL. The files come
    from another process in another language, and the contract's own principle
@@ -551,6 +564,12 @@ let once t ~kind ~name f =
     Hash_set.add t.said key;
     f ())
 
+(* The rebalance column of an accepted judgement until its outcome replaces
+   it. A crash between the two leaves this in place for good, and it says so. *)
+let pending =
+  "pending: the judgement is recorded and its rebalance not yet proposed; if this never \
+   changes, the desk stopped in between, and the signal is not sized again"
+
 let record t ~name ~ident ~text (doc : Contract.t) (j : Judgement.t) =
   Journal.record_signal t.journal
     {
@@ -562,6 +581,10 @@ let record t ~name ~ident ~text (doc : Contract.t) (j : Judgement.t) =
       rule = j.rule;
       detail = j.detail;
       document = text;
+      rebalance =
+        (match j.verdict with
+        | Verdict.Accepted -> Some pending
+        | Advisory | Rejected -> None);
     };
   Hashtbl.set t.judged ~key:name ~data:ident;
   log t "%S: %S %d, as_of %s: %s%s -- %S" name doc.strategy doc.sequence
@@ -597,10 +620,17 @@ type candidate =
   | Unparsed of string * ident * string
   | Parsed of string * ident * string * Contract.t
 
-(* One pass: every step the header describes, synchronously. A raise leaves
+(* A document this pass judged accepted, with its strategy, held in memory
+   for [size]: the only way a signal reaches a rebalance. *)
+module Accepted = struct
+  type t = { strategy : Signals_spec.Strategy.t; doc : Contract.t }
+end
+
+(* One pass: every step the header describes, synchronously, returning the
+   documents it judged accepted, in the order it judged them. A raise leaves
    this function -- [run] catches it -- and whatever was recorded before it
    stays recorded; the next pass skips it as already judged. *)
-let pass t =
+let judge_pass t : Accepted.t list =
   let names =
     Sys_unix.readdir t.dir |> Array.to_list
     |> List.filter ~f:(String.is_suffix ~suffix:".json")
@@ -662,6 +692,7 @@ let pass t =
       max_reads_per_pass;
   let unsettled = ref String.Map.empty in
   let deferred = ref 0 in
+  let accepted = ref [] in
   let settle name ident =
     unsettled := Map.set !unsettled ~key:name ~data:ident;
     incr deferred
@@ -724,7 +755,13 @@ let pass t =
                 Contract.validate ~clock ~registry ~universe:t.universe ~max_age doc
               in
               match decide ~latest ~bars_after ~spec doc verdict with
-              | `Judged j -> record t ~name ~ident ~text doc j
+              | `Judged j -> (
+                  record t ~name ~ident ~text doc j;
+                  (* Recorded above before it is handed on: see the header. *)
+                  match (j.verdict, spec) with
+                  | Verdict.Accepted, Some strategy ->
+                      accepted := { Accepted.strategy; doc } :: !accepted
+                  | _ -> ())
               | `Defer why ->
                   (* The first sighting is the journal's, by the document's key:
                    a restart or a rename finds it where it was left. *)
@@ -756,16 +793,91 @@ let pass t =
                   (Exn.to_string exn))));
   t.unsettled <- !unsettled;
   t.deferred <- !deferred;
-  t.last_pass <- Some (t.now ())
+  t.last_pass <- Some (t.now ());
+  List.rev !accepted
+
+let pass t = ignore (judge_pass t : Accepted.t list)
+
+(* One accepted document's rebalance, as the sentence recorded beside it. *)
+let rebalance ~oms (a : Accepted.t) : string Deferred.t =
+  let doc = a.Accepted.doc in
+  let source = { Rebalance.Source.strategy = doc.strategy; sequence = doc.sequence } in
+  match
+    Oms.plan_rebalance oms ~strategy:a.Accepted.strategy
+      ~targets:
+        (List.map doc.targets ~f:(fun (x : Contract.target) -> (x.symbol, x.weight)))
+  with
+  | Error why -> return ("no targets, and no order: " ^ why)
+  | Ok [] -> return "no order: the strategy's own position already equals every target"
+  | Ok legs ->
+      let%map outcome = Oms.propose_rebalance oms ~source ~legs in
+      sprintf "%s. Targets: %s"
+        (Oms.Rebalance_outcome.to_string outcome)
+        (String.concat ~sep:"; " (List.map legs ~f:Rebalance.Leg.describe))
+
+(* The pass's accepted documents, one at a time: planned, proposed, and the
+   outcome written over the pending sentence. Nothing here raises out: a
+   rebalance that raises is recorded as having raised, with where to look,
+   and one whose outcome cannot be written is said in the log. [oms] is None
+   only for an intake with no order manager, which sizes nothing and says so. *)
+let size t ~(oms : Oms.t option) (accepted : Accepted.t list) : unit Deferred.t =
+  Deferred.List.iter ~how:`Sequential accepted ~f:(fun (a : Accepted.t) ->
+      let doc = a.Accepted.doc in
+      let source =
+        { Rebalance.Source.strategy = doc.strategy; sequence = doc.sequence }
+      in
+      let later =
+        List.find accepted ~f:(fun (b : Accepted.t) ->
+            String.equal b.Accepted.doc.strategy doc.strategy
+            && b.Accepted.doc.sequence > doc.sequence)
+      in
+      let%map outcome =
+        match (later, oms) with
+        | Some b, _ ->
+            return
+              (sprintf
+                 "not sized: sequence %d of the same strategy was accepted in the same \
+                  pass, and only the latest is sized"
+                 b.Accepted.doc.sequence)
+        | None, None -> return "not sized: this intake runs with no order manager"
+        | None, Some oms -> (
+            match%map Monitor.try_with ~extract_exn:true (fun () -> rebalance ~oms a) with
+            | Ok outcome -> outcome
+            | Error exn ->
+                sprintf
+                  "the rebalance raised (%s); the orders whose source is %s are the \
+                   record of anything journaled or sent"
+                  (Exn.to_string exn)
+                  (Rebalance.Source.to_string source))
+      in
+      match
+        Or_error.try_with (fun () ->
+            Journal.record_rebalance t.journal ~strategy:doc.strategy
+              ~sequence:doc.sequence ~from:pending ~outcome)
+      with
+      | Ok () -> log t "%S %d: rebalance %S" doc.strategy doc.sequence outcome
+      | Error e ->
+          log t "%S %d: rebalance %S, which could not be recorded: %s" doc.strategy
+            doc.sequence outcome (Error.to_string_hum e))
 
 (* Once a minute, from now: the first pass at once, so a restart judges what
-   arrived while it was down without waiting a minute. [pass] is synchronous,
-   so a plain try/with sees every raise it can make. *)
-let run ?(time_source = Time_source.wall_clock ()) t : unit Deferred.t =
+   arrived while it was down without waiting a minute. [judge_pass] is
+   synchronous, so a plain try/with sees every raise it can make; its
+   accepted documents are sized before the minute's wait begins, so no pass
+   starts while a rebalance is still being proposed. *)
+let run ?(time_source = Time_source.wall_clock ()) ?oms t : unit Deferred.t =
   let rec loop () =
-    (try pass t
-     with exn ->
-       log t "a pass raised, and the next one runs in a minute: %s" (Exn.to_string exn));
+    let accepted =
+      try judge_pass t
+      with exn ->
+        log t "a pass raised, and the next one runs in a minute: %s" (Exn.to_string exn);
+        []
+    in
+    let%bind () =
+      match%map Monitor.try_with ~extract_exn:true (fun () -> size t ~oms accepted) with
+      | Ok () -> ()
+      | Error exn -> log t "sizing raised: %s" (Exn.to_string exn)
+    in
     let%bind () = Time_source.after time_source every in
     loop ()
   in
@@ -788,6 +900,9 @@ let judgement_json (s : Journal.Signal.t) : Yojson.Safe.t =
       ("verdict", `String (Verdict.to_string s.verdict));
       ("rule", jopt (fun r -> `String r) s.rule);
       ("detail", `String s.detail);
+      (* An accepted judgement's rebalance: pending, then what came of it.
+         Null for every other verdict. *)
+      ("rebalance", jopt (fun r -> `String r) s.rebalance);
       ("sequence", `Int s.sequence);
       ("as_of", `String (Date.to_string s.as_of));
       ("received_at", `String (Desk_time.rfc3339 s.received_at));

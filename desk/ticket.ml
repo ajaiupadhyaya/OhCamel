@@ -19,6 +19,8 @@ let to_request (t : t) ~(client_order_id : Ids.Client_order_id.t) : Order.Reques
     side = t.side;
     qty = t.qty;
     kind = t.kind;
+    (* A ticket is a person's order, and a person's order is a day order. *)
+    tif = Order.Tif.Day;
   }
 
 let of_json (json : Yojson.Safe.t) : (t, string) Result.t =

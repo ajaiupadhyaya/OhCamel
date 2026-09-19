@@ -19,6 +19,7 @@ let request ?(qty = 100) ?(kind = Order.Kind.Market) () =
     side = Order.Side.Buy;
     qty;
     kind;
+    tif = Order.Tif.Day;
   }
 
 let fill ?(position_qty = None) id qty price =

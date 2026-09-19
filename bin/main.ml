@@ -1430,7 +1430,10 @@ let run_live ~book_path ~(serve_port : int option) =
       don't_wait_for
         (Ohcamel_desk.Oms.refresh_forever oms ~every:(Time_ns.Span.of_min 1.0));
       (* The signal intake: the directory above and the book's signals block,
-         both, or none. It judges and records; it sizes nothing. *)
+         both, or none. It judges and records every signal, and a signal
+         accepted for a strategy the owner set live -- none is, as shipped --
+         becomes one rebalance through this order manager: the same rules,
+         gate and journal as a ticket. *)
       let strategies =
         Option.value_map book.Config.Book.signals ~default:[] ~f:(fun s ->
             s.Config.Book.Signals_spec.strategies)
@@ -1445,11 +1448,15 @@ let run_live ~book_path ~(serve_port : int option) =
       | Ohcamel_desk.Intake.Running t ->
           live_line
             (sprintf
-               "intake    %d strategies registered; reading %s once a minute, judging \
-                R1-R7 and recording every judgement. R8 is not enforced."
+               "intake    %d strategies registered (%d live); reading %s once a minute, \
+                judging R1-R7 and recording every judgement. R8 is not enforced."
                (List.length strategies)
+               (List.count strategies ~f:(fun s ->
+                    Config.Book.Signals_spec.equal_sizing
+                      s.Config.Book.Signals_spec.Strategy.sizing
+                      Config.Book.Signals_spec.Live))
                (Option.value signals_dir ~default:""));
-          don't_wait_for (Ohcamel_desk.Intake.run t)
+          don't_wait_for (Ohcamel_desk.Intake.run ~oms t)
       | Ohcamel_desk.Intake.Off why -> live_line ("intake    off -- " ^ why));
       (match venue with
       | Ohcamel_desk.Desk.Reads read ->

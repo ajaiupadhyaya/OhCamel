@@ -291,6 +291,7 @@ let test_with_a_manager_the_desk_says_what_it_can_do () =
           side = Ohcamel_desk.Order.Side.Buy;
           qty = 10;
           kind = Ohcamel_desk.Order.Kind.Market;
+          tif = Ohcamel_desk.Order.Tif.Day;
         }
       in
       Journal.insert_order journal

@@ -286,7 +286,9 @@ let bars_of_json (json : Yojson.Safe.t) :
 (* Quantities and prices go as strings, as Alpaca's reference writes them. A
    limit price goes with two decimals: the rules' tick refused any limit that
    is not a whole cent, at every price, before this was reached, so formatting
-   here rounds nothing. *)
+   here rounds nothing. time_in_force is the request's own: "day" for every
+   ticket, "opg" for a rebalance's market-on-open order, which Alpaca queues
+   for the next opening auction when it arrives after 19:00 ET. *)
 let order_request_json (r : Order.Request.t) : Yojson.Safe.t =
   `Assoc
     ([
@@ -294,7 +296,7 @@ let order_request_json (r : Order.Request.t) : Yojson.Safe.t =
        ("qty", `String (Int.to_string r.Order.Request.qty));
        ("side", `String (Order.Side.to_string r.Order.Request.side));
        ("type", `String (Order.Kind.to_string r.Order.Request.kind));
-       ("time_in_force", `String "day");
+       ("time_in_force", `String (Order.Tif.to_string r.Order.Request.tif));
        ( "client_order_id",
          `String (Ids.Client_order_id.to_string r.Order.Request.client_order_id) );
      ]

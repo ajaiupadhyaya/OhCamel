@@ -30,7 +30,14 @@ let id n =
     (Ids.Client_order_id.of_string (sprintf "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZZ%d" n))
 
 let request ?(side = Order.Side.Buy) ?(kind = Order.Kind.Market) n qty =
-  { Order.Request.client_order_id = id n; symbol = aapl; side; qty; kind }
+  {
+    Order.Request.client_order_id = id n;
+    symbol = aapl;
+    side;
+    qty;
+    kind;
+    tif = Order.Tif.Day;
+  }
 
 let later now ms = now := Time_ns.add t0 (Time_ns.Span.of_ms ms)
 

@@ -76,6 +76,62 @@ let test_the_synthetic_calendar () =
     "dated 2026-01-02" "2026-01-02"
     (Date.to_string c.Venue.Session_clock.next_close_date)
 
+(* The closed phase a test sets (Task 15). After Monday's close the clock is
+   closed and names Tuesday's open and close; a market-on-open order taken
+   then is held -- a step an hour later fills nothing -- until the test opens
+   the session, when it fills as a market order does: AAPL 10 bought at 150
+   plus half a spread of 5 bps, 150 x 1.0005 = 150.075. *)
+let test_a_closed_session_holds_an_opening_auction_order_until_it_opens () =
+  let now = ref (Time_ns.of_string_with_utc_offset "2026-09-14T23:15:00Z") in
+  let v =
+    Sim.create ~opened_at:t0
+      ~marks:(fun s -> if Symbol.equal s aapl then Some (Price.of_float 150.0) else None)
+      ~now:(fun () -> !now)
+      ~half_spread_bps:(fun _ -> 5.0)
+      ~cash:(Notional.of_float 100_000.0) ~positions:[] ()
+  in
+  let next_open = Time_ns.of_string_with_utc_offset "2026-09-15T13:30:00Z" in
+  let next_close = Time_ns.of_string_with_utc_offset "2026-09-15T20:00:00Z" in
+  Sim.set_session v (Sim.Session.Closed { next_open; next_close });
+  let c = Sim.clock v in
+  Alcotest.(check (triple bool string string))
+    "closed, naming Tuesday's open and close"
+    (false, "2026-09-15T13:30:00.000000000Z", "2026-09-15T20:00:00.000000000Z")
+    ( c.Venue.Session_clock.is_open,
+      Ohcamel_desk.Desk_time.rfc3339 c.Venue.Session_clock.next_open,
+      Ohcamel_desk.Desk_time.rfc3339 c.Venue.Session_clock.next_close );
+  (match
+     Sim.submit_now v
+       {
+         Ohcamel_desk.Order.Request.client_order_id =
+           Option.value_exn
+             (Ohcamel_desk.Ids.Client_order_id.of_string "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZZ1");
+         symbol = aapl;
+         side = Ohcamel_desk.Order.Side.Buy;
+         qty = 10;
+         kind = Ohcamel_desk.Order.Kind.Market;
+         tif = Ohcamel_desk.Order.Tif.Opg;
+       }
+   with
+  | Venue.Submission.Accepted _ -> ()
+  | _ -> Alcotest.fail "the venue did not take the order");
+  now := Time_ns.add !now (Time_ns.Span.of_hr 1.0);
+  Alcotest.(check int) "an hour later, still held" 0 (List.length (Sim.step v));
+  now := next_open;
+  Sim.set_session v
+    (Sim.Session.Open
+       { next_close; next_open = Time_ns.add next_open (Time_ns.Span.of_day 1.0) });
+  Alcotest.(check bool)
+    "the clock reads open" true (Sim.clock v).Venue.Session_clock.is_open;
+  match Sim.step v with
+  | [ { Venue.Update.event = "fill"; fill = Some f; _ } ] ->
+      Alcotest.(check (float 1e-9))
+        "filled at 150 x 1.0005" 150.075
+        (Price.to_float f.Ohcamel_desk.Order.Fill.price);
+      Alcotest.(check (float 0.0)) "all 10" 10.0 f.Ohcamel_desk.Order.Fill.qty
+  | updates ->
+      Alcotest.failf "expected one fill at the open, got %d updates" (List.length updates)
+
 let suite =
   ( "sim_venue",
     [
@@ -88,4 +144,6 @@ let suite =
       Alcotest.test_case "a held name with no mark is an error, not a zero" `Quick
         test_a_held_name_with_no_mark_is_an_error_not_a_zero;
       Alcotest.test_case "the synthetic calendar" `Quick test_the_synthetic_calendar;
+      Alcotest.test_case "a closed session holds an opening-auction order until it opens"
+        `Quick test_a_closed_session_holds_an_opening_auction_order_until_it_opens;
     ] )
