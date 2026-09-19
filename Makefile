@@ -189,8 +189,17 @@ test:
 # pyproject.toml, rather than silently rewriting it -- so CI fails loudly on a
 # drifted lockfile instead of quietly resolving a different one than what was
 # committed.
+#
+# The two `fixtures doctor` runs are the same check `tests/test_fixtures_doctor.py`
+# makes pytest enforce, run again here as a standalone command so a broken or
+# missing fixture (bad sidecar, wrong window, no provenance) fails `make
+# research-test` loudly on its own line, not only inside the test process.
+# `macro.parquet` gets its own directory and its own doctor run rather than
+# living beside the nine ETFs, per fixtures/history/README.md.
 research-test:
 	cd research && uv sync --locked --extra dev && uv run pytest && uv run ruff check
+	cd research && uv run ohcamel-research fixtures doctor --fixtures $(CURDIR)/fixtures/history
+	cd research && uv run ohcamel-research fixtures doctor --fixtures $(CURDIR)/fixtures/macro
 
 # What a tick costs, in seconds and in words, against a throwaway
 # poll-and-recompute baseline. `make run` counts NODES; this counts time and

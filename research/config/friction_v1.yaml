@@ -1,0 +1,32 @@
+version: "1.0.0"
+min_notional: 1.00
+cash_buffer_pct: 0.10
+settlement_days: 1
+stress_multipliers: [1, 2, 5]
+
+# Half-spread in basis points (SPY ~ 1 tick at ~$500 = ~0.2 bps; use conservative retail estimates)
+spread_bps_default: 5.0
+spread_bps_by_symbol:
+  SPY: 2.0
+  QQQ: 3.0
+  IWM: 4.0
+  TLT: 3.0
+  IEF: 3.0
+  GLD: 4.0
+  XLE: 5.0
+  XLF: 4.0
+  XLK: 4.0
+
+# VIX regime: multiply spread when VIX > threshold
+vix_spread_threshold: 25.0
+vix_spread_multiplier: 1.5
+
+# Regulatory fees (Alpaca pass-through, approximate 2024-2026)
+sec_fee_rate: 0.0000278  # per dollar sold (rate varies; use published baseline)
+finra_taf_per_share: 0.000166
+finra_taf_cap: 8.30
+sec_fee_minimum: 0.01
+finra_taf_minimum: 0.01
+
+# Ruin threshold: smallest viable round-trip + fee floor
+ruin_capital_threshold: 1.11
