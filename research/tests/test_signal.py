@@ -4,9 +4,14 @@
   separate arguments, so two symbols on the same fdq rule emit two distinct
   documents.
 - ``validation_from_manifest`` is the only source of a validation block
-  whose status is anything but "unvalidated": fresh pass, fresh
-  "pass, fragile" (also "pass"), fresh fail, a stale manifest, and a
-  manifest that cannot even be loaded -- each case as its own test.
+  whose status is anything but "unvalidated": fresh pass, fresh fail,
+  fresh "pass, fragile" (unvalidated: the pre-registration's second-window
+  rule), a stale manifest, a manifest that cannot even be loaded, and a
+  manifest earned by another slug, fdq rule or parameters -- each case as
+  its own test, none of the unvalidated ones a pass by any route.
+- with a manifest, each weight is the fraction of equity the manifest's
+  backtests held (``invested_fraction``), read from its experiment's
+  friction file, never 1.0.
 - ``emit`` itself only ever reaches ``validation_from_manifest`` through its
   own ``validation_from`` path argument, which it calls internally -- there
   is no parameter, at the Python level, that accepts a ready-made
@@ -55,7 +60,38 @@ from ohcamel_research.manifest import (
     compute_verdict,
 )
 from ohcamel_research.replay import load_bars
-from ohcamel_research.signal import UNVALIDATED, emit, validation_from_manifest, write_signal
+from ohcamel_research.signal import (
+    FRAGILE_REASON,
+    UNVALIDATED,
+    emit,
+    invested_fraction,
+    validation_from_manifest,
+    write_signal,
+)
+
+# What the test manifests below are the evidence for: a document counts as
+# validated by one only when it is emitted under exactly this slug, fdq rule
+# and parameters.
+SLUG = "exp_test_spy"
+FDQ = "ma_crossover"
+PARAMS = {"symbol": "SPY", "fast": 1, "slow": 200}
+IDENTITY: dict[str, Any] = {"strategy": SLUG, "fdq_strategy": FDQ, "params": PARAMS}
+
+# The test experiment's own friction file, loadable by fdq. Its cash buffer
+# is deliberately not friction_v1.yaml's 0.10, so a weight of 0.75 can only
+# have been read from this file.
+CASH_BUFFER_PCT = 0.25
+FRICTION_TEST = (
+    f"min_notional: 1.0\ncash_buffer_pct: {CASH_BUFFER_PCT}\nsettlement_days: 1\n"
+    "spread_bps_default: 1.0\n"
+).encode()
+# The same file with one number changed: still loadable, but no longer the
+# bytes a manifest recorded, so that manifest reads stale.
+FRICTION_TEST_EDITED = FRICTION_TEST.replace(
+    b"spread_bps_default: 1.0", b"spread_bps_default: 999.0"
+)
+
+EXP_A01 = REPO_ROOT / "research" / "experiments" / "EXP-A01"
 
 # --------------------------------------------------------------------------
 # A tmp_path repo a manifest can be judged fresh or stale against, trimmed
@@ -78,12 +114,12 @@ def _build_repo(root: Path) -> dict[str, Path]:
     _write(
         config_path,
         b"id: EXP-TEST\n"
-        b"friction: {file: research/config/friction_test.yaml}\n"
+        b'friction: {version: "1.0.0", file: research/config/friction_test.yaml}\n'
         b"macro: fixtures/macro/macro.parquet\n",
     )
 
     friction_path = root / "research" / "config" / "friction_test.yaml"
-    _write(friction_path, b"spread_bps_default: 1.0\n")
+    _write(friction_path, FRICTION_TEST)
 
     macro_path = root / "fixtures" / "macro" / "macro.parquet"
     _write(macro_path, b"macro bytes v1")
@@ -98,6 +134,7 @@ def _build_repo(root: Path) -> dict[str, Path]:
 
     return {
         "root": root,
+        "exp": exp_dir,
         "battery": battery,
         "config": config_path,
         "friction": friction_path,
@@ -121,7 +158,7 @@ def _manifest(paths: dict[str, Path], **overrides: Any) -> Manifest:
         "slug": "exp_test_spy",
         "strategy": "ma_crossover",
         "symbol": "SPY",
-        "selected_params": {"fast": 1, "slow": 200},
+        "selected_params": dict(PARAMS),
         "selection_window": Window(start="2016-06-01", end="2022-05-31"),
         "holdout_window": Window(start="2022-06-01", end="2026-06-01"),
         "gates_version": "2026-09-02",
@@ -293,10 +330,10 @@ def test_validation_from_manifest_is_pass_when_fresh_and_verdict_pass(tmp_path: 
         paths, gates=({"name": "psr", "passed": True, "value": 0.9, "detail": {}},), pbo=0.1
     )
     assert m.verdict == "pass"
-    manifest_file = paths["root"] / "manifest.exp_test_spy.json"
+    manifest_file = paths["exp"] / "manifest.exp_test_spy.json"
     m.dump(manifest_file)
 
-    v = validation_from_manifest(manifest_file, paths["root"])
+    v = validation_from_manifest(manifest_file, paths["root"], **IDENTITY)
 
     assert v["status"] == "pass"
     assert v["gates_version"] == m.gates_version
@@ -306,19 +343,26 @@ def test_validation_from_manifest_is_pass_when_fresh_and_verdict_pass(tmp_path: 
     assert v["manifest"] == str(manifest_file)
 
 
-def test_validation_from_manifest_is_pass_when_fresh_and_verdict_pass_fragile(tmp_path: Path):
+def test_validation_from_manifest_is_unvalidated_when_fresh_and_verdict_pass_fragile(
+    tmp_path: Path,
+):
     paths = _build_repo(tmp_path)
     m = _manifest(
         paths, gates=({"name": "psr", "passed": True, "value": 0.9, "detail": {}},), pbo=0.6
     )
     assert m.verdict == "pass, fragile"
-    manifest_file = paths["root"] / "manifest.exp_test_spy.json"
+    manifest_file = paths["exp"] / "manifest.exp_test_spy.json"
     m.dump(manifest_file)
 
-    v = validation_from_manifest(manifest_file, paths["root"])
+    v = validation_from_manifest(manifest_file, paths["root"], **IDENTITY)
 
-    assert v["status"] == "pass"
+    # The pre-registration's own kill criterion: not promoted without a
+    # second, independent window. Its numbers are still this strategy's own.
+    assert v["status"] == "unvalidated"
+    assert v["manifest"] == f"{manifest_file}: {FRAGILE_REASON}"
+    assert FRAGILE_REASON == "pass, fragile: not promoted without a second, independent window"
     assert v["pbo"] == 0.6
+    assert v["dsr"] == m.dsr.value
 
 
 def test_validation_from_manifest_is_fail_when_fresh_and_verdict_fail(tmp_path: Path):
@@ -327,10 +371,10 @@ def test_validation_from_manifest_is_fail_when_fresh_and_verdict_fail(tmp_path: 
         paths, gates=({"name": "psr", "passed": False, "value": 0.1, "detail": {}},), pbo=0.2
     )
     assert m.verdict == "fail"
-    manifest_file = paths["root"] / "manifest.exp_test_spy.json"
+    manifest_file = paths["exp"] / "manifest.exp_test_spy.json"
     m.dump(manifest_file)
 
-    v = validation_from_manifest(manifest_file, paths["root"])
+    v = validation_from_manifest(manifest_file, paths["root"], **IDENTITY)
 
     assert v["status"] == "fail"
     assert v["dsr"] == m.dsr.value
@@ -340,12 +384,12 @@ def test_validation_from_manifest_is_fail_when_fresh_and_verdict_fail(tmp_path: 
 def test_validation_from_manifest_is_unvalidated_when_stale(tmp_path: Path):
     paths = _build_repo(tmp_path)
     m = _manifest(paths)
-    manifest_file = paths["root"] / "manifest.exp_test_spy.json"
+    manifest_file = paths["exp"] / "manifest.exp_test_spy.json"
     m.dump(manifest_file)
     # Edit a hashed file after the manifest was written.
-    paths["friction"].write_bytes(b"spread_bps_default: 999.0\n")
+    paths["friction"].write_bytes(FRICTION_TEST_EDITED)
 
-    v = validation_from_manifest(manifest_file, paths["root"])
+    v = validation_from_manifest(manifest_file, paths["root"], **IDENTITY)
 
     assert v["status"] == "unvalidated"
     assert v["gates_version"] == m.gates_version
@@ -361,9 +405,9 @@ def test_validation_from_manifest_is_unvalidated_when_stale(tmp_path: Path):
 
 def test_validation_from_manifest_is_unvalidated_when_the_file_is_missing(tmp_path: Path):
     paths = _build_repo(tmp_path)
-    missing = paths["root"] / "manifest.does_not_exist.json"
+    missing = paths["exp"] / "manifest.does_not_exist.json"
 
-    v = validation_from_manifest(missing, paths["root"])
+    v = validation_from_manifest(missing, paths["root"], **IDENTITY)
 
     assert v == {
         "status": "unvalidated",
@@ -379,10 +423,10 @@ def test_validation_from_manifest_is_unvalidated_when_the_file_is_missing(tmp_pa
 
 def test_validation_from_manifest_is_unvalidated_when_the_json_is_malformed(tmp_path: Path):
     paths = _build_repo(tmp_path)
-    manifest_file = paths["root"] / "manifest.broken.json"
+    manifest_file = paths["exp"] / "manifest.broken.json"
     manifest_file.write_text("{not valid json at all")
 
-    v = validation_from_manifest(manifest_file, paths["root"])
+    v = validation_from_manifest(manifest_file, paths["root"], **IDENTITY)
 
     assert v["status"] == "unvalidated"
     assert v["dsr"] is None and v["psr"] is None and v["pbo"] is None
@@ -397,10 +441,10 @@ def test_validation_from_manifest_is_unvalidated_when_the_top_level_is_not_an_ob
     # loader's field checks as a non-mapping; it must read "unvalidated",
     # never raise out of emit.
     paths = _build_repo(tmp_path)
-    manifest_file = paths["root"] / "manifest.scalar.json"
+    manifest_file = paths["exp"] / "manifest.scalar.json"
     manifest_file.write_text(body)
 
-    v = validation_from_manifest(manifest_file, paths["root"])
+    v = validation_from_manifest(manifest_file, paths["root"], **IDENTITY)
 
     assert v["status"] == "unvalidated"
     assert "cannot be loaded" in v["manifest"]
@@ -411,10 +455,10 @@ def test_validation_from_manifest_is_unvalidated_when_it_fails_its_own_validatio
     m = _manifest(paths)
     data = m.to_dict()
     del data["verdict_line"]  # a required field, missing -> Manifest.from_dict raises
-    manifest_file = paths["root"] / "manifest.invalid_shape.json"
+    manifest_file = paths["exp"] / "manifest.invalid_shape.json"
     manifest_file.write_text(json.dumps(data))
 
-    v = validation_from_manifest(manifest_file, paths["root"])
+    v = validation_from_manifest(manifest_file, paths["root"], **IDENTITY)
 
     assert v["status"] == "unvalidated"
     assert v["dsr"] is None and v["psr"] is None and v["pbo"] is None
@@ -426,16 +470,16 @@ def test_validation_from_manifest_never_raises_and_a_document_built_from_it_stil
 ):
     paths = _build_repo(tmp_path)
     m = _manifest(paths)
-    manifest_file = paths["root"] / "manifest.exp_test_spy.json"
+    manifest_file = paths["exp"] / "manifest.exp_test_spy.json"
     m.dump(manifest_file)
-    paths["friction"].write_bytes(b"spread_bps_default: 999.0\n")  # make it stale
+    paths["friction"].write_bytes(FRICTION_TEST_EDITED)  # make it stale
 
     # emit() calls validation_from_manifest itself; there is no dict to
     # thread through by hand any more (see the "emit" tests below).
     doc = emit(
-        "exp_a01_spy",
-        "ma_crossover",
-        {"symbol": "SPY", "fast": 1, "slow": 200},
+        SLUG,
+        FDQ,
+        dict(PARAMS),
         date(2020, 12, 31),
         load_bars(),
         1,
@@ -458,13 +502,13 @@ def test_emit_with_a_fresh_passing_manifest_is_pass(tmp_path: Path):
         paths, gates=({"name": "psr", "passed": True, "value": 0.9, "detail": {}},), pbo=0.1
     )
     assert m.verdict == "pass"
-    manifest_file = paths["root"] / "manifest.exp_test_spy.json"
+    manifest_file = paths["exp"] / "manifest.exp_test_spy.json"
     m.dump(manifest_file)
 
     doc = emit(
-        "exp_a01_spy",
-        "ma_crossover",
-        {"symbol": "SPY", "fast": 1, "slow": 200},
+        SLUG,
+        FDQ,
+        dict(PARAMS),
         date(2020, 12, 31),
         load_bars(),
         1,
@@ -474,20 +518,23 @@ def test_emit_with_a_fresh_passing_manifest_is_pass(tmp_path: Path):
 
     assert doc["validation"]["status"] == "pass"
     assert doc["validation"]["manifest"] == str(manifest_file)
+    # SPY's close is above its 200-day SMA on 2020-12-31: on, at the
+    # fraction the test experiment's friction file leaves invested.
+    assert doc["targets"] == [{"symbol": "SPY", "weight": 1.0 - CASH_BUFFER_PCT}]
     assert check(doc) == []
 
 
 def test_emit_with_a_stale_manifest_is_unvalidated(tmp_path: Path):
     paths = _build_repo(tmp_path)
     m = _manifest(paths)
-    manifest_file = paths["root"] / "manifest.exp_test_spy.json"
+    manifest_file = paths["exp"] / "manifest.exp_test_spy.json"
     m.dump(manifest_file)
-    paths["friction"].write_bytes(b"spread_bps_default: 999.0\n")  # make it stale
+    paths["friction"].write_bytes(FRICTION_TEST_EDITED)  # make it stale
 
     doc = emit(
-        "exp_a01_spy",
-        "ma_crossover",
-        {"symbol": "SPY", "fast": 1, "slow": 200},
+        SLUG,
+        FDQ,
+        dict(PARAMS),
         date(2020, 12, 31),
         load_bars(),
         1,
@@ -499,6 +546,144 @@ def test_emit_with_a_stale_manifest_is_unvalidated(tmp_path: Path):
     assert "stale" in doc["validation"]["manifest"]
     assert "friction" in doc["validation"]["manifest"]
     assert check(doc) == []
+
+
+# --------------------------------------------------------------------------
+# A validation block counts only for the strategy, rule, parameters and
+# verdict it was earned by. Each case below uses a fresh manifest whose
+# gates all pass -- the one thing that differs is what makes it not a pass.
+# --------------------------------------------------------------------------
+
+_PASSING_GATES = ({"name": "psr", "passed": True, "value": 0.9, "detail": {}},)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"slug": "exp_other_spy"}, "its slug 'exp_other_spy' is not the emitting strategy"),
+        ({"strategy": "donchian"}, "its strategy 'donchian' is not the emitting fdq rule"),
+        (
+            {"selected_params": {"symbol": "SPY", "fast": 1, "slow": 250}},
+            "are not the params emitted",
+        ),
+        ({"pbo": 0.6}, FRAGILE_REASON),
+    ],
+    ids=["slug", "strategy", "params", "pass-fragile"],
+)
+def test_a_passing_manifest_is_no_pass_for_anything_it_was_not_earned_by(
+    tmp_path: Path, overrides: dict[str, Any], reason: str
+):
+    paths = _build_repo(tmp_path)
+    m = _manifest(paths, gates=_PASSING_GATES, pbo=overrides.pop("pbo", 0.1), **overrides)
+    assert m.verdict in ("pass", "pass, fragile")
+    manifest_file = paths["exp"] / "manifest.exp_test_spy.json"
+    m.dump(manifest_file)
+
+    direct = validation_from_manifest(manifest_file, paths["root"], **IDENTITY)
+    doc = emit(
+        SLUG,
+        FDQ,
+        dict(PARAMS),
+        date(2020, 12, 31),
+        load_bars(),
+        1,
+        validation_from=manifest_file,
+        repo_root=paths["root"],
+    )
+
+    for v in (direct, doc["validation"]):
+        assert v["status"] == "unvalidated"
+        assert v["manifest"].startswith(f"{manifest_file}: ")
+        assert reason in v["manifest"]
+    assert check(doc) == []
+
+
+def test_another_strategys_evidence_reports_none_of_its_numbers(tmp_path: Path):
+    paths = _build_repo(tmp_path)
+    m = _manifest(paths, gates=_PASSING_GATES, pbo=0.1, slug="exp_other_spy")
+    manifest_file = paths["exp"] / "manifest.exp_other_spy.json"
+    m.dump(manifest_file)
+
+    v = validation_from_manifest(manifest_file, paths["root"], **IDENTITY)
+
+    assert v["status"] == "unvalidated"
+    assert v["dsr"] is None and v["psr"] is None and v["pbo"] is None
+    assert "not this strategy's evidence" in v["manifest"]
+
+
+def test_params_are_compared_as_the_document_hashes_them(tmp_path: Path):
+    # 200 and 200.0 are equal in Python but not in params_hash's canonical
+    # JSON, which is what the document's own params_hash states.
+    paths = _build_repo(tmp_path)
+    m = _manifest(paths, gates=_PASSING_GATES, pbo=0.1)
+    manifest_file = paths["exp"] / "manifest.exp_test_spy.json"
+    m.dump(manifest_file)
+
+    floated = {**PARAMS, "slow": 200.0}
+    v = validation_from_manifest(
+        manifest_file, paths["root"], strategy=SLUG, fdq_strategy=FDQ, params=floated
+    )
+
+    assert v["status"] == "unvalidated"
+    assert "are not the params emitted" in v["manifest"]
+
+
+def test_validation_from_manifest_requires_the_emitters_identity(tmp_path: Path):
+    paths = _build_repo(tmp_path)
+    m = _manifest(paths, gates=_PASSING_GATES, pbo=0.1)
+    manifest_file = paths["exp"] / "manifest.exp_test_spy.json"
+    m.dump(manifest_file)
+
+    with pytest.raises(TypeError):
+        validation_from_manifest(manifest_file, paths["root"])  # type: ignore[call-arg]
+
+
+# --------------------------------------------------------------------------
+# The weight is the fraction the evidence held.
+# --------------------------------------------------------------------------
+
+
+def test_the_invested_fraction_is_read_from_the_experiments_friction_file(tmp_path: Path):
+    paths = _build_repo(tmp_path)
+    manifest_file = paths["exp"] / "manifest.exp_test_spy.json"
+    _manifest(paths).dump(manifest_file)
+
+    assert invested_fraction(manifest_file, paths["root"]) == 1.0 - CASH_BUFFER_PCT
+
+
+def test_exp_a01s_invested_fraction_is_fdqs_own_max_deployable_under_friction_v1():
+    from fdq.frictions.config import load_friction_config
+
+    engine = load_friction_config(REPO_ROOT / "research" / "config" / "friction_v1.yaml")
+    for slug in ("exp_a01_spy", "exp_a01_tlt"):
+        fraction = invested_fraction(EXP_A01 / f"manifest.{slug}.json", REPO_ROOT)
+        assert fraction == engine.max_deployable(1.0) == 1.0 - engine.cash_buffer_pct
+        assert fraction < 1.0
+
+
+def test_emit_off_is_no_target_and_on_is_the_invested_fraction(tmp_path: Path):
+    paths = _build_repo(tmp_path)
+    m = _manifest(paths, gates=_PASSING_GATES, pbo=0.1)
+    manifest_file = paths["exp"] / "manifest.exp_test_spy.json"
+    m.dump(manifest_file)
+    bars = load_bars()
+
+    on = emit(SLUG, FDQ, dict(PARAMS), date(2020, 12, 31), bars, 1, manifest_file, paths["root"])
+    # 2020-03-31: SPY's close is far below its 200-day SMA after the crash.
+    off = emit(SLUG, FDQ, dict(PARAMS), date(2020, 3, 31), bars, 2, manifest_file, paths["root"])
+
+    assert on["targets"] == [{"symbol": "SPY", "weight": 1.0 - CASH_BUFFER_PCT}]
+    assert off["targets"] == []
+
+
+def test_emit_refuses_when_the_invested_fraction_cannot_be_read(tmp_path: Path):
+    paths = _build_repo(tmp_path)
+    manifest_file = paths["exp"] / "manifest.exp_test_spy.json"
+    _manifest(paths).dump(manifest_file)
+    paths["friction"].write_bytes(b"spread_bps_default: 1.0\n")  # no cash_buffer_pct
+
+    with pytest.raises(ValueError, match="invested fraction"):
+        emit(SLUG, FDQ, dict(PARAMS), date(2020, 12, 31), load_bars(), 1, manifest_file, tmp_path)
 
 
 def test_emit_defaults_repo_root_to_the_real_repository():
@@ -583,6 +768,71 @@ def test_cli_emits_two_strategies_as_two_distinct_documents(tmp_path: Path):
     assert spy_doc != tlt_doc
     assert check(spy_doc) == []
     assert check(tlt_doc) == []
+
+
+def _cli_emit_with_exp_a01(out: Path, strategy: str, params: dict[str, Any]) -> dict[str, Any]:
+    """The CLI against EXP-A01's real SPY manifest, which is fresh against
+    this checkout and whose verdict is "fail"."""
+    result = CliRunner().invoke(
+        cli,
+        [
+            "signal",
+            "emit",
+            "--strategy",
+            strategy,
+            "--fdq-strategy",
+            "ma_crossover",
+            "--params",
+            json.dumps(params),
+            "--as-of",
+            "2020-12-31",
+            "--sequence",
+            "1",
+            "--validation-from",
+            str(EXP_A01 / "manifest.exp_a01_spy.json"),
+            "--out",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    return json.loads(out.read_text())
+
+
+def test_cli_with_the_manifests_own_identity_carries_its_verdict_and_fraction(tmp_path: Path):
+    manifest = Manifest.load(EXP_A01 / "manifest.exp_a01_spy.json")
+    doc = _cli_emit_with_exp_a01(tmp_path / "a.json", "exp_a01_spy", manifest.selected_params)
+
+    assert doc["validation"]["status"] == manifest.verdict == "fail"
+    assert doc["validation"]["manifest"] == str(EXP_A01 / "manifest.exp_a01_spy.json")
+    # Above its 150-day SMA on 2020-12-31: on, at the fraction EXP-A01 held.
+    fraction = invested_fraction(EXP_A01 / "manifest.exp_a01_spy.json", REPO_ROOT)
+    assert doc["targets"] == [{"symbol": "SPY", "weight": fraction}]
+
+
+@pytest.mark.parametrize(
+    ("strategy", "params", "reason"),
+    [
+        (
+            "exp_a01_spy",
+            {"symbol": "SPY", "fast": 1, "slow": 200},
+            "are not the params emitted",
+        ),
+        (
+            "exp_a01_tlt",
+            {"symbol": "SPY", "fast": 1, "slow": 150},
+            "is not the emitting strategy 'exp_a01_tlt'",
+        ),
+    ],
+    ids=["params", "slug"],
+)
+def test_cli_params_obey_the_same_rule(
+    tmp_path: Path, strategy: str, params: dict[str, Any], reason: str
+):
+    doc = _cli_emit_with_exp_a01(tmp_path / "b.json", strategy, params)
+
+    assert doc["validation"]["status"] == "unvalidated"
+    assert reason in doc["validation"]["manifest"]
+    assert check(doc) == []
 
 
 # --------------------------------------------------------------------------

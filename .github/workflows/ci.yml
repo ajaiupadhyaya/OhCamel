@@ -48,7 +48,10 @@ jobs:
       # file, costs a second, and runs before the forty-minute Owl build
       # rather than after it. desk/dune does the same with EXP-A01's two
       # manifests (research_manifests.ml, for /api/research/evidence), so its
-      # delimiters are read too and the two files are searched beside web/.
+      # delimiters are read too, and every research/experiments/*/manifest.*.json
+      # is searched beside web/ -- by glob, so a manifest a later experiment
+      # commits is covered without this step naming it, and an empty glob
+      # fails rather than searching nothing.
       #
       # The pattern list is derived from lib/dune itself, not retyped by hand
       # here: lib/dune currently defines four such delimiters (the fourth,
@@ -80,7 +83,14 @@ jobs:
             echo "no {ohcamel_*|...|ohcamel_*} delimiters found in lib/dune -- the rule moved, or the delimiters were renamed, and this check has nothing left to guard."
             exit 1
           fi
-          matches=$(grep -rnF -f <(printf '%s\n' "$patterns") web docs/crisis research/experiments/EXP-A01/manifest.exp_a01_spy.json research/experiments/EXP-A01/manifest.exp_a01_tlt.json) && status=0 || status=$?
+          shopt -s nullglob
+          manifests=(research/experiments/*/manifest.*.json)
+          shopt -u nullglob
+          if [ "${#manifests[@]}" -eq 0 ]; then
+            echo "no research/experiments/*/manifest.*.json in the checkout -- desk/dune embeds them, so this check would search nothing."
+            exit 1
+          fi
+          matches=$(grep -rnF -f <(printf '%s\n' "$patterns") web docs/crisis "${manifests[@]}") && status=0 || status=$?
           case "$status" in
             0)
               echo "$matches"
@@ -89,7 +99,7 @@ jobs:
               exit 1
               ;;
             1)
-              echo "no stray delimiters in web/, docs/crisis/ or EXP-A01's manifests"
+              echo "no stray delimiters in web/, docs/crisis/ or the ${#manifests[@]} committed manifests"
               ;;
             *)
               echo "grep failed (exit $status) — the check did not run"
@@ -297,3 +307,13 @@ jobs:
       # machine.
       - name: research-test
         run: make research-test
+
+      # is_stale proves a manifest names the bytes it hashed; nothing else
+      # proves its numbers are what those bytes produce. This re-runs the
+      # battery for every experiment on a temporary copy of the commit and
+      # fails if any committed manifest differs once ran_at is masked (and,
+      # off the machine the evidence was run on, python_version and a
+      # float's last digits -- tools/reproduce_manifests.py says why and
+      # prints what moved). Offline, no credential; about 26 s an experiment.
+      - name: The committed manifests reproduce
+        run: make research-reproduce

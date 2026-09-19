@@ -1,9 +1,9 @@
 # EXP-A01 — report
 
-Pre-registration: `hypothesis.md` and `config.yaml`, committed alone in `7235b7b`,
+Pre-registration: `hypothesis.md` and `config.yaml`, committed alone in `2c92874`,
 before any line of `battery/` existed. Evidence: `manifest.exp_a01_spy.json` and
 `manifest.exp_a01_tlt.json`, written by `ohcamel-research battery run` on the battery
-at `639546e`, seed 42, `ran_at` 2026-09-19T04:12:20Z, Python 3.13.12. Every number
+at `38011f6`, seed 42, `ran_at` 2026-09-19T04:12:20Z, Python 3.13.12. Every number
 below is read from those two manifests. None is computed by hand, except the
 distribution bound in the Disclosures, which is arithmetic on the pre-registration's
 own figure and is labelled as such.

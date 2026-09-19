@@ -1,6 +1,7 @@
 # The research service's own config (research/src/ohcamel_research/service.py,
-# Task 16): which strategies it runs at 19:15 America/New_York every trading
-# day, each one's slug (registered with the desk), fdq's strategy key (which
+# Task 16): which strategies it runs every weekday evening (from 19:15
+# America/New_York, once the fetch's end is 16 minutes old -- see service.py),
+# each one's slug (registered with the desk), fdq's strategy key (which
 # REGISTRY entry computes its weight), its symbol, and its manifest's path
 # (repo-root-relative), which supplies selected_params and the validation
 # block. Validated on load (load_service_config): unknown or missing keys are

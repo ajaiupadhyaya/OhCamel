@@ -124,7 +124,13 @@ def signal_emit(
     "unvalidated": it is built from a manifest by
     ohcamel_research.signal.validation_from_manifest, which emit() itself
     calls -- there is no flag to set the status by hand, and no way to pass
-    emit() a ready-made validation dict either.
+    emit() a ready-made validation dict either. The block counts only when
+    the manifest's slug, strategy and selected_params are STRATEGY,
+    FDQ_STRATEGY and --params exactly, and "pass, fragile" is never a pass;
+    anything else is "unvalidated", with the reason after the manifest path.
+    With --validation-from, each weight is the fraction of equity the
+    manifest's backtests held (1 - cash_buffer_pct of its experiment's
+    friction file), as the research service emits it.
     """
     from ohcamel_research.signal import emit, write_signal  # fdq import is slow; keep replay fast
 

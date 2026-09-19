@@ -25,26 +25,43 @@ which is keyed by the slug alone.
 **The validation block comes only from a manifest, and ``emit`` never takes
 one as a dict.** ``validation_from_manifest`` is the one function that may
 set ``status`` to anything but ``"unvalidated"``, and it does so only by
-reading a fresh manifest whose own verdict says so (see its docstring).
-``emit`` takes ``validation_from``, a path to a manifest (or ``None``), and
-calls ``validation_from_manifest`` on it itself; there is no parameter here
-that accepts a ready-made ``dict``. This is not merely a CLI-level
-convention -- Task 16's research service calls ``emit`` directly, in
-Python, where a CLI's refusal to expose a ``--status`` flag would not have
-reached at all -- so the refusal has to live in this function's own
-signature. Passing anything but a path (or ``None``) as ``validation_from``,
-by keyword or by position, is a ``TypeError``.
+reading a fresh manifest whose own verdict says so, and whose slug, fdq
+strategy and selected parameters are the ones being emitted (see its
+docstring). ``emit`` takes ``validation_from``, a path to a manifest (or
+``None``), and calls ``validation_from_manifest`` on it itself, with its own
+slug, fdq key and params; there is no parameter here that accepts a
+ready-made ``dict``. This is not merely a CLI-level convention -- Task 16's
+research service calls ``emit`` directly, in Python, where a CLI's refusal
+to expose a ``--status`` flag would not have reached at all -- so the
+refusal has to live in this function's own signature. Passing anything but
+a path (or ``None``) as ``validation_from``, by keyword or by position, is a
+``TypeError``.
+
+**The weight is the fraction the evidence held.** fdq's engine sizes a
+target weight against ``FrictionConfig.max_deployable(equity)`` --
+``equity * (1 - cash_buffer_pct)`` -- so a backtest's weight of 1.0 held
+90% of equity under ``friction_v1.yaml``'s ``cash_buffer_pct: 0.10``. When
+``emit`` is given a manifest, every target weight is multiplied by
+``invested_fraction(validation_from)``: the same ``max_deployable`` read from
+the friction file the manifest's own experiment config names, loaded by the
+battery's own loader (``battery.run.load_friction``), so the document states
+the fraction of the strategy's capital the evidence actually held, never a
+literal. Without a manifest there is no evidence to read a fraction from:
+the weights are fdq's own, and the document is unvalidated.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
+from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import yaml
 from fdq.strategies.trend import Donchian, MACrossover
 
 from ohcamel_research import REPO_ROOT
@@ -53,9 +70,11 @@ from ohcamel_research.contract import GATES_VERSION, check, data_hash, params_ha
 from ohcamel_research.manifest import Manifest, is_stale
 
 __all__ = [
+    "FRAGILE_REASON",
     "REGISTRY",
     "UNVALIDATED",
     "emit",
+    "invested_fraction",
     "validation_from_manifest",
     "wide",
     "write_signal",
@@ -72,33 +91,77 @@ UNVALIDATED: dict[str, Any] = {
     "manifest": None,
 }
 
-_PASSING_VERDICTS = ("pass", "pass, fragile")
+# EXP-A01's pre-registration: a "pass, fragile" strategy is not promoted
+# until a second, independent window confirms it. Enforced here, where the
+# status is set, rather than left to whoever reads the verdict.
+FRAGILE_REASON = "pass, fragile: not promoted without a second, independent window"
 
 
-def validation_from_manifest(manifest_path: Path, repo_root: Path) -> dict[str, Any]:
+def _identity_mismatches(
+    manifest: Manifest, *, strategy: str, fdq_strategy: str, params: Mapping[str, Any]
+) -> list[str]:
+    """Every way ``manifest`` is not the evidence for what is being emitted:
+    another slug, another fdq rule, or other parameters. Parameters are
+    compared by ``params_hash`` -- the same canonical form the document's
+    own ``params_hash`` states -- so ``1`` and ``1.0``, or ``True`` and
+    ``1``, are different parameters here exactly as they are to the desk."""
+    reasons = []
+    if manifest.slug != strategy:
+        reasons.append(f"its slug {manifest.slug!r} is not the emitting strategy {strategy!r}")
+    if manifest.strategy != fdq_strategy:
+        reasons.append(
+            f"its strategy {manifest.strategy!r} is not the emitting fdq rule {fdq_strategy!r}"
+        )
+    if params_hash(dict(manifest.selected_params)) != params_hash(dict(params)):
+        reasons.append(
+            f"its selected_params {dict(manifest.selected_params)!r} are not the params "
+            f"emitted {dict(params)!r}"
+        )
+    return reasons
+
+
+def validation_from_manifest(
+    manifest_path: Path,
+    repo_root: Path,
+    *,
+    strategy: str,
+    fdq_strategy: str,
+    params: Mapping[str, Any],
+) -> dict[str, Any]:
     """The signal's ``validation`` block -- and the *only* way to get a
     ``status`` other than ``"unvalidated"``.
 
-    - ``"pass"`` only when the manifest at ``manifest_path`` loads, is fresh
-      (``manifest.is_stale`` returns no reasons against ``repo_root``), and
-      its own ``verdict`` is ``"pass"`` or ``"pass, fragile"``.
-    - ``"fail"`` when the manifest loads and is fresh but its verdict is
-      ``"fail"``.
+    ``strategy``, ``fdq_strategy`` and ``params`` are what is being emitted
+    (``emit``'s own arguments), and they are required: a validation block
+    counts only for the strategy, rule and parameters it was earned by.
+
+    - ``"pass"`` only when the manifest at ``manifest_path`` loads, its
+      ``slug`` is ``strategy``, its ``strategy`` is ``fdq_strategy``, its
+      ``selected_params`` are ``params``, it is fresh (``manifest.is_stale``
+      returns no reasons against ``repo_root``), and its own ``verdict`` is
+      ``"pass"``.
+    - ``"fail"`` when all of that holds but the verdict is ``"fail"``.
     - ``"unvalidated"`` in every other case: the manifest file is missing,
       its JSON is malformed, it fails its own field validation
-      (``Manifest.__post_init__``), or it loads but is stale. This function
-      never raises for any of those -- a caller that always routes
-      ``validation`` through here can never end up emitting a hand-written
-      ``"pass"``, because there is no path through it that produces one
-      except an actually-fresh, actually-passing manifest.
+      (``Manifest.__post_init__``), it is another strategy's evidence (slug,
+      rule or parameters differ -- its numbers are then not reported, since
+      they describe something else), it is stale, or its verdict is
+      ``"pass, fragile"`` (``FRAGILE_REASON``: the pre-registration's own
+      kill criterion -- not promoted without a second, independent window).
+      This function never raises for any of those -- a caller that always
+      routes ``validation`` through here can never end up emitting a
+      hand-written ``"pass"``, because there is no path through it that
+      produces one except an actually-fresh, actually-passing manifest for
+      exactly this strategy.
 
     The schema (``interface/signal.schema.json``) has no field of its own
     for *why* validation did not produce a pass, and this task does not
-    change the schema. The reason -- unreadable, malformed, or the list of
-    staleness reasons from ``is_stale`` -- is recorded as a suffix on the
-    ``manifest`` field, which the schema already allows as a free-form
-    string ("path or content hash of the battery manifest this block was
-    written from"). When the manifest does load, ``manifest`` is simply
+    change the schema. The reason -- unreadable, malformed, another
+    strategy's evidence, the list of staleness reasons from ``is_stale``, or
+    ``FRAGILE_REASON`` -- is recorded as a suffix on the ``manifest`` field,
+    which the schema already allows as a free-form string ("path or content
+    hash of the battery manifest this block was written from"). When the
+    manifest does load and counts, ``manifest`` is simply
     ``str(manifest_path)``, matching that description exactly; the suffix
     is added only when there is a reason to explain.
     """
@@ -118,6 +181,19 @@ def validation_from_manifest(manifest_path: Path, repo_root: Path) -> dict[str, 
             "manifest": f"{manifest_str}: cannot be loaded ({type(e).__name__}: {e})",
         }
 
+    mismatches = _identity_mismatches(
+        manifest, strategy=strategy, fdq_strategy=fdq_strategy, params=params
+    )
+    if mismatches:
+        return {
+            "status": "unvalidated",
+            "gates_version": GATES_VERSION,
+            "dsr": None,
+            "psr": None,
+            "pbo": None,
+            "manifest": (f"{manifest_str}: not this strategy's evidence ({'; '.join(mismatches)})"),
+        }
+
     reasons = is_stale(manifest, repo_root)
     if reasons:
         return {
@@ -129,15 +205,56 @@ def validation_from_manifest(manifest_path: Path, repo_root: Path) -> dict[str, 
             "manifest": f"{manifest_str}: stale ({'; '.join(reasons)})",
         }
 
-    status = "pass" if manifest.verdict in _PASSING_VERDICTS else "fail"
+    if manifest.verdict == "pass":
+        status, manifest_field = "pass", manifest_str
+    elif manifest.verdict == "fail":
+        status, manifest_field = "fail", manifest_str
+    elif manifest.verdict == "pass, fragile":
+        status, manifest_field = "unvalidated", f"{manifest_str}: {FRAGILE_REASON}"
+    else:  # Manifest.__post_init__ admits no other verdict; never a pass if it ever did
+        status, manifest_field = "unvalidated", f"{manifest_str}: verdict {manifest.verdict!r}"
     return {
         "status": status,
         "gates_version": manifest.gates_version,
         "dsr": manifest.dsr.value,
         "psr": manifest.psr,
         "pbo": manifest.pbo,
-        "manifest": manifest_str,
+        "manifest": manifest_field,
     }
+
+
+def invested_fraction(manifest_path: Path, repo_root: Path) -> float:
+    """The fraction of equity a target weight of 1.0 held in the backtests
+    behind ``manifest_path``: fdq's own ``FrictionConfig.max_deployable(1.0)``,
+    i.e. ``1 - cash_buffer_pct``, read from the friction file named by the
+    manifest's experiment config (``config.yaml`` beside the manifest, the
+    layout ``manifest.manifest_path`` writes) and loaded by the battery's own
+    ``load_friction`` -- the object the battery handed fdq's engine. 0.9
+    under ``friction_v1.yaml``, but never written here as a number.
+
+    Raises ``ValueError`` when the config or the friction file cannot be
+    read, or the fraction is not in (0, 1]: a weight the evidence never held
+    is not emitted in its place."""
+    # Imported here, not at module level: battery.run pulls in fdq's whole
+    # validation stack, which a document with no manifest never needs.
+    from ohcamel_research.battery.run import load_friction
+
+    config_path = Path(manifest_path).parent / "config.yaml"
+    try:
+        doc = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        friction_doc = doc["friction"]
+        friction = load_friction(repo_root / friction_doc["file"], str(friction_doc["version"]))
+    except Exception as e:  # noqa: BLE001 -- any failure means the fraction is unknown
+        raise ValueError(
+            f"{config_path}: cannot read the invested fraction the evidence held "
+            f"({type(e).__name__}: {e}); refusing to emit a weight no backtest held"
+        ) from e
+    fraction = friction.max_deployable(1.0)
+    if not (isinstance(fraction, float) and math.isfinite(fraction) and 0.0 < fraction <= 1.0):
+        raise ValueError(
+            f"{config_path}: invested fraction {fraction!r} is not in (0, 1]; refusing to emit"
+        )
+    return fraction
 
 
 def emit(
@@ -155,10 +272,15 @@ def emit(
 
     ``validation_from`` is a path to a battery manifest, or ``None``. When
     given, the validation block is built by calling
-    ``validation_from_manifest(validation_from, repo_root)`` right here, so
-    it can only ever be ``pass``, ``fail`` or ``unvalidated`` by that
-    function's own rules. When ``None``, the document is unvalidated
-    (``UNVALIDATED``). There has never been, and is not now, any argument
+    ``validation_from_manifest`` right here with this call's own
+    ``strategy``, ``fdq_strategy`` and ``params``, so it can only ever be
+    ``pass``, ``fail`` or ``unvalidated`` by that function's own rules, and
+    only ``pass`` for the strategy, rule and parameters the manifest was
+    earned by; and every weight is multiplied by
+    ``invested_fraction(validation_from, repo_root)`` (see the module
+    docstring), which raises rather than guess. When ``None``, the document
+    is unvalidated (``UNVALIDATED``) and its weights are fdq's own. There
+    has never been, and is not now, any argument
     that accepts a ready-made validation ``dict`` -- passing one (by
     keyword, where it lands on no parameter at all, or positionally, where
     it would land on ``validation_from``) is refused with ``TypeError``.
@@ -178,16 +300,27 @@ def emit(
     hist = bars_long.loc[bars_long["date"] <= as_of].reset_index(drop=True)
     if hist.empty:
         raise ValueError(f"no bars on or before {as_of}")
+    fraction = (
+        invested_fraction(Path(validation_from), repo_root) if validation_from is not None else 1.0
+    )
     strat = REGISTRY[fdq_strategy](dict(params))
     w = wide(hist)
     for d in sorted(hist["date"].unique()):
         strat.should_rebalance(d, w)
     weights = strat.target_weights(as_of, w)
     targets = [
-        {"symbol": str(sym), "weight": float(x)} for sym, x in weights.items() if float(x) != 0.0
+        {"symbol": str(sym), "weight": float(x) * fraction}
+        for sym, x in weights.items()
+        if float(x) != 0.0
     ]
     validation = (
-        validation_from_manifest(Path(validation_from), repo_root)
+        validation_from_manifest(
+            Path(validation_from),
+            repo_root,
+            strategy=strategy,
+            fdq_strategy=fdq_strategy,
+            params=params,
+        )
         if validation_from is not None
         else dict(UNVALIDATED)
     )

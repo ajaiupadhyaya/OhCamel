@@ -146,8 +146,10 @@ services:
       start_period: 20s
 
   # Task 16: computes each registered strategy's weight once a trading day
-  # at 19:15 America/New_York, from its manifest's selected_params, and
-  # writes it where ohcamel-live reads it (above). Behind the same "live"
+  # from 19:15 America/New_York (in practice 00:16 UTC, once the fetch's end
+  # is clear of Alpaca's 15-minute SIP window -- see service.py), from its
+  # manifest's selected_params, and writes it where ohcamel-live reads it
+  # (above). Behind the same "live"
   # profile as ohcamel-live -- it has nothing to compute for the demo
   # engine, which registers no strategies -- and never started, and no
   # credential needed, in phases 1-3 of the deployment (same reasoning as
@@ -172,8 +174,10 @@ services:
       # fdq's own bar cache and its yfinance cross-validation log both
       # default to ./data (fdq.util.settings.Settings), which a read-only
       # root filesystem (below) would refuse to create. Redirected to the
-      # tmpfs: the cache is disposable -- every run re-fetches through
-      # Alpaca regardless -- so losing it on a restart costs nothing.
+      # tmpfs. The service never shares a cache across fetches: each fetch
+      # gets a fresh directory inside this one, deleted when it returns
+      # (service.py's AlpacaBarSource), so no row from an earlier, refused
+      # fetch can reach a later one.
       FDQ_DATA_DIR: /tmp/fdq-data
     volumes:
       - signals:/signals

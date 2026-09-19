@@ -21,11 +21,26 @@ FROM python:3.12-slim AS research
 # git: uv shells out to it for fdq's git+https dependency (pinned in
 # research/pyproject.toml; public, needs no credential -- see the pin's own
 # comment there). ca-certificates: TLS to GitHub and PyPI, both reached only
-# at build time, never at container run time.
+# at build time, never at container run time. tzdata: the schedule is 19:15
+# America/New_York (service.py's ZONE, a zoneinfo.ZoneInfo), and the
+# lockfile's Python tzdata package never reaches Linux (uv.lock installs it
+# only on Windows and Emscripten), so the system zone database is the only
+# one the service has -- without it, the service cannot even import. The
+# build fails here, as deploy/Dockerfile's does, unless the zone loads: with
+# the base image's own interpreter, before any virtualenv exists, so nothing
+# but the system database can answer.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git \
       ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+      tzdata \
+ && rm -rf /var/lib/apt/lists/* \
+ && python -c 'import zoneinfo; zoneinfo.ZoneInfo("America/New_York")'
+
+# Every line the service logs (service.py's on_event is print) reaches
+# `docker logs` as it is printed. Python block-buffers stdout when it is not
+# a terminal, which in a container it never is: a quiet service's lines would
+# sit in the buffer for hours, and a crash would lose them outright.
+ENV PYTHONUNBUFFERED=1
 
 # uv, pinned to the version research-test's own CI job installs
 # (.github/workflows/ci.yml's astral-sh/setup-uv@v5 step) -- so a build here
@@ -46,8 +61,10 @@ WORKDIR /app
 # to this file, and used INSTEAD of the repository's own .dockerignore for
 # this build -- see Docker's <dockerfile>.dockerignore lookup) trims what
 # actually reaches the image inside them: no .venv/, no uncommitted
-# research/experiments/*/results/, no __pycache__, no *.md except the two
-# files that are actually needed (see that file's own comments).
+# research/experiments/*/results/, and at any depth no .env file, no
+# __pycache__ and no *.pyc. The markdown inside these trees does reach the
+# image -- only research/README.md is read, by hatchling -- and none of it is
+# hashed (see that file's own comments).
 COPY research/ research/
 COPY interface/ interface/
 COPY fixtures/macro/ fixtures/macro/

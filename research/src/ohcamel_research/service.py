@@ -33,17 +33,51 @@ computes it a second way.
 - the atomic, once-a-day, idempotent write (``run_once``/``_run_strategy``),
   through ``signal.emit``/``signal.write_signal`` and nothing else;
 - the schedule (``run_forever``, see its docstring for why a loop and not
-  cron) and the orphaned-temp-file sweep on start.
+  cron, which days it runs, and how a late bar is retried), its watchdog,
+  and the orphaned-temp-file sweep on start.
+
+**The weight is the fraction the evidence held, not 1.0.** fdq's engine
+sizes a target weight against ``max_deployable(equity)`` =
+``equity * (1 - cash_buffer_pct)``, so every backtest behind EXP-A01's
+manifests held 90% of equity when the rule was on (``friction_v1.yaml``'s
+``cash_buffer_pct: 0.10``). ``signal.emit``, given the manifest, multiplies
+fdq's weight by ``signal.invested_fraction`` -- that same
+``max_deployable(1.0)``, read from the friction file the manifest's own
+experiment config names and loaded by the battery's own loader -- so a
+document says 0.9 when the rule is on and carries no target when it is off.
+The number is read, never written here.
+
+**What the live fetch pins, and what it cannot** (``AlpacaBarSource``,
+``fetchable_through``). The evidence is fdq's Alpaca daily bars:
+consolidated (SIP), unadjusted (``fixtures/history/README.md``). fdq's
+``fetch_symbol`` takes only a symbol, a start and an end *date*;
+``fdq.data.bars._fetch_alpaca`` builds its ``StockBarsRequest`` with neither
+``feed`` nor ``adjustment``, and nothing in ``fetch_symbol`` or fdq's
+``Settings`` sets either, so neither can be pinned without modifying fdq
+(which this project never does). Both therefore take Alpaca's server-side
+defaults -- the ones the evidence was fetched with through the same call:
+adjustment ``raw`` (Alpaca's documented default) and the account's default
+feed (SIP for the account the fixtures came from, as their consolidated
+volumes show). What fdq's API does allow is the end date, which fdq sends
+as that date's 23:59:59.999999, read by Alpaca as UTC -- inside the last
+15 minutes of SIP data a free plan may not query, and even ahead of the
+clock, at 19:15 New York in summer. So the end is pinned: the fetch is never
+handed a date whose 23:59:59.999999 UTC is later than now minus 16 minutes,
+and the schedule waits for today's to qualify -- 00:16 UTC, which is 20:16
+New York in summer and 19:16 in winter, not 19:15.
 """
 
 from __future__ import annotations
 
 import math
 import re
+import signal as os_signal
+import tempfile
 import time as time_module
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
@@ -60,6 +94,8 @@ from ohcamel_research.signal import REGISTRY, emit, write_signal
 
 __all__ = [
     "RUN_AT",
+    "SIP_RECENT_HOLD",
+    "WATCHDOG_SECONDS",
     "ZONE",
     "AlpacaBarSource",
     "BarSource",
@@ -67,9 +103,13 @@ __all__ = [
     "ServiceConfig",
     "ServiceError",
     "StrategyConfig",
+    "StrategyOutcome",
     "VendorMismatchError",
+    "WatchdogTimeout",
+    "fetchable_through",
     "load_service_config",
     "main",
+    "run_day",
     "run_forever",
     "run_once",
     "sweep_orphaned_tmp",
@@ -84,9 +124,21 @@ SIGNALS_DIR = Path("/signals")
 
 # 19:15 America/New_York (design and Task 16's brief): after the desk has
 # recorded the close (Task 14 defers anything earlier) and inside Alpaca's
-# opening-auction window for the *next* session's Opg orders.
+# opening-auction window for the *next* session's Opg orders. The earliest
+# a day's run starts; the fetch's end pin (SIP_RECENT_HOLD) can hold it later.
 RUN_AT = time(19, 15)
 ZONE = ZoneInfo("America/New_York")
+
+# How far behind now the end of a fetch must be. Alpaca refuses a free plan
+# SIP data from the last 15 minutes; one more minute keeps a poll that lands
+# exactly on the boundary out of it. See fetchable_through.
+SIP_RECENT_HOLD = timedelta(minutes=16)
+
+# The watchdog around one run of every strategy (run_forever). Generous: a
+# healthy run is a couple of small fetches and a few hundred bars through
+# fdq, seconds in all; this exists only so a fetch that never returns cannot
+# stop the loop.
+WATCHDOG_SECONDS = 900.0
 
 # How much extra history, in trading days, beyond the longest moving
 # average a config's selected_params implies. fdq's long/flat strategies
@@ -215,6 +267,32 @@ def _require_alpaca_provenance(cache_parquet: Path, symbol: str) -> None:
         )
 
 
+def _fdq_end_instant(day: date) -> datetime:
+    """The instant fdq asks Alpaca for when handed ``end=day``:
+    ``datetime.combine(end, datetime.max.time())`` in
+    ``fdq.data.bars._fetch_alpaca``, a naive datetime alpaca-py documents as
+    UTC."""
+    return datetime.combine(day, time.max, tzinfo=UTC)
+
+
+def fetchable_through(now: datetime) -> date:
+    """The latest end date fdq's fetch may be handed at ``now`` (aware):
+    the latest day whose ``_fdq_end_instant`` is at least ``SIP_RECENT_HOLD``
+    before ``now``. fdq's API takes the end only as a date, so this is the
+    one part of the request's end this service can pin; see the module
+    docstring."""
+    cutoff = now.astimezone(UTC) - SIP_RECENT_HOLD
+    day = cutoff.date()
+    return day if _fdq_end_instant(day) <= cutoff else day - timedelta(days=1)
+
+
+def _fetchable_from(day: date) -> datetime:
+    """The first instant ``fetchable_through`` reaches ``day``: the next
+    UTC midnight (one microsecond after ``_fdq_end_instant(day)``) plus
+    ``SIP_RECENT_HOLD`` -- 00:16 UTC."""
+    return datetime.combine(day + timedelta(days=1), time.min, tzinfo=UTC) + SIP_RECENT_HOLD
+
+
 class AlpacaBarSource:
     """Production: fdq's own Alpaca-backed daily-bar fetcher
     (``fdq.data.bars.fetch_symbol``), which reads ``ALPACA_API_KEY`` and
@@ -233,16 +311,39 @@ class AlpacaBarSource:
 
     Every fetch is checked with ``_require_alpaca_provenance`` before its
     bars are handed back -- see that function for why.
+
+    **A fresh cache for every fetch.** ``fetch_symbol`` merges what it
+    fetched into whatever ``<FDQ_DATA_DIR>/raw/<symbol>.parquet`` already
+    holds and rewrites the sidecar with *this* fetch's source. With one
+    shared cache, rows a refused yfinance fallback wrote yesterday would
+    survive under today's ``alpaca`` sidecar and pass the provenance check.
+    Each fetch therefore gets its own empty data directory, created inside
+    the configured ``FDQ_DATA_DIR`` (the tmpfs, in the container) and
+    deleted when the fetch returns: the sidecar read afterwards describes
+    every row handed back, and nothing outlives the call.
+
+    **The end is pinned** (``fetchable_through``): ``end`` is lowered, never
+    raised, to the latest date whose 23:59:59.999999 UTC -- the instant fdq
+    asks Alpaca for -- is at least ``SIP_RECENT_HOLD`` before ``clock()``.
+    ``feed`` and ``adjustment`` cannot be pinned through fdq (see the module
+    docstring) and take Alpaca's defaults.
     """
+
+    def __init__(self, clock: Callable[[], datetime] = lambda: datetime.now(UTC)) -> None:
+        self._clock = clock
 
     def fetch(self, symbol: str, start: date, end: date) -> pd.DataFrame:
         from fdq.data.bars import fetch_symbol
         from fdq.util.settings import Settings
 
-        settings = Settings()
-        df = fetch_symbol(symbol, start, end, settings=settings, cross_validate=False)
-        _require_alpaca_provenance(settings.raw_dir / f"{symbol}.parquet", symbol)
-        return _to_long_form(df, symbol)
+        end = min(end, fetchable_through(self._clock()))
+        parent = Settings().data_dir
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="fetch-", dir=parent) as fresh:
+            settings = Settings(FDQ_DATA_DIR=fresh)
+            df = fetch_symbol(symbol, start, end, settings=settings, cross_validate=False)
+            _require_alpaca_provenance(settings.raw_dir / f"{symbol}.parquet", symbol)
+            return _to_long_form(df, symbol)
 
 
 class FixtureBarSource:
@@ -408,6 +509,30 @@ def _lookback_start(today: date, period: int, margin_bars: int = LOOKBACK_MARGIN
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class StrategyOutcome:
+    """What one strategy's turn in a run came to. ``as_of`` is the newest
+    bar's date the fetch returned -- ``today`` itself when today's document
+    already existed and nothing was fetched -- or ``None`` when the strategy
+    was refused or raised before any bar was seen. ``written`` is the
+    document written on this turn, if any."""
+
+    slug: str
+    as_of: date | None
+    written: Path | None
+
+
+def _signal_path(signals_dir: Path, slug: str, day: date) -> Path:
+    return signals_dir / f"{slug}-{day.isoformat()}.json"
+
+
+def _late_line(outcome: StrategyOutcome, today: date) -> str:
+    return (
+        f"research  {outcome.slug}: the newest bar is {outcome.as_of}, not {today} -- a late "
+        f"bar, or no session on {today}; no signal for {today} yet"
+    )
+
+
 def _run_strategy(
     cfg: StrategyConfig,
     *,
@@ -416,13 +541,19 @@ def _run_strategy(
     signals_dir: Path,
     repo_root: Path,
     on_event: Callable[[str], None],
-) -> Path | None:
-    """Refresh, compute, emit, write -- for one strategy, once. Returns the
-    path written, or ``None`` when nothing was (today's file already
-    exists, the manifest cannot be trusted enough even to compute a weight
-    from, or the fetch came back empty). Every refusal is logged through
-    ``on_event`` and never raised past this function for the caller
-    (``run_once``) to treat as this one strategy's problem alone."""
+) -> StrategyOutcome:
+    """Refresh, compute, emit, write -- for one strategy, once. Nothing is
+    fetched when ``today``'s document already exists. Otherwise a document
+    is written for the newest bar's date unless one exists for it already
+    (a same-``as_of`` re-run is a no-op) or the strategy is refused -- the
+    manifest cannot be trusted enough even to compute a weight from, or the
+    fetch came back empty. Every refusal is logged through ``on_event`` and
+    never raised past this function for the caller (``run_day``) to treat as
+    this one strategy's problem alone. A newest bar older than ``today`` is
+    not logged here: the caller decides how often to say so."""
+    if _signal_path(signals_dir, cfg.slug, today).exists():
+        return StrategyOutcome(cfg.slug, today, None)
+
     manifest_path = repo_root / cfg.manifest
     try:
         manifest = Manifest.load(manifest_path)
@@ -431,7 +562,7 @@ def _run_strategy(
             f"research  {cfg.slug}: cannot load manifest {manifest_path} "
             f"({type(e).__name__}: {e}); no signal emitted"
         )
-        return None
+        return StrategyOutcome(cfg.slug, None, None)
 
     # The family check emit() itself has no way to make: it takes
     # fdq_strategy and a manifest path as independent arguments and trusts
@@ -443,7 +574,7 @@ def _run_strategy(
             f"research  {cfg.slug}: refusing -- config's fdq_strategy {cfg.fdq_strategy!r} "
             f"does not match the manifest's strategy {manifest.strategy!r}"
         )
-        return None
+        return StrategyOutcome(cfg.slug, None, None)
 
     manifest_symbol = manifest.selected_params.get("symbol")
     if manifest_symbol != cfg.symbol:
@@ -451,7 +582,7 @@ def _run_strategy(
             f"research  {cfg.slug}: refusing -- the manifest's selected_params symbol "
             f"{manifest_symbol!r} does not match the config's symbol {cfg.symbol!r}"
         )
-        return None
+        return StrategyOutcome(cfg.slug, None, None)
 
     period = _lookback_period(manifest.selected_params)
     start = _lookback_start(today, period)
@@ -461,12 +592,12 @@ def _run_strategy(
             f"research  {cfg.slug}: no bars for {cfg.symbol} in [{start}, {today}]; "
             "no signal emitted"
         )
-        return None
+        return StrategyOutcome(cfg.slug, None, None)
 
     as_of = max(bars_long["date"])
-    out = signals_dir / f"{cfg.slug}-{as_of.isoformat()}.json"
+    out = _signal_path(signals_dir, cfg.slug, as_of)
     if out.exists():
-        return None  # today's (as_of's) document already exists: a no-op re-run
+        return StrategyOutcome(cfg.slug, as_of, None)  # as_of's document exists: a no-op
 
     doc = emit(
         cfg.slug,
@@ -483,7 +614,40 @@ def _run_strategy(
         f"research  {cfg.slug}: wrote {out.name}, status={doc['validation']['status']}, "
         f"targets={doc['targets']}"
     )
-    return out
+    return StrategyOutcome(cfg.slug, as_of, out)
+
+
+def run_day(
+    config: ServiceConfig,
+    *,
+    bar_source: BarSource,
+    today: date,
+    signals_dir: Path,
+    repo_root: Path = REPO_ROOT,
+    on_event: Callable[[str], None] = lambda _line: None,
+) -> list[StrategyOutcome]:
+    """Every strategy in ``config``, once, for ``today``, one outcome each
+    in the config's order. A strategy that raises is logged and skipped
+    (``as_of`` ``None``); the rest still run -- one strategy's broken
+    manifest or fetch is not a reason to withhold every other strategy's
+    signal. ``WatchdogTimeout`` is a ``BaseException`` and is not caught
+    here: it abandons the whole run."""
+    outcomes: list[StrategyOutcome] = []
+    for cfg in config.strategies:
+        try:
+            outcome = _run_strategy(
+                cfg,
+                bar_source=bar_source,
+                today=today,
+                signals_dir=signals_dir,
+                repo_root=repo_root,
+                on_event=on_event,
+            )
+        except Exception as e:  # noqa: BLE001 -- one strategy's bug must not sink the others
+            on_event(f"research  {cfg.slug}: raised ({type(e).__name__}: {e}); no signal emitted")
+            outcome = StrategyOutcome(cfg.slug, None, None)
+        outcomes.append(outcome)
+    return outcomes
 
 
 def run_once(
@@ -495,27 +659,21 @@ def run_once(
     repo_root: Path = REPO_ROOT,
     on_event: Callable[[str], None] = lambda _line: None,
 ) -> list[Path]:
-    """Every strategy in ``config``, once, for ``today``. A strategy that
-    raises is logged and skipped; the rest still run -- one strategy's
-    broken manifest or fetch is not a reason to withhold every other
-    strategy's signal."""
-    written: list[Path] = []
-    for cfg in config.strategies:
-        try:
-            path = _run_strategy(
-                cfg,
-                bar_source=bar_source,
-                today=today,
-                signals_dir=signals_dir,
-                repo_root=repo_root,
-                on_event=on_event,
-            )
-        except Exception as e:  # noqa: BLE001 -- one strategy's bug must not sink the others
-            on_event(f"research  {cfg.slug}: raised ({type(e).__name__}: {e}); no signal emitted")
-            continue
-        if path is not None:
-            written.append(path)
-    return written
+    """``run_day``, for a caller that runs a day once (a test, a manual
+    run): returns the documents written, and logs every strategy whose
+    newest bar is older than ``today``."""
+    outcomes = run_day(
+        config,
+        bar_source=bar_source,
+        today=today,
+        signals_dir=signals_dir,
+        repo_root=repo_root,
+        on_event=on_event,
+    )
+    for o in outcomes:
+        if o.as_of is not None and o.as_of < today:
+            on_event(_late_line(o, today))
+    return [o.written for o in outcomes if o.written is not None]
 
 
 # ---------------------------------------------------------------------------
@@ -546,11 +704,48 @@ def sweep_orphaned_tmp(signals_dir: Path) -> list[Path]:
 
 
 def _due(now_et: datetime, last_run: date | None) -> bool:
-    """Once a day: true from the first check at or after 19:15
-    America/New_York on a date this loop has not yet run for. Pure and
-    independent of ``run_forever``'s own loop, so the trigger logic is
-    testable without touching a clock, a sleep, or a fetch."""
-    return now_et.time() >= RUN_AT and now_et.date() != last_run
+    """Once a weekday: true from the first check at or after 19:15
+    America/New_York on a Monday-to-Friday date this loop has not yet
+    finished (``last_run``). Pure and independent of ``run_forever``'s own
+    loop, so the trigger logic is testable without touching a clock, a
+    sleep, or a fetch."""
+    return now_et.weekday() < 5 and now_et.time() >= RUN_AT and now_et.date() != last_run
+
+
+def _previous_weekday(day: date) -> date:
+    d = day - timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
+
+class WatchdogTimeout(BaseException):
+    """A run outlived its watchdog. A ``BaseException``, like
+    ``KeyboardInterrupt``, so that no ``except Exception`` on the way --
+    ``run_day``'s per-strategy guard, fdq's own vendor fallback -- can
+    swallow it and carry on inside the run it is meant to abandon."""
+
+
+@contextmanager
+def _watchdog(seconds: float) -> Iterator[None]:
+    """Raise ``WatchdogTimeout`` inside the body if it runs longer than
+    ``seconds``: ``SIGALRM`` through ``setitimer``, so a fetch blocked in a
+    socket read is interrupted too (the syscall returns to Python, which
+    runs the handler). Main thread only, which is where the service runs.
+    The previous handler is restored and the timer cancelled on every exit."""
+
+    def _expire(_signum: int, _frame: object) -> None:
+        raise WatchdogTimeout(f"no return within {seconds:g} s")
+
+    previous = os_signal.signal(os_signal.SIGALRM, _expire)
+    os_signal.setitimer(os_signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        try:
+            os_signal.setitimer(os_signal.ITIMER_REAL, 0)
+        finally:
+            os_signal.signal(os_signal.SIGALRM, previous)
 
 
 def run_forever(
@@ -562,6 +757,7 @@ def run_forever(
     clock: Callable[[], datetime] = lambda: datetime.now(ZONE),
     sleep: Callable[[float], None] = time_module.sleep,
     poll_seconds: float = 300.0,
+    watchdog_seconds: float = WATCHDOG_SECONDS,
     on_event: Callable[[str], None] = print,
 ) -> None:
     """The schedule is a loop inside this process, not cron in the
@@ -578,31 +774,99 @@ def run_forever(
     replace, which a cron line inside the container image would not be.
 
     Runs forever (``while True``); callers other than the container's own
-    entrypoint should call ``run_once`` directly with a fixed ``today``,
-    which is what every test in ``tests/test_service.py`` does. Sweeps
-    orphaned temp files once, at start, then wakes every ``poll_seconds``
-    to check whether today's run is due (``_due``); a day is attempted at
-    most once regardless of how many polls land after 19:15, so a strategy
-    that keeps failing is retried the next calendar day, not hammered
-    every five minutes.
+    entrypoint should call ``run_once`` directly with a fixed ``today``.
+    Sweeps orphaned temp files once, at start, then:
+
+    - **Back-fill, once, at start.** Started between midnight and 19:15 New
+      York, with the previous weekday's document missing for any strategy:
+      that session is run once (``today`` = the previous weekday), since
+      its market-on-open window is still open. The desk's calendar check
+      (``desk/rebalance.ml``'s ``calendar_refusal``) accepts it until 16:00
+      New York on the next weekday, and all weekend; one back-filled
+      between 16:00 and 19:15 on a weekday is refused there -- closed, not
+      acted on -- and that evening's own run follows it.
+    - **Weekends are skipped**, said once a day.
+    - **A weekday's run** starts at the first poll at or after 19:15
+      (``_due``), once the fetch's end pin reaches today
+      (``fetchable_through``; the wait is said once). ``last_run`` is set --
+      ending the day's attempts -- only once every strategy's newest bar is
+      today's. Until then every poll retries, while the evening lasts: a
+      late bar is picked up when it lands, a strategy that failed is tried
+      again, and a strategy whose document for today exists is not fetched
+      again. A newest bar older than today (a late bar, or a weekday with
+      no session) is said once per strategy, day and bar -- never silently.
+    - **A watchdog** (``watchdog_seconds``, ``SIGALRM``) bounds every run:
+      a fetch that never returns is abandoned, logged, and the loop moves
+      on to its next poll, which retries.
     """
     removed = sweep_orphaned_tmp(signals_dir)
     if removed:
         on_event(f"research  swept {len(removed)} orphaned temp file(s) on start")
+
+    said: set[tuple[Any, ...]] = set()
+
+    def say_once(key: tuple[Any, ...], line: str) -> None:
+        if key not in said:
+            said.add(key)
+            on_event(line)
+
+    def attempt(day: date) -> list[StrategyOutcome] | None:
+        try:
+            with _watchdog(watchdog_seconds):
+                outcomes = run_day(
+                    config,
+                    bar_source=bar_source,
+                    today=day,
+                    signals_dir=signals_dir,
+                    repo_root=repo_root,
+                    on_event=on_event,
+                )
+        except WatchdogTimeout:
+            on_event(
+                f"research  {day}: the run outlived its {watchdog_seconds:g} s watchdog and "
+                "was abandoned; the next poll retries"
+            )
+            return None
+        for o in outcomes:
+            if o.as_of is not None and o.as_of < day:
+                say_once(("late", o.slug, day, o.as_of), _late_line(o, day))
+        return outcomes
+
+    started = clock().astimezone(ZONE)
+    if started.time() < RUN_AT:
+        session = _previous_weekday(started.date())
+        missing = [
+            s.slug
+            for s in config.strategies
+            if not _signal_path(signals_dir, s.slug, session).exists()
+        ]
+        if missing:
+            on_event(
+                f"research  started {started.isoformat()}, before {RUN_AT:%H:%M}, with no "
+                f"signal for {session} from {', '.join(missing)}: running that session once"
+            )
+            attempt(session)
+
     last_run: date | None = None
     while True:
         now_et = clock().astimezone(ZONE)
-        if _due(now_et, last_run):
-            on_event(f"research  {now_et.isoformat()}: running today's signals")
-            run_once(
-                config,
-                bar_source=bar_source,
-                today=now_et.date(),
-                signals_dir=signals_dir,
-                repo_root=repo_root,
-                on_event=on_event,
-            )
-            last_run = now_et.date()
+        today = now_et.date()
+        if today.weekday() >= 5:
+            say_once(("weekend", today), f"research  {today} is a {today:%A}: no session")
+        elif _due(now_et, last_run):
+            if fetchable_through(now_et) < today:
+                ready = _fetchable_from(today).astimezone(ZONE)
+                say_once(
+                    ("hold", today),
+                    f"research  {today}: holding until {ready:%H:%M %Z} -- fdq asks Alpaca for "
+                    "bars through 23:59:59 UTC of the end date, and a free plan may not query "
+                    "SIP data from the last 15 minutes",
+                )
+            else:
+                say_once(("run", today), f"research  {now_et.isoformat()}: running {today}")
+                outcomes = attempt(today)
+                if outcomes is not None and all(o.as_of == today for o in outcomes):
+                    last_run = today
         sleep(poll_seconds)
 
 

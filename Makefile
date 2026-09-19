@@ -83,7 +83,7 @@ export OWL_CFLAGS := -g -O1 -funroll-loops -fno-math-errno -fno-rounding-math -f
 # Homebrew's directory for every build, so no ordering can win.
 export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 
-.PHONY: all build run stress backtest backtest-crisis options garch test research-test bench coverage fmt clean deps doctor \
+.PHONY: all build run stress backtest backtest-crisis options garch test research-test research-reproduce bench coverage fmt clean deps doctor \
         deploy-build deploy-up deploy-down deploy-verify deploy-logs deploy-smoke
 
 all: build
@@ -200,6 +200,18 @@ research-test:
 	cd research && uv sync --locked --extra dev && uv run pytest && uv run ruff check
 	cd research && uv run ohcamel-research fixtures doctor --fixtures $(CURDIR)/fixtures/history
 	cd research && uv run ohcamel-research fixtures doctor --fixtures $(CURDIR)/fixtures/macro
+
+# Every committed battery manifest, re-derived: `ohcamel-research battery run`
+# for every experiment, on a temporary copy of HEAD's research/, fixtures/ and
+# interface/ (never this checkout), compared with what was committed once
+# ran_at is masked -- see tools/reproduce_manifests.py for the comparison and
+# why python_version and a float's last digits may differ off the machine the
+# evidence was run on. is_stale proves a manifest names the bytes it hashed;
+# this proves its numbers are what those bytes produce. Offline and hermetic:
+# no credential, no network, committed fixtures only. About 26 seconds an
+# experiment. CI's research job runs it after research-test.
+research-reproduce:
+	cd research && uv run --locked --offline --extra dev python $(CURDIR)/tools/reproduce_manifests.py
 
 # What a tick costs, in seconds and in words, against a throwaway
 # poll-and-recompute baseline. `make run` counts NODES; this counts time and

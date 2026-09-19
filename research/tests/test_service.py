@@ -41,7 +41,9 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date, datetime, time, timedelta
+import signal as os_signal
+import time as time_module
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -72,15 +74,33 @@ from ohcamel_research.service import (
     _due,
     _lookback_period,
     _lookback_start,
+    _previous_weekday,
     _require_alpaca_provenance,
     _to_long_form,
+    fetchable_through,
     load_service_config,
+    run_forever,
     run_once,
     sweep_orphaned_tmp,
 )
 from ohcamel_research.signal import REGISTRY as signal_registry
+from ohcamel_research.signal import invested_fraction
 
 FIXTURE_BARS = REPO_ROOT / "fixtures" / "bars"
+
+# The test experiment's own friction file, loadable by fdq, with a cash
+# buffer that is not friction_v1.yaml's 0.10: a weight of 0.75 can only have
+# been read from it. INVESTED is what every "on" document must carry.
+CASH_BUFFER_PCT = 0.25
+INVESTED = 1.0 - CASH_BUFFER_PCT
+FRICTION_TEST = (
+    f"min_notional: 1.0\ncash_buffer_pct: {CASH_BUFFER_PCT}\nsettlement_days: 1\n"
+    "spread_bps_default: 1.0\n"
+).encode()
+# Still loadable, but no longer the bytes a manifest recorded: stale.
+FRICTION_TEST_EDITED = FRICTION_TEST.replace(
+    b"spread_bps_default: 1.0", b"spread_bps_default: 999.0"
+)
 
 # The fixture's own last date (both SPY.parquet and TLT.parquet end here --
 # see fixtures/bars/*.parquet.meta.json). Every test below runs "today"
@@ -121,12 +141,12 @@ def _build_repo(root: Path) -> dict[str, Path]:
     _write(
         config_path,
         b"id: EXP-TEST\n"
-        b"friction: {file: research/config/friction_test.yaml}\n"
+        b'friction: {version: "1.0.0", file: research/config/friction_test.yaml}\n'
         b"macro: fixtures/macro/macro.parquet\n",
     )
 
     friction_path = root / "research" / "config" / "friction_test.yaml"
-    _write(friction_path, b"spread_bps_default: 1.0\n")
+    _write(friction_path, FRICTION_TEST)
 
     macro_path = root / "fixtures" / "macro" / "macro.parquet"
     _write(macro_path, b"macro bytes v1")
@@ -141,6 +161,7 @@ def _build_repo(root: Path) -> dict[str, Path]:
 
     return {
         "root": root,
+        "exp": exp_dir,
         "battery": battery,
         "config": config_path,
         "friction": friction_path,
@@ -193,7 +214,7 @@ def _manifest(paths: dict[str, Path], **overrides: Any) -> Manifest:
 def _spy_manifest_file(tmp_path: Path, **overrides: Any) -> tuple[Path, dict[str, Path]]:
     paths = _build_repo(tmp_path)
     m = _manifest(paths, **overrides)
-    manifest_file = paths["root"] / "manifest.exp_test_spy.json"
+    manifest_file = paths["exp"] / "manifest.exp_test_spy.json"
     m.dump(manifest_file)
     return manifest_file, paths
 
@@ -204,7 +225,7 @@ def _tlt_manifest_file(tmp_path: Path, **overrides: Any) -> tuple[Path, dict[str
     overrides.setdefault("symbol", "TLT")
     overrides.setdefault("selected_params", dict(TLT_PARAMS))
     m = _manifest(paths, **overrides)
-    manifest_file = paths["root"] / "manifest.exp_test_tlt.json"
+    manifest_file = paths["exp"] / "manifest.exp_test_tlt.json"
     m.dump(manifest_file)
     return manifest_file, paths
 
@@ -217,8 +238,8 @@ def _two_strategy_config(tmp_path: Path) -> tuple[ServiceConfig, dict[str, Path]
     paths = _build_repo(tmp_path)
     spy = _manifest(paths, slug="exp_test_spy", symbol="SPY", selected_params=dict(SPY_PARAMS))
     tlt = _manifest(paths, slug="exp_test_tlt", symbol="TLT", selected_params=dict(TLT_PARAMS))
-    spy_file = paths["root"] / "manifest.exp_test_spy.json"
-    tlt_file = paths["root"] / "manifest.exp_test_tlt.json"
+    spy_file = paths["exp"] / "manifest.exp_test_spy.json"
+    tlt_file = paths["exp"] / "manifest.exp_test_tlt.json"
     spy.dump(spy_file)
     tlt.dump(tlt_file)
     config = ServiceConfig(
@@ -284,8 +305,9 @@ def test_each_weight_matches_the_rule_computed_by_hand_on_the_fixture(tmp_path: 
     tlt_doc = json.loads(
         (signals_dir / f"exp_test_tlt-{FIXTURE_LAST_DATE.isoformat()}.json").read_text()
     )
-    # Close above its 150-day SMA on 2020-12-31: long.
-    assert spy_doc["targets"] == [{"symbol": "SPY", "weight": 1.0}]
+    # Close above its 150-day SMA on 2020-12-31: long, at the fraction the
+    # test experiment's friction file leaves invested -- not 1.0.
+    assert spy_doc["targets"] == [{"symbol": "SPY", "weight": INVESTED}]
     # Close below its 200-day SMA on 2020-12-31: flat.
     assert tlt_doc["targets"] == []
 
@@ -395,7 +417,7 @@ def test_a_stale_manifest_emits_unvalidated(tmp_path: Path):
     # Edit a hashed file after the manifest was written -- exactly
     # test_signal.py's own staleness recipe, exercised here through the
     # service instead of validation_from_manifest directly.
-    paths["friction"].write_bytes(b"spread_bps_default: 999.0\n")
+    paths["friction"].write_bytes(FRICTION_TEST_EDITED)
 
     config = ServiceConfig(
         strategies=(
@@ -835,7 +857,7 @@ def test_due_is_true_again_the_next_day():
 # not just a tautology, by mutation: temporarily changing _run_strategy to
 # call emit with bars_long.iloc[:-1] instead of bars_long turned this
 # test's assertion from a pass into a failure (targets [] instead of
-# [{"symbol": "XYZ", "weight": 1.0}]) -- the mutation was made, observed to
+# the long XYZ target) -- the mutation was made, observed to
 # fail this test, and reverted; it is not part of the committed code.
 # ---------------------------------------------------------------------------
 
@@ -885,7 +907,7 @@ def test_the_last_bar_participates_in_the_weight(tmp_path: Path):
     manifest = _manifest(
         paths, slug="exp_test_xyz", symbol="XYZ", selected_params=dict(_OFF_BY_ONE_PARAMS)
     )
-    manifest_file = paths["root"] / "manifest.exp_test_xyz.json"
+    manifest_file = paths["exp"] / "manifest.exp_test_xyz.json"
     manifest.dump(manifest_file)
     config = ServiceConfig(
         strategies=(
@@ -911,4 +933,439 @@ def test_the_last_bar_participates_in_the_weight(tmp_path: Path):
     assert len(written) == 1
     doc = json.loads(written[0].read_text())
     assert doc["as_of"] == last_date.isoformat()
-    assert doc["targets"] == [{"symbol": "XYZ", "weight": 1.0}]
+    assert doc["targets"] == [{"symbol": "XYZ", "weight": INVESTED}]
+
+
+# ---------------------------------------------------------------------------
+# The weight is the fraction the evidence held: on, 1 - cash_buffer_pct of
+# the manifest's own experiment; off, no target at all.
+# ---------------------------------------------------------------------------
+
+
+def test_the_weight_is_the_fraction_the_evidence_held_when_on_and_zero_when_off(tmp_path: Path):
+    config, paths = _two_strategy_config(tmp_path)
+    signals_dir = tmp_path / "signals"
+
+    run_once(
+        config,
+        bar_source=FixtureBarSource(FIXTURE_BARS),
+        today=TODAY,
+        signals_dir=signals_dir,
+        repo_root=paths["root"],
+    )
+
+    fraction = invested_fraction(paths["root"] / config.strategies[0].manifest, paths["root"])
+    assert fraction == INVESTED  # read from the test experiment's friction file
+    spy = json.loads((signals_dir / f"exp_test_spy-{FIXTURE_LAST_DATE}.json").read_text())
+    tlt = json.loads((signals_dir / f"exp_test_tlt-{FIXTURE_LAST_DATE}.json").read_text())
+    assert spy["targets"] == [{"symbol": "SPY", "weight": fraction}]  # on
+    assert tlt["targets"] == []  # off: weight 0, so no target
+
+
+def test_the_committed_service_config_emits_the_fraction_exp_a01_held():
+    from fdq.frictions.config import load_friction_config
+
+    engine = load_friction_config(REPO_ROOT / "research" / "config" / "friction_v1.yaml")
+    config = load_service_config(REPO_ROOT / "research" / "service.yaml", REPO_ROOT)
+    for s in config.strategies:
+        fraction = invested_fraction(REPO_ROOT / s.manifest, REPO_ROOT)
+        assert fraction == engine.max_deployable(1.0) == 1.0 - engine.cash_buffer_pct
+
+
+# ---------------------------------------------------------------------------
+# AlpacaBarSource against fdq's real fetch_symbol, with fdq's two vendor
+# calls replaced by fakes -- no network and no credential: the keys below
+# are placeholders that only make fdq take its Alpaca branch.
+# ---------------------------------------------------------------------------
+
+
+def _fdq_frame(days: list[date], close: float) -> pd.DataFrame:
+    idx = pd.DatetimeIndex([pd.Timestamp(d) for d in days], name="timestamp")
+    return pd.DataFrame(
+        {
+            "open": close,
+            "high": close,
+            "low": close,
+            "close": close,
+            "volume": 1000.0,
+            "close_adj": close,
+        },
+        index=idx,
+    )
+
+
+@pytest.fixture
+def fake_vendors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """fdq's ``_fetch_alpaca`` answers from ``alpaca`` (a queue: a frame, or
+    an exception to raise) and records the end date it was asked for;
+    ``_fetch_yfinance`` always answers ``yfinance``."""
+    import fdq.data.bars as fdq_bars
+
+    monkeypatch.setenv("ALPACA_API_KEY", "placeholder-not-a-key")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "placeholder-not-a-key")
+    monkeypatch.setenv("FDQ_DATA_DIR", str(tmp_path / "fdq-data"))
+    state: dict[str, Any] = {"alpaca": [], "yfinance": None, "alpaca_ends": []}
+
+    def fake_alpaca(symbols: list[str], start: date, end: date, settings: Any) -> dict:
+        state["alpaca_ends"].append(end)
+        answer = state["alpaca"].pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return {symbols[0]: answer}
+
+    def fake_yfinance(symbols: list[str], start: date, end: date) -> dict:
+        return {symbols[0]: state["yfinance"]}
+
+    monkeypatch.setattr(fdq_bars, "_fetch_alpaca", fake_alpaca)
+    monkeypatch.setattr(fdq_bars, "_fetch_yfinance", fake_yfinance)
+    return state
+
+
+def test_rows_from_a_refused_fetch_never_reach_a_later_one(
+    tmp_path: Path, fake_vendors: dict[str, Any]
+):
+    d1, d2, d3 = date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)
+    # First fetch: Alpaca fails, fdq falls back to yfinance -- three rows,
+    # one of them a day Alpaca will not have -- and the service refuses it.
+    # Second fetch: Alpaca answers two rows. With one shared fdq cache the
+    # yfinance row for d3 would be merged in under an "alpaca" sidecar.
+    fake_vendors["alpaca"] = [RuntimeError("alpaca unavailable"), _fdq_frame([d1, d2], 100.0)]
+    fake_vendors["yfinance"] = _fdq_frame([d1, d2, d3], 999.0)
+    source = AlpacaBarSource(clock=lambda: datetime(2024, 2, 1, 12, 0, tzinfo=UTC))
+
+    with pytest.raises(VendorMismatchError, match="yfinance"):
+        source.fetch("SPY", date(2024, 1, 1), date(2024, 1, 31))
+    out = source.fetch("SPY", date(2024, 1, 1), date(2024, 1, 31))
+
+    assert list(out["date"]) == [d1, d2]
+    assert out["close"].tolist() == [100.0, 100.0]
+    # Nothing outlives a fetch: each had its own directory, now gone.
+    assert list((tmp_path / "fdq-data").iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("now", "through"),
+    [
+        # Summer, 19:15 New York is 23:15 UTC: today's 23:59:59 UTC is ahead.
+        (datetime(2026, 7, 1, 19, 15, tzinfo=ZONE), date(2026, 6, 30)),
+        # 00:15 UTC: past it, but inside the last 16 minutes.
+        (datetime(2026, 7, 1, 20, 15, tzinfo=ZONE), date(2026, 6, 30)),
+        (datetime(2026, 7, 1, 20, 16, tzinfo=ZONE), date(2026, 7, 1)),
+        # Winter, 19:15 New York is 00:15 UTC.
+        (datetime(2026, 1, 5, 19, 15, tzinfo=ZONE), date(2026, 1, 4)),
+        (datetime(2026, 1, 5, 19, 16, tzinfo=ZONE), date(2026, 1, 5)),
+    ],
+)
+def test_fetchable_through_keeps_fdqs_end_at_least_16_minutes_behind_now(
+    now: datetime, through: date
+):
+    assert fetchable_through(now) == through
+    cutoff = now - timedelta(minutes=16)
+    # fdq sends end=D as D 23:59:59.999999, read as UTC.
+    assert datetime.combine(through, time.max, tzinfo=UTC) <= cutoff
+    assert datetime.combine(through + timedelta(days=1), time.max, tzinfo=UTC) > cutoff
+
+
+def test_the_alpaca_fetch_end_is_lowered_to_the_pin_and_never_raised(
+    fake_vendors: dict[str, Any],
+):
+    d = date(2026, 6, 30)
+    fake_vendors["alpaca"] = [_fdq_frame([d], 100.0), _fdq_frame([d], 100.0)]
+    summer_evening = datetime(2026, 7, 1, 19, 15, tzinfo=ZONE)
+    source = AlpacaBarSource(clock=lambda: summer_evening)
+
+    source.fetch("SPY", date(2026, 6, 1), date(2026, 7, 1))
+    source.fetch("SPY", date(2026, 6, 1), date(2026, 6, 15))
+
+    assert fake_vendors["alpaca_ends"] == [date(2026, 6, 30), date(2026, 6, 15)]
+
+
+# ---------------------------------------------------------------------------
+# The loop itself: a clock that returns the start instant and then one
+# instant per poll, and a sleep that stops the loop after the last poll.
+# ---------------------------------------------------------------------------
+
+
+class _Stop(Exception):
+    pass
+
+
+class _CountingSource:
+    """Wraps a source, records every fetch, and can hide one day's bars for
+    the first ``hide_for`` fetches -- a bar that arrives late."""
+
+    def __init__(self, inner: Any, *, hide: date | None = None, hide_for: int = 0) -> None:
+        self._inner = inner
+        self._hide = hide
+        self._hide_for = hide_for
+        self.calls: list[tuple[str, date]] = []
+
+    def fetch(self, symbol: str, start: date, end: date) -> pd.DataFrame:
+        self.calls.append((symbol, end))
+        bars = self._inner.fetch(symbol, start, end)
+        if self._hide is not None and len(self.calls) <= self._hide_for:
+            bars = bars.loc[bars["date"] != self._hide].reset_index(drop=True)
+        return bars
+
+
+def _run_polls(
+    config: ServiceConfig,
+    source: Any,
+    paths: dict[str, Path],
+    signals_dir: Path,
+    start: datetime,
+    polls: list[datetime],
+    **kwargs: Any,
+) -> list[str]:
+    """``run_forever`` from ``start``, through exactly ``polls``; returns
+    what it logged."""
+    instants = iter([start, *polls])
+    slept: list[float] = []
+    events: list[str] = []
+
+    def clock() -> datetime:
+        return next(instants)
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        if len(slept) == len(polls):
+            raise _Stop
+
+    with pytest.raises(_Stop):
+        run_forever(
+            config,
+            bar_source=source,
+            signals_dir=signals_dir,
+            repo_root=paths["root"],
+            clock=clock,
+            sleep=sleep,
+            on_event=events.append,
+            **kwargs,
+        )
+    return events
+
+
+def _et(d: date, hh: int, mm: int) -> datetime:
+    return datetime.combine(d, time(hh, mm), tzinfo=ZONE)
+
+
+def test_a_late_bar_is_retried_every_poll_until_it_lands(tmp_path: Path):
+    config, paths = _two_strategy_config(tmp_path)
+    signals_dir = tmp_path / "signals"
+    day = FIXTURE_LAST_DATE  # a Thursday
+    # The day's own bar is missing from the first two polls' fetches.
+    source = _CountingSource(FixtureBarSource(FIXTURE_BARS), hide=day, hide_for=4)
+
+    events = _run_polls(
+        config,
+        source,
+        paths,
+        signals_dir,
+        _et(day, 20, 30),
+        [_et(day, 20, 30), _et(day, 20, 35), _et(day, 20, 40), _et(day, 20, 45)],
+    )
+
+    for slug in ("exp_test_spy", "exp_test_tlt"):
+        assert (signals_dir / f"{slug}-{day}.json").exists()
+        late = [e for e in events if e.startswith(f"research  {slug}: the newest bar is")]
+        assert late == [
+            f"research  {slug}: the newest bar is {day - timedelta(days=1)}, not {day} -- a late "
+            f"bar, or no session on {day}; no signal for {day} yet"
+        ]  # said once, though it was late on two polls
+    # Two strategies on each of three polls; the fourth poll fetches nothing,
+    # because the day is complete once every strategy's newest bar is today's.
+    assert len(source.calls) == 6
+
+
+def test_weekends_are_skipped_and_said_once(tmp_path: Path):
+    config, paths = _two_strategy_config(tmp_path)
+    saturday = date(2021, 1, 2)
+    source = _CountingSource(FixtureBarSource(FIXTURE_BARS))
+
+    events = _run_polls(
+        config,
+        source,
+        paths,
+        tmp_path / "signals",
+        _et(saturday, 20, 0),  # after 19:15: no back-fill either
+        [_et(saturday, 20, 0), _et(saturday, 20, 5), _et(saturday, 23, 55)],
+    )
+
+    assert source.calls == []
+    assert [e for e in events if "Saturday" in e] == [
+        f"research  {saturday} is a Saturday: no session"
+    ]
+
+
+def test_a_weekday_with_no_new_bar_is_said_once_and_writes_nothing_for_that_day(tmp_path: Path):
+    config, paths = _two_strategy_config(tmp_path)
+    signals_dir = tmp_path / "signals"
+    holiday = date(2021, 1, 1)  # a Friday with no session: the fixture has no bar for it
+    source = _CountingSource(FixtureBarSource(FIXTURE_BARS))
+
+    events = _run_polls(
+        config,
+        source,
+        paths,
+        signals_dir,
+        _et(holiday, 20, 30),
+        [_et(holiday, 20, 30), _et(holiday, 20, 35), _et(holiday, 20, 40)],
+    )
+
+    assert not list(signals_dir.glob(f"*-{holiday}.json"))
+    assert len([e for e in events if "the newest bar is" in e]) == 2  # once per strategy
+    assert len(source.calls) == 6  # every poll retried, in case the bar was only late
+
+
+def test_a_start_before_the_run_backfills_the_previous_weekday_once(tmp_path: Path):
+    config, paths = _two_strategy_config(tmp_path)
+    signals_dir = tmp_path / "signals"
+    friday = date(2021, 1, 1)
+    source = _CountingSource(FixtureBarSource(FIXTURE_BARS))
+
+    events = _run_polls(
+        config,
+        source,
+        paths,
+        signals_dir,
+        _et(friday, 10, 0),
+        [_et(friday, 10, 0), _et(friday, 10, 5)],
+    )
+
+    session = _previous_weekday(friday)
+    assert session == FIXTURE_LAST_DATE
+    assert (signals_dir / f"exp_test_spy-{session}.json").exists()
+    assert (signals_dir / f"exp_test_tlt-{session}.json").exists()
+    assert len(source.calls) == 2  # once, at start; the morning polls are not due
+    assert any(f"no signal for {session}" in e and "running that session once" in e for e in events)
+
+
+def test_no_backfill_when_the_previous_weekdays_signals_exist(tmp_path: Path):
+    config, paths = _two_strategy_config(tmp_path)
+    signals_dir = tmp_path / "signals"
+    run_once(
+        config,
+        bar_source=FixtureBarSource(FIXTURE_BARS),
+        today=FIXTURE_LAST_DATE,
+        signals_dir=signals_dir,
+        repo_root=paths["root"],
+    )
+    friday = date(2021, 1, 1)
+    source = _CountingSource(FixtureBarSource(FIXTURE_BARS))
+
+    _run_polls(config, source, paths, signals_dir, _et(friday, 9, 0), [_et(friday, 9, 0)])
+
+    assert source.calls == []
+
+
+def test_previous_weekday_skips_the_weekend():
+    assert _previous_weekday(date(2021, 1, 4)) == date(2021, 1, 1)  # Monday -> Friday
+    assert _previous_weekday(date(2021, 1, 2)) == date(2021, 1, 1)  # Saturday -> Friday
+    assert _previous_weekday(date(2021, 1, 3)) == date(2021, 1, 1)  # Sunday -> Friday
+    assert _previous_weekday(date(2021, 1, 5)) == date(2021, 1, 4)  # Tuesday -> Monday
+
+
+def test_due_is_false_on_a_weekend_evening():
+    assert _due(_et(date(2026, 1, 3), 19, 30), last_run=None) is False  # Saturday
+    assert _due(_et(date(2026, 1, 4), 19, 30), last_run=None) is False  # Sunday
+
+
+def test_a_summer_evening_holds_until_the_fetch_end_is_16_minutes_old(tmp_path: Path):
+    day = date(2026, 7, 1)  # a Wednesday, New York on EDT
+    paths = _build_repo(tmp_path)
+    manifest = _manifest(
+        paths, slug="exp_test_xyz", symbol="XYZ", selected_params=dict(_OFF_BY_ONE_PARAMS)
+    )
+    manifest_file = paths["exp"] / "manifest.exp_test_xyz.json"
+    manifest.dump(manifest_file)
+    config = ServiceConfig(
+        strategies=(
+            StrategyConfig(
+                slug="exp_test_xyz",
+                fdq_strategy="ma_crossover",
+                symbol="XYZ",
+                manifest=str(manifest_file.relative_to(paths["root"])),
+            ),
+        )
+    )
+    bars = _off_by_one_bars()
+    bars["date"] = [day - timedelta(days=len(bars) - 1 - i) for i in range(len(bars))]
+    source = _CountingSource(_FixedFrameBarSource(bars))
+    signals_dir = tmp_path / "signals"
+
+    events = _run_polls(
+        config,
+        source,
+        paths,
+        signals_dir,
+        _et(day, 19, 15),
+        [_et(day, 19, 15), _et(day, 19, 20), _et(day, 20, 15), _et(day, 20, 16)],
+    )
+
+    assert len(source.calls) == 1  # only the 20:16 poll fetched
+    assert (signals_dir / f"exp_test_xyz-{day}.json").exists()
+    holds = [e for e in events if "holding until" in e]
+    assert holds == [
+        f"research  {day}: holding until 20:16 EDT -- fdq asks Alpaca for bars through "
+        "23:59:59 UTC of the end date, and a free plan may not query SIP data from the last "
+        "15 minutes"
+    ]
+
+
+def test_a_hung_fetch_is_abandoned_by_the_watchdog_and_the_loop_moves_on(tmp_path: Path):
+    config, paths = _two_strategy_config(tmp_path)
+
+    class _Hangs:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def fetch(self, symbol: str, start: date, end: date) -> pd.DataFrame:
+            self.calls += 1
+            time_module.sleep(30)
+            raise AssertionError("unreachable: the watchdog fires first")
+
+    source = _Hangs()
+    handler_before = os_signal.getsignal(os_signal.SIGALRM)
+    day = FIXTURE_LAST_DATE
+    began = time_module.monotonic()
+
+    events = _run_polls(
+        config,
+        source,
+        paths,
+        tmp_path / "signals",
+        _et(day, 20, 30),
+        [_et(day, 20, 30), _et(day, 20, 35)],
+        watchdog_seconds=0.2,
+    )
+
+    assert time_module.monotonic() - began < 10
+    watchdog = [e for e in events if "watchdog" in e]
+    assert len(watchdog) == 2  # both polls abandoned, and the loop went on to the next
+    assert watchdog[0] == (
+        f"research  {day}: the run outlived its 0.2 s watchdog and was abandoned; "
+        "the next poll retries"
+    )
+    assert source.calls == 2  # one hung fetch per poll; the other strategy never started
+    assert os_signal.getsignal(os_signal.SIGALRM) is handler_before
+    assert os_signal.getitimer(os_signal.ITIMER_REAL) == (0.0, 0.0)
+    assert not (tmp_path / "signals").exists() or list((tmp_path / "signals").iterdir()) == []
+
+
+def test_a_run_that_finishes_in_time_leaves_no_alarm_behind(tmp_path: Path):
+    config, paths = _two_strategy_config(tmp_path)
+    handler_before = os_signal.getsignal(os_signal.SIGALRM)
+    day = FIXTURE_LAST_DATE
+
+    _run_polls(
+        config,
+        FixtureBarSource(FIXTURE_BARS),
+        paths,
+        tmp_path / "signals",
+        _et(day, 20, 30),
+        [_et(day, 20, 30)],
+        watchdog_seconds=60,
+    )
+
+    assert os_signal.getsignal(os_signal.SIGALRM) is handler_before
+    assert os_signal.getitimer(os_signal.ITIMER_REAL) == (0.0, 0.0)
