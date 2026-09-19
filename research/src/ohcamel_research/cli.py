@@ -79,26 +79,67 @@ def signal() -> None:
 
 
 @signal.command("emit")
-@click.option("--strategy", required=True)
+@click.option(
+    "--strategy",
+    required=True,
+    help="the document's strategy slug, registered with the desk (e.g. exp_a01_spy)",
+)
+@click.option(
+    "--fdq-strategy",
+    "fdq_strategy",
+    required=True,
+    help="fdq's strategy key that computes the weights (e.g. ma_crossover)",
+)
 @click.option("--params", default="{}", help="JSON object of strategy parameters")
 @click.option("--as-of", "as_of", required=True, callback=_date)
 @click.option("--sequence", type=int, required=True)
 @click.option("--fixtures", type=click.Path(path_type=Path), default=DEFAULT_FIXTURES)
+@click.option(
+    "--validation-from",
+    "validation_from",
+    type=click.Path(path_type=Path, exists=True),
+    help="a battery manifest to build the validation block from; omit for unvalidated",
+)
 @click.option("--out", type=click.Path(path_type=Path), required=True)
 def signal_emit(
-    strategy: str, params: str, as_of: date, sequence: int, fixtures: Path, out: Path
+    strategy: str,
+    fdq_strategy: str,
+    params: str,
+    as_of: date,
+    sequence: int,
+    fixtures: Path,
+    validation_from: Path | None,
+    out: Path,
 ) -> None:
-    """Run an fdq strategy point-in-time at AS_OF and write an UNVALIDATED signal.
+    """Run an fdq strategy point-in-time at AS_OF and write a signal.
 
-    Unvalidated on purpose: the validation block is written by the battery in
-    Phase 1, never by hand. The core will reject this under R6, which is the
-    behaviour being demonstrated.
+    STRATEGY and FDQ_STRATEGY are separate on purpose: STRATEGY is the
+    document's slug, registered with the desk and distinct per symbol
+    (exp_a01_spy, exp_a01_tlt); FDQ_STRATEGY is which fdq rule computes the
+    weights, and may be shared by several slugs (both above use
+    ma_crossover). One argument doing both jobs would make two symbols on
+    the same rule emit under the same strategy name, colliding on sequence.
+
+    --validation-from is the only way to get a validation status other than
+    "unvalidated": it is built from a manifest by
+    ohcamel_research.signal.validation_from_manifest, which is the one place
+    a "pass" can come from. There is no flag to set the status by hand.
     """
-    from ohcamel_research.signal import emit  # fdq import is slow; keep replay fast
+    from ohcamel_research.signal import (  # fdq import is slow; keep replay fast
+        emit,
+        validation_from_manifest,
+        write_signal,
+    )
 
-    doc = emit(strategy, json.loads(params), as_of, load_bars(fixtures), sequence)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(doc, indent=2) + "\n")
+    validation = (
+        validation_from_manifest(validation_from, REPO_ROOT)
+        if validation_from is not None
+        else None
+    )
+    doc = emit(
+        strategy, fdq_strategy, json.loads(params), as_of, load_bars(fixtures), sequence, validation
+    )
+    write_signal(doc, out)
     status = doc["validation"]["status"]
     click.echo(f"wrote {out}: {strategy} as_of={as_of} targets={doc['targets']} status={status}")
 
