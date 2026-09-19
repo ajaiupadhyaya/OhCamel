@@ -1,5 +1,7 @@
 # Phase A3: signals — Implementation Plan
 
+> **Status (2026-09-19):** historical record of a finished, merged phase. Superseded as the active plan by `docs/superpowers/plans/2026-09-19-final-completion.md` ("the finish"); see `docs/superpowers/specs/2026-09-19-the-finish.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Bring OhCamel Alpha's signal contract and research layer into this repository, run one pre-registered strategy — Faber (2007) on SPY and TLT — through the charter's full battery on real data, and let the desk read signals, judge them R1–R7, show them, and size only what passes the gates *and* the owner has promoted.

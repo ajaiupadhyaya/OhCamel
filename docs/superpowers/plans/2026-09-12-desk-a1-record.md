@@ -1,5 +1,7 @@
 # Desk A1 — The Record — Implementation Plan
 
+> **Status (2026-09-19):** historical record of a finished, merged phase. Superseded as the active plan by `docs/superpowers/plans/2026-09-19-final-completion.md` ("the finish"); see `docs/superpowers/specs/2026-09-19-the-finish.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A `desk/` library that holds the order vocabulary, the SQLite journal, a venue interface with a simulated venue and Alpaca paper's read side, the book synced from the venue, and a session close that rolls the return window and records forecasts — attached to both hosts and served on `/api/desk`.

@@ -1,5 +1,7 @@
 # The page — Phase 6: deploy and measure — Implementation Plan
 
+> **Status (2026-09-19):** historical record of a finished, merged phase. Superseded as the active plan by `docs/superpowers/plans/2026-09-19-final-completion.md` ("the finish"); see `docs/superpowers/specs/2026-09-19-the-finish.md`.
+
 > **Superseded 2026-09-10.** Not executed as written. Deploying and closing out are items 9–10 of `2026-09-10-the-page-finish-line.md`, with the cuts listed there.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

@@ -1,5 +1,7 @@
 # The page — Phase 5: the reports and the argument — Implementation Plan
 
+> **Status (2026-09-19):** historical record of a finished, merged phase. Superseded as the active plan by `docs/superpowers/plans/2026-09-19-final-completion.md` ("the finish"); see `docs/superpowers/specs/2026-09-19-the-finish.md`.
+
 > **Superseded 2026-09-10.** Not executed as written. Its scope is folded into items 4–9 of `2026-09-10-the-page-finish-line.md`, with the cuts listed there. This file stays as a parts bin for the encoders, routes and GARCH domain.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

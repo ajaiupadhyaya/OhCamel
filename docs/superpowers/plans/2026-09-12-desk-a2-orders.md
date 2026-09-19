@@ -1,5 +1,7 @@
 # Desk A2 — The Order Manager — Implementation Plan
 
+> **Status (2026-09-19):** historical record of a finished, merged phase. Superseded as the active plan by `docs/superpowers/plans/2026-09-19-final-completion.md` ("the finish"); see `docs/superpowers/specs/2026-09-19-the-finish.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The desk places, tracks and reconciles paper orders — the rules, then the limits on a fork of the live graph, then the journal, then the venue — and every order, fill, rejection and cost is on the page with its reasons.

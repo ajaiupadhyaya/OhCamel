@@ -1,5 +1,7 @@
 # The page — the finish line
 
+> **Status (2026-09-19):** historical record of a finished, merged phase. Superseded as the active plan by `docs/superpowers/plans/2026-09-19-final-completion.md` ("the finish"); see `docs/superpowers/specs/2026-09-19-the-finish.md`.
+
 > **Done, 2026-09-10: 10 of 10.** Deployed to both hosts from `36fc84f`; production smoke 21 passed, 0 failed; the page's computed tables agree with the README on the droplet in every cell.
 
 *2026-09-10. This replaces everything that was left of the page redesign: the Phase 4 wrap-up and all

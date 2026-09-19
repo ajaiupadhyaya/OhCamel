@@ -1,5 +1,7 @@
 # Desk W1 — Figure 1 — Implementation Plan
 
+> **Status (2026-09-19):** historical record of a finished, merged phase. Superseded as the active plan by `docs/superpowers/plans/2026-09-19-final-completion.md` ("the finish"); see `docs/superpowers/specs/2026-09-19-the-finish.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Figure 1 shows a frame's work travelling through the graph rank by rank, distinguishes a node that ran and changed from one whose cutoff held, pulses the cell a frame set, weights edges by how often they have carried work and rules by what each node costs, bundles its edges into trunks, carries a legend and a set caption, and opens as a full-screen poster — with every fact it draws supplied by the server.

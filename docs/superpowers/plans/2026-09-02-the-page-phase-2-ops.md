@@ -1,5 +1,7 @@
 # The page — Phase 2: the build sha and the operations surface — Implementation Plan
 
+> **Status (2026-09-19):** historical record of a finished, merged phase. Superseded as the active plan by `docs/superpowers/plans/2026-09-19-final-completion.md` ("the finish"); see `docs/superpowers/specs/2026-09-19-the-finish.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the deployed engine able to say which build it is, how long it has been that build, and what its feed, stream, alerts and process are doing — on one JSON route, one small HTML page, and one smoke assertion that fails a deploy which kept the old container.

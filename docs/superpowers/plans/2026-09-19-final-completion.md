@@ -1331,6 +1331,102 @@ Branch `final/s6-finish`.
 
 ---
 
+## Trace table
+
+Every item the four completion surveys (dynamic workflow `wf_24268dd5-b01`, synthesized into `docs/superpowers/specs/2026-09-19-the-finish.md` §1, §3.7 and §4) marked *missing*, *partial* or *broken*, mapped to the task or ruling that closes it; every *owner-only* item, mapped to its owner step. This is the table Task 74 walks against the tree, Task 76a re-walks after the final fix wave, and Definition of Done #14/§5 item 14 requires to have no unmapped row.
+
+### §3.13/3.14/3.15 — whole clauses the survey found unbuilt
+
+| # | Finding | Status | Maps to |
+|---|---|---|---|
+| 1 | §3.13 risk depth ~15% built: no long window, factor model, liquidity, options marks, GARCH wiring or Cornish–Fisher | missing | Stages 2A/2B, Tasks 21–33B |
+| 2 | §3.14 self-validation 0% built: no live VaR scorer, session pairing, traffic-light zone or shadow-vs-backtest record | missing | Stage 4 validation lane, Tasks 55–63 |
+| 3 | §3.15 operations ~10% built: no CI image publish, no journal backup, deploy fallback unsafe, no watchdog, no clock on the wire | missing | Stage 1, Tasks 8–20 |
+
+### Already-merged phases (W1–A3) the survey found partial (spec §1.1)
+
+| # | Finding | Status | Maps to |
+|---|---|---|---|
+| 4 | The journal's `alerts` table has no writer; only a retired `File` sink exists | partial | Tasks 34, 35; ruling 3 |
+| 5 | A hand halt does not survive a restart on the live host | partial | Task 36 |
+| 6 | `/api/ops` does not state the desk's trading state in words, as §8 item 5 requires | partial | Task 37; ruling 14 |
+| 7 | TCA aggregates per fill, not per order, though §3.9 asks for per order | partial | Task 40; ruling 15 |
+| 8 | The navigation does not follow §4's order | partial | Task 39; ruling 18 |
+| 9 | The desk does not state its market clock on the wire, so a host script cannot read it without a credential | missing | Task 13a; ruling 20 |
+| 10 | The public demo does not show every arc §0 promises (research, signal, size, rules, gate, order, venue, fill, validation), and any synthetic arc it does show is unlabelled | partial | Tasks 38, 45, 46, 58; rulings 8, 9 |
+
+### False or stale claims in the repository (spec §1.2)
+
+| # | Finding | Status | Maps to |
+|---|---|---|---|
+| 11 | The site says GARCH is "implemented, not wired in" in twenty-odd places | broken | Task 28 |
+| 12 | Options say "DISABLED — no options-chain source" | broken | Task 52 |
+| 13 | The live track record is called "phase A5" | broken | Task 62 |
+| 14 | The research suite is documented at 355 tests; it collects 388 | broken | Task 5 |
+| 15 | Line counts are a year stale (`desk/` claimed 2,000 vs. ~9,650 measured; `test/` claimed 13,700 vs. ~24,500 measured) | broken | Task 74; Task 72 |
+| 16 | A quoted count is not checked by CI, so drift like #14 survives silently | broken | Task 5; ruling 22 |
+
+### Deploy and operations defects (spec §1.3)
+
+| # | Finding | Status | Maps to |
+|---|---|---|---|
+| 17 | `deploy.sh`'s on-droplet `--build` fallback omits the live profile, so `ohcamel-research` is built once and goes stale on every later deploy | broken | Task 4; ruling 12 |
+| 18 | No pre-deploy backup is taken and the book is not validated before the engine restarts | missing | Tasks 12, 13, 16 |
+| 19 | The smoke suite does not check the desk on both hosts, paper-account reachability, or that mutating routes refuse a headerless request | missing | Task 15 |
+| 20 | No nightly journal backup exists, is verified when written, is rotated, or restores | missing | Tasks 12, 14; ruling 11 |
+
+### Hand-derivation and identity gaps (spec §1.4)
+
+| # | Finding | Status | Maps to |
+|---|---|---|---|
+| 21 | A5's coverage statistics are not all hand-derived (only Kupiec is today) | missing | Tasks 57, 59 |
+| 22 | The host watchdog's five thresholds have no hand-derived case | missing | Task 18 |
+| 23 | The per-tick cost has not been re-measured against the finished graph | partial | Task 31 |
+| 24 | A6's backup-retention arithmetic (14 dailies, 8 Sundays, 5 pre-deploys) has no hand-derived case | missing | Task 12 (`desk/backup_retention.ml`) |
+
+### Stated shortfalls, recorded rather than closed (spec §4, "two shortfalls")
+
+| # | Finding | Status | Maps to |
+|---|---|---|---|
+| 25 | The live-host smoke suite deliberately never POSTs `/api/desk/kill`, leaving that route covered only by hermetic tests | departure | Ruling 13; Task 71 (§8 departure) |
+| 26 | The research service's whole trading-day test is `weekday() < 5` — the "stubs survey" finding — so a weekday holiday polls all evening for nothing | departure (fixed where possible) | Task 68a; Task 71 (§8 departure for the fallback that remains) |
+
+### Structural findings about the plans themselves
+
+| # | Finding | Status | Maps to |
+|---|---|---|---|
+| 27 | The A4 plan (`2026-09-19-desk-a4-depth.md`) was never merged and duplicates work this plan must also do | broken | This task (Task 1): `docs/superpowers/plans/README.md`; Task 7 tags `archive/a4-plan-v2` |
+| 28 | A5 and A6 existed only as spec sections and ledger rows, with no plan document for either | missing | Folded into this plan's Stages 1, 4 and 5; ruling 1 |
+| 29 | "The operations survey's list" (Stage 1's own closing review citation) | partial | Task 20 (Stage 1 close) |
+
+### Owner-only items (spec §1.5), mapped to their owner step
+
+| # | Item | Maps to |
+|---|---|---|
+| 30 | Deploy the overdue W2/A3 work, and each later stage | O2, O18a, O18b, O19, O20, O21, O23 |
+| 31 | Merge SPY/TLT positions, the `desk` block and the `signals` block into `book.sexp` by hand | O3 |
+| 32 | Arm the live desk (`trading enabled`, alert sinks, kill switch) | O4 |
+| 33 | Fill one paper order on the live host (A2's acceptance) | O5 |
+| 34 | Confirm A3's live half (an advisory signal shown with its rule on live `/research`) | O6 |
+| 35 | Rotate the Alpaca paper key exposed in a tool output | O7 |
+| 36 | Pin `fdq`'s feature-branch commit so it stays reachable | O8 |
+| 37 | Archive the OhCamel-Alpha repository | O9 |
+| 38 | Make the GHCR images reachable (public, or a read token) | O10 |
+| 39 | Set up failure notifications for CI | O11 |
+| 40 | Root host setup: backup timer, watch timer, docker log rotation, unattended upgrades | O12 |
+| 41 | The first deploy by pull, once Stage 1 is live | O13 |
+| 42 | The restore drill (A6's acceptance) | O14 |
+| 43 | Choose the off-box backup copy (free pull vs. paid DigitalOcean backups — Q10 forbids the spending change by default) | O15 |
+| 44 | Host alerts (disk, memory, CPU) | O16 |
+| 45 | Measure droplet capacity once | O17 |
+| 46 | R8 enforcement promotion, the buy-and-hold veto, and any promotion to `(sizing live)` | O22 |
+| 47 | What waits on time only — the 60- and 250-session verdicts | O24 |
+| 48 | Optional hardening (SSH passphrase, CAA record, fail2ban/allowlist choice, droplet resize) | O25 |
+
+No row above is unmapped. A row this table cannot yet place (a finding Task 74's audit surfaces that predates this table) becomes a new row pointing at the fix task Task 75 opens for it, per Definition of Done #14.
+
+---
+
 ## Owner steps
 
 Everything below is the owner's, because the agent cannot ssh to the droplet, cannot read a credential, cannot edit `book.sexp` and cannot build an image locally. Report each result so `docs/status.md` can record it; nothing here is claimed done on the owner's behalf.

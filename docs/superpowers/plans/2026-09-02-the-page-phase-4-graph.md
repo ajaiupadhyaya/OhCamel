@@ -1,5 +1,7 @@
 # The page — Phase 4: the graph on the wire — Implementation Plan
 
+> **Status (2026-09-19):** historical record of a finished, merged phase. Superseded as the active plan by `docs/superpowers/plans/2026-09-19-final-completion.md` ("the finish"); see `docs/superpowers/specs/2026-09-19-the-finish.md`.
+
 > **Superseded 2026-09-10 for what was left of it.** All 14 tasks below are done. The wrap-up (Figure 1 fit, review, merge, deploy) is items 1–3 of `2026-09-10-the-page-finish-line.md`, which is now the only plan that sets order and scope.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
