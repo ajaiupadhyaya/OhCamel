@@ -25,7 +25,9 @@
    (42 s in all), after which an order nobody found has failed; a lookup that
    errors is tried again every minute -- and never by sending the order again.
    A failed order the venue later reports it still works is cancelled by the
-   venue's id ([cancel_failed]): a cancel is not a resend.
+   venue's id ([cancel_failed]), and so is a pending_cancel order a
+   reconciliation finds still resting ([resend_cancel]): a cancel is not a
+   resend.
    ONE miss is not the answer: a request can still be arriving, so a lookup
    that finds nothing while a delay remains only schedules the next one.
 
@@ -97,6 +99,9 @@ type t = {
   (* The venue ids of failed orders a DELETE has been sent for, and not
      refused ([cancel_failed]). *)
   failed_cancels : String.Hash_set.t;
+  (* The venue ids of pending_cancel orders a reconciliation has sent the
+     DELETE again for, and not refused ([resend_cancel]). *)
+  resent_cancels : String.Hash_set.t;
 }
 
 let create ~graph ~journal ~spec ~read ~trade ~halt ~accepts_tickets ~adv ~now ~rng
@@ -129,6 +134,7 @@ let create ~graph ~journal ~spec ~read ~trade ~halt ~accepts_tickets ~adv ~now ~
     session = None;
     live_loops = String.Hash_set.create ();
     failed_cancels = String.Hash_set.create ();
+    resent_cancels = String.Hash_set.create ();
   }
 
 let halt t = t.halt
@@ -792,23 +798,6 @@ let on_update t (u : Venue.Update.t) : unit Deferred.t =
               cancel_failed t trade ~client:raw u.Venue.Update.order
           | Ok _ | Error _ -> Deferred.unit))
 
-(* THE STREAM CAN STOP, and a desk that only hears about fills on it must not
-   go on believing its orders are being watched. The trade_updates socket ends
-   its pipe when the venue closes it -- an Unauthorized reply ends it at once
-   -- and nothing here reconnects. So the end of the pipe is said aloud rather
-   than returned in silence: the orders still open at that moment will be
-   settled by the next restart's reconciliation, not by this process. *)
-let run t : unit Deferred.t =
-  match t.trade with
-  | Error _ -> Deferred.unit
-  | Ok trade ->
-      let%map () = Pipe.iter trade.Venue.Trade.updates ~f:(on_update t) in
-      t.on_event
-        (sprintf
-           "desk      the venue's stream of order updates has ended; %d order(s) are \
-            open and nothing on this connection will report them again"
-           (Map.length t.open_))
-
 let jnum x = if Float.is_finite x then `Float x else `Null
 let jstr_opt = Option.value_map ~default:`Null ~f:(fun s -> `String s)
 
@@ -894,9 +883,63 @@ let halt_by_hand t ~why =
   t.on_event ("desk      HALTED by hand: " ^ why);
   t.on_change ()
 
+(* The halt, then the cancels -- the cancels whether or not anything after the
+   halt raised, as the kill route sends them, because the halt is set and
+   orders left open under it could still fill. A raise still reaches the
+   caller, once the cancels have started. *)
 let kill t ~why : unit Deferred.t =
-  halt_by_hand t ~why;
-  cancel_all t
+  let raised = Result.try_with (fun () -> halt_by_hand t ~why) in
+  let cancels = cancel_all t in
+  Result.ok_exn raised;
+  cancels
+
+(* The engine's stop (§3.8): the venue's order updates have ended for good,
+   so no fill would be heard. The switch first, so nothing new goes out; then
+   every open order is asked to be cancelled, as a trip and a kill ask. The
+   cancels go on behind, one at a time, under a monitor of their own, so a
+   raise among them reaches the log and not the process -- and every answer
+   the venue gives them after the DELETE would travel on the stream that
+   ended, so none can be confirmed here: the orders stay pending_cancel until
+   a restart reconciles, and [reconcile] sends again any DELETE that never
+   arrived. Only then the line, and the page told. *)
+let stop t ~why =
+  Halt.stop t.halt ~why ~at:(t.now ());
+  don't_wait_for
+    (match%map Monitor.try_with ~extract_exn:true ~rest:`Log (fun () -> cancel_all t) with
+    | Ok () ->
+        t.on_event
+          "desk      the engine's stop has asked the venue to cancel every open order it \
+           has an id for"
+    | Error exn ->
+        t.on_event
+          (sprintf "desk      the engine's stop's cancels raised: %s" (Exn.to_string exn)));
+  t.on_event ("desk      STOPPED by the engine: " ^ why);
+  t.on_change ()
+
+(* THE STREAM CAN STOP, and a desk that only hears about fills on it must not
+   go on believing its orders are being watched. The trade_updates socket ends
+   its pipe when the venue closes it -- an Unauthorized reply ends it at once
+   -- and nothing here reconnects. So the end of the pipe is said aloud rather
+   than returned in silence, and the engine stops the desk ([stop]): no order
+   may go out whose fill nothing would apply. That is the switch's own state,
+   not a halt by hand -- a reset cannot lift it, because the stream has not
+   come back -- and only a restart, which reconnects and reconciles, clears
+   it. A manager with no trading half has no stream to lose, and returns at
+   once without stopping anything. *)
+let run t : unit Deferred.t =
+  match t.trade with
+  | Error _ -> Deferred.unit
+  | Ok trade ->
+      let%map () = Pipe.iter trade.Venue.Trade.updates ~f:(on_update t) in
+      t.on_event
+        (sprintf
+           "desk      the venue's stream of order updates has ended; %d order(s) are \
+            open and nothing on this connection will report them again"
+           (Map.length t.open_));
+      stop t
+        ~why:
+          "the venue's order updates stopped, so no fill would be heard; restart the \
+           engine to reconnect and reconcile"
 
 (* The other half of §3.8. The switch already refuses new orders through
    [Halt.reason]; a trip must also cancel the open ones. The handler runs
@@ -910,6 +953,48 @@ let watch_alerts t (alerts : Ohcamel.Alerts.t) =
                event.Ohcamel.Alerts.Event.limit_name);
           t.on_change ();
           don't_wait_for (cancel_all t)))
+
+(* An order this desk asked the venue to cancel -- journaled pending_cancel --
+   that a reconciliation finds still resting. The DELETE may never have
+   arrived: [cancel] journals the request before it sends it, and the engine's
+   stop sends its cancels when the stream has ended, which it does only when
+   the paper host refuses the key -- so the same key's DELETEs were likely
+   refused too, and the retries died with the process. Nothing else would send
+   it again: a reconciliation's [Venue_accepted] changes nothing in
+   pending_cancel. So it is sent again, by the venue's own id, in any switch
+   state, because the desk already decided to cancel it; a partial fill the
+   reconciliation recovered first moved it to partially_filled, so the cancel
+   is asked for again, journaled as one, as [retry_cancel] does.
+
+   One DELETE per venue id, as [cancel_failed] sends: a live start reconciles
+   twice, and a report written before the venue acts on a DELETE still says
+   the order rests. A DELETE whose answer was not a confirmation is sent again
+   the next time a reconciliation finds the order resting, and not before. *)
+let resend_cancel t (trade : Venue.Trade.t) (o : Order.t) (v : Venue.Venue_order.t) :
+    unit Deferred.t =
+  let id = v.Venue.Venue_order.id in
+  if Hash_set.mem t.resent_cancels id then Deferred.unit
+  else (
+    Hash_set.add t.resent_cancels id;
+    let o =
+      if Order.State.equal o.Order.state Order.State.Pending_cancel then o
+      else record t o Order.Event.Cancel_requested
+    in
+    t.on_event
+      (sprintf
+         "desk      reconcile: %s is pending_cancel on the desk and %s at the venue \
+          under id %s; the DELETE may never have arrived, so it is sent again"
+         (key o) v.Venue.Venue_order.status id);
+    match%map trade.Venue.Trade.cancel id with
+    | Ok () -> ()
+    | Error e ->
+        Hash_set.remove t.resent_cancels id;
+        t.on_event
+          (sprintf
+             "desk      reconcile: the venue's answer to cancelling %s (%s) again was \
+              not a confirmation (%s); it may still be resting there, and is cancelled \
+              again the next time a reconciliation finds it resting"
+             (key o) id (Error.to_string_hum e)))
 
 (* The failed orders the venue still works, found in the venue's own list of
    its open orders: the journal's open set cannot name them, failed being
@@ -942,8 +1027,9 @@ let reconcile_failed t (trade : Venue.Trade.t) : unit Deferred.t =
 
 (* On start, and after every reconnection of the venue's update stream: the
    journal's open orders, each looked up by client order id and told what the
-   venue knows (Reconcile.events_for), and then the venue's open orders, for
-   any this desk declared failed ([reconcile_failed]). Then the account is
+   venue knows (Reconcile.events_for), a pending_cancel one the venue reports
+   resting sent its DELETE again ([resend_cancel]), and then the venue's open
+   orders, for any this desk declared failed ([reconcile_failed]). Then the account is
    re-read, because fills nobody heard about moved it. *)
 let reconcile t : unit Deferred.t =
   enqueue t (fun () ->
@@ -959,7 +1045,12 @@ let reconcile t : unit Deferred.t =
           let%bind () =
             Deferred.List.iter ~how:`Sequential rows ~f:(fun r ->
                 let o = r.Journal.Order_row.order in
-                let%map looked_up =
+                (* The journal's word, before the venue's: this desk asked for
+                   the cancel. *)
+                let asked_to_cancel =
+                  Order.State.equal o.Order.state Order.State.Pending_cancel
+                in
+                let%bind looked_up =
                   trade.Venue.Trade.find_order
                     o.Order.request.Order.Request.client_order_id
                 in
@@ -998,7 +1089,11 @@ let reconcile t : unit Deferred.t =
                 if Order.State.equal o.Order.state Order.State.Submit_unknown then
                   don't_wait_for
                     (resolve t o.Order.request.Order.Request.client_order_id
-                       ~delays:t.resolve_delays))
+                       ~delays:t.resolve_delays);
+                match looked_up with
+                | Ok (Some v) when asked_to_cancel && Venue.Venue_order.rests v ->
+                    resend_cancel t trade o v
+                | Ok _ | Error _ -> Deferred.unit)
           in
           let%map () = reconcile_failed t trade in
           if not (List.is_empty rows) then t.after_fill ();

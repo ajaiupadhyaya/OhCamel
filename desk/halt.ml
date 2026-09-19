@@ -14,7 +14,10 @@
    reconnects and reconciles -- so a reset while stopped changes nothing at
    all, not the hand's halt or the limit's trip beneath it, and the reset
    route answers 409 before it would be called. It is not a halt by hand and
-   never says it is. Only a restart, which builds a new switch, clears it.
+   never says it is. Only a restart, which builds a new switch, clears it;
+   halt.mli keeps [t] abstract so nothing else can. Oms.stop sets it and asks
+   the venue to cancel the open orders, as a trip and a kill do; this module
+   is only the switch, and calls nothing back.
 
    A HAND OUTRANKS A LIMIT. A halt by hand is reported ahead of a trip, and
    only a deliberate reset lifts it: whoever pressed it knew something the

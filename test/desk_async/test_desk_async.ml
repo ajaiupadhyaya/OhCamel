@@ -109,10 +109,12 @@ let managers_built = ref 0
    uses the venue directly. [now] is the wall clock unless a case gives the
    manager its own, and the book is the account's unless a case says when it
    stops being so. [on_change] is the page's nudge, a no-op unless a case
-   makes it raise. Its lookups keep production's schedule -- 2, 10 and 30 s --
+   makes it raise; [on_event] runs after each line is kept in [f.events], for
+   a case whose log must raise. Its lookups keep production's schedule -- 2, 10 and 30 s --
    on the fixture's clock, so they fire only when a case advances it. *)
 let manager ?trade ?read ?(now = Time_ns.now) ?(book_is_current = fun () -> true)
-    ?(halt = D.Halt.create D.Halt.Source.none) ?(on_change = ignore) f =
+    ?(halt = D.Halt.create D.Halt.Source.none) ?(on_change = ignore) ?(on_event = ignore)
+    f =
   let trade =
     match trade with Some t -> t | None -> D.Sim_venue.trade ~auto:false f.venue
   in
@@ -125,7 +127,9 @@ let manager ?trade ?read ?(now = Time_ns.now) ?(book_is_current = fun () -> true
       ~adv:(D.Oms.Adv.Fixed 1_000_000.0) ~now
       ~rng:(Random.State.make [| 7; !managers_built |])
       ~on_change
-      ~on_event:(fun e -> Queue.enqueue f.events e)
+      ~on_event:(fun e ->
+        Queue.enqueue f.events e;
+        on_event e)
       ~after_fill:ignore ~book_is_current
       ~time_source:(Time_source.read_only f.clock)
       ()
@@ -462,9 +466,10 @@ let test_a_halt_refuses_and_cancels () =
 (* A raise after the halt, through the kill route itself. A limit buy of 50
    AAPL at 99 rests; then the page's nudge raises -- once, the first time it
    is called after the order rests, which is inside the kill, just after the
-   halt is set. The person who pressed halt is answered 200 with the switch
-   as it reads and a fixed sentence, never the exception's own words, which
-   go to the log; and the open order is still cancelled. *)
+   halt is set -- and so does the log line that reports it. The person who
+   pressed halt is answered 200 with the switch as it reads and a fixed
+   sentence, never the exception's own words, which go to the log; and the
+   open order is still cancelled. *)
 let test_a_raise_after_the_halt_is_answered_and_the_cancels_still_go () =
   let f = fixture () in
   let armed = ref false in
@@ -473,7 +478,13 @@ let test_a_raise_after_the_halt_is_answered_and_the_cancels_still_go () =
       armed := false;
       failwith "boom at /var/lib/ohcamel/secret")
   in
-  let oms = manager ~on_change f in
+  (* And the log line that reports the raise raises in its turn (fix round 1,
+     M3), after it is kept: the answer must not depend on the log. *)
+  let on_event line =
+    if String.is_substring line ~substring:"kill raised" then
+      failwith "the log is broken too"
+  in
+  let oms = manager ~on_change ~on_event f in
   let%bind _, resting =
     D.Oms.propose oms (ticket ~kind:limit_at_99 aapl D.Order.Side.Buy 50)
   in
@@ -526,6 +537,232 @@ let test_a_raise_after_the_halt_is_answered_and_the_cancels_still_go () =
   let%bind () = pump f in
   Alcotest.(check string)
     "and the open order is still cancelled" "cancelled" (state f resting);
+  Graph.destroy f.graph;
+  return ()
+
+(* [Oms.kill] itself, as the scheduler cases call it (fix round 1, M2): a
+   raise after its halt -- the page's nudge, as above -- still reaches the
+   caller, but only once the cancels have started, so the resting order is
+   cancelled all the same. *)
+let test_a_raise_inside_the_kill_still_sends_the_cancels () =
+  let f = fixture () in
+  let armed = ref false in
+  let on_change () =
+    if !armed then (
+      armed := false;
+      failwith "boom")
+  in
+  let oms = manager ~on_change f in
+  let%bind _, resting =
+    D.Oms.propose oms (ticket ~kind:limit_at_99 aapl D.Order.Side.Buy 50)
+  in
+  let%bind () = pump f in
+  Alcotest.(check string) "resting" "accepted" (state f resting);
+  armed := true;
+  let raised =
+    match D.Oms.kill oms ~why:"testing the switch" with
+    | (_ : unit Deferred.t) -> false
+    | exception _ -> true
+  in
+  Alcotest.(check bool) "the raise reaches the caller" true raised;
+  let%bind () = pump f in
+  Alcotest.(check string)
+    "halted" "halted"
+    (D.Halt.State.name (D.Halt.state (D.Oms.halt oms)));
+  Alcotest.(check string)
+    "and the order cancelled all the same" "cancelled" (state f resting);
+  Graph.destroy f.graph;
+  return ()
+
+(* The venue's own updates, forwarded to a pipe the case closes: closing it
+   is the stream giving up for good, as the paper host's does when it refuses
+   the key, and whatever the venue says after that reaches no one. *)
+let forwarded (sim : D.Venue.Trade.t) =
+  let stream, to_desk = Pipe.create () in
+  don't_wait_for
+    (Pipe.iter_without_pushback sim.D.Venue.Trade.updates ~f:(fun u ->
+         Pipe.write_without_pushback_if_open to_desk u));
+  (stream, to_desk)
+
+let switch_of oms = D.Halt.State.name (D.Halt.state (D.Oms.halt oms))
+
+let resting_at f o =
+  (Option.value_exn
+     (D.Sim_venue.find_now f.venue o.D.Order.request.D.Order.Request.client_order_id))
+    .D.Venue.Venue_order.status
+
+(* The engine's stop (fix round 1). A limit buy of 50 AAPL at 99 rests, as
+   sim-1; then the stream ends. The engine stops the desk and asks the venue
+   to cancel the order, which it does -- but its word that it did travels on
+   the stream that ended, so the desk still reads pending_cancel, and no
+   confirmation can move it until a restart reconciles. A reset changes
+   nothing, and a new order is refused by the switch alone. *)
+let test_the_engine's_stop_cancels_and_a_reset_leaves_it_stopped () =
+  let f = fixture () in
+  let sim = D.Sim_venue.trade ~auto:false f.venue in
+  let stream, to_desk = forwarded sim in
+  let deletes = ref [] in
+  let oms =
+    manager
+      ~trade:
+        {
+          sim with
+          D.Venue.Trade.cancel =
+            (fun id ->
+              deletes := id :: !deletes;
+              sim.D.Venue.Trade.cancel id);
+          updates = stream;
+        }
+      f
+  in
+  let%bind _, resting =
+    D.Oms.propose oms (ticket ~kind:limit_at_99 aapl D.Order.Side.Buy 50)
+  in
+  let%bind () = pump f in
+  Alcotest.(check string) "resting" "accepted" (state f resting);
+  Pipe.close to_desk;
+  let%bind () = settle () in
+  Alcotest.(check string) "the switch reads stopped" "stopped" (switch_of oms);
+  Alcotest.(check (list string)) "one DELETE, for sim-1" [ "sim-1" ] !deletes;
+  Alcotest.(check string) "the venue cancelled it" "canceled" (resting_at f resting);
+  Alcotest.(check string)
+    "but the desk cannot hear that: pending_cancel" "pending_cancel" (state f resting);
+  let said words =
+    Queue.exists f.events ~f:(fun line -> String.is_substring line ~substring:words)
+  in
+  Alcotest.(check (pair bool bool))
+    "the stop and its cancels, said" (true, true)
+    ( said "STOPPED by the engine",
+      said "the engine's stop has asked the venue to cancel every open order" );
+  let%bind () = pump f in
+  Alcotest.(check string)
+    "the venue's report goes nowhere" "pending_cancel" (state f resting);
+  D.Halt.reset (D.Oms.halt oms);
+  Alcotest.(check string) "a reset leaves it stopped" "stopped" (switch_of oms);
+  let%bind p, refused = D.Oms.propose oms (ticket aapl D.Order.Side.Buy 1) in
+  Alcotest.(check string) "a new order: refused" "rejected_pre_trade" (state f refused);
+  Alcotest.(check (list string)) "by the switch alone" [ "kill_switch" ] (rules p);
+  Graph.destroy f.graph;
+  return ()
+
+(* The engine's stop when the venue refuses the DELETE too, as it will when
+   the stream ended because the paper host refused the key. The cancel is
+   sent again under the stop on the lookups' schedule -- 2, 10 and 30 s --
+   and after the last the order is left pending_cancel, said aloud. *)
+let test_under_the_engine's_stop_a_refused_cancel_is_sent_again () =
+  let f = fixture () in
+  let sim = D.Sim_venue.trade ~auto:false f.venue in
+  let stream, to_desk = forwarded sim in
+  let deletes = ref 0 in
+  let oms =
+    manager
+      ~trade:
+        {
+          sim with
+          D.Venue.Trade.cancel =
+            (fun _ ->
+              incr deletes;
+              return (Or_error.error_string "the paper host refused the key"));
+          updates = stream;
+        }
+      f
+  in
+  let%bind _, resting =
+    D.Oms.propose oms (ticket ~kind:limit_at_99 aapl D.Order.Side.Buy 50)
+  in
+  let%bind () = pump f in
+  Pipe.close to_desk;
+  let%bind () = settle () in
+  Alcotest.(check (pair string int))
+    "stopped, one DELETE" ("stopped", 1)
+    (switch_of oms, !deletes);
+  let at s =
+    let%bind () =
+      Time_source.advance_by_alarms ~wait_for:settle f.clock
+        ~to_:(Time_ns.add t0 (Time_ns.Span.of_sec s))
+    in
+    settle ()
+  in
+  let%bind () = at 2.0 in
+  Alcotest.(check int) "at 2 s, sent again" 2 !deletes;
+  let%bind () = at 12.0 in
+  Alcotest.(check int) "at 12 s" 3 !deletes;
+  let%bind () = at 42.0 in
+  Alcotest.(check int) "at 42 s, the last" 4 !deletes;
+  Alcotest.(check bool)
+    "and said so" true
+    (Queue.exists f.events ~f:(fun line ->
+         String.is_substring line ~substring:"no retry is left"));
+  Alcotest.(check (pair string string))
+    "still pending_cancel, still resting at the venue, still stopped"
+    ("pending_cancel", "new")
+    (state f resting, resting_at f resting);
+  Alcotest.(check string) "stopped" "stopped" (switch_of oms);
+  Graph.destroy f.graph;
+  return ()
+
+(* The restart after that stop (fix round 1). The journal says pending_cancel
+   and the venue still has the order resting: no DELETE ever reached it. The
+   restart's reconciliation sends it again by the venue's id. The first
+   answer is not a confirmation, so the next reconciliation that finds it
+   resting sends it again; that one the venue takes, though its reports
+   still say new until it acts, so a third reconciliation sends nothing --
+   one DELETE per venue id. When the venue acts, the restart's stream
+   reports the order cancelled. *)
+let test_a_restart_sends_again_a_cancel_that_never_arrived () =
+  let f = fixture () in
+  let sim = D.Sim_venue.trade ~auto:false f.venue in
+  let stream, to_desk = forwarded sim in
+  let refused = Or_error.error_string "the paper host refused the key" in
+  let stopped =
+    manager
+      ~trade:
+        { sim with D.Venue.Trade.cancel = (fun _ -> return refused); updates = stream }
+      f
+  in
+  let%bind _, resting =
+    D.Oms.propose stopped (ticket ~kind:limit_at_99 aapl D.Order.Side.Buy 50)
+  in
+  let%bind () = pump f in
+  Pipe.close to_desk;
+  let%bind () = settle () in
+  Alcotest.(check (pair string string))
+    "stopped; pending_cancel on the desk, new at the venue" ("pending_cancel", "new")
+    (state f resting, resting_at f resting);
+  (* The restart, with the key fixed. *)
+  let venue = D.Sim_venue.trade ~auto:false f.venue in
+  let deletes = ref [] and answers = ref [ refused; Ok () ] in
+  let restarted =
+    manager
+      ~trade:
+        {
+          venue with
+          D.Venue.Trade.cancel =
+            (fun id ->
+              deletes := id :: !deletes;
+              match !answers with
+              | answer :: rest ->
+                  answers := rest;
+                  return answer
+              | [] -> return (Ok ()));
+        }
+      f
+  in
+  let%bind () = D.Oms.reconcile restarted in
+  let%bind () = settle () in
+  Alcotest.(check (list string)) "the restart sends it again" [ "sim-1" ] !deletes;
+  let%bind () = D.Oms.reconcile restarted in
+  let%bind () = settle () in
+  Alcotest.(check (list string))
+    "not a confirmation, so the next finding sends it again" [ "sim-1"; "sim-1" ] !deletes;
+  let%bind () = D.Oms.reconcile restarted in
+  let%bind () = settle () in
+  Alcotest.(check int) "confirmed once: nothing more" 2 (List.length !deletes);
+  Alcotest.(check string)
+    "still pending_cancel until the venue acts" "pending_cancel" (state f resting);
+  let%bind (_ : unit Or_error.t) = venue.D.Venue.Trade.cancel "sim-1" in
+  let%bind () = pump f in
+  Alcotest.(check string) "and then cancelled" "cancelled" (state f resting);
   Graph.destroy f.graph;
   return ()
 
@@ -583,8 +820,9 @@ let test_a_limit's_trip_cancels_the_open_orders () =
    does -- once at start and once when the update stream connects -- and the
    second starts no second schedule for an order already on one. Nothing was
    sent twice. The three
-   that never hear back get update pipes of their own that are already
-   closed, so none can take the venue's updates from the restart. *)
+   that never hear back get update pipes of their own that nothing writes to
+   and nothing closes, so none can take the venue's updates from the restart
+   -- and none stops its desk, as a stream that ended would (fix round 1). *)
 let test_a_restart_reconciles () =
   let f = fixture () in
   let sim = D.Sim_venue.trade ~auto:false f.venue in
@@ -595,15 +833,17 @@ let test_a_restart_reconciles () =
         (fun r ->
           don't_wait_for (Deferred.ignore_m (sim.D.Venue.Trade.submit r));
           Deferred.never ());
-      updates = Pipe.empty ();
     }
   in
   let never_sent =
     { answer_lost with D.Venue.Trade.submit = (fun _ -> Deferred.never ()) }
   in
-  let first = manager ~trade:answer_lost f
-  and second = manager ~trade:never_sent f
-  and third = manager ~trade:answer_lost f in
+  let quiet (trade : D.Venue.Trade.t) =
+    { trade with D.Venue.Trade.updates = fst (Pipe.create ()) }
+  in
+  let first = manager ~trade:(quiet answer_lost) f
+  and second = manager ~trade:(quiet never_sent) f
+  and third = manager ~trade:(quiet answer_lost) f in
   don't_wait_for
     (Deferred.ignore_m (D.Oms.propose first (ticket aapl D.Order.Side.Buy 10)));
   don't_wait_for
@@ -939,6 +1179,14 @@ let suites =
           test_a_halt_refuses_and_cancels;
         case "a raise after the halt is answered, and the cancels still go"
           test_a_raise_after_the_halt_is_answered_and_the_cancels_still_go;
+        case "a raise inside the kill still sends the cancels"
+          test_a_raise_inside_the_kill_still_sends_the_cancels;
+        case "the engine's stop cancels, and a reset leaves it stopped"
+          test_the_engine's_stop_cancels_and_a_reset_leaves_it_stopped;
+        case "under the engine's stop, a refused cancel is sent again"
+          test_under_the_engine's_stop_a_refused_cancel_is_sent_again;
+        case "a restart sends again a cancel that never arrived"
+          test_a_restart_sends_again_a_cancel_that_never_arrived;
         case "a limit's trip cancels the open orders"
           test_a_limit's_trip_cancels_the_open_orders;
         case "a restart reconciles against the venue" test_a_restart_reconciles;

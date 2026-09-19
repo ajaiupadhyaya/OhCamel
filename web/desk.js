@@ -480,38 +480,53 @@
     return "cancelling " + n + (n === 1 ? " open order" : " open orders");
   }
 
+  // The engine's stop asks the venue to cancel every open order, as a trip
+  // and a hand do -- but the venue's answers travel on the stream that ended,
+  // so while stopped the count cannot fall. The line never says "cancelled"
+  // or "cancelling" then: the cancels were asked for, and only a restart's
+  // reconciliation can confirm them.
+  function stoppedOrdersWords(n) {
+    if (!known(n) || n <= 0) return "no open orders";
+    return "cancels asked for " + n + (n === 1 ? " open order" : " open orders")
+      + " — none can be confirmed until a restart reconciles";
+  }
+
+  var switchStates = { clear: true, tripped: true, halted: true, stopped: true };
+
   function renderSwitch(b) {
     var box = document.getElementById("deskswitch"), sw = b.switch, F = window.OhCamelFormat;
     if (!box) return;
     if (!sw) { box.hidden = true; box.textContent = ""; return; }
     box.textContent = "";
-    box.className = "desk-switch " + sw.state;
-    if (sw.state === "clear") switchError = null;
+    var state = switchStates.hasOwnProperty(sw.state) ? sw.state : "unknown";
+    box.className = "desk-switch " + state;
+    if (state === "clear") switchError = null;
     var n = b.open_orders;
-    // The engine's stop cancels nothing: it refuses new orders because no
-    // fill would be heard, and says what is still open.
-    var line = sw.state === "clear" ? "kill switch clear: orders may be sent"
-      : sw.state === "tripped" ? "kill switch TRIPPED by " + sw.limit + ": new orders refused, " + openOrdersWords(n) + ", positions untouched"
-      : sw.state === "stopped" ? "desk STOPPED by the engine (" + sw.why + "): new orders refused"
-        + (known(n) && n > 0 ? ", " + n + (n === 1 ? " open order" : " open orders") + " not cancelled" : "")
-        + ", positions untouched"
-      : "desk HALTED by hand (" + sw.why + "): new orders refused, " + openOrdersWords(n) + ", positions untouched";
+    // Each state the server names, by name; one this page does not know is
+    // drawn as the server named it and claims nothing about orders -- never
+    // as a halt by hand.
+    var line = state === "clear" ? "kill switch clear: orders may be sent"
+      : state === "tripped" ? "kill switch TRIPPED by " + sw.limit + ": new orders refused, " + openOrdersWords(n) + ", positions untouched"
+      : state === "halted" ? "desk HALTED by hand (" + sw.why + "): new orders refused, " + openOrdersWords(n) + ", positions untouched"
+      : state === "stopped" ? "desk STOPPED by the engine (" + sw.why + "): new orders refused, positions untouched, " + stoppedOrdersWords(n)
+      : "the kill switch reads \u201c" + String(sw.state) + "\u201d, a state this page does not know how to describe";
     box.appendChild(F.el("span", "desk-switch-line", line));
-    if (sw.state === "stopped")
+    if (state === "stopped")
       box.appendChild(F.el("span", "desk-switch-note",
         "· a reset cannot lift this, because what stopped has not recovered — only a restart of the engine clears it, reconnecting to the venue and reconciling"));
-    if (sw.state === "tripped" && known(sw.auto_reset_s))
+    if (state === "tripped" && known(sw.auto_reset_s))
       box.appendChild(F.el("span", "desk-switch-note", known(sw.resets_in_s)
         ? "· resets itself in " + Math.ceil(sw.resets_in_s) + " s — the demo only"
         : "· resets itself " + sw.auto_reset_s + " s after " + sw.limit + " clears — the demo only"));
     if (switchError) box.appendChild(F.el("span", "desk-switch-error", switchError));
     // The buttons only where tickets are accepted: the demo host answers 405
     // to both routes, and a button that can only be refused is not offered --
-    // which is why a stopped switch has none: a reset would be refused (409).
-    if (b.tickets === "accepted" && sw.state !== "stopped") {
+    // which is why a stopped switch has none, a reset being refused (409),
+    // and a state this page does not know has none either.
+    if (b.tickets === "accepted" && (state === "clear" || state === "tripped" || state === "halted")) {
       var btn = document.createElement("button");
       btn.type = "button";
-      if (sw.state === "clear") {
+      if (state === "clear") {
         btn.textContent = "halt the desk";
         btn.onclick = function () {
           var why = window.prompt("Why halt the desk? Every open order will be cancelled; positions stay.");

@@ -98,7 +98,8 @@ let trade ~(credentials : Alpaca_paper.Credentials.t)
     | Ok (status, body) -> unexpected ~what status body
   in
   let updates, writer = Pipe.create () in
-  (* Closed when the stream gives up for good, so Oms.run returns and the desk halts. *)
+  (* Closed when the stream gives up for good, so Oms.run returns and the engine
+     stops the desk. *)
   don't_wait_for
     (let%map () = Trade_updates.run ~credentials ~writer ~on_connected ~on_event in
      Pipe.close writer);

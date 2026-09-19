@@ -366,7 +366,8 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
                        confirm logs its own line; the run's end, or its raise,
                        is logged below. The raise is logged only after the
                        cancels are started, so a log that itself raises cannot
-                       stop them. *)
+                       stop them -- and a raise from that log call is ignored,
+                       so it cannot take the answer away either. *)
                     let raised =
                       try
                         Oms.halt_by_hand oms ~why;
@@ -383,7 +384,8 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
                             "desk      the kill has asked the venue to cancel every open \
                              order it has an id for"
                       | Error exn -> log_exn oms ~route:"kill's cancels" exn);
-                    Option.iter raised ~f:(log_exn oms ~route:"kill");
+                    Option.iter raised ~f:(fun exn ->
+                        try log_exn oms ~route:"kill" exn with _ -> ());
                     respond server
                       (`Assoc
                          [

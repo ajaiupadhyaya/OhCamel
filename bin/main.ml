@@ -1411,26 +1411,11 @@ let run_live ~book_path ~(serve_port : int option) =
       | Ohcamel_desk.Halt.State.Stopped _ ->
           ());
       (* The venue's order updates end only when the stream has given up for
-         good -- the paper host refused the key, and nothing reconnects. After
-         that no fill is heard, so no order may go out whose fill nothing would
-         apply: the engine stops the desk, and the reason says why. That is the
-         switch's own state, not a halt by hand: a reset cannot lift it, because
-         the stream has not come back, and only a restart clears it. A manager
-         with no trading half has no stream to lose, and its [run] returns at
-         once; stopping it would show a desk that cannot trade as one whose
-         updates stopped. *)
-      don't_wait_for
-        (let%map () = Ohcamel_desk.Oms.run oms in
-         match trade with
-         | Error _ -> ()
-         | Ok _ ->
-             let why =
-               "the venue's order updates stopped, so no fill would be heard; restart \
-                the engine to reconnect and reconcile"
-             in
-             Ohcamel_desk.Halt.stop halt ~why ~at:(Time_ns.now ());
-             live_line ("desk      STOPPED by the engine: " ^ why);
-             !notify ());
+         good -- the paper host refused the key, and nothing reconnects. [run]
+         then stops the desk itself (Oms.stop): the switch, the cancels, the
+         line and the page told. A manager with no trading half has no stream
+         to lose, and its [run] returns at once without stopping anything. *)
+      don't_wait_for (Ohcamel_desk.Oms.run oms);
       don't_wait_for
         (Ohcamel_desk.Oms.refresh_forever oms ~every:(Time_ns.Span.of_min 1.0));
       (match venue with
@@ -1697,13 +1682,8 @@ let run_demo ~port =
      a trip to miss. *)
   Option.iter alerts ~f:(Ohcamel_desk.Oms.watch_alerts oms);
   (* The simulated venue's updates never end while this process runs; if they
-     did, the engine would stop the desk as the live host's does, and say why. *)
-  don't_wait_for
-    (let%map () = Ohcamel_desk.Oms.run oms in
-     let why = "the venue's order updates stopped, so no fill would be heard" in
-     Ohcamel_desk.Halt.stop halt ~why ~at:(Time_ns.now ());
-     printf "  desk      STOPPED by the engine: %s\n%!" why;
-     !notify ());
+     did, [run] would stop the desk as the live host's does, and say why. *)
+  don't_wait_for (Ohcamel_desk.Oms.run oms);
   let%bind () = Ohcamel_desk.Oms.refresh oms ~bars:false in
   don't_wait_for (Ohcamel_desk.Oms.refresh_forever oms ~every:(Time_ns.Span.of_min 1.0));
   (* The one symbol that is never ticked -- the comment above [tickable] says
