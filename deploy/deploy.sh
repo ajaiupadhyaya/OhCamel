@@ -17,55 +17,79 @@
 # ["live"], never built by a plain `up -d`) on a stale image while the smoke
 # suite against the demo host still passes.
 #
-# A live deploy refuses to run on a weekday inside [13:25, 20:10) UTC --
-# because a restart drops the one allowed stream and forces reconciliation --
-# unless --during-market is given. DEPLOY_NOW overrides the clock this guard
-# reads, so deploy/test/deploy_guard_test.sh can exercise it without waiting
-# for the calendar.
+# A live deploy refuses to run on a weekday inside 09:25-16:10 in
+# America/New_York -- because a restart drops the one allowed stream and
+# forces reconciliation -- unless --during-market is given. A fixed UTC band
+# is wrong for this: New York keeps two different UTC offsets across the
+# year, so a band tuned to one of them either leaves the last fifty minutes
+# of every EST session unguarded or over-blocks an hour of EDT mornings.
+# Reading the zone database directly -- instead of hardcoding either offset,
+# or a DST transition date -- is the fix. DEPLOY_NOW overrides the clock this
+# guard reads (see ny_wall_clock below for its format), so
+# deploy/test/deploy_guard_test.sh can exercise it without waiting for the
+# calendar -- including both of 2026's DST transition instants.
 
 set -euo pipefail
 
-# in_market_window UTC_ISO
+# in_market_window ISO_WEEKDAY HHMM
 #
-# Pure: no I/O, no globals read or set, nothing beyond its argument and bash's
-# own arithmetic -- so a test can call it directly, in isolation, for any
-# timestamp it likes. UTC_ISO is "YYYY-MM-DDTHH:MM:SSZ" (what `date -u
-# +%FT%TZ` and this script's own DEPLOY_NOW both produce).
+# Pure: no I/O, no globals read or set, nothing beyond its two arguments and
+# bash's own arithmetic -- so a test can call it directly, in isolation, for
+# any wall-clock reading it likes. ISO_WEEKDAY is date's own %u (1=Monday ..
+# 7=Sunday); HHMM is a 4-digit 24h wall-clock time as %H%M prints it (e.g.
+# "0925", "1610"). Both are meant to already be New York local time -- this
+# function does not know or care what produced them, which is deliberate:
+# all of the DST correctness lives in ny_wall_clock's call into the zone
+# database, not in any arithmetic here.
 #
-# Returns 0 (true) when a live deploy started at that instant should be
-# REFUSED: a weekday, inside [13:25, 20:10) UTC. Returns 1 otherwise.
-#
-# The weekday is Zeller's congruence rather than `date -d`/`date -j`, because
-# those two flags are GNU's and BSD's respectively and this script has to run
-# unmodified on the droplet (GNU) and under a hand-run test on a laptop (BSD
-# macOS) alike. Zeller's congruence over the ISO date's own digits needs
-# neither.
+# Returns 0 (true) when a live deploy at that wall-clock reading should be
+# REFUSED: a weekday, 09:25-16:10 (a 5-minute lead and 10-minute tail around
+# the 09:30-16:00 session). Returns 1 otherwise.
 in_market_window() {
-	local iso="$1"
-	local y m d hh mm
-	y="${iso:0:4}"; m="${iso:5:2}"; d="${iso:8:2}"
-	hh="${iso:11:2}"; mm="${iso:14:2}"
-	y=$((10#$y)); m=$((10#$m)); d=$((10#$d))
-	hh=$((10#$hh)); mm=$((10#$mm))
-
-	# Zeller's congruence (Gregorian): January and February count as months
-	# 13 and 14 of the PREVIOUS year.
-	local zy zm K J h
-	zy=$y; zm=$m
-	if [ "$zm" -lt 3 ]; then
-		zm=$((zm + 12))
-		zy=$((zy - 1))
-	fi
-	K=$((zy % 100))
-	J=$((zy / 100))
-	h=$(( (d + (13 * (zm + 1)) / 5 + K + K / 4 + J / 4 + 5 * J) % 7 ))
-	# h: 0=Saturday, 1=Sunday, 2=Monday, 3=Tuesday, 4=Wednesday, 5=Thursday, 6=Friday.
-	case "$h" in
-	0 | 1) return 1 ;; # weekend: never refused
+	local dow="$1" hhmm="$2"
+	case "$dow" in
+	6 | 7) return 1 ;; # Saturday, Sunday: never refused
 	esac
+	hhmm=$((10#$hhmm))
+	[ "$hhmm" -ge 925 ] && [ "$hhmm" -lt 1610 ]
+}
 
-	local minutes=$((hh * 60 + mm))
-	[ "$minutes" -ge $((13 * 60 + 25)) ] && [ "$minutes" -lt $((20 * 60 + 10)) ]
+# ny_wall_clock [EPOCH]
+#
+# Prints "ISO_WEEKDAY HHMM" (the two arguments in_market_window wants) for
+# EPOCH -- Unix seconds since 1970-01-01 UTC, timezone-neutral by
+# construction -- read as America/New_York wall-clock time. With no argument,
+# prints the current instant. The IANA zone database supplies whatever offset
+# (EST or EDT) was actually in force at that instant, so no transition date
+# is hardcoded here.
+#
+# EPOCH is read two ways because this script has to run unmodified on the
+# droplet (GNU date, which understands `-d @EPOCH`) and under a hand-run test
+# on a laptop (BSD date on macOS, which does not: confirmed by hand on this
+# Mac, `date -d @<epoch>` fails with "illegal option -- d", so the GNU form is
+# tried first and the BSD form, `-r EPOCH`, is the fallback that actually
+# runs here). DEPLOY_NOW carries this same EPOCH format, so a test can pin an
+# exact instant -- including right up against a DST transition -- without
+# depending on which flavour of `date` is running it.
+ny_wall_clock() {
+	if [ $# -eq 0 ]; then
+		TZ=America/New_York date +'%u %H%M'
+	else
+		TZ=America/New_York date -d "@$1" +'%u %H%M' 2>/dev/null ||
+			TZ=America/New_York date -r "$1" +'%u %H%M'
+	fi
+}
+
+# should_refuse_live_deploy DURING_MARKET ISO_WEEKDAY HHMM
+#
+# Pure, like in_market_window: combines the operator's --during-market
+# override (DURING_MARKET is "1" when given, empty/"0" otherwise) with the
+# window check, so main() and the test exercise the exact same decision
+# instead of the test re-implementing it and risking drift.
+should_refuse_live_deploy() {
+	local during="$1" dow="$2" hhmm="$3"
+	[ "$during" = 1 ] && return 1
+	in_market_window "$dow" "$hhmm"
 }
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
@@ -144,13 +168,20 @@ main() {
 	fi
 
 	# ---------------------------------------------------------------------------
-	# The market-hours guard. DEPLOY_NOW overrides the clock this reads, which is
-	# how deploy/test/deploy_guard_test.sh exercises all five hand cases without
-	# waiting for the calendar to cooperate.
+	# The market-hours guard. DEPLOY_NOW (a Unix epoch) overrides the clock this
+	# reads, which is how deploy/test/deploy_guard_test.sh exercises every hand
+	# case -- including both of 2026's DST transition instants -- without waiting
+	# for the calendar to cooperate.
 	if [ ${#PROFILE[@]} -gt 0 ]; then
-		local now_utc="${DEPLOY_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-		if [ "$during_market" != 1 ] && in_market_window "$now_utc"; then
-			echo "deploy: refusing a live deploy at $now_utc UTC -- a weekday in [13:25, 20:10) UTC drops the one allowed stream and forces reconciliation; pass --during-market to override" >&2
+		local wall dow hhmm
+		if [ -n "${DEPLOY_NOW:-}" ]; then
+			wall=$(ny_wall_clock "$DEPLOY_NOW")
+		else
+			wall=$(ny_wall_clock)
+		fi
+		read -r dow hhmm <<<"$wall"
+		if should_refuse_live_deploy "$during_market" "$dow" "$hhmm"; then
+			echo "deploy: refusing a live deploy -- it is $hhmm America/New_York time (ISO weekday $dow), inside the 09:25-16:10 trading window; a restart drops the one allowed stream and forces reconciliation; pass --during-market to override" >&2
 			exit 1
 		fi
 	fi
