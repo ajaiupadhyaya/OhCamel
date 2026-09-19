@@ -32,10 +32,12 @@
    that finds nothing while a delay remains only schedules the next one.
 
    ONE SUBMIT SITE. [submit_journaled] is the only place in this module, and
-   so in the desk, that calls the venue's submit. The venue's submit takes a
-   permit that only desk/wire.ml can make, and that module's one call is
-   used here and nowhere else (test/test_rebalance.ml reads desk/ and bin/
-   for any other mention of it), so a second call does not compile. A ticket
+   so in the desk, that calls the venue's submit. Both adapters build their
+   trading half at a permit only desk/wire.ml can make, so their submit is
+   reached only through that module's one function, and a call written
+   against the field does not compile. That this is the one place that
+   calls the wire module, and the only file that names [submit_journaled],
+   is held by test/test_rebalance.ml, which reads desk/ and bin/. A ticket
    ([propose]) and a live strategy's rebalance ([propose_rebalance]) both
    journal first and then hand each order to it, and it asks, at that
    instant, what time can change since the rules ran -- the switch, the
@@ -1220,26 +1222,53 @@ end
    - THE CALENDAR (Rebalance.calendar_refusal): the signal's as_of, the
      closes and the newest recorded session are one date, and no weekday
      has closed since it unrecorded;
-   - THE RULES, PER ORDER, sells first, each as a market-on-open order
-     priced at the newest recorded close, each counting the rebalance's
-     earlier orders against the open-order cap;
+   - one order per name: a name twice is refused, since which order shrinks
+     and which grows it would depend on which filled first;
+   - THE RULES, PER ORDER, the orders that shrink a position first and those
+     that grow one last (Rebalance.shrinking_first, on the book the gate
+     reads), each as a market-on-open order priced at the newest recorded
+     close, each counting the rebalance's earlier orders against the
+     open-order cap;
    - THE GATE, as a unit: one call with every order's fill and the resting
-     orders -- and one more AS IF ONLY ITS BUYS FILL, because a sell can go
-     unfilled at the auction, or be refused, and leave its buys alone. It
-     passes only if both pass.
+     orders -- and one more AS IF ONLY THE ORDERS THAT GROW A POSITION FILL,
+     because an order that shrinks one can go unfilled at the auction, or be
+     refused, and leave the others alone. For a long-only strategy those are
+     its buys; for a short one, its sells. It passes only if both pass.
    Any failure refuses the whole, naming the order and its rules, or the
    limits. *)
 let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t list) :
     (Checked_rebalance.t, string) Result.t =
   let open Result.Let_syntax in
+  (* The book as the gate reads it: a name it does not hold is flat here, and
+     the universe rule refuses its order below. *)
+  let position symbol =
+    if Graph.knows_symbol t.graph symbol then Qty.to_float (Graph.qty t.graph symbol)
+    else 0.0
+  in
+  let grows (r : Order.Request.t) =
+    Rebalance.grows
+      ~position:(position r.Order.Request.symbol)
+      ~side:r.Order.Request.side ~qty:r.Order.Request.qty
+  in
   let legs =
     List.stable_sort legs ~compare:(fun (a : Rebalance.Leg.t) b ->
-        Rebalance.sells_first
-          (a.Rebalance.Leg.side, a.Rebalance.Leg.symbol)
-          (b.Rebalance.Leg.side, b.Rebalance.Leg.symbol))
+        Rebalance.shrinking_first ~position
+          (a.Rebalance.Leg.side, a.Rebalance.Leg.symbol, a.Rebalance.Leg.qty)
+          (b.Rebalance.Leg.side, b.Rebalance.Leg.symbol, b.Rebalance.Leg.qty))
   in
   let n = List.length legs in
   let%bind () = if n = 0 then Error "the rebalance has no order" else Ok () in
+  let%bind () =
+    match
+      List.find_a_dup legs ~compare:(fun (a : Rebalance.Leg.t) b ->
+          Symbol.compare a.Rebalance.Leg.symbol b.Rebalance.Leg.symbol)
+    with
+    | Some l ->
+        Error
+          (sprintf "the rebalance names %s twice; it trades each name once"
+             (Symbol.to_string l.Rebalance.Leg.symbol))
+    | None -> Ok ()
+  in
   let%bind (_ : float Symbol.Map.t) =
     Result.map_error (strategy_position t ~strategy:source.Rebalance.Source.strategy)
       ~f:(fun why -> "the strategy's fill history is unknown: " ^ why)
@@ -1302,10 +1331,7 @@ let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t li
            sprintf "%s at %.2f" (name_leg ~i ~n r) (Price.to_float p)))
   in
   let indexed = List.mapi priced ~f:(fun i o -> (i, o)) in
-  let buys =
-    List.filter indexed ~f:(fun (_, ((r : Order.Request.t), _)) ->
-        Order.Side.equal r.Order.Request.side Order.Side.Buy)
-  in
+  let growing = List.filter indexed ~f:(fun (_, (r, _)) -> grows r) in
   let gate what orders =
     match gate_orders t (List.map orders ~f:snd) with
     | Error why -> Error why
@@ -1317,12 +1343,15 @@ let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t li
   in
   let%bind whole = gate "as a unit" indexed in
   let%map () =
-    (* With no buy, or nothing but buys, this is the unit's own gate again. *)
-    if List.is_empty buys || List.length buys = n then Ok ()
+    (* With no order that grows a position, or nothing else, this is the
+       unit's own gate again. *)
+    if List.is_empty growing || List.length growing = n then Ok ()
     else
       Result.map
-        (gate "if only its buys fill, as an unfilled or refused sell would leave them"
-           buys) ~f:(fun (_ : Scenarios.t) -> ())
+        (gate
+           "if only the orders that grow a position fill, as an unfilled or refused \
+            order that shrinks one would leave them"
+           growing) ~f:(fun (_ : Scenarios.t) -> ())
   in
   { Checked_rebalance.orders = priced; gate = whole }
 

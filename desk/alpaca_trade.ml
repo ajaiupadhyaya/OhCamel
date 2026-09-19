@@ -29,7 +29,7 @@ let json_of ~what body : Yojson.Safe.t Or_error.t =
 
 let trade ~(credentials : Alpaca_paper.Credentials.t)
     ~(on_connected : unit -> unit Deferred.t) ~(on_event : string -> unit) :
-    _ Venue.Trade.t =
+    Wire.permit Venue.Trade.t =
   let request ?body meth uri =
     Alpaca_paper.request_json ~span ~meth ?body ~credentials uri
   in

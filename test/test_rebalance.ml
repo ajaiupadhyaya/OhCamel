@@ -130,7 +130,8 @@ let limit name scope n =
 let with_oms ?(now = evening) ?(session_date = "2026-09-14")
     ?(closes = [ (aapl, 149.0); (msft, 299.0); (xom, 100.0) ])
     ?(spec = { Desk_spec.default with Desk_spec.trading = Desk_spec.Enabled })
-    ?(book_is_current = true) ~f () =
+    ?(book_is_current = true) ?(held = [ (aapl, 400.0); (msft, 100.0); (xom, -200.0) ]) ~f
+    () =
   let graph =
     Graph.create
       ~starting_cash:(Notional.of_float 1_000_000.0)
@@ -150,9 +151,12 @@ let with_oms ?(now = evening) ?(session_date = "2026-09-14")
   Exn.protect
     ~finally:(fun () -> Graph.destroy graph)
     ~f:(fun () ->
-      List.iter
-        [ (aapl, 150.0, 400.0); (msft, 300.0, 100.0); (xom, 100.0, -200.0) ]
-        ~f:(fun (s, p, q) ->
+      List.iter held ~f:(fun (s, q) ->
+          let p =
+            List.Assoc.find_exn
+              [ (aapl, 150.0); (msft, 300.0); (xom, 100.0) ]
+              s ~equal:Symbol.equal
+          in
           Graph.set_qty graph s (Qty.of_float q);
           Graph.set_returns graph s
             [| -0.02; -0.01; 0.0; 0.01; 0.02; -0.02; -0.01; 0.0; 0.01; 0.02 |];
@@ -472,6 +476,9 @@ let test_the_calendar_ties_the_signal_and_the_close_to_the_newest_session () =
   refused "a close of another day" ~substring:"is 2026-09-17's, not the newest session's"
     (refusal ~closes:[ "2026-09-17" ] ~now:"2026-09-18T23:15:00Z" ~as_of:"2026-09-18"
        (Some "2026-09-18"));
+  refused "a newest session after D_ref: Monday's, read at 10:00 EDT that Monday"
+    ~substring:"the newest recorded session (2026-09-21) is after 2026-09-20"
+    (refusal ~now:"2026-09-21T14:00:00Z" ~as_of:"2026-09-21" (Some "2026-09-21"));
   refused "no session" ~substring:"no session is recorded"
     (refusal ~now:"2026-09-18T23:15:00Z" ~as_of:"2026-09-18" None);
   refused "no zone" ~substring:"time zone could not be loaded"
@@ -515,7 +522,9 @@ let test_a_rebalance_is_gated_as_if_only_its_buys_fill () =
              ~legs:[ leg msft D.Order.Side.Buy 80; leg aapl D.Order.Side.Sell 160 ])
       in
       contains "the buys-only gate"
-        ~substring:"the gate refuses the rebalance if only its buys fill" why;
+        ~substring:
+          "the gate refuses the rebalance if only the orders that grow a position fill"
+        why;
       contains "tech-cap" ~substring:"tech-cap would be breached" why;
       contains "sells first"
         ~substring:"order 2 of 2 (MSFT buy 80 market-on-open) at 299.00" why;
@@ -525,6 +534,115 @@ let test_a_rebalance_is_gated_as_if_only_its_buys_fill () =
            (D.Oms.check_rebalance oms ~source
               ~legs:[ leg aapl D.Order.Side.Sell 160; leg msft D.Order.Side.Buy 30 ]));
       Alcotest.(check int) "nothing journaled" 0 (journaled journal))
+    ()
+
+(* Which orders grow a position: from flat, away from zero, or across it;
+   and which shrink one: toward zero, to zero at most.
+     long 100:  buy 10 -> 110 grows;   sell 40 -> 60 shrinks;
+                sell 100 -> 0 shrinks; sell 160 -> -60 crosses, grows
+                (a short opened, though |-60| < |100|)
+     short -330: buy 150 -> -180 shrinks;  short -100: sell 80 -> -180 grows
+     flat:      buy 1 grows, sell 1 grows *)
+let test_which_orders_grow_a_position () =
+  let grows position side qty = D.Rebalance.grows ~position ~side ~qty in
+  let buy = D.Order.Side.Buy and sell = D.Order.Side.Sell in
+  Alcotest.(check (list bool))
+    "grows?"
+    [ true; false; false; true; false; true; true; true ]
+    [
+      grows 100.0 buy 10;
+      grows 100.0 sell 40;
+      grows 100.0 sell 100;
+      grows 100.0 sell 160;
+      grows (-330.0) buy 150;
+      grows (-100.0) sell 80;
+      grows 0.0 buy 1;
+      grows 0.0 sell 1;
+    ]
+
+(* The review's short case. The book is short AAPL 330 and MSFT 100; the
+   rebalance covers AAPL 150 and shorts MSFT 80 more. For a short, the buy
+   shrinks and the sell grows, so the cover goes first -- and the gate asks
+   what the book is if only the sell fills:
+     whole:          AAPL 180 x 150 + MSFT 180 x 300 = 27,000 + 54,000 =  81,000
+     the sell alone: AAPL 330 x 150 + MSFT 180 x 300 = 49,500 + 54,000 = 103,500
+   which is over tech-cap's 100,000: refused, naming the growing-only gate.
+   Shorting MSFT 20 instead, the sell alone is 49,500 + 36,000 = 85,500, and it
+   passes, the cover first whatever order the legs came in. *)
+let test_a_short_strategy's_rebalance_covers_first_and_is_gated_on_its_sells () =
+  with_oms
+    ~held:[ (aapl, -330.0); (msft, -100.0); (xom, -200.0) ]
+    ~f:(fun oms journal ->
+      let why =
+        refusal
+          (D.Oms.check_rebalance oms ~source
+             ~legs:[ leg msft D.Order.Side.Sell 80; leg aapl D.Order.Side.Buy 150 ])
+      in
+      contains "the growing-only gate"
+        ~substring:
+          "the gate refuses the rebalance if only the orders that grow a position fill"
+        why;
+      contains "tech-cap" ~substring:"tech-cap would be breached" why;
+      contains "the cover first, the short last"
+        ~substring:"(order 2 of 2 (MSFT sell 80 market-on-open) at 299.00): tech-cap" why;
+      (match
+         D.Oms.check_rebalance oms ~source
+           ~legs:[ leg msft D.Order.Side.Sell 20; leg aapl D.Order.Side.Buy 150 ]
+       with
+      | Error why -> Alcotest.failf "MSFT -20 refused: %s" why
+      | Ok checked ->
+          Alcotest.(check (list (pair string string)))
+            "MSFT -20: passes, the cover first"
+            [ ("AAPL", "buy"); ("MSFT", "sell") ]
+            (List.map checked.D.Oms.Checked_rebalance.orders ~f:(fun (r, _) ->
+                 ( Symbol.to_string r.D.Order.Request.symbol,
+                   D.Order.Side.to_string r.D.Order.Request.side ))));
+      Alcotest.(check int) "nothing journaled" 0 (journaled journal))
+    ()
+
+(* An order that takes a position across zero grows it. Long AAPL 100, sell
+   160 flips it to short 60 -- smaller, but a short opened -- so it goes after
+   MSFT -50, which only shrinks a long: MSFT first, then AAPL, where by name
+   alone AAPL would lead. And it is gated as growing. A sector's notional is
+   the size of its NET sum, so the flip that grows TECH is a short bought
+   into a long beside a long: short AAPL 50 and long MSFT 280 (|-7,500 +
+   84,000| = 76,500), AAPL +160 (to +110) with MSFT -80:
+     whole:          AAPL 110 x 150 + MSFT 200 x 300 = 16,500 + 60,000 =  76,500
+     the flip alone: AAPL 110 x 150 + MSFT 280 x 300 = 16,500 + 84,000 = 100,500
+   over tech-cap: refused. A name twice is refused before any of it. *)
+let test_an_order_that_crosses_zero_is_ordered_and_gated_as_growing () =
+  with_oms
+    ~held:[ (aapl, 100.0); (msft, 280.0); (xom, -200.0) ]
+    ~f:(fun oms _ ->
+      match
+        D.Oms.check_rebalance oms ~source
+          ~legs:[ leg aapl D.Order.Side.Sell 160; leg msft D.Order.Side.Sell 50 ]
+      with
+      | Error why -> Alcotest.failf "refused: %s" why
+      | Ok checked ->
+          Alcotest.(check (list string))
+            "the shrinking sell first, the flip last" [ "MSFT"; "AAPL" ]
+            (List.map checked.D.Oms.Checked_rebalance.orders ~f:(fun (r, _) ->
+                 Symbol.to_string r.D.Order.Request.symbol)))
+    ();
+  with_oms
+    ~held:[ (aapl, -50.0); (msft, 280.0); (xom, -200.0) ]
+    ~f:(fun oms _ ->
+      let why =
+        refusal
+          (D.Oms.check_rebalance oms ~source
+             ~legs:[ leg aapl D.Order.Side.Buy 160; leg msft D.Order.Side.Sell 80 ])
+      in
+      contains "the flip, gated as growing"
+        ~substring:
+          "if only the orders that grow a position fill, as an unfilled or refused order \
+           that shrinks one would leave them (order 2 of 2 (AAPL buy 160 market-on-open) \
+           at 149.00): tech-cap"
+        why;
+      contains "a name twice" ~substring:"the rebalance names AAPL twice"
+        (refusal
+           (D.Oms.check_rebalance oms ~source
+              ~legs:[ leg aapl D.Order.Side.Buy 1; leg aapl D.Order.Side.Buy 2 ])))
     ()
 
 (* Each order of a rebalance counts the rebalance's orders before it against
@@ -617,15 +735,20 @@ let test_a_rebalance_is_sized_and_priced_at_the_close_not_the_live_mark () =
                  Price.to_float p)))
     ()
 
-(* Invariant 10's other half: one submit site, made structural. The venue's
-   submit takes a permit (Venue.Trade.t's parameter), and only desk/wire.ml
-   can make one, so a call written straight against the field -- under any
-   alias, type-directed or not -- does not compile. What remains is the wire
-   module's one function, and this case holds its callers to one: across
-   desk/ and bin/, the module is named only in wire.ml and wire.mli
-   themselves and in oms.ml, where every mention is its permit TYPE except
-   one, the call in submit_journaled. An alias of the module (module W =
-   ..., open, include) or of its function names it again, and fails here. *)
+(* Invariant 10's other half: one submit site. What the compiler holds:
+   the venue's submit takes a permit (Venue.Trade.t's parameter); both
+   adapters build their trading half at desk/wire.ml's permit, whose values
+   nothing outside that module can make; so an adapter's submit cannot be
+   called against its field, under any alias, and an adapter cannot be typed
+   at another permit to get round it. What this case holds, across every .ml
+   and .mli in desk/ and bin/:
+   - the wire module is named, outside wire.ml(i), only for its permit TYPE
+     -- in oms.ml and in the two adapters that build a trading half at it --
+     and once more, as the call in oms.ml's submit_journaled. An alias of the
+     module (module W = ..., open, include) or of its function names it
+     again, and fails here;
+   - submit_journaled, the function that makes that call, is named in
+     oms.ml alone: nothing else can hand an order to it. *)
 let test_the_venue's_submit_is_called_in_one_place () =
   let files dir =
     Sys_unix.readdir dir |> Array.to_list
@@ -634,64 +757,61 @@ let test_the_venue's_submit_is_called_in_one_place () =
         (String.is_suffix f ~suffix:".ml" || String.is_suffix f ~suffix:".mli")
         && not (String.is_substring f ~substring:".pp."))
     |> List.sort ~compare:String.compare
-    |> List.map ~f:(fun f -> (dir, f))
+    |> List.map ~f:(fun f -> dir ^ "/" ^ f)
   in
-  let mentions line =
-    (* Every occurrence of the module's name as a word, with what follows it:
-       "Wire.permit", "Wire.submit", or "Wire" alone. *)
-    let n = String.length line in
+  let sources = files "../desk" @ files "../bin" in
+  (* Every occurrence of [word] as a whole identifier in [line], each with
+     the text after it. *)
+  let occurrences ~word line =
+    let n = String.length line and w = String.length word in
+    let ident c = Char.is_alphanum c || Char.equal c '_' || Char.equal c '\'' in
     let rec go i acc =
-      match String.substr_index line ~pattern:"Wire" ~pos:i with
+      match String.substr_index line ~pattern:word ~pos:i with
       | None -> List.rev acc
       | Some j ->
-          let before_ok =
-            j = 0 || not (Char.is_alphanum line.[j - 1] || Char.equal line.[j - 1] '_')
-          in
-          let k = j + 4 in
-          let after_ok =
-            k >= n
-            || not
-                 (Char.is_alphanum line.[k]
-                 || Char.equal line.[k] '_'
-                 || Char.equal line.[k] '\'')
-          in
-          if before_ok && after_ok then
-            let rest = String.drop_prefix line k in
-            let what =
-              if String.is_prefix rest ~prefix:".permit" then "Wire.permit"
-              else if String.is_prefix rest ~prefix:".submit" then "Wire.submit"
-              else "Wire"
-            in
-            go k (what :: acc)
+          let k = j + w in
+          if (j = 0 || not (ident line.[j - 1])) && (k >= n || not (ident line.[k])) then
+            go k (String.drop_prefix line k :: acc)
           else go k acc
     in
     go 0 []
   in
-  let found =
-    files "../desk" @ files "../bin"
-    |> List.concat_map ~f:(fun (dir, file) ->
-        In_channel.read_lines (Filename.concat dir file)
+  let found ~word =
+    List.concat_map sources ~f:(fun file ->
+        In_channel.read_lines file
         |> List.concat_map ~f:(fun line ->
-            List.map (mentions line) ~f:(fun what ->
-                (dir ^ "/" ^ file, what, String.strip line))))
+            List.map (occurrences ~word line) ~f:(fun rest ->
+                (file, rest, String.strip line))))
   in
-  let outside_the_module =
-    List.filter found ~f:(fun (file, _, _) ->
-        not (List.mem [ "../desk/wire.ml"; "../desk/wire.mli" ] file ~equal:String.equal))
+  let wire =
+    List.filter_map (found ~word:"Wire") ~f:(fun (file, rest, line) ->
+        if List.mem [ "../desk/wire.ml"; "../desk/wire.mli" ] file ~equal:String.equal
+        then None
+        else
+          Some
+            ( file,
+              (if String.is_prefix rest ~prefix:".permit" then "Wire.permit"
+               else if String.is_prefix rest ~prefix:".submit" then "Wire.submit"
+               else "Wire"),
+              line ))
   in
   Alcotest.(check (list (triple string string string)))
-    "outside wire.ml(i): one call, in oms.ml's submit_journaled"
+    "outside wire.ml(i), beside its permit type: one call, in oms.ml's submit_journaled"
     [
       ( "../desk/oms.ml",
         "Wire.submit",
         "let%map submission = Wire.submit trade request in" );
     ]
-    (List.filter outside_the_module ~f:(fun (_, what, _) ->
-         not (String.equal what "Wire.permit")));
+    (List.filter wire ~f:(fun (_, what, _) -> not (String.equal what "Wire.permit")));
   Alcotest.(check (list string))
-    "and the permit type is named in oms.ml alone" [ "../desk/oms.ml" ]
-    (List.filter_map outside_the_module ~f:(fun (file, what, _) ->
+    "the permit type is named by the order manager and the two adapters"
+    [ "../desk/alpaca_trade.ml"; "../desk/oms.ml"; "../desk/sim_venue.ml" ]
+    (List.filter_map wire ~f:(fun (file, what, _) ->
          Option.some_if (String.equal what "Wire.permit") file)
+    |> List.dedup_and_sort ~compare:String.compare);
+  Alcotest.(check (list string))
+    "submit_journaled is named in oms.ml alone" [ "../desk/oms.ml" ]
+    (List.map (found ~word:"submit_journaled") ~f:(fun (file, _, _) -> file)
     |> List.dedup_and_sort ~compare:String.compare)
 
 let suite =
@@ -723,6 +843,13 @@ let suite =
         test_a_signal_from_before_an_outage_is_not_sized_at_a_weeks_old_close;
       Alcotest.test_case "a rebalance is gated as if only its buys fill" `Quick
         test_a_rebalance_is_gated_as_if_only_its_buys_fill;
+      Alcotest.test_case "which orders grow a position" `Quick
+        test_which_orders_grow_a_position;
+      Alcotest.test_case
+        "a short strategy's rebalance covers first and is gated on its sells" `Quick
+        test_a_short_strategy's_rebalance_covers_first_and_is_gated_on_its_sells;
+      Alcotest.test_case "an order that crosses zero is ordered and gated as growing"
+        `Quick test_an_order_that_crosses_zero_is_ordered_and_gated_as_growing;
       Alcotest.test_case "each order counts the ones before it against the open-order cap"
         `Quick test_each_order_counts_the_ones_before_it_against_the_open_order_cap;
       Alcotest.test_case "no targets while the book is not the account's" `Quick

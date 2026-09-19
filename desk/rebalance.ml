@@ -77,12 +77,31 @@ end
 
 let positive_finite x = Float.is_finite x && Float.( > ) x 0.0
 
-(* A sell before a buy, then by name: were anything to stop a rebalance
+(* Whether an order GROWS its name's position: opens one from flat, takes it
+   further from zero, or crosses zero -- a long sold into a short, a short
+   bought into a long, which opens a position in the other direction even
+   when the new one is smaller. An order that brings a position toward zero,
+   to zero at most, SHRINKS it. For a long-only strategy the buys grow and
+   the sells shrink; for a short one a sell opens risk and a buy closes it.
+   [position] is the book's, as the gate reads it. *)
+let grows ~(position : float) ~(side : Order.Side.t) ~(qty : int) =
+  let after = position +. (Order.Side.sign side *. Float.of_int qty) in
+  Float.( <> ) after 0.0
+  && (Float.( = ) position 0.0
+     || Float.( < ) (position *. after) 0.0
+     || Float.( > ) (Float.abs after) (Float.abs position))
+
+(* The order a rebalance's orders go in: those that shrink a position first,
+   those that grow one last, then by name. Were anything to stop a rebalance
    between two submits -- the switch, or a venue that does not acknowledge an
    order -- what went out first takes risk off rather than on. *)
-let sells_first (a : Order.Side.t * Symbol.t) (b : Order.Side.t * Symbol.t) =
-  let rank = function Order.Side.Sell -> 0 | Order.Side.Buy -> 1 in
-  [%compare: int * Symbol.t] (rank (fst a), snd a) (rank (fst b), snd b)
+let shrinking_first ~(position : Symbol.t -> float)
+    ((a_side, a_symbol, a_qty) : Order.Side.t * Symbol.t * int)
+    ((b_side, b_symbol, b_qty) : Order.Side.t * Symbol.t * int) =
+  let key side symbol qty =
+    (Bool.to_int (grows ~position:(position symbol) ~side ~qty), symbol)
+  in
+  [%compare: int * Symbol.t] (key a_side a_symbol a_qty) (key b_side b_symbol b_qty)
 
 (* The regular session's close in New York. Before it, today's close has not
    happened, so the last date whose close should be recorded is yesterday's. *)
@@ -102,7 +121,9 @@ let weekdays_between a b =
        recorded session are one date;
    (b) no weekday lies after that date and on or before D_ref -- New York's
        date now if its time is 16:00 or later, else the day before -- so the
-       newest recorded session is the last one that has closed.
+       newest recorded session is the last one that has closed; and that
+       date is not after D_ref, which would be a record ahead of the clock
+       (a close before 16:00, or a clock that is wrong).
    A holiday is a weekday with no session, so it can only make (b) refuse,
    never pass: an owner who sees that refusal the day after a holiday reads
    why. The zone is the tz database's; none refuses. *)
@@ -134,7 +155,14 @@ let calendar_refusal ~(zone : Timezone.t option) ~(now : Time_ns.t) ~(as_of : Da
             else Date.add_days today (-1)
           in
           let missed = weekdays_between latest reference in
-          if missed = 0 then None
+          if Date.( > ) latest reference then
+            Some
+              (sprintf
+                 "the newest recorded session (%s) is after %s, the last date whose \
+                  16:00 ET close has come: the record is ahead of the clock, and nothing \
+                  is sized on it"
+                 (Date.to_string latest) (Date.to_string reference))
+          else if missed = 0 then None
           else
             Some
               (sprintf
@@ -277,6 +305,7 @@ let plan ~(symbols : Symbol.t list) ~(weights : (Symbol.t * float) list)
              }))
     |> Result.all
   in
+  let position s = Option.value (Map.find account s) ~default:0.0 in
   List.filter_opt legs
   |> List.sort ~compare:(fun (a : Leg.t) b ->
-      sells_first (a.side, a.symbol) (b.side, b.symbol))
+      shrinking_first ~position (a.side, a.symbol, a.qty) (b.side, b.symbol, b.qty))

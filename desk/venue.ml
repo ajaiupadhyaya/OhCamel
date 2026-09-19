@@ -149,12 +149,13 @@ module Update = struct
     | _ -> None
 end
 
-(* ['permit t]: the submit takes a permit, and only the wire module can make
-   one (desk/wire.mli). An adapter builds its submit for any permit, and
-   ignores it; the order manager holds the wire module's permit type and
-   submits through it in one place (Oms.submit_journaled). So a second call
-   of the venue's submit anywhere else does not compile: it has no permit to
-   pass. *)
+(* ['permit t]: the submit takes a permit. Both adapters (Sim_venue.trade,
+   Alpaca_trade.trade) build their trading half at the wire module's permit
+   (desk/wire.mli), which nothing outside that module can make; so an
+   adapter's submit is reached only through the wire module, and a call
+   written against the field does not compile -- nor does typing an adapter
+   at another permit. That the order manager is the wire module's only
+   caller is held by a test, not by the compiler. *)
 module Trade = struct
   type 'permit t = {
     submit : 'permit -> Order.Request.t -> Submission.t Deferred.t;
