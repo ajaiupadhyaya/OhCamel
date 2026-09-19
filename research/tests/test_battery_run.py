@@ -46,13 +46,15 @@ from ohcamel_research.battery.config import (
 )
 from ohcamel_research.battery.data import load_bars, load_macro, wide
 from ohcamel_research.battery.run import (
-    ENGINE_NOTE,
+    FDQ_EXIT_SPREAD_CORRECTION,
     NONE_MEASURED,
+    SPREAD_NOTES,
     RunRefused,
     describe_measure,
     evaluate_fixed,
     holdout_returns,
     join_series,
+    load_friction,
     pooled_capacity,
     pooled_turnover,
     run,
@@ -67,7 +69,19 @@ from ohcamel_research.manifest import BATTERY_REL, Manifest, compute_verdict, ma
 from ohcamel_research.manifest import Window as ManifestWindow
 
 BARS = REPO_ROOT / "fixtures" / "bars"
-FRICTION = load_friction_config(REPO_ROOT / "research" / "config" / "friction_v1.yaml")
+FRICTION_FILE = REPO_ROOT / "research" / "config" / "friction_v1.yaml"
+# The file as fdq reads it, uncorrected: for tests of fdq itself and of
+# helpers handed an explicit friction.
+FRICTION = load_friction_config(FRICTION_FILE)
+# The base friction the runner hands fdq: every spread in the file doubled.
+BASE = load_friction(FRICTION_FILE, "1.0.0")
+# The same, built here from the file and a literal 2, independently of the
+# runner's code, so a test comparing against it cannot agree with a bug.
+DOUBLED = replace(
+    FRICTION,
+    spread_bps_default=2.0 * FRICTION.spread_bps_default,
+    spread_bps_by_symbol={k: 2.0 * v for k, v in FRICTION.spread_bps_by_symbol.items()},
+)
 MACRO = load_macro(REPO_ROOT / "fixtures" / "macro" / "macro.parquet")
 SPY = wide(load_bars(BARS, ["SPY"]))
 GATE_ORDER = [
@@ -222,11 +236,12 @@ def test_one_manifest_per_strategy_in_the_configs_order_and_shape(recorded):
         assert m.turnover is None or m.turnover >= 0.0
         assert m.capacity is None or m.capacity > 0.0
         assert m.python_version == platform.python_version()
-        assert ENGINE_NOTE in m.notes
+        assert all(note in m.notes for note in SPREAD_NOTES)
         sweep = m.gates[GATE_ORDER.index("cost_sweep")]["detail"]
         assert set(sweep["sharpe_by_bps"]) == {"0.0", "5.0", "15.0", "30.0"}
         assert set(sweep["total_return_by_bps"]) == {"0.0", "5.0", "15.0", "30.0"}
         assert set(sweep["holdout_total_return_by_bps"]) == {"0.0", "5.0", "15.0", "30.0"}
+        assert sweep["exit_spread_correction"] == FDQ_EXIT_SPREAD_CORRECTION == 2.0
 
 
 def test_the_verdict_is_the_manifest_modules_rule_over_every_gate(recorded):
@@ -357,14 +372,14 @@ def test_no_return_dated_before_the_holdout_start_enters_the_holdout(recorded):
 def test_the_cost_sweep_re_evaluates_the_selected_params_and_never_re_selects(recorded):
     # Every selection-side run -- walk_forward, in_sample_return_matrix, and
     # every backtest inside them -- saw the base friction only: its
-    # per-symbol table intact, never a sweep level's cleared one.
+    # per-symbol table intact (doubled), never a sweep level's cleared one.
     selection_tables = (
         [c["friction"].spread_bps_by_symbol for c in recorded.wf_calls]
         + [f.spread_bps_by_symbol for f in recorded.is_frictions]
         + [f.spread_bps_by_symbol for f in recorded.inner_frictions]
     )
     assert selection_tables
-    assert all(t == FRICTION.spread_bps_by_symbol for t in selection_tables)
+    assert all(t == DOUBLED.spread_bps_by_symbol for t in selection_tables)
     # Selection ran once per strategy (plus the prior's two re-runs), not
     # once per sweep level.
     assert len(recorded.wf_calls) == 4
@@ -375,23 +390,38 @@ def test_the_cost_sweep_re_evaluates_the_selected_params_and_never_re_selects(re
     for m in recorded.manifests:
         mine = [b for b in sweep if b.params["symbol"] == m.symbol]
         assert all(b.params == m.selected_params for b in mine)
+        # Each round-trip level L reaches fdq as 2L (FDQ_EXIT_SPREAD_CORRECTION).
         assert Counter(b.friction.spread_bps_default for b in mine) == {
             0.0: 3,
-            5.0: 3,
-            15.0: 3,
+            10.0: 3,
             30.0: 3,
+            60.0: 3,
         }
         spans = {(b.start, b.end) for b in mine}
         assert spans == _fold_spans(m.symbol) | {(date(2020, 1, 2), date(2020, 12, 31))}
         for b in mine:
             assert b.friction == replace(
-                FRICTION,
+                BASE,
                 spread_bps_default=b.friction.spread_bps_default,
                 spread_bps_by_symbol={},
             )
         detail = m.gates[GATE_ORDER.index("cost_sweep")]["detail"]
         assert detail["params"] == m.selected_params
         assert detail["reselected"] is False
+
+
+def test_every_base_friction_the_run_handed_fdq_doubles_every_spread_in_the_file(recorded):
+    # Selection, the walk-forward, the prior's re-run (inside walk_forward),
+    # the holdout and the turnover/capacity re-runs: all at BASE, the file
+    # with its default and every per-symbol spread doubled, nothing else moved.
+    handed = (
+        [c["friction"] for c in recorded.wf_calls]
+        + recorded.is_frictions
+        + recorded.inner_frictions
+        + [b.friction for b in recorded.backtests if b.friction.spread_bps_by_symbol]
+    )
+    assert len(handed) > 6
+    assert all(f == DOUBLED for f in handed)
 
 
 def test_turnover_and_capacity_come_from_each_folds_own_params(recorded):
@@ -665,23 +695,46 @@ def test_fdq_counts_every_fold_trial_including_fast_equal_to_slow():
 # --------------------------------------------------------------------------
 
 
-def test_a_sweep_level_sets_every_symbols_spread_and_keeps_everything_else():
-    f = sweep_friction(FRICTION, 15)
-    assert (f.spread_bps_default, f.spread_bps_by_symbol) == (15.0, {})
-    assert f.spread_bps("SPY") == f.spread_bps("TLT") == 15.0
-    assert f.spread_bps("SPY", vix=30.0) == pytest.approx(22.5)  # the VIX widening kept
-    assert replace(f, spread_bps_default=5.0, spread_bps_by_symbol={}) == replace(
-        FRICTION, spread_bps_default=5.0, spread_bps_by_symbol={}
+def test_the_base_friction_handed_to_fdq_doubles_every_spread_in_the_file():
+    assert BASE == DOUBLED
+    raw = load_friction_config(FRICTION_FILE)
+    assert BASE.spread_bps_default == 2.0 * raw.spread_bps_default == 10.0
+    assert set(BASE.spread_bps_by_symbol) == set(raw.spread_bps_by_symbol)
+    for symbol, bps in raw.spread_bps_by_symbol.items():
+        assert BASE.spread_bps_by_symbol[symbol] == 2.0 * bps
+    assert (BASE.spread_bps("SPY"), BASE.spread_bps("TLT")) == (4.0, 6.0)
+    # Nothing but the spreads moved: fees, VIX, buffer, minimum, settlement.
+    assert (
+        replace(
+            BASE,
+            spread_bps_default=raw.spread_bps_default,
+            spread_bps_by_symbol=raw.spread_bps_by_symbol,
+        )
+        == raw
     )
-    assert FRICTION.spread_bps_by_symbol["SPY"] == 2.0  # the base is untouched
+    # And the hashed file itself is untouched.
+    assert "  SPY: 2.0\n" in FRICTION_FILE.read_text()
 
 
-def test_fdq_charges_half_the_round_trip_level_per_fill():
-    broker = BrokerEmulator(sweep_friction(FRICTION, 30))
-    buy = broker.apply_fill(100.0, "buy", 1000.0, "SPY")
-    sell = broker.apply_fill(100.0, "sell", 1000.0, "SPY")
-    assert buy.execution_price == pytest.approx(100.0 * (1 + 0.0015))  # 15 bps a fill
-    assert sell.execution_price == pytest.approx(100.0 * (1 - 0.0015))  # 30 a round trip
+def test_a_sweep_level_sets_every_symbols_spread_and_keeps_everything_else():
+    f = sweep_friction(BASE, 15)
+    assert (f.spread_bps_default, f.spread_bps_by_symbol) == (30.0, {})  # 15 round trip, x2
+    assert f.spread_bps("SPY") == f.spread_bps("TLT") == 30.0
+    assert f.spread_bps("SPY", vix=30.0) == pytest.approx(45.0)  # the VIX widening kept
+    assert replace(f, spread_bps_default=5.0, spread_bps_by_symbol={}) == replace(
+        BASE, spread_bps_default=5.0, spread_bps_by_symbol={}
+    )
+    assert BASE.spread_bps_by_symbol["SPY"] == 4.0  # the base is untouched
+
+
+def test_fdq_halves_its_spread_per_fill_and_the_runner_puts_the_round_trip_on_the_entry():
+    # fdq itself: a spread of 30 is 15 bps a fill.
+    raw = BrokerEmulator(replace(FRICTION, spread_bps_default=30.0, spread_bps_by_symbol={}))
+    assert raw.apply_fill(100.0, "buy", 1000.0, "SPY").execution_price == pytest.approx(100.15)
+    assert raw.apply_fill(100.0, "sell", 1000.0, "SPY").execution_price == pytest.approx(99.85)
+    # The runner at level 30: the entry fill pays the whole 30 bps round trip.
+    ours = BrokerEmulator(sweep_friction(BASE, 30))
+    assert ours.apply_fill(100.0, "buy", 1000.0, "SPY").execution_price == pytest.approx(100.30)
 
 
 class _OneRoundTrip(FdqStrategy):
@@ -704,35 +757,66 @@ class _OneRoundTrip(FdqStrategy):
         return pd.Series({"SPY": 1.0}) if self.on else pd.Series(dtype=float)
 
 
-def test_a_full_exit_pays_no_spread_in_fdq_1_0_0():
-    """What ``ENGINE_NOTE`` states, pinned: with fees zeroed, one round trip
-    at 100 bps loses about 50 bps of equity (the buy's half), while the cost
-    ledger records both halves. If fdq's engine changes, this fails and the
-    note must change with it."""
-    no_fees = replace(
-        FRICTION,
-        sec_fee_rate=0.0,
-        finra_taf_per_share=0.0,
-        sec_fee_minimum=0.0,
-        finra_taf_minimum=0.0,
+def _no_fees(f: FrictionConfig) -> FrictionConfig:
+    return replace(
+        f, sec_fee_rate=0.0, finra_taf_per_share=0.0, sec_fee_minimum=0.0, finra_taf_minimum=0.0
     )
 
-    def trip(level: float):
-        return run_backtest(
-            _OneRoundTrip(),
-            SPY,
-            BacktestConfig(starting_capital=50000.0, friction=sweep_friction(no_fees, level)),
-            None,
-            date(2019, 1, 2),
-            date(2019, 1, 31),
-        )
 
-    free, costly = trip(0.0), trip(100.0)
+def _one_round_trip(friction: FrictionConfig):
+    return run_backtest(
+        _OneRoundTrip(),
+        SPY,
+        BacktestConfig(starting_capital=50000.0, friction=friction),
+        None,
+        date(2019, 1, 2),
+        date(2019, 1, 31),
+    )
+
+
+def _lost_bps(free, costly) -> float:
+    """Equity lost to the spread over one round trip, in bps of the
+    position's value at the exit's mid in the spread-free run."""
+    exit_value = float(free.trades.iloc[1]["notional"])
+    assert list(free.trades["side"]) == ["buy", "sell"]
+    return (free.ending_equity - costly.ending_equity) / exit_value * 1e4
+
+
+def test_fdq_1_0_0_books_a_full_exits_half_spread_to_the_ledger_but_not_to_equity():
+    """fdq itself, uncorrected, pinned: with fees zeroed, one round trip at a
+    spread of 100 bps loses about 50 bps of equity (the buy's half) while the
+    cost ledger records both halves. The runner's FDQ_EXIT_SPREAD_CORRECTION
+    exists because of this. If an fdq upgrade starts charging the exit, this
+    fails, and the correction would then double-charge: remove it."""
+    no_fees = _no_fees(FRICTION)
+    free = _one_round_trip(replace(no_fees, spread_bps_default=0.0, spread_bps_by_symbol={}))
+    costly = _one_round_trip(replace(no_fees, spread_bps_default=100.0, spread_bps_by_symbol={}))
+    assert 49.0 < _lost_bps(free, costly) < 51.0
     buy_notional = float(costly.trades.iloc[0]["notional"])
-    lost_bps = (free.ending_equity - costly.ending_equity) / buy_notional * 1e4
-    assert 45.0 < lost_bps < 55.0
     ledger_bps = costly.cost_ledger.spread_cents / 100 / buy_notional * 1e4
-    assert 95.0 < ledger_bps < 105.0
+    assert 99.0 < ledger_bps < 102.0
+
+
+@pytest.mark.parametrize("level", [5.0, 30.0, 100.0])
+def test_one_round_trip_at_a_sweep_level_costs_that_level_in_equity(level):
+    """The corrected runner: one round trip at level L, fees zeroed, loses L
+    bps of equity. The entry fill pays the whole L and the exit pays nothing
+    in fdq, so against the exit's value the loss is exactly L/(1 + L/1e4):
+    within 1% of L at 100 bps, and closer below."""
+    no_fees = _no_fees(BASE)
+    free = _one_round_trip(sweep_friction(no_fees, 0.0))
+    costly = _one_round_trip(sweep_friction(no_fees, level))
+    lost = _lost_bps(free, costly)
+    assert lost == pytest.approx(level, rel=0.01)
+    assert lost == pytest.approx(level / (1.0 + level / 1e4), rel=1e-9)
+
+
+def test_one_round_trip_at_level_zero_costs_nothing():
+    no_fees = _no_fees(BASE)
+    zero = _one_round_trip(sweep_friction(no_fees, 0.0))
+    free = _one_round_trip(replace(no_fees, spread_bps_default=0.0, spread_bps_by_symbol={}))
+    assert abs(zero.ending_equity - free.ending_equity) < 1e-9
+    assert zero.cost_ledger.spread_cents == 0.0
 
 
 # --------------------------------------------------------------------------

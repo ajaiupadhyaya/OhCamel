@@ -32,6 +32,10 @@ each round-trip level over the folds' test spans and the holdout, and never
 re-selects. Turnover and capacity come from each fold's own ``fold_params``
 backtest. The verdict is ``manifest.compute_verdict``'s, never a second copy.
 
+**Every spread handed to fdq is doubled** (``FDQ_EXIT_SPREAD_CORRECTION``):
+fdq 1.0.0 books a full exit's half-spread to the ledger but not to equity,
+and the pre-registration states the spread as a round trip paid in full.
+
 The run refuses to start unless ``battery/`` is exactly what git committed
 (``manifest.assert_battery_committed``, the first thing ``run`` does).
 """
@@ -108,14 +112,47 @@ DSR_UNIT = "fold_trials"
 
 NONE_MEASURED = "none measured"
 
-# A fact about the friction model the evidence was computed with, recorded
-# beside it. fdq 1.0.0's engine credits a sale at the mid price less fees
-# (``fdq/backtest/engine.py``, ``proceeds = sell_notional - fees``), so a
-# full exit's half-spread reaches the cost ledger but not the equity curve.
-ENGINE_NOTE = (
-    "fdq 1.0.0 deducts no spread from a full exit's proceeds (engine.py credits the mid "
-    "less fees), so a long/flat round trip charges equity half the configured spread, "
-    "plus fees; the cost ledger records both halves"
+FDQ_EXIT_SPREAD_CORRECTION = 2.0
+"""The factor every spread the runner hands fdq is multiplied by: the
+friction file's ``spread_bps_default`` and each of its per-symbol spreads
+(the base friction, used for selection, the walk-forward, the prior's
+re-run, the holdout, and turnover and capacity), and each cost-sweep level
+(``spread_bps_for_round_trip``). The file itself is never edited; it is
+hashed.
+
+Why: fdq 1.0.0's ``fdq/backtest/engine.py::_execute_rebalance`` credits a
+sale with ``proceeds = sell_notional - fill.regulatory_fees``, where
+``sell_notional`` is the position valued at the open's mid, and on a full
+exit deletes the position, so the sell's half-spread
+(``BrokerEmulator.apply_fill``: ``spread_bps / 1e4 / 2`` per fill) is booked
+to the cost ledger but never to equity. A round trip therefore paid half its
+spread. The pre-registration states the spread as that many basis points
+round trip, halved per fill; the owner ruled that its economics govern.
+Doubling the spread makes the entry fill carry the whole round trip.
+
+Exact, to first order, for the trades the runner makes. Every fdq strategy
+it runs (``ma_crossover``, ``donchian``: both ``_LongFlat``) enters from
+flat to 90% of equity or exits in full, never partially and never short
+(fdq's engine refuses a short). The exit's half is charged on the entry's
+notional at the entry day's VIX rather than on the exit's, and a position
+still open when a backtest ends has paid an exit it never made: both
+conservative or second order. If fdq ever charges the exit itself, this
+factor double-charges, and this test in ``tests/test_battery_run.py`` fails
+to say so:
+``test_fdq_1_0_0_books_a_full_exits_half_spread_to_the_ledger_but_not_to_equity``."""
+
+# Disclosed in every manifest, beside the evidence the correction shaped.
+SPREAD_NOTES = (
+    "spread correction: fdq 1.0.0 books a full exit's half-spread to the ledger but not "
+    "to equity (engine.py::_execute_rebalance credits the mid less fees), so every spread "
+    "the runner hands fdq -- the friction file's, per symbol and default, and each cost "
+    f"sweep level -- is multiplied by FDQ_EXIT_SPREAD_CORRECTION = {FDQ_EXIT_SPREAD_CORRECTION}"
+    " and the entry fill carries the whole round trip",
+    "friction_v1.yaml calls its spreads 'Half-spread in basis points'; fdq's code treats the "
+    "value as the whole spread and halves it per fill, and the pre-registration states it as "
+    "a round trip, halved per fill; the pre-registration governs",
+    "the VIX widening (x1.5 above 25) on the whole round trip's spread is read on the entry "
+    "day, not the exit day",
 )
 
 
@@ -190,7 +227,7 @@ def run(
     except ValueError as e:
         raise RunRefused(f"{config_path}: the experiment must live inside {root}") from e
     cfg = load_experiment_config(config_path, root)
-    friction = _load_friction(root / cfg.friction_file, cfg.friction_version)
+    friction = load_friction(root / cfg.friction_file, cfg.friction_version)
     macro_path = root / cfg.macro
     macro = load_macro(macro_path)
     bars_dir = root / cfg.bars
@@ -515,13 +552,13 @@ def concat_oos(parts: Sequence[pd.Series]) -> pd.Series:
 
 def spread_bps_for_round_trip(level_bps: float) -> float:
     """fdq's ``spread_bps_default`` for a cost-sweep level given in basis
-    points round trip. fdq's ``BrokerEmulator.apply_fill`` charges
-    ``spread_bps / 1e4 / 2`` per fill (``fdq/frictions/emulator.py``), so
-    ``spread_bps`` is the whole round-trip spread, halved per fill, exactly
-    as the pre-registration says: the setting is the level itself. (What the
-    engine then deducts from equity on a full exit is ``ENGINE_NOTE``'s
-    matter, and is the same at every level and at the base friction.)"""
-    return float(level_bps)
+    points round trip: the level times ``FDQ_EXIT_SPREAD_CORRECTION``. fdq's
+    ``BrokerEmulator.apply_fill`` charges ``spread_bps / 1e4 / 2`` per fill,
+    so fdq's ``spread_bps`` is a round trip halved per fill, as the
+    pre-registration says; but fdq's engine drops the exit's half from
+    equity, so the setting is doubled and the entry fill pays the whole
+    level. One round trip at level L then costs L bps of equity."""
+    return float(level_bps) * FDQ_EXIT_SPREAD_CORRECTION
 
 
 def sweep_friction(base: FrictionConfig, level_bps: float) -> FrictionConfig:
@@ -612,10 +649,11 @@ def _cost_sweep_gate(
             "reselected": False,
             "spans": "each walk-forward fold's test span, then the holdout",
             "conversion": (
-                "spread_bps_default = the level in bps round trip, per-symbol table cleared; "
-                "fdq charges half of it per fill; fees and the VIX widening kept"
+                "spread_bps_default = the level in bps round trip x FDQ_EXIT_SPREAD_CORRECTION, "
+                "per-symbol table cleared, so the entry fill pays the whole level; "
+                "fees and the VIX widening kept"
             ),
-            "engine_note": ENGINE_NOTE,
+            "exit_spread_correction": FDQ_EXIT_SPREAD_CORRECTION,
         },
     )
 
@@ -758,7 +796,7 @@ def _manifest(
         "selected_params: walk_forward's rule (highest per-bar Sharpe, first in grid order "
         "on a tie) over the whole selection window; each fold's own choice is in the dsr "
         "gate's detail as fold_params",
-        ENGINE_NOTE,
+        *SPREAD_NOTES,
     ]
     if cfg.stress_multipliers is not None:
         notes.append(
@@ -890,16 +928,24 @@ def _require_macro_covers(macro: pd.DataFrame, index: pd.DatetimeIndex) -> None:
         )
 
 
-def _load_friction(path: Path, version: str) -> FrictionConfig:
-    """The vendored friction file, loaded by its own path -- never fdq's
-    relative default, which resolves against whatever the working directory
-    happens to be."""
-    friction = load_friction_config(path, stress_multiplier=1.0)
-    if friction.version != version:
+def load_friction(path: Path, version: str) -> FrictionConfig:
+    """The base friction the runner hands fdq: the vendored friction file,
+    loaded by its own path -- never fdq's relative default, which resolves
+    against whatever the working directory happens to be -- with its default
+    spread and every per-symbol spread multiplied by
+    ``FDQ_EXIT_SPREAD_CORRECTION``. Everything else is the file's."""
+    raw = load_friction_config(path, stress_multiplier=1.0)
+    if raw.version != version:
         raise RunRefused(
-            f"{path.name} is friction version {friction.version}, the config names {version}"
+            f"{path.name} is friction version {raw.version}, the config names {version}"
         )
-    return friction
+    return replace(
+        raw,
+        spread_bps_default=raw.spread_bps_default * FDQ_EXIT_SPREAD_CORRECTION,
+        spread_bps_by_symbol={
+            k: v * FDQ_EXIT_SPREAD_CORRECTION for k, v in raw.spread_bps_by_symbol.items()
+        },
+    )
 
 
 def _battery_bytes(d: Path) -> dict[str, bytes]:
@@ -925,9 +971,10 @@ def _require_running_battery_is_hashed(root: Path) -> None:
 # Re-exported for the CLI and the tests, which name them from here.
 __all__ = [
     "DSR_UNIT",
-    "ENGINE_NOTE",
+    "FDQ_EXIT_SPREAD_CORRECTION",
     "NONE_MEASURED",
     "RETURNS_SERIES",
+    "SPREAD_NOTES",
     "Evaluation",
     "RunRefused",
     "Selection",
@@ -938,6 +985,7 @@ __all__ = [
     "holdout_returns",
     "join_series",
     "judge_strategy",
+    "load_friction",
     "pooled_capacity",
     "pooled_turnover",
     "run",
