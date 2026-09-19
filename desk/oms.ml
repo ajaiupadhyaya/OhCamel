@@ -250,10 +250,26 @@ let context t ~(symbol : Symbol.t) : Rules.Context.t =
      sell. A per-name or sector notional is the absolute value of a sum whose
      coefficients (the marks) are all positive, so over any subset of resting
      fills it is largest at one of these two.
-   - [Growing_side]: name by name, whichever of that name's resting buys or
-     resting sells takes |position now + the proposal + that side| further
-     from zero. Gross is a sum of per-name absolute values, so this is where
-     it is largest.
+   - [Growing_side]: for each name the PROPOSAL ITSELF TRADES, that name's
+     resting buys when the proposal's own net quantity in it is positive, its
+     resting sells when negative -- because |position + fills| is
+     non-decreasing in however much more moves the same way the proposal
+     already moves it, so the worst case is the resting side that agrees with
+     the proposal's own direction, not simply whichever side is larger on its
+     own: the larger-magnitude side can be the one the proposal is shrinking,
+     which lets through a fill combination that actually breaches (Task 3's
+     re-review, the Important). A name the proposal leaves flat, or does not
+     trade at all, falls back to whichever of that name's resting buys or
+     resting sells takes |position now + that side| further from zero, as
+     before.
+
+     Gross is a sum of per-name absolute values, so FOR A SINGLE-NAME
+     PROPOSAL this scenario is the exact worst case for gross. A proposal
+     that trades several names at once (Task 15's rebalance) is bounded only
+     approximately: growing every name on its own worst side is not
+     necessarily the one combination of fills that maximizes the sum, since
+     several names can trade off against each other in ways a single-name
+     proposal cannot.
    - [Every_resting]: all of them. Each resting fill is priced no better than
      the mark ([resting_fills]), so each can only lower equity, and this is
      where drawdown is deepest.
@@ -413,16 +429,25 @@ end
    record that the venue is done with it.
 
    And only while its session lasts. Every order this desk sends is a day
-   order, and a day order does not outlive its session's close; the desk
-   records each close in the journal a few minutes after it happens
-   (Session_close), so a failed order journaled before the latest recorded
-   close is over, whatever the venue said or did not say. A close that went
-   unrecorded -- a book not current, an engine down at the close -- leaves
-   the order counted until the next one is recorded: longer than it lives,
-   never shorter. [failed_cancels] is not the test: a DELETE the venue took is
-   not the venue saying the order is done, and until it says so the order may
-   fill. [reconcile_failed] cancels one it finds still resting; the venue's
-   answer to that cancel is the report that ends its count.
+   order, and a day order does not outlive its session's close. The bound is
+   the latest recorded session's DATE, not when that row was RECORDED
+   (Session_close writes it a few minutes after the close): a close recorded
+   late, during the following session -- Session_close missed one and caught
+   up, or a restart re-ran it -- must not drop a failed order that is still
+   live in that following session, which bounding by [recorded_at] would do.
+   A failed order counts only if it was created at or after the start of the
+   latest recorded session's date ([Journal.unfinished_failed_orders]); one
+   created before that is over, whatever the venue said or did not say. When
+   [created_at] is compared as UTC text, "the start of that date" reads as
+   midnight UTC, which is earlier than the exchange's own midnight -- so this
+   errs toward counting one already-dead session's failed orders once more,
+   never toward dropping a live one. A close that went unrecorded -- a book
+   not current, an engine down at the close -- leaves the order counted until
+   the next one is recorded: longer than it lives, never shorter.
+   [failed_cancels] is not the test: a DELETE the venue took is not the venue
+   saying the order is done, and until it says so the order may fill.
+   [reconcile_failed] cancels one it finds still resting; the venue's answer
+   to that cancel is the report that ends its count.
 
    A journal that cannot be read is an Error, as an order that cannot be
    priced is ([resting_fills]): the proposal is refused, saying so, and
@@ -433,7 +458,7 @@ let failed_still_working t : (Order.t list, string) Result.t =
         let since =
           Option.map
             (List.hd (Journal.recent_sessions t.journal ~limit:1))
-            ~f:(fun s -> s.Journal.Session.recorded_at)
+            ~f:(fun s -> s.Journal.Session.date)
         in
         Journal.unfinished_failed_orders t.journal ~since)
   with
@@ -547,19 +572,34 @@ let gate_scenarios t ~(fills : Gate.Fill.t list) : (Scenarios.t, string) Result.
       let sells = by_symbol (List.filter resting ~f:sell) in
       let total m symbol = Option.value (Map.find m symbol) ~default:0.0 in
       (* Whether a name's resting buys take |q0 + proposal + side| at least as
-         far from zero as its resting sells, q0 being the position now. *)
+         far from zero as its resting sells, q0 being the position now. Only
+         the fallback for a name the proposal itself leaves flat or does not
+         trade -- see [growing_side_buys]. *)
       let buys_grow symbol =
         let q = Qty.to_float (Graph.qty t.graph symbol) +. total proposed symbol in
         Float.( >= )
           (Float.abs (q +. total buys symbol))
           (Float.abs (q +. total sells symbol))
       in
+      (* [Growing_side]'s choice for [symbol]: the proposal's own direction in
+         it, when the proposal trades that name at all (a positive net picks
+         buys, a negative one sells), since |x + p| only grows as more of it
+         moves the same way [p] does; the larger-magnitude side on its own can
+         be the side the proposal is shrinking instead. Falls back to
+         [buys_grow] when the proposal's net in [symbol] is exactly zero. *)
+      let growing_side_buys symbol =
+        let net = total proposed symbol in
+        if Float.( > ) net 0.0 then true
+        else if Float.( < ) net 0.0 then false
+        else buys_grow symbol
+      in
       let takes (scenario : Scenario.t) (f : Gate.Fill.t) =
         match scenario with
         | Scenario.As_it_stands -> false
         | Scenario.Resting_buys -> buy f
         | Scenario.Resting_sells -> sell f
-        | Scenario.Growing_side -> if buys_grow f.Gate.Fill.symbol then buy f else sell f
+        | Scenario.Growing_side ->
+            if growing_side_buys f.Gate.Fill.symbol then buy f else sell f
         | Scenario.Every_resting -> true
       in
       List.fold Scenario.all ~init:[] ~f:(fun seen scenario ->

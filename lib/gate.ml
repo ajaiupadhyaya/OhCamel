@@ -29,8 +29,9 @@
    "Before" is then that book, not the live one, and created, worsened and
    reduced are all judged relative to it -- so a breach the base alone makes
    is not charged to a proposal that leaves it where it is or brings it
-   back, and a proposal that takes it further over fails as worsened. With no base, "before" is the live graph itself, read
-   exactly as it was before the base existed. The base is still a
+   back, and a proposal that takes it further over fails as worsened. With no
+   base, "before" is the live graph itself, read exactly as it was before the
+   base existed. The base is still a
    hypothetical on a fork: which resting orders to assume fill, and at what
    price, is the caller's to decide, and nothing here knows an order exists. *)
 

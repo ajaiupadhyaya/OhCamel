@@ -584,6 +584,53 @@ let test_only_the_growing_side_catches_a_gross_breach () =
         ((not (D.Oms.Preview.passed p)) && says p "book-cap would be breached"))
     ()
 
+(* The re-review's probe (Task 3's fix round, the Important): [Growing_side]
+   must pick, for the name the PROPOSAL ITSELF trades, the resting side that
+   moves the same way the proposal does -- not simply the larger-magnitude
+   side, which can be the side the proposal is shrinking.
+
+   Resting: XOM buy 250 @ 100 (at the mark) and XOM sell 60 @ 100; MSFT sell
+   548 @ 300 (at the mark). Proposed: XOM buy 10, at the mark (1,000). The
+   proposal's own name is XOM, and its net there is +10, positive, so
+   [Growing_side] must take XOM's resting BUY (250) -- even though, alone,
+   XOM's resting SELL is the larger-magnitude side: base position -200, so
+   |-200 + 250| = 50 against |-200 - 60| = 260. MSFT is untouched by the
+   proposal (net 0), so its side is unchanged by this fix -- only a resting
+   sell rests there, and it is still taken.
+     growing side base:  AAPL 60,000 + MSFT |100 - 548| x 300 (134,400) + XOM
+                          |-200 + 250| x 100 (5,000) = 199,400, clear
+     with the proposal:  XOM |-200 + 250 + 10| x 100 (6,000) -> 200,400 --
+                          created, over book-cap's 200,000
+   Picking XOM's sell instead (the bug the re-review found) puts the base
+   already over book-cap from the resting orders' own sell (AAPL 60,000 +
+   MSFT 134,400 + XOM |-200 - 60| x 100 (26,000) = 220,400), a breach the
+   proposal only reduces (219,400) -- which the gate's own rule (reduced
+   passes) lets through. Every scenario passed under the bug, though a real
+   fill of the resting XOM buy and the MSFT sell, beside this order, breaches
+   book-cap. *)
+let test_growing_side_takes_the_proposals_own_direction_not_the_larger_side () =
+  with_oms
+    ~f:(fun oms journal ->
+      let at p = D.Order.Kind.Limit (price p) in
+      ignore (rest oms journal ~seed:130 xom D.Order.Side.Buy 250 (at 100.0) : D.Order.t);
+      ignore (rest oms journal ~seed:131 xom D.Order.Side.Sell 60 (at 100.0) : D.Order.t);
+      ignore
+        (rest oms journal ~seed:132 msft D.Order.Side.Sell 548 (at 300.0) : D.Order.t);
+      let p = D.Oms.preview oms (ticket xom D.Order.Side.Buy 10) in
+      Alcotest.(check (list string)) "by no rule" [] (rules p);
+      Alcotest.(check (list string))
+        "five distinct bases"
+        [ as_it_stands; if_buys; if_sells; if_growing; if_every ]
+        (scenarios p);
+      Alcotest.(check (option (triple string (list string) (list string))))
+        "book-cap, if each name grows"
+        (Some (if_growing, [ "book-cap" ], []))
+        (failing p);
+      Alcotest.(check bool)
+        "refused, naming book-cap" true
+        ((not (D.Oms.Preview.passed p)) && says p "book-cap would be breached"))
+    ()
+
 (* Resting orders alone can take a limit over its line (the review's minor
    a). They are a base, not part of the proposal, so a proposal is charged
    only with what it does to them. Resting: AAPL buy 100 @ 150. If it fills,
@@ -770,17 +817,20 @@ let test_a_failed_order_counts_until_the_venue_finishes_it () =
     ()
 
 (* A failed order is a day order, and a day order does not outlive its
-   session: once the close after it is recorded in the journal, it no longer
-   counts. MSFT buy 20 @ 300 failed an hour ago and is refused against as
-   above; a session close recorded half an hour ago, after it, ends that --
-   the same proposal passes. *)
-let test_a_failed_order_from_a_closed_session_does_not_count () =
+   session. The bound is the latest recorded session's DATE, not when
+   Session_close actually wrote that row (the re-review's minor: bounding by
+   [recorded_at] can drop a still-live order -- the next test). MSFT buy 20 @
+   300 fails on 2026-09-14 and is refused against, as above; a session dated
+   2026-09-15 -- the day after -- is then recorded (whenever that write
+   actually lands), and the order, from before that date, no longer
+   counts. *)
+let test_a_failed_order_from_an_earlier_session_does_not_count () =
+  let at = Time_ns.of_string_with_utc_offset in
   with_oms
     ~f:(fun oms journal ->
-      let now = Time_ns.now () in
-      let ago m = Time_ns.sub now (Time_ns.Span.of_min m) in
       ignore
-        (fail oms journal ~seed:123 ~at:(ago 60.0) msft D.Order.Side.Buy 20
+        (fail oms journal ~seed:123 ~at:(at "2026-09-14T19:00:00Z") msft D.Order.Side.Buy
+           20
            (D.Order.Kind.Limit (price 300.0))
           : D.Order.t);
       let order2 () =
@@ -792,15 +842,55 @@ let test_a_failed_order_from_a_closed_session_does_not_count () =
         (D.Oms.Preview.passed (order2 ()));
       D.Journal.record_session journal
         {
-          D.Journal.Session.date = Date.today ~zone:Time_float.Zone.utc;
+          D.Journal.Session.date = Date.of_string "2026-09-15";
           equity_close = 1_070_000.0;
           cash_close = 1_000_000.0;
           gross_close = 110_000.0;
           net_close = 70_000.0;
-          recorded_at = ago 30.0;
+          recorded_at = at "2026-09-15T20:05:00Z";
         };
       Alcotest.(check bool)
-        "not once the close after it is recorded" true
+        "not once a session dated after it is recorded" true
+        (D.Oms.Preview.passed (order2 ())))
+    ()
+
+(* The re-review's minor: the bound must be the session's DATE, not
+   [recorded_at] -- when Session_close writes a close late, during the NEXT
+   session (it missed one and only caught up afterwards), [recorded_at] is
+   later than orders that are still live and must not be dropped.
+
+   Monday 2026-09-14's close is recorded on Tuesday afternoon, a day late,
+   but dated 2026-09-14 -- the session it closes, not when the row was
+   written. MSFT buy 20 @ 300 fails Tuesday morning, in the session that has
+   not closed yet, before that late write. Bounding by the session's date
+   (2026-09-14) still counts it, since it was created on or after that date;
+   bounding by [recorded_at] (Tuesday afternoon) would read this Tuesday
+   morning order as older than the write and drop it, though the venue has
+   said nothing about it. *)
+let test_a_close_recorded_late_still_counts_the_next_sessions_failed_order () =
+  let at = Time_ns.of_string_with_utc_offset in
+  with_oms
+    ~f:(fun oms journal ->
+      D.Journal.record_session journal
+        {
+          D.Journal.Session.date = Date.of_string "2026-09-14";
+          equity_close = 1_070_000.0;
+          cash_close = 1_000_000.0;
+          gross_close = 110_000.0;
+          net_close = 70_000.0;
+          recorded_at = at "2026-09-15T18:00:00Z";
+        };
+      ignore
+        (fail oms journal ~seed:124 ~at:(at "2026-09-15T13:35:00Z") msft D.Order.Side.Buy
+           20
+           (D.Order.Kind.Limit (price 300.0))
+          : D.Order.t);
+      let order2 () =
+        D.Oms.preview oms
+          (ticket ~kind:(D.Order.Kind.Limit (price 300.0)) msft D.Order.Side.Buy 15)
+      in
+      Alcotest.(check bool)
+        "still counted, though created before the late write" false
         (D.Oms.Preview.passed (order2 ())))
     ()
 
@@ -854,6 +944,9 @@ let suite =
         test_only_the_resting_sells_catch_a_sector_breach;
       Alcotest.test_case "only the growing side catches a gross breach" `Quick
         test_only_the_growing_side_catches_a_gross_breach;
+      Alcotest.test_case
+        "growing side takes the proposal's own direction, not the larger side" `Quick
+        test_growing_side_takes_the_proposals_own_direction_not_the_larger_side;
       Alcotest.test_case "a breach the resting orders make is theirs, not the proposal's"
         `Quick test_a_breach_the_resting_orders_make_is_theirs_not_the_proposal's;
       Alcotest.test_case "a partly filled resting order counts at what remains" `Quick
@@ -864,8 +957,11 @@ let suite =
         test_a_resting_fill_is_priced_no_better_than_the_mark;
       Alcotest.test_case "a failed order counts until the venue finishes it" `Quick
         test_a_failed_order_counts_until_the_venue_finishes_it;
-      Alcotest.test_case "a failed order from a closed session does not count" `Quick
-        test_a_failed_order_from_a_closed_session_does_not_count;
+      Alcotest.test_case "a failed order from an earlier session does not count" `Quick
+        test_a_failed_order_from_an_earlier_session_does_not_count;
+      Alcotest.test_case
+        "a close recorded late still counts the next session's failed order" `Quick
+        test_a_close_recorded_late_still_counts_the_next_sessions_failed_order;
       Alcotest.test_case "a journal that cannot be read refuses and does not raise" `Quick
         test_a_journal_that_cannot_be_read_refuses_and_does_not_raise;
     ] )

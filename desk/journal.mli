@@ -138,11 +138,13 @@ val load_order : t -> Ids.Client_order_id.t -> Order_row.t option
 val open_orders : t -> Order_row.t list
 (** Non-terminal states, oldest first. *)
 
-val unfinished_failed_orders : t -> since:Time_ns.t option -> Order_row.t list
-(** Orders in state failed, journaled after [since] (every one, when None), for which no
-    venue report has since finished them: no venue_cancelled, venue_expired or
-    venue_rejected event. A fill is not such an event here -- the caller reads what
-    remains from the order's filled quantity. Oldest first. *)
+val unfinished_failed_orders : t -> since:Date.t option -> Order_row.t list
+(** Orders in state failed, created at or after midnight UTC of [since] (every one, when
+    None), for which no venue report has since finished them: no venue_cancelled,
+    venue_expired or venue_rejected event. A fill is not such an event here -- the caller
+    reads what remains from the order's filled quantity. [since] is a session's date, not
+    when its close was recorded, so a close recorded late does not drop an order still
+    live in the session after it. Oldest first. *)
 
 val recent_orders : t -> limit:int -> Order_row.t list
 (** Newest first. *)

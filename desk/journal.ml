@@ -722,18 +722,33 @@ let finishing_events =
             Order.Event.Venue_rejected "";
           ] ~f:(fun e -> sprintf "'%s'" (Order.Event.name e))))
 
-(* Failed orders journaled after [since] -- every one, when None -- with no
-   finishing event since: the ones a venue has not said it is done with.
-   created_at is RFC 3339 UTC at a fixed width, so text order is time order,
-   as [open_orders] already relies on. Oldest first. *)
-let unfinished_failed_orders t ~(since : Time_ns.t option) : Order_row.t list =
-  let since = match since with None -> Data.NULL | Some at -> time at in
+(* Failed orders created at or after the start of [since] -- every one, when
+   None -- with no finishing event since: the ones a venue has not said it is
+   done with. [since] is a SESSION'S DATE, not a recorded_at: the caller
+   passes the latest recorded session's date, so that a close recorded late
+   does not bound out an order still live in the session after it (oms.ml's
+   [failed_still_working] says why). created_at is RFC 3339 UTC text
+   (Desk_time.rfc3339) at a fixed width, so text order is time order, as
+   [open_orders] already relies on, and comparing it against a bare
+   "YYYY-MM-DD" bounds it at midnight UTC of that date: "2026-09-18" sorts
+   before "2026-09-18T00:00:00.000000000Z" and everything after it, being a
+   prefix of it, so [since] itself needs no time-of-day appended.
+
+   Always binds a value -- the date's text, or "" (before any real
+   created_at can sort) when there is no session yet -- so the predicate is
+   sargable and SQLite can use orders_by_created's (created_at,
+   client_order_id) index for both the range scan and this query's own
+   ORDER BY, rather than "(? IS NULL OR created_at > ?)", which is not: SQLite
+   cannot use an index range scan on a column also compared to NULL in the
+   same OR, so every row was scanned and sorted (Task 3's re-review). *)
+let unfinished_failed_orders t ~(since : Date.t option) : Order_row.t list =
+  let since = match since with None -> "" | Some d -> Date.to_string d in
   query t ~what:"unfinished failed orders"
-    ("SELECT client_order_id FROM orders WHERE state = 'failed' AND (? IS NULL OR \
-      created_at > ?) AND NOT EXISTS (SELECT 1 FROM order_events e WHERE \
-      e.client_order_id = orders.client_order_id AND e.event IN " ^ finishing_events
+    ("SELECT client_order_id FROM orders WHERE state = 'failed' AND created_at >= ? AND \
+      NOT EXISTS (SELECT 1 FROM order_events e WHERE e.client_order_id = \
+      orders.client_order_id AND e.event IN " ^ finishing_events
    ^ ") ORDER BY created_at, client_order_id")
-    [ since; since ]
+    [ text since ]
     ~row:(fun r -> col_text r 0)
   |> orders_of_ids t
 

@@ -313,6 +313,39 @@ let test_a_file_journal_runs_in_wal_mode () =
     "two-answers' refusal names the path" true
     (error_names_the_path [ "wal"; "wal" ])
 
+(* Task 3's re-review, minor: [unfinished_failed_orders] must let SQLite use
+   orders_by_created (created_at, client_order_id) as a bounded SEARCH, not
+   merely to walk every row in order. The old clause, "(? IS NULL OR
+   created_at > ?)", is not sargable -- a column compared to NULL in the same
+   OR cannot drive an index range -- so SQLite still used the index for the
+   ORDER BY (checked below) but as a full SCAN, touching every row; the fixed
+   query always binds a value (a date string, or "" when there is no session
+   yet) and compares with a plain ">=", which SQLite can answer as a SEARCH,
+   bounded by that value. There is no [Journal.For_testing.query_plan] on
+   this branch (a later task adds one elsewhere), so this reads SQLite's own
+   answer directly, through the raw handle [For_testing.db] exposes. *)
+let test_the_failed_order_query_is_a_bounded_search_not_a_scan () =
+  let j = open_exn ":memory:" in
+  let plan =
+    let lines = ref [] in
+    ignore
+      (Sqlite3.exec_not_null_no_headers (Journal.For_testing.db j)
+         ~cb:(fun row -> lines := String.concat_array ~sep:" " row :: !lines)
+         "EXPLAIN QUERY PLAN SELECT client_order_id FROM orders WHERE state = 'failed' \
+          AND created_at >= '2026-01-01' ORDER BY created_at, client_order_id"
+        : Sqlite3.Rc.t);
+    String.concat ~sep:"; " (List.rev !lines)
+  in
+  Alcotest.(check bool)
+    (sprintf "a bounded SEARCH on orders_by_created (plan: %s)" plan)
+    true
+    (String.is_substring plan ~substring:"SEARCH orders USING INDEX orders_by_created");
+  Alcotest.(check bool)
+    (sprintf "not a SCAN (plan: %s)" plan)
+    false
+    (String.is_substring plan ~substring:"SCAN orders");
+  Journal.close j
+
 let suite =
   ( "journal",
     [
@@ -336,4 +369,6 @@ let suite =
         test_a_failed_commit_rolls_back_before_the_next_write;
       Alcotest.test_case "a file journal runs in WAL mode" `Quick
         test_a_file_journal_runs_in_wal_mode;
+      Alcotest.test_case "the failed-order query is a bounded search, not a scan" `Quick
+        test_the_failed_order_query_is_a_bounded_search_not_a_scan;
     ] )
