@@ -1,7 +1,7 @@
 # OhCamel
 
 [![ci](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml/badge.svg)](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml)
-[![coverage 77%](https://img.shields.io/badge/coverage-77%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
+[![coverage 79%](https://img.shields.io/badge/coverage-79%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
 
 **Live:** [ohcamel.ajaiupadhyaya.com](https://ohcamel.ajaiupadhyaya.com) — the
 synthetic demo, no credentials, always on. [How it is deployed](#watching-it).
@@ -1186,8 +1186,8 @@ six properties and four example tests. `QCHECK_TRIALS=5000 make test` runs
 
 ### Coverage, and what it is not measuring
 
-`make coverage` runs the suite under `bisect_ppx` and reports **77%** (measured
-2026-09-18). The badge above is that number; CI enforces a floor of 60% and
+`make coverage` runs the suite under `bisect_ppx` and reports **79%** (measured
+2026-09-19). The badge above is that number; CI enforces a floor of 60% and
 prints the full per-file table into the run summary, so a drop is visible
 without anyone remembering to look. The number covers both libraries: the risk
 kernel, `ohcamel` in `lib/`, and the desk, `ohcamel_desk` in `desk/`.
@@ -1196,38 +1196,41 @@ The interesting thing about the number is that it is bimodal, and it should be
 read as two numbers rather than one:
 
 ```
- 95%  lib/history_buffer.ml     75%  lib/options.ml
- 95%  lib/crisis_data.ml        71%  desk/oms.ml
- 94%  desk/ticket.ml            70%  desk/tca.ml
- 93%  lib/graph.ml              68%  lib/gate.ml
- 91%  lib/attribution.ml        65%  desk/desk_routes.ml
- 90%  lib/stress.ml             64%  desk/alpaca_paper.ml
- 90%  desk/rules.ml             64%  desk/book_sync.ml
- 90%  desk/desk_time.ml         64%  desk/order.ml
- 90%  lib/risk_metrics.ml       56%  lib/alerts.ml
- 89%  lib/limits.ml             51%  lib/feed/fred_client.ml
- 88%  lib/reports.ml            51%  desk/session_close.ml
- 87%  lib/vol_estimators.ml     50%  lib/feed/alpaca_rest.ml
- 87%  desk/reconcile.ml         49%  lib/types.ml
- 86%  lib/server.ml             48%  lib/config.ml
- 85%  lib/var_backtest.ml       40%  lib/feed/alpaca_ws.ml
- 83%  desk/desk.ml              36%  desk/trade_updates.ml
- 83%  desk/journal.ml           12%  desk/venue.ml
- 82%  desk/ids.ml
- 82%  desk/sim_venue.ml
- 81%  desk/halt.ml
+  95%  lib/history_buffer.ml     79%  desk/intake.ml
+  95%  lib/crisis_data.ml        78%  desk/rebalance.ml
+  94%  desk/rules.ml             77%  desk/desk_routes.ml
+  94%  desk/ticket.ml            75%  lib/options.ml
+  94%  lib/graph.ml              70%  desk/tca.ml
+  92%  desk/desk_time.ml         65%  desk/alpaca_paper.ml
+  91%  lib/attribution.ml        64%  desk/book_sync.ml
+  90%  lib/stress.ml             63%  desk/order.ml
+  90%  desk/desk.ml              58%  lib/config.ml
+  90%  lib/risk_metrics.ml       56%  lib/alerts.ml
+  89%  lib/gate.ml               51%  lib/feed/fred_client.ml
+  89%  lib/limits.ml             51%  lib/types.ml
+  88%  desk/sim_venue.ml         51%  desk/session_close.ml
+  88%  lib/reports.ml            50%  lib/feed/alpaca_rest.ml
+  87%  lib/vol_estimators.ml     40%  lib/feed/alpaca_ws.ml
+  87%  desk/oms.ml               36%  desk/trade_updates.ml
+  87%  desk/reconcile.ml         13%  desk/venue.ml
+  86%  desk/contract.ml
+  86%  lib/server.ml
+  85%  lib/var_backtest.ml
+  84%  desk/halt.ml
+  82%  desk/ids.ml
+  81%  desk/journal.ml
 ```
 
 The left column is the numeric core, the HTTP, JSON and server-sent-events
 layer that serves it (`lib/server.ml`), and the desk's simpler pieces — a
 rule, a ticket, the switch, a reconciliation — each tested directly against a
-hand-computed value or a fixed scenario. `desk.ml` and `journal.ml` join it
-here, both above 80% for the first time since this table was written.
-That is not every file that *decides* something: `lib/gate.ml` answers what
-an order would do to the book, and the order manager and its routes decide
-the rest of what the desk does, and all three sit in the right column below,
-each for its own reason. The split sits at 80% of each file's unrounded
-figure.
+hand-computed value or a fixed scenario. At this measurement (2026-09-19)
+`lib/gate.ml`, which answers what an order would do to the book, and
+`desk/oms.ml`, the order manager, join it -- A3's gate and rebalance tests
+moved them from 68% and 71% -- and `desk/contract.ml`, the signal contract,
+enters it new. The desk's routes, A3's intake and its rebalance planner sit
+in the right column, each just under the line. The split sits at 80% of each
+file's unrounded figure.
 
 The right column is not one thing. Six files in it perform network IO
 themselves — `lib/feed/alpaca_ws.ml`, `lib/feed/alpaca_rest.ml`,
@@ -1258,6 +1261,12 @@ boilerplate on its state and event types; `desk/book_sync.ml` is pure too,
 and its gap is that same derived boilerplate plus a comparator that only
 sorts when a sync leaves two or more unmanaged positions, which no test has
 done yet.
+
+The paragraphs from here on name each file's gap as `bisect-ppx-report`
+showed it at the 2026-09-18 measurement, before A3. Since then A3's tests have
+closed much of what they say `lib/gate.ml` and `desk/oms.ml` left unvisited
+(the table above is current); what they say about the other files still
+stands.
 
 `lib/gate.ml`'s whole gap is the derived `sexp_of` on its three record types
 (`Fill.t`, `Move.t`, `Verdict.t`) and the `None`, or fallback, arm of four
