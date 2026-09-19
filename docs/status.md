@@ -486,8 +486,10 @@ ssh root@DROPLET 'bash -s' < deploy/provision.sh
 git pull --ff-only && deploy/deploy.sh          # public demo
 git pull --ff-only && deploy/deploy.sh --live   # plus the live host
 
-# roll back: deploy.sh always builds origin/main, so a rollback is a revert on
-# main, pushed, then the redeploy above -- not a checkout on the droplet, which
+# roll back: deploy.sh fast-forwards whatever branch is checked out (`git pull
+# --ff-only`), it does not always build origin/main, so a rollback is a revert
+# on the branch actually checked out on the droplet (main, for every deploy so
+# far), pushed, then the redeploy above -- not a checkout on the droplet, which
 # the next deploy's pull would undo
 
 # look
@@ -496,8 +498,11 @@ docker compose -f deploy/docker-compose.yml logs --tail 100 [caddy|ohcamel-demo|
 deploy/smoke.sh https://ohcamel.ajaiupadhyaya.com [--live https://live.ohcamel.ajaiupadhyaya.com] [--expect-sha "$(git rev-parse HEAD)"]
 open https://ohcamel.ajaiupadhyaya.com/ops       # which build, how long, what the process is doing; the live host's /ops draws both
 
-# change the book without a rebuild: edit book.sexp, then
+# change the book without a rebuild: edit book.sexp, then restart the engine
+# that reads it -- the demo and the live engine are separate containers, so
+# restarting one does not pick up the edit on the other
 docker compose -f deploy/docker-compose.yml restart ohcamel-demo
+docker compose -f deploy/docker-compose.yml --profile live restart ohcamel-live
 ```
 
 Things not to do: delete the `caddy_data` volume (it holds the certificate and

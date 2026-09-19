@@ -14,6 +14,72 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Stage 0, not Stage 1: deploy.sh reaches the owner for the overdue W2/A3
+  # deploy the moment this branch merges, so the check on it has to exist
+  # before that, not in a later stage's plan. Least-privilege token: this job
+  # only reads the checkout and runs local scripts, so contents: read is
+  # everything it needs, and naming that explicitly is cheaper than auditing
+  # later whether some step quietly started needing more.
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # ubuntu-latest normally carries shellcheck already; installed here only
+      # if a runner image ever drops it, so this step is never the reason the
+      # job is red.
+      - name: shellcheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+          shellcheck --version
+
+          # scripts/*.sh does not exist yet in this stage -- nullglob so an
+          # empty scripts/ drops out of the argument list instead of being
+          # passed to shellcheck as a literal, missing filename. deploy/*.sh
+          # and deploy/test/*.sh are never empty, so the check below still
+          # catches the case where every glob came up empty.
+          shopt -s nullglob
+          files=(deploy/*.sh deploy/test/*.sh scripts/*.sh)
+          shopt -u nullglob
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no shell scripts found under deploy/, deploy/test/ or scripts/ -- this check would lint nothing"
+            exit 1
+          fi
+          printf 'linting:\n'
+          printf '  %s\n' "${files[@]}"
+          # -S warning: this repo's existing scripts carry a few info-level
+          # notes (SC1091 on a sourced /etc/os-release, SC2015 on `A && B ||
+          # C` used for its short-circuit rather than as if/else) that are not
+          # bugs. warning and above is where a seeded mistake -- an unquoted
+          # expansion, a genuinely wrong test -- actually shows up.
+          shellcheck -S warning "${files[@]}"
+
+      # Every hand-written guard test in deploy/test/, run and required to
+      # pass. Today that is deploy_guard_test.sh (deploy.sh's market-hours
+      # guard); a later task's own test lands here the same way, by adding
+      # another file under deploy/test/, with no change to this step.
+      - name: deploy/test/*.sh
+        run: |
+          shopt -s nullglob
+          tests=(deploy/test/*.sh)
+          shopt -u nullglob
+          if [ ${#tests[@]} -eq 0 ]; then
+            echo "no deploy/test/*.sh found -- this check would run nothing"
+            exit 1
+          fi
+          status=0
+          for t in "${tests[@]}"; do
+            echo "== $t =="
+            bash "$t" || status=1
+          done
+          exit "$status"
+
   build-and-test:
     # Two platforms, and the second one is not decoration. The Makefile carries
     # two long write-ups of Owl bugs that only appear on arm64 macOS — a clang
