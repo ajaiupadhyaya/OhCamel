@@ -382,7 +382,8 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
                       | Ok () ->
                           Oms.on_event oms
                             "desk      the kill has asked the venue to cancel every open \
-                             order it has an id for"
+                             order it has an id for, and every order it declared failed \
+                             that the venue lists as working"
                       | Error exn -> log_exn oms ~route:"kill's cancels" exn);
                     Option.iter raised ~f:(fun exn ->
                         try log_exn oms ~route:"kill" exn with _ -> ());

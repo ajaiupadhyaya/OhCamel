@@ -181,26 +181,37 @@ let read (t : t) : Venue.Read.t =
 
 let half t symbol = t.half_spread_bps symbol /. 10_000.0
 
-let submit_now (t : t) (r : Order.Request.t) : Venue.Submission.t =
-  t.next_id <- t.next_id + 1;
-  let id = sprintf "sim-%d" t.next_id in
-  let order =
-    {
-      Venue.Venue_order.id;
-      client_order_id = Ids.Client_order_id.to_string r.Order.Request.client_order_id;
-      symbol = r.Order.Request.symbol;
-      side = r.Order.Request.side;
-      qty = Float.of_int r.Order.Request.qty;
-      filled_qty = 0.0;
-      filled_avg_price = None;
-      status = "new";
-      limit_price =
-        Option.map (Order.Kind.limit_price r.Order.Request.kind) ~f:Price.to_float;
-    }
-  in
-  t.orders <- Map.set t.orders ~key:id ~data:(order, r, Time_ns.add (t.now ()) t.latency);
-  t.by_client <- Map.set t.by_client ~key:order.Venue.Venue_order.client_order_id ~data:id;
-  Venue.Submission.Accepted order
+(* The venue taking an order, with no permit and no journal: what [trade]'s
+   submit does once the wire module has handed it an order, and what a test
+   of the simulator's own fills calls directly. In [For_testing], not at the
+   top level, because nothing in the desk may call it: an order it takes was
+   never journaled and never gated. test/test_rebalance.ml's one-submit-site
+   case fails when any file in desk/ or bin/ but this one names the
+   function, and when this one names it anywhere but its definition and
+   [trade]'s submit. *)
+module For_testing = struct
+  let submit_now (t : t) (r : Order.Request.t) : Venue.Submission.t =
+    t.next_id <- t.next_id + 1;
+    let id = sprintf "sim-%d" t.next_id in
+    let order =
+      {
+        Venue.Venue_order.id;
+        client_order_id = Ids.Client_order_id.to_string r.Order.Request.client_order_id;
+        symbol = r.Order.Request.symbol;
+        side = r.Order.Request.side;
+        qty = Float.of_int r.Order.Request.qty;
+        filled_qty = 0.0;
+        filled_avg_price = None;
+        status = "new";
+        limit_price =
+          Option.map (Order.Kind.limit_price r.Order.Request.kind) ~f:Price.to_float;
+      }
+    in
+    t.orders <- Map.set t.orders ~key:id ~data:(order, r, Time_ns.add (t.now ()) t.latency);
+    t.by_client <-
+      Map.set t.by_client ~key:order.Venue.Venue_order.client_order_id ~data:id;
+    Venue.Submission.Accepted order
+end
 
 let find_now (t : t) (client : Ids.Client_order_id.t) : Venue.Venue_order.t option =
   Option.bind
@@ -315,7 +326,7 @@ let trade ?(auto = true) (t : t) : Wire.permit Venue.Trade.t =
   {
     Venue.Trade.submit =
       (fun _permit r ->
-        let s = submit_now t r in
+        let s = For_testing.submit_now t r in
         (match s with
         | Venue.Submission.Accepted o ->
             emit t { Venue.Update.event = "new"; order = o; fill = None; at = t.now () }

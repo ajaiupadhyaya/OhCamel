@@ -293,13 +293,14 @@ let cid n =
     (D.Ids.Client_order_id.of_string (sprintf "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZ%02d" n))
 
 (* An order written straight into the journal in [state], with [fills]. *)
-let journal_order journal ~n ~source ?(side = D.Order.Side.Buy) ~state ?(fills = []) qty =
+let journal_order journal ~n ~source ?(symbol = aapl) ?(side = D.Order.Side.Buy) ~state
+    ?(fills = []) qty =
   let o =
     {
       (D.Order.create
          {
            D.Order.Request.client_order_id = cid n;
-           symbol = aapl;
+           symbol;
            side;
            qty;
            kind = D.Order.Kind.Market;
@@ -735,6 +736,97 @@ let test_a_rebalance_is_sized_and_priced_at_the_close_not_the_live_mark () =
                  Price.to_float p)))
     ()
 
+(* The final review's probe: every prefix of the send order is gated. The
+   account holds AAPL -500 by hand and MSFT +350, the strategy's own (one
+   fill, journaled); a long-only two-symbol strategy buys AAPL 500 and sells
+   MSFT 350. Both orders shrink a position -- AAPL -500 to 0, MSFT 350 to 0
+   -- so the growing-only gate has nothing to gate, and by name the AAPL buy
+   goes first. The order cap is raised to 200,000 for this case, so no rule
+   stands in front of the gate (74,500 and 104,650 at the closes). TECH is
+   the size of a net sum:
+     the unit:           AAPL 0 x 150 + MSFT   0 x 300 =       0  passes
+     the AAPL buy alone: AAPL 0 x 150 + MSFT 350 x 300 = 105,000  over tech-cap
+   and the AAPL buy alone is what reaches the book when the venue does not
+   acknowledge the MSFT sell, or the switch is set before it. Refused, naming
+   the prefix, its order and tech-cap, and nothing journaled. With MSFT 300
+   held instead, the AAPL buy alone is 90,000, and the rebalance passes, the
+   buy first: the prefixes refuse what breaches and nothing else. (A single
+   order's only prefix is the rebalance itself, gated once: the cases above
+   are judged as they were.) *)
+let test_every_prefix_of_the_send_order_is_gated () =
+  let spec =
+    {
+      Desk_spec.default with
+      Desk_spec.trading = Desk_spec.Enabled;
+      max_order_notional = 200_000.0;
+    }
+  in
+  let legs msft_qty =
+    [ leg msft D.Order.Side.Sell msft_qty; leg aapl D.Order.Side.Buy 500 ]
+  in
+  with_oms ~spec
+    ~held:[ (aapl, -500.0); (msft, 350.0); (xom, -200.0) ]
+    ~f:(fun oms journal ->
+      journal_order journal ~n:7 ~source:"signal:exp_a01_tech:1" ~symbol:msft
+        ~state:D.Order.State.Filled ~fills:[ 350.0 ] 350;
+      let why = refusal (D.Oms.check_rebalance oms ~source ~legs:(legs 350)) in
+      contains "the prefix"
+        ~substring:"the gate refuses the rebalance if it stops after order 1 of 2" why;
+      contains "its one order, and tech-cap"
+        ~substring:"(order 1 of 2 (AAPL buy 500 market-on-open) at 149.00): tech-cap" why;
+      Alcotest.(check int)
+        "nothing journaled but the strategy's own fill" 1 (journaled journal))
+    ();
+  with_oms ~spec
+    ~held:[ (aapl, -500.0); (msft, 300.0); (xom, -200.0) ]
+    ~f:(fun oms _ ->
+      match D.Oms.check_rebalance oms ~source ~legs:(legs 300) with
+      | Error why -> Alcotest.failf "MSFT 300: refused: %s" why
+      | Ok checked ->
+          Alcotest.(check (list string))
+            "MSFT 300: passes, the AAPL buy first" [ "AAPL"; "MSFT" ]
+            (List.map checked.D.Oms.Checked_rebalance.orders ~f:(fun (r, _) ->
+                 Symbol.to_string r.D.Order.Request.symbol)))
+    ()
+
+(* [plan_rebalance] runs outside the order manager's queue, and
+   [check_rebalance] inside it, so what the plan read is asked again there.
+   The strategy owns AAPL 100 (one fill, journaled) and the account holds
+   400: a flat signal plans a sale of 100. Then, before the rebalance's turn,
+   the account's AAPL reads 60 -- a hand sale -- and the check refuses in
+   I2's words. And with the book no longer the account's, the equity is
+   unknown: refused in the sizing's words, ahead of the rules. *)
+let test_the_rebalance_asks_again_what_its_plan_read () =
+  with_oms
+    ~f:(fun oms journal ->
+      journal_order journal ~n:8 ~source:"signal:exp_a01_tech:1"
+        ~state:D.Order.State.Filled ~fills:[ 100.0 ] 100;
+      let legs =
+        match D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[] with
+        | Ok legs -> legs
+        | Error why -> Alcotest.failf "the plan: %s" why
+      in
+      Alcotest.(check (list (pair string int)))
+        "the plan: sell 100"
+        [ ("sell", 100) ]
+        (List.map legs ~f:(fun (l : Leg.t) ->
+             (D.Order.Side.to_string l.Leg.side, l.Leg.qty)));
+      Graph.set_qty oms.D.Oms.graph aapl (Qty.of_float 60.0);
+      Graph.stabilize oms.D.Oms.graph;
+      contains "I2, asked again"
+        ~substring:"the account holds 60 AAPL, less than the strategy's own 100"
+        (refusal (D.Oms.check_rebalance oms ~source ~legs)))
+    ();
+  with_oms ~book_is_current:false
+    ~f:(fun oms _ ->
+      contains "the equity, asked again"
+        ~substring:
+          "the book's equity is unknown: the desk has not applied a recent read of the \
+           account"
+        (refusal
+           (D.Oms.check_rebalance oms ~source ~legs:[ leg aapl D.Order.Side.Buy 10 ])))
+    ()
+
 (* Invariant 10's other half: one submit site. What the compiler holds:
    the venue's submit takes a permit (Venue.Trade.t's parameter); both
    adapters build their trading half at desk/wire.ml's permit, whose values
@@ -748,7 +840,11 @@ let test_a_rebalance_is_sized_and_priced_at_the_close_not_the_live_mark () =
      module (module W = ..., open, include) or of its function names it
      again, and fails here;
    - submit_journaled, the function that makes that call, is named in
-     oms.ml alone: nothing else can hand an order to it. *)
+     oms.ml alone: nothing else can hand an order to it;
+   - the simulator's own submit, which takes no permit, is named only where
+     sim_venue.ml defines it (in For_testing) and where its trading half
+     calls it: the one venue-side way in that skips the permit is the
+     tests', and the permit's. *)
 let test_the_venue's_submit_is_called_in_one_place () =
   let files dir =
     Sys_unix.readdir dir |> Array.to_list
@@ -812,7 +908,20 @@ let test_the_venue's_submit_is_called_in_one_place () =
   Alcotest.(check (list string))
     "submit_journaled is named in oms.ml alone" [ "../desk/oms.ml" ]
     (List.map (found ~word:"submit_journaled") ~f:(fun (file, _, _) -> file)
-    |> List.dedup_and_sort ~compare:String.compare)
+    |> List.dedup_and_sort ~compare:String.compare);
+  (* The simulator taking an order with no permit and no journal
+     (Sim_venue.For_testing): the tests' way in, and trade's. Named where it
+     is defined and where trade's submit calls it, in sim_venue.ml, and
+     nowhere else in desk/ or bin/ -- a call from the engine, or an alias
+     that re-exports it, names it again and fails here. *)
+  Alcotest.(check (list (pair string string)))
+    "the simulator's own submit: its definition and trade's call, and nothing else"
+    [
+      ( "../desk/sim_venue.ml",
+        "let submit_now (t : t) (r : Order.Request.t) : Venue.Submission.t =" );
+      ("../desk/sim_venue.ml", "let s = For_testing.submit_now t r in");
+    ]
+    (List.map (found ~word:"submit_now") ~f:(fun (file, _, line) -> (file, line)))
 
 let suite =
   ( "rebalance",
@@ -858,4 +967,8 @@ let suite =
         `Quick test_no_targets_when_the_account_holds_less_than_the_strategy's_own;
       Alcotest.test_case "a rebalance is sized and priced at the close, not the live mark"
         `Quick test_a_rebalance_is_sized_and_priced_at_the_close_not_the_live_mark;
+      Alcotest.test_case "every prefix of the send order is gated" `Quick
+        test_every_prefix_of_the_send_order_is_gated;
+      Alcotest.test_case "the rebalance asks again what its plan read" `Quick
+        test_the_rebalance_asks_again_what_its_plan_read;
     ] )

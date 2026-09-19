@@ -914,6 +914,126 @@ let test_a_journal_that_cannot_be_read_refuses_and_does_not_raise () =
         (says p "the journal's failed orders could not be read"))
     ()
 
+(* A failed order's DELETE is journaled before it is sent, as an open
+   order's cancel is ([Oms.cancel_failed]). MSFT buy 20 @ 300 fails; the
+   venue then reports it resting under venue-9, and the desk keeps that id
+   (an anomaly, as Order.keep_venue_id says). At the instant the venue's
+   cancel is called, the journal's last event for the order is already
+   cancel_requested, the state still failed and no anomaly beside it. A
+   second report of the same order sends no second DELETE and journals
+   nothing more. *)
+let test_a_failed_order's_delete_is_journaled_before_it_is_sent () =
+  with_oms
+    ~f:(fun oms journal ->
+      let o =
+        fail oms journal ~seed:125 ~at:(Time_ns.now ()) msft D.Order.Side.Buy 20
+          (D.Order.Kind.Limit (price 300.0))
+      in
+      let client =
+        D.Ids.Client_order_id.to_string o.D.Order.request.D.Order.Request.client_order_id
+      in
+      let events () =
+        let rows = ref [] in
+        ignore
+          (Sqlite3.exec_not_null_no_headers
+             (D.Journal.For_testing.db journal)
+             ~cb:(fun row -> rows := String.concat_array ~sep:" / " row :: !rows)
+             (sprintf
+                "SELECT event, state_after, COALESCE(anomaly, '-') FROM order_events \
+                 WHERE client_order_id = '%s' ORDER BY seq"
+                client)
+            : Sqlite3.Rc.t);
+        List.rev !rows
+      in
+      let venue =
+        D.Sim_venue.create ~opened_at:(Time_ns.now ())
+          ~marks:(fun _ -> None)
+          ~now:Time_ns.now
+          ~half_spread_bps:(fun _ -> 5.0)
+          ~cash:(money 1_000_000.0) ~positions:[] ()
+      in
+      let deletes = ref [] in
+      let trade =
+        {
+          (D.Sim_venue.trade ~auto:false venue) with
+          D.Venue.Trade.cancel =
+            (fun id ->
+              deletes := (id, List.last (events ())) :: !deletes;
+              Async.return (Ok ()));
+        }
+      in
+      let resting =
+        {
+          D.Venue.Venue_order.id = "venue-9";
+          client_order_id = client;
+          symbol = msft;
+          side = D.Order.Side.Buy;
+          qty = 20.0;
+          filled_qty = 0.0;
+          filled_avg_price = None;
+          status = "new";
+          limit_price = Some 300.0;
+        }
+      in
+      let o = D.Oms.record oms o (D.Order.Event.Found "venue-9") in
+      ignore (D.Oms.cancel_failed oms trade o resting : unit Async.Deferred.t);
+      Alcotest.(check (list (pair string (option string))))
+        "at the DELETE, cancel_requested is journaled: the order failed, no anomaly"
+        [ ("venue-9", Some "cancel_requested / failed / -") ]
+        !deletes;
+      let journaled = List.length (events ()) in
+      ignore (D.Oms.cancel_failed oms trade o resting : unit Async.Deferred.t);
+      Alcotest.(check (pair int int))
+        "a second report: no second DELETE, nothing more journaled" (1, journaled)
+        (List.length !deletes, List.length (events ())))
+    ()
+
+(* Which of the venue's statuses mean it still works the order -- it can
+   still fill, and a DELETE would stop it -- and which do not. Alpaca's
+   resting statuses, of which the simulator uses new and partially_filled;
+   then pending_cancel, done_for_day, the terminal ones and the rest of
+   Alpaca's list, none of which a DELETE stops, and two that are not
+   statuses at all: the test is exact, not a prefix or a case-folding. *)
+let test_which_venue_statuses_rest () =
+  let rests status =
+    D.Venue.Venue_order.rests
+      {
+        D.Venue.Venue_order.id = "venue-1";
+        client_order_id = "client-1";
+        symbol = aapl;
+        side = D.Order.Side.Buy;
+        qty = 1.0;
+        filled_qty = 0.0;
+        filled_avg_price = None;
+        status;
+        limit_price = None;
+      }
+  in
+  let resting =
+    [
+      "new"; "accepted"; "pending_new"; "accepted_for_bidding"; "partially_filled"; "held";
+    ]
+  and not_resting =
+    [
+      "pending_cancel";
+      "done_for_day";
+      "filled";
+      "canceled";
+      "expired";
+      "rejected";
+      "replaced";
+      "pending_replace";
+      "stopped";
+      "suspended";
+      "calculated";
+      "NEW";
+      "";
+    ]
+  in
+  Alcotest.(check (pair (list string) (list string)))
+    "resting, and not" (resting, not_resting)
+    (List.partition_tf (resting @ not_resting) ~f:rests)
+
 let suite =
   ( "oms",
     [
@@ -968,4 +1088,7 @@ let suite =
         test_a_close_recorded_late_still_counts_the_next_sessions_failed_order;
       Alcotest.test_case "a journal that cannot be read refuses and does not raise" `Quick
         test_a_journal_that_cannot_be_read_refuses_and_does_not_raise;
+      Alcotest.test_case "a failed order's DELETE is journaled before it is sent" `Quick
+        test_a_failed_order's_delete_is_journaled_before_it_is_sent;
+      Alcotest.test_case "which venue statuses rest" `Quick test_which_venue_statuses_rest;
     ] )

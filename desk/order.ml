@@ -296,6 +296,11 @@ let apply (t : t) (event : Event.t) : t * Anomaly.t option =
   | (State.Submitted | State.Accepted | State.Partially_filled), Event.Cancel_requested ->
       move State.Pending_cancel
   | State.Pending_cancel, Event.Cancel_requested -> (t, None)
+  (* A failed order the venue reports it still works is cancelled by the desk
+     (Oms.cancel_failed), and the request is journaled before the DELETE is
+     sent. Failed is terminal, so the state stays; the event is the record
+     that the desk asked, and no anomaly. *)
+  | State.Failed, Event.Cancel_requested -> (t, None)
   | ( ( State.Pending_submit | State.Submit_unknown | State.Submitted | State.Accepted
       | State.Partially_filled | State.Pending_cancel ),
       Event.Venue_cancelled ) ->

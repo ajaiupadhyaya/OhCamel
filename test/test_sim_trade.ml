@@ -43,7 +43,7 @@ let later now ms = now := Time_ns.add t0 (Time_ns.Span.of_ms ms)
 
 let test_a_market_buy_fills_at_the_ask_after_the_latency () =
   let venue, now, _ = fixture () in
-  (match Sim.submit_now venue (request 1 10) with
+  (match Sim.For_testing.submit_now venue (request 1 10) with
   | Venue.Submission.Accepted o ->
       Alcotest.(check string) "accepted as new" "new" o.Venue.Venue_order.status
   | _ -> Alcotest.fail "the simulated venue refused a plain market order");
@@ -72,7 +72,8 @@ let test_a_market_buy_fills_at_the_ask_after_the_latency () =
 let test_a_limit_buy_waits_for_the_ask_to_reach_it () =
   let venue, now, mark = fixture () in
   ignore
-    (Sim.submit_now venue (request ~kind:(Order.Kind.Limit (Price.of_float 149.0)) 2 5)
+    (Sim.For_testing.submit_now venue
+       (request ~kind:(Order.Kind.Limit (Price.of_float 149.0)) 2 5)
       : Venue.Submission.t);
   later now 300.0;
   (* ask 150.075 > 149: no fill *)
@@ -88,7 +89,9 @@ let test_a_limit_buy_waits_for_the_ask_to_reach_it () =
 
 let test_a_sell_from_flat_is_a_short () =
   let venue, now, _ = fixture () in
-  ignore (Sim.submit_now venue (request ~side:Order.Side.Sell 3 5) : Venue.Submission.t);
+  ignore
+    (Sim.For_testing.submit_now venue (request ~side:Order.Side.Sell 3 5)
+      : Venue.Submission.t);
   later now 250.0;
   match Sim.step venue with
   | [ { Venue.Update.fill = Some f; _ } ] ->
@@ -103,7 +106,7 @@ let test_a_sell_from_flat_is_a_short () =
 let test_a_cancelled_order_never_fills () =
   let venue, now, _ = fixture () in
   let o =
-    match Sim.submit_now venue (request 4 10) with
+    match Sim.For_testing.submit_now venue (request 4 10) with
     | Venue.Submission.Accepted o -> o
     | _ -> Alcotest.fail "refused"
   in

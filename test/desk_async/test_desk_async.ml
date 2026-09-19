@@ -111,10 +111,11 @@ let managers_built = ref 0
    stops being so. [on_change] is the page's nudge, a no-op unless a case
    makes it raise; [on_event] runs after each line is kept in [f.events], for
    a case whose log must raise. Its lookups keep production's schedule -- 2, 10 and 30 s --
-   on the fixture's clock, so they fire only when a case advances it. *)
+   on the fixture's clock, so they fire only when a case advances it. [run] is
+   started unless a case starts it itself, to watch what it returns. *)
 let manager ?trade ?read ?(now = Time_ns.now) ?(book_is_current = fun () -> true)
     ?(halt = D.Halt.create D.Halt.Source.none) ?(on_change = ignore) ?(on_event = ignore)
-    f =
+    ?(run = true) f =
   let trade =
     match trade with Some t -> t | None -> D.Sim_venue.trade ~auto:false f.venue
   in
@@ -135,7 +136,7 @@ let manager ?trade ?read ?(now = Time_ns.now) ?(book_is_current = fun () -> true
       ()
   in
   D.Oms.set_market oms ~session_open:true ~adv20:[];
-  don't_wait_for (D.Oms.run oms);
+  if run then don't_wait_for (D.Oms.run oms);
   oms
 
 (* Every job the last step queued -- the pipe, the sequencer, the journal's
@@ -702,13 +703,17 @@ let test_under_the_engine's_stop_a_refused_cancel_is_sent_again () =
   return ()
 
 (* The restart after that stop (fix round 1). The journal says pending_cancel
-   and the venue still has the order resting: no DELETE ever reached it. The
-   restart's reconciliation sends it again by the venue's id. The first
-   answer is not a confirmation, so the next reconciliation that finds it
-   resting sends it again; that one the venue takes, though its reports
-   still say new until it acts, so a third reconciliation sends nothing --
-   one DELETE per venue id. When the venue acts, the restart's stream
-   reports the order cancelled. *)
+   and the venue still has the order resting: no DELETE ever reached it. And
+   while nobody listened, 20 of its 50 filled at 99: the venue's lookup says
+   partially_filled, 20 at 99, still working the rest. The restart's
+   reconciliation recovers the fill first, which moves the order to
+   partially_filled, so the cancel is asked for again, journaled as one --
+   pending_cancel, the 20 kept -- and the DELETE is sent again by the venue's
+   id. The first answer is not a confirmation, so the next reconciliation
+   that finds it resting sends it again; that one the venue takes, though its
+   reports still say it rests until it acts, so a third reconciliation sends
+   nothing -- one DELETE per venue id. When the venue acts, the restart's
+   stream reports the order cancelled. *)
 let test_a_restart_sends_again_a_cancel_that_never_arrived () =
   let f = fixture () in
   let sim = D.Sim_venue.trade ~auto:false f.venue in
@@ -729,8 +734,17 @@ let test_a_restart_sends_again_a_cancel_that_never_arrived () =
   Alcotest.(check (pair string string))
     "stopped; pending_cancel on the desk, new at the venue" ("pending_cancel", "new")
     (state f resting, resting_at f resting);
-  (* The restart, with the key fixed. *)
+  (* The restart, with the key fixed. The simulated venue fills whole orders
+     only, so the partial fill is the lookup's answer, written by hand. *)
   let venue = D.Sim_venue.trade ~auto:false f.venue in
+  let partly (v : D.Venue.Venue_order.t) =
+    {
+      v with
+      D.Venue.Venue_order.status = "partially_filled";
+      filled_qty = 20.0;
+      filled_avg_price = Some 99.0;
+    }
+  in
   let deletes = ref [] and answers = ref [ refused; Ok () ] in
   let restarted =
     manager
@@ -745,12 +759,20 @@ let test_a_restart_sends_again_a_cancel_that_never_arrived () =
                   answers := rest;
                   return answer
               | [] -> return (Ok ()));
+          find_order =
+            (fun c ->
+              let%map found = venue.D.Venue.Trade.find_order c in
+              Or_error.map found ~f:(Option.map ~f:partly));
         }
       f
   in
   let%bind () = D.Oms.reconcile restarted in
   let%bind () = settle () in
   Alcotest.(check (list string)) "the restart sends it again" [ "sim-1" ] !deletes;
+  Alcotest.(check (pair string (float 1e-9)))
+    "the fill recovered, and the cancel asked for again: pending_cancel, 20 kept"
+    ("pending_cancel", 20.0)
+    (state f resting, (journaled f resting).D.Order.filled_qty);
   let%bind () = D.Oms.reconcile restarted in
   let%bind () = settle () in
   Alcotest.(check (list string))
@@ -762,7 +784,9 @@ let test_a_restart_sends_again_a_cancel_that_never_arrived () =
     "still pending_cancel until the venue acts" "pending_cancel" (state f resting);
   let%bind (_ : unit Or_error.t) = venue.D.Venue.Trade.cancel "sim-1" in
   let%bind () = pump f in
-  Alcotest.(check string) "and then cancelled" "cancelled" (state f resting);
+  Alcotest.(check (pair string (float 1e-9)))
+    "and then cancelled, the 20 kept" ("cancelled", 20.0)
+    (state f resting, (journaled f resting).D.Order.filled_qty);
   Graph.destroy f.graph;
   return ()
 
@@ -1073,9 +1097,12 @@ let test_a_failed_order_the_venue_reports_resting_is_cancelled () =
   Alcotest.(check string)
     "and cancelled at the venue" "canceled" (at_venue a).D.Venue.Venue_order.status;
   (* XOM's, by a reconciliation, under a halt by hand. Its report as the venue
-     made it before the cancel is kept for the late copy below. *)
+     made it before the cancel is kept for the late copy below. The halt is
+     set on the switch itself, not by [Oms.kill], whose own cancels look for
+     failed orders too (the cases after this one): here the reconciliation
+     is what finds it. *)
   let before_the_cancel = at_venue x in
-  let%bind () = D.Oms.kill oms ~why:"testing the switch" in
+  D.Halt.halt (D.Oms.halt oms) ~why:"testing the switch" ~at:t0;
   let%bind () = D.Oms.reconcile oms in
   let%bind () = settle () in
   Alcotest.(check (pair int int)) "one DELETE, for sim-2" (1, 1) (deletes_of_both ());
@@ -1096,6 +1123,212 @@ let test_a_failed_order_the_venue_reports_resting_is_cancelled () =
     (Queue.count f.events ~f:(fun line ->
          String.is_substring line ~substring:"declared failed"
          && String.is_substring line ~substring:"cancelling it"));
+  Graph.destroy f.graph;
+  return ()
+
+(* A failed order the venue still works, and nothing else: a limit buy of 10
+   AAPL at 99 that rests at the venue as sim-1, whose answer was lost and
+   whose every lookup missed, so at t0 + 42 s the desk declared it failed.
+   The venue never reports it on the stream, and no reconciliation runs. The
+   stream is [to_desk], which the case may close; the venue's own updates go
+   to a pipe nobody reads. *)
+let failed_but_resting () =
+  let f = fixture () in
+  let sim = D.Sim_venue.trade ~auto:false f.venue in
+  let stream, to_desk = Pipe.create () in
+  let deletes = ref [] in
+  let blind =
+    {
+      sim with
+      D.Venue.Trade.submit =
+        (fun permit r ->
+          let%map (_ : D.Venue.Submission.t) = sim.D.Venue.Trade.submit permit r in
+          D.Venue.Submission.Unknown "timed out after 10 s");
+      find_order = (fun _ -> return (Ok None));
+      cancel =
+        (fun id ->
+          deletes := id :: !deletes;
+          sim.D.Venue.Trade.cancel id);
+      updates = stream;
+    }
+  in
+  let oms = manager ~trade:blind f in
+  let%bind _, a = D.Oms.propose oms (ticket ~kind:limit_at_99 aapl D.Order.Side.Buy 10) in
+  let%bind () =
+    Time_source.advance_by_alarms ~wait_for:settle f.clock
+      ~to_:(Time_ns.add t0 (Time_ns.Span.of_sec 42.0))
+  in
+  let%map () = settle () in
+  Alcotest.(check (pair string string))
+    "declared failed, and resting at the venue" ("failed", "new")
+    (state f a, resting_at f a);
+  (f, oms, a, deletes, to_desk)
+
+(* A kill cancels it: the open set cannot name a failed order, so the kill's
+   cancels ask the venue's own list of its open orders for any this desk
+   declared failed (Oms.cancel_all), and DELETE it by the venue's id. A
+   market-on-open order the venue holds would otherwise rest some fourteen
+   hours, to the auction, with the switch set. *)
+let test_a_kill_cancels_a_failed_order_the_venue_still_works () =
+  let%bind f, oms, a, deletes, _ = failed_but_resting () in
+  let%bind () = D.Oms.kill oms ~why:"testing the switch" in
+  let%bind () = settle () in
+  Alcotest.(check (list string)) "one DELETE, for sim-1" [ "sim-1" ] !deletes;
+  Alcotest.(check (pair string string))
+    "cancelled at the venue; failed on the desk" ("canceled", "failed")
+    (resting_at f a, state f a);
+  Alcotest.(check (option string))
+    "by the venue id the desk now keeps" (Some "sim-1")
+    (journaled f a).D.Order.venue_order_id;
+  Graph.destroy f.graph;
+  return ()
+
+(* And the engine's stop, when the stream ends, cancels it the same way. *)
+let test_the_engine's_stop_cancels_a_failed_order_the_venue_still_works () =
+  let%bind f, oms, a, deletes, to_desk = failed_but_resting () in
+  Pipe.close to_desk;
+  let%bind () = settle () in
+  Alcotest.(check string) "stopped" "stopped" (switch_of oms);
+  Alcotest.(check (list string)) "one DELETE, for sim-1" [ "sim-1" ] !deletes;
+  Alcotest.(check (pair string string))
+    "cancelled at the venue; failed on the desk" ("canceled", "failed")
+    (resting_at f a, state f a);
+  Graph.destroy f.graph;
+  return ()
+
+(* The engine's stop when a cancel raises rather than answering. Two orders
+   rest at the venue: AAPL 50 at 99, open on the desk as sim-1, and XOM 20
+   at 49, sim-2, whose answer was lost and whose every lookup missed, so at
+   t0 + 42 s the desk declared it failed. The stream ends; the DELETE of
+   sim-1 raises. The stop's cancels run under a monitor of their own, so the
+   raise reaches the log, naming what raised, and not the process; the
+   switch reads stopped; the line that says the cancels were asked for is
+   not written -- and the failed order is still looked for and cancelled,
+   because a raise among the open orders' cancels does not end the sweep. *)
+let test_a_stop_whose_cancel_raises_says_so_and_stays_stopped () =
+  let f = fixture () in
+  let sim = D.Sim_venue.trade ~auto:false f.venue in
+  (* The venue's updates reach the desk, but none about XOM's order: its
+     answer, and every word of it, is lost. *)
+  let stream, to_desk = Pipe.create () in
+  don't_wait_for
+    (Pipe.iter_without_pushback sim.D.Venue.Trade.updates ~f:(fun u ->
+         if not (Symbol.equal u.D.Venue.Update.order.D.Venue.Venue_order.symbol xom) then
+           Pipe.write_without_pushback_if_open to_desk u));
+  let deletes = ref [] in
+  let oms =
+    manager
+      ~trade:
+        {
+          sim with
+          D.Venue.Trade.submit =
+            (fun permit r ->
+              if Symbol.equal r.D.Order.Request.symbol xom then
+                let%map (_ : D.Venue.Submission.t) = sim.D.Venue.Trade.submit permit r in
+                D.Venue.Submission.Unknown "timed out after 10 s"
+              else sim.D.Venue.Trade.submit permit r);
+          find_order = (fun _ -> return (Ok None));
+          cancel =
+            (fun id ->
+              if String.equal id "sim-1" then failwith "the DELETE raised"
+              else (
+                deletes := id :: !deletes;
+                sim.D.Venue.Trade.cancel id));
+          updates = stream;
+        }
+      f
+  in
+  let%bind _, resting =
+    D.Oms.propose oms (ticket ~kind:limit_at_99 aapl D.Order.Side.Buy 50)
+  in
+  let%bind _, failed =
+    D.Oms.propose oms
+      (ticket ~kind:(D.Order.Kind.Limit (Price.of_float 49.0)) xom D.Order.Side.Buy 20)
+  in
+  let%bind () = pump f in
+  let%bind () =
+    Time_source.advance_by_alarms ~wait_for:settle f.clock
+      ~to_:(Time_ns.add t0 (Time_ns.Span.of_sec 42.0))
+  in
+  let%bind () = settle () in
+  Alcotest.(check (pair string string))
+    "one resting, one failed" ("accepted", "failed")
+    (state f resting, state f failed);
+  Pipe.close to_desk;
+  let%bind () = settle () in
+  let said words =
+    Queue.exists f.events ~f:(fun line -> String.is_substring line ~substring:words)
+  in
+  Alcotest.(check string) "the switch reads stopped" "stopped" (switch_of oms);
+  Alcotest.(check (triple bool bool bool))
+    "the raise, logged with its words; no line saying the cancels were asked for"
+    (true, true, false)
+    ( said "the engine's stop's cancels raised",
+      said "the DELETE raised",
+      said "the engine's stop has asked the venue to cancel" );
+  Alcotest.(check (pair (list string) string))
+    "and the failed order still cancelled" ([ "sim-2" ], "canceled")
+    (!deletes, resting_at f failed);
+  Graph.destroy f.graph;
+  return ()
+
+(* [Oms.run] stops the desk before it says the stream ended: a log line that
+   raises must not keep the switch from being set. Here the line saying the
+   stream has ended raises; [run] returns that raise, and the switch reads
+   stopped all the same. *)
+let test_the_stream's_end_stops_the_desk_before_the_line_that_says_so () =
+  let f = fixture () in
+  let sim = D.Sim_venue.trade ~auto:false f.venue in
+  let stream, to_desk = forwarded sim in
+  let on_event line =
+    if String.is_substring line ~substring:"stream of order updates has ended" then
+      failwith "the log raised"
+  in
+  let oms =
+    manager ~run:false ~on_event ~trade:{ sim with D.Venue.Trade.updates = stream } f
+  in
+  let ran = Monitor.try_with ~extract_exn:true (fun () -> D.Oms.run oms) in
+  Pipe.close to_desk;
+  let%bind () = settle () in
+  let%bind ran = ran in
+  Alcotest.(check bool) "the line raised, out of run" true (Result.is_error ran);
+  Alcotest.(check string) "and the switch reads stopped" "stopped" (switch_of oms);
+  Graph.destroy f.graph;
+  return ()
+
+(* A clock read that fails after one that answered: the session it last
+   described is not assumed to go on, so the session reads closed
+   ([Oms.refresh] sets no clock at all), and the log says why. The first read
+   answers, and an order passes the session rule; the second fails, and the
+   same order is refused by it. *)
+let test_a_clock_read_that_fails_clears_the_session () =
+  let f = fixture () in
+  let answers = ref [ true; false ] in
+  let venue_read = D.Sim_venue.read f.venue in
+  let read =
+    {
+      venue_read with
+      D.Venue.Read.clock =
+        (fun () ->
+          match !answers with
+          | true :: rest ->
+              answers := rest;
+              venue_read.D.Venue.Read.clock ()
+          | _ -> return (Or_error.error_string "HTTP 503 from the clock"));
+    }
+  in
+  let oms = manager ~read f in
+  let refused () = rules (D.Oms.preview oms (ticket aapl D.Order.Side.Buy 1)) in
+  let%bind () = D.Oms.refresh oms in
+  Alcotest.(check (list string)) "a read that answered: open" [] (refused ());
+  let%bind () = D.Oms.refresh oms in
+  Alcotest.(check (list string))
+    "a read that failed: the session rule refuses" [ "session" ] (refused ());
+  Alcotest.(check bool)
+    "and the log says why" true
+    (Queue.exists f.events ~f:(fun line ->
+         String.is_substring line
+           ~substring:"the venue's clock is unavailable, so the session reads closed"));
   Graph.destroy f.graph;
   return ()
 
@@ -1771,7 +2004,11 @@ let test_an_accepted_signal_on_a_live_strategy_becomes_one_rebalance () =
    is a different trade without it, so it is moved to rejected_pre_trade
    naming the sell, and never sent: the venue received nothing. Then the same
    with a sell whose answer is lost: it reached the venue and its outcome is
-   unknown, and the buy is again not sent -- the venue received one order. *)
+   unknown, and the buy is again not sent -- the venue received one order.
+   And when the venue takes the sell and refuses the buy, the LAST order:
+   both went, the sell acknowledged and the buy rejected_by_venue, and the
+   outcome says the last was not acknowledged -- never that the orders were
+   sent and acknowledged, and never that an order after it went unsent. *)
 let test_a_leg_the_venue_does_not_acknowledge_stops_the_legs_after_it () =
   let run ~answer =
     let f = fixture () in
@@ -1787,6 +2024,9 @@ let test_a_leg_the_venue_does_not_acknowledge_stops_the_legs_after_it () =
             match answer with
             | `Refused ->
                 return (D.Venue.Submission.Rejected "insufficient qty available")
+            | `Refused_last when List.length !submits = 2 ->
+                return (D.Venue.Submission.Rejected "insufficient buying power")
+            | `Refused_last -> sim.D.Venue.Trade.submit permit r
             | `Lost ->
                 let%map (_ : D.Venue.Submission.t) = sim.D.Venue.Trade.submit permit r in
                 D.Venue.Submission.Unknown "timed out after 10 s");
@@ -1831,8 +2071,34 @@ let test_a_leg_the_venue_does_not_acknowledge_stops_the_legs_after_it () =
   in
   let%bind refused = run ~answer:`Refused in
   check "refused" refused ~sell_state:"rejected_by_venue" ~received:0;
-  let%map lost = run ~answer:`Lost in
-  check "unknown" lost ~sell_state:"accepted" ~received:1
+  let%bind lost = run ~answer:`Lost in
+  check "unknown" lost ~sell_state:"accepted" ~received:1;
+  let%map f, outcome, submits = run ~answer:`Refused_last in
+  (match outcome with
+  | D.Oms.Rebalance_outcome.Stopped { sent = [ sell; buy ]; unsent = []; why } ->
+      Alcotest.(check (list (pair string string)))
+        "the last refused: both went, as the venue left them"
+        [ ("AAPL", "accepted"); ("MSFT", "rejected_by_venue") ]
+        (List.map [ sell; buy ] ~f:(fun o ->
+             (Symbol.to_string o.D.Order.request.D.Order.Request.symbol, state f o)));
+      Alcotest.(check string)
+        "the reason names the last order, and nothing after it" why
+        "rebalance: order 2 of 2 (MSFT buy 120 market-on-open) was not acknowledged (the \
+         venue refused it: insufficient buying power)";
+      let said = D.Oms.Rebalance_outcome.to_string outcome in
+      Alcotest.(check (pair bool bool))
+        (sprintf "the sentence says the last was not acknowledged: %s" said)
+        (true, false)
+        ( String.is_substring said
+            ~substring:"every order journaled, then sent, and the last not acknowledged",
+          String.is_substring said ~substring:"and acknowledged:" )
+  | other ->
+      Alcotest.failf "the last refused: %s" (D.Oms.Rebalance_outcome.to_string other));
+  Alcotest.(check (pair (list string) int))
+    "the last refused: two submits, one received"
+    ([ "AAPL"; "MSFT" ], 1)
+    (submits, D.Sim_venue.received f.venue);
+  Graph.destroy f.graph
 
 (* [run], given an order manager, sizes what ITS OWN pass accepted, and
    nothing it reads back (I4). A crash is left behind first: an intake judges
@@ -1940,6 +2206,16 @@ let suites =
           test_a_book_that_goes_stale_while_the_quote_is_fetched_is_refused;
         case "a failed order the venue reports resting is cancelled, once"
           test_a_failed_order_the_venue_reports_resting_is_cancelled;
+        case "a kill cancels a failed order the venue still works"
+          test_a_kill_cancels_a_failed_order_the_venue_still_works;
+        case "the engine's stop cancels a failed order the venue still works"
+          test_the_engine's_stop_cancels_a_failed_order_the_venue_still_works;
+        case "a stop whose cancel raises says so, and stays stopped"
+          test_a_stop_whose_cancel_raises_says_so_and_stays_stopped;
+        case "the stream's end stops the desk before the line that says so"
+          test_the_stream's_end_stops_the_desk_before_the_line_that_says_so;
+        case "a clock read that fails clears the session"
+          test_a_clock_read_that_fails_clears_the_session;
         case "the clock is read again when its session ends"
           test_the_clock_is_read_again_when_its_session_ends;
         case "preview and propose agree about a resting order"

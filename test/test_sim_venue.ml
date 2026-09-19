@@ -101,7 +101,7 @@ let test_a_closed_session_holds_an_opening_auction_order_until_it_opens () =
       Ohcamel_desk.Desk_time.rfc3339 c.Venue.Session_clock.next_open,
       Ohcamel_desk.Desk_time.rfc3339 c.Venue.Session_clock.next_close );
   (match
-     Sim.submit_now v
+     Sim.For_testing.submit_now v
        {
          Ohcamel_desk.Order.Request.client_order_id =
            Option.value_exn

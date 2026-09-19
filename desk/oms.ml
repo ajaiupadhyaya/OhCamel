@@ -37,7 +37,10 @@
    reached only through that module's one function, and a call written
    against the field does not compile. That this is the one place that
    calls the wire module, and the only file that names [submit_journaled],
-   is held by test/test_rebalance.ml, which reads desk/ and bin/. A ticket
+   is held by test/test_rebalance.ml, which reads desk/ and bin/; so is that
+   the simulator's own way in, which takes no permit
+   (Sim_venue.For_testing), is named nowhere there but in its own file, where
+   its trading half calls it. A ticket
    ([propose]) and a live strategy's rebalance ([propose_rebalance]) both
    journal first and then hand each order to it, and it asks, at that
    instant, what time can change since the rules ran -- the switch, the
@@ -645,7 +648,8 @@ let gate_scenarios t ~(fills : Gate.Fill.t list) : (Scenarios.t, string) Result.
 
 (* The gate for orders at their decision prices, each signed by its side:
    what [preview] runs for a ticket's one order and [check_rebalance] for a
-   rebalance's many, in one call, so a rebalance is gated as a unit. *)
+   rebalance's many, one call for each set of them that can reach the book
+   -- the unit, its growing orders, every prefix of its send order. *)
 let gate_orders t (priced : (Order.Request.t * Price.t) list) =
   gate_scenarios t
     ~fills:
@@ -1168,10 +1172,15 @@ let plan_rebalance t ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
 
 (* What a rebalance came to, in the words the intake records beside the
    judgement. [Refused]: nothing was journaled and nothing sent. [Sent]:
-   every order was journaled and handed to the wire, each in the state the
-   venue's answer left it. [Stopped]: the switch, the book or the session
-   failed between two submits; what went out went, and every order after it
-   was moved to rejected_pre_trade and never sent. *)
+   every order was journaled and handed to the wire, and the venue
+   acknowledged each. [Stopped]: the switch, the book or the session failed
+   between two submits, or the venue did not acknowledge an order -- refused
+   it, or left its outcome unknown; what went out went, each in the state the
+   venue's answer left it, and every order after it was moved to
+   rejected_pre_trade and never sent. When the order the venue did not
+   acknowledge was the last, [unsent] is empty: every order went, and the
+   sentence says the last was not acknowledged rather than that all were
+   sent. *)
 module Rebalance_outcome = struct
   type t =
     | Refused of string
@@ -1193,9 +1202,13 @@ module Rebalance_outcome = struct
   let to_string = function
     | Refused why -> "refused, and nothing journaled or sent: " ^ why
     | Sent os ->
-        sprintf "%d market-on-open order%s journaled, then sent: %s" (List.length os)
+        sprintf "%d market-on-open order%s journaled, then sent, and acknowledged: %s"
+          (List.length os)
           (if List.length os = 1 then "" else "s")
           (orders os)
+    | Stopped { sent; unsent = []; why } ->
+        sprintf "every order journaled, then sent, and the last not acknowledged (%s): %s"
+          why (orders sent)
     | Stopped { sent; unsent; why } ->
         sprintf
           "stopped between submits (%s): sent %s; journaled and never sent, now \
@@ -1219,6 +1232,16 @@ end
 (* Everything a rebalance must pass before anything is written, and nothing
    written: synchronous, so the main suite can ask it. In order:
    - the strategy's fill history must be settled ([strategy_position]);
+   - WHAT THE PLAN ASSUMED, ASKED AGAIN HERE. [plan_rebalance] runs outside
+     the queue (the intake calls it, then this), so a job that ran between
+     the two -- a fill, a read of the account -- could have changed what it
+     read. The legs are not re-planned: the rules and every gate below judge
+     them against the book as it is now, whatever E they were sized at, and
+     re-planning would take the legs out of the caller's hands. What is asked
+     again is what makes the legs wrong rather than merely sized at another
+     E: that the book's equity is known ([sizing_equity]), and I2 -- that the
+     account still holds at least the strategy's own position in each name
+     it has one in, in its direction (Rebalance.account_refusal);
    - THE CALENDAR (Rebalance.calendar_refusal): the signal's as_of, the
      closes and the newest recorded session are one date, and no weekday
      has closed since it unrecorded;
@@ -1229,13 +1252,27 @@ end
      reads), each as a market-on-open order priced at the newest recorded
      close, each counting the rebalance's earlier orders against the
      open-order cap;
-   - THE GATE, as a unit: one call with every order's fill and the resting
-     orders -- and one more AS IF ONLY THE ORDERS THAT GROW A POSITION FILL,
-     because an order that shrinks one can go unfilled at the auction, or be
-     refused, and leave the others alone. For a long-only strategy those are
-     its buys; for a short one, its sells. It passes only if both pass.
+   - THE GATE, on every set of the orders that can be all that reaches the
+     book, each one call with those orders' fills and the resting orders
+     (every scenario of [gate_scenarios]):
+     . the unit, every order filled;
+     . AS IF ONLY THE ORDERS THAT GROW A POSITION FILL, because an order that
+       shrinks one can go unfilled at the auction, or be refused, and leave
+       the others alone. For a long-only strategy those are its buys; for a
+       short one, its sells;
+     . EVERY PREFIX OF THE SEND ORDER: the orders go out in this order and
+       the loop stops at the first the venue does not acknowledge, or when
+       the switch, the book or the session fails between two submits
+       ([propose_rebalance]), so what reaches the venue is always a prefix.
+       An order that shrinks one name's position can still take a sector
+       over its line -- a sector's notional is the size of a net sum, and a
+       buy that covers a short in one name leaves a long in another
+       uncovered -- so the shrinking orders sent first are gated as sent
+       alone too.
+     A set met twice is gated once, and the empty set not at all: a single
+     order's only prefix is the unit. It passes only if every one passes.
    Any failure refuses the whole, naming the order and its rules, or the
-   limits. *)
+   limits and the set that breached them. *)
 let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t list) :
     (Checked_rebalance.t, string) Result.t =
   let open Result.Let_syntax in
@@ -1269,9 +1306,21 @@ let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t li
              (Symbol.to_string l.Rebalance.Leg.symbol))
     | None -> Ok ()
   in
-  let%bind (_ : float Symbol.Map.t) =
+  let%bind own =
     Result.map_error (strategy_position t ~strategy:source.Rebalance.Source.strategy)
       ~f:(fun why -> "the strategy's fill history is unknown: " ^ why)
+  in
+  let%bind (_ : float) =
+    Result.map_error (sizing_equity t) ~f:(fun why ->
+        "the book's equity is unknown: " ^ why)
+  in
+  let%bind () =
+    match
+      List.find_map (Map.to_alist own) ~f:(fun (symbol, q) ->
+          Rebalance.account_refusal ~symbol ~held:(position symbol) ~own:q)
+    with
+    | Some why -> Error why
+    | None -> Ok ()
   in
   let now = t.now () in
   let%bind () =
@@ -1331,7 +1380,6 @@ let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t li
            sprintf "%s at %.2f" (name_leg ~i ~n r) (Price.to_float p)))
   in
   let indexed = List.mapi priced ~f:(fun i o -> (i, o)) in
-  let growing = List.filter indexed ~f:(fun (_, (r, _)) -> grows r) in
   let gate what orders =
     match gate_orders t (List.map orders ~f:snd) with
     | Error why -> Error why
@@ -1342,22 +1390,34 @@ let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t li
              (String.concat ~sep:"; " (Scenarios.reasons s)))
   in
   let%bind whole = gate "as a unit" indexed in
-  let%map () =
-    (* With no order that grows a position, or nothing else, this is the
-       unit's own gate again. *)
-    if List.is_empty growing || List.length growing = n then Ok ()
-    else
-      Result.map
-        (gate
-           "if only the orders that grow a position fill, as an unfilled or refused \
-            order that shrinks one would leave them"
-           growing) ~f:(fun (_ : Scenarios.t) -> ())
+  (* The other sets, each named for the refusal, in the order they are
+     gated: the growing orders alone, then the prefixes, shortest first. *)
+  let others =
+    ( "if only the orders that grow a position fill, as an unfilled or refused order \
+       that shrinks one would leave them",
+      List.filter indexed ~f:(fun (_, (r, _)) -> grows r) )
+    :: List.init (n - 1) ~f:(fun k ->
+        ( sprintf
+            "if it stops after order %d of %d, as an order the venue does not \
+             acknowledge, or the switch, the book or the session failing between two \
+             submits, would leave it"
+            (k + 1) n,
+          List.take indexed (k + 1) ))
+  in
+  let%map (_ : int list list) =
+    List.fold_result others
+      ~init:[ List.map indexed ~f:fst ]
+      ~f:(fun seen (what, orders) ->
+        let ids = List.map orders ~f:fst in
+        if List.is_empty ids || List.mem seen ids ~equal:[%equal: int list] then Ok seen
+        else Result.map (gate what orders) ~f:(fun (_ : Scenarios.t) -> ids :: seen))
   in
   { Checked_rebalance.orders = priced; gate = whole }
 
 (* A live strategy's rebalance, through the machinery a ticket goes through,
-   in ONE sequencer job: [check_rebalance] (the rules per order, one gate
-   call); the arrival quotes; [pre_wire] again for every order, because the
+   in ONE sequencer job: [check_rebalance] (what the plan read, asked again;
+   the rules per order; the gate on the unit, its growing orders and every
+   prefix of the send order); the arrival quotes; [pre_wire] again for every order, because the
    quotes took time; then every order journaled in one transaction ([admit])
    before any is sent; then each handed to [submit_journaled], which asks
    [pre_wire] once more at its own instant -- a kill sets the switch outside
@@ -1416,14 +1476,15 @@ let propose_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t 
                  naming the order that stopped it. *)
               let stop_after ~i o ~sent ~rest why =
                 let because =
-                  sprintf
-                    "rebalance: %s was not acknowledged (%s), so no order after it is \
-                     sent"
+                  sprintf "rebalance: %s was not acknowledged (%s)%s"
                     (name_leg ~i ~n o.Order.request)
                     why
+                    (if List.is_empty rest then "" else ", so no order after it is sent")
                 in
                 match rest with
-                | [] -> Rebalance_outcome.Sent (List.rev (o :: sent))
+                | [] ->
+                    Rebalance_outcome.Stopped
+                      { sent = List.rev (o :: sent); unsent = []; why = because }
                 | _ :: _ ->
                     Rebalance_outcome.Stopped
                       {
@@ -1481,10 +1542,16 @@ let apply_to_graph t (o : Order.t) (f : Order.Fill.t) =
    One DELETE per venue id. The stream and a reconciliation can each report
    the same order, and a report written before the venue took the DELETE
    still says it rests. A DELETE whose answer was not a confirmation is sent
-   again the next time the venue reports the order resting, and not before. *)
-let cancel_failed t (trade : Wire.permit Venue.Trade.t) ~(client : string)
+   again the next time the venue reports the order resting, and not before.
+
+   The request is journaled before it is sent, as [cancel] journals its own:
+   a cancel_requested event on the failed order, which stays failed
+   (Order.apply), so the record shows the desk asked before the venue's
+   answer to it arrives -- and that it asked, if none ever does. *)
+let cancel_failed t (trade : Wire.permit Venue.Trade.t) (o : Order.t)
     (v : Venue.Venue_order.t) : unit Deferred.t =
   let id = v.Venue.Venue_order.id in
+  let client = key o in
   if Hash_set.mem t.failed_cancels id then Deferred.unit
   else (
     Hash_set.add t.failed_cancels id;
@@ -1494,6 +1561,7 @@ let cancel_failed t (trade : Wire.permit Venue.Trade.t) ~(client : string)
           when its lookups found nothing; nothing manages it, so the desk is cancelling \
           it by that id"
          client v.Venue.Venue_order.status id);
+    ignore (record t o Order.Event.Cancel_requested : Order.t);
     match%map trade.Venue.Trade.cancel id with
     | Ok () -> ()
     | Error e ->
@@ -1559,16 +1627,19 @@ let on_update t (u : Venue.Update.t) : unit Deferred.t =
                 o
             | None -> o
           in
-          (match (u.Venue.Update.event, Venue.Update.to_event u) with
-          | ("fill" | "partial_fill"), _ -> ()
-          | _, Some e -> ignore (record t o e : Order.t)
-          | _, None ->
-              t.on_event
-                (sprintf "desk      %s: %s changes nothing the order's states describe"
-                   raw u.Venue.Update.event));
+          let o =
+            match (u.Venue.Update.event, Venue.Update.to_event u) with
+            | ("fill" | "partial_fill"), _ -> o
+            | _, Some e -> record t o e
+            | _, None ->
+                t.on_event
+                  (sprintf "desk      %s: %s changes nothing the order's states describe"
+                     raw u.Venue.Update.event);
+                o
+          in
           match t.trade with
           | Ok trade when failed && resting ->
-              cancel_failed t trade ~client:raw u.Venue.Update.order
+              cancel_failed t trade o u.Venue.Update.order
           | Ok _ | Error _ -> Deferred.unit))
 
 let jnum x = if Float.is_finite x then `Float x else `Null
@@ -1635,18 +1706,69 @@ let costs t (rows : Journal.Fill_row.t list) : (Tca.Inputs.t * Tca.Costs.t) list
 
 let changed t = t.on_change ()
 
-(* Every open order the venue has an id for. One without an id yet is
-   cancelled by [record] the moment the venue gives it one. The set is
-   [t.open_], which is the journal's open orders held -- [reconcile] re-seeds
-   it from [Journal.open_orders] -- and not the venue's [open_orders], which is
-   a different set: the desk's own orders as the VENUE has them, which cannot
-   include one the desk journaled and never managed to send. *)
+(* The failed orders the venue still works, found in the venue's own list of
+   its open orders: the journal's open set cannot name them, failed being
+   terminal. Each gets the venue's id, if it had none, and [cancel_failed].
+   [reconcile] runs it, and so does [cancel_all] -- a kill, a trip and the
+   engine's stop -- each inside the sequencer. *)
+let reconcile_failed t (trade : Wire.permit Venue.Trade.t) : unit Deferred.t =
+  match%bind trade.Venue.Trade.open_orders () with
+  | Error e ->
+      t.on_event
+        (sprintf
+           "desk      the venue's open orders could not be read, so no order this desk \
+            declared failed was looked for there: %s"
+           (Error.to_string_hum e));
+      Deferred.unit
+  | Ok resting ->
+      Deferred.List.iter ~how:`Sequential resting ~f:(fun v ->
+          let failed =
+            Option.bind
+              (Ids.Client_order_id.of_string v.Venue.Venue_order.client_order_id)
+              ~f:(Journal.load_order t.journal)
+            |> Option.map ~f:(fun r -> r.Journal.Order_row.order)
+            |> Option.filter ~f:(fun o ->
+                Order.State.equal o.Order.state Order.State.Failed)
+          in
+          match failed with
+          | Some o when Venue.Venue_order.rests v ->
+              let o =
+                if Option.is_none o.Order.venue_order_id then
+                  record t o (Order.Event.Found v.Venue.Venue_order.id)
+                else o
+              in
+              cancel_failed t trade o v
+          | Some _ | None -> Deferred.unit)
+
+(* Every order that may still fill and that the desk can cancel. First every
+   open order the venue has an id for; one without an id yet is cancelled by
+   [record] the moment the venue gives it one. That set is [t.open_], which
+   is the journal's open orders held -- [reconcile] re-seeds it from
+   [Journal.open_orders] -- and not the venue's [open_orders], which is a
+   different set: the desk's own orders as the VENUE has them, which cannot
+   include one the desk journaled and never managed to send.
+
+   Then the orders this desk declared failed that the venue still works
+   ([reconcile_failed]): out of the open set, so no cancel above reaches
+   them, and a market-on-open order the venue holds rests there for some
+   fourteen hours until the auction. Without this a kill, a trip or the
+   engine's stop would leave them working until the next reconciliation.
+   Read from the venue's own list, so a venue that cannot list its open
+   orders cancels none of them, and says so. They are looked for even when
+   a cancel above raised, and the raise still reaches the caller after. *)
 let cancel_all t : unit Deferred.t =
-  Deferred.List.iter ~how:`Sequential (Map.data t.open_) ~f:(fun o ->
-      match o.Order.venue_order_id with
-      | None -> Deferred.unit
-      | Some _ ->
-          Deferred.ignore_m (cancel t o.Order.request.Order.Request.client_order_id))
+  Monitor.protect
+    (fun () ->
+      Deferred.List.iter ~how:`Sequential (Map.data t.open_) ~f:(fun o ->
+          match o.Order.venue_order_id with
+          | None -> Deferred.unit
+          | Some _ ->
+              Deferred.ignore_m (cancel t o.Order.request.Order.Request.client_order_id)))
+    ~finally:(fun () ->
+      enqueue t (fun () ->
+          match t.trade with
+          | Error _ -> Deferred.unit
+          | Ok trade -> reconcile_failed t trade))
 
 (* A kill's first half, synchronous: the halt, its line in the log, and the
    page told. The halt comes first, so anything that raises after it raises
@@ -1669,7 +1791,8 @@ let kill t ~why : unit Deferred.t =
 
 (* The engine's stop (§3.8): the venue's order updates have ended for good,
    so no fill would be heard. The switch first, so nothing new goes out; then
-   every open order is asked to be cancelled, as a trip and a kill ask. The
+   every open order, and every failed one the venue still works, is asked to
+   be cancelled ([cancel_all]), as a trip and a kill ask. The
    cancels go on behind, one at a time, under a monitor of their own, so a
    raise among them reaches the log and not the process -- and every answer
    the venue gives them after the DELETE would travel on the stream that
@@ -1683,7 +1806,8 @@ let stop t ~why =
     | Ok () ->
         t.on_event
           "desk      the engine's stop has asked the venue to cancel every open order it \
-           has an id for"
+           has an id for, and every order it declared failed that the venue lists as \
+           working"
     | Error exn ->
         t.on_event
           (sprintf "desk      the engine's stop's cancels raised: %s" (Exn.to_string exn)));
@@ -1698,22 +1822,24 @@ let stop t ~why =
    may go out whose fill nothing would apply. That is the switch's own state,
    not a halt by hand -- a reset cannot lift it, because the stream has not
    come back -- and only a restart, which reconnects and reconciles, clears
-   it. A manager with no trading half has no stream to lose, and returns at
-   once without stopping anything. *)
+   it. The stop comes before the line that says the stream ended: a log that
+   raises must not keep the switch from being set. A manager with no trading
+   half has no stream to lose, and returns at once without stopping
+   anything. *)
 let run t : unit Deferred.t =
   match t.trade with
   | Error _ -> Deferred.unit
   | Ok trade ->
       let%map () = Pipe.iter trade.Venue.Trade.updates ~f:(on_update t) in
+      stop t
+        ~why:
+          "the venue's order updates stopped, so no fill would be heard; restart the \
+           engine to reconnect and reconcile";
       t.on_event
         (sprintf
            "desk      the venue's stream of order updates has ended; %d order(s) are \
             open and nothing on this connection will report them again"
-           (Map.length t.open_));
-      stop t
-        ~why:
-          "the venue's order updates stopped, so no fill would be heard; restart the \
-           engine to reconnect and reconcile"
+           (Map.length t.open_))
 
 (* The other half of §3.8. The switch already refuses new orders through
    [Halt.reason]; a trip must also cancel the open ones. The handler runs
@@ -1769,35 +1895,6 @@ let resend_cancel t (trade : Wire.permit Venue.Trade.t) (o : Order.t)
               not a confirmation (%s); it may still be resting there, and is cancelled \
               again the next time a reconciliation finds it resting"
              (key o) id (Error.to_string_hum e)))
-
-(* The failed orders the venue still works, found in the venue's own list of
-   its open orders: the journal's open set cannot name them, failed being
-   terminal. Each gets the venue's id, if it had none, and [cancel_failed]. *)
-let reconcile_failed t (trade : Wire.permit Venue.Trade.t) : unit Deferred.t =
-  match%bind trade.Venue.Trade.open_orders () with
-  | Error e ->
-      t.on_event
-        (sprintf
-           "desk      reconcile: the venue's open orders could not be read, so no order \
-            this desk declared failed was looked for there: %s"
-           (Error.to_string_hum e));
-      Deferred.unit
-  | Ok resting ->
-      Deferred.List.iter ~how:`Sequential resting ~f:(fun v ->
-          let failed =
-            Option.bind
-              (Ids.Client_order_id.of_string v.Venue.Venue_order.client_order_id)
-              ~f:(Journal.load_order t.journal)
-            |> Option.map ~f:(fun r -> r.Journal.Order_row.order)
-            |> Option.filter ~f:(fun o ->
-                Order.State.equal o.Order.state Order.State.Failed)
-          in
-          match failed with
-          | Some o when Venue.Venue_order.rests v ->
-              if Option.is_none o.Order.venue_order_id then
-                ignore (record t o (Order.Event.Found v.Venue.Venue_order.id) : Order.t);
-              cancel_failed t trade ~client:v.Venue.Venue_order.client_order_id v
-          | Some _ | None -> Deferred.unit)
 
 (* On start, and after every reconnection of the venue's update stream: the
    journal's open orders, each looked up by client order id and told what the

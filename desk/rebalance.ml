@@ -180,6 +180,24 @@ let calendar_refusal ~(zone : Timezone.t option) ~(now : Time_ns.t) ~(as_of : Da
    made, and is not sized against. *)
 let whole_tolerance = 1e-6
 
+(* I2: the account's holding of [symbol], from the book the gate reads, must
+   cover the strategy's own position in its direction. A hand sale or a
+   reverse split can leave it short of it, and then selling the strategy's
+   shares sells what is not there. [plan] asks it for each symbol it sizes,
+   and Oms.check_rebalance asks it again, for every name the strategy holds,
+   under the order manager's queue -- the plan was made outside it. *)
+let account_refusal ~(symbol : Symbol.t) ~(held : float) ~(own : float) : string option =
+  let short_of_it =
+    (Float.( > ) own 0.0 && Float.( < ) held (own -. whole_tolerance))
+    || (Float.( < ) own 0.0 && Float.( > ) held (own +. whole_tolerance))
+  in
+  Option.some_if short_of_it
+    (sprintf
+       "the account holds %.17g %s, less than the strategy's own %.17g: a hand sale, a \
+        split or a fill the desk never heard of; nothing is sized until a person settles \
+        it"
+       held (Symbol.to_string symbol) own)
+
 let plan ~(symbols : Symbol.t list) ~(weights : (Symbol.t * float) list)
     ~(capital_fraction : float) ~(equity : (float, string) Result.t)
     ~(account : float Symbol.Map.t) ~(marks : (float, string) Result.t Symbol.Map.t)
@@ -272,24 +290,15 @@ let plan ~(symbols : Symbol.t list) ~(weights : (Symbol.t * float) list)
                   the desk will not size against it"
                  name held)
         in
-        (* The account's holding, from the book the gate reads, must cover
-           the strategy's own in its direction: a hand sale or a reverse
-           split can leave it short of it, and then selling the strategy's
-           shares sells what is not there. *)
+        (* I2 ([account_refusal]). *)
         let%bind () =
-          let held = Option.value (Map.find account symbol) ~default:0.0 in
-          let short_of_it =
-            (current > 0 && Float.( < ) held (Float.of_int current -. whole_tolerance))
-            || (current < 0 && Float.( > ) held (Float.of_int current +. whole_tolerance))
-          in
-          if short_of_it then
-            Error
-              (sprintf
-                 "the account holds %.17g %s, less than the strategy's own %d: a hand \
-                  sale, a split or a fill the desk never heard of; nothing is sized \
-                  until a person settles it"
-                 held name current)
-          else Ok ()
+          match
+            account_refusal ~symbol
+              ~held:(Option.value (Map.find account symbol) ~default:0.0)
+              ~own:(Float.of_int current)
+          with
+          | Some why -> Error why
+          | None -> Ok ()
         in
         let order = target - current in
         Ok

@@ -5,9 +5,9 @@
    ever set a flag; this module is where the flag gains a consequence. The
    second is a halt by hand, the POST /api/desk/kill someone sends when
    something is wrong that no limit measures. The third is the engine's stop,
-   which bin/main.ml sets when the venue's order updates end for good: after
-   that no fill is heard, so no order may go out whose fill nothing would
-   apply.
+   which Oms.stop sets, called from Oms.run when the venue's order updates
+   end for good: after that no fill is heard, so no order may go out whose
+   fill nothing would apply.
 
    THE ENGINE'S STOP OUTRANKS EVERYTHING, AND NO RESET LIFTS IT. What stopped
    has not recovered -- the update stream is gone until the engine restarts,
