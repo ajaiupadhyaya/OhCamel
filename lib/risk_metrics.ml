@@ -328,6 +328,19 @@ let cornish_fisher_is_monotone ~skew ~excess_kurtosis =
   in
   Float.( > ) (List.fold candidates ~init:Float.infinity ~f:Float.min) 0.0
 
+(* The fewest observations a series must carry before a higher-moment or
+   multi-row estimate here is trusted at all: below this, a third- and
+   fourth-moment estimate ([cornish_fisher_var], just below) or a five-factor
+   regression ([Factor_model.fit]) is fitting noise and reporting it as a
+   figure. One constant, not two: [Factor_model.min_observations] is defined
+   as this value rather than repeating the literal, and it is safe to do so
+   because [Factor_model] already depends on this module (it calls
+   [is_effectively_constant], [mean], [stddev] and [covariance_matrix]) while
+   this module depends on nothing in [Factor_model] -- so the reference runs
+   one way and creates no cycle. test_factor_model.ml pins that the two
+   values agree. *)
+let min_observations = 120
+
 (* Cornish-Fisher VaR for a single return series: the same zero-mean,
    population-sigma convention [portfolio_parametric_var] uses, with the
    normal quantile replaced by its skew/kurtosis-corrected counterpart.
@@ -347,10 +360,11 @@ let cornish_fisher_var ~returns ~confidence =
       (Printf.sprintf
          "risk_metrics: cornish_fisher_var: %d of %d observations are not finite"
          non_finite n)
-  else if n < 120 then
+  else if n < min_observations then
     Error
       (Printf.sprintf
-         "risk_metrics: cornish_fisher_var needs at least 120 observations, got %d" n)
+         "risk_metrics: cornish_fisher_var needs at least %d observations, got %d"
+         min_observations n)
   else if is_effectively_constant returns then
     Error
       "risk_metrics: cornish_fisher_var: series is effectively constant, skewness and \

@@ -648,11 +648,27 @@ let test_risk_by_hand () =
   Alcotest.(check (option (float 0.0)))
     "no asset covariance, no sample figure" None without.sample_variance
 
+(* Task 3 (the finish): the 120-observation floor used to be a literal
+   repeated in both this module and risk_metrics.ml's [cornish_fisher_var].
+   It is now one constant, defined in Risk_metrics (which this module already
+   depends on for [mean], [stddev], [is_effectively_constant] and
+   [covariance_matrix]) and read from there as [FM.min_observations] -- so
+   this pins that the two minimums cannot drift apart again. *)
+let test_the_two_minimums_agree () =
+  Alcotest.(check int)
+    "Factor_model.min_observations = Risk_metrics.min_observations" 120
+    FM.min_observations;
+  Alcotest.(check int)
+    "and they are literally the same constant" Ohcamel.Risk_metrics.min_observations
+    FM.min_observations
+
 let suite =
   ( "factor_model",
     [
       Alcotest.test_case "one factor by hand; fit_one refuses four rows" `Quick
         test_one_factor_by_hand;
+      Alcotest.test_case "the two 120-observation minimums are the same constant" `Quick
+        test_the_two_minimums_agree;
       Alcotest.test_case "Walsh-Hadamard: every alpha and beta recovered exactly" `Quick
         test_walsh_hadamard_recovers_every_coefficient;
       Alcotest.test_case "Walsh-Hadamard: residuals orthogonal, fitted + residual = y"

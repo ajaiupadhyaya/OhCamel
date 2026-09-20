@@ -60,6 +60,31 @@ let test_the_desk_block_parses_defaults_to_no_trading_and_refuses_nonsense () =
         "the error names the field" true
         (String.is_substring (Error.to_string_hum e) ~substring:"price_collar")
 
+(* Task 3 (the finish): [Desk_spec.validate] used to check only "< 0.0" on
+   spread_bps_default, and "nan < 0.0" is false in IEEE 754 -- every
+   comparison with nan is false -- so a nan spread_bps_default passed
+   validation silently and would turn LVaR into nan downstream
+   (liquidity.ml's [lvar]). [Float.is_finite] catches nan and both
+   infinities regardless of sign, closing that gap. *)
+let test_desk_refuses_a_non_finite_spread_bps_default () =
+  match Config.Book.of_string (minimal_book "(desk ((spread_bps_default nan)))") with
+  | Ok _ -> Alcotest.fail "a nan spread_bps_default was accepted"
+  | Error e ->
+      Alcotest.(check bool)
+        "the error names spread_bps_default" true
+        (String.is_substring (Error.to_string_hum e) ~substring:"spread_bps_default")
+
+(* The same widened guard applies per symbol, and still names the symbol, not
+   just the value -- a negative spread_bps was already refused before Task 3;
+   this pins that the naming survived widening the check to non-finite too. *)
+let test_desk_refuses_a_negative_per_symbol_spread_bps () =
+  match Config.Book.of_string (minimal_book "(desk ((spread_bps ((SPY -1.0)))))") with
+  | Ok _ -> Alcotest.fail "a negative SPY spread_bps was accepted"
+  | Error e ->
+      Alcotest.(check bool)
+        "the error names SPY" true
+        (String.is_substring (Error.to_string_hum e) ~substring:"SPY")
+
 let account ~cash ~equity =
   {
     Venue.Account.equity = Notional.of_float equity;
@@ -692,6 +717,10 @@ let suite =
     [
       Alcotest.test_case "the desk block parses, defaults to no trading, refuses nonsense"
         `Quick test_the_desk_block_parses_defaults_to_no_trading_and_refuses_nonsense;
+      Alcotest.test_case "a non-finite spread_bps_default is refused, naming the field"
+        `Quick test_desk_refuses_a_non_finite_spread_bps_default;
+      Alcotest.test_case "a negative per-symbol spread_bps is refused, naming the symbol"
+        `Quick test_desk_refuses_a_negative_per_symbol_spread_bps;
       Alcotest.test_case "a sync sets the book and names what it cannot hold" `Quick
         test_a_sync_sets_the_book_and_names_what_it_cannot_hold;
       Alcotest.test_case "a failed read keeps the last good account and says what failed"

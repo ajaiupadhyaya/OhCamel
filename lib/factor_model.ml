@@ -118,8 +118,14 @@
 
 open Core
 
-(* Ruling 5's floor: the fewest observations a name may be fitted on. *)
-let min_observations = 120
+(* Ruling 5's floor: the fewest observations a name may be fitted on. The
+   value lives in Risk_metrics, which this module already depends on for
+   [is_effectively_constant], [mean], [stddev] and [covariance_matrix] --
+   Risk_metrics depends on nothing here, so taking the constant from there
+   creates no cycle. It is [cornish_fisher_var]'s own floor too, for the same
+   reason (too few rows to trust a higher-moment estimate); test_factor_model.ml
+   pins that the two agree. *)
+let min_observations = Risk_metrics.min_observations
 
 (* sigma_min / sigma_max of the standardised design below this is refused: the
    variance-inflation bound of 10^4 derived in the header. *)

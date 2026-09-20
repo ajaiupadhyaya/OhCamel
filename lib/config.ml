@@ -208,11 +208,23 @@ module Book = struct
         fail "duplicate_window_s" "may not be negative" t.duplicate_window_s
       else if t.max_open_orders < 1 then
         fail "max_open_orders" "must be at least 1" (Float.of_int t.max_open_orders)
-      else if Float.( < ) t.spread_bps_default 0.0 then
-        fail "spread_bps_default" "may not be negative" t.spread_bps_default
+      else if
+        (not (Float.is_finite t.spread_bps_default))
+        || Float.( < ) t.spread_bps_default 0.0
+      then
+        fail "spread_bps_default" "must be finite and may not be negative"
+          t.spread_bps_default
       else
-        match List.find t.spread_bps ~f:(fun (_, b) -> Float.( < ) b 0.0) with
-        | Some (symbol, b) -> fail ("spread_bps for " ^ symbol) "may not be negative" b
+        (* A nan compares false against every bound, so "b < 0.0" alone lets a
+           nan spread through and it would turn LVaR into nan downstream
+           (liquidity.ml). [not (is_finite b)] catches nan and both infinities
+           regardless of sign. *)
+        match
+          List.find t.spread_bps ~f:(fun (_, b) ->
+              (not (Float.is_finite b)) || Float.( < ) b 0.0)
+        with
+        | Some (symbol, b) ->
+            fail ("spread_bps for " ^ symbol) "must be finite and may not be negative" b
         | None -> Ok ()
   end
 
