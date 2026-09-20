@@ -2,10 +2,11 @@
 #
 # Hand cases for deploy.sh's market-hours guard, exercised without running a
 # deploy. Sourcing deploy.sh only defines its functions -- in_market_window,
-# ny_wall_clock, should_refuse_live_deploy, say, main -- and never calls
-# main, because deploy.sh guards that call with
+# ny_wall_clock, should_refuse_live_deploy, resolve_live_profile, say, main --
+# and never calls main, because deploy.sh guards that call with
 # `[ "${BASH_SOURCE[0]}" = "${0}" ]`, which is false while it is being
-# sourced from here.
+# sourced from here. (resolve_live_profile has its own cases, in
+# deploy_profile_test.sh beside this file.)
 #
 #   deploy/test/deploy_guard_test.sh
 #

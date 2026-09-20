@@ -15,7 +15,12 @@
 # exists or an ohcamel-live container is already present, so a demo-only
 # deploy run out of habit can no longer leave ohcamel-research (profiles:
 # ["live"], never built by a plain `up -d`) on a stale image while the smoke
-# suite against the demo host still passes.
+# suite against the demo host still passes. But that auto-add can only ever
+# be a courtesy, not a requirement: if it turns out /etc/ohcamel/live.env is
+# unreadable, a plain `deploy.sh` warns on stderr and falls back to a
+# demo-only deploy rather than refusing to deploy anything at all. Asking for
+# --live explicitly and hitting the same unreadable file still exits 1 --
+# that was a request, and it cannot be honored.
 #
 # A live deploy refuses to run on a weekday inside 09:25-16:10 in
 # America/New_York -- because a restart drops the one allowed stream and
@@ -92,6 +97,56 @@ should_refuse_live_deploy() {
 	in_market_window "$dow" "$hhmm"
 }
 
+# resolve_live_profile LIVE_FLAG LIVE_ENV_READABLE HAS_LIVE_CONTAINER
+#
+# Pure, like the two functions above: the whole "does this run use the live
+# profile" decision, from three 1/0 inputs, no filesystem or docker access of
+# its own -- so a test can drive every combination directly instead of
+# faking a file's permission bits or a running daemon. LIVE_FLAG is 1 when
+# --live was given on the command line. LIVE_ENV_READABLE and
+# HAS_LIVE_CONTAINER stand in for `[ -r /etc/ohcamel/live.env ]` and an
+# already-existing ohcamel-live container; main() reads both exactly once,
+# before calling this, and never re-reads either.
+#
+# This is also the fix for the bug where a habitual, flagless `deploy.sh`
+# could be refused outright: the auto-add heuristic and the
+# readable-by-this-user check used to live in two separate `if`s in main(),
+# so a profile guessed from "a container already exists" had no path back to
+# a demo-only deploy when the file underneath that guess turned out
+# unreadable -- only an explicit --live is allowed to make that failure
+# fatal. Putting both decisions in one pure function is what makes that
+# guarantee checkable at all: deploy/test/deploy_profile_test.sh below calls
+# this directly, in isolation, for every combination of the three inputs.
+#
+# Prints "PROFILE AUTO_ADDED REFUSE" (each 1 or 0):
+#   PROFILE     1 if this run should pass --profile live to compose.
+#   AUTO_ADDED  1 if PROFILE's value (on OR off) came from the heuristic
+#               rather than an explicit --live.
+#   REFUSE      1 if main() must exit 1: --live was requested explicitly and
+#               live.env is not readable, so there is nothing to fall back
+#               to. Always 0 when PROFILE=1, and when AUTO_ADDED=1.
+resolve_live_profile() {
+	local live_flag="$1" live_env_readable="$2" has_live_container="$3"
+	local profile=0 auto=0 refuse=0
+
+	if [ "$live_flag" = 1 ]; then
+		profile=1
+	elif [ "$live_env_readable" = 1 ] || [ "$has_live_container" = 1 ]; then
+		profile=1
+		auto=1
+	fi
+
+	if [ "$profile" = 1 ] && [ "$live_env_readable" != 1 ]; then
+		if [ "$auto" = 1 ]; then
+			profile=0 # auto-added only, never asked for -- fall back to demo-only
+		else
+			refuse=1 # --live was explicit -- asked for something that cannot work
+		fi
+	fi
+
+	printf '%s %s %s\n' "$profile" "$auto" "$refuse"
+}
+
 say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
 main() {
@@ -100,6 +155,7 @@ main() {
 	local COMPOSE=(docker compose -f deploy/docker-compose.yml)
 
 	local live_flag=0 during_market=0
+	local profile_on=0 profile_auto_added=0 refuse_live_deploy=0
 	local arg
 	for arg in "$@"; do
 		case "$arg" in
@@ -113,22 +169,31 @@ main() {
 	done
 
 	local PROFILE=()
-	[ "$live_flag" = 1 ] && PROFILE=(--profile live)
+
+	# The two facts resolve_live_profile needs, read exactly once. The docker
+	# query only runs when it could actually change the answer: an explicit
+	# --live does not need a reason, and a readable live.env already is one --
+	# this is the same short-circuit the old inline version had.
+	local live_env_readable=0 has_live_container=0
+	[ -r /etc/ohcamel/live.env ] && live_env_readable=1
+	if [ "$live_flag" != 1 ] && [ "$live_env_readable" != 1 ]; then
+		docker ps -a --filter "label=com.docker.compose.service=ohcamel-live" --quiet 2>/dev/null | grep -q . && has_live_container=1
+	fi
+
+	read -r profile_on profile_auto_added refuse_live_deploy < <(
+		resolve_live_profile "$live_flag" "$live_env_readable" "$has_live_container"
+	)
 
 	# Auto-add the live profile so a habitual `deploy.sh` (no flag) never
 	# leaves ohcamel-research -- behind the same profile, built only by a
-	# profiled `build`/`up` -- on whatever image it last had.
-	if [ ${#PROFILE[@]} -eq 0 ]; then
-		local why=""
-		if [ -r /etc/ohcamel/live.env ]; then
-			why="/etc/ohcamel/live.env exists"
-		elif docker ps -a --filter "label=com.docker.compose.service=ohcamel-live" --quiet 2>/dev/null | grep -q .; then
-			why="an ohcamel-live container already exists"
-		fi
-		if [ -n "$why" ]; then
-			PROFILE=(--profile live)
-			echo "deploy: $why -- adding --profile live automatically so ohcamel-research is rebuilt too"
-		fi
+	# profiled `build`/`up` -- on whatever image it last had. Announced here,
+	# immediately, even on the path that resolve_live_profile is about to
+	# walk straight back on the unreadable-file check below -- that second
+	# message explains the reversal, it does not replace this one.
+	if [ "$profile_auto_added" = 1 ]; then
+		local why="/etc/ohcamel/live.env exists"
+		[ "$live_env_readable" = 1 ] || why="an ohcamel-live container already exists"
+		echo "deploy: $why -- adding --profile live automatically so ohcamel-research is rebuilt too"
 	fi
 
 	[ -f deploy/.env ] || {
@@ -162,10 +227,31 @@ main() {
 
 	# Readable BY THIS USER: compose reads env_file on the client side, so a file
 	# root can read and the deploy user cannot is a file the container never sees.
-	if [ ${#PROFILE[@]} -gt 0 ] && [ ! -r /etc/ohcamel/live.env ]; then
+	#
+	# refuse_live_deploy and profile_on/profile_auto_added were both decided
+	# together, above, by resolve_live_profile -- so the two outcomes below
+	# can never disagree with each other the way the bug this fixes did:
+	#
+	#   - the operator typed --live: refuse_live_deploy=1. They asked for
+	#     something that cannot work, so exiting 1 is honest and expected.
+	#   - the profile was only auto-added (an ohcamel-live container already
+	#     exists, or the file existed a moment ago and no longer reads):
+	#     resolve_live_profile already turned profile_on back off, so a
+	#     plain `deploy.sh`, run out of habit, is not refused outright over a
+	#     credential this run was never asked to touch -- it warns instead
+	#     and falls back to a demo-only deploy. `build`/`up` below, gated on
+	#     PROFILE, then never look at ohcamel-live or ohcamel-research, and
+	#     the market-hours guard right after this skips too, since nothing
+	#     live is restarting.
+	if [ "$refuse_live_deploy" = 1 ]; then
 		echo "deploy: --live needs /etc/ohcamel/live.env, readable by $(id -un) -- 0640 root:$(id -un); see deploy/live.env.example" >&2
 		exit 1
 	fi
+	if [ "$profile_auto_added" = 1 ] && [ "$profile_on" = 0 ]; then
+		echo "deploy: /etc/ohcamel/live.env is unreadable by $(id -un) (need 0640 root:$(id -un); see deploy/live.env.example) -- the live profile was only auto-added, not requested, so falling back to a demo-only deploy; ohcamel-live and ohcamel-research will NOT be rebuilt or restarted this run" >&2
+	fi
+
+	[ "$profile_on" = 1 ] && PROFILE=(--profile live)
 
 	# ---------------------------------------------------------------------------
 	# The market-hours guard. DEPLOY_NOW (a Unix epoch) overrides the clock this
@@ -234,15 +320,6 @@ main() {
 	say "Starting"
 	"${COMPOSE[@]}" "${PROFILE[@]}" up -d --remove-orphans
 
-	# ---------------------------------------------------------------------------
-	say "Pruning"
-	# Dangling images (the ones `build` just orphaned by replacing them) and old
-	# build cache. -f: no interactive confirmation on an unattended deploy.
-	# --keep-storage 5GB: bounded, not emptied -- an emptied cache turns the next
-	# deploy's build back into a cold one.
-	docker image prune -f
-	docker builder prune -f --keep-storage 5GB
-
 	# Give Caddy a moment to bind and, on a first run, to complete the ACME
 	# handshake. A smoke test that starts before the certificate exists reports a
 	# TLS failure that is really just impatience.
@@ -261,9 +338,34 @@ main() {
 
 	if deploy/smoke.sh "${SMOKE_ARGS[@]}"; then
 		say "Deployed"
+
+		# -----------------------------------------------------------------------
+		say "Pruning"
+		# Only now, after the smoke suite has passed: pruning too early is what
+		# makes rollback impossible, because a dangling image IS the previous
+		# image -- `build` just orphaned it by re-tagging `ohcamel:latest`
+		# (and, under --live, `ohcamel-research:latest`) onto the new one, but
+		# the old image itself does not stop existing until something prunes
+		# it. Doing that before the verify step meant a failed smoke suite had
+		# nothing left to roll back to except a full rebuild -- twenty minutes
+		# on the droplet, on an engine that is already down or wrong. Doing it
+		# here, only on the path where smoke just proved the new image good,
+		# costs nothing: the previous image will get here on the NEXT
+		# successful deploy either way.
+		#
+		# Dangling images and old build cache. -f: no interactive confirmation on
+		# an unattended deploy. --keep-storage 5GB: bounded, not emptied -- an
+		# emptied cache turns the next deploy's build back into a cold one.
+		docker image prune -f
+		docker builder prune -f --keep-storage 5GB
 	else
 		say "Deployed, but the smoke suite FAILED -- see above"
-		echo "  logs:  docker compose -f deploy/docker-compose.yml logs --tail 100" >&2
+		echo "  logs:            docker compose -f deploy/docker-compose.yml logs --tail 100" >&2
+		echo "  not pruned: the previous image is still here, exactly because this failed --" >&2
+		echo "  to roll back to it:" >&2
+		echo "    docker image ls --filter dangling=true                 # find its IMAGE ID" >&2
+		echo "    docker tag <IMAGE_ID> ohcamel:latest                   # restore the tag" >&2
+		echo "    ${COMPOSE[*]} ${PROFILE[*]} up -d --force-recreate     # run it again" >&2
 		exit 1
 	fi
 }
