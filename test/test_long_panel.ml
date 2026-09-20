@@ -560,6 +560,109 @@ let test_error_bad_window () =
     "a negative window is refused" "long_panel: window must be at least 1, got -3"
     (build_with (-3))
 
+(* ------------------------------------------------------------------------ *)
+(* present_returns: the nan-free reader                                      *)
+(* ------------------------------------------------------------------------ *)
+
+(* The panel's gaps are nan on purpose, and Risk_metrics' window functions
+   compute over every element they are given, so a raw [returns] array must
+   never reach one. [present_returns] is the reader that does not make that
+   mistake, and this is what it owes:
+
+   Four panel dates, d1..d4, every ETF with a bar on each, so window = 3 and
+   each instrument has three return slots:
+
+     slot 0 = close(d2)/close(d1) - 1
+     slot 1 = close(d3)/close(d2) - 1
+     slot 2 = close(d4)/close(d3) - 1
+
+   FULL has a bar on all four (100, 110, 121, 133.1):
+     slots = 110/100 - 1, 121/110 - 1, 133.1/121 - 1, no gap anywhere, so
+     present_returns is the raw array element for element -- a reader that
+     dropped or reordered something would show up here, on the easy case.
+   LATE's first bar is on d2 (100, 110, 99):
+     slot 0 needs a bar on d1 and has none, so it is nan; slot 1 is
+     110/100 - 1 = 0.10 and slot 2 is 99/110 - 1 = -0.10. present_returns is
+     [0.10; -0.10]: the gap removed, the order kept, and NOT slid down into
+     slot 0's place.
+   GAP has bars on d1 and d4 only:
+     slot 0 needs d2 (none), slot 1 needs d2 and d3 (none), slot 2 needs d3
+     (none). All three nan, so present_returns is empty -- not a zero, and not
+     a one-element array invented across the hole. An empty array is what
+     Risk_metrics' own [validate_non_empty] then refuses, by name.
+   NOBAR is in ~instruments and absent from the bars map entirely: in the panel,
+     with three nans, so [||] -- "the feed has nothing on this name yet" is a
+     fact about the market. ABSENT was never asked for: that is the caller's
+     own spelling, and it raises rather than reading as an instrument with no
+     observations.
+
+   The length of every result is that instrument's [observations], which is
+   counted with the same predicate -- pinned here so the two cannot part. *)
+let test_present_returns () =
+  let d1 = date "2026-01-05" and d2 = date "2026-01-06" in
+  let d3 = date "2026-01-07" and d4 = date "2026-01-08" in
+  let all_four closes = List.zip_exn [ d1; d2; d3; d4 ] closes in
+  let etfs =
+    etf_bars_5
+      [
+        all_four [ 100.0; 101.0; 102.0; 103.0 ];
+        (* SPY *)
+        all_four [ 50.0; 50.5; 51.0; 51.5 ];
+        (* IWM *)
+        all_four [ 40.0; 40.4; 40.8; 41.2 ];
+        (* IWD *)
+        all_four [ 60.0; 60.6; 61.2; 61.8 ];
+        (* IWF *)
+        all_four [ 80.0; 80.8; 81.6; 82.4 ];
+        (* MTUM *)
+      ]
+  in
+  let bars =
+    Symbol.Map.of_alist_exn
+      (( sym "FULL",
+         List.map (all_four [ 100.0; 110.0; 121.0; 133.1 ]) ~f:(fun (d, c) -> bar d c 1.0)
+       )
+      :: (sym "LATE", [ bar d2 100.0 1.0; bar d3 110.0 1.0; bar d4 99.0 1.0 ])
+      :: (sym "GAP", [ bar d1 10.0 1.0; bar d4 11.0 1.0 ])
+      :: etfs)
+  in
+  let panel =
+    get_ok
+      (LP.build ~bars
+         ~dgs10:[ (d1, 4.0); (d2, 4.01); (d3, 4.02); (d4, 4.03) ]
+         ~instruments:[ sym "FULL"; sym "LATE"; sym "GAP"; sym "NOBAR" ]
+         ~window:3 ~now:(utc "2026-01-09" "00:16:00"))
+  in
+  let present s = LP.present_returns panel (sym s) in
+  let farray = Alcotest.array (Alcotest.float 1e-12) in
+  Alcotest.check farray "FULL: no gap, so the raw array element for element"
+    [| (110.0 /. 100.0) -. 1.0; (121.0 /. 110.0) -. 1.0; (133.1 /. 121.0) -. 1.0 |]
+    (present "FULL");
+  Alcotest.check farray "LATE: the leading gap removed, the two observations in order"
+    [| (110.0 /. 100.0) -. 1.0; (99.0 /. 110.0) -. 1.0 |]
+    (present "LATE");
+  Alcotest.check farray "GAP: every slot nan, so nothing" [||] (present "GAP");
+  Alcotest.check farray "NOBAR: an instrument the feed has nothing on" [||]
+    (present "NOBAR");
+  List.iter [ "FULL"; "LATE"; "GAP"; "NOBAR" ] ~f:(fun s ->
+      Alcotest.(check int)
+        (s ^ ": the length is the observation count")
+        (Map.find_exn panel.LP.observations (sym s))
+        (Array.length (present s)));
+  (* Reading does not rewrite: LATE's raw array still carries its nan, so a
+     second reader (or the factor model, which wants the rows) sees the panel
+     as built. *)
+  let late_raw = Map.find_exn panel.LP.returns (sym "LATE") in
+  Alcotest.(check int) "LATE's raw array is still three slots" 3 (Array.length late_raw);
+  Alcotest.(check bool) "and slot 0 is still nan" true (Float.is_nan late_raw.(0));
+  match LP.present_returns panel (sym "ABSENT") with
+  | (_ : float array) ->
+      Alcotest.fail "a symbol the panel does not carry must raise, not read as empty"
+  | exception Invalid_argument message ->
+      Alcotest.(check string)
+        "a symbol the caller never asked for names itself"
+        "long_panel: present_returns: ABSENT is not an instrument in this panel" message
+
 let suite =
   ( "long_panel",
     [
@@ -598,4 +701,7 @@ let suite =
       Alcotest.test_case "an instrument listed twice is deduplicated, not an error" `Quick
         test_duplicate_instrument_is_deduplicated;
       Alcotest.test_case "Error: window must be at least 1" `Quick test_error_bad_window;
+      Alcotest.test_case
+        "present_returns: the gaps removed, the order kept, an unknown symbol refused"
+        `Quick test_present_returns;
     ] )

@@ -652,15 +652,47 @@ let test_risk_by_hand () =
    repeated in both this module and risk_metrics.ml's [cornish_fisher_var].
    It is now one constant, defined in Risk_metrics (which this module already
    depends on for [mean], [stddev], [is_effectively_constant] and
-   [covariance_matrix]) and read from there as [FM.min_observations] -- so
-   this pins that the two minimums cannot drift apart again. *)
+   [covariance_matrix]) and read from there as [FM.min_observations].
+
+   What this pins is an AGREEMENT, not an identity of meaning. The two floors
+   answer different questions -- Risk_metrics' bounds a third- and
+   fourth-moment estimate (hence its name, [min_observations_higher_moment]),
+   this module's bounds the degrees of freedom left after fitting six OLS
+   parameters -- and they are independent decisions that today happen to have
+   been chosen equal at 120. Sharing one constant is what stops a typo moving
+   one and not the other; moving one on a NEW argument would be a legitimate
+   change, and this case failing is then the reminder to split them
+   deliberately rather than a bug report. *)
 let test_the_two_minimums_agree () =
   Alcotest.(check int)
-    "Factor_model.min_observations = Risk_metrics.min_observations" 120
-    FM.min_observations;
+    "the OLS degrees-of-freedom floor is 120 (an independent decision from the \
+     higher-moment floor, currently chosen equal)"
+    120 FM.min_observations;
   Alcotest.(check int)
-    "and they are literally the same constant" Ohcamel.Risk_metrics.min_observations
-    FM.min_observations
+    "and the two independent floors agree, because they share one constant"
+    Ohcamel.Risk_metrics.min_observations_higher_moment FM.min_observations
+
+(* And that the sharing is still real, which no runtime check can see: both
+   sides read 120 whether Factor_model reads the constant or carries a literal
+   of its own, so a mutation replacing the reference with [120] leaves the case
+   above green and re-opens exactly the drift it was written to close. So read
+   the source line, the way test_rebalance.ml's one-submit-site case reads
+   desk/ and bin/.
+
+   Matched on the whole definition rather than a substring, so that a redefined
+   alias ([let min_observations = 120] beside a now-unused reference) fails too.
+   test/dune lists ../lib/factor_model.ml as a dep, which is what puts it
+   beside the runner in _build. *)
+let test_the_shared_constant_is_still_read () =
+  let line = "let min_observations = Risk_metrics.min_observations_higher_moment" in
+  let definitions =
+    In_channel.read_lines "../lib/factor_model.ml"
+    |> List.filter ~f:(fun l ->
+        String.is_prefix (String.strip l) ~prefix:"let min_observations ")
+  in
+  Alcotest.(check (list string))
+    "factor_model.ml defines its floor by reading Risk_metrics', exactly once" [ line ]
+    definitions
 
 let suite =
   ( "factor_model",
@@ -669,6 +701,8 @@ let suite =
         test_one_factor_by_hand;
       Alcotest.test_case "the two 120-observation minimums are the same constant" `Quick
         test_the_two_minimums_agree;
+      Alcotest.test_case "factor_model.ml still reads the shared minimum, not a literal"
+        `Quick test_the_shared_constant_is_still_read;
       Alcotest.test_case "Walsh-Hadamard: every alpha and beta recovered exactly" `Quick
         test_walsh_hadamard_recovers_every_coefficient;
       Alcotest.test_case "Walsh-Hadamard: residuals orthogonal, fitted + residual = y"

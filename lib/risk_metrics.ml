@@ -21,7 +21,26 @@
      caller, not a market condition, and the alternative -- returning 0.0 --
      renders as "no risk" on a dashboard, which is the single most dangerous
      wrong answer this module could give. Callers in graph.ml guard before
-     calling, so these exceptions should never reach a node body. *)
+     calling, so these exceptions should never reach a node body.
+
+   - A NON-FINITE observation is structurally invalid in exactly that sense,
+     and raises for exactly that reason. [Long_panel] is this tree's first
+     legitimate producer of arrays containing [nan] -- an instrument's returns
+     carry one on every panel date it has no bar for, and the rates factor
+     carries one on its trailing unpublished run -- and float arithmetic does
+     not raise on [nan], it propagates it. A window here handed such an array
+     returned [nan], which renders on a page as a figure this module vouched
+     for. So every function that reads a whole series checks it
+     ([validate_finite] below), and the caller's job is to have removed the
+     gaps first: Long_panel.present_returns does that, Factor_model drops whole
+     [nan] rows, Liquidity.line guards with [is_finite]. Raising, rather than
+     returning an [Error] or an option: a [nan] here is a programming error at
+     the call site, one of a kind with an empty window, and the same argument
+     applies -- a [None] or an [Error] that a caller resolved with a default
+     would put 0.0 back on the dashboard. [cornish_fisher_var] is the one
+     exception and returns an [Error], because it was written that way for
+     four refusals a caller may want to REPORT (too few rows, a flat series,
+     a non-monotone expansion), and a non-finite input joined that list. *)
 
 open Core
 
@@ -32,6 +51,27 @@ let validate_confidence ~confidence =
 
 let validate_non_empty ~name (xs : float array) =
   if Array.is_empty xs then invalid_argf "risk_metrics: %s must be non-empty" name ()
+
+(* Every observation finite, or [Invalid_argument] -- see the non-finite
+   convention in the header for why it raises rather than returning an [Error].
+
+   [who] is the name of the function the CALLER called, not of whichever one
+   ends up reading the array: [stddev] delegates to the covariance arithmetic,
+   and a message reading "risk_metrics: covariance" for a [stddev] call would
+   send a reader to the wrong line. ([is_effectively_constant] and [beta] have
+   no [who] of their own and inherit their delegate's.)
+
+   Names the index and the value rather than just "not finite". On a
+   250-observation panel those two are what tell a missing observation ([nan],
+   Long_panel's own marker for a date with no bar) apart from an infinity,
+   which can only have come from a zero close upstream and is a data error
+   rather than a gap. *)
+let validate_finite ~who (xs : float array) =
+  match Array.findi xs ~f:(fun _ x -> not (Float.is_finite x)) with
+  | None -> ()
+  | Some (i, x) ->
+      invalid_argf "risk_metrics: %s: observation %d of %d is %g, not a finite number" who
+        i (Array.length xs) x ()
 
 (* How many observations fall in the loss tail at this confidence level.
 
@@ -65,6 +105,10 @@ let loss_tail ~returns ~confidence =
 let historical_var ~returns ~confidence =
   validate_confidence ~confidence;
   validate_non_empty ~name:"returns" returns;
+  (* Before the sort, not after: [Float.compare] gives [nan] a place in the
+     total order (below every number), so a [nan] observation sorts INTO the
+     loss tail and comes back out as the reported VaR. *)
+  validate_finite ~who:"historical_var" returns;
   let tail = loss_tail ~returns ~confidence in
   -.tail.(Array.length tail - 1)
 
@@ -82,6 +126,7 @@ let historical_var ~returns ~confidence =
 let expected_shortfall ~returns ~confidence =
   validate_confidence ~confidence;
   validate_non_empty ~name:"returns" returns;
+  validate_finite ~who:"expected_shortfall" returns;
   let tail = loss_tail ~returns ~confidence in
   -.(Array.fold tail ~init:0.0 ~f:( +. ) /. float_of_int (Array.length tail))
 
@@ -102,6 +147,16 @@ let normal_ppf ~p = Owl.Stats.gaussian_ppf p ~mu:0.0 ~sigma:1.0
    diagnostic. *)
 let parametric_var ~mean ~stddev ~confidence =
   validate_confidence ~confidence;
+  (* Both scalars, and BEFORE the sign check: [Float.is_negative nan] is false,
+     so a [nan] sigma passed the old guard untouched and came back as a [nan]
+     VaR. This is also where a [nan] out of [mean] or [stddev] over a panel
+     window arrives, one call later, when a caller computed the moments
+     itself -- var_backtest.ml passes both. *)
+  if not (Float.is_finite mean) then
+    invalid_argf "risk_metrics: parametric_var: mean is %g, not a finite number" mean ();
+  if not (Float.is_finite stddev) then
+    invalid_argf "risk_metrics: parametric_var: stddev is %g, not a finite number" stddev
+      ();
   if Float.is_negative stddev then
     invalid_argf "risk_metrics: stddev must be non-negative, got %f" stddev ();
   let z = normal_ppf ~p:(1.0 -. confidence) in
@@ -117,19 +172,39 @@ let mean xs =
    choice cancels there provided both use the same denominator -- which is the
    real reason to fix one convention here and use it everywhere rather than
    mixing. *)
-let covariance xs ys =
-  validate_non_empty ~name:"series" xs;
-  if Array.length xs <> Array.length ys then
-    invalid_argf "risk_metrics: series length mismatch (%d vs %d)" (Array.length xs)
-      (Array.length ys) ();
+(* The arithmetic alone, on input a caller above has already checked. Split out
+   so [covariance_matrix] can sweep each of its n series for a non-finite
+   observation ONCE, naming the series, instead of re-sweeping the same two
+   arrays inside each of its n(n+1)/2 inner calls.
+
+   Internal by convention, not by an interface: this library declares no .mli,
+   so the name is reachable from outside and the discipline has to be read
+   rather than enforced. Every call inside this module validates first; anything
+   outside it wanting a covariance wants [covariance], which does. *)
+let covariance_core xs ys =
   let mx = mean xs and my = mean ys in
   let total =
     Array.foldi xs ~init:0.0 ~f:(fun i acc x -> acc +. ((x -. mx) *. (ys.(i) -. my)))
   in
   total /. float_of_int (Array.length xs)
 
-let variance xs = covariance xs xs
-let stddev xs = Float.sqrt (variance xs)
+(* [who] names the function the caller actually called -- see [validate_finite]. *)
+let covariance_checked ~who xs ys =
+  validate_non_empty ~name:"series" xs;
+  if Array.length xs <> Array.length ys then
+    invalid_argf "risk_metrics: series length mismatch (%d vs %d)" (Array.length xs)
+      (Array.length ys) ();
+  validate_finite ~who xs;
+  validate_finite ~who ys;
+  covariance_core xs ys
+
+let covariance xs ys = covariance_checked ~who:"covariance" xs ys
+
+(* [variance] and [stddev] pass their own names rather than inheriting
+   [covariance]'s: the two are the same computation, but a caller reading a
+   message wants the line it wrote. *)
+let variance xs = covariance_checked ~who:"variance" xs xs
+let stddev xs = Float.sqrt (covariance_checked ~who:"stddev" xs xs)
 
 (* Is this series constant for practical purposes?
 
@@ -215,10 +290,16 @@ let covariance_matrix (series : float array array) =
   if Array.is_empty series then invalid_arg "risk_metrics: need at least one series";
   let n = Array.length series in
   let len = Array.length series.(0) in
+  (* One sweep per series, up front, naming the series: in an n x T panel the
+     index is the only thing that says WHICH instrument has the gap, and the
+     inner loop below reads every series n times over. [validate_non_empty] is
+     hoisted here for the same reason -- the inner calls no longer do it. *)
   Array.iteri series ~f:(fun i s ->
       if Array.length s <> len then
         invalid_argf "risk_metrics: series %d has length %d, expected %d" i
-          (Array.length s) len ());
+          (Array.length s) len ();
+      validate_non_empty ~name:"series" s;
+      validate_finite ~who:(Printf.sprintf "covariance_matrix: series %d" i) s);
   let m = Owl.Mat.zeros n n in
   for i = 0 to n - 1 do
     (* Symmetric, so only compute the upper triangle and mirror it. Besides
@@ -226,7 +307,7 @@ let covariance_matrix (series : float array array) =
        independently can leave them differing in the last bit, which is enough to
        make a matrix fail a positive-definiteness check downstream. *)
     for j = i to n - 1 do
-      let c = covariance series.(i) series.(j) in
+      let c = covariance_core series.(i) series.(j) in
       Owl.Mat.set m i j c;
       Owl.Mat.set m j i c
     done
@@ -328,18 +409,26 @@ let cornish_fisher_is_monotone ~skew ~excess_kurtosis =
   in
   Float.( > ) (List.fold candidates ~init:Float.infinity ~f:Float.min) 0.0
 
-(* The fewest observations a series must carry before a higher-moment or
-   multi-row estimate here is trusted at all: below this, a third- and
-   fourth-moment estimate ([cornish_fisher_var], just below) or a five-factor
-   regression ([Factor_model.fit]) is fitting noise and reporting it as a
-   figure. One constant, not two: [Factor_model.min_observations] is defined
-   as this value rather than repeating the literal, and it is safe to do so
-   because [Factor_model] already depends on this module (it calls
-   [is_effectively_constant], [mean], [stddev] and [covariance_matrix]) while
-   this module depends on nothing in [Factor_model] -- so the reference runs
-   one way and creates no cycle. test_factor_model.ml pins that the two
-   values agree. *)
-let min_observations = 120
+(* The fewest observations a THIRD- AND FOURTH-MOMENT estimate here is trusted
+   on: below this, [cornish_fisher_var] (just below) is estimating a skewness
+   and an excess kurtosis from too little data and reporting the result as a
+   figure. Named for the property, not for the module, because it is shared
+   with a genuinely SEPARATE decision that currently lands on the same number:
+   [Factor_model.min_observations] is about degrees of freedom -- six OLS
+   parameters, an intercept and five betas, fitted without fitting noise -- and
+   the two arguments have nothing in common but their answer.
+
+   Shared anyway, rather than written twice as a literal, so that the two
+   cannot drift apart by a typo: [Factor_model.min_observations] is defined as
+   this value, which is safe because [Factor_model] already depends on this
+   module (it calls [is_effectively_constant], [mean], [stddev] and
+   [covariance_matrix]) while this module depends on nothing in it -- the
+   reference runs one way and makes no cycle. test_factor_model.ml pins both
+   halves: that the two floors agree at 120 today, and that Factor_model's is
+   still READING this constant rather than having quietly acquired a literal of
+   its own. Moving one floor on a new argument is a legitimate change; the
+   name is what keeps it from reading as a bug. *)
+let min_observations_higher_moment = 120
 
 (* Cornish-Fisher VaR for a single return series: the same zero-mean,
    population-sigma convention [portfolio_parametric_var] uses, with the
@@ -360,11 +449,11 @@ let cornish_fisher_var ~returns ~confidence =
       (Printf.sprintf
          "risk_metrics: cornish_fisher_var: %d of %d observations are not finite"
          non_finite n)
-  else if n < min_observations then
+  else if n < min_observations_higher_moment then
     Error
       (Printf.sprintf
          "risk_metrics: cornish_fisher_var needs at least %d observations, got %d"
-         min_observations n)
+         min_observations_higher_moment n)
   else if is_effectively_constant returns then
     Error
       "risk_metrics: cornish_fisher_var: series is effectively constant, skewness and \

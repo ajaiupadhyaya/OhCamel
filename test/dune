@@ -8,8 +8,12 @@
  ; example book's half-spreads to it. desk/ and bin/: the one-submit-site test
  ; reads every source file there for a mention of the wire module, which only
  ; the order manager's one submit may make.
+ ; lib/factor_model.ml: the shared-minimum case reads its one definition line,
+ ; because whether that line reads Risk_metrics' constant or a literal 120 of
+ ; its own is invisible at runtime -- both are 120.
  (deps
   ../book.example.sexp
+  ../lib/factor_model.ml
   ../research/config/friction_v1.yaml
   (glob_files ../desk/*.ml)
   (glob_files ../desk/*.mli)

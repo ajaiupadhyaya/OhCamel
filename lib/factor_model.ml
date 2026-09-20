@@ -118,14 +118,21 @@
 
 open Core
 
-(* Ruling 5's floor: the fewest observations a name may be fitted on. The
-   value lives in Risk_metrics, which this module already depends on for
-   [is_effectively_constant], [mean], [stddev] and [covariance_matrix] --
-   Risk_metrics depends on nothing here, so taking the constant from there
-   creates no cycle. It is [cornish_fisher_var]'s own floor too, for the same
-   reason (too few rows to trust a higher-moment estimate); test_factor_model.ml
-   pins that the two agree. *)
-let min_observations = Risk_metrics.min_observations
+(* Ruling 5's floor: the fewest observations a name may be fitted on, so that
+   six OLS parameters -- an intercept and five betas -- are estimated from
+   enough rows not to be fitting noise.
+
+   An ALIAS of [Risk_metrics.min_observations_higher_moment], not the same
+   decision as it. That constant bounds a third- and fourth-moment estimate;
+   this one bounds a degrees-of-freedom argument, and the two happen to have
+   been chosen equal at 120. They are shared rather than written twice so a
+   typo cannot move one without the other -- the value lives in Risk_metrics,
+   which this module already depends on for [is_effectively_constant], [mean],
+   [stddev] and [covariance_matrix], while Risk_metrics depends on nothing here,
+   so the reference creates no cycle. test_factor_model.ml pins that the two
+   agree AND that this line still reads the shared constant instead of a
+   literal 120 of its own. *)
+let min_observations = Risk_metrics.min_observations_higher_moment
 
 (* sigma_min / sigma_max of the standardised design below this is refused: the
    variance-inflation bound of 10^4 derived in the header. *)
@@ -158,13 +165,13 @@ let fit ~enforce_minimum ~(y : float array) ~(factors : float array array) :
   let k = Array.length factors in
   let length = Array.length y in
   let%bind () =
-    if k = 0 then Error "factor model: there are no factors to regress on" else Ok ()
+    if k = 0 then Error "factor_model: there are no factors to regress on" else Ok ()
   in
   let%bind () =
     match Array.findi factors ~f:(fun _ f -> Array.length f <> length) with
     | Some (i, f) ->
         Error
-          (sprintf "factor model: factor %d has %d rows, and y has %d" i (Array.length f)
+          (sprintf "factor_model: factor %d has %d rows, and y has %d" i (Array.length f)
              length)
     | None -> Ok ()
   in
@@ -174,7 +181,7 @@ let fit ~enforce_minimum ~(y : float array) ~(factors : float array array) :
     if enforce_minimum && n < min_observations then
       Error
         (sprintf
-           "factor model: %d observations after dropping rows with nan, fewer than the \
+           "factor_model: %d observations after dropping rows with nan, fewer than the \
             %d a fit needs"
            n min_observations)
     else Ok ()
@@ -186,7 +193,7 @@ let fit ~enforce_minimum ~(y : float array) ~(factors : float array array) :
     if n < k + 2 then
       Error
         (sprintf
-           "factor model: %d observations cannot fit an intercept and K = %d factors \
+           "factor_model: %d observations cannot fit an intercept and K = %d factors \
             with a residual degree of freedom left"
            n k)
     else Ok ()
@@ -203,14 +210,14 @@ let fit ~enforce_minimum ~(y : float array) ~(factors : float array array) :
       |> Option.map ~f:(fun (t, v) -> (rows.(t), v))
     in
     match first_infinite y with
-    | Some (row, v) -> Error (sprintf "factor model: y is %g at row %d" v row)
+    | Some (row, v) -> Error (sprintf "factor_model: y is %g at row %d" v row)
     | None -> (
         match
           Array.find_mapi f ~f:(fun i c ->
               Option.map (first_infinite c) ~f:(fun (row, v) -> (i, row, v)))
         with
         | Some (i, row, v) ->
-            Error (sprintf "factor model: factor %d is %g at row %d" i v row)
+            Error (sprintf "factor_model: factor %d is %g at row %d" i v row)
         | None -> Ok ())
   in
   let%bind () =
@@ -218,7 +225,7 @@ let fit ~enforce_minimum ~(y : float array) ~(factors : float array array) :
     | Some (i, _) ->
         Error
           (sprintf
-             "factor model: factor %d does not move over the %d rows used, so the \
+             "factor_model: factor %d does not move over the %d rows used, so the \
               standardised design is singular (sigma_min / sigma_max = 0)"
              i n)
     | None -> Ok ()
@@ -232,7 +239,7 @@ let fit ~enforce_minimum ~(y : float array) ~(factors : float array array) :
     if Float.is_nan ratio || Float.( < ) ratio condition_floor then
       Error
         (sprintf
-           "factor model: the standardised design is ill-conditioned over the %d rows \
+           "factor_model: the standardised design is ill-conditioned over the %d rows \
             used: sigma_min / sigma_max = %.4g, below %g, the floor that bounds every \
             beta's variance inflation at 10^4"
            n ratio condition_floor)
@@ -272,7 +279,7 @@ let fit ~enforce_minimum ~(y : float array) ~(factors : float array array) :
   else
     Error
       (sprintf
-         "factor model: the fit over %d rows is not finite (does an input overflow?)" n)
+         "factor_model: the fit over %d rows is not finite (does an input overflow?)" n)
 
 let fit_one ~y ~factors = fit ~enforce_minimum:true ~y ~factors
 
@@ -343,24 +350,24 @@ let risk ~(fits : Fit.t option array) ~(exposures : float array)
   let k, k_cols = Owl.Mat.shape covariance in
   let%bind () =
     if Array.length fits <> n then
-      Error (sprintf "factor model: %d fits for %d exposures" (Array.length fits) n)
+      Error (sprintf "factor_model: %d fits for %d exposures" (Array.length fits) n)
     else Ok ()
   in
   let%bind () =
     if k = 0 || k <> k_cols then
-      Error (sprintf "factor model: the factor covariance is %dx%d, not square" k k_cols)
+      Error (sprintf "factor_model: the factor covariance is %dx%d, not square" k k_cols)
     else Ok ()
   in
   let%bind () =
     if Float.( > ) confidence 0.0 && Float.( < ) confidence 1.0 then Ok ()
     else
       Error
-        (sprintf "factor model: confidence must lie strictly between 0 and 1, got %g"
+        (sprintf "factor_model: confidence must lie strictly between 0 and 1, got %g"
            confidence)
   in
   let%bind () =
     match Array.findi exposures ~f:(fun _ x -> not (Float.is_finite x)) with
-    | Some (i, x) -> Error (sprintf "factor model: instrument %d's exposure is %g" i x)
+    | Some (i, x) -> Error (sprintf "factor_model: instrument %d's exposure is %g" i x)
     | None -> Ok ()
   in
   let%bind () =
@@ -370,14 +377,14 @@ let risk ~(fits : Fit.t option array) ~(exposures : float array)
         | Some { Fit.betas; _ } when Array.length betas <> k ->
             Error
               (sprintf
-                 "factor model: instrument %d has %d betas and the covariance is %dx%d" i
+                 "factor_model: instrument %d has %d betas and the covariance is %dx%d" i
                  (Array.length betas) k k)
         | Some _ -> Ok ()
         | None when Float.equal exposures.(i) 0.0 -> Ok ()
         | None ->
             Error
               (sprintf
-                 "factor model: instrument %d has a nonzero exposure (%g) and no fit, so \
+                 "factor_model: instrument %d has a nonzero exposure (%g) and no fit, so \
                   the book's factor risk is unknown"
                  i exposures.(i)))
   in
@@ -389,7 +396,7 @@ let risk ~(fits : Fit.t option array) ~(exposures : float array)
         if rows = n && cols = n then Ok ()
         else
           Error
-            (sprintf "factor model: the asset covariance is %dx%d for %d exposures" rows
+            (sprintf "factor_model: the asset covariance is %dx%d for %d exposures" rows
                cols n)
   in
   let b =
@@ -443,7 +450,7 @@ let risk ~(fits : Fit.t option array) ~(exposures : float array)
         | Some (i, j, v) ->
             Error
               (sprintf
-                 "factor model: the asset covariance's entry (%d, %d) is %g, and \
+                 "factor_model: the asset covariance's entry (%d, %d) is %g, and \
                   instruments %d and %d are both held"
                  i j v i j)
         | None when m = 0 -> Ok (Some 0.0)
@@ -480,5 +487,5 @@ let risk ~(fits : Fit.t option array) ~(exposures : float array)
   then Ok risk
   else
     Error
-      "factor model: the book's factor risk is not finite (is an entry of the factor \
+      "factor_model: the book's factor risk is not finite (is an entry of the factor \
        covariance, or a fit's residual variance, nan?)"

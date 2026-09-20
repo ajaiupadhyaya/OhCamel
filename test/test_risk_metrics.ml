@@ -233,6 +233,97 @@ let test_invalid_inputs () =
         ~covariance:(Owl.Mat.of_arrays [| [| 0.04 |] |]));
   check_invalid_arg "empty equity" (fun () -> RM.max_drawdown ~equity:[||])
 
+(* A non-finite observation is structurally invalid in the same sense an empty
+   window is, and raises for the same reason: it is a bug at the call site, and
+   the alternative is a figure nobody can tell from a real one.
+
+   [Long_panel] is where these come from. An instrument's returns carry nan on
+   every panel date it has no bar for, and the rates factor carries nan on its
+   trailing unpublished run, so from the moment the long window is wired into
+   the graph any of these functions can be handed one. What each WOULD have
+   returned, on R with one entry replaced by nan:
+
+     variance, stddev, covariance -- the mean is nan, so every deviation is
+       nan and so is the total: nan.
+     historical_var -- [Float.compare] gives nan a place below every number, so
+       it sorts to index 0 and IS the 95% tail: -nan.
+     expected_shortfall -- the same, averaged: -nan.
+     covariance_matrix -- every entry of that series' row and column: nan.
+     parametric_var -- [Float.is_negative nan] is false, so a nan sigma walked
+       straight past the sign check: nan.
+
+   Not one of those raises, and every one of them renders. [cornish_fisher_var]
+   already refused (its own case, above); these did not.
+
+   The messages are pinned in full, not just "it raised". Two things need to
+   stay true and neither is visible from the exception alone: the message names
+   the function the CALLER called ([variance] must not report itself as the
+   covariance arithmetic it delegates to), and [covariance_matrix] names WHICH
+   series, because on an n x T panel that index is the only thing identifying
+   the instrument with the gap. R has ten entries, so a nan at index 3 reads
+   "observation 3 of 10". *)
+let test_non_finite_observations_are_refused () =
+  let nan_series = Array.copy returns in
+  nan_series.(3) <- Float.nan;
+  let inf_series = Array.copy returns in
+  inf_series.(7) <- Float.infinity;
+  (* nan and infinity both, because they arrive by different routes -- a
+     missing observation, and a zero close upstream -- and poison the same
+     arithmetic. *)
+  List.iter
+    [ ("nan", nan_series); ("infinity", inf_series) ]
+    ~f:(fun (what, xs) ->
+      check_invalid_arg ("stddev, " ^ what) (fun () -> RM.stddev xs);
+      check_invalid_arg ("variance, " ^ what) (fun () -> RM.variance xs);
+      check_invalid_arg ("covariance, left, " ^ what) (fun () -> RM.covariance xs returns);
+      check_invalid_arg ("covariance, right, " ^ what) (fun () ->
+          RM.covariance returns xs);
+      check_invalid_arg ("covariance_matrix, " ^ what) (fun () ->
+          RM.covariance_matrix [| returns; xs |]);
+      check_invalid_arg ("historical_var, " ^ what) (fun () ->
+          RM.historical_var ~returns:xs ~confidence:0.95);
+      check_invalid_arg ("expected_shortfall, " ^ what) (fun () ->
+          RM.expected_shortfall ~returns:xs ~confidence:0.95);
+      check_invalid_arg ("parametric_var mean, " ^ what) (fun () ->
+          RM.parametric_var
+            ~mean:xs.(if String.equal what "nan" then 3 else 7)
+            ~stddev:0.02 ~confidence:0.95);
+      check_invalid_arg ("parametric_var stddev, " ^ what) (fun () ->
+          RM.parametric_var ~mean:0.0
+            ~stddev:xs.(if String.equal what "nan" then 3 else 7)
+            ~confidence:0.95));
+  let message f =
+    match f () with
+    | exception Invalid_argument m -> m
+    | exception e -> Alcotest.failf "expected Invalid_argument, got %s" (Exn.to_string e)
+    | _ -> Alcotest.fail "expected Invalid_argument, but it returned"
+  in
+  Alcotest.(check string)
+    "stddev names itself, and the observation"
+    "risk_metrics: stddev: observation 3 of 10 is nan, not a finite number"
+    (message (fun () -> RM.stddev nan_series));
+  Alcotest.(check string)
+    "variance names itself, not the covariance arithmetic it delegates to"
+    "risk_metrics: variance: observation 3 of 10 is nan, not a finite number"
+    (message (fun () -> RM.variance nan_series));
+  Alcotest.(check string)
+    "covariance_matrix names which series carries the gap"
+    "risk_metrics: covariance_matrix: series 1: observation 3 of 10 is nan, not a finite \
+     number"
+    (message (fun () -> RM.covariance_matrix [| returns; nan_series |]));
+  Alcotest.(check string)
+    "an infinity is reported as one, so a data error reads differently from a gap"
+    "risk_metrics: historical_var: observation 7 of 10 is inf, not a finite number"
+    (message (fun () -> RM.historical_var ~returns:inf_series ~confidence:0.95));
+  Alcotest.(check string)
+    "parametric_var's sigma, which the sign check could not see"
+    "risk_metrics: parametric_var: stddev is nan, not a finite number"
+    (message (fun () -> RM.parametric_var ~mean:0.0 ~stddev:Float.nan ~confidence:0.95));
+  (* And the guard is a guard, not a rejection of the whole family: R itself
+     still computes, so nothing above passes by refusing everything. *)
+  Alcotest.check feq "R is untouched: 95% VaR is still 0.05" 0.05
+    (RM.historical_var ~returns ~confidence:0.95)
+
 (* Population moments of [1;2;3;10]: mean 16/4 = 4, deviations -3,-2,-1,6.
      m2 = (9+4+1+36)/4    = 50/4    = 12.5
      m3 = (-27-8-1+216)/4 = 180/4   = 45
@@ -485,6 +576,8 @@ let suite =
       Alcotest.test_case "drawdown" `Quick test_drawdown;
       Alcotest.test_case "drawdown on a monotonic curve" `Quick test_drawdown_monotonic;
       Alcotest.test_case "invalid inputs raise" `Quick test_invalid_inputs;
+      Alcotest.test_case "a non-finite observation raises rather than returning nan"
+        `Quick test_non_finite_observations_are_refused;
       Alcotest.test_case "skewness and excess kurtosis of [1;2;3;10]" `Quick
         test_skewness_and_kurtosis;
       Alcotest.test_case "cornish-fisher z is unchanged at zero skew and kurtosis" `Quick

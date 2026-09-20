@@ -23,6 +23,23 @@
      name shortens only its OWN observation count, never the window's dates
      or anyone else's count.
 
+   THE ONE RULE FOR CONSUMERS
+
+   Because a gap is [nan] and not a number, this module is the first place in
+   this tree that legitimately produces arrays containing [nan]: an
+   instrument's [returns] carry one wherever it has no observation, and the
+   [rates] factor carries one on its trailing unpublished run. So: a raw
+   [returns] array, and the [rates] factor, must NEVER be handed to
+   Risk_metrics. Arithmetic does not raise on [nan], it propagates it, so a
+   window function given one would return [nan] -- and a [nan] that reaches a
+   published figure is the failure this whole module's care about alignment
+   exists to prevent. Read the panel through [present_returns] below, which
+   removes the gaps; [Factor_model.fit] drops whole [nan] rows and
+   [Liquidity.line] guards with [is_finite], each for its own reasons.
+   Risk_metrics now refuses a non-finite observation with [Invalid_argument]
+   rather than returning [nan], so breaking the rule is loud rather than
+   silent -- but it is still the rule.
+
    [build] never raises. Every way a caller's own data can be malformed --
    a duplicated bar, a duplicated DGS10 print, a window that makes no sense --
    is an [Error] that names the problem, because this module's caller is a
@@ -92,6 +109,14 @@ let iwm = Symbol.of_string "IWM"
 let iwd = Symbol.of_string "IWD"
 let iwf = Symbol.of_string "IWF"
 let mtum = Symbol.of_string "MTUM"
+
+(* The ADV window: how many of an instrument's own final bars [adv20] averages,
+   and therefore also the floor below which there is no ADV to report. Named
+   once because it is used as both -- the floor and the divisor have to be the
+   same number, and writing the literal twice is how they come to differ: a
+   mean over the last 20 bars divided by 19 is a number that looks right and
+   is not. *)
+let adv_bars = 20
 
 (* A symbol's bars, keyed by date -- or an [Error] naming [who] (an ETF
    ticker or a book instrument's symbol, whichever the caller is building)
@@ -261,10 +286,12 @@ let build ~(bars : Bar.t list Symbol.Map.t) ~(dgs10 : (Date.t * float) list)
     in
     let adv20 =
       let n_bs = List.length bars_up_to_as_of in
-      if n_bs < 20 then None
+      if n_bs < adv_bars then None
       else
-        let last20 = List.drop bars_up_to_as_of (n_bs - 20) in
-        Some (List.sum (module Float) last20 ~f:(fun (b : Bar.t) -> b.volume) /. 20.0)
+        let window_bars = List.drop bars_up_to_as_of (n_bs - adv_bars) in
+        Some
+          (List.sum (module Float) window_bars ~f:(fun (b : Bar.t) -> b.volume)
+          /. Float.of_int adv_bars)
     in
     Ok (symbol, returns, observations, last_close, adv20)
   in
@@ -287,3 +314,42 @@ let build ~(bars : Bar.t list Symbol.Map.t) ~(dgs10 : (Date.t * float) list)
       observations = map_of (fun (s, _, o, _, _) -> (s, o));
       as_of;
     }
+
+(* val present_returns : t -> Symbol.t -> float array
+
+   That instrument's observed returns, in order, with the [nan] gaps removed
+   -- the only array from this module that may be handed to Risk_metrics.
+
+   A raw [returns] array must never go there, and neither must the [rates]
+   factor: both carry [nan] by design (a date the instrument has no bar on, a
+   panel date newer than FRED's last DGS10 print), and Risk_metrics' window
+   functions compute over every element they are given. [stddev],
+   [covariance_matrix], [historical_var] and their siblings now raise
+   [Invalid_argument] on a non-finite observation rather than returning [nan],
+   so the mistake surfaces -- but surfacing it in a scheduled refresh is not
+   the same as not making it, and this is the function that does not make it.
+
+   Removes [nan] only, never [infinity]. The two mean different things here:
+   [nan] is this module's own marker for "no observation", so dropping it is
+   reading the panel as it was written, while an infinity can only come from a
+   zero close upstream -- a data error, not a gap. Dropping that one would
+   hide it; leaving it in hands it to Risk_metrics, which refuses it by name.
+   That is the same split [Factor_model] makes (nan rows dropped as missing,
+   inf an [Error]), and it is why the predicate below is [is_nan] and not
+   [is_finite].
+
+   The result's length is exactly [observations] for that symbol, which is
+   counted with the same predicate; test_long_panel.ml pins the two together.
+
+   Raises [Invalid_argument] on a symbol the panel does not carry. That is a
+   key the CALLER chose -- an instrument it never passed in [~instruments] --
+   not data a feed sent, so it is a programming error and not the kind of
+   malformation [build] turns into an [Error]: returning [||] instead would
+   read as "this name has no observations", which is a claim about the market
+   rather than about the caller's spelling. *)
+let present_returns (t : t) (symbol : Symbol.t) : float array =
+  match Map.find t.returns symbol with
+  | Some returns -> Array.filter returns ~f:(fun x -> not (Float.is_nan x))
+  | None ->
+      invalid_argf "long_panel: present_returns: %s is not an instrument in this panel"
+        (Symbol.to_string symbol) ()
