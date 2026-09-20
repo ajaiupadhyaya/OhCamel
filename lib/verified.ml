@@ -8,10 +8,10 @@
    against the registry it runs, so the count cannot drift silently, and Phase
    5 serves them on /api/reports beside the numbers the process did compute.
 
-   [coverage_pct] is the published rounding, not the quotient: 7,643 / 9,618
-   is 79.466%, published as 79.5 -- README.md's badge rounds further to the
-   whole percent (79%) and docs/status.md carries the one-decimal figure
-   (79.5%), so a page that printed 79.4660 would
+   [coverage_pct] is the published rounding, not the quotient: 8,115 / 10,173
+   is 79.770%, published as 79.8 -- README.md's badge rounds further to the
+   whole percent (80%) and docs/status.md carries the one-decimal figure
+   (79.8%), so a page that printed 79.7699 would
    be claiming a precision `make coverage` did not measure (bisect_ppx
    counts visited points, not lines, and the number moves with the
    instrumentation). The fraction is kept beside it so the rounding is
@@ -24,7 +24,7 @@
    is named here by its directory, because CI's grep refuses the desk
    library's name anywhere in lib/. *)
 
-let tests = 662
+let tests = 663
 
 (* The scheduler suite's count: test/desk_async, the executable whose cases run
    with Async's scheduler on clocks of their own. It asserts this against its
@@ -39,4 +39,4 @@ let scheduler_tests = 30
 let coverage_covered = 7_643
 let coverage_lines = 9_618
 let coverage_pct = 79.5
-let dated = "2026-09-19"
+let dated = "2026-09-20"

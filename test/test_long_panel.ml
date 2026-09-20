@@ -598,6 +598,46 @@ let test_error_bad_window () =
 
    The length of every result is that instrument's [observations], which is
    counted with the same predicate -- pinned here so the two cannot part. *)
+(* [Factor] lives in types.ml, and this suite is where it is tested, because
+   long_panel.ml is its only reader -- the same reason types.ml gives for
+   declaring it there rather than here. It arrived with Stage 0's integration
+   and, until this case, nothing called [to_string] or [of_string] at all: the
+   coverage re-measure found lib/types.ml at 38 of 91 points where it had been
+   37 of 73, an 18-point denominator arriving almost entirely unexercised.
+   Stage 2A will parse a factor's name out of the book to build a
+   [Factor_exposure] limit, so a parser that has never round-tripped is a
+   parser that first runs against an operator's configuration file. *)
+let test_factor_names_round_trip () =
+  List.iter Factor.all ~f:(fun f ->
+      let s = Factor.to_string f in
+      match Factor.of_string s with
+      | Error e -> Alcotest.failf "%s did not parse back: %s" s (Error.to_string_hum e)
+      | Ok back ->
+          Alcotest.(check bool)
+            (Printf.sprintf "%s round-trips" s)
+            true (Factor.equal f back));
+  (* Five, in ruling 3's order, so a reordering that would silently re-label
+     every exposure column in [Long_panel.build] fails here first. *)
+  Alcotest.(check (list string))
+    "the five factors, in ruling 3's order"
+    [ "market"; "size"; "value"; "momentum"; "rates" ]
+    (List.map Factor.all ~f:Factor.to_string);
+  Alcotest.(check (list string))
+    "and the five ETFs those definitions read, in the same order"
+    [ "SPY"; "IWM"; "IWD"; "IWF"; "MTUM" ]
+    (List.map Factor.etfs ~f:Symbol.to_string);
+  (* An unknown name is refused, and the refusal quotes what it was given --
+     an operator who writes "Market" or "mom" should see which word failed. *)
+  List.iter [ "Market"; "mom"; ""; "rates " ] ~f:(fun bad ->
+      match Factor.of_string bad with
+      | Ok _ -> Alcotest.failf "%S was accepted as a factor" bad
+      | Error e ->
+          let m = Error.to_string_hum e in
+          Alcotest.(check bool)
+            (Printf.sprintf "%S is quoted back in: %s" bad m)
+            true
+            (String.is_substring m ~substring:(Printf.sprintf "%S" bad)))
+
 let test_present_returns () =
   let d1 = date "2026-01-05" and d2 = date "2026-01-06" in
   let d3 = date "2026-01-07" and d4 = date "2026-01-08" in
@@ -704,4 +744,8 @@ let suite =
       Alcotest.test_case
         "present_returns: the gaps removed, the order kept, an unknown symbol refused"
         `Quick test_present_returns;
+      Alcotest.test_case
+        "Factor: the five names round-trip, in ruling 3's order, and an unknown name is \
+         quoted back"
+        `Quick test_factor_names_round_trip;
     ] )
