@@ -275,12 +275,16 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 - **Property tests** (qcheck) generalise the identities over random inputs:
   Euler additivity, component VaR summing to portfolio VaR, a hedge reducing
   variance, VaR monotone in confidence, fork isolation, backtest lookahead.
-- **Coverage 79.5%** (7,643 / 9,618 instrumented points in `lib/` and `desk/`,
-  measured 2026-09-19), with a 60% floor in CI that exists to make deleting
-  tests noticeable, not as a target. The number is bimodal by design: the pure
-  numeric core is above 85% and the network-IO files run 36% to 64%, because
+- **Coverage 79.9%** (8,126 / 10,173 instrumented points in `lib/` and
+  `desk/`, measured 2026-09-20), with a 60% floor in CI that exists to make
+  deleting tests noticeable, not as a target. The number is bimodal by
+  design, and the two modes are what the per-file table in `README.md`
+  actually shows: 26 files run 81% to 95%, and 17 run below 80%. Of those
+  17, the six that perform network IO themselves run 36% to 65%, because
   exercising them means mocking a broker, which raises the number and
-  establishes nothing.
+  establishes nothing. The rest of the low mode is derived
+  `sexp_of`/`compare`/`equal` boilerplate on record and variant types —
+  `desk/venue.ml`, at 13%, is almost entirely that.
 - **CI** on every push, `ubuntu-latest` and `macos-latest`. The macOS leg
   exports the Owl workarounds the Makefile documents, so a green run is
   evidence they still work. Both legs run all six credential-free modes end to

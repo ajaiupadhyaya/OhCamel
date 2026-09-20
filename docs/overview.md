@@ -236,9 +236,10 @@ may send one); on the public demo each answers 405.
 - **Architecture tests** pin how many nodes a tick recomputes, and fail if the
   staleness clock ever feeds a risk number. That test is the guard against the
   engine quietly becoming a poller.
-- **79.5% coverage** of `lib/` and `desk/` together (measured 2026-09-19). The
-  pure numeric core is above 85% and the network edges are lower, because
-  the tests never touch a network.
+- **79.9% coverage** of `lib/` and `desk/` together (8,126 of 10,173
+  instrumented points, measured 2026-09-20). Read as two modes, not one: 26
+  files run 81% to 95%, and the six that reach a network themselves run 36%
+  to 65%, because the tests never touch a network.
 - **CI on Ubuntu and macOS** for every push: the build, the tests, a formatting
   check, every credential-free mode run end to end, and the README's quoted
   tables reproduced on both platforms.

@@ -1,7 +1,7 @@
 # OhCamel
 
 [![ci](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml/badge.svg)](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml)
-[![coverage 79%](https://img.shields.io/badge/coverage-79%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
+[![coverage 80%](https://img.shields.io/badge/coverage-80%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
 
 **Live:** [ohcamel.ajaiupadhyaya.com](https://ohcamel.ajaiupadhyaya.com) — the
 synthetic demo, no credentials, always on. [How it is deployed](#watching-it).
@@ -1225,11 +1225,12 @@ six properties and four example tests. `QCHECK_TRIALS=5000 make test` runs
 
 ### Coverage, and what it is not measuring
 
-`make coverage` runs the suite under `bisect_ppx` and reports **79%** (measured
-2026-09-19). The badge above is that number; CI enforces a floor of 60% and
-prints the full per-file table into the run summary, so a drop is visible
-without anyone remembering to look. The number covers both libraries: the risk
-kernel, `ohcamel` in `lib/`, and the desk, `ohcamel_desk` in `desk/`.
+`make coverage` runs the suite under `bisect_ppx` and reports **80%** —
+8,126 of 10,173 instrumented points, measured 2026-09-20. The badge above is
+that number; CI enforces a floor of 60% and prints the full per-file table
+into the run summary, so a drop is visible without anyone remembering to
+look. The number covers both libraries: the risk kernel, `ohcamel` in
+`lib/`, and the desk, `ohcamel_desk` in `desk/`.
 
 The interesting thing about the number is that it is bimodal, and it should be
 read as two numbers rather than one:
@@ -1241,21 +1242,24 @@ read as two numbers rather than one:
   94%  desk/ticket.ml            75%  lib/options.ml
   94%  lib/graph.ml              70%  desk/tca.ml
   92%  desk/desk_time.ml         65%  desk/alpaca_paper.ml
-  91%  lib/attribution.ml        64%  desk/book_sync.ml
-  90%  lib/stress.ml             63%  desk/order.ml
-  90%  desk/desk.ml              58%  lib/config.ml
-  90%  lib/risk_metrics.ml       56%  lib/alerts.ml
+  92%  lib/risk_metrics.ml       64%  desk/book_sync.ml
+  91%  lib/attribution.ml        63%  desk/order.ml
+  91%  lib/long_panel.ml         59%  lib/config.ml
+  90%  lib/stress.ml             56%  lib/alerts.ml
+  90%  desk/desk.ml              54%  lib/types.ml
   89%  lib/gate.ml               51%  lib/feed/fred_client.ml
-  89%  lib/limits.ml             51%  lib/types.ml
-  88%  desk/sim_venue.ml         51%  desk/session_close.ml
-  88%  lib/reports.ml            50%  lib/feed/alpaca_rest.ml
-  87%  lib/vol_estimators.ml     40%  lib/feed/alpaca_ws.ml
-  87%  desk/oms.ml               36%  desk/trade_updates.ml
-  87%  desk/reconcile.ml         13%  desk/venue.ml
+  89%  lib/limits.ml             51%  desk/session_close.ml
+  88%  desk/sim_venue.ml         50%  lib/feed/alpaca_rest.ml
+  88%  lib/reports.ml            40%  lib/feed/alpaca_ws.ml
+  87%  lib/vol_estimators.ml     36%  desk/trade_updates.ml
+  87%  desk/oms.ml               13%  desk/venue.ml
+  87%  desk/reconcile.ml
   86%  desk/contract.ml
   86%  lib/server.ml
   85%  lib/var_backtest.ml
   84%  desk/halt.ml
+  84%  lib/liquidity.ml
+  83%  lib/factor_model.ml
   82%  desk/ids.ml
   81%  desk/journal.ml
 ```
@@ -1263,13 +1267,12 @@ read as two numbers rather than one:
 The left column is the numeric core, the HTTP, JSON and server-sent-events
 layer that serves it (`lib/server.ml`), and the desk's simpler pieces — a
 rule, a ticket, the switch, a reconciliation — each tested directly against a
-hand-computed value or a fixed scenario. At this measurement (2026-09-19)
-`lib/gate.ml`, which answers what an order would do to the book, and
-`desk/oms.ml`, the order manager, join it -- A3's gate and rebalance tests
-moved them from 68% and 71% -- and `desk/contract.ml`, the signal contract,
-enters it new. The desk's routes, A3's intake and its rebalance planner sit
-in the right column, each just under the line. The split sits at 80% of each
-file's unrounded figure.
+hand-computed value or a fixed scenario. At this measurement (2026-09-20)
+three modules enter it new — `lib/long_panel.ml` at 91%, `lib/liquidity.ml`
+at 84% and `lib/factor_model.ml` at 83%, the pure risk-depth kernel, each
+tested against figures derived by hand — and nothing left it. The desk's
+routes, A3's intake and its rebalance planner sit in the right column, each
+just under the line. The split sits at 80% of each file's unrounded figure.
 
 The right column is not one thing. Six files in it perform network IO
 themselves — `lib/feed/alpaca_ws.ml`, `lib/feed/alpaca_rest.ml`,
@@ -1288,7 +1291,10 @@ two sections down.
 The rest of the right column touches no network and is worth naming rather
 than hiding, each against what `bisect-ppx-report`'s own line data says is
 unvisited, not a guess: `types.ml` is mostly single-line accessors on
-abstract wrappers, many of which nothing calls yet; `options.ml` carries
+abstract wrappers, many of which nothing calls yet, plus the derived
+`sexp_of`/`compare`/`equal`/`all` on the `Factor` enumeration Stage 0 added
+for the risk-depth model, which only `Long_panel` and one round-trip case
+read; `options.ml` carries
 display and position helpers the pricing tests do not reach; `lib/config.ml`
 loads credentials and the book file, and most of what is untested is the
 missing-or-malformed-input error messages a hermetic run has no reason to
@@ -1302,10 +1308,11 @@ sorts when a sync leaves two or more unmanaged positions, which no test has
 done yet.
 
 The paragraphs from here on name each file's gap as `bisect-ppx-report`
-showed it at the 2026-09-18 measurement, before A3. Since then A3's tests have
-closed much of what they say `lib/gate.ml` and `desk/oms.ml` left unvisited
-(the table above is current); what they say about the other files still
-stands.
+showed it at the 2026-09-18 measurement, before A3. Since then A3's tests
+have closed much of what they say `lib/gate.ml` and `desk/oms.ml` left
+unvisited, and Stage 0 of the finish plan added three modules and one
+enumeration in `types.ml` that these paragraphs predate (the table above is
+current); what they say about the other files still stands.
 
 `lib/gate.ml`'s whole gap is the derived `sexp_of` on its three record types
 (`Fill.t`, `Move.t`, `Verdict.t`) and the `None`, or fallback, arm of four

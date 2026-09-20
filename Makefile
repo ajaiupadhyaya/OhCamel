@@ -244,10 +244,11 @@ bench:
 #
 # Expect a bimodal number, and read it that way rather than as one figure. The
 # pure numeric core (graph, attribution, limits, risk_metrics, vol_estimators,
-# crisis_data, stress) sits above 86%. The IO edges that actually reach a
-# network -- the Alpaca websocket, the Alpaca REST client, the FRED client, the
-# alert sinks' Slack post, the desk's own Alpaca transport, and the venue's
-# trade-updates socket -- sit from 36% to 64%, because exercising them needs a
+# crisis_data, stress, and the risk-depth modules: long_panel, factor_model,
+# liquidity) sits from 83% up. The IO edges that actually reach a network --
+# the Alpaca websocket, the Alpaca REST client, the FRED client, the alert
+# sinks' Slack post, the desk's own Alpaca transport, and the venue's
+# trade-updates socket -- sit from 36% to 65%, because exercising them needs a
 # network and every test in this project is hermetic. That gap is a design
 # decision showing up in a metric, not a backlog.
 coverage: build
