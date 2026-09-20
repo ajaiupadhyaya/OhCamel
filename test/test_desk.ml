@@ -85,6 +85,26 @@ let test_desk_refuses_a_negative_per_symbol_spread_bps () =
         "the error names SPY" true
         (String.is_substring (Error.to_string_hum e) ~substring:"SPY")
 
+(* The per-symbol half of that same widened guard, isolated. Task 3's review
+   mutated only this half -- leaving "< 0.0" per symbol while keeping the
+   default's finiteness check -- and the whole suite still passed, because the
+   negative case above exercises the comparison but never the finiteness. A
+   nan spread for one symbol is the case that reaches LVaR. *)
+let test_desk_refuses_a_non_finite_per_symbol_spread_bps () =
+  List.iter
+    [ ("nan", "nan"); ("infinity", "inf") ]
+    ~f:(fun (literal, what) ->
+      match
+        Config.Book.of_string
+          (minimal_book (Printf.sprintf "(desk ((spread_bps ((SPY %s)))))" literal))
+      with
+      | Ok _ -> Alcotest.failf "a %s SPY spread_bps was accepted" what
+      | Error e ->
+          Alcotest.(check bool)
+            (what ^ ": the error names SPY")
+            true
+            (String.is_substring (Error.to_string_hum e) ~substring:"SPY"))
+
 let account ~cash ~equity =
   {
     Venue.Account.equity = Notional.of_float equity;
@@ -721,6 +741,8 @@ let suite =
         `Quick test_desk_refuses_a_non_finite_spread_bps_default;
       Alcotest.test_case "a negative per-symbol spread_bps is refused, naming the symbol"
         `Quick test_desk_refuses_a_negative_per_symbol_spread_bps;
+      Alcotest.test_case "a non-finite per-symbol spread_bps is refused" `Quick
+        test_desk_refuses_a_non_finite_per_symbol_spread_bps;
       Alcotest.test_case "a sync sets the book and names what it cannot hold" `Quick
         test_a_sync_sets_the_book_and_names_what_it_cannot_hold;
       Alcotest.test_case "a failed read keeps the last good account and says what failed"
