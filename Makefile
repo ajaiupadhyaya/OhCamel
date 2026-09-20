@@ -84,6 +84,7 @@ export OWL_CFLAGS := -g -O1 -funroll-loops -fno-math-errno -fno-rounding-math -f
 export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 
 .PHONY: all build run stress backtest backtest-crisis options garch test research-test research-reproduce bench coverage fmt clean deps doctor \
+        check-counts \
         deploy-build deploy-up deploy-down deploy-verify deploy-logs deploy-smoke
 
 all: build
@@ -212,6 +213,15 @@ research-test:
 # experiment. CI's research job runs it after research-test.
 research-reproduce:
 	cd research && uv run --locked --offline --extra dev python $(CURDIR)/tools/reproduce_manifests.py
+
+# The three published test counts, checked against their source of truth:
+# lib/verified.ml's `tests` and `scheduler_tests`, and
+# research/src/ohcamel_research/verified.py's `TESTS`. Deliberately NOT
+# $(OPAM_ENV): scripts/check-counts.sh is grep and sed only, so this target
+# runs on a plain runner with no opam switch at all -- which is exactly the
+# `lint` job in CI that gates every push on it.
+check-counts:
+	@scripts/check-counts.sh
 
 # What a tick costs, in seconds and in words, against a throwaway
 # poll-and-recompute baseline. `make run` counts NODES; this counts time and

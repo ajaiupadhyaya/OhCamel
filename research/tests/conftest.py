@@ -16,6 +16,34 @@ import pytest
 
 from ohcamel_research import REPO_ROOT
 from ohcamel_research.manifest import BATTERY_REL
+from ohcamel_research.verified import TESTS
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Pin the research suite's count the way ``test_ohcamel.ml`` pins the
+    OCaml one: fail collection if it stops matching ``verified.TESTS``.
+
+    Only when the whole ``research/tests`` directory is collected. A ``-k``
+    expression, a ``-m`` expression, or an explicit node id/path on the
+    command line all narrow the run on purpose (``pytest -k contract`` is
+    the brief's own example), so none of them should trip this assertion --
+    detected by comparing ``config.args`` (the resolved invocation paths)
+    against ``testpaths``, since a filtered path list differs from it while
+    an unfiltered one, falling back to ``testpaths``, is identical to it.
+    """
+    if config.getoption("keyword") or config.getoption("markexpr"):
+        return
+    if list(config.args) != list(config.getini("testpaths")):
+        return
+    if len(items) != TESTS:
+        pytest.exit(
+            f"collected {len(items)} tests but "
+            f"ohcamel_research.verified.TESTS = {TESTS} -- update TESTS "
+            "and the three <!-- count:research-tests --> markers "
+            "(README.md, docs/overview.md, docs/status.md) together",
+            returncode=1,
+        )
+
 
 # The 2018-2020 slice, split into a two-year selection window and a
 # one-year holdout, with a two-configuration grid per symbol and a tiny

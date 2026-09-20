@@ -266,7 +266,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **659 hermetic tests**, plus thirty scheduler cases in `test/desk_async` —
+- **<!-- count:ocaml-tests -->659<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->30<!-- /count --> scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler
@@ -294,7 +294,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 - **Recomputation counts are asserted**, not claimed: `test_graph.ml` pins
   how many nodes a tick reaches.
 - **`make research-test`** runs the research layer's own suite separately:
-  355 Python tests, hermetic and offline, checked with `ruff`. Reported
+  <!-- count:research-tests -->388<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Reported
   here rather than folded into `lib/verified.ml`, which counts the OCaml
   suites only.
 - **Production smoke suite** after every deploy: the dashboard renders,

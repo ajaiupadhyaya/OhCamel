@@ -39,11 +39,12 @@ jobs:
           fi
           shellcheck --version
 
-          # scripts/*.sh does not exist yet in this stage -- nullglob so an
-          # empty scripts/ drops out of the argument list instead of being
-          # passed to shellcheck as a literal, missing filename. deploy/*.sh
-          # and deploy/test/*.sh are never empty, so the check below still
-          # catches the case where every glob came up empty.
+          # nullglob so an empty deploy/, deploy/test/ or scripts/ drops out
+          # of the argument list instead of being passed to shellcheck as a
+          # literal, missing filename -- scripts/ held nothing before
+          # scripts/check-counts.sh, and the same could happen again if a
+          # script under any of the three ever moves. The check below still
+          # catches the case where every glob comes up empty.
           shopt -s nullglob
           files=(deploy/*.sh deploy/test/*.sh scripts/*.sh)
           shopt -u nullglob
@@ -79,6 +80,16 @@ jobs:
             bash "$t" || status=1
           done
           exit "$status"
+
+      # The three published test-count sentences (README.md, docs/overview.md,
+      # docs/status.md), checked against lib/verified.ml and
+      # research/src/ohcamel_research/verified.py by scripts/check-counts.sh.
+      # This runner has no opam switch and no uv project set up, which is the
+      # point: the script is grep and sed only, so this is the CI fact that
+      # makes ruling 22 ("a count is a CI fact") and Definition of Done #3
+      # true, on every push, without needing either toolchain.
+      - name: make check-counts
+        run: make check-counts
 
   build-and-test:
     # Two platforms, and the second one is not decoration. The Makefile carries
