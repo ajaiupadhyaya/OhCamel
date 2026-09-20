@@ -60,10 +60,12 @@ it as `uv run ohcamel-research <command>` from `research/`, or
 ## The live service
 
 `src/ohcamel_research/service.py` is what Docker Compose's
-`ohcamel-research` container (the `live` profile only) runs. Once a trading
-day, from 19:15 America/New_York once that day's bar can be fetched, it
-calls `signal.emit` directly for its weight -- never a second implementation
-of the strategy's rule -- and writes it for every registered strategy.
+`ohcamel-research` container (the `live` profile only) runs. Once a
+weekday (`now_et.weekday() < 5` -- it does not yet know a market holiday
+from an ordinary weekday; the exchange calendar arrives in Task 68a), from
+19:15 America/New_York once that day's bar can be fetched, it calls
+`signal.emit` directly for its weight -- never a second implementation of
+the strategy's rule -- and writes it for every registered strategy.
 `service.yaml` configures it, validated the same way `battery/config.py`
 validates an experiment's `config.yaml`: an unknown or missing key is
 refused, not ignored.

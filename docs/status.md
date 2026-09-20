@@ -360,8 +360,8 @@ From the production smoke run that verified the deployment: 234 nodes
 recomputed across a two-second gap, 52 distinct SSE frames over twenty seconds.
 
 Size, counted on 2026-09-19 (`find DIR -name '*.ml' -o -name '*.mli' | xargs cat
-| wc -l`): about 11,600 lines of OCaml in `lib/`, 9,650 in `desk/` (five
-`.mli` files included), 1,940 in `bin/` and 23,900 in `test/`.
+| wc -l`): about 12,800 lines of OCaml in `lib/`, 9,650 in `desk/` (five
+`.mli` files included), 1,940 in `bin/` and 26,000 in `test/`.
 
 ## The invariants
 
@@ -538,6 +538,11 @@ open https://ohcamel.ajaiupadhyaya.com/ops       # which build, how long, what t
 docker compose -f deploy/docker-compose.yml restart ohcamel-demo
 docker compose -f deploy/docker-compose.yml --profile live restart ohcamel-live
 ```
+
+A `--live` redeploy refuses to run on a weekday inside 09:25-16:10
+America/New York time -- a restart drops the one allowed stream and forces
+reconciliation -- unless `--during-market` is passed to override that
+deliberately.
 
 Things not to do: delete the `caddy_data` volume (it holds the certificate and
 the ACME account; Let's Encrypt rate-limits re-issuance); add `ports:` to an

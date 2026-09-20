@@ -11,7 +11,7 @@
    [coverage_pct] is the published rounding, not the quotient: 7,643 / 9,618
    is 79.466%, published as 79.5 -- README.md's badge rounds further to the
    whole percent (79%) and docs/status.md carries the one-decimal figure
-   (79.5%), so a page that printed 76.560 would
+   (79.5%), so a page that printed 79.4660 would
    be claiming a precision `make coverage` did not measure (bisect_ppx
    counts visited points, not lines, and the number moves with the
    instrumentation). The fraction is kept beside it so the rounding is

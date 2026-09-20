@@ -682,10 +682,11 @@ $$\text{delay}_{bps} = s \cdot \frac{P_m - P_d}{P_d}\cdot 10^4 \qquad
 Delay and slippage add to shortfall only to first order, because each is
 normalised by a different denominator ($P_d$ and $P_m$); both are reported
 rather than one derived from the other. The realised half-spread at
-submission, $(P_a - P_b)/(2 P_m) \cdot 10^4$, is compared against the book's
-own modelled half-spread (`spread_bps`) to give `versus_model_bps` -- how
-much of the slippage the cost model already priced in. Without a quote, only
-shortfall is reported.
+submission, $(P_a - P_b)/(2 P_m) \cdot 10^4$, is reported as
+`half_spread_bps`. Slippage is compared against the book's own modelled
+half-spread (`spread_bps`) to give `versus_model_bps` $=
+\text{slippage}_{bps} - \text{spread\_bps}$ -- how much of the slippage the
+cost model already priced in. Without a quote, only shortfall is reported.
 
 `summarize` reduces a list of fills to count, mean, median and the
 **quantity-weighted mean** of shortfall,
