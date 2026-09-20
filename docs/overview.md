@@ -283,9 +283,9 @@ the Alpaca stream; yojson; Alcotest and QCheck; bisect_ppx; core_bench. The
 front end is hand-written JavaScript and inline SVG with no libraries. It is
 deployed with Docker, Caddy and DigitalOcean.
 
-As of 2026-09-19 (`find DIR -name '*.ml' -o -name '*.mli' | xargs cat | wc
--l`) that comes to about 12,800 lines of OCaml in `lib/`, 1,940 in `bin/`,
-26,000 in `test/`, and 5,200 lines of JavaScript, HTML and CSS in `web/`.
+As of 2026-09-20 (`find DIR -name '*.ml' -o -name '*.mli' | xargs cat | wc
+-l`) that comes to about 13,000 lines of OCaml in `lib/`, 1,940 in `bin/`,
+26,200 in `test/`, and 5,200 lines of JavaScript, HTML and CSS in `web/`.
 The desk library, `desk/`, adds about 9,650 more lines of OCaml (five
 `.mli` files included).
 

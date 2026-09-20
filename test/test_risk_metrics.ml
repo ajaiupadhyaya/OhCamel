@@ -273,6 +273,7 @@ let test_non_finite_observations_are_refused () =
   List.iter
     [ ("nan", nan_series); ("infinity", inf_series) ]
     ~f:(fun (what, xs) ->
+      check_invalid_arg ("mean, " ^ what) (fun () -> RM.mean xs);
       check_invalid_arg ("stddev, " ^ what) (fun () -> RM.stddev xs);
       check_invalid_arg ("variance, " ^ what) (fun () -> RM.variance xs);
       check_invalid_arg ("covariance, left, " ^ what) (fun () -> RM.covariance xs returns);
@@ -298,6 +299,10 @@ let test_non_finite_observations_are_refused () =
     | exception e -> Alcotest.failf "expected Invalid_argument, got %s" (Exn.to_string e)
     | _ -> Alcotest.fail "expected Invalid_argument, but it returned"
   in
+  Alcotest.(check string)
+    "mean names itself too -- it is the summary most likely to be printed raw"
+    "risk_metrics: mean: observation 3 of 10 is nan, not a finite number"
+    (message (fun () -> RM.mean nan_series));
   Alcotest.(check string)
     "stddev names itself, and the observation"
     "risk_metrics: stddev: observation 3 of 10 is nan, not a finite number"

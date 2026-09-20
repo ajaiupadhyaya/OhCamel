@@ -359,9 +359,9 @@ O(n²) ones; what incrementality removes is the O(n²·w) covariance rebuild:
 From the production smoke run that verified the deployment: 234 nodes
 recomputed across a two-second gap, 52 distinct SSE frames over twenty seconds.
 
-Size, counted on 2026-09-19 (`find DIR -name '*.ml' -o -name '*.mli' | xargs cat
-| wc -l`): about 12,800 lines of OCaml in `lib/`, 9,650 in `desk/` (five
-`.mli` files included), 1,940 in `bin/` and 26,000 in `test/`.
+Size, counted on 2026-09-20 (`find DIR -name '*.ml' -o -name '*.mli' | xargs cat
+| wc -l`): about 13,000 lines of OCaml in `lib/`, 9,650 in `desk/` (five
+`.mli` files included), 1,940 in `bin/` and 26,200 in `test/`.
 
 ## The invariants
 

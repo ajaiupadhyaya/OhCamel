@@ -162,8 +162,16 @@ let parametric_var ~mean ~stddev ~confidence =
   let z = normal_ppf ~p:(1.0 -. confidence) in
   -.(mean +. (z *. stddev))
 
+(* Guarded like its six siblings below, and for the same reason, even though
+   [parametric_var] -- today's only caller that could be hurt -- checks the
+   scalar it gets back. Relying on that check leaves the guarantee in the wrong
+   place: it holds for one caller, at one call site, and the next consumer to
+   average a window inherits a silent [nan] instead of a sentence naming the
+   function. A mean is also the one summary a page is most likely to print
+   directly, where [nan] renders as a blank cell rather than an error. *)
 let mean xs =
   validate_non_empty ~name:"series" xs;
+  validate_finite ~who:"mean" xs;
   Array.fold xs ~init:0.0 ~f:( +. ) /. float_of_int (Array.length xs)
 
 (* Population (not sample) moments throughout.
