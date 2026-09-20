@@ -1464,7 +1464,7 @@ docker run --rm -v $PWD/book.sexp:/app/book.sexp:ro ghcr.io/ajaiupadhyaya/ohcame
 docker compose -f deploy/docker-compose.yml --profile live logs --tail 40 ohcamel-live | grep -E 'trading|kill|first sync'
 ```
 
-**O5 — A2's acceptance: one paper order filled on the live host.** During market hours (13:30–20:00 UTC on a weekday), place a one-share SPY ticket from the live Desk page, or:
+**O5 — A2's acceptance: one paper order filled on the live host.** During market hours (09:30–16:00 America/New York on a weekday — the wall clock ruling 12's deploy guard reads, not a fixed UTC band, which is only the right band for the part of the year the exchange spends in daylight time), place a one-share SPY ticket from the live Desk page, or:
 ```
 P="$(cat ~/.ohcamel-live-password)"
 H='https://live.ohcamel.ajaiupadhyaya.com'
