@@ -1,9 +1,0 @@
-{
-  "source": "alpaca",
-  "data_kind": "historical",
-  "fetched_at": "2026-06-09T17:53:10.839491+00:00",
-  "synthetic": false,
-  "symbol": "QQQ",
-  "start": "2016-06-01",
-  "end": "2026-06-01"
-}

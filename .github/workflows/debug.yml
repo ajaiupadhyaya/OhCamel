@@ -1,0 +1,32 @@
+name: debug-sec-xom
+on:
+  push:
+    branches: [claude/debug-sec-xom]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sS -A "OhCamel-Quant/1.0 (research; contact: ohcamel@ajaiupadhyaya.com)" \
+            https://data.sec.gov/api/xbrl/companyfacts/CIK0000034088.json -o xom.json
+          ls -la xom.json
+          python3 - <<'PY'
+          import json, collections
+          d = json.load(open("xom.json"))
+          f = d["facts"]
+          print("entity", d.get("entityName"), "taxonomies", list(f))
+          g = f.get("us-gaap", {})
+          print("n us-gaap tags", len(g))
+          for tag in ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "NetIncomeLoss",
+                      "SalesRevenueNet", "RevenuesAndOtherIncome", "Assets"]:
+              t = g.get(tag)
+              if not t: print(tag, "ABSENT"); continue
+              for unit, rows in t["units"].items():
+                  forms = collections.Counter(r.get("form") for r in rows)
+                  fps = collections.Counter(r.get("fp") for r in rows)
+                  withstart = sum(1 for r in rows if "start" in r)
+                  print(tag, unit, len(rows), dict(forms), dict(fps), "with start:", withstart)
+                  print("   last rows:", rows[-3:])
+          dei = f.get("dei", {})
+          print("dei tags", list(dei))
+          PY

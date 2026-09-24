@@ -1,8 +1,0 @@
-(executable
- (name main)
- ; async appears here as well as in the library because live mode owns the
- ; scheduler: it starts the timers and blocks on the feed. Synthetic mode never
- ; enters Async at all, which keeps it a plain program that runs and exits.
- (libraries ohcamel ohcamel_desk core async logs)
- (preprocess
-  (pps ppx_jane)))
