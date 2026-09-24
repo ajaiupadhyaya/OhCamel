@@ -208,7 +208,7 @@ def test_live_market_rf_and_market_cap_prior(client):
     j = _ok(client.post("/api/portfolio/optimize", json=body))
     assert j["risk_free"]["source"] == "market"
     assert 0.0 <= j["risk_free"]["annual"] < 0.2
-    assert "market capitalisation" in j["expected_returns"]["prior_source"]
+    assert "market capitalisation" in j["expected_returns"]["prior_source"], j.get("notes")
     mw = j["expected_returns"]["market_weights"]
     assert abs(sum(mw.values()) - 1) < 1e-9 and mw["MSFT"] > mw["XOM"] * 0.5
 
@@ -276,3 +276,15 @@ def test_risk_free_not_extrapolated_past_last_print(etf_returns):
         pr._risk_free(_Stub(idx[-60]), idx, None, True)
     rf, ann, *_ = pr._risk_free(_Stub(idx[-60]), idx, None, False)
     assert rf is None and ann is None
+
+
+def test_market_weights_fall_back_to_last_close_and_name_reasons(market):
+    """Offline: SEC facts are unavailable, so the prior falls back to equal weights
+    and says why for each ticker."""
+    from ohcamel_quant.api.routers.portfolio import _latest_price, _market_weights
+
+    px, prov = _latest_price("SPY", market)
+    assert px is not None and px > 0 and prov
+    w, src, _, notes = _market_weights(["SPY", "TLT"], market, None)
+    assert src == "equal weights (uninformative)"
+    assert "SPY: SEC facts unavailable" in notes[0] and "TLT: SEC facts unavailable" in notes[0]

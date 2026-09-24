@@ -176,7 +176,7 @@ def fetch_series(ids: list[str], start: date | None, end: date | None, settings:
     got, provs, missing = _series(ids, settings)
     if missing:
         raise DataUnavailable("fred: could not fetch " + "; ".join(missing))
-    df = pd.concat([got[s] for s in ids], axis=1).sort_index()
+    df = pd.concat([got[s] for s in ids], axis=1, sort=True)
     df.columns = ids
     df.index.name = "date"
     if start is not None:

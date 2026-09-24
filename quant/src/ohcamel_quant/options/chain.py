@@ -79,7 +79,7 @@ def slice_id(expiry: pd.Timestamp, settlement: str) -> str:
 
 def analyze_chain(
     chain: Any, max_rel_spread: float = 0.5, n_parity_strikes: int = 20,
-    max_rate_se: float = 0.005,
+    max_rate_se: float = 0.005, rate_curve: Any = None,
 ) -> ChainAnalytics:
     """Clean an OptionChain (``underlying, spot, as_of, quotes``) and compute analytics.
 
@@ -87,6 +87,9 @@ def analyze_chain(
     (bid-ask spread as a fraction of mid above which a quote is flagged ``wide``),
     ``n_parity_strikes`` (near-the-money strikes in the parity regression),
     ``max_rate_se`` (rate standard error above which a slice borrows ``r``).
+    ``rate_curve`` (``T -> r``, continuously compounded, from market data) fixes the
+    discount factor per expiry instead of inferring it from parity -- used for
+    American-style underlyings (see :mod:`.parity`).
     """
     notes: list[str] = []
     spot = float(chain.spot)
@@ -129,7 +132,7 @@ def analyze_chain(
     q["valid"] = ~(q["no_quote"] | q["zero_bid"] | q["crossed"] | q["wide"])
 
     groups = {sid: (g, float(g["T"].iloc[0])) for sid, g in q.groupby("slice", sort=False)}
-    fits, errors = parity.fit_all(groups, spot, n_parity_strikes, max_rate_se)
+    fits, errors = parity.fit_all(groups, spot, n_parity_strikes, max_rate_se, rate_curve=rate_curve)
     for sid, msg in errors.items():
         notes.append(f"{sid}: forward not identified ({msg}); slice excluded")
     q = q[q["slice"].isin(list(fits))].reset_index(drop=True)
@@ -181,8 +184,14 @@ def analyze_chain(
 
     european = str(chain.underlying).upper().lstrip("_^") in parity.EUROPEAN_UNDERLYINGS
     notes.append(f"quotes flagged 'wide' when bid-ask spread > {max_rel_spread:.0%} of mid; IVs use mids")
-    notes.append("forward F and discount D per expiry are implied from put-call parity (no external rate "
-                 "or dividend assumption); r = -ln D / T and q = r - ln(F/S)/T are continuously compounded")
+    if rate_curve is not None:
+        notes.append("discount D per expiry from the Treasury curve (FRED constant-maturity yields, "
+                     "continuously compounded, interpolated in T); forward F implied from put-call parity "
+                     "with D fixed; q = r - ln(F/S)/T")
+    else:
+        notes.append("forward F and discount D per expiry are implied from put-call parity (no external "
+                     "rate or dividend assumption); r = -ln D / T and q = r - ln(F/S)/T are continuously "
+                     "compounded")
     borrowed = slices.index[slices["rate_source"] == "borrowed"].tolist()
     if borrowed:
         notes.append(f"{len(borrowed)} short/illiquid expiries borrow r from better-identified expiries "
@@ -196,5 +205,6 @@ def analyze_chain(
         underlying=str(chain.underlying), spot=spot, as_of=as_of, quotes=q, slices=slices,
         european=european, notes=notes, errors={str(k): v for k, v in errors.items()},
         params={"max_rel_spread": max_rel_spread, "n_parity_strikes": n_parity_strikes,
-                "max_rate_se": max_rate_se},
+                "max_rate_se": max_rate_se,
+                "rate_source": "treasury" if rate_curve is not None else "parity"},
     )

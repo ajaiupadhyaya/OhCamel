@@ -16,6 +16,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
+from datetime import date, timedelta
 from typing import Annotated, Any, Literal
 
 import numpy as np
@@ -313,6 +314,25 @@ def _risk_free(market: MarketData, index: pd.DatetimeIndex, override: float | No
         ds.provenance_dicts(), []
 
 
+def _latest_price(ticker: str, market: MarketData) -> tuple[float | None, Any]:
+    """Latest quote, falling back to the last daily close; (None, reason) if neither."""
+    try:
+        q = market.quotes([ticker])
+        px = float(q.data.loc[ticker, "price"])
+        if np.isfinite(px) and px > 0:
+            return px, q.provenance_dicts()
+    except (DataUnavailable, KeyError, TypeError, ValueError):
+        pass
+    try:
+        ds = market.ohlcv(ticker, date.today() - timedelta(days=14))
+        px = float(ds.data["close"].dropna().iloc[-1])
+        if np.isfinite(px) and px > 0:
+            return px, ds.provenance_dicts()
+        return None, "non-positive close"
+    except (DataUnavailable, IndexError, KeyError) as e:
+        return None, str(e) or "no recent bars"
+
+
 def _market_weights(tickers: list[str], market: MarketData, prior: dict[str, float] | None
                     ) -> tuple[pd.Series, str, list[dict], list[str]]:
     """Black-Litterman prior weights: SEC shares outstanding x latest price when every
@@ -320,23 +340,31 @@ def _market_weights(tickers: list[str], market: MarketData, prior: dict[str, flo
     caps: dict[str, float] = {}
     prov: list[dict] = []
     missing: list[str] = []
+    reasons: list[str] = []
     for t in tickers:
         try:
             facts = market.company_facts(t)
-            so = facts.data.get("shares_outstanding")
-            if not so:
-                missing.append(t)
-                continue
-            q = market.quotes([t])
-            caps[t] = float(so) * float(q.data.loc[t, "price"])
-            prov += facts.provenance_dicts() + q.provenance_dicts()
-        except (DataUnavailable, KeyError, TypeError, ValueError):
+        except DataUnavailable as e:
             missing.append(t)
+            reasons.append(f"{t}: SEC facts unavailable ({e})")
+            continue
+        so = facts.data.get("shares_outstanding")
+        if not so or not np.isfinite(float(so)) or float(so) <= 0:
+            missing.append(t)
+            reasons.append(f"{t}: no dei:EntityCommonStockSharesOutstanding")
+            continue
+        price, pprov = _latest_price(t, market)
+        if price is None:
+            missing.append(t)
+            reasons.append(f"{t}: no price ({pprov})")
+            continue
+        caps[t] = float(so) * price
+        prov += facts.provenance_dicts() + pprov
     if not missing:
         w = pd.Series(caps)
         return w / w.sum(), "market capitalisation (SEC shares outstanding x latest price)", prov, []
     notes = [f"No SEC shares-outstanding/price for {', '.join(missing)} (e.g. ETFs); "
-             "market-cap prior weights unavailable."]
+             "market-cap prior weights unavailable: " + "; ".join(reasons)]
     if prior:
         miss = [t for t in tickers if t not in prior]
         if miss:

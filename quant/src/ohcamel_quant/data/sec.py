@@ -418,7 +418,7 @@ def standardize(facts_json: dict[str, Any]) -> dict[str, Any]:
         g = g[~g.index.isin(net.dropna().index)]
         if len(g):
             st = [x for x in st_parts[idx] if len(x)] if st_parts[idx] else []
-            st_sum = pd.concat(st, axis=1).sum(axis=1, min_count=1) if st else pd.Series(dtype=float)
+            st_sum = pd.concat(st, axis=1, sort=True).sum(axis=1, min_count=1) if st else pd.Series(dtype=float)
             gross_debt[key] = g.add(st_sum.reindex(g.index).fillna(0.0))
 
     # earliest filing that reported each quarter end (any quarterly-form fact)
