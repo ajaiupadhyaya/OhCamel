@@ -341,7 +341,19 @@ main() {
 
 	# ---------------------------------------------------------------------------
 	say "Pulling"
+	local before_pull
+	before_pull=$(git -C "$REPO" rev-parse HEAD)
 	git -C "$REPO" pull --ff-only
+	# If the pull changed this script, the rest of THIS run would still be the
+	# old logic (bash already has it) driving new compose/smoke files -- the
+	# way an old deploy.sh once rejected a new flag before it could pull the
+	# version that knows it. Re-run the version just pulled, once, with the
+	# same arguments.
+	if [ -z "${OHCAMEL_DEPLOY_REEXEC:-}" ] &&
+		! git -C "$REPO" diff --quiet "$before_pull" HEAD -- deploy/deploy.sh; then
+		say "deploy.sh changed in this pull -- re-running the new version"
+		OHCAMEL_DEPLOY_REEXEC=1 exec "$REPO/deploy/deploy.sh" "$@"
+	fi
 
 	# ---------------------------------------------------------------------------
 	say "Book"
