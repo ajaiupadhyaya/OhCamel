@@ -44,3 +44,26 @@ def test_shares_outstanding_falls_back_to_diluted_weighted_average():
             {"end": "2025-01-31", "val": 0, "form": "10-K", "filed": "2025-02-01", "accn": "a"}]}}}}
     val, _, tag = sec._shares_outstanding(facts)
     assert val == 4.3e9 and tag.endswith("WeightedAverageNumberOfDilutedSharesOutstanding")
+
+
+def test_fetch_company_facts_skips_a_registrant_without_annual_reports(monkeypatch):
+    """XOM is listed under a new holding company (no 10-K yet) and the legacy filer."""
+    import pandas as pd
+
+    from ohcamel_quant.config import Settings
+    from ohcamel_quant.data.base import DataUnavailable, Provenance
+
+    table = pd.DataFrame({"cik": ["0002115436", "0000034088"], "ticker": ["XOM", "XOM"],
+                          "name": ["ExxonMobil Holdings Corp", "EXXON MOBIL CORP"]})
+    monkeypatch.setattr(sec, "ticker_table", lambda settings: (table, None))
+    tried = []
+
+    def fake(cik, name, tick, settings):
+        tried.append(cik)
+        if cik == "0002115436":
+            raise DataUnavailable("sec: no annual (10-K) duration facts")
+        return type("D", (), {"data": {"cik": cik}, "provenance": [Provenance.now("sec-edgar")]})()
+
+    monkeypatch.setattr(sec, "_fetch_company_facts", fake)
+    out = sec.fetch_company_facts("XOM", Settings(offline=False))
+    assert out.data["cik"] == "0000034088" and tried == ["0002115436", "0000034088"]
