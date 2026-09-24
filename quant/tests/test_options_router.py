@@ -164,7 +164,10 @@ def test_live_surface(live_client, ticker):
     good = [s for s in j["smiles"] if s["fit"]["rmse_vol_pts"] < 2.0]
     assert len(good) >= 0.7 * len(j["smiles"])
     rates = [e["rate"] for e in j["expiries"]]
-    assert all(-0.02 < r < 0.15 for r in rates)
+    assert all(-0.02 < r < 0.15 for r in rates), rates
+    if ticker == "SPY":  # American-style: discounting from the Treasury curve, not parity
+        assert all(e["rate_source"] == "treasury" for e in j["expiries"])
+        assert any(p["source"] == "fred" for p in j["provenance"])
     assert j["vix_style_30d"] is None or 5 < j["vix_style_30d"]["index"] < 150
     assert any(p["source"] == "cboe" for p in j["provenance"])
     if ticker == "_SPX":

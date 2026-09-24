@@ -13,6 +13,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from typing import Annotated, Any, Literal
 
 import numpy as np
@@ -24,7 +25,7 @@ from ...data.base import DataUnavailable
 from ...data.market import MarketData, get_market
 from ...options import bsm, density, realized, strategy
 from ...options.chain import CONTRACT_MULTIPLIER, ChainAnalytics, analyze_chain
-from ...options.parity import InsufficientQuotes
+from ...options.parity import EUROPEAN_UNDERLYINGS, InsufficientQuotes
 from ...options.surface import VolSurface, build_surface, svi_weights
 from ...options.svi import fit_svi
 from ..serialize import clean, frame, records, series
@@ -78,6 +79,28 @@ def _norm(ticker: str) -> str:
     return t
 
 
+def _treasury_rate_curve(market: MarketData):
+    """Latest Treasury constant-maturity curve from FRED as ``T -> r``.
+
+    FRED CMT yields are bond-equivalent (semiannual) percent; converted to
+    continuous compounding ``r = 2 ln(1 + y/200)`` and interpolated linearly in
+    tenor (flat beyond the ends). Used as the discount curve for American-style
+    underlyings, as the Cboe VIX white paper uses Treasury rates.
+    """
+    ds = market.treasury_curve(date.today() - timedelta(days=30))
+    curve = ds.data.dropna(how="all")
+    if curve.empty:
+        raise DataUnavailable("no recent Treasury curve observation")
+    last = curve.iloc[-1].dropna()
+    if len(last) < 2:
+        raise DataUnavailable("fewer than two tenors on the latest Treasury curve")
+    tenors = np.asarray(last.index, dtype=float)
+    rates = 2.0 * np.log1p(last.to_numpy(dtype=float) / 200.0)
+    order = np.argsort(tenors)
+    tenors, rates = tenors[order], rates[order]
+    return (lambda T: float(np.interp(T, tenors, rates))), ds.provenance_dicts()
+
+
 def _bundle(ticker: str, market: MarketData, max_rel_spread: float = 0.5) -> _Bundle:
     t = _norm(ticker)
     key = (t, round(max_rel_spread, 4))
@@ -88,11 +111,22 @@ def _bundle(ticker: str, market: MarketData, max_rel_spread: float = 0.5) -> _Bu
         if b is not None and now - b.created < ttl:
             return b
     ds = market.option_chain(t)
+    provenance = ds.provenance_dicts()
+    rate_curve, curve_note = None, None
+    if t.lstrip("_^") not in EUROPEAN_UNDERLYINGS:
+        try:
+            rate_curve, curve_prov = _treasury_rate_curve(market)
+            provenance += curve_prov
+        except (DataUnavailable, ValueError) as e:
+            curve_note = (f"Treasury curve unavailable ({e}); rates inferred from put-call parity, which "
+                          "is biased for American-style options")
     try:
-        ca = analyze_chain(ds.data, max_rel_spread=max_rel_spread)
+        ca = analyze_chain(ds.data, max_rel_spread=max_rel_spread, rate_curve=rate_curve)
     except InsufficientQuotes as e:
         raise DataUnavailable(f"{t}: {e}") from e
-    b = _Bundle(ca=ca, provenance=ds.provenance_dicts(), created=now)
+    if curve_note:
+        ca.notes.append(curve_note)
+    b = _Bundle(ca=ca, provenance=provenance, created=now)
     with _CACHE_LOCK:
         _CACHE[key] = b
         while len(_CACHE) > _MAX_ENTRIES:

@@ -23,9 +23,13 @@ reliably-fitted slices (linear interpolation in T, flat extrapolation) and
 re-estimates ``F`` with ``D`` fixed; the slice is flagged ``rate_source =
 'borrowed'``.
 
-American-style options (single stocks, ETFs) satisfy parity only as an inequality;
-the implied ``q`` then also absorbs the early-exercise premium near the money --
-callers must say so.
+American-style options (single stocks, ETFs) satisfy parity only as an inequality:
+the early-exercise premium of in-the-money puts bends ``C - P`` in ``K``, so the
+regression slope -- hence ``D`` and ``r`` -- is biased (live SPY chains give
+implausible rates on some expiries). For those underlyings callers pass
+``rate_curve`` (the Treasury curve, as the Cboe VIX white paper does), ``D`` is
+fixed from it and only ``F`` is estimated; the implied ``q`` then also absorbs the
+early-exercise premium near the money -- callers must say so.
 
 Timing: ``T`` is ACT/365 from the quote instant to the settlement instant, both
 US/Eastern wall-clock: 16:00 for PM-settled contracts, 09:30 (the opening print
@@ -165,6 +169,7 @@ def pair_quotes(slice_quotes: pd.DataFrame) -> pd.DataFrame:
 def fit_parity(
     slice_quotes: pd.DataFrame, spot: float, T: float, n_strikes: int = 12,
     fixed_discount: float | None = None, paired: pd.DataFrame | None = None,
+    rate_source: str = "borrowed",
 ) -> ParityFit:
     """Estimate ``F, D`` for one expiry from strike-paired two-sided mids.
 
@@ -203,7 +208,7 @@ def fit_parity(
         return ParityFit(
             T=T, forward=F, discount=D, rate=r, div_yield=r - np.log(F / spot) / T, n_strikes=len(K),
             rate_se=float("nan"), forward_se=f_se, residual_rmse=float(np.sqrt(np.mean(res * res))),
-            rate_source="borrowed", k_star=k_star, strikes=K.tolist(),
+            rate_source=rate_source, k_star=k_star, strikes=K.tolist(),
         )
 
     if len(K) < 3:
@@ -231,15 +236,27 @@ def fit_parity(
 
 def fit_all(
     slices: dict[Any, tuple[pd.DataFrame, float]], spot: float, n_strikes: int = 12,
-    max_rate_se: float = 0.005,
+    max_rate_se: float = 0.005, rate_curve: Any = None,
 ) -> tuple[dict[Any, ParityFit], dict[Any, str]]:
     """Fit every slice; slices with an unidentified rate borrow it (see module doc).
 
-    ``slices`` maps a slice id to ``(quotes, T)``. Returns (fits, errors-by-slice).
+    ``slices`` maps a slice id to ``(quotes, T)``. With ``rate_curve`` (a callable
+    ``T -> continuously-compounded r``, e.g. the Treasury curve), every slice fixes
+    ``D = exp(-r(T) T)`` and estimates only ``F`` (``rate_source = 'treasury'``).
+    Returns (fits, errors-by-slice).
     """
     fits: dict[Any, ParityFit] = {}
     errors: dict[Any, str] = {}
     pairs = {sid: pair_quotes(q) for sid, (q, _) in slices.items()}
+    if rate_curve is not None:
+        for sid, (q, T) in slices.items():
+            r = float(rate_curve(T))
+            try:
+                fits[sid] = fit_parity(q, spot, T, n_strikes, fixed_discount=float(np.exp(-r * T)),
+                                       paired=pairs[sid], rate_source="treasury")
+            except InsufficientQuotes as e:
+                errors[sid] = str(e)
+        return fits, errors
     for sid, (q, T) in slices.items():
         try:
             fits[sid] = fit_parity(q, spot, T, n_strikes, paired=pairs[sid])

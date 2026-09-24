@@ -71,6 +71,20 @@ def test_fit_all_borrows_rate_for_unidentified_short_expiry():
     assert fits["S"].forward == pytest.approx(spot * np.exp((r - q) * 2 / 365), rel=1e-6)
 
 
+def test_fit_all_with_rate_curve_fixes_discount_and_recovers_forward():
+    """American-style path: D comes from the (Treasury) curve, only F from parity."""
+    spot, r, q = 500.0, 0.042, 0.013
+    slices = {T: (_two_sided(spot, T, r, q, lambda k: 0.2 + 0 * k, np.arange(400.0, 601.0, 5.0), 0.01), T)
+              for T in (7 / 365, 0.25, 1.0)}
+    fits, errors = parity.fit_all(slices, spot, rate_curve=lambda T: r)
+    assert not errors
+    for T, f in fits.items():
+        assert f.rate_source == "treasury" and f.rate == pytest.approx(r)
+        assert f.discount == pytest.approx(np.exp(-r * T))
+        assert f.forward == pytest.approx(spot * np.exp((r - q) * T), rel=1e-6)
+        assert f.div_yield == pytest.approx(q, abs=1e-5)
+
+
 def test_expiry_timing_am_pm_and_act365():
     assert parity.expiry_timestamp("2026-10-16", "SPX") == pd.Timestamp("2026-10-16 09:30")
     assert parity.expiry_timestamp("2026-10-16", "SPXW") == pd.Timestamp("2026-10-16 16:00")

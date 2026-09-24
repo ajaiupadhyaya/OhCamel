@@ -67,7 +67,8 @@ def test_live_aapl_companyfacts(live):
     assert a["revenue"].dropna().iloc[-1] > 3e11 and a["total_assets"].dropna().iloc[-1] > 3e11
     assert d["shares_outstanding"] and d["shares_outstanding"] > 1e10
     q = d["quarterly"]["revenue"].dropna()
-    assert len(q) >= 8 and (q > 5e10).all()
+    # Apple's quarterly revenue was ~$7-13B in 2008 and has been > $50B since FY2019
+    assert len(q) >= 8 and (q.loc["2019":] > 5e10).all() and (q > 0).all()
     # quarters of the latest complete fiscal year sum to the annual figure
     fy_end = a["revenue"].dropna().index[-1]
     last4 = q.loc[:fy_end].tail(4)
