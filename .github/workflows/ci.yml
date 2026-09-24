@@ -2,9 +2,31 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # main, and the stage branches. A stage is accepted only when CI is green
+    # on it BEFORE it merges, and this project merges by fast-forward rather
+    # than through a pull request -- so with `main` alone, the first run that
+    # ever saw a stage's commits would be the one on main after the merge, and
+    # "green in CI before the merge" would be a claim about a run that had not
+    # happened yet.
+    branches:
+      - main
+      - 'desk/**'
+      - 'final/**'
   pull_request:
   workflow_dispatch:
+
+# Least privilege, stated once for every job rather than per job. Nothing here
+# writes to the repository: the jobs read the checkout, run local scripts, and
+# upload an artifact (which needs no repository scope). The default when a
+# workflow says nothing at all is whatever the repository's Actions setting
+# happens to be, which for a repository created before GitHub changed that
+# default is read/write -- so saying it here is the difference between least
+# privilege and luck. A job that genuinely needs more declares its own
+# `permissions:` block, which REPLACES this one: Task 11's image job will need
+# `packages: write` to push to ghcr, and that exception will then be visible at
+# the job taking it rather than granted to every job in the file.
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -16,15 +38,18 @@ concurrency:
 jobs:
   # Stage 0, not Stage 1: deploy.sh reaches the owner for the overdue W2/A3
   # deploy the moment this branch merges, so the check on it has to exist
-  # before that, not in a later stage's plan. Least-privilege token: this job
-  # only reads the checkout and runs local scripts, so contents: read is
-  # everything it needs, and naming that explicitly is cheaper than auditing
-  # later whether some step quietly started needing more.
+  # before that, not in a later stage's plan.
+  #
+  # Everything this job runs is a parser: shellcheck over the shell, compose's
+  # own renderer over the three compose files, caddy's Caddyfile adapter,
+  # systemd's unit parser, and a grep-only script over three sentences. None of
+  # it needs a toolchain, a daemon on the host, or a credential, which is why
+  # it finishes in a couple of minutes and why it can be the check that gates a
+  # deploy. It reads the checkout and nothing else -- the workflow's top-level
+  # `permissions: contents: read` is all it gets.
   lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -91,6 +116,181 @@ jobs:
       - name: make check-counts
         run: make check-counts
 
+      # The compose files render. Not a substitute for bringing the stack up --
+      # Task 10's image job does that against real images -- but `config` is the
+      # step that catches an unknown key, an anchor that no longer merges, an
+      # `!override` in the wrong place and an unset `${VAR:?...}`, and it
+      # catches them in seconds on a runner that has pulled no image at all. It
+      # is worth having separately from the harness because a compose file that
+      # does not parse takes BOTH hosts down at once on the droplet, and
+      # `deploy.sh` would discover it after it had already stopped them.
+      #
+      # The five hostname/ACME/basic-auth variables come from deploy/local.env,
+      # which is committed for exactly this kind of use (see its own header).
+      # Values invented here would be a second copy of the same five lines to
+      # keep in step with the `${VAR:?...}` declarations.
+      #
+      # /etc/ohcamel/live.env is written with DUMMY values because both
+      # ohcamel-live and ohcamel-research declare it `required: true`, so the
+      # live profile does not render without it -- and a check that skipped the
+      # live profile would skip the only two services that carry credentials,
+      # a volume mounted read-only against another service's read-write, and
+      # the env_file declaration itself. Nothing here is a credential: the
+      # runner has none, and these three values are visibly fake.
+      #
+      # `config -q` and not `config`: the quiet form prints nothing. The verbose
+      # form inlines every variable it resolved, env_file included, which on
+      # this runner would only echo the dummies above but is the wrong habit to
+      # write into a file that a later task may copy for the live host.
+      - name: The compose files render
+        run: |
+          sudo install -d -m 0755 /etc/ohcamel
+          printf '%s\n' \
+            '# CI only. Dummy values, so that `docker compose config` can' \
+            '# render the live profile, whose env_file is required: true.' \
+            '# The real file is root-owned and 0640 on the droplet.' \
+            'ALPACA_API_KEY=ci-dummy-not-a-key' \
+            'ALPACA_SECRET_KEY=ci-dummy-not-a-key' \
+            'FRED_API_KEY=ci-dummy-not-a-key' \
+            | sudo tee /etc/ohcamel/live.env >/dev/null
+          sudo chmod 0644 /etc/ohcamel/live.env
+
+          docker compose version
+
+          base=(--env-file deploy/local.env -f deploy/docker-compose.yml)
+
+          echo "== base, default profile (caddy + ohcamel-demo)"
+          docker compose "${base[@]}" config -q
+          echo "== base, live profile (adds ohcamel-live + ohcamel-research)"
+          docker compose "${base[@]}" --profile live config -q
+          echo "== base + the localhost harness override (make deploy-verify)"
+          docker compose "${base[@]}" -f deploy/docker-compose.local.yml config -q
+
+          # Task 9 adds deploy/docker-compose.ci.yml -- the image job's own
+          # override, which names the sha tags buildx loaded and carries no
+          # build block. The guard is a file test rather than a committed stub:
+          # a stub would exist only to keep this check busy, and would render
+          # cleanly while proving nothing. This turns itself on the moment the
+          # real file lands, and says out loud when it is skipping.
+          if [ -f deploy/docker-compose.ci.yml ]; then
+            echo "== base + the CI override, both profiles"
+            docker compose "${base[@]}" -f deploy/docker-compose.ci.yml config -q
+            docker compose "${base[@]}" -f deploy/docker-compose.ci.yml --profile live config -q
+          else
+            echo "-- deploy/docker-compose.ci.yml does not exist yet (Task 9 creates it); skipped"
+          fi
+
+      # Both Caddyfiles adapt and provision. This is the only check that reads
+      # deploy/Caddyfile.snippets the way the running proxy does: both files
+      # import it, so one broken snippet breaks production AND the harness, and
+      # it would otherwise surface on the droplet, where Caddy refuses to start
+      # and takes both hosts with it.
+      #
+      # The image is pinned, because a floating caddy:2-alpine would mean this
+      # step validates against whichever version the runner happened to pull.
+      # It has to be the version compose runs, or it is validating a different
+      # program than the one that will read these files -- the assertion at the
+      # end of the step is what keeps the two from drifting apart silently.
+      #
+      # The environment is dummies: deploy/Caddyfile takes its hostnames, ACME
+      # contact and basic-auth credential from {$VAR} (which is Caddy's own
+      # env-var syntax, expanded when the Caddyfile is adapted, not shell
+      # interpolation). OHCAMEL_LIVE_HASH is a real, well-formed bcrypt string
+      # -- the example from Caddy's basic_auth documentation, a hash of a
+      # throwaway password nothing here knows -- rather than a placeholder
+      # word, because this step adapts and provisions the site and a validator
+      # should be handed the SHAPE of value the running proxy gets.
+      #
+      # Caddyfile.local needs no environment at all: it hardcodes
+      # http://localhost. And --adapter caddyfile is explicit for both, because
+      # Caddy infers the adapter from a file named exactly "Caddyfile" and
+      # "Caddyfile.local" is not that.
+      - name: caddy validate
+        run: |
+          # Keep in step with deploy/docker-compose.yml's caddy image; the
+          # assertion below fails if they ever name different exact versions.
+          caddy_image=caddy:2.11.4-alpine
+
+          docker run --rm \
+            -v "$PWD/deploy:/etc/caddy:ro" \
+            -e OHCAMEL_ACME_EMAIL=ci@example.invalid \
+            -e OHCAMEL_DEMO_HOST=demo.example.com \
+            -e OHCAMEL_LIVE_HOST=live.example.com \
+            -e OHCAMEL_LIVE_USER=ci \
+            -e 'OHCAMEL_LIVE_HASH=$2a$14$Zkx19XLiW6VYouLHR5NmfOFU0z2GTNmpkT/5qqR7hx4IjWJPDhjvG' \
+            "$caddy_image" \
+            caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
+
+          docker run --rm \
+            -v "$PWD/deploy:/etc/caddy:ro" \
+            "$caddy_image" \
+            caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile.local
+
+          # Drift. Task 9 pins compose's caddy to an exact 2.x version; until it
+          # does, compose still says caddy:2-alpine and this step says so rather
+          # than failing on a mismatch that is not yet anyone's mistake.
+          compose_caddy=$(grep -oE 'image: caddy:[0-9A-Za-z.+_-]+' deploy/docker-compose.yml \
+                          | head -n 1 | sed 's/^image: //')
+          if [ -z "$compose_caddy" ]; then
+            echo "no caddy image found in deploy/docker-compose.yml -- this step no longer knows which caddy it is validating for"
+            exit 1
+          fi
+          echo "validated with $caddy_image; compose runs $compose_caddy"
+          case "$compose_caddy" in
+            "$caddy_image")
+              ;;
+            caddy:2-alpine)
+              echo "-- compose's caddy tag still floats (Task 9 pins it); once pinned it must equal $caddy_image"
+              ;;
+            *)
+              echo "compose runs $compose_caddy but this step validated with $caddy_image -- pin both to the same version"
+              exit 1
+              ;;
+          esac
+
+      # The systemd units parse. Task 14 creates ohcamel-backup.{service,timer}
+      # and Task 18 creates ohcamel-watch.{service,timer}; until they exist this
+      # step says it found none and passes. The guard is a glob, not a stub unit
+      # committed to keep a check busy, so this turns itself on when they land.
+      #
+      # The exit code is deliberately NOT the assertion, and that is the whole
+      # subtlety of this step. systemd-analyze on a GitHub runner complains
+      # about things that are true only of the droplet -- `User=ohcamel` does
+      # not exist here, nor do the units these depend on -- and it exits
+      # non-zero for some of them. What CAN be asserted from a runner is the
+      # PARSE: a directive systemd does not know (`Unknown lvalue`), a section
+      # it does not know, a section header that is not one, or a value it cannot
+      # read. Those are exactly the mistakes a unit file in a git repository
+      # carries, they are fatal on the host, and they are invisible until
+      # `systemctl daemon-reload` says so at 06:30 UTC.
+      - name: systemd-analyze verify (deploy/systemd/)
+        run: |
+          shopt -s nullglob
+          units=(deploy/systemd/*.service deploy/systemd/*.timer)
+          shopt -u nullglob
+          if [ "${#units[@]}" -eq 0 ]; then
+            echo "-- no units under deploy/systemd/ yet (Task 14 and Task 18 create them); skipped"
+            exit 0
+          fi
+          systemd-analyze --version | head -n 1
+          status=0
+          for u in "${units[@]}"; do
+            echo "== $u"
+            # `|| true` because the exit code is not the assertion (above), and
+            # because a bare assignment whose command fails would otherwise end
+            # the step before the output could be read: GitHub runs an
+            # unqualified `run:` block as `bash -e {0}`, so -e would propagate
+            # systemd-analyze's own non-zero exit as a step failure.
+            out=$(systemd-analyze verify "$u" 2>&1) || true
+            printf '%s\n' "$out"
+            if printf '%s\n' "$out" \
+               | grep -qE 'Failed to parse|Unknown lvalue|Invalid section|Unknown section'; then
+              echo "$u does not parse (see above) -- systemd would refuse it on the host."
+              status=1
+            fi
+          done
+          exit "$status"
+
   build-and-test:
     # Two platforms, and the second one is not decoration. The Makefile carries
     # two long write-ups of Owl bugs that only appear on arm64 macOS — a clang
@@ -113,6 +313,26 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      # The launchd plist that runs deploy/pull-backups.sh on the owner's
+      # laptop, linted by the tool that will actually load it. This lives on the
+      # macOS leg and can live nowhere else: plutil is part of macOS and is not
+      # present on an ubuntu runner at all, so the same step on the Linux leg
+      # would either fail for want of the tool or quietly check nothing.
+      #
+      # Task 14 creates the file. Until it does, this says it found nothing and
+      # passes -- a file test rather than a stub plist, which would exist only
+      # to keep a check busy. It runs before the forty-minute Owl build because
+      # it costs a second.
+      - name: plutil -lint the launchd plist (macOS only)
+        if: runner.os == 'macOS'
+        run: |
+          plist=deploy/launchd/com.ohcamel.pull-backups.plist
+          if [ ! -f "$plist" ]; then
+            echo "-- $plist does not exist yet (Task 14 creates it); skipped"
+            exit 0
+          fi
+          plutil -lint "$plist"
 
       # The two pages, the three crisis CSVs and the quoted tables are OCaml
       # quoted string literals: lib/dune cats web/* and docs/crisis/*.csv into
@@ -345,12 +565,22 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # A floor, not a target. The README explains why the number is bimodal —
-      # the split sits at 80% of each file's unrounded figure, and the lowest
-      # files in the IO column run down to 13%, because exercising them needs
-      # a network and this project declines to fake one. The floor exists so
-      # that deleting tests is noticed; chasing the number upward by testing
-      # the feed against a mock would make it go up and mean less.
+      # A floor, not a target, and the number it floors is bimodal. README.md's
+      # per-file table is where that shape is set out and kept current, and this
+      # comment repeats none of its per-file figures on purpose -- but it does
+      # have to agree with it, and with the same two sentences in
+      # docs/status.md and the Makefile, about what the two modes ARE.
+      #
+      # The split sits at 80% of each file's unrounded figure. The six files
+      # that perform network IO themselves run 36% to 65%, because exercising
+      # them means mocking a broker, which raises the number and establishes
+      # nothing. Below those six is not more IO: it is derived
+      # sexp_of/compare/equal boilerplate on record and variant types, which is
+      # almost all of what the lowest file in the table -- desk/venue.ml, at
+      # 13% -- actually is.
+      #
+      # The floor exists so that deleting tests is noticed; chasing the number
+      # upward against a mocked feed would make it go up and mean less.
       - name: Coverage floor
         run: |
           percent=$(opam exec -- bisect-ppx-report summary --coverage-path _coverage \

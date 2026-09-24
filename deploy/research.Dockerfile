@@ -16,7 +16,19 @@
 # fixtures/macro/..., research/config/..., research/experiments/...) and
 # every path this Dockerfile copies is repo-root-relative for exactly this
 # reason -- there is one directory layout, and it is the repository's own.
-FROM python:3.12-slim AS research
+# The patch version and its digest, not `3.12-slim`. Two things float in that
+# tag, and the second one is the surprise: the interpreter's patch level, and
+# the Debian release underneath it -- `-slim` follows Debian stable, so the same
+# tag crossed from bookworm to trixie without this file changing. Verified
+# 2026-09-20 against registry-1.docker.io: `python:3.12-slim`,
+# `python:3.12.14-slim` and `python:3.12.14-slim-trixie` were all the same
+# manifest digest, so this pin changed nothing about what is pulled and made
+# both moving parts explicit. That matters here because the apt line below
+# installs git, ca-certificates and tzdata from whatever release this image is,
+# and because the build-time zone check and `uv sync --locked` both run against
+# it. Dependabot moves this line (.github/dependabot.yml); a bump that also
+# changes the Debian release is a bump to read rather than merge.
+FROM python:3.12.14-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9 AS research
 
 # git: uv shells out to it for fdq's git+https dependency (pinned in
 # research/pyproject.toml; public, needs no credential -- see the pin's own
