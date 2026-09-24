@@ -577,10 +577,3 @@ fi
 # ---------------------------------------------------------------------------
 printf '\n  %d passed, %d failed, %d skipped\n\n' "$pass" "$fail" "$skip"
 [ "$fail" -eq 0 ] || exit 1
-
-# t8 SEED -- a deliberate shellcheck warning (SC2154), committed only to prove
-# that the lint job fails on one, and reverted in the very next commit. Never
-# called, so nothing this script does changes.
-t8_seeded_failure() {
-	echo "$t8_never_assigned_anywhere"
-}
