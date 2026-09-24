@@ -91,6 +91,22 @@ The Desk page, served from memory by server.ml at /.
    nothing to fetch.
 -->
 
+<!--
+   FIGURE 2, 2026-09-24
+
+   The essay above refuses a trading-terminal pastiche, and Figure 2 is a film
+   prop on purpose: the targeting computer from Star Wars (1977), amber vectors
+   on a dark screen. It is allowed for two reasons, both the essay's own. It is
+   framed as a screen -- a bezel, its own always-dark tokens -- so nothing
+   outside it changes style and the page's palette is untouched. And it draws
+   only the frame's facts: every limit still ahead is a gate at a depth set by
+   its headroom, a breach is a pair of red rails, a limit that cannot be
+   evaluated is a dashed gate with no depth rather than a far one, and the
+   lamps beside it carry the exact figures. Nothing moves unless a value did.
+   The design is docs/superpowers/specs/2026-09-24-figure-2-the-scope-design.md
+   and the file that draws it is web/scope.js.
+-->
+
 <section id="desksec">
   <span class="lbl">desk <i id="desknote">— the venue's account</i></span>
   <div class="twrap"><table id="desk"></table></div>
@@ -112,6 +128,14 @@ The Desk page, served from memory by server.ml at /.
 <figure id="graph" class="fig">
   <span class="lbl">Figure 1. <i>The graph, taken from the graph.</i></span>
   <div id="graphbox"></div>
+</figure>
+
+<figure id="scope" class="fig">
+  <span class="lbl">Figure 2. <i>The nearest limit, as a targeting computer.</i></span>
+  <div class="scope-console">
+    <div id="scopescreen" class="scope-screen"></div>
+    <ul id="scopelamps" class="scope-lamps" aria-label="every limit, with its utilisation"></ul>
+  </div>
 </figure>
 
 <main id="main">

@@ -83,7 +83,7 @@ export OWL_CFLAGS := -g -O1 -funroll-loops -fno-math-errno -fno-rounding-math -f
 # Homebrew's directory for every build, so no ordering can win.
 export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 
-.PHONY: all build run stress backtest backtest-crisis options garch test research-test research-reproduce bench coverage fmt clean deps doctor \
+.PHONY: all build run stress backtest backtest-crisis options garch test research-test research-reproduce web-test bench coverage fmt clean deps doctor \
         check-counts \
         deploy-build deploy-up deploy-down deploy-verify deploy-logs deploy-smoke
 
@@ -213,6 +213,13 @@ research-test:
 # experiment. CI's research job runs it after research-test.
 research-reproduce:
 	cd research && uv run --locked --offline --extra dev python $(CURDIR)/tools/reproduce_manifests.py
+
+# Figure 2's layout arithmetic (web/scope.js), under node's own test runner.
+# The page's scripts have no build step and no dependencies, so neither does
+# this: node alone, which CI's lint runner already carries. Its cases are not
+# among the published OCaml or research counts.
+web-test:
+	node --test web/test/*.test.js
 
 # The three published test counts, checked against their source of truth:
 # lib/verified.ml's `tests` and `scheduler_tests`, and

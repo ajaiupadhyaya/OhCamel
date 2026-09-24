@@ -208,8 +208,9 @@ Alpaca account allows one concurrent market-data stream.
 The site is six pages, one binary, one shared shell and client:
 
 - **Desk** (`/`) — the account and its ticket, Figure 1 (with the orders,
-  fills and signals bands the desk writes), positions and their share of
-  risk, the book's aggregates, the blotter and fills, and the equity trail.
+  fills and signals bands the desk writes), Figure 2 (every limit as a gate
+  in a targeting computer's tunnel, the nearest one's room to spare on its
+  readout), positions and their share of risk, the book's aggregates, the blotter and fills, and the equity trail.
 - **Risk** (`/risk`) — the limits ledger, the macro factor and the book's
   beta to it, the option Greeks, and the scenario suite behind a button.
 - **Execution** (`/execution`) — the open orders, the cost analysis overall
@@ -235,7 +236,7 @@ answers 405.
 
 | Route | |
 |---|---|
-| `/` | The Desk: the account and its ticket, Figure 1 (the graph from Incremental's node table, lit per frame, drawn rank by rank with cutoffs, heat and cost classes, with the orders and fills bands the desk writes), positions and their share of risk, the book's aggregates, the blotter and fills, and the equity trail. One embedded HTML string, inline SVG, no external assets |
+| `/` | The Desk: the account and its ticket, Figure 1 (the graph from Incremental's node table, lit per frame, drawn rank by rank with cutoffs, heat and cost classes, with the orders and fills bands the desk writes), Figure 2 (the limits as a targeting computer: a gate per limit at a depth set by its headroom, breaches as rails, the unevaluable as a dashed gate with no depth; `web/scope.js`, its arithmetic tested by `make web-test`), positions and their share of risk, the book's aggregates, the blotter and fills, and the equity trail. One embedded HTML string, inline SVG, no external assets |
 | `/argument` | The README's argument, moved intact: the same headings, the same tables, computed by this process and checked against the README |
 | `/risk` | The limits ledger, the macro factor and the book's beta to it, the option Greeks, and the scenario suite behind a button |
 | `/execution` | The open orders, the cost analysis overall and by symbol, the session record and the VaR forecasts |

@@ -88,7 +88,9 @@
     ; time; and desk.js subscribes to stream.js at load, so the object
     ; has to exist by then. start() opens the connection, and it is the last
     ; statement in the block so that every section has registered before the
-    ; first frame can arrive. charts.js and argument.js moved to
+    ; first frame can arrive. scope.js (Figure 2) only defines
+    ; window.OhCamelScope, which desk.js calls per frame, so it is catted
+    ; before desk.js. charts.js and argument.js moved to
     ; argument_html.ml with the essay they draw for; the dashboard no longer
     ; loads either.
     (cat
@@ -97,6 +99,7 @@
      ../web/shared.js
      ../web/stream.js
      ../web/graph.js
+     ../web/scope.js
      ../web/desk.js)
     (echo "OhCamelStream.start();\n")
     (echo "</script>\n</body>\n</html>\n|ohcamel_html}\n")))))

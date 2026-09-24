@@ -456,6 +456,74 @@
   figure.fig.poster .ohcamel-graph g.node.lit text.name { filter: drop-shadow(0 0 3px rgba(230, 176, 76, .6)); }
   figure.fig.poster .graph-note { display: none; }
   html.poster-open { overflow: hidden; }
+
+  /* ---- Figure 2: the nearest limit, as a targeting computer ----
+     A screen set into the page. Its tokens are its own and do not follow the
+     page's scheme: the console is dark in light mode and in dark mode, the way
+     a monitor is dark on a white desk. Nothing here restyles anything outside
+     #scope. No glow, no scanlines: the amber is the whole effect. */
+  #scope {
+    margin: 0; padding: 14px 20px 18px; border-bottom: 1px solid var(--rule);
+    --sc-panel: #1b1916; --sc-bezel: #2e2a25; --sc-ground: #110d08;
+    --sc-amber: #f2b441; --sc-amber-soft: rgba(242, 180, 65, .42); --sc-amber-text: #f6cf7a;
+    --sc-red: #ec4b36; --sc-red-text: #f39a8a; --sc-unknown: #8b9ae0; --sc-seg-off: rgba(236, 75, 54, .09);
+  }
+  #scope > .lbl { display: block; margin-bottom: 10px; font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif; font-size: 17px; letter-spacing: 0; text-transform: none; color: var(--ink); font-weight: 600; }
+  #scope > .lbl i { font-weight: 400; color: var(--ink-soft); }
+  .scope-console {
+    display: flex; gap: 18px; align-items: stretch; max-width: 980px;
+    background: var(--sc-panel); border-radius: 6px; padding: 14px;
+  }
+  .scope-screen {
+    flex: 1 1 auto; min-width: 0; max-width: 720px;
+    background: var(--sc-ground); border: 7px solid var(--sc-bezel); border-radius: 20px; padding: 6px;
+  }
+  .scope-screen svg { display: block; width: 100%; height: auto; }
+  .scope-screen .persp line { stroke: var(--sc-amber-soft); stroke-width: 1.2; }
+  .scope-screen .frame { fill: none; stroke: var(--sc-amber); stroke-width: 2.5; }
+  .scope-screen .gate { fill: none; stroke: var(--sc-amber-soft); stroke-width: 1.4; }
+  .scope-screen .gate.target { stroke: var(--sc-amber); stroke-width: 2.6; }
+  .scope-screen .gate.unknown { stroke: var(--sc-unknown); stroke-dasharray: 4 3; stroke-width: 1.2; }
+  .scope-screen .unknown-q { fill: var(--sc-unknown); font: 12px ui-monospace, Menlo, monospace; }
+  .scope-screen .gate-label { fill: var(--sc-amber-text); font: 11px ui-monospace, Menlo, monospace; }
+  .scope-screen .rail line { stroke: var(--sc-red); stroke-width: 3; }
+  .scope-screen .rail-label { fill: var(--sc-red-text); font: 11px ui-monospace, Menlo, monospace; }
+  .scope-screen .rail.fresh { animation: sc-blink .3s steps(1, end) 3; }
+  @keyframes sc-blink { 50% { opacity: 0; } }
+  .scope-screen .readout-box { fill: none; stroke: var(--sc-amber); stroke-width: 2; }
+  .scope-screen .seg { fill: var(--sc-seg-off); }
+  .scope-screen .seg.on { fill: var(--sc-red); }
+  .scope-screen .caption { fill: var(--sc-amber-text); font: 11px ui-monospace, Menlo, monospace; letter-spacing: .06em; }
+  .scope-screen .readout.over .readout-box { stroke: var(--sc-red); }
+  /* staleness: the ledger's opacity, on exactly the limits the closure names */
+  .scope-screen .stale { opacity: .35; }
+  .scope-lamps {
+    list-style: none; margin: 0; padding: 4px 0; flex: 0 0 auto; min-width: 190px;
+    display: flex; flex-direction: column; gap: 9px;
+    font: 11px ui-monospace, Menlo, monospace; color: var(--sc-amber-text);
+  }
+  .scope-lamps li { display: grid; grid-template-columns: 16px 1fr auto; gap: 9px; align-items: center; }
+  .scope-lamps .lamp { width: 16px; height: 16px; border-radius: 2px; background: var(--sc-amber-soft); border: 1px solid var(--sc-amber); }
+  .scope-lamps li.target .lamp { background: var(--sc-amber); }
+  .scope-lamps li.over { color: var(--sc-red-text); }
+  .scope-lamps li.over .lamp { background: var(--sc-red); border-color: var(--sc-red); }
+  .scope-lamps li.unknown { color: var(--sc-unknown); }
+  .scope-lamps li.unknown .lamp { background: none; border: 1px dashed var(--sc-unknown); }
+  .scope-lamps li.stale { opacity: .45; }
+  .scope-lamps .pct { text-align: right; }
+  @media (max-width: 600px) {
+    #scope { padding: 12px 12px 16px; }
+    .scope-console { flex-direction: column; padding: 10px; gap: 12px; }
+    .scope-screen { border-width: 5px; border-radius: 14px; padding: 3px; }
+    .scope-lamps { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; min-width: 0; }
+    /* The drawing is scaled to about half here, so its type is set in the
+       drawing's own units at twice the size. The rails keep their lines and
+       drop their labels: the lamps below name every breach and its figure. */
+    .scope-screen .gate-label, .scope-screen .caption { font-size: 21px; }
+    .scope-screen .unknown-q { font-size: 22px; }
+    .scope-screen .rail-label { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { .scope-screen .rail.fresh { animation: none; } }
   /* staleness by closure: the ledger's opacity, on exactly these nodes */
   .ohcamel-graph g.node.stale { opacity: .38; }
   .ohcamel-graph g.node.over text.name { fill: var(--over); }

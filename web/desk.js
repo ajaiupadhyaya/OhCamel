@@ -710,6 +710,8 @@
     renderBook(s);
     renderDesk(s);
     renderGraphFrame(s);
+    // Figure 2 reads the same frame's limits and the same stale closure.
+    window.OhCamelScope.render(s);
     document.getElementById("nodes").textContent = s.nodes_recomputed.toLocaleString("en-US");
     if (s.stabilizes !== undefined && s.stabilizes !== null)
       document.getElementById("stabilizes").textContent = s.stabilizes.toLocaleString("en-US");

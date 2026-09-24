@@ -81,6 +81,11 @@ jobs:
           done
           exit "$status"
 
+      # Figure 2's layout arithmetic, web/scope.js, under node's built-in test
+      # runner. ubuntu-latest carries node; nothing is installed.
+      - name: make web-test
+        run: make web-test
+
       # The three published test-count sentences (README.md, docs/overview.md,
       # docs/status.md), checked against lib/verified.ml and
       # research/src/ohcamel_research/verified.py by scripts/check-counts.sh.

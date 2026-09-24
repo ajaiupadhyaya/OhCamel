@@ -72,6 +72,8 @@ let test_the_document_is_assembled_in_order () =
         "<nav class=\"sitenav\"";
         "THE DESIGN, AND WHY IT IS THIS AND NOT A TRADING TERMINAL PASTICHE";
         "THE SUCCESSOR, 2026-09-02";
+        "FIGURE 2, 2026-09-24";
+        "<figure id=\"scope\"";
         "<table id=\"pos\"></table>";
         (* The essay, its comment and its quoted-JSON pin all left with it in
            this phase: the dashboard's own markup now runs straight from the
@@ -86,6 +88,9 @@ let test_the_document_is_assembled_in_order () =
            subscription, moved to the argument page with the essay they
            serve; window.OhCamelCharts is no longer catted into this page at
            all. *)
+        (* scope.js before desk.js: desk.js calls window.OhCamelScope per
+           frame, so the object has to exist by the first one. *)
+        "root.OhCamelScope = api";
         "window.OhCamelStream.onTopology(buildFigure)";
         "</script>";
         "</html>";
