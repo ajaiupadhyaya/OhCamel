@@ -68,3 +68,70 @@
 		write_timeout 0
 	}
 }
+
+# ---------------------------------------------------------------------------
+# OhCamel Quant -- the public site (FastAPI + the built React SPA).
+#
+# Imported by the public host in Caddyfile and by http://localhost in
+# Caddyfile.local, so the harness exercises exactly these headers.
+#
+# One upstream serves everything: /api/* (JSON), /assets/* (Vite's hashed
+# bundles) and every other path, which FastAPI answers with index.html so
+# client-side routes (/portfolio, /company/AAPL ...) survive a reload. No SSE
+# here, so no streaming directives; FastAPI already gzips JSON over 1 KB, and
+# Caddy's encode (ohcamel_common) leaves an already-encoded body alone.
+#
+# The Content-Security-Policy, directive by directive:
+#   default-src 'self'        nothing external: fonts, KaTeX and Plotly are all
+#                             bundled by Vite; the API is same-origin.
+#   script-src 'unsafe-eval'  plotly.js-dist-min compiles some trace code
+#                             (WebGL/regl, ndarray accessors behind the 3-D
+#                             surface) with Function(); without it those charts
+#                             throw EvalError. Inline script is NOT allowed --
+#   script-src 'sha256-...'   except the one pre-paint theme snippet in
+#                             quant/web/index.html (it applies the saved theme
+#                             before first paint), allowed by its exact hash.
+#                             Vite copies it into dist/index.html byte for byte.
+#                             deploy/test/csp_hash_test.sh fails CI if the
+#                             snippet changes without this hash, and smoke.sh
+#                             checks the served page against the served header.
+#   style-src 'unsafe-inline' Plotly and KaTeX set inline style attributes and
+#                             Plotly injects <style> rules at run time.
+#   img-src data: blob:       Plotly's "download as PNG" and inline SVG icons.
+#   font-src data:            Vite inlines small font files as data: URIs.
+#   worker-src blob:          Plotly/regl may spawn blob workers.
+#   frame-ancestors 'none'    the same promise X-Frame-Options DENY makes.
+#
+# /api/docs (Swagger UI) is FastAPI's page, which loads swagger-ui from
+# cdn.jsdelivr.net and boots it with an inline script; it gets its own looser
+# policy so the interactive API docs keep working, and nothing else does.
+(ohcamel_quant) {
+	@quant_spa not path /api/docs /api/docs/* /api/redoc
+	header @quant_spa Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-eval' 'sha256-O0B56bzSBq+EQqRRMRQWMXbWBh8/H3a/8h36L7o9fag='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+
+	@quant_apidocs path /api/docs /api/docs/* /api/redoc
+	header @quant_apidocs Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https://fastapi.tiangolo.com; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+
+	header {
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		Cross-Origin-Opener-Policy same-origin
+	}
+
+	# Vite content-hashes every file under /assets, so a name never changes
+	# meaning: cache for a year. Everything that is not an asset or the API --
+	# index.html, served for every client route -- must be revalidated, or a
+	# deploy leaves browsers holding an index.html that names deleted bundles.
+	@quant_assets path /assets/*
+	header @quant_assets Cache-Control "public, max-age=31536000, immutable"
+	@quant_html not path /api/* /assets/*
+	header @quant_html Cache-Control "no-cache"
+
+	reverse_proxy ohcamel-quant:8090 {
+		# The heaviest endpoints (optimiser sweeps, backtest sweeps) compute
+		# for a while on a 2 vCPU box; fail them visibly rather than hang.
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 120s
+		}
+	}
+}

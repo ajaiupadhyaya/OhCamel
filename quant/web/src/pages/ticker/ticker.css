@@ -1,0 +1,34 @@
+/* Ticker page — page-local styles (prefix tk-). */
+.tk-title {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 18px;
+}
+.tk-symbol {
+  font-family: var(--font-display);
+  font-variant-numeric: normal;
+  letter-spacing: -0.02em;
+}
+.tk-name {
+  font-size: 0.5em;
+  color: var(--text-3);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+.tk-quote {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+.tk-last {
+  font-size: 1.75rem;
+  font-weight: 500;
+  color: var(--text);
+  letter-spacing: -0.03em;
+}
+.tk-chg {
+  font-size: var(--fs-lg);
+  font-weight: 500;
+}

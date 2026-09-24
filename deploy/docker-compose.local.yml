@@ -1,18 +1,23 @@
 # The localhost harness.
 #
-#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d
+#   docker compose --env-file local.env -f docker-compose.yml \
+#       -f docker-compose.local.yml --profile demo up -d
 #
 # An OVERRIDE of docker-compose.yml, not a replacement, so the engine service
 # under test is the real one: same image, same command, same read-only root,
-# same mounted book. Three things change, and only three:
+# same mounted book, and the same ohcamel-quant image and settings as the
+# public site. Three things change, and only three:
 #
-#   1. Caddy serves http://localhost and does not attempt ACME.
-#   2. Port 80 only. Nothing here can obtain a certificate.
+#   1. Caddy serves http://localhost (Quant) and http://localhost:8001 (the
+#      synthetic engine, --profile demo) and does not attempt ACME.
+#   2. Plain HTTP only: host 8000 -> Quant, host 8001 -> the demo engine.
+#      Nothing here can obtain a certificate.
 #   3. The environment variables production requires come from deploy/local.env
 #      (passed with --env-file), so running this needs no hand-written config.
 #
-# What it is FOR: proving that a frame written by the engine reaches a client
-# through Caddy without being buffered. That is the assertion the whole
+# What it is FOR: proving the public Quant site answers through the production
+# proxy configuration with real data, and that a frame written by the engine
+# reaches a client through Caddy without being buffered. That is the assertion the whole
 # deployment turns on, it is cheap to get wrong, and it is checkable on a
 # laptop in thirty seconds.
 
@@ -20,6 +25,7 @@ services:
   caddy:
     ports: !override
       - "8000:80"
+      - "8001:8001"
     volumes:
       - ./Caddyfile.local:/etc/caddy/Caddyfile:ro
       - ./Caddyfile.snippets:/etc/caddy/Caddyfile.snippets:ro

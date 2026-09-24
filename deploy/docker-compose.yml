@@ -1,10 +1,15 @@
 # OhCamel on one droplet.
 #
-#   caddy         TLS termination and the only service with a host port
-#   ohcamel-demo  the synthetic engine, public
-#   ohcamel-live  the same image against Alpaca and FRED, password-gated
+#   caddy          TLS termination and the only service with a host port
+#   ohcamel-quant  OhCamel Quant (FastAPI + React), the PUBLIC site: real
+#                  market data only (Alpaca/Yahoo/Stooq, FRED, Cboe, SEC,
+#                  Ken French), no synthetic feed anywhere
+#   ohcamel-live   the OCaml engine against Alpaca and FRED, password-gated
+#                  (profile "live")
+#   ohcamel-demo   the OCaml engine on its SYNTHETIC feed -- no longer public;
+#                  behind profile "demo", for the localhost harness only
 #
-# The two engines have no published ports -- they are reachable only from
+# None of the app containers publishes a port -- they are reachable only from
 # caddy, over the internal network. That is what makes the basic-auth on the
 # live host meaningful: without it, anyone could skip the proxy by asking the
 # droplet for :8081 directly, and the password would be decoration.
@@ -13,6 +18,19 @@ name: ohcamel
 
 x-engine: &engine
   image: ohcamel:latest
+  # On the anchor, so whichever engine service a run enables can build the
+  # image -- ohcamel-live under --profile live on the droplet, ohcamel-demo
+  # under --profile demo in the localhost harness. Both tag ohcamel:latest from
+  # the same Dockerfile, so both always report the same sha; when both
+  # profiles are on, the second build is a cache hit.
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+    # Passed through to dune's %{env:...} inside the builder stage. Absent,
+    # the image honestly says `unknown` rather than carrying a date nobody set.
+    args:
+      OHCAMEL_GIT_SHA: "${OHCAMEL_GIT_SHA:-unknown}"
+      OHCAMEL_BUILT_AT: "${OHCAMEL_BUILT_AT:-unknown}"
   restart: unless-stopped
   # Docker's own init as PID 1. Async installs signal handlers, but PID 1 in a
   # container does not get the default SIGTERM disposition, so without an init
@@ -67,24 +85,85 @@ services:
       OHCAMEL_LIVE_HOST: ${OHCAMEL_LIVE_HOST:?set it in deploy/deploy.env}
       OHCAMEL_LIVE_USER: ${OHCAMEL_LIVE_USER:?set it in deploy/deploy.env}
       OHCAMEL_LIVE_HASH: ${OHCAMEL_LIVE_HASH:?run `caddy hash-password`}
+    # The public host is the Quant app now; Caddy starts once it answers.
     depends_on:
-      ohcamel-demo:
+      ohcamel-quant:
         condition: service_healthy
     networks: [ohcamel]
 
-  ohcamel-demo:
-    <<: *engine
+  # The public site. Real data only: every number comes from a vendor through
+  # MarketData, cached on the quant_data volume, or -- when a vendor is down --
+  # from the committed real fixtures baked into the image; never a simulation.
+  ohcamel-quant:
     build:
       context: ..
-      dockerfile: deploy/Dockerfile
-      # Passed through to dune's %{env:...} inside the builder stage. Absent,
-      # the image honestly says `unknown` rather than carrying a date nobody
-      # set. ohcamel-live has no build block -- it runs this same image, so
-      # both hosts always report the same sha, and a disagreement would mean
-      # one of them did not restart.
+      dockerfile: quant/Dockerfile
       args:
         OHCAMEL_GIT_SHA: "${OHCAMEL_GIT_SHA:-unknown}"
-        OHCAMEL_BUILT_AT: "${OHCAMEL_BUILT_AT:-unknown}"
+    image: ohcamel-quant:latest
+    restart: unless-stopped
+    init: true
+    # OPTIONAL, unlike the live engine's: present on the droplet, the Alpaca
+    # data keys in it (ALPACA_API_KEY / ALPACA_SECRET_KEY, mapped onto the
+    # APCA_* names Settings reads by the image's entrypoint, or APCA_* given
+    # directly) make Alpaca the first price source and FRED_API_KEY is used if
+    # set. Absent -- a fresh host, the localhost harness, CI -- the app runs on
+    # the keyless public sources (Yahoo/Stooq, fredgraph.csv) instead.
+    env_file:
+      - path: /etc/ohcamel/live.env
+        required: false
+    environment:
+      OHCAMEL_QUANT_DATA_DIR: /data
+      # The read-only bridge to the OCaml engine (api/routers/engine.py): GET
+      # /api/health, /api/ops, /api/snapshot, /api/history only, over the
+      # internal network, so the public /engine page can show it. Unreachable
+      # (live profile not running) is a 503 the page renders, not an error.
+      # OFF by default: the snapshot carries the paper book's positions, which
+      # have only ever been shown behind the live host's password. To publish
+      # them on the public /engine page, set in deploy/.env:
+      #   OHCAMEL_QUANT_ENGINE_URL=http://ohcamel-live:8081
+      OHCAMEL_QUANT_ENGINE_URL: "${OHCAMEL_QUANT_ENGINE_URL-}"
+      # SEC EDGAR's fair-access policy requires a User-Agent naming a contact.
+      # Defaults to the ACME contact the owner already reads.
+      OHCAMEL_QUANT_USER_AGENT: "${OHCAMEL_QUANT_USER_AGENT:-OhCamel-Quant/1.0 (research; contact: ${OHCAMEL_ACME_EMAIL:-unset})}"
+    # The Parquet cache and provenance sidecars; everything else is read-only.
+    # A named volume so a rebuild keeps the cache and vendors are not
+    # re-hammered on every deploy.
+    volumes:
+      - quant_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    # A 2 vCPU / 4 GB droplet shared with Caddy, the live engine and the
+    # research service. pandas/scipy on ten years of daily bars for a 60-name
+    # universe fits comfortably in this; a runaway request is killed and
+    # restarted rather than taking the engine down with it.
+    mem_limit: 1536m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/api/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Importing numpy/pandas/scipy/statsmodels and mounting every router.
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks: [ohcamel]
+
+  # The synthetic engine. It used to be the public site; the owner's rule for
+  # the public site is now real data only, so it is behind a profile and never
+  # started by a plain `docker compose up -d`. The localhost harness enables
+  # it (--profile demo) to exercise the engine and the streaming proxy
+  # without credentials; deploy.sh stops and removes any container of it left
+  # over from before.
+  ohcamel-demo:
+    <<: *engine
+    profiles: ["demo"]
     command: ["demo", "8080"]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/health"]
@@ -97,19 +176,18 @@ services:
       # container killed while it was starting correctly.
       start_period: 20s
 
-  # Behind a profile, so `docker compose up -d` brings up only the public demo
-  # and `docker compose --profile live up -d` adds this. Phases 1-3 of the
+  # Behind a profile, so `docker compose up -d` brings up only the public site
+  # (caddy + ohcamel-quant) and `docker compose --profile live up -d` adds this. Phases 1-3 of the
   # deployment never start it, which means they never need a credential.
   ohcamel-live:
     <<: *engine
     profiles: ["live"]
-    # Where the OTHER host is. /ops on the live origin fills its second column
-    # from the public demo engine, which is possible only in this direction:
-    # the demo engine publishes a CORS header on its JSON in demo mode, and the
-    # live host publishes none and stays behind the password. The demo service
-    # deliberately gets no peer -- nothing crosses the other way.
+    # No OHCAMEL_PEER_ORIGIN any more. /ops on the live origin used to fill its
+    # second column from the public demo engine's /api/ops; the public host is
+    # the Quant app now and serves no /api/ops, so a peer pointing there would
+    # only ever read "unreachable". Unset, the page says "no peer configured",
+    # which is the truth.
     environment:
-      OHCAMEL_PEER_ORIGIN: "https://${OHCAMEL_DEMO_HOST}"
       OHCAMEL_JOURNAL: /data/desk.db
       # Task 16: where ohcamel-research writes one signal a strategy a
       # trading day. Read-only here -- the engine only ever lists and opens
@@ -200,6 +278,10 @@ networks:
 volumes:
   caddy_data:
   caddy_config:
+  # OhCamel Quant's data cache: fetched vendor datasets as Parquet plus a JSON
+  # provenance sidecar each. Disposable (deleting it only means refetching),
+  # but kept across rebuilds so a deploy does not re-download everything.
+  quant_data:
   desk_data:
   # Task 16: one JSON signal a strategy a trading day, written by
   # ohcamel-research (read-write, above) and read by ohcamel-live

@@ -1,9 +1,17 @@
 # OhCamel — state of the project
 
+> **2026-09-24 — the public site is now OhCamel Quant** ([`quant/`](../quant/)),
+> a real-data quant platform (risk, portfolio construction, factors,
+> backtesting, options, rates & macro, fundamentals). The synthetic demo engine
+> no longer runs on the public host (`ohcamel-demo` sits behind the `demo`
+> compose profile); the live engine is unchanged. Deploy with
+> `deploy/deploy.sh --public-only`. Sections below describe the engine.
+
+
 *As of 2026-09-19. This is the document to read first when coming back to the
 repository after time away, and the one to update when the facts in it change.*
 
-The [README](../README.md) argues: it makes the case for the design with real
+The [README](engine.md) argues: it makes the case for the design with real
 numbers and is long because the case is. [`quant_notes.md`](quant_notes.md)
 states: every formula in standard notation, cross-referenced to the function
 that evaluates it. This file does neither. It is an inventory — what exists,

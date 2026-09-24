@@ -394,3 +394,216 @@ jobs:
       # prints what moved). Offline, no credential; about 26 s an experiment.
       - name: The committed manifests reproduce
         run: make research-reproduce
+
+  # OhCamel Quant (quant/): the public site. Its own uv project and npm
+  # project, so this job needs neither the opam switch nor research/'s
+  # environment. Offline by construction: conftest.py forces
+  # OHCAMEL_QUANT_OFFLINE=1, so every test reads the committed REAL fixtures
+  # and nothing here depends on a vendor being up.
+  quant:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv and Python 3.12
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.10.4"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: quant/uv.lock
+
+      # --frozen: exactly what quant/uv.lock says, never re-resolved -- the
+      # same install the Docker image does, plus the dev extra.
+      - name: uv sync
+        working-directory: quant
+        run: uv sync --frozen --extra dev
+
+      - name: ruff
+        working-directory: quant
+        run: uv run --frozen ruff check
+
+      - name: pytest (offline, committed real fixtures)
+        working-directory: quant
+        run: uv run --frozen pytest -q
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: quant/web/package-lock.json
+
+      - name: web -- npm ci, typecheck, build
+        working-directory: quant/web
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: npm ci && npm run typecheck && npm run build
+
+      # The built page against the CSP Caddy serves it with: every inline
+      # script must be allowed by hash, or the page breaks in a browser while
+      # every HTTP check passes. (The lint job checks the source page too.)
+      - name: The built index.html is allowed by the CSP
+        run: bash deploy/test/csp_hash_test.sh quant/web/dist/index.html
+
+  # The same suite's `live` tests, against the real vendors (Alpaca, Yahoo,
+  # Stooq, FRED, Cboe, SEC EDGAR, Ken French's library). Informational:
+  # vendors rate-limit shared runner IPs, and Yahoo in particular refuses
+  # them often, so a red result here is a fact about a vendor on this runner
+  # as often as about the code. continue-on-error keeps it from failing the
+  # workflow; the per-source summary (below, and in the run's summary page)
+  # says which source failed and why, which is the part worth reading.
+  quant-live-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv and Python 3.12
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.10.4"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: quant/uv.lock
+
+      - name: uv sync
+        working-directory: quant
+        run: uv sync --frozen --extra dev
+
+      # Optional repository secrets. Exported only when non-empty: an empty
+      # APCA_API_KEY_ID would read as "configured" and make the Alpaca
+      # provider fail instead of stepping aside. Fork PRs get no secrets, and
+      # the keyless sources are still exercised.
+      - name: Optional vendor keys
+        env:
+          APCA_KEY: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_SECRET: ${{ secrets.APCA_API_SECRET_KEY }}
+          FRED_KEY: ${{ secrets.FRED_API_KEY }}
+        run: |
+          if [ -n "$APCA_KEY" ] && [ -n "$APCA_SECRET" ]; then
+            { echo "APCA_API_KEY_ID=$APCA_KEY"; echo "APCA_API_SECRET_KEY=$APCA_SECRET"; } >> "$GITHUB_ENV"
+            echo "Alpaca keys: present"
+          else
+            echo "Alpaca keys: absent (secrets APCA_API_KEY_ID / APCA_API_SECRET_KEY) -- Alpaca tests will skip or fail"
+          fi
+          if [ -n "$FRED_KEY" ]; then echo "FRED_API_KEY=$FRED_KEY" >> "$GITHUB_ENV"; fi
+
+      - name: pytest -m live
+        id: live
+        working-directory: quant
+        env:
+          OHCAMEL_QUANT_LIVE_TESTS: "1"
+        run: uv run --frozen pytest -m live -q -rA --junitxml=live-results.xml
+
+      # One row per data source, whatever the step above did. The source is
+      # the vendor a failure message names (the data layer prefixes every
+      # fetch error with it: "sec-edgar: ...", "yahoo: 429 ..."), else the one
+      # the test's name or module names (test_live_fred_curve -> FRED); a test
+      # naming no known vendor is listed under its module, so nothing is
+      # dropped from the table.
+      - name: Per-source summary
+        if: always()
+        working-directory: quant
+        run: |
+          python3 - <<'PY'
+          import os, re, sys
+          import xml.etree.ElementTree as ET
+          SOURCES = [
+              ("Alpaca", r"alpaca"), ("Yahoo", r"yahoo"), ("Stooq", r"stooq"),
+              ("FRED", r"fred|treasury|dgs|macro"), ("Cboe", r"cboe|option|chain|vix"),
+              ("SEC EDGAR", r"(^|[^a-z])sec([^a-z]|$)|edgar|13f|filing|fundamental"),
+              ("Ken French", r"french|fama|factor|(^|[^a-z])ff[35]?([^a-z]|$)"),
+          ]
+          path = "live-results.xml"
+          out = []
+          if not os.path.exists(path):
+              out.append("**quant live data: no results file -- pytest did not run (see the step above).**")
+              rows = {}
+          else:
+              rows = {}
+              for tc in ET.parse(path).getroot().iter("testcase"):
+                  bad = tc.find("failure") if tc.find("failure") is not None else tc.find("error")
+                  # Most specific first: the vendor a failure names ("sec-edgar: ...",
+                  # "yahoo: 429 ..."), then the test's name, then its module.
+                  texts = [(bad.get("message") or "") if bad is not None else "",
+                           tc.get("name") or "", tc.get("classname") or ""]
+                  src = next((s for t in texts for s, pat in SOURCES if re.search(pat, t.lower())),
+                             (tc.get("classname") or "?").split(".")[-1])
+                  r = rows.setdefault(src, {"pass": 0, "fail": 0, "skip": 0, "why": []})
+                  if bad is not None:
+                      r["fail"] += 1
+                      msg = (bad.get("message") or bad.text or "").strip().splitlines()
+                      r["why"].append("%s: %s" % (tc.get("name"), (msg[0] if msg else "")[:160]))
+                  elif tc.find("skipped") is not None:
+                      r["skip"] += 1
+                  else:
+                      r["pass"] += 1
+              if not rows:
+                  out.append("**quant live data: no `live` tests were collected.**")
+          if rows:
+              out += ["### quant live data, per source", "", "| source | result | passed | failed | skipped |", "|---|---|---|---|---|"]
+              for src in sorted(rows):
+                  r = rows[src]
+                  verdict = "FAIL" if r["fail"] else ("PASS" if r["pass"] else "SKIP")
+                  out.append("| %s | %s | %d | %d | %d |" % (src, verdict, r["pass"], r["fail"], r["skip"]))
+              why = [(s, w) for s in sorted(rows) for w in rows[s]["why"]]
+              if why:
+                  out += ["", "Failures (vendors rate-limit shared runner IPs; read these before blaming the code):", ""]
+                  out += ["- **%s** %s" % (s, w) for s, w in why]
+          text = "\n".join(out)
+          print(text)
+          summ = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summ:
+              with open(summ, "a") as f:
+                  f.write(text + "\n")
+          PY
+
+  # The production image, built exactly as the droplet builds it (repo-root
+  # context, quant/Dockerfile and its own .dockerignore), then RUN the way
+  # compose runs it -- read-only root, tmpfs /tmp, a volume at /data, as its
+  # non-root user -- and asked for its health, its SPA shell and a real-data
+  # endpoint. Offline, so the answer comes from the fixtures baked into the
+  # image: that is the check that the image layout satisfies config.py's
+  # REPO_ROOT and data/fixtures.py's paths. Built, never pushed.
+  quant-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: docker build
+        run: |
+          docker build -f quant/Dockerfile \
+            --build-arg OHCAMEL_GIT_SHA="${{ github.sha }}" \
+            -t ohcamel-quant:ci .
+          docker image ls ohcamel-quant:ci
+
+      - name: Run it as compose does, and probe it
+        run: |
+          docker run -d --name quant --init --read-only --tmpfs /tmp \
+            --security-opt no-new-privileges:true \
+            -v quant_data:/data -e OHCAMEL_QUANT_OFFLINE=1 \
+            -p 127.0.0.1:8090:8090 ohcamel-quant:ci
+          for _ in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8090/api/health >/dev/null 2>&1 && break
+            sleep 1
+          done
+          set -x
+          curl -fsS http://127.0.0.1:8090/api/health | tee /dev/stderr | grep -q '"status":"ok"'
+          curl -fsS http://127.0.0.1:8090/ | grep -q 'id="root"'
+          curl -fsS http://127.0.0.1:8090/portfolio | grep -q 'id="root"'
+          curl -fsS "http://127.0.0.1:8090/api/market/overview?universe=sectors" | grep -q '"rows"'
+          test "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' quant)" = "${{ github.sha }}"
+          test "$(docker exec quant id -u)" = "10002"
+
+      - name: Container logs
+        if: always()
+        run: docker logs quant 2>&1 | tail -100 || true

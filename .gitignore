@@ -69,3 +69,11 @@ research/experiments/*/results/
 # interface/ is borrowed for a local run; it is not one of the committed
 # examples and carries no fixture content.
 interface/examples/.clock.jsonl
+
+# quant platform
+quant/.venv/
+quant/.data/
+quant/web/node_modules/
+quant/web/dist/
+quant/.pytest_cache/
+quant/.ruff_cache/

@@ -1,0 +1,261 @@
+/*
+ * OhCamel Quant design tokens.
+ *
+ * Palette: impressionist — Monet's water lilies and Seurat's points. Light mode is
+ * warm paper; dark mode is deep ink-blue night. Every colour used anywhere in the
+ * app (CSS or Plotly) comes from here; src/lib/theme.ts reads these at runtime to
+ * build the chart template, so editing a token re-themes the charts too.
+ *
+ * Categorical palette (--c1..--c8) was validated with the dataviz palette checker
+ * (lightness band, chroma floor, adjacent-pair CVD ΔE ≥ 8, normal-vision ΔE ≥ 15)
+ * against --surface in both modes. Keep the ORDER — it is what passes.
+ * Assign series colours in this fixed order; never cycle past 8: series 9+ (and any
+ * "Other" bucket) take the neutral --c-other. Use seriesVar(i) / seriesColor(t, i) from
+ * src/lib/theme.tsx rather than indexing the palette yourself.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* ---- surfaces ---- */
+  --bg: #f4eee3;            /* paper */
+  --bg-grain: #efe7d8;
+  --surface: #faf6ee;       /* panels */
+  --surface-2: #f1eadd;     /* insets, table headers, inputs */
+  --surface-3: #e8dfcf;     /* hover, pressed */
+  --overlay: rgba(28, 32, 46, 0.36);
+
+  /* ---- ink ---- */
+  --text: #1c2130;
+  --text-2: #4c5064;        /* secondary */
+  --text-3: #7d7f8c;        /* muted, captions */
+  --text-inverse: #faf6ee;
+
+  /* ---- lines ---- */
+  --rule: rgba(28, 33, 48, 0.12);        /* hairline */
+  --rule-strong: rgba(28, 33, 48, 0.22);
+  --focus: #3f66c4;
+
+  /* ---- accents (painterly) ---- */
+  --lilac: #7c68c0;
+  --water: #2f9a86;
+  --cornflower: #3f66c4;
+  --ochre: #b8761f;
+  --rose: #c65a7c;
+  --accent: var(--cornflower);
+  --accent-soft: rgba(63, 102, 196, 0.1);
+
+  /* ---- semantic ---- */
+  --gain: #2f7d52;
+  --gain-soft: rgba(47, 125, 82, 0.12);
+  --loss: #b8442c;
+  --loss-soft: rgba(184, 68, 44, 0.12);
+  --warn: #a8701a;
+  --warn-soft: rgba(184, 118, 31, 0.13);
+  --unknown: #7c68c0;
+  --unknown-soft: rgba(124, 104, 192, 0.12);
+
+  /* ---- categorical series (validated order) ---- */
+  --c1: #3f66c4; /* cornflower */
+  --c2: #d4852a; /* ochre */
+  --c3: #2f9a86; /* water green */
+  --c4: #b0452f; /* sienna */
+  --c5: #7c68c0; /* lilac */
+  --c6: #6f9432; /* sap green */
+  --c7: #c65a7c; /* rose */
+  --c8: #2f8fbf; /* cerulean */
+  --c-other: var(--text-3); /* neutral: series beyond the 8th / "Other" */
+
+  /* ---- diverging (loss ← neutral → gain) for heatmaps ---- */
+  --div-neg-3: #9c3a25;
+  --div-neg-2: #cf7a5f;
+  --div-neg-1: #ecc6b6;
+  --div-mid: #ece6da;
+  --div-pos-1: #bfdcc6;
+  --div-pos-2: #6fae86;
+  --div-pos-3: #2a6f4a;
+
+  /* ---- neutral diverging (ochre ← neutral → cornflower) for signed non-P&L data, e.g. correlation ---- */
+  --dn-neg-3: #9a6415;
+  --dn-neg-2: #cf9a4f;
+  --dn-neg-1: #efd7ae;
+  --dn-pos-1: #c6d1ef;
+  --dn-pos-2: #7f98d6;
+  --dn-pos-3: #2f4f9e;
+
+  /* ---- sequential (one hue: cornflower, light→dark) ---- */
+  --seq-1: #e3e8f5;
+  --seq-2: #b6c4e8;
+  --seq-3: #7f98d6;
+  --seq-4: #4a6cc0;
+  --seq-5: #2a458d;
+
+  /* ---- type ---- */
+  --font-display: "Fraunces Variable", "Iowan Old Style", Georgia, serif;
+  --font-ui: "Inter Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  --fs-2xs: 0.6875rem; /* 11 */
+  --fs-xs: 0.75rem;    /* 12 */
+  --fs-sm: 0.8125rem;  /* 13 */
+  --fs-md: 0.875rem;   /* 14 */
+  --fs-lg: 1rem;       /* 16 */
+  --fs-xl: 1.25rem;    /* 20 */
+  --fs-2xl: 1.625rem;  /* 26 */
+  --fs-3xl: 2.25rem;   /* 36 */
+  --fs-4xl: 3rem;      /* 48 */
+
+  /* ---- space (4px grid) ---- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+
+  /* ---- shape & depth ---- */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --shadow-1: 0 1px 0 rgba(28, 33, 48, 0.04), 0 1px 2px rgba(28, 33, 48, 0.05);
+  --shadow-2: 0 10px 30px -12px rgba(28, 33, 48, 0.22), 0 2px 6px rgba(28, 33, 48, 0.06);
+  --shadow-3: 0 30px 80px -20px rgba(20, 24, 40, 0.45);
+
+  --sidebar-w: 232px;
+  --sidebar-w-collapsed: 64px;
+  --topbar-h: 56px;
+  --content-max: 1440px;
+
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --dur: 160ms;
+}
+
+/* Dark: deep ink-blue night. Declared twice: OS preference (unless the user
+   forced light) and the explicit toggle. Keep the two blocks identical. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0d1322;
+    --bg-grain: #10172a;
+    --surface: #131a2b;
+    --surface-2: #19223a;
+    --surface-3: #222c47;
+    --overlay: rgba(4, 7, 14, 0.62);
+    --text: #ece6d8;
+    --text-2: #b4b3bd;
+    --text-3: #7f8397;
+    --text-inverse: #0d1322;
+    --rule: rgba(236, 230, 216, 0.09);
+    --rule-strong: rgba(236, 230, 216, 0.18);
+    --focus: #8ea8f0;
+    --lilac: #a595e6;
+    --water: #54bba6;
+    --cornflower: #7f9ce9;
+    --ochre: #e0a751;
+    --rose: #e08aa7;
+    --accent: var(--cornflower);
+    --accent-soft: rgba(127, 156, 233, 0.14);
+    --gain: #6cc28f;
+    --gain-soft: rgba(108, 194, 143, 0.14);
+    --loss: #ef8a6c;
+    --loss-soft: rgba(239, 138, 108, 0.14);
+    --warn: #e0a751;
+    --warn-soft: rgba(224, 167, 81, 0.14);
+    --unknown: #a595e6;
+    --unknown-soft: rgba(165, 149, 230, 0.14);
+    --c1: #6a8ae0;
+    --c2: #c0822a;
+    --c3: #2f9a86;
+    --c4: #cc5a42;
+    --c5: #8f7ed6;
+    --c6: #789a38;
+    --c7: #cc6e8f;
+    --c8: #3f98c6;
+    --c-other: var(--text-3); /* neutral: series beyond the 8th / "Other" */
+    --div-neg-3: #e2775a;
+    --div-neg-2: #a4533e;
+    --div-neg-1: #4f3130;
+    --div-mid: #1f2638;
+    --div-pos-1: #24433a;
+    --div-pos-2: #3e8a63;
+    --div-pos-3: #72c797;
+    --dn-neg-3: #e0a751;
+    --dn-neg-2: #9a6d2c;
+    --dn-neg-1: #463a2a;
+    --dn-pos-1: #2a3659;
+    --dn-pos-2: #4a68b8;
+    --dn-pos-3: #93acf0;
+    --seq-1: #1c2744;
+    --seq-2: #2b3f73;
+    --seq-3: #4461a8;
+    --seq-4: #6f8ee0;
+    --seq-5: #b1c3f4;
+    --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.25);
+    --shadow-2: 0 14px 34px -14px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.3);
+    --shadow-3: 0 30px 80px -20px rgba(0, 0, 0, 0.75);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0d1322;
+  --bg-grain: #10172a;
+  --surface: #131a2b;
+  --surface-2: #19223a;
+  --surface-3: #222c47;
+  --overlay: rgba(4, 7, 14, 0.62);
+  --text: #ece6d8;
+  --text-2: #b4b3bd;
+  --text-3: #7f8397;
+  --text-inverse: #0d1322;
+  --rule: rgba(236, 230, 216, 0.09);
+  --rule-strong: rgba(236, 230, 216, 0.18);
+  --focus: #8ea8f0;
+  --lilac: #a595e6;
+  --water: #54bba6;
+  --cornflower: #7f9ce9;
+  --ochre: #e0a751;
+  --rose: #e08aa7;
+  --accent: var(--cornflower);
+  --accent-soft: rgba(127, 156, 233, 0.14);
+  --gain: #6cc28f;
+  --gain-soft: rgba(108, 194, 143, 0.14);
+  --loss: #ef8a6c;
+  --loss-soft: rgba(239, 138, 108, 0.14);
+  --warn: #e0a751;
+  --warn-soft: rgba(224, 167, 81, 0.14);
+  --unknown: #a595e6;
+  --unknown-soft: rgba(165, 149, 230, 0.14);
+  --c1: #6a8ae0;
+  --c2: #c0822a;
+  --c3: #2f9a86;
+  --c4: #cc5a42;
+  --c5: #8f7ed6;
+  --c6: #789a38;
+  --c7: #cc6e8f;
+  --c8: #3f98c6;
+  --c-other: var(--text-3); /* neutral: series beyond the 8th / "Other" */
+  --div-neg-3: #e2775a;
+  --div-neg-2: #a4533e;
+  --div-neg-1: #4f3130;
+  --div-mid: #1f2638;
+  --div-pos-1: #24433a;
+  --div-pos-2: #3e8a63;
+  --div-pos-3: #72c797;
+  --dn-neg-3: #e0a751;
+  --dn-neg-2: #9a6d2c;
+  --dn-neg-1: #463a2a;
+  --dn-pos-1: #2a3659;
+  --dn-pos-2: #4a68b8;
+  --dn-pos-3: #93acf0;
+  --seq-1: #1c2744;
+  --seq-2: #2b3f73;
+  --seq-3: #4461a8;
+  --seq-4: #6f8ee0;
+  --seq-5: #b1c3f4;
+  --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.25);
+  --shadow-2: 0 14px 34px -14px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.3);
+  --shadow-3: 0 30px 80px -20px rgba(0, 0, 0, 0.75);
+}

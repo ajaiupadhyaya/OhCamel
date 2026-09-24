@@ -8,6 +8,15 @@
 #
 # There is no live host here. Live mode needs credentials, and the point of
 # verifying locally is to need none.
+#
+# Two sites, mirroring what production serves plus what it no longer does:
+#
+#   http://localhost        (host :8000) OhCamel Quant, via the same
+#                           ohcamel_quant snippet as the public host.
+#   http://localhost:8001   (host :8001) the synthetic demo ENGINE, which is
+#                           not public anywhere any more but is the only
+#                           credential-free way to prove the engine image and
+#                           the streaming proxy work (--profile demo).
 {
 	auto_https off
 }
@@ -15,6 +24,11 @@
 import Caddyfile.snippets
 
 http://localhost {
+	import ohcamel_common
+	import ohcamel_quant
+}
+
+http://localhost:8001 {
 	import ohcamel_common
 
 	reverse_proxy ohcamel-demo:8080 {

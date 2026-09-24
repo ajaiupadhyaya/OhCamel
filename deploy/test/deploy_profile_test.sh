@@ -83,5 +83,35 @@ check "explicit --live, live.env unreadable, container exists -- still refuses" 
 check "explicit --live, live.env readable" 1 1 0 1 0 0
 check "explicit --live, live.env readable, container exists" 1 1 1 1 0 0
 
+# --- --public-only (the optional fourth input): ships the public Quant site
+# during a trading session without touching the live profile. It must win
+# over every reason the heuristic has to auto-add live -- a readable live.env
+# and an existing ohcamel-live container are exactly the droplet's normal
+# state, and auto-adding there is what would drag the market-hours guard (or
+# worse, a live restart) into a public-site deploy. ---
+check4() {
+	local label="$1" live_flag="$2" readable="$3" container="$4" public_only="$5"
+	local profile auto refuse
+	read -r profile auto refuse <<<"$(resolve_live_profile "$live_flag" "$readable" "$container" "$public_only")"
+	if [ "$profile" = 0 ] && [ "$auto" = 0 ] && [ "$refuse" = 0 ]; then
+		ok "$label -- profile=$profile auto=$auto refuse=$refuse"
+	else
+		no "$label" "got profile=$profile auto=$auto refuse=$refuse, expected 0 0 0"
+	fi
+}
+for readable in 0 1; do
+	for container in 0 1; do
+		check4 "--public-only, live.env readable=$readable, container=$container -- never live" 0 "$readable" "$container" 1
+	done
+done
+# Not produced by main() (it refuses the pair first), but still inert.
+check4 "--public-only with --live -- inert, main() refuses the pair" 1 1 1 1
+
+# And an explicit 0 in the fourth slot is exactly the three-argument form.
+read -r a <<<"$(resolve_live_profile 0 1 0 0)"
+read -r b <<<"$(resolve_live_profile 0 1 0)"
+[ "$a" = "$b" ] && ok "public_only=0 is the three-argument form" \
+	|| no "public_only=0 is the three-argument form" "got '$a' vs '$b'"
+
 printf '\n  %d passed, %d failed\n\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
