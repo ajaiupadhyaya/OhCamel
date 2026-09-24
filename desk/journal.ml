@@ -313,6 +313,307 @@ let open_ ~(path : string) : t Or_error.t =
 
 let close t = ignore (Sqlite3.db_close t.db : bool)
 
+(* ------------------------------------------------------------------------ *)
+(* Backing the file up, and checking the copy                                *)
+(* ------------------------------------------------------------------------ *)
+
+(* Every table the schema creates, in the order the CREATE TABLE statements
+   appear, read out of [schema] rather than written down a second time beside
+   it. A twelfth table is then counted by [verify] the day it is added, not the
+   day someone remembers a list. The index statements do not match the prefix
+   and fall out. *)
+let tables =
+  List.filter_map schema ~f:(fun sql ->
+      Option.bind (String.chop_prefix sql ~prefix:"CREATE TABLE IF NOT EXISTS ")
+        ~f:(fun rest -> List.hd (String.split rest ~on:' ')))
+
+(* SQLITE_OPEN_READONLY, and NO [set_up]. A backup is checked by reading it,
+   and [open_] would write to it: eleven CREATE TABLEs, seven indexes, a
+   schema-version insert, and -- on a file that came back missing a table --
+   the table itself, after which the check would find it empty and call the
+   file sound. So this opens the handle, sets the busy timeout that lets it
+   wait for the one writer, and stops.
+
+   The handle is closed if the timeout call fails, for [open_]'s reason (A1's
+   final review, M1): a caller that tried again would otherwise leak one per
+   try. *)
+let open_read_only (path : string) : (t, string) Result.t =
+  match
+    Or_error.try_with (fun () ->
+        let db = Sqlite3.db_open ~mode:`READONLY path in
+        match Sqlite3.busy_timeout db 5_000 with
+        | () -> { db; location = path; version = 0 }
+        | exception e ->
+            ignore (Sqlite3.db_close db : bool);
+            raise e)
+  with
+  | Ok t -> Ok t
+  | Error e ->
+      Error (sprintf "journal: cannot open %s read-only: %s" path (Error.to_string_hum e))
+
+(* SQLite's online backup API, which is the one way to copy a live WAL
+   database: `cp` reads pages while the writer writes them and can produce a
+   file that opens and is wrong, which is the worst failure a backup has,
+   because it is invisible until the restore. [step (-1)] copies every page
+   under one read lock, so the copy is one consistent snapshot.
+
+   The source is opened read-only, so this cannot write to the desk's own
+   file -- not a page, not a checkpoint, not a journal-mode change. The copy
+   goes to [dst.tmp], is chmodded 0640 (the owner, and the group that pulls it
+   off the box, and nobody else -- the journal is the whole record), and is
+   renamed onto [dst]: a reader of the backup directory sees either no file or
+   a whole one, never a half-copied file under the name a restore reaches for.
+   A tmp from a run that died is removed before and after, so the next run
+   does not trip over it.
+
+   Both handles carry the busy timeout, because the desk may be mid-write when
+   the timer fires at 06:30 UTC. *)
+
+(* THE COPY LEAVES WAL MODE, and this is what makes the copy readable.
+
+   The backup API writes the source's header into the destination, WAL flag and
+   all, and SQLite will not open a WAL database read-only unless it can create
+   the -shm file beside it. A backup is precisely the file that gets read
+   somewhere it cannot write: off the box, from a read-only mount, by
+   `sqlite3` as a user with no access to the directory -- and by [verify], one
+   line later, on a read-only handle. The copy already holds every page (that
+   is what [step (-1)] under one read lock means), so nothing is lost by
+   putting it in the rollback journal mode, which needs no sibling file at all
+   and makes the one file a whole backup.
+
+   This writes to the COPY. The source was opened SQLITE_OPEN_READONLY and
+   stays in WAL mode, which the tests check from the other side. *)
+let leave_wal_mode db =
+  let answered = ref [] in
+  (match
+     Sqlite3.exec_not_null_no_headers db
+       ~cb:(fun row -> answered := row.(0) :: !answered)
+       "PRAGMA journal_mode=DELETE"
+   with
+  | Rc.OK -> ()
+  | rc -> failwithf "journal_mode=DELETE answered %s" (Rc.to_string rc) ());
+  match !answered with
+  | [ mode ] when String.equal (String.lowercase mode) "delete" -> ()
+  | modes ->
+      failwithf "the copy answered journal_mode %s, not delete"
+        (String.concat ~sep:"," modes)
+        ()
+
+let backup ~(src : string) ~(dst : string) : (unit, string) Result.t =
+  let tmp = dst ^ ".tmp" in
+  (* The -wal and -shm the destination handle makes for itself. It makes them
+     because the backup API writes the source's header, WAL flag and all, into
+     the copy, and [leave_wal_mode] then has to open the WAL to checkpoint it
+     away; SQLite unlinks the -wal on the mode change but leaves the -shm
+     behind. Left there, "desk-2026-10-31.db.tmp-shm" would sit in the backup
+     directory forever -- retention keeps a name it cannot parse, on purpose --
+     and one would accumulate per run. *)
+  let remove ps =
+    ignore
+      (Or_error.try_with (fun () ->
+           List.iter ps ~f:(fun p -> if Stdlib.Sys.file_exists p then Core_unix.unlink p))
+        : unit Or_error.t)
+  in
+  let siblings = [ tmp ^ "-wal"; tmp ^ "-shm" ] in
+  let remove_tmp () = remove (tmp :: siblings) in
+  let copy () =
+    remove_tmp ();
+    let src_db = Sqlite3.db_open ~mode:`READONLY src in
+    Exn.protect
+      ~finally:(fun () -> ignore (Sqlite3.db_close src_db : bool))
+      ~f:(fun () ->
+        Sqlite3.busy_timeout src_db 5_000;
+        let dst_db = Sqlite3.db_open tmp in
+        Exn.protect
+          ~finally:(fun () -> ignore (Sqlite3.db_close dst_db : bool))
+          ~f:(fun () ->
+            Sqlite3.busy_timeout dst_db 5_000;
+            let b =
+              Sqlite3.Backup.init ~dst:dst_db ~dst_name:"main" ~src:src_db
+                ~src_name:"main"
+            in
+            let stepped = Sqlite3.Backup.step b (-1) in
+            let finished = Sqlite3.Backup.finish b in
+            (match (stepped, finished) with
+            | Rc.DONE, Rc.OK -> ()
+            | Rc.DONE, rc -> failwithf "finish answered %s" (Rc.to_string rc) ()
+            | rc, _ ->
+                failwithf "step answered %s (%s)" (Rc.to_string rc)
+                  (Sqlite3.errmsg dst_db) ());
+            leave_wal_mode dst_db));
+    remove siblings;
+    Core_unix.chmod tmp ~perm:0o640;
+    Core_unix.rename ~src:tmp ~dst
+  in
+  match Or_error.try_with copy with
+  | Ok () -> Ok ()
+  | Error e ->
+      remove_tmp ();
+      Error
+        (sprintf "journal: backup %s -> %s failed: %s" src dst (Error.to_string_hum e))
+
+module Report = struct
+  type t = {
+    path : string;
+    schema_version : string option;
+    integrity : string list;
+    counts : (string * int) list;
+    missing_tables : string list;
+    newest_session : Date.t option;
+    newest_order : (string * Time_ns.t) option;
+    problems : string list;
+  }
+  [@@deriving sexp_of, compare, equal]
+
+  let clean t = List.is_empty t.problems
+
+  (* What [journal-verify] prints. The counts come first because they are what
+     an operator skims -- a backup whose sessions count stopped growing is the
+     interesting failure -- and the problems come last, so the reason the
+     command exited non-zero is the last thing on the screen. *)
+  let lines t =
+    let field label value = sprintf "  %-18s %s" label value in
+    List.concat
+      [
+        [ sprintf "journal %s" t.path ];
+        [
+          field "schema version" (Option.value t.schema_version ~default:"none recorded");
+        ];
+        [ field "integrity_check" (String.concat ~sep:"; " t.integrity) ];
+        List.map t.counts ~f:(fun (table, n) ->
+            field table (sprintf "%d row%s" n (if n = 1 then "" else "s")));
+        List.map t.missing_tables ~f:(fun table -> field table "MISSING");
+        [
+          field "newest session"
+            (Option.value_map t.newest_session ~default:"none" ~f:Date.to_string);
+        ];
+        [
+          field "newest order"
+            (Option.value_map t.newest_order ~default:"none" ~f:(fun (id, at) ->
+                 sprintf "%s at %s" id (Desk_time.rfc3339 at)));
+        ];
+        (if List.is_empty t.problems then [ "  no problem found" ]
+         else List.map t.problems ~f:(sprintf "  PROBLEM: %s"));
+      ]
+end
+
+type report = Report.t
+
+(* The verdict alone, with no SQLite and no IO: everything [verify] concludes
+   from the three answers it collected, in the order the report prints them.
+   Pulled out and exported for [wal_check]'s reason -- a corruption
+   integrity_check REPORTS rather than refuses ("row 3 missing from index
+   fills_by_at") cannot be manufactured by a hermetic test without depending on
+   the page layout of whichever SQLite the host linked, or on a writable_schema
+   that a defensive build refuses outright. A case that only read a real file
+   could therefore never tell a working integrity check from a deleted one.
+
+   [known_version] is the module's [schema_version] under a second name, because
+   the labelled argument below shadows it. *)
+let known_version = schema_version
+
+let problems_of ~(schema_version : string option) ~(integrity : string list)
+    ~(missing_tables : string list) : string list =
+  List.concat
+    [
+      (match integrity with
+      | [ "ok" ] -> []
+      | answers ->
+          [ sprintf "integrity_check answered %s" (String.concat ~sep:"; " answers) ]);
+      List.map missing_tables ~f:(sprintf "no %s table");
+      (match schema_version with
+      | None -> [ "no schema version recorded" ]
+      | Some v when String.equal v (Int.to_string known_version) -> []
+      | Some v ->
+          [ sprintf "schema version %s, and this build knows version %d" v known_version ]);
+    ]
+
+let count_rows t table =
+  match
+    query t ~what:("count " ^ table) (sprintf "SELECT COUNT(*) FROM %s" table) []
+      ~row:(fun r -> Data.to_int_exn r.(0))
+  with
+  | [ n ] -> n
+  | _ -> failwithf "journal: COUNT(*) on %s did not answer with one row" table ()
+
+(* Every question [verify] asks, on a handle that cannot write. A table the
+   file does not have is not counted and is named instead: asking a missing
+   table for its count would raise, and the operator would get an error where
+   he wanted the other ten counts and a sentence saying which one is gone.
+
+   The table names in the SQL are this module's own constants, never input --
+   the same reason [columns] may interpolate one. *)
+let report_of t ~path : report =
+  let integrity =
+    query t ~what:"integrity_check" "PRAGMA integrity_check" [] ~row:(fun r ->
+        col_text r 0)
+  in
+  let present =
+    query t ~what:"tables" "SELECT name FROM sqlite_master WHERE type = 'table'" []
+      ~row:(fun r -> col_text r 0)
+  in
+  let has table = List.mem present table ~equal:String.equal in
+  let missing_tables = List.filter tables ~f:(fun table -> not (has table)) in
+  let counts =
+    List.filter_map tables ~f:(fun table ->
+        if has table then Some (table, count_rows t table) else None)
+  in
+  let schema_version_found =
+    if not (has "meta") then None
+    else
+      List.hd
+        (query t ~what:"schema version"
+           "SELECT value FROM meta WHERE key = 'schema_version'" [] ~row:(fun r ->
+             col_text r 0))
+  in
+  let newest_session =
+    if not (has "sessions") then None
+    else
+      match
+        query t ~what:"newest session" "SELECT MAX(date) FROM sessions" [] ~row:(fun r ->
+            col_opt_text r 0)
+      with
+      | [ Some d ] -> Some (Date.of_string d)
+      | _ -> None
+  in
+  let newest_order =
+    if not (has "orders") then None
+    else
+      List.hd
+        (query t ~what:"newest order"
+           "SELECT client_order_id, created_at FROM orders ORDER BY created_at DESC, \
+            client_order_id DESC LIMIT 1"
+           [] ~row:(fun r -> (col_text r 0, col_time r 1)))
+  in
+  let problems =
+    problems_of ~schema_version:schema_version_found ~integrity ~missing_tables
+  in
+  {
+    Report.path;
+    schema_version = schema_version_found;
+    integrity;
+    counts;
+    missing_tables;
+    newest_session;
+    newest_order;
+    problems;
+  }
+
+(* An [Error] is a file that could not be read at all. A file that answers but
+   answers badly comes back [Ok] with a non-empty [problems], because the
+   operator wants the counts printed beside the trouble; [journal-verify] exits
+   non-zero on either. *)
+let verify (path : string) : (report, string) Result.t =
+  match open_read_only path with
+  | Error e -> Error e
+  | Ok t -> (
+      let r = Or_error.try_with (fun () -> report_of t ~path) in
+      close t;
+      match r with
+      | Ok report -> Ok report
+      | Error e ->
+          Error (sprintf "journal: cannot verify %s: %s" path (Error.to_string_hum e)))
+
 module Session = struct
   type t = {
     date : Date.t;
@@ -1141,6 +1442,7 @@ module For_testing = struct
   let write = write
   let run = run
   let wal_check = wal_check
+  let problems_of = problems_of
   let recent_fills_sql = recent_fills_sql
   let latest_signal_sql = latest_signal_sql
   let source_fills_sql = source_fills_sql
