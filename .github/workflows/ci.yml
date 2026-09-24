@@ -566,10 +566,11 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # A floor, not a target, and the number it floors is bimodal. README.md's
-      # per-file table is where that shape is set out and kept current, and this
-      # comment repeats none of its per-file figures on purpose -- but it does
-      # have to agree with it, and with the same two sentences in
-      # docs/status.md and the Makefile, about what the two modes ARE.
+      # per-file table is where that shape is set out and kept current; this
+      # comment deliberately carries no more of it than the two bounds that
+      # docs/status.md and the Makefile also state, because a fifth copy of the
+      # table would be a fifth thing to re-measure. What it does have to do is
+      # agree with them about what the two modes ARE.
       #
       # The split sits at 80% of each file's unrounded figure. The six files
       # that perform network IO themselves run 36% to 65%, because exercising
