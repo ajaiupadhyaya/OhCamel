@@ -67,3 +67,16 @@ def test_fetch_company_facts_skips_a_registrant_without_annual_reports(monkeypat
     monkeypatch.setattr(sec, "_fetch_company_facts", fake)
     out = sec.fetch_company_facts("XOM", Settings(offline=False))
     assert out.data["cik"] == "0000034088" and tried == ["0002115436", "0000034088"]
+
+
+def test_registrant_with_only_10q_facts_is_kept_with_empty_annual():
+    q = [{"start": "2026-01-01", "end": "2026-03-31", "val": 85e9, "form": "10-Q", "fy": 2026,
+          "fp": "Q1", "filed": "2026-05-04", "accn": "a"}]
+    f = {"entityName": "NewCo", "facts": {"us-gaap": {"Revenues": {"units": {"USD": q}}},
+                                          "dei": {"EntityCommonStockSharesOutstanding": {"units": {
+                                              "shares": [{"end": "2026-04-30", "val": 4.2e9, "form": "10-Q",
+                                                          "filed": "2026-05-04", "accn": "a"}]}}}}}
+    out = sec.standardize(f)
+    assert out["annual"].empty and out["quarterly"]["revenue"].iloc[-1] == 85e9
+    assert any("no 10-K yet" in n for n in out["notes"])
+    assert sec._shares_outstanding(f["facts"])[0] == 4.2e9
