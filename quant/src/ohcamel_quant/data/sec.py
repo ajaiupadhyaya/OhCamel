@@ -482,13 +482,19 @@ def _derive(df: pd.DataFrame, notes: list[str]) -> pd.DataFrame:
 def _shares_outstanding(facts: dict[str, Any]) -> tuple[float | None, str | None, str | None]:
     """Latest dei:EntityCommonStockSharesOutstanding (summed across share
     classes reported at the same date in the same filing), falling back to
-    us-gaap:CommonStockSharesOutstanding."""
+    us-gaap:CommonStockSharesOutstanding, then to the latest weighted-average
+    diluted share count (a period average, not a point count -- the returned tag
+    says which was used so callers can state it)."""
     for taxonomy, tag in (("dei", "EntityCommonStockSharesOutstanding"),
-                          ("us-gaap", "CommonStockSharesOutstanding")):
+                          ("us-gaap", "CommonStockSharesOutstanding"),
+                          ("us-gaap", "WeightedAverageNumberOfDilutedSharesOutstanding")):
         rows = (((facts.get(taxonomy) or {}).get(tag) or {}).get("units") or {}).get("shares") or []
         if not rows:
             continue
         df = pd.DataFrame(rows)
+        df = df[pd.to_numeric(df["val"], errors="coerce") > 0]
+        if df.empty:
+            continue
         df["end"] = pd.to_datetime(df["end"])
         df["filed"] = pd.to_datetime(df.get("filed"))
         last = df.sort_values(["filed", "end"]).iloc[-1]
@@ -543,6 +549,10 @@ def fetch_company_facts(ticker: str, settings: Settings) -> Dataset:
         so, so_date, so_tag = _shares_outstanding(payload.get("facts") or {})
         res.update(cik=cik, name=payload.get("entityName") or name, ticker=tick,
                    shares_outstanding=so, shares_outstanding_as_of=so_date, shares_outstanding_tag=so_tag)
+        if so_tag and "WeightedAverage" in so_tag:
+            res["notes"] = [*res.get("notes", []),
+                            "shares_outstanding is the latest weighted-average DILUTED count (no cover-page "
+                            "shares-outstanding fact was filed); market cap uses it as an approximation"]
         return _encode(res), Provenance.now("sec-edgar", url=url, cik=cik, dataset="companyfacts")
 
     enc, prov = get_store(settings).fetch_or_stale(
