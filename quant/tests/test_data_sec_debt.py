@@ -34,3 +34,13 @@ def test_noncurrent_plus_current_is_summed():
                _fact("LongTermDebtCurrent", 50.0, "2024-12-31"))
     out = sec.standardize(f)
     assert out["annual"].iloc[-1]["total_debt"] == 500.0
+
+
+def test_shares_outstanding_falls_back_to_diluted_weighted_average():
+    facts = {"us-gaap": {"WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": [
+        {"start": "2024-01-01", "end": "2024-12-31", "val": 4.3e9, "form": "10-K", "fy": 2024,
+         "fp": "FY", "filed": "2025-02-01", "accn": "a"}]}}},
+        "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": [
+            {"end": "2025-01-31", "val": 0, "form": "10-K", "filed": "2025-02-01", "accn": "a"}]}}}}
+    val, _, tag = sec._shares_outstanding(facts)
+    assert val == 4.3e9 and tag.endswith("WeightedAverageNumberOfDilutedSharesOutstanding")

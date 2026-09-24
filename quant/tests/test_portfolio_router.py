@@ -208,7 +208,8 @@ def test_live_market_rf_and_market_cap_prior(client):
     j = _ok(client.post("/api/portfolio/optimize", json=body))
     assert j["risk_free"]["source"] == "market"
     assert 0.0 <= j["risk_free"]["annual"] < 0.2
-    assert "market capitalisation" in j["expected_returns"]["prior_source"], j.get("notes")
+    assert "market capitalisation" in j["expected_returns"]["prior_source"], " | ".join(
+        n for n in j.get("notes", []) if "SEC" in n)
     mw = j["expected_returns"]["market_weights"]
     assert abs(sum(mw.values()) - 1) < 1e-9 and mw["MSFT"] > mw["XOM"] * 0.5
 
