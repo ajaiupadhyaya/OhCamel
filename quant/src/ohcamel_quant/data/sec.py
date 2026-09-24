@@ -249,10 +249,22 @@ def resolve(ticker_or_cik: str, settings: Settings) -> tuple[str, str, str | Non
         c = cik10(s)
         m = table[table["cik"] == c]
         return c, (m["name"].iloc[0] if len(m) else ""), (m["ticker"].iloc[0] if len(m) else None)
+    return resolve_all(s, settings)[0]
+
+
+def resolve_all(ticker: str, settings: Settings) -> list[tuple[str, str, str]]:
+    """Every ``(cik10, name, ticker)`` SEC lists for a ticker, in list order.
+
+    A ticker can map to more than one registrant -- e.g. after a holding-company
+    reorganization SEC lists XOM under both the new ExxonMobil Holdings Corp
+    (no 10-K history yet) and the legacy Exxon Mobil Corporation that filed them.
+    """
+    s = ticker.strip().upper()
+    table, _ = ticker_table(settings)
     for cand in (s, s.replace(".", "-"), s.replace("-", ".")):
-        m = table[table["ticker"] == cand]
+        m = table[table["ticker"] == cand].drop_duplicates("cik")
         if len(m):
-            return m["cik"].iloc[0], m["name"].iloc[0], cand
+            return [(c, n, cand) for c, n in zip(m["cik"], m["name"], strict=True)]
     raise DataUnavailable(f"sec: ticker {s} not found in SEC company_tickers.json")
 
 
@@ -536,11 +548,25 @@ def fetch_company_facts(ticker: str, settings: Settings) -> Dataset:
 
     ``.data`` keys: cik, name, ticker, annual, quarterly, shares_outstanding,
     shares_outstanding_as_of, first_filed_annual, first_filed_quarterly,
-    tags_used, notes.
+    tags_used, notes. When SEC lists several registrants for a ticker, the first
+    whose facts standardize (i.e. that has filed annual reports) is used.
     """
+    if ticker.strip().isdigit():
+        candidates = [resolve(ticker, settings)]
+    else:
+        candidates = resolve_all(ticker, settings)
+    errors: list[str] = []
+    for cik, name, tick in candidates:
+        try:
+            return _fetch_company_facts(cik, name, tick, settings)
+        except DataUnavailable as e:
+            errors.append(f"CIK {cik} ({name}): {e}")
+    raise DataUnavailable("; ".join(errors))
+
+
+def _fetch_company_facts(cik: str, name: str, tick: str | None, settings: Settings):
     from .market import Dataset
 
-    cik, name, tick = resolve(ticker, settings)
     url = FACTS_URL.format(cik=cik)
 
     def fetch() -> tuple[dict[str, Any], Provenance]:
