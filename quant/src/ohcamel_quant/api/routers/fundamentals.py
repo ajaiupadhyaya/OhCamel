@@ -84,7 +84,9 @@ def _facts(market: MarketData, ticker: str) -> tuple[dict[str, Any], list[dict]]
         d["annual"] = st.ensure_columns(d["annual"])
         d["quarterly"] = st.ensure_columns(d["quarterly"])
         if d["annual"].empty:
-            raise DataUnavailable(f"sec: no annual statements for {ticker}")
+            why = ("its SEC registrant has filed 10-Qs but no 10-K yet (e.g. a new holding company "
+                   "after a reorganization)") if not d["quarterly"].empty else "no statements filed"
+            raise DataUnavailable(f"sec: no annual statements for {ticker}: {why}")
         return d, ds.provenance_dicts()
 
     return _cached(f"facts:{ticker}", FACTS_TTL_S, load)

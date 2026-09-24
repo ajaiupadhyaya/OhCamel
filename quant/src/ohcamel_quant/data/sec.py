@@ -351,9 +351,20 @@ def standardize(facts_json: dict[str, Any]) -> dict[str, Any]:
     fy_frames = [_annual_duration(f) for item, spec in LINE_ITEMS.items() if spec.kind == "duration"
                  for _, f in raw[item]]
     fy_all = pd.concat([f for f in fy_frames if len(f)]) if any(len(f) for f in fy_frames) else None
-    if fy_all is None:
-        raise DataUnavailable(f"sec: no annual (10-K) duration facts for {facts_json.get('entityName')}")
-    fy_ends = pd.DatetimeIndex(sorted(fy_all["end"].unique()))
+    no_annual = fy_all is None
+    if no_annual:
+        # A new registrant (e.g. a holding company after a reorganization) may
+        # have filed 10-Qs but no 10-K yet: keep its quarterly facts and cover
+        # data, with empty annual tables, rather than refusing the company.
+        has_quarterly = any(len(f[f["form"].isin(QUARTERLY_FORMS) & f["start"].notna()])
+                            for item, spec in LINE_ITEMS.items() if spec.kind == "duration"
+                            for _, f in raw[item])
+        if not has_quarterly:
+            raise DataUnavailable(
+                f"sec: no 10-K or 10-Q duration facts for {facts_json.get('entityName')}")
+        fy_ends = pd.DatetimeIndex([])
+    else:
+        fy_ends = pd.DatetimeIndex(sorted(fy_all["end"].unique()))
     # earliest 10-K that reported each fiscal year (before restatement de-duplication)
     first_parts = []
     for item in LINE_ITEMS:
@@ -361,7 +372,8 @@ def standardize(facts_json: dict[str, Any]) -> dict[str, Any]:
             d = f[f["form"].isin(ANNUAL_FORMS) & f["end"].isin(fy_ends)]
             if len(d):
                 first_parts.append(d[["end", "filed"]])
-    annual_first = pd.concat(first_parts).groupby("end")["filed"].min()
+    annual_first = (pd.concat(first_parts).groupby("end")["filed"].min() if first_parts
+                    else pd.Series(dtype="datetime64[ns]"))
 
     annual: dict[str, pd.Series] = {}
     quarterly: dict[str, pd.Series] = {}
@@ -444,6 +456,10 @@ def standardize(facts_json: dict[str, Any]) -> dict[str, Any]:
         "use first_filed_* to avoid look-ahead",
         "quarterly flow values for cash-flow items and Q4 are derived by differencing year-to-date facts",
     ]
+    if no_annual:
+        notes.append("this registrant has filed no 10-K yet (e.g. a new holding company after a "
+                     "reorganization): annual tables are empty; quarterly/TTM figures and the cover-page "
+                     "share count are from its 10-Qs")
     out = {}
     for name, cols, idx in (("annual", annual, fy_ends), ("quarterly", quarterly, q_ends)):
         df = pd.DataFrame({k: v for k, v in cols.items()}).reindex(idx)
