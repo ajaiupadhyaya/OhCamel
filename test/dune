@@ -19,6 +19,9 @@
  ; The child is forked and waited on against a deadline (unix, below), so a
  ; regression that turned one of those into a server would be killed and
  ; reported, not sat on.
+ ; lib/ and lib/feed/ whole: test_desk's kernel-purity case reads every kernel
+ ; source for a mention of Venue.Session_clock, which is the desk's type and
+ ; may not be named there (invariant 6, ruling 20).
  (deps
   ../book.example.sexp
   ../bin/main.exe
@@ -27,6 +30,8 @@
   (glob_files ../desk/*.ml)
   (glob_files ../desk/*.mli)
   (glob_files ../bin/*.ml)
+  (glob_files ../lib/*.ml)
+  (glob_files ../lib/feed/*.ml)
   (glob_files ../interface/examples/*.json))
  ; qcheck-core supplies the generators and qcheck-alcotest turns a property into
  ; an ordinary alcotest case, which is what keeps the example-based and

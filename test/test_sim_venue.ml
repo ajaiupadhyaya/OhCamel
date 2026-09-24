@@ -66,7 +66,9 @@ let test_a_held_name_with_no_mark_is_an_error_not_a_zero () =
 
 let test_the_synthetic_calendar () =
   (* Five-minute sessions from t0. Seven minutes in, the first session (closed
-     at +5) is done and the second closes at +10, dated base_date + 1 day. *)
+     at +5) is done and the second closes at +10, dated the second synthetic
+     weekday -- Friday 2026-01-02, since 2026-01-01 is a Thursday (the
+     derivation is above [test_the_synthetic_calendar_skips_the_weekend]). *)
   let c = Sim.clock (venue ~now:(Time_ns.add t0 (Time_ns.Span.of_min 7.0)) ()) in
   Alcotest.(check bool) "always open" true c.Venue.Session_clock.is_open;
   Alcotest.(check string)
@@ -75,6 +77,45 @@ let test_the_synthetic_calendar () =
   Alcotest.(check string)
     "dated 2026-01-02" "2026-01-02"
     (Date.to_string c.Venue.Session_clock.next_close_date)
+
+(* Task 13a: the synthetic calendar is a WEEKDAY calendar, because the demo's
+   clock block and its recorded sessions are read as a trading record and a
+   session dated Saturday is a day the market it imitates never had.
+
+   2026-01-01 is a Thursday: 2024-01-01 was a Monday, 2024 is a leap year
+   (366 days = 52 x 7 + 2) so 2025-01-01 is a Wednesday, and 2025 has 365 days
+   (52 x 7 + 1) so 2026-01-01 is a Thursday. So the first eight sessions are
+   Thu 01-01, Fri 01-02, then Sat 01-03 and Sun 01-04 are skipped, Mon 01-05,
+   Tue 01-06, Wed 01-07, Thu 01-08, Fri 01-09, then Sat 01-10 and Sun 01-11
+   are skipped, Mon 01-12. *)
+let test_the_synthetic_calendar_skips_the_weekend () =
+  Alcotest.(check (list string))
+    "the first eight synthetic sessions, weekdays only"
+    [
+      "2026-01-01";
+      "2026-01-02";
+      "2026-01-05";
+      "2026-01-06";
+      "2026-01-07";
+      "2026-01-08";
+      "2026-01-09";
+      "2026-01-12";
+    ]
+    (List.init 8 ~f:(fun i -> Date.to_string (Sim.session_date (i + 1))));
+  (* There is no zeroth session -- the demo counts from one -- and a caller
+     that asked for one is answered with the first session's date rather than
+     with the Wednesday before it, which nothing trades on. *)
+  Alcotest.(check string)
+    "and a zeroth session is the first" "2026-01-01"
+    (Date.to_string (Sim.session_date 0));
+  (* The clock's own date comes from this same function, so the block on the
+     wire and the journal's session rows cannot disagree. A year of sessions,
+     none of them on a weekend. *)
+  Alcotest.(check (list string))
+    "no weekend in the first 260 sessions" []
+    (List.init 260 ~f:(fun i -> Sim.session_date (i + 1))
+    |> List.filter ~f:(fun d -> Day_of_week.is_sun_or_sat (Date.day_of_week d))
+    |> List.map ~f:Date.to_string)
 
 (* The closed phase a test sets (Task 15). After Monday's close the clock is
    closed and names Tuesday's open and close; a market-on-open order taken
@@ -144,6 +185,8 @@ let suite =
       Alcotest.test_case "a held name with no mark is an error, not a zero" `Quick
         test_a_held_name_with_no_mark_is_an_error_not_a_zero;
       Alcotest.test_case "the synthetic calendar" `Quick test_the_synthetic_calendar;
+      Alcotest.test_case "the synthetic calendar skips the weekend" `Quick
+        test_the_synthetic_calendar_skips_the_weekend;
       Alcotest.test_case "a closed session holds an opening-auction order until it opens"
         `Quick test_a_closed_session_holds_an_opening_auction_order_until_it_opens;
     ] )

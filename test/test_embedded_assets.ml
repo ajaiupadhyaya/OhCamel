@@ -80,6 +80,12 @@ let test_the_document_is_assembled_in_order () =
         "</footer>";
         "<script>";
         "\"use strict\"";
+        (* Task 13a's row in the Desk panel, from desk.js: the market clock
+           ruling 20 puts on the wire. Pinned here because the row is the only
+           place the page says what the venue's clock reads, and a cat rule that
+           dropped desk.js would otherwise leave a page that serves without
+           it. *)
+        "market clock";
         (* desk.js's own subscription -- the last thing its file does,
            and the one marker here that only it still makes. charts.js and
            argument.js, and the marker that used to name argument.js's own

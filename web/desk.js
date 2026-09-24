@@ -355,8 +355,32 @@
       .then(function () { historyInFlight = false; });
   }
 
+  // The market clock, in words, from the desk's clock block (ruling 20). The
+  // three sources are the server's and this function invents no fourth:
+  // "venue-clock" is a reading under fifteen minutes old, "stale" an older one
+  // kept rather than emptied, "unknown" no reading at all -- which is said as
+  // a reason and never drawn as "closed", because the desk that has read
+  // nothing is making no claim about the market.
+  //
+  // A simulated venue's clock is synthetic and the row says so before it says
+  // anything else: the demo's session dates come from a calendar of its own,
+  // and a synthetic session that read like a real one is the thing this page
+  // exists against. Text only, and every field checked before it is read.
+  function clockWords(c, venue) {
+    if (!c || typeof c.source !== "string") return "—";
+    if (c.source === "unknown") return "unknown — the venue's clock has not answered yet";
+    var words = venue === "simulated" ? "synthetic, " : "";
+    words += c.is_open === true ? "open" : c.is_open === false ? "closed" : "open or closed unknown";
+    if (typeof c.next_close_date === "string") words += " · close dated " + c.next_close_date;
+    if (c.source === "stale") {
+      words += " · stale: last read " +
+        (typeof c.read_at === "string" ? c.read_at.replace("T", " ").slice(0, 19) + "Z" : "at an unknown time");
+    }
+    return words;
+  }
+
   // ---- the desk: the venue's account, from the frame's desk object ----
-  // The frame carries sixteen fields and nothing a table needs a second
+  // The frame carries seventeen fields and nothing a table needs a second
   // request for, except what /api/desk lists: the names the venue holds
   // outside the book, the switch whole, the blotter and the fills. Those are
   // fetched when something they show has moved -- the key built at the end of
@@ -383,6 +407,7 @@
       ["open orders", d.tickets === "none" || typeof d.open_orders !== "number" ? "—" : String(d.open_orders)],
       ["sessions recorded", String(d.sessions) + (d.journal === "memory" ? " · in memory" : "")],
       ["last sync", d.last_sync ? d.last_sync.replace("T", " ").slice(0, 19) + "Z" : (d.last_error ? "failed" : "never")],
+      ["market clock", clockWords(d.clock, d.venue)],
       ["unmanaged", d.unmanaged === 0 ? "none" : d.unmanaged + " held outside the book"]
     ];
     t.textContent = "";

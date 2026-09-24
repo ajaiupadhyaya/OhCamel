@@ -1482,11 +1482,23 @@ let run_live ~book_path ~(serve_port : int option) =
       (* The clock. The ONLY writer of the [now] cell, and the reason
          test_graph.ml asserts that no risk node is downstream of it: if one
          were, this timer would be recomputing the book every few seconds and
-         the engine would have quietly become a poller. *)
+         the engine would have quietly become a poller.
+
+         It is also where the desk's market-clock reading is refreshed (ruling
+         20), because this is the interval Config.Runtime already calls the
+         clock's.
+         STARTED AND NOT WAITED FOR: this callback writes [now], and a venue
+         request that took four seconds would delay the staleness clock by
+         four. [refresh_clock] starts no second read while one is out, so the
+         interval cannot pile requests up, and it says nothing on a failure --
+         the block's own [source] reports a reading that has gone unrefreshed,
+         and the order manager's refresh already prints an unreachable clock in
+         words. *)
       let clock =
         Clock_ns.every' runtime.Config.Runtime.clock_interval (fun () ->
             Graph.set_now graph (Time.now ());
             Graph.stabilize graph;
+            don't_wait_for (Ohcamel_desk.Desk.refresh_clock desk);
             Deferred.unit);
         Deferred.never ()
       in
@@ -1822,7 +1834,7 @@ let run_demo ~port =
         match
           Or_error.try_with (fun () ->
               Ohcamel_desk.Session_close.record ~graph ~journal
-                ~date:(Date.add_days Ohcamel_desk.Sim_venue.base_date (!sessions - 1))
+                ~date:(Ohcamel_desk.Sim_venue.session_date !sessions)
                 ~returns:[] ~mark_equity:false ~confidence ~recorded_at:(Time_ns.now ()))
         with
         | Ok _ -> ()
@@ -1831,10 +1843,16 @@ let run_demo ~port =
       Deferred.unit);
   Clock_ns.every' (Time_ns.Span.of_sec 15.0) (fun () ->
       Deferred.ignore_m (Ohcamel_desk.Desk.sync desk));
-  (* The staleness clock, exactly as in live mode. *)
+  (* The staleness clock, exactly as in live mode -- and, exactly as in live
+     mode, where the desk's market-clock reading is refreshed (ruling 20), so
+     the demo's block is populated rather than reading "unknown" forever. The
+     simulated venue answers from this process and cannot be slow, but the read
+     is still started and not waited for, so the two modes run the same
+     arrangement and neither can drift from the other. *)
   Clock_ns.every' (Time_ns.Span.of_sec 3.0) (fun () ->
       Graph.set_now graph (Time.now ());
       Graph.stabilize graph;
+      don't_wait_for (Ohcamel_desk.Desk.refresh_clock desk);
       Deferred.unit);
   (* The demo's switch resets itself; this is the clock it resets by. *)
   Clock_ns.every' (Time_ns.Span.of_sec 1.0) (fun () ->
