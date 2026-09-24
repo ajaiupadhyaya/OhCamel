@@ -34,13 +34,18 @@ WEB_DIST = Path(__file__).resolve().parents[3] / "web" / "dist"
 
 @asynccontextmanager
 async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
-    # Periodic cache refresh of the landing-page datasets (no-op offline).
+    # Periodic cache refresh of the landing-page datasets, and the Flight Deck's
+    # recorder (one reading of the reference book a minute while the US session
+    # is open). Both are no-ops offline.
     from ..data.market import start_background_refresh, stop_background_refresh
+    from .routers.deck import start_recorder, stop_recorder
 
     start_background_refresh()
+    start_recorder()
     try:
         yield
     finally:
+        stop_recorder()
         stop_background_refresh()
 
 

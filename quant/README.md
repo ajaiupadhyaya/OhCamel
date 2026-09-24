@@ -14,6 +14,7 @@ of the code.
 | `src/ohcamel_quant/options/` | BSM/Black-76, IV, parity-implied forwards, SVI, surface, VIX-style variance, risk-neutral density, realized vol, strategies |
 | `src/ohcamel_quant/macro/` | Curve bootstrap, NS/NSS, PCA, bonds & KRDs, recession probit, Sahm rule, Markov regimes, Taylor rules, dashboard |
 | `src/ohcamel_quant/fundamentals/` | SEC statements, ratios, Piotroski/Altman/Beneish/Sloan/Ohlson, FCFF DCF & reverse DCF |
+| `src/ohcamel_quant/deck/` | The Flight Deck: limits (policy, evaluated in the engine's wire shape), the book marked to live quotes, the US session clock, and the flight recorder (SQLite + its loop) |
 | `src/ohcamel_quant/api/` | FastAPI app; routers are auto-discovered from `api/routers/` |
 | `web/` | React + TypeScript app (Vite); `web/src/README.md` is the page-author guide |
 | `tests/` | pytest, offline against committed real data; `-m live` hits the real vendors |
