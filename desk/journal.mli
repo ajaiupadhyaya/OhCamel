@@ -1,0 +1,294 @@
+(* The journal's interface: what the rest of the desk may do to the record.
+
+   Every write goes through a function here, and so through one transaction
+   and one step of the version counter. Invariant 10 -- the journal before the
+   wire -- is a promise about order writes, and it holds only if no caller can
+   reach the database around them. Before this file a caller could, through
+   the record's [db] field (A1's final review, M8). The two tests that need
+   the handle itself reach it through [For_testing], whose name says what it
+   is for. *)
+
+open Core
+open Ohcamel.Types
+
+type t
+
+val schema_version : int
+
+val open_ : path:string -> t Or_error.t
+(** Opens, or creates, the journal at [path] (":memory:" for one that ends with the
+    process). An error names the file and what failed, and leaves no handle open behind
+    it. A file journal that SQLite would not put in WAL mode is refused. *)
+
+val close : t -> unit
+val location : t -> string
+
+val version : t -> int
+(** Moves once per committed transaction: the page's signal that the record changed. *)
+
+module Session : sig
+  type t = {
+    date : Date.t;
+    equity_close : float;
+    cash_close : float;
+    gross_close : float;
+    net_close : float;
+    recorded_at : Time_ns.t;
+  }
+  [@@deriving sexp_of, compare, equal]
+end
+
+val record_session : t -> Session.t -> unit
+val sessions : t -> Session.t list
+val session_count : t -> int
+
+val recent_sessions : t -> limit:int -> Session.t list
+(** The newest [limit], oldest first. *)
+
+val session : t -> Date.t -> Session.t option
+
+val session_dates : t -> Date.t list
+(** Every recorded session's date, oldest first, from one statement: the intake's clock
+    takes its earliest bar, its latest and its counts from this one list. *)
+
+module Mark : sig
+  type t = { date : Date.t; symbol : Symbol.t; close : float; qty : float }
+  [@@deriving sexp_of, compare, equal]
+end
+
+val record_marks : t -> Mark.t list -> unit
+val marks : t -> Date.t -> Mark.t list
+
+val latest_close : t -> Symbol.t -> (Date.t * float) option
+(** The newest recorded session's close for the symbol, with that session's date: the
+    newest row of [sessions], and that date's mark. None when no session is recorded or it
+    holds no mark for the symbol. An opening-auction order is judged and sized at this. *)
+
+module Forecast : sig
+  type t = {
+    date : Date.t;
+    estimator : string;
+    confidence : float;
+    var_fraction : float option;
+    var_notional : float option;
+    es_notional : float option;
+  }
+  [@@deriving sexp_of, compare, equal]
+end
+
+val record_forecasts : t -> Forecast.t list -> unit
+val forecasts : t -> Forecast.t list
+
+val latest_forecasts : t -> Forecast.t list
+(** The latest date's forecasts, by estimator. *)
+
+module Alert : sig
+  type t = { at : Time_ns.t; kind : string; limit_name : string; line : string }
+  [@@deriving sexp_of, compare, equal]
+end
+
+val record_alert : t -> Alert.t -> unit
+val recent_alerts : t -> limit:int -> Alert.t list
+
+(** One judgement of one signal document (desk/intake.ml): the [signals] table's row. *)
+module Signal : sig
+  module Verdict : sig
+    type t = Accepted | Advisory | Rejected [@@deriving sexp_of, compare, equal]
+
+    val to_string : t -> string
+    (** "accepted", "advisory", "rejected": the words the table holds and the page reads.
+    *)
+
+    val of_string : string -> t option
+  end
+
+  type t = {
+    strategy : string;
+    sequence : int;
+    as_of : Date.t;
+    received_at : Time_ns.t;
+    verdict : Verdict.t;
+    rule : string option;
+        (** The rule that decided it -- "R1".."R7", "strategy", or "sizing" -- or None for
+            an accepted signal. *)
+    detail : string;
+    document : string;  (** The file's text, whole. *)
+    rebalance : string option;
+        (** An accepted judgement's rebalance: the pending sentence it is recorded with,
+            then, once, what the rebalance came to. None for any other verdict, and for a
+            judgement recorded before the column existed. *)
+  }
+  [@@deriving sexp_of, compare, equal]
+end
+
+val record_signal : t -> Signal.t -> unit
+(** A plain INSERT: a (strategy, sequence) already recorded raises rather than overwrite
+    the first judgement. *)
+
+val record_rebalance :
+  t -> strategy:string -> sequence:int -> from:string -> outcome:string -> unit
+(** Replaces an accepted judgement's rebalance, when it still reads [from], with
+    [outcome]; raises when no such row holds [from], so an outcome is written once. *)
+
+val signal_judged : t -> strategy:string -> sequence:int -> bool
+
+val highest_sequence :
+  t -> strategy:string -> verdicts:Signal.Verdict.t list -> int option
+(** The highest sequence among [strategy]'s judgements with one of [verdicts]. *)
+
+val latest_signal : t -> strategy:string -> Signal.t option
+(** The judgement recorded last for [strategy], by recording order (rowid), not by the
+    wall clock; one seek on signals_by_strategy. *)
+
+val signal : t -> strategy:string -> sequence:int -> Signal.t option
+(** One judgement, by the primary key. *)
+
+val record_signal_file : t -> name:string -> received_at:Time_ns.t -> error:string -> unit
+(** A file that could not be read as a signal, by name, once. *)
+
+val signal_file_recorded : t -> name:string -> bool
+
+val record_deferral : t -> strategy:string -> sequence:int -> first_latest:Date.t -> unit
+(** The first sighting of a signal dated after the latest session: that session's date, by
+    the signal's (strategy, sequence). [INSERT OR IGNORE]: the first one stands. *)
+
+val deferral_since : t -> strategy:string -> sequence:int -> Date.t option
+val signal_file_error : t -> name:string -> string option
+
+(** A journaled order, rebuilt: the request and state from its row, the filled quantity,
+    notional and executions from its fills, the reason from its latest event that carries
+    one. *)
+module Order_row : sig
+  type t = {
+    order : Order.t;
+    source : string;
+    decision_price : Price.t;
+    arrival : (Price.t * Price.t) option;
+    verdict : Yojson.Safe.t;
+    created_at : Time_ns.t;
+    updated_at : Time_ns.t;
+  }
+end
+
+(** A fill, with its order's decision price and arrival quote joined in. *)
+module Fill_row : sig
+  type t = {
+    client_order_id : Ids.Client_order_id.t;
+    symbol : Symbol.t;
+    side : Order.Side.t;
+    fill : Order.Fill.t;
+    decision_price : Price.t;
+    arrival : (Price.t * Price.t) option;
+    tif : Order.Tif.t;
+        (** Its order's: a market-on-open order's arrival quote was read after hours. *)
+  }
+end
+
+val insert_order :
+  t ->
+  Order.t ->
+  source:string ->
+  decision_price:Price.t ->
+  arrival:(Price.t * Price.t) option ->
+  verdict:Yojson.Safe.t ->
+  at:Time_ns.t ->
+  unit
+(** One transaction: the orders row and its [created] event. The order manager calls this
+    before the request that submits the order is sent. *)
+
+module Insert : sig
+  type t = {
+    order : Order.t;
+    source : string;
+    decision_price : Price.t;
+    arrival : (Price.t * Price.t) option;
+    verdict : Yojson.Safe.t;
+  }
+end
+
+val insert_orders : t -> Insert.t list -> at:Time_ns.t -> unit
+(** Several orders in ONE transaction, all or none: a rebalance's, before any is sent. *)
+
+val update_order :
+  t ->
+  Order.t ->
+  event:Order.Event.t ->
+  anomaly:Order.Anomaly.t option ->
+  at:Time_ns.t ->
+  unit
+(** One transaction: the row's state, venue id, filled quantity and average price, and one
+    order_events row. *)
+
+val record_fill : t -> Order.t -> Order.Fill.t -> bool
+(** [INSERT OR IGNORE]: true when the execution id is new. *)
+
+val load_order : t -> Ids.Client_order_id.t -> Order_row.t option
+
+val open_orders : t -> Order_row.t list
+(** Non-terminal states, oldest first. *)
+
+val unfinished_failed_orders : t -> since:Date.t option -> Order_row.t list
+(** Orders in state failed, created at or after midnight UTC of [since] (every one, when
+    None), for which no venue report has since finished them: no venue_cancelled,
+    venue_expired or venue_rejected event. A fill is not such an event here -- the caller
+    reads what remains from the order's filled quantity. [since] is a session's date, not
+    when its close was recorded, so a close recorded late does not drop an order still
+    live in the session after it. Oldest first. *)
+
+val source_fills : t -> prefix:string -> (Symbol.t * float) list
+(** The net signed quantity of the fills of every order whose source begins with [prefix],
+    by symbol, read through orders_by_source: a strategy's own position when [prefix] is
+    its "signal:<slug>:". *)
+
+val source_orders_unsettled :
+  t -> prefix:string -> since:Date.t option -> Order_row.t list
+(** The orders whose source begins with [prefix] that may still fill: non-terminal, or
+    failed with no finishing venue report and created at or after [since] (every one, when
+    None). Oldest first. *)
+
+val recent_orders : t -> limit:int -> Order_row.t list
+(** Newest first. *)
+
+val recent_fills : t -> limit:int -> Fill_row.t list
+(** Newest first. *)
+
+module For_testing : sig
+  val db : t -> Sqlite3.db
+  (** The raw handle, for a test that must make SQLite fail on purpose -- a trigger, a
+      deferred foreign key. Nothing in desk/ or bin/ calls it. *)
+
+  val write : t -> what:string -> (unit -> unit) -> unit
+  val run : t -> what:string -> string -> Sqlite3.Data.t list -> unit
+
+  val journal_mode : t -> string
+  (** SQLite's answer to PRAGMA journal_mode: "wal" for a file journal, "memory" for
+      ":memory:". *)
+
+  val wal_check : path:string -> string list -> (unit, string) Result.t
+  (** The refusal's decision alone, with no SQLite and no IO: [Ok ()] only for a single
+      answer equal to "wal", ignoring case, else an [Error] naming [path] and the modes
+      answered. Exported so the refusal can be tested against an answer of our own
+      choosing -- this build's own test filesystem always enters WAL for real, so a case
+      that only opens a real file can never tell a working refusal from a deleted one. *)
+
+  val recent_fills_sql : string
+  (** The exact SQL [recent_fills] runs, so a test can ask SQLite's own planner about it
+      rather than a copy that could drift from what actually executes. *)
+
+  val latest_signal_sql : string
+  (** The exact SQL [latest_signal] runs, for the same reason. *)
+
+  val source_fills_sql : string
+  (** The exact SQL [source_fills] runs, for the same reason. *)
+
+  val source_range : string -> Sqlite3.Data.t * Sqlite3.Data.t
+  (** The two bounds [source_fills] binds for a prefix. *)
+
+  val columns : t -> table:string -> string list
+  (** PRAGMA table_info's column names, in order: what the added-column guard reads. *)
+
+  val query_plan : t -> string -> Sqlite3.Data.t list -> string list
+  (** [EXPLAIN QUERY PLAN sql], bound with [params]: one line per step, in the words
+      SQLite's own planner uses ("SCAN f USING INDEX fills_by_at", "USE TEMP B-TREE FOR
+      ORDER BY"). *)
+end

@@ -1,0 +1,297 @@
+; `include_subdirs unqualified` folds lib/feed/*.ml into this library as
+; top-level modules (Alpaca_ws, Fred_client) rather than requiring a nested
+; library. The feed is not a separable component -- it exists only to push
+; values into the graph's input cells -- so it should not have its own
+; compilation unit boundary.
+
+(include_subdirs unqualified)
+
+(library
+ (name ohcamel)
+ (public_name ohcamel)
+ ; websocket-async brings the Alpaca market data stream; cohttp-async is the
+ ; HTTP client for FRED (and the server in Phase 3). Both reach TLS through
+ ; conduit-async, which only supports async_ssl as a backend -- hence the
+ ; explicit dependency rather than letting it be an optional extra.
+ (libraries
+  core
+  async
+  async_ssl
+  conduit-async
+  cohttp-async
+  websocket
+  mirage-crypto-rng.unix
+  websocket-async
+  yojson
+  incremental
+  owl)
+ (preprocess
+  (pps ppx_jane ppx_yojson_conv))
+ ; Coverage instrumentation, OFF unless dune is invoked with
+ ; --instrument-with bisect_ppx (which only `make coverage` does). An ordinary
+ ; build and an ordinary `make test` compile exactly the code they did before,
+ ; which matters more than it looks: a coverage tool that is always on is a
+ ; second compilation mode that the numbers everyone actually reads were not
+ ; produced under.
+ (instrumentation
+  (backend bisect_ppx)))
+
+; ---------------------------------------------------------------------------
+; Generated modules: the six pages (dashboard_html.ml, ops_html.ml,
+; argument_html.ml, risk_html.ml, execution_html.ml, research_html.ml), the
+; crisis cache, the README's quoted tables, and the build stamp.
+;
+; Each of these is a string that a program has to carry but a human has to
+; author. dashboard_html.ml was 767 lines of OCaml holding 29 KB of HTML, CSS
+; and JavaScript, with editor support for none of the three -- no highlighting,
+; no formatter, no linter, and a one-line diff for any change to the page. The
+; sources now live in web/ and docs/crisis/ as the files they are, and dune
+; concatenates them at build time. What is NOT given up is the property that
+; made the literal worth having in the first place: the binary stays
+; self-contained, so there is no asset path to get wrong, nothing to forget to
+; deploy, and `ohcamel serve` still works from any working directory.
+;
+; The delimiters are {ohcamel_html|...|ohcamel_html}, {ohcamel_csv|...} and
+; {ohcamel_json|...}. A CLOSING delimiter inside a source file ends the literal
+; early. In practice the trailing bytes are then not valid OCaml and the build
+; fails -- but it fails inside a GENERATED file, at a line number nobody can
+; map back to the file they actually edited. CI therefore greps web/ and
+; docs/crisis/ for the three closing delimiters and names the real file, and
+; that check does not depend on the trailing bytes happening to be ill-formed.
+;
+; These modules are outside `dune build @fmt` (they are build artefacts, not
+; sources) and inside bisect instrumentation, which costs nothing: a string
+; literal has no branch to cover.
+; ---------------------------------------------------------------------------
+
+(rule
+ (targets dashboard_html.ml)
+ (deps
+  (glob_files ../web/*))
+ (action
+  (with-stdout-to
+   dashboard_html.ml
+   (progn
+    (echo "let page = {ohcamel_html|")
+    (cat ../web/head.html)
+    (echo "<title>OhCamel — Desk</title>\n")
+    (echo "<style>\n")
+    (cat ../web/page.css)
+    (echo "</style>\n</head>\n<body>\n")
+    (cat ../web/header.html)
+    (cat ../web/nav.html)
+    (cat ../web/index.html)
+    (echo "<script>\n")
+    ; Load order, and it is load-bearing. shared.js formats with format.js's
+    ; el; stream.js drives shared.js's frame state; graph.js reads
+    ; window.OhCamelFormat at load and shared.js walks its closure at frame
+    ; time; and desk.js subscribes to stream.js at load, so the object
+    ; has to exist by then. start() opens the connection, and it is the last
+    ; statement in the block so that every section has registered before the
+    ; first frame can arrive. charts.js and argument.js moved to
+    ; argument_html.ml with the essay they draw for; the dashboard no longer
+    ; loads either.
+    (cat
+     ../web/shell.js
+     ../web/format.js
+     ../web/shared.js
+     ../web/stream.js
+     ../web/graph.js
+     ../web/desk.js)
+    (echo "OhCamelStream.start();\n")
+    (echo "</script>\n</body>\n</html>\n|ohcamel_html}\n")))))
+
+(rule
+ (targets ops_html.ml)
+ (deps
+  (glob_files ../web/*))
+ (action
+  (with-stdout-to
+   ops_html.ml
+   (progn
+    (echo "let html = {ohcamel_html|")
+    (cat ../web/head.html)
+    (echo "<title>OhCamel — Ops</title>\n")
+    (echo "<style>\n")
+    (cat ../web/page.css)
+    (echo "</style>\n</head>\n<body>\n")
+    (cat ../web/nav.html)
+    (cat ../web/ops.html)
+    (echo "<script>\n")
+    (cat ../web/shell.js ../web/ops.js)
+    (echo "</script>\n</body>\n</html>\n|ohcamel_html}\n")))))
+
+(rule
+ (targets argument_html.ml)
+ (deps
+  (glob_files ../web/*))
+ (action
+  (with-stdout-to
+   argument_html.ml
+   (progn
+    (echo "let page = {ohcamel_html|")
+    (cat ../web/head.html)
+    (echo "<title>OhCamel — Argument</title>\n")
+    (echo "<style>\n")
+    (cat ../web/page.css)
+    (echo "</style>\n</head>\n<body>\n")
+    (cat ../web/header.html)
+    (cat ../web/nav.html)
+    (cat ../web/argument.html)
+    (echo "<script id=\"quoted\" type=\"application/json\">\n")
+    (cat ../web/quoted.json)
+    (echo "</script>\n<script>\n")
+    ; The essay's own load order: format.js before shared.js before stream.js,
+    ; graph.js because the essay's first figure draws the graph, then
+    ; charts.js and argument.js, which reads window.OhCamelFormat,
+    ; window.OhCamelGraph and window.OhCamelCharts at load and subscribes to
+    ; the stream itself. start() is last, as on every page that opens one.
+    (cat
+     ../web/shell.js
+     ../web/format.js
+     ../web/shared.js
+     ../web/stream.js
+     ../web/graph.js
+     ../web/charts.js
+     ../web/argument.js)
+    (echo "OhCamelStream.start();\n")
+    (echo "</script>\n</body>\n</html>\n|ohcamel_html}\n")))))
+
+(rule
+ (targets risk_html.ml)
+ (deps
+  (glob_files ../web/*))
+ (action
+  (with-stdout-to
+   risk_html.ml
+   (progn
+    (echo "let page = {ohcamel_html|")
+    (cat ../web/head.html)
+    (echo "<title>OhCamel — Risk</title>\n")
+    (echo "<style>\n")
+    (cat ../web/page.css)
+    (echo "</style>\n</head>\n<body>\n")
+    (cat ../web/header.html)
+    (cat ../web/nav.html)
+    (cat ../web/risk.html)
+    (echo "<script>\n")
+    ; graph.js is here although this page draws no figure: the ledger's
+    ; dimming needs the downstream closure of a stale cell, and that function
+    ; is window.OhCamelGraph.closure -- the same one desk.js calls. No
+    ; charts.js: nothing here plots.
+    (cat
+     ../web/shell.js
+     ../web/format.js
+     ../web/shared.js
+     ../web/stream.js
+     ../web/graph.js
+     ../web/risk.js)
+    (echo "OhCamelStream.start();\n")
+    (echo "</script>\n</body>\n</html>\n|ohcamel_html}\n")))))
+
+(rule
+ (targets execution_html.ml)
+ (deps
+  (glob_files ../web/*))
+ (action
+  (with-stdout-to
+   execution_html.ml
+   (progn
+    (echo "let page = {ohcamel_html|")
+    (cat ../web/head.html)
+    (echo "<title>OhCamel — Execution</title>\n")
+    (echo "<style>\n")
+    (cat ../web/page.css)
+    (echo "</style>\n</head>\n<body>\n")
+    (cat ../web/header.html)
+    (cat ../web/nav.html)
+    (cat ../web/execution.html)
+    (echo "<script>\n")
+    ; No graph.js: nothing here reads a stale closure or draws a figure -- the
+    ; four tables are a straight read of /api/desk's own record.
+    (cat
+     ../web/shell.js
+     ../web/format.js
+     ../web/shared.js
+     ../web/stream.js
+     ../web/execution.js)
+    (echo "OhCamelStream.start();\n")
+    (echo "</script>\n</body>\n</html>\n|ohcamel_html}\n")))))
+
+(rule
+ (targets research_html.ml)
+ (deps
+  (glob_files ../web/*))
+ (action
+  (with-stdout-to
+   research_html.ml
+   (progn
+    (echo "let page = {ohcamel_html|")
+    (cat ../web/head.html)
+    (echo "<title>OhCamel — Research</title>\n")
+    (echo "<style>\n")
+    (cat ../web/page.css)
+    (echo "</style>\n</head>\n<body>\n")
+    (cat ../web/header.html)
+    (cat ../web/nav.html)
+    (cat ../web/research.html)
+    (echo "<script>\n")
+    ; Execution's order, and for its reason: no graph.js, because nothing
+    ; here reads a stale closure or draws a figure. The evidence and the
+    ; judgements are not in this file at all -- the manifests are embedded
+    ; by desk/dune, which lib/ may not name, and served by the desk's
+    ; /api/research/evidence -- so research.js fetches both, and the stream
+    ; is here for the masthead and for the frame that says the journal moved.
+    (cat
+     ../web/shell.js
+     ../web/format.js
+     ../web/shared.js
+     ../web/stream.js
+     ../web/research.js)
+    (echo "OhCamelStream.start();\n")
+    (echo "</script>\n</body>\n</html>\n|ohcamel_html}\n")))))
+
+(rule
+ (targets quoted.ml)
+ (deps ../web/quoted.json)
+ (action
+  (with-stdout-to
+   quoted.ml
+   (progn
+    (echo "let json = {ohcamel_json|")
+    (cat ../web/quoted.json)
+    (echo "|ohcamel_json}\n")))))
+
+(rule
+ (targets crisis_csv.ml)
+ (deps
+  (glob_files ../docs/crisis/*.csv))
+ (action
+  (with-stdout-to
+   crisis_csv.ml
+   (progn
+    (echo "let gfc = {ohcamel_csv|")
+    (cat ../docs/crisis/gfc.csv)
+    (echo "|ohcamel_csv}\n\nlet covid = {ohcamel_csv|")
+    (cat ../docs/crisis/covid.csv)
+    (echo "|ohcamel_csv}\n\nlet rates_2022 = {ohcamel_csv|")
+    (cat ../docs/crisis/rates-2022.csv)
+    (echo "|ohcamel_csv}\n")))))
+
+; git_sha and built_at are OCaml quoted-string literals -- {ohcamel_build|...|ohcamel_build},
+; a fourth delimiter -- rather than ordinary "..." literals, because ordinary
+; strings process backslash escapes and these two values come from the
+; environment: a backslash inside one would be reinterpreted, silently under
+; --profile release, which only warns on the unknown-escape case. A quoted
+; string processes no escapes at all, so the value that went in is the value
+; that comes out. %{profile} is dune's own, not an environment value, so it
+; stays an ordinary "..." literal -- a dev build cannot claim to be a release
+; one.
+
+(rule
+ (targets build_info.ml)
+ (action
+  (with-stdout-to
+   build_info.ml
+   (echo
+    "let git_sha = {ohcamel_build|%{env:OHCAMEL_GIT_SHA=unknown}|ohcamel_build}\nlet built_at = {ohcamel_build|%{env:OHCAMEL_BUILT_AT=unknown}|ohcamel_build}\nlet profile = \"%{profile}\"\nlet architecture = \"%{ocaml-config:architecture}\"\nlet system = \"%{ocaml-config:system}\"\n"))))

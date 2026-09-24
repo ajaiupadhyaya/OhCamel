@@ -1,0 +1,38 @@
+<!--
+  The masthead and the two banners, catted into the five pages whose client
+  fills them. They were the top of the dashboard until the site became five
+  pages; they are shared because the stream that fills them is shared, and a
+  page carrying the stream without these ids would take its first frame into
+  nothing. The ops page is not one of them: it has its own masthead, with its
+  own ids, and its own connection.
+
+  #halt and #warn are empty until something is wrong -- the halt is the desk's
+  switch, the warn is the kernel's staleness. An empty div here is the absence
+  of a condition, and page.css gives it no box until it has text.
+
+  #conn was the footer's until the stream became shared, and it moved here for
+  the reason this partial exists: only stream.js can know whether this
+  browser's subscription is up, it writes that line on five pages, and four
+  of them have no footer of their own to put it in. It is also the one line
+  that matters most when the page has stopped updating, and the masthead is
+  sticky while a footer is not. It says something #feed cannot: #feed is the
+  engine's prints, #conn is this tab's connection, and a healthy feed with a
+  dropped stream is exactly the case where the two disagree. It carries no
+  label, as it carried none in the footer: its value is a sentence that names
+  itself ("stream connected", "stream lost -- reconnecting in 4 s"), and a
+  "stream" label in front of it would only stutter.
+-->
+<header>
+  <h1>OhCamel<span id="mode">reactive risk &amp; limits</span></h1>
+  <div class="stat"><span class="lbl">feed</span><span class="v" id="feed"><span class="dot idle"></span>connecting</span></div>
+  <div class="stat"><span class="v" id="conn">—</span></div>
+  <div class="stat"><span class="lbl">last print</span><span class="v num" id="lastprint">—</span></div>
+  <div class="stat"><span class="lbl">last frame</span><span class="v num" id="lastframe">—</span></div>
+  <div class="stat"><span class="lbl">named nodes</span><span class="v num" id="ran">—</span></div>
+  <div class="stat"><span class="lbl">book</span><span class="v num" id="nsym">—</span></div>
+  <div class="stat spacer"><span class="lbl">alerts</span><span class="v ks off" id="ks">off</span></div>
+  <div class="stat"><span class="lbl">as of</span><span class="v num" id="asof">—</span></div>
+</header>
+
+<div id="halt"></div>
+<div id="warn"></div>

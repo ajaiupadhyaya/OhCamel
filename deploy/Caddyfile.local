@@ -1,0 +1,23 @@
+# The localhost harness: the production proxy configuration, minus TLS.
+#
+# `http://` in the site address is what tells Caddy not to attempt ACME. That
+# is the ONLY intended difference from deploy/Caddyfile -- the streaming
+# directives come from the same Caddyfile.snippets both files import, so a
+# green `make deploy-verify` on a laptop is evidence about the real thing and
+# not about a simplified stand-in.
+#
+# There is no live host here. Live mode needs credentials, and the point of
+# verifying locally is to need none.
+{
+	auto_https off
+}
+
+import Caddyfile.snippets
+
+http://localhost {
+	import ohcamel_common
+
+	reverse_proxy ohcamel-demo:8080 {
+		import ohcamel_stream_proxy
+	}
+}

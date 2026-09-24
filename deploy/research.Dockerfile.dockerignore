@@ -1,0 +1,89 @@
+# deploy/research.Dockerfile's own ignore file. Docker looks for
+# <dockerfile-path>.dockerignore next to the Dockerfile and, when present,
+# uses it INSTEAD of the repository's own .dockerignore for that build --
+# so this file, not the top-level one (whose *.md/!README.md pair and other
+# rules are the engine image's concerns), is what actually governs what
+# reaches ohcamel-research's image.
+#
+# research.Dockerfile copies exactly four repo-relative trees: research/,
+# interface/, fixtures/macro/ and fixtures/history/. Everything below either
+# trims what those COPYs pull in, or drops trees none of them ever touch (kept
+# out mainly to keep the build context this Dockerfile sends to the daemon
+# small; no COPY here could reach them regardless).
+#
+# How a pattern matches: against the whole path from the context root, and
+# `*` never crosses a `/`. A bare `.env` or `*.pyc` therefore matches at the
+# root only -- research/.env or research/src/.../x.pyc would slip through it.
+# `**/` matches any number of directories, none included, so every pattern
+# that must hold at any depth below starts with it.
+
+# Never baked into any image, at any depth: an image layer is permanent, and
+# live mode's secrets reach the container through an env_file mount at
+# runtime, never a COPY (see docker-compose.yml's ohcamel-research entry).
+**/.env
+**/.env.*
+**/*.env
+
+# Local, regenerated, or otherwise dev-only files and trees, at any depth.
+research/.venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+
+# Uncommitted battery run artifacts. research/experiments/ is otherwise
+# copied whole, so its manifest.*.json files and each experiment's
+# config.yaml -- both required for the staleness check below to run at all --
+# reach the image with no pattern of their own.
+research/experiments/*/results/
+
+# Markdown at the context root only (see "How a pattern matches" above):
+# README.md, CLAUDE.md and the like. Nothing inside the four copied trees
+# is touched by it -- research/README.md, research/experiments/*/
+# hypothesis.md and report.md, interface/README.md and
+# fixtures/history/README.md all reach the image. Only research/README.md
+# is read there (research/pyproject.toml's `readme = "README.md"` makes
+# hatchling refuse to build the project without it, in `uv sync --locked`);
+# the rest are inert, and none is hashed into a manifest. The re-include
+# changes nothing today; it is here so that widening `*.md` to `**/*.md`
+# could never drop the one markdown file the build needs.
+*.md
+!research/README.md
+
+# Everything the staleness check (research.Dockerfile's is_stale RUN step)
+# hashes must reach the image: battery/'s files (never its __pycache__ or
+# *.pyc, which is_stale does not hash either), each experiment's
+# config.yaml, research/config/friction_v1.yaml, research/uv.lock, and
+# fixtures/history/ and fixtures/macro/'s parquet files and .meta.json
+# sidecars. No exclusion above matches any of them, so none needs a
+# re-include -- and one for battery/** would, coming later, re-include the
+# *.pyc and __pycache__/ excluded above. The manifests themselves are named
+# outright, as before, so this file says they reach the image rather than
+# leaving it to omission.
+!research/experiments/*/manifest.*.json
+
+# Everything outside the four trees research.Dockerfile actually copies.
+desk/
+lib/
+web/
+bin/
+test/
+bench/
+docs/
+deploy/
+.git/
+.github/
+.superpowers/
+_build/
+_opam/
+_coverage/
+book.sexp
+book.example.sexp
+desk.db*
+Untitled
+notes.txt
+claudecodehandoff.md
+*.pdf
+.claude/
+.playwright-mcp/

@@ -1,0 +1,70 @@
+# Shared by deploy/Caddyfile (production) and deploy/Caddyfile.local (the
+# no-TLS localhost harness), and shared ON PURPOSE. The local smoke run exists
+# to prove that streaming survives the proxy; if it exercised a different
+# proxy configuration than production, it would prove nothing about production.
+# Both files import this one, so there is exactly one place where the streaming
+# behaviour is defined.
+
+# ---------------------------------------------------------------------------
+(ohcamel_common) {
+	# The stream is excluded from compression. gzip works by accumulating bytes
+	# before emitting a block, which is the wrong shape for a stream -- though
+	# Caddy's encode module turns out to handle text/event-stream correctly on
+	# its own (see the note below the header block; it was tested). The
+	# exclusion stays because it costs nothing and is right against a less
+	# careful proxy. Every other route is a discrete response and compresses
+	# fine; the dashboard HTML is the one that actually benefits.
+	@compressible not path /api/stream
+	encode @compressible zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}
+
+# ---------------------------------------------------------------------------
+# Streaming, and an honest account of what these two directives are worth.
+#
+# The fear these were written against: a reverse proxy that buffers the SSE
+# body produces a dashboard that loads, renders one snapshot from
+# /api/snapshot, and then freezes. It looks exactly like an engine bug, and it
+# would make the project's reactive claim unfalsifiable from outside precisely
+# where it is most visible.
+#
+# That fear turns out to be largely unfounded on Caddy, and it was worth
+# finding out rather than assuming. Three deliberate misconfigurations were
+# tested against this stack, each with the smoke suite watching:
+#
+#   flush_interval 30s   -- longer than the whole probe window.  Still streamed.
+#   encode applied to /api/stream (gzip requested by the client). Still streamed.
+#   nginx with proxy_buffering on, in Caddy's place.              Still streamed.
+#
+# Caddy special-cases responses whose Content-Type is text/event-stream and
+# flushes them immediately regardless of flush_interval; its encode module does
+# the same. So these directives are defence in depth, not the thing holding the
+# dashboard up.
+#
+# They are kept anyway, for two narrow reasons. The auto-detection keys off the
+# Content-Type, so a future route that streams something which is not
+# text/event-stream would get no such protection. And an explicit -1 documents
+# the requirement for whoever swaps this proxy for one that is less careful --
+# which is a real possibility, and the reason the smoke suite tests the
+# behaviour from outside rather than trusting any of these lines.
+#
+# The compression exclusion below is kept on the same footing: verified
+# unnecessary here, cheap, and correct against a proxy that is less thoughtful.
+(ohcamel_stream_proxy) {
+	flush_interval -1
+	transport http {
+		read_timeout 0
+		write_timeout 0
+	}
+}

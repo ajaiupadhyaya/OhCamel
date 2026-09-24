@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "strategy": "ma_crossover",
+  "params_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "as_of": "2020-12-31",
+  "computed_at": "2026-09-02T00:00:00Z",
+  "data_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "sequence": 5,
+  "validation": {
+    "status": "pass",
+    "gates_version": "2026-09-02",
+    "dsr": 0.31,
+    "psr": 0.72,
+    "pbo": 0.2,
+    "manifest": null
+  },
+  "targets": [
+    {
+      "symbol": "SPY",
+      "weight": 1.0
+    }
+  ]
+}

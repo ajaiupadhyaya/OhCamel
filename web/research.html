@@ -1,0 +1,54 @@
+<!--
+  Research: the strategies this host's book registers, what the desk made of
+  each one's latest signal, and the evidence each was tested on.
+
+  The evidence leads. Each strategy's backtest verdict sits in the first table
+  on the page, beside its name, and each manifest below opens with its verdict
+  and its gates before anything else it holds -- the charter's reporting rule,
+  "lead with the verdict and the gates, not the return". Both of EXP-A01's
+  strategies fail, and the page says so in the words the manifests use. It
+  recommends nothing: a verdict is shown, and promotion stays the owner's, in
+  book.sexp, where no task sets a strategy live.
+
+  Everything drawn here is read, never computed. /api/research (the desk's
+  extension) serves the registered strategies and each one's latest
+  judgement from the journal; /api/research/evidence serves EXP-A01's two
+  manifests as committed, embedded at build time by desk/dune. The numbers
+  are the manifests' own, rounded for reading and nothing else; the report
+  that explains them is research/experiments/EXP-A01/report.md.
+
+  On the demo no strategy is registered -- its synthetic book holds neither
+  SPY nor TLT -- so the first two sections say so and the evidence is shown
+  all the same. "Against live" is a sentence and not a comparison: the
+  desk's record has to hold enough sessions before one can be made, and that
+  is phase A5's.
+-->
+
+<main id="main" class="research">
+  <section id="strategiessec">
+    <span class="lbl">strategies <i>— what this host's book registers, and each one's backtest verdict</i></span>
+    <p id="intake" class="rs-line">asking /api/research…</p>
+    <div class="twrap"><table id="strategies" class="rs-t"></table></div>
+  </section>
+
+  <section id="signalsec">
+    <span class="lbl">latest signal <i>— the last judgement the desk recorded for each strategy</i></span>
+    <div id="signals"></div>
+    <p id="deferred" class="rs-note"></p>
+  </section>
+
+  <section id="evidencesec">
+    <span class="lbl">evidence <i>— EXP-A01, read from each committed manifest: the verdict and the gates first</i></span>
+    <div id="evidence" class="rs-evidence"><p class="rs-line">asking /api/research/evidence…</p></div>
+  </section>
+
+  <section id="livesec">
+    <span class="lbl">against live</span>
+    <p class="rs-line">The desk's own record of each strategy will be compared with this backtest once it holds enough sessions to compare; that is phase A5, and nothing on this page makes the comparison yet.</p>
+  </section>
+
+  <section id="r8sec">
+    <span class="lbl">R8 <i>— the contract's data hash</i></span>
+    <p id="r8" class="rs-line">—</p>
+  </section>
+</main>

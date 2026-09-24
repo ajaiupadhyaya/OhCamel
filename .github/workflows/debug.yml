@@ -15,24 +15,17 @@ jobs:
           uv sync --frozen -q
           curl -sS -A "OhCamel-Quant/1.0 (research; contact: ohcamel@ajaiupadhyaya.com)" \
             https://data.sec.gov/api/xbrl/companyfacts/CIK0000034088.json -o /tmp/xom.json
-          uv run --frozen python - <<'PY'
-          import json, traceback
+          OHCAMEL_QUANT_DATA_DIR=/tmp/qd uv run --frozen python - <<'PY'
+          import traceback, logging
+          logging.basicConfig(level=logging.INFO)
+          from ohcamel_quant.data.market import MarketData
+          m = MarketData()
+          for t in ["AAPL", "MSFT", "JPM", "XOM"]:
+              try:
+                  d = m.company_facts(t).data
+                  print("OK", t, d["cik"], d["name"], d["annual"].shape, d["shares_outstanding"], d.get("shares_outstanding_tag"))
+              except Exception:
+                  print("FAIL", t); traceback.print_exc()
           from ohcamel_quant.data import sec
-          d = json.load(open("/tmp/xom.json"))
-          facts = d["facts"]
-          for item, spec in sec.LINE_ITEMS.items():
-              for tag in spec.tags:
-                  try:
-                      f = sec._tag_facts(facts, tag, spec.unit)
-                  except Exception as e:
-                      print("TAGFACTS FAIL", item, tag, repr(e)); continue
-                  if len(f):
-                      a = sec._annual_duration(f) if spec.kind == "duration" else None
-                      print(item, tag, spec.unit, spec.kind, len(f), "annual" if a is None else len(a),
-                            f["form"].unique()[:6].tolist(), f["start"].notna().sum())
-          try:
-              out = sec.standardize(d)
-              print(out["annual"].tail(3).T)
-          except Exception:
-              traceback.print_exc()
+          print("resolve XOM ->", sec.resolve("XOM", m.settings))
           PY

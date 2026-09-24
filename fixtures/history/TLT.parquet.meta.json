@@ -1,0 +1,9 @@
+{
+  "source": "alpaca",
+  "data_kind": "historical",
+  "fetched_at": "2026-06-09T17:53:12.136908+00:00",
+  "synthetic": false,
+  "symbol": "TLT",
+  "start": "2016-06-01",
+  "end": "2026-06-01"
+}

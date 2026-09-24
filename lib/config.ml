@@ -1,0 +1,502 @@
+(* Phase 2. Credentials, the book file, and runtime knobs.
+
+   Two rules govern this module.
+
+   1. SECRETS NEVER LEAVE. API keys are read from the process environment and
+      wrapped in [Secret.t], whose [sexp_of_t] prints "<redacted>". That is not
+      politeness -- this engine sexps its config into logs and will eventually
+      serve state over HTTP, and a key that can be printed will eventually be
+      printed. The only way to get the bytes back out is [Secret.to_string],
+      which exists solely for the wire and is grep-able as a single call site
+      per credential.
+
+   2. A MISSING KEY IS FATAL. [Credentials.load] returns an error naming the
+      variable; it never substitutes a default and never quietly falls back to
+      synthetic mode. A risk engine that looks live but is showing made-up
+      numbers is worse than one that refuses to start.
+
+   The book (positions, cash, limits) is read from a sexp file rather than
+   compiled in, so the same binary can run different books. The file's types are
+   deliberately NOT Types.Limit and friends: this module owns plain
+   string/float specs and converts, so that a malformed file produces a message
+   about the file rather than a parse failure deep in a domain type. *)
+
+open Core
+
+(* ------------------------------------------------------------------------ *)
+(* Secrets                                                                   *)
+(* ------------------------------------------------------------------------ *)
+
+module Secret : sig
+  type t
+
+  val of_string : string -> t
+
+  (* The only way out. Call it at the point of use -- do not stash the result. *)
+  val to_string : t -> string
+
+  (* Prints "<redacted>". Deliberately shadows what deriving would have
+     produced, and there is a test that pins it. *)
+  val sexp_of_t : t -> Sexp.t
+end = struct
+  type t = string
+
+  let of_string = Fn.id
+  let to_string = Fn.id
+  let sexp_of_t (_ : t) = Sexp.Atom "<redacted>"
+end
+
+(* ------------------------------------------------------------------------ *)
+(* Credentials                                                               *)
+(* ------------------------------------------------------------------------ *)
+
+module Credentials = struct
+  type t = { alpaca_key : Secret.t; alpaca_secret : Secret.t; fred_api_key : Secret.t }
+  [@@deriving sexp_of]
+
+  let alpaca_key_var = "ALPACA_API_KEY"
+  let alpaca_secret_var = "ALPACA_SECRET_KEY"
+  let fred_api_key_var = "FRED_API_KEY"
+
+  (* An empty variable is treated as absent. `export FOO=` is a far more common
+     way to end up without a credential than never setting it at all, and the
+     failure it produces otherwise is a 401 from the far end rather than a
+     message about configuration. *)
+  let required var =
+    match Sys.getenv var with
+    | Some value when not (String.is_empty (String.strip value)) ->
+        Ok (Secret.of_string (String.strip value))
+    | Some _ -> Or_error.errorf "%s is set but empty" var
+    | None -> Or_error.errorf "%s is not set" var
+
+  let load () =
+    let open Or_error.Let_syntax in
+    (* Every missing variable is reported at once. Discovering them one run at a
+       time is a needlessly slow way to configure three keys. *)
+    let results =
+      [
+        (alpaca_key_var, required alpaca_key_var);
+        (alpaca_secret_var, required alpaca_secret_var);
+        (fred_api_key_var, required fred_api_key_var);
+      ]
+    in
+    match List.filter_map results ~f:(fun (_, r) -> Result.error r) with
+    | _ :: _ as errors ->
+        Or_error.error_string
+          (String.concat ~sep:"\n"
+             ("ohcamel: missing credentials."
+              :: List.map errors ~f:(fun e -> "  - " ^ Error.to_string_hum e)
+             @ [
+                 "";
+                 "Live mode needs all three. Export them, or source a file that does:";
+                 "  set -a; source /path/to/.env; set +a";
+               ]))
+    | [] ->
+        let%bind alpaca_key = required alpaca_key_var in
+        let%bind alpaca_secret = required alpaca_secret_var in
+        let%map fred_api_key = required fred_api_key_var in
+        { alpaca_key; alpaca_secret; fred_api_key }
+end
+
+(* ------------------------------------------------------------------------ *)
+(* The book                                                                  *)
+(* ------------------------------------------------------------------------ *)
+
+(* ------------------------------------------------------------------------ *)
+(* Alerting and the kill switch                                              *)
+(* ------------------------------------------------------------------------ *)
+
+(* Phase 4 is the only part of this system that can act on the outside world,
+   and the brief is explicit about it: keep it behind explicit config, and do
+   not wire the kill switch to anything that places real trades.
+
+   So every default here is inert. [enabled = false] means a breach is computed,
+   displayed, and otherwise ignored. Turning alerting on is a decision someone
+   has to write down in a file, and turning the kill switch on is a second,
+   separate decision -- because "tell me when a limit breaks" and "act when a
+   limit breaks" are different levels of trust and should not share a switch. *)
+module Alerts = struct
+  module Sink = struct
+    type t =
+      | Log (* stdout, always safe *)
+      | File of string (* append to a path *)
+      | Slack (* POST to SLACK_WEBHOOK_URL, the only sink that leaves the machine *)
+      | Dry_run (* format and print exactly what WOULD be sent, send nothing *)
+    [@@deriving sexp, compare, equal]
+  end
+
+  type t = {
+    enabled : bool;
+    sinks : Sink.t list;
+    (* Hysteresis. A limit sitting exactly on its threshold would otherwise
+       oscillate breached/cleared on every tick and produce an alert storm --
+       which is how an alerting system trains its reader to ignore it. Once
+       raised, an alert clears only when utilisation falls back below this
+       fraction of the limit. 0.95 means "it has to come back 5% inside the line
+       before I will call it resolved". *)
+    clear_below : float;
+    kill_switch_enabled : bool;
+    (* Which limits are hard enough to trip the switch. Empty means none, even
+       when the switch is enabled -- so a misconfigured file cannot arm
+       something that trips on everything. *)
+    kill_switch_trips_on : string list;
+  }
+  [@@deriving sexp]
+
+  let default =
+    {
+      enabled = false;
+      sinks = [ Sink.Log ];
+      clear_below = 0.95;
+      kill_switch_enabled = false;
+      kill_switch_trips_on = [];
+    }
+
+  let validate (t : t) : unit Or_error.t =
+    if not (Float.( > ) t.clear_below 0.0 && Float.( <= ) t.clear_below 1.0) then
+      Or_error.errorf
+        "alerts: clear_below must be in (0, 1], got %f -- it is the fraction of the \
+         limit an alert must fall back inside before it is called resolved"
+        t.clear_below
+    else if t.kill_switch_enabled && List.is_empty t.kill_switch_trips_on then
+      Or_error.error_string
+        "alerts: the kill switch is enabled but trips on no limits. Name the limits it \
+         should act on, or disable it -- an armed switch with no trigger is a \
+         configuration someone will misread."
+    else Ok ()
+end
+
+module Book = struct
+  module Position_spec = struct
+    type t = { symbol : string; sector : string; qty : float } [@@deriving sexp]
+  end
+
+  (* The desk's rules and the spread table its cost analysis compares against
+     (design §3.3, §3.7, §3.9). Configuration only: plain numbers the desk
+     library reads. Nothing here trades, and the defaults trade nothing --
+     [trading] is Disabled unless a book says otherwise, for the same reason
+     alerting is off unless a book says otherwise. *)
+  module Desk_spec = struct
+    type trading = Enabled | Disabled [@@deriving sexp, compare, equal]
+
+    type t = {
+      trading : trading; [@sexp.default Disabled]
+      max_order_notional : float; [@sexp.default 25_000.0]
+      max_adv_participation : float; [@sexp.default 0.01]
+      price_collar : float; [@sexp.default 0.05]
+      duplicate_window_s : float; [@sexp.default 10.0]
+      max_open_orders : int; [@sexp.default 20]
+      spread_bps_default : float; [@sexp.default 5.0]
+      spread_bps : (string * float) list; [@sexp.default []]
+    }
+    [@@deriving sexp, compare, equal]
+
+    let default = t_of_sexp (Sexp.List [])
+
+    let validate (t : t) : unit Or_error.t =
+      let fail field why value = Or_error.errorf "desk: %s %s, got %g" field why value in
+      if Float.( <= ) t.max_order_notional 0.0 then
+        fail "max_order_notional" "must be positive" t.max_order_notional
+      else if
+        not
+          (Float.( > ) t.max_adv_participation 0.0
+          && Float.( <= ) t.max_adv_participation 1.0)
+      then fail "max_adv_participation" "must be in (0, 1]" t.max_adv_participation
+      else if not (Float.( > ) t.price_collar 0.0 && Float.( < ) t.price_collar 1.0) then
+        fail "price_collar" "must be in (0, 1)" t.price_collar
+      else if Float.( < ) t.duplicate_window_s 0.0 then
+        fail "duplicate_window_s" "may not be negative" t.duplicate_window_s
+      else if t.max_open_orders < 1 then
+        fail "max_open_orders" "must be at least 1" (Float.of_int t.max_open_orders)
+      else if
+        (not (Float.is_finite t.spread_bps_default))
+        || Float.( < ) t.spread_bps_default 0.0
+      then
+        fail "spread_bps_default" "must be finite and may not be negative"
+          t.spread_bps_default
+      else
+        (* A nan compares false against every bound, so "b < 0.0" alone lets a
+           nan spread through and it would turn LVaR into nan downstream
+           (liquidity.ml). [not (is_finite b)] catches nan and both infinities
+           regardless of sign. *)
+        match
+          List.find t.spread_bps ~f:(fun (_, b) ->
+              (not (Float.is_finite b)) || Float.( < ) b 0.0)
+        with
+        | Some (symbol, b) ->
+            fail ("spread_bps for " ^ symbol) "must be finite and may not be negative" b
+        | None -> Ok ()
+  end
+
+  (* The strategies whose signals the desk reads (design §3.12). Configuration
+     only, like Desk_spec: the desk library reads these names and numbers, and
+     nothing here reads a file or judges a signal.
+
+     SIZING DEFAULTS TO ADVISORY (ruling 2). A signal that passes R1-R7 is
+     sized only when its strategy says (sizing live), and promoting one is the
+     owner's decision, written into the book by hand -- a model does not
+     promote itself, so an absent field can only ever mean the safer of the
+     two.
+
+     Validated against the book's own universe, because a strategy that names
+     a symbol the book does not hold could never pass R7 and would only ever
+     be a typo discovered one signal at a time. *)
+  module Signals_spec = struct
+    type sizing = Advisory | Live [@@deriving sexp, compare, equal]
+
+    let sizing_to_string = function Advisory -> "advisory" | Live -> "live"
+
+    module Strategy = struct
+      type t = {
+        name : string;
+        symbols : string list;
+        (* R4's bound, in recorded sessions: interface/README.md's default. *)
+        max_age : int; [@sexp.default 3]
+        sizing : sizing; [@sexp.default Advisory]
+        capital_fraction : float;
+      }
+      [@@deriving sexp, compare, equal]
+    end
+
+    type t = { strategies : Strategy.t list } [@@deriving sexp, compare, equal]
+
+    (* interface/signal.schema.json's pattern for [strategy], ^[a-z][a-z0-9_]{1,63}$,
+       written out: a name the schema would refuse can never arrive in a
+       signal, so registering one is a book that can never be fed. *)
+    let name_ok name =
+      let n = String.length name in
+      n >= 2 && n <= 64
+      && Char.between name.[0] ~low:'a' ~high:'z'
+      && String.for_all name ~f:(fun c ->
+          Char.between c ~low:'a' ~high:'z' || Char.is_digit c || Char.equal c '_')
+
+    (* Written positively, as contract.ml's R7 is: every comparison with NaN is
+       false, so "not (f > 0 && f <= 1)" refuses a NaN fraction where
+       "f <= 0 || f > 1" would let it through. The live sum carries R7's own
+       1e-9, so that fractions like 0.1 x 10 are not refused for the last bit
+       of a float. *)
+    let validate ~(universe : string list) (t : t) : unit Or_error.t =
+      let fail name fmt =
+        Printf.ksprintf (fun s -> Or_error.errorf "signals: %s: %s" name s) fmt
+      in
+      let names = List.map t.strategies ~f:(fun s -> s.Strategy.name) in
+      let check (s : Strategy.t) =
+        let open Strategy in
+        if not (name_ok s.name) then
+          fail s.name "the name must match ^[a-z][a-z0-9_]{1,63}$, the schema's pattern"
+        else if List.is_empty s.symbols then fail s.name "symbols is empty"
+        else
+          match
+            ( List.find s.symbols ~f:(fun sym ->
+                  not (List.mem universe sym ~equal:String.equal)),
+              List.find_a_dup s.symbols ~compare:String.compare )
+          with
+          | Some sym, _ -> fail s.name "%s is not in the book's universe" sym
+          | None, Some sym -> fail s.name "symbols lists %s twice" sym
+          | None, None ->
+              (* At least 1: with 0 no signal could ever be deferred -- the one
+                 the service writes before its close is recorded would be
+                 rejected at R3 on its first look. *)
+              if s.max_age < 1 then
+                fail s.name "max_age must be at least 1, got %d" s.max_age
+              else if not Float.(s.capital_fraction > 0.0 && s.capital_fraction <= 1.0)
+              then
+                fail s.name "capital_fraction must be in (0, 1], got %g"
+                  s.capital_fraction
+              else Ok ()
+      in
+      match List.find_a_dup names ~compare:String.compare with
+      | Some name -> fail name "two strategies have this name"
+      | None -> (
+          match List.find_map t.strategies ~f:(fun s -> Result.error (check s)) with
+          | Some e -> Error e
+          | None ->
+              let live =
+                List.sum
+                  (module Float)
+                  t.strategies
+                  ~f:(fun s ->
+                    match s.Strategy.sizing with
+                    | Live -> s.Strategy.capital_fraction
+                    | Advisory -> 0.0)
+              in
+              if not Float.(live <= 1.0 +. 1e-9) then
+                Or_error.errorf
+                  "signals: the live strategies' capital_fraction values sum to %g, more \
+                   than 1"
+                  live
+              else Ok ())
+  end
+
+  module Limit_spec = struct
+    (* Mirrors Types.Limit but in plain strings and floats, with round-trip sexp
+       conversion. Types.Limit has sexp_of but no of_sexp (its Symbol and Sector
+       are abstract), and adding one would mean giving those types a parser that
+       accepts any string -- which is exactly the property they exist to
+       withhold. Converting here keeps the abstraction and puts validation at
+       the file boundary. *)
+    type scope = Instrument of string | Sector of string | Portfolio [@@deriving sexp]
+
+    type kind =
+      | Gross_notional of float
+      | Value_at_risk of float
+      | Component_var of float
+      | Max_drawdown of float
+    [@@deriving sexp]
+
+    type t = { name : string; scope : scope; kind : kind } [@@deriving sexp]
+
+    let to_limit (t : t) : Types.Limit.t =
+      {
+        Types.Limit.name = t.name;
+        scope =
+          (match t.scope with
+          | Instrument s -> Types.Limit.Instrument (Types.Symbol.of_string s)
+          | Sector s -> Types.Limit.Sector (Types.Sector.of_string s)
+          | Portfolio -> Types.Limit.Portfolio);
+        kind =
+          (match t.kind with
+          | Gross_notional n -> Types.Limit.Gross_notional (Types.Notional.of_float n)
+          | Value_at_risk n -> Types.Limit.Value_at_risk (Types.Notional.of_float n)
+          | Component_var n -> Types.Limit.Component_var (Types.Notional.of_float n)
+          | Max_drawdown f -> Types.Limit.Max_drawdown f);
+      }
+  end
+
+  type t = {
+    cash : float;
+    positions : Position_spec.t list;
+    limits : Limit_spec.t list;
+    (* Optional, and absent means inert. An existing book file keeps working and
+       keeps doing nothing, which is the right default for the one part of this
+       system that can act. *)
+    alerts : Alerts.t; [@sexp.default Alerts.default] [@sexp_drop_default.sexp]
+    (* Optional, and absent means no trading -- see Desk_spec's comment above.
+       An existing book file keeps parsing and the desk it feeds keeps its
+       venue read-only. *)
+    desk : Desk_spec.t; [@sexp.default Desk_spec.default] [@sexp_drop_default.sexp]
+    (* Optional, and absent means no intake: the desk registers no strategy and
+       reads no signal file. An existing book keeps parsing unchanged. *)
+    signals : Signals_spec.t option; [@sexp.option]
+  }
+  [@@deriving sexp]
+
+  let instruments (t : t) : Types.Instrument.t list =
+    List.map t.positions ~f:(fun p ->
+        {
+          Types.Instrument.symbol = Types.Symbol.of_string p.symbol;
+          sector = Types.Sector.of_string p.sector;
+        })
+
+  let limits (t : t) : Types.Limit.t list = List.map t.limits ~f:Limit_spec.to_limit
+
+  let of_string (contents : string) : t Or_error.t =
+    let open Or_error.Let_syntax in
+    let%bind book = Or_error.try_with (fun () -> t_of_sexp (Sexp.of_string contents)) in
+    let%bind () = Desk_spec.validate book.desk in
+    let%map () =
+      match book.signals with
+      | None -> Ok ()
+      | Some signals ->
+          Signals_spec.validate
+            ~universe:(List.map book.positions ~f:(fun p -> p.Position_spec.symbol))
+            signals
+    in
+    book
+
+  let load (path : string) : t Or_error.t =
+    Or_error.tag_arg
+      (let open Or_error.Let_syntax in
+       let%bind contents = Or_error.try_with (fun () -> In_channel.read_all path) in
+       of_string contents)
+      "ohcamel: cannot load book file" path String.sexp_of_t
+end
+
+(* ------------------------------------------------------------------------ *)
+(* Runtime settings                                                          *)
+(* ------------------------------------------------------------------------ *)
+
+module Runtime = struct
+  type t = {
+    (* Alpaca's data feed tier. "iex" is what a free account gets; "sip" needs
+         a paid subscription and "delayed_sip" is 15 minutes behind. Wrong value
+         here shows up as an authorisation failure after a successful connect,
+         which is confusing enough to be worth naming in config. *)
+    alpaca_feed : string;
+    (* FRED series driving the factor-exposure node. DGS10 is the 10-year
+         constant-maturity Treasury yield. *)
+    fred_series_id : string;
+    fred_poll_interval : Time_ns.Span.t;
+    (* How long a symbol may go without a print before it is called stale.
+         This is a judgement about the instrument, not about the network: a
+         thinly-traded name can legitimately be quiet for minutes during RTH,
+         while a liquid one going quiet for thirty seconds means the feed is
+         gone. One threshold for now, and it is deliberately generous. *)
+    staleness_threshold : Time_ns.Span.t;
+    (* How often the staleness clock advances. Only the feed-health nodes are
+         downstream of it -- see graph.ml, where that isolation is enforced and
+         tested. *)
+    clock_interval : Time_ns.Span.t;
+    confidence : float;
+    return_window : int;
+    snapshot_interval : Time_ns.Span.t;
+    (* The origin of the other host, when there is one. Set only on the live
+         container: /ops on the live origin fills its second column from the
+         public demo engine, which is possible only in that direction, because
+         the demo engine publishes a CORS header on its JSON in demo mode and
+         the live one publishes none and stays behind the password. None here
+         is not a failure -- it is the demo host, and its /ops says where to
+         look for both. *)
+    peer_origin : string option;
+  }
+  [@@deriving sexp_of]
+
+  let default =
+    {
+      alpaca_feed = "iex";
+      fred_series_id = "DGS10";
+      fred_poll_interval = Time_ns.Span.of_hr 6.0;
+      staleness_threshold = Time_ns.Span.of_sec 90.0;
+      clock_interval = Time_ns.Span.of_sec 5.0;
+      confidence = 0.95;
+      return_window = 60;
+      snapshot_interval = Time_ns.Span.of_sec 10.0;
+      peer_origin = None;
+    }
+
+  (* Split out of [of_env] so the "empty means absent" rule can be tested
+     without a test that mutates the process environment. Same rule as
+     Credentials.required, and for the same reason: `export FOO=` is how
+     people end up without a value. *)
+  let peer_origin_of (raw : string option) : string option =
+    match raw with
+    | Some v when not (String.is_empty (String.strip v)) -> Some (String.strip v)
+    | Some _ | None -> None
+
+  (* Environment overrides for the two knobs most likely to need changing
+     without a rebuild. Everything else is edited in source, on the grounds that
+     a config surface nobody uses is a config surface nobody tests. *)
+  let of_env () =
+    let string_var name default =
+      match Sys.getenv name with
+      | Some v when not (String.is_empty (String.strip v)) -> String.strip v
+      | _ -> default
+    in
+    {
+      default with
+      alpaca_feed = string_var "OHCAMEL_ALPACA_FEED" default.alpaca_feed;
+      fred_series_id = string_var "OHCAMEL_FRED_SERIES" default.fred_series_id;
+      peer_origin = peer_origin_of (Sys.getenv "OHCAMEL_PEER_ORIGIN");
+    }
+end
+
+type t = { credentials : Credentials.t; book : Book.t; runtime : Runtime.t }
+[@@deriving sexp_of]
+
+let default_book_path = "book.sexp"
+
+let load ?(book_path = default_book_path) () : t Or_error.t =
+  let open Or_error.Let_syntax in
+  let%bind credentials = Credentials.load () in
+  let%map book = Book.load book_path in
+  { credentials; book; runtime = Runtime.of_env () }

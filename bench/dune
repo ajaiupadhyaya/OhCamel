@@ -1,0 +1,17 @@
+; Benchmarks live in their own stanza and do NOT ship in the main binary.
+;
+; That separation is load-bearing rather than tidy. bench_graph.ml contains a
+; second implementation of the book's arithmetic -- a deliberate
+; poll-and-recompute baseline, written so the incremental-versus-polling
+; contrast can be measured instead of asserted -- and a second implementation of
+; exposure and limit logic is precisely what stress.ml goes to some length to
+; avoid having. Keeping it here means nothing in lib/ or bin/ can reach it.
+;
+; Not run by `make test` either: benchmarks take minutes and answer a different
+; question from correctness.
+
+(executable
+ (name bench_graph)
+ (libraries ohcamel core core_bench core_unix.command_unix)
+ (preprocess
+  (pps ppx_jane)))

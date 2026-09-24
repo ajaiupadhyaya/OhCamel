@@ -1,0 +1,24 @@
+# The research service's own config (research/src/ohcamel_research/service.py,
+# Task 16): which strategies it runs every weekday evening (from 19:15
+# America/New_York, once the fetch's end is 16 minutes old -- see service.py),
+# each one's slug (registered with the desk), fdq's strategy key (which
+# REGISTRY entry computes its weight), its symbol, and its manifest's path
+# (repo-root-relative), which supplies selected_params and the validation
+# block. Validated on load (load_service_config): unknown or missing keys are
+# refused, not ignored, the same way research/experiments/*/config.yaml is.
+#
+# EXP-A01's two strategies (research/experiments/EXP-A01/): both verdicts are
+# "fail" (see manifest.exp_a01_spy.json / manifest.exp_a01_tlt.json), so every
+# signal this service emits for them today carries status: fail. The desk's
+# R6 makes a failing (or, before promotion, any) signal advisory -- shown with
+# its weights, never sized -- which is correct: nothing here promotes a
+# strategy, and no task sets one live in book.sexp.
+strategies:
+  - slug: exp_a01_spy
+    fdq_strategy: ma_crossover
+    symbol: SPY
+    manifest: research/experiments/EXP-A01/manifest.exp_a01_spy.json
+  - slug: exp_a01_tlt
+    fdq_strategy: ma_crossover
+    symbol: TLT
+    manifest: research/experiments/EXP-A01/manifest.exp_a01_tlt.json

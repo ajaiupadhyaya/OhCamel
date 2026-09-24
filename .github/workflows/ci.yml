@@ -1,0 +1,396 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Only collapse superseded PR runs. A push to main must never cancel main's
+  # own last recorded result — that is how an Actions tab ends up showing a
+  # cancellation as its newest outcome.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Stage 0, not Stage 1: deploy.sh reaches the owner for the overdue W2/A3
+  # deploy the moment this branch merges, so the check on it has to exist
+  # before that, not in a later stage's plan. Least-privilege token: this job
+  # only reads the checkout and runs local scripts, so contents: read is
+  # everything it needs, and naming that explicitly is cheaper than auditing
+  # later whether some step quietly started needing more.
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # ubuntu-latest normally carries shellcheck already; installed here only
+      # if a runner image ever drops it, so this step is never the reason the
+      # job is red.
+      - name: shellcheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+          shellcheck --version
+
+          # nullglob so an empty deploy/, deploy/test/ or scripts/ drops out
+          # of the argument list instead of being passed to shellcheck as a
+          # literal, missing filename -- scripts/ held nothing before
+          # scripts/check-counts.sh, and the same could happen again if a
+          # script under any of the three ever moves. The check below still
+          # catches the case where every glob comes up empty.
+          shopt -s nullglob
+          files=(deploy/*.sh deploy/test/*.sh scripts/*.sh)
+          shopt -u nullglob
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no shell scripts found under deploy/, deploy/test/ or scripts/ -- this check would lint nothing"
+            exit 1
+          fi
+          printf 'linting:\n'
+          printf '  %s\n' "${files[@]}"
+          # -S warning: this repo's existing scripts carry a few info-level
+          # notes (SC1091 on a sourced /etc/os-release, SC2015 on `A && B ||
+          # C` used for its short-circuit rather than as if/else) that are not
+          # bugs. warning and above is where a seeded mistake -- an unquoted
+          # expansion, a genuinely wrong test -- actually shows up.
+          shellcheck -S warning "${files[@]}"
+
+      # Every hand-written guard test in deploy/test/, run and required to
+      # pass. Today that is deploy_guard_test.sh (deploy.sh's market-hours
+      # guard); a later task's own test lands here the same way, by adding
+      # another file under deploy/test/, with no change to this step.
+      - name: deploy/test/*.sh
+        run: |
+          shopt -s nullglob
+          tests=(deploy/test/*.sh)
+          shopt -u nullglob
+          if [ ${#tests[@]} -eq 0 ]; then
+            echo "no deploy/test/*.sh found -- this check would run nothing"
+            exit 1
+          fi
+          status=0
+          for t in "${tests[@]}"; do
+            echo "== $t =="
+            bash "$t" || status=1
+          done
+          exit "$status"
+
+      # The three published test-count sentences (README.md, docs/overview.md,
+      # docs/status.md), checked against lib/verified.ml and
+      # research/src/ohcamel_research/verified.py by scripts/check-counts.sh.
+      # This runner has no opam switch and no uv project set up, which is the
+      # point: the script is grep and sed only, so this is the CI fact that
+      # makes ruling 22 ("a count is a CI fact") and Definition of Done #3
+      # true, on every push, without needing either toolchain.
+      - name: make check-counts
+        run: make check-counts
+
+  build-and-test:
+    # Two platforms, and the second one is not decoration. The Makefile carries
+    # two long write-ups of Owl bugs that only appear on arm64 macOS — a clang
+    # segfault above -O1, and OpenMP code compiled against a runtime Owl never
+    # links — with a workaround for each. Prose describing a workaround that
+    # nothing runs is a claim, not a fact. The macOS leg below exports exactly
+    # the two variables the Makefile sets, so a run of this workflow is evidence
+    # that the documented workaround still works on a machine that is not the
+    # author's.
+    strategy:
+      # A macOS failure must not cancel the Linux leg. If the Owl workaround
+      # stops working, the useful information is "Linux is fine and macOS is
+      # not", which fail-fast would destroy.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    # Generous, because Owl is built from source on both platforms and it is
+    # slow. The default 360 would hide a genuine hang; 60 will not.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # The two pages, the three crisis CSVs and the quoted tables are OCaml
+      # quoted string literals: lib/dune cats web/* and docs/crisis/*.csv into
+      # generated modules using delimiters of the form
+      # {ohcamel_NAME|...|ohcamel_NAME}. A CLOSING delimiter inside one of
+      # those sources ends the literal early. In practice the trailing bytes
+      # are then not valid OCaml and the build fails — but it fails inside a
+      # GENERATED file, at a line number nobody can map back to the file they
+      # edited, and "in practice" is not a guarantee. This names the real
+      # file, costs a second, and runs before the forty-minute Owl build
+      # rather than after it. desk/dune does the same with EXP-A01's two
+      # manifests (research_manifests.ml, for /api/research/evidence), so its
+      # delimiters are read too, and every research/experiments/*/manifest.*.json
+      # is searched beside web/ -- by glob, so a manifest a later experiment
+      # commits is covered without this step naming it, and an empty glob
+      # fails rather than searching nothing.
+      #
+      # The pattern list is derived from lib/dune itself, not retyped by hand
+      # here: lib/dune currently defines four such delimiters (the fourth,
+      # {ohcamel_build|...}, wraps the build stamp's env-sourced strings, and
+      # is included even though it cannot be reached from web/ or
+      # docs/crisis/, so a fifth delimiter added anywhere in lib/dune is
+      # guarded automatically instead of silently unguarded). And the check
+      # only trusts grep's two documented outcomes — 0 (found, so fail loud
+      # naming the file) and 1 (not found, so pass) — because a grep exit
+      # code of 2 (a missing or unreadable directory, e.g. web/ absent from
+      # the checkout) means the check itself never ran, which is not the same
+      # thing as a clean pass and must not be reported as one.
+      #
+      # One platform is enough, for the same reason the format check is Linux
+      # only: the answer does not depend on the OS.
+      - name: No stray quoted-string delimiters in the embedded sources
+        if: runner.os == 'Linux'
+        run: |
+          # GitHub runs an unqualified `run:` block as `bash -eo pipefail`, so a
+          # bare `var=$(cmd)` assignment whose command fails (grep exiting 1 for
+          # "no match", or 2 for "no such directory") kills the step right there,
+          # before its exit status can be read -- silently, since -e prints
+          # nothing of its own. Both fallible assignments below are therefore the
+          # left side of an explicit `... && status=0 || status=$?` (or `|| true`
+          # for the one whose value, not status, is what matters), so -e sees a
+          # command whose failure is being tested rather than left to propagate.
+          patterns=$(grep -ho '|ohcamel_[a-z_]*}' lib/dune desk/dune | sort -u) || true
+          if [ -z "$patterns" ]; then
+            echo "no {ohcamel_*|...|ohcamel_*} delimiters found in lib/dune -- the rule moved, or the delimiters were renamed, and this check has nothing left to guard."
+            exit 1
+          fi
+          shopt -s nullglob
+          manifests=(research/experiments/*/manifest.*.json)
+          shopt -u nullglob
+          if [ "${#manifests[@]}" -eq 0 ]; then
+            echo "no research/experiments/*/manifest.*.json in the checkout -- desk/dune embeds them, so this check would search nothing."
+            exit 1
+          fi
+          matches=$(grep -rnF -f <(printf '%s\n' "$patterns") web docs/crisis "${manifests[@]}") && status=0 || status=$?
+          case "$status" in
+            0)
+              echo "$matches"
+              echo "a closing quoted-string delimiter appears in an embedded source."
+              echo "rename it, or change the delimiter in lib/dune or desk/dune."
+              exit 1
+              ;;
+            1)
+              echo "no stray delimiters in web/, docs/crisis/ or the ${#manifests[@]} committed manifests"
+              ;;
+            *)
+              echo "grep failed (exit $status) — the check did not run"
+              exit 1
+              ;;
+          esac
+
+      # Invariant 6, as a grep. dune refuses lib/ depending on the desk
+      # library, because that would be a cycle; it does not refuse a pasted
+      # string. The risk kernel may not name the trading host, the orders
+      # path, the journal's database binding or the desk library, and grep's
+      # exit code is trusted only for its two documented outcomes -- 0 found,
+      # 1 not found -- because 2 means the check never ran.
+      - name: The risk kernel names nothing that trades
+        if: runner.os == 'Linux'
+        run: |
+          matches=$(grep -rnE 'paper-api\.alpaca\.markets|/v2/orders|Sqlite3|ohcamel_desk' lib) && status=0 || status=$?
+          case "$status" in
+            0) echo "$matches"; echo "lib/ names something that trades; it belongs in desk/."; exit 1 ;;
+            1) echo "lib/ names nothing that trades" ;;
+            *) echo "grep failed (exit $status) -- the check did not run"; exit 1 ;;
+          esac
+
+      # Owl links against OpenBLAS. The Makefile's OWL_CFLAGS/OWL_LDLIBS
+      # workarounds are deliberately NOT exported on Linux: they exist because
+      # Apple clang segfaults compiling Owl's C stubs above -O1, which is a
+      # macOS-only compiler bug. gcc builds Owl at its own -O3 fine.
+      - name: System dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libopenblas-dev liblapacke-dev \
+                                  libffi-dev libssl-dev libsqlite3-dev
+
+      - name: System dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install pkg-config openblas libomp sqlite
+
+      # Written into GITHUB_ENV rather than the job's `env:` block because
+      # these must apply to exactly one leg of the matrix, and `env:` has no
+      # conditional form. The values are copied from the Makefile; if they ever
+      # diverge, this leg stops testing the thing it exists to test.
+      - name: Owl workarounds (macOS only — see the Makefile for why)
+        if: runner.os == 'macOS'
+        run: |
+          echo "OWL_CFLAGS=-g -O1 -funroll-loops -fno-math-errno -fno-rounding-math -fno-signaling-nans -fexcess-precision=fast -DSFMT_MEXP=19937 -fno-strict-aliasing" >> "$GITHUB_ENV"
+          echo "OWL_LDLIBS=-lm -L/opt/homebrew/opt/libomp/lib -lomp" >> "$GITHUB_ENV"
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2.1"
+          dune-cache: true
+
+      - name: Install dependencies
+        run: opam install --deps-only --with-test -y .
+
+      - name: Build
+        run: opam exec -- dune build
+
+      - name: Test
+        run: opam exec -- dune runtest --force
+
+      # The credential-free modes, end to end. `make test` covers the units;
+      # this covers the six things a reader is actually told to run, and it is
+      # the step that would catch a committed crisis cache going missing or a
+      # printf format string that only fails at run time.
+      - name: The credential-free modes run
+        run: |
+          opam exec -- dune exec bin/main.exe -- synthetic > /dev/null
+          opam exec -- dune exec bin/main.exe -- stress > /dev/null
+          opam exec -- dune exec bin/main.exe -- backtest > /dev/null
+          opam exec -- dune exec bin/main.exe -- backtest-crisis > /dev/null
+          opam exec -- dune exec bin/main.exe -- options > /dev/null
+          opam exec -- dune exec bin/main.exe -- garch > /dev/null
+
+      # One platform is enough: ocamlformat's output does not depend on the OS,
+      # so a second run would only cost minutes and tell you the same thing.
+      - name: Format check
+        if: runner.os == 'Linux'
+        run: |
+          opam install -y ocamlformat.0.29.0
+          opam exec -- dune build @fmt
+
+  # Benchmarks, on demand only.
+  #
+  # Never on push or PR. A shared runner's timings are noise -- the hardware is
+  # unspecified, the neighbours are unknown, and a 3x swing between runs would
+  # turn a green build red for reasons that have nothing to do with the code.
+  # The README quotes a local run and names the machine.
+  #
+  # This job exists so the benchmark is proven to still COMPILE and RUN, which
+  # is the part that rots silently. Its numbers are for reading, not gating.
+  bench:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libopenblas-dev liblapacke-dev \
+                                  libffi-dev libssl-dev libsqlite3-dev
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2.1"
+          dune-cache: true
+
+      - name: Install dependencies
+        run: |
+          opam install --deps-only --with-test -y .
+          opam install -y core_bench
+
+      - name: Run
+        run: |
+          {
+            echo '### Benchmarks (shared runner — indicative only)'
+            echo '```'
+            opam exec -- dune exec bench/bench_graph.exe
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  coverage:
+    # Separate from the matrix because instrumentation changes what is compiled,
+    # and the build whose tests everyone reads should not be the instrumented
+    # one. Linux only — coverage is a property of the tests, not the platform.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libopenblas-dev liblapacke-dev \
+                                  libffi-dev libssl-dev libsqlite3-dev
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2.1"
+          dune-cache: true
+
+      - name: Install dependencies
+        run: |
+          opam install --deps-only --with-test -y .
+          opam install -y bisect_ppx
+
+      - name: Measure
+        run: |
+          mkdir -p _coverage
+          BISECT_FILE=$PWD/_coverage/ohcamel \
+            opam exec -- dune runtest --force --instrument-with bisect_ppx
+          opam exec -- bisect-ppx-report html \
+            --coverage-path _coverage -o _coverage/html
+          opam exec -- bisect-ppx-report summary --per-file \
+            --coverage-path _coverage | tee _coverage/summary.txt
+
+      - name: Report
+        run: |
+          {
+            echo '### Coverage'
+            echo '```'
+            cat _coverage/summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # A floor, not a target. The README explains why the number is bimodal —
+      # the split sits at 80% of each file's unrounded figure, and the lowest
+      # files in the IO column run down to 13%, because exercising them needs
+      # a network and this project declines to fake one. The floor exists so
+      # that deleting tests is noticed; chasing the number upward by testing
+      # the feed against a mock would make it go up and mean less.
+      - name: Coverage floor
+        run: |
+          percent=$(opam exec -- bisect-ppx-report summary --coverage-path _coverage \
+                    | grep -oE '[0-9]+\.[0-9]+%' | tr -d '%')
+          echo "measured ${percent}%"
+          awk -v p="$percent" 'BEGIN { exit !(p >= 60) }' \
+            || { echo "coverage ${percent}% is below the 60% floor"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: _coverage/html
+
+  research-test:
+    # The research layer (research/) is a separate uv project over `fdq`, not
+    # gated by the opam switch the jobs above use. Ubuntu only: the answer
+    # does not depend on the OS, and this job needs no OCaml toolchain at all.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.10.4"
+
+      # --locked (inside the target) refuses to run if research/uv.lock has
+      # drifted from pyproject.toml, rather than silently re-resolving it --
+      # so a stale lockfile fails loudly here instead of only on someone's
+      # machine.
+      - name: research-test
+        run: make research-test
+
+      # is_stale proves a manifest names the bytes it hashed; nothing else
+      # proves its numbers are what those bytes produce. This re-runs the
+      # battery for every experiment on a temporary copy of the commit and
+      # fails if any committed manifest differs once ran_at is masked (and,
+      # off the machine the evidence was run on, python_version and a
+      # float's last digits -- tools/reproduce_manifests.py says why and
+      # prints what moved). Offline, no credential; about 26 s an experiment.
+      - name: The committed manifests reproduce
+        run: make research-reproduce
