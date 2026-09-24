@@ -6,27 +6,33 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - run: |
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/modest-dijkstra-4i10yq
+      - uses: astral-sh/setup-uv@v5
+      - working-directory: quant
+        run: |
+          uv sync --frozen -q
           curl -sS -A "OhCamel-Quant/1.0 (research; contact: ohcamel@ajaiupadhyaya.com)" \
-            https://data.sec.gov/api/xbrl/companyfacts/CIK0000034088.json -o xom.json
-          ls -la xom.json
-          python3 - <<'PY'
-          import json, collections
-          d = json.load(open("xom.json"))
-          f = d["facts"]
-          print("entity", d.get("entityName"), "taxonomies", list(f))
-          g = f.get("us-gaap", {})
-          print("n us-gaap tags", len(g))
-          for tag in ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "NetIncomeLoss",
-                      "SalesRevenueNet", "RevenuesAndOtherIncome", "Assets"]:
-              t = g.get(tag)
-              if not t: print(tag, "ABSENT"); continue
-              for unit, rows in t["units"].items():
-                  forms = collections.Counter(r.get("form") for r in rows)
-                  fps = collections.Counter(r.get("fp") for r in rows)
-                  withstart = sum(1 for r in rows if "start" in r)
-                  print(tag, unit, len(rows), dict(forms), dict(fps), "with start:", withstart)
-                  print("   last rows:", rows[-3:])
-          dei = f.get("dei", {})
-          print("dei tags", list(dei))
+            https://data.sec.gov/api/xbrl/companyfacts/CIK0000034088.json -o /tmp/xom.json
+          uv run --frozen python - <<'PY'
+          import json, traceback
+          from ohcamel_quant.data import sec
+          d = json.load(open("/tmp/xom.json"))
+          facts = d["facts"]
+          for item, spec in sec.LINE_ITEMS.items():
+              for tag in spec.tags:
+                  try:
+                      f = sec._tag_facts(facts, tag, spec.unit)
+                  except Exception as e:
+                      print("TAGFACTS FAIL", item, tag, repr(e)); continue
+                  if len(f):
+                      a = sec._annual_duration(f) if spec.kind == "duration" else None
+                      print(item, tag, spec.unit, spec.kind, len(f), "annual" if a is None else len(a),
+                            f["form"].unique()[:6].tolist(), f["start"].notna().sum())
+          try:
+              out = sec.standardize(d)
+              print(out["annual"].tail(3).T)
+          except Exception:
+              traceback.print_exc()
           PY
