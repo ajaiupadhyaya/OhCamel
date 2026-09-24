@@ -17,7 +17,20 @@
 # ---------------------------------------------------------------------------
 # Stage 1 -- builder
 # ---------------------------------------------------------------------------
-FROM ocaml/opam:debian-12-ocaml-5.2 AS builder
+# Pinned to a digest as well as a tag, and the two are not the same thing.
+# ocaml/opam rebuilds `debian-12-ocaml-5.2` in place -- that is the only
+# granularity this tag family publishes, there is no `-5.2.1` -- so the tag is
+# mutable, and two builds a month apart are builds against different bases. The
+# digest is what makes the version exact. The tag stays beside it because it is
+# the part a reader can act on, and because Dependabot identifies the image by
+# it; .github/dependabot.yml is what moves this line, weekly, as a pull request
+# that says what changed. Without that half, pinning a digest would only mean
+# the builder quietly stopped receiving the base image's security updates.
+#
+# Resolved 2026-09-20 from registry-1.docker.io: this is the manifest-list
+# digest the tag pointed at, so the pin changes nothing about what is pulled
+# today and freezes it from here on.
+FROM ocaml/opam:debian-12-ocaml-5.2@sha256:fa213a9a52c82cc704d2192dee5c6d12d26bb3932c18c5d48e83d269858e35d3 AS builder
 
 USER root
 
@@ -86,7 +99,15 @@ RUN opam exec -- dune build --profile release bin/main.exe \
 # ---------------------------------------------------------------------------
 # Stage 2 -- runtime
 # ---------------------------------------------------------------------------
-FROM debian:12-slim AS runtime
+# The point release, not `12-slim`, and its digest with it. `debian:12-slim`
+# moves with every bookworm point release and every rebuild in between, which
+# means the image that ships to the droplet is decided by the day the build ran
+# rather than by anything in this repository -- and the runtime stage is the one
+# whose libssl3, libsqlite3-0 and tzdata the engine actually loads. Verified
+# 2026-09-20: `debian:12-slim` and `debian:12.15-slim` were the same manifest
+# digest, so this pin changed nothing about the image and everything about when
+# it changes. Dependabot moves it (.github/dependabot.yml).
+FROM debian:12.15-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS runtime
 
 # The runtime halves of the -dev packages above, plus ca-certificates (live
 # mode verifies Alpaca's and FRED's certificates and cannot without them),

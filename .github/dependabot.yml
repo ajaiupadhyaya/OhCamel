@@ -1,0 +1,53 @@
+# Dependabot, for the two dependency sets nothing else in this repository
+# watches.
+#
+# What is NOT here, and why: the OCaml dependencies are resolved by opam from
+# dune-project, which Dependabot has no ecosystem for, and they are already
+# pinned by the switch CI sets up (ocaml/setup-ocaml@v3 with an explicit
+# compiler) and by `opam install --deps-only` resolving against a lock nobody
+# floats. research/ is a uv project whose uv.lock CI refuses to run against a
+# drifted pyproject.toml (`--locked`, see the research-test job), so a version
+# bump there has to be a deliberate `uv lock`, not a background PR. What HAS
+# no such guard is the two sets below: an action reference and a base image
+# both float by default, and both are fetched at run time from somewhere this
+# repository does not control.
+#
+# Weekly, not daily. A base-image bump that arrives every morning is a bump
+# nobody reads.
+version: 2
+updates:
+  # The `uses:` references in .github/workflows/. Dependabot reads the whole
+  # workflows directory for this ecosystem, which is why the directory is "/"
+  # and not "/.github/workflows".
+  #
+  # These are the pinned-by-major references (actions/checkout@v4,
+  # ocaml/setup-ocaml@v3, astral-sh/setup-uv@v5, actions/upload-artifact@v4):
+  # a major tag is mutable, so what this entry actually buys is a PR when a
+  # NEW major is out, which is the change that breaks a workflow.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 3
+    # This repository's commit subjects carry a scope prefix from a fixed list
+    # (`ci:`, `deploy:`, `docs:`, ...). A workflow's own dependencies are CI.
+    commit-message:
+      prefix: "ci"
+  # The base images in deploy/Dockerfile and deploy/research.Dockerfile, both
+  # of which are pinned to an exact version AND a digest -- which is what makes
+  # this entry the only way they ever move. Without it, pinning a digest means
+  # the builder silently stops receiving the base image's security updates,
+  # which is a worse failure than a floating tag, not a better one.
+  - package-ecosystem: "docker"
+    directory: "/deploy"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deploy"

@@ -83,7 +83,12 @@ export OWL_CFLAGS := -g -O1 -funroll-loops -fno-math-errno -fno-rounding-math -f
 # Homebrew's directory for every build, so no ordering can win.
 export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 
-.PHONY: all build run stress backtest backtest-crisis options garch test research-test research-reproduce bench coverage fmt clean deps doctor \
+# Every target in this file, and it has to stay that way. None of them produces
+# a file of its own name, so a directory or file called `demo` or `serve` in the
+# repository root would make make declare that target up to date and run
+# nothing -- and for those two the symptom is a server that silently never
+# starts. run-live, serve and demo were the three that had been left out.
+.PHONY: all build run run-live serve demo stress backtest backtest-crisis options garch test research-test research-reproduce bench coverage fmt clean deps doctor \
         check-counts \
         deploy-build deploy-up deploy-down deploy-verify deploy-logs deploy-smoke
 
