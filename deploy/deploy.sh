@@ -5,6 +5,19 @@
 #   cd ~/OhCamel && deploy/deploy.sh
 #   cd ~/OhCamel && deploy/deploy.sh --live            # bring the gated engine up too
 #   cd ~/OhCamel && deploy/deploy.sh --live --during-market  # override the market-hours guard
+#   cd ~/OhCamel && deploy/deploy.sh --public-only     # the public site only, any time
+#
+# The public host serves OhCamel Quant (ohcamel-quant: FastAPI + React, real
+# market data only). The synthetic ohcamel-demo engine is no longer public: it
+# sits behind compose's "demo" profile, and this script stops and removes any
+# container of it left over from before. The live host keeps serving the OCaml
+# engine (ohcamel-live, profile "live") behind basic auth, exactly as before.
+#
+# --public-only rebuilds and restarts caddy and ohcamel-quant and never touches
+# the live profile -- not even the auto-add below -- so the market-hours guard
+# has nothing to protect and does not apply. It is how the public site ships
+# during a trading session without dropping the live engine's one allowed
+# Alpaca stream. It cannot be combined with --live.
 #
 # Pull, rebuild, restart, verify. The verify step is not optional and not
 # advisory: if the smoke suite fails, this exits non-zero and says so, because
@@ -125,9 +138,21 @@ should_refuse_live_deploy() {
 #   REFUSE      1 if main() must exit 1: --live was requested explicitly and
 #               live.env is not readable, so there is nothing to fall back
 #               to. Always 0 when PROFILE=1, and when AUTO_ADDED=1.
+#
+# PUBLIC_ONLY, an optional fourth input (default 0), is --public-only: when 1
+# the answer is always "0 0 0" -- no profile, nothing auto-added, nothing to
+# refuse -- whatever the other three say. main() refuses --live together with
+# --public-only before ever calling this, so PUBLIC_ONLY=1 with LIVE_FLAG=1 is
+# not a case main() produces; it still answers "0 0 0" rather than guessing.
 resolve_live_profile() {
 	local live_flag="$1" live_env_readable="$2" has_live_container="$3"
+	local public_only="${4:-0}"
 	local profile=0 auto=0 refuse=0
+
+	if [ "$public_only" = 1 ]; then
+		printf '0 0 0\n'
+		return 0
+	fi
 
 	if [ "$live_flag" = 1 ]; then
 		profile=1
@@ -149,24 +174,65 @@ resolve_live_profile() {
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
+# wait_healthy TIMEOUT_S SERVICE...
+#
+# Polls each compose service's container health until every one reports
+# healthy, or TIMEOUT_S passes. Prints one line per service as it turns
+# healthy; returns 1 naming the ones that did not. Only services with a
+# healthcheck belong here (ohcamel-quant, ohcamel-live); `up -d` has already
+# waited for ohcamel-quant through caddy's depends_on, so on the happy path
+# this returns at once for it.
+wait_healthy() {
+	local timeout="$1" deadline svc id state pending=()
+	shift
+	deadline=$(($(date +%s) + timeout))
+	pending=("$@")
+	while [ ${#pending[@]} -gt 0 ]; do
+		local still=()
+		for svc in "${pending[@]}"; do
+			id=$(docker ps --filter "label=com.docker.compose.project=ohcamel" \
+				--filter "label=com.docker.compose.service=$svc" --quiet | head -1)
+			state=""
+			[ -n "$id" ] && state=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$id" 2>/dev/null)
+			case "$state" in
+			healthy | none) echo "  $svc: ${state}" ;;
+			*) still+=("$svc") ;;
+			esac
+		done
+		pending=("${still[@]+"${still[@]}"}")
+		[ ${#pending[@]} -eq 0 ] && return 0
+		if [ "$(date +%s)" -ge "$deadline" ]; then
+			echo "deploy: not healthy after ${timeout}s: ${pending[*]}" >&2
+			return 1
+		fi
+		/bin/sleep 3
+	done
+}
+
 main() {
 	cd "$(dirname "${BASH_SOURCE[0]}")/.."
 	local REPO="$PWD"
 	local COMPOSE=(docker compose -f deploy/docker-compose.yml)
 
-	local live_flag=0 during_market=0
+	local live_flag=0 during_market=0 public_only=0
 	local profile_on=0 profile_auto_added=0 refuse_live_deploy=0
 	local arg
 	for arg in "$@"; do
 		case "$arg" in
 		--live) live_flag=1 ;;
 		--during-market) during_market=1 ;;
+		--public-only) public_only=1 ;;
 		*)
 			echo "deploy: unknown argument $arg" >&2
 			exit 1
 			;;
 		esac
 	done
+
+	if [ "$live_flag" = 1 ] && [ "$public_only" = 1 ]; then
+		echo "deploy: --live and --public-only contradict each other -- pick one" >&2
+		exit 1
+	fi
 
 	local PROFILE=()
 
@@ -176,13 +242,14 @@ main() {
 	# this is the same short-circuit the old inline version had.
 	local live_env_readable=0 has_live_container=0
 	[ -r /etc/ohcamel/live.env ] && live_env_readable=1
-	if [ "$live_flag" != 1 ] && [ "$live_env_readable" != 1 ]; then
+	if [ "$public_only" != 1 ] && [ "$live_flag" != 1 ] && [ "$live_env_readable" != 1 ]; then
 		docker ps -a --filter "label=com.docker.compose.service=ohcamel-live" --quiet 2>/dev/null | grep -q . && has_live_container=1
 	fi
 
 	read -r profile_on profile_auto_added refuse_live_deploy < <(
-		resolve_live_profile "$live_flag" "$live_env_readable" "$has_live_container"
+		resolve_live_profile "$live_flag" "$live_env_readable" "$has_live_container" "$public_only"
 	)
+	[ "$public_only" = 1 ] && echo "deploy: --public-only -- caddy and ohcamel-quant only; the live profile is not touched"
 
 	# Auto-add the live profile so a habitual `deploy.sh` (no flag) never
 	# leaves ohcamel-research -- behind the same profile, built only by a
@@ -320,11 +387,42 @@ main() {
 	say "Starting"
 	"${COMPOSE[@]}" "${PROFILE[@]}" up -d --remove-orphans
 
+	# The synthetic engine used to BE the public site. It is behind the "demo"
+	# profile now, which `up` above never enables -- but a profiled service is
+	# not an orphan either, so --remove-orphans leaves a container of it from
+	# an earlier deploy running forever, holding memory on a 4 GB box. Naming
+	# the service here is what lets compose act on it with its profile off.
+	# A no-op when there is nothing to remove.
+	say "Retiring the synthetic demo engine"
+	"${COMPOSE[@]}" rm --stop --force ohcamel-demo
+
+	# Caddy's two config files are single-file bind mounts, and those pin the
+	# file's inode: `git pull` replaces a changed file with a new inode, so a
+	# caddy container that compose did not recreate keeps serving the OLD
+	# Caddyfile forever -- and compose only recreates it when its compose
+	# definition changes, not when the file's content does. Compare what the
+	# container sees with the checkout and recreate caddy only if they differ.
+	# That drops open connections for a second; certificates survive in the
+	# caddy_data volume, so nothing is re-issued.
+	local f stale=0
+	for f in Caddyfile Caddyfile.snippets; do
+		if ! "${COMPOSE[@]}" exec -T caddy cat "/etc/caddy/$f" 2>/dev/null | cmp -s - "deploy/$f"; then
+			stale=1
+		fi
+	done
+	if [ "$stale" = 1 ]; then
+		say "Caddy's mounted config is stale -- recreating caddy"
+		"${COMPOSE[@]}" "${PROFILE[@]}" up -d --force-recreate --no-deps caddy
+	fi
+
 	# Give Caddy a moment to bind and, on a first run, to complete the ACME
 	# handshake. A smoke test that starts before the certificate exists reports a
 	# TLS failure that is really just impatience.
 	say "Settling"
 	/bin/sleep 15
+	local HEALTHY=(ohcamel-quant)
+	[ ${#PROFILE[@]} -gt 0 ] && HEALTHY+=(ohcamel-live)
+	wait_healthy 180 "${HEALTHY[@]}" || true # smoke.sh below says what is wrong
 
 	"${COMPOSE[@]}" "${PROFILE[@]}" ps
 
@@ -343,8 +441,9 @@ main() {
 		say "Pruning"
 		# Only now, after the smoke suite has passed: pruning too early is what
 		# makes rollback impossible, because a dangling image IS the previous
-		# image -- `build` just orphaned it by re-tagging `ohcamel:latest`
-		# (and, under --live, `ohcamel-research:latest`) onto the new one, but
+		# image -- `build` just orphaned it by re-tagging `ohcamel-quant:latest`
+		# (and, under --live, `ohcamel:latest` and `ohcamel-research:latest`)
+		# onto the new one, but
 		# the old image itself does not stop existing until something prunes
 		# it. Doing that before the verify step meant a failed smoke suite had
 		# nothing left to roll back to except a full rebuild -- twenty minutes
@@ -364,7 +463,7 @@ main() {
 		echo "  not pruned: the previous image is still here, exactly because this failed --" >&2
 		echo "  to roll back to it:" >&2
 		echo "    docker image ls --filter dangling=true                 # find its IMAGE ID" >&2
-		echo "    docker tag <IMAGE_ID> ohcamel:latest                   # restore the tag" >&2
+		echo "    docker tag <IMAGE_ID> ohcamel-quant:latest             # restore the tag (or ohcamel:latest for the engine)" >&2
 		echo "    ${COMPOSE[*]} ${PROFILE[*]} up -d --force-recreate     # run it again" >&2
 		exit 1
 	fi

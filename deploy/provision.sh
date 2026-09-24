@@ -106,9 +106,10 @@ say "Firewall"
 #
 # Docker famously writes its own iptables rules and can bypass ufw for
 # PUBLISHED ports. That is survivable here only because of a specific choice in
-# docker-compose.yml: the two engine containers publish nothing. Caddy is the
-# only service with a host port, and 80/443 are open on purpose. If a future
-# change adds `ports:` to an engine, this firewall will not save it -- see
+# docker-compose.yml: the app containers (ohcamel-quant and the engines)
+# publish nothing. Caddy is the only service with a host port, and 80/443 are
+# open on purpose. If a future change adds `ports:` to one of them, this
+# firewall will not save it -- see
 # assertion 5 in smoke.sh, which checks for exactly that mistake from outside.
 ufw --force reset >/dev/null
 ufw default deny incoming

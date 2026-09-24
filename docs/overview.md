@@ -1,6 +1,14 @@
 # OhCamel, in brief
 
-*Written 2026-09-12. The [README](../README.md) argues the design at length,
+> **2026-09-24 — the public site is now OhCamel Quant** ([`quant/`](../quant/)),
+> a real-data quant platform (risk, portfolio construction, factors,
+> backtesting, options, rates & macro, fundamentals). The synthetic demo engine
+> no longer runs on the public host (`ohcamel-demo` sits behind the `demo`
+> compose profile); the live engine is unchanged. Deploy with
+> `deploy/deploy.sh --public-only`. Sections below describe the engine.
+
+
+*Written 2026-09-12. The [README](engine.md) argues the design at length,
 [`quant_notes.md`](quant_notes.md) writes out the math, and
 [`status.md`](status.md) is the operator's inventory. This is the short
 version: what the project is, what it can do, and where its edges are, for
@@ -292,7 +300,7 @@ The desk library, `desk/`, adds about 9,650 more lines of OCaml (five
 
 ## Reading further
 
-- [README](../README.md): the full argument, with the tables and the reasoning
+- [README](engine.md): the full argument, with the tables and the reasoning
   behind each design choice.
 - [`quant_notes.md`](quant_notes.md): every formula, and the function that
   computes it.

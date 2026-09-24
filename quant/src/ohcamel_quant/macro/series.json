@@ -1,0 +1,36 @@
+{
+  "transforms": {
+    "level": "value as published",
+    "yoy_pct": "percent change versus the same period one year earlier",
+    "diff": "change versus the previous observation",
+    "mom_ann": "period-over-period change, compounded to an annual rate (percent)"
+  },
+  "series": [
+    {"id": "CPIAUCSL", "name": "CPI inflation (headline)", "category": "Inflation", "transform": "yoy_pct", "units": "% y/y", "frequency": "M"},
+    {"id": "CPILFESL", "name": "Core CPI inflation", "category": "Inflation", "transform": "yoy_pct", "units": "% y/y", "frequency": "M"},
+    {"id": "PCEPILFE", "name": "Core PCE inflation", "category": "Inflation", "transform": "yoy_pct", "units": "% y/y", "frequency": "M"},
+    {"id": "T10YIE", "name": "10y breakeven inflation", "category": "Inflation", "transform": "level", "units": "%", "frequency": "D"},
+    {"id": "UNRATE", "name": "Unemployment rate", "category": "Labor", "transform": "level", "units": "%", "frequency": "M"},
+    {"id": "PAYEMS", "name": "Nonfarm payrolls, monthly change", "category": "Labor", "transform": "diff", "units": "thousands", "frequency": "M"},
+    {"id": "ICSA", "name": "Initial jobless claims", "category": "Labor", "transform": "level", "units": "claims", "frequency": "W"},
+    {"id": "INDPRO", "name": "Industrial production", "category": "Growth", "transform": "yoy_pct", "units": "% y/y", "frequency": "M"},
+    {"id": "RSAFS", "name": "Retail & food services sales", "category": "Growth", "transform": "yoy_pct", "units": "% y/y", "frequency": "M"},
+    {"id": "GDPC1", "name": "Real GDP", "category": "Growth", "transform": "yoy_pct", "units": "% y/y", "frequency": "Q"},
+    {"id": "UMCSENT", "name": "U. Michigan consumer sentiment", "category": "Growth", "transform": "level", "units": "index 1966Q1=100", "frequency": "M"},
+    {"id": "DFF", "name": "Effective fed funds rate", "category": "Policy & rates", "transform": "level", "units": "%", "frequency": "D"},
+    {"id": "DGS2", "name": "2y Treasury yield", "category": "Policy & rates", "transform": "level", "units": "%", "frequency": "D"},
+    {"id": "DGS10", "name": "10y Treasury yield", "category": "Policy & rates", "transform": "level", "units": "%", "frequency": "D"},
+    {"id": "T10Y2Y", "name": "10y-2y Treasury spread", "category": "Policy & rates", "transform": "level", "units": "pp", "frequency": "D"},
+    {"id": "T10Y3M", "name": "10y-3m Treasury spread", "category": "Policy & rates", "transform": "level", "units": "pp", "frequency": "D"},
+    {"id": "DFII10", "name": "10y TIPS real yield", "category": "Policy & rates", "transform": "level", "units": "%", "frequency": "D"},
+    {"id": "MORTGAGE30US", "name": "30y mortgage rate", "category": "Policy & rates", "transform": "level", "units": "%", "frequency": "W"},
+    {"id": "BAMLH0A0HYM2", "name": "High-yield OAS", "category": "Credit & conditions", "transform": "level", "units": "%", "frequency": "D"},
+    {"id": "BAMLC0A0CM", "name": "Investment-grade OAS", "category": "Credit & conditions", "transform": "level", "units": "%", "frequency": "D"},
+    {"id": "NFCI", "name": "Chicago Fed financial conditions (NFCI)", "category": "Credit & conditions", "transform": "level", "units": "index (0 = average)", "frequency": "W"},
+    {"id": "VIXCLS", "name": "VIX", "category": "Markets", "transform": "level", "units": "index", "frequency": "D"},
+    {"id": "DTWEXBGS", "name": "Broad trade-weighted dollar", "category": "Markets", "transform": "level", "units": "index Jan-2006=100", "frequency": "D"},
+    {"id": "DCOILWTICO", "name": "WTI crude oil", "category": "Markets", "transform": "level", "units": "USD/bbl", "frequency": "D"},
+    {"id": "M2SL", "name": "M2 money stock", "category": "Money & Fed", "transform": "yoy_pct", "units": "% y/y", "frequency": "M"},
+    {"id": "WALCL", "name": "Fed total assets", "category": "Money & Fed", "transform": "level", "units": "USD millions", "frequency": "W"}
+  ]
+}

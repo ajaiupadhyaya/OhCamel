@@ -56,7 +56,7 @@ py_tests=$(grep -E '^TESTS = [0-9]+$' research/src/ohcamel_research/verified.py 
 
 # --- Markers -----------------------------------------------------------
 
-docs=(README.md docs/overview.md docs/status.md)
+docs=(docs/engine.md docs/overview.md docs/status.md)
 
 # check_marker KIND EXPECTED: every "<!-- count:KIND -->N<!-- /count -->" in
 # each of $docs must read N == EXPECTED. Sets $status rather than exiting on

@@ -1,0 +1,36 @@
+# quant/Dockerfile's own ignore file. The build context is the repository root,
+# and Docker uses <dockerfile-path>.dockerignore, when it exists, INSTEAD of the
+# root .dockerignore -- so this file (and not quant/.dockerignore, which a
+# repo-root context never reads) is what decides what reaches the daemon.
+#
+# Deny everything, then allow exactly what quant/Dockerfile copies. An
+# allow-list cannot drift into shipping something new by accident: a file
+# nobody named here never leaves the laptop or the droplet.
+*
+
+!quant/pyproject.toml
+!quant/uv.lock
+!quant/README.md
+!quant/src/
+!quant/web/
+
+# The committed real-data fixtures the offline fallback reads.
+!fixtures/
+!docs/crisis/*.csv
+
+# Never, at any depth, even inside an allowed tree.
+**/.env
+**/.env.*
+**/*.env
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+quant/.venv/
+quant/.data/
+quant/web/node_modules/
+quant/web/dist/
+quant/web/test-results/
+quant/web/playwright-report/
+**/.DS_Store

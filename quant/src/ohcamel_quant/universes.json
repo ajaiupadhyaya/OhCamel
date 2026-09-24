@@ -1,0 +1,112 @@
+{
+  "_about": "Named universes: DEFINITIONS (which instruments to show), not data. Every number shown for them is fetched live from MarketData. ETF names are the issuers' fund names.",
+  "universes": {
+    "us_equity_indices": {
+      "label": "US equity indices",
+      "description": "Broad US equity benchmarks via their most liquid ETFs.",
+      "members": [
+        {"ticker": "SPY", "name": "SPDR S&P 500 ETF Trust"},
+        {"ticker": "QQQ", "name": "Invesco QQQ Trust (Nasdaq-100)"},
+        {"ticker": "DIA", "name": "SPDR Dow Jones Industrial Average ETF"},
+        {"ticker": "IWM", "name": "iShares Russell 2000 ETF"},
+        {"ticker": "MDY", "name": "SPDR S&P MidCap 400 ETF"}
+      ]
+    },
+    "sectors": {
+      "label": "S&P 500 sectors",
+      "description": "Select Sector SPDR funds, one per GICS sector.",
+      "members": [
+        {"ticker": "XLK", "name": "Technology"},
+        {"ticker": "XLF", "name": "Financials"},
+        {"ticker": "XLE", "name": "Energy"},
+        {"ticker": "XLV", "name": "Health Care"},
+        {"ticker": "XLI", "name": "Industrials"},
+        {"ticker": "XLY", "name": "Consumer Discretionary"},
+        {"ticker": "XLP", "name": "Consumer Staples"},
+        {"ticker": "XLU", "name": "Utilities"},
+        {"ticker": "XLB", "name": "Materials"},
+        {"ticker": "XLRE", "name": "Real Estate"},
+        {"ticker": "XLC", "name": "Communication Services"}
+      ]
+    },
+    "style_factors": {
+      "label": "Style factors",
+      "description": "iShares MSCI USA factor ETFs (long-only factor tilts).",
+      "members": [
+        {"ticker": "MTUM", "name": "Momentum (iShares MSCI USA Momentum Factor)"},
+        {"ticker": "QUAL", "name": "Quality (iShares MSCI USA Quality Factor)"},
+        {"ticker": "VLUE", "name": "Value (iShares MSCI USA Value Factor)"},
+        {"ticker": "USMV", "name": "Minimum volatility (iShares MSCI USA Min Vol Factor)"},
+        {"ticker": "SIZE", "name": "Size (iShares MSCI USA Size Factor)"}
+      ]
+    },
+    "rates": {
+      "label": "US Treasuries",
+      "description": "Treasury ETFs along the curve, bills to long bond, plus TIPS.",
+      "members": [
+        {"ticker": "BIL", "name": "1-3 month T-bills (SPDR Bloomberg)"},
+        {"ticker": "SHY", "name": "1-3 year Treasuries (iShares)"},
+        {"ticker": "IEI", "name": "3-7 year Treasuries (iShares)"},
+        {"ticker": "IEF", "name": "7-10 year Treasuries (iShares)"},
+        {"ticker": "TLT", "name": "20+ year Treasuries (iShares)"},
+        {"ticker": "TIP", "name": "TIPS (iShares)"}
+      ]
+    },
+    "credit": {
+      "label": "Credit",
+      "description": "Investment grade, high yield and emerging-market USD bonds.",
+      "members": [
+        {"ticker": "LQD", "name": "Investment-grade corporates (iShares iBoxx)"},
+        {"ticker": "HYG", "name": "High-yield corporates (iShares iBoxx)"},
+        {"ticker": "EMB", "name": "EM USD sovereigns (iShares J.P. Morgan)"}
+      ]
+    },
+    "international": {
+      "label": "International equity",
+      "description": "Developed, emerging and single-country equity ETFs.",
+      "members": [
+        {"ticker": "EFA", "name": "Developed ex-US (iShares MSCI EAFE)"},
+        {"ticker": "EEM", "name": "Emerging markets (iShares MSCI EM)"},
+        {"ticker": "VGK", "name": "Europe (Vanguard FTSE Europe)"},
+        {"ticker": "EWJ", "name": "Japan (iShares MSCI Japan)"},
+        {"ticker": "FXI", "name": "China large-cap (iShares)"},
+        {"ticker": "INDA", "name": "India (iShares MSCI India)"}
+      ]
+    },
+    "commodities": {
+      "label": "Commodities",
+      "description": "Exchange-traded commodity exposure (physical or futures-based).",
+      "members": [
+        {"ticker": "GLD", "name": "Gold (SPDR Gold Shares)"},
+        {"ticker": "SLV", "name": "Silver (iShares Silver Trust)"},
+        {"ticker": "USO", "name": "WTI crude oil futures (United States Oil Fund)"},
+        {"ticker": "UNG", "name": "Natural gas futures (United States Natural Gas Fund)"},
+        {"ticker": "DBA", "name": "Agriculture futures (Invesco DB)"},
+        {"ticker": "DBC", "name": "Broad commodity futures (Invesco DB)"}
+      ]
+    },
+    "crypto": {
+      "label": "Crypto",
+      "description": "Spot crypto in USD (trades 7 days a week).",
+      "members": [
+        {"ticker": "BTC-USD", "name": "Bitcoin"},
+        {"ticker": "ETH-USD", "name": "Ether"}
+      ]
+    },
+    "volatility": {
+      "label": "Volatility",
+      "description": "Cboe Volatility Index: 30-day S&P 500 implied volatility (an index level, not tradable).",
+      "members": [
+        {"ticker": "^VIX", "name": "Cboe Volatility Index"}
+      ]
+    }
+  },
+  "notable_13f_filers": [
+    {"cik": "0001067983", "name": "Berkshire Hathaway Inc", "manager": "Warren Buffett", "sec_name_contains": "BERKSHIRE"},
+    {"cik": "0001336528", "name": "Pershing Square Capital Management, L.P.", "manager": "Bill Ackman", "sec_name_contains": "PERSHING"},
+    {"cik": "0001649339", "name": "Scion Asset Management, LLC", "manager": "Michael Burry", "sec_name_contains": "SCION"},
+    {"cik": "0001350694", "name": "Bridgewater Associates, LP", "manager": "Ray Dalio (founder)", "sec_name_contains": "BRIDGEWATER"},
+    {"cik": "0001037389", "name": "Renaissance Technologies LLC", "manager": "Jim Simons (founder)", "sec_name_contains": "RENAISSANCE"},
+    {"cik": "0001656456", "name": "Appaloosa LP", "manager": "David Tepper", "sec_name_contains": "APPALOOSA"}
+  ]
+}

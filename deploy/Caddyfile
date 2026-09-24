@@ -1,16 +1,21 @@
 # OhCamel behind Caddy, in production.
 #
-# Two hosts, one image, one difference between them: the public one runs the
-# synthetic demo and the gated one runs the engine against Alpaca and FRED.
+# Two hosts. The public one serves OhCamel Quant (ohcamel-quant: FastAPI + the
+# React SPA, real market data only -- no synthetic feed, no simulated market).
+# The gated one serves the OCaml engine against Alpaca and FRED, exactly as
+# before. The synthetic demo engine is no longer routed anywhere in
+# production. The public host's variable keeps its old name,
+# OHCAMEL_DEMO_HOST, so an existing deploy/.env keeps working unchanged.
 #
 # Hostnames, the ACME contact and the basic-auth credential arrive as
 # environment variables (Caddy's {$VAR} syntax) rather than being written here,
 # so this file is safe in a public repository. docker-compose.yml passes them
 # in; deploy/deploy.env.example lists them.
 #
-# The streaming configuration lives in Caddyfile.snippets, which the localhost
-# harness imports too -- read the comments there before changing anything about
-# how /api/stream is proxied.
+# The streaming configuration, and the Quant site's headers (CSP, caching),
+# live in Caddyfile.snippets, which the localhost harness imports too -- read
+# the comments there before changing anything about how /api/stream is proxied
+# or what the Content-Security-Policy allows.
 {
 	email {$OHCAMEL_ACME_EMAIL}
 }
@@ -18,7 +23,7 @@
 import Caddyfile.snippets
 
 # ---------------------------------------------------------------------------
-# Public -- the synthetic demo
+# Public -- OhCamel Quant
 # ---------------------------------------------------------------------------
 {$OHCAMEL_DEMO_HOST} {
 	import ohcamel_common
@@ -27,9 +32,7 @@ import Caddyfile.snippets
 	# HTTPS, and it must not be made by the localhost harness, which cannot.
 	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
 
-	reverse_proxy ohcamel-demo:8080 {
-		import ohcamel_stream_proxy
-	}
+	import ohcamel_quant
 }
 
 # ---------------------------------------------------------------------------

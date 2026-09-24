@@ -85,6 +85,7 @@ export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 
 .PHONY: all build run stress backtest backtest-crisis options garch test research-test research-reproduce bench coverage fmt clean deps doctor \
         check-counts \
+        quant-deps quant-dev quant-test quant-live-test quant-web quant-serve quant-image \
         deploy-build deploy-up deploy-down deploy-verify deploy-logs deploy-smoke
 
 all: build
@@ -283,12 +284,71 @@ doctor:
 	  && opam list --installed --columns=name,version core async incremental owl cohttp-async alcotest
 
 # ---------------------------------------------------------------------------
+# OhCamel Quant (quant/): the public site -- FastAPI + React, real data only
+# ---------------------------------------------------------------------------
+#
+# Its own uv project (quant/pyproject.toml, quant/uv.lock) and npm project
+# (quant/web), like research/: none of these targets touches $(OPAM_ENV).
+# --frozen everywhere: install exactly what the lockfile says, never
+# re-resolve -- the same guarantee the Docker image and CI rely on.
+
+QUANT_PORT ?= 8090
+
+# Python deps (with the dev extra: pytest, ruff, respx) and the web app's
+# node_modules. npm ci only when node_modules is missing or older than the
+# lockfile, so repeated `make quant-dev` stays fast.
+quant-deps:
+	cd quant && uv sync --frozen --extra dev
+	@if [ ! -d quant/web/node_modules ] || [ quant/web/package-lock.json -nt quant/web/node_modules ]; then \
+	  cd quant/web && npm ci; \
+	fi
+
+# The API on :$(QUANT_PORT) and Vite on :5173 (which proxies /api to it),
+# together; Ctrl-C stops both. OFFLINE by default: committed real fixtures
+# only, no network, no keys -- set OHCAMEL_QUANT_OFFLINE=0 to fetch live data.
+quant-dev: quant-deps
+	@echo "  web  http://localhost:5173    api  http://localhost:$(QUANT_PORT)/api/docs"
+	@trap 'kill 0' INT TERM EXIT; \
+	  (cd quant && OHCAMEL_QUANT_OFFLINE=$${OHCAMEL_QUANT_OFFLINE:-1} \
+	     uv run --frozen ohcamel-quant serve --host 127.0.0.1 --port $(QUANT_PORT)) & \
+	  (cd quant/web && npm run dev) & \
+	  wait
+
+# Lint and the offline suite (committed real fixtures; conftest.py forces
+# OHCAMEL_QUANT_OFFLINE=1). What CI's `quant` job runs.
+quant-test:
+	cd quant && uv sync --frozen --extra dev && uv run --frozen ruff check && uv run --frozen pytest -q
+
+# The tests marked `live`: they hit the real vendors (Alpaca/Yahoo/Stooq,
+# FRED, Cboe, SEC, Ken French). Needs network; vendors rate-limit.
+quant-live-test:
+	cd quant && OHCAMEL_QUANT_LIVE_TESTS=1 uv run --frozen pytest -m live -q -rA
+
+# Typecheck and build the SPA into quant/web/dist, which the API serves at /.
+quant-web:
+	cd quant/web && npm ci && npm run typecheck && npm run build
+
+# The built app, as production runs it, on http://localhost:$(QUANT_PORT)
+# (online: real vendors, cached under quant/.data).
+quant-serve: quant-web
+	cd quant && uv sync --frozen && uv run --frozen ohcamel-quant serve --port $(QUANT_PORT)
+
+# The production image, from the repository root (it bakes in fixtures/ and
+# docs/crisis/). deploy.sh builds it through compose on the droplet.
+quant-image:
+	docker build -f quant/Dockerfile \
+	  --build-arg OHCAMEL_GIT_SHA=$$(git rev-parse HEAD 2>/dev/null || echo unknown) \
+	  -t ohcamel-quant:latest .
+
+# ---------------------------------------------------------------------------
 # Deployment
 # ---------------------------------------------------------------------------
 #
-# These targets drive the LOCAL harness -- the containerised engine behind the
-# same Caddy configuration production uses, on localhost, without TLS. They
-# exist so the deployment can be broken and fixed on a laptop instead of on a
+# These targets drive the LOCAL harness -- the public Quant app on
+# http://localhost:8000 and the containerised synthetic engine on
+# http://localhost:8001 (--profile demo; it is no longer public anywhere),
+# behind the same Caddy configuration production uses, without TLS. They exist
+# so the deployment can be broken and fixed on a laptop instead of on a
 # droplet.
 #
 # Deploying for real is deploy/deploy.sh, run on the droplet. There is no
@@ -296,21 +356,24 @@ doctor:
 # is a target somebody eventually runs by accident.
 
 LOCAL_COMPOSE := docker compose --env-file deploy/local.env \
-                  -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml
+                  -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml \
+                  --profile demo
 
-# Build the image. Twenty minutes cold; about one after an edit to lib/,
-# because the Dockerfile installs dependencies before it copies source.
-deploy-build:
+# Build both images. The engine: twenty minutes cold, about one after an edit
+# to lib/, because the Dockerfile installs dependencies before it copies
+# source. Quant: a few minutes cold, seconds after an edit.
+deploy-build: quant-image
 	docker build -f deploy/Dockerfile \
 	  --build-arg OHCAMEL_GIT_SHA=$$(git rev-parse HEAD 2>/dev/null || echo unknown) \
 	  --build-arg OHCAMEL_BUILT_AT=$$(date -u +%FT%TZ) \
 	  -t ohcamel:latest .
 
-# The demo engine behind Caddy on http://localhost:8000.
+# Quant on http://localhost:8000, the synthetic engine on :8001, both behind Caddy.
 deploy-up: deploy-build
-	$(LOCAL_COMPOSE) up -d
+	$(LOCAL_COMPOSE) up -d --no-build
 	@echo
-	@echo "  dashboard  http://localhost:8000"
+	@echo "  quant      http://localhost:8000"
+	@echo "  engine     http://localhost:8001   (synthetic demo, harness only)"
 	@echo "  verify     make deploy-verify"
 
 deploy-down:
@@ -323,11 +386,11 @@ deploy-logs:
 # the window, not delivered in a pile at the end. See the comment above the
 # stream check in deploy/smoke.sh for why counting frames is not enough.
 deploy-smoke:
-	deploy/smoke.sh http://localhost:8000
+	deploy/smoke.sh http://localhost:8000 --engine http://localhost:8001
 
 # Up, verify, down. What CI would run if this were wired into CI.
 deploy-verify: deploy-up
 	@sleep 5
-	@deploy/smoke.sh http://localhost:8000; status=$$?; \
+	@deploy/smoke.sh http://localhost:8000 --engine http://localhost:8001; status=$$?; \
 	  $(LOCAL_COMPOSE) down >/dev/null 2>&1; \
 	  exit $$status

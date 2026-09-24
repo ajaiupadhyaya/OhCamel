@@ -153,5 +153,12 @@ USER ohcamel
 # is the only service with a port on the host.
 EXPOSE 8080 8081
 
+# The same sha the binary carries on /api/ops, as image metadata, so
+# deploy/smoke.sh --expect-sha can check the gated live engine from the
+# droplet's docker CLI without its password. An ARG is per stage, hence
+# declared again here; last, so it costs one metadata layer.
+ARG OHCAMEL_GIT_SHA=unknown
+LABEL org.opencontainers.image.revision="$OHCAMEL_GIT_SHA"
+
 ENTRYPOINT ["/usr/local/bin/ohcamel"]
 CMD ["demo", "8080"]
