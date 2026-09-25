@@ -42,11 +42,12 @@ jobs:
   #
   # Everything this job runs is a parser: shellcheck over the shell, compose's
   # own renderer over the three compose files, caddy's Caddyfile adapter,
-  # systemd's unit parser, and a grep-only script over three sentences. None of
-  # it needs a toolchain, a daemon on the host, or a credential, which is why
-  # it finishes in a couple of minutes and why it can be the check that gates a
-  # deploy. It reads the checkout and nothing else -- the workflow's top-level
-  # `permissions: contents: read` is all it gets.
+  # systemd's unit parser, a grep-only script over three sentences, and awk
+  # over the two Dockerfiles' FROM lines. None of it needs a toolchain, a
+  # daemon on the host, or a credential, which is why it finishes in a couple
+  # of minutes and why it can be the check that gates a deploy. It reads the
+  # checkout and nothing else -- the workflow's top-level `permissions:
+  # contents: read` is all it gets.
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -308,6 +309,98 @@ jobs:
             fi
           done
           exit "$status"
+
+      # Every base image under deploy/ is pinned to a tag AND a digest (Task
+      # 8's requirement 6, and what both Dockerfiles' own FROM comments
+      # promise), and this is the step that notices when one is not. Nothing
+      # else in this workflow would: nothing builds deploy/Dockerfile or
+      # deploy/research.Dockerfile until Task 10's image job, and a build
+      # accepts a floating tag as readily as a digest -- so without this the
+      # requirement held only for as long as the three lines happened to read
+      # that way, while Dependabot (.github/dependabot.yml) is precisely the
+      # process that rewrites them, weekly, as pull requests that would
+      # otherwise merge green with the digest dropped.
+      #
+      # awk over the FROM lines and nothing else, in this job's character.
+      # What it has to know about a Dockerfile: `FROM` is case-insensitive; a
+      # `--platform=...` flag may precede the image; `FROM <stage>` names an
+      # earlier `AS <stage>` in the same file, not an image, and `FROM scratch`
+      # names the empty image, so neither is a base to pin (a build that reuses
+      # a stage is a correct Dockerfile, and a check that failed on it would be
+      # switched off, not fixed); and a heredoc (`RUN <<EOF` ... `EOF`) is data,
+      # not instructions -- deploy/research.Dockerfile carries Python whose
+      # `from` lines sit at column zero inside one. A digest without a tag
+      # fails too: the tag is the part a reader can act on and what Dependabot
+      # identifies the image by, and without it a digest bump is a bump of
+      # whatever `latest` means that week.
+      #
+      # Scope is deploy/ deliberately: quant/Dockerfile's floating FROM lines
+      # are compute Task 0.2 Step 2's, which publishes that image, and its pins
+      # land there with that step's Dependabot entry.
+      - name: FROM lines are pinned to a tag and a digest (deploy/)
+        run: |
+          files=(deploy/Dockerfile deploy/research.Dockerfile)
+          for f in "${files[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "$f is missing -- this step's list names the Dockerfiles deploy/ publishes; if one moved, move it here too"
+              exit 1
+            fi
+          done
+          # One line per FROM: "<verdict> <file>:<line>: <text>". The verdicts
+          # are pinned, stage, scratch, untagged (a digest but no tag) and
+          # unpinned; the last two fail.
+          report=$(awk '
+            FNR == 1 { split("", stages); inheredoc = 0 }
+            /^[ \t]*#/ { next }
+            inheredoc {
+              t = $0; sub(/^[ \t]+/, "", t)
+              if (t == delim) inheredoc = 0
+              next
+            }
+            {
+              # A heredoc opens at a token of the form <<EOF or <<-EOF, with
+              # EOF optionally quoted, which is how the Docker parser itself
+              # recognises one; everything up to the line that reads EOF is
+              # data.
+              for (k = 1; k <= NF; k++)
+                if ($k ~ /^<<-?[\047"]?[A-Za-z0-9_]+[\047"]?$/) {
+                  delim = $k
+                  sub(/^<<-?[\047"]?/, "", delim); sub(/[\047"]$/, "", delim)
+                  inheredoc = 1
+                  next
+                }
+            }
+            toupper($1) == "FROM" {
+              i = 2
+              while (i <= NF && substr($i, 1, 2) == "--") i++
+              image = (i <= NF) ? $i : ""
+              key = tolower(image)
+              # The tag is a ":" after the last "/" of the part before "@"; a
+              # ":" before the last "/" is a registry port, not a tag.
+              base = image; sub(/@.*$/, "", base)
+              n = split(base, parts, "/")
+              tagged = (parts[n] ~ /:/)
+              # "@sha256:" is 8 characters and a sha256 digest is 64 hex
+              # digits, so a pinned token matches exactly 8 + 64 = 72.
+              digested = (match(image, /@sha256:[0-9a-f]+/) && RLENGTH == 72)
+              if (image != "" && (key in stages)) v = "stage"
+              else if (key == "scratch")           v = "scratch"
+              else if (digested && tagged)         v = "pinned"
+              else if (digested)                   v = "untagged"
+              else                                 v = "unpinned"
+              for (j = i + 1; j < NF; j++)
+                if (toupper($j) == "AS") stages[tolower($(j + 1))] = 1
+              printf "%-8s %s:%d: %s\n", v, FILENAME, FNR, $0
+            }' "${files[@]}")
+          if [ -z "$report" ]; then
+            echo "no FROM lines found in ${files[*]} -- this check would check nothing"
+            exit 1
+          fi
+          printf '%s\n' "$report"
+          if printf '%s\n' "$report" | grep -qE '^(unpinned|untagged) '; then
+            echo "a FROM line above is not pinned as image:tag@sha256:<digest> -- pin it (docker buildx imagetools inspect image:tag prints the digest) so the build is reproducible and Dependabot can move it"
+            exit 1
+          fi
 
   build-and-test:
     # Two platforms, and the second one is not decoration. The Makefile carries
