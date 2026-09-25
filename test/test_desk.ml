@@ -882,6 +882,119 @@ let test_the_simulated_venues_synthetic_clock_populates_the_block () =
            (Date.day_of_week reading.Venue.Session_clock.next_close_date)))
     ()
 
+(* Fix round, B1: the k where the two calendars part, read through the clock.
+
+   The case above is at k = 2, and the pre-change arithmetic --
+   [Date.add_days base_date (k - 1)] -- agrees with the weekday walk at k = 1
+   and k = 2, because the second weekday from Thursday 2026-01-01 IS
+   2026-01-01 + 1 day. So restoring the old line leaves every assertion above
+   passing. k = 3 is the first session where the two disagree.
+
+   Twelve minutes into five-minute sessions from 14:00:00: elapsed 12 min, so
+   k = floor(12/5) + 1 = 3, the third session, closing at
+   14:00 + 3 x 5 min = 14:15:00Z. The third WEEKDAY from Thursday 2026-01-01
+   is Monday 2026-01-05 (Thu 01-01, Fri 01-02, then Sat 01-03 and Sun 01-04
+   are skipped -- 2026-01-01 is a Thursday, and the derivation is above
+   [monday_session]). The old arithmetic gave base_date + 2 days =
+   2026-01-03, a SATURDAY: a session dated on a day the market this venue
+   imitates never had, published on /api/desk. That is the defect ruling 20's
+   task exists to remove, so it is asserted here on the published field.
+
+   This case goes through [Sim_venue.clock] and reads the desk's own block,
+   NOT [Sim_venue.session_date] directly: test_sim_venue pins the calendar,
+   and what nothing held was the clock's use of it. *)
+let test_the_synthetic_clocks_third_session_is_published_as_a_monday () =
+  with_desk
+    ~f:(fun desk _ _ ->
+      let twelve = Time_ns.add at (Time_ns.Span.of_min 12.0) in
+      let venue =
+        Ohcamel_desk.Sim_venue.create ~opened_at:at
+          ~marks:(fun _ -> None)
+          ~now:(fun () -> twelve)
+          ~half_spread_bps:(fun _ -> 5.0)
+          ~cash:Notional.zero ~positions:[] ()
+      in
+      let reading = Ohcamel_desk.Sim_venue.clock venue in
+      Desk.set_clock desk ~at:twelve reading;
+      let s = Desk.summary_json ~now:twelve desk in
+      Alcotest.(check string)
+        "the third session closes at 14:15Z" "2026-09-14T14:15:00.000000000Z"
+        (Yojson.Safe.Util.to_string (clock_field s "next_close"));
+      Alcotest.(check string)
+        "dated the third synthetic weekday, Monday 2026-01-05 and not Saturday the 3rd"
+        "2026-01-05"
+        (Yojson.Safe.Util.to_string (clock_field s "next_close_date"));
+      Alcotest.(check bool)
+        "which is a weekday" false
+        (Day_of_week.is_sun_or_sat
+           (Date.day_of_week reading.Venue.Session_clock.next_close_date));
+      (* The wire and the journal's session rows come from one function --
+         bin/main.ml's demo close calls [session_date] too -- so the block's
+         date is the date that function gives for this k, and not a second
+         arithmetic that happens to agree at small k. *)
+      Alcotest.(check string)
+        "and it is the calendar's own third session"
+        (Date.to_string (Ohcamel_desk.Sim_venue.session_date 3))
+        (Yojson.Safe.Util.to_string (clock_field s "next_close_date")))
+    ()
+
+(* Fix round, B3: both of bin/main.ml's timer wirings, pinned in the source.
+
+   [Desk.refresh_clock] is called from exactly two places, both
+   [Clock_ns.every'] callbacks in bin/main.ml: live mode's
+   Config.Runtime.clock_interval timer and the demo's three-second staleness
+   timer. Delete the live one and the live /api/desk publishes
+   source: "unknown" for the life of the process, watch.sh (Task 18) skips
+   both of its market-state checks with one log line each, and every test,
+   smoke and lint in this repository stays green. Task 15's demo smoke catches
+   the demo's site later; nothing at any stage catches the live one.
+
+   bin/ is an executable and not a library, so no test can link it and call
+   the callback. This is therefore a source-level assertion, the same shape as
+   test_rebalance.ml's one-submit-site case, over the copies of bin/*.ml that
+   test/dune already globs in as deps. Each call is reported with the
+   [Clock_ns.every'] line that opened the callback it sits in, so deleting a
+   call fails here and so does moving one off the timer it belongs on.
+   "Desk.refresh_clock" is matched qualified, because the comments in
+   bin/main.ml and desk/desk.ml write the bare [refresh_clock] and a comment
+   is not a wiring. *)
+let test_both_of_the_engines_timers_refresh_the_clock () =
+  let sources =
+    Sys_unix.readdir "../bin" |> Array.to_list
+    |> List.filter ~f:(fun f ->
+        String.is_suffix f ~suffix:".ml" && not (String.is_substring f ~substring:".pp."))
+    |> List.sort ~compare:String.compare
+    |> List.map ~f:(fun f -> "../bin/" ^ f)
+  in
+  Alcotest.(check bool)
+    "there are bin/ sources to read at all" true
+    (not (List.is_empty sources));
+  let calls =
+    List.concat_map sources ~f:(fun file ->
+        In_channel.read_lines file
+        |> List.fold ~init:("", []) ~f:(fun (timer, found) line ->
+            let timer =
+              if String.is_substring line ~substring:"Clock_ns.every'" then
+                String.strip line
+              else timer
+            in
+            if String.is_substring line ~substring:"Desk.refresh_clock" then
+              (timer, (file, timer, String.strip line) :: found)
+            else (timer, found))
+        |> snd |> List.rev)
+  in
+  Alcotest.(check (list (triple string string string)))
+    "two wirings: live mode's clock_interval timer, and the demo's staleness timer"
+    [
+      ( "../bin/main.ml",
+        "Clock_ns.every' runtime.Config.Runtime.clock_interval (fun () ->",
+        "don't_wait_for (Ohcamel_desk.Desk.refresh_clock desk);" );
+      ( "../bin/main.ml",
+        "Clock_ns.every' (Time_ns.Span.of_sec 3.0) (fun () ->",
+        "don't_wait_for (Ohcamel_desk.Desk.refresh_clock desk);" );
+    ]
+    calls
+
 (* The kernel may not name the desk (global constraints), and the clock is the
    desk's. [Session_clock] is declared in desk/venue.ml and read in desk/ and
    bin/ alone; a kernel module that named it would be lib/ learning the venue's
@@ -960,6 +1073,10 @@ let suite =
         test_the_frames_desk_clock_is_the_same_object_as_api_desks;
       Alcotest.test_case "the simulated venue's synthetic clock populates the block"
         `Quick test_the_simulated_venues_synthetic_clock_populates_the_block;
+      Alcotest.test_case "the synthetic clock's third session is published as a Monday"
+        `Quick test_the_synthetic_clocks_third_session_is_published_as_a_monday;
+      Alcotest.test_case "both of the engine's timers refresh the clock" `Quick
+        test_both_of_the_engines_timers_refresh_the_clock;
       Alcotest.test_case "the kernel does not name the venue's clock" `Quick
         test_the_kernel_does_not_name_the_venues_clock;
     ] )

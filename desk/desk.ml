@@ -358,6 +358,34 @@ let clock_json ?now t : Yojson.Safe.t =
           ( "next_close_date",
             `String (Date.to_string c.Venue.Session_clock.next_close_date) );
           ("read_at", `String (Desk_time.rfc3339 read_at));
+          (* TWO WALL-CLOCK STAMPS, and the exposure that follows -- recorded
+             here for Task 18's watch.sh author, and deliberately NOT changed.
+
+             Both [now] and [read_at] come from Time_ns.now (), the host's wall
+             clock, so a reading stamped in the future relative to [now] has a
+             negative age and reads "venue-clock". On its own terms that is
+             right: a reading taken very recently should not be called stale.
+             Venue/host skew cannot produce it either, because [read_at] is the
+             host's clock at the moment the answer landed and not the venue's
+             own [Session_clock.now]. Only a backward step of the host's own
+             clock can -- an NTP correction or a resumed VM, the two causes
+             [book_is_current]'s comment above already names.
+
+             The bounded exposure is the combination VENUE UNREACHABLE plus
+             HOST CLOCK STEPS BACK by d: a genuinely old reading then reads
+             "venue-clock" for d + 15 minutes, and a watchdog runs its
+             market-state checks against a stale [is_open]. While the venue is
+             reachable the window is one clock_interval either way, because the
+             next successful read re-stamps.
+
+             It is left as it is because [book_is_current] compares two
+             wall-clock stamps in exactly this way for [last_sync]: changing
+             only this one would make the two halves of the same block
+             disagree about what a clock step means. Ruling 20 puts the raw
+             [read_at] on the wire for precisely this reason, so the guard can
+             live in the watchdog: Task 18's watch.sh must treat a [read_at] in
+             the future as stale rather than trusting the word here -- plan
+             commit 08972b1, which gives Task 18 that rule and a test for it. *)
           ( "source",
             `String
               (if Time_ns.Span.( <= ) (Time_ns.diff now read_at) clock_freshness then

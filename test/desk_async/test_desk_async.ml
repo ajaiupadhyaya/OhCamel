@@ -1543,6 +1543,211 @@ let test_a_raising_restore_idles_fill_read_and_a_later_read_still_runs () =
   Graph.destroy f.graph;
   return ()
 
+(* ---- Task 13a, fix round: [Desk.refresh_clock] (ruling 20, B2) ---------- *)
+
+(* [Desk.refresh_clock] is the Deferred half of the market-clock block: the
+   only caller is bin/main.ml's staleness timer, which starts it and does not
+   wait for it. The main suite hands readings over with [Desk.set_clock], a
+   plain setter, so until these three cases the whole of [refresh_clock] could
+   be replaced with [Deferred.unit] and every test stayed green -- including
+   the three behaviours the code's own comments call load-bearing. They need a
+   scheduler, so they live here.
+
+   [Venue.Read.clock] is a plain closure, so each case substitutes one: a read
+   that fails on its second call, a read that does not answer until the case
+   releases an Ivar, and no read at all (a disabled venue). No network, no
+   latency, no wall-clock wait. *)
+
+(* A Monday's session on the New York venue, in UTC. 2026-09-14 is a Monday --
+   2026-01-01 is a Thursday (2024-01-01 was a Monday, 2024 is a leap year so
+   2025-01-01 is a Wednesday, and 2025 has 365 days so 2026-01-01 is a
+   Thursday), and 2026-09-14 is 256 days later (31 + 28 + 31 + 30 + 31 + 30 +
+   31 + 31 = 243 days to 2026-09-01, plus 13), with 256 = 36 x 7 + 4, so
+   Thursday + 4 = Monday. The regular session runs 09:30-16:00 ET =
+   13:30-20:00 UTC in daylight time, so at t0 (14:00 UTC) the market is open,
+   this session closes at 20:00 UTC and the next opens Tuesday at 13:30. The
+   same reading as test/test_desk.ml's [monday_session]. *)
+let monday_session =
+  {
+    D.Venue.Session_clock.now = t0;
+    is_open = true;
+    next_open = Time_ns.of_string_with_utc_offset "2026-09-15T13:30:00Z";
+    next_close = Time_ns.of_string_with_utc_offset "2026-09-14T20:00:00Z";
+    next_close_date = Date.of_string "2026-09-14";
+  }
+
+(* A read half whose clock is the case's and whose other four answers are
+   errors: [refresh_clock] reads the clock and nothing else, and a case that
+   accidentally drove [sync] would say so here instead of passing quietly. *)
+let clock_only_read clock : D.Venue.Read.t =
+  {
+    name = "test";
+    account = (fun () -> return (Or_error.error_string "unused in this test"));
+    positions = (fun () -> return (Or_error.error_string "unused in this test"));
+    clock;
+    latest_quote = (fun _ -> return (Or_error.error_string "unused in this test"));
+    daily_bars = (fun _ ~days:_ -> return (Or_error.error_string "unused in this test"));
+  }
+
+let clock_desk f venue =
+  D.Desk.create ~graph:f.graph ~journal:f.journal ~venue ~spec:Desk_spec.default
+    ~on_change:ignore ~on_first_sync:ignore
+
+let clock_block json = Yojson.Safe.Util.member "clock" json
+
+let clock_field json key =
+  match Yojson.Safe.Util.member key (clock_block json) with
+  | `String s -> s
+  (* Never raises, so a block that has gone null under a mutation fails with a
+     readable message instead of a Yojson type error. *)
+  | other -> Yojson.Safe.to_string other
+
+(* "A FAILED READ LEAVES THIS ALONE" (desk/desk.ml's comment on the field) --
+   the headline contract of the whole block. A reading does not become wrong
+   when the next request fails, it becomes old, and the block says so in a
+   word while keeping every value the venue gave. Turning [| Error _ -> ()]
+   into [| Error _ -> t.clock <- None] would make one venue hiccup publish
+   "unknown", on which Task 18's watch.sh skips both of its market-state
+   checks -- the exact false alarm this field exists to avoid.
+
+   The venue answers once and fails afterwards. The stamp is the host's wall
+   clock at the moment the answer landed, so the ages this case means are
+   stated relative to that stamp and not to a fixed time: at the stamp itself
+   the age is zero, and at the stamp + 901 s it is past the fifteen-minute
+   freshness window (900 s) and reads "stale". *)
+let test_a_failed_clock_read_keeps_the_reading_it_had_which_ages_to_stale () =
+  let f = fixture () in
+  let reads = ref 0 in
+  let read =
+    clock_only_read (fun () ->
+        incr reads;
+        return
+          (if !reads = 1 then Ok monday_session
+           else Or_error.error_string "simulated: the venue's clock did not answer"))
+  in
+  let desk = clock_desk f (D.Desk.Reads read) in
+  let%bind () = D.Desk.refresh_clock desk in
+  Alcotest.(check int) "the first refresh took a read" 1 !reads;
+  let read_at = snd (Option.value_exn desk.D.Desk.clock) in
+  let fresh = D.Desk.summary_json ~now:read_at desk in
+  Alcotest.(check string) "which answered" "venue-clock" (clock_field fresh "source");
+  Alcotest.(check string)
+    "the venue's own next close" "2026-09-14T20:00:00.000000000Z"
+    (clock_field fresh "next_close");
+  (* The failing read. *)
+  let%bind () = D.Desk.refresh_clock desk in
+  Alcotest.(check int) "the second refresh took a read too, and it failed" 2 !reads;
+  Alcotest.(check string)
+    "a failed read leaves the whole published block alone"
+    (Yojson.Safe.to_string (clock_block fresh))
+    (Yojson.Safe.to_string (clock_block (D.Desk.summary_json ~now:read_at desk)));
+  Alcotest.(check bool)
+    "including its stamp, which is still the successful read's" true
+    (Option.value_map desk.D.Desk.clock ~default:false ~f:(fun (_, at) ->
+         Time_ns.equal at read_at));
+  (* And it ages, rather than disappearing: 901 s past the stamp is past the
+     fifteen-minute window, so the word changes and the values do not. *)
+  let old =
+    D.Desk.summary_json ~now:(Time_ns.add read_at (Time_ns.Span.of_sec 901.0)) desk
+  in
+  Alcotest.(check string)
+    "at 901 s the reading is stale" "stale" (clock_field old "source");
+  Alcotest.(check string)
+    "and is_open is still the venue's" "true" (clock_field old "is_open");
+  Alcotest.(check string)
+    "and so is the session's date" "2026-09-14"
+    (clock_field old "next_close_date");
+  Graph.destroy f.graph;
+  return ()
+
+(* The in-flight guard. The timer that calls [refresh_clock] every
+   Config.Runtime.clock_interval (5 s) also writes the graph's [now] cell, so
+   it starts the read and does not wait for it; without the guard a venue
+   slower than one interval would pile a request per interval for as long as
+   it stayed slow.
+
+   The venue does not answer until this case fills the gate. The second
+   refresh must start no read AND must not wait on the first -- it is called
+   from a timer callback that has work of its own to finish.
+
+   It also pins why a slow read cannot move [read_at] backwards: the stamp is
+   taken where the answer lands, not where the request was sent, and the guard
+   means at most one read is ever out, so two readings can only be stamped in
+   the order they land. (Two reads out at once is not constructible against
+   this code, which is the reviewer's own finding; what is asserted here is
+   the pair of properties that makes it so.) *)
+let test_a_second_clock_refresh_while_one_is_out_starts_no_second_read () =
+  let f = fixture () in
+  let gate = Ivar.create () in
+  let reads = ref 0 in
+  let read =
+    clock_only_read (fun () ->
+        incr reads;
+        let%map () = Ivar.read gate in
+        Ok monday_session)
+  in
+  let desk = clock_desk f (D.Desk.Reads read) in
+  let first = D.Desk.refresh_clock desk in
+  let%bind () = Scheduler.yield_until_no_jobs_remain () in
+  Alcotest.(check int) "one read is out" 1 !reads;
+  Alcotest.(check bool)
+    "and the guard says so" true
+    (Poly.equal desk.D.Desk.clock_read `Running);
+  let second = D.Desk.refresh_clock desk in
+  let%bind () = Scheduler.yield_until_no_jobs_remain () in
+  Alcotest.(check int) "the second refresh started no second read" 1 !reads;
+  Alcotest.(check bool)
+    "and returned at once rather than waiting on the first" true
+    (Deferred.is_determined second);
+  Alcotest.(check bool) "the first read is still out" false (Deferred.is_determined first);
+  Alcotest.(check bool)
+    "nothing is cached while it is out" true
+    (Option.is_none desk.D.Desk.clock);
+  let before_it_landed = Time_ns.now () in
+  Ivar.fill_exn gate ();
+  let%bind () = first in
+  let%bind () = Scheduler.yield_until_no_jobs_remain () in
+  Alcotest.(check int) "still one read, and its answer landed" 1 !reads;
+  Alcotest.(check bool)
+    "the guard idles again, so the next interval starts a read" true
+    (Poly.equal desk.D.Desk.clock_read `Idle);
+  Alcotest.(check bool)
+    "the stamp is where the answer landed, not where the request was sent" true
+    (Option.value_map desk.D.Desk.clock ~default:false ~f:(fun (_, at) ->
+         Time_ns.( >= ) at before_it_landed));
+  Graph.destroy f.graph;
+  return ()
+
+(* A disabled venue -- no credentials, or a refused trading key -- has no read
+   half at all, so there is nothing to ask. The refresh is a no-op: it raises
+   nothing, it leaves the cache empty, and the block goes on saying "unknown"
+   with five nulls. Unknown is not zero and it is not false: is_open false
+   would say the market is shut, which is a claim this desk has none to make,
+   and watch.sh would act on it. *)
+let test_a_disabled_venue_takes_no_clock_read_and_stays_unknown () =
+  let f = fixture () in
+  let desk =
+    clock_desk f
+      (D.Desk.Unavailable
+         { name = "alpaca-paper"; reason = "no credentials in this test" })
+  in
+  let%bind () = D.Desk.refresh_clock desk in
+  let%bind () = Scheduler.yield_until_no_jobs_remain () in
+  Alcotest.(check bool) "nothing was cached" true (Option.is_none desk.D.Desk.clock);
+  Alcotest.(check bool)
+    "and no read is out" true
+    (Poly.equal desk.D.Desk.clock_read `Idle);
+  let s = D.Desk.summary_json desk in
+  Alcotest.(check string) "the block says unknown" "unknown" (clock_field s "source");
+  Alcotest.(check (list string))
+    "and carries five nulls, not zeros"
+    [ "null"; "null"; "null"; "null"; "null" ]
+    (List.map
+       [ "is_open"; "next_open"; "next_close"; "next_close_date"; "read_at" ]
+       ~f:(clock_field s));
+  Graph.destroy f.graph;
+  return ()
+
 (* The intake's minute loop: a pass that raises is logged, and the next one
    still runs. The signals directory is removed before the first pass, so
    listing it raises -- the real failure of a volume that goes away -- and
@@ -2243,6 +2448,12 @@ let suites =
       [
         case "a raising restore idles fill_read, and a later read still runs"
           test_a_raising_restore_idles_fill_read_and_a_later_read_still_runs;
+        case "a failed clock read keeps the reading it had, which ages to stale"
+          test_a_failed_clock_read_keeps_the_reading_it_had_which_ages_to_stale;
+        case "a second clock refresh while one is out starts no second read"
+          test_a_second_clock_refresh_while_one_is_out_starts_no_second_read;
+        case "a disabled venue takes no clock read and stays unknown"
+          test_a_disabled_venue_takes_no_clock_read_and_stays_unknown;
       ] );
     ( "intake",
       [

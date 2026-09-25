@@ -8,9 +8,12 @@
 ; waits on the wall clock: every delay is on a Time_source the case creates
 ; and advances.
 ; let%bind and let%map need the preprocessor desk/dune names.
+; yojson: the market-clock refresh cases read the published block
+; (Desk.summary_json), because what they hold is what /api/desk carries and
+; not only what the cache field contains.
 
 (test
  (name test_desk_async)
- (libraries ohcamel ohcamel_desk core async alcotest)
+ (libraries ohcamel ohcamel_desk core async alcotest yojson)
  (preprocess
   (pps ppx_jane)))
