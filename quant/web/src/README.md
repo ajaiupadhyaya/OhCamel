@@ -1,7 +1,8 @@
 # OhCamel Quant web — guide for page authors
 
 Vite + React 18 + TypeScript (strict). `npm run dev` (proxy `/api` → `:8090`), `npm run build`
-(→ `web/dist`, served by FastAPI), `npm run typecheck`, `npm run lint`,
+(→ `web/dist`, served by FastAPI), `npm run typecheck`, `npm run lint`, `npm test` (Vitest,
+DOM-free unit tests beside pure modules as `*.test.ts`),
 `npm run screenshots` (Playwright against a running backend).
 
 **Read `pages/Markets.tsx` first.** It is the reference page, and its header comment lists the
@@ -103,8 +104,10 @@ null, undefined or NaN.
 ## Routes & navigation
 
 `lib/routes.ts` is the single registry (router, sidebar, command palette); its order is the
-sidebar order: Markets · Portfolio Lab, Optimizer, Strategy Lab · Volatility, Rates & Macro,
+sidebar order: Markets, Flight Deck · Portfolio Lab, Optimizer, Strategy Lab · Volatility, Rates & Macro,
 Company · Live Engine, Methodology. `/company` (no ticker) renders the Company landing.
+The Flight Deck takes `/deck?source=reference` (the recorded reference book) or
+`?source=engine` (the OCaml engine bridge); the default is your portfolio.
 The Optimizer accepts `/optimize?tickers=A,B&weights=0.4,0.6&start=…&end=…&from=portfolio`.
 
 ## Portfolio context
