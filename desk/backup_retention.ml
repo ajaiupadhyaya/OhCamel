@@ -6,7 +6,11 @@
    copies. Everything else goes. The Sunday tier is what makes a two-month-old
    restore possible without keeping sixty files: 14 dailies reach back a
    fortnight, and the Sundays reach back another eight weeks at one file a
-   week. *)
+   week.
+
+   And a fourth line the rule needs because of how a copy is written: a name
+   in the .tmp family is the leftover of a run that died, never a backup, and
+   always deleted. *)
 
 open Core
 
@@ -17,34 +21,65 @@ let daily_prefix = "desk-"
 let daily_suffix = ".db"
 let pre_deploy_prefix = "pre-deploy-"
 
-type kind = Daily of Date.t | Pre_deploy | Unrecognised
+(* What [Journal.backup] has beside a copy while the copy is being written:
+   the copy itself under [.tmp], and the -wal, -shm and -journal SQLite makes
+   for the destination handle while the copy leaves WAL mode. A run killed
+   between opening those and the rename -- SIGKILL, an OOM kill, a host
+   reboot -- leaves them under THAT day's name, and the next run's own tidying
+   knows only its own name, so the leftovers of every other day are this
+   module's to delete. *)
+let leftover_suffixes = [ ".tmp"; ".tmp-wal"; ".tmp-shm"; ".tmp-journal" ]
 
-(* [desk-YYYY-MM-DD.db] and nothing looser. The length is checked as well as
-   the parse because [Date.of_string] accepts "2026-9-1", which is not a name
-   anything here writes, and treating it as a daily would have it compete for
-   one of the 14 places with a file whose date nobody chose. A name beginning
-   [pre-deploy-] is a pre-deploy copy whatever follows, because the deploy
-   names those and the rule for them is a glob (ruling 11). *)
-let classify (name : string) : kind =
-  if String.is_prefix name ~prefix:pre_deploy_prefix then Pre_deploy
-  else
-    match String.chop_prefix name ~prefix:daily_prefix with
-    | None -> Unrecognised
-    | Some rest -> (
-        match String.chop_suffix rest ~suffix:daily_suffix with
-        | Some stamp when String.length stamp = 10 -> (
-            match Option.try_with (fun () -> Date.of_string stamp) with
-            | Some d -> Daily d
-            | None -> Unrecognised)
-        | _ -> Unrecognised)
+type kind = Daily of Date.t | Pre_deploy | Leftover | Unrecognised
+
+(* A leftover is judged FIRST, and only when what is under the suffix is a name
+   this rule recognises. First, because judged as a pre-deploy copy,
+   "pre-deploy-2026-09-08.db.tmp" sorts newest by name and takes a place from
+   a real rollback copy. Only over a recognised name, because the promise that
+   nothing unparseable is deleted must survive this: "notes.tmp" is somebody's
+   file and is kept.
+
+   A daily is [desk-YYYY-MM-DD.db] and nothing looser. The length is checked
+   as well as the parse because [Date.of_string] accepts the compact
+   "20260901", which is not a name anything here writes, and treating it as a
+   daily would have it compete for one of the 14 places with a file whose
+   date nobody chose. A name beginning [pre-deploy-] is a pre-deploy copy
+   whatever follows, because the deploy names those and the rule for them is
+   a glob (ruling 11).
+
+   A bare "-wal", "-shm" or "-journal" beside a FINISHED name is not a
+   leftover: nothing here writes one, a hot -journal is how SQLite rolls a
+   partial write back, and deleting one from under a database is how a
+   database is corrupted by hand. Those stay unrecognised, and kept. *)
+let rec classify (name : string) : kind =
+  match
+    List.find_map leftover_suffixes ~f:(fun suffix -> String.chop_suffix name ~suffix)
+  with
+  | Some stem -> (
+      match classify stem with
+      | Daily _ | Pre_deploy -> Leftover
+      | Leftover | Unrecognised -> Unrecognised)
+  | None -> (
+      if String.is_prefix name ~prefix:pre_deploy_prefix then Pre_deploy
+      else
+        match String.chop_prefix name ~prefix:daily_prefix with
+        | None -> Unrecognised
+        | Some rest -> (
+            match String.chop_suffix rest ~suffix:daily_suffix with
+            | Some stamp when String.length stamp = 10 -> (
+                match Option.try_with (fun () -> Date.of_string stamp) with
+                | Some d -> Daily d
+                | None -> Unrecognised)
+            | _ -> Unrecognised))
 
 let keep ~(now : Date.t) (names : string list) : string list * string list =
-  let dailies, pre_deploys, unrecognised =
-    List.fold names ~init:([], [], []) ~f:(fun (dailies, pre, odd) name ->
+  let dailies, pre_deploys, leftovers, unrecognised =
+    List.fold names ~init:([], [], [], []) ~f:(fun (dailies, pre, gone, odd) name ->
         match classify name with
-        | Daily d -> ((name, d) :: dailies, pre, odd)
-        | Pre_deploy -> (dailies, name :: pre, odd)
-        | Unrecognised -> (dailies, pre, name :: odd))
+        | Daily d -> ((name, d) :: dailies, pre, gone, odd)
+        | Pre_deploy -> (dailies, name :: pre, gone, odd)
+        | Leftover -> (dailies, pre, name :: gone, odd)
+        | Unrecognised -> (dailies, pre, gone, name :: odd))
   in
   (* A daily dated after [now] is kept and takes none of the 14 places: a
      clock that ran backwards, or a copy carried in by hand, must not push
@@ -66,6 +101,6 @@ let keep ~(now : Date.t) (names : string list) : string list * string list =
   let keeping = Set.of_list (module String) kept in
   let deleted =
     List.filter (List.map older ~f:fst) ~f:(fun n -> not (Set.mem keeping n))
-    @ pre_deleted
+    @ pre_deleted @ leftovers
   in
   (List.sort kept ~compare:String.compare, List.sort deleted ~compare:String.compare)

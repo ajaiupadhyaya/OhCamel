@@ -351,6 +351,78 @@ let test_the_copy_is_group_readable_and_no_tmp_survives () =
            (List.sort (Array.to_list (Sys_unix.readdir dir)) ~compare:String.compare)
            ~f:(fun name -> String.is_prefix name ~prefix:(Filename.basename dst ^ ".tmp"))))
 
+(* THE SOURCE IS NEVER THE DESTINATION (promoted from the reviewer's note (a)).
+
+   `ohcamel journal-backup /data/desk.db /data --name desk.db` is a line an
+   operator can type, and before this guard it returned Ok: the copy was
+   written to desk.db.tmp and renamed onto the live journal's own name, so
+   the file the desk had open was replaced under it -- a new inode, the mode
+   silently 0644 -> 0640, and a -wal left describing pages of a file that no
+   longer existed. The reviewer could not demonstrate data loss; a backup
+   whose destination can be its own source is refused regardless. Three ways
+   the destination can be the source, each tried here: the same path once
+   every symlink is resolved, the same inode under another name, and the
+   source's own -wal, -shm or -journal, which a rename onto would corrupt the
+   journal for certain. Refused before anything is touched: no .tmp is
+   written, and the source's inode and mode are what they were. *)
+let test_backup_refuses_its_own_source () =
+  with_temp_dir ~f:(fun dir ->
+      let src = Filename.concat dir "desk.db" in
+      let j = open_exn src in
+      fill_a_journal j;
+      let before = Core_unix.stat src in
+      let names () =
+        List.sort (Array.to_list (Sys_unix.readdir dir)) ~compare:String.compare
+      in
+      let listing = names () in
+      let refused what dst =
+        match Journal.backup ~src ~dst with
+        | Ok () -> Alcotest.failf "%s: a backup onto its own source returned Ok" what
+        | Error e ->
+            Alcotest.(check bool)
+              (what ^ ": the refusal names the source")
+              true
+              (String.is_substring e ~substring:src)
+      in
+      refused "the same path" src;
+      (* the same file by another path: through a symlink to the directory *)
+      let link = Filename.concat dir "link" in
+      Core_unix.symlink ~target:dir ~link_name:link;
+      refused "through a symlinked directory" (Filename.concat link "desk.db");
+      (* the same inode under another name *)
+      let hard = Filename.concat dir "hard.db" in
+      Core_unix.link ~target:src ~link_name:hard ();
+      refused "a hard link to the source" hard;
+      (* and the source's own siblings, whether or not they exist yet: the
+         -wal does, because the journal is in WAL mode with rows in it *)
+      Alcotest.(check bool)
+        "the -wal exists, so that case is a real file" true
+        (Stdlib.Sys.file_exists (src ^ "-wal"));
+      refused "the source's -wal" (src ^ "-wal");
+      refused "the source's -shm" (src ^ "-shm");
+      refused "the source's -journal" (src ^ "-journal");
+      let after = Core_unix.stat src in
+      Alcotest.(check int) "the source's inode is unchanged" before.st_ino after.st_ino;
+      Alcotest.(check int) "and so is its mode" before.st_perm after.st_perm;
+      Alcotest.(check (list string))
+        "and nothing was written beside it"
+        (List.sort (listing @ [ "hard.db"; "link" ]) ~compare:String.compare)
+        (names ());
+      (* the desk's handle still writes *)
+      Journal.record_session j
+        {
+          Journal.Session.date = date "2026-09-15";
+          equity_close = 101_000.0;
+          cash_close = 40_000.0;
+          gross_close = 90_000.0;
+          net_close = 60_000.0;
+          recorded_at = at;
+        };
+      Alcotest.(check int) "two sessions" 2 (Journal.session_count j);
+      (* and a backup to a name of its own still works from the same directory *)
+      backup_exn ~src ~dst:(Filename.concat dir "desk-2026-09-15.db");
+      Journal.close j)
+
 (* THE COPY IS CHECKED, on a copy that is sound.
 
    The counts are the rows [fill_a_journal] writes, one table at a time:
@@ -461,17 +533,89 @@ let test_verify_never_calls_a_truncated_copy_clean () =
       in
       Alcotest.(check bool) "a truncated copy is never clean" false clean)
 
-(* THE COPY IS CHECKED, on answers of our own choosing.
+(* THE COPY IS CHECKED, on real corruption, one page at a time.
 
    Ruling 11: the copy is reopened and integrity_check'ed before rotation. The
-   corruptions SQLite REPORTS rather than refuses -- "row 3 missing from index
-   fills_by_at", and the rest of integrity_check's own vocabulary -- cannot be
-   manufactured by a hermetic test without writing bytes at page offsets this
-   build's SQLite happens to use, or without a writable_schema that a defensive
-   build refuses outright (both were tried). So the verdict is driven directly,
-   exactly as [wal_check] is driven with a journal_mode answer of our own, and
-   for the same reason: a case that only read a real file could never tell a
-   working integrity check from a deleted one.
+   truncation case above cannot pin that pragma, because SQLite refuses a
+   half-file at [prepare] and the verdict comes through the [Error] branch;
+   the reviewer showed that replacing the pragma's answer with ["ok"] left
+   every case green. This case pins it without knowing anything about the
+   page layout of whichever SQLite the host linked: a real backup is taken,
+   and for EVERY page after the first a copy is written with that one page
+   zeroed and verified. SQLite has two possible answers to a zeroed page --
+   it refuses the file at some later query, or it answers and
+   integrity_check reports the page -- and neither may read as clean. At
+   least one page must reach the second answer, because that is the answer
+   the mutation above forges: a b-tree root that no query after the pragma
+   reads (the schema has seven declared indexes, and a row count walks at
+   most one b-tree per table) is found by integrity_check alone. Which pages those are
+   is SQLite's business and is not asserted.
+
+   The page size is read from the file's own header rather than assumed:
+   a big-endian 16-bit value at offset 16, where 1 means 65536 (SQLite file
+   format, "The Database Header"). *)
+let test_no_single_zeroed_page_ever_reads_clean () =
+  with_temp_dir ~f:(fun dir ->
+      let src = Filename.concat dir "desk.db" in
+      let j = open_exn src in
+      fill_a_journal j;
+      let good = Filename.concat dir "good.db" in
+      backup_exn ~src ~dst:good;
+      Journal.close j;
+      let whole = In_channel.read_all good in
+      let page_size =
+        match (Char.to_int whole.[16] lsl 8) lor Char.to_int whole.[17] with
+        | 1 -> 65536
+        | n -> n
+      in
+      let pages = String.length whole / page_size in
+      Alcotest.(check int)
+        "the copy is a whole number of pages" 0
+        (String.length whole mod page_size);
+      Alcotest.(check bool)
+        "and more than one of them, so there is a page after the header" true (pages > 1);
+      let broken = Filename.concat dir "broken.db" in
+      let reported = ref [] and refused = ref [] in
+      for page = 2 to pages do
+        let bytes = Bytes.of_string whole in
+        Bytes.fill bytes ~pos:((page - 1) * page_size) ~len:page_size '\000';
+        Out_channel.write_all broken ~data:(Bytes.to_string bytes);
+        match Journal.verify broken with
+        | Ok r when Journal.Report.clean r ->
+            Alcotest.failf "page %d of %d zeroed, and verify called the copy clean" page
+              pages
+        | Ok r ->
+            Alcotest.(check bool)
+              (sprintf "page %d zeroed: the problem is integrity_check's own" page)
+              false
+              (List.equal String.equal r.Journal.Report.integrity [ "ok" ]);
+            reported := page :: !reported
+        | Error _ -> refused := page :: !refused
+      done;
+      Alcotest.(check int)
+        "every page after the first was tried" (pages - 1)
+        (List.length !reported + List.length !refused);
+      Alcotest.(check bool)
+        (sprintf
+           "at least one zeroed page is REPORTED by integrity_check rather than refused \
+            (%d reported, %d refused of %d)"
+           (List.length !reported) (List.length !refused) (pages - 1))
+        true
+        (not (List.is_empty !reported));
+      (* and the untouched copy still reads clean, so the loop above was
+         testing the zeroing and not a broken fixture *)
+      Alcotest.(check bool)
+        "the good copy is clean" true
+        (Journal.Report.clean (verify_exn good)))
+
+(* THE COPY IS CHECKED, on answers of our own choosing.
+
+   [problems_of] is the verdict as a pure function of the three answers
+   [verify] collects, and this drives it directly for what only a pure
+   function can pin cheaply: the wording of every problem sentence, and the
+   order the report prints them in. It is NOT the pin on integrity_check
+   itself -- the zeroed-page sweep above is, because this case says nothing
+   about whether SQLite was asked.
 
    The four kinds of trouble, and the order the report prints them in. *)
 let test_the_verdict_names_every_kind_of_trouble () =
@@ -751,6 +895,401 @@ let test_retention_keeps_what_it_cannot_parse_and_what_postdates_now () =
     kept;
   Alcotest.(check int) "and 41 are still deleted" 41 (List.length deleted)
 
+(* THE SUNDAY CAP, IN BOTH DIRECTIONS (the reviewer's finding 3).
+
+   The 61-day case above has six Sundays in its tail, fewer than the 8 the
+   rule allows, so it cannot tell "the 8 most recent Sundays" from "every
+   Sunday" or from "the 8 OLDEST Sundays" -- and a pruner that kept the eight
+   oldest would still keep 22 files and look sane in a listing while the
+   restore window silently became a fortnight plus whatever ancient Sundays
+   lingered. This case has nineteen Sundays in its tail.
+
+   Dailies 2026-06-01 .. 2026-10-31, `now` = Saturday 2026-10-31:
+
+     the fixture        June 30 + July 31 + August 31 + September 30 +
+                        October 31 = 153 names
+     the 14 newest      10-18 .. 10-31, as before
+     what is left       06-01 .. 10-17 = 139 names
+     Sundays in those   2026-06-01 is a Monday: it is day 152 of the year,
+                        151 days after Thursday 01-01, and 151 = 21*7 + 4,
+                        so Thursday + 4. The first Sunday is therefore 06-07,
+                        and the Sundays at or before 10-17 are 06-07, 06-14,
+                        06-21, 06-28, 07-05, 07-12, 07-19, 07-26, 08-02,
+                        08-09, 08-16, 08-23, 08-30, 09-06, 09-13, 09-20,
+                        09-27, 10-04, 10-11: nineteen.
+     the 8 most recent  10-11, 10-04, 09-27, 09-20, 09-13, 09-06, 08-30, 08-23
+     kept               14 + 8 = 22
+     deleted            153 - 22 = 131
+
+   Dropping the cap would keep 08-16 and ten older Sundays (33 kept); taking
+   the eight oldest would keep 06-07 .. 07-26 and delete 08-23 .. 10-11.
+   Either changes the list below, which is written out in name order. *)
+let one_hundred_fifty_three_dailies =
+  let month first days = List.init days ~f:(fun i -> Date.add_days (date first) i) in
+  List.map ~f:daily
+    (month "2026-06-01" 30 @ month "2026-07-01" 31 @ month "2026-08-01" 31
+   @ month "2026-09-01" 30 @ month "2026-10-01" 31)
+
+let test_retention_keeps_the_eight_most_recent_sundays_and_no_more () =
+  Alcotest.(check int)
+    "the fixture is 153 names" 153
+    (List.length one_hundred_fifty_three_dailies);
+  Alcotest.(check string)
+    "and begins on a Monday" "MON"
+    (Day_of_week.to_string (Date.day_of_week (date "2026-06-01")));
+  let kept, deleted = Retention.keep ~now one_hundred_fifty_three_dailies in
+  Alcotest.(check (list string))
+    "the 14 newest and the EIGHT MOST RECENT older Sundays"
+    ([
+       "desk-2026-08-23.db";
+       "desk-2026-08-30.db";
+       "desk-2026-09-06.db";
+       "desk-2026-09-13.db";
+       "desk-2026-09-20.db";
+       "desk-2026-09-27.db";
+       "desk-2026-10-04.db";
+       "desk-2026-10-11.db";
+     ]
+    @ List.map (List.init 14 ~f:(fun i -> Date.add_days (date "2026-10-18") i)) ~f:daily)
+    kept;
+  Alcotest.(check int) "22 kept" 22 (List.length kept);
+  Alcotest.(check int) "131 deleted" 131 (List.length deleted);
+  Alcotest.(check bool)
+    "the ninth Sunday back, 08-16, is deleted" true
+    (List.mem deleted "desk-2026-08-16.db" ~equal:String.equal);
+  Alcotest.(check bool)
+    "and so is the oldest, 06-07" true
+    (List.mem deleted "desk-2026-06-07.db" ~equal:String.equal)
+
+(* A LEFTOVER IS NEVER A BACKUP (the reviewer's finding 1, reproduced).
+
+   [Journal.backup] writes to [dst.tmp] and renames; SQLite makes [.tmp-wal],
+   [.tmp-shm] and, while the copy leaves WAL mode, [.tmp-journal] beside it.
+   A run killed between the open and the rename -- SIGKILL, an OOM kill, a
+   host reboot -- leaves those behind under THAT day's name, and the next
+   run's own tidying only knows its own name. So retention must know them:
+   a name ending in the .tmp family is a leftover, deleted, and never a
+   backup that competes for a place.
+
+   The reviewer's fixture: seven pre-deploy copies 09-01 .. 09-07 and one
+   zero-byte "pre-deploy-2026-09-08.db.tmp". Before the fix the leftover was
+   classified pre-deploy, sorted newest by name, took one of the five places
+   and evicted the good pre-deploy-2026-09-03.db. Expected now: the five
+   newest real copies 09-03 .. 09-07 kept; 09-01, 09-02 and every leftover
+   deleted. The daily leftovers ride along to pin the other half of the
+   finding: a dead "desk-2026-09-19.db.tmp" with its -shm and -wal siblings,
+   and a "-journal", from a run on a day that is not today. *)
+let leftovers =
+  [
+    "pre-deploy-2026-09-08.db.tmp";
+    "desk-2026-09-19.db.tmp";
+    "desk-2026-09-19.db.tmp-shm";
+    "desk-2026-09-19.db.tmp-wal";
+    "desk-2026-09-20.db.tmp-journal";
+  ]
+
+let seven_pre_deploys =
+  List.map [ "01"; "02"; "03"; "04"; "05"; "06"; "07" ] ~f:(fun d ->
+      sprintf "pre-deploy-2026-09-%s.db" d)
+
+let test_retention_never_keeps_a_leftover_and_never_lets_one_take_a_place () =
+  let kept, deleted =
+    Retention.keep ~now:(date "2026-09-24") (leftovers @ seven_pre_deploys)
+  in
+  Alcotest.(check (list string))
+    "the five newest REAL pre-deploy copies, 09-03 among them"
+    [
+      "pre-deploy-2026-09-03.db";
+      "pre-deploy-2026-09-04.db";
+      "pre-deploy-2026-09-05.db";
+      "pre-deploy-2026-09-06.db";
+      "pre-deploy-2026-09-07.db";
+    ]
+    kept;
+  Alcotest.(check (list string))
+    "the two oldest copies and every leftover, whatever its date"
+    (List.sort
+       ([ "pre-deploy-2026-09-01.db"; "pre-deploy-2026-09-02.db" ] @ leftovers)
+       ~compare:String.compare)
+    deleted;
+  (* a leftover is deleted even when it is the only thing in the directory:
+     nothing about it is a backup *)
+  let kept, deleted = Retention.keep ~now:(date "2026-09-24") leftovers in
+  Alcotest.(check (list string)) "alone, nothing is kept" [] kept;
+  Alcotest.(check int) "and all five go" 5 (List.length deleted);
+  (* a bare -journal, -wal or -shm beside a FINISHED backup is not one of
+     ours -- SQLite would need a hot journal to roll a partial write back, and
+     deleting one under it is how a database is corrupted by hand -- so those
+     stay unrecognised and kept *)
+  let odd = [ "desk-2026-09-14.db-journal"; "desk-2026-09-14.db-wal" ] in
+  let kept, deleted = Retention.keep ~now:(date "2026-09-24") odd in
+  Alcotest.(check (list string)) "a bare sibling is kept" odd kept;
+  Alcotest.(check (list string)) "and nothing is deleted" [] deleted
+
+(* ------------------------------------------------------------------------ *)
+(* THE COMMANDS                                                              *)
+(* ------------------------------------------------------------------------ *)
+
+(* [ohcamel journal-backup] and [ohcamel journal-verify], driven through
+   [Journal_cli] -- the bodies bin/main.ml prints and exits on. The reviewer
+   showed that with those bodies in bin/, three things could each be deleted
+   with the whole suite green: the verify-the-copy step that runs before the
+   prune, the --name guard, and journal-verify's non-zero exit on a dirty
+   report. Each is pinned below, on outcomes a test can read. *)
+module Cli = Ohcamel_desk.Journal_cli
+
+let plant dir name = Out_channel.write_all (Filename.concat dir name) ~data:""
+
+let names_in dir =
+  List.sort (Array.to_list (Sys_unix.readdir dir)) ~compare:String.compare
+
+(* 2026-09-14, the day these cases reckon from: day 257 of 2026 (243 through
+   August, plus 14), 256 days after Thursday 01-01, and 256 = 36*7 + 4, so a
+   Monday. *)
+let reckoning = date "2026-09-14"
+
+let test_the_commands_reckoning_day_is_a_monday () =
+  Alcotest.(check string)
+    "2026-09-14" "MON"
+    (Day_of_week.to_string (Date.day_of_week reckoning))
+
+(* A file journal this build would not restore from: real rows, then the
+   schema version rewritten to 99 underneath. [Journal.backup] copies it
+   faithfully -- the backup API copies pages and judges nothing -- and
+   [verify] then reports the version, which is how a copy fails its check
+   without a byte of it being corrupt. *)
+let a_journal_of_version_99 dir =
+  let src = Filename.concat dir "desk.db" in
+  let j = open_exn src in
+  fill_a_journal j;
+  Journal.close j;
+  let db = Sqlite3.db_open src in
+  ignore
+    (Sqlite3.exec db "UPDATE meta SET value = '99' WHERE key = 'schema_version'"
+      : Sqlite3.Rc.t);
+  ignore (Sqlite3.db_close db : bool);
+  src
+
+(* journal-verify: status 0 and the report on a clean copy; on a dirty one,
+   status 1 with the report still printed and its PROBLEM line the last thing
+   on the screen, and one stderr line naming the file; on a file that cannot
+   be read, status 1 and nothing on stdout. *)
+let test_journal_verify_exits_non_zero_on_a_dirty_report () =
+  with_temp_dir ~f:(fun dir ->
+      let src = Filename.concat dir "desk.db" in
+      let j = open_exn src in
+      fill_a_journal j;
+      let good = Filename.concat dir "good.db" in
+      backup_exn ~src ~dst:good;
+      Journal.close j;
+      let o = Cli.verify good in
+      Alcotest.(check int) "a clean copy: status 0" 0 o.Cli.Outcome.status;
+      Alcotest.(check (option string)) "and nothing on stderr" None o.Cli.Outcome.err;
+      Alcotest.(check (list string))
+        "stdout is the report, line for line"
+        (Journal.Report.lines (verify_exn good))
+        o.Cli.Outcome.out;
+      let db = Sqlite3.db_open good in
+      ignore
+        (Sqlite3.exec db "UPDATE meta SET value = '99' WHERE key = 'schema_version'"
+          : Sqlite3.Rc.t);
+      ignore (Sqlite3.db_close db : bool);
+      let o = Cli.verify good in
+      Alcotest.(check int) "a dirty copy: status 1" 1 o.Cli.Outcome.status;
+      Alcotest.(check bool)
+        "the report is still printed, its PROBLEM line last" true
+        (String.is_prefix
+           (List.last_exn o.Cli.Outcome.out)
+           ~prefix:"  PROBLEM: schema version 99");
+      Alcotest.(check bool)
+        "and the stderr line names the file" true
+        (Option.value_map o.Cli.Outcome.err ~default:false
+           ~f:(String.is_substring ~substring:good));
+      let o = Cli.verify (Filename.concat dir "absent.db") in
+      Alcotest.(check int) "a file that is not there: status 1" 1 o.Cli.Outcome.status;
+      Alcotest.(check (list string)) "nothing on stdout" [] o.Cli.Outcome.out;
+      Alcotest.(check bool) "the error on stderr" true (Option.is_some o.Cli.Outcome.err))
+
+(* THE COMMAND, END TO END, with the reviewer's leftovers in the directory.
+
+   The source lives in one temp directory and the backups in another, so the
+   journal's own -wal and -shm are not in the listing the prune reads.
+   Planted in DIR before the run, zero bytes each, because retention reads
+   names and nothing else:
+
+     desk-2026-09-01.db .. desk-2026-09-13.db   13 dailies
+     desk-2026-08-31.db                          a Monday: day 243, 242 = 34*7 + 4
+     desk-2026-08-30.db                          a Sunday: day 242, 241 = 34*7 + 3
+     desk-2026-09-10.db.tmp, .tmp-shm            a killed run's leftovers, four days old
+     pre-deploy-2026-09-01.db .. 07.db           seven rollback copies
+     pre-deploy-2026-09-08.db.tmp                the reviewer's leftover
+     README                                      somebody's note
+
+   26 names, and the run writes a 27th, desk-2026-09-14.db (no --name, so
+   today's). Retention at 2026-09-14:
+
+     dailies at or before now   08-30, 08-31, 09-01 .. 09-14: 16
+     the 14 newest              09-01 .. 09-14
+     older                      08-31 (Monday, deleted), 08-30 (Sunday, kept)
+     pre-deploy                 the five newest 09-03 .. 09-07 kept; 09-01, 09-02 deleted
+     leftovers                  all three deleted
+     README                     kept
+
+   kept = 14 + 1 + 5 + 1 = 21, deleted = 1 + 2 + 3 = 6, and 21 + 6 = 27.
+   Before finding 1 the leftover "pre-deploy-2026-09-08.db.tmp" took 09-03's
+   place and the three leftovers stayed for ever. *)
+let test_journal_backup_writes_todays_copy_verifies_it_and_prunes () =
+  with_temp_dir ~f:(fun home ->
+      with_temp_dir ~f:(fun dir ->
+          let src = Filename.concat home "desk.db" in
+          let j = open_exn src in
+          fill_a_journal j;
+          let september =
+            List.init 13 ~f:(fun i -> daily (Date.add_days (date "2026-09-01") i))
+          in
+          List.iter september ~f:(plant dir);
+          List.iter
+            [
+              "desk-2026-08-31.db";
+              "desk-2026-08-30.db";
+              "desk-2026-09-10.db.tmp";
+              "desk-2026-09-10.db.tmp-shm";
+              "pre-deploy-2026-09-08.db.tmp";
+              "README";
+            ]
+            ~f:(plant dir);
+          List.iter seven_pre_deploys ~f:(plant dir);
+          Alcotest.(check int) "26 names before the run" 26 (List.length (names_in dir));
+          let o = Cli.backup ~now:reckoning ~src ~dir ~name:None in
+          Alcotest.(check (option string)) "nothing on stderr" None o.Cli.Outcome.err;
+          Alcotest.(check int) "status 0" 0 o.Cli.Outcome.status;
+          let dst = Filename.concat dir "desk-2026-09-14.db" in
+          Alcotest.(check (list string))
+            "the 21 kept are what is left in DIR"
+            (List.sort
+               (september
+               @ [ "desk-2026-09-14.db"; "desk-2026-08-30.db"; "README" ]
+               @ List.drop seven_pre_deploys 2)
+               ~compare:String.compare)
+            (names_in dir);
+          Alcotest.(check bool)
+            "today's copy is a real journal, and clean" true
+            (Journal.Report.clean (verify_exn dst));
+          Alcotest.(check int) "0640" 0o640 (Core_unix.stat dst).st_perm;
+          (* what it printed: the write first, the tally last, the report and
+             one line per deletion between *)
+          Alcotest.(check string)
+            "the first line is the write"
+            (sprintf "ohcamel: wrote %s" dst)
+            (List.hd_exn o.Cli.Outcome.out);
+          Alcotest.(check string)
+            "the last line is the tally"
+            (sprintf "ohcamel: 21 kept, 6 deleted in %s" dir)
+            (List.last_exn o.Cli.Outcome.out);
+          Alcotest.(check (list string))
+            "six deletions, each named"
+            (List.map
+               [
+                 "desk-2026-08-31.db";
+                 "desk-2026-09-10.db.tmp";
+                 "desk-2026-09-10.db.tmp-shm";
+                 "pre-deploy-2026-09-01.db";
+                 "pre-deploy-2026-09-02.db";
+                 "pre-deploy-2026-09-08.db.tmp";
+               ] ~f:(fun n -> sprintf "ohcamel: deleted %s" (Filename.concat dir n)))
+            (List.filter o.Cli.Outcome.out
+               ~f:(String.is_prefix ~prefix:"ohcamel: deleted "));
+          Alcotest.(check bool)
+            "and the report is printed, with its integrity answer" true
+            (List.exists o.Cli.Outcome.out ~f:(fun l ->
+                 String.is_prefix l ~prefix:"  integrity_check"
+                 && String.is_suffix l ~suffix:" ok"));
+          Journal.close j))
+
+(* VERIFY BEFORE PRUNE, and a copy that fails is not left under a daily's name.
+
+   The source is a version-99 journal, so the copy is written whole and then
+   fails its check. Planted: 25 dailies, 2026-08-20 .. 2026-09-13 (12 in
+   August, 13 in September), eleven more than the window. A prune that ran
+   would keep the 14 newest, 08-31 .. 09-13, and of the eleven older -- 08-20
+   .. 08-30 -- the Sundays 08-23 (day 235, 234 = 33*7 + 3) and 08-30, deleting
+   nine. Expected instead: all 25 still there, the copy gone, no .tmp
+   anywhere, status 1, the report printed with its PROBLEM line, no tally and
+   no "deleted" line at all. *)
+let test_journal_backup_deletes_a_copy_that_fails_its_check_and_prunes_nothing () =
+  with_temp_dir ~f:(fun home ->
+      with_temp_dir ~f:(fun dir ->
+          let src = a_journal_of_version_99 home in
+          let planted =
+            List.map ~f:daily
+              (List.init 12 ~f:(fun i -> Date.add_days (date "2026-08-20") i)
+              @ List.init 13 ~f:(fun i -> Date.add_days (date "2026-09-01") i))
+          in
+          List.iter planted ~f:(plant dir);
+          Alcotest.(check int) "25 planted" 25 (List.length planted);
+          let o = Cli.backup ~now:reckoning ~src ~dir ~name:None in
+          Alcotest.(check int) "status 1" 1 o.Cli.Outcome.status;
+          Alcotest.(check (list string))
+            "every planted daily is still there, the copy is gone, and no .tmp"
+            (List.sort planted ~compare:String.compare)
+            (names_in dir);
+          Alcotest.(check bool)
+            "the report was printed, with the problem" true
+            (List.exists o.Cli.Outcome.out
+               ~f:(String.is_prefix ~prefix:"  PROBLEM: schema version 99"));
+          Alcotest.(check (list string))
+            "and nothing was deleted by a prune" []
+            (List.filter o.Cli.Outcome.out
+               ~f:(String.is_prefix ~prefix:"ohcamel: deleted "));
+          Alcotest.(check bool)
+            "no tally either" false
+            (List.exists o.Cli.Outcome.out ~f:(String.is_substring ~substring:" kept, "));
+          Alcotest.(check bool)
+            "the stderr line names the copy and says it was deleted" true
+            (Option.value_map o.Cli.Outcome.err ~default:false ~f:(fun e ->
+                 String.is_substring e
+                   ~substring:(Filename.concat dir "desk-2026-09-14.db")
+                 && String.is_substring e ~substring:"deleted"))))
+
+(* THE TWO REFUSALS, before anything is written.
+
+   A NAME with a directory in it, or empty. The subdirectory "a" exists, so
+   without the guard "a/b.db" would be written there successfully -- outside
+   the prune's view -- and a case that only checked the status would pass for
+   the wrong reason. And the source's own name in the source's own directory,
+   which is the operator's `journal-backup /data/desk.db /data --name
+   desk.db`, and its -wal. *)
+let test_journal_backup_refuses_a_bad_name_and_its_own_source () =
+  with_temp_dir ~f:(fun dir ->
+      let src = Filename.concat dir "desk.db" in
+      let j = open_exn src in
+      fill_a_journal j;
+      let sub = Filename.concat dir "a" in
+      Core_unix.mkdir sub;
+      let before = names_in dir and inode = (Core_unix.stat src).st_ino in
+      let refused what name ~naming =
+        let o = Cli.backup ~now:reckoning ~src ~dir ~name:(Some name) in
+        Alcotest.(check int) (what ^ ": status 1") 1 o.Cli.Outcome.status;
+        Alcotest.(check (list string)) (what ^ ": nothing printed") [] o.Cli.Outcome.out;
+        Alcotest.(check bool)
+          (what ^ ": the stderr line says why")
+          true
+          (Option.value_map o.Cli.Outcome.err ~default:false
+             ~f:(String.is_substring ~substring:naming));
+        Alcotest.(check (list string)) (what ^ ": nothing written") before (names_in dir)
+      in
+      refused "a name with a directory in it" "a/b.db" ~naming:"--name";
+      Alcotest.(check bool)
+        "and a/b.db was not written" false
+        (Stdlib.Sys.file_exists (Filename.concat sub "b.db"));
+      refused "an empty name" "" ~naming:"--name";
+      refused "the source's own name" "desk.db" ~naming:src;
+      refused "the source's -wal" "desk.db-wal" ~naming:src;
+      Alcotest.(check int)
+        "the source's inode is what it was" inode (Core_unix.stat src).st_ino;
+      Alcotest.(check int) "and it still has its one session" 1 (Journal.session_count j);
+      Journal.close j)
+
 let suite =
   ( "journal backup",
     [
@@ -764,12 +1303,16 @@ let suite =
         test_a_read_only_open_creates_nothing;
       Alcotest.test_case "the copy is group-readable and no tmp survives" `Quick
         test_the_copy_is_group_readable_and_no_tmp_survives;
+      Alcotest.test_case "backup refuses its own source" `Quick
+        test_backup_refuses_its_own_source;
       Alcotest.test_case "verify reports the version, counts and newest rows" `Quick
         test_verify_reports_the_version_the_counts_and_the_newest_rows;
       Alcotest.test_case "verify reports an empty journal as empty, not broken" `Quick
         test_verify_reports_an_empty_journal_as_empty_not_broken;
       Alcotest.test_case "verify never calls a truncated copy clean" `Quick
         test_verify_never_calls_a_truncated_copy_clean;
+      Alcotest.test_case "no single zeroed page ever reads clean" `Quick
+        test_no_single_zeroed_page_ever_reads_clean;
       Alcotest.test_case "the verdict names every kind of trouble" `Quick
         test_the_verdict_names_every_kind_of_trouble;
       Alcotest.test_case "verify names a missing table" `Quick
@@ -788,4 +1331,20 @@ let suite =
         test_retention_keeps_the_five_newest_pre_deploy_copies;
       Alcotest.test_case "retention keeps what it cannot parse and what postdates now"
         `Quick test_retention_keeps_what_it_cannot_parse_and_what_postdates_now;
+      Alcotest.test_case "retention keeps the eight most recent Sundays and no more"
+        `Quick test_retention_keeps_the_eight_most_recent_sundays_and_no_more;
+      Alcotest.test_case
+        "retention never keeps a leftover and never lets one take a place" `Quick
+        test_retention_never_keeps_a_leftover_and_never_lets_one_take_a_place;
+      Alcotest.test_case "the commands' reckoning day is a Monday" `Quick
+        test_the_commands_reckoning_day_is_a_monday;
+      Alcotest.test_case "journal-verify exits non-zero on a dirty report" `Quick
+        test_journal_verify_exits_non_zero_on_a_dirty_report;
+      Alcotest.test_case "journal-backup writes today's copy, verifies it and prunes"
+        `Quick test_journal_backup_writes_todays_copy_verifies_it_and_prunes;
+      Alcotest.test_case
+        "journal-backup deletes a copy that fails its check and prunes nothing" `Quick
+        test_journal_backup_deletes_a_copy_that_fails_its_check_and_prunes_nothing;
+      Alcotest.test_case "journal-backup refuses a bad name and its own source" `Quick
+        test_journal_backup_refuses_a_bad_name_and_its_own_source;
     ] )

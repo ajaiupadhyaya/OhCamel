@@ -399,7 +399,7 @@ let leave_wal_mode db =
         (String.concat ~sep:"," modes)
         ()
 
-let backup ~(src : string) ~(dst : string) : (unit, string) Result.t =
+let backup_to ~(src : string) ~(dst : string) : (unit, string) Result.t =
   let tmp = dst ^ ".tmp" in
   (* The -wal and -shm the destination handle makes for itself. It makes them
      because the backup API writes the source's header, WAL flag and all, into
@@ -452,6 +452,61 @@ let backup ~(src : string) ~(dst : string) : (unit, string) Result.t =
       Error
         (sprintf "journal: backup %s -> %s failed: %s" src dst (Error.to_string_hum e))
 
+(* THE DESTINATION IS NEVER THE SOURCE.
+
+   `ohcamel journal-backup /data/desk.db /data --name desk.db` is a line an
+   operator can type. Without this guard it returned Ok, having written the
+   copy to desk.db.tmp and renamed it onto the live journal's own name: the
+   file the desk held open was replaced under it (a new inode, the mode
+   silently 0640), and its -wal was left describing pages of a file that no
+   longer existed. Whether that loses data depends on what the desk does
+   next, and a backup does not get to depend on that.
+
+   Three ways the destination can be the source, each refused before anything
+   is touched: the same path once every symlink is resolved; the same inode
+   under another name; and any file this run writes -- the copy, its .tmp,
+   and the .tmp's -wal, -shm and -journal -- landing on any of the source's
+   own: the journal, its -wal, -shm and -journal. A rename onto a live -wal
+   corrupts the journal for certain. *)
+
+(* [path] with every symlink resolved, for a file that need not exist yet: its
+   directory is resolved and its basename kept. None when even the directory
+   cannot be resolved, which leaves the guard nothing to say and the open that
+   follows to name the missing directory itself. *)
+let resolved path =
+  match Filename_unix.realpath path with
+  | p -> Some p
+  | exception _ -> (
+      match Filename_unix.realpath (Filename.dirname path) with
+      | d -> Some (Filename.concat d (Filename.basename path))
+      | exception _ -> None)
+
+let same_inode a b =
+  match (Core_unix.stat a, Core_unix.stat b) with
+  | sa, sb -> sa.st_dev = sb.st_dev && sa.st_ino = sb.st_ino
+  | exception _ -> false
+
+let destination_is_the_source ~src ~dst =
+  let tmp = dst ^ ".tmp" in
+  let written = [ dst; tmp; tmp ^ "-wal"; tmp ^ "-shm"; tmp ^ "-journal" ] in
+  let sources = [ src; src ^ "-wal"; src ^ "-shm"; src ^ "-journal" ] in
+  List.exists written ~f:(fun w ->
+      List.exists sources ~f:(fun s ->
+          same_inode w s
+          ||
+          match (resolved w, resolved s) with
+          | Some w, Some s -> String.equal w s
+          | _ -> false))
+
+let backup ~(src : string) ~(dst : string) : (unit, string) Result.t =
+  if destination_is_the_source ~src ~dst then
+    Error
+      (sprintf
+         "journal: backup %s -> %s refused: the destination is the source's own file, \
+          and renaming the copy onto it would replace the live journal under the desk"
+         src dst)
+  else backup_to ~src ~dst
+
 module Report = struct
   type t = {
     path : string;
@@ -501,12 +556,10 @@ type report = Report.t
 
 (* The verdict alone, with no SQLite and no IO: everything [verify] concludes
    from the three answers it collected, in the order the report prints them.
-   Pulled out and exported for [wal_check]'s reason -- a corruption
-   integrity_check REPORTS rather than refuses ("row 3 missing from index
-   fills_by_at") cannot be manufactured by a hermetic test without depending on
-   the page layout of whichever SQLite the host linked, or on a writable_schema
-   that a defensive build refuses outright. A case that only read a real file
-   could therefore never tell a working integrity check from a deleted one.
+   Pulled out and exported so the wording of each problem and the order they
+   print in can be pinned on answers of a test's own choosing. It is NOT what
+   pins integrity_check itself: that is a real backup with one page zeroed at a
+   time, which SQLite either refuses or reports, and never calls clean.
 
    [known_version] is the module's [schema_version] under a second name, because
    the labelled argument below shadows it. *)

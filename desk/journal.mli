@@ -52,7 +52,12 @@ val backup : src:string -> dst:string -> (unit, string) Result.t
     will not open a WAL database read-only unless it can create the -shm file beside it,
     and a backup is the one file that gets read where it cannot write, [verify] included.
     The copy holds every page either way, so the rollback journal mode costs nothing and
-    makes the single file a whole backup. *)
+    makes the single file a whole backup.
+
+    A destination that is the source's own file -- the journal, or its -wal, -shm or
+    -journal, by path once every symlink is resolved or by inode -- is refused before
+    anything is written, because renaming the copy onto it would replace the live journal
+    under the desk. *)
 
 (** What [verify] found in one journal file. [problems] is the whole verdict: empty means
     every check passed, and [Report.clean] is the sentence [journal-verify]'s exit status
@@ -333,11 +338,10 @@ module For_testing : sig
     missing_tables:string list ->
     string list
   (** [verify]'s verdict alone, with no SQLite and no IO, from answers of the caller's
-      choosing, in the order the report prints them. Exported for [wal_check]'s reason: a
-      corruption that integrity_check REPORTS rather than refuses cannot be manufactured
-      hermetically without depending on the page layout of whichever SQLite the host
-      linked, so a case that only read a real file could never tell a working integrity
-      check from a deleted one. *)
+      choosing, in the order the report prints them: the seam for pinning each problem's
+      wording and the order they print in. It does not pin integrity_check itself -- a
+      real backup with one page zeroed at a time does, layout-independently, because
+      SQLite either refuses such a file or reports the page, and neither reads clean. *)
 
   val wal_check : path:string -> string list -> (unit, string) Result.t
   (** The refusal's decision alone, with no SQLite and no IO: [Ok ()] only for a single

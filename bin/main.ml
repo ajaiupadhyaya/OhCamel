@@ -1882,73 +1882,29 @@ let run_demo ~port =
 (* ------------------------------------------------------------------------ *)
 
 (* Both modes are plain programs: no scheduler, no book, no feeds, no
-   credentials. `journal-backup` runs in a one-shot container off a host
-   systemd timer at 06:30 UTC (ruling 11), so everything it can be wrong about
-   must be an exit status, and every exit status but zero must mean "do not
-   trust today's copy". It therefore refuses to prune until the copy it just
-   wrote has been verified: a pruner that ran before the check could delete the
-   fourteenth-oldest good daily to make room for a broken new one.
-
+   credentials -- and their bodies live in desk/journal_cli.ml, where test/
+   can drive them: while they lived here, three of their guarantees (the copy
+   verified before anything is pruned, the --name guard, journal-verify's
+   non-zero exit on a dirty report) could each be deleted with the suite
+   green. This prints what the command printed and exits with its status.
    Async is never entered, which is what lets the timer run this in the same
    image as the engine without starting one. *)
 
-let journal_problem line =
-  Out_channel.output_string Stdlib.stderr (line ^ "\n");
-  Out_channel.flush Stdlib.stderr;
-  exit 1
+module Journal_cli = Ohcamel_desk.Journal_cli
 
-let print_report report =
-  List.iter (Ohcamel_desk.Journal.Report.lines report) ~f:(printf "%s\n")
+let exit_with (o : Journal_cli.Outcome.t) =
+  List.iter o.Journal_cli.Outcome.out ~f:(printf "%s\n");
+  Out_channel.flush Stdlib.stdout;
+  Option.iter o.Journal_cli.Outcome.err ~f:(fun line ->
+      Out_channel.output_string Stdlib.stderr (line ^ "\n");
+      Out_channel.flush Stdlib.stderr);
+  exit o.Journal_cli.Outcome.status
 
-let run_journal_verify path =
-  match Ohcamel_desk.Journal.verify path with
-  | Error e -> journal_problem e
-  | Ok report ->
-      print_report report;
-      if not (Ohcamel_desk.Journal.Report.clean report) then exit 1
-
-(* The names in the backup directory, for the pruning. A directory that cannot
-   be read is a failure and not an empty directory, because an empty directory
-   is a list with nothing to delete and would exit zero. *)
-let backup_dir_names dir =
-  match Or_error.try_with (fun () -> Array.to_list (Sys_unix.readdir dir)) with
-  | Ok names -> names
-  | Error e ->
-      journal_problem (sprintf "ohcamel: cannot list %s: %s" dir (Error.to_string_hum e))
+let run_journal_verify path = exit_with (Journal_cli.verify path)
 
 let run_journal_backup ~src ~dir ~name =
-  let today = Date.today ~zone:Time_float.Zone.utc in
-  let basename =
-    match name with Some n -> n | None -> sprintf "desk-%s.db" (Date.to_string today)
-  in
-  (* A NAME with a directory in it would write outside DIR and then be pruned
-     by a rule that never saw it. *)
-  if String.exists basename ~f:(Char.equal '/') || String.is_empty basename then
-    journal_problem
-      (sprintf "ohcamel: --name %S must be a file name, with no directory in it" basename);
-  let dst = Filename.concat dir basename in
-  (match Ohcamel_desk.Journal.backup ~src ~dst with
-  | Error e -> journal_problem e
-  | Ok () -> printf "ohcamel: wrote %s\n" dst);
-  (match Ohcamel_desk.Journal.verify dst with
-  | Error e -> journal_problem e
-  | Ok report ->
-      print_report report;
-      if not (Ohcamel_desk.Journal.Report.clean report) then
-        journal_problem
-          (sprintf "ohcamel: %s is not a journal this build would restore from" dst));
-  let kept, deleted =
-    Ohcamel_desk.Backup_retention.keep ~now:today (backup_dir_names dir)
-  in
-  List.iter deleted ~f:(fun n ->
-      let path = Filename.concat dir n in
-      match Or_error.try_with (fun () -> Core_unix.unlink path) with
-      | Ok () -> printf "ohcamel: deleted %s\n" path
-      | Error e ->
-          journal_problem
-            (sprintf "ohcamel: cannot delete %s: %s" path (Error.to_string_hum e)));
-  printf "ohcamel: %d kept, %d deleted in %s\n" (List.length kept) (List.length deleted)
-    dir
+  exit_with
+    (Journal_cli.backup ~now:(Date.today ~zone:Time_float.Zone.utc) ~src ~dir ~name)
 
 (* ------------------------------------------------------------------------ *)
 (* Entry point                                                               *)
