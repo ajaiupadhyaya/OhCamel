@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Checks that every <!-- count:KIND -->N<!-- /count --> marker in README.md,
+# Checks that every <!-- count:KIND -->N<!-- /count --> marker in docs/engine.md,
 # docs/overview.md and docs/status.md agrees with the source of truth for
 # that KIND: lib/verified.ml's `tests` and `scheduler_tests`, and
 # research/src/ohcamel_research/verified.py's `TESTS`. Also sweeps the same
