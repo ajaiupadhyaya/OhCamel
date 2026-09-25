@@ -261,11 +261,26 @@ jobs:
       # about things that are true only of the droplet -- `User=ohcamel` does
       # not exist here, nor do the units these depend on -- and it exits
       # non-zero for some of them. What CAN be asserted from a runner is the
-      # PARSE: a directive systemd does not know (`Unknown lvalue`), a section
-      # it does not know, a section header that is not one, or a value it cannot
-      # read. Those are exactly the mistakes a unit file in a git repository
-      # carries, they are fatal on the host, and they are invisible until
-      # `systemctl daemon-reload` says so at 06:30 UTC.
+      # PARSE: a directive systemd does not know, a section it does not know, a
+      # section header that is not one, or a value it cannot read. Those are
+      # exactly the mistakes a unit file in a git repository carries, they are
+      # fatal on the host, and they are invisible until `systemctl
+      # daemon-reload` says so at 06:30 UTC.
+      #
+      # Because the exit code is not the assertion, the grep below is the only
+      # guard, so its words must be the words systemd prints -- and the one for
+      # an unknown directive has changed twice (src/shared/conf-parser.c):
+      #
+      #   Unknown lvalue 'X' in section 'S'               v240; gone by v249
+      #   Unknown key name 'X' in section 'S', ignoring.  v249 (Ubuntu 22.04),
+      #                                                   v255 (Ubuntu 24.04,
+      #                                                   ubuntu-latest)
+      #   Unknown key 'X' in section [S], ignoring.       v257 and later
+      #
+      # `Unknown key` matches both newer wordings and `Unknown lvalue` stays for
+      # an old host. An unknown directive is a WARNING systemd ignores, exit 0,
+      # which is exactly why a pattern that knew only the old wording let a
+      # misspelled `OnCalender=` through on this runner: nothing else fails.
       - name: systemd-analyze verify (deploy/systemd/)
         run: |
           shopt -s nullglob
@@ -287,7 +302,7 @@ jobs:
             out=$(systemd-analyze verify "$u" 2>&1) || true
             printf '%s\n' "$out"
             if printf '%s\n' "$out" \
-               | grep -qE 'Failed to parse|Unknown lvalue|Invalid section|Unknown section'; then
+               | grep -qE 'Failed to parse|Unknown lvalue|Unknown key|Invalid section|Unknown section'; then
               echo "$u does not parse (see above) -- systemd would refuse it on the host."
               status=1
             fi
