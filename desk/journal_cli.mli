@@ -38,12 +38,20 @@ val backup : now:Date.t -> src:string -> dir:string -> name:string option -> Out
 
     Refused before anything is written, with status 1: a NAME that is empty or has a
     directory in it, because a copy written outside DIR would be pruned by a rule that
-    never saw it; and a destination that is the source's own file ([Journal.backup]'s
-    refusal).
+    never saw it; a NAME that this run's own prune would delete -- one in the .tmp family,
+    which retention reads as a leftover wherever it lands, or a daily's or pre-deploy's
+    name that the copies already in DIR rank out of its places -- because the command
+    otherwise wrote the copy, verified it, deleted it and exited 0 with no backup; and a
+    destination that is the source's own file ([Journal.backup]'s refusal).
 
     A copy that fails verification -- unreadable, or a report with a problem -- is DELETED
     and nothing is pruned, status 1: left in place under a daily's name it would take one
     of the 14 places from a good daily on every prune after, and a pruner that ran before
     the check could delete the fourteenth-oldest good daily to make room for a broken new
     one. The report is printed either way, so the operator reads the counts beside the
-    trouble. *)
+    trouble.
+
+    A delete the prune cannot make -- a directory under a daily's name, a file this
+    process may not remove -- stops the prune at that file, status 1, with the path on
+    stderr: what was deleted before it is named on stdout, nothing after it is touched,
+    and the copy, verified before the prune began, stays. *)

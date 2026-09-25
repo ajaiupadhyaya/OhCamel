@@ -1020,10 +1020,22 @@ let test_retention_never_keeps_a_leftover_and_never_lets_one_take_a_place () =
   (* a bare -journal, -wal or -shm beside a FINISHED backup is not one of
      ours -- SQLite would need a hot journal to roll a partial write back, and
      deleting one under it is how a database is corrupted by hand -- so those
-     stay unrecognised and kept *)
-  let odd = [ "desk-2026-09-14.db-journal"; "desk-2026-09-14.db-wal" ] in
+     stay unrecognised and kept. And a .tmp is a leftover ONLY over a daily or
+     pre-deploy name: "notes.tmp" is somebody's file and "desk-latest.db.tmp"
+     is over a stem this rule does not parse, so both are kept -- the .mli's
+     promise that nothing unparseable is deleted, which a rule reading every
+     .tmp as a leftover would break exactly there *)
+  let odd =
+    [
+      "desk-2026-09-14.db-journal";
+      "desk-2026-09-14.db-wal";
+      "desk-latest.db.tmp";
+      "notes.tmp";
+    ]
+  in
   let kept, deleted = Retention.keep ~now:(date "2026-09-24") odd in
-  Alcotest.(check (list string)) "a bare sibling is kept" odd kept;
+  Alcotest.(check (list string))
+    "a bare sibling and a .tmp over no backup are kept" odd kept;
   Alcotest.(check (list string)) "and nothing is deleted" [] deleted
 
 (* ------------------------------------------------------------------------ *)
@@ -1124,8 +1136,9 @@ let test_journal_verify_exits_non_zero_on_a_dirty_report () =
      pre-deploy-2026-09-01.db .. 07.db           seven rollback copies
      pre-deploy-2026-09-08.db.tmp                the reviewer's leftover
      README                                      somebody's note
+     notes.tmp                                   somebody's .tmp, over no backup's name
 
-   26 names, and the run writes a 27th, desk-2026-09-14.db (no --name, so
+   27 names, and the run writes a 28th, desk-2026-09-14.db (no --name, so
    today's). Retention at 2026-09-14:
 
      dailies at or before now   08-30, 08-31, 09-01 .. 09-14: 16
@@ -1133,11 +1146,13 @@ let test_journal_verify_exits_non_zero_on_a_dirty_report () =
      older                      08-31 (Monday, deleted), 08-30 (Sunday, kept)
      pre-deploy                 the five newest 09-03 .. 09-07 kept; 09-01, 09-02 deleted
      leftovers                  all three deleted
-     README                     kept
+     README, notes.tmp          kept: unrecognised, and a .tmp is a leftover only
+                                over a daily or pre-deploy name
 
-   kept = 14 + 1 + 5 + 1 = 21, deleted = 1 + 2 + 3 = 6, and 21 + 6 = 27.
+   kept = 14 + 1 + 5 + 2 = 22, deleted = 1 + 2 + 3 = 6, and 22 + 6 = 28.
    Before finding 1 the leftover "pre-deploy-2026-09-08.db.tmp" took 09-03's
-   place and the three leftovers stayed for ever. *)
+   place and the three leftovers stayed for ever; a rule that read every .tmp
+   as a leftover would delete notes.tmp here. *)
 let test_journal_backup_writes_todays_copy_verifies_it_and_prunes () =
   with_temp_dir ~f:(fun home ->
       with_temp_dir ~f:(fun dir ->
@@ -1156,19 +1171,20 @@ let test_journal_backup_writes_todays_copy_verifies_it_and_prunes () =
               "desk-2026-09-10.db.tmp-shm";
               "pre-deploy-2026-09-08.db.tmp";
               "README";
+              "notes.tmp";
             ]
             ~f:(plant dir);
           List.iter seven_pre_deploys ~f:(plant dir);
-          Alcotest.(check int) "26 names before the run" 26 (List.length (names_in dir));
+          Alcotest.(check int) "27 names before the run" 27 (List.length (names_in dir));
           let o = Cli.backup ~now:reckoning ~src ~dir ~name:None in
           Alcotest.(check (option string)) "nothing on stderr" None o.Cli.Outcome.err;
           Alcotest.(check int) "status 0" 0 o.Cli.Outcome.status;
           let dst = Filename.concat dir "desk-2026-09-14.db" in
           Alcotest.(check (list string))
-            "the 21 kept are what is left in DIR"
+            "the 22 kept are what is left in DIR, notes.tmp among them"
             (List.sort
                (september
-               @ [ "desk-2026-09-14.db"; "desk-2026-08-30.db"; "README" ]
+               @ [ "desk-2026-09-14.db"; "desk-2026-08-30.db"; "README"; "notes.tmp" ]
                @ List.drop seven_pre_deploys 2)
                ~compare:String.compare)
             (names_in dir);
@@ -1184,7 +1200,7 @@ let test_journal_backup_writes_todays_copy_verifies_it_and_prunes () =
             (List.hd_exn o.Cli.Outcome.out);
           Alcotest.(check string)
             "the last line is the tally"
-            (sprintf "ohcamel: 21 kept, 6 deleted in %s" dir)
+            (sprintf "ohcamel: 22 kept, 6 deleted in %s" dir)
             (List.last_exn o.Cli.Outcome.out);
           Alcotest.(check (list string))
             "six deletions, each named"
@@ -1290,6 +1306,153 @@ let test_journal_backup_refuses_a_bad_name_and_its_own_source () =
       Alcotest.(check int) "and it still has its one session" 1 (Journal.session_count j);
       Journal.close j)
 
+(* A DELETE THAT FAILS IS A FAILURE (plan item 3: non-zero on ANY failure).
+
+   Planted: the 14 dailies 2026-08-31 .. 2026-09-13, and a DIRECTORY named
+   "desk-2020-01-01.db" -- a name retention reads as a daily, and one that
+   unlink cannot remove. The run writes desk-2026-09-14.db, so there are 16
+   dailies at or before now; the 14 newest are 09-01 .. 09-14 and the two
+   older go: 08-31, a Monday, and 2020-01-01, which the Sunday tier would
+   take back if it were a Sunday and is a Wednesday -- 2024-01-01 was a
+   Monday (the Saturday derivation above), so 2023-01-01 was Monday - 365
+   mod 7 = Monday - 1 = Sunday, 2022-01-01 Saturday, 2021-01-01 Friday, and
+   2020 is a leap year, so 2020-01-01 = Friday - 366 mod 7 = Friday - 2 =
+   Wednesday. Sorted by name the directory comes first, so its unlink is the
+   first the prune attempts, and it fails.
+
+   Expected: status 1; the stderr line names the directory's path and says it
+   cannot be deleted; no "deleted" line and no tally, because the prune stops
+   at the first failure rather than deleting past it -- so 08-31, second in
+   the deletion order, is still there, and the listing is exactly what was
+   planted plus today's copy, which was written and verified before the prune
+   began and stays. A prune that skipped the failure and went on would delete
+   08-31, print "14 kept, 2 deleted" with the directory counted among the
+   deleted, and exit 0. *)
+let test_journal_backup_stops_at_a_delete_that_fails_and_exits_non_zero () =
+  Alcotest.(check string)
+    "2020-01-01 is a Wednesday, so not a Sunday the tier would keep" "WED"
+    (Day_of_week.to_string (Date.day_of_week (date "2020-01-01")));
+  with_temp_dir ~f:(fun home ->
+      with_temp_dir ~f:(fun dir ->
+          let src = Filename.concat home "desk.db" in
+          let j = open_exn src in
+          fill_a_journal j;
+          let planted =
+            List.init 14 ~f:(fun i -> daily (Date.add_days (date "2026-08-31") i))
+          in
+          List.iter planted ~f:(plant dir);
+          let undeletable = Filename.concat dir "desk-2020-01-01.db" in
+          Core_unix.mkdir undeletable;
+          let o = Cli.backup ~now:reckoning ~src ~dir ~name:None in
+          Alcotest.(check int) "status 1" 1 o.Cli.Outcome.status;
+          Alcotest.(check bool)
+            "the stderr line names the path that could not be deleted" true
+            (Option.value_map o.Cli.Outcome.err ~default:false ~f:(fun e ->
+                 String.is_substring e ~substring:"cannot delete"
+                 && String.is_substring e ~substring:undeletable));
+          Alcotest.(check (list string))
+            "the listing is what was planted plus today's copy, 08-31 included"
+            (List.sort
+               ("desk-2020-01-01.db" :: "desk-2026-09-14.db" :: planted)
+               ~compare:String.compare)
+            (names_in dir);
+          Alcotest.(check (list string))
+            "nothing was deleted before the failure" []
+            (List.filter o.Cli.Outcome.out
+               ~f:(String.is_prefix ~prefix:"ohcamel: deleted "));
+          Alcotest.(check bool)
+            "and no tally" false
+            (List.exists o.Cli.Outcome.out ~f:(String.is_substring ~substring:" kept, "));
+          Alcotest.(check bool)
+            "today's copy was written and verified before the prune, and stays" true
+            (Journal.Report.clean (verify_exn (Filename.concat dir "desk-2026-09-14.db")));
+          Journal.close j))
+
+(* A NAME THE PRUNE WOULD DELETE IS REFUSED BEFORE THE COPY IS WRITTEN.
+
+   `journal-backup SRC DIR --name desk-2020-01-02.db.tmp` wrote the copy,
+   verified it clean, deleted it as a leftover in its own prune, printed
+   "1 kept, 1 deleted" and exited 0 -- a backup command reporting success
+   with no backup. Two more names do the same once DIR is full enough: a
+   daily's name that fourteen newer dailies already rank out of the window,
+   and a pre-deploy's name that five newer ones outrank. So the name is
+   judged against what DIR holds, before anything is written.
+
+   Planted: the 14 dailies 2026-08-31 .. 09-13 and the 5 pre-deploys
+   2026-09-01 .. 05, nineteen names. Refused, each with status 1, nothing on
+   stdout, a stderr line naming --name and the name, and the listing
+   unchanged:
+
+     desk-2020-01-02.db.tmp    a leftover's name, deleted whatever else is there
+     desk-2020-01-02.db        with 14 newer dailies it is the fifteenth, and
+                               a Thursday (2020-01-01 is a Wednesday, above),
+                               so the Sunday tier does not take it either
+     pre-deploy-2020-01-01.db  sixth by name among six; the five newer are kept
+
+   And the deploy's own use of --name still works: "pre-deploy-2026-09-14.db"
+   sorts newest of six, so it is written, verified and kept, and the prune
+   that follows deletes the oldest, 09-01: 14 + 5 = 19 kept, 1 deleted, and
+   the listing is the nineteen planted less 09-01 plus the new copy. *)
+let test_journal_backup_refuses_a_name_its_own_prune_would_delete () =
+  with_temp_dir ~f:(fun home ->
+      with_temp_dir ~f:(fun dir ->
+          let src = Filename.concat home "desk.db" in
+          let j = open_exn src in
+          fill_a_journal j;
+          let dailies =
+            List.init 14 ~f:(fun i -> daily (Date.add_days (date "2026-08-31") i))
+          in
+          let pre_deploys =
+            List.map [ "01"; "02"; "03"; "04"; "05" ] ~f:(fun d ->
+                sprintf "pre-deploy-2026-09-%s.db" d)
+          in
+          List.iter (dailies @ pre_deploys) ~f:(plant dir);
+          let before = names_in dir in
+          Alcotest.(check int) "19 planted" 19 (List.length before);
+          let refused what name =
+            let o = Cli.backup ~now:reckoning ~src ~dir ~name:(Some name) in
+            Alcotest.(check int) (what ^ ": status 1") 1 o.Cli.Outcome.status;
+            Alcotest.(check (list string))
+              (what ^ ": nothing printed") [] o.Cli.Outcome.out;
+            Alcotest.(check bool)
+              (what ^ ": the stderr line names --name and the name")
+              true
+              (Option.value_map o.Cli.Outcome.err ~default:false ~f:(fun e ->
+                   String.is_substring e ~substring:"--name"
+                   && String.is_substring e ~substring:name));
+            Alcotest.(check (list string))
+              (what ^ ": nothing written, nothing pruned")
+              before (names_in dir)
+          in
+          refused "a leftover's name" "desk-2020-01-02.db.tmp";
+          refused "a daily's name fourteen newer dailies outrank" "desk-2020-01-02.db";
+          refused "a pre-deploy's name five newer copies outrank"
+            "pre-deploy-2020-01-01.db";
+          (* the positive control: the deploy's own kind of name *)
+          let o =
+            Cli.backup ~now:reckoning ~src ~dir ~name:(Some "pre-deploy-2026-09-14.db")
+          in
+          Alcotest.(check (option string))
+            "a name retention keeps: nothing on stderr" None o.Cli.Outcome.err;
+          Alcotest.(check int) "and status 0" 0 o.Cli.Outcome.status;
+          let dst = Filename.concat dir "pre-deploy-2026-09-14.db" in
+          Alcotest.(check bool)
+            "the copy is there, and clean" true
+            (Journal.Report.clean (verify_exn dst));
+          Alcotest.(check (list string))
+            "the listing: the nineteen planted, less 09-01, plus the copy"
+            (List.sort
+               ("pre-deploy-2026-09-14.db"
+               :: List.filter before ~f:(fun n ->
+                   not (String.equal n "pre-deploy-2026-09-01.db")))
+               ~compare:String.compare)
+            (names_in dir);
+          Alcotest.(check string)
+            "19 kept, 1 deleted"
+            (sprintf "ohcamel: 19 kept, 1 deleted in %s" dir)
+            (List.last_exn o.Cli.Outcome.out);
+          Journal.close j))
+
 let suite =
   ( "journal backup",
     [
@@ -1347,4 +1510,8 @@ let suite =
         test_journal_backup_deletes_a_copy_that_fails_its_check_and_prunes_nothing;
       Alcotest.test_case "journal-backup refuses a bad name and its own source" `Quick
         test_journal_backup_refuses_a_bad_name_and_its_own_source;
+      Alcotest.test_case "journal-backup stops at a delete that fails and exits non-zero"
+        `Quick test_journal_backup_stops_at_a_delete_that_fails_and_exits_non_zero;
+      Alcotest.test_case "journal-backup refuses a name its own prune would delete" `Quick
+        test_journal_backup_refuses_a_name_its_own_prune_would_delete;
     ] )
