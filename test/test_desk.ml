@@ -952,9 +952,20 @@ let test_the_synthetic_clocks_third_session_is_published_as_a_monday () =
    bin/ is an executable and not a library, so no test can link it and call
    the callback. This is therefore a source-level assertion, the same shape as
    test_rebalance.ml's one-submit-site case, over the copies of bin/*.ml that
-   test/dune already globs in as deps. Each call is reported with the
-   [Clock_ns.every'] line that opened the callback it sits in, so deleting a
-   call fails here and so does moving one off the timer it belongs on.
+   test/dune already globs in as deps. Each call is reported with the nearest
+   [Clock_ns.every'] line above it, so deleting a call fails here, and so does
+   moving one under another timer or adding a third site. That alone does not
+   hold the call INSIDE the callback: hoisted to just below the callback's
+   closing [Deferred.unit);] -- still under the same timer line, run once at
+   startup and never again -- the triple is unchanged, and the live process
+   would publish "stale" for the rest of its life (fix round 1's mutations M9
+   and M15). So each call's leading-space width is also held strictly greater
+   than its timer line's: ocamlformat lays a callback's body four columns past
+   the [Clock_ns.every'] line that opened it (12 over 8 in live mode, 6 over 2
+   in the demo) and a statement after the callback back at the timer's own
+   column, where the hoist lands. A hoist hand-indented to the body's column
+   would pass this line and fail [dune build @fmt], which every commit and
+   CI's build-and-test job run, so the two checks together are the pin.
    "Desk.refresh_clock" is matched qualified, because the comments in
    bin/main.ml and desk/desk.ml write the bare [refresh_clock] and a comment
    is not a wiring. *)
@@ -969,18 +980,23 @@ let test_both_of_the_engines_timers_refresh_the_clock () =
   Alcotest.(check bool)
     "there are bin/ sources to read at all" true
     (not (List.is_empty sources));
+  (* Leading-space width: ocamlformat indents with spaces, never tabs. *)
+  let indent line = String.length line - String.length (String.lstrip line) in
   let calls =
     List.concat_map sources ~f:(fun file ->
         In_channel.read_lines file
-        |> List.fold ~init:("", []) ~f:(fun (timer, found) line ->
-            let timer =
-              if String.is_substring line ~substring:"Clock_ns.every'" then
-                String.strip line
-              else timer
-            in
-            if String.is_substring line ~substring:"Desk.refresh_clock" then
-              (timer, (file, timer, String.strip line) :: found)
-            else (timer, found))
+        |> List.fold
+             ~init:(("", 0), [])
+             ~f:(fun ((timer, timer_indent), found) line ->
+               let timer, timer_indent =
+                 if String.is_substring line ~substring:"Clock_ns.every'" then
+                   (String.strip line, indent line)
+                 else (timer, timer_indent)
+               in
+               if String.is_substring line ~substring:"Desk.refresh_clock" then
+                 ( (timer, timer_indent),
+                   (file, timer, String.strip line, timer_indent, indent line) :: found )
+               else ((timer, timer_indent), found))
         |> snd |> List.rev)
   in
   Alcotest.(check (list (triple string string string)))
@@ -993,7 +1009,15 @@ let test_both_of_the_engines_timers_refresh_the_clock () =
         "Clock_ns.every' (Time_ns.Span.of_sec 3.0) (fun () ->",
         "don't_wait_for (Ohcamel_desk.Desk.refresh_clock desk);" );
     ]
-    calls
+    (List.map calls ~f:(fun (file, timer, call, _, _) -> (file, timer, call)));
+  (* Inside the callback, not hoisted below it: live 12 > 8, demo 6 > 2. *)
+  List.iter calls ~f:(fun (file, timer, _, timer_indent, call_indent) ->
+      Alcotest.(check bool)
+        (sprintf
+           "%s: the call under [%s] sits %d columns in, deeper than that line's %d, so \
+            it is inside the callback the timer opened"
+           file timer call_indent timer_indent)
+        true (call_indent > timer_indent))
 
 (* The kernel may not name the desk (global constraints), and the clock is the
    desk's. [Session_clock] is declared in desk/venue.ml and read in desk/ and
