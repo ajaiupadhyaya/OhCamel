@@ -1925,7 +1925,13 @@ let usage () =
     \  ohcamel garch              why GARCH(1,1) is implemented and not wired in\n\
     \  ohcamel demo [port]        synthetic feed + live dashboard, NO credentials\n\
     \  ohcamel live [book.sexp]   live Alpaca market data and FRED macro\n\
-    \  ohcamel serve [port]       live feeds + dashboard on http://localhost:PORT\n\n\
+    \  ohcamel serve [port] [book.sexp]\n\
+    \                             live feeds + dashboard on http://localhost:PORT\n\n\
+    \  ohcamel check-book [book.sexp]\n\
+    \                             parse the book and run every validation the engine\n\
+    \                             would -- the limits, the alerts, the desk and the\n\
+    \                             signals -- print what it says, and exit 1 listing\n\
+    \                             EVERY problem. Needs no credentials.\n\
     \  ohcamel journal-backup SRC DIR [--name NAME]\n\
     \                             copy the journal at SRC to DIR, verify the copy,\n\
     \                             then prune DIR. Default NAME is desk-YYYY-MM-DD.db\n\
@@ -1942,6 +1948,52 @@ let usage () =
     \  ohcamel demo\n\n"
     Config.default_book_path
 
+(* A bad argument is a usage message and exit 2. Every mode routes its refusals
+   through here so that a mode added later cannot invent a third convention:
+   2 means "you typed something I cannot read", 1 means "I read it and the answer
+   is no", and 0 means yes. deploy.sh and the systemd units read nothing else. *)
+let bad_usage sentence =
+  printf "ohcamel: %s\n\n" sentence;
+  usage ();
+  exit 2
+
+(* A port, or the usage.
+
+   [Int.of_string] on raw argv RAISES, and an uncaught exception reaches the
+   operator as a backtrace: `ohcamel serve 808O` printed
+   "Fatal error: exception Failure(...)" and said nothing about what to type.
+   Worse, Core's parser is generous where a port is not -- it reads "0x1f90" as
+   8080, "1_000" as 1000 and "+8080" as 8080 -- so a mistyped argument could
+   start a server on a port nobody asked for. Digits only, then the range, which
+   is the same rule desk/alpaca_paper.ml applies to a number off the wire and for
+   the same reason. *)
+let port_arg ~mode (raw : string) : int =
+  if String.is_empty raw || not (String.for_all raw ~f:Char.is_digit) then
+    bad_usage (sprintf "%s: %S is not a port number" mode raw)
+  else
+    match Int.of_string_opt raw with
+    | Some p when p >= 1 && p <= 65_535 -> p
+    | Some _ | None ->
+        bad_usage (sprintf "%s: %S is not a port; give a number in 1..65535" mode raw)
+
+(* The optional positional book path, shared by check-book and serve so that the
+   default cannot be spelled two ways. [live] has taken one since phase 2. *)
+let book_arg = function path :: _ -> path | [] -> Config.default_book_path
+
+let run_check_book path =
+  match Config.check path with
+  | Ok summary ->
+      List.iter (Config.Summary.lines summary) ~f:(printf "%s\n");
+      printf "\nohcamel: %s is a book this build would start on\n" path
+  | Error problems ->
+      printf "ohcamel: %s has %d problem%s\n\n" path (List.length problems)
+        (if List.length problems = 1 then "" else "s");
+      List.iter problems ~f:(printf "  - %s\n");
+      (* Exit 1 and not 2: the argument was readable and the answer is no. That
+         distinction is what lets deploy.sh tell "the book is wrong, do not
+         restart the engine" from "I was called wrongly". *)
+      exit 1
+
 let () =
   match Array.to_list (Sys.get_argv ()) with
   | _ :: ("synthetic" | "syn") :: _ | [ _ ] -> run_synthetic ()
@@ -1951,44 +2003,51 @@ let () =
   | _ :: ("options" | "greeks") :: _ -> run_options ()
   | _ :: "garch" :: _ -> run_garch ()
   | _ :: "live" :: rest ->
-      let book_path =
-        match rest with path :: _ -> path | [] -> Config.default_book_path
-      in
+      let book_path = book_arg rest in
       (* Async only from here. Synthetic mode never starts the scheduler, which
          keeps it usable as a plain program. *)
       Async.Thread_safe.block_on_async_exn (fun () ->
           run_live ~book_path ~serve_port:None)
   | _ :: "serve" :: rest ->
-      let port = match rest with p :: _ -> Int.of_string p | [] -> default_port in
+      (* PORT then BOOK, and both optional. serve read the default book
+         unconditionally, so the one mode that both serves the dashboard and
+         trades could not be pointed at a second book -- which is exactly what a
+         host running two engines, or an owner checking a book against the real
+         feed, needs. Every argument is read BEFORE the scheduler starts, so a
+         typo costs no connection. *)
+      let port, book_path =
+        match rest with
+        | [] -> (default_port, Config.default_book_path)
+        | [ p ] -> (port_arg ~mode:"serve" p, Config.default_book_path)
+        | [ p; book ] -> (port_arg ~mode:"serve" p, book)
+        | _ -> bad_usage "serve takes [PORT] [BOOK], and no more"
+      in
       Async.Thread_safe.block_on_async_exn (fun () ->
-          run_live ~book_path:Config.default_book_path ~serve_port:(Some port))
+          run_live ~book_path ~serve_port:(Some port))
+  | _ :: "check-book" :: rest -> (
+      match rest with
+      | [] | [ _ ] -> run_check_book (book_arg rest)
+      | _ -> bad_usage "check-book takes at most one BOOK")
   | _ :: "journal-backup" :: rest -> (
       match rest with
       | src :: dir :: flags -> (
           match flags with
           | [] -> run_journal_backup ~src ~dir ~name:None
           | [ "--name"; name ] -> run_journal_backup ~src ~dir ~name:(Some name)
-          | _ ->
-              printf "ohcamel: journal-backup takes SRC DIR [--name NAME]\n\n";
-              usage ();
-              exit 2)
-      | _ ->
-          printf "ohcamel: journal-backup needs SRC and DIR\n\n";
-          usage ();
-          exit 2)
+          | _ -> bad_usage "journal-backup takes SRC DIR [--name NAME]")
+      | _ -> bad_usage "journal-backup needs SRC and DIR")
   | _ :: "journal-verify" :: rest -> (
       match rest with
       | [ path ] -> run_journal_verify path
-      | _ ->
-          printf "ohcamel: journal-verify needs one FILE\n\n";
-          usage ();
-          exit 2)
+      | _ -> bad_usage "journal-verify needs one FILE")
   | _ :: "demo" :: rest ->
-      let port = match rest with p :: _ -> Int.of_string p | [] -> default_port in
+      let port =
+        match rest with
+        | [] -> default_port
+        | [ p ] -> port_arg ~mode:"demo" p
+        | _ -> bad_usage "demo takes at most one PORT"
+      in
       Async.Thread_safe.block_on_async_exn (fun () -> run_demo ~port)
   | _ :: ("-h" | "--help" | "help") :: _ -> usage ()
-  | _ :: unknown :: _ ->
-      printf "ohcamel: unknown mode %S\n\n" unknown;
-      usage ();
-      exit 2
+  | _ :: unknown :: _ -> bad_usage (sprintf "unknown mode %S" unknown)
   | [] -> usage ()

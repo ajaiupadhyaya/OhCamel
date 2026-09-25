@@ -390,9 +390,84 @@ module Book = struct
 
   let limits (t : t) : Types.Limit.t list = List.map t.limits ~f:Limit_spec.to_limit
 
+  (* The parse alone, with nothing validated. [of_string] is the startup path and
+     stops at the first failure; [Config.check] wants a parsed book it can hand to
+     every validator, so the two steps are separable here.
+
+     The exception comes back raw rather than as an [Error.t], because the two
+     callers want different things from it: [of_string] wants the [Error.t] it has
+     always produced, and [check] wants the sentence inside it on one line. *)
+  let parse (contents : string) : (t, exn) Result.t =
+    try Ok (t_of_sexp (Sexp.of_string contents)) with exn -> Error exn
+
+  (* Every validation failure this book has, as sentences, rather than the first
+     one.
+
+     [of_string] stops at the first, which is right on a startup path: the engine
+     refuses to run either way and the operator's next act is to fix that one
+     thing. [check-book] is the opposite case. Someone has just edited the file
+     and wants the whole list, and a checker that reports one problem per run
+     teaches its reader to fix one line and run again -- which is how an edit
+     with three typos in it takes three rounds and a deploy window.
+
+     The order is the order the engine applies them in: the limits (graph
+     construction), the alerts (sink construction), the desk, then the signals.
+     Nothing here is new validation; every sentence below comes from the
+     validator that already owned it, so check-book cannot accept a book the
+     engine would refuse, or refuse one it would accept. *)
+  let errors (t : t) : string list =
+    (* [invalid_argf], which is what Limits.validate raises: the message alone,
+       because [Error.of_exn] would print it inside its constructor and this list
+       is read by a person who has just made a typo. *)
+    let raised f =
+      match try Ok (f ()) with exn -> Error exn with
+      | Ok () -> None
+      | Error (Invalid_argument m | Failure m) -> Some m
+      | Error exn -> Some (Exn.to_string exn)
+    in
+    let returned = function Ok () -> None | Error e -> Some (Error.to_string_hum e) in
+    (* A rule about the WHOLE set -- two limits with one name, two strategies
+       with one name, the live fractions' sum -- cannot be seen by validating one
+       member, and both validators check those rules BEFORE they walk the
+       members. So each member is validated alone, which collects every
+       per-member problem, and one run over the whole set adds the set-level
+       sentence. When there is no set-level problem that run repeats one of the
+       per-member sentences, which is why it is dropped rather than appended
+       blind: the alternative is a second copy of each set rule's wording here,
+       free to drift from the one the engine prints. *)
+    let whole_and_parts ~whole ~parts =
+      match whole with
+      | Some e when not (List.mem parts e ~equal:String.equal) -> parts @ [ e ]
+      | Some _ | None -> parts
+    in
+    let instruments = instruments t in
+    let limit_errors =
+      let each = limits t in
+      whole_and_parts
+        ~parts:
+          (List.filter_map each ~f:(fun l ->
+               raised (fun () -> Limits.validate ~instruments [ l ])))
+        ~whole:(raised (fun () -> Limits.validate ~instruments each))
+    in
+    let alert_errors = Option.to_list (returned (Alerts.validate t.alerts)) in
+    let desk_errors = Option.to_list (returned (Desk_spec.validate t.desk)) in
+    let signal_errors =
+      match t.signals with
+      | None -> []
+      | Some signals ->
+          let universe = List.map t.positions ~f:(fun p -> p.Position_spec.symbol) in
+          whole_and_parts
+            ~parts:
+              (List.filter_map signals.Signals_spec.strategies ~f:(fun s ->
+                   returned
+                     (Signals_spec.validate ~universe { Signals_spec.strategies = [ s ] })))
+            ~whole:(returned (Signals_spec.validate ~universe signals))
+    in
+    limit_errors @ alert_errors @ desk_errors @ signal_errors
+
   let of_string (contents : string) : t Or_error.t =
     let open Or_error.Let_syntax in
-    let%bind book = Or_error.try_with (fun () -> t_of_sexp (Sexp.of_string contents)) in
+    let%bind book = Result.map_error (parse contents) ~f:Error.of_exn in
     let%bind () = Desk_spec.validate book.desk in
     let%map () =
       match book.signals with
@@ -411,6 +486,180 @@ module Book = struct
        of_string contents)
       "ohcamel: cannot load book file" path String.sexp_of_t
 end
+
+(* ------------------------------------------------------------------------ *)
+(* What a book says, for someone who has just edited it                      *)
+(* ------------------------------------------------------------------------ *)
+
+(* [check-book]'s other half. A checker that only says "no problems" is a
+   checker whose reader cannot tell a book it fixed from a book it saved to the
+   wrong path, so the summary states what the engine would start on: the
+   universe and the sectors it implies, every limit with the scope and threshold
+   the graph will read, every strategy with its sizing, and the two switches that
+   decide whether this process can act -- the desk's [trading] and alerting's
+   kill switch.
+
+   Every string here is rendered by the function the engine itself renders with
+   ([Types.Limit.scope_to_string], [Limits.render_value]), so the summary cannot
+   describe a limit in words the rest of the system does not use. *)
+module Summary = struct
+  module Holding = struct
+    type t = { symbol : string; sector : string; qty : float }
+    [@@deriving sexp_of, compare, equal]
+  end
+
+  module Limit_line = struct
+    type t = { name : string; scope : string; kind : string; threshold : string }
+    [@@deriving sexp_of, compare, equal]
+  end
+
+  module Strategy_line = struct
+    type t = {
+      name : string;
+      symbols : string list;
+      max_age : int;
+      sizing : string;
+      capital_fraction : float;
+    }
+    [@@deriving sexp_of, compare, equal]
+  end
+
+  type t = {
+    path : string;
+    cash : float;
+    universe : Holding.t list;
+    sectors : string list;
+    limits : Limit_line.t list;
+    strategies : Strategy_line.t list;
+    (* The desk's and alerting's switches as (field, value) pairs in the order a
+       reader wants them, rendered here rather than in bin/main.ml so that the
+       one caller that prints them and any later caller that reads them cannot
+       render them differently. *)
+    desk : (string * string) list;
+    alerts : (string * string) list;
+  }
+  [@@deriving sexp_of]
+
+  (* A limit's kind as one word. The same five words graph.ml's topology uses;
+     it cannot be borrowed from there, because graph.ml is downstream of this
+     module. The Greek case is unreachable from a book -- Book.Limit_spec has no
+     Greek constructor, so no file can ask for one -- and is here because the
+     kind it matches on is Types.Limit's, which does. *)
+  let kind_name : Types.Limit.kind -> string = function
+    | Types.Limit.Gross_notional _ -> "gross_notional"
+    | Types.Limit.Value_at_risk _ -> "value_at_risk"
+    | Types.Limit.Component_var _ -> "component_var"
+    | Types.Limit.Max_drawdown _ -> "max_drawdown"
+    | Types.Limit.Greek_limit (greek, _) -> "greek:" ^ Types.Greek.to_string greek
+
+  let of_book ~(path : string) (book : Book.t) : t =
+    let holdings =
+      List.map book.Book.positions ~f:(fun p ->
+          {
+            Holding.symbol = p.Book.Position_spec.symbol;
+            sector = p.Book.Position_spec.sector;
+            qty = p.Book.Position_spec.qty;
+          })
+    in
+    let limits =
+      List.map book.Book.limits ~f:(fun spec ->
+          let limit = Book.Limit_spec.to_limit spec in
+          let kind = Types.Limit.kind limit in
+          {
+            Limit_line.name = Types.Limit.name limit;
+            scope = Types.Limit.scope_to_string (Types.Limit.scope limit);
+            kind = kind_name kind;
+            threshold = Limits.render_value kind (Limits.threshold kind);
+          })
+    in
+    let strategies =
+      Option.value_map book.Book.signals ~default:[] ~f:(fun signals ->
+          List.map signals.Book.Signals_spec.strategies ~f:(fun s ->
+              {
+                Strategy_line.name = s.Book.Signals_spec.Strategy.name;
+                symbols = s.Book.Signals_spec.Strategy.symbols;
+                max_age = s.Book.Signals_spec.Strategy.max_age;
+                sizing =
+                  Book.Signals_spec.sizing_to_string s.Book.Signals_spec.Strategy.sizing;
+                capital_fraction = s.Book.Signals_spec.Strategy.capital_fraction;
+              }))
+    in
+    let desk = book.Book.desk in
+    let alerts = book.Book.alerts in
+    {
+      path;
+      cash = book.Book.cash;
+      universe = holdings;
+      sectors =
+        List.dedup_and_sort
+          (List.map holdings ~f:(fun h -> h.Holding.sector))
+          ~compare:String.compare;
+      limits;
+      strategies;
+      desk =
+        [
+          ( "trading",
+            match desk.Book.Desk_spec.trading with
+            | Book.Desk_spec.Enabled -> "enabled"
+            | Book.Desk_spec.Disabled -> "disabled" );
+          ("max_order_notional", sprintf "$%.2f" desk.Book.Desk_spec.max_order_notional);
+          ( "max_adv_participation",
+            sprintf "%.2f%%" (desk.Book.Desk_spec.max_adv_participation *. 100.0) );
+          ("price_collar", sprintf "%.2f%%" (desk.Book.Desk_spec.price_collar *. 100.0));
+          ("duplicate_window_s", sprintf "%g" desk.Book.Desk_spec.duplicate_window_s);
+          ("max_open_orders", Int.to_string desk.Book.Desk_spec.max_open_orders);
+          ("spread_bps_default", sprintf "%g" desk.Book.Desk_spec.spread_bps_default);
+          ( "spread_bps",
+            if List.is_empty desk.Book.Desk_spec.spread_bps then "(none)"
+            else
+              String.concat ~sep:" "
+                (List.map desk.Book.Desk_spec.spread_bps ~f:(fun (sym, bps) ->
+                     sprintf "%s=%g" sym bps)) );
+        ];
+      alerts =
+        [
+          ("enabled", Bool.to_string alerts.Alerts.enabled);
+          ( "sinks",
+            String.concat ~sep:" "
+              (List.map alerts.Alerts.sinks ~f:(fun sink ->
+                   Sexp.to_string (Alerts.Sink.sexp_of_t sink))) );
+          ("clear_below", sprintf "%g" alerts.Alerts.clear_below);
+          ( "kill_switch",
+            if alerts.Alerts.kill_switch_enabled then "enabled" else "disabled" );
+          ( "kill_switch_trips_on",
+            if List.is_empty alerts.Alerts.kill_switch_trips_on then "(none)"
+            else String.concat ~sep:" " alerts.Alerts.kill_switch_trips_on );
+        ];
+    }
+
+  (* The printed form. One function, so that the page deploy.sh's log shows and
+     the page the owner reads after an edit are the same page. *)
+  let lines (t : t) : string list =
+    let section name = [ ""; name ] in
+    let pairs = List.map ~f:(fun (field, value) -> sprintf "  %-22s %s" field value) in
+    [ sprintf "book %s" t.path; sprintf "  %-22s $%.2f" "cash" t.cash ]
+    @ section
+        (sprintf "universe (%d names, %d sectors: %s)" (List.length t.universe)
+           (List.length t.sectors)
+           (String.concat ~sep:" " t.sectors))
+    @ List.map t.universe ~f:(fun h ->
+        sprintf "  %-8s %-14s %g" h.Holding.symbol h.Holding.sector h.Holding.qty)
+    @ section (sprintf "limits (%d)" (List.length t.limits))
+    @ List.map t.limits ~f:(fun l ->
+        sprintf "  %-14s %-18s %-16s %s" l.Limit_line.name l.Limit_line.scope
+          l.Limit_line.kind l.Limit_line.threshold)
+    @ section "desk" @ pairs t.desk @ section "alerts" @ pairs t.alerts
+    @ section
+        (if List.is_empty t.strategies then
+           "strategies (none: the desk registers none and reads no signal file)"
+         else sprintf "strategies (%d)" (List.length t.strategies))
+    @ List.map t.strategies ~f:(fun s ->
+        sprintf "  %-16s %-10s max_age %d  capital_fraction %g  [%s]" s.Strategy_line.name
+          s.Strategy_line.sizing s.Strategy_line.max_age s.Strategy_line.capital_fraction
+          (String.concat ~sep:" " s.Strategy_line.symbols))
+end
+
+type summary = Summary.t
 
 (* ------------------------------------------------------------------------ *)
 (* Runtime settings                                                          *)
@@ -500,3 +749,52 @@ let load ?(book_path = default_book_path) () : t Or_error.t =
   let%bind credentials = Credentials.load () in
   let%map book = Book.load book_path in
   { credentials; book; runtime = Runtime.of_env () }
+
+(* One book, every validation, and no credentials.
+
+   The error side is a LIST, and that is the whole design. deploy.sh runs this
+   before it restarts the engine (the plan's Task 16) and the owner runs it after
+   every edit, so the reader is always someone who has just changed the file and
+   wants to know everything that is wrong with it -- not the first thing.
+
+   No credential is read, so this runs in a container with nothing mounted and on
+   a laptop with nothing exported: a book is checkable on any machine that has
+   the binary. *)
+let check (path : string) : (summary, string list) Result.t =
+  (* One problem is one line. The caller prints these as a bulleted list and its
+     reader counts the bullets, so a sentence that arrived with a newline in it --
+     a sexp error pretty-printed across three lines is the one that does -- would
+     read as three problems. *)
+  let one_line s =
+    String.split_lines s
+    |> List.filter_map ~f:(fun l ->
+        let l = String.strip l in
+        if String.is_empty l then None else Some l)
+    |> String.concat ~sep:" "
+  in
+  let refuse sentences = Error (List.map sentences ~f:one_line) in
+  (* A file that did not parse has no book to validate, so there is exactly one
+     thing to report. Both exceptions are unwrapped rather than printed through
+     [Error.of_exn], which would render them as their own constructors: the reader
+     of this list has just made a typo and wants the sentence, not the sexp of the
+     exception that carried it. *)
+  match try Ok (In_channel.read_all path) with exn -> Error exn with
+  | Error (Sys_error message) -> refuse [ sprintf "cannot read the book: %s" message ]
+  | Error exn -> refuse [ sprintf "cannot read %s: %s" path (Exn.to_string exn) ]
+  | Ok contents -> (
+      match Book.parse contents with
+      | Error (Sexp.Of_sexp_error (inner, offending)) ->
+          refuse
+            [
+              sprintf "%s does not parse: %s, at %s" path
+                (match inner with
+                | Invalid_argument m | Failure m -> m
+                | exn -> Exn.to_string exn)
+                (Sexp.to_string offending);
+            ]
+      | Error (Failure message) -> refuse [ sprintf "%s does not parse: %s" path message ]
+      | Error exn -> refuse [ sprintf "%s does not parse: %s" path (Exn.to_string exn) ]
+      | Ok book -> (
+          match Book.errors book with
+          | [] -> Ok (Summary.of_book ~path book)
+          | problems -> refuse problems))
