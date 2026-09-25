@@ -48,6 +48,7 @@ const PATHS = {
   list: "M9 6h11 M9 12h11 M9 18h11 M4.5 6v.01 M4.5 12v.01 M4.5 18v.01",
   candles: "M7 3v3 M7 16v5 M5 6h4v10H5z M17 3v6 M17 17v4 M15 9h4v8h-4z",
   line: "M3 17l5-6 4 3 8-9",
+  gauge: "M3.5 17a8.5 8.5 0 1 1 17 0 M12 17l4.2-5.2 M12 5.5v1.5 M6 9.8l1.1.9 M18 9.8l-1.1.9 M8.5 20h7",
 } as const;
 
 export type IconName = keyof typeof PATHS;

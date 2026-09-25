@@ -436,11 +436,11 @@ jobs:
           cache: npm
           cache-dependency-path: quant/web/package-lock.json
 
-      - name: web -- npm ci, typecheck, build
+      - name: web -- npm ci, typecheck, test, build
         working-directory: quant/web
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-        run: npm ci && npm run typecheck && npm run build
+        run: npm ci && npm run typecheck && npm test && npm run build
 
       # The built page against the CSP Caddy serves it with: every inline
       # script must be allowed by hash, or the page breaks in a browser while

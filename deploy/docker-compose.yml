@@ -123,6 +123,12 @@ services:
       # them on the public /engine page, set in deploy/.env:
       #   OHCAMEL_QUANT_ENGINE_URL=http://ohcamel-live:8081
       OHCAMEL_QUANT_ENGINE_URL: "${OHCAMEL_QUANT_ENGINE_URL-}"
+      # The Flight Deck's recorder (api/routers/deck.py): one reading of the
+      # reference book a minute while the US session is open, into
+      # /data/deck/recorder.sqlite on the quant_data volume, pruned to 30
+      # sessions (~12k small rows). Set OHCAMEL_QUANT_RECORDER=0 in deploy/.env
+      # to turn it off; the /deck page then says the tape is not recorded.
+      OHCAMEL_QUANT_RECORDER: "${OHCAMEL_QUANT_RECORDER:-1}"
       # SEC EDGAR's fair-access policy requires a User-Agent naming a contact.
       # Defaults to the ACME contact the owner already reads.
       OHCAMEL_QUANT_USER_AGENT: "${OHCAMEL_QUANT_USER_AGENT:-OhCamel-Quant/1.0 (research; contact: ${OHCAMEL_ACME_EMAIL:-unset})}"

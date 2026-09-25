@@ -269,6 +269,34 @@ k, v = vars_[0]
 print("OK 60/40 SPY/TLT, %d VaR/ES figures (%s = %.4g)" % (len(vars_), k, v))
 '
 
+# The Flight Deck: a live reading of the reference book (marks, limits and the
+# feeds behind them), and the flight recorder's status. The recorder being
+# enabled is required on the public host (compose turns it on); how many rows
+# it holds depends on how long the session has been open, so it is reported.
+qjson "GET /api/deck/books        " GET /api/deck/books "" '
+rec = body.get("recorder") or {}
+if not any(b.get("key") == "core" for b in body.get("books", [])):
+    print("NOBOOK no core reference book in %s" % str(body)[:200]); raise SystemExit
+if not rec.get("enabled"):
+    print("RECORDER the flight recorder is disabled (OHCAMEL_QUANT_RECORDER)"); raise SystemExit
+print("OK core book, recorder %s, %s rows over %s sessions%s" % (
+    "running" if rec.get("running") else "NOT RUNNING", rec.get("rows"), rec.get("sessions"),
+    ", last error: " + rec["last_error"] if rec.get("last_error") else ""))
+'
+
+qjson "POST /api/deck/reading     " POST /api/deck/reading \
+	'{"holdings":[{"ticker":"SPY","weight":0.6},{"ticker":"TLT","weight":0.4}]}' '
+lims = body.get("limits") or []
+feeds = {f.get("key"): f.get("state") for f in body.get("feeds", [])}
+if len(lims) + len(body.get("unevaluated", [])) != 7:
+    print("LIMITS expected the 7 default limits, got %s" % [x.get("name") for x in lims]); raise SystemExit
+if feeds.get("quotes") not in ("ok", "stale"):
+    print("QUOTES the quotes lamp is %r: %s" % (feeds.get("quotes"), str(body.get("feeds"))[:200])); raise SystemExit
+srcs = sorted({m.get("source") for m in body.get("marks", []) if m.get("source")})
+print("OK 60/40, %d limits evaluated, quotes %s from %s, session %s" % (
+    len(lims), feeds.get("quotes"), ", ".join(srcs) or "?", "open" if body.get("clock", {}).get("is_open") else "closed"))
+'
+
 # The engine bridge. Reachable is REQUIRED only under --engine (the local
 # harness wires the bridge to its engine). In production the bridge is off
 # unless the owner opts in (OHCAMEL_QUANT_ENGINE_URL in deploy/.env), so a 503

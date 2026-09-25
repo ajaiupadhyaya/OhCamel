@@ -1,0 +1,528 @@
+/* Flight Deck — page-local styles (prefix dk-).
+   The screens use the --crt-* tokens, which are the same in both themes: the consoles are
+   dark on a light page as on a dark one, the way a monitor is dark on a white desk. No glow,
+   no scanlines: the amber is the whole effect (after Figure 2's #scope). */
+
+/* ---------------------------------------------------------------- layout */
+/* The source switch wraps rather than scrolling when the header is narrow. */
+.oc-seg.dk-source {
+  flex-wrap: wrap;
+  overflow: visible;
+  border-radius: var(--radius);
+}
+.dk-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-4);
+  margin-bottom: var(--sp-2);
+}
+.dk-deck {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-4);
+}
+.dk-inst {
+  min-width: 0;
+}
+.dk-inst-scope {
+  grid-column: 1 / -1;
+}
+@media (max-width: 900px) {
+  .dk-deck {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------------------------------------------------------------- the consoles */
+.dk-scope,
+.dk-console,
+.dk-radar {
+  background: var(--crt-panel);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-3);
+  color: var(--crt-amber-text);
+  min-width: 0;
+}
+.dk-scope {
+  display: flex;
+  gap: 18px;
+  align-items: stretch;
+}
+.dk-screen {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 760px;
+  background: var(--crt-ground);
+  border: 7px solid var(--crt-bezel);
+  border-radius: 20px;
+  padding: 6px;
+}
+.dk-screen svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.dk-screen-round {
+  max-width: 460px;
+  margin: 0 auto;
+  border-radius: 24px;
+}
+
+/* ---------------------------------------------------------------- A · targeting computer */
+.dk-persp line {
+  stroke: var(--crt-amber-soft);
+  stroke-width: 1.2;
+}
+.dk-frame {
+  fill: none;
+  stroke: var(--crt-amber);
+  stroke-width: 2.5;
+}
+.dk-gate {
+  fill: none;
+  stroke: var(--crt-amber-soft);
+  stroke-width: 1.4;
+}
+.dk-gate.target {
+  stroke: var(--crt-amber);
+  stroke-width: 2.6;
+}
+.dk-gate.unknown {
+  stroke: var(--crt-unknown);
+  stroke-dasharray: 4 3;
+  stroke-width: 1.2;
+}
+.dk-unknown-q {
+  fill: var(--crt-unknown);
+  font: 12px var(--font-mono);
+}
+.dk-gate-label {
+  fill: var(--crt-amber-text);
+  font: 11px var(--font-mono);
+}
+.dk-rail line {
+  stroke: var(--crt-red);
+  stroke-width: 3;
+}
+.dk-rail-label {
+  fill: var(--crt-red-text);
+  font: 11px var(--font-mono);
+}
+.dk-rail.fresh {
+  animation: dk-blink 0.3s steps(1, end) 3;
+}
+@keyframes dk-blink {
+  50% {
+    opacity: 0;
+  }
+}
+.dk-readout-box {
+  fill: none;
+  stroke: var(--crt-amber);
+  stroke-width: 2;
+}
+.dk-readout.over .dk-readout-box {
+  stroke: var(--crt-red);
+}
+.dk-seg {
+  fill: var(--crt-seg-off);
+}
+.dk-seg.on {
+  fill: var(--crt-red);
+}
+.dk-caption {
+  fill: var(--crt-amber-text);
+  font: 11px var(--font-mono);
+  letter-spacing: 0.06em;
+}
+.dk-screen .stale {
+  opacity: 0.35;
+}
+
+.dk-scope-lamps {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  flex: 0 0 auto;
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  font: 11px var(--font-mono);
+  color: var(--crt-amber-text);
+}
+.dk-scope-lamps li {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+}
+.dk-lamp {
+  width: 16px;
+  height: 16px;
+  border-radius: 2px;
+  background: var(--crt-amber-soft);
+  border: 1px solid var(--crt-amber);
+}
+.dk-lamp-name {
+  overflow-wrap: anywhere;
+}
+.dk-lamp-pct {
+  text-align: right;
+}
+.dk-scope-lamps li.target .dk-lamp {
+  background: var(--crt-amber);
+}
+.dk-scope-lamps li.over {
+  color: var(--crt-red-text);
+}
+.dk-scope-lamps li.over .dk-lamp {
+  background: var(--crt-red);
+  border-color: var(--crt-red);
+}
+.dk-scope-lamps li.unknown {
+  color: var(--crt-unknown);
+}
+.dk-scope-lamps li.unknown .dk-lamp {
+  background: none;
+  border: 1px dashed var(--crt-unknown);
+}
+.dk-scope-lamps li.stale {
+  opacity: 0.45;
+}
+
+/* ---------------------------------------------------------------- B · radar */
+.dk-radar-rim {
+  fill: none;
+  stroke: var(--crt-amber);
+  stroke-width: 2;
+}
+.dk-radar-grid line {
+  stroke: var(--crt-amber-soft);
+  stroke-width: 0.8;
+}
+.dk-radar-grid line.dk-radar-tick {
+  stroke: var(--crt-amber);
+  stroke-width: 1;
+}
+.dk-radar-ring {
+  fill: none;
+  stroke: var(--crt-amber-soft);
+  stroke-width: 1.2;
+  stroke-dasharray: 3 4;
+}
+.dk-radar-ring-label {
+  fill: var(--crt-amber-text);
+  font: 10px var(--font-mono);
+}
+.dk-radar-centre {
+  fill: var(--crt-amber);
+}
+.dk-sweep-wedge {
+  fill: var(--crt-green);
+  opacity: 0.12;
+}
+.dk-sweep-line {
+  stroke: var(--crt-green);
+  stroke-width: 1.5;
+  opacity: 0.7;
+}
+.dk-sweep.turn {
+  animation: dk-sweep 1.4s cubic-bezier(0.4, 0, 0.3, 1) 1;
+}
+@keyframes dk-sweep {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+.dk-blip circle {
+  stroke-width: 1.5;
+}
+.dk-blip.gain circle {
+  fill: var(--crt-green);
+  stroke: var(--crt-green);
+}
+.dk-blip.loss circle {
+  fill: var(--crt-red);
+  stroke: var(--crt-red);
+}
+.dk-blip.flat circle {
+  fill: var(--crt-amber);
+  stroke: var(--crt-amber);
+}
+.dk-blip.hedge circle {
+  fill: var(--crt-ground);
+  stroke-width: 2;
+}
+.dk-blip-clamp {
+  stroke: var(--crt-amber);
+  stroke-width: 2;
+}
+.dk-blip-label {
+  fill: var(--crt-amber-text);
+  font: 11px var(--font-mono);
+}
+.dk-legend {
+  list-style: none;
+  margin: var(--sp-3) 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  color: var(--crt-amber-text);
+  font-family: var(--font-mono);
+}
+.dk-legend .subtle {
+  color: var(--crt-amber-soft);
+}
+.dk-key {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  vertical-align: -1px;
+  margin-right: 4px;
+}
+.dk-key.gain {
+  background: var(--crt-green);
+}
+.dk-key.loss {
+  background: var(--crt-red);
+}
+.dk-key.hedge {
+  border: 2px solid var(--crt-amber);
+}
+.dk-unknown-text {
+  color: var(--crt-unknown);
+  margin: var(--sp-2) 0 0;
+}
+
+/* ---------------------------------------------------------------- C · lamp panel */
+.dk-lamps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+}
+.dk-counters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-2);
+}
+.dk-counter {
+  background: var(--crt-ground);
+  border: 4px solid var(--crt-bezel);
+  border-radius: 10px;
+  padding: 6px 8px;
+  min-width: 0;
+  text-align: center;
+}
+.dk-counter-label,
+.dk-counter-unit {
+  color: var(--crt-amber-text);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.dk-counter-unit {
+  color: var(--crt-amber-soft);
+  text-transform: none;
+}
+.dk-counter-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 2px auto;
+}
+.dk-counter.gain .dk-seg.on {
+  fill: var(--crt-green);
+}
+.dk-bank-title {
+  color: var(--crt-amber-soft);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 10px;
+  margin-top: var(--sp-1);
+}
+.dk-bank {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 6px 12px;
+}
+.dk-bank-item {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: center;
+  color: var(--crt-amber-text);
+  min-width: 0;
+}
+.dk-bank-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dk-bank-state {
+  color: var(--crt-amber-soft);
+}
+.dk-square {
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  border: 1px solid var(--crt-bezel);
+  background: var(--crt-bezel);
+}
+.dk-bank-item.ok .dk-square {
+  background: var(--crt-green);
+  border-color: var(--crt-green);
+}
+.dk-bank-item.stale .dk-square,
+.dk-bank-item.near .dk-square {
+  background: var(--crt-amber);
+  border-color: var(--crt-amber);
+}
+.dk-bank-item.down .dk-square,
+.dk-bank-item.over .dk-square {
+  background: var(--crt-red);
+  border-color: var(--crt-red);
+}
+.dk-bank-item.down,
+.dk-bank-item.over.lit {
+  color: var(--crt-red-text);
+}
+.dk-bank-item.unknown .dk-square {
+  background: none;
+  border: 1px dashed var(--crt-unknown);
+}
+.dk-bank-item.unknown.lit .dk-square {
+  background: var(--crt-unknown);
+}
+.dk-bank-item.off .dk-square,
+.dk-bank-item.dark .dk-square {
+  background: var(--crt-bezel);
+  border-color: var(--crt-bezel);
+}
+.dk-bank-item.dark {
+  opacity: 0.6;
+}
+.dk-console-note {
+  color: var(--crt-amber-soft);
+  margin: var(--sp-1) 0 0;
+  font-size: 10px;
+}
+
+/* ---------------------------------------------------------------- tape, limits */
+.dk-mini {
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  margin-bottom: var(--sp-1);
+}
+.dk-tape-chart {
+  min-width: 0;
+}
+.dk-limits-head,
+.dk-limit-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) minmax(140px, 1fr) minmax(200px, 1.3fr) minmax(150px, 1.4fr) 32px;
+  gap: var(--sp-2) var(--sp-3);
+  align-items: center;
+}
+.dk-limits-head {
+  padding-bottom: var(--sp-1);
+  border-bottom: 1px solid var(--rule);
+}
+.dk-limits-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.dk-limit-row {
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--rule);
+}
+.dk-limit-name {
+  width: 100%;
+  min-width: 0;
+  font-family: var(--font-mono);
+}
+.dk-limit-threshold {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.dk-limit-scope {
+  min-width: 0;
+}
+.dk-limits-actions {
+  margin-top: var(--sp-3);
+  gap: var(--sp-2) var(--sp-3);
+}
+@media (max-width: 900px) {
+  .dk-limits-head {
+    display: none;
+  }
+  .dk-limit-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 32px;
+  }
+  .dk-limit-threshold,
+  .dk-limit-scope {
+    grid-column: 1 / 3;
+  }
+}
+
+/* ---------------------------------------------------------------- narrow screens */
+@media (max-width: 600px) {
+  .dk-scope {
+    flex-direction: column;
+    padding: 10px;
+    gap: 12px;
+  }
+  .dk-screen {
+    border-width: 5px;
+    border-radius: 14px;
+    padding: 3px;
+  }
+  .dk-scope-lamps {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 16px;
+    min-width: 0;
+  }
+  /* The drawings are scaled to about half here, so their type is set in the drawing's own
+     units at about twice the size. The rails keep their lines and drop their labels: the
+     lamps below name every breach and its figure. */
+  .dk-gate-label,
+  .dk-caption {
+    font-size: 21px;
+  }
+  .dk-unknown-q {
+    font-size: 22px;
+  }
+  .dk-rail-label {
+    display: none;
+  }
+  .dk-radar-ring-label,
+  .dk-blip-label {
+    font-size: 17px;
+  }
+  .dk-counters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dk-rail.fresh,
+  .dk-sweep.turn {
+    animation: none;
+  }
+}

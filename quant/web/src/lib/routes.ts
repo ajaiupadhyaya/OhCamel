@@ -1,7 +1,7 @@
 /**
  * The app's page registry — the single source for the router, sidebar and command palette.
  * Page components live in src/pages/<Name>.tsx and are lazily loaded (one chunk per page).
- * Array order = sidebar order: Markets · Portfolio Lab, Optimizer, Strategy Lab ·
+ * Array order = sidebar order: Markets, Flight Deck · Portfolio Lab, Optimizer, Strategy Lab ·
  * Volatility, Rates & Macro, Company · Live Engine, Methodology.
  */
 import { lazy, type ComponentType, type LazyExoticComponent } from "react";
@@ -28,6 +28,7 @@ export interface RouteDef {
 
 export const ROUTES: RouteDef[] = [
   { path: "/", to: "/", title: "Markets", icon: "markets", nav: true, section: "Home", blurb: "Today's market: indices, sectors, rates, credit, commodities and volatility.", keywords: "home overview heatmap sectors", component: lazy(() => import("../pages/Markets")) },
+  { path: "/deck", to: "/deck", title: "Flight Deck", icon: "gauge", nav: true, section: "Home", blurb: "Your book's limits, risk and data feeds as live cockpit instruments.", keywords: "instruments cockpit limits radar live targeting lamps var session tape recorder", component: lazy(() => import("../pages/Deck")) },
   { path: "/portfolio", to: "/portfolio", title: "Portfolio Lab", icon: "portfolio", nav: true, section: "Analyze", blurb: "Build or import a portfolio and study its performance, risk, factors and stress.", keywords: "holdings risk var factors stress 13f", component: lazy(() => import("../pages/PortfolioLab")) },
   { path: "/optimize", to: "/optimize", title: "Optimizer", icon: "optimize", nav: true, section: "Analyze", blurb: "Mean-variance, risk parity, HRP and Black–Litterman with constraints and walk-forward tests.", keywords: "frontier hrp black litterman weights", component: lazy(() => import("../pages/Optimizer")) },
   { path: "/research", to: "/research", title: "Strategy Lab", icon: "research", nav: true, section: "Analyze", blurb: "Backtest strategies from the literature and diagnose overfitting.", keywords: "backtest strategy pbo deflated sharpe", component: lazy(() => import("../pages/StrategyLab")) },

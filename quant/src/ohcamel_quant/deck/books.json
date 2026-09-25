@@ -1,0 +1,16 @@
+{
+  "_comment": "The deck's reference books. `core` must equal DEFAULT_PORTFOLIO in quant/web/src/lib/portfolio.tsx (tests/test_deck_router.py checks it), so the recorded tape is the book a first-time visitor already has.",
+  "core": {
+    "name": "Core multi-asset",
+    "holdings": [
+      {"ticker": "SPY", "weight": 0.4},
+      {"ticker": "QQQ", "weight": 0.15},
+      {"ticker": "IWM", "weight": 0.05},
+      {"ticker": "TLT", "weight": 0.15},
+      {"ticker": "IEF", "weight": 0.15},
+      {"ticker": "GLD", "weight": 0.1}
+    ],
+    "benchmark": "SPY",
+    "notional": 1000000.0
+  }
+}
