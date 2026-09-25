@@ -9,7 +9,7 @@
    5 serves them on /api/reports beside the numbers the process did compute.
 
    [coverage_pct] is the published rounding, not the quotient: 8,126 / 10,173
-   is 79.878%, published as 79.9 -- README.md's badge rounds further to the
+   is 79.878%, published as 79.9 -- docs/engine.md's badge rounds further to the
    whole percent (80%) and docs/status.md carries the one-decimal figure
    (79.9%), so a page that printed 79.8781 would
    be claiming a precision `make coverage` did not measure (bisect_ppx
