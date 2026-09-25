@@ -50,6 +50,8 @@ jobs:
   # contents: read` is all it gets.
   lint:
     runs-on: ubuntu-latest
+    # 15 rather than 10: the caddy step pulls an image before it can validate
+    # anything, and a slow registry should not be what turns this job red.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -107,8 +109,8 @@ jobs:
           done
           exit "$status"
 
-      # The three published test-count sentences (README.md, docs/overview.md,
-      # docs/status.md), checked against lib/verified.ml and
+      # The three published test-count sentences (docs/engine.md,
+      # docs/overview.md, docs/status.md), checked against lib/verified.ml and
       # research/src/ohcamel_research/verified.py by scripts/check-counts.sh.
       # This runner has no opam switch and no uv project set up, which is the
       # point: the script is grep and sed only, so this is the CI fact that
