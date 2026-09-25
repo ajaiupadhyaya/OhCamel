@@ -22,7 +22,7 @@ on:
 # happens to be, which for a repository created before GitHub changed that
 # default is read/write -- so saying it here is the difference between least
 # privilege and luck. A job that genuinely needs more declares its own
-# `permissions:` block, which REPLACES this one: Task 11's image job will need
+# `permissions:` block, which REPLACES this one: Task 10's image job will need
 # `packages: write` to push to ghcr, and that exception will then be visible at
 # the job taking it rather than granted to every job in the file.
 permissions:
@@ -125,10 +125,10 @@ jobs:
       # does not parse takes BOTH hosts down at once on the droplet, and
       # `deploy.sh` would discover it after it had already stopped them.
       #
-      # The five hostname/ACME/basic-auth variables come from deploy/local.env,
+      # The hostname/ACME/basic-auth variables come from deploy/local.env,
       # which is committed for exactly this kind of use (see its own header).
-      # Values invented here would be a second copy of the same five lines to
-      # keep in step with the `${VAR:?...}` declarations.
+      # Values invented here would be a second copy of the same lines to keep
+      # in step with the `${VAR:?...}` declarations.
       #
       # /etc/ohcamel/live.env is written with DUMMY values because both
       # ohcamel-live and ohcamel-research declare it `required: true`, so the
@@ -146,7 +146,7 @@ jobs:
         run: |
           sudo install -d -m 0755 /etc/ohcamel
           printf '%s\n' \
-            '# CI only. Dummy values, so that `docker compose config` can' \
+            '# CI only. Dummy values, so that docker compose config can' \
             '# render the live profile, whose env_file is required: true.' \
             '# The real file is root-owned and 0640 on the droplet.' \
             'ALPACA_API_KEY=ci-dummy-not-a-key' \
@@ -159,12 +159,15 @@ jobs:
 
           base=(--env-file deploy/local.env -f deploy/docker-compose.yml)
 
-          echo "== base, default profile (caddy + ohcamel-demo)"
+          echo "== base, default profile (caddy + ohcamel-quant, the public site)"
           docker compose "${base[@]}" config -q
           echo "== base, live profile (adds ohcamel-live + ohcamel-research)"
           docker compose "${base[@]}" --profile live config -q
-          echo "== base + the localhost harness override (make deploy-verify)"
-          docker compose "${base[@]}" -f deploy/docker-compose.local.yml config -q
+          # --profile demo, as the Makefile's LOCAL_COMPOSE passes it: the
+          # synthetic engine sits behind that profile now, so a render without
+          # it would never reach ohcamel-demo's service block.
+          echo "== base + the localhost harness override, demo profile (make deploy-verify)"
+          docker compose "${base[@]}" -f deploy/docker-compose.local.yml --profile demo config -q
 
           # Task 9 adds deploy/docker-compose.ci.yml -- the image job's own
           # override, which names the sha tags buildx loaded and carries no
