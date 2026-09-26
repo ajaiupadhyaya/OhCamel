@@ -13,24 +13,38 @@
 # caddy, over the internal network. That is what makes the basic-auth on the
 # live host meaningful: without it, anyone could skip the proxy by asking the
 # droplet for :8081 directly, and the password would be decoration.
+#
+# Images are PULLED, never built here. Every OhCamel image is
+# ghcr.io/ajaiupadhyaya/<name>:${OHCAMEL_TAG}, and the tag is a commit sha:
+# CI's image job builds the three and publishes them for every green main
+# (.github/workflows/image.yml), and deploy.sh passes the sha per command, so
+# a deploy names exactly one immutable image and a rollback is the previous
+# sha. There is no build block in this file and no `latest` anywhere: `latest`
+# named whatever was built last, so nothing could be rolled back to, and a
+# build on the droplet took twenty minutes beside the live engine. The build
+# blocks live in docker-compose.local.yml (the localhost harness, tag `local`);
+# the image job's own override is docker-compose.ci.yml (the sha tags it just
+# loaded, no build). deploy/test/compose_tags_test.sh pins all of that
+# against real renders.
 
 name: ohcamel
 
+# One logging block for every long-running service, caddy included: json-file,
+# rotated at 10 MB x 3, so no container's log grows without bound under the
+# daemon's default driver. The journal, not a log, is the audit record of
+# orders and fills; a log is for the last few hours of diagnosis.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 x-engine: &engine
-  image: ohcamel:latest
-  # On the anchor, so whichever engine service a run enables can build the
-  # image -- ohcamel-live under --profile live on the droplet, ohcamel-demo
-  # under --profile demo in the localhost harness. Both tag ohcamel:latest from
-  # the same Dockerfile, so both always report the same sha; when both
-  # profiles are on, the second build is a cache hit.
-  build:
-    context: ..
-    dockerfile: deploy/Dockerfile
-    # Passed through to dune's %{env:...} inside the builder stage. Absent,
-    # the image honestly says `unknown` rather than carrying a date nobody set.
-    args:
-      OHCAMEL_GIT_SHA: "${OHCAMEL_GIT_SHA:-unknown}"
-      OHCAMEL_BUILT_AT: "${OHCAMEL_BUILT_AT:-unknown}"
+  # Pulled at the sha deploy.sh passes; the :? refuses a render with no tag
+  # rather than quietly naming a `latest`. OHCAMEL_IMAGE exists for a mirror
+  # or a private registry of the same image and re-points the engine only --
+  # the research and quant refs below are fixed names.
+  image: "${OHCAMEL_IMAGE:-ghcr.io/ajaiupadhyaya/ohcamel}:${OHCAMEL_TAG:?deploy.sh sets OHCAMEL_TAG}"
   restart: unless-stopped
   # Docker's own init as PID 1. Async installs signal handlers, but PID 1 in a
   # container does not get the default SIGTERM disposition, so without an init
@@ -54,18 +68,21 @@ x-engine: &engine
     - /tmp
   security_opt:
     - no-new-privileges:true
-  logging:
-    driver: json-file
-    options:
-      max-size: "10m"
-      max-file: "3"
+  logging: *logging
   networks: [ohcamel]
 
 services:
   caddy:
-    image: caddy:2-alpine
+    # An exact version, never the floating 2-alpine: CI's lint job validates
+    # both Caddyfiles inside this same image and fails when the two name
+    # different versions, and deploy/deploy.env.example hashes the dashboard
+    # password with it, so the hash is made by the binary that checks it.
+    # Bumping it is bumping all three lines together;
+    # deploy/test/compose_tags_test.sh holds them equal.
+    image: caddy:2.11.4-alpine
     restart: unless-stopped
     init: true
+    logging: *logging
     ports:
       - "80:80"
       - "443:443"
@@ -95,12 +112,7 @@ services:
   # MarketData, cached on the quant_data volume, or -- when a vendor is down --
   # from the committed real fixtures baked into the image; never a simulation.
   ohcamel-quant:
-    build:
-      context: ..
-      dockerfile: quant/Dockerfile
-      args:
-        OHCAMEL_GIT_SHA: "${OHCAMEL_GIT_SHA:-unknown}"
-    image: ohcamel-quant:latest
+    image: "ghcr.io/ajaiupadhyaya/ohcamel-quant:${OHCAMEL_TAG:?deploy.sh sets OHCAMEL_TAG}"
     restart: unless-stopped
     init: true
     # OPTIONAL, unlike the live engine's: present on the droplet, the Alpaca
@@ -154,11 +166,7 @@ services:
       retries: 3
       # Importing numpy/pandas/scipy/statsmodels and mounting every router.
       start_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *logging
     networks: [ohcamel]
 
   # The synthetic engine. It used to be the public site; the owner's rule for
@@ -239,10 +247,7 @@ services:
   # credential needed, in phases 1-3 of the deployment (same reasoning as
   # ohcamel-live's own profile comment).
   ohcamel-research:
-    build:
-      context: ..
-      dockerfile: deploy/research.Dockerfile
-    image: ohcamel-research:latest
+    image: "ghcr.io/ajaiupadhyaya/ohcamel-research:${OHCAMEL_TAG:?deploy.sh sets OHCAMEL_TAG}"
     restart: unless-stopped
     init: true
     profiles: ["live"]
@@ -270,11 +275,7 @@ services:
       - /tmp
     security_opt:
       - no-new-privileges:true
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *logging
     networks: [ohcamel]
 
 networks:

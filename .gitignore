@@ -40,6 +40,9 @@ Untitled
 deploy/.env
 deploy/*.env
 !deploy/local.env
+# The image job's dummy env_file (deploy/docker-compose.ci.yml): committed for
+# the same reason local.env is -- three visibly fake values, nothing to protect.
+!deploy/ci.env
 !deploy/deploy.env.example
 !deploy/live.env.example
 

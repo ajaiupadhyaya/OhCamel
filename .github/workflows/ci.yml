@@ -131,7 +131,12 @@ jobs:
       # The hostname/ACME/basic-auth variables come from deploy/local.env,
       # which is committed for exactly this kind of use (see its own header).
       # Values invented here would be a second copy of the same lines to keep
-      # in step with the `${VAR:?...}` declarations.
+      # in step with the `${VAR:?...}` declarations. The same file carries
+      # OHCAMEL_TAG=local, the tag every image reference in
+      # deploy/docker-compose.yml requires (`${OHCAMEL_TAG:?...}`; the droplet
+      # gets a commit sha from deploy.sh), so these renders name the harness's
+      # :local images -- what each file names, and that the render fails with
+      # no tag at all, is deploy/test/compose_tags_test.sh's job, run above.
       #
       # /etc/ohcamel/live.env is written with DUMMY values because both
       # ohcamel-live and ohcamel-research declare it `required: true`, so the
@@ -172,19 +177,16 @@ jobs:
           echo "== base + the localhost harness override, demo profile (make deploy-verify)"
           docker compose "${base[@]}" -f deploy/docker-compose.local.yml --profile demo config -q
 
-          # Task 9 adds deploy/docker-compose.ci.yml -- the image job's own
-          # override, which names the sha tags buildx loaded and carries no
-          # build block. The guard is a file test rather than a committed stub:
-          # a stub would exist only to keep this check busy, and would render
-          # cleanly while proving nothing. This turns itself on the moment the
-          # real file lands, and says out loud when it is skipping.
-          if [ -f deploy/docker-compose.ci.yml ]; then
-            echo "== base + the CI override, both profiles"
-            docker compose "${base[@]}" -f deploy/docker-compose.ci.yml config -q
-            docker compose "${base[@]}" -f deploy/docker-compose.ci.yml --profile live config -q
-          else
-            echo "-- deploy/docker-compose.ci.yml does not exist yet (Task 9 creates it); skipped"
-          fi
+          # deploy/docker-compose.ci.yml is the image job's own override: the
+          # sha tags buildx loaded, no build block, and the two required
+          # env_files pointed at deploy/ci.env -- which is why its live
+          # profile renders with no /etc/ohcamel at all, and why the image job
+          # can bring the live profile up on a runner. Rendered
+          # unconditionally: the file exists now, and a missing one is a
+          # failure, not a skip.
+          echo "== base + the CI override, both profiles"
+          docker compose "${base[@]}" -f deploy/docker-compose.ci.yml config -q
+          docker compose "${base[@]}" -f deploy/docker-compose.ci.yml --profile live config -q
 
       # Both Caddyfiles adapt and provision. This is the only check that reads
       # deploy/Caddyfile.snippets the way the running proxy does: both files
@@ -232,9 +234,12 @@ jobs:
             "$caddy_image" \
             caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile.local
 
-          # Drift. Task 9 pins compose's caddy to an exact 2.x version; until it
-          # does, compose still says caddy:2-alpine and this step says so rather
-          # than failing on a mismatch that is not yet anyone's mistake.
+          # Drift. deploy/docker-compose.yml pins caddy to the same exact
+          # version, and any other value -- a different pin, or the floating
+          # caddy:2-alpine coming back -- fails here: a validator for a version
+          # nobody runs is decoration. deploy/test/compose_tags_test.sh holds
+          # the same equality, and deploy.env.example's hash-password line to
+          # it as well.
           compose_caddy=$(grep -oE 'image: caddy:[0-9A-Za-z.+_-]+' deploy/docker-compose.yml \
                           | head -n 1 | sed 's/^image: //')
           if [ -z "$compose_caddy" ]; then
@@ -242,17 +247,10 @@ jobs:
             exit 1
           fi
           echo "validated with $caddy_image; compose runs $compose_caddy"
-          case "$compose_caddy" in
-            "$caddy_image")
-              ;;
-            caddy:2-alpine)
-              echo "-- compose's caddy tag still floats (Task 9 pins it); once pinned it must equal $caddy_image"
-              ;;
-            *)
-              echo "compose runs $compose_caddy but this step validated with $caddy_image -- pin both to the same version"
-              exit 1
-              ;;
-          esac
+          if [ "$compose_caddy" != "$caddy_image" ]; then
+            echo "compose runs $compose_caddy but this step validated with $caddy_image -- pin both to the same version"
+            exit 1
+          fi
 
       # The systemd units parse. Task 14 creates ohcamel-backup.{service,timer}
       # and Task 18 creates ohcamel-watch.{service,timer}; until they exist this

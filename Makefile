@@ -339,11 +339,14 @@ quant-serve: quant-web
 	cd quant && uv sync --frozen && uv run --frozen ohcamel-quant serve --port $(QUANT_PORT)
 
 # The production image, from the repository root (it bakes in fixtures/ and
-# docs/crisis/). deploy.sh builds it through compose on the droplet.
+# docs/crisis/), tagged for the localhost harness (LOCAL_TAG, below). The
+# droplet builds nothing: it pulls ghcr.io/ajaiupadhyaya/ohcamel-quant:<sha>,
+# published by CI's image job (deploy/docker-compose.yml); this is that same
+# name at the harness's tag.
 quant-image:
 	docker build -f quant/Dockerfile \
 	  --build-arg OHCAMEL_GIT_SHA=$$(git rev-parse HEAD 2>/dev/null || echo unknown) \
-	  -t ohcamel-quant:latest .
+	  -t ghcr.io/ajaiupadhyaya/ohcamel-quant:$(LOCAL_TAG) .
 
 # ---------------------------------------------------------------------------
 # Deployment
@@ -360,18 +363,30 @@ quant-image:
 # `make deploy` on purpose: a target that silently reaches a production host
 # is a target somebody eventually runs by accident.
 
-LOCAL_COMPOSE := docker compose --env-file deploy/local.env \
+# The harness's image tag: what deploy-build and quant-image tag, what
+# deploy/docker-compose.local.yml's build blocks produce, and the value
+# deploy/local.env also carries for a hand-run `docker compose --env-file
+# deploy/local.env ...`. Passed on LOCAL_COMPOSE explicitly as well -- the
+# shell environment wins over --env-file -- so the -t below and the image
+# compose starts cannot drift; deploy/test/compose_tags_test.sh reads all
+# three. Never pushed: the production name is used so the harness runs the
+# compose file production runs, with one word changed.
+LOCAL_TAG := local
+
+LOCAL_COMPOSE := OHCAMEL_TAG=$(LOCAL_TAG) docker compose --env-file deploy/local.env \
                   -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml \
                   --profile demo
 
-# Build both images. The engine: twenty minutes cold, about one after an edit
-# to lib/, because the Dockerfile installs dependencies before it copies
-# source. Quant: a few minutes cold, seconds after an edit.
+# Build both images the harness runs, at LOCAL_TAG. The engine: twenty minutes
+# cold, about one after an edit to lib/, because the Dockerfile installs
+# dependencies before it copies source. Quant: a few minutes cold, seconds
+# after an edit. The research image is not built here: it sits behind the
+# live profile, which the harness never enables.
 deploy-build: quant-image
 	docker build -f deploy/Dockerfile \
 	  --build-arg OHCAMEL_GIT_SHA=$$(git rev-parse HEAD 2>/dev/null || echo unknown) \
 	  --build-arg OHCAMEL_BUILT_AT=$$(date -u +%FT%TZ) \
-	  -t ohcamel:latest .
+	  -t ghcr.io/ajaiupadhyaya/ohcamel:$(LOCAL_TAG) .
 
 # Quant on http://localhost:8000, the synthetic engine on :8001, both behind Caddy.
 deploy-up: deploy-build

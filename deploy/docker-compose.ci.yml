@@ -1,0 +1,71 @@
+# The image job's override (.github/workflows/image.yml). CI only.
+#
+#   OHCAMEL_TAG=<sha> docker compose --env-file deploy/local.env \
+#       -f deploy/docker-compose.yml -f deploy/docker-compose.ci.yml \
+#       --profile demo up -d --no-build
+#
+# The job builds deploy/Dockerfile, deploy/research.Dockerfile and
+# quant/Dockerfile with buildx --load, tagged
+# ghcr.io/ajaiupadhyaya/{ohcamel,ohcamel-research,ohcamel-quant}:<sha>, brings
+# the harness up on exactly those images, runs deploy/smoke.sh against it, and
+# only on a green main pushes them. Three things differ from
+# docker-compose.yml, and only three:
+#
+#   1. image: is the sha tag the job just loaded, written out in full rather
+#      than through ${OHCAMEL_IMAGE:-...}, with pull_policy: never -- a tag the
+#      job did not load fails as "image not found" instead of becoming a pull
+#      from ghcr.io that a non-main run has no right to expect to exist.
+#   2. env_file: the two services that require /etc/ohcamel/live.env read
+#      deploy/ci.env instead -- three visibly fake values, committed, so the
+#      live profile renders and starts on a runner that has neither the file
+#      nor a key. `!override`, because compose otherwise APPENDS an override's
+#      env_file list to the base's and the real path would still be required.
+#      ohcamel-quant's env_file is optional in the base file and is left
+#      alone: absent on the runner, the app runs on its keyless public sources,
+#      which is the path the smoke suite exercises.
+#   3. caddy: the harness's plain-HTTP shape, the same block as
+#      docker-compose.local.yml's -- host 8000 -> Quant, 8001 -> the demo
+#      engine, Caddyfile.local, no ACME. Copied rather than stacked: this file
+#      stands alone beside the base on purpose, because stacking the local
+#      override under it would bring that file's build blocks along, and a
+#      harness that can rebuild may test something other than the image it
+#      loaded.
+#
+# No build block, ever: deploy/test/compose_tags_test.sh counts them.
+#
+# Whose override this is: the image job's. The localhost harness's is
+# docker-compose.local.yml (the build blocks, tag local). The droplet uses
+# neither: it pulls the sha deploy.sh names.
+
+services:
+  caddy:
+    ports: !override
+      - "8000:80"
+      - "8001:8001"
+    volumes:
+      - ./Caddyfile.local:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile.snippets:/etc/caddy/Caddyfile.snippets:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  ohcamel-demo:
+    image: "ghcr.io/ajaiupadhyaya/ohcamel:${OHCAMEL_TAG:?the image job sets OHCAMEL_TAG to the sha it loaded}"
+    pull_policy: never
+
+  ohcamel-live:
+    image: "ghcr.io/ajaiupadhyaya/ohcamel:${OHCAMEL_TAG:?the image job sets OHCAMEL_TAG to the sha it loaded}"
+    pull_policy: never
+    env_file: !override
+      - path: ./ci.env
+        required: true
+
+  ohcamel-research:
+    image: "ghcr.io/ajaiupadhyaya/ohcamel-research:${OHCAMEL_TAG:?the image job sets OHCAMEL_TAG to the sha it loaded}"
+    pull_policy: never
+    env_file: !override
+      - path: ./ci.env
+        required: true
+
+  ohcamel-quant:
+    image: "ghcr.io/ajaiupadhyaya/ohcamel-quant:${OHCAMEL_TAG:?the image job sets OHCAMEL_TAG to the sha it loaded}"
+    pull_policy: never
