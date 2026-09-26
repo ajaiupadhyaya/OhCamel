@@ -166,6 +166,19 @@ module Alerts = struct
     else Ok ()
 end
 
+(* ------------------------------------------------------------------------ *)
+(* The universe cap                                                          *)
+(* ------------------------------------------------------------------------ *)
+
+(* Alpaca's free plan streams at most 30 symbols. A larger book would subscribe,
+   be told no for the excess, and watch a fraction of itself while the page drew
+   all of it. run_live (bin/main.ml) refuses such a book before it connects, and
+   [Book.errors] below reports it, and both read THIS number: check-book exists
+   so the engine never dies on a book at startup, and a cap the checker spelled
+   for itself would be a second number, free to drift from the one the engine
+   enforces. Moving to a paid feed means raising it here, once. *)
+let universe_cap = 30
+
 module Book = struct
   module Position_spec = struct
     type t = { symbol : string; sector : string; qty : float } [@@deriving sexp]
@@ -410,11 +423,27 @@ module Book = struct
      teaches its reader to fix one line and run again -- which is how an edit
      with three typos in it takes three rounds and a deploy window.
 
-     The order is the order the engine applies them in: the limits (graph
-     construction), the alerts (sink construction), the desk, then the signals.
-     Nothing here is new validation; every sentence below comes from the
-     validator that already owned it, so check-book cannot accept a book the
-     engine would refuse, or refuse one it would accept. *)
+     The order is the order the engine applies them in once the file has
+     parsed: the universe (run_live's cap on the count, then the graph's two
+     rules about the list), the limits (graph construction), the alerts (sink
+     construction), the desk, then the signals.
+
+     Every sentence below is one of two kinds. Most come from the validator that
+     owns them -- Limits.validate, Alerts.validate, Desk_spec.validate and
+     Signals_spec.validate are CALLED here, not copied, so their wording cannot
+     drift from what the engine prints. Three are restated, because this module
+     cannot call the code that owns them: Graph.create's "need at least one
+     instrument" and "appears twice" (graph.ml is downstream of config.ml) and
+     run_live's universe cap (bin/ is downstream of lib/). Those three are
+     spelled over the same list run_live hands the graph, with the same
+     comparison, and the cap is [universe_cap] above, which run_live reads too.
+
+     So a book this list passes is a book the engine starts on, as far as the
+     BOOK decides it. A startup refusal added elsewhere -- a new rule in
+     Graph.create, a sink lib/alerts.ml declines to build -- is one more this
+     list does not see until it is restated here; round 1's review found the
+     universe's three exactly that way, after an earlier version of this comment
+     had claimed there were none. *)
   let errors (t : t) : string list =
     (* [invalid_argf], which is what Limits.validate raises: the message alone,
        because [Error.of_exn] would print it inside its constructor and this list
@@ -441,6 +470,39 @@ module Book = struct
       | Some _ | None -> parts
     in
     let instruments = instruments t in
+    let universe_errors =
+      let count = List.length instruments in
+      (* The cap before the shape, as run_live refuses before Graph.create is
+         reached. *)
+      let cap =
+        if count > universe_cap then
+          Some
+            (sprintf
+               "universe: the book declares %d names and the free Alpaca plan streams at \
+                most %d; remove names, or move to a paid feed and raise \
+                Config.universe_cap"
+               count universe_cap)
+        else None
+      in
+      let shape =
+        if count = 0 then
+          Some "universe: no positions; the graph needs at least one instrument"
+        else
+          match
+            List.find_a_dup instruments ~compare:(fun a b ->
+                Types.Symbol.compare (Types.Instrument.symbol a)
+                  (Types.Instrument.symbol b))
+          with
+          | Some dup ->
+              Some
+                (sprintf
+                   "universe: instrument %S appears twice; the graph refuses a duplicate \
+                    at construction"
+                   (Types.Symbol.to_string (Types.Instrument.symbol dup)))
+          | None -> None
+      in
+      List.filter_opt [ cap; shape ]
+    in
     let limit_errors =
       let each = limits t in
       whole_and_parts
@@ -463,7 +525,7 @@ module Book = struct
                      (Signals_spec.validate ~universe { Signals_spec.strategies = [ s ] })))
             ~whole:(returned (Signals_spec.validate ~universe signals))
     in
-    limit_errors @ alert_errors @ desk_errors @ signal_errors
+    universe_errors @ limit_errors @ alert_errors @ desk_errors @ signal_errors
 
   let of_string (contents : string) : t Or_error.t =
     let open Or_error.Let_syntax in

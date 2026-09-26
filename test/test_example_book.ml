@@ -304,6 +304,87 @@ let test_check_on_a_file_that_is_not_there_is_one_sentence () =
     (names "no-such-book-t13.sexp" errors)
 
 (* ------------------------------------------------------------------------- *)
+(* The universe: what the engine refuses AFTER Config.load                     *)
+(* ------------------------------------------------------------------------- *)
+
+(* Three refusals the startup path applies to the instrument list, none of them
+   in Book.of_string: Graph.create refuses an empty list and a duplicate symbol
+   (lib/graph.ml), and run_live refuses more names than the free Alpaca plan
+   streams (bin/main.ml, reading Config.universe_cap). Round 1's review found
+   check-book accepting all three and printing "is a book this build would start
+   on" for each. deploy.sh will run check-book before the restart precisely so
+   the engine never dies on a book at startup, and for each of these the deploy
+   would have proceeded and the live desk gone down at Graph.create, with the
+   checker's blessing on the log. *)
+
+(* The copy-paste edit: AAPL twice, and nothing else wrong. *)
+let duplicate_symbol_book =
+  "((cash 1000000.0) (positions (((symbol AAPL) (sector TECH) (qty 100.0)) ((symbol \
+   AAPL) (sector TECH) (qty 50.0)))) (limits ()))"
+
+let empty_universe_book = "((cash 1000000.0) (positions ()) (limits ()))"
+
+(* A book of [n] names S01 .. Sn, one sector, no limits: the only thing that can
+   be wrong with it is its size. *)
+let book_of_n_names n =
+  sprintf "((cash 1000000.0) (positions (%s)) (limits ()))"
+    (String.concat ~sep:" "
+       (List.init n ~f:(fun i ->
+            sprintf "((symbol S%02d) (sector TECH) (qty 1.0))" (i + 1))))
+
+let test_check_refuses_a_duplicate_position_symbol () =
+  with_book duplicate_symbol_book ~f:(fun p ->
+      let errors = refusal_of p in
+      Alcotest.(check int) "one problem: the duplicate" 1 (List.length errors);
+      (* The symbol, quoted the way the graph quotes it, and "twice", the graph's
+         own word for it. *)
+      Alcotest.(check bool) "naming AAPL" true (names "\"AAPL\"" errors);
+      Alcotest.(check bool) "as appearing twice" true (names "twice" errors))
+
+let test_check_refuses_an_empty_universe () =
+  with_book empty_universe_book ~f:(fun p ->
+      let errors = refusal_of p in
+      Alcotest.(check int) "one problem: no instrument" 1 (List.length errors);
+      Alcotest.(check bool)
+        "saying the graph needs at least one" true (names "at least one" errors))
+
+let test_check_refuses_a_book_over_the_universe_cap_and_accepts_one_at_it () =
+  (* The cap is 30 because Alpaca's free plan streams at most 30 symbols. It is
+     pinned as a number here so that moving it is a deliberate edit to this case
+     as well as to the constant. 31 = 30 + 1 is the smallest book over the cap
+     and 30 the largest book under it, so the pair fixes the boundary exactly: a
+     cap of 29 fails the second half, a cap of 31 -- or no cap at all -- fails
+     the first. *)
+  Alcotest.(check int) "the cap is Alpaca's free-plan 30" 30 Config.universe_cap;
+  with_book (book_of_n_names 31) ~f:(fun p ->
+      let errors = refusal_of p in
+      Alcotest.(check int) "one problem: the size" 1 (List.length errors);
+      Alcotest.(check bool) "naming the 31 names" true (names "31 names" errors);
+      Alcotest.(check bool) "and the cap of 30" true (names "at most 30" errors));
+  with_book (book_of_n_names 30) ~f:(fun p ->
+      match Config.check p with
+      | Error errors ->
+          Alcotest.failf "30 names were refused: %s" (String.concat ~sep:"; " errors)
+      | Ok summary ->
+          Alcotest.(check int)
+            "30 names, accepted" 30
+            (List.length summary.Summary.universe));
+  (* run_live applies the same cap before it connects, and cannot be run here:
+     its next act is Config.load, which asks for three credentials. So the one
+     property a test can hold it to is that it reads THE SAME number -- the
+     constant, and no literal of its own -- the way the shared-minimum case
+     reads lib/factor_model.ml. A cap the checker and the engine each spelled
+     for themselves would be two numbers free to drift, and the drift would show
+     up as exactly the failure this section is about. *)
+  let source = In_channel.read_all "../bin/main.ml" in
+  Alcotest.(check bool)
+    "run_live reads Config.universe_cap" true
+    (String.is_substring source ~substring:"Config.universe_cap");
+  Alcotest.(check bool)
+    "and defines no cap of its own" false
+    (String.is_substring source ~substring:"let universe_cap")
+
+(* ------------------------------------------------------------------------- *)
 (* The CLI: a bad argument is a usage message and exit 2, never a backtrace   *)
 (* ------------------------------------------------------------------------- *)
 
@@ -416,6 +497,34 @@ let test_check_book_with_no_path_reads_the_default_book () =
     (String.is_substring out ~substring:"book.sexp");
   Alcotest.(check bool) "and no backtrace" true (no_backtrace out)
 
+let test_check_book_exits_one_on_a_book_the_engine_refuses_at_startup () =
+  (* The three books of round 1's finding, through the binary deploy.sh will
+     run. Each is exit 1 with one bullet, and the last line no longer says the
+     engine would start on it. *)
+  List.iter
+    [
+      ("a duplicate symbol", duplicate_symbol_book, "\"AAPL\" appears twice");
+      ("an empty universe", empty_universe_book, "at least one");
+      ("31 names", book_of_n_names 31, "31 names");
+    ]
+    ~f:(fun (what, contents, sentence) ->
+      with_book contents ~f:(fun p ->
+          let status, out = run [ "check-book"; p ] in
+          Alcotest.(check int) (sprintf "%s exits 1" what) 1 status;
+          Alcotest.(check int)
+            (sprintf "%s is one bullet" what)
+            1
+            (List.count (String.split_lines out) ~f:(String.is_prefix ~prefix:"  - "));
+          Alcotest.(check bool)
+            (sprintf "%s: the bullet says %s" what sentence)
+            true
+            (String.is_substring out ~substring:sentence);
+          Alcotest.(check bool)
+            (sprintf "%s: and nothing says the engine would start on it" what)
+            false
+            (String.is_substring out ~substring:"would start on");
+          Alcotest.(check bool) (sprintf "%s: no backtrace" what) true (no_backtrace out)))
+
 let test_serve_with_a_port_that_is_not_a_number_prints_the_usage_and_exits_two () =
   (* "0x1f90" is the reason the rule is "digits only" and not Int.of_string:
      Core reads it as 8080, and a port nobody typed is worse than a refusal.
@@ -501,12 +610,21 @@ let suite =
         `Quick test_check_reports_a_duplicate_limit_name_beside_each_bad_limit;
       Alcotest.test_case "check on a file that is not there is one sentence" `Quick
         test_check_on_a_file_that_is_not_there_is_one_sentence;
+      Alcotest.test_case "check refuses a duplicate position symbol" `Quick
+        test_check_refuses_a_duplicate_position_symbol;
+      Alcotest.test_case "check refuses an empty universe" `Quick
+        test_check_refuses_an_empty_universe;
+      Alcotest.test_case
+        "check refuses a book over the universe cap and accepts one at it" `Quick
+        test_check_refuses_a_book_over_the_universe_cap_and_accepts_one_at_it;
       Alcotest.test_case "check-book exits zero on the example book" `Quick
         test_check_book_exits_zero_on_the_example_book;
       Alcotest.test_case "check-book exits one and lists every problem" `Quick
         test_check_book_exits_one_and_lists_every_problem;
       Alcotest.test_case "check-book with no path reads the default book" `Quick
         test_check_book_with_no_path_reads_the_default_book;
+      Alcotest.test_case "check-book exits one on a book the engine refuses at startup"
+        `Quick test_check_book_exits_one_on_a_book_the_engine_refuses_at_startup;
       Alcotest.test_case "serve with a port that is not a number prints the usage" `Quick
         test_serve_with_a_port_that_is_not_a_number_prints_the_usage_and_exits_two;
       Alcotest.test_case "demo with a port that is not a number prints the usage" `Quick

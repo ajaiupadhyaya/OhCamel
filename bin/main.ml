@@ -1080,23 +1080,25 @@ let run_live ~book_path ~(serve_port : int option) =
       let runtime = config.Config.runtime in
       let instruments = Config.Book.instruments book in
       let limits = Config.Book.limits book in
-      (* Alpaca's free plan streams at most 30 symbols. A larger book would
-         subscribe, be told no for the excess, and watch a fraction of itself
-         while the page drew all of it. Refused here, with the number. *)
-      let universe_cap = 30 in
+      (* Alpaca's free plan streams at most Config.universe_cap symbols; the
+         reason is on the constant. A larger book would subscribe, be told no
+         for the excess, and watch a fraction of itself while the page drew all
+         of it. Refused here, with the number -- and check-book refuses the same
+         book by the same number, so a deploy that runs it first never reaches
+         this line with a book that fails it. *)
       (* Every refusal below exits through Async's [exit], bound, rather than
          [Stdlib.exit]. Under [open Async], [prerr_endline] writes to a buffered
          writer that only Async's shutdown flushes: followed by Stdlib.exit, the
          process exited 1 with nothing on stderr, a refusal that never said what
          it refused. *)
       let%bind () =
-        if List.length instruments > universe_cap then (
+        if List.length instruments > Config.universe_cap then (
           prerr_endline
             (sprintf
                "ohcamel: the book declares %d names and the free Alpaca plan streams at \
-                most %d. Remove names, or move to a paid feed and raise the cap in \
-                bin/main.ml."
-               (List.length instruments) universe_cap);
+                most %d. Remove names, or move to a paid feed and raise \
+                Config.universe_cap."
+               (List.length instruments) Config.universe_cap);
           exit 1)
         else return ()
       in
@@ -1929,9 +1931,10 @@ let usage () =
     \                             live feeds + dashboard on http://localhost:PORT\n\n\
     \  ohcamel check-book [book.sexp]\n\
     \                             parse the book and run every validation the engine\n\
-    \                             would -- the limits, the alerts, the desk and the\n\
-    \                             signals -- print what it says, and exit 1 listing\n\
-    \                             EVERY problem. Needs no credentials.\n\
+    \                             would -- the universe and its cap, the limits, the\n\
+    \                             alerts, the desk and the signals -- print what it\n\
+    \                             says, and exit 1 listing EVERY problem. Needs no\n\
+    \                             credentials.\n\
     \  ohcamel journal-backup SRC DIR [--name NAME]\n\
     \                             copy the journal at SRC to DIR, verify the copy,\n\
     \                             then prune DIR. Default NAME is desk-YYYY-MM-DD.db\n\
