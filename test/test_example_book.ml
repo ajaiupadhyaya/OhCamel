@@ -296,6 +296,41 @@ let test_check_reports_a_duplicate_limit_name_beside_each_bad_limit () =
         "and the duplicate name, which only the whole set shows" true
         (names "duplicate limit name" errors))
 
+let test_check_reports_the_live_sum_beside_a_strategy's_own_problem () =
+  (* Signals_spec.validate checks the duplicate-name rule before the members but
+     the live fractions' sum AFTER them, so on the startup path a member's own
+     problem hides the sum, and round 1's review found check-book hiding it for
+     one round too (N1). Two live strategies at 0.7 each: 0.7 + 0.7 = 1.4, exact
+     in binary because doubling is, and %g prints it as "1.4". A third names
+     GOOG, which the book does not hold. Both problems, in one run. *)
+  let extra =
+    "(signals ((strategies (((name s_a) (symbols (SPY)) (sizing Live) (capital_fraction \
+     0.7)) ((name s_b) (symbols (AAPL)) (sizing Live) (capital_fraction 0.7)) ((name \
+     s_c) (symbols (GOOG)) (capital_fraction 0.5))))))"
+  in
+  with_book (book ~limits:"" ~extra) ~f:(fun p ->
+      let errors = refusal_of p in
+      Alcotest.(check int) "GOOG and the sum, in one run" 2 (List.length errors);
+      Alcotest.(check bool) "s_c's GOOG" true (names "GOOG" errors);
+      Alcotest.(check bool) "and the live sum of 1.4" true (names "sum to 1.4" errors))
+
+let test_check_reports_a_duplicate_strategy_name_beside_a_member's_problem () =
+  (* The other set rule, and the reason the whole set is still validated as a
+     whole: two strategies named s_one, the first naming GOOG. A whole-set run
+     over only the strategies that passed alone would see one s_one and no
+     duplicate, so this case holds the run over all of them in place. *)
+  let extra =
+    "(signals ((strategies (((name s_one) (symbols (GOOG)) (capital_fraction 0.5)) \
+     ((name s_one) (symbols (SPY)) (capital_fraction 0.5))))))"
+  in
+  with_book (book ~limits:"" ~extra) ~f:(fun p ->
+      let errors = refusal_of p in
+      Alcotest.(check int) "GOOG and the duplicate name" 2 (List.length errors);
+      Alcotest.(check bool) "the GOOG" true (names "GOOG" errors);
+      Alcotest.(check bool)
+        "and the name two strategies share" true
+        (names "two strategies have this name" errors))
+
 let test_check_on_a_file_that_is_not_there_is_one_sentence () =
   let errors = refusal_of "../no-such-book-t13.sexp" in
   Alcotest.(check int) "one sentence, and no exception" 1 (List.length errors);
@@ -525,6 +560,36 @@ let test_check_book_exits_one_on_a_book_the_engine_refuses_at_startup () =
             (String.is_substring out ~substring:"would start on");
           Alcotest.(check bool) (sprintf "%s: no backtrace" what) true (no_backtrace out)))
 
+let test_check_book_prints_a_multi_line_parse_error_as_one_bullet () =
+  (* Sexplib's parse error echoes the input, so an unclosed book written over
+     three lines is echoed over three lines. Config.check folds each sentence
+     onto one line so that the bullet count still means "problems"; without the
+     fold the bullet would be the first of three lines and the file's own text
+     would follow it, for an operator to count as more problems or as none.
+     Round 1's review mutated the fold to the identity and nothing failed (N2);
+     this case is the pin. *)
+  with_book
+    "((cash 1000000.0)\n\
+    \ (positions (((symbol AAPL) (sector TECH) (qty 100.0))))\n\
+    \ (limits ())\n" ~f:(fun p ->
+      let status, out = run [ "check-book"; p ] in
+      Alcotest.(check int) "exit 1" 1 status;
+      let lines =
+        List.filter (String.split_lines out) ~f:(fun l ->
+            not (String.is_empty (String.strip l)))
+      in
+      Alcotest.(check int)
+        "one bullet" 1
+        (List.count lines ~f:(String.is_prefix ~prefix:"  - "));
+      Alcotest.(check bool)
+        "and it is the last line: nothing of the file spills after it" true
+        (match List.last lines with
+        | Some l -> String.is_prefix l ~prefix:"  - "
+        | None -> false);
+      Alcotest.(check bool)
+        "the one line says the book does not parse" true
+        (String.is_substring out ~substring:"does not parse"))
+
 let test_serve_with_a_port_that_is_not_a_number_prints_the_usage_and_exits_two () =
   (* "0x1f90" is the reason the rule is "digits only" and not Int.of_string:
      Core reads it as 8080, and a port nobody typed is worse than a refusal.
@@ -608,6 +673,11 @@ let suite =
         test_check_reports_every_problem_in_one_run;
       Alcotest.test_case "check reports a duplicate limit name beside each bad limit"
         `Quick test_check_reports_a_duplicate_limit_name_beside_each_bad_limit;
+      Alcotest.test_case "check reports the live sum beside a strategy's own problem"
+        `Quick test_check_reports_the_live_sum_beside_a_strategy's_own_problem;
+      Alcotest.test_case
+        "check reports a duplicate strategy name beside a member's problem" `Quick
+        test_check_reports_a_duplicate_strategy_name_beside_a_member's_problem;
       Alcotest.test_case "check on a file that is not there is one sentence" `Quick
         test_check_on_a_file_that_is_not_there_is_one_sentence;
       Alcotest.test_case "check refuses a duplicate position symbol" `Quick
@@ -625,6 +695,8 @@ let suite =
         test_check_book_with_no_path_reads_the_default_book;
       Alcotest.test_case "check-book exits one on a book the engine refuses at startup"
         `Quick test_check_book_exits_one_on_a_book_the_engine_refuses_at_startup;
+      Alcotest.test_case "check-book prints a multi-line parse error as one bullet" `Quick
+        test_check_book_prints_a_multi_line_parse_error_as_one_bullet;
       Alcotest.test_case "serve with a port that is not a number prints the usage" `Quick
         test_serve_with_a_port_that_is_not_a_number_prints_the_usage_and_exits_two;
       Alcotest.test_case "demo with a port that is not a number prints the usage" `Quick

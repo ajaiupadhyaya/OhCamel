@@ -457,17 +457,28 @@ module Book = struct
     let returned = function Ok () -> None | Error e -> Some (Error.to_string_hum e) in
     (* A rule about the WHOLE set -- two limits with one name, two strategies
        with one name, the live fractions' sum -- cannot be seen by validating one
-       member, and both validators check those rules BEFORE they walk the
-       members. So each member is validated alone, which collects every
-       per-member problem, and one run over the whole set adds the set-level
-       sentence. When there is no set-level problem that run repeats one of the
-       per-member sentences, which is why it is dropped rather than appended
-       blind: the alternative is a second copy of each set rule's wording here,
-       free to drift from the one the engine prints. *)
-    let whole_and_parts ~whole ~parts =
-      match whole with
-      | Some e when not (List.mem parts e ~equal:String.equal) -> parts @ [ e ]
-      | Some _ | None -> parts
+       member. So each member is validated alone, which collects every
+       per-member problem, and a run over the whole set adds the set-level
+       sentence. A whole-set run stops at its first problem, and when that is a
+       member's it repeats a sentence the parts already hold, which is why a
+       whole-set sentence is dropped when it is already listed rather than
+       appended blind: the alternative is a second copy of each set rule's
+       wording here, free to drift from the one the engine prints.
+
+       Limits.validate checks its set rule before the members, so one run over
+       the whole set sees it. Signals_spec.validate checks the duplicate name
+       before the members but the live fractions' sum AFTER them, so a member's
+       own problem hid the sum for a round (round 1's N1). Hence two runs for
+       the signals: over every strategy, for the duplicate name, and over the
+       strategies that passed alone, which gets past the members to the sum.
+       The sum that second run names is over those strategies -- a lower bound
+       on the book's when a failing member is live too, still over 1, and the
+       member's own bullet is beside it. *)
+    let whole_and_parts ~wholes ~parts =
+      List.fold wholes ~init:parts ~f:(fun acc whole ->
+          match whole with
+          | Some e when not (List.mem acc e ~equal:String.equal) -> acc @ [ e ]
+          | Some _ | None -> acc)
     in
     let instruments = instruments t in
     let universe_errors =
@@ -509,7 +520,7 @@ module Book = struct
         ~parts:
           (List.filter_map each ~f:(fun l ->
                raised (fun () -> Limits.validate ~instruments [ l ])))
-        ~whole:(raised (fun () -> Limits.validate ~instruments each))
+        ~wholes:[ raised (fun () -> Limits.validate ~instruments each) ]
     in
     let alert_errors = Option.to_list (returned (Alerts.validate t.alerts)) in
     let desk_errors = Option.to_list (returned (Desk_spec.validate t.desk)) in
@@ -518,12 +529,19 @@ module Book = struct
       | None -> []
       | Some signals ->
           let universe = List.map t.positions ~f:(fun p -> p.Position_spec.symbol) in
+          let whole strategies =
+            returned (Signals_spec.validate ~universe { Signals_spec.strategies })
+          in
+          let verdicts =
+            List.map signals.Signals_spec.strategies ~f:(fun s -> (s, whole [ s ]))
+          in
+          let passed =
+            List.filter_map verdicts ~f:(fun (s, verdict) ->
+                Option.some_if (Option.is_none verdict) s)
+          in
           whole_and_parts
-            ~parts:
-              (List.filter_map signals.Signals_spec.strategies ~f:(fun s ->
-                   returned
-                     (Signals_spec.validate ~universe { Signals_spec.strategies = [ s ] })))
-            ~whole:(returned (Signals_spec.validate ~universe signals))
+            ~parts:(List.filter_map verdicts ~f:snd)
+            ~wholes:[ whole signals.Signals_spec.strategies; whole passed ]
     in
     universe_errors @ limit_errors @ alert_errors @ desk_errors @ signal_errors
 
