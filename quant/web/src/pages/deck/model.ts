@@ -20,6 +20,7 @@ export type FeedState = "ok" | "stale" | "down" | "off" | "unknown";
 export type DeckSource = "portfolio" | "reference" | "engine";
 
 export interface ReadingClock {
+  session?: string;
   is_open: boolean;
   next_open: string | null;
   next_close: string | null;
