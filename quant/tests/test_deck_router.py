@@ -187,3 +187,32 @@ def test_the_quote_date_of_a_bare_close_is_that_date():
     assert deck._quote_date(pd.Timestamp("2026-06-01")).isoformat() == "2026-06-01"
     # 01:30 UTC on the 25th is 21:30 New York on the 24th.
     assert deck._quote_date(pd.Timestamp("2026-09-25T01:30:00")).isoformat() == "2026-09-24"
+
+
+def test_partial_marks_never_certify_limits_or_equity(market):
+    d = deck.build_reading(deck.DeckIn(**CORE), HalfQuoted(market), now=NOW, clock=OPEN)
+    assert d["quality"]["complete"] is False
+    assert d["quality"]["missing"] == ["TLT"]
+    assert d["quality"]["basis"] == "held-close estimate"
+    assert d["book"]["equity_usd"] is None
+    assert not d["limits"]
+    assert len(d["unevaluated"]) == len(deck.lm.DEFAULT_LIMITS)
+
+
+def test_source_age_and_engine_configuration_are_not_health(market, monkeypatch):
+    settings = market.settings.model_copy(update={"offline": False, "engine_url": "http://engine"})
+    monkeypatch.setattr(deck, "recorder_status", lambda _: {"enabled": True, "running": True,
+                        "last_error": None, "last_write": "2026-09-24T14:00:00+00:00"})
+    marks = [{"source": "old", "price": 100, "error": None, "age_s": 301},
+             {"source": "fresh", "price": 100, "error": None, "age_s": 20},
+             {"source": "undated", "price": 100, "error": None, "age_s": None}]
+    feeds = {f["key"]: f for f in deck._feeds(settings, OPEN, marks, None, NOW.date())}
+    assert feeds["source:old"]["state"] == "stale"
+    assert feeds["source:fresh"]["state"] == "ok"
+    assert feeds["source:undated"]["state"] == "unknown"
+    assert feeds["engine"]["state"] == "unknown"
+    assert feeds["recorder"]["state"] == "stale"
+    from dataclasses import replace
+    closed = replace(OPEN, is_open=False)
+    feeds = {f["key"]: f for f in deck._feeds(settings, closed, marks, None, NOW.date())}
+    assert feeds["recorder"]["state"] == "ok"

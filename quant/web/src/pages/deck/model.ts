@@ -16,7 +16,7 @@ import type { ScopeLimit } from "./scope";
 
 // ------------------------------------------------------------------ wire: /deck/reading
 
-export type FeedState = "ok" | "stale" | "down" | "off";
+export type FeedState = "ok" | "stale" | "down" | "off" | "unknown";
 export type DeckSource = "portfolio" | "reference" | "engine";
 
 export interface ReadingClock {
@@ -80,7 +80,17 @@ export interface ReadingFeed {
   detail: string | null;
   age_s: number | null;
 }
+export interface ReadingQuality {
+  complete: boolean;
+  missing: string[];
+  offline: boolean;
+  fixtures?: boolean;
+  basis: string;
+  history_as_of: string;
+  quote_cache_s: number;
+}
 export interface Reading extends Envelope {
+  quality?: ReadingQuality;
   as_of: string;
   source: string;
   clock: ReadingClock;
@@ -140,6 +150,8 @@ export interface TapeOut extends Envelope {
 // ------------------------------------------------------------------ the model
 
 export interface DeckModel {
+  observation_key?: string;
+  quality?: ReadingQuality;
   source: DeckSource;
   as_of: string | null;
   clock: ReadingClock | null;
@@ -183,6 +195,8 @@ export function fromReading(r: Reading, source: Exclude<DeckSource, "engine"> = 
   const marks = r.marks ?? [];
   return {
     source,
+    quality: r.quality,
+    observation_key: marks.length ? JSON.stringify([marks.map(m => [m.ticker, m.as_of, m.price, m.error]), r.risk?.var_usd, r.risk?.es_usd, r.limits, r.unevaluated]) : undefined,
     as_of: r.as_of ?? null,
     clock: r.clock ?? null,
     notional: r.book?.notional ?? null,
@@ -281,6 +295,7 @@ export interface TapeColumns {
 }
 
 export interface TrailPoint {
+  observation_key?: string;
   ts: string;
   day_pnl_usd: number | null;
   var_usd: number | null;
@@ -293,11 +308,13 @@ export const TRAIL_MAX = 2000;
 /** Add a reading to the page's own trail; a reading already on it (same as_of) is skipped. */
 export function appendTrail(trail: TrailPoint[], m: DeckModel, max: number = TRAIL_MAX): TrailPoint[] {
   if (!m.as_of) return trail;
+  const observationKey = m.observation_key ? JSON.stringify([m.observation_key, m.counters.day_pnl_usd, m.counters.var_usd, m.counters.es_usd, m.limits, m.unevaluated]) : undefined;
+  if (observationKey && trail.at(-1)?.observation_key === observationKey) return trail;
   if (trail.some((p) => p.ts === m.as_of)) return trail;
   const u: Record<string, number | null> = {};
   for (const l of m.limits) u[l.name] = finite(l.utilisation) ? l.utilisation : null;
   for (const x of m.unevaluated) u[x.name] = null;
-  const next = [...trail, { ts: m.as_of, day_pnl_usd: m.counters.day_pnl_usd, var_usd: m.counters.var_usd, es_usd: m.counters.es_usd, utilisation: u }];
+  const next = [...trail, { observation_key: observationKey, ts: m.as_of, day_pnl_usd: m.counters.day_pnl_usd, var_usd: m.counters.var_usd, es_usd: m.counters.es_usd, utilisation: u }];
   next.sort((a, b) => (parseTs(a.ts) ?? 0) - (parseTs(b.ts) ?? 0));
   return next.length > max ? next.slice(next.length - max) : next;
 }

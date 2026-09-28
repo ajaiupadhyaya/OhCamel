@@ -49,7 +49,7 @@ export function LimitsEditor({ limits, customised, onChange, onReset, notional, 
               <NameInput value={l.name} taken={others} onCommit={(name) => set(i, { name })} />
               <Select<LimitKind> ariaLabel={`Kind of ${l.name}`} value={l.kind} onChange={(kind) => set(i, { kind, ticker: kind === "name" ? l.ticker : undefined })} options={KINDS.map((k) => ({ value: k.kind, label: k.label }))} />
               <div className="dk-limit-threshold">
-                <NumberField value={l.threshold} onChange={(threshold) => set(i, { threshold })} percent min={0} step={money ? 0.0025 : 0.05} width={112} />
+                <NumberField label={<span className="sr-only">Threshold for {l.name}</span>} value={l.threshold} onChange={(threshold) => set(i, { threshold })} percent min={0.000001} step={money ? 0.0025 : 0.05} width={112} />
                 <span className="subtle small">
                   {money ? (
                     <>

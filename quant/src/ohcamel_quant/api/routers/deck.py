@@ -231,6 +231,14 @@ def build_reading(body: DeckIn, market: MarketData, settings: Settings | None = 
     limits = [x.to_limit() for x in body.limits] if body.limits is not None else list(lm.DEFAULT_LIMITS)
     evaluated, unevaluated = lm.evaluate(limits, facts)
 
+    if missing:
+        # Every limit depends on a complete marked book. Keep the indicative
+        # risk calculation, but never certify limits against held-close prices.
+        unevaluated = [{"name": x.name, "kind": x.kind,
+                        "reason": f"incomplete marks: {', '.join(missing)}; held-close risk is indicative only"}
+                       for x in limits]
+        evaluated = []
+
     n = body.notional
     by_ticker = {m["ticker"]: m for m in marks}
     for m in marks:
@@ -245,9 +253,13 @@ def build_reading(body: DeckIn, market: MarketData, settings: Settings | None = 
     feeds = _feeds(settings, clock, marks, quote_failure, last_bar)
     return clean({
         "as_of": now.isoformat(), "source": "portfolio",
+        "quality": {"complete": not missing, "missing": missing, "offline": settings.offline,
+                    "fixtures": any(str(m["source"]).startswith("fixture:") for m in marks),
+                    "basis": "held-close estimate" if missing else "historical fixtures" if settings.offline else "latest available marks",
+                    "history_as_of": last_bar.isoformat(), "quote_cache_s": settings.ttl_intraday_quote_s},
         "clock": clock.to_dict(),
         "book": {
-            "notional": n, "equity_usd": n * (1.0 + day), "day_pnl": None if missing else day,
+            "notional": n, "equity_usd": None if missing else n * (1.0 + day), "day_pnl": None if missing else day,
             "day_pnl_usd": None if missing else day * n,
             "gross": sum(abs(x) for x in lw.values()), "net": sum(lw.values()), "cash": 1.0 - sum(lw.values()),
             "observations": len(rets), "start": rets.index[0], "end": rets.index[-1],
@@ -272,7 +284,7 @@ def _feeds(settings: Settings, clock: Clock, marks: list[dict[str, Any]], quote_
            last_bar: date) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     out.append({"key": "clock", "label": "Session clock",
-                "state": "ok" if clock.source == "alpaca" else "off",
+                "state": "off" if settings.offline else "ok" if clock.source == "alpaca" else "unknown",
                 "detail": ("Alpaca clock: " if clock.source == "alpaca" else "") +
                           ("open" if clock.is_open else "closed") + (f"; {clock.note}" if clock.note else ""),
                 "age_s": None})
@@ -284,6 +296,8 @@ def _feeds(settings: Settings, clock: Clock, marks: list[dict[str, Any]], quote_
         state, detail = "off", "offline: the last committed daily closes"
     elif not got:
         state, detail = "down", quote_failure or "no holding could be quoted"
+    elif len(ages) < len(got):
+        state, detail = "unknown", "quote timestamps missing; freshness cannot be verified"
     elif len(got) < len(marks):
         state, detail = "stale", f"{len(marks) - len(got)} of {len(marks)} holdings unquoted"
     elif clock.is_open and oldest is not None and oldest > QUOTE_STALE_OPEN_S:
@@ -295,7 +309,10 @@ def _feeds(settings: Settings, clock: Clock, marks: list[dict[str, Any]], quote_
     for src in sorted({str(m["source"]) for m in got if m["source"]}):
         n = sum(1 for m in got if m["source"] == src)
         src_ages = [m["age_s"] for m in got if m["source"] == src and m["age_s"] is not None]
-        out.append({"key": f"source:{src}", "label": src, "state": "ok",
+        src_age = max(src_ages) if src_ages else None
+        src_state = ("off" if settings.offline or src.startswith("fixture:") else "unknown" if len(src_ages) < n else
+                     "stale" if clock.is_open and src_age > QUOTE_STALE_OPEN_S else "ok")
+        out.append({"key": f"source:{src}", "label": src, "state": src_state,
                     "detail": f"{n} mark{'s' if n != 1 else ''}", "age_s": max(src_ages) if src_ages else None})
 
     lag = (date.fromisoformat(clock.session) - last_bar).days
@@ -305,14 +322,21 @@ def _feeds(settings: Settings, clock: Clock, marks: list[dict[str, Any]], quote_
 
     rec = recorder_status(settings)
     rec_state = "off" if not rec["enabled"] else ("down" if not rec["running"] or rec["last_error"] else "ok")
+    if rec_state == "ok" and clock.is_open:
+        try:
+            age = (datetime.fromisoformat(clock.now) - datetime.fromisoformat(rec["last_write"])).total_seconds()
+            if age > 3 * settings.recorder_interval_s:
+                rec_state = "stale"
+        except (TypeError, ValueError):
+            rec_state = "unknown"
     rec_detail = ("disabled" if not rec["enabled"] else
                   rec["last_error"] or (f"last write {rec['last_write']}" if rec["last_write"] else "no readings yet"))
     out.append({"key": "recorder", "label": "Flight recorder", "state": rec_state, "detail": rec_detail,
                 "age_s": None})
 
     configured = bool((settings.engine_url or "").strip())
-    out.append({"key": "engine", "label": "OCaml engine bridge", "state": "ok" if configured else "off",
-                "detail": "configured (read on the engine source)" if configured else "not configured on this server",
+    out.append({"key": "engine", "label": "OCaml engine bridge", "state": "unknown" if configured else "off",
+                "detail": "configured, connectivity unchecked (select the engine source)" if configured else "not configured on this server",
                 "age_s": None})
     return out
 

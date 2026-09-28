@@ -951,6 +951,14 @@ Each page task covers:
 
 ## Lane F — the Flight Deck console tab (depends on D1–D3, 0.4)
 
+**2026-09-28 standalone visual release:** `/deck` now has a page-local SVG console,
+limit corridor, risk radar, truthful feed lamps, session scanner and details drawer.
+This release uses the existing quote polling and daily EWMA models and does not depend
+on Terminal tokens, `hostd`, SSE or model artifacts. The private engine bridge stays
+at its existing disabled public default. The infrastructure-dependent tasks below
+remain open; this visual release does not claim their completion.
+
+
 **Tasks:**
 - **F0:** plan.
 - **F1: console layout.**

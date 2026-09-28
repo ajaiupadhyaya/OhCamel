@@ -219,3 +219,13 @@ describe("the session tape", () => {
     expect(c.pnlLabel).toMatch(/Equity change/);
   });
 });
+
+
+test("a cached quote response does not add an invented market observation", () => {
+  const first = fromReading(reading());
+  const trail = appendTrail([], first);
+  const repeat = fromReading(reading({as_of: "2026-09-24T14:31:15Z"}));
+  expect(appendTrail(trail, repeat)).toBe(trail);
+  const changed = fromReading(reading({as_of: "2026-09-24T14:32:00Z", risk: {...reading().risk, var_usd: 12500}}));
+  expect(appendTrail(trail, changed)).toHaveLength(2);
+});

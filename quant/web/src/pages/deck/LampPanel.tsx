@@ -10,7 +10,7 @@ import type { DeckModel, FeedState } from "./model";
 import { SevenSeg, segWidth } from "./SevenSeg";
 import { ageCounter, moneyCounter, sessionCountdown, type Counter } from "./segments";
 
-const STATE_WORD: Record<FeedState, string> = { ok: "live", stale: "stale", down: "down", off: "off" };
+const STATE_WORD: Record<FeedState, string> = { ok: "ready", stale: "stale", down: "down", off: "off", unknown: "unchecked" };
 
 function ageWords(s: number | null): string {
   if (s == null) return "";
@@ -49,12 +49,27 @@ function CounterTile({ label, counter, caption, signed = false }: { label: strin
   );
 }
 
-export function LampPanel({ model }: { model: DeckModel }) {
+export function Counters({ model }: { model: DeckModel }) {
   const now = useNow(15_000);
+  const responseTime = Date.parse(model.as_of ?? "");
+  const elapsed = Number.isFinite(responseTime) ? Math.max(0, (now - responseTime) / 1000) : 0;
   const c = model.counters;
   const countdown = sessionCountdown(model.clock, now);
   const alpha = model.alpha != null ? `${fmtPct(model.alpha, 0)} 1-day` : "1-day";
 
+  return (
+      <div className="dk-counters">
+        <CounterTile signed label="Day P&L" counter={moneyCounter(c.day_pnl_usd)} caption={c.day_pnl != null ? fmtPct(c.day_pnl, 2, { signed: true }) : undefined} />
+        <CounterTile label={`VaR · ${alpha}`} counter={moneyCounter(c.var_usd)} />
+        <CounterTile label="Oldest mark" counter={ageCounter(c.marks_age_s == null ? null : c.marks_age_s + elapsed)} />
+        <CounterTile label={countdown.label === "session clock" ? "Session" : countdown.label === "to the close" ? "To the close" : "To the open"} counter={countdown} caption={model.clock ? (model.clock.is_open ? "open" : "closed") : "no clock"} />
+      </div>
+  );
+}
+
+export function LampPanel({ model, onInspect, stale }: { model: DeckModel; onInspect: (text: string) => void; stale: boolean }) {
+  const now = useNow(15_000);
+  const elapsed = Math.max(0, (now - (Date.parse(model.as_of ?? "") || now)) / 1000);
   const states = useMemo(() => {
     const near = model.limits.filter((l) => !l.breached && l.utilisation != null && l.utilisation >= 0.8).length;
     const over = model.limits.filter((l) => l.breached).length;
@@ -69,21 +84,16 @@ export function LampPanel({ model }: { model: DeckModel }) {
 
   return (
     <div className="dk-console dk-lamps">
-      <div className="dk-counters">
-        <CounterTile signed label="Day P&L" counter={moneyCounter(c.day_pnl_usd)} caption={c.day_pnl != null ? fmtPct(c.day_pnl, 2, { signed: true }) : undefined} />
-        <CounterTile label={`VaR · ${alpha}`} counter={moneyCounter(c.var_usd)} />
-        <CounterTile label="Oldest mark" counter={ageCounter(c.marks_age_s)} />
-        <CounterTile label={countdown.label === "session clock" ? "Session" : countdown.label === "to the close" ? "To the close" : "To the open"} counter={countdown} caption={model.clock ? (model.clock.is_open ? "open" : "closed") : "no clock"} />
-      </div>
+
 
       <div className="dk-bank-title">Feeds</div>
       <ul className="dk-bank" aria-label="Data feeds">
         {model.feeds.map((f) => (
-          <li key={f.key} className={`dk-bank-item ${f.state}`} title={[f.detail, ageWords(f.age_s)].filter(Boolean).join(" · ")}>
+          <li key={f.key} className={`dk-bank-item ${stale && f.state === "ok" ? "stale" : f.state}`} title={[f.detail, ageWords(f.age_s)].filter(Boolean).join(" · ")}>
             <span className="dk-square" aria-hidden="true" />
-            <span className="dk-bank-label">{f.label}</span>
+            <button className="dk-bank-label" onClick={() => onInspect(`${f.label}: ${stale ? "refresh failed · " : ""}${f.detail ?? f.state}${f.age_s != null ? ` · ${ageWords(f.age_s + elapsed)}` : ""}`)}>{f.label}</button>
             <span className="dk-bank-state">
-              {STATE_WORD[f.state] ?? f.state}
+              {stale && f.state === "ok" ? "stale" : STATE_WORD[f.state] ?? f.state}
               <span className="sr-only">{f.detail ? ` — ${f.detail}` : ""}{f.age_s != null ? `, ${ageWords(f.age_s)}` : ""}</span>
             </span>
           </li>
@@ -101,7 +111,7 @@ export function LampPanel({ model }: { model: DeckModel }) {
           </li>
         ))}
       </ul>
-      {model.clock?.note && <p className="dk-console-note">{model.clock.note}</p>}
+      <p className="dk-console-note">Select a lamp for its source, age and diagnostics.</p>
     </div>
   );
 }

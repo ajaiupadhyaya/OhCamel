@@ -12,15 +12,15 @@
  * (its 503 is rendered, never replaced). All three become one DeckModel (deck/model.ts).
  * Below the instruments: the session tape, the marks with provenance, and the limits editor.
  */
-import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import { DataTable, Page, Panel, Section, SegmentedControl, useTabParam, type Column } from "../components";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { DataTable, Panel, Section, SegmentedControl, useTabParam, type Column } from "../components";
 import { DataUnavailableError, type ApiError } from "../lib/api";
 import { fmtDate, fmtNum, fmtPct, fmtRelativeTime, fmtSignedPct } from "../lib/format";
 import { usePortfolio } from "../lib/portfolio";
 import { useApiPost, useApiQuery } from "../lib/query";
 import type { HistoryOut, SnapshotOut } from "./engine/types";
-import { LampPanel } from "./deck/LampPanel";
+import { Counters, LampPanel } from "./deck/LampPanel";
 import { LimitsEditor } from "./deck/LimitsEditor";
 import { DEFAULT_LIMITS, loadLimits, sanitizeLimits, saveLimits, toWire, type LimitIn } from "./deck/limits";
 import { appendTrail, fromEngine, fromReading, historyToTape, tapeFromServer, trailToTape, type BooksOut, type DeckModel, type DeckSource, type Reading, type ReadingMark, type TapeOut, type TrailPoint } from "./deck/model";
@@ -79,26 +79,31 @@ function useDeckLimits() {
 // ------------------------------------------------------------------ page
 
 export default function Deck() {
+  const [params, setParams] = useSearchParams();
+  const focus = params.get("focus") === "1";
   const [raw, setSource] = useTabParam<string>("source", "portfolio");
   const source: DeckSource = isSource(raw) ? raw : "portfolio";
-  const label = SOURCES.find((s) => s.value === source)!.label;
-
   return (
-    <Page
-      eyebrow={`Live · ${label}`}
-      title="Flight Deck"
-      subtitle="Your book's limits, risk and data feeds as three cockpit instruments, each read from real data and refreshed while you watch. Nothing is simulated: a number that cannot be computed is shown as missing."
-      actions={<SegmentedControl<DeckSource> className="dk-source" ariaLabel="What the deck is flying" options={SOURCES} value={source} onChange={(v) => setSource(v)} />}
-    >
-      {/* keyed: a new source is a new set of queries, so no reading from another source is ever shown as a placeholder */}
+    <div className="dk-flight">
+      <header className="dk-flight-header">
+        <h1><span>OhCamel /</span> FLIGHT DECK</h1>
+        <SegmentedControl<DeckSource> className="dk-source" ariaLabel="What the deck is flying" options={SOURCES} value={source} onChange={(v) => setSource(v)} />
+        <button className="dk-button" onClick={() => {const next = new URLSearchParams(params); if (focus) next.delete("focus"); else next.set("focus","1"); setParams(next);}}>{focus ? "Exit focus" : "Focus view"}</button>
+      </header>
       <DeckBody key={source} source={source} />
-    </Page>
+    </div>
   );
 }
 
 function DeckBody({ source }: { source: DeckSource }) {
   const { request, portfolio } = usePortfolio();
   const limits = useDeckLimits();
+  const drawer = useRef<HTMLDialogElement>(null);
+  const [inspection, setInspection] = useState("Reading details");
+  const inspect = (text: string) => {
+    setInspection(text);
+    drawer.current?.showModal();
+  };
   const wire = toWire(limits.custom);
 
   // Reference books (and the server's default limits) — not needed for the engine.
@@ -118,6 +123,7 @@ function DeckBody({ source }: { source: DeckSource }) {
 
   const reading = useApiPost<Reading>("/deck/reading", body, {
     enabled: source !== "engine" && body != null,
+    placeholderData: undefined,
     staleTime: 0,
     refetchInterval: (q) => (q.state.data?.clock?.is_open ? OPEN_POLL : CLOSED_POLL),
   });
@@ -155,22 +161,34 @@ function DeckBody({ source }: { source: DeckSource }) {
 
   return (
     <>
-      <StatusStrip q={q} source={source} />
-      {q.isError ? (
-        <SourceError source={source} error={q.error} onRetry={() => void q.refetch()} />
-      ) : (
+      <div className="dk-command-row">
+        <StatusStrip q={q} source={source} />
+        <button className="dk-button" onClick={() => inspect("Reading details")}>Details / limits</button>
+      </div>
+      {model?.quality && (!model.quality.complete || model.quality.offline || model.quality.fixtures) && (
+        <p className="dk-notice" role="status">{(model.quality.offline || model.quality.fixtures) ? "HISTORICAL FIXTURES · NOT LIVE" : "PARTIAL READING"} · {model.quality.complete ? "Committed real market observations. These are historical observations, not current quotes." : `Missing ${model.quality.missing.join(", ")}. Risk uses held-close estimates; limits are unevaluated.`}</p>
+      )}
+      {q.isError ? <SourceError source={source} error={q.error} onRetry={() => void q.refetch()} /> : (
         <>
-          <Section title="Instruments" description={`Refreshed ${q.cadence}. Each screen has a plain-text equivalent beside or below it.`}>
-            <Instruments q={q} />
-          </Section>
-          <Section title="Session tape" description="The day so far: how full each limit has been, and day P&L against the 1-day VaR line.">
-            <Tape source={source} q={q} />
-          </Section>
-          <Section title="Marks" description="Every price behind the reading, with how old it is and where it came from.">
-            <MarksPanel q={q} />
-          </Section>
+          <Instruments q={q} onInspect={inspect} />
+          <div className="dk-tape-shell"><div className="dk-instrument-heading"><h2>Session scanner</h2><span>TIME / RISK / EVENTS</span></div><Tape source={source} q={q} /></div>
         </>
       )}
+      <footer className="dk-provenance-strip">
+        <span>READ-ONLY INSTRUMENTS</span>
+        <span>{source === "engine" ? "OCaml engine" : `Quote cache ${model?.quality?.quote_cache_s ?? 60}s · 1-day EWMA risk`}</span>
+        <span>History through {model?.quality?.history_as_of ?? "—"}</span>
+        <button onClick={() => inspect("Sources & model assumptions")}>Sources & assumptions</button>
+      </footer>
+      <dialog ref={drawer} className="dk-details" aria-labelledby="dk-details-title">
+        <header className="dk-details-header"><h2 id="dk-details-title">{inspection}</h2><button className="btn" onClick={() => drawer.current?.close()}>Close</button></header>
+        <p className="small subtle">Quotes and risk estimates have different observation times. Policy limits are your settings. Escape closes this drawer.</p>
+        {model?.quality && <p>Basis: {model.quality.basis}. Historical window ends {model.quality.history_as_of}.</p>}
+        {model?.notes.map((note, i) => <p key={i} className="small">{note}</p>)}
+        {model?.feeds.map(f => <p key={f.key} className="small"><strong>{f.label}: {f.state}</strong> — {f.detail}{f.age_s != null ? ` · ${Math.round(f.age_s)}s old at reading` : ""}</p>)}
+        <p className="small">Corridor depth shows observed ÷ threshold. The red counter shows the worst breach when one exists, otherwise the nearest limit’s remaining headroom. Select a limit for its actual value and units.</p>
+        <p className="small">Radar bearings follow alphabetical ticker order; radius is absolute share of value at risk, size is absolute portfolio weight, and hollow marks are hedges. Values beyond the rim are clamped and marked. The green phosphor is a display color; today’s signed move is in holding inspection and the marks table.</p>
+        <MarksPanel q={q} />
       <Section title="Limits" description="Your policy lines. They are sent with every reading, so the targeting computer and the lamps show your limits, not ours.">
         {source === "engine" ? (
           <Panel title="Engine limits" notes={[]}>
@@ -194,6 +212,7 @@ function DeckBody({ source }: { source: DeckSource }) {
           </Panel>
         )}
       </Section>
+      </dialog>
     </>
   );
 }
@@ -205,10 +224,10 @@ function StatusStrip({ q, source }: { q: DeckQuery; source: DeckSource }) {
   if (!m) return null;
   const clock = m.clock;
   return (
-    <div className="dk-status" role="status">
+    <div className="dk-status">
       {clock ? (
         <span className={`badge ${clock.is_open ? "gain" : "unknown"}`} title={clock.note ?? undefined}>
-          US session {clock.is_open ? "open" : "closed"}
+          {clock.source === "alpaca" ? "US session" : "Estimated session"} {clock.is_open ? "open" : "closed"}
           {clock.source ? ` · ${clock.source}` : ""}
         </span>
       ) : (
@@ -216,7 +235,7 @@ function StatusStrip({ q, source }: { q: DeckQuery; source: DeckSource }) {
       )}
       {m.as_of && (
         <span className="subtle small">
-          Reading <span className="num">{fmtRelativeTime(m.as_of.replace(" ", "T"))}</span>
+          Response <span className="num">{fmtRelativeTime(m.as_of.replace(" ", "T"))}</span>
         </span>
       )}
       {q.stale && (
@@ -255,47 +274,28 @@ function SourceError({ source, error, onRetry }: { source: DeckSource; error: un
 
 // ------------------------------------------------------------------ instruments
 
-function Instruments({ q }: { q: DeckQuery }) {
+function Instruments({ q, onInspect }: { q: DeckQuery; onInspect: (text: string) => void }) {
   const m = q.data;
-  const unevaluated = useMemo(() => (m?.unevaluated ?? []).map((u) => u.name), [m?.unevaluated]);
+  const unevaluated = (m?.unevaluated ?? []).map(u => u.name);
+  const stale = q.stale || !!m?.feeds.some(f => f.state === "stale" || f.state === "down");
+  // Vendor observation times identify a new market reading, not the response timestamp.
+  const quoteKey = m?.marks.map(x => `${x.ticker}:${x.as_of}:${x.price}`).join("|") ?? null;
   return (
-    <div className="dk-deck">
-      <Panel<DeckModel>
-        className="dk-inst dk-inst-scope"
-        title="A · Targeting computer"
-        subtitle="How close is the book to each of its limits? The nearest is the target; the red readout is its room to spare."
-        info={{ text: "Every limit still ahead is a gate in the tunnel, drawn nearer the fuller it is (scale 1 / (1 + 5·headroom)). A breached limit has passed the screen and is a pair of red rails. A limit that cannot be evaluated is the dashed gate beyond the vanishing point, never drawn as far away and safe. Money limits read in dollars, fractions in basis points.", reference: "After Figure 2 of the OhCamel desk (web/scope.js)." }}
-        query={q}
-        notes={m?.unevaluated.length ? m.unevaluated.map((u) => `${u.name}: ${u.reason}.`) : []}
-        provenance={[]}
-        skeletonHeight={320}
-      >
-        {(d) => <TargetingComputer limits={d.limits} unevaluated={unevaluated} stale={q.stale} />}
-      </Panel>
-      <Panel<DeckModel>
-        className="dk-inst"
-        title="B · Radar"
-        subtitle="Where is the risk, and what is moving today?"
-        info={{ title: "Euler share of VaR", text: "Each holding sits at a fixed bearing (book order). Its distance from the centre is its share of the book's 1-day parametric VaR (EWMA covariance, live weights); rings at 10, 25 and 50 %; beyond 60 % it is pinned to the rim with a tick. Size is its live weight; hollow means its component VaR is negative (it hedges).", formula: "\\text{share}_i = \\frac{w_i (\\Sigma w)_i}{w^\\top \\Sigma w}", reference: "Tasche (2000)" }}
-        query={q}
-        notes={[]}
-        provenance={[]}
-        skeletonHeight={320}
-      >
-        {(d) => <Radar blips={d.blips} readingKey={d.as_of} />}
-      </Panel>
-      <Panel<DeckModel>
-        className="dk-inst"
-        title="C · Lamp panel"
-        subtitle="Is the data behind this alive?"
-        info={{ text: "A square lamp for each feed the reading reports (quotes per source, the session clock, the flight recorder, the engine bridge): green live, amber stale, red down, dark off. The counters are day P&L and VaR in dollars, the oldest mark's age, and the time to the close or the next open." }}
-        query={q}
-        notes={[]}
-        provenance={[]}
-        skeletonHeight={320}
-      >
-        {(d) => <LampPanel model={d} />}
-      </Panel>
+    <div className="dk-deck" aria-busy={q.isLoading}>
+      <section className="dk-instrument dk-inst-scope">
+        <div className="dk-instrument-heading"><h2>Limit corridor</h2><span>{m?.limits.some(l => l.breached) ? "BREACH" : "PORTFOLIO RISK VIEW"}</span></div>
+        {!m && <p className="dk-no-reading">{q.isLoading ? "ACQUIRING READING" : "NO READING"}</p>}
+        <TargetingComputer limits={m?.limits ?? []} unevaluated={unevaluated} stale={stale} onInspect={onInspect} />
+        {m && <Counters model={m} />}
+      </section>
+      <section className="dk-instrument dk-inst-radar">
+        <div className="dk-instrument-heading"><h2>Risk radar</h2><span>1D VaR</span></div>
+        <Radar blips={m?.blips ?? []} readingKey={quoteKey} onInspect={onInspect} />
+      </section>
+      <section className="dk-instrument dk-inst-system">
+        <div className="dk-instrument-heading"><h2>Systems</h2><span>STATUS</span></div>
+        {m ? <LampPanel model={m} onInspect={onInspect} stale={q.stale} /> : <p className="dk-no-reading">NO READING</p>}
+      </section>
     </div>
   );
 }
@@ -343,14 +343,17 @@ function EngineTape() {
 
 function TrailTape({ model }: { model: DeckModel | undefined }) {
   const { request } = usePortfolio();
-  const key = useMemo(() => JSON.stringify([request.holdings, request.notional, request.start, request.end]), [request]);
+  const key = useMemo(() => JSON.stringify([request.holdings, request.notional, request.start, request.end, model?.clock?.session, model?.limits.map(l => [l.name, l.threshold])]), [request, model?.clock?.session, model?.limits]);
   const [trail, setTrail] = useState<TrailPoint[]>(() => TRAILS.get(key) ?? []);
   useEffect(() => setTrail(TRAILS.get(key) ?? []), [key]);
   useEffect(() => {
     if (!model) return;
     setTrail((t) => {
       const next = appendTrail(t, model);
-      if (next !== t) TRAILS.set(key, next);
+      if (next !== t) {
+        TRAILS.set(key, next);
+        if (TRAILS.size > 12) TRAILS.delete(TRAILS.keys().next().value!);
+      }
       return next;
     });
   }, [model, key]);
