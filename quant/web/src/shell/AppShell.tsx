@@ -77,11 +77,12 @@ export function AppShell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("keydown", on);
   }, []);
 
+  const focus = loc.pathname === "/deck" && new URLSearchParams(loc.search).get("focus") === "1";
   const isCollapsed = !mobile && collapsed;
   const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
   return (
-    <div className={`oc-app ${isCollapsed ? "collapsed" : ""} ${mobile ? "mobile" : ""} ${drawer ? "drawer-open" : ""}`}>
+    <div className={`oc-app ${focus ? "dk-focus" : ""} ${isCollapsed ? "collapsed" : ""} ${mobile ? "mobile" : ""} ${drawer ? "drawer-open" : ""}`}>
       <div className="oc-sidebar-cell">
       <aside className="oc-sidebar" aria-label="Primary">
         <div className="oc-sidebar-top">

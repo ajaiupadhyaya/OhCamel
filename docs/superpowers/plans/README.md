@@ -2,7 +2,9 @@
 
 This directory is the project's plan history. Every file that was ever committed here stays, unedited except for one status header line each: it is either the historical record of a finished, merged phase, or a superseded draft. The active plan is named below first.
 
-**Active plan:** `docs/superpowers/plans/2026-09-19-final-completion.md` — "the finish." Design doc: `docs/superpowers/specs/2026-09-19-the-finish.md`. Ledger: `.superpowers/sdd/2026-09-19-final/progress.md` (gitignored). It replaces the A4 plan below and the separate A5 and A6 phases, which were never written as their own plan documents (see the design doc §2).
+**Active program (2026-09-24):** `docs/superpowers/plans/2026-09-24-quant-compute-program.md` — the compute program: a three-tier droplet (protected engine, interactive API, preemptible batch), Rust kernels and telemetry, a job system, a DuckDB warehouse, trained models, the Terminal UI and the Flight Deck console. It absorbs the finish plan's Stage 1 into its Phase 0 and runs the finish plan's Stages 2A–6 as its Lane E; the finish plan below stays binding for those stages.
+
+**Active plan (engine lane):** `docs/superpowers/plans/2026-09-19-final-completion.md` — "the finish." Design doc: `docs/superpowers/specs/2026-09-19-the-finish.md`. Ledger: `.superpowers/sdd/2026-09-19-final/progress.md` (gitignored). It replaces the A4 plan below and the separate A5 and A6 phases, which were never written as their own plan documents (see the design doc §2).
 
 ## Superseded, never merged
 

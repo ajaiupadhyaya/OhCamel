@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     price_providers: list[str] = Field(default_factory=lambda: ["alpaca", "yahoo", "stooq"])
     # Optional URL of the OCaml real-time engine (read-only JSON), for the Live page.
     engine_url: str | None = None
+    # The Flight Deck's recorder: one reading of the reference book per interval
+    # while the US session is open, kept in {data_dir}/deck/recorder.sqlite.
+    # OHCAMEL_QUANT_RECORDER=0 turns it off; it never runs offline.
+    recorder: bool = True
+    recorder_interval_s: int = Field(default=60, ge=10)
+    recorder_keep_sessions: int = Field(default=30, ge=1)
     # Directory of committed real-data fixtures (used offline and in tests).
     fixtures_dir: Path = Field(default=REPO_ROOT / "fixtures")
 

@@ -27,7 +27,7 @@ The repository has two parts:
 
 | | What it is | Where |
 |---|---|---|
-| **OhCamel Quant** | The platform above: a FastAPI analytics service (Python, ~20k lines, 600 tests) and a React app. It is the public site. | [`quant/`](quant/) |
+| **OhCamel Quant** | The platform above: a FastAPI analytics service (Python, ~20k lines, 653 tests) and a React app. It is the public site. | [`quant/`](quant/) |
 | **The engine** | A real-time risk and limits engine in OCaml on Jane Street's Incremental. Risk is a dependency graph, so a tick recomputes only what depends on it. It is driven by Alpaca's live feed and runs a paper-trading desk behind a password. | [`lib/`](lib/), [`desk/`](desk/), [`docs/engine.md`](docs/engine.md) |
 
 ---

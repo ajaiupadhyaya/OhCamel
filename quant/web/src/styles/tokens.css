@@ -131,6 +131,22 @@
 
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
   --dur: 160ms;
+
+  /* ---- CRT instruments (Flight Deck) ----
+     The cockpit screens are always dark, the way a monitor is dark on a white desk,
+     so these are declared once here and deliberately NOT redefined in the dark
+     blocks below: the same values apply in both themes. (After Figure 2's --sc-*.) */
+  --crt-panel: #1b1916;      /* the console the screens are set into */
+  --crt-bezel: #2e2a25;      /* the screen's frame */
+  --crt-ground: #110d08;     /* the tube */
+  --crt-amber: #f2b441;
+  --crt-amber-soft: rgba(242, 180, 65, 0.42);
+  --crt-amber-text: #f6cf7a;
+  --crt-red: #ec4b36;
+  --crt-red-text: #f39a8a;
+  --crt-green: #53c08f;
+  --crt-unknown: #8b9ae0;    /* lilac-blue: cannot be evaluated / no data */
+  --crt-seg-off: rgba(236, 75, 54, 0.09); /* an unlit seven-segment bar */
 }
 
 /* Dark: deep ink-blue night. Declared twice: OS preference (unless the user
