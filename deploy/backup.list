@@ -1,0 +1,54 @@
+# deploy/backup.list -- what the nightly backup copies. Read by deploy/backup.sh,
+# which ohcamel-backup.timer runs at 06:30 UTC (deploy/systemd/); pinned by
+# deploy/test/backup_list_test.sh.
+#
+# One file a line, four fields separated by spaces:
+#
+#   VOLUME  PATH  METHOD  UID
+#
+#   VOLUME  the compose volume the file lives on: a key under `volumes:` in
+#           deploy/docker-compose.yml. backup.sh mounts exactly that volume,
+#           and no other, at /data in the one-shot ohcamel-backup container,
+#           so a line can read only the volume it names.
+#   PATH    the file's absolute path INSIDE that volume as the service that
+#           writes it sees it -- every writer mounts its volume at /data, so
+#           the path begins with /data/ and may not climb with `..`.
+#   METHOD  how the copy is taken:
+#             journal  the engine's own `ohcamel journal-backup PATH /backups`:
+#                      SQLite's online backup API, the copy reopened and
+#                      integrity_checked, then pruned to the 14 newest
+#                      dailies, the 8 most recent Sundays and the 5 newest
+#                      pre-deploy-* copies (finish plan ruling 11). At most
+#                      one line, because it always writes desk-YYYY-MM-DD.db.
+#             sqlite   the sqlite3 CLI's `.backup` on a read-only handle (the
+#                      same online backup API, for a database the engine does
+#                      not own), integrity_checked before the copy takes its
+#                      name STEM-YYYY-MM-DD.EXT; backup.sh keeps the 14 newest.
+#             duckdb   reserved for Lane C (CHECKPOINT, then a file copy) and
+#                      refused until that lane teaches backup.sh the method.
+#   UID     the uid the copy runs as: the uid of the image that owns the
+#           volume (deploy/Dockerfile 10001, quant/Dockerfile 10002). A WAL
+#           reader creates the -shm beside the database and only the
+#           directory's owner can, so the copy must run as that owner. Never 0.
+#
+# Blank lines and # comments are ignored. A malformed line -- the wrong field
+# count, an undeclared volume, a path outside /data/, an unknown or reserved
+# method, a uid that is not a number or is root, two lines that would write
+# the same name -- fails the whole run BEFORE any container starts, with the
+# file and line named. An empty list is refused too: a timer that exits 0
+# having copied nothing is the failure mode this file exists to prevent.
+#
+# Later lanes APPEND here rather than editing backup.sh:
+#   quant_data /data/jobs.sqlite sqlite 10002         Lane B, the job queue
+#   quant_data /data/warehouse.duckdb duckdb 10002    Lane C, once `duckdb` exists
+
+# The desk's journal: every order, event, fill, session close, mark and
+# forecast (desk/journal.ml). ohcamel-live writes it at OHCAMEL_JOURNAL.
+desk_data /data/desk.db journal 10001
+
+# The Flight Deck's recorder: one reading of the reference book a minute while
+# the US session is open (quant/src/ohcamel_quant/deck/recorder.py, WAL mode),
+# at {OHCAMEL_QUANT_DATA_DIR}/deck/recorder.sqlite, data_dir=/data in
+# ohcamel-quant. Absent until the first open minute after a deploy, which the
+# run reports and does not count as a failure.
+quant_data /data/deck/recorder.sqlite sqlite 10002

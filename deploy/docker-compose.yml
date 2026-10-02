@@ -278,6 +278,51 @@ services:
     logging: *logging
     networks: [ohcamel]
 
+  # The nightly backup's container (finish plan ruling 11, Task 14), behind
+  # profile "backup" so no `up` ever starts it: deploy/backup.sh runs it once
+  # per line of deploy/backup.list, as `docker compose --profile backup run
+  # --rm -T --user UID:GID ohcamel-backup ...`, from ohcamel-backup.timer at
+  # 06:30 UTC. The same engine image and tag as ohcamel-live -- `ohcamel
+  # journal-backup` is the engine's own command, and the sqlite3 CLI for the
+  # files the engine does not own (the Flight Deck's recorder) is installed
+  # in the same runtime stage (deploy/Dockerfile) so this stays one image.
+  #
+  # One volume at /data, chosen per run: OHCAMEL_BACKUP_VOLUME names the
+  # compose volume the list line lives on (desk_data for the journal, which
+  # is the default so `--profile backup config` renders the journal's
+  # configuration; quant_data for the recorder), so a run can read exactly the
+  # volume its line names and no other, and the line's path is literally the
+  # path inside that volume. Read-write, not :ro, because a WAL reader may
+  # have to create the -shm beside the database even though it only reads
+  # (ruling 11); the container runs as the volume's owning uid for the same
+  # reason. /var/backups/ohcamel on the host is /backups, the one place
+  # anything is written; OHCAMEL_BACKUP_DIR re-points it for a test.
+  #
+  # No network, a read-only root, no env_file: nothing here reaches Alpaca,
+  # and the trading keys in /etc/ohcamel/live.env are never mounted or copied
+  # (backup.sh copies book.sexp and deploy/.env beside the backups; never
+  # live.env). deploy/restore.sh runs this same service as root to put a
+  # verified copy back into the volume. SQLite's integrity_check on a big
+  # copy may spill to a temp file; the root is read-only, so that goes to the
+  # tmpfs.
+  ohcamel-backup:
+    image: "${OHCAMEL_IMAGE:-ghcr.io/ajaiupadhyaya/ohcamel}:${OHCAMEL_TAG:?deploy.sh sets OHCAMEL_TAG}"
+    profiles: ["backup"]
+    init: true
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      SQLITE_TMPDIR: /tmp
+    volumes:
+      - "${OHCAMEL_BACKUP_VOLUME:-desk_data}:/data"
+      - "${OHCAMEL_BACKUP_DIR:-/var/backups/ohcamel}:/backups"
+    logging: *logging
+    command: ["journal-backup", "/data/desk.db", "/backups"]
+
 networks:
   ohcamel:
     driver: bridge

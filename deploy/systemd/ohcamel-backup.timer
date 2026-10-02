@@ -1,0 +1,25 @@
+# Fires ohcamel-backup.service once a day at 06:30 UTC (finish plan ruling
+# 11). The hour is chosen to be clear of everything else the host does on a
+# clock: the session close (close + 5 min: 20:05 or 21:05 UTC), the research
+# run (00:16 UTC), the unattended-upgrade reboot window (10:00 UTC, O12) and
+# the next open (13:30 or 14:30 UTC). The zone is written out so the instant
+# does not move with the host's local time.
+#
+# Persistent=true: a firing missed while the host was down runs at the next
+# boot, so a reboot across 06:30 costs no night's copy.
+#
+# Enabled by owner step O12: systemctl enable --now ohcamel-backup.timer, and
+# `systemctl list-timers 'ohcamel-*'` shows the next firing. `User=` is a
+# [Service] directive and lives in ohcamel-backup.service.
+
+[Unit]
+Description=Run ohcamel-backup.service daily at 06:30 UTC
+
+[Timer]
+OnCalendar=*-*-* 06:30:00 UTC
+Persistent=true
+AccuracySec=1min
+Unit=ohcamel-backup.service
+
+[Install]
+WantedBy=timers.target

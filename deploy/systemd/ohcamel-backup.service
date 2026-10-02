@@ -1,0 +1,51 @@
+# The nightly backup, as a one-shot: deploy/backup.sh copies every file
+# deploy/backup.list names (the desk's journal, the Flight Deck's recorder,
+# whatever later lanes append) into /var/backups/ohcamel through one
+# throwaway container a line, then book.sexp and deploy/.env beside them.
+# Started by ohcamel-backup.timer at 06:30 UTC; `systemctl start
+# ohcamel-backup.service` runs it now.
+#
+# Installed by owner step O12 (finish plan):
+#   install -d -m 0770 -o 10001 -g ohcamel /var/backups/ohcamel
+#   install -m 0644 deploy/systemd/ohcamel-backup.{service,timer} /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now ohcamel-backup.timer
+# The directory is group-writable, not 0750: uid 10001 writes the journal's
+# copies, uid 10002 the recorder's, and the ohcamel user the book's, and
+# backup.sh refuses to run until it is (the refusal prints that install line).
+#
+# User=ohcamel is the deploy user -- the checkout's owner, in the docker group
+# -- so the script runs the same `docker compose` the owner runs by hand, and
+# reads deploy/.env the way compose does (never sourced into a shell: see
+# deploy.sh on the `$$` in the bcrypt hash). /etc/ohcamel/live.env is 0640
+# root:ohcamel and this unit neither reads nor names it; the backup service
+# in docker-compose.yml declares no env_file.
+#
+# CI's lint job runs `systemd-analyze verify` on this file and asserts the
+# PARSE (a runner has no ohcamel user, which that step tolerates by design):
+# a misspelled directive here is a warning systemd would ignore on the host,
+# and the timer would then fire a unit that does something other than this.
+
+[Unit]
+Description=OhCamel nightly backup (deploy/backup.sh): the journal, the recorder, the book and deploy/.env into /var/backups/ohcamel
+Documentation=file:///home/ohcamel/OhCamel/deploy/backup.sh
+# The containers need the daemon; without it compose fails in its first
+# second and the timer reports a failed run, which is the right outcome.
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=ohcamel
+Group=ohcamel
+WorkingDirectory=/home/ohcamel/OhCamel
+ExecStart=/home/ohcamel/OhCamel/deploy/backup.sh
+# The journal is small (megabytes) and the recorder is ~12k rows; a run is
+# seconds. Half an hour is the ceiling at which a stuck daemon call becomes a
+# failed run rather than a unit that never ends.
+TimeoutStartSec=30min
+# A failure is a failed unit in journalctl and `systemctl list-timers`; the
+# watchdog (ohcamel-watch, Task 18) alerts on a newest backup older than 26 h,
+# which is how a silent miss is noticed.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ohcamel-backup

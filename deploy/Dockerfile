@@ -116,6 +116,15 @@ FROM debian:12.15-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e36
 # market-on-open orders may go only from 19:00 America/New_York, read from the
 # tz database (desk/desk_time.ml), and without the zone the desk refuses every
 # one of them.
+#
+# sqlite3 -- the CLI, not just the library the engine links -- is for the
+# nightly backup and nothing the engine does: deploy/backup.sh's `sqlite`
+# method copies the databases the engine does not own (the Flight Deck's
+# recorder on quant_data; later Lane B's jobs.sqlite) with `sqlite3 -readonly
+# SRC ".backup DEST"` inside the ohcamel-backup compose service, which is this
+# image at the engine's tag, so the backup stays one image instead of a
+# second one to build, publish and pin. The engine's own `journal-backup`
+# goes through the library (libsqlite3-0, above). About 1.5 MB.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libopenblas0 \
       liblapacke \
@@ -124,12 +133,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libgmp10 \
       libev4 \
       libsqlite3-0 \
+      sqlite3 \
       zlib1g \
       ca-certificates \
       curl \
       tzdata \
  && rm -rf /var/lib/apt/lists/* \
- && test -f /usr/share/zoneinfo/America/New_York
+ && test -f /usr/share/zoneinfo/America/New_York \
+ && sqlite3 -version
 
 # Unprivileged, and with no login shell. The process reads market data and
 # serves HTML; nothing it does wants root, and a container escape should land
