@@ -17,7 +17,13 @@
    The second half of this file is [Config.check] and the CLI that calls it
    (Task 13). Everything here still runs without the scheduler: [check-book] is
    a plain program, and a bad argument is refused before Async would start, so
-   the cases that run the binary run a process that never opens a socket. *)
+   the cases that run the binary run a process that never opens a socket. Two
+   cases hand the child three dummy credential values in a cleared environment
+   so that [live] and [serve] reach their own refusals -- the universe cap, a
+   book that is not there -- which come after Config.load and before the
+   journal is opened or anything is connected to; that child starts Async's
+   scheduler in its own process and exits under it, and still opens no
+   socket. *)
 
 open Core
 module Book = Ohcamel.Config.Book
@@ -352,10 +358,17 @@ let test_check_on_a_file_that_is_not_there_is_one_sentence () =
    would have proceeded and the live desk gone down at Graph.create, with the
    checker's blessing on the log. *)
 
-(* The copy-paste edit: AAPL twice, and nothing else wrong. *)
+(* The copy-paste edit: AAPL twice, and nothing else wrong. The copied row has
+   its sector edited and its symbol not, so the two rows differ as whole
+   instruments and agree only on the symbol. That is the value at which the
+   graph's comparison (Symbol.compare over Instrument.symbol, lib/graph.ml) and
+   the one a later edit would reach for (Types.Instrument.compare, which the
+   derived compare invites) DISAGREE. Round 2's review found both rows in TECH,
+   where the two find the same duplicate, and a checker comparing whole
+   instruments passed every case while Graph.create refused the book. *)
 let duplicate_symbol_book =
   "((cash 1000000.0) (positions (((symbol AAPL) (sector TECH) (qty 100.0)) ((symbol \
-   AAPL) (sector TECH) (qty 50.0)))) (limits ()))"
+   AAPL) (sector INDEX) (qty 50.0)))) (limits ()))"
 
 let empty_universe_book = "((cash 1000000.0) (positions ()) (limits ()))"
 
@@ -374,7 +387,22 @@ let test_check_refuses_a_duplicate_position_symbol () =
       (* The symbol, quoted the way the graph quotes it, and "twice", the graph's
          own word for it. *)
       Alcotest.(check bool) "naming AAPL" true (names "\"AAPL\"" errors);
-      Alcotest.(check bool) "as appearing twice" true (names "twice" errors))
+      Alcotest.(check bool) "as appearing twice" true (names "twice" errors);
+      (* The sentence is restated from Graph.create, so it is held to the
+         refusal it restates: the same list, handed to the graph, is refused
+         with the same word. The duplicate check is the graph's second act, so
+         nothing is built; a graph that did come back is destroyed. *)
+      let instruments = Book.instruments (Or_error.ok_exn (Book.load p)) in
+      Alcotest.(check bool)
+        "and Graph.create refuses the same list" true
+        (match
+           Ohcamel.Graph.create ~instruments ~limits:[] ~confidence:0.95 ~return_window:60
+             ()
+         with
+        | exception Invalid_argument m -> String.is_substring m ~substring:"appears twice"
+        | graph ->
+            Ohcamel.Graph.destroy graph;
+            false))
 
 let test_check_refuses_an_empty_universe () =
   with_book empty_universe_book ~f:(fun p ->
@@ -404,17 +432,24 @@ let test_check_refuses_a_book_over_the_universe_cap_and_accepts_one_at_it () =
           Alcotest.(check int)
             "30 names, accepted" 30
             (List.length summary.Summary.universe));
-  (* run_live applies the same cap before it connects, and cannot be run here:
-     its next act is Config.load, which asks for three credentials. So the one
-     property a test can hold it to is that it reads THE SAME number -- the
-     constant, and no literal of its own -- the way the shared-minimum case
-     reads lib/factor_model.ml. A cap the checker and the engine each spelled
-     for themselves would be two numbers free to drift, and the drift would show
-     up as exactly the failure this section is about. *)
+  (* run_live applies the same cap before it connects, and the live case in
+     the CLI section observes both halves of it (31 refused with its sentence,
+     30 let through to the fuse). What that cannot show is the NUMBER as the
+     engine spells it -- the sentence prints the constant whatever the
+     comparison reads -- so the one line that carries the comparison is held
+     here as text, the way the shared-minimum case reads lib/factor_model.ml.
+     The whole comparison and not a substring of it: round 2's review found
+     "Config.universe_cap" satisfied by a comment and by the refusal's own text
+     while the comparison read a literal 29, and "+ 1" past the constant
+     satisfied it too; a literal, an offset or another operator on this line
+     now fails. ocamlformat decides the spelling, so the spelling is stable.
+     The negative half stays: a second definition is the drift this section is
+     about. *)
   let source = In_channel.read_all "../bin/main.ml" in
   Alcotest.(check bool)
-    "run_live reads Config.universe_cap" true
-    (String.is_substring source ~substring:"Config.universe_cap");
+    "run_live compares the universe against Config.universe_cap, and nothing else" true
+    (String.is_substring source
+       ~substring:"if List.length instruments > Config.universe_cap then (");
   Alcotest.(check bool)
     "and defines no cap of its own" false
     (String.is_substring source ~substring:"let universe_cap")
@@ -427,10 +462,17 @@ let test_check_refuses_a_book_over_the_universe_cap_and_accepts_one_at_it () =
    before it restarts the engine, and the exit code is the whole of what it
    reads, so the exit code is what these cases assert.
 
-   Every mode below is one that never enters Async: check-book is a plain
-   program, and a bad argument is refused in the dispatcher, before
-   [block_on_async_exn]. So this suite's promise that it starts no scheduler
-   holds for the process it spawns as well as for itself.
+   Most modes below never enter Async: check-book is a plain program, and a bad
+   argument is refused in the dispatcher, before [block_on_async_exn]. Two
+   cases run live and serve far enough to reach a refusal of their own, which
+   is past Config.load and so past the three credential variables. They are
+   given [cleared_environment] -- three dummy values and a fuse, never this
+   process's environment, which on the owner's machine may hold the real keys
+   -- and the refusal comes before the journal is opened or the first request
+   is made, so the values go nowhere; a child that got past it would stop at
+   the fuse. That child starts Async's scheduler in its own process and exits
+   under it; it opens no socket, and this suite's own process still starts
+   none.
 
    That holds today, and the runner is written for the day it stops holding. A
    regression in the port parse that reads "0x1f90" as 8080 -- Core's
@@ -452,17 +494,56 @@ let deadline_s = 20.0
    it fails, with a number that says the child was killed. *)
 let killed = -1
 
-let run (args : string list) : int * string =
+(* Three values that are not keys, named so that nothing reading a log could
+   mistake them for one, in the shape deploy/ci.env uses. Config.load reads
+   these three, and nothing that would send them is reached. *)
+let dummy_credentials =
+  [|
+    "ALPACA_API_KEY=t13-dummy-not-a-key";
+    "ALPACA_SECRET_KEY=t13-dummy-not-a-secret";
+    "FRED_API_KEY=t13-dummy-not-a-key";
+  |]
+
+(* The fuse, for a child that gets PAST the refusal a case expects. run_live's
+   acts after the cap are, in order: the COHTTP_DEBUG refusal, the intake, the
+   journal, the reports, the graph, the feeds. Two of them are made stops.
+   COHTTP_DEBUG set to anything is refused right after the cap, before anything
+   is opened, because with it cohttp-async would log key headers -- the
+   engine's own promise that no request follows, which is the promise a test
+   needs. Behind it the journal is pointed at a file in a directory that does
+   not exist, so a child that somehow reached the journal would exit there,
+   before the reports and the feeds. Under every mutation of the engine a child
+   given this environment therefore creates no file and opens no socket, and
+   its output says which stop it reached. Learned on the way here: before the
+   fuse, the cap mutated to "+ 1" let the 31-name child past the cap, and it
+   exited 1 somewhere later, within the second, with the case unable to say
+   where. *)
+let fuse =
+  [|
+    "COHTTP_DEBUG=t13-fuse";
+    "OHCAMEL_JOURNAL="
+    ^ Stdlib.Filename.concat
+        (Stdlib.Filename.get_temp_dir_name ())
+        "t13-no-such-dir/desk.db";
+  |]
+
+(* The whole of the child's environment when a case gives one: create_process_env
+   replaces, it does not extend. Without it the child inherits this process's,
+   as an operator's shell would hand it. *)
+let cleared_environment = Array.append dummy_credentials fuse
+
+let run ?env (args : string list) : int * string =
   let out = Stdlib.Filename.temp_file "t13-cli" ".out" in
   Exn.protect
     ~f:(fun () ->
       let fd = Caml_unix.openfile out [ Caml_unix.O_WRONLY; Caml_unix.O_TRUNC ] 0o600 in
+      let argv = Array.of_list (exe :: args) in
       let pid =
         Exn.protect
           ~f:(fun () ->
-            Caml_unix.create_process exe
-              (Array.of_list (exe :: args))
-              Caml_unix.stdin fd fd)
+            match env with
+            | None -> Caml_unix.create_process exe argv Caml_unix.stdin fd fd
+            | Some env -> Caml_unix.create_process_env exe argv env Caml_unix.stdin fd fd)
           ~finally:(fun () -> Caml_unix.close fd)
       in
       let started = Caml_unix.gettimeofday () in
@@ -559,6 +640,37 @@ let test_check_book_exits_one_on_a_book_the_engine_refuses_at_startup () =
             false
             (String.is_substring out ~substring:"would start on");
           Alcotest.(check bool) (sprintf "%s: no backtrace" what) true (no_backtrace out)))
+
+let test_live_applies_the_universe_cap_before_it_connects () =
+  (* The engine's half of the cap, APPLIED, which no source line can show. Both
+     halves, as in the library case: 31 = 30 + 1 is the smallest book over the
+     cap and 30 the largest under it. With the dummy values and the fuse as the
+     child's whole environment, live on 31 names is exit 1 with run_live's own
+     sentence and never reaches the fuse; live on 30 names passes the cap -- the
+     sentence is absent -- and is stopped by the fuse one act later, naming
+     COHTTP_DEBUG, before the journal, the reports or a feed. A cap of 29 fails
+     the second half, a cap of 31 or none fails the first. The comparison line
+     pinned in the library case holds the number as text; this holds what the
+     binary does with it. *)
+  let cap_sentence out = String.is_substring out ~substring:"at most 30" in
+  let fuse_sentence out = String.is_substring out ~substring:"COHTTP_DEBUG is set" in
+  with_book (book_of_n_names 31) ~f:(fun p ->
+      let status, out = run ~env:cleared_environment [ "live"; p ] in
+      Alcotest.(check int) "31 names: exit 1" 1 status;
+      Alcotest.(check bool)
+        "31 names: naming the 31" true
+        (String.is_substring out ~substring:"31 names");
+      Alcotest.(check bool) "31 names: and the cap of 30" true (cap_sentence out);
+      Alcotest.(check bool)
+        "31 names: refused at the cap, before the fuse" false (fuse_sentence out);
+      Alcotest.(check bool) "31 names: no backtrace" true (no_backtrace out));
+  with_book (book_of_n_names 30) ~f:(fun p ->
+      let status, out = run ~env:cleared_environment [ "live"; p ] in
+      Alcotest.(check int) "30 names: exit 1, at the fuse" 1 status;
+      Alcotest.(check bool) "30 names: the cap let it through" false (cap_sentence out);
+      Alcotest.(check bool)
+        "30 names: and the fuse stopped it, naming COHTTP_DEBUG" true (fuse_sentence out);
+      Alcotest.(check bool) "30 names: no backtrace" true (no_backtrace out))
 
 let test_check_book_prints_a_multi_line_parse_error_as_one_bullet () =
   (* Sexplib's parse error echoes the input, so an unclosed book written over
@@ -695,6 +807,8 @@ let suite =
         test_check_book_with_no_path_reads_the_default_book;
       Alcotest.test_case "check-book exits one on a book the engine refuses at startup"
         `Quick test_check_book_exits_one_on_a_book_the_engine_refuses_at_startup;
+      Alcotest.test_case "live applies the universe cap before it connects" `Quick
+        test_live_applies_the_universe_cap_before_it_connects;
       Alcotest.test_case "check-book prints a multi-line parse error as one bullet" `Quick
         test_check_book_prints_a_multi_line_parse_error_as_one_bullet;
       Alcotest.test_case "serve with a port that is not a number prints the usage" `Quick
