@@ -439,7 +439,13 @@ module Book = struct
      comparison, and the cap is [universe_cap] above, which run_live reads too.
 
      So a book this list passes is a book the engine starts on, as far as the
-     BOOK decides it. A startup refusal added elsewhere -- a new rule in
+     BOOK decides it. The one direction this list is STRICTER in: Alerts.validate
+     runs here always, while Alerts.attach validates only when the block is
+     enabled (lib/alerts.ml), so a wrong but disabled alerts block is refused
+     here and started on by the engine. That is deliberate -- the block would
+     otherwise fail on the day it is enabled -- and it is the one case where a
+     deploy's check-book refuses a book the running engine accepts. A startup
+     refusal added elsewhere -- a new rule in
      Graph.create, a sink lib/alerts.ml declines to build -- is one more this
      list does not see until it is restated here; round 1's review found the
      universe's three exactly that way, after an earlier version of this comment
@@ -472,8 +478,10 @@ module Book = struct
        the signals: over every strategy, for the duplicate name, and over the
        strategies that passed alone, which gets past the members to the sum.
        The sum that second run names is over those strategies -- a lower bound
-       on the book's when a failing member is live too, still over 1, and the
-       member's own bullet is beside it. *)
+       on the book's when a failing member is live too. When that bound is
+       still over 1 the sentence appears beside the member's own bullet; when
+       it is not, the sum goes unreported until the member is fixed, and the
+       next run names it in full. *)
     let whole_and_parts ~wholes ~parts =
       List.fold wholes ~init:parts ~f:(fun acc whole ->
           match whole with

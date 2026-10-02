@@ -749,14 +749,27 @@ let test_serve_takes_a_port_and_then_a_book () =
   Alcotest.(check bool)
     "and the usage advertises the book argument" true
     (String.is_substring help ~substring:"serve [port] [book.sexp]");
-  (* That the path it read is the path it RUNS on cannot be seen from outside
-     without starting the scheduler, and this suite starts none: serve's next act
-     after the parse is Config.load, which asks for three credentials. So the one
-     line that carries the argument is pinned as text, the way the one-submit-site
-     case reads desk/ and bin/ -- it is the line the plan names, where serve
-     passed ~book_path:Config.default_book_path outright, and a refactor that
-     moves it should say so out loud rather than quietly go back to the default.
-     ocamlformat decides the spelling, so the spelling is stable. *)
+  Alcotest.(check bool)
+    "and the check-book mode" true
+    (String.is_substring help ~substring:"ohcamel check-book [book.sexp]");
+  (* That the path it read is the path it RUNS on, observed: with the three
+     dummy values and nothing else in its environment, serve PORT BOOK reaches
+     Config.load, which names the book it could not read, and exits 1 -- before
+     the port is bound, before the journal, before anything is connected to.
+     Round 1 called this unobservable without three keys; round 2's review ran
+     it. The port is never bound, so any number will do. The line that carries
+     the argument stays pinned as text as well: it is the line the plan names,
+     where serve passed ~book_path:Config.default_book_path outright, and a
+     refactor that moves it should say so out loud rather than quietly go back
+     to the default. ocamlformat decides the spelling, so the spelling is
+     stable. *)
+  let missing = "../no-such-book-t13-serve.sexp" in
+  let status, out = run ~env:cleared_environment [ "serve"; "18613"; missing ] in
+  Alcotest.(check int) "serve PORT BOOK runs on BOOK: a missing one exits 1" 1 status;
+  Alcotest.(check bool)
+    "naming the book it was given, not the default" true
+    (String.is_substring out ~substring:"no-such-book-t13-serve.sexp");
+  Alcotest.(check bool) "and no backtrace" true (no_backtrace out);
   let source = In_channel.read_all "../bin/main.ml" in
   Alcotest.(check bool)
     "serve's second positional becomes the book it runs on" true
