@@ -76,42 +76,51 @@ export function LampPanel({ model, onInspect, stale }: { model: DeckModel; onIns
     const clear = model.limits.length - near - over;
     return [
       { key: "clear", label: "Clear", n: clear, tone: "ok" },
-      { key: "near", label: "Near (≥ 80 %)", n: near, tone: "near" },
+      { key: "near", label: "Near ≥80%", n: near, tone: "near" },
       { key: "over", label: "Breached", n: over, tone: "over" },
       { key: "unknown", label: "Unevaluated", n: model.unevaluated.length, tone: "unknown" },
     ];
   }, [model.limits, model.unevaluated]);
 
   return (
-    <div className="dk-console dk-lamps">
+    <div className="dk-lamps">
+      <h3 className="dk-group">FDS<span>feeds</span></h3>
+      <ul className="dk-lampfield" aria-label="Data feeds">
+        {model.feeds.map((f) => {
+          const tone = stale && f.state === "ok" ? "stale" : f.state;
+          return (
+            <li key={f.key} className={`dk-key ${tone}`} title={[f.detail, ageWords(f.age_s)].filter(Boolean).join(" · ")}>
+              <button type="button" className="dk-key-face" onClick={() => onInspect(`${f.label}: ${stale ? "refresh failed · " : ""}${f.detail ?? f.state}${f.age_s != null ? ` · ${ageWords(f.age_s + elapsed)}` : ""}`)}>
+                <span className="dk-key-legend">{f.label}</span>
+                <span className="dk-key-state">
+                  {stale && f.state === "ok" ? "stale" : STATE_WORD[f.state] ?? f.state}
+                  <span className="sr-only">{f.detail ? ` — ${f.detail}` : ""}{f.age_s != null ? `, ${ageWords(f.age_s)}` : ""}</span>
+                </span>
+              </button>
+            </li>
+          );
+        })}
+        {!model.feeds.length && (
+          <li className="dk-key off">
+            <span className="dk-key-face">
+              <span className="dk-key-legend">NO FEEDS</span>
+              <span className="dk-key-state">reported</span>
+            </span>
+          </li>
+        )}
+      </ul>
 
-
-      <div className="dk-bank-title">Feeds</div>
-      <ul className="dk-bank" aria-label="Data feeds">
-        {model.feeds.map((f) => (
-          <li key={f.key} className={`dk-bank-item ${stale && f.state === "ok" ? "stale" : f.state}`} title={[f.detail, ageWords(f.age_s)].filter(Boolean).join(" · ")}>
-            <span className="dk-square" aria-hidden="true" />
-            <button className="dk-bank-label" onClick={() => onInspect(`${f.label}: ${stale ? "refresh failed · " : ""}${f.detail ?? f.state}${f.age_s != null ? ` · ${ageWords(f.age_s + elapsed)}` : ""}`)}>{f.label}</button>
-            <span className="dk-bank-state">
-              {stale && f.state === "ok" ? "stale" : STATE_WORD[f.state] ?? f.state}
-              <span className="sr-only">{f.detail ? ` — ${f.detail}` : ""}{f.age_s != null ? `, ${ageWords(f.age_s)}` : ""}</span>
+      <h3 className="dk-group">LIM<span>limits by state</span></h3>
+      <ul className="dk-lampfield dk-lampfield-4" aria-label="Limits by state">
+        {states.map((s) => (
+          <li key={s.key} className={`dk-key ${s.tone}${s.n ? " lit" : " dark"}`}>
+            <span className="dk-key-face">
+              <span className="dk-key-legend">{s.label}</span>
+              <span className="dk-key-state num">{s.n}</span>
             </span>
           </li>
         ))}
-        {!model.feeds.length && <li className="dk-bank-item off">No feeds reported.</li>}
       </ul>
-
-      <div className="dk-bank-title">Limits</div>
-      <ul className="dk-bank dk-bank-states" aria-label="Limits by state">
-        {states.map((s) => (
-          <li key={s.key} className={`dk-bank-item ${s.tone}${s.n ? " lit" : " dark"}`}>
-            <span className="dk-square" aria-hidden="true" />
-            <span className="dk-bank-label">{s.label}</span>
-            <span className="dk-bank-state num">{s.n}</span>
-          </li>
-        ))}
-      </ul>
-      <p className="dk-console-note">Select a lamp for its source, age and diagnostics.</p>
     </div>
   );
 }
