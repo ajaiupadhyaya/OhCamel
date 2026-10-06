@@ -193,7 +193,7 @@ jobs:
           docker save "ghcr.io/ajaiupadhyaya/$IMAGE:$SHA" | zstd -T0 -3 -q -o "$RUNNER_TEMP/images/$IMAGE.tar.zst"
           ls -l "$RUNNER_TEMP/images"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: image-${{ matrix.image }}
           path: ${{ runner.temp }}/images/${{ matrix.image }}.tar.zst
