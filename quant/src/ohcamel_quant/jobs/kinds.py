@@ -75,3 +75,7 @@ def validate_params(spec: KindSpec, params: dict[str, Any]) -> None:
         model(**params)
     except Exception as e:  # pydantic.ValidationError is a ValueError subclass; keep the message
         raise ValueError(f"invalid params for {spec.name}: {e}") from e
+
+
+register(KindSpec("ops.selftest", "ohcamel_quant.jobs.handlers.selftest:run", "S", heavy=False))
+register(KindSpec("ingest.fred", "ohcamel_quant.jobs.handlers.fred:run", "S", heavy=False))

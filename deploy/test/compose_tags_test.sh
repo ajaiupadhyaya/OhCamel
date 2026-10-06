@@ -158,10 +158,12 @@ A="$scratch/A.yml"
 RENDER_ENV=(OHCAMEL_TAG=deadbeef)
 if render "$A" "$scratch/A.err" --env-file "$harness_env" -f "$base" -f "$override" --profile live; then
 	ok "A1 base + live renders at OHCAMEL_TAG=deadbeef"
-	# 5 = caddy + ohcamel-quant + ohcamel-hostd (default profile) + ohcamel-live + ohcamel-research (live).
-	expect_images "A2 the five live-profile images are caddy 2.11.4 and the four ghcr refs at :deadbeef" "$A" \
+	# 6 = caddy + ohcamel-quant + ohcamel-hostd + ohcamel-worker (default profile) + ohcamel-live +
+	# ohcamel-research (live); ohcamel-worker runs the ohcamel-quant image, so that ref appears twice.
+	expect_images "A2 the six live-profile images are caddy 2.11.4 and the four ghcr refs at :deadbeef (quant twice: the worker)" "$A" \
 		"$(printf '%s\n' caddy:2.11.4-alpine \
 			ghcr.io/ajaiupadhyaya/ohcamel-hostd:deadbeef \
+			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-research:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel:deadbeef | sort)"
@@ -196,9 +198,10 @@ fi
 C="$scratch/C.yml"
 RENDER_ENV=(OHCAMEL_TAG=deadbeef OHCAMEL_IMAGE=registry.example/mirror/ohcamel)
 if render "$C" "$scratch/C.err" --env-file "$harness_env" -f "$base" -f "$override" --profile live; then
-	expect_images "C1 OHCAMEL_IMAGE moves the engine ref alone; research, quant and hostd stay on ghcr" "$C" \
+	expect_images "C1 OHCAMEL_IMAGE moves the engine ref alone; research, quant (and the worker) and hostd stay on ghcr" "$C" \
 		"$(printf '%s\n' caddy:2.11.4-alpine \
 			ghcr.io/ajaiupadhyaya/ohcamel-hostd:deadbeef \
+			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-research:deadbeef \
 			registry.example/mirror/ohcamel:deadbeef | sort)"
@@ -264,12 +267,14 @@ if render "$E" "$scratch/E.err" --env-file "$harness_env" -f "$base" -f "$local_
 	else
 		ok "E3 caddy has no build block"
 	fi
-	# 6 image lines with both profiles on: caddy, ohcamel-quant, ohcamel-hostd,
-	# ohcamel-demo, ohcamel-live, ohcamel-research -- the engine ref twice, once
-	# per engine service, because both expand the same anchor.
+	# 7 image lines with both profiles on: caddy, ohcamel-quant, ohcamel-hostd,
+	# ohcamel-worker, ohcamel-demo, ohcamel-live, ohcamel-research -- the engine
+	# ref twice, once per engine service, because both expand the same anchor,
+	# and the quant ref twice, because ohcamel-worker runs the ohcamel-quant image.
 	expect_images "E4 the harness runs the four ghcr refs at :local and caddy 2.11.4" "$E" \
 		"$(printf '%s\n' caddy:2.11.4-alpine \
 			ghcr.io/ajaiupadhyaya/ohcamel-hostd:local \
+			ghcr.io/ajaiupadhyaya/ohcamel-quant:local \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:local \
 			ghcr.io/ajaiupadhyaya/ohcamel-research:local \
 			ghcr.io/ajaiupadhyaya/ohcamel:local \
@@ -323,9 +328,10 @@ fi
 FL="$scratch/FL.yml"
 if render "$FL" "$scratch/FL.err" --env-file "$harness_env" -f "$base" -f "$ci_yml" --profile live; then
 	ok "F2 base + ci renders, live profile, with no /etc/ohcamel and no scratch override"
-	expect_images "F3 the ci override runs caddy 2.11.4 and the four ghcr refs at :deadbeef" "$FL" \
+	expect_images "F3 the ci override runs caddy 2.11.4 and the four ghcr refs at :deadbeef (quant twice: the worker)" "$FL" \
 		"$(printf '%s\n' caddy:2.11.4-alpine \
 			ghcr.io/ajaiupadhyaya/ohcamel-hostd:deadbeef \
+			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-research:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel:deadbeef | sort)"
@@ -417,7 +423,7 @@ fi
 
 # --- H. json-file, 10m x 3, on every long-running service, caddy included ---
 if [ -s "$A" ]; then
-	for svc in caddy ohcamel-quant ohcamel-hostd ohcamel-live ohcamel-research; do
+	for svc in caddy ohcamel-quant ohcamel-hostd ohcamel-worker ohcamel-live ohcamel-research; do
 		block=$(service_block "$A" "$svc")
 		if echo "$block" | grep -q 'driver: json-file' \
 			&& echo "$block" | grep -qE 'max-size: "?10m"?' \

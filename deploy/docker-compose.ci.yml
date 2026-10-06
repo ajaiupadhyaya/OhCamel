@@ -73,3 +73,7 @@ services:
   ohcamel-hostd:
     image: "ghcr.io/ajaiupadhyaya/ohcamel-hostd:${OHCAMEL_TAG:?the image job sets OHCAMEL_TAG to the sha it loaded}"
     pull_policy: never
+
+  ohcamel-worker:
+    image: "ghcr.io/ajaiupadhyaya/ohcamel-quant:${OHCAMEL_TAG:?the image job sets OHCAMEL_TAG to the sha it loaded}"
+    pull_policy: never
