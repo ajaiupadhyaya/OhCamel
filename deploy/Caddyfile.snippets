@@ -107,7 +107,7 @@
 # policy so the interactive API docs keep working, and nothing else does.
 (ohcamel_quant) {
 	@quant_spa not path /api/docs /api/docs/* /api/redoc
-	header @quant_spa Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-eval' 'sha256-O0B56bzSBq+EQqRRMRQWMXbWBh8/H3a/8h36L7o9fag='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+	header @quant_spa Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-eval' 'sha256-SwhT+ug7GN6bjlLRVrRAP3/MQEid6XtWbpmX1S3rY20='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 
 	@quant_apidocs path /api/docs /api/docs/* /api/redoc
 	header @quant_apidocs Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https://fastapi.tiangolo.com; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
