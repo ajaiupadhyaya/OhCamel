@@ -118,6 +118,17 @@ mod tests {
     }
 
     #[test]
+    fn a_huge_mean_block_is_one_circular_block() {
+        // mean_block = 1e12 -> p = 1e-12: P(any restart in 100 x 63 steps) ~ 6e-9, so every
+        // replicate is one circular block from a random start and visits each of 0..64 once:
+        // mean = (0 + ... + 63) / 64 = 2016 / 64 = 31.5 exactly (integer sums are exact).
+        // With p = mean_block (>= 1) every step restarts, and the means scatter.
+        let x: Vec<f64> = (0..64).map(|i| i as f64).collect();
+        let out = stationary_bootstrap_means(&x, 64, 1, 1e12, 100, 5, 2).unwrap();
+        assert!(out.iter().all(|&m| m == 31.5), "{:?}", &out[..5]);
+    }
+
+    #[test]
     fn columns_share_the_index_stream() {
         // column 1 = 2 x column 0, and doubling is exact, so every mean doubles exactly
         let x: Vec<f64> = (0..60)

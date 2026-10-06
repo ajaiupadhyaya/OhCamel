@@ -184,6 +184,52 @@ mod tests {
     }
 
     #[test]
+    fn turnover_is_against_the_drifted_weights() {
+        // 0.5 long executed at session 1 and again at session 2, 10 bps.
+        // s = 2: r = 0.1, g = 0.5 x 0.1 = 0.05, so w drifts from 0.5 to 0.55 / 1.05 before
+        // the execution; the trade back to 0.5 is 0.5 - 0.55 / 1.05 = -0.025 / 1.05, so
+        // turnover = 0.025 / 1.05 = 0.0238095... (zero if measured against the pre-drift 0.5).
+        let p = backtest_weights(
+            &[100.0, 100.0, 110.0],
+            3,
+            1,
+            &[0.5, 0.5],
+            &[1, 2],
+            10.0,
+            0.0,
+            &[0.0; 3],
+        )
+        .unwrap();
+        assert!(
+            (p.turnover[2] - 0.025 / 1.05).abs() < 1e-15,
+            "{}",
+            p.turnover[2]
+        );
+        assert!((p.trades[2] + 0.025 / 1.05).abs() < 1e-15);
+        assert!((p.costs[2] - 1e-3 * 0.025 / 1.05).abs() < 1e-18);
+    }
+
+    #[test]
+    fn borrow_is_charged_on_short_notional_only() {
+        // 1.0 long A, 0.5 short B, flat prices, 252 bps/yr -> b = 1e-4 a day.
+        // short notional = (|w| sum - w sum) / 2 = (1.5 - 0.5) / 2 = 0.5, so borrow = 0.5e-4
+        // (charging gross notional 1.5 would give 1.5e-4); gross = 0, net = -0.5e-4.
+        let p = backtest_weights(
+            &[100.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+            3,
+            2,
+            &[1.0, -0.5],
+            &[1],
+            0.0,
+            252.0,
+            &[0.0; 3],
+        )
+        .unwrap();
+        assert!((p.borrow[2] - 0.5e-4).abs() < 1e-18, "{}", p.borrow[2]);
+        assert!((p.net[2] + 0.5e-4).abs() < 1e-18);
+    }
+
+    #[test]
     fn ruin_stops_the_book() {
         // 2x long, then a -60 % day: g = 2 x -0.6 = -1.2, 1 + g <= 0 -> net = -1, weights zero after
         let p = backtest_weights(

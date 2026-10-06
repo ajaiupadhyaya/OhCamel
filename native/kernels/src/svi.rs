@@ -295,6 +295,30 @@ mod tests {
     }
 
     #[test]
+    fn recovers_a_steep_smile_under_the_slope_cap() {
+        // raw SVI (a, b, rho, m, sigma) = (0.01, 2.5, 0.3, 0.0, 0.1): the right wing slope
+        // b (1 + rho) = 3.25 and the left b (1 - rho) = 1.75 are inside Lee's bound of 4
+        // (SLOPE_CAP), so the box u, v <= 4 sigma holds u = 0.325, v = 0.175 and the fit is
+        // exact. A cap of 2 would clip u at 0.2 and miss.
+        let k: Vec<f64> = (0..41).map(|i| -0.4 + 0.7 * i as f64 / 40.0).collect();
+        let w: Vec<f64> = k
+            .iter()
+            .map(|&x| raw(0.01, 2.5, 0.3, 0.0, 0.1, x))
+            .collect();
+        let f = svi_fit(&k, &w, &vec![1.0; 41]).unwrap();
+        for (got, want) in [
+            (f.a, 0.01),
+            (f.b, 2.5),
+            (f.rho, 0.3),
+            (f.m, 0.0),
+            (f.sigma, 0.1),
+        ] {
+            assert!((got - want).abs() < 1e-6, "{got} vs {want}");
+        }
+        assert!(f.sse < 1e-14, "{}", f.sse);
+    }
+
+    #[test]
     fn rejects_bad_input() {
         assert!(svi_fit(&[0.0; 4], &[0.01; 4], &[1.0; 4]).is_err()); // < 5 points
         assert!(svi_fit(
