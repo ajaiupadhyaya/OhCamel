@@ -8,4 +8,15 @@ Python is the NumPy reference (`quant/src/ohcamel_quant/kernels/reference.py`); 
 are medians of repeated runs in milliseconds. Only rows measured on the droplet's CPU
 class speak for production.
 
-No benchmark run is recorded yet.
+| kernel | size | Python ms | Rust 1T ms | Rust 2T ms | 1T speed-up | 2T / 1T | measured on | sha |
+|---|---|---:|---:|---:|---:|---:|---|---|
+| fhs_paths | 100,000 paths x 10 days, 9 assets (GJR-t fits on the fixture ETFs) | 61.748 | 42.293 | 22.955 | 1.5x | 1.84x | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| copula_t_paths | 100,000 paths x 10 days, 9 fixture ETFs, nu = 6 | 1,373.457 | 1,306.863 | 675.130 | 1.1x | 1.94x | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| var_es_from_pnl | 1,000,000 P&L draws, alpha = 0.99 | 7.531 | 3.045 | n/a | 2.5x | n/a | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| stationary_bootstrap_means | 10,000 replications of SPY's fixture returns as (x, x^2), mean block 10 | 409.252 | 471.219 | 471.163 | 0.9x | 1.00x | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| cscv_pbo | fixture-ETF returns x 18 trials, S = 16 (12,870 combinations) | 11.564 | 3.340 | 2.151 | 3.5x | 1.55x | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| garch_nll | one GJR-t likelihood over SPY's fixture returns | 0.072 | 0.034 | n/a | 2.1x | n/a | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| garch_fit | one GJR-t fit on the last 1,000 SPY fixture returns | 2.962 | 20.067 | n/a | 0.1x | n/a | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| backtest_weights | 9 fixture ETFs, every session, monthly executions | 5.468 | 0.126 | n/a | 43.4x | n/a | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| svi_fit | one 41-point smile | 15.996 | 0.460 | n/a | 34.8x | n/a | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
+| realized_vol_minute | 252 sessions x 390 one-minute prices | 1.014 | 0.543 | n/a | 1.9x | n/a | developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class | 55d9c96258a3 |
