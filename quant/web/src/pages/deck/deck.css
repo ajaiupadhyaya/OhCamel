@@ -822,6 +822,13 @@ button.dk-key-face:hover {
 .dk-cmp-bar.unknown .dk-cmp-value {
   color: var(--dk-dim);
 }
+/* stale: the last reading of a host no longer answering live -- hatched amber, never a solid live fill */
+.dk-cmp-bar.stale .dk-cmp-fill {
+  background: repeating-linear-gradient(135deg, var(--crt-amber) 0 3px, transparent 3px 5px);
+}
+.dk-cmp-bar.stale .dk-cmp-value {
+  color: var(--crt-amber);
+}
 
 /* ---------------------------------------------------------------- session scanner (amber raster, cyan markers) */
 .dk-inst-tape .oc-panel {
