@@ -228,8 +228,32 @@ def _kendall_corr(returns: Any, threads: int = 1) -> np.ndarray:
     return np.asarray(_impl("_kendall_corr")(x, _threads(threads))).reshape(k, k)
 
 
+def stationary_bootstrap_means(x: Any, mean_block: float, reps: int, seed: int, threads: int) -> np.ndarray:
+    """Means of ``reps`` stationary-bootstrap resamples (Politis & Romano 1994,
+    expected block length ``mean_block``). ``x`` (n,) gives (reps,); ``x`` (n, k)
+    gives (reps, k), every column resampled with the SAME indices (the stream
+    never depends on the values)."""
+    one_d = np.ndim(x) == 1
+    m = _matrix(x, "x")
+    n, k = m.shape
+    if n < 2:
+        raise ValueError(f"x needs n >= 2 observations; got {n}")
+    if not np.all(np.isfinite(m)):
+        raise ValueError("x must be finite")
+    b = float(mean_block)
+    if not (math.isfinite(b) and b >= 1.0):
+        raise ValueError(f"mean_block must be >= 1; got {mean_block!r}")
+    reps = int(reps)
+    if not 1 <= reps * k <= MAX_PATHS:
+        raise ValueError(f"reps x columns must be in 1..{MAX_PATHS}; got reps={reps}")
+    out = np.asarray(_impl("stationary_bootstrap_means")(m, b, reps, _seed(seed), _threads(threads)))
+    out = out.reshape(reps, k)
+    return out[:, 0].copy() if one_d else out
+
+
 __all__ = [
     "API", "API_VERSION", "ENGINE", "ENV", "MAX_HORIZON", "MAX_PATHS", "MAX_THREADS",
     "BacktestPath", "GarchFitResult", "GarchParams", "SviFitResult",
-    "copula_t_paths", "engine_of", "fhs_paths", "forced", "tail_count", "var_es_from_pnl",
+    "copula_t_paths", "engine_of", "fhs_paths", "forced", "stationary_bootstrap_means", "tail_count",
+    "var_es_from_pnl",
 ]

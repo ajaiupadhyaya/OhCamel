@@ -122,3 +122,17 @@ def test_copula_parity(both, etf_returns, horizon):
     args = (x, [0.4, 0.3, 0.2, 0.1], 6.0, horizon, 200_000)
     H.assert_same_distribution(on("rust", kernels.copula_t_paths, *args, 1, 2),
                                on("python", kernels.copula_t_paths, *args, 2, 1), 0.01)
+
+
+# ---------------------------------------------------------------- A3: bootstrap
+def test_bootstrap_parity(both, etf_returns):
+    x = etf_returns["SPY"].dropna().to_numpy()[-250:]
+    r = on("rust", kernels.stationary_bootstrap_means, x, 5.0, 200_000, 1, 2)
+    p = on("python", kernels.stationary_bootstrap_means, x, 5.0, 200_000, 2, 1)
+    H.assert_same_distribution(r, p, 0.01)
+
+
+def test_bootstrap_bit_identical(both, etf_returns):
+    x = etf_returns["SPY"].dropna().to_numpy()[-250:]
+    a = on("rust", kernels.stationary_bootstrap_means, x, 5.0, 50_000, 3, 2)
+    assert np.array_equal(a, on("rust", kernels.stationary_bootstrap_means, x, 5.0, 50_000, 3, 2))

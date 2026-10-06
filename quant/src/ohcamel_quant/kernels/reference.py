@@ -97,3 +97,37 @@ def copula_t_paths(returns: np.ndarray, weights: np.ndarray, nu: float, horizon:
             logg += np.log1p(np.where(bad, 0.0, rp))
         out[lo:lo + m] = np.where(wiped, -1.0, np.expm1(logg))
     return out
+
+
+# ------------------------------------------------------------------ A3: bootstrap
+def _sb_indices(rng: np.random.Generator, n: int, p: float, b: int) -> np.ndarray:
+    """(b, n) stationary-bootstrap index paths: a block starts at t = 0 and wherever
+    u < p, at a uniform position; otherwise the index is the previous one + 1 mod n."""
+    new = rng.random((b, n)) < p
+    new[:, 0] = True
+    starts = rng.integers(0, n, size=(b, n))
+    t = np.arange(n)
+    last = np.maximum.accumulate(np.where(new, t, 0), axis=1)
+    return (np.take_along_axis(starts, last, axis=1) + (t - last)) % n
+
+
+def stationary_bootstrap_means(x: np.ndarray, mean_block: float, reps: int, seed: int,
+                               threads: int) -> np.ndarray:
+    """(reps, k) column means of stationary-bootstrap resamples (Politis & Romano 1994).
+
+    Each column is reduced on its own (m, n) C-contiguous gather, so column j's means are
+    bit-identical whatever k is. ``x[idx].mean(axis=1)`` on (m, n, k) would not be: NumPy
+    reduces the contiguous axis pairwise but a strided axis naively, so (m, n, 1) and (m, n, 2)
+    can differ in the last bits (a review measured 3.7e-18 on SPY's last 300 sessions).
+    The batch depends on n only, so the index stream is the same for every k too."""
+    n, k = x.shape
+    rng = np.random.Generator(np.random.PCG64(seed))
+    p = 1.0 / mean_block
+    out = np.empty((reps, k))
+    batch = max(1, min(4096, 2_000_000 // n))          # <= 2M indices (and one 2M gather) in flight
+    for lo in range(0, reps, batch):
+        m = min(batch, reps - lo)
+        idx = _sb_indices(rng, n, p, m)
+        for j in range(k):
+            out[lo:lo + m, j] = x[:, j][idx].mean(axis=1)
+    return out

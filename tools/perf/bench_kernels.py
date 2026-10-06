@@ -55,6 +55,9 @@ def cases() -> dict[str, Case]:
     out["copula_t_paths"] = (lambda t: kernels.copula_t_paths(etf.to_numpy(), w9, 6.0, 10, 100_000, 1, t), True)
     pnl1m = kernels.fhs_paths(z9, gp9, w9, 1, 1_000_000, 2, 2)
     out["var_es_from_pnl"] = (lambda t: kernels.var_es_from_pnl(pnl1m, 0.99), False)
+    xs = etf["SPY"].to_numpy()
+    xx = np.column_stack([xs, xs * xs])
+    out["stationary_bootstrap_means"] = (lambda t: kernels.stationary_bootstrap_means(xx, 10.0, 10_000, 3, t), True)
     return out
 
 

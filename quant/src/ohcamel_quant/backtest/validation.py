@@ -34,12 +34,14 @@ import numpy as np
 import pandas as pd
 from scipy import optimize, stats
 
+from .. import kernels
 from . import metrics as M
 from .engine import BacktestResult, EngineConfig, StrategyContext, run_backtest, run_weights
 from .strategies import StrategySpec, validate_params
 
 MAX_GRID = 64
 MAX_REPS = 1000
+JOB_MAX_REPS = 200_000  # jobs only (compute plan A3); the synchronous cap stays MAX_REPS
 
 
 # ======================================================================= grid
@@ -230,35 +232,54 @@ def optimal_block(x: np.ndarray) -> float:
 
 
 def bootstrap_sharpe(r: pd.Series, rf: pd.Series | None = None, reps: int = 1000, alpha: float = 0.05,
-                     seed: int = 7, bins: int = 30) -> dict[str, Any]:
+                     seed: int = 7, bins: int = 30, *, use_kernels: bool = False, threads: int = 1,
+                     max_reps: int = MAX_REPS) -> dict[str, Any]:
     """Stationary-bootstrap (Politis & Romano 1994) distribution of the
     annualized Sharpe ratio, expected block length by Politis & White (2004).
     Percentile interval at level ``1 - alpha``; also the bootstrap standard
-    error and ``P*[SR <= 0]``. ``reps`` is capped at 1000."""
-    from arch.bootstrap import StationaryBootstrap
+    error and ``P*[SR <= 0]``. ``reps`` is capped at ``max_reps`` (synchronous
+    callers: ``MAX_REPS``; jobs pass ``JOB_MAX_REPS``).
 
-    reps = int(min(max(reps, 100), MAX_REPS))
+    ``use_kernels=True`` (jobs) resamples on the ``stationary_bootstrap_means``
+    kernel: it bootstraps the columns [x, x^2] with one index stream, so each
+    replication's Sharpe is ``mean / sqrt((mean(x^2) - mean^2) n / (n - 1))``
+    annualized -- the same statistic, other draws -- and records ``engine``."""
+    reps = int(min(max(reps, 100), max_reps))
     x = M.excess(r.dropna(), rf).to_numpy(dtype=float)
     if len(x) < 60:
         raise ValueError("need at least 60 observations to bootstrap the Sharpe ratio")
     block = optimal_block(x)
-    bs = StationaryBootstrap(block, x, seed=seed)
 
     def f(a: np.ndarray) -> float:
         sd = a.std(ddof=1)
         return a.mean() / sd * math.sqrt(M.PERIODS) if sd > 0 else np.nan
 
-    draws = bs.apply(f, reps=reps)[:, 0]
+    engine = None
+    if use_kernels:
+        mom = kernels.stationary_bootstrap_means(np.column_stack([x, x * x]), block, reps, seed, threads)
+        n = len(x)
+        mean = mom[:, 0]
+        var = (mom[:, 1] - mean * mean) * (n / (n - 1.0))
+        safe = np.where(var > 0, var, 1.0)
+        draws = np.where(var > 0, mean / np.sqrt(safe) * math.sqrt(M.PERIODS), np.nan)
+        engine = kernels.engine_of("stationary_bootstrap_means")
+    else:
+        from arch.bootstrap import StationaryBootstrap
+
+        draws = StationaryBootstrap(block, x, seed=seed).apply(f, reps=reps)[:, 0]
     draws = draws[np.isfinite(draws)]
     lo, hi = np.quantile(draws, [alpha / 2, 1 - alpha / 2])
     hist, edges = np.histogram(draws, bins=bins)
-    return {
+    out = {
         "sharpe": f(x), "ci_low": float(lo), "ci_high": float(hi), "level": 1 - alpha,
         "std_error": float(draws.std(ddof=1)), "prob_sharpe_le_0": float(np.mean(draws <= 0)),
-        "expected_block_length": block, "reps": reps, "reps_cap": MAX_REPS,
+        "expected_block_length": block, "reps": reps, "reps_cap": max_reps,
         "histogram": {"counts": hist.tolist(), "edges": edges.tolist()},
         "method": "stationary bootstrap (Politis & Romano 1994), block length Politis & White (2004), percentile CI",
     }
+    if engine is not None:
+        out["engine"] = engine
+    return out
 
 
 def spa_test(benchmark: pd.Series, models: pd.DataFrame, reps: int = 1000, seed: int = 7) -> dict[str, Any]:
@@ -424,7 +445,7 @@ def run_config_from(config: EngineConfig, **kw: Any) -> EngineConfig:
 
 
 __all__ = [
-    "MAX_GRID", "MAX_REPS", "SweepResult", "bootstrap_sharpe", "cost_sensitivity", "cscv_pbo",
+    "JOB_MAX_REPS", "MAX_GRID", "MAX_REPS", "SweepResult", "bootstrap_sharpe", "cost_sensitivity", "cscv_pbo",
     "deflated_sharpe_for_grid", "optimal_block", "param_grid", "run_weights", "spa_test", "sweep",
     "walk_forward", "run_config_from",
 ]
