@@ -60,3 +60,65 @@ def test_tail_count_parity(both, n, alpha):
     # the reference IS risk.core.tail_count; Rust must agree everywhere
     assert on("rust", kernels.tail_count, n, alpha) == core_tail_count(n, alpha)
     assert on("python", kernels.tail_count, n, alpha) == core_tail_count(n, alpha)
+
+
+# ---------------------------------------------------------------- A2: risk
+from ohcamel_quant.kernels.types import GarchParams  # noqa: E402
+from ohcamel_quant.risk import garch as gm  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def fits(etf_returns):
+    r = etf_returns[["SPY", "TLT"]].dropna()
+    return [gm.fit_garch(r[c].to_numpy()[-1500:], "gjr") for c in r.columns]
+
+
+@pytest.mark.parametrize("alpha", [0.95, 0.99])
+def test_var_es_parity(both, etf_returns, alpha):
+    pnl = etf_returns["SPY"].dropna().to_numpy()
+    r, p = on("rust", kernels.var_es_from_pnl, pnl, alpha), on("python", kernels.var_es_from_pnl, pnl, alpha)
+    assert r == pytest.approx(p, rel=1e-10)
+
+
+def test_fhs_parity_one_asset(both, fits):
+    f = fits[0]
+    args = (f.std_resid, GarchParams.from_fits([f]), [1.0], 10, 200_000)
+    H.assert_same_distribution(on("rust", kernels.fhs_paths, *args, 1, 2),
+                               on("python", kernels.fhs_paths, *args, 2, 1), 0.01)
+
+
+def test_fhs_parity_two_assets_joint_rows(both, fits):
+    z = np.column_stack([f.std_resid for f in fits])
+    args = (z, GarchParams.from_fits(fits), [0.6, 0.4], 10, 200_000)
+    H.assert_same_distribution(on("rust", kernels.fhs_paths, *args, 3, 2),
+                               on("python", kernels.fhs_paths, *args, 4, 1), 0.01)
+
+
+def test_fhs_reference_matches_arch_bootstrap(fits):
+    """The kernel path keeps fhs_var_es's semantics: same law as arch's residual bootstrap."""
+    f = fits[0]
+    arch_cum, _ = gm._fhs_paths(f, 10, 200_000, 20_240_805)
+    ref = on("python", kernels.fhs_paths, f.std_resid, GarchParams.from_fits([f]), [1.0], 10, 200_000, 9, 1)
+    H.assert_same_distribution(ref, arch_cum, 0.01)
+
+
+def test_fhs_threads_change_stream_not_law(both, fits):
+    f = fits[0]
+    args = (f.std_resid, GarchParams.from_fits([f]), [1.0], 10, 200_000, 5)
+    one, two = on("rust", kernels.fhs_paths, *args, 1), on("rust", kernels.fhs_paths, *args, 2)
+    assert not np.array_equal(one, two)
+    H.assert_same_mean_sd(one, two)
+
+
+def test_kendall_corr_parity(both, etf_returns):
+    x = etf_returns[["SPY", "TLT", "GLD", "XLE"]].dropna().to_numpy()
+    np.testing.assert_allclose(on("rust", kernels._kendall_corr, x), on("python", kernels._kendall_corr, x),
+                               rtol=1e-12, atol=1e-15)
+
+
+@pytest.mark.parametrize("horizon", [1, 5])
+def test_copula_parity(both, etf_returns, horizon):
+    x = etf_returns[["SPY", "TLT", "GLD", "XLE"]].dropna().to_numpy()
+    args = (x, [0.4, 0.3, 0.2, 0.1], 6.0, horizon, 200_000)
+    H.assert_same_distribution(on("rust", kernels.copula_t_paths, *args, 1, 2),
+                               on("python", kernels.copula_t_paths, *args, 2, 1), 0.01)

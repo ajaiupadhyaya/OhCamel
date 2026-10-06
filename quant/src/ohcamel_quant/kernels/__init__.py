@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 import os
 from collections.abc import Iterator
 from types import ModuleType
@@ -171,8 +172,64 @@ def tail_count(n: int, alpha: float) -> int:
     return int(_impl("tail_count")(n, _alpha(alpha)))
 
 
+def var_es_from_pnl(pnl: Any, alpha: float) -> tuple[float, float]:
+    """VaR and ES (positive loss fractions) of a P&L sample at ``alpha``: losses
+    ``L = -pnl`` with non-finite values dropped, ``k = tail_count(n, alpha)``, VaR
+    the k-th largest loss, ES the mean of the k largest (risk.core.empirical_var_es);
+    ``(nan, nan)`` for an empty sample."""
+    v, e = _impl("var_es_from_pnl")(_arr(pnl, "pnl", 1), _alpha(alpha))
+    return float(v), float(e)
+
+
+def fhs_paths(std_resid: Any, sigma_path_params: GarchParams, weights: Any, horizon: int, n_paths: int,
+              seed: int, threads: int) -> np.ndarray:
+    """``(n_paths,)`` h-day portfolio P&L (fraction) by filtered historical simulation.
+
+    ``std_resid`` is (n,) or (n, k) standardized residuals, rows drawn jointly;
+    ``sigma_path_params`` the per-asset GJR parameters (percent units) and
+    sigma^2_{T+1}; ``weights`` the daily-rebalanced book. See native/kernels/src/fhs.rs.
+    """
+    z = _matrix(std_resid, "std_resid")
+    if not np.all(np.isfinite(z)):
+        raise ValueError("std_resid must be finite (drop the NaN rows first)")
+    p = sigma_path_params.arrays()
+    w = _arr(weights, "weights", 1)
+    k = z.shape[1]
+    if w.size != k or any(a.size != k for a in p):
+        raise ValueError(f"std_resid has {k} columns; weights and every GarchParams field need {k} entries")
+    h, n, s, t = _sim(horizon, n_paths, seed, threads)
+    if engine_of("fhs_paths") == "rust":
+        return np.asarray(_RUST.fhs_paths(z, *p, w, h, n, s, t))
+    return reference.fhs_paths(z, sigma_path_params, w, h, n, s, t)
+
+
+def copula_t_paths(returns: Any, weights: Any, nu: float, horizon: int, n_paths: int, seed: int,
+                   threads: int) -> np.ndarray:
+    """``(n_paths,)`` h-day portfolio P&L (fraction) from a Student-t copula (Kendall
+    sin-transform correlation, ``nu`` degrees of freedom) over the empirical
+    marginals of ``returns`` (n, k). See native/kernels/src/copula.rs."""
+    x = _matrix(returns, "returns")
+    if not np.all(np.isfinite(x)):
+        raise ValueError("returns must be finite")
+    w = _arr(weights, "weights", 1)
+    if w.size != x.shape[1]:
+        raise ValueError(f"returns has {x.shape[1]} columns; weights has {w.size}")
+    nu = float(nu)
+    if not (math.isfinite(nu) and nu > 0):
+        raise ValueError(f"nu must be positive and finite; got {nu}")
+    h, n, s, t = _sim(horizon, n_paths, seed, threads)
+    return np.asarray(_impl("copula_t_paths")(x, w, nu, h, n, s, t))
+
+
+def _kendall_corr(returns: Any, threads: int = 1) -> np.ndarray:
+    """The copula's k x k correlation (exposed for the parity tests)."""
+    x = _matrix(returns, "returns")
+    k = x.shape[1]
+    return np.asarray(_impl("_kendall_corr")(x, _threads(threads))).reshape(k, k)
+
+
 __all__ = [
     "API", "API_VERSION", "ENGINE", "ENV", "MAX_HORIZON", "MAX_PATHS", "MAX_THREADS",
     "BacktestPath", "GarchFitResult", "GarchParams", "SviFitResult",
-    "engine_of", "forced", "tail_count",
+    "copula_t_paths", "engine_of", "fhs_paths", "forced", "tail_count", "var_es_from_pnl",
 ]

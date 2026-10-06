@@ -34,6 +34,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .. import kernels
+from ..kernels.types import GarchParams
 from .core import RiskEstimate, empirical_var_es, std_t_es, std_t_quantile, validate_alpha
 
 KINDS = {"garch": 0, "gjr": 1}
@@ -207,6 +209,10 @@ def garch_var_es(fit: GarchFit, alpha: float = 0.99, horizon: int = 1) -> RiskEs
 # several (sims x h) float arrays; 2.5M cells is ~0.6 s and < 200 MB, whereas
 # 50,000 x 250 takes ~10 s and ~1 GB -- too much for a 2 vCPU / 4 GB server.
 FHS_MAX_CELLS = 2_500_000
+# Jobs only (compute plan A2: "raise FHS_MAX_CELLS only for jobs"). The kernel
+# path holds just the (paths,) output and per-chunk state -- 1M x 250 is 8 MB,
+# not arch's several (sims x h) arrays -- so the cap is about CPU time.
+JOB_FHS_MAX_CELLS = 250_000_000
 
 
 def _fhs_paths(fit: GarchFit, horizon: int, simulations: int, seed: int) -> tuple[np.ndarray, int]:
@@ -230,7 +236,8 @@ def _fhs_paths(fit: GarchFit, horizon: int, simulations: int, seed: int) -> tupl
 
 
 def fhs_var_es(fit: GarchFit, alpha: float = 0.99, horizon: int = 1,
-               simulations: int = 10_000, seed: int = 20_240_805) -> RiskEstimate:
+               simulations: int = 10_000, seed: int = 20_240_805, *, use_kernels: bool = False,
+               threads: int = 1, max_cells: int = FHS_MAX_CELLS) -> RiskEstimate:
     """Filtered historical simulation VaR/ES.
 
     1-day (exact, no simulation): ``L_j = -(mu + sigma_{T+1} z_j)/100`` over the
@@ -240,6 +247,11 @@ def fhs_var_es(fit: GarchFit, alpha: float = 0.99, horizon: int = 1,
     return <= -100% compounded as a total loss. ``simulations x horizon`` is
     capped at :data:`FHS_MAX_CELLS` (stated in notes). The seed is fixed so
     results are reproducible, and the paths are reused across ``alpha``.
+
+    ``use_kernels=True`` (jobs) simulates on the ``fhs_paths`` kernel (same law
+    as arch's bootstrap, other draws), records ``engine`` in ``params``, and
+    honours ``max_cells`` (jobs pass ``JOB_FHS_MAX_CELLS``); synchronous callers
+    keep arch and ``FHS_MAX_CELLS``.
     """
     alpha = validate_alpha(alpha)
     z = fit.std_resid[np.isfinite(fit.std_resid)]
@@ -251,14 +263,24 @@ def fhs_var_es(fit: GarchFit, alpha: float = 0.99, horizon: int = 1,
         extra["scenarios"] = int(z.size)
     else:
         sims = int(simulations)
-        cap = max(1_000, FHS_MAX_CELLS // horizon)
+        cap = max(1_000, max_cells // horizon)
         if sims > cap:
             notes.append(f"bootstrap simulations capped at {cap} (requested {sims}) to keep "
-                         f"simulations x horizon <= {FHS_MAX_CELLS:,}")
+                         f"simulations x horizon <= {max_cells:,}")
             sims = cap
-        cum, wiped = _fhs_paths(fit, horizon, sims, seed)
-        var, es = empirical_var_es(-cum, alpha)
-        notes.append(f"{sims} bootstrap GARCH paths (numerical method on the fitted model; seed {seed})")
+        if use_kernels:
+            cum = kernels.fhs_paths(z, GarchParams.from_fits([fit]), np.array([1.0]), horizon, sims, seed,
+                                    threads)
+            wiped = int(np.count_nonzero(cum <= -1.0))
+            var, es = kernels.var_es_from_pnl(cum, alpha)
+            engine = kernels.engine_of("fhs_paths")
+            notes.append(f"{sims} filtered-bootstrap GARCH paths on the {engine} kernel "
+                         f"(seed {seed}, {threads} thread(s))")
+            extra["engine"] = engine
+        else:
+            cum, wiped = _fhs_paths(fit, horizon, sims, seed)
+            var, es = empirical_var_es(-cum, alpha)
+            notes.append(f"{sims} bootstrap GARCH paths (numerical method on the fitted model; seed {seed})")
         if wiped:
             notes.append(f"{wiped} simulated paths drew a daily return <= -100% and are counted as a -100% "
                          "total loss (the linear-return GARCH model is unreliable that far out).")

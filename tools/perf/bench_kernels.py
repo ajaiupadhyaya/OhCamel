@@ -24,11 +24,11 @@ from pathlib import Path
 
 os.environ.setdefault("OHCAMEL_QUANT_OFFLINE", "1")
 
-import numpy as np  # noqa: E402,F401  (used by the cases each Lane A task adds)
+import numpy as np  # noqa: E402
 
 from ohcamel_quant import kernels  # noqa: E402
 from ohcamel_quant.kernels import bench  # noqa: E402
-from ohcamel_quant.kernels.types import GarchParams  # noqa: E402,F401
+from ohcamel_quant.kernels.types import GarchParams  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 JSON = ROOT / "docs" / "perf" / "kernels.json"
@@ -41,8 +41,20 @@ def cases() -> dict[str, Case]:
     """One timed call per kernel at the size bench.SIZES states, on the committed fixtures."""
     from ohcamel_quant.data.market import get_market
 
-    market = get_market()  # noqa: F841  (used by the cases each Lane A task adds below)
+    market = get_market()
     out: dict[str, Case] = {}
+    from ohcamel_quant.risk.garch import fit_garch
+
+    nine = ["SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "XLE", "XLF", "XLK"]
+    etf = market.returns(nine).data.dropna()
+    fits = [fit_garch(etf[c].to_numpy(), "gjr") for c in nine]
+    z9 = np.column_stack([f.std_resid for f in fits])
+    gp9 = GarchParams.from_fits(fits)
+    w9 = np.full(9, 1 / 9)
+    out["fhs_paths"] = (lambda t: kernels.fhs_paths(z9, gp9, w9, 10, 100_000, 1, t), True)
+    out["copula_t_paths"] = (lambda t: kernels.copula_t_paths(etf.to_numpy(), w9, 6.0, 10, 100_000, 1, t), True)
+    pnl1m = kernels.fhs_paths(z9, gp9, w9, 1, 1_000_000, 2, 2)
+    out["var_es_from_pnl"] = (lambda t: kernels.var_es_from_pnl(pnl1m, 0.99), False)
     return out
 
 
