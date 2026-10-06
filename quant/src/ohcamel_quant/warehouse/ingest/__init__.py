@@ -13,3 +13,7 @@ HANDLERS: dict[str, Callable[[dict, Any], dict]] = {}
 from .universes import run_universes  # noqa: E402
 
 HANDLERS["ingest.universes"] = run_universes
+
+from . import bars  # noqa: E402
+
+HANDLERS["ingest.bars_daily"] = bars.run_bars_daily
