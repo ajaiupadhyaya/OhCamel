@@ -141,8 +141,12 @@ def find(o, pred, depth=0):
             yield from find(v, pred, depth + 1)
 exec(os.environ["QCHECK"])
 ' 2>&1)
-	case "$out" in
-	OK*) ok "$label ${out#OK }" ;;
+	case "$BASE:$out" in
+	*:OK*) ok "$label ${out#OK }" ;;
+	# On the localhost harness (CI's image job) a vendor that does not answer
+	# the runner -- FRED times out from GitHub's network -- is the vendor's
+	# state, not the image's, so it warns; on a deployed host it still fails.
+	http://localhost:*:UNAVAILABLE*|http://127.0.0.1:*:UNAVAILABLE*) meh "$label vendor unavailable from this network: ${out#UNAVAILABLE }" ;;
 	*) no "$label" "${out:-no response}" ;;
 	esac
 }
@@ -152,8 +156,9 @@ exec(os.environ["QCHECK"])
 #
 # Real data only, so every data check asserts SUBSTANCE: a sector table with
 # rows, a yield curve with points, a VaR that is a number. A 503 here is the
-# app honestly saying a vendor did not answer; it is still a failure of the
-# deploy, and its `detail` (printed) says which vendor and why.
+# app honestly saying a vendor did not answer; on a deployed host it is still a
+# failure of the deploy, and its `detail` (printed) says which vendor and why.
+# On the localhost harness it is a warning (see qjson).
 # ---------------------------------------------------------------------------
 printf '\nOhCamel smoke -- %s\n\n' "$BASE"
 
