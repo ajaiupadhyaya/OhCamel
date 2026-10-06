@@ -17,6 +17,8 @@ pub mod bootstrap;
 pub mod copula;
 pub mod cscv;
 pub mod fhs;
+pub mod garch;
+pub mod optim;
 pub mod par;
 pub mod special;
 pub mod tail;

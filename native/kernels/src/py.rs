@@ -167,6 +167,55 @@ fn cscv_pbo<'py>(
     ))
 }
 
+#[pyfunction]
+fn garch_nll(
+    py: Python<'_>,
+    params: PyReadonlyArray1<'_, f64>,
+    r: PyReadonlyArray1<'_, f64>,
+    kind: String,
+) -> PyResult<f64> {
+    let k = crate::garch::Kind::parse(&kind).map_err(err)?;
+    let (p, y) = (s1(&params, "params")?, s1(&r, "r")?);
+    py.allow_threads(|| crate::garch::garch_nll(p, y, k))
+        .map_err(err)
+}
+
+#[pyfunction]
+#[pyo3(signature = (r, kind, x0=None))]
+fn garch_fit<'py>(
+    py: Python<'py>,
+    r: PyReadonlyArray1<'py, f64>,
+    kind: String,
+    x0: Option<PyReadonlyArray1<'py, f64>>,
+) -> PyResult<(
+    Bound<'py, PyArray1<f64>>,
+    f64,
+    bool,
+    usize,
+    Bound<'py, PyArray1<f64>>,
+    f64,
+    Bound<'py, PyArray1<f64>>,
+)> {
+    let k = crate::garch::Kind::parse(&kind).map_err(err)?;
+    let y = s1(&r, "r")?;
+    let start = match &x0 {
+        Some(a) => Some(s1(a, "x0")?),
+        None => None,
+    };
+    let f = py
+        .allow_threads(|| crate::garch::garch_fit(y, k, start))
+        .map_err(err)?;
+    Ok((
+        f.params.into_pyarray_bound(py),
+        f.nll,
+        f.converged,
+        f.iterations,
+        f.sigma2.into_pyarray_bound(py),
+        f.next_variance,
+        f.std_resid.into_pyarray_bound(py),
+    ))
+}
+
 #[pymodule]
 fn ohcamel_kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("API_VERSION", crate::API_VERSION)?;
@@ -178,5 +227,7 @@ fn ohcamel_kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(kendall_corr_py, m)?)?;
     m.add_function(wrap_pyfunction!(stationary_bootstrap_means, m)?)?;
     m.add_function(wrap_pyfunction!(cscv_pbo, m)?)?;
+    m.add_function(wrap_pyfunction!(garch_nll, m)?)?;
+    m.add_function(wrap_pyfunction!(garch_fit, m)?)?;
     Ok(())
 }
