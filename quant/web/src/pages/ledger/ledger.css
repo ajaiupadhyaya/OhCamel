@@ -5,6 +5,18 @@
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  /* Break only at spaces and hyphens, never mid-word (the cell itself allows "anywhere"). */
+  overflow-wrap: normal;
+  word-break: normal;
+  hyphens: manual;
+}
+.lg-pending {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
 }
 
 .sys-rows {

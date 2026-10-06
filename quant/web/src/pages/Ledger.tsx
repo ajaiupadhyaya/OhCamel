@@ -11,7 +11,12 @@ type Row = LedgerEntry & { n: number };
 
 const COLUMNS: Column<Row>[] = [
   { key: "n", label: "NO.", width: 48, render: (r) => <span className="num">{String(r.n).padStart(2, "0")}</span> },
-  { key: "item", label: "ITEM", width: "30%", wrap: true, render: (r) => <span className="lg-item">{r.item}</span> },
+  { key: "item", label: "ITEM", width: "30%", wrap: true, render: (r) => (
+      <>
+        <span className="lg-item">{r.item}</span>
+        {r.pending && <span className="lg-pending">PENDING FIRST RUN</span>}
+      </>
+    ) },
   { key: "detail", label: "DETAIL", wrap: true },
 ];
 

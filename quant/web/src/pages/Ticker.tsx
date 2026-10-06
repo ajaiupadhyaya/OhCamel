@@ -10,7 +10,7 @@
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import type { Data } from "plotly.js";
-import { Chart, HeatmapChart, HistogramChart, Page, Panel, SegmentedControl, StatGrid, StatTile, TimeSeriesChart, Toggle, withAlpha } from "../components";
+import { Chart, HeatmapChart, HistogramChart, Page, Panel, SegmentedControl, StatGrid, StatTile, TimeSeriesChart, Toggle } from "../components";
 import type { Info } from "../lib/glossary";
 import { fmtCompact, fmtDate, fmtNum, fmtPct, fmtSignedPct, parseDate, signClass, toIsoDate } from "../lib/format";
 import { useUniverses } from "../lib/market";
@@ -200,7 +200,7 @@ function PriceChart({ view, mode, log }: { view: View; mode: "line" | "candles";
       const price =
         mode === "candles"
           ? { type: "candlestick", x: view.dates, open: view.open, high: view.high, low: view.low, close: view.close, name: "OHLC", increasing: { line: { color: t.gain, width: 1 }, fillcolor: t.gain }, decreasing: { line: { color: t.loss, width: 1 }, fillcolor: t.loss } }
-          : { type: "scatter", mode: "lines", x: view.dates, y: view.adj, name: "Adj. close", line: { width: 1.8, color: t.categorical[0] }, fill: "tozeroy", fillgradient: { type: "vertical", colorscale: [[0, withAlpha(t.categorical[0], 0)], [1, withAlpha(t.categorical[0], 0.16)]] }, hovertemplate: "<b>%{y:,.2f}</b><extra></extra>" };
+          : { type: "scatter", mode: "lines", x: view.dates, y: view.adj, name: "Adj. close", line: { width: 1.25, color: t.categorical[0] }, hovertemplate: "<b>%{y:,.2f}</b><extra></extra>" };
       const colors = view.close.map((c, i) => (i && c != null && view.close[i - 1] != null && c < (view.close[i - 1] as number) ? t.loss : t.gain));
       const vol = { type: "bar", x: view.dates, y: view.volume, name: "Volume", yaxis: "y2", marker: { color: colors, opacity: 0.4 }, hovertemplate: "vol %{y:,.3s}<extra></extra>" };
       return [price, vol] as Data[];

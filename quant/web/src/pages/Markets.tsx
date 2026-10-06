@@ -82,7 +82,7 @@ export default function Markets() {
       {/* 2 — sectors */}
       <Section title="Sectors" description={`S&P 500 sectors by ${period.long} return, strongest first. Colour intensity is scaled to ±${Math.round(period.scale * 100)}% for this horizon.`}>
         <div className="grid-3">
-          <Panel<Overview> title="Sector heatmap" info={{ text: "Each tile is a Select Sector SPDR ETF; green tiles rose over the chosen horizon, vermilion tiles fell. Greyed tiles have no data from any configured source." }} query={sectors} error={sectors.error ?? allFailed(sectors.data)} span={2} skeletonHeight={300}>
+          <Panel<Overview> title="Sector heatmap" info={{ text: "Each tile is a Select Sector SPDR ETF; ink tiles rose over the chosen horizon, vermilion tiles fell. Hatched tiles have no data from any configured source." }} query={sectors} error={sectors.error ?? allFailed(sectors.data)} span={2} skeletonHeight={300}>
             {(d) => <SectorHeatmap rows={d.rows} period={period.key} scale={period.scale} />}
           </Panel>
           <Panel<Overview> notes={[]} title={`${period.label} leaders & laggards`} info={{ text: "Sector returns over the chosen horizon, as bars. Hover for the exact value." }} query={sectors} error={sectors.error ?? allFailed(sectors.data)} skeletonHeight={300}>

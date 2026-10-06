@@ -10,6 +10,8 @@ import { fmtStamp } from "../design/stamp";
 import { absentLabel } from "../lib/artifacts";
 import { useOps, type OpsOut } from "../shell/ops";
 import { LEDGER, LEDGER_AS_OF } from "./ledger/entries";
+import { MODELS } from "./methodology/models";
+import { REFS } from "./methodology/references";
 import "./ledger/ledger.css";
 
 interface Row {
@@ -50,7 +52,7 @@ function rows(ops: ReturnType<typeof useOps>): Row[] {
       code: "DOCS",
       to: "/methodology",
       title: "Methodology",
-      status: down ?? `BUILD ${sha ? sha.slice(0, 7) : "—"}${d?.build?.version ? ` · ${d.build.version}` : ""}`,
+      status: `${MODELS.length} MODELS · ${Object.keys(REFS).length} REFERENCES${sha ? ` · BUILD ${sha.slice(0, 7)}` : ""}`,
     },
     {
       code: "LEDGER",

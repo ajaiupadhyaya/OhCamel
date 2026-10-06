@@ -1,6 +1,7 @@
 // Paper Tape style guard, run by `npm run build`.
 // Scans src/**/*.{css,tsx,ts} (except the Flight Deck files and tests) and fails, naming
-// file:line, on: a non-zero border-radius, a box-shadow other than none, any gradient(),
+// file:line, on: a non-zero border-radius, a box-shadow other than none, any gradient()
+// (CSS, SVG <linear/radialGradient>, canvas create*Gradient, Plotly fillgradient),
 // the removed faces Fraunces and Inter Variable, and the green tokens --gain-soft and
 // --crt-green. Green is allowed only inside src/pages/deck/** and src/pages/Deck.tsx.
 // Usage: node scripts/check-style.mjs [root]   (root defaults to ./src)
@@ -28,6 +29,9 @@ const RULES = [
   { re: /border-radius\s*:\s*([^;}]+)/g, bad: (m) => !isZero(m[1]), why: (m) => `border-radius ${m[1].trim()} (radius is 0)` },
   { re: /box-shadow\s*:\s*([^;}]+)/g, bad: (m) => m[1].trim() !== "none", why: () => "box-shadow (no shadows)" },
   { re: /gradient\(/g, bad: () => true, why: () => "gradient() (no gradients; use var(--hatch) or a flat token)" },
+  // The JSX, canvas and Plotly forms: <linearGradient>, <radialGradient>, ctx.createLinearGradient(),
+  // createRadialGradient(), createConicGradient(), and Plotly's fillgradient.
+  { re: /(linear|radial|conic)Gradient|fillgradient/gi, bad: () => true, why: (m) => `${m[0]} (no gradients; hatch the area or use a flat token)` },
   { re: /Fraunces|Inter Variable/g, bad: () => true, why: (m) => `${m[0]} (faces are Archivo, IBM Plex Sans, IBM Plex Mono)` },
   { re: /--gain-soft|--crt-green/g, bad: () => true, why: (m) => `${m[0]} (no green outside the Deck)` },
 ];

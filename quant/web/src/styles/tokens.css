@@ -107,7 +107,8 @@
   --surface-3: var(--paper-2);
   --text: var(--ink);
   --text-2: var(--ink-2);
-  --text-3: var(--ink-3);
+  /* --text-3 is real text on unmigrated pages, so it reads at --ink-2 (4.5:1); --ink-3 stays for rules and gridlines. */
+  --text-3: var(--ink-2);
   --text-inverse: var(--paper);
   --accent: var(--ink);
   --accent-soft: var(--paper-2);
@@ -116,7 +117,7 @@
   --loss-soft: var(--paper-2);
   --warn: var(--signal);
   --warn-soft: var(--paper-2);
-  --unknown: var(--ink-3);
+  --unknown: var(--ink-2); /* "unavailable" copy is text */
   --unknown-soft: var(--paper-2);
   --lilac: var(--ink-2);
   --water: var(--ink-2);
@@ -156,14 +157,14 @@
   --c8: #8D93A3;
   --seq-1: #26251F;
   --seq-2: #45433E;
-  --seq-3: #6E6B63;
+  --seq-3: #67645D;
   --seq-4: #9A968C;
   --seq-5: #ECE8DF;
   --div-neg-3: #FF4A3D;
   --div-neg-2: #A8362C;
   --div-neg-1: #4A2421;
   --div-pos-1: #33322E;
-  --div-pos-2: #6E6B63;
+  --div-pos-2: #67645D;
   --div-pos-3: #ECE8DF;
   --overlay: rgba(0, 0, 0, 0.6);
 }
@@ -183,14 +184,14 @@
     --c8: #8D93A3;
     --seq-1: #26251F;
     --seq-2: #45433E;
-    --seq-3: #6E6B63;
+    --seq-3: #67645D;
     --seq-4: #9A968C;
     --seq-5: #ECE8DF;
     --div-neg-3: #FF4A3D;
     --div-neg-2: #A8362C;
     --div-neg-1: #4A2421;
     --div-pos-1: #33322E;
-    --div-pos-2: #6E6B63;
+    --div-pos-2: #67645D;
     --div-pos-3: #ECE8DF;
     --overlay: rgba(0, 0, 0, 0.6);
   }

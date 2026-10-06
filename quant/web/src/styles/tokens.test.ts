@@ -42,6 +42,18 @@ describe("paper tape tokens", () => {
         for (const g of ["--paper", "--paper-2"])
           expect(contrast(theme[t], theme[g]), `${t} on ${g}`).toBeGreaterThanOrEqual(4.5);
   });
+  it("legacy text aliases (--text-3, --unknown) read at --ink-2, never --ink-3 (rules and gridlines only)", () => {
+    for (const t of ["--text-3", "--unknown"]) for (const theme of [paper, carbon]) expect(theme[t] ?? paper[t], t).toBe("var(--ink-2)");
+  });
+  it("heat-table text reaches 4.5:1 on every sequential bucket (ink on 1-3, paper on 4-5; DataTable heatStyle)", () => {
+    for (const theme of [paper, carbon])
+      for (let k = 1; k <= 5; k++) expect(contrast(theme[k >= 4 ? "--paper" : "--ink"], theme[`--seq-${k}`]), `seq-${k}`).toBeGreaterThanOrEqual(4.5);
+  });
+  it("heat-table text reaches 4.5:1 on every diverging bucket (ink on 1-2, paper on 3)", () => {
+    for (const theme of [paper, carbon])
+      for (const side of ["neg", "pos"])
+        for (let k = 1; k <= 3; k++) expect(contrast(theme[k === 3 ? "--paper" : "--ink"], theme[`--div-${side}-${k}`]), `div-${side}-${k}`).toBeGreaterThanOrEqual(4.5);
+  });
   it("has no radius, shadow or gradient", () => {
     expect(css).not.toMatch(/gradient\(/);
     expect(paper["--radius"]).toBe("0");

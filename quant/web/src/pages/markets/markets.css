@@ -103,7 +103,7 @@ a.mk-card:hover {
 }
 .mk-tile-ticker {
   font-size: var(--fs-2xs);
-  color: var(--text-2);
+  color: var(--ink); /* on a tinted tile, --ink-2 drops below 4.5:1 */
 }
 .mk-tile-value {
   grid-column: 1 / -1;

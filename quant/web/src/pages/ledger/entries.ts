@@ -8,6 +8,8 @@ export interface LedgerEntry {
   section: LedgerSection;
   item: string;
   detail: string;
+  /** Built but its nightly artifact has not run yet; the row says PENDING FIRST RUN. */
+  pending?: boolean;
 }
 
 export const LEDGER_AS_OF = "2026-10-05";
@@ -28,13 +30,13 @@ export const LEDGER: LedgerEntry[] = [
   { section: "BUILT", item: "GP", detail: "Ticker: price history, volume, return statistics, realized volatility." },
   { section: "BUILT", item: "DECK", detail: "Flight Deck: the paper book's limits, risk and feeds as live instruments." },
   { section: "BUILT", item: "SYS", detail: "System index: Compute, Engine, Methodology, Ledger." },
-  { section: "BUILT", item: "P1 RISK ATLAS", detail: "Nightly Monte Carlo VaR/ES, FHS and t-copula, 1D and 10D, Euler split." },
-  { section: "BUILT", item: "P2 VOL FORECAST LEAGUE", detail: "GARCH, GJR, EGARCH, HAR-RV, EWMA scored by QLIKE and MSE; Diebold–Mariano; model confidence set." },
-  { section: "BUILT", item: "P3 COVARIANCE LEAGUE", detail: "Estimators ranked by next-month minimum-variance realized volatility; Ledoit–Wolf test." },
-  { section: "BUILT", item: "P4 STRATEGY FARM", detail: "Strategies × universes × grids; CSCV PBO, SPA, DSR, cost sensitivity; verdict first." },
-  { section: "BUILT", item: "P5 CROSS-SECTIONAL MODEL", detail: "EXP-Q01 LightGBM on purged walk-forward folds; IC, decile spread net of costs, DSR, PBO." },
-  { section: "BUILT", item: "P6 REGIME HMM", detail: "EXP-Q02 Gaussian HMM, 2–4 states by BIC; filtered and smoothed probabilities." },
-  { section: "BUILT", item: "P7 SURFACE HISTORY", detail: "Nightly SVI: ATM IV, 25-delta risk reversal and butterfly, term slope, model-free variance, VRP." },
+  { section: "BUILT", item: "P1 RISK ATLAS", detail: "Nightly Monte Carlo VaR/ES, FHS and t-copula, 1D and 10D, Euler split.", pending: true },
+  { section: "BUILT", item: "P2 VOL FORECAST LEAGUE", detail: "GARCH, GJR, EGARCH, HAR-RV, EWMA scored by QLIKE and MSE; Diebold–Mariano; model confidence set.", pending: true },
+  { section: "BUILT", item: "P3 COVARIANCE LEAGUE", detail: "Estimators ranked by next-month minimum-variance realized volatility; Ledoit–Wolf test.", pending: true },
+  { section: "BUILT", item: "P4 STRATEGY FARM", detail: "Strategies × universes × grids; CSCV PBO, SPA, DSR, cost sensitivity; verdict first.", pending: true },
+  { section: "BUILT", item: "P5 CROSS-SECTIONAL MODEL", detail: "EXP-Q01 LightGBM on purged walk-forward folds; IC, decile spread net of costs, DSR, PBO.", pending: true },
+  { section: "BUILT", item: "P6 REGIME HMM", detail: "EXP-Q02 Gaussian HMM, 2–4 states by BIC; filtered and smoothed probabilities.", pending: true },
+  { section: "BUILT", item: "P7 SURFACE HISTORY", detail: "Nightly SVI: ATM IV, 25-delta risk reversal and butterfly, term slope, model-free variance, VRP.", pending: true },
   { section: "BUILT", item: "KERNELS", detail: "Rust hot loops via PyO3 with a NumPy reference and parity tests; Rust vs Python benchmarks on /compute." },
   { section: "BUILT", item: "JOBS", detail: "Scheduled job queue on the droplet: immutable artifacts with provenance and data_asof." },
   { section: "BUILT", item: "WAREHOUSE", detail: "DuckDB: daily and minute bars, FRED, factors, option snapshots, SEC facts; ingest log." },
