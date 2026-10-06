@@ -103,7 +103,7 @@
   gap: var(--sp-6);
   padding: var(--sp-5) var(--sp-6);
   border-radius: var(--radius-lg);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   background: var(--surface);
   box-shadow: var(--shadow-1);
   scroll-margin-top: calc(var(--topbar-h) + 72px);
@@ -232,7 +232,7 @@
 .me-source {
   padding: var(--sp-4) var(--sp-5);
   border-radius: var(--radius-lg);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   background: var(--surface);
   font-size: var(--fs-sm);
 }

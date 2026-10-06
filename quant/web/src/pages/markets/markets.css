@@ -12,7 +12,7 @@
   padding: var(--sp-4) var(--sp-4) var(--sp-3);
   border-radius: var(--radius-lg);
   background: var(--surface);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   box-shadow: var(--shadow-1);
   color: var(--text);
   text-decoration: none !important;
@@ -230,7 +230,7 @@ a.mk-card:hover {
   gap: var(--sp-5);
   padding: var(--sp-3) var(--sp-5);
   border-radius: var(--radius-lg);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   background: var(--surface);
   box-shadow: var(--shadow-1);
 }

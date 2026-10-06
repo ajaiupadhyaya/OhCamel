@@ -140,8 +140,8 @@ export function AppShell({ children }: { children: ReactNode }) {
           </button>
           <div className="spacer" />
           <PortfolioChip />
-          <button className="icon-btn" onClick={toggle} aria-label={`Switch to ${resolved === "dark" ? "light" : "dark"} mode`} title={`Switch to ${resolved === "dark" ? "light" : "dark"} mode`}>
-            <Icon name={resolved === "dark" ? "sun" : "moon"} size={18} />
+          <button className="icon-btn" onClick={toggle} aria-label={`Switch to ${resolved === "carbon" ? "paper" : "carbon"} mode`} title={`Switch to ${resolved === "carbon" ? "paper" : "carbon"} mode`}>
+            <Icon name={resolved === "carbon" ? "sun" : "moon"} size={18} />
           </button>
         </header>
         <main className="oc-content" id="main">

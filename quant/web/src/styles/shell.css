@@ -15,8 +15,8 @@
 
 /* ---------------------------------------------------------------- sidebar */
 .oc-sidebar-cell {
-  border-right: 1px solid var(--rule);
-  background: color-mix(in srgb, var(--bg-grain) 70%, var(--bg));
+  border-right: 1px solid var(--ink-3);
+  background: var(--paper);
   min-width: 0;
 }
 .oc-app.mobile .oc-sidebar-cell {
@@ -110,7 +110,7 @@
 .oc-nav-link.active {
   background: var(--surface);
   color: var(--text);
-  box-shadow: var(--shadow-1), 0 0 0 1px var(--rule);
+  box-shadow: var(--shadow-1), 0 0 0 1px var(--ink-3);
 }
 .oc-nav-link.active::before {
   content: "";
@@ -191,7 +191,7 @@
   background: color-mix(in srgb, var(--bg) 82%, transparent);
   backdrop-filter: saturate(1.4) blur(12px);
   -webkit-backdrop-filter: saturate(1.4) blur(12px);
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--ink-3);
 }
 .oc-search-trigger {
   display: flex;
@@ -200,7 +200,7 @@
   width: min(440px, 100%);
   height: 36px;
   padding: 0 8px 0 12px;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   border-radius: 999px;
   background: var(--surface);
   color: var(--text-3);
@@ -337,7 +337,7 @@
   gap: 12px;
   padding: 0 16px;
   height: 56px;
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--ink-3);
   color: var(--text-3);
 }
 .oc-palette-search input {
@@ -418,7 +418,7 @@
   display: flex;
   gap: var(--sp-4);
   padding: 8px 16px;
-  border-top: 1px solid var(--rule);
+  border-top: 1px solid var(--ink-3);
   font-size: var(--fs-2xs);
   color: var(--text-3);
   background: var(--surface-2);

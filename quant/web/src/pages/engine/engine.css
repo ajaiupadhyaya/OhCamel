@@ -29,7 +29,7 @@
   padding: var(--sp-5);
   border-radius: var(--radius-lg);
   background: var(--surface);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   font-size: var(--fs-sm);
 }
 .en-facts dt {
@@ -49,7 +49,7 @@
 .en-card {
   padding: var(--sp-4) var(--sp-5);
   border-radius: var(--radius-lg);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   background: var(--surface);
 }
 .en-card p {

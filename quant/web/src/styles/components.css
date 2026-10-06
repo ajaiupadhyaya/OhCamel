@@ -14,7 +14,7 @@
   gap: var(--sp-6);
   padding-bottom: var(--sp-6);
   margin-bottom: var(--sp-6);
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--ink-3);
 }
 .oc-page-titles {
   min-width: 0;
@@ -129,7 +129,7 @@
   flex-direction: column;
   min-width: 0;
   background: var(--surface);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-1);
   overflow: hidden;
@@ -186,7 +186,7 @@
   align-items: center;
   gap: var(--sp-2) var(--sp-4);
   padding: var(--sp-2) var(--sp-5);
-  border-top: 1px solid var(--rule);
+  border-top: 1px solid var(--ink-3);
   background: color-mix(in srgb, var(--surface-2) 45%, transparent);
 }
 .oc-panel-progress {
@@ -447,15 +447,15 @@
 .oc-statgrid {
   display: grid;
   gap: 0;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   border-radius: var(--radius-lg);
   background: var(--surface);
   overflow: hidden;
   box-shadow: var(--shadow-1);
 }
 .oc-statgrid > .oc-stat {
-  border-right: 1px solid var(--rule);
-  border-bottom: 1px solid var(--rule);
+  border-right: 1px solid var(--ink-3);
+  border-bottom: 1px solid var(--ink-3);
   margin: 0 -1px -1px 0;
 }
 .oc-stat {
@@ -574,7 +574,7 @@ th.sorted {
 }
 .oc-table td {
   padding: 9px 10px;
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--ink-3);
   white-space: nowrap;
   vertical-align: middle;
 }
@@ -665,7 +665,7 @@ th.sorted {
 .oc-tabs {
   display: flex;
   gap: var(--sp-6);
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--ink-3);
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -713,7 +713,7 @@ th.sorted {
   gap: 2px;
   border-radius: 999px;
   background: var(--surface-2);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   max-width: 100%;
   overflow-x: auto;
   scrollbar-width: none;
@@ -741,7 +741,7 @@ th.sorted {
 .oc-seg button.active {
   background: var(--surface);
   color: var(--text);
-  box-shadow: var(--shadow-1), 0 0 0 1px var(--rule);
+  box-shadow: var(--shadow-1), 0 0 0 1px var(--ink-3);
 }
 
 /* ================================================================ Fields */
@@ -1079,7 +1079,7 @@ th.sorted {
 .oc-builder-holdings {
   display: flex;
   flex-direction: column;
-  border-top: 1px solid var(--rule);
+  border-top: 1px solid var(--ink-3);
 }
 .oc-builder-row {
   display: grid;
@@ -1087,7 +1087,7 @@ th.sorted {
   gap: var(--sp-3);
   align-items: center;
   padding: 6px 0;
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--ink-3);
 }
 .oc-builder-ticker {
   color: var(--text);
@@ -1133,7 +1133,7 @@ th.sorted {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: var(--sp-4);
   padding-top: var(--sp-4);
-  border-top: 1px solid var(--rule);
+  border-top: 1px solid var(--ink-3);
   align-items: start;
 }
 .oc-builder-settings > :last-child {
@@ -1151,7 +1151,7 @@ th.sorted {
   gap: 2px;
   padding: var(--sp-3);
   text-align: left;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   border-radius: var(--radius);
   background: var(--surface);
   transition: border-color var(--dur), background var(--dur), transform 80ms;
@@ -1176,7 +1176,7 @@ th.sorted {
 .oc-13f-preview {
   max-height: 220px;
   overflow: auto;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   border-radius: var(--radius-sm);
 }
 .oc-13f-row {
@@ -1185,7 +1185,7 @@ th.sorted {
   gap: var(--sp-3);
   padding: 5px 10px;
   font-size: var(--fs-sm);
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--ink-3);
 }
 .oc-13f-row:last-child {
   border-bottom: 0;
@@ -1278,7 +1278,7 @@ th.sorted {
 
 /* ================================================================ StartHere (landing guide) */
 .oc-starthere {
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   border-radius: var(--radius-lg);
   background: var(--surface);
   box-shadow: var(--shadow-1);
@@ -1315,7 +1315,7 @@ th.sorted {
   height: 100%;
   padding: var(--sp-3);
   border-radius: var(--radius);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   background: var(--surface-2);
   color: var(--text);
   text-decoration: none;

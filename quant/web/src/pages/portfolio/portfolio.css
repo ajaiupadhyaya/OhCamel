@@ -3,7 +3,7 @@
 /* ------------------------------------------------------------ active portfolio strip */
 .pl-strip-wrap {
   background: var(--surface);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-1);
   overflow: hidden;
@@ -95,7 +95,7 @@
   align-items: center;
   gap: 10px;
   padding: 10px var(--sp-6);
-  border-top: 1px solid var(--rule);
+  border-top: 1px solid var(--ink-3);
   background: var(--warn-soft);
   color: var(--text-2);
   font-size: var(--fs-sm);
@@ -125,7 +125,7 @@
   text-underline-offset: 2px;
 }
 .pl-editor {
-  border-top: 1px solid var(--rule);
+  border-top: 1px solid var(--ink-3);
   padding: var(--sp-5) var(--sp-6) var(--sp-6);
   background: var(--bg);
 }
@@ -216,7 +216,7 @@
   justify-content: space-between;
   gap: var(--sp-3);
   padding: 7px 0;
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--ink-3);
   min-width: 0;
 }
 .pl-kv-row dt {
@@ -413,7 +413,7 @@
   height: 10px;
   border-radius: 999px;
   background: var(--surface-2);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
 }
 .pl-trl-fill {
   height: 100%;
@@ -453,7 +453,7 @@
   gap: var(--sp-3);
   padding: var(--sp-6);
   border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--rule));
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--ink-3));
   background: linear-gradient(160deg, var(--accent-soft), transparent 70%), var(--surface);
   box-shadow: var(--shadow-1);
 }
@@ -517,7 +517,7 @@
   gap: 2px;
   padding: 10px 12px;
   border-radius: var(--radius);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   background: var(--surface-2);
 }
 .pl-riskshare {
@@ -551,7 +551,7 @@
   text-align: left;
   padding: var(--sp-4);
   border-radius: var(--radius);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   background: var(--surface);
   color: var(--text);
   font: inherit;
@@ -611,7 +611,7 @@
   font-size: var(--fs-xs);
   color: var(--text-2);
   padding-top: 8px;
-  border-top: 1px solid var(--rule);
+  border-top: 1px solid var(--ink-3);
 }
 .pl-incomplete {
   margin-top: var(--sp-4);
@@ -629,7 +629,7 @@
   gap: 12px;
   align-items: baseline;
   padding: 8px 0;
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--ink-3);
   font-size: var(--fs-sm);
 }
 @media (max-width: 900px) {
@@ -656,7 +656,7 @@
   gap: var(--sp-3);
   padding: var(--sp-6);
   border-radius: var(--radius-lg);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   background: linear-gradient(170deg, var(--accent-soft), transparent 55%), var(--surface);
   box-shadow: var(--shadow-1);
 }
@@ -674,7 +674,7 @@
 .pl-chip {
   padding: 3px 9px;
   border-radius: 999px;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   background: var(--surface);
   font-size: var(--fs-xs);
 }
