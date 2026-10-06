@@ -209,6 +209,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 # Last, so a new sha changes only this metadata layer: smoke.sh compares it
 # with the checkout deploy.sh built from.
 ARG OHCAMEL_GIT_SHA=unknown
+# The worker stamps every artifact's manifest with this (code_sha, contract II.3).
+ENV OHCAMEL_GIT_SHA=$OHCAMEL_GIT_SHA
 LABEL org.opencontainers.image.title="ohcamel-quant" \
       org.opencontainers.image.source="https://github.com/ajaiupadhyaya/OhCamel" \
       org.opencontainers.image.revision="$OHCAMEL_GIT_SHA"

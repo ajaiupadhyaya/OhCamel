@@ -21,7 +21,7 @@ from typing import Annotated, Any, Literal
 
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ...data.base import DataUnavailable
@@ -36,10 +36,13 @@ from ...portfolio.optimize import Constraints, efficient_frontier
 from ...portfolio.optimize import evaluate as opt_evaluate
 from ..models import UniverseIn
 from ..serialize import clean, frame, records, series
+from .jobs import JobsDb, submit_over_cap
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 Market = Annotated[MarketData, Depends(get_market)]
 TRADING_DAYS = 252
+SYNC_MAX_TICKERS = 60   # compare runs synchronously up to here (Lane B, B5)
+JOB_MAX_TICKERS = 200   # and as a job up to here; above that, 422
 RF_FFILL_SESSIONS = 5  # rows a risk-free print may be carried forward (holidays / 1-2 day FRED lag)
 
 MethodName = Literal["equal_weight", "inverse_volatility", "min_variance", "max_sharpe", "mean_variance",
@@ -223,6 +226,7 @@ class CovarianceIn(UniverseIn):
 
 
 class CompareIn(UniverseIn, MethodParams):
+    tickers: list[str] = Field(min_length=2, max_length=JOB_MAX_TICKERS)  # > SYNC_MAX_TICKERS runs as a job
     methods: list[MethodName] = Field(
         default_factory=lambda: ["equal_weight", "inverse_volatility", "min_variance", "max_sharpe",
                                  "risk_parity", "hrp", "max_diversification", "min_cvar"],
@@ -667,8 +671,10 @@ def _frontier(body: FrontierIn, market: MarketData) -> dict[str, Any]:
 
 
 @router.post("/compare")
-def compare(body: CompareIn, market: Market) -> dict[str, Any]:
+def compare(body: CompareIn, market: Market, request: Request, jobs_db: JobsDb) -> Any:
     """Walk-forward out-of-sample comparison with costs and Sharpe-difference tests."""
+    if len(body.tickers) > SYNC_MAX_TICKERS:
+        return submit_over_cap("api.portfolio_compare", body.model_dump(mode="json"), request, jobs_db)
     return _cached("compare", body, lambda: _compare(body, market))
 
 

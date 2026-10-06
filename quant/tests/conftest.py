@@ -34,3 +34,18 @@ def client():
     from ohcamel_quant.api.app import create_app
 
     return TestClient(create_app())
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _jobs_queue_in_a_temp_dir(tmp_path_factory):
+    """In tests the API's default jobs.sqlite ({data_dir}/jobs.sqlite) is a
+    session temp file. The shared `client` fixture has no dependency
+    override, and an over-cap request through it queues a job (Lane B, B5).
+    Tests that need their own queue still override get_jobs_db_path on their app."""
+    from ohcamel_quant.api.routers import jobs as jobs_router
+
+    path = tmp_path_factory.mktemp("jobs") / "jobs.sqlite"
+    mp = pytest.MonkeyPatch()
+    mp.setattr(jobs_router, "jobs_db_path", lambda: path)  # get_jobs_db_path() looks the name up per call
+    yield path
+    mp.undo()

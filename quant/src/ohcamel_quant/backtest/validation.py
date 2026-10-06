@@ -25,6 +25,7 @@ series -- they resample history, they do not simulate markets.
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import math
 from dataclasses import dataclass, field
@@ -35,6 +36,7 @@ import pandas as pd
 from scipy import optimize, stats
 
 from .. import kernels
+from ..kernels.reference import CSCV_CHUNK_BYTES  # the NumPy reference's chunk size (Lane B B5)
 from . import metrics as M
 from .engine import BacktestResult, EngineConfig, StrategyContext, run_backtest, run_weights
 from .strategies import StrategySpec, validate_params
@@ -42,6 +44,16 @@ from .strategies import StrategySpec, validate_params
 MAX_GRID = 64
 MAX_REPS = 1000
 JOB_MAX_REPS = 200_000  # jobs only (compute plan A3); the synchronous cap stays MAX_REPS
+SWEEP_SERIES_PER_COMBO = 10      # float64 series-equivalents a sweep keeps per combination besides its weights
+
+
+def sweep_footprint_bytes(n_combos: int, n_tickers: int, n_rows: int) -> int:
+    """Upper bound on the bytes a ``sweep`` keeps alive. For each combination:
+    its weights (``n_rows x n_tickers``), the six engine series it keeps, its
+    column of the aligned returns frame, and headroom -- ``n_rows x
+    (n_tickers + 10)`` float64. Pinned against tracemalloc in
+    tests/test_jobs_migration.py."""
+    return int(n_combos) * int(n_rows) * 8 * (int(n_tickers) + SWEEP_SERIES_PER_COMBO)
 
 
 # ======================================================================= grid
@@ -77,16 +89,31 @@ def _annual_turnover(res: BacktestResult) -> float:
 
 
 def sweep(ctx: StrategyContext, spec: StrategySpec, base_params: dict[str, Any],
-          space: dict[str, list[Any]], config: EngineConfig, rf: pd.Series | None = None) -> SweepResult:
+          space: dict[str, list[Any]], config: EngineConfig, rf: pd.Series | None = None,
+          max_combos: int = MAX_GRID, max_bytes: int | None = None) -> SweepResult:
     """Run every grid combination (``base_params`` overridden by the combo) and
     align the net returns on the window where ALL combinations are live, so
-    that metrics are compared on identical sessions."""
+    that metrics are compared on identical sessions.
+
+    Refuses grids larger than ``max_combos`` (64 synchronously, 512 as a job).
+    When ``max_bytes`` is given, it also refuses grids whose
+    ``sweep_footprint_bytes`` exceeds it. Each kept result is slimmed (its
+    ``contributions``, ``trades`` and ``audit`` are dropped), and ``weights``
+    are views of the results' own weights. A combination therefore costs one
+    weights frame plus a few series."""
+    combos = param_grid(space, max_combos)
     for k in space:
         p = spec.param(k)
         if not p.sweepable:
             raise ValueError(f"parameter {k!r} is not numeric and cannot be swept")
-    combos = param_grid(space)
     tickers = list(ctx.prices.columns)
+    if max_bytes is not None:
+        need = sweep_footprint_bytes(len(combos), len(tickers), len(ctx.prices))
+        if need > max_bytes:
+            raise ValueError(f"this sweep would hold about {need / 2**20:.1f} MiB ({len(combos)} combinations x "
+                             f"{len(tickers)} tickers x {len(ctx.prices)} sessions); the cap is "
+                             f"{max_bytes / 2**20:.0f} MiB -- use fewer combinations, fewer tickers or a "
+                             "shorter window")
     cfg = EngineConfig(**{**config.__dict__, "audit_points": min(config.audit_points, 1)})
     ok_combos, results, skipped = [], [], []
     for combo in combos:
@@ -100,14 +127,20 @@ def sweep(ctx: StrategyContext, spec: StrategySpec, base_params: dict[str, Any],
             skipped.append({**combo, "reason": "never produced a signal"})
             continue
         ok_combos.append(combo)
-        results.append(res)
+        # .copy(): an empty iloc slice is a copy-on-write view that would keep the whole frame alive
+        results.append(dataclasses.replace(res, contributions=res.contributions.iloc[0:0].copy(), trades=None,
+                                           audit={}))
     if len(results) < 2:
         raise ValueError("fewer than two grid combinations produced a live backtest")
     start = max(r.live_start for r in results)
     rets = pd.DataFrame({i: r.returns_net.loc[r.returns_net.index >= start] for i, r in enumerate(results)})
     if len(rets) < 126:
         raise ValueError(f"only {len(rets)} sessions where every combination is live; widen the window")
-    weights = [r.weights.loc[rets.index] for r in results]
+    weights = []
+    for r in results:
+        pos = int(r.weights.index.searchsorted(rets.index[0]))
+        w = r.weights.iloc[pos:pos + len(rets)]  # a view (copy-on-write), not a second copy
+        weights.append(w if w.index.equals(rets.index) else r.weights.loc[rets.index])
     rows = []
     for i, combo in enumerate(ok_combos):
         r = rets[i]
@@ -136,7 +169,9 @@ def cscv_pbo(returns: pd.DataFrame | np.ndarray, n_partitions: int = 16, bins: i
     ``SR_Jbar(n*) = a + b SR_J(n*) + e`` and ``P[SR_Jbar(n*) < 0]``. Sharpe
     ratios here are per-period (non-annualized). Moments come from block sums on the
     ``cscv_pbo`` kernel (``ohcamel_quant.kernels``); a trial with s2 - n mean^2 <= 1e-10 s2
-    (a constant) has zero variance, a NaN Sharpe, and ranks last.
+    (a constant) has zero variance, a NaN Sharpe, and ranks last. The Rust kernel holds
+    O(C(S, S/2)) memory; the NumPy reference evaluates the combinations in chunks whose
+    ``(chunk x N)`` temporaries stay under ``CSCV_CHUNK_BYTES``.
     """
     m = np.asarray(returns, dtype=float)
     if m.ndim != 2 or m.shape[1] < 2:
@@ -421,7 +456,9 @@ def run_config_from(config: EngineConfig, **kw: Any) -> EngineConfig:
 
 
 __all__ = [
-    "JOB_MAX_REPS", "MAX_GRID", "MAX_REPS", "SweepResult", "bootstrap_sharpe", "cost_sensitivity", "cscv_pbo",
+    "CSCV_CHUNK_BYTES", "JOB_MAX_REPS", "MAX_GRID", "MAX_REPS", "SweepResult", "bootstrap_sharpe",
+    "cost_sensitivity", "cscv_pbo",
     "deflated_sharpe_for_grid", "optimal_block", "param_grid", "run_weights", "spa_test", "sweep",
+    "sweep_footprint_bytes",
     "walk_forward", "run_config_from",
 ]

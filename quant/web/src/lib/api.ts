@@ -14,6 +14,9 @@
  *                            request, e.g. offline mode or a vendor outage). Render it as an
  *                            informative "data source unavailable" state, never as fake data.
  *   - NetworkError           fetch itself failed (backend down).
+ *   - JobQueuedError         202 {job, status_url, notes}: a heavy endpoint queued the request as a job
+ *                            because it is over the synchronous cap (Lane B, B5). It is never handed
+ *                            to a page as data; `.job` and `.statusUrl` let a page follow the job.
  */
 
 export class ApiError extends Error {
@@ -45,6 +48,36 @@ export class NetworkError extends ApiError {
     super(0, message, path, undefined, "network");
     this.name = "NetworkError";
   }
+}
+
+export interface QueuedJob {
+  id: string;
+  kind: string;
+  state: string;
+  [key: string]: unknown;
+}
+
+interface QueuedBody {
+  job: QueuedJob;
+  status_url?: string;
+  notes?: string[];
+}
+
+export class JobQueuedError extends ApiError {
+  readonly job: QueuedJob;
+  readonly statusUrl?: string;
+  constructor(path: string, body: QueuedBody) {
+    const why = (body.notes ?? []).join(" ");
+    super(202, `Queued as job ${body.job.id}.${why ? ` ${why}` : ""}`, path, body, "job_queued");
+    this.name = "JobQueuedError";
+    this.job = body.job;
+    this.statusUrl = body.status_url;
+  }
+}
+
+function isQueuedBody(body: unknown): body is QueuedBody {
+  const job = body && typeof body === "object" ? (body as { job?: unknown }).job : undefined;
+  return !!job && typeof job === "object" && typeof (job as { id?: unknown }).id === "string";
 }
 
 export type QueryValue = string | number | boolean | null | undefined | (string | number)[];
@@ -111,6 +144,7 @@ async function request<T>(method: string, path: string, opts: { params?: QueryPa
     const code = body && typeof body === "object" ? ((body as any).error as string | undefined) : undefined;
     throw new ApiError(res.status, detail, url, body, code);
   }
+  if (res.status === 202 && isQueuedBody(body)) throw new JobQueuedError(url, body);
   return body as T;
 }
 

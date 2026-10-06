@@ -20,8 +20,8 @@
 # copied but before the recorder was, a copy of the book that was never made,
 # or a credential copied beside the backups. Each is a case here:
 #
-#   L. the committed list names the two files this stage owes -- the desk's
-#      journal and the Flight Deck's recorder -- at the path, by the method
+#   L. the committed list names the three files owed so far -- the desk's
+#      journal, the Flight Deck's recorder and the job queue -- at the path, by the method
 #      and as the uid the owning image really uses.
 #   A. each list line becomes EXACTLY ONE container run, on that line's
 #      volume, reading that line's path, by that line's method, as that
@@ -54,7 +54,7 @@ finish() {
 
 missing=0
 for f in "$script" "$list" "$compose" deploy/Dockerfile quant/Dockerfile \
-	quant/src/ohcamel_quant/api/routers/deck.py; do
+	quant/src/ohcamel_quant/api/routers/deck.py quant/src/ohcamel_quant/jobs/paths.py; do
 	if [ ! -f "$f" ]; then
 		no "$f" "missing"
 		missing=1
@@ -183,7 +183,8 @@ entries=$(grep -vE '^[[:space:]]*(#|$)' "$list" | awk '{$1=$1}1' || true)
 n_entries=$(printf '%s\n' "$entries" | grep -c . || true)
 
 for want in 'desk_data /data/desk.db journal 10001' \
-	'quant_data /data/deck/recorder.sqlite sqlite 10002'; do
+	'quant_data /data/deck/recorder.sqlite sqlite 10002' \
+	'quant_data /data/jobs.sqlite sqlite 10002'; do
 	if printf '%s\n' "$entries" | grep -qxF -- "$want"; then
 		ok "L1 backup.list carries '$want'"
 	else
@@ -204,6 +205,12 @@ if grep -qF 'Path(settings.data_dir) / "deck" / "recorder.sqlite"' quant/src/ohc
 else
 	no "L2 the Quant app keeps its recorder at {data_dir}/deck/recorder.sqlite, data_dir=/data" "deck.py or compose no longer says so"
 fi
+if grep -qF 'return Path((settings or get_settings()).data_dir) / "jobs.sqlite"' quant/src/ohcamel_quant/jobs/paths.py &&
+	grep -qE '^ +OHCAMEL_QUANT_DATA_DIR: /data$' "$compose"; then
+	ok "L2 the job system keeps jobs.sqlite at {data_dir}/jobs.sqlite, data_dir=/data"
+else
+	no "L2 the job system keeps jobs.sqlite at {data_dir}/jobs.sqlite, data_dir=/data" "paths.py or compose no longer says so"
+fi
 # The uid in the list is the uid the owning image runs as -- a WAL reader
 # creates the -shm beside the database, which only the directory's owner can.
 if grep -qE '^RUN useradd --system --uid 10001 ' deploy/Dockerfile; then
@@ -221,8 +228,8 @@ fi
 fresh
 run_backup --
 expect_rc "A1 the committed list backs up cleanly" 0
-# One run a line: the list has n_entries entries (2 today: the journal and the
-# recorder), so n_entries runs -- no more, no fewer.
+# One run a line: the list has n_entries entries (3 today: the journal, the
+# recorder and the job queue), so n_entries runs -- no more, no fewer.
 expect_eq "A2 $n_entries list lines became exactly $n_entries container runs" "$(runs)" "$n_entries"
 
 i=0
@@ -283,10 +290,10 @@ done <<EOF
 $entries
 EOF
 
-# What is in the directory afterwards: the two files the (simulated)
-# containers wrote and the two backup.sh copies itself. 2 + 2 = 4.
-expect_eq "A5 the directory holds the two copies and the two configuration files" "$(listing)" \
-	"book-$today.sexp deploy-$today.env desk-$today.db recorder-$today.sqlite"
+# What is in the directory afterwards: the three files the (simulated)
+# containers wrote and the two backup.sh copies itself. 3 + 2 = 5.
+expect_eq "A5 the directory holds the three copies and the two configuration files" "$(listing)" \
+	"book-$today.sexp deploy-$today.env desk-$today.db jobs-$today.sqlite recorder-$today.sqlite"
 if cmp -s "$repo/book.sexp" "$backups/book-$today.sexp"; then
 	ok "A6 book-$today.sexp is book.sexp, byte for byte"
 else
@@ -438,8 +445,8 @@ fresh
 run_backup SHIM_EXIT_JOURNAL=1 --
 expect_rc "C2 the journal's copy failing fails the run" 1
 expect_eq "C2 and every line still ran" "$(runs)" "$n_entries"
-expect_eq "C2 and the recorder and the configuration were still copied" "$(listing)" \
-	"book-$today.sexp deploy-$today.env recorder-$today.sqlite"
+expect_eq "C2 and the recorder, the job queue and the configuration were still copied" "$(listing)" \
+	"book-$today.sexp deploy-$today.env jobs-$today.sqlite recorder-$today.sqlite"
 
 # Exit 3 is the container saying "the file is not in the volume": the recorder
 # writes its first row the first minute a US session is open, so a host
@@ -455,7 +462,7 @@ rm "$repo/book.sexp"
 run_backup --
 expect_rc "C4 a missing book.sexp fails the run" 1
 expect_eq "C4 and everything else was still copied" "$(listing)" \
-	"deploy-$today.env desk-$today.db recorder-$today.sqlite"
+	"deploy-$today.env desk-$today.db jobs-$today.sqlite recorder-$today.sqlite"
 
 # --- D. retention of what backup.sh writes ---------------------------------------
 # The journal's dailies are pruned by `ohcamel journal-backup` (ruling 11) and

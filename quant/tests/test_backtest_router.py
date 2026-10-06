@@ -103,7 +103,7 @@ def test_run_errors(bt_client):
     assert r.status_code == 422
 
 
-def test_sweep(bt_client):
+def test_sweep(bt_client, tmp_path):
     body = {"strategy": "tsmom", "tickers": NINE, "grid": {"lookback": [126, 252, 378], "com": [30, 60]},
             "spa_reps": 200, "n_partitions": 8}
     r = bt_client.post("/api/backtest/sweep", json=body)
@@ -115,7 +115,16 @@ def test_sweep(bt_client):
     assert 0 <= j["spa"]["pvalue_consistent"] <= 1
     assert j["caps"]["grid_combinations"] == 64
     too_big = {**body, "grid": {"lookback": list(range(21, 504, 5)), "com": [30, 60]}}
-    assert bt_client.post("/api/backtest/sweep", json=too_big).status_code == 422
+    from ohcamel_quant.api.routers.jobs import get_jobs_db_path
+
+    bt_client.app.dependency_overrides[get_jobs_db_path] = lambda: tmp_path / "jobs.sqlite"
+    try:
+        r = bt_client.post("/api/backtest/sweep", json=too_big)  # 97 x 2 = 194: over 64, within the job cap
+        assert r.status_code == 202 and r.json()["job"]["kind"] == "api.backtest_sweep"
+        way_too_big = {**body, "grid": {"lookback": list(range(1, 301)), "com": [30, 60]}}  # 600 > 512
+        assert bt_client.post("/api/backtest/sweep", json=way_too_big).status_code == 422
+    finally:
+        bt_client.app.dependency_overrides.pop(get_jobs_db_path, None)
 
 
 def test_walkforward(bt_client):

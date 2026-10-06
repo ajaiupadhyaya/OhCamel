@@ -97,9 +97,11 @@ jobs:
           - image: ohcamel-research
             dockerfile: deploy/research.Dockerfile
             stamp: env
+          # env since Lane B (B2): the worker stamps each artifact's manifest
+          # with OHCAMEL_GIT_SHA (code_sha, contract II.3).
           - image: ohcamel-quant
             dockerfile: quant/Dockerfile
-            stamp: label
+            stamp: env
           # The host telemetry daemon (compute task 0.4): a scratch image
           # with no shell, so its stamp is the revision LABEL alone.
           - image: ohcamel-hostd

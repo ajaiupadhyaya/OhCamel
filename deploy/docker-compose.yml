@@ -180,13 +180,13 @@ services:
     # A 2 vCPU / 4 GB droplet shared with Caddy, the live engine and the
     # research service. pandas/scipy on ten years of daily bars for a 60-name
     # universe fits comfortably in this; a runaway request is killed and
-    # restarted rather than taking the engine down with it. 1536m until heavy
-    # requests go through the worker (compute plan Lane B, B5), which lowers
-    # it to 1024m. OOM rank 0: after the batch tier, before caddy and the
+    # restarted rather than taking the engine down with it. 1024m: heavy
+    # requests over their synchronous caps now run on ohcamel-worker (compute
+    # plan Lane B, B5), not in this process. OOM rank 0: after the batch tier, before caddy and the
     # engine (tiers above caddy's).
     cgroup_parent: ohcamel-web.slice
     cpu_shares: 1024
-    mem_limit: 1536m
+    mem_limit: 1024m
     oom_score_adj: 0
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/api/health', timeout=4)"]
@@ -229,6 +229,58 @@ services:
     volumes:
       - /proc:/host/proc:ro
       - /sys/fs/cgroup:/host/sys/fs/cgroup:ro
+    logging: *logging
+    networks: [ohcamel]
+
+  # The job worker (compute plan Lane B; contracts II.2-II.3): the batch tier.
+  # The ohcamel-quant image with another command. It claims one queued job at a
+  # time from /data/jobs.sqlite when admission control allows -- hostd's
+  # mem_available minus 512 MiB must cover the job's memory class, and heavy
+  # jobs wait for 16:05 New York on a session day -- runs it in a child process
+  # (memory returned after every job) and publishes an immutable artifact under
+  # /data/artifacts. The lightest CPU weight on the box and the highest OOM rank:
+  # under contention it yields first, and the kernel kills it before anything
+  # else. 1.75 CPUs at most, so the engine always has a quarter core even when
+  # the worker is the only thing running. stop_grace_period: SIGTERM gives the
+  # running job 15 s to finish or re-queue. Default profile: the public site
+  # shows what it computes. Pinned by deploy/test/resource_budget_test.sh.
+  ohcamel-worker:
+    image: "ghcr.io/ajaiupadhyaya/ohcamel-quant:${OHCAMEL_TAG:?deploy.sh sets OHCAMEL_TAG}"
+    restart: unless-stopped
+    init: true
+    command: ["worker"]
+    env_file:
+      - path: /etc/ohcamel/live.env
+        required: false
+    environment:
+      OHCAMEL_QUANT_DATA_DIR: /data
+      OHCAMEL_QUANT_HOSTD_URL: "${OHCAMEL_QUANT_HOSTD_URL-http://ohcamel-hostd:9100}"
+      OHCAMEL_QUANT_RECORDER: "0"
+      OHCAMEL_QUANT_USER_AGENT: "${OHCAMEL_QUANT_USER_AGENT:-OhCamel-Quant/1.0 (research; contact: ${OHCAMEL_ACME_EMAIL:-unset})}"
+    volumes:
+      - quant_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cgroup_parent: ohcamel-batch.slice
+    cpu_shares: 128
+    cpus: 1.75
+    mem_limit: 1280m
+    oom_score_adj: 800
+    stop_grace_period: 25s
+    # The worker stamps /tmp/ohcamel-worker.heartbeat every poll (5 s) and every
+    # job heartbeat (15 s); older than 120 s means the loop stopped turning.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, sys, time; p = '/tmp/ohcamel-worker.heartbeat'; sys.exit(1 if not os.path.exists(p) or time.time() - os.path.getmtime(p) > 120 else 0)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      ohcamel-hostd:
+        condition: service_started
     logging: *logging
     networks: [ohcamel]
 

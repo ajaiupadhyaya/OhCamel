@@ -136,6 +136,7 @@ def stationary_bootstrap_means(x: np.ndarray, mean_block: float, reps: int, seed
 # ------------------------------------------------------------------ A4: cscv
 MAX_PARTITIONS = 20
 ZERO_VAR_REL = 1e-10      # s2 - n mean^2 <= ZERO_VAR_REL * s2 is zero variance (as cscv.rs)
+CSCV_CHUNK_BYTES = 8 * 2**20  # each (splits x trials) float64 temporary of the reference (Lane B B5)
 
 
 def cscv_pbo(perf: np.ndarray, n_partitions: int, threads: int) -> dict:
@@ -143,8 +144,8 @@ def cscv_pbo(perf: np.ndarray, n_partitions: int, threads: int) -> dict:
     moved here and returning the per-combination selection with it. One change: zero variance
     is the relative rule s2 - n mean^2 <= ZERO_VAR_REL * s2 (shared with cscv.rs) instead of
     var > 0, whose verdict on a constant trial depended on the sign of a rounding residue and
-    so on summation order. Memory is O(C(S, S/2) x N): S = 20 with many trials is a job for
-    the Rust kernel."""
+    so on summation order. The combinations are scored in chunks whose (chunk x N) temporaries
+    stay under CSCV_CHUNK_BYTES (Lane B, B5), so memory is O(C(S, S/2)) plus 8 MiB."""
     import itertools
 
     from scipy import stats
@@ -163,11 +164,9 @@ def cscv_pbo(perf: np.ndarray, n_partitions: int, threads: int) -> dict:
     t = (len(m) // s) * s
     blocks = m[len(m) - t:].reshape(s, t // s, m.shape[1])
     b1, b2, bn = blocks.sum(axis=1), (blocks ** 2).sum(axis=1), np.full(s, t // s, dtype=float)
+    t1, t2, tn = b1.sum(0), b2.sum(0), bn.sum()
     combos = np.array(list(itertools.combinations(range(s), s // 2)))
-    mask = np.zeros((len(combos), s))
-    mask[np.arange(len(combos))[:, None], combos] = 1.0
-    is1, is2, isn = mask @ b1, mask @ b2, mask @ bn
-    oos1, oos2, oosn = b1.sum(0) - is1, b2.sum(0) - is2, bn.sum() - isn
+    n, c_all = m.shape[1], len(combos)
 
     def sharpe(s1: np.ndarray, s2: np.ndarray, n: np.ndarray) -> np.ndarray:
         mean = s1 / n[:, None]
@@ -176,14 +175,27 @@ def cscv_pbo(perf: np.ndarray, n_partitions: int, threads: int) -> dict:
         with np.errstate(invalid="ignore", divide="ignore"):
             return np.where(dev > ZERO_VAR_REL * s2, mean / np.sqrt(np.maximum(var, 0.0)), np.nan)
 
-    sr_is, sr_oos = sharpe(is1, is2, isn), sharpe(oos1, oos2, oosn)
-    best = np.argmax(np.where(np.isfinite(sr_is), sr_is, -np.inf), axis=1)
-    rows = np.arange(len(combos))
-    ranks = stats.rankdata(np.where(np.isfinite(sr_oos), sr_oos, -np.inf), axis=1, method="average")
-    w = ranks[rows, best] / (m.shape[1] + 1.0)
+    best = np.empty(c_all, dtype=np.int64)
+    w, x, y = np.empty(c_all), np.empty(c_all), np.empty(c_all)
+    step = max(1, CSCV_CHUNK_BYTES // (8 * n))  # each (chunk x N) temporary stays under CSCV_CHUNK_BYTES
+    for lo in range(0, c_all, step):
+        cc = combos[lo:lo + step]
+        k = np.arange(len(cc))
+        mask = np.zeros((len(cc), s))
+        mask[k[:, None], cc] = 1.0
+        is1, is2, isn = mask @ b1, mask @ b2, mask @ bn
+        sr_is, sr_oos = sharpe(is1, is2, isn), sharpe(t1 - is1, t2 - is2, tn - isn)
+        del is1, is2
+        bst = np.argmax(np.where(np.isfinite(sr_is), sr_is, -np.inf), axis=1)
+        ranks = stats.rankdata(np.where(np.isfinite(sr_oos), sr_oos, -np.inf), axis=1, method="average")
+        best[lo:lo + len(cc)] = bst
+        w[lo:lo + len(cc)] = ranks[k, bst] / (n + 1.0)
+        x[lo:lo + len(cc)] = sr_is[k, bst]
+        y[lo:lo + len(cc)] = sr_oos[k, bst]
+        del sr_is, sr_oos, ranks
     lam = np.log(w / (1.0 - w))
-    return {"pbo": float(np.mean(lam <= 0)), "logits": lam, "n_combinations": int(len(combos)),
-            "selected": best.astype(np.int64), "is_sharpe": sr_is[rows, best], "oos_sharpe": sr_oos[rows, best]}
+    return {"pbo": float(np.mean(lam <= 0)), "logits": lam, "n_combinations": int(c_all),
+            "selected": best, "is_sharpe": x, "oos_sharpe": y}
 
 
 # ------------------------------------------------------------------ A5: garch
