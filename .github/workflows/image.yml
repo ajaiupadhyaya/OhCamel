@@ -96,9 +96,7 @@ jobs:
             stamp: env
           - image: ohcamel-research
             dockerfile: deploy/research.Dockerfile
-            # Task 11 declares research.Dockerfile's ARG/ENV and moves this
-            # entry to `env`.
-            stamp: none
+            stamp: env
           - image: ohcamel-quant
             dockerfile: quant/Dockerfile
             stamp: label
@@ -226,6 +224,41 @@ jobs:
           # into a hard error, but this says which.
           for image in ohcamel ohcamel-research ohcamel-quant; do
             docker image inspect "ghcr.io/ajaiupadhyaya/$image:$SHA" --format '{{.RepoTags}} {{.Size}}'
+          done
+
+      # Finish plan Task 11: the research image runs as uid 10001 and the
+      # signals volume it writes is the one the engine reads read-only. On a
+      # fresh named volume each time, in both orders -- research first, then
+      # the engine first, which is the order the old root departure was
+      # about: whichever image seeds an empty volume, it must come out
+      # writable by research's 10001 and readable through the engine's :ro
+      # mount, and a write through that mount must be refused. --entrypoint
+      # on every run: research's entrypoint is the service and the engine's
+      # is its binary.
+      - name: Signals volume -- research as 10001, engine read-only
+        run: |
+          set -euo pipefail
+          research="ghcr.io/ajaiupadhyaya/ohcamel-research:$SHA"
+          engine="ghcr.io/ajaiupadhyaya/ohcamel:$SHA"
+          for order in research-first engine-first; do
+            vol="t11-signals-$order-$GITHUB_RUN_ID"
+            docker volume create "$vol" >/dev/null
+            if [ "$order" = engine-first ]; then
+              docker run --rm --entrypoint ls -v "$vol:/data/signals:ro" "$engine" -ln /data/signals
+            fi
+            uid=$(docker run --rm --entrypoint id -v "$vol:/signals" "$research" -u)
+            if [ "$uid" != "10001" ]; then
+              echo "::error::$order: research runs as uid '$uid', expected 10001"
+              exit 1
+            fi
+            docker run --rm --entrypoint touch -v "$vol:/signals" "$research" /signals/probe
+            docker run --rm --entrypoint cat -v "$vol:/data/signals:ro" "$engine" /data/signals/probe
+            if docker run --rm --entrypoint touch -v "$vol:/data/signals:ro" "$engine" /data/signals/engine-write 2>/dev/null; then
+              echo "::error::$order: the engine wrote through its :ro mount"
+              exit 1
+            fi
+            echo "$order -- research (uid 10001) touched /signals/probe, the engine read it through :ro and was refused a second file"
+            docker volume rm "$vol" >/dev/null
           done
 
       # The base file plus the image job's own override: the sha tags just

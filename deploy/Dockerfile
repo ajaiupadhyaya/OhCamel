@@ -151,7 +151,14 @@ RUN useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin ohcamel
 # A named volume mounted here for the first time is populated from the image,
 # ownership included, so it starts writable by the unprivileged user rather
 # than by root -- which matters because the engine never runs as root.
-RUN mkdir -p /data && chown ohcamel:ohcamel /data
+#
+# /data/signals as well, though the engine only ever reads it: the `signals`
+# volume is mounted there read-only, and read-write into ohcamel-research at
+# /signals, whose image runs as this same uid (10001) and owns its /signals
+# the same way. An empty named volume is seeded from whichever container
+# mounts it first; with both mount points 10001's, the order no longer
+# matters (deploy/research.Dockerfile, finish plan Task 11).
+RUN mkdir -p /data/signals && chown ohcamel:ohcamel /data /data/signals
 
 COPY --from=builder /home/opam/ohcamel.exe /usr/local/bin/ohcamel
 

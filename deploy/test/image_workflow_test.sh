@@ -306,7 +306,7 @@ fi
 #   env    ARG OHCAMEL_GIT_SHA, ENV OHCAMEL_GIT_SHA=$OHCAMEL_GIT_SHA and the
 #          revision LABEL -- the stamp step runs printenv as well
 #   label  ARG and the revision LABEL, no ENV
-#   none   no ARG at all (research.Dockerfile until Task 11)
+#   none   no ARG at all (no entry today; research.Dockerfile was one until Task 11)
 # Assertion 13 holds each entry exactly equal to its Dockerfile, both ways.
 matrix=$(awk -F '\t' '
 	$1 == "KEY" && $3 == "jobs/build/strategy/matrix/include/image" { image[$2] = $5; line[$2] = $4; order[++n] = $2 }

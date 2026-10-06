@@ -339,4 +339,8 @@ volumes:
   # ohcamel-research (read-write, above) and read by ohcamel-live
   # (read-only, above). Named, not a bind mount, for the same reason
   # desk_data is: a rebuild or a `down` keeps every signal ever written.
+  # Owned by uid 10001 however it is first seeded: both images carry their
+  # mount point (/signals, /data/signals) owned by that uid, research runs
+  # as it, and the image job proves both orders on fresh volumes (finish
+  # plan Task 11).
   signals:
