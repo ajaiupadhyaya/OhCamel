@@ -205,8 +205,11 @@ services:
   # admission control (Lane B) reads mem_available from it. /proc and the
   # cgroup tree are mounted read-only; the image runs as nobody. In the
   # default profile, beside caddy and ohcamel-quant, because the public site
-  # shows it. Without the systemd cgroup driver (owner check O-3), set
-  # HOSTD_GROUPS to the cgroupfs names (/ohcamel-rt, ...).
+  # shows it. Under the systemd driver hostd nests each slice name on its
+  # dashes (ohcamel-rt.slice is read at ohcamel.slice/ohcamel-rt.slice) and
+  # keys it by the name given. Without the systemd cgroup driver (owner check
+  # O-3), set HOSTD_GROUPS to the cgroupfs names (/ohcamel-rt, ...); a
+  # leading '/' is read under /host/sys/fs/cgroup, not the container root.
   ohcamel-hostd:
     image: "ghcr.io/ajaiupadhyaya/ohcamel-hostd:${OHCAMEL_TAG:?deploy.sh sets OHCAMEL_TAG}"
     restart: unless-stopped
