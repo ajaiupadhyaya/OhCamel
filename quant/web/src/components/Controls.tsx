@@ -20,7 +20,7 @@ export interface TabItem<T extends string = string> {
 }
 
 /**
- * Underlined editorial tabs. Controlled; pair with useTabParam() to deep-link:
+ * A ruled row of Archivo caps tabs; the active tab is inverted (paper on ink). Controlled; pair with useTabParam() to deep-link:
  *   const [tab, setTab] = useTabParam("tab", "overview");
  *   <Tabs items={[{id:"overview",label:"Overview"}, …]} value={tab} onChange={setTab} />
  */
@@ -64,7 +64,7 @@ export function useTabParam<T extends string>(key: string, fallback: T): [T, (v:
 
 // ------------------------------------------------------------------ SegmentedControl
 
-/** Pill toggle for 2–6 mutually exclusive options: <SegmentedControl options={["1Y","3Y"]} value={w} onChange={setW} /> */
+/** Square segmented switch (1px ink frame, active inverted) for 2–6 exclusive options: <SegmentedControl options={["1Y","3Y"]} value={w} onChange={setW} /> */
 export function SegmentedControl<T extends string>({ options, value, onChange, size = "md", ariaLabel, className }: { options: Opt<T>[]; value: T; onChange: (v: T) => void; size?: "sm" | "md"; ariaLabel?: string; className?: string }) {
   return (
     <div className={`oc-seg oc-seg-${size} ${className ?? ""}`} role="radiogroup" aria-label={ariaLabel}>
@@ -201,6 +201,7 @@ export function Slider({ label, value, onChange, min, max, step = 1, format, inf
 
 // ------------------------------------------------------------------ Toggle
 
+/** A square check: a 12px ink frame, filled when on. */
 export function Toggle({ label, checked, onChange, disabled }: { label: ReactNode; checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
   return (
     <label className={`oc-toggle ${disabled ? "disabled" : ""}`}>
@@ -213,7 +214,7 @@ export function Toggle({ label, checked, onChange, disabled }: { label: ReactNod
   );
 }
 
-/** Native select styled to match. options: string[] or {value,label}[] */
+/** Native select, square, mono value, ink caret. options: string[] or {value,label}[] */
 export function Select<T extends string>({ value, onChange, options, ariaLabel, className, style }: { value: T; onChange: (v: T) => void; options: Opt<T>[]; ariaLabel?: string; className?: string; style?: React.CSSProperties }) {
   return (
     <select className={`select ${className ?? ""}`} value={value} aria-label={ariaLabel} onChange={(e) => onChange(e.target.value as T)} style={style}>

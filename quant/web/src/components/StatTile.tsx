@@ -1,5 +1,6 @@
 /**
- * Headline numbers.
+ * Figure: headline numbers. Archivo caps label, the value in Plex Mono, the change in mono
+ * with an explicit sign (gains ink, losses --signal).
  *
  *   <StatGrid>
  *     <StatTile label="Sharpe" value={fmtNum(s, 2)} info="sharpe" />
@@ -7,7 +8,8 @@
  *     <StatTile label="Max drawdown" value={fmtPct(mdd)} tone="loss" />
  *   </StatGrid>
  *
- * `delta` colours automatically (gain > 0, loss < 0; `invert` flips for lower-is-better).
+ * `delta` colours automatically (ink > 0, signal < 0; `invert` flips for lower-is-better)
+ * and always carries its sign.
  * `value` may be a pre-formatted string or a number + `format`.
  * Values are never ellipsized: they shrink to fit the tile width (to ~60% of the size) and
  * wrap only as a last resort. `size="sm"` is a smaller type ramp for dense grids / long values.
@@ -52,7 +54,7 @@ export function StatTile({ label, value, format, delta, deltaFormat, deltaLabel,
         <div className="oc-stat-foot">
           {delta !== undefined && delta !== null && Number.isFinite(delta) && (
             <span className={`oc-stat-delta num ${signClass(delta, invert)}`}>
-              {delta > 0 ? "▲" : delta < 0 ? "▼" : "•"} {(deltaFormat ?? ((d) => fmtPct(d, 2, { signed: true })))(delta)}
+              {signed((deltaFormat ?? ((d) => fmtPct(d, 2, { signed: true })))(delta), delta)}
             </span>
           )}
           {deltaLabel && <span className="subtle">{deltaLabel}</span>}
@@ -61,6 +63,11 @@ export function StatTile({ label, value, format, delta, deltaFormat, deltaLabel,
       ) : null}
     </div>
   );
+}
+
+/** A change always shows its sign: prefix "+" to a positive value a formatter left unsigned. */
+function signed(text: string, d: number): string {
+  return d > 0 && !/^[+]/.test(text.trim()) ? `+${text}` : text;
 }
 
 /**
@@ -105,11 +112,17 @@ function useFitText<E extends HTMLElement>(dep: unknown, minScale = 0.6) {
   return ref;
 }
 
-/** Responsive row of StatTiles with hairline separators. `min` = min tile width in px. */
+/**
+ * Responsive row of StatTiles ruled apart by 1px ink lines. `min` = min tile width in px.
+ * The inner grid is pulled up and left by 1px inside a clipping frame, so every tile can
+ * draw its own top and left rule and the outer edge of the first row and column is hidden.
+ */
 export function StatGrid({ children, min = 150, className }: { children: ReactNode; min?: number; className?: string }) {
   return (
-    <div className={`oc-statgrid ${className ?? ""}`} style={{ gridTemplateColumns: `repeat(auto-fit, minmax(${min}px, 1fr))` }}>
-      {children}
+    <div className={`oc-statgrid ${className ?? ""}`}>
+      <div className="oc-statgrid-inner" style={{ gridTemplateColumns: `repeat(auto-fit, minmax(min(${min}px, 100%), 1fr))` }}>
+        {children}
+      </div>
     </div>
   );
 }

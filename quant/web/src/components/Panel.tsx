@@ -1,6 +1,7 @@
 /**
- * The data panel: title (+ info), actions, body, provenance footer, notes callout, and
- * built-in loading / error / empty states.
+ * The Cell: a ruled header strip (Archivo caps title, asOf and actions on the right), the
+ * body, footnote-style notes behind NOTES (n), a mono provenance line, and built-in
+ * loading / error / empty states. No box: a 1px top rule separates cells.
  *
  * Simplest use — hand it a react-query result and a render function. Provenance and
  * notes are picked up from the payload automatically (`data.provenance`, `data.notes`):
@@ -12,13 +13,20 @@
  *
  * Or fully manual: <Panel title="…" loading={…} error={…} provenance={…} notes={…}>…</Panel>
  * `flush` removes body padding (for edge-to-edge tables).
+ *
+ * Staleness (Review Focus 1): pass `asOf` and `maxAgeSec`; past its max age (or with an
+ * unknown asOf) the header reads STALE in --signal and the body carries a hatched rail.
+ * The last good content still renders -- stale is a mark, not an error.
+ * `subtitle` is accepted for compatibility and not rendered.
  */
 import { useState, type ReactNode } from "react";
 import type { UseQueryResult } from "@tanstack/react-query";
 import type { ProvenanceRecord } from "../lib/types";
+import { fmtStamp } from "../design/stamp";
+import { isStale } from "../design/stale";
 import { InfoTip, type InfoProp } from "./InfoTip";
 import { Provenance } from "./Provenance";
-import { Callout, ChartSkeleton, EmptyState, ErrorState } from "./States";
+import { ChartSkeleton, EmptyState, ErrorState } from "./States";
 
 type Renderable<T> = ReactNode | ((data: T) => ReactNode);
 
@@ -54,6 +62,10 @@ export interface PanelProps<T> {
   span?: 2 | "all";
   children?: Renderable<T>;
   id?: string;
+  /** When the content was computed / observed (ISO timestamp or YYYY-MM-DD). Shown in the header. */
+  asOf?: string;
+  /** With `asOf`: older than this many seconds renders the stale mark. */
+  maxAgeSec?: number;
 }
 
 function asList(n: string[] | string | null | undefined): string[] {
@@ -62,7 +74,7 @@ function asList(n: string[] | string | null | undefined): string[] {
 }
 
 export function Panel<T = unknown>(props: PanelProps<T>) {
-  const { title, subtitle, info, actions, query, footer, skeletonHeight = 260, flush, compact, className, span, children, id } = props;
+  const { title, info, actions, query, footer, skeletonHeight = 260, flush, compact, className, span, children, id, asOf, maxAgeSec } = props;
   const data = query?.data;
   const loading = props.loading ?? (query ? query.isLoading : false);
   const error = props.error ?? (query?.isError ? query.error : undefined);
@@ -83,20 +95,28 @@ export function Panel<T = unknown>(props: PanelProps<T>) {
   else body = children;
 
   const spanCls = span === 2 ? "span-2" : span === "all" ? "span-all" : "";
+  const stale = maxAgeSec !== undefined && !notApplicable && isStale(asOf ?? null, maxAgeSec, new Date());
   return (
-    <section id={id} className={`oc-panel ${spanCls} ${className ?? ""}`} aria-busy={loading || refreshing}>
-      {(title || actions) && (
+    <section id={id} className={`oc-panel ${spanCls} ${stale ? "oc-panel-stale" : ""} ${className ?? ""}`} aria-busy={loading || refreshing}>
+      {(title || actions || asOf || stale) && (
         <header className="oc-panel-head">
-          <div className="oc-panel-titles">
-            {title && (
-              <h3 className="oc-panel-title">
-                {title}
-                <InfoTip info={info} label={typeof title === "string" ? title : undefined} />
-              </h3>
-            )}
-            {subtitle && <div className="oc-panel-subtitle">{subtitle}</div>}
-          </div>
-          {actions && <div className="oc-panel-actions">{actions}</div>}
+          {title && (
+            <h3 className="oc-panel-title">
+              {title}
+              <InfoTip info={info} label={typeof title === "string" ? title : undefined} />
+            </h3>
+          )}
+          {(asOf || stale || actions) && (
+            <div className="oc-panel-meta">
+              {stale && <span className="oc-panel-stale-mark">STALE</span>}
+              {asOf && (
+                <span className="oc-panel-asof num">
+                  AS OF <time dateTime={asOf}>{fmtStamp(asOf)}</time>
+                </span>
+              )}
+              {actions && <div className="oc-panel-actions">{actions}</div>}
+            </div>
+          )}
         </header>
       )}
       {refreshing && <div className="oc-panel-progress" />}
@@ -116,20 +136,26 @@ export function Panel<T = unknown>(props: PanelProps<T>) {
   );
 }
 
-/** Model/data notes: the first two are shown; the rest behind "N more". */
-export function Notes({ notes, initial = 2 }: { notes: string[]; initial?: number }) {
-  const [all, setAll] = useState(false);
-  const shown = all ? notes : notes.slice(0, initial);
-  const more = notes.length - shown.length;
+/**
+ * Model/data notes as numbered footnotes, collapsed behind NOTES (n).
+ * `initial` is accepted for compatibility; every note sits behind the one toggle.
+ */
+export function Notes({ notes }: { notes: string[]; initial?: number }) {
+  const [open, setOpen] = useState(false);
+  if (!notes.length) return null;
   return (
-    <Callout>
-      {shown.length === 1 && !more ? shown[0] : <ul>{shown.map((n, i) => <li key={i}>{n}</li>)}</ul>}
-      {(more > 0 || all) && notes.length > initial && (
-        <button type="button" className="oc-notes-more" onClick={() => setAll((a) => !a)}>
-          {all ? "Show fewer" : `${more} more note${more > 1 ? "s" : ""}`}
-        </button>
+    <div className="oc-notes">
+      <button type="button" className="oc-notes-toggle" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        NOTES ({notes.length})
+      </button>
+      {open && (
+        <ol className="oc-notes-list">
+          {notes.map((n, i) => (
+            <li key={i}>{n}</li>
+          ))}
+        </ol>
       )}
-    </Callout>
+    </div>
   );
 }
 

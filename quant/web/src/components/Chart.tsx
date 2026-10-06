@@ -1,37 +1,40 @@
 /**
- * Theme-aware Plotly wrapper. Plotly (~4.5 MB) is its own chunk, fetched the first time a
- * chart mounts. The template is built from the CSS tokens, so charts re-theme on toggle.
- *
- * Low level — any Plotly figure:
- *   <Chart data={traces} layout={{ yaxis: { tickformat: ".0%" } }} height={320} />
- *
- * Presets (preferred — consistent hover formats & styling):
+ * Charts. The four presets are uPlot/canvas (src/charts/UPlot.tsx) and never load Plotly:
  *   <TimeSeriesChart series={[{ name: "SPY", x, y }]} yFormat="usd" rangeSelector />
  *   <BarChart x={labels} y={values} yFormat="pct" colorBySign />
  *   <HeatmapChart x={cols} y={rows} z={matrix} format="pct" diverging />
- *   <SurfaceChart x={strikes} y={expiries} z={ivs} zFormat="pct" titles={{ x: "Strike", y: "Days", z: "IV" }} />
  *   <HistogramChart values={returns} format="pct" vlines={[{ x: -var99, label: "VaR 99%" }]} />
  *
- * Formats: "pct" (decimals shown as %), "pctPoints" (already in %), "num", "usd", "bps", "int".
- * Colours: series take categorical slots in order (--c1..--c8); series 9+ get the neutral
- * --c-other (see seriesColor in lib/theme) — hues are never repeated. Pass `color` only to encode
- * meaning (e.g. tokens.gain) — never to pick a "nicer" hue.
+ * Plotly (~4.5 MB) stays for the raw <Chart> and the 3-D <SurfaceChart>. It is its own chunk,
+ * reached only through loadPlotly()'s dynamic import(), so a page pays for it only when one of
+ * those mounts. Its template is paper tape: ink lines at 1.25px, dotted --ink-3 grid, Plex
+ * Mono 11px ticks, transparent backgrounds, and no legend box -- line traces get direct
+ * end-of-line labels instead.
+ *
+ * Formats: "pct" (decimals shown as %), "pctPoints" (already in %), "num", "usd", "bps", "int", "x".
+ * Colours: series take the slots --c1..--c8 in order (ink, ink-2, signal, ink-3, earths), then
+ * the neutral --c-other. Pass `color` only to encode meaning (a loss is var(--loss)).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Config, Data, Layout, PlotlyHTMLElement } from "plotly.js";
-import { useTheme, readTokens, seriesColor, type Tokens } from "../lib/theme";
+import { useTheme, readTokens, type Tokens } from "../lib/theme";
+import { endLabels, type ValueFormat } from "../charts/scales";
+import { resolveColor, withAlpha } from "../charts/theme";
 import { ChartSkeleton } from "./States";
+
+export { TimeSeriesChart, BarChart, HeatmapChart, HistogramChart, type LineSeries } from "../charts/UPlot";
+export { resolveColor, withAlpha };
+export type { ValueFormat };
 
 type PlotlyModule = typeof import("plotly.js");
 let plotlyPromise: Promise<PlotlyModule> | null = null;
+/** The only path to Plotly: a dynamic import, so it never lands in the entry chunk. */
 export function loadPlotly(): Promise<PlotlyModule> {
   if (!plotlyPromise) plotlyPromise = import("plotly.js-dist-min").then((m) => ((m as any).default ?? m) as PlotlyModule);
   return plotlyPromise;
 }
 
-export type ValueFormat = "pct" | "pctPoints" | "num" | "usd" | "bps" | "int" | "x";
-
-/** d3-format for axis ticks + hover. */
+/** d3-format for Plotly axis ticks + hover. */
 export function d3Format(f: ValueFormat | undefined, digits = 2): { tick: string; hover: string; suffix?: string; prefix?: string; tickprefix?: string; exponentformat?: "B" } {
   switch (f) {
     case "pct":
@@ -40,8 +43,6 @@ export function d3Format(f: ValueFormat | undefined, digits = 2): { tick: string
       return { tick: ".2f", hover: `.${digits}f`, suffix: "%" };
     case "usd":
       // Not a "$,.2~s" tickformat: d3's SI renders < $1 as "$800m" (milli) on log axes.
-      // Plotly's own auto ticks with exponentformat "B" only abbreviate |exponent| ≥ 3
-      // (k, M, B) — "$0.8", "$950", "$1.5k", "$3.5M" — so currency never gets milli.
       return { tick: "", hover: `$,.${digits}f`, tickprefix: "$", exponentformat: "B" };
     case "bps":
       return { tick: ",.0f", hover: ",.0f", suffix: " bp" };
@@ -54,17 +55,20 @@ export function d3Format(f: ValueFormat | undefined, digits = 2): { tick: string
   }
 }
 
-/** The shared Plotly template (layout defaults) derived from tokens. */
+/** The paper tape Plotly template (layout defaults), built from the live tokens. */
 export function plotlyTemplate(t: Tokens, compact = false): Partial<Layout> {
   const axis = {
-    gridcolor: t.rule,
-    linecolor: t.ruleStrong,
-    zerolinecolor: t.ruleStrong,
+    gridcolor: t.rule, // --ink-3
+    griddash: "dot",
+    gridwidth: 1,
+    linecolor: t.text,
+    linewidth: 1,
+    zerolinecolor: t.text,
     zerolinewidth: 1,
-    tickcolor: t.ruleStrong,
+    tickcolor: t.text,
     ticklen: 4,
-    tickfont: { family: t.fontMono, size: 11, color: t.text3 },
-    title: { font: { family: t.fontUi, size: 11, color: t.text3 }, standoff: 8 },
+    tickfont: { family: t.fontMono, size: 11, color: t.text2 },
+    title: { font: { family: t.fontMono, size: 11, color: t.text2 }, standoff: 8 },
     automargin: true,
     showline: false,
     zeroline: false,
@@ -72,17 +76,18 @@ export function plotlyTemplate(t: Tokens, compact = false): Partial<Layout> {
   return {
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(0,0,0,0)",
-    font: { family: t.fontUi, size: 12, color: t.text2 },
+    font: { family: t.fontMono, size: 11, color: t.text2 },
     colorway: t.categorical,
     margin: compact ? { l: 36, r: 8, t: 8, b: 28 } : { l: 52, r: 16, t: 12, b: 36 },
-    xaxis: { ...axis, showgrid: false, showline: true, showspikes: true, spikemode: "across", spikethickness: 1, spikecolor: t.ruleStrong, spikedash: "solid", spikesnap: "cursor" } as any,
-    yaxis: { ...axis, showgrid: true } as any,
-    hoverlabel: { bgcolor: t.surface, bordercolor: t.ruleStrong, font: { family: t.fontMono, size: 12, color: t.text }, align: "left" },
-    legend: { orientation: "h", x: 0, xanchor: "left", y: 1.02, yanchor: "bottom", font: { size: 12, color: t.text2 }, bgcolor: "rgba(0,0,0,0)", itemclick: "toggle", itemdoubleclick: "toggleothers" },
+    xaxis: { ...axis, showgrid: false, showline: true, ticks: "outside", showspikes: true, spikemode: "across", spikethickness: 1, spikecolor: t.text2, spikedash: "dot", spikesnap: "cursor" } as any,
+    yaxis: { ...axis, showgrid: true, ticks: "" } as any,
+    hoverlabel: { bgcolor: t.bg, bordercolor: t.text, font: { family: t.fontMono, size: 11, color: t.text }, align: "left" },
+    showlegend: false,
+    legend: { orientation: "h", x: 0, xanchor: "left", y: 1.02, yanchor: "bottom", font: { family: t.fontMono, size: 11, color: t.text2 }, bgcolor: "rgba(0,0,0,0)", borderwidth: 0, itemclick: "toggle", itemdoubleclick: "toggleothers" },
     hovermode: "closest",
     dragmode: "zoom",
     bargap: 0.25,
-    modebar: { bgcolor: "rgba(0,0,0,0)", color: t.text3, activecolor: t.text },
+    modebar: { bgcolor: "rgba(0,0,0,0)", color: t.text2, activecolor: t.text },
   } as Partial<Layout>;
 }
 
@@ -97,29 +102,6 @@ export function mergeLayout<T extends Record<string, any>>(base: T, over: Record
   return out as T;
 }
 
-/** Resolve a CSS colour expression like "var(--gain)" to a concrete value Plotly understands. */
-export function resolveColor(c: string): string {
-  const m = /^var\((--[\w-]+)\)$/.exec(c.trim());
-  if (!m) return c;
-  return getComputedStyle(document.documentElement).getPropertyValue(m[1]).trim() || c;
-}
-
-/** "#3f66c4" / "rgb(…)" -> rgba with alpha. */
-export function withAlpha(color: string, a: number): string {
-  const c = resolveColor(color);
-  const hex = /^#([0-9a-f]{6})$/i.exec(c);
-  if (hex) {
-    const n = parseInt(hex[1], 16);
-    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
-  }
-  const rgb = /^rgba?\(([^)]+)\)$/.exec(c);
-  if (rgb) {
-    const [r, g, b] = rgb[1].split(",").map((x) => x.trim());
-    return `rgba(${r}, ${g}, ${b}, ${a})`;
-  }
-  return c;
-}
-
 /** Deep-replace "var(--token)" strings (skips numeric arrays) so authors can use tokens in traces. */
 function resolveVars<T>(x: T): T {
   if (typeof x === "string") return (x.startsWith("var(") ? resolveColor(x) : x) as T;
@@ -130,6 +112,74 @@ function resolveVars<T>(x: T): T {
     return out as T;
   }
   return x;
+}
+
+const isLineTrace = (d: any) => (d.type === undefined || d.type === "scatter" || d.type === "scattergl") && (d.mode === undefined || String(d.mode).includes("lines"));
+
+/** Ink lines at 1.25px unless the trace sets its own width. */
+function traceDefaults(data: Data[]): Data[] {
+  return data.map((d: any) => (isLineTrace(d) && d.line?.width === undefined ? { ...d, line: { ...(d.line ?? {}), width: 1.25 } } : d));
+}
+
+/**
+ * No legend box. Where a legend would show (asked for, or several named traces), line traces
+ * get direct end-of-line labels as annotations instead; charts that are not all lines keep a
+ * boxless legend because their marks cannot carry a label at a line end.
+ */
+function directLabels(data: Data[], layout: Record<string, any>, t: Tokens, height: number): Record<string, any> {
+  const named = (data as any[]).filter((d) => d.name && d.showlegend !== false && d.visible !== false && d.visible !== "legendonly");
+  const wants = layout.showlegend === true || (layout.showlegend === undefined && named.length > 1);
+  if (!wants || !named.length) return { ...layout, showlegend: false };
+  if (!named.every(isLineTrace)) return { ...layout, showlegend: true };
+  const items: { y: number; text: string; x: unknown; color: string; xref: string; yref: string }[] = [];
+  (data as any[]).forEach((d, i) => {
+    if (!named.includes(d) || d.line?.width === 0 || !Array.isArray(d.x) || !Array.isArray(d.y)) return;
+    for (let k = d.y.length - 1; k >= 0; k--) {
+      const y = d.y[k];
+      if (typeof y === "number" && Number.isFinite(y) && d.x[k] !== undefined && d.x[k] !== null) {
+        const color = d.line?.color ?? t.categorical[i % t.categorical.length];
+        items.push({ y, text: String(i), x: d.x[k], color: color === t.rule ? t.text2 : color, xref: d.xaxis ?? "x", yref: d.yaxis ?? "y" });
+        break;
+      }
+    }
+  });
+  if (!items.length) return { ...layout, showlegend: false };
+  const log = (layout.yaxis?.type ?? "") === "log";
+  // collision gap in data units: 13px of the axis extent the traces span
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const d of named as any[]) {
+    for (const v of Array.isArray(d.y) ? d.y : []) {
+      if (typeof v !== "number" || !Number.isFinite(v)) continue;
+      lo = Math.min(lo, v);
+      hi = Math.max(hi, v);
+    }
+  }
+  const span = hi - lo || 1;
+  const placed = log ? items : endLabels(items, (span * 13) / Math.max(120, height));
+  const byIdx = new Map(placed.map((p) => [p.text, p.y]));
+  const names = new Map((data as any[]).map((d, i) => [String(i), String(d.name)]));
+  const longest = Math.max(...items.map((it) => (names.get(it.text) ?? "").length));
+  // annotations on a log axis are placed in log10 units
+  const axisOf = (ref: string, kind: "x" | "y") => layout[`${kind}axis${ref.slice(1)}`] ?? {};
+  const onAxis = (v: unknown, ref: string, kind: "x" | "y") => (axisOf(ref, kind).type === "log" && typeof v === "number" && v > 0 ? Math.log10(v) : v);
+  const annotations = items.map((it) => ({
+    x: onAxis(it.x, it.xref, "x"),
+    y: onAxis(byIdx.get(it.text) ?? it.y, it.yref, "y"),
+    xref: it.xref,
+    yref: it.yref,
+    text: names.get(it.text),
+    showarrow: false,
+    xanchor: "left",
+    xshift: 6,
+    font: { family: t.fontMono, size: 11, color: it.color },
+  }));
+  return {
+    ...layout,
+    showlegend: false,
+    annotations: [...(layout.annotations ?? []), ...annotations],
+    margin: { ...(layout.margin ?? {}), r: Math.max(layout.margin?.r ?? 0, Math.min(160, Math.ceil(longest * 6.7) + 14)) },
+  };
 }
 
 export interface ChartProps {
@@ -144,6 +194,7 @@ export interface ChartProps {
   ariaLabel?: string;
 }
 
+/** Raw Plotly figure in the paper tape template. Prefer the uPlot presets; this loads Plotly. */
 export function Chart({ data, layout, config, height = 300, className, compact, onClick, ariaLabel }: ChartProps) {
   const el = useRef<HTMLDivElement>(null);
   const { resolved } = useTheme();
@@ -160,11 +211,14 @@ export function Chart({ data, layout, config, height = 300, className, compact, 
 
   // tokens re-read whenever the theme flips
   const tokens = useMemo(() => readTokens(), [resolved]); // eslint-disable-line react-hooks/exhaustive-deps
+  const fullData = useMemo(() => traceDefaults(resolveVars(typeof data === "function" ? data(tokens) : data)), [tokens, data]);
   const fullLayout = useMemo(() => {
     const user = typeof layout === "function" ? layout(tokens) : layout;
-    return resolveVars(mergeLayout(mergeLayout(plotlyTemplate(tokens, compact), { height, autosize: true }), user as any));
-  }, [tokens, layout, height, compact]);
-  const fullData = useMemo(() => resolveVars(typeof data === "function" ? data(tokens) : data), [tokens, data]);
+    const merged = resolveVars(mergeLayout(mergeLayout(plotlyTemplate(tokens, compact), { height, autosize: true }), user as any));
+    // the template's showlegend:false is a default, not the caller's choice
+    const asked = (user as any)?.showlegend;
+    return directLabels(fullData, { ...merged, showlegend: asked }, tokens, height);
+  }, [tokens, layout, height, compact, fullData]);
 
   useEffect(() => {
     if (!plotly || !el.current) return;
@@ -205,157 +259,6 @@ export function Chart({ data, layout, config, height = 300, className, compact, 
   );
 }
 
-// =================================================================== presets
-
-export interface LineSeries {
-  name: string;
-  x: (string | number)[];
-  y: (number | null)[];
-  color?: string;
-  dash?: "solid" | "dot" | "dash" | "dashdot";
-  width?: number;
-  /** Fill to zero (area). */
-  fill?: boolean;
-  /** Put on a secondary row? No — never dual axes. Use two charts. */
-  hoverSuffix?: string;
-  customdata?: unknown[];
-}
-
-const RANGE_BUTTONS = [
-  { count: 1, label: "1M", step: "month", stepmode: "backward" },
-  { count: 6, label: "6M", step: "month", stepmode: "backward" },
-  { count: 1, label: "YTD", step: "year", stepmode: "todate" },
-  { count: 1, label: "1Y", step: "year", stepmode: "backward" },
-  { count: 5, label: "5Y", step: "year", stepmode: "backward" },
-  { step: "all", label: "All" },
-];
-
-/**
- * Line / area time series. One y-axis only. `rangeSelector` adds 1M…All buttons.
- * `baseline` draws a hairline at a level (e.g. 0 for returns, 1 for growth of $1).
- * With `rangeSelector` the legend sits below the plot (buttons own the top-left).
- */
-export function TimeSeriesChart({ series, yFormat = "num", digits = 2, area, rangeSelector, logY, height = 320, yTitle, baseline, showLegend, compact, layout: extra }: { series: LineSeries[]; yFormat?: ValueFormat; digits?: number; area?: boolean; rangeSelector?: boolean; logY?: boolean; height?: number; yTitle?: string; baseline?: number; showLegend?: boolean; compact?: boolean; layout?: Partial<Layout> }) {
-  const f = d3Format(yFormat, digits);
-  const legendOn = showLegend ?? series.length > 1;
-  const data = useMemo(
-    () => (t: Tokens) =>
-      series.map((s, i) => ({
-        type: "scatter",
-        mode: "lines",
-        name: s.name,
-        x: s.x,
-        y: s.y,
-        line: { width: s.width ?? (series.length > 3 ? 1.5 : 2), color: s.color ?? seriesColor(t, i), dash: s.dash, shape: "linear" },
-        fill: area || s.fill ? "tozeroy" : undefined,
-        fillcolor: area || s.fill ? withAlpha(s.color ?? seriesColor(t, i), series.length > 1 ? 0.06 : 0.1) : undefined,
-        connectgaps: false,
-        hovertemplate: `<b>%{fullData.name}</b>  ${f.prefix ?? ""}%{y:${f.hover}}${f.suffix ?? ""}${s.hoverSuffix ?? ""}<extra></extra>`,
-      })) as Data[],
-    [series, area, f.hover, f.prefix, f.suffix],
-  );
-  const layout = useMemo(
-    () => (t: Tokens) =>
-      mergeLayout(
-        {
-          hovermode: "x unified",
-          showlegend: legendOn,
-          xaxis: {
-            type: "date",
-            hoverformat: "%a %d %b %Y",
-            rangeselector: rangeSelector
-              ? { buttons: RANGE_BUTTONS, x: 0, y: 1.02, xanchor: "left", yanchor: "bottom", bgcolor: t.surface2, activecolor: t.surface3, bordercolor: t.rule, borderwidth: 1, font: { family: t.fontUi, size: 11, color: t.text2 } }
-              : undefined,
-          },
-          yaxis: { tickformat: f.tick, ticksuffix: f.suffix, tickprefix: f.tickprefix ?? f.prefix, exponentformat: f.exponentformat, type: logY ? "log" : "linear", title: yTitle ? { text: yTitle } : undefined, side: "right" },
-          // With range buttons along the top, the legend moves below the plot (no overlap).
-          legend: rangeSelector && legendOn ? { x: 0, xanchor: "left", xref: "paper", y: 0, yanchor: "bottom", yref: "container" } : {},
-          hoverlabel: { bgcolor: t.surface },
-          shapes:
-            baseline !== undefined
-              ? [{ type: "line", xref: "paper", x0: 0, x1: 1, y0: baseline, y1: baseline, line: { color: t.ruleStrong, width: 1, dash: "dot" } }]
-              : [],
-          margin: { l: 16, r: 8, t: rangeSelector || legendOn ? 36 : 12, b: rangeSelector && legendOn ? 56 : 28 },
-        } as any,
-        extra as any,
-      ),
-    [rangeSelector, logY, yTitle, baseline, f.tick, f.suffix, f.prefix, f.tickprefix, f.exponentformat, legendOn, extra],
-  );
-  return <Chart data={data} layout={layout} height={height} compact={compact} />;
-}
-
-/** Vertical (or horizontal) bars. `colorBySign` paints negatives in the loss colour. */
-export function BarChart({ x, y, series, yFormat = "num", digits = 2, horizontal, colorBySign, height = 300, barmode = "group", layout: extra, onClick }: { x?: (string | number)[]; y?: (number | null)[]; series?: { name: string; x: (string | number)[]; y: (number | null)[] }[]; yFormat?: ValueFormat; digits?: number; horizontal?: boolean; colorBySign?: boolean; height?: number; barmode?: "group" | "stack" | "relative"; layout?: Partial<Layout>; onClick?: (ev: any) => void }) {
-  const f = d3Format(yFormat, digits);
-  const { resolved } = useTheme();
-  const data = useMemo<Data[]>(() => {
-    const t = readTokens();
-    const list = series ?? [{ name: "", x: x ?? [], y: y ?? [] }];
-    return list.map((s, i) => {
-      const trace: Record<string, unknown> = {
-        type: "bar",
-        name: s.name,
-        x: horizontal ? s.y : s.x,
-        y: horizontal ? s.x : s.y,
-        orientation: horizontal ? "h" : "v",
-        hovertemplate: `${list.length > 1 ? "<b>%{fullData.name}</b> " : ""}%{${horizontal ? "y" : "x"}}: ${f.prefix ?? ""}%{${horizontal ? "x" : "y"}:${f.hover}}${f.suffix ?? ""}<extra></extra>`,
-      };
-      // Never pass `marker: undefined` — Plotly's cleanData does `"line" in marker` and throws.
-      if (colorBySign) trace.marker = { color: s.y.map((v) => ((v ?? 0) < 0 ? t.loss : t.gain)) };
-      else if (i >= 8) trace.marker = { color: seriesColor(t, i) }; // colorway would cycle; go neutral
-      return trace;
-    }) as Data[];
-  }, [x, y, series, horizontal, colorBySign, f.hover, f.prefix, f.suffix, resolved]); // eslint-disable-line react-hooks/exhaustive-deps
-  const valueAxis = { tickformat: f.tick, ticksuffix: f.suffix, tickprefix: f.tickprefix, exponentformat: f.exponentformat, zeroline: true, showgrid: true };
-  const catAxis = { showgrid: false, type: "category", automargin: true, showspikes: false };
-  const layout = useMemo(
-    () => mergeLayout({ barmode, showlegend: (series?.length ?? 1) > 1, xaxis: horizontal ? valueAxis : catAxis, yaxis: horizontal ? { ...catAxis, autorange: "reversed" } : valueAxis, hovermode: "closest" } as any, extra as any),
-    [barmode, series?.length, horizontal, extra, f.tick, f.suffix], // eslint-disable-line react-hooks/exhaustive-deps
-  );
-  return <Chart data={data} layout={layout} height={height} onClick={onClick} />;
-}
-
-/**
- * Heatmap. `diverging` (default when z has both signs) centres a scale at `zmid` (default 0);
- * otherwise a one-hue sequential scale. `palette`: "pnl" (loss↔gain, default — for returns)
- * or "neutral" (ochre↔cornflower — for signed quantities that are not good/bad, e.g.
- * correlations). `showValues` prints cells. `gap` = px between cells (default 2; 0 for dense grids).
- */
-export function HeatmapChart({ x, y, z, format = "num", digits = 2, diverging, zmid = 0, showValues, height = 360, colorbar = true, layout: extra, onClick, zmin, zmax, palette = "pnl", gap = 2 }: { x: (string | number)[]; y: (string | number)[]; z: (number | null)[][]; format?: ValueFormat; digits?: number; diverging?: boolean; zmid?: number; showValues?: boolean; height?: number; colorbar?: boolean; layout?: Partial<Layout>; onClick?: (ev: any) => void; zmin?: number; zmax?: number; palette?: "pnl" | "neutral"; /** Cell gap in px (default 2; use 0 for dense time × asset grids). */ gap?: number }) {
-  const { resolved } = useTheme();
-  const f = d3Format(format, digits);
-  const data = useMemo<Data[]>(() => {
-    const t = readTokens();
-    const flat = z.flat().filter((v): v is number => typeof v === "number" && Number.isFinite(v));
-    const div = diverging ?? (flat.some((v) => v < 0) && flat.some((v) => v > 0));
-    const ramp = palette === "neutral" ? t.divergingNeutral : t.diverging;
-    const scale = div ? ramp.map((c, i) => [i / (ramp.length - 1), c]) : t.sequential.map((c, i) => [i / (t.sequential.length - 1), c]);
-    const m = div ? Math.max(...flat.map((v) => Math.abs(v - zmid)), 1e-12) : undefined;
-    return [
-      {
-        type: "heatmap",
-        x,
-        y,
-        z,
-        colorscale: scale,
-        zmid: div ? zmid : undefined,
-        zmin: zmin ?? (div ? zmid - m! : undefined),
-        zmax: zmax ?? (div ? zmid + m! : undefined),
-        xgap: gap,
-        ygap: gap,
-        showscale: colorbar,
-        colorbar: { thickness: 8, outlinewidth: 0, tickformat: f.tick, ticksuffix: f.suffix, tickprefix: f.tickprefix, exponentformat: f.exponentformat, tickfont: { family: t.fontMono, size: 10, color: t.text3 }, len: 0.9 },
-        texttemplate: showValues ? `%{z:${f.hover}}${f.suffix ?? ""}` : undefined,
-        textfont: { family: t.fontMono, size: 11 },
-        hovertemplate: `%{y} · %{x}<br><b>${f.prefix ?? ""}%{z:${f.hover}}${f.suffix ?? ""}</b><extra></extra>`,
-        hoverongaps: false,
-      } as any,
-    ];
-  }, [x, y, z, diverging, zmid, showValues, colorbar, f.tick, f.hover, f.suffix, f.prefix, f.tickprefix, f.exponentformat, zmin, zmax, palette, gap, resolved]); // eslint-disable-line react-hooks/exhaustive-deps
-  const layout = useMemo(() => mergeLayout({ xaxis: { showgrid: false, showspikes: false, type: "category", side: "bottom", showline: false }, yaxis: { showgrid: false, type: "category", autorange: "reversed", automargin: true }, margin: { l: 8, r: 8, t: 8, b: 8 } } as any, extra as any), [extra]);
-  return <Chart data={data} layout={layout} height={height} onClick={onClick} />;
-}
-
 /** 3-D surface (e.g. implied vol by strike × expiry). */
 export function SurfaceChart({ x, y, z, zFormat = "num", titles, height = 480, layout: extra }: { x: (number | string)[]; y: (number | string)[]; z: (number | null)[][]; zFormat?: ValueFormat; titles?: { x?: string; y?: string; z?: string }; height?: number; layout?: Partial<Layout> }) {
   const { resolved } = useTheme();
@@ -386,37 +289,3 @@ export function SurfaceChart({ x, y, z, zFormat = "num", titles, height = 480, l
   return <Chart data={data} layout={layout} height={height} />;
 }
 
-/** Distribution histogram with optional labelled vertical markers (e.g. VaR, ES). */
-export function HistogramChart({ values, nbins = 60, format = "pct", digits = 2, vlines, height = 280, normalize = "probability", layout: extra }: { values: (number | null)[]; nbins?: number; format?: ValueFormat; digits?: number; vlines?: { x: number; label: string; color?: string }[]; height?: number; normalize?: "" | "percent" | "probability" | "density"; layout?: Partial<Layout> }) {
-  const f = d3Format(format, digits);
-  const { resolved } = useTheme();
-  const data = useMemo<Data[]>(() => {
-    const t = readTokens();
-    return [
-      {
-        type: "histogram",
-        x: values.filter((v) => v !== null),
-        nbinsx: nbins,
-        histnorm: normalize,
-        marker: { color: t.categorical[0], opacity: 0.85, line: { color: t.surface, width: 1 } },
-        hovertemplate: `%{x:${f.hover}}${f.suffix ?? ""}: <b>%{y:.2%}</b><extra></extra>`,
-      } as any,
-    ];
-  }, [values, nbins, normalize, f.hover, f.suffix, resolved]); // eslint-disable-line react-hooks/exhaustive-deps
-  const layout = useMemo(
-    () => (t: Tokens) =>
-      mergeLayout(
-        {
-          bargap: 0.04,
-          showlegend: false,
-          xaxis: { tickformat: f.tick, ticksuffix: f.suffix, tickprefix: f.tickprefix, exponentformat: f.exponentformat, showspikes: false },
-          yaxis: { tickformat: normalize === "probability" ? ".0%" : undefined },
-          shapes: (vlines ?? []).map((v) => ({ type: "line", yref: "paper", y0: 0, y1: 1, x0: v.x, x1: v.x, line: { color: v.color ?? t.loss, width: 1.5, dash: "dot" } })),
-          annotations: (vlines ?? []).map((v) => ({ x: v.x, yref: "paper", y: 1, text: v.label, showarrow: false, xanchor: "left", yanchor: "top", xshift: 4, font: { size: 11, color: t.text2 } })),
-        } as any,
-        extra as any,
-      ),
-    [vlines, f.tick, f.suffix, f.tickprefix, f.exponentformat, normalize, extra],
-  );
-  return <Chart data={data} layout={layout} height={height} />;
-}

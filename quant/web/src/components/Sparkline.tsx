@@ -2,11 +2,13 @@
  * Tiny inline SVG line (no Plotly) — for tables and tiles.
  *   <Sparkline values={closes} width={96} height={28} />
  * Colour follows the sign of last − first (gain/loss) unless `color` is given.
+ * The area under the line is hatched with diagonal hairlines in the stroke colour,
+ * never a gradient (spec 3.1/3.5).
  */
 import { useId } from "react";
 
 export function Sparkline({ values, width = 96, height = 28, color, area = true, strokeWidth = 1.5, baseline, className, title }: { values: (number | null | undefined)[]; width?: number; height?: number; color?: string; area?: boolean; strokeWidth?: number; baseline?: number; className?: string; title?: string }) {
-  const id = useId();
+  const id = `oc-spark-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
   const pts = values.map((v, i) => [i, v] as const).filter((p): p is readonly [number, number] => typeof p[1] === "number" && Number.isFinite(p[1]));
   if (pts.length < 2) return <svg width={width} height={height} className={className} aria-hidden />;
   const ys = pts.map((p) => p[1]);
@@ -29,10 +31,9 @@ export function Sparkline({ values, width = 96, height = 28, color, area = true,
       {area && (
         <>
           <defs>
-            <linearGradient id={id} x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0" stopColor={stroke} stopOpacity="0.22" />
-              <stop offset="1" stopColor={stroke} stopOpacity="0" />
-            </linearGradient>
+            <pattern id={id} patternUnits="userSpaceOnUse" width={4} height={4} patternTransform="rotate(45)">
+              <line x1={0} y1={0} x2={0} y2={4} stroke={stroke} strokeWidth={1} strokeOpacity={0.4} />
+            </pattern>
           </defs>
           <path d={`${d}L${X(last[0]).toFixed(1)},${height}L${X(pts[0][0]).toFixed(1)},${height}Z`} fill={`url(#${id})`} />
         </>

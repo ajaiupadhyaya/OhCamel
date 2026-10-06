@@ -31,7 +31,7 @@ export const SECTIONS: { id: SectionId; title: string; blurb: string }[] = [
   { id: "data", title: "Data & provenance", blurb: "The rules every number obeys: where it came from, when, and what happens when a source is missing." },
 ];
 
-const PL_RISK = { label: "Portfolio Lab · Risk", to: "/portfolio?tab=risk" };
+const PL_RISK = { label: "Risk", to: "/risk" };
 const PL_STRESS = { label: "Portfolio Lab · Stress", to: "/portfolio?tab=stress" };
 const PL_FACTORS = { label: "Portfolio Lab · Factors", to: "/portfolio?tab=factors" };
 const PL_OVERVIEW = { label: "Portfolio Lab · Overview", to: "/portfolio" };

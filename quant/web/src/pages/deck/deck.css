@@ -3,6 +3,23 @@
    dark on a light page as on a dark one, the way a monitor is dark on a white desk. No glow,
    no scanlines: the amber is the whole effect (after Figure 2's #scope). */
 
+:root {
+  /* CRT instruments, moved here from tokens.css so green stays inside the Deck. The
+     cockpit screens are always dark, the way a monitor is dark on a white desk, so these
+     are declared once and are the same in both site themes. */
+  --crt-panel: #1b1916;      /* the console the screens are set into */
+  --crt-bezel: #2e2a25;      /* the screen's frame */
+  --crt-ground: #110d08;     /* the tube */
+  --crt-amber: #f2b441;
+  --crt-amber-soft: rgba(242, 180, 65, 0.42);
+  --crt-amber-text: #f6cf7a;
+  --crt-red: #ec4b36;
+  --crt-red-text: #f39a8a;
+  --crt-green: #53c08f;
+  --crt-unknown: #8b9ae0;    /* lilac-blue, cannot be evaluated or no data */
+  --crt-seg-off: rgba(236, 75, 54, 0.09); /* an unlit seven-segment bar */
+}
+
 /* ---------------------------------------------------------------- layout */
 /* The source switch wraps rather than scrolling when the header is narrow. */
 .oc-seg.dk-source {
@@ -438,7 +455,7 @@
 }
 .dk-limits-head {
   padding-bottom: var(--sp-1);
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--ink-3);
 }
 .dk-limits-list {
   list-style: none;
@@ -447,7 +464,7 @@
 }
 .dk-limit-row {
   padding: var(--sp-2) 0;
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--ink-3);
 }
 .dk-limit-name {
   width: 100%;
@@ -641,7 +658,7 @@
 .dk-provenance-strip {display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-top:16px;border-top:1px solid #4f4032;padding:14px 2px;color:#b4aa91;font:10px/1.6 var(--font-mono);}
 .dk-details {inset:0 0 0 auto;margin:0;width:min(760px,100%);max-width:100%;height:100dvh;max-height:100dvh;background:var(--surface,#12151b);color:var(--text,#ddd);border:0;border-left:1px solid #776142;padding:22px;font:14px/1.6 var(--font-sans);color-scheme:normal;}
 .dk-details::backdrop {background:#0009;}
-.dk-details-header {display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:1px solid var(--rule);padding-bottom:18px;margin-bottom:18px;}
+.dk-details-header {display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:1px solid var(--ink-3);padding-bottom:18px;margin-bottom:18px;}
 .dk-details-header h2 {font:500 18px/1.5 var(--font-mono);margin:0;overflow-wrap:anywhere;}
 .dk-flight button:focus-visible,.dk-flight input:focus-visible {outline:2px solid #80ddd3;outline-offset:3px;}
 @media(min-width:1600px) {.dk-deck {grid-template-columns:minmax(0,1.7fr) minmax(0,1fr) minmax(220px,.7fr);} .dk-instrument {padding:20px;} .dk-instrument-heading h2 {font-size:16px;}}

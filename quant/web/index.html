@@ -9,8 +9,11 @@
     <script>
       // Apply the persisted theme before first paint (no flash).
       try {
+        // Older builds stored "light" / "dark"; theme.tsx normalizeTheme does the same mapping.
         var t = localStorage.getItem("ohcamel.theme");
-        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+        if (t === "light") t = "paper";
+        if (t === "dark") t = "carbon";
+        if (t === "paper" || t === "carbon") document.documentElement.dataset.theme = t;
       } catch (e) {}
     </script>
   </head>

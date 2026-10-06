@@ -1,0 +1,92 @@
+/* Ledger (prefix lg-) and System (prefix sys-). */
+.lg-item {
+  font-family: var(--font-display);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  /* Break only at spaces and hyphens, never mid-word (the cell itself allows "anywhere"). */
+  overflow-wrap: normal;
+  word-break: normal;
+  hyphens: manual;
+}
+.lg-pending {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+
+.sys-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-bottom: var(--rule-heavy);
+}
+.sys-row {
+  border-top: var(--rule);
+}
+.sys-row:first-child {
+  border-top: var(--rule-heavy);
+}
+.sys-link {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: var(--sp-6);
+  row-gap: var(--sp-1);
+  padding: var(--sp-4) 0;
+  color: var(--ink);
+  text-decoration: none;
+}
+.sys-code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+.sys-title {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 70%;
+  font-variation-settings: "wdth" 70;
+  font-size: var(--fs-2xl);
+  line-height: 1;
+  text-transform: uppercase;
+}
+.sys-go {
+  font-family: var(--font-mono);
+  font-size: var(--fs-lg);
+}
+.sys-status {
+  grid-column: 2 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.sys-link:hover .sys-title,
+.sys-link:focus-visible .sys-title {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
+}
+@media (max-width: 600px) {
+  .sys-link {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .sys-code {
+    grid-column: 1 / -1;
+  }
+  .sys-status {
+    grid-column: 1 / -1;
+  }
+}

@@ -53,12 +53,12 @@ const r = useApiPost<VarOut>("/risk/var", { ...request, alpha: 0.99 });       //
 
 | Component | Use |
 |---|---|
-| `Page` `{title, eyebrow?, subtitle?, actions?, meta?, docTitle?}` | Page frame with the display-serif title. It also sets `document.title`. |
-| `Section` `{title, description?, actions?}` | Titled group of panels. `actions` wrap onto more lines on narrow screens (they never widen the page). Long `.badge`s in `Page meta` wrap too. |
-| `Panel` / `Card` `{title, subtitle?, info?, actions?, query?, loading?, error?, empty?, applicable?, provenance?, notes?, flush?, compact?, span?, skeletonHeight?}` | The data container. Pass `query={q}` and a render function `{(data) => …}`. It handles the loading skeleton, the 503 "data source unavailable" state, other errors, `notes` (collapsible) and `provenance` (read from the payload automatically). `flush` is for edge-to-edge tables. `span={2 \| "all"}` works inside `.grid-*`. Precedence: `applicable={false}` (shows `empty` or “Not applicable here”, hides errors/notes/provenance) → `empty` → error → loading → content, so a panel that has nothing to show never surfaces an unrelated error. |
-| `StatGrid` `{min?}` + `StatTile` `{label, value, format?, delta?, deltaFormat?, deltaLabel?, invert?, tone?, info?, caption?, loading?, size?}` | Headline numbers. `tone="auto"` colours the value by its sign. `size="sm" \| "md" \| "lg"`; values are never ellipsized — inside a `StatGrid` they shrink with the tile and wrap as a last resort. |
+| `Page` `{title, eyebrow?, subtitle?, actions?, meta?, docTitle?}` | The Sheet: route code (+ eyebrow) in mono, the Archivo title over a heavy rule, `meta` as mono chips. `subtitle` is accepted and not rendered. It also sets `document.title`. |
+| `Section` `{title, description?, actions?}` | Archivo caps heading under a heavy rule; `description` is not rendered. `actions` wrap onto more lines on narrow screens (they never widen the page). Long `.badge`s in `Page meta` wrap too. |
+| `Panel` / `Card` `{title, subtitle?, info?, actions?, query?, loading?, error?, empty?, applicable?, provenance?, notes?, flush?, compact?, span?, skeletonHeight?, asOf?, maxAgeSec?}` | The Cell: a top rule, no box. With `asOf` + `maxAgeSec` it marks itself STALE (header + hatched rail) past its max age or when `asOf` is unknown, and still shows the last good content. Pass `query={q}` and a render function `{(data) => …}`. It handles the loading skeleton, the 503 "data source unavailable" state, other errors, `notes` (collapsible) and `provenance` (read from the payload automatically). `flush` is for edge-to-edge tables. `span={2 \| "all"}` works inside `.grid-*`. Precedence: `applicable={false}` (shows `empty` or “Not applicable here”, hides errors/notes/provenance) → `empty` → error → loading → content, so a panel that has nothing to show never surfaces an unrelated error. |
+| `StatGrid` `{min?}` + `StatTile` `{label, value, format?, delta?, deltaFormat?, deltaLabel?, invert?, tone?, info?, caption?, loading?, size?}` | Figures: mono values, changes always signed (ink up, signal down). `tone="auto"` colours the value by its sign. `size="sm" \| "md" \| "lg"`; values are never ellipsized — inside a `StatGrid` they shrink with the tile and wrap as a last resort. |
 | `DataTable` `{columns, rows, rowKey?, onRowClick?, defaultSort?, maxHeight?, isActive?}` | Sortable table with a sticky header. Column options: `{key, label, numeric?, format?, render?, value?, color?: "sign" \| fn, heat?: {min,max}, info?, hideBelow?: 600\|900\|1200\|1440\|1600, wrap?}`. `wrap` lets long text (references) wrap. |
-| `Tabs` + `useTabParam(key, default)` | Underlined tabs whose state lives in the URL (`?tab=`). |
+| `Tabs` + `useTabParam(key, default)` | Ruled caps tabs (active inverted) whose state lives in the URL (`?tab=`). |
 | `SegmentedControl`, `Select`, `Toggle`, `Field` | Small controls. All are controlled components. |
 | `NumberField` `{value, onChange, unit?, percent?, min?, max?, step?}` | `percent` edits a decimal as a percent (0.05 ⇄ “5 %”). |
 | `Slider` `{value, min, max, step?, format?}` | Range slider with a live readout. |
@@ -73,9 +73,17 @@ const r = useApiPost<VarOut>("/risk/var", { ...request, alpha: 0.99 });       //
 | `HistogramChart` `{values, format, vlines?}` | Histograms. |
 | `Chart` `{data \| (tokens)=>data, layout \| (tokens)=>layout, height}` | Raw Plotly with the theme applied. Colours may be `"var(--gain)"`, or you can build traces from `tokens` so they follow the theme toggle. Helpers: `withAlpha`, `resolveColor`, `mergeLayout`, `d3Format`. |
 | `Sparkline` `{values}` | Tiny SVG line, no Plotly. Use it in tables. |
-| `Formula` `{tex, inline?}` / `InfoTip` `{info}` | KaTeX and the “?” popover. `info` is a glossary key (`lib/glossary.ts`: `sharpe`, `sortino`, `vol`, `var`, `es`/`expected_shortfall`, `beta`, `max_drawdown`, `cagr`, `risk_contribution`, `effective_bets`, `diversification_ratio`, `shrinkage`, `condition_number`, `marchenko_pastur`, `psr`, `dsr`, `pbo`, …) or `{title?, text, formula?, reference?, href?}`. |
+| `Formula` `{tex, inline?}` / `InfoTip` `{info}` | KaTeX and the † footnote popover. `info` is a glossary key (`lib/glossary.ts`: `sharpe`, `sortino`, `vol`, `var`, `es`/`expected_shortfall`, `beta`, `max_drawdown`, `cagr`, `risk_contribution`, `effective_bets`, `diversification_ratio`, `shrinkage`, `condition_number`, `marchenko_pastur`, `psr`, `dsr`, `pbo`, …) or `{title?, text, formula?, reference?, href?}`. |
 | `Provenance`, `EmptyState`, `ErrorState`, `Skeleton`, `Callout`, `Notes`, `Icon` | Building blocks. |
-| `StartHere` | The dismissible first-visit guide on Markets (dismissal kept in localStorage). |
+
+## Primitives (`import { … } from "../design"`)
+
+| Primitive | Use |
+|---|---|
+| `Verdict` `{value: "PASS"\|"FAIL"\|"ADVISORY"\|"INSUFFICIENT DATA"\|"AWAITING PRE-REGISTRATION", detail?}` | Stamped verdict; `FAIL` in `--signal`. Every research and model result leads with one. |
+| `Lamp` `{state: "ok"\|"idle"\|"fault"\|"stale", label}` | 10px square status lamp. |
+| `Note` `{n, to}` | Superscript footnote linking to `/methodology#<to>`. |
+| `isStale(asOf, maxAgeSec, now)` / `fmtStamp(v)` | The stale rule (unknown, unparseable or future is stale) and the mono `05 OCT 16:02` stamp. |
 
 Formatters (`lib/format.ts`): `fmtNum`, `fmtPct`, `fmtSignedPct`, `fmtPctPoints`, `fmtBps`,
 `fmtCurrency({compact})`, `fmtCompact`, `fmtMultiple`, `fmtAuto`, `fmtDate(style)` (`"medium"` 11 Feb 2026, `"short"` 11 Feb, `"short-year"` 11 Feb 26, `"month"`, `"year"`, `"iso"`),
@@ -103,12 +111,17 @@ null, undefined or NaN.
 
 ## Routes & navigation
 
-`lib/routes.ts` is the single registry (router, sidebar, command palette); its order is the
+`lib/routes.ts` is the single registry (router, function-code nav, command line); its order is the
 sidebar order: Markets, Flight Deck · Portfolio Lab, Optimizer, Strategy Lab · Volatility, Rates & Macro,
 Company · Live Engine, Methodology. `/company` (no ticker) renders the Company landing.
 The Flight Deck takes `/deck?source=reference` (the recorded reference book) or
 `?source=engine` (the OCaml engine bridge); the default is your portfolio.
 The Optimizer accepts `/optimize?tickers=A,B&weights=0.4,0.6&start=…&end=…&from=portfolio`.
+
+The command line (`/` or ⌘K) parses one line with `shell/command.ts` (`parseCommand`,
+`commandPath`): function codes (`RATES`, `GO VOL`), `<TICKER> GP|DES|OMON`, `PORT RISK 99 10D`,
+`JOB <KIND>`; anything else searches pages and tickers. `g` + letter jumps (`shell/hotkeys.ts`);
+`?` shows the key map.
 
 ## Portfolio context
 

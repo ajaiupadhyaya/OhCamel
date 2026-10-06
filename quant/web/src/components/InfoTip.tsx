@@ -1,5 +1,6 @@
 /**
- * The "?" affordance. Hover, focus or click to open; Esc / click-away closes.
+ * A footnote dagger (†) set as a superscript, Note-style. Hover, focus or click to open the
+ * definition; Esc / click-away closes. `size` is accepted for compatibility and ignored.
  *   <InfoTip info="sharpe" />                                     glossary key (lib/glossary.ts)
  *   <InfoTip info={{ text: "…", formula: "…", reference: "…" }} />
  * Renders nothing when info is undefined, so it is safe to always pass through.
@@ -8,11 +9,10 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { createPortal } from "react-dom";
 import { resolveInfo, type GlossaryKey, type Info } from "../lib/glossary";
 import { Formula } from "./Formula";
-import { Icon } from "./Icon";
 
 export type InfoProp = Info | GlossaryKey | string;
 
-export function InfoTip({ info, label, size = 14 }: { info?: InfoProp; label?: string; size?: number }) {
+export function InfoTip({ info, label }: { info?: InfoProp; label?: string; size?: number }) {
   const data = resolveInfo(info);
   const btn = useRef<HTMLButtonElement>(null);
   const pop = useRef<HTMLDivElement>(null);
@@ -85,7 +85,7 @@ export function InfoTip({ info, label, size = 14 }: { info?: InfoProp; label?: s
           setOpen(true);
         }}
       >
-        <Icon name="help" size={size} strokeWidth={1.7} />
+        †
       </button>
       {open &&
         createPortal(

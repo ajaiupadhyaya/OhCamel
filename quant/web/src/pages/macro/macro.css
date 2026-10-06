@@ -19,8 +19,7 @@
   gap: var(--sp-4);
   flex-wrap: wrap;
   padding: var(--sp-3) var(--sp-4);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-lg);
+  border: 1px solid var(--ink-3);
   background: var(--surface-2);
 }
 .mc-controls-main {
@@ -58,7 +57,6 @@ label.mc-inline-field .oc-field-label {
 }
 .mc-chip {
   padding: 3px 10px;
-  border-radius: 999px;
   border: 1px solid var(--rule-strong);
   background: var(--surface);
   color: var(--text-2);
@@ -95,7 +93,6 @@ label.mc-inline-field .oc-field-label {
   gap: 8px;
   padding: var(--sp-2) var(--sp-3) var(--sp-3);
   border: 1px dashed var(--ochre);
-  border-radius: var(--radius);
   background: var(--warn-soft);
 }
 .mc-param-tag {
@@ -112,9 +109,8 @@ label.mc-inline-field .oc-field-label {
   flex-direction: column;
   gap: var(--sp-3);
   padding: var(--sp-5);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--rule);
-  background: linear-gradient(160deg, color-mix(in srgb, var(--lilac) 7%, var(--surface)), var(--surface) 60%);
+  border: 1px solid var(--ink-3);
+  background: var(--surface);
   min-width: 0;
 }
 .mc-method-title {
@@ -133,7 +129,6 @@ label.mc-inline-field .oc-field-label {
 .mc-method-formula {
   overflow-x: auto;
   padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--radius);
   background: var(--surface-2);
   font-size: 0.92em;
 }
@@ -141,7 +136,7 @@ label.mc-inline-field .oc-field-label {
   margin: 0;
   padding: var(--sp-3) 0 0;
   list-style: none;
-  border-top: 1px solid var(--rule);
+  border-top: 1px solid var(--ink-3);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -161,7 +156,7 @@ label.mc-inline-field .oc-field-label {
   align-items: baseline;
   gap: var(--sp-3);
   padding: 7px 0;
-  border-bottom: 1px solid var(--rule);
+  border-bottom: 1px solid var(--ink-3);
   font-size: var(--fs-sm);
 }
 .mc-kv-row:last-child {
@@ -208,14 +203,12 @@ label.mc-inline-field .oc-field-label {
 .mc-swatch-chip {
   width: 14px;
   height: 10px;
-  border-radius: 2px;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
 }
 .mc-dot {
   display: inline-block;
   width: 9px;
   height: 9px;
-  border-radius: 50%;
   flex: none;
 }
 
@@ -235,7 +228,7 @@ label.mc-inline-field .oc-field-label {
 }
 .mc-cat + .mc-cat {
   padding-top: var(--sp-5);
-  border-top: 1px solid var(--rule);
+  border-top: 1px solid var(--ink-3);
 }
 .mc-cat-head {
   display: flex;
@@ -263,10 +256,8 @@ label.mc-inline-field .oc-field-label {
   flex-direction: column;
   gap: var(--sp-3);
   padding: var(--sp-4);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   background: var(--surface);
-  box-shadow: var(--shadow-1);
   cursor: pointer;
   text-align: left;
   min-width: 0;
@@ -275,7 +266,6 @@ label.mc-inline-field .oc-field-label {
 .mc-card:hover,
 .mc-card:focus-visible {
   border-color: var(--rule-strong);
-  box-shadow: var(--shadow-2);
   transform: translateY(-1px);
 }
 .mc-card-head {
@@ -317,8 +307,8 @@ label.mc-inline-field .oc-field-label {
   grid-template-columns: repeat(3, 1fr);
   gap: 4px;
   padding: 8px 0;
-  border-top: 1px solid var(--rule);
-  border-bottom: 1px solid var(--rule);
+  border-top: 1px solid var(--ink-3);
+  border-bottom: 1px solid var(--ink-3);
 }
 .mc-card-chg {
   display: flex;
@@ -348,9 +338,8 @@ label.mc-inline-field .oc-field-label {
 .mc-gauge-track {
   position: relative;
   height: 6px;
-  border-radius: 3px;
-  background: linear-gradient(90deg, color-mix(in srgb, var(--cornflower) 14%, var(--surface-2)), var(--surface-2) 50%, color-mix(in srgb, var(--ochre) 18%, var(--surface-2)));
-  border: 1px solid var(--rule);
+  background: var(--paper-2);
+  border: 1px solid var(--ink-3);
 }
 .mc-gauge-q {
   position: absolute;
@@ -365,9 +354,8 @@ label.mc-inline-field .oc-field-label {
   width: 10px;
   height: 10px;
   margin: -5px 0 0 -5px;
-  border-radius: 50%;
   background: var(--text);
-  box-shadow: 0 0 0 2px var(--surface);
+  outline: 2px solid var(--surface);
 }
 .mc-gauge-extreme .mc-gauge-dot {
   background: var(--ochre);
@@ -378,9 +366,8 @@ label.mc-inline-field .oc-field-label {
   align-items: center;
   gap: 6px;
   padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--radius);
   border: 1px dashed color-mix(in srgb, var(--unknown) 45%, transparent);
-  background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--unknown) 5%, transparent) 6px 7px), var(--surface);
+  background: var(--hatch), var(--surface);
 }
 .mc-off-label {
   font-size: var(--fs-2xs);
@@ -394,7 +381,6 @@ label.mc-inline-field .oc-field-label {
   font-size: var(--fs-xs);
   color: var(--text-3);
   padding: 1px 8px;
-  border-radius: 999px;
   background: var(--unknown-soft);
 }
 .mc-off-chip .num {
@@ -416,9 +402,8 @@ label.mc-inline-field .oc-field-label {
 }
 .mc-meter {
   height: 8px;
-  border-radius: 4px;
   background: var(--surface-2);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   overflow: hidden;
 }
 .mc-meter span {
@@ -447,7 +432,7 @@ label.mc-inline-field .oc-field-label {
 }
 .mc-risk-total {
   padding-left: var(--sp-4);
-  border-left: 1px solid var(--rule);
+  border-left: 1px solid var(--ink-3);
 }
 .mc-risk-head {
   display: flex;
@@ -464,9 +449,8 @@ label.mc-inline-field .oc-field-label {
 }
 .mc-risk-bar {
   height: 6px;
-  border-radius: 3px;
   background: var(--surface-2);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   overflow: hidden;
 }
 .mc-risk-bar span {
@@ -503,7 +487,7 @@ label.mc-inline-field .oc-field-label {
 }
 .mc-form-rule {
   height: 1px;
-  background: var(--rule);
+  background: var(--ink-3);
   margin: 2px 0;
 }
 .mc-run {
@@ -522,8 +506,7 @@ label.mc-inline-field .oc-field-label {
   align-items: center;
   gap: 8px;
   padding: 4px 6px 4px 10px;
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
+  border: 1px solid var(--ink-3);
   background: var(--surface);
   min-width: 0;
 }

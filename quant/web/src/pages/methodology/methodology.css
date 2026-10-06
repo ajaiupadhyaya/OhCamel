@@ -17,7 +17,6 @@
   display: flex;
   justify-content: space-between;
   padding: 5px 10px;
-  border-radius: var(--radius-sm);
   color: var(--text-2);
   text-decoration: none;
 }
@@ -57,10 +56,8 @@
   align-items: center;
   gap: var(--sp-3);
   padding: 10px 14px;
-  border-radius: var(--radius-lg);
   border: 1px solid var(--rule-strong);
   background: var(--surface);
-  box-shadow: var(--shadow-2);
   color: var(--text-3);
 }
 .me-search input {
@@ -75,7 +72,6 @@
 }
 .me-empty {
   padding: var(--sp-5);
-  border-radius: var(--radius-lg);
   background: var(--surface-2);
   color: var(--text-2);
 }
@@ -102,15 +98,13 @@
   grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
   gap: var(--sp-6);
   padding: var(--sp-5) var(--sp-6);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   background: var(--surface);
-  box-shadow: var(--shadow-1);
   scroll-margin-top: calc(var(--topbar-h) + 72px);
 }
 .me-card:target {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  outline: 3px solid var(--accent-soft);
 }
 .me-card h3 {
   position: relative;
@@ -174,7 +168,6 @@
   align-items: center;
   gap: 4px;
   padding: 3px 10px;
-  border-radius: 999px;
   background: var(--accent-soft);
   color: var(--accent);
   font-size: var(--fs-xs);
@@ -193,7 +186,6 @@
 .me-formula {
   margin: 0;
   padding: var(--sp-3) var(--sp-4);
-  border-radius: var(--radius);
   background: var(--surface-2);
   overflow-x: auto;
 }
@@ -231,8 +223,7 @@
 }
 .me-source {
   padding: var(--sp-4) var(--sp-5);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--ink-3);
   background: var(--surface);
   font-size: var(--fs-sm);
 }
@@ -301,7 +292,6 @@
 }
 .me-bib li:target {
   background: var(--accent-soft);
-  border-radius: var(--radius-sm);
 }
 .me-bib-authors {
   color: var(--text);

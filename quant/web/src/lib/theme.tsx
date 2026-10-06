@@ -1,12 +1,16 @@
 /**
- * Theme: "light" | "dark" | "system", persisted to localStorage ("ohcamel.theme").
+ * Theme: "paper" | "carbon" | "system", persisted to localStorage ("ohcamel.theme").
+ * Older builds stored "light" / "dark"; those are read as "paper" / "carbon".
+ * `data-theme` is set only when the user chose explicitly; otherwise the OS
+ * preference decides through the stylesheet's media query.
  * `resolved` is what is actually on screen. Charts subscribe to `resolved` and
  * rebuild their template from the CSS tokens via readTokens().
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
-export type ThemeMode = "light" | "dark" | "system";
-export type ResolvedTheme = "light" | "dark";
+export type ThemeName = "paper" | "carbon";
+export type ThemeMode = ThemeName | "system";
+export type ResolvedTheme = ThemeName;
 
 const KEY = "ohcamel.theme";
 
@@ -20,13 +24,19 @@ interface ThemeCtx {
 const Ctx = createContext<ThemeCtx | null>(null);
 
 function systemPref(): ResolvedTheme {
-  return typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "carbon" : "paper";
+}
+
+/** A stored theme value as a paper tape theme name, or null when it is not an explicit choice. */
+export function normalizeTheme(v: string | null): ThemeName | null {
+  if (v === "paper" || v === "light") return "paper";
+  if (v === "carbon" || v === "dark") return "carbon";
+  return null;
 }
 
 function readStored(): ThemeMode {
   try {
-    const v = localStorage.getItem(KEY);
-    if (v === "light" || v === "dark") return v;
+    return normalizeTheme(localStorage.getItem(KEY)) ?? "system";
   } catch {
     /* storage blocked */
   }
@@ -39,7 +49,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const on = () => setSys(mq.matches ? "dark" : "light");
+    const on = () => setSys(mq.matches ? "carbon" : "paper");
     mq.addEventListener("change", on);
     return () => mq.removeEventListener("change", on);
   }, []);
@@ -59,7 +69,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, [mode]);
 
   const setMode = useCallback((m: ThemeMode) => setModeState(m), []);
-  const toggle = useCallback(() => setModeState((m) => ((m === "system" ? systemPref() : m) === "dark" ? "light" : "dark")), []);
+  const toggle = useCallback(() => setModeState((m) => ((m === "system" ? systemPref() : m) === "carbon" ? "paper" : "carbon")), []);
 
   const value = useMemo(() => ({ mode, resolved, setMode, toggle }), [mode, resolved, setMode, toggle]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
@@ -109,8 +119,9 @@ export function readTokens(): Tokens {
     text: v("--text"),
     text2: v("--text-2"),
     text3: v("--text-3"),
-    rule: v("--rule"),
-    ruleStrong: v("--rule-strong"),
+    // --rule is a border shorthand in paper tape; charts want the colours.
+    rule: v("--ink-3"),
+    ruleStrong: v("--ink-2"),
     accent: v("--accent"),
     gain: v("--gain"),
     loss: v("--loss"),

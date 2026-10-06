@@ -1,6 +1,8 @@
 // Barrel: `import { Page, Panel, StatTile, DataTable, TimeSeriesChart } from "../components";`
 export { Page, Section } from "./Page";
 export { Panel, Card, Notes, type PanelProps } from "./Panel";
+export { ReadCell, type ReadCellProps } from "./ReadCell";
+export { ArtifactCell, Headline, type ArtifactCellProps } from "./ArtifactCell";
 export { StatTile, StatGrid, type StatTileProps } from "./StatTile";
 export { DataTable, type Column, type DataTableProps } from "./DataTable";
 export { Tabs, useTabParam, SegmentedControl, Field, NumberField, Slider, Toggle, Select, type TabItem } from "./Controls";
@@ -16,4 +18,3 @@ export { InfoTip, type InfoProp } from "./InfoTip";
 export { Provenance } from "./Provenance";
 export { EmptyState, ErrorState, Skeleton, ChartSkeleton, Callout } from "./States";
 export { Icon, type IconName } from "./Icon";
-export { StartHere } from "./StartHere";

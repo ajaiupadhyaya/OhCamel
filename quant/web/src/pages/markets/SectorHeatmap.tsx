@@ -10,7 +10,7 @@ import type { OverviewRow, PeriodKey } from "./data";
 export function tileColor(v: number | null | undefined, scale: number): string {
   if (v === null || v === undefined || !Number.isFinite(v)) return "var(--surface-2)";
   const t = Math.max(-1, Math.min(1, v / scale));
-  const pct = Math.round(8 + Math.abs(t) * 52);
+  const pct = Math.round(6 + Math.abs(t) * 26); // capped at 32% so ink text keeps 4.5:1 on paper and carbon
   return `color-mix(in srgb, var(${t >= 0 ? "--gain" : "--loss"}) ${pct}%, var(--surface))`;
 }
 

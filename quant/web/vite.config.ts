@@ -15,6 +15,7 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     sourcemap: false,
+    manifest: true, // read by scripts/check-bundle.mjs
     chunkSizeWarningLimit: 5000, // plotly is ~4.5 MB raw; it is lazily loaded.
     rollupOptions: {
       output: {

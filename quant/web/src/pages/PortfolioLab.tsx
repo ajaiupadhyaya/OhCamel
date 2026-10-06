@@ -6,10 +6,12 @@
  * keystroke: the tabs analyse a *committed* copy of the portfolio, and "Run analysis"
  * commits the current one. The first render commits immediately, so results appear on load.
  *
- * Tabs (URL ?tab=): Overview · Risk · Factors · Stress · Optimize.
+ * Tabs (URL ?tab=): Overview · Factors · Stress · Optimize. Risk has its own route, /risk;
+ * the old ?tab=risk bookmark redirects there.
  * Page-local code lives in ./portfolio/ (CSS prefix `pl-`).
  */
 import { useCallback, useMemo, useState } from "react";
+import { Link, Navigate } from "react-router-dom";
 import { EmptyState, Page, Tabs, useTabParam } from "../components";
 import { usePortfolio } from "../lib/portfolio";
 import { useApiQuery } from "../lib/query";
@@ -18,14 +20,12 @@ import { FactorsTab } from "./portfolio/FactorsTab";
 import { OptimizeTab } from "./portfolio/OptimizeTab";
 import { OverviewTab } from "./portfolio/OverviewTab";
 import { PortfolioStrip } from "./portfolio/PortfolioStrip";
-import { RiskTab } from "./portfolio/RiskTab";
 import { StressTab } from "./portfolio/StressTab";
 import "./portfolio/portfolio.css";
 
-type Tab = "overview" | "risk" | "factors" | "stress" | "optimize";
+type Tab = "overview" | "factors" | "stress" | "optimize";
 const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
-  { id: "risk", label: "Risk" },
   { id: "factors", label: "Factors" },
   { id: "stress", label: "Stress" },
   { id: "optimize", label: "Optimize" },
@@ -33,7 +33,7 @@ const TABS: { id: Tab; label: string }[] = [
 
 export default function PortfolioLab() {
   const { request } = usePortfolio();
-  const [tab, setTab] = useTabParam<Tab>("tab", "overview");
+  const [tab, setTab] = useTabParam<Tab | "risk">("tab", "overview");
   const [committed, setCommitted] = useState<PortfolioIn>(request);
   const dirty = useMemo(() => JSON.stringify(request) !== JSON.stringify(committed), [request, committed]);
   const run = useCallback(() => setCommitted(request), [request]);
@@ -41,6 +41,7 @@ export default function PortfolioLab() {
   const empty = committed.holdings.length === 0;
   const active = TABS.some((t) => t.id === tab) ? tab : "overview";
 
+  if (tab === "risk") return <Navigate to="/risk" replace />;
   return (
     <Page
       eyebrow="Analyze"
@@ -52,6 +53,11 @@ export default function PortfolioLab() {
             Offline dataset — committed daily prices only
           </span>
         ) : undefined
+      }
+      actions={
+        <Link to="/risk" className="oc-go">
+          RISK →
+        </Link>
       }
     >
       <PortfolioStrip dirty={dirty} onRun={run} />
@@ -67,7 +73,6 @@ export default function PortfolioLab() {
       ) : (
         <div className="pl-tab-body" key={active}>
           {active === "overview" && <OverviewTab req={committed} />}
-          {active === "risk" && <RiskTab req={committed} />}
           {active === "factors" && <FactorsTab req={committed} />}
           {active === "stress" && <StressTab req={committed} />}
           {active === "optimize" && <OptimizeTab req={committed} />}

@@ -1,314 +1,525 @@
-/* App chrome: sidebar, top bar, command palette. */
+/*
+ * App chrome, Paper Tape: masthead, tape, function-code row, command line, key map, footer.
+ * Rules, not boxes. Every number in mono. The function-code row is the one sticky
+ * strip; its height is --topbar-h, which page-level sticky elements offset by.
+ */
 
 .oc-app {
-  display: grid;
-  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
-  min-height: 100vh;
-  transition: grid-template-columns 200ms var(--ease);
-}
-.oc-app.collapsed {
-  grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr);
-}
-.oc-app.mobile {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-/* ---------------------------------------------------------------- sidebar */
-.oc-sidebar-cell {
-  border-right: 1px solid var(--rule);
-  background: color-mix(in srgb, var(--bg-grain) 70%, var(--bg));
-  min-width: 0;
-}
-.oc-app.mobile .oc-sidebar-cell {
-  display: contents;
-}
-.oc-sidebar {
-  position: sticky;
-  top: 0;
-  height: 100vh;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
-  padding: var(--sp-4) var(--sp-3);
-  overflow: hidden;
-  z-index: 20;
+  min-height: 100vh;
 }
-.oc-sidebar-top {
+
+.oc-skip {
+  position: absolute;
+  left: var(--sp-4);
+  top: -40px;
+  z-index: 1000;
+  padding: var(--sp-1) var(--sp-2);
+  background: var(--ink);
+  color: var(--paper);
+  font: 700 var(--fs-xs) / 1.4 var(--font-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.oc-skip:focus {
+  top: var(--sp-2);
+}
+
+/* ---------------------------------------------------------------- masthead */
+.oc-masthead {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: var(--sp-6);
+  row-gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-6) var(--sp-2);
+  border-bottom: var(--rule-double);
+}
+.oc-wordmark {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-stretch: 70%;
+  font-variation-settings: "wdth" 70;
+  font-size: var(--fs-2xl);
+  line-height: 1;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.oc-wordmark:hover {
+  text-decoration: none;
+}
+.oc-wordmark-slash {
+  font-weight: 300;
+  color: var(--ink-2);
+  margin: 0 0.04em;
+}
+.oc-dateline {
+  margin: 0;
+  justify-self: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+/* status cluster */
+.oc-status {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 40px;
-  padding: 0 6px;
-  margin-bottom: var(--sp-4);
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: flex-end;
+  column-gap: var(--sp-4);
+  row-gap: var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
 }
-.oc-logo {
+.oc-readout {
   display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--text);
-  text-decoration: none !important;
-}
-.oc-logo-text {
-  display: flex;
   align-items: baseline;
   gap: 6px;
   white-space: nowrap;
+  color: var(--ink);
+  text-decoration: none;
 }
-.oc-logo-text .display {
-  font-size: 1.28rem;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  font-variation-settings: "SOFT" 100, "WONK" 1, "opsz" 72;
+.oc-readout-label {
+  color: var(--ink-2);
+  letter-spacing: 0.04em;
 }
-.oc-logo-sub {
-  font-size: var(--fs-2xs);
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
-  color: var(--text-3);
-  font-weight: 600;
-}
-.oc-nav {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-5);
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-.oc-nav-section {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.oc-nav-heading {
-  padding: 0 10px 6px;
-  font-size: var(--fs-2xs);
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text-3);
-}
-.oc-nav-link {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  height: 36px;
-  padding: 0 10px;
-  border-radius: var(--radius-sm);
-  color: var(--text-2);
-  font-size: var(--fs-md);
+.oc-readout-value {
   font-weight: 500;
-  white-space: nowrap;
-  text-decoration: none !important;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.oc-nav-link:hover {
-  background: var(--surface-2);
-  color: var(--text);
+.oc-book {
+  padding-left: var(--sp-4);
+  border-left: var(--rule-faint);
 }
-.oc-nav-link.active {
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: var(--shadow-1), 0 0 0 1px var(--rule);
+.oc-book:hover .oc-readout-value {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
-.oc-nav-link.active::before {
-  content: "";
-  position: absolute;
-  left: -12px;
-  top: 9px;
-  bottom: 9px;
-  width: 3px;
-  border-radius: 0 3px 3px 0;
-  background: var(--ochre);
-}
-.oc-app.collapsed .oc-nav-link {
-  justify-content: center;
-  padding: 0;
-}
-.oc-app.collapsed .oc-sidebar-top {
-  justify-content: center;
-  padding: 0;
-}
-.oc-collapse {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 34px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-3);
+
+/* lamps: see .lamp in components.css (the Lamp primitive) */
+
+/* ---------------------------------------------------------------- tape */
+.oc-tape {
+  height: 24px;
+  overflow: hidden;
+  border-bottom: var(--rule-faint);
+  font-family: var(--font-mono);
   font-size: var(--fs-sm);
+  line-height: 24px;
+  white-space: nowrap;
+  background: var(--paper);
 }
-.oc-collapse:hover {
-  background: var(--surface-2);
-  color: var(--text);
+.oc-tape-msg {
+  display: block;
+  padding: 0 var(--sp-6);
+  color: var(--ink-2);
+  letter-spacing: 0.04em;
 }
-.oc-app.collapsed .oc-collapse {
-  justify-content: center;
-  padding: 0;
+.oc-tape-track {
+  display: inline-flex;
+  width: max-content;
+  animation: oc-tape 90s linear infinite;
+}
+.oc-tape:hover .oc-tape-track {
+  animation-play-state: paused;
+}
+.oc-tape-run {
+  display: inline-flex;
+  flex: none;
+  padding-left: var(--sp-6);
+}
+.oc-tape-item {
+  display: inline-flex;
+  gap: 0.6ch;
+}
+.oc-tape-sym {
+  font-weight: 500;
+}
+.oc-tape-chg.loss {
+  color: var(--signal);
+}
+.oc-tape-sep {
+  padding: 0 1.2ch;
+  color: var(--ink-3);
+}
+@keyframes oc-tape {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-tape-track {
+    animation: none;
+  }
+  .oc-tape-run + .oc-tape-run,
+  .oc-tape-item:last-child .oc-tape-sep {
+    display: none;
+  }
 }
 
-/* mobile drawer */
-.oc-app.mobile .oc-sidebar {
-  position: fixed;
-  left: 0;
-  top: 0;
-  width: min(280px, 84vw);
-  transform: translateX(-102%);
-  transition: transform 220ms var(--ease);
-  background: var(--bg);
-  box-shadow: var(--shadow-3);
-}
-.oc-app.mobile.drawer-open .oc-sidebar {
-  transform: none;
-}
-.oc-scrim {
-  position: fixed;
-  inset: 0;
-  z-index: 15;
-  background: var(--overlay);
-  animation: oc-fade-in 160ms var(--ease);
-}
-
-/* ---------------------------------------------------------------- top bar */
-.oc-main {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-.oc-topbar {
+/* ---------------------------------------------------------------- function codes */
+.oc-fnav {
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: 20;
   display: flex;
-  align-items: center;
-  gap: var(--sp-3);
+  align-items: stretch;
+  max-width: 100vw;
   height: var(--topbar-h);
-  padding: 0 var(--sp-8);
-  background: color-mix(in srgb, var(--bg) 82%, transparent);
-  backdrop-filter: saturate(1.4) blur(12px);
-  -webkit-backdrop-filter: saturate(1.4) blur(12px);
-  border-bottom: 1px solid var(--rule);
+  box-sizing: border-box;
+  padding: 0 var(--sp-6);
+  background: var(--paper);
+  border-bottom: var(--rule);
 }
-.oc-search-trigger {
+.oc-fnav-codes {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  width: min(440px, 100%);
-  height: 36px;
-  padding: 0 8px 0 12px;
-  border: 1px solid var(--rule);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--text-3);
-  font-size: var(--fs-sm);
-  text-align: left;
-  transition: border-color var(--dur), box-shadow var(--dur);
-}
-.oc-search-trigger:hover {
-  border-color: var(--rule-strong);
-  box-shadow: var(--shadow-1);
-}
-.oc-search-placeholder {
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.oc-search-kbd {
-  display: flex;
-  gap: 3px;
-}
-.oc-pchip {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  max-width: 320px;
-  height: 38px;
-  padding: 0 12px 0 8px;
-  border-radius: var(--radius);
-  color: var(--text);
-  text-decoration: none !important;
-  transition: background var(--dur);
-}
-.oc-pchip:hover {
-  background: var(--surface-2);
-}
-.oc-pchip-bars {
-  display: flex;
-  gap: 1.5px;
-  width: 36px;
-  height: 22px;
-  border-radius: 5px;
-  overflow: hidden;
-  flex: none;
-}
-.oc-pchip-bars span {
-  display: block;
-  height: 100%;
-}
-.oc-pchip-text {
-  display: flex;
-  flex-direction: column;
   min-width: 0;
-  line-height: 1.2;
-}
-.oc-pchip-name {
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-x: auto;
+  overflow-y: hidden;
   white-space: nowrap;
+  scrollbar-width: none;
+  margin-left: calc(-1 * var(--sp-3));
 }
-.oc-pchip-meta {
-  font-size: var(--fs-2xs);
-  color: var(--text-3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.oc-fnav-codes::-webkit-scrollbar {
+  display: none;
 }
+.oc-fcode {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  padding: 0 var(--sp-3);
+  font-family: var(--font-display);
+  font-size: var(--fs-md);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  color: var(--ink);
+  text-decoration: none;
+}
+.oc-fcode:hover {
+  text-decoration: none;
+  background: var(--paper-2);
+}
+.oc-fcode.active {
+  background: var(--ink);
+  color: var(--paper);
+}
+.oc-fcode:focus-visible,
+.oc-ftool:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: -2px;
+}
+.oc-fnav-tools {
+  display: flex;
+  flex: none;
+  align-items: stretch;
+  margin-right: calc(-1 * var(--sp-3));
+  border-left: var(--rule-faint);
+}
+.oc-ftool {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+.oc-ftool:hover {
+  background: var(--paper-2);
+}
+.oc-ftool + .oc-ftool {
+  border-left: var(--rule-faint);
+}
+.oc-ftool-key {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--ink);
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: var(--fs-xs);
+  letter-spacing: 0;
+}
+
+/* ---------------------------------------------------------------- content and footer */
 .oc-content {
   flex: 1;
   min-width: 0;
 }
-@media (max-width: 900px) {
-  .oc-topbar {
-    padding: 0 var(--sp-3);
-    gap: var(--sp-2);
+
+.oc-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--sp-6);
+  row-gap: var(--sp-1);
+  margin-top: var(--sp-12);
+  padding: var(--sp-3) var(--sp-6) var(--sp-6);
+  border-top: var(--rule-double);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--ink-2);
+  letter-spacing: 0.02em;
+}
+.oc-footer-build {
+  color: var(--ink);
+}
+.oc-footer-sources {
+  flex: 1;
+  min-width: 0;
+}
+.oc-footer-links {
+  display: flex;
+  gap: var(--sp-4);
+}
+.oc-footer-links a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* the Flight Deck's focus view hides the paper chrome */
+.oc-app.dk-focus > .oc-masthead,
+.oc-app.dk-focus > .oc-tape,
+.oc-app.dk-focus > .oc-fnav,
+.oc-app.dk-focus > .oc-footer {
+  display: none;
+}
+
+/* ---------------------------------------------------------------- narrow */
+@media (max-width: 1100px) {
+  .oc-masthead {
+    grid-template-columns: auto minmax(0, 1fr);
   }
-  .oc-search-trigger {
-    width: auto;
-    flex: 1;
-    min-width: 0;
+  .oc-dateline {
+    justify-self: end;
   }
-  .oc-topbar .spacer {
-    display: none;
-  }
-  .oc-pchip,
-  .oc-topbar .icon-btn {
-    flex: none;
-  }
-  .oc-search-kbd {
-    display: none;
-  }
-  .oc-pchip-text {
-    display: none;
-  }
-  .oc-pchip {
-    padding: 0 6px;
+  .oc-status {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    padding-top: var(--sp-1);
   }
 }
-@media (max-width: 520px) {
-  .oc-search-placeholder {
-    font-size: var(--fs-xs);
+@media (max-width: 600px) {
+  .oc-masthead,
+  .oc-fnav,
+  .oc-footer {
+    padding-left: var(--sp-4);
+    padding-right: var(--sp-4);
+  }
+  .oc-masthead {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .oc-dateline {
+    justify-self: start;
+    font-size: var(--fs-2xs);
+  }
+  .oc-status {
+    column-gap: var(--sp-3);
+  }
+  .oc-book {
+    padding-left: 0;
+    border-left: 0;
+  }
+  .oc-tape-msg,
+  .oc-tape-run {
+    padding-left: var(--sp-4);
+  }
+  .oc-ftool-text {
+    display: none;
+  }
+  .oc-footer {
+    flex-direction: column;
   }
 }
 
-/* ---------------------------------------------------------------- palette */
-.oc-palette-overlay {
+
+/* ---------------------------------------------------------------- command line */
+/* One ruled line under the function codes; results print below it as a ruled list. */
+.oc-cmd {
+  position: sticky;
+  top: var(--topbar-h);
+  z-index: 19;
+  max-width: 100vw;
+  background: var(--paper);
+}
+.oc-cmd-line {
+  display: flex;
+  align-items: stretch;
+  height: 32px;
+  box-sizing: border-box;
+  padding: 0 var(--sp-6);
+  border-bottom: var(--rule-heavy);
+}
+.oc-cmd-prompt {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  margin-left: calc(-1 * var(--sp-3));
+  padding: 0 var(--sp-3);
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-display);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.oc-cmd-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  caret-color: var(--ink);
+}
+.oc-cmd-input::placeholder {
+  color: var(--ink-2);
+  text-transform: none;
+}
+.oc-cmd-echo {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  padding: 0 var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--ink-2);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.oc-cmd-arrow {
+  margin-right: 0.8ch;
+}
+.oc-cmd-esc {
+  flex: none;
+  margin-right: calc(-1 * var(--sp-3));
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-left: var(--rule-faint);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+.oc-cmd-esc:hover {
+  background: var(--paper-2);
+}
+.oc-cmd-esc:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: -2px;
+}
+.oc-ftool.active {
+  background: var(--ink);
+  color: var(--paper);
+}
+.oc-ftool.active .oc-ftool-key {
+  border-color: var(--paper);
+}
+
+.oc-cmd-results {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  background: var(--paper);
+  border-bottom: var(--rule);
+}
+.oc-cmd-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.oc-cmd-row {
+  display: grid;
+  grid-template-columns: 8ch minmax(0, 16ch) minmax(0, 1fr);
+  align-items: center;
+  column-gap: var(--sp-4);
+  height: var(--row-h);
+  padding: 0 var(--sp-6);
+  border-bottom: var(--rule-faint);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.oc-cmd-row:last-child {
+  border-bottom: 0;
+}
+.oc-cmd-row.active {
+  background: var(--ink);
+  color: var(--paper);
+}
+.oc-cmd-code {
+  font-family: var(--font-display);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.oc-cmd-label,
+.oc-cmd-hint {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-cmd-label {
+  font-weight: 500;
+}
+.oc-cmd-hint {
+  color: var(--ink-2);
+}
+.oc-cmd-row.active .oc-cmd-hint {
+  color: var(--paper);
+}
+.oc-cmd-status {
+  margin: 0;
+  padding: 0 var(--sp-6);
+  height: var(--row-h);
+  line-height: var(--row-h);
+  border-top: var(--rule-faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+.oc-cmd-list + .oc-cmd-status {
+  border-top: var(--rule-faint);
+}
+.oc-cmd-results > .oc-cmd-status:first-child {
+  border-top: 0;
+}
+
+/* ---------------------------------------------------------------- key map */
+.oc-keymap-overlay {
   position: fixed;
   inset: 0;
   z-index: 900;
@@ -317,109 +528,96 @@
   align-items: flex-start;
   padding: 12vh var(--sp-4) var(--sp-4);
   background: var(--overlay);
-  backdrop-filter: blur(3px);
-  animation: oc-fade-in 120ms var(--ease);
 }
-.oc-palette {
-  width: min(640px, 100%);
-  max-height: 70vh;
-  display: flex;
-  flex-direction: column;
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  border: 1px solid var(--rule-strong);
-  box-shadow: var(--shadow-3);
-  overflow: hidden;
-}
-.oc-palette-search {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 16px;
-  height: 56px;
-  border-bottom: 1px solid var(--rule);
-  color: var(--text-3);
-}
-.oc-palette-search input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
+.oc-keymap {
   outline: none;
-  background: transparent;
-  font-size: var(--fs-lg);
-  color: var(--text);
-}
-.oc-palette-search input::placeholder {
-  color: var(--text-3);
-}
-.oc-palette-spin {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 2px solid var(--rule-strong);
-  border-top-color: var(--accent);
-  animation: oc-spin 0.7s linear infinite;
-}
-@keyframes oc-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-.oc-palette-list {
-  list-style: none;
-  margin: 0;
-  padding: 6px;
+  width: min(560px, 100%);
+  max-height: 76vh;
   overflow: auto;
+  box-sizing: border-box;
+  padding: 0 var(--sp-6) var(--sp-6);
+  background: var(--paper);
+  border: var(--rule-heavy);
 }
-.oc-palette-group {
-  padding: 10px 10px 4px;
-  font-size: var(--fs-2xs);
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-3);
-}
-.oc-palette-item {
+.oc-keymap-head {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 9px 10px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  color: var(--text-2);
+  align-items: stretch;
+  justify-content: space-between;
+  height: 40px;
+  border-bottom: var(--rule-double);
 }
-.oc-palette-item.active {
-  background: var(--surface-2);
-  color: var(--text);
+.oc-keymap-title {
+  margin: 0;
+  align-self: center;
+  font-family: var(--font-display);
+  font-size: var(--fs-lg);
+  font-weight: 800;
+  letter-spacing: 0.06em;
 }
-.oc-palette-label {
-  font-weight: 500;
-  color: var(--text);
-  white-space: nowrap;
+.oc-keymap-head .oc-cmd-esc {
+  margin-right: calc(-1 * var(--sp-6));
+  padding: 0 var(--sp-6);
 }
-.oc-palette-hint {
-  flex: 1;
-  min-width: 0;
+.oc-keymap-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: var(--sp-4);
   font-size: var(--fs-sm);
-  color: var(--text-3);
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+.oc-keymap-cap {
+  caption-side: top;
+  text-align: left;
+  padding-bottom: var(--sp-1);
+  border-bottom: var(--rule);
+  font-family: var(--font-display);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+}
+.oc-keymap-table th,
+.oc-keymap-table td {
+  height: var(--row-h);
+  padding: 0;
+  border-bottom: var(--rule-faint);
+  text-align: left;
+  vertical-align: middle;
+}
+.oc-keymap-table th {
+  width: 18ch;
+  padding-right: var(--sp-4);
+  font-family: var(--font-mono);
+  font-weight: 500;
   white-space: nowrap;
 }
-.oc-palette-go {
-  color: var(--text-3);
+.oc-keymap-table td {
+  font-family: var(--font-mono);
+  color: var(--ink-2);
+  letter-spacing: 0.02em;
 }
-.oc-palette-empty {
-  padding: var(--sp-6);
-  text-align: center;
-  color: var(--text-3);
-}
-.oc-palette-foot {
-  display: flex;
-  gap: var(--sp-4);
-  padding: 8px 16px;
-  border-top: 1px solid var(--rule);
-  font-size: var(--fs-2xs);
-  color: var(--text-3);
-  background: var(--surface-2);
+
+@media (max-width: 600px) {
+  .oc-cmd-line,
+  .oc-cmd-row,
+  .oc-cmd-status {
+    padding-left: var(--sp-4);
+    padding-right: var(--sp-4);
+  }
+  .oc-cmd-echo {
+    display: none;
+  }
+  .oc-cmd-row {
+    grid-template-columns: 6ch minmax(0, 12ch) minmax(0, 1fr);
+    column-gap: var(--sp-3);
+  }
+  .oc-keymap {
+    padding: 0 var(--sp-4) var(--sp-4);
+  }
+  .oc-keymap-head .oc-cmd-esc {
+    margin-right: calc(-1 * var(--sp-4));
+    padding: 0 var(--sp-4);
+  }
+  .oc-keymap-table th {
+    width: auto;
+  }
 }

@@ -216,7 +216,7 @@ function ConeTable({ rows }: { rows: ConeRow[] }) {
   return (
     <>
       <DataTable className="vx-tight" columns={columns} rows={rows} rowKey={(c) => c.horizon} />
-      <p className="vx-foot-note subtle small">Percentiles use overlapping windows, so they are not independent samples. Vermilion: top quintile (unusually turbulent); green: bottom quintile (unusually calm).</p>
+      <p className="vx-foot-note subtle small">Percentiles use overlapping windows, so they are not independent samples. Vermilion: top quintile (unusually turbulent); ink: bottom quintile (unusually calm).</p>
     </>
   );
 }
