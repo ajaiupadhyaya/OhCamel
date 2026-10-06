@@ -82,6 +82,22 @@ services:
     image: caddy:2.11.4-alpine
     restart: unless-stopped
     init: true
+    # The resource tiers of the compute plan (docs/superpowers/plans/
+    # 2026-09-24-quant-compute-program.md I.3), one block per service:
+    # cgroup_parent places the container in a systemd slice (rt, web, batch),
+    # cpu_shares is its weight under contention only (an idle engine leaves
+    # its cores to whoever wants them), mem_limit is a cap, not a reservation
+    # (the caps add up to more than the box on purpose), and oom_score_adj
+    # ranks who the kernel's OOM killer reaches first: the batch tier, then
+    # the API, never the engine. Assumes Docker's systemd cgroup driver on
+    # cgroup v2 (owner check O-3: `docker info --format '{{.CgroupDriver}}
+    # {{.CgroupVersion}}'` prints `systemd 2`); with cgroupfs the slice names
+    # become /ohcamel-rt, /ohcamel-web and /ohcamel-batch. Pinned by
+    # deploy/test/resource_budget_test.sh.
+    cgroup_parent: ohcamel-web.slice
+    cpu_shares: 1024
+    mem_limit: 128m
+    oom_score_adj: -500
     logging: *logging
     ports:
       - "80:80"
@@ -157,8 +173,14 @@ services:
     # A 2 vCPU / 4 GB droplet shared with Caddy, the live engine and the
     # research service. pandas/scipy on ten years of daily bars for a 60-name
     # universe fits comfortably in this; a runaway request is killed and
-    # restarted rather than taking the engine down with it.
+    # restarted rather than taking the engine down with it. 1536m until heavy
+    # requests go through the worker (compute plan Lane B, B5), which lowers
+    # it to 1024m. OOM rank 0: after the batch tier, before caddy and the
+    # engine (tiers above caddy's).
+    cgroup_parent: ohcamel-web.slice
+    cpu_shares: 1024
     mem_limit: 1536m
+    oom_score_adj: 0
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/api/health', timeout=4)"]
       interval: 30s
@@ -179,6 +201,11 @@ services:
     <<: *engine
     profiles: ["demo"]
     command: ["demo", "8080"]
+    # The localhost harness only; the same budget as the live engine.
+    cgroup_parent: ohcamel-rt.slice
+    cpu_shares: 4096
+    mem_limit: 512m
+    oom_score_adj: -800
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/health"]
       interval: 30s
@@ -196,6 +223,13 @@ services:
   ohcamel-live:
     <<: *engine
     profiles: ["live"]
+    # The protected tier: the heaviest CPU weight on the box, 256m that is
+    # always its own, and the lowest OOM rank of anything here.
+    cgroup_parent: ohcamel-rt.slice
+    cpu_shares: 4096
+    mem_limit: 512m
+    mem_reservation: 256m
+    oom_score_adj: -800
     # No OHCAMEL_PEER_ORIGIN any more. /ops on the live origin used to fill its
     # second column from the public demo engine's /api/ops; the public host is
     # the Quant app now and serves no /api/ops, so a peer pointing there would
@@ -251,6 +285,12 @@ services:
     restart: unless-stopped
     init: true
     profiles: ["live"]
+    # The batch tier: preemptible by weight and the first thing the OOM
+    # killer reaches.
+    cgroup_parent: ohcamel-batch.slice
+    cpu_shares: 256
+    mem_limit: 384m
+    oom_score_adj: 500
     # The live engine's own env_file (its trading keys are simply never
     # read by this service -- fdq's Settings reads only ALPACA_API_KEY and
     # ALPACA_SECRET_KEY, the *data* keys; recorded as a known Minor in the

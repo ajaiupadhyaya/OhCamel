@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 #
-# Checks that every <!-- count:KIND -->N<!-- /count --> marker in docs/engine.md,
-# docs/overview.md and docs/status.md agrees with the source of truth for
-# that KIND: lib/verified.ml's `tests` and `scheduler_tests`, and
-# research/src/ohcamel_research/verified.py's `TESTS`. Also sweeps the same
-# three documents for a bare count -- a number quoting a test count with no
+# Checks that every <!-- count:KIND -->N<!-- /count --> marker in README.md,
+# docs/engine.md, docs/overview.md and docs/status.md agrees with the source
+# of truth for that KIND: lib/verified.ml's `tests` and `scheduler_tests`,
+# research/src/ohcamel_research/verified.py's `TESTS`, and quant/README.md's
+# `TESTS = N` line (the Quant suite's size, compute plan Task 0.3). Also
+# sweeps the same four documents for a bare count -- a number quoting a test count with no
 # marker around it at all -- and fails on any it finds outside docs/status.md's
 # dated ledger rows. That second sweep exists because a marker check alone has
 # a hole: stripping the <!-- count:KIND --> tags (or writing a brand-new count
@@ -54,9 +55,14 @@ py_tests=$(grep -E '^TESTS = [0-9]+$' research/src/ohcamel_research/verified.py 
   exit 1
 }
 
+quant_tests=$(grep -E '^TESTS = [0-9]+$' quant/README.md | grep -oE '[0-9]+') || {
+  echo "check-counts.sh: could not find 'TESTS = N' in quant/README.md"
+  exit 1
+}
+
 # --- Markers -----------------------------------------------------------
 
-docs=(docs/engine.md docs/overview.md docs/status.md)
+docs=(README.md docs/engine.md docs/overview.md docs/status.md)
 
 # check_marker KIND EXPECTED: every "<!-- count:KIND -->N<!-- /count -->" in
 # each of $docs must read N == EXPECTED. Sets $status rather than exiting on
@@ -85,6 +91,7 @@ check_marker() {
 check_marker ocaml-tests "$ocaml_tests"
 check_marker scheduler-tests "$ocaml_scheduler_tests"
 check_marker research-tests "$py_tests"
+check_marker quant-tests "$quant_tests"
 
 # --- Bare counts -----------------------------------------------------------
 #
@@ -199,7 +206,7 @@ for file in "${docs[@]}"; do
 done
 
 if [ "$status" -eq 0 ]; then
-  echo "check-counts.sh: ocaml-tests=$ocaml_tests scheduler-tests=$ocaml_scheduler_tests research-tests=$py_tests -- every marker agrees, and no bare count found"
+  echo "check-counts.sh: ocaml-tests=$ocaml_tests scheduler-tests=$ocaml_scheduler_tests research-tests=$py_tests quant-tests=$quant_tests -- every marker agrees, and no bare count found"
 fi
 
 exit "$status"
