@@ -1333,6 +1333,109 @@
   width: 100%;
   min-width: 0;
 }
+/* uPlot charts: a 20px crosshair readout strip, then the plot. Mono figures throughout. */
+.oc-chart-readout {
+  /* no intrinsic width: a long readout ellipsizes instead of widening the page */
+  contain: inline-size;
+  height: 20px;
+  line-height: 20px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  border-bottom: var(--rule-faint);
+}
+.oc-chart-readout-k {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+.oc-chart-readout-v {
+  color: var(--ink);
+}
+.oc-chart-readout-neg {
+  color: var(--signal);
+}
+.oc-chart-range {
+  display: flex;
+  gap: 0;
+  height: 28px;
+  align-items: flex-start;
+}
+.oc-chart-range-btn {
+  height: 22px;
+  padding: 0 var(--sp-2);
+  border: var(--rule);
+  border-left-width: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.oc-chart-range-btn:first-child {
+  border-left-width: 1px;
+}
+.oc-chart-range-btn[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--paper);
+}
+.oc-chart-range-btn:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+.oc-uplot {
+  width: 100%;
+  min-width: 0;
+}
+.oc-uplot .uplot {
+  font-family: var(--font-mono);
+}
+/* the parked cursor point sits at (-10, -10); keep it inside the plot */
+.oc-uplot .u-over {
+  overflow: hidden;
+}
+.oc-uplot .u-hz .u-cursor-x {
+  border-right: 1px dotted var(--ink-2);
+}
+.oc-uplot .u-hz .u-cursor-y {
+  border-bottom: 0;
+}
+.oc-uplot .uplot .u-cursor-pt {
+  border-radius: 0;
+}
+.oc-uplot .uplot .u-select {
+  background: transparent;
+  outline: 1px solid var(--ink);
+}
+.oc-heat-plot {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+.oc-heat-plot canvas {
+  display: block;
+}
+.oc-heat-hover {
+  position: absolute;
+  pointer-events: none;
+  outline: 2px solid var(--ink);
+  outline-offset: -1px;
+}
+.oc-chart-hbar svg {
+  display: block;
+  overflow: visible;
+}
+.oc-hbar-row.is-clickable {
+  cursor: pointer;
+}
+.oc-hbar-row.is-clickable:hover rect:first-child {
+  fill: var(--paper-2);
+}
 .oc-chart .modebar {
   top: -6px !important;
 }
