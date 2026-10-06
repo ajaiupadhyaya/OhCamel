@@ -39,7 +39,6 @@
 # having copied nothing is the failure mode this file exists to prevent.
 #
 # Later lanes APPEND here rather than editing backup.sh:
-#   quant_data /data/jobs.sqlite sqlite 10002         Lane B, the job queue
 #   quant_data /data/warehouse.duckdb duckdb 10002    Lane C, once `duckdb` exists
 
 # The desk's journal: every order, event, fill, session close, mark and
@@ -52,3 +51,9 @@ desk_data /data/desk.db journal 10001
 # ohcamel-quant. Absent until the first open minute after a deploy, which the
 # run reports and does not count as a failure.
 quant_data /data/deck/recorder.sqlite sqlite 10002
+
+# The job queue, its artifact ledger and the scheduler's record (compute plan
+# Lane B; quant/src/ohcamel_quant/jobs/db.py, WAL mode), at
+# {OHCAMEL_QUANT_DATA_DIR}/jobs.sqlite, data_dir=/data in ohcamel-quant and
+# ohcamel-worker (both uid 10002). Absent until the first job is queued.
+quant_data /data/jobs.sqlite sqlite 10002

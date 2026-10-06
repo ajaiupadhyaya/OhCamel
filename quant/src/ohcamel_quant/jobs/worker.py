@@ -1,8 +1,9 @@
 """The worker process: ``python -m ohcamel_quant worker`` (compose service ohcamel-worker).
 
-One job at a time. Each poll: housekeeping (stale re-queue every minute),
-stamp the heartbeat file (the compose healthcheck), ask admission, claim,
-run in a child, settle. SIGTERM/SIGINT request a stop: the running job is
+One job at a time. Each poll: housekeeping every minute (stale re-queue, SSE
+events older than 48 h, abandoned staging dirs), stamp the heartbeat file (the
+compose healthcheck), ask admission, claim, run in a child, settle -- and
+after each published artifact, prune its kind (II.3 retention). SIGTERM/SIGINT request a stop: the running job is
 given ``grace_s`` (15 s) to finish or notice, then re-queued -- compose
 gives the container 25 s (stop_grace_period).
 """
@@ -22,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .admission import Admission, make_admit
-from .artifacts import build_manifest, publish
+from .artifacts import build_manifest, prune, prune_housekeeping, publish
 from .db import connect, iso, utcnow
 from .kinds import retries_for
 from .queue import (
@@ -76,6 +77,7 @@ class Worker:
     def _housekeeping(self) -> None:
         for job_id, state in requeue_stale(self.conn, now=self.now()):
             log.warning("stale job %s -> %s", job_id, state)
+        prune_housekeeping(self.conn, self.cfg.artifacts_root, now=self.now())
 
     def run_once(self) -> Outcome | None:
         now = self.now()
@@ -112,6 +114,8 @@ class Worker:
             if not finish(self.conn, job.id, artifact=art, cpu_seconds=out.cpu_seconds,
                           peak_rss_bytes=out.peak_rss_bytes, now=now):
                 shutil.rmtree(final, ignore_errors=True)  # cancelled while it finished: not published
+            else:
+                prune(self.conn, kind=job.kind)  # II.3 retention, per kind
             return
         shutil.rmtree(out.staging, ignore_errors=True)
         if out.status == "failed":

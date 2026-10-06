@@ -31,11 +31,16 @@ program.md), returned unchanged with ``provenance`` and ``notes`` added::
 ``cpu``, ``steal`` and ``iowait`` are fractions of all CPUs over the last
 interval; a group's ``cpu`` is in cores; memory is in bytes. History holds up
 to 720 samples (an hour at 5 s).
+
+``GET /api/ops`` -- the Quant app's operations summary: the job queue (Lane B,
+B6).
 """
 
 from __future__ import annotations
 
 import time
+from contextlib import closing
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -44,6 +49,7 @@ from fastapi.responses import JSONResponse
 
 from ...config import get_settings
 from ...data.base import Provenance
+from .jobs import JobsDb
 
 router = APIRouter(prefix="/ops", tags=["ops"])
 
@@ -163,3 +169,18 @@ def host(base: str | None = Depends(get_hostd_url)) -> Any:
         status_code=503,
         content={"error": "hostd_unavailable", "detail": exc.detail, "configured": exc.configured},
     )
+
+
+@router.get("")
+def ops_index(db: JobsDb) -> dict[str, Any]:
+    """The Quant app's operations summary: the job queue's counts (compute plan B6)."""
+    from ...jobs.db import connect, utcnow
+    from ...jobs.summary import jobs_summary
+
+    provenance = [Provenance.now("ohcamel-jobs", store="jobs.sqlite").to_dict()]
+    if not Path(db).exists():
+        return {"jobs": None, "provenance": provenance,
+                "notes": ["No job has been queued on this server yet (jobs.sqlite does not exist)."]}
+    with closing(connect(db)) as conn:
+        return {"jobs": jobs_summary(conn, utcnow()), "provenance": provenance,
+                "notes": ["done_24h, failed_24h and cpu_seconds_24h count jobs that finished in the last 24 hours."]}

@@ -11,13 +11,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sqlite3
+import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .db import parse_iso
+from .db import iso, parse_iso
 
 if TYPE_CHECKING:  # the worker's parent never imports pandas
     import pandas as pd
@@ -99,3 +101,63 @@ def latest_artifact(conn: sqlite3.Connection, kind: str, params_hash: str | None
         age = (now - parse_iso(row["finished_at"])).total_seconds()
         return {"manifest": manifest, "stale": max_age_s is not None and age > max_age_s}
     return None
+
+
+KEEP_NEWEST = 30
+EVENTS_KEEP = timedelta(hours=48)
+STAGING_MAX_AGE_S = 24 * 3600
+
+
+def _keeps_each_series(kind: str) -> bool:
+    """Scheduled kinds (every kind not marked public, and any kind no longer registered) keep the
+    newest artifact of each params_hash: their params come from schedules.yaml or the owner, a finite
+    set. Public kinds (api.*) do not: there every request is its own params_hash."""
+    from .kinds import REGISTRY
+
+    spec = REGISTRY.get(kind)
+    return spec is None or not spec.public
+
+
+def prune(conn: sqlite3.Connection, *, kind: str | None = None, keep: int = KEEP_NEWEST) -> list[str]:
+    """II.3 retention, per kind: the newest ``keep`` plus the newest of each calendar month (UTC).
+    Scheduled kinds also keep the newest artifact of each params_hash (``_keeps_each_series``)."""
+    sql, args = "SELECT id, kind, params_hash, finished_at, path FROM artifacts", []
+    if kind is not None:
+        sql += " WHERE kind = ?"
+        args.append(kind)
+    by_kind: dict[str, list[sqlite3.Row]] = {}
+    for r in conn.execute(sql + " ORDER BY finished_at DESC, id DESC", args).fetchall():
+        by_kind.setdefault(r["kind"], []).append(r)
+    pruned: list[str] = []
+    for k, rows in by_kind.items():
+        kept = {r["id"] for r in rows[:keep]}
+        series = _keeps_each_series(k)
+        months: set[str] = set()
+        hashes: set[str] = set()
+        for r in rows:  # newest first: the first row seen in a month (or of a series) is its newest
+            if r["finished_at"][:7] not in months:
+                months.add(r["finished_at"][:7])
+                kept.add(r["id"])
+            if series and r["params_hash"] not in hashes:
+                hashes.add(r["params_hash"])
+                kept.add(r["id"])
+        for r in rows:
+            if r["id"] not in kept:
+                conn.execute("DELETE FROM artifacts WHERE id = ?", (r["id"],))
+                shutil.rmtree(r["path"], ignore_errors=True)
+                pruned.append(r["id"])
+    return pruned
+
+
+def prune_housekeeping(conn: sqlite3.Connection, root: Path, *, now: datetime) -> dict[str, int]:
+    """SSE events older than 48 h; staging directories abandoned for a day (a worker killed mid-publish)."""
+    cur = conn.execute("DELETE FROM job_events WHERE at < ?", (iso(now - EVENTS_KEEP),))
+    removed = 0
+    staging = root / ".staging"
+    if staging.is_dir():
+        cutoff = time.time() - STAGING_MAX_AGE_S
+        for d in staging.iterdir():
+            if d.is_dir() and d.stat().st_mtime < cutoff:
+                shutil.rmtree(d, ignore_errors=True)
+                removed += 1
+    return {"events_deleted": cur.rowcount, "staging_removed": removed}
