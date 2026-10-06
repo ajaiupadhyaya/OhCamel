@@ -72,7 +72,7 @@ paper, rules instead of boxes, numbers set like type.
 | `--ink` text, rules, gains | `#111111` | `#ECE8DF` |
 | `--ink-2` secondary text | `#5E5B54` | `#9A968C` |
 | `--ink-3` tertiary / gridlines | `#B9B4A8` | `#45433E` |
-| `--signal` losses, breaches, alerts, the one accent | `#D7261E` | `#FF4A3D` |
+| `--signal` losses, breaches, alerts, the one accent | `#C8201A` | `#FF4A3D` |
 | `--stale` | `--ink-3` with a hatched fill | same |
 
 - Gains are `--ink` with an explicit `+`. There is no green anywhere outside
