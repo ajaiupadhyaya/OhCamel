@@ -258,6 +258,40 @@ fn backtest_weights<'py>(
     ))
 }
 
+#[pyfunction]
+fn svi_fit(
+    py: Python<'_>,
+    k: PyReadonlyArray1<'_, f64>,
+    w: PyReadonlyArray1<'_, f64>,
+    weights: PyReadonlyArray1<'_, f64>,
+) -> PyResult<(f64, f64, f64, f64, f64, f64, bool)> {
+    let (kk, ww, wt) = (s1(&k, "k")?, s1(&w, "w")?, s1(&weights, "weights")?);
+    let f = py
+        .allow_threads(|| crate::svi::svi_fit(kk, ww, wt))
+        .map_err(err)?;
+    Ok((f.a, f.b, f.rho, f.m, f.sigma, f.sse, f.constrained_a))
+}
+
+#[pyfunction]
+fn realized_vol_minute<'py>(
+    py: Python<'py>,
+    ts_ns: PyReadonlyArray1<'py, i64>,
+    px: PyReadonlyArray1<'py, f64>,
+    session_bounds: PyReadonlyArray2<'py, i64>,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let ts = ts_ns
+        .as_slice()
+        .map_err(|_| err("ts_ns must be a C-contiguous int64 array".into()))?;
+    let b = session_bounds
+        .as_slice()
+        .map_err(|_| err("session_bounds must be a C-contiguous int64 array".into()))?;
+    let p = s1(&px, "px")?;
+    let out = py
+        .allow_threads(|| crate::rv::realized_variance(ts, p, b))
+        .map_err(err)?;
+    Ok(out.into_pyarray_bound(py))
+}
+
 #[pymodule]
 fn ohcamel_kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("API_VERSION", crate::API_VERSION)?;
@@ -272,5 +306,7 @@ fn ohcamel_kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(garch_nll, m)?)?;
     m.add_function(wrap_pyfunction!(garch_fit, m)?)?;
     m.add_function(wrap_pyfunction!(backtest_weights, m)?)?;
+    m.add_function(wrap_pyfunction!(svi_fit, m)?)?;
+    m.add_function(wrap_pyfunction!(realized_vol_minute, m)?)?;
     Ok(())
 }

@@ -21,7 +21,9 @@ pub mod fhs;
 pub mod garch;
 pub mod optim;
 pub mod par;
+pub mod rv;
 pub mod special;
+pub mod svi;
 pub mod tail;
 
 #[cfg(feature = "python")]
