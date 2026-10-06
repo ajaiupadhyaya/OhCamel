@@ -112,7 +112,6 @@
   --accent: var(--ink);
   --accent-soft: var(--paper-2);
   --gain: var(--ink);
-  --gain-soft: var(--paper-2);
   --loss: var(--signal);
   --loss-soft: var(--paper-2);
   --warn: var(--signal);
@@ -141,21 +140,6 @@
   --content-max: 1440px;
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
   --dur: 120ms;
-
-  /* CRT instruments (Flight Deck), unchanged. The cockpit screens are always
-     dark, the way a monitor is dark on a white desk, so these are declared once
-     here and deliberately not redefined in the carbon blocks below */
-  --crt-panel: #1b1916;      /* the console the screens are set into */
-  --crt-bezel: #2e2a25;      /* the screen's frame */
-  --crt-ground: #110d08;     /* the tube */
-  --crt-amber: #f2b441;
-  --crt-amber-soft: rgba(242, 180, 65, 0.42);
-  --crt-amber-text: #f6cf7a;
-  --crt-red: #ec4b36;
-  --crt-red-text: #f39a8a;
-  --crt-green: #53c08f;
-  --crt-unknown: #8b9ae0;    /* lilac-blue, cannot be evaluated or no data */
-  --crt-seg-off: rgba(236, 75, 54, 0.09); /* an unlit seven-segment bar */
 }
 
 :root[data-theme="carbon"] {

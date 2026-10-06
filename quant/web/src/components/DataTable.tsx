@@ -1,6 +1,8 @@
 /**
- * Sortable, compact data table with numeric alignment, conditional colouring and a
- * sticky header (set `maxHeight` to scroll inside the table).
+ * Table: 22px rows, faint inner rules under a heavy header rule, mono right-aligned numbers,
+ * a sticky header (set `maxHeight` to scroll inside the table) and a sticky first column.
+ * The table scrolls sideways inside its own wrapper; the page never does.
+ * With `onRowClick`, rows take a roving focus: ↑/↓ move the active row, Enter opens it.
  *
  *   <DataTable
  *     rows={rows}
@@ -16,15 +18,15 @@
  *   />
  *
  * Columns are numeric-aligned (right, mono, tabular) when `numeric` is set.
- * `color: "sign"` colours gains/losses; a function may return any CSS colour or class.
- * `heat` shades the cell background on the diverging (signed) or sequential ramp.
+ * `color: "sign"` sets gains in ink and losses in --signal; a function may return any CSS
+ * colour or class. `heat` shades the cell on the diverging (signal ↔ ink) or the sequential
+ * ink-density ramp (--seq-1 … --seq-5); dark buckets switch the text to paper.
  * `wrap` lets a long-text column (e.g. references) wrap; give it a `width` to bound it.
  * `hideBelow` hides a column under a viewport width (600 / 900 / 1200 / 1440 / 1600).
  */
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { EM_DASH } from "../lib/format";
 import { InfoTip, type InfoProp } from "./InfoTip";
-import { Icon } from "./Icon";
 
 export interface Column<T> {
   key: string;
@@ -84,19 +86,23 @@ function cmp(a: unknown, b: unknown): number {
   return String(a).localeCompare(String(b), undefined, { numeric: true });
 }
 
-function heatBg(v: number, h: NonNullable<Column<unknown>["heat"]>): string | undefined {
+/** Heat bucket for a cell: background token and, for the dark end, paper text. */
+function heatStyle(v: number, h: NonNullable<Column<unknown>["heat"]>): { background: string; color?: string } | undefined {
   if (!Number.isFinite(v)) return undefined;
   const diverging = h.diverging ?? (h.min === undefined || h.min < 0);
   if (diverging) {
     const m = Math.max(Math.abs(h.min ?? -1), Math.abs(h.max ?? 1)) || 1;
     const t = Math.max(-1, Math.min(1, v / m));
-    const pct = Math.round(Math.abs(t) * 38);
-    return `color-mix(in srgb, var(${t >= 0 ? "--gain" : "--loss"}) ${pct}%, transparent)`;
+    const a = Math.abs(t);
+    if (a < 0.05) return undefined;
+    const k = a < 0.34 ? 1 : a < 0.67 ? 2 : 3;
+    return { background: `var(--div-${t < 0 ? "neg" : "pos"}-${k})`, color: k === 3 ? "var(--paper)" : undefined };
   }
   const lo = h.min ?? 0;
   const hi = h.max ?? 1;
   const t = Math.max(0, Math.min(1, (v - lo) / (hi - lo || 1)));
-  return `color-mix(in srgb, var(--accent) ${Math.round(t * 34)}%, transparent)`;
+  const k = Math.min(5, 1 + Math.floor(t * 5));
+  return { background: `var(--seq-${k})`, color: k >= 4 ? "var(--paper)" : undefined };
 }
 
 export function DataTable<T>({ columns, rows, rowKey, onRowClick, defaultSort, compact = true, maxHeight, empty, caption, className, footer, isActive }: DataTableProps<T>) {
@@ -114,6 +120,27 @@ export function DataTable<T>({ columns, rows, rowKey, onRowClick, defaultSort, c
     }
     return out;
   }, [rows, columns, sort]);
+
+  const [cursor, setCursor] = useState(0);
+  const body = useRef<HTMLTableSectionElement>(null);
+  const focusRow = (i: number) => {
+    const n = sorted.length;
+    if (!n) return;
+    const k = Math.max(0, Math.min(n - 1, i));
+    setCursor(k);
+    (body.current?.children[k] as HTMLElement | undefined)?.focus();
+  };
+  const onRowKey = (e: KeyboardEvent<HTMLTableRowElement>, row: T, i: number) => {
+    const to = e.key === "ArrowDown" ? i + 1 : e.key === "ArrowUp" ? i - 1 : e.key === "Home" ? 0 : e.key === "End" ? sorted.length - 1 : null;
+    if (to !== null) {
+      e.preventDefault();
+      focusRow(to);
+    } else if ((e.key === "Enter" || e.key === " ") && onRowClick) {
+      e.preventDefault();
+      onRowClick(row);
+    }
+  };
+  const activeRow = Math.min(cursor, Math.max(0, sorted.length - 1));
 
   const onSort = (c: Column<T>) => {
     if (c.sortable === false) return;
@@ -146,7 +173,7 @@ export function DataTable<T>({ columns, rows, rowKey, onRowClick, defaultSort, c
                   <span className="oc-th-inner" style={{ justifyContent: align === "right" ? "flex-end" : align === "center" ? "center" : "flex-start" }}>
                     <button type="button" className="oc-th-btn" onClick={() => onSort(c)} disabled={c.sortable === false}>
                       {c.label}
-                      {c.sortable !== false && <Icon name={active ? (sort!.dir === "asc" ? "chevron-up" : "chevron-down") : "sort"} size={11} className="oc-th-sort" />}
+                      {active && <span className="oc-th-sort" aria-hidden="true">{sort!.dir === "asc" ? "↑" : "↓"}</span>}
                     </button>
                     {c.info && <InfoTip info={c.info} size={12} label={typeof c.label === "string" ? c.label : undefined} />}
                   </span>
@@ -155,7 +182,7 @@ export function DataTable<T>({ columns, rows, rowKey, onRowClick, defaultSort, c
             })}
           </tr>
         </thead>
-        <tbody>
+        <tbody ref={body}>
           {sorted.length === 0 && (
             <tr>
               <td colSpan={columns.length} className="oc-table-empty">
@@ -166,9 +193,10 @@ export function DataTable<T>({ columns, rows, rowKey, onRowClick, defaultSort, c
           {sorted.map((row, i) => (
             <tr
               key={rowKey ? rowKey(row, i) : i}
-              onClick={onRowClick ? () => onRowClick(row) : undefined}
-              onKeyDown={onRowClick ? (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onRowClick(row)) : undefined}
-              tabIndex={onRowClick ? 0 : undefined}
+              onClick={onRowClick ? () => { setCursor(i); onRowClick(row); } : undefined}
+              onKeyDown={onRowClick ? (e) => onRowKey(e, row, i) : undefined}
+              onFocus={onRowClick ? () => setCursor(i) : undefined}
+              tabIndex={onRowClick ? (i === activeRow ? 0 : -1) : undefined}
               className={isActive?.(row) ? "active" : undefined}
             >
               {columns.map((c) => {
@@ -183,10 +211,10 @@ export function DataTable<T>({ columns, rows, rowKey, onRowClick, defaultSort, c
                   if (r && /^(gain|loss|warn|muted|subtle)$/.test(r)) colorCls = r;
                   else colorStyle = r;
                 }
-                const bg = c.heat && typeof v === "number" ? heatBg(v, c.heat as any) : undefined;
+                const heat = c.heat && typeof v === "number" ? heatStyle(v, c.heat as any) : undefined;
                 const content = c.render ? c.render(row) : c.format ? c.format(v, row) : v === null || v === undefined || v === "" ? EM_DASH : String(v);
                 return (
-                  <td key={c.key} className={`${c.numeric ? "num" : ""} ${colorCls} ${hideCls(c)} ${c.wrap ? "oc-td-wrap" : ""} ${c.className ?? ""}`} style={{ textAlign: align, color: colorStyle, background: bg }}>
+                  <td key={c.key} className={`${c.numeric ? "num" : ""} ${colorCls} ${hideCls(c)} ${c.wrap ? "oc-td-wrap" : ""} ${c.className ?? ""}`} style={{ textAlign: align, color: heat?.color ?? colorStyle, background: heat?.background }}>
                     {content}
                   </td>
                 );

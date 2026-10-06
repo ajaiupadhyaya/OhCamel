@@ -10,10 +10,8 @@
   flex-direction: column;
   gap: var(--sp-3);
   padding: var(--sp-4) var(--sp-4) var(--sp-3);
-  border-radius: var(--radius-lg);
   background: var(--surface);
   border: 1px solid var(--ink-3);
-  box-shadow: var(--shadow-1);
   color: var(--text);
   text-decoration: none !important;
   min-width: 0;
@@ -21,7 +19,6 @@
 }
 a.mk-card:hover {
   border-color: var(--rule-strong);
-  box-shadow: var(--shadow-2);
   transform: translateY(-1px);
 }
 .mk-card-head {
@@ -59,7 +56,7 @@ a.mk-card:hover {
   margin-top: 2px;
 }
 .mk-card-off {
-  background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--unknown) 6%, transparent) 6px 7px), var(--surface);
+  background: var(--hatch), var(--surface);
   box-shadow: none;
 }
 .mk-card-unavail {
@@ -91,14 +88,12 @@ a.mk-card:hover {
   min-height: 96px;
   padding: 12px 12px 10px;
   border: 0;
-  border-radius: var(--radius-sm);
   text-align: left;
   color: var(--text);
   transition: transform 120ms var(--ease), box-shadow var(--dur);
 }
 .mk-tile:not(:disabled):hover {
   transform: scale(1.02);
-  box-shadow: var(--shadow-2);
   z-index: 1;
 }
 .mk-tile-name {
@@ -118,7 +113,7 @@ a.mk-card:hover {
   letter-spacing: -0.02em;
 }
 .mk-tile-off {
-  background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--unknown) 7%, transparent) 6px 7px), var(--surface-2);
+  background: var(--hatch), var(--surface-2);
   color: var(--text-3);
   cursor: not-allowed;
 }
@@ -142,8 +137,11 @@ a.mk-card:hover {
 .mk-legend-ramp {
   width: 160px;
   height: 6px;
-  border-radius: 3px;
-  background: linear-gradient(90deg, color-mix(in srgb, var(--loss) 60%, var(--surface)), var(--surface-2), color-mix(in srgb, var(--gain) 60%, var(--surface)));
+  /* three steps without a gradient: signal | mid | ink */
+  box-sizing: border-box;
+  border-left: 53px solid var(--div-neg-2);
+  border-right: 53px solid var(--div-pos-2);
+  background: var(--div-mid);
 }
 
 /* table cells */
@@ -178,8 +176,7 @@ a.mk-card:hover {
   right: 0;
   top: 4px;
   height: 2px;
-  border-radius: 2px;
-  background: linear-gradient(90deg, var(--loss-soft), var(--rule-strong), var(--gain-soft));
+  background: var(--ink-3);
 }
 .mk-range-dot {
   position: absolute;
@@ -187,9 +184,8 @@ a.mk-card:hover {
   width: 8px;
   height: 8px;
   margin-left: -4px;
-  border-radius: 50%;
   background: var(--text);
-  box-shadow: 0 0 0 2px var(--surface);
+  outline: 2px solid var(--surface);
 }
 
 .mk-groups {
@@ -229,16 +225,14 @@ a.mk-card:hover {
   align-items: center;
   gap: var(--sp-5);
   padding: var(--sp-3) var(--sp-5);
-  border-radius: var(--radius-lg);
   border: 1px solid var(--ink-3);
   background: var(--surface);
-  box-shadow: var(--shadow-1);
 }
 .mk-regime-off {
   display: flex;
   gap: var(--sp-3);
   align-items: baseline;
-  background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--unknown) 6%, transparent) 6px 7px), var(--surface);
+  background: var(--hatch), var(--surface);
   box-shadow: none;
 }
 .mk-regime-now {
@@ -272,7 +266,6 @@ a.mk-card:hover {
 .mk-regime-ribbon {
   display: flex;
   height: 22px;
-  border-radius: 4px;
   overflow: hidden;
   gap: 1px;
 }
@@ -296,7 +289,6 @@ a.mk-card:hover {
   display: inline-block;
   width: 8px;
   height: 8px;
-  border-radius: 50%;
   background: var(--text-3);
   flex: none;
 }

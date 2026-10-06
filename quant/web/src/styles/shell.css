@@ -102,36 +102,7 @@
   text-underline-offset: 2px;
 }
 
-/* lamps: 10px squares. ok filled ink, idle hollow, fault signal, stale hatched */
-.lamp {
-  display: inline-block;
-  flex: none;
-  width: 10px;
-  height: 10px;
-  box-sizing: border-box;
-  border: 1px solid var(--ink);
-  color: var(--ink);
-  overflow: hidden;
-  align-self: center;
-}
-.lamp svg {
-  display: block;
-}
-.lamp-ok {
-  background: var(--ink);
-}
-.lamp-idle {
-  background: transparent;
-}
-.lamp-fault {
-  background: var(--signal);
-  border-color: var(--signal);
-}
-.lamp-stale {
-  background: transparent;
-  color: var(--ink-2);
-  border-color: var(--ink-2);
-}
+/* lamps: see .lamp in components.css (the Lamp primitive) */
 
 /* ---------------------------------------------------------------- tape */
 .oc-tape {

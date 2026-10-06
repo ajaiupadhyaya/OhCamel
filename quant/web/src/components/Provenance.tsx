@@ -1,9 +1,10 @@
 /**
- * Quiet provenance footer: "Source yahoo · SPY, QQQ · fetched 3 min ago".
- * Records with the same source are merged. Hover a source to see its full detail.
+ * The provenance line, mono: "SOURCE fred DGS10 · FETCHED 05 OCT 16:02".
+ * Records with the same source are merged; groups are separated by " / ".
+ * Hover a source for its full detail.
  */
 import type { ProvenanceRecord } from "../lib/types";
-import { fmtDate, fmtRelativeTime } from "../lib/format";
+import { fmtStamp } from "../design/stamp";
 
 function symbolsOf(p: ProvenanceRecord): string[] {
   const d = p.detail ?? {};
@@ -24,9 +25,10 @@ export function Provenance({ items, className }: { items?: ProvenanceRecord[] | 
     g.details.push(p);
     groups.set(p.source, g);
   }
+  if (!groups.size) return null;
   return (
-    <div className={`oc-provenance ${className ?? ""}`}>
-      <span className="oc-provenance-label">Source</span>
+    <div className={`oc-provenance num ${className ?? ""}`}>
+      <span className="oc-provenance-label">SOURCE</span>
       {[...groups].map(([src, g], i) => {
         const syms = [...g.symbols];
         const title = g.details
@@ -34,19 +36,17 @@ export function Provenance({ items, className }: { items?: ProvenanceRecord[] | 
           .join("\n\n");
         return (
           <span key={src} className="oc-provenance-item" title={title}>
-            {i > 0 && <span className="oc-provenance-sep">·</span>}
-            <strong>{src}</strong>
-            {syms.length > 0 && <span className="subtle"> {syms.length > 6 ? `${syms.slice(0, 6).join(", ")} +${syms.length - 6}` : syms.join(", ")}</span>}
+            {i > 0 && <span className="oc-provenance-sep">/</span>}
+            <span className="oc-provenance-src">{src}</span>
+            {syms.length > 0 && <span> {syms.length > 6 ? `${syms.slice(0, 6).join(" ")} +${syms.length - 6}` : syms.join(" ")}</span>}
             {g.latest && (
-              <span className="subtle">
-                {" "}
-                · fetched <time dateTime={g.latest}>{fmtRelativeTime(g.latest)}</time>
+              <span>
+                {" · "}FETCHED <time dateTime={g.latest}>{fmtStamp(g.latest)}</time>
               </span>
             )}
           </span>
         );
       })}
-      <span className="sr-only">{items.map((p) => `${p.source} ${fmtDate(p.fetched_at)}`).join("; ")}</span>
     </div>
   );
 }

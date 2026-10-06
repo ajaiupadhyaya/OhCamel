@@ -9,21 +9,7 @@ import { fmtDate, fmtPct, parseDate } from "../lib/format";
 import { usePortfolio } from "../lib/portfolio";
 import { useHost, useOps } from "./ops";
 import { useTape } from "./Tape";
-
-type LampState = "ok" | "idle" | "fault" | "stale";
-
-/** Until Task P4's Lamp: same classes. ok = filled ink, idle = hollow, fault = signal, stale = hatched. */
-function Lamp({ state, label }: { state: LampState; label: string }) {
-  return (
-    <span className={`lamp lamp-${state}`} role="img" aria-label={`${label}: ${state}`}>
-      {state === "stale" && (
-        <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden focusable="false">
-          <path d="M-1 5 L5 -1 M-1 11 L11 -1 M5 11 L11 5" stroke="currentColor" strokeWidth="1" />
-        </svg>
-      )}
-    </span>
-  );
-}
+import { Lamp, type LampState } from "../design";
 
 function Readout({ label, value, state, title }: { label: string; value: string; state: LampState; title?: string }) {
   return (

@@ -15,7 +15,7 @@
  */
 import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { BarChart, HeatmapChart, Page, Panel, Section, SegmentedControl, Skeleton, StartHere, useTabParam } from "../components";
+import { BarChart, HeatmapChart, Page, Panel, Section, SegmentedControl, Skeleton, useTabParam } from "../components";
 import { fmtDate } from "../lib/format";
 import { prettyName, useUniverses } from "../lib/market";
 import { useApiQuery } from "../lib/query";
@@ -69,7 +69,6 @@ export default function Markets() {
       }
     >
       {/* 0 — first-visit orientation (dismissible, remembered in localStorage) */}
-      <StartHere />
 
       {/* 1 — headline indices + VIX */}
       <HeroStrip hero={hero} vix={vix} periodKey={period.key} periodLabel={period.label} />

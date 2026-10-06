@@ -16,4 +16,3 @@ export { InfoTip, type InfoProp } from "./InfoTip";
 export { Provenance } from "./Provenance";
 export { EmptyState, ErrorState, Skeleton, ChartSkeleton, Callout } from "./States";
 export { Icon, type IconName } from "./Icon";
-export { StartHere } from "./StartHere";

@@ -4,8 +4,6 @@
 .pl-strip-wrap {
   background: var(--surface);
   border: 1px solid var(--ink-3);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-1);
   overflow: hidden;
 }
 .pl-strip {
@@ -36,7 +34,6 @@
 .pl-comp {
   display: flex;
   height: 10px;
-  border-radius: 999px;
   overflow: hidden;
   gap: 2px;
   background: var(--surface-2);
@@ -47,7 +44,7 @@
   transition: flex-grow 300ms var(--ease);
 }
 .pl-comp-seg.short {
-  background-image: repeating-linear-gradient(135deg, transparent 0 3px, var(--surface) 3px 5px) !important;
+  background-image: var(--hatch) !important;
 }
 .pl-comp-legend {
   display: flex;
@@ -63,7 +60,6 @@
 .pl-comp-dot {
   width: 8px;
   height: 8px;
-  border-radius: 50%;
   flex: none;
 }
 .pl-strip-meta {
@@ -103,7 +99,6 @@
 .pl-dirty-dot {
   width: 8px;
   height: 8px;
-  border-radius: 50%;
   background: var(--warn);
   flex: none;
   animation: pl-pulse 1.6s var(--ease) infinite;
@@ -284,7 +279,6 @@
   align-items: center;
   gap: 6px;
   padding: 2px 9px 2px 7px;
-  border-radius: 999px;
   font-size: var(--fs-xs);
   font-weight: 500;
   text-transform: capitalize;
@@ -293,13 +287,11 @@
 .pl-zone-dot {
   width: 8px;
   height: 8px;
-  border-radius: 50%;
   background: currentColor;
-  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent);
 }
 .pl-zone-gain {
   color: var(--gain);
-  background: var(--gain-soft);
+  background: var(--paper-2);
 }
 .pl-zone-warn {
   color: var(--warn);
@@ -331,7 +323,6 @@
 .pl-spinner {
   width: 12px;
   height: 12px;
-  border-radius: 50%;
   border: 2px solid currentColor;
   border-right-color: transparent;
   animation: pl-spin 0.8s linear infinite;
@@ -411,13 +402,11 @@
 .pl-trl-track {
   position: relative;
   height: 10px;
-  border-radius: 999px;
   background: var(--surface-2);
   border: 1px solid var(--ink-3);
 }
 .pl-trl-fill {
   height: 100%;
-  border-radius: 999px;
 }
 .pl-trl-fill.ok {
   background: var(--gain);
@@ -432,7 +421,6 @@
   width: 2px;
   margin-left: -1px;
   background: var(--text);
-  border-radius: 1px;
 }
 
 /* ------------------------------------------------------------ factors */
@@ -452,10 +440,8 @@
   flex-direction: column;
   gap: var(--sp-3);
   padding: var(--sp-6);
-  border-radius: var(--radius-lg);
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--ink-3));
-  background: linear-gradient(160deg, var(--accent-soft), transparent 70%), var(--surface);
-  box-shadow: var(--shadow-1);
+  background: var(--surface);
 }
 .pl-offer h4 {
   margin: 0;
@@ -474,7 +460,6 @@
 .pl-offer-icon {
   width: 36px;
   height: 36px;
-  border-radius: 10px;
   display: grid;
   place-items: center;
   color: var(--accent);
@@ -516,7 +501,6 @@
   flex-direction: column;
   gap: 2px;
   padding: 10px 12px;
-  border-radius: var(--radius);
   border: 1px solid var(--ink-3);
   background: var(--surface-2);
 }
@@ -550,7 +534,6 @@
   gap: 8px;
   text-align: left;
   padding: var(--sp-4);
-  border-radius: var(--radius);
   border: 1px solid var(--ink-3);
   background: var(--surface);
   color: var(--text);
@@ -560,12 +543,11 @@
 }
 .pl-scen:hover {
   border-color: var(--rule-strong);
-  box-shadow: var(--shadow-2);
   transform: translateY(-1px);
 }
 .pl-scen.active {
   border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent), var(--shadow-1);
+  outline: 1px solid var(--accent);
 }
 .pl-scen-head {
   display: flex;
@@ -655,10 +637,8 @@
   flex-direction: column;
   gap: var(--sp-3);
   padding: var(--sp-6);
-  border-radius: var(--radius-lg);
   border: 1px solid var(--ink-3);
-  background: linear-gradient(170deg, var(--accent-soft), transparent 55%), var(--surface);
-  box-shadow: var(--shadow-1);
+  background: var(--surface);
 }
 .pl-handoff-title {
   margin: 0;
@@ -673,7 +653,6 @@
 }
 .pl-chip {
   padding: 3px 9px;
-  border-radius: 999px;
   border: 1px solid var(--ink-3);
   background: var(--surface);
   font-size: var(--fs-xs);

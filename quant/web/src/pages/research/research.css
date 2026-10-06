@@ -33,8 +33,6 @@
   padding: var(--sp-4);
   background: var(--surface);
   border: 1px solid var(--ink-3);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-1);
 }
 @media (max-width: 1180px) {
   .sl-catalog {
@@ -75,7 +73,6 @@
   gap: 6px;
   padding: var(--sp-3) var(--sp-3) var(--sp-3) calc(var(--sp-3) + 2px);
   border: 1px solid var(--ink-3);
-  border-radius: var(--radius);
   background: var(--surface);
   cursor: pointer;
   position: relative;
@@ -96,14 +93,12 @@
   top: 10px;
   bottom: 10px;
   width: 3px;
-  border-radius: 0 3px 3px 0;
   background: transparent;
   transition: background var(--dur) var(--ease);
 }
 .sl-card.active {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--ink-3));
   background: color-mix(in srgb, var(--accent) 5%, var(--surface));
-  box-shadow: var(--shadow-1);
 }
 .sl-card.active::before {
   background: var(--accent);
@@ -210,7 +205,6 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1px;
   background: var(--ink-3);
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   overflow: hidden;
   border-bottom: 1px solid var(--ink-3);
 }
@@ -301,7 +295,6 @@
   flex-direction: column;
   gap: 6px;
   padding: var(--sp-2) var(--sp-3);
-  border-radius: var(--radius-sm);
   background: var(--unknown-soft);
   color: var(--text-2);
 }
@@ -324,7 +317,6 @@
   align-items: center;
   gap: 2px;
   padding: 1px 4px 1px 8px;
-  border-radius: 999px;
   border: 1px dashed color-mix(in srgb, var(--unknown) 60%, transparent);
   font-size: var(--fs-xs);
   color: var(--text-3);
@@ -335,7 +327,6 @@
   all: unset;
   display: inline-flex;
   padding: 2px;
-  border-radius: 50%;
   cursor: pointer;
   color: var(--text-3);
 }
@@ -355,7 +346,6 @@
   gap: 5px;
   padding: 3px 10px;
   border: 1px solid var(--ink-3);
-  border-radius: 999px;
   font-size: var(--fs-xs);
   color: var(--text-2);
   cursor: pointer;
@@ -392,7 +382,6 @@
   gap: var(--sp-3);
   padding: var(--sp-3) var(--sp-5);
   background: var(--surface-2);
-  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 }
 .sl-runbar {
   display: flex;
@@ -414,7 +403,6 @@
   content: "";
   width: 7px;
   height: 7px;
-  border-radius: 50%;
   background: var(--warn);
 }
 
@@ -425,13 +413,8 @@
   flex-direction: column;
   gap: var(--sp-3);
   padding: var(--sp-5) var(--sp-6);
-  border-radius: var(--radius-lg);
   border: 1px solid color-mix(in srgb, var(--lilac) 40%, var(--ink-3));
-  background:
-    radial-gradient(600px 220px at 100% 0%, color-mix(in srgb, var(--lilac) 16%, transparent), transparent 70%),
-    radial-gradient(500px 240px at 0% 100%, color-mix(in srgb, var(--water) 12%, transparent), transparent 70%),
-    var(--surface);
-  box-shadow: var(--shadow-1);
+  background: var(--surface);
 }
 .sl-guard.closed {
   padding: var(--sp-4) var(--sp-6);
@@ -474,7 +457,6 @@
   flex-direction: column;
   gap: 6px;
   padding: var(--sp-3) var(--sp-4);
-  border-radius: var(--radius);
   background: color-mix(in srgb, var(--surface) 80%, transparent);
   border: 1px solid var(--ink-3);
   backdrop-filter: blur(2px);
@@ -601,7 +583,6 @@
   top: 0.15em;
   bottom: 0.15em;
   width: 3px;
-  border-radius: 2px;
   background: var(--rule-strong);
 }
 .sl-tone-gain .sl-verdict-head::before {
@@ -810,14 +791,12 @@
 .sl-gauge-track {
   position: relative;
   height: 10px;
-  border-radius: 999px;
   background: var(--surface-3);
   overflow: visible;
 }
 .sl-gauge-fill {
   height: 100%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 70%, transparent), var(--gain));
+  background: var(--ink);
 }
 .sl-gauge-mark {
   position: absolute;
@@ -825,7 +804,6 @@
   bottom: -4px;
   width: 2px;
   background: var(--text);
-  border-radius: 1px;
 }
 .sl-gauge-scale {
   position: relative;
@@ -877,8 +855,7 @@
   position: absolute;
   top: 30px;
   height: 18px;
-  border-radius: 4px;
-  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--warn) 30%, transparent) 0 6px, color-mix(in srgb, var(--warn) 12%, transparent) 6px 12px);
+  background: var(--hatch);
 }
 .sl-nl-pt {
   position: absolute;
@@ -901,10 +878,9 @@
 .sl-nl-dot {
   width: 12px;
   height: 12px;
-  border-radius: 50%;
   border: 2px solid var(--surface);
   background: var(--text-3);
-  box-shadow: 0 0 0 1px var(--rule-strong);
+  outline: 1px solid var(--rule-strong);
   margin: 4px 0;
 }
 .sl-nl-luck .sl-nl-dot {
@@ -969,12 +945,10 @@
 .sl-spa-track {
   position: relative;
   height: 12px;
-  border-radius: 3px;
   background: var(--surface-3);
 }
 .sl-spa-fill {
   height: 100%;
-  border-radius: 3px;
   background: color-mix(in srgb, var(--warn) 65%, transparent);
 }
 .sl-spa-fill.gain {

@@ -27,7 +27,6 @@
   gap: 10px 16px;
   margin: 0;
   padding: var(--sp-5);
-  border-radius: var(--radius-lg);
   background: var(--surface);
   border: 1px solid var(--ink-3);
   font-size: var(--fs-sm);
@@ -48,7 +47,6 @@
 }
 .en-card {
   padding: var(--sp-4) var(--sp-5);
-  border-radius: var(--radius-lg);
   border: 1px solid var(--ink-3);
   background: var(--surface);
 }
@@ -157,7 +155,6 @@
   display: inline-block;
   width: 12px;
   height: 12px;
-  border-radius: 3px;
   vertical-align: -2px;
   margin-right: 4px;
   border: 1px solid var(--rule-strong);
@@ -193,7 +190,6 @@
   display: inline-block;
   width: 7px;
   height: 7px;
-  border-radius: 50%;
   background: currentColor;
   margin-right: 4px;
   animation: en-pulse 1.6s ease-in-out infinite;
@@ -226,7 +222,6 @@
 }
 .en-limit-bar {
   height: 8px;
-  border-radius: 4px;
   background: var(--surface-2);
   overflow: hidden;
 }
@@ -234,7 +229,6 @@
   display: block;
   height: 100%;
   background: var(--gain);
-  border-radius: 4px;
 }
 .en-limit-fill.near {
   background: var(--warn);
@@ -277,7 +271,6 @@
 }
 .en-off-grid > div {
   padding: var(--sp-4);
-  border-radius: var(--radius);
   background: var(--surface-2);
 }
 .en-off-grid p {

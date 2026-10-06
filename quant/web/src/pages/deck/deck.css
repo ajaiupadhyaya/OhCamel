@@ -3,6 +3,23 @@
    dark on a light page as on a dark one, the way a monitor is dark on a white desk. No glow,
    no scanlines: the amber is the whole effect (after Figure 2's #scope). */
 
+:root {
+  /* CRT instruments, moved here from tokens.css so green stays inside the Deck. The
+     cockpit screens are always dark, the way a monitor is dark on a white desk, so these
+     are declared once and are the same in both site themes. */
+  --crt-panel: #1b1916;      /* the console the screens are set into */
+  --crt-bezel: #2e2a25;      /* the screen's frame */
+  --crt-ground: #110d08;     /* the tube */
+  --crt-amber: #f2b441;
+  --crt-amber-soft: rgba(242, 180, 65, 0.42);
+  --crt-amber-text: #f6cf7a;
+  --crt-red: #ec4b36;
+  --crt-red-text: #f39a8a;
+  --crt-green: #53c08f;
+  --crt-unknown: #8b9ae0;    /* lilac-blue, cannot be evaluated or no data */
+  --crt-seg-off: rgba(236, 75, 54, 0.09); /* an unlit seven-segment bar */
+}
+
 /* ---------------------------------------------------------------- layout */
 /* The source switch wraps rather than scrolling when the header is narrow. */
 .oc-seg.dk-source {
