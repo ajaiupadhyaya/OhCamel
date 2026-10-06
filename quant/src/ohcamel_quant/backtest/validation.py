@@ -119,21 +119,8 @@ def sweep(ctx: StrategyContext, spec: StrategySpec, base_params: dict[str, Any],
 
 
 # ======================================================================= CSCV
-def _block_moments(m: np.ndarray, s: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    t = (len(m) // s) * s
-    m = m[len(m) - t:]
-    blocks = m.reshape(s, t // s, m.shape[1])
-    return blocks.sum(axis=1), (blocks ** 2).sum(axis=1), np.full(s, t // s, dtype=float)
-
-
-def _sharpe_from_sums(s1: np.ndarray, s2: np.ndarray, n: np.ndarray) -> np.ndarray:
-    mean = s1 / n[:, None]
-    var = (s2 - n[:, None] * mean ** 2) / (n[:, None] - 1.0)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        return np.where(var > 0, mean / np.sqrt(np.maximum(var, 0.0)), np.nan)
-
-
-def cscv_pbo(returns: pd.DataFrame | np.ndarray, n_partitions: int = 16, bins: int = 20) -> dict[str, Any]:
+def cscv_pbo(returns: pd.DataFrame | np.ndarray, n_partitions: int = 16, bins: int = 20, *,
+             threads: int = 1) -> dict[str, Any]:
     """Probability of Backtest Overfitting by CSCV (Bailey et al. 2017, sec. 2).
 
     1. Split the ``T x N`` matrix of trial returns into ``S`` contiguous,
@@ -147,8 +134,9 @@ def cscv_pbo(returns: pd.DataFrame | np.ndarray, n_partitions: int = 16, bins: i
 
     Also returned: the logit histogram, the performance-degradation regression
     ``SR_Jbar(n*) = a + b SR_J(n*) + e`` and ``P[SR_Jbar(n*) < 0]``. Sharpe
-    ratios here are per-period (non-annualized); moments come from block sums,
-    so all combinations are evaluated in one vectorized pass.
+    ratios here are per-period (non-annualized). Moments come from block sums on the
+    ``cscv_pbo`` kernel (``ohcamel_quant.kernels``); a trial with s2 - n mean^2 <= 1e-10 s2
+    (a constant) has zero variance, a NaN Sharpe, and ranks last.
     """
     m = np.asarray(returns, dtype=float)
     if m.ndim != 2 or m.shape[1] < 2:
@@ -160,24 +148,11 @@ def cscv_pbo(returns: pd.DataFrame | np.ndarray, n_partitions: int = 16, bins: i
     if len(m) < 4 * n_partitions:
         raise ValueError(f"need at least {4 * n_partitions} rows for {n_partitions} partitions")
     s = n_partitions
-    b1, b2, bn = _block_moments(m, s)
-    combos = np.array(list(itertools.combinations(range(s), s // 2)))
-    mask = np.zeros((len(combos), s))
-    mask[np.arange(len(combos))[:, None], combos] = 1.0
-    is1, is2, isn = mask @ b1, mask @ b2, mask @ bn
-    oos1, oos2, oosn = b1.sum(0) - is1, b2.sum(0) - is2, bn.sum() - isn
-    sr_is = _sharpe_from_sums(is1, is2, isn)
-    sr_oos = _sharpe_from_sums(oos1, oos2, oosn)
-    sr_is_f = np.where(np.isfinite(sr_is), sr_is, -np.inf)
-    best = np.argmax(sr_is_f, axis=1)
-    rows = np.arange(len(combos))
-    oos_f = np.where(np.isfinite(sr_oos), sr_oos, -np.inf)
-    ranks = stats.rankdata(oos_f, axis=1, method="average")
+    k = kernels.cscv_pbo(m, s, threads)
+    lam, best, x, y = k["logits"], k["selected"], k["is_sharpe"], k["oos_sharpe"]
+    n_comb = k["n_combinations"]
     n = m.shape[1]
-    w = ranks[rows, best] / (n + 1.0)
-    lam = np.log(w / (1.0 - w))
-    pbo = float(np.mean(lam <= 0))
-    x, y = sr_is[rows, best], sr_oos[rows, best]
+    pbo = k["pbo"]
     ok = np.isfinite(x) & np.isfinite(y)
     reg: dict[str, float] = {}
     if ok.sum() > 2 and np.ptp(x[ok]) > 0:
@@ -185,12 +160,12 @@ def cscv_pbo(returns: pd.DataFrame | np.ndarray, n_partitions: int = 16, bins: i
         reg = {"slope": float(lr.slope), "intercept": float(lr.intercept), "r2": float(lr.rvalue ** 2),
                "slope_pvalue": float(lr.pvalue)}
     hist, edges = np.histogram(lam, bins=bins)
-    scatter_idx = np.linspace(0, len(rows) - 1, min(400, len(rows))).astype(int)
+    scatter_idx = np.linspace(0, n_comb - 1, min(400, n_comb)).astype(int)
     ann = math.sqrt(M.PERIODS)
     return {
         "pbo": pbo,
         "n_partitions": s,
-        "n_combinations": int(len(combos)),
+        "n_combinations": int(n_comb),
         "n_trials": int(n),
         "rows_used": int((len(m) // s) * s),
         "logits": {"counts": hist.tolist(), "edges": edges.tolist(), "mean": float(np.mean(lam)),
@@ -199,6 +174,7 @@ def cscv_pbo(returns: pd.DataFrame | np.ndarray, n_partitions: int = 16, bins: i
                         "is_sharpe_ann": (x[scatter_idx] * ann).tolist(),
                         "oos_sharpe_ann": (y[scatter_idx] * ann).tolist()},
         "selected_counts": np.bincount(best, minlength=n).tolist(),
+        "engine": kernels.engine_of("cscv_pbo"),
     }
 
 

@@ -131,3 +131,56 @@ def stationary_bootstrap_means(x: np.ndarray, mean_block: float, reps: int, seed
         for j in range(k):
             out[lo:lo + m, j] = x[:, j][idx].mean(axis=1)
     return out
+
+
+# ------------------------------------------------------------------ A4: cscv
+MAX_PARTITIONS = 20
+ZERO_VAR_REL = 1e-10      # s2 - n mean^2 <= ZERO_VAR_REL * s2 is zero variance (as cscv.rs)
+
+
+def cscv_pbo(perf: np.ndarray, n_partitions: int, threads: int) -> dict:
+    """CSCV PBO (Bailey et al. 2017): backtest/validation.py's vectorised NumPy at 0b87dec,
+    moved here and returning the per-combination selection with it. One change: zero variance
+    is the relative rule s2 - n mean^2 <= ZERO_VAR_REL * s2 (shared with cscv.rs) instead of
+    var > 0, whose verdict on a constant trial depended on the sign of a rounding residue and
+    so on summation order. Memory is O(C(S, S/2) x N): S = 20 with many trials is a job for
+    the Rust kernel."""
+    import itertools
+
+    from scipy import stats
+
+    m, s = perf, int(n_partitions)
+    if m.shape[1] < 2:
+        raise ValueError("CSCV needs a T x N matrix with N >= 2 trials")
+    if s < 2 or s % 2:
+        raise ValueError("n_partitions must be an even integer >= 2")
+    if s > MAX_PARTITIONS:
+        raise ValueError(f"n_partitions must be <= {MAX_PARTITIONS} (C(20, 10) = 184,756 combinations)")
+    if np.isnan(m).any():
+        raise ValueError("returns matrix contains NaN")
+    if len(m) < 4 * s:
+        raise ValueError(f"need at least {4 * s} rows for {s} partitions")
+    t = (len(m) // s) * s
+    blocks = m[len(m) - t:].reshape(s, t // s, m.shape[1])
+    b1, b2, bn = blocks.sum(axis=1), (blocks ** 2).sum(axis=1), np.full(s, t // s, dtype=float)
+    combos = np.array(list(itertools.combinations(range(s), s // 2)))
+    mask = np.zeros((len(combos), s))
+    mask[np.arange(len(combos))[:, None], combos] = 1.0
+    is1, is2, isn = mask @ b1, mask @ b2, mask @ bn
+    oos1, oos2, oosn = b1.sum(0) - is1, b2.sum(0) - is2, bn.sum() - isn
+
+    def sharpe(s1: np.ndarray, s2: np.ndarray, n: np.ndarray) -> np.ndarray:
+        mean = s1 / n[:, None]
+        dev = s2 - n[:, None] * mean ** 2                  # (n - 1) x variance
+        var = dev / (n[:, None] - 1.0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return np.where(dev > ZERO_VAR_REL * s2, mean / np.sqrt(np.maximum(var, 0.0)), np.nan)
+
+    sr_is, sr_oos = sharpe(is1, is2, isn), sharpe(oos1, oos2, oosn)
+    best = np.argmax(np.where(np.isfinite(sr_is), sr_is, -np.inf), axis=1)
+    rows = np.arange(len(combos))
+    ranks = stats.rankdata(np.where(np.isfinite(sr_oos), sr_oos, -np.inf), axis=1, method="average")
+    w = ranks[rows, best] / (m.shape[1] + 1.0)
+    lam = np.log(w / (1.0 - w))
+    return {"pbo": float(np.mean(lam <= 0)), "logits": lam, "n_combinations": int(len(combos)),
+            "selected": best.astype(np.int64), "is_sharpe": sr_is[rows, best], "oos_sharpe": sr_oos[rows, best]}

@@ -136,3 +136,36 @@ def test_bootstrap_bit_identical(both, etf_returns):
     x = etf_returns["SPY"].dropna().to_numpy()[-250:]
     a = on("rust", kernels.stationary_bootstrap_means, x, 5.0, 50_000, 3, 2)
     assert np.array_equal(a, on("rust", kernels.stationary_bootstrap_means, x, 5.0, 50_000, 3, 2))
+
+
+# ---------------------------------------------------------------- A4: cscv
+@pytest.mark.parametrize("s", [8, 12, 16])
+def test_cscv_parity(both, etf_returns, s):
+    x = etf_returns.dropna().to_numpy()
+    m = np.column_stack([x, -0.5 * x])
+    r, p = on("rust", kernels.cscv_pbo, m, s, 2), on("python", kernels.cscv_pbo, m, s, 1)
+    assert r["pbo"] == p["pbo"] and np.array_equal(r["selected"], p["selected"])
+    np.testing.assert_allclose(r["logits"], p["logits"], rtol=1e-10, atol=1e-14)
+    np.testing.assert_allclose(r["is_sharpe"], p["is_sharpe"], rtol=1e-10, equal_nan=True)
+    np.testing.assert_allclose(r["oos_sharpe"], p["oos_sharpe"], rtol=1e-10, equal_nan=True)
+
+
+@pytest.mark.parametrize("c", [0.0001, 0.1 / 3, np.pi / 1000])
+def test_cscv_constant_trial_parity(both, etf_returns, c):
+    # the zero-variance rule is the same on both engines whatever their summation order
+    x = etf_returns[["SPY", "TLT"]].dropna().to_numpy()
+    m = np.column_stack([x, np.full(len(x), c)])
+    r, p = on("rust", kernels.cscv_pbo, m, 8, 1), on("python", kernels.cscv_pbo, m, 8, 1)
+    assert r["pbo"] == p["pbo"] and np.array_equal(r["selected"], p["selected"])
+    np.testing.assert_allclose(r["logits"], p["logits"], rtol=1e-10, atol=1e-14)
+
+
+def test_cscv_tie_parity(both):
+    # trials [A, A, B], A dominant everywhere, S = 4: each engine against the hand values
+    # (first maximum -> n* = 0; averaged rank 2.5 of 3 -> logit ln(5/3); PBO 0), not each other
+    tied = np.array([[g, g, b] for g, b in zip([0.02, 0.01, 0.02, 0.01] * 4, [-0.01, 0.0, -0.01, 0.0] * 4, strict=True)])
+    for eng in ("rust", "python"):
+        r = on(eng, kernels.cscv_pbo, tied, 4, 1)
+        assert np.array_equal(r["selected"], np.zeros(6, dtype=np.int64)), eng
+        np.testing.assert_allclose(r["logits"], np.log(5 / 3), rtol=0, atol=1e-15, err_msg=eng)
+        assert r["pbo"] == 0.0, eng

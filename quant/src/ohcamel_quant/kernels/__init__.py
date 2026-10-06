@@ -251,9 +251,27 @@ def stationary_bootstrap_means(x: Any, mean_block: float, reps: int, seed: int, 
     return out[:, 0].copy() if one_d else out
 
 
+MAX_PARTITIONS = 20
+
+
+def cscv_pbo(perf: Any, n_partitions: int, threads: int) -> dict:
+    """CSCV probability of backtest overfitting over a T x N trial-returns matrix
+    (Bailey et al. 2017). Returns ``pbo``, ``logits`` (one per C(S, S/2) combination,
+    lexicographic), ``n_combinations``, and per combination the in-sample winner
+    ``selected`` with its ``is_sharpe`` / ``oos_sharpe`` (per period). S <= 20."""
+    m = _arr(perf, "perf", 2)
+    s, t = int(n_partitions), _threads(threads)
+    if engine_of("cscv_pbo") == "rust":
+        pbo, logits, nc, sel, is_sr, oos_sr = _RUST.cscv_pbo(m, s, t)
+        return {"pbo": float(pbo), "logits": np.asarray(logits), "n_combinations": int(nc),
+                "selected": np.asarray(sel, dtype=np.int64), "is_sharpe": np.asarray(is_sr),
+                "oos_sharpe": np.asarray(oos_sr)}
+    return reference.cscv_pbo(m, s, t)
+
+
 __all__ = [
-    "API", "API_VERSION", "ENGINE", "ENV", "MAX_HORIZON", "MAX_PATHS", "MAX_THREADS",
+    "API", "API_VERSION", "ENGINE", "ENV", "MAX_HORIZON", "MAX_PARTITIONS", "MAX_PATHS", "MAX_THREADS",
     "BacktestPath", "GarchFitResult", "GarchParams", "SviFitResult",
-    "copula_t_paths", "engine_of", "fhs_paths", "forced", "stationary_bootstrap_means", "tail_count",
+    "copula_t_paths", "cscv_pbo", "engine_of", "fhs_paths", "forced", "stationary_bootstrap_means", "tail_count",
     "var_es_from_pnl",
 ]

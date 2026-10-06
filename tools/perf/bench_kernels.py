@@ -58,6 +58,8 @@ def cases() -> dict[str, Case]:
     xs = etf["SPY"].to_numpy()
     xx = np.column_stack([xs, xs * xs])
     out["stationary_bootstrap_means"] = (lambda t: kernels.stationary_bootstrap_means(xx, 10.0, 10_000, 3, t), True)
+    perf18 = np.column_stack([etf.to_numpy(), -0.5 * etf.to_numpy()])
+    out["cscv_pbo"] = (lambda t: kernels.cscv_pbo(perf18, 16, t), True)
     return out
 
 
