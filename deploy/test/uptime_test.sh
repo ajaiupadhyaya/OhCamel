@@ -81,7 +81,10 @@ https://pub.test/api/engine/snapshot)
 	if [ "$code" = 200 ]; then
 		body="{\"snapshot\":{\"gross_exposure\":1000.0,\"nodes_recomputed\":$(counter bridge),\"positions\":[{}]}}"
 	else
-		body='{"detail":"the engine bridge is not configured"}'
+		# The bridge's 503 says whether it is switched on: configured false
+		# when OHCAMEL_QUANT_ENGINE_URL is unset, true when the engine behind
+		# it is down, slow or answering non-200.
+		body="{\"error\":\"engine_unavailable\",\"detail\":\"unavailable\",\"configured\":${S_BRIDGE_CONFIGURED:-false},\"reachable\":false}"
 	fi
 	;;
 http://pub.test/) code=${S_PUB_REDIR:-308}; redir=${S_PUB_REDIR_TO:-https://pub.test/} ;;
@@ -280,6 +283,10 @@ case "$(line "engine counter")" in *frozen* | *FROZEN* | *stuck*) ok "counter fr
 run bridge-off S_BRIDGE=503 --
 expect_rc "bridge off" 0
 expect_line "bridge off" SKIP "engine counter"
+
+run bridge-dead S_BRIDGE=503 S_BRIDGE_CONFIGURED=true --
+expect_rc "bridge on, engine dead" 1
+expect_line "bridge on, engine dead" FAIL "engine counter"
 
 run pub-noredir S_PUB_REDIR=200 S_PUB_REDIR_TO= --
 expect_rc "public no redirect" 1

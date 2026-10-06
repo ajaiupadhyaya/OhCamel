@@ -24,10 +24,13 @@
 #                                     /api/snapshot. Without it, through the
 #                                     public host's read-only bridge
 #                                     (/api/engine/snapshot); the bridge is off
-#                                     unless the owner opts in, and its 503 is
-#                                     then a SKIP, not a failure -- the public
-#                                     host has served Quant, not the engine,
-#                                     since the Quant cutover.
+#                                     unless the owner opts in, and a 503 whose
+#                                     body says "configured": false is then a
+#                                     SKIP, not a failure -- the public host
+#                                     has served Quant, not the engine, since
+#                                     the Quant cutover. Any other 503 (the
+#                                     bridge is on, the engine behind it is
+#                                     down, slow or not answering 200) FAILs.
 #   /api/desk shape                   status enabled|disabled and a venue.
 #                                     Needs --engine: the only engine in
 #                                     production is the live one, behind its
@@ -91,7 +94,9 @@ done
 # ---------------------------------------------------------------------------
 # The engine is recomputing: nodes_recomputed advances across 2 s
 # ---------------------------------------------------------------------------
-# counter URL -- prints "CODE N", N empty when the body carries no counter.
+# counter URL -- prints "CODE N OFF": N empty when the body carries no
+# counter; OFF is "off" only when the body says "configured": false (the
+# bridge's 503 with OHCAMEL_QUANT_ENGINE_URL unset), else "-".
 counter() {
 	local raw code body
 	raw=$(curl -sS --max-time 15 -w '\n%{http_code}' "$1" 2>/dev/null || true)
@@ -101,7 +106,10 @@ counter() {
 	# The bridge wraps the engine's snapshot as {"snapshot": {...}}; the
 	# engine's own /api/snapshot is the bare object. The first
 	# "nodes_recomputed" in either is the one.
-	printf '%s %s\n' "${code:-000}" "$(printf '%s' "$body" | grep -o '"nodes_recomputed": *[0-9]*' | head -1 | grep -o '[0-9]*$')"
+	local n off=-
+	n=$(printf '%s' "$body" | grep -o '"nodes_recomputed": *[0-9]*' | head -1 | grep -o '[0-9]*$')
+	printf '%s' "$body" | grep -q '"configured": *false' && off=off
+	printf '%s %s %s\n' "${code:-000}" "${n:--}" "$off"
 }
 
 if [ -n "$ENGINE" ]; then
@@ -109,14 +117,18 @@ if [ -n "$ENGINE" ]; then
 else
 	src="https://$PUBLIC/api/engine/snapshot"
 fi
-read -r code_a n_a <<<"$(counter "$src")"
-if [ -z "$ENGINE" ] && [ "$code_a" = 503 ]; then
-	meh "engine counter" "the public bridge is off (503 from $src); nothing to read without a password"
+read -r code_a n_a off_a <<<"$(counter "$src")"
+[ "$n_a" = - ] && n_a=""
+if [ -z "$ENGINE" ] && [ "$code_a" = 503 ] && [ "$off_a" = off ]; then
+	meh "engine counter" "the public bridge is off (503, configured false, from $src); nothing to read without a password"
+elif [ "$code_a" = 503 ]; then
+	no "engine counter" "$src answered 503: the engine behind the bridge is unreachable, slow or not answering 200"
 elif [ "$code_a" != 200 ] || [ -z "$n_a" ]; then
 	no "engine counter" "$src answered ${code_a:-000} with no nodes_recomputed"
 else
 	sleep 2
-	read -r code_b n_b <<<"$(counter "$src")"
+	read -r code_b n_b _ <<<"$(counter "$src")"
+	[ "$n_b" = - ] && n_b=""
 	if [ "$code_b" != 200 ] || [ -z "$n_b" ]; then
 		no "engine counter" "$src answered ${code_b:-000} on the second read"
 	elif [ "$n_b" -le "$n_a" ]; then
