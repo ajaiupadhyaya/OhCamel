@@ -211,12 +211,14 @@ the session window.
 - **quant-rigor applies** to every research and model product: purged
   walk-forward CV, costs included, DSR/PSR/PBO reported, verdict first.
   Most strategies will fail and the page says so.
-- **Pre-registrations.** EXP-Q01 (cross-sectional LightGBM) and EXP-Q02
-  (regime HMM) are drafted by the agent — hypothesis, universe, features,
-  horizon, CV scheme, gates (DSR > 0.95, PBO < 0.2, IC t-stat > 2 with HAC
-  errors, net-of-cost decile spread > 0) and kill rule — and committed only
-  after the owner's explicit approval. Until approved the products' pages
-  show `AWAITING PRE-REGISTRATION`, not results.
+- **Pre-registrations.** EXP-Q01 and EXP-Q02 are governed by
+  `research/experiments/EXP-Q0{1,2}/preregistration.md`, both approved by the
+  owner 2026-10-06. Their gates are `docs/CHARTER.md`'s, applied literally
+  (amended 2026-10-06: the earlier "DSR > 0.95, PBO < 0.2" here was not the
+  charter's). EXP-Q01 runs on the survivorship-free ETF universe, because the
+  charter rules single-name cross-sectional claims out of scope until a
+  survivorship-free source exists (owner option A). A product whose
+  pre-registration is not approved shows `AWAITING PRE-REGISTRATION`.
 - Nothing from the models reaches the desk; all model output is advisory.
 - `book.sexp` on the droplet is not edited by the agent (live trading stays
   the owner's switch).
