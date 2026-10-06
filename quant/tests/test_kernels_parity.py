@@ -188,3 +188,35 @@ def test_egarch_fit_parity(both, etf_returns):
     r, p = on("rust", kernels.garch_fit, y, "egarch", None), on("python", kernels.garch_fit, y, "egarch", None)
     assert r.nll == pytest.approx(p.nll, rel=1e-6)
     np.testing.assert_allclose(r.params, p.params, rtol=1e-3, atol=1e-3)
+
+
+# ---------------------------------------------------------------- A6: backtest
+from ohcamel_quant.backtest.engine import EngineConfig, StrategyContext, run_backtest  # noqa: E402
+from ohcamel_quant.backtest.strategies import (  # noqa: E402
+    STRATEGIES,
+    get_strategy,
+    validate_params,
+)
+
+_NINE = ["SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "XLE", "XLF", "XLK"]
+
+
+@pytest.mark.parametrize("cfg", [{}, {"cost_bps": 10.0, "borrow_bps": 75.0, "vol_target": 0.10}], ids=["default", "costly"])
+@pytest.mark.parametrize("key", sorted(STRATEGIES))
+def test_backtest_parity_every_strategy(both, market, key, cfg):
+    """compute plan A6: every registered strategy's fixture run, Rust vs the reference loop, to 1e-10;
+    the causality audit passes on the Rust path."""
+    px = market.prices(_NINE).data
+    cols = ["XLK", "QQQ"] if key in ("pairs_coint", "pairs_distance") else _NINE
+    spec = get_strategy(key)
+    params = validate_params(spec, {}, cols)
+    config = EngineConfig(rebalance=spec.default_rebalance, max_gross_leverage=spec.default_max_leverage, **cfg)
+    ctx = StrategyContext(px[cols], None, px["SPY"])
+    r = on("rust", run_backtest, ctx, spec.fn, params, config)
+    p = on("python", run_backtest, ctx, spec.fn, params, config)
+    assert r.kernel_engine == "rust" and p.kernel_engine == "python" and r.audit["passed"]
+    for name in ("returns_gross", "returns_net", "turnover", "costs", "borrow"):
+        np.testing.assert_allclose(getattr(r, name).to_numpy(), getattr(p, name).to_numpy(), rtol=1e-10, atol=1e-14)
+    for name in ("weights", "trades", "contributions"):
+        np.testing.assert_allclose(getattr(r, name).to_numpy(), getattr(p, name).to_numpy(), rtol=1e-10, atol=1e-14)
+    assert r.notes == p.notes

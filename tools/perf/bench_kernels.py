@@ -64,6 +64,14 @@ def cases() -> dict[str, Case]:
     p6 = kernels.garch_fit(ypct[-1000:], "gjr", None).params
     out["garch_nll"] = (lambda t: kernels.garch_nll(p6, ypct, "gjr"), False)
     out["garch_fit"] = (lambda t: kernels.garch_fit(ypct[-1000:], "gjr", None), False)
+    from ohcamel_quant.backtest.engine import rebalance_mask
+
+    px9 = market.prices(nine).data.dropna()
+    dec = np.flatnonzero(rebalance_mask(px9.index, "monthly"))
+    ex9 = dec[dec + 1 < len(px9)] + 1
+    tw9 = np.full((len(ex9), 9), 1 / 9)
+    out["backtest_weights"] = (lambda t: kernels.backtest_weights(px9.to_numpy(), tw9, ex9, 5.0, 0.0, np.zeros(len(px9))), False)
+
     return out
 
 

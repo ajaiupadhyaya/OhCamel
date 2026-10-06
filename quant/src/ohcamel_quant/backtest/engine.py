@@ -51,6 +51,7 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
+from .. import kernels
 from .estimators import ewma_cov_at, rolling_cov_at
 
 Rebalance = Literal["daily", "weekly", "monthly", "quarterly", "signal", "never"]
@@ -131,6 +132,7 @@ class BacktestResult:
     notes: list[str] = field(default_factory=list)
     config: EngineConfig | None = None
     trades: pd.DataFrame | None = None  # signed w*_i - w~_i traded at each close (0 elsewhere)
+    kernel_engine: str = "python"       # which kernels engine ran the accounting loop (compute plan A6)
 
     def live(self, s: pd.Series | pd.DataFrame) -> Any:
         """Slice a series/frame to the live period, which STARTS at the first
@@ -325,55 +327,17 @@ def run_weights(prices: pd.DataFrame, targets: pd.DataFrame, config: EngineConfi
     exec_at: dict[int, np.ndarray] = {d + config.execution_lag: w for d, w in final.items()}
     decisions = idx[sorted(final)]
 
-    # ---- accounting loop (scalar-light: this runs once per session per backtest)
-    w = np.zeros(n_a)
-    W = np.zeros((n_t, n_a))
-    gross = np.zeros(n_t)
-    net = np.zeros(n_t)
-    turnover = np.zeros(n_t)
-    trades = np.zeros((n_t, n_a))
-    costs = np.zeros(n_t)
-    borrow = np.zeros(n_t)
-    c = config.cost_bps / 1e4
-    b = config.borrow_bps / 1e4 / PERIODS
-    ruined = False
-    first = min(exec_at) if exec_at else n_t
-    # before the first execution the book is all cash: it earns rf, nothing else
-    gross[1:first] = rf_arr[1:first]
-    net[1:first] = rf_arr[1:first]
-    rf_l = rf_arr.tolist()
-    for s in range(first, n_t):
-        if s > 0:
-            r = rets[s]
-            wr = w * r
-            wsum = float(w.sum())
-            gs = float(wr.sum()) + (1.0 - wsum) * rf_l[s]
-            # short notional sum max(-w, 0) = (sum|w| - sum w) / 2
-            bs = b * 0.5 * (float(np.abs(w).sum()) - wsum) if b else 0.0
-            gross[s] = gs
-            borrow[s] = bs
-            g = gs - bs
-            if 1.0 + g <= 0:
-                net[s] = -1.0
-                ruined = True
-                W[s:] = 0.0
-                break
-            w = (w + wr) / (1.0 + g)
-            net[s] = g
-        tw = exec_at.get(s)
-        if tw is not None:
-            dw = tw - w
-            trades[s] = dw
-            to = float(np.abs(dw).sum())
-            turnover[s] = to
-            costs[s] = c * to
-            net[s] = (1.0 + net[s]) * (1.0 - costs[s]) - 1.0
-            w = tw.copy()
-        W[s] = w
+    # ---- accounting loop: the backtest_weights kernel (Rust, or reference.backtest_weights,
+    # which is this loop verbatim)
+    ex = np.array(sorted(exec_at), dtype=np.int64)
+    tw = np.vstack([exec_at[int(s)] for s in ex]) if len(ex) else np.zeros((0, n_a))
+    path = kernels.backtest_weights(px, tw, ex, config.cost_bps, config.borrow_bps, rf_arr)
+    gross, net, W = path.gross, path.net, path.weights
+    turnover, trades, costs, borrow = path.turnover, path.trades, path.costs, path.borrow
     # arithmetic attribution w_{s-1,i} R_{s,i} (W[s-1] is the book carried into s)
     contrib = np.zeros((n_t, n_a))
     contrib[1:] = W[:-1] * rets[1:]
-    if ruined:
+    if path.ruined:
         notes.append("Portfolio NAV was wiped out (a session loss >= 100%); the backtest stops there.")
 
     executions = idx[sorted(exec_at)]
@@ -396,4 +360,5 @@ def run_weights(prices: pd.DataFrame, targets: pd.DataFrame, config: EngineConfi
         notes=notes,
         config=config,
         trades=pd.DataFrame(trades, idx, cols),
+        kernel_engine=kernels.engine_of("backtest_weights"),
     )

@@ -312,9 +312,39 @@ def garch_fit(r: Any, kind: str, x0: Any | None) -> GarchFitResult:
     return reference.garch_fit(y, kind, x)
 
 
+def backtest_weights(prices: Any, target_w: Any, decision_idx: Any, cost_bps: float, borrow_bps: float,
+                     rf: Any) -> BacktestPath:
+    """The engine's accounting loop (backtest/engine.py docstring): ``prices`` n_t x n_a
+    adjusted closes, ``target_w`` one row per execution, ``decision_idx[j]`` the
+    session at whose close row j is executed (decision + execution lag), costs in
+    bps, ``rf`` daily decimal cash returns."""
+    px = _arr(prices, "prices", 2)
+    n_t, n_a = px.shape
+    tw = np.ascontiguousarray(np.asarray(target_w, dtype=np.float64).reshape(-1, n_a))
+    idx = np.ascontiguousarray(np.asarray(decision_idx, dtype=np.int64).reshape(-1))
+    rfa = _arr(rf, "rf", 1)
+    if tw.shape[0] != idx.size:
+        raise ValueError(f"target_w has {tw.shape[0]} rows for {idx.size} executions")
+    if rfa.size != n_t:
+        raise ValueError(f"rf has {rfa.size} values for {n_t} sessions")
+    if idx.size and (idx[0] < 1 or idx[-1] >= n_t or np.any(np.diff(idx) <= 0)):
+        raise ValueError("decision_idx must be strictly increasing sessions in 1..n_t-1 "
+                         "(an execution needs a prior close)")
+    if not np.all(np.isfinite(px)) or np.any(px <= 0):
+        raise ValueError("prices must be finite and positive")
+    cost, borrow = float(cost_bps), float(borrow_bps)
+    if not (cost >= 0 and borrow >= 0 and math.isfinite(cost) and math.isfinite(borrow)):
+        raise ValueError("costs must be finite and non-negative")
+    if engine_of("backtest_weights") == "rust":
+        g, net, w, to, tr, c, b, ruined = _RUST.backtest_weights(px, tw, idx, cost, borrow, rfa)
+        return BacktestPath(np.asarray(g), np.asarray(net), np.asarray(w).reshape(n_t, n_a), np.asarray(to),
+                            np.asarray(tr).reshape(n_t, n_a), np.asarray(c), np.asarray(b), bool(ruined))
+    return reference.backtest_weights(px, tw, idx, cost, borrow, rfa)
+
+
 __all__ = [
     "API", "API_VERSION", "ENGINE", "ENV", "GARCH_KINDS", "MAX_HORIZON", "MAX_PARTITIONS", "MAX_PATHS", "MAX_THREADS",
     "BacktestPath", "GarchFitResult", "GarchParams", "SviFitResult",
-    "copula_t_paths", "cscv_pbo", "engine_of", "fhs_paths", "forced", "garch_fit", "garch_nll", "stationary_bootstrap_means", "tail_count",
+    "backtest_weights", "copula_t_paths", "cscv_pbo", "engine_of", "fhs_paths", "forced", "garch_fit", "garch_nll", "stationary_bootstrap_means", "tail_count",
     "var_es_from_pnl",
 ]

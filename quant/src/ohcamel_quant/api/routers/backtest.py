@@ -33,6 +33,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, field_validator
 
+from ... import kernels
 from ...backtest import metrics as M
 from ...backtest import validation as V
 from ...backtest.engine import (
@@ -51,7 +52,7 @@ from ...backtest.strategies import (
     validate_params,
     warmup_sessions,
 )
-from ...data.base import DataUnavailable
+from ...data.base import DataUnavailable, Provenance
 from ...data.fred import rf_error_reason, rf_series_used
 from ...data.market import MarketData, get_market, load_universes
 from ..serialize import clean, frame, records, series
@@ -339,6 +340,14 @@ def _std_notes(p: Prepared, res: BacktestResult, n_live: int) -> list[str]:
     return notes
 
 
+def _kernel_provenance(used: dict[str, str]) -> dict[str, Any]:
+    """Contract II.4: the engine each kernel in this payload actually ran on, as one provenance
+    row (source ``ohcamel_quant.kernels``). ``engine`` is that engine, or ``"mixed"``."""
+    engines = set(used.values())
+    engine = next(iter(engines)) if len(engines) == 1 else "mixed"
+    return Provenance.now("ohcamel_quant.kernels", engine=engine, kernels=dict(used)).to_dict()
+
+
 def _monthly_last(df: pd.DataFrame | pd.Series) -> Any:
     return df.groupby(df.index.to_period("M")).tail(1)
 
@@ -435,7 +444,7 @@ def _do_run(body: BacktestIn, market: Market) -> dict[str, Any]:
         "look_ahead_audit": res.audit,
         "method": _method(p),
         "notes": _std_notes(p, res, len(net)),
-        "provenance": p.provenance,
+        "provenance": p.provenance + [_kernel_provenance({"backtest_weights": res.kernel_engine})],
     }
     return clean(out)
 
@@ -512,6 +521,9 @@ def _do_sweep(body: SweepIn, market: Market) -> dict[str, Any]:
     weekly = (1.0 + rets).cumprod()
     weekly = weekly.groupby(weekly.index.to_period("W")).tail(1)
     weekly.columns = [f"#{i}" for i in range(len(sw.combos))]
+    used = {"backtest_weights": kernels.engine_of("backtest_weights")}
+    if isinstance(pbo, dict) and "engine" in pbo:            # CSCV ran (not the identical-trials or error path)
+        used["cscv_pbo"] = pbo["engine"]
     out = {
         "strategy": {"key": p.spec.key, "name": p.spec.name, "citation": p.spec.citation},
         "base_params": p.params, "grid": body.grid, "combos": sw.combos,
@@ -532,7 +544,7 @@ def _do_sweep(body: SweepIn, market: Market) -> dict[str, Any]:
         "notes": notes + ["PBO near 0 means the in-sample winner also ranks well out-of-sample; above 0.5 "
                           "means parameter selection is worse than a coin flip.",
                           "SPA benchmark = buy-and-hold of the benchmark ticker (no costs)."],
-        "provenance": p.provenance,
+        "provenance": p.provenance + [_kernel_provenance(used)],
     }
     return clean(out)
 
@@ -577,7 +589,7 @@ def _do_walkforward(body: WalkForwardIn, market: Market) -> dict[str, Any]:
             "(no same-close selection).",
             "Walk-forward efficiency = OOS Sharpe / mean in-sample Sharpe of the chosen combinations."],
         "caps": {"grid_combinations": V.MAX_GRID},
-        "provenance": p.provenance,
+        "provenance": p.provenance + [_kernel_provenance({"backtest_weights": kernels.engine_of("backtest_weights")})],
     }
     return clean(out)
 
@@ -614,7 +626,7 @@ def _do_costs(body: CostsIn, market: Market) -> dict[str, Any]:
             "positive even at 10,000 bps) or 'always_below' (it is <= 0 even at zero cost); "
             "break_even_case_vs_benchmark is the same for the CAGR-vs-benchmark break-even."],
         "caps": {"cost_points": MAX_COST_POINTS},
-        "provenance": p.provenance,
+        "provenance": p.provenance + [_kernel_provenance({"backtest_weights": res.kernel_engine})],
     }
     return clean(out)
 

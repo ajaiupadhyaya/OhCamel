@@ -39,5 +39,5 @@ size updates this line in the same commit.
 
 <!-- quant-tests -->
 ```
-TESTS = 804
+TESTS = 860
 ```

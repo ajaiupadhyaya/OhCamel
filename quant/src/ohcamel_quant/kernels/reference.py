@@ -293,3 +293,58 @@ def garch_fit(r: np.ndarray, kind: str, x0: np.ndarray | None):
     nxt = math.exp(min(x[1] + x[2] * (abs(z) - SQRT2_OV_PI) + x[3] * z + x[4] * math.log(s_last), LNSIGMA_MAX))
     return GarchFitResult("egarch", x, float(garch_nll(x, r, "egarch")), converged, nit, s2, nxt,
                           (r - x[0]) / np.sqrt(s2))
+
+
+# ------------------------------------------------------------------ A6: backtest
+def backtest_weights(prices: np.ndarray, target_w: np.ndarray, decision_idx: np.ndarray, cost_bps: float,
+                     borrow_bps: float, rf: np.ndarray):
+    """backtest/engine.run_weights's accounting loop at 0b87dec, moved here unchanged."""
+    from .types import BacktestPath
+
+    n_t, n_a = prices.shape
+    rets = np.zeros_like(prices)
+    rets[1:] = prices[1:] / prices[:-1] - 1.0
+    exec_at = {int(s): target_w[j] for j, s in enumerate(decision_idx)}
+    w = np.zeros(n_a)
+    W = np.zeros((n_t, n_a))
+    gross = np.zeros(n_t)
+    net = np.zeros(n_t)
+    turnover = np.zeros(n_t)
+    trades = np.zeros((n_t, n_a))
+    costs = np.zeros(n_t)
+    borrow = np.zeros(n_t)
+    c = cost_bps / 1e4
+    b = borrow_bps / 1e4 / 252
+    ruined = False
+    first = min(exec_at) if exec_at else n_t
+    gross[1:first] = rf[1:first]
+    net[1:first] = rf[1:first]
+    rf_l = rf.tolist()
+    for s in range(first, n_t):
+        if s > 0:
+            r = rets[s]
+            wr = w * r
+            wsum = float(w.sum())
+            gs = float(wr.sum()) + (1.0 - wsum) * rf_l[s]
+            bs = b * 0.5 * (float(np.abs(w).sum()) - wsum) if b else 0.0
+            gross[s] = gs
+            borrow[s] = bs
+            g = gs - bs
+            if 1.0 + g <= 0:
+                net[s] = -1.0
+                ruined = True
+                W[s:] = 0.0
+                break
+            w = (w + wr) / (1.0 + g)
+            net[s] = g
+        tw = exec_at.get(s)
+        if tw is not None:
+            dw = tw - w
+            trades[s] = dw
+            to = float(np.abs(dw).sum())
+            turnover[s] = to
+            costs[s] = c * to
+            net[s] = (1.0 + net[s]) * (1.0 - costs[s]) - 1.0
+            w = tw.copy()
+        W[s] = w
+    return BacktestPath(gross, net, W, turnover, trades, costs, borrow, ruined)
