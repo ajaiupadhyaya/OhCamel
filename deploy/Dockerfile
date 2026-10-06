@@ -189,7 +189,14 @@ EXPOSE 8080 8081
 # deploy/smoke.sh --expect-sha can check the gated live engine from the
 # droplet's docker CLI without its password. An ARG is per stage, hence
 # declared again here; last, so it costs one metadata layer.
+#
+# ENV as well, in THIS stage: the builder's ENV above is per stage too and
+# never reached the image that ships, so `docker run --rm --entrypoint
+# printenv <image> OHCAMEL_GIT_SHA` printed nothing and an operator inside
+# the container could not ask which sha it was. The image job
+# (.github/workflows/image.yml, matrix entry `stamp: env`) asserts this line.
 ARG OHCAMEL_GIT_SHA=unknown
+ENV OHCAMEL_GIT_SHA=$OHCAMEL_GIT_SHA
 LABEL org.opencontainers.image.revision="$OHCAMEL_GIT_SHA"
 
 ENTRYPOINT ["/usr/local/bin/ohcamel"]

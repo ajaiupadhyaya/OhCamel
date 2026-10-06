@@ -1,0 +1,337 @@
+# The image workflow: build, smoke, publish.
+#
+# Builds the three images deploy/docker-compose.yml pulls, brings the compose
+# harness up on exactly the images it just built, runs deploy/smoke.sh against
+# that, and -- only after ci has passed on a push to main -- publishes them to
+# ghcr.io as :<sha> and :main. Everything else (a stage branch, a pull
+# request, a hand-started run) builds and smokes and pushes nothing.
+#
+# Three jobs, and the split is the point:
+#
+#   build    one job per image (the matrix below), each on its own runner,
+#            each stamping, asserting and saving its image as an artifact.
+#            No write scope.
+#   smoke    loads the three artifacts, runs the harness on them with the ci
+#            override, runs the suite, tears down. No write scope.
+#   publish  the ONE job that can reach the registry: loads the same three
+#            artifacts the smoke ran and pushes them. `packages: write` sits
+#            here and nowhere else, so the jobs that run code from a branch
+#            (npm, pip, opam, the harness) never hold a token that can
+#            publish under this project's name.
+#
+# What is pushed is byte-for-byte what was smoked: the artifact, not a
+# rebuild from the cache. The gha cache exists to make the engine's
+# twenty-minute opam layer a cache hit; the artifact is the carrier.
+#
+# The sha. On workflow_run, github.sha is the default branch's tip at the
+# moment the trigger fired, which need not be the commit ci passed on; the
+# commit that passed is github.event.workflow_run.head_sha. SHA below is that
+# when there is one and github.sha otherwise, and every checkout, build arg,
+# tag and label in this file reads SHA and nothing else.
+#
+# Image names are written out, lowercase: github.repository is
+# `ajaiupadhyaya/OhCamel`, which the registry refuses as an image name.
+#
+# ci.yml's quant-image job overlaps with the ohcamel-quant entry here (the
+# same Dockerfile); it is kept -- it is ci's own gate on every push, runs the
+# image bare and offline against the fixtures, and needs no artifact.
+#
+# deploy/test/image_workflow_test.sh reads this file as text and pins its
+# shape: the token scopes, the triggers, the matrix, the one gate a push sits
+# behind, and that every Dockerfile declares the stamp its matrix entry says
+# it does. Lists here are written one `- item` a line for that reader.
+
+name: image
+
+on:
+  workflow_run:
+    workflows:
+      - ci
+    types:
+      - completed
+    branches:
+      - main
+  push:
+    # Stage branches build and smoke their images before their merge. main
+    # is deliberately absent: main is built by workflow_run, AFTER ci is green
+    # on it, and a push trigger would build it before, twice, and put a second
+    # run beside the one that publishes.
+    branches:
+      - 'desk/**'
+      - 'final/**'
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege at the top; the publish job takes `packages: write` itself.
+permissions:
+  contents: read
+
+env:
+  SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+jobs:
+  build:
+    # A red ci run still fires workflow_run; nothing is built for it.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # image       the ghcr.io/ajaiupadhyaya/<image> name, lowercase
+        # dockerfile  what it is built from, repo-root context
+        # stamp       what the Dockerfile's LAST stage declares, and so what
+        #             the stamp step may assert beyond the label buildx adds:
+        #               env    ARG + ENV OHCAMEL_GIT_SHA + the revision LABEL;
+        #                      `printenv OHCAMEL_GIT_SHA` prints the sha
+        #               label  ARG + the revision LABEL, no ENV
+        #               none   no ARG at all; the build args are dropped and
+        #                      only the labels this workflow passes carry the
+        #                      sha
+        #             deploy/test/image_workflow_test.sh holds each entry
+        #             exactly equal to its Dockerfile, in both directions.
+        include:
+          - image: ohcamel
+            dockerfile: deploy/Dockerfile
+            stamp: env
+          - image: ohcamel-research
+            dockerfile: deploy/research.Dockerfile
+            # Task 11 declares research.Dockerfile's ARG/ENV and moves this
+            # entry to `env`.
+            stamp: none
+          - image: ohcamel-quant
+            dockerfile: quant/Dockerfile
+            stamp: label
+          # ohcamel-hostd (native/hostd/Dockerfile) lands here as a fourth
+          # entry in compute task 0.4, with its own stamp value.
+          #
+          # ohcamel-worker (Lane B) is NOT an entry: it runs the ohcamel-quant
+          # image with another `command`, so there is no fourth image to
+          # build, and nothing here changes when it arrives.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build stamp
+        id: stamp
+        # The same spelling the Makefile and deploy.sh use for the build.
+        run: echo "built_at=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Build ${{ matrix.image }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          # The droplet is amd64; an image built for the runner's own
+          # platform by default is right only by luck.
+          platforms: linux/amd64
+          # Loaded into the runner's daemon for the stamp step and `docker
+          # save`; never pushed from here.
+          load: true
+          push: false
+          tags: ghcr.io/ajaiupadhyaya/${{ matrix.image }}:${{ env.SHA }}
+          build-args: |
+            OHCAMEL_GIT_SHA=${{ env.SHA }}
+            OHCAMEL_BUILT_AT=${{ steps.stamp.outputs.built_at }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/ajaiupadhyaya/OhCamel
+            org.opencontainers.image.revision=${{ env.SHA }}
+          # mode=max caches every stage, not only the last: the engine's opam
+          # layer lives in its builder stage, and that layer is the twenty
+          # minutes. One scope per image, so the three never evict each other.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - name: Assert the stamp
+        env:
+          IMAGE: ${{ matrix.image }}
+          STAMP: ${{ matrix.stamp }}
+        run: |
+          set -euo pipefail
+          ref="ghcr.io/ajaiupadhyaya/$IMAGE:$SHA"
+          got=$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$ref")
+          if [ "$got" != "$SHA" ]; then
+            echo "::error::$ref carries revision label '$got', expected $SHA"
+            exit 1
+          fi
+          echo "$ref: org.opencontainers.image.revision = $got"
+          case "$STAMP" in
+          env)
+            # --entrypoint, because the engine's entrypoint is its binary and a
+            # bare `docker run <image> printenv` would run `ohcamel printenv`.
+            got=$(docker run --rm --entrypoint printenv "$ref" OHCAMEL_GIT_SHA || true)
+            if [ "$got" != "$SHA" ]; then
+              echo "::error::$ref: printenv OHCAMEL_GIT_SHA printed '$got', expected $SHA -- the ENV is missing from the Dockerfile's last stage, or the build arg was dropped"
+              exit 1
+            fi
+            echo "$ref: OHCAMEL_GIT_SHA = $got"
+            ;;
+          label)
+            echo "$ref: the Dockerfile stamps the label and no ENV (stamp: label); nothing more to assert"
+            ;;
+          none)
+            echo "$ref: the Dockerfile declares no stamp yet (stamp: none); the label above came from this workflow"
+            ;;
+          *)
+            echo "::error::unknown stamp '$STAMP' for $IMAGE"
+            exit 1
+            ;;
+          esac
+
+      - name: Save ${{ matrix.image }}
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/images"
+          docker save "ghcr.io/ajaiupadhyaya/$IMAGE:$SHA" | zstd -T0 -3 -q -o "$RUNNER_TEMP/images/$IMAGE.tar.zst"
+          ls -l "$RUNNER_TEMP/images"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.image }}
+          path: ${{ runner.temp }}/images/${{ matrix.image }}.tar.zst
+          if-no-files-found: error
+          # Already zstd; the uploader has nothing to add.
+          compression-level: 0
+          retention-days: 1
+
+  smoke:
+    needs:
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: image-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/images
+
+      - name: Load the images
+        run: |
+          set -euo pipefail
+          for f in "$RUNNER_TEMP"/images/*.tar.zst; do
+            zstd -dc "$f" | docker load
+          done
+          # The three the harness needs, present under the sha tag the ci
+          # override names; pull_policy: never there turns anything missing
+          # into a hard error, but this says which.
+          for image in ohcamel ohcamel-research ohcamel-quant; do
+            docker image inspect "ghcr.io/ajaiupadhyaya/$image:$SHA" --format '{{.RepoTags}} {{.Size}}'
+          done
+
+      # The base file plus the image job's own override: the sha tags just
+      # loaded, pull_policy: never, deploy/ci.env for the two services that
+      # require /etc/ohcamel/live.env, and the plain-HTTP caddy on 8000 (Quant)
+      # and 8001 (the demo engine). Never the local override, whose build
+      # blocks would let the harness rebuild instead of running what was
+      # loaded. --wait blocks until every started service reports healthy.
+      - name: Harness up
+        run: |
+          set -euo pipefail
+          # book.sexp is gitignored and the runner has none; both engines
+          # bind-mount ../book.sexp, and Docker turns a missing bind source
+          # into a DIRECTORY, which fails the container ("not a directory").
+          # The example book, as deploy.sh seeds it on a fresh droplet.
+          [ -f book.sexp ] || cp book.example.sexp book.sexp
+          OHCAMEL_TAG="$SHA" docker compose --env-file deploy/local.env -f deploy/docker-compose.yml -f deploy/docker-compose.ci.yml --profile demo up -d --no-build --wait --wait-timeout 180
+
+      - name: Smoke
+        run: |
+          set -euo pipefail
+          deploy/smoke.sh http://localhost:8000 --engine http://localhost:8001 --expect-sha "$SHA"
+
+      - name: Harness state and logs
+        if: failure()
+        run: |
+          OHCAMEL_TAG="$SHA" docker compose --env-file deploy/local.env -f deploy/docker-compose.yml -f deploy/docker-compose.ci.yml --profile demo ps --all
+          OHCAMEL_TAG="$SHA" docker compose --env-file deploy/local.env -f deploy/docker-compose.yml -f deploy/docker-compose.ci.yml --profile demo logs --no-color --tail 200
+
+      - name: Harness down
+        if: always()
+        run: |
+          OHCAMEL_TAG="$SHA" docker compose --env-file deploy/local.env -f deploy/docker-compose.yml -f deploy/docker-compose.ci.yml --profile demo down -v --remove-orphans
+
+  publish:
+    needs:
+      - build
+      - smoke
+    # Only a green ci run of a push to this repository's main. Every conjunct
+    # is load-bearing: event_name, because a push to a stage branch or a PR
+    # must never publish; conclusion, because a red main must not; event ==
+    # push, because workflow_run also fires for ci runs of pull requests;
+    # head_branch, because the trigger's branch filter is a filter, not a
+    # proof; head_repository, because a fork's run is not this repository's.
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: image-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/images
+
+      - name: Load the images
+        run: |
+          set -euo pipefail
+          for f in "$RUNNER_TEMP"/images/*.tar.zst; do
+            zstd -dc "$f" | docker load
+          done
+
+      - name: Log in to ghcr.io
+        env:
+          # The job's own token, scoped by the permissions block above. No
+          # new secret, and never on a command line: --password-stdin.
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Push :<sha> and :main
+        run: |
+          set -euo pipefail
+          for image in ohcamel ohcamel-research ohcamel-quant; do
+            ref="ghcr.io/ajaiupadhyaya/$image"
+            docker tag "$ref:$SHA" "$ref:main"
+            # push prints "<tag>: digest: sha256:... size: N" last; kept for
+            # the summary, because RepoDigests is filled in by a push only on
+            # the classic image store.
+            docker push "$ref:$SHA" | tee "$RUNNER_TEMP/push-$image.log"
+            docker push "$ref:main"
+          done
+
+      - name: Digests
+        run: |
+          set -euo pipefail
+          {
+            echo "## Published for $SHA"
+            echo
+            echo "| image | tags | digest |"
+            echo "| --- | --- | --- |"
+            for image in ohcamel ohcamel-research ohcamel-quant; do
+              ref="ghcr.io/ajaiupadhyaya/$image"
+              # The digest the registry assigned, from the push's own output;
+              # RepoDigests (filled in by the push on the classic store) if
+              # that line is missing.
+              digest=$(grep -oE 'digest: sha256:[0-9a-f]{64}' "$RUNNER_TEMP/push-$image.log" | sed 's/^digest: //' | tail -n 1 || true)
+              [ -n "$digest" ] || digest=$(docker inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$ref:$SHA" | sed -n "s|^$ref@||p" | head -n 1)
+              echo "| $ref | :$SHA, :main | ${digest:-unknown} |"
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"

@@ -914,6 +914,12 @@ jobs:
   # endpoint. Offline, so the answer comes from the fixtures baked into the
   # image: that is the check that the image layout satisfies config.py's
   # REPO_ROOT and data/fixtures.py's paths. Built, never pushed.
+  #
+  # Overlaps with .github/workflows/image.yml, whose matrix builds the same
+  # quant/Dockerfile (entry ohcamel-quant) for publishing and smokes it
+  # through the compose harness. Kept on purpose: this is ci's own gate on
+  # every push, it runs the image bare and offline rather than behind caddy,
+  # and it needs no artifact and no second workflow to be red.
   quant-image:
     runs-on: ubuntu-latest
     timeout-minutes: 30

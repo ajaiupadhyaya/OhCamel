@@ -364,12 +364,16 @@ fi
 # same pair of claims /api/ops used to make for the public demo engine: the
 # commit just pulled is the one answering, and this deploy replaced it.
 container_is_this_deploy() {
-	local svc="$1" id rev started age
+	local svc="$1" id rev started bsd_started started_s age
 	if ! command -v docker >/dev/null 2>&1; then
 		no "$svc build sha     docker CLI unavailable, cannot verify" "--expect-sha was given; run the suite where the containers are"
 		return
 	fi
-	id=$(docker ps --filter "label=com.docker.compose.project=ohcamel" \
+	# The compose project the containers belong to: COMPOSE_PROJECT_NAME when
+	# the caller set one (the image job's harness, or one started with -p
+	# beside a running stack), else `ohcamel`, docker-compose.yml's own
+	# `name:`. deploy.sh sets neither and gets the droplet's.
+	id=$(docker ps --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-ohcamel}" \
 		--filter "label=com.docker.compose.service=$svc" --quiet 2>/dev/null | head -1)
 	if [ -z "$id" ]; then
 		no "$svc build sha     no running $svc container found"
@@ -382,7 +386,15 @@ container_is_this_deploy() {
 		no "$svc build sha     ${rev:-unlabelled}, expected ${EXPECT_SHA:0:7}" \
 			"the image answering was not built from this checkout: the build failed, or up -d kept the old image"
 	fi
-	age=$(( $(date +%s) - $(date -d "$started" +%s 2>/dev/null || echo 0) ))
+	# StartedAt is RFC 3339 with nanoseconds, in UTC. GNU date reads it whole;
+	# BSD date (a Mac running the harness) needs the format spelled out, the
+	# fraction and the Z dropped. Unparseable reads as epoch 0, so the age
+	# below is the whole epoch and the check fails rather than passes.
+	bsd_started="${started%%.*}"
+	started_s=$(date -d "$started" +%s 2>/dev/null ||
+		date -j -u -f '%Y-%m-%dT%H:%M:%S' "${bsd_started%Z}" +%s 2>/dev/null ||
+		echo 0)
+	age=$(( $(date +%s) - started_s ))
 	if [ "$age" -ge 0 ] && [ "$age" -lt 300 ]; then
 		ok "$svc started       ${age} s ago: this deploy's container"
 	else
