@@ -1,5 +1,5 @@
 /*
- * App chrome, Paper Tape: masthead, tape, function-code row, footer, command palette.
+ * App chrome, Paper Tape: masthead, tape, function-code row, command line, key map, footer.
  * Rules, not boxes. Every number in mono. The function-code row is the one sticky
  * strip; its height is --topbar-h, which page-level sticky elements offset by.
  */
@@ -380,8 +380,175 @@
   }
 }
 
-/* ---------------------------------------------------------------- palette (P3 replaces) */
-.oc-palette-overlay {
+
+/* ---------------------------------------------------------------- command line */
+/* One ruled line under the function codes; results print below it as a ruled list. */
+.oc-cmd {
+  position: sticky;
+  top: var(--topbar-h);
+  z-index: 19;
+  max-width: 100vw;
+  background: var(--paper);
+}
+.oc-cmd-line {
+  display: flex;
+  align-items: stretch;
+  height: 32px;
+  box-sizing: border-box;
+  padding: 0 var(--sp-6);
+  border-bottom: var(--rule-heavy);
+}
+.oc-cmd-prompt {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  margin-left: calc(-1 * var(--sp-3));
+  padding: 0 var(--sp-3);
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-display);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.oc-cmd-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  caret-color: var(--ink);
+}
+.oc-cmd-input::placeholder {
+  color: var(--ink-2);
+  text-transform: none;
+}
+.oc-cmd-echo {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  padding: 0 var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--ink-2);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.oc-cmd-arrow {
+  margin-right: 0.8ch;
+}
+.oc-cmd-esc {
+  flex: none;
+  margin-right: calc(-1 * var(--sp-3));
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-left: var(--rule-faint);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+.oc-cmd-esc:hover {
+  background: var(--paper-2);
+}
+.oc-cmd-esc:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: -2px;
+}
+.oc-ftool.active {
+  background: var(--ink);
+  color: var(--paper);
+}
+.oc-ftool.active .oc-ftool-key {
+  border-color: var(--paper);
+}
+
+.oc-cmd-results {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  background: var(--paper);
+  border-bottom: var(--rule);
+}
+.oc-cmd-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.oc-cmd-row {
+  display: grid;
+  grid-template-columns: 8ch minmax(0, 16ch) minmax(0, 1fr);
+  align-items: center;
+  column-gap: var(--sp-4);
+  height: var(--row-h);
+  padding: 0 var(--sp-6);
+  border-bottom: var(--rule-faint);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.oc-cmd-row:last-child {
+  border-bottom: 0;
+}
+.oc-cmd-row.active {
+  background: var(--ink);
+  color: var(--paper);
+}
+.oc-cmd-code {
+  font-family: var(--font-display);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.oc-cmd-label,
+.oc-cmd-hint {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-cmd-label {
+  font-weight: 500;
+}
+.oc-cmd-hint {
+  color: var(--ink-2);
+}
+.oc-cmd-row.active .oc-cmd-hint {
+  color: var(--paper);
+}
+.oc-cmd-status {
+  margin: 0;
+  padding: 0 var(--sp-6);
+  height: var(--row-h);
+  line-height: var(--row-h);
+  border-top: var(--rule-faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+.oc-cmd-list + .oc-cmd-status {
+  border-top: var(--rule-faint);
+}
+.oc-cmd-results > .oc-cmd-status:first-child {
+  border-top: 0;
+}
+
+/* ---------------------------------------------------------------- key map */
+.oc-keymap-overlay {
   position: fixed;
   inset: 0;
   z-index: 900;
@@ -391,122 +558,95 @@
   padding: 12vh var(--sp-4) var(--sp-4);
   background: var(--overlay);
 }
-.oc-palette {
-  width: min(640px, 100%);
-  max-height: 70vh;
-  display: flex;
-  flex-direction: column;
+.oc-keymap {
+  outline: none;
+  width: min(560px, 100%);
+  max-height: 76vh;
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 0 var(--sp-6) var(--sp-6);
   background: var(--paper);
   border: var(--rule-heavy);
-  overflow: hidden;
 }
-.oc-palette-search {
+.oc-keymap-head {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 var(--sp-4);
-  height: 48px;
-  border-bottom: var(--rule);
-  color: var(--ink-2);
+  align-items: stretch;
+  justify-content: space-between;
+  height: 40px;
+  border-bottom: var(--rule-double);
 }
-.oc-palette-search input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  outline: none;
-  background: transparent;
-  font-family: var(--font-mono);
-  font-size: var(--fs-lg);
-  color: var(--ink);
-}
-.oc-palette-search input::placeholder {
-  color: var(--ink-2);
-}
-.oc-palette-spin {
-  width: 10px;
-  height: 10px;
-  border: 1px solid var(--ink);
-  animation: oc-spin 0.9s steps(4) infinite;
-}
-@keyframes oc-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-.oc-palette-list {
-  list-style: none;
+.oc-keymap-title {
   margin: 0;
-  padding: 0;
-  overflow: auto;
+  align-self: center;
+  font-family: var(--font-display);
+  font-size: var(--fs-lg);
+  font-weight: 800;
+  letter-spacing: 0.06em;
 }
-.oc-palette-group {
-  padding: var(--sp-3) var(--sp-4) var(--sp-1);
-  border-bottom: var(--rule-faint);
+.oc-keymap-head .oc-cmd-esc {
+  margin-right: calc(-1 * var(--sp-6));
+  padding: 0 var(--sp-6);
+}
+.oc-keymap-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: var(--sp-4);
+  font-size: var(--fs-sm);
+}
+.oc-keymap-cap {
+  caption-side: top;
+  text-align: left;
+  padding-bottom: var(--sp-1);
+  border-bottom: var(--rule);
   font-family: var(--font-display);
   font-size: var(--fs-xs);
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink);
-}
-.oc-palette-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 30px;
-  padding: 0 var(--sp-4);
-  border-bottom: var(--rule-faint);
-  cursor: pointer;
-  color: var(--ink-2);
-}
-.oc-palette-item.active {
-  background: var(--ink);
-  color: var(--paper);
-}
-.oc-palette-item.active .oc-palette-label,
-.oc-palette-item.active .oc-palette-hint,
-.oc-palette-item.active .oc-palette-go {
-  color: var(--paper);
-}
-.oc-palette-code {
-  flex: none;
-  width: 6ch;
-  font-family: var(--font-display);
-  font-size: var(--fs-sm);
   font-weight: 700;
   letter-spacing: 0.08em;
-}
-.oc-palette-label {
-  font-weight: 500;
   color: var(--ink);
-  white-space: nowrap;
 }
-.oc-palette-hint {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--fs-sm);
-  color: var(--ink-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.oc-keymap-table th,
+.oc-keymap-table td {
+  height: var(--row-h);
+  padding: 0;
+  border-bottom: var(--rule-faint);
+  text-align: left;
+  vertical-align: middle;
 }
-.oc-palette-go {
-  color: var(--ink-2);
-}
-.oc-palette-empty {
-  padding: var(--sp-6);
-  text-align: center;
-  color: var(--ink-2);
-}
-.oc-palette-foot {
-  display: flex;
-  gap: var(--sp-4);
-  padding: var(--sp-2) var(--sp-4);
-  border-top: var(--rule);
+.oc-keymap-table th {
+  width: 18ch;
+  padding-right: var(--sp-4);
   font-family: var(--font-mono);
-  font-size: var(--fs-2xs);
-  color: var(--ink-2);
+  font-weight: 500;
+  white-space: nowrap;
 }
-.oc-palette-foot .warn {
-  color: var(--signal);
+.oc-keymap-table td {
+  font-family: var(--font-mono);
+  color: var(--ink-2);
+  letter-spacing: 0.02em;
+}
+
+@media (max-width: 600px) {
+  .oc-cmd-line,
+  .oc-cmd-row,
+  .oc-cmd-status {
+    padding-left: var(--sp-4);
+    padding-right: var(--sp-4);
+  }
+  .oc-cmd-echo {
+    display: none;
+  }
+  .oc-cmd-row {
+    grid-template-columns: 6ch minmax(0, 12ch) minmax(0, 1fr);
+    column-gap: var(--sp-3);
+  }
+  .oc-keymap {
+    padding: 0 var(--sp-4) var(--sp-4);
+  }
+  .oc-keymap-head .oc-cmd-esc {
+    margin-right: calc(-1 * var(--sp-4));
+    padding: 0 var(--sp-4);
+  }
+  .oc-keymap-table th {
+    width: auto;
+  }
 }

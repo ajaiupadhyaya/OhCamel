@@ -1,6 +1,6 @@
 /**
  * The app's page registry — the single source for the router, the function-code nav and the
- * command palette. Page components live in src/pages/<Name>.tsx and are lazily loaded (one
+ * command line. Page components live in src/pages/<Name>.tsx and are lazily loaded (one
  * chunk per page). Every route has a function code; the nav row shows the codes of `nav`
  * routes in NAV_CODES order, then any other nav codes in array order.
  */
@@ -14,7 +14,7 @@ export interface RouteDef {
   /** Link target for nav (for parameterised routes, a sensible default). */
   to: string;
   title: string;
-  /** One line for the palette / placeholder. */
+  /** One line for the placeholder. */
   blurb: string;
   /** Function code: the nav label and the command-line verb (e.g. "MKTS"). */
   code: string;

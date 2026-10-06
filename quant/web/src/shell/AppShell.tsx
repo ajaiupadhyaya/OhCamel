@@ -1,36 +1,43 @@
 /**
  * Global chrome, top to bottom: masthead (double rule), tape, function-code row
- * (sticky), the routed page, footer (double rule). No sidebar, no icons.
- * `/` or Cmd/Ctrl-K opens the command palette (Task P3 replaces it with the command line).
+ * (sticky), the command line when open, the routed page, footer (double rule).
+ * No sidebar, no icons. Keys: `/` or Cmd/Ctrl-K for the command line, `g` + letter
+ * to jump, `?` for the key map (see hotkeys.ts).
  */
-import { useEffect, useState, type ReactNode } from "react";
-import { useLocation } from "react-router-dom";
-import { useTheme } from "../lib/theme";
-import { CommandPalette } from "./CommandPalette";
+import { useCallback, useState, type ReactNode } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { CommandLine, KeyMap } from "./CommandLine";
 import { Footer } from "./Footer";
 import { FunctionNav } from "./FunctionNav";
+import { useHotkeys } from "./hotkeys";
 import { Masthead } from "./Masthead";
 import { Tape } from "./Tape";
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const [palette, setPalette] = useState(false);
-  const { toggle } = useTheme();
+  const [cmd, setCmd] = useState(false);
+  const [keys, setKeys] = useState(false);
   const loc = useLocation();
+  const nav = useNavigate();
 
-  useEffect(() => {
-    const on = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement | null;
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setPalette((p) => !p);
-      } else if (e.key === "/" && !/^(INPUT|TEXTAREA|SELECT)$/.test(t?.tagName ?? "") && !t?.isContentEditable) {
-        e.preventDefault();
-        setPalette(true);
-      }
-    };
-    window.addEventListener("keydown", on);
-    return () => window.removeEventListener("keydown", on);
+  const toggleCmd = useCallback(() => {
+    setKeys(false);
+    setCmd((o) => !o);
   }, []);
+  const closeCmd = useCallback(() => setCmd(false), []);
+  const closeKeys = useCallback(() => setKeys(false), []);
+
+  useHotkeys({
+    onCommand: toggleCmd,
+    onHelp: () => {
+      setCmd(false);
+      setKeys((o) => !o);
+    },
+    onNavigate: (path) => {
+      setKeys(false);
+      setCmd(false);
+      nav(path);
+    },
+  });
 
   const focus = loc.pathname === "/deck" && new URLSearchParams(loc.search).get("focus") === "1";
 
@@ -41,12 +48,13 @@ export function AppShell({ children }: { children: ReactNode }) {
       </a>
       <Masthead />
       <Tape />
-      <FunctionNav onCommand={() => setPalette(true)} />
+      <FunctionNav onCommand={toggleCmd} commandOpen={cmd} />
+      <CommandLine open={cmd} onClose={closeCmd} />
       <main className="oc-content" id="main">
         {children}
       </main>
       <Footer />
-      <CommandPalette open={palette} onClose={() => setPalette(false)} onToggleTheme={toggle} />
+      <KeyMap open={keys} onClose={closeKeys} />
     </div>
   );
 }

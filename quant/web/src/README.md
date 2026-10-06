@@ -103,12 +103,17 @@ null, undefined or NaN.
 
 ## Routes & navigation
 
-`lib/routes.ts` is the single registry (router, sidebar, command palette); its order is the
+`lib/routes.ts` is the single registry (router, function-code nav, command line); its order is the
 sidebar order: Markets, Flight Deck · Portfolio Lab, Optimizer, Strategy Lab · Volatility, Rates & Macro,
 Company · Live Engine, Methodology. `/company` (no ticker) renders the Company landing.
 The Flight Deck takes `/deck?source=reference` (the recorded reference book) or
 `?source=engine` (the OCaml engine bridge); the default is your portfolio.
 The Optimizer accepts `/optimize?tickers=A,B&weights=0.4,0.6&start=…&end=…&from=portfolio`.
+
+The command line (`/` or ⌘K) parses one line with `shell/command.ts` (`parseCommand`,
+`commandPath`): function codes (`RATES`, `GO VOL`), `<TICKER> GP|DES|OMON`, `PORT RISK 99 10D`,
+`JOB <KIND>`; anything else searches pages and tickers. `g` + letter jumps (`shell/hotkeys.ts`);
+`?` shows the key map.
 
 ## Portfolio context
 

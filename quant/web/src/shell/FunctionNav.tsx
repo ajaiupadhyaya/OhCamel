@@ -14,7 +14,7 @@ function isActive(r: RouteDef, pathname: string, matched: boolean): boolean {
   return r.path.includes(":") && pathname.startsWith(r.path.split("/:")[0]);
 }
 
-export function FunctionNav({ onCommand }: { onCommand: () => void }) {
+export function FunctionNav({ onCommand, commandOpen = false }: { onCommand: () => void; commandOpen?: boolean }) {
   const { resolved, toggle } = useTheme();
   const { pathname } = useLocation();
   const next = resolved === "carbon" ? "paper" : "carbon";
@@ -39,7 +39,15 @@ export function FunctionNav({ onCommand }: { onCommand: () => void }) {
         ))}
       </nav>
       <div className="oc-fnav-tools">
-        <button type="button" className="oc-ftool" onClick={onCommand} aria-label="Command line (/ or Ctrl-K)" title="Command line — / or ⌘K">
+        <button
+          type="button"
+          className={`oc-ftool${commandOpen ? " active" : ""}`}
+          onMouseDown={(e) => commandOpen && e.stopPropagation()}
+          onClick={onCommand}
+          aria-expanded={commandOpen}
+          aria-label="Command line (/ or Ctrl-K)"
+          title="Command line — / or ⌘K"
+        >
           <span className="oc-ftool-key" aria-hidden>
             /
           </span>
