@@ -224,11 +224,16 @@ else
 	# anchor expanded into ohcamel-demo and ohcamel-live, the fixed refs, and
 	# the x-engine extension field itself -- so `at least 4`, not a count
 	# that moves with how a compose version reports an anchor.
+	# Older Compose (the v2 line on GitHub's runners) stops at the first
+	# interpolation error, so the render proves the refusal and the source
+	# proves the count: every image reference in the base file reads the tag.
 	n=$(grep -c 'error while interpolating .*OHCAMEL_TAG' "$scratch/D.err" || true)
-	if [ "$n" -ge 4 ]; then
-		ok "D3 every image reference reads OHCAMEL_TAG ($n interpolation errors, at least 4)"
+	refs=$(grep -cE '^\s*image:.*\$\{OHCAMEL_TAG' "$base" || true)
+	untagged=$(grep -E '^\s*image:.*ghcr\.io/ajaiupadhyaya/' "$base" | grep -vc 'OHCAMEL_TAG' || true)
+	if [ "$n" -ge 1 ] && [ "$refs" -ge 4 ] && [ "$untagged" -eq 0 ]; then
+		ok "D3 every image reference reads OHCAMEL_TAG ($refs references, $n interpolation error(s) reported)"
 	else
-		no "D3 every image reference reads OHCAMEL_TAG" "only $n interpolation error(s) name it; expected at least 4"
+		no "D3 every image reference reads OHCAMEL_TAG" "$n interpolation error(s), $refs tagged references (at least 4), $untagged ghcr references without the tag"
 	fi
 fi
 
@@ -345,7 +350,7 @@ if render "$FE" "$scratch/FE.err" --env-file "$harness_env" -f "$base" -f "$ci_y
 		block=$(service_block "$FE" "$svc")
 		if echo "$block" | grep -q '/etc/ohcamel/live.env'; then
 			no "F4 $svc reads deploy/ci.env under the ci override, not /etc/ohcamel/live.env" "still names /etc/ohcamel/live.env"
-		elif echo "$block" | grep -qE 'path: .*/deploy/ci\.env$'; then
+		elif echo "$block" | grep -qE '(path: |- )[^ ]*/deploy/ci\.env$'; then
 			ok "F4 $svc reads deploy/ci.env under the ci override, not /etc/ohcamel/live.env"
 		else
 			no "F4 $svc reads deploy/ci.env under the ci override" "no env_file path ending in deploy/ci.env in its block"
