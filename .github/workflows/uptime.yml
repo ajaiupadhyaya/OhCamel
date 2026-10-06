@@ -1,0 +1,43 @@
+name: uptime
+
+# Uptime and certificate watch for the two public hostnames, from outside the
+# droplet: scripts/uptime.sh, every fifteen minutes and on demand. It makes
+# read-only GETs and opens TLS connections, nothing else -- no secret, no
+# credential, no write scope. A failing check fails the run, and a failed run
+# is the alert, once the owner turns on Actions failure notifications (O11).
+#
+# GitHub disables a scheduled workflow in a public repository after 60 days
+# without repository activity; `gh workflow enable uptime.yml` re-enables it
+# (docs/status.md, Task 19).
+#
+# The hosts come from the repository variables OHCAMEL_DEMO_HOST and
+# OHCAMEL_LIVE_HOST when set (deploy.env's names), else the production names.
+# They are hostnames, not secrets.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One watch at a time; a slow run is not stacked on.
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: scripts/uptime.sh
+        env:
+          OHCAMEL_DEMO_HOST: ${{ vars.OHCAMEL_DEMO_HOST || 'ohcamel.ajaiupadhyaya.com' }}
+          OHCAMEL_LIVE_HOST: ${{ vars.OHCAMEL_LIVE_HOST || 'live.ohcamel.ajaiupadhyaya.com' }}
+        run: bash scripts/uptime.sh
