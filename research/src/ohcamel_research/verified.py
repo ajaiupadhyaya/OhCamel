@@ -21,4 +21,4 @@ from __future__ import annotations
 # research/tests, collected whole (no -k, -m or node-id filter): the number
 # conftest.py's pytest_collection_modifyitems hook checks collection against,
 # and the number scripts/check-counts.sh greps out of this line.
-TESTS = 388
+TESTS = 391

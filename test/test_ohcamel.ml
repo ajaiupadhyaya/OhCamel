@@ -63,6 +63,7 @@ let suites =
     Test_contract.suite;
     Test_desk_order.suite;
     Test_journal.suite;
+    Test_journal_backup.suite;
     Test_sim_venue.suite;
     Test_alpaca_paper.suite;
     Test_book_sync.suite;

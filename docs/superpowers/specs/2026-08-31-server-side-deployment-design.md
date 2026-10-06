@@ -273,3 +273,37 @@ stack trace.
 | 5 | Smoke suite green against production, README section, ops notes | 1–4 |
 
 Phase 1 is the majority of the work and needs nothing from anyone.
+
+## Addendum, 2026-10-06: deploy by pull, and what changed since
+
+This spec describes the first deployment as it was built. Four things in it
+no longer describe the running system, and are corrected here rather than in
+place, so the history above stays readable:
+
+- **The droplet no longer builds.** CI builds the four images
+  (`ghcr.io/ajaiupadhyaya/{ohcamel,ohcamel-research,ohcamel-quant,ohcamel-hostd}`)
+  and publishes them per commit sha; compose has no `build:` block and
+  references `${OHCAMEL_TAG}`; `deploy/deploy.sh --sha <sha>` checks the sha
+  out detached, waits for the images, backs up the journal, runs
+  `ohcamel check-book` in the new image, pulls, restarts, smokes, and appends
+  `UTC sha ok|failed` to `~/deploys.log`. `--build` is the fallback, and it
+  builds all four images on the droplet. Rollback is `--sha <previous good
+  sha>`, not a revert. The *Build* section's twenty-minute OCaml build is now
+  CI's cost, and the 4 GB sizing argument above is the fallback's.
+- **The Secrets table is incomplete.** It lists six variables; the engine
+  now reads thirteen, and the Quant service, the research service and the
+  host daemon read their own. The one table of every variable the code reads
+  is in `docs/status.md`, *Environment variables*.
+- **The ACME email is the account contact, not an alert channel:** Let's
+  Encrypt stopped sending expiry email on 2025-06-04. Certificate expiry is
+  watched by `scripts/uptime.sh`, run every 15 minutes by
+  `.github/workflows/uptime.yml`.
+- **The smoke suite** has grown well past the seven assertions in *Testing*:
+  the Quant site's data checks, `--expect-sha`, and the live desk checked
+  from inside its container (`--live-container`). `deploy/smoke.sh`'s header
+  is the current list.
+
+Backups (`deploy/backup.sh`, nightly at 06:30 UTC, and a pre-deploy copy on
+every live deploy), the restore and its drill (`deploy/restore.sh`), the
+on-host watch (`deploy/watch.sh`) and the outside uptime check were added
+after this spec; their runbooks are in `docs/status.md`, *Operating it*.

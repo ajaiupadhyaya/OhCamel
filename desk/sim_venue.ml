@@ -5,9 +5,9 @@
    caller supplies, so that the desk above it runs the same code on both.
 
    Its calendar is synthetic and says so: sessions of a fixed length from the
-   moment the venue opened, dated from 2026-01-01. A demo that dated its
-   sessions with today's date would put fabricated days into a record that
-   looks like a real one.
+   moment the venue opened, dated on the weekdays from 2026-01-01
+   ([session_date]). A demo that dated its sessions with today's date would put
+   fabricated days into a record that looks like a real one.
 
    A held position with no mark makes the account an error. The whole engine
    is arranged against a position marked at a price that never existed, and a
@@ -20,6 +20,31 @@ open Ohcamel.Types
 
 let name = "simulated"
 let base_date = Date.create_exn ~y:2026 ~m:Month.Jan ~d:1
+
+(* The k-th synthetic session's date (k >= 1): the k-th WEEKDAY from
+   [base_date], counting base_date itself as the first. 2026-01-01 is a
+   Thursday, so the first two sessions are Thursday the 1st and Friday the
+   2nd, and the third is Monday the 5th.
+
+   Weekends are skipped because these dates are read as a trading record --
+   they go into the journal's session rows, onto the Execution page, and onto
+   the clock block ruling 20 puts on the wire -- and a session dated Saturday
+   is a day the market this venue imitates never had. Holidays are NOT
+   skipped: this venue has no holiday table and does not pretend to one. What
+   keeps that honest is not the calendar but the label: every synthetic date
+   is marked synthetic on the page.
+
+   k <= 1 is the first session rather than an error, so a caller counting from
+   zero gets 2026-01-01 and never the Wednesday before it. *)
+let session_date k =
+  let rec walk date remaining =
+    if remaining <= 0 then date
+    else
+      let next = Date.add_days date 1 in
+      if Day_of_week.is_sun_or_sat (Date.day_of_week next) then walk next remaining
+      else walk next (remaining - 1)
+  in
+  walk base_date (k - 1)
 
 (* The session the venue's clock reports. [Rolling] is the demo's: always
    open, one session of [session_length] after another. A test sets the other
@@ -125,8 +150,8 @@ let quote (t : t) (symbol : Symbol.t) : Venue.Quote.t option =
 (* A session a test set is reported as set, dated by its close's UTC date:
    the test chooses the times, and nothing here pretends to know the
    exchange's calendar. [Rolling]: the k-th session (k >= 1) closes at
-   opened_at + k x length and is dated base_date + (k - 1) days; the next
-   close is the first strictly after now. *)
+   opened_at + k x length and is dated [session_date k], the k-th synthetic
+   weekday; the next close is the first strictly after now. *)
 let clock (t : t) : Venue.Session_clock.t =
   let now = t.now () in
   let set ~is_open ~next_open ~next_close =
@@ -155,7 +180,7 @@ let clock (t : t) : Venue.Session_clock.t =
         is_open = true;
         next_open = now;
         next_close;
-        next_close_date = Date.add_days base_date (k - 1);
+        next_close_date = session_date k;
       }
 
 let read (t : t) : Venue.Read.t =

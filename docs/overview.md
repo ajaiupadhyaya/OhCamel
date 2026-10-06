@@ -226,14 +226,22 @@ may send one); on the public demo each answers 405.
   FRED, behind a password.
 - **Infrastructure:** one DigitalOcean droplet (2 vCPU, 4 GB, $24/month), Docker
   Compose, and Caddy for TLS. Last deployed 2026-09-17 from `e0f5a71`.
-- **Deploy check:** a smoke suite runs after every deploy, and a failure fails
-  the deploy. The checks that matter are that the recompute counter *advances*
-  between two reads and that the stream delivers frames spread over 20 seconds.
-  A frozen graph would still serve valid JSON.
+- **Deploy check:** `deploy/deploy.sh` runs the smoke suite after every
+  deploy, with `--expect-sha` so the containers answering must be the commit
+  just deployed, and a failure fails the deploy. The live host is checked from
+  inside its own container, with no password: the desk's status, the paper
+  account, and three of the four mutating routes refusing a request without
+  the page's header. It never POSTs `/api/desk/kill`, because a regression
+  there would halt the live desk; that route's refusal is covered by the
+  hermetic desk-route tests. The engine checks that matter are that the
+  recompute counter *advances* between two reads and that the stream delivers
+  frames spread over 20 seconds. A frozen graph would still serve valid JSON.
+  Between deploys, an on-host watch every 5 minutes and an outside uptime
+  check every 15 minutes take over.
 
 ## How it's checked
 
-- **<!-- count:ocaml-tests -->663<!-- /count --> tests**, plus <!-- count:scheduler-tests -->30<!-- /count --> scheduler cases in `test/desk_async`, all
+- **<!-- count:ocaml-tests -->720<!-- /count --> tests**, plus <!-- count:scheduler-tests -->33<!-- /count --> scheduler cases in `test/desk_async`, all
   hermetic: no network, no credentials, no waiting on a clock -- the
   scheduler's cases move a clock of their own. Expected values are derived by
   hand beside each assertion, and each suite checks its own count against
@@ -252,7 +260,7 @@ may send one); on the public demo each answers 405.
   check, every credential-free mode run end to end, and the README's quoted
   tables reproduced on both platforms.
 - **`make research-test`** runs the research layer's own suite separately:
-  <!-- count:research-tests -->388<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Not folded
+  <!-- count:research-tests -->391<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Not folded
   into [`lib/verified.ml`](../lib/verified.ml)'s counts, which cover the
   OCaml suites only.
 

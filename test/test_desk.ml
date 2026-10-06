@@ -256,11 +256,13 @@ let test_a_desk_without_a_venue_says_why () =
         (Poly.equal (field s "equity") `Null))
     ()
 
-let test_the_frame's_desk_object_has_exactly_these_sixteen_keys () =
+(* Task 13a moved this pin from sixteen keys to seventeen: [clock] is appended
+   last, after last_error, so nothing a reader indexes by position moves. *)
+let test_the_frame's_desk_object_has_exactly_these_seventeen_keys () =
   with_desk
     ~f:(fun desk _ _ ->
       Alcotest.(check (list string))
-        "sixteen, in order"
+        "seventeen, in order"
         [
           "status";
           "reason";
@@ -278,6 +280,7 @@ let test_the_frame's_desk_object_has_exactly_these_sixteen_keys () =
           "sessions";
           "last_sync";
           "last_error";
+          "clock";
         ]
         (Yojson.Safe.Util.keys (Desk.summary_json desk)))
     ()
@@ -732,6 +735,322 @@ let test_a_read_that_raced_a_fill_changes_nothing_and_the_next_one_applies () =
         (Yojson.Safe.Util.to_number (field (Desk.body_json desk) "equity_gap")))
     ()
 
+(* ---- ruling 20: the market clock on the wire ---------------------------- *)
+
+(* The venue's answer, handed to [set_clock] directly, as every other venue
+   answer in this file is handed to [sync_with]: [Desk.refresh_clock] is the
+   Deferred wrapper bin/main.ml's timer calls, and no case here starts a
+   scheduler.
+
+   A Monday's session on the New York venue, in UTC. 2026-09-14 is a Monday:
+   2026-01-01 is a Thursday (2024-01-01 was a Monday, 2024 is a leap year so
+   2025-01-01 is a Wednesday, and 2025 has 365 days so 2026-01-01 is a
+   Thursday), and 2026-09-14 is 256 days later (31 + 28 + 31 + 30 + 31 + 30 +
+   31 + 31 = 243 days to 2026-09-01, plus 13), with 256 = 36 x 7 + 4, so
+   Thursday + 4 = Monday. The regular session runs 09:30-16:00 ET =
+   13:30-20:00 UTC in daylight time, so at 14:00 UTC the market is open, this
+   session closes at 20:00 UTC and the next one opens on Tuesday at 13:30. *)
+let monday_session =
+  {
+    Venue.Session_clock.now = at;
+    is_open = true;
+    next_open = Time_ns.of_string_with_utc_offset "2026-09-15T13:30:00Z";
+    next_close = Time_ns.of_string_with_utc_offset "2026-09-14T20:00:00Z";
+    next_close_date = Date.of_string "2026-09-14";
+  }
+
+let clock_of json = Yojson.Safe.Util.member "clock" json
+let clock_field json key = Yojson.Safe.Util.member key (clock_of json)
+
+(* Unknown is not zero, and it is not false either: a desk that has taken no
+   reading says so in a word and carries five nulls, rather than publishing
+   is_open false -- which watch.sh (Task 18) would read as "the market is
+   shut" and skip its two most valuable checks on. *)
+let test_the_clock_block_is_unknown_with_nulls_until_a_reading_answers () =
+  with_desk
+    ~f:(fun desk _ _ ->
+      let s = Desk.summary_json desk in
+      Alcotest.(check string)
+        "source" "unknown"
+        (Yojson.Safe.Util.to_string (clock_field s "source"));
+      List.iter [ "is_open"; "next_open"; "next_close"; "next_close_date"; "read_at" ]
+        ~f:(fun key ->
+          Alcotest.(check bool)
+            (key ^ " is null") true
+            (Poly.equal (clock_field s key) `Null)))
+    ()
+
+(* The fifteen-minute boundary, both sides of it and on it. A reading taken at
+   14:00:00 is read at:
+     14:14:59 -- age 899 s, under 900, so "venue-clock";
+     14:15:00 -- age exactly 900 s, which is not OLDER than fifteen minutes,
+                 so still "venue-clock";
+     14:15:01 -- age 901 s, over 900, so "stale";
+     14:16:00 -- age 960 s, the plan's sixteen minutes, "stale" -- and every
+                 value is still the one the venue gave, because a reading that
+                 has aged has not become wrong. *)
+let test_a_reading_is_the_venue_clock_for_fifteen_minutes_and_stale_after () =
+  with_desk
+    ~f:(fun desk _ _ ->
+      Desk.set_clock desk ~at monday_session;
+      let source_at text =
+        let now = Time_ns.of_string_with_utc_offset text in
+        Yojson.Safe.Util.to_string (clock_field (Desk.summary_json ~now desk) "source")
+      in
+      Alcotest.(check string) "899 s" "venue-clock" (source_at "2026-09-14T14:14:59Z");
+      Alcotest.(check string) "900 s" "venue-clock" (source_at "2026-09-14T14:15:00Z");
+      Alcotest.(check string) "901 s" "stale" (source_at "2026-09-14T14:15:01Z");
+      Alcotest.(check string) "960 s" "stale" (source_at "2026-09-14T14:16:00Z");
+      let sixteen =
+        Desk.summary_json
+          ~now:(Time_ns.of_string_with_utc_offset "2026-09-14T14:16:00Z")
+          desk
+      in
+      Alcotest.(check bool)
+        "a stale reading keeps is_open" true
+        (Yojson.Safe.Util.to_bool (clock_field sixteen "is_open"));
+      Alcotest.(check string)
+        "and next_open" "2026-09-15T13:30:00.000000000Z"
+        (Yojson.Safe.Util.to_string (clock_field sixteen "next_open"));
+      Alcotest.(check string)
+        "and next_close" "2026-09-14T20:00:00.000000000Z"
+        (Yojson.Safe.Util.to_string (clock_field sixteen "next_close"));
+      Alcotest.(check string)
+        "and next_close_date" "2026-09-14"
+        (Yojson.Safe.Util.to_string (clock_field sixteen "next_close_date"));
+      Alcotest.(check string)
+        "and the stamp of the read it kept" "2026-09-14T14:00:00.000000000Z"
+        (Yojson.Safe.Util.to_string (clock_field sixteen "read_at")))
+    ()
+
+(* One constructor, so the desk block that rides on every frame -- and the one
+   /api/ops will carry through Task 37's ?ops_extra seam, which is built from
+   this same [summary_fields] -- can never disagree with /api/desk. Asserted
+   by equality of the whole object rather than field by field: a second
+   constructor that happened to agree on four fields and not the fifth would
+   pass a field-by-field check on the four. *)
+let test_the_frames_desk_clock_is_the_same_object_as_api_desks () =
+  with_desk
+    ~f:(fun desk _ _ ->
+      Desk.set_clock desk ~at monday_session;
+      let now = Time_ns.of_string_with_utc_offset "2026-09-14T14:05:00Z" in
+      let frame = clock_of (Desk.summary_json ~now desk) in
+      let body = clock_of (Desk.body_json ~now desk) in
+      Alcotest.(check bool)
+        "the frame's clock object is not empty" false (Poly.equal frame `Null);
+      Alcotest.(check string)
+        "the frame's desk block and /api/desk carry the same clock"
+        (Yojson.Safe.to_string frame) (Yojson.Safe.to_string body))
+    ()
+
+(* The demo's block is populated, and populated from the simulated venue's own
+   synthetic calendar rather than from today.
+
+   Five-minute sessions from 14:00:00; seven minutes in, the first session
+   (closed at 14:05) is done and the second closes at 14:10. The second
+   synthetic session is dated the second weekday from 2026-01-01, which is
+   Friday 2026-01-02 (2026-01-01 is a Thursday -- the derivation is above
+   [monday_session]). It is a weekday, which is what "a synthetic weekday
+   clock" asks for: the demo never reports a session dated on a day the market
+   it imitates does not trade. *)
+let test_the_simulated_venues_synthetic_clock_populates_the_block () =
+  with_desk
+    ~f:(fun desk _ _ ->
+      let seven = Time_ns.add at (Time_ns.Span.of_min 7.0) in
+      let venue =
+        Ohcamel_desk.Sim_venue.create ~opened_at:at
+          ~marks:(fun _ -> None)
+          ~now:(fun () -> seven)
+          ~half_spread_bps:(fun _ -> 5.0)
+          ~cash:Notional.zero ~positions:[] ()
+      in
+      let reading = Ohcamel_desk.Sim_venue.clock venue in
+      Desk.set_clock desk ~at:seven reading;
+      let s = Desk.summary_json ~now:seven desk in
+      Alcotest.(check string)
+        "the demo's block is a reading, not unknown" "venue-clock"
+        (Yojson.Safe.Util.to_string (clock_field s "source"));
+      Alcotest.(check bool)
+        "the synthetic session is open" true
+        (Yojson.Safe.Util.to_bool (clock_field s "is_open"));
+      Alcotest.(check string)
+        "dated the second synthetic weekday" "2026-01-02"
+        (Yojson.Safe.Util.to_string (clock_field s "next_close_date"));
+      Alcotest.(check bool)
+        "which is a weekday" false
+        (Day_of_week.is_sun_or_sat
+           (Date.day_of_week reading.Venue.Session_clock.next_close_date)))
+    ()
+
+(* Fix round, B1: the k where the two calendars part, read through the clock.
+
+   The case above is at k = 2, and the pre-change arithmetic --
+   [Date.add_days base_date (k - 1)] -- agrees with the weekday walk at k = 1
+   and k = 2, because the second weekday from Thursday 2026-01-01 IS
+   2026-01-01 + 1 day. So restoring the old line leaves every assertion above
+   passing. k = 3 is the first session where the two disagree.
+
+   Twelve minutes into five-minute sessions from 14:00:00: elapsed 12 min, so
+   k = floor(12/5) + 1 = 3, the third session, closing at
+   14:00 + 3 x 5 min = 14:15:00Z. The third WEEKDAY from Thursday 2026-01-01
+   is Monday 2026-01-05 (Thu 01-01, Fri 01-02, then Sat 01-03 and Sun 01-04
+   are skipped -- 2026-01-01 is a Thursday, and the derivation is above
+   [monday_session]). The old arithmetic gave base_date + 2 days =
+   2026-01-03, a SATURDAY: a session dated on a day the market this venue
+   imitates never had, published on /api/desk. That is the defect ruling 20's
+   task exists to remove, so it is asserted here on the published field.
+
+   This case goes through [Sim_venue.clock] and reads the desk's own block,
+   NOT [Sim_venue.session_date] directly: test_sim_venue pins the calendar,
+   and what nothing held was the clock's use of it. *)
+let test_the_synthetic_clocks_third_session_is_published_as_a_monday () =
+  with_desk
+    ~f:(fun desk _ _ ->
+      let twelve = Time_ns.add at (Time_ns.Span.of_min 12.0) in
+      let venue =
+        Ohcamel_desk.Sim_venue.create ~opened_at:at
+          ~marks:(fun _ -> None)
+          ~now:(fun () -> twelve)
+          ~half_spread_bps:(fun _ -> 5.0)
+          ~cash:Notional.zero ~positions:[] ()
+      in
+      let reading = Ohcamel_desk.Sim_venue.clock venue in
+      Desk.set_clock desk ~at:twelve reading;
+      let s = Desk.summary_json ~now:twelve desk in
+      Alcotest.(check string)
+        "the third session closes at 14:15Z" "2026-09-14T14:15:00.000000000Z"
+        (Yojson.Safe.Util.to_string (clock_field s "next_close"));
+      Alcotest.(check string)
+        "dated the third synthetic weekday, Monday 2026-01-05 and not Saturday the 3rd"
+        "2026-01-05"
+        (Yojson.Safe.Util.to_string (clock_field s "next_close_date"));
+      Alcotest.(check bool)
+        "which is a weekday" false
+        (Day_of_week.is_sun_or_sat
+           (Date.day_of_week reading.Venue.Session_clock.next_close_date));
+      (* The wire and the journal's session rows come from one function --
+         bin/main.ml's demo close calls [session_date] too -- so the block's
+         date is the date that function gives for this k, and not a second
+         arithmetic that happens to agree at small k. *)
+      Alcotest.(check string)
+        "and it is the calendar's own third session"
+        (Date.to_string (Ohcamel_desk.Sim_venue.session_date 3))
+        (Yojson.Safe.Util.to_string (clock_field s "next_close_date")))
+    ()
+
+(* Fix round, B3: both of bin/main.ml's timer wirings, pinned in the source.
+
+   [Desk.refresh_clock] is called from exactly two places, both
+   [Clock_ns.every'] callbacks in bin/main.ml: live mode's
+   Config.Runtime.clock_interval timer and the demo's three-second staleness
+   timer. Delete the live one and the live /api/desk publishes
+   source: "unknown" for the life of the process, watch.sh (Task 18) skips
+   both of its market-state checks with one log line each, and every test,
+   smoke and lint in this repository stays green. Task 15's demo smoke catches
+   the demo's site later; nothing at any stage catches the live one.
+
+   bin/ is an executable and not a library, so no test can link it and call
+   the callback. This is therefore a source-level assertion, the same shape as
+   test_rebalance.ml's one-submit-site case, over the copies of bin/*.ml that
+   test/dune already globs in as deps. Each call is reported with the nearest
+   [Clock_ns.every'] line above it, so deleting a call fails here, and so does
+   moving one under another timer or adding a third site. That alone does not
+   hold the call INSIDE the callback: hoisted to just below the callback's
+   closing [Deferred.unit);] -- still under the same timer line, run once at
+   startup and never again -- the triple is unchanged, and the live process
+   would publish "stale" for the rest of its life (fix round 1's mutations M9
+   and M15). So each call's leading-space width is also held strictly greater
+   than its timer line's: ocamlformat lays a callback's body four columns past
+   the [Clock_ns.every'] line that opened it (12 over 8 in live mode, 6 over 2
+   in the demo) and a statement after the callback back at the timer's own
+   column, where the hoist lands. A hoist hand-indented to the body's column
+   would pass this line and fail [dune build @fmt], which every commit and
+   CI's build-and-test job run, so the two checks together are the pin.
+   "Desk.refresh_clock" is matched qualified, because the comments in
+   bin/main.ml and desk/desk.ml write the bare [refresh_clock] and a comment
+   is not a wiring. *)
+let test_both_of_the_engines_timers_refresh_the_clock () =
+  let sources =
+    Sys_unix.readdir "../bin" |> Array.to_list
+    |> List.filter ~f:(fun f ->
+        String.is_suffix f ~suffix:".ml" && not (String.is_substring f ~substring:".pp."))
+    |> List.sort ~compare:String.compare
+    |> List.map ~f:(fun f -> "../bin/" ^ f)
+  in
+  Alcotest.(check bool)
+    "there are bin/ sources to read at all" true
+    (not (List.is_empty sources));
+  (* Leading-space width: ocamlformat indents with spaces, never tabs. *)
+  let indent line = String.length line - String.length (String.lstrip line) in
+  let calls =
+    List.concat_map sources ~f:(fun file ->
+        In_channel.read_lines file
+        |> List.fold
+             ~init:(("", 0), [])
+             ~f:(fun ((timer, timer_indent), found) line ->
+               let timer, timer_indent =
+                 if String.is_substring line ~substring:"Clock_ns.every'" then
+                   (String.strip line, indent line)
+                 else (timer, timer_indent)
+               in
+               if String.is_substring line ~substring:"Desk.refresh_clock" then
+                 ( (timer, timer_indent),
+                   (file, timer, String.strip line, timer_indent, indent line) :: found )
+               else ((timer, timer_indent), found))
+        |> snd |> List.rev)
+  in
+  Alcotest.(check (list (triple string string string)))
+    "two wirings: live mode's clock_interval timer, and the demo's staleness timer"
+    [
+      ( "../bin/main.ml",
+        "Clock_ns.every' runtime.Config.Runtime.clock_interval (fun () ->",
+        "don't_wait_for (Ohcamel_desk.Desk.refresh_clock desk);" );
+      ( "../bin/main.ml",
+        "Clock_ns.every' (Time_ns.Span.of_sec 3.0) (fun () ->",
+        "don't_wait_for (Ohcamel_desk.Desk.refresh_clock desk);" );
+    ]
+    (List.map calls ~f:(fun (file, timer, call, _, _) -> (file, timer, call)));
+  (* Inside the callback, not hoisted below it: live 12 > 8, demo 6 > 2. *)
+  List.iter calls ~f:(fun (file, timer, _, timer_indent, call_indent) ->
+      Alcotest.(check bool)
+        (sprintf
+           "%s: the call under [%s] sits %d columns in, deeper than that line's %d, so \
+            it is inside the callback the timer opened"
+           file timer call_indent timer_indent)
+        true (call_indent > timer_indent))
+
+(* The kernel may not name the desk (global constraints), and the clock is the
+   desk's. [Session_clock] is declared in desk/venue.ml and read in desk/ and
+   bin/ alone; a kernel module that named it would be lib/ learning the venue's
+   vocabulary, which is what ?frame_extra and ?ops_extra exist to prevent. CI
+   greps for the four strings invariant 6 lists; this is the same check for
+   this task's type, run by the suite so it fails locally too.
+
+   The sources are lib/'s own and lib/feed/'s, read out of the build's copies
+   (test/dune's glob_files deps); the preprocessed .pp.ml copies beside them
+   are skipped, as test_rebalance.ml's one-submit-site test skips them. *)
+let test_the_kernel_does_not_name_the_venues_clock () =
+  let files dir =
+    Sys_unix.readdir dir |> Array.to_list
+    |> List.filter ~f:(fun f ->
+        (String.is_suffix f ~suffix:".ml" || String.is_suffix f ~suffix:".mli")
+        && not (String.is_substring f ~substring:".pp."))
+    |> List.sort ~compare:String.compare
+    |> List.map ~f:(fun f -> dir ^ "/" ^ f)
+  in
+  let sources = files "../lib" @ files "../lib/feed" in
+  Alcotest.(check bool)
+    "there are lib/ sources to read at all" true
+    (List.length sources > 20);
+  Alcotest.(check (list (pair string string)))
+    "no kernel source names Session_clock" []
+    (List.concat_map sources ~f:(fun file ->
+         In_channel.read_lines file
+         |> List.filter_map ~f:(fun line ->
+             Option.some_if
+               (String.is_substring line ~substring:"Session_clock")
+               (file, String.strip line))))
+
 let suite =
   ( "desk",
     [
@@ -749,8 +1068,8 @@ let suite =
         `Quick test_a_failed_read_keeps_the_last_good_account_and_says_what_failed;
       Alcotest.test_case "a desk without a venue says why" `Quick
         test_a_desk_without_a_venue_says_why;
-      Alcotest.test_case "the frame's desk object has exactly these sixteen keys" `Quick
-        test_the_frame's_desk_object_has_exactly_these_sixteen_keys;
+      Alcotest.test_case "the frame's desk object has exactly these seventeen keys" `Quick
+        test_the_frame's_desk_object_has_exactly_these_seventeen_keys;
       Alcotest.test_case "with a manager the desk says what it can do" `Quick
         test_with_a_manager_the_desk_says_what_it_can_do;
       Alcotest.test_case "/api/desk answers through the server" `Quick
@@ -769,4 +1088,19 @@ let suite =
       Alcotest.test_case
         "a read that raced a fill changes nothing, and the next one applies" `Quick
         test_a_read_that_raced_a_fill_changes_nothing_and_the_next_one_applies;
+      Alcotest.test_case "the clock block is unknown, with nulls, until a reading answers"
+        `Quick test_the_clock_block_is_unknown_with_nulls_until_a_reading_answers;
+      Alcotest.test_case
+        "a reading is the venue clock for fifteen minutes and stale after" `Quick
+        test_a_reading_is_the_venue_clock_for_fifteen_minutes_and_stale_after;
+      Alcotest.test_case "the frame's desk clock is the same object as /api/desk's" `Quick
+        test_the_frames_desk_clock_is_the_same_object_as_api_desks;
+      Alcotest.test_case "the simulated venue's synthetic clock populates the block"
+        `Quick test_the_simulated_venues_synthetic_clock_populates_the_block;
+      Alcotest.test_case "the synthetic clock's third session is published as a Monday"
+        `Quick test_the_synthetic_clocks_third_session_is_published_as_a_monday;
+      Alcotest.test_case "both of the engine's timers refresh the clock" `Quick
+        test_both_of_the_engines_timers_refresh_the_clock;
+      Alcotest.test_case "the kernel does not name the venue's clock" `Quick
+        test_the_kernel_does_not_name_the_venues_clock;
     ] )

@@ -30,3 +30,14 @@ OHCAMEL_QUANT_LIVE_TESTS=1 .venv/bin/pytest -m live   # real sources (needs inte
 OHCAMEL_QUANT_OFFLINE=1 .venv/bin/python -m ohcamel_quant serve --port 8090
 cd web && npm ci && npm run dev      # http://localhost:5173, proxies /api
 ```
+
+The offline suite's size (`.venv/bin/pytest -q`, `-m live` deselected). This
+line is the source of truth for every published Quant test count:
+`scripts/check-counts.sh` reads it and checks each
+`<!-- count:quant-tests -->` marker against it, so a change to the suite's
+size updates this line in the same commit.
+
+<!-- quant-tests -->
+```
+TESTS = 664
+```

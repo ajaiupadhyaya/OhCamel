@@ -10,8 +10,8 @@ or the password -- and it is deliberately narrow:
 * **GET only, and only three engine paths**: ``/api/health``, ``/api/ops``
   (best effort, for the build/mode line), ``/api/snapshot`` and
   ``/api/history``. The path is never taken from the request, so no desk route
-  (``/api/desk/orders``, ``/api/desk/cancel``, ``/api/desk/kill`` ...) and no
-  other engine route can be reached through here, whatever a caller sends.
+  and no other engine route can be reached through here, whatever a caller
+  sends.
 * **Short timeouts** (connect 1.5 s, total 4 s) and a 2-second in-process
   cache per path, so many public viewers cost the engine one read per path
   every two seconds, and a wedged engine costs this app four seconds at most.

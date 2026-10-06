@@ -1,0 +1,11 @@
+# The Rust workspace of the compute program
+# (docs/superpowers/plans/2026-09-24-quant-compute-program.md II.1):
+# hostd (host telemetry, Task 0.4) now; kernels (Lane A) joins later.
+[workspace]
+resolver = "2"
+members = ["hostd"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"

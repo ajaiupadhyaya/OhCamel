@@ -9,7 +9,7 @@
    5 serves them on /api/reports beside the numbers the process did compute.
 
    [coverage_pct] is the published rounding, not the quotient: 8,126 / 10,173
-   is 79.878%, published as 79.9 -- README.md's badge rounds further to the
+   is 79.878%, published as 79.9 -- docs/engine.md's badge rounds further to the
    whole percent (80%) and docs/status.md carries the one-decimal figure
    (79.9%), so a page that printed 79.8781 would
    be claiming a precision `make coverage` did not measure (bisect_ppx
@@ -24,7 +24,7 @@
    is named here by its directory, because CI's grep refuses the desk
    library's name anywhere in lib/. *)
 
-let tests = 663
+let tests = 720
 
 (* The scheduler suite's count: test/desk_async, the executable whose cases run
    with Async's scheduler on clocks of their own. It asserts this against its
@@ -32,7 +32,7 @@ let tests = 663
    drift. Counted apart because the main suite's promise is that it never
    starts the scheduler. Not served on /api/reports: the page's dated block
    prints [tests], and reports.ml names its keys one by one. *)
-let scheduler_tests = 30
+let scheduler_tests = 33
 
 (* The coverage figures: dated and re-measured together, never adjusted
    alone -- see the comment above [tests] for why. *)

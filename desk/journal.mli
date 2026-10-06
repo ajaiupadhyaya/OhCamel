@@ -26,6 +26,74 @@ val location : t -> string
 val version : t -> int
 (** Moves once per committed transaction: the page's signal that the record changed. *)
 
+val open_read_only : string -> (t, string) Result.t
+(** Opens an existing journal with SQLITE_OPEN_READONLY and runs no [set_up]: no pragma,
+    no CREATE TABLE, no schema-version insert, nothing that would write a page. That is
+    the whole point -- [open_] would happily add its eleven tables to a backup that was
+    missing them, and then report the backup sound. A handle from here answers every read
+    in this interface and raises on every write. *)
+
+val tables : string list
+(** Every table the schema creates, in the order [verify] counts them, read out of the
+    schema itself so a twelfth table is counted the day it is added rather than the day
+    someone remembers this list. *)
+
+val backup : src:string -> dst:string -> (unit, string) Result.t
+(** Copies the journal at [src] to [dst] with SQLite's online backup API, which is the one
+    way to copy a live WAL database without stopping the writer: [cp] can catch it
+    mid-transaction and produce a file that opens and is wrong.
+
+    [src] is opened read-only, so the running desk's file is only read. The copy is
+    written to [dst ^ ".tmp"], chmodded 0640 and renamed onto [dst], so a reader of the
+    directory sees either no file or a whole one. Both handles carry a busy timeout,
+    because the desk may be writing while this runs.
+
+    The copy is then taken out of WAL mode -- a write to the copy, never to [src]. SQLite
+    will not open a WAL database read-only unless it can create the -shm file beside it,
+    and a backup is the one file that gets read where it cannot write, [verify] included.
+    The copy holds every page either way, so the rollback journal mode costs nothing and
+    makes the single file a whole backup.
+
+    A destination that is the source's own file -- the journal, or its -wal, -shm or
+    -journal, by path once every symlink is resolved or by inode -- is refused before
+    anything is written, because renaming the copy onto it would replace the live journal
+    under the desk. *)
+
+(** What [verify] found in one journal file. [problems] is the whole verdict: empty means
+    every check passed, and [Report.clean] is the sentence [journal-verify]'s exit status
+    is made of. *)
+module Report : sig
+  type t = {
+    path : string;
+    schema_version : string option;  (** What [meta] holds, or None when it holds none. *)
+    integrity : string list;  (** PRAGMA integrity_check's answers; ["ok"] when sound. *)
+    counts : (string * int) list;
+        (** One row count per present table, in [tables] order. *)
+    missing_tables : string list;
+    newest_session : Date.t option;
+    newest_order : (string * Time_ns.t) option;
+        (** The newest order's client id and the time it was created. *)
+    problems : string list;
+  }
+  [@@deriving sexp_of, compare, equal]
+
+  val clean : t -> bool
+  (** [List.is_empty problems]: nothing wrong with this file. *)
+
+  val lines : t -> string list
+  (** The report as [journal-verify] prints it, one line each, problems last. *)
+end
+
+type report = Report.t
+
+val verify : string -> (report, string) Result.t
+(** Reopens the file read-only and asks it for its schema version, PRAGMA integrity_check,
+    a row count per table, its newest session date and its newest order. An [Error] is a
+    file that could not be read at all -- missing, not a database, truncated past the
+    point SQLite will answer a query. A file that answers but answers badly is [Ok] with a
+    non-empty [problems], because the operator wants the counts printed beside the
+    trouble. Either way [journal-verify] exits non-zero. *)
+
 module Session : sig
   type t = {
     date : Date.t;
@@ -263,6 +331,17 @@ module For_testing : sig
   val journal_mode : t -> string
   (** SQLite's answer to PRAGMA journal_mode: "wal" for a file journal, "memory" for
       ":memory:". *)
+
+  val problems_of :
+    schema_version:string option ->
+    integrity:string list ->
+    missing_tables:string list ->
+    string list
+  (** [verify]'s verdict alone, with no SQLite and no IO, from answers of the caller's
+      choosing, in the order the report prints them: the seam for pinning each problem's
+      wording and the order they print in. It does not pin integrity_check itself -- a
+      real backup with one page zeroed at a time does, layout-independently, because
+      SQLite either refuses such a file or reports the page, and neither reads clean. *)
 
   val wal_check : path:string -> string list -> (unit, string) Result.t
   (** The refusal's decision alone, with no SQLite and no IO: [Ok ()] only for a single

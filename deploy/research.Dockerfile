@@ -16,7 +16,19 @@
 # fixtures/macro/..., research/config/..., research/experiments/...) and
 # every path this Dockerfile copies is repo-root-relative for exactly this
 # reason -- there is one directory layout, and it is the repository's own.
-FROM python:3.12-slim AS research
+# The patch version and its digest, not `3.12-slim`. Two things float in that
+# tag, and the second one is the surprise: the interpreter's patch level, and
+# the Debian release underneath it -- `-slim` follows Debian stable, so the same
+# tag crossed from bookworm to trixie without this file changing. Verified
+# 2026-09-20 against registry-1.docker.io: `python:3.12-slim`,
+# `python:3.12.14-slim` and `python:3.12.14-slim-trixie` were all the same
+# manifest digest, so this pin changed nothing about what is pulled and made
+# both moving parts explicit. That matters here because the apt line below
+# installs git, ca-certificates and tzdata from whatever release this image is,
+# and because the build-time zone check and `uv sync --locked` both run against
+# it. Dependabot moves this line (.github/dependabot.yml); a bump that also
+# changes the Debian release is a bump to read rather than merge.
+FROM python:3.12.14-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9 AS research
 
 # git: uv shells out to it for fdq's git+https dependency (pinned in
 # research/pyproject.toml; public, needs no credential -- see the pin's own
@@ -115,16 +127,39 @@ print(f"{len(manifests)} manifest(s) fresh: " + ", ".join(str(p) for p in manife
 PYEOF
 EOF
 
-# Runs as root (no USER here) -- deliberately, and only for one reason: the
-# named `signals` volume (docker-compose.yml) is also mounted read-only into
-# ohcamel-live, and whichever of the two containers Docker creates first is
-# the one whose image ownership seeds that still-empty volume the first time
-# it is used. compose declares no ordering between them (there is no reason
-# for the live engine's own start to wait on this container -- see
-# docs/status.md's empty-directory finding), so a non-root user here could
-# end up unable to write into a volume a *different* image's uid seeded.
-# Root sidesteps the race outright: DAC checks never block root's own
-# writes. The blast radius this buys back is bounded elsewhere -- no ports,
-# no bind mount but the one named volume, a read-only root filesystem with
-# only /tmp writable (docker-compose.yml), and no-new-privileges.
+# The service's user is uid 10001 -- the engine's (deploy/Dockerfile's
+# `useradd --uid 10001 ... ohcamel`), on purpose. The named `signals` volume
+# (docker-compose.yml) is mounted read-write here at /signals and read-only
+# into ohcamel-live at /data/signals, and Docker seeds an empty named volume
+# from the image of whichever container mounts it first, ownership included.
+# Compose declares no ordering between the two, so both images carry the
+# mount point owned by the SAME uid: whichever one seeds the volume, it comes
+# out 10001's, writable by this service and readable by the engine. This
+# image used to run as root to sidestep that race -- a guess no build had
+# tested; the image job (.github/workflows/image.yml, the signals volume
+# step) now runs both orders on fresh volumes and asserts the write and the
+# read-only read. No home directory: the root filesystem is read-only in
+# compose and the service writes only /signals and /tmp (FDQ_DATA_DIR).
+RUN useradd --system --uid 10001 --no-create-home --home-dir /nonexistent \
+      --shell /usr/sbin/nologin research \
+ && mkdir -p /signals \
+ && chown 10001 /signals
+
+USER 10001
+
+# The build stamp, last, as deploy/Dockerfile's runtime stage declares it: the
+# image job passes both build args, and without an ARG here they were dropped,
+# so an operator inside the droplet could not ask which sha the research
+# container was. ENV as well as ARG so that `docker run --rm --entrypoint
+# printenv <image> OHCAMEL_GIT_SHA` answers (the image job's `stamp: env`
+# asserts exactly that); the LABEL because deploy.sh's --build fallback
+# passes no --label, so the Dockerfile's own is the only revision an image
+# built on the droplet carries. After every RUN, so a new sha re-runs none of
+# the uv layers.
+ARG OHCAMEL_GIT_SHA=unknown
+ARG OHCAMEL_BUILT_AT=unknown
+ENV OHCAMEL_GIT_SHA=$OHCAMEL_GIT_SHA
+ENV OHCAMEL_BUILT_AT=$OHCAMEL_BUILT_AT
+LABEL org.opencontainers.image.revision="$OHCAMEL_GIT_SHA"
+
 ENTRYPOINT ["/app/research/.venv/bin/python", "-m", "ohcamel_research.service"]

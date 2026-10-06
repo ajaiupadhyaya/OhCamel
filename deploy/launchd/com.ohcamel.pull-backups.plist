@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The laptop's launchd agent for deploy/pull-backups.sh: the off-box copy of
+  /var/backups/ohcamel (finish plan ruling 11, owner step O15).
+
+  Install, once, on the laptop:
+
+    cp deploy/launchd/com.ohcamel.pull-backups.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.ohcamel.pull-backups.plist
+
+  and to run it now rather than wait: launchctl start com.ohcamel.pull-backups.
+  The log is ~/Library/Logs/ohcamel-pull-backups.log.
+
+  08:15 local, daily. The host's backup runs at 06:30 UTC (02:30 EDT, 01:30
+  EST), so the pull always finds that night's copy. A StartCalendarInterval
+  the laptop slept through is run once when it wakes, which is the plan's
+  "while the laptop is awake"; one that fell while it was shut down is not,
+  and the next day's pull brings the missed files along (nothing is deleted
+  on the host for two weeks). RunAtLoad is false: loading the agent must not
+  start an ssh session.
+
+  launchd expands no `~` and no `$HOME` in a string of its own, so the script
+  runs through /bin/bash -c, which does; the PATH puts Homebrew's rsync ahead
+  of macOS's openrsync, and both accept the flags the script uses. plutil
+  -lint checks this file in CI's macOS leg (.github/workflows/ci.yml) and in
+  deploy/test/pull_backups_test.sh.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.ohcamel.pull-backups</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>-c</string>
+		<string>exec "$HOME/Documents/OhCamel/deploy/pull-backups.sh" &gt;&gt;"$HOME/Library/Logs/ohcamel-pull-backups.log" 2&gt;&amp;1</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+	</dict>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>8</integer>
+		<key>Minute</key>
+		<integer>15</integer>
+	</dict>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>ProcessType</key>
+	<string>Background</string>
+</dict>
+</plist>

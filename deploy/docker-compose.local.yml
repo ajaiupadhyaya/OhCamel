@@ -1,12 +1,12 @@
 # The localhost harness.
 #
-#   docker compose --env-file local.env -f docker-compose.yml \
+#   OHCAMEL_TAG=local docker compose --env-file local.env -f docker-compose.yml \
 #       -f docker-compose.local.yml --profile demo up -d
 #
 # An OVERRIDE of docker-compose.yml, not a replacement, so the engine service
-# under test is the real one: same image, same command, same read-only root,
-# same mounted book, and the same ohcamel-quant image and settings as the
-# public site. Three things change, and only three:
+# under test is the real one: same image name, same command, same read-only
+# root, same mounted book, and the same ohcamel-quant image and settings as
+# the public site. Four things change, and only four:
 #
 #   1. Caddy serves http://localhost (Quant) and http://localhost:8001 (the
 #      synthetic engine, --profile demo) and does not attempt ACME.
@@ -14,12 +14,39 @@
 #      Nothing here can obtain a certificate.
 #   3. The environment variables production requires come from deploy/local.env
 #      (passed with --env-file), so running this needs no hand-written config.
+#   4. The build blocks. docker-compose.yml names images to PULL, by commit
+#      sha, from ghcr.io -- nothing on the droplet builds -- so the harness is
+#      the one place an image is built from the working tree, and the three
+#      build blocks live here. The tag is `local`: deploy/local.env carries
+#      OHCAMEL_TAG=local, the Makefile passes the same value on every
+#      LOCAL_COMPOSE and tags its `docker build -t` with it, and so `make
+#      deploy-build` produces ghcr.io/ajaiupadhyaya/<name>:local and `make
+#      deploy-up --no-build` starts exactly that. Nothing ever pushes a
+#      :local tag; the name is the production name so that the harness runs
+#      the file production runs, with one word changed.
 #
 # What it is FOR: proving the public Quant site answers through the production
 # proxy configuration with real data, and that a frame written by the engine
 # reaches a client through Caddy without being buffered. That is the assertion the whole
 # deployment turns on, it is cheap to get wrong, and it is checkable on a
 # laptop in thirty seconds.
+#
+# Whose override this is: the localhost harness's (make deploy-*). The image
+# job's is docker-compose.ci.yml, which names the sha tags it just loaded and
+# carries no build block. The droplet uses neither.
+
+# The engine's build, once, for the two services that share the engine anchor:
+# ohcamel-demo (--profile demo, the harness) and ohcamel-live (--profile live).
+# Both name the same image, so when both profiles are on the second build is
+# a cache hit.
+x-engine-build: &engine-build
+  context: ..
+  dockerfile: deploy/Dockerfile
+  # Passed through to dune's %{env:...} inside the builder stage. Absent,
+  # the image honestly says `unknown` rather than carrying a date nobody set.
+  args:
+    OHCAMEL_GIT_SHA: "${OHCAMEL_GIT_SHA:-unknown}"
+    OHCAMEL_BUILT_AT: "${OHCAMEL_BUILT_AT:-unknown}"
 
 services:
   caddy:
@@ -31,3 +58,29 @@ services:
       - ./Caddyfile.snippets:/etc/caddy/Caddyfile.snippets:ro
       - caddy_data:/data
       - caddy_config:/config
+
+  ohcamel-demo:
+    build: *engine-build
+
+  ohcamel-live:
+    build: *engine-build
+
+  ohcamel-research:
+    build:
+      context: ..
+      dockerfile: deploy/research.Dockerfile
+
+  ohcamel-quant:
+    build:
+      context: ..
+      dockerfile: quant/Dockerfile
+      args:
+        OHCAMEL_GIT_SHA: "${OHCAMEL_GIT_SHA:-unknown}"
+
+  # Host telemetry (native/hostd): the Rust workspace is the whole input.
+  ohcamel-hostd:
+    build:
+      context: ..
+      dockerfile: native/hostd/Dockerfile
+      args:
+        OHCAMEL_GIT_SHA: "${OHCAMEL_GIT_SHA:-unknown}"

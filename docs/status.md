@@ -194,7 +194,10 @@ below re-enters the project-local opam switch, so they work from a clean shell.
 | `garch` | `garch` | nothing | The measurement behind not wiring GARCH in |
 | `demo [port]` | `demo` | nothing | The dashboard on a synthetic feed. This is what the public URL runs |
 | `live [book]` | `run-live` | Alpaca + FRED keys | Real market data, terminal output |
-| `serve [port]` | `serve` | Alpaca + FRED keys | Real market data, dashboard |
+| `serve [port] [book]` | `serve` | Alpaca + FRED keys | Real market data, dashboard; the port first, then the book (default `book.sexp`). What the live host runs, as `serve 8081` |
+| `check-book [book]` | -- | nothing | Parses the book and runs every validation the engine would -- universe and cap, limits, alerts, desk, signals -- and exits 1 listing every problem. `deploy.sh` runs it in the new image before any pull |
+| `journal-backup SRC DIR [--name NAME]` | -- | nothing | Copies the journal with SQLite's online backup API, verifies the copy, then prunes `DIR`. What the nightly and pre-deploy backups run |
+| `journal-verify FILE` | -- | nothing | Prints a journal's schema version, integrity, row counts and newest rows. What the restore drill runs |
 
 Also: `make test`, `make bench` (local only, a minute or two), `make coverage`,
 `make fmt`, `make deps`, `make doctor` (diagnoses the macOS build of Owl, the
@@ -274,7 +277,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **<!-- count:ocaml-tests -->663<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->30<!-- /count --> scheduler cases in `test/desk_async` —
+- **<!-- count:ocaml-tests -->720<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->33<!-- /count --> scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler
@@ -286,11 +289,11 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 - **Coverage 79.9%** (8,126 / 10,173 instrumented points in `lib/` and
   `desk/`, measured 2026-09-20), with a 60% floor in CI that exists to make
   deleting tests noticeable, not as a target. The number is bimodal by
-  design, and the two modes are what the per-file table in `README.md`
-  actually shows: 26 files run 81% to 95%, and 17 run below 80%. Of those
-  17, the six that perform network IO themselves run 36% to 65%, because
-  exercising them means mocking a broker, which raises the number and
-  establishes nothing. The rest of the low mode is derived
+  design, and the two modes are what the per-file table in the
+  [README](engine.md) actually shows: 26 files run 81% to 95%, and 17 run
+  below 80%. Of those 17, the six that perform network IO themselves run 36%
+  to 65%, because exercising them means mocking a broker, which raises the
+  number and establishes nothing. The rest of the low mode is derived
   `sexp_of`/`compare`/`equal` boilerplate on record and variant types —
   `desk/venue.ml`, at 13%, is almost entirely that.
 - **CI** on every push, `ubuntu-latest` and `macos-latest`. The macOS leg
@@ -306,7 +309,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 - **Recomputation counts are asserted**, not claimed: `test_graph.ml` pins
   how many nodes a tick reaches.
 - **`make research-test`** runs the research layer's own suite separately:
-  <!-- count:research-tests -->388<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Reported
+  <!-- count:research-tests -->391<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Reported
   here rather than folded into `lib/verified.ml`, which counts the OCaml
   suites only.
 - **Production smoke suite** after every deploy: the dashboard renders,
@@ -389,7 +392,7 @@ line each (10 to 12 bind the order path, `desk/oms.ml`):
 - **10. Journal before wire.** An order is in the journal as `Pending_submit` before the request that submits it is sent, and a submission whose outcome is unknown becomes `Submit_unknown`, resolved by asking the venue for its client order id, never by sending it again.
 - **11. Fills are facts.** A fill is recorded even when it arrives in a state that makes the transition illegal, with the anomaly beside it, and a position is set from the venue's reported position, not incremented.
 - **12. Every trade passes the engine first.** Every order is checked by the rules and then against the limits on a fork of the live graph before it exists at a venue, and one that creates a breach or worsens one is rejected naming the limits.
-- **13. Persistence is the journal, and only the journal.** One SQLite file; the engine's root filesystem stays read-only, the in-memory trail stays in memory, and nothing else writes to disk.
+- **13. Persistence is the journal, and only the journal.** One SQLite file; the engine's root filesystem stays read-only, the in-memory trail stays in memory, and nothing else writes to disk. A backup is a copy of the journal, written to the host, and the engine neither writes nor reads it.
 
 ## What it is not, and known limits
 
@@ -400,13 +403,13 @@ line each (10 to 12 bind the order path, `desk/oms.ml`):
 - One broker (Alpaca, IEX feed on the free tier), one macro source (FRED, `DGS10` by default), one macro factor.
 - Not a strategy platform, on purpose: `make backtest` validates the *risk model*, never a trading idea, and nothing here is optimised. `research/` does validate trading ideas now (phase A3), against the charter's gates, but validating and trading stay apart -- every strategy ships `(sizing advisory)` by default and no task has ever set one `live`. EXP-A01, the one battery run so far, tested two strategies (`exp_a01_spy`, `exp_a01_tlt`) and both **fail**: see the quoted verdict in [`README.md`](../README.md#signals-and-research) and [`research/experiments/EXP-A01/report.md`](../research/experiments/EXP-A01/report.md).
 - A departure from the charter, disclosed in the report: `docs/CHARTER.md`'s Data section says the bars come from "Alpaca (IEX, daily)"; EXP-A01's actual ten-year history is consolidated (SIP) volume, unadjusted, so returns exclude distributions -- a bias against a rule passing, not for it. `docs/CHARTER.md` is a verbatim port and does not carry the correction, so it is stated here and in the README instead.
-- The research image (`deploy/research.Dockerfile`) runs its process as root, deliberately: the named `signals` volume it shares with `ohcamel-live` is seeded by whichever container starts first, compose declares no ordering between them, and a non-root user here could end up unable to write into a volume the other image's uid had already seeded. Recorded as a known departure because it has never been verified against a real build -- see *What the owner must do on the live host*, below.
 - Nothing is optimised: the engine reports concentration and never suggests weights.
 - Options: European only, one flat rate, one vol per contract, no dividends, no implied-vol solve, vega not bucketed by strike, and off in live mode.
 - Volatility: equal-weighted or EWMA; GARCH is present but not wired in, for a measured reason.
 - Validation windows: three US equity episodes, scored at TODAY's six names held at constant weights — what this book would have done, not what the book of the day did.
 - Positions are a static file unless `run-live` or `serve` runs with an Alpaca paper key, when the desk reads that account every minute for quantities and cash; the book file still declares the universe, the limits and the alerts, and names the account holds outside it show as unmanaged.
 - Single droplet, no replica, by design: a second copy of an in-memory graph is a second, differently aged truth.
+- Operations, as they stand (see *Operating it*): the only off-box copy of the journal is the owner's laptop pull, which runs while the laptop is awake; the live host's basic auth has no rate limit, an open owner decision; capacity is the 2026-09-24 survey's, not yet re-measured (O17); and the disaster-recovery target of 2 hours has never been rehearsed.
 
 ## How it got here
 
@@ -520,49 +523,383 @@ happened by itself, and none of it will until the owner does it by hand:
 
 ## Operating it
 
-All on the droplet, as the deploy user, from `~/OhCamel`.
+*Runbooks, as of 2026-10-06.* All on the droplet, as the deploy user
+(`ohcamel`), from `~/OhCamel`, unless a step says root or the laptop. Since
+2026-10-05 the agent (Claude) runs deploys on the owner's authorization; the
+owner still holds the basic-auth password, the Alpaca, FRED and GitHub
+accounts, DNS, and every spending decision. Every script named here is read
+before it is run: several of them act on production with no confirmation.
+
+### Deploy, by sha
+
+`deploy/deploy.sh` deploys one commit by **pulling** the four images CI
+published for it -- `ghcr.io/ajaiupadhyaya/{ohcamel,ohcamel-research,ohcamel-quant,ohcamel-hostd}:<sha>`.
+It builds nothing unless `--build` is passed. Its own `--help` text is the
+reference; the two commands a release uses are:
 
 ```
-# a fresh box, once, as root (idempotent; prints the next steps when done)
-ssh root@DROPLET 'bash -s' < deploy/provision.sh
-
-# redeploy -- pull FIRST, then run. deploy.sh pulls too, but bash reads a
-# script as it goes, so a script that replaces itself mid-run keeps executing
-# the old text; pulling first means the version that runs is the one you meant
-git pull --ff-only && deploy/deploy.sh          # public demo
-git pull --ff-only && deploy/deploy.sh --live   # plus the live host
-
-# roll back: deploy.sh fast-forwards whatever branch is checked out (`git pull
-# --ff-only`), it does not always build origin/main, so a rollback is a revert
-# on the branch actually checked out on the droplet (main, for every deploy so
-# far), pushed, then the redeploy above -- not a checkout on the droplet, which
-# the next deploy's pull would undo
-
-# look
-docker compose -f deploy/docker-compose.yml ps
-docker compose -f deploy/docker-compose.yml logs --tail 100 [caddy|ohcamel-demo|ohcamel-live]
-deploy/smoke.sh https://ohcamel.ajaiupadhyaya.com [--live https://live.ohcamel.ajaiupadhyaya.com] [--expect-sha "$(git rev-parse HEAD)"]
-open https://ohcamel.ajaiupadhyaya.com/ops       # which build, how long, what the process is doing; the live host's /ops draws both
-
-# change the book without a rebuild: edit book.sexp, then restart the engine
-# that reads it -- the demo and the live engine are separate containers, so
-# restarting one does not pick up the edit on the other
-docker compose -f deploy/docker-compose.yml restart ohcamel-demo
-docker compose -f deploy/docker-compose.yml --profile live restart ohcamel-live
+deploy/deploy.sh --sha <sha> --live          # the public and live hosts together
+deploy/deploy.sh --sha <sha> --public-only   # caddy, ohcamel-quant and ohcamel-hostd only; any time of day
 ```
 
-A `--live` redeploy refuses to run on a weekday inside 09:25-16:10
-America/New York time -- a restart drops the one allowed stream and forces
-reconciliation -- unless `--during-market` is passed to override that
-deliberately.
+`--sha` defaults to `origin/main`, resolved after `git fetch origin`. A run, in
+order: the market guard; `git fetch origin`; a detached checkout of the sha
+(if `deploy.sh` itself differs there, the checked-out version is re-run once
+with the same arguments); a wait of up to 40 minutes for all four images to
+exist at the sha; the market guard again; the pre-deploy journal backup (live
+only, below); `ohcamel check-book` on `book.sexp` inside the new engine image,
+with no network, aborting before anything is pulled; `docker compose pull`;
+`up -d --remove-orphans`; a wait of up to 120 s for health; `deploy/smoke.sh
+https://PUBLIC --expect-sha <sha> [--live https://LIVE --live-container]`;
+one line `UTC sha ok|failed` appended to `~/deploys.log`; and, only after a
+good deploy, every image tag but the three most recent good shas' removed.
+Exit 0 only when the smoke suite passed. `--dry-run` prints every command
+and runs none.
 
-Things not to do: delete the `caddy_data` volume (it holds the certificate and
-the ACME account; Let's Encrypt rate-limits re-issuance); add `ports:` to an
-engine service (the firewall will not save it — smoke assertion 6 checks from
-outside); source `deploy/.env` into a shell (the `$$` becomes a PID — see the
-spec); commit `book.sexp` or any `.env`.
+A `--live` deploy is refused on a weekday inside 09:25-16:10
+America/New_York -- a restart drops the one allowed Alpaca stream and forces
+reconciliation -- unless `--during-market` is passed. `--live` is also added
+on its own when `/etc/ohcamel/live.env` is readable or an `ohcamel-live`
+container exists; `--public-only` never touches the live profile and so is
+not guarded.
 
-Credentials: the live host's basic-auth *hash* is in `deploy/.env` on the
-droplet, the password is the owner's. Alpaca and FRED keys go only in
-`/etc/ohcamel/live.env`, never in the repository, never in the Docker build
-context, never in an image layer.
+From a checkout whose `deploy.sh` predates `--sha` (it rejects the flag),
+check the sha out first and run the version that knows it:
+
+```
+git fetch origin && git checkout --detach <sha> && deploy/deploy.sh --sha <sha> --live
+```
+
+**The `--build` fallback.** `deploy/deploy.sh --sha <sha> --live --build`
+skips the wait and builds **all four** images on the droplet, one per
+Dockerfile (`deploy/Dockerfile`, `deploy/research.Dockerfile`,
+`quant/Dockerfile`, `native/hostd/Dockerfile`), each with the `OHCAMEL_GIT_SHA` and
+`OHCAMEL_BUILT_AT` build args and tagged with the sha; the pull is skipped
+for the images it just built. It exists for the case owner step O10 names --
+GHCR packages still private and no read token on the droplet -- and for a CI
+outage. A one-image fallback would bring `ohcamel-research` up on a missing
+or stale image, which is why it builds every one. The OCaml build is the slow
+part (about twenty minutes cold) and is what the droplet's 4 GB was sized for.
+
+### Roll back
+
+Rollback is a deploy of the previous good sha: the newest `ok` line in
+`~/deploys.log` before the bad one. A failed run prints the exact command.
+
+```
+tail -5 ~/deploys.log
+deploy/deploy.sh --sha <previous good sha> --live
+```
+
+Rolling back the code does not roll back the journal, and it does not need
+to, because **the journal is additive**: `desk/journal.ml` is at schema
+version 1, a later build adds tables (`CREATE ... IF NOT EXISTS`) or columns
+with a default every older row can take (`ensure_column`), and the version
+stays 1, so an older build opens a newer file and ignores what it does not
+know. A change that bumps `schema_version` breaks that: an older build
+refuses a file at a version it has never seen, and the engine will not start.
+Rolling back across a bump therefore means restoring that deploy's
+`pre-deploy-<UTC>-<old sha>.db` (below), which **loses every order, fill and
+session close journaled since that backup** -- so a bump needs its own
+rollback plan written before it ships, and no task has bumped it yet.
+
+### Backups
+
+- **Pre-deploy.** Every `--live` deploy copies the journal through the
+  `ohcamel-backup` compose service (the engine image, no network, read-only
+  root) into `/var/backups/ohcamel/pre-deploy-<UTC>-<old sha>.db`, before
+  anything is pulled. A backup that fails aborts the deploy with nothing
+  restarted; no journal in the volume yet is a message, not a failure.
+  `ohcamel journal-backup` keeps the 5 newest pre-deploy copies by name.
+- **Nightly.** `deploy/systemd/ohcamel-backup.timer` runs
+  `ohcamel-backup.service` -- `deploy/backup.sh` -- at 06:30 UTC
+  (`Persistent=true`, so a firing missed while the host was down runs at the
+  next boot). It copies every line of `deploy/backup.list` (the journal,
+  `desk_data:/data/desk.db`, as `desk-YYYY-MM-DD.db`; the Quant recorder,
+  `quant_data:/data/deck/recorder.sqlite`) and `book.sexp` and `deploy/.env`
+  beside them at 0640. The journal's copy is made with SQLite's online
+  backup API and reopened and `integrity_check`ed before rotation, which
+  keeps the 14 newest dailies, the 8 most recent Sundays and the 5 newest
+  pre-deploys; `backup.sh` keeps 14 of each other copy.
+  `/etc/ohcamel/live.env` is never copied.
+- `deploy/backup.sh --check` validates `backup.list` with no docker call;
+  `--dry-run` prints every container run and copy and writes nothing.
+- A backup is a copy of the journal, written to the host, and the engine
+  neither writes nor reads it -- invariant 13 holds.
+- The directory is created once by root (owner step O12) and the timers
+  enabled then: `install -d -m 0770 -o 10001 -g ohcamel /var/backups/ohcamel`,
+  then `systemctl enable --now ohcamel-backup.timer ohcamel-watch.timer`, and
+  `systemctl list-timers 'ohcamel-*'` shows the next firings.
+
+### Restore, the drill, and the off-box pull
+
+```
+deploy/restore.sh --drill /var/backups/ohcamel/desk-YYYY-MM-DD.db              # verifies a COPY; touches nothing live
+deploy/restore.sh --restore /var/backups/ohcamel/desk-YYYY-MM-DD.db [--during-market]
+```
+
+`--drill` copies the file to a scratch directory and runs `ohcamel
+journal-verify` on the copy in a throwaway engine container: schema version,
+integrity, per-table counts, the newest session. Owner step O14 runs it on
+the first nightly backup, and its output, with its date, is recorded here
+when it exists; **it has not been run yet.**
+
+`--restore` refuses a file outside `/var/backups/ohcamel` (copy a pulled-back
+file there first), refuses inside the market window unless
+`--during-market`, and refuses any file that fails the drill, before anything
+is stopped. Then it stops `ohcamel-live`, copies the backup in beside the
+journal, moves `desk.db` and its `-wal` and `-shm` aside as
+`*.pre-restore-<UTC>` (never deleted), renames the copy into place, starts
+the engine, waits up to 180 s for the "first sync succeeded, so N session
+closes are restored" log line, and checks that `/api/desk`'s `sessions`
+equals the drill's count. `--dry-run` prints every command.
+
+**Off the box.** `deploy/pull-backups.sh` runs on the laptop, not the droplet:
+one `rsync -a` of `/var/backups/ohcamel/` over the `ohcamel` ssh alias into
+`~/Backups/ohcamel/`, deleting nothing on the laptop, so a copy the host has
+rotated out is still there. `deploy/launchd/com.ohcamel.pull-backups.plist`
+runs it on a schedule once the owner loads it (O15), and it pulls only while
+the laptop is awake. DigitalOcean's paid droplet backups (about $4.80 a
+month) are the alternative, and a spending decision that is the owner's.
+
+### Watching it
+
+**On the host: `deploy/watch.sh`**, every 5 minutes as the `ohcamel` user
+(`deploy/systemd/ohcamel-watch.timer`); `systemctl start
+ohcamel-watch.service` runs it now and `journalctl -t ohcamel-watch` reads
+it. It checks: a running container for each of `caddy`, `ohcamel-quant`,
+`ohcamel-live` and `ohcamel-research` (a container unhealthy for 3
+consecutive runs is restarted once and alerted; a missing or exited one is
+alerted, never started); `docker ps` answering; `/api/desk`, read inside
+`ohcamel-live` over plain HTTP with no credential, for `last_error`, the
+kill switch, `last_sync` over 180 s while the market is open, and no session
+row 30 minutes after a close; the signal file owed from 01:00 UTC when the
+book has strategies; the newest `desk-*.db` over 26 h old (the nightly, not
+the newest file); `/` over 80% full; and `/var/run/reboot-required`.
+
+**When the clock is stale, the watch skips two checks:** the `last_sync` check
+and the missing-session check both depend on whether the market is open,
+which the script never guesses. When `/api/desk`'s `clock.source` is `stale`
+or `unknown`, or `clock.read_at` is in the host's future, both are skipped
+for that run with one log line. Every other check runs.
+
+Alerts are edge-triggered (`ALERT` once, `RECOVERED` once, state under
+`~/.local/state/ohcamel-watch`). When `/etc/ohcamel/ops.env` (0640
+root:ohcamel) holds `SLACK_WEBHOOK_URL`, each of those lines is also posted
+to Slack; when it holds `HEALTHCHECKS_URL`, every run ends with a ping to
+it, `/fail` appended when a key is firing, so a watch that stops running is
+noticed too. The file is read for those two keys only and never sourced.
+
+**From outside: `scripts/uptime.sh`**, run every 15 minutes by
+`.github/workflows/uptime.yml` (read-only GETs, no secrets): the public `/`
+and `/api/health`; the engine's counter advancing (a SKIP while the public
+bridge is off, as it is by default); HTTP redirecting to HTTPS on both hosts;
+the live host refusing an anonymous caller; each certificate with more than
+21 days left (warn) and more than 10 (fail). It alerts by failing, which
+reaches the owner once O11 sets GitHub's failed-workflow notifications.
+GitHub disables a scheduled workflow in a public repository after 60 days
+without repository activity; `gh workflow enable uptime.yml` re-enables it.
+
+Host alerts for disk, memory and CPU from DigitalOcean monitoring are owner
+step O16 and are not set up as of this writing.
+
+```
+docker compose -f deploy/docker-compose.yml --profile live ps
+docker compose -f deploy/docker-compose.yml --profile live logs --tail 100 [caddy|ohcamel-quant|ohcamel-live|ohcamel-research]
+deploy/smoke.sh https://ohcamel.ajaiupadhyaya.com --live https://live.ohcamel.ajaiupadhyaya.com --live-container --expect-sha "$(git rev-parse HEAD)"
+```
+
+### Changing the book
+
+Validate first, then restart only the engine that reads it:
+
+```
+docker run --rm --network none --read-only -v "$PWD/book.sexp:/app/book.sexp:ro" ghcr.io/ajaiupadhyaya/ohcamel:"$(git rev-parse HEAD)" check-book /app/book.sexp
+OHCAMEL_TAG="$(git rev-parse HEAD)" docker compose -f deploy/docker-compose.yml --profile live restart ohcamel-live
+```
+
+`restart` re-reads the bind-mounted `book.sexp`; it does **not** re-read
+`env_file` (below). A restart of `ohcamel-live` drops the Alpaca stream, so do
+it outside 09:25-16:10 New York time.
+
+### Credential rotation
+
+| Secret | Where it lives | Read by |
+|---|---|---|
+| Alpaca data keys (`ALPACA_API_KEY`, `ALPACA_SECRET_KEY`) | `/etc/ohcamel/live.env`, 0640 root:ohcamel | `ohcamel-live`, `ohcamel-research`, `ohcamel-quant` (mapped onto `APCA_*` by its entrypoint) |
+| Alpaca paper trading keys (`ALPACA_TRADING_API_KEY`, `ALPACA_TRADING_SECRET_KEY`), optional | `/etc/ohcamel/live.env` | `ohcamel-live` only |
+| `FRED_API_KEY` | `/etc/ohcamel/live.env` | `ohcamel-live`; `ohcamel-quant` optionally |
+| `SLACK_WEBHOOK_URL` for the book's Slack sink, optional | `/etc/ohcamel/live.env` | `ohcamel-live` |
+| `SLACK_WEBHOOK_URL`, `HEALTHCHECKS_URL` for the watch, optional | `/etc/ohcamel/ops.env`, 0640 root:ohcamel | `deploy/watch.sh` |
+| The live host's basic-auth hash (`OHCAMEL_LIVE_HASH`) | `deploy/.env` on the droplet; the password is the owner's alone | `caddy` |
+| A GHCR read token, only if the packages stay private | the deploy user's `~/.docker/config.json` (`docker login ghcr.io`) | `docker pull` |
+
+The order, for an API key: **create the new key**; edit `/etc/ohcamel/live.env`
+as root; recreate the containers that read it --
+
+```
+OHCAMEL_TAG="$(git rev-parse HEAD)" docker compose -f deploy/docker-compose.yml --profile live up -d --force-recreate ohcamel-live ohcamel-research ohcamel-quant
+```
+
+-- **confirm the first sync** (`docker compose ... logs ohcamel-live` shows the
+first sync succeeding, and `/api/desk`'s `last_sync` is recent and
+`last_error` null); **only then revoke the old key** at the provider.
+`docker compose restart` does **not** re-read `env_file`: a restarted
+container keeps the environment it was created with, so a key rotated that
+way is still the old key until the container is recreated. Recreating
+`ohcamel-live` drops the stream, so rotate outside the market window. For
+the basic-auth password: generate a hash with the pinned caddy
+(`deploy/deploy.env.example` gives the command and the `$$` rule), edit
+`deploy/.env`, and `up -d --force-recreate caddy`. The cadence: **at once on
+any exposure** (a key in a log, a commit, a screenshot or a chat), **otherwise
+every 180 days**.
+
+### The reboot window
+
+Unattended upgrades are installed by `deploy/provision.sh`. Owner step O12
+sets their automatic reboot to **10:00 UTC**
+(`/etc/apt/apt.conf.d/52ohcamel-reboot`: `Automatic-Reboot "true"`,
+`Automatic-Reboot-Time "10:00"`): 05:00 or 06:00 in New York, clear of the
+session, the 00:16 UTC research run and the 06:30 UTC backup. Every
+long-running service is `restart: unless-stopped`, so the containers come
+back with Docker; a backup missed across the reboot runs at boot. Until O12
+is done, a pending reboot shows as the watch's `reboot` alert and is the
+owner's to take, outside market hours.
+
+### Log retention
+
+Every long-running container logs through Docker's `json-file` driver,
+rotated at 10 MB x 3 (`x-logging` in `deploy/docker-compose.yml`; O12 also
+writes the same default into `/etc/docker/daemon.json` for containers
+outside compose). The watch and backup units log to journald, under its
+default retention. That is a few hours to a few days of diagnosis, and no
+more. **The journal, not the logs, is the audit record of orders and
+fills**: every order, its events and fills, and each session's close live in
+`/data/desk.db`, which the nightly and pre-deploy backups copy.
+
+### Capacity
+
+**Not measured under owner step O17 yet.** The numbers on record are from
+2026-09-24 (the compute program's survey): an `s-2vcpu-4gb` droplet with two
+*shared* vCPUs, 3.9 GB of RAM of which 1.46 GB was available with 231 MB in
+swap, a 77 GB disk with 12 GB used, and 2 GB of swap. Memory is the binding
+constraint, and per-service ceilings and OOM ranks are set in
+`deploy/docker-compose.yml`. O17 (`df -h /`, `free -m`, `docker system df`,
+`docker volume ls`) replaces this paragraph with measured numbers and their
+date.
+
+### Disaster recovery
+
+**Recovery-time target: 2 hours** from the decision to rebuild to both hosts
+answering, using published images (a `--build` recovery adds the OCaml
+build). This is a target and has not been rehearsed. What is lost is
+whatever the newest surviving backup does not hold: with the laptop pull,
+up to a day of the journal, or more if the laptop was asleep.
+
+1. **A new droplet.** `doctl compute droplet create ohcamel --region nyc3
+   --size s-2vcpu-4gb --image ubuntu-24-04-x64 --ssh-keys <key id> --wait`
+   (the owner's account and a spending action: the owner runs it or
+   authorizes it), then `ssh root@NEW_IP 'bash -s' < deploy/provision.sh`
+   from a checkout on the laptop.
+2. **Repoint DNS before Caddy starts.** At Porkbun, change the two A records,
+   `ohcamel` and `live.ohcamel`, to the new IP, and wait until `dig +short
+   ohcamel.ajaiupadhyaya.com` and `dig +short live.ohcamel.ajaiupadhyaya.com`
+   return it. Starting Caddy first fails the ACME challenge and counts
+   toward Let's Encrypt's failed-validation limit.
+3. **Restore the configuration.** As `ohcamel`: clone the repository; restore
+   `deploy/.env` and `book.sexp` from the newest `deploy-*.env` and
+   `book-*.sexp` in the pulled backups (or rewrite them from the `.example`
+   files); as root, recreate `/etc/ohcamel/live.env` (0640 root:ohcamel) with
+   keys from the providers -- it is never backed up -- and, optionally,
+   `/etc/ohcamel/ops.env`.
+4. **Owner step O12 on the new box**: the backup directory, the four systemd
+   units, the timers, `daemon.json` and the reboot window.
+5. **Deploy** the last good sha from the old `~/deploys.log` if it survives,
+   else `origin/main`: `deploy/deploy.sh --sha <sha> --live`. This starts a
+   fresh, empty journal.
+6. **Restore the journal**: copy the newest `desk-*.db` from
+   `~/Backups/ohcamel/` into `/var/backups/ohcamel/` on the new box (chmod
+   0640, group `ohcamel`), then `deploy/restore.sh --drill FILE` and
+   `deploy/restore.sh --restore FILE`.
+7. **Verify**: `deploy/smoke.sh ... --live-container --expect-sha <sha>`, a
+   green run of the uptime workflow, and the first nightly backup the next
+   morning. Then destroy the old droplet, which is the owner's call.
+
+The `caddy_data` volume is lost with the droplet, so the new box issues new
+certificates; that is two issuances, well inside Let's Encrypt's limits, but
+do not repeat the rebuild in a loop.
+
+### The live host's password, and brute force
+
+**An owner decision, currently open.** The live host is Caddy `basic_auth`
+with a bcrypt hash (cost 14, so each guess costs the server real CPU) and
+**no rate limit**: `deploy/provision.sh` enables fail2ban, whose default jail
+watches ssh only, not Caddy. The options are to leave it (a long random
+password makes guessing hopeless), to add a fail2ban jail on Caddy's access
+log, or to put the host behind an allow-list or a VPN. Until the owner
+decides, it stays as it is, and the password must be long and random.
+
+### Things not to do
+
+Delete the `caddy_data` volume (it holds the certificate and the ACME
+account; Let's Encrypt rate-limits re-issuance) or the `desk_data` volume
+(it holds the journal); add `ports:` to an engine service (the firewall will
+not save it -- the smoke suite checks from outside); source `deploy/.env` into
+a shell (the `$$` becomes a PID -- see the deployment spec); commit
+`book.sexp` or any `.env`; run `deploy/pull-backups.sh` or `deploy/watch.sh`
+"to see the help" -- neither takes `--help`, and both act.
+
+## Environment variables
+
+Names only; no value belongs in this file. **The engine** (`ohcamel`, every
+`Sys.getenv` in `bin/`, `desk/` and `lib/`):
+
+| Variable | Read in | Required | What it does |
+|---|---|---|---|
+| `ALPACA_API_KEY` | `lib/config.ml` | `live`/`serve` | Alpaca market data |
+| `ALPACA_SECRET_KEY` | `lib/config.ml` | `live`/`serve` | |
+| `FRED_API_KEY` | `lib/config.ml` | `live`/`serve` | the macro factor series |
+| `ALPACA_TRADING_API_KEY` | `desk/alpaca_paper.ml` | no | a separate paper key pair for the desk; must begin `PK`; set both or neither, else the data keys are used |
+| `ALPACA_TRADING_SECRET_KEY` | `desk/alpaca_paper.ml` | no | |
+| `OHCAMEL_ALPACA_FEED` | `lib/config.ml` | no | default `iex`; `sip` needs a paid subscription |
+| `OHCAMEL_FRED_SERIES` | `lib/config.ml` | no | default `DGS10` |
+| `OHCAMEL_PEER_ORIGIN` | `lib/config.ml` | no | the second column of `/ops`; unset in production since the Quant cutover |
+| `OHCAMEL_JOURNAL` | `bin/main.ml` | no | the journal's path; default `desk.db`, `/data/desk.db` on the live host |
+| `OHCAMEL_SIGNALS_DIR` | `desk/intake.ml` (via `bin/main.ml`) | no | the signal intake's directory; unset is no intake, set but empty or unreadable refuses to start |
+| `SLACK_WEBHOOK_URL` | `lib/alerts.ml` | no | read only when the book's alerts name the Slack sink |
+| `OHCAMEL_LOG_LEVEL` | `bin/main.ml` | no | `error`, `warning`, `info`, `debug` or `off`; unset is no log reporter |
+| `COHTTP_DEBUG` | `bin/main.ml` | must be **unset** | the live engine refuses to start when it is set, because cohttp would then log the key headers |
+
+**Compose and the deploy scripts** (`deploy/docker-compose.yml`, never read
+by the engine): `OHCAMEL_TAG` (the image tag, a commit sha; `deploy.sh` sets
+it per command and compose refuses a render without it), `OHCAMEL_IMAGE` (a
+mirror of the engine image; default `ghcr.io/ajaiupadhyaya/ohcamel`),
+`OHCAMEL_ACME_EMAIL`, `OHCAMEL_DEMO_HOST`, `OHCAMEL_LIVE_HOST`,
+`OHCAMEL_LIVE_USER` and `OHCAMEL_LIVE_HASH` (all from `deploy/.env`),
+`OHCAMEL_BACKUP_VOLUME` and `OHCAMEL_BACKUP_DIR` (the backup service).
+The scripts' own test seams (`DEPLOY_*`, `OHCAMEL_WATCH_*`,
+`OHCAMEL_SSH_HOST`, `OHCAMEL_PULL_DIR`, `RESTORE_WAIT_SECS`) are documented
+in each script's header and are never set on the droplet.
+
+**OhCamel Quant** (`quant/src/ohcamel_quant/config.py`, pydantic settings with
+the prefix `OHCAMEL_QUANT_`, plus two plain names):
+
+| Variable | Default | What it does |
+|---|---|---|
+| `OHCAMEL_QUANT_DATA_DIR` | `quant/.data`; `/data` in compose | the Parquet cache, the recorder, the warehouse |
+| `OHCAMEL_QUANT_OFFLINE` | false | serve only committed fixtures and the cache; never touch the network |
+| `OHCAMEL_QUANT_USER_AGENT` | a contact string | SEC EDGAR's required contact; compose builds it from `OHCAMEL_ACME_EMAIL` |
+| `OHCAMEL_QUANT_HTTP_TIMEOUT_S`, `OHCAMEL_QUANT_HTTP_RETRIES` | 20, 3 | outbound requests |
+| `OHCAMEL_QUANT_TTL_PRICES_S`, `_TTL_INTRADAY_QUOTE_S`, `_TTL_MACRO_S`, `_TTL_FACTORS_S`, `_TTL_OPTIONS_S`, `_TTL_FILINGS_S` | per family | cache freshness |
+| `OHCAMEL_QUANT_PRICE_PROVIDERS` | alpaca, yahoo, stooq | provider order |
+| `OHCAMEL_QUANT_ENGINE_URL` | unset; compose passes it through, empty by default | the read-only bridge to the engine |
+| `OHCAMEL_QUANT_HOSTD_URL` | `http://ohcamel-hostd:9100` in compose | host telemetry for `/api/ops/host` |
+| `OHCAMEL_QUANT_RECORDER`, `_RECORDER_INTERVAL_S`, `_RECORDER_KEEP_SESSIONS` | on, 60, 30 | the Flight Deck's recorder |
+| `OHCAMEL_QUANT_FIXTURES_DIR` | `fixtures/` | committed real-data fixtures |
+| `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` | unset | Alpaca, first price source; the image's entrypoint fills them from `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` |
+| `FRED_API_KEY` | unset | optional; the keyless `fredgraph.csv` is used without it |
+| `OPENFIGI_API_KEY` | unset | optional, read in `data/openfigi.py`; raises OpenFIGI's rate limit |
+
+The research service reads `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` from the
+same `live.env`, and compose sets `FDQ_DATA_DIR` for it; `ohcamel-hostd`
+reads `HOSTD_PROC` and `HOSTD_CGROUP` (`native/hostd/src/main.rs`).

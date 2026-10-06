@@ -27,7 +27,7 @@ The repository has two parts:
 
 | | What it is | Where |
 |---|---|---|
-| **OhCamel Quant** | The platform above: a FastAPI analytics service (Python, ~20k lines, 653 tests) and a React app. It is the public site. | [`quant/`](quant/) |
+| **OhCamel Quant** | The platform above: a FastAPI analytics service (Python, ~20k lines, <!-- count:quant-tests -->664<!-- /count --> tests) and a React app. It is the public site. | [`quant/`](quant/) |
 | **The engine** | A real-time risk and limits engine in OCaml on Jane Street's Incremental. Risk is a dependency graph, so a tick recomputes only what depends on it. It is driven by Alpaca's live feed and runs a paper-trading desk behind a password. | [`lib/`](lib/), [`desk/`](desk/), [`docs/engine.md`](docs/engine.md) |
 
 ---
@@ -181,10 +181,15 @@ Online mode needs outbound internet. Optional environment variables:
 Offline mode (`OHCAMEL_QUANT_OFFLINE=1`) serves only the committed real
 fixtures. Pages that need other sources say so.
 
-**Deploying** (on the droplet): `deploy/deploy.sh --public-only` builds and
-starts Caddy and the Quant service, smoke-tests them, and is safe during
-market hours. `deploy/deploy.sh --live` also rebuilds the OCaml live engine
-and the research service. See [`deploy/`](deploy/).
+**Deploying** (on the droplet): `deploy/deploy.sh --sha <sha> --public-only`
+pulls the images CI published for that commit and restarts Caddy, the Quant
+service and the host telemetry daemon, smoke-tests them, and is safe during
+market hours. `deploy/deploy.sh --sha <sha> --live` also pulls and restarts
+the OCaml live engine and the research service, after a backup of the
+journal. Rollback is the same command with the previous good sha from
+`~/deploys.log`. The runbooks -- deploy, rollback, backup, restore, watch,
+rotation, disaster recovery -- and the environment-variable table are in
+[`docs/status.md`](docs/status.md#operating-it).
 
 **CI** runs, on every push:
 

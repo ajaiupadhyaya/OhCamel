@@ -1080,23 +1080,25 @@ let run_live ~book_path ~(serve_port : int option) =
       let runtime = config.Config.runtime in
       let instruments = Config.Book.instruments book in
       let limits = Config.Book.limits book in
-      (* Alpaca's free plan streams at most 30 symbols. A larger book would
-         subscribe, be told no for the excess, and watch a fraction of itself
-         while the page drew all of it. Refused here, with the number. *)
-      let universe_cap = 30 in
+      (* Alpaca's free plan streams at most Config.universe_cap symbols; the
+         reason is on the constant. A larger book would subscribe, be told no
+         for the excess, and watch a fraction of itself while the page drew all
+         of it. Refused here, with the number -- and check-book refuses the same
+         book by the same number, so a deploy that runs it first never reaches
+         this line with a book that fails it. *)
       (* Every refusal below exits through Async's [exit], bound, rather than
          [Stdlib.exit]. Under [open Async], [prerr_endline] writes to a buffered
          writer that only Async's shutdown flushes: followed by Stdlib.exit, the
          process exited 1 with nothing on stderr, a refusal that never said what
          it refused. *)
       let%bind () =
-        if List.length instruments > universe_cap then (
+        if List.length instruments > Config.universe_cap then (
           prerr_endline
             (sprintf
                "ohcamel: the book declares %d names and the free Alpaca plan streams at \
-                most %d. Remove names, or move to a paid feed and raise the cap in \
-                bin/main.ml."
-               (List.length instruments) universe_cap);
+                most %d. Remove names, or move to a paid feed and raise \
+                Config.universe_cap."
+               (List.length instruments) Config.universe_cap);
           exit 1)
         else return ()
       in
@@ -1480,11 +1482,23 @@ let run_live ~book_path ~(serve_port : int option) =
       (* The clock. The ONLY writer of the [now] cell, and the reason
          test_graph.ml asserts that no risk node is downstream of it: if one
          were, this timer would be recomputing the book every few seconds and
-         the engine would have quietly become a poller. *)
+         the engine would have quietly become a poller.
+
+         It is also where the desk's market-clock reading is refreshed (ruling
+         20), because this is the interval Config.Runtime already calls the
+         clock's.
+         STARTED AND NOT WAITED FOR: this callback writes [now], and a venue
+         request that took four seconds would delay the staleness clock by
+         four. [refresh_clock] starts no second read while one is out, so the
+         interval cannot pile requests up, and it says nothing on a failure --
+         the block's own [source] reports a reading that has gone unrefreshed,
+         and the order manager's refresh already prints an unreachable clock in
+         words. *)
       let clock =
         Clock_ns.every' runtime.Config.Runtime.clock_interval (fun () ->
             Graph.set_now graph (Time.now ());
             Graph.stabilize graph;
+            don't_wait_for (Ohcamel_desk.Desk.refresh_clock desk);
             Deferred.unit);
         Deferred.never ()
       in
@@ -1820,7 +1834,7 @@ let run_demo ~port =
         match
           Or_error.try_with (fun () ->
               Ohcamel_desk.Session_close.record ~graph ~journal
-                ~date:(Date.add_days Ohcamel_desk.Sim_venue.base_date (!sessions - 1))
+                ~date:(Ohcamel_desk.Sim_venue.session_date !sessions)
                 ~returns:[] ~mark_equity:false ~confidence ~recorded_at:(Time_ns.now ()))
         with
         | Ok _ -> ()
@@ -1829,10 +1843,16 @@ let run_demo ~port =
       Deferred.unit);
   Clock_ns.every' (Time_ns.Span.of_sec 15.0) (fun () ->
       Deferred.ignore_m (Ohcamel_desk.Desk.sync desk));
-  (* The staleness clock, exactly as in live mode. *)
+  (* The staleness clock, exactly as in live mode -- and, exactly as in live
+     mode, where the desk's market-clock reading is refreshed (ruling 20), so
+     the demo's block is populated rather than reading "unknown" forever. The
+     simulated venue answers from this process and cannot be slow, but the read
+     is still started and not waited for, so the two modes run the same
+     arrangement and neither can drift from the other. *)
   Clock_ns.every' (Time_ns.Span.of_sec 3.0) (fun () ->
       Graph.set_now graph (Time.now ());
       Graph.stabilize graph;
+      don't_wait_for (Ohcamel_desk.Desk.refresh_clock desk);
       Deferred.unit);
   (* The demo's switch resets itself; this is the clock it resets by. *)
   Clock_ns.every' (Time_ns.Span.of_sec 1.0) (fun () ->
@@ -1878,6 +1898,35 @@ let run_demo ~port =
   Deferred.never ()
 
 (* ------------------------------------------------------------------------ *)
+(* The journal's backup and verify modes                                     *)
+(* ------------------------------------------------------------------------ *)
+
+(* Both modes are plain programs: no scheduler, no book, no feeds, no
+   credentials -- and their bodies live in desk/journal_cli.ml, where test/
+   can drive them: while they lived here, three of their guarantees (the copy
+   verified before anything is pruned, the --name guard, journal-verify's
+   non-zero exit on a dirty report) could each be deleted with the suite
+   green. This prints what the command printed and exits with its status.
+   Async is never entered, which is what lets the timer run this in the same
+   image as the engine without starting one. *)
+
+module Journal_cli = Ohcamel_desk.Journal_cli
+
+let exit_with (o : Journal_cli.Outcome.t) =
+  List.iter o.Journal_cli.Outcome.out ~f:(printf "%s\n");
+  Out_channel.flush Stdlib.stdout;
+  Option.iter o.Journal_cli.Outcome.err ~f:(fun line ->
+      Out_channel.output_string Stdlib.stderr (line ^ "\n");
+      Out_channel.flush Stdlib.stderr);
+  exit o.Journal_cli.Outcome.status
+
+let run_journal_verify path = exit_with (Journal_cli.verify path)
+
+let run_journal_backup ~src ~dir ~name =
+  exit_with
+    (Journal_cli.backup ~now:(Date.today ~zone:Time_float.Zone.utc) ~src ~dir ~name)
+
+(* ------------------------------------------------------------------------ *)
 (* Entry point                                                               *)
 (* ------------------------------------------------------------------------ *)
 
@@ -1896,7 +1945,21 @@ let usage () =
     \  ohcamel garch              why GARCH(1,1) is implemented and not wired in\n\
     \  ohcamel demo [port]        synthetic feed + live dashboard, NO credentials\n\
     \  ohcamel live [book.sexp]   live Alpaca market data and FRED macro\n\
-    \  ohcamel serve [port]       live feeds + dashboard on http://localhost:PORT\n\n\
+    \  ohcamel serve [port] [book.sexp]\n\
+    \                             live feeds + dashboard on http://localhost:PORT\n\n\
+    \  ohcamel check-book [book.sexp]\n\
+    \                             parse the book and run every validation the engine\n\
+    \                             would -- the universe and its cap, the limits, the\n\
+    \                             alerts, the desk and the signals -- print what it\n\
+    \                             says, and exit 1 listing EVERY problem. Needs no\n\
+    \                             credentials.\n\
+    \  ohcamel journal-backup SRC DIR [--name NAME]\n\
+    \                             copy the journal at SRC to DIR, verify the copy,\n\
+    \                             then prune DIR. Default NAME is desk-YYYY-MM-DD.db\n\
+    \                             (today, UTC). Non-zero on any failure.\n\
+    \  ohcamel journal-verify FILE\n\
+    \                             print FILE's schema version, integrity, row counts\n\
+    \                             and newest rows. Non-zero on any problem.\n\n\
      Live and serve need ALPACA_API_KEY, ALPACA_SECRET_KEY and FRED_API_KEY in\n\
      the environment, and a book file (default %s):\n\n\
     \  set -a; source /path/to/.env; set +a\n\
@@ -1905,6 +1968,52 @@ let usage () =
      market is closed:\n\n\
     \  ohcamel demo\n\n"
     Config.default_book_path
+
+(* A bad argument is a usage message and exit 2. Every mode routes its refusals
+   through here so that a mode added later cannot invent a third convention:
+   2 means "you typed something I cannot read", 1 means "I read it and the answer
+   is no", and 0 means yes. deploy.sh and the systemd units read nothing else. *)
+let bad_usage sentence =
+  printf "ohcamel: %s\n\n" sentence;
+  usage ();
+  exit 2
+
+(* A port, or the usage.
+
+   [Int.of_string] on raw argv RAISES, and an uncaught exception reaches the
+   operator as a backtrace: `ohcamel serve 808O` printed
+   "Fatal error: exception Failure(...)" and said nothing about what to type.
+   Worse, Core's parser is generous where a port is not -- it reads "0x1f90" as
+   8080, "1_000" as 1000 and "+8080" as 8080 -- so a mistyped argument could
+   start a server on a port nobody asked for. Digits only, then the range, which
+   is the same rule desk/alpaca_paper.ml applies to a number off the wire and for
+   the same reason. *)
+let port_arg ~mode (raw : string) : int =
+  if String.is_empty raw || not (String.for_all raw ~f:Char.is_digit) then
+    bad_usage (sprintf "%s: %S is not a port number" mode raw)
+  else
+    match Int.of_string_opt raw with
+    | Some p when p >= 1 && p <= 65_535 -> p
+    | Some _ | None ->
+        bad_usage (sprintf "%s: %S is not a port; give a number in 1..65535" mode raw)
+
+(* The optional positional book path, shared by check-book and serve so that the
+   default cannot be spelled two ways. [live] has taken one since phase 2. *)
+let book_arg = function path :: _ -> path | [] -> Config.default_book_path
+
+let run_check_book path =
+  match Config.check path with
+  | Ok summary ->
+      List.iter (Config.Summary.lines summary) ~f:(printf "%s\n");
+      printf "\nohcamel: %s is a book this build would start on\n" path
+  | Error problems ->
+      printf "ohcamel: %s has %d problem%s\n\n" path (List.length problems)
+        (if List.length problems = 1 then "" else "s");
+      List.iter problems ~f:(printf "  - %s\n");
+      (* Exit 1 and not 2: the argument was readable and the answer is no. That
+         distinction is what lets deploy.sh tell "the book is wrong, do not
+         restart the engine" from "I was called wrongly". *)
+      exit 1
 
 let () =
   match Array.to_list (Sys.get_argv ()) with
@@ -1915,23 +2024,51 @@ let () =
   | _ :: ("options" | "greeks") :: _ -> run_options ()
   | _ :: "garch" :: _ -> run_garch ()
   | _ :: "live" :: rest ->
-      let book_path =
-        match rest with path :: _ -> path | [] -> Config.default_book_path
-      in
+      let book_path = book_arg rest in
       (* Async only from here. Synthetic mode never starts the scheduler, which
          keeps it usable as a plain program. *)
       Async.Thread_safe.block_on_async_exn (fun () ->
           run_live ~book_path ~serve_port:None)
   | _ :: "serve" :: rest ->
-      let port = match rest with p :: _ -> Int.of_string p | [] -> default_port in
+      (* PORT then BOOK, and both optional. serve read the default book
+         unconditionally, so the one mode that both serves the dashboard and
+         trades could not be pointed at a second book -- which is exactly what a
+         host running two engines, or an owner checking a book against the real
+         feed, needs. Every argument is read BEFORE the scheduler starts, so a
+         typo costs no connection. *)
+      let port, book_path =
+        match rest with
+        | [] -> (default_port, Config.default_book_path)
+        | [ p ] -> (port_arg ~mode:"serve" p, Config.default_book_path)
+        | [ p; book ] -> (port_arg ~mode:"serve" p, book)
+        | _ -> bad_usage "serve takes [PORT] [BOOK], and no more"
+      in
       Async.Thread_safe.block_on_async_exn (fun () ->
-          run_live ~book_path:Config.default_book_path ~serve_port:(Some port))
+          run_live ~book_path ~serve_port:(Some port))
+  | _ :: "check-book" :: rest -> (
+      match rest with
+      | [] | [ _ ] -> run_check_book (book_arg rest)
+      | _ -> bad_usage "check-book takes at most one BOOK")
+  | _ :: "journal-backup" :: rest -> (
+      match rest with
+      | src :: dir :: flags -> (
+          match flags with
+          | [] -> run_journal_backup ~src ~dir ~name:None
+          | [ "--name"; name ] -> run_journal_backup ~src ~dir ~name:(Some name)
+          | _ -> bad_usage "journal-backup takes SRC DIR [--name NAME]")
+      | _ -> bad_usage "journal-backup needs SRC and DIR")
+  | _ :: "journal-verify" :: rest -> (
+      match rest with
+      | [ path ] -> run_journal_verify path
+      | _ -> bad_usage "journal-verify needs one FILE")
   | _ :: "demo" :: rest ->
-      let port = match rest with p :: _ -> Int.of_string p | [] -> default_port in
+      let port =
+        match rest with
+        | [] -> default_port
+        | [ p ] -> port_arg ~mode:"demo" p
+        | _ -> bad_usage "demo takes at most one PORT"
+      in
       Async.Thread_safe.block_on_async_exn (fun () -> run_demo ~port)
   | _ :: ("-h" | "--help" | "help") :: _ -> usage ()
-  | _ :: unknown :: _ ->
-      printf "ohcamel: unknown mode %S\n\n" unknown;
-      usage ();
-      exit 2
+  | _ :: unknown :: _ -> bad_usage (sprintf "unknown mode %S" unknown)
   | [] -> usage ()

@@ -59,6 +59,21 @@ type t = {
   (* The read [after_fill] starts: none out, one out, or one out and one more
      owed, because a fill landed while it was out. *)
   mutable fill_read : [ `Idle | `Running | `Owed ];
+  (* The venue's clock as last read, with the time the reading was taken
+     (ruling 20). None until the first one answers.
+
+     A FAILED READ LEAVES THIS ALONE. The reading does not become wrong when a
+     request times out, it becomes old, and [clock_json] says so in a word
+     while keeping its values. Emptying the block on one failed request would
+     make the page and watch.sh read "unknown" -- and skip the two checks that
+     need the market's state -- every time the venue hiccuped, which is the
+     false alarm this field exists to avoid. *)
+  mutable clock : (Venue.Session_clock.t * Time_ns.t) option;
+  (* Whether a clock read is out. The timer that refreshes the clock is also
+     the only writer of the graph's [now] cell, so it starts the read and does
+     not wait for it; without this a venue slower than one interval would let
+     each interval's request overlap the next's. *)
+  mutable clock_read : [ `Idle | `Running ];
   (* The session count, re-read only when the journal has been written since:
      this object rides on every frame, and a frame is not a reason to query. *)
   mutable sessions_seen : int * int;
@@ -84,6 +99,8 @@ let create ~graph ~journal ~venue ~spec ~on_change ~on_first_sync =
     raced_through = 0;
     oms = None;
     fill_read = `Idle;
+    clock = None;
+    clock_read = `Idle;
     sessions_seen = (-1, 0);
   }
 
@@ -238,6 +255,49 @@ let rec after_fill t =
              | _ -> t.fill_read <- `Idle);
              Deferred.unit))
 
+(* ------------------------------------------------------------------------ *)
+(* The market clock (ruling 20)                                              *)
+(* ------------------------------------------------------------------------ *)
+
+(* How old a reading may be before the block stops calling it the venue's.
+   Fifteen minutes is 180 times Config.Runtime.clock_interval, the five-second
+   interval bin/main.ml refreshes on, so "stale" means the venue's clock has
+   been unreachable across a long run of attempts and never that one request
+   was slow. It is the threshold Task 18's watch.sh keys its two market-state
+   checks on, so it lives here, on the wire, and not in a host script. *)
+let clock_freshness = Time_ns.Span.of_min 15.0
+
+(* The reading, and when it was taken. Separate from [refresh_clock] so the
+   tests hand a reading over the way they hand [sync_with] an account -- no
+   scheduler, no venue. *)
+let set_clock t ~at (clock : Venue.Session_clock.t) = t.clock <- Some (clock, at)
+
+(* Read the venue's clock and keep it. Called from bin/main.ml's existing clock
+   timer and not awaited by it; one read at a time (see [clock_read]).
+
+   A failure is not reported here. The block's own [source] reports it by
+   ageing, and the order manager's own refresh already prints an unreachable
+   clock in words -- saying it again on a five-second timer would fill the log
+   with the same sentence.
+
+   Monitor.protect for the reason [after_fill] gives: a raise partway through a
+   bind chain never drives the continuation, so a plain bind would leave
+   [clock_read] `Running` for the rest of the process and every later interval
+   would find a read already out and start none. *)
+let refresh_clock t : unit Deferred.t =
+  match (t.venue, t.clock_read) with
+  | Unavailable _, _ | _, `Running -> Deferred.unit
+  | Reads read, `Idle ->
+      t.clock_read <- `Running;
+      Monitor.protect
+        (fun () ->
+          match%map read.Venue.Read.clock () with
+          | Ok c -> set_clock t ~at:(Time_ns.now ()) c
+          | Error _ -> ())
+        ~finally:(fun () ->
+          t.clock_read <- `Idle;
+          Deferred.unit)
+
 let rec sync_forever t ~every ~on_event =
   let%bind () = Clock_ns.after every in
   let%bind result = sync t in
@@ -259,7 +319,81 @@ let sessions_count t =
     t.sessions_seen <- (version, count);
     count
 
-let summary_fields t =
+(* THE ONE CONSTRUCTOR for the clock block (ruling 20). It is built here, in
+   [summary_fields], which is both the desk block that rides on every frame
+   (bin/main.ml's ?frame_extra) and the head of /api/desk's body -- and which
+   Task 37's ?ops_extra will build /api/ops' desk block from. Building it twice
+   is how the same field comes to read differently on two routes, so
+   test_desk.ml asserts the two objects are equal.
+
+   [source] is the whole of what a reader needs to know about the reading's
+   age, in a word rather than as a stamp the caller has to subtract:
+     "venue-clock" -- taken within [clock_freshness];
+     "stale"       -- older than that, with every value the venue gave kept;
+     "unknown"     -- no reading has answered, and the five fields are null.
+   Unknown is not zero and it is not false: is_open false would say the market
+   is shut, which is a claim, and this desk has none to make.
+
+   [now] is a parameter so a test can state the age it means; in the process it
+   is the wall clock. *)
+let clock_json ?now t : Yojson.Safe.t =
+  match t.clock with
+  | None ->
+      `Assoc
+        [
+          ("is_open", `Null);
+          ("next_open", `Null);
+          ("next_close", `Null);
+          ("next_close_date", `Null);
+          ("read_at", `Null);
+          ("source", `String "unknown");
+        ]
+  | Some (c, read_at) ->
+      let now = match now with Some at -> at | None -> Time_ns.now () in
+      `Assoc
+        [
+          ("is_open", `Bool c.Venue.Session_clock.is_open);
+          ("next_open", `String (Desk_time.rfc3339 c.Venue.Session_clock.next_open));
+          ("next_close", `String (Desk_time.rfc3339 c.Venue.Session_clock.next_close));
+          ( "next_close_date",
+            `String (Date.to_string c.Venue.Session_clock.next_close_date) );
+          ("read_at", `String (Desk_time.rfc3339 read_at));
+          (* TWO WALL-CLOCK STAMPS, and the exposure that follows -- recorded
+             here for Task 18's watch.sh author, and deliberately NOT changed.
+
+             Both [now] and [read_at] come from Time_ns.now (), the host's wall
+             clock, so a reading stamped in the future relative to [now] has a
+             negative age and reads "venue-clock". On its own terms that is
+             right: a reading taken very recently should not be called stale.
+             Venue/host skew cannot produce it either, because [read_at] is the
+             host's clock at the moment the answer landed and not the venue's
+             own [Session_clock.now]. Only a backward step of the host's own
+             clock can -- an NTP correction or a resumed VM, the two causes
+             [book_is_current]'s comment above already names.
+
+             The bounded exposure is the combination VENUE UNREACHABLE plus
+             HOST CLOCK STEPS BACK by d: a genuinely old reading then reads
+             "venue-clock" for d + 15 minutes, and a watchdog runs its
+             market-state checks against a stale [is_open]. While the venue is
+             reachable the window is one clock_interval either way, because the
+             next successful read re-stamps.
+
+             It is left as it is because [book_is_current] compares two
+             wall-clock stamps in exactly this way for [last_sync]: changing
+             only this one would make the two halves of the same block
+             disagree about what a clock step means. Ruling 20 puts the raw
+             [read_at] on the wire for precisely this reason, so the guard can
+             live in the watchdog: Task 18's watch.sh must treat a [read_at] in
+             the future as stale rather than trusting the word here -- plan
+             commit 08972b1, which gives Task 18 that rule and a test for it. *)
+          ( "source",
+            `String
+              (if Time_ns.Span.( <= ) (Time_ns.diff now read_at) clock_freshness then
+                 "venue-clock"
+               else "stale") );
+        ]
+
+let summary_fields ?now t =
   [
     ( "status",
       `String (match t.venue with Reads _ -> "enabled" | Unavailable _ -> "disabled") );
@@ -294,16 +428,18 @@ let summary_fields t =
     ("sessions", `Int (sessions_count t));
     ("last_sync", jopt (fun at -> `String (Desk_time.rfc3339 at)) t.last_sync);
     ("last_error", jopt (fun e -> `String e) t.last_error);
+    (* Appended last, so nothing a reader indexes by position moves. *)
+    ("clock", clock_json ?now t);
   ]
 
-let summary_json t : Yojson.Safe.t = `Assoc (summary_fields t)
+let summary_json ?now t : Yojson.Safe.t = `Assoc (summary_fields ?now t)
 
-let body_json t : Yojson.Safe.t =
+let body_json ?now t : Yojson.Safe.t =
   let snapshot_exposure = Graph.exposure_by_instrument t.graph in
   let recent = Journal.recent_sessions t.journal ~limit:30 in
   let forecasts = Journal.latest_forecasts t.journal in
   `Assoc
-    (summary_fields t
+    (summary_fields ?now t
     @ [
         ( "account",
           jopt

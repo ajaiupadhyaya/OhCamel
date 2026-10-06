@@ -8,6 +8,9 @@
 #   ./smoke.sh https://ohcamel.example.com  # production, public host only
 #   ./smoke.sh https://ohcamel.example.com --live https://live.ohcamel.example.com \
 #              --expect-sha "$(git rev-parse HEAD)"      # what deploy.sh runs
+#   ./smoke.sh https://ohcamel.example.com --live-container --expect-sha SHA
+#                                           # + the live desk, read from inside
+#                                           # its own container (section 7)
 #
 # BASE (the first bare argument) is the PUBLIC host, which serves OhCamel
 # Quant: the FastAPI + React app on real market data. Section Q below asserts
@@ -26,6 +29,13 @@
 # engine) that is read from the running container's image label via the
 # docker CLI, so it is meaningful where deploy.sh runs it: on the droplet.
 #
+# --live-container checks the live host from INSIDE its container, through
+# `docker compose -f deploy/docker-compose.yml --profile live exec -T
+# ohcamel-live curl http://localhost:8081/...` -- the runtime image ships curl
+# for its healthcheck -- so the suite needs no password and no credential
+# enters it. Run it on the droplet, where the containers are; section 7 says
+# what it asserts. deploy/test/smoke_live_test.sh drives it against shims.
+#
 # Deployment has no unit tests worth writing. What it has is a handful of
 # assertions run against the real thing after every deploy, and for the
 # engine one of them carries all the weight -- see STREAM below.
@@ -40,6 +50,7 @@ LIVE=""
 ENGINE=""
 SSE_WINDOW=20
 EXPECT_SHA=""
+LIVE_CONTAINER=0
 
 # The routes, as this suite knows them. The 404 body lists lib/server.ml's
 # `routes` table, the one the dispatcher is generated from, and then the
@@ -69,6 +80,7 @@ while [[ $# -gt 0 ]]; do
 	--engine) [ $# -ge 2 ] || { echo "smoke: --engine requires a value" >&2; exit 2; }; ENGINE="$2"; shift 2 ;;
 	--sse-window) [ $# -ge 2 ] || { echo "smoke: --sse-window requires a value" >&2; exit 2; }; SSE_WINDOW="$2"; shift 2 ;;
 	--expect-sha) [ $# -ge 2 ] || { echo "smoke: --expect-sha requires a value" >&2; exit 2; }; EXPECT_SHA="$2"; shift 2 ;;
+	--live-container) LIVE_CONTAINER=1; shift ;;
 	*) echo "smoke: unknown argument $1" >&2; exit 2 ;;
 	esac
 done
@@ -297,6 +309,38 @@ print("OK 60/40, %d limits evaluated, quotes %s from %s, session %s" % (
     len(lims), feeds.get("quotes"), ", ".join(srcs) or "?", "open" if body.get("clock", {}).get("is_open") else "closed"))
 '
 
+# Host telemetry (compute plan Task 0.4): ohcamel-hostd through the Quant
+# app's proxy. Required on every host -- compose runs hostd in the default
+# profile and points the app at it. hostd needs one sampling interval (5 s)
+# before `latest` is non-null, so a stack that has only just started is given
+# up to 15 s to produce its first sample before the check runs. Only an
+# answer with a null `latest` waits: no answer, or a 503, goes straight to the
+# check below, which reports it.
+if [ "$have_py" = 1 ]; then
+	for _ in 1 2 3; do
+		rc=0
+		curl -sS --max-time 5 "$BASE/api/ops/host" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    body = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+sys.exit(2 if isinstance(body, dict) and "latest" in body and body["latest"] is None else 0)' 2>/dev/null || rc=$?
+		[ "$rc" = 2 ] || break
+		sleep 5
+	done
+fi
+qjson "GET /api/ops/host          " GET /api/ops/host "" '
+latest = body.get("latest") or {}
+if not (isinstance(latest.get("mem_available"), (int, float)) and latest["mem_available"] > 0):
+    print("NOSAMPLE latest.mem_available is %r: %s" % (latest.get("mem_available"), str(body)[:200])); raise SystemExit
+if (body.get("provenance") or [{}])[0].get("source") != "ohcamel-hostd":
+    print("PROVENANCE %s" % str(body.get("provenance"))[:200]); raise SystemExit
+print("OK cpu %.2f, steal %.2f, swap_used %d MiB, %d MiB available" % (
+    latest.get("cpu") or 0.0, latest.get("steal") or 0.0,
+    (latest.get("swap_used") or 0) // 2**20, latest["mem_available"] // 2**20))
+'
+
 # The engine bridge. Reachable is REQUIRED only under --engine (the local
 # harness wires the bridge to its engine). In production the bridge is off
 # unless the owner opts in (OHCAMEL_QUANT_ENGINE_URL in deploy/.env), so a 503
@@ -364,12 +408,16 @@ fi
 # same pair of claims /api/ops used to make for the public demo engine: the
 # commit just pulled is the one answering, and this deploy replaced it.
 container_is_this_deploy() {
-	local svc="$1" id rev started age
+	local svc="$1" id rev started bsd_started started_s age
 	if ! command -v docker >/dev/null 2>&1; then
 		no "$svc build sha     docker CLI unavailable, cannot verify" "--expect-sha was given; run the suite where the containers are"
 		return
 	fi
-	id=$(docker ps --filter "label=com.docker.compose.project=ohcamel" \
+	# The compose project the containers belong to: COMPOSE_PROJECT_NAME when
+	# the caller set one (the image job's harness, or one started with -p
+	# beside a running stack), else `ohcamel`, docker-compose.yml's own
+	# `name:`. deploy.sh sets neither and gets the droplet's.
+	id=$(docker ps --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-ohcamel}" \
 		--filter "label=com.docker.compose.service=$svc" --quiet 2>/dev/null | head -1)
 	if [ -z "$id" ]; then
 		no "$svc build sha     no running $svc container found"
@@ -382,7 +430,15 @@ container_is_this_deploy() {
 		no "$svc build sha     ${rev:-unlabelled}, expected ${EXPECT_SHA:0:7}" \
 			"the image answering was not built from this checkout: the build failed, or up -d kept the old image"
 	fi
-	age=$(( $(date +%s) - $(date -d "$started" +%s 2>/dev/null || echo 0) ))
+	# StartedAt is RFC 3339 with nanoseconds, in UTC. GNU date reads it whole;
+	# BSD date (a Mac running the harness) needs the format spelled out, the
+	# fraction and the Z dropped. Unparseable reads as epoch 0, so the age
+	# below is the whole epoch and the check fails rather than passes.
+	bsd_started="${started%%.*}"
+	started_s=$(date -d "$started" +%s 2>/dev/null ||
+		date -j -u -f '%Y-%m-%dT%H:%M:%S' "${bsd_started%Z}" +%s 2>/dev/null ||
+		echo 0)
+	age=$(( $(date +%s) - started_s ))
 	if [ "$age" -ge 0 ] && [ "$age" -lt 300 ]; then
 		ok "$svc started       ${age} s ago: this deploy's container"
 	else
@@ -733,16 +789,67 @@ fi
 # ---------------------------------------------------------------------------
 # 4a''. The desk's routes, as each host allows them
 #
-# The preview answers on the demo and creates nothing; an order is refused
-# there with a 405. On the live host this suite has no password and sends no
-# order: section 6 asserts the host refuses anonymous callers on the orders
-# route with the rest.
+# The preview answers on the demo and creates nothing; the four routes that
+# change a desk -- orders, cancel, kill and kill/reset -- are each refused
+# there with a 405 and a JSON `error` sentence. Desk_routes.Protection
+# refuses every one on the demo host before its handler runs, so POSTing
+# kill here halts nothing; on the live host this suite never POSTs kill at
+# all (section 7). The demo's own /api/desk says what it is: the simulated
+# venue, an in-memory journal, and a clock block read from that venue. On the
+# live host this suite has no password and sends no order: section 6 asserts
+# the host refuses anonymous callers, and section 7 reads it from inside its
+# container.
 # ---------------------------------------------------------------------------
 if command -v python3 >/dev/null 2>&1 && [ "${ops_mode:-}" = "demo" ]; then
 	ticket='{"symbol":"AAPL","side":"buy","qty":1}'
-	code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 -X POST -H 'Content-Type: application/json' -d "$ticket" "$ENGINE/api/desk/orders" 2>/dev/null)
-	[ "$code" = "405" ] && ok "POST /api/desk/orders        405 on the demo host" \
-		|| no "POST /api/desk/orders        $code, expected 405" "the public demo did not refuse an order"
+	for route in orders cancel kill kill/reset; do
+		case "$route" in
+		orders) body="$ticket" ;;
+		cancel) body='{"client_order_id":"smoke-no-such-order"}' ;;
+		kill) body='{"why":"smoke: the demo must refuse this"}' ;;
+		kill/reset) body='{"confirm":"reset"}' ;;
+		esac
+		refused=$(curl -sS --max-time 15 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' -d "$body" "$ENGINE/api/desk/$route" 2>/dev/null | python3 -c '
+import json, sys
+raw = sys.stdin.read().rsplit("\n", 1)
+code = raw[-1] if len(raw) == 2 else "000"
+try:
+    b = json.loads(raw[0])
+except Exception as e:
+    print("NOTJSON HTTP %s: %s" % (code, e)); raise SystemExit
+if code != "405":
+    print("CODE %s, expected 405" % code); raise SystemExit
+e = b.get("error") if isinstance(b, dict) else None
+if not isinstance(e, str) or not e:
+    print("NOERROR 405 without a JSON error sentence: %s" % str(b)[:200]); raise SystemExit
+print("OK")
+' 2>/dev/null)
+		label=$(printf 'POST %-23s' "/api/desk/$route")
+		case "$refused" in
+		OK*) ok "$label 405 on the demo host, with an error sentence" ;;
+		*) no "$label ${refused:-no response}" "the public demo did not refuse $route" ;;
+		esac
+	done
+	demodesk=$(curl -sS --max-time 15 "$ENGINE/api/desk" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception as e:
+    print("NOTJSON %s" % e); raise SystemExit
+c = d.get("clock")
+bad = []
+if d.get("venue") != "simulated": bad.append("venue %r, expected simulated" % (d.get("venue"),))
+if d.get("journal") != "memory": bad.append("journal %r, expected memory" % (d.get("journal"),))
+if not isinstance(c, dict): bad.append("no clock block")
+elif c.get("source") != "venue-clock": bad.append("clock.source %r, expected venue-clock" % (c.get("source"),))
+if bad:
+    print("BAD " + "; ".join(bad)); raise SystemExit
+print("OK")
+' 2>/dev/null)
+	case "$demodesk" in
+	OK*) ok "GET /api/desk               demo: venue simulated, journal memory, clock from the venue" ;;
+	*) no "GET /api/desk               demo desk is not what the demo should be" "${demodesk:-no response}" ;;
+	esac
 	preview=$(curl -sS --max-time 15 -X POST -H 'Content-Type: application/json' -d "$ticket" "$ENGINE/api/desk/preview" 2>/dev/null | python3 -c '
 import json, sys
 try:
@@ -919,6 +1026,241 @@ if [ -n "$LIVE" ]; then
 	done
 else
 	meh "live host                  not given (--live URL), skipping"
+fi
+
+# ---------------------------------------------------------------------------
+# 7. The live desk, from inside its container (--live-container)
+#
+# Every request below runs as
+#
+#   docker compose -f deploy/docker-compose.yml --profile live \
+#     exec -T ohcamel-live curl ... http://localhost:8081/PATH
+#
+# so it reaches the engine on its own loopback, behind Caddy's basic_auth:
+# the suite holds no password and no credential ever enters it. The runtime
+# image ships curl for its healthcheck; nothing was added to it for this.
+# /api/health stays liveness-only (ruling 13), so readiness is read here, from
+# /api/desk and /api/ops. Every line this block prints begins "live:", which
+# is what deploy/test/smoke_live_test.sh reads.
+# ---------------------------------------------------------------------------
+if [ "$LIVE_CONTAINER" = 1 ]; then
+printf '\nOhCamel live, inside ohcamel-live -- http://localhost:8081\n\n'
+
+SMOKE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# OHCAMEL_TAG: docker-compose.yml's ohcamel-research image is written
+# ${OHCAMEL_TAG:?...}, and compose interpolates the whole file before an
+# `exec`, so an unset tag would refuse the call. exec acts on the running
+# container and pulls nothing, so the value only has to be present: the tag
+# deploy.sh exported, else the sha this suite was told to expect.
+LIVE_COMPOSE=(env "OHCAMEL_TAG=${OHCAMEL_TAG:-${EXPECT_SHA:-unset}}"
+	docker compose -f "$SMOKE_DIR/docker-compose.yml" --profile live)
+
+# lc METHOD PATH [CURL-ARGS...]: one request inside ohcamel-live; prints the
+# body, a newline, and the status.
+lc() {
+	local method="$1" path="$2"
+	shift 2
+	"${LIVE_COMPOSE[@]}" exec -T ohcamel-live \
+		curl -sS --max-time 15 -w '\n%{http_code}' -X "$method" "$@" "http://localhost:8081$path" 2>/dev/null
+}
+
+# report: reads "OK<TAB>label<TAB>detail" / "NO<TAB>label<TAB>detail" lines,
+# one per assertion, and passes or fails each, so one regression is named on
+# its own line instead of hiding behind the first.
+report() {
+	local verdict label detail
+	while IFS=$'\t' read -r verdict label detail; do
+		case "$verdict" in
+		OK) ok "live: $label  $detail" ;;
+		NO) no "live: $label  $detail" ;;
+		*) [ -n "$verdict" ] && no "live: $verdict" "$label $detail" ;;
+		esac
+	done
+}
+
+if [ "$have_py" != 1 ]; then
+	no "live:                        python3 unavailable" "--live-container was asked for and cannot parse an answer here"
+else
+
+# 7a. /api/desk. last_sync is polled: the first sync follows startup and the
+# backfill, so a container this deploy just started honestly has none yet.
+# SMOKE_SYNC_WAIT_S (default 120) bounds the wait; the test sets it to 0.
+sync_wait="${SMOKE_SYNC_WAIT_S:-120}"
+deadline=$(($(date +%s) + sync_wait))
+while :; do
+	desk_raw=$(lc GET /api/desk)
+	fresh=$(printf '%s' "$desk_raw" | python3 -c '
+import datetime, json, sys
+raw = sys.stdin.read().rsplit("\n", 1)
+try:
+    d = json.loads(raw[0])
+    s = d["last_sync"]
+    head, _, frac = s.rstrip("Z").partition(".")
+    at = datetime.datetime.strptime(head, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc)
+    age = (datetime.datetime.now(datetime.timezone.utc) - at).total_seconds()
+    print("FRESH" if age < 180 else "OLD")
+except Exception:
+    print("NONE")
+' 2>/dev/null)
+	[ "$fresh" = FRESH ] && break
+	[ "$(date +%s)" -ge "$deadline" ] && break
+	/bin/sleep 5
+done
+printf '%s' "$desk_raw" | python3 -c '
+import datetime, json, sys
+raw = sys.stdin.read().rsplit("\n", 1)
+code = raw[-1] if len(raw) == 2 else "000"
+def say(ok, label, detail):
+    print("%s\t%-35s\t%s" % ("OK" if ok else "NO", label, detail))
+try:
+    d = json.loads(raw[0])
+except Exception as e:
+    say(False, "/api/desk", "HTTP %s, not JSON: %s" % (code, e)); raise SystemExit
+if code != "200" or not isinstance(d, dict):
+    say(False, "/api/desk", "HTTP %s, expected 200: %s" % (code, str(d)[:200])); raise SystemExit
+say(d.get("status") == "enabled", "/api/desk status", "%s%s" % (d.get("status"), "" if d.get("status") == "enabled" else ", expected enabled: %s" % d.get("reason")))
+say(d.get("venue") == "alpaca-paper", "/api/desk venue", "%s%s" % (d.get("venue"), "" if d.get("venue") == "alpaca-paper" else ", expected alpaca-paper"))
+say(d.get("journal") == "file", "/api/desk journal", "%s%s" % (d.get("journal"), "" if d.get("journal") == "file" else ", expected file: the live desk would forget its orders on restart"))
+k = d.get("kill_switch")
+say(isinstance(k, str) and bool(k), "/api/desk kill_switch", "%s%s" % (k, "" if isinstance(k, str) and k else ", expected present: the desk has no order manager"))
+c = d.get("clock") if isinstance(d.get("clock"), dict) else {}
+src = c.get("source")
+say(isinstance(src, str) and src != "unknown", "/api/desk clock.source", "%s%s" % (json.dumps(src), "" if isinstance(src, str) and src != "unknown" else ", expected a reading: the market clock never answered"))
+s = d.get("last_sync")
+if s is None:
+    say(False, "/api/desk last_sync", "null, expected a sync under 180 s old: none within the wait")
+else:
+    try:
+        head, _, frac = s.rstrip("Z").partition(".")
+        at = datetime.datetime.strptime(head, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc)
+        age = int((datetime.datetime.now(datetime.timezone.utc) - at).total_seconds())
+        if age < -5:
+            say(False, "/api/desk last_sync", "%d s in the future: the host clock stepped back" % -age)
+        else:
+            say(age < 180, "/api/desk last_sync", "%d s ago%s" % (age, "" if age < 180 else ", expected under 180 s: the sync loop has stopped"))
+    except Exception:
+        say(False, "/api/desk last_sync", "%r, unreadable" % (s,))
+e = d.get("last_error")
+say(e is None, "/api/desk last_error", "null" if e is None else "%r, expected null" % (e,))
+a = d.get("account") if isinstance(d.get("account"), dict) else {}
+say(a.get("status") == "ACTIVE", "/api/desk account.status", "%s%s" % (a.get("status"), "" if a.get("status") == "ACTIVE" else ", expected ACTIVE"))
+say(a.get("trading_blocked") is False, "/api/desk account.trading_blocked", "%s%s" % (json.dumps(a.get("trading_blocked")), "" if a.get("trading_blocked") is False else ", expected false"))
+' 2>&1 | report
+
+# 7b. The mutating routes refuse a request that is not the page's own: first
+# without X-OhCamel-Desk, then with it but with neither Origin nor
+# Sec-Fetch-Site (curl sends neither). Each body is one that would do
+# nothing even if it got through: an empty ticket, a cancel of an id that
+# does not exist, a reset with no confirm field.
+#
+# /api/desk/kill is NEVER POSTed here, on purpose (ruling 13): a regression
+# in its guard would halt the live desk, and the smoke suite must not be the
+# thing that finds out that way. Its refusal is covered by the hermetic
+# desk-route tests (test/test_desk_routes.ml) instead. §3.15's acceptance asks
+# for all four mutating routes, so this gap is recorded as a §8 departure of
+# docs/superpowers/specs/2026-09-12-the-desk-design.md -- "the live smoke
+# suite never POSTs /api/desk/kill" -- which Task 71 keeps.
+for route in orders cancel kill/reset; do
+	case "$route" in
+	orders) body='{}' ;;
+	cancel) body='{"client_order_id":"smoke-no-such-order-0000"}' ;;
+	kill/reset) body='{}' ;;
+	esac
+	for variant in noheader noorigin; do
+		if [ "$variant" = noheader ]; then
+			raw=$(lc POST "/api/desk/$route" -H 'Content-Type: application/json' -d "$body")
+			want="without X-OhCamel-Desk"
+		else
+			raw=$(lc POST "/api/desk/$route" -H 'Content-Type: application/json' -H 'X-OhCamel-Desk: 1' -d "$body")
+			want="with the header but no Origin"
+		fi
+		code=""
+		case "$raw" in *$'\n'*) code="${raw##*$'\n'}" ;; esac
+		label=$(printf 'POST %-24s' "/api/desk/$route")
+		if [ "$code" = 403 ]; then
+			ok "live: $label 403 $want"
+		elif [ -z "$code" ] || [ "$code" = 000 ]; then
+			no "live: $label no response, expected 403 $want" \
+				"the request never reached ohcamel-live: is it running, and is this the host it runs on?"
+		else
+			no "live: $label $code, expected 403 $want" \
+				"a request that is not the page's own was not refused: ${raw%$'\n'*}"
+		fi
+	done
+done
+
+# 7c. /api/ops: this deploy's build, in a container this deploy started.
+lc GET /api/ops | EXPECT="$EXPECT_SHA" python3 -c '
+import json, os, sys
+raw = sys.stdin.read().rsplit("\n", 1)
+code = raw[-1] if len(raw) == 2 else "000"
+def say(ok, label, detail):
+    print("%s\t%-35s\t%s" % ("OK" if ok else "NO", label, detail))
+try:
+    o = json.loads(raw[0])
+except Exception as e:
+    say(False, "/api/ops", "HTTP %s, not JSON: %s" % (code, e)); raise SystemExit
+want = os.environ.get("EXPECT", "")
+say(o.get("mode") == "live", "/api/ops mode", "%s%s" % (o.get("mode"), "" if o.get("mode") == "live" else ", expected live"))
+sha = (o.get("build") or {}).get("git_sha")
+if not want:
+    say(False, "/api/ops build.git_sha", "%s, and no --expect-sha to compare it with" % sha)
+else:
+    say(sha == want, "/api/ops build.git_sha", ("matches %s" % want[:7]) if sha == want else "%s, expected %s" % (sha, want[:7]))
+up = o.get("uptime_s")
+fine = isinstance(up, (int, float)) and not isinstance(up, bool) and up < 300
+say(fine, "/api/ops uptime_s", "%s s%s" % (up, "" if fine else ", expected under 300: this deploy did not replace it"))
+' 2>&1 | report
+
+# 7d. ohcamel-research: running, built from this sha, and stamped with it.
+rid=$(docker ps --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-ohcamel}" \
+	--filter "label=com.docker.compose.service=ohcamel-research" --quiet 2>/dev/null | head -1)
+if [ -z "$rid" ]; then
+	no "live: ohcamel-research running        no running ohcamel-research container found"
+else
+	read -r rrunning rrev <<<"$(docker inspect -f '{{.State.Running}} {{index .Config.Labels "org.opencontainers.image.revision"}}' "$rid" 2>/dev/null)"
+	if [ "$rrunning" = true ]; then
+		ok "live: ohcamel-research running        yes"
+	else
+		no "live: ohcamel-research running        ${rrunning:-unknown}, expected true"
+	fi
+	if [ -n "$EXPECT_SHA" ] && [ "$rrev" = "$EXPECT_SHA" ]; then
+		ok "live: ohcamel-research image revision matches ${EXPECT_SHA:0:7}"
+	else
+		no "live: ohcamel-research image revision ${rrev:-unlabelled}, expected ${EXPECT_SHA:-a --expect-sha}"
+	fi
+	renv=$(docker exec "$rid" printenv OHCAMEL_GIT_SHA 2>/dev/null)
+	if [ -n "$EXPECT_SHA" ] && [ "$renv" = "$EXPECT_SHA" ]; then
+		ok "live: ohcamel-research OHCAMEL_GIT_SHA matches ${EXPECT_SHA:0:7}"
+	else
+		no "live: ohcamel-research OHCAMEL_GIT_SHA ${renv:-unset}, expected ${EXPECT_SHA:-a --expect-sha}"
+	fi
+fi
+
+# 7e. /api/research: the intake runs. How many strategies it holds is
+# reported, not asserted -- 0 until the owner merges the book's signals block.
+research=$(lc GET /api/research | python3 -c '
+import json, sys
+raw = sys.stdin.read().rsplit("\n", 1)
+code = raw[-1] if len(raw) == 2 else "000"
+try:
+    r = json.loads(raw[0])
+except Exception as e:
+    print("NOTJSON HTTP %s: %s" % (code, e)); raise SystemExit
+if code != "200":
+    print("CODE %s, expected 200" % code); raise SystemExit
+if r.get("intake") != "running":
+    print("INTAKE %r, expected running" % (r.get("intake"),)); raise SystemExit
+print("OK %d" % len(r.get("strategies") or []))
+' 2>&1)
+case "$research" in
+OK*) ok "live: /api/research                   intake running, ${research#OK } strategies registered" ;;
+*) no "live: /api/research                   ${research:-no response}" ;;
+esac
+
+fi
+else
+	meh "live container             not asked for (--live-container), skipping"
 fi
 
 # ---------------------------------------------------------------------------

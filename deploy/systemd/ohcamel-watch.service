@@ -1,0 +1,40 @@
+# The on-host watch, as a one-shot: deploy/watch.sh checks the containers,
+# /api/desk (read inside ohcamel-live, no credential), the nightly backup's
+# age, the disk and the reboot flag, restarts a container that has been
+# unhealthy for three consecutive runs, and alerts on each edge. Started by
+# ohcamel-watch.timer every 5 minutes; `systemctl start ohcamel-watch.service`
+# runs it now, and `journalctl -t ohcamel-watch` is its whole history.
+#
+# Installed by the owner (finish plan Task 19's runbook):
+#   install -m 0644 deploy/systemd/ohcamel-watch.{service,timer} /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now ohcamel-watch.timer
+# Optional: /etc/ohcamel/ops.env at 0640 root:ohcamel with SLACK_WEBHOOK_URL=
+# and/or HEALTHCHECKS_URL= (watch.sh reads those two keys and never sources
+# the file).
+#
+# User=ohcamel is the deploy user, in the docker group, so `docker ps`,
+# `docker exec` and `docker restart` work without root; its edge state lives
+# in ~/.local/state/ohcamel-watch (watch.sh). Every ALERT/RECOVERED line is
+# stdout, which goes to journald below.
+#
+# CI's lint job runs `systemd-analyze verify` on this file and asserts the
+# parse (see the backup unit beside it for why the exit code is not).
+
+[Unit]
+Description=OhCamel on-host watch (deploy/watch.sh): containers, the desk, backups, disk, reboot flag
+Documentation=file:///home/ohcamel/OhCamel/deploy/watch.sh
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=ohcamel
+Group=ohcamel
+WorkingDirectory=/home/ohcamel/OhCamel
+ExecStart=/home/ohcamel/OhCamel/deploy/watch.sh
+# A run is a few docker calls and one HTTP read inside a container: seconds.
+# Four minutes keeps a stuck daemon call from overlapping the next firing.
+TimeoutStartSec=4min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ohcamel-watch

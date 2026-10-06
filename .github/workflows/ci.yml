@@ -2,9 +2,31 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # main, and the stage branches. A stage is accepted only when CI is green
+    # on it BEFORE it merges, and this project merges by fast-forward rather
+    # than through a pull request -- so with `main` alone, the first run that
+    # ever saw a stage's commits would be the one on main after the merge, and
+    # "green in CI before the merge" would be a claim about a run that had not
+    # happened yet.
+    branches:
+      - main
+      - 'desk/**'
+      - 'final/**'
   pull_request:
   workflow_dispatch:
+
+# Least privilege, stated once for every job rather than per job. Nothing here
+# writes to the repository: the jobs read the checkout, run local scripts, and
+# upload an artifact (which needs no repository scope). The default when a
+# workflow says nothing at all is whatever the repository's Actions setting
+# happens to be, which for a repository created before GitHub changed that
+# default is read/write -- so saying it here is the difference between least
+# privilege and luck. A job that genuinely needs more declares its own
+# `permissions:` block, which REPLACES this one: Task 10's image job will need
+# `packages: write` to push to ghcr, and that exception will then be visible at
+# the job taking it rather than granted to every job in the file.
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -16,15 +38,21 @@ concurrency:
 jobs:
   # Stage 0, not Stage 1: deploy.sh reaches the owner for the overdue W2/A3
   # deploy the moment this branch merges, so the check on it has to exist
-  # before that, not in a later stage's plan. Least-privilege token: this job
-  # only reads the checkout and runs local scripts, so contents: read is
-  # everything it needs, and naming that explicitly is cheaper than auditing
-  # later whether some step quietly started needing more.
+  # before that, not in a later stage's plan.
+  #
+  # Everything this job runs is a parser: shellcheck over the shell, compose's
+  # own renderer over the three compose files, caddy's Caddyfile adapter,
+  # systemd's unit parser, a grep-only script over three sentences, and awk
+  # over the two Dockerfiles' FROM lines. None of it needs a toolchain, a
+  # daemon on the host, or a credential, which is why it finishes in a couple
+  # of minutes and why it can be the check that gates a deploy. It reads the
+  # checkout and nothing else -- the workflow's top-level `permissions:
+  # contents: read` is all it gets.
   lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
+    # 15 rather than 10: the caddy step pulls an image before it can validate
+    # anything, and a slow registry should not be what turns this job red.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -81,8 +109,8 @@ jobs:
           done
           exit "$status"
 
-      # The three published test-count sentences (README.md, docs/overview.md,
-      # docs/status.md), checked against lib/verified.ml and
+      # The three published test-count sentences (docs/engine.md,
+      # docs/overview.md, docs/status.md), checked against lib/verified.ml and
       # research/src/ohcamel_research/verified.py by scripts/check-counts.sh.
       # This runner has no opam switch and no uv project set up, which is the
       # point: the script is grep and sed only, so this is the CI fact that
@@ -90,6 +118,289 @@ jobs:
       # true, on every push, without needing either toolchain.
       - name: make check-counts
         run: make check-counts
+
+      # The compose files render. Not a substitute for bringing the stack up --
+      # Task 10's image job does that against real images -- but `config` is the
+      # step that catches an unknown key, an anchor that no longer merges, an
+      # `!override` in the wrong place and an unset `${VAR:?...}`, and it
+      # catches them in seconds on a runner that has pulled no image at all. It
+      # is worth having separately from the harness because a compose file that
+      # does not parse takes BOTH hosts down at once on the droplet, and
+      # `deploy.sh` would discover it after it had already stopped them.
+      #
+      # The hostname/ACME/basic-auth variables come from deploy/local.env,
+      # which is committed for exactly this kind of use (see its own header).
+      # Values invented here would be a second copy of the same lines to keep
+      # in step with the `${VAR:?...}` declarations. The same file carries
+      # OHCAMEL_TAG=local, the tag every image reference in
+      # deploy/docker-compose.yml requires (`${OHCAMEL_TAG:?...}`; the droplet
+      # gets a commit sha from deploy.sh), so these renders name the harness's
+      # :local images -- what each file names, and that the render fails with
+      # no tag at all, is deploy/test/compose_tags_test.sh's job, run above.
+      #
+      # /etc/ohcamel/live.env is written with DUMMY values because both
+      # ohcamel-live and ohcamel-research declare it `required: true`, so the
+      # live profile does not render without it -- and a check that skipped the
+      # live profile would skip the only two services that carry credentials,
+      # a volume mounted read-only against another service's read-write, and
+      # the env_file declaration itself. Nothing here is a credential: the
+      # runner has none, and these three values are visibly fake.
+      #
+      # `config -q` and not `config`: the quiet form prints nothing. The verbose
+      # form inlines every variable it resolved, env_file included, which on
+      # this runner would only echo the dummies above but is the wrong habit to
+      # write into a file that a later task may copy for the live host.
+      - name: The compose files render
+        run: |
+          sudo install -d -m 0755 /etc/ohcamel
+          printf '%s\n' \
+            '# CI only. Dummy values, so that docker compose config can' \
+            '# render the live profile, whose env_file is required: true.' \
+            '# The real file is root-owned and 0640 on the droplet.' \
+            'ALPACA_API_KEY=ci-dummy-not-a-key' \
+            'ALPACA_SECRET_KEY=ci-dummy-not-a-key' \
+            'FRED_API_KEY=ci-dummy-not-a-key' \
+            | sudo tee /etc/ohcamel/live.env >/dev/null
+          sudo chmod 0644 /etc/ohcamel/live.env
+
+          docker compose version
+
+          base=(--env-file deploy/local.env -f deploy/docker-compose.yml)
+
+          echo "== base, default profile (caddy + ohcamel-quant, the public site)"
+          docker compose "${base[@]}" config -q
+          echo "== base, live profile (adds ohcamel-live + ohcamel-research)"
+          docker compose "${base[@]}" --profile live config -q
+          # --profile demo, as the Makefile's LOCAL_COMPOSE passes it: the
+          # synthetic engine sits behind that profile now, so a render without
+          # it would never reach ohcamel-demo's service block.
+          echo "== base + the localhost harness override, demo profile (make deploy-verify)"
+          docker compose "${base[@]}" -f deploy/docker-compose.local.yml --profile demo config -q
+
+          # deploy/docker-compose.ci.yml is the image job's own override: the
+          # sha tags buildx loaded, no build block, and the two required
+          # env_files pointed at deploy/ci.env -- which is why its live
+          # profile renders with no /etc/ohcamel at all, and why the image job
+          # can bring the live profile up on a runner. Rendered
+          # unconditionally: the file exists now, and a missing one is a
+          # failure, not a skip.
+          echo "== base + the CI override, both profiles"
+          docker compose "${base[@]}" -f deploy/docker-compose.ci.yml config -q
+          docker compose "${base[@]}" -f deploy/docker-compose.ci.yml --profile live config -q
+
+      # Both Caddyfiles adapt and provision. This is the only check that reads
+      # deploy/Caddyfile.snippets the way the running proxy does: both files
+      # import it, so one broken snippet breaks production AND the harness, and
+      # it would otherwise surface on the droplet, where Caddy refuses to start
+      # and takes both hosts with it.
+      #
+      # The image is pinned, because a floating caddy:2-alpine would mean this
+      # step validates against whichever version the runner happened to pull.
+      # It has to be the version compose runs, or it is validating a different
+      # program than the one that will read these files -- the assertion at the
+      # end of the step is what keeps the two from drifting apart silently.
+      #
+      # The environment is dummies: deploy/Caddyfile takes its hostnames, ACME
+      # contact and basic-auth credential from {$VAR} (which is Caddy's own
+      # env-var syntax, expanded when the Caddyfile is adapted, not shell
+      # interpolation). OHCAMEL_LIVE_HASH is a real, well-formed bcrypt string
+      # -- the example from Caddy's basic_auth documentation, a hash of a
+      # throwaway password nothing here knows -- rather than a placeholder
+      # word, because this step adapts and provisions the site and a validator
+      # should be handed the SHAPE of value the running proxy gets.
+      #
+      # Caddyfile.local needs no environment at all: it hardcodes
+      # http://localhost. And --adapter caddyfile is explicit for both, because
+      # Caddy infers the adapter from a file named exactly "Caddyfile" and
+      # "Caddyfile.local" is not that.
+      - name: caddy validate
+        run: |
+          # Keep in step with deploy/docker-compose.yml's caddy image; the
+          # assertion below fails if they ever name different exact versions.
+          caddy_image=caddy:2.11.4-alpine
+
+          docker run --rm \
+            -v "$PWD/deploy:/etc/caddy:ro" \
+            -e OHCAMEL_ACME_EMAIL=ci@example.invalid \
+            -e OHCAMEL_DEMO_HOST=demo.example.com \
+            -e OHCAMEL_LIVE_HOST=live.example.com \
+            -e OHCAMEL_LIVE_USER=ci \
+            -e 'OHCAMEL_LIVE_HASH=$2a$14$Zkx19XLiW6VYouLHR5NmfOFU0z2GTNmpkT/5qqR7hx4IjWJPDhjvG' \
+            "$caddy_image" \
+            caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
+
+          docker run --rm \
+            -v "$PWD/deploy:/etc/caddy:ro" \
+            "$caddy_image" \
+            caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile.local
+
+          # Drift. deploy/docker-compose.yml pins caddy to the same exact
+          # version, and any other value -- a different pin, or the floating
+          # caddy:2-alpine coming back -- fails here: a validator for a version
+          # nobody runs is decoration. deploy/test/compose_tags_test.sh holds
+          # the same equality, and deploy.env.example's hash-password line to
+          # it as well.
+          compose_caddy=$(grep -oE 'image: caddy:[0-9A-Za-z.+_-]+' deploy/docker-compose.yml \
+                          | head -n 1 | sed 's/^image: //')
+          if [ -z "$compose_caddy" ]; then
+            echo "no caddy image found in deploy/docker-compose.yml -- this step no longer knows which caddy it is validating for"
+            exit 1
+          fi
+          echo "validated with $caddy_image; compose runs $compose_caddy"
+          if [ "$compose_caddy" != "$caddy_image" ]; then
+            echo "compose runs $compose_caddy but this step validated with $caddy_image -- pin both to the same version"
+            exit 1
+          fi
+
+      # The systemd units parse. Task 14 creates ohcamel-backup.{service,timer}
+      # and Task 18 creates ohcamel-watch.{service,timer}; until they exist this
+      # step says it found none and passes. The guard is a glob, not a stub unit
+      # committed to keep a check busy, so this turns itself on when they land.
+      #
+      # The exit code is deliberately NOT the assertion, and that is the whole
+      # subtlety of this step. systemd-analyze on a GitHub runner complains
+      # about things that are true only of the droplet -- `User=ohcamel` does
+      # not exist here, nor do the units these depend on -- and it exits
+      # non-zero for some of them. What CAN be asserted from a runner is the
+      # PARSE: a directive systemd does not know, a section it does not know, a
+      # section header that is not one, or a value it cannot read. Those are
+      # exactly the mistakes a unit file in a git repository carries, they are
+      # fatal on the host, and they are invisible until `systemctl
+      # daemon-reload` says so at 06:30 UTC.
+      #
+      # Because the exit code is not the assertion, the grep below is the only
+      # guard, so its words must be the words systemd prints -- and the one for
+      # an unknown directive has changed twice (src/shared/conf-parser.c):
+      #
+      #   Unknown lvalue 'X' in section 'S'               v240; gone by v249
+      #   Unknown key name 'X' in section 'S', ignoring.  v249 (Ubuntu 22.04),
+      #                                                   v255 (Ubuntu 24.04,
+      #                                                   ubuntu-latest)
+      #   Unknown key 'X' in section [S], ignoring.       v257 and later
+      #
+      # `Unknown key` matches both newer wordings and `Unknown lvalue` stays for
+      # an old host. An unknown directive is a WARNING systemd ignores, exit 0,
+      # which is exactly why a pattern that knew only the old wording let a
+      # misspelled `OnCalender=` through on this runner: nothing else fails.
+      - name: systemd-analyze verify (deploy/systemd/)
+        run: |
+          shopt -s nullglob
+          units=(deploy/systemd/*.service deploy/systemd/*.timer)
+          shopt -u nullglob
+          if [ "${#units[@]}" -eq 0 ]; then
+            echo "-- no units under deploy/systemd/ yet (Task 14 and Task 18 create them); skipped"
+            exit 0
+          fi
+          systemd-analyze --version | head -n 1
+          status=0
+          for u in "${units[@]}"; do
+            echo "== $u"
+            # `|| true` because the exit code is not the assertion (above), and
+            # because a bare assignment whose command fails would otherwise end
+            # the step before the output could be read: GitHub runs an
+            # unqualified `run:` block as `bash -e {0}`, so -e would propagate
+            # systemd-analyze's own non-zero exit as a step failure.
+            out=$(systemd-analyze verify "$u" 2>&1) || true
+            printf '%s\n' "$out"
+            if printf '%s\n' "$out" \
+               | grep -qE 'Failed to parse|Unknown lvalue|Unknown key|Invalid section|Unknown section'; then
+              echo "$u does not parse (see above) -- systemd would refuse it on the host."
+              status=1
+            fi
+          done
+          exit "$status"
+
+      # Every base image under deploy/ is pinned to a tag AND a digest (Task
+      # 8's requirement 6, and what both Dockerfiles' own FROM comments
+      # promise), and this is the step that notices when one is not. Nothing
+      # else in this workflow would: nothing builds deploy/Dockerfile or
+      # deploy/research.Dockerfile until Task 10's image job, and a build
+      # accepts a floating tag as readily as a digest -- so without this the
+      # requirement held only for as long as the three lines happened to read
+      # that way, while Dependabot (.github/dependabot.yml) is precisely the
+      # process that rewrites them, weekly, as pull requests that would
+      # otherwise merge green with the digest dropped.
+      #
+      # awk over the FROM lines and nothing else, in this job's character.
+      # What it has to know about a Dockerfile: `FROM` is case-insensitive; a
+      # `--platform=...` flag may precede the image; `FROM <stage>` names an
+      # earlier `AS <stage>` in the same file, not an image, and `FROM scratch`
+      # names the empty image, so neither is a base to pin (a build that reuses
+      # a stage is a correct Dockerfile, and a check that failed on it would be
+      # switched off, not fixed); and a heredoc (`RUN <<EOF` ... `EOF`) is data,
+      # not instructions -- deploy/research.Dockerfile carries Python whose
+      # `from` lines sit at column zero inside one. A digest without a tag
+      # fails too: the tag is the part a reader can act on and what Dependabot
+      # identifies the image by, and without it a digest bump is a bump of
+      # whatever `latest` means that week.
+      #
+      # Scope is deploy/ deliberately: quant/Dockerfile's floating FROM lines
+      # are compute Task 0.2 Step 2's, which publishes that image, and its pins
+      # land there with that step's Dependabot entry.
+      - name: FROM lines are pinned to a tag and a digest (deploy/)
+        run: |
+          files=(deploy/Dockerfile deploy/research.Dockerfile)
+          for f in "${files[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "$f is missing -- this step's list names the Dockerfiles deploy/ publishes; if one moved, move it here too"
+              exit 1
+            fi
+          done
+          # One line per FROM: "<verdict> <file>:<line>: <text>". The verdicts
+          # are pinned, stage, scratch, untagged (a digest but no tag) and
+          # unpinned; the last two fail.
+          report=$(awk '
+            FNR == 1 { split("", stages); inheredoc = 0 }
+            /^[ \t]*#/ { next }
+            inheredoc {
+              t = $0; sub(/^[ \t]+/, "", t)
+              if (t == delim) inheredoc = 0
+              next
+            }
+            {
+              # A heredoc opens at a token of the form <<EOF or <<-EOF, with
+              # EOF optionally quoted, which is how the Docker parser itself
+              # recognises one; everything up to the line that reads EOF is
+              # data.
+              for (k = 1; k <= NF; k++)
+                if ($k ~ /^<<-?[\047"]?[A-Za-z0-9_]+[\047"]?$/) {
+                  delim = $k
+                  sub(/^<<-?[\047"]?/, "", delim); sub(/[\047"]$/, "", delim)
+                  inheredoc = 1
+                  next
+                }
+            }
+            toupper($1) == "FROM" {
+              i = 2
+              while (i <= NF && substr($i, 1, 2) == "--") i++
+              image = (i <= NF) ? $i : ""
+              key = tolower(image)
+              # The tag is a ":" after the last "/" of the part before "@"; a
+              # ":" before the last "/" is a registry port, not a tag.
+              base = image; sub(/@.*$/, "", base)
+              n = split(base, parts, "/")
+              tagged = (parts[n] ~ /:/)
+              # "@sha256:" is 8 characters and a sha256 digest is 64 hex
+              # digits, so a pinned token matches exactly 8 + 64 = 72.
+              digested = (match(image, /@sha256:[0-9a-f]+/) && RLENGTH == 72)
+              if (image != "" && (key in stages)) v = "stage"
+              else if (key == "scratch")           v = "scratch"
+              else if (digested && tagged)         v = "pinned"
+              else if (digested)                   v = "untagged"
+              else                                 v = "unpinned"
+              for (j = i + 1; j < NF; j++)
+                if (toupper($j) == "AS") stages[tolower($(j + 1))] = 1
+              printf "%-8s %s:%d: %s\n", v, FILENAME, FNR, $0
+            }' "${files[@]}")
+          if [ -z "$report" ]; then
+            echo "no FROM lines found in ${files[*]} -- this check would check nothing"
+            exit 1
+          fi
+          printf '%s\n' "$report"
+          if printf '%s\n' "$report" | grep -qE '^(unpinned|untagged) '; then
+            echo "a FROM line above is not pinned as image:tag@sha256:<digest> -- pin it (docker buildx imagetools inspect image:tag prints the digest) so the build is reproducible and Dependabot can move it"
+            exit 1
+          fi
 
   build-and-test:
     # Two platforms, and the second one is not decoration. The Makefile carries
@@ -113,6 +424,26 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      # The launchd plist that runs deploy/pull-backups.sh on the owner's
+      # laptop, linted by the tool that will actually load it. This lives on the
+      # macOS leg and can live nowhere else: plutil is part of macOS and is not
+      # present on an ubuntu runner at all, so the same step on the Linux leg
+      # would either fail for want of the tool or quietly check nothing.
+      #
+      # Task 14 creates the file. Until it does, this says it found nothing and
+      # passes -- a file test rather than a stub plist, which would exist only
+      # to keep a check busy. It runs before the forty-minute Owl build because
+      # it costs a second.
+      - name: plutil -lint the launchd plist (macOS only)
+        if: runner.os == 'macOS'
+        run: |
+          plist=deploy/launchd/com.ohcamel.pull-backups.plist
+          if [ ! -f "$plist" ]; then
+            echo "-- $plist does not exist yet (Task 14 creates it); skipped"
+            exit 0
+          fi
+          plutil -lint "$plist"
 
       # The two pages, the three crisis CSVs and the quoted tables are OCaml
       # quoted string literals: lib/dune cats web/* and docs/crisis/*.csv into
@@ -197,6 +528,22 @@ jobs:
           case "$status" in
             0) echo "$matches"; echo "lib/ names something that trades; it belongs in desk/."; exit 1 ;;
             1) echo "lib/ names nothing that trades" ;;
+            *) echo "grep failed (exit $status) -- the check did not run"; exit 1 ;;
+          esac
+
+      # Compute plan constraint 8: the Quant side never trades. The same rule
+      # as the step above, for quant/src and native/ (the Rust workspace): no
+      # file there may name the venue's orders path or a desk route that
+      # places, cancels or kills. The engine bridge's docstring says "no desk
+      # route" rather than listing them, so a match here is always real. As
+      # above, grep's 2 means the check never ran and fails the step.
+      - name: nothing under quant/ or native/ can reach an order route
+        if: runner.os == 'Linux'
+        run: |
+          matches=$(grep -rnE '/v2/orders|/api/desk/(orders|cancel|kill)' quant/src native) && status=0 || status=$?
+          case "$status" in
+            0) echo "$matches"; echo "an order route is named under quant/ or native/"; exit 1 ;;
+            1) echo "nothing under quant/src or native/ names an order route" ;;
             *) echo "grep failed (exit $status) -- the check did not run"; exit 1 ;;
           esac
 
@@ -345,12 +692,24 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # A floor, not a target. The README explains why the number is bimodal —
-      # the split sits at 80% of each file's unrounded figure, and the lowest
-      # files in the IO column run down to 13%, because exercising them needs
-      # a network and this project declines to fake one. The floor exists so
-      # that deleting tests is noticed; chasing the number upward by testing
-      # the feed against a mock would make it go up and mean less.
+      # A floor, not a target, and the number it floors is bimodal. The per-file
+      # table in docs/engine.md (the engine's README, moved there when OhCamel
+      # Quant became the public site) is where that shape is set out and kept
+      # current; this comment deliberately carries no more of it than the two
+      # bounds that docs/status.md and the Makefile also state, because a fifth
+      # copy of the table would be a fifth thing to re-measure. What it does
+      # have to do is agree with them about what the two modes ARE.
+      #
+      # The split sits at 80% of each file's unrounded figure. The six files
+      # that perform network IO themselves run 36% to 65%, because exercising
+      # them means mocking a broker, which raises the number and establishes
+      # nothing. Below those six is not more IO: it is derived
+      # sexp_of/compare/equal boilerplate on record and variant types, which is
+      # almost all of what the lowest file in the table -- desk/venue.ml, at
+      # 13% -- actually is.
+      #
+      # The floor exists so that deleting tests is noticed; chasing the number
+      # upward against a mocked feed would make it go up and mean less.
       - name: Coverage floor
         run: |
           percent=$(opam exec -- bisect-ppx-report summary --coverage-path _coverage \
@@ -394,6 +753,34 @@ jobs:
       # prints what moved). Offline, no credential; about 26 s an experiment.
       - name: The committed manifests reproduce
         run: make research-reproduce
+
+  # The Rust workspace (native/): hostd today, the kernels crate later
+  # (compute plan II.1). rustup reads native/rust-toolchain.toml, so the
+  # toolchain here is the pinned 1.80 with rustfmt and clippy, the same one
+  # native/hostd/Dockerfile builds with. --locked: exactly native/Cargo.lock.
+  # The image itself is built and published by image.yml's matrix.
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: native
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain (native/rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --locked
 
   # OhCamel Quant (quant/): the public site. Its own uv project and npm
   # project, so this job needs neither the opam switch nor research/'s
@@ -571,6 +958,12 @@ jobs:
   # endpoint. Offline, so the answer comes from the fixtures baked into the
   # image: that is the check that the image layout satisfies config.py's
   # REPO_ROOT and data/fixtures.py's paths. Built, never pushed.
+  #
+  # Overlaps with .github/workflows/image.yml, whose matrix builds the same
+  # quant/Dockerfile (entry ohcamel-quant) for publishing and smokes it
+  # through the compose harness. Kept on purpose: this is ci's own gate on
+  # every push, it runs the image bare and offline rather than behind caddy,
+  # and it needs no artifact and no second workflow to be red.
   quant-image:
     runs-on: ubuntu-latest
     timeout-minutes: 30

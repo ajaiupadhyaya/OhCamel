@@ -17,7 +17,20 @@
 # ---------------------------------------------------------------------------
 # Stage 1 -- builder
 # ---------------------------------------------------------------------------
-FROM ocaml/opam:debian-12-ocaml-5.2 AS builder
+# Pinned to a digest as well as a tag, and the two are not the same thing.
+# ocaml/opam rebuilds `debian-12-ocaml-5.2` in place -- that is the only
+# granularity this tag family publishes, there is no `-5.2.1` -- so the tag is
+# mutable, and two builds a month apart are builds against different bases. The
+# digest is what makes the version exact. The tag stays beside it because it is
+# the part a reader can act on, and because Dependabot identifies the image by
+# it; .github/dependabot.yml is what moves this line, weekly, as a pull request
+# that says what changed. Without that half, pinning a digest would only mean
+# the builder quietly stopped receiving the base image's security updates.
+#
+# Resolved 2026-09-20 from registry-1.docker.io: this is the manifest-list
+# digest the tag pointed at, so the pin changes nothing about what is pulled
+# today and freezes it from here on.
+FROM ocaml/opam:debian-12-ocaml-5.2@sha256:fa213a9a52c82cc704d2192dee5c6d12d26bb3932c18c5d48e83d269858e35d3 AS builder
 
 USER root
 
@@ -86,7 +99,15 @@ RUN opam exec -- dune build --profile release bin/main.exe \
 # ---------------------------------------------------------------------------
 # Stage 2 -- runtime
 # ---------------------------------------------------------------------------
-FROM debian:12-slim AS runtime
+# The point release, not `12-slim`, and its digest with it. `debian:12-slim`
+# moves with every bookworm point release and every rebuild in between, which
+# means the image that ships to the droplet is decided by the day the build ran
+# rather than by anything in this repository -- and the runtime stage is the one
+# whose libssl3, libsqlite3-0 and tzdata the engine actually loads. Verified
+# 2026-09-20: `debian:12-slim` and `debian:12.15-slim` were the same manifest
+# digest, so this pin changed nothing about the image and everything about when
+# it changes. Dependabot moves it (.github/dependabot.yml).
+FROM debian:12.15-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS runtime
 
 # The runtime halves of the -dev packages above, plus ca-certificates (live
 # mode verifies Alpaca's and FRED's certificates and cannot without them),
@@ -95,6 +116,15 @@ FROM debian:12-slim AS runtime
 # market-on-open orders may go only from 19:00 America/New_York, read from the
 # tz database (desk/desk_time.ml), and without the zone the desk refuses every
 # one of them.
+#
+# sqlite3 -- the CLI, not just the library the engine links -- is for the
+# nightly backup and nothing the engine does: deploy/backup.sh's `sqlite`
+# method copies the databases the engine does not own (the Flight Deck's
+# recorder on quant_data; later Lane B's jobs.sqlite) with `sqlite3 -readonly
+# SRC ".backup DEST"` inside the ohcamel-backup compose service, which is this
+# image at the engine's tag, so the backup stays one image instead of a
+# second one to build, publish and pin. The engine's own `journal-backup`
+# goes through the library (libsqlite3-0, above). About 1.5 MB.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libopenblas0 \
       liblapacke \
@@ -103,12 +133,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libgmp10 \
       libev4 \
       libsqlite3-0 \
+      sqlite3 \
       zlib1g \
       ca-certificates \
       curl \
       tzdata \
  && rm -rf /var/lib/apt/lists/* \
- && test -f /usr/share/zoneinfo/America/New_York
+ && test -f /usr/share/zoneinfo/America/New_York \
+ && sqlite3 -version
 
 # Unprivileged, and with no login shell. The process reads market data and
 # serves HTML; nothing it does wants root, and a container escape should land
@@ -119,7 +151,14 @@ RUN useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin ohcamel
 # A named volume mounted here for the first time is populated from the image,
 # ownership included, so it starts writable by the unprivileged user rather
 # than by root -- which matters because the engine never runs as root.
-RUN mkdir -p /data && chown ohcamel:ohcamel /data
+#
+# /data/signals as well, though the engine only ever reads it: the `signals`
+# volume is mounted there read-only, and read-write into ohcamel-research at
+# /signals, whose image runs as this same uid (10001) and owns its /signals
+# the same way. An empty named volume is seeded from whichever container
+# mounts it first; with both mount points 10001's, the order no longer
+# matters (deploy/research.Dockerfile, finish plan Task 11).
+RUN mkdir -p /data/signals && chown ohcamel:ohcamel /data /data/signals
 
 COPY --from=builder /home/opam/ohcamel.exe /usr/local/bin/ohcamel
 
@@ -157,7 +196,14 @@ EXPOSE 8080 8081
 # deploy/smoke.sh --expect-sha can check the gated live engine from the
 # droplet's docker CLI without its password. An ARG is per stage, hence
 # declared again here; last, so it costs one metadata layer.
+#
+# ENV as well, in THIS stage: the builder's ENV above is per stage too and
+# never reached the image that ships, so `docker run --rm --entrypoint
+# printenv <image> OHCAMEL_GIT_SHA` printed nothing and an operator inside
+# the container could not ask which sha it was. The image job
+# (.github/workflows/image.yml, matrix entry `stamp: env`) asserts this line.
 ARG OHCAMEL_GIT_SHA=unknown
+ENV OHCAMEL_GIT_SHA=$OHCAMEL_GIT_SHA
 LABEL org.opencontainers.image.revision="$OHCAMEL_GIT_SHA"
 
 ENTRYPOINT ["/usr/local/bin/ohcamel"]
