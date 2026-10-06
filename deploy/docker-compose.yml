@@ -180,13 +180,13 @@ services:
     # A 2 vCPU / 4 GB droplet shared with Caddy, the live engine and the
     # research service. pandas/scipy on ten years of daily bars for a 60-name
     # universe fits comfortably in this; a runaway request is killed and
-    # restarted rather than taking the engine down with it. 1536m until heavy
-    # requests go through the worker (compute plan Lane B, B5), which lowers
-    # it to 1024m. OOM rank 0: after the batch tier, before caddy and the
+    # restarted rather than taking the engine down with it. 1024m: heavy
+    # requests over their synchronous caps now run on ohcamel-worker (compute
+    # plan Lane B, B5), not in this process. OOM rank 0: after the batch tier, before caddy and the
     # engine (tiers above caddy's).
     cgroup_parent: ohcamel-web.slice
     cpu_shares: 1024
-    mem_limit: 1536m
+    mem_limit: 1024m
     oom_score_adj: 0
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/api/health', timeout=4)"]

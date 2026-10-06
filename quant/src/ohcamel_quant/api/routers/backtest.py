@@ -20,6 +20,7 @@ loaded so look-back windows are filled, and no position is taken before ``start`
 from __future__ import annotations
 
 import hashlib
+import math
 import threading
 import time
 from collections import OrderedDict
@@ -30,7 +31,7 @@ from typing import Annotated, Any, Literal
 
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, field_validator
 
 from ...backtest import metrics as M
@@ -55,12 +56,15 @@ from ...data.base import DataUnavailable
 from ...data.fred import rf_error_reason, rf_series_used
 from ...data.market import MarketData, get_market, load_universes
 from ..serialize import clean, frame, records, series
+from .jobs import JobsDb, submit_over_cap
 
 router = APIRouter(prefix="/backtest", tags=["backtest"])
 Market = Annotated[MarketData, Depends(get_market)]
 
 RF_FFILL_SESSIONS = 5
 MAX_TICKERS = 60
+JOB_MAX_GRID = 512                 # combinations a sweep/walk-forward job may run
+JOB_SWEEP_BYTES = 192 * 2**20      # and what it may keep (V.sweep_footprint_bytes); sized in B5 Step 4 to fit class M
 MAX_COST_POINTS = 30
 
 # ------------------------------------------------------------------ caching
@@ -456,16 +460,40 @@ def _distinct_trials(rets: pd.DataFrame, tol: float = 1e-10, max_share: float = 
     return len(reps)
 
 
+def _runs_as_job(body: SweepIn | WalkForwardIn, market: MarketData) -> bool:
+    """False: run synchronously. True: run as a job. ValueError (422) when even a job would exceed its caps.
+
+    The footprint check needs the session count, so an over-cap request loads its prices here (the
+    synchronous path does the same first step); nothing is queued for a request the job would refuse."""
+    n = math.prod(len(v) for v in body.grid.values()) if body.grid else 0
+    if n <= V.MAX_GRID:
+        return False
+    if n > JOB_MAX_GRID:
+        raise ValueError(f"grid has {n} combinations; the cap is {JOB_MAX_GRID} as a job "
+                         f"({V.MAX_GRID} synchronously)")
+    p = _prepare(body, market)
+    tickers, sessions = p.ctx.prices.shape[1], len(p.ctx.prices)
+    need = V.sweep_footprint_bytes(n, tickers, sessions)
+    if need > JOB_SWEEP_BYTES:
+        raise ValueError(f"this sweep would hold about {need / 2**20:.1f} MiB ({n} combinations x {tickers} "
+                         f"tickers x {sessions} sessions); the cap as a job is {JOB_SWEEP_BYTES / 2**20:.0f} MiB "
+                         "-- use fewer combinations, fewer tickers or a shorter window")
+    return True
+
+
 @router.post("/sweep")
-def sweep(body: SweepIn, market: Market) -> dict[str, Any]:
+def sweep(body: SweepIn, market: Market, request: Request, jobs_db: JobsDb) -> Any:
+    if _runs_as_job(body, market):
+        return submit_over_cap("api.backtest_sweep", body.model_dump(mode="json"), request, jobs_db)
     return _cached("sweep", body, lambda: _do_sweep(body, market))
 
 
-def _do_sweep(body: SweepIn, market: Market) -> dict[str, Any]:
+def _do_sweep(body: SweepIn, market: Market, max_combos: int = V.MAX_GRID,
+              max_bytes: int | None = None) -> dict[str, Any]:
     if body.n_partitions % 2:
         raise ValueError("n_partitions must be even")
     p = _prepare(body, market)
-    sw = V.sweep(p.ctx, p.spec, p.params, body.grid, p.config, p.rf)
+    sw = V.sweep(p.ctx, p.spec, p.params, body.grid, p.config, p.rf, max_combos=max_combos, max_bytes=max_bytes)
     rets = sw.returns
     rf = p.rf.reindex(rets.index) if p.rf is not None else None
     bench = p.bench_ret.loc[rets.index]
@@ -538,13 +566,16 @@ def _do_sweep(body: SweepIn, market: Market) -> dict[str, Any]:
 
 
 @router.post("/walkforward")
-def walkforward(body: WalkForwardIn, market: Market) -> dict[str, Any]:
+def walkforward(body: WalkForwardIn, market: Market, request: Request, jobs_db: JobsDb) -> Any:
+    if _runs_as_job(body, market):
+        return submit_over_cap("api.backtest_walkforward", body.model_dump(mode="json"), request, jobs_db)
     return _cached("walkforward", body, lambda: _do_walkforward(body, market))
 
 
-def _do_walkforward(body: WalkForwardIn, market: Market) -> dict[str, Any]:
+def _do_walkforward(body: WalkForwardIn, market: Market, max_combos: int = V.MAX_GRID,
+                    max_bytes: int | None = None) -> dict[str, Any]:
     p = _prepare(body, market)
-    sw = V.sweep(p.ctx, p.spec, p.params, body.grid, p.config, p.rf)
+    sw = V.sweep(p.ctx, p.spec, p.params, body.grid, p.config, p.rf, max_combos=max_combos, max_bytes=max_bytes)
     rf = p.rf.reindex(sw.returns.index) if p.rf is not None else None
     ref = next((i for i, c in enumerate(sw.combos) if all(p.params.get(k) == v for k, v in c.items())), None)
     wf = V.walk_forward(sw, body.is_days, body.oos_days, body.anchored, body.objective,

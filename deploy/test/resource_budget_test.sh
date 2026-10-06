@@ -15,9 +15,10 @@
 # versions print an integer and a hand-written file may say "512m", so
 # every memory value goes through parse_mem and is compared in bytes.
 #
-# ohcamel-quant's ceiling stays 1536m until heavy requests go through the
-# worker (compute plan Lane B, B5), whose final step lowers it to 1024m and
-# changes the value asserted here to match (Task 0.3 Step 3).
+# ohcamel-quant's ceiling is 1024m: B5 (compute plan Lane B) has landed, so
+# heavy requests over their synchronous caps run on ohcamel-worker instead of
+# in the API process, and the 1536m ceiling it held until then is lowered
+# here and in the compose file (Task 0.3 Step 3).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -70,7 +71,7 @@ want = {  # service: (slice, cpu_shares, mem bytes, oom_score_adj)
     "ohcamel-live":     ("ohcamel-rt.slice",    4096,  512 * 2**20, -800),
     "ohcamel-demo":     ("ohcamel-rt.slice",    4096,  512 * 2**20, -800),
     "caddy":            ("ohcamel-web.slice",   1024,  128 * 2**20, -500),
-    "ohcamel-quant":    ("ohcamel-web.slice",   1024, 1536 * 2**20,    0),
+    "ohcamel-quant":    ("ohcamel-web.slice",   1024, 1024 * 2**20,    0),
     "ohcamel-research": ("ohcamel-batch.slice",  256,  384 * 2**20,  500),
     "ohcamel-hostd":    ("ohcamel-web.slice",   1024,   32 * 2**20, -500),
     "ohcamel-worker":   ("ohcamel-batch.slice",  128, 1280 * 2**20,  800),

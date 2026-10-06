@@ -19,7 +19,7 @@ from typing import Annotated, Any, Literal
 
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import Field, field_validator
 
 from ...data.base import DataUnavailable
@@ -38,6 +38,7 @@ from ...risk.core import (
 )
 from ..models import PortfolioIn
 from ..serialize import clean, frame, records, series
+from .jobs import JobsDb, submit_over_cap
 
 router = APIRouter(prefix="/risk", tags=["risk"])
 Market = Annotated[MarketData, Depends(get_market)]
@@ -137,6 +138,11 @@ class ConditionalStressIn(PortfolioIn):
 # Budget of rolling re-estimations per backtest: each refit fits t, GARCH, GJR and
 # a GPD (~15 ms together); ~150 keeps a 10-year backtest to a few seconds on 2 vCPU.
 _MAX_REFITS = 150
+JOB_MAX_REFITS = 1000
+# The Risk page's smallest refit choice (window 250/500/1000 x refit 5/20/60). At or above it an
+# over-cap request is coarsened synchronously (200 with a note), exactly as before B5, because the
+# page reads any 2xx as a result. Only finer refits than the page offers run as jobs.
+SYNC_COARSEN_MIN_REFIT = 5
 
 
 def _check_weights(p: PortfolioIn) -> None:
@@ -284,21 +290,33 @@ def _summary(body: SummaryIn, market: MarketData) -> dict[str, Any]:
     })
 
 
+class OverSyncCap(Exception):
+    """The request needs more refits than the synchronous cap allows: it runs as a job instead."""
+
+
 @router.post("/backtest")
-def backtest(body: BacktestIn, market: Market) -> dict[str, Any]:
+def backtest(body: BacktestIn, market: Market, request: Request, jobs_db: JobsDb) -> Any:
     """Rolling out-of-sample 1-day VaR/ES backtest with coverage, independence and ES tests."""
-    return _cached("backtest", body, lambda: _backtest(body, market))
+    if body.refit_every >= SYNC_COARSEN_MIN_REFIT:
+        return _cached("backtest", body, lambda: _backtest(body, market))
+    try:
+        return _cached("backtest", body, lambda: _backtest(body, market, over_cap="raise"))
+    except OverSyncCap:
+        return submit_over_cap("api.risk_backtest", body.model_dump(mode="json"), request, jobs_db)
 
 
-def _backtest(body: BacktestIn, market: MarketData) -> dict[str, Any]:
+def _backtest(body: BacktestIn, market: MarketData, max_refits: int = _MAX_REFITS,
+              over_cap: str = "coarsen") -> dict[str, Any]:
     _, rp, prov, notes = _load_portfolio(body, market)
     models = tuple(body.models) if body.models else bt.ALL_MODELS
     refit = body.refit_every
     if any(m in models for m in ("student_t", "garch", "gjr_garch", "fhs", "evt_pot")):
-        refit = max(refit, math.ceil(max(len(rp) - body.window, 1) / _MAX_REFITS))
+        refit = max(refit, math.ceil(max(len(rp) - body.window, 1) / max_refits))
     if refit != body.refit_every:
+        if over_cap == "raise":
+            raise OverSyncCap(refit)
         notes.append(f"refit frequency capped: re-estimating every {refit} sessions instead of "
-                     f"{body.refit_every} (at most {_MAX_REFITS} refits per backtest on this server); "
+                     f"{body.refit_every} (at most {max_refits} refits per backtest on this server); "
                      "GARCH variances are still filtered daily between refits.")
     t0 = time.perf_counter()
     fc = bt.rolling_forecasts(rp.to_numpy(), body.alpha, body.window, refit, models,

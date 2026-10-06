@@ -25,6 +25,7 @@ series -- they resample history, they do not simulate markets.
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import math
 from dataclasses import dataclass, field
@@ -40,6 +41,17 @@ from .strategies import StrategySpec, validate_params
 
 MAX_GRID = 64
 MAX_REPS = 1000
+CSCV_CHUNK_BYTES = 8 * 2**20     # size of each (splits x trials) float64 temporary in cscv_pbo
+SWEEP_SERIES_PER_COMBO = 10      # float64 series-equivalents a sweep keeps per combination besides its weights
+
+
+def sweep_footprint_bytes(n_combos: int, n_tickers: int, n_rows: int) -> int:
+    """Upper bound on the bytes a ``sweep`` keeps alive. For each combination:
+    its weights (``n_rows x n_tickers``), the six engine series it keeps, its
+    column of the aligned returns frame, and headroom -- ``n_rows x
+    (n_tickers + 10)`` float64. Pinned against tracemalloc in
+    tests/test_jobs_migration.py."""
+    return int(n_combos) * int(n_rows) * 8 * (int(n_tickers) + SWEEP_SERIES_PER_COMBO)
 
 
 # ======================================================================= grid
@@ -75,16 +87,31 @@ def _annual_turnover(res: BacktestResult) -> float:
 
 
 def sweep(ctx: StrategyContext, spec: StrategySpec, base_params: dict[str, Any],
-          space: dict[str, list[Any]], config: EngineConfig, rf: pd.Series | None = None) -> SweepResult:
+          space: dict[str, list[Any]], config: EngineConfig, rf: pd.Series | None = None,
+          max_combos: int = MAX_GRID, max_bytes: int | None = None) -> SweepResult:
     """Run every grid combination (``base_params`` overridden by the combo) and
     align the net returns on the window where ALL combinations are live, so
-    that metrics are compared on identical sessions."""
+    that metrics are compared on identical sessions.
+
+    Refuses grids larger than ``max_combos`` (64 synchronously, 512 as a job).
+    When ``max_bytes`` is given, it also refuses grids whose
+    ``sweep_footprint_bytes`` exceeds it. Each kept result is slimmed (its
+    ``contributions``, ``trades`` and ``audit`` are dropped), and ``weights``
+    are views of the results' own weights. A combination therefore costs one
+    weights frame plus a few series."""
+    combos = param_grid(space, max_combos)
     for k in space:
         p = spec.param(k)
         if not p.sweepable:
             raise ValueError(f"parameter {k!r} is not numeric and cannot be swept")
-    combos = param_grid(space)
     tickers = list(ctx.prices.columns)
+    if max_bytes is not None:
+        need = sweep_footprint_bytes(len(combos), len(tickers), len(ctx.prices))
+        if need > max_bytes:
+            raise ValueError(f"this sweep would hold about {need / 2**20:.1f} MiB ({len(combos)} combinations x "
+                             f"{len(tickers)} tickers x {len(ctx.prices)} sessions); the cap is "
+                             f"{max_bytes / 2**20:.0f} MiB -- use fewer combinations, fewer tickers or a "
+                             "shorter window")
     cfg = EngineConfig(**{**config.__dict__, "audit_points": min(config.audit_points, 1)})
     ok_combos, results, skipped = [], [], []
     for combo in combos:
@@ -98,14 +125,20 @@ def sweep(ctx: StrategyContext, spec: StrategySpec, base_params: dict[str, Any],
             skipped.append({**combo, "reason": "never produced a signal"})
             continue
         ok_combos.append(combo)
-        results.append(res)
+        # .copy(): an empty iloc slice is a copy-on-write view that would keep the whole frame alive
+        results.append(dataclasses.replace(res, contributions=res.contributions.iloc[0:0].copy(), trades=None,
+                                           audit={}))
     if len(results) < 2:
         raise ValueError("fewer than two grid combinations produced a live backtest")
     start = max(r.live_start for r in results)
     rets = pd.DataFrame({i: r.returns_net.loc[r.returns_net.index >= start] for i, r in enumerate(results)})
     if len(rets) < 126:
         raise ValueError(f"only {len(rets)} sessions where every combination is live; widen the window")
-    weights = [r.weights.loc[rets.index] for r in results]
+    weights = []
+    for r in results:
+        pos = int(r.weights.index.searchsorted(rets.index[0]))
+        w = r.weights.iloc[pos:pos + len(rets)]  # a view (copy-on-write), not a second copy
+        weights.append(w if w.index.equals(rets.index) else r.weights.loc[rets.index])
     rows = []
     for i, combo in enumerate(ok_combos):
         r = rets[i]
@@ -146,7 +179,8 @@ def cscv_pbo(returns: pd.DataFrame | np.ndarray, n_partitions: int = 16, bins: i
     Also returned: the logit histogram, the performance-degradation regression
     ``SR_Jbar(n*) = a + b SR_J(n*) + e`` and ``P[SR_Jbar(n*) < 0]``. Sharpe
     ratios here are per-period (non-annualized); moments come from block sums,
-    so all combinations are evaluated in one vectorized pass.
+    so the combinations are evaluated vectorized, in chunks whose ``(chunk x N)``
+    temporaries stay under ``CSCV_CHUNK_BYTES``.
     """
     m = np.asarray(returns, dtype=float)
     if m.ndim != 2 or m.shape[1] < 2:
@@ -159,23 +193,32 @@ def cscv_pbo(returns: pd.DataFrame | np.ndarray, n_partitions: int = 16, bins: i
         raise ValueError(f"need at least {4 * n_partitions} rows for {n_partitions} partitions")
     s = n_partitions
     b1, b2, bn = _block_moments(m, s)
+    t1, t2, tn = b1.sum(0), b2.sum(0), bn.sum()
     combos = np.array(list(itertools.combinations(range(s), s // 2)))
-    mask = np.zeros((len(combos), s))
-    mask[np.arange(len(combos))[:, None], combos] = 1.0
-    is1, is2, isn = mask @ b1, mask @ b2, mask @ bn
-    oos1, oos2, oosn = b1.sum(0) - is1, b2.sum(0) - is2, bn.sum() - isn
-    sr_is = _sharpe_from_sums(is1, is2, isn)
-    sr_oos = _sharpe_from_sums(oos1, oos2, oosn)
-    sr_is_f = np.where(np.isfinite(sr_is), sr_is, -np.inf)
-    best = np.argmax(sr_is_f, axis=1)
-    rows = np.arange(len(combos))
-    oos_f = np.where(np.isfinite(sr_oos), sr_oos, -np.inf)
-    ranks = stats.rankdata(oos_f, axis=1, method="average")
     n = m.shape[1]
-    w = ranks[rows, best] / (n + 1.0)
+    c_all = len(combos)
+    best = np.empty(c_all, dtype=np.intp)
+    w, x, y = np.empty(c_all), np.empty(c_all), np.empty(c_all)
+    step = max(1, CSCV_CHUNK_BYTES // (8 * n))  # bounded temporaries: each (chunk x N) array <= 8 MiB
+    for lo in range(0, c_all, step):
+        cc = combos[lo:lo + step]
+        k = np.arange(len(cc))
+        mask = np.zeros((len(cc), s))
+        mask[k[:, None], cc] = 1.0
+        is1, is2, isn = mask @ b1, mask @ b2, mask @ bn
+        sr_is = _sharpe_from_sums(is1, is2, isn)
+        sr_oos = _sharpe_from_sums(t1 - is1, t2 - is2, tn - isn)
+        del is1, is2
+        bst = np.argmax(np.where(np.isfinite(sr_is), sr_is, -np.inf), axis=1)
+        ranks = stats.rankdata(np.where(np.isfinite(sr_oos), sr_oos, -np.inf), axis=1, method="average")
+        best[lo:lo + len(cc)] = bst
+        w[lo:lo + len(cc)] = ranks[k, bst] / (n + 1.0)
+        x[lo:lo + len(cc)] = sr_is[k, bst]
+        y[lo:lo + len(cc)] = sr_oos[k, bst]
+        del sr_is, sr_oos, ranks
+    rows = np.arange(c_all)
     lam = np.log(w / (1.0 - w))
     pbo = float(np.mean(lam <= 0))
-    x, y = sr_is[rows, best], sr_oos[rows, best]
     ok = np.isfinite(x) & np.isfinite(y)
     reg: dict[str, float] = {}
     if ok.sum() > 2 and np.ptp(x[ok]) > 0:
@@ -424,7 +467,8 @@ def run_config_from(config: EngineConfig, **kw: Any) -> EngineConfig:
 
 
 __all__ = [
-    "MAX_GRID", "MAX_REPS", "SweepResult", "bootstrap_sharpe", "cost_sensitivity", "cscv_pbo",
+    "CSCV_CHUNK_BYTES", "MAX_GRID", "MAX_REPS", "SweepResult", "bootstrap_sharpe", "cost_sensitivity", "cscv_pbo",
     "deflated_sharpe_for_grid", "optimal_block", "param_grid", "run_weights", "spa_test", "sweep",
+    "sweep_footprint_bytes",
     "walk_forward", "run_config_from",
 ]

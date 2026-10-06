@@ -79,3 +79,12 @@ def validate_params(spec: KindSpec, params: dict[str, Any]) -> None:
 
 register(KindSpec("ops.selftest", "ohcamel_quant.jobs.handlers.selftest:run", "S", heavy=False))
 register(KindSpec("ingest.fred", "ohcamel_quant.jobs.handlers.fred:run", "S", heavy=False))
+_H = "ohcamel_quant.jobs.handlers.api_heavy"
+register(KindSpec("api.risk_backtest", f"{_H}:risk_backtest", "M", heavy=False, public=True,
+                  validate="ohcamel_quant.api.routers.risk:BacktestIn"))
+register(KindSpec("api.backtest_sweep", f"{_H}:backtest_sweep", "M", heavy=False, public=True,
+                  validate="ohcamel_quant.api.routers.backtest:SweepIn"))
+register(KindSpec("api.backtest_walkforward", f"{_H}:backtest_walkforward", "M", heavy=False, public=True,
+                  validate="ohcamel_quant.api.routers.backtest:WalkForwardIn"))
+register(KindSpec("api.portfolio_compare", f"{_H}:portfolio_compare", "M", heavy=False, public=True,
+                  validate="ohcamel_quant.api.routers.portfolio:CompareIn"))

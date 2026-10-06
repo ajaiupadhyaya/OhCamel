@@ -79,12 +79,17 @@ def test_conditional_stress_rejects_duplicate_shock_keys(client):
     assert "duplicate" in r.text.lower()
 
 
-def test_backtest_caps_refits_for_the_droplet(client):
+def test_backtest_caps_refits_for_the_droplet(client, market):
     """refit_every=1 on 10 years would run ~2,000 GARCH/GJR/t/EVT refits (tens of
-    seconds on 2 vCPU); the router caps the refit count and says so."""
+    seconds on 2 vCPU). Over the synchronous cap the endpoint queues a job
+    (Lane B, B5). The coarsening is still the router's: the job calls _backtest
+    with over_cap="coarsen", checked here at the synchronous refit cap."""
+    from ohcamel_quant.api.routers.risk import _MAX_REFITS, BacktestIn, _backtest
+
     r = client.post("/api/risk/backtest", json={**PF, "refit_every": 1})
-    assert r.status_code == 200
-    j = r.json()
+    assert r.status_code == 202, r.text
+    assert r.json()["job"]["kind"] == "api.risk_backtest" and r.json()["job"]["state"] == "queued"
+    j = _backtest(BacktestIn(**PF, refit_every=1), market, max_refits=_MAX_REFITS, over_cap="coarsen")
     assert j["refit_every"] == 1
     assert j["refit_every_effective"] > 1
     assert any("refit" in n and "capped" in n for n in j["notes"])

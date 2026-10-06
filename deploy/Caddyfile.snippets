@@ -14,7 +14,9 @@
 	# exclusion stays because it costs nothing and is right against a less
 	# careful proxy. Every other route is a discrete response and compresses
 	# fine; the dashboard HTML is the one that actually benefits.
-	@compressible not path /api/stream
+	# /api/jobs/events is the Quant app's SSE stream (Lane B), excluded for the
+	# same reason.
+	@compressible not path /api/stream /api/jobs/events
 	encode @compressible zstd gzip
 
 	header {
