@@ -248,3 +248,57 @@ def test_xsmom_holding_every_asset_says_it_is_equal_weight(bt_client):
                                                   "params": {"top_k": 3}})
     assert r.status_code == 200, r.text
     assert any("equal-weight portfolio" in n for n in r.json()["notes"])
+
+
+# ---------------------------------------------------------------- compute plan A6: engine in provenance
+def _kernel_prov(j):
+    rows = [p for p in j["provenance"] if p["source"] == "ohcamel_quant.kernels"]
+    assert len(rows) == 1, j["provenance"]
+    assert rows[0]["synthetic"] is False
+    return rows[0]["detail"]
+
+
+def test_backtest_payloads_record_the_kernel_engine(bt_client):
+    """Contract II.4: the engine that ran the accounting loop (and CSCV) is in each payload's provenance,
+    so a production backtest on Rust says so."""
+    from ohcamel_quant import kernels
+
+    bw = kernels.engine_of("backtest_weights")
+    three = ["SPY", "TLT", "GLD"]
+    run = bt_client.post("/api/backtest/run", json={"strategy": "sma_trend", "tickers": ["SPY", "TLT"],
+                                                    "bootstrap_reps": 101})
+    assert run.status_code == 200, run.text
+    assert _kernel_prov(run.json()) == {"engine": bw, "kernels": {"backtest_weights": bw}}
+
+    sweep = bt_client.post("/api/backtest/sweep", json={"strategy": "tsmom", "tickers": three,
+                                                        "grid": {"lookback": [126, 252, 378]}, "spa_reps": 101,
+                                                        "n_partitions": 8})
+    assert sweep.status_code == 200, sweep.text
+    sj = sweep.json()
+    assert "error" not in sj["pbo"], sj["pbo"]
+    cs = kernels.engine_of("cscv_pbo")
+    assert sj["pbo"]["engine"] == cs
+    assert _kernel_prov(sj) == {"engine": bw if bw == cs else "mixed",
+                                "kernels": {"backtest_weights": bw, "cscv_pbo": cs}}
+
+    walk = bt_client.post("/api/backtest/walkforward", json={"strategy": "tsmom", "tickers": three,
+                                                             "grid": {"lookback": [126, 252]},
+                                                             "is_days": 504, "oos_days": 126})
+    assert walk.status_code == 200, walk.text
+    assert _kernel_prov(walk.json()) == {"engine": bw, "kernels": {"backtest_weights": bw}}
+
+    costs = bt_client.post("/api/backtest/costs", json={"strategy": "sma_trend", "tickers": ["SPY", "TLT"],
+                                                        "bps": [0, 5, 11]})
+    assert costs.status_code == 200, costs.text
+    assert _kernel_prov(costs.json()) == {"engine": bw, "kernels": {"backtest_weights": bw}}
+
+
+def test_backtest_payload_engine_follows_the_dispatcher(bt_client):
+    # forced to the reference, the payload says python: the row reports what ran, not a constant
+    from ohcamel_quant import kernels
+
+    with kernels.forced("python"):
+        r = bt_client.post("/api/backtest/run", json={"strategy": "sma_trend", "tickers": ["SPY", "TLT"],
+                                                      "bootstrap_reps": 103})
+    assert r.status_code == 200, r.text
+    assert _kernel_prov(r.json()) == {"engine": "python", "kernels": {"backtest_weights": "python"}}

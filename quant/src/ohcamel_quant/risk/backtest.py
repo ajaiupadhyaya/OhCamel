@@ -39,6 +39,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 from scipy import stats
 from scipy.special import xlogy
 
+from .. import kernels
 from .core import (
     ewma_variance_path,
     fit_t_dof,
@@ -47,7 +48,7 @@ from .core import (
     tail_count,
     validate_alpha,
 )
-from .garch import filter_variance, fit_garch_fast
+from .garch import FastGarch, filter_variance, fit_garch_fast
 from .var import cornish_fisher_tail_mean, fit_gpd, gpd_var_es
 
 ALL_MODELS = ("historical", "gaussian", "student_t", "cornish_fisher", "ewma",
@@ -63,12 +64,28 @@ class Forecasts:
     info: dict[str, dict[str, Any]]
 
 
+def _refit(window_r: np.ndarray, kind: str, x0: np.ndarray | None, use_kernels: bool) -> FastGarch:
+    """One rolling GARCH refit: fit_garch_fast, or (jobs) the garch_fit kernel on percent returns."""
+    if not use_kernels:
+        return fit_garch_fast(window_r, kind, x0=x0)
+    g = kernels.garch_fit(100.0 * np.asarray(window_r, dtype=float), kind, x0)
+    p = g.params
+    gamma = float(p[3]) if kind == "gjr" else 0.0
+    return FastGarch(kind, float(p[0]), float(p[1]), float(p[2]), gamma, float(p[-2]), float(p[-1]), -g.nll,
+                     g.sigma2, g.next_variance, g.std_resid, p.copy(), g.converged, g.iterations)
+
+
 def rolling_forecasts(
     r: np.ndarray, alpha: float = 0.99, window: int = 500, refit_every: int = 20,
     models: tuple[str, ...] | list[str] = ALL_MODELS, ewma_lambda: float = 0.94,
-    evt_threshold: float = 0.90,
+    evt_threshold: float = 0.90, *, use_kernels: bool = False,
 ) -> Forecasts:
-    """Out-of-sample one-day VaR/ES for days ``window .. n-1`` of ``r``."""
+    """Out-of-sample one-day VaR/ES for days ``window .. n-1`` of ``r``.
+
+    ``use_kernels=True`` (jobs): GARCH refits run on the ``garch_fit`` kernel (parameters
+    within 1e-4 of fit_garch_fast) and ``info`` records ``engine``. This function has no
+    refit cap; the synchronous router's ``_MAX_REFITS`` stays where it is.
+    """
     alpha = validate_alpha(alpha)
     r = np.asarray(r, dtype=float)
     n = r.size
@@ -136,7 +153,7 @@ def rolling_forecasts(
         for j0 in refits:
             j1 = min(j0 + refit_every, m)
             t0 = window + j0
-            fit = fit_garch_fast(r[t0 - window:t0], kind, x0=start_vals)
+            fit = _refit(r[t0 - window:t0], kind, start_vals, use_kernels)
             start_vals = fit.x
             persist.append(fit.persistence)
             eps = 100.0 * r[t0:t0 + (j1 - j0)] - fit.mu
@@ -154,7 +171,8 @@ def rolling_forecasts(
         name = "garch" if kind == "garch" else "gjr_garch"
         if name in models:
             var[name], es[name] = v, ev
-            info[name] = {"refits": len(refits), "persistence_median": float(np.median(persist))}
+            info[name] = {"refits": len(refits), "persistence_median": float(np.median(persist)),
+                          **({"engine": kernels.engine_of("garch_fit")} if use_kernels else {})}
         if kind == "gjr" and "fhs" in models:
             var["fhs"], es["fhs"] = fv, fe
             info["fhs"] = {"filter": "gjr", "refits": len(refits)}

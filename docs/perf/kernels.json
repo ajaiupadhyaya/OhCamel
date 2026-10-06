@@ -1,0 +1,84 @@
+{
+  "kernels": [
+    {
+      "name": "fhs_paths",
+      "python_ms": 61.748,
+      "rust_1t_ms": 42.293,
+      "rust_2t_ms": 22.955,
+      "measured_on": "developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class",
+      "sha": "55d9c96258a3"
+    },
+    {
+      "name": "copula_t_paths",
+      "python_ms": 1373.457,
+      "rust_1t_ms": 1306.863,
+      "rust_2t_ms": 675.13,
+      "measured_on": "developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class",
+      "sha": "55d9c96258a3"
+    },
+    {
+      "name": "var_es_from_pnl",
+      "python_ms": 7.531,
+      "rust_1t_ms": 3.045,
+      "rust_2t_ms": null,
+      "measured_on": "developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class",
+      "sha": "55d9c96258a3"
+    },
+    {
+      "name": "stationary_bootstrap_means",
+      "python_ms": 409.252,
+      "rust_1t_ms": 471.219,
+      "rust_2t_ms": 471.163,
+      "measured_on": "developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class",
+      "sha": "55d9c96258a3"
+    },
+    {
+      "name": "cscv_pbo",
+      "python_ms": 11.564,
+      "rust_1t_ms": 3.34,
+      "rust_2t_ms": 2.151,
+      "measured_on": "developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class",
+      "sha": "55d9c96258a3"
+    },
+    {
+      "name": "garch_nll",
+      "python_ms": 0.072,
+      "rust_1t_ms": 0.034,
+      "rust_2t_ms": null,
+      "measured_on": "developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class",
+      "sha": "55d9c96258a3"
+    },
+    {
+      "name": "garch_fit",
+      "python_ms": 2.962,
+      "rust_1t_ms": 20.067,
+      "rust_2t_ms": null,
+      "measured_on": "developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class",
+      "sha": "55d9c96258a3"
+    },
+    {
+      "name": "backtest_weights",
+      "python_ms": 5.468,
+      "rust_1t_ms": 0.126,
+      "rust_2t_ms": null,
+      "measured_on": "developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class",
+      "sha": "55d9c96258a3"
+    },
+    {
+      "name": "svi_fit",
+      "python_ms": 15.996,
+      "rust_1t_ms": 0.46,
+      "rust_2t_ms": null,
+      "measured_on": "developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class",
+      "sha": "55d9c96258a3"
+    },
+    {
+      "name": "realized_vol_minute",
+      "python_ms": 1.014,
+      "rust_1t_ms": 0.543,
+      "rust_2t_ms": null,
+      "measured_on": "developer laptop: Apple M2 Pro, 12 cores, macOS -- NOT the droplet's CPU class",
+      "sha": "55d9c96258a3"
+    }
+  ]
+}

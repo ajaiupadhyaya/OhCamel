@@ -1,0 +1,27 @@
+[package]
+name = "ohcamel-kernels"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "ohcamel_kernels"
+# cdylib for the wheel, rlib so `cargo test` and the cores link normally.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# The Python bindings (src/py.rs). maturin turns this on together with
+# pyo3/extension-module (pyproject.toml); `cargo test` leaves it off, so the
+# test binaries never need libpython.
+python = ["dep:pyo3", "dep:numpy"]
+
+[dependencies]
+rand = "0.8"
+rand_chacha = "0.3"
+rand_distr = "0.4"
+rayon = "1.10"
+libm = "0.2"
+pyo3 = { version = "0.22", features = ["abi3-py312"], optional = true }
+numpy = { version = "0.22", optional = true }

@@ -34,12 +34,14 @@ import numpy as np
 import pandas as pd
 from scipy import optimize, stats
 
+from .. import kernels
 from . import metrics as M
 from .engine import BacktestResult, EngineConfig, StrategyContext, run_backtest, run_weights
 from .strategies import StrategySpec, validate_params
 
 MAX_GRID = 64
 MAX_REPS = 1000
+JOB_MAX_REPS = 200_000  # jobs only (compute plan A3); the synchronous cap stays MAX_REPS
 
 
 # ======================================================================= grid
@@ -117,21 +119,8 @@ def sweep(ctx: StrategyContext, spec: StrategySpec, base_params: dict[str, Any],
 
 
 # ======================================================================= CSCV
-def _block_moments(m: np.ndarray, s: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    t = (len(m) // s) * s
-    m = m[len(m) - t:]
-    blocks = m.reshape(s, t // s, m.shape[1])
-    return blocks.sum(axis=1), (blocks ** 2).sum(axis=1), np.full(s, t // s, dtype=float)
-
-
-def _sharpe_from_sums(s1: np.ndarray, s2: np.ndarray, n: np.ndarray) -> np.ndarray:
-    mean = s1 / n[:, None]
-    var = (s2 - n[:, None] * mean ** 2) / (n[:, None] - 1.0)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        return np.where(var > 0, mean / np.sqrt(np.maximum(var, 0.0)), np.nan)
-
-
-def cscv_pbo(returns: pd.DataFrame | np.ndarray, n_partitions: int = 16, bins: int = 20) -> dict[str, Any]:
+def cscv_pbo(returns: pd.DataFrame | np.ndarray, n_partitions: int = 16, bins: int = 20, *,
+             threads: int = 1) -> dict[str, Any]:
     """Probability of Backtest Overfitting by CSCV (Bailey et al. 2017, sec. 2).
 
     1. Split the ``T x N`` matrix of trial returns into ``S`` contiguous,
@@ -145,8 +134,9 @@ def cscv_pbo(returns: pd.DataFrame | np.ndarray, n_partitions: int = 16, bins: i
 
     Also returned: the logit histogram, the performance-degradation regression
     ``SR_Jbar(n*) = a + b SR_J(n*) + e`` and ``P[SR_Jbar(n*) < 0]``. Sharpe
-    ratios here are per-period (non-annualized); moments come from block sums,
-    so all combinations are evaluated in one vectorized pass.
+    ratios here are per-period (non-annualized). Moments come from block sums on the
+    ``cscv_pbo`` kernel (``ohcamel_quant.kernels``); a trial with s2 - n mean^2 <= 1e-10 s2
+    (a constant) has zero variance, a NaN Sharpe, and ranks last.
     """
     m = np.asarray(returns, dtype=float)
     if m.ndim != 2 or m.shape[1] < 2:
@@ -158,24 +148,11 @@ def cscv_pbo(returns: pd.DataFrame | np.ndarray, n_partitions: int = 16, bins: i
     if len(m) < 4 * n_partitions:
         raise ValueError(f"need at least {4 * n_partitions} rows for {n_partitions} partitions")
     s = n_partitions
-    b1, b2, bn = _block_moments(m, s)
-    combos = np.array(list(itertools.combinations(range(s), s // 2)))
-    mask = np.zeros((len(combos), s))
-    mask[np.arange(len(combos))[:, None], combos] = 1.0
-    is1, is2, isn = mask @ b1, mask @ b2, mask @ bn
-    oos1, oos2, oosn = b1.sum(0) - is1, b2.sum(0) - is2, bn.sum() - isn
-    sr_is = _sharpe_from_sums(is1, is2, isn)
-    sr_oos = _sharpe_from_sums(oos1, oos2, oosn)
-    sr_is_f = np.where(np.isfinite(sr_is), sr_is, -np.inf)
-    best = np.argmax(sr_is_f, axis=1)
-    rows = np.arange(len(combos))
-    oos_f = np.where(np.isfinite(sr_oos), sr_oos, -np.inf)
-    ranks = stats.rankdata(oos_f, axis=1, method="average")
+    k = kernels.cscv_pbo(m, s, threads)
+    lam, best, x, y = k["logits"], k["selected"], k["is_sharpe"], k["oos_sharpe"]
+    n_comb = k["n_combinations"]
     n = m.shape[1]
-    w = ranks[rows, best] / (n + 1.0)
-    lam = np.log(w / (1.0 - w))
-    pbo = float(np.mean(lam <= 0))
-    x, y = sr_is[rows, best], sr_oos[rows, best]
+    pbo = k["pbo"]
     ok = np.isfinite(x) & np.isfinite(y)
     reg: dict[str, float] = {}
     if ok.sum() > 2 and np.ptp(x[ok]) > 0:
@@ -183,12 +160,12 @@ def cscv_pbo(returns: pd.DataFrame | np.ndarray, n_partitions: int = 16, bins: i
         reg = {"slope": float(lr.slope), "intercept": float(lr.intercept), "r2": float(lr.rvalue ** 2),
                "slope_pvalue": float(lr.pvalue)}
     hist, edges = np.histogram(lam, bins=bins)
-    scatter_idx = np.linspace(0, len(rows) - 1, min(400, len(rows))).astype(int)
+    scatter_idx = np.linspace(0, n_comb - 1, min(400, n_comb)).astype(int)
     ann = math.sqrt(M.PERIODS)
     return {
         "pbo": pbo,
         "n_partitions": s,
-        "n_combinations": int(len(combos)),
+        "n_combinations": int(n_comb),
         "n_trials": int(n),
         "rows_used": int((len(m) // s) * s),
         "logits": {"counts": hist.tolist(), "edges": edges.tolist(), "mean": float(np.mean(lam)),
@@ -197,6 +174,7 @@ def cscv_pbo(returns: pd.DataFrame | np.ndarray, n_partitions: int = 16, bins: i
                         "is_sharpe_ann": (x[scatter_idx] * ann).tolist(),
                         "oos_sharpe_ann": (y[scatter_idx] * ann).tolist()},
         "selected_counts": np.bincount(best, minlength=n).tolist(),
+        "engine": kernels.engine_of("cscv_pbo"),
     }
 
 
@@ -230,35 +208,54 @@ def optimal_block(x: np.ndarray) -> float:
 
 
 def bootstrap_sharpe(r: pd.Series, rf: pd.Series | None = None, reps: int = 1000, alpha: float = 0.05,
-                     seed: int = 7, bins: int = 30) -> dict[str, Any]:
+                     seed: int = 7, bins: int = 30, *, use_kernels: bool = False, threads: int = 1,
+                     max_reps: int = MAX_REPS) -> dict[str, Any]:
     """Stationary-bootstrap (Politis & Romano 1994) distribution of the
     annualized Sharpe ratio, expected block length by Politis & White (2004).
     Percentile interval at level ``1 - alpha``; also the bootstrap standard
-    error and ``P*[SR <= 0]``. ``reps`` is capped at 1000."""
-    from arch.bootstrap import StationaryBootstrap
+    error and ``P*[SR <= 0]``. ``reps`` is capped at ``max_reps`` (synchronous
+    callers: ``MAX_REPS``; jobs pass ``JOB_MAX_REPS``).
 
-    reps = int(min(max(reps, 100), MAX_REPS))
+    ``use_kernels=True`` (jobs) resamples on the ``stationary_bootstrap_means``
+    kernel: it bootstraps the columns [x, x^2] with one index stream, so each
+    replication's Sharpe is ``mean / sqrt((mean(x^2) - mean^2) n / (n - 1))``
+    annualized -- the same statistic, other draws -- and records ``engine``."""
+    reps = int(min(max(reps, 100), max_reps))
     x = M.excess(r.dropna(), rf).to_numpy(dtype=float)
     if len(x) < 60:
         raise ValueError("need at least 60 observations to bootstrap the Sharpe ratio")
     block = optimal_block(x)
-    bs = StationaryBootstrap(block, x, seed=seed)
 
     def f(a: np.ndarray) -> float:
         sd = a.std(ddof=1)
         return a.mean() / sd * math.sqrt(M.PERIODS) if sd > 0 else np.nan
 
-    draws = bs.apply(f, reps=reps)[:, 0]
+    engine = None
+    if use_kernels:
+        mom = kernels.stationary_bootstrap_means(np.column_stack([x, x * x]), block, reps, seed, threads)
+        n = len(x)
+        mean = mom[:, 0]
+        var = (mom[:, 1] - mean * mean) * (n / (n - 1.0))
+        safe = np.where(var > 0, var, 1.0)
+        draws = np.where(var > 0, mean / np.sqrt(safe) * math.sqrt(M.PERIODS), np.nan)
+        engine = kernels.engine_of("stationary_bootstrap_means")
+    else:
+        from arch.bootstrap import StationaryBootstrap
+
+        draws = StationaryBootstrap(block, x, seed=seed).apply(f, reps=reps)[:, 0]
     draws = draws[np.isfinite(draws)]
     lo, hi = np.quantile(draws, [alpha / 2, 1 - alpha / 2])
     hist, edges = np.histogram(draws, bins=bins)
-    return {
+    out = {
         "sharpe": f(x), "ci_low": float(lo), "ci_high": float(hi), "level": 1 - alpha,
         "std_error": float(draws.std(ddof=1)), "prob_sharpe_le_0": float(np.mean(draws <= 0)),
-        "expected_block_length": block, "reps": reps, "reps_cap": MAX_REPS,
+        "expected_block_length": block, "reps": reps, "reps_cap": max_reps,
         "histogram": {"counts": hist.tolist(), "edges": edges.tolist()},
         "method": "stationary bootstrap (Politis & Romano 1994), block length Politis & White (2004), percentile CI",
     }
+    if engine is not None:
+        out["engine"] = engine
+    return out
 
 
 def spa_test(benchmark: pd.Series, models: pd.DataFrame, reps: int = 1000, seed: int = 7) -> dict[str, Any]:
@@ -424,7 +421,7 @@ def run_config_from(config: EngineConfig, **kw: Any) -> EngineConfig:
 
 
 __all__ = [
-    "MAX_GRID", "MAX_REPS", "SweepResult", "bootstrap_sharpe", "cost_sensitivity", "cscv_pbo",
+    "JOB_MAX_REPS", "MAX_GRID", "MAX_REPS", "SweepResult", "bootstrap_sharpe", "cost_sensitivity", "cscv_pbo",
     "deflated_sharpe_for_grid", "optimal_block", "param_grid", "run_weights", "spa_test", "sweep",
     "walk_forward", "run_config_from",
 ]

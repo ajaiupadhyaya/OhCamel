@@ -17,6 +17,10 @@
 # The committed real-data fixtures the offline fallback reads.
 !fixtures/
 !docs/crisis/*.csv
+# The Rust workspace the kernels stage builds (native/hostd comes along: it is a
+# workspace member cargo needs to see), and the benchmark table the API serves.
+!native/
+!docs/perf/kernels.json
 
 # Never, at any depth, even inside an allowed tree.
 **/.env
@@ -33,4 +37,5 @@ quant/web/node_modules/
 quant/web/dist/
 quant/web/test-results/
 quant/web/playwright-report/
+native/target/
 **/.DS_Store

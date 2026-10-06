@@ -35,15 +35,19 @@ to 720 samples (an hour at 5 s).
 
 from __future__ import annotations
 
+import json
 import time
-from typing import Any
+from pathlib import Path
+from typing import Annotated, Any
 
 import httpx
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
-from ...config import get_settings
+from ... import kernels
+from ...config import REPO_ROOT, get_settings
 from ...data.base import Provenance
+from ...kernels import bench as kernel_bench
 
 router = APIRouter(prefix="/ops", tags=["ops"])
 
@@ -163,3 +167,47 @@ def host(base: str | None = Depends(get_hostd_url)) -> Any:
         status_code=503,
         content={"error": "hostd_unavailable", "detail": exc.detail, "configured": exc.configured},
     )
+
+
+# ------------------------------------------------------------------ kernels
+#: The committed benchmark table (compute plan gate GA; the Ship plan's Lane A
+#: delta). quant/Dockerfile copies it to the same repo-relative path in the image.
+KERNELS_TABLE = REPO_ROOT / "docs" / "perf" / "kernels.json"
+
+
+def get_kernels_table_path() -> Path:
+    return KERNELS_TABLE
+
+
+@router.get("/kernels")
+def kernels_table(path: Annotated[Path, Depends(get_kernels_table_path)]) -> Any:
+    """The kernel benchmark table: Python reference vs Rust at one and two threads.
+
+    ``{"kernels": [{name, python_ms, rust_1t_ms, rust_2t_ms, measured_on, sha}],
+    "engine", "engines", "provenance", "notes"}``. 503
+    ``{"error": "kernels_table_unavailable", "detail"}`` when the file is absent
+    from this build or invalid.
+    """
+    try:
+        rows = kernel_bench.validate_table(json.loads(path.read_text(encoding="utf-8")))
+    except FileNotFoundError:
+        return JSONResponse(status_code=503, content={
+            "error": "kernels_table_unavailable", "detail": f"{path.name} is not present in this build"})
+    except ValueError as e:  # json.JSONDecodeError is a ValueError
+        return JSONResponse(status_code=503, content={
+            "error": "kernels_table_unavailable", "detail": f"{path.name} is invalid: {e}"})
+    notes = [
+        "python_ms is the NumPy reference; rust_1t_ms and rust_2t_ms are ohcamel_kernels at one and two "
+        "threads; rust_2t_ms is null for single-threaded kernels. Times are medians in milliseconds.",
+        "measured_on names the machine; only rows measured on the droplet's CPU class speak for production.",
+    ]
+    if not rows:
+        notes.append("no benchmark run is recorded yet")
+    provenance = Provenance.now("docs/perf/kernels.json", rows=len(rows)).to_dict()
+    return {
+        "kernels": rows,
+        "engine": kernels.ENGINE,
+        "engines": {name: kernels.engine_of(name) for name in kernels.API},
+        "provenance": [provenance],
+        "notes": notes,
+    }

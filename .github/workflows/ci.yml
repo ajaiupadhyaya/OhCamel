@@ -754,14 +754,17 @@ jobs:
       - name: The committed manifests reproduce
         run: make research-reproduce
 
-  # The Rust workspace (native/): hostd today, the kernels crate later
-  # (compute plan II.1). rustup reads native/rust-toolchain.toml, so the
-  # toolchain here is the pinned 1.80 with rustfmt and clippy, the same one
-  # native/hostd/Dockerfile builds with. --locked: exactly native/Cargo.lock.
-  # The image itself is built and published by image.yml's matrix.
+  # The Rust workspace (native/): hostd and the kernels crate (compute plan
+  # II.1). rustup reads native/rust-toolchain.toml, so the toolchain is the
+  # pinned 1.80 with rustfmt and clippy. --locked: exactly native/Cargo.lock.
+  # Then the kernels' Python side (compute plan A1): build the ohcamel_kernels
+  # wheel with maturin, install it into quant/.venv, and run the parity suite
+  # with Rust and again on the NumPy reference, then the whole offline Quant
+  # suite on Rust (gate GA: no synchronous result moves). The hostd image is
+  # built and published by image.yml; the quant image builds its own wheel.
   native:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     permissions:
       contents: read
     defaults:
@@ -781,6 +784,69 @@ jobs:
 
       - name: cargo test
         run: cargo test --locked
+
+      - name: Install uv and Python 3.12
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.10.4"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: quant/uv.lock
+
+      - name: uv sync (quant, dev extra -- brings maturin)
+        working-directory: quant
+        run: uv sync --frozen --extra dev
+
+      - name: cargo clippy the Python bindings -D warnings
+        env:
+          PYO3_PYTHON: ${{ github.workspace }}/quant/.venv/bin/python
+        run: cargo clippy --locked -p ohcamel-kernels --features python --all-targets -- -D warnings
+
+      - name: Build the ohcamel_kernels wheel
+        run: ../quant/.venv/bin/maturin build --release --locked -m kernels/Cargo.toml -i ../quant/.venv/bin/python -o "$RUNNER_TEMP/wheels"
+
+      # Not `uv run` afterwards: a sync would remove the wheel (it is not in uv.lock).
+      - name: Install the wheel into quant/.venv
+        run: uv pip install --python ../quant/.venv/bin/python --no-deps "$RUNNER_TEMP"/wheels/ohcamel_kernels-*.whl
+
+      - name: Parity suite with Rust
+        working-directory: quant
+        env:
+          OHCAMEL_QUANT_KERNELS: rust
+        run: .venv/bin/pytest -q tests/test_kernels_*.py
+
+      - name: Parity suite on the NumPy reference
+        working-directory: quant
+        env:
+          OHCAMEL_QUANT_KERNELS: python
+        run: .venv/bin/pytest -q tests/test_kernels_*.py
+
+      - name: Full offline Quant suite with Rust (no synchronous result moves)
+        working-directory: quant
+        env:
+          OHCAMEL_QUANT_KERNELS: rust
+        run: .venv/bin/pytest -q
+
+      # Informational: this runner's timings, uploaded for the owner to merge
+      # into docs/perf/kernels.json (gate GA's "via CI's ubuntu runner").
+      - name: Kernel benchmarks (artifact)
+        working-directory: ${{ github.workspace }}
+        env:
+          OHCAMEL_QUANT_KERNELS: rust
+        run: |
+          cp docs/perf/kernels.json "$RUNNER_TEMP/kernels.json"
+          quant/.venv/bin/python tools/perf/bench_kernels.py run \
+            --measured-on "github-actions ubuntu-latest: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs), $(nproc) vCPU" \
+            --json "$RUNNER_TEMP/kernels.json" --md "$RUNNER_TEMP/kernels.md"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernels-bench
+          path: |
+            ${{ runner.temp }}/kernels.json
+            ${{ runner.temp }}/kernels.md
+          if-no-files-found: error
+          retention-days: 30
 
   # OhCamel Quant (quant/): the public site. Its own uv project and npm
   # project, so this job needs neither the opam switch nor research/'s

@@ -27,10 +27,11 @@
 # FIXTURES_DIR), so a layout change fails loudly rather than silently caching
 # into a read-only root.
 #
-# Three stages; only the last ships:
-#   web      node:22-slim  -> quant/web/dist         (~a few MB of static files)
-#   pydeps   python + uv   -> /app/quant/.venv       (uv itself stays behind)
-#   runtime  python:3.12-slim + venv + src + dist + fixtures, non-root
+# Four stages; only the last ships:
+#   web       node:22-slim  -> quant/web/dist         (~a few MB of static files)
+#   kernels   python:3.12-slim + the Rust 1.80 toolchain -> /wheels/ohcamel_kernels-*.whl
+#   pydeps    python + uv   -> /app/quant/.venv       (uv itself stays behind; the wheel goes in)
+#   runtime   python:3.12-slim + venv + src + dist + fixtures, non-root
 
 # ---------------------------------------------------------------------------
 # Stage 1 -- the single-page app
@@ -52,7 +53,40 @@ RUN npm run build \
  && test -f dist/index.html
 
 # ---------------------------------------------------------------------------
-# Stage 2 -- the Python environment, resolved from quant/uv.lock
+# Stage 2 -- the Rust kernels wheel (native/kernels, compute plan Lane A)
+# ---------------------------------------------------------------------------
+# Built here, inside the image build, so `deploy.sh --build` and CI's image
+# workflow need no separate artifact: the image is self-contained. The
+# toolchain is copied out of the rust image into a python:3.12-slim stage --
+# the runtime's own base -- so the wheel links against the runtime's glibc.
+# native/rust-toolchain.toml pins 1.80 (rustup fetches it if the copied
+# toolchain is another 1.80.x). --locked: exactly native/Cargo.lock. If the
+# wheel does not build, this stage fails and so does the image: production
+# never runs without the kernels (the runtime sets OHCAMEL_QUANT_KERNELS=rust,
+# under which the dispatcher refuses to start without them).
+FROM rust:1.80-slim AS rust-toolchain
+
+FROM python:3.12-slim AS kernels
+# The same maturin quant/uv.lock resolves for the dev extra
+# (quant/tests/test_kernels_docker.py holds the two equal).
+ARG MATURIN_VERSION=1.15.0
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends gcc libc6-dev \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
+COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo \
+    RUSTUP_HOME=/usr/local/rustup \
+    PATH=/usr/local/cargo/bin:$PATH
+RUN pip install --no-cache-dir "maturin==${MATURIN_VERSION}"
+WORKDIR /src/native
+COPY native/ ./
+RUN maturin build --release --locked -m kernels/Cargo.toml -i python3.12 \
+      --compatibility linux -o /wheels \
+ && ls /wheels/ohcamel_kernels-*.whl
+
+# ---------------------------------------------------------------------------
+# Stage 3 -- the Python environment, resolved from quant/uv.lock
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS pydeps
 # Pinned to the version research.Dockerfile and CI use.
@@ -73,6 +107,13 @@ COPY quant/src/ ./src/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev \
  && .venv/bin/python -c "import ohcamel_quant.config as c; assert str(c.REPO_ROOT) == '/app', c.REPO_ROOT"
+# The kernels wheel from stage 2, into the same venv. It is built from this
+# checkout, not resolved, so it is not in uv.lock: it goes in after the frozen
+# sync, and nothing after this line syncs again. --no-deps: numpy is already
+# locked above.
+COPY --from=kernels /wheels/ /wheels/
+RUN uv pip install --python /app/quant/.venv/bin/python --no-deps /wheels/ohcamel_kernels-*.whl \
+ && .venv/bin/python -c "import ohcamel_kernels as k; assert k.API_VERSION == 1, k.API_VERSION"
 # The scientific stack ships its own test suites (pandas alone ~40 MB with
 # bytecode); none is imported at run time. Pruned here, in the stage that is
 # thrown away, so the runtime layer never contains them. The runtime stage
@@ -87,7 +128,7 @@ RUN find .venv/lib/python3.12/site-packages \
  && rm -rf .venv/lib/python3.12/site-packages/pyarrow/include
 
 # ---------------------------------------------------------------------------
-# Stage 3 -- runtime
+# Stage 4 -- runtime
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS runtime
 
@@ -112,6 +153,8 @@ WORKDIR /app
 # at their repo-relative paths -- the offline fallback and the test data.
 COPY fixtures/ /app/fixtures/
 COPY docs/crisis/ /app/docs/crisis/
+# The kernel benchmark table GET /api/ops/kernels serves (repo-relative, like the fixtures).
+COPY docs/perf/kernels.json /app/docs/perf/kernels.json
 
 COPY --from=pydeps /app/quant /app/quant
 COPY --from=web /src/quant/web/dist /app/quant/web/dist
@@ -138,9 +181,12 @@ EOF
 # volume there, which Docker seeds with this directory's ownership on first
 # use, so it starts writable by `quant`. /tmp is a tmpfs under compose's
 # read-only root; XDG caches point into it so no library tries $HOME.
+# OHCAMEL_QUANT_KERNELS=rust: the kernels dispatcher raises at import if the
+# wheel is missing or stale -- production never silently falls back to NumPy.
 ENV PATH=/app/quant/.venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    OHCAMEL_QUANT_KERNELS=rust \
     XDG_CACHE_HOME=/tmp/.cache \
     OHCAMEL_QUANT_DATA_DIR=/data \
     OHCAMEL_QUANT_FIXTURES_DIR=/app/fixtures
@@ -148,9 +194,10 @@ ENV PATH=/app/quant/.venv/bin:$PATH \
 # Every router imports, against exactly this filesystem -- the pruning above
 # and the path layout included. Runs with PYTHONDONTWRITEBYTECODE set, so it
 # leaves nothing behind.
-RUN python -c "import ohcamel_quant.api.app as a, ohcamel_quant.config as c; \
+RUN python -c "import ohcamel_quant.api.app as a, ohcamel_quant.config as c, ohcamel_quant.kernels as k; \
 assert a.WEB_DIST.is_dir(), a.WEB_DIST; assert (c.get_settings().fixtures_dir / 'history').is_dir(); \
-print('routes:', len(a.app.routes))"
+assert k.ENGINE == 'rust', k.ENGINE; assert all(k.engine_of(n) == 'rust' for n in k.API), [n for n in k.API if k.engine_of(n) != 'rust']; \
+print('routes:', len(a.app.routes), 'kernels:', k.ENGINE)"
 
 USER quant
 VOLUME ["/data"]

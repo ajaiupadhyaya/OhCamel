@@ -1,9 +1,9 @@
 # The Rust workspace of the compute program
 # (docs/superpowers/plans/2026-09-24-quant-compute-program.md II.1):
-# hostd (host telemetry, Task 0.4) now; kernels (Lane A) joins later.
+# hostd (host telemetry, Task 0.4) and kernels (Lane A, the PyO3 extension).
 [workspace]
 resolver = "2"
-members = ["hostd"]
+members = ["hostd", "kernels"]
 
 [workspace.package]
 edition = "2021"
