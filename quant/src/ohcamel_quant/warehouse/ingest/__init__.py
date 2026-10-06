@@ -21,3 +21,10 @@ HANDLERS["ingest.bars_daily"] = bars.run_bars_daily
 from . import minute  # noqa: E402
 
 HANDLERS["ingest.bars_minute"] = minute.run_bars_minute
+
+from . import filings, macro  # noqa: E402
+
+HANDLERS["ingest.fred_warehouse"] = macro.run_fred
+HANDLERS["ingest.factors"] = macro.run_factors
+HANDLERS["ingest.sec_facts"] = filings.run_sec_facts
+HANDLERS["ingest.holdings_13f"] = filings.run_holdings_13f

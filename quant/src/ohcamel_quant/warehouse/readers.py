@@ -144,3 +144,19 @@ def warehouse_returns(settings: Settings, tickers: list[str], start: date | None
     except WarehouseUnavailable as e:
         return None, f"warehouse not used ({e}); served from providers"
     return _WarehouseBars(settings, frames).returns(want, start, end, log), None
+
+
+def sec_facts_asof(con: Any, ticker: str, asof: date, tags: list[str] | None = None) -> pd.DataFrame:
+    """Facts available on ``asof`` (II.5 point-in-time rule: ``filed <= asof``): for each
+    (tag, unit, period_start, period_end) the latest value filed on or before ``asof``."""
+    sql = ("SELECT tag, unit, period_start, period_end, filed, form, value FROM ("
+           "SELECT *, row_number() OVER (PARTITION BY tag, unit, period_start, period_end ORDER BY filed DESC) AS rn "
+           "FROM sec_facts WHERE ticker = ? AND filed <= ?")
+    args: list[Any] = [ticker.upper().strip(), asof]
+    if tags:
+        sql += " AND list_contains(?, tag)"
+        args.append(list(tags))
+    df = con.execute(sql + ") WHERE rn = 1 ORDER BY tag, period_end, period_start", args).df()
+    for c in ("period_start", "period_end", "filed"):
+        df[c] = pd.to_datetime(df[c]).dt.strftime("%Y-%m-%d")
+    return df
