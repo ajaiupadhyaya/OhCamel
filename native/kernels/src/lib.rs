@@ -13,6 +13,7 @@
     clippy::type_complexity
 )]
 
+pub mod backtest;
 pub mod bootstrap;
 pub mod copula;
 pub mod cscv;

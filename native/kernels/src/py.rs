@@ -216,6 +216,48 @@ fn garch_fit<'py>(
     ))
 }
 
+#[pyfunction]
+fn backtest_weights<'py>(
+    py: Python<'py>,
+    prices: PyReadonlyArray2<'py, f64>,
+    target_w: PyReadonlyArray2<'py, f64>,
+    decision_idx: PyReadonlyArray1<'py, i64>,
+    cost_bps: f64,
+    borrow_bps: f64,
+    rf: PyReadonlyArray1<'py, f64>,
+) -> PyResult<(
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<f64>>,
+    bool,
+)> {
+    let (px, nt, na) = s2(&prices, "prices")?;
+    let (tw, _, _) = s2(&target_w, "target_w")?;
+    let idx = decision_idx
+        .as_slice()
+        .map_err(|_| err("decision_idx must be a C-contiguous int64 array".into()))?;
+    let rfs = s1(&rf, "rf")?;
+    let p = py
+        .allow_threads(|| {
+            crate::backtest::backtest_weights(px, nt, na, tw, idx, cost_bps, borrow_bps, rfs)
+        })
+        .map_err(err)?;
+    Ok((
+        p.gross.into_pyarray_bound(py),
+        p.net.into_pyarray_bound(py),
+        p.weights.into_pyarray_bound(py),
+        p.turnover.into_pyarray_bound(py),
+        p.trades.into_pyarray_bound(py),
+        p.costs.into_pyarray_bound(py),
+        p.borrow.into_pyarray_bound(py),
+        p.ruined,
+    ))
+}
+
 #[pymodule]
 fn ohcamel_kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("API_VERSION", crate::API_VERSION)?;
@@ -229,5 +271,6 @@ fn ohcamel_kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cscv_pbo, m)?)?;
     m.add_function(wrap_pyfunction!(garch_nll, m)?)?;
     m.add_function(wrap_pyfunction!(garch_fit, m)?)?;
+    m.add_function(wrap_pyfunction!(backtest_weights, m)?)?;
     Ok(())
 }
