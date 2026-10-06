@@ -13,7 +13,10 @@
     clippy::type_complexity
 )]
 
+pub mod copula;
+pub mod fhs;
 pub mod par;
+pub mod special;
 pub mod tail;
 
 #[cfg(feature = "python")]
