@@ -30,7 +30,7 @@
 # Resolved 2026-09-20 from registry-1.docker.io: this is the manifest-list
 # digest the tag pointed at, so the pin changes nothing about what is pulled
 # today and freezes it from here on.
-FROM ocaml/opam:debian-12-ocaml-5.2@sha256:fa213a9a52c82cc704d2192dee5c6d12d26bb3932c18c5d48e83d269858e35d3 AS builder
+FROM ocaml/opam:debian-12-ocaml-5.3@sha256:bbaac53e502f6602013d8967c3a54cfcb898b556f453ab72e8e23966c3c681df AS builder
 
 USER root
 
