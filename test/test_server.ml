@@ -719,6 +719,73 @@ let test_alerts_json_when_firing () =
    a reports state this build cannot produce. And uptime has to be a number,
    because the smoke suite compares it to 300 and a string would pass every
    naive check while proving nothing. *)
+(* Compute plan Task 0.5. Nearest-rank percentiles: the p-th percentile of n
+   sorted values is the value at rank ceil(p * n), 1-based.
+     [5;1;3;2;4] sorted is [1;2;3;4;5]: p50 is rank ceil(2.5) = 3 -> 3, p99 is
+     rank ceil(4.95) = 5 -> 5, max 5.
+     1..100: p50 is rank 50 -> 50, p99 is rank 99 -> 99, max 100.
+     1..200: p50 is rank 100 -> 100, p99 is rank ceil(198.0) = 198 -> 198.
+     One value: every percentile is that value. None: no percentiles at all.
+   And the ring keeps the newest [capacity] durations: 1, 2, 3, 4 into three
+   slots leaves {2, 3, 4}, so p50 is rank ceil(1.5) = 2 -> 3, p99 and max 4. *)
+let test_stabilize_percentiles_are_nearest_rank () =
+  let module F = Server.For_testing in
+  let p = Alcotest.(option (triple (float 0.0) (float 0.0) (float 0.0))) in
+  let xs = [| 5.; 1.; 3.; 2.; 4. |] in
+  Alcotest.check p "[5;1;3;2;4]" (Some (3., 5., 5.)) (F.percentiles xs);
+  Alcotest.(check (array (float 0.0)))
+    "the input is not sorted in place" [| 5.; 1.; 3.; 2.; 4. |] xs;
+  Alcotest.check p "1..100"
+    (Some (50., 99., 100.))
+    (F.percentiles (Array.init 100 ~f:(fun i -> Float.of_int (i + 1))));
+  Alcotest.check p "1..200"
+    (Some (100., 198., 200.))
+    (F.percentiles (Array.init 200 ~f:(fun i -> Float.of_int (i + 1))));
+  Alcotest.check p "one value" (Some (7., 7., 7.)) (F.percentiles [| 7. |]);
+  Alcotest.check p "no values" None (F.percentiles [||]);
+  let ring = F.Stabilize_ring.create 3 in
+  Alcotest.check p "an empty ring" None (F.percentiles (F.Stabilize_ring.to_array ring));
+  List.iter [ 1.; 2.; 3.; 4. ] ~f:(F.Stabilize_ring.add ring);
+  Alcotest.(check int) "the ring holds three" 3 (F.Stabilize_ring.length ring);
+  Alcotest.check p "the oldest duration is gone"
+    (Some (3., 4., 4.))
+    (F.percentiles (F.Stabilize_ring.to_array ring));
+  (* And the served graph feeds it: a stabilize that recomputed something is
+     one duration, wherever it ran -- a tick's own [Graph.stabilize], as the
+     feed handlers do, or the frame loop's snapshot -- and a stabilize with
+     nothing dirty is none, so a poller cannot fill the window with no-ops. *)
+  with_server
+    ~f:(fun server graph ->
+      let n () =
+        match field_exn (field_exn (Server.json_of_ops server) "stabilize_ms") "n" with
+        | `Int n -> n
+        | _ -> -1
+      in
+      let tick px =
+        Graph.apply_tick graph
+          { Tick.symbol = aapl; price = Price.of_float px; time = Time.now () }
+      in
+      let before = n () in
+      tick 151.0;
+      Graph.stabilize graph;
+      Alcotest.(check int) "a tick's stabilize is one duration" (before + 1) (n ());
+      Graph.stabilize graph;
+      ignore (Server.render server : string);
+      Alcotest.(check int)
+        "nothing dirty: neither stabilize is counted" (before + 1) (n ());
+      tick 152.0;
+      ignore (Server.next_frame server : string);
+      Alcotest.(check int)
+        "the frame loop's working stabilize is one more" (before + 2) (n ());
+      let st = field_exn (Server.json_of_ops server) "stabilize_ms" in
+      Alcotest.(check bool)
+        "p50 <= p99 <= max, and not negative" true
+        Float.(
+          num st "p50" <= num st "p99"
+          && num st "p99" <= num st "max"
+          && num st "p50" >= 0.0))
+    ()
+
 let test_ops_shape () =
   with_server ~mode:`Live ~peer:"https://ohcamel.example.com" ~quiet:[ xom ]
     ~f:(fun server _graph ->
@@ -748,8 +815,29 @@ let test_ops_shape () =
           "rss_bytes";
           "reports";
           "peer";
+          "stabilize_ms";
         ]
         j;
+      (* Compute plan Task 0.5: the stabilize latency the G-RT gate reads. A
+         server whose frame loop has not run has no durations yet, and says
+         so with n = 0 and null percentiles -- never a zero latency. *)
+      let st = field_exn j "stabilize_ms" in
+      check_key_set ~what:"stabilize_ms" [ "n"; "p50"; "p99"; "max"; "window" ] st;
+      Alcotest.(check bool)
+        "stabilize_ms.window is the ring's 4096" true
+        (match field_exn st "window" with `Int 4096 -> true | _ -> false);
+      (match field_exn st "n" with
+      | `Int 0 ->
+          List.iter [ "p50"; "p99"; "max" ] ~f:(fun k ->
+              Alcotest.(check bool)
+                (sprintf "stabilize_ms.%s is null with no durations" k)
+                true
+                (match field_exn st k with `Null -> true | _ -> false))
+      | `Int n when n > 0 ->
+          Alcotest.(check bool)
+            "p50 <= p99 <= max" true
+            Float.(num st "p50" <= num st "p99" && num st "p99" <= num st "max")
+      | other -> Alcotest.failf "stabilize_ms.n is %s" (Yojson.Safe.to_string other));
       Alcotest.(check string)
         "the mode is a word the client can switch on" "live"
         (match field_exn j "mode" with `String s -> s | _ -> "?");
@@ -2526,6 +2614,8 @@ let suite =
       Alcotest.test_case "the alerts object when a limit is firing" `Quick
         test_alerts_json_when_firing;
       Alcotest.test_case "/api/ops shape, and what it must not say" `Quick test_ops_shape;
+      Alcotest.test_case "stabilize percentiles are nearest-rank" `Quick
+        test_stabilize_percentiles_are_nearest_rank;
       Alcotest.test_case "/api/ops takes its feed source from the closure" `Quick
         test_ops_feed_source_comes_from_the_closure;
       Alcotest.test_case "the 404 body lists exactly the routes table" `Quick

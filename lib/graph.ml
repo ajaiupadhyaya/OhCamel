@@ -625,6 +625,9 @@ type t = {
   releases : (unit -> unit) list ref;
   (* Callbacks fired when any published value changes -- see [on_change]. *)
   change_listeners : (unit -> unit) list ref;
+  (* Callbacks handed the duration of each stabilize through this graph that
+     recomputed anything -- see [on_stabilize]. Not inherited by a fork. *)
+  stabilize_listeners : (Time_ns.Span.t -> unit) list ref;
 }
 
 let find_var (vars : 'a Inc.Var.t Symbol.Map.t) (symbol : Symbol.t) ~(what : string) :
@@ -732,6 +735,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
   let note (name : string) = on_compute name in
   let releases = ref [] in
   let change_listeners = ref [] in
+  let stabilize_listeners = ref [] in
   (* Observe a node and remember how to let it go.
 
      Split from [observe] below because the attribution node needs the first
@@ -1689,6 +1693,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
       obs_feed_health = observe feed_health_node;
       releases;
       change_listeners;
+      stabilize_listeners;
     }
   in
   (* Stabilize once so a freshly created graph is readable without the caller
@@ -1763,6 +1768,7 @@ let fork ?on_compute ?(limits : Limit.t list option) (t : t) : t =
    since the state is shared, that cost lands on whoever is still using it. *)
 let destroy (t : t) : unit =
   t.change_listeners := [];
+  t.stabilize_listeners := [];
   List.iter !(t.releases) ~f:(fun release -> release ())
 
 (* -------------------------------------------------------------------------
@@ -2358,7 +2364,32 @@ let sector_of (t : t) (symbol : Symbol.t) : Sector.t option =
    of a hundred ticks can be applied and then settled once, so the graph does
    one propagation instead of a hundred. *)
 
-let stabilize (_ : t) : unit = Inc.stabilize ()
+(* One stabilize, timed when someone asked (see [on_stabilize]). Only a
+   stabilize that recomputed at least one node is reported: a stabilize with
+   nothing dirty costs a few microseconds whoever calls it, and counting the
+   many a poller makes would describe the poller, not the graph. *)
+let timed_stabilize (t : t) : unit =
+  match !(t.stabilize_listeners) with
+  | [] -> Inc.stabilize ()
+  | listeners ->
+      let nodes = Inc.State.num_nodes_recomputed Inc.State.t in
+      let t0 = Time_ns.now () in
+      Inc.stabilize ();
+      let span = Time_ns.diff (Time_ns.now ()) t0 in
+      if Inc.State.num_nodes_recomputed Inc.State.t > nodes then
+        List.iter listeners ~f:(fun f -> f span)
+
+let stabilize (t : t) : unit = timed_stabilize t
+
+(* Be handed how long each working stabilize through this graph took -- the
+   ones [stabilize] and [snapshot] run. The server's /api/ops stabilize
+   latency (compute plan Task 0.5, the G-RT gate) is fed from here, so it
+   measures the recompute wherever it happens: on the tick, where the feed
+   handlers stabilize, and not only in the frame loop, which usually finds the
+   graph already settled. *)
+let on_stabilize (t : t) ~(f : Time_ns.Span.t -> unit) : unit =
+  t.stabilize_listeners := f :: !(t.stabilize_listeners)
+
 let symbols (t : t) : Symbol.t list = Map.keys t.instruments
 
 (* Configuration, read back out. The demo host runs at 20 s and the live host
@@ -2624,7 +2655,7 @@ let limit_results (t : t) : (Limit.t * Breach.t option) list =
 let attribution (t : t) : Attribution.t option = Inc.Observer.value_exn t.obs_attribution
 
 let snapshot (t : t) : Snapshot.t =
-  Inc.stabilize ();
+  timed_stabilize t;
   let results = limit_results t in
   let historical_var = historical_var t in
   let attribution = attribution t in

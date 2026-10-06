@@ -587,6 +587,51 @@ module Request = struct
   }
 end
 
+(* The stabilize latency the compute program's G-RT gate is measured against
+   (docs/superpowers/plans/2026-09-24-quant-compute-program.md, Task 0.5): the
+   last [stabilize_window] durations of the served graph's working
+   stabilizes, in milliseconds, in a fixed float ring, and their nearest-rank
+   percentiles on /api/ops. A ring rather than a histogram because 4096 floats is 32 KB and
+   the exact p99 of the window is then a sort of a copy, done only when
+   /api/ops is read. *)
+let stabilize_window = 4096
+
+module Stabilize_ring = struct
+  type t = { buf : float array; mutable next : int; mutable length : int }
+
+  let create capacity =
+    { buf = Array.create ~len:(Int.max 1 capacity) 0.0; next = 0; length = 0 }
+
+  (* The oldest duration is overwritten once the ring is full. *)
+  let add t x =
+    let cap = Array.length t.buf in
+    t.buf.(t.next) <- x;
+    t.next <- (t.next + 1) mod cap;
+    t.length <- Int.min cap (t.length + 1)
+
+  let length t = t.length
+
+  (* The held durations, in no particular order -- percentiles sort a copy. *)
+  let to_array t = Array.sub t.buf ~pos:0 ~len:t.length
+end
+
+(* (p50, p99, max) of [xs] by nearest rank -- the value at 1-based rank
+   ceil(p * n) of the sorted values -- or None for no values. The rank is
+   integer arithmetic, ceil(pct * n / 100) = (pct * n + 99) / 100, so it
+   cannot hang on how a float product happens to round. Sorts a copy, so the
+   caller's array (the ring's) is never reordered. *)
+let percentiles (xs : float array) : (float * float * float) option =
+  let n = Array.length xs in
+  if n = 0 then None
+  else
+    let sorted = Array.copy xs in
+    Array.sort sorted ~compare:Float.compare;
+    let at pct =
+      let rank = ((pct * n) + 99) / 100 in
+      sorted.(Int.clamp_exn rank ~min:1 ~max:n - 1)
+    in
+    Some (at 50, at 99, sorted.(n - 1))
+
 type t = {
   graph : Graph.t;
   factor : string;
@@ -649,6 +694,10 @@ type t = {
      cannot reset them. *)
   mutable last_stabilizes : int;
   mutable last_nodes_recomputed : int;
+  (* The served graph's stabilize durations, ms (see [Stabilize_ring]), fed
+     by [Graph.on_stabilize]: every stabilize that recomputed something,
+     whoever ran it -- the feed's tick handler above all. *)
+  stabilize_ring : Stabilize_ring.t;
   (* The topology, encoded once. It cannot change after construction -- every
      edge is declared when the graph is built -- so serving it is a string
      copy, and the drawing on a thousand tabs costs the engine nothing. *)
@@ -1177,6 +1226,25 @@ let json_of_ops (t : t) : Yojson.Safe.t =
                 | Some g -> Reports.Garch.status_word g) );
           ] );
       ("peer", match t.peer with None -> `Null | Some url -> jstring url);
+      (* The graph's stabilize latency over its last [window] working
+         stabilizes, milliseconds, nearest-rank (compute plan Task 0.5: the
+         G-RT gate's number). n = 0 -- none yet -- is null percentiles, not
+         zeros. *)
+      ( "stabilize_ms",
+        let durations = Stabilize_ring.to_array t.stabilize_ring in
+        let p50, p99, mx =
+          match percentiles durations with
+          | None -> (`Null, `Null, `Null)
+          | Some (a, b, c) -> (jfloat a, jfloat b, jfloat c)
+        in
+        `Assoc
+          [
+            ("n", `Int (Array.length durations));
+            ("p50", p50);
+            ("p99", p99);
+            ("max", mx);
+            ("window", `Int stabilize_window);
+          ] );
     ]
 
 let subscribe (t : t) =
@@ -1465,6 +1533,7 @@ let create ?(extensions : extension list = []) ?(frame_extra = fun () -> [])
       garch;
       last_stabilizes = Graph.total_stabilizes ();
       last_nodes_recomputed = Graph.total_nodes_recomputed ();
+      stabilize_ring = Stabilize_ring.create stabilize_window;
       graph_json =
         Yojson.Safe.to_string
           (json_of_graph
@@ -1480,6 +1549,11 @@ let create ?(extensions : extension list = []) ?(frame_extra = fun () -> [])
      Ivar. All the work -- snapshotting, serializing, writing -- happens in the
      broadcaster, outside the graph. *)
   Graph.on_change graph ~f:(fun () -> Ivar.fill_if_empty t.changed ());
+  (* The stabilize latency on /api/ops: a float written to a ring, inside
+     stabilization's caller and after Incremental has returned, so it costs
+     the graph nothing it would notice. *)
+  Graph.on_stabilize graph ~f:(fun span ->
+      Stabilize_ring.add t.stabilize_ring (Time_ns.Span.to_ms span));
   don't_wait_for (run_broadcaster t);
   t
 
@@ -1626,3 +1700,10 @@ let started_at (t : t) = t.started_at
 let peer (t : t) = t.peer
 let quiet (t : t) = t.quiet
 let recompute_log (t : t) = t.recompute_log
+
+(* Exposed for test/test_server.ml only. *)
+module For_testing = struct
+  module Stabilize_ring = Stabilize_ring
+
+  let percentiles = percentiles
+end
