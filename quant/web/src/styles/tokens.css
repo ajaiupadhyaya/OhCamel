@@ -135,9 +135,9 @@
   --shadow-3: none;
 
   /* layout and motion */
-  --sidebar-w: 232px;
-  --sidebar-w-collapsed: 64px;
-  --topbar-h: 56px;
+  /* height of the sticky function-code row (32px + its 1px rule); page-level sticky
+     elements offset by it */
+  --topbar-h: 33px;
   --content-max: 1440px;
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
   --dur: 120ms;

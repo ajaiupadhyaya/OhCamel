@@ -16,7 +16,9 @@ interface Item {
   kind: "page" | "ticker" | "action";
   label: string;
   hint?: string;
-  icon: Parameters<typeof Icon>[0]["name"];
+  /** Function code shown in place of an icon for pages. */
+  code?: string;
+  icon?: Parameters<typeof Icon>[0]["name"];
   run: () => void;
 }
 
@@ -41,15 +43,15 @@ export function CommandPalette({ open, onClose, onToggleTheme }: { open: boolean
     const go = (to: string) => () => (nav(to), onClose());
     const needle = q.trim().toLowerCase();
     const pages: Item[] = ROUTES.filter((r) => r.nav || r.path.startsWith("/ticker"))
-      .filter((r) => !needle || `${r.title} ${r.keywords ?? ""} ${r.blurb}`.toLowerCase().includes(needle))
-      .map((r) => ({ id: `page:${r.path}`, kind: "page", label: r.title, hint: r.blurb, icon: r.icon, run: go(r.to) }));
+      .filter((r) => !needle || `${r.code} ${r.title} ${r.keywords ?? ""} ${r.blurb}`.toLowerCase().includes(needle))
+      .map((r) => ({ id: `page:${r.path}`, kind: "page", label: r.title, hint: r.blurb, code: r.code, run: go(r.to) }));
     const tickers: Item[] = (search.data ?? []).slice(0, 8).map((h) => ({ id: `t:${h.ticker}`, kind: "ticker", label: h.ticker, hint: h.name !== h.ticker ? h.name : "Open ticker", icon: "ticker", run: go(`/ticker/${h.ticker}`) }));
     const raw = cleanTicker(q);
     if (raw && raw.length <= 10 && /^[A-Z0-9.^=-]+$/.test(raw) && !tickers.some((t) => t.label === raw)) {
       tickers.push({ id: `t-raw:${raw}`, kind: "ticker", label: raw, hint: "Open ticker page", icon: "arrow-right", run: go(`/ticker/${raw}`) });
       tickers.push({ id: `c-raw:${raw}`, kind: "ticker", label: `${raw} fundamentals`, hint: "Open company page", icon: "company", run: go(`/company/${raw}`) });
     }
-    const actions: Item[] = [{ id: "a:theme", kind: "action", label: "Toggle light / dark", icon: "moon", run: () => (onToggleTheme(), onClose()) }].filter((a) => !needle || a.label.toLowerCase().includes(needle)) as Item[];
+    const actions: Item[] = [{ id: "a:theme", kind: "action", label: "Toggle paper / carbon", icon: "moon", run: () => (onToggleTheme(), onClose()) }].filter((a) => !needle || a.label.toLowerCase().includes(needle)) as Item[];
     return needle ? [...tickers, ...pages, ...actions] : [...pages, ...actions];
   }, [q, search.data, nav, onClose, onToggleTheme]);
 
@@ -100,7 +102,7 @@ export function CommandPalette({ open, onClose, onToggleTheme }: { open: boolean
               <li key={it.id} role="presentation">
                 {header && <div className="oc-palette-group">{header}</div>}
                 <div role="option" aria-selected={i === hi} data-idx={i} className={`oc-palette-item ${i === hi ? "active" : ""}`} onMouseMove={() => setHi(i)} onClick={it.run}>
-                  <Icon name={it.icon} size={16} />
+                  {it.code ? <span className="oc-palette-code">{it.code}</span> : it.icon ? <Icon name={it.icon} size={16} /> : null}
                   <span className={it.kind === "ticker" ? "num oc-palette-label" : "oc-palette-label"}>{it.label}</span>
                   {it.hint && <span className="oc-palette-hint">{it.hint}</span>}
                   {i === hi && <Icon name="arrow-right" size={14} className="oc-palette-go" />}
