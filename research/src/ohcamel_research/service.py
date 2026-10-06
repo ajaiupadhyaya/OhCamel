@@ -70,6 +70,7 @@ New York in summer and 19:16 in winter, not 19:15.
 from __future__ import annotations
 
 import math
+import os
 import re
 import signal as os_signal
 import tempfile
@@ -139,6 +140,22 @@ SIP_RECENT_HOLD = timedelta(minutes=16)
 # fdq, seconds in all; this exists only so a fetch that never returns cannot
 # stop the loop.
 WATCHDOG_SECONDS = 900.0
+
+# The heartbeat (finish plan Task 18). run_forever stamps this file with its
+# own clock at the top of every poll and again after every run, and
+# deploy/docker-compose.yml's healthcheck for ohcamel-research fails once it
+# is more than HEARTBEAT_MAX_AGE_S old -- the one signal that tells a loop
+# that stopped turning (a deadlock, a wedged import, a sleep that never
+# returns) from one that is merely waiting for 19:15, which logs nothing for
+# hours by design. On /tmp because the root filesystem is read-only and /tmp
+# is the container's tmpfs: the file means "this process is alive", so it
+# should not outlive the process. The limit equals WATCHDOG_SECONDS on
+# purpose: a run is bounded by the watchdog and the file is stamped on both
+# sides of it, so a healthy loop never goes longer than that between stamps
+# (the healthcheck's retries absorb the second or two beyond it a run that
+# hits the watchdog can take).
+HEARTBEAT_PATH = Path("/tmp/ohcamel-research.heartbeat")
+HEARTBEAT_MAX_AGE_S = 900
 
 # How much extra history, in trading days, beyond the longest moving
 # average a config's selected_params implies. fdq's long/flat strategies
@@ -719,6 +736,31 @@ def _previous_weekday(day: date) -> date:
     return d
 
 
+def _beat(heartbeat: Path | None, at: datetime) -> None:
+    """Stamp ``heartbeat`` with ``at`` -- the loop's clock, not the wall
+    clock, so a test can state the age it means. In the container the two
+    are the same clock."""
+    if heartbeat is None:
+        return
+    heartbeat.parent.mkdir(parents=True, exist_ok=True)
+    heartbeat.touch()
+    stamp = at.timestamp()
+    os.utime(heartbeat, (stamp, stamp))
+
+
+def heartbeat_is_fresh(
+    heartbeat: Path, *, now: float, max_age: float = HEARTBEAT_MAX_AGE_S
+) -> bool:
+    """True when ``heartbeat`` exists and is at most ``max_age`` seconds old
+    at ``now`` (epoch seconds). The rule compose's healthcheck applies, in
+    one place a test can reach; the healthcheck itself is stdlib-only Python
+    so it does not import pandas once a minute."""
+    try:
+        return now - heartbeat.stat().st_mtime <= max_age
+    except FileNotFoundError:
+        return False
+
+
 class WatchdogTimeout(BaseException):
     """A run outlived its watchdog. A ``BaseException``, like
     ``KeyboardInterrupt``, so that no ``except Exception`` on the way --
@@ -759,6 +801,7 @@ def run_forever(
     poll_seconds: float = 300.0,
     watchdog_seconds: float = WATCHDOG_SECONDS,
     on_event: Callable[[str], None] = print,
+    heartbeat: Path | None = None,
 ) -> None:
     """The schedule is a loop inside this process, not cron in the
     container.
@@ -798,6 +841,10 @@ def run_forever(
     - **A watchdog** (``watchdog_seconds``, ``SIGALRM``) bounds every run:
       a fetch that never returns is abandoned, logged, and the loop moves
       on to its next poll, which retries.
+    - **A heartbeat** (``heartbeat``, when given): the file is stamped with
+      ``clock()`` at start, at the top of every poll and after every run, so
+      its age is never more than one watchdog or one sleep (see
+      ``HEARTBEAT_PATH``).
     """
     removed = sweep_orphaned_tmp(signals_dir)
     if removed:
@@ -833,6 +880,7 @@ def run_forever(
         return outcomes
 
     started = clock().astimezone(ZONE)
+    _beat(heartbeat, started)
     if started.time() < RUN_AT:
         session = _previous_weekday(started.date())
         missing = [
@@ -846,10 +894,13 @@ def run_forever(
                 f"signal for {session} from {', '.join(missing)}: running that session once"
             )
             attempt(session)
+            if heartbeat is not None:  # no extra clock() read when there is no file
+                _beat(heartbeat, clock())
 
     last_run: date | None = None
     while True:
         now_et = clock().astimezone(ZONE)
+        _beat(heartbeat, now_et)
         today = now_et.date()
         if today.weekday() >= 5:
             say_once(("weekend", today), f"research  {today} is a {today:%A}: no session")
@@ -865,6 +916,8 @@ def run_forever(
             else:
                 say_once(("run", today), f"research  {now_et.isoformat()}: running {today}")
                 outcomes = attempt(today)
+                if heartbeat is not None:
+                    _beat(heartbeat, clock())
                 if outcomes is not None and all(o.as_of == today for o in outcomes):
                     last_run = today
         sleep(poll_seconds)
@@ -884,6 +937,7 @@ def main() -> int:
         signals_dir=SIGNALS_DIR,
         repo_root=REPO_ROOT,
         on_event=print,
+        heartbeat=HEARTBEAT_PATH,
     )
     return 0  # pragma: no cover -- run_forever never returns
 

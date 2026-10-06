@@ -1658,7 +1658,7 @@ loaded. Figure 1 draws a signals band into the orders band only where an
 intake actually runs, so the demo's own figure, which has none, stays
 byte-identical to the one before this phase.
 
-`research/` has its own test suite, run by `make research-test`: <!-- count:research-tests -->388<!-- /count --> Python
+`research/` has its own test suite, run by `make research-test`: <!-- count:research-tests -->391<!-- /count --> Python
 tests, hermetic, offline, seeded, checked with `ruff`. `lib/verified.ml`
 and this file's counts cover only the OCaml suites; the Python count is
 reported here and in `docs/status.md`, never folded into either.

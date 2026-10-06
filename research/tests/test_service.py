@@ -61,8 +61,9 @@ from ohcamel_research.manifest import (
     compute_hashes,
     compute_verdict,
 )
-from ohcamel_research.service import REGISTRY as service_registry
 from ohcamel_research.service import (
+    HEARTBEAT_MAX_AGE_S,
+    HEARTBEAT_PATH,
     RUN_AT,
     ZONE,
     AlpacaBarSource,
@@ -78,11 +79,13 @@ from ohcamel_research.service import (
     _require_alpaca_provenance,
     _to_long_form,
     fetchable_through,
+    heartbeat_is_fresh,
     load_service_config,
     run_forever,
     run_once,
     sweep_orphaned_tmp,
 )
+from ohcamel_research.service import REGISTRY as service_registry
 from ohcamel_research.signal import REGISTRY as signal_registry
 from ohcamel_research.signal import invested_fraction
 
@@ -1369,3 +1372,58 @@ def test_a_run_that_finishes_in_time_leaves_no_alarm_behind(tmp_path: Path):
 
     assert os_signal.getsignal(os_signal.SIGALRM) is handler_before
     assert os_signal.getitimer(os_signal.ITIMER_REAL) == (0.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# The heartbeat (finish plan Task 18): touched on every poll loop, stamped
+# with the loop's own clock, so compose's healthcheck can tell a loop that
+# stopped turning from one that is merely waiting for 19:15.
+# ---------------------------------------------------------------------------
+
+
+def test_the_heartbeat_is_stamped_with_the_loop_clock_on_every_poll(tmp_path: Path):
+    config, paths = _two_strategy_config(tmp_path)
+    saturday = date(2021, 1, 2)  # no session: every poll is only the loop turning
+    heartbeat = tmp_path / "run" / "heartbeat"
+    polls = [_et(saturday, 20, 0), _et(saturday, 20, 5), _et(saturday, 20, 10)]
+    seen: list[float] = []
+    instants = iter([_et(saturday, 20, 0), *polls])
+
+    def sleep(_seconds: float) -> None:
+        seen.append(heartbeat.stat().st_mtime)
+        if len(seen) == len(polls):
+            raise _Stop
+
+    with pytest.raises(_Stop):
+        run_forever(
+            config,
+            bar_source=_CountingSource(FixtureBarSource(FIXTURE_BARS)),
+            signals_dir=tmp_path / "signals",
+            repo_root=paths["root"],
+            clock=lambda: next(instants),
+            sleep=sleep,
+            on_event=lambda _line: None,
+            heartbeat=heartbeat,
+        )
+
+    # One touch a poll, each carrying that poll's instant -- the fake clock's,
+    # not the wall clock's, which is what makes the age arithmetic testable.
+    assert seen == [p.timestamp() for p in polls]
+
+
+def test_the_heartbeat_is_fresh_at_900_s_and_stale_at_901_s(tmp_path: Path):
+    heartbeat = tmp_path / "heartbeat"
+    assert HEARTBEAT_MAX_AGE_S == 900
+    assert not heartbeat_is_fresh(heartbeat, now=1_000_000.0)  # never touched
+    heartbeat.touch()
+    os.utime(heartbeat, (1_000_000.0, 1_000_000.0))
+    assert heartbeat_is_fresh(heartbeat, now=1_000_000.0 + 900)
+    assert not heartbeat_is_fresh(heartbeat, now=1_000_000.0 + 901)
+
+
+def test_the_compose_healthcheck_reads_the_service_heartbeat_with_the_same_limit():
+    compose = (REPO_ROOT / "deploy" / "docker-compose.yml").read_text()
+    block = compose.split("  ohcamel-research:\n", 1)[1].split("\n  ohcamel-backup:", 1)[0]
+    assert "healthcheck:" in block
+    assert str(HEARTBEAT_PATH) in block
+    assert f"> {HEARTBEAT_MAX_AGE_S}" in block

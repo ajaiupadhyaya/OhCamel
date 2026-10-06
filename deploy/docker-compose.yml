@@ -275,6 +275,23 @@ services:
       - /tmp
     security_opt:
       - no-new-privileges:true
+    # Task 18: the poll loop stamps /tmp/ohcamel-research.heartbeat at the
+    # top of every poll and after every run (service.py's HEARTBEAT_PATH),
+    # and this fails once it is more than 900 s old (HEARTBEAT_MAX_AGE_S) or
+    # absent -- the one way to see a loop that stopped turning, since a loop
+    # waiting for 19:15 is silent for hours by design. Stdlib-only Python, so
+    # a check a minute never imports pandas. deploy/watch.sh restarts the
+    # container after three consecutive unhealthy runs and alerts.
+    # research/tests/test_service.py holds the path and the limit to
+    # service.py's.
+    healthcheck:
+      test: ["CMD", "/app/research/.venv/bin/python", "-c", "import os, sys, time; p = '/tmp/ohcamel-research.heartbeat'; sys.exit(1 if not os.path.exists(p) or time.time() - os.path.getmtime(p) > 900 else 0)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      # The file is stamped before the start-up back-fill runs, so this is
+      # only the interpreter starting.
+      start_period: 30s
     logging: *logging
     networks: [ohcamel]
 

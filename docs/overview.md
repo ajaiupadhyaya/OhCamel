@@ -252,7 +252,7 @@ may send one); on the public demo each answers 405.
   check, every credential-free mode run end to end, and the README's quoted
   tables reproduced on both platforms.
 - **`make research-test`** runs the research layer's own suite separately:
-  <!-- count:research-tests -->388<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Not folded
+  <!-- count:research-tests -->391<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Not folded
   into [`lib/verified.ml`](../lib/verified.ml)'s counts, which cover the
   OCaml suites only.
 
