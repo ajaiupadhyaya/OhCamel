@@ -287,17 +287,23 @@ CREATE TABLE bars_minute (ticker TEXT, ts TIMESTAMP, open DOUBLE, high DOUBLE, l
                           volume DOUBLE, source TEXT, PRIMARY KEY (ticker, ts));
 CREATE TABLE fred        (series TEXT, date DATE, value DOUBLE, fetched_at TIMESTAMP, PRIMARY KEY (series, date));
 CREATE TABLE factors     (dataset TEXT, factor TEXT, date DATE, value DOUBLE, PRIMARY KEY (dataset, factor, date));
-CREATE TABLE option_snapshots (underlying TEXT, asof DATE, expiry DATE, strike DOUBLE, cp TEXT,
+CREATE TABLE option_snapshots (underlying TEXT, "asof" DATE, expiry DATE, strike DOUBLE, cp TEXT,
                           bid DOUBLE, ask DOUBLE, last DOUBLE, volume DOUBLE, open_interest DOUBLE,
-                          source TEXT, PRIMARY KEY (underlying, asof, expiry, strike, cp));
-CREATE TABLE sec_facts   (cik TEXT, ticker TEXT, tag TEXT, unit TEXT, period_end DATE, filed DATE,
-                          form TEXT, value DOUBLE, PRIMARY KEY (cik, tag, unit, period_end, filed));
+                          source TEXT, PRIMARY KEY (underlying, "asof", expiry, strike, cp));
+CREATE TABLE sec_facts   (cik TEXT, ticker TEXT, tag TEXT, unit TEXT, period_start DATE, period_end DATE,
+                          filed DATE, form TEXT, value DOUBLE,
+                          PRIMARY KEY (cik, tag, unit, period_start, period_end, filed));
+CREATE TABLE holdings_13f (cik TEXT, filer TEXT, accession TEXT, form TEXT, period DATE, filed DATE,
+                          cusip TEXT, put_call TEXT, issuer TEXT, title TEXT, ticker TEXT, shares DOUBLE,
+                          shares_type TEXT, value_usd DOUBLE, weight DOUBLE,
+                          PRIMARY KEY (accession, cusip, put_call));
 CREATE TABLE ingest_log  (dataset TEXT, key TEXT, ran_at TIMESTAMP, rows INTEGER, status TEXT,
                           detail TEXT, data_asof DATE);
 ```
 
 - **Writers:** only the worker's ingest jobs write. The API opens the file `read_only=True`. DuckDB allows one writer process, which is why ingest runs only in the worker.
 - **Point-in-time rule:** `sec_facts.filed` is the availability date; a feature may use a fact only when `filed <= feature_date`.
+- **Amended 2026-10-06 (Lane C, C1):** `sec_facts` gains `period_start` in its key because a 10-Q files a quarter and its year-to-date total with the same `end` and `filed` (e.g. Apple's FY2023 Q2 revenue, 94,836 M for 2023-01-01..04-01 and 211,990 M for 2022-09-25..04-01, both filed 2023-05-05); for an instant fact `period_start = period_end`. `holdings_13f` holds the 13F filings C5 ingests (`put_call` is `''` for a plain holding, `'Put'`/`'Call'` otherwise). `option_snapshots.asof` is written `"asof"` in every SQL statement, because `asof` is DuckDB's reserved `ASOF` join keyword and the unquoted DDL does not parse; the column name is unchanged. The warehouse path is `Settings.warehouse_path` (env `OHCAMEL_QUANT_WAREHOUSE_PATH`); unset means no warehouse.
 
 ## II.6 Telemetry (`hostd`, task 0.4)
 
@@ -321,7 +327,7 @@ CREATE TABLE ingest_log  (dataset TEXT, key TEXT, ran_at TIMESTAMP, rows INTEGER
 |---|---|---|
 | A | `native/kernels/**`, `quant/src/ohcamel_quant/kernels/**`, `quant/tests/test_kernels_*.py`, CI job `native` | everything |
 | B | `quant/src/ohcamel_quant/jobs/**`, `api/routers/jobs.py`, `quant/tests/test_jobs_*.py`, deploy worker service | kernels API (II.4) |
-| C | `quant/src/ohcamel_quant/warehouse/**`, `api/routers/warehouse.py`, `quant/tests/test_warehouse_*.py` | jobs protocol (II.2) |
+| C | `quant/src/ohcamel_quant/warehouse/**`, `api/routers/warehouse.py`, `quant/tests/test_warehouse_*.py`, the warehouse-first branch of `MarketData.returns` (C1) | jobs protocol (II.2) |
 | D | `quant/web/src/{styles,design,charts,shell,components}/**`, `quant/web/package.json` | pages (migrated in D2) |
 | M | `quant/src/ohcamel_quant/{models,products}/**`, `api/routers/artifacts.py`, `research/experiments/EXP-Q*/**` | A, B, C |
 | F | `quant/web/src/pages/Deck.tsx`, `quant/web/src/pages/deck/**` | D |
