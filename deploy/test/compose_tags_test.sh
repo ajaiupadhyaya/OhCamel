@@ -352,6 +352,10 @@ if render "$FE" "$scratch/FE.err" --env-file "$harness_env" -f "$base" -f "$ci_y
 			no "F4 $svc reads deploy/ci.env under the ci override, not /etc/ohcamel/live.env" "still names /etc/ohcamel/live.env"
 		elif echo "$block" | grep -qE '(path: |- )[^ ]*/deploy/ci\.env$'; then
 			ok "F4 $svc reads deploy/ci.env under the ci override, not /etc/ohcamel/live.env"
+		elif ! echo "$block" | grep -q 'env_file' && [ "$(echo "$block" | grep -c 'ci-dummy-not-a-key')" -ge 3 ]; then
+			# Compose v2 inlines env_file values even under --no-env-resolution;
+			# the three dummies can only have come from deploy/ci.env.
+			ok "F4 $svc reads deploy/ci.env under the ci override (inlined by this Compose)"
 		else
 			no "F4 $svc reads deploy/ci.env under the ci override" "no env_file path ending in deploy/ci.env in its block"
 		fi
