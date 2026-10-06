@@ -6,10 +6,22 @@ Only the regular session [09:30, 16:00) New York is stored (~390 bars a day:
 fetched and written on its own, so memory holds one month of one ticker.
 ``adjustment=split``: a split re-adjusts history, detected on the overlap of
 the incremental refetch, and then the ticker is refetched in full.
+
+A full refetch REPLACES the ticker's history one month at a time: each month's
+transaction deletes only that month (``ticker = ? AND ts >= ? AND ts < ?``) and
+inserts the refetched month. Never a ticker-wide DELETE: bars_minute has no
+retention, and on a grown table (~20M rows) one statement deleting a ticker's
+whole history exceeds the RW connection's 256MB memory_limit, which DuckDB
+treats as fatal (the process aborts; no ``except`` sees it). Stored rows older
+than the backfill window are purged the same way, in month-sized ranges, so no
+unadjusted bar survives a split. A failure partway leaves the months not yet
+reached as they were (the next run's overlap check sees the mismatch again and
+refetches). A month the vendor returns empty is left as stored.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from urllib.parse import quote as urlquote
@@ -32,8 +44,21 @@ MINUTE_TICKERS = (
 SESSION_OPEN, SESSION_CLOSE = time(9, 30), time(16, 0)
 OVERLAP = timedelta(days=1)
 RTOL = 5e-5
+DELETE_MONTH = "DELETE FROM bars_minute WHERE ticker = ? AND ts >= ? AND ts < ?"
 INSERT = ("INSERT OR REPLACE INTO bars_minute SELECT ticker, ts, open, high, low, close, volume, source "
           "FROM incoming")
+
+
+@dataclass
+class Month:
+    """One month of a full refetch: replace stored rows in [lo, hi) (naive UTC)
+    with ``frame``. ``purge`` marks a range before the backfill window, deleted
+    with no replacement."""
+
+    lo: datetime
+    hi: datetime
+    frame: pd.DataFrame
+    purge: bool = False
 
 
 def _now() -> datetime:
@@ -83,17 +108,21 @@ def _pages(sym: str, lo: datetime, hi: datetime, settings: Any) -> list[dict[str
 
 def read_state(con: Any, keys: list[str]) -> dict[str, KeyState]:
     out = {}
-    for ticker, last in con.execute("SELECT ticker, max(ts) FROM bars_minute WHERE list_contains(?, ticker) "
-                                    "GROUP BY ticker", [keys]).fetchall():
+    for ticker, first, last in con.execute("SELECT ticker, min(ts), max(ts) FROM bars_minute "
+                                           "WHERE list_contains(?, ticker) GROUP BY ticker", [keys]).fetchall():
         tail = con.execute("SELECT ts, close FROM bars_minute WHERE ticker = ? AND ts >= ? ORDER BY ts",
                            [ticker, last - OVERLAP]).df()
         tail["ts"] = pd.to_datetime(tail["ts"]).astype("datetime64[ns]")
-        out[ticker] = KeyState(last.date(), {"last_ts": last, "tail": tail})
+        out[ticker] = KeyState(last.date(), {"first_ts": first, "last_ts": last, "tail": tail})
     return out
 
 
 def _utc(d: datetime) -> datetime:
     return d.replace(tzinfo=UTC) if d.tzinfo is None else d.astimezone(UTC)
+
+
+def _naive(d: datetime) -> datetime:
+    return _utc(d).replace(tzinfo=None)
 
 
 def run_bars_minute(params: dict, ctx: Any) -> dict:
@@ -122,13 +151,19 @@ def run_bars_minute(params: dict, ctx: Any) -> dict:
                 state.extra["mode"] = "incremental"
                 yield new
                 return
+        first = state.extra.get("first_ts")
+        if first is not None and _utc(first) < start:  # stored rows before the window: purge, month-sized
+            for lo, hi in month_ranges(_utc(first), start):
+                yield Month(_naive(lo), _naive(hi), parse_minute_bars([]), purge=True)
         for lo, hi in month_ranges(start, end):
-            yield parse_minute_bars(_pages(sym, lo, hi, s))
+            yield Month(_naive(lo), _naive(hi), parse_minute_bars(_pages(sym, lo, hi, s)))
 
-    def write(con: Any, key: str, state: KeyState, frame: pd.DataFrame) -> Written:
-        if state.extra.get("mode") == "full" and not state.extra.get("cleared") and len(frame):
-            con.execute("DELETE FROM bars_minute WHERE ticker = ?", [key])
-            state.extra["cleared"] = True
+    def write(con: Any, key: str, state: KeyState, payload: Month | pd.DataFrame) -> Written:
+        frame = payload
+        if isinstance(payload, Month):
+            frame = payload.frame
+            if payload.purge or len(frame):  # one bounded month per transaction, never ticker-wide
+                con.execute(DELETE_MONTH, [key, payload.lo, payload.hi])
         f = frame.copy()
         f.insert(0, "ticker", key)
         f["source"] = "alpaca:iex"

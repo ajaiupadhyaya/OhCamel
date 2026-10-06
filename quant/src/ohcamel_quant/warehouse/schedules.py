@@ -9,7 +9,15 @@ Session kinds get 78h, so Friday's artifact (about 72 h old by Monday's run)
 is not stale every weekend; a missed weekday run shows amber after about three
 days. Session-precise staleness (stale the morning after one missed run) is
 ``GET /api/warehouse/freshness``. Calendar kinds use the endpoint's own ages:
-FRED 30h (daily), weekly kinds 204h."""
+FRED 30h (daily), weekly kinds 204h.
+
+``ingest.bars_minute`` stays S (<=256 MB) because a full refetch replaces a
+ticker one month per transaction (``DELETE ... AND ts >= ? AND ts < ?``):
+measured 2026-10-06 on a 19.7M-row bars_minute (2-year backfill plus 2 years
+of nightly day-blocks, DuckDB 1.5.6, open_rw), replacing one ticker's 36
+months peaked at 244 MB RSS for the whole process, of which 149 MB is the
+interpreter and imports. The old ticker-wide DELETE aborted the process on
+the same file (DuckDB FatalException at the 256 MB memory_limit)."""
 
 from __future__ import annotations
 

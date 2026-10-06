@@ -126,3 +126,97 @@ def test_no_keys_fails_cleanly(tmp_path):
     with pytest.raises(IngestFailed, match="keys not configured"):
         minute.run_bars_minute({"tickers": ["SPY"], "start": "2026-05-30"}, ctx(tmp_path, keys=False))
     assert HANDLERS["ingest.bars_minute"] is minute.run_bars_minute
+
+
+# Three months of SPY (all 13:30Z = 09:30 NY, in session): April, May, June 2026.
+SPAN = [bar("2026-04-15T13:30:00Z", 500.0), bar("2026-05-04T13:30:00Z", 510.0),
+        bar("2026-05-20T13:30:00Z", 520.0), bar("2026-06-01T13:30:00Z", 530.0)]
+
+
+class Recorder:
+    """Delegates to a DuckDB connection and records every SQL statement, so a test
+    can see which statements ran in which transaction."""
+
+    def __init__(self, con, log):
+        self._con, self._log = con, log
+
+    def execute(self, sql, *args, **kwargs):
+        self._log.append((sql, args[0] if args else None))
+        return self._con.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._con, name)
+
+
+def record_sql(monkeypatch):
+    from contextlib import contextmanager
+
+    from ohcamel_quant.warehouse.ingest import base
+
+    real, log = base.open_rw, []
+
+    @contextmanager
+    def spy(*a, **kw):
+        with real(*a, **kw) as con:
+            yield Recorder(con, log)
+
+    monkeypatch.setattr(base, "open_rw", spy)
+    return log
+
+
+def transactions(log):
+    """The statements of each BEGIN..COMMIT/ROLLBACK block."""
+    out, cur = [], None
+    for sql, p in log:
+        if sql == "BEGIN TRANSACTION":
+            cur = []
+        elif sql in ("COMMIT", "ROLLBACK"):
+            out.append(cur)
+            cur = None
+        elif cur is not None:
+            cur.append((sql, p))
+    return out
+
+
+@respx.mock
+def test_full_refetch_replaces_history_one_bounded_month_at_a_time(tmp_path, monkeypatch):
+    # bars_minute has no retention; a ticker-wide DELETE on a grown table exceeds the
+    # RW connection's 256MB memory_limit and DuckDB aborts the process (FatalException).
+    # A split refetch must delete by ts range, one month per transaction.
+    route = respx.get(URL).mock(side_effect=serve(SPAN))
+    c = ctx(tmp_path)
+    minute.run_bars_minute({"tickers": ["SPY"], "start": "2026-04-01"}, c)
+    assert len(rows(tmp_path)) == 4
+    log = record_sql(monkeypatch)
+    route.side_effect = serve(SPAN, scale=0.5)  # a 2:1 split re-adjusts history
+    # the backfill window moved forward: April is now before it and must not stay unadjusted
+    minute.run_bars_minute({"tickers": ["SPY"], "start": "2026-05-01"}, c)
+    assert rows(tmp_path) == [(datetime(2026, 5, 4, 13, 30), 255.0), (datetime(2026, 5, 20, 13, 30), 260.0),
+                              (datetime(2026, 6, 1, 13, 30), 265.0)]
+    deletes = [(sql, p) for sql, p in log if sql.lstrip().upper().startswith("DELETE")]
+    assert deletes, "the refetch must replace stored bars"
+    for sql, p in deletes:
+        assert "ts >= ?" in sql and "ts < ?" in sql, sql
+        lo, hi = p[1], p[2]
+        assert hi - lo <= pd.Timedelta(days=31), (lo, hi)
+    for tx in transactions(log):
+        assert sum(s.lstrip().upper().startswith("DELETE") for s, _ in tx) <= 1
+
+
+@respx.mock
+def test_refetch_failing_partway_keeps_unreached_months(tmp_path):
+    route = respx.get(URL).mock(side_effect=serve(SPAN))
+    c = ctx(tmp_path)
+    minute.run_bars_minute({"tickers": ["SPY"], "start": "2026-04-01"}, c)
+    half = serve(SPAN, scale=0.5)
+
+    def flaky(request):
+        if pd.Timestamp(request.url.params["start"]) >= pd.Timestamp("2026-06-01T00:00:00Z"):
+            return httpx.Response(500, json={"message": "boom"})
+        return half(request)
+
+    route.side_effect = flaky
+    with pytest.raises(IngestFailed):
+        minute.run_bars_minute({"tickers": ["SPY"], "start": "2026-04-01"}, c)
+    # April and May were replaced; June's fetch failed, so June's stored bar is still there
+    assert [cl for _, cl in rows(tmp_path)] == [250.0, 255.0, 260.0, 530.0]
