@@ -167,8 +167,10 @@ def finish(conn: sqlite3.Connection, job_id: str, *, artifact: dict[str, Any], c
         conn.execute("INSERT INTO artifacts (id, kind, params_hash, finished_at, path, data_asof) VALUES (?,?,?,?,?,?)",
                      (artifact["id"], artifact["kind"], artifact["params_hash"], artifact["finished_at"],
                       artifact["path"], artifact.get("data_asof")))
-        conn.execute("UPDATE jobs SET state='done', finished_at=?, artifact_id=?, cpu_seconds=?, peak_rss_bytes=?"
-                     " WHERE id=?", (iso(now), artifact["id"], cpu_seconds, peak_rss_bytes, job_id))
+        # error=NULL: an earlier attempt's reason (a retry, a stale re-queue)
+        # stays in job_events; a done job does not read as a failure.
+        conn.execute("UPDATE jobs SET state='done', finished_at=?, artifact_id=?, cpu_seconds=?, peak_rss_bytes=?,"
+                     " error=NULL WHERE id=?", (iso(now), artifact["id"], cpu_seconds, peak_rss_bytes, job_id))
         _event(conn, job_id, "done", now, 1.0)
     return True
 

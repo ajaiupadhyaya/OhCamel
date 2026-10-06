@@ -184,6 +184,23 @@ def test_finish_records_artifact_and_measurements(conn):
     assert conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0] == 1
 
 
+def test_a_job_done_after_a_retry_carries_no_error(conn):
+    # Gate GB, step 2: a SIGKILLed job, re-queued and then done, read
+    # {state: done, error: "re-queued: the worker stopped heartbeating ..."},
+    # which a page would show as a failure. The retry stays in job_events;
+    # a finished job's error is cleared.
+    j, _ = _q(conn, kind="ingest.fred")
+    _claim(conn)
+    assert fail(conn, j.id, error="RuntimeError: vendor down", retries=retries_for("ingest.fred"),
+                cpu_seconds=0.1, peak_rss_bytes=1, now=T0) == "queued"
+    _claim(conn)
+    t1 = T0 + timedelta(minutes=2)
+    assert finish(conn, j.id, artifact=_art(j, t1), cpu_seconds=1.0, peak_rss_bytes=1, now=t1)
+    d = get_job(conn, j.id)
+    assert (d.state, d.attempts, d.error) == ("done", 2, None)
+    assert any("vendor down" in (e["message"] or "") for e in events_after(conn, 0))
+
+
 def test_finish_refuses_a_job_cancelled_meanwhile(conn):
     j, _ = _q(conn)
     _claim(conn)
