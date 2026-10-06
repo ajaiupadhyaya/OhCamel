@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "ohcamel-kernels"
+version = "0.1.0"
+description = "OhCamel Quant's Rust kernels (compute plan contract II.4)"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+[tool.maturin]
+features = ["python", "pyo3/extension-module"]
+module-name = "ohcamel_kernels"
