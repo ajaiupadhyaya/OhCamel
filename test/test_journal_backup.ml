@@ -545,7 +545,8 @@ let test_verify_never_calls_a_truncated_copy_clean () =
    zeroed and verified. SQLite has two possible answers to a zeroed page --
    it refuses the file at some later query, or it answers and
    integrity_check reports the page -- and neither may read as clean. At
-   least one page must reach the second answer, because that is the answer
+   least one page must reach integrity_check's verdict (in its rows, or as the
+   pragma's own failure on a SQLite that fails it), because that is the answer
    the mutation above forges: a b-tree root that no query after the pragma
    reads (the schema has seven declared indexes, and a row count walks at
    most one b-tree per table) is found by integrity_check alone. Which pages those are
@@ -590,18 +591,30 @@ let test_no_single_zeroed_page_ever_reads_clean () =
               false
               (List.equal String.equal r.Journal.Report.integrity [ "ok" ]);
             reported := page :: !reported
-        | Error _ -> refused := page :: !refused
+        | Error e -> refused := (page, e) :: !refused
       done;
       Alcotest.(check int)
         "every page after the first was tried" (pages - 1)
         (List.length !reported + List.length !refused);
+      (* The pragma's verdict is consumed if at least one zeroed page is either
+         reported in its rows or refused BY the pragma itself. Which of the two a
+         host gives depends on the SQLite it links: macOS's answers with rows,
+         Ubuntu 24.04's 3.45 fails the pragma with SQLITE_CORRUPT. Either way a
+         forged ["ok"] would let the pages only integrity_check reaches read
+         clean, which the loop above refuses. *)
+      let by_pragma =
+        List.filter !refused ~f:(fun (_, e) ->
+            String.is_substring e ~substring:"integrity_check")
+      in
       Alcotest.(check bool)
         (sprintf
-           "at least one zeroed page is REPORTED by integrity_check rather than refused \
-            (%d reported, %d refused of %d)"
-           (List.length !reported) (List.length !refused) (pages - 1))
+           "at least one zeroed page reaches integrity_check's verdict (%d reported, %d \
+            refused by the pragma, %d refused in all of %d; first refusal: %s)"
+           (List.length !reported) (List.length by_pragma) (List.length !refused)
+           (pages - 1)
+           (match List.last !refused with Some (_, e) -> e | None -> "none"))
         true
-        (not (List.is_empty !reported));
+        (not (List.is_empty !reported && List.is_empty by_pragma));
       (* and the untouched copy still reads clean, so the loop above was
          testing the zeroing and not a broken fixture *)
       Alcotest.(check bool)
