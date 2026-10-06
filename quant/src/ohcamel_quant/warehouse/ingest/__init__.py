@@ -9,3 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 HANDLERS: dict[str, Callable[[dict, Any], dict]] = {}
+
+from .universes import run_universes  # noqa: E402
+
+HANDLERS["ingest.universes"] = run_universes

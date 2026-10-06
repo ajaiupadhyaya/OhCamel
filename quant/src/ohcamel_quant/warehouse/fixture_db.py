@@ -51,5 +51,11 @@ def build_fixture_warehouse(path: Path) -> Path:
                         s.index[-1].date(), ran_at=ran)
             log_row(con, "fred", SUMMARY_KEY, "ok", 0, json.dumps({"fixture": True}),
                     macro.dropna(how="all").index[-1].date(), ran_at=ran)
+        from .ingest.universes import UNIVERSES, universe_rows
+
+        for u in UNIVERSES:
+            frame = universe_rows(u, None)
+            insert_frame(con, "INSERT OR REPLACE INTO universe_members SELECT universe, ticker, name, "
+                              "CAST(added AS DATE), source, survivorship FROM incoming", frame)
         con.execute("COMMIT")
     return path
