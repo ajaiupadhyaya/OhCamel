@@ -17,3 +17,7 @@ HANDLERS["ingest.universes"] = run_universes
 from . import bars  # noqa: E402
 
 HANDLERS["ingest.bars_daily"] = bars.run_bars_daily
+
+from . import minute  # noqa: E402
+
+HANDLERS["ingest.bars_minute"] = minute.run_bars_minute
