@@ -16,6 +16,9 @@
 pub mod par;
 pub mod tail;
 
+#[cfg(feature = "python")]
+mod py;
+
 /// The binding surface's version. The Python dispatcher refuses a wheel whose
 /// value it does not know (a stale build), so bump it with any signature or
 /// semantics change in `py.rs`.

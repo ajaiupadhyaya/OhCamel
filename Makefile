@@ -90,7 +90,7 @@ export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 # starts. run-live, serve and demo were the three that had been left out.
 .PHONY: all build run run-live serve demo stress backtest backtest-crisis options garch test research-test research-reproduce bench coverage fmt clean deps doctor \
         check-counts \
-        quant-deps quant-dev quant-test quant-live-test quant-web quant-serve quant-image hostd-image \
+        quant-deps quant-dev quant-test quant-live-test quant-web quant-serve quant-image hostd-image kernels-dev \
         deploy-build deploy-up deploy-down deploy-verify deploy-logs deploy-smoke
 
 all: build
@@ -383,6 +383,18 @@ hostd-image:
 	docker build -f native/hostd/Dockerfile \
 	  --build-arg OHCAMEL_GIT_SHA=$$(git rev-parse HEAD 2>/dev/null || echo unknown) \
 	  -t ghcr.io/ajaiupadhyaya/ohcamel-hostd:$(LOCAL_TAG) .
+
+# The Rust kernels wheel (native/kernels, compute plan Lane A), built and
+# installed into quant/.venv so the dispatcher picks Rust. It is built from
+# this checkout, not resolved, so it is not in quant/uv.lock -- and `uv sync`
+# removes it again: re-run this after a sync. The image builds its own copy
+# (quant/Dockerfile, stage `kernels`).
+kernels-dev:
+	cd quant && uv sync --frozen --extra dev
+	quant/.venv/bin/maturin build --release --locked -m native/kernels/Cargo.toml \
+	  -i quant/.venv/bin/python -o native/target/wheels
+	uv pip install --python quant/.venv/bin/python --no-deps --reinstall \
+	  native/target/wheels/ohcamel_kernels-*.whl
 
 # Build the images the harness runs, at LOCAL_TAG. The engine: twenty minutes
 # cold, about one after an edit to lib/, because the Dockerfile installs

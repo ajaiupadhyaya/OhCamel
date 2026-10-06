@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4", "respx>=0.21"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4", "respx>=0.21", "maturin>=1.7,<2"]
 
 [project.scripts]
 ohcamel-quant = "ohcamel_quant.cli:main"
