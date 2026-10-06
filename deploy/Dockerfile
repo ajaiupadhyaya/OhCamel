@@ -61,6 +61,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 USER opam
 WORKDIR /home/opam/ohcamel
 
+# Owl's configure defaults to -march=native on x86_64, which bakes the BUILD
+# machine's instruction set into the binary. Built on the droplet that was
+# harmless; built on a CI runner (with a layer cache shared across runners) it
+# produced an engine that died with SIGILL (exit 132) on the next runner. These
+# are Owl 1.2's own defaults (src/owl/config/configure.ml) minus -march=native,
+# so the image runs on any x86-64 host, the droplet included. Set inside the
+# opam RUN below because the SSE flags exist only on x86_64.
+
 # Dependencies before source, deliberately. opam install on this tree takes
 # fifteen to twenty minutes; dune build takes about one. Copying only the two
 # files that determine the dependency set means editing lib/graph.ml reuses the
@@ -70,7 +78,12 @@ WORKDIR /home/opam/ohcamel
 # are declared with :with-test in dune-project and are not wanted here. The
 # tests run in CI, on a machine that has them.
 COPY --chown=opam:opam dune-project ohcamel.opam ./
-RUN opam update -y \
+RUN owl_common="-g -O3 -funroll-loops -fno-math-errno -fno-rounding-math -fno-signaling-nans -fexcess-precision=fast -DSFMT_MEXP=19937 -fno-strict-aliasing" \
+ && case "$(uname -m)" in \
+      x86_64) export OWL_CFLAGS="$owl_common -mfpmath=sse -msse2" ;; \
+      *) export OWL_CFLAGS="$owl_common" ;; \
+    esac \
+ && opam update -y \
  && opam install --deps-only --yes . \
  && opam clean -a -c -s --logs
 
