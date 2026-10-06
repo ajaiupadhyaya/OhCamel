@@ -3,6 +3,7 @@ controller's backfill, local checks) or build the offline fixture warehouse.
 
   run <kind> [--params JSON] [--threads N]   needs OHCAMEL_QUANT_WAREHOUSE_PATH
   build-fixture <path>
+  freshness                                  needs OHCAMEL_QUANT_WAREHOUSE_PATH
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--threads", type=int, default=1)
     b = sub.add_parser("build-fixture", help="build the offline fixture warehouse")
     b.add_argument("path")
+    sub.add_parser("freshness", help="print data_asof and staleness per dataset")
     a = p.parse_args(argv)
     if a.cmd == "run":
         from .ingest import HANDLERS
@@ -39,6 +41,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if a.cmd == "build-fixture":
         print(build_fixture_warehouse(Path(a.path)))
+        return 0
+    if a.cmd == "freshness":
+        from . import freshness
+        from .db import open_ro
+
+        with open_ro() as con:
+            print(json.dumps(freshness.dataset_freshness(con, freshness._now()), indent=2))
         return 0
     return 2  # pragma: no cover - argparse enforces the choices
 

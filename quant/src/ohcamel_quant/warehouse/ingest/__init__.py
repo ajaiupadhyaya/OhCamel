@@ -28,3 +28,7 @@ HANDLERS["ingest.fred_warehouse"] = macro.run_fred
 HANDLERS["ingest.factors"] = macro.run_factors
 HANDLERS["ingest.sec_facts"] = filings.run_sec_facts
 HANDLERS["ingest.holdings_13f"] = filings.run_holdings_13f
+
+from . import options  # noqa: E402
+
+HANDLERS["ingest.option_snapshots"] = options.run_option_snapshots
