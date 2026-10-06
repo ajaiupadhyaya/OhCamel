@@ -498,7 +498,7 @@ def sweep(body: SweepIn, market: Market, request: Request, jobs_db: JobsDb) -> A
 
 
 def _do_sweep(body: SweepIn, market: Market, max_combos: int = V.MAX_GRID,
-              max_bytes: int | None = None) -> dict[str, Any]:
+              max_bytes: int | None = None, *, threads: int = 1) -> dict[str, Any]:
     if body.n_partitions % 2:
         raise ValueError("n_partitions must be even")
     p = _prepare(body, market)
@@ -540,7 +540,7 @@ def _do_sweep(body: SweepIn, market: Market, max_combos: int = V.MAX_GRID,
     else:
         try:
             # rank trials on EXCESS Sharpe, the criterion used for 'best' and the DSR
-            pbo = V.cscv_pbo(rets.sub(rf, axis=0) if rf is not None else rets, body.n_partitions)
+            pbo = V.cscv_pbo(rets.sub(rf, axis=0) if rf is not None else rets, body.n_partitions, threads=threads)
         except ValueError as e:
             pbo = {"error": str(e)}
     dsr = V.deflated_sharpe_for_grid(rets, None, rf)

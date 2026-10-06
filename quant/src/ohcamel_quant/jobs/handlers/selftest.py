@@ -20,11 +20,20 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from ...data.base import Provenance
 from ..artifacts import ArtifactSpec
 from ..context import JobContext
 
 ALLOWED = {"tag", "sleep_s", "fail_if_exists", "exit_hard"}
+
+
+class SelftestIn(BaseModel):
+    """What ``POST /api/jobs`` may submit: a tag, nothing else."""
+
+    model_config = ConfigDict(extra="forbid")
+    tag: str = Field(default="", max_length=64)
 
 
 def run(params: dict[str, Any], ctx: JobContext) -> ArtifactSpec:

@@ -77,7 +77,11 @@ def validate_params(spec: KindSpec, params: dict[str, Any]) -> None:
         raise ValueError(f"invalid params for {spec.name}: {e}") from e
 
 
-register(KindSpec("ops.selftest", "ohcamel_quant.jobs.handlers.selftest:run", "S", heavy=False))
+# Public (ship integration): the end-to-end smoke posts it. Only ``tag`` may be
+# submitted; the test-only params (sleep_s, fail_if_exists, exit_hard) stay
+# reachable from the queue alone.
+register(KindSpec("ops.selftest", "ohcamel_quant.jobs.handlers.selftest:run", "S", heavy=False, public=True,
+                  validate="ohcamel_quant.jobs.handlers.selftest:SelftestIn"))
 register(KindSpec("ingest.fred", "ohcamel_quant.jobs.handlers.fred:run", "S", heavy=False))
 _H = "ohcamel_quant.jobs.handlers.api_heavy"
 register(KindSpec("api.risk_backtest", f"{_H}:risk_backtest", "M", heavy=False, public=True,
@@ -88,3 +92,14 @@ register(KindSpec("api.backtest_walkforward", f"{_H}:backtest_walkforward", "M",
                   validate="ohcamel_quant.api.routers.backtest:WalkForwardIn"))
 register(KindSpec("api.portfolio_compare", f"{_H}:portfolio_compare", "M", heavy=False, public=True,
                   validate="ohcamel_quant.api.routers.portfolio:CompareIn"))
+
+# Lane C's warehouse ingest (compute plan C2-C6), the only writers of the
+# DuckDB file. Private: they run on schedules.yaml, never from the API. The
+# memory classes and heavy flags are warehouse/schedules.py's, pinned equal by
+# tests/test_jobs_integration.py (this module must not import DuckDB).
+_W = "ohcamel_quant.jobs.handlers.warehouse"
+for _kind, _mem, _heavy in (("ingest.universes", "S", False), ("ingest.bars_daily", "S", False),
+                            ("ingest.bars_minute", "S", False), ("ingest.fred_warehouse", "S", False),
+                            ("ingest.factors", "S", False), ("ingest.sec_facts", "M", True),
+                            ("ingest.holdings_13f", "S", False), ("ingest.option_snapshots", "S", False)):
+    register(KindSpec(_kind, f"{_W}:{_kind.split('.', 1)[1]}", _mem, heavy=_heavy))

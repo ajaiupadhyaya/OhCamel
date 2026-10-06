@@ -49,7 +49,8 @@ def test_post_queues_an_allow_listed_kind(api):
 @pytest.mark.parametrize("body,error", [
     ({"kind": "nope.x", "params": {}}, "unknown_kind"),
     ({"kind": "ingest.fred", "params": {"series": "DGS10"}}, "kind_not_allowed"),
-    ({"kind": "ops.selftest", "params": {}}, "kind_not_allowed"),
+    ({"kind": "ingest.bars_daily", "params": {}}, "kind_not_allowed"),
+    ({"kind": "ops.selftest", "params": {"exit_hard": True}}, "invalid_input"),
     ({"kind": "api.backtest_sweep", "params": {"strategy": "tsmom"}}, "invalid_input"),
 ])
 def test_post_refuses_what_is_not_allowed(api, body, error):

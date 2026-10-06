@@ -114,14 +114,20 @@ def open_rw(path: Path | None = None, *, settings: Settings | None = None, threa
         con.close()
 
 
+def connect_ro(path: Path | None = None, *, settings: Settings | None = None,
+               timeout_s: float = 2.0) -> duckdb.DuckDBPyConnection:
+    """A read-only connection the caller closes (``JobContext.warehouse``); prefer :func:`open_ro`."""
+    p = _resolve(path, settings)
+    if not p.exists():
+        raise WarehouseUnavailable(f"warehouse {p} does not exist yet (no ingest has run)")
+    return _connect(p, read_only=True, config=dict(RO_CONFIG), timeout_s=timeout_s)
+
+
 @contextmanager
 def open_ro(path: Path | None = None, *, settings: Settings | None = None,
             timeout_s: float = 2.0) -> Iterator[duckdb.DuckDBPyConnection]:
     """A short-lived read-only connection (API and readers). Close it promptly."""
-    p = _resolve(path, settings)
-    if not p.exists():
-        raise WarehouseUnavailable(f"warehouse {p} does not exist yet (no ingest has run)")
-    con = _connect(p, read_only=True, config=dict(RO_CONFIG), timeout_s=timeout_s)
+    con = connect_ro(path, settings=settings, timeout_s=timeout_s)
     try:
         yield con
     finally:

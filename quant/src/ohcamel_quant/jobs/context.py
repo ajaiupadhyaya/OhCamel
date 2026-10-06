@@ -41,16 +41,17 @@ class JobContext:
 
     @property
     def warehouse(self) -> Any:
-        """A read-only DuckDB connection to {data_dir}/warehouse.duckdb (contract II.5, Lane C)."""
-        if self._warehouse is None:
-            try:
-                import duckdb
-            except ImportError as e:
-                raise RuntimeError("the warehouse is not available in this build (duckdb is not installed; "
-                                   "Lane C adds it)") from e
-            from ..config import get_settings
+        """A read-only DuckDB connection to ``Settings.warehouse_path`` (contract II.5, Lane C).
 
-            self._warehouse = duckdb.connect(str(get_settings().data_dir / "warehouse.duckdb"), read_only=True)
+        Raises ``WarehouseUnavailable`` (a ``DataUnavailable``) when no warehouse is
+        configured, the file does not exist yet, or an ingest job holds the write
+        lock past the reader's timeout. Ingest handlers never use it: they write
+        through ``warehouse.db.open_rw``. Held until :meth:`close`, so a handler
+        that reads it blocks ingest for its duration."""
+        if self._warehouse is None:
+            from ..warehouse.db import connect_ro
+
+            self._warehouse = connect_ro(settings=self.market.settings)
         return self._warehouse
 
     def close(self) -> None:

@@ -13,6 +13,16 @@
 max_age:
   ops.selftest: 26h
   ingest.fred: 30h
+  # Lane C (warehouse/schedules.py MAX_AGE, copied verbatim): session kinds 78h
+  # so Friday's run is not stale by Monday's; weekly kinds 204h.
+  ingest.universes: 204h
+  ingest.bars_daily: 78h
+  ingest.bars_minute: 78h
+  ingest.fred_warehouse: 30h
+  ingest.factors: 204h
+  ingest.sec_facts: 204h
+  ingest.holdings_13f: 204h
+  ingest.option_snapshots: 78h
 
 schedules:
   - name: selftest-nightly
@@ -28,5 +38,85 @@ schedules:
     kind: ingest.fred
     params: {series: DGS10}
     priority: 2
+    mem_class: S
+    heavy: false
+
+  # Lane C's warehouse ingest (compute plan C2-C6; warehouse/schedules.py
+  # SCHEDULES, copied verbatim and pinned equal by tests/test_jobs_integration.py).
+  # The only writers of /data/warehouse.duckdb.
+  - name: warehouse-universes
+    cron: "0 5 * * 0"
+    kind: ingest.universes
+    params: {}
+    priority: 2
+    mem_class: S
+    heavy: false
+
+  - name: warehouse-bars-daily
+    cron: "30 18 * * 1-5"
+    kind: ingest.bars_daily
+    params: {}
+    priority: 2
+    mem_class: S
+    heavy: false
+
+  - name: warehouse-bars-minute
+    cron: "0 19 * * 1-5"
+    kind: ingest.bars_minute
+    params: {}
+    priority: 2
+    mem_class: S
+    heavy: false
+
+  - name: warehouse-fred
+    cron: "0 7 * * *"
+    kind: ingest.fred_warehouse
+    params: {}
+    priority: 2
+    mem_class: S
+    heavy: false
+
+  - name: warehouse-factors
+    cron: "0 6 * * 6"
+    kind: ingest.factors
+    params: {}
+    priority: 2
+    mem_class: S
+    heavy: false
+
+  - name: warehouse-sec-facts
+    cron: "0 2 * * 0"
+    kind: ingest.sec_facts
+    params: {}
+    priority: 2
+    mem_class: M
+    heavy: true
+
+  - name: warehouse-13f
+    cron: "0 3 * * 0"
+    kind: ingest.holdings_13f
+    params: {}
+    priority: 2
+    mem_class: S
+    heavy: false
+
+  - name: warehouse-option-snapshots
+    cron: "20 16 * * 1-5"
+    kind: ingest.option_snapshots
+    params: {underlyings: [XLB, XLC, XLE, XLF, XLI, XLK, XLP, XLRE, XLU, XLV, XLY, SPY, QQQ, IWM, TLT, GLD, TSLA, NVDA, AAPL, AMZN, PLTR, AMD, META, MSFT, GOOGL, AVGO, MSTR, NFLX, COIN, HOOD]}
+    priority: 2
+    mem_class: S
+    heavy: false
+
+  # Intraday (compute plan I.4 P9: "nightly and intraday"): the minute bars'
+  # incremental top-up every 30 minutes in session, 10:00-15:30 New York on
+  # weekdays (a holiday finds nothing new and keeps what is stored). Light: one
+  # month of one ticker in memory at most, so class S and heavy: false, which
+  # admission lets run inside the session at priority 1 with 1 thread.
+  - name: warehouse-bars-minute-intraday
+    cron: "*/30 10-15 * * 1-5"
+    kind: ingest.bars_minute
+    params: {}
+    priority: 1
     mem_class: S
     heavy: false

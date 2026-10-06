@@ -167,7 +167,8 @@ class MarketData:
     ) -> Dataset:
         """Daily simple (or log) returns from adj_close on common sessions.
 
-        With a warehouse configured (``OHCAMEL_QUANT_WAREHOUSE_PATH``), a request
+        With a warehouse configured (``OHCAMEL_QUANT_WAREHOUSE_PATH``) and its file
+        present (an ingest job has run; until then nothing changes), a request
         whose tickers are all present, fresh and stored back to ``start``
         (``None`` = provider max history) is served from it (provenance source
         ``warehouse:<vendor>``); otherwise the providers serve as before and a
@@ -176,7 +177,8 @@ class MarketData:
         import numpy as np
 
         note = None
-        if self._reads_warehouse and self.settings.warehouse_path is not None:
+        wh = self.settings.warehouse_path
+        if self._reads_warehouse and wh is not None and Path(wh).exists():
             from ..warehouse.readers import warehouse_returns
 
             hit, note = warehouse_returns(self.settings, tickers, start, end, log)

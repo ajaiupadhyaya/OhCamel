@@ -167,6 +167,11 @@ services:
       # SEC EDGAR's fair-access policy requires a User-Agent naming a contact.
       # Defaults to the ACME contact the owner already reads.
       OHCAMEL_QUANT_USER_AGENT: "${OHCAMEL_QUANT_USER_AGENT:-OhCamel-Quant/1.0 (research; contact: ${OHCAMEL_ACME_EMAIL:-unset})}"
+      # The DuckDB warehouse (compute plan II.5) on the quant_data volume,
+      # opened read-only per request; ohcamel-worker's ingest jobs write it.
+      # MarketData.returns reads it first once the file exists and a request's
+      # tickers are present and fresh; until the first ingest nothing changes.
+      OHCAMEL_QUANT_WAREHOUSE_PATH: /data/warehouse.duckdb
     # The Parquet cache and provenance sidecars; everything else is read-only.
     # A named volume so a rebuild keeps the cache and vendors are not
     # re-hammered on every deploy.
@@ -257,6 +262,8 @@ services:
       OHCAMEL_QUANT_HOSTD_URL: "${OHCAMEL_QUANT_HOSTD_URL-http://ohcamel-hostd:9100}"
       OHCAMEL_QUANT_RECORDER: "0"
       OHCAMEL_QUANT_USER_AGENT: "${OHCAMEL_QUANT_USER_AGENT:-OhCamel-Quant/1.0 (research; contact: ${OHCAMEL_ACME_EMAIL:-unset})}"
+      # The warehouse's only writer (Lane C ingest kinds in jobs/schedules.yaml).
+      OHCAMEL_QUANT_WAREHOUSE_PATH: /data/warehouse.duckdb
     volumes:
       - quant_data:/data
     read_only: true

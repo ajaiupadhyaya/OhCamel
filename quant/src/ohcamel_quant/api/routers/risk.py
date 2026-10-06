@@ -306,7 +306,7 @@ def backtest(body: BacktestIn, market: Market, request: Request, jobs_db: JobsDb
 
 
 def _backtest(body: BacktestIn, market: MarketData, max_refits: int = _MAX_REFITS,
-              over_cap: str = "coarsen") -> dict[str, Any]:
+              over_cap: str = "coarsen", *, use_kernels: bool = False) -> dict[str, Any]:
     _, rp, prov, notes = _load_portfolio(body, market)
     models = tuple(body.models) if body.models else bt.ALL_MODELS
     refit = body.refit_every
@@ -320,7 +320,7 @@ def _backtest(body: BacktestIn, market: MarketData, max_refits: int = _MAX_REFIT
                      "GARCH variances are still filtered daily between refits.")
     t0 = time.perf_counter()
     fc = bt.rolling_forecasts(rp.to_numpy(), body.alpha, body.window, refit, models,
-                              body.ewma_lambda, body.evt_threshold)
+                              body.ewma_lambda, body.evt_threshold, use_kernels=use_kernels)
     elapsed = time.perf_counter() - t0
     oos = rp.iloc[fc.start:]
     r = oos.to_numpy()

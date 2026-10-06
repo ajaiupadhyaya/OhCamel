@@ -20,9 +20,9 @@ def _ctx(params, threads=2, cancelled=lambda: False):
 
 
 def test_kinds_are_registered_light_and_private():
-    for name in ("ops.selftest", "ingest.fred"):
+    for name, public in (("ops.selftest", True), ("ingest.fred", False)):  # selftest: public since integration
         k = get_kind(name)
-        assert (k.mem_class, k.heavy, k.public) == ("S", False, False)
+        assert (k.mem_class, k.heavy, k.public) == ("S", False, public)
     assert get_kind("ingest.fred").retries == 2 and get_kind("ops.selftest").retries == 0
 
 
