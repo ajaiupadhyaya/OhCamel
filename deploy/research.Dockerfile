@@ -28,7 +28,7 @@
 # and because the build-time zone check and `uv sync --locked` both run against
 # it. Dependabot moves this line (.github/dependabot.yml); a bump that also
 # changes the Debian release is a bump to read rather than merge.
-FROM python:3.12.14-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9 AS research
+FROM python:3.14.7-slim@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d AS research
 
 # git: uv shells out to it for fdq's git+https dependency (pinned in
 # research/pyproject.toml; public, needs no credential -- see the pin's own
