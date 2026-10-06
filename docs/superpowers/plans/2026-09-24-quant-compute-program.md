@@ -263,7 +263,7 @@ def copula_t_paths(returns: np.ndarray, weights: np.ndarray, nu: float, horizon:
                    n_paths: int, seed: int, threads: int) -> np.ndarray             # (n_paths,)
 def var_es_from_pnl(pnl: np.ndarray, alpha: float) -> tuple[float, float]           # same tail-count rule as risk.core.tail_count
 def stationary_bootstrap_means(x: np.ndarray, mean_block: float, reps: int, seed: int, threads: int) -> np.ndarray
-def cscv_pbo(perf: np.ndarray, n_partitions: int, threads: int) -> dict             # {'pbo','logits','n_combinations'}
+def cscv_pbo(perf: np.ndarray, n_partitions: int, threads: int) -> dict             # {'pbo','logits','n_combinations','selected','is_sharpe','oos_sharpe'}
 def garch_nll(params: np.ndarray, r: np.ndarray, kind: str) -> float                # kind in {'garch','gjr','egarch'}, Student-t
 def garch_fit(r: np.ndarray, kind: str, x0: np.ndarray | None) -> GarchFitResult
 def backtest_weights(prices: np.ndarray, target_w: np.ndarray, decision_idx: np.ndarray,
@@ -273,6 +273,7 @@ def realized_vol_minute(ts_ns: np.ndarray, px: np.ndarray, session_bounds: np.nd
 ```
 
 - **Determinism:** the same `(seed, threads)` gives bit-identical output. Across thread counts, results are equal in distribution, and the tests check moments to a stated tolerance.
+- **Amended 2026-10-06 (Lane A, A4):** `cscv_pbo` also returns `selected` (the in-sample winner n* per combination), `is_sharpe` and `oos_sharpe` (its per-period Sharpe in and out of sample). `backtest/validation.cscv_pbo` needs them for the performance-degradation regression and the selection counts, which it has always published; without them the kernel would cover only the cheap half of the computation. The three original keys are unchanged.
 - **RNG:** Rust uses `rand_chacha::ChaCha20Rng` with `set_stream(thread_index)`. The reference uses `np.random.Generator(np.random.PCG64(seed))`. So parity for random kernels is statistical (II.4 tests), and parity for deterministic kernels is to 1e-10 relative.
 
 ## II.5 Warehouse (`/data/warehouse.duckdb`, Lane C owns)
