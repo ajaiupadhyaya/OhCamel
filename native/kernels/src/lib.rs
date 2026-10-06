@@ -13,6 +13,7 @@
     clippy::type_complexity
 )]
 
+pub mod bootstrap;
 pub mod copula;
 pub mod fhs;
 pub mod par;

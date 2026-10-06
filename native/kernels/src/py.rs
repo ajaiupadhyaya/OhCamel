@@ -119,6 +119,24 @@ fn kendall_corr_py<'py>(
     Ok(out.into_pyarray_bound(py))
 }
 
+#[pyfunction]
+fn stationary_bootstrap_means<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray2<'py, f64>,
+    mean_block: f64,
+    reps: usize,
+    seed: u64,
+    threads: usize,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let (v, n, k) = s2(&x, "x")?;
+    let out = py
+        .allow_threads(|| {
+            crate::bootstrap::stationary_bootstrap_means(v, n, k, mean_block, reps, seed, threads)
+        })
+        .map_err(err)?;
+    Ok(out.into_pyarray_bound(py))
+}
+
 #[pymodule]
 fn ohcamel_kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("API_VERSION", crate::API_VERSION)?;
@@ -128,5 +146,6 @@ fn ohcamel_kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fhs_paths, m)?)?;
     m.add_function(wrap_pyfunction!(copula_t_paths, m)?)?;
     m.add_function(wrap_pyfunction!(kendall_corr_py, m)?)?;
+    m.add_function(wrap_pyfunction!(stationary_bootstrap_means, m)?)?;
     Ok(())
 }
