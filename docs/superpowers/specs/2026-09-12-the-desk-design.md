@@ -519,3 +519,28 @@ change deliberately where §3.8 says.
    A3's deliverable in every part, so W2 wrote no page and no nav link for
    it; A3 adds both, with Figure 1's signals band. Risk's factor-model and
    liquidity sections likewise arrive with A4, which computes them.
+9. **Backups are host copies, outside the engine** (finish plan ruling 11).
+   `ohcamel journal-backup`, run in a one-shot container of the engine image
+   by a host systemd timer at 06:30 UTC and before every live deploy, copies
+   the journal with SQLite's online backup API to `/var/backups/ohcamel`,
+   reopens and `integrity_check`s the copy, and rotates (14 dailies, 8
+   Sundays, 5 pre-deploys). A backup is a copy of the journal, written to the
+   host, and the engine neither writes nor reads it, so invariant 13 holds;
+   staleness is `deploy/watch.sh`'s business. The off-box copy is the owner's
+   free laptop pull; paid backups are a spending decision.
+10. **`/api/health` stays liveness-only, and the live smoke suite never POSTs
+   `/api/desk/kill`** (ruling 13). Readiness is read in-container from
+   `/api/desk` and `/api/ops`. §3.15 asks for all four mutating routes to
+   refuse a headerless request on the live host; the live smoke suite checks
+   three of them (`orders`, `cancel`, `kill/reset`) for a headerless 403 and
+   deliberately never POSTs `/api/desk/kill`, because a regression in that
+   route's guard would halt the live desk. Its refusal is covered by the
+   hermetic desk-route tests (`test/test_desk_routes.ml`) instead, and
+   `deploy/smoke.sh` says so beside the loop.
+11. **The market clock is on the wire before anything reads it** (ruling 20).
+   The desk caches its newest `Venue.Session_clock` reading, refreshed on the
+   existing clock timer, and publishes it on `/api/desk` and in `/api/ops`'
+   desk block with its read stamp and a `source` field. `deploy/watch.sh`
+   reads it over plain HTTP in-container and skips its two market-dependent
+   checks when the source is `stale` or `unknown` or the read stamp is in
+   the host's future; no host script guesses the market's state.

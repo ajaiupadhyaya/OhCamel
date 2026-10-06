@@ -1144,10 +1144,14 @@ and all three are written up in
 [the spec](superpowers/specs/2026-08-31-server-side-deployment-design.md)
 next to the failure the design had actually prepared for, which never happened.
 
-Redeploying is one command on the droplet, `deploy/deploy.sh`: pull, rebuild —
-about a minute, since the dependency layer is cached — restart, verify. Live-mode
-credentials live in a root-owned file outside the repository, readable by the
-deploy user alone, and reach the container as environment, never as a layer.
+Redeploying is one command on the droplet, `deploy/deploy.sh --sha <sha>`: it
+pulls the images CI built and published for that commit, backs up the journal,
+checks the book with the new engine, restarts, and verifies with the smoke
+suite; the droplet builds nothing unless told to with `--build`. Live-mode
+credentials live in `/etc/ohcamel/live.env`, outside the repository, owned
+root:ohcamel at 0640 so the deploy user's compose can read them, and reach the
+container as environment, never as a layer. The runbooks are in
+[`status.md`](status.md#operating-it).
 
 ## What's verified
 

@@ -181,10 +181,15 @@ Online mode needs outbound internet. Optional environment variables:
 Offline mode (`OHCAMEL_QUANT_OFFLINE=1`) serves only the committed real
 fixtures. Pages that need other sources say so.
 
-**Deploying** (on the droplet): `deploy/deploy.sh --public-only` builds and
-starts Caddy and the Quant service, smoke-tests them, and is safe during
-market hours. `deploy/deploy.sh --live` also rebuilds the OCaml live engine
-and the research service. See [`deploy/`](deploy/).
+**Deploying** (on the droplet): `deploy/deploy.sh --sha <sha> --public-only`
+pulls the images CI published for that commit and restarts Caddy, the Quant
+service and the host telemetry daemon, smoke-tests them, and is safe during
+market hours. `deploy/deploy.sh --sha <sha> --live` also pulls and restarts
+the OCaml live engine and the research service, after a backup of the
+journal. Rollback is the same command with the previous good sha from
+`~/deploys.log`. The runbooks -- deploy, rollback, backup, restore, watch,
+rotation, disaster recovery -- and the environment-variable table are in
+[`docs/status.md`](docs/status.md#operating-it).
 
 **CI** runs, on every push:
 

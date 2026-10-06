@@ -226,10 +226,18 @@ may send one); on the public demo each answers 405.
   FRED, behind a password.
 - **Infrastructure:** one DigitalOcean droplet (2 vCPU, 4 GB, $24/month), Docker
   Compose, and Caddy for TLS. Last deployed 2026-09-17 from `e0f5a71`.
-- **Deploy check:** a smoke suite runs after every deploy, and a failure fails
-  the deploy. The checks that matter are that the recompute counter *advances*
-  between two reads and that the stream delivers frames spread over 20 seconds.
-  A frozen graph would still serve valid JSON.
+- **Deploy check:** `deploy/deploy.sh` runs the smoke suite after every
+  deploy, with `--expect-sha` so the containers answering must be the commit
+  just deployed, and a failure fails the deploy. The live host is checked from
+  inside its own container, with no password: the desk's status, the paper
+  account, and three of the four mutating routes refusing a request without
+  the page's header. It never POSTs `/api/desk/kill`, because a regression
+  there would halt the live desk; that route's refusal is covered by the
+  hermetic desk-route tests. The engine checks that matter are that the
+  recompute counter *advances* between two reads and that the stream delivers
+  frames spread over 20 seconds. A frozen graph would still serve valid JSON.
+  Between deploys, an on-host watch every 5 minutes and an outside uptime
+  check every 15 minutes take over.
 
 ## How it's checked
 
