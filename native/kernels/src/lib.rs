@@ -15,6 +15,7 @@
 
 pub mod bootstrap;
 pub mod copula;
+pub mod cscv;
 pub mod fhs;
 pub mod par;
 pub mod special;

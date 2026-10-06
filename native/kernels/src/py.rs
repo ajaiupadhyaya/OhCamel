@@ -137,6 +137,36 @@ fn stationary_bootstrap_means<'py>(
     Ok(out.into_pyarray_bound(py))
 }
 
+#[pyfunction]
+fn cscv_pbo<'py>(
+    py: Python<'py>,
+    perf: PyReadonlyArray2<'py, f64>,
+    n_partitions: usize,
+    threads: usize,
+) -> PyResult<(
+    f64,
+    Bound<'py, PyArray1<f64>>,
+    usize,
+    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<f64>>,
+)> {
+    let (m, t, nt) = s2(&perf, "perf")?;
+    let r = py
+        .allow_threads(|| crate::cscv::cscv_pbo(m, t, nt, n_partitions, threads))
+        .map_err(err)?;
+    let n = r.logits.len();
+    let sel: Vec<i64> = r.selected.iter().map(|&v| v as i64).collect();
+    Ok((
+        r.pbo,
+        r.logits.into_pyarray_bound(py),
+        n,
+        sel.into_pyarray_bound(py),
+        r.is_sharpe.into_pyarray_bound(py),
+        r.oos_sharpe.into_pyarray_bound(py),
+    ))
+}
+
 #[pymodule]
 fn ohcamel_kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("API_VERSION", crate::API_VERSION)?;
@@ -147,5 +177,6 @@ fn ohcamel_kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(copula_t_paths, m)?)?;
     m.add_function(wrap_pyfunction!(kendall_corr_py, m)?)?;
     m.add_function(wrap_pyfunction!(stationary_bootstrap_means, m)?)?;
+    m.add_function(wrap_pyfunction!(cscv_pbo, m)?)?;
     Ok(())
 }
