@@ -1389,6 +1389,10 @@
   outline: 2px solid var(--ink);
   outline-offset: 1px;
 }
+.oc-chart-fixed {
+  height: var(--chart-h);
+  min-height: var(--chart-h);
+}
 .oc-uplot {
   width: 100%;
   min-width: 0;

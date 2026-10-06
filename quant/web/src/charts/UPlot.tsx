@@ -23,12 +23,12 @@ import "uplot/dist/uPlot.min.css";
 import { alignSeries, endLabels, formatTick, formatValue, niceTicks, type ValueFormat } from "./scales";
 import { labelColor, luminance, rampColor, resolveColor, slotColor, useChartTheme, type ChartTheme } from "./theme";
 
-const STRIP = 20; // crosshair readout strip
+export const STRIP = 20; // crosshair readout strip
 const RANGE_ROW = 28; // 1M 3M 1Y 5Y MAX
-const MONO_CH = 6.7; // IBM Plex Mono advance at 11px, for layout before the canvas exists
+export const MONO_CH = 6.7; // IBM Plex Mono advance at 11px, for layout before the canvas exists
 const DAY = 86400;
 
-const pxr = () => (typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1);
+export const pxr = () => (typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1);
 
 // =================================================================== wrapper
 
@@ -76,14 +76,14 @@ export function UPlot({ opts, data, height, className }: { opts: OptsBuilder; da
 
 // =================================================================== shared pieces
 
-interface ReadoutItem {
+export interface ReadoutItem {
   k: string;
   v: string;
   signal?: boolean;
 }
 
 /** Write the readout strip: KEY value · KEY value. Text nodes only (series names are data). */
-function writeReadout(node: HTMLElement | null, items: ReadoutItem[]) {
+export function writeReadout(node: HTMLElement | null, items: ReadoutItem[]) {
   if (!node) return;
   node.replaceChildren();
   items.forEach((it, i) => {
@@ -98,7 +98,7 @@ function writeReadout(node: HTMLElement | null, items: ReadoutItem[]) {
   });
 }
 
-function Readout({ refEl }: { refEl: RefObject<HTMLDivElement> }) {
+export function Readout({ refEl }: { refEl: RefObject<HTMLDivElement> }) {
   return <div ref={refEl} className="oc-chart-readout" aria-live="off" />;
 }
 
@@ -123,9 +123,9 @@ function yHints(layout: unknown): { fixed?: [number, number]; toZero: boolean } 
   return { fixed, toZero: y?.rangemode === "tozero" };
 }
 
-const DASH: Record<string, number[] | undefined> = { solid: undefined, dot: [1.5, 3], dash: [5, 4], dashdot: [5, 3, 1.5, 3] };
+export const DASH: Record<string, number[] | undefined> = { solid: undefined, dot: [1.5, 3], dash: [5, 4], dashdot: [5, 3, 1.5, 3] };
 
-function axisFont(t: ChartTheme) {
+export function axisFont(t: ChartTheme) {
   return `11px ${t.mono}`;
 }
 
@@ -150,7 +150,7 @@ function timeTicks(splits: number[], incr: number): string[] {
 }
 
 /** Y range snapped to nice tick ends; includes the baseline (and zero when asked). */
-function niceRange(dmin: number | null, dmax: number | null, count: number, extra: number[], fixed?: [number, number]): [number, number] {
+export function niceRange(dmin: number | null, dmax: number | null, count: number, extra: number[], fixed?: [number, number]): [number, number] {
   if (fixed) return fixed;
   const vals = [dmin, dmax, ...extra].filter((v): v is number => typeof v === "number" && Number.isFinite(v));
   if (!vals.length) return [0, 1];
@@ -163,7 +163,7 @@ function ticksWithin(min: number, max: number, count: number): number[] {
   return niceTicks(min, max, count).filter((v) => v >= min - eps && v <= max + eps);
 }
 
-function yAxis(t: ChartTheme, fmt: ValueFormat, count: number, log: boolean, title?: string): uPlot.Axis {
+export function yAxis(t: ChartTheme, fmt: ValueFormat, count: number, log: boolean, title?: string): uPlot.Axis {
   return {
     side: 3,
     stroke: t.ink2,
@@ -182,7 +182,7 @@ function yAxis(t: ChartTheme, fmt: ValueFormat, count: number, log: boolean, tit
 }
 
 /** The x baseline: a solid 1px ink rule along the bottom of the plot, over the gridlines. */
-function xRule(u: uPlot, t: ChartTheme) {
+export function xRule(u: uPlot, t: ChartTheme) {
   const { ctx, bbox } = u;
   const y = Math.round(bbox.top + bbox.height) + 0.5;
   ctx.save();

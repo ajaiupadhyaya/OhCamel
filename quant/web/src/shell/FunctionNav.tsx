@@ -45,7 +45,7 @@ export function FunctionNav({ onCommand, commandOpen = false }: { onCommand: () 
           onMouseDown={(e) => commandOpen && e.stopPropagation()}
           onClick={onCommand}
           aria-expanded={commandOpen}
-          aria-label="Command line (/ or Ctrl-K)"
+          aria-label="CMD: command line (/ or Ctrl-K)"
           title="Command line — / or ⌘K"
         >
           <span className="oc-ftool-key" aria-hidden>

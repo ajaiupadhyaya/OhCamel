@@ -144,7 +144,7 @@ export function GraphDiagram() {
             const clickable = n.kind === "input";
             return (
               <g key={n.id} transform={`translate(${p.x},${p.y})`} className={`en-node en-node-${n.kind} ${on ? "lit" : ""} ${dirty.has(n.id) ? "dirty" : ""} ${clickable ? "clickable" : ""}`} onClick={clickable ? () => tick(n.id) : undefined}>
-                <rect width={NW} height={NH} rx={8} />
+                <rect width={NW} height={NH} />
                 <text x={10} y={15} className="en-node-label">
                   {n.label}
                 </text>

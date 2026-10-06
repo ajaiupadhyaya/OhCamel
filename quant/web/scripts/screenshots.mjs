@@ -2,10 +2,12 @@
 // Usage: node scripts/screenshots.mjs [baseUrl] [outDir] [paths...]
 //   defaults: http://localhost:8090, ../../docs/media/quant/paper, every route.
 // Writes <outDir>/<page>/<page>-<width>-<theme>.png at 1440 and 380 in paper and carbon,
-// and fails if any page scrolls sideways at 380 or throws.
+// and fails if any page scrolls sideways at 380, throws, or has a serious or critical axe
+// violation (axe-core, every width and theme).
 // Chromium: CHROMIUM_PATH, else PLAYWRIGHT_BROWSERS_PATH (default /opt/pw-browsers), else Playwright's own.
 import { chromium } from "playwright";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 
 const ROUTES = ["/", "/markets", "/risk", "/portfolio", "/optimize", "/research", "/options", "/macro", "/company/AAPL", "/ticker/SPY", "/deck", "/system", "/compute", "/engine", "/methodology", "/ledger"];
@@ -25,6 +27,16 @@ function findChromium() {
     }
   }
   return undefined;
+}
+
+const AXE = createRequire(import.meta.url).resolve("axe-core/axe.min.js");
+
+async function axeSerious(page) {
+  await page.addScriptTag({ path: AXE });
+  return page.evaluate(async () => {
+    const r = await window.axe.run(document, { resultTypes: ["violations"] });
+    return r.violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => `${v.id} (${v.nodes.length}): ${v.nodes.slice(0, 3).map((n) => n.target.join(" ")).join(" | ")}`);
+  });
 }
 
 const slugOf = (p) => (p === "/" ? "front" : p.replace(/^\//, "").replace(/[/?=&]+/g, "-").toLowerCase());
@@ -48,6 +60,7 @@ for (const theme of ["paper", "carbon"]) {
         const [sw, iw] = await page.evaluate(() => [document.documentElement.scrollWidth, window.innerWidth]);
         if (sw > iw) failures.push(`overflow ${theme} ${vp.width} ${p}: scrollWidth ${sw} > ${iw}`);
       }
+      for (const v of await axeSerious(page)) failures.push(`axe ${theme} ${vp.width} ${p}: ${v}`);
       const slug = slugOf(p);
       mkdirSync(join(out, slug), { recursive: true });
       const file = join(out, slug, `${slug}-${vp.width}-${theme}.png`);
