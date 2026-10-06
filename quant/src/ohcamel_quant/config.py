@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     # Optional URL of ohcamel-hostd, the host telemetry daemon (contract II.6
     # of the compute plan), proxied at /api/ops/host.
     hostd_url: str | None = None
+    # The DuckDB warehouse (compute plan II.5), written only by the worker's
+    # ingest jobs and opened read-only by the API. Unset means no warehouse:
+    # MarketData serves from its providers exactly as before.
+    warehouse_path: Path | None = None
     # The Flight Deck's recorder: one reading of the reference book per interval
     # while the US session is open, kept in {data_dir}/deck/recorder.sqlite.
     # OHCAMEL_QUANT_RECORDER=0 turns it off; it never runs offline.
@@ -58,7 +62,8 @@ class Settings(BaseSettings):
     fixtures_dir: Path = Field(default=REPO_ROOT / "fixtures")
 
     @field_validator(
-        "alpaca_key_id", "alpaca_secret_key", "fred_api_key", "engine_url", "hostd_url", mode="before"
+        "alpaca_key_id", "alpaca_secret_key", "fred_api_key", "engine_url", "hostd_url", "warehouse_path",
+        mode="before",
     )
     @classmethod
     def _blank_is_unset(cls, v: object) -> object:
