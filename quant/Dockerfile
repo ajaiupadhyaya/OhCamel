@@ -196,7 +196,7 @@ ENV PATH=/app/quant/.venv/bin:$PATH \
 # leaves nothing behind.
 RUN python -c "import ohcamel_quant.api.app as a, ohcamel_quant.config as c, ohcamel_quant.kernels as k; \
 assert a.WEB_DIST.is_dir(), a.WEB_DIST; assert (c.get_settings().fixtures_dir / 'history').is_dir(); \
-assert k.ENGINE == 'rust', k.ENGINE; \
+assert k.ENGINE == 'rust', k.ENGINE; assert all(k.engine_of(n) == 'rust' for n in k.API), [n for n in k.API if k.engine_of(n) != 'rust']; \
 print('routes:', len(a.app.routes), 'kernels:', k.ENGINE)"
 
 USER quant

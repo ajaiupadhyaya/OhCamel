@@ -101,3 +101,14 @@ def test_endpoint_invalid_file_is_503(tmp_path):
 
 def test_endpoint_reads_the_committed_table(client):
     assert client.get("/api/ops/kernels").status_code == 200
+
+
+def test_bench_runner_times_every_kernel(monkeypatch):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("bench_kernels", REPO_ROOT / "tools" / "perf" / "bench_kernels.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    from ohcamel_quant.kernels import API
+
+    assert set(mod.cases()) == set(API)

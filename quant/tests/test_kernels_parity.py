@@ -220,3 +220,42 @@ def test_backtest_parity_every_strategy(both, market, key, cfg):
     for name in ("weights", "trades", "contributions"):
         np.testing.assert_allclose(getattr(r, name).to_numpy(), getattr(p, name).to_numpy(), rtol=1e-10, atol=1e-14)
     assert r.notes == p.notes
+
+
+# ---------------------------------------------------------------- A7: options
+from test_options_chain_strategy import make_chain  # noqa: E402
+
+from ohcamel_quant.options.chain import analyze_chain  # noqa: E402
+
+
+def _smiles():
+    """(k, w) per expiry: total variance iv^2 T, read as options/surface.build_surface reads the chain."""
+    ca = analyze_chain(make_chain())
+    for sid, s in ca.slices.iterrows():
+        sm = ca.slice_quotes(str(sid))
+        sm = sm[sm["use_smile"]]
+        yield sm["k"].to_numpy(), sm["iv"].to_numpy() ** 2 * float(s["T"])
+
+
+@pytest.mark.parametrize("noisy", [False, True], ids=["exact", "perturbed"])
+def test_svi_parity(both, noisy):
+    rng = np.random.Generator(np.random.PCG64(17))
+    for k, w in _smiles():
+        if noisy:
+            w = w * (1.0 + 0.004 * rng.standard_normal(w.size))
+        wt = 1.0 + 0.5 * np.cos(np.arange(w.size))              # non-uniform weights, mean ~1
+        r, p = on("rust", kernels.svi_fit, k, w, wt), on("python", kernels.svi_fit, k, w, wt)
+        for f in ("a", "b", "rho", "m", "sigma"):
+            assert getattr(r, f) == pytest.approx(getattr(p, f), abs=1e-5), f
+        assert r.sse == pytest.approx(p.sse, rel=1e-8, abs=1e-14)
+        assert r.constrained_a == p.constrained_a
+
+
+def test_rv_parity(both):
+    # 30 sessions x 390 minutes of a deterministic +-1bp zigzag with a drift; RV exact both ways
+    day, minute = 86_400 * 10**9, 60 * 10**9
+    ts = (np.arange(30)[:, None] * day + 34_200 * 10**9 + np.arange(390)[None, :] * minute).ravel().astype(np.int64)
+    px = 100.0 * np.exp(np.cumsum(np.tile([1e-4, -0.8e-4], 30 * 195)))
+    bounds = np.column_stack([np.arange(30) * day + 34_200 * 10**9, np.arange(30) * day + 57_600 * 10**9])
+    np.testing.assert_allclose(on("rust", kernels.realized_vol_minute, ts, px, bounds),
+                               on("python", kernels.realized_vol_minute, ts, px, bounds), rtol=1e-12)

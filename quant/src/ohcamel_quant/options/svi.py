@@ -49,6 +49,8 @@ from typing import Any
 import numpy as np
 from scipy.optimize import minimize
 
+from .. import kernels
+
 SLOPE_CAP = 4.0
 
 
@@ -125,9 +127,12 @@ class SVIFit:
     k_max: float
     constrained_a: bool = False
     butterfly: dict[str, Any] = field(default_factory=dict)
+    engine: str | None = None    # kernels engine when fit with use_kernels=True (jobs); else absent
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
+        if d.get("engine") is None:
+            d.pop("engine")
         d["params"] = self.params.to_dict()
         d["wing_slopes"] = list(self.params.wing_slopes())
         d["min_variance"] = self.params.min_variance()
@@ -222,26 +227,11 @@ def _to_params(x: np.ndarray, m: float, s: float) -> SVIParams:
     return SVIParams(a=a, b=b, rho=rho, m=float(m), sigma=float(s))
 
 
-def fit_svi(
-    k: Any, iv: Any, T: float, weights: Any | None = None, butterfly_grid: Any | None = None,
-) -> SVIFit:
-    """Calibrate raw SVI to implied vols ``iv`` at log-moneyness ``k`` (one expiry).
-
-    ``weights`` (optional, e.g. inverse bid-ask spread) multiply the squared
-    total-variance errors; they are normalized to mean 1. Needs >= 5 points.
-    """
-    k = np.asarray(k, dtype=float)
-    iv = np.asarray(iv, dtype=float)
-    ok = np.isfinite(k) & np.isfinite(iv) & (iv > 0)
-    wt = np.ones_like(k) if weights is None else np.asarray(weights, dtype=float)
-    ok &= np.isfinite(wt) & (wt > 0)
-    k, iv, wt = k[ok], iv[ok], wt[ok]
-    if k.size < 5:
-        raise ValueError(f"SVI needs at least 5 quotes, got {k.size}")
-    if T <= 0:
-        raise ValueError("T must be positive")
-    wt = wt / wt.mean()
-    w = iv * iv * T
+def calibrate(k: np.ndarray, w: np.ndarray, wt: np.ndarray) -> tuple[SVIParams, float, bool]:
+    """Raw SVI on total variance ``w`` at log-moneyness ``k`` with weights ``wt``:
+    the grid + Nelder-Mead outer search over (m, sigma) around the exact inner QP
+    (module docstring). Returns (params, weighted SSE, whether a >= 0 was imposed).
+    The ``svi_fit`` kernel's reference."""
     kmin, kmax = float(k.min()), float(k.max())
     span = max(kmax - kmin, 1e-3)
     m_lo, m_hi = kmin - span, kmax + span
@@ -279,14 +269,49 @@ def fit_svi(
     m = float(np.clip(best.x[0], m_lo, m_hi))
     s = float(np.clip(np.exp(best.x[1]), s_lo, s_hi))
     x, sse, constrained = _inner(k, w, wt, m, s)
-    p = _to_params(x, m, s)
+    return _to_params(x, m, s), sse, constrained
+
+
+def fit_svi(
+    k: Any, iv: Any, T: float, weights: Any | None = None, butterfly_grid: Any | None = None, *,
+    use_kernels: bool = False,
+) -> SVIFit:
+    """Calibrate raw SVI to implied vols ``iv`` at log-moneyness ``k`` (one expiry).
+
+    ``weights`` (optional, e.g. inverse bid-ask spread) multiply the squared
+    total-variance errors; they are normalized to mean 1. Needs >= 5 points.
+    ``use_kernels=True`` (jobs: the nightly surface history) calibrates on the
+    ``svi_fit`` kernel and records ``engine``; diagnostics and the butterfly check
+    are computed here either way.
+    """
+    k = np.asarray(k, dtype=float)
+    iv = np.asarray(iv, dtype=float)
+    ok = np.isfinite(k) & np.isfinite(iv) & (iv > 0)
+    wt = np.ones_like(k) if weights is None else np.asarray(weights, dtype=float)
+    ok &= np.isfinite(wt) & (wt > 0)
+    k, iv, wt = k[ok], iv[ok], wt[ok]
+    if k.size < 5:
+        raise ValueError(f"SVI needs at least 5 quotes, got {k.size}")
+    if T <= 0:
+        raise ValueError("T must be positive")
+    wt = wt / wt.mean()
+    w = iv * iv * T
+    engine = None
+    if use_kernels:
+        r = kernels.svi_fit(k, w, wt)
+        p, sse, constrained = SVIParams(a=r.a, b=r.b, rho=r.rho, m=r.m, sigma=r.sigma), r.sse, r.constrained_a
+        engine = kernels.engine_of("svi_fit")
+    else:
+        p, sse, constrained = calibrate(k, w, wt)
+    kmin, kmax = float(k.min()), float(k.max())
+    span = max(kmax - kmin, 1e-3)
     fit_iv = p.implied_vol(k, T)
     err = (fit_iv - iv) * 100.0
     grid = np.linspace(kmin - 0.5 * span, kmax + 0.5 * span, 401) if butterfly_grid is None else butterfly_grid
     return SVIFit(
         params=p, T=float(T), n=int(k.size), rmse_w=float(np.sqrt(sse / k.size)),
         rmse_vol_pts=float(np.sqrt(np.nanmean(err * err))), max_abs_err_vol_pts=float(np.nanmax(np.abs(err))),
-        k_min=kmin, k_max=kmax, constrained_a=constrained, butterfly=butterfly_check(p, grid),
+        k_min=kmin, k_max=kmax, constrained_a=constrained, butterfly=butterfly_check(p, grid), engine=engine,
     )
 
 

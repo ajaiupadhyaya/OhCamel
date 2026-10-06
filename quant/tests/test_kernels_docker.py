@@ -57,3 +57,7 @@ def test_ci_native_job_builds_the_wheel_and_runs_parity_both_ways():
     assert "OHCAMEL_QUANT_KERNELS: python" in job
     assert "tests/test_kernels_*.py" in job
     assert "--features python" in job
+
+
+def test_image_asserts_every_kernel_runs_on_rust():
+    assert "all(k.engine_of(n) == 'rust' for n in k.API)" in DOCKERFILE

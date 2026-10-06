@@ -125,3 +125,19 @@ def test_seed_validation(bad):
 def test_alpha_validation(bad):
     with pytest.raises(ValueError, match="alpha"):
         kernels.tail_count(100, bad)
+
+
+def test_every_api_function_exists_on_both_sides():
+    from ohcamel_quant.kernels import reference
+
+    for name in kernels.API:
+        assert callable(getattr(kernels, name)) and callable(getattr(reference, name)), name
+    if kernels._RUST is not None:
+        missing = [n for n in kernels.API if not hasattr(kernels._RUST, n)]
+        assert not missing, f"ohcamel_kernels lacks {missing}"
+
+
+def test_rust_env_means_every_kernel_on_rust():
+    if os.environ.get(kernels.ENV) != "rust":
+        pytest.skip("only meaningful under OHCAMEL_QUANT_KERNELS=rust")
+    assert all(kernels.engine_of(n) == "rust" for n in kernels.API)

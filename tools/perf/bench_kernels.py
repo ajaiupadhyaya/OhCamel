@@ -72,6 +72,17 @@ def cases() -> dict[str, Case]:
     tw9 = np.full((len(ex9), 9), 1 / 9)
     out["backtest_weights"] = (lambda t: kernels.backtest_weights(px9.to_numpy(), tw9, ex9, 5.0, 0.0, np.zeros(len(px9))), False)
 
+    from ohcamel_quant.options.svi import SVIParams
+
+    k41 = np.linspace(-0.4, 0.3, 41)
+    w41 = SVIParams(a=0.004, b=0.04, rho=-0.6, m=0.02, sigma=0.12).w(k41)
+    out["svi_fit"] = (lambda t: kernels.svi_fit(k41, w41, np.ones(41)), False)
+    day, minute = 86_400 * 10**9, 60 * 10**9
+    tsm = (np.arange(252)[:, None] * day + np.arange(390)[None, :] * minute).ravel().astype(np.int64)
+    pxm = 100.0 * np.exp(np.cumsum(np.tile([1e-4, -1e-4], 252 * 195)))
+    sbm = np.column_stack([np.arange(252) * day, np.arange(252) * day + 390 * minute])
+    out["realized_vol_minute"] = (lambda t: kernels.realized_vol_minute(tsm, pxm, sbm), False)
+
     return out
 
 

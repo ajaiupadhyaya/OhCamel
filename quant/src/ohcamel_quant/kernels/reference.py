@@ -348,3 +348,26 @@ def backtest_weights(prices: np.ndarray, target_w: np.ndarray, decision_idx: np.
             w = tw.copy()
         W[s] = w
     return BacktestPath(gross, net, W, turnover, trades, costs, borrow, ruined)
+
+
+# ------------------------------------------------------------------ A7: options
+def svi_fit(k: np.ndarray, w: np.ndarray, weights: np.ndarray):
+    """options.svi.calibrate, unchanged (the legacy SVI calibration)."""
+    from ..options.svi import calibrate
+    from .types import SviFitResult
+
+    p, sse, constrained = calibrate(k, w, weights)
+    return SviFitResult(float(p.a), float(p.b), float(p.rho), float(p.m), float(p.sigma), float(sse), bool(constrained))
+
+
+def realized_vol_minute(ts_ns: np.ndarray, px: np.ndarray, session_bounds: np.ndarray) -> np.ndarray:
+    """Daily realized variance: sum of squared consecutive log returns inside each [open, close)."""
+    lo = np.searchsorted(ts_ns, session_bounds[:, 0], side="left")
+    hi = np.searchsorted(ts_ns, session_bounds[:, 1], side="left")
+    lp = np.log(px)
+    out = np.full(len(session_bounds), np.nan)
+    for d, (a, b) in enumerate(zip(lo, hi, strict=True)):
+        if b - a >= 2:
+            r = np.diff(lp[a:b])
+            out[d] = float(np.sum(r * r))
+    return out

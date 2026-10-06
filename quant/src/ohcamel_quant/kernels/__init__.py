@@ -342,9 +342,42 @@ def backtest_weights(prices: Any, target_w: Any, decision_idx: Any, cost_bps: fl
     return reference.backtest_weights(px, tw, idx, cost, borrow, rfa)
 
 
+def svi_fit(k: Any, w: Any, weights: Any) -> SviFitResult:
+    """Raw SVI calibration to total variance ``w`` at log-moneyness ``k`` with
+    weights (options/svi.calibrate's algorithm). >= 5 points; w and weights > 0."""
+    ka, wa, wt = _arr(k, "k", 1), _arr(w, "w", 1), _arr(weights, "weights", 1)
+    if not ka.size == wa.size == wt.size or ka.size < 5:
+        raise ValueError(f"SVI needs at least 5 quotes of equal-length k, w and weights; got {ka.size}")
+    if not (np.all(np.isfinite(ka)) and np.all(np.isfinite(wa)) and np.all(np.isfinite(wt))
+            and np.all(wa > 0) and np.all(wt > 0)):
+        raise ValueError("k, w and weights must be finite, with w and weights positive")
+    if engine_of("svi_fit") == "rust":
+        a, b, rho, m, s, sse, con = _RUST.svi_fit(ka, wa, wt)
+        return SviFitResult(float(a), float(b), float(rho), float(m), float(s), float(sse), bool(con))
+    return reference.svi_fit(ka, wa, wt)
+
+
+def realized_vol_minute(ts_ns: Any, px: Any, session_bounds: Any) -> np.ndarray:
+    """Daily realized VARIANCE (sum of squared intraday log returns; Andersen &
+    Bollerslev 1998) per session [open, close) in nanosecond epoch time; NaN for a
+    session with fewer than two prices. ``np.sqrt`` it for realized volatility."""
+    ts = np.ascontiguousarray(np.asarray(ts_ns, dtype=np.int64).reshape(-1))
+    p = _arr(px, "px", 1)
+    sb = np.ascontiguousarray(np.asarray(session_bounds, dtype=np.int64).reshape(-1, 2))
+    if ts.size != p.size:
+        raise ValueError("ts_ns and px must have one length")
+    if np.any(np.diff(ts) < 0):
+        raise ValueError("ts_ns must be non-decreasing")
+    if not np.all(np.isfinite(p)) or np.any(p <= 0):
+        raise ValueError("px must be finite and positive")
+    if np.any(sb[:, 0] >= sb[:, 1]) or np.any(sb[1:, 0] < sb[:-1, 1]):
+        raise ValueError("sessions must be non-empty, ordered and non-overlapping [open, close)")
+    return np.asarray(_impl("realized_vol_minute")(ts, p, sb))
+
+
 __all__ = [
     "API", "API_VERSION", "ENGINE", "ENV", "GARCH_KINDS", "MAX_HORIZON", "MAX_PARTITIONS", "MAX_PATHS", "MAX_THREADS",
     "BacktestPath", "GarchFitResult", "GarchParams", "SviFitResult",
-    "backtest_weights", "copula_t_paths", "cscv_pbo", "engine_of", "fhs_paths", "forced", "garch_fit", "garch_nll", "stationary_bootstrap_means", "tail_count",
-    "var_es_from_pnl",
+    "backtest_weights", "copula_t_paths", "cscv_pbo", "engine_of", "fhs_paths", "forced", "garch_fit", "garch_nll", "realized_vol_minute", "stationary_bootstrap_means",
+    "svi_fit", "tail_count", "var_es_from_pnl",
 ]
