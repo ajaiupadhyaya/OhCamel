@@ -1,0 +1,32 @@
+# Lane B's schedules (compute plan B4; ship spec section 5). Read by the worker's
+# scheduler thread (jobs/schedules.py) every 30 s.
+#
+# max_age: how old a kind's latest artifact may be before every page that shows
+# it marks it stale (ship delta, Review Focus 1). One missed run must turn the
+# lamp amber, so each is a little over the kind's schedule period.
+#
+# schedules: one entry each -- name (unique), cron (five fields, NEW YORK wall
+# time), kind (registered in jobs/kinds.py), params, priority (1 intraday,
+# 2 nightly; 0 is reserved for user submissions), mem_class (S/M/L, contract
+# II.2) and heavy (true = never starts 09:25-16:05 New York on a session day).
+# Other lanes append their kinds' max ages and entries here.
+max_age:
+  ops.selftest: 26h
+  ingest.fred: 30h
+
+schedules:
+  - name: selftest-nightly
+    cron: "5 4 * * *"
+    kind: ops.selftest
+    params: {tag: nightly}
+    priority: 2
+    mem_class: S
+    heavy: false
+
+  - name: fred-dgs10-nightly
+    cron: "30 6 * * *"
+    kind: ingest.fred
+    params: {series: DGS10}
+    priority: 2
+    mem_class: S
+    heavy: false

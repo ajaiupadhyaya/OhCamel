@@ -125,6 +125,12 @@ class Worker:
 
     def run(self) -> None:
         self._housekeeping()
+        sched = None
+        if self.cfg.scheduler:
+            from .schedules import DEFAULT_PATH, load_schedules, start_scheduler
+
+            schedules = load_schedules(self.cfg.schedules_path or DEFAULT_PATH)  # a bad file fails the start
+            sched = start_scheduler(self.cfg.db_path, schedules, self.stop, self.now)
         last_house = time.monotonic()
         while not self.stop.is_set():
             self._stamp()
@@ -133,6 +139,8 @@ class Worker:
                 last_house = time.monotonic()
             if self.run_once() is None:
                 self.stop.wait(self.cfg.poll_s)
+        if sched is not None:
+            sched.join(5)
         self.conn.close()
 
 
