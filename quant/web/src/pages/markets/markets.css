@@ -132,7 +132,10 @@ a.mk-fig:focus-visible {
 /* table cells */
 .mk-inst {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
+  height: 21px;
+  line-height: 21px;
+  vertical-align: middle;
   gap: var(--sp-2);
   min-width: 0;
 }

@@ -3,7 +3,8 @@
 //   defaults: http://localhost:8090, ../../docs/media/quant/paper, every route.
 // Writes <outDir>/<page>/<page>-<width>-<theme>.png at 1440 and 380 in paper and carbon,
 // and fails if any page scrolls sideways at 380, throws, or has a serious or critical axe
-// violation (axe-core, every width and theme).
+// violation (axe-core, every width and theme). On migrated routes (RHYTHM_ROUTES) it also fails
+// when the body rows of a dense table are not all one height: a broken row rhythm.
 // Chromium: CHROMIUM_PATH, else PLAYWRIGHT_BROWSERS_PATH (default /opt/pw-browsers), else Playwright's own.
 import { chromium } from "playwright";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
@@ -11,6 +12,23 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 
 const ROUTES = ["/", "/markets", "/risk", "/portfolio", "/optimize", "/research", "/options", "/macro", "/company/AAPL", "/ticker/SPY", "/deck", "/system", "/compute", "/engine", "/methodology", "/ledger"];
+
+// Paper Tape pages whose dense tables must keep one row height. Later P2 tasks add their routes.
+const RHYTHM_ROUTES = new Set(["/markets"]);
+
+async function unevenRows(page) {
+  return page.evaluate(() => {
+    const bad = [];
+    document.querySelectorAll("table.oc-table-compact").forEach((t, i) => {
+      // The first cell's padding box: a row's tr box also carries half of the collapsed header rule.
+      const hs = [...t.querySelectorAll("tbody tr")].map((r) => r.firstElementChild?.clientHeight ?? 0).filter((h) => h > 0);
+      if (hs.length < 2) return;
+      const lo = Math.min(...hs), hi = Math.max(...hs);
+      if (hi > lo) bad.push(`table ${i}: rows ${lo}-${hi}px`);
+    });
+    return bad;
+  });
+}
 
 const base = process.argv[2] ?? "http://localhost:8090";
 const out = process.argv[3] ?? "../../docs/media/quant/paper";
@@ -60,6 +78,7 @@ for (const theme of ["paper", "carbon"]) {
         const [sw, iw] = await page.evaluate(() => [document.documentElement.scrollWidth, window.innerWidth]);
         if (sw > iw) failures.push(`overflow ${theme} ${vp.width} ${p}: scrollWidth ${sw} > ${iw}`);
       }
+      if (RHYTHM_ROUTES.has(p)) for (const v of await unevenRows(page)) failures.push(`rhythm ${theme} ${vp.width} ${p}: ${v}`);
       for (const v of await axeSerious(page)) failures.push(`axe ${theme} ${vp.width} ${p}: ${v}`);
       const slug = slugOf(p);
       mkdirSync(join(out, slug), { recursive: true });

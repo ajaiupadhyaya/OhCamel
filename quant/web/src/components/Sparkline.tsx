@@ -10,7 +10,7 @@ import { useId } from "react";
 export function Sparkline({ values, width = 96, height = 28, color, area = true, strokeWidth = 1.5, baseline, className, title }: { values: (number | null | undefined)[]; width?: number; height?: number; color?: string; area?: boolean; strokeWidth?: number; baseline?: number; className?: string; title?: string }) {
   const id = `oc-spark-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
   const pts = values.map((v, i) => [i, v] as const).filter((p): p is readonly [number, number] => typeof p[1] === "number" && Number.isFinite(p[1]));
-  if (pts.length < 2) return <svg width={width} height={height} className={className} aria-hidden />;
+  if (pts.length < 2) return <svg width={width} height={height} className={`oc-sparkline ${className ?? ""}`} aria-hidden />;
   const ys = pts.map((p) => p[1]);
   let lo = Math.min(...ys);
   let hi = Math.max(...ys);
