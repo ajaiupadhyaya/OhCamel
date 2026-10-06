@@ -4,3 +4,4 @@ export { Lamp, type LampState } from "./Lamp";
 export { Note } from "./Note";
 export { isStale } from "./stale";
 export { fmtStamp } from "./stamp";
+export { Absent } from "./Absent";

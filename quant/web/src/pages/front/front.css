@@ -1,0 +1,137 @@
+/* Front Page (prefix fp-). Rules, not boxes; numbers in Plex Mono. */
+.fp-figures {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+.fp-figures .oc-statgrid {
+  border-top: var(--rule-heavy);
+}
+.fp-figures-prov {
+  padding-top: var(--sp-1);
+}
+.fp-label {
+  font-family: var(--font-display);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.fp-dim {
+  color: var(--ink-2);
+}
+
+/* CURVE: the plot, then a narrow column of figures. */
+.fp-curve-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 200px;
+  column-gap: var(--sp-6);
+  row-gap: var(--sp-4);
+}
+.fp-curve-plot {
+  min-width: 0;
+}
+.fp-curve-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.fp-curve {
+  width: 100%;
+  min-width: 0;
+}
+.fp-curve svg {
+  display: block;
+  touch-action: pan-y;
+}
+.fp-grid {
+  stroke: var(--ink-3);
+  stroke-width: 1;
+  stroke-dasharray: 1 3;
+}
+.fp-axis {
+  stroke: var(--ink);
+  stroke-width: 1;
+}
+.fp-cross {
+  stroke: var(--ink-2);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+}
+.fp-node {
+  fill: var(--ink);
+}
+.fp-tick,
+.fp-end {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  fill: var(--ink-2);
+}
+.fp-end-today {
+  fill: var(--ink);
+  font-weight: 500;
+}
+.fp-slope {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding-top: var(--sp-2);
+  border-top: var(--rule);
+}
+.fp-slope-val {
+  font-size: 40px;
+  font-weight: 500;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+.fp-slope-val.loss {
+  color: var(--signal);
+}
+.fp-slope-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+}
+
+.fp-farm {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+.fp-farm-fail {
+  font-size: 56px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  color: var(--signal);
+}
+.fp-farm-pass {
+  margin-left: var(--sp-3);
+  font-size: 24px;
+  font-weight: 500;
+}
+.fp-farm-word {
+  font-family: var(--font-display);
+  font-size: var(--fs-sm);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+@media (max-width: 760px) {
+  .fp-curve-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.fp-unit {
+  margin-left: var(--sp-1);
+  font-size: var(--fs-sm);
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}

@@ -22,12 +22,16 @@ const ALPHAS: { value: Alpha; label: string }[] = [
   { value: "0.99", label: "99%" },
 ];
 
-export function RiskTab({ req }: { req: PortfolioIn }) {
+/**
+ * `alpha` and `horizon` seed the confidence and horizon controls (the /risk?alpha=&h= link);
+ * the controls stay free to change after that.
+ */
+export function RiskTab({ req, alpha = "0.99", horizon = "1" }: { req: PortfolioIn; alpha?: Alpha; horizon?: "1" | "10" }) {
   return (
     <>
-      <ModelsSection req={req} />
-      <DecompositionSection req={req} />
-      <BacktestSection req={req} />
+      <ModelsSection req={req} seedAlpha={alpha} seedHorizon={horizon} />
+      <DecompositionSection req={req} seedAlpha={alpha} />
+      <BacktestSection req={req} seedAlpha={alpha} />
       <GarchSection req={req} />
     </>
   );
@@ -39,9 +43,9 @@ function isInvalid(e: Estimate | undefined): boolean {
   return !!e && (e.var == null || (e.params as { valid_domain?: boolean } | undefined)?.valid_domain === false);
 }
 
-function ModelsSection({ req }: { req: PortfolioIn }) {
-  const [horizon, setHorizon] = useState<"1" | "10">("1");
-  const [alpha, setAlpha] = useState<Alpha>("0.99");
+function ModelsSection({ req, seedAlpha, seedHorizon }: { req: PortfolioIn; seedAlpha: Alpha; seedHorizon: "1" | "10" }) {
+  const [horizon, setHorizon] = useState<"1" | "10">(seedHorizon);
+  const [alpha, setAlpha] = useState<Alpha>(seedAlpha);
   const body = useMemo(() => ({ ...req, alphas: [0.99, 0.95], horizon: Number(horizon) }), [req, horizon]);
   const q = useApiPost<RiskSummaryOut>("/risk/summary", body);
   const notional = req.notional ?? 1_000_000;
@@ -236,8 +240,8 @@ function DistributionFit({ d }: { d: RiskSummaryOut }) {
 
 // =================================================================== decomposition
 
-function DecompositionSection({ req }: { req: PortfolioIn }) {
-  const [alpha, setAlpha] = useState<Alpha>("0.99");
+function DecompositionSection({ req, seedAlpha }: { req: PortfolioIn; seedAlpha: Alpha }) {
+  const [alpha, setAlpha] = useState<Alpha>(seedAlpha);
   const [cov, setCov] = useState<"sample" | "ewma">("sample");
   const body = useMemo(() => ({ ...req, alpha: Number(alpha), cov_method: cov }), [req, alpha, cov]);
   const q = useApiPost<DecompositionOut>("/risk/decomposition", body);
@@ -335,8 +339,8 @@ function DecompTable({ d }: { d: DecompositionOut }) {
 
 const WINDOWS = ["250", "500", "1000"] as const;
 
-function BacktestSection({ req }: { req: PortfolioIn }) {
-  const [alpha, setAlpha] = useState<Alpha>("0.99");
+function BacktestSection({ req, seedAlpha }: { req: PortfolioIn; seedAlpha: Alpha }) {
+  const [alpha, setAlpha] = useState<Alpha>(seedAlpha);
   const [window, setWindow] = useState<(typeof WINDOWS)[number]>("500");
   const [refit, setRefit] = useState<"5" | "20" | "60">("20");
   const draft = useMemo(() => ({ ...req, alpha: Number(alpha), window: Number(window), refit_every: Number(refit) }), [req, alpha, window, refit]);

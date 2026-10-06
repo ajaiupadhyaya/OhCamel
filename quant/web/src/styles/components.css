@@ -229,6 +229,7 @@
 .oc-panel-stale .oc-panel-body {
   position: relative;
   padding-left: var(--sp-4);
+  padding-right: var(--sp-2);
   outline: var(--rule-faint);
   outline-offset: -1px;
 }
@@ -1566,4 +1567,84 @@
 .note a:hover {
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+/* Absent: a source with nothing yet. The stamp, the reason, the read it waits on. */
+.absent {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-2) 0 var(--sp-2) var(--sp-4);
+  position: relative;
+}
+.absent::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 6px;
+  background-image: var(--hatch);
+}
+.absent-src {
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* Go: a cell's link to its page. Mono caps, underlined on hover, never a button. */
+.oc-go {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.oc-go:hover,
+.oc-go:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ArtifactCell: verdict first, headline readings as a ruled list, the artifact id. */
+.oc-art {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.oc-art-id {
+  font-size: var(--fs-2xs);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.oc-kv {
+  width: 100%;
+  margin: 0;
+}
+.oc-kv-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--sp-3);
+  min-height: var(--row-h);
+  border-bottom: var(--rule-faint);
+}
+.oc-kv dd {
+  margin: 0;
+  text-align: right;
+}
+.oc-kv dt {
+  font-family: var(--font-display);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
 }

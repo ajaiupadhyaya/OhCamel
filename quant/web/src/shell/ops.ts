@@ -11,7 +11,7 @@ import type { Session } from "./dateline";
 export interface OpsOut {
   mode?: string | null;
   build?: { git_sha?: string | null; version?: string | null } | null;
-  jobs?: { queued?: number; running?: number; done_24h?: number; failed_24h?: number } | null;
+  jobs?: { queued?: number; running?: number; done_24h?: number; failed_24h?: number; cpu_seconds_24h?: number } | null;
   /** The session clock, in the same shape the Flight Deck reads from /deck/reading. */
   clock?: ReadingClock | null;
   desk?: { clock?: ReadingClock | null } | null;
