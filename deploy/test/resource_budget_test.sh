@@ -71,6 +71,7 @@ want = {  # service: (slice, cpu_shares, mem bytes, oom_score_adj)
     "caddy":            ("ohcamel-web.slice",   1024,  128 * 2**20, -500),
     "ohcamel-quant":    ("ohcamel-web.slice",   1024, 1536 * 2**20,    0),
     "ohcamel-research": ("ohcamel-batch.slice",  256,  384 * 2**20,  500),
+    "ohcamel-hostd":    ("ohcamel-web.slice",   1024,   32 * 2**20, -500),
 }
 bad = []
 for name, (slice_, shares, mem, oom) in want.items():

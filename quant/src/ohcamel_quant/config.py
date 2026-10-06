@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     price_providers: list[str] = Field(default_factory=lambda: ["alpaca", "yahoo", "stooq"])
     # Optional URL of the OCaml real-time engine (read-only JSON), for the Live page.
     engine_url: str | None = None
+    # Optional URL of ohcamel-hostd, the host telemetry daemon (contract II.6
+    # of the compute plan), proxied at /api/ops/host.
+    hostd_url: str | None = None
     # The Flight Deck's recorder: one reading of the reference book per interval
     # while the US session is open, kept in {data_dir}/deck/recorder.sqlite.
     # OHCAMEL_QUANT_RECORDER=0 turns it off; it never runs offline.
@@ -54,7 +57,9 @@ class Settings(BaseSettings):
     # Directory of committed real-data fixtures (used offline and in tests).
     fixtures_dir: Path = Field(default=REPO_ROOT / "fixtures")
 
-    @field_validator("alpaca_key_id", "alpaca_secret_key", "fred_api_key", "engine_url", mode="before")
+    @field_validator(
+        "alpaca_key_id", "alpaca_secret_key", "fred_api_key", "engine_url", "hostd_url", mode="before"
+    )
     @classmethod
     def _blank_is_unset(cls, v: object) -> object:
         # An env line like `FRED_API_KEY=` must mean "not configured", not "".

@@ -27,26 +27,28 @@
 # build blocks live only in the harness override. Each of those facts is a
 # line in a YAML file that nothing else reads, so each is pinned here:
 #
-#   A. base + live at OHCAMEL_TAG=deadbeef: exactly four image lines --
-#      caddy:2.11.4-alpine and the three ghcr refs at :deadbeef (the default
-#      profile is caddy + ohcamel-quant, --profile live adds ohcamel-live +
-#      ohcamel-research: 2 + 2 = 4) -- and no build key, no :latest.
+#   A. base + live at OHCAMEL_TAG=deadbeef: exactly five image lines --
+#      caddy:2.11.4-alpine and the four ghcr refs at :deadbeef (the default
+#      profile is caddy + ohcamel-quant + ohcamel-hostd, --profile live adds
+#      ohcamel-live + ohcamel-research: 3 + 2 = 5) -- and no build key, no
+#      :latest.
 #   B. base + demo: ohcamel-demo runs the SAME engine ref (one anchor).
-#   C. OHCAMEL_IMAGE re-points the engine only; research and quant stay ghcr.
+#   C. OHCAMEL_IMAGE re-points the engine only; research, quant and hostd
+#      stay ghcr.
 #   D. OHCAMEL_TAG unset: the render fails and names deploy.sh in the message.
-#   E. base + local at OHCAMEL_TAG=local: three distinct Dockerfiles rendered
+#   E. base + local at OHCAMEL_TAG=local: four distinct Dockerfiles rendered
 #      (deploy/Dockerfile, shared by ohcamel-demo and ohcamel-live;
-#      deploy/research.Dockerfile; quant/Dockerfile), build on those four
-#      services and not on caddy, every ghcr ref at :local, and the Makefile's
+#      deploy/research.Dockerfile; quant/Dockerfile; native/hostd/Dockerfile),
+#      build on those five services and not on caddy, every ghcr ref at :local, and the Makefile's
 #      -t tags and deploy/local.env's OHCAMEL_TAG agree with that.
 #   F. base + ci: no build key in the file at all, both profiles render with
 #      no /etc/ohcamel and no scratch override because the two required
-#      env_files point at deploy/ci.env, the three refs at :deadbeef, and
+#      env_files point at deploy/ci.env, the four refs at :deadbeef, and
 #      every value in deploy/ci.env is visibly fake.
 #   G. no floating tag in docker-compose.yml (:latest, :2-alpine), no build
 #      key, and caddy's exact version equals the one CI's lint job validates
 #      the Caddyfiles with and the one deploy.env.example hashes with.
-#   H. the json-file 10m x 3 logging block on all four long-running services,
+#   H. the json-file 10m x 3 logging block on all five long-running services,
 #      caddy included (it had none, and a proxy's per-request line grows
 #      without bound under the daemon's default driver).
 
@@ -156,9 +158,10 @@ A="$scratch/A.yml"
 RENDER_ENV=(OHCAMEL_TAG=deadbeef)
 if render "$A" "$scratch/A.err" --env-file "$harness_env" -f "$base" -f "$override" --profile live; then
 	ok "A1 base + live renders at OHCAMEL_TAG=deadbeef"
-	# 4 = caddy + ohcamel-quant (default profile) + ohcamel-live + ohcamel-research (live).
-	expect_images "A2 the four live-profile images are caddy 2.11.4 and the three ghcr refs at :deadbeef" "$A" \
+	# 5 = caddy + ohcamel-quant + ohcamel-hostd (default profile) + ohcamel-live + ohcamel-research (live).
+	expect_images "A2 the five live-profile images are caddy 2.11.4 and the four ghcr refs at :deadbeef" "$A" \
 		"$(printf '%s\n' caddy:2.11.4-alpine \
+			ghcr.io/ajaiupadhyaya/ohcamel-hostd:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-research:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel:deadbeef | sort)"
@@ -193,8 +196,9 @@ fi
 C="$scratch/C.yml"
 RENDER_ENV=(OHCAMEL_TAG=deadbeef OHCAMEL_IMAGE=registry.example/mirror/ohcamel)
 if render "$C" "$scratch/C.err" --env-file "$harness_env" -f "$base" -f "$override" --profile live; then
-	expect_images "C1 OHCAMEL_IMAGE moves the engine ref alone; research and quant stay on ghcr" "$C" \
+	expect_images "C1 OHCAMEL_IMAGE moves the engine ref alone; research, quant and hostd stay on ghcr" "$C" \
 		"$(printf '%s\n' caddy:2.11.4-alpine \
+			ghcr.io/ajaiupadhyaya/ohcamel-hostd:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-research:deadbeef \
 			registry.example/mirror/ohcamel:deadbeef | sort)"
@@ -214,17 +218,17 @@ else
 	else
 		no "D2 the refusal carries the :? message 'deploy.sh sets OHCAMEL_TAG'" "stderr: $(head -c 400 "$scratch/D.err" | tr '\n' ' ')"
 	fi
-	# One interpolation error per image reference that reads the tag. Three
+	# One interpolation error per image reference that reads the tag. Four
 	# references are written (the engine anchor's, ohcamel-research's,
-	# ohcamel-quant's); Compose v5.5.1 reports five -- the anchor expanded
-	# into ohcamel-demo and ohcamel-live, the two fixed refs, and the
-	# x-engine extension field itself -- so `at least 3`, not a count that
-	# moves with how a compose version reports an anchor.
+	# ohcamel-quant's, ohcamel-hostd's); Compose v5.5.1 reports more -- the
+	# anchor expanded into ohcamel-demo and ohcamel-live, the fixed refs, and
+	# the x-engine extension field itself -- so `at least 4`, not a count
+	# that moves with how a compose version reports an anchor.
 	n=$(grep -c 'error while interpolating .*OHCAMEL_TAG' "$scratch/D.err" || true)
-	if [ "$n" -ge 3 ]; then
-		ok "D3 every image reference reads OHCAMEL_TAG ($n interpolation errors, at least 3)"
+	if [ "$n" -ge 4 ]; then
+		ok "D3 every image reference reads OHCAMEL_TAG ($n interpolation errors, at least 4)"
 	else
-		no "D3 every image reference reads OHCAMEL_TAG" "only $n interpolation error(s) name it; expected at least 3"
+		no "D3 every image reference reads OHCAMEL_TAG" "only $n interpolation error(s) name it; expected at least 4"
 	fi
 fi
 
@@ -233,16 +237,17 @@ E="$scratch/E.yml"
 RENDER_ENV=(OHCAMEL_TAG=local)
 if render "$E" "$scratch/E.err" --env-file "$harness_env" -f "$base" -f "$local_yml" -f "$override" --profile demo --profile live; then
 	ok "E1 base + local renders with both profiles"
-	# 3 = one Dockerfile per image: deploy/Dockerfile (the engine, shared by
-	# ohcamel-demo and ohcamel-live), deploy/research.Dockerfile, quant/Dockerfile.
+	# 4 = one Dockerfile per image: deploy/Dockerfile (the engine, shared by
+	# ohcamel-demo and ohcamel-live), deploy/research.Dockerfile, quant/Dockerfile,
+	# native/hostd/Dockerfile.
 	got=$(grep -E '^\s*dockerfile: ' "$E" | sed 's/^ *dockerfile: //' | sort -u)
-	if [ "$got" = "$(printf '%s\n' deploy/Dockerfile deploy/research.Dockerfile quant/Dockerfile)" ]; then
-		ok "E2 exactly three Dockerfiles are built: deploy/Dockerfile, deploy/research.Dockerfile, quant/Dockerfile"
+	if [ "$got" = "$(printf '%s\n' deploy/Dockerfile deploy/research.Dockerfile native/hostd/Dockerfile quant/Dockerfile)" ]; then
+		ok "E2 exactly four Dockerfiles are built: deploy/Dockerfile, deploy/research.Dockerfile, native/hostd/Dockerfile, quant/Dockerfile"
 	else
-		no "E2 exactly three Dockerfiles are built" "rendered dockerfiles: $(echo "$got" | tr '\n' ' ')"
+		no "E2 exactly four Dockerfiles are built" "rendered dockerfiles: $(echo "$got" | tr '\n' ' ')"
 	fi
-	# 4 services carry a build block (2 engine services + research + quant); caddy never.
-	for svc in ohcamel-demo ohcamel-live ohcamel-research ohcamel-quant; do
+	# 5 services carry a build block (2 engine services + research + quant + hostd); caddy never.
+	for svc in ohcamel-demo ohcamel-live ohcamel-research ohcamel-quant ohcamel-hostd; do
 		if service_block "$E" "$svc" | grep -qE '^    build:'; then
 			ok "E3 $svc has a build block in the harness"
 		else
@@ -254,11 +259,12 @@ if render "$E" "$scratch/E.err" --env-file "$harness_env" -f "$base" -f "$local_
 	else
 		ok "E3 caddy has no build block"
 	fi
-	# 5 image lines with both profiles on: caddy, ohcamel-quant, ohcamel-demo,
-	# ohcamel-live, ohcamel-research -- the engine ref twice, once per engine
-	# service, because both expand the same anchor.
-	expect_images "E4 the harness runs the three ghcr refs at :local and caddy 2.11.4" "$E" \
+	# 6 image lines with both profiles on: caddy, ohcamel-quant, ohcamel-hostd,
+	# ohcamel-demo, ohcamel-live, ohcamel-research -- the engine ref twice, once
+	# per engine service, because both expand the same anchor.
+	expect_images "E4 the harness runs the four ghcr refs at :local and caddy 2.11.4" "$E" \
 		"$(printf '%s\n' caddy:2.11.4-alpine \
+			ghcr.io/ajaiupadhyaya/ohcamel-hostd:local \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:local \
 			ghcr.io/ajaiupadhyaya/ohcamel-research:local \
 			ghcr.io/ajaiupadhyaya/ohcamel:local \
@@ -283,6 +289,7 @@ else
 fi
 for want in '-t ghcr.io/ajaiupadhyaya/ohcamel:$(LOCAL_TAG) .' \
 	'-t ghcr.io/ajaiupadhyaya/ohcamel-quant:$(LOCAL_TAG) .' \
+	'-t ghcr.io/ajaiupadhyaya/ohcamel-hostd:$(LOCAL_TAG) .' \
 	'OHCAMEL_TAG=$(LOCAL_TAG) docker compose'; do
 	if grep -qF -- "$want" Makefile; then
 		ok "E5 Makefile carries '$want'"
@@ -311,8 +318,9 @@ fi
 FL="$scratch/FL.yml"
 if render "$FL" "$scratch/FL.err" --env-file "$harness_env" -f "$base" -f "$ci_yml" --profile live; then
 	ok "F2 base + ci renders, live profile, with no /etc/ohcamel and no scratch override"
-	expect_images "F3 the ci override runs caddy 2.11.4 and the three ghcr refs at :deadbeef" "$FL" \
+	expect_images "F3 the ci override runs caddy 2.11.4 and the four ghcr refs at :deadbeef" "$FL" \
 		"$(printf '%s\n' caddy:2.11.4-alpine \
+			ghcr.io/ajaiupadhyaya/ohcamel-hostd:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-research:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel:deadbeef | sort)"
@@ -400,7 +408,7 @@ fi
 
 # --- H. json-file, 10m x 3, on every long-running service, caddy included ---
 if [ -s "$A" ]; then
-	for svc in caddy ohcamel-quant ohcamel-live ohcamel-research; do
+	for svc in caddy ohcamel-quant ohcamel-hostd ohcamel-live ohcamel-research; do
 		block=$(service_block "$A" "$svc")
 		if echo "$block" | grep -q 'driver: json-file' \
 			&& echo "$block" | grep -qE 'max-size: "?10m"?' \

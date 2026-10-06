@@ -76,3 +76,11 @@ services:
       dockerfile: quant/Dockerfile
       args:
         OHCAMEL_GIT_SHA: "${OHCAMEL_GIT_SHA:-unknown}"
+
+  # Host telemetry (native/hostd): the Rust workspace is the whole input.
+  ohcamel-hostd:
+    build:
+      context: ..
+      dockerfile: native/hostd/Dockerfile
+      args:
+        OHCAMEL_GIT_SHA: "${OHCAMEL_GIT_SHA:-unknown}"

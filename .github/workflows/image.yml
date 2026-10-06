@@ -1,6 +1,6 @@
 # The image workflow: build, smoke, publish.
 #
-# Builds the three images deploy/docker-compose.yml pulls, brings the compose
+# Builds the four images deploy/docker-compose.yml pulls, brings the compose
 # harness up on exactly the images it just built, runs deploy/smoke.sh against
 # that, and -- only after ci has passed on a push to main -- publishes them to
 # ghcr.io as :<sha> and :main. Everything else (a stage branch, a pull
@@ -11,9 +11,9 @@
 #   build    one job per image (the matrix below), each on its own runner,
 #            each stamping, asserting and saving its image as an artifact.
 #            No write scope.
-#   smoke    loads the three artifacts, runs the harness on them with the ci
+#   smoke    loads the four artifacts, runs the harness on them with the ci
 #            override, runs the suite, tears down. No write scope.
-#   publish  the ONE job that can reach the registry: loads the same three
+#   publish  the ONE job that can reach the registry: loads the same four
 #            artifacts the smoke ran and pushes them. `packages: write` sits
 #            here and nowhere else, so the jobs that run code from a branch
 #            (npm, pip, opam, the harness) never hold a token that can
@@ -100,11 +100,14 @@ jobs:
           - image: ohcamel-quant
             dockerfile: quant/Dockerfile
             stamp: label
-          # ohcamel-hostd (native/hostd/Dockerfile) lands here as a fourth
-          # entry in compute task 0.4, with its own stamp value.
+          # The host telemetry daemon (compute task 0.4): a scratch image
+          # with no shell, so its stamp is the revision LABEL alone.
+          - image: ohcamel-hostd
+            dockerfile: native/hostd/Dockerfile
+            stamp: label
           #
           # ohcamel-worker (Lane B) is NOT an entry: it runs the ohcamel-quant
-          # image with another `command`, so there is no fourth image to
+          # image with another `command`, so there is no fifth image to
           # build, and nothing here changes when it arrives.
     steps:
       - uses: actions/checkout@v4
@@ -139,7 +142,7 @@ jobs:
             org.opencontainers.image.revision=${{ env.SHA }}
           # mode=max caches every stage, not only the last: the engine's opam
           # layer lives in its builder stage, and that layer is the twenty
-          # minutes. One scope per image, so the three never evict each other.
+          # minutes. One scope per image, so they never evict each other.
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
@@ -219,10 +222,10 @@ jobs:
           for f in "$RUNNER_TEMP"/images/*.tar.zst; do
             zstd -dc "$f" | docker load
           done
-          # The three the harness needs, present under the sha tag the ci
+          # The four the harness needs, present under the sha tag the ci
           # override names; pull_policy: never there turns anything missing
           # into a hard error, but this says which.
-          for image in ohcamel ohcamel-research ohcamel-quant; do
+          for image in ohcamel ohcamel-research ohcamel-quant ohcamel-hostd; do
             docker image inspect "ghcr.io/ajaiupadhyaya/$image:$SHA" --format '{{.RepoTags}} {{.Size}}'
           done
 
@@ -340,7 +343,7 @@ jobs:
       - name: Push :<sha> and :main
         run: |
           set -euo pipefail
-          for image in ohcamel ohcamel-research ohcamel-quant; do
+          for image in ohcamel ohcamel-research ohcamel-quant ohcamel-hostd; do
             ref="ghcr.io/ajaiupadhyaya/$image"
             docker tag "$ref:$SHA" "$ref:main"
             # push prints "<tag>: digest: sha256:... size: N" last; kept for
@@ -358,7 +361,7 @@ jobs:
             echo
             echo "| image | tags | digest |"
             echo "| --- | --- | --- |"
-            for image in ohcamel ohcamel-research ohcamel-quant; do
+            for image in ohcamel ohcamel-research ohcamel-quant ohcamel-hostd; do
               ref="ghcr.io/ajaiupadhyaya/$image"
               # The digest the registry assigned, from the push's own output;
               # RepoDigests (filled in by the push on the classic store) if

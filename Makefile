@@ -90,7 +90,7 @@ export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 # starts. run-live, serve and demo were the three that had been left out.
 .PHONY: all build run run-live serve demo stress backtest backtest-crisis options garch test research-test research-reproduce bench coverage fmt clean deps doctor \
         check-counts \
-        quant-deps quant-dev quant-test quant-live-test quant-web quant-serve quant-image \
+        quant-deps quant-dev quant-test quant-live-test quant-web quant-serve quant-image hostd-image \
         deploy-build deploy-up deploy-down deploy-verify deploy-logs deploy-smoke
 
 all: build
@@ -377,12 +377,19 @@ LOCAL_COMPOSE := OHCAMEL_TAG=$(LOCAL_TAG) docker compose --env-file deploy/local
                   -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml \
                   --profile demo
 
-# Build both images the harness runs, at LOCAL_TAG. The engine: twenty minutes
+# The host telemetry daemon's image (native/hostd), at the harness's tag; the
+# droplet pulls ghcr.io/ajaiupadhyaya/ohcamel-hostd:<sha> from CI instead.
+hostd-image:
+	docker build -f native/hostd/Dockerfile \
+	  --build-arg OHCAMEL_GIT_SHA=$$(git rev-parse HEAD 2>/dev/null || echo unknown) \
+	  -t ghcr.io/ajaiupadhyaya/ohcamel-hostd:$(LOCAL_TAG) .
+
+# Build the images the harness runs, at LOCAL_TAG. The engine: twenty minutes
 # cold, about one after an edit to lib/, because the Dockerfile installs
 # dependencies before it copies source. Quant: a few minutes cold, seconds
-# after an edit. The research image is not built here: it sits behind the
-# live profile, which the harness never enables.
-deploy-build: quant-image
+# after an edit. hostd: a minute or two cold. The research image is not built
+# here: it sits behind the live profile, which the harness never enables.
+deploy-build: quant-image hostd-image
 	docker build -f deploy/Dockerfile \
 	  --build-arg OHCAMEL_GIT_SHA=$$(git rev-parse HEAD 2>/dev/null || echo unknown) \
 	  --build-arg OHCAMEL_BUILT_AT=$$(date -u +%FT%TZ) \

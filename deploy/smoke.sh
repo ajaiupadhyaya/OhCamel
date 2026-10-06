@@ -309,6 +309,38 @@ print("OK 60/40, %d limits evaluated, quotes %s from %s, session %s" % (
     len(lims), feeds.get("quotes"), ", ".join(srcs) or "?", "open" if body.get("clock", {}).get("is_open") else "closed"))
 '
 
+# Host telemetry (compute plan Task 0.4): ohcamel-hostd through the Quant
+# app's proxy. Required on every host -- compose runs hostd in the default
+# profile and points the app at it. hostd needs one sampling interval (5 s)
+# before `latest` is non-null, so a stack that has only just started is given
+# up to 15 s to produce its first sample before the check runs. Only an
+# answer with a null `latest` waits: no answer, or a 503, goes straight to the
+# check below, which reports it.
+if [ "$have_py" = 1 ]; then
+	for _ in 1 2 3; do
+		rc=0
+		curl -sS --max-time 5 "$BASE/api/ops/host" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    body = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+sys.exit(2 if isinstance(body, dict) and "latest" in body and body["latest"] is None else 0)' 2>/dev/null || rc=$?
+		[ "$rc" = 2 ] || break
+		sleep 5
+	done
+fi
+qjson "GET /api/ops/host          " GET /api/ops/host "" '
+latest = body.get("latest") or {}
+if not (isinstance(latest.get("mem_available"), (int, float)) and latest["mem_available"] > 0):
+    print("NOSAMPLE latest.mem_available is %r: %s" % (latest.get("mem_available"), str(body)[:200])); raise SystemExit
+if (body.get("provenance") or [{}])[0].get("source") != "ohcamel-hostd":
+    print("PROVENANCE %s" % str(body.get("provenance"))[:200]); raise SystemExit
+print("OK cpu %.2f, steal %.2f, swap_used %d MiB, %d MiB available" % (
+    latest.get("cpu") or 0.0, latest.get("steal") or 0.0,
+    (latest.get("swap_used") or 0) // 2**20, latest["mem_available"] // 2**20))
+'
+
 # The engine bridge. Reachable is REQUIRED only under --engine (the local
 # harness wires the bridge to its engine). In production the bridge is off
 # unless the owner opts in (OHCAMEL_QUANT_ENGINE_URL in deploy/.env), so a 503

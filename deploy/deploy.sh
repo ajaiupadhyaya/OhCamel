@@ -18,10 +18,10 @@
 #       already read this one, and an old deploy.sh driving new compose and
 #       smoke files is how an old script once rejected a new flag.
 #    3. Waits up to 40 minutes for `docker manifest inspect` to find each of
-#       the three images compose pulls -- ghcr.io/ajaiupadhyaya/ohcamel,
-#       ohcamel-research and ohcamel-quant -- at the sha, and otherwise exits
-#       1 naming the sha and saying CI has not published it. --build skips
-#       the wait: it builds all three here instead, one per Dockerfile, with
+#       the four images compose pulls -- ghcr.io/ajaiupadhyaya/ohcamel,
+#       ohcamel-research, ohcamel-quant and ohcamel-hostd -- at the sha, and
+#       otherwise exits 1 naming the sha and saying CI has not published it. --build skips
+#       the wait: it builds all four here instead, one per Dockerfile, with
 #       the OHCAMEL_GIT_SHA and OHCAMEL_BUILT_AT build args, and the pull
 #       below is skipped for the images it just built.
 #    4. Refuses a live deploy on a weekday inside 09:25-16:10 America/New_York
@@ -56,7 +56,7 @@
 #       `ok` line before this one is the rollback reference, and a failed run
 #       prints the exact command: rollback is `--sha <previous>`.
 #   12. Only after a good deploy: keeps the three most recent good shas' tags
-#       of the three images (this one included) and removes the rest, then
+#       of the four images (this one included) and removes the rest, then
 #       prunes dangling images and old build cache.
 #
 # The --live profile is also added automatically when /etc/ohcamel/live.env
@@ -65,7 +65,7 @@
 # meets an unreadable live.env it falls back to a public-only deploy with a
 # warning, while an explicit --live in the same state exits 1
 # (resolve_live_profile, deploy/test/deploy_profile_test.sh). --public-only
-# touches caddy and ohcamel-quant only, never the live profile, so the market
+# touches caddy, ohcamel-quant and ohcamel-hostd only, never the live profile, so the market
 # guard has nothing to protect and does not apply.
 #
 # Test seams, read from the environment and never set by the droplet:
@@ -206,13 +206,14 @@ resolve_live_profile() {
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
-# The three images docker-compose.yml pulls, one per Dockerfile, as
+# The four images docker-compose.yml pulls, one per Dockerfile, as
 # .github/workflows/image.yml builds and publishes them: "NAME DOCKERFILE".
 DEPLOY_REGISTRY=ghcr.io/ajaiupadhyaya
 DEPLOY_IMAGES=(
 	"ohcamel deploy/Dockerfile"
 	"ohcamel-research deploy/research.Dockerfile"
 	"ohcamel-quant quant/Dockerfile"
+	"ohcamel-hostd native/hostd/Dockerfile"
 )
 
 # deploy_epoch NOW: DEPLOY_NOW as a Unix epoch. NOW is an epoch already, or
@@ -321,14 +322,14 @@ as the deploy user, from ~/OhCamel.
 
   --sha SHA         the commit to deploy (default origin/main, resolved after
                     `git fetch origin`). Checked out detached; the images are
-                    ghcr.io/ajaiupadhyaya/{ohcamel,ohcamel-research,ohcamel-quant}:<sha>
+                    ghcr.io/ajaiupadhyaya/{ohcamel,ohcamel-research,ohcamel-quant,ohcamel-hostd}:<sha>
   --live            the live profile as well: ohcamel-live and ohcamel-research,
                     behind the password on the live host. Needs
                     /etc/ohcamel/live.env readable by this user. Added on its
                     own when that file is readable or ohcamel-live exists.
-  --public-only     caddy and ohcamel-quant only; never touches the live
+  --public-only     caddy, ohcamel-quant and ohcamel-hostd only; never touches the live
                     profile, so it may run during market hours. Not with --live.
-  --build           build the three images here (one per Dockerfile, with the
+  --build           build the four images here (one per Dockerfile, with the
                     build stamp) instead of waiting for CI to publish them
   --during-market   allow a live deploy inside 09:25-16:10 America/New_York
   --dry-run         print every step's command; run none of them
@@ -351,7 +352,7 @@ and check the sha out first, then run the version that knows it:
 
   git fetch origin && git checkout --detach <sha> && deploy/deploy.sh --sha <sha> --live
 
-Order: market guard, fetch, detached checkout, wait up to 40 min for the three
+Order: market guard, fetch, detached checkout, wait up to 40 min for the four
 images (or --build), market guard again, pre-deploy journal backup (live),
 check-book in the new engine image, pull, up -d --remove-orphans, wait up to
 120 s for health, smoke the public hosts then --live-container, append
@@ -418,7 +419,7 @@ main() {
 	read -r profile_on profile_auto_added refuse_live_deploy < <(
 		resolve_live_profile "$live_flag" "$live_env_readable" "$has_live_container" "$public_only"
 	)
-	[ "$public_only" = 1 ] && echo "deploy: --public-only -- caddy and ohcamel-quant only; the live profile is not touched"
+	[ "$public_only" = 1 ] && echo "deploy: --public-only -- caddy, ohcamel-quant and ohcamel-hostd only; the live profile is not touched"
 	if [ "$profile_auto_added" = 1 ]; then
 		local why="$live_env exists"
 		[ "$live_env_readable" = 1 ] || why="an ohcamel-live container already exists"
@@ -515,7 +516,7 @@ main() {
 	# --- 3. the images: CI's, or built here -----------------------------------
 	local entry name dockerfile
 	if [ "$build" = 1 ]; then
-		say "Building the three images here (--build: no wait for CI)"
+		say "Building the four images here (--build: no wait for CI)"
 		local built_at
 		built_at=$(date -u +%FT%TZ)
 		for entry in "${DEPLOY_IMAGES[@]}"; do
@@ -525,7 +526,7 @@ main() {
 		done
 	else
 		local wait_s="${DEPLOY_MANIFEST_WAIT_S:-2400}" poll="${DEPLOY_POLL_S:-20}"
-		say "Waiting up to ${wait_s}s for CI to publish the three images at $TAG"
+		say "Waiting up to ${wait_s}s for CI to publish the four images at $TAG"
 		if [ "$DRY" = 1 ]; then
 			for entry in "${DEPLOY_IMAGES[@]}"; do
 				read -r name dockerfile <<<"$entry"
@@ -547,7 +548,7 @@ main() {
 				fi
 				sleep "$poll"
 			done
-			echo "  all three images are published at $TAG"
+			echo "  all four images are published at $TAG"
 		fi
 	fi
 
@@ -672,7 +673,7 @@ main() {
 	if [ "$DRY" = 1 ]; then
 		act deploy/smoke.sh "${SMOKE_ARGS[@]}"
 		printf '+ echo "<UTC> %s ok|failed" >> %s\n' "$TAG" "$log"
-		echo "+ (keep the 3 newest ok shas' tags of the three images; docker image rm the rest; docker image prune -f; docker builder prune -f --keep-storage 5GB)"
+		echo "+ (keep the 3 newest ok shas' tags of the four images; docker image rm the rest; docker image prune -f; docker builder prune -f --keep-storage 5GB)"
 		return 0
 	fi
 	deploy/smoke.sh "${SMOKE_ARGS[@]}" || result=failed

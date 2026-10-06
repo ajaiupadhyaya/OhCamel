@@ -8,6 +8,8 @@
 #                  (profile "live")
 #   ohcamel-demo   the OCaml engine on its SYNTHETIC feed -- no longer public;
 #                  behind profile "demo", for the localhost harness only
+#   ohcamel-hostd  host telemetry (native/hostd, Rust): CPU, steal, memory and
+#                  per-slice use, read by ohcamel-quant at /api/ops/host
 #
 # None of the app containers publishes a port -- they are reachable only from
 # caddy, over the internal network. That is what makes the basic-auth on the
@@ -151,6 +153,11 @@ services:
       # them on the public /engine page, set in deploy/.env:
       #   OHCAMEL_QUANT_ENGINE_URL=http://ohcamel-live:8081
       OHCAMEL_QUANT_ENGINE_URL: "${OHCAMEL_QUANT_ENGINE_URL-}"
+      # Host telemetry (api/routers/ops.py -> ohcamel-hostd below), served at
+      # /api/ops/host. On by default: it carries no positions, only the box's
+      # CPU and memory. Set OHCAMEL_QUANT_HOSTD_URL= in deploy/.env to turn
+      # the proxy off (the route then answers 503).
+      OHCAMEL_QUANT_HOSTD_URL: "${OHCAMEL_QUANT_HOSTD_URL-http://ohcamel-hostd:9100}"
       # The Flight Deck's recorder (api/routers/deck.py): one reading of the
       # reference book a minute while the US session is open, into
       # /data/deck/recorder.sqlite on the quant_data volume, pruned to 30
@@ -188,6 +195,37 @@ services:
       retries: 3
       # Importing numpy/pandas/scipy/statsmodels and mounting every router.
       start_period: 30s
+    logging: *logging
+    networks: [ohcamel]
+
+  # Host telemetry (compute plan Task 0.4, contract II.6): a static Rust
+  # binary in a scratch image that samples /proc and the three slices above
+  # every 5 s and answers GET /v1/host on the internal network only (no host
+  # port). ohcamel-quant proxies it at /api/ops/host, and the worker's
+  # admission control (Lane B) reads mem_available from it. /proc and the
+  # cgroup tree are mounted read-only; the image runs as nobody. In the
+  # default profile, beside caddy and ohcamel-quant, because the public site
+  # shows it. Without the systemd cgroup driver (owner check O-3), set
+  # HOSTD_GROUPS to the cgroupfs names (/ohcamel-rt, ...).
+  ohcamel-hostd:
+    image: "ghcr.io/ajaiupadhyaya/ohcamel-hostd:${OHCAMEL_TAG:?deploy.sh sets OHCAMEL_TAG}"
+    restart: unless-stopped
+    # Docker's init as PID 1, as for every other service: a Rust binary as
+    # PID 1 does not get SIGTERM's default disposition, and a `down` would
+    # wait out its ten seconds.
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cgroup_parent: ohcamel-web.slice
+    cpu_shares: 1024
+    mem_limit: 32m
+    oom_score_adj: -500
+    environment:
+      HOSTD_GROUPS: "${HOSTD_GROUPS:-ohcamel-rt.slice,ohcamel-web.slice,ohcamel-batch.slice}"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys/fs/cgroup:/host/sys/fs/cgroup:ro
     logging: *logging
     networks: [ohcamel]
 

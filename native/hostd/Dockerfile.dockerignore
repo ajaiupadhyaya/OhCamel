@@ -1,0 +1,11 @@
+# native/hostd/Dockerfile's own ignore file: Docker uses
+# <dockerfile-path>.dockerignore INSTEAD of the repository's .dockerignore
+# for this build. The Dockerfile copies native/ and nothing else, so
+# everything else is excluded, and native/'s own build output and any
+# credential-shaped file with it.
+*
+!native/
+native/target/
+**/.env
+**/.env.*
+**/*.env

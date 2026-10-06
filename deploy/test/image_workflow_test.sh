@@ -48,7 +48,7 @@
 #      `workflow_dispatch`.
 #   4. The sha every job builds, checks out and stamps is the triggering
 #      run's `head_sha` when there is one, and every checkout names it.
-#   5. The build matrix holds the three images, each on its own Dockerfile,
+#   5. The build matrix holds the four images, each on its own Dockerfile,
 #      in lowercase, each with a `stamp` of env, label or none. Further
 #      entries are allowed -- ohcamel-hostd (compute task 0.4) lands as a
 #      fourth.
@@ -301,7 +301,7 @@ else
 	done <<<"$checkouts"
 fi
 
-# --- 5. The matrix: three images, each on its own Dockerfile. --------------
+# --- 5. The matrix: four images, each on its own Dockerfile. ---------------
 # Each entry carries `stamp`, what its Dockerfile's LAST stage declares:
 #   env    ARG OHCAMEL_GIT_SHA, ENV OHCAMEL_GIT_SHA=$OHCAMEL_GIT_SHA and the
 #          revision LABEL -- the stamp step runs printenv as well
@@ -334,6 +334,7 @@ want_image() {
 want_image ohcamel deploy/Dockerfile
 want_image ohcamel-research deploy/research.Dockerfile
 want_image ohcamel-quant quant/Dockerfile
+want_image ohcamel-hostd native/hostd/Dockerfile
 while IFS=$'\t' read -r line i f s; do
 	[ -n "$line" ] || continue
 	case "$i" in

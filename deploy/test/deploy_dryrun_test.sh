@@ -29,7 +29,7 @@
 #   S. a failing smoke exits 1, logs the failure, prunes nothing, and names
 #      the previous good sha as the rollback.
 #   P. after a good deploy, the last three logged shas' tags are kept and
-#      every other tag of the three images is removed.
+#      every other tag of the four images is removed.
 #   H. --help documents --sha, --live, --build, --during-market, --dry-run
 #      and --public-only, and exits 0.
 #
@@ -205,12 +205,12 @@ has() { grep -qF -- "$2" "$scratch/$1"; }
 fresh O >/dev/null
 run O --live --sha "$SHA"
 if [ "$(rc O)" = 0 ]; then ok "O1 a live deploy of a published sha exits 0"; else no "O1 a live deploy of a published sha exits 0" "rc $(rc O): $(tail -5 "$scratch/out-O" | tr '\n' ' ')"; fi
-want="fetch manifest manifest manifest backup check-book pull up health smoke log"
+want="fetch manifest manifest manifest manifest backup check-book pull up health smoke log"
 got=$(order O)
 if [ "$got" = "$want" ]; then ok "O2 order: $want"; else no "O2 order" "got '$got', want '$want'"; fi
 if grep -E " compose .* pull" "$scratch/log-O" | grep -q "^docker OHCAMEL_TAG=$SHA "; then ok "O3 the pull carries OHCAMEL_TAG=<sha> as a prefix"; else no "O3 the pull carries OHCAMEL_TAG=<sha> as a prefix" "$(grep ' pull' "$scratch/log-O")"; fi
 if grep -F " up -d --remove-orphans" "$scratch/log-O" | grep -q "^docker OHCAMEL_TAG=$SHA .*--profile live"; then ok "O4 the up carries OHCAMEL_TAG=<sha> and --profile live"; else no "O4 the up carries OHCAMEL_TAG=<sha> and --profile live" "$(grep -F ' up -d' "$scratch/log-O")"; fi
-for img in ohcamel ohcamel-research ohcamel-quant; do
+for img in ohcamel ohcamel-research ohcamel-quant ohcamel-hostd; do
 	if has log-O "manifest inspect ghcr.io/ajaiupadhyaya/$img:$SHA"; then ok "O5 manifest inspect $img:<sha>"; else no "O5 manifest inspect $img:<sha>" "not called"; fi
 done
 if has log-O "git checkout --detach $SHA"; then ok "O6 the sha is checked out detached"; else no "O6 the sha is checked out detached" "$(grep checkout "$scratch/log-O")"; fi
@@ -227,7 +227,7 @@ fresh F >/dev/null
 SHIM_CHECKBOOK_RC=1 run F --live --sha "$SHA"
 if [ "$(rc F)" != 0 ]; then ok "F1 a failing check-book exits non-zero"; else no "F1 a failing check-book exits non-zero" "rc 0"; fi
 got=$(order F)
-if [ "$got" = "fetch manifest manifest manifest backup check-book" ]; then ok "F2 nothing after check-book: no pull, no up"; else no "F2 nothing after check-book: no pull, no up" "got '$got'"; fi
+if [ "$got" = "fetch manifest manifest manifest manifest backup check-book" ]; then ok "F2 nothing after check-book: no pull, no up"; else no "F2 nothing after check-book: no pull, no up" "got '$got'"; fi
 
 # --- B. the backup ----------------------------------------------------------------
 
@@ -237,7 +237,7 @@ if [ "$(rc B3)" = 0 ] && [ "$(order B3)" = "$want" ]; then ok "B1 no journal yet
 if grep -qi "no journal" "$scratch/out-B3"; then ok "B2 the skip says there is no journal yet"; else no "B2 the skip says there is no journal yet" "$(tail -5 "$scratch/out-B3" | tr '\n' ' ')"; fi
 fresh B1 >/dev/null
 SHIM_BACKUP_RC=1 run B1 --live --sha "$SHA"
-if [ "$(rc B1)" != 0 ] && [ "$(order B1)" = "fetch manifest manifest manifest backup" ]; then ok "B3 a failed backup aborts before check-book"; else no "B3 a failed backup aborts before check-book" "rc $(rc B1), order '$(order B1)'"; fi
+if [ "$(rc B1)" != 0 ] && [ "$(order B1)" = "fetch manifest manifest manifest manifest backup" ]; then ok "B3 a failed backup aborts before check-book"; else no "B3 a failed backup aborts before check-book" "rc $(rc B1), order '$(order B1)'"; fi
 
 # --- M. the manifest wait ---------------------------------------------------------
 
@@ -263,7 +263,7 @@ if has out-D "manifest inspect ghcr.io/ajaiupadhyaya/ohcamel:deadbeef"; then ok 
 fresh U >/dev/null
 SHIM_TARGET_SHA=deadbeef run U --dry-run --build --live --sha deadbeef
 if [ "$(rc U)" = 0 ]; then ok "U1 --dry-run --build exits 0"; else no "U1 --dry-run --build exits 0" "rc $(rc U): $(tail -5 "$scratch/out-U" | tr '\n' ' ')"; fi
-for pair in "deploy/Dockerfile ohcamel" "deploy/research.Dockerfile ohcamel-research" "quant/Dockerfile ohcamel-quant"; do
+for pair in "deploy/Dockerfile ohcamel" "deploy/research.Dockerfile ohcamel-research" "quant/Dockerfile ohcamel-quant" "native/hostd/Dockerfile ohcamel-hostd"; do
 	# shellcheck disable=SC2086 # two words, split on purpose
 	set -- $pair
 	if grep -E "docker build .*-f $1 .*-t ghcr.io/ajaiupadhyaya/$2:deadbeef" "$scratch/out-U" | grep -q -- "OHCAMEL_GIT_SHA=deadbeef" &&
@@ -274,9 +274,9 @@ for pair in "deploy/Dockerfile ohcamel" "deploy/research.Dockerfile ohcamel-rese
 	fi
 done
 n=$(grep -c "docker build " "$scratch/out-U")
-if [ "$n" = 3 ]; then ok "U3 exactly one build per Dockerfile"; else no "U3 exactly one build per Dockerfile" "$n builds"; fi
+if [ "$n" = 4 ]; then ok "U3 exactly one build per Dockerfile"; else no "U3 exactly one build per Dockerfile" "$n builds"; fi
 n=$(grep -o -- "-t ghcr.io/ajaiupadhyaya/[a-z-]*:deadbeef" "$scratch/out-U" | sort -u | wc -l | tr -d ' ')
-if [ "$n" = 3 ]; then ok "U4 one tag per Dockerfile"; else no "U4 one tag per Dockerfile" "$n distinct tags"; fi
+if [ "$n" = 4 ]; then ok "U4 one tag per Dockerfile"; else no "U4 one tag per Dockerfile" "$n distinct tags"; fi
 if grep -q "manifest inspect" "$scratch/out-U"; then no "U5 --build has no manifest wait" "$(grep manifest "$scratch/out-U")"; else ok "U5 --build has no manifest wait"; fi
 if grep -E "compose .* pull" "$scratch/out-U" >/dev/null; then no "U6 --build pulls nothing it just built" "$(grep pull "$scratch/out-U")"; else ok "U6 --build pulls nothing it just built"; fi
 
@@ -323,7 +323,7 @@ done
 for t in bbbb dddd "$SHA"; do
 	if has log-P "image rm ghcr.io/ajaiupadhyaya/ohcamel:$t"; then no "P3 $t is kept" "removed"; else ok "P3 $t is kept"; fi
 done
-if has log-P "docker image rm ghcr.io/ajaiupadhyaya/ohcamel-quant:aaaa" && has log-P "docker image rm ghcr.io/ajaiupadhyaya/ohcamel-research:aaaa"; then ok "P4 all three images are pruned alike"; else no "P4 all three images are pruned alike" "$(grep 'image rm' "$scratch/log-P" | tr '\n' ' ')"; fi
+if has log-P "docker image rm ghcr.io/ajaiupadhyaya/ohcamel-quant:aaaa" && has log-P "docker image rm ghcr.io/ajaiupadhyaya/ohcamel-research:aaaa" && has log-P "docker image rm ghcr.io/ajaiupadhyaya/ohcamel-hostd:aaaa"; then ok "P4 all four images are pruned alike"; else no "P4 all four images are pruned alike" "$(grep 'image rm' "$scratch/log-P" | tr '\n' ' ')"; fi
 
 # --- H. --help ----------------------------------------------------------------------
 

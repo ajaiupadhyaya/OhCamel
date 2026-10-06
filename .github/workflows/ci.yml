@@ -754,6 +754,34 @@ jobs:
       - name: The committed manifests reproduce
         run: make research-reproduce
 
+  # The Rust workspace (native/): hostd today, the kernels crate later
+  # (compute plan II.1). rustup reads native/rust-toolchain.toml, so the
+  # toolchain here is the pinned 1.80 with rustfmt and clippy, the same one
+  # native/hostd/Dockerfile builds with. --locked: exactly native/Cargo.lock.
+  # The image itself is built and published by image.yml's matrix.
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: native
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain (native/rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --locked
+
   # OhCamel Quant (quant/): the public site. Its own uv project and npm
   # project, so this job needs neither the opam switch nor research/'s
   # environment. Offline by construction: conftest.py forces
