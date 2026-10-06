@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .admission import Admission, admit_all
+from .admission import Admission, make_admit
 from .artifacts import build_manifest, publish
 from .db import connect, iso, utcnow
 from .kinds import retries_for
@@ -57,7 +57,7 @@ class Worker:
     def __init__(self, cfg: WorkerConfig, *, admit: Callable[[datetime], Admission] | None = None,
                  now: Callable[[], datetime] = utcnow) -> None:
         self.cfg = cfg
-        self.admit = admit or admit_all
+        self.admit = admit or make_admit()
         self.now = now
         self.stop = threading.Event()
         self.conn = connect(cfg.db_path)
