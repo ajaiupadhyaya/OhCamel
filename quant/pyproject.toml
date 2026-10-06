@@ -19,6 +19,7 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
+    "duckdb>=1.2",
 ]
 
 [project.optional-dependencies]

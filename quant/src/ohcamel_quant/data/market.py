@@ -89,6 +89,10 @@ def _window(df: pd.DataFrame, start: date | None, end: date | None) -> pd.DataFr
 
 
 class MarketData:
+    #: MarketData.returns reads the warehouse first when one is configured;
+    #: the warehouse's own reader subclass turns this off to avoid recursion.
+    _reads_warehouse = True
+
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
@@ -161,12 +165,29 @@ class MarketData:
         self, tickers: list[str], start: date | None = None, end: date | None = None,
         log: bool = False,
     ) -> Dataset:
-        """Daily simple (or log) returns from adj_close on common sessions."""
+        """Daily simple (or log) returns from adj_close on common sessions.
+
+        With a warehouse configured (``OHCAMEL_QUANT_WAREHOUSE_PATH``), a request
+        whose tickers are all present, fresh and stored back to ``start``
+        (``None`` = provider max history) is served from it (provenance source
+        ``warehouse:<vendor>``); otherwise the providers serve as before and a
+        ``derived`` provenance note says why the warehouse was not used.
+        """
         import numpy as np
 
+        note = None
+        if self._reads_warehouse and self.settings.warehouse_path is not None:
+            from ..warehouse.readers import warehouse_returns
+
+            hit, note = warehouse_returns(self.settings, tickers, start, end, log)
+            if hit is not None:
+                return hit
         px = self.prices(tickers, start, end)
         r = np.log(px.data).diff() if log else px.data.pct_change()
-        return Dataset(r.iloc[1:], px.provenance)
+        provs = list(px.provenance)
+        if note:
+            provs.append(Provenance.now("derived", note=note))
+        return Dataset(r.iloc[1:], provs)
 
     def quotes(self, tickers: list[str]) -> Dataset:
         """Latest snapshot per ticker: DataFrame indexed by ticker with
