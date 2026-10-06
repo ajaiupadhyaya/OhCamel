@@ -414,6 +414,7 @@ class FastGarch:
     std_resid: np.ndarray
     x: np.ndarray             # optimiser vector, for warm starts
     converged: bool
+    iterations: int = 0
 
     @property
     def persistence(self) -> float:
@@ -424,12 +425,17 @@ def fit_garch_fast(returns: np.ndarray, kind: str = "gjr", x0: np.ndarray | None
     """MLE of (GJR-)GARCH(1,1)-t on DECIMAL returns (internally percent), SLSQP with
     analytic gradient and linear constraints ``alpha + gamma/2 + beta <= 0.9999``,
     ``alpha + gamma >= 0``."""
+    return fit_garch_fast_pct(100.0 * np.asarray(returns, dtype=float), kind, x0)
+
+
+def fit_garch_fast_pct(y: np.ndarray, kind: str = "gjr", x0: np.ndarray | None = None) -> FastGarch:
+    """fit_garch_fast on PERCENT returns ``y`` (the kernels' reference for garch/gjr)."""
     from scipy.optimize import minimize
 
     if kind not in KINDS:
         raise ValueError(f"unknown GARCH kind {kind!r}")
     gjr = kind == "gjr"
-    y = 100.0 * np.asarray(returns, dtype=float)
+    y = np.asarray(y, dtype=float)
     if y.size < 100:
         raise ValueError("GARCH needs at least 100 observations")
     bc = _backcast(y - y.mean())
@@ -464,4 +470,5 @@ def fit_garch_fast(returns: np.ndarray, kind: str = "gjr", x0: np.ndarray | None
     s[1:], _ = lfilter([1.0], [1.0, -b], u, zi=[b * s[0]])
     nxt = om + (a + g * (e[-1] < 0)) * e[-1] ** 2 + b * s[-1]
     return FastGarch(kind, float(mu), float(om), float(a), float(g), float(b), float(nu),
-                     float(-res.fun * y.size), s, float(nxt), e / np.sqrt(s), x, bool(res.success))
+                     float(-res.fun * y.size), s, float(nxt), e / np.sqrt(s), x, bool(res.success),
+                     iterations=int(res.nit))

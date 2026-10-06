@@ -184,3 +184,112 @@ def cscv_pbo(perf: np.ndarray, n_partitions: int, threads: int) -> dict:
     lam = np.log(w / (1.0 - w))
     return {"pbo": float(np.mean(lam <= 0)), "logits": lam, "n_combinations": int(len(combos)),
             "selected": best.astype(np.int64), "is_sharpe": sr_is[rows, best], "oos_sharpe": sr_oos[rows, best]}
+
+
+# ------------------------------------------------------------------ A5: garch
+SQRT2_OV_PI = math.sqrt(2.0 / math.pi)
+LNSIGMA_MAX = math.log(np.finfo(float).max)
+
+
+def _backcast(y: np.ndarray) -> float:
+    e = y - y.mean()
+    tau = min(75, e.size)
+    w = 0.94 ** np.arange(tau)
+    return float(np.sum(e[:tau] ** 2 * w / w.sum()))
+
+
+def _variance_path(p: np.ndarray, y: np.ndarray, kind: str, bc: float) -> np.ndarray | None:
+    from scipy.signal import lfilter
+
+    mu, om = float(p[0]), float(p[1])
+    n = y.size
+    if kind == "egarch":
+        al, ga, be = float(p[2]), float(p[3]), float(p[4])
+        s2 = np.empty(n)
+        lns = min(om + be * math.log(bc), LNSIGMA_MAX)
+        s2[0] = math.exp(lns)
+        yl = y.tolist()
+        for t in range(1, n):
+            if not s2[t - 1] > 0.0:                        # underflow to 0 (or NaN): infeasible, as garch.rs
+                return None
+            z = (yl[t - 1] - mu) / math.sqrt(s2[t - 1])
+            lns = min(om + al * (abs(z) - SQRT2_OV_PI) + ga * z + be * lns, LNSIGMA_MAX)
+            s2[t] = math.exp(lns)
+    else:
+        al = float(p[2])
+        ga = float(p[3]) if kind == "gjr" else 0.0
+        be = float(p[-2])
+        e = y - mu
+        s2 = np.empty(n)
+        s2[0] = om + (al + 0.5 * ga + be) * bc
+        u = om + (al + ga * (e[:-1] < 0)) * e[:-1] ** 2
+        s2[1:], _ = lfilter([1.0], [1.0, -be], u, zi=[be * s2[0]])
+    if not np.all(np.isfinite(s2)) or np.any(s2 <= 0):
+        return None
+    return s2
+
+
+def garch_nll(params: np.ndarray, r: np.ndarray, kind: str) -> float:
+    """Total Student-t NLL of (GJR-/E)GARCH(1,1): see native/kernels/src/garch.rs."""
+    from scipy.special import gammaln
+
+    p = np.asarray(params, dtype=float)
+    nu = float(p[-1])
+    if not nu > 2.0 or not np.all(np.isfinite(p)):
+        return math.inf
+    s2 = _variance_path(p, r, kind, _backcast(r))
+    if s2 is None:
+        return math.inf
+    e = r - p[0]
+    c = gammaln((nu + 1) / 2) - gammaln(nu / 2) - 0.5 * math.log(math.pi * (nu - 2))
+    with np.errstate(over="ignore"):                       # an overflow is an infeasible point: inf below
+        ll = r.size * c - 0.5 * np.sum(np.log(s2)) - 0.5 * (nu + 1) * np.sum(np.log1p(e * e / ((nu - 2) * s2)))
+    return float(-ll) if math.isfinite(ll) else math.inf
+
+
+def garch_fit(r: np.ndarray, kind: str, x0: np.ndarray | None):
+    """garch/gjr: risk.garch.fit_garch_fast_pct (SLSQP, analytic gradient) -- compute plan A5's
+    parity target. egarch: the Rust kernel's own algorithm -- scipy's bounded Nelder-Mead on the
+    mean NLL inside the same box, restarted from the best point until a restart gains <= 1e-12
+    -- because the EGARCH likelihood is multimodal: on SPY's last 1,000 fixture sessions SLSQP
+    (and arch) stop at a local optimum (NLL 1292.137, alpha > 0) that Nelder-Mead walks past to
+    a better one (NLL 1290.938, alpha < 0), so a different optimiser would not be a reference."""
+    from scipy.optimize import minimize
+
+    from .types import GarchFitResult
+
+    if kind in ("garch", "gjr"):
+        from ..risk.garch import fit_garch_fast_pct
+
+        f = fit_garch_fast_pct(r, kind, x0)
+        return GarchFitResult(kind, np.asarray(f.x, dtype=float), float(-f.loglik), bool(f.converged),
+                              int(f.iterations), f.sigma2, float(f.next_variance_pct), f.std_resid)
+    mean, var, amax = float(r.mean()), float(r.var()), float(np.abs(r).max())
+    lnv, lc = math.log(var), math.log(10_000.0)
+    bounds = [(-10 * amax, 10 * amax), (lnv - lc, lnv + lc), (-5.0, 5.0), (-5.0, 5.0), (0.0, 0.9999), (2.05, 500.0)]
+    start = np.array([mean, 0.05 * lnv, 0.1, -0.05, 0.95, 8.0]) if x0 is None else np.asarray(x0, dtype=float)
+    start = np.clip(start, [b[0] for b in bounds], [b[1] for b in bounds])
+    n = r.size
+
+    def obj(p: np.ndarray) -> float:
+        v = garch_nll(p, r, "egarch") / n
+        return v if math.isfinite(v) else 1e10
+
+    opts = {"xatol": 1e-10, "fatol": 1e-14, "maxiter": 5_000, "maxfev": 10_000}
+    x, best = start, obj(start)
+    nit, converged = 0, False
+    for _ in range(8):                                     # garch.rs's restart rule
+        res = minimize(obj, x, method="Nelder-Mead", bounds=bounds, options=opts)
+        nit += int(res.nit)
+        gain = best - float(res.fun)
+        if res.fun <= best:
+            x, best = np.asarray(res.x, dtype=float), float(res.fun)
+        if gain <= 1e-12 * max(abs(best), 1.0):
+            converged = bool(res.success)
+            break
+    s2 = _variance_path(x, r, "egarch", _backcast(r))
+    e_last, s_last = float(r[-1] - x[0]), float(s2[-1])
+    z = e_last / math.sqrt(s_last)
+    nxt = math.exp(min(x[1] + x[2] * (abs(z) - SQRT2_OV_PI) + x[3] * z + x[4] * math.log(s_last), LNSIGMA_MAX))
+    return GarchFitResult("egarch", x, float(garch_nll(x, r, "egarch")), converged, nit, s2, nxt,
+                          (r - x[0]) / np.sqrt(s2))

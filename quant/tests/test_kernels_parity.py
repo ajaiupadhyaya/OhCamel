@@ -169,3 +169,22 @@ def test_cscv_tie_parity(both):
         assert np.array_equal(r["selected"], np.zeros(6, dtype=np.int64)), eng
         np.testing.assert_allclose(r["logits"], np.log(5 / 3), rtol=0, atol=1e-15, err_msg=eng)
         assert r["pbo"] == 0.0, eng
+
+
+# ---------------------------------------------------------------- A5: garch
+@pytest.mark.parametrize("kind,params", [
+    ("garch", [0.05, 0.02, 0.08, 0.88, 7.0]),
+    ("gjr", [0.05, 0.02, 0.03, 0.12, 0.86, 6.5]),
+    ("egarch", [0.04, 0.01, 0.12, -0.08, 0.97, 7.5]),
+])
+def test_garch_nll_parity(both, etf_returns, kind, params):
+    y = 100.0 * etf_returns["SPY"].dropna().to_numpy()[-1500:]
+    assert on("rust", kernels.garch_nll, params, y, kind) == pytest.approx(
+        on("python", kernels.garch_nll, params, y, kind), rel=1e-10)
+
+
+def test_egarch_fit_parity(both, etf_returns):
+    y = 100.0 * etf_returns["SPY"].dropna().to_numpy()[-1000:]
+    r, p = on("rust", kernels.garch_fit, y, "egarch", None), on("python", kernels.garch_fit, y, "egarch", None)
+    assert r.nll == pytest.approx(p.nll, rel=1e-6)
+    np.testing.assert_allclose(r.params, p.params, rtol=1e-3, atol=1e-3)

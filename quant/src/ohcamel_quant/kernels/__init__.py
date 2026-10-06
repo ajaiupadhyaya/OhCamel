@@ -269,9 +269,52 @@ def cscv_pbo(perf: Any, n_partitions: int, threads: int) -> dict:
     return reference.cscv_pbo(m, s, t)
 
 
+GARCH_KINDS = ("garch", "gjr", "egarch")
+_N_PARAMS = {"garch": 5, "gjr": 6, "egarch": 6}
+
+
+def _kind(kind: str) -> str:
+    if kind not in GARCH_KINDS:
+        raise ValueError(f"unknown GARCH kind {kind!r}; use one of {GARCH_KINDS}")
+    return kind
+
+
+def garch_nll(params: Any, r: Any, kind: str) -> float:
+    """Total Student-t negative log-likelihood of (GJR-/E)GARCH(1,1) at ``params``
+    (garch [mu, omega, alpha, beta, nu]; gjr/egarch [mu, omega, alpha, gamma, beta, nu])
+    over ``r`` in the parameters' units (percent returns, as arch fits); ``inf`` where
+    the parameters are infeasible. Initialisation is arch's backcast."""
+    kind = _kind(kind)
+    p, y = _arr(params, "params", 1), _arr(r, "r", 1)
+    if p.size != _N_PARAMS[kind]:
+        raise ValueError(f"{kind} takes {_N_PARAMS[kind]} parameters; got {p.size}")
+    if y.size < 2 or not np.all(np.isfinite(y)):
+        raise ValueError("r must be at least 2 finite returns")
+    return float(_impl("garch_nll")(p, y, kind))
+
+
+def garch_fit(r: Any, kind: str, x0: Any | None) -> GarchFitResult:
+    """Maximum-likelihood (GJR-/E)GARCH(1,1)-t on ``r`` (percent returns; >= 100),
+    warm-started from ``x0`` when given (compute plan A5)."""
+    kind = _kind(kind)
+    y = _arr(r, "r", 1)
+    if y.size < 100:
+        raise ValueError(f"GARCH needs at least 100 observations; got {y.size}")
+    if not np.all(np.isfinite(y)):
+        raise ValueError("r must be finite")
+    x = None if x0 is None else _arr(x0, "x0", 1)
+    if x is not None and x.size != _N_PARAMS[kind]:
+        raise ValueError(f"x0 needs {_N_PARAMS[kind]} parameters; got {x.size}")
+    if engine_of("garch_fit") == "rust":
+        params, nll, conv, nit, s2, nxt, z = _RUST.garch_fit(y, kind, x)
+        return GarchFitResult(kind, np.asarray(params), float(nll), bool(conv), int(nit), np.asarray(s2),
+                              float(nxt), np.asarray(z))
+    return reference.garch_fit(y, kind, x)
+
+
 __all__ = [
-    "API", "API_VERSION", "ENGINE", "ENV", "MAX_HORIZON", "MAX_PARTITIONS", "MAX_PATHS", "MAX_THREADS",
+    "API", "API_VERSION", "ENGINE", "ENV", "GARCH_KINDS", "MAX_HORIZON", "MAX_PARTITIONS", "MAX_PATHS", "MAX_THREADS",
     "BacktestPath", "GarchFitResult", "GarchParams", "SviFitResult",
-    "copula_t_paths", "cscv_pbo", "engine_of", "fhs_paths", "forced", "stationary_bootstrap_means", "tail_count",
+    "copula_t_paths", "cscv_pbo", "engine_of", "fhs_paths", "forced", "garch_fit", "garch_nll", "stationary_bootstrap_means", "tail_count",
     "var_es_from_pnl",
 ]

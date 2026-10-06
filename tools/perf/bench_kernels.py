@@ -60,6 +60,10 @@ def cases() -> dict[str, Case]:
     out["stationary_bootstrap_means"] = (lambda t: kernels.stationary_bootstrap_means(xx, 10.0, 10_000, 3, t), True)
     perf18 = np.column_stack([etf.to_numpy(), -0.5 * etf.to_numpy()])
     out["cscv_pbo"] = (lambda t: kernels.cscv_pbo(perf18, 16, t), True)
+    ypct = 100.0 * etf["SPY"].to_numpy()
+    p6 = kernels.garch_fit(ypct[-1000:], "gjr", None).params
+    out["garch_nll"] = (lambda t: kernels.garch_nll(p6, ypct, "gjr"), False)
+    out["garch_fit"] = (lambda t: kernels.garch_fit(ypct[-1000:], "gjr", None), False)
     return out
 
 
