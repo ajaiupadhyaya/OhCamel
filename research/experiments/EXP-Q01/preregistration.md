@@ -1,6 +1,6 @@
 # EXP-Q01 — Does a gradient-boosted cross-sectional ranker beat a linear composite on liquid ETFs?
 
-**Status: DRAFT — NOT APPROVED.** Drafted by the agent 2026-10-06 for the
+**Status: APPROVED 2026-10-06.** Drafted by the agent 2026-10-06 for the
 owner. Under `docs/CHARTER.md` the owner owns hypotheses and kill decisions;
 nothing below runs against the holdout, and no result is published, until the
 owner records approval at the bottom of this file.
@@ -88,4 +88,4 @@ verdict (Ship spec §6).
 
 ## Approval
 
-`Approved-by:` _(owner, date, option A/B/C, and any edits)_
+`Approved-by:` owner (ajaiupadhyaya), 2026-10-06, option A (ETF universe), approved as written, recorded by the agent from the owner's answer in session.

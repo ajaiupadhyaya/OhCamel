@@ -1,6 +1,6 @@
 # EXP-Q02 — Do HMM regime probabilities carry information about next-month risk?
 
-**Status: DRAFT — NOT APPROVED.** Drafted by the agent 2026-10-06 for the
+**Status: APPROVED 2026-10-06.** Drafted by the agent 2026-10-06 for the
 owner. Under `docs/CHARTER.md` the owner owns hypotheses; no result is
 published until approval is recorded at the bottom of this file.
 
@@ -58,4 +58,4 @@ fit; FRED revisions (OAS is not revised; the slope is from daily yields).
 
 ## Approval
 
-`Approved-by:` _(owner, date, and any edits)_
+`Approved-by:` owner (ajaiupadhyaya), 2026-10-06, approved as written, recorded by the agent from the owner's answer in session.
