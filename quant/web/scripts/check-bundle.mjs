@@ -21,7 +21,6 @@ const SURFACE = "src/pages/volatility/SurfaceView.tsx";
 // Pages that still render the raw Plotly <Chart>; each P2 task deletes its own (P2-6: macro,
 // company, ticker; P2-7: engine). Empty = Plotly is the surface view's alone.
 const LEGACY_PLOTLY = [
-  "src/pages/Ticker.tsx",
   "src/pages/company/DcfTab.tsx",
   "src/pages/company/RatiosTab.tsx",
   "src/pages/engine/Live.tsx",
