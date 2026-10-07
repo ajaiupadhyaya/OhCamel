@@ -75,14 +75,14 @@ export default function Markets() {
           <Panel<Overview> title={`Heatmap · ±${Math.round(period.scale * 100)}%`} query={sectors} error={sectorError} span={2} skeletonHeight={300} asOf={sectors.data?.as_of ?? undefined}>
             {(d) => <SectorHeatmap rows={d.rows} period={period.key} scale={period.scale} />}
           </Panel>
-          <Panel<Overview> notes={[]} title={`Ranked · ${period.label}`} query={sectors} error={sectorError} skeletonHeight={300}>
+          <Panel<Overview> notes={[]} title={`Ranked · ${period.label}`} query={sectors} error={sectorError} skeletonHeight={300} asOf={sectors.data?.as_of ?? undefined}>
             {(d) => {
               const rows = ranked(d, period.key);
               return <BarChart horizontal colorBySign x={rows.map((r) => r.name)} y={rows.map((r) => r[period.key] as number)} yFormat="pct" height={Math.max(180, rows.length * 26 + 40)} />;
             }}
           </Panel>
         </div>
-        <Panel<Overview> notes={[]} title="Detail" query={sectors} error={sectorError} flush skeletonHeight={240}>
+        <Panel<Overview> notes={[]} title="Detail" query={sectors} error={sectorError} flush skeletonHeight={240} asOf={sectors.data?.as_of ?? undefined}>
           {(d) => <MarketTable rows={d.rows} />}
         </Panel>
       </Section>
@@ -176,6 +176,7 @@ function CorrelationPanel({ q }: { q: OverviewQuery }) {
       info={{ text: "Pearson correlation of daily returns over the last year.", formula: "\\rho_{ij} = \\frac{\\operatorname{Cov}(r_i, r_j)}{\\sigma_i\\,\\sigma_j}" }}
       query={q}
       error={q.error ?? allFailed(q.data)}
+      asOf={q.data?.as_of ?? undefined}
       empty={empty ? <div className="mk-nodata num">FEWER THAN 2 INSTRUMENTS WITH 1Y COMMON HISTORY</div> : undefined}
       actions={corr?.n_obs ? <span className="mk-missing num">N {corr.n_obs}</span> : undefined}
       skeletonHeight={320}
