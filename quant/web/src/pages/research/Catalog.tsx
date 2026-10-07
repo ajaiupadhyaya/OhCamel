@@ -1,72 +1,66 @@
 /**
- * The strategy catalog rail: one editorial card per rule from the literature, grouped by
- * family. The selected card opens up to the full explanation and citation.
+ * The strategy catalog: every rule from GET /api/backtest/strategies as one ruled radio table
+ * grouped by family (name, source, default universe size, rebalance), then the selected
+ * rule's citation and terms. Explanations live in Methodology behind the Note marker.
  */
-import { Icon } from "../../components/Icon";
+import { Note } from "../../design";
+import { fmtNum } from "../../lib/format";
 import { CATEGORY_LABEL, CATEGORY_ORDER, shortCite } from "./info";
+import { Readline } from "./shared";
 import type { StrategySpec } from "./types";
 
-export function Catalog({
-  strategies,
-  selected,
-  onSelect,
-  universeLabel,
-}: {
-  strategies: StrategySpec[];
-  selected: string;
-  onSelect: (key: string) => void;
-  universeLabel: (tickers: string[]) => string | null;
-}) {
-  const groups = [
-    ...new Set([...CATEGORY_ORDER, ...strategies.map((s) => s.category)]),
-  ]
-    .map((c) => ({ c, items: strategies.filter((s) => s.category === c) }))
-    .filter((g) => g.items.length);
+export function Catalog({ strategies, selected, onSelect }: { strategies: StrategySpec[]; selected: string; onSelect: (key: string) => void }) {
+  const groups = [...new Set([...CATEGORY_ORDER, ...strategies.map((s) => s.category)])].map((c) => ({ c, items: strategies.filter((s) => s.category === c) })).filter((g) => g.items.length);
   return (
-    <nav className="sl-catalog" aria-label="Strategy catalog">
-      <div className="sl-catalog-head">
-        <div className="eyebrow">Catalog</div>
-        <div className="sl-catalog-title display">
-          {strategies.length} rules from the literature
-        </div>
-        <p className="subtle small">
-          Each is implemented exactly as published, on daily adjusted closes,
-          and runs through the same cost-aware engine.
-        </p>
+    <div className="sl-strategies">
+      <div className="sl-strat sl-strat-headrow" aria-hidden>
+        <span>STRATEGY</span>
+        <span className="sl-strat-cite">SOURCE</span>
+        <span className="sl-strat-n">N</span>
+        <span className="sl-strat-rebal">REBAL</span>
       </div>
-      {groups.map((g) => (
-        <div key={g.c} className="sl-catalog-group">
-          <div className="sl-catalog-cat">{CATEGORY_LABEL[g.c] ?? g.c}</div>
-          {g.items.map((s) => {
-            const active = s.key === selected;
-            const uni = universeLabel(s.default_tickers);
-            return (
-              <button
-                key={s.key}
-                type="button"
-                className={`sl-card ${active ? "active" : ""}`}
-                aria-pressed={active}
-                onClick={() => onSelect(s.key)}
-              >
-                <span className="sl-card-name">{s.name}</span>
-                <span className="sl-card-text clamp">{s.explanation}</span>
-                <span className="sl-card-cite">
-                  <Icon name="book" size={12} /> {shortCite(s.citation)}
-                </span>
-                <span className="sl-card-uni">
-                  {uni && <span className="sl-card-uni-label">{uni}</span>}
-                  <span className="num">
-                    {s.default_tickers.slice(0, 6).join(" ")}
-                    {s.default_tickers.length > 6
-                      ? ` +${s.default_tickers.length - 6}`
-                      : ""}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      ))}
-    </nav>
+      <div role="radiogroup" aria-label="Strategy">
+        {groups.map((g) => (
+          <div key={g.c} role="presentation">
+            <span className="sl-strat-family" aria-hidden>
+              {CATEGORY_LABEL[g.c] ?? g.c}
+            </span>
+            {g.items.map((s) => {
+              const active = s.key === selected;
+              return (
+                <button key={s.key} type="button" role="radio" aria-checked={active} className={`sl-strat ${active ? "active" : ""}`} onClick={() => onSelect(s.key)}>
+                  <span className="sl-strat-name">{s.name}</span>
+                  <span className="sl-strat-cite">{shortCite(s.citation)}</span>
+                  <span className="sl-strat-n">{s.default_tickers.length}</span>
+                  <span className="sl-strat-rebal">{s.default_rebalance.toUpperCase()}</span>
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** The selected rule: its citation (with the Methodology note) and its terms. */
+export function StrategyFoot({ spec }: { spec: StrategySpec }) {
+  return (
+    <div className="sl-strat-foot">
+      <div className="sl-cite">
+        {spec.citation}
+        <Note n={1} to="strategies" />
+      </div>
+      <Readline
+        items={[
+          { k: "FAMILY", v: CATEGORY_LABEL[spec.category] ?? spec.category.toUpperCase() },
+          { k: "REBAL", v: spec.default_rebalance.toUpperCase() },
+          { k: "GROSS ≤", v: `${fmtNum(spec.default_max_leverage, spec.default_max_leverage % 1 ? 1 : 0)}×` },
+          { k: "MIN ASSETS", v: spec.min_assets },
+          spec.max_assets != null && { k: "MAX ASSETS", v: spec.max_assets },
+          spec.needs_market && { k: "MARKET", v: "BENCH" },
+        ]}
+      />
+    </div>
   );
 }

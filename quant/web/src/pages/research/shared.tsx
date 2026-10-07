@@ -1,12 +1,14 @@
 /**
- * Small building blocks shared by the Strategy Lab tabs: ticker availability, the
- * editorial verdict block, a pre-binned histogram and number helpers.
+ * Building blocks shared by the Research views: ticker availability, the verdict block (the
+ * stamp, its figures, the charter gates), a ruled readout line and number helpers. Paper
+ * Tape: rules, caps labels, mono numbers.
  */
-import { useMemo, type ReactNode } from "react";
-import type { Data } from "plotly.js";
-import { Chart, InfoTip, type InfoProp } from "../../components";
+import { useMemo, type CSSProperties, type ReactNode } from "react";
+import { DataTable, type Column } from "../../components";
+import { Verdict, type VerdictValue } from "../../design";
+import { fmtNum, fmtPct } from "../../lib/format";
 import { useApiQuery } from "../../lib/query";
-import type { Tokens } from "../../lib/theme";
+import type { GateStatus, LabGate } from "./derive";
 
 // ------------------------------------------------------------------ availability
 
@@ -24,24 +26,14 @@ export type Availability = {
 
 /**
  * Which tickers any configured data source can serve, via GET /market/overview (cheap,
- * cached). Offline, only the committed fixtures are available; online, almost everything.
- * If the check itself fails, tickers are treated as available and the backtest reports
- * any real problem.
+ * cached). Offline, only the committed fixtures are available. If the check itself fails,
+ * tickers are treated as available and the backtest reports any real problem.
  */
 export function useAvailability(tickers: string[]): Availability {
-  const list = useMemo(
-    () => [...new Set(tickers.map((t) => t.toUpperCase()))].sort(),
-    [tickers],
-  );
-  const q = useApiQuery<OverviewLite>(
-    "/market/overview",
-    { tickers: list.join(",") },
-    { enabled: list.length > 0, staleTime: 30 * 60_000 },
-  );
+  const list = useMemo(() => [...new Set(tickers.map((t) => t.toUpperCase()))].sort(), [tickers]);
+  const q = useApiQuery<OverviewLite>("/market/overview", { tickers: list.join(",") }, { enabled: list.length > 0, staleTime: 30 * 60_000 });
   return useMemo(() => {
-    const rows = new Map(
-      (q.data?.rows ?? []).map((r) => [r.ticker.toUpperCase(), r]),
-    );
+    const rows = new Map((q.data?.rows ?? []).map((r) => [r.ticker.toUpperCase(), r]));
     const failed = q.isError;
     return {
       status: (t: string) => {
@@ -64,242 +56,113 @@ export function useAvailability(tickers: string[]): Availability {
   }, [q.data, q.isError, q.isLoading, q.isFetching, list]);
 }
 
-// ------------------------------------------------------------------ verdict
+// ------------------------------------------------------------------ verdict block
 
-export function Verdict({
-  eyebrow,
-  head,
-  children,
-  stats,
-  tone,
-}: {
-  eyebrow?: ReactNode;
-  head: ReactNode;
-  children?: ReactNode;
-  stats?: {
-    label: ReactNode;
-    value: ReactNode;
-    caption?: ReactNode;
-    info?: InfoProp;
-    tone?: string;
-  }[];
-  tone?: "gain" | "loss" | "warn" | "neutral";
-}) {
+export interface Fig {
+  k: ReactNode;
+  v: ReactNode;
+  sub?: ReactNode;
+  tone?: "loss" | "";
+}
+
+/** Big mono figures under the verdict: label, value, one-line footnote. */
+export function Figs({ items }: { items: Fig[] }) {
   return (
-    <div className={`sl-verdict sl-tone-${tone ?? "neutral"}`}>
-      {eyebrow && <div className="eyebrow">{eyebrow}</div>}
-      <h2 className="sl-verdict-head display">{head}</h2>
-      {stats && stats.length > 0 && (
-        <div className="sl-verdict-grid">
-          {stats.map((s, i) => (
-            <div className="sl-verdict-stat" key={i}>
-              <div className="sl-verdict-label">
-                {s.label}
-                <InfoTip
-                  info={s.info}
-                  size={12}
-                  label={typeof s.label === "string" ? s.label : undefined}
-                />
-              </div>
-              <div className={`sl-verdict-value num ${s.tone ?? ""}`}>
-                {s.value}
-              </div>
-              {s.caption && (
-                <div className="sl-verdict-caption subtle small">
-                  {s.caption}
-                </div>
-              )}
-            </div>
-          ))}
+    <div className="sl-figs num" style={{ "--n": items.length } as CSSProperties}>
+      {items.map((f, i) => (
+        <div key={i}>
+          <span className="sl-fig-k">{f.k}</span>
+          <span className={`sl-fig-v ${f.tone ?? ""}`}>{f.v}</span>
+          {f.sub && <span className="sl-fig-sub">{f.sub}</span>}
         </div>
-      )}
-      {children && <div className="sl-verdict-text">{children}</div>}
+      ))}
     </div>
   );
 }
 
-// ------------------------------------------------------------------ binned histogram
+const statusClass = (s: GateStatus) => (s === "FAIL" ? "sl-gate-fail" : s === "PASS" || s === "REPORTED" ? "" : "sl-gate-dim");
 
-/**
- * Histogram from server-side bins (edges length = counts length + 1). Bars are coloured by
- * which side of `split` their centre falls on (loss colour left, gain right) when `split`
- * is given; `vlines` are labelled markers.
- */
-export function BinnedHistogram({
-  counts,
-  edges,
-  split,
-  vlines,
-  xTitle,
-  xFormat = ".2f",
-  height = 260,
-  normalize = true,
-}: {
-  counts: number[];
-  edges: number[];
-  split?: number;
-  vlines?: { x: number; label: string; color?: string; dash?: string }[];
-  xTitle?: string;
-  xFormat?: string;
-  height?: number;
-  normalize?: boolean;
-}) {
-  const total = counts.reduce((a, b) => a + b, 0) || 1;
-  const data = useMemo(
-    () =>
-      (t: Tokens): Data[] => {
-        const centers = counts.map((_, i) => (edges[i] + edges[i + 1]) / 2);
-        const widths = counts.map((_, i) => edges[i + 1] - edges[i]);
-        const y = counts.map((c) => (normalize ? c / total : c));
-        const colors = centers.map((c) =>
-          split === undefined ? t.categorical[0] : c <= split ? t.loss : t.gain,
-        );
-        return [
-          {
-            type: "bar",
-            x: centers,
-            y,
-            width: widths,
-            marker: {
-              color: colors,
-              opacity: 0.8,
-              line: { color: t.surface, width: 1 },
-            },
-            customdata: counts.map((_, i) => [
-              edges[i],
-              edges[i + 1],
-              counts[i],
-            ]),
-            hovertemplate: `%{customdata[0]:${xFormat}} to %{customdata[1]:${xFormat}}<br><b>${normalize ? "%{y:.1%}" : "%{y}"}</b> (%{customdata[2]:,})<extra></extra>`,
-          } as Data,
-        ];
-      },
-    [counts, edges, split, normalize, total, xFormat],
-  );
-  const layout = useMemo(
-    () => (t: Tokens) => ({
-      bargap: 0,
-      showlegend: false,
-      margin: { l: 44, r: 12, t: 26, b: 40 },
-      xaxis: {
-        title: xTitle ? { text: xTitle } : undefined,
-        tickformat: xFormat,
-        showspikes: false,
-        zeroline: false,
-      },
-      yaxis: { tickformat: normalize ? ".0%" : ",d", rangemode: "tozero" },
-      shapes: (vlines ?? []).map((v) => ({
-        type: "line",
-        yref: "paper",
-        y0: 0,
-        y1: 1,
-        x0: v.x,
-        x1: v.x,
-        line: { color: v.color ?? t.text2, width: 1.5, dash: v.dash ?? "dot" },
-      })),
-      annotations: (vlines ?? []).map((v, i) => ({
-        x: v.x,
-        yref: "paper",
-        y: 1,
-        yanchor: "bottom",
-        text: v.label,
-        showarrow: false,
-        xanchor: i % 2 ? "right" : "left",
-        xshift: i % 2 ? -4 : 4,
-        font: { size: 11, color: t.text2, family: t.fontUi },
-      })),
-    }),
-    [vlines, xTitle, xFormat, normalize],
-  );
-  return <Chart data={data} layout={layout as any} height={height} />;
+/** The charter gates as a dense ruled table: GATE · VALUE · RULE · STATUS (FAIL in signal). */
+export function GateTable({ gates }: { gates: LabGate[] }) {
+  const cols: Column<LabGate>[] = [
+    { key: "code", label: "Gate", sortable: false, render: (g) => <span className="num">{g.code}</span> },
+    { key: "value", label: "Value", numeric: true, sortable: false, render: (g) => <span className={g.status === "NOT RUN" ? "sl-gate-dim" : ""}>{g.value}</span> },
+    { key: "rule", label: "Rule", numeric: true, sortable: false, hideBelow: 420, render: (g) => <span className="sl-gate-dim">{g.rule}</span> },
+    { key: "status", label: "Status", numeric: true, sortable: false, render: (g) => <span className={statusClass(g.status)}>{g.status}</span> },
+  ];
+  return <DataTable<LabGate> columns={cols} rows={gates} rowKey={(g) => g.code} compact />;
 }
 
-// ------------------------------------------------------------------ helpers
+/** Verdict first, then figures, then the gates. */
+export function VerdictBlock({ value, detail, figs, gates, children }: { value: VerdictValue; detail: string; figs?: Fig[]; gates?: LabGate[]; children?: ReactNode }) {
+  return (
+    <div className="sl-verdict">
+      <Verdict value={value} detail={detail} />
+      {figs && figs.length > 0 && <Figs items={figs} />}
+      {gates && gates.length > 0 && <GateTable gates={gates} />}
+      {children}
+    </div>
+  );
+}
 
-export const finite = (x: number | null | undefined): x is number =>
-  typeof x === "number" && Number.isFinite(x);
+type ReadItem = { k: string; v: ReactNode; tone?: string };
 
-/** "0.49" style Sharpe. */
-export const fmtSR = (x: number | null | undefined, d = 2) =>
-  finite(x) ? x.toFixed(d).replace("-", "−") : "—";
+/** A terse ruled readout line: KEY value · KEY value. */
+export function Readline({ items }: { items: (ReadItem | false | null | undefined)[] }) {
+  return (
+    <div className="sl-readline num">
+      {items
+        .filter((it): it is ReadItem => !!it)
+        .map((it, i) => (
+          <span key={i}>
+            <span className="sl-readline-k">{it.k}</span> <span className={it.tone ?? ""}>{it.v}</span>
+          </span>
+        ))}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ number helpers
+
+export const finite = (x: number | null | undefined): x is number => typeof x === "number" && Number.isFinite(x);
+
+/** Sharpe-style ratio, 2 dp. */
+export const fmtSR = (x: number | null | undefined, d = 2) => fmtNum(x, d);
 
 /** Probability as a percent with sensible precision near the ends. */
 export function fmtProb(p: number | null | undefined): string {
   if (!finite(p)) return "—";
   if (p > 0.999) return ">99.9%";
   if (p < 0.001) return "<0.1%";
-  return `${(p * 100).toFixed(p > 0.99 || p < 0.01 ? 1 : 0)}%`;
+  return fmtPct(p, p > 0.99 || p < 0.01 ? 1 : 0);
 }
 
 export function fmtYears(y: number | null | undefined): string {
   if (y === Infinity) return "∞";
   if (!finite(y)) return "—";
-  return y >= 100 ? `${Math.round(y)} yrs` : `${y.toFixed(1)} yrs`;
+  return `${fmtNum(y, y >= 100 ? 0 : 1)}Y`;
 }
 
-/** Converts a list of values to category labels for heatmaps. */
-export const label = (v: number) => String(+v.toFixed(6));
+/** A grid value as a label: up to six decimals, trailing zeros dropped. */
+export const paramLabel = (v: number) => String(Math.round(v * 1e6) / 1e6);
 
-// ------------------------------------------------------------------ bars
+/** Parameter names as caps labels: "vol_target" → "VOL TARGET". */
+export const capsName = (s: string) => s.replace(/_/g, " ").toUpperCase();
 
-/**
- * Grouped bars built on <Chart> (page-local styling; the shared BarChart also works now).
- */
-export function Bars({
-  series,
-  tick = ".2f",
-  hover = ".2f",
-  suffix = "",
-  dateX,
-  height = 280,
-  colorBySign,
-  layout: extra,
-}: {
-  series: {
-    name: string;
-    x: (string | number)[];
-    y: (number | null)[];
-    color?: string;
-  }[];
-  tick?: string;
-  hover?: string;
-  suffix?: string;
-  dateX?: boolean;
-  height?: number;
-  colorBySign?: boolean;
-  layout?: Record<string, unknown>;
-}) {
-  const data = useMemo(
-    () =>
-      (t: Tokens): Data[] =>
-        series.map((s, i) => ({
-          type: "bar",
-          name: s.name,
-          x: s.x,
-          y: s.y,
-          marker: {
-            color: colorBySign
-              ? s.y.map((v) => ((v ?? 0) < 0 ? t.loss : t.gain))
-              : (s.color ?? t.categorical[i % 8]),
-          },
-          hovertemplate: `${series.length > 1 ? "<b>%{fullData.name}</b> " : ""}%{x${dateX ? "|%b %Y" : ""}}: %{y:${hover}}${suffix}<extra></extra>`,
-        })) as Data[],
-    [series, hover, suffix, dateX, colorBySign],
-  );
-  const layout = useMemo(
-    () => ({
-      barmode: "group",
-      bargap: dateX ? 0.15 : 0.25,
-      showlegend: series.length > 1,
-      hovermode: "closest",
-      xaxis: dateX
-        ? { type: "date", showspikes: false }
-        : { type: "category", showgrid: false, showspikes: false },
-      yaxis: { tickformat: tick, ticksuffix: suffix, zeroline: true },
-      margin: { l: 48, r: 8, t: series.length > 1 ? 30 : 10, b: 30 },
-      ...(extra ?? {}),
-    }),
-    [dateX, tick, suffix, series.length, extra],
-  );
-  return <Chart data={data} layout={layout as any} height={height} />;
+/** Params as a terse mono line: LOOKBACK 252 · VOL TARGET 0.4. */
+export function paramLine(params: Record<string, unknown> | null | undefined): string {
+  if (!params) return "";
+  return Object.entries(params)
+    .map(([k, v]) => {
+      const n = capsName(k);
+      if (typeof v === "number") return `${n} ${paramLabel(v)}`;
+      if (v && typeof v === "object") {
+        const e = Object.entries(v as Record<string, number>);
+        return e.length ? e.map(([t, w]) => `${t} ${fmtPct(w, 1)}`).join(" ") : `${n} EQUAL`;
+      }
+      if (v === "") return `${n} CASH`;
+      if (typeof v === "boolean") return `${n} ${v ? "ON" : "OFF"}`;
+      return `${n} ${String(v)}`;
+    })
+    .join(" · ");
 }

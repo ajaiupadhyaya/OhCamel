@@ -3,7 +3,7 @@
  *   <Verdict value="FAIL" detail="DSR 0.41 < 0.95" />
  * FAIL is set in --signal; every other value in ink.
  */
-export type VerdictValue = "PASS" | "FAIL" | "ADVISORY" | "INSUFFICIENT DATA" | "AWAITING PRE-REGISTRATION";
+export type VerdictValue = "PASS" | "FAIL" | "ADVISORY" | "INSUFFICIENT DATA" | "DESCRIPTIVE ONLY" | "AWAITING PRE-REGISTRATION";
 
 export function Verdict({ value, detail }: { value: VerdictValue; detail?: string }) {
   const slug = value.toLowerCase().replace(/[^a-z]+/g, "-");

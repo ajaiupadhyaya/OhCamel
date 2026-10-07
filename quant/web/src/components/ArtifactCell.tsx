@@ -2,14 +2,15 @@
  * A Cell backed by one job kind's latest artifact (GET /api/artifacts/{kind}/latest).
  *  - held for pre-registration → AWAITING PRE-REGISTRATION, and nothing is read;
  *  - 404 → INSUFFICIENT DATA · NOT YET RUN; 503 → INSUFFICIENT DATA · DATA UNAVAILABLE;
- *  - present → the verdict first (when the product has one), then the body, with the
- *    artifact's data_asof in the header and the stale mark past a missed night.
+ *  - present → the verdict first (when the product has one) with its one-line detail, then
+ *    the body, with the artifact's data_asof in the header and the stale mark when the API
+ *    says stale (or, without its flag, past a missed night).
  */
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Panel } from "./Panel";
 import { Absent, Verdict } from "../design";
-import { NIGHTLY_MAX_AGE_SEC, PREREGISTERED, absentLabel, manifestOf, useArtifact, type Manifest } from "../lib/artifacts";
+import { PREREGISTERED, absentLabel, artifactMaxAge, manifestOf, useArtifact, type Manifest } from "../lib/artifacts";
 import { fmtAuto } from "../lib/format";
 
 export interface ArtifactCellProps {
@@ -61,13 +62,12 @@ export function ArtifactCell({ title, kind, to, go, experiment, span, controls, 
       actions={actions}
       span={span}
       asOf={m.data_asof ?? m.finished_at ?? undefined}
-      // Lane B's {stale: true} wins over the clock: a negative max age is always exceeded.
-      maxAgeSec={m.stale ? -1 : NIGHTLY_MAX_AGE_SEC}
+      maxAgeSec={artifactMaxAge(m)}
       provenance={m.provenance}
       notes={m.notes}
     >
       <div className="oc-art">
-        {m.verdict && <Verdict value={m.verdict} />}
+        {m.verdict && <Verdict value={m.verdict} detail={m.verdict_detail ?? undefined} />}
         {children ? children(m) : <Headline m={m} />}
         <div className="oc-art-id num">
           {kind} · {m.id}

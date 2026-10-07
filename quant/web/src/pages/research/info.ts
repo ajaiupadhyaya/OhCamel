@@ -45,7 +45,7 @@ export const INFO = {
   turnover: { title: "Annual turnover", text: "Total traded notional per year as a multiple of capital: 10× means the book was traded ten times over in a year.", formula: "\\text{TO} = \\tfrac{252}{N}\\sum_t \\sum_i |w_{i,t} - w_{i,t^-}|" },
   cost_drag: { title: "Annual cost drag", text: "Return lost to proportional trading costs per year, at the cost level you set.", formula: "\\approx c \\times \\text{TO}" },
   exposure: { title: "Exposure", text: "Gross = sum of absolute weights (leverage); net = longs minus shorts (market direction); cash = 1 − Σw, which earns the T-bill rate." },
-  weights: { title: "Target weights over time", text: "The weight the strategy held in each asset at each month end: ochre is short, cornflower is long, pale is flat." },
+  weights: { title: "Target weights over time", text: "The weight the strategy held in each asset at each month end. Darker is a larger position; shorts are on the other side of the ramp." },
   rolling_sharpe: { title: "Rolling Sharpe", text: "Sharpe ratio over the trailing window, sampled weekly. Shows whether the edge is steady or came from one lucky stretch.", formula: "SR_t = \\sqrt{252}\\,\\frac{\\overline{r - r_f}_{[t-w,t]}}{\\operatorname{sd}(r - r_f)_{[t-w,t]}}" },
   drawdown: { title: "Drawdown", text: "How far the equity curve sits below its previous peak on each day.", formula: "D_t = \\frac{W_t}{\\max_{s \\le t} W_s} - 1" },
   look_ahead: { title: "Look-ahead audit", text: "The engine re-runs the strategy on data truncated at several dates and checks that the weights decided on those dates do not change. Any difference would mean the rule peeked at the future." },
@@ -121,12 +121,12 @@ export function shortCite(c: string | null | undefined): string {
 }
 
 export const CATEGORY_LABEL: Record<string, string> = {
-  trend: "Trend",
-  momentum: "Momentum",
-  risk: "Risk-based",
-  factor: "Factor",
-  reversal: "Reversal",
-  "stat-arb": "Statistical arbitrage",
-  benchmark: "Benchmarks",
+  trend: "TREND",
+  momentum: "MOMENTUM",
+  risk: "RISK-BASED",
+  factor: "FACTOR",
+  reversal: "REVERSAL",
+  "stat-arb": "STAT ARB",
+  benchmark: "BENCHMARK",
 };
 export const CATEGORY_ORDER = ["trend", "momentum", "risk", "factor", "reversal", "stat-arb", "benchmark"];

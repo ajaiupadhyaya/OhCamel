@@ -1,158 +1,94 @@
 /**
- * Costs tab — POST /api/backtest/costs: the same positions re-priced at other proportional
- * cost levels (turnover does not depend on cost), with break-even costs.
+ * COSTS (POST /api/backtest/costs): the same positions re-priced at other one-way costs
+ * (turnover does not depend on cost), with the break-even costs. Verdict first: FAIL when
+ * the Sharpe is not positive at the cost the user set; the charter's 0/5/15/30 bps ladder
+ * is REPORTED when every level is on it.
  */
-import { useMemo, useState } from "react";
-import type { Data } from "plotly.js";
-import { Chart, DataTable, Field, Panel, type Column } from "../../components";
-import { Icon } from "../../components/Icon";
+import { useState } from "react";
+import { DataTable, Field, Panel, type Column } from "../../components";
+import { XYChart, type XYRule } from "../../charts/XYChart";
+import { Note } from "../../design";
 import { fmtMultiple, fmtNum, fmtPct } from "../../lib/format";
 import { useApiPost } from "../../lib/query";
-import type { Tokens } from "../../lib/theme";
 import type { BaseBody } from "./config";
+import { CHARTER, costsVerdict } from "./derive";
 import { INFO } from "./info";
-import { Verdict, finite, fmtSR } from "./shared";
+import { Readline, VerdictBlock, finite, fmtSR } from "./shared";
 import type { CostPoint, CostsOut } from "./types";
 
 const DEFAULT_BPS = [0, 1, 2, 5, 10, 15, 20, 30, 50, 75, 100];
 
-function parseBps(
-  text: string,
-  cap: number,
-): { values: number[]; error: string | null } {
-  const parts = text.split(/[\s,;]+/).filter(Boolean);
+function parseBps(text: string, cap: number): { values: number[]; error: string | null } {
   const vals: number[] = [];
-  for (const p of parts) {
+  for (const p of text.split(/[\s,;]+/).filter(Boolean)) {
     const v = Number(p);
-    if (!Number.isFinite(v))
-      return { values: [], error: `“${p}” is not a number` };
-    if (v < 0 || v > 1000)
-      return {
-        values: [],
-        error: "cost levels must be between 0 and 1,000 bps",
-      };
+    if (!Number.isFinite(v)) return { values: [], error: `NOT A NUMBER · ${p}` };
+    if (v < 0 || v > 1000) return { values: [], error: "0 … 1000 BP" };
     vals.push(v);
   }
   const u = [...new Set(vals)].sort((a, b) => a - b);
-  if (u.length < 2)
-    return { values: u, error: "give at least two cost levels" };
-  if (u.length > cap) return { values: u, error: `at most ${cap} levels` };
+  if (u.length < 2) return { values: u, error: "MIN 2 LEVELS" };
+  if (u.length > cap) return { values: u, error: `MAX ${cap} LEVELS` };
   return { values: u, error: null };
 }
 
-export function CostsTab({
-  base,
-  cap,
-}: {
-  base: BaseBody | null;
-  cap: number;
-}) {
-  const [text, setText] = useState(() =>
-    [...new Set([...DEFAULT_BPS, base?.cost_bps ?? 5])]
-      .sort((a, b) => a - b)
-      .join(", "),
-  );
+export function CostsTab({ base, cap }: { base: BaseBody | null; cap: number }) {
+  const [text, setText] = useState(() => [...new Set([...DEFAULT_BPS, base?.cost_bps ?? 5])].sort((a, b) => a - b).join(", "));
   const parsed = parseBps(text, cap);
   const [submitted, setSubmitted] = useState<number[]>(parsed.values);
   const body = base ? { ...base, bps: submitted } : null;
-  const q = useApiPost<CostsOut>("/backtest/costs", body, {
-    enabled: !!body && submitted.length >= 2,
-  });
+  const q = useApiPost<CostsOut>("/backtest/costs", body, { enabled: !!body && submitted.length >= 2 });
   const changed = parsed.values.join() !== submitted.join();
+  const yours = base?.cost_bps ?? null;
+  const cell = { query: q, asOf: q.data?.window.end, notes: [] as string[] };
+
   return (
     <div className="sl-tab">
-      <section className="oc-panel sl-controls">
-        <div className="sl-controls-intro">
-          <div className="eyebrow">Cost sensitivity</div>
-          <p className="small">
-            The same trades priced at different one-way costs. A strategy whose
-            edge vanishes at a few basis points only works for someone who
-            trades for free. For liquid ETFs at a discount broker, 1–5 bp per
-            trade is realistic; small caps or options cost far more.
-          </p>
-        </div>
-        <div className="sl-controls-foot">
-          <Field
-            label="Cost levels (bps, one-way)"
-            info={INFO.cost_bps}
-            hint={
-              parsed.error ? (
-                <span className="loss">{parsed.error}</span>
-              ) : (
-                `${parsed.values.length} levels`
-              )
-            }
-          >
-            <input
-              className="input num sl-values sl-values-wide"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              spellCheck={false}
-              aria-label="Cost levels in basis points"
-            />
-          </Field>
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={!!parsed.error || !base || (!changed && !q.isError)}
-            onClick={() => setSubmitted(parsed.values)}
-          >
-            <Icon name="scale" size={14} />{" "}
-            {q.isFetching ? "Re-pricing…" : "Re-price"}
+      <Panel
+        title={
+          <>
+            Cost ladder · setup
+            <Note n={4} to="wfo-costs" />
+          </>
+        }
+        actions={
+          <button type="button" className={`btn btn-sm ${changed || q.isError ? "btn-primary" : ""}`} disabled={!!parsed.error || !base || q.isFetching || (!changed && !q.isError)} onClick={() => setSubmitted(parsed.values)}>
+            {q.isFetching ? "RUNNING" : changed || q.isError ? "RUN" : "CURRENT"}
           </button>
+        }
+      >
+        <div className="sl-controls">
+          <Field label="Levels · bp one-way" info={INFO.cost_bps}>
+            <input className="input num sl-values sl-values-wide" value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} aria-label="Cost levels in basis points" />
+          </Field>
+          <Readline
+            items={[
+              { k: "LEVELS", v: `${parsed.values.length} / ${cap}` },
+              parsed.error ? { k: "INPUT", v: parsed.error, tone: "loss" } : null,
+              { k: "YOURS", v: finite(yours) ? `${fmtNum(yours, 0)} BP` : "—" },
+              { k: "CHARTER", v: CHARTER.costs.join(" / ") + " BP" },
+              changed && !parsed.error && { k: "INPUTS", v: "CHANGED", tone: "loss" },
+            ]}
+          />
         </div>
-      </section>
+      </Panel>
 
-      <Panel<CostsOut> query={q} skeletonHeight={220}>
-        {(d) => <CostsVerdict d={d} yourBps={base?.cost_bps ?? null} />}
+      <Panel<CostsOut> {...cell} notes={undefined} title="Verdict · costs" skeletonHeight={220}>
+        {(d) => <CostsVerdict d={d} yourBps={yours} />}
       </Panel>
 
       {!q.isError && q.data && (
         <>
           <div className="grid-2">
-            <Panel<CostsOut>
-              title="Sharpe vs trading cost"
-              info={INFO.breakeven}
-              subtitle="Net Sharpe at each cost level. Where the line crosses zero is the break-even cost; the dotted marker is your assumption."
-              query={q}
-              notes={[]}
-              skeletonHeight={300}
-            >
-              {(d) => (
-                <CostCurve
-                  d={d}
-                  metric="sharpe"
-                  yourBps={base?.cost_bps ?? null}
-                />
-              )}
+            <Panel<CostsOut> {...cell} title="SR vs cost" info={INFO.breakeven} skeletonHeight={300}>
+              {(d) => <CostCurve d={d} metric="sharpe" yourBps={yours} />}
             </Panel>
-            <Panel<CostsOut>
-              title="CAGR vs trading cost"
-              info={INFO.cagr}
-              subtitle={`Net compound growth at each cost level against the benchmark’s buy-and-hold CAGR (grey).`}
-              query={q}
-              notes={[]}
-              skeletonHeight={300}
-            >
-              {(d) => (
-                <CostCurve
-                  d={d}
-                  metric="cagr"
-                  yourBps={base?.cost_bps ?? null}
-                />
-              )}
+            <Panel<CostsOut> {...cell} title="CAGR vs cost" info={INFO.cagr} skeletonHeight={300}>
+              {(d) => <CostCurve d={d} metric="cagr" yourBps={yours} />}
             </Panel>
           </div>
-
-          <Panel<CostsOut>
-            title="Cost ladder"
-            subtitle="Every level tested. Cost drag grows linearly with cost because turnover does not change."
-            query={q}
-            flush
-            notes={[]}
-            skeletonHeight={240}
-          >
-            {(d) => <CostTable d={d} yourBps={base?.cost_bps ?? null} />}
+          <Panel<CostsOut> {...cell} title="Cost ladder" flush skeletonHeight={240}>
+            {(d) => <CostTable d={d} yourBps={yours} />}
           </Panel>
         </>
       )}
@@ -161,257 +97,54 @@ export function CostsTab({
 }
 
 function CostsVerdict({ d, yourBps }: { d: CostsOut; yourBps: number | null }) {
+  const v = costsVerdict(d, yourBps);
   const be = d.breakeven_bps_sharpe_zero;
   const bb = d.breakeven_bps_vs_benchmark;
-  const at0 = d.curve.find((c) => c.cost_bps === 0);
-  const head = finite(be)
-    ? `The Sharpe reaches zero at ${fmtNum(be, be < 10 ? 1 : 0)} bp per trade.`
-    : at0 && finite(at0.sharpe) && at0.sharpe <= 0
-      ? "The Sharpe is not positive even when trading is free."
-      : "The Sharpe stays positive at every cost up to 10,000 bp.";
-  const margin =
-    finite(be) && finite(yourBps) && yourBps > 0 ? be / yourBps : null;
-  const tone = !finite(be)
-    ? at0 && (at0.sharpe ?? 0) <= 0
-      ? "loss"
-      : "gain"
-    : margin !== null && margin < 3
-      ? "warn"
-      : "gain";
   return (
-    <Verdict
-      eyebrow={`${d.strategy.name} · ${fmtMultiple(d.annual_turnover, 1)} annual turnover`}
-      head={head}
-      tone={tone}
-      stats={[
-        {
-          label: "Break-even (Sharpe = 0)",
-          value: finite(be) ? `${fmtNum(be, be < 10 ? 1 : 0)} bp` : "—",
-          caption: finite(be) ? undefined : "not crossed below 10,000 bp",
-          info: INFO.breakeven,
-        },
-        {
-          label: `Break-even vs ${d.benchmark.ticker}`,
-          value: finite(bb) ? `${fmtNum(bb, bb < 10 ? 1 : 0)} bp` : "—",
-          caption: finite(bb)
-            ? "CAGR falls to the benchmark’s"
-            : d.curve[0] &&
-                (d.curve[0].cagr ?? 0) < (d.benchmark.summary.cagr ?? 0)
-              ? "trails it even at zero cost"
-              : "stays ahead",
-          info: INFO.breakeven,
-        },
-        {
-          label: "Annual turnover",
-          value: fmtMultiple(d.annual_turnover, 1),
-          info: INFO.turnover,
-        },
-        {
-          label: "Safety margin",
-          value: margin !== null ? fmtMultiple(margin, 1) : "—",
-          caption: finite(yourBps)
-            ? `break-even ÷ your ${yourBps} bp`
-            : undefined,
-          info: {
-            text: "How many times your assumed cost the strategy could absorb before its Sharpe hits zero. Below about 3× the result is fragile to real-world frictions.",
-          },
-        },
+    <VerdictBlock
+      value={v.value}
+      detail={v.detail}
+      figs={[
+        { k: "Break-even · SR 0", v: finite(be) ? `${fmtNum(be, be < 10 ? 1 : 0)}BP` : "—", sub: finite(be) ? "ONE-WAY" : "NOT CROSSED" },
+        { k: `Break-even · ${d.benchmark.ticker}`, v: finite(bb) ? `${fmtNum(bb, bb < 10 ? 1 : 0)}BP` : "—", sub: "CAGR = BENCH CAGR" },
+        { k: "Turnover", v: fmtMultiple(d.annual_turnover, 1), sub: `${fmtPct((d.annual_turnover ?? 0) / 10000, 2)}/Y PER BP` },
+        { k: "Margin", v: finite(be) && finite(yourBps) && yourBps > 0 ? fmtMultiple(be / yourBps, 1) : "—", sub: finite(yourBps) ? `BREAK-EVEN ÷ ${fmtNum(yourBps, 0)}BP` : "" },
       ]}
-    >
-      <p>
-        Each extra basis point of one-way cost removes about{" "}
-        <span className="num">
-          {fmtPct((d.annual_turnover ?? 0) / 10000, 2)}
-        </span>{" "}
-        of return a year (turnover × cost).{" "}
-        {finite(be) && finite(yourBps)
-          ? be > yourBps
-            ? `At your ${yourBps} bp assumption the strategy keeps a positive Sharpe.`
-            : `At your ${yourBps} bp assumption the Sharpe is already negative.`
-          : ""}
-      </p>
-    </Verdict>
+      gates={v.gates}
+    />
   );
 }
 
-function CostCurve({
-  d,
-  metric,
-  yourBps,
-}: {
-  d: CostsOut;
-  metric: "sharpe" | "cagr";
-  yourBps: number | null;
-}) {
+function CostCurve({ d, metric, yourBps }: { d: CostsOut; metric: "sharpe" | "cagr"; yourBps: number | null }) {
   const bench = d.benchmark.summary[metric];
-  const be =
-    metric === "sharpe"
-      ? d.breakeven_bps_sharpe_zero
-      : d.breakeven_bps_vs_benchmark;
-  const data = useMemo(
-    () =>
-      (t: Tokens): Data[] => [
-        {
-          type: "scatter",
-          mode: "lines+markers",
-          name: metric === "sharpe" ? "Net Sharpe" : "Net CAGR",
-          x: d.curve.map((c) => c.cost_bps),
-          y: d.curve.map((c) => c[metric]),
-          line: { color: t.categorical[0], width: 2.2 },
-          marker: { size: 6, color: t.categorical[0] },
-          hovertemplate: `%{x} bp → <b>%{y:${metric === "sharpe" ? ".2f" : ".2%"}}</b><extra></extra>`,
-        } as Data,
-      ],
-    [d, metric],
+  const be = metric === "sharpe" ? d.breakeven_bps_sharpe_zero : d.breakeven_bps_vs_benchmark;
+  const xmax = Math.max(...d.curve.map((c) => c.cost_bps));
+  const hlines: XYRule[] = [...(metric === "sharpe" ? [{ at: 0, label: "0", tone: "ink3" as const }] : []), ...(finite(bench) ? [{ at: bench, label: d.benchmark.ticker, tone: "ink2" as const }] : [])];
+  const vlines: XYRule[] = [...(finite(be) && be <= xmax * 1.02 ? [{ at: be, label: `BE ${fmtNum(be, be < 10 ? 1 : 0)}`, tone: "signal" as const, dash: "solid" as const }] : []), ...(finite(yourBps) ? [{ at: yourBps, label: "YOURS", tone: "ink2" as const, dash: "dot" as const }] : [])];
+  return (
+    <XYChart
+      x={d.curve.map((c) => c.cost_bps)}
+      series={[{ name: metric === "sharpe" ? "SR" : "CAGR", y: d.curve.map((c) => c[metric]), tone: "ink", width: 1.5 }]}
+      hlines={hlines}
+      vlines={vlines}
+      yFormat={metric === "sharpe" ? "num" : "pct"}
+      digits={metric === "sharpe" ? 2 : 1}
+      xFormat="int"
+      xTitle="Cost · bp"
+      height={280}
+      ariaLabel={`Net ${metric === "sharpe" ? "Sharpe ratio" : "CAGR"} at each one-way cost level`}
+    />
   );
-  const layout = useMemo(
-    () => (t: Tokens) => {
-      const xmax = Math.max(...d.curve.map((c) => c.cost_bps));
-      const shapes: any[] = [];
-      const annotations: any[] = [];
-      if (finite(bench)) {
-        shapes.push({
-          type: "line",
-          xref: "paper",
-          x0: 0,
-          x1: 1,
-          y0: bench,
-          y1: bench,
-          line: { color: t.text3, width: 1.2 },
-        });
-        annotations.push({
-          xref: "paper",
-          x: 1,
-          y: bench,
-          xanchor: "right",
-          yanchor: "bottom",
-          text: `${d.benchmark.ticker} ${metric === "sharpe" ? bench.toFixed(2) : fmtPct(bench, 1)}`,
-          showarrow: false,
-          font: { size: 11, color: t.text3 },
-        });
-      }
-      if (metric === "sharpe")
-        shapes.push({
-          type: "line",
-          xref: "paper",
-          x0: 0,
-          x1: 1,
-          y0: 0,
-          y1: 0,
-          line: { color: t.ruleStrong, width: 1, dash: "dot" },
-        });
-      if (finite(be) && be <= xmax * 1.02) {
-        shapes.push({
-          type: "line",
-          yref: "paper",
-          y0: 0,
-          y1: 1,
-          x0: be,
-          x1: be,
-          line: { color: t.loss, width: 1.5 },
-        });
-        annotations.push({
-          x: be,
-          yref: "paper",
-          y: 1,
-          yanchor: "bottom",
-          xanchor: "left",
-          xshift: 4,
-          text: `break-even ${fmtNum(be, be < 10 ? 1 : 0)} bp`,
-          showarrow: false,
-          font: { size: 11, color: t.loss },
-        });
-      }
-      if (finite(yourBps)) {
-        shapes.push({
-          type: "line",
-          yref: "paper",
-          y0: 0,
-          y1: 1,
-          x0: yourBps,
-          x1: yourBps,
-          line: { color: t.text2, width: 1, dash: "dot" },
-        });
-        annotations.push({
-          x: yourBps,
-          yref: "paper",
-          y: 0.02,
-          yanchor: "bottom",
-          xanchor: "left",
-          xshift: 4,
-          text: `you: ${yourBps} bp`,
-          showarrow: false,
-          font: { size: 11, color: t.text2 },
-        });
-      }
-      return {
-        showlegend: false,
-        hovermode: "closest",
-        xaxis: {
-          title: { text: "One-way cost (bp per unit traded)" },
-          showspikes: false,
-          zeroline: false,
-        },
-        yaxis: {
-          tickformat: metric === "sharpe" ? ".2f" : ".0%",
-          zeroline: false,
-        },
-        margin: { l: 52, r: 12, t: 28, b: 44 },
-        shapes,
-        annotations,
-      };
-    },
-    [d, metric, bench, be, yourBps],
-  );
-  return <Chart data={data} layout={layout as any} height={300} />;
 }
 
 function CostTable({ d, yourBps }: { d: CostsOut; yourBps: number | null }) {
   const cols: Column<CostPoint>[] = [
-    { key: "cost_bps", label: "Cost", numeric: true, format: (v) => `${v} bp` },
-    {
-      key: "sharpe",
-      label: "Sharpe",
-      numeric: true,
-      format: (v) => fmtSR(v),
-      color: "sign",
-      info: INFO.sharpe,
-    },
-    {
-      key: "cagr",
-      label: "CAGR",
-      numeric: true,
-      format: (v) => fmtPct(v, 2),
-      color: "sign",
-    },
-    {
-      key: "annual_cost_drag",
-      label: "Cost drag / yr",
-      numeric: true,
-      format: (v) => fmtPct(v, 2),
-      info: INFO.cost_drag,
-    },
-    {
-      key: "ann_vol",
-      label: "Vol",
-      numeric: true,
-      format: (v) => fmtPct(v, 1),
-      hideBelow: 600,
-    },
-    {
-      key: "max_drawdown",
-      label: "Max DD",
-      numeric: true,
-      format: (v) => fmtPct(v, 1),
-      hideBelow: 600,
-    },
+    { key: "cost_bps", label: "Cost", numeric: true, format: (v) => `${fmtNum(v, 0)}BP` },
+    { key: "sharpe", label: "SR", numeric: true, format: (v) => fmtSR(v), color: "sign", info: INFO.sharpe },
+    { key: "cagr", label: "CAGR", numeric: true, format: (v) => fmtPct(v, 2, { signed: true }), color: "sign" },
+    { key: "annual_cost_drag", label: "Drag / Y", numeric: true, format: (v) => fmtPct(v, 2), info: INFO.cost_drag },
+    { key: "ann_vol", label: "Vol", numeric: true, format: (v) => fmtPct(v, 1), hideBelow: 600 },
+    { key: "max_drawdown", label: "Max DD", numeric: true, format: (v) => fmtPct(v, 1), color: () => "loss", hideBelow: 600 },
   ];
-  return (
-    <DataTable
-      columns={cols}
-      rows={d.curve}
-      rowKey={(c) => c.cost_bps}
-      isActive={(c) => c.cost_bps === yourBps}
-    />
-  );
+  return <DataTable columns={cols} rows={d.curve} rowKey={(c) => c.cost_bps} isActive={(c) => c.cost_bps === yourBps} compact />;
 }
