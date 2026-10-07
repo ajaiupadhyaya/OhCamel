@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { logXRange, xyData, xyWhiskers } from "./XYChart";
+import { logXRange, xyBands, xyData, xyWhiskers } from "./XYChart";
 
 describe("xyData", () => {
   it("drops unparseable x, nulls non-finite y, and on a log axis non-positive y", () => {
@@ -30,5 +30,18 @@ describe("logXRange", () => {
     const [a, b] = logXRange(5, 5);
     expect(a).toBeLessThan(5);
     expect(b).toBeGreaterThan(5);
+  });
+});
+
+describe("xyBands (shaded x spans: recessions, inversions, regimes)", () => {
+  it("time spans become unix-second pairs; reversed ends are ordered; unparseable spans are dropped", () => {
+    const b = xyBands([{ from: "2020-02-01", to: "2020-04-30" }, { from: "2009-06-30", to: "2007-12-01", tone: "hatch" }, { from: "x", to: "2021-01-01" }], true);
+    expect(b).toEqual([
+      { x0: Date.UTC(2020, 1, 1) / 1000, x1: Date.UTC(2020, 3, 30) / 1000, tone: "faint" },
+      { x0: Date.UTC(2007, 11, 1) / 1000, x1: Date.UTC(2009, 5, 30) / 1000, tone: "hatch" },
+    ]);
+  });
+  it("numeric spans pass through", () => {
+    expect(xyBands([{ from: 2, to: 5 }], false)).toEqual([{ x0: 2, x1: 5, tone: "faint" }]);
   });
 });

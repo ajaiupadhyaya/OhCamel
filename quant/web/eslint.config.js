@@ -46,11 +46,6 @@ const LEGACY_INLINE_STYLE = [
   "src/pages/company/DcfTab.tsx",
   "src/pages/company/shared.tsx",
   "src/pages/engine/Live.tsx",
-  "src/pages/macro/ExplorerTab.tsx",
-  "src/pages/macro/PolicyTab.tsx",
-  "src/pages/macro/RecessionTab.tsx",
-  "src/pages/macro/RegimesTab.tsx",
-  "src/pages/macro/shared.tsx",
   "src/pages/research/BacktestTab.tsx",
   "src/pages/research/Setup.tsx",
   "src/pages/research/SweepTab.tsx",
@@ -60,14 +55,12 @@ const LEGACY_TOFIXED = [
   "src/components/Controls.tsx",
   "src/components/ParamForm.tsx",
   "src/components/Sparkline.tsx",
-  "src/pages/macro/BondsTab.tsx",
   "src/pages/research/BacktestTab.tsx",
   "src/pages/research/CostsTab.tsx",
   "src/pages/research/Guardrails.tsx",
   "src/pages/research/SweepTab.tsx",
   "src/pages/research/config.ts",
   "src/pages/research/shared.tsx",
-  "src/pages/macro/shared.tsx",
 ];
 const DECK = ["src/pages/deck/**", "src/pages/Deck.tsx"];
 

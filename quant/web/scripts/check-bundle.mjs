@@ -25,14 +25,6 @@ const LEGACY_PLOTLY = [
   "src/pages/company/DcfTab.tsx",
   "src/pages/company/RatiosTab.tsx",
   "src/pages/engine/Live.tsx",
-  "src/pages/macro/BondsTab.tsx",
-  "src/pages/macro/CurveTab.tsx",
-  "src/pages/macro/ExplorerTab.tsx",
-  "src/pages/macro/HistoryTab.tsx",
-  "src/pages/macro/PolicyTab.tsx",
-  "src/pages/macro/RecessionTab.tsx",
-  "src/pages/macro/RegimesTab.tsx",
-  "src/pages/macro/shared.tsx",
 ];
 const LEGACY_LOADER = "src/components/plotlyLegacy.ts";
 const LIMIT = 250 * 1000;

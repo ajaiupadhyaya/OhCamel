@@ -1,19 +1,21 @@
 /**
- * Yield curve — GET /api/macro/curve?date=&compare=: Treasury par (CMT) curve, the
- * bootstrapped zero curve, instantaneous and 1-year forwards, Nelson–Siegel and Svensson
- * fits (params, RMSE, residuals) and comparison curves (offsets like 1M/1Y or ISO dates).
+ * CURVE — GET /api/macro/curve?date=&compare=: the Treasury par (CMT) curve against comparison
+ * dates, the bootstrapped zero curve with instantaneous and 1-year forwards, and the
+ * Nelson–Siegel / Svensson fits (parameters, RMSE, residuals). Without the full FRED curve the
+ * tab reads INSUFFICIENT DATA and lists what it computes.
  */
 import { useMemo, useState } from "react";
-import type { Data } from "plotly.js";
-import { Chart, DataTable, Panel, StatGrid, StatTile, type Column } from "../../components";
-import { fmtBps, fmtDate, fmtNum, fmtPctPoints, toIsoDate } from "../../lib/format";
+import { BarChart, DataTable, Panel, StatGrid, StatTile, type Column } from "../../components";
+import { CurveChart, type CurveLine } from "../../charts/CurveChart";
+import { XYChart } from "../../charts/XYChart";
+import { Note } from "../../design";
+import { fmtDate, fmtNum, fmtPctPoints, toIsoDate } from "../../lib/format";
 import { useApiQuery } from "../../lib/query";
-import type { Tokens } from "../../lib/theme";
+import { alignNumeric, tenorLabel, tenorTicks } from "./derive";
 import { INFO } from "./info";
-import { Bars, Controls, KV, MethodCard, tenorAxis, tenorLabel } from "./shared";
+import { Controls, Ctl, KV, LiveOnly, Readline, Sub, fmtBpFromPp } from "./shared";
 import type { CompareCurve, CurveFit, CurveOut } from "./types";
 
-const STD_LABELS = new Set(["1M", "3M", "6M", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "20Y", "30Y"]);
 const OFFSETS = ["1W", "1M", "3M", "6M", "1Y", "2Y", "5Y"] as const;
 const DEFAULT_COMPARE = ["1M", "1Y"];
 
@@ -21,11 +23,18 @@ export function useCurve(date: string | undefined, compare: string[]) {
   return useApiQuery<CurveOut>("/macro/curve", { date, compare: compare.join(",") });
 }
 
-/** par yield at a tenor (exact match) */
+/** Par yield at a tenor (exact match). */
 const parAt = (c: { par?: { tenors: number[]; yields: number[] } } | undefined, t: number) => {
   const i = c?.par?.tenors.findIndex((x) => Math.abs(x - t) < 1e-6) ?? -1;
   return i >= 0 ? c!.par!.yields[i] : null;
 };
+
+const LIVE_ITEMS = [
+  { k: "PAR · CMT · NOW VS COMPARISON DATES", note: "curve" },
+  { k: "Δ BY TENOR · BP", note: "curve" },
+  { k: "ZERO · BOOTSTRAP · INST + 1Y FORWARD", note: "curve" },
+  { k: "NELSON–SIEGEL · SVENSSON · RMSE · RESIDUALS", note: "curve" },
+];
 
 export function CurveTab() {
   const [date, setDate] = useState<string>("");
@@ -35,38 +44,26 @@ export function CurveTab() {
   const toggle = (o: string) => setCompare((c) => (c.includes(o) ? c.filter((x) => x !== o) : [...c, o].slice(-5)));
 
   const controls = (
-    <Controls
-      right={
-        <span className="subtle small">
-          {q.data ? (
-            <>
-              Curve of <span className="num">{fmtDate(q.data.date)}</span>
-            </>
-          ) : null}
-        </span>
-      }
-    >
-      <label className="mc-inline-field">
-        <span className="oc-field-label">Curve date</span>
+    <Controls right={q.data ? `CURVE ${fmtDate(q.data.date).toUpperCase()}` : undefined}>
+      <Ctl label="DATE">
         <input type="date" className="input num" value={date} max={toIsoDate(new Date())} min="1990-01-02" onChange={(e) => setDate(e.target.value)} aria-label="Curve date (blank = latest)" />
         {date && (
-          <button type="button" className="btn btn-sm btn-ghost" onClick={() => setDate("")}>
-            Latest
+          <button type="button" className="btn btn-sm" onClick={() => setDate("")}>
+            LATEST
           </button>
         )}
-      </label>
-      <div className="mc-inline-field">
-        <span className="oc-field-label">Compare with</span>
+      </Ctl>
+      <Ctl label="VS">
         <div className="mc-chips" role="group" aria-label="Comparison curves">
           {OFFSETS.map((o) => (
             <button key={o} type="button" className={`mc-chip num ${compare.includes(o) ? "on" : ""}`} aria-pressed={compare.includes(o)} onClick={() => toggle(o)}>
-              {o} ago
+              {o}
             </button>
           ))}
           {compare
             .filter((c) => !(OFFSETS as readonly string[]).includes(c))
             .map((c) => (
-              <button key={c} type="button" className="mc-chip num on" onClick={() => toggle(c)} title="Remove">
+              <button key={c} type="button" className="mc-chip num on" onClick={() => toggle(c)} aria-label={`Remove ${c}`}>
                 {c} ×
               </button>
             ))}
@@ -81,78 +78,72 @@ export function CurveTab() {
               if (v && !compare.includes(v)) setCompare((c) => [...c, v].slice(-5));
             }}
             aria-label="Add a comparison date"
-            title="Add a specific date"
           />
         </div>
-      </div>
+      </Ctl>
     </Controls>
   );
 
-  const method = (
-    <MethodCard
-      title="From quoted yields to a full curve"
-      formulas={["1 = \\tfrac{c_T}{2}\\sum_{k=1}^{2T} P(\\tfrac k2) + P(T),\\quad z(T) = -\\tfrac{\\ln P(T)}{T}", "f(T) = z(T) + T\\,z'(T)"]}
-      refs={["Hull, Options, Futures & Other Derivatives, ch. 4", "Fritsch & Carlson (1980), SIAM J. Numer. Anal. — PCHIP", "Nelson & Siegel (1987); Svensson (1994)", "Gürkaynak, Sack & Wright (2007), JME 54(8)"]}
-    >
-      The Treasury publishes <em>par</em> yields at 11 maturities. Treating each as a bond priced at 100, we strip out the <em>zero</em> rate for every maturity (bootstrapping), then read off the <em>forward</em> rates the market is implicitly locking in. Nelson–Siegel and Svensson compress the whole curve into a level, a slope and one or two humps.
-    </MethodCard>
-  );
-
-  if (q.isError && !q.data) {
+  if (q.isError && !q.data)
     return (
       <div className="stack">
         {controls}
-        <div className="grid-3">
-          <Panel title="Treasury yield curve" subtitle="Par, zero and forward curves with Nelson–Siegel and Svensson fits." query={q} span={2} />
-          {method}
-        </div>
+        <LiveOnly title="CURVE · UST" error={q.error} source="/api/macro/curve · FRED DGS1MO…DGS30" items={LIVE_ITEMS} />
       </div>
     );
-  }
 
+  const asOf = q.data?.date;
   return (
     <div className="stack">
       {controls}
-      <Panel<CurveOut> query={q} skeletonHeight={96} notes={[]} provenance={[]}>
+      <Panel<CurveOut> query={q} skeletonHeight={96} notes={[]} provenance={[]} asOf={asOf}>
         {(d) => <Headline d={d} />}
       </Panel>
       <div className="grid-3">
         <Panel<CurveOut>
-          title="Par curve: now vs then"
-          subtitle="Treasury yields by maturity. An upward slope is normal (lenders want more to lock money up longer); an inverted curve — short yields above long — says markets expect rates to fall."
-          info={INFO.par}
+          title={
+            <>
+              PAR · CMT
+              <Note n={1} to="curve" />
+            </>
+          }
           query={q}
           span={2}
-          skeletonHeight={380}
+          skeletonHeight={300}
           notes={[]}
+          asOf={asOf}
         >
-          {(d) => <ParCompare d={d} />}
+          {(d) => <CurveChart lines={parLines(d)} height={300} ariaLabel="Treasury par curve against the comparison dates" />}
         </Panel>
-        <Panel<CurveOut> title="Change by maturity" subtitle="How far each yield has moved since each comparison date, in basis points (1 bp = 0.01%)." query={q} skeletonHeight={380} notes={[]} provenance={[]} info={{ text: "Today's par yield minus the par yield on the comparison date, per maturity. A bigger rise at the short end than the long end is a bear flattener; the opposite is a bear steepener." }}>
-          {(d) => <ChangeBars compare={d.compare} />}
+        <Panel<CurveOut> title="Δ BY TENOR · BP" query={q} skeletonHeight={300} notes={[]} provenance={[]} flush asOf={asOf}>
+          {(d) => <ChangeTable d={d} />}
         </Panel>
-      </div>
-      <div className="grid-3">
-        <Panel<CurveOut>
-          title="Par, zero and forward curves"
-          subtitle="The same curve three ways. Zero rates discount a single payment; forwards are the rates locked in today for future borrowing — when forwards sit below spot, the market is pricing cuts."
-          info={INFO.forward}
-          query={q}
-          span={2}
-          skeletonHeight={380}
-        >
-          {(d) => <ThreeCurves d={d} />}
-        </Panel>
-        {method}
       </div>
       <Panel<CurveOut>
-        title="Nelson–Siegel & Svensson fits"
-        subtitle="Smooth parametric curves fitted to the bootstrapped zero rates — how central banks publish yield curves. Residuals show where each quoted maturity trades rich (below the fit) or cheap (above)."
-        info={INFO.nss}
+        title={
+          <>
+            PAR · ZERO · FORWARD
+            <Note n={2} to="curve" />
+          </>
+        }
         query={q}
-        skeletonHeight={380}
+        skeletonHeight={320}
         notes={[]}
         provenance={[]}
+        asOf={asOf}
+      >
+        {(d) => <ThreeCurves d={d} />}
+      </Panel>
+      <Panel<CurveOut>
+        title={
+          <>
+            NELSON–SIEGEL · SVENSSON
+            <Note n={3} to="curve" />
+          </>
+        }
+        query={q}
+        skeletonHeight={320}
+        asOf={asOf}
       >
         {(d) => <Fits d={d} />}
       </Panel>
@@ -160,154 +151,175 @@ export function CurveTab() {
   );
 }
 
+export function parLines(d: CurveOut): CurveLine[] {
+  const out: CurveLine[] = [{ key: "now", label: "NOW", tenors: d.par.tenors, yields: d.par.yields }];
+  for (const c of d.compare) if (!c.error && c.par) out.push({ key: c.label, label: c.label, tenors: c.par.tenors, yields: c.par.yields });
+  return out;
+}
+
 function Headline({ d }: { d: CurveOut }) {
   const ref = d.compare.find((c) => !c.error);
   const y = (t: number) => parAt(d, t);
   const r = (t: number) => (ref ? parAt(ref, t) : null);
-  const sp = (a: number, b: number, src: (t: number) => number | null) => {
-    const A = src(a);
-    const B = src(b);
-    return A != null && B != null ? 100 * (A - B) : null;
+  const delta = (t: number) => {
+    const a = y(t);
+    const b = r(t);
+    return a != null && b != null ? a - b : null;
   };
-  const dl = (a: number | null, b: number | null) => (a != null && b != null ? a - b : null);
-  const bp = (v: number) => fmtBps(v / 1e4, 0, { signed: true });
-  const lbl = ref ? `vs ${ref.label}` : undefined;
-  const s2s10 = sp(10, 2, y);
-  const s3m10 = sp(10, 0.25, y);
+  const sp = (a: number, b: number) => {
+    const A = y(a);
+    const B = y(b);
+    return A != null && B != null ? A - B : null;
+  };
+  const lbl = ref ? `VS ${ref.label}` : undefined;
+  const s2s10 = sp(10, 2);
+  const s3m10 = sp(10, 0.25);
+  const tile = (t: number, label: string) => <StatTile size="sm" label={label} value={fmtPctPoints(y(t))} caption={delta(t) != null ? `${fmtBpFromPp(delta(t))} ${lbl}` : undefined} />;
+  const slope = (v: number | null, label: string, info: typeof INFO.s2s10) => (
+    <StatTile size="sm" label={label} info={info} value={fmtBpFromPp(v)} tone={v != null && v < 0 ? "loss" : "neutral"} caption={v != null ? <span className={v < 0 ? "loss" : ""}>{v < 0 ? "INVERTED" : "POSITIVE"}</span> : undefined} />
+  );
   return (
-    <StatGrid min={140}>
-      <StatTile label="3-month" value={fmtPctPoints(y(0.25))} delta={dl(y(0.25), r(0.25)) != null ? dl(y(0.25), r(0.25))! * 100 : null} deltaFormat={bp} deltaLabel={lbl} info={INFO.par} />
-      <StatTile label="2-year" value={fmtPctPoints(y(2))} delta={dl(y(2), r(2)) != null ? dl(y(2), r(2))! * 100 : null} deltaFormat={bp} deltaLabel={lbl} />
-      <StatTile label="10-year" value={fmtPctPoints(y(10))} delta={dl(y(10), r(10)) != null ? dl(y(10), r(10))! * 100 : null} deltaFormat={bp} deltaLabel={lbl} />
-      <StatTile label="30-year" value={fmtPctPoints(y(30))} delta={dl(y(30), r(30)) != null ? dl(y(30), r(30))! * 100 : null} deltaFormat={bp} deltaLabel={lbl} />
-      <StatTile label="2s10s" value={s2s10 != null ? bp(s2s10) : null} tone={s2s10 != null && s2s10 < 0 ? "loss" : "neutral"} info={INFO.s2s10} caption={s2s10 != null ? (s2s10 < 0 ? "inverted" : "positive slope") : undefined} />
-      <StatTile label="3m10y" value={s3m10 != null ? bp(s3m10) : null} tone={s3m10 != null && s3m10 < 0 ? "loss" : "neutral"} info={INFO.s3m10y} caption={s3m10 != null ? (s3m10 < 0 ? "inverted" : "positive slope") : undefined} />
+    <StatGrid min={130}>
+      {tile(0.25, "3M")}
+      {tile(2, "2Y")}
+      {tile(10, "10Y")}
+      {tile(30, "30Y")}
+      {slope(s2s10, "2S10S", INFO.s2s10)}
+      {slope(s3m10, "3M10Y", INFO.s3m10y)}
     </StatGrid>
   );
 }
 
-const hoverTenor = (fmt = ".2f", unit = "%") => `%{customdata}  <b>%{y:${fmt}}${unit}</b><extra>%{fullData.name}</extra>`;
+type ChangeRow = { t: number; now: number | null; [k: string]: number | null };
 
-function ParCompare({ d }: { d: CurveOut }) {
-  const data = useMemo(
-    () => (t: Tokens): Data[] => {
-      const ok = d.compare.filter((c) => !c.error && c.par);
-      const tr = (c: { par?: { tenors: number[]; yields: number[] }; date?: string }, name: string, color: string, main: boolean) =>
-        ({
-          type: "scatter",
-          mode: "lines+markers",
-          name,
-          x: c.par!.tenors,
-          y: c.par!.yields,
-          customdata: c.par!.tenors.map(tenorLabel),
-          line: { color, width: main ? 2.4 : 1.6, dash: main ? "solid" : "dot", shape: "spline", smoothing: 0.6 },
-          marker: { size: main ? 7 : 5, color, line: { width: main ? 1.5 : 0, color: t.surface } },
-          hovertemplate: hoverTenor(),
-        }) as Data;
-      return [...ok.map((c, i) => tr(c, `${c.label} ago · ${fmtDate(c.date)}`, t.categorical[i + 1], false)), tr(d, `Now · ${fmtDate(d.date)}`, t.categorical[0], true)];
-    },
-    [d],
-  );
-  const layout = useMemo(() => ({ xaxis: tenorAxis(), yaxis: { ticksuffix: "%", tickformat: ".2f", side: "right" }, hovermode: "x unified", legend: { traceorder: "reversed" }, margin: { l: 16, r: 8, t: 36, b: 40 } }) as any, []);
-  return <Chart data={data} layout={layout} height={360} ariaLabel="Par yield curve comparison" />;
-}
-
-function ChangeBars({ compare }: { compare: CompareCurve[] }) {
-  const ok = compare.filter((c) => !c.error && c.change_bp);
-  const failed = compare.filter((c) => c.error);
-  if (!ok.length) return <div className="subtle small">{failed.length ? failed.map((f) => `${f.label}: ${f.error}`).join("; ") : "Pick a comparison date above."}</div>;
-  const tenors = Object.keys(ok[0].change_bp!).map(Number).sort((a, b) => a - b);
-  const series = ok.map((c) => {
-    const m = new Map(Object.entries(c.change_bp!).map(([k, v]) => [+k, v]));
-    return { name: `vs ${c.label}`, x: tenors.map(tenorLabel), y: tenors.map((t) => m.get(t) ?? null) };
+function ChangeTable({ d }: { d: CurveOut }) {
+  const ok = d.compare.filter((c): c is CompareCurve & { change_bp: Record<string, number> } => !c.error && !!c.change_bp);
+  const failed = d.compare.filter((c) => c.error);
+  const rows: ChangeRow[] = d.par.tenors.map((t, i) => {
+    const row: ChangeRow = { t, now: d.par.yields[i] ?? null };
+    ok.forEach((c, j) => {
+      const hit = Object.entries(c.change_bp).find(([k]) => Math.abs(+k - t) < 1e-6);
+      row[`c${j}`] = hit ? hit[1] : null;
+    });
+    return row;
   });
+  const cols: Column<ChangeRow>[] = [
+    { key: "t", label: "Tenor", render: (r) => <span className="num">{tenorLabel(r.t)}</span> },
+    { key: "now", label: "Par", numeric: true, format: (v) => fmtPctPoints(v) },
+    ...ok.map((c, j) => ({ key: `c${j}`, label: `Δ ${c.label}`, numeric: true, format: (v: number | null) => (v == null ? "—" : fmtNum(v, 0, { signed: true })) })),
+  ];
   return (
     <>
-      <Bars series={series} unit=" bp" height={340} />
-      {failed.length > 0 && <div className="subtle small">No curve for {failed.map((f) => f.label).join(", ")}.</div>}
+      <DataTable<ChangeRow> columns={cols} rows={rows} rowKey={(r) => r.t} compact />
+      {failed.length > 0 && <div className="mc-none num mc-pad">NO CURVE · {failed.map((f) => f.label).join(" · ")}</div>}
     </>
   );
 }
 
 function ThreeCurves({ d }: { d: CurveOut }) {
-  const data = useMemo(
-    () => (t: Tokens): Data[] => {
-      const c = d.curve;
-      const lab = c.t.map(tenorLabel);
-      return [
-        { type: "scatter", mode: "markers", name: "Par (quoted)", x: d.par.tenors, y: d.par.yields, customdata: d.par.tenors.map(tenorLabel), marker: { size: 8, color: t.surface, line: { width: 2, color: t.categorical[0] } }, hovertemplate: hoverTenor() },
-        { type: "scatter", mode: "lines", name: "Zero (spot)", x: c.t, y: c.zero, customdata: lab, line: { color: t.categorical[0], width: 2.2 }, hovertemplate: hoverTenor() },
-        { type: "scatter", mode: "lines", name: "1-year forward", x: c.t, y: c.forward_1y, customdata: lab, line: { color: t.categorical[1], width: 1.8, dash: "dash" }, hovertemplate: hoverTenor() },
-        { type: "scatter", mode: "lines", name: "Instantaneous forward", x: c.t, y: c.inst_forward, customdata: lab, line: { color: t.categorical[2], width: 1.4, dash: "dot" }, hovertemplate: hoverTenor() },
-      ] as Data[];
-    },
-    [d],
+  const c = d.curve;
+  const a = useMemo(
+    () =>
+      alignNumeric([
+        { x: d.par.tenors, y: d.par.yields },
+        { x: c.t, y: c.zero },
+        { x: c.t, y: c.forward_1y },
+        { x: c.t, y: c.inst_forward },
+      ]),
+    [d, c],
   );
-  const layout = useMemo(() => ({ xaxis: tenorAxis([0.25, 30]), yaxis: { ticksuffix: "%", tickformat: ".2f", side: "right" }, hovermode: "x unified", margin: { l: 16, r: 8, t: 36, b: 40 } }) as any, []);
+  const lo = Math.min(...a.x.filter((v) => v > 0));
+  const df10 = c.discount[c.t.findIndex((x) => Math.abs(x - 10) < 1e-6)];
   return (
     <>
-      <Chart data={data} layout={layout} height={360} ariaLabel="Par, zero and forward curves" />
-      <div className="subtle small">Zero and forward rates are continuously compounded; par yields are semiannual bond-equivalent. Discount factor at 10 years: <span className="num">{fmtNum(d.curve.discount[d.curve.t.findIndex((x) => Math.abs(x - 10) < 1e-6)], 4)}</span>.</div>
+      <Readline items={[{ k: "ZERO · FWD", v: "CONT. COMP." }, { k: "PAR", v: "SEMIANNUAL BEY" }, { k: "DF 10Y", v: fmtNum(df10, 4) }]} />
+      <XYChart
+        x={a.x}
+        logX
+        xTicks={tenorTicks(lo, 30)}
+        series={[
+          { name: "PAR", y: a.ys[0], mode: "points", tone: "ink", size: 5 },
+          { name: "ZERO", y: a.ys[1], tone: "ink", span: true },
+          { name: "FWD 1Y", y: a.ys[2], tone: "ink2", dash: "dash", span: true },
+          { name: "FWD INST", y: a.ys[3], tone: "ink3", dash: "dot", span: true },
+        ]}
+        yFormat="pctPoints"
+        digits={2}
+        height={300}
+        ariaLabel="Par yields, zero curve and forward curves by maturity"
+      />
     </>
   );
 }
 
-const PARAM_ROWS: { key: string; label: string; text: string }[] = [
-  { key: "b0", label: "β₀ level", text: "Long-run level the curve approaches at very long maturities (%)." },
-  { key: "b1", label: "β₁ slope", text: "Short end minus long end: negative β₁ means an upward-sloping curve (%)." },
-  { key: "b2", label: "β₂ hump", text: "Size of the medium-term hump (+) or trough (−) (%)." },
-  { key: "b3", label: "β₃ 2nd hump", text: "Svensson's second hump, for a bend further out the curve (%)." },
-  { key: "tau", label: "τ decay", text: "Where the hump peaks, in years." },
-  { key: "tau1", label: "τ₁ decay", text: "Where the first hump peaks, in years." },
-  { key: "tau2", label: "τ₂ decay", text: "Where the second hump peaks, in years." },
+const PARAMS: { key: string; label: string }[] = [
+  { key: "b0", label: "β₀ LEVEL" },
+  { key: "b1", label: "β₁ SLOPE" },
+  { key: "b2", label: "β₂ HUMP" },
+  { key: "b3", label: "β₃ HUMP 2" },
+  { key: "tau", label: "τ" },
+  { key: "tau1", label: "τ₁" },
+  { key: "tau2", label: "τ₂" },
 ];
 
 function Fits({ d }: { d: CurveOut }) {
   const ns = d.fits.nelson_siegel;
   const nss = d.fits.svensson;
-  const good = (f?: CurveFit) => f && !f.error;
-  const data = useMemo(
-    () => (t: Tokens): Data[] => {
-      const out: Data[] = [{ type: "scatter", mode: "markers", name: "Bootstrapped zero (nodes)", x: d.nodes.t, y: d.nodes.zero, customdata: d.nodes.t.map(tenorLabel), marker: { size: 7, color: t.text2 }, hovertemplate: hoverTenor() } as Data];
-      if (good(ns)) out.push({ type: "scatter", mode: "lines", name: `Nelson–Siegel · ${fmtNum(ns!.rmse_bp, 1)} bp RMSE`, x: ns!.fitted.t, y: ns!.fitted.zero, customdata: ns!.fitted.t.map(tenorLabel), line: { color: t.categorical[1], width: 2 }, hovertemplate: hoverTenor() } as Data);
-      if (good(nss)) out.push({ type: "scatter", mode: "lines", name: `Svensson · ${fmtNum(nss!.rmse_bp, 1)} bp RMSE`, x: nss!.fitted.t, y: nss!.fitted.zero, customdata: nss!.fitted.t.map(tenorLabel), line: { color: t.categorical[0], width: 2, dash: "dash" }, hovertemplate: hoverTenor() } as Data);
-      return out;
-    },
+  const good = (f?: CurveFit): f is CurveFit => !!f && !f.error;
+  const a = useMemo(
+    () =>
+      alignNumeric([
+        { x: d.nodes.t, y: d.nodes.zero },
+        { x: good(ns) ? ns.fitted.t : [], y: good(ns) ? ns.fitted.zero : [] },
+        { x: good(nss) ? nss.fitted.t : [], y: good(nss) ? nss.fitted.zero : [] },
+      ]),
     [d, ns, nss],
   );
-  const layout = useMemo(() => ({ xaxis: tenorAxis(), yaxis: { ticksuffix: "%", tickformat: ".2f", side: "right" }, hovermode: "x unified", margin: { l: 16, r: 8, t: 36, b: 40 } }) as any, []);
-  const resid = [good(ns) && { name: "Nelson–Siegel", x: ns!.residuals_bp.t.map(tenorLabel), y: ns!.residuals_bp.bp }, good(nss) && { name: "Svensson", x: nss!.residuals_bp.t.map(tenorLabel), y: nss!.residuals_bp.bp }].filter(Boolean) as { name: string; x: string[]; y: number[] }[];
-  type Row = { key: string; label: string; text: string; ns: number | null; nss: number | null };
-  const rows: Row[] = PARAM_ROWS.map((p) => ({ ...p, ns: ns?.params?.[p.key] ?? null, nss: nss?.params?.[p.key] ?? null })).filter((r) => r.ns != null || r.nss != null);
+  type Row = { key: string; label: string; ns: number | null; nss: number | null };
+  const rows: Row[] = PARAMS.map((p) => ({ ...p, ns: ns?.params?.[p.key] ?? null, nss: nss?.params?.[p.key] ?? null })).filter((r) => r.ns != null || r.nss != null);
   const cols: Column<Row>[] = [
-    { key: "label", label: "Parameter", render: (r) => <span title={r.text}>{r.label}</span> },
-    { key: "ns", label: "Nelson–Siegel", numeric: true, format: (v) => fmtNum(v, 3), info: INFO.ns },
-    { key: "nss", label: "Svensson", numeric: true, format: (v) => fmtNum(v, 3), info: INFO.nss },
+    { key: "label", label: "Param", render: (r) => <span className="num mc-sym">{r.label}</span> },
+    { key: "ns", label: "NS", numeric: true, format: (v) => fmtNum(v, 3), info: INFO.ns },
+    { key: "nss", label: "NSS", numeric: true, format: (v) => fmtNum(v, 3), info: INFO.nss },
   ];
+  const lo = Math.min(...a.x.filter((v) => v > 0));
+  const resid = [good(ns) && { name: "NS", x: ns.residuals_bp.t.map(tenorLabel), y: ns.residuals_bp.bp }, good(nss) && { name: "NSS", x: nss.residuals_bp.t.map(tenorLabel), y: nss.residuals_bp.bp }].filter(Boolean) as { name: string; x: string[]; y: number[] }[];
+  const binding = [ns, nss].some((f) => f?.binding_constraints?.length);
   return (
-    <div className="stack">
-      <div className="mc-fit-grid">
-        <div>
-          <Chart data={data} layout={layout} height={340} ariaLabel="Parametric curve fits" />
-        </div>
-        <div className="stack">
-          <DataTable columns={cols} rows={rows} rowKey={(r) => r.key} />
-          <KV
-            rows={[
-              { k: "RMSE · Nelson–Siegel", v: good(ns) ? `${fmtNum(ns!.rmse_bp, 2)} bp` : ns?.error ?? "—", info: INFO.rmse },
-              { k: "RMSE · Svensson", v: good(nss) ? `${fmtNum(nss!.rmse_bp, 2)} bp` : nss?.error ?? "—", info: INFO.rmse },
-              { k: "Optimizer starts", v: `${ns?.starts ?? "—"} / ${nss?.starts ?? "—"}`, muted: true },
-            ]}
-          />
-          {[ns, nss].some((f) => f?.binding_constraints?.length) && <div className="subtle small">A sign restriction is binding (see notes): read the fitted curve, not β₀, as the long end.</div>}
-        </div>
+    <div className="mc-split">
+      <div className="mc-split-main">
+        <XYChart
+          x={a.x}
+          logX
+          xTicks={tenorTicks(lo, 30)}
+          series={[
+            { name: "ZERO NODES", y: a.ys[0], mode: "points", tone: "ink2", size: 5 },
+            ...(good(ns) ? [{ name: "NS", y: a.ys[1], tone: "ink" as const, span: true }] : []),
+            ...(good(nss) ? [{ name: "NSS", y: a.ys[2], tone: "ink" as const, dash: "dash" as const, span: true }] : []),
+          ]}
+          yFormat="pctPoints"
+          digits={2}
+          height={300}
+          ariaLabel="Bootstrapped zero nodes with Nelson–Siegel and Svensson fits"
+        />
+        {resid.length > 0 && (
+          <>
+            <Sub>RESIDUAL · ZERO − FIT · BP</Sub>
+            <BarChart series={resid} yFormat="num" digits={1} height={180} />
+          </>
+        )}
       </div>
-      {resid.length > 0 && (
-        <div>
-          <div className="mc-subhead">Residuals at each quoted maturity (zero minus fit, bp)</div>
-          <Bars series={resid} unit=" bp" tick=",.1f" hover=",.2f" height={200} layout={{ xaxis: { tickvals: resid[0]?.x.filter((l) => STD_LABELS.has(l)), tickangle: 0 } }} />
-        </div>
-      )}
+      <div className="mc-split-side">
+        <DataTable<Row> columns={cols} rows={rows} rowKey={(r) => r.key} compact />
+        <KV
+          rows={[
+            { k: "RMSE · NS", v: good(ns) ? `${fmtNum(ns.rmse_bp, 2)} BP` : (d.fits.nelson_siegel?.error ?? "—"), info: INFO.rmse },
+            { k: "RMSE · NSS", v: good(nss) ? `${fmtNum(nss.rmse_bp, 2)} BP` : (d.fits.svensson?.error ?? "—"), info: INFO.rmse },
+            { k: "STARTS", v: `${ns?.starts ?? "—"} / ${nss?.starts ?? "—"}` },
+            ...(binding ? [{ k: "SIGN RESTRICTION", v: "BINDING" }] : []),
+          ]}
+        />
+      </div>
     </div>
   );
 }

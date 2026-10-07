@@ -1,20 +1,19 @@
 /**
- * Bonds — POST /api/macro/bond on an explicit "Run": clean/dirty price ⇄ yield, Macaulay &
- * modified duration, convexity, DV01 (per 100 and on a notional), cash-flow schedule,
- * price–yield curve with duration / convexity approximations, and — when the Treasury curve
- * is reachable — curve fair value, rich/cheap, Z-spread, effective duration and key-rate
- * durations (Ho 1992). Inputs are seeded from the latest 10-year Treasury yield (FRED DGS10).
+ * BONDS — POST /api/macro/bond on RUN: clean / dirty price ⇄ yield, Macaulay and modified
+ * duration, convexity, DV01 (per 100 and on a notional), the cash-flow schedule, the
+ * price–yield curve against its duration and duration + convexity approximations, and — with
+ * the Treasury curve — fair value, rich / cheap, Z-spread, effective duration and key-rate
+ * durations (Ho 1992). The yield is seeded from the latest 10-year Treasury (FRED DGS10).
  */
 import { useEffect, useMemo, useState } from "react";
-import type { Data } from "plotly.js";
-import { Chart, Field, NumberField, Panel, SegmentedControl, StatGrid, StatTile, Toggle } from "../../components";
-import { Icon } from "../../components/Icon";
-import { DataUnavailableError } from "../../lib/api";
+import { BarChart, DataTable, Field, NumberField, Panel, SegmentedControl, StatGrid, StatTile, Toggle, type Column } from "../../components";
+import { XYChart } from "../../charts/XYChart";
+import { Absent, Note } from "../../design";
 import { fmtCurrency, fmtDate, fmtNum, fmtPctPoints } from "../../lib/format";
 import { useApiPost, useApiQuery } from "../../lib/query";
-import type { Tokens } from "../../lib/theme";
+import { alignNumeric, tenorLabel } from "./derive";
 import { INFO } from "./info";
-import { Bars, KV, MethodCard, tenorLabel } from "./shared";
+import { KV, Readline } from "./shared";
 import type { BondIn, BondOut, FredExplorer } from "./types";
 
 type PxMode = "yield" | "price" | "curve";
@@ -55,7 +54,7 @@ export function BondsTab() {
   useEffect(() => {
     if (committed || yieldPct != null) return;
     if (seed?.latest != null) {
-      const y = +seed.latest.toFixed(3);
+      const y = Math.round(seed.latest * 1000) / 1000;
       const c = Math.floor(seed.latest * 8) / 8;
       setYieldPct(y);
       setCoupon(c);
@@ -69,184 +68,189 @@ export function BondsTab() {
   const res = useApiPost<BondOut>("/macro/bond", committed, { enabled: committed != null });
   const canon = (b: BondIn | null) => (b ? JSON.stringify(Object.keys(b).sort().map((k) => [k, b[k as keyof BondIn]])) : "null");
   const dirty = canon(body) !== canon(committed);
-  const curveOff = !!res.data && !res.data.curve && !!committed?.use_curve && !res.isFetching;
+  const pending = res.isLoading || !committed;
+  const curveNote = res.data && !res.data.curve && committed?.use_curve && !res.isFetching ? curveReason(res.data) : null;
 
   return (
     <div className="stack">
-      <div className="mc-bond-layout">
-        <aside className="mc-bond-form oc-panel">
-          <div className="eyebrow">Bond</div>
-          <NumberField label="Coupon" value={coupon} onChange={setCoupon} unit="% / yr" min={0} max={50} step={0.125} info={{ text: "Annual coupon rate, paid in equal instalments at the chosen frequency." }} />
+      <div className="mc-bond">
+        <aside className="mc-bond-form">
+          <h3 className="mc-sub">BOND</h3>
+          <NumberField label="Coupon" value={coupon} onChange={setCoupon} unit="% / YR" min={0} max={50} step={0.125} />
           <Field label="Maturity">
-            <SegmentedControl size="sm" options={[{ value: "years", label: "Years" }, { value: "maturity", label: "Date" }]} value={termMode} onChange={setTermMode} ariaLabel="Maturity input" />
+            <SegmentedControl size="sm" options={[{ value: "years", label: "YEARS" }, { value: "maturity", label: "DATE" }]} value={termMode} onChange={setTermMode} ariaLabel="Maturity input" />
           </Field>
-          {termMode === "years" ? (
-            <NumberField value={years} onChange={setYears} unit="years" min={0.25} max={100} step={1} />
-          ) : (
-            <input type="date" className="input num" value={maturity} onChange={(e) => setMaturity(e.target.value)} aria-label="Maturity date" />
-          )}
-          <Field label="Coupons per year">
+          {termMode === "years" ? <NumberField value={years} onChange={setYears} unit="Y" min={0.25} max={100} step={1} ariaLabel="Years to maturity" /> : <input type="date" className="input num" value={maturity} onChange={(e) => setMaturity(e.target.value)} aria-label="Maturity date" />}
+          <Field label="Coupons / yr">
             <SegmentedControl size="sm" options={[{ value: "1", label: "1" }, { value: "2", label: "2" }, { value: "4", label: "4" }, { value: "12", label: "12" }]} value={freq} onChange={setFreq} ariaLabel="Coupon frequency" />
           </Field>
-          <Field label="Settlement" hint="Blank = next business day (T+1).">
+          <Field label="Settle · blank T+1">
             <input type="date" className="input num" value={settlement} onChange={(e) => setSettlement(e.target.value)} aria-label="Settlement date" />
           </Field>
-          <div className="mc-form-rule" />
-          <Field label="Price the bond from" info={INFO.ytm}>
-            <SegmentedControl size="sm" options={[{ value: "yield", label: "Yield" }, { value: "price", label: "Price" }, { value: "curve", label: "Curve" }]} value={pxMode} onChange={setPxMode} ariaLabel="Pricing input" />
+          <Field label="Price from" info={INFO.ytm}>
+            <SegmentedControl size="sm" options={[{ value: "yield", label: "YIELD" }, { value: "price", label: "PRICE" }, { value: "curve", label: "CURVE" }]} value={pxMode} onChange={setPxMode} ariaLabel="Pricing input" />
           </Field>
-          {pxMode === "yield" && (
-            <NumberField
-              label="Yield to maturity"
-              value={yieldPct}
-              onChange={setYieldPct}
-              unit="%"
-              min={-49}
-              max={99}
-              step={0.05}
-              hint={seed ? <>Seeded with the 10-year Treasury, {fmtPctPoints(seed.latest)} on {fmtDate(seed.date)} (FRED DGS10).</> : dgs10.isLoading ? "Loading the latest 10-year yield…" : undefined}
-            />
-          )}
-          {pxMode === "price" && <NumberField label="Clean price" value={price} onChange={setPrice} unit="per 100" min={0.01} step={0.25} info={INFO.dirty} />}
-          {pxMode === "curve" && <div className="subtle small">Priced at fair value on today's Treasury zero curve (needs the full curve from FRED).</div>}
+          {pxMode === "yield" && <NumberField label="YTM" value={yieldPct} onChange={setYieldPct} unit="%" min={-49} max={99} step={0.05} hint={seed ? `SEED DGS10 ${fmtPctPoints(seed.latest)} · ${fmtDate(seed.date, "short").toUpperCase()}` : undefined} />}
+          {pxMode === "price" && <NumberField label="Clean" value={price} onChange={setPrice} unit="/ 100" min={0.01} step={0.25} info={INFO.dirty} />}
+          {pxMode === "curve" && <div className="mc-none num">FAIR VALUE · UST ZERO CURVE</div>}
           <NumberField label="Notional" value={notional} onChange={setNotional} unit="$" min={1} step={100000} />
-          <Toggle label="Curve analytics (fair value, Z-spread, KRDs)" checked={useCurve} onChange={setUseCurve} />
-          <button type="button" className="btn btn-primary mc-run" disabled={!body || (!dirty && !!res.data)} onClick={() => body && setCommitted(body)}>
-            <Icon name="arrow-right" size={15} /> {res.isFetching ? "Running…" : dirty || !res.data ? "Run" : "Up to date"}
+          <Toggle label="Curve analytics" checked={useCurve} onChange={setUseCurve} />
+          <button type="button" className={`btn btn-sm mc-run ${dirty || !res.data ? "btn-primary" : ""}`} disabled={!body || (!dirty && !!res.data)} onClick={() => body && setCommitted(body)}>
+            {res.isFetching ? "RUNNING" : dirty || !res.data ? "RUN" : "CURRENT"}
           </button>
-          {dirty && res.data && <div className="subtle small">Inputs changed — press Run to reprice.</div>}
         </aside>
 
         <div className="stack">
-          <Panel<BondOut> title="Price, yield & risk" subtitle="What the bond costs and how sensitive it is to interest rates. Duration ≈ % price change per 1-point yield move; DV01 is the dollar change per 0.01%." info={INFO.modified} query={res} loading={res.isLoading || (!committed && !seedFailed)} skeletonHeight={180} notes={[]} provenance={[]}>
+          <Panel<BondOut>
+            title={
+              <>
+                PRICE · YIELD · RISK
+                <Note n={1} to="bonds" />
+              </>
+            }
+            query={res}
+            loading={pending && !seedFailed}
+            skeletonHeight={180}
+            notes={[]}
+            provenance={[]}
+          >
             {(d) => <Headline d={d} />}
           </Panel>
-          <Panel<BondOut> title="Price–yield curve" subtitle="The exact price at yields ±300 bp, and how well duration alone (a straight line) and duration + convexity approximate it. The gap between them is convexity at work." info={INFO.convexity} query={res} loading={res.isLoading || !committed} skeletonHeight={320} notes={[]} provenance={[]}>
+          <Panel<BondOut> title="PRICE–YIELD · ±300 BP" query={res} loading={pending} skeletonHeight={300} notes={[]} provenance={[]}>
             {(d) => <PriceYield d={d} />}
           </Panel>
         </div>
       </div>
 
-      {curveOff ? (
-        <Panel title="Curve analytics & key-rate durations" subtitle="Fair value on the Treasury zero curve, rich/cheap, Z-spread, effective duration and where along the curve the rate risk sits. The price, yield and risk measures above don't need the curve." info={INFO.krd} error={curveError(res.data!)} compact notes={[]} />
-      ) : (
-        <div className="grid-3">
-          <Panel<BondOut> title="Curve analytics" subtitle="The bond against today's Treasury zero curve: fair value, how rich or cheap your price is, and the spread you earn over Treasuries." info={INFO.zspread} query={res} loading={res.isLoading || !committed} skeletonHeight={260} notes={[]} provenance={[]}>
-            {(d) => (d.curve ? <CurveStats d={d} /> : <div className="subtle small">Curve analytics are switched off — turn them on and Run.</div>)}
-          </Panel>
-          <Panel<BondOut> title="Key-rate durations" subtitle="Where along the curve the bond's rate risk sits: price sensitivity to a 1 bp move at each maturity alone. Bars sum to effective duration." info={INFO.krd} query={res} loading={res.isLoading || !committed} skeletonHeight={260} span={2} notes={[]} provenance={[]}>
-            {(d) => (d.curve ? <KRD d={d} /> : <div className="subtle small">Curve analytics are switched off.</div>)}
-          </Panel>
-        </div>
-      )}
-
       <div className="grid-3">
-        <Panel<BondOut> title="Cash flows" subtitle="Every coupon and the final principal, with what each is worth today at the bond's yield. Distant cash flows shrink the most — that's duration." info={INFO.macaulay} query={res} loading={res.isLoading || !committed} skeletonHeight={260} span={2}>
-          {(d) => <Cashflows d={d} />}
+        <Panel<BondOut> title="CURVE · FAIR VALUE · Z-SPREAD" query={res} loading={pending} skeletonHeight={240} notes={[]} provenance={[]}>
+          {(d) => (d.curve ? <CurveStats d={d} /> : <Absent reason={curveNote ?? "CURVE ANALYTICS OFF"} source="/api/macro/bond · use_curve" />)}
         </Panel>
-        <MethodCard
-          title="One yield, many sensitivities"
-          formulas={["P = \\sum_{k} \\frac{CF_k}{(1+y/m)^{m t_k}}", "\\frac{\\Delta P}{P} \\approx -D_{\\text{mod}}\\,\\Delta y + \\tfrac12 C\\,(\\Delta y)^2"]}
-          refs={["SIFMA Standard Formulas; Fabozzi, Bond Markets, Analysis & Strategies", "Ho (1992), J. Fixed Income 2(2) — key-rate durations", "Brent (1973) — yield solver"]}
+        <Panel<BondOut>
+          title={
+            <>
+              KEY-RATE DURATION
+              <Note n={2} to="bonds" />
+            </>
+          }
+          query={res}
+          loading={pending}
+          skeletonHeight={240}
+          span={2}
+          notes={[]}
+          provenance={[]}
         >
-          A bond is a bundle of dated cash flows. Discounting them at one yield gives the price; differentiating the price with respect to that yield gives duration and convexity. Discounting on the full Treasury zero curve instead gives a fair value, and bumping the curve one maturity at a time shows where the risk lives.
-        </MethodCard>
+          {(d) => (d.curve ? <KRD d={d} /> : <Absent reason={curveNote ?? "CURVE ANALYTICS OFF"} source="/api/macro/bond · use_curve" />)}
+        </Panel>
       </div>
+
+      <Panel<BondOut> title="CASH FLOWS · PER 100" query={res} loading={pending} skeletonHeight={240} flush>
+        {(d) => <Cashflows d={d} />}
+      </Panel>
     </div>
   );
 }
 
-function curveError(d: BondOut) {
+function curveReason(d: BondOut): string {
   const n = (Array.isArray(d.notes) ? d.notes : []).find((x) => x.startsWith("curve-based analytics unavailable"));
-  return new DataUnavailableError(n ? n.replace(/^curve-based analytics unavailable:\s*/, "") : "Treasury curve unavailable", "/api/macro/bond");
+  return n ? `CURVE UNAVAILABLE · ${n.replace(/^curve-based analytics unavailable:\s*/, "")}` : "CURVE UNAVAILABLE";
 }
 
 function Headline({ d }: { d: BondOut }) {
   const r = d.risk;
   return (
-    <div className="stack">
-      <StatGrid min={150}>
-        <StatTile label="Clean price" value={fmtNum(d.clean_price, 3)} info={INFO.dirty} caption={d.bond.price_source === "curve" ? "curve fair value" : "per 100 face"} />
-        <StatTile label="YTM" value={fmtPctPoints(d.ytm_pct, 3)} info={INFO.ytm} caption={`compounded ${d.bond.freq}×/yr`} />
-        <StatTile label="Dirty price" value={fmtNum(d.dirty_price, 3)} info={INFO.dirty} caption={`accrued ${fmtNum(d.accrued, 3)}`} />
-        <StatTile label="Macaulay dur." value={`${fmtNum(r.macaulay_duration, 2)} y`} info={INFO.macaulay} />
-        <StatTile label="Modified dur." value={fmtNum(r.modified_duration, 2)} info={INFO.modified} caption="% per 1 pp" />
-        <StatTile label="Convexity" value={fmtNum(r.convexity, 1)} info={INFO.convexity} />
-        <StatTile label="DV01" value={fmtNum(r.dv01, 4)} info={INFO.dv01} caption="per 100 face" />
-        <StatTile label="DV01 · notional" value={fmtCurrency(r.dv01_notional, { digits: 0 })} info={INFO.dv01} caption={`${fmtCurrency(r.notional, { compact: true })} face`} />
+    <>
+      <Readline
+        items={[
+          { k: "CPN", v: `${fmtNum(d.bond.coupon_pct, 3)}%` },
+          { k: "MAT", v: fmtDate(d.bond.maturity).toUpperCase() },
+          { k: "SETTLE", v: fmtDate(d.bond.settlement).toUpperCase() },
+          { k: "FLOWS", v: fmtNum(d.cashflows.length, 0) },
+          { k: "PX FROM", v: d.bond.price_source.toUpperCase() },
+        ]}
+      />
+      <StatGrid min={130}>
+        <StatTile size="sm" label="CLEAN" info={INFO.dirty} value={fmtNum(d.clean_price, 3)} caption="PER 100" />
+        <StatTile size="sm" label="YTM" info={INFO.ytm} value={fmtPctPoints(d.ytm_pct, 3)} caption={`${d.bond.freq}×/YR`} />
+        <StatTile size="sm" label="DIRTY" info={INFO.dirty} value={fmtNum(d.dirty_price, 3)} caption={`AI ${fmtNum(d.accrued, 3)}`} />
+        <StatTile size="sm" label="D MAC" info={INFO.macaulay} value={`${fmtNum(r.macaulay_duration, 2)} Y`} />
+        <StatTile size="sm" label="D MOD" info={INFO.modified} value={fmtNum(r.modified_duration, 2)} caption="% / 1 PP" />
+        <StatTile size="sm" label="CONVEXITY" info={INFO.convexity} value={fmtNum(r.convexity, 1)} />
+        <StatTile size="sm" label="DV01" info={INFO.dv01} value={fmtNum(r.dv01, 4)} caption="PER 100" />
+        <StatTile size="sm" label="DV01 · NOTIONAL" info={INFO.dv01} value={fmtCurrency(r.dv01_notional, { digits: 0 })} caption={`${fmtCurrency(r.notional, { compact: true })} FACE`} />
       </StatGrid>
-      <div className="subtle small">
-        {fmtNum(d.bond.coupon_pct, 3)}% coupon, matures {fmtDate(d.bond.maturity)}, settles {fmtDate(d.bond.settlement)}; <span className="num">{d.cashflows.length}</span> remaining cash flows.
-      </div>
-    </div>
+    </>
   );
 }
 
 function PriceYield({ d }: { d: BondOut }) {
   const py = d.price_yield;
-  const data = useMemo(
-    () => (t: Tokens): Data[] => [
-      { type: "scatter", mode: "lines", name: "Exact price", x: py.yield_pct, y: py.price, line: { color: t.categorical[0], width: 2.4 }, hovertemplate: "<b>Exact</b> %{y:.3f}<extra></extra>" } as Data,
-      { type: "scatter", mode: "lines", name: "Duration only", x: py.yield_pct, y: py.duration_approx, line: { color: t.categorical[1], width: 1.4, dash: "dash" }, hovertemplate: "<b>Duration</b> %{y:.3f}<extra></extra>" } as Data,
-      { type: "scatter", mode: "lines", name: "Duration + convexity", x: py.yield_pct, y: py.duration_convexity_approx, line: { color: t.categorical[2], width: 1.4, dash: "dot" }, hovertemplate: "<b>Dur + conv</b> %{y:.3f}<extra></extra>" } as Data,
-      { type: "scatter", mode: "markers", name: "Today", x: [d.ytm_pct], y: [d.dirty_price], marker: { size: 10, color: t.surface, line: { color: t.text, width: 2 } }, hovertemplate: "<b>Today</b> %{y:.3f} at %{x:.3f}%<extra></extra>" } as Data,
-    ],
+  const a = useMemo(
+    () =>
+      alignNumeric([
+        { x: py.yield_pct, y: py.price },
+        { x: py.yield_pct, y: py.duration_approx },
+        { x: py.yield_pct, y: py.duration_convexity_approx },
+        { x: [d.ytm_pct], y: [d.dirty_price] },
+      ]),
     [py, d.ytm_pct, d.dirty_price],
   );
-  const layout = useMemo(() => ({ hovermode: "x unified", xaxis: { title: { text: "Yield to maturity" }, ticksuffix: "%", hoverformat: ".2f", showspikes: true }, yaxis: { title: { text: "Dirty price per 100" }, side: "right", tickformat: ",.0f" }, margin: { l: 16, r: 8, t: 36, b: 44 } }) as any, []);
-  return <Chart data={data} layout={layout} height={300} ariaLabel="Price-yield curve" />;
+  return (
+    <XYChart
+      x={a.x}
+      series={[
+        { name: "EXACT", y: a.ys[0], tone: "ink", span: true },
+        { name: "DUR", y: a.ys[1], tone: "ink2", dash: "dash", span: true },
+        { name: "DUR+CONV", y: a.ys[2], tone: "ink3", dash: "dot", span: true },
+        { name: "NOW", y: a.ys[3], mode: "points", tone: "ink", size: 7, label: false },
+      ]}
+      vlines={[{ at: d.ytm_pct, label: `YTM ${fmtNum(d.ytm_pct, 2)}`, tone: "ink3", dash: "dot" }]}
+      xFormat="num"
+      xTitle="YTM %"
+      yFormat="num"
+      digits={2}
+      height={280}
+      ariaLabel="Dirty price against yield: exact, duration and duration plus convexity"
+    />
+  );
 }
 
 function CurveStats({ d }: { d: BondOut }) {
   const c = d.curve!;
   return (
-    <div className="stack">
-      <StatGrid min={130}>
-        <StatTile label="Fair value (clean)" value={fmtNum(c.fair_clean, 3)} info={INFO.fair} caption={`curve of ${fmtDate(c.date)}`} />
-        <StatTile label="Rich / cheap" value={fmtNum(c.rich_cheap, 3, { signed: true })} info={INFO.fair} caption={c.rich_cheap > 0 ? "rich (above fair)" : c.rich_cheap < 0 ? "cheap (below fair)" : "at fair value"} />
-        <StatTile label="Z-spread" value={`${fmtNum(c.z_spread_bp, 1, { signed: true })} bp`} info={INFO.zspread} />
-      </StatGrid>
-      <KV
-        rows={[
-          { k: "Effective duration", v: fmtNum(c.effective_duration, 3), info: INFO.effdur },
-          { k: "Effective convexity", v: fmtNum(c.effective_convexity, 1), info: INFO.convexity },
-          { k: "Sum of KRDs", v: fmtNum(c.krd_sum, 3), info: INFO.krd, muted: true },
-        ]}
-      />
-    </div>
+    <KV
+      rows={[
+        { k: "CURVE", v: fmtDate(c.date).toUpperCase() },
+        { k: "FAIR · CLEAN", v: fmtNum(c.fair_clean, 3), info: INFO.fair },
+        { k: "RICH / CHEAP", v: `${fmtNum(c.rich_cheap, 3, { signed: true })} ${c.rich_cheap > 0 ? "RICH" : c.rich_cheap < 0 ? "CHEAP" : "FAIR"}`, info: INFO.fair },
+        { k: "Z-SPREAD", v: `${fmtNum(c.z_spread_bp, 1, { signed: true })} BP`, info: INFO.zspread },
+        { k: "D EFF", v: fmtNum(c.effective_duration, 3), info: INFO.effdur },
+        { k: "CONV EFF", v: fmtNum(c.effective_convexity, 1), info: INFO.convexity },
+        { k: "Σ KRD", v: fmtNum(c.krd_sum, 3), info: INFO.krd },
+      ]}
+    />
   );
 }
 
 function KRD({ d }: { d: BondOut }) {
   const k = d.curve!.key_rate_durations;
-  const data = useMemo(
-    () => (t: Tokens): Data[] => [
-      {
-        type: "bar",
-        x: k.map((r) => tenorLabel(r.tenor)),
-        y: k.map((r) => r.krd),
-        customdata: k.map((r) => r.krd01_notional),
-        marker: { color: t.categorical[0] },
-        hovertemplate: "%{x}: <b>%{y:.3f}</b> yrs<br>$%{customdata:,.0f} per bp on notional<extra></extra>",
-      } as Data,
-    ],
-    [k],
-  );
-  const layout = useMemo(() => ({ showlegend: false, xaxis: { type: "category", showgrid: false, showspikes: false, title: { text: "Key tenor" } }, yaxis: { tickformat: ".2f", side: "right", title: { text: "KRD" } }, margin: { l: 16, r: 8, t: 12, b: 44 } }) as any, []);
-  return <Chart data={data} layout={layout} height={260} ariaLabel="Key-rate durations" />;
-}
-
-function Cashflows({ d }: { d: BondOut }) {
-  const cf = d.cashflows;
-  const series = [
-    { name: "Cash flow", x: cf.map((r) => r.date), y: cf.map((r) => r.cashflow) },
-    { name: "Present value", x: cf.map((r) => r.date), y: cf.map((r) => r.pv) },
-  ];
-  const big = cf.length > 0 && cf[cf.length - 1].cashflow > 10 * (cf[0]?.cashflow || 1);
   return (
     <>
-      <Bars series={series} tick=",.4~g" hover=",.3f" height={260} layout={{ xaxis: { type: "date" }, yaxis: { type: big ? "log" : "linear", title: { text: big ? "per 100 face (log)" : "per 100 face" } }, bargap: 0.15 }} />
-      <div className="subtle small">Present values discount each cash flow at the yield to maturity; they add up to the dirty price ({fmtNum(d.dirty_price, 3)}).</div>
+      <Readline items={[{ k: "Σ KRD", v: fmtNum(d.curve!.krd_sum, 3) }, { k: "D EFF", v: fmtNum(d.curve!.effective_duration, 3) }, { k: "LARGEST $/BP", v: fmtCurrency(Math.max(...k.map((r) => Math.abs(r.krd01_notional))), { digits: 0 }) }]} />
+      <BarChart x={k.map((r) => tenorLabel(r.tenor))} y={k.map((r) => r.krd)} yFormat="num" digits={3} height={220} />
     </>
   );
+}
+
+type CF = BondOut["cashflows"][number];
+
+function Cashflows({ d }: { d: BondOut }) {
+  const cols: Column<CF>[] = [
+    { key: "date", label: "Date", render: (r) => <span className="num">{fmtDate(r.date, "short-year").toUpperCase()}</span> },
+    { key: "t_years", label: "T · Y", numeric: true, format: (v) => fmtNum(v, 3) },
+    { key: "cashflow", label: "CF", numeric: true, format: (v) => fmtNum(v, 4) },
+    { key: "pv", label: "PV", numeric: true, format: (v) => fmtNum(v, 4) },
+  ];
+  const total = d.cashflows.reduce((a, r) => a + r.pv, 0);
+  return <DataTable<CF> columns={cols} rows={d.cashflows} rowKey={(r) => r.date} compact maxHeight={22 * 14} footer={<span className="num mc-pad">Σ PV {fmtNum(total, 3)} · DIRTY {fmtNum(d.dirty_price, 3)}</span>} />;
 }

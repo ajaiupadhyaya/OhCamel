@@ -66,6 +66,28 @@ export interface XYChartProps {
   logX?: boolean;
   /** Explicit x ticks and their labels (e.g. horizons "10D" "1M"); replaces the computed ones. */
   xTicks?: { at: number; label: string }[];
+  /** Shaded x spans behind the series (NBER recessions, inversions, a regime): "faint" fills
+   *  --paper-2, "hatch" draws --ink-3 diagonal hairlines. Dates on a time axis. */
+  bands?: XYBand[];
+}
+
+export interface XYBand {
+  from: number | string;
+  to: number | string;
+  tone?: "faint" | "hatch";
+}
+
+/** Bands as ordered x pairs in axis units (unix seconds on a time axis); unparseable spans dropped. */
+export function xyBands(bands: XYBand[], time: boolean): { x0: number; x1: number; tone: "faint" | "hatch" }[] {
+  const conv = (v: number | string) => (time ? toEpochSec(v) : typeof v === "number" ? v : Number(v));
+  const out: { x0: number; x1: number; tone: "faint" | "hatch" }[] = [];
+  for (const b of bands) {
+    const a = conv(b.from);
+    const c = conv(b.to);
+    if (a === null || c === null || !Number.isFinite(a) || !Number.isFinite(c)) continue;
+    out.push({ x0: Math.min(a, c), x1: Math.max(a, c), tone: b.tone ?? "faint" });
+  }
+  return out;
 }
 
 const toneColor = (t: ChartTheme, tone: Tone | undefined) => (tone === "signal" ? t.signal : tone === "ink2" ? t.ink2 : tone === "ink3" ? t.ink3 : t.ink);
@@ -94,7 +116,7 @@ export function logXRange(min: number, max: number): [number, number] {
   return [lo / 10 ** 0.1, hi > lo ? hi : hi * 10 ** 0.1];
 }
 
-export function XYChart({ x, series, time = false, xFormat = "num", yFormat = "num", digits = 2, logY = false, hlines = [], vlines = [], height = 280, xTitle, ariaLabel, zero, yMin, logX = false, xTicks }: XYChartProps) {
+export function XYChart({ x, series, time = false, xFormat = "num", yFormat = "num", digits = 2, logY = false, hlines = [], vlines = [], height = 280, xTitle, ariaLabel, zero, yMin, logX = false, xTicks, bands }: XYChartProps) {
   const t = useChartTheme();
   const readout = useRef<HTMLDivElement>(null);
   const data = useMemo(() => xyData(x, series, time, logY), [x, series, time, logY]);
@@ -103,11 +125,13 @@ export function XYChart({ x, series, time = false, xFormat = "num", yFormat = "n
   whiskerRef.current = whiskers;
   const metaKey = JSON.stringify(series.map((s) => [s.name, s.mode ?? "line", s.tone, s.dash, s.width, s.size, s.label, s.span ?? false]));
   const rulesKey = JSON.stringify([hlines, vlines, xTicks ?? null]);
+  const bandsKey = JSON.stringify(bands ? xyBands(bands, time) : []);
   const plotH = height - STRIP;
 
   const opts = useMemo(() => {
     const meta = JSON.parse(metaKey) as [string, "line" | "points" | "bars", Tone | undefined, string | undefined, number | undefined, number | undefined, boolean | undefined, boolean][];
     const [hl, vl, xt] = JSON.parse(rulesKey) as [XYRule[], XYRule[], { at: number; label: string }[] | null];
+    const bd = JSON.parse(bandsKey) as ReturnType<typeof xyBands>;
     const colors = meta.map((m) => toneColor(t, m[2]));
     const labelled = meta.map((m) => m[6] ?? m[1] === "line");
     const count = Math.max(2, Math.round(plotH / 56));
@@ -208,6 +232,45 @@ export function XYChart({ x, series, time = false, xFormat = "num", yFormat = "n
           ready: [(u) => show(u, null)],
           setData: [(u) => show(u, null)],
           setCursor: [(u) => show(u, u.cursor.idx)],
+          drawAxes: [
+            (u) => {
+              if (!bd.length) return;
+              const { ctx, bbox } = u;
+              ctx.save();
+              const clip = new Path2D();
+              clip.rect(bbox.left, bbox.top, bbox.width, bbox.height);
+              ctx.clip(clip);
+              for (const b of bd) {
+                const a = u.valToPos(b.x0, "x", true);
+                const c = u.valToPos(b.x1, "x", true);
+                const x0 = Math.max(bbox.left, Math.min(a, c));
+                const w = Math.max(r, Math.min(bbox.left + bbox.width, Math.max(a, c)) - x0);
+                if (x0 > bbox.left + bbox.width) continue;
+                if (b.tone === "hatch") {
+                  ctx.save();
+                  const p = new Path2D();
+                  p.rect(x0, bbox.top, w, bbox.height);
+                  ctx.clip(p);
+                  ctx.strokeStyle = t.ink3;
+                  ctx.globalAlpha = 0.55;
+                  ctx.lineWidth = r;
+                  ctx.setLineDash([]);
+                  ctx.beginPath();
+                  const step = 5 * r;
+                  for (let x = x0 - bbox.height; x < x0 + w; x += step) {
+                    ctx.moveTo(x, bbox.top + bbox.height);
+                    ctx.lineTo(x + bbox.height, bbox.top);
+                  }
+                  ctx.stroke();
+                  ctx.restore();
+                } else {
+                  ctx.fillStyle = t.paper2;
+                  ctx.fillRect(x0, bbox.top, w, bbox.height);
+                }
+              }
+              ctx.restore();
+            },
+          ],
           draw: [
             (u) => {
               xRule(u, t);
@@ -330,7 +393,7 @@ export function XYChart({ x, series, time = false, xFormat = "num", yFormat = "n
       };
       return o;
     };
-  }, [t, metaKey, rulesKey, plotH, time, xFormat, yFormat, digits, logY, zero, xTitle, yMin, logX]);
+  }, [t, metaKey, rulesKey, bandsKey, plotH, time, xFormat, yFormat, digits, logY, zero, xTitle, yMin, logX]);
 
   return (
     <div className="oc-chart oc-chart-uplot oc-chart-fixed" style={{ "--chart-h": `${height}px` } as CSSProperties} role="img" aria-label={ariaLabel}>
