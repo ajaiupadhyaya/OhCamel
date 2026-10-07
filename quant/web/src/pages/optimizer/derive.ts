@@ -9,26 +9,58 @@ export interface SharpeVerdict {
   method: MethodName;
   label: string;
   diff: number | null;
+  /** Raw two-sided p of the Sharpe-difference test. */
   p: number | null;
+  /** Holm–Bonferroni adjusted p across every method with a testable result. */
+  pHolm: number | null;
   se: number | null;
+  /** Significant at 5% after Holm, with the sign. */
   better: boolean;
   worse: boolean;
 }
 
-/** One row per method tested against the benchmark (Ledoit–Wolf HAC, else Memmel). */
+/** The family-wise level the verdict is held to. */
+export const ALPHA = 0.05;
+
+/**
+ * Holm–Bonferroni step-down adjusted p-values (Holm 1979), in input order.
+ * Sorted ascending, p_(i) becomes max over j <= i of min(1, (n - j + 1) p_(j)).
+ */
+export function holmAdjust(ps: number[]): number[] {
+  const n = ps.length;
+  const order = ps.map((p, i) => [p, i] as const).sort((a, b) => a[0] - b[0]);
+  const out = new Array<number>(n);
+  let run = 0;
+  order.forEach(([p, i], k) => {
+    run = Math.max(run, Math.min(1, (n - k) * p));
+    out[i] = run;
+  });
+  return out;
+}
+
+/**
+ * One row per method tested against the benchmark (Ledoit–Wolf HAC, else Memmel).
+ * Better/worse are called on Holm-adjusted p across the n tested methods (CHARTER
+ * principle 4: no uncorrected signal scans), so one lucky method out of seven cannot PASS.
+ */
 export function sharpeVerdicts(d: CompareOut): SharpeVerdict[] {
-  return d.stats
+  const rows = d.stats
     .filter((s) => d.tests[s.method])
     .map((s) => {
       const t = d.tests[s.method].ledoit_wolf ?? d.tests[s.method].memmel;
-      const diff = t?.sharpe_diff_annual ?? null;
-      const p = t?.p_value ?? null;
-      const sig = diff != null && p != null && p < 0.05;
-      return { method: s.method, label: s.label, diff, p, se: t?.se_annual ?? null, better: sig && diff > 0, worse: sig && diff < 0 };
+      return { method: s.method, label: s.label, diff: t?.sharpe_diff_annual ?? null, p: t?.p_value ?? null, se: t?.se_annual ?? null };
     });
+  const testable = rows.filter((r) => r.diff != null && r.p != null);
+  const adj = holmAdjust(testable.map((r) => r.p as number));
+  const holm = new Map(testable.map((r, i) => [r, adj[i]]));
+  return rows.map((r) => {
+    const pHolm = holm.get(r) ?? null;
+    const sig = pHolm != null && pHolm < ALPHA;
+    return { ...r, pHolm, better: sig && (r.diff as number) > 0, worse: sig && (r.diff as number) < 0 };
+  });
 }
 
-/** PASS when at least one method beats 1/N at 5% (unadjusted); FAIL when none does. */
+/** PASS when at least one method beats 1/N at 5% after Holm across the n tests; FAIL when none does. */
 export function beatVerdict(v: SharpeVerdict[]): { value: VerdictValue; better: number; worse: number; same: number; n: number } {
   const tested = v.filter((x) => x.diff != null && x.p != null);
   const better = tested.filter((x) => x.better).length;

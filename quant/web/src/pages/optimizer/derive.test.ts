@@ -25,6 +25,23 @@ describe("sharpeVerdicts / beatVerdict (walk-forward vs 1/N)", () => {
     expect(beatVerdict(sharpeVerdicts(cmp({ hrp: test(null, null) }))).value).toBe("INSUFFICIENT DATA");
     expect(beatVerdict([]).value).toBe("INSUFFICIENT DATA");
   });
+  it("Holm across the n tested methods: one p = 0.03 among 7 does not PASS, one p = 0.001 does", () => {
+    const six = { a: test(0.05, 0.6), b: test(0.02, 0.7), c: test(-0.01, 0.9), d: test(0.04, 0.5), e: test(0.01, 0.8), f: test(-0.03, 0.4) };
+    const weak = sharpeVerdicts(cmp({ hrp: test(0.3, 0.03), ...six }));
+    expect(weak[0].p).toBe(0.03);
+    expect(weak[0].pHolm).toBeCloseTo(0.21);
+    expect(weak[0].better).toBe(false);
+    expect(beatVerdict(weak)).toMatchObject({ value: "FAIL", better: 0, n: 7 });
+    const strong = sharpeVerdicts(cmp({ hrp: test(0.3, 0.001), ...six }));
+    expect(strong[0].pHolm).toBeCloseTo(0.007);
+    expect(beatVerdict(strong)).toMatchObject({ value: "PASS", better: 1, n: 7 });
+  });
+  it("Holm is step-down and monotone; untestable rows carry no adjusted p", () => {
+    const v = sharpeVerdicts(cmp({ hrp: test(0.3, 0.01), herc: test(0.2, 0.02), mv: test(-0.1, 0.04), x: test(null, null) }));
+    expect(v.map((r) => r.pHolm)).toEqual([expect.closeTo(0.03), expect.closeTo(0.04), expect.closeTo(0.04), null]);
+    expect(v.map((r) => [r.better, r.worse])).toEqual([[true, false], [true, false], [false, true], [false, false]]);
+    expect(beatVerdict(v)).toMatchObject({ n: 3 });
+  });
 });
 
 describe("frontierSlices", () => {

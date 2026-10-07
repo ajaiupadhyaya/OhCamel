@@ -63,8 +63,15 @@ describe("VerdictBlock (BACKTEST · 1/N)", () => {
     const html = render(<VerdictBlock d={d} />);
     expect(html.indexOf("verdict-fail")).toBeGreaterThan(-1);
     expect(html.indexOf("verdict-fail")).toBeLessThan(html.indexOf("op-verdict-grid"));
-    expect(html).toContain("0 OF 2 BEAT 1/N · LW HAC 5%");
+    expect(html).toContain("0 OF 2 BEAT 1/N · LW HAC 5% · HOLM ACROSS 2 TESTS");
+    expect(html).not.toContain("UNADJUSTED");
     expect(html).toContain("0.80");
+  });
+  it("a winner reads its Holm-adjusted p beside the raw p", () => {
+    const w = { ...d, tests: { ...d.tests, hrp: { vs: "equal_weight", ledoit_wolf: { sharpe_diff_annual: 0.3, p_value: 0.001, se_annual: 0.1 } } } } as unknown as CompareOut;
+    const html = render(<VerdictBlock d={w} />);
+    expect(html.indexOf("verdict-pass")).toBeGreaterThan(-1);
+    expect(html).toContain("p 0.001 · HOLM 0.002");
   });
 });
 

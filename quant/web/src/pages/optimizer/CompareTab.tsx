@@ -1,7 +1,7 @@
 /**
  * BACKTEST · 1/N: walk-forward, out-of-sample comparison of allocation methods against 1/N
  * after trading costs, led by the verdict (PASS when a method beats 1/N at 5% on the
- * Ledoit–Wolf HAC test, FAIL when none does), then growth, the Sharpe differences with their
+ * Ledoit–Wolf HAC test after a Holm correction across the methods tested, FAIL when none does), then growth, the Sharpe differences with their
  * intervals, drawdowns and the scorecard. POST /portfolio/compare runs on RUN.
  */
 import { useEffect, useMemo, useState } from "react";
@@ -133,7 +133,7 @@ export function VerdictBlock({ d }: { d: CompareOut }) {
   const bench = d.stats.find((s) => s.method === d.method.benchmark);
   const best = [...d.stats].sort((a, c) => (c.sharpe ?? -Infinity) - (a.sharpe ?? -Infinity))[0];
   const winners = v.filter((x) => x.better);
-  const detail = b.value === "INSUFFICIENT DATA" ? "NO TESTABLE METHOD" : `${b.better} OF ${b.n} BEAT 1/N · LW HAC 5% · UNADJUSTED FOR ${b.n} TESTS`;
+  const detail = b.value === "INSUFFICIENT DATA" ? "NO TESTABLE METHOD" : `${b.better} OF ${b.n} BEAT 1/N · LW HAC 5% · HOLM ACROSS ${b.n} TESTS`;
   return (
     <div className="op-verdict">
       <Verdict value={b.value} detail={detail} />
@@ -168,7 +168,7 @@ export function VerdictBlock({ d }: { d: CompareOut }) {
         </div>
       </div>
       {winners.length > 0 && (
-        <Readline items={winners.map((w) => ({ k: METHOD_CODE[w.method], v: `ΔSR ${fmtNum(w.diff, 2, { signed: true })} · p ${fmtNum(w.p, 3)}` }))} />
+        <Readline items={winners.map((w) => ({ k: METHOD_CODE[w.method], v: `ΔSR ${fmtNum(w.diff, 2, { signed: true })} · p ${fmtNum(w.p, 3)} · HOLM ${fmtNum(w.pHolm, 3)}` }))} />
       )}
     </div>
   );
@@ -203,22 +203,22 @@ function Forest({ d }: { d: CompareOut }) {
       sharpeVerdicts(d)
         .filter((x) => x.diff != null)
         .sort((a, b) => (b.diff ?? 0) - (a.diff ?? 0))
-        .map((x) => ({ term: METHOD_CODE[x.method], est: x.diff as number, lo: (x.diff as number) - 1.96 * (x.se ?? 0), hi: (x.diff as number) + 1.96 * (x.se ?? 0), t: x.se ? (x.diff as number) / x.se : 0, p: x.p })),
+        .map((x) => ({ term: METHOD_CODE[x.method], est: x.diff as number, lo: (x.diff as number) - 1.96 * (x.se ?? 0), hi: (x.diff as number) + 1.96 * (x.se ?? 0), t: x.se ? (x.diff as number) / x.se : 0, p: x.p, ph: x.pHolm })),
     [d],
   );
-  return <CoefChart rows={rows} sigT={1.96} tick={(v) => fmtNum(v, 1, { signed: true })} right={(r) => `p ${fmtNum((r as (typeof rows)[number]).p, 3)}`} ariaLabel="Annual Sharpe difference against 1/N with 95% intervals" />;
+  return <CoefChart rows={rows} sigT={1.96} tick={(v) => fmtNum(v, 1, { signed: true })} right={(r) => `p ${fmtNum((r as (typeof rows)[number]).p, 3)} · HOLM ${fmtNum((r as (typeof rows)[number]).ph, 3)}`} ariaLabel="Annual Sharpe difference against 1/N with 95% intervals" />;
 }
 
 function ScoreTable({ d }: { d: CompareOut }) {
-  type Row = CompareStats & { diff: number | null; p: number | null; pm: number | null };
-  const rows = useMemo<Row[]>(
-    () =>
-      d.stats.map((s) => {
-        const t = d.tests[s.method];
-        return { ...s, diff: t?.ledoit_wolf?.sharpe_diff_annual ?? null, p: t?.ledoit_wolf?.p_value ?? null, pm: t?.memmel?.p_value ?? null };
-      }),
-    [d],
-  );
+  type Row = CompareStats & { diff: number | null; p: number | null; ph: number | null; worse: boolean; pm: number | null };
+  const rows = useMemo<Row[]>(() => {
+    const v = new Map(sharpeVerdicts(d).map((x) => [x.method, x]));
+    return d.stats.map((s) => {
+      const t = d.tests[s.method];
+      const x = v.get(s.method);
+      return { ...s, diff: t?.ledoit_wolf?.sharpe_diff_annual ?? null, p: t?.ledoit_wolf?.p_value ?? null, ph: x?.pHolm ?? null, worse: x?.worse ?? false, pm: t?.memmel?.p_value ?? null };
+    });
+  }, [d]);
   const cols: Column<Row>[] = [
     {
       key: "label",
@@ -239,7 +239,8 @@ function ScoreTable({ d }: { d: CompareOut }) {
     { key: "annual_turnover", label: "TO / yr", numeric: true, format: (v) => fmtPct(v, 0), info: INFO.annualTurnover, hideBelow: 600 },
     { key: "cost_drag_annual", label: "Cost drag", numeric: true, format: (v) => fmtPct(v, 2), info: INFO.costDrag, hideBelow: 900 },
     { key: "diff", label: "ΔSR", numeric: true, format: (v) => fmtNum(v, 2, { signed: true }), info: INFO.sharpeTest },
-    { key: "p", label: "p LW", numeric: true, format: (v) => fmtNum(v, 3), color: (v, r) => (v != null && v < 0.05 && (r.diff ?? 0) < 0 ? "loss" : undefined), info: { title: "p-value, Ledoit–Wolf", text: "Probability of a Sharpe gap this large if the method and 1/N were equally good. Significantly worse is marked in signal.", reference: "Ledoit & Wolf (2008), J. Empirical Finance 15(5)" } },
+    { key: "p", label: "p LW", numeric: true, format: (v) => fmtNum(v, 3), info: { title: "p-value, Ledoit–Wolf", text: "Probability of a Sharpe gap this large if the method and 1/N were equally good. Raw, one test at a time.", reference: "Ledoit & Wolf (2008), J. Empirical Finance 15(5)" } },
+    { key: "ph", label: "p Holm", numeric: true, format: (v) => fmtNum(v, 3), color: (_v, r) => (r.worse ? "loss" : undefined), info: { title: "p-value, Holm-adjusted", text: "The Ledoit–Wolf p corrected for testing every method against 1/N at once. The verdict uses this. Significantly worse is marked in signal.", reference: "Holm (1979), Scand. J. Statistics 6(2)" } },
     { key: "pm", label: "p JK-M", numeric: true, format: (v) => fmtNum(v, 3), hideBelow: 1200, info: { title: "p-value, Jobson–Korkie–Memmel", text: "The classic Sharpe-difference test (normal, independent returns): a cross-check on the robust one.", reference: "Jobson & Korkie (1981); Memmel (2003)" } },
   ];
   return <DataTable<Row> columns={cols} rows={rows} rowKey={(r) => r.method} defaultSort={{ key: "sharpe", dir: "desc" }} isActive={(r) => r.method === d.method.benchmark} />;
