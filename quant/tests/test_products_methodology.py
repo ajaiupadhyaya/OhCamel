@@ -8,7 +8,8 @@ from ohcamel_quant.config import REPO_ROOT
 
 WEB = REPO_ROOT / "quant" / "web" / "src" / "pages" / "methodology"
 # entry id -> section. Each Lane M task appends its entry here.
-ENTRIES = {"p1-mc-atlas": "risk", "p2-vol-league": "options", "p3-cov-league": "portfolio", "p4-strategy-farm": "backtest"}
+ENTRIES = {"p1-mc-atlas": "risk", "p2-vol-league": "options", "p3-cov-league": "portfolio", "p4-strategy-farm": "backtest",
+           "p7-surface-history": "options"}
 
 
 def test_each_product_has_an_entry_with_known_references():

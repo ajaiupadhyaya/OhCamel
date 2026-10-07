@@ -12,6 +12,7 @@ LANE_M_KINDS = {
     "vol.forecast_league": ("M", True),
     "cov.league": ("M", True),
     "farm.sweep": ("L", True),
+    "vol.surface_history": ("M", True),
 }
 
 

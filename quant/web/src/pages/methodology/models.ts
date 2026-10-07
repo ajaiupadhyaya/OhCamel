@@ -782,4 +782,18 @@ export const MODELS: Model[] = [
     refs: ["bailey_2014", "bailey_2017", "bailey_2012", "hansen_2005", "politis_romano_1994", "pardo_2008"],
     keywords: "strategy farm backtest overfitting deflated sharpe pbo spa walk forward leaderboard",
   },
+  {
+    id: "p7-surface-history",
+    name: "Option-surface history (P7)",
+    section: "options",
+    summary: "Each night's delayed Cboe chains for 30 underlyings are fitted with SVI per expiry and reduced to a daily record: 30- and 90-day at-the-money implied volatility, the term slope between them, the 25-delta risk reversal and butterfly at 30 days, 30-day model-free variance, and the variance risk premium against the realized-variance forecast of the forecast league. The history only grows from the first snapshot; the page says how many days it holds.",
+    formulas: [
+      { tex: T`w(T) = w_1 + (w_2 - w_1)\frac{T - T_1}{T_2 - T_1},\ w = \sigma_{ATM}^2 T,\ \sigma_{30d} = \sqrt{w(30/365)/(30/365)}`, caption: "ATM interpolated in total variance, no extrapolation" },
+      { tex: T`\text{VRP} = \sigma^2_{MF,30d} - 252\,\widehat{RV}^{HAR}_{22d}` },
+    ],
+    assumptions: ["Cboe quotes are delayed 15 minutes; snapshots cannot be re-fetched, so missing nights stay missing.", "SVI fits are checked for butterfly arbitrage (Gatheral & Jacquier 2014); slices that fail to fit are skipped and listed.", "VRP is shown only where a forecast dated on or before the snapshot exists (minute bars cover about 50 names).", "A measurement, not a strategy: verdict DESCRIPTIVE ONLY."],
+    appears: [{ label: "Volatility · Surface history", to: "/options" }],
+    refs: ["gatheral_2004", "gatheral_jacquier_2014", "demeterfi_1999", "cboe_vix", "carr_wu_2009"],
+    keywords: "implied volatility surface svi history skew term structure variance risk premium",
+  },
 ];

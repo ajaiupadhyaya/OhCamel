@@ -30,6 +30,7 @@ max_age:
   vol.forecast_league: 78h
   cov.league: 204h
   farm.sweep: 78h
+  vol.surface_history: 78h
 
 schedules:
   - name: selftest-nightly
@@ -178,4 +179,13 @@ schedules:
     params: {budget_minutes: 90}
     priority: 2
     mem_class: L
+    heavy: true
+
+  # Lane M: P7 option-surface history, nightly after the 16:20 snapshots.
+  - name: vol-surface-history
+    cron: "0 21 * * 1-5"
+    kind: vol.surface_history
+    params: {}
+    priority: 2
+    mem_class: M
     heavy: true
