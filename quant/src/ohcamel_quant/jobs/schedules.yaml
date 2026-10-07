@@ -32,6 +32,7 @@ max_age:
   farm.sweep: 78h
   vol.surface_history: 78h
   models.xs_lgbm: 816h   # monthly (1st, 22:30) plus 2 days
+  regime.hmm: 204h       # weekly (Saturday 09:00), like the weekly ingest kinds
 
 schedules:
   - name: selftest-nightly
@@ -195,6 +196,15 @@ schedules:
   - name: exp-q01-monthly
     cron: "30 22 1 * *"
     kind: models.xs_lgbm
+    params: {}
+    priority: 2
+    mem_class: M
+    heavy: true
+
+  # Lane M: P6 EXP-Q02 (approved pre-registration), weekly features -> weekly run on Saturday morning.
+  - name: exp-q02-weekly
+    cron: "0 9 * * 6"
+    kind: regime.hmm
     params: {}
     priority: 2
     mem_class: M

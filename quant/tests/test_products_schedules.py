@@ -14,6 +14,7 @@ LANE_M_KINDS = {
     "farm.sweep": ("L", True),
     "vol.surface_history": ("M", True),
     "models.xs_lgbm": ("M", True),
+    "regime.hmm": ("M", True),
 }
 
 

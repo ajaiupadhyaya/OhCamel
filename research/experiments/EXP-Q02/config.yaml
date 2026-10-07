@@ -1,0 +1,24 @@
+# EXP-Q02 -- frozen design. Source: research/experiments/EXP-Q02/preregistration.md (APPROVED 2026-10-06).
+experiment: EXP-Q02
+preregistration: research/experiments/EXP-Q02/preregistration.md
+approved: "2026-10-06"
+methodology_version: 1
+features: [ret_4w, rv_4w, slope, d_oas]
+fred: {dgs10: DGS10, dgs2: DGS2, hy_oas: BAMLH0A0HYM2}
+macro_lag_business_days: 1
+standardize: {min_weeks: 52}
+model: {ks: [2, 3, 4], restarts: 20, max_iter: 500, tol: 1.0e-6, seed: 20261006, min_train_weeks: 156}
+refit: {first: "2005-01-01", every_weeks: 26}
+target: {sessions: 21, ewma_lambda: 0.94}
+windows: {selection_end: "2021-12-31", holdout_start: "2022-01-01"}
+pass: {dm_p_max: 0.05, hac_t_min: 2.0}
+sufficiency: {min_selection_weeks: 260, min_holdout_weeks: 26}
+holdout_reevaluation_approved: null
+interpretations:
+  - "I-Q02-1 weekly: last session of each week with a later session; 4-week return and realized vol over the previous 4 week-ends; rv = sqrt(252 mean r^2) of daily log returns."
+  - "I-Q02-2 OAS change: 1-week change of BAMLH0A0HYM2; every FRED value available one business day after its date."
+  - "I-Q02-3 standardization: expanding mean and sd through t inclusive, >= 52 weeks."
+  - "I-Q02-4 target: sum of squared daily SPY log returns over the 21 sessions after the week-end; EWMA forecast 21 x sigma^2_{t+1}, lambda 0.94."
+  - "I-Q02-5 refits: every 26 weeks from the first 2005 week-end, on all weeks to the refit date (>= 156); high-vol state = highest mean standardized rv_4w."
+  - "I-Q02-6 scoring: selection = weeks whose 21-session target ends on or before selection_end; holdout = weeks ending on or after holdout_start; straddling weeks are purged; OLS target ~ 1 + EWMA (+ P) on the selection window, Newey-West max(4, nw_lag_rule(n)) lags; frozen coefficients on the holdout, floored at the selection minimum RV; QLIKE; one-sided DM with the same lags; incremental R^2 in both windows."
+  - "I-Q02-7 sufficiency (not gates): >= 260 selection and >= 26 holdout weeks with targets; every feature covers the first refit's 156 weeks, else INSUFFICIENT DATA naming the short series."
