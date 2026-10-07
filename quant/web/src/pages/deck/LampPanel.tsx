@@ -7,8 +7,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { fmtPct } from "../../lib/format";
 import type { DeckModel, FeedState } from "./model";
+import { counterBank, type DigitFit } from "./fit";
 import { SevenSeg, segWidth } from "./SevenSeg";
 import { ageCounter, moneyCounter, sessionCountdown, type Counter } from "./segments";
+import { useBox } from "./useBox";
 
 const STATE_WORD: Record<FeedState, string> = { ok: "ready", stale: "stale", down: "down", off: "off", unknown: "unchecked" };
 
@@ -30,16 +32,13 @@ function useNow(ms: number): number {
   return now;
 }
 
-function CounterTile({ label, counter, caption, signed = false }: { label: string; counter: Counter; caption?: string; signed?: boolean }) {
-  const w = 14;
-  const h = 24;
-  const gap = 5;
-  const width = Math.max(segWidth(counter.digits, w, gap), 60) + 16;
+function CounterTile({ label, counter, seg, caption, signed = false }: { label: string; counter: Counter; seg: DigitFit; caption?: string; signed?: boolean }) {
+  const width = Math.max(1, segWidth(counter.digits, seg.w, seg.gap));
   return (
     <div className={`dk-counter${signed && counter.sign ? ` ${counter.sign}` : ""}`}>
       <div className="dk-counter-label">{label}</div>
-      <svg viewBox={`0 0 ${width} ${h + 12}`} role="img" aria-label={`${label}: ${counter.text}`} className="dk-counter-svg" style={{ maxWidth: width * 1.6 }}>
-        <SevenSeg text={counter.digits} x={(width - segWidth(counter.digits, w, gap)) / 2} y={6} w={w} h={h} gap={gap} />
+      <svg width={width} height={seg.h} viewBox={`0 0 ${width} ${seg.h}`} role="img" aria-label={`${label}: ${counter.text}`} className="dk-counter-svg">
+        <SevenSeg text={counter.digits} x={0} y={0} w={seg.w} h={seg.h} gap={seg.gap} />
       </svg>
       <div className="dk-counter-unit">
         {counter.unit}
@@ -49,6 +48,11 @@ function CounterTile({ label, counter, caption, signed = false }: { label: strin
   );
 }
 
+/**
+ * The counter bank: four seven-segment faces, one per real counter (day P&L, VaR, the oldest
+ * mark's age, time to the close or open), all drawn at one digit size set by the longest
+ * reading and the row's measured width (fit.ts).
+ */
 export function Counters({ model }: { model: DeckModel }) {
   const now = useNow(15_000);
   const responseTime = Date.parse(model.as_of ?? "");
@@ -56,14 +60,21 @@ export function Counters({ model }: { model: DeckModel }) {
   const c = model.counters;
   const countdown = sessionCountdown(model.clock, now);
   const alpha = model.alpha != null ? `${fmtPct(model.alpha, 0)} 1-day` : "1-day";
+  const pnl = moneyCounter(c.day_pnl_usd);
+  const risk = moneyCounter(c.var_usd);
+  const age = ageCounter(c.marks_age_s == null ? null : c.marks_age_s + elapsed);
+  const [row, size] = useBox<HTMLDivElement>({ width: 600, height: 0 });
+  const bank = counterBank(size.width, [pnl.digits.length, risk.digits.length, age.digits.length, countdown.digits.length]);
 
   return (
-      <div className="dk-counters">
-        <CounterTile signed label="Day P&L" counter={moneyCounter(c.day_pnl_usd)} caption={c.day_pnl != null ? fmtPct(c.day_pnl, 2, { signed: true }) : undefined} />
-        <CounterTile label={`VaR · ${alpha}`} counter={moneyCounter(c.var_usd)} />
-        <CounterTile label="Oldest mark" counter={ageCounter(c.marks_age_s == null ? null : c.marks_age_s + elapsed)} />
-        <CounterTile label={countdown.label === "session clock" ? "Session" : countdown.label === "to the close" ? "To the close" : "To the open"} counter={countdown} caption={model.clock ? (model.clock.is_open ? "open" : "closed") : "no clock"} />
+    <div className="dk-counters-fit" ref={row}>
+      <div className={`dk-counters cols-${bank.cols}`}>
+        <CounterTile signed label="Day P&L" counter={pnl} seg={bank.seg} caption={c.day_pnl != null ? fmtPct(c.day_pnl, 2, { signed: true }) : undefined} />
+        <CounterTile label={`VaR · ${alpha}`} counter={risk} seg={bank.seg} />
+        <CounterTile label="Oldest mark" counter={age} seg={bank.seg} />
+        <CounterTile label={countdown.label === "session clock" ? "Session" : countdown.label === "to the close" ? "To the close" : "To the open"} counter={countdown} seg={bank.seg} caption={model.clock ? (model.clock.is_open ? "open" : "closed") : "no clock"} />
       </div>
+    </div>
   );
 }
 

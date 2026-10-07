@@ -10,25 +10,29 @@
  * (Named RadarScope.tsx, not Radar.tsx: that would collide with the pure radar.ts under
  * extensionless imports on case-insensitive filesystems such as macOS's.)
  */
-import { useMemo } from "react";
+import { useMemo, type CSSProperties } from "react";
 import { fmtPct, fmtSignedPct } from "../../lib/format";
+import { radarGeometry } from "./fit";
 import { radar, type BlipIn } from "./radar";
 import { useReducedMotion } from "./TargetingComputer";
+import { useBox } from "./useBox";
 
-const S = 400; // viewBox side
-const C = S / 2;
-const R = 168; // rim radius
 const SPOKES = 12;
+/** the round screen's padding (4 px) and border (1 px), each side: the drawing sits inside them */
+const SCREEN_INSET = 5;
 
 export function Radar({ blips, readingKey, onInspect }: { blips: BlipIn[]; readingKey: string | null; onInspect: (text: string) => void }) {
   const reduced = useReducedMotion();
   const m = useMemo(() => radar([...blips].sort((a,b) => a.ticker.localeCompare(b.ticker))), [blips]);
+  const [box, size] = useBox<HTMLDivElement>({ width: 380, height: 380 });
+  const { size: S, c: C, r: R } = radarGeometry(size.width - 2 * SCREEN_INSET, size.height - 2 * SCREEN_INSET);
   const px = (u: number) => C + u * R;
 
   return (
     <div className="dk-radar">
+      <div className="dk-fit dk-fit-radar" ref={box}>
       <div className="dk-screen dk-screen-round">
-        <svg viewBox={`0 0 ${S} ${S}`} role="group" aria-label={m.summary}>
+        <svg width={S} height={S} viewBox={`0 0 ${S} ${S}`} role="group" aria-label={m.summary}>
           <circle cx={C} cy={C} r={R} className="dk-radar-rim" />
           <g className="dk-radar-grid">
             {Array.from({ length: SPOKES }, (_, i) => {
@@ -51,7 +55,7 @@ export function Radar({ blips, readingKey, onInspect }: { blips: BlipIn[]; readi
           ))}
 
           {/* the sweep: one turn per reading */}
-          <g key={reduced ? "still" : (readingKey ?? "none")} className={`dk-sweep${reduced || !readingKey ? "" : " turn"}`} style={{ transformOrigin: `${C}px ${C}px` }}>
+          <g key={reduced ? "still" : (readingKey ?? "none")} className={`dk-sweep${reduced || !readingKey ? "" : " turn"}`} style={{ "--dk-c": `${C}px` } as CSSProperties}>
             <path d={`M${C},${C} L${C},${C - R} A${R},${R} 0 0,0 ${C - R * Math.sin(Math.PI / 7)},${C - R * Math.cos(Math.PI / 7)} Z`} className="dk-sweep-wedge" />
             <line x1={C} y1={C} x2={C} y2={C - R} className="dk-sweep-line" />
           </g>
@@ -60,7 +64,7 @@ export function Radar({ blips, readingKey, onInspect }: { blips: BlipIn[]; readi
             const cx = px(b.x);
             const cy = px(b.y);
             const r = Math.max(3, b.r * R);
-            const lx = Math.max(42, Math.min(S - 42, cx + (b.x >= 0 ? r + 4 : -(r + 4))));
+            const lx = Math.max(36, Math.min(S - 36, cx + (b.x >= 0 ? r + 4 : -(r + 4))));
             return (
               <g key={b.ticker} role="button" tabIndex={0} aria-label={`Inspect ${b.ticker}`}
                 onClick={() => onInspect(`${b.ticker}: ${fmtPct(b.pct_var,1)} of VaR · weight ${fmtPct(b.live_weight,1)} · today ${fmtSignedPct(b.change_pct,2)}`)}
@@ -76,6 +80,7 @@ export function Radar({ blips, readingKey, onInspect }: { blips: BlipIn[]; readi
           })}
           <circle cx={C} cy={C} r={2.5} className="dk-radar-centre" />
         </svg>
+      </div>
       </div>
       <p className="dk-radar-caption">RANGE = |SHARE OF VaR|<br />SIZE = |WEIGHT| · HOLLOW = HEDGE</p>
       <div className="dk-ticker-keys" aria-label="Inspect holding">

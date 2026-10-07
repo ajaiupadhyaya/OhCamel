@@ -248,6 +248,7 @@
   grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr) minmax(232px, 0.72fr);
   grid-template-areas:
     "scope radar sys"
+    "ctr ctr sys"
     "tape tape tape";
   gap: 1px;
   padding: 1px 0;
@@ -265,6 +266,9 @@
 }
 .dk-inst-system {
   grid-area: sys;
+}
+.dk-inst-ctr {
+  grid-area: ctr;
 }
 .dk-inst-tape {
   grid-area: tape;
@@ -326,15 +330,43 @@
 }
 .dk-screen svg {
   display: block;
-  width: 100%;
-  height: auto;
 }
-.dk-screen-round {
+/* Console scale (F2): a fit box takes its size from CSS alone and the drawing inside it is
+   absolutely placed, so what is drawn can never feed back into what is measured. Every
+   instrument then draws in the box's CSS pixels: hairlines stay 1 px, type stays 11-12 px. */
+.dk-fit {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+}
+.dk-fit > svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+.dk-fit-scope {
+  aspect-ratio: 16 / 10;
+  min-height: 220px;
+  max-height: 480px;
+}
+.dk-fit-radar {
   max-width: 440px;
   margin: 0 auto;
   aspect-ratio: 1;
+}
+.dk-fit-radar > .dk-screen-round {
+  position: absolute;
+  inset: 0;
+}
+.dk-screen-round {
+  box-sizing: border-box;
+  aspect-ratio: 1;
   border-radius: 50%;
   padding: 4px;
+}
+.dk-fit-row {
+  width: 100%;
+  height: 0;
 }
 .dk-screen text {
   font-family: var(--font-mono);
@@ -500,15 +532,22 @@
 }
 
 /* ---------------------------------------------------------------- counters (seven-segment, real counters only) */
+.dk-counters-fit {
+  width: 100%;
+}
 .dk-counters {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
-  margin-top: 12px;
+}
+.dk-counters.cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 .dk-counter {
+  box-sizing: border-box;
   min-width: 0;
-  padding: 6px 6px 4px;
+  /* 9 px + the 1 px border = counterBank's 10 px pad: the digits are sized to fit inside it */
+  padding: 6px 9px 4px;
   background: var(--crt-ground);
   border: 1px solid var(--dk-rule-2);
   border-radius: 3px;
@@ -528,9 +567,8 @@
 }
 .dk-counter-svg {
   display: block;
-  width: 100%;
-  height: auto;
-  margin: 2px auto;
+  max-width: 100%;
+  margin: 6px auto 4px;
 }
 .dk-counter .dk-seg.on {
   fill: var(--crt-amber);
@@ -577,6 +615,9 @@
   stroke: var(--crt-green);
   stroke-width: 1;
   opacity: 0.8;
+}
+.dk-sweep {
+  transform-origin: var(--dk-c) var(--dk-c);
 }
 .dk-sweep.turn {
   animation: dk-sweep 1.4s cubic-bezier(0.4, 0, 0.3, 1) 1;
@@ -873,9 +914,10 @@ button.dk-key-face:hover {
   width: 100%;
   overflow: visible;
 }
-/* the plot keeps its aspect; on wide screens it stops growing taller than a strip */
+/* the plot is drawn in the scanner's own pixels (F2): no stretching */
 .dk-scanner > svg {
-  max-height: 260px;
+  width: auto;
+  max-width: 100%;
 }
 .dk-scanner svg text {
   fill: var(--crt-amber-text);
@@ -1099,12 +1141,16 @@ button.dk-key-face:hover {
   .dk-instrument {
     padding: 16px 20px 20px;
   }
+  .dk-fit-radar {
+    max-width: 520px;
+  }
 }
 @media (max-width: 1200px) {
   .dk-bay {
     grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
     grid-template-areas:
       "scope radar"
+      "ctr ctr"
       "sys sys"
       "tape tape";
   }
@@ -1166,7 +1212,7 @@ button.dk-key-face:hover {
   }
   .dk-bay {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "scope" "radar" "sys" "tape";
+    grid-template-areas: "scope" "radar" "ctr" "sys" "tape";
   }
   .dk-instrument {
     padding: 10px 16px 14px;
@@ -1177,9 +1223,6 @@ button.dk-key-face:hover {
   .dk-inst-system > .dk-group {
     margin-top: 10px;
   }
-  .dk-counters {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
   .dk-lampfield {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -1189,25 +1232,10 @@ button.dk-key-face:hover {
   .dk-screen {
     padding: 3px;
   }
-  .dk-screen-round {
-    max-width: 340px;
-  }
-  /* The drawings are scaled to about half here, so their type is set in the drawing's
-     own units at about twice the size. The rails keep their lines and drop their labels:
-     the lamps below name every breach and its figure. */
-  .dk-gate-label,
-  .dk-caption {
-    font-size: 20px;
-  }
-  .dk-unknown-q {
-    font-size: 22px;
-  }
+  /* Drawn at console scale, so type keeps its size; the rails keep their lines and drop
+     their labels for room: the lamps below name every breach and its figure. */
   .dk-rail-label {
     display: none;
-  }
-  .dk-radar-ring-label,
-  .dk-blip-label {
-    font-size: 18px;
   }
   .dk-scanner {
     padding: 8px;

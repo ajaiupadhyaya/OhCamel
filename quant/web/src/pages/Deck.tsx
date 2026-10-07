@@ -5,6 +5,10 @@
  *   A. Targeting computer — how close is the book to each of its limits?   (deck/scope.ts)
  *   B. Radar              — where is the risk, and what is moving today?  (deck/radar.ts)
  *   C. Lamp panel         — is the data behind this alive?               (deck/LampPanel.tsx)
+ *      with the counter bank (day P&L, VaR, marks age, time to close) and the compute bank.
+ *
+ * Console scale (F2): every instrument draws in the CSS pixels of its grid cell (deck/fit.ts,
+ * deck/useBox.ts), so type and hairlines are the same size at 380, 1280 and 1920.
  *
  * Sources (?source=, a SegmentedControl): your portfolio (default) and the reference book both
  * POST /deck/reading, polled every 15 s while the US session is open and every 5 min while it
@@ -356,11 +360,14 @@ function Instruments({ q, onInspect }: { q: DeckQuery; onInspect: (text: string)
         <InstrumentHead id="dk-h-scope" label="Limit corridor" code={breached ? "BREACH" : "TGT · LIMITS"} />
         {!m && <p className="dk-no-reading">{q.isLoading ? "ACQUIRING READING" : "NO READING"}</p>}
         <TargetingComputer limits={m?.limits ?? []} unevaluated={unevaluated} stale={stale} onInspect={onInspect} />
-        {m && <Counters model={m} />}
       </section>
       <section className="dk-instrument dk-inst-radar" aria-labelledby="dk-h-radar">
         <InstrumentHead id="dk-h-radar" label="Risk radar" code="1D VaR · SHARE" />
         <Radar blips={m?.blips ?? []} readingKey={quoteKey} onInspect={onInspect} />
+      </section>
+      <section className="dk-instrument dk-inst-ctr" aria-labelledby="dk-h-ctr">
+        <InstrumentHead id="dk-h-ctr" label="Counters" code="P&L · VaR · MARKS · CLOCK" />
+        {m ? <Counters model={m} /> : <p className="dk-no-reading">{q.isLoading ? "ACQUIRING READING" : "NO READING"}</p>}
       </section>
     </>
   );
