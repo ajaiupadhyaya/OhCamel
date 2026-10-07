@@ -28,6 +28,7 @@ max_age:
   risk.mc_atlas: 78h
   risk.mc_intraday: 35m
   vol.forecast_league: 78h
+  cov.league: 204h
 
 schedules:
   - name: selftest-nightly
@@ -155,6 +156,15 @@ schedules:
   - name: vol-forecast-league
     cron: "30 21 * * 1-5"
     kind: vol.forecast_league
+    params: {}
+    priority: 2
+    mem_class: M
+    heavy: true
+
+  # Lane M: P3 covariance league, weekly on Saturday morning.
+  - name: cov-league-weekly
+    cron: "0 8 * * 6"
+    kind: cov.league
     params: {}
     priority: 2
     mem_class: M

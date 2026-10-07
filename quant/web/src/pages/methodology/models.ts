@@ -753,4 +753,19 @@ export const MODELS: Model[] = [
     refs: ["bollerslev_1986", "glosten_1993", "riskmetrics_1996", "newey_west_1987", "patton_2019"],
     keywords: "garch egarch har realized variance qlike diebold mariano model confidence set",
   },
+  {
+    id: "p3-cov-league",
+    name: "Covariance forecast league (P3)",
+    section: "portfolio",
+    summary: "Weekly, seven covariance estimators — sample, EWMA, two Ledoit–Wolf shrinkage targets, OAS, Marchenko–Pastur denoising and a PCA statistical factor model — each build a global minimum-variance portfolio every 21 sessions from the trailing year; the estimator whose portfolio then realizes the lowest volatility forecasts risk best for allocation. Each is tested against the sample covariance for equal realized variance.",
+    formulas: [
+      { tex: T`w = \frac{\hat\Sigma^{-1}\mathbf{1}}{\mathbf{1}^\top\hat\Sigma^{-1}\mathbf{1}}`, caption: "global minimum-variance weights" },
+      { tex: T`\hat\Sigma_{\text{PCA}} = B B^\top + \operatorname{diag}(\hat\sigma^2 - \operatorname{diag}(BB^\top)),\ k = \#\{\lambda_i(C) > (1+\sqrt{N/T})^2\}`, caption: "statistical factor model, MP edge" },
+      { tex: T`z = \frac{\ln\hat\sigma^2_a - \ln\hat\sigma^2_b}{\sqrt{g^\top \hat S_{NW} g / T}},\ g = (1/\hat\sigma^2_a, -1/\hat\sigma^2_b)`, caption: "HAC test of equal variance" },
+    ],
+    assumptions: ["Weights held constant (daily rebalanced) for 21 sessions; long-short GMV, no costs (a forecast comparison, not a strategy).", "Tickers without full history over the span are dropped and listed; Nasdaq-100 members are today's constituents (survivorship).", "Verdict DESCRIPTIVE ONLY."],
+    appears: [{ label: "Portfolio · Covariance league", to: "/portfolio" }],
+    refs: ["ledoit_wolf_2004a", "ledoit_wolf_2004b", "ledoit_wolf_2008", "chen_2010", "laloux_1999", "newey_west_1987"],
+    keywords: "covariance shrinkage ledoit wolf oas denoising pca factor minimum variance league",
+  },
 ];
