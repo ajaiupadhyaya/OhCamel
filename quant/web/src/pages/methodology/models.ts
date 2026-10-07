@@ -768,4 +768,18 @@ export const MODELS: Model[] = [
     refs: ["ledoit_wolf_2004a", "ledoit_wolf_2004b", "ledoit_wolf_2008", "chen_2010", "laloux_1999", "newey_west_1987"],
     keywords: "covariance shrinkage ledoit wolf oas denoising pca factor minimum variance league",
   },
+  {
+    id: "p4-strategy-farm",
+    name: "Strategy farm (P4)",
+    section: "backtest",
+    summary: "Every published strategy in the Strategy Lab, on each universe it suits, swept over a fixed grid of up to 256 parameter sets and selected walk-forward (five years in, one out). Each row is held to the charter's gates — holdout positive, deflated Sharpe ≥ 0.30 counting every trial in the whole farm, PSR ≥ 0.70, bootstrap lower 5% > 0, positive in three of five stress regimes, costs at 0/5/15/30 bps — with PBO and Hansen's SPA reported. Most rows fail, and the verdict leads.",
+    formulas: [
+      { tex: T`\text{DSR} = \Phi\!\left(\frac{(\widehat{SR} - SR_0)\sqrt{n-1}}{\sqrt{1 - \hat\gamma_3\widehat{SR} + \frac{\hat\gamma_4-1}{4}\widehat{SR}^2}}\right),\ SR_0 = \sqrt{V[SR]}\,\big((1-\gamma)\Phi^{-1}(1-\tfrac1N) + \gamma\Phi^{-1}(1-\tfrac1{Ne})\big)`, caption: "N = every trial in the farm" },
+      { tex: T`\text{PBO} = \Pr[\lambda_c \le 0],\ \lambda_c = \ln\frac{w_c}{1-w_c}`, caption: "CSCV, S = 16" },
+    ],
+    assumptions: ["Grids are fixed in code before any result; nothing is tuned on the leaderboard.", "Costs are the engine's (5 bps one-way; execution one session after the decision close).", "ETF universes are fixed lists; nothing here is live or sized (advisory)."],
+    appears: [{ label: "Research · Farm", to: "/research" }, { label: "Front page", to: "/" }],
+    refs: ["bailey_2014", "bailey_2017", "bailey_2012", "hansen_2005", "politis_romano_1994", "pardo_2008"],
+    keywords: "strategy farm backtest overfitting deflated sharpe pbo spa walk forward leaderboard",
+  },
 ];

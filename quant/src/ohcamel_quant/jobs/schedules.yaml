@@ -29,6 +29,7 @@ max_age:
   risk.mc_intraday: 35m
   vol.forecast_league: 78h
   cov.league: 204h
+  farm.sweep: 78h
 
 schedules:
   - name: selftest-nightly
@@ -168,4 +169,13 @@ schedules:
     params: {}
     priority: 2
     mem_class: M
+    heavy: true
+
+  # Lane M: P4 strategy farm, nightly and incremental (90-minute budget, stalest cells first).
+  - name: farm-nightly
+    cron: "0 23 * * 1-5"
+    kind: farm.sweep
+    params: {budget_minutes: 90}
+    priority: 2
+    mem_class: L
     heavy: true
