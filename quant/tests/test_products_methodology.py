@@ -21,3 +21,16 @@ def test_each_product_has_an_entry_with_known_references():
         block = models[m.start():models.index("\n  },", m.start())]
         keys = re.findall(r'"([a-z0-9_]+)"', re.search(r"refs: \[([^\]]*)\]", block).group(1))
         assert keys and set(keys) <= refs, f"{eid}: unknown refs {set(keys) - refs}"
+
+
+def test_atlas_entry_says_what_members_get():
+    """Members are FHS only at 97.5% and 99%; the entry must not claim a copula reading for them."""
+    from ohcamel_quant.products import atlas
+
+    models = (WEB / "models.ts").read_text()
+    start = models.index('id: "p1-mc-atlas"')
+    summary = re.search(r'summary: "([^"]+)"', models[start:]).group(1)
+    assert atlas.MEMBER_METHODS == ("fhs",) and atlas.MEMBER_ALPHAS == (0.975, 0.99)
+    assert "universe member is measured alone by filtered historical simulation only" in summary
+    assert "97.5 and 99%" in summary and "no copula is run for members" in summary
+    assert "every universe member, by" not in summary

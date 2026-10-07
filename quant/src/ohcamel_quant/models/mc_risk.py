@@ -24,6 +24,7 @@ from ..risk.garch import FastGarch
 
 ALPHAS = (0.95, 0.975, 0.99)
 HORIZONS = (1, 10)
+METHODS = ("fhs", "copula_t")
 NU_BOUNDS = (3.0, 30.0)
 
 
@@ -77,23 +78,30 @@ def _row(method: str, h: int, a: float, var: float, es: float, paths: int | None
 
 
 def book_risk(returns: pd.DataFrame, weights: np.ndarray, *, n_paths: int, seed: int, threads: int,
-              alphas: Sequence[float] = ALPHAS, horizons: Sequence[int] = HORIZONS) -> BookRisk:
+              alphas: Sequence[float] = ALPHAS, horizons: Sequence[int] = HORIZONS,
+              methods: Sequence[str] = METHODS) -> BookRisk:
+    """``methods`` names what is computed; a method left out is not simulated at all (no busy-work)."""
+    if not methods or set(methods) - set(METHODS):
+        raise ValueError(f"methods must be a non-empty subset of {METHODS}, got {tuple(methods)}")
+    copula = "copula_t" in methods
     x = np.ascontiguousarray(returns.to_numpy(dtype=float))
     w = np.asarray(weights, dtype=float)
-    fits = [fit_gjr(x[:, j]) for j in range(x.shape[1])]
-    out = BookRisk(rows=[], nu=copula_nu(x), engine=kernels.engine_of("fhs_paths"),
+    fits = [fit_gjr(x[:, j]) for j in range(x.shape[1])] if "fhs" in methods else []
+    out = BookRisk(rows=[], nu=copula_nu(x) if copula else float("nan"), engine=kernels.engine_of("fhs_paths"),
                    converged=all(f.converged for f in fits))
     for h in horizons:
-        if h == 1:
+        if "fhs" in methods and h == 1:
             for a in alphas:
                 var, es, al = fhs_1d(fits, w, a)
                 out.rows.append(_row("fhs", 1, a, var, es, None))
                 out.euler[a] = euler_es(al, a)
-        else:
+        elif "fhs" in methods:
             pnl = kernels.fhs_paths(residual_matrix(fits), kernels.GarchParams.from_fits(fits), w, h, n_paths,
                                     seed, threads)
             for a in alphas:
                 out.rows.append(_row("fhs", h, a, *kernels.var_es_from_pnl(pnl, a), n_paths))
+        if not copula:
+            continue
         pnl = kernels.copula_t_paths(x, w, out.nu, h, n_paths, seed + 1, threads)
         for a in alphas:
             out.rows.append(_row("copula_t", h, a, *kernels.var_es_from_pnl(pnl, a), n_paths))

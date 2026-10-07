@@ -42,6 +42,26 @@ def test_members_without_history_get_a_reason_not_a_number(market):
     assert pd.isna(m.loc["NOPE", "var"]) and m.loc["NOPE", "reason"]
 
 
+def test_members_are_fhs_only_at_the_member_alphas(market, monkeypatch):
+    """Members store FHS rows at 97.5% and 99%, 1 and 10 days, and nothing else is computed for them."""
+    from ohcamel_quant import kernels
+
+    calls, real = [], kernels.copula_t_paths
+
+    def counted(*a, **k):
+        calls.append(a[0].shape[1])  # assets in the simulated book
+        return real(*a, **k)
+
+    monkeypatch.setattr(kernels, "copula_t_paths", counted)
+    spec = atlas.run({"n_paths": 5_000, "member_paths": 5_000, "members": ["SPY"]}, ctx(market))
+    assert len(calls) == len(deck.BOOKS) * 2  # the books' two copula horizons; none for the member
+    m = spec.tables["members"]
+    assert set(m["method"]) == {"fhs"}
+    assert {(int(h), float(a)) for h, a in zip(m["horizon"], m["alpha"], strict=True)} == {
+        (h, a) for h in (1, 10) for a in atlas.MEMBER_ALPHAS}
+    assert atlas.MEMBER_ALPHAS == (0.975, 0.99) and atlas.MEMBER_METHODS == ("fhs",)
+
+
 def test_intraday_and_the_deck_field(market, tmp_path, monkeypatch):
     spec = atlas.run_intraday({"n_paths": 20_000}, ctx(market))
     s = spec.tables["summary"]

@@ -22,6 +22,7 @@ from ..models import mc_risk
 LOOKBACK = 1000
 MIN_OBS = 500
 MEMBER_ALPHAS = (0.975, 0.99)
+MEMBER_METHODS = ("fhs",)  # members store FHS only, so only FHS is computed for them (no busy-work)
 DEFAULTS: dict[str, Any] = {"n_paths": 1_000_000, "member_paths": 250_000, "members": True, "seed": 20_261_006}
 INTRADAY: dict[str, Any] = {"n_paths": 250_000, "seed": 20_261_006}
 SURVIVORSHIP = "current constituents; delisted names absent"
@@ -89,9 +90,10 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         try:
             r, _ = _returns(ctx, [t])
             br = mc_risk.book_risk(r, np.array([1.0]), n_paths=int(p["member_paths"]), seed=int(p["seed"]),
-                                   threads=ctx.threads, alphas=MEMBER_ALPHAS, horizons=(1, 10))
+                                   threads=ctx.threads, alphas=MEMBER_ALPHAS, horizons=(1, 10),
+                                   methods=MEMBER_METHODS)
             members += [{"ticker": t, "universe": u, **row, "observations": len(r), "reason": None}
-                        for row in br.rows if row["method"] == "fhs"]
+                        for row in br.rows]
         except (DataUnavailable, ValueError, KeyError) as e:
             members.append({"ticker": t, "universe": u, "method": "fhs", "horizon": None, "alpha": None,
                             "var": None, "es": None, "n_paths": None, "observations": None, "reason": str(e)})
@@ -104,7 +106,8 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                 "members": pd.DataFrame(members, columns=member_cols)},
         data_asof=str(min(last).date()), provenance=[*prov, Provenance.now("ohcamel-mc", engine=br.engine).to_dict()],
         notes=[*notes, f"last {LOOKBACK} common sessions; 1-day FHS exact over residual rows; "
-                        f"{int(p['n_paths']):,} paths for 10-day FHS and both copula horizons"],
+                        f"{int(p['n_paths']):,} paths per book for 10-day FHS and both copula horizons; "
+                        f"members: FHS only, {int(p['member_paths']):,} paths for 10-day"],
         survivorship=surv, engine=br.engine,
         verdict="DESCRIPTIVE ONLY", verdict_detail="risk measurement, not a strategy: no gate applies")
 

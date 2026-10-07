@@ -727,7 +727,7 @@ export const MODELS: Model[] = [
     id: "p1-mc-atlas",
     name: "Monte Carlo risk atlas (P1)",
     section: "risk",
-    summary: "Nightly 1- and 10-day VaR and ES for the reference books and every universe member, by filtered historical simulation (GJR-GARCH-t per asset, residual rows drawn jointly) and by a Student-t copula over empirical marginals, with a million paths per book, plus each holding's Euler share of ES. Intraday, the books are re-measured every 15 minutes at weights drifted to the live marks.",
+    summary: "Nightly 1- and 10-day VaR and ES for the reference books at 95, 97.5 and 99%, by filtered historical simulation (GJR-GARCH-t per asset, residual rows drawn jointly) and by a Student-t copula over empirical marginals, with a million paths per book, plus each holding's Euler share of ES. Every universe member is measured alone by filtered historical simulation only, 1- and 10-day at 97.5 and 99% (250,000 paths for 10 days); no copula is run for members. Intraday, the books are re-measured every 15 minutes at weights drifted to the live marks.",
     formulas: [
       { tex: T`\sigma^2_{t+1,i} = \omega_i + (\alpha_i + \gamma_i \mathbf{1}[\varepsilon_{t,i}<0])\varepsilon_{t,i}^2 + \beta_i \sigma^2_{t,i}`, caption: "GJR-GARCH(1,1) per asset, Student-t innovations" },
       { tex: T`L_j = -\sum_i w_i(\mu_i + \sigma_{T+1,i} z_{j,i}),\quad \text{VaR} = L_{(k)},\ \text{ES} = \tfrac{1}{k}\sum_{j\le k} L_{(j)},\ k=\lceil n(1-\alpha)\rceil`, caption: "1-day FHS over residual rows j" },

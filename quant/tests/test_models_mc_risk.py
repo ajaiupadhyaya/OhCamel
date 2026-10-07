@@ -61,3 +61,17 @@ def test_book_risk_is_deterministic_and_complete(rets):
     ten = {r["alpha"]: r["var"] for r in a.rows if r["method"] == "fhs" and r["horizon"] == 10}
     one = {r["alpha"]: r["var"] for r in a.rows if r["method"] == "fhs" and r["horizon"] == 1}
     assert all(ten[al] > one[al] for al in ten)  # ten days of risk exceed one
+
+
+def test_fhs_only_skips_the_copula_and_matches_the_full_run(rets, monkeypatch):
+    """No busy-work: methods=("fhs",) never calls the copula kernel; its FHS rows equal the full run's."""
+    from ohcamel_quant import kernels
+
+    w = np.array([0.6, 0.3, 0.1])
+    full = book_risk(rets, w, n_paths=20_000, seed=11, threads=1)
+    monkeypatch.setattr(kernels, "copula_t_paths", lambda *a, **k: 1 / 0)
+    only = book_risk(rets, w, n_paths=20_000, seed=11, threads=1, methods=("fhs",))
+    assert only.rows == [r for r in full.rows if r["method"] == "fhs"]
+    assert {r["method"] for r in only.rows} == {"fhs"}
+    with pytest.raises(ValueError):
+        book_risk(rets, w, n_paths=1_000, seed=11, threads=1, methods=("bogus",))
