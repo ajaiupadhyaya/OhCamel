@@ -251,6 +251,7 @@ manifest.json   {"id","kind","params","params_hash","code_sha","data_asof","star
   - `GET /api/artifacts/{kind}/{id}` (manifest)
   - `GET /api/artifacts/{kind}/{id}/{table}` (JSON frame, `lib/serialize.frame` shape)
 - Retention: each kind keeps its newest 30 artifacts plus the newest artifact per month (B6).
+- **Amended 2026-10-06 (Lane M, M1; ship spec §3.4, §6):** the manifest gains two keys after `"tables"`: `"verdict"` (one of `PASS`, `FAIL`, `ADVISORY`, `INSUFFICIENT DATA`, `DESCRIPTIVE ONLY`, or `null` for kinds that are not products, e.g. `ingest.*`, `api.*`) and `"verdict_detail"` (a one-line reason, or `null`). Handlers set them on `ArtifactSpec`. Every `/api/artifacts` payload returns `verdict` as its first key. Existing keys are unchanged.
 
 ## II.4 Kernel API (`ohcamel_quant.kernels`, Lane A owns)
 
