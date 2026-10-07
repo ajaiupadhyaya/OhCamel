@@ -14,7 +14,7 @@ import { join } from "node:path";
 const ROUTES = ["/", "/markets", "/risk", "/portfolio", "/optimize", "/research", "/options", "/macro", "/company/AAPL", "/ticker/SPY", "/deck", "/system", "/compute", "/engine", "/methodology", "/ledger"];
 
 // Paper Tape pages whose dense tables must keep one row height. Later P2 tasks add their routes.
-const RHYTHM_ROUTES = new Set(["/markets", "/risk", "/portfolio"]);
+const RHYTHM_ROUTES = new Set(["/markets", "/risk", "/portfolio", "/optimize"]);
 
 async function unevenRows(page) {
   return page.evaluate(() => {
@@ -78,7 +78,7 @@ for (const theme of ["paper", "carbon"]) {
         const [sw, iw] = await page.evaluate(() => [document.documentElement.scrollWidth, window.innerWidth]);
         if (sw > iw) failures.push(`overflow ${theme} ${vp.width} ${p}: scrollWidth ${sw} > ${iw}`);
       }
-      if (RHYTHM_ROUTES.has(p)) for (const v of await unevenRows(page)) failures.push(`rhythm ${theme} ${vp.width} ${p}: ${v}`);
+      if (RHYTHM_ROUTES.has(p.split("?")[0])) for (const v of await unevenRows(page)) failures.push(`rhythm ${theme} ${vp.width} ${p}: ${v}`);
       for (const v of await axeSerious(page)) failures.push(`axe ${theme} ${vp.width} ${p}: ${v}`);
       const slug = slugOf(p);
       mkdirSync(join(out, slug), { recursive: true });

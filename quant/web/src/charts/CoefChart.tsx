@@ -4,6 +4,7 @@
  * open; the t-stat sits at the right edge in mono.
  *
  *   <CoefChart rows={[{ term: "MKT", est: 0.92, lo: 0.88, hi: 0.96, t: 41.2 }]} />
+ * `tick` formats the axis and `right` the right-edge figure (e.g. percent estimates, a p-value).
  */
 import { useLayoutEffect, useRef, useState } from "react";
 import { fmtNum } from "../lib/format";
@@ -20,7 +21,21 @@ export interface CoefRow {
 
 const ROW = 26;
 
-export function CoefChart({ rows, sigT = 2, ariaLabel }: { rows: CoefRow[]; sigT?: number; ariaLabel: string }) {
+export function CoefChart({
+  rows,
+  sigT = 2,
+  ariaLabel,
+  tick = (v) => fmtNum(v, 2),
+  right = (r) => `t ${fmtNum(r.t, 1)}`,
+}: {
+  rows: CoefRow[];
+  sigT?: number;
+  ariaLabel: string;
+  /** Axis tick text (default 2-decimal numbers). */
+  tick?: (v: number) => string;
+  /** The right-edge figure per row (default the t-stat). */
+  right?: (r: CoefRow) => string;
+}) {
   const t = useChartTheme();
   const box = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
@@ -51,7 +66,7 @@ export function CoefChart({ rows, sigT = 2, ariaLabel }: { rows: CoefRow[]; sigT
             <g key={v}>
               <line x1={X(v)} x2={X(v)} y1={0} y2={rows.length * ROW} stroke={t.ink3} strokeDasharray="1 3" />
               <text x={X(v)} y={rows.length * ROW + 15} textAnchor="middle" fill={t.ink2} {...font(11, t.mono)}>
-                {fmtNum(v, 2)}
+                {tick(v)}
               </text>
             </g>
           ))}
@@ -69,7 +84,7 @@ export function CoefChart({ rows, sigT = 2, ariaLabel }: { rows: CoefRow[]; sigT
                 <line x1={X(r.hi)} x2={X(r.hi)} y1={cy - 4} y2={cy + 4} stroke={t.ink} />
                 <rect x={X(r.est) - 4} y={cy - 4} width={8} height={8} fill={sig ? t.ink : t.paper} stroke={t.ink} />
                 <text x={width} y={cy} textAnchor="end" dominantBaseline="middle" fill={sig ? t.ink : t.ink2} {...font(11, t.mono)}>
-                  t {fmtNum(r.t, 1)}
+                  {right(r)}
                 </text>
                 <line x1={0} x2={width} y1={(i + 1) * ROW - 0.5} y2={(i + 1) * ROW - 0.5} stroke={t.ink3} strokeDasharray="1 3" />
               </g>

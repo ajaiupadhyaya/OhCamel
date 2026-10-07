@@ -1,11 +1,12 @@
 /**
- * Page-local plumbing: the optimizer context (config + setters), a Panel wrapper that turns
- * the "risk-free rate unavailable" 503 into an actionable state, and small helpers.
+ * Page-local plumbing: the optimizer context (config + setters), a Cell wrapper that turns
+ * the "risk-free rate unavailable" 503 into INSUFFICIENT DATA with a one-click switch to a
+ * user-supplied rate, and small helpers. Paper Tape: rules, caps labels, mono numbers.
  */
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useContext, type CSSProperties, type ReactNode } from "react";
 import type { UseQueryResult } from "@tanstack/react-query";
-import { ErrorState, Panel, type PanelProps } from "../../components";
-import { Icon } from "../../components/Icon";
+import { Panel, type PanelProps } from "../../components";
+import { Absent } from "../../design";
 import { DataUnavailableError, type ApiError } from "../../lib/api";
 import type { OptConfig } from "./config";
 import type { MethodsCatalog, MethodSpec } from "./types";
@@ -32,8 +33,8 @@ export function isRfError(e: unknown): boolean {
 }
 
 /**
- * Panel for an optimizer query. A 503 caused by the risk-free series gets the standard
- * "data source unavailable" treatment plus a one-click switch to a user-supplied rate.
+ * Cell for an optimizer query. A 503 caused by the risk-free series reads INSUFFICIENT DATA ·
+ * RISK-FREE UNAVAILABLE (nothing is computed on an assumed rate) with SET RF beside it.
  */
 export function QPanel<T>({
   q,
@@ -46,28 +47,12 @@ export function QPanel<T>({
   const { set, cfg } = useOpt();
   if (isRfError(q.error)) {
     return (
-      <Panel<T> {...props} notes={undefined}>
+      <Panel<T> {...props} notes={undefined} actions={undefined}>
         <div className="op-rf-missing">
-          <ErrorState error={q.error} onRetry={() => void q.refetch()} />
-          <div className="op-rf-missing-fix">
-            <p>
-              This view needs a risk-free rate (Sharpe ratios, the tangency
-              portfolio or Black–Litterman equilibrium). The 3-month T-bill
-              series could not be loaded, so nothing is computed rather than
-              assuming one. You can supply the rate yourself — it will be
-              labelled as user-supplied everywhere it is used.
-            </p>
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              onClick={() => set({ rfMode: "manual" })}
-            >
-              <Icon name="plus" size={14} />{" "}
-              {cfg.rfMode === "manual"
-                ? "Edit my risk-free rate in the rail"
-                : "Enter a risk-free rate myself"}
-            </button>
-          </div>
+          <Absent reason="RISK-FREE UNAVAILABLE" source="FRED DGS3MO · K. FRENCH RF" />
+          <button type="button" className="btn btn-sm" onClick={() => set({ rfMode: "manual" })}>
+            {cfg.rfMode === "manual" ? "EDIT RF" : "SET RF"}
+          </button>
         </div>
       </Panel>
     );
@@ -80,41 +65,52 @@ export function QPanel<T>({
 }
 
 /** Tickers sorted by a numeric map, descending. */
-export function sortBy(
-  tickers: string[],
-  m: Record<string, number | null | undefined>,
-): string[] {
+export function sortBy(tickers: string[], m: Record<string, number | null | undefined>): string[] {
   return [...tickers].sort((a, b) => (m[b] ?? -Infinity) - (m[a] ?? -Infinity));
 }
 
-/** Top-k tickers by |value| with the remainder folded into "Other" (≤ 8 series rule). */
-export function foldTop(
-  tickers: string[],
-  score: (t: string) => number,
-  k = 7,
-): { keep: string[]; other: string[] } {
-  if (tickers.length <= k + 1) return { keep: tickers, other: [] };
-  const ranked = [...tickers].sort((a, b) => score(b) - score(a));
-  const keepSet = new Set(ranked.slice(0, k));
-  return {
-    keep: tickers.filter((t) => keepSet.has(t)),
-    other: tickers.filter((t) => !keepSet.has(t)),
-  };
+/** A number with a hairline bar under it, scaled to `max` (weights, risk shares). Shorts draw ink-3. */
+export function BarCell({ v, max, text, dim }: { v: number | null | undefined; max: number; text: string; dim?: boolean }) {
+  const w = v == null || !Number.isFinite(v) ? 0 : Math.min(100, (Math.abs(v) / (max || 1)) * 100);
+  return (
+    <span className={`op-barcell ${dim ? "op-barcell-dim" : ""} ${v != null && v < 0 ? "op-barcell-neg" : ""}`}>
+      <span className="op-barcell-v">{text}</span>
+      <span className="op-barcell-bar" aria-hidden style={{ "--w": `${w}%` } as CSSProperties} />
+    </span>
+  );
 }
 
-/** "SPY 42.1% · TLT 20.0% · …" for hover labels (largest |w| first). */
-export function weightsLine(
-  w: Record<string, number> | undefined,
-  max = 6,
-  sep = "<br>",
-): string {
-  if (!w) return "";
-  const rows = Object.entries(w)
-    .filter(([, v]) => Math.abs(v) > 0.0005)
-    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
-  const shown = rows
-    .slice(0, max)
-    .map(([k, v]) => `${k} ${(v * 100).toFixed(1)}%`);
-  if (rows.length > max) shown.push(`+${rows.length - max} more`);
-  return shown.join(sep);
+type ReadItem = { k: string; v: ReactNode; tone?: string };
+
+/** A terse ruled readout line: KEY value · KEY value (labels, not sentences). */
+export function Readline({ items }: { items: (ReadItem | false | null | undefined)[] }) {
+  return (
+    <div className="op-readline num">
+      {items
+        .filter((it): it is ReadItem => !!it)
+        .map((it, i) => (
+          <span key={i} className="op-readline-item">
+            <span className="op-readline-k">{it.k}</span> <span className={it.tone ?? ""}>{it.v}</span>
+          </span>
+        ))}
+    </div>
+  );
+}
+
+/**
+ * A label with its Greek letters kept lowercase inside an uppercased caps label (μ would set
+ * as Μ, which reads as M; ρ as P; τ as T).
+ */
+export function sym(s: string): ReactNode {
+  const parts = s.split(/([α-ω]+)/);
+  if (parts.length === 1) return s;
+  return parts.map((p, i) =>
+    /[α-ω]/.test(p) ? (
+      <span key={i} className="op-sym">
+        {p}
+      </span>
+    ) : (
+      p
+    ),
+  );
 }
