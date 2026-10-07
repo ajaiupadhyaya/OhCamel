@@ -54,11 +54,6 @@ const LEGACY_INLINE_STYLE = [
   "src/pages/research/BacktestTab.tsx",
   "src/pages/research/Setup.tsx",
   "src/pages/research/SweepTab.tsx",
-  "src/pages/volatility/ChainTable.tsx",
-  "src/pages/volatility/DensityTab.tsx",
-  "src/pages/volatility/ImpliedTab.tsx",
-  "src/pages/volatility/RealizedTab.tsx",
-  "src/pages/volatility/shared.tsx",
 ];
 const LEGACY_TOFIXED = [
   "src/charts/scales.ts",
@@ -72,8 +67,6 @@ const LEGACY_TOFIXED = [
   "src/pages/research/SweepTab.tsx",
   "src/pages/research/config.ts",
   "src/pages/research/shared.tsx",
-  "src/pages/volatility/CalculatorTab.tsx",
-  "src/pages/volatility/ImpliedTab.tsx",
   "src/pages/macro/shared.tsx",
 ];
 const DECK = ["src/pages/deck/**", "src/pages/Deck.tsx"];

@@ -5,9 +5,11 @@
  *   <HeatmapChart x={cols} y={rows} z={matrix} format="pct" diverging />
  *   <HistogramChart values={returns} format="pct" vlines={[{ x: -var99, label: "VaR 99%" }]} />
  *
- * Plotly (~4.5 MB) stays for the raw <Chart> and the 3-D <SurfaceChart>. It is its own chunk,
- * reached only through loadPlotly()'s dynamic import(), so a page pays for it only when one of
- * those mounts. Its template is paper tape: ink lines at 1.25px, dotted --ink-3 grid, Plex
+ * Plotly (~4.5 MB) stays only for the raw <Chart> on pages Lane P2 has not migrated yet
+ * (scripts/check-bundle.mjs LEGACY_PLOTLY: Rates & Macro, Company, Ticker, Engine) and for the
+ * 3-D surface (pages/volatility/SurfaceView.tsx, which loads it itself). It reaches Plotly only
+ * through loadPlotly()'s dynamic import() of ./plotlyLegacy (a chunk check-bundle can name), so
+ * a page pays for it only when a raw <Chart> mounts. Delete it with the last user. Its template is paper tape: ink lines at 1.25px, dotted --ink-3 grid, Plex
  * Mono 11px ticks, transparent backgrounds, and no legend box -- line traces get direct
  * end-of-line labels instead.
  *
@@ -30,7 +32,7 @@ type PlotlyModule = typeof import("plotly.js");
 let plotlyPromise: Promise<PlotlyModule> | null = null;
 /** The only path to Plotly: a dynamic import, so it never lands in the entry chunk. */
 export function loadPlotly(): Promise<PlotlyModule> {
-  if (!plotlyPromise) plotlyPromise = import("plotly.js-dist-min").then((m) => ((m as any).default ?? m) as PlotlyModule);
+  if (!plotlyPromise) plotlyPromise = import("./plotlyLegacy").then((m) => { const p = m.default as any; return (p.default ?? p) as PlotlyModule; });
   return plotlyPromise;
 }
 
@@ -258,34 +260,3 @@ export function Chart({ data, layout, config, height = 300, className, compact, 
     </div>
   );
 }
-
-/** 3-D surface (e.g. implied vol by strike × expiry). */
-export function SurfaceChart({ x, y, z, zFormat = "num", titles, height = 480, layout: extra }: { x: (number | string)[]; y: (number | string)[]; z: (number | null)[][]; zFormat?: ValueFormat; titles?: { x?: string; y?: string; z?: string }; height?: number; layout?: Partial<Layout> }) {
-  const { resolved } = useTheme();
-  const f = d3Format(zFormat);
-  const data = useMemo<Data[]>(() => {
-    const t = readTokens();
-    return [
-      {
-        type: "surface",
-        x,
-        y,
-        z,
-        colorscale: t.sequential.map((c, i) => [i / (t.sequential.length - 1), c]),
-        showscale: true,
-        colorbar: { thickness: 8, outlinewidth: 0, tickformat: f.tick, tickfont: { family: t.fontMono, size: 10, color: t.text3 } },
-        contours: { z: { show: true, usecolormap: true, highlightcolor: t.text, project: { z: false } } } as any,
-        hovertemplate: `${titles?.x ?? "x"} %{x}<br>${titles?.y ?? "y"} %{y}<br><b>${titles?.z ?? "z"} %{z:${f.hover}}${f.suffix ?? ""}</b><extra></extra>`,
-      } as any,
-    ];
-  }, [x, y, z, f.tick, f.hover, f.suffix, titles, resolved]); // eslint-disable-line react-hooks/exhaustive-deps
-  const layout = useMemo(
-    () => (t: Tokens) => {
-      const ax = (title?: string, fmt?: string) => ({ title: { text: title ?? "" }, gridcolor: t.rule, zerolinecolor: t.ruleStrong, showbackground: false, tickfont: { family: t.fontMono, size: 10, color: t.text3 }, tickformat: fmt });
-      return mergeLayout({ margin: { l: 0, r: 0, t: 0, b: 0 }, scene: { xaxis: ax(titles?.x), yaxis: ax(titles?.y), zaxis: ax(titles?.z, f.tick), camera: { eye: { x: 1.6, y: -1.6, z: 0.9 } }, aspectmode: "manual", aspectratio: { x: 1.2, y: 1.2, z: 0.7 } } } as any, extra as any);
-    },
-    [titles, f.tick, extra],
-  );
-  return <Chart data={data} layout={layout} height={height} />;
-}
-

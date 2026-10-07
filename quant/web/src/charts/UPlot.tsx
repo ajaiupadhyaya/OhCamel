@@ -464,7 +464,8 @@ export function TimeSeriesChart({ series, yFormat = "num", digits = 2, area, ran
 
   const names = series.map((s) => s.name).filter(Boolean).join(", ");
   return (
-    <div className="oc-chart oc-chart-uplot" style={{ height, minHeight: height }} role="img" aria-label={`Time series${names ? `: ${names}` : ""}`}>
+    // With range buttons the chart is a group (an img may not contain controls: axe nested-interactive).
+    <div className="oc-chart oc-chart-uplot" style={{ height, minHeight: height }} role={rangeSelector ? "group" : "img"} aria-label={`Time series${names ? `: ${names}` : ""}`}>
       {rangeSelector && (
         <div className="oc-chart-range" role="group" aria-label="Range">
           {[...ranges.map((r) => r.key), "MAX"].map((k) => (

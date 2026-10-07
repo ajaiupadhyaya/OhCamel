@@ -80,6 +80,13 @@ export function fmtMultiple(x: number | null | undefined, digits = 2): string {
   return ok(x) ? `${fmtNum(x, digits)}×` : EM_DASH;
 }
 
+/** Scientific: 0.000123 -> "1.23e−4" (for tiny diagnostics such as an arbitrage margin); 0 stays "0". */
+export function fmtSci(x: number | null | undefined, digits = 2): string {
+  if (!ok(x)) return EM_DASH;
+  if (x === 0) return "0";
+  return x.toExponential(digits).replace("e+", "e").replace(/-/g, MINUS);
+}
+
 /** Heuristic formatter for tables with mixed magnitudes. */
 export function fmtAuto(x: unknown): string {
   if (x === null || x === undefined) return EM_DASH;

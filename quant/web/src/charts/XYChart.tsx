@@ -4,6 +4,7 @@
  *   <XYChart x={days} series={[{ name: "GJR", y, tone: "ink" }]} hlines={[{ y: 0.18, label: "LONG RUN" }]} />
  *   <XYChart time x={dates} series={[{ name: "RET", y, mode: "points", tone: "ink3" },
  *                                    { name: "BREACH", y: b, mode: "points", tone: "signal" }]} />
+ *   <XYChart logX xTicks={[{ at: 30, label: "30D" }]} x={strikes} series={[{ name: "MID", y, mode: "points", lo: bid, hi: ask }]} />
  *
  * For the shapes the presets do not cover: a fitted density over a histogram, a forecast term
  * structure with reference levels, daily P&L dots against a VaR band. House style as the
@@ -29,6 +30,11 @@ export interface XYSeries {
   size?: number;
   /** Direct end label (lines default on). */
   label?: boolean;
+  /** Lines: draw across missing points (a sparse series on a shared x). */
+  span?: boolean;
+  /** Points mode: a vertical hairline whisker from lo to hi at each point (e.g. bid to ask). */
+  lo?: (number | null)[];
+  hi?: (number | null)[];
 }
 
 export interface XYRule {
@@ -56,6 +62,10 @@ export interface XYChartProps {
   zero?: boolean;
   /** Log axis floor (values below are clipped out of view), e.g. 0.5 day for counts. */
   yMin?: number;
+  /** Log x axis (x > 0 only). */
+  logX?: boolean;
+  /** Explicit x ticks and their labels (e.g. horizons "10D" "1M"); replaces the computed ones. */
+  xTicks?: { at: number; label: string }[];
 }
 
 const toneColor = (t: ChartTheme, tone: Tone | undefined) => (tone === "signal" ? t.signal : tone === "ink2" ? t.ink2 : tone === "ink3" ? t.ink3 : t.ink);
@@ -68,17 +78,36 @@ export function xyData(x: (number | string)[], series: XYSeries[], time: boolean
   return [keep.map((i) => xs[i] as number), ...series.map((s) => keep.map((i) => clean(s.y[i])))];
 }
 
-export function XYChart({ x, series, time = false, xFormat = "num", yFormat = "num", digits = 2, logY = false, hlines = [], vlines = [], height = 280, xTitle, ariaLabel, zero, yMin }: XYChartProps) {
+/** Whisker ends per series, aligned with the x values xyData keeps; null for a series without them. */
+export function xyWhiskers(x: (number | string)[], series: XYSeries[], time = false): ({ lo: (number | null)[]; hi: (number | null)[] } | null)[] {
+  const xs = x.map((v) => (time ? toEpochSec(v) : typeof v === "number" ? v : Number(v)));
+  const keep = xs.map((v, i) => (v !== null && Number.isFinite(v) ? i : -1)).filter((i) => i >= 0);
+  const clean = (v: number | null | undefined) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  return series.map((s) => (s.lo || s.hi ? { lo: keep.map((i) => clean(s.lo?.[i])), hi: keep.map((i) => clean(s.hi?.[i])) } : null));
+}
+
+/** A log x range padded by a tenth of a decade on the left; the right edge is the last x, so line
+ *  ends reach the gutter and their direct labels are spaced there, not overprinted in the plot. */
+export function logXRange(min: number, max: number): [number, number] {
+  const lo = Math.max(min, 1e-12);
+  const hi = Math.max(max, lo);
+  return [lo / 10 ** 0.1, hi > lo ? hi : hi * 10 ** 0.1];
+}
+
+export function XYChart({ x, series, time = false, xFormat = "num", yFormat = "num", digits = 2, logY = false, hlines = [], vlines = [], height = 280, xTitle, ariaLabel, zero, yMin, logX = false, xTicks }: XYChartProps) {
   const t = useChartTheme();
   const readout = useRef<HTMLDivElement>(null);
   const data = useMemo(() => xyData(x, series, time, logY), [x, series, time, logY]);
-  const metaKey = JSON.stringify(series.map((s) => [s.name, s.mode ?? "line", s.tone, s.dash, s.width, s.size, s.label]));
-  const rulesKey = JSON.stringify([hlines, vlines]);
+  const whiskers = useMemo(() => xyWhiskers(x, series, time), [x, series, time]);
+  const whiskerRef = useRef(whiskers);
+  whiskerRef.current = whiskers;
+  const metaKey = JSON.stringify(series.map((s) => [s.name, s.mode ?? "line", s.tone, s.dash, s.width, s.size, s.label, s.span ?? false]));
+  const rulesKey = JSON.stringify([hlines, vlines, xTicks ?? null]);
   const plotH = height - STRIP;
 
   const opts = useMemo(() => {
-    const meta = JSON.parse(metaKey) as [string, "line" | "points" | "bars", Tone | undefined, string | undefined, number | undefined, number | undefined, boolean | undefined][];
-    const [hl, vl] = JSON.parse(rulesKey) as [XYRule[], XYRule[]];
+    const meta = JSON.parse(metaKey) as [string, "line" | "points" | "bars", Tone | undefined, string | undefined, number | undefined, number | undefined, boolean | undefined, boolean][];
+    const [hl, vl, xt] = JSON.parse(rulesKey) as [XYRule[], XYRule[], { at: number; label: string }[] | null];
     const colors = meta.map((m) => toneColor(t, m[2]));
     const labelled = meta.map((m) => m[6] ?? m[1] === "line");
     const count = Math.max(2, Math.round(plotH / 56));
@@ -111,7 +140,11 @@ export function XYChart({ x, series, time = false, xFormat = "num", yFormat = "n
         padding: [10, gutter, 0, 0],
         cursor: { y: false, drag: { x: false, y: false }, points: { size: 6, width: 1.25, fill: t.paper, stroke: (_u: uPlot, s: number) => colors[s - 1] ?? t.ink } },
         scales: {
-          x: time ? { time: true } : { time: false, range: (_u, min, max) => (min === max ? [min - 1, max + 1] : [min, max]) },
+          x: time
+            ? { time: true }
+            : logX
+              ? { time: false, distr: 3, range: (_u, min, max) => logXRange(min, max) }
+              : { time: false, range: (_u, min, max) => (min === max ? [min - 1, max + 1] : [min, max]) },
           y: logY
             ? { distr: 3, range: (_u, min, max) => [Math.max(yMin ?? 0, min > 0 ? 10 ** Math.floor(Math.log10(min)) : yMin ?? 1), 10 ** Math.ceil(Math.log10(Math.max(max, 1e-12)))] }
             : { range: (_u, min, max) => niceRange(min, max, count, [...(zero ? [0] : []), ...hl.map((h) => h.at)]) },
@@ -123,7 +156,7 @@ export function XYChart({ x, series, time = false, xFormat = "num", yFormat = "n
               return { label: m[0], width: 0, fill: colors[i], points: { show: false }, paths: uPlot.paths.bars!({ size: [1, Infinity, 1], gap: 1 }) };
             if (m[1] === "points")
               return { label: m[0], width: 0, stroke: colors[i], paths: () => null, points: { show: true, size: m[5] ?? 3, width: 0, fill: colors[i], stroke: colors[i] } };
-            return { label: m[0], stroke: colors[i], width: m[4] ?? 1.25, dash: m[3] ? DASH[m[3]] : undefined, points: { show: false }, spanGaps: false };
+            return { label: m[0], stroke: colors[i], width: m[4] ?? 1.25, dash: m[3] ? DASH[m[3]] : undefined, points: { show: false }, spanGaps: m[7] };
           }),
         ],
         axes: [
@@ -141,13 +174,21 @@ export function XYChart({ x, series, time = false, xFormat = "num", yFormat = "n
                   values: (_u: uPlot, splits: number[], _ai: number, _sp: number, incr: number) =>
                     splits.map((s) => {
                       const d = new Date(s * 1000);
-                      return incr >= 360 * 86400 ? String(d.getUTCFullYear()) : `${MON[d.getUTCMonth()]} ${String(d.getUTCFullYear()).slice(2)}`;
+                      if (incr >= 360 * 86400) return String(d.getUTCFullYear());
+                      if (incr >= 28 * 86400) return `${MON[d.getUTCMonth()]} ${String(d.getUTCFullYear()).slice(2)}`;
+                      return `${String(d.getUTCDate()).padStart(2, "0")} ${MON[d.getUTCMonth()]}`;
                     }),
                 }
-              : {
-                  splits: (_u: uPlot, _i: number, min: number, max: number) => niceTicks(min, max, xCount).filter((v) => v >= min - 1e-12 && v <= max + 1e-12),
-                  values: (_u: uPlot, splits: number[]) => splits.map((v) => formatTick(v, xFormat, splits.length > 1 ? Math.abs(splits[1] - splits[0]) : 1)),
-                }),
+              : xt
+                ? {
+                    splits: (_u: uPlot, _i: number, min: number, max: number) => xt.map((k) => k.at).filter((v) => v >= min - 1e-12 && v <= max + 1e-12),
+                    values: (_u: uPlot, splits: number[]) => splits.map((v) => xt.find((k) => k.at === v)?.label ?? formatValue(v, xFormat, digits)),
+                    filter: (_u: uPlot, splits: number[]) => splits,
+                  }
+                : {
+                    splits: (_u: uPlot, _i: number, min: number, max: number) => niceTicks(min, max, xCount).filter((v) => v >= min - 1e-12 && v <= max + 1e-12),
+                    values: (_u: uPlot, splits: number[]) => splits.map((v) => formatTick(v, xFormat, splits.length > 1 ? Math.abs(splits[1] - splits[0]) : 1)),
+                  }),
             ...(xTitle ? { label: xTitle.toUpperCase(), labelFont: `11px ${t.mono}`, labelSize: 14 } : {}),
           },
           logY
@@ -173,6 +214,29 @@ export function XYChart({ x, series, time = false, xFormat = "num", yFormat = "n
               const { ctx, bbox } = u;
               const right = bbox.left + bbox.width;
               ctx.save();
+              // whiskers: a hairline from lo to hi at each point, in the series' tone
+              ctx.save();
+              const clip = new Path2D();
+              clip.rect(bbox.left, bbox.top, bbox.width, bbox.height);
+              ctx.clip(clip);
+              whiskerRef.current.forEach((w, s) => {
+                if (!w) return;
+                ctx.strokeStyle = colors[s];
+                ctx.lineWidth = r;
+                ctx.setLineDash([]);
+                ctx.beginPath();
+                u.data[0].forEach((xv, i) => {
+                  const lo = w.lo[i];
+                  const hi = w.hi[i];
+                  if (lo === null || hi === null) return;
+                  const px = Math.round(u.valToPos(xv, "x", true)) + 0.5;
+                  if (px < bbox.left || px > right) return;
+                  ctx.moveTo(px, u.valToPos(lo, "y", true));
+                  ctx.lineTo(px, u.valToPos(hi, "y", true));
+                });
+                ctx.stroke();
+              });
+              ctx.restore();
               ctx.font = `${Math.round(11 * r)}px ${t.mono}`;
               ctx.textBaseline = "middle";
               // reference levels: a dotted rule across, labelled in the right gutter
@@ -266,7 +330,7 @@ export function XYChart({ x, series, time = false, xFormat = "num", yFormat = "n
       };
       return o;
     };
-  }, [t, metaKey, rulesKey, plotH, time, xFormat, yFormat, digits, logY, zero, xTitle, yMin]);
+  }, [t, metaKey, rulesKey, plotH, time, xFormat, yFormat, digits, logY, zero, xTitle, yMin, logX]);
 
   return (
     <div className="oc-chart oc-chart-uplot oc-chart-fixed" style={{ "--chart-h": `${height}px` } as CSSProperties} role="img" aria-label={ariaLabel}>
