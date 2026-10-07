@@ -14,7 +14,7 @@ import { join } from "node:path";
 const ROUTES = ["/", "/markets", "/risk", "/portfolio", "/optimize", "/research", "/options", "/macro", "/company/AAPL", "/ticker/SPY", "/deck", "/system", "/compute", "/engine", "/methodology", "/ledger"];
 
 // Paper Tape pages whose dense tables must keep one row height. Later P2 tasks add their routes.
-const RHYTHM_ROUTES = new Set(["/markets"]);
+const RHYTHM_ROUTES = new Set(["/markets", "/risk", "/portfolio"]);
 
 async function unevenRows(page) {
   return page.evaluate(() => {

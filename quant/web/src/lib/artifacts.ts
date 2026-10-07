@@ -77,3 +77,30 @@ export function absentLabel(error: unknown): "NOT YET RUN" | "DATA UNAVAILABLE" 
 export function useArtifact(kind: string, enabled = true) {
   return useApiQuery<unknown>(`/artifacts/${encodeURIComponent(kind)}/latest`, undefined, { enabled, staleTime: 5 * 60_000 });
 }
+
+/** One artifact table as the API returns it (`lib/serialize.frame`: column-major). */
+export interface Frame {
+  index: unknown[];
+  columns: string[];
+  data: Record<string, unknown[]>;
+}
+
+/** A frame as row records; null when the body is not a frame (an empty frame is []). */
+export function frameRecords(body: unknown): Record<string, unknown>[] | null {
+  if (!body || typeof body !== "object") return null;
+  const f = body as Partial<Frame>;
+  if (!Array.isArray(f.columns) || !f.data || typeof f.data !== "object") return null;
+  const cols = f.columns.map(String);
+  if (!cols.every((c) => Array.isArray(f.data![c]))) return null;
+  const n = cols.length ? f.data[cols[0]].length : 0;
+  return Array.from({ length: n }, (_, i) => Object.fromEntries(cols.map((c) => [c, f.data![c][i] ?? null])));
+}
+
+/** GET /api/artifacts/{kind}/{id}/{table} (contract II.3). */
+export function useArtifactTable(kind: string, id: string | undefined, table: string, enabled = true) {
+  return useApiQuery<unknown, Record<string, unknown>[] | null>(`/artifacts/${encodeURIComponent(kind)}/${encodeURIComponent(id ?? "")}/${encodeURIComponent(table)}`, undefined, {
+    enabled: enabled && !!id,
+    staleTime: 30 * 60_000,
+    select: frameRecords,
+  });
+}

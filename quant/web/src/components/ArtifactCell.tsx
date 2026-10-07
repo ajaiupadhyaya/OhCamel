@@ -21,20 +21,28 @@ export interface ArtifactCellProps {
   /** The pre-registration this product waits on (e.g. "EXP-Q01"). */
   experiment?: string;
   span?: 2 | "all";
+  /** Controls in the header (beside the link), e.g. a confidence toggle. */
+  controls?: ReactNode;
   children?: (m: Manifest) => ReactNode;
 }
 
-export function ArtifactCell({ title, kind, to, go, experiment, span, children }: ArtifactCellProps) {
+export function ArtifactCell({ title, kind, to, go, experiment, span, controls, children }: ArtifactCellProps) {
   const held = experiment !== undefined && !PREREGISTERED[kind];
   const q = useArtifact(kind, !held);
-  const actions = to ? (
+  const link = to ? (
     <Link to={to} className="oc-go">
       {go ?? "OPEN"} →
     </Link>
+  ) : null;
+  const actions = link || controls ? (
+    <>
+      {controls}
+      {link}
+    </>
   ) : undefined;
   if (held)
     return (
-      <Panel title={title} actions={actions} span={span}>
+      <Panel title={title} actions={link ?? undefined} span={span}>
         <Absent value="AWAITING PRE-REGISTRATION" reason={experiment ?? ""} source={kind} />
       </Panel>
     );
@@ -42,11 +50,11 @@ export function ArtifactCell({ title, kind, to, go, experiment, span, children }
   const m = manifestOf(q.data);
   if (absent || (q.data !== undefined && !m))
     return (
-      <Panel title={title} actions={actions} span={span}>
+      <Panel title={title} actions={link ?? undefined} span={span}>
         <Absent reason={absent ?? "NO MANIFEST"} source={kind} />
       </Panel>
     );
-  if (!m) return <Panel title={title} actions={actions} span={span} loading={q.isLoading} error={q.isError ? q.error : undefined} onRetry={() => void q.refetch()} skeletonHeight={120} />;
+  if (!m) return <Panel title={title} actions={link ?? undefined} span={span} loading={q.isLoading} error={q.isError ? q.error : undefined} onRetry={() => void q.refetch()} skeletonHeight={120} />;
   return (
     <Panel
       title={title}

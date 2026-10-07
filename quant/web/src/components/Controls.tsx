@@ -113,7 +113,7 @@ export function Field({ label, info, hint, children, htmlFor, inline }: { label:
  *   <NumberField label="Confidence" value={0.99} percent min={0.5} max={0.999} step={0.005} onChange={setA} />
  *   <NumberField label="Notional" value={1e6} unit="$" onChange={setN} />
  */
-export function NumberField({ label, value, onChange, min, max, step, unit, percent, info, hint, digits, disabled, width }: { label?: ReactNode; value: number | null | undefined; onChange: (v: number) => void; min?: number; max?: number; step?: number; unit?: string; percent?: boolean; info?: InfoProp; hint?: ReactNode; digits?: number; disabled?: boolean; width?: number | string }) {
+export function NumberField({ label, ariaLabel, value, onChange, min, max, step, unit, percent, info, hint, digits, disabled, width }: { label?: ReactNode; ariaLabel?: string; value: number | null | undefined; onChange: (v: number) => void; min?: number; max?: number; step?: number; unit?: string; percent?: boolean; info?: InfoProp; hint?: ReactNode; digits?: number; disabled?: boolean; width?: number | string }) {
   const id = useId();
   const k = percent ? 100 : 1;
   const show = (v: number | null | undefined) => (v === null || v === undefined || !Number.isFinite(v) ? "" : String(+(v * k).toFixed(digits ?? (percent ? 4 : 6))));
@@ -135,6 +135,7 @@ export function NumberField({ label, value, onChange, min, max, step, unit, perc
       <input
         id={id}
         className="num"
+        aria-label={ariaLabel}
         inputMode="decimal"
         value={text}
         disabled={disabled}

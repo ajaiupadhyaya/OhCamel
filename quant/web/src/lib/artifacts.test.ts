@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ApiError, DataUnavailableError, NetworkError } from "./api";
-import { absentLabel, manifestOf } from "./artifacts";
+import { absentLabel, frameRecords, manifestOf } from "./artifacts";
 
 describe("absentLabel (missing reads render as missing)", () => {
   it("a 404 means the job kind has not produced an artifact yet", () => {
@@ -29,5 +29,23 @@ describe("manifestOf", () => {
     expect(manifestOf(null)).toBeNull();
     expect(manifestOf({})).toBeNull();
     expect(manifestOf({ manifest: {} })).toBeNull();
+  });
+});
+
+describe("frameRecords (artifact tables arrive as lib/serialize.frame)", () => {
+  it("turns a column-major frame into rows", () => {
+    const f = { index: [0, 1], columns: ["book", "var"], data: { book: ["core", "spy"], var: [0.02, null] } };
+    expect(frameRecords(f)).toEqual([
+      { book: "core", var: 0.02 },
+      { book: "spy", var: null },
+    ]);
+  });
+  it("rejects anything that is not a frame", () => {
+    expect(frameRecords(null)).toBeNull();
+    expect(frameRecords({ columns: ["a"] })).toBeNull();
+    expect(frameRecords({ index: [0], columns: ["a"], data: {} })).toBeNull();
+  });
+  it("an empty frame is zero rows, not missing", () => {
+    expect(frameRecords({ index: [], columns: ["a"], data: { a: [] } })).toEqual([]);
   });
 });
