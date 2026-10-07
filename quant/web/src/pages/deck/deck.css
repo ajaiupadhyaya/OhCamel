@@ -1259,3 +1259,43 @@ button.dk-key-face:hover {
     transition: none !important;
   }
 }
+
+/* ================================================================ F3: MC line on the scanner */
+.dk-mc {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+  margin: 0 0 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--dk-rule-2);
+  font: 11px/1.4 var(--font-mono);
+  color: var(--crt-amber-text);
+}
+.dk-mc-label {
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--dk-dim);
+}
+.dk-mc-value {
+  font-size: 13px;
+  color: var(--crt-amber-text);
+  font-variant-numeric: tabular-nums;
+}
+.dk-mc-meta {
+  color: var(--dk-dim);
+  overflow-wrap: anywhere;
+}
+.dk-mc-absent .dk-mc-value {
+  font-size: 11px;
+  color: var(--dk-dim);
+}
+.dk-mc.stale .dk-mc-value {
+  color: var(--dk-dim);
+}
+.dk-mc-stale {
+  color: var(--crt-red-text);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}

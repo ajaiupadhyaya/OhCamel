@@ -11,9 +11,15 @@
  * deck/useBox.ts), so type and hairlines are the same size at 380, 1280 and 1920.
  *
  * Sources (?source=, a SegmentedControl): your portfolio (default) and the reference book both
- * POST /deck/reading, polled every 15 s while the US session is open and every 5 min while it
- * is closed; the OCaml engine is GET /engine/snapshot through the read-only bridge, every 2 s
- * (its 503 is rendered, never replaced). All three become one DeckModel (deck/model.ts).
+ * POST /deck/reading, one reading per quote-cache refresh while the US session is open and
+ * every 5 min while it is closed (deck/live.ts); the OCaml engine is GET /engine/snapshot
+ * through the read-only bridge, every 2 s (its 503 is rendered, never replaced). All three
+ * become one DeckModel (deck/model.ts).
+ *
+ * Live (F3): running jobs stream from GET /api/jobs/events (deck/useJobStream.ts); the server
+ * has no multiplexed stream hub, so readings, host metrics and the engine are still polled at
+ * the cadences above, and the strip says so. The session scanner shows the intraday Monte
+ * Carlo VaR the reading carries (`mc_var`, compute plan M2) with its asOf, or that it is absent.
  * Below the instruments: the session tape, the marks with provenance, and the limits editor.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -29,6 +35,8 @@ import { drawerKey } from "./deck/keys";
 import { Counters, LampPanel } from "./deck/LampPanel";
 import { LimitsEditor } from "./deck/LimitsEditor";
 import { DEFAULT_LIMITS, loadLimits, sanitizeLimits, saveLimits, toWire, type LimitIn } from "./deck/limits";
+import { MC_MAX_AGE_S, mcVarOf, readingInterval, READING_MIN } from "./deck/live";
+import { McReadout } from "./deck/McReadout";
 import { appendTrail, fromEngine, fromReading, historyToTape, tapeFromServer, trailToTape, type BooksOut, type DeckModel, type DeckSource, type Reading, type ReadingMark, type TapeOut, type TrailPoint } from "./deck/model";
 import { Radar } from "./deck/RadarScope";
 import { SessionTape } from "./deck/SessionTape";
@@ -37,8 +45,6 @@ import "./deck/deck.css";
 
 const ALPHA = 0.95;
 const EWMA_LAMBDA = 0.94;
-const OPEN_POLL = 15_000;
-const CLOSED_POLL = 300_000;
 const ENGINE_POLL = 2_000;
 const REFERENCE_KEY = "core";
 
@@ -165,7 +171,8 @@ function DeckBody({ source, onSource }: { source: DeckSource; onSource: (s: Deck
     enabled: source !== "engine" && body != null,
     placeholderData: undefined,
     staleTime: 0,
-    refetchInterval: (q) => (q.state.data?.clock?.is_open ? OPEN_POLL : CLOSED_POLL),
+    // one reading per quote-cache refresh while open, 5 min while closed (deck/live.ts)
+    refetchInterval: (q) => readingInterval(q.state.data),
   });
   const snap = useApiQuery<SnapshotOut>("/engine/snapshot", undefined, {
     enabled: source === "engine",
@@ -195,7 +202,7 @@ function DeckBody({ source, onSource }: { source: DeckSource; onSource: (s: Deck
       refetch: () => (refError ? books.refetch() : base.refetch()),
       stale: hasData && base.isError,
       staleError: hasData && base.isError ? (base.error as ApiError) : null,
-      cadence: source === "engine" ? "every 2 s" : open ? "every 15 s while the session is open" : "every 5 min while the session is closed",
+      cadence: source === "engine" ? "every 2 s" : open ? `every ${Math.round(readingInterval(reading.data) / 1000)} s · per quote refresh` : "every 5 min · session closed",
     };
   }, [source, snap, reading, books, core, model]);
 
@@ -228,6 +235,7 @@ function DeckBody({ source, onSource }: { source: DeckSource; onSource: (s: Deck
         {!q.isError && (
           <section className="dk-instrument dk-inst-tape" aria-labelledby="dk-h-tape">
             <InstrumentHead id="dk-h-tape" label="Session scanner" code="TIME · RISK · EVENTS" />
+            {source !== "engine" && <McLine reading={reading.data} />}
             <Tape source={source} q={q} />
           </section>
         )}
@@ -279,7 +287,8 @@ function DeckBody({ source, onSource }: { source: DeckSource; onSource: (s: Deck
           {model?.feeds.map((f) => <p key={f.key} className="small"><strong>{f.label}: {f.state}</strong> — {f.detail}{f.age_s != null ? ` · ${Math.round(f.age_s)}s old at reading` : ""}</p>)}
           <p className="small">Corridor depth is observed ÷ threshold. The red counter is the worst breach when one exists, otherwise the nearest limit's remaining headroom.</p>
           <p className="small">Radar bearings follow alphabetical ticker order; radius is absolute share of value at risk, size is absolute portfolio weight, hollow marks are hedges, values beyond the rim are clamped and marked.</p>
-          <p className="small">Compute: hostd via GET /api/ops/host; running jobs via GET /api/jobs?state=running; both every 15 s.</p>
+          <p className="small">Compute: hostd via GET /api/ops/host every 15 s; running jobs via the job stream GET /api/jobs/events, with GET /api/jobs?state=running read on open, when an unseen job starts, every 2 min to reconcile, and every 15 s while the stream is down.</p>
+          <p className="small">MC VaR: the intraday Monte Carlo VaR the reading carries from the latest risk.mc_intraday artifact, shown with its asOf and marked stale {MC_MAX_AGE_S / 60} min after it was computed (one missed 15-minute run plus slack). Absent when the reading carries none.</p>
         </section>
       </dialog>
     </>
@@ -374,6 +383,17 @@ function Instruments({ q, onInspect }: { q: DeckQuery; onInspect: (text: string)
 }
 
 // ------------------------------------------------------------------ session tape
+
+/** The intraday MC VaR line; its staleness re-checked every 15 s (never animated). */
+function McLine({ reading }: { reading: Reading | undefined }) {
+  const mc = useMemo(() => mcVarOf(reading), [reading]);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), READING_MIN);
+    return () => clearInterval(id);
+  }, []);
+  return <McReadout mc={mc} now={now} />;
+}
 
 function Tape({ source, q }: { source: DeckSource; q: DeckQuery }) {
   if (source === "reference") return <ReferenceTape open={!!q.data?.clock?.is_open} />;

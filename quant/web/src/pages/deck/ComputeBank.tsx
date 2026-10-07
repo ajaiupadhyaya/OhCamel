@@ -1,17 +1,22 @@
 /**
  * The lamp panel's compute bank (spec §3.7): what the box is doing while the deck flies.
  * One lamp for hostd, three bar lamps (CPU, steal, memory) from GET /api/ops/host, and one
- * lamp per running job kind from GET /api/jobs?state=running. The reading is compute.ts;
- * this file only draws it. A read that fails is drawn as failed, never as idle.
+ * lamp per running job kind from GET /api/jobs?state=running, kept current by the job stream
+ * (GET /api/jobs/events, F3: live.ts, useJobStream.ts). The reading is compute.ts; this file
+ * only draws it. A read that fails is drawn as failed, never as idle.
  */
-import { useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ApiError } from "../../lib/api";
 import { fmtPct } from "../../lib/format";
 import { useApiQuery } from "../../lib/query";
-import { computeBank, type HostState, type HostWire, type JobsWire } from "./compute";
+import { computeBank, type HostState, type HostWire, type JobRow, type JobsWire } from "./compute";
+import { applyJobEvent, jobsPollInterval, type JobEvent, type LinkState } from "./live";
+import { useJobStream } from "./useJobStream";
 
 const POLL = 15_000;
 const POLL_ERR = 5 * 60_000;
+
+const LINK_WORD: Record<LinkState, string> = { live: "SSE", connecting: "SSE …", down: "POLL 15 s" };
 
 const HOST_WORD: Record<HostState, string> = { ok: "LIVE", stale: "STALE", off: "NOT SET", down: "DOWN", warming: "WARMING", unknown: "—" };
 const HOST_TONE: Record<HostState, string> = { ok: "ok", stale: "stale", off: "off", down: "down", warming: "stale", unknown: "off" };
@@ -22,9 +27,46 @@ function configuredOf(e: ApiError | null): { configured: boolean } | null {
   return { configured: body?.configured !== false };
 }
 
+/**
+ * Running jobs: the list read seeds them; each stream event then moves a progress or drops a
+ * job without a read; a job the deck has not seen starting asks for one list read (its kind is
+ * only on the list). While the stream is down the list is polled every 15 s, as before F3.
+ */
+function useRunningJobs() {
+  const [held, setHeld] = useState<JobRow[] | null>(null);
+  const heldRef = useRef<JobRow[] | null>(null);
+  const refetchRef = useRef<() => unknown>(() => undefined);
+  const onEvent = useCallback((e: JobEvent) => {
+    const h = heldRef.current;
+    if (!h) return;
+    const r = applyJobEvent(h, e);
+    if (r.jobs !== h) {
+      heldRef.current = r.jobs;
+      setHeld(r.jobs);
+    }
+    if (r.needsList) void refetchRef.current();
+  }, []);
+  const link = useJobStream(onEvent);
+  const jobs = useApiQuery<JobsWire>("/jobs", { state: "running", limit: 50 }, { staleTime: 0, refetchInterval: (q) => jobsPollInterval(link, q.state.status === "error") });
+  const { data, dataUpdatedAt, refetch } = jobs;
+  refetchRef.current = refetch;
+  // a new list read replaces whatever the stream had moved
+  useEffect(() => {
+    if (!data) return;
+    heldRef.current = data.jobs ?? [];
+    setHeld(heldRef.current);
+  }, [data, dataUpdatedAt]);
+  // the stream (re)opened: events may have been missed while it was down, so read the list once
+  useEffect(() => {
+    if (link === "live") void refetch();
+  }, [link, refetch]);
+  const live: JobsWire | undefined = data ? { ...data, jobs: held ?? data.jobs } : undefined;
+  return { jobs, live, link };
+}
+
 export function ComputeBank({ onInspect }: { onInspect: (text: string) => void }) {
   const host = useApiQuery<HostWire>("/ops/host", undefined, { staleTime: 0, refetchInterval: (q) => (q.state.status === "error" ? POLL_ERR : POLL) });
-  const jobs = useApiQuery<JobsWire>("/jobs", { state: "running", limit: 50 }, { staleTime: 0, refetchInterval: (q) => (q.state.status === "error" ? POLL_ERR : POLL) });
+  const { jobs, live, link } = useRunningJobs();
   // React Query keeps `data` after a later fetch fails (keepPreviousData): an error with a held
   // reading is "stale", drawn as old, never as live; an error with nothing held is down/off.
   const hostConfigured = host.data ? null : (configuredOf(host.error ?? null)?.configured ?? null);
@@ -36,11 +78,11 @@ export function ComputeBank({ onInspect }: { onInspect: (text: string) => void }
         host: host.data ?? null,
         hostError: hostConfigured == null ? null : { configured: hostConfigured },
         hostStale,
-        jobs: jobs.data ?? null,
+        jobs: live ?? null,
         jobsError: !jobs.data && jobs.isError,
         jobsStale,
       }),
-    [host.data, hostConfigured, hostStale, jobs.data, jobs.isError, jobsStale],
+    [host.data, hostConfigured, hostStale, live, jobs.data, jobs.isError, jobsStale],
   );
   const cpus = host.data?.cpus;
 
@@ -72,6 +114,24 @@ export function ComputeBank({ onInspect }: { onInspect: (text: string) => void }
           >
             <span className="dk-key-legend">HOSTD</span>
             <span className="dk-key-state">{HOST_WORD[bank.host]}</span>
+          </button>
+        </li>
+        <li className={`dk-key ${link === "live" ? "ok" : link === "connecting" ? "stale" : "off"}`}>
+          <button
+            type="button"
+            className="dk-key-face"
+            onClick={() =>
+              onInspect(
+                link === "live"
+                  ? "JOB STREAM · SSE · GET /api/jobs/events open; job progress and finishes arrive as they happen, the running list is re-read every 2 min to reconcile"
+                  : link === "connecting"
+                    ? "JOB STREAM · CONNECTING · opening GET /api/jobs/events; the running list is read every 15 s meanwhile"
+                    : "JOB STREAM · DOWN · GET /api/jobs/events is not answering; retrying with backoff, the running list is read every 15 s meanwhile",
+              )
+            }
+          >
+            <span className="dk-key-legend">JOB LINK</span>
+            <span className="dk-key-state">{LINK_WORD[link]}</span>
           </button>
         </li>
         {bank.jobs === "down" || bank.jobs === "unknown" ? (
