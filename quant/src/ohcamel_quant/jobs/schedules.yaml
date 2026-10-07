@@ -23,6 +23,10 @@ max_age:
   ingest.sec_facts: 204h
   ingest.holdings_13f: 204h
   ingest.option_snapshots: 78h
+  # Lane M (products). Nightly kinds 78h like Lane C's session kinds; intraday 35m (one missed run + slack,
+  # the deck's MC_MAX_AGE_S on ship/lane-f).
+  risk.mc_atlas: 78h
+  risk.mc_intraday: 35m
 
 schedules:
   - name: selftest-nightly
@@ -116,6 +120,31 @@ schedules:
   - name: warehouse-bars-minute-intraday
     cron: "*/30 10-15 * * 1-5"
     kind: ingest.bars_minute
+    params: {}
+    priority: 1
+    mem_class: S
+    heavy: false
+
+  # Lane M: P1 risk atlas, nightly after the 18:30 bars ingest; intraday every 15 min in session.
+  - name: risk-atlas-nightly
+    cron: "0 20 * * 1-5"
+    kind: risk.mc_atlas
+    params: {}
+    priority: 2
+    mem_class: M
+    heavy: true
+
+  - name: risk-atlas-intraday-open
+    cron: "45 9 * * 1-5"
+    kind: risk.mc_intraday
+    params: {}
+    priority: 1
+    mem_class: S
+    heavy: false
+
+  - name: risk-atlas-intraday
+    cron: "*/15 10-15 * * 1-5"
+    kind: risk.mc_intraday
     params: {}
     priority: 1
     mem_class: S

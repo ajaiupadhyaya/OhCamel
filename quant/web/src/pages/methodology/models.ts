@@ -722,4 +722,20 @@ export const MODELS: Model[] = [
     refs: [],
     keywords: "adjusted close dividends splits units",
   },
+  // ======================================================== COMPUTE PRODUCTS (Lane M; scheduled jobs)
+  {
+    id: "p1-mc-atlas",
+    name: "Monte Carlo risk atlas (P1)",
+    section: "risk",
+    summary: "Nightly 1- and 10-day VaR and ES for the reference books and every universe member, by filtered historical simulation (GJR-GARCH-t per asset, residual rows drawn jointly) and by a Student-t copula over empirical marginals, with a million paths per book, plus each holding's Euler share of ES. Intraday, the books are re-measured every 15 minutes at weights drifted to the live marks.",
+    formulas: [
+      { tex: T`\sigma^2_{t+1,i} = \omega_i + (\alpha_i + \gamma_i \mathbf{1}[\varepsilon_{t,i}<0])\varepsilon_{t,i}^2 + \beta_i \sigma^2_{t,i}`, caption: "GJR-GARCH(1,1) per asset, Student-t innovations" },
+      { tex: T`L_j = -\sum_i w_i(\mu_i + \sigma_{T+1,i} z_{j,i}),\quad \text{VaR} = L_{(k)},\ \text{ES} = \tfrac{1}{k}\sum_{j\le k} L_{(j)},\ k=\lceil n(1-\alpha)\rceil`, caption: "1-day FHS over residual rows j" },
+      { tex: T`\text{ES} = \sum_i \mathbb{E}[\,L_i \mid L \ge \text{VaR}\,]`, caption: "Euler allocation of ES" },
+    ],
+    assumptions: ["The last 1,000 common sessions; standardized residuals are drawn as whole rows, so cross-asset dependence is the empirical one.", "Copula degrees of freedom are the median per-asset Student-t MLE, clipped to [3, 30]; Kendall's tau sets the correlation.", "Universe members are today's constituents; delisted names are absent (survivorship).", "A risk measurement, not a strategy: no gate applies (verdict DESCRIPTIVE ONLY). Same seed and thread count give identical numbers."],
+    appears: [{ label: "Risk · Atlas", to: "/risk" }, { label: "Front page", to: "/" }, { label: "Flight Deck", to: "/deck" }],
+    refs: ["barone_adesi_1999", "glosten_1993", "mcneil_frey_2000", "tasche_2000", "mcneil_2015"],
+    keywords: "monte carlo var es fhs copula euler atlas",
+  },
 ];
