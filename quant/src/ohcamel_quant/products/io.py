@@ -27,9 +27,13 @@ def _rows(db: Path, kind: str, params_hash: str | None) -> list[Any]:
         return conn.execute(sql + " ORDER BY finished_at DESC, id DESC", args).fetchall()
 
 
-def previous_artifact(kind: str, params_hash: str | None = None, *,
-                      db_path: Path | None = None) -> tuple[dict[str, Any], Path] | None:
-    """The newest artifact of ``kind`` whose directory still has its manifest."""
+def previous_artifact(kind: str, params_hash: str | None = None, *, db_path: Path | None = None,
+                      with_table: str | None = None) -> tuple[dict[str, Any], Path] | None:
+    """The newest artifact of ``kind`` whose directory still has its manifest.
+
+    With ``with_table``, the newest one that also holds that table. Experiments look their once-only holdout up
+    this way: an INSUFFICIENT DATA run (a vendor outage, a short history) publishes no holdout, and reading the
+    newest artifact instead would let the next run score the holdout a second time."""
     from ..jobs.paths import jobs_db_path
 
     db = Path(db_path) if db_path is not None else jobs_db_path()
@@ -37,6 +41,8 @@ def previous_artifact(kind: str, params_hash: str | None = None, *,
         return None
     for row in _rows(db, kind, params_hash):
         path = Path(row["path"])
+        if with_table is not None and not (path / f"{with_table}.parquet").exists():
+            continue
         try:
             return json.loads((path / "manifest.json").read_text()), path
         except FileNotFoundError:

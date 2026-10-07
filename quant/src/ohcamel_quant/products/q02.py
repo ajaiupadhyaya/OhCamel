@@ -70,7 +70,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                           "rv_end": Q.target_end(spy, z.index, cfg["target"]["sessions"]),
                           "ewma": Q.ewma_month(spy, z.index, cfg["target"]["ewma_lambda"], cfg["target"]["sessions"]),
                           "p_high": p_high})
-    prev = previous_artifact(KIND, db_path=DB_PATH)
+    prev = previous_artifact(KIND, db_path=DB_PATH, with_table="holdout")  # skips INSUFFICIENT DATA runs
     prev_t = {t: read_table(prev[1], t) for t in HOLDOUT_TABLES} if prev else {}
     decision = holdout_decision(prev_t.get("holdout"), version=version, cfg_hash=h,
                                 approved=cfg.get("holdout_reevaluation_approved"))

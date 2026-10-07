@@ -59,9 +59,13 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     tickers = sorted(set(cfg.universe) | {cfg.benchmark})
     panel, prov = load_panel(ctx.warehouse, tickers)
     samples = X.build_samples(panel, cfg)
-    prev = previous_artifact(KIND, db_path=DB_PATH)
-    stored = (*HOLDOUT_TABLES, "selection", "trials", "stitched", "model", "scores")
-    prev_t = {t: read_table(prev[1], t) for t in stored} if prev else {}
+    # Each stored group comes from the newest artifact that holds it, so an INSUFFICIENT DATA artifact (which
+    # publishes only an empty gates table) never reopens the once-only holdout or the frozen selection.
+    prev_t: dict[str, pd.DataFrame | None] = {}
+    for anchor, group in (("holdout", HOLDOUT_TABLES), ("selection", ("selection", "trials", "stitched")),
+                          ("model", ("model", "scores"))):
+        got = previous_artifact(KIND, db_path=DB_PATH, with_table=anchor)
+        prev_t.update({t: read_table(got[1], t) for t in group} if got else {})
 
     sel_row = prev_t.get("selection")
     if sel_row is not None and not sel_row.empty and sel_row.iloc[0]["config_hash"] == h \

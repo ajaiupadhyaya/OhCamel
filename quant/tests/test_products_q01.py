@@ -6,12 +6,13 @@ the frozen design lives in research/experiments/EXP-Q01/config.yaml and is never
 from __future__ import annotations
 
 import copy
+from datetime import timedelta
 
 import duckdb
 import numpy as np
 import pandas as pd
 import pytest
-from lane_m_harness import publish_artifact
+from lane_m_harness import T0, publish_artifact
 
 from ohcamel_quant.jobs.context import JobContext
 from ohcamel_quant.products import experiment, q01
@@ -155,3 +156,22 @@ def test_q01_holdout_goes_stale_on_methodology_change(market, wh, test_cfg, monk
     approved = {**bumped, "holdout_reevaluation_approved": 2}
     again = _run(market, wh, approved, monkeypatch, db)
     assert again.tables["holdout"].iloc[0]["methodology_version"] == 2
+
+
+def test_q01_insufficient_artifact_does_not_reopen_the_holdout(market, wh, test_cfg, frozen, monkeypatch, tmp_path):
+    """An INSUFFICIENT DATA artifact (no holdout table) published after the evaluation must not make the next
+    run evaluate the holdout again: the lookup reads the newest artifact that holds a holdout."""
+    db, root = tmp_path / "jobs.sqlite", tmp_path / "artifacts"
+    first = _run(market, wh, test_cfg, monkeypatch, db)
+    _, path = publish_artifact(db, root, "models.xs_lgbm", first.tables, verdict=first.verdict, finished=T0)
+    down = _run(market, wh, {**frozen, "universe": None}, monkeypatch, db)
+    assert set(down.tables) == {"gates"}
+    publish_artifact(db, root, "models.xs_lgbm", down.tables, verdict=down.verdict, finished=T0 + timedelta(days=1))
+
+    def boom(*a, **k):
+        raise AssertionError("holdout evaluated a second time")
+    monkeypatch.setattr(q01.X, "run_holdout", boom)
+    third = _run(market, wh, test_cfg, monkeypatch, db)
+    assert third.verdict == first.verdict
+    for t in q01.HOLDOUT_TABLES:
+        pd.testing.assert_frame_equal(third.tables[t], read_table(path, t))
