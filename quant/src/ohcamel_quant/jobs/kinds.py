@@ -108,3 +108,4 @@ for _kind, _mem, _heavy in (("ingest.universes", "S", False), ("ingest.bars_dail
 _P = "ohcamel_quant.products"
 register(KindSpec("risk.mc_atlas", f"{_P}.atlas:run", "M", heavy=True))
 register(KindSpec("risk.mc_intraday", f"{_P}.atlas:run_intraday", "S", heavy=False))
+register(KindSpec("vol.forecast_league", f"{_P}.vol_league:run", "M", heavy=True))

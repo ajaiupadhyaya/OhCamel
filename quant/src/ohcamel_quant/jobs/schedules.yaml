@@ -27,6 +27,7 @@ max_age:
   # the deck's MC_MAX_AGE_S on ship/lane-f).
   risk.mc_atlas: 78h
   risk.mc_intraday: 35m
+  vol.forecast_league: 78h
 
 schedules:
   - name: selftest-nightly
@@ -149,3 +150,12 @@ schedules:
     priority: 1
     mem_class: S
     heavy: false
+
+  # Lane M: P2 volatility forecast league, nightly after the daily (18:30) and minute (19:00) ingests.
+  - name: vol-forecast-league
+    cron: "30 21 * * 1-5"
+    kind: vol.forecast_league
+    params: {}
+    priority: 2
+    mem_class: M
+    heavy: true

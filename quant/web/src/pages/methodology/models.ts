@@ -738,4 +738,19 @@ export const MODELS: Model[] = [
     refs: ["barone_adesi_1999", "glosten_1993", "mcneil_frey_2000", "tasche_2000", "mcneil_2015"],
     keywords: "monte carlo var es fhs copula euler atlas",
   },
+  {
+    id: "p2-vol-league",
+    name: "Volatility forecast league (P2)",
+    section: "options",
+    summary: "Every night each name's next-day variance is forecast out of sample by GARCH, GJR, EGARCH, EWMA and, where minute bars exist, HAR-RV, and the forecasts are scored against realized variance. Losses are QLIKE and squared error; pairs are compared with Diebold–Mariano tests (Diebold & Mariano 1995) and each name's Model Confidence Set at 10% keeps the models not significantly worse than the best (Hansen, Lunde & Nason 2011).",
+    formulas: [
+      { tex: T`L^{\text{QLIKE}}(RV, F) = \ln F + \frac{RV}{F}`, caption: "Patton (2011): robust to a noisy RV proxy; minimised at F = RV" },
+      { tex: T`RV_{t+1} = \beta_0 + \beta_d RV_t + \beta_w \overline{RV}_{t-4:t} + \beta_m \overline{RV}_{t-21:t} + \varepsilon`, caption: "HAR-RV (Corsi 2009)" },
+      { tex: T`\text{DM} = \bar d / \sqrt{\hat S_{NW}/n},\quad d_t = L_{a,t} - L_{b,t}` },
+    ],
+    assumptions: ["Refit every 21 sessions on the last 1,000; parameters fixed between refits, so every forecast uses only earlier closes.", "Realized variance is the sum of squared 1-minute log returns (Alpaca IEX, 09:30–16:00) for ~50 names; elsewhere the squared daily return.", "Universe members are today's constituents (survivorship). A forecast comparison, not a strategy: verdict DESCRIPTIVE ONLY."],
+    appears: [{ label: "Volatility · Forecasts", to: "/options" }],
+    refs: ["bollerslev_1986", "glosten_1993", "riskmetrics_1996", "newey_west_1987", "patton_2019"],
+    keywords: "garch egarch har realized variance qlike diebold mariano model confidence set",
+  },
 ];

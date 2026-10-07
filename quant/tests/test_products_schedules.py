@@ -9,6 +9,7 @@ from ohcamel_quant.jobs.schedules import load_schedules
 LANE_M_KINDS = {
     "risk.mc_atlas": ("M", True),
     "risk.mc_intraday": ("S", False),
+    "vol.forecast_league": ("M", True),
 }
 
 
