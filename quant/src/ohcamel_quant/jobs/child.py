@@ -47,7 +47,8 @@ def child_main(job: dict[str, Any], threads: int, staging: str, db_path: str, ca
             raise TypeError(f"handler for {job['kind']} returned {type(spec).__name__}, not ArtifactSpec")
         names = write_tables(Path(staging), spec.tables)
         msg = {"ok": True, "data_asof": spec.data_asof, "provenance": spec.provenance, "notes": spec.notes,
-               "survivorship": spec.survivorship, "engine": spec.engine, "tables": names}
+               "survivorship": spec.survivorship, "engine": spec.engine, "tables": names,
+               "verdict": spec.verdict, "verdict_detail": spec.verdict_detail}
     except JobCancelled:
         msg = {"ok": False, "cancelled": True, "error": "cancelled"}
     except Exception as e:  # noqa: BLE001 - every failure is reported, never swallowed

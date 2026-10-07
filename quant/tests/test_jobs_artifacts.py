@@ -14,7 +14,8 @@ from ohcamel_quant.jobs.queue import claim_next, enqueue
 
 T0 = datetime(2026, 10, 6, 14, 0, tzinfo=UTC)
 MANIFEST_KEYS = ["id", "kind", "params", "params_hash", "code_sha", "data_asof", "started_at", "finished_at",
-                 "cpu_seconds", "peak_rss_bytes", "engine", "provenance", "notes", "survivorship", "tables"]
+                 "cpu_seconds", "peak_rss_bytes", "engine", "provenance", "notes", "survivorship", "tables",
+                 "verdict", "verdict_detail"]
 
 
 @pytest.fixture
@@ -56,6 +57,19 @@ def test_build_manifest_refuses_an_unknown_engine(conn):
         build_manifest(_job(conn), {"data_asof": None, "provenance": [], "notes": [], "survivorship": None,
                                     "engine": "gpu", "tables": []},
                        code_sha="x", finished_at=iso(T0), cpu_seconds=0.0, peak_rss_bytes=0)
+
+
+def test_build_manifest_carries_and_checks_the_verdict(conn):
+    job = _job(conn)
+    base = {"data_asof": None, "provenance": [], "notes": [], "survivorship": None, "engine": "python", "tables": []}
+    m = build_manifest(job, {**base, "verdict": "FAIL", "verdict_detail": "dsr 0.12 (needs >= 0.3)"},
+                       code_sha="x", finished_at=iso(T0), cpu_seconds=0.0, peak_rss_bytes=0)
+    assert (m["verdict"], m["verdict_detail"]) == ("FAIL", "dsr 0.12 (needs >= 0.3)")
+    m2 = build_manifest(job, base, code_sha="x", finished_at=iso(T0), cpu_seconds=0.0, peak_rss_bytes=0)
+    assert (m2["verdict"], m2["verdict_detail"]) == (None, None)  # ingest/api kinds carry no verdict
+    with pytest.raises(ValueError, match="verdict"):
+        build_manifest(job, {**base, "verdict": "MAYBE"}, code_sha="x", finished_at=iso(T0), cpu_seconds=0.0,
+                       peak_rss_bytes=0)
 
 
 def test_write_tables_writes_parquet_and_validates_names(tmp_path):
