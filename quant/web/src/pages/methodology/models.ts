@@ -796,4 +796,19 @@ export const MODELS: Model[] = [
     refs: ["gatheral_2004", "gatheral_jacquier_2014", "demeterfi_1999", "cboe_vix", "carr_wu_2009"],
     keywords: "implied volatility surface svi history skew term structure variance risk premium",
   },
+  {
+    id: "p5-exp-q01",
+    name: "EXP-Q01: gradient-boosted ETF ranker vs a linear composite (P5)",
+    section: "backtest",
+    summary: "A pre-registered experiment (approved 2026-10-06): does a LightGBM ranker on five point-in-time features — 12-1 momentum, 1-month reversal, 60-day volatility, 252-day beta, 20-day dollar volume — predict next-month relative returns of a fixed, survivorship-free ETF universe better than an equal-weight linear composite of the same features, after costs? Purged walk-forward (5y/1y/6m), eight configurations, every configuration × fold a trial; the 2022→ holdout is evaluated once. The charter's gates decide, plus beating the composite; the verdict leads and the result is advisory whatever it is.",
+    formulas: [
+      { tex: T`y_{i,m} = \operatorname{rank}_i\!\left(\frac{\tilde O_{i,\,e(m+1)}}{\tilde O_{i,\,e(m)}} - 1\right),\ \tilde O = O\cdot\frac{C^{adj}}{C}`, caption: "label: next-month open-to-open total-return rank" },
+      { tex: T`s^{lin}_{i,m} = \tfrac{1}{5}\sum_f \operatorname{sgn}_f\,(\operatorname{pctrank}_i(x_{f,i,m}) - \tfrac12)`, caption: "the linear composite baseline" },
+      { tex: T`1 + r^{net}_d = (1 + w_{d-1}^\top r_d)(1 - c\,\lVert w^\ast - \tilde w\rVert_1)`, caption: "quintile long-short, costs at entry" },
+    ],
+    assumptions: ["The universe is the frozen ETF list that traded throughout the window (survivorship-free by construction); single-name claims are out of scope (charter).", "Features use only data to the decision close; positions trade at the next open (charter principle 1).", "Interpretation points I-Q01-1…9 fixed before any result (config.yaml).", "Nothing reaches the desk under any verdict; a PASS would still be advisory and never sized."],
+    appears: [{ label: "Research · Models", to: "/research" }, { label: "Front page", to: "/" }],
+    refs: ["jegadeesh_titman_1993", "frazzini_pedersen_2014", "bailey_2014", "bailey_2012", "bailey_2017", "newey_west_1987"],
+    keywords: "exp-q01 lightgbm cross sectional etf ranker linear composite purged walk forward holdout",
+  },
 ];

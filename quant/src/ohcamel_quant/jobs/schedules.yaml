@@ -31,6 +31,7 @@ max_age:
   cov.league: 204h
   farm.sweep: 78h
   vol.surface_history: 78h
+  models.xs_lgbm: 816h   # monthly (1st, 22:30) plus 2 days
 
 schedules:
   - name: selftest-nightly
@@ -185,6 +186,15 @@ schedules:
   - name: vol-surface-history
     cron: "0 21 * * 1-5"
     kind: vol.surface_history
+    params: {}
+    priority: 2
+    mem_class: M
+    heavy: true
+
+  # Lane M: P5 EXP-Q01 (approved pre-registration), monthly: selection and holdout once, retrain and score monthly.
+  - name: exp-q01-monthly
+    cron: "30 22 1 * *"
+    kind: models.xs_lgbm
     params: {}
     priority: 2
     mem_class: M

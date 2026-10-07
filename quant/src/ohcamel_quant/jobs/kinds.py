@@ -112,3 +112,4 @@ register(KindSpec("vol.forecast_league", f"{_P}.vol_league:run", "M", heavy=True
 register(KindSpec("cov.league", f"{_P}.cov_league:run", "M", heavy=True))
 register(KindSpec("farm.sweep", f"{_P}.farm:run", "L", heavy=True))
 register(KindSpec("vol.surface_history", f"{_P}.surface_history:run", "M", heavy=True))
+register(KindSpec("models.xs_lgbm", f"{_P}.q01:run", "M", heavy=True))

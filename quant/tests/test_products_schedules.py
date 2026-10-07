@@ -13,6 +13,7 @@ LANE_M_KINDS = {
     "cov.league": ("M", True),
     "farm.sweep": ("L", True),
     "vol.surface_history": ("M", True),
+    "models.xs_lgbm": ("M", True),
 }
 
 

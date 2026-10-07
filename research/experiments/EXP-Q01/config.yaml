@@ -1,0 +1,36 @@
+# EXP-Q01 -- frozen design. Source: research/experiments/EXP-Q01/preregistration.md (APPROVED 2026-10-06,
+# option A). Changing anything here after a holdout evaluation marks that evaluation stale (config_hash);
+# a change of design is a new experiment and goes to the owner (docs/CHARTER.md).
+experiment: EXP-Q01
+preregistration: research/experiments/EXP-Q01/preregistration.md
+approved: "2026-10-06"
+methodology_version: 1
+universe: null              # frozen once by `python -m ohcamel_quant.products.q01 freeze` after the backfill
+universe_frozen_on: null
+universe_source: quant/src/ohcamel_quant/universes.json (every ETF), continuity rule I-Q01-9
+benchmark: SPY              # beta_252d is measured against it
+features: [mom_12_1, rev_1m, vol_60d, beta_252d, dollar_vol_20d]
+label: next_month_open_to_open_total_return_rank
+cv: {train_months: 60, test_months: 12, step_months: 6, embargo_sessions: 5}
+model:
+  grid: {num_leaves: [7, 15], min_data_in_leaf: [50, 200], learning_rate: [0.03, 0.1]}
+  rounds: 300
+  early_stopping_rounds: 30
+  validation_months: 12
+  objective: regression
+  seed: 20261006
+portfolio: {quantile: 0.2, weighting: equal, long_short: true, cost_bps_base: 5.0, borrow_bps: 0.0}
+windows: {selection: ["2008-01-01", "2021-12-31"], holdout_start: "2022-01-01"}
+composite_signs: {mom_12_1: 1, rev_1m: -1, vol_60d: -1, beta_252d: -1, dollar_vol_20d: -1}
+gates: charter            # docs/CHARTER.md, plus model holdout net Sharpe > linear composite's
+holdout_reevaluation_approved: null   # owner only: set to methodology_version to allow one re-evaluation
+interpretations:
+  - "I-Q01-1 label: decision at month-end close t_m; entry at the next session's open; exit at the open of the session after the next month-end; adjusted opens (open x adj_close / close). Samples go to folds, selection and holdout by the entry session (when the label is realised), not the decision: the 2021-12-31 decision is the first holdout sample, and no selection return is dated in 2022."
+  - "I-Q01-2 ranker: LightGBM L2 regression on the cross-sectional percentile rank of the label."
+  - "I-Q01-3 early stopping: last 12 months of each purged training window are the validation set; the fit set is purged against them; the best-iteration model is used without refitting."
+  - "I-Q01-4 trials and stitching: each configuration x fold's full 12-month test is one DSR trial; the stitched OOS series takes each month from the newest fold covering it."
+  - "I-Q01-5 selection: highest per-period net Sharpe of the stitched selection-window OOS series; ties to the lower configuration index."
+  - "I-Q01-6 gates: holdout-positive, DSR, PSR, bootstrap and beats-composite on holdout daily net returns; regimes on the selected configuration's full walk-forward OOS record (selection stitched + holdout); a regime without OOS data counts as not positive."
+  - "I-Q01-7 composite: within-month percentile ranks centred at 0, signed (mom +1, rev -1, vol -1, beta -1, dollar volume -1 [owner to confirm]), equal-weight mean."
+  - "I-Q01-8 accounting: daily open-to-open, drifting weights, cost bps x sum|w_target - w_drifted| at entry, (1 + net) = (1 + gross)(1 - c x turnover); base 5 bps; borrow 0."
+  - "I-Q01-9 universe: first bar on or before 2008-01-02, no gap > 5 sessions vs SPY through the freeze date, a dividend-adjusted close judged by source: every bar from the panel start (2006-12-01) comes from alpaca or yahoo; any stooq, fixture or unknown bar excludes the ETF; adj_close == close is not evidence (GLD pays nothing)."
