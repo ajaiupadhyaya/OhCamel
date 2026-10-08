@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { freshnessRows, lampOf, lastPair, slope2s10s, vixFigure } from "./data";
+import { freshnessRows, lampOf, lastPair, slope2s10s, stateLabel, vixFigure } from "./data";
 
 const frame = {
   index: ["2026-05-28", "2026-05-29", "2026-06-01"],
@@ -58,7 +58,16 @@ describe("freshnessRows (GET /api/warehouse/freshness)", () => {
     expect(lampOf({ dataset: "a", data_asof: "2026-10-06", status: "ok", keys_failed: 1 }, now)).toBe("fault");
     expect(lampOf({ dataset: "a", data_asof: "2026-10-06", status: "ok", stale: true }, now)).toBe("stale");
     expect(lampOf({ dataset: "a", data_asof: "2026-01-01", status: "ok", stale: false }, now)).toBe("ok");
-    expect(lampOf({ dataset: "a", data_asof: null }, now)).toBe("stale");
+    expect(lampOf({ dataset: "a", data_asof: null }, now)).toBe("idle");
+  });
+  it("a dataset never ingested (0 keys, no data date) is NOT YET RUN, not STALE", () => {
+    const now = new Date("2026-10-07T12:00:00Z");
+    const never = { dataset: "sec_facts", data_asof: null, keys: 0, stale: true };
+    expect(lampOf(never, now)).toBe("idle");
+    expect(stateLabel(lampOf(never, now))).toBe("NOT YET RUN");
+    expect(lampOf({ ...never, status: "failed" }, now)).toBe("fault");
+    expect(lampOf({ dataset: "a", data_asof: "2026-01-01", keys: 3, stale: true }, now)).toBe("stale");
+    expect(stateLabel("stale")).toBe("STALE");
   });
   it("tolerates garbage", () => {
     expect(freshnessRows(null)).toEqual([]);

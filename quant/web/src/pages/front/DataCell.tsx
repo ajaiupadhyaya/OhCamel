@@ -5,7 +5,7 @@ import { Lamp } from "../../design";
 import { fmtStamp } from "../../design/stamp";
 import { fmtNum } from "../../lib/format";
 import { useApiQuery } from "../../lib/query";
-import { freshnessRows, lampOf, type FreshnessRow } from "./data";
+import { freshnessRows, lampOf, stateLabel, type FreshnessRow } from "./data";
 
 export function DataCell() {
   const q = useApiQuery<unknown>("/warehouse/freshness", undefined, { refetchInterval: 5 * 60_000 });
@@ -24,7 +24,7 @@ export function DataCell() {
     { key: "keys", label: "KEYS", numeric: true, hideBelow: 600, format: (v) => fmtNum(v, 0) },
     { key: "keys_behind", label: "BEHIND", numeric: true, hideBelow: 600, format: (v) => fmtNum(v, 0) },
     { key: "data_asof", label: "DATA AS OF", align: "right", render: (r) => <span className="num">{fmtStamp(r.data_asof)}</span> },
-    { key: "state", label: "STATE", align: "right", value: (r) => lampOf(r, now), render: (r) => <span className={lampOf(r, now) === "ok" ? "num" : "num loss"}>{lampOf(r, now).toUpperCase()}</span> },
+    { key: "state", label: "STATE", align: "right", value: (r) => lampOf(r, now), render: (r) => <span className={lampOf(r, now) === "ok" || lampOf(r, now) === "idle" ? "num" : "num loss"}>{stateLabel(lampOf(r, now))}</span> },
   ];
   return (
     <ReadCell<unknown>

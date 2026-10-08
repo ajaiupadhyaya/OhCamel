@@ -135,9 +135,18 @@ export function freshnessRows(body: unknown): FreshnessRow[] {
     .sort((x, y) => x.dataset.localeCompare(y.dataset));
 }
 
-/** One lamp per dataset: a failed run or failed keys is a fault; then the API's stale flag; then age. */
+/**
+ * One lamp per dataset: a failed run or failed keys is a fault; a dataset never ingested (no
+ * keys, or no data date and no run) is idle (NOT YET RUN); then the API's stale flag; then age.
+ */
 export function lampOf(r: FreshnessRow, now: Date): LampState {
   if ((r.status && /fail|error/i.test(r.status)) || (r.keys_failed ?? 0) > 0) return "fault";
+  if (!r.data_asof && (r.keys === 0 || !r.status)) return "idle";
   if (r.stale !== undefined) return r.stale ? "stale" : "ok";
   return isStale(r.data_asof, r.max_age_s ?? NIGHTLY_MAX_AGE_SEC, now) ? "stale" : "ok";
+}
+
+/** The STATE column's word for a lamp. */
+export function stateLabel(l: LampState): string {
+  return l === "idle" ? "NOT YET RUN" : l.toUpperCase();
 }
