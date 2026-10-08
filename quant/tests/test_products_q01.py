@@ -182,3 +182,79 @@ def test_q01_insufficient_artifact_does_not_reopen_the_holdout(market, wh, test_
     assert third.verdict == first.verdict
     for t in q01.HOLDOUT_TABLES:
         pd.testing.assert_frame_equal(third.tables[t], read_table(path, t))
+
+
+# ---------------------------------------------------------------- the freeze, inside the deployed container
+def _freeze_wh(path):
+    """SPY and AAA from an adjusting vendor since the panel start; BBB has a Stooq segment (excluded)."""
+    from ohcamel_quant.warehouse.db import open_rw
+
+    days = pd.bdate_range(q01.PANEL_START, "2026-09-30")
+    frames = [pd.DataFrame({"ticker": t, "date": days.date, "open": 100.0, "high": 100.0, "low": 100.0,
+                            "close": 100.0, "adj_close": 99.0, "volume": 1e6,
+                            "source": np.where((t == "BBB") & (days.year < 2012), "stooq", "alpaca"),
+                            "fetched_at": pd.NaT}) for t in ("SPY", "AAA", "BBB")]
+    incoming = pd.concat(frames, ignore_index=True)
+    with open_rw(path) as con:
+        con.register("incoming", incoming)
+        con.execute("INSERT INTO bars_daily SELECT ticker, CAST(date AS DATE), open, high, low, close, adj_close, "
+                    "volume, source, CAST(fetched_at AS TIMESTAMP) FROM incoming")
+    return path
+
+
+@pytest.fixture
+def freeze_env(tmp_path, monkeypatch):
+    from ohcamel_quant.data import market as market_mod
+
+    monkeypatch.setattr(market_mod, "load_universes", lambda: {"universes": {
+        "u": {"members": [{"ticker": "AAA"}, {"ticker": "BBB"}]}}})
+    monkeypatch.setattr(experiment, "FROZEN_DIR", tmp_path / "data" / "experiments")
+    return tmp_path
+
+
+def test_freeze_write_persists_where_the_job_reads_it(freeze_env):
+    import yaml
+
+    wh = _freeze_wh(freeze_env / "w.duckdb")
+    unfrozen = experiment.load_config("EXP-Q01")
+    assert unfrozen["universe"] is None  # the committed config is never edited by the freeze
+    assert q01.main(["freeze", "--warehouse", str(wh), "--write"]) == 0
+    path = experiment.frozen_universe_path("EXP-Q01")
+    assert path == freeze_env / "data" / "experiments" / "EXP-Q01" / "universe.yaml"
+    stored = yaml.safe_load(path.read_text())
+    assert stored["universe"] == ["AAA"] and "stooq" in stored["excluded"]["BBB"]
+    got = experiment.load_config("EXP-Q01")
+    assert got["universe"] == ["AAA"] and got["universe_frozen_on"] == stored["universe_frozen_on"]
+    assert experiment.config_hash(got) != experiment.config_hash(unfrozen)
+    # committing the same two lines to config.yaml later keeps the hash (and so the holdout) unchanged
+    assert experiment.config_hash({**unfrozen, "universe": ["AAA"],
+                                   "universe_frozen_on": stored["universe_frozen_on"]}) == experiment.config_hash(got)
+
+
+def test_freeze_runs_once(freeze_env):
+    wh = _freeze_wh(freeze_env / "w.duckdb")
+    assert q01.main(["freeze", "--warehouse", str(wh), "--write"]) == 0
+    before = experiment.frozen_universe_path("EXP-Q01").read_text()
+    assert q01.main(["freeze", "--warehouse", str(wh), "--write"]) == 1
+    assert experiment.frozen_universe_path("EXP-Q01").read_text() == before
+
+
+def test_freeze_write_refuses_an_empty_universe(freeze_env, wh):
+    assert q01.main(["freeze", "--warehouse", str(wh), "--write"]) == 1  # fixture bars are never adjusted
+    assert not experiment.frozen_universe_path("EXP-Q01").exists()
+
+
+def test_a_committed_universe_wins_over_the_frozen_file(freeze_env, monkeypatch):
+    import yaml
+
+    exp_dir = freeze_env / "exps" / "EXP-Q01"
+    exp_dir.mkdir(parents=True)
+    raw = yaml.safe_load((experiment.EXPERIMENTS / "EXP-Q01" / "config.yaml").read_text())
+    (exp_dir / "config.yaml").write_text(yaml.safe_dump({**raw, "universe": ["ZZZ"], "universe_frozen_on": "2026-10-01"}))
+    wh = _freeze_wh(freeze_env / "w.duckdb")
+    assert q01.main(["freeze", "--warehouse", str(wh), "--write"]) == 0  # the file holds AAA
+    monkeypatch.setattr(experiment, "EXPERIMENTS", freeze_env / "exps")
+    assert experiment.load_config("EXP-Q01")["universe"] == ["ZZZ"]
+    experiment.frozen_universe_path("EXP-Q01").unlink()
+    assert q01.main(["freeze", "--warehouse", str(wh), "--write"]) == 1  # already frozen in config.yaml
+    assert not experiment.frozen_universe_path("EXP-Q01").exists()

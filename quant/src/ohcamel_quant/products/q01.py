@@ -11,6 +11,7 @@ months and score the new month. Everything is advisory; nothing reaches the desk
 from __future__ import annotations
 
 import argparse
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -53,8 +54,10 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
 
     raw = load_config("EXP-Q01")
     if not raw.get("universe"):
-        return _insufficient("UNIVERSE NOT FROZEN", ["EXP-Q01's config.yaml carries no frozen universe yet; it is frozen "
-                                                     "once, after the warehouse backfill (methodology p5-exp-q01)"])
+        return _insufficient("UNIVERSE NOT FROZEN", ["EXP-Q01 has no frozen universe yet (config.yaml or "
+                                                     "{data_dir}/experiments/EXP-Q01/universe.yaml); it is frozen "
+                                                     "once, after the warehouse backfill (methodology p5-exp-q01; "
+                                                     "docs/runbooks/compute.md)"])
     cfg, h, version = X.Q01Config.from_dict(raw), config_hash(raw), int(raw["methodology_version"])
     tickers = sorted(set(cfg.universe) | {cfg.benchmark})
     panel, prov = load_panel(ctx.warehouse, tickers)
@@ -133,18 +136,35 @@ def coverage_from_warehouse(con: Any, tickers: list[str]) -> tuple[dict[str, dic
 
 
 def main(argv: list[str] | None = None) -> int:
-    import duckdb
+    import yaml
 
+    from ..config import get_settings
     from ..data.market import load_universes
+    from ..warehouse.db import open_ro
+    from .experiment import frozen_universe_path
 
     ap = argparse.ArgumentParser(prog="python -m ohcamel_quant.products.q01")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    f = sub.add_parser("freeze", help="print EXP-Q01's frozen universe (I-Q01-9) as YAML for config.yaml")
-    f.add_argument("--warehouse", required=True, type=Path)
+    f = sub.add_parser("freeze", help="EXP-Q01's frozen universe (I-Q01-9): print it as YAML for config.yaml, and "
+                                      "with --write store it once where models.xs_lgbm reads it")
+    f.add_argument("--warehouse", type=Path, default=None,
+                   help="DuckDB warehouse (default: OHCAMEL_QUANT_WAREHOUSE_PATH, /data/warehouse.duckdb in the image)")
+    f.add_argument("--write", action="store_true",
+                   help="write {data_dir}/experiments/EXP-Q01/universe.yaml (once; never overwritten)")
     a = ap.parse_args(argv)
+    wh = a.warehouse or get_settings().warehouse_path
+    if wh is None:
+        print("freeze: no warehouse: pass --warehouse or set OHCAMEL_QUANT_WAREHOUSE_PATH", file=sys.stderr)
+        return 2
+    out = frozen_universe_path("EXP-Q01")
+    if a.write:
+        if load_config("EXP-Q01").get("universe"):
+            print(f"freeze: EXP-Q01 is already frozen ({'config.yaml' if not out.exists() else out}); "
+                  "a freeze runs once", file=sys.stderr)
+            return 1
     u = load_universes()["universes"]
     etfs = sorted({m["ticker"] for v in u.values() for m in v["members"]})
-    with duckdb.connect(str(a.warehouse), read_only=True) as con:
+    with open_ro(Path(wh), timeout_s=30.0) as con:  # waits out an ingest holding the write lock
         cov, spy = coverage_from_warehouse(con, etfs)
     today = pd.Timestamp(datetime.now(UTC).date())
     members, excluded = X.freeze_universe(cov, spy, pd.Timestamp("2008-01-02"), today,
@@ -153,6 +173,17 @@ def main(argv: list[str] | None = None) -> int:
     print(f'universe_frozen_on: "{today.date()}"')
     for t, why in excluded.items():
         print(f"# excluded {t}: {why}")
+    if not a.write:
+        return 0
+    if not members:
+        print("freeze: no ETF passes I-Q01-9; nothing written", file=sys.stderr)
+        return 1
+    out.parent.mkdir(parents=True, exist_ok=True)
+    body = {"experiment": "EXP-Q01", "universe": members, "universe_frozen_on": str(today.date()),
+            "warehouse": str(wh), "frozen_at": datetime.now(UTC).isoformat(), "excluded": dict(excluded)}
+    with out.open("x") as fh:  # exclusive create: a second freeze can never overwrite the first
+        yaml.safe_dump(body, fh, sort_keys=False)
+    print(f"freeze: wrote {out}", file=sys.stderr)
     return 0
 
 

@@ -1,22 +1,45 @@
-"""Pre-registered experiments: their frozen config, its hash, and the once-only holdout rule."""
+"""Pre-registered experiments: their frozen config, its hash, and the once-only holdout rule.
+
+A universe freeze runs once, inside the deployed worker container, where the
+image (and so ``config.yaml``) is read-only. It writes
+``{data_dir}/experiments/<EXP>/universe.yaml`` on the persistent volume
+(``/data`` on the droplet), and :func:`load_config` lays that file's
+``universe`` and ``universe_frozen_on`` over a config that has none. A universe
+committed to ``config.yaml`` always wins. Committing the same two lines later
+leaves ``config_hash`` unchanged (docs/runbooks/compute.md).
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any, Literal
 
 import pandas as pd
 import yaml
 
-from ..config import REPO_ROOT
+from ..config import REPO_ROOT, get_settings
 
 EXPERIMENTS = REPO_ROOT / "research" / "experiments"
 NOT_HASHED = ("holdout_reevaluation_approved",)
 
 
+FROZEN_DIR: Path | None = None  # tests point the freeze's state at a temp dir; default {data_dir}/experiments
+FROZEN_KEYS = ("universe", "universe_frozen_on")
+
+
+def frozen_universe_path(exp: str) -> Path:
+    return (FROZEN_DIR or get_settings().data_dir / "experiments") / exp / "universe.yaml"
+
+
 def load_config(exp: str) -> dict[str, Any]:
-    return yaml.safe_load((EXPERIMENTS / exp / "config.yaml").read_text())
+    cfg: dict[str, Any] = yaml.safe_load((EXPERIMENTS / exp / "config.yaml").read_text())
+    path = frozen_universe_path(exp)
+    if not cfg.get("universe") and path.exists():
+        frozen = yaml.safe_load(path.read_text()) or {}
+        cfg.update({k: frozen[k] for k in FROZEN_KEYS if k in frozen})
+    return cfg
 
 
 def config_hash(cfg: dict[str, Any]) -> str:
