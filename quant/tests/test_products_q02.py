@@ -9,7 +9,7 @@ from datetime import timedelta
 
 import pandas as pd
 import pytest
-from lane_m_harness import T0, publish_artifact
+from lane_m_harness import T0, is_label, publish_artifact
 
 from ohcamel_quant.data import fixtures
 from ohcamel_quant.data.base import DataUnavailable
@@ -27,6 +27,7 @@ def test_q02_short_oas_history_is_insufficient_data(market, tmp_path, monkeypatc
     monkeypatch.setattr(q02, "DB_PATH", tmp_path / "jobs.sqlite")
     spec = q02.run({}, ctx(market))  # offline: BAMLH0A0HYM2 is not in the fixtures
     assert spec.verdict == "INSUFFICIENT DATA" and "BAMLH0A0HYM2" in spec.verdict_detail
+    assert is_label(spec.verdict_detail) and any("BAMLH0A0HYM2" in n for n in spec.notes)
 
 
 @pytest.fixture

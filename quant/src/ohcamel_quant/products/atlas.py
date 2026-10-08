@@ -109,7 +109,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                         f"{int(p['n_paths']):,} paths per book for 10-day FHS and both copula horizons; "
                         f"members: FHS only, {int(p['member_paths']):,} paths for 10-day"],
         survivorship=surv, engine=br.engine,
-        verdict="DESCRIPTIVE ONLY", verdict_detail="risk measurement, not a strategy: no gate applies")
+        verdict="DESCRIPTIVE ONLY", verdict_detail="RISK MEASUREMENT · NO GATE")
 
 
 def run_intraday(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
@@ -139,7 +139,7 @@ def run_intraday(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     return ArtifactSpec(tables={"summary": pd.DataFrame(rows)}, data_asof=str(min(last).date()), provenance=prov,
                         notes=[*notes, "weights drifted to the live marks; GARCH filters as of the last close"],
                         engine=br.engine, verdict="DESCRIPTIVE ONLY",
-                        verdict_detail="risk measurement, not a strategy: no gate applies")
+                        verdict_detail="RISK MEASUREMENT · NO GATE")
 
 
 def intraday_for(weights: dict[str, float], *, now: datetime | None = None,

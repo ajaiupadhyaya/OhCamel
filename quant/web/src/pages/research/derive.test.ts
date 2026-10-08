@@ -107,6 +107,13 @@ describe("farm leaderboard", () => {
     expect(failedGates("every charter gate passed; advisory; never sized")).toEqual([]);
     expect(failedGates(null)).toEqual([]);
   });
+  it("failedGates and pboHigh read the label form too (FAILED DSR 0.12 (NEEDS >= 0.3) · PBO 0.71 HIGH)", () => {
+    const d = "FAILED DSR 0.12 (NEEDS >= 0.3), BOOTSTRAP_LOWER_5PCT -0.04 (NEEDS > 0), COST_SWEEP N/A (NEEDS 0/5/15/30 BPS REPORTED) · PBO 0.71 HIGH";
+    expect(failedGates(d)).toEqual(["dsr", "bootstrap_lower_5pct", "cost_sweep"]);
+    expect(pboHigh(d)).toBe(true);
+    expect(failedGates("EVERY CHARTER GATE PASSED · ADVISORY · NEVER SIZED")).toEqual([]);
+    expect(pboHigh("EVERY CHARTER GATE PASSED · ADVISORY · NEVER SIZED")).toBe(false);
+  });
   it("pboHigh finds the PBO the verdict named as high", () => {
     expect(pboHigh("failed: dsr 0.12 (needs >= 0.3); PBO 0.71 (high)")).toBe(true);
     expect(pboHigh("every charter gate passed; advisory; never sized")).toBe(false);

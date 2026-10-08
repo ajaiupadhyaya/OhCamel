@@ -25,7 +25,7 @@ COST_GRID_BPS = (0.0, 5.0, 15.0, 30.0)
 REGIMES = (("2008", "2008-01-01", "2008-12-31"), ("2015-16", "2015-01-01", "2016-12-31"),
            ("2020", "2020-01-01", "2020-12-31"), ("2022", "2022-01-01", "2022-12-31"),
            ("2024", "2024-01-01", "2024-12-31"))
-ADVISORY_NOTE = "advisory; never sized"
+ADVISORY_NOTE = "ADVISORY · NEVER SIZED"
 
 
 @dataclass(frozen=True)
@@ -80,7 +80,7 @@ def charter_verdict(*, holdout_return: Any, dsr: Any, psr: Any, boot_lo5: Any, r
                     costs_reported: bool, extra: Sequence[Gate] = ()) -> Verdict:
     hr = _num(holdout_return)
     if hr is None:
-        return Verdict("INSUFFICIENT DATA", "no out-of-sample holdout returns")
+        return Verdict("INSUFFICIENT DATA", "NO OOS HOLDOUT RETURNS")
     d, p, b, pb = _num(dsr), _num(psr), _num(boot_lo5), _num(pbo)
     flags = [None if x is None or pd.isna(x) else bool(x) for x in regimes["positive"]]  # parquet may return np.bool_
     pos = sum(1 for x in flags if x is True)
@@ -97,12 +97,12 @@ def charter_verdict(*, holdout_return: Any, dsr: Any, psr: Any, boot_lo5: Any, r
              note="" if costs_reported else "missing"),
         *extra,
     ]
-    pbo_txt = f"; PBO {pb:.2f} (high)" if pb is not None and pb > PBO_HIGH else ""
+    pbo_txt = f" · PBO {pb:.2f} HIGH" if pb is not None and pb > PBO_HIGH else ""
     failed = [g for g in gates if g.passed is False]
     if failed:
-        return Verdict("FAIL", "failed: " + ", ".join(f"{g.name} {_fmt(g.value)} (needs {g.rule})" for g in failed)
-                       + pbo_txt, tuple(gates))
-    return Verdict("PASS", f"every charter gate passed; {ADVISORY_NOTE}{pbo_txt}", tuple(gates))
+        return Verdict("FAIL", "FAILED " + ", ".join(f"{g.name.upper()} {_fmt(g.value).upper()} (NEEDS {g.rule.upper()})"
+                                                     for g in failed) + pbo_txt, tuple(gates))
+    return Verdict("PASS", f"EVERY CHARTER GATE PASSED · {ADVISORY_NOTE}{pbo_txt}", tuple(gates))
 
 
 def descriptive(detail: str) -> Verdict:

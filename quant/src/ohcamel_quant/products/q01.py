@@ -53,8 +53,8 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
 
     raw = load_config("EXP-Q01")
     if not raw.get("universe"):
-        return _insufficient("universe not frozen: run `python -m ohcamel_quant.products.q01 freeze` after the "
-                             "warehouse backfill and commit config.yaml")
+        return _insufficient("UNIVERSE NOT FROZEN", ["EXP-Q01's config.yaml carries no frozen universe yet; it is frozen "
+                                                     "once, after the warehouse backfill (methodology p5-exp-q01)"])
     cfg, h, version = X.Q01Config.from_dict(raw), config_hash(raw), int(raw["methodology_version"])
     tickers = sorted(set(cfg.universe) | {cfg.benchmark})
     panel, prov = load_panel(ctx.warehouse, tickers)
@@ -92,8 +92,9 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     elif decision == "stale":
         tables.update({t: prev_t[t] for t in HOLDOUT_TABLES})
         verdict = "INSUFFICIENT DATA"
-        detail = (f"holdout evidence predates methodology v{version} / config {h}; re-evaluating the holdout is "
-                  "the owner's decision (holdout_reevaluation_approved)")
+        detail = f"STALE HOLDOUT · METHODOLOGY V{version} · OWNER DECISION"
+        notes.append(f"holdout evidence predates methodology v{version} / config {h}; re-evaluating the holdout is "
+                     "the owner's decision (holdout_reevaluation_approved)")
     else:
         ho = X.run_holdout(samples, panel, cfg, sel, ctx.threads)
         tables.update({"holdout": pd.DataFrame([{**ho.row, "methodology_version": version, "config_hash": h,
@@ -112,7 +113,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         tables["scores"] = scores
         tables["model"] = pd.DataFrame([{"month": month, "config_hash": h, "booster": booster}])
     if verdict == "PASS" and ADVISORY_NOTE not in detail:
-        detail = f"{detail}; {ADVISORY_NOTE}"
+        detail = f"{detail} · {ADVISORY_NOTE}"
     return ArtifactSpec(tables=tables, data_asof=month,
                         provenance=[*prov, Provenance.now("ohcamel-exp-q01", config_hash=h).to_dict()],
                         notes=notes, verdict=verdict, verdict_detail=detail)

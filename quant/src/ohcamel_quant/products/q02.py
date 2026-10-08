@@ -18,6 +18,7 @@ from .experiment import config_hash, holdout_decision, load_config
 KIND = "regime.hmm"
 DB_PATH: Path | None = None
 HOLDOUT_TABLES = ("holdout", "holdout_forecasts", "regression", "gates")
+INPUT_SERIES = ("SPY", "DGS10", "DGS2", "BAMLH0A0HYM2")
 
 
 def load_inputs(ctx: Any, cfg: dict[str, Any]) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, list[dict]]:
@@ -48,8 +49,10 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         spy, d10, d2, oas, prov = load_inputs(ctx, cfg)
     except DataUnavailable as e:
         return ArtifactSpec(tables={"gates": pd.DataFrame(columns=["gate", "value", "rule", "passed", "note"])},
-                            data_asof=None, provenance=[], notes=[], verdict="INSUFFICIENT DATA",
-                            verdict_detail=f"{e} (BAMLH0A0HYM2 is the HY OAS input)")
+                            data_asof=None, provenance=[], notes=[f"{e} (BAMLH0A0HYM2 is the HY OAS input)"],
+                            verdict="INSUFFICIENT DATA",
+                            verdict_detail=" ".join(["INPUT UNAVAILABLE", *(f"· {s}" for s in INPUT_SERIES
+                                                                             if s in str(e))]))
     feats = Q.weekly_features(spy, d10, d2, oas)
     assert_point_in_time(feats)
     z = Q.standardize_expanding(feats, cfg["standardize"]["min_weeks"]).dropna()
@@ -62,8 +65,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         return ArtifactSpec(tables={"gates": pd.DataFrame(columns=["gate", "value", "rule", "passed", "note"])},
                             data_asof=None, provenance=prov, notes=[f"first dates: {short}"],
                             verdict="INSUFFICIENT DATA",
-                            verdict_detail=f"the first refit ({need.date()}) needs {m['min_train_weeks']} weeks of "
-                                           f"standardized features; series start: {short}")
+                            verdict_detail=f"SHORT HISTORY · FIRST REFIT {need.date()} NEEDS {m['min_train_weeks']}W")
     p_high, probs, fits = Q.oos_probabilities(z, refits, ks=tuple(m["ks"]), restarts=m["restarts"], seed=m["seed"],
                                               min_train=m["min_train_weeks"])
     frame = pd.DataFrame({"rv": Q.target_rv(spy, z.index, cfg["target"]["sessions"]),
@@ -93,8 +95,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
             verdict, detail = str(hrow["verdict"]), str(hrow["verdict_detail"])
         else:
             verdict = "INSUFFICIENT DATA"
-            detail = (f"holdout evidence predates methodology v{version} / config {h}; re-evaluation is the owner's "
-                      "decision (holdout_reevaluation_approved)")
+            detail = f"STALE HOLDOUT · METHODOLOGY V{version} · OWNER DECISION"
     return ArtifactSpec(tables=tables, data_asof=str(z.index[-1].date()),
                         provenance=[*prov, Provenance.now("ohcamel-exp-q02", config_hash=h).to_dict()],
                         notes=["filtered probabilities are scored; p_high_smoothed_history uses later data and is "

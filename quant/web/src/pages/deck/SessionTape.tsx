@@ -5,6 +5,13 @@ import { parseTs, type TapeColumns } from "./model";
 import { scanner } from "./scanner";
 import { useBox } from "./useBox";
 
+/** Why a tape is empty, as labels (no sentences on the public deck). */
+export const TAPE_EMPTY = {
+  reference: "RECORDER IDLE · RECORDS IN SESSION",
+  engine: "ENGINE RESTARTED · NO POINT YET",
+  trail: "FIRST READING STARTS THE TAPE",
+} as const;
+
 const time = (s: string) => new Date(s).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false });
 export function SessionTape({ tape, emptyText }: { tape: TapeColumns; emptyText: string }) {
   const [picked, setPicked] = useState<number | null>(null);
@@ -27,7 +34,7 @@ export function SessionTape({ tape, emptyText }: { tape: TapeColumns; emptyText:
       <line x1={plot.x(parseTs(ts)!)} x2={plot.x(parseTs(ts)!)} y1="16" y2="169" className="dk-scanner-cursor"/>
     </svg>
     <div className="dk-scanner-readout"><label htmlFor="dk-tape-point">Inspect observation</label><input id="dk-tape-point" type="range" min="0" max={tape.ts.length-1} value={index} onChange={e => setPicked(Number(e.target.value))} aria-valuetext={`${ts}: ${fmtNum(tape.day_pnl_usd[index],2)} dollars`} /><button onClick={() => setPicked(null)}>Latest</button></div>
-    <p className="dk-tape-value">{ts} · {tape.pnlLabel} ${fmtNum(tape.day_pnl_usd[index],2)} · VaR ${fmtNum(tape.var_usd[index],2)}<br/>Tape inspection only · instruments above retain the current reading.</p>
+    <p className="dk-tape-value">{ts} · {tape.pnlLabel} ${fmtNum(tape.day_pnl_usd[index],2)} · VaR ${fmtNum(tape.var_usd[index],2)}<br/>{picked == null ? "LATEST" : "INSPECTING · INSTRUMENTS SHOW LATEST"}</p>
     <div className="dk-util-head"><span>LIMIT UTILIZATION</span><span>0% → 100% · red = breached · gaps = no reading</span></div>
     {Object.entries(tape.utilisation).map(([name, values]) => <div className="dk-raster-row" key={name}><span>{name}</span><svg viewBox={`0 0 ${width-90} 14`} preserveAspectRatio="none" role="img" aria-label={`${name}: ${fmtPct(values[index],1)} at selected observation`}>
       {values.map((v,i) => v == null || !Number.isFinite(v) ? null : <rect key={i} x={plot.x(parseTs(tape.ts[i])!)-70} y="1" width={plot.cellWidth(i)} height="12" fill={v>1 ? "#ff5348" : "#ffb64e"} opacity={.12 + .88*Math.min(1,Math.max(0,v))} />)}

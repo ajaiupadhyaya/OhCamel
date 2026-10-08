@@ -129,15 +129,18 @@ export const GATE_CODE: Record<string, string> = {
   beats_linear_composite: "VS LIN",
 };
 
-/** The gate names a charter verdict's detail lists as failed ("failed: dsr 0.12 (needs >= 0.3), ..."). */
+/**
+ * The gate names a charter verdict's detail lists as failed, lower-case: the label form
+ * ("FAILED DSR 0.12 (NEEDS >= 0.3), ...") and the earlier sentence form ("failed: dsr 0.12 (needs >= 0.3), ...").
+ */
 export function failedGates(detail: string | null | undefined): string[] {
-  if (!detail || !/^failed:/.test(detail)) return [];
-  return [...detail.matchAll(/(\w+) (?:[-−]?[\d.]+|n\/a) \(needs/g)].map((m) => m[1]);
+  if (!detail || !/^failed\b/i.test(detail)) return [];
+  return [...detail.matchAll(/(\w+) (?:[-−]?[\d.]+|n\/a) \(needs/gi)].map((m) => m[1].toLowerCase());
 }
 
-/** True when the verdict named the PBO as high ("; PBO 0.71 (high)"). */
+/** True when the verdict named the PBO as high ("· PBO 0.71 HIGH", earlier "; PBO 0.71 (high)"). */
 export function pboHigh(detail: string | null | undefined): boolean {
-  return !!detail && /PBO [\d.]+ \(high\)/.test(detail);
+  return !!detail && /PBO [\d.]+ \(?high\)?/i.test(detail);
 }
 
 export function farmCounts(board: FarmBoardRow[], cells: FarmCellRow[]) {

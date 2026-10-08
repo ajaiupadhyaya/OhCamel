@@ -11,6 +11,12 @@ from ohcamel_quant.jobs.queue import claim_next, enqueue, finish
 T0 = datetime(2026, 10, 6, 21, 0, tzinfo=UTC)
 
 
+def is_label(detail: str | None) -> bool:
+    """A verdict detail is public copy: a terse upper-case label, never a sentence or an operator instruction."""
+    return bool(detail) and detail == detail.upper() and not any(c in detail for c in ";:`") \
+        and "PYTHON -M" not in detail
+
+
 def publish_artifact(db, root, kind, tables, *, verdict=None, finished=T0, params=None, mem="S",
                      data_asof="2026-06-01"):
     """Queue, claim, write and finish one job; returns (artifact id, artifact directory)."""

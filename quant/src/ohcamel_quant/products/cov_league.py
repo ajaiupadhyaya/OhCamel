@@ -77,7 +77,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         ctx.progress((k + 1) / len(universes), name)
     if not league:
         return ArtifactSpec(tables={"skipped": pd.DataFrame(skipped)}, data_asof=None, provenance=prov, notes=notes,
-                            verdict="INSUFFICIENT DATA", verdict_detail="no universe had enough common history")
+                            verdict="INSUFFICIENT DATA", verdict_detail="NO UNIVERSE WITH COMMON HISTORY")
     lg = pd.DataFrame(league)
     win = lg[lg["rank"] == 1].groupby("estimator").size().sort_values(ascending=False)
     return ArtifactSpec(
@@ -86,5 +86,5 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         notes=[*notes, f"GMV portfolios refitted every {C.HOLD} sessions on {C.EST_WINDOW}; realized volatility "
                        "annualized; equal-variance test vs sample covariance (HAC delta method)"],
         survivorship=surv, verdict="DESCRIPTIVE ONLY",
-        verdict_detail=f"estimator comparison, not a strategy; lowest realized GMV volatility: "
-                       f"{', '.join(f'{e} ({n})' for e, n in win.items())}")
+        verdict_detail="ESTIMATOR LEAGUE · LOWEST GMV VOL " + ", ".join(f"{str(e).upper()} ({n})"
+                                                                       for e, n in win.items()))

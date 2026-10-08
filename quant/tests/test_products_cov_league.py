@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from lane_m_harness import is_label
+
 from ohcamel_quant.jobs.context import JobContext
 from ohcamel_quant.products import cov_league
 
@@ -11,7 +13,7 @@ def test_cov_league_on_fixtures(market):
                    _market=market)
     spec = cov_league.run({"universes": {"fixture": ["SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "XLE", "XLF", "XLK"],
                                          "ndx100": None}, "eval_sessions": 504}, c)
-    assert spec.verdict == "DESCRIPTIVE ONLY"
+    assert spec.verdict == "DESCRIPTIVE ONLY" and is_label(spec.verdict_detail)
     lg = spec.tables["league"]
     assert set(lg["estimator"]) == set(cov_league.ESTIMATORS) and (lg["realized_vol"] > 0).all()
     assert sorted(lg["rank"]) == list(range(1, len(cov_league.ESTIMATORS) + 1))

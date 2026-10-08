@@ -130,4 +130,4 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         notes=[f"{done} cells run tonight; DSR deflated by all {len(trials)} trials in the farm; walk-forward "
                f"{WF_IS}/{WF_OOS} sessions; costs from the engine's default ({EngineConfig().cost_bps} bps)"],
         verdict=verdict,
-        verdict_detail=f"{n_pass} PASS · {n_fail} FAIL · {n_skip} skipped; advisory, nothing is live")
+        verdict_detail=f"{n_pass} PASS · {n_fail} FAIL · {n_skip} SKIPPED · ADVISORY")

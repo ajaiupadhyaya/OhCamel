@@ -161,10 +161,10 @@ def score(frame: pd.DataFrame, *, selection_end: pd.Timestamp, holdout_start: pd
              Gate("incremental_r2_selection", r2b - r2a, "reported", None),
              Gate("incremental_r2_holdout", oos_b - oos_a, "reported", None))
     ok = all(g.passed for g in gates if g.passed is not None)
-    v = (Verdict("PASS", "P(high-vol) adds to EWMA in selection and holdout; descriptive risk model, never sized",
+    v = (Verdict("PASS", "P(HIGH VOL) ADDS TO EWMA · SELECTION AND HOLDOUT · RISK MODEL · NEVER SIZED",
                  gates) if ok else
-         Verdict("DESCRIPTIVE ONLY", "adds nothing over EWMA: " + ", ".join(
-             f"{g.name} {g.value:.3g} (needs {g.rule})" for g in gates if g.passed is False), gates))
+         Verdict("DESCRIPTIVE ONLY", "ADDS NOTHING OVER EWMA · " + ", ".join(
+             f"{g.name.upper()} {g.value:.3g} (NEEDS {g.rule.upper()})" for g in gates if g.passed is False), gates))
     row = {"selection_weeks": len(sel), "selection_last_target_end": str(sel["rv_end"].max().date()),
            "boundary_weeks_purged": purged, "holdout_weeks": len(hold), "hac_t_p": t_p, "hac_lags": lags,
            "r2_ewma": r2a, "r2_ewma_p": r2b, "dm_stat": dm, "dm_pvalue": p, "qlike_ewma": float(qlike(rv, fa).mean()),

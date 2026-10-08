@@ -9,7 +9,7 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Panel } from "./Panel";
-import { Absent, Verdict } from "../design";
+import { Absent, Note, Verdict } from "../design";
 import { PREREGISTERED, absentLabel, artifactMaxAge, manifestOf, useArtifact, type Manifest } from "../lib/artifacts";
 import { fmtAuto } from "../lib/format";
 
@@ -21,13 +21,23 @@ export interface ArtifactCellProps {
   go?: string;
   /** The pre-registration this product waits on (e.g. "EXP-Q01"). */
   experiment?: string;
+  /** A footnote beside the title linking the product's Methodology entry. */
+  note?: { n: number; to: string };
   span?: 2 | "all";
   /** Controls in the header (beside the link), e.g. a confidence toggle. */
   controls?: ReactNode;
   children?: (m: Manifest) => ReactNode;
 }
 
-export function ArtifactCell({ title, kind, to, go, experiment, span, controls, children }: ArtifactCellProps) {
+export function ArtifactCell({ title: label, kind, to, go, experiment, note, span, controls, children }: ArtifactCellProps) {
+  const title = note ? (
+    <>
+      {label}
+      <Note n={note.n} to={note.to} />
+    </>
+  ) : (
+    label
+  );
   const held = experiment !== undefined && !PREREGISTERED[kind];
   const q = useArtifact(kind, !held);
   const link = to ? (

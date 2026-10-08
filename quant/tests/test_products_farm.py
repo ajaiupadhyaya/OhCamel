@@ -6,7 +6,7 @@ import json
 
 import pandas as pd
 import pytest
-from lane_m_harness import publish_artifact
+from lane_m_harness import is_label, publish_artifact
 
 from ohcamel_quant.jobs.context import JobContext
 from ohcamel_quant.products import farm
@@ -56,4 +56,4 @@ def test_incremental_run_carries_cells_forward_and_respects_the_budget(market, t
     assert spec.tables["cells"]["cell_id"].tolist() == [row["cell_id"]]
     assert spec.tables["leaderboard"]["verdict"].iloc[0] in ("PASS", "FAIL")
     assert spec.verdict == spec.tables["leaderboard"]["verdict"].iloc[0]
-    assert spec.verdict_detail.startswith(("0 PASS", "1 PASS"))
+    assert spec.verdict_detail.startswith(("0 PASS", "1 PASS")) and is_label(spec.verdict_detail)

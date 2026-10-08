@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 import pytest
-from lane_m_harness import publish_artifact
+from lane_m_harness import is_label, publish_artifact
 
 from ohcamel_quant.api.routers import deck
 from ohcamel_quant.deck.clock import rule_clock
@@ -23,6 +23,7 @@ def ctx(market, threads=1):
 def test_atlas_artifact_on_fixtures(market):
     spec = atlas.run({"n_paths": 20_000, "members": False}, ctx(market))
     assert isinstance(spec, ArtifactSpec) and spec.verdict == "DESCRIPTIVE ONLY"
+    assert is_label(spec.verdict_detail)
     s = spec.tables["summary"]
     assert set(s["book"]) == set(deck.BOOKS)
     assert len(s) == len(deck.BOOKS) * 2 * 2 * 3  # methods x horizons x alphas

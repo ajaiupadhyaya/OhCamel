@@ -83,7 +83,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     if lg.empty:
         return ArtifactSpec(tables={"skipped": pd.DataFrame(skipped, columns=["ticker", "reason"])}, data_asof=None,
                             provenance=prov, notes=notes, verdict="INSUFFICIENT DATA",
-                            verdict_detail="no name had enough history for the league")
+                            verdict_detail="NO NAME WITH ENOUGH HISTORY")
     summary = (lg.assign(in_mcs_f=lg["in_mcs"].astype(float))  # None (MCS not computable) -> NaN, not False
                .groupby("model").agg(names=("ticker", "nunique"), mean_rank=("rank_qlike", "mean"),
                                      mcs_rate=("in_mcs_f", "mean"), median_qlike=("qlike", "median"))
@@ -98,5 +98,5 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                        "target is minute RV where stored, else the squared daily return (QLIKE is robust to it)"],
         survivorship=SURVIVORSHIP if surv else None, engine=V.kernels.engine_of("garch_fit"),
         verdict="DESCRIPTIVE ONLY",
-        verdict_detail=f"forecast league, not a strategy; {best['model'].upper()} in the 10% MCS for "
-                       f"{best['mcs_rate']:.0%} of {int(best['names'])} names")
+        verdict_detail=f"FORECAST LEAGUE · {best['model'].upper()} IN 10% MCS · {best['mcs_rate']:.0%} OF "
+                       f"{int(best['names'])} NAMES")

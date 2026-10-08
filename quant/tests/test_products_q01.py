@@ -12,7 +12,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 import pytest
-from lane_m_harness import T0, publish_artifact
+from lane_m_harness import T0, is_label, publish_artifact
 
 from ohcamel_quant.jobs.context import JobContext
 from ohcamel_quant.products import experiment, q01
@@ -60,7 +60,7 @@ def test_q01_unfrozen_universe_is_insufficient_data(market, wh, frozen, monkeypa
     monkeypatch.setattr(q01, "load_config", lambda exp: {**frozen, "universe": None})
     monkeypatch.setattr(q01, "DB_PATH", tmp_path / "jobs.sqlite")
     spec = q01.run({}, ctx(market, wh))
-    assert spec.verdict == "INSUFFICIENT DATA" and "not frozen" in spec.verdict_detail
+    assert spec.verdict == "INSUFFICIENT DATA" and spec.verdict_detail == "UNIVERSE NOT FROZEN"
     assert set(spec.tables) == {"gates"}  # no numbers at all
 
 
@@ -84,7 +84,8 @@ def test_q01_runs_and_leads_with_the_charter_verdict(market, wh, test_cfg, monke
     assert h["holdout_start"] == first_2023  # the 2022-12-30 decision is the first holdout sample (I-Q01-1)
     assert list(spec.tables["holdout_costs"]["cost_bps"]) == [0.0, 5.0, 15.0, 30.0]
     assert set(spec.tables["scores"]["side"]) <= {"long", "short", "none"}
-    assert "advisory" in spec.verdict_detail or spec.verdict == "FAIL"
+    assert "ADVISORY" in spec.verdict_detail or spec.verdict == "FAIL"
+    assert is_label(spec.verdict_detail)
 
 
 def test_q01_no_selection_return_reaches_the_holdout(market, wh, test_cfg, monkeypatch, tmp_path):
@@ -152,7 +153,7 @@ def test_q01_holdout_goes_stale_on_methodology_change(market, wh, test_cfg, monk
     publish_artifact(db, root, "models.xs_lgbm", first.tables, verdict=first.verdict)
     bumped = {**test_cfg, "methodology_version": 2}
     stale = _run(market, wh, bumped, monkeypatch, db)
-    assert stale.verdict == "INSUFFICIENT DATA" and "owner" in stale.verdict_detail
+    assert stale.verdict == "INSUFFICIENT DATA" and "OWNER" in stale.verdict_detail and is_label(stale.verdict_detail)
     approved = {**bumped, "holdout_reevaluation_approved": 2}
     again = _run(market, wh, approved, monkeypatch, db)
     assert again.tables["holdout"].iloc[0]["methodology_version"] == 2

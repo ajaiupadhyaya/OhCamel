@@ -84,7 +84,7 @@ def test_score_gates_on_constructed_frames():
     noise = good.assign(p_high=rng.uniform(0, 1, len(idx)), rv=ewma + rng.normal(0, 2e-5, len(idx)).clip(-9e-5))
     _, _, _, v2 = score(noise, selection_end=pd.Timestamp("2021-12-31"), holdout_start=pd.Timestamp("2022-01-01"),
                         min_selection=260, min_holdout=26)
-    assert v2.value == "DESCRIPTIVE ONLY" and "adds nothing over EWMA" in v2.detail
+    assert v2.value == "DESCRIPTIVE ONLY" and "ADDS NOTHING OVER EWMA" in v2.detail
     short = good.loc[:"2022-03-31"]
     assert score(short, selection_end=pd.Timestamp("2021-12-31"), holdout_start=pd.Timestamp("2022-01-01"),
                  min_selection=260, min_holdout=26)[3].value == "INSUFFICIENT DATA"

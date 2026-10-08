@@ -60,7 +60,6 @@ export const LEDGER: LedgerEntry[] = [
   { section: "LIMITS", item: "OPTIONS DELAYED", detail: "Option quotes are Cboe delayed data." },
   { section: "LIMITS", item: "SHARED VCPU", detail: "One 2-vCPU droplet; CPU steal from neighbours is measured, not prevented." },
   { section: "LIMITS", item: "KERNEL BENCHMARKS", detail: "The recorded table was measured on a developer laptop, not the droplet's CPU class; two kernels are slower in Rust there." },
-  { section: "LIMITS", item: "SCHEDULE TABLE", detail: "The schedule's next run times are not served by the API yet; /compute says so." },
   // ---------------------------------------------------------------- owner
   { section: "OWNER", item: "LIVE TRADING SWITCH", detail: "book.sexp on the droplet; never edited by the agent." },
   { section: "OWNER", item: "PRE-REGISTRATIONS", detail: "EXP-Q01 and EXP-Q02 approved 2026-10-06; any deviation is a new experiment and goes back to the owner." },

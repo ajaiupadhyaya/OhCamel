@@ -39,7 +39,7 @@ import { MC_MAX_AGE_S, mcVarOf, readingInterval, READING_MIN } from "./deck/live
 import { McReadout } from "./deck/McReadout";
 import { appendTrail, fromEngine, fromReading, historyToTape, tapeFromServer, trailToTape, type BooksOut, type DeckModel, type DeckSource, type Reading, type ReadingMark, type TapeOut, type TrailPoint } from "./deck/model";
 import { Radar } from "./deck/RadarScope";
-import { SessionTape } from "./deck/SessionTape";
+import { SessionTape, TAPE_EMPTY } from "./deck/SessionTape";
 import { TargetingComputer, useReducedMotion } from "./deck/TargetingComputer";
 import "./deck/deck.css";
 
@@ -419,7 +419,7 @@ function ReferenceTape({ open }: { open: boolean }) {
       query={tape}
       skeletonHeight={260}
     >
-      {() => columns && <SessionTape tape={columns} emptyText="The recorder has not written a reading for this book yet — it records while the US session is open." />}
+      {() => columns && <SessionTape tape={columns} emptyText={TAPE_EMPTY.reference} />}
     </Panel>
   );
 }
@@ -429,7 +429,7 @@ function EngineTape() {
   const columns = useMemo(() => (hist.data ? historyToTape(hist.data.history) : null), [hist.data]);
   return (
     <Panel<HistoryOut> title="Engine trail" subtitle="What the engine has seen since it last started, kept in its memory. It records equity and VaR/ES, not per-limit utilisation." query={hist} skeletonHeight={260}>
-      {() => columns && <SessionTape tape={columns} emptyText="The engine restarted recently and has not appended a point yet." />}
+      {() => columns && <SessionTape tape={columns} emptyText={TAPE_EMPTY.engine} />}
     </Panel>
   );
 }
@@ -457,7 +457,7 @@ function TrailTape({ model }: { model: DeckModel | undefined }) {
       subtitle={`${trail.length} reading${trail.length === 1 ? "" : "s"} collected by this page while it has been open.`}
       notes={["Your portfolio is not recorded on the server: this tape is kept in the page's memory and is lost on reload. The reference book's tape is recorded all session."]}
     >
-      <SessionTape tape={columns} emptyText="The first reading will start the tape." />
+      <SessionTape tape={columns} emptyText={TAPE_EMPTY.trail} />
     </Panel>
   );
 }

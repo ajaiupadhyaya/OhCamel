@@ -10,7 +10,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 import pytest
-from lane_m_harness import publish_artifact
+from lane_m_harness import is_label, publish_artifact
 
 from ohcamel_quant.jobs.context import JobContext
 from ohcamel_quant.options import bsm
@@ -62,7 +62,7 @@ def test_one_day_of_history_from_a_known_smile(market, wh, tmp_path, monkeypatch
     publish_artifact(db, root, "vol.forecast_league",
                      {"forecasts": pd.DataFrame({"ticker": ["SPY"], "asof": ["2026-05-29"], "har_22d": [1e-4]})})
     spec = surface_history.run({}, ctx(market, wh))
-    assert spec.verdict == "DESCRIPTIVE ONLY" and "1 day" in spec.verdict_detail
+    assert spec.verdict == "DESCRIPTIVE ONLY" and "1 DAY" in spec.verdict_detail and is_label(spec.verdict_detail)
     h = spec.tables["history"].iloc[0]
     assert h["underlying"] == "SPY" and h["asof"] == "2026-06-01"
     assert h["atm_iv_30d"] == pytest.approx(0.20, abs=0.005)   # the constructed smile's ATM level
@@ -86,7 +86,7 @@ def test_surface_history_with_no_snapshots_is_insufficient_data(market, tmp_path
     with open_rw(path):
         pass
     spec = surface_history.run({}, ctx(market, path))
-    assert spec.verdict == "INSUFFICIENT DATA" and "0 days of history" in spec.verdict_detail
+    assert spec.verdict == "INSUFFICIENT DATA" and spec.verdict_detail == "NO OPTION SNAPSHOTS"
 
 
 def test_a_snapshot_without_its_spot_is_listed_not_fatal(market, wh, tmp_path, monkeypatch):

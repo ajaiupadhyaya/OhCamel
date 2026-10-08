@@ -95,7 +95,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     if hist.empty:
         return ArtifactSpec(tables={"history": hist, "errors": pd.DataFrame(errors, columns=ERR_COLS)}, data_asof=None,
                             provenance=[], notes=notes, verdict="INSUFFICIENT DATA",
-                            verdict_detail="0 days of history: no option snapshots yet")
+                            verdict_detail="NO OPTION SNAPSHOTS")
     summary = (hist.groupby("underlying").agg(days=("asof", "nunique"), first=("asof", "min"), last=("asof", "max"))
                .reset_index())
     return ArtifactSpec(
@@ -104,5 +104,4 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         notes=[*notes, "SVI per expiry; ATM in total variance, RR/BF linear in T, no extrapolation; "
                        "model-free variance by the Cboe method"],
         verdict="DESCRIPTIVE ONLY",
-        verdict_detail=f"{days} day{'s' if days != 1 else ''} of history across {hist['underlying'].nunique()} "
-                       "underlyings; a measurement, not a strategy")
+        verdict_detail=f"{days} DAY{'S' if days != 1 else ''} · {hist['underlying'].nunique()} UNDERLYINGS · MEASUREMENT")

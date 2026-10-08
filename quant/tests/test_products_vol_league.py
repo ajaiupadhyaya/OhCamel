@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from lane_m_harness import is_label
+
 from ohcamel_quant.jobs.context import JobContext
 from ohcamel_quant.products import vol_league
 
@@ -13,7 +15,7 @@ def ctx(market):
 
 def test_league_on_two_fixture_etfs(market):
     spec = vol_league.run({"tickers": ["SPY", "TLT", "NOPE"], "eval_days": 42}, ctx(market))
-    assert spec.verdict == "DESCRIPTIVE ONLY" and "MCS" in spec.verdict_detail
+    assert spec.verdict == "DESCRIPTIVE ONLY" and "MCS" in spec.verdict_detail and is_label(spec.verdict_detail)
     lg = spec.tables["league"]
     assert set(lg["ticker"]) == {"SPY", "TLT"}
     assert {"garch", "gjr", "ewma"} <= set(lg["model"]) <= {"garch", "gjr", "egarch", "ewma"}  # no HAR offline
