@@ -10,6 +10,7 @@
  * docs/superpowers/specs/2026-09-24-quant-flight-deck-design.md §API.
  */
 import type { Envelope, ProvenanceRecord } from "../../lib/types";
+import { fmtRelativeTime } from "../../lib/format";
 import type { History, Snapshot } from "../engine/types";
 import type { BlipIn } from "./radar";
 import type { ScopeLimit } from "./scope";
@@ -349,3 +350,10 @@ export function historyToTape(h: History): TapeColumns {
     pnlLabel: "Equity change since the trail began",
   };
 }
+
+/** The reading's age as a label: READ NOW, READ 3 MIN AGO. */
+export function readAge(asOf: string, now: Date = new Date()): string {
+  const rel = fmtRelativeTime(asOf.replace(" ", "T"), now);
+  return rel === "just now" ? "READ NOW" : `READ ${rel.toUpperCase()}`;
+}
+

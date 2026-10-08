@@ -1,6 +1,7 @@
 /** A calibrated scanner: real timestamps, gaps, dollars and per-limit utilization. */
 import { useState } from "react";
-import { fmtNum, fmtPct } from "../../lib/format";
+import { fmtCurrency, fmtNum, fmtPct } from "../../lib/format";
+import { fmtStamp } from "../../design/stamp";
 import { parseTs, type TapeColumns } from "./model";
 import { scanner } from "./scanner";
 import { useBox } from "./useBox";
@@ -33,12 +34,12 @@ export function SessionTape({ tape, emptyText }: { tape: TapeColumns; emptyText:
       {plot.events.map(p => <path key={p.i} d={`M${p.x},22 l5,5 -5,5 -5,-5 Z`} className="dk-scanner-event"/>)}
       <line x1={plot.x(parseTs(ts)!)} x2={plot.x(parseTs(ts)!)} y1="16" y2="169" className="dk-scanner-cursor"/>
     </svg>
-    <div className="dk-scanner-readout"><label htmlFor="dk-tape-point">Inspect observation</label><input id="dk-tape-point" type="range" min="0" max={tape.ts.length-1} value={index} onChange={e => setPicked(Number(e.target.value))} aria-valuetext={`${ts}: ${fmtNum(tape.day_pnl_usd[index],2)} dollars`} /><button onClick={() => setPicked(null)}>Latest</button></div>
-    <p className="dk-tape-value">{ts} · {tape.pnlLabel} ${fmtNum(tape.day_pnl_usd[index],2)} · VaR ${fmtNum(tape.var_usd[index],2)}<br/>{picked == null ? "LATEST" : "INSPECTING · INSTRUMENTS SHOW LATEST"}</p>
+    <div className="dk-scanner-readout"><label htmlFor="dk-tape-point">OBSERVATION</label><input id="dk-tape-point" type="range" min="0" max={tape.ts.length-1} value={index} onChange={e => setPicked(Number(e.target.value))} aria-valuetext={`${ts}: ${fmtNum(tape.day_pnl_usd[index],2)} dollars`} /><button onClick={() => setPicked(null)}>LATEST</button></div>
+    <p className="dk-tape-value">{fmtStamp(ts)} ET · {tape.pnlLabel.toUpperCase()} {fmtCurrency(tape.day_pnl_usd[index], { digits: 2, signed: true })} · VAR {fmtCurrency(tape.var_usd[index], { digits: 2 })}<br/>{picked == null ? "LATEST" : "INSPECTING · INSTRUMENTS SHOW LATEST"}</p>
     <div className="dk-util-head"><span>LIMIT UTILIZATION</span><span>0% → 100% · red = breached · gaps = no reading</span></div>
     {Object.entries(tape.utilisation).map(([name, values]) => <div className="dk-raster-row" key={name}><span>{name}</span><svg viewBox={`0 0 ${width-90} 14`} preserveAspectRatio="none" role="img" aria-label={`${name}: ${fmtPct(values[index],1)} at selected observation`}>
       {values.map((v,i) => v == null || !Number.isFinite(v) ? null : <rect key={i} x={plot.x(parseTs(tape.ts[i])!)-70} y="1" width={plot.cellWidth(i)} height="12" fill={v>1 ? "#ff5348" : "#ffb64e"} opacity={.12 + .88*Math.min(1,Math.max(0,v))} />)}
     </svg><span>{fmtPct(values[index],0)}</span></div>)}
-    {!Object.keys(tape.utilisation).length && <p className="dk-tape-value">This source records no per-limit utilization.</p>}
+    {!Object.keys(tape.utilisation).length && <p className="dk-tape-value">NO PER-LIMIT UTILIZATION</p>}
   </div>;
 }

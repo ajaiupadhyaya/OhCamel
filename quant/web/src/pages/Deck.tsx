@@ -37,7 +37,7 @@ import { LimitsEditor } from "./deck/LimitsEditor";
 import { DEFAULT_LIMITS, loadLimits, sanitizeLimits, saveLimits, toWire, type LimitIn } from "./deck/limits";
 import { MC_MAX_AGE_S, mcVarOf, readingInterval, READING_MIN } from "./deck/live";
 import { McReadout } from "./deck/McReadout";
-import { appendTrail, fromEngine, fromReading, historyToTape, tapeFromServer, trailToTape, type BooksOut, type DeckModel, type DeckSource, type Reading, type ReadingMark, type TapeOut, type TrailPoint } from "./deck/model";
+import { appendTrail, fromEngine, fromReading, historyToTape, readAge, tapeFromServer, trailToTape, type BooksOut, type DeckModel, type DeckSource, type Reading, type ReadingMark, type TapeOut, type TrailPoint } from "./deck/model";
 import { Radar } from "./deck/RadarScope";
 import { SessionTape, TAPE_EMPTY } from "./deck/SessionTape";
 import { TargetingComputer, useReducedMotion } from "./deck/TargetingComputer";
@@ -244,7 +244,7 @@ function DeckBody({ source, onSource }: { source: DeckSource; onSource: (s: Deck
         <span>Read-only instruments</span>
         <span className="num">{source === "engine" ? "OCaml engine" : `Quote cache ${model?.quality?.quote_cache_s ?? 60}s · 1-day EWMA risk`}</span>
         <span className="num">History through {model?.quality?.history_as_of ?? "—"}</span>
-        <button type="button" onClick={() => inspect("Sources & model assumptions")}>Sources & assumptions</button>
+        <button type="button" onClick={() => inspect("SOURCES · MODEL ASSUMPTIONS")}>SOURCES</button>
       </footer>
       <dialog ref={drawer} id="dk-drawer" className="dk-drawer" aria-labelledby="dk-drawer-title" onClose={() => setOpen(false)}>
         <header className="dk-drawer-head">
@@ -280,7 +280,7 @@ function DeckBody({ source, onSource }: { source: DeckSource; onSource: (s: Deck
           <MarksPanel q={q} />
         </section>
         <section className="dk-drawer-sec dk-drawer-notes">
-          <h3>Sources & assumptions</h3>
+          <h3>Sources · assumptions</h3>
           {model?.quality && <p className="small">Basis: {model.quality.basis}. Historical window ends <span className="num">{model.quality.history_as_of}</span>.</p>}
           <p className="small">Quotes and risk estimates have different observation times. Policy limits are your settings.</p>
           {model?.notes.map((note, i) => <p key={i} className="small">{note}</p>)}
@@ -318,7 +318,7 @@ function StatusStrip({ q, source }: { q: DeckQuery; source: DeckSource }) {
       ) : m && source === "engine" ? (
         <span className="dk-session">No session clock</span>
       ) : null}
-      {m?.as_of && <span className="num">Read {fmtRelativeTime(m.as_of.replace(" ", "T"))}</span>}
+      {m?.as_of && <span className="num">{readAge(m.as_of)}</span>}
       {q.stale && (
         <span className="dk-stale" title={q.staleError?.detail}>
           Refresh failed · previous reading

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { History, Snapshot } from "../engine/types";
-import { appendTrail, fromEngine, fromReading, historyToTape, parseTs, tapeFromServer, trailToTape, type DeckModel, type Reading } from "./model";
+import { appendTrail, fromEngine, fromReading, historyToTape, parseTs, readAge, tapeFromServer, trailToTape, type DeckModel, type Reading } from "./model";
 import { layout } from "./scope";
 import { radar } from "./radar";
 
@@ -228,4 +228,10 @@ test("a cached quote response does not add an invented market observation", () =
   expect(appendTrail(trail, repeat)).toBe(trail);
   const changed = fromReading(reading({as_of: "2026-09-24T14:32:00Z", risk: {...reading().risk, var_usd: 12500}}));
   expect(appendTrail(trail, changed)).toHaveLength(2);
+});
+
+describe("readAge (the status strip's label)", () => {
+  const now = new Date("2026-10-08T06:15:00Z");
+  test("NOW inside 45 s", () => expect(readAge("2026-10-08 06:14:40+00:00", now)).toBe("READ NOW"));
+  test("minutes in caps", () => expect(readAge("2026-10-08T06:12:00Z", now)).toBe("READ 3 MIN AGO"));
 });
