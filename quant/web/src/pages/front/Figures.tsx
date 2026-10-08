@@ -1,12 +1,13 @@
 /**
  * Row 1: four headline figures. SPY and QQQ (the S&P 500 and Nasdaq-100 ETFs) and the VIX from
- * the market overview; the 10-year par yield from FRED DGS10. Changes are 1D and signed.
+ * the market overview (FRED VIXCLS when the quote source lacks ^VIX: the caption and the
+ * provenance say so); the 10-year par yield from FRED DGS10. Changes are 1D and signed.
  */
 import { Provenance, StatGrid, StatTile } from "../../components";
 import { fmtBps, fmtNum, fmtPct, fmtPctPoints } from "../../lib/format";
 import { fmtStamp } from "../../design/stamp";
 import type { ProvenanceRecord } from "../../lib/types";
-import { lastPair, useFrontOverview, useTreasuries } from "./data";
+import { lastPair, useFrontOverview, useTreasuries, useVixFred, vixFigure } from "./data";
 
 export function Figures() {
   const ov = useFrontOverview();
@@ -14,7 +15,15 @@ export function Figures() {
   const row = (t: string) => ov.data?.rows.find((r) => r.ticker === t);
   const ten = tsy.data ? lastPair(tsy.data.data, "DGS10") : null;
   const tenChg = ten && ten.prev !== null ? (ten.last - ten.prev) / 100 : null;
-  const prov: ProvenanceRecord[] = [...(ov.data?.provenance ?? []), ...(tsy.data?.provenance ?? [])];
+  const vixRow = row("^VIX");
+  const quoteVix = !!vixRow && !vixRow.error && vixRow.last != null;
+  const vixFred = useVixFred(!ov.isLoading && !quoteVix);
+  const vix = vixFigure(vixRow, quoteVix ? null : vixFred.data?.data);
+  const prov: ProvenanceRecord[] = [
+    ...(ov.data?.provenance ?? []),
+    ...(tsy.data?.provenance ?? []),
+    ...(vix.source === "fred" ? (vixFred.data?.provenance ?? []).map((p) => (p.detail?.series ? { ...p, detail: { ...p.detail, note: "VIX: FRED VIXCLS, the quote source has no ^VIX" } } : p)) : []),
+  ];
 
   const quote = (ticker: string, label: string, name: string, invert = false) => {
     const r = row(ticker);
@@ -46,7 +55,20 @@ export function Figures() {
           value={ten ? fmtPctPoints(ten.last, 2) : null}
           caption={ten ? `${tenChg !== null ? fmtBps(tenChg, 0, { signed: true }) + " 1D · " : ""}DGS10 · ${fmtStamp(ten.date)}` : "UNAVAILABLE"}
         />
-        {quote("^VIX", "VIX", "CBOE", true)}
+        {vix.source === "fred" ? (
+          <StatTile
+            size="lg"
+            label="VIX"
+            value={fmtNum(vix.value, 2)}
+            delta={vix.ret1d}
+            deltaFormat={(d) => fmtPct(d, 2, { signed: true })}
+            deltaLabel="1D"
+            invert
+            caption={`FRED VIXCLS · ${fmtStamp(vix.asOf)}`}
+          />
+        ) : (
+          quote("^VIX", "VIX", "CBOE", true)
+        )}
       </StatGrid>
       <Provenance items={prov} className="fp-figures-prov" />
     </div>

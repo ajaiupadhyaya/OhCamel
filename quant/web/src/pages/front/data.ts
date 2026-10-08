@@ -1,6 +1,7 @@
 /**
  * Front Page reads and the pure arithmetic behind its figures.
- * Reads: GET /api/market/overview (SPY, QQQ, ^VIX), GET /api/macro/series (DGS2, DGS10),
+ * Reads: GET /api/market/overview (SPY, QQQ, ^VIX), GET /api/macro/series (DGS2, DGS10; VIXCLS
+ * when the quote source lacks ^VIX),
  * GET /api/macro/curve (via the Rates page's useCurve), GET /api/warehouse/freshness.
  */
 import { isStale, type LampState } from "../../design";
@@ -54,6 +55,31 @@ export function lastPair(f: FramePayload, col: string): { last: number; prev: nu
     else return { last: last.v, prev: x, date: String(f.index[last.i]) };
   }
   return last ? { last: last.v, prev: null, date: String(f.index[last.i]) } : null;
+}
+
+export interface VixFigure {
+  value: number | null;
+  ret1d: number | null;
+  asOf: string | null;
+  source: "quote" | "fred" | "none";
+}
+
+/**
+ * The VIX figure: the ^VIX quote when the overview has it, else FRED VIXCLS (the CBOE close FRED
+ * republishes, a day behind) with its own 1D change; neither reads as missing.
+ */
+export function vixFigure(row: OverviewRow | undefined, fred: FramePayload | null | undefined): VixFigure {
+  if (row && !row.error && num(row.last)) return { value: row.last, ret1d: num(row.ret_1d) ? row.ret_1d : null, asOf: row.as_of ?? null, source: "quote" };
+  const p = fred ? lastPair(fred, "VIXCLS") : null;
+  if (p) return { value: p.last, ret1d: p.prev ? p.last / p.prev - 1 : null, asOf: p.date, source: "fred" };
+  return { value: null, ret1d: null, asOf: null, source: "none" };
+}
+
+/** FRED VIXCLS, read only when the quote source has no ^VIX (the treasuries' window: a stale store still reads). */
+export function useVixFred(enabled: boolean) {
+  const d = new Date();
+  d.setUTCMonth(d.getUTCMonth() - 13, 1);
+  return useApiQuery<FredExplorer>("/macro/series", { ids: "VIXCLS", start: d.toISOString().slice(0, 10) }, { enabled });
 }
 
 export interface FreshnessRow {

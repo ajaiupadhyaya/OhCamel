@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { freshnessRows, lampOf, lastPair, slope2s10s } from "./data";
+import { freshnessRows, lampOf, lastPair, slope2s10s, vixFigure } from "./data";
 
 const frame = {
   index: ["2026-05-28", "2026-05-29", "2026-06-01"],
@@ -63,5 +63,21 @@ describe("freshnessRows (GET /api/warehouse/freshness)", () => {
   it("tolerates garbage", () => {
     expect(freshnessRows(null)).toEqual([]);
     expect(freshnessRows({ datasets: [{ nope: 1 }] })).toEqual([]);
+  });
+});
+
+describe("vixFigure (^VIX quote, else FRED VIXCLS)", () => {
+  const fred = { index: ["2026-05-28", "2026-05-29", "2026-06-01"], columns: ["VIXCLS"], data: { VIXCLS: [15.74, 16.0, null] } };
+  it("the quote when the overview has ^VIX", () => {
+    expect(vixFigure({ ticker: "^VIX", last: 17.2, ret_1d: 0.05, as_of: "2026-06-01", error: null } as never, fred)).toEqual({ value: 17.2, ret1d: 0.05, asOf: "2026-06-01", source: "quote" });
+  });
+  it("FRED VIXCLS when the quote source lacks ^VIX (errored row or no row)", () => {
+    const want = { value: 16.0, ret1d: 16.0 / 15.74 - 1, asOf: "2026-05-29", source: "fred" };
+    expect(vixFigure({ ticker: "^VIX", error: "no fixture" } as never, fred)).toEqual(want);
+    expect(vixFigure(undefined, fred)).toEqual(want);
+  });
+  it("neither → nothing, never a guess", () => {
+    expect(vixFigure(undefined, undefined)).toEqual({ value: null, ret1d: null, asOf: null, source: "none" });
+    expect(vixFigure(undefined, { index: [], columns: [], data: {} })).toEqual({ value: null, ret1d: null, asOf: null, source: "none" });
   });
 });
