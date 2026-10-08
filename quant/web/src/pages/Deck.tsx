@@ -5,34 +5,46 @@
  *   A. Targeting computer — how close is the book to each of its limits?   (deck/scope.ts)
  *   B. Radar              — where is the risk, and what is moving today?  (deck/radar.ts)
  *   C. Lamp panel         — is the data behind this alive?               (deck/LampPanel.tsx)
+ *      with the counter bank (day P&L, VaR, marks age, time to close) and the compute bank.
+ *
+ * Console scale (F2): every instrument draws in the CSS pixels of its grid cell (deck/fit.ts,
+ * deck/useBox.ts), so type and hairlines are the same size at 380, 1280 and 1920.
  *
  * Sources (?source=, a SegmentedControl): your portfolio (default) and the reference book both
- * POST /deck/reading, polled every 15 s while the US session is open and every 5 min while it
- * is closed; the OCaml engine is GET /engine/snapshot through the read-only bridge, every 2 s
- * (its 503 is rendered, never replaced). All three become one DeckModel (deck/model.ts).
+ * POST /deck/reading, one reading per quote-cache refresh while the US session is open and
+ * every 5 min while it is closed (deck/live.ts); the OCaml engine is GET /engine/snapshot
+ * through the read-only bridge, every 2 s (its 503 is rendered, never replaced). All three
+ * become one DeckModel (deck/model.ts).
+ *
+ * Live (F3): running jobs stream from GET /api/jobs/events (deck/useJobStream.ts); the server
+ * has no multiplexed stream hub, so readings, host metrics and the engine are still polled at
+ * the cadences above, and the strip says so. The session scanner shows the intraday Monte
+ * Carlo VaR the reading carries (`mc_var`, compute plan M2) with its asOf, or that it is absent.
  * Below the instruments: the session tape, the marks with provenance, and the limits editor.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
-import { DataTable, Panel, Section, SegmentedControl, useTabParam, type Column } from "../components";
+import { Link } from "react-router-dom";
+import { DataTable, Panel, SegmentedControl, useTabParam, type Column } from "../components";
 import { DataUnavailableError, type ApiError } from "../lib/api";
 import { fmtDate, fmtNum, fmtPct, fmtRelativeTime, fmtSignedPct } from "../lib/format";
 import { usePortfolio } from "../lib/portfolio";
 import { useApiPost, useApiQuery } from "../lib/query";
 import type { HistoryOut, SnapshotOut } from "./engine/types";
+import { ComputeBank } from "./deck/ComputeBank";
+import { drawerKey } from "./deck/keys";
 import { Counters, LampPanel } from "./deck/LampPanel";
 import { LimitsEditor } from "./deck/LimitsEditor";
 import { DEFAULT_LIMITS, loadLimits, sanitizeLimits, saveLimits, toWire, type LimitIn } from "./deck/limits";
+import { MC_MAX_AGE_S, mcVarOf, readingInterval, READING_MIN } from "./deck/live";
+import { McReadout } from "./deck/McReadout";
 import { appendTrail, fromEngine, fromReading, historyToTape, tapeFromServer, trailToTape, type BooksOut, type DeckModel, type DeckSource, type Reading, type ReadingMark, type TapeOut, type TrailPoint } from "./deck/model";
 import { Radar } from "./deck/RadarScope";
 import { SessionTape } from "./deck/SessionTape";
-import { TargetingComputer } from "./deck/TargetingComputer";
+import { TargetingComputer, useReducedMotion } from "./deck/TargetingComputer";
 import "./deck/deck.css";
 
 const ALPHA = 0.95;
 const EWMA_LAMBDA = 0.94;
-const OPEN_POLL = 15_000;
-const CLOSED_POLL = 300_000;
 const ENGINE_POLL = 2_000;
 const REFERENCE_KEY = "core";
 
@@ -79,31 +91,65 @@ function useDeckLimits() {
 // ------------------------------------------------------------------ page
 
 export default function Deck() {
-  const [params, setParams] = useSearchParams();
-  const focus = params.get("focus") === "1";
   const [raw, setSource] = useTabParam<string>("source", "portfolio");
   const source: DeckSource = isSource(raw) ? raw : "portfolio";
   return (
     <div className="dk-flight">
-      <header className="dk-flight-header">
-        <h1><span>OhCamel /</span> FLIGHT DECK</h1>
-        <SegmentedControl<DeckSource> className="dk-source" ariaLabel="What the deck is flying" options={SOURCES} value={source} onChange={(v) => setSource(v)} />
-        <button className="dk-button" onClick={() => {const next = new URLSearchParams(params); if (focus) next.delete("focus"); else next.set("focus","1"); setParams(next);}}>{focus ? "Exit focus" : "Focus view"}</button>
-      </header>
-      <DeckBody key={source} source={source} />
+      <DeckBody key={source} source={source} onSource={setSource} />
     </div>
   );
 }
 
-function DeckBody({ source }: { source: DeckSource }) {
+// ------------------------------------------------------------------ the strip
+
+const NY_TIME = (withSeconds: boolean) =>
+  new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", ...(withSeconds ? { second: "2-digit" } : {}), hourCycle: "h23" });
+
+/** New York wall time; ticks each second, or each 15 s (no seconds) under reduced motion. */
+function NyClock() {
+  const reduced = useReducedMotion();
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), reduced ? 15_000 : 1_000);
+    return () => clearInterval(id);
+  }, [reduced]);
+  return <time className="dk-strip-time num" dateTime={new Date(now).toISOString()}>{NY_TIME(!reduced).format(now)} NY</time>;
+}
+
+function DeckBody({ source, onSource }: { source: DeckSource; onSource: (s: DeckSource) => void }) {
   const { request, portfolio } = usePortfolio();
   const limits = useDeckLimits();
   const drawer = useRef<HTMLDialogElement>(null);
-  const [inspection, setInspection] = useState("Reading details");
+  const [open, setOpen] = useState(false);
+  const [inspection, setInspection] = useState<string | null>(null);
+  const show = () => {
+    const d = drawer.current;
+    if (d && !d.open) d.showModal();
+    setOpen(true);
+  };
+  const toggle = () => {
+    const d = drawer.current;
+    if (d?.open) d.close();
+    else show();
+  };
   const inspect = (text: string) => {
     setInspection(text);
-    drawer.current?.showModal();
+    show();
   };
+  useEffect(() => {
+    const on = (e: KeyboardEvent) => {
+      if (!drawerKey({ key: e.key, metaKey: e.metaKey, ctrlKey: e.ctrlKey, altKey: e.altKey, defaultPrevented: e.defaultPrevented, target: e.target as HTMLElement | null })) return;
+      e.preventDefault();
+      const d = drawer.current;
+      if (d?.open) d.close();
+      else {
+        if (d) d.showModal();
+        setOpen(true);
+      }
+    };
+    window.addEventListener("keydown", on);
+    return () => window.removeEventListener("keydown", on);
+  }, []);
   const wire = toWire(limits.custom);
 
   // Reference books (and the server's default limits) — not needed for the engine.
@@ -125,7 +171,8 @@ function DeckBody({ source }: { source: DeckSource }) {
     enabled: source !== "engine" && body != null,
     placeholderData: undefined,
     staleTime: 0,
-    refetchInterval: (q) => (q.state.data?.clock?.is_open ? OPEN_POLL : CLOSED_POLL),
+    // one reading per quote-cache refresh while open, 5 min while closed (deck/live.ts)
+    refetchInterval: (q) => readingInterval(q.state.data),
   });
   const snap = useApiQuery<SnapshotOut>("/engine/snapshot", undefined, {
     enabled: source === "engine",
@@ -155,65 +202,105 @@ function DeckBody({ source }: { source: DeckSource }) {
       refetch: () => (refError ? books.refetch() : base.refetch()),
       stale: hasData && base.isError,
       staleError: hasData && base.isError ? (base.error as ApiError) : null,
-      cadence: source === "engine" ? "every 2 s" : open ? "every 15 s while the session is open" : "every 5 min while the session is closed",
+      cadence: source === "engine" ? "every 2 s" : open ? `every ${Math.round(readingInterval(reading.data) / 1000)} s · per quote refresh` : "every 5 min · session closed",
     };
   }, [source, snap, reading, books, core, model]);
 
+  const quality = model?.quality;
+  const notice = quality && (!quality.complete || quality.offline || quality.fixtures)
+    ? `${quality.offline || quality.fixtures ? "HISTORICAL FIXTURES · NOT LIVE" : "PARTIAL READING"} · ${quality.complete ? "committed real market observations, not current quotes" : `missing ${quality.missing.join(", ")} · risk on held closes · limits unevaluated`}`
+    : null;
+
   return (
     <>
-      <div className="dk-command-row">
+      <header className="dk-strip">
+        <h1 className="dk-strip-title">Flight deck</h1>
+        <SegmentedControl<DeckSource> className="dk-source" size="sm" ariaLabel="What the deck is flying" options={SOURCES} value={source} onChange={onSource} />
         <StatusStrip q={q} source={source} />
-        <button className="dk-button" onClick={() => inspect("Reading details")}>Details / limits</button>
-      </div>
-      {model?.quality && (!model.quality.complete || model.quality.offline || model.quality.fixtures) && (
-        <p className="dk-notice" role="status">{(model.quality.offline || model.quality.fixtures) ? "HISTORICAL FIXTURES · NOT LIVE" : "PARTIAL READING"} · {model.quality.complete ? "Committed real market observations. These are historical observations, not current quotes." : `Missing ${model.quality.missing.join(", ")}. Risk uses held-close estimates; limits are unevaluated.`}</p>
-      )}
-      {q.isError ? <SourceError source={source} error={q.error} onRetry={() => void q.refetch()} /> : (
-        <>
-          <Instruments q={q} onInspect={inspect} />
-          <div className="dk-tape-shell"><div className="dk-instrument-heading"><h2>Session scanner</h2><span>TIME / RISK / EVENTS</span></div><Tape source={source} q={q} /></div>
-        </>
-      )}
-      <footer className="dk-provenance-strip">
-        <span>READ-ONLY INSTRUMENTS</span>
-        <span>{source === "engine" ? "OCaml engine" : `Quote cache ${model?.quality?.quote_cache_s ?? 60}s · 1-day EWMA risk`}</span>
-        <span>History through {model?.quality?.history_as_of ?? "—"}</span>
-        <button onClick={() => inspect("Sources & model assumptions")}>Sources & assumptions</button>
-      </footer>
-      <dialog ref={drawer} className="dk-details" aria-labelledby="dk-details-title">
-        <header className="dk-details-header"><h2 id="dk-details-title">{inspection}</h2><button className="btn" onClick={() => drawer.current?.close()}>Close</button></header>
-        <p className="small subtle">Quotes and risk estimates have different observation times. Policy limits are your settings. Escape closes this drawer.</p>
-        {model?.quality && <p>Basis: {model.quality.basis}. Historical window ends {model.quality.history_as_of}.</p>}
-        {model?.notes.map((note, i) => <p key={i} className="small">{note}</p>)}
-        {model?.feeds.map(f => <p key={f.key} className="small"><strong>{f.label}: {f.state}</strong> — {f.detail}{f.age_s != null ? ` · ${Math.round(f.age_s)}s old at reading` : ""}</p>)}
-        <p className="small">Corridor depth shows observed ÷ threshold. The red counter shows the worst breach when one exists, otherwise the nearest limit’s remaining headroom. Select a limit for its actual value and units.</p>
-        <p className="small">Radar bearings follow alphabetical ticker order; radius is absolute share of value at risk, size is absolute portfolio weight, and hollow marks are hedges. Values beyond the rim are clamped and marked. The green phosphor is a display color; today’s signed move is in holding inspection and the marks table.</p>
-        <MarksPanel q={q} />
-      <Section title="Limits" description="Your policy lines. They are sent with every reading, so the targeting computer and the lamps show your limits, not ours.">
-        {source === "engine" ? (
-          <Panel title="Engine limits" notes={[]}>
-            <p className="small subtle">The OCaml engine evaluates the limits configured in its own book file; they are read-only here. Switch to your portfolio or the reference book to edit limits.</p>
-          </Panel>
-        ) : (
-          <Panel
-            title="Limits editor"
-            subtitle="Exposure and drawdown limits are a percent of equity; value at risk, expected shortfall and day loss are a percent of notional, evaluated in dollars."
-            info={{ text: "A limit is breached when its observed value exceeds its threshold. Utilisation = observed ÷ threshold. A limit whose observation cannot be computed (say, no history for a holding) is shown as unevaluated, never as fine." }}
-            notes={source === "reference" ? ["The recorded session tape uses the server's default limits; your edits apply to the live reading above."] : []}
-          >
-            <LimitsEditor
-              limits={limits.custom ?? defaults}
-              customised={limits.custom != null}
-              onChange={limits.set}
-              onReset={limits.reset}
-              notional={source === "reference" ? (core?.notional ?? null) : portfolio.notional}
-              tickers={(source === "reference" ? (core?.holdings ?? []) : portfolio.holdings).map((h) => h.ticker)}
-            />
-          </Panel>
+        <NyClock />
+        <button type="button" className="dk-strip-key" aria-haspopup="dialog" aria-expanded={open} aria-controls="dk-drawer" onClick={() => { setInspection(null); toggle(); }}>
+          Limits · marks <kbd>D</kbd>
+        </button>
+      </header>
+      {notice && <p className="dk-notice" role="status">{notice}</p>}
+      {q.isError ? <div className="dk-error"><SourceError source={source} error={q.error} onRetry={() => void q.refetch()} /></div> : null}
+      <div className="dk-bay" aria-busy={q.isLoading}>
+        {!q.isError && <Instruments q={q} onInspect={inspect} />}
+        <section className="dk-instrument dk-inst-system" aria-labelledby="dk-h-sys">
+          <InstrumentHead id="dk-h-sys" label="Systems" code="LAMPS" />
+          {model ? <LampPanel model={model} onInspect={inspect} stale={q.stale} /> : <p className="dk-no-reading">{q.isLoading ? "ACQUIRING READING" : "NO READING"}</p>}
+          <h3 className="dk-group">CMP<span>compute</span></h3>
+          <ComputeBank onInspect={inspect} />
+        </section>
+        {!q.isError && (
+          <section className="dk-instrument dk-inst-tape" aria-labelledby="dk-h-tape">
+            <InstrumentHead id="dk-h-tape" label="Session scanner" code="TIME · RISK · EVENTS" />
+            {source !== "engine" && <McLine reading={reading.data} />}
+            <Tape source={source} q={q} />
+          </section>
         )}
-      </Section>
+      </div>
+      <footer className="dk-provenance-strip">
+        <span>Read-only instruments</span>
+        <span className="num">{source === "engine" ? "OCaml engine" : `Quote cache ${model?.quality?.quote_cache_s ?? 60}s · 1-day EWMA risk`}</span>
+        <span className="num">History through {model?.quality?.history_as_of ?? "—"}</span>
+        <button type="button" onClick={() => inspect("Sources & model assumptions")}>Sources & assumptions</button>
+      </footer>
+      <dialog ref={drawer} id="dk-drawer" className="dk-drawer" aria-labelledby="dk-drawer-title" onClose={() => setOpen(false)}>
+        <header className="dk-drawer-head">
+          <h2 id="dk-drawer-title">Limits · marks</h2>
+          <button type="button" className="btn btn-sm" onClick={() => drawer.current?.close()}>Close <kbd>D</kbd></button>
+        </header>
+        {inspection && (
+          <section className="dk-drawer-sec dk-inspect" aria-label="Inspection">
+            <h3>Inspect</h3>
+            <p className="num">{inspection}</p>
+          </section>
+        )}
+        <section className="dk-drawer-sec">
+          <h3>Limits</h3>
+          {source === "engine" ? (
+            <p className="small">Engine limits come from the engine's own book file and are read-only here. Switch to your portfolio or the reference book to edit limits.</p>
+          ) : (
+            <>
+              <p className="small subtle">Exposure and drawdown: % of equity. VaR, ES and day loss: % of notional, evaluated in dollars. A limit that cannot be computed shows as unevaluated, never as fine.{source === "reference" ? " The recorded tape uses the server's default limits; edits apply to the live reading." : ""}</p>
+              <LimitsEditor
+                limits={limits.custom ?? defaults}
+                customised={limits.custom != null}
+                onChange={limits.set}
+                onReset={limits.reset}
+                notional={source === "reference" ? (core?.notional ?? null) : portfolio.notional}
+                tickers={(source === "reference" ? (core?.holdings ?? []) : portfolio.holdings).map((h) => h.ticker)}
+              />
+            </>
+          )}
+        </section>
+        <section className="dk-drawer-sec">
+          <h3>Marks</h3>
+          <MarksPanel q={q} />
+        </section>
+        <section className="dk-drawer-sec dk-drawer-notes">
+          <h3>Sources & assumptions</h3>
+          {model?.quality && <p className="small">Basis: {model.quality.basis}. Historical window ends <span className="num">{model.quality.history_as_of}</span>.</p>}
+          <p className="small">Quotes and risk estimates have different observation times. Policy limits are your settings.</p>
+          {model?.notes.map((note, i) => <p key={i} className="small">{note}</p>)}
+          {model?.feeds.map((f) => <p key={f.key} className="small"><strong>{f.label}: {f.state}</strong> — {f.detail}{f.age_s != null ? ` · ${Math.round(f.age_s)}s old at reading` : ""}</p>)}
+          <p className="small">Corridor depth is observed ÷ threshold. The red counter is the worst breach when one exists, otherwise the nearest limit's remaining headroom.</p>
+          <p className="small">Radar bearings follow alphabetical ticker order; radius is absolute share of value at risk, size is absolute portfolio weight, hollow marks are hedges, values beyond the rim are clamped and marked.</p>
+          <p className="small">Compute: hostd via GET /api/ops/host every 15 s; running jobs via the job stream GET /api/jobs/events, with GET /api/jobs?state=running read on open, when an unseen job starts, every 2 min to reconcile, and every 15 s while the stream is down.</p>
+          <p className="small">MC VaR: the intraday Monte Carlo VaR the reading carries from the latest risk.mc_intraday artifact, shown with its asOf and marked stale {MC_MAX_AGE_S / 60} min after it was computed (one missed 15-minute run plus slack). Absent when the reading carries none.</p>
+        </section>
       </dialog>
     </>
+  );
+}
+
+function InstrumentHead({ id, label, code }: { id: string; label: string; code: string }) {
+  return (
+    <div className="dk-instrument-heading">
+      <h2 id={id}>{label}</h2>
+      <span>{code}</span>
+    </div>
   );
 }
 
@@ -221,29 +308,24 @@ function DeckBody({ source }: { source: DeckSource }) {
 
 function StatusStrip({ q, source }: { q: DeckQuery; source: DeckSource }) {
   const m = q.data;
-  if (!m) return null;
-  const clock = m.clock;
+  const clock = m?.clock;
   return (
-    <div className="dk-status">
+    <div className="dk-status" role="status">
       {clock ? (
-        <span className={`badge ${clock.is_open ? "gain" : "unknown"}`} title={clock.note ?? undefined}>
-          {clock.source === "alpaca" ? "US session" : "Estimated session"} {clock.is_open ? "open" : "closed"}
-          {clock.source ? ` · ${clock.source}` : ""}
+        <span className={`dk-session ${clock.is_open ? "open" : "closed"}`} title={clock.note ?? undefined}>
+          {clock.source === "alpaca" ? "Session" : "Est. session"} {clock.is_open ? "open" : "closed"}
         </span>
-      ) : (
-        source === "engine" && <span className="badge accent">Engine book · no session clock</span>
-      )}
-      {m.as_of && (
-        <span className="subtle small">
-          Response <span className="num">{fmtRelativeTime(m.as_of.replace(" ", "T"))}</span>
-        </span>
-      )}
+      ) : m && source === "engine" ? (
+        <span className="dk-session">No session clock</span>
+      ) : null}
+      {m?.as_of && <span className="num">Read {fmtRelativeTime(m.as_of.replace(" ", "T"))}</span>}
       {q.stale && (
-        <span className="badge warn" title={q.staleError?.detail}>
-          Last refresh failed — showing the previous reading
+        <span className="dk-stale" title={q.staleError?.detail}>
+          Refresh failed · previous reading
         </span>
       )}
-      {source !== "engine" && <span className="subtle small">Quotes are cached for 60 s on the server, so marks move about once a minute.</span>}
+      {!m && q.isLoading && <span>Acquiring</span>}
+      <span className="dk-cadence">{q.cadence}</span>
     </div>
   );
 }
@@ -280,27 +362,38 @@ function Instruments({ q, onInspect }: { q: DeckQuery; onInspect: (text: string)
   const stale = q.stale || !!m?.feeds.some(f => f.state === "stale" || f.state === "down");
   // Vendor observation times identify a new market reading, not the response timestamp.
   const quoteKey = m?.marks.map(x => `${x.ticker}:${x.as_of}:${x.price}`).join("|") ?? null;
+  const breached = !!m?.limits.some(l => l.breached);
   return (
-    <div className="dk-deck" aria-busy={q.isLoading}>
-      <section className="dk-instrument dk-inst-scope">
-        <div className="dk-instrument-heading"><h2>Limit corridor</h2><span>{m?.limits.some(l => l.breached) ? "BREACH" : "PORTFOLIO RISK VIEW"}</span></div>
+    <>
+      <section className={`dk-instrument dk-inst-scope${breached ? " breach" : ""}`} aria-labelledby="dk-h-scope">
+        <InstrumentHead id="dk-h-scope" label="Limit corridor" code={breached ? "BREACH" : "TGT · LIMITS"} />
         {!m && <p className="dk-no-reading">{q.isLoading ? "ACQUIRING READING" : "NO READING"}</p>}
         <TargetingComputer limits={m?.limits ?? []} unevaluated={unevaluated} stale={stale} onInspect={onInspect} />
-        {m && <Counters model={m} />}
       </section>
-      <section className="dk-instrument dk-inst-radar">
-        <div className="dk-instrument-heading"><h2>Risk radar</h2><span>1D VaR</span></div>
+      <section className="dk-instrument dk-inst-radar" aria-labelledby="dk-h-radar">
+        <InstrumentHead id="dk-h-radar" label="Risk radar" code="1D VaR · SHARE" />
         <Radar blips={m?.blips ?? []} readingKey={quoteKey} onInspect={onInspect} />
       </section>
-      <section className="dk-instrument dk-inst-system">
-        <div className="dk-instrument-heading"><h2>Systems</h2><span>STATUS</span></div>
-        {m ? <LampPanel model={m} onInspect={onInspect} stale={q.stale} /> : <p className="dk-no-reading">NO READING</p>}
+      <section className="dk-instrument dk-inst-ctr" aria-labelledby="dk-h-ctr">
+        <InstrumentHead id="dk-h-ctr" label="Counters" code="P&L · VaR · MARKS · CLOCK" />
+        {m ? <Counters model={m} /> : <p className="dk-no-reading">{q.isLoading ? "ACQUIRING READING" : "NO READING"}</p>}
       </section>
-    </div>
+    </>
   );
 }
 
 // ------------------------------------------------------------------ session tape
+
+/** The intraday MC VaR line; its staleness re-checked every 15 s (never animated). */
+function McLine({ reading }: { reading: Reading | undefined }) {
+  const mc = useMemo(() => mcVarOf(reading), [reading]);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), READING_MIN);
+    return () => clearInterval(id);
+  }, []);
+  return <McReadout mc={mc} now={now} />;
+}
 
 function Tape({ source, q }: { source: DeckSource; q: DeckQuery }) {
   if (source === "reference") return <ReferenceTape open={!!q.data?.clock?.is_open} />;

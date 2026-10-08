@@ -39,10 +39,13 @@ export function AppShell({ children }: { children: ReactNode }) {
     },
   });
 
-  const focus = loc.pathname === "/deck" && new URLSearchParams(loc.search).get("focus") === "1";
+  const deck = loc.pathname === "/deck";
+  const focus = deck && new URLSearchParams(loc.search).get("focus") === "1";
 
+  // The Flight Deck is the one dark room: its masthead, nav and footer are inverted
+  // (ink ground). The tokens for oc-app-ink live with the deck (pages/deck/deck.css).
   return (
-    <div className={`oc-app${focus ? " dk-focus" : ""}`}>
+    <div className={`oc-app${deck ? " oc-app-ink" : ""}${focus ? " dk-focus" : ""}`}>
       <a className="oc-skip" href="#main">
         Skip to content
       </a>

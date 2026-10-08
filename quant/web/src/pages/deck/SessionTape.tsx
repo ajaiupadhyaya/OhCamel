@@ -1,21 +1,24 @@
 /** A calibrated scanner: real timestamps, gaps, dollars and per-limit utilization. */
 import { useState } from "react";
-import { useMediaQuery } from "../../lib/hooks";
 import { fmtNum, fmtPct } from "../../lib/format";
 import { parseTs, type TapeColumns } from "./model";
 import { scanner } from "./scanner";
+import { useBox } from "./useBox";
 
 const time = (s: string) => new Date(s).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false });
 export function SessionTape({ tape, emptyText }: { tape: TapeColumns; emptyText: string }) {
   const [picked, setPicked] = useState<number | null>(null);
-  const width = useMediaQuery("(max-width: 700px)") ? 400 : 1000;
+  // console scale: the plot is drawn in the pixels of the scanner's own width (fit.ts, F2)
+  const [box, size] = useBox<HTMLDivElement>({ width: 1000, height: 0 });
+  const width = Math.max(280, Math.floor(size.width));
   const plot = scanner(tape, width);
   if (!plot) return <div className="dk-empty-tape"><span>NO RECORDED OBSERVATIONS</span><p>{emptyText}</p><div className="dk-empty-scale" aria-hidden="true" /></div>;
   const index = picked == null ? tape.ts.length - 1 : Math.min(picked, tape.ts.length - 1);
   const ts = tape.ts[index];
   return <div className="dk-scanner">
+    <div className="dk-fit-row" ref={box} aria-hidden="true" />
     <div className="dk-scanner-key"><span>{tape.pnlLabel} / USD</span><span>−VaR / USD · dashed</span><span>◆ observed breach</span></div>
-    <svg viewBox={`0 0 ${width} 210`} role="img" aria-label={`${tape.pnlLabel} and negative VaR over ${tape.ts.length} recorded observations. Time in New York. Gaps are not interpolated.`}>
+    <svg width={width} height={210} viewBox={`0 0 ${width} 210`} role="img" aria-label={`${tape.pnlLabel} and negative VaR over ${tape.ts.length} recorded observations. Time in New York. Gaps are not interpolated.`}>
       {[0, .5, 1].map(t => <g key={t}><line x1="70" x2={width-20} y1={20+t*145} y2={20+t*145} className="dk-scanner-grid" /><text x="60" y={24+t*145} textAnchor="end">{fmtNum(plot.max-t*(plot.max-plot.min),0)}</text></g>)}
       {plot.ticks.map(t => <g key={t.ts}><line x1={t.x} x2={t.x} y1="20" y2="165" className="dk-scanner-grid"/><text x={t.x} y="195" textAnchor="middle">{time(t.ts)}</text></g>)}
       <path d={plot.pnl} className="dk-scanner-line"/><path d={plot.varPath} className="dk-scanner-var"/>

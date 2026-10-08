@@ -9,31 +9,10 @@
  */
 import { useMemo } from "react";
 import { useMediaQuery } from "../../lib/hooks";
-import { SevenSeg, segWidth } from "./SevenSeg";
+import { scopeGeometry } from "./fit";
+import { SevenSeg } from "./SevenSeg";
 import { UNKNOWN_DEPTH, layout, scaleOf, type ScopeLimit } from "./scope";
-
-const VB_W = 600;
-const VB_H = 340;
-const X0 = 24;
-const Y0 = 16;
-const X1 = 576;
-const Y1 = 246; // the screen's frame
-const CX = 300;
-const CY = 131;
-const HW = 276;
-const HH = 115; // centre and half-size
-const PERSP: [number, number][] = [
-  [X0, Y0],
-  [X1, Y0],
-  [X0, Y1],
-  [X1, Y1],
-  [162, Y0],
-  [438, Y0],
-  [162, Y1],
-  [438, Y1],
-];
-
-const gateRect = (s: number) => ({ x: CX - HW * s, y: CY - HH * s, width: 2 * HW * s, height: 2 * HH * s });
+import { useBox } from "./useBox";
 
 export function useReducedMotion(): boolean {
   return useMediaQuery("(prefers-reduced-motion: reduce)");
@@ -43,70 +22,75 @@ export function TargetingComputer({ limits, unevaluated, stale = false, onInspec
   const m = useMemo(() => layout(limits, unevaluated, () => stale), [limits, unevaluated, stale]);
 
   const readout = m.rails.length ? layout(limits.filter(l => l.breached), [], () => stale).readout : m.readout;
-  const target = m.gates.find((g) => g.target);
+  const [box, size] = useBox<HTMLDivElement>({ width: 560, height: 340 });
+  const g = scopeGeometry(size.width, size.height, readout.digits);
+  const { x0, y0, x1, y1, cx, cy, hw, hh } = g;
+  const gateRect = (s: number) => ({ x: cx - hw * s, y: cy - hh * s, width: 2 * hw * s, height: 2 * hh * s });
+  const target = m.gates.find((t) => t.target);
   const tScale = target ? target.scale : 1;
-  const railLabelX = X0 + 14 + m.rails.length * 12 + 4;
+  const railLabelX = x0 + 14 + m.rails.length * 10 + 4;
   const n = readout.digits.length;
-  const total = segWidth(readout.digits);
-  const boxW = Math.max(240, total + 44);
   const us = scaleOf(UNKNOWN_DEPTH);
+  const rd = g.readout;
 
   return (
     <div className="dk-scope">
       <div className={`dk-screen${m.rails.length ? " dk-alarm" : ""}`}>
-        <svg viewBox={`0 0 ${VB_W} ${VB_H}`} role="img" aria-label={m.summary}>
+        <div className="dk-fit dk-fit-scope" ref={box}>
+        <svg width={g.w} height={g.h} viewBox={`0 0 ${g.w} ${g.h}`} role="img" aria-label={m.summary}>
           <g className="dk-persp">
-            {PERSP.map(([x, y], i) => (
-              <line key={i} x1={x} y1={y} x2={CX} y2={CY} />
+            {g.persp.map(([x, y], i) => (
+              <line key={i} x1={x} y1={y} x2={cx} y2={cy} />
             ))}
           </g>
-          <rect x={X0} y={Y0} width={X1 - X0} height={Y1 - Y0} rx={14} className="dk-frame" />
+          <rect x={x0 + 0.5} y={y0 + 0.5} width={x1 - x0 - 1} height={y1 - y0 - 1} rx={8} className="dk-frame" />
 
           {m.unknown.length > 0 && (
             <>
               <rect {...gateRect(us)} className="dk-gate unknown" />
-              <text x={CX + HW * us + 5} y={CY + 4} className="dk-unknown-q">
+              <text x={cx + hw * us + 5} y={cy + 4} className="dk-unknown-q">
                 ?
               </text>
             </>
           )}
 
-          {m.gates.map((g) => (
-            <rect key={g.name} {...gateRect(g.scale)} className={`dk-gate${g.target ? " target" : ""}${g.stale ? " stale" : ""}`} />
+          {m.gates.map((gt) => (
+            <rect key={gt.name} {...gateRect(gt.scale)} className={`dk-gate${gt.target ? " target" : ""}${gt.stale ? " stale" : ""}`} />
           ))}
           {target && (
-            <text x={CX - HW * tScale + 6} y={CY - HH * tScale + 22} className={`dk-gate-label${target.stale ? " stale" : ""}`}>
+            <text x={cx - hw * tScale + 6} y={cy - hh * tScale + 16} className={`dk-gate-label${target.stale ? " stale" : ""}`}>
               {target.name} {target.pct}
             </text>
           )}
 
           {m.rails.map((rl, i) => {
-            const dx = 14 + i * 12;
+            const dx = 12 + i * 10;
             return (
               <g key={rl.name} className={`dk-rail${rl.stale ? " stale" : ""}`}>
-                <line x1={X0 + dx} y1={Y0} x2={X0 + dx} y2={Y1} />
-                <line x1={X1 - dx} y1={Y0} x2={X1 - dx} y2={Y1} />
-                <text x={railLabelX} y={Y1 - 10 - i * 14} className="dk-rail-label">
+                <line x1={x0 + dx} y1={y0} x2={x0 + dx} y2={y1} />
+                <line x1={x1 - dx} y1={y0} x2={x1 - dx} y2={y1} />
+                <text x={railLabelX} y={y1 - 8 - i * 14} className="dk-rail-label">
                   {rl.label}
                 </text>
               </g>
             );
           })}
           {m.railsHidden > 0 && (
-            <text x={railLabelX} y={Y1 - 10 - m.rails.length * 14} className="dk-rail-label">
+            <text x={railLabelX} y={y1 - 8 - m.rails.length * 14} className="dk-rail-label">
               +{m.railsHidden} more over
             </text>
           )}
 
           <g className={`dk-readout${readout.over ? " over" : ""}${readout.stale ? " stale" : ""}`}>
-            <rect x={CX - boxW / 2} y={258} width={boxW} height={52} rx={14} className="dk-readout-box" />
-            <SevenSeg text={readout.digits} x={CX - total / 2} y={267} />
+            <rect x={rd.x + 0.5} y={rd.y + 0.5} width={rd.w - 1} height={rd.h - 1} rx={4} className="dk-readout-box" />
+            <SevenSeg text={readout.digits} x={cx - rd.seg.width / 2} y={rd.y + (rd.h - rd.seg.h) / 2} w={rd.seg.w} h={rd.seg.h} gap={rd.seg.gap} />
           </g>
-          <text x={CX} y={328} textAnchor="middle" className="dk-caption">
+          <text x={g.caption.x} y={g.caption.y} textAnchor="middle" className="dk-caption">
             {readout.caption}
           </text>
           <desc>{n ? `Readout ${readout.digits}${readout.unit ? ` ${readout.unit}` : ""}` : ""}</desc>
         </svg>
+        </div>
       </div>
 
       <ul className="dk-scope-lamps" aria-label="Limits, fullest first on the screen; listed in the book's order">
