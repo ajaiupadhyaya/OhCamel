@@ -31,6 +31,6 @@ interpretations:
   - "I-Q01-4 trials and stitching: each configuration x fold's full 12-month test is one DSR trial; the stitched OOS series takes each month from the newest fold covering it."
   - "I-Q01-5 selection: highest per-period net Sharpe of the stitched selection-window OOS series; ties to the lower configuration index."
   - "I-Q01-6 gates: holdout-positive, DSR, PSR, bootstrap and beats-composite on holdout daily net returns; regimes on the selected configuration's full walk-forward OOS record (selection stitched + holdout); a regime without OOS data counts as not positive."
-  - "I-Q01-7 composite: within-month percentile ranks centred at 0, signed (mom +1, rev -1, vol -1, beta -1, dollar volume -1 [owner to confirm]), equal-weight mean."
+  - "I-Q01-7 composite: within-month percentile ranks centred at 0, signed (mom +1, rev -1, vol -1, beta -1, dollar volume -1), equal-weight mean. Dollar-volume sign -1 = illiquidity premium (Amihud 2002), the documented default; owner kept it, recorded 2026-10-07."
   - "I-Q01-8 accounting: daily open-to-open, drifting weights, cost bps x sum|w_target - w_drifted| at entry, (1 + net) = (1 + gross)(1 - c x turnover); base 5 bps; borrow 0."
   - "I-Q01-9 universe: first bar on or before 2008-01-02, no gap > 5 sessions vs SPY through the freeze date, a dividend-adjusted close judged by source: every bar from the panel start (2006-12-01) comes from alpaca or yahoo; any stooq, fixture or unknown bar excludes the ETF; adj_close == close is not evidence (GLD pays nothing)."

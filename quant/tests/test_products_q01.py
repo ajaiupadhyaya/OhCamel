@@ -56,6 +56,12 @@ def test_the_frozen_config_is_the_preregistration(frozen):
     assert len(frozen["interpretations"]) == 9
 
 
+def test_i_q01_7_dollar_volume_sign_is_recorded(frozen):
+    assert frozen["composite_signs"]["dollar_vol_20d"] == -1
+    i7 = next(i for i in frozen["interpretations"] if i.startswith("I-Q01-7"))
+    assert "owner to confirm" not in i7 and "Amihud 2002" in i7 and "2026-10-07" in i7
+
+
 def test_q01_unfrozen_universe_is_insufficient_data(market, wh, frozen, monkeypatch, tmp_path):
     monkeypatch.setattr(q01, "load_config", lambda exp: {**frozen, "universe": None})
     monkeypatch.setattr(q01, "DB_PATH", tmp_path / "jobs.sqlite")
