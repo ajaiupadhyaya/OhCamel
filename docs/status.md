@@ -27,9 +27,9 @@ the `demo` compose profile). The live engine runs the paper desk on the live hos
 | Cost | $24/month, metered hourly, capped |
 | Proxy / TLS | Caddy, Let's Encrypt, HTTP→HTTPS 308, HSTS, a CSP measured per route. Only Caddy has a host port |
 | DNS | Porkbun: A records `ohcamel` and `live.ohcamel` on the owner's domain |
-| **Deployed — public** | **`40f8b46`**, 2026-10-08, by `deploy/deploy.sh --sha 40f8b46 --public-only`: every Ship workflow (Phase 0 ops, Paper Tape, kernels/jobs/warehouse, products P1–P7, page migration, Flight Deck, Lane H hardening) plus the EXP-Q01 universe freeze and EXP-Q02 v2. The run restarts Caddy, `ohcamel-quant`, `ohcamel-worker` and `ohcamel-hostd`. Rollback reference: the previous good public deploy in `~/deploys.log` (`a9d9cc3`, then `e02a4b2`, `557296a`) |
-| **Deployed — live** | **`88ebc96`** (`main`, 2026-09-28), deployed before the Ship began. The live deploy is blocked on one owner step as root: `install -d -m 0770 -o 10001 -g ohcamel /var/backups/ohcamel`. A `--live` deploy takes a pre-deploy journal backup into that directory and aborts without it. After that step: `deploy/deploy.sh --sha <sha> --live`, outside 09:25–16:10 New York on a weekday |
-| Not deployed | Nothing on `main` beyond `40f8b46` except docs. The live host waits on the owner step above |
+| **Deployed — public** | **`c4415cd`**, 2026-10-08, by `deploy/deploy.sh --sha c4415cd --live` (one release for both hosts): every Ship workflow, the EXP-Q01 freeze (verdict FAIL), EXP-Q02 v2 (verdict DESCRIPTIVE ONLY), the additive-journal backup fix and the smoke fixes. Production smoke 44 passed, 0 failed, 3 skipped; `~/deploys.log` records `c4415cd ok`, and the previous good line is the rollback reference |
+| **Deployed — live** | **`c4415cd`**, the same release, 2026-10-08 (after the owner created `/var/backups/ohcamel`). The pre-deploy journal backup is in that directory. The live desk trades nothing until `book.sexp` gains a `desk` block with `(trading enabled)`, and its signal intake stays off until the book has a `signals` block -- both the owner's |
+| Not deployed | Nothing: `main` and both hosts are at `c4415cd` (later commits, if any, are docs) |
 
 **Data on the droplet (2026-10-08).** The warehouse backfill ran through the queue. `ingest.universes` finished,
 and `ingest.bars_daily` filled 563 keys to as-of 2026-10-07 in 322 cpu-s at 233 MB peak. The factors are as of
