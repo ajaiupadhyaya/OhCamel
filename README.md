@@ -21,7 +21,7 @@ XBRL.
 
 | | What it is | Where |
 |---|---|---|
-| **OhCamel Quant** | The public site. A FastAPI service (Python, ~30k lines, <!-- count:quant-tests -->1301<!-- /count --> tests), a React app, a job worker, a DuckDB warehouse, ten Rust kernels and a host telemetry daemon | [`quant/`](quant/), [`native/`](native/) |
+| **OhCamel Quant** | The public site. A FastAPI service (Python, ~30k lines, <!-- count:quant-tests -->1304<!-- /count --> tests), a React app, a job worker, a DuckDB warehouse, ten Rust kernels and a host telemetry daemon | [`quant/`](quant/), [`native/`](native/) |
 | **The engine** | A real-time risk and limits engine in OCaml on Jane Street's Incremental: a tick recomputes only what depends on it. It runs a paper desk behind a password on the live host | [`lib/`](lib/), [`desk/`](desk/), [`docs/engine.md`](docs/engine.md) |
 
 ---
