@@ -1,7 +1,9 @@
 """Read side of the warehouse, in MarketData's own shapes (compute plan C1).
 
 ``warehouse_returns`` is what ``MarketData.returns`` calls first when a
-warehouse is configured: it serves only when every ticker is present, fresh
+warehouse is configured (``warehouse_prices`` is the same for
+``MarketData.prices(..., warehouse_first=True)``, which batch jobs such as
+``farm.sweep`` use so they do not hammer the vendors): it serves only when every ticker is present, fresh
 (or the window ends on or before the stored history), and its stored history
 covers the requested start, and otherwise returns the reason so the provider
 path can record it in provenance.
@@ -111,12 +113,9 @@ class _WarehouseBars(MarketData):
         return Dataset(_window(ds.data, start, end), list(ds.provenance))
 
 
-def warehouse_returns(settings: Settings, tickers: list[str], start: date | None, end: date | None,
-                      log: bool) -> tuple[Dataset | None, str | None]:
-    """``(dataset, None)`` when the warehouse can serve every ticker, else ``(None, reason)``."""
-    want = list(dict.fromkeys(x.upper().strip() for x in tickers if x.strip()))
-    if not want:
-        return None, None
+def _warehouse_bars(settings: Settings, want: list[str], start: date | None,
+                    end: date | None) -> tuple[_WarehouseBars | None, str | None]:
+    """The stored bars for every ticker when the warehouse can serve them all, else ``(None, reason)``."""
     path = warehouse_path(settings)
     try:
         with open_ro(path, timeout_s=RO_TIMEOUT_S) as con:
@@ -143,7 +142,31 @@ def warehouse_returns(settings: Settings, tickers: list[str], start: date | None
             frames = {t: ohlcv(con, t, path=str(path)) for t in want}
     except WarehouseUnavailable as e:
         return None, f"warehouse not used ({e}); served from providers"
-    return _WarehouseBars(settings, frames).returns(want, start, end, log), None
+    return _WarehouseBars(settings, frames), None
+
+
+def _wanted(tickers: list[str]) -> list[str]:
+    return list(dict.fromkeys(x.upper().strip() for x in tickers if x.strip()))
+
+
+def warehouse_returns(settings: Settings, tickers: list[str], start: date | None, end: date | None,
+                      log: bool) -> tuple[Dataset | None, str | None]:
+    """``(dataset, None)`` when the warehouse can serve every ticker, else ``(None, reason)``."""
+    want = _wanted(tickers)
+    if not want:
+        return None, None
+    bars, note = _warehouse_bars(settings, want, start, end)
+    return (bars.returns(want, start, end, log), None) if bars is not None else (None, note)
+
+
+def warehouse_prices(settings: Settings, tickers: list[str], start: date | None, end: date | None,
+                     field: str) -> tuple[Dataset | None, str | None]:
+    """``MarketData.prices(..., warehouse_first=True)``: the same serve-or-reason rule as returns."""
+    want = _wanted(tickers)
+    if not want:
+        return None, None
+    bars, note = _warehouse_bars(settings, want, start, end)
+    return (bars.prices(want, start, end, field), None) if bars is not None else (None, note)
 
 
 def sec_facts_asof(con: Any, ticker: str, asof: date, tags: list[str] | None = None) -> pd.DataFrame:

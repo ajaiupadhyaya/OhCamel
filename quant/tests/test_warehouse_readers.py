@@ -177,3 +177,28 @@ def test_short_requested_start_covers_only_its_own_window(tmp_path, wh, monkeypa
 def test_no_warehouse_configured_changes_nothing(tmp_path):
     ds = MarketData(Settings(offline=True, data_dir=tmp_path)).returns(["SPY", "QQQ"])
     assert [p.source for p in ds.provenance] == ["fixture:alpaca", "fixture:alpaca"]
+
+
+# ---------------------------------------------------------------- prices, warehouse first (opt-in)
+def test_prices_warehouse_first_serves_the_warehouse(tmp_path, wh, monkeypatch):
+    pin(monkeypatch, datetime(2026, 6, 2, 14, 0, tzinfo=UTC))
+    got = market(tmp_path, wh).prices(["SPY", "QQQ"], start=FIRST, warehouse_first=True)
+    ref = MarketData(Settings(offline=True, data_dir=tmp_path)).prices(["SPY", "QQQ"], start=FIRST)
+    assert [p.source for p in got.provenance] == ["warehouse:fixture:alpaca"] * 2
+    assert list(got.data.columns) == ["SPY", "QQQ"] and got.data.index.name == "date"
+    np.testing.assert_allclose(got.data.to_numpy(), ref.data.to_numpy(), rtol=1e-12, atol=0)
+
+
+def test_prices_warehouse_first_falls_back_with_a_note(tmp_path, wh, monkeypatch):
+    pin(monkeypatch, datetime(2026, 6, 2, 14, 0, tzinfo=UTC))
+    with open_rw(wh) as con:
+        con.execute("DELETE FROM bars_daily WHERE ticker = 'QQQ'")
+    ds = market(tmp_path, wh).prices(["SPY", "QQQ"], start=FIRST, warehouse_first=True)
+    assert ds.provenance[0].source == "fixture:alpaca"
+    assert "not in warehouse: QQQ" in ds.provenance[-1].detail["note"]
+
+
+def test_prices_default_still_reads_the_providers(tmp_path, wh, monkeypatch):
+    pin(monkeypatch, datetime(2026, 6, 2, 14, 0, tzinfo=UTC))
+    ds = market(tmp_path, wh).prices(["SPY"], start=FIRST)
+    assert [p.source for p in ds.provenance] == ["fixture:alpaca"]

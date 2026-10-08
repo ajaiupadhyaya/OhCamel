@@ -119,12 +119,27 @@ class MarketData:
 
     def prices(
         self, tickers: list[str], start: date | None = None, end: date | None = None,
-        field: str = "adj_close",
+        field: str = "adj_close", *, warehouse_first: bool = False,
     ) -> Dataset:
         """Wide frame of one field for many tickers, inner-joined on common sessions.
 
         Raises DataUnavailable naming every ticker that could not be served.
+        ``warehouse_first`` applies :meth:`returns`' warehouse rule (every ticker
+        present, fresh, covering the window) before the providers, with the same
+        ``derived`` note on a miss; batch jobs pass it so they read the warehouse
+        rather than the vendors.
         """
+        wh = self.settings.warehouse_path
+        if warehouse_first and self._reads_warehouse and wh is not None and Path(wh).exists():
+            from ..warehouse.readers import warehouse_prices
+
+            hit, note = warehouse_prices(self.settings, tickers, start, end, field)
+            if hit is not None:
+                return hit
+            ds = self.prices(tickers, start, end, field)
+            if note:
+                ds.provenance.append(Provenance.now("derived", note=note))
+            return ds
         frames: dict[str, pd.Series] = {}
         provs: list[Provenance] = []
         errors: list[str] = []

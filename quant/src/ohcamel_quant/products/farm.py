@@ -56,12 +56,12 @@ def run_cell(strategy: str, universe: str, ctx: Any,
     spec = get_strategy(strategy)
     try:
         tk = tickers or _universe(universe)
-        px = ctx.market.prices(tk).data.dropna()
+        px = ctx.market.prices(tk, warehouse_first=True).data.dropna()  # never the vendors when stored
         try:
             rf = ctx.market.risk_free_daily(px.index[0].date(), px.index[-1].date()).data.reindex(px.index).fillna(0.0)
         except DataUnavailable:
             rf = None
-        mkt = ctx.market.prices(["SPY"]).data["SPY"].reindex(px.index) if spec.needs_market else None
+        mkt = ctx.market.prices(["SPY"], warehouse_first=True).data["SPY"].reindex(px.index) if spec.needs_market else None
         sctx = StrategyContext(prices=px, rf=rf, market=mkt)
         cfg = EngineConfig(rebalance=spec.default_rebalance, max_gross_leverage=spec.default_max_leverage)
         sw = sweep(sctx, spec, {}, strategy_grid(spec), cfg, rf, max_combos=GRID_MAX, max_bytes=FARM_SWEEP_BYTES)

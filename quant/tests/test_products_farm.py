@@ -71,3 +71,36 @@ def test_leaderboard_cost_gate_reads_the_cells_cost_curve(cell):
     assert "COST_SWEEP" not in full["detail"].iloc[0]
     assert cut["verdict"].iloc[0] == "FAIL" and "COST_SWEEP 2.00" in cut["detail"].iloc[0]
     assert gone["verdict"].iloc[0] == "FAIL" and "COST_SWEEP 0.00" in gone["detail"].iloc[0]
+
+
+def test_a_cell_reads_prices_from_the_warehouse_first(tmp_path, monkeypatch):
+    """On the droplet the farm must not hammer the vendors: a fresh warehouse that covers the window serves it."""
+    from datetime import UTC, date, datetime
+
+    from ohcamel_quant.config import Settings
+    from ohcamel_quant.data.base import DataUnavailable
+    from ohcamel_quant.data.market import MarketData
+    from ohcamel_quant.warehouse import freshness
+    from ohcamel_quant.warehouse.db import open_rw
+    from ohcamel_quant.warehouse.fixture_db import build_fixture_warehouse
+    from ohcamel_quant.warehouse.ingest.base import log_row
+
+    wh = build_fixture_warehouse(tmp_path / "wh.duckdb")
+    with open_rw(wh) as con:  # what a full backfill logs: the vendor was asked from 1990
+        for t in ("SPY", "QQQ", "IWM"):
+            log_row(con, "bars_daily", t, "ok", 0, json.dumps({"mode": "full", "requested_start": "1990-01-01"}),
+                    date(2026, 6, 1), ran_at=datetime(2026, 6, 1, 21, 0))
+    monkeypatch.setattr(freshness, "_now", lambda: datetime(2026, 6, 2, 14, 0, tzinfo=UTC))
+    md = MarketData(Settings(offline=True, data_dir=tmp_path, warehouse_path=wh))
+    calls: list[str] = []
+
+    def vendor(ticker, start=None, end=None):
+        calls.append(ticker)
+        raise DataUnavailable(f"{ticker}: vendor must not be called")
+
+    monkeypatch.setattr(md, "ohlcv", vendor)
+    c = JobContext(job_id="t", params={}, threads=1, progress_fn=lambda f, m: None, cancelled_fn=lambda: False,
+                   _market=md)
+    row, _, trials = farm.run_cell("sma_trend", "fixture", c, tickers=["SPY", "QQQ", "IWM"])
+    assert row["status"] == "ok", row.get("reason")
+    assert calls == [] and len(trials) == 16
