@@ -83,13 +83,15 @@
 # here, so no streaming directives; FastAPI already gzips JSON over 1 KB, and
 # Caddy's encode (ohcamel_common) leaves an already-encoded body alone.
 #
-# The Content-Security-Policy, directive by directive:
+# The Content-Security-Policy, directive by directive -- exactly what the
+# bundle needs, measured (Harden H4) by loading every route of the built SPA
+# and a Plotly surface in Chromium under the policy and recording each
+# securitypolicyviolation:
 #   default-src 'self'        nothing external: fonts, KaTeX and Plotly are all
 #                             bundled by Vite; the API is same-origin.
-#   script-src 'unsafe-eval'  plotly.js-dist-min compiles some trace code
-#                             (WebGL/regl, ndarray accessors behind the 3-D
-#                             surface) with Function(); without it those charts
-#                             throw EvalError. Inline script is NOT allowed --
+#   script-src 'self'         no 'unsafe-eval': Plotly 4's surface (the app's one
+#                             Plotly view) renders without compiling code.
+#                             Inline script is NOT allowed --
 #   script-src 'sha256-...'   except the one pre-paint theme snippet in
 #                             quant/web/index.html (it applies the saved theme
 #                             before first paint), allowed by its exact hash.
@@ -97,11 +99,24 @@
 #                             deploy/test/csp_hash_test.sh fails CI if the
 #                             snippet changes without this hash, and smoke.sh
 #                             checks the served page against the served header.
-#   style-src 'unsafe-inline' Plotly and KaTeX set inline style attributes and
-#                             Plotly injects <style> rules at run time.
-#   img-src data: blob:       Plotly's "download as PNG" and inline SVG icons.
-#   font-src data:            Vite inlines small font files as data: URIs.
-#   worker-src blob:          Plotly/regl may spawn blob workers.
+#   style-src-elem            'self' plus the hash of the EMPTY string: Plotly
+#                             creates one empty <style> and adds its rules with
+#                             insertRule (CSSOM, which CSP does not govern). No
+#                             other inline <style> runs (Plotly's bundled
+#                             maplibre CSS is refused; the app draws no maps).
+#   style-src-attr            'unsafe-inline': KaTeX's markup carries style=""
+#                             attributes (vertical metrics), and so does
+#                             Plotly's. uPlot needs nothing here: it styles
+#                             through element.style (CSSOM).
+#   style-src                 'self' 'unsafe-inline' -- read only by browsers
+#                             without the CSP3 -elem/-attr split, so they still
+#                             render formulas.
+#   img-src data:             CSS data: images (hatching, icons) and Plotly's
+#                             "download as PNG".
+#   font-src data:            KaTeX's stylesheet inlines a font as a data: URI.
+#   connect-src 'self'        the JSON API and the job stream (SSE,
+#                             /api/jobs/events) are same-origin.
+#   worker-src 'none'         nothing spawns a worker.
 #   frame-ancestors 'none'    the same promise X-Frame-Options DENY makes.
 #
 # /api/docs (Swagger UI) is FastAPI's page, which loads swagger-ui from
@@ -109,7 +124,7 @@
 # policy so the interactive API docs keep working, and nothing else does.
 (ohcamel_quant) {
 	@quant_spa not path /api/docs /api/docs/* /api/redoc
-	header @quant_spa Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-eval' 'sha256-SwhT+ug7GN6bjlLRVrRAP3/MQEid6XtWbpmX1S3rY20='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+	header @quant_spa Content-Security-Policy "default-src 'self'; script-src 'self' 'sha256-SwhT+ug7GN6bjlLRVrRAP3/MQEid6XtWbpmX1S3rY20='; style-src 'self' 'unsafe-inline'; style-src-elem 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; worker-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 
 	@quant_apidocs path /api/docs /api/docs/* /api/redoc
 	header @quant_apidocs Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https://fastapi.tiangolo.com; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"

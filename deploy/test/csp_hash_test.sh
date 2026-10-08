@@ -63,18 +63,61 @@ while IFS= read -r h; do
 	esac
 done <<<"$hashes"
 
+# One directive's sources ("" when absent).
+directive() { printf '%s' "$csp" | tr ';' '\n' | sed -n "s/^ *$1 //p" | head -1; }
+
 # The policy's other load-bearing promises, so an edit cannot quietly widen it.
 case "$csp" in
 *"default-src 'self'"*) ok "default-src 'self'" ;;
 *) no "default-src" "the SPA policy must be default-src 'self'" ;;
 esac
-case "$csp" in
-*"'unsafe-inline'; style-src"* | *"script-src 'self' 'unsafe-inline'"*) no "script-src" "'unsafe-inline' in script-src defeats the hash" ;;
+case "$(directive script-src)" in
+"") no "script-src" "missing" ;;
+*"'unsafe-inline'"*) no "script-src" "'unsafe-inline' in script-src defeats the hash" ;;
 *) ok "script-src carries no 'unsafe-inline'" ;;
 esac
 case "$csp" in
 *"frame-ancestors 'none'"*) ok "frame-ancestors 'none'" ;;
 *) no "frame-ancestors" "missing frame-ancestors 'none'" ;;
+esac
+
+# Harden H4: exactly what the bundle needs, measured in a browser against the
+# built SPA (every route) and a Plotly surface: uPlot styles through the CSSOM
+# (no inline style needed), KaTeX's markup carries style="" attributes
+# (style-src-attr), Plotly's rules go through insertRule into one EMPTY <style>
+# (style-src-elem allows only the empty string's hash), Plotly 4's surface
+# compiles nothing (no 'unsafe-eval'), nothing spawns a worker, and the SSE
+# stream is same-origin (connect-src 'self').
+EMPTY_STYLE="'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='"
+case "$csp" in
+*"'unsafe-eval'"*) no "script-src" "'unsafe-eval' is not needed by the bundle (Plotly 4 surface runs without it)" ;;
+*) ok "no 'unsafe-eval'" ;;
+esac
+[ "$(directive style-src-elem)" = "'self' $EMPTY_STYLE" ] && ok "style-src-elem 'self' + the empty <style> hash only" ||
+	no "style-src-elem" "want 'self' $EMPTY_STYLE, got '$(directive style-src-elem)'"
+[ "$(directive style-src-attr)" = "'unsafe-inline'" ] && ok "style-src-attr 'unsafe-inline' (KaTeX markup)" ||
+	no "style-src-attr" "want 'unsafe-inline', got '$(directive style-src-attr)'"
+[ "$(directive connect-src)" = "'self'" ] && ok "connect-src 'self' (API + SSE)" ||
+	no "connect-src" "want 'self', got '$(directive connect-src)'"
+[ "$(directive worker-src)" = "'none'" ] && ok "worker-src 'none'" || no "worker-src" "want 'none', got '$(directive worker-src)'"
+[ "$(directive img-src)" = "'self' data:" ] && ok "img-src 'self' data:" || no "img-src" "want 'self' data:, got '$(directive img-src)'"
+[ "$(directive object-src)" = "'none'" ] && ok "object-src 'none'" || no "object-src" "want 'none'"
+
+# The quant site's other security headers: nosniff, Referrer-Policy and
+# X-Frame-Options come from ohcamel_common, which the public host imports
+# before ohcamel_quant; HSTS is set on the production host only.
+common=$(sed -n '/^(ohcamel_common)/,/^}/p' "$snippets")
+for h in "X-Content-Type-Options nosniff" "X-Frame-Options DENY" "Referrer-Policy no-referrer"; do
+	case "$common" in *"$h"*) ok "ohcamel_common: $h" ;; *) no "ohcamel_common" "missing '$h'" ;; esac
+done
+public=$(sed -n '/^{\$OHCAMEL_DEMO_HOST} {/,/^}/p' deploy/Caddyfile)
+case "$public" in
+*"import ohcamel_common"*"import ohcamel_quant"*) ok "public host imports ohcamel_common and ohcamel_quant" ;;
+*) no "deploy/Caddyfile" "the public host must import ohcamel_common and ohcamel_quant" ;;
+esac
+case "$public" in
+*'Strict-Transport-Security "max-age=31536000'*) ok "public host sends HSTS (max-age one year)" ;;
+*) no "deploy/Caddyfile" "the public host must send Strict-Transport-Security" ;;
 esac
 
 printf '\n  %d passed, %d failed\n\n' "$pass" "$fail"
