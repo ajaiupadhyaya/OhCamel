@@ -7,7 +7,11 @@
 * ``GET /api/jobs/{id}``, ``GET /api/jobs?kind=&state=&limit=``,
   ``DELETE /api/jobs/{id}`` (only the client that submitted an API job may
   cancel it; scheduled jobs cannot be cancelled here).
-* ``GET /api/jobs/{id}/result`` -- the payload of a finished ``api.*`` job.
+* ``GET /api/jobs/{id}/result`` -- the payload of a finished ``api.*`` job,
+  only to the client that submitted it (or posted the identical request while
+  it was live); anyone else gets 403. Likewise an API job's ``params`` read as
+  null with ``params_redacted: true`` to every other client, so one visitor's
+  holdings and weights are not listed to the next. Scheduled jobs stay public.
 * ``GET /api/jobs/schedules`` -- schedules.yaml with each entry's next run
   (compute plan D12's schedule table).
 * ``GET /api/jobs/events`` -- SSE, one ``event: job`` per state or progress
@@ -46,6 +50,7 @@ from ...jobs.kinds import UnknownKind, get_kind, validate_params
 from ...jobs.paths import jobs_db_path
 from ...jobs.queue import (
     Job,
+    add_reader,
     cancel,
     client_of,
     current_seq,
@@ -55,6 +60,7 @@ from ...jobs.queue import (
     get_job,
     list_jobs,
     live_count_for_client,
+    may_read,
     params_hash,
     progress_of,
 )
@@ -147,12 +153,17 @@ def _meta() -> dict[str, Any]:
     return {"provenance": [Provenance.now("ohcamel-jobs", store="jobs.sqlite").to_dict()], "notes": []}
 
 
-def _view(conn: Any, job: Job) -> dict[str, Any]:
+def _view(conn: Any, job: Job, viewer: str | None = None) -> dict[str, Any]:
+    """The job as JSON; ``viewer`` (a client address) sees an API job's params and result only if may_read."""
     p = progress_of(conn, job.id) or {}
     d = job.to_dict()
     d.update(progress=p.get("progress"), message=p.get("message"), heartbeat_at=p.get("heartbeat_at"))
+    readable = viewer is None or may_read(conn, job, viewer)
+    if not readable:
+        d["params"] = None
+    d["params_redacted"] = not readable
     d["result_url"] = (f"/api/jobs/{job.id}/result"
-                       if job.state == "done" and job.kind.startswith("api.") else None)
+                       if readable and job.state == "done" and job.kind.startswith("api.") else None)
     return d
 
 
@@ -174,6 +185,8 @@ def _enqueue_public(db: Path, kind: str, params: dict[str, Any], request: Reques
     with closing(connect(db)) as conn:
         live = find_live(conn, kind, params_hash(params))
         if live is not None:
+            if live.submitted_by == "api":
+                add_reader(conn, live.id, client)
             return live, False
         if live_count_for_client(conn, client) >= MAX_LIVE_PER_CLIENT:
             return _error(429, "too_many_jobs",
@@ -205,17 +218,19 @@ def submit_over_cap(kind: str, params: dict[str, Any], request: Request, db: Pat
         return got
     job, _ = got
     with closing(connect(db)) as conn:
-        view = _view(conn, job)
+        view = _view(conn, job, client_id(request))
     meta = _meta()
     return JSONResponse(status_code=202, content={"job": view, "status_url": f"/api/jobs/{job.id}",
                                                   "provenance": meta["provenance"], "notes": [OVER_CAP_NOTE]})
 
 
 @router.get("")
-def list_(db: JobsDb, kind: str | None = None, state: str | None = None,
+def list_(request: Request, db: JobsDb, kind: str | None = None, state: str | None = None,
           limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
+    viewer = client_id(request)
     with closing(connect(db)) as conn:
-        return {"jobs": [_view(conn, j) for j in list_jobs(conn, kind=kind, state=state, limit=limit)], **_meta()}
+        return {"jobs": [_view(conn, j, viewer) for j in list_jobs(conn, kind=kind, state=state, limit=limit)],
+                **_meta()}
 
 
 @router.get("/schedules")
@@ -280,12 +295,12 @@ async def events(request: Request, db: JobsDb, gate: Annotated[SseGate, Depends(
 
 
 @router.get("/{job_id}")
-def one(job_id: str, db: JobsDb) -> Any:
+def one(job_id: str, request: Request, db: JobsDb) -> Any:
     with closing(connect(db)) as conn:
         job = get_job(conn, job_id)
         if job is None:
             return _error(404, "not_found", f"no job {job_id}")
-        return {**_view(conn, job), **_meta()}
+        return {**_view(conn, job, client_id(request)), **_meta()}
 
 
 @router.delete("/{job_id}")
@@ -297,17 +312,19 @@ def delete(job_id: str, request: Request, db: JobsDb) -> Any:
         if job.submitted_by != "api" or client_of(conn, job_id) != client_id(request):
             return _error(403, "forbidden", "only the client that submitted a job may cancel it")
         job = cancel(conn, job_id, now=utcnow())
-        return {**_view(conn, job), **_meta()}
+        return {**_view(conn, job, client_id(request)), **_meta()}
 
 
 @router.get("/{job_id}/result")
-def result(job_id: str, db: JobsDb) -> Any:
+def result(job_id: str, request: Request, db: JobsDb) -> Any:
     import pyarrow.parquet as pq
 
     with closing(connect(db)) as conn:
         job = get_job(conn, job_id)
         if job is None:
             return _error(404, "not_found", f"no job {job_id}")
+        if not may_read(conn, job, client_id(request)):
+            return _error(403, "forbidden", "only the client that submitted a job may read its result")
         if job.state != "done" or not job.kind.startswith("api."):
             return JSONResponse(status_code=409, content={"error": "not_done", "state": job.state,
                                                           "detail": "the job has no result yet"})

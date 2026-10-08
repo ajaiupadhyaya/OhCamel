@@ -9,6 +9,9 @@ IF NOT EXISTS). The additive tables:
   by the SSE stream by sequence number.
 * ``job_clients``   which client address submitted an API job (the per-IP
   limit and the cancel check).
+* ``job_readers``   other client addresses that posted the identical request
+  while the job was live (they share it, so they may read its params and
+  result).
 * ``schedule_runs`` one row per (schedule name, scheduled instant): the
   scheduler's idempotency key.
 
@@ -56,6 +59,7 @@ CREATE TABLE IF NOT EXISTS job_events (
 );
 CREATE TABLE IF NOT EXISTS job_clients (job_id TEXT PRIMARY KEY, client TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS job_clients_client ON job_clients(client);
+CREATE TABLE IF NOT EXISTS job_readers (job_id TEXT NOT NULL, client TEXT NOT NULL, PRIMARY KEY (job_id, client));
 CREATE TABLE IF NOT EXISTS schedule_runs (
   name TEXT NOT NULL, scheduled_for TEXT NOT NULL, job_id TEXT NOT NULL, enqueued_at TEXT NOT NULL,
   PRIMARY KEY (name, scheduled_for)

@@ -279,6 +279,20 @@ def client_of(conn: sqlite3.Connection, job_id: str) -> str | None:
     return row["client"] if row else None
 
 
+def add_reader(conn: sqlite3.Connection, job_id: str, client: str) -> None:
+    """A client that posted the identical request shares the live job: it may read it too."""
+    conn.execute("INSERT OR IGNORE INTO job_readers (job_id, client) VALUES (?,?)", (job_id, client))
+
+
+def may_read(conn: sqlite3.Connection, job: Job, client: str) -> bool:
+    """Params and result of an API job are its submitter's (and sharers'); scheduled jobs are public."""
+    if job.submitted_by != "api":
+        return True
+    if client_of(conn, job.id) == client:
+        return True
+    return conn.execute("SELECT 1 FROM job_readers WHERE job_id = ? AND client = ?", (job.id, client)).fetchone() is not None
+
+
 def live_count_for_client(conn: sqlite3.Connection, client: str) -> int:
     return conn.execute("SELECT COUNT(*) FROM jobs j JOIN job_clients c ON c.job_id = j.id"
                         " WHERE c.client = ? AND j.state IN ('queued','running')", (client,)).fetchone()[0]

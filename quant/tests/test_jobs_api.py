@@ -316,3 +316,47 @@ def test_sse_closes_an_idle_stream_before_its_lifetime(api):
     r = client.get("/api/jobs/events")
     assert r.status_code == 200 and _time.monotonic() - t0 < 5.0
     assert "event: job" not in r.text and ": idle" in r.text
+
+
+# Whole-program review: one visitor's API job (holdings, weights, results) is not readable by another.
+def _finish_with_result(db, tmp_path, payload='{"ok": 1}'):
+    conn = connect(db)
+    job = claim_next(conn, allowed_classes=frozenset({"M"}), allow_heavy=True, now=utcnow())
+    art = tmp_path / "artifacts" / job.kind / job.id
+    write_tables(art, {"result": pd.DataFrame({"payload": [payload]})})
+    (art / "manifest.json").write_text("{}")
+    t = utcnow() + timedelta(seconds=1)
+    finish(conn, job.id, artifact={"id": job.id, "kind": job.kind, "params_hash": job.params_hash,
+                                   "finished_at": iso(t), "path": str(art), "data_asof": None},
+           cpu_seconds=1.0, peak_rss_bytes=1, now=t)
+
+
+def test_params_of_an_api_job_are_shown_only_to_its_submitter(api):
+    client, db = api
+    jid = client.post("/api/jobs", json={"kind": "api.backtest_sweep", "params": SWEEP}, headers=IP_A).json()["id"]
+    mine = client.get(f"/api/jobs/{jid}", headers=IP_A).json()
+    assert mine["params"] == SWEEP
+    theirs = client.get(f"/api/jobs/{jid}", headers=IP_B).json()
+    assert theirs["params"] is None and theirs["params_redacted"] is True
+    listed = {x["id"]: x for x in client.get("/api/jobs", headers=IP_B).json()["jobs"]}
+    assert listed[jid]["params"] is None and "TLT" not in client.get("/api/jobs", headers=IP_B).text
+    assert {x["id"]: x for x in client.get("/api/jobs", headers=IP_A).json()["jobs"]}[jid]["params"] == SWEEP
+    sched, _ = enqueue(connect(db), kind="ops.selftest", params={"tag": "nightly"}, priority=2, mem_class="S",
+                       heavy=False, submitted_by="schedule:nightly", now=utcnow())
+    s = client.get(f"/api/jobs/{sched.id}", headers=IP_B).json()
+    assert s["params"] == {"tag": "nightly"} and s["params_redacted"] is False
+
+
+def test_result_of_an_api_job_is_readable_only_by_who_asked_for_it(api, tmp_path):
+    client, db = api
+    jid = client.post("/api/jobs", json={"kind": "api.backtest_sweep", "params": SWEEP}, headers=IP_A).json()["id"]
+    # A second client posting the identical request shares the live job and may read its result.
+    assert client.post("/api/jobs", json={"kind": "api.backtest_sweep", "params": SWEEP},
+                       headers=IP_B).json()["id"] == jid
+    _finish_with_result(db, tmp_path)
+    ip_c = {"X-Forwarded-For": "203.0.113.9"}
+    assert client.get(f"/api/jobs/{jid}/result", headers=IP_A).status_code == 200
+    assert client.get(f"/api/jobs/{jid}/result", headers=IP_B).status_code == 200
+    r = client.get(f"/api/jobs/{jid}/result", headers=ip_c)
+    assert r.status_code == 403 and r.json()["error"] == "forbidden" and "ok" not in r.text
+    assert client.get(f"/api/jobs/{jid}", headers=ip_c).json()["result_url"] is None
