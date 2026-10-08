@@ -4,6 +4,9 @@
  * recomputed; everything else is reused from the previous stabilization. The node set
  * mirrors the engine's structure (prices → returns windows → covariance → VaR/ES; prices ×
  * quantities → exposures → gross/net; both → limits) for three symbols.
+ *
+ * Paper Tape: square nodes (rx 0, crisp edges), ink for recomputed, --ink-3 for reused, a
+ * dashed outline for inputs; no colour. Reduced motion shows the final state at once.
  */
 import { useEffect, useMemo, useState } from "react";
 
@@ -18,17 +21,17 @@ interface Node {
 
 const SYMS = ["SPY", "TLT", "GLD"];
 const NODES: Node[] = [
-  ...SYMS.map((s, i) => ({ id: `tick:${s}`, label: `${s} tick`, sub: "feed", col: 0, row: i * 2, kind: "input" as const })),
-  { id: "qty", label: "Quantities", sub: "positions", col: 0, row: 6, kind: "input" },
-  ...SYMS.map((s, i) => ({ id: `px:${s}`, label: `${s} price`, sub: "mark", col: 1, row: i * 2, kind: "compute" as const })),
-  ...SYMS.map((s, i) => ({ id: `ret:${s}`, label: `${s} returns`, sub: "window", col: 2, row: i * 2, kind: "compute" as const })),
-  ...SYMS.map((s, i) => ({ id: `exp:${s}`, label: `${s} exposure`, sub: "P × q", col: 2, row: i * 2 + 1, kind: "compute" as const })),
-  { id: "cov", label: "Covariance Σ", sub: "EWMA / sample", col: 3, row: 1, kind: "compute" },
-  { id: "book", label: "Gross / net", sub: "exposure", col: 3, row: 4, kind: "compute" },
-  { id: "var", label: "VaR / ES", sub: "hist · param · EWMA", col: 4, row: 1, kind: "compute" },
-  { id: "euler", label: "Component VaR", sub: "Euler", col: 4, row: 3, kind: "compute" },
-  { id: "limits", label: "Limits", sub: "utilisation", col: 5, row: 2.5, kind: "output" },
-  { id: "alpha", label: "Confidence α", sub: "config", col: 3, row: 6, kind: "input" },
+  ...SYMS.map((s, i) => ({ id: `tick:${s}`, label: `${s} TICK`, sub: "feed", col: 0, row: i * 2, kind: "input" as const })),
+  { id: "qty", label: "QUANTITIES", sub: "positions", col: 0, row: 6, kind: "input" },
+  ...SYMS.map((s, i) => ({ id: `px:${s}`, label: `${s} PRICE`, sub: "mark", col: 1, row: i * 2, kind: "compute" as const })),
+  ...SYMS.map((s, i) => ({ id: `ret:${s}`, label: `${s} RETURNS`, sub: "window", col: 2, row: i * 2, kind: "compute" as const })),
+  ...SYMS.map((s, i) => ({ id: `exp:${s}`, label: `${s} EXPOSURE`, sub: "P × q", col: 2, row: i * 2 + 1, kind: "compute" as const })),
+  { id: "cov", label: "COVARIANCE Σ", sub: "EWMA / sample", col: 3, row: 1, kind: "compute" },
+  { id: "book", label: "GROSS / NET", sub: "exposure", col: 3, row: 4, kind: "compute" },
+  { id: "var", label: "VAR / ES", sub: "hist · param · EWMA", col: 4, row: 1, kind: "compute" },
+  { id: "euler", label: "COMPONENT VAR", sub: "Euler", col: 4, row: 3, kind: "compute" },
+  { id: "limits", label: "LIMITS", sub: "utilisation", col: 5, row: 2.5, kind: "output" },
+  { id: "alpha", label: "CONFIDENCE α", sub: "config", col: 3, row: 6, kind: "input" },
 ];
 
 const EDGES: [string, string][] = [
@@ -50,6 +53,8 @@ const EDGES: [string, string][] = [
   ["euler", "limits"],
   ["book", "limits"],
 ];
+
+const INPUTS = [...SYMS.map((s) => ({ id: `tick:${s}`, label: s })), { id: "qty", label: "QTY" }, { id: "alpha", label: "ALPHA" }];
 
 const W = 980;
 const H = 330;
@@ -79,6 +84,7 @@ function downstream(src: string): Map<string, number> {
 export function GraphDiagram() {
   const [src, setSrc] = useState("tick:SPY");
   const [step, setStep] = useState(99);
+  const still = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
   const dirty = useMemo(() => downstream(src), [src]);
   const maxDepth = Math.max(...dirty.values());
   const pos = useMemo(() => Object.fromEntries(NODES.map((n) => [n.id, { x: COLX(n.col), y: ROWY(n.row) }])), []);
@@ -92,7 +98,7 @@ export function GraphDiagram() {
 
   const tick = (id: string) => {
     setSrc(id);
-    setStep(0);
+    setStep(still ? 99 : 0);
   };
   const lit = (id: string) => dirty.has(id) && dirty.get(id)! <= step;
   const recomputed = NODES.filter((n) => dirty.has(n.id) && n.kind !== "input").length;
@@ -101,23 +107,17 @@ export function GraphDiagram() {
   return (
     <div className="en-graph">
       <div className="en-graph-controls">
-        <span className="subtle small">Send a tick:</span>
-        {SYMS.map((s) => (
-          <button key={s} type="button" className={`btn btn-sm ${src === `tick:${s}` ? "btn-primary" : ""}`} onClick={() => tick(`tick:${s}`)}>
-            {s}
+        <span className="en-graph-label">TICK</span>
+        {INPUTS.map((b) => (
+          <button key={b.id} type="button" className={`btn btn-sm ${src === b.id ? "btn-primary" : ""}`} aria-pressed={src === b.id} onClick={() => tick(b.id)}>
+            {b.label}
           </button>
         ))}
-        <button type="button" className={`btn btn-sm ${src === "qty" ? "btn-primary" : ""}`} onClick={() => tick("qty")}>
-          Trade (qty)
-        </button>
-        <button type="button" className={`btn btn-sm ${src === "alpha" ? "btn-primary" : ""}`} onClick={() => tick("alpha")}>
-          Change α
-        </button>
-        <span className="en-graph-count small">
-          <span className="num">{recomputed}</span> of <span className="num">{total}</span> computations re-run · <span className="num">{total - recomputed}</span> reused
+        <span className="en-graph-count num">
+          {recomputed} / {total} RECOMPUTED · {total - recomputed} REUSED
         </span>
       </div>
-      <div className="en-graph-scroll">
+      <div className="en-graph-scroll" tabIndex={0} role="region" aria-label="Dependency graph, scrolls sideways">
         <svg viewBox={`0 0 ${W} ${H}`} className="en-graph-svg" role="img" aria-label="Dependency graph: a tick propagates only to the nodes downstream of it">
           <defs>
             <marker id="en-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
@@ -144,7 +144,7 @@ export function GraphDiagram() {
             const clickable = n.kind === "input";
             return (
               <g key={n.id} transform={`translate(${p.x},${p.y})`} className={`en-node en-node-${n.kind} ${on ? "lit" : ""} ${dirty.has(n.id) ? "dirty" : ""} ${clickable ? "clickable" : ""}`} onClick={clickable ? () => tick(n.id) : undefined}>
-                <rect width={NW} height={NH} rx={8} />
+                <rect width={NW} height={NH} rx={0} ry={0} shapeRendering="crispEdges" />
                 <text x={10} y={15} className="en-node-label">
                   {n.label}
                 </text>
@@ -158,17 +158,17 @@ export function GraphDiagram() {
           })}
         </svg>
       </div>
-      <div className="en-legend small subtle">
+      <div className="en-legend num">
         <span>
-          <i className="en-swatch input" /> input (set from outside)
+          <i className="en-swatch input" /> INPUT
         </span>
         <span>
-          <i className="en-swatch lit" /> recomputed on this change
+          <i className="en-swatch lit" /> RECOMPUTED
         </span>
         <span>
-          <i className="en-swatch idle" /> reused — its inputs did not change
+          <i className="en-swatch idle" /> REUSED
         </span>
-        <span className="en-legend-note">Illustration of the graph's shape for three symbols; the live engine has one such chain per holding.</span>
+        <span>3 SYMBOLS SHOWN · LIVE: ONE CHAIN PER HOLDING</span>
       </div>
     </div>
   );

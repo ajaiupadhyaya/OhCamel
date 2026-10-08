@@ -3,6 +3,8 @@
  * Reads: GET /api/market/overview (SPY, QQQ, ^VIX), GET /api/macro/series (DGS2, DGS10),
  * GET /api/macro/curve (via the Rates page's useCurve), GET /api/warehouse/freshness.
  */
+import { isStale, type LampState } from "../../design";
+import { NIGHTLY_MAX_AGE_SEC } from "../../lib/artifacts";
 import { useApiQuery } from "../../lib/query";
 import type { Envelope, FramePayload } from "../../lib/types";
 import type { FredExplorer } from "../macro/types";
@@ -59,11 +61,22 @@ export interface FreshnessRow {
   data_asof: string | null;
   status?: string;
   max_age_s?: number;
+  /** The API's own verdict (it knows a session dataset from a calendar one). */
+  stale?: boolean;
+  keys?: number;
+  keys_behind?: number;
+  keys_failed?: number;
 }
 
-const ENVELOPE_KEYS = new Set(["as_of", "generated_at", "provenance", "notes", "datasets"]);
+const ENVELOPE_KEYS = new Set(["now", "as_of", "generated_at", "provenance", "notes", "datasets"]);
+const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+const int = (v: unknown) => (num(v) ? v : undefined);
 
-/** GET /api/warehouse/freshness as rows: `{datasets: [...]}` or a dataset → data_asof record. */
+/**
+ * GET /api/warehouse/freshness as rows. The served shape (warehouse/freshness.py) is
+ * `{now, datasets: {name: {data_asof, last_status, keys, keys_behind, keys_failed, stale, rule}}}`;
+ * a list of `{dataset, ...}` and a bare name → data_asof record are read too.
+ */
 export function freshnessRows(body: unknown): FreshnessRow[] {
   if (!body || typeof body !== "object") return [];
   const b = body as Record<string, unknown>;
@@ -77,8 +90,28 @@ export function freshnessRows(body: unknown): FreshnessRow[] {
         max_age_s: num(r.max_age_s) ? r.max_age_s : undefined,
       }));
   }
+  if (b.datasets && typeof b.datasets === "object") {
+    return Object.entries(b.datasets as Record<string, unknown>)
+      .filter((e): e is [string, Record<string, unknown>] => !!e[1] && typeof e[1] === "object")
+      .map(([dataset, r]) => {
+        const row: FreshnessRow = { dataset, data_asof: str(r.data_asof) ?? null, status: str(r.last_status) };
+        if (typeof r.stale === "boolean") row.stale = r.stale;
+        if (int(r.keys) !== undefined) row.keys = r.keys as number;
+        if (int(r.keys_behind) !== undefined) row.keys_behind = r.keys_behind as number;
+        if (int(r.keys_failed) !== undefined) row.keys_failed = r.keys_failed as number;
+        return row;
+      })
+      .sort((x, y) => x.dataset.localeCompare(y.dataset));
+  }
   return Object.entries(b)
     .filter(([k, v]) => !ENVELOPE_KEYS.has(k) && (typeof v === "string" || v === null))
     .map(([k, v]) => ({ dataset: k, data_asof: v as string | null }))
     .sort((x, y) => x.dataset.localeCompare(y.dataset));
+}
+
+/** One lamp per dataset: a failed run or failed keys is a fault; then the API's stale flag; then age. */
+export function lampOf(r: FreshnessRow, now: Date): LampState {
+  if ((r.status && /fail|error/i.test(r.status)) || (r.keys_failed ?? 0) > 0) return "fault";
+  if (r.stale !== undefined) return r.stale ? "stale" : "ok";
+  return isStale(r.data_asof, r.max_age_s ?? NIGHTLY_MAX_AGE_SEC, now) ? "stale" : "ok";
 }

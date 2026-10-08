@@ -108,7 +108,7 @@ export function defaultValues(p: ParamSpec, n = 5): number[] {
     const span = (Number.isFinite(hi) ? hi : 1) - (Number.isFinite(lo) ? lo : 0);
     vals = Array.from({ length: n }, (_, i) => roundNice((Number.isFinite(lo) ? lo : 0) + (span * i) / (n - 1), isInt));
   }
-  vals = [...new Set(vals.map((v) => +v.toFixed(6)))].sort((a, b) => a - b);
+  vals = [...new Set(vals.map((v) => Math.round(v * 1e6) / 1e6))].sort((a, b) => a - b);
   if (vals.length < 3 && Number.isFinite(lo) && Number.isFinite(hi)) {
     vals = [...new Set(Array.from({ length: n }, (_, i) => roundNice(lo + ((hi - lo) * i) / (n - 1), isInt)))];
   }
@@ -120,30 +120,15 @@ export function parseValues(text: string, p: ParamSpec | undefined): { values: n
   const values: number[] = [];
   for (const s of parts) {
     const v = Number(s);
-    if (!Number.isFinite(v)) return { values: [], error: `“${s}” is not a number` };
-    if (p?.type === "int" && !Number.isInteger(v)) return { values: [], error: `${p.name} takes whole numbers` };
-    if (p?.min != null && v < p.min) return { values: [], error: `${v} is below the minimum ${p.min}` };
-    if (p?.max != null && v > p.max) return { values: [], error: `${v} is above the maximum ${p.max}` };
+    if (!Number.isFinite(v)) return { values: [], error: `NOT A NUMBER · ${s}` };
+    if (p?.type === "int" && !Number.isInteger(v)) return { values: [], error: `WHOLE NUMBERS ONLY` };
+    if (p?.min != null && v < p.min) return { values: [], error: `${v} < MIN ${p.min}` };
+    if (p?.max != null && v > p.max) return { values: [], error: `${v} > MAX ${p.max}` };
     values.push(v);
   }
   const uniq = [...new Set(values)].sort((a, b) => a - b);
-  if (uniq.length < 2) return { values: uniq, error: "give at least two values" };
+  if (uniq.length < 2) return { values: uniq, error: "MIN 2 VALUES" };
   return { values: uniq, error: null };
 }
 
-export const humanize = (s: string) => s.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
-
-export function fmtParams(params: Record<string, unknown> | null | undefined): string {
-  if (!params) return "";
-  return Object.entries(params)
-    .map(([k, v]) => {
-      if (typeof v === "number") return `${k} ${+v.toFixed(4)}`;
-      if (v && typeof v === "object") {
-        const e = Object.entries(v as Record<string, number>);
-        return e.length ? e.map(([t, w]) => `${t} ${+(w * 100).toFixed(1)}%`).join(" ") : `${k} equal`;
-      }
-      if (v === "") return `${k} cash`;
-      return `${k} ${String(v)}`;
-    })
-    .join(" · ");
-}
+export const humanize = (s: string) => s.replace(/_/g, " ").toUpperCase();

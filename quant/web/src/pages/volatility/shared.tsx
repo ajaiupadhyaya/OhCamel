@@ -1,12 +1,13 @@
 /**
- * Small building blocks shared by the Volatility tabs (prefix `vx-`): data hooks,
- * the expiry picker, pass/fail chips, key-value lists and the Run button.
+ * Building blocks shared by the Volatility views (prefix `vx-`): data hooks, the expiry
+ * picker, PASS / FAIL words, ruled label / value rows, the RUN button and the live-only
+ * absence block. Paper Tape: rules, caps labels, mono numbers, signal only for a failure.
  */
 import { useCallback, useMemo, useState, type ReactNode } from "react";
-import { Formula, Icon, InfoTip, Panel, Select, type InfoProp } from "../../components";
-import { isDataUnavailable } from "../../lib/api";
+import { InfoTip, Select, type InfoProp } from "../../components";
+import { Absent, Note } from "../../design";
+import { ApiError, isDataUnavailable } from "../../lib/api";
 import { fmtDate, fmtNum } from "../../lib/format";
-import type { Info } from "../../lib/glossary";
 import { useApiQuery } from "../../lib/query";
 import type { Chain, Density, Estimator, Expiries, Realized, SliceSummary, Surface } from "./types";
 
@@ -36,18 +37,21 @@ export function defaultExpiry(list: SliceSummary[] | undefined): string | undefi
 }
 
 export function expiryLabel(e: { expiry: string; dte: number; settlement?: string }): string {
-  return `${fmtDate(e.expiry)} · ${Math.round(e.dte)}d${e.settlement === "AM" ? " · AM" : ""}`;
+  return `${fmtDate(e.expiry).toUpperCase()} · ${Math.round(e.dte)}D${e.settlement === "AM" ? " · AM" : ""}`;
 }
 
-/** Days formatter: "36 d" or "8.2 d" for the very short end. */
-export const fmtDays = (d: number | null | undefined) => (d == null || !Number.isFinite(d) ? "—" : `${d < 10 ? fmtNum(d, 1) : fmtNum(d, 0)} d`);
+/** Days: "36D", or "8.2D" at the very short end. */
+export const fmtDays = (d: number | null | undefined) => (d == null || !Number.isFinite(d) ? "—" : `${d < 10 ? fmtNum(d, 1) : fmtNum(d, 0)}D`);
+
+/** Vol points from a decimal difference: +0.065 → "+6.5". */
+export const fmtVolPts = (v: number | null | undefined, digits = 1) => (v == null || !Number.isFinite(v) ? "—" : fmtNum(v * 100, digits, { signed: true }));
 
 // ------------------------------------------------------------------ controls
 export function ExpirySelect({ expiries, value, onChange }: { expiries: SliceSummary[]; value: string | undefined; onChange: (v: string) => void }) {
   if (!expiries.length || !value) return null;
   return (
     <label className="vx-expiry">
-      <span className="vx-expiry-label">Expiry</span>
+      <span className="vx-expiry-label">EXPIRY</span>
       <Select ariaLabel="Expiry" value={value} onChange={onChange} options={expiries.map((e) => ({ value: e.slice, label: expiryLabel(e) }))} />
     </label>
   );
@@ -61,27 +65,28 @@ export function useCommitted<T>(draft: T, initial?: T): { committed: T; run: () 
   return { committed, run, dirty, commit: setCommitted };
 }
 
-export function RunButton({ onRun, dirty, busy, label = "Run", disabled }: { onRun: () => void; dirty: boolean; busy?: boolean; label?: string; disabled?: boolean }) {
+/** RUN for a heavy computation: armed (ink ground) when inputs changed, CURRENT otherwise. */
+export function RunButton({ onRun, dirty, busy, label = "RUN", disabled }: { onRun: () => void; dirty: boolean; busy?: boolean; label?: string; disabled?: boolean }) {
   return (
-    <button type="button" className={`btn btn-sm ${dirty ? "btn-primary" : ""} vx-run`} onClick={onRun} disabled={disabled || busy || !dirty} title={dirty ? "Inputs changed — recompute" : "Results are up to date"}>
-      {busy ? <span className="vx-spinner" aria-hidden /> : <Icon name={dirty ? "refresh" : "check"} size={14} />}
-      {busy ? "Running…" : dirty ? label : "Up to date"}
+    <button type="button" className={`btn btn-sm vx-run ${dirty ? "btn-primary" : ""}`} onClick={onRun} disabled={disabled || busy || !dirty}>
+      {busy ? "RUNNING" : dirty ? label : "CURRENT"}
     </button>
   );
 }
 
 // ------------------------------------------------------------------ display
-/** Pass / fail / unknown chip for diagnostics. */
-export function Check({ ok, label, title }: { ok: boolean | null | undefined; label: ReactNode; title?: string }) {
-  const tone = ok == null ? "unknown" : ok ? "gain" : "loss";
+/** A diagnostic as a caps word: PASS in ink, FAIL in signal, — when unknown. */
+export function Check({ ok, label }: { ok: boolean | null | undefined; label?: ReactNode }) {
+  const word = ok == null ? "—" : ok ? "PASS" : "FAIL";
   return (
-    <span className={`vx-check vx-check-${tone}`} title={title}>
-      <Icon name={ok == null ? "help" : ok ? "check" : "x"} size={12} strokeWidth={2.2} />
-      {label}
+    <span className="vx-check num">
+      {label && <span className="vx-check-k">{label}</span>}
+      <span className={ok === false ? "loss" : ""}>{word}</span>
     </span>
   );
 }
 
+/** Ruled label / value rows; InfoTips only on metric labels. */
 export function KV({ rows, cols = 1 }: { rows: { label: ReactNode; value: ReactNode; info?: InfoProp; tone?: string; hint?: ReactNode }[]; cols?: 1 | 2 }) {
   return (
     <dl className={`vx-kv ${cols === 2 ? "vx-kv-2" : ""}`}>
@@ -101,62 +106,65 @@ export function KV({ rows, cols = 1 }: { rows: { label: ReactNode; value: ReactN
   );
 }
 
-/** Legend swatch used in custom legends and tables. */
-export function Swatch({ color, dash, dot }: { color: string; dash?: boolean; dot?: boolean }) {
-  return <span className={`vx-swatch ${dash ? "dash" : ""} ${dot ? "dot" : ""}`} style={{ ["--sw" as string]: color }} aria-hidden />;
-}
-
-/**
- * Shown in place of a tab's panels when the live option chain is unavailable (the server
- * answers 503 offline). One honest Panel with the server's reason, then a quiet catalogue
- * of what the tab computes once the source is reachable — no placeholder numbers.
- */
-export function LiveOnly({ title, error, items, onRetry, alternatives }: { title: string; error: unknown; items: { title: string; text: string; info?: Info }[]; onRetry?: () => void; alternatives?: ReactNode }) {
+/** A terse ruled readout line: KEY value · KEY value. */
+export function Readline({ items }: { items: { k: string; v: ReactNode; tone?: string }[] }) {
   return (
-    <div className="stack">
-      <Panel title={title} subtitle="Needs a live option chain" error={error} onRetry={onRetry} />
-      {isDataUnavailable(error) && (
-        <div className="vx-preview">
-          <div className="vx-preview-head">
-            <span className="eyebrow">When the chain is reachable, this tab shows</span>
-            {alternatives && <span className="vx-preview-alt small">{alternatives}</span>}
-          </div>
-          <ol className="vx-preview-list">
-            {items.map((it, i) => (
-              <li key={it.title} className="vx-preview-item">
-                <span className="vx-preview-n num">{String(i + 1).padStart(2, "0")}</span>
-                <div className="vx-preview-body">
-                  <div className="vx-preview-title">
-                    {it.title}
-                    <InfoTip info={it.info} size={12} label={it.title} />
-                  </div>
-                  <p className="vx-preview-text">{it.text}</p>
-                  {it.info?.formula && <Formula tex={it.info.formula} className="vx-preview-formula" />}
-                </div>
-              </li>
-            ))}
-          </ol>
-        </div>
-      )}
+    <div className="vx-readline num">
+      {items.map((it, i) => (
+        <span key={i} className="vx-readline-item">
+          <span className="vx-readline-k">{it.k}</span> <span className={it.tone ?? ""}>{it.v}</span>
+        </span>
+      ))}
     </div>
   );
 }
 
-/** Compact grid of greek readouts (smaller than StatTile so long decimals fit). */
-export function GreekGrid({ cells }: { cells: { label: string; value: string; info?: InfoProp; caption?: string }[] }) {
+/** Greek readouts: caps label, mono value, unit line. */
+export function GreekGrid({ cells }: { cells: { label: string; value: string; info?: InfoProp; caption?: string; sym?: boolean }[] }) {
   return (
     <div className="vx-greeks">
       {cells.map((c) => (
         <div key={c.label} className="vx-greek">
           <div className="vx-greek-label">
-            {c.label}
+            {c.sym ? <span className="vx-sym">{c.label}</span> : c.label}
             <InfoTip info={c.info} size={12} label={c.label} />
           </div>
           <div className="vx-greek-value num">{c.value}</div>
-          {c.caption && <div className="vx-greek-cap subtle">{c.caption}</div>}
+          {c.caption && <div className="vx-greek-cap num">{c.caption}</div>}
         </div>
       ))}
     </div>
   );
 }
 
+/**
+ * In place of a live-chain view when the chain is unavailable (503 offline): INSUFFICIENT
+ * DATA with the server's reason, then a ruled list of what the view computes once Cboe is
+ * reachable, each with its Methodology note. No placeholder numbers.
+ */
+export function LiveOnly({ title, error, items, source, actions }: { title: string; error: unknown; items: { k: string; note: string }[]; source: string; actions?: ReactNode }) {
+  const reason = isDataUnavailable(error) ? "DATA UNAVAILABLE" : error instanceof ApiError && error.status === 404 ? "NO OPTIONS LISTED" : "CHAIN UNAVAILABLE";
+  const detail = error instanceof ApiError ? error.detail : error instanceof Error ? error.message : null;
+  return (
+    <section className="oc-panel vx-live-only">
+      <header className="oc-panel-head">
+        <h3 className="oc-panel-title">{title}</h3>
+        {actions && <div className="oc-panel-meta">{actions}</div>}
+      </header>
+      <div className="oc-panel-body">
+        <Absent reason={reason} source={detail ? `${source} · ${detail}` : source} />
+        <ol className="vx-live-list num">
+          {items.map((it, i) => (
+            <li key={it.k}>
+              <span className="vx-live-n">{String(i + 1).padStart(2, "0")}</span>
+              <span className="vx-live-k">
+                {it.k}
+                <Note n={i + 1} to={it.note} />
+              </span>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </section>
+  );
+}

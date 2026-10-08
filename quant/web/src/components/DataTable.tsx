@@ -68,6 +68,9 @@ export interface DataTableProps<T> {
   footer?: ReactNode;
   /** Highlight a row (e.g. the selected ticker). */
   isActive?: (row: T) => boolean;
+  /** A wide table that scrolls sideways inside its Cell on a phone: the wrapper becomes a
+   *  focusable, labelled region so the scroll is reachable by keyboard. */
+  scrollLabel?: string;
 }
 
 const HIDE_BREAKPOINTS = [600, 900, 1200, 1440, 1600] as const;
@@ -105,7 +108,7 @@ function heatStyle(v: number, h: NonNullable<Column<unknown>["heat"]>): { backgr
   return { background: `var(--seq-${k})`, color: k >= 4 ? "var(--paper)" : undefined };
 }
 
-export function DataTable<T>({ columns, rows, rowKey, onRowClick, defaultSort, compact = true, maxHeight, empty, caption, className, footer, isActive }: DataTableProps<T>) {
+export function DataTable<T>({ columns, rows, rowKey, onRowClick, defaultSort, compact = true, maxHeight, empty, caption, className, footer, isActive, scrollLabel }: DataTableProps<T>) {
   const [sort, setSort] = useState<{ key: string; dir: "asc" | "desc" } | undefined>(defaultSort);
   const sorted = useMemo(() => {
     if (!sort) return rows;
@@ -154,7 +157,7 @@ export function DataTable<T>({ columns, rows, rowKey, onRowClick, defaultSort, c
   };
 
   return (
-    <div className={`oc-table-wrap ${className ?? ""}`} style={{ maxHeight }}>
+    <div className={`oc-table-wrap ${className ?? ""}`} style={{ maxHeight }} {...(scrollLabel ? { tabIndex: 0, role: "region", "aria-label": scrollLabel } : {})}>
       <table className={`oc-table ${compact ? "oc-table-compact" : ""} ${onRowClick ? "oc-table-clickable" : ""}`}>
         {caption && <caption className="sr-only">{caption}</caption>}
         <thead>

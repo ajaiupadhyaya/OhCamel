@@ -4,6 +4,8 @@
  * niceTicks -- 1-2-5 stepped ticks that cover [min, max] in about `count` steps.
  * endLabels -- end-of-line labels pushed apart so no two sit closer than `gap` px.
  */
+import { roundTo } from "../lib/format";
+
 export function niceTicks(min: number, max: number, count: number): number[] {
   if (!Number.isFinite(min) || !Number.isFinite(max)) return [];
   if (min === max) { const d = Math.abs(min) || 1; min -= d * 0.5; max += d * 0.5; }
@@ -78,7 +80,7 @@ function grouped(v: number, digits: number): string {
 }
 
 function signOf(v: number, digits: number, scale: number, signed: boolean): string {
-  const shown = Number((v * scale).toFixed(digits));
+  const shown = roundTo(v * scale, digits);
   if (shown < 0) return MINUS;
   return signed && shown > 0 ? "+" : "";
 }

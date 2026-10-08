@@ -25,3 +25,20 @@ describe("check-style catches every gradient form", () => {
     });
   }
 });
+
+describe("check-style catches rounded SVG corners", () => {
+  for (const form of ["<rect width={4} height={4} rx={8} />", '<rect rx="4" ry="4" />', "<rect ry={r} />", "rect { rx: 3px; }", 'const svg = `<rect rx="2"/>`;']) {
+    it(form, () => {
+      const r = run(form.startsWith("rect {") ? "a.css" : "a.tsx", form);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(/\b(rx|ry)\b/);
+    });
+  }
+  for (const form of ["<rect rx={0} ry=\"0\" />", "// ?tab=x&ry=1&re=2", "const proxy = 1;"]) {
+    it(`passes ${form}`, () => expect(run("a.tsx", form).status).toBe(0));
+  }
+});
+
+describe("check-style rx/ry: no false positives", () => {
+  it("a ternary on a variable named ry", () => expect(run("a.tsx", "const y = ok(ry) ? +ry : 10;").status).toBe(0));
+});

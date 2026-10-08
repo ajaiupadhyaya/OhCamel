@@ -198,3 +198,104 @@ export interface CostsOut extends Envelope {
   window: { live_start: string; end: string; sessions: number };
   method: Method;
 }
+
+// ------------------------------------------------------------------ products (Lane M)
+// Rows of artifact tables (GET /api/artifacts/{kind}/{id}/{table}), as frameRecords returns
+// them. Every field may be null or absent: a renderer checks before it shows a number.
+
+/** farm.sweep · leaderboard: one ok cell, its charter verdict, deflated by every trial in the farm. */
+export interface FarmBoardRow {
+  cell_id: string;
+  strategy: string;
+  universe: string;
+  verdict: string;
+  detail: string | null;
+  dsr_farm: number | null;
+  psr: number | null;
+  oos_sharpe_ann: number | null;
+  holdout_return: number | null;
+  boot_lo5: number | null;
+  pbo: number | null;
+  spa_p: number | null;
+  n_combos: number | null;
+  selected_params: string | null;
+  data_asof: string | null;
+  ran_at: string | null;
+}
+
+/** farm.sweep · cells: every cell, ok or skipped (with its reason). */
+export interface FarmCellRow {
+  cell_id: string;
+  strategy: string;
+  universe: string;
+  status: "ok" | "skipped" | string;
+  reason: string | null;
+  ran_at: string | null;
+  data_asof?: string | null;
+  cost_curve?: string | null;
+  n?: number | null;
+}
+
+/** Charter regime windows (farm.sweep · regimes, models.xs_lgbm · holdout_regimes). */
+export interface RegimeRow {
+  cell_id?: string;
+  regime: string;
+  start: string;
+  end: string;
+  n: number | null;
+  total_return: number | null;
+  positive: boolean | null;
+}
+
+/** models.xs_lgbm · gates (and any verdict's gate table). passed null = reported, not gated. */
+export interface GateRow {
+  gate: string;
+  value: number | null;
+  rule: string;
+  passed: boolean | null;
+  note: string | null;
+}
+
+/** models.xs_lgbm · holdout: the one-time holdout evaluation (EXP-Q01). */
+export interface HoldoutRow {
+  holdout_start: string | null;
+  holdout_end: string | null;
+  selected_config: number | null;
+  params: string | null;
+  verdict: string | null;
+  verdict_detail: string | null;
+  net_sharpe: number | null;
+  composite_net_sharpe: number | null;
+  total_return: number | null;
+  max_drawdown: number | null;
+  dsr: number | null;
+  n_trials: number | null;
+  psr: number | null;
+  boot_lo5: number | null;
+  pbo: number | null;
+  ic_mean: number | null;
+  ic_hac_t: number | null;
+  rank_ic_mean: number | null;
+  rank_ic_hac_t: number | null;
+  annual_turnover: number | null;
+  capacity_usd: number | null;
+  methodology_version: number | null;
+  config_hash: string | null;
+  evaluated_at: string | null;
+}
+
+export interface SelectionRow {
+  config_hash: string | null;
+  methodology_version: number | null;
+  selected: number | null;
+  params: string | null;
+  pbo: number | null;
+  selected_at: string | null;
+}
+
+export interface ScoreRow {
+  ticker: string;
+  score: number | null;
+  side: "long" | "short" | "none" | string;
+  rank: number | null;
+}

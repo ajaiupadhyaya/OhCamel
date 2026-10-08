@@ -325,3 +325,49 @@ export const LINKAGE_INFO: Record<LinkageName, string> = {
   average: "Average: mean distance between all pairs across clusters.",
   complete: "Complete: clusters merge at their farthest pair (tight clusters).",
 };
+
+/** The Methodology entry (anchor on /methodology) behind each method's Note marker. */
+export const METHOD_DOC: Record<MethodName, string> = {
+  equal_weight: "naive",
+  inverse_volatility: "naive",
+  min_variance: "mean-variance",
+  max_sharpe: "mean-variance",
+  mean_variance: "mean-variance",
+  risk_parity: "risk-parity",
+  hrp: "hrp",
+  herc: "hrp",
+  max_diversification: "risk-parity",
+  min_cvar: "min-cvar",
+};
+
+/** Caps code per method, for table rows and chart labels. */
+export const METHOD_CODE: Record<MethodName, string> = {
+  equal_weight: "1/N",
+  inverse_volatility: "INV VOL",
+  min_variance: "MIN VAR",
+  max_sharpe: "MAX SR",
+  mean_variance: "MV",
+  risk_parity: "ERC",
+  hrp: "HRP",
+  herc: "HERC",
+  max_diversification: "MAX DIV",
+  min_cvar: "MIN CVAR",
+};
+
+/** Caps code per covariance estimator. */
+export const COV_CODE: Record<CovName, string> = {
+  sample: "SAMPLE",
+  ewma: "EWMA",
+  lw_constant_corr: "LW CONST CORR",
+  lw_identity: "LW IDENTITY",
+  oas: "OAS",
+  mp_denoise: "MP DENOISED",
+};
+
+/** Caps code per expected-return model. */
+export const RETURNS_CODE: Record<ReturnsModel, string> = {
+  historical: "HIST MEAN",
+  james_stein: "JAMES–STEIN",
+  capm: "CAPM",
+  black_litterman: "BLACK–LITTERMAN",
+};

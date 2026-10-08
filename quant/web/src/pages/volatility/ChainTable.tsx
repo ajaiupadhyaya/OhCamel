@@ -1,10 +1,9 @@
 /**
- * Classic calls | strike | puts option chain. Bid and ask cells are buttons: click the ask
- * to buy one contract, the bid to sell one (adds a leg to the strategy ticket). OI and
- * volume are drawn as bars behind the numbers; in-the-money cells are tinted and the
- * forward is marked between strikes.
+ * Calls | strike | puts. Bid and ask cells are buttons: the ask buys one contract, the bid
+ * sells one (a leg on the ticket). OI and volume carry hairline bars behind the numbers;
+ * in-the-money cells sit on paper-2; the forward is a rule between strikes.
  */
-import { Fragment, useEffect, useMemo, useRef } from "react";
+import { Fragment, useEffect, useMemo, useRef, type CSSProperties } from "react";
 import { InfoTip, type InfoProp } from "../../components";
 import { fmtCompact, fmtNum, fmtPct } from "../../lib/format";
 import { INFO } from "./info";
@@ -98,7 +97,7 @@ export function ChainTable({ c, rows, view, onTrade, maxHeight = 600 }: { c: Cha
         const w = Math.round(((v ?? 0) / (k === "oi" ? maxOi : maxVol)) * 100);
         return (
           <td key={key} className={`${cls} vx-ch-barcell`}>
-            <span className={`vx-ch-bar vx-ch-bar-${k} ${side === "C" ? "left" : "right"}`} style={{ width: `${w}%` }} aria-hidden />
+            <span className={`vx-ch-bar vx-ch-bar-${k} ${side === "C" ? "left" : "right"}`} style={{ "--w": `${w}%` } as CSSProperties} aria-hidden />
             <span className="vx-ch-barval">{fmtCompact(v, 1)}</span>
           </td>
         );
@@ -107,7 +106,7 @@ export function ChainTable({ c, rows, view, onTrade, maxHeight = 600 }: { c: Cha
         const flags = FLAG_TEXT.filter(([f]) => q[f]).map(([, t]) => t);
         return (
           <td key={key} className={`${cls} ${q.use_smile ? "vx-ch-iv-used" : ""}`} title={flags.length ? `Flags: ${flags.join(", ")}` : q.use_smile ? "Used in the SVI fit" : undefined}>
-            {q.iv != null ? fmtPct(q.iv, 1) : <span className="subtle">—</span>}
+            {fmtPct(q.iv, 1)}
             {flags.length > 0 && <span className="vx-flag" aria-label={flags.join(", ")} />}
           </td>
         );
@@ -128,13 +127,13 @@ export function ChainTable({ c, rows, view, onTrade, maxHeight = 600 }: { c: Cha
   const callCols = cols;
   const putCols = [...cols].reverse();
   return (
-    <div className="vx-chain-wrap" ref={wrap} style={{ maxHeight }}>
+    <div className="vx-chain-wrap" ref={wrap} style={{ "--max-h": `${maxHeight}px` } as CSSProperties}>
       <table className="vx-chain">
         <thead>
           <tr className="vx-chain-group">
-            <th colSpan={callCols.length} className="vx-chain-side calls">Calls</th>
+            <th colSpan={callCols.length} className="vx-chain-side calls">CALLS</th>
             <th className="vx-chain-strike-h" />
-            <th colSpan={putCols.length} className="vx-chain-side puts">Puts</th>
+            <th colSpan={putCols.length} className="vx-chain-side puts">PUTS</th>
           </tr>
           <tr>
             {callCols.map((k) => (
@@ -142,7 +141,7 @@ export function ChainTable({ c, rows, view, onTrade, maxHeight = 600 }: { c: Cha
                 <span className="vx-th">{HEAD[k].label}<InfoTip info={HEAD[k].info} size={11} label={HEAD[k].label} /></span>
               </th>
             ))}
-            <th className="vx-chain-strike-h">Strike</th>
+            <th className="vx-chain-strike-h">STRIKE</th>
             {putCols.map((k) => (
               <th key={`hp-${k}`} className={hideCls(k)}>
                 <span className="vx-th">{HEAD[k].label}<InfoTip info={HEAD[k].info} size={11} label={HEAD[k].label} /></span>
@@ -156,7 +155,7 @@ export function ChainTable({ c, rows, view, onTrade, maxHeight = 600 }: { c: Cha
               {i === fwdIdx && (
                 <tr className="vx-fwd-row">
                   <td colSpan={callCols.length * 2 + 1}>
-                    <span className="vx-fwd-label num">Forward {fmtNum(F, 2)} · spot {fmtNum(c.spot, 2)}</span>
+                    <span className="vx-fwd-label num">FWD {fmtNum(F, 2)} · SPOT {fmtNum(c.spot, 2)}</span>
                   </td>
                 </tr>
               )}

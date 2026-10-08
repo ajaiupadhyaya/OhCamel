@@ -7,6 +7,7 @@
  * `choices`/`options`), date. Numbers with both min & max render as sliders; others as
  * NumberFields. `unit: "%"` (or name ending in _pct) edits decimals as percents.
  */
+import { fixedNum, roundTo } from "../lib/format";
 import type { ParamSpec } from "../lib/types";
 import { Field, NumberField, Select, Slider, Toggle } from "./Controls";
 
@@ -59,7 +60,7 @@ export function ParamForm({ params, values, onChange, columns = 2 }: { params: P
                 min={p.min}
                 max={p.max}
                 step={step}
-                format={(x) => (pct ? `${(x * 100).toFixed(1)}%` : isInt ? String(Math.round(x)) : `${+x.toFixed(4)}${p.unit && p.unit !== "%" ? ` ${p.unit}` : ""}`)}
+                format={(x) => (pct ? `${fixedNum(x * 100, 1)}%` : isInt ? String(Math.round(x)) : `${roundTo(x, 4)}${p.unit && p.unit !== "%" ? ` ${p.unit}` : ""}`)}
                 onChange={(x) => set(p.name, isInt ? Math.round(x) : x)}
               />
             );

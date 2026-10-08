@@ -1,136 +1,178 @@
 /**
- * Ratio history: margins, returns on capital, leverage & liquidity, efficiency, growth,
- * a DuPont breakdown of ROE and a CAGR table. Annual (fiscal years) or rolling TTM.
+ * RATIOS — GET /api/fundamentals/{t}/ratios: the latest ratios, their history (fiscal years or
+ * rolling TTM) on uPlot lines with direct labels, growth vs a year earlier and the CAGRs as
+ * ruled tables, and ROE's DuPont split as one ruled equation.
  */
 import { useMemo } from "react";
-import { Chart, DataTable, Panel, SegmentedControl, StatGrid, StatTile, TimeSeriesChart, useTabParam, type Column } from "../../components";
-import { fmtDate, fmtNum, fmtPct, fmtSignedPct } from "../../lib/format";
+import { XYChart, type XYSeries } from "../../charts/XYChart";
+import { DataTable, Panel, SegmentedControl, StatGrid, StatTile, useTabParam, type Column } from "../../components";
+import { Note } from "../../design";
+import type { ValueFormat } from "../../charts/scales";
+import { fmtDate, fmtPct, fmtSignedPct } from "../../lib/format";
 import { INFO } from "./info";
-import { mult, periodLabel, useRatios } from "./shared";
+import { Controls, Ctl, mult, periodLabel, useRatios } from "./shared";
 import type { Ratios } from "./types";
-import type { Data } from "plotly.js";
-import type { Tokens } from "../../lib/theme";
 
 type Basis = "annual" | "ttm";
 
-const LABEL: Record<string, string> = {
-  gross_margin: "Gross",
-  operating_margin: "Operating",
+/** Line styles that stay legible in ink only: tone × dash. */
+const STYLE: Pick<XYSeries, "tone" | "dash">[] = [
+  { tone: "ink", dash: "solid" },
+  { tone: "ink", dash: "dash" },
+  { tone: "ink2", dash: "solid" },
+  { tone: "ink2", dash: "dot" },
+  { tone: "ink3", dash: "solid" },
+];
+
+export const LABEL: Record<string, string> = {
+  gross_margin: "GROSS",
+  operating_margin: "OPER",
   ebitda_margin: "EBITDA",
-  net_margin: "Net",
+  net_margin: "NET",
   fcf_margin: "FCF",
   roe: "ROE",
   roa: "ROA",
   roic: "ROIC",
-  debt_to_equity: "Debt / equity",
-  net_debt_to_ebitda: "Net debt / EBITDA",
-  liabilities_to_assets: "Liabilities / assets",
-  interest_coverage: "Interest coverage",
-  current_ratio: "Current",
-  quick_ratio: "Quick",
-  cash_ratio: "Cash",
-  dso_days: "Days sales outstanding",
-  dio_days: "Days inventory outstanding",
-  revenue_growth: "Revenue",
-  eps_growth: "EPS",
-  fcf_growth: "Free cash flow",
-  net_income_growth: "Net income",
+  debt_to_equity: "D/E",
+  net_debt_to_ebitda: "ND/EBITDA",
+  liabilities_to_assets: "L/A",
+  interest_coverage: "COVER",
+  current_ratio: "CURRENT",
+  quick_ratio: "QUICK",
+  cash_ratio: "CASH",
+  dso_days: "DSO",
+  dio_days: "DIO",
 };
 
-export function RatiosTab({ ticker, compact }: { ticker: string; compact?: boolean }) {
+/** Series for the keys with any data, styled in order. */
+export function ratioSeries(frame: Ratios["annual"] | null, keys: string[]): XYSeries[] {
+  if (!frame) return [];
+  return keys
+    .filter((k) => ((frame.data[k] ?? []) as (number | null)[]).some((v) => v != null))
+    .map((k, i) => ({ name: LABEL[k] ?? k.toUpperCase(), y: (frame.data[k] ?? []) as (number | null)[], ...STYLE[i % STYLE.length] }));
+}
+
+const day = (d: string | null | undefined) => fmtDate(d, "short-year").toUpperCase();
+
+export function RatiosTab({ ticker }: { ticker: string }) {
   const q = useRatios(ticker);
   const [basis, setBasis] = useTabParam<Basis>("basis", "annual");
-  const frame = q.data ? (basis === "ttm" && q.data.ttm.index.length ? q.data.ttm : q.data.annual) : null;
-  const x = useMemo(() => (frame ? (frame.index as string[]) : []), [frame]);
-  // Series are memoized per frame so Plotly is not re-driven on unrelated re-renders.
-  const S = useMemo(() => {
-    const col = (k: string) => (frame?.data[k] ?? []) as (number | null)[];
-    const lines = (keys: string[]) => keys.filter((k) => col(k).some((v) => v != null)).map((k) => ({ name: LABEL[k] ?? k, x, y: col(k) }));
-    return {
-      margins: lines(["gross_margin", "operating_margin", "ebitda_margin", "net_margin", "fcf_margin"]),
-      returns: lines(["roe", "roa", "roic"]),
-      leverage: lines(["debt_to_equity", "net_debt_to_ebitda", "liabilities_to_assets"]),
-      coverage: lines(["interest_coverage"]),
-      liquidity: lines(["current_ratio", "quick_ratio", "cash_ratio"]),
-      efficiency: lines(["dso_days", "dio_days"]),
-      growth: ["revenue_growth", "eps_growth", "fcf_growth"].map((k) => ({ name: LABEL[k], x: x.map((p) => periodLabel(p, basis === "ttm" ? "ttm" : "annual")), y: col(k) })),
-    };
-  }, [frame, x, basis]);
   const ttmEmpty = !!q.data && !q.data.ttm.index.length;
+  const useTtm = basis === "ttm" && !ttmEmpty;
+  const frame = q.data ? (useTtm ? q.data.ttm : q.data.annual) : null;
+  const x = useMemo(() => (frame ? (frame.index as string[]) : []), [frame]);
+  const S = useMemo(
+    () => ({
+      margins: ratioSeries(frame, ["gross_margin", "operating_margin", "ebitda_margin", "net_margin", "fcf_margin"]),
+      returns: ratioSeries(frame, ["roe", "roa", "roic"]),
+      leverage: ratioSeries(frame, ["debt_to_equity", "net_debt_to_ebitda", "liabilities_to_assets"]),
+      coverage: ratioSeries(frame, ["interest_coverage"]),
+      liquidity: ratioSeries(frame, ["current_ratio", "quick_ratio", "cash_ratio"]),
+      efficiency: ratioSeries(frame, ["dso_days", "dio_days"]),
+    }),
+    [frame],
+  );
+  const tag = useTtm ? "TTM" : "FY";
+  const asOf = x.at(-1);
 
-  const basisCtl = (
-    <SegmentedControl
-      size="sm"
-      ariaLabel="Ratio basis"
-      options={[
-        { value: "annual", label: "Fiscal years" },
-        { value: "ttm", label: "Rolling TTM", disabled: ttmEmpty, title: ttmEmpty ? "No run of four consecutive quarters in the filings" : "One point per quarter end, each a trailing-twelve-month window" },
-      ]}
-      value={basis}
-      onChange={setBasis}
-    />
+  const chart = (title: string, series: XYSeries[], fmt: ValueFormat, digits: number, note?: { n: number; to: string }, zero = true) => (
+    <Panel<Ratios>
+      title={
+        <>
+          {title} · {tag}
+          {note && <Note n={note.n} to={note.to} />}
+        </>
+      }
+      query={q}
+      notes={[]}
+      provenance={[]}
+      skeletonHeight={240}
+      asOf={asOf}
+    >
+      {() => (series.length && x.length > 1 ? <XYChart time x={x} series={series} yFormat={fmt} digits={digits} height={240} zero={zero} ariaLabel={`${title} history`} /> : <div className="co-none">NOT ENOUGH PERIODS</div>)}
+    </Panel>
   );
 
-  if (q.isError || q.isLoading || !q.data) return <Panel title="Ratios" subtitle="Margins, returns, leverage, efficiency and growth over time." query={q} compact={compact} actions={basisCtl} skeletonHeight={420} />;
-  const d = q.data;
-  const v = d.latest.values;
-
   return (
-    <div className="stack-lg">
+    <div className="stack">
+      <Controls right={q.data ? <>LATEST {q.data.latest.basis === "ttm" ? "TTM" : "FY"} · {day(q.data.latest.period_end)}</> : undefined}>
+        <Ctl label="BASIS">
+          <SegmentedControl
+            size="sm"
+            ariaLabel="Ratio basis"
+            options={[
+              { value: "annual", label: "FY" },
+              { value: "ttm", label: "TTM", disabled: ttmEmpty, title: ttmEmpty ? "No run of four consecutive quarters in the filings" : "One point per quarter end, each a trailing-twelve-month window" },
+            ]}
+            value={basis}
+            onChange={setBasis}
+          />
+        </Ctl>
+      </Controls>
+
       <Panel<Ratios>
-        title="Where the business stands now"
-        subtitle={`Latest ${d.latest.basis === "ttm" ? "trailing-twelve-month" : "fiscal-year"} ratios, period ending ${fmtDate(d.latest.period_end)}. Hover any figure for its definition.`}
+        title={
+          <>
+            LATEST · {q.data?.latest.basis === "ttm" ? "TTM" : "FY"}
+            <Note n={1} to="ratios" />
+          </>
+        }
         query={q}
         notes={[]}
         provenance={[]}
-        actions={basisCtl}
         skeletonHeight={120}
+        asOf={q.data?.latest.period_end}
       >
-        {() => (
-          <StatGrid min={150}>
-            <StatTile label="Gross margin" value={v.gross_margin} format={(x) => fmtPct(x, 1)} info={INFO.gross_margin} />
-            <StatTile label="Operating margin" value={v.operating_margin} format={(x) => fmtPct(x, 1)} tone="auto" info={INFO.operating_margin} />
-            <StatTile label="Net margin" value={v.net_margin} format={(x) => fmtPct(x, 1)} tone="auto" info={INFO.net_margin} />
-            <StatTile label="ROE" value={v.roe} format={(x) => fmtPct(x, 1)} tone="auto" info={INFO.roe} />
-            <StatTile label="ROIC" value={v.roic} format={(x) => fmtPct(x, 1)} tone="auto" info={INFO.roic} />
-            <StatTile label="Debt / equity" value={mult(v.debt_to_equity, 2)} info={INFO.debt_to_equity} />
-            <StatTile label="Net debt / EBITDA" value={mult(v.net_debt_to_ebitda, 2)} info={INFO.net_debt_to_ebitda} />
-            <StatTile label="Interest cover" value={mult(v.interest_coverage, 1)} info={INFO.interest_coverage} />
-            <StatTile label="Current ratio" value={mult(v.current_ratio, 2)} info={INFO.current_ratio} />
-          </StatGrid>
-        )}
+        {(d) => {
+          const v = d.latest.values;
+          const tone = (x: number | null | undefined) => (x != null && x < 0 ? "loss" : "neutral");
+          return (
+            <StatGrid min={120}>
+              <StatTile size="sm" label="GROSS MGN" value={v.gross_margin} format={(x) => fmtPct(x, 1)} info={INFO.gross_margin} />
+              <StatTile size="sm" label="OPER MGN" value={v.operating_margin} format={(x) => fmtPct(x, 1)} tone={tone(v.operating_margin)} info={INFO.operating_margin} />
+              <StatTile size="sm" label="NET MGN" value={v.net_margin} format={(x) => fmtPct(x, 1)} tone={tone(v.net_margin)} info={INFO.net_margin} />
+              <StatTile size="sm" label="ROE" value={v.roe} format={(x) => fmtPct(x, 1)} tone={tone(v.roe)} info={INFO.roe} />
+              <StatTile size="sm" label="ROIC" value={v.roic} format={(x) => fmtPct(x, 1)} tone={tone(v.roic)} info={INFO.roic} />
+              <StatTile size="sm" label="D / E" value={mult(v.debt_to_equity, 2)} info={INFO.debt_to_equity} />
+              <StatTile size="sm" label="ND / EBITDA" value={mult(v.net_debt_to_ebitda, 2)} info={INFO.net_debt_to_ebitda} />
+              <StatTile size="sm" label="INT COVER" value={mult(v.interest_coverage, 1)} info={INFO.interest_coverage} />
+              <StatTile size="sm" label="CURRENT" value={mult(v.current_ratio, 2)} info={INFO.current_ratio} />
+            </StatGrid>
+          );
+        }}
       </Panel>
 
       <div className="grid-2">
-        <Panel title="Margins" subtitle="How much of each sales dollar survives each layer of cost. Rising margins usually mean pricing power or operating leverage." info={{ title: "Margins", text: "Gross → operating → net: each line subtracts another layer of cost from revenue. FCF margin is the cash version.", formula: "\\text{margin} = \\frac{\\text{profit measure}}{\\text{revenue}}" }} notes={[]}>
-          <TimeSeriesChart series={S.margins} yFormat="pct" digits={1} height={280} baseline={0} />
-        </Panel>
-        <Panel title="Returns on capital" subtitle="Profit earned on the money invested in the business. ROIC above the cost of capital is what makes growth valuable." info={INFO.roic} notes={[]}>
-          <TimeSeriesChart series={S.returns} yFormat="pct" digits={1} height={280} baseline={0} />
-        </Panel>
-        <Panel title="Leverage" subtitle="How heavily the balance sheet leans on borrowed money. Lower is more resilient; blank where equity or EBITDA is not positive." info={INFO.net_debt_to_ebitda} notes={[]}>
-          <TimeSeriesChart series={S.leverage} yFormat="x" digits={2} height={280} baseline={0} />
-        </Panel>
-        <Panel title="Interest coverage & liquidity" subtitle="Can the company pay its interest and its bills? Coverage is times EBIT covers interest; the liquidity ratios compare short-term assets to short-term debts." info={INFO.interest_coverage} notes={[]}>
-          <div className="co-split">
-            <TimeSeriesChart series={S.coverage} yFormat="x" digits={1} height={130} showLegend />
-            <TimeSeriesChart series={S.liquidity} yFormat="x" digits={2} height={150} />
-          </div>
-        </Panel>
-        <Panel title="Growth vs a year earlier" subtitle="Year-over-year change in the lines investors watch most. Blank where the prior value was not positive." info={INFO.growth} notes={[]}>
-          <GroupedBars series={S.growth} height={280} />
-        </Panel>
-        <Panel title="Working-capital efficiency" subtitle="How long cash is tied up in receivables and inventory. Shorter cycles free up cash." info={INFO.dso} notes={[]}>
-          <TimeSeriesChart series={S.efficiency} yFormat="num" digits={0} height={280} />
-        </Panel>
+        {chart("MARGINS", S.margins, "pct", 1)}
+        {chart("RETURNS ON CAPITAL", S.returns, "pct", 1)}
+        {chart("LEVERAGE", S.leverage, "x", 2)}
+        {chart("INTEREST COVER", S.coverage, "x", 1)}
+        {chart("LIQUIDITY", S.liquidity, "x", 2)}
+        {chart("WORKING CAPITAL · DAYS", S.efficiency, "num", 0)}
       </div>
 
-      <div className="grid-3">
-        <Panel title="DuPont: where ROE comes from" subtitle="Return on equity split into margin × asset turnover × leverage (latest period)." info={INFO.dupont} notes={[]} span={2}>
-          <DuPont values={v} />
+      <Panel<Ratios>
+        title={
+          <>
+            DUPONT · ROE · {q.data?.latest.basis === "ttm" ? "TTM" : "FY"}
+            <Note n={2} to="ratios" />
+          </>
+        }
+        query={q}
+        notes={[]}
+        provenance={[]}
+        skeletonHeight={80}
+        asOf={q.data?.latest.period_end}
+      >
+        {(d) => <DuPont values={d.latest.values} />}
+      </Panel>
+
+      <div className="grid-2">
+        <Panel<Ratios> title={`GROWTH · YOY · ${tag}`} query={q} flush notes={[]} provenance={[]} skeletonHeight={200} asOf={asOf}>
+          {() => frame && <GrowthTable frame={frame} basis={useTtm ? "ttm" : "annual"} />}
         </Panel>
-        <Panel<Ratios> title="Compound growth" subtitle="Annualized growth to the latest fiscal year." info={INFO.cagr} query={q} flush notes={d.notes} provenance={d.provenance}>
-          {() => <CagrTable data={d} />}
+        <Panel<Ratios> title="CAGR · TO LATEST FY" query={q} flush skeletonHeight={160} asOf={q.data?.annual.index.at(-1) as string | undefined}>
+          {(d) => <CagrTable data={d} />}
         </Panel>
       </div>
     </div>
@@ -143,27 +185,53 @@ function DuPont({ values: v }: { values: Record<string, number | null> }) {
   const l = v.dupont_equity_multiplier;
   const roe = m != null && t != null && l != null ? m * t * l : v.roe;
   return (
-    <div className="co-dupont">
-      <DuTerm label="Net margin" value={fmtPct(m, 1)} hint="profit per $ of sales" />
+    <div className="co-dupont num">
+      <DuTerm label="NET MGN" value={fmtPct(m, 1)} />
       <span className="co-dupont-op">×</span>
-      <DuTerm label="Asset turnover" value={fmt2(t)} hint="sales per $ of assets" />
+      <DuTerm label="ASSET TURN" value={mult(t, 2)} />
       <span className="co-dupont-op">×</span>
-      <DuTerm label="Equity multiplier" value={fmt2(l)} hint="assets per $ of equity" />
+      <DuTerm label="EQUITY MULT" value={mult(l, 2)} />
       <span className="co-dupont-op">=</span>
-      <DuTerm label="ROE" value={fmtPct(roe, 1)} hint="profit per $ of equity" strong />
+      <DuTerm label="ROE" value={fmtPct(roe, 1)} strong tone={roe != null && roe < 0 ? "loss" : ""} />
     </div>
   );
 }
-const fmt2 = (x: number | null | undefined) => (x == null ? "—" : `${fmtNum(x, 2)}×`);
 
-function DuTerm({ label, value, hint, strong }: { label: string; value: string; hint: string; strong?: boolean }) {
+function DuTerm({ label, value, strong, tone }: { label: string; value: string; strong?: boolean; tone?: string }) {
   return (
     <div className={`co-dupont-term ${strong ? "strong" : ""}`}>
-      <div className="co-mini-label">{label}</div>
-      <div className="num co-dupont-val">{value}</div>
-      <div className="subtle small">{hint}</div>
+      <div className="co-ctl-k">{label}</div>
+      <div className={`co-dupont-val ${tone ?? ""}`}>{value}</div>
     </div>
   );
+}
+
+interface GrowthRow {
+  period: string;
+  revenue_growth: number | null;
+  eps_growth: number | null;
+  fcf_growth: number | null;
+  net_income_growth: number | null;
+}
+
+function GrowthTable({ frame, basis }: { frame: Ratios["annual"]; basis: Basis }) {
+  const rows: GrowthRow[] = (frame.index as string[])
+    .map((p, i) => {
+      const c = (k: string) => ((frame.data[k] ?? []) as (number | null)[])[i] ?? null;
+      return { period: p, revenue_growth: c("revenue_growth"), eps_growth: c("eps_growth"), fcf_growth: c("fcf_growth"), net_income_growth: c("net_income_growth") };
+    })
+    .filter((r) => r.revenue_growth != null || r.eps_growth != null || r.fcf_growth != null || r.net_income_growth != null)
+    .reverse();
+  if (!rows.length) return <div className="co-none co-pad">NO GROWTH ROWS</div>;
+  const col = (key: keyof GrowthRow, label: string): Column<GrowthRow> => ({ key, label, numeric: true, sortable: false, format: (x: number | null) => fmtSignedPct(x, 1), color: "sign" });
+  const cols: Column<GrowthRow>[] = [
+    { key: "period", label: "PERIOD", sortable: false, render: (r) => <span className="num">{periodLabel(r.period, basis === "ttm" ? "ttm" : "annual")}</span> },
+    col("revenue_growth", "REV"),
+    col("eps_growth", "EPS"),
+    col("fcf_growth", "FCF"),
+    col("net_income_growth", "NI"),
+  ];
+  return <DataTable columns={cols} rows={rows} rowKey={(r) => r.period} />;
 }
 
 interface CagrRow {
@@ -172,26 +240,14 @@ interface CagrRow {
   "3y": number | null;
   "5y": number | null;
 }
-const CAGR_LABEL: Record<string, string> = { revenue: "Revenue", eps_diluted: "Diluted EPS", fcf: "Free cash flow", net_income: "Net income" };
+const CAGR_LABEL: Record<string, string> = { revenue: "REVENUE", eps_diluted: "EPS DIL", fcf: "FCF", net_income: "NET INCOME" };
 
 function CagrTable({ data }: { data: Ratios }) {
   const rows: CagrRow[] = Object.entries(data.growth_cagr).map(([item, r]) => ({ item, "1y": r["1y"] ?? null, "3y": r["3y"] ?? null, "5y": r["5y"] ?? null }));
   const cols: Column<CagrRow>[] = [
-    { key: "item", label: "Line", render: (r) => CAGR_LABEL[r.item] ?? r.item, sortable: false },
-    ...(["1y", "3y", "5y"] as const).map((h) => ({ key: h, label: h.toUpperCase(), numeric: true, format: (x: number | null) => fmtSignedPct(x, 1), color: "sign" as const, heat: { min: -0.3, max: 0.3, diverging: true } })),
+    { key: "item", label: "LINE", render: (r) => CAGR_LABEL[r.item] ?? r.item.toUpperCase(), sortable: false, info: INFO.cagr },
+    ...(["1y", "3y", "5y"] as const).map((h) => ({ key: h, label: h.toUpperCase(), numeric: true, sortable: false, format: (x: number | null) => fmtSignedPct(x, 1), color: "sign" as const })),
   ];
   return <DataTable columns={cols} rows={rows} rowKey={(r) => r.item} />;
 }
 
-/**
- * Grouped bars built on the raw Chart (page-local styling; the shared BarChart also works now).
- */
-function GroupedBars({ series, height }: { series: { name: string; x: string[]; y: (number | null)[] }[]; height: number }) {
-  const data = useMemo(
-    () => (t: Tokens): Data[] =>
-      series.map((s, i) => ({ type: "bar", name: s.name, x: s.x, y: s.y, marker: { color: t.categorical[i] }, hovertemplate: `<b>%{fullData.name}</b> %{x}: %{y:.1%}<extra></extra>` })) as Data[],
-    [series],
-  );
-  const layout = useMemo(() => ({ barmode: "group", showlegend: true, hovermode: "closest", xaxis: { type: "category", showgrid: false, showspikes: false }, yaxis: { tickformat: ".0%", zeroline: true }, margin: { l: 44, r: 8, t: 30, b: 30 } }) as any, []);
-  return <Chart data={data} layout={layout} height={height} />;
-}

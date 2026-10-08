@@ -1,23 +1,24 @@
 /**
- * Optimizer (/optimize) — turn a universe into weights, and test honestly whether the
+ * Optimizer (/optimize): a universe into weights, and the walk-forward test of whether the
  * method would have worked.
  *
  * Data (all real, from quant/src/ohcamel_quant/api/routers/portfolio.py):
- *   GET  /api/portfolio/methods     method catalog (descriptions, references)
+ *   GET  /api/portfolio/methods     method catalog
  *   POST /api/portfolio/optimize    weights + ex-ante diagnostics (+ BL posterior, HRP tree)
  *   POST /api/portfolio/frontier    constrained frontier, CML, assets, other methods
  *   POST /api/portfolio/covariance  estimator, clustered correlation, MP spectrum
  *   POST /api/portfolio/compare     walk-forward OOS comparison + Sharpe-difference tests
  * Light endpoints re-query as inputs change (debounced); the walk-forward backtest runs on
- * an explicit button. Deep-link (from Portfolio Lab):
+ * RUN. Deep link (from Portfolio):
  *   /optimize?tickers=SPY,TLT&weights=0.6,0.4&start=YYYY-MM-DD&end=YYYY-MM-DD&from=portfolio
- * Page-local components live in ./optimizer/ (CSS prefix `op-`).
+ * Paper Tape: ruled cells, caps labels, mono numbers; narrative lives in Methodology behind
+ * Note markers. Page-local components live in ./optimizer/ (CSS prefix `op-`).
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Page, Skeleton, Tabs, useTabParam, InfoTip } from "../components";
-import { Icon } from "../components/Icon";
-import { fmtDate } from "../lib/format";
+import { Page, Skeleton, Tabs, useTabParam } from "../components";
+import { Absent } from "../design";
+import { fmtDate, fmtNum } from "../lib/format";
 import { useDebounced } from "../lib/hooks";
 import { usePortfolio, type Portfolio } from "../lib/portfolio";
 import { useApiPost, useApiQuery } from "../lib/query";
@@ -34,13 +35,8 @@ import {
 } from "./optimizer/config";
 import { CovarianceTab } from "./optimizer/CovarianceTab";
 import { FrontierTab } from "./optimizer/FrontierTab";
-import { METHOD_FAMILY } from "./optimizer/info";
-import {
-  MethodHeader,
-  MethodParams,
-  MethodPicker,
-  methodInfo,
-} from "./optimizer/MethodPicker";
+import { roundWeight } from "./optimizer/derive";
+import { MethodHeader, MethodParams, MethodPicker } from "./optimizer/MethodPicker";
 import { SetupRail } from "./optimizer/SetupRail";
 import { OptProvider, isRfError, type OptCtx } from "./optimizer/shared";
 import type {
@@ -170,7 +166,7 @@ export default function Optimizer() {
     (d: OptimizeOut) => {
       const hs = Object.entries(d.result.weights)
         .filter(([, v]) => Math.abs(v) > 1e-4)
-        .map(([ticker, weight]) => ({ ticker, weight: +weight.toFixed(6) }));
+        .map(([ticker, weight]) => ({ ticker, weight: roundWeight(weight) }));
       setHoldings(hs);
       set({ currentSource: PORTFOLIO_SOURCE, current: {} });
     },
@@ -202,99 +198,46 @@ export default function Optimizer() {
   const tabs = [
     { id: "allocation" as const, label: "Allocation" },
     { id: "frontier" as const, label: "Frontier" },
-    {
-      id: "views" as const,
-      label: "Black–Litterman",
-      badge:
-        cfg.returns === "black_litterman"
-          ? String(cfg.views.length)
-          : undefined,
-    },
+    { id: "views" as const, label: "Views · BL", badge: cfg.returns === "black_litterman" ? String(cfg.views.length) : undefined },
     { id: "covariance" as const, label: "Covariance" },
-    { id: "backtest" as const, label: "Backtest vs 1/N" },
+    { id: "backtest" as const, label: "Backtest · 1/N" },
   ];
 
   return (
     <OptProvider value={ctx}>
       <Page
-        eyebrow="Portfolio construction"
         title="Optimizer"
-        subtitle="Turn a universe of assets into weights with ten allocation methods — then check, out of sample and after costs, whether any of them actually beats splitting the money equally."
         meta={
           <>
-            {health.data?.offline && (
-              <span
-                className="badge unknown"
-                title="The backend is running in offline mode: only committed daily data (9 ETFs, 2016–2026, a few FRED series) is available."
-              >
-                Offline dataset
-              </span>
-            )}
+            {health.data?.offline && <span title="Offline mode: committed daily data only (9 ETFs, 2016–2026, a few FRED series)">OFFLINE DATASET</span>}
             {u && (
-              <span>
-                <span className="num">{u.tickers.length}</span> assets ·{" "}
-                <span className="num">{u.observations.toLocaleString()}</span>{" "}
-                common trading days · {fmtDate(u.start)} – {fmtDate(u.end)}
+              <span className="num">
+                {u.tickers.length} ASSETS · {fmtNum(u.observations, 0)} DAYS · {fmtDate(u.start)} – {fmtDate(u.end)}
               </span>
             )}
-            {opt.isFetching && !opt.isLoading && (
-              <span className="op-updating">
-                <span className="op-dot" /> updating
-              </span>
-            )}
+            {opt.isFetching && !opt.isLoading && <span className="op-updating num">UPDATING</span>}
           </>
         }
       >
         <div className="op-layout">
-          <SetupRail
-            cfg={cfg}
-            set={set}
-            catalog={catalog.data}
-            portfolioName={portfolio.name}
-            onUsePortfolio={adoptPortfolio}
-            anchor={u?.end}
-          />
+          <SetupRail cfg={cfg} set={set} portfolioName={portfolio.name} onUsePortfolio={adoptPortfolio} anchor={u?.end} />
 
           <div className="op-main">
-            <section
-              className="op-method-block"
-              aria-labelledby="op-method-title"
-            >
-              <header className="op-block-head">
-                <div>
-                  <h2 id="op-method-title" className="op-block-title display">
-                    Method
-                    <InfoTip info={methodInfo(spec)} />
-                  </h2>
-                  <p className="op-block-desc">
-                    Ten ways to turn estimates into weights, from naive to
-                    hierarchical. Results update as you change anything.
-                  </p>
+            <section className="op-method-block" aria-labelledby="op-method-title">
+              <header className="oc-panel-head">
+                <h2 id="op-method-title" className="oc-panel-title">
+                  Method
+                </h2>
+                <div className="oc-panel-meta">
+                  <span className="num">{catalog.data ? `${catalog.data.methods.length} METHODS` : ""}</span>
                 </div>
-                {spec && (
-                  <span className="badge accent">
-                    {METHOD_FAMILY[spec.name]}
-                  </span>
-                )}
               </header>
               {catalog.isLoading ? (
-                <div className="op-methods">
-                  {Array.from({ length: 10 }, (_, i) => (
-                    <Skeleton key={i} height={120} />
-                  ))}
-                </div>
+                <Skeleton height={260} />
               ) : catalog.data ? (
-                <MethodPicker
-                  methods={catalog.data.methods}
-                  cfg={cfg}
-                  set={set}
-                  rfMissing={rfMissing}
-                />
+                <MethodPicker methods={catalog.data.methods} cfg={cfg} set={set} rfMissing={rfMissing} />
               ) : (
-                <div className="op-warn small">
-                  <Icon name="alert" size={14} /> The method catalog could not
-                  be loaded ({catalog.error?.detail}).
-                </div>
+                <Absent reason="CATALOG UNAVAILABLE" source="GET /api/portfolio/methods" />
               )}
               {spec && (
                 <div className="op-method-foot">
@@ -310,34 +253,17 @@ export default function Optimizer() {
 
             {!ready ? (
               <div className="op-empty-universe">
-                <Icon name="optimize" size={22} />
-                <p className="display">
-                  Add at least two assets to the universe to begin.
-                </p>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={adoptPortfolio}
-                >
-                  <Icon name="portfolio" size={15} /> Use my portfolio
+                <Absent reason="UNIVERSE < 2 ASSETS" source="ADD TICKERS · OR USE PORT" />
+                <button type="button" className="btn btn-sm" onClick={adoptPortfolio}>
+                  USE PORT
                 </button>
               </div>
             ) : (
               <>
-                {tab === "allocation" && (
-                  <AllocationTab q={opt} onApply={apply} applied={applied} />
-                )}
-                {tab === "frontier" && (
-                  <FrontierTab
-                    q={frontier}
-                    opt={opt}
-                    current={curBody ? currentEval : null}
-                  />
-                )}
+                {tab === "allocation" && <AllocationTab q={opt} onApply={apply} applied={applied} />}
+                {tab === "frontier" && <FrontierTab q={frontier} opt={opt} current={curBody ? currentEval : null} />}
                 {tab === "views" && <BlackLittermanTab q={opt} />}
-                {tab === "covariance" && (
-                  <CovarianceTab enabled={tab === "covariance"} />
-                )}
+                {tab === "covariance" && <CovarianceTab enabled={tab === "covariance"} />}
                 {/* kept mounted so a finished backtest survives tab switches */}
                 <div hidden={tab !== "backtest"}>
                   <CompareTab enabled={tab === "backtest"} />

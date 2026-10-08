@@ -80,6 +80,13 @@ export function fmtMultiple(x: number | null | undefined, digits = 2): string {
   return ok(x) ? `${fmtNum(x, digits)}×` : EM_DASH;
 }
 
+/** Scientific: 0.000123 -> "1.23e−4" (for tiny diagnostics such as an arbitrage margin); 0 stays "0". */
+export function fmtSci(x: number | null | undefined, digits = 2): string {
+  if (!ok(x)) return EM_DASH;
+  if (x === 0) return "0";
+  return x.toExponential(digits).replace("e+", "e").replace(/-/g, MINUS);
+}
+
 /** Heuristic formatter for tables with mixed magnitudes. */
 export function fmtAuto(x: unknown): string {
   if (x === null || x === undefined) return EM_DASH;
@@ -154,4 +161,14 @@ export function fmtRelativeTime(iso: string | null | undefined, now: Date = new 
 export function signClass(x: number | null | undefined, invert = false): "gain" | "loss" | "" {
   if (!ok(x) || x === 0) return "";
   return (x > 0) !== invert ? "gain" : "loss";
+}
+
+/** Round to `digits` decimals as a number (no display formatting): 0.1 + 0.2 -> 0.3 at 10. */
+export function roundTo(x: number, digits: number): number {
+  return Number(x.toFixed(digits));
+}
+
+/** Plain fixed decimals with an ASCII minus and no grouping, for SVG path data and input values. */
+export function fixedNum(x: number, digits: number): string {
+  return x.toFixed(digits);
 }

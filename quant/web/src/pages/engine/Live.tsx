@@ -1,29 +1,44 @@
 /**
  * The engine's live state through the read-only bridge: GET /api/engine/{status,snapshot,history}.
- * Polls every 5 s while the engine answers; a 503 renders as "bridge not enabled"
- * (OHCAMEL_QUANT_ENGINE_URL unset) or "engine unreachable" — never as stand-in numbers.
+ * Polls every 5 s while the engine answers. A 503 renders INSUFFICIENT DATA · BRIDGE OFF
+ * (OHCAMEL_QUANT_ENGINE_URL unset) or · DATA UNAVAILABLE (configured, unreachable); never a
+ * stand-in number. Paper Tape: ruled Cells, caps labels, mono numbers, signal red only for a
+ * breached limit or an unhealthy feed.
  */
-import { useMemo } from "react";
-import type { Data } from "plotly.js";
-import { Chart, DataTable, Panel, StatGrid, StatTile, TimeSeriesChart, type Column } from "../../components";
-import { Icon } from "../../components/Icon";
+import { useMemo, type CSSProperties } from "react";
+import { XYChart } from "../../charts/XYChart";
+import { DataTable, Panel, StatGrid, StatTile, type Column } from "../../components";
+import { Absent } from "../../design";
 import { DataUnavailableError } from "../../lib/api";
-import { fmtCurrency, fmtDate, fmtNum, fmtPct, fmtRelativeTime } from "../../lib/format";
+import { fmtCurrency, fmtMultiple, fmtNum, fmtPct } from "../../lib/format";
 import { useApiQuery } from "../../lib/query";
-import type { Tokens } from "../../lib/theme";
 import type { EngineLimit, EnginePosition, EngineStatus, HistoryOut, SnapshotOut } from "./types";
 
-const LIVE_HOST = "https://live.ohcamel.ajaiupadhyaya.com";
+export const LIVE_HOST = "https://live.ohcamel.ajaiupadhyaya.com";
 const POLL = 5000;
 const usd = (x: number | null | undefined) => fmtCurrency(x, { digits: 0 });
 const usdC = (x: number | null | undefined) => fmtCurrency(x, { compact: true, digits: 1 });
+const asIso = (s: string | undefined) => (s ? s.replace(" ", "T") : undefined);
 
-function uptime(s: number | undefined): string {
+export function uptime(s: number | undefined): string {
   if (s == null) return "—";
   const d = Math.floor(s / 86400);
   const h = Math.floor((s % 86400) / 3600);
   const m = Math.floor((s % 3600) / 60);
-  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+  return d ? `${d}D ${h}H` : h ? `${h}H ${m}M` : `${m}M`;
+}
+
+export function Kv({ rows }: { rows: [string, string, string?][] }) {
+  return (
+    <dl className="oc-kv">
+      {rows.map(([k, v, cls]) => (
+        <div key={k} className="oc-kv-row">
+          <dt>{k}</dt>
+          <dd className={`num ${cls ?? ""}`}>{v}</dd>
+        </div>
+      ))}
+    </dl>
+  );
 }
 
 export function LiveEngine() {
@@ -32,214 +47,200 @@ export function LiveEngine() {
   const snap = useApiQuery<SnapshotOut>("/engine/snapshot", undefined, { enabled: up, refetchInterval: up ? POLL : false, staleTime: 0 });
   const hist = useApiQuery<HistoryOut>("/engine/history", undefined, { enabled: up, refetchInterval: up ? POLL : false, staleTime: 0 });
 
-  if (status.isLoading) return <Panel title="Engine status" loading skeletonHeight={160} />;
+  if (status.isLoading) return <Panel title="ENGINE · STATUS" loading skeletonHeight={120} />;
   if (status.isError) {
-    const body = (status.error as DataUnavailableError | undefined)?.body as { configured?: boolean } | undefined;
-    if (status.error instanceof DataUnavailableError && body?.configured === false) return <BridgeOff detail={status.error.detail} />;
-    return (
-      <Panel title="Engine status" subtitle="The bridge is configured but the engine did not answer." query={status}>
-        {null}
-      </Panel>
-    );
+    const err = status.error;
+    const off = err instanceof DataUnavailableError && (err.body as { configured?: boolean } | undefined)?.configured === false;
+    return <BridgeOff off={off} detail={err instanceof DataUnavailableError ? err.detail : String(err)} />;
   }
   const st = status.data!;
   const s = snap.data?.snapshot;
+  const asOf = asIso(s?.as_of);
   return (
-    <div className="stack-lg">
-      <Panel<EngineStatus> title="Engine status" subtitle="Is the OCaml process up, which feed is it on, and is its graph moving? Polled every 5 seconds." query={status} skeletonHeight={100}>
-        {() => (
-          <div className="en-status">
-            <span className={`badge ${st.ops?.mode === "live" ? "gain" : st.ops?.mode === "demo" ? "warn" : "unknown"}`}>
-              <span className="en-pulse" /> {st.ops?.mode === "live" ? "LIVE" : st.ops?.mode === "demo" ? "DEMO · synthetic feed" : "mode unknown"}
-            </span>
-            <Kv k="Feed" v={st.health.healthy ? "healthy" : `${st.health.stale.length} stale · ${st.health.never_seen.length} never seen`} tone={st.health.healthy ? "gain" : "warn"} />
-            <Kv k="Symbols" v={String(st.health.symbols.length)} />
-            <Kv k="Uptime" v={uptime(st.ops?.uptime_s)} />
-            <Kv k="Round trip" v={`${fmtNum(st.latency_ms, 0)} ms`} />
-            <Kv k="Build" v={st.ops?.build?.git_sha ?? "—"} />
-            {s && <Kv k="Nodes recomputed" v={`${s.nodes_recomputed.toLocaleString()}${s.nodes_recomputed_delta ? ` (+${s.nodes_recomputed_delta})` : ""}`} />}
-            <a className="btn btn-sm" href={LIVE_HOST} target="_blank" rel="noreferrer">
-              Open the live desk <Icon name="external" size={13} />
-            </a>
-          </div>
-        )}
-      </Panel>
-
-      <Panel<SnapshotOut> title="Book risk now" subtitle={s ? `Snapshot as of ${fmtRelativeTime(s.as_of.replace(" ", "T"))} — value at risk, shortfall and exposure recomputed on the last tick.` : "The engine's whole book as of its last stabilization."} query={snap} skeletonHeight={130}>
-        {(d) => {
-          const x = d.snapshot;
-          return (
-            <StatGrid min={150}>
-              <StatTile label="Equity" value={usdC(x.equity)} caption={x.current_drawdown != null ? `drawdown ${fmtPct(x.current_drawdown, 2)}` : undefined} />
-              <StatTile label="Gross exposure" value={usdC(x.gross_exposure)} caption={x.net_exposure != null ? `net ${usdC(x.net_exposure)}` : undefined} />
-              <StatTile label="VaR (1-day)" value={usd(x.value_at_risk_notional)} tone="loss" info="var" caption={x.historical_var != null ? `${fmtPct(x.historical_var, 2)} historical` : "warming up"} />
-              <StatTile label="Expected shortfall" value={usd(x.expected_shortfall_notional)} tone="loss" info="es" caption={x.expected_shortfall != null ? fmtPct(x.expected_shortfall, 2) : undefined} />
-              <StatTile label="Parametric VaR" value={x.parametric_var ?? null} format={(v) => fmtPct(v, 2)} info={{ title: "Parametric VaR", text: "Normal (variance–covariance) VaR from the engine's covariance matrix; the EWMA variant weights recent returns more (RiskMetrics λ).", formula: "z_\\alpha\\sqrt{w^\\top\\Sigma w}" }} caption={x.parametric_var_ewma != null ? `EWMA ${fmtPct(x.parametric_var_ewma, 2)} (λ ${fmtNum(x.ewma_lambda, 2)})` : undefined} />
-              <StatTile label={`Beta vs ${x.factor ?? "market"}`} value={x.portfolio_beta ?? null} format={(v) => fmtNum(v, 2)} info="beta" />
-              <StatTile label="Diversification ratio" value={x.diversification_ratio ?? null} format={(v) => `${fmtNum(v, 2)}×`} info={{ title: "Diversification ratio", text: "Sum of the positions' standalone risks divided by the book's risk. 1× means no diversification; higher means positions offset each other.", reference: "Choueifaty & Coignard (2008), JPM 35(1)" }} />
-            </StatGrid>
-          );
-        }}
-      </Panel>
+    <>
+      <div className="grid-2">
+        <Panel<EngineStatus> title="ENGINE · STATUS" query={status} skeletonHeight={120} asOf={asOf} maxAgeSec={120}>
+          {() => (
+            <Kv
+              rows={[
+                ["MODE", st.ops?.mode ? st.ops.mode.toUpperCase() : "UNKNOWN"],
+                ["FEED", st.health.healthy ? "HEALTHY" : `${fmtNum(st.health.stale.length, 0)} STALE · ${fmtNum(st.health.never_seen.length, 0)} NEVER SEEN`, st.health.healthy ? "" : "loss"],
+                ["SYMBOLS", fmtNum(st.health.symbols.length, 0)],
+                ["UPTIME", uptime(st.ops?.uptime_s)],
+                ["ROUND TRIP", `${fmtNum(st.latency_ms, 0)} MS`],
+                ["BUILD", st.ops?.build?.git_sha ? st.ops.build.git_sha.slice(0, 7) : "—"],
+                ...(s ? ([["NODES RECOMPUTED", `${fmtNum(s.nodes_recomputed, 0)}${s.nodes_recomputed_delta ? ` · +${fmtNum(s.nodes_recomputed_delta, 0)}` : ""}`]] as [string, string][]) : []),
+              ]}
+            />
+          )}
+        </Panel>
+        <Panel<SnapshotOut> title="BOOK · 1D" query={snap} skeletonHeight={120} asOf={asOf} maxAgeSec={120}>
+          {(d) => {
+            const x = d.snapshot;
+            return (
+              <StatGrid min={120}>
+                <StatTile size="sm" label="EQUITY" value={usdC(x.equity)} caption={x.current_drawdown != null ? `DD ${fmtPct(x.current_drawdown, 2)}` : undefined} />
+                <StatTile size="sm" label="GROSS" value={usdC(x.gross_exposure)} caption={x.net_exposure != null ? `NET ${usdC(x.net_exposure)}` : undefined} />
+                <StatTile size="sm" label="VAR $" value={usd(x.value_at_risk_notional)} info="var" caption={x.historical_var != null ? `HIST ${fmtPct(x.historical_var, 2)}` : "WARMING UP"} />
+                <StatTile size="sm" label="ES $" value={usd(x.expected_shortfall_notional)} info="es" caption={x.expected_shortfall != null ? fmtPct(x.expected_shortfall, 2) : undefined} />
+                <StatTile size="sm" label="VAR · PARAM" value={x.parametric_var ?? null} format={(v) => fmtPct(v, 2)} caption={x.parametric_var_ewma != null ? `EWMA ${fmtPct(x.parametric_var_ewma, 2)} · λ ${fmtNum(x.ewma_lambda, 2)}` : undefined} />
+                <StatTile size="sm" label={`BETA · ${(x.factor ?? "MKT").toUpperCase()}`} value={x.portfolio_beta ?? null} format={(v) => fmtNum(v, 2)} info="beta" />
+                <StatTile size="sm" label="DIV RATIO" value={x.diversification_ratio ?? null} format={(v) => fmtMultiple(v, 2)} />
+              </StatGrid>
+            );
+          }}
+        </Panel>
+      </div>
 
       {s && (
         <div className="grid-2">
-          <Panel title="Risk versus money" subtitle="Each position's share of the book's capital next to its share of VaR (Euler allocation). Bars that differ show where risk hides." info={{ title: "Euler risk contribution", text: "Component VaR = weight × marginal VaR; the components add up to total VaR, so each is a position's fair share of the risk.", formula: "\\text{VaR} = \\sum_i w_i \\frac{\\partial\\,\\text{VaR}}{\\partial w_i}", reference: "Tasche (2000)" }} notes={[]}>
-            <RiskVsMoney positions={s.positions} />
+          <Panel title="RISK VS CAPITAL · EULER" notes={[]} asOf={asOf} maxAgeSec={120}>
+            <Share positions={s.positions} />
           </Panel>
-          <Panel title="Limits" subtitle="Each risk limit, how much of it is used, and whether it is breached." info={{ text: "Limits are configured in the engine; utilisation = observed / threshold. Red bars are breached." }} notes={s.unevaluated?.length ? [`Not yet evaluated: ${s.unevaluated.join(", ")}`] : []}>
+          <Panel title="LIMITS" flush notes={s.unevaluated?.length ? [`Not yet evaluated: ${s.unevaluated.join(", ")}`] : []} asOf={asOf} maxAgeSec={120}>
             <Limits limits={s.limits ?? []} />
           </Panel>
         </div>
       )}
 
       {s && (
-        <Panel<SnapshotOut> title="Positions" subtitle="The book line by line, with each position's contribution to value at risk." query={snap} flush notes={[]} provenance={[]}>
+        <Panel<SnapshotOut> title={`POSITIONS · ${fmtNum(s.positions.length, 0)}`} query={snap} flush notes={[]} provenance={[]} asOf={asOf} maxAgeSec={120}>
           {(d) => <Positions rows={d.snapshot.positions} />}
         </Panel>
       )}
 
-      <Panel<HistoryOut> title="Intraday trail" subtitle="What the engine has seen since it last started: equity, and VaR/ES in dollars. Kept in memory only." query={hist} skeletonHeight={240}>
+      <Panel<HistoryOut> title="TRAIL · SINCE START" query={hist} skeletonHeight={220}>
         {(d) => <Trail h={d.history} />}
       </Panel>
-    </div>
+    </>
   );
 }
 
-function Kv({ k, v, tone }: { k: string; v: string; tone?: string }) {
+function BridgeOff({ off, detail }: { off: boolean; detail: string }) {
   return (
-    <span className="en-kv">
-      <span className="subtle small">{k}</span> <span className={`num ${tone ?? ""}`}>{v}</span>
-    </span>
+    <Panel
+      title="ENGINE · BRIDGE"
+      actions={
+        <a className="oc-go" href={LIVE_HOST} target="_blank" rel="noreferrer">
+          LIVE DESK →
+        </a>
+      }
+    >
+      <div className="en-off">
+        <Absent reason={off ? "BRIDGE OFF" : "DATA UNAVAILABLE"} source={detail} />
+        <Kv
+          rows={[
+            ["SWITCH", "OHCAMEL_QUANT_ENGINE_URL"],
+            ["READS", "HEALTH · OPS · SNAPSHOT · HISTORY"],
+            ["ACCESS", "GET ONLY · 2 S CACHE"],
+            ["LIVE DESK", "GATED"],
+          ]}
+        />
+      </div>
+    </Panel>
   );
 }
 
-function BridgeOff({ detail }: { detail: string }) {
+function Share({ positions }: { positions: EnginePosition[] }) {
+  const max = Math.max(1e-9, ...positions.map((p) => Math.max(Math.abs(p.weight ?? 0), Math.abs(p.risk_share ?? 0))));
+  const w = (v: number | null) => `${(Math.abs(v ?? 0) / max) * 100}%`;
   return (
-    <section className="oc-panel en-off">
-      <div className="en-off-head">
-        <div className="oc-state-icon en-off-icon">
-          <Icon name="cloud-off" size={20} />
-        </div>
-        <div>
-          <h3 className="en-off-title">The engine bridge is not enabled on this server</h3>
-          <p className="subtle small">
-            This app reads the engine through a narrow, GET-only bridge. It is switched off here, so there is no live book to show — and nothing is simulated in its place.
-          </p>
-          <div className="oc-state-detail num en-off-detail">{detail}</div>
-        </div>
-      </div>
-      <div className="en-off-grid">
-        <div>
-          <div className="en-mini">See it running</div>
-          <p className="small">
-            The engine runs 24/7 on its own private host, behind a password.{" "}
-            <a href={LIVE_HOST} target="_blank" rel="noreferrer">
-              live.ohcamel.ajaiupadhyaya.com <Icon name="external" size={12} />
-            </a>
-          </p>
-        </div>
-        <div>
-          <div className="en-mini">Turn the bridge on</div>
-          <p className="small">
-            Set <code className="num">OHCAMEL_QUANT_ENGINE_URL</code> to the engine's base URL (on the droplet, <code className="num">http://ohcamel-live:8081</code>) and restart the quant server. Only <code className="num">/api/health</code>, <code className="num">/api/ops</code>, <code className="num">/api/snapshot</code> and{" "}
-            <code className="num">/api/history</code> are ever read.
-          </p>
-        </div>
-        <div>
-          <div className="en-mini">What appears here then</div>
-          <p className="small">Feed health and mode, book equity and exposure, 1-day VaR and expected shortfall (historical, parametric, EWMA), beta, Euler risk contributions per position, limit utilisation, and the intraday trail — refreshed every 5 seconds.</p>
-        </div>
-      </div>
-    </section>
+    <table className="en-share">
+      <thead>
+        <tr>
+          <th scope="col">SYM</th>
+          <th scope="col" className="en-share-bars">
+            <span className="en-key en-key-cap" aria-hidden /> CAPITAL <span className="en-key en-key-var" aria-hidden /> VAR
+          </th>
+          <th scope="col" className="num">CAP</th>
+          <th scope="col" className="num">VAR</th>
+        </tr>
+      </thead>
+      <tbody>
+        {positions.map((p) => (
+          <tr key={p.symbol}>
+            <td className="num">{p.symbol}</td>
+            <td className="en-share-bars">
+              <span className="en-bar-cap" style={{ "--w": w(p.weight) } as CSSProperties} />
+              <span className="en-bar-var" style={{ "--w": w(p.risk_share) } as CSSProperties} />
+            </td>
+            <td className="num">{fmtPct(p.weight, 1)}</td>
+            <td className="num">{fmtPct(p.risk_share, 1)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
-function RiskVsMoney({ positions }: { positions: EnginePosition[] }) {
-  const data = useMemo(
-    () => (t: Tokens): Data[] => {
-      const x = positions.map((p) => p.symbol);
-      return [
-        { type: "bar", name: "Share of capital", x, y: positions.map((p) => p.weight), marker: { color: t.categorical[0] }, hovertemplate: "<b>%{x}</b> capital %{y:.1%}<extra></extra>" },
-        { type: "bar", name: "Share of VaR", x, y: positions.map((p) => p.risk_share), marker: { color: t.categorical[1] }, hovertemplate: "<b>%{x}</b> VaR %{y:.1%}<extra></extra>" },
-      ] as Data[];
-    },
-    [positions],
-  );
-  const layout = useMemo(() => ({ barmode: "group", showlegend: true, xaxis: { type: "category", showspikes: false }, yaxis: { tickformat: ".0%", zeroline: true }, margin: { l: 44, r: 8, t: 30, b: 30 } }) as any, []);
-  return <Chart data={data} layout={layout} height={280} ariaLabel="Capital share vs VaR share per position" />;
-}
-
-const LIMIT_NAME = (s: string) => s.replace(/_/g, " ").replace(/\bvar\b/i, "VaR").replace(/^\w/, (c) => c.toUpperCase());
+const LIMIT_NAME = (s: string) => s.replace(/_/g, " ").toUpperCase();
 
 function Limits({ limits }: { limits: EngineLimit[] }) {
-  if (!limits.length) return <div className="subtle small">No limits are configured on this engine.</div>;
-  const fmt = (v: number | null, unit: string) => (v == null ? "—" : unit === "USD" ? usd(v) : unit === "fraction" ? fmtPct(v, 1) : fmtNum(v, 2));
-  return (
-    <ul className="en-limits">
-      {limits.map((l) => {
-        const u = l.utilisation ?? 0;
-        return (
-          <li key={`${l.name}:${l.scope}`}>
-            <div className="en-limit-head">
-              <span>
-                {LIMIT_NAME(l.name)} <span className="subtle small">· {l.scope}</span>
-              </span>
-              <span className={`num small ${l.breached ? "loss" : ""}`}>
-                {fmt(l.observed, l.unit)} / {fmt(l.threshold, l.unit)} {l.breached && <span className="badge loss">breached</span>}
-              </span>
-            </div>
-            <div className="en-limit-bar">
-              <span className={`en-limit-fill ${l.breached ? "breach" : u > 0.8 ? "near" : ""}`} style={{ width: `${Math.min(1, u) * 100}%` }} />
-            </div>
-            <div className="subtle small num">{l.utilisation != null ? `${fmtPct(l.utilisation, 0)} used` : "not evaluated"}</div>
-          </li>
-        );
-      })}
-    </ul>
-  );
+  if (!limits.length) return <Absent reason="NO LIMITS CONFIGURED" source="engine · book limits" />;
+  const fmt = (v: number | null, unit: string) => (v == null ? "—" : unit === "USD" ? usdC(v) : unit === "fraction" ? fmtPct(v, 1) : fmtNum(v, 2));
+  const cols: Column<EngineLimit>[] = [
+    { key: "name", label: "LIMIT", render: (l) => <span className={l.breached ? "loss" : ""}>{LIMIT_NAME(l.name)}</span> },
+    { key: "scope", label: "SCOPE", hideBelow: 900, render: (l) => <span className="num">{l.scope}</span> },
+    { key: "observed", label: "OBS", numeric: true, format: (v, l) => <span className={l.breached ? "loss" : ""}>{fmt(v, l.unit)}</span> },
+    { key: "threshold", label: "MAX", numeric: true, format: (v, l) => fmt(v, l.unit) },
+    {
+      key: "utilisation",
+      label: "USED",
+      width: "30%",
+      render: (l) =>
+        l.utilisation == null ? (
+          <span className="num">NOT EVALUATED</span>
+        ) : (
+          <span className="en-use">
+            <span className="en-use-bar" aria-hidden>
+              <span className={`en-use-fill ${l.breached ? "breach" : ""}`} style={{ "--w": `${Math.min(1, l.utilisation) * 100}%` } as CSSProperties} />
+            </span>
+            <span className={`num ${l.breached ? "loss" : ""}`}>{l.breached ? `BREACH ${fmtPct(l.utilisation, 0)}` : fmtPct(l.utilisation, 0)}</span>
+          </span>
+        ),
+    },
+  ];
+  return <DataTable<EngineLimit> compact columns={cols} rows={limits} rowKey={(l) => `${l.name}:${l.scope}`} scrollLabel="Engine limits" />;
 }
 
 function Positions({ rows }: { rows: EnginePosition[] }) {
   const cols: Column<EnginePosition>[] = [
-    { key: "symbol", label: "Symbol", render: (r) => <strong className="num">{r.symbol}</strong> },
-    { key: "sector", label: "Sector", hideBelow: 900 },
-    { key: "qty", label: "Qty", numeric: true, format: (v) => fmtNum(v, 0) },
-    { key: "price", label: "Mark", numeric: true, format: (v) => fmtNum(v, 2) },
-    { key: "exposure", label: "Exposure", numeric: true, format: (v) => usd(v), color: "sign" },
-    { key: "weight", label: "Weight", numeric: true, format: (v) => fmtPct(v, 1) },
-    { key: "component_var", label: "Component VaR", numeric: true, format: (v) => usd(v), info: { text: "This position's additive share of the book's dollar VaR (Euler)." } },
-    { key: "risk_share", label: "VaR share", numeric: true, format: (v) => fmtPct(v, 1), heat: { min: 0, max: 0.5 } },
-    { key: "risk_over_money", label: "Risk / money", numeric: true, format: (v) => (v == null ? "—" : `${fmtNum(v, 2)}×`), hideBelow: 900, info: { text: "VaR share divided by capital share: above 1× the position carries more risk than its size suggests." } },
+    { key: "symbol", label: "SYM", render: (r) => <span className="num">{r.symbol}</span> },
+    { key: "sector", label: "SECTOR", hideBelow: 900 },
+    { key: "qty", label: "QTY", numeric: true, format: (v) => fmtNum(v, 0) },
+    { key: "price", label: "MARK", numeric: true, format: (v) => fmtNum(v, 2) },
+    { key: "exposure", label: "EXPOSURE", numeric: true, format: (v) => usd(v) },
+    { key: "weight", label: "WEIGHT", numeric: true, hideBelow: 600, format: (v) => fmtPct(v, 1) },
+    { key: "component_var", label: "VAR $ · EULER", numeric: true, hideBelow: 600, format: (v) => usd(v) },
+    { key: "risk_share", label: "VAR SHARE", numeric: true, format: (v) => fmtPct(v, 1) },
+    { key: "risk_over_money", label: "RISK/CAP", numeric: true, hideBelow: 900, format: (v) => fmtMultiple(v, 2) },
   ];
-  return <DataTable columns={cols} rows={rows} rowKey={(r) => r.symbol} defaultSort={{ key: "exposure", dir: "desc" }} />;
+  return <DataTable compact columns={cols} rows={rows} rowKey={(r) => r.symbol} scrollLabel="Engine positions" defaultSort={{ key: "exposure", dir: "desc" }} />;
 }
 
-const EQ_LAYOUT = { yaxis: { tickformat: ",.0f" } } as any; // "$" comes from yFormat="usd" (tickprefix)
-
 function Trail({ h }: { h: HistoryOut["history"] }) {
-  const x = useMemo(() => h.time.map((t) => new Date(t).toISOString()), [h.time]);
-  const eq = useMemo(() => [{ name: "Equity", x, y: h.equity }], [x, h.equity]);
-  const risk = useMemo(
-    () => [
-      { name: "VaR", x, y: h.var_notional, color: "var(--loss)" },
-      { name: "Expected shortfall", x, y: h.es_notional, color: "var(--warn)" },
-    ],
-    [x, h.var_notional, h.es_notional],
-  );
-  if (!h.points) return <div className="subtle small">The trail is empty: the engine restarted recently and has not appended a point yet.</div>;
+  // Minutes before the latest point: the trail is intraday, so a date axis would read one day.
+  const x = useMemo(() => h.time.map((t) => (t - (h.time[h.time.length - 1] ?? t)) / 60_000), [h.time]);
+  if (!h.points) return <Absent reason="NO POINTS SINCE RESTART" source="GET /api/engine/history" />;
   return (
     <div className="grid-2">
-      <div>
-        <div className="en-mini">Equity</div>
-        <TimeSeriesChart series={eq} yFormat="usd" height={220} layout={EQ_LAYOUT} />
-      </div>
-      <div>
-        <div className="en-mini">1-day VaR & ES ($)</div>
-        <TimeSeriesChart series={risk} yFormat="usd" height={220} layout={EQ_LAYOUT} />
-      </div>
-      <div className="subtle small span-all">
-        {h.points.toLocaleString()} of {h.capacity.toLocaleString()} points held · from {fmtDate(x[0])} to {fmtDate(x[x.length - 1])}
+      <XYChart x={x} xTitle="MIN" xFormat="int" series={[{ name: "EQUITY", y: h.equity, tone: "ink" }]} yFormat="usd" digits={0} height={200} ariaLabel="Engine book equity since the engine started" />
+      <XYChart
+        x={x}
+        xTitle="MIN"
+        xFormat="int"
+        series={[
+          { name: "VAR", y: h.var_notional, tone: "ink" },
+          { name: "ES", y: h.es_notional, tone: "ink2", dash: "dash" },
+        ]}
+        yFormat="usd"
+        digits={0}
+        zero
+        height={200}
+        ariaLabel="Engine 1-day VaR and expected shortfall in dollars since the engine started"
+      />
+      <div className="en-trail-meta num span-all">
+        {fmtNum(h.points, 0)} / {fmtNum(h.capacity, 0)} POINTS · IN MEMORY
       </div>
     </div>
   );

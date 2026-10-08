@@ -1,34 +1,35 @@
-/* Ticker page — page-local styles (prefix tk-). */
-.tk-title {
-  display: inline-flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 0 18px;
-}
+/* Ticker page — page-local styles (prefix tk-). Paper Tape: rules, caps, mono numbers. */
 .tk-symbol {
-  font-family: var(--font-display);
   font-variant-numeric: normal;
-  letter-spacing: -0.02em;
 }
-.tk-name {
-  font-size: 0.5em;
-  color: var(--text-3);
-  font-weight: 400;
-  letter-spacing: -0.01em;
-}
-.tk-quote {
-  display: inline-flex;
-  align-items: baseline;
+.tk-actions {
+  display: flex;
   flex-wrap: wrap;
-  gap: 6px 14px;
+  gap: var(--sp-2);
 }
-.tk-last {
-  font-size: 1.75rem;
-  font-weight: 500;
-  color: var(--text);
-  letter-spacing: -0.03em;
+.tk-ctl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
 }
-.tk-chg {
-  font-size: var(--fs-lg);
-  font-weight: 500;
+.tk-price {
+  display: grid;
+  gap: 0;
+}
+.tk-none {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+.tk-yr {
+  font-weight: 600;
+}
+.tk-yr-n {
+  margin-left: 4px;
+  font-size: var(--fs-2xs);
+  font-weight: 400;
+  line-height: 1;
+  color: var(--ink-2);
 }

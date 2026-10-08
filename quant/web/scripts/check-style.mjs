@@ -1,6 +1,6 @@
 // Paper Tape style guard, run by `npm run build`.
 // Scans src/**/*.{css,tsx,ts} (except the Flight Deck files and tests) and fails, naming
-// file:line, on: a non-zero border-radius, a box-shadow other than none, any gradient()
+// file:line, on: a non-zero border-radius or SVG rx/ry, a box-shadow other than none, any gradient()
 // (CSS, SVG <linear/radialGradient>, canvas create*Gradient, Plotly fillgradient),
 // the removed faces Fraunces and Inter Variable, and the green tokens --gain-soft and
 // --crt-green. Green is allowed only inside src/pages/deck/** and src/pages/Deck.tsx.
@@ -32,6 +32,9 @@ const RULES = [
   // The JSX, canvas and Plotly forms: <linearGradient>, <radialGradient>, ctx.createLinearGradient(),
   // createRadialGradient(), createConicGradient(), and Plotly's fillgradient.
   { re: /(linear|radial|conic)Gradient|fillgradient/gi, bad: () => true, why: (m) => `${m[0]} (no gradients; hatch the area or use a flat token)` },
+  // Rounded SVG corners: rx= / ry= attributes (JSX or markup in strings) and the CSS rx / ry
+  // properties, unless the value is a literal zero. A non-literal value cannot be proven zero.
+  { re: /(?<![\w&?.$-])(rx|ry)(?:\s*=\s*\{?\s*["'`]?\s*|:\s*)([\d.]+[a-z%]*|[A-Za-z_$][\w.$]*)/g, bad: (m) => !/^0*\.?0*(px|%|em|rem)?$/.test(m[2]) || !/0/.test(m[2]), why: (m) => `${m[1]} ${m[2]} (no rounded corners; radius is 0)` },
   { re: /Fraunces|Inter Variable/g, bad: () => true, why: (m) => `${m[0]} (faces are Archivo, IBM Plex Sans, IBM Plex Mono)` },
   { re: /--gain-soft|--crt-green/g, bad: () => true, why: (m) => `${m[0]} (no green outside the Deck)` },
 ];

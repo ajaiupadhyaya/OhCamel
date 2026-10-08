@@ -1,27 +1,23 @@
 /**
- * The active portfolio at a glance (composition bar, benchmark, notional, window), with
- * the shared <PortfolioBuilder/> in a collapsible drawer and the "run analysis" control.
+ * The active portfolio as one ruled strip: name, a composition rule (segment width = |weight|,
+ * shorts in ink-3), the holdings with weights, benchmark / notional / invested / window, and
+ * RUN · EDIT · SHARE. The shared <PortfolioBuilder/> opens below it.
  */
-import { useState } from "react";
-import { Icon, PortfolioBuilder } from "../../components";
+import { useState, type CSSProperties } from "react";
+import { PortfolioBuilder } from "../../components";
 import { fmtCurrency, fmtDate, fmtPct } from "../../lib/format";
 import { grossWeight, totalWeight, usePortfolio } from "../../lib/portfolio";
 
-const MAX_SEGMENTS = 7; // --c1..--c7 for holdings, the 8th slot is folded into "Other"
+const MAX_LISTED = 10;
 
 export function PortfolioStrip({ dirty, onRun }: { dirty: boolean; onRun: () => void }) {
   const { portfolio: p, shareUrl } = usePortfolio();
   const [open, setOpen] = useState(p.holdings.length === 0);
   const [copied, setCopied] = useState(false);
-  // Colours follow the builder's order (slot i = i-th holding) so both views agree.
-  const hs = p.holdings.map((h, i) => ({ ...h, slot: i })).filter((h) => h.weight !== 0);
+  const hs = p.holdings.filter((h) => h.weight !== 0);
   const gross = grossWeight(hs) || 1;
-  const shown = hs.filter((h) => h.slot < (hs.length > MAX_SEGMENTS + 1 ? MAX_SEGMENTS : 8));
-  const rest = hs.filter((h) => !shown.includes(h));
-  const segs = [
-    ...shown.map((h) => ({ key: h.ticker, label: h.ticker, w: h.weight, color: `var(--c${h.slot + 1})`, short: h.weight < 0 })),
-    ...(rest.length ? [{ key: "__other", label: `${rest.length} others`, w: rest.reduce((a, h) => a + h.weight, 0), color: "var(--text-3)", short: false }] : []),
-  ];
+  const listed = [...hs].sort((a, b) => Math.abs(b.weight) - Math.abs(a.weight));
+  const rest = listed.slice(MAX_LISTED);
   const net = totalWeight(hs);
   const share = async () => {
     try {
@@ -34,65 +30,63 @@ export function PortfolioStrip({ dirty, onRun }: { dirty: boolean; onRun: () => 
   };
 
   return (
-    <section className={`pl-strip-wrap ${open ? "open" : ""}`}>
+    <section className={`pl-strip-wrap ${open ? "open" : ""}`} aria-label="Active portfolio">
       <div className="pl-strip">
         <div className="pl-strip-main">
           <div className="pl-strip-top">
-            <span className="eyebrow">Active portfolio</span>
-            <span className="pl-strip-name display">{p.name || "Untitled"}</span>
+            <span className="pl-strip-k">BOOK</span>
+            <span className="pl-strip-name">{p.name || "UNTITLED"}</span>
           </div>
-          <div className="pl-comp" role="img" aria-label={`Composition: ${segs.map((s) => `${s.label} ${fmtPct(s.w, 1)}`).join(", ")}`}>
-            {segs.map((s) => (
-              <span key={s.key} className={`pl-comp-seg ${s.short ? "short" : ""}`} style={{ flexGrow: Math.abs(s.w) / gross, background: s.color }} title={`${s.label} ${fmtPct(s.w, 1)}`} />
+          <div className="pl-comp" role="img" aria-label={`Composition: ${listed.map((h) => `${h.ticker} ${fmtPct(h.weight, 1)}`).join(", ")}`}>
+            {listed.map((h) => (
+              <span key={h.ticker} className={`pl-comp-seg ${h.weight < 0 ? "short" : ""}`} style={{ "--grow": Math.abs(h.weight) / gross } as CSSProperties} />
             ))}
           </div>
-          <div className="pl-comp-legend">
-            {segs.map((s) => (
-              <span key={s.key} className="pl-comp-item">
-                <span className="pl-comp-dot" style={{ background: s.color }} />
-                <span className="num">{s.label}</span>
-                <span className="num subtle">{fmtPct(s.w, 1)}</span>
+          <div className="pl-comp-legend num">
+            {listed.slice(0, MAX_LISTED).map((h) => (
+              <span key={h.ticker} className="pl-comp-item">
+                {h.ticker} <span className="subtle">{fmtPct(h.weight, 1)}</span>
               </span>
             ))}
-            {hs.length === 0 && <span className="subtle small">No holdings yet — open the editor to add some.</span>}
+            {rest.length > 0 && <span className="pl-comp-item subtle">+{rest.length}</span>}
+            {hs.length === 0 && <span className="pl-comp-item subtle">NO HOLDINGS</span>}
           </div>
         </div>
         <dl className="pl-strip-meta">
           <div>
-            <dt>Benchmark</dt>
+            <dt>BENCH</dt>
             <dd className="num">{p.benchmark || "—"}</dd>
           </div>
           <div>
-            <dt>Notional</dt>
+            <dt>NOTIONAL</dt>
             <dd className="num">{fmtCurrency(p.notional, { compact: true })}</dd>
           </div>
           <div>
-            <dt>Invested</dt>
+            <dt>NET</dt>
             <dd className="num">{fmtPct(net, 0)}</dd>
           </div>
           <div>
-            <dt>Window</dt>
-            <dd className="num">{p.start || p.end ? `${p.start ? fmtDate(p.start, "month") : "start"} – ${p.end ? fmtDate(p.end, "month") : "latest"}` : "Full history"}</dd>
+            <dt>WINDOW</dt>
+            <dd className="num">{p.start || p.end ? `${p.start ? fmtDate(p.start, "month") : "START"} – ${p.end ? fmtDate(p.end, "month") : "LATEST"}` : "FULL"}</dd>
           </div>
         </dl>
         <div className="pl-strip-actions">
           {dirty && (
-            <button type="button" className="btn btn-primary" onClick={onRun} disabled={hs.length === 0}>
-              <Icon name="refresh" size={15} /> Run analysis
+            <button type="button" className="btn btn-sm btn-primary" onClick={onRun} disabled={hs.length === 0}>
+              RUN
             </button>
           )}
-          <button type="button" className="btn" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-            <Icon name={open ? "chevron-up" : "portfolio"} size={15} /> {open ? "Close editor" : "Edit portfolio"}
+          <button type="button" className="btn btn-sm" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+            {open ? "CLOSE" : "EDIT"}
           </button>
-          <button type="button" className="btn btn-ghost" onClick={share} title="Copy a link that opens this exact portfolio">
-            <Icon name={copied ? "check" : "share"} size={15} /> {copied ? "Link copied" : "Share"}
+          <button type="button" className="btn btn-sm" onClick={share}>
+            {copied ? "COPIED" : "LINK"}
           </button>
         </div>
       </div>
       {dirty && (
-        <div className="pl-dirty" role="status">
-          <span className="pl-dirty-dot" aria-hidden />
-          The portfolio has changed since the results below were computed. <button type="button" className="pl-linkbtn" onClick={onRun}>Run analysis</button> to update every tab.
+        <div className="pl-dirty num" role="status">
+          INPUTS CHANGED · RESULTS ARE FROM THE LAST RUN
         </div>
       )}
       {open && (

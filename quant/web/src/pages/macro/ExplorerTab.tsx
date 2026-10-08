@@ -1,22 +1,25 @@
 /**
- * Explorer — GET /api/macro/series?ids=&transform=&start=: any FRED series (up to 12) with a
- * transform each (level | y/y % | change | m/m annualized), overlaid or as small multiples,
- * plus a summary table. State lives in the URL (?ids=&tr=&from=) so views are shareable.
+ * EXPLORER — GET /api/macro/series?ids=&transform=&start=: any FRED series (up to 8) with a
+ * transform each (level | y/y % | change | m/m annualized), overlaid or as small multiples, and
+ * a summary table. Series are joined on their own observation dates; nothing is forward-filled.
+ * State lives in the URL (?ids=&tr=&from=).
  */
 import { useMemo, useState } from "react";
-import type { Data } from "plotly.js";
-import { Chart, DataTable, Panel, SegmentedControl, Select, useTabParam, type Column } from "../../components";
+import { DataTable, Panel, SegmentedControl, Select, useTabParam, type Column } from "../../components";
+import { XYChart } from "../../charts/XYChart";
+import { alignSeries } from "../../charts/scales";
+import { Note } from "../../design";
 import { fmtDate, fmtNum } from "../../lib/format";
 import { useApiQuery } from "../../lib/query";
-import type { Tokens } from "../../lib/theme";
+import { seriesStyle } from "./derive";
 import { INFO, TRANSFORM_LABEL } from "./info";
-import { Controls, ordinal, yearsBack } from "./shared";
+import { Controls, Ctl, PctTick, yearsBack } from "./shared";
 import type { Dashboard, FredExplorer } from "./types";
 
 const TRANSFORMS = ["level", "yoy_pct", "diff", "mom_ann"] as const;
 type Tr = (typeof TRANSFORMS)[number];
 const RANGES = ["1", "3", "5", "10", "20", "all"] as const;
-const MAX_IDS = 8; // the categorical palette has 8 colours; the API accepts 12
+const MAX_IDS = 8;
 
 export function ExplorerTab({ dashboard }: { dashboard?: Dashboard }) {
   const [idsParam, setIdsParam] = useTabParam<string>("ids", "DGS10,DGS2");
@@ -45,131 +48,114 @@ export function ExplorerTab({ dashboard }: { dashboard?: Dashboard }) {
   const start = from === "all" ? undefined : yearsBack(+from);
   const q = useApiQuery<FredExplorer>("/macro/series", { ids: ids.join(","), transform: trs.join(","), start }, { enabled: ids.length > 0 });
   const names = useMemo(() => new Map((dashboard?.series ?? []).map((r) => [r.id, r])), [dashboard]);
-  const suggestions = (dashboard?.series ?? []).filter((r) => !ids.includes(r.id));
+  const suggestions = (dashboard?.series ?? []).filter((r) => !ids.includes(r.id) && !r.error);
+  const asOf = q.data?.data.index.length ? String(q.data.data.index[q.data.data.index.length - 1]) : undefined;
 
   return (
     <div className="stack">
       <Controls>
         <form
-          className="mc-inline-field"
+          className="mc-ctl"
           onSubmit={(e) => {
             e.preventDefault();
             add(text);
             setText("");
           }}
         >
-          <span className="oc-field-label">Add a FRED series id</span>
-          <div className="row" style={{ gap: 6 }}>
-            <input className="input num" value={text} onChange={(e) => setText(e.target.value)} placeholder="e.g. UNRATE, T10Y2Y, CPIAUCSL" aria-label="FRED series id" style={{ width: 240 }} list="mc-fred-ids" />
-            <datalist id="mc-fred-ids">
-              {suggestions.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </datalist>
-            <button type="submit" className="btn btn-sm" disabled={!text.trim() || ids.length >= MAX_IDS}>
-              Add
-            </button>
-          </div>
+          <span className="mc-ctl-k">ADD</span>
+          <input className="input num mc-id-input" value={text} onChange={(e) => setText(e.target.value.toUpperCase())} placeholder="FRED ID" aria-label="FRED series id" list="mc-fred-ids" />
+          <datalist id="mc-fred-ids">
+            {suggestions.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+              </option>
+            ))}
+          </datalist>
+          <button type="submit" className="btn btn-sm" disabled={!text.trim() || ids.length >= MAX_IDS}>
+            ADD
+          </button>
         </form>
-        <div className="mc-inline-field">
-          <span className="oc-field-label">Window</span>
-          <SegmentedControl size="sm" options={RANGES.map((r) => ({ value: r, label: r === "all" ? "Max" : `${r}Y` }))} value={from} onChange={setFrom} ariaLabel="Window" />
-        </div>
-        <div className="mc-inline-field">
-          <span className="oc-field-label">Layout</span>
-          <SegmentedControl size="sm" options={[{ value: "overlay", label: "One chart" }, { value: "multiples", label: "Small multiples" }]} value={layoutMode} onChange={setLayoutMode} ariaLabel="Chart layout" />
-        </div>
+        <Ctl label="WINDOW">
+          <SegmentedControl size="sm" options={RANGES.map((r) => ({ value: r, label: r === "all" ? "MAX" : `${r}Y` }))} value={from} onChange={setFrom} ariaLabel="Window" />
+        </Ctl>
+        <Ctl label="LAYOUT">
+          <SegmentedControl size="sm" options={[{ value: "overlay", label: "ONE" }, { value: "multiples", label: "SMALL ×" }]} value={layoutMode} onChange={setLayoutMode} ariaLabel="Chart layout" />
+        </Ctl>
       </Controls>
 
-      <div className="mc-series-list">
+      <div className="mc-series">
         {ids.map((id, i) => (
-          <div key={id} className="mc-series-item">
-            <span className="mc-dot" style={{ background: `var(--c${i + 1})` }} />
+          <div key={id} className="mc-series-row">
+            <span className={`mc-key mc-key-${seriesStyle(i).tone} mc-key-${seriesStyle(i).dash}`} aria-hidden />
             <span className="num mc-series-id">{id}</span>
-            <span className="subtle small mc-series-name">{q.data?.metadata?.[id]?.title ?? names.get(id)?.name ?? ""}</span>
+            <span className="mc-series-name">{q.data?.metadata?.[id]?.title ?? names.get(id)?.name ?? ""}</span>
             <Select<Tr> value={trs[i]} onChange={(t) => setTr(i, t)} options={TRANSFORMS.map((t) => ({ value: t, label: TRANSFORM_LABEL[t] }))} ariaLabel={`Transform for ${id}`} />
-            <button type="button" className="icon-btn" onClick={() => remove(i)} aria-label={`Remove ${id}`} title="Remove">
+            <button type="button" className="btn btn-sm mc-x" onClick={() => remove(i)} aria-label={`Remove ${id}`}>
               ×
             </button>
           </div>
         ))}
-        {ids.length === 0 && <span className="subtle small">Add a series to begin.</span>}
+        {ids.length === 0 && <div className="mc-none num">NO SERIES · ADD A FRED ID</div>}
+        {suggestions.length > 0 && ids.length < MAX_IDS && (
+          <div className="mc-suggest">
+            <span className="mc-ctl-k">QUICK</span>
+            {suggestions.slice(0, 14).map((r) => (
+              <button key={r.id} type="button" className="mc-chip num" onClick={() => add(r.id, r.transform as Tr)} title={`${r.name} · ${TRANSFORM_LABEL[r.transform] ?? r.transform}`}>
+                {r.id}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
-      {suggestions.length > 0 && ids.length < MAX_IDS && (
-        <div className="mc-suggest">
-          <span className="subtle small">Quick add:</span>
-          {suggestions.slice(0, 14).map((r) => (
-            <button key={r.id} type="button" className={`mc-chip small ${r.error ? "mc-chip-off" : ""}`} onClick={() => add(r.id, r.transform as Tr)} title={r.error ? `${r.name} — currently unavailable: ${r.error}` : `${r.name} (${TRANSFORM_LABEL[r.transform] ?? r.transform})`}>
-              <span className="num">{r.id}</span>
-            </button>
-          ))}
-        </div>
-      )}
 
       <Panel<FredExplorer>
-        title="Series"
-        subtitle="Official data straight from FRED (Federal Reserve Bank of St. Louis), transformed as chosen. Series are joined on their own observation dates — nothing is forward-filled."
-        info={INFO.transforms}
+        title={
+          <>
+            SERIES · FRED
+            <Note n={1} to="macro" />
+          </>
+        }
         query={q}
         empty={ids.length === 0}
-        skeletonHeight={380}
+        skeletonHeight={340}
         notes={[]}
+        asOf={asOf}
       >
         {(d) => (layoutMode === "overlay" ? <Overlay d={d} /> : <Multiples d={d} />)}
       </Panel>
-      <Panel<FredExplorer> title="Summary" subtitle="Latest value, changes and where it sits within the chosen window." info={INFO.percentile} query={q} empty={ids.length === 0} skeletonHeight={160} flush>
+      <Panel<FredExplorer> title="SUMMARY" query={q} empty={ids.length === 0} skeletonHeight={160} flush provenance={[]} asOf={asOf}>
         {(d) => <Summary d={d} names={names} />}
       </Panel>
     </div>
   );
 }
 
-const lbl = (d: FredExplorer, id: string) => `${id}${d.transforms[id] !== "level" ? ` (${TRANSFORM_LABEL[d.transforms[id]] ?? d.transforms[id]})` : ""}`;
-
-function traces(d: FredExplorer, t: Tokens, only?: string): Data[] {
-  return d.ids
-    .filter((id) => !only || id === only)
-    .map((id) => {
-      const i = d.ids.indexOf(id);
-      const ys = d.data.data[id] ?? [];
-      const xs: (string | number)[] = [];
-      const yv: number[] = [];
-      d.data.index.forEach((x, j) => {
-        const v = ys[j];
-        if (v != null) {
-          xs.push(x);
-          yv.push(v);
-        }
-      });
-      return { type: "scatter", mode: "lines", name: lbl(d, id), x: xs, y: yv, line: { width: 1.6, color: t.categorical[i % 8] }, hovertemplate: `<b>${id}</b> %{y:,.3~f}<extra></extra>` } as Data;
-    });
-}
+const lbl = (d: FredExplorer, id: string) => `${id}${d.transforms[id] && d.transforms[id] !== "level" ? ` ${TRANSFORM_LABEL[d.transforms[id]] ?? d.transforms[id]}` : ""}`;
 
 function Overlay({ d }: { d: FredExplorer }) {
-  const data = useMemo(() => (t: Tokens) => traces(d, t), [d]);
-  const layout = useMemo(() => ({ hovermode: "x unified", showlegend: true, xaxis: { type: "date", hoverformat: "%d %b %Y" }, yaxis: { side: "right" }, margin: { l: 16, r: 8, t: 36, b: 28 } }) as any, []);
-  return <Chart data={data} layout={layout} height={380} ariaLabel="FRED series" />;
+  const a = useMemo(() => alignSeries(d.ids.map((id) => ({ x: d.data.index, y: d.data.data[id] ?? [] }))), [d]);
+  return (
+    <XYChart
+      x={a.t.map((s) => s * 1000)}
+      time
+      series={d.ids.map((id, i) => ({ name: lbl(d, id), y: a.ys[i], ...seriesStyle(i), span: true }))}
+      yFormat="num"
+      digits={2}
+      height={340}
+      ariaLabel={`FRED series ${d.ids.join(", ")}`}
+    />
+  );
 }
 
 function Multiples({ d }: { d: FredExplorer }) {
   return (
     <div className="mc-multiples">
       {d.ids.map((id) => (
-        <Multiple key={id} d={d} id={id} />
+        <div key={id}>
+          <h4 className="mc-sub num">{lbl(d, id)}</h4>
+          <XYChart x={d.data.index} time series={[{ name: id, y: d.data.data[id] ?? [], tone: "ink", span: true }]} yFormat="num" digits={2} height={180} ariaLabel={`FRED series ${id}`} />
+        </div>
       ))}
-    </div>
-  );
-}
-
-function Multiple({ d, id }: { d: FredExplorer; id: string }) {
-  const data = useMemo(() => (t: Tokens) => traces(d, t, id), [d, id]);
-  const layout = useMemo(() => ({ hovermode: "x unified", showlegend: false, xaxis: { type: "date", hoverformat: "%d %b %Y" }, yaxis: { side: "right" }, margin: { l: 8, r: 8, t: 8, b: 24 } }) as any, []);
-  return (
-    <div>
-      <div className="mc-subhead num">{lbl(d, id)}</div>
-      <Chart data={data} layout={layout} height={200} compact ariaLabel={id} />
     </div>
   );
 }
@@ -182,16 +168,17 @@ function Summary({ d, names }: { d: FredExplorer; names: Map<string, { name: str
   });
   const n = (v: number | null | undefined, signed = false) => fmtNum(v, Math.abs(v ?? 0) >= 1000 ? 0 : 2, { signed });
   const cols: Column<Row>[] = [
-    { key: "id", label: "Series", render: (r) => <span className="row" style={{ gap: 8 }}><span className="mc-dot" style={{ background: `var(--c${d.ids.indexOf(r.id) + 1})` }} /><span className="num">{r.id}</span><span className="subtle small">{r.title}</span></span> },
-    { key: "tr", label: "Transform", hideBelow: 900 },
-    { key: "latest", label: "Latest", numeric: true, format: (v) => n(v) },
-    { key: "date", label: "As of", format: (v) => fmtDate(v), hideBelow: 600 },
+    { key: "id", label: "Series", render: (r) => <span className="num">{r.id}</span> },
+    { key: "title", label: "Name", hideBelow: 900, render: (r) => <span>{r.title}</span> },
+    { key: "tr", label: "Tr", hideBelow: 600, render: (r) => <span className="num">{r.tr}</span> },
+    { key: "latest", label: "Last", numeric: true, format: (v) => n(v) },
+    { key: "date", label: "As of", numeric: true, hideBelow: 600, format: (v) => (v ? fmtDate(v, "short-year").toUpperCase() : "—") },
     { key: "m1", label: "1M", numeric: true, format: (v) => n(v, true), info: INFO.change, hideBelow: 600 },
     { key: "m3", label: "3M", numeric: true, format: (v) => n(v, true), hideBelow: 900 },
     { key: "y1", label: "1Y", numeric: true, format: (v) => n(v, true) },
-    { key: "pct", label: "Pct in window", numeric: true, format: (v) => ordinal(v), info: { text: "Share of observations in the chosen window (up to 10 years) at or below the latest value." } },
+    { key: "pct", label: "Pctile", numeric: true, render: (r) => <PctTick value={r.pct} />, info: { title: "Percentile in window", text: "Share of observations in the window (up to 10 years) at or below the latest value." } },
     { key: "lo", label: "Low", numeric: true, format: (v) => n(v), hideBelow: 1200 },
     { key: "hi", label: "High", numeric: true, format: (v) => n(v), hideBelow: 1200 },
   ];
-  return <DataTable columns={cols} rows={rows} rowKey={(r) => r.id} />;
+  return <DataTable<Row> columns={cols} rows={rows} rowKey={(r) => r.id} compact />;
 }

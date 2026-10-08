@@ -1,4 +1,4 @@
-/** Rates & Macro — plain-English definitions, formulas and references for every metric/model. */
+/** Rates & Macro — InfoTip definitions (formula, reference) for metric labels, and caps labels. */
 import type { Info } from "../../lib/glossary";
 
 export const INFO = {
@@ -113,25 +113,17 @@ export const INFO = {
   },
 } satisfies Record<string, Info>;
 
-/** Dashboard category display order and plain-English blurbs (keys are the backend's categories). */
-export const CATEGORY_BLURB: Record<string, string> = {
-  Inflation: "How fast prices are rising — what the Fed targets at 2% (PCE).",
-  Labor: "Jobs and unemployment: the other half of the Fed's mandate, and the first place recessions show up.",
-  Growth: "Growth: output, spending and sentiment.",
-  "Policy & rates": "Policy and Treasury yields — the price of money across maturities.",
-  // pre-rename backend keys (kept so an older API response still gets its blurb)
-  Activity: "Growth: output, spending and sentiment.",
-  Rates: "Policy and Treasury yields — the price of money across maturities.",
-  "Credit & conditions": "What it costs companies to borrow over Treasuries, and overall funding stress.",
-  Markets: "Volatility, the dollar and oil — cross-asset gauges of risk appetite.",
-  "Money & Fed": "Money supply and the Fed's balance sheet.",
-};
-
-/** Plain names used on the page for the backend's category keys. The backend now sends
- * "Growth" and "Policy & rates" directly (shown as is); the old keys are relabelled. */
+/** Caps labels for the backend's dashboard categories (old keys relabelled). */
 export const CATEGORY_LABEL: Record<string, string> = {
-  Activity: "Growth",
-  Rates: "Policy & rates",
+  Inflation: "INFLATION",
+  Labor: "LABOR",
+  Growth: "GROWTH",
+  Activity: "GROWTH",
+  "Policy & rates": "POLICY · RATES",
+  Rates: "POLICY · RATES",
+  "Credit & conditions": "CREDIT · CONDITIONS",
+  Markets: "MARKETS",
+  "Money & Fed": "MONEY · FED",
 };
 
-export const TRANSFORM_LABEL: Record<string, string> = { level: "Level", yoy_pct: "y/y %", diff: "Change", mom_ann: "m/m ann." };
+export const TRANSFORM_LABEL: Record<string, string> = { level: "LEVEL", yoy_pct: "Y/Y %", diff: "CHANGE", mom_ann: "M/M ANN" };

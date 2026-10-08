@@ -1,8 +1,9 @@
 /**
- * Small building blocks shared by the Portfolio Lab tabs (prefix `pl-`).
+ * Small building blocks shared by Portfolio and Risk (prefix `pl-`). Paper Tape: ruled rows,
+ * caps labels, mono numbers; signal only for rejections, breaches and losses.
  */
-import { useCallback, useMemo, useState, type ReactNode } from "react";
-import { Icon, InfoTip, type InfoProp } from "../../components";
+import { useCallback, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { InfoTip, type InfoProp } from "../../components";
 import { fmtCurrency, fmtNum, fmtPct } from "../../lib/format";
 
 /**
@@ -16,17 +17,16 @@ export function useCommitted<T>(draft: T): { committed: T; run: () => void; dirt
   return { committed, run, dirty };
 }
 
-/** The "Run" button for a heavy computation; highlighted when inputs changed. */
-export function RunButton({ onRun, dirty, busy, label = "Run", disabled }: { onRun: () => void; dirty: boolean; busy?: boolean; label?: string; disabled?: boolean }) {
+/** RUN for a heavy computation: armed (ink ground) when inputs changed, CURRENT otherwise. */
+export function RunButton({ onRun, dirty, busy, label = "RUN", disabled }: { onRun: () => void; dirty: boolean; busy?: boolean; label?: string; disabled?: boolean }) {
   return (
-    <button type="button" className={`btn btn-sm ${dirty ? "btn-primary" : ""} pl-run`} onClick={onRun} disabled={disabled || busy || !dirty} title={dirty ? "Inputs changed — recompute" : "Results are up to date"}>
-      {busy ? <span className="pl-spinner" aria-hidden /> : <Icon name={dirty ? "refresh" : "check"} size={14} />}
-      {busy ? "Running…" : dirty ? label : "Up to date"}
+    <button type="button" className={`btn btn-sm pl-run ${dirty ? "btn-primary" : ""}`} onClick={onRun} disabled={disabled || busy || !dirty}>
+      {busy ? "RUNNING" : dirty ? label : "CURRENT"}
     </button>
   );
 }
 
-/** Label/value rows with info tips — for dense secondary statistics. */
+/** Label/value rows; InfoTips only on metric labels. */
 export function KV({ rows, cols = 1 }: { rows: { label: ReactNode; value: ReactNode; info?: InfoProp; tone?: string; hint?: ReactNode }[]; cols?: 1 | 2 }) {
   return (
     <dl className={`pl-kv ${cols === 2 ? "pl-kv-2" : ""}`}>
@@ -46,31 +46,28 @@ export function KV({ rows, cols = 1 }: { rows: { label: ReactNode; value: ReactN
   );
 }
 
-/** Basel traffic-light chip. */
+/** Basel traffic-light zone as a caps word: RED in signal, the others ink (no green here). */
 export function ZoneChip({ zone, title }: { zone: string | null | undefined; title?: string }) {
   if (!zone) return <span className="subtle">—</span>;
-  const tone = zone === "green" ? "gain" : zone === "yellow" ? "warn" : "loss";
   return (
-    <span className={`pl-zone pl-zone-${tone}`} title={title}>
-      <span className="pl-zone-dot" aria-hidden />
-      {zone}
+    <span className={`pl-zone num ${zone === "red" ? "loss" : ""}`} title={title}>
+      {zone.toUpperCase()}
     </span>
   );
 }
 
-/** A p-value cell: vermilion when the model is rejected at 5%. */
+/** A p-value cell: signal when the model is rejected at 5%. */
 export function PValue({ p, digits = 3 }: { p: number | null | undefined; digits?: number }) {
   if (p === null || p === undefined || !Number.isFinite(p)) return <span className="subtle">—</span>;
   const rejected = p < 0.05;
   return (
-    <span className={rejected ? "loss" : ""} title={rejected ? "Rejected at the 5% level" : "Not rejected at 5%"}>
+    <span className={rejected ? "loss" : ""} title={rejected ? "Rejected at 5%" : "Not rejected at 5%"}>
       {p < 0.001 ? "<0.001" : fmtNum(p, digits)}
-      {rejected && <span className="pl-reject" aria-label="rejected">✕</span>}
     </span>
   );
 }
 
-/** Percent with dollars underneath. */
+/** Percent with dollars beside it. */
 export function PctUsd({ pct, usd, digits = 2 }: { pct: number | null | undefined; usd: number | null | undefined; digits?: number }) {
   return (
     <span className="pl-pctusd">
@@ -80,15 +77,59 @@ export function PctUsd({ pct, usd, digits = 2 }: { pct: number | null | undefine
   );
 }
 
-/** Plain-English "reading" line shown above a chart or table. */
-export function Reading({ children }: { children: ReactNode }) {
+/** A terse ruled readout line: KEY value · KEY value (labels, not sentences). */
+export function Readline({ items }: { items: { k: string; v: ReactNode; tone?: string }[] }) {
   return (
-    <p className="pl-reading">
-      <span className="pl-reading-mark" aria-hidden>
-        ¶
-      </span>
-      <span>{children}</span>
-    </p>
+    <div className="pl-readline num">
+      {items.map((it, i) => (
+        <span key={i} className="pl-readline-item">
+          <span className="pl-readline-k">{it.k}</span> <span className={it.tone ?? ""}>{it.v}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Capital against risk, one ruled row per holding: two hairline bars on a shared scale (weight
+ * in ink-3, risk share in ink) and the difference in points. Sorted by risk share.
+ */
+export function ShareRows({ rows, riskLabel }: { rows: { ticker: string; weight: number; share: number }[]; riskLabel: string }) {
+  const sorted = [...rows].sort((a, b) => b.share - a.share);
+  const max = Math.max(0.01, ...sorted.flatMap((r) => [Math.abs(r.weight), Math.abs(r.share)]));
+  const w = (v: number) => `${Math.min(100, (Math.abs(v) / max) * 100)}%`;
+  return (
+    <div className="pl-share-wrap">
+      <table className="pl-share">
+        <thead>
+          <tr>
+            <th scope="col">HOLDING</th>
+            <th scope="col" className="num-col">WEIGHT</th>
+            <th scope="col" className="num-col">{riskLabel}</th>
+            <th scope="col" className="num-col">Δ</th>
+            <th scope="col" className="pl-share-bars">
+              <span className="pl-share-key">
+                <span className="pl-share-key-w" /> W <span className="pl-share-key-r" /> R
+              </span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((r) => (
+            <tr key={r.ticker}>
+              <th scope="row" className="num">{r.ticker}</th>
+              <td className="num">{fmtPct(r.weight, 1)}</td>
+              <td className="num">{fmtPct(r.share, 1)}</td>
+              <td className="num">{fmtPct(r.share - r.weight, 1, { signed: true })}</td>
+              <td className="pl-share-bars" aria-hidden>
+                <span className="pl-share-w" style={{ "--w": w(r.weight) } as CSSProperties} />
+                <span className="pl-share-r" style={{ "--w": w(r.share) } as CSSProperties} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

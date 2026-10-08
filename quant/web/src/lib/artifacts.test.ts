@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ApiError, DataUnavailableError, NetworkError } from "./api";
-import { absentLabel, manifestOf } from "./artifacts";
+import { KINDS, PREREGISTERED, absentLabel, artifactMaxAge, frameRecords, manifestOf } from "./artifacts";
 
 describe("absentLabel (missing reads render as missing)", () => {
   it("a 404 means the job kind has not produced an artifact yet", () => {
@@ -25,9 +25,50 @@ describe("manifestOf", () => {
     expect(out?.id).toBe("a1");
     expect(out?.stale).toBe(true);
   });
+  it("reads Lane M's latest payload: verdict and verdict_detail first, then the manifest", () => {
+    const out = manifestOf({ verdict: "FAIL", verdict_detail: "0 PASS · 3 FAIL", stale: false, manifest: { ...m, verdict: "FAIL", verdict_detail: "0 PASS · 3 FAIL" } });
+    expect([out?.verdict, out?.verdict_detail, out?.stale]).toEqual(["FAIL", "0 PASS · 3 FAIL", false]);
+  });
+  it("takes the top-level verdict when the manifest inside lacks one", () => {
+    const out = manifestOf({ verdict: "DESCRIPTIVE ONLY", verdict_detail: "risk measurement", manifest: m });
+    expect([out?.verdict, out?.verdict_detail]).toEqual(["DESCRIPTIVE ONLY", "risk measurement"]);
+  });
   it("rejects anything without an id", () => {
     expect(manifestOf(null)).toBeNull();
     expect(manifestOf({})).toBeNull();
     expect(manifestOf({ manifest: {} })).toBeNull();
+  });
+});
+
+describe("frameRecords (artifact tables arrive as lib/serialize.frame)", () => {
+  it("turns a column-major frame into rows", () => {
+    const f = { index: [0, 1], columns: ["book", "var"], data: { book: ["core", "spy"], var: [0.02, null] } };
+    expect(frameRecords(f)).toEqual([
+      { book: "core", var: 0.02 },
+      { book: "spy", var: null },
+    ]);
+  });
+  it("rejects anything that is not a frame", () => {
+    expect(frameRecords(null)).toBeNull();
+    expect(frameRecords({ columns: ["a"] })).toBeNull();
+    expect(frameRecords({ index: [0], columns: ["a"], data: {} })).toBeNull();
+  });
+  it("an empty frame is zero rows, not missing", () => {
+    expect(frameRecords({ index: [], columns: ["a"], data: { a: [] } })).toEqual([]);
+  });
+});
+
+describe("artifactMaxAge (Review Focus 1: the API's stale flag wins over the page's clock)", () => {
+  it("stale: true is always stale, stale: false is never stale, absent falls back to a missed night", () => {
+    expect(artifactMaxAge({ id: "a", kind: "k", stale: true })).toBeLessThan(0);
+    expect(artifactMaxAge({ id: "a", kind: "k", stale: false })).toBe(Infinity);
+    expect(artifactMaxAge({ id: "a", kind: "k" })).toBe(36 * 3600);
+  });
+});
+
+describe("PREREGISTERED", () => {
+  it("EXP-Q01 and EXP-Q02 were approved by the owner on 2026-10-06, so their results are read", () => {
+    expect(PREREGISTERED[KINDS.models]).toBe(true);
+    expect(PREREGISTERED[KINDS.regimes]).toBe(true);
   });
 });

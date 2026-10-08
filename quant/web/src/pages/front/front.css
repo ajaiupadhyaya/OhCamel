@@ -124,6 +124,38 @@
   letter-spacing: 0.08em;
 }
 
+.fp-farm-zero {
+  color: var(--ink);
+}
+/* Verdict words in the farm rows: FAIL in signal, the rest ink. */
+.fp-v {
+  font-family: var(--font-display);
+  font-size: var(--fs-2xs);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+.fp-v-fail {
+  color: var(--signal);
+}
+.fp-art {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  align-self: stretch;
+  min-width: 0;
+}
+.fp-ds {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+/* One mono line under a cell's figures: what the figures are of. */
+.fp-meta {
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.02em;
+  color: var(--ink-2);
+}
+
 @media (max-width: 760px) {
   .fp-curve-grid {
     grid-template-columns: minmax(0, 1fr);

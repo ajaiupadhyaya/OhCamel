@@ -1,25 +1,31 @@
 /**
- * Policy — GET /api/macro/taylor?r_star=&pi_star=&start=: Taylor (1993) and balanced-approach
- * prescriptions vs the effective fed funds rate. r* and π* are RULE PARAMETERS the user sets
- * (defaults = Taylor's 1993 calibration), never presented as data.
+ * POLICY — GET /api/macro/taylor?r_star=&pi_star=&start=: Taylor (1993) and balanced-approach
+ * prescriptions against the effective fed funds rate, the policy gap, and the rule's inputs
+ * (core PCE y/y, CBO output gap). r* and π* are RULE PARAMETERS set here (defaults = Taylor's
+ * 1993 calibration), labelled as assumptions, never presented as data.
  */
-import { useMemo, useState } from "react";
-import type { Data } from "plotly.js";
-import { Callout, Chart, NumberField, Panel, SegmentedControl, StatGrid, StatTile } from "../../components";
+import { useState } from "react";
+import { NumberField, Panel, SegmentedControl, StatGrid, StatTile } from "../../components";
+import { XYChart } from "../../charts/XYChart";
+import { Note } from "../../design";
 import { fmtDate, fmtNum, fmtPctPoints } from "../../lib/format";
 import { useDebounced } from "../../lib/hooks";
 import { useApiQuery } from "../../lib/query";
-import type { Tokens } from "../../lib/theme";
 import { INFO } from "./info";
-import { Controls, MethodCard } from "./shared";
+import { Controls, Ctl, LiveOnly, Readline } from "./shared";
 import type { TaylorOut } from "./types";
 
 const STARTS = [
   { value: "1990", label: "1990–" },
   { value: "2000", label: "2000–" },
   { value: "2010", label: "2010–" },
-  { value: "all", label: "All" },
+  { value: "all", label: "ALL" },
 ] as const;
+const LIVE_ITEMS = [
+  { k: "TAYLOR 1993 · BALANCED APPROACH · VS EFFR", note: "taylor" },
+  { k: "POLICY GAP · RULE − EFFR · PP", note: "taylor" },
+  { k: "INPUTS · CORE PCE Y/Y · CBO OUTPUT GAP", note: "taylor" },
+];
 
 export function PolicyTab() {
   const [rStar, setRStar] = useState(2);
@@ -32,138 +38,125 @@ export function PolicyTab() {
   const controls = (
     <Controls
       right={
-        !isDefault ? (
-          <button type="button" className="btn btn-sm btn-ghost" onClick={() => (setRStar(2), setPiStar(2))}>
-            Reset to Taylor (1993): 2 / 2
-          </button>
+        isDefault ? (
+          "TAYLOR 1993 · 2 / 2"
         ) : (
-          <span className="subtle small">Taylor's 1993 calibration</span>
+          <button type="button" className="btn btn-sm" onClick={() => (setRStar(2), setPiStar(2))}>
+            RESET · 2 / 2
+          </button>
         )
       }
     >
-      <div className="mc-param-box">
-        <span className="mc-param-tag">Rule parameters — your assumptions, not data</span>
-        <div className="row-wrap" style={{ gap: 16 }}>
-          <NumberField label="r* neutral real rate" value={rStar} onChange={setRStar} unit="%" min={-5} max={10} step={0.25} width={110} info={INFO.rstar} />
-          <NumberField label="π* inflation target" value={piStar} onChange={setPiStar} unit="%" min={0} max={10} step={0.25} width={110} info={INFO.pistar} />
-        </div>
+      <div className="mc-assume">
+        <span className="mc-ctl-k">ASSUMED</span>
+        <NumberField label="r*" value={rStar} onChange={setRStar} unit="%" min={-5} max={10} step={0.25} width={96} info={INFO.rstar} />
+        <NumberField label="π*" value={piStar} onChange={setPiStar} unit="%" min={0} max={10} step={0.25} width={96} info={INFO.pistar} />
       </div>
-      <div className="mc-inline-field">
-        <span className="oc-field-label">From</span>
+      <Ctl label="FROM">
         <SegmentedControl size="sm" options={STARTS.map((s) => ({ value: s.value, label: s.label }))} value={start} onChange={setStart} ariaLabel="Start year" />
-      </div>
+      </Ctl>
     </Controls>
   );
-  const method = (
-    <MethodCard
-      title="Where 'should' the policy rate be?"
-      formulas={["i^{\\text{Taylor}} = r^* + \\pi + 0.5(\\pi - \\pi^*) + 0.5\\,\\text{gap}", "i^{\\text{BA}} = r^* + \\pi + 0.5(\\pi - \\pi^*) + 1.0\\,\\text{gap}"]}
-      refs={["Taylor (1993), Carnegie-Rochester Conf. Series 39", "Yellen (2012), Boston Economic Club speech", "Fed Monetary Policy Report — policy-rules box"]}
-    >
-      A policy rule turns two observable gaps — inflation vs target (core PCE, year over year) and output vs potential (real GDP vs CBO potential) — into a benchmark fed funds rate. It is a yardstick, not a forecast: the Fed deviates on purpose (e.g. at the zero lower bound), and the answer depends heavily on the r* you assume.
-    </MethodCard>
-  );
 
-  if (q.isError && !q.data) {
+  if (q.isError && !q.data)
     return (
       <div className="stack">
         {controls}
-        <div className="grid-3">
-          <Panel title="Taylor rule vs the fed funds rate" subtitle="Rule-implied policy rates from core PCE inflation and the CBO output gap, against the actual effective fed funds rate." query={q} span={2} />
-          {method}
-        </div>
+        <LiveOnly title="POLICY RULES · FED FUNDS" error={q.error} source="/api/macro/taylor · FRED DFF PCEPILFE GDPC1 GDPPOT" items={LIVE_ITEMS} />
       </div>
     );
-  }
 
+  const asOf = q.data?.latest.date;
   return (
     <div className="stack">
       {controls}
-      <Panel<TaylorOut> query={q} skeletonHeight={96} notes={[]} provenance={[]}>
+      <Panel<TaylorOut> query={q} skeletonHeight={96} notes={[]} provenance={[]} asOf={asOf}>
         {(d) => {
           const l = d.latest;
+          const vs = (v: number | null | undefined) => (v != null ? `${fmtNum(v, 2, { signed: true })} PP VS EFFR` : undefined);
           return (
             <StatGrid min={150}>
-              <StatTile label="Fed funds (effective)" value={fmtPctPoints(l.fed_funds)} caption={`${fmtDate(l.date, "month")} average`} />
-              <StatTile label="Taylor (1993)" value={fmtPctPoints(l.taylor_1993)} info={INFO.taylor} caption={l.gap_taylor_minus_ff != null ? `${fmtNum(l.gap_taylor_minus_ff, 2, { signed: true })} pp vs actual` : undefined} />
-              <StatTile label="Balanced approach" value={fmtPctPoints(l.balanced_approach)} info={INFO.balanced} caption={l.gap_balanced_minus_ff != null ? `${fmtNum(l.gap_balanced_minus_ff, 2, { signed: true })} pp vs actual` : undefined} />
-              <StatTile label="Core PCE inflation" value={fmtPctPoints(l.inflation)} info={INFO.yoy} caption={`target π* = ${fmtNum(d.params.pi_star, 2)}%`} />
-              <StatTile label="Output gap" value={`${fmtNum(l.output_gap, 2, { signed: true })}%`} info={INFO.gap} caption="of potential GDP" />
+              <StatTile size="sm" label="EFFR" value={fmtPctPoints(l.fed_funds)} caption={`${fmtDate(l.date, "month").toUpperCase()} AVG`} />
+              <StatTile size="sm" label="TAYLOR 1993" info={INFO.taylor} value={fmtPctPoints(l.taylor_1993)} caption={vs(l.gap_taylor_minus_ff)} />
+              <StatTile size="sm" label="BALANCED" info={INFO.balanced} value={fmtPctPoints(l.balanced_approach)} caption={vs(l.gap_balanced_minus_ff)} />
+              <StatTile size="sm" label="CORE PCE Y/Y" info={INFO.yoy} value={fmtPctPoints(l.inflation)} caption={`π* ${fmtNum(d.params.pi_star, 2)}% ASSUMED`} />
+              <StatTile size="sm" label="OUTPUT GAP" info={INFO.gap} value={`${fmtNum(l.output_gap, 2, { signed: true })}%`} caption="OF POTENTIAL · CBO" />
             </StatGrid>
           );
         }}
       </Panel>
-      <div className="grid-3">
-        <Panel<TaylorOut>
-          title="Rule prescriptions vs actual policy"
-          subtitle={`Where two standard rules would put the policy rate given inflation and the output gap (with r* = ${fmtNum(rStar, 2)}%, π* = ${fmtNum(piStar, 2)}%), against the rate the Fed actually set. A rule above the actual line means policy was looser than the rule suggests.`}
-          info={INFO.taylor}
-          query={q}
-          span={2}
-          skeletonHeight={360}
-          notes={[]}
-        >
-          {(d) => <RulesChart d={d} />}
-        </Panel>
-        {method}
-      </div>
+      <Panel<TaylorOut>
+        title={
+          <>
+            RULES VS EFFR · %
+            <Note n={1} to="taylor" />
+          </>
+        }
+        query={q}
+        skeletonHeight={320}
+        notes={[]}
+        asOf={asOf}
+      >
+        {(d) => (
+          <>
+            <Readline items={[{ k: "r*", v: `${fmtNum(d.params.r_star, 2)}% ASSUMED` }, { k: "π*", v: `${fmtNum(d.params.pi_star, 2)}% ASSUMED` }, { k: "GAP COEF", v: `${fmtNum(d.params.gap_coef_taylor, 1)} · ${fmtNum(d.params.gap_coef_balanced, 1)}` }]} />
+            <XYChart
+              x={d.series.index}
+              time
+              series={[
+                ...(d.series.data.fed_funds ? [{ name: "EFFR", y: d.series.data.fed_funds as (number | null)[], tone: "ink" as const, width: 1.75 }] : []),
+                { name: "TAYLOR", y: d.series.data.taylor_1993 as (number | null)[], tone: "ink2" },
+                { name: "BALANCED", y: d.series.data.balanced_approach as (number | null)[], tone: "ink3", dash: "dash" },
+              ]}
+              hlines={[{ at: 0, label: "0", tone: "ink3", dash: "dot" }]}
+              yFormat="num"
+              digits={2}
+              height={300}
+              ariaLabel="Taylor rule and balanced-approach prescriptions against the effective fed funds rate"
+            />
+          </>
+        )}
+      </Panel>
       <div className="grid-2">
-        <Panel<TaylorOut> title="Policy gap" subtitle="Rule minus actual fed funds, in percentage points. Positive = policy easier than the rule; negative = tighter." info={{ text: "Prescribed rate minus the monthly average effective fed funds rate (DFF)." }} query={q} skeletonHeight={260} notes={[]} provenance={[]}>
-          {(d) => <GapChart d={d} />}
+        <Panel<TaylorOut> title="GAP · RULE − EFFR · PP" query={q} skeletonHeight={260} notes={[]} provenance={[]} asOf={asOf}>
+          {(d) =>
+            d.series.data.gap_taylor_minus_ff ? (
+              <XYChart
+                x={d.series.index}
+                time
+                series={[
+                  { name: "TAYLOR", y: d.series.data.gap_taylor_minus_ff as (number | null)[], tone: "ink" },
+                  ...(d.series.data.gap_balanced_minus_ff ? [{ name: "BALANCED", y: d.series.data.gap_balanced_minus_ff as (number | null)[], tone: "ink3" as const, dash: "dash" as const }] : []),
+                ]}
+                hlines={[{ at: 0, label: "0", tone: "ink", dash: "solid" }]}
+                yFormat="num"
+                digits={2}
+                height={240}
+                ariaLabel="Rule minus effective fed funds rate"
+              />
+            ) : (
+              <div className="mc-none num">INSUFFICIENT DATA · EFFR UNAVAILABLE</div>
+            )
+          }
         </Panel>
-        <Panel<TaylorOut> title="The rule's inputs" subtitle="Core PCE inflation (y/y) and the output gap — the two things the rule reacts to." info={INFO.gap} query={q} skeletonHeight={260}>
-          {(d) => <InputsChart d={d} />}
+        <Panel<TaylorOut> title="INPUTS · %" query={q} skeletonHeight={260} asOf={asOf}>
+          {(d) => (
+            <XYChart
+              x={d.series.index}
+              time
+              series={[
+                { name: "CORE PCE", y: d.series.data.inflation as (number | null)[], tone: "ink" },
+                { name: "GAP", y: d.series.data.output_gap as (number | null)[], tone: "ink2", dash: "dash" },
+              ]}
+              hlines={[{ at: d.params.pi_star, label: "π*", tone: "ink3", dash: "dot" }]}
+              yFormat="num"
+              digits={2}
+              height={240}
+              ariaLabel="Core PCE inflation and the output gap"
+            />
+          )}
         </Panel>
       </div>
-      <Callout tone="info" title="About r* and π*">
-        They are inputs to the rule, not measurements. Taylor used 2% and 2%; the Fed's target is 2% PCE inflation, while estimates of the neutral real rate have ranged from about 0.5% to 2% since 2010 (Holston–Laubach–Williams). No r* estimate is published on FRED, so no data-driven r* is shown.
-      </Callout>
     </div>
   );
-}
-
-function RulesChart({ d }: { d: TaylorOut }) {
-  const s = d.series;
-  const data = useMemo(
-    () => (t: Tokens): Data[] => {
-      const out: Data[] = [
-        { type: "scatter", mode: "lines", name: "Taylor (1993)", x: s.index, y: s.data.taylor_1993, line: { color: t.categorical[0], width: 1.8 }, hovertemplate: "<b>Taylor</b> %{y:.2f}%<extra></extra>" } as Data,
-        { type: "scatter", mode: "lines", name: "Balanced approach", x: s.index, y: s.data.balanced_approach, line: { color: t.categorical[1], width: 1.6, dash: "dot" }, hovertemplate: "<b>Balanced</b> %{y:.2f}%<extra></extra>" } as Data,
-      ];
-      if (s.data.fed_funds) out.push({ type: "scatter", mode: "lines", name: "Effective fed funds (actual)", x: s.index, y: s.data.fed_funds, line: { color: t.text, width: 2.2 }, hovertemplate: "<b>Actual</b> %{y:.2f}%<extra></extra>" } as Data);
-      return out;
-    },
-    [s],
-  );
-  const layout = useMemo(() => (t: Tokens) => ({ hovermode: "x unified", xaxis: { type: "date", hoverformat: "%b %Y" }, yaxis: { ticksuffix: "%", side: "right", zeroline: true, zerolinecolor: t.ruleStrong }, margin: { l: 16, r: 8, t: 36, b: 28 } }) as any, []);
-  return <Chart data={data} layout={layout} height={340} ariaLabel="Taylor rule vs fed funds" />;
-}
-
-function GapChart({ d }: { d: TaylorOut }) {
-  const s = d.series;
-  const data = useMemo(
-    () => (t: Tokens): Data[] =>
-      [
-        s.data.gap_taylor_minus_ff && { type: "scatter", mode: "lines", name: "Taylor − actual", x: s.index, y: s.data.gap_taylor_minus_ff, line: { color: t.categorical[0], width: 1.6 }, hovertemplate: "<b>Taylor − FF</b> %{y:+.2f} pp<extra></extra>" },
-        s.data.gap_balanced_minus_ff && { type: "scatter", mode: "lines", name: "Balanced − actual", x: s.index, y: s.data.gap_balanced_minus_ff, line: { color: t.categorical[1], width: 1.4, dash: "dot" }, hovertemplate: "<b>Balanced − FF</b> %{y:+.2f} pp<extra></extra>" },
-      ].filter(Boolean) as Data[],
-    [s],
-  );
-  const layout = useMemo(() => (t: Tokens) => ({ hovermode: "x unified", xaxis: { type: "date", hoverformat: "%b %Y" }, yaxis: { ticksuffix: " pp", side: "right", zeroline: true, zerolinecolor: t.text3 }, margin: { l: 16, r: 8, t: 36, b: 28 } }) as any, []);
-  if (!s.data.gap_taylor_minus_ff) return <div className="subtle small">The effective fed funds rate is unavailable, so the gap can't be computed.</div>;
-  return <Chart data={data} layout={layout} height={240} ariaLabel="Policy gap" />;
-}
-
-function InputsChart({ d }: { d: TaylorOut }) {
-  const s = d.series;
-  const data = useMemo(
-    () => (t: Tokens): Data[] => [
-      { type: "scatter", mode: "lines", name: "Core PCE inflation (y/y)", x: s.index, y: s.data.inflation, line: { color: t.categorical[2], width: 1.6 }, hovertemplate: "<b>Inflation</b> %{y:.2f}%<extra></extra>" } as Data,
-      { type: "scatter", mode: "lines", name: "Output gap", x: s.index, y: s.data.output_gap, line: { color: t.categorical[4], width: 1.6 }, hovertemplate: "<b>Output gap</b> %{y:+.2f}%<extra></extra>" } as Data,
-      { type: "scatter", mode: "lines", name: `π* = ${fmtNum(d.params.pi_star, 2)}%`, x: [s.index[0], s.index[s.index.length - 1]], y: [d.params.pi_star, d.params.pi_star], line: { color: t.categorical[2], width: 1, dash: "dash" }, hoverinfo: "skip" } as Data,
-    ],
-    [s, d.params.pi_star],
-  );
-  const layout = useMemo(() => (t: Tokens) => ({ hovermode: "x unified", xaxis: { type: "date", hoverformat: "%b %Y" }, yaxis: { ticksuffix: "%", side: "right", zeroline: true, zerolinecolor: t.ruleStrong }, margin: { l: 16, r: 8, t: 36, b: 28 } }) as any, []);
-  return <Chart data={data} layout={layout} height={240} ariaLabel="Inflation and output gap" />;
 }

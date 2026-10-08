@@ -11,7 +11,7 @@ export { ParamForm, paramDefaults, type ParamValues } from "./ParamForm";
 export { TickerInput } from "./TickerInput";
 export { TickerChips } from "./TickerChips";
 export { PortfolioBuilder } from "./PortfolioBuilder";
-export { Chart, TimeSeriesChart, BarChart, HeatmapChart, SurfaceChart, HistogramChart, plotlyTemplate, mergeLayout, d3Format, loadPlotly, resolveColor, withAlpha, type ChartProps, type LineSeries, type ValueFormat } from "./Chart";
+export { TimeSeriesChart, BarChart, HeatmapChart, HistogramChart, resolveColor, withAlpha, type LineSeries, type ValueFormat } from "./Chart";
 export { Sparkline } from "./Sparkline";
 export { Formula } from "./Formula";
 export { InfoTip, type InfoProp } from "./InfoTip";

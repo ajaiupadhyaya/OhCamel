@@ -233,7 +233,7 @@
   outline: var(--rule-faint);
   outline-offset: -1px;
 }
-.oc-panel-stale .oc-panel-body::before {
+.oc-panel-stale .oc-panel-body::after {
   content: "";
   position: absolute;
   top: 0;
@@ -1388,6 +1388,10 @@
 .oc-chart-range-btn:focus-visible {
   outline: 2px solid var(--ink);
   outline-offset: 1px;
+}
+.oc-chart-fixed {
+  height: var(--chart-h);
+  min-height: var(--chart-h);
 }
 .oc-uplot {
   width: 100%;
