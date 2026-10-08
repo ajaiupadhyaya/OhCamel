@@ -93,9 +93,10 @@
   --div-pos-1: #D2CEC4;
   --div-pos-2: #8F8A7E;
   --div-pos-3: #111111;
-  --dn-neg-3: var(--div-neg-3);
-  --dn-neg-2: var(--div-neg-2);
-  --dn-neg-1: var(--div-neg-1);
+  /* neutral (correlations, weights): ink only; a negative is the same density, back-hatched (charts/heat) */
+  --dn-neg-3: var(--div-pos-3);
+  --dn-neg-2: var(--div-pos-2);
+  --dn-neg-1: var(--div-pos-1);
   --dn-pos-1: var(--div-pos-1);
   --dn-pos-2: var(--div-pos-2);
   --dn-pos-3: var(--div-pos-3);

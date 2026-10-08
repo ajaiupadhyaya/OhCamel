@@ -21,7 +21,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject }
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import { alignSeries, endLabels, formatTick, formatValue, niceTicks, type ValueFormat } from "./scales";
-import { labelColor, luminance, rampColor, resolveColor, slotColor, useChartTheme, type ChartTheme } from "./theme";
+import { heatScale } from "./heat";
+import { labelColor, luminance, resolveColor, slotColor, useChartTheme, type ChartTheme } from "./theme";
 
 export const STRIP = 20; // crosshair readout strip
 const RANGE_ROW = 28; // 1M 3M 1Y 5Y MAX
@@ -210,6 +211,25 @@ function hatch(ctx: CanvasRenderingContext2D, clip: Path2D, box: { left: number;
   for (let x = box.left - box.height; x < box.left + box.width; x += step) {
     ctx.moveTo(x, box.top + box.height);
     ctx.lineTo(x + box.height, box.top);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** The negative mark on a neutral heatmap cell: a back-slash hatch, the mirror of the missing-cell hatch. */
+function backHatch(ctx: CanvasRenderingContext2D, clip: Path2D, box: { left: number; top: number; width: number; height: number }, color: string) {
+  const r = pxr();
+  ctx.save();
+  ctx.setLineDash([]);
+  ctx.clip(clip);
+  ctx.strokeStyle = color;
+  ctx.globalAlpha = 0.55;
+  ctx.lineWidth = r;
+  ctx.beginPath();
+  const step = 4 * r;
+  for (let x = box.left; x < box.left + box.width + box.height; x += step) {
+    ctx.moveTo(x - box.height, box.top);
+    ctx.lineTo(x, box.top + box.height);
   }
   ctx.stroke();
   ctx.restore();
@@ -909,7 +929,11 @@ function contrast(a: string, b: string): number {
   return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
 }
 
-/** A canvas grid: diverging (signal to ink) around `zmid`, else the ink density ramp. Missing cells are hatched, never coloured. */
+/**
+ * A canvas grid: diverging around `zmid` (palette "pnl": signal to ink; "neutral": ink density with
+ * negatives back-hatched, never red; charts/heat), else the ink density ramp. Missing cells are
+ * forward-hatched on bare paper, never coloured.
+ */
 export function HeatmapChart({ x, y, z, format = "num", digits = 2, diverging, zmid = 0, showValues, height = 360, colorbar = true, layout, onClick, zmin, zmax, palette = "pnl", gap = 2 }: HeatmapChartProps) {
   const t = useChartTheme();
   const box = useRef<HTMLDivElement>(null);
@@ -920,20 +944,10 @@ export function HeatmapChart({ x, y, z, format = "num", digits = 2, diverging, z
   const hints = useMemo(() => heatHints(layout), [layout]);
   const plotHeight = height - STRIP;
 
-  const scale = useMemo(() => {
-    const flat = z.flat().filter((v): v is number => typeof v === "number" && Number.isFinite(v));
-    const div = diverging ?? (flat.some((v) => v < 0) && flat.some((v) => v > 0));
-    if (div) {
-      const m = Math.max(...flat.map((v) => Math.abs(v - zmid)), 1e-12);
-      const lo = zmin ?? zmid - m;
-      const hi = zmax ?? zmid + m;
-      const ramp = palette === "neutral" ? t.divNeutral : t.div;
-      return { div, lo, hi, color: (v: number) => rampColor(ramp, v < zmid ? 0.5 * ((v - lo) / (zmid - lo || 1)) : 0.5 + 0.5 * ((v - zmid) / (hi - zmid || 1))) };
-    }
-    const lo = zmin ?? (flat.length ? Math.min(...flat) : 0);
-    const hi = zmax ?? (flat.length ? Math.max(...flat) : 1);
-    return { div, lo, hi, color: (v: number) => rampColor(t.seq, (v - lo) / (hi - lo || 1)) };
-  }, [z, diverging, zmid, zmin, zmax, palette, t]);
+  const scale = useMemo(
+    () => heatScale(z.flat().filter((v): v is number => typeof v === "number" && Number.isFinite(v)), { diverging, zmid, zmin, zmax, palette }, t),
+    [z, diverging, zmid, zmin, zmax, palette, t],
+  );
 
   const geom = useMemo(() => {
     const nx = x.length;
@@ -984,9 +998,14 @@ export function HeatmapChart({ x, y, z, format = "num", digits = 2, diverging, z
           hatch(ctx, p, { left: cx, top: cy, width: cellW, height: cellH }, t.ink3, 1);
           continue;
         }
-        const fill = scale.color(v);
+        const { fill, hatch: neg } = scale.cell(v);
         ctx.fillStyle = fill;
         ctx.fillRect(cx + g / 2, cy + g / 2, cellW - g, cellH - g);
+        if (neg) {
+          const p = new Path2D();
+          p.rect(cx + g / 2, cy + g / 2, cellW - g, cellH - g);
+          backHatch(ctx, p, { left: cx, top: cy, width: cellW, height: cellH }, contrast(fill, t.ink) >= contrast(fill, t.paper) ? t.ink : t.paper);
+        }
         if (showValues) {
           const text = fmt(v);
           if (text.length * 6.1 + 4 <= cellW - g && cellH - g >= 12) {
@@ -1053,8 +1072,14 @@ export function HeatmapChart({ x, y, z, format = "num", digits = 2, diverging, z
       const bh = plotH / steps;
       for (let s = 0; s < steps; s++) {
         const v = scale.hi - ((s + 0.5) / steps) * (scale.hi - scale.lo);
-        ctx.fillStyle = scale.color(v);
+        const { fill, hatch: neg } = scale.cell(v);
+        ctx.fillStyle = fill;
         ctx.fillRect(kx, top + s * bh, 8, Math.ceil(bh));
+        if (neg) {
+          const p = new Path2D();
+          p.rect(kx, top + s * bh, 8, Math.ceil(bh));
+          backHatch(ctx, p, { left: kx, top: top + s * bh, width: 8, height: Math.ceil(bh) }, contrast(fill, t.ink) >= contrast(fill, t.paper) ? t.ink : t.paper);
+        }
       }
       ctx.fillStyle = t.ink2;
       ctx.textAlign = "left";
@@ -1070,14 +1095,14 @@ export function HeatmapChart({ x, y, z, format = "num", digits = 2, diverging, z
       const row = rowAt(hover.j);
       writeReadout(readout.current, [
         { k: geom.yl[row] ?? "", v: "" },
-        { k: geom.xl[hover.i] ?? "", v: fmt(z[row]?.[hover.i]), signal: scale.div && (z[row]?.[hover.i] ?? 0) < zmid },
+        { k: geom.xl[hover.i] ?? "", v: fmt(z[row]?.[hover.i]), signal: scale.signal(z[row]?.[hover.i] ?? zmid) },
       ]);
       return;
     }
     const flat = z.flat().filter((v): v is number => typeof v === "number" && Number.isFinite(v));
     if (!flat.length) return writeReadout(readout.current, [{ k: "NO DATA", v: "" }]);
     writeReadout(readout.current, [
-      { k: "MIN", v: fmt(Math.min(...flat)), signal: scale.div && Math.min(...flat) < zmid },
+      { k: "MIN", v: fmt(Math.min(...flat)), signal: scale.signal(Math.min(...flat)) },
       { k: "MAX", v: fmt(Math.max(...flat)) },
     ]);
   });
