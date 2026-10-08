@@ -11,7 +11,9 @@ textbook uncorrected scan.
 
 from __future__ import annotations
 
+import json
 import math
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -57,6 +59,17 @@ def farm_dsr(cells: pd.DataFrame, trial_srs: np.ndarray) -> pd.Series:
                       for r in cells.itertuples()], index=cells.index, dtype=float)
 
 
+def _cost_curve(raw: Any) -> list[dict[str, Any]] | None:
+    """The cell's stored 0/5/15/30 bps curve (JSON records); None when absent or unreadable."""
+    if not isinstance(raw, str):
+        return None
+    try:
+        rows = json.loads(raw)
+    except ValueError:
+        return None
+    return rows if isinstance(rows, list) else None
+
+
 def leaderboard(cells: pd.DataFrame, regimes: pd.DataFrame, trial_srs: np.ndarray) -> pd.DataFrame:
     ok = cells[cells["status"] == "ok"].copy()
     if ok.empty:
@@ -66,7 +79,7 @@ def leaderboard(cells: pd.DataFrame, regimes: pd.DataFrame, trial_srs: np.ndarra
     for r in ok.itertuples():
         reg = regimes[regimes["cell_id"] == r.cell_id]
         v = charter_verdict(holdout_return=r.holdout_return, dsr=r.dsr_farm, psr=r.psr, boot_lo5=r.boot_lo5,
-                            regimes=reg, pbo=r.pbo, costs_reported=bool(r.costs_reported))
+                            regimes=reg, pbo=r.pbo, costs=_cost_curve(getattr(r, "cost_curve", None)))
         rows.append({"cell_id": r.cell_id, "strategy": r.strategy, "universe": r.universe, "verdict": v.value,
                      "detail": v.detail, "dsr_farm": r.dsr_farm, "psr": r.psr, "oos_sharpe_ann": r.oos_sharpe_ann,
                      "holdout_return": r.holdout_return, "boot_lo5": r.boot_lo5, "pbo": r.pbo, "spa_p": r.spa_p,

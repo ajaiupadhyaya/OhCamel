@@ -20,7 +20,7 @@ def _regimes(pos: list[bool | None]) -> pd.DataFrame:
 
 
 GOOD = dict(holdout_return=0.08, dsr=0.41, psr=0.83, boot_lo5=0.02, regimes=_regimes([None, True, True, True, False]),
-            pbo=0.2, costs_reported=True)
+            pbo=0.2, costs=pd.DataFrame({"cost_bps": [0.0, 5.0, 15.0, 30.0], "sharpe": [0.9, 0.8, 0.6, 0.3]}))
 
 
 def test_every_gate_passing_is_pass_and_says_advisory():
@@ -59,7 +59,27 @@ def test_high_pbo_is_named_but_reported_not_gated():
 
 
 def test_a_missing_cost_sweep_fails():
-    assert charter_verdict(**{**GOOD, "costs_reported": False}).value == "FAIL"
+    v = charter_verdict(**{**GOOD, "costs": None})
+    assert v.value == "FAIL" and "COST_SWEEP" in v.detail
+
+
+def test_the_cost_sweep_gate_reads_the_table_not_a_flag():
+    partial = pd.DataFrame({"cost_bps": [0.0, 5.0], "sharpe": [0.9, 0.8]})  # 15 and 30 bps never computed
+    v = charter_verdict(**{**GOOD, "costs": partial})
+    gate = {g.name: g for g in v.gates}["cost_sweep"]
+    assert v.value == "FAIL" and gate.passed is False and gate.note == "MISSING 15, 30 BPS"
+    assert gate.value == 2.0 and is_label(v.detail)
+
+
+def test_a_cost_row_with_no_number_does_not_count():
+    nan_row = pd.DataFrame({"cost_bps": [0.0, 5.0, 15.0, 30.0], "sharpe": [0.9, 0.8, 0.6, float("nan")]})
+    assert {g.name: g for g in charter_verdict(**{**GOOD, "costs": nan_row}).gates}["cost_sweep"].passed is False
+
+
+def test_a_full_cost_sweep_is_reported_not_gated_and_accepts_records():
+    recs = [{"cost_bps": b, "sharpe": 0.5} for b in (30, 15, 5, 0)]  # the farm's cost_curve JSON shape, any order
+    gate = {g.name: g for g in charter_verdict(**{**GOOD, "costs": recs}).gates}["cost_sweep"]
+    assert gate.passed is None and gate.value == 4.0 and gate.note == ""
 
 
 def test_regime_table_compounds_inside_each_window():

@@ -4,15 +4,18 @@ A verdict leads every product. ``charter_verdict`` is the strategy battery:
 every gated metric must pass; a metric that cannot be computed fails its gate
 (never-pass is the conservative reading); no holdout at all is INSUFFICIENT
 DATA; PBO and the cost sweep are reported (PBO named when high), not gated.
+The cost sweep is read from the cost table itself: every 0/5/15/30 bps row must
+be there with at least one finite number, or the gate fails and names the gaps.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from ..jobs.artifacts import VERDICTS
@@ -76,8 +79,24 @@ def regime_table(r: pd.Series) -> pd.DataFrame:
     return pd.DataFrame(rows).astype({"positive": object})
 
 
+def cost_sweep_gate(costs: pd.DataFrame | Sequence[Mapping[str, Any]] | None) -> Gate:
+    """Reported, not gated, when the table holds a row for each of 0/5/15/30 bps with a finite metric."""
+    df = pd.DataFrame(list(costs)) if costs is not None and not isinstance(costs, pd.DataFrame) else costs
+    have: set[float] = set()
+    if df is not None and not df.empty and "cost_bps" in df.columns:
+        metrics = df.drop(columns=["cost_bps"]).apply(pd.to_numeric, errors="coerce")
+        live = np.isfinite(metrics.to_numpy(dtype=float)).any(axis=1)
+        have = {float(b) for b, ok in zip(pd.to_numeric(df["cost_bps"], errors="coerce"), live, strict=True)
+                if ok and _num(b) is not None}
+    missing = [b for b in COST_GRID_BPS if not any(math.isclose(b, h) for h in have)]
+    note = "" if not missing else "MISSING " + ", ".join(f"{b:g}" for b in missing) + " BPS"
+    return Gate("cost_sweep", float(len(COST_GRID_BPS) - len(missing)), "0/5/15/30 bps reported",
+                None if not missing else False, note=note)
+
+
 def charter_verdict(*, holdout_return: Any, dsr: Any, psr: Any, boot_lo5: Any, regimes: pd.DataFrame, pbo: Any,
-                    costs_reported: bool, extra: Sequence[Gate] = ()) -> Verdict:
+                    costs: pd.DataFrame | Sequence[Mapping[str, Any]] | None,
+                    extra: Sequence[Gate] = ()) -> Verdict:
     hr = _num(holdout_return)
     if hr is None:
         return Verdict("INSUFFICIENT DATA", "NO OOS HOLDOUT RETURNS")
@@ -93,8 +112,7 @@ def charter_verdict(*, holdout_return: Any, dsr: Any, psr: Any, boot_lo5: Any, r
         Gate("regimes_positive", float(pos), f">= {REGIMES_MIN} of {len(REGIMES)}", pos >= REGIMES_MIN,
              note=f"{avail} of {len(REGIMES)} regimes have out-of-sample data"),
         Gate("pbo", pb, "reported", None, note="high" if pb is not None and pb > PBO_HIGH else ""),
-        Gate("cost_sweep", None, "0/5/15/30 bps reported", None if costs_reported else False,
-             note="" if costs_reported else "missing"),
+        cost_sweep_gate(costs),
         *extra,
     ]
     pbo_txt = f" · PBO {pb:.2f} HIGH" if pb is not None and pb > PBO_HIGH else ""

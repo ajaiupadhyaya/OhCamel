@@ -314,7 +314,7 @@ def run_holdout(samples: pd.DataFrame, panel: Panel, cfg: Q01Config, sel: Select
                            "model_total": M.total_return(_port(pred, panel, cfg, b)["net"])} for b in COST_GRID_BPS])
     beats = M.sharpe(net) - M.sharpe(base["net"])
     v = charter_verdict(holdout_return=M.total_return(net), dsr=dsr, psr=M.probabilistic_sharpe(sr, len(net), sk, ku),
-                        boot_lo5=boot["ci_low"], regimes=regimes, pbo=sel.pbo, costs_reported=True,
+                        boot_lo5=boot["ci_low"], regimes=regimes, pbo=sel.pbo, costs=costs,
                         extra=[Gate("beats_linear_composite", beats, "> 0", beats > 0,
                                     note="model holdout net Sharpe minus composite's")])
     ic = ic_table(pred, samples)

@@ -27,7 +27,8 @@ def test_a_cell_carries_every_gate_input(cell):
     assert row["status"] == "ok" and row["n_combos"] == 16 and len(trials) == 16
     for k in ("holdout_return", "psr", "boot_lo5", "pbo", "spa_p", "sr_pp", "n", "skew", "kurt", "oos_sharpe_ann"):
         assert row[k] is not None, k
-    assert row["costs_reported"] and len(json.loads(row["cost_curve"])) == 4  # 0/5/15/30 bps
+    assert [c["cost_bps"] for c in json.loads(row["cost_curve"])] == [0.0, 5.0, 15.0, 30.0]
+    assert "costs_reported" not in row  # the gate reads the table, never a flag
     assert set(regimes["regime"]) == {"2008", "2015-16", "2020", "2022", "2024"}
     assert regimes.set_index("regime").loc["2008", "positive"] is None  # fixtures start 2016: no 2008 data
 
@@ -57,3 +58,16 @@ def test_incremental_run_carries_cells_forward_and_respects_the_budget(market, t
     assert spec.tables["leaderboard"]["verdict"].iloc[0] in ("PASS", "FAIL")
     assert spec.verdict == spec.tables["leaderboard"]["verdict"].iloc[0]
     assert spec.verdict_detail.startswith(("0 PASS", "1 PASS")) and is_label(spec.verdict_detail)
+
+
+def test_leaderboard_cost_gate_reads_the_cells_cost_curve(cell):
+    from ohcamel_quant.models.farm import leaderboard
+
+    row, regimes, trials = cell
+    curve = json.loads(row["cost_curve"])
+    full = leaderboard(pd.DataFrame([row]), regimes, trials)
+    cut = leaderboard(pd.DataFrame([{**row, "cost_curve": json.dumps(curve[:2])}]), regimes, trials)
+    gone = leaderboard(pd.DataFrame([{**row, "cost_curve": None}]), regimes, trials)
+    assert "COST_SWEEP" not in full["detail"].iloc[0]
+    assert cut["verdict"].iloc[0] == "FAIL" and "COST_SWEEP 2.00" in cut["detail"].iloc[0]
+    assert gone["verdict"].iloc[0] == "FAIL" and "COST_SWEEP 0.00" in gone["detail"].iloc[0]

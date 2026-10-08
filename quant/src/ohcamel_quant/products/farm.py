@@ -85,7 +85,7 @@ def run_cell(strategy: str, universe: str, ctx: Any,
            "skew": sk, "kurt": ku, "psr": M.probabilistic_sharpe(sr, len(ex), sk, ku), "boot_lo5": boot["ci_low"],
            "pbo": cscv_pbo(sw.returns, PBO_S, threads=ctx.threads)["pbo"],
            "spa_p": spa_test(bench.fillna(0.0), sw.returns)["pvalue_consistent"],
-           "oos_sharpe_ann": M.sharpe(ex), "costs_reported": True,
+           "oos_sharpe_ann": M.sharpe(ex),
            "cost_curve": json.dumps(costs["curve"]), "selected_params": json.dumps(sw.combos[pick])}
     return row, reg.assign(cell_id=row["cell_id"]), trials
 
