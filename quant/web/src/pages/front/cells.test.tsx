@@ -66,6 +66,19 @@ describe("FarmReport (farm.sweep · leaderboard)", () => {
   });
 });
 
+describe("FarmReport when every cell is skipped (INSUFFICIENT DATA)", () => {
+  const cells: FarmCellRow[] = Array.from({ length: 21 }, (_, i) => ({ cell_id: `s${i}@sectors`, strategy: `s${i}`, universe: "sectors", status: "skipped", reason: "short", ran_at: null }));
+  const html = render(<FarmReport board={[]} cells={cells} names={{}} />);
+  it("the headline is the skip count, not 0 FAIL / 0 PASS", () => {
+    expect(html).toMatch(/fp-farm-fail num[^"]*"[^>]*>21</);
+    expect(html).toContain(">SKIPPED<");
+    expect(html).not.toContain(">FAIL<");
+    expect(html).not.toContain(">PASS<");
+    expect(html).toContain("OF 21 CELLS");
+  });
+  it("the skip count is ink, never signal", () => expect(html).toContain("fp-farm-zero"));
+});
+
 describe("ModelsReport (models.xs_lgbm · holdout)", () => {
   it("rank IC and its HAC t", () => {
     const h = { holdout_start: "2022-01-31", holdout_end: "2026-08-31", rank_ic_mean: 0.0312, rank_ic_hac_t: 1.84, net_sharpe: 0.41, composite_net_sharpe: 0.38 } as HoldoutRow;

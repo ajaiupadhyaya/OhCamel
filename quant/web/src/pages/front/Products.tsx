@@ -6,7 +6,8 @@
  *   STRATEGY FARM farm.sweep · leaderboard  n FAIL · m PASS, failures first and largest;
  *                                           the top three by farm DSR, verdict first
  *   MODELS        models.xs_lgbm · holdout  rank IC and its HAC t on the once-only holdout
- * An empty leaderboard shows the counts only: the verdict line above says why.
+ * An empty leaderboard shows the counts only: the verdict line above says why; when every
+ * cell was skipped the headline is the skip count.
  * A product that has not run reads INSUFFICIENT DATA · NOT YET RUN; a product whose own
  * verdict is INSUFFICIENT DATA shows that verdict and its reason, and no number.
  */
@@ -130,6 +131,8 @@ const verdictClass = (v: string) => (v === "FAIL" ? "fp-v fp-v-fail" : v === "PA
 
 export function FarmReport({ board, cells, names }: { board: FarmBoardRow[]; cells: FarmCellRow[]; names: Record<string, string> }) {
   const c = farmCounts(board, cells);
+  // Nothing tested (every cell skipped): the headline is the skip count, not 0 FAIL · 0 PASS.
+  const allSkipped = board.length === 0 && c.skipped > 0;
   const cols: Column<FarmBoardRow>[] = [
     { key: "verdict", label: "VERDICT", sortable: false, render: (r) => <span className={verdictClass(r.verdict)}>{r.verdict}</span> },
     { key: "strategy", label: "STRATEGY", sortable: false, render: (r) => <span>{(names[r.strategy] ?? r.strategy.replace(/_/g, " ")).toUpperCase()}</span> },
@@ -138,18 +141,26 @@ export function FarmReport({ board, cells, names }: { board: FarmBoardRow[]; cel
   ];
   return (
     <div className="fp-art">
-      <div className="fp-farm" aria-label="Farm count">
-        <span className={`fp-farm-fail num ${c.fail ? "" : "fp-farm-zero"}`}>{fmtNum(c.fail, 0)}</span>
-        <span className="fp-farm-word">FAIL</span>
-        <span className="fp-farm-pass num">{fmtNum(c.pass, 0)}</span>
-        <span className="fp-farm-word fp-dim">PASS</span>
-        {c.skipped > 0 && (
-          <>
-            <span className="fp-farm-pass num fp-dim">{fmtNum(c.skipped, 0)}</span>
-            <span className="fp-farm-word fp-dim">SKIPPED</span>
-          </>
-        )}
-      </div>
+      {allSkipped ? (
+        <div className="fp-farm" aria-label="Farm count">
+          <span className="fp-farm-fail num fp-farm-zero">{fmtNum(c.skipped, 0)}</span>
+          <span className="fp-farm-word">SKIPPED</span>
+          <span className="fp-farm-word fp-dim">OF {fmtNum(c.total, 0)} CELLS</span>
+        </div>
+      ) : (
+        <div className="fp-farm" aria-label="Farm count">
+          <span className={`fp-farm-fail num ${c.fail ? "" : "fp-farm-zero"}`}>{fmtNum(c.fail, 0)}</span>
+          <span className="fp-farm-word">FAIL</span>
+          <span className="fp-farm-pass num">{fmtNum(c.pass, 0)}</span>
+          <span className="fp-farm-word fp-dim">PASS</span>
+          {c.skipped > 0 && (
+            <>
+              <span className="fp-farm-pass num fp-dim">{fmtNum(c.skipped, 0)}</span>
+              <span className="fp-farm-word fp-dim">SKIPPED</span>
+            </>
+          )}
+        </div>
+      )}
       {board.length > 0 && <DataTable<FarmBoardRow> columns={cols} rows={farmTop(board)} rowKey={(r) => r.cell_id} compact />}
     </div>
   );
