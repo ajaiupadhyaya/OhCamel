@@ -1,0 +1,45 @@
+/* Compute page (prefix cp-). Paper Tape: ruled, mono numbers, signal red only for a breach. */
+.cp-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.cp-prog {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.cp-prog-bar {
+  position: relative;
+  flex: 1;
+  min-width: 48px;
+  height: 6px;
+  border: 1px solid var(--ink-3);
+}
+.cp-prog-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--w, 0);
+  background: var(--ink);
+}
+.cp-art,
+.cp-kernel {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.cp-measured {
+  padding: var(--sp-2) 0;
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.02em;
+  color: var(--ink-2);
+  border-bottom: var(--rule-faint);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 900px) {
+  .cp-charts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
