@@ -12,7 +12,7 @@ import { useNavigate } from "react-router-dom";
 import { useDebounced, useLocalStorage } from "../lib/hooks";
 import { useTickerSearch } from "../lib/market";
 import { ROUTES } from "../lib/routes";
-import { commandPath, parseCommand, pushRecent, RECENT_MAX } from "./command";
+import { commandPath, exactRow, parseCommand, pushRecent, RECENT_MAX } from "./command";
 import { CHORDS } from "./hotkeys";
 
 interface Row {
@@ -127,7 +127,8 @@ export function CommandLine({ open, onClose }: { open: boolean; onClose: () => v
       e.preventDefault();
       if (hi >= 0 && rows[hi]) runRow(rows[hi]);
       else if (path) go(path, v);
-      else if (rows.length) setHi(0); // a search: Enter selects the first result, Enter again opens it
+      else if (exactRow(rows, query) >= 0) runRow(rows[exactRow(rows, query)]); // a bare ticker opens at once
+      else if (rows.length) setHi(0); // otherwise Enter selects the first result, Enter again opens it
     }
   };
 

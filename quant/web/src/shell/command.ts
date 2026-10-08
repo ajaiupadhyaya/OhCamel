@@ -57,3 +57,9 @@ export function pushRecent(list: unknown, entry: string): string[] {
   if (!e) return prev.slice(0, RECENT_MAX);
   return [e, ...prev.filter((x) => x !== e)].slice(0, RECENT_MAX);
 }
+
+/** The index of the ticker row that is exactly the query (Enter opens it at once), else -1. */
+export function exactRow(rows: { id: string; label: string }[], query: string): number {
+  const q = query.trim().toUpperCase();
+  return q ? rows.findIndex((r) => r.id.startsWith("t:") && r.label.toUpperCase() === q) : -1;
+}

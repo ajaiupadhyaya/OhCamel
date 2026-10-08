@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commandPath, parseCommand, pushRecent } from "./command";
+import { commandPath, exactRow, parseCommand, pushRecent } from "./command";
 
 describe("parseCommand", () => {
   it("function codes go to pages", () => {
@@ -49,4 +49,15 @@ describe("pushRecent", () => {
     expect(pushRecent("garbage" as unknown as string[], "VOL")).toEqual(["VOL"]);
     expect(pushRecent([1, null, "SYS"] as unknown as string[], "VOL")).toEqual(["VOL", "SYS"]);
   });
+});
+
+describe("exactRow (Enter on a bare ticker opens it)", () => {
+  const rows = [
+    { id: "p:/markets", label: "MARKETS" },
+    { id: "t:SPY", label: "SPY" },
+    { id: "t:SPYG", label: "SPYG" },
+  ];
+  it("the row whose ticker is exactly the query", () => expect(exactRow(rows, "spy")).toBe(1));
+  it("none for a partial query", () => expect(exactRow(rows, "sp")).toBe(-1));
+  it("pages do not count (a page search keeps select-then-open)", () => expect(exactRow(rows, "markets")).toBe(-1));
 });
