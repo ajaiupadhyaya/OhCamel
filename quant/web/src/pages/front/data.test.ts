@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { freshnessRows, lastPair, slope2s10s } from "./data";
+import { freshnessRows, lampOf, lastPair, slope2s10s } from "./data";
 
 const frame = {
   index: ["2026-05-28", "2026-05-29", "2026-06-01"],
@@ -36,6 +36,29 @@ describe("freshnessRows (GET /api/warehouse/freshness)", () => {
       ["bars_daily", null],
       ["fred", "2026-10-02"],
     ]);
+  });
+  it("reads the served shape: {now, datasets: {name: {data_asof, stale, last_status, keys_failed}}}", () => {
+    const body = {
+      now: "2026-10-08T00:49:55Z",
+      datasets: {
+        fred: { data_asof: "2026-06-01", last_run_at: "2026-06-09T17:53:15", last_status: "ok", keys: 3, keys_behind: 0, keys_failed: 0, stale: true, rule: "age" },
+        bars_daily: { data_asof: "2026-10-06", last_status: "ok", keys: 9, keys_behind: 1, keys_failed: 2, stale: false, rule: "session" },
+      },
+      provenance: [],
+      notes: [],
+    };
+    expect(freshnessRows(body)).toEqual([
+      { dataset: "bars_daily", data_asof: "2026-10-06", status: "ok", stale: false, keys: 9, keys_behind: 1, keys_failed: 2 },
+      { dataset: "fred", data_asof: "2026-06-01", status: "ok", stale: true, keys: 3, keys_behind: 0, keys_failed: 0 },
+    ]);
+  });
+  it("lampOf: a failed run or failed keys is a fault; the API's stale flag wins over age", () => {
+    const now = new Date("2026-10-07T12:00:00Z");
+    expect(lampOf({ dataset: "a", data_asof: "2026-10-06", status: "failed" }, now)).toBe("fault");
+    expect(lampOf({ dataset: "a", data_asof: "2026-10-06", status: "ok", keys_failed: 1 }, now)).toBe("fault");
+    expect(lampOf({ dataset: "a", data_asof: "2026-10-06", status: "ok", stale: true }, now)).toBe("stale");
+    expect(lampOf({ dataset: "a", data_asof: "2026-01-01", status: "ok", stale: false }, now)).toBe("ok");
+    expect(lampOf({ dataset: "a", data_asof: null }, now)).toBe("stale");
   });
   it("tolerates garbage", () => {
     expect(freshnessRows(null)).toEqual([]);
