@@ -718,7 +718,7 @@ jobs:
           awk -v p="$percent" 'BEGIN { exit !(p >= 60) }' \
             || { echo "coverage ${percent}% is below the 60% floor"; exit 1; }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coverage-html
           path: _coverage/html
@@ -839,7 +839,7 @@ jobs:
             --measured-on "github-actions ubuntu-latest: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs), $(nproc) vCPU" \
             --json "$RUNNER_TEMP/kernels.json" --md "$RUNNER_TEMP/kernels.md"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: kernels-bench
           path: |
