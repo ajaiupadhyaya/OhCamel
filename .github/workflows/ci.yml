@@ -54,7 +54,7 @@ jobs:
     # anything, and a slow registry should not be what turns this job red.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # ubuntu-latest normally carries shellcheck already; installed here only
       # if a runner image ever drops it, so this step is never the reason the
@@ -423,7 +423,7 @@ jobs:
     # slow. The default 360 would hide a genuine hang; 60 will not.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The launchd plist that runs deploy/pull-backups.sh on the owner's
       # laptop, linted by the tool that will actually load it. This lives on the
@@ -621,7 +621,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: System dependencies
         run: |
@@ -655,7 +655,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: System dependencies
         run: |
@@ -730,7 +730,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -771,7 +771,7 @@ jobs:
       run:
         working-directory: native
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Toolchain (native/rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
@@ -859,7 +859,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv and Python 3.12
         uses: astral-sh/setup-uv@v5
@@ -921,7 +921,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv and Python 3.12
         uses: astral-sh/setup-uv@v5
@@ -1042,7 +1042,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: docker build
         run: |
