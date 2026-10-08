@@ -265,3 +265,54 @@ def test_selftest_accepts_only_a_bounded_tag(api, params):
 def test_selftest_tag_at_the_bound_is_accepted(api):
     client, _ = api
     assert client.post("/api/jobs", json={"kind": "ops.selftest", "params": {"tag": "t" * 64}}).status_code == 202
+
+
+# Harden H4 (security): SSE fan-out cap and idle timeout.
+def test_sse_gate_counts_total_and_per_client():
+    from ohcamel_quant.api.routers.jobs import SseGate
+
+    g = SseGate(max_total=3, max_per_client=2)
+    a1, a2 = g.acquire("a"), g.acquire("a")
+    assert a1 is not None and a2 is not None
+    assert g.acquire("a") == "per_client"
+    b1 = g.acquire("b")
+    assert b1 is not None and g.acquire("c") == "total"
+    a1.release()
+    a1.release()  # idempotent: the stream's finally and the response's background both release
+    assert g.total == 2 and g.per == {"a": 1, "b": 1}
+    assert g.acquire("c") is not None
+    for s in (a2, b1):
+        s.release()
+    assert g.per == {"c": 1}
+
+
+def test_sse_refuses_beyond_the_fan_out_cap(api):
+    from ohcamel_quant.api.routers.jobs import SseGate, get_sse_gate
+
+    client, _ = api
+    gate = SseGate(max_total=2, max_per_client=1)
+    client.app.dependency_overrides[get_sse_gate] = lambda: gate
+    held = gate.acquire("203.0.113.7")
+    r = client.get("/api/jobs/events", headers=IP_A)
+    assert r.status_code == 429 and r.json()["error"] == "too_many_streams" and r.headers["retry-after"]
+    gate.acquire("198.51.100.1")
+    r = client.get("/api/jobs/events", headers=IP_B)
+    assert r.status_code == 503 and r.json()["error"] == "streams_full" and r.headers["retry-after"]
+    held.release()
+    r = client.get("/api/jobs/events", headers=IP_A)  # a slot frees: served, then released at its end
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
+    assert gate.total == 1 and "203.0.113.7" not in gate.per
+
+
+def test_sse_closes_an_idle_stream_before_its_lifetime(api):
+    import time as _time
+
+    from ohcamel_quant.api.routers.jobs import get_sse_idle
+
+    client, _ = api
+    client.app.dependency_overrides[get_sse_lifetime] = lambda: 30.0
+    client.app.dependency_overrides[get_sse_idle] = lambda: 0.6
+    t0 = _time.monotonic()
+    r = client.get("/api/jobs/events")
+    assert r.status_code == 200 and _time.monotonic() - t0 < 5.0
+    assert "event: job" not in r.text and ": idle" in r.text

@@ -12,6 +12,10 @@
   (compute plan D12's schedule table).
 * ``GET /api/jobs/events`` -- SSE, one ``event: job`` per state or progress
   change, ``id:`` = the job_events sequence (``Last-Event-ID`` resumes).
+  At most ``SSE_MAX_STREAMS`` open streams (503 beyond) and
+  ``SSE_MAX_PER_CLIENT`` per client (429), each with ``Retry-After``; a stream
+  ends after ``SSE_LIFETIME_S`` or ``SSE_IDLE_S`` without a job event, and the
+  browser reconnects with ``Last-Event-ID`` (Harden H4).
 
 The client address is the rightmost ``X-Forwarded-For`` entry (of the last
 such header) -- what Caddy, the only way in, saw and appended -- falling back
@@ -22,14 +26,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from contextlib import closing
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from ...data.base import Provenance
 from ...jobs.artifacts import inside
@@ -56,6 +63,10 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 MAX_LIVE_PER_CLIENT = 20
 MAX_PARAMS_BYTES = 16_384  # Harden H4: every public kind's params fit in well under this
 SSE_LIFETIME_S = 300.0
+SSE_IDLE_S = 120.0        # no job event for this long: end the stream (keepalives do not count)
+SSE_MAX_STREAMS = 64      # each open stream holds a SQLite connection polled twice a second
+SSE_MAX_PER_CLIENT = 8    # a few tabs (deck, compute) per address, not a fan-out
+SSE_RETRY_AFTER_S = 30
 OVER_CAP_NOTE = ("This request exceeds the endpoint's synchronous cap, so it runs as a job on the batch worker; "
                  "poll status_url or listen on /api/jobs/events, then read result_url.")
 
@@ -66,6 +77,58 @@ def get_jobs_db_path() -> Path:
 
 def get_sse_lifetime() -> float:
     return SSE_LIFETIME_S
+
+
+def get_sse_idle() -> float:
+    return SSE_IDLE_S
+
+
+class SseSlot:
+    """One admitted stream; ``release`` is idempotent."""
+
+    def __init__(self, gate: SseGate, client: str) -> None:
+        self._gate, self._client, self._done = gate, client, False
+
+    def release(self) -> None:
+        with self._gate.lock:
+            if self._done:
+                return
+            self._done = True
+            self._gate.total -= 1
+            n = self._gate.per.get(self._client, 0) - 1
+            if n > 0:
+                self._gate.per[self._client] = n
+            else:
+                self._gate.per.pop(self._client, None)
+
+
+@dataclass
+class SseGate:
+    """Counts open SSE streams, in total and per client (Harden H4 fan-out cap)."""
+
+    max_total: int
+    max_per_client: int
+    total: int = 0
+    per: dict[str, int] = field(default_factory=dict)
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def acquire(self, client: str) -> SseSlot | str:
+        """A slot, or the reason there is none: ``"per_client"`` or ``"total"``."""
+        with self.lock:
+            if self.per.get(client, 0) >= self.max_per_client:
+                return "per_client"
+            if self.total >= self.max_total:
+                return "total"
+            self.total += 1
+            self.per[client] = self.per.get(client, 0) + 1
+            return SseSlot(self, client)
+
+
+SSE_GATE = SseGate(SSE_MAX_STREAMS, SSE_MAX_PER_CLIENT)
+
+
+def get_sse_gate() -> SseGate:
+    return SSE_GATE
 
 
 JobsDb = Annotated[Path, Depends(get_jobs_db_path)]
@@ -169,32 +232,50 @@ def schedules() -> dict[str, Any]:
 
 
 @router.get("/events")
-async def events(request: Request, db: JobsDb, lifetime: float = Depends(get_sse_lifetime)) -> StreamingResponse:
+async def events(request: Request, db: JobsDb, gate: Annotated[SseGate, Depends(get_sse_gate)],
+                 lifetime: Annotated[float, Depends(get_sse_lifetime)],
+                 idle: Annotated[float, Depends(get_sse_idle)]) -> Any:
     last = request.headers.get("last-event-id", "")
     start = int(last) if last.isdigit() else None
+    slot = gate.acquire(client_id(request))
+    if isinstance(slot, str):
+        retry = {"Retry-After": str(SSE_RETRY_AFTER_S)}
+        if slot == "per_client":
+            return JSONResponse(status_code=429, headers=retry, content={
+                "error": "too_many_streams", "detail": f"at most {gate.max_per_client} open streams per client"})
+        return JSONResponse(status_code=503, headers=retry, content={
+            "error": "streams_full", "detail": "the job stream is at capacity; poll /api/jobs meanwhile"})
 
     async def gen():
-        conn = connect(db)
         try:
-            after = current_seq(conn) if start is None else start
-            yield "retry: 3000\n\n"
-            t0 = last_ping = time.monotonic()
-            while time.monotonic() - t0 < lifetime:
-                if await request.is_disconnected():
-                    break
-                for e in events_after(conn, after, limit=200):
-                    after = e["seq"]
-                    data = {"type": "job", "id": e["job_id"], "state": e["state"], "progress": e["progress"],
-                            "message": e["message"]}
-                    yield f"id: {e['seq']}\nevent: job\ndata: {json.dumps(data)}\n\n"
-                if time.monotonic() - last_ping >= 15.0:
-                    last_ping = time.monotonic()
-                    yield ": keepalive\n\n"
-                await asyncio.sleep(0.5)
+            conn = connect(db)
+            try:
+                after = current_seq(conn) if start is None else start
+                yield "retry: 3000\n\n"
+                t0 = last_ping = last_event = time.monotonic()
+                while time.monotonic() - t0 < lifetime:
+                    if await request.is_disconnected():
+                        break
+                    for e in events_after(conn, after, limit=200):
+                        after = e["seq"]
+                        last_event = time.monotonic()
+                        data = {"type": "job", "id": e["job_id"], "state": e["state"], "progress": e["progress"],
+                                "message": e["message"]}
+                        yield f"id: {e['seq']}\nevent: job\ndata: {json.dumps(data)}\n\n"
+                    if time.monotonic() - last_event >= idle:
+                        yield ": idle\n\n"
+                        break
+                    if time.monotonic() - last_ping >= 15.0:
+                        last_ping = time.monotonic()
+                        yield ": keepalive\n\n"
+                    await asyncio.sleep(0.5)
+            finally:
+                conn.close()
         finally:
-            conn.close()
+            slot.release()
 
-    return StreamingResponse(gen(), media_type="text/event-stream",
+    # The generator's finally releases the slot; the background task covers a stream never started.
+    return StreamingResponse(gen(), media_type="text/event-stream", background=BackgroundTask(slot.release),
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
