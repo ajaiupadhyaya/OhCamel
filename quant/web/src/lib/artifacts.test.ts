@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ApiError, DataUnavailableError, NetworkError } from "./api";
-import { KINDS, PREREGISTERED, absentLabel, artifactMaxAge, frameRecords, manifestOf } from "./artifacts";
+import { KINDS, PREREGISTERED, absentLabel, artifactMaxAge, artifactStamp, frameRecords, manifestOf } from "./artifacts";
 
 describe("absentLabel (missing reads render as missing)", () => {
   it("a 404 means the job kind has not produced an artifact yet", () => {
@@ -71,4 +71,14 @@ describe("PREREGISTERED", () => {
     expect(PREREGISTERED[KINDS.models]).toBe(true);
     expect(PREREGISTERED[KINDS.regimes]).toBe(true);
   });
+});
+
+describe("artifactStamp (a run time is never shown as a data date)", () => {
+  it("data_asof reads AS OF", () => {
+    expect(artifactStamp({ data_asof: "2026-06-01", finished_at: "2026-10-08T02:10:00Z" })).toEqual({ at: "2026-06-01", label: "AS OF" });
+  });
+  it("without data_asof the finish time reads RUN", () => {
+    expect(artifactStamp({ data_asof: null, finished_at: "2026-10-08T02:10:00Z" })).toEqual({ at: "2026-10-08T02:10:00Z", label: "RUN" });
+  });
+  it("neither: nothing", () => expect(artifactStamp({})).toEqual({ at: undefined, label: "AS OF" }));
 });

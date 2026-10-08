@@ -3,14 +3,14 @@
  *  - held for pre-registration → AWAITING PRE-REGISTRATION, and nothing is read;
  *  - 404 → INSUFFICIENT DATA · NOT YET RUN; 503 → INSUFFICIENT DATA · DATA UNAVAILABLE;
  *  - present → the verdict first (when the product has one) with its one-line detail, then
- *    the body, with the artifact's data_asof in the header and the stale mark when the API
+ *    the body, with the artifact's data_asof in the header (or RUN and its finish time when it has none) and the stale mark when the API
  *    says stale (or, without its flag, past a missed night).
  */
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Panel } from "./Panel";
 import { Absent, Note, Verdict } from "../design";
-import { PREREGISTERED, absentLabel, artifactMaxAge, manifestOf, useArtifact, type Manifest } from "../lib/artifacts";
+import { PREREGISTERED, absentLabel, artifactMaxAge, artifactStamp, manifestOf, useArtifact, type Manifest } from "../lib/artifacts";
 import { fmtAuto } from "../lib/format";
 
 export interface ArtifactCellProps {
@@ -66,12 +66,14 @@ export function ArtifactCell({ title: label, kind, to, go, experiment, note, spa
       </Panel>
     );
   if (!m) return <Panel title={title} actions={link ?? undefined} span={span} loading={q.isLoading} error={q.isError ? q.error : undefined} onRetry={() => void q.refetch()} skeletonHeight={120} />;
+  const stamp = artifactStamp(m);
   return (
     <Panel
       title={title}
       actions={actions}
       span={span}
-      asOf={m.data_asof ?? m.finished_at ?? undefined}
+      asOf={stamp.at}
+      asOfLabel={stamp.label}
       maxAgeSec={artifactMaxAge(m)}
       provenance={m.provenance}
       notes={m.notes}

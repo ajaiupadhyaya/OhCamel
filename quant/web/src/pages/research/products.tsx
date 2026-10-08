@@ -6,7 +6,7 @@
 import type { ReactNode } from "react";
 import { Panel, Skeleton } from "../../components";
 import { Absent } from "../../design";
-import { artifactMaxAge, manifestOf, useArtifact, useArtifactTable, type Manifest } from "../../lib/artifacts";
+import { artifactMaxAge, artifactStamp, manifestOf, useArtifact, useArtifactTable, type Manifest } from "../../lib/artifacts";
 
 export function useLatest(kind: string): Manifest | null {
   const q = useArtifact(kind);
@@ -29,8 +29,9 @@ export function useTable<T>(kind: string, m: Manifest | null, table: string): { 
 /** A Cell over an existing artifact: its asOf, stale mark and provenance; nothing before it exists. */
 export function ProductPanel({ m, title, children, flush, span }: { m: Manifest | null; title: ReactNode; children: ReactNode; flush?: boolean; span?: 2 | "all" }) {
   if (!m) return null;
+  const stamp = artifactStamp(m);
   return (
-    <Panel title={title} asOf={m.data_asof ?? m.finished_at ?? undefined} maxAgeSec={artifactMaxAge(m)} provenance={m.provenance} flush={flush} span={span}>
+    <Panel title={title} asOf={stamp.at} asOfLabel={stamp.label} maxAgeSec={artifactMaxAge(m)} provenance={m.provenance} flush={flush} span={span}>
       {children}
     </Panel>
   );

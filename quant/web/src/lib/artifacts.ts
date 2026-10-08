@@ -123,3 +123,14 @@ export function useArtifactTable(kind: string, id: string | undefined, table: st
     select: frameRecords,
   });
 }
+
+/**
+ * The header stamp of an artifact Cell: its data_asof as AS OF; with no data date (an
+ * INSUFFICIENT DATA run) the job's finish time as RUN, so a run time never reads as a data date.
+ * Staleness is still measured from `at`.
+ */
+export function artifactStamp(m: Pick<Manifest, "data_asof" | "finished_at">): { at: string | undefined; label: "AS OF" | "RUN" } {
+  if (m.data_asof) return { at: m.data_asof, label: "AS OF" };
+  if (m.finished_at) return { at: m.finished_at, label: "RUN" };
+  return { at: undefined, label: "AS OF" };
+}

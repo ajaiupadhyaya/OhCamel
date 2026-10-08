@@ -66,6 +66,8 @@ export interface PanelProps<T> {
   asOf?: string;
   /** With `asOf`: older than this many seconds renders the stale mark. */
   maxAgeSec?: number;
+  /** The word before `asOf` (default AS OF; RUN for a job's finish time). */
+  asOfLabel?: string;
 }
 
 function asList(n: string[] | string | null | undefined): string[] {
@@ -74,7 +76,7 @@ function asList(n: string[] | string | null | undefined): string[] {
 }
 
 export function Panel<T = unknown>(props: PanelProps<T>) {
-  const { title, info, actions, query, footer, skeletonHeight = 260, flush, compact, className, span, children, id, asOf, maxAgeSec } = props;
+  const { title, info, actions, query, footer, skeletonHeight = 260, flush, compact, className, span, children, id, asOf, maxAgeSec, asOfLabel = "AS OF" } = props;
   const data = query?.data;
   const loading = props.loading ?? (query ? query.isLoading : false);
   const error = props.error ?? (query?.isError ? query.error : undefined);
@@ -111,7 +113,7 @@ export function Panel<T = unknown>(props: PanelProps<T>) {
               {stale && <span className="oc-panel-stale-mark">STALE</span>}
               {asOf && (
                 <span className="oc-panel-asof num">
-                  AS OF <time dateTime={asOf}>{fmtStamp(asOf)}</time>
+                  {asOfLabel} <time dateTime={asOf}>{fmtStamp(asOf)}</time>
                 </span>
               )}
               {actions && <div className="oc-panel-actions">{actions}</div>}
