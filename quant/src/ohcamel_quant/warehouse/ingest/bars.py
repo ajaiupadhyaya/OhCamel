@@ -122,6 +122,16 @@ def run_bars_daily(params: dict, ctx: Any) -> dict:
     given = [t.upper().strip() for t in params.get("tickers") or [] if str(t).strip()]
     from_universe = not given
     tickers = given or universe_tickers(warehouse_path(settings))
+    built_universe = False
+    if not tickers and from_universe:
+        # A fresh warehouse: build the universe here (this job already holds
+        # the writer) rather than fail every weekday until Sunday's
+        # ingest.universes. Found 2026-10-08 when the backfill raced it.
+        from . import universes
+
+        universes.run_universes({}, ctx)
+        tickers = universe_tickers(warehouse_path(settings))
+        built_universe = True
     if not tickers:
         raise IngestFailed("bars_daily: no universe -- run ingest.universes first")
     if params.get("start"):
@@ -132,6 +142,8 @@ def run_bars_daily(params: dict, ctx: Any) -> dict:
         start = prices.DEFAULT_START
     notes = [f"window from {start.isoformat()}; one vendor per ticker; Alpaca history begins 2016, "
              "so windows before 2016 are served by Yahoo first (data/prices.py provider order)"]
+    if built_universe:
+        notes.append("universe built on demand: the warehouse had none (ingest.universes ran inside this job)")
     return run_ingest(
         dataset="bars_daily", keys=list(dict.fromkeys(tickers)), ctx=ctx, read_state=read_state,
         fetch=lambda key, state, s: [fetch_bars(key, state, s, start=start, full=full)],

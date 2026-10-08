@@ -158,8 +158,35 @@ def test_default_tickers_come_from_the_universe(tmp_path, monkeypatch):
     assert len(tickers) == n and tickers == sorted(tickers)
     ctx = LocalContext(market=MarketData(Settings(offline=False, data_dir=tmp_path,
                                                   warehouse_path=tmp_path / "empty.duckdb")))
+    from ohcamel_quant.warehouse.ingest import universes
+
+    calls = []
+    monkeypatch.setattr(universes, "run_universes", lambda params, c: calls.append(params) or {})
     with pytest.raises(IngestFailed, match="no universe"):
         bars.run_bars_daily({}, ctx)
+    assert calls == [{}], "an empty universe is built on demand before giving up"
+
+
+def test_an_empty_universe_is_built_before_the_bars(tmp_path, monkeypatch):
+    # A fresh warehouse must not fail the daily bars every weekday until
+    # Sunday's ingest.universes: the bars job builds the universe itself
+    # (it already holds the writer) and then ingests it. Found 2026-10-08,
+    # when the production backfill raced the universe job.
+    path = tmp_path / "w.duckdb"
+    from ohcamel_quant.warehouse.ingest import universes
+
+    def build(params, c):
+        with open_rw(path) as con:
+            con.execute("INSERT INTO universe_members VALUES ('sp500', 'SPY', 'x', NULL, 't', ?)", [SURVIVORSHIP])
+        return {}
+
+    monkeypatch.setattr(universes, "run_universes", build)
+    monkeypatch.setattr(bars, "_now", lambda: datetime(2026, 6, 2, 14, 0, tzinfo=UTC))
+    monkeypatch.setitem(prices.PROVIDERS, "yahoo", vendor("yahoo", SPY))
+    ctx = LocalContext(market=MarketData(Settings(offline=False, data_dir=tmp_path, warehouse_path=path)))
+    out = bars.run_bars_daily({}, ctx)
+    assert stored(path), "the bars were ingested after the universe was built"
+    assert any("universe built on demand" in n for n in out.get("notes", [])), out.get("notes")
 
 
 def test_universe_runs_carry_the_survivorship_note(tmp_path, monkeypatch):
