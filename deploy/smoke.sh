@@ -377,7 +377,10 @@ else:
 		;;
 	*) no "GET /api/engine/status     malformed" "${bridge:-no response}" ;;
 	esac
-	if [ -n "$LIVE" ] || [ -n "$ENGINE" ]; then
+	# The snapshot is asked only of a bridge that answered: since the Quant
+	# cutover the public host serves no engine, and a --live run against it
+	# must not fail on a bridge the status check already called absent.
+	if [ -n "$ENGINE" ] || [ "${bridge#OK}" != "$bridge" ]; then
 		esnap=$(curl -sS --compressed --max-time 15 "$BASE/api/engine/snapshot" 2>/dev/null | python3 -c '
 import json, sys
 try:
@@ -1242,8 +1245,9 @@ else
 	fi
 fi
 
-# 7e. /api/research: the intake runs. How many strategies it holds is
-# reported, not asserted -- 0 until the owner merges the book's signals block.
+# 7e. /api/research: the intake runs, or is off because the owner's book has
+# no signals block (a skip, not a failure). How many strategies it holds is
+# reported, not asserted.
 research=$(lc GET /api/research | python3 -c '
 import json, sys
 raw = sys.stdin.read().rsplit("\n", 1)
@@ -1254,12 +1258,16 @@ except Exception as e:
     print("NOTJSON HTTP %s: %s" % (code, e)); raise SystemExit
 if code != "200":
     print("CODE %s, expected 200" % code); raise SystemExit
+if r.get("intake") == "off" and "no signals block" in str(r.get("reason") or ""):
+    print("BOOKOFF"); raise SystemExit
 if r.get("intake") != "running":
     print("INTAKE %r, expected running" % (r.get("intake"),)); raise SystemExit
 print("OK %d" % len(r.get("strategies") or []))
 ' 2>&1)
 case "$research" in
 OK*) ok "live: /api/research                   intake running, ${research#OK } strategies registered" ;;
+# Off by the owner's book (no signals block): the configured state, not a fault.
+BOOKOFF) meh "live: /api/research                   intake off -- the book has no signals block (owner's)" ;;
 *) no "live: /api/research                   ${research:-no response}" ;;
 esac
 
