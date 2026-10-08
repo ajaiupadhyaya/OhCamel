@@ -137,7 +137,8 @@ def start_scheduler(db_path: Path, schedules: Schedules, stop: threading.Event, 
 
 
 def read_latest(conn: sqlite3.Connection, kind: str, params_hash: str | None = None, *, now: datetime,
-                schedules: Schedules | None = None) -> dict[str, Any] | None:
-    """The latest artifact of a kind as ``{"manifest", "stale"}``, stale per schedules.yaml's max_age."""
+                schedules: Schedules | None = None, root: Path | None = None) -> dict[str, Any] | None:
+    """The latest artifact of a kind as ``{"manifest", "stale"}``, stale per schedules.yaml's max_age.
+    With ``root``, rows whose files resolve outside it are skipped (``artifacts.inside``)."""
     s = schedules or load_schedules()
-    return latest_artifact(conn, kind, params_hash, now=now, max_age_s=s.max_age_s.get(kind))
+    return latest_artifact(conn, kind, params_hash, now=now, max_age_s=s.max_age_s.get(kind), root=root)

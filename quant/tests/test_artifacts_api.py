@@ -68,3 +68,85 @@ def test_table_reads_are_paged(api):
     t = client.get(f"/api/artifacts/ops.selftest/{aid}/t?limit=3&offset=4").json()
     assert t["rows"] == 10 and t["offset"] == 4 and t["data"]["x"] == [4, 5, 6]
     assert client.get(f"/api/artifacts/ops.selftest/{aid}/t?limit=0").status_code == 422
+
+
+# Harden H4 (security): no request value and no on-disk link takes a read outside <data>/artifacts.
+@pytest.mark.parametrize("url", [
+    "/api/artifacts/..%2F..%2Fetc/latest",
+    "/api/artifacts/%2e%2e%2f%2e%2e%2fetc/latest",
+    "/api/artifacts/%2e%2e/latest",
+    "/api/artifacts/%2Fetc%2Fpasswd/latest",
+    "/api/artifacts/..%5C..%5Cetc/latest",
+    "/api/artifacts/ops.selftest/..%2F..%2F..%2Fetc%2Fpasswd",
+    "/api/artifacts/ops.selftest/%2e%2e%2f%2e%2e%2fjobs.sqlite",
+    "/api/artifacts/ops.selftest/%2Fetc%2Fpasswd",
+    "/api/artifacts/ops.selftest/%2e%2e",
+])
+def test_encoded_traversal_in_kind_or_id_is_404(api, url):
+    client, db, root = api
+    publish_artifact(db, root, "ops.selftest", {"summary": pd.DataFrame({"x": [1]})}, finished=utcnow())
+    r = client.get(url)
+    assert r.status_code == 404 and "root:" not in r.text
+
+
+@pytest.mark.parametrize("table", ["..%2Fmanifest", "%2e%2e%2f%2e%2e%2f%2e%2e%2fjobs", "%2Fetc%2Fpasswd",
+                                   "summary.parquet", "%2e%2e", "summary%00", "..%5Csummary", "SUMMARY"])
+def test_encoded_traversal_in_table_is_404(api, table):
+    client, db, root = api
+    aid, _ = publish_artifact(db, root, "ops.selftest", {"summary": pd.DataFrame({"x": [1]})}, finished=utcnow())
+    assert client.get(f"/api/artifacts/ops.selftest/{aid}/{table}").status_code == 404
+
+
+def _outside(tmp_path):
+    out = tmp_path / "outside"
+    out.mkdir(exist_ok=True)
+    pd.DataFrame({"secret": ["s3cr3t"]}).to_parquet(out / "summary.parquet", index=False)
+    (out / "manifest.json").write_text('{"verdict": "PASS", "tables": ["summary"], "secret": "s3cr3t"}')
+    return out
+
+
+def test_a_symlinked_table_pointing_outside_is_refused(api, tmp_path):
+    client, db, root = api
+    aid, path = publish_artifact(db, root, "ops.selftest", {"summary": pd.DataFrame({"x": [1]})}, finished=utcnow())
+    out = _outside(tmp_path)
+    (path / "summary.parquet").unlink()
+    (path / "summary.parquet").symlink_to(out / "summary.parquet")
+    r = client.get(f"/api/artifacts/ops.selftest/{aid}/summary")
+    assert r.status_code == 404 and r.json()["error"] == "outside_root" and "s3cr3t" not in r.text
+
+
+def test_a_symlinked_manifest_or_directory_pointing_outside_is_refused(api, tmp_path):
+    client, db, root = api
+    aid, path = publish_artifact(db, root, "ops.selftest", {"summary": pd.DataFrame({"x": [1]})}, finished=utcnow())
+    out = _outside(tmp_path)
+    (path / "manifest.json").unlink()
+    (path / "manifest.json").symlink_to(out / "manifest.json")
+    for url in (f"/api/artifacts/ops.selftest/{aid}", f"/api/artifacts/ops.selftest/{aid}/summary",
+                "/api/artifacts/ops.selftest/latest"):
+        r = client.get(url)
+        assert r.status_code == 404 and "s3cr3t" not in r.text, url
+    import shutil
+    shutil.rmtree(path)
+    path.symlink_to(out, target_is_directory=True)  # the artifact directory itself is a link out
+    for url in (f"/api/artifacts/ops.selftest/{aid}", f"/api/artifacts/ops.selftest/{aid}/summary",
+                "/api/artifacts/ops.selftest/latest"):
+        r = client.get(url)
+        assert r.status_code == 404 and "s3cr3t" not in r.text, url
+
+
+def test_a_row_whose_path_leaves_the_root_is_refused(api, tmp_path):
+    """A tampered or stale artifacts row (absolute path elsewhere, or root/../x) is never followed."""
+    from ohcamel_quant.jobs.db import connect
+
+    client, db, root = api
+    aid, _ = publish_artifact(db, root, "ops.selftest", {"summary": pd.DataFrame({"x": [1]})}, finished=utcnow())
+    out = _outside(tmp_path)
+    for bad in (str(out), str(root / ".." / "outside")):
+        conn = connect(db)
+        conn.execute("UPDATE artifacts SET path = ? WHERE id = ?", (bad, aid))
+        conn.commit()
+        conn.close()
+        for url in (f"/api/artifacts/ops.selftest/{aid}", f"/api/artifacts/ops.selftest/{aid}/summary",
+                    "/api/artifacts/ops.selftest/latest"):
+            r = client.get(url)
+            assert r.status_code == 404 and "s3cr3t" not in r.text, (bad, url)

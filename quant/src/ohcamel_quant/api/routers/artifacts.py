@@ -10,6 +10,10 @@
 Every payload leads with ``verdict``. Paths are never built from the request:
 the kind must be registered, the id a ULID found in the ``artifacts`` table
 under that kind, and the table one the manifest lists (Review Focus 4).
+Every file read must also resolve (symlinks and ``..`` followed) under
+``<data>/artifacts`` -- the directory beside jobs.sqlite, as jobs/paths.py lays
+them out -- so a tampered row or a link on disk is refused, not followed
+(Harden H4).
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
-from ...jobs.artifacts import TABLE_NAME
+from ...jobs.artifacts import TABLE_NAME, inside
 from ...jobs.db import connect, utcnow
 from ...jobs.kinds import REGISTRY
 from ...jobs.paths import jobs_db_path
@@ -42,6 +46,14 @@ def get_artifacts_db_path() -> Path:
 
 
 Db = Annotated[Path, Depends(get_artifacts_db_path)]
+
+
+def _root(db: Path) -> Path:
+    return db.parent / "artifacts"  # jobs/paths.py: jobs.sqlite and artifacts/ share Settings.data_dir
+
+
+def _outside() -> JSONResponse:
+    return _err(404, "outside_root", "artifact files must lie under the artifacts directory")
 
 
 def _err(status: int, error: str, detail: str) -> JSONResponse:
@@ -68,6 +80,8 @@ def _manifest(db: Path, kind: str, art_id: str) -> tuple[dict[str, Any], Path] |
     if row is None:
         return _err(404, "not_found", f"no {kind} artifact {art_id}")
     path = Path(row["path"])
+    if not inside(_root(db), path / "manifest.json"):
+        return _outside()
     try:
         return json.loads((path / "manifest.json").read_text()), path
     except FileNotFoundError:
@@ -83,7 +97,7 @@ def latest(kind: str, db: Db, params_hash: str | None = None) -> Any:
     if not db.exists():
         return _err(404, "not_found", f"no {kind} artifact yet")
     with closing(connect(db)) as conn:
-        got = read_latest(conn, kind, params_hash, now=utcnow())
+        got = read_latest(conn, kind, params_hash, now=utcnow(), root=_root(db))
     if got is None:
         return _err(404, "not_found", f"no {kind} artifact yet")
     m = got["manifest"]
@@ -113,6 +127,8 @@ def table(kind: str, art_id: str, table: str, db: Db, limit: int = Query(default
     if not TABLE_NAME.match(table) or table not in (m.get("tables") or []):
         return _err(404, "no_table", f"artifact {art_id} has no table {table!r}")
     f = path / f"{table}.parquet"
+    if not inside(_root(db), f):
+        return _outside()
     if not f.exists():
         return _err(410, "pruned", "this artifact's table has been pruned")
     df = pd.read_parquet(f)

@@ -94,16 +94,29 @@ def publish(staging: Path, root: Path, job: Job, manifest: dict[str, Any]) -> Pa
     return final
 
 
+def inside(root: Path, p: Path) -> bool:
+    """True when ``p``, every symlink and ``..`` resolved, lies under ``root`` (Harden H4: artifact reads
+    never leave <data>/artifacts, whatever a row's path or a link on disk says)."""
+    try:
+        p.resolve().relative_to(root.resolve())
+    except (ValueError, OSError, RuntimeError):
+        return False
+    return True
+
+
 def latest_artifact(conn: sqlite3.Connection, kind: str, params_hash: str | None = None, *, now: datetime,
-                    max_age_s: float | None) -> dict[str, Any] | None:
+                    max_age_s: float | None, root: Path | None = None) -> dict[str, Any] | None:
     sql, args = "SELECT * FROM artifacts WHERE kind = ?", [kind]
     if params_hash is not None:
         sql += " AND params_hash = ?"
         args.append(params_hash)
     sql += " ORDER BY finished_at DESC, id DESC"
     for row in conn.execute(sql, args).fetchall():
+        mpath = Path(row["path"]) / "manifest.json"
+        if root is not None and not inside(root, mpath):
+            continue  # a row or link that leaves the root is treated as absent, never followed
         try:
-            manifest = json.loads((Path(row["path"]) / "manifest.json").read_text())
+            manifest = json.loads(mpath.read_text())
         except FileNotFoundError:
             continue
         age = (now - parse_iso(row["finished_at"])).total_seconds()

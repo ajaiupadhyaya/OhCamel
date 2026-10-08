@@ -31,6 +31,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ...data.base import Provenance
+from ...jobs.artifacts import inside
 from ...jobs.cron import next_due
 from ...jobs.db import connect, iso, utcnow
 from ...jobs.kinds import UnknownKind, get_kind, validate_params
@@ -227,6 +228,8 @@ def result(job_id: str, db: JobsDb) -> Any:
                                                           "detail": "the job has no result yet"})
         row = conn.execute("SELECT path FROM artifacts WHERE id = ?", (job.artifact_id,)).fetchone()
     path = Path(row["path"]) / "result.parquet" if row else None
+    if path is not None and not inside(db.parent / "artifacts", path):  # Harden H4 (see routers/artifacts.py)
+        return _error(404, "outside_root", "artifact files must lie under the artifacts directory")
     if path is None or not path.exists():
         return _error(410, "pruned", "this job's artifact has been pruned (retention: compute plan II.3)")
     return JSONResponse(content=json.loads(pq.read_table(path).column("payload")[0].as_py()))

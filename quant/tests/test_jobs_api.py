@@ -158,3 +158,27 @@ def test_schedules_lists_every_entry_with_its_next_run(api):
     assert all(x["next_run"] for x in rows)  # every shipped entry fires again
     assert body["timezone"] == "America/New_York"
     assert body["provenance"][0]["source"] == "ohcamel-jobs"
+
+
+def test_result_never_reads_outside_the_artifacts_root(api, tmp_path):
+    """Harden H4: a row path or a result.parquet link that leaves <data>/artifacts is refused."""
+    client, db = api
+    jid = client.post("/api/jobs", json={"kind": "api.backtest_sweep", "params": SWEEP}).json()["id"]
+    conn = connect(db)
+    job = claim_next(conn, allowed_classes=frozenset({"M"}), allow_heavy=True, now=utcnow())
+    out = tmp_path / "outside"
+    write_tables(out, {"result": pd.DataFrame({"payload": ['{"secret": "s3cr3t"}']})})
+    art = tmp_path / "artifacts" / job.kind / job.id
+    art.mkdir(parents=True)
+    (art / "result.parquet").symlink_to(out / "result.parquet")
+    t = utcnow() + timedelta(seconds=1)
+    finish(conn, job.id, artifact={"id": job.id, "kind": job.kind, "params_hash": job.params_hash,
+                                   "finished_at": iso(t), "path": str(art), "data_asof": None},
+           cpu_seconds=1.0, peak_rss_bytes=1, now=t)
+    r = client.get(f"/api/jobs/{jid}/result")
+    assert r.status_code == 404 and "s3cr3t" not in r.text
+    for bad in (str(out), str(tmp_path / "artifacts" / ".." / "outside")):
+        conn.execute("UPDATE artifacts SET path = ? WHERE id = ?", (bad, job.id))
+        conn.commit()
+        r = client.get(f"/api/jobs/{jid}/result")
+        assert r.status_code == 404 and "s3cr3t" not in r.text, bad
