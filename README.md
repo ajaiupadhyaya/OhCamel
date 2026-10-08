@@ -2,212 +2,155 @@
 
 [![ci](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml/badge.svg)](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml)
 
-**A real-data quantitative finance workstation.** Build a portfolio from real
-tickers (or import a real fund's latest 13F filing), then measure its risk
-with eight VaR/ES models and backtest them. You can also decompose it into
-factors, stress it through seventeen historical crises, optimize it with ten
-published methods, test literature trading strategies with overfitting
-diagnostics, read the options market's implied volatility surface, and put it
-all in the context of the rates and macro cycle.
+**OhCamel Quant** is a real-data quantitative finance site and the compute behind it, on one $24/month
+droplet. You can measure a portfolio's risk under nine VaR/ES models and backtest them, decompose and stress
+it, optimize it, and test published strategies with overfitting diagnostics. You can also read the options
+surface and the rates cycle. Scheduled jobs run seven research products overnight. Each product leads with
+a verdict, and most of the verdicts are not flattering.
 
-**Live:** [ohcamel.ajaiupadhyaya.com](https://ohcamel.ajaiupadhyaya.com)
+**Live:** [ohcamel.ajaiupadhyaya.com](https://ohcamel.ajaiupadhyaya.com) · what exists, what was cut and what
+is only advisory: [`/ledger`](https://ohcamel.ajaiupadhyaya.com/ledger)
 
-![Markets](docs/media/quant/markets.png)
+![Front page](docs/media/quant/paper/final/front/front-1440-paper.png)
 
-Every number on the site comes from a real data source, and every payload
-carries its **provenance** (source, fetch time, `synthetic: false`) plus any
-caveats. There are no simulated markets, no placeholder figures, and no
-hard-coded market inputs. The risk-free rate comes from FRED, the equity risk
-premium from Kenneth French's data library, option-implied rates and dividends
-from put–call parity on the live chain, and company fundamentals from SEC
-XBRL filings. When a source is unreachable, the page says so and shows
-nothing, rather than an approximation.
-
-The repository has two parts:
+Every number comes from a real source, and every payload and artifact carries its **provenance** (source, fetch
+time, `data_asof`) and its caveats. When a source is unreachable, the page says so and shows nothing. Nothing is
+simulated, filled in or hard-coded. The risk-free rate comes from FRED, the equity premium from Ken French's
+library, option-implied rates and dividends from put-call parity on the live chain, and fundamentals from SEC
+XBRL.
 
 | | What it is | Where |
 |---|---|---|
-| **OhCamel Quant** | The platform above: a FastAPI analytics service (Python, ~20k lines, <!-- count:quant-tests -->1301<!-- /count --> tests) and a React app. It is the public site. | [`quant/`](quant/) |
-| **The engine** | A real-time risk and limits engine in OCaml on Jane Street's Incremental. Risk is a dependency graph, so a tick recomputes only what depends on it. It is driven by Alpaca's live feed and runs a paper-trading desk behind a password. | [`lib/`](lib/), [`desk/`](desk/), [`docs/engine.md`](docs/engine.md) |
+| **OhCamel Quant** | The public site. A FastAPI service (Python, ~30k lines, <!-- count:quant-tests -->1301<!-- /count --> tests), a React app, a job worker, a DuckDB warehouse, ten Rust kernels and a host telemetry daemon | [`quant/`](quant/), [`native/`](native/) |
+| **The engine** | A real-time risk and limits engine in OCaml on Jane Street's Incremental: a tick recomputes only what depends on it. It runs a paper desk behind a password on the live host | [`lib/`](lib/), [`desk/`](desk/), [`docs/engine.md`](docs/engine.md) |
 
 ---
 
-## What you can do
+## Three tiers on one box
 
-### Markets
-Where every major asset class stands today and how it got there: US indices,
-the eleven S&P sectors as a heatmap, style factors, the Treasury curve now vs
-1 month and 1 year ago, credit, international equity, commodities, crypto and
-VIX. The page also has a market-regime strip and a cross-asset correlation
-matrix. Every instrument opens a ticker page with its price history, drawdowns,
-realized volatility, return distribution and monthly returns.
+The droplet is `s-2vcpu-4gb`. Docker Compose places each service in a systemd slice, and the CPU weights decide
+who yields under contention.
 
-### Portfolio Lab
-Enter tickers and weights, pick a named universe, paste a CSV, or **import the
-latest 13F holdings** of Berkshire Hathaway, Bridgewater, Renaissance,
-Pershing Square, Scion or Appaloosa from SEC EDGAR. You get five tabs:
+| Tier | Services | Slice and budget | Job |
+|---|---|---|---|
+| **Protected** | `ohcamel-live` (OCaml engine) | `ohcamel-rt`, weight 4096, 512 MB | The live risk engine and paper desk. It is never starved |
+| **Interactive** | Caddy, `ohcamel-quant` (API + site), `ohcamel-hostd` | `ohcamel-web`, weight 1024; API 1 GB | Answers every page synchronously, within caps. Requests over the caps become jobs |
+| **Preemptible** | `ohcamel-worker` (jobs), `ohcamel-research` | `ohcamel-batch`, worker weight 128, ≤ 1.75 CPUs, 1280 MB, OOM-killed first | Runs one job at a time from `jobs.sqlite` and publishes immutable artifacts |
 
-| Tab | Contents |
-|---|---|
-| **Overview** | Growth vs benchmark and CAGR. Sharpe with its Lo (2002) standard error, Sortino, Calmar, Omega. Drawdown episodes and a monthly returns grid. Rolling Sharpe, volatility and beta. Alpha/beta, information ratio, capture ratios, M². The Probabilistic Sharpe Ratio and minimum track-record length. |
-| **Risk** | VaR and ES at 95% and 99% under eight models, side by side: historical, Gaussian, Student-t, Cornish–Fisher, EWMA, GARCH-t, GJR-GARCH-t, filtered historical simulation and EVT peaks-over-threshold. Each is backtested out of sample with the Kupiec, Christoffersen, Engle–Manganelli and Acerbi–Szekely tests and the Basel traffic light. Also an Euler decomposition of VaR and ES by position, incremental VaR, and GARCH volatility forecasts. |
-| **Factors** | Fama–French 3/5-factor and Carhart regressions with Newey–West t-stats, rolling betas, a systematic vs idiosyncratic risk split, and cumulative return attribution. If Ken French's server is down, it falls back to tradable ETF factors. |
-| **Stress** | Seventeen real crises replayed on your actual holdings, from Black Monday 1987, LTCM, the dot-com bust and the GFC to COVID, the 2022 bear market, SVB and the August 2024 yen-carry unwind. Also conditional "what if SPY falls 10%" shocks propagated through the estimated covariance (Kupiec 1998). |
-| **Optimize** | Your capital share against your risk share, with a one-click hand-off to the Optimizer. |
+The worker only starts a job when hostd's `mem_available` minus a 512 MiB reserve covers the job's memory class
+(S 256, M 640, L 1152 MiB). Heavy jobs never start 09:25–16:05 New York on a session day. The worker is also the
+warehouse's only writer. Heavy loops (Monte Carlo paths, bootstrap, CSCV, GARCH fits, backtests, SVI, realized
+variance) run in Rust via PyO3. Each kernel has a NumPy reference and parity tests, and the production image
+refuses to start without the Rust wheel.
 
-![Portfolio Lab](docs/media/quant/portfolio-risk.png)
+## The products
 
-### Optimizer
-Minimum variance, max Sharpe (convex tangency), mean–variance targets, equal
-risk contribution, hierarchical risk parity, HERC, maximum diversification,
-minimum CVaR (LP) and Black–Litterman with your own views. Each runs on sample,
-EWMA, Ledoit–Wolf or OAS covariance, optionally denoised with random-matrix
-theory. You get the efficient frontier with the capital market line, a
-covariance explorer showing the eigenvalue spectrum against Marchenko–Pastur
-bounds, and a **walk-forward out-of-sample comparison of every method against
-1/N**, with a robust Sharpe-difference test.
+Each runs on a schedule (`quant/src/ohcamel_quant/jobs/schedules.yaml`, New York time). Each writes an artifact
+whose first field is its verdict: `PASS`, `FAIL`, `ADVISORY`, `INSUFFICIENT DATA` or `DESCRIPTIVE ONLY`. A
+measurement that is not a strategy is `DESCRIPTIVE ONLY` and has no gate to pass. Strategies are held to
+[`docs/CHARTER.md`](docs/CHARTER.md)'s gates, applied literally. A metric that cannot be computed fails its
+gate. Nothing any product computes reaches the desk.
 
-### Strategy Lab
-A dozen published strategies, each with its paper: time-series momentum
-(Moskowitz–Ooi–Pedersen), cross-sectional momentum (Jegadeesh–Titman), dual
-momentum, Faber's trend rule, volatility-managed portfolios (Moreira–Muir,
-real-time version), risk parity with a vol target, betting-against-beta, short-term
-reversal, and distance and cointegration pairs trading. The engine executes
-with a lag, so there is no look-ahead. It includes transaction costs, borrow
-costs and cash earning the T-bill rate. The **overfitting guardrails** are
-parameter sweeps, the Probability of Backtest Overfitting (CSCV), the Deflated
-Sharpe Ratio, Hansen's SPA test, a stationary-bootstrap Sharpe interval,
-walk-forward optimization and cost-sensitivity curves.
+| | Product | Schedule | Verdict it can reach | Where |
+|---|---|---|---|---|
+| P1 | **Risk atlas.** 1M-path Monte Carlo VaR/ES per reference book, by FHS (GJR-GARCH-t) and a Student-t copula, at 1D and 10D, with the Euler split of ES. Universe members are measured by FHS alone. Books are re-measured every 15 minutes in session | nightly 20:00; intraday | DESCRIPTIVE ONLY | `/risk`, `/`, `/deck` |
+| P2 | **Volatility forecast league.** GARCH, GJR, EGARCH, HAR-RV (minute bars) and EWMA, scored out of sample by QLIKE and MSE, with Diebold–Mariano tests and a model confidence set | nightly 21:30 | DESCRIPTIVE ONLY | `/options` |
+| P3 | **Covariance league.** Seven estimators, ranked by the realized volatility of their minimum-variance portfolio, with a HAC test against the sample covariance | Sat 08:00 | DESCRIPTIVE ONLY | `/portfolio` |
+| P4 | **Strategy farm.** Every Strategy Lab strategy × universe × a grid of up to 256 parameter sets, selected walk-forward, with DSR counting every trial in the farm, PSR, CSCV PBO, SPA, bootstrap, regimes and costs at 0/5/15/30 bps | nightly 23:00, 90-min budget | PASS / FAIL per row | `/research` |
+| P5 | **EXP-Q01.** A LightGBM ETF ranker against a linear composite, with purged walk-forward CV; the 2022→ holdout is evaluated once | monthly, 1st 22:30 | PASS / FAIL, always advisory | `/research` |
+| P6 | **EXP-Q02.** A Gaussian HMM on four weekly features. Does the filtered high-volatility probability beat EWMA for next-month SPY variance? | Sat 09:00 | PASS / FAIL, descriptive | `/macro` |
+| P7 | **Surface history.** A nightly SVI fit of each option snapshot: ATM IV, 25Δ risk reversal and butterfly, term slope, model-free variance, VRP | nightly 21:00 | DESCRIPTIVE ONLY | `/options` |
 
-### Volatility
-The listed options chain from Cboe gives:
+**Where they stand, honestly (2026-10-08).** The warehouse backfill on the droplet finished its daily bars on
+2026-10-08 (as-of 2026-10-07). P5 reads `INSUFFICIENT DATA · UNIVERSE NOT FROZEN` until its universe is frozen,
+once, after that backfill (the procedure is in the [compute runbook](docs/runbooks/compute.md)). P7's history
+grows only from the first nightly snapshot, because Cboe history cannot be re-fetched. P6 reads the high-yield
+spread from the warehouse's FRED ingest. On the offline fixture warehouse, which lacks that series and has no
+option snapshots or frozen universe, P1–P3 return numbers and P4–P7 return `INSUFFICIENT DATA` with their
+reasons. The farm's rows are expected to fail mostly, and the page lists the failures first. EXP-Q01 and
+EXP-Q02 were pre-registered and approved by the owner on 2026-10-06
+([`research/experiments/`](research/experiments/)). A deviation from either is a new experiment. Each product's
+live verdict is on its page and on `/ledger`. Methodology for every product and kernel: `/methodology`.
 
-- implied forward, rate and dividend yield per expiry from put–call parity;
-- our own implied vols against the vendor's;
-- SVI smiles and a 3-D surface, with no-butterfly and calendar-arbitrage checks;
-- a VIX-methodology model-free implied vol for any underlying, 25Δ risk reversals and butterflies;
-- the risk-neutral density (Breeden–Litzenberger) with implied probabilities of a move;
-- a multi-leg strategy builder on real quotes;
-- five realized-vol estimators, the volatility cone and the volatility risk premium.
+## The site: Paper Tape
 
-### Rates & Macro
-- A dashboard of 26 FRED indicators, each with its 10-year percentile.
-- The Treasury par curve bootstrapped to zero and forward curves, with Nelson–Siegel and Svensson fits.
-- PCA of curve moves (level, slope, curvature).
-- An Estrella–Mishkin recession probit fitted on NBER dates, and the Sahm rule.
-- Hamilton Markov-switching regimes.
-- Taylor-rule policy rates against actual fed funds.
-- A bond calculator with key-rate durations and Z-spread.
-- A FRED explorer.
+The design is a printed risk report: ink on paper, ruled cells, Archivo caps for labels, IBM Plex Mono for every
+number, and signal red only for losses, breaches and alerts. There is a carbon (dark) theme too. The Flight Deck
+is the one dark room. Every route passes axe with zero serious violations and works at 380px.
 
-### Company
-Standardized statements from SEC XBRL, ratios and DuPont analysis, and quality
-scores: Piotroski F, Altman Z/Z″, Beneish M and Sloan accruals. There is also
-a two-stage FCFF DCF whose inputs all come from data:
+| Code | Route | Contents |
+|---|---|---|
+| FRONT | `/` | Index figures, UST curve and 2s10s, regime probabilities (P6), atlas headline (P1), farm verdict count (P4), model verdict (P5), last night's compute, data freshness |
+| MKTS | `/markets` | Indices, the eleven sectors, rates, credit, commodities, volatility, cross-asset correlation |
+| RISK | `/risk` | VaR/ES under nine models (historical, Gaussian, Student-t, Cornish-Fisher, EWMA, GARCH, GJR, FHS, EVT), with Kupiec/Christoffersen/Acerbi–Szekely backtests and the Basel light; Euler and incremental VaR; the atlas (P1) |
+| PORT | `/portfolio` | Holdings (tickers, CSV, named universes, the latest 13F of six funds), performance with PSR, Fama–French regressions, 17 historical crises and conditional shocks, the covariance league (P3) |
+| OPT | `/optimize` | Ten methods (min variance to HRP, HERC and min-CVaR) plus Black–Litterman, on four covariance estimators with optional denoising; the frontier; walk-forward against 1/N |
+| RSCH | `/research` | Twelve strategies (ten from the literature, two benchmarks) with PBO, DSR, SPA, bootstrap, walk-forward and cost curves; the farm (P4); the model (P5) |
+| VOL | `/options` | The Cboe chain: parity forwards, own IVs, SVI smiles and surface with arbitrage checks, model-free IV, risk-neutral density, a strategy builder, five realized-vol estimators; P2, P7 |
+| RATES | `/macro` | 26 FRED indicators with percentiles, bootstrapped zero and forward curves, NS/NSS, curve PCA, recession probit, Sahm rule, Taylor rules, regimes (P6), a bond calculator |
+| CO | `/company/:ticker` | SEC XBRL statements, ratios, Piotroski/Altman/Beneish/Sloan, a data-driven FCFF DCF and reverse DCF |
+| DECK | `/deck` | The Flight Deck: reference books' limits, risk and feeds as instruments, plus a compute bank |
+| SYS | `/system` | Index of `/compute` (hostd, queue, schedule, kernel benchmarks), `/engine`, `/methodology`, `/ledger` |
 
-- the risk-free rate from FRED;
-- beta from 60 months of returns;
-- the ERP from the French library;
-- the tax rate and cost of debt from the filings;
-- terminal growth from 10-year breakeven inflation.
-
-It adds a WACC × growth sensitivity grid and a reverse DCF that solves for the
-growth the price implies.
-
-### Methodology
-Every model on the site with a plain-English summary, its formulas, its
-assumptions and its citation. It also has a bibliography, the data sources and
-their refresh cadence, and an honest list of limitations.
-
----
+![Risk](docs/media/quant/paper/final/risk/risk-1440-paper.png)
 
 ## Data sources
 
-| Source | Supplies | Notes |
-|---|---|---|
-| [Alpaca](https://alpaca.markets/docs/api-references/market-data-api/) | Daily bars and snapshots for US equities and ETFs | Used first when keys are present. Split- and dividend-adjusted. |
-| Yahoo Finance chart API | Long daily history (to 1990), indices (`^VIX`), crypto, FX | Adjusted closes. |
-| Stooq | Last-resort daily bars | Unadjusted, and stated as such. |
-| [FRED](https://fred.stlouisfed.org) | Treasury curve, T-bills, inflation, labor, credit spreads, NFCI, USREC, GDP and potential GDP… | Public CSV endpoint; an API key is optional. |
-| [Kenneth French Data Library](https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html) | Daily FF3/FF5 factors, momentum, RF | Cached weekly. |
-| Cboe delayed quotes | Full listed options chains | Cached for 15 minutes. |
-| SEC EDGAR | XBRL company facts, 13F-HR information tables, ticker↔CIK | Fair-access rate limits and a contact user-agent. |
-| OpenFIGI | CUSIP → ticker for 13F holdings | Mappings cached permanently. |
+| Source | Supplies |
+|---|---|
+| Alpaca | Daily bars (used first when keys are present); IEX 1-minute bars for 50 names |
+| Yahoo Finance chart API | Long daily history, indices (`^VIX`), crypto, FX |
+| Stooq | Last-resort daily bars, unadjusted and labelled as such |
+| FRED | Treasury curve, bills, inflation, labour, credit spreads, recession dates |
+| Kenneth French Data Library | Daily FF3/FF5, momentum, RF |
+| Cboe delayed quotes | Full listed option chains; 30 underlyings snapshotted nightly |
+| SEC EDGAR | XBRL company facts, 13F-HR holdings |
+| OpenFIGI | CUSIP → ticker for 13F holdings |
 
-Fetched data is cached as Parquet with a JSON provenance sidecar. If a refresh
-fails, the last good copy is served and labelled stale. The committed real
-datasets in [`fixtures/`](fixtures/) (ten years of Alpaca ETF bars and FRED
-yields) back the offline test suite and serve as the last-resort source.
+Interactive reads are cached as Parquet with a provenance sidecar. When a refresh fails, the last good copy is
+served and labelled stale. The warehouse (`warehouse.duckdb`) holds the scheduled ingests and is read first. The
+committed real datasets in [`fixtures/`](fixtures/) back the offline tests and are the last resort.
+Universes are current constituents, so delisted names are absent (survivorship). This is stated on every
+product that uses them.
 
-## Architecture
-
-```
-            ┌──────────────────────── React app (quant/web) ────────────────────────┐
-browser ──▶ │ Markets · Portfolio Lab · Optimizer · Strategy Lab · Volatility ·      │
-            │ Rates & Macro · Company · Live Engine · Methodology                    │
-            └───────────────────────────────┬───────────────────────────────────────┘
-                                            │ /api (JSON, every payload with provenance)
-            ┌───────────────── FastAPI (quant/src/ohcamel_quant) ───────────────────┐
-            │ routers ─▶ pure analytics: risk · portfolio · factors · backtest ·     │
-            │            options · macro · fundamentals   (numpy/scipy/statsmodels/  │
-            │            arch; no I/O, tested on real fixtures)                      │
-            │ MarketData facade ─▶ store (Parquet + provenance, TTL, stale-serve)   │
-            │                   ─▶ providers: Alpaca · Yahoo · Stooq · FRED ·        │
-            │                      French · Cboe · SEC EDGAR · OpenFIGI              │
-            └────────────────────────────────────────────────────────────────────────┘
-                   Caddy (TLS) ─ one DigitalOcean droplet ─ OCaml engine (live host)
-```
-
-The analytics modules are pure functions over pandas objects and never touch
-the network. Only the routers call the `MarketData` facade. That separation
-means the maths can be tested against closed forms, textbook examples and ten
-years of real data with no network access.
-
-## Running it
+## Running it locally
 
 ```bash
 make quant-deps      # uv sync (Python 3.12) + npm ci
-make quant-dev       # API on :8090 (offline, committed real data) + Vite on :5173
-make quant-test      # ruff + pytest (offline) + web typecheck/build
-make quant-serve     # API + built web app on :8090, fetching live data
+make kernels-dev     # build the Rust kernels wheel into quant/.venv (rustup; optional: NumPy references otherwise)
+make quant-dev       # API on :8090 offline (committed real data) + Vite on :5173
+make quant-test      # ruff + the offline pytest suite
+make quant-serve     # the built app on :8090, fetching live data
 ```
 
-Online mode needs outbound internet. Optional environment variables:
+Optional environment variables: `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY` (Alpaca), `FRED_API_KEY`, and
+`OHCAMEL_QUANT_USER_AGENT` (the contact string SEC asks for). `OHCAMEL_QUANT_OFFLINE=1` serves only the committed
+fixtures. `OHCAMEL_QUANT_KERNELS=python` forces the NumPy references. Pages that need other sources say so.
+`quant/README.md` is the code map. `quant/web/src/README.md` is the page-author guide.
 
-- `APCA_API_KEY_ID` and `APCA_API_SECRET_KEY` (Alpaca)
-- `FRED_API_KEY`
-- `OHCAMEL_QUANT_USER_AGENT` (a contact string SEC asks for)
+## How it deploys
 
-Offline mode (`OHCAMEL_QUANT_OFFLINE=1`) serves only the committed real
-fixtures. Pages that need other sources say so.
+On every push, CI runs the OCaml build and tests, the Rust kernels' parity in both directions, the quant lint
+and offline suite (plus `scripts/check-counts.sh --verify`), the web typecheck, tests and build with its bundle
+rule, the `@live` vendor tests, and the deploy-script tests. The image workflow publishes four images per commit
+(`ohcamel`, `ohcamel-research`, `ohcamel-quant`, `ohcamel-hostd`). The droplet builds nothing.
 
-**Deploying** (on the droplet): `deploy/deploy.sh --sha <sha> --public-only`
-pulls the images CI published for that commit and restarts Caddy, the Quant
-service and the host telemetry daemon, smoke-tests them, and is safe during
-market hours. `deploy/deploy.sh --sha <sha> --live` also pulls and restarts
-the OCaml live engine and the research service, after a backup of the
-journal. Rollback is the same command with the previous good sha from
-`~/deploys.log`. The runbooks -- deploy, rollback, backup, restore, watch,
-rotation, disaster recovery -- and the environment-variable table are in
-[`docs/status.md`](docs/status.md#operating-it).
-
-**CI** runs, on every push:
-
-- `quant`: lint, the offline tests and the web build;
-- `quant-live-data`: the `@live` tests against every real vendor, with a per-source pass/fail table;
-- `quant-image`: builds the container and smoke-tests it;
-- the OCaml engine's own build and tests.
+`deploy/deploy.sh --sha <sha> --public-only`, run on the droplet, checks the sha out and waits for its images.
+It restarts Caddy, the API, the worker and hostd, then smoke-tests the result against the sha. It is safe during
+market hours. `--live` also restarts the engine and the research service, after a backup of the desk journal,
+and it is refused inside the market window. Rollback is the same command with the previous good sha from
+`~/deploys.log`. Runbooks: [`docs/status.md`](docs/status.md#operating-it) (deploy, rollback, backups, watch,
+recovery) and [`docs/runbooks/compute.md`](docs/runbooks/compute.md) (hostd, the queue, schedules, backfill,
+the Q01 freeze, restoring `jobs.sqlite` and the warehouse). What is deployed where:
+[`docs/status.md`](docs/status.md#where-it-runs).
 
 ## The engine
 
-The OCaml engine is the project's first half, and it is still the part to
-read to see how real-time risk can be computed without a polling loop. A
-price tick sets one input cell of an Incremental graph, and only its
-downstream nodes recompute. At 400 names a tick costs about 0.5 ms, against
-53 ms to recompute everything. It validates its own VaR with coverage tests on
-real crisis windows, and it gates a paper-trading desk's orders against the
-book's limits. The full write-up is [`docs/engine.md`](docs/engine.md); the
-maths is in [`docs/quant_notes.md`](docs/quant_notes.md).
+The OCaml engine is the project's first half. Read it to see how real-time risk works without a polling loop. A
+price tick sets one input cell of an Incremental graph, and only that cell's downstream nodes recompute. At 400
+names a tick costs about 0.5 ms, against 53 ms to recompute everything. It validates its own VaR with coverage
+tests on real crisis windows, and it gates a paper desk's orders against the book's limits. The full write-up is
+[`docs/engine.md`](docs/engine.md); the maths is in [`docs/quant_notes.md`](docs/quant_notes.md).
 
 ## License
 
