@@ -211,6 +211,17 @@ def freeze_env(tmp_path, monkeypatch):
     monkeypatch.setattr(market_mod, "load_universes", lambda: {"universes": {
         "u": {"members": [{"ticker": "AAA"}, {"ticker": "BBB"}]}}})
     monkeypatch.setattr(experiment, "FROZEN_DIR", tmp_path / "data" / "experiments")
+    # The freeze is exercised against an UNFROZEN copy of EXP-Q01's config: the committed
+    # config.yaml was frozen on the droplet 2026-10-08, and these cases test the freeze itself.
+    import yaml
+
+    real = experiment.EXPERIMENTS
+    unfrozen = tmp_path / "unfrozen-exps"
+    for exp in ("EXP-Q01",):
+        (unfrozen / exp).mkdir(parents=True)
+        raw = yaml.safe_load((real / exp / "config.yaml").read_text())
+        (unfrozen / exp / "config.yaml").write_text(yaml.safe_dump({**raw, "universe": None, "universe_frozen_on": None}))
+    monkeypatch.setattr(experiment, "EXPERIMENTS", unfrozen)
     return tmp_path
 
 
@@ -251,7 +262,7 @@ def test_a_committed_universe_wins_over_the_frozen_file(freeze_env, monkeypatch)
 
     exp_dir = freeze_env / "exps" / "EXP-Q01"
     exp_dir.mkdir(parents=True)
-    raw = yaml.safe_load((experiment.EXPERIMENTS / "EXP-Q01" / "config.yaml").read_text())
+    raw = yaml.safe_load((experiment.EXPERIMENTS / "EXP-Q01" / "config.yaml").read_text())  # the unfrozen copy
     (exp_dir / "config.yaml").write_text(yaml.safe_dump({**raw, "universe": ["ZZZ"], "universe_frozen_on": "2026-10-01"}))
     wh = _freeze_wh(freeze_env / "w.duckdb")
     assert q01.main(["freeze", "--warehouse", str(wh), "--write"]) == 0  # the file holds AAA
