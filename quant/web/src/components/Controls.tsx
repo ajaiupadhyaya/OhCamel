@@ -4,6 +4,7 @@
  */
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
+import { roundTo } from "../lib/format";
 import { InfoTip, type InfoProp } from "./InfoTip";
 
 type Opt<T extends string> = T | { value: T; label: ReactNode; title?: string; disabled?: boolean };
@@ -116,7 +117,7 @@ export function Field({ label, info, hint, children, htmlFor, inline }: { label:
 export function NumberField({ label, ariaLabel, value, onChange, min, max, step, unit, percent, info, hint, digits, disabled, width }: { label?: ReactNode; ariaLabel?: string; value: number | null | undefined; onChange: (v: number) => void; min?: number; max?: number; step?: number; unit?: string; percent?: boolean; info?: InfoProp; hint?: ReactNode; digits?: number; disabled?: boolean; width?: number | string }) {
   const id = useId();
   const k = percent ? 100 : 1;
-  const show = (v: number | null | undefined) => (v === null || v === undefined || !Number.isFinite(v) ? "" : String(+(v * k).toFixed(digits ?? (percent ? 4 : 6))));
+  const show = (v: number | null | undefined) => (v === null || v === undefined || !Number.isFinite(v) ? "" : String(roundTo(v * k, digits ?? (percent ? 4 : 6))));
   const [text, setText] = useState(show(value));
   useEffect(() => setText(show(value)), [value]); // eslint-disable-line react-hooks/exhaustive-deps
   const commit = (t: string) => {
@@ -149,7 +150,7 @@ export function NumberField({ label, ariaLabel, value, onChange, min, max, step,
             let v = cur + (e.key === "ArrowUp" ? step : -step);
             if (min !== undefined) v = Math.max(min, v);
             if (max !== undefined) v = Math.min(max, v);
-            onChange(+v.toFixed(10));
+            onChange(roundTo(v, 10));
           }
         }}
       />

@@ -233,7 +233,7 @@
   outline: var(--rule-faint);
   outline-offset: -1px;
 }
-.oc-panel-stale .oc-panel-body::before {
+.oc-panel-stale .oc-panel-body::after {
   content: "";
   position: absolute;
   top: 0;

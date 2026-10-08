@@ -162,3 +162,13 @@ export function signClass(x: number | null | undefined, invert = false): "gain" 
   if (!ok(x) || x === 0) return "";
   return (x > 0) !== invert ? "gain" : "loss";
 }
+
+/** Round to `digits` decimals as a number (no display formatting): 0.1 + 0.2 -> 0.3 at 10. */
+export function roundTo(x: number, digits: number): number {
+  return Number(x.toFixed(digits));
+}
+
+/** Plain fixed decimals with an ASCII minus and no grouping, for SVG path data and input values. */
+export function fixedNum(x: number, digits: number): string {
+  return x.toFixed(digits);
+}

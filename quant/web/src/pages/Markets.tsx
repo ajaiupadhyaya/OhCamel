@@ -9,7 +9,7 @@
  *  4. Numbers only through lib/format, rendered in `.num` (Plex Mono, tabular). Gains ink with
  *     a "+", losses --signal (`signClass`, DataTable `color: "sign"`). No green.
  *  5. InfoTips only on metric labels (2S10S, 1D, YTD, VOL 1M, 52W RANGE, CORRELATION).
- *  6. No `.toFixed`, no inline style except CSS custom properties (ESLint enforces both).
+ *  6. No `toFixed`, no inline style except CSS custom properties (ESLint enforces both).
  *  7. Charts are the uPlot wrappers in src/charts (or components' re-exports); never Plotly.
  *  8. Page controls in <Page actions>; shareable state in the URL (`useTabParam`).
  *  9. Page-local components and CSS in ./markets/ (classes prefixed `mk-`).

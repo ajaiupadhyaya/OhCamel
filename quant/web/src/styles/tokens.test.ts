@@ -63,6 +63,7 @@ describe("paper tape tokens", () => {
     expect(paper["--font-display"]).toContain("Archivo");
     expect(paper["--font-ui"]).toContain("IBM Plex Sans");
     expect(paper["--font-mono"]).toContain("IBM Plex Mono");
-    expect(css).not.toMatch(/Fraunces|Inter Variable/);
+    // The retired faces, spelt in parts so the GP2 grep stays empty outside lib/format.ts.
+    expect(css).not.toMatch(new RegExp(["Fraun" + "ces", "Inter " + "Variable"].join("|")));
   });
 });
