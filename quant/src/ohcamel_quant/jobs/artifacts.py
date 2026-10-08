@@ -28,6 +28,7 @@ if TYPE_CHECKING:  # the worker's parent never imports pandas
 
 TABLE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 ENGINES = ("rust", "python")
+VERDICTS = ("PASS", "FAIL", "ADVISORY", "INSUFFICIENT DATA", "DESCRIPTIVE ONLY")  # II.3 as amended (Lane M)
 
 
 @dataclass
@@ -40,6 +41,8 @@ class ArtifactSpec:
     notes: list[str] = field(default_factory=list)
     survivorship: str | None = None
     engine: str = "python"
+    verdict: str | None = None          # II.3 as amended: products lead with a verdict
+    verdict_detail: str | None = None
 
 
 def write_tables(staging: Path, tables: dict[str, Any]) -> list[str]:
@@ -58,6 +61,9 @@ def build_manifest(job: Job, result: dict[str, Any], *, code_sha: str, finished_
                    peak_rss_bytes: int | None) -> dict[str, Any]:
     if result.get("engine", "python") not in ENGINES:
         raise ValueError(f"engine must be one of {ENGINES}")
+    verdict = result.get("verdict")
+    if verdict is not None and verdict not in VERDICTS:
+        raise ValueError(f"verdict must be one of {VERDICTS} or None; got {verdict!r}")
     return {
         "id": job.id,
         "kind": job.kind,
@@ -74,6 +80,8 @@ def build_manifest(job: Job, result: dict[str, Any], *, code_sha: str, finished_
         "notes": list(result.get("notes") or []),
         "survivorship": result.get("survivorship"),
         "tables": list(result.get("tables") or []),
+        "verdict": verdict,
+        "verdict_detail": result.get("verdict_detail"),
     }
 
 

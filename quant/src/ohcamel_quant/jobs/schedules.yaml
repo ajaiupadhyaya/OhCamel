@@ -23,6 +23,16 @@ max_age:
   ingest.sec_facts: 204h
   ingest.holdings_13f: 204h
   ingest.option_snapshots: 78h
+  # Lane M (products). Nightly kinds 78h like Lane C's session kinds; intraday 35m (one missed run + slack,
+  # the deck's MC_MAX_AGE_S on ship/lane-f).
+  risk.mc_atlas: 78h
+  risk.mc_intraday: 35m
+  vol.forecast_league: 78h
+  cov.league: 204h
+  farm.sweep: 78h
+  vol.surface_history: 78h
+  models.xs_lgbm: 816h   # monthly (1st, 22:30) plus 2 days
+  regime.hmm: 204h       # weekly (Saturday 09:00), like the weekly ingest kinds
 
 schedules:
   - name: selftest-nightly
@@ -120,3 +130,82 @@ schedules:
     priority: 1
     mem_class: S
     heavy: false
+
+  # Lane M: P1 risk atlas, nightly after the 18:30 bars ingest; intraday every 15 min in session.
+  - name: risk-atlas-nightly
+    cron: "0 20 * * 1-5"
+    kind: risk.mc_atlas
+    params: {}
+    priority: 2
+    mem_class: M
+    heavy: true
+
+  - name: risk-atlas-intraday-open
+    cron: "45 9 * * 1-5"
+    kind: risk.mc_intraday
+    params: {}
+    priority: 1
+    mem_class: S
+    heavy: false
+
+  - name: risk-atlas-intraday
+    cron: "*/15 10-15 * * 1-5"
+    kind: risk.mc_intraday
+    params: {}
+    priority: 1
+    mem_class: S
+    heavy: false
+
+  # Lane M: P2 volatility forecast league, nightly after the daily (18:30) and minute (19:00) ingests.
+  - name: vol-forecast-league
+    cron: "30 21 * * 1-5"
+    kind: vol.forecast_league
+    params: {}
+    priority: 2
+    mem_class: M
+    heavy: true
+
+  # Lane M: P3 covariance league, weekly on Saturday morning.
+  - name: cov-league-weekly
+    cron: "0 8 * * 6"
+    kind: cov.league
+    params: {}
+    priority: 2
+    mem_class: M
+    heavy: true
+
+  # Lane M: P4 strategy farm, nightly and incremental (90-minute budget, stalest cells first).
+  - name: farm-nightly
+    cron: "0 23 * * 1-5"
+    kind: farm.sweep
+    params: {budget_minutes: 90}
+    priority: 2
+    mem_class: L
+    heavy: true
+
+  # Lane M: P7 option-surface history, nightly after the 16:20 snapshots.
+  - name: vol-surface-history
+    cron: "0 21 * * 1-5"
+    kind: vol.surface_history
+    params: {}
+    priority: 2
+    mem_class: M
+    heavy: true
+
+  # Lane M: P5 EXP-Q01 (approved pre-registration), monthly: selection and holdout once, retrain and score monthly.
+  - name: exp-q01-monthly
+    cron: "30 22 1 * *"
+    kind: models.xs_lgbm
+    params: {}
+    priority: 2
+    mem_class: M
+    heavy: true
+
+  # Lane M: P6 EXP-Q02 (approved pre-registration), weekly features -> weekly run on Saturday morning.
+  - name: exp-q02-weekly
+    cron: "0 9 * * 6"
+    kind: regime.hmm
+    params: {}
+    priority: 2
+    mem_class: M
+    heavy: true

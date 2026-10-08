@@ -182,6 +182,17 @@ def _marks(tickers: list[str], market: MarketData, now: datetime) -> tuple[list[
     return rows, ds.provenance_dicts(), None
 
 
+def _mc(weights: dict[str, float]) -> dict[str, Any] | None:
+    """The latest intraday Monte Carlo reading for a reference book (Lane M, P1), or None.
+    The deck never fails because the batch tier did: any error reads as None."""
+    try:
+        from ...products import atlas
+
+        return atlas.intraday_for(weights)
+    except Exception:  # noqa: BLE001 - the batch tier is optional for the deck
+        return None
+
+
 def build_reading(body: DeckIn, market: MarketData, settings: Settings | None = None,
                   now: datetime | None = None, clock: Clock | None = None) -> dict[str, Any]:
     settings = settings or market.settings
@@ -272,6 +283,7 @@ def build_reading(body: DeckIn, market: MarketData, settings: Settings | None = 
             "model": "parametric, EWMA covariance, live weights, 1 day, zero mean",
             "ewma_lambda": body.ewma_lambda,
         },
+        "mc_var": _mc(weights),
         "marks": marks, "blips": blips,
         "limits": evaluated, "unevaluated": unevaluated,
         "feeds": feeds,

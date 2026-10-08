@@ -141,6 +141,9 @@ FROM python:3.12-slim AS runtime
 RUN python -c 'import zoneinfo; zoneinfo.ZoneInfo("America/New_York")' \
  && test -s /etc/ssl/certs/ca-certificates.crt
 
+# LightGBM (EXP-Q01) links the system OpenMP runtime, which python:3.12-slim lacks.
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
+
 # Unprivileged, no login shell. uid 10002 so it never collides with the
 # engine image's 10001 on a shared volume.
 RUN useradd --system --uid 10002 --create-home --shell /usr/sbin/nologin quant \
@@ -155,6 +158,8 @@ COPY fixtures/ /app/fixtures/
 COPY docs/crisis/ /app/docs/crisis/
 # The kernel benchmark table GET /api/ops/kernels serves (repo-relative, like the fixtures).
 COPY docs/perf/kernels.json /app/docs/perf/kernels.json
+# The pre-registered experiments' frozen configs (EXP-Q01/Q02), read by their jobs at run time.
+COPY research/experiments/ /app/research/experiments/
 
 COPY --from=pydeps /app/quant /app/quant
 COPY --from=web /src/quant/web/dist /app/quant/web/dist
@@ -195,6 +200,7 @@ ENV PATH=/app/quant/.venv/bin:$PATH \
 # and the path layout included. Runs with PYTHONDONTWRITEBYTECODE set, so it
 # leaves nothing behind.
 RUN python -c "import ohcamel_quant.api.app as a, ohcamel_quant.config as c, ohcamel_quant.kernels as k; \
+import lightgbm, pathlib; assert pathlib.Path('/app/research/experiments/EXP-Q01/config.yaml').is_file(); \
 assert a.WEB_DIST.is_dir(), a.WEB_DIST; assert (c.get_settings().fixtures_dir / 'history').is_dir(); \
 assert k.ENGINE == 'rust', k.ENGINE; assert all(k.engine_of(n) == 'rust' for n in k.API), [n for n in k.API if k.engine_of(n) != 'rust']; \
 print('routes:', len(a.app.routes), 'kernels:', k.ENGINE)"

@@ -81,9 +81,11 @@ def svi_weights(T: float, iv_bid: np.ndarray, iv_ask: np.ndarray) -> np.ndarray:
 
 def build_surface(
     ca: ChainAnalytics, min_dte: float = 1.0, max_slices: int = 40, n_k: int = 41, n_T: int = 30,
-    rr_deltas: tuple[float, ...] = (0.25, 0.10),
+    rr_deltas: tuple[float, ...] = (0.25, 0.10), use_kernels: bool = False,
 ) -> VolSurface:
-    """Fit every expiry with ``dte >= min_dte`` (up to ``max_slices``, nearest first)."""
+    """Fit every expiry with ``dte >= min_dte`` (up to ``max_slices``, nearest first).
+
+    ``use_kernels`` routes each slice's SVI fit through the compute kernels (``fit_svi``)."""
     notes: list[str] = []
     errors: dict[str, str] = {}
     fits: dict[str, SVIFit] = {}
@@ -106,7 +108,8 @@ def build_surface(
         row["atm_iv_market"] = metrics.atm_vol_market(sm["k"].to_numpy(), sm["iv"].to_numpy())
         try:
             fit = fit_svi(sm["k"].to_numpy(), sm["iv"].to_numpy(), T,
-                          weights=svi_weights(T, sm["iv_bid"].to_numpy(), sm["iv_ask"].to_numpy()))
+                          weights=svi_weights(T, sm["iv_bid"].to_numpy(), sm["iv_ask"].to_numpy()),
+                          use_kernels=use_kernels)
             fits[str(sid)] = fit
             p = fit.params
             row.update({"atm_iv": metrics.atm_vol(p, T), "skew_slope": metrics.skew_slope(p, T),

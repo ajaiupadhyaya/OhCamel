@@ -103,3 +103,14 @@ for _kind, _mem, _heavy in (("ingest.universes", "S", False), ("ingest.bars_dail
                             ("ingest.factors", "S", False), ("ingest.sec_facts", "M", True),
                             ("ingest.holdings_13f", "S", False), ("ingest.option_snapshots", "S", False)):
     register(KindSpec(_kind, f"{_W}:{_kind.split('.', 1)[1]}", _mem, heavy=_heavy))
+
+# Lane M's products (compute plan M2-M8; ship plan Lane M). Private: scheduled only.
+_P = "ohcamel_quant.products"
+register(KindSpec("risk.mc_atlas", f"{_P}.atlas:run", "M", heavy=True))
+register(KindSpec("risk.mc_intraday", f"{_P}.atlas:run_intraday", "S", heavy=False))
+register(KindSpec("vol.forecast_league", f"{_P}.vol_league:run", "M", heavy=True))
+register(KindSpec("cov.league", f"{_P}.cov_league:run", "M", heavy=True))
+register(KindSpec("farm.sweep", f"{_P}.farm:run", "L", heavy=True))
+register(KindSpec("vol.surface_history", f"{_P}.surface_history:run", "M", heavy=True))
+register(KindSpec("models.xs_lgbm", f"{_P}.q01:run", "M", heavy=True))
+register(KindSpec("regime.hmm", f"{_P}.q02:run", "M", heavy=True))
