@@ -116,7 +116,7 @@ jobs:
         with:
           ref: ${{ env.SHA }}
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Build stamp
         id: stamp
