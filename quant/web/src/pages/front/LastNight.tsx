@@ -36,7 +36,7 @@ export function LastNight() {
           <StatGrid min={110}>
             <StatTile size="sm" label="DONE" value={j.done_24h != null ? fmtNum(j.done_24h, 0) : null} />
             <StatTile size="sm" label="FAILED" value={failed != null ? fmtNum(failed, 0) : null} tone={failed ? "loss" : "neutral"} />
-            <StatTile size="sm" label="CORE-H" value={j.cpu_seconds_24h != null ? fmtNum(j.cpu_seconds_24h / 3600, 1) : null} />
+            <StatTile size="sm" label="CORE-H" value={j.cpu_seconds_24h != null ? fmtNum(j.cpu_seconds_24h / 3600, 2) : null} />
             <StatTile size="sm" label="ARTIFACTS" loading={jobs.isLoading} value={arts != null ? fmtNum(arts, 0) : null} caption={jobs.isError ? "UNAVAILABLE" : undefined} />
             <StatTile size="sm" label="QUEUED · RUN" value={`${j.queued ?? "—"} · ${j.running ?? "—"}`} />
           </StatGrid>

@@ -259,7 +259,7 @@ export default function Compute() {
               series ? (
                 <XYChart
                   x={series.minAgo}
-                  xTicks={HOUR_TICKS} xTitle="MIN" xFormat="int"
+                  xTicks={HOUR_TICKS} xTitle="T (MIN)" xFormat="int"
                   series={[{ name: "TOTAL", y: series.cpuCores, tone: "ink" }, ...series.slices.map((s) => ({ name: s.name, y: s.y, tone: "ink3" as const, span: true }))]}
                   yFormat="num"
                   digits={2}
@@ -277,7 +277,7 @@ export default function Compute() {
               series ? (
                 <XYChart
                   x={series.minAgo}
-                  xTicks={HOUR_TICKS} xTitle="MIN" xFormat="int"
+                  xTicks={HOUR_TICKS} xTitle="T (MIN)" xFormat="int"
                   series={[{ name: "STEAL", y: series.steal, tone: "ink" }]}
                   hlines={[{ at: 0.05, label: "5%", tone: "signal", dash: "dot" }]}
                   yFormat="pct"
@@ -296,7 +296,7 @@ export default function Compute() {
               series ? (
                 <XYChart
                   x={series.minAgo}
-                  xTicks={HOUR_TICKS} xTitle="MIN" xFormat="int"
+                  xTicks={HOUR_TICKS} xTitle="T (MIN)" xFormat="int"
                   series={[{ name: "USED", y: series.memUsedGb, tone: "ink" }]}
                   hlines={d.latest?.mem_total != null ? [{ at: d.latest.mem_total / 1e9, label: "TOTAL", tone: "ink3", dash: "dot" }] : undefined}
                   yFormat="num"
