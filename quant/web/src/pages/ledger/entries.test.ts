@@ -36,6 +36,13 @@ describe("Ledger accuracy (re-dated 2026-10-08, Ship plan Lane H H2)", () => {
     const owner = LEDGER.filter((e) => e.section === "OWNER").map((e) => `${e.item} ${e.detail}`).join("\n");
     expect(owner).toMatch(/\/var\/backups\/ohcamel/);
   });
+  it("claims no public-host build: it ships with that deploy, and the footer's BUILD shows this host's", () => {
+    for (const e of LEDGER) expect(`${e.item} ${e.detail}`, e.item).not.toMatch(/public host/i);
+    const live = LEDGER.find((e) => e.item === "LIVE HOST BEHIND")?.detail ?? "";
+    expect(live).toMatch(/88ebc96/);
+    expect(live).toMatch(/\/var\/backups\/ohcamel/);
+    expect(live.match(/\b[0-9a-f]{7}\b/g)).toEqual(["88ebc96"]);
+  });
   it("has one row per item, and every section non-empty", () => {
     const items = LEDGER.map((e) => `${e.section}:${e.item}`);
     expect(new Set(items).size).toBe(items.length);

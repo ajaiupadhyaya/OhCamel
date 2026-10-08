@@ -68,7 +68,7 @@ export const LEDGER: LedgerEntry[] = [
   { section: "LIMITS", item: "SHARED VCPU", detail: "One 2-vCPU, 4 GB droplet; CPU steal from neighbours is measured, not prevented." },
   { section: "LIMITS", item: "NO WAREHOUSE BACKUP", detail: "The warehouse and the artifacts are not backed up; the warehouse is rebuilt from vendors, option snapshots excepted." },
   { section: "LIMITS", item: "BACKUPS PAUSED", detail: "Nightly backups refuse to run until /var/backups/ohcamel exists." },
-  { section: "LIMITS", item: "LIVE HOST BEHIND", detail: "The live host serves 88ebc96 until its deploy; the public host serves 557296a." },
+  { section: "LIMITS", item: "LIVE HOST BEHIND", detail: "The live host serves 88ebc96 until its deploy, which waits on /var/backups/ohcamel." },
   { section: "LIMITS", item: "KERNEL BENCHMARKS", detail: "The recorded table was measured on a developer laptop, not the droplet's CPU class; two kernels are slower in Rust there." },
   // ---------------------------------------------------------------- owner
   { section: "OWNER", item: "LIVE TRADING SWITCH", detail: "book.sexp on the droplet; never edited by the agent." },
