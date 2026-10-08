@@ -20,7 +20,7 @@ from .features import ASOF, asof_join
 from .hmm import filtered, order_by, select_k, smoothed
 from .verdict import Gate, Verdict
 
-FEATURES = ("ret_4w", "rv_4w", "slope", "d_oas")
+FEATURES = ("ret_4w", "rv_4w", "slope", "d_credit")
 VOL_COL = FEATURES.index("rv_4w")
 
 
@@ -38,7 +38,7 @@ def week_ends(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
     return pd.DatetimeIndex(sorted(last.to_numpy()))[:-1]
 
 
-def weekly_features(spy: pd.Series, dgs10: pd.Series, dgs2: pd.Series, oas: pd.Series) -> pd.DataFrame:
+def weekly_features(spy: pd.Series, dgs10: pd.Series, dgs2: pd.Series, credit: pd.Series) -> pd.DataFrame:
     we = week_ends(spy.index)
     px = spy.reindex(we)
     lr = np.log(spy).diff()
@@ -46,13 +46,13 @@ def weekly_features(spy: pd.Series, dgs10: pd.Series, dgs2: pd.Series, oas: pd.S
     rv = [math.sqrt(252.0 * float((lr.iloc[pos[i - 4] + 1:pos[i] + 1] ** 2).mean())) if i >= 4 else np.nan
           for i in range(len(we))]
     slope = asof_join((dgs10 - dgs2).dropna(), we)
-    o = asof_join(oas, we)
+    o = asof_join(credit, we)
     f = pd.DataFrame({"ret_4w": px / px.shift(4) - 1.0, "rv_4w": rv, "slope": slope["value"],
-                      "d_oas": o["value"] - o["value"].shift(1)}, index=we)
+                      "d_credit": o["value"] - o["value"].shift(1)}, index=we)
     f["ret_4w" + ASOF] = we
     f["rv_4w" + ASOF] = we
     f["slope" + ASOF] = slope[ASOF]
-    f["d_oas" + ASOF] = o[ASOF]
+    f["d_credit" + ASOF] = o[ASOF]
     f.index.name = "date"
     return f
 

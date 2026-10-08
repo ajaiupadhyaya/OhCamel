@@ -18,7 +18,7 @@ from .experiment import config_hash, holdout_decision, load_config
 KIND = "regime.hmm"
 DB_PATH: Path | None = None
 HOLDOUT_TABLES = ("holdout", "holdout_forecasts", "regression", "gates")
-INPUT_SERIES = ("SPY", "DGS10", "DGS2", "BAMLH0A0HYM2")
+INPUT_SERIES = ("SPY", "DGS10", "DGS2", "BAA10Y")
 
 
 def load_inputs(ctx: Any, cfg: dict[str, Any]) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, list[dict]]:
@@ -37,7 +37,7 @@ def load_inputs(ctx: Any, cfg: dict[str, Any]) -> tuple[pd.Series, pd.Series, pd
     missing = [s for s in ids.values() if s not in wide.columns or wide[s].dropna().empty]
     if missing:
         raise DataUnavailable(f"FRED series unavailable: {', '.join(missing)}")
-    return (spy_ds.data["adj_close"], wide[ids["dgs10"]], wide[ids["dgs2"]], wide[ids["hy_oas"]], prov)
+    return (spy_ds.data["adj_close"], wide[ids["dgs10"]], wide[ids["dgs2"]], wide[ids["credit"]], prov)
 
 
 def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
@@ -52,7 +52,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                             data_asof=None,
                             provenance=[Provenance.now("ohcamel-exp-q02", config="EXP-Q02", config_hash=h,
                                                        inputs=list(INPUT_SERIES)).to_dict()],
-                            notes=[f"{e} (BAMLH0A0HYM2 is the HY OAS input)"],
+                            notes=[f"{e} (BAA10Y is the credit-spread input, v2)"],
                             verdict="INSUFFICIENT DATA",
                             verdict_detail=" ".join(["INPUT UNAVAILABLE", *(f"· {s}" for s in INPUT_SERIES
                                                                              if s in str(e))]))
@@ -64,7 +64,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     need = refits[0] if len(refits) else feats.index[-1]
     if len(z) == 0 or int(z.index.searchsorted(need, side="right")) < m["min_train_weeks"]:
         short = {c: str(s.dropna().index.min().date()) for c, s in
-                 (("SPY", spy), ("DGS10", d10), ("DGS2", d2), ("BAMLH0A0HYM2", oas))}
+                 (("SPY", spy), ("DGS10", d10), ("DGS2", d2), ("BAA10Y", oas))}
         return ArtifactSpec(tables={"gates": pd.DataFrame(columns=["gate", "value", "rule", "passed", "note"])},
                             data_asof=None, provenance=prov, notes=[f"first dates: {short}"],
                             verdict="INSUFFICIENT DATA",

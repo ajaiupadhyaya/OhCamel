@@ -88,7 +88,7 @@ def test_score_gates_on_constructed_frames():
     short = good.loc[:"2022-03-31"]
     assert score(short, selection_end=pd.Timestamp("2021-12-31"), holdout_start=pd.Timestamp("2022-01-01"),
                  min_selection=260, min_holdout=26)[3].value == "INSUFFICIENT DATA"
-    assert set(FEATURES) == {"ret_4w", "rv_4w", "slope", "d_oas"}
+    assert set(FEATURES) == {"ret_4w", "rv_4w", "slope", "d_credit"}
 
 
 def test_q02_selection_drops_weeks_whose_target_reaches_the_holdout():

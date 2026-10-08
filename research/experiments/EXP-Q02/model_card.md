@@ -18,7 +18,7 @@ The frozen design is [`config.yaml`](config.yaml). Every value in it is copied f
   - SPY 4-week return
   - SPY 4-week realized volatility
   - the 10y–2y slope (FRED DGS10 − DGS2)
-  - the 1-week change in high-yield OAS (FRED BAMLH0A0HYM2)
+  - the 1-week change in the Baa − 10-year credit spread (FRED BAA10Y; v2, replacing BAMLH0A0HYM2)
 
   Each is standardized on an expanding window of at least 52 weeks.
 - **Model.** A Gaussian HMM with full covariance, fitted by our own EM (`quant/src/ohcamel_quant/models/hmm.py`, scaled Baum–Welch). The number of states K ∈ {2, 3, 4} is chosen by BIC inside each training window. Each fit uses 20 seeded restarts (seed 20261006), and the best likelihood is kept. States are ordered by their mean standardized 4-week volatility, which fixes label switching.
@@ -31,7 +31,7 @@ The frozen design is [`config.yaml`](config.yaml). Every value in it is copied f
 I-Q02-1 to I-Q02-7 are written verbatim in `config.yaml` under `interpretations:`. The full text is in the Lane M plan (`docs/superpowers/plans/2026-10-06-lane-m.md`, "Interpretation points"). In brief:
 
 1. **Weekly sampling.** Each week is sampled at its last session that has a later session.
-2. **OAS change.** The 1-week change in BAMLH0A0HYM2. Every FRED value is used from the business day after its date.
+2. **Credit change.** The 1-week change in BAA10Y (v2; v1 used BAMLH0A0HYM2). Every FRED value is used from the business day after its date.
 3. **Standardization.** Expanding, through t inclusive, with at least 52 weeks.
 4. **Target and EWMA forecast.** As in the design above.
 5. **Refits.** Every 26 weeks. The high-volatility state is the state with the highest mean standardized `rv_4w`.
@@ -67,7 +67,7 @@ The first run with sufficient data scores the holdout and stores it. Later runs 
 
 ## Data caveat
 
-FRED's ICE BofA series (BAMLH0A0HYM2) may be served with a truncated history. If the history does not cover the first refit's 156 weeks (from 2005), the artifact says INSUFFICIENT DATA and names the series. It never substitutes another spread.
+FRED serves its ICE BofA series (BAMLH0A0HYM2) only from 2023-10, which is why v2 (2026-10-08, owner-approved) uses BAA10Y. If any input's history does not cover the first refit's 156 weeks (from 2005), the artifact says INSUFFICIENT DATA and names the series. The code never substitutes a series on its own; any change is a pre-registered amendment.
 
 ## Results
 

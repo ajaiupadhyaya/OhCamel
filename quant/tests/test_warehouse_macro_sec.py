@@ -45,7 +45,7 @@ DGS10 = "observation_date,DGS10\n2024-01-01,\n2024-01-02,3.95\n2024-01-03,3.91\n
 
 
 def test_default_series_are_dashboard_plus_treasury():
-    assert len(macro.DEFAULT_SERIES) == 35  # 26 dashboard + 11 tenors - DGS2, DGS10 shared
+    assert len(macro.DEFAULT_SERIES) == 36  # 26 dashboard + 11 tenors - DGS2, DGS10 shared + BAA10Y (EXP-Q02 v2)
     assert {"DGS3MO", "CPIAUCSL", "WALCL"} <= set(macro.DEFAULT_SERIES)
 
 
@@ -222,3 +222,13 @@ def test_handlers_registered():
         assert kind in HANDLERS
     # Lane B owns ingest.fred (its smoke job); its register() refuses a second spec under one kind.
     assert "ingest.fred" not in HANDLERS
+
+
+def test_fred_ingest_carries_the_model_series():
+    """EXP-Q02 v2 reads BAA10Y from the warehouse; the nightly FRED ingest must fetch it."""
+    from ohcamel_quant.products import experiment
+    from ohcamel_quant.warehouse.ingest import macro
+
+    assert "BAA10Y" in macro.DEFAULT_SERIES
+    for sid in experiment.load_config("EXP-Q02")["fred"].values():
+        assert sid in macro.DEFAULT_SERIES, sid

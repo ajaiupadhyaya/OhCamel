@@ -20,7 +20,11 @@ from ...data.market import TREASURY_SERIES
 from ...macro.dashboard import load_series_config
 from .base import KeyState, Written, insert_frame, run_ingest, utcnow
 
-DEFAULT_SERIES = list(dict.fromkeys([s["id"] for s in load_series_config()["series"]] + list(TREASURY_SERIES)))
+# Model inputs that are not dashboard rows: BAA10Y is EXP-Q02 v2's credit spread (long history, unlike
+# FRED's ICE BofA series, which it serves only from 2023-10).
+MODEL_SERIES = ("BAA10Y",)
+DEFAULT_SERIES = list(dict.fromkeys([s["id"] for s in load_series_config()["series"]] + list(TREASURY_SERIES)
+                                    + list(MODEL_SERIES)))
 FACTOR_FILES = {"ff5_daily": french.FILES["ff5"], "mom_daily": french.FILES["mom"]}
 
 

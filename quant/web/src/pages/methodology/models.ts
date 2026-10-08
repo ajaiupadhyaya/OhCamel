@@ -815,7 +815,7 @@ export const MODELS: Model[] = [
     id: "p6-exp-q02",
     name: "EXP-Q02: HMM regime probabilities vs EWMA (P6)",
     section: "macro",
-    summary: "A pre-registered descriptive risk model (approved 2026-10-06): a Gaussian hidden Markov model on four weekly features — SPY's 4-week return and realized volatility, the 10y–2y Treasury slope and the weekly change in high-yield spreads — refitted every 26 weeks with 2 to 4 states chosen by BIC. The question: does the real-time (filtered) probability of the high-volatility state forecast next-month SPY variance better than EWMA alone? If not, the verdict says “adds nothing over EWMA” and the regimes are still shown, labelled.",
+    summary: "A pre-registered descriptive risk model (approved 2026-10-06, amended v2 2026-10-08): a Gaussian hidden Markov model on four weekly features — SPY's 4-week return and realized volatility, the 10y–2y Treasury slope and the weekly change in the Baa − 10-year credit spread (FRED BAA10Y; FRED serves the high-yield OAS only from 2023) — refitted every 26 weeks with 2 to 4 states chosen by BIC. The question: does the real-time (filtered) probability of the high-volatility state forecast next-month SPY variance better than EWMA alone? If not, the verdict says “adds nothing over EWMA” and the regimes are still shown, labelled.",
     formulas: [
       { tex: T`\alpha_t(j) = P(s_t = j \mid x_{1:t}) \propto \Big(\sum_i \alpha_{t-1}(i)\,A_{ij}\Big)\,\mathcal{N}(x_t;\mu_j,\Sigma_j)`, caption: "filtered state probability (scored)" },
       { tex: T`RV_{t\to t+21} = a + b\,\hat\sigma^2_{\text{EWMA},t} + c\,P_t(\text{high}) + \varepsilon_t`, caption: "HAC t-stat on c; holdout QLIKE with a one-sided DM test" },

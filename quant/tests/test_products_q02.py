@@ -1,4 +1,4 @@
-"""Lane M, M7: regime.hmm. Offline fixtures carry no ICE BofA series, so a real run is INSUFFICIENT DATA;
+"""Lane M, M7: regime.hmm. Offline fixtures carry no BAA10Y (v2 credit input), so a real run is INSUFFICIENT DATA;
 the machinery test swaps in VIXCLS for the OAS input in memory (nothing is published) to exercise the
 holdout-once path with a shortened TEST config."""
 
@@ -25,9 +25,9 @@ def ctx(market):
 
 def test_q02_short_oas_history_is_insufficient_data(market, tmp_path, monkeypatch):
     monkeypatch.setattr(q02, "DB_PATH", tmp_path / "jobs.sqlite")
-    spec = q02.run({}, ctx(market))  # offline: BAMLH0A0HYM2 is not in the fixtures
-    assert spec.verdict == "INSUFFICIENT DATA" and "BAMLH0A0HYM2" in spec.verdict_detail
-    assert is_label(spec.verdict_detail) and any("BAMLH0A0HYM2" in n for n in spec.notes)
+    spec = q02.run({}, ctx(market))  # offline: BAA10Y is not in the fixtures
+    assert spec.verdict == "INSUFFICIENT DATA" and "BAA10Y" in spec.verdict_detail
+    assert is_label(spec.verdict_detail) and any("BAA10Y" in n for n in spec.notes)
     src = spec.provenance[-1]
     assert src["source"] == "ohcamel-exp-q02" and src["detail"]["config"] == "EXP-Q02" and src["detail"]["inputs"] == list(q02.INPUT_SERIES)
 
