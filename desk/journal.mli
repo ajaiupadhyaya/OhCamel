@@ -70,6 +70,9 @@ module Report : sig
     counts : (string * int) list;
         (** One row count per present table, in [tables] order. *)
     missing_tables : string list;
+    absent_in_source : string list;
+        (** Tables the copy lacks that its source lacked too: an older, additive journal,
+            whose tables this build creates on open. Listed, never a problem. *)
     newest_session : Date.t option;
     newest_order : (string * Time_ns.t) option;
         (** The newest order's client id and the time it was created. *)
@@ -86,13 +89,19 @@ end
 
 type report = Report.t
 
-val verify : string -> (report, string) Result.t
+val verify : ?absent_in_source:string list -> string -> (report, string) Result.t
 (** Reopens the file read-only and asks it for its schema version, PRAGMA integrity_check,
     a row count per table, its newest session date and its newest order. An [Error] is a
     file that could not be read at all -- missing, not a database, truncated past the
     point SQLite will answer a query. A file that answers but answers badly is [Ok] with a
     non-empty [problems], because the operator wants the counts printed beside the
     trouble. Either way [journal-verify] exits non-zero. *)
+(** [absent_in_source] (the backup path only): tables the copy's source did not have
+    either. They are reported as [absent_in_source], not as problems, because the journal
+    is additive; any other missing table is still a problem. *)
+
+val tables_absent_from : string -> (string list, string) Result.t
+(** The schema's tables a journal file does not have, read-only. *)
 
 module Session : sig
   type t = {

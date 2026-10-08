@@ -24,7 +24,7 @@
    is named here by its directory, because CI's grep refuses the desk
    library's name anywhere in lib/. *)
 
-let tests = 720
+let tests = 722
 
 (* The scheduler suite's count: test/desk_async, the executable whose cases run
    with Async's scheduler on clocks of their own. It asserts this against its
@@ -36,7 +36,7 @@ let scheduler_tests = 33
 
 (* The coverage figures: dated and re-measured together, never adjusted
    alone -- see the comment above [tests] for why. *)
-let coverage_covered = 8_126
-let coverage_lines = 10_173
-let coverage_pct = 79.9
-let dated = "2026-09-20"
+let coverage_covered = 8_661
+let coverage_lines = 10_897
+let coverage_pct = 79.5
+let dated = "2026-10-08"

@@ -1155,7 +1155,7 @@ container as environment, never as a layer. The runbooks are in
 
 ## What's verified
 
-`make test` runs <!-- count:ocaml-tests -->720<!-- /count --> tests, plus <!-- count:scheduler-tests -->33<!-- /count --> in `test/desk_async` that run with
+`make test` runs <!-- count:ocaml-tests -->722<!-- /count --> tests, plus <!-- count:scheduler-tests -->33<!-- /count --> in `test/desk_async` that run with
 the scheduler -- the order manager's cases, a live strategy's rebalance, the
 transport's bound, the signal intake's minute loop and that suite's own count --
 all hermetic — no network, no credentials, and nothing that waits on the wall
@@ -1230,7 +1230,7 @@ six properties and four example tests. `QCHECK_TRIALS=5000 make test` runs
 ### Coverage, and what it is not measuring
 
 `make coverage` runs the suite under `bisect_ppx` and reports **80%** —
-8,126 of 10,173 instrumented points, measured 2026-09-20. The badge above is
+8,661 of 10,897 instrumented points, measured 2026-10-08. The badge above is
 that number; CI enforces a floor of 60% and prints the full per-file table
 into the run summary, so a drop is visible without anyone remembering to
 look. The number covers both libraries: the risk kernel, `ohcamel` in

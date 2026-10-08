@@ -388,7 +388,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **<!-- count:ocaml-tests -->720<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->33<!-- /count --> scheduler cases in `test/desk_async` —
+- **<!-- count:ocaml-tests -->722<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->33<!-- /count --> scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler
@@ -397,8 +397,8 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 - **Property tests** (qcheck) generalise the identities over random inputs:
   Euler additivity, component VaR summing to portfolio VaR, a hedge reducing
   variance, VaR monotone in confidence, fork isolation, backtest lookahead.
-- **Coverage 79.9%** (8,126 / 10,173 instrumented points in `lib/` and
-  `desk/`, measured 2026-09-20), with a 60% floor in CI that exists to make
+- **Coverage 79.5%** (8,661 / 10,897 instrumented points in `lib/` and
+  `desk/`, measured 2026-10-08), with a 60% floor in CI that exists to make
   deleting tests noticeable, not as a target. The number is bimodal by
   design, and the two modes are what the per-file table in the
   [README](engine.md) actually shows: 26 files run 81% to 95%, and 17 run

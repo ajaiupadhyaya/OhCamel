@@ -241,7 +241,7 @@ may send one); on the public demo each answers 405.
 
 ## How it's checked
 
-- **<!-- count:ocaml-tests -->720<!-- /count --> tests**, plus <!-- count:scheduler-tests -->33<!-- /count --> scheduler cases in `test/desk_async`, all
+- **<!-- count:ocaml-tests -->722<!-- /count --> tests**, plus <!-- count:scheduler-tests -->33<!-- /count --> scheduler cases in `test/desk_async`, all
   hermetic: no network, no credentials, no waiting on a clock -- the
   scheduler's cases move a clock of their own. Expected values are derived by
   hand beside each assertion, and each suite checks its own count against
@@ -252,8 +252,8 @@ may send one); on the public demo each answers 405.
 - **Architecture tests** pin how many nodes a tick recomputes, and fail if the
   staleness clock ever feeds a risk number. That test is the guard against the
   engine quietly becoming a poller.
-- **79.9% coverage** of `lib/` and `desk/` together (8,126 of 10,173
-  instrumented points, measured 2026-09-20). Read as two modes, not one: 26
+- **79.5% coverage** of `lib/` and `desk/` together (8,661 of 10,897
+  instrumented points, measured 2026-10-08). Read as two modes, not one: 26
   files run 81% to 95%, and the six that reach a network themselves run 36%
   to 65%, because the tests never touch a network.
 - **CI on Ubuntu and macOS** for every push: the build, the tests, a formatting

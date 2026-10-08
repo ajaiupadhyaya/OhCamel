@@ -1466,6 +1466,64 @@ let test_journal_backup_refuses_a_name_its_own_prune_would_delete () =
             (List.last_exn o.Cli.Outcome.out);
           Journal.close j))
 
+(* AN OLDER JOURNAL BACKS UP. Found 2026-10-08: the live host's journal was
+   written by a build from before signal_files and signal_deferrals existed,
+   and the new build's pre-deploy backup refused its faithful copy as "not a
+   journal this build would restore from" -- every deploy that adds a table
+   would have been blocked. The journal is additive: the build creates a
+   missing table on open. So a table absent from the SOURCE too is reported,
+   not a problem; a table the source has and the copy lacks still is. *)
+let an_old_journal dir =
+  let src = Filename.concat dir "desk.db" in
+  let j = open_exn src in
+  fill_a_journal j;
+  Journal.close j;
+  let db = Sqlite3.db_open src in
+  List.iter [ "signal_files"; "signal_deferrals" ] ~f:(fun t ->
+      ignore (Sqlite3.exec db ("DROP TABLE " ^ t) : Sqlite3.Rc.t));
+  ignore (Sqlite3.db_close db : bool);
+  src
+
+let test_journal_backup_takes_an_older_journal_that_lacks_newer_tables () =
+  with_temp_dir ~f:(fun dir ->
+      let src = an_old_journal dir in
+      let out = Filename.concat dir "backups" in
+      Core_unix.mkdir out;
+      let o = Cli.backup ~now:reckoning ~src ~dir:out ~name:None in
+      Alcotest.(check int) "status 0: the copy is restorable" 0 o.Cli.Outcome.status;
+      Alcotest.(check (list string))
+        "the copy stays" [ "desk-2026-09-14.db" ] (names_in out);
+      Alcotest.(check bool)
+        "and the report says the two tables are absent in the source too" true
+        (List.exists o.Cli.Outcome.out ~f:(fun l ->
+             String.is_substring l ~substring:"signal_files"
+             && String.is_substring l ~substring:"absent in the source"));
+      List.iter (names_in out) ~f:(fun n -> Core_unix.unlink (Filename.concat out n));
+      Core_unix.rmdir out)
+
+let test_verify_against_a_source_stays_strict_for_tables_the_source_had () =
+  with_temp_dir ~f:(fun dir ->
+      let src = Filename.concat dir "desk.db" in
+      let j = open_exn src in
+      fill_a_journal j;
+      let dst = Filename.concat dir "copy.db" in
+      backup_exn ~src ~dst;
+      Journal.close j;
+      let db = Sqlite3.db_open dst in
+      ignore (Sqlite3.exec db "DROP TABLE alerts" : Sqlite3.Rc.t);
+      ignore (Sqlite3.db_close db : bool);
+      let strict = Result.ok_or_failwith (Journal.verify ~absent_in_source:[] dst) in
+      Alcotest.(check bool)
+        "the source had alerts, the copy does not: not clean" false
+        (Journal.Report.clean strict);
+      let additive =
+        Result.ok_or_failwith (Journal.verify ~absent_in_source:[ "alerts" ] dst)
+      in
+      Alcotest.(check bool)
+        "absent in the source too: clean, and still listed" true
+        (Journal.Report.clean additive
+        && List.equal String.equal additive.Journal.Report.absent_in_source [ "alerts" ]))
+
 let suite =
   ( "journal backup",
     [
@@ -1527,4 +1585,8 @@ let suite =
         `Quick test_journal_backup_stops_at_a_delete_that_fails_and_exits_non_zero;
       Alcotest.test_case "journal-backup refuses a name its own prune would delete" `Quick
         test_journal_backup_refuses_a_name_its_own_prune_would_delete;
+      Alcotest.test_case "journal-backup takes an older journal that lacks newer tables"
+        `Quick test_journal_backup_takes_an_older_journal_that_lacks_newer_tables;
+      Alcotest.test_case "verify against a source stays strict for tables the source had"
+        `Quick test_verify_against_a_source_stays_strict_for_tables_the_source_had;
     ] )

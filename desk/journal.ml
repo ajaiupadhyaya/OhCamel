@@ -514,6 +514,7 @@ module Report = struct
     integrity : string list;
     counts : (string * int) list;
     missing_tables : string list;
+    absent_in_source : string list;
     newest_session : Date.t option;
     newest_order : (string * Time_ns.t) option;
     problems : string list;
@@ -538,6 +539,8 @@ module Report = struct
         List.map t.counts ~f:(fun (table, n) ->
             field table (sprintf "%d row%s" n (if n = 1 then "" else "s")));
         List.map t.missing_tables ~f:(fun table -> field table "MISSING");
+        List.map t.absent_in_source ~f:(fun table ->
+            field table "absent in the source too (created on open)");
         [
           field "newest session"
             (Option.value_map t.newest_session ~default:"none" ~f:Date.to_string);
@@ -596,7 +599,7 @@ let count_rows t table =
 
    The table names in the SQL are this module's own constants, never input --
    the same reason [columns] may interpolate one. *)
-let report_of t ~path : report =
+let report_of ?(absent_in_source = []) t ~path : report =
   let integrity =
     query t ~what:"integrity_check" "PRAGMA integrity_check" [] ~row:(fun r ->
         col_text r 0)
@@ -606,7 +609,13 @@ let report_of t ~path : report =
       ~row:(fun r -> col_text r 0)
   in
   let has table = List.mem present table ~equal:String.equal in
-  let missing_tables = List.filter tables ~f:(fun table -> not (has table)) in
+  let absent = List.filter tables ~f:(fun table -> not (has table)) in
+  (* The journal is additive: a table the source never had is one this build
+     creates on open, not a table the copy lost. Only the backup path knows the
+     source, so only it passes [absent_in_source]; journal-verify stays strict. *)
+  let in_source_list table = List.mem absent_in_source table ~equal:String.equal in
+  let absent_in_source = List.filter absent ~f:in_source_list in
+  let missing_tables = List.filter absent ~f:(fun t -> not (in_source_list t)) in
   let counts =
     List.filter_map tables ~f:(fun table ->
         if has table then Some (table, count_rows t table) else None)
@@ -647,6 +656,7 @@ let report_of t ~path : report =
     integrity;
     counts;
     missing_tables;
+    absent_in_source;
     newest_session;
     newest_order;
     problems;
@@ -656,16 +666,37 @@ let report_of t ~path : report =
    answers badly comes back [Ok] with a non-empty [problems], because the
    operator wants the counts printed beside the trouble; [journal-verify] exits
    non-zero on either. *)
-let verify (path : string) : (report, string) Result.t =
+let verify ?absent_in_source (path : string) : (report, string) Result.t =
   match open_read_only path with
   | Error e -> Error e
   | Ok t -> (
-      let r = Or_error.try_with (fun () -> report_of t ~path) in
+      let r = Or_error.try_with (fun () -> report_of ?absent_in_source t ~path) in
       close t;
       match r with
       | Ok report -> Ok report
       | Error e ->
           Error (sprintf "journal: cannot verify %s: %s" path (Error.to_string_hum e)))
+
+(* The schema's tables that [path] does not have, asked read-only. *)
+let tables_absent_from (path : string) : (string list, string) Result.t =
+  match open_read_only path with
+  | Error e -> Error e
+  | Ok t -> (
+      let r =
+        Or_error.try_with (fun () ->
+            query t ~what:"tables" "SELECT name FROM sqlite_master WHERE type = 'table'"
+              [] ~row:(fun r -> col_text r 0))
+      in
+      close t;
+      match r with
+      | Ok present ->
+          Ok
+            (List.filter tables ~f:(fun table ->
+                 not (List.mem present table ~equal:String.equal)))
+      | Error e ->
+          Error
+            (sprintf "journal: cannot read the tables of %s: %s" path
+               (Error.to_string_hum e)))
 
 module Session = struct
   type t = {

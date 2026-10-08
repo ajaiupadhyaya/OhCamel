@@ -90,42 +90,49 @@ let backup ~(now : Date.t) ~src ~dir ~name =
              basename dir)
     | Ok _ -> (
         let dst = Filename.concat dir basename in
-        match Journal.backup ~src ~dst with
+        (* What the source itself lacks, asked before the copy: an older journal
+           is additive, and its copy is judged against it (see Journal.verify). *)
+        match Journal.tables_absent_from src with
         | Error e -> fail all e
-        | Ok () -> (
-            say (sprintf "ohcamel: wrote %s" dst);
-            (* THE COPY IS CHECKED BEFORE ANYTHING IS PRUNED, and a copy that
-               fails the check does not stay: see the .mli. *)
-            let verdict =
-              match Journal.verify dst with
-              | Error e -> Error e
-              | Ok report ->
-                  List.iter (Journal.Report.lines report) ~f:say;
-                  if Journal.Report.clean report then Ok ()
-                  else Error (not_restorable dst)
-            in
-            match verdict with
-            | Error e -> fail all (sprintf "%s; %s" e (discard dst))
+        | Ok absent_in_source -> (
+            match Journal.backup ~src ~dst with
+            | Error e -> fail all e
             | Ok () -> (
-                match names_in dir with
-                | Error e -> fail all e
-                | Ok names ->
-                    let kept, deleted = Backup_retention.keep ~now names in
-                    let rec unlink = function
-                      | [] ->
-                          say
-                            (sprintf "ohcamel: %d kept, %d deleted in %s"
-                               (List.length kept) (List.length deleted) dir);
-                          finish all
-                      | n :: rest -> (
-                          let path = Filename.concat dir n in
-                          match Or_error.try_with (fun () -> Core_unix.unlink path) with
-                          | Ok () ->
-                              say (sprintf "ohcamel: deleted %s" path);
-                              unlink rest
-                          | Error e ->
-                              fail all
-                                (sprintf "ohcamel: cannot delete %s: %s" path
-                                   (Error.to_string_hum e)))
-                    in
-                    unlink deleted)))
+                say (sprintf "ohcamel: wrote %s" dst);
+                (* THE COPY IS CHECKED BEFORE ANYTHING IS PRUNED, and a copy that
+               fails the check does not stay: see the .mli. *)
+                let verdict =
+                  match Journal.verify ~absent_in_source dst with
+                  | Error e -> Error e
+                  | Ok report ->
+                      List.iter (Journal.Report.lines report) ~f:say;
+                      if Journal.Report.clean report then Ok ()
+                      else Error (not_restorable dst)
+                in
+                match verdict with
+                | Error e -> fail all (sprintf "%s; %s" e (discard dst))
+                | Ok () -> (
+                    match names_in dir with
+                    | Error e -> fail all e
+                    | Ok names ->
+                        let kept, deleted = Backup_retention.keep ~now names in
+                        let rec unlink = function
+                          | [] ->
+                              say
+                                (sprintf "ohcamel: %d kept, %d deleted in %s"
+                                   (List.length kept) (List.length deleted) dir);
+                              finish all
+                          | n :: rest -> (
+                              let path = Filename.concat dir n in
+                              match
+                                Or_error.try_with (fun () -> Core_unix.unlink path)
+                              with
+                              | Ok () ->
+                                  say (sprintf "ohcamel: deleted %s" path);
+                                  unlink rest
+                              | Error e ->
+                                  fail all
+                                    (sprintf "ohcamel: cannot delete %s: %s" path
+                                       (Error.to_string_hum e)))
+                        in
+                        unlink deleted))))
