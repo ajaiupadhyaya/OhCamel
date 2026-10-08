@@ -10,13 +10,22 @@
   word-break: normal;
   hyphens: manual;
 }
-.lg-pending {
+.lg-link {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.lg-state {
   display: block;
   margin-top: 2px;
   font-family: var(--font-mono);
   font-size: var(--fs-2xs);
   letter-spacing: 0.04em;
   color: var(--ink-2);
+}
+.lg-state-fail {
+  color: var(--signal);
 }
 
 .sys-rows {

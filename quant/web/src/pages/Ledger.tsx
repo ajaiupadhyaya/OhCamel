@@ -1,11 +1,21 @@
 /**
  * The Ledger (/ledger): what was built, what was cut, what is advisory, known limits, and
- * what the owner holds. Dated from a constant; each section a ruled table.
+ * what the owner holds. Dated from a constant; each section a ruled table. A product row reads
+ * its kind's latest artifact and shows its verdict and data date, or NOT YET RUN.
  */
+import { Link } from "react-router-dom";
 import { DataTable, Page, Section, type Column } from "../components";
 import { fmtStamp } from "../design/stamp";
+import { manifestOf, useArtifact } from "../lib/artifacts";
 import { LEDGER, LEDGER_AS_OF, SECTION_ORDER, type LedgerEntry } from "./ledger/entries";
+import { productStatus } from "./ledger/status";
 import "./ledger/ledger.css";
+
+function ProductState({ kind }: { kind: string }) {
+  const q = useArtifact(kind);
+  const s = productStatus(manifestOf(q.data), q.error, q.isLoading);
+  return <span className={"lg-state num" + (s.fail ? " lg-state-fail" : "")}>{s.text}</span>;
+}
 
 type Row = LedgerEntry & { n: number };
 
@@ -13,8 +23,12 @@ const COLUMNS: Column<Row>[] = [
   { key: "n", label: "NO.", width: 48, render: (r) => <span className="num">{String(r.n).padStart(2, "0")}</span> },
   { key: "item", label: "ITEM", width: "30%", wrap: true, render: (r) => (
       <>
-        <span className="lg-item">{r.item}</span>
-        {r.pending && <span className="lg-pending">PENDING FIRST RUN</span>}
+        {r.methodology ? (
+          <Link className="lg-item lg-link" to={`/methodology#${r.methodology}`}>{r.item}</Link>
+        ) : (
+          <span className="lg-item">{r.item}</span>
+        )}
+        {r.kind && <ProductState kind={r.kind} />}
       </>
     ) },
   { key: "detail", label: "DETAIL", wrap: true },
