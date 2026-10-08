@@ -1,53 +1,63 @@
-/** /company with no ticker: a search prompt and a few large caps to start from. */
+/** /company with no ticker: the search and a ruled list of large caps to start from. */
 import { Link, useNavigate } from "react-router-dom";
-import { Page, TickerInput } from "../../components";
-import { Icon } from "../../components/Icon";
+import { Page, Panel, TickerInput } from "../../components";
 
 export const SUGGESTED: { ticker: string; name: string; sector: string }[] = [
-  { ticker: "AAPL", name: "Apple", sector: "Technology hardware" },
-  { ticker: "MSFT", name: "Microsoft", sector: "Software" },
-  { ticker: "NVDA", name: "NVIDIA", sector: "Semiconductors" },
-  { ticker: "AMZN", name: "Amazon", sector: "Retail & cloud" },
-  { ticker: "GOOGL", name: "Alphabet", sector: "Internet services" },
-  { ticker: "META", name: "Meta Platforms", sector: "Internet services" },
-  { ticker: "JPM", name: "JPMorgan Chase", sector: "Banks" },
-  { ticker: "XOM", name: "Exxon Mobil", sector: "Energy" },
-  { ticker: "JNJ", name: "Johnson & Johnson", sector: "Health care" },
-  { ticker: "COST", name: "Costco", sector: "Consumer staples" },
+  { ticker: "AAPL", name: "Apple", sector: "TECH HARDWARE" },
+  { ticker: "MSFT", name: "Microsoft", sector: "SOFTWARE" },
+  { ticker: "NVDA", name: "NVIDIA", sector: "SEMICONDUCTORS" },
+  { ticker: "AMZN", name: "Amazon", sector: "RETAIL · CLOUD" },
+  { ticker: "GOOGL", name: "Alphabet", sector: "INTERNET" },
+  { ticker: "META", name: "Meta Platforms", sector: "INTERNET" },
+  { ticker: "JPM", name: "JPMorgan Chase", sector: "BANKS" },
+  { ticker: "XOM", name: "Exxon Mobil", sector: "ENERGY" },
+  { ticker: "JNJ", name: "Johnson & Johnson", sector: "HEALTH CARE" },
+  { ticker: "COST", name: "Costco", sector: "STAPLES" },
 ];
 
 export function Landing() {
   const nav = useNavigate();
   return (
-    <Page eyebrow="Company research" title="Look under the hood" subtitle="Financial statements, ratios, accounting-quality scores and an interactive DCF for any SEC-filing company — every figure read from its 10-K and 10-Q filings." docTitle="Company">
+    <Page title="Company" docTitle="Company" meta={<span>SEC EDGAR XBRL · 10-K 10-Q</span>}>
       <div className="co-landing">
-        <TickerInput autoFocus placeholder="Search a company or ticker…" onSelect={(t) => nav(`/company/${encodeURIComponent(t)}`)} className="co-landing-search" />
-        <div className="co-mini-label">Or start with a large cap</div>
-        <div className="co-suggest">
-          {SUGGESTED.map((s) => (
-            <Link key={s.ticker} to={`/company/${s.ticker}`} className="co-suggest-card">
-              <span className="num co-suggest-t">{s.ticker}</span>
-              <span className="co-suggest-n">{s.name}</span>
-              <span className="subtle small">{s.sector}</span>
-              <Icon name="arrow-up-right" size={14} className="co-suggest-arrow" />
-            </Link>
-          ))}
-        </div>
+        <TickerInput autoFocus placeholder="TICKER" onSelect={(t) => nav(`/company/${encodeURIComponent(t)}`)} className="co-landing-search" />
+        <Panel title="LARGE CAPS" flush notes={[]} provenance={[]}>
+            <table className="oc-table oc-table-compact co-suggest">
+              <thead>
+                <tr>
+                  <th>TICKER</th>
+                  <th>NAME</th>
+                  <th>SECTOR</th>
+                </tr>
+              </thead>
+              <tbody>
+                {SUGGESTED.map((s) => (
+                  <tr key={s.ticker}>
+                    <td className="num">
+                      <Link to={`/company/${s.ticker}`}>{s.ticker}</Link>
+                    </td>
+                    <td>{s.name}</td>
+                    <td className="co-dim">{s.sector}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+        </Panel>
       </div>
     </Page>
   );
 }
 
-/** A compact row of suggestion links (used at the foot of a company page). */
+/** A compact row of company links at the foot of a company page. */
 export function SuggestRow({ exclude }: { exclude: string }) {
   return (
-    <div className="co-suggest-row">
-      <span className="subtle small">Other companies:</span>
+    <nav className="co-suggest-row num" aria-label="Other companies">
+      <span className="co-ctl-k">OTHER</span>
       {SUGGESTED.filter((s) => s.ticker !== exclude).map((s) => (
-        <Link key={s.ticker} to={`/company/${s.ticker}`} className="badge" title={s.name}>
+        <Link key={s.ticker} to={`/company/${s.ticker}`} title={s.name}>
           {s.ticker}
         </Link>
       ))}
-    </div>
+    </nav>
   );
 }
