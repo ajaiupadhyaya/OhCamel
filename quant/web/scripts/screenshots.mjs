@@ -11,11 +11,24 @@ import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 
-const ROUTES = ["/", "/markets", "/risk", "/portfolio", "/optimize", "/research", "/options", "/macro", "/company/AAPL", "/ticker/SPY", "/deck", "/system", "/compute", "/engine", "/methodology", "/ledger"];
+const ROUTES = ["/", "/markets", "/risk", "/portfolio", "/optimize", "/optimize?tab=backtest", "/research", "/options", "/macro", "/company/AAPL", "/ticker/SPY", "/deck", "/system", "/compute", "/engine", "/methodology", "/ledger"];
 
 // Paper Tape pages whose dense tables must keep one row height. Later P2 tasks add their routes.
 const RHYTHM_ROUTES = new Set(["/markets", "/risk", "/portfolio", "/optimize", "/research", "/options", "/macro", "/ticker/SPY", "/company/AAPL", "/engine", "/compute", "/system"]);
 // Not /methodology or /ledger: their tables are prose (sources, ledger detail) whose rows wrap by design.
+
+// Routes that need a step before the shot so a populated state is visible. Offline, the walk-forward
+// backtest has no 3M bill (no DGS3MO fixture) and reads INSUFFICIENT DATA; with the rail's MANUAL
+// risk-free rate (2%, shown as such on the page) it runs on the committed fixture prices, which puts
+// the ΔSR forest with its "p · HOLM" gutter, growth, drawdown and the scorecard in the shot.
+const PREPARE = {
+  "/optimize?tab=backtest": async (page) => {
+    await page.getByRole("radio", { name: "MANUAL" }).click();
+    await page.getByRole("button", { name: "RUN", exact: true }).click();
+    await page.waitForSelector(".oc-chart-coef svg", { timeout: 60000 });
+    await page.waitForLoadState("networkidle");
+  },
+};
 
 async function unevenRows(page) {
   return page.evaluate(() => {
@@ -75,6 +88,7 @@ for (const theme of ["paper", "carbon"]) {
     for (const p of paths) {
       await page.goto(base + p, { waitUntil: "networkidle" });
       await page.waitForTimeout(1500);
+      if (PREPARE[p]) await PREPARE[p](page);
       if (vp.width < 768) {
         const [sw, iw] = await page.evaluate(() => [document.documentElement.scrollWidth, window.innerWidth]);
         if (sw > iw) failures.push(`overflow ${theme} ${vp.width} ${p}: scrollWidth ${sw} > ${iw}`);

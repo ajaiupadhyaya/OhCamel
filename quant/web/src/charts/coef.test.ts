@@ -27,3 +27,16 @@ describe("coefLayout", () => {
     expect(L.row).toBeGreaterThan(26);
   });
 });
+
+describe("coefLayout with a measured label width", () => {
+  it("sizes the gutter from the measured width, not the glyph estimate", () => {
+    // a fallback font set wider than Plex Mono: the gutter follows what was measured
+    const wide = (s: string) => s.length * 8;
+    const L = coefLayout(rows, [label], 1100, wide);
+    expect(L.plotR).toBeLessThanOrEqual(1100 - label.length * 8 - 8);
+  });
+  it("a measure that cannot measure (0) falls back to the estimate", () => {
+    const L = coefLayout(rows, [label], 1100, () => 0);
+    expect(L.plotR).toBeLessThanOrEqual(1100 - label.length * MONO_ADVANCE - 8);
+  });
+});

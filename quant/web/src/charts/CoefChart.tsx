@@ -5,10 +5,11 @@
  *
  *   <CoefChart rows={[{ term: "MKT", est: 0.92, lo: 0.88, hi: 0.96, t: 41.2 }]} />
  * `tick` formats the axis and `right` the right-edge figure (e.g. percent estimates, a p-value).
- * The right-edge column is sized from the longest figure; when that column would squeeze the plot
+ * The right-edge column is sized from the longest figure (measured in the mono face, never
+ * narrower than the Plex Mono estimate); when that column would squeeze the plot
  * below a readable width, each figure drops to its own line under its whisker instead.
  */
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { fmtNum } from "../lib/format";
 import { niceTicks } from "./scales";
 import { useChartTheme } from "./theme";
@@ -37,10 +38,23 @@ export interface CoefLayout {
   row: number;
 }
 
+/** Rendered width of a right-edge figure: measured when possible, else the Plex Mono estimate. */
+export type MeasureText = (s: string) => number;
+const estimate: MeasureText = (s) => s.length * MONO_ADVANCE;
+
+/** A canvas measure in the chart's own mono font, so a fallback face still clears the plot. */
+function canvasMeasure(fontFamily: string): MeasureText {
+  const ctx = typeof document === "undefined" ? null : document.createElement("canvas").getContext?.("2d");
+  if (!ctx || !fontFamily) return estimate;
+  ctx.font = `11px ${fontFamily}`;
+  return (s) => ctx.measureText(s).width;
+}
+
 /** Horizontal layout: term column, plot, and a right column wide enough for the longest figure. */
-export function coefLayout(rows: { term: string }[], rights: string[], width: number): CoefLayout {
+export function coefLayout(rows: { term: string }[], rights: string[], width: number, measure: MeasureText = estimate): CoefLayout {
   const labelW = Math.min(110, Math.ceil(Math.max(3, ...rows.map((r) => r.term.length)) * 7) + 10);
-  const tW = Math.ceil(Math.max(0, ...rights.map((s) => s.length)) * MONO_ADVANCE) + GAP;
+  const widthOf = (s: string) => Math.max(measure(s) || 0, estimate(s));
+  const tW = Math.ceil(Math.max(0, ...rights.map(widthOf))) + GAP;
   if (width - labelW - tW >= MIN_PLOT) return { labelW, plotL: labelW, plotR: width - tW, stacked: false, row: ROW };
   return { labelW, plotL: labelW, plotR: Math.max(labelW + 40, width - 20), stacked: true, row: ROW_STACKED };
 }
@@ -76,7 +90,8 @@ export function CoefChart({
   const lo = ticks[0] ?? -1;
   const hi = ticks[ticks.length - 1] ?? 1;
   const rights = rows.map(right);
-  const { plotL, plotR, stacked, row: rowH } = coefLayout(rows, rights, width);
+  const measure = useMemo(() => canvasMeasure(t.mono), [t.mono]);
+  const { plotL, plotR, stacked, row: rowH } = coefLayout(rows, rights, width, measure);
   const X = (v: number) => plotL + ((v - lo) / (hi - lo || 1)) * (plotR - plotL);
   const height = rows.length * rowH + 22;
   const font = (px: number, fam: string) => ({ fontSize: px, fontFamily: fam });
@@ -105,7 +120,7 @@ export function CoefChart({
                 <line x1={X(r.lo)} x2={X(r.lo)} y1={cy - 4} y2={cy + 4} stroke={t.ink} />
                 <line x1={X(r.hi)} x2={X(r.hi)} y1={cy - 4} y2={cy + 4} stroke={t.ink} />
                 <rect x={X(r.est) - 4} y={cy - 4} width={8} height={8} fill={sig ? t.ink : t.paper} stroke={t.ink} />
-                {stacked && <rect x={width - rights[i].length * MONO_ADVANCE - 6} y={cy + 8} width={rights[i].length * MONO_ADVANCE + 6} height={14} fill={t.paper} />}
+                {stacked && <rect x={width - Math.max(measure(rights[i]), estimate(rights[i])) - 6} y={cy + 8} width={Math.max(measure(rights[i]), estimate(rights[i])) + 6} height={14} fill={t.paper} />}
                 <text x={width} y={stacked ? cy + 15 : cy} textAnchor="end" dominantBaseline="middle" fill={sig ? t.ink : t.ink2} {...font(11, t.mono)}>
                   {rights[i]}
                 </text>
