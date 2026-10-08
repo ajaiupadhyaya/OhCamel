@@ -5,8 +5,8 @@ experiment: EXP-Q01
 preregistration: research/experiments/EXP-Q01/preregistration.md
 approved: "2026-10-06"
 methodology_version: 1
-universe: null              # frozen once by `python -m ohcamel_quant.products.q01 freeze` after the backfill
-universe_frozen_on: null
+universe: [BIL, DBA, DBC, DIA, EEM, EFA, EMB, EWJ, FXI, GLD, HYG, IEF, IEI, IWM, LQD, MDY, QQQ, SHY, SLV, SPY, TIP, TLT, UNG, USO, VGK, XLB, XLE, XLF, XLI, XLK, XLP, XLU, XLV, XLY]  # frozen on the droplet 2026-10-08 after the backfill
+universe_frozen_on: "2026-10-08"
 universe_source: quant/src/ohcamel_quant/universes.json (every ETF), continuity rule I-Q01-9
 benchmark: SPY              # beta_252d is measured against it
 features: [mom_12_1, rev_1m, vol_60d, beta_252d, dollar_vol_20d]
