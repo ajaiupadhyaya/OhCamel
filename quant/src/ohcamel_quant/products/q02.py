@@ -49,7 +49,10 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         spy, d10, d2, oas, prov = load_inputs(ctx, cfg)
     except DataUnavailable as e:
         return ArtifactSpec(tables={"gates": pd.DataFrame(columns=["gate", "value", "rule", "passed", "note"])},
-                            data_asof=None, provenance=[], notes=[f"{e} (BAMLH0A0HYM2 is the HY OAS input)"],
+                            data_asof=None,
+                            provenance=[Provenance.now("ohcamel-exp-q02", config="EXP-Q02", config_hash=h,
+                                                       inputs=list(INPUT_SERIES)).to_dict()],
+                            notes=[f"{e} (BAMLH0A0HYM2 is the HY OAS input)"],
                             verdict="INSUFFICIENT DATA",
                             verdict_detail=" ".join(["INPUT UNAVAILABLE", *(f"· {s}" for s in INPUT_SERIES
                                                                              if s in str(e))]))

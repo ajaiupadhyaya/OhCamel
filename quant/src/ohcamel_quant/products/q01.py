@@ -45,7 +45,9 @@ def load_panel(con: Any, tickers: list[str], start: str = PANEL_START) -> tuple[
 
 def _insufficient(detail: str, notes: list[str] | None = None) -> ArtifactSpec:
     gates = pd.DataFrame(columns=["gate", "value", "rule", "passed", "note"])
-    return ArtifactSpec(tables={"gates": gates}, data_asof=None, provenance=[], notes=notes or [],
+    # The refusal still names its source (the experiment's config), so the cell keeps a SOURCE line.
+    prov = [Provenance.now("ohcamel-exp-q01", config="EXP-Q01", refused=detail).to_dict()]
+    return ArtifactSpec(tables={"gates": gates}, data_asof=None, provenance=prov, notes=notes or [],
                         verdict="INSUFFICIENT DATA", verdict_detail=detail)
 
 

@@ -68,6 +68,8 @@ def test_q01_unfrozen_universe_is_insufficient_data(market, wh, frozen, monkeypa
     spec = q01.run({}, ctx(market, wh))
     assert spec.verdict == "INSUFFICIENT DATA" and spec.verdict_detail == "UNIVERSE NOT FROZEN"
     assert set(spec.tables) == {"gates"}  # no numbers at all
+    # Still a SOURCE line: the experiment and its config, so the cell says where the refusal came from.
+    assert [p["source"] for p in spec.provenance] == ["ohcamel-exp-q01"] and spec.provenance[0]["detail"]["config"] == "EXP-Q01"
 
 
 def _run(market, wh, cfg, monkeypatch, db):

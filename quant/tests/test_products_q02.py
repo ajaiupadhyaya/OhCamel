@@ -28,6 +28,8 @@ def test_q02_short_oas_history_is_insufficient_data(market, tmp_path, monkeypatc
     spec = q02.run({}, ctx(market))  # offline: BAMLH0A0HYM2 is not in the fixtures
     assert spec.verdict == "INSUFFICIENT DATA" and "BAMLH0A0HYM2" in spec.verdict_detail
     assert is_label(spec.verdict_detail) and any("BAMLH0A0HYM2" in n for n in spec.notes)
+    src = spec.provenance[-1]
+    assert src["source"] == "ohcamel-exp-q02" and src["detail"]["config"] == "EXP-Q02" and src["detail"]["inputs"] == list(q02.INPUT_SERIES)
 
 
 @pytest.fixture
