@@ -13,8 +13,9 @@
 * ``GET /api/jobs/events`` -- SSE, one ``event: job`` per state or progress
   change, ``id:`` = the job_events sequence (``Last-Event-ID`` resumes).
 
-The client address is the rightmost ``X-Forwarded-For`` entry -- what Caddy,
-the only way in, saw -- falling back to the socket peer.
+The client address is the rightmost ``X-Forwarded-For`` entry (of the last
+such header) -- what Caddy, the only way in, saw and appended -- falling back
+to the socket peer. Params are at most ``MAX_PARAMS_BYTES`` of JSON (413).
 """
 
 from __future__ import annotations
@@ -53,6 +54,7 @@ from ...jobs.queue import (
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 MAX_LIVE_PER_CLIENT = 20
+MAX_PARAMS_BYTES = 16_384  # Harden H4: every public kind's params fit in well under this
 SSE_LIFETIME_S = 300.0
 OVER_CAP_NOTE = ("This request exceeds the endpoint's synchronous cap, so it runs as a job on the batch worker; "
                  "poll status_url or listen on /api/jobs/events, then read result_url.")
@@ -70,9 +72,9 @@ JobsDb = Annotated[Path, Depends(get_jobs_db_path)]
 
 
 def client_id(request: Request) -> str:
-    xff = request.headers.get("x-forwarded-for")
+    xff = request.headers.getlist("x-forwarded-for")
     if xff:
-        last = xff.split(",")[-1].strip()
+        last = xff[-1].split(",")[-1].strip()
         if last:
             return last
     return request.client.host if request.client else "unknown"
@@ -102,6 +104,8 @@ def _enqueue_public(db: Path, kind: str, params: dict[str, Any], request: Reques
         return _error(422, "unknown_kind", str(e))
     if not spec.public:
         return _error(422, "kind_not_allowed", f"{kind} cannot be submitted through the API")
+    if len(json.dumps(params, separators=(",", ":"), default=str)) > MAX_PARAMS_BYTES:
+        return _error(413, "params_too_large", f"params are at most {MAX_PARAMS_BYTES} bytes of JSON")
     validate_params(spec, params)  # ValueError -> 422 invalid_input (app handler)
     client = client_id(request)
     with closing(connect(db)) as conn:

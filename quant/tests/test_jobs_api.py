@@ -182,3 +182,86 @@ def test_result_never_reads_outside_the_artifacts_root(api, tmp_path):
         conn.commit()
         r = client.get(f"/api/jobs/{jid}/result")
         assert r.status_code == 404 and "s3cr3t" not in r.text, bad
+
+
+# Harden H4 (security): /api/jobs allow-list, the per-client cap under X-Forwarded-For spoofing, size limits.
+PRIVATE_KINDS = ["ingest.fred", "ingest.universes", "ingest.bars_daily", "ingest.sec_facts", "risk.mc_atlas",
+                 "farm.sweep", "models.xs_lgbm", "regime.hmm", "vol.surface_history", "cov.league"]
+
+
+def test_every_private_kind_is_refused_and_nothing_is_queued(api):
+    from ohcamel_quant.jobs.kinds import REGISTRY
+
+    client, db = api
+    private = sorted(k for k, s in REGISTRY.items() if not s.public)
+    assert set(PRIVATE_KINDS) <= set(private)
+    public = sorted(k for k, s in REGISTRY.items() if s.public)
+    assert public == ["api.backtest_sweep", "api.backtest_walkforward", "api.portfolio_compare",
+                      "api.risk_backtest", "ops.selftest"]  # a new public kind is a reviewed change
+    for k in private:
+        r = client.post("/api/jobs", json={"kind": k, "params": {}})
+        assert r.status_code == 422 and r.json()["error"] == "kind_not_allowed", k
+    assert not db.exists() or connect(db).execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 0
+
+
+def test_rotating_spoofed_forwarded_entries_share_one_cap(api):
+    """Caddy appends the address it saw; only that last hop counts, so rotating the left entries is useless."""
+    client, _ = api
+    for i in range(20):
+        h = {"X-Forwarded-For": f"10.0.{i}.1, 198.51.100.{i}, 203.0.113.7"}
+        assert client.post("/api/jobs", json={"kind": "api.backtest_sweep", "params": _sweep(i)},
+                           headers=h).status_code == 202
+    for i in range(20, 25):
+        h = {"X-Forwarded-For": f"203.0.113.{i}, 203.0.113.7"}
+        r = client.post("/api/jobs", json={"kind": "api.backtest_sweep", "params": _sweep(i)}, headers=h)
+        assert r.status_code == 429, i
+
+
+def test_a_duplicated_forwarded_header_counts_its_last_hop(api):
+    """Two X-Forwarded-For headers: the client is the last entry of the last one (the one Caddy wrote)."""
+    from starlette.requests import Request
+
+    from ohcamel_quant.api.routers.jobs import client_id
+
+    def req(headers):
+        raw = [(k.lower().encode(), v.encode()) for k, v in headers]
+        return Request({"type": "http", "headers": raw, "client": ("172.18.0.5", 1234)})
+
+    assert client_id(req([("X-Forwarded-For", "6.6.6.6"), ("X-Forwarded-For", "1.1.1.1, 203.0.113.7")])) == \
+        "203.0.113.7"
+    assert client_id(req([("X-Forwarded-For", "6.6.6.6, 203.0.113.7")])) == "203.0.113.7"
+    assert client_id(req([("X-Forwarded-For", "6.6.6.6, ")])) == "172.18.0.5"  # empty last hop: the peer
+    assert client_id(req([])) == "172.18.0.5"
+
+
+def test_params_over_the_size_limit_are_refused(api):
+    client, db = api
+    big = {**SWEEP, "params": {"pad": "x" * 20_000}}
+    r = client.post("/api/jobs", json={"kind": "api.backtest_sweep", "params": big})
+    assert r.status_code == 413 and r.json()["error"] == "params_too_large"
+    deep = {**SWEEP, "grid": {"lookback": list(range(5000))}}
+    r = client.post("/api/jobs", json={"kind": "api.backtest_sweep", "params": deep})
+    assert r.status_code == 413
+    assert not db.exists() or connect(db).execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 0
+    long_kind = client.post("/api/jobs", json={"kind": "k" * 65, "params": {}})
+    assert long_kind.status_code == 422
+
+
+@pytest.mark.parametrize("params", [
+    {"tag": "t" * 65},
+    {"tag": 7},
+    {"tag": ["a"]},
+    {"sleep_s": 60},
+    {"fail_if_exists": "/etc/passwd"},
+    {"exit_hard": True},
+    {"tag": "ok", "extra": 1},
+])
+def test_selftest_accepts_only_a_bounded_tag(api, params):
+    client, _ = api
+    r = client.post("/api/jobs", json={"kind": "ops.selftest", "params": params})
+    assert r.status_code == 422 and r.json()["error"] == "invalid_input", params
+
+
+def test_selftest_tag_at_the_bound_is_accepted(api):
+    client, _ = api
+    assert client.post("/api/jobs", json={"kind": "ops.selftest", "params": {"tag": "t" * 64}}).status_code == 202
