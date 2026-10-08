@@ -4,6 +4,10 @@ Each handler validates the same request model the endpoint uses, calls the
 endpoint's own private function with the job-sized cap, and stores the JSON
 payload the endpoint would have returned as a one-row table ``result``
 (column ``payload``) -- served by ``GET /api/jobs/{id}/result``.
+
+``portfolio_compare`` needs a risk-free series (FRED DGS3MO, then Ken French RF).
+Offline neither exists and none is substituted: the job fails saying so, and runs
+when the caller supplies ``risk_free_rate`` (docs/runbooks/compute.md).
 """
 
 from __future__ import annotations

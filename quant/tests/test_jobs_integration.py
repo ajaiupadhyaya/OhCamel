@@ -179,6 +179,33 @@ def test_sweep_job_runs_cscv_with_the_jobs_threads(monkeypatch):
     assert spec.engine == kernels.engine_of("backtest_weights")
 
 
+CMP = {"tickers": ["SPY", "TLT", "GLD"], "start": "2018-01-01", "methods": ["min_variance", "hrp"],
+       "window": 252, "rebalance": "Q", "cost_bps": 10}
+
+
+def test_compare_job_offline_without_a_bill_rate_fails_naming_the_fallback():
+    """No DGS3MO fixture is committed (no real data to commit offline), and Ken French RF is online only:
+    the job never substitutes a rate; it fails saying the caller can supply risk_free_rate."""
+    from ohcamel_quant.data.base import DataUnavailable
+    from ohcamel_quant.jobs.handlers import api_heavy
+
+    with pytest.raises(DataUnavailable) as e:
+        api_heavy.portfolio_compare(CMP, _ctx())
+    msg = str(e.value)
+    assert "DGS3MO" in msg and "supply risk_free_rate explicitly" in msg
+
+
+def test_compare_job_offline_runs_on_a_caller_supplied_rate():
+    import json
+
+    from ohcamel_quant.jobs.handlers import api_heavy
+
+    spec = api_heavy.portfolio_compare({**CMP, "risk_free_rate": 0.03}, _ctx())
+    payload = json.loads(spec.tables["result"]["payload"].iloc[0])
+    assert payload["risk_free"]["source"] == "user" and payload["risk_free"]["annual"] == 0.03
+    assert {s["method"] for s in payload["stats"]} == {"min_variance", "hrp", "equal_weight"}
+
+
 # ------------------------------------------------------------- compose
 @pytest.mark.parametrize("service", ["ohcamel-quant", "ohcamel-worker"])
 def test_compose_points_the_api_and_worker_at_the_warehouse(service):
