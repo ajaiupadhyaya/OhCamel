@@ -1,26 +1,146 @@
 # OhCamel — state of the project
 
-> **2026-09-24 — the public site is now OhCamel Quant** ([`quant/`](../quant/)),
-> a real-data quant platform (risk, portfolio construction, factors,
-> backtesting, options, rates & macro, fundamentals). The synthetic demo engine
-> no longer runs on the public host (`ohcamel-demo` sits behind the `demo`
-> compose profile); the live engine is unchanged. Deploy with
-> `deploy/deploy.sh --public-only`. Sections below describe the engine.
+*As of 2026-10-08, against `ship/harden`. This is the document to read first when coming back to the repository
+after time away, and the one to update when the facts in it change.*
 
+It is an inventory: what exists, where it runs, what is deployed, what it will not do, what was cut, and what
+the owner holds. The [README](../README.md) is the front door. [`engine.md`](engine.md) argues the engine's
+design with real numbers, and [`quant_notes.md`](quant_notes.md) states its formulas. The
+[compute runbook](runbooks/compute.md) operates the worker and its data, and *Operating it* below runs the
+host. The second half of this file, from *The engine*, is the OCaml engine's own inventory, which has not changed
+since 2026-09-19 except where marked.
 
-*As of 2026-09-19. This is the document to read first when coming back to the
-repository after time away, and the one to update when the facts in it change.*
-
-The [README](engine.md) argues: it makes the case for the design with real
-numbers and is long because the case is. [`quant_notes.md`](quant_notes.md)
-states: every formula in standard notation, cross-referenced to the function
-that evaluates it. This file does neither. It is an inventory — what exists,
-where it runs, how to drive it, what it will not do, and what comes next — kept
-short enough to read in ten minutes and dated so its staleness is visible.
-[`overview.md`](overview.md) is the short summary of what the project is and
-can do.
+The public site is **OhCamel Quant** ([`quant/`](../quant/)): real-data risk, portfolio construction, factors,
+backtesting, options, rates and macro, and fundamentals. It also shows seven scheduled research products (P1–P7)
+computed on the droplet. The synthetic demo engine no longer runs on the public host (`ohcamel-demo` sits behind
+the `demo` compose profile). The live engine runs the paper desk on the live host.
 
 ---
+
+## Where it runs
+
+| | |
+|---|---|
+| Public site | **https://ohcamel.ajaiupadhyaya.com** — OhCamel Quant on real data, no credentials. Every `/api` route is public |
+| Live host | `https://live.ohcamel.ajaiupadhyaya.com` — the OCaml engine against Alpaca (IEX) and FRED, behind basic auth; the owner holds the password |
+| Host | One DigitalOcean droplet, `s-2vcpu-4gb` (two shared vCPUs), Ubuntu 24.04, nyc3, `138.197.116.165` |
+| Cost | $24/month, metered hourly, capped |
+| Proxy / TLS | Caddy, Let's Encrypt, HTTP→HTTPS 308, HSTS, a CSP measured per route. Only Caddy has a host port |
+| DNS | Porkbun: A records `ohcamel` and `live.ohcamel` on the owner's domain |
+| **Deployed — public** | **`557296a`**, 2026-10-08, by `deploy/deploy.sh --sha 557296a --public-only`. That is `ship/main` with Lanes M (P1–P7), P2 (every page in Paper Tape) and F (the Flight Deck) integrated. The run restarts Caddy, `ohcamel-quant`, `ohcamel-worker` and `ohcamel-hostd`. The rollback reference is the previous good public deploy, `49a5c69` (2026-10-06, Lanes A/B/C: kernels, jobs, warehouse), and before that `279d407` (2026-10-06, Phase 0 and the Paper Tape system). `~/deploys.log` on the droplet is the record |
+| **Deployed — live** | **`88ebc96`** (`main`, 2026-09-28), deployed before the Ship began. The live deploy is blocked on one owner step as root: `install -d -m 0770 -o 10001 -g ohcamel /var/backups/ohcamel`. A `--live` deploy takes a pre-deploy journal backup into that directory and aborts without it. After that step: `deploy/deploy.sh --sha <sha> --live`, outside 09:25–16:10 New York on a weekday |
+| Not deployed | `ship/harden`: the Lane H work since `557296a` (counts, security, backend and web hardening, these docs, the EXP-Q01 freeze `--write`, the operator job CLI). It ships with the Lane H deploy |
+
+**Data on the droplet (2026-10-08).** The warehouse backfill ran through the queue. `ingest.universes` finished,
+and `ingest.bars_daily` filled 563 keys to as-of 2026-10-07 in 322 cpu-s at 233 MB peak. The factors are as of
+2026-08-31, the newest month Ken French had published. SEC facts and 13F holdings wait for Sunday's runs. The
+EXP-Q01 universe is not frozen yet: the freeze needs `ship/harden`'s persistent `--write` (the image is
+read-only) and runs once after it is deployed.
+
+## What runs on the droplet
+
+Compose services (`deploy/docker-compose.yml`). Slices and CPU weights decide who yields under contention, and
+memory ceilings are caps, not reservations.
+
+| Service | Image | Profile | Slice, weight, memory | What it does |
+|---|---|---|---|---|
+| `caddy` | caddy | default | web, 1024, 128 MB | TLS, routing, CSP and headers |
+| `ohcamel-quant` | `ohcamel-quant` | default | web, 1024, 1 GB | The API and the built site; opens the warehouse read-only per request |
+| `ohcamel-worker` | `ohcamel-quant` | default | batch, 128, ≤ 1.75 CPUs, 1280 MB, OOM rank 800 | One job at a time from `/data/jobs.sqlite`, each in a child process; the scheduler thread; the warehouse's only writer |
+| `ohcamel-hostd` | `ohcamel-hostd` (Rust, scratch image) | default | web, 1024, 32 MB | CPU, steal, iowait, memory and per-slice use every 5 s; read at `/api/ops/host` and by admission |
+| `ohcamel-live` | `ohcamel` (OCaml) | live | rt, 4096, 512 MB | The live engine and paper desk |
+| `ohcamel-research` | `ohcamel-research` | live | batch, 256, 384 MB | The research service's post-close signal run |
+| `ohcamel-backup` | `ohcamel` | backup | — | One-shot copies for `deploy/backup.sh` and `deploy/restore.sh` |
+| `ohcamel-demo` | `ohcamel` | demo | rt | The synthetic engine; harness only |
+
+**Admission** (`quant/src/ohcamel_quant/jobs/admission.py`): a job starts only when hostd's `mem_available`
+minus 512 MiB covers its class (S 256, M 640, L 1152 MiB). A heavy job never starts 09:25–16:05 New York on a
+session day. Jobs get 1 thread inside that window and 2 outside it. When hostd is unreadable, nothing starts.
+
+**Schedules** (`quant/src/ohcamel_quant/jobs/schedules.yaml`, New York wall time; `GET /api/jobs/schedules` shows
+the next runs):
+
+| Kind | When | Class | Product |
+|---|---|---|---|
+| `ingest.option_snapshots` | weekdays 16:20 | S | warehouse (30 underlyings) |
+| `ingest.bars_daily` | weekdays 18:30 | S | warehouse |
+| `ingest.bars_minute` | weekdays 19:00, and every 30 min 10:00–15:30 | S | warehouse (50 names) |
+| `ingest.fred_warehouse`, `ingest.fred` | daily 07:00, 06:30 | S | warehouse, FRED cache |
+| `ingest.universes`, `ingest.factors` | Sun 05:00, Sat 06:00 | S | warehouse |
+| `ingest.sec_facts` (heavy), `ingest.holdings_13f` | Sun 02:00, 03:00 | M, S | warehouse |
+| `risk.mc_intraday` | weekdays 09:45 and every 15 min 10:00–15:45 | S | P1 intraday |
+| `risk.mc_atlas` | weekdays 20:00 | M heavy | P1 |
+| `vol.surface_history` | weekdays 21:00 | M heavy | P7 |
+| `vol.forecast_league` | weekdays 21:30 | M heavy | P2 |
+| `farm.sweep` | weekdays 23:00, 90-min budget | L heavy | P4 |
+| `cov.league` | Sat 08:00 | M heavy | P3 |
+| `regime.hmm` | Sat 09:00 | M heavy | P6 (EXP-Q02) |
+| `models.xs_lgbm` | 1st of the month 22:30 | M heavy | P5 (EXP-Q01) |
+| `ops.selftest` | daily 04:05 | S | end-to-end check |
+
+Each kind's latest artifact counts as stale after its `max_age` in the same file, a little over one period, and
+the pages hatch it. Public `POST /api/jobs` accepts only `ops.selftest` and the four `api.*` kinds (requests over
+the synchronous caps), with a per-client cap and rate limit.
+
+**Data** (`/data` on the `quant_data` volume): `jobs.sqlite` (queue, artifact ledger, scheduler record),
+`artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
+(after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
+
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->1301<!-- /count --> tests, offline against
+committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
+Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
+`scripts/check-counts.sh --verify` holds the published count to pytest's collected count.
+
+## OhCamel Quant: limits
+
+- **Survivorship.** Universes are current constituents (dated S&P 500 and Nasdaq-100 lists, the site's ETFs).
+  Delisted names are absent, and every product that uses them says so. EXP-Q01 uses the ETF universe for that
+  reason (charter; owner option A).
+- **Data.** Alpaca IEX is one venue, not the consolidated tape. Cboe options are delayed 15 minutes, and the
+  snapshot history only grows (it cannot be re-fetched). Stooq bars are unadjusted and labelled so.
+- **One box.** Two shared vCPUs: steal is measured by hostd, not prevented. Memory binds first, so heavy jobs
+  run one at a time outside the session. Capacity was last surveyed 2026-09-24 (owner step O17 re-measures it).
+- **Backups.** Nightly backups (journal, recorder, `jobs.sqlite`) refuse to run until `/var/backups/ohcamel`
+  exists, so no backup has run on the droplet as of 2026-10-08. The warehouse and the artifacts have no backup
+  at all: the warehouse is rebuilt from vendors (option snapshots excepted), and products re-run.
+- **Fresh warehouse ordering.** `ingest.bars_daily` fails on an empty universe table, and the universes ingest
+  is weekly, so a new warehouse runs `warehouse-universes` first (runbook, *Enqueueing a backfill*).
+- **Kernel benchmarks.** The table on `/compute` was measured on a developer laptop, not the droplet's CPU
+  class. There, `stationary_bootstrap_means` and `garch_fit` are slower in Rust on one thread.
+- **Not yet shown.** The five-session soak (Ship acceptance 3), the G-RT latency gate under the batch, and the
+  backup restore drill are Lane H's remaining steps.
+- **Advisory, always.** No product output reaches the desk. P5 and P6 are approved pre-registrations, and their
+  holdouts are evaluated once.
+
+## Cut
+
+From the Ship spec (`superpowers/specs/2026-10-05-the-ship-design.md` §2); each is listed on `/ledger`:
+
+- Finish-plan Stages 2A–6 (Tasks 21–77): the engine's long window, GARCH and Cornish–Fisher estimators, the
+  factor and liquidity limits, option marks, self-validation on the live record, R8. The engine as deployed stays.
+- Compute plan Lane E: the engine-side scenario grid (P8) and C stubs for the numeric core.
+- The Flight Deck's kiosk mode (F4), saved per-route layouts, and table density modes.
+
+## What the owner holds
+
+- **Root step:** `install -d -m 0770 -o 10001 -g ohcamel /var/backups/ohcamel`, then
+  `systemctl enable --now ohcamel-backup.timer ohcamel-watch.timer` (O12). This unblocks backups and the live
+  deploy.
+- **EXP-Q01:** the I-Q01-7 dollar-volume sign was recorded as −1, the default, on 2026-10-07, when the owner
+  skipped the question. It is the owner's to confirm before the freeze, because changing it later is a new
+  experiment.
+- **Droplet size** (O-1): resize if hostd shows steal above 10 % for sustained periods, or the nightly batch
+  misses 09:00 New York.
+- **Engine bridge** (O-7): whether the public site shows the paper book's positions
+  (`OHCAMEL_QUANT_ENGINE_URL`). It is off.
+- **The live book.** `book.sexp` is never edited by the agent. Merging SPY/TLT and the `signals` block from
+  `book.example.sexp`, any `(sizing live)` and `(trading enabled)` remain the owner's (see *The engine*, below).
+- Accounts and money: the basic-auth password, the Alpaca, FRED and GitHub accounts, DNS, and every spending
+  decision.
+
+---
+
+# The engine
 
 ## What it is
 
@@ -46,20 +166,10 @@ strategy is `live`. EXP-A01, the one battery run so far, tested two
 strategies and both fail their gates, so nothing has been promoted and no
 strategy is `live` anywhere in this repository.
 
-## Where it runs
+## Resources at rest
 
-| | |
-|---|---|
-| Public demo | **https://ohcamel.ajaiupadhyaya.com** — synthetic feed, no credentials, always on |
-| Live host | `https://live.ohcamel.ajaiupadhyaya.com` — same image against Alpaca (IEX) and FRED, behind basic-auth. Up since 2026-09-02; the owner holds the password |
-| Host | One DigitalOcean droplet, `s-2vcpu-4gb`, Ubuntu 24.04, nyc3, at `138.197.116.165` |
-| Cost | $24/month, metered hourly, capped |
-| Proxy / TLS | Caddy, Let's Encrypt, HTTP→HTTPS 308, HSTS. Only Caddy has a host port; the engines are on an internal Docker network |
-| DNS | Porkbun. Two A records, `ohcamel` and `live.ohcamel`, on a domain whose apex is unrelated (the owner's portfolio site) |
-| Deployed | 2026-09-17, both hosts, from `e0f5a71` (phase A2: the order manager -- the twelve pre-trade rules, the book's own limits re-evaluated on a fork of the live graph, the journal before the wire, reconciliation on restart, the kill switch the desk obeys, costs per fill, and the page's switch, ticket and blotter) -- the demo reports it as `build.git_sha` on `/api/ops`, built `2026-09-17T17:55:08Z` -- verified by the production smoke suite: 26 passed, 0 failed, 0 skipped, and both engines report healthy. On the live host the engine opened `/data/desk.db` with three session closes recorded (the latest 2026-09-16), read the paper account, and its first sync succeeded, which restored those three into the equity trail; it logs `Alpaca paper, read side` and `trading off -- the book does not enable trading`, so the live desk previews and places nothing until `book.sexp` gains a `desk` block with `(trading enabled)`. The public demo serves the whole desk against its simulated venue: its own trader's orders and fills, the costs of each, and a switch that trips on `nvda-cap` and resets itself 90 s after the limit clears. Not yet deployed: `main` at `b6132c6` -- phase W2 (`b9471da`: the five-page site navigation and Figure 1's two bands) and phase A3 (the signal contract, the intake, and the Research page), including the documented `desk` block in `book.example.sexp` (`4e04b29`) and the test that parses it -- until the owner redeploys with the `live` profile. Previous deploy, and the rollback reference: `cf79764` (2026-09-13, phase A1: the journal and the paper-account sync) |
-
-Resource use at rest is small enough to be worth stating so nobody adds a
-bigger box for the wrong reason: the engine sits at about 41 MB and six percent
+*Measured in September 2026, when the public host still ran the demo engine; the compute tier has changed the
+picture since (hostd shows it live on `/compute`).* The engine sits at about 41 MB and six percent
 of one core with the demo feed ticking one name every 400 ms; Caddy at 27 MB
 and one percent. The droplet is at roughly three percent of capacity. The
 4 GB was chosen for the twenty-minute OCaml *build*, not the runtime.
@@ -69,6 +179,7 @@ specified in
 [the server-side design](superpowers/specs/2026-08-31-server-side-deployment-design.md),
 which also records the two bugs the first production deploy found and why the
 local harness could not have caught either.
+
 
 ## What it computes
 
@@ -192,7 +303,7 @@ below re-enters the project-local opam switch, so they work from a clean shell.
 | `backtest-crisis` | `backtest-crisis` | nothing (committed cache) | The same battery over the GFC, COVID and the 2022 rate shock -- three windows |
 | `options` | `options` | nothing | The options book, Greeks, tenor buckets, and the two-clocks walk |
 | `garch` | `garch` | nothing | The measurement behind not wiring GARCH in |
-| `demo [port]` | `demo` | nothing | The dashboard on a synthetic feed. This is what the public URL runs |
+| `demo [port]` | `demo` | nothing | The dashboard on a synthetic feed. The public URL ran it until 2026-09-24; now harness only (`demo` profile) |
 | `live [book]` | `run-live` | Alpaca + FRED keys | Real market data, terminal output |
 | `serve [port] [book]` | `serve` | Alpaca + FRED keys | Real market data, dashboard; the port first, then the book (default `book.sexp`). What the live host runs, as `serve 8081` |
 | `check-book [book]` | -- | nothing | Parses the book and runs every validation the engine would -- universe and cap, limits, alerts, desk, signals -- and exits 1 listing every problem. `deploy.sh` runs it in the new image before any pull |
@@ -426,104 +537,40 @@ line each (10 to 12 bind the order path, `desk/oms.ml`):
 | 2026-09-17 | Phase A2 merged to main and deployed to both hosts from `e0f5a71`, after twenty reviewed tasks, a whole-branch review and one fix wave: the rules and the pre-trade gate on a fork of the live graph; the order manager (the journal before the wire, a timed-out submission resolved by lookup, reconciliation on restart, and no order while the book is not the account's); Alpaca paper's trading half behind a ten-second bound on every request; the kill switch wired to the desk, which refuses new orders and cancels open ones, including one that was already resting when a partial fill arrived; previews for anyone and orders only from the live host's own page; costs per fill; the ticket and the blotter. The fix wave also indexed the journal, because `/api/desk` had been scanning whole tables on the scheduler thread. Acceptance on the live host -- one paper order filled -- waits for the owner: the `desk` block in `book.sexp`, the basic-auth password, and market hours |
 | 2026-09-18 | Phase W2 merged to main after nine reviewed tasks, a whole-branch review and one fix wave: the site became five pages under one navigation -- the Desk at `/`, Risk, Execution, the Argument and Ops -- with one shared head and stylesheet and one stream connection per page. The limits ledger moved to `/risk`, which added the macro factor, the option Greeks and the scenario suite behind a button; `/execution` added the open orders, the costs, the session record and the VaR forecasts from the journal; the README's argument moved to `/argument` intact. Figure 1 draws the desk's two bands, orders leaving the engine and fills arriving at `qty[S]`, routed through the figure's own gutters. The Research page was deferred to A3, because everything §4 of the design assigns it is A3's deliverable; the factor model and liquidity stay with A4. 454 tests and seven scheduler cases, coverage 76.6%. Not yet deployed: the live host still serves A2's `e0f5a71` until the owner redeploys |
 | 2026-09-19 | Phase A3 merged to main after its reviewed tasks, a whole-branch review and one fix wave (18 tasks, 600 tests plus 30 scheduler cases and 388 research tests; coverage re-measured at 79.5%, 7,643 / 9,618, on 2026-09-19): `desk/contract.ml` enforces the signal contract ported from Alpha (R1 through R7; R8 not enforced, ruling 3), `desk/intake.ml` reads and judges signal files against the desk's own session clock, and a `live` strategy's validated signal becomes one gated market-on-open rebalance -- but no task in this project sets a strategy `live`, so every signal ships `(sizing advisory)`. `research/` ran EXP-A01, the first battery, against ten years of Alpaca bars and wrote two manifests; its own report states, verbatim: 'Both strategies fail. The pre-registration's kill criterion is "any charter gate failing is a fail", and each strategy fails at least one gate.' The site gained a sixth page, Research, reading `/api/research` and the committed manifests -- verdict, then latest signal, then gates -- and Figure 1 draws a signals band where an intake runs. Not yet deployed: the droplet still serves A2's `e0f5a71` until the owner redeploys with the `live` profile, and the research image's first build happens then |
+| 2026-10-05 | The Ship approved: one finished, published product; the public site rebuilt in Paper Tape; the compute tier (Rust kernels, jobs, warehouse, P1–P7) on the droplet; the agent pushes and deploys. Finish-plan Stages 2A–6 and compute Lane E cut. Integration branch `ship/main` cut from `main` at `88ebc96` |
+| 2026-10-06 | Phase 0 (ops close, resource governance, hostd, latency baselines) and Lane P (the Paper Tape design system) merged, pushed and deployed public from `279d407`. Lanes A (kernels), B (jobs) and C (warehouse) integrated as `49a5c69`, pushed and deployed public; the worker and hostd started and the ingests began. The owner approved EXP-Q01 (ETF universe, option A) and EXP-Q02 |
+| 2026-10-08 | Lanes M (P1–P7), P2 (every page) and F (the Flight Deck) integrated as `557296a` and deployed public. Warehouse backfill through the queue: universes, then daily bars to 2026-10-07. Lane H hardening on `ship/harden` (counts, security, backend, web, docs), not yet deployed |
 
 Plans and specs live under [`superpowers/`](superpowers/): the readable-front-door
 design (the README rewrite), the eight-phase roadmap (marked complete, with its three deviations
 recorded), and the deployment design.
 
-## Next
+## Next (engine)
 
-**The remaining work**, under the plan that supersedes the A4/A5/A6 phases
-named in earlier revisions of this file:
-[`docs/superpowers/specs/2026-09-19-the-finish.md`](superpowers/specs/2026-09-19-the-finish.md),
-staged so each stage ships, merges to `main`, and deploys before the next
-begins:
-
-- **Stage 0 — Baseline** (`final/s0-baseline`, cut from `main` at `b6132c6`):
-  the earlier phases' kernel commits cherry-picked in, this document's own
-  stale facts corrected, and a `lint` CI job running `make check-counts`.
-- **Stage 1 — Operations** (`desk/a6-ops`, design §3.15): the journal-backup
-  CLI and its retention, `check-book`, the market clock read onto the wire,
-  the host watchdog that reads it, and CI building and publishing both
-  images so the droplet only pulls.
-- **Stage 2A — the long window and the estimators** (`desk/a4-long`): the
-  long return window, GARCH wired in as a third estimator, and
-  Cornish–Fisher VaR -- the stage whose deploy starts the `garch` and
-  `cornish_fisher` forecast rows accruing on the live host.
-- **Stage 2B — the factor model and liquidity** (`desk/a4-depth`): the
-  factor model, the factor-exposure limit, liquidity and impact, and the
-  Risk page's remaining sections.
-- **Stage 3 — Correctness**: fixes across `bin/main.ml`, `web/execution.js`,
-  `desk/sim_venue.ml` and the embedded-assets tests, found by the earlier
-  phases' own whole-branch reviews.
-- **Stage 4 — Two lanes** (`desk/a4-options` then `desk/a5-validation`):
-  indicative option marks from Alpaca, and self-validation -- the coverage
-  battery run on the live VaR record from the journal, the Basel zone shown
-  on the page, and the desk's own record compared against EXP-A01's
-  backtest once enough sessions exist (the Research page's "against live"
-  section is a placeholder sentence until then). Buy-and-hold for SPY and
-  TLT is added as a report-only benchmark, never a gate (ruling 17) --
-  EXP-A01's battery computes none today, so its hypothesis's drawdown claim
-  was never tested by any gate.
-- **Stage 5 — Research completion** (`final/s5-research`): R8, the repeat
-  data-hash check, decided by evidence and, if the sources agree, enforced
-  only after it has been observed (ruling 16).
-- **Stage 6 — Finish** (`final/s6-finish`): the documents brought into
-  agreement with the code -- correcting this file's own stale facts is part
-  of that -- and the plan's own closing audit.
-
-Owner steps (`O1` through `O25`) interleave between the stages above; the
-ones outstanding as this file was last edited are listed next.
+The engine's remaining depth (finish-plan Stages 2A–6) is cut by the Ship spec; see *Cut*, above. What is left on
+the engine side is the owner's: the root step that unblocks the live deploy, and the live book's contents.
 
 ## What the owner must do on the live host
 
-No task in this phase may touch the owner's `book.sexp`, so none of this
-happened by itself, and none of it will until the owner does it by hand:
+No task may touch the owner's `book.sexp`, so none of this happens by itself:
 
-- **Add SPY and TLT to the live book.** Merge the SPY and TLT positions and
-  the `signals` block -- which registers `exp_a01_spy` and `exp_a01_tlt`,
-  both `(sizing advisory)` -- from the new `book.example.sexp` into the
-  owner's own `book.sexp` by hand; copying the example file over it would
-  discard whatever the live book already holds.
-- **Leave both strategies `advisory`** until the owner has read
-  `research/experiments/EXP-A01/report.md` and its manifests. With status
-  `fail`, R6 already refuses to size either signal no matter what
-  `book.sexp` says -- but the switch is still the owner's to set, not a
-  side effect of deploying.
-- **Before promoting either one,** raise `max_order_notional` (in the
-  book's `desk` block) to at least that strategy's largest target order,
-  and confirm `(trading enabled)` is set in that same block. Left at its
-  default, the `notional` rule refuses every rebalance, visibly, in the
-  journal and on `/execution`; without `(trading enabled)`, the live desk
-  previews and places nothing at all, signal or ticket alike.
-- **Redeploy with the `live` profile** (`deploy/deploy.sh --live`, which
-  passes `--profile live` to compose), so that `ohcamel-research` actually
-  runs. Two things about that redeploy the owner should expect, not be
-  surprised by:
-  - **the research image has never been built.** The local Docker daemon
-    was unhealthy for the whole of this phase, so `deploy/research.Dockerfile`
-    has only been read, never run. Its first real build is at deploy, where
-    the staleness step baked into the image (`RUN` at build time, over the
-    committed manifests) fails the build loudly if anything about the
-    battery, the manifests or the dependency lock has drifted since.
-  - **the live host's first post-close run of the service**, in the
-    evening New York time (00:16 UTC at the earliest), is the first time a *real* signal exists anywhere in
-    this project. It will show on `/research` as `advisory` with its
-    reason, which is the live-host half of the spec's acceptance line that
-    no task here could demonstrate ahead of time -- see *The spec's
-    acceptance*, above.
-- **The three README screenshots are stale** (`docs/media/dashboard.png`,
-  `demo.png`, `stress.png`), last captured 2026-09-10, before W1, W2, phase
-  A2 and phase A3, so they predate the site's navigation, Figure 1's orders
-  and signals bands, and the Research page entirely. No task before Stage 6
-  can retake them -- they are pixels from a running browser at a finished
-  site, not a fact a document can state today -- so they stay as they are
-  until the finish plan's own closing audit recaptures them from the
-  finished demo.
+- **Add SPY and TLT to the live book.** Merge the SPY and TLT positions and the `signals` block (which
+  registers `exp_a01_spy` and `exp_a01_tlt`, both `(sizing advisory)`) from `book.example.sexp` into the
+  owner's own `book.sexp` by hand. Copying the example over it would discard what the live book holds.
+- **Leave both strategies `advisory`.** EXP-A01's status is `fail`, so R6 refuses to size either signal
+  whatever `book.sexp` says.
+- **Before promoting either one,** raise `max_order_notional` in the book's `desk` block to at least that
+  strategy's largest target order, and set `(trading enabled)` in the same block. Without it the live desk
+  previews and places nothing.
+- **Redeploy with the `live` profile** after the root step above, so `ohcamel-research` runs; its first
+  post-close run (00:16 UTC at the earliest) is the first real signal in the project, shown on the engine's
+  `/research` as `advisory` with its reason.
+
 
 ## Operating it
 
-*Runbooks, as of 2026-10-06.* All on the droplet, as the deploy user
+*Runbooks, as of 2026-10-08.* The quant worker, its queue and its data have their own runbook,
+[`runbooks/compute.md`](runbooks/compute.md). All on the droplet, as the deploy user
 (`ohcamel`), from `~/OhCamel`, unless a step says root or the laptop. Since
 2026-10-05 the agent (Claude) runs deploys on the owner's authorization; the
 owner still holds the basic-auth password, the Alpaca, FRED and GitHub
@@ -616,7 +663,7 @@ rollback plan written before it ships, and no task has bumped it yet.
   (`Persistent=true`, so a firing missed while the host was down runs at the
   next boot). It copies every line of `deploy/backup.list` (the journal,
   `desk_data:/data/desk.db`, as `desk-YYYY-MM-DD.db`; the Quant recorder,
-  `quant_data:/data/deck/recorder.sqlite`) and `book.sexp` and `deploy/.env`
+  `quant_data:/data/deck/recorder.sqlite`; the job queue, `quant_data:/data/jobs.sqlite`) and `book.sexp` and `deploy/.env`
   beside them at 0640. The journal's copy is made with SQLite's online
   backup API and reopened and `integrity_check`ed before rotation, which
   keeps the 14 newest dailies, the 8 most recent Sundays and the 5 newest
@@ -626,6 +673,9 @@ rollback plan written before it ships, and no task has bumped it yet.
   `--dry-run` prints every container run and copy and writes nothing.
 - A backup is a copy of the journal, written to the host, and the engine
   neither writes nor reads it -- invariant 13 holds.
+- **Not running yet (2026-10-08):** `/var/backups/ohcamel` does not exist on the droplet, and `backup.sh`
+  refuses a missing directory before any container starts. The warehouse and the artifacts are not in
+  `backup.list` at all (the `duckdb` method is reserved); the compute runbook covers rebuilding them.
 - The directory is created once by root (owner step O12) and the timers
   enabled then: `install -d -m 0770 -o 10001 -g ohcamel /var/backups/ohcamel`,
   then `systemctl enable --now ohcamel-backup.timer ohcamel-watch.timer`, and
