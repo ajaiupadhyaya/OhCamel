@@ -482,3 +482,21 @@
   line-height: 14px;
   vertical-align: baseline;
 }
+
+/* ------------------------------------------------------------ covariance league (P3) */
+.pl-league {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+.pl-league-universe {
+  font-family: var(--font-display);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-2);
+  border-bottom: var(--rule);
+  padding-bottom: var(--sp-1);
+  margin-bottom: var(--sp-3);
+}
