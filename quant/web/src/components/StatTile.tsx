@@ -27,6 +27,8 @@ export interface StatTileProps {
   deltaFormat?: (d: number) => string;
   deltaLabel?: ReactNode;
   invert?: boolean;
+  /** The delta is a move in a level that is neither a gain nor a loss (VIX): ink either way. */
+  neutralDelta?: boolean;
   tone?: "gain" | "loss" | "warn" | "neutral" | "auto";
   info?: InfoProp;
   caption?: ReactNode;
@@ -35,7 +37,7 @@ export interface StatTileProps {
   size?: "sm" | "md" | "lg";
 }
 
-export function StatTile({ label, value, format, delta, deltaFormat, deltaLabel, invert, tone = "neutral", info, caption, loading, size = "md" }: StatTileProps) {
+export function StatTile({ label, value, format, delta, deltaFormat, deltaLabel, invert, neutralDelta, tone = "neutral", info, caption, loading, size = "md" }: StatTileProps) {
   const shown = typeof value === "number" ? (format ? format(value) : String(value)) : (value ?? "—");
   const valueRef = useFitText<HTMLDivElement>(loading ? null : shown);
   const autoTone = tone === "auto" && typeof value === "number" ? signClass(value, invert) : tone === "gain" || tone === "loss" || tone === "warn" ? tone : "";
@@ -53,7 +55,7 @@ export function StatTile({ label, value, format, delta, deltaFormat, deltaLabel,
       {(delta !== undefined && delta !== null && Number.isFinite(delta)) || caption ? (
         <div className="oc-stat-foot">
           {delta !== undefined && delta !== null && Number.isFinite(delta) && (
-            <span className={`oc-stat-delta num ${signClass(delta, invert)}`}>
+            <span className={`oc-stat-delta num ${neutralDelta ? "" : signClass(delta, invert)}`}>
               {signed((deltaFormat ?? ((d) => fmtPct(d, 2, { signed: true })))(delta), delta)}
             </span>
           )}

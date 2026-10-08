@@ -56,6 +56,12 @@ export function ZoneChip({ zone, title }: { zone: string | null | undefined; tit
   );
 }
 
+/** The Acerbi–Szekely Z2 indicative verdict as a word and its tone: REJECT in signal (as a red zone). */
+export function esVerdict(v: string): { word: string; tone: "loss" | "subtle" | "" } {
+  const word = v.split(/[\s(]/)[0].toUpperCase();
+  return { word, tone: v.startsWith("reject") ? "loss" : v === "accept" ? "" : "subtle" };
+}
+
 /** A p-value cell: signal when the model is rejected at 5%. */
 export function PValue({ p, digits = 3 }: { p: number | null | undefined; digits?: number }) {
   if (p === null || p === undefined || !Number.isFinite(p)) return <span className="subtle">—</span>;

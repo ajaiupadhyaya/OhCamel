@@ -12,7 +12,7 @@ import { useApiPost } from "../../lib/query";
 import { frameToMatrix } from "../../lib/series";
 import type { PortfolioIn } from "../../lib/types";
 import { CONDITIONAL_MODELS, INFO, modelInfo, modelLabel } from "../portfolio/info";
-import { KV, PValue, PctUsd, Readline, RunButton, ShareRows, ZoneChip, asDates, useCommitted, usd } from "../portfolio/shared";
+import { KV, PValue, PctUsd, Readline, RunButton, ShareRows, ZoneChip, asDates, esVerdict, useCommitted, usd } from "../portfolio/shared";
 import type { BacktestOut, DecompPosition, DecompositionOut, Estimate, GarchOut, RiskSummaryOut, Scorecard } from "../portfolio/types";
 import { splitBreaches } from "./breaches";
 
@@ -367,9 +367,9 @@ function Scorecards({ d, active, onPick }: { d: BacktestOut; active: string; onP
       render: (r) => {
         const z = r.acerbi_szekely_z2;
         if (!z) return "—";
-        const word = z.indicative_verdict.split(" ")[0].toUpperCase();
+        const { word, tone } = esVerdict(z.indicative_verdict);
         return (
-          <span className={`num ${z.indicative_verdict === "reject" ? "loss" : z.indicative_verdict === "accept" ? "" : "subtle"}`} title={`Z₂ = ${fmtNum(z.z2, 2)} (5% critical ${fmtNum(z.critical_5pct, 1)})`}>
+          <span className={`num ${tone}`} title={`Z₂ = ${fmtNum(z.z2, 2)} (5% critical ${fmtNum(z.critical_5pct, 1)})`}>
             {word}
           </span>
         );

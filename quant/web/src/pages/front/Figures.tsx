@@ -25,7 +25,7 @@ export function Figures() {
     ...(vix.source === "fred" ? (vixFred.data?.provenance ?? []).map((p) => (p.detail?.series ? { ...p, detail: { ...p.detail, note: "VIX: FRED VIXCLS, the quote source has no ^VIX" } } : p)) : []),
   ];
 
-  const quote = (ticker: string, label: string, name: string, invert = false) => {
+  const quote = (ticker: string, label: string, name: string, neutral = false) => {
     const r = row(ticker);
     const missing = ov.isError || (r && r.error) || (ov.data && !r);
     return (
@@ -37,7 +37,7 @@ export function Figures() {
         delta={missing ? null : r?.ret_1d}
         deltaFormat={(d) => fmtPct(d, 2, { signed: true })}
         deltaLabel={missing ? undefined : "1D"}
-        invert={invert}
+        neutralDelta={neutral}
         caption={missing ? "UNAVAILABLE" : `${name} · ${fmtStamp(r?.as_of ?? null)}`}
       />
     );
@@ -63,7 +63,7 @@ export function Figures() {
             delta={vix.ret1d}
             deltaFormat={(d) => fmtPct(d, 2, { signed: true })}
             deltaLabel="1D"
-            invert
+            neutralDelta
             caption={`FRED VIXCLS · ${fmtStamp(vix.asOf)}`}
           />
         ) : (
