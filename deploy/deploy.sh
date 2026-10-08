@@ -65,8 +65,10 @@
 # meets an unreadable live.env it falls back to a public-only deploy with a
 # warning, while an explicit --live in the same state exits 1
 # (resolve_live_profile, deploy/test/deploy_profile_test.sh). --public-only
-# touches caddy, ohcamel-quant and ohcamel-hostd only, never the live profile, so the market
-# guard has nothing to protect and does not apply.
+# touches caddy, ohcamel-quant, ohcamel-worker (the quant job worker, which
+# has no profile and so starts with the public services) and ohcamel-hostd
+# only, never the live profile, so the market guard has nothing to protect and
+# does not apply.
 #
 # Test seams, read from the environment and never set by the droplet:
 # DEPLOY_NOW (the guard's clock: a Unix epoch, or YYYY-MM-DDTHH:MM[:SS]Z),
@@ -327,8 +329,9 @@ as the deploy user, from ~/OhCamel.
                     behind the password on the live host. Needs
                     /etc/ohcamel/live.env readable by this user. Added on its
                     own when that file is readable or ohcamel-live exists.
-  --public-only     caddy, ohcamel-quant and ohcamel-hostd only; never touches the live
-                    profile, so it may run during market hours. Not with --live.
+  --public-only     caddy, ohcamel-quant, ohcamel-worker and ohcamel-hostd only;
+                    never touches the live profile, so it may run during market
+                    hours. Not with --live.
   --build           build the four images here (one per Dockerfile, with the
                     build stamp) instead of waiting for CI to publish them
   --during-market   allow a live deploy inside 09:25-16:10 America/New_York
@@ -419,7 +422,7 @@ main() {
 	read -r profile_on profile_auto_added refuse_live_deploy < <(
 		resolve_live_profile "$live_flag" "$live_env_readable" "$has_live_container" "$public_only"
 	)
-	[ "$public_only" = 1 ] && echo "deploy: --public-only -- caddy, ohcamel-quant and ohcamel-hostd only; the live profile is not touched"
+	[ "$public_only" = 1 ] && echo "deploy: --public-only -- caddy, ohcamel-quant, ohcamel-worker and ohcamel-hostd only; the live profile is not touched"
 	if [ "$profile_auto_added" = 1 ]; then
 		local why="$live_env exists"
 		[ "$live_env_readable" = 1 ] || why="an ohcamel-live container already exists"

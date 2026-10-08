@@ -31,7 +31,7 @@
 #   P. after a good deploy, the last three logged shas' tags are kept and
 #      every other tag of the four images is removed.
 #   H. --help documents --sha, --live, --build, --during-market, --dry-run
-#      and --public-only, and exits 0.
+#      and --public-only (which also starts ohcamel-worker), and exits 0.
 #
 # Exits non-zero if any case fails.
 
@@ -292,6 +292,7 @@ if [ "$(rc G2)" = 0 ]; then ok "G3 --during-market overrides it"; else no "G3 --
 fresh G3 >/dev/null
 DEPLOY_NOW=2026-09-21T15:00Z run G3 --public-only --sha deadbeef --dry-run
 if [ "$(rc G3)" = 0 ]; then ok "G4 --public-only is never refused"; else no "G4 --public-only is never refused" "rc $(rc G3)"; fi
+if grep -q -- "--public-only -- caddy, ohcamel-quant, ohcamel-worker and ohcamel-hostd only" "$scratch/out-G3"; then ok "G4b --public-only names every service it starts, ohcamel-worker included"; else no "G4b --public-only names every service it starts, ohcamel-worker included" "$(grep -- '--public-only --' "$scratch/out-G3")"; fi
 fresh G4 >/dev/null
 DEPLOY_NOW=1790002800 run G4 --live --sha deadbeef --dry-run
 if [ "$(rc G4)" = 1 ]; then ok "G5 DEPLOY_NOW still takes a Unix epoch (2026-09-21 15:00Z)"; else no "G5 DEPLOY_NOW still takes a Unix epoch" "rc $(rc G4)"; fi
@@ -335,6 +336,7 @@ for flag in --sha --live --build --during-market --dry-run --public-only; do
 done
 if grep -q -- "deploy/deploy.sh --sha <sha> --live" "$scratch/out-H"; then ok "H3 --help gives the public+live command"; else no "H3 --help gives the public+live command" "absent"; fi
 if [ ! -s "$scratch/log-H" ]; then ok "H4 --help runs nothing"; else no "H4 --help runs nothing" "$(head -3 "$scratch/log-H" | tr '\n' ' ')"; fi
+if grep -A1 -- "^  --public-only" "$scratch/out-H" | tr '\n' ' ' | grep -q "ohcamel-worker"; then ok "H6 --help says --public-only also starts ohcamel-worker"; else no "H6 --help says --public-only also starts ohcamel-worker" "$(grep -A1 -- '^  --public-only' "$scratch/out-H" | tr '\n' ' ')"; fi
 fresh X >/dev/null
 run X --nonsense
 if [ "$(rc X)" = 2 ]; then ok "H5 an unknown flag is exit 2"; else no "H5 an unknown flag is exit 2" "rc $(rc X)"; fi

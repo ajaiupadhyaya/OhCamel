@@ -539,7 +539,7 @@ reference; the two commands a release uses are:
 
 ```
 deploy/deploy.sh --sha <sha> --live          # the public and live hosts together
-deploy/deploy.sh --sha <sha> --public-only   # caddy, ohcamel-quant and ohcamel-hostd only; any time of day
+deploy/deploy.sh --sha <sha> --public-only   # caddy, ohcamel-quant, ohcamel-worker and ohcamel-hostd only; any time of day
 ```
 
 `--sha` defaults to `origin/main`, resolved after `git fetch origin`. A run, in
