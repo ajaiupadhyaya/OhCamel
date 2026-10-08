@@ -48,13 +48,25 @@ def test_three_regimes_ordered(spy):
 
 def test_resample_and_validation(spy):
     w = rg.resample_returns(spy, "W")
-    assert (w.index.dayofweek == 4).all()
+    assert (w.index[:-1].dayofweek == 4).all()
     m = rg.resample_returns(spy, "M")
     assert 110 < len(m) < 125
     with pytest.raises(ValueError):
         rg.fit_markov_switching(w, k=4)
     with pytest.raises(ValueError):
         rg.fit_markov_switching(w.iloc[:50])
+
+
+def test_the_last_bar_is_never_dated_after_the_data():
+    """A week (or month) still open is stamped with its last observation, not the coming Friday."""
+    px = pd.Series(range(1, 9), index=pd.bdate_range("2026-05-19", periods=8), dtype=float)  # ends Thu 28 May
+    w = rg.resample_prices(px, "W")
+    assert w.index[-1] == pd.Timestamp("2026-05-28") and w.iloc[-1] == 8.0
+    assert w.index[0] == pd.Timestamp("2026-05-22")
+    m = rg.resample_prices(px, "M")
+    assert list(m.index) == [pd.Timestamp("2026-05-28")]
+    full = rg.resample_prices(px.loc[:"2026-05-22"], "W")
+    assert full.index[-1] == pd.Timestamp("2026-05-22")
 
 
 def test_percentile_rank_and_panel(market, spy):

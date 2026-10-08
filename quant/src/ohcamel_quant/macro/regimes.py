@@ -57,12 +57,16 @@ __all__ = ["resample_returns", "MSResult", "fit_markov_switching", "percentile_r
 
 def resample_prices(prices: pd.Series, freq: Literal["D", "W", "M"]) -> pd.Series:
     """Prices sampled at daily, weekly (Friday close) or month-end frequency
-    (last observation of each period, stamped with the period end)."""
+    (last observation of each period, stamped with the period end -- except a
+    period still open at the end of the data, which is stamped with its last
+    observation so no bar is dated after the data)."""
     p = prices.dropna()
-    if freq == "W":
-        p = p.resample("W-FRI").last().dropna()
-    elif freq == "M":
-        p = p.resample("ME").last().dropna()
+    if p.empty or freq == "D":
+        return p
+    last = p.index[-1]
+    p = p.resample("W-FRI" if freq == "W" else "ME").last().dropna()
+    if len(p) and p.index[-1] > last:
+        p.index = p.index[:-1].append(pd.DatetimeIndex([last]))
     return p
 
 
