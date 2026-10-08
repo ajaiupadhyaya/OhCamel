@@ -95,8 +95,9 @@ val verify : ?absent_in_source:string list -> string -> (report, string) Result.
     file that could not be read at all -- missing, not a database, truncated past the
     point SQLite will answer a query. A file that answers but answers badly is [Ok] with a
     non-empty [problems], because the operator wants the counts printed beside the
-    trouble. Either way [journal-verify] exits non-zero. *)
-(** [absent_in_source] (the backup path only): tables the copy's source did not have
+    trouble. Either way [journal-verify] exits non-zero.
+
+    [absent_in_source] (the backup path only): tables the copy's source did not have
     either. They are reported as [absent_in_source], not as problems, because the journal
     is additive; any other missing table is still a problem. *)
 
