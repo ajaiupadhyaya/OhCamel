@@ -5,7 +5,7 @@
  *   JOBS     GET /api/jobs           running jobs with progress (live from GET /api/jobs/events,
  *                                    SSE), the last 24 h with cpu_seconds and peak RSS, each
  *                                    artifact linked to the page that reads it
- *   SCHEDULE GET /api/jobs/schedules not served by this build: the cell says so
+ *   SCHEDULE GET /api/jobs/schedules schedules.yaml with next run (a 404 from an older build: NOT SERVED)
  *   KERNELS  GET /api/ops/kernels    Rust vs Python benchmark table (docs/perf/kernels.json)
  * 404 → INSUFFICIENT DATA · NOT YET RUN, 503 → · DATA UNAVAILABLE; never a stand-in number.
  */

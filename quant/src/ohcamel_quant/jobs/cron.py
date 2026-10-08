@@ -90,3 +90,14 @@ def latest_due(c: Cron, after: datetime, now: datetime) -> datetime | None:
             return due[-1]
         d -= timedelta(days=1)
     return None
+
+
+def next_due(c: Cron, now: datetime, horizon_days: int = 400) -> datetime | None:
+    """The first fire time t > now within ``horizon_days`` (a monthly entry can be weeks away), or None."""
+    d = now.astimezone(NY).date()
+    for _ in range(horizon_days + 1):
+        due = [t for t in fire_times(c, d) if t > now]
+        if due:
+            return due[0]
+        d += timedelta(days=1)
+    return None

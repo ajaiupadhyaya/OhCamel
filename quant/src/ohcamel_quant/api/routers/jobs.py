@@ -8,6 +8,8 @@
   ``DELETE /api/jobs/{id}`` (only the client that submitted an API job may
   cancel it; scheduled jobs cannot be cancelled here).
 * ``GET /api/jobs/{id}/result`` -- the payload of a finished ``api.*`` job.
+* ``GET /api/jobs/schedules`` -- schedules.yaml with each entry's next run
+  (compute plan D12's schedule table).
 * ``GET /api/jobs/events`` -- SSE, one ``event: job`` per state or progress
   change, ``id:`` = the job_events sequence (``Last-Event-ID`` resumes).
 
@@ -29,7 +31,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ...data.base import Provenance
-from ...jobs.db import connect, utcnow
+from ...jobs.cron import next_due
+from ...jobs.db import connect, iso, utcnow
 from ...jobs.kinds import UnknownKind, get_kind, validate_params
 from ...jobs.paths import jobs_db_path
 from ...jobs.queue import (
@@ -145,6 +148,19 @@ def list_(db: JobsDb, kind: str | None = None, state: str | None = None,
           limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
     with closing(connect(db)) as conn:
         return {"jobs": [_view(conn, j) for j in list_jobs(conn, kind=kind, state=state, limit=limit)], **_meta()}
+
+
+@router.get("/schedules")
+def schedules() -> dict[str, Any]:
+    from ...jobs.schedules import load_schedules
+
+    now = utcnow()
+    rows = []
+    for e in load_schedules().entries:
+        nxt = next_due(e.parsed, now)
+        rows.append({"name": e.name, "kind": e.kind, "cron": e.cron, "priority": e.priority,
+                     "mem_class": e.mem_class, "heavy": e.heavy, "next_run": iso(nxt) if nxt else None})
+    return {"schedules": rows, "timezone": "America/New_York", **_meta()}
 
 
 @router.get("/events")

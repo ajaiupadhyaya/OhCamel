@@ -10,6 +10,7 @@
  * than STALE_SAMPLES sample intervals, the bank says "stale" and marks the bars so.
  * compute.test.ts runs it without a DOM.
  */
+import { fixedNum } from "../../lib/format";
 
 export interface HostLatest {
   t_ms?: number;
@@ -85,7 +86,7 @@ const finite = (v: unknown): v is number => typeof v === "number" && Number.isFi
 
 function pctText(v: number): string {
   const p = v * 100;
-  return `${Math.abs(p) < 10 ? p.toFixed(1) : p.toFixed(0)}%`;
+  return `${Math.abs(p) < 10 ? fixedNum(p, 1) : fixedNum(p, 0)}%`;
 }
 
 function bar(key: ComputeBar["key"], label: ComputeBar["label"], value: number | null, stale: boolean): ComputeBar {

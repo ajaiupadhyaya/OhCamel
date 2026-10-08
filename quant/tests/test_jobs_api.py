@@ -139,3 +139,22 @@ def test_the_default_queue_is_never_the_real_data_dir():
 
     assert get_jobs_db_path() != jobs_db_path()
     assert Path(get_settings().data_dir).resolve() not in get_jobs_db_path().resolve().parents
+
+
+def test_schedules_lists_every_entry_with_its_next_run(api):
+    from ohcamel_quant.jobs.schedules import load_schedules
+
+    client, _ = api
+    r = client.get("/api/jobs/schedules")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    rows = body["schedules"]
+    want = load_schedules()
+    assert [x["name"] for x in rows] == [e.name for e in want.entries]
+    first, entry = rows[0], want.entries[0]
+    assert first["cron"] == entry.cron and first["kind"] == entry.kind
+    assert first["heavy"] == entry.heavy and first["mem_class"] == entry.mem_class
+    assert first["next_run"] is None or first["next_run"].endswith("Z")
+    assert all(x["next_run"] for x in rows)  # every shipped entry fires again
+    assert body["timezone"] == "America/New_York"
+    assert body["provenance"][0]["source"] == "ohcamel-jobs"

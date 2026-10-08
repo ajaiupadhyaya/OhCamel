@@ -66,3 +66,27 @@ def test_latest_due_is_the_newest_in_the_half_open_window():
     assert latest_due(hourly, u(2026, 10, 5, 16, 59), u(2026, 10, 5, 17, 0)) == u(2026, 10, 5, 17, 0)
     weekly = parse_cron("0 6 * * 1")  # Mondays 06:00 New York
     assert latest_due(weekly, u(2026, 9, 30), u(2026, 10, 7)) == u(2026, 10, 5, 10, 0)
+
+
+def test_next_due_is_the_first_fire_strictly_after_now():
+    from ohcamel_quant.jobs.cron import next_due
+
+    c = parse_cron("0 23 * * *")  # 23:00 New York nightly
+    # 2026-10-07 21:00 EDT = 2026-10-08 01:00 UTC; next is 23:00 EDT = 03:00 UTC on the 8th
+    assert next_due(c, u(2026, 10, 8, 1, 0)) == u(2026, 10, 8, 3, 0)
+    # exactly on a fire time: the next one, not this one
+    assert next_due(c, u(2026, 10, 8, 3, 0)) == u(2026, 10, 9, 3, 0)
+
+
+def test_next_due_reaches_a_monthly_entry_weeks_away():
+    from ohcamel_quant.jobs.cron import next_due
+
+    c = parse_cron("30 22 1 * *")  # monthly on the 1st, 22:30 New York
+    # from 2026-10-02 the next is 2026-11-01 22:30 EST (after the fall-back) = 2026-11-02 03:30 UTC
+    assert next_due(c, u(2026, 10, 2, 12, 0)) == u(2026, 11, 2, 3, 30)
+
+
+def test_next_due_none_for_an_impossible_date():
+    from ohcamel_quant.jobs.cron import next_due
+
+    assert next_due(parse_cron("0 0 31 2 *"), u(2026, 10, 8, 0, 0)) is None

@@ -1,3 +1,4 @@
+import { fixedNum } from "../../lib/format";
 import { parseTs, type TapeColumns } from "./model";
 const valid = (x: number | null | undefined): x is number => x != null && Number.isFinite(x);
 const MAX_GAP_MS = 180_000;
@@ -19,7 +20,7 @@ export function scanner(tape: TapeColumns, width = 1000) {
     values.forEach((v,i) => {
       if (!valid(v) || ts[i] == null) { previous=null; return; }
       const connect=previous!=null && ts[i]-previous<=MAX_GAP_MS && ts[i]>=previous;
-      d+=`${connect ? "L" : "M"}${x(ts[i]).toFixed(2)},${y(v).toFixed(2)} `;
+      d+=`${connect ? "L" : "M"}${fixedNum(x(ts[i]), 2)},${fixedNum(y(v), 2)} `;
       previous=ts[i];
     });
     return d;

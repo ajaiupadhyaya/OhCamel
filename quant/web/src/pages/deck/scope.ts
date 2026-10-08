@@ -10,6 +10,7 @@
  * `layout()` is arithmetic and touches no DOM, so scope.test.ts runs it under Vitest. The
  * drawing is TargetingComputer.tsx.
  */
+import { fixedNum } from "../../lib/format";
 
 /** A limit evaluation in the OCaml engine's wire shape (the deck's readings use it too). */
 export interface ScopeLimit {
@@ -88,7 +89,7 @@ const pctOf = (l: ScopeLimit) => (finite(l.utilisation) ? `${Math.round(l.utilis
 // reads as no breach at all, so under ten percent it keeps a decimal.
 function overPct(u: number): string {
   const o = (u - 1) * 100;
-  return `${o < 10 ? o.toFixed(1) : String(Math.round(o))}%`;
+  return `${o < 10 ? fixedNum(o, 1) : String(Math.round(o))}%`;
 }
 // Sorting key for "fullest": a non-finite utilisation on a breach is the worst there is
 // (a zero threshold with something against it).
