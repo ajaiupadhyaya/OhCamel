@@ -42,3 +42,14 @@ describe("check-style catches rounded SVG corners", () => {
 describe("check-style rx/ry: no false positives", () => {
   it("a ternary on a variable named ry", () => expect(run("a.tsx", "const y = ok(ry) ? +ry : 10;").status).toBe(0));
 });
+
+describe("check-style holds spec 8.2 (retired page-title class, paper grain)", () => {
+  for (const form of ['<h1 className="oc-page-title">x</h1>', ".oc-page-titles { display: flex; }", "body::before { content: ''; }"]) {
+    it(form, () => {
+      const r = run(form.startsWith("<") ? "a.tsx" : "a.css", form);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(/oc-page-title|body::before/);
+    });
+  }
+  it("passes the Sheet title class", () => expect(run("a.tsx", '<h1 className="oc-sheet-title">x</h1>').status).toBe(0));
+});

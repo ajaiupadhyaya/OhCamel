@@ -22,7 +22,7 @@
   padding-bottom: var(--sp-2);
   border-bottom: var(--rule-heavy);
 }
-.oc-page-titles {
+.oc-sheet-titles {
   min-width: 0;
 }
 .oc-page-code {
@@ -49,7 +49,7 @@
 .oc-page-eyebrow a {
   color: inherit;
 }
-.oc-page-title {
+.oc-sheet-title {
   font-family: var(--font-display);
   font-weight: 800;
   font-stretch: 70%;
@@ -108,7 +108,7 @@
   .oc-page {
     padding: var(--sp-4) var(--sp-4) var(--sp-10);
   }
-  .oc-page-title {
+  .oc-sheet-title {
     font-size: var(--fs-2xl);
   }
   .oc-page-actions {

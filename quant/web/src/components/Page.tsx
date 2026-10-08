@@ -27,14 +27,14 @@ export function Page({ title, eyebrow, actions, children, meta, docTitle }: { ti
   return (
     <div className="oc-page">
       <header className="oc-page-head">
-        <div className="oc-page-titles">
+        <div className="oc-sheet-titles">
           {(code || eyebrow) && (
             <div className="oc-page-code">
               {code && <span className="oc-page-code-fn">{code}</span>}
               {eyebrow && <span className="oc-page-eyebrow">{eyebrow}</span>}
             </div>
           )}
-          <h1 className="oc-page-title">{title}</h1>
+          <h1 className="oc-sheet-title">{title}</h1>
         </div>
         {actions && <div className="oc-page-actions">{actions}</div>}
       </header>

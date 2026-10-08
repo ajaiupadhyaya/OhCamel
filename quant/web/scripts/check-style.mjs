@@ -2,7 +2,8 @@
 // Scans src/**/*.{css,tsx,ts} (except the Flight Deck files and tests) and fails, naming
 // file:line, on: a non-zero border-radius or SVG rx/ry, a box-shadow other than none, any gradient()
 // (CSS, SVG <linear/radialGradient>, canvas create*Gradient, Plotly fillgradient),
-// the removed faces Fraunces and Inter Variable, and the green tokens --gain-soft and
+// the removed faces Fraunces and Inter Variable, the retired .oc-page-title class and body::before
+// overlay (spec 8.2), and the green tokens --gain-soft and
 // --crt-green. Green is allowed only inside src/pages/deck/** and src/pages/Deck.tsx.
 // Usage: node scripts/check-style.mjs [root]   (root defaults to ./src)
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -36,6 +37,8 @@ const RULES = [
   // properties, unless the value is a literal zero. A non-literal value cannot be proven zero.
   { re: /(?<![\w&?.$-])(rx|ry)(?:\s*=\s*\{?\s*["'`]?\s*|:\s*)([\d.]+[a-z%]*|[A-Za-z_$][\w.$]*)/g, bad: (m) => !/^0*\.?0*(px|%|em|rem)?$/.test(m[2]) || !/0/.test(m[2]), why: (m) => `${m[1]} ${m[2]} (no rounded corners; radius is 0)` },
   { re: /Fraunces|Inter Variable/g, bad: () => true, why: (m) => `${m[0]} (faces are Archivo, IBM Plex Sans, IBM Plex Mono)` },
+  // Spec 8.2: the pre-Paper-Tape title class and the paper-grain overlay are gone.
+  { re: /oc-page-title|body::before/g, bad: () => true, why: (m) => `${m[0]} (retired by Paper Tape; the Sheet title is .oc-sheet-title)` },
   { re: /--gain-soft|--crt-green/g, bad: () => true, why: (m) => `${m[0]} (no green outside the Deck)` },
 ];
 
