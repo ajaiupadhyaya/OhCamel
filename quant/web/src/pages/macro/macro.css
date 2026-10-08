@@ -368,3 +368,13 @@
   color: var(--ink);
   letter-spacing: 0.02em;
 }
+
+/* Dashboard tables: the name absorbs what is left and ellipsizes, so a long series id or a wide
+   change column never pushes AS OF out of the cell (POLICY · RATES at 1440). */
+.oc-table td.mc-name {
+  max-width: 0;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -103,6 +103,7 @@ function Indicators({ rows, onExplore }: { rows: DashboardRow[]; onExplore: (id:
       key: "name",
       label: "Name",
       hideBelow: 600,
+      className: "mc-name",
       render: (r) => (
         <span className={ok(r) ? "" : "mc-dim"} title={r.error ?? `${r.name} · ${FREQ[r.frequency] ?? r.frequency} · ${TRANSFORM_LABEL[r.transform] ?? r.transform}`}>
           {ok(r) ? r.name : "UNAVAILABLE"}
