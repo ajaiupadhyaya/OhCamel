@@ -3,13 +3,10 @@
 //   - fails if the entry chunk is over 250 KB gzip (zlib.gzipSync of the emitted file);
 //   - fails if Plotly is reachable from the entry through static imports (it must only be
 //     fetched by loadPlotly()'s dynamic import());
-//   - strict (Ship plan P2-5, gate GP2): fails if any chunk other than the surface view
-//     (src/pages/volatility/SurfaceView.tsx, the 3-D implied-vol surface) imports Plotly. The one
-//     temporary exception is src/components/plotlyLegacy.ts (the raw <Chart>'s loader), allowed
-//     only while LEGACY_PLOTLY below still names a page that renders a raw <Chart>; P2-6 and P2-7
-//     empty that list, after which that chunk importing Plotly fails too;
-//   - fails if a source file outside LEGACY_PLOTLY renders a raw <Chart> or imports Plotly,
-//     other than the surface view (so the list can only shrink).
+//   - strict (Ship plan gate GP2): fails if any chunk other than the surface view
+//     (src/pages/volatility/SurfaceView.tsx, the 3-D implied-vol surface) imports Plotly. P2-7
+//     migrated the last raw Plotly <Chart> (the Engine page) and deleted it with its loader;
+//   - fails if any other source file renders a raw <Chart>, imports Plotly or calls loadPlotly.
 // Usage: node scripts/check-bundle.mjs [distDir] [srcDir]   (defaults ./dist and ./src)
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
@@ -18,12 +15,6 @@ import { gzipSync } from "node:zlib";
 const dist = process.argv[2] ?? "dist";
 const src = process.argv[3] ?? "src";
 const SURFACE = "src/pages/volatility/SurfaceView.tsx";
-// Pages that still render the raw Plotly <Chart>; each P2 task deletes its own (P2-6: macro,
-// company, ticker; P2-7: engine). Empty = Plotly is the surface view's alone.
-const LEGACY_PLOTLY = [
-  "src/pages/engine/Live.tsx",
-];
-const LEGACY_LOADER = "src/components/plotlyLegacy.ts";
 const LIMIT = 250 * 1000;
 const manifest = JSON.parse(readFileSync(join(dist, ".vite", "manifest.json"), "utf8"));
 const gz = (file) => gzipSync(readFileSync(join(dist, file))).length;
@@ -54,18 +45,17 @@ const isPlotly = (k, c) => c.name === "plotly" || /plotly\.js-dist-min/.test(k) 
 const plotlyKeys = Object.entries(manifest).filter(([k, c]) => isPlotly(k, c)).map(([k]) => k);
 for (const k of plotlyKeys) if (seen.has(k)) failures.push(`Plotly (${manifest[k].file}) is statically reachable from the entry`);
 
-// Strict: the surface view, and the legacy raw-Chart chunk while a legacy page remains.
+// Strict: the surface view alone.
 for (const [k, c] of Object.entries(manifest)) {
   const imports = [...(c.imports ?? []), ...(c.dynamicImports ?? [])];
   if (!imports.some((i) => plotlyKeys.includes(i)) || isPlotly(k, c)) continue;
   if (c.src === SURFACE) continue;
-  if (c.src === LEGACY_LOADER && LEGACY_PLOTLY.length) continue;
   failures.push(`${c.file}${c.src ? ` (${c.src})` : ` (${k})`} imports Plotly; only the surface view (${SURFACE}) may`);
 }
 if (!Object.values(manifest).some((c) => c.src === SURFACE && [...(c.imports ?? []), ...(c.dynamicImports ?? [])].some((i) => plotlyKeys.includes(i))))
   failures.push(`the surface view (${SURFACE}) is not its own chunk importing Plotly: load it with React.lazy`);
 
-// Source: no raw <Chart> and no Plotly import outside the legacy list and the surface view.
+// Source: no raw <Chart> and no Plotly import outside the surface view.
 function* walk(dir) {
   for (const name of readdirSync(dir)) {
     const full = join(dir, name);
@@ -75,23 +65,12 @@ function* walk(dir) {
 }
 for (const file of walk(src)) {
   const rel = ["src", ...relative(src, file).split(sep)].join("/");
-  if (rel === SURFACE || rel === LEGACY_LOADER || rel === "src/components/Chart.tsx" || LEGACY_PLOTLY.includes(rel)) continue;
+  if (rel === SURFACE) continue;
   const text = readFileSync(file, "utf8");
   if (/<Chart[\s>]/.test(text)) failures.push(`${rel} renders a raw Plotly <Chart>; use the uPlot wrappers in src/charts/`);
   // the runtime package (plotly.js-dist-min); "plotly.js" is its types package, type-only
   if (/["']plotly\.js-dist-min["']/.test(text)) failures.push(`${rel} imports Plotly; only ${SURFACE} may`);
-  if (/\bloadPlotly\b/.test(text)) failures.push(`${rel} calls loadPlotly; only the legacy raw <Chart> may`);
-}
-
-for (const rel of LEGACY_PLOTLY) {
-  let text = "";
-  try {
-    text = readFileSync(join(src, rel.replace(/^src\//, "")), "utf8");
-  } catch {
-    failures.push(`LEGACY_PLOTLY names ${rel}, which no longer exists: delete the entry`);
-    continue;
-  }
-  if (!/<Chart[\s>]/.test(text)) failures.push(`LEGACY_PLOTLY names ${rel}, which no longer renders a raw <Chart>: delete the entry`);
+  if (/\bloadPlotly\b/.test(text)) failures.push(`${rel} calls loadPlotly; only ${SURFACE} may`);
 }
 
 const closure = [...seen].reduce((a, k) => a + gz(manifest[k].file), 0);

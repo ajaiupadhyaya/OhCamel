@@ -19,9 +19,8 @@ export default defineConfig({
     chunkSizeWarningLimit: 5000, // plotly is ~4.5 MB raw; it is lazily loaded.
     rollupOptions: {
       output: {
-        // Plotly is only ever reached through a dynamic import(): from the 3-D surface view
-        // (src/pages/volatility/SurfaceView.tsx, lazy) and, until Lane P2 migrates the last raw
-        // <Chart>, from src/components/plotlyLegacy.ts (scripts/check-bundle.mjs names both).
+        // Plotly is only ever reached through a dynamic import() from the 3-D surface view
+        // (src/pages/volatility/SurfaceView.tsx, lazy); scripts/check-bundle.mjs enforces it.
         manualChunks(id: string) {
           if (id.includes("plotly.js-dist-min")) return "plotly";
           if (id.includes("katex")) return "katex";

@@ -33,7 +33,6 @@ const NO_INLINE_STYLE = [
 const LEGACY_INLINE_STYLE = [
   "src/App.tsx",
   "src/charts/UPlot.tsx",
-  "src/components/Chart.tsx",
   "src/components/Controls.tsx",
   "src/components/DataTable.tsx",
   "src/components/Icon.tsx",
@@ -43,7 +42,6 @@ const LEGACY_INLINE_STYLE = [
   "src/components/StatTile.tsx",
   "src/components/States.tsx",
   "src/components/TickerChips.tsx",
-  "src/pages/engine/Live.tsx",
   "src/pages/research/BacktestTab.tsx",
   "src/pages/research/Setup.tsx",
   "src/pages/research/SweepTab.tsx",
