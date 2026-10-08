@@ -32,13 +32,15 @@ program.md), returned unchanged with ``provenance`` and ``notes`` added::
 interval; a group's ``cpu`` is in cores; memory is in bytes. History holds up
 to 720 samples (an hour at 5 s).
 
-``GET /api/ops`` -- the Quant app's operations summary: the job queue (Lane B,
-B6).
+``GET /api/ops`` -- the Quant app's operations summary: the image build
+(``build.git_sha`` from ``OHCAMEL_GIT_SHA``, read by the site footer) and the job
+queue (Lane B, B6).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import time
 from contextlib import closing
 from pathlib import Path
@@ -48,7 +50,7 @@ import httpx
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
-from ... import kernels
+from ... import __version__, kernels
 from ...config import REPO_ROOT, get_settings
 from ...data.base import Provenance
 from ...kernels import bench as kernel_bench
@@ -218,16 +220,25 @@ def kernels_table(path: Annotated[Path, Depends(get_kernels_table_path)]) -> Any
     }
 
 
+def build_info() -> dict[str, str | None]:
+    """The running image's build: OHCAMEL_GIT_SHA (quant/Dockerfile stamps it from the build arg), None when
+    the process was not started from a stamped image (the Dockerfile's ``unknown`` default included)."""
+    sha = (os.environ.get("OHCAMEL_GIT_SHA") or "").strip()
+    return {"git_sha": sha if sha and sha != "unknown" else None, "version": __version__}
+
+
 @router.get("")
 def ops_index(db: JobsDb) -> dict[str, Any]:
-    """The Quant app's operations summary: the job queue's counts (compute plan B6)."""
+    """The Quant app's operations summary: the image build (the site footer's BUILD) and the job queue's
+    counts (compute plan B6)."""
     from ...jobs.db import connect, utcnow
     from ...jobs.summary import jobs_summary
 
     provenance = [Provenance.now("ohcamel-jobs", store="jobs.sqlite").to_dict()]
+    build = build_info()
     if not Path(db).exists():
-        return {"jobs": None, "provenance": provenance,
+        return {"build": build, "jobs": None, "provenance": provenance,
                 "notes": ["No job has been queued on this server yet (jobs.sqlite does not exist)."]}
     with closing(connect(db)) as conn:
-        return {"jobs": jobs_summary(conn, utcnow()), "provenance": provenance,
+        return {"build": build, "jobs": jobs_summary(conn, utcnow()), "provenance": provenance,
                 "notes": ["done_24h, failed_24h and cpu_seconds_24h count jobs that finished in the last 24 hours."]}
