@@ -56,3 +56,15 @@ import Caddyfile.snippets
 		import ohcamel_stream_proxy
 	}
 }
+
+# strata.ajaiupadhyaya.com -- the owner's research archive (a separate compose
+# project, "strata", whose strata-archive container joins this network). Added
+# on the droplet 2026-09-24, committed 2026-10-08 so a rebuild keeps it.
+strata.ajaiupadhyaya.com {
+	encode zstd gzip
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+	reverse_proxy strata-archive:8080
+}
