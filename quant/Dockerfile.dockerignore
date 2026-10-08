@@ -21,6 +21,8 @@
 # workspace member cargo needs to see), and the benchmark table the API serves.
 !native/
 !docs/perf/kernels.json
+# EXP-Q01/Q02's frozen configs (Lane M, M6/M7: COPY research/experiments/ in the runtime stage)
+!research/experiments/
 
 # Never, at any depth, even inside an allowed tree.
 **/.env
