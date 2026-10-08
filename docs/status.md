@@ -895,6 +895,7 @@ the prefix `OHCAMEL_QUANT_`, plus two plain names):
 | `OHCAMEL_QUANT_ENGINE_URL` | unset; compose passes it through, empty by default | the read-only bridge to the engine |
 | `OHCAMEL_QUANT_HOSTD_URL` | `http://ohcamel-hostd:9100` in compose | host telemetry for `/api/ops/host` |
 | `OHCAMEL_QUANT_RECORDER`, `_RECORDER_INTERVAL_S`, `_RECORDER_KEEP_SESSIONS` | on, 60, 30 | the Flight Deck's recorder |
+| `OHCAMEL_QUANT_RATE_LIMIT_PER_MIN`, `_RATE_LIMIT_BURST` | 30, 30 | per-client token bucket on the expensive synchronous `POST /api/*` (429 + `Retry-After`; 0 turns it off; `/api/jobs`, the deck poll and the option/bond calculators exempt) |
 | `OHCAMEL_QUANT_FIXTURES_DIR` | `fixtures/` | committed real-data fixtures |
 | `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` | unset | Alpaca, first price source; the image's entrypoint fills them from `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` |
 | `FRED_API_KEY` | unset | optional; the keyless `fredgraph.csv` is used without it |

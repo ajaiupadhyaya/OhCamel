@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     recorder: bool = True
     recorder_interval_s: int = Field(default=60, ge=10)
     recorder_keep_sessions: int = Field(default=30, ge=1)
+    # Harden H4: a per-client token bucket on the expensive synchronous POSTs
+    # (api/ratelimit.py): `burst` requests at once, refilled at `per_min` a
+    # minute. OHCAMEL_QUANT_RATE_LIMIT_PER_MIN=0 turns it off.
+    rate_limit_per_min: float = Field(default=30.0, ge=0)
+    rate_limit_burst: int = Field(default=30, ge=1)
     # Directory of committed real-data fixtures (used offline and in tests).
     fixtures_dir: Path = Field(default=REPO_ROOT / "fixtures")
 

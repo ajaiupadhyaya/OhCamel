@@ -26,6 +26,7 @@ from .. import __version__
 from ..config import get_settings
 from ..data.base import DataUnavailable
 from . import routers as routers_pkg
+from .ratelimit import RateLimit
 
 log = logging.getLogger("ohcamel_quant")
 
@@ -59,6 +60,8 @@ def create_app() -> FastAPI:
         openapi_url="/api/openapi.json",
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024)
+    s = get_settings()
+    app.add_middleware(RateLimit, per_min=s.rate_limit_per_min, burst=s.rate_limit_burst)  # outermost: before gzip
 
     @app.exception_handler(DataUnavailable)
     async def _unavailable(_: Request, exc: DataUnavailable) -> JSONResponse:

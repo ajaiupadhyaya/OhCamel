@@ -8,6 +8,8 @@ import pytest
 
 if not os.environ.get("OHCAMEL_QUANT_LIVE_TESTS"):
     os.environ["OHCAMEL_QUANT_OFFLINE"] = "1"
+# The shared session `client` posts far more than any visitor; tests/test_api_ratelimit.py tests the limit.
+os.environ.setdefault("OHCAMEL_QUANT_RATE_LIMIT_PER_MIN", "0")
 
 from ohcamel_quant.config import get_settings  # noqa: E402
 from ohcamel_quant.data.market import MarketData, get_market  # noqa: E402
