@@ -153,3 +153,15 @@ def test_window_keys_are_label_entry_sessions():
     # Every selection label's last return day (the session before its exit) is in 2021.
     assert (sessions[samples.loc[in_sel, "t1"].to_numpy() - 1] <= sel_end).all()
     assert k[k >= hold].index.min() == pd.Timestamp("2021-12-31")
+
+
+def test_freeze_excludes_symbols_that_are_not_tradable_funds():
+    """An index (^VIX) or a crypto pair (BTC-USD) is not an ETF the quintile portfolio can hold, however
+    complete its bars. Found 2026-10-08 in the production freeze's dry run, which listed ^VIX."""
+    spy = pd.bdate_range("2007-01-02", "2026-09-30")
+    full = ("yahoo", "2007-01-02")
+    cov = {"^VIX": _cov(spy, full), "BTC-USD": _cov(spy, full), "SPY": _cov(spy, full)}
+    members, excluded = freeze_universe(cov, spy, pd.Timestamp("2008-01-02"), pd.Timestamp("2026-09-30"))
+    assert members == ["SPY"]
+    assert excluded["^VIX"] == "not a tradable fund (index)"
+    assert excluded["BTC-USD"] == "not a tradable fund (crypto pair)"

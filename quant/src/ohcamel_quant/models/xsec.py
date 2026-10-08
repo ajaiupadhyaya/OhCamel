@@ -367,6 +367,16 @@ DIVIDEND_ADJUSTED_SOURCES = frozenset({"alpaca", "yahoo"})
 UNADJUSTED_SOURCES = frozenset({"stooq"})
 
 
+def _not_a_fund(ticker: str) -> str | None:
+    """Symbols in universes.json that the quintile portfolio cannot hold: indexes (``^VIX``) and crypto
+    pairs (``BTC-USD``). The pre-registration's universe is liquid ETFs."""
+    if ticker.startswith("^"):
+        return "index"
+    if ticker.endswith("-USD"):
+        return "crypto pair"
+    return None
+
+
 def freeze_universe(coverage: dict[str, dict[str, Any]], spy_dates: pd.DatetimeIndex, window_start: pd.Timestamp,
                     freeze_date: pd.Timestamp, adjusted_from: pd.Timestamp | None = None
                     ) -> tuple[list[str], dict[str, str]]:
@@ -377,6 +387,10 @@ def freeze_universe(coverage: dict[str, dict[str, Any]], spy_dates: pd.DatetimeI
     since = window_start if adjusted_from is None else adjusted_from
     members, excluded = [], {}
     for t, c in sorted(coverage.items()):
+        kind = _not_a_fund(t)
+        if kind:
+            excluded[t] = f"not a tradable fund ({kind})"
+            continue
         d = pd.DatetimeIndex(c["dates"])
         if d.empty:
             excluded[t] = "no bars"
