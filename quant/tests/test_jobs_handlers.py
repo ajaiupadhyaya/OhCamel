@@ -81,8 +81,10 @@ def test_fred_rejects_bad_params(params):
 
 def test_fred_unknown_series_offline_is_unavailable_not_invented():
     ctx, _ = _ctx({"series": "NOSUCHSERIES"})
-    with pytest.raises(DataUnavailable):
+    with pytest.raises(DataUnavailable) as e:
         fred.run({"series": "NOSUCHSERIES"}, ctx)
+    # Names the series as a plain list (the UI reads it as a reason code), not a Python repr.
+    assert str(e.value).endswith("not in fixtures: NOSUCHSERIES") and "[" not in str(e.value)
 
 
 @pytest.mark.skipif(importlib.util.find_spec("duckdb") is not None, reason="duckdb installed (Lane C)")

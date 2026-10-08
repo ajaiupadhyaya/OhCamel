@@ -12,6 +12,7 @@ import { Absent, Note } from "../../design";
 import { KINDS, type Manifest } from "../../lib/artifacts";
 import { fmtDate, fmtNum, fmtPct } from "../../lib/format";
 import { useApiQuery } from "../../lib/query";
+import { reasonCode, reasonNames } from "../../lib/reasons";
 import { CHARTER, GATE_CODE, costRows, failedGates, farmCounts, paramsText, pboHigh, type CostRow } from "./derive";
 import { useTable } from "./products";
 import { Readline } from "./shared";
@@ -112,7 +113,8 @@ export function FarmBoard({ board, cells, regimes, names }: { board: FarmBoardRo
             columns={[
               { key: "strategy", label: "Strategy", render: (c) => <span className="num">{c.strategy.replace(/_/g, " ").toUpperCase()}</span> },
               { key: "universe", label: "Universe", render: (c) => <span className="num">{universeLabel(c.universe)}</span> },
-              { key: "reason", label: "Reason", wrap: true, render: (c) => <span className="num sl-gate-dim">{c.reason ?? "—"}</span> },
+              { key: "reason", label: "Reason", value: (c) => reasonCode(c.reason), render: (c) => <span className="num sl-gate-dim" title={c.reason ?? undefined}>{reasonCode(c.reason)}</span> },
+              { key: "names", label: "Names", numeric: true, value: (c) => reasonNames(c.reason).length, render: (c) => <span className="num" title={reasonNames(c.reason).join(", ") || undefined}>{reasonNames(c.reason).length ? fmtNum(reasonNames(c.reason).length, 0) : "—"}</span> },
             ]}
             rows={skipped}
             rowKey={(c) => c.cell_id}

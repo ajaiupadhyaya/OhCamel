@@ -53,6 +53,7 @@ describe("FarmBoard (P4 leaderboard)", () => {
     expect(html).toContain("DSR · HOLD");
     expect(html).toContain("PAIRS");
     expect(html).toContain("1512 for walk-forward");
+    expect(html).toContain("SHORT HISTORY");
   });
 
   it("shows the selected cell's regimes and its cost ladder", () => {

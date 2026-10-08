@@ -1,10 +1,12 @@
 /**
  * Empty / error / loading / note states, set as labels: NO DATA, DATA UNAVAILABLE,
  * API UNREACHABLE, ERROR. Panel uses these automatically; use them directly when you are
- * not inside a Panel. The server's detail is shown verbatim in mono; nothing is invented.
+ * not inside a Panel. The server's detail is shown in mono: a DATA UNAVAILABLE sentence as its
+ * reason code (lib/reasons) with the sentence verbatim in the title; anything else verbatim.
  */
 import type { ReactNode } from "react";
 import { ApiError, DataUnavailableError, NetworkError } from "../lib/api";
+import { reasonLabel } from "../lib/reasons";
 import type { IconName } from "./Icon";
 
 /** NO DATA, with the reason (`title`). `icon` is accepted for compatibility and not rendered. */
@@ -31,11 +33,13 @@ export function ErrorState({ error, onRetry, compact }: { error: unknown; onRetr
   );
   let title: string;
   let detail: string;
+  let full: string | undefined;
   let cls = "oc-state-error";
   let role: "status" | "alert" = "alert";
   if (error instanceof DataUnavailableError) {
     title = "DATA UNAVAILABLE";
-    detail = error.detail;
+    detail = reasonLabel(error.detail);
+    full = detail !== error.detail ? error.detail : undefined;
     cls = "oc-state-unavailable";
     role = "status";
   } else if (error instanceof NetworkError) {
@@ -50,7 +54,11 @@ export function ErrorState({ error, onRetry, compact }: { error: unknown; onRetr
   return (
     <div className={`oc-state ${cls} ${compact ? "oc-state-compact" : ""}`} role={role}>
       <div className="oc-state-title">{title}</div>
-      {detail && <div className="oc-state-detail num">{detail}</div>}
+      {detail && (
+        <div className="oc-state-detail num" title={full}>
+          {detail}
+        </div>
+      )}
       {retry && <div className="oc-state-action">{retry}</div>}
     </div>
   );

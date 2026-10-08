@@ -236,7 +236,7 @@ class MarketData:
             hit = fixtures.macro(ids)
             missing = [s for s in ids if s not in fixtures.FRED_FIXTURE_COLUMNS]
             if hit is None or missing:
-                raise DataUnavailable(f"offline mode: FRED series not in fixtures: {missing or ids}")
+                raise DataUnavailable(f"offline mode: FRED series not in fixtures: {', '.join(missing or ids)}")
             df, prov = hit
             return Dataset(_window(df, start, end), [prov])
         from . import fred

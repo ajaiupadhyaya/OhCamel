@@ -12,6 +12,7 @@ import { Absent, Note } from "../../design";
 import { KINDS, type Manifest } from "../../lib/artifacts";
 import { fmtDate, fmtNum, fmtPct } from "../../lib/format";
 import { useTable } from "../research/products";
+import { groupReasons, namesShort, type ReasonGroup } from "../../lib/reasons";
 import { dmFor, leagueFor, leagueSummary, modelLabel, nameForecasts, type DmRow, type ForecastRow, type LeagueRow, type LeagueSummaryRow, type SkipRow } from "./derive";
 import { Readline } from "./shared";
 
@@ -75,10 +76,12 @@ export function LeagueReport({ summary, league, dm, forecasts, skipped, dropped,
     { key: "stat", label: "DM t", numeric: true, format: (v) => fmtNum(v, 2, { signed: true }), info: DM_INFO },
     { key: "pvalue", label: "p", numeric: true, render: (r) => <span className={r.pvalue != null && r.pvalue < 0.05 ? "vx-strong" : ""}>{r.pvalue != null && r.pvalue < 0.001 ? "<0.001" : fmtNum(r.pvalue, 3)}</span> },
   ];
-  const skipCols: Column<SkipRow>[] = [
-    { key: "ticker", label: "Name", render: (r) => <span className="num">{r.ticker}</span> },
-    ...(dropped.length ? [{ key: "model", label: "Model", render: (r: SkipRow) => <span className="num">{r.model ? modelLabel(r.model) : "—"}</span> }] : []),
-    { key: "reason", label: "Reason", wrap: true, render: (r) => <span className="num">{r.reason ?? "—"}</span> },
+  const skipGroups = groupReasons([...dropped, ...skipped]);
+  const skipCols: Column<ReasonGroup>[] = [
+    { key: "code", label: "Reason", render: (g) => <span className="num" title={g.sample}>{g.code}</span> },
+    ...(dropped.length ? [{ key: "model", label: "Model", render: (g: ReasonGroup) => <span className="num">{g.model ? modelLabel(g.model) : "—"}</span> }] : []),
+    { key: "n", label: "N", numeric: true, format: (v) => fmtNum(v, 0) },
+    { key: "tickers", label: "Names", value: (g) => g.tickers.join(","), render: (g) => <span className="num">{namesShort(g.tickers)}</span> },
   ];
 
   return (
@@ -130,7 +133,7 @@ export function LeagueReport({ summary, league, dm, forecasts, skipped, dropped,
       {(skipped.length > 0 || dropped.length > 0) && (
         <>
           <h4 className="vx-table-title">Skipped · dropped · {skipped.length + dropped.length}</h4>
-          <DataTable<SkipRow> columns={skipCols} rows={[...dropped, ...skipped]} rowKey={(r, i) => `${r.ticker}-${r.model ?? ""}-${i}`} maxHeight={22 * 12} />
+          <DataTable<ReasonGroup> columns={skipCols} rows={skipGroups} rowKey={(g) => g.key} maxHeight={22 * 12} />
         </>
       )}
     </div>

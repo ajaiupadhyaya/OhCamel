@@ -45,7 +45,16 @@ describe("LeagueReport (P2 vol.forecast_league)", () => {
   it("lists the DM pair and the skipped names with their reason; no signal colour on a measurement", () => {
     expect(html).toContain("−2.80");
     expect(html).toContain("1250");
+    expect(html).toContain("SHORT HISTORY");
     expect(html).not.toMatch(/class="[^"]*\bloss\b/);
+  });
+  it("collapses per-name skips to one row per reason code with a name count", () => {
+    const fix = (t: string) => ({ ticker: t, reason: `${t}: offline mode and no committed fixture (available: GLD, SPY)` });
+    const h = render(<LeagueReport summary={summary} league={league} dm={dm} forecasts={[]} skipped={["A", "AAPL", "ABBV", "ABNB"].map(fix)} dropped={[]} ticker="spy" />);
+    expect(h).toContain("OFFLINE · NO FIXTURE");
+    expect(h).toContain("A, AAPL, ABBV +1");
+    expect(h.match(/OFFLINE · NO FIXTURE/g)).toHaveLength(1);
+    expect(h).not.toContain(">ABNB: offline mode");
   });
   it("a name outside the league says so instead of showing numbers", () => {
     const h = render(<LeagueReport summary={summary} league={league} dm={dm} forecasts={[]} skipped={[]} dropped={[]} ticker="IWM" />);
