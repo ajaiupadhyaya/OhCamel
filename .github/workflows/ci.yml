@@ -883,6 +883,12 @@ jobs:
         working-directory: quant
         run: uv run --frozen pytest -q
 
+      # quant/README.md's TESTS = N is pytest's real collected count, not just
+      # a number the documents agree with (the lint job's check-counts run has
+      # no uv project, so the collection check lives here).
+      - name: check-counts --verify (TESTS = collected)
+        run: scripts/check-counts.sh --verify
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"

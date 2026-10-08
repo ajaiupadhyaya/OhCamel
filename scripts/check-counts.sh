@@ -28,6 +28,17 @@
 #
 #   scripts/check-counts.sh
 #
+#   scripts/check-counts.sh --verify
+#
+# --verify (CI's quant job, which has the uv project) additionally runs
+# `pytest --collect-only -q` in quant/ and fails unless quant/README.md's
+# `TESTS = N` is the number of tests pytest actually collects: the marker
+# checks above only prove the documents agree with README, not that README
+# agrees with the suite. The collection command defaults to quant/.venv's
+# pytest when present, else `uv run --frozen pytest`; CHECK_COUNTS_COLLECT_CMD
+# overrides it (the tests use that to feed a known collection line). Without
+# --verify nothing is run, so the lint job keeps needing grep and sed only.
+#
 # Exits non-zero -- naming the file and line -- on the first marker whose
 # number disagrees with its source of truth, on a marker sed cannot parse a
 # number out of, on a source-of-truth constant this script cannot find, or
@@ -35,6 +46,14 @@
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+verify=0
+for arg in "$@"; do
+  case "$arg" in
+    --verify) verify=1 ;;
+    *) echo "check-counts.sh: unknown argument: $arg (usage: check-counts.sh [--verify])"; exit 2 ;;
+  esac
+done
 
 status=0
 
@@ -205,8 +224,37 @@ for file in "${docs[@]}"; do
   done
 done
 
+# --- --verify: the README number is the suite's real size -------------------
+
+collected_note=""
+if [ "$verify" -eq 1 ]; then
+  if [ -n "${CHECK_COUNTS_COLLECT_CMD:-}" ]; then
+    collect_cmd="$CHECK_COUNTS_COLLECT_CMD"
+  elif [ -x quant/.venv/bin/pytest ]; then
+    collect_cmd=".venv/bin/pytest --collect-only -q"
+  else
+    collect_cmd="uv run --frozen pytest --collect-only -q"
+  fi
+  collect_out=$(cd quant && bash -c "$collect_cmd" 2>&1 || true)
+  # "1238/1258 tests collected (20 deselected) in 4.12s" or "1238 tests collected in 4.12s"
+  summary=$(printf '%s\n' "$collect_out" | grep -E '^[0-9]+(/[0-9]+)? tests? collected' | tail -1 || true)
+  if [ -z "$summary" ]; then
+    echo "check-counts.sh: --verify: could not read a 'N tests collected' line from: $collect_cmd"
+    printf '%s\n' "$collect_out" | tail -5
+    status=1
+  else
+    collected=$(printf '%s\n' "$summary" | grep -oE '^[0-9]+')
+    if [ "$collected" != "$quant_tests" ]; then
+      echo "check-counts.sh: --verify: pytest collects $collected quant tests, but quant/README.md says TESTS = $quant_tests"
+      status=1
+    else
+      collected_note=" (collected $collected)"
+    fi
+  fi
+fi
+
 if [ "$status" -eq 0 ]; then
-  echo "check-counts.sh: ocaml-tests=$ocaml_tests scheduler-tests=$ocaml_scheduler_tests research-tests=$py_tests quant-tests=$quant_tests -- every marker agrees, and no bare count found"
+  echo "check-counts.sh: ocaml-tests=$ocaml_tests scheduler-tests=$ocaml_scheduler_tests research-tests=$py_tests quant-tests=$quant_tests$collected_note -- every marker agrees, and no bare count found"
 fi
 
 exit "$status"
