@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-11-autonomous-paper-trading-design.md` — read it first; every task below cites its section.
 
-**Ledger:** `.superpowers/sdd/2026-10-11-auto/progress.md` (gitignored). Branches: one per stage, `auto/s0-governance` … `auto/s5-unattended`, each from `main` after the previous stage merges. Conventions: `.superpowers/sdd/conventions.md` and `implementer-howto.md` bind every task (opam switch, `dune build @fmt`, hermetic tests, `lib/verified.ml` counts bumped in the same commit, never `git add -A`, the owner's three untracked root files never touched). Commit trailer: `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
+**Ledger:** `.superpowers/sdd/2026-10-11-autonomous-paper-trading/progress.md` (gitignored). Branches: one per stage, `auto/s0-governance` … `auto/s5-unattended`, each from `main` after the previous stage merges. Conventions: `.superpowers/sdd/conventions.md` and `implementer-howto.md` bind every task (opam switch, `dune build @fmt`, hermetic tests, `lib/verified.ml` counts bumped in the same commit, never `git add -A`, the owner's three untracked root files never touched). Commit trailer: `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
 ## Global Constraints
 

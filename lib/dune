@@ -278,6 +278,20 @@
     (cat ../docs/crisis/rates-2022.csv)
     (echo "|ohcamel_csv}\n")))))
 
+; The charter, embedded so the doc pin in test_embedded_assets.ml needs no
+; working directory. The delimiter is {ohcamel_md|...|ohcamel_md}, a fifth.
+
+(rule
+ (targets charter_md.ml)
+ (deps ../docs/CHARTER.md)
+ (action
+  (with-stdout-to
+   charter_md.ml
+   (progn
+    (echo "let text = {ohcamel_md|")
+    (cat ../docs/CHARTER.md)
+    (echo "|ohcamel_md}\n")))))
+
 ; git_sha and built_at are OCaml quoted-string literals -- {ohcamel_build|...|ohcamel_build},
 ; a fourth delimiter -- rather than ordinary "..." literals, because ordinary
 ; strings process backslash escapes and these two values come from the

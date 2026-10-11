@@ -61,8 +61,16 @@ battery and the gates are applied literally:
 | Cost sensitivity at 0 / 5 / 15 / 30 bps | reported at every level |
 
 A signal reaches the core with a `validation` block written by the code that
-ran the battery. Only `status: pass` may trade; anything else is advisory,
-logged, and never sized.
+ran the battery. Only `status: pass` may be sized as `live`; anything else is
+advisory, logged, and never sized as `live`. On the paper venue, and only
+there, the owner may register a strategy as `incubation`: it is sized under
+the book's incubation caps whatever its status, its validation block is
+carried unchanged, every order, page and report it touches says
+INCUBATION, its realised record is scored with this charter's statistics
+and stop rules the owner wrote before it traded, and promotion to `live`
+never follows from that record by itself. Incubation exists so that a
+strategy's first out-of-sample test on simulated money is recorded; it is
+not evidence of edge and is never reported as such.
 
 ## Data
 
@@ -86,5 +94,5 @@ turnover and capacity.
 ## Reporting
 
 Lead with the verdict and the gates, not the return. State what failed as
-plainly as what passed. Distinguish *advisory* from *live* every time. If a
+plainly as what passed. Distinguish *advisory*, *incubation* and *live* every time. If a
 run cannot be reproduced, that is the finding.

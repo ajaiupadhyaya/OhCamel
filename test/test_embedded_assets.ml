@@ -684,9 +684,20 @@ let test_the_desk_page_is_in_reading_order () =
         "id=\"histsec\"";
       ]
 
+(* The charter is embedded the way the crisis CSVs are (lib/dune), so the pin
+   needs no working directory. The amendment of 2026-10-11 admits paper
+   incubation; every later page quotes these words, so a rewrite of the
+   paragraph that loses them is noticed here. *)
+let test_charter_names_incubation () =
+  Alcotest.(check bool)
+    "CHARTER.md says the owner may register a strategy as `incubation`" true
+    (String.is_substring Ohcamel.Charter_md.text
+       ~substring:"the owner may register a strategy as `incubation`")
+
 let suite =
   ( "embedded_assets",
     [
+      Alcotest.test_case "charter names incubation" `Quick test_charter_names_incubation;
       Alcotest.test_case "the document is assembled in the rule's order" `Quick
         test_the_document_is_assembled_in_order;
       Alcotest.test_case "the ops page is assembled in the rule's order" `Quick
