@@ -253,7 +253,9 @@ let context ?(tif = Order.Tif.Day) t ~(source : string) ~(symbol : Symbol.t) :
     (* Read only for an order that is priced at it: a ticket's context is
        built on every preview, and needs no journal read. *)
     close =
-      (match tif with Order.Tif.Opg -> opening_price t symbol | Order.Tif.Day -> None);
+      (match tif with
+      | Order.Tif.Opg -> opening_price t symbol
+      | Order.Tif.Day | Order.Tif.Cls -> None);
     new_york = Lazy.force Desk_time.new_york;
     stale =
       held
@@ -1144,10 +1146,12 @@ let strategy_position t ~(strategy : string) : (float Symbol.Map.t, string) Resu
    strategy's own position from [strategy_position], at [strategy]'s
    capital_fraction -- the caller's to set to the effective fraction an
    incubation strategy is sized at -- times [scale], which Rebalance.plan
-   refuses outside [0, 1]. Rebalance.plan decides. *)
+   refuses outside [0, 1]. Rebalance.plan decides. Then every leg worth less
+   than the book's min_leg_notional is dropped (Rebalance.drop_small), in
+   either mode: (kept, dropped), so the caller can say what it dropped. *)
 let plan_rebalance t ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
     ~(targets : (Symbol.t * float) list) ~(scale : float) :
-    (Rebalance.Leg.t list, string) Result.t =
+    (Rebalance.Leg.t list * Rebalance.Leg.t list, string) Result.t =
   let module S = Ohcamel.Config.Book.Signals_spec.Strategy in
   let symbols = List.map strategy.S.symbols ~f:Symbol.of_string in
   let marks =
@@ -1177,6 +1181,8 @@ let plan_rebalance t ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
   Rebalance.plan ~symbols ~weights:targets ~capital_fraction:strategy.S.capital_fraction
     ~scale ~equity:(sizing_equity t) ~account ~marks
     ~current:(strategy_position t ~strategy:strategy.S.name)
+  |> Result.map ~f:(fun legs ->
+      Rebalance.drop_small ~legs ~min_leg_notional:t.spec.Desk_spec.min_leg_notional)
 
 (* What a rebalance came to, in the words the intake records beside the
    judgement. [Refused]: nothing was journaled and nothing sent. [Sent]:
@@ -1188,12 +1194,18 @@ let plan_rebalance t ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
    rejected_pre_trade and never sent. When the order the venue did not
    acknowledge was the last, [unsent] is empty: every order went, and the
    sentence says the last was not acknowledged rather than that all were
-   sent. *)
+   sent. [Waved]: an intraday rebalance of more than Rebalance.max_legs
+   orders, sent in waves (desk/waves.ml), each wave's own outcome in the
+   order they went; a wave that was not [Sent] is the last, and so is one
+   whose wait ran out, [timed_out], after which every open order of the
+   rebalance was cancelled. Its first wave is never [Refused]: a rebalance
+   whose first wave is refused is [Refused]. *)
 module Rebalance_outcome = struct
   type t =
     | Refused of string
     | Sent of Order.t list
     | Stopped of { sent : Order.t list; unsent : Order.t list; why : string }
+    | Waved of { waves : t list; timed_out : bool }
 
   let describe_order (o : Order.t) =
     let r = o.Order.request in
@@ -1207,13 +1219,37 @@ module Rebalance_outcome = struct
 
   let orders os = String.concat ~sep:"; " (List.map os ~f:describe_order)
 
-  let to_string = function
+  (* What a rebalance's orders are, by their time in force: one mode's orders
+     share one. *)
+  let kind os =
+    match
+      List.dedup_and_sort ~compare:Order.Tif.compare
+        (List.map os ~f:(fun (o : Order.t) -> o.Order.request.Order.Request.tif))
+    with
+    | [ Order.Tif.Opg ] -> "market-on-open"
+    | [ Order.Tif.Day ] -> "day limit"
+    | [ Order.Tif.Cls ] -> "market-on-close"
+    | _ -> "rebalance"
+
+  let rec to_string = function
     | Refused why -> "refused, and nothing journaled or sent: " ^ why
     | Sent os ->
-        sprintf "%d market-on-open order%s journaled, then sent, and acknowledged: %s"
-          (List.length os)
+        sprintf "%d %s order%s journaled, then sent, and acknowledged: %s"
+          (List.length os) (kind os)
           (if List.length os = 1 then "" else "s")
           (orders os)
+    | Waved { waves; timed_out } ->
+        let n = List.length waves in
+        sprintf "in %d wave%s%s: %s" n
+          (if n = 1 then "" else "s")
+          (if timed_out then
+             sprintf
+               ", and wave %d was not filled or cancelled within its wait, so every open \
+                order of the rebalance was cancelled and no wave after it was sent"
+               n
+           else "")
+          (String.concat ~sep:" | "
+             (List.mapi waves ~f:(fun i w -> sprintf "wave %d: %s" (i + 1) (to_string w))))
     | Stopped { sent; unsent = []; why } ->
         sprintf "every order journaled, then sent, and the last not acknowledged (%s): %s"
           why (orders sent)
@@ -1228,10 +1264,15 @@ end
 
 (* A leg as a refusal names it: its place in the rebalance and its order. *)
 let name_leg ~i ~n (r : Order.Request.t) =
-  sprintf "order %d of %d (%s %s %d market-on-open)" (i + 1) n
+  sprintf "order %d of %d (%s %s %d %s)" (i + 1) n
     (Symbol.to_string r.Order.Request.symbol)
     (Order.Side.to_string r.Order.Request.side)
     r.Order.Request.qty
+    (match (r.Order.Request.tif, r.Order.Request.kind) with
+    | Order.Tif.Opg, _ -> "market-on-open"
+    | Order.Tif.Cls, _ -> "market-on-close"
+    | Order.Tif.Day, Order.Kind.Limit p -> sprintf "day limit at %.2f" (Price.to_float p)
+    | Order.Tif.Day, Order.Kind.Market -> "day market")
 
 module Checked_rebalance = struct
   type t = { orders : (Order.Request.t * Price.t) list; gate : Scenarios.t }
@@ -1266,7 +1307,7 @@ end
      [gate_scenarios]). What reaches the venue is a prefix of the send order
      -- the loop stops at the first order the venue does not acknowledge, or
      when the switch, the book or the session fails between two submits
-     ([propose_rebalance]) -- and any order that reached it can still go
+     ([send_rebalance]) -- and any order that reached it can still go
      unfilled at the auction, or be refused at the open after it was
      acknowledged, so the fills can be any subset. A sector's notional is
      the size of a net sum, so an order can take a sector over its line
@@ -1277,9 +1318,19 @@ end
      Rebalance.max_legs orders (six: 63 calls), refused before anything
      else with the reason.
    Any failure refuses the whole, naming the order and its rules, or the
-   limits and the subset that breached them. *)
-let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t list) :
-    (Checked_rebalance.t, string) Result.t =
+   limits and the subset that breached them.
+
+   [mode] decides what each order is (Rebalance.Mode). [Open]: a
+   market-on-open order priced at the newest recorded close, as above.
+   [Intraday]: a day limit order at Rebalance.limit_price of the feed's live
+   mark, judged by the rules as a day order -- the regular session, the live
+   mark, the tick and the collar -- and gated at its limit, the price a
+   ticket's limit is gated at. A name with no live mark gets no limit; the
+   mark rule refuses it. Everything else is the same, the max_legs refusal
+   included: an intraday rebalance with more orders is split into waves
+   before it gets here ([propose_rebalance]). *)
+let check_rebalance t ~(mode : Rebalance.Mode.t) ~(source : Rebalance.Source.t)
+    ~(legs : Rebalance.Leg.t list) : (Checked_rebalance.t, string) Result.t =
   let open Result.Let_syntax in
   (* The book as the gate reads it: a name it does not hold is flat here, and
      the universe rule refuses its order below. *)
@@ -1353,27 +1404,49 @@ let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t li
     | None -> Ok ()
     | Some why -> Error why
   in
+  let tif =
+    match mode with
+    | Rebalance.Mode.Open -> Order.Tif.Opg
+    | Rebalance.Mode.Intraday -> Order.Tif.Day
+  in
   let judged =
     List.mapi legs ~f:(fun i (leg : Rebalance.Leg.t) ->
-        let request =
-          {
-            Order.Request.client_order_id = Ids.Client_order_id.generate ~now ~rng:t.rng;
-            symbol = leg.Rebalance.Leg.symbol;
-            side = leg.Rebalance.Leg.side;
-            qty = leg.Rebalance.Leg.qty;
-            kind = Order.Kind.Market;
-            tif = Order.Tif.Opg;
-          }
-        in
         let ctx =
-          context ~tif:Order.Tif.Opg t
+          context ~tif t
             ~source:(Rebalance.Source.to_string source)
             ~symbol:leg.Rebalance.Leg.symbol
         in
         let ctx =
           { ctx with Rules.Context.open_orders = ctx.Rules.Context.open_orders + i }
         in
-        (i, request, ctx.Rules.Context.close, Rules.check ctx request))
+        (* The order's kind and the price it is gated at. *)
+        let kind, price =
+          match mode with
+          | Rebalance.Mode.Open ->
+              (Order.Kind.Market, Option.map ctx.Rules.Context.close ~f:snd)
+          | Rebalance.Mode.Intraday -> (
+              match ctx.Rules.Context.mark with
+              | None -> (Order.Kind.Market, None)
+              | Some mark ->
+                  let limit =
+                    Price.of_float
+                      (Rebalance.limit_price ~side:leg.Rebalance.Leg.side
+                         ~mark:(Price.to_float mark)
+                         ~slip_bps:t.spec.Desk_spec.intraday_slip_bps)
+                  in
+                  (Order.Kind.Limit limit, Some limit))
+        in
+        let request =
+          {
+            Order.Request.client_order_id = Ids.Client_order_id.generate ~now ~rng:t.rng;
+            symbol = leg.Rebalance.Leg.symbol;
+            side = leg.Rebalance.Leg.side;
+            qty = leg.Rebalance.Leg.qty;
+            kind;
+            tif;
+          }
+        in
+        (i, request, price, Rules.check ctx request))
   in
   let%bind priced =
     match
@@ -1386,10 +1459,13 @@ let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t li
                   sprintf "%s: %s" (name_leg ~i ~n r)
                     (String.concat ~sep:"; " (List.map failures ~f:reason)))))
     | [] ->
-        List.map judged ~f:(fun (i, r, close, _) ->
-            match close with
-            | Some (_, p) -> Ok (r, p)
-            | None -> Error (sprintf "%s has no recorded close" (name_leg ~i ~n r)))
+        List.map judged ~f:(fun (i, r, price, _) ->
+            match (price, mode) with
+            | Some p, _ -> Ok (r, p)
+            | None, Rebalance.Mode.Open ->
+                Error (sprintf "%s has no recorded close" (name_leg ~i ~n r))
+            | None, Rebalance.Mode.Intraday ->
+                Error (sprintf "%s has no live mark" (name_leg ~i ~n r)))
         |> Result.all
   in
   let named orders =
@@ -1412,12 +1488,15 @@ let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t li
       in
       sprintf
         "if only %s %s of %d fill%s, as when the other%s %s refused, never sent or left \
-         unfilled at the auction"
+         unfilled%s"
         (if k = 1 then "order" else "orders")
         listed n
         (if k = 1 then "s" else "")
         (if n - k = 1 then "" else "s")
         (if n - k = 1 then "is" else "are")
+        (match mode with
+        | Rebalance.Mode.Open -> " at the auction"
+        | Rebalance.Mode.Intraday -> "")
   in
   let gate ids =
     let orders = List.map ids ~f:(fun i -> (i, by_place.(i))) in
@@ -1470,10 +1549,10 @@ let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t li
    sends nothing. After it, what the venue has taken it has; an order already
    acknowledged when the switch is set is cancelled by the switch's own
    machinery ([record], [cancel_all]), as any open order is. *)
-let propose_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t list) :
-    Rebalance_outcome.t Deferred.t =
+let send_rebalance t ~(mode : Rebalance.Mode.t) ~(source : Rebalance.Source.t)
+    ~(legs : Rebalance.Leg.t list) : Rebalance_outcome.t Deferred.t =
   enqueue t (fun () ->
-      match check_rebalance t ~source ~legs with
+      match check_rebalance t ~mode ~source ~legs with
       | Error why -> return (Rebalance_outcome.Refused why)
       | Ok { Checked_rebalance.orders; gate } -> (
           let n = List.length orders in
@@ -1554,6 +1633,114 @@ let propose_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t 
                              { sent = List.rev sent; unsent; why = reason f }))
               in
               go 0 [] created))
+
+(* Whether every order of a rebalance has finished -- filled, cancelled,
+   expired or refused -- waiting at most [timeout]: the journal's open orders
+   whose source is [source]'s, read now and every two seconds after on the
+   order manager's own clock, [time_source]. OUTSIDE THE SEQUENCER: the fills
+   it waits for are journaled by [on_update], a sequencer job, so a wait
+   inside one would never see one. A journal read is one synchronous call, so
+   it cannot interleave with a job. *)
+let await_settled t ~(source : Rebalance.Source.t) ~(timeout : Time_ns.Span.t) :
+    [ `Settled | `Timed_out ] Deferred.t =
+  let name = Rebalance.Source.to_string source in
+  let every = Time_ns.Span.of_sec 2.0 in
+  let deadline = Time_ns.add (Time_source.now t.time_source) timeout in
+  let resting () =
+    List.exists (Journal.open_orders t.journal) ~f:(fun (r : Journal.Order_row.t) ->
+        String.equal r.Journal.Order_row.source name)
+  in
+  let rec poll () =
+    if not (resting ()) then return `Settled
+    else
+      let now = Time_source.now t.time_source in
+      if Time_ns.( >= ) now deadline then return `Timed_out
+      else
+        let%bind () =
+          Time_source.after t.time_source
+            (Time_ns.Span.min every (Time_ns.diff deadline now))
+        in
+        poll ()
+  in
+  poll ()
+
+(* Every open order of a rebalance, cancelled through [cancel] -- journaled
+   pending_cancel before the DELETE, cancelled when the venue says so -- one
+   at a time. A cancel that is not sent is said in the log: the order stays
+   open, and the next pass finds the strategy's position unknown until it
+   finishes ([strategy_position]). *)
+let cancel_rebalance t ~(source : Rebalance.Source.t) : unit Deferred.t =
+  let name = Rebalance.Source.to_string source in
+  Journal.open_orders t.journal
+  |> List.filter ~f:(fun (r : Journal.Order_row.t) ->
+      String.equal r.Journal.Order_row.source name)
+  |> Deferred.List.iter ~how:`Sequential ~f:(fun (r : Journal.Order_row.t) ->
+      let client =
+        r.Journal.Order_row.order.Order.request.Order.Request.client_order_id
+      in
+      match%map cancel t client with
+      | Ok _ -> ()
+      | Error why ->
+          t.on_event
+            (sprintf
+               "desk      %s: the wave's wait ran out, and its cancel was not sent: %s"
+               (Ids.Client_order_id.to_string client)
+               why))
+
+(* A strategy's rebalance in [mode] (Rebalance.Mode).
+
+   [Open], and [Intraday] with at most Rebalance.max_legs orders: one
+   [send_rebalance] -- one sequencer job, as above -- and its outcome, with
+   no wait: a day limit order the venue does not fill rests until it does,
+   or until the session's close ends it.
+
+   [Intraday] with more: in waves (Waves.split: the orders that shrink a
+   position first, then the growing ones, largest first, six at a time).
+   Each wave is one [send_rebalance], checked and gated on the book as it is
+   when its turn comes -- after the waves before it have filled -- then
+   waited on ([await_settled], at most the book's wave_timeout_s). EACH WAVE
+   IS ITS OWN SEQUENCER JOB, and the wait is between them, not inside one:
+   the fills that settle a wave are journaled and applied to the book by
+   sequencer jobs, and a wait that held the sequencer would see none of them
+   -- nor let a kill's cancels through. What may run between two waves is
+   any other job; none can size this strategy again, because
+   [strategy_position] refuses while one of its orders may fill, and the
+   next wave's check asks it again. A wave that is refused or stopped ends
+   the rebalance, and so does one whose wait runs out: every open order of
+   the rebalance is cancelled ([cancel_rebalance]) and no later wave is sent.
+   A first wave refused is the rebalance refused, nothing journaled. *)
+let propose_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t list)
+    ~(mode : Rebalance.Mode.t) : Rebalance_outcome.t Deferred.t =
+  match mode with
+  | Rebalance.Mode.Open -> send_rebalance t ~mode ~source ~legs
+  | Rebalance.Mode.Intraday when List.length legs <= Rebalance.max_legs ->
+      send_rebalance t ~mode ~source ~legs
+  | Rebalance.Mode.Intraday ->
+      let position symbol =
+        if Graph.knows_symbol t.graph symbol then Qty.to_float (Graph.qty t.graph symbol)
+        else 0.0
+      in
+      let timeout = Time_ns.Span.of_sec t.spec.Desk_spec.wave_timeout_s in
+      let waved waves ~timed_out =
+        Rebalance_outcome.Waved { waves = List.rev waves; timed_out }
+      in
+      let rec go sent = function
+        | [] -> return (waved sent ~timed_out:false)
+        | wave :: rest -> (
+            match%bind send_rebalance t ~mode ~source ~legs:wave with
+            | Rebalance_outcome.Refused _ as refused when List.is_empty sent ->
+                return refused
+            | ( Rebalance_outcome.Refused _ | Rebalance_outcome.Stopped _
+              | Rebalance_outcome.Waved _ ) as last ->
+                return (waved (last :: sent) ~timed_out:false)
+            | Rebalance_outcome.Sent _ as this -> (
+                match%bind await_settled t ~source ~timeout with
+                | `Settled -> go (this :: sent) rest
+                | `Timed_out ->
+                    let%map () = cancel_rebalance t ~source in
+                    waved (this :: sent) ~timed_out:true))
+      in
+      go [] (Waves.split ~legs ~position ~max_legs:Rebalance.max_legs)
 
 let apply_to_graph t (o : Order.t) (f : Order.Fill.t) =
   let symbol = o.Order.request.Order.Request.symbol in

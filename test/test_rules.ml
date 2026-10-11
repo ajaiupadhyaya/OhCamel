@@ -422,9 +422,40 @@ let test_the_window_in_the_weeks_the_clocks_change () =
     (nanosecond_before "2026-03-09T13:28:00Z");
   check "Mon 9 Mar 09:28 EDT" [ "session" ] spring (at "2026-03-09T13:28:00Z")
 
+(* ------------------------------------------------------------------------ *)
+(* A market-on-close order (Order.Tif.Cls): until ten minutes before close   *)
+(* ------------------------------------------------------------------------ *)
+
+(* Monday's session, its close at 16:00 EDT (20:00Z): the cut-off is 15:50
+   EDT (19:50Z). At 15:30 EDT (19:30Z) a market-on-close order passes, priced
+   at the live mark as a day order is; at 15:51 (19:51Z) it is refused,
+   naming 15:50; after the close, at 16:30 EDT (20:30Z) on a clock read then
+   -- naming Tuesday's open first -- it is refused because the session is
+   closed. *)
+let test_a_market_on_close_order_until_ten_minutes_before_the_close () =
+  let cls = request ~tif:Order.Tif.Cls in
+  let monday now = { context with now = at now; new_york } in
+  check_rules "15:30 EDT" [] (monday "2026-09-14T19:30:00Z") (cls 100);
+  check_rules "15:51 EDT" [ "session" ] (monday "2026-09-14T19:51:00Z") (cls 100);
+  says "the refusal names the cut-off"
+    ~substring:
+      "it is 2026-09-14 15:51 ET, not before 2026-09-14 15:50 ET, ten minutes before the \
+       close the clock names (2026-09-14 16:00 ET)"
+    (monday "2026-09-14T19:51:00Z")
+    (cls 100);
+  check_rules "16:30 EDT, closed" [ "session" ]
+    { (monday "2026-09-14T20:30:00Z") with session = after_monday }
+    (cls 100);
+  says "closed, in the rule's words" ~substring:"the regular session is closed"
+    { (monday "2026-09-14T20:30:00Z") with session = after_monday }
+    (cls 100)
+
 let suite =
   ( "rules",
     [
+      Alcotest.test_case
+        "Cls legal at 15:30, refused at 15:51 naming the cut-off, refused when closed"
+        `Quick test_a_market_on_close_order_until_ten_minutes_before_the_close;
       Alcotest.test_case "an order inside every line passes" `Quick
         test_an_order_inside_every_line_passes;
       Alcotest.test_case "the book and the desk decide whether to trade at all" `Quick

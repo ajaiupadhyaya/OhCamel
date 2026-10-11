@@ -56,16 +56,20 @@ let tech_cap =
     kind = Limit.Gross_notional (Notional.of_float 100_000.0);
   }
 
-let fixture ?(limits = [ tech_cap ]) () =
+(* [extra]: more names, each with its sector and first print, for a case
+   that needs more than three (Task 10's waves). *)
+let fixture ?(limits = [ tech_cap ]) ?(extra = []) () =
   let graph =
     Graph.create
       ~starting_cash:(Notional.of_float 1_000_000.0)
       ~instruments:
-        [
-          { Instrument.symbol = aapl; sector = tech };
-          { Instrument.symbol = msft; sector = tech };
-          { Instrument.symbol = xom; sector = Sector.of_string "ENERGY" };
-        ]
+        ([
+           { Instrument.symbol = aapl; sector = tech };
+           { Instrument.symbol = msft; sector = tech };
+           { Instrument.symbol = xom; sector = Sector.of_string "ENERGY" };
+         ]
+        @ List.map extra ~f:(fun (symbol, sector, _) ->
+            { Instrument.symbol; sector = Sector.of_string sector }))
       ~limits ~confidence:0.95 ~return_window:10 ()
   in
   let marks = Symbol.Table.create () in
@@ -88,7 +92,8 @@ let fixture ?(limits = [ tech_cap ]) () =
     }
   in
   List.iter
-    [ (aapl, 100.0); (msft, 200.0); (xom, 50.0) ]
+    ([ (aapl, 100.0); (msft, 200.0); (xom, 50.0) ]
+    @ List.map extra ~f:(fun (s, _, p) -> (s, p)))
     ~f:(fun (s, p) ->
       Graph.set_returns graph s
         [| -0.02; -0.01; 0.0; 0.01; 0.02; -0.02; -0.01; 0.0; 0.01; 0.02 |];
@@ -1919,7 +1924,7 @@ let test_a_rebalance_journals_before_the_wire_and_fills_when_the_session_opens (
   let oms = manager ~trade:watched ~now:(fun () -> evening) f in
   after_the_close f oms;
   let%bind outcome =
-    D.Oms.propose_rebalance oms ~source:aapl_source
+    D.Oms.propose_rebalance oms ~mode:D.Rebalance.Mode.Open ~source:aapl_source
       ~legs:[ rebalance_leg aapl D.Order.Side.Buy 50 ]
   in
   let%bind () = settle () in
@@ -1999,7 +2004,7 @@ let test_a_halt_between_two_submits_leaves_the_second_unsent () =
   let oms = manager ~trade:halting ~halt ~now:(fun () -> evening) f in
   after_the_close f oms;
   let%bind outcome =
-    D.Oms.propose_rebalance oms ~source:aapl_source
+    D.Oms.propose_rebalance oms ~mode:D.Rebalance.Mode.Open ~source:aapl_source
       ~legs:
         [
           rebalance_leg aapl D.Order.Side.Buy 10;
@@ -2107,7 +2112,7 @@ let test_a_rebalance_whose_window_closes_while_its_quotes_are_fetched_is_refused
   let oms = manager ~read ~now:(fun () -> !now) f in
   after_the_close f oms;
   let proposal =
-    D.Oms.propose_rebalance oms ~source:aapl_source
+    D.Oms.propose_rebalance oms ~mode:D.Rebalance.Mode.Open ~source:aapl_source
       ~legs:[ rebalance_leg aapl D.Order.Side.Buy 10 ]
   in
   let%bind () = Ivar.read asked in
@@ -2340,7 +2345,7 @@ let test_a_cap_of_nothing_flattens_like_a_scale_of_nothing () =
   let oms = manager ~incubation_cap:0.0 ~now:(fun () -> evening) f in
   after_the_close f oms;
   let%bind bought =
-    D.Oms.propose_rebalance oms
+    D.Oms.propose_rebalance oms ~mode:D.Rebalance.Mode.Open
       ~source:
         {
           D.Rebalance.Source.strategy = "inc_aapl";
@@ -2476,7 +2481,7 @@ let test_a_leg_the_venue_does_not_acknowledge_stops_the_legs_after_it () =
     let oms = manager ~trade:refusing ~now:(fun () -> evening) f in
     after_the_close f oms;
     let%bind outcome =
-      D.Oms.propose_rebalance oms ~source:aapl_source
+      D.Oms.propose_rebalance oms ~mode:D.Rebalance.Mode.Open ~source:aapl_source
         ~legs:
           [
             rebalance_leg aapl D.Order.Side.Sell 200;
@@ -2622,6 +2627,326 @@ let test_run_sizes_only_what_its_own_pass_accepted () =
   Graph.destroy f.graph;
   return ()
 
+(* ------------------------------------------------------------------------ *)
+(* Task 10: the intraday mode and its waves                                  *)
+(* ------------------------------------------------------------------------ *)
+
+(* Tuesday 15 September at 11:00 EDT (15:00Z), inside the session the
+   manager's market reads open: Monday's close, recorded, is still the newest
+   whose 16:00 has come, so the calendar passes. *)
+let tuesday_mid = Time_ns.of_string_with_utc_offset "2026-09-15T15:00:00Z"
+
+(* An intraday rebalance of three, AAPL, MSFT and XOM +10 at marks of 100,
+   200 and 50: three day limit orders at each mark x 1.001 -- 100.10, 200.20,
+   50.05 -- sent at once, one wave, with no wait. Each fills on the next pump,
+   the ask (mark x 1.0005) being inside its limit: AAPL at 100.05. *)
+let test_intraday_single_wave_sends_day_limits () =
+  let f = fixture () in
+  record_close f;
+  let oms = manager ~now:(fun () -> tuesday_mid) f in
+  let%bind outcome =
+    D.Oms.propose_rebalance oms ~mode:D.Rebalance.Mode.Intraday ~source:aapl_source
+      ~legs:
+        [
+          rebalance_leg aapl D.Order.Side.Buy 10;
+          rebalance_leg msft D.Order.Side.Buy 10;
+          rebalance_leg xom D.Order.Side.Buy 10;
+        ]
+  in
+  let%bind () = settle () in
+  let sent =
+    match outcome with
+    | D.Oms.Rebalance_outcome.Sent os -> os
+    | other -> Alcotest.failf "not sent: %s" (D.Oms.Rebalance_outcome.to_string other)
+  in
+  Alcotest.(check (list (triple string string (float 1e-9))))
+    "three day limits at mark x 1.001"
+    [
+      ("AAPL", "limit day", 100.10);
+      ("MSFT", "limit day", 200.20);
+      ("XOM", "limit day", 50.05);
+    ]
+    (List.map sent ~f:(fun o ->
+         let r = (journaled f o).D.Order.request in
+         ( Symbol.to_string r.D.Order.Request.symbol,
+           sprintf "%s %s"
+             (D.Order.Kind.to_string r.D.Order.Request.kind)
+             (D.Order.Tif.to_string r.D.Order.Request.tif),
+           Price.to_float
+             (Option.value_exn (D.Order.Kind.limit_price r.D.Order.Request.kind)) )));
+  Alcotest.(check bool)
+    "the sentence names day limits" true
+    (String.is_prefix
+       (D.Oms.Rebalance_outcome.to_string outcome)
+       ~prefix:"3 day limit orders journaled, then sent, and acknowledged");
+  let%bind () = pump f in
+  Alcotest.(check (list string))
+    "each filled on the next pump"
+    [ "filled"; "filled"; "filled" ]
+    (List.map sent ~f:(state f));
+  Alcotest.(check (option (float 1e-9)))
+    "AAPL at 100 x 1.0005" (Some 100.05)
+    (D.Order.avg_fill_price (journaled f (List.hd_exn sent)));
+  Graph.destroy f.graph;
+  return ()
+
+(* Open mode is what it was: two legs after Monday's close are two
+   market-on-open orders, market and opg, and the sentence is the one the
+   intake has always recorded. *)
+let test_open_mode_unchanged () =
+  let f = fixture () in
+  record_close f;
+  let oms = manager ~now:(fun () -> evening) f in
+  after_the_close f oms;
+  let%bind outcome =
+    D.Oms.propose_rebalance oms ~mode:D.Rebalance.Mode.Open ~source:aapl_source
+      ~legs:
+        [ rebalance_leg aapl D.Order.Side.Buy 10; rebalance_leg xom D.Order.Side.Buy 10 ]
+  in
+  let%map () = settle () in
+  (match outcome with
+  | D.Oms.Rebalance_outcome.Sent os ->
+      Alcotest.(check (list string))
+        "market, opg"
+        [ "market opg"; "market opg" ]
+        (List.map os ~f:(fun o ->
+             let r = (journaled f o).D.Order.request in
+             sprintf "%s %s"
+               (D.Order.Kind.to_string r.D.Order.Request.kind)
+               (D.Order.Tif.to_string r.D.Order.Request.tif)))
+  | other -> Alcotest.failf "not sent: %s" (D.Oms.Rebalance_outcome.to_string other));
+  Alcotest.(check bool)
+    "the sentence it always was" true
+    (String.is_prefix
+       (D.Oms.Rebalance_outcome.to_string outcome)
+       ~prefix:"2 market-on-open orders journaled, then sent, and acknowledged: ");
+  Graph.destroy f.graph
+
+(* Seven names for two waves: the fixture's three and IWM 200, QQQ 300, SPY
+   400, TLT 90. Nothing is held, so every buy grows a position and there is
+   no shrinking wave: +10 of each, by notional 10 x price -- SPY 4,000, QQQ
+   3,000, IWM 2,000, MSFT 2,000, AAPL 1,000, TLT 900, XOM 500 -- is wave 1
+   the six largest and wave 2 XOM alone. *)
+let iwm = Symbol.of_string "IWM"
+let qqq = Symbol.of_string "QQQ"
+let spy = Symbol.of_string "SPY"
+let tlt = Symbol.of_string "TLT"
+
+let wide () =
+  fixture
+    ~extra:
+      [
+        (iwm, "FUNDS", 200.0);
+        (qqq, "FUNDS", 300.0);
+        (spy, "FUNDS", 400.0);
+        (tlt, "FUNDS", 90.0);
+      ]
+    ()
+
+let seven =
+  List.map
+    [
+      (aapl, 100.0);
+      (msft, 200.0);
+      (xom, 50.0);
+      (iwm, 200.0);
+      (qqq, 300.0);
+      (spy, 400.0);
+      (tlt, 90.0);
+    ]
+    ~f:(fun (s, price) ->
+      { (rebalance_leg s D.Order.Side.Buy 10) with D.Rebalance.Leg.price })
+
+let wide_source =
+  {
+    D.Rebalance.Source.strategy = "exp_i_wide";
+    sequence = 1;
+    as_of = Date.of_string "2026-09-14";
+  }
+
+let symbols_of orders =
+  List.map orders ~f:(fun (r : D.Journal.Order_row.t) ->
+      Symbol.to_string r.D.Journal.Order_row.order.D.Order.request.D.Order.Request.symbol)
+  |> List.sort ~compare:String.compare
+
+(* The wait runs out. Wave 1's six day limits go and the venue takes them;
+   every mark then moves up 1%, so each ask (mark x 1.01 x 1.0005) is above
+   its limit (mark x 1.001) and the pumps fill nothing. At 179 s the
+   rebalance is still waiting; at 180 s, the book's wave_timeout_s, it stops:
+   every order of the rebalance is cancelled -- journaled pending_cancel when
+   its DELETE is sent, cancelled when the venue confirms -- the outcome is
+   Waved with timed_out, and XOM's wave 2 is never sent: the venue received
+   six orders. *)
+let test_wave_timeout_cancels () =
+  let f = wide () in
+  record_close f;
+  let sim = D.Sim_venue.trade ~auto:false f.venue in
+  let at_the_delete = ref [] in
+  let watched =
+    {
+      sim with
+      D.Venue.Trade.cancel =
+        (fun id ->
+          at_the_delete :=
+            List.filter_map (D.Journal.open_orders f.journal) ~f:(fun r ->
+                let o = r.D.Journal.Order_row.order in
+                Option.some_if
+                  (Option.equal String.equal o.D.Order.venue_order_id (Some id))
+                  (D.Order.State.to_string o.D.Order.state))
+            @ !at_the_delete;
+          sim.D.Venue.Trade.cancel id);
+    }
+  in
+  let oms = manager ~trade:watched ~now:(fun () -> tuesday_mid) f in
+  let outcome =
+    D.Oms.propose_rebalance oms ~mode:D.Rebalance.Mode.Intraday ~source:wide_source
+      ~legs:seven
+  in
+  let%bind () = settle () in
+  let orders () = D.Journal.recent_orders f.journal ~limit:20 in
+  Alcotest.(check (list string))
+    "wave 1: the six largest, sent and taken"
+    [ "AAPL"; "IWM"; "MSFT"; "QQQ"; "SPY"; "TLT" ]
+    (symbols_of (orders ()));
+  List.iter
+    [
+      (aapl, 100.0); (msft, 200.0); (iwm, 200.0); (qqq, 300.0); (spy, 400.0); (tlt, 90.0);
+    ]
+    ~f:(fun (s, p) -> mark f s (p *. 1.01));
+  let%bind () = pump f in
+  Alcotest.(check (list string))
+    "outside their limits, nothing fills"
+    (List.init 6 ~f:(fun _ -> "accepted"))
+    (List.map (orders ()) ~f:(fun r ->
+         D.Order.State.to_string r.D.Journal.Order_row.order.D.Order.state));
+  let%bind () =
+    Time_source.advance_by_alarms ~wait_for:settle f.clock
+      ~to_:(Time_ns.add t0 (Time_ns.Span.of_sec 179.0))
+  in
+  let%bind () = settle () in
+  Alcotest.(check bool) "at 179 s, still waiting" false (Deferred.is_determined outcome);
+  let%bind () =
+    Time_source.advance_by_alarms ~wait_for:settle f.clock
+      ~to_:(Time_ns.add t0 (Time_ns.Span.of_sec 180.0))
+  in
+  let%bind () = settle () in
+  (match Deferred.peek outcome with
+  | Some
+      (D.Oms.Rebalance_outcome.Waved
+         { waves = [ D.Oms.Rebalance_outcome.Sent os ]; timed_out = true } as o) ->
+      Alcotest.(check int) "one wave of six" 6 (List.length os);
+      Alcotest.(check bool)
+        (sprintf "the sentence says it timed out: %s"
+           (D.Oms.Rebalance_outcome.to_string o))
+        true
+        (String.is_prefix
+           (D.Oms.Rebalance_outcome.to_string o)
+           ~prefix:
+             "in 1 wave, and wave 1 was not filled or cancelled within its wait, so \
+              every open order of the rebalance was cancelled and no wave after it was \
+              sent: wave 1: 6 day limit orders")
+  | Some other ->
+      Alcotest.failf "not timed out: %s" (D.Oms.Rebalance_outcome.to_string other)
+  | None -> Alcotest.fail "still waiting at 180 s");
+  Alcotest.(check (list string))
+    "each DELETE sent with its order journaled pending_cancel"
+    (List.init 6 ~f:(fun _ -> "pending_cancel"))
+    !at_the_delete;
+  Alcotest.(check (list string))
+    "then cancelled, every one"
+    (List.init 6 ~f:(fun _ -> "cancelled"))
+    (List.map (orders ()) ~f:(fun r ->
+         D.Order.State.to_string r.D.Journal.Order_row.order.D.Order.state));
+  Alcotest.(check int) "no second wave: six received" 6 (D.Sim_venue.received f.venue);
+  Graph.destroy f.graph;
+  return ()
+
+(* A restart between two waves (the plan's Review Focus 4). Wave 1's six
+   day limits are sent and rest; the manager is dropped while it waits, and a
+   new one is built on the same journal and venue and reconciles. The next
+   intake pass brings sequence 2 for the same strategy: its targets are not
+   sized, because six of its orders may still fill -- the existing refusal,
+   word for word, as the rebalance's sentence -- and no new order exists: the
+   journal holds the six, the venue received six. *)
+let test_restart_mid_wave_does_not_double_send () =
+  let f = wide () in
+  record_close f;
+  let oms = manager ~now:(fun () -> tuesday_mid) f in
+  let first =
+    D.Oms.propose_rebalance oms ~mode:D.Rebalance.Mode.Intraday ~source:wide_source
+      ~legs:seven
+  in
+  let%bind () = settle () in
+  Alcotest.(check (pair int bool))
+    "wave 1 of 2 sent, and its wait not over" (6, false)
+    (D.Sim_venue.received f.venue, Deferred.is_determined first);
+  let restarted = manager ~now:(fun () -> tuesday_mid) f in
+  let%bind () = D.Oms.reconcile restarted in
+  let%bind () = settle () in
+  let dir = Filename_unix.temp_dir "ohcamel-signals-" "" in
+  let intake =
+    D.Intake.create ~journal:f.journal ~dir
+      ~strategies:
+        [
+          {
+            Ohcamel.Config.Book.Signals_spec.Strategy.name = "exp_i_wide";
+            symbols = [ "AAPL"; "MSFT"; "XOM"; "IWM"; "QQQ"; "SPY"; "TLT" ];
+            max_age = 3;
+            sizing = Ohcamel.Config.Book.Signals_spec.Live;
+            capital_fraction = 0.01;
+            cadence = Ohcamel.Config.Book.Signals_spec.Cadence.Daily;
+            adjust = Ohcamel.Config.Book.Signals_spec.Adjust.Intraday;
+            max_age_minutes = 20;
+            horizon = Ohcamel.Config.Book.Signals_spec.Horizon.Carry;
+            stop = None;
+            reinstated = None;
+          };
+        ]
+      ~universe:[ aapl; msft; xom; iwm; qqq; spy; tlt ]
+      ~on_event:ignore
+      ~now:(fun () -> tuesday_mid)
+  in
+  let zeros = "sha256:" ^ String.make 64 '0' in
+  Out_channel.write_all
+    (Filename.concat dir "exp_i_wide-2.json")
+    ~data:
+      (sprintf
+         {|{"schema_version":1,"strategy":"exp_i_wide","params_hash":"%s","as_of":"2026-09-14","computed_at":"2026-09-14T23:15:00Z","data_hash":"%s","sequence":2,"validation":{"status":"pass","gates_version":"2026-09-02"},"targets":[{"symbol":"SPY","weight":1.0}]}|}
+         zeros zeros);
+  let accepted = D.Intake.judge_pass intake in
+  Alcotest.(check (list int))
+    "sequence 2 accepted" [ 2 ]
+    (List.map accepted ~f:(fun a -> a.D.Intake.Accepted.doc.sequence));
+  let%bind () =
+    D.Intake.size intake ~oms:(Some restarted) ~scale:(fun () -> 1.0) accepted
+  in
+  let%map () = settle () in
+  let resting =
+    D.Journal.source_orders_unsettled f.journal ~prefix:"signal:exp_i_wide:"
+      ~since:(Some (Date.of_string "2026-09-14"))
+  in
+  Alcotest.(check string)
+    "the existing refusal, word for word"
+    (sprintf
+       "no targets, and no order: the strategy's fill history is unknown: 6 of its \
+        orders may still fill (%s), so its position is not yet known, and nothing is \
+        sized on top of them"
+       (String.concat ~sep:"; "
+          (List.map resting ~f:(fun r ->
+               D.Oms.describe_resting r.D.Journal.Order_row.order))))
+    (Option.value_exn
+       (Option.bind (D.Journal.signal f.journal ~strategy:"exp_i_wide" ~sequence:2)
+          ~f:(fun s -> s.D.Journal.Signal.rebalance)));
+  Alcotest.(check (pair (list string) int))
+    "no new order: the journal's six, the venue's six"
+    ([ "AAPL"; "IWM"; "MSFT"; "QQQ"; "SPY"; "TLT" ], 6)
+    ( symbols_of (D.Journal.recent_orders f.journal ~limit:20),
+      D.Sim_venue.received f.venue );
+  Array.iter (Sys_unix.readdir dir) ~f:(fun name ->
+      Core_unix.unlink (Filename.concat dir name));
+  Core_unix.rmdir dir;
+  Graph.destroy f.graph
+
 let suites =
   [
     ( "transport",
@@ -2690,6 +3015,12 @@ let suites =
           test_incubation_refused_on_a_foreign_venue;
         case "a cap of nothing flattens like a scale of nothing"
           test_a_cap_of_nothing_flattens_like_a_scale_of_nothing;
+        case "intraday single wave sends Day limits"
+          test_intraday_single_wave_sends_day_limits;
+        case "open mode unchanged" test_open_mode_unchanged;
+        case "wave timeout cancels" test_wave_timeout_cancels;
+        case "restart mid-wave does not double-send"
+          test_restart_mid_wave_does_not_double_send;
       ] );
     ( "desk",
       [

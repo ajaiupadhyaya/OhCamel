@@ -232,7 +232,16 @@ module For_testing = struct
           Option.map (Order.Kind.limit_price r.Order.Request.kind) ~f:Price.to_float;
       }
     in
-    t.orders <- Map.set t.orders ~key:id ~data:(order, r, Time_ns.add (t.now ()) t.latency);
+    (* A market-on-close order becomes fillable at the close its clock names
+       when it is taken -- this session's -- and not before. *)
+    let due =
+      let after_latency = Time_ns.add (t.now ()) t.latency in
+      match r.Order.Request.tif with
+      | Order.Tif.Cls ->
+          Time_ns.max after_latency (clock t).Venue.Session_clock.next_close
+      | Order.Tif.Day | Order.Tif.Opg -> after_latency
+    in
+    t.orders <- Map.set t.orders ~key:id ~data:(order, r, due);
     t.by_client <-
       Map.set t.by_client ~key:order.Venue.Venue_order.client_order_id ~data:id;
     Venue.Submission.Accepted order
@@ -268,8 +277,18 @@ let step (t : t) : Venue.Update.t list =
       (* Nothing trades while a set session is closed: a market-on-open order
          taken after the close waits there for the session a test opens, and
          then fills as a market order does, half a spread from the mark --
-         every fill here pays the spread, the opening auction's included. *)
-      let closed = match t.session with Session.Closed _ -> true | _ -> false in
+         every fill here pays the spread, the opening auction's included.
+         The one exception is the closing auction's: a market-on-close order
+         is due at the close it was taken for, and fills at the first step
+         at or after it -- the session's last mark, half a spread away --
+         whether or not the session now reads closed, since the auction it
+         waited for has happened. *)
+      let closed =
+        match (t.session, r.Order.Request.tif) with
+        | _, Order.Tif.Cls -> false
+        | Session.Closed _, (Order.Tif.Day | Order.Tif.Opg) -> true
+        | (Session.Rolling | Session.Open _), (Order.Tif.Day | Order.Tif.Opg) -> false
+      in
       if
         (not (String.equal o.Venue.Venue_order.status "new"))
         || Time_ns.( < ) now due || closed

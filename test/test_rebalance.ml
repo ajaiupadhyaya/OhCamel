@@ -317,7 +317,9 @@ let journaled journal = List.length (D.Journal.recent_orders journal ~limit:10)
 let test_a_rebalance_is_refused_as_a_unit_when_its_second_order_breaches_a_limit () =
   with_oms
     ~f:(fun oms journal ->
-      let check legs = D.Oms.check_rebalance oms ~source ~legs in
+      let check legs =
+        D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source ~legs
+      in
       Alcotest.(check bool)
         "AAPL +20 alone passes" true
         (Result.is_ok (check [ leg aapl D.Order.Side.Buy 20 ]));
@@ -346,7 +348,9 @@ let test_a_rebalance_outside_the_window_is_refused_naming_the_boundary () =
   with_oms ~now:(at "2026-09-14T21:00:00Z")
     ~f:(fun oms journal ->
       let why =
-        refusal (D.Oms.check_rebalance oms ~source ~legs:[ leg aapl D.Order.Side.Buy 20 ])
+        refusal
+          (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
+             ~legs:[ leg aapl D.Order.Side.Buy 20 ])
       in
       contains "the order and the session rule"
         ~substring:
@@ -429,7 +433,7 @@ let test_a_flat_signal_sells_exactly_the_strategy's_own_shares () =
            ~f:(fun (s, q) -> (Symbol.to_string s, q)));
       match D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[] ~scale:1.0 with
       | Error why -> Alcotest.failf "no targets: %s" why
-      | Ok legs ->
+      | Ok (legs, _) ->
           Alcotest.(check (list (triple string int int)))
             "sell 100 to a target of 0"
             [ ("sell", 100, 0) ]
@@ -462,7 +466,8 @@ let test_a_strategy_with_an_order_that_may_still_fill_is_not_sized () =
               ~scale:1.0));
       contains "and check_rebalance says the same" ~substring:"may still fill"
         (refusal
-           (D.Oms.check_rebalance oms ~source ~legs:[ leg aapl D.Order.Side.Buy 1 ]));
+           (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
+              ~legs:[ leg aapl D.Order.Side.Buy 1 ]));
       Alcotest.(check int) "nothing journaled by the refusal" 2 (journaled journal))
     ();
   with_oms
@@ -577,7 +582,7 @@ let test_a_signal_from_before_an_outage_is_not_sized_at_a_weeks_old_close () =
     ~f:(fun oms journal ->
       let why =
         refusal
-          (D.Oms.check_rebalance oms
+          (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open
              ~source:
                { source with D.Rebalance.Source.as_of = Date.of_string "2026-08-28" }
              ~legs:[ leg aapl D.Order.Side.Buy 10 ])
@@ -603,7 +608,7 @@ let test_a_rebalance_is_gated_as_if_only_its_buys_fill () =
     ~f:(fun oms journal ->
       let why =
         refusal
-          (D.Oms.check_rebalance oms ~source
+          (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
              ~legs:[ leg msft D.Order.Side.Buy 80; leg aapl D.Order.Side.Sell 160 ])
       in
       contains "the buy alone"
@@ -617,7 +622,7 @@ let test_a_rebalance_is_gated_as_if_only_its_buys_fill () =
       Alcotest.(check bool)
         "MSFT +30 beside the sell: passes" true
         (Result.is_ok
-           (D.Oms.check_rebalance oms ~source
+           (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
               ~legs:[ leg aapl D.Order.Side.Sell 160; leg msft D.Order.Side.Buy 30 ]));
       Alcotest.(check int) "nothing journaled" 0 (journaled journal))
     ()
@@ -662,7 +667,7 @@ let test_a_short_strategy's_rebalance_covers_first_and_is_gated_on_its_sells () 
     ~f:(fun oms journal ->
       let why =
         refusal
-          (D.Oms.check_rebalance oms ~source
+          (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
              ~legs:[ leg msft D.Order.Side.Sell 80; leg aapl D.Order.Side.Buy 150 ])
       in
       contains "the sell alone"
@@ -671,7 +676,7 @@ let test_a_short_strategy's_rebalance_covers_first_and_is_gated_on_its_sells () 
       contains "the cover first, the short last"
         ~substring:"(order 2 of 2 (MSFT sell 80 market-on-open) at 299.00): tech-cap" why;
       (match
-         D.Oms.check_rebalance oms ~source
+         D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
            ~legs:[ leg msft D.Order.Side.Sell 20; leg aapl D.Order.Side.Buy 150 ]
        with
       | Error why -> Alcotest.failf "MSFT -20 refused: %s" why
@@ -700,7 +705,7 @@ let test_an_order_that_crosses_zero_is_ordered_and_gated_as_growing () =
     ~held:[ (aapl, 100.0); (msft, 280.0); (xom, -200.0) ]
     ~f:(fun oms _ ->
       match
-        D.Oms.check_rebalance oms ~source
+        D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
           ~legs:[ leg aapl D.Order.Side.Sell 160; leg msft D.Order.Side.Sell 50 ]
       with
       | Error why -> Alcotest.failf "refused: %s" why
@@ -715,7 +720,7 @@ let test_an_order_that_crosses_zero_is_ordered_and_gated_as_growing () =
     ~f:(fun oms _ ->
       let why =
         refusal
-          (D.Oms.check_rebalance oms ~source
+          (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
              ~legs:[ leg aapl D.Order.Side.Buy 160; leg msft D.Order.Side.Sell 80 ])
       in
       contains "the flip, gated as growing"
@@ -726,7 +731,7 @@ let test_an_order_that_crosses_zero_is_ordered_and_gated_as_growing () =
         why;
       contains "a name twice" ~substring:"the rebalance names AAPL twice"
         (refusal
-           (D.Oms.check_rebalance oms ~source
+           (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
               ~legs:[ leg aapl D.Order.Side.Buy 1; leg aapl D.Order.Side.Buy 2 ])))
     ()
 
@@ -745,13 +750,14 @@ let test_each_order_counts_the_ones_before_it_against_the_open_order_cap () =
       Alcotest.(check bool)
         "one order: passes" true
         (Result.is_ok
-           (D.Oms.check_rebalance oms ~source ~legs:[ leg aapl D.Order.Side.Buy 1 ]));
+           (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
+              ~legs:[ leg aapl D.Order.Side.Buy 1 ]));
       contains "the second of two"
         ~substring:
           "order 2 of 2 (MSFT buy 1 market-on-open): open_orders: 1 orders are already \
            open; the cap is 1"
         (refusal
-           (D.Oms.check_rebalance oms ~source
+           (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
               ~legs:[ leg aapl D.Order.Side.Buy 1; leg msft D.Order.Side.Buy 1 ])))
     ()
 
@@ -809,13 +815,16 @@ let test_a_rebalance_is_sized_and_priced_at_the_close_not_the_live_mark () =
            ~scale:1.0
        with
       | Error why -> Alcotest.failf "no targets: %s" why
-      | Ok ls ->
+      | Ok (ls, _) ->
           Alcotest.(check (list (triple string int int)))
             "718 at 149, not 713 at 150"
             [ ("buy", 718, 718) ]
             (List.map ls ~f:(fun (l : Leg.t) ->
                  (D.Order.Side.to_string l.Leg.side, l.Leg.qty, l.Leg.target))));
-      match D.Oms.check_rebalance oms ~source ~legs:[ leg aapl D.Order.Side.Buy 10 ] with
+      match
+        D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
+          ~legs:[ leg aapl D.Order.Side.Buy 10 ]
+      with
       | Error why -> Alcotest.failf "refused: %s" why
       | Ok checked ->
           Alcotest.(check (list (float 0.0)))
@@ -856,7 +865,10 @@ let test_a_prefix_of_the_send_order_is_gated () =
     ~f:(fun oms journal ->
       journal_order journal ~n:7 ~source:"signal:exp_a01_tech:1" ~symbol:msft
         ~state:D.Order.State.Filled ~fills:[ 350.0 ] 350;
-      let why = refusal (D.Oms.check_rebalance oms ~source ~legs:(legs 350)) in
+      let why =
+        refusal
+          (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source ~legs:(legs 350))
+      in
       contains "the prefix, as a subset"
         ~substring:"the gate refuses the rebalance if only order 1 of 2 fills" why;
       contains "its one order, and tech-cap"
@@ -867,7 +879,9 @@ let test_a_prefix_of_the_send_order_is_gated () =
   with_oms ~spec
     ~held:[ (aapl, -500.0); (msft, 300.0); (xom, -200.0) ]
     ~f:(fun oms _ ->
-      match D.Oms.check_rebalance oms ~source ~legs:(legs 300) with
+      match
+        D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source ~legs:(legs 300)
+      with
       | Error why -> Alcotest.failf "MSFT 300: refused: %s" why
       | Ok checked ->
           Alcotest.(check (list string))
@@ -900,7 +914,7 @@ let test_a_later_order_alone_is_gated () =
     ~f:(fun oms journal ->
       let why =
         refusal
-          (D.Oms.check_rebalance oms ~source
+          (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
              ~legs:[ leg aapl D.Order.Side.Sell 700; leg msft D.Order.Side.Buy 300 ])
       in
       contains "the MSFT buy alone"
@@ -942,7 +956,8 @@ let test_a_rebalance_of_more_than_six_orders_is_refused () =
           "the rebalance has 7 orders, and the desk takes at most 6: it gates every \
            combination of a rebalance's orders that could be its fills, 127 for 7 orders \
            and 63 for 6"
-        (refusal (D.Oms.check_rebalance oms ~source ~legs:seven));
+        (refusal
+           (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source ~legs:seven));
       Alcotest.(check int) "nothing journaled" 0 (journaled journal))
     ()
 
@@ -960,7 +975,7 @@ let test_the_rebalance_asks_again_what_its_plan_read () =
         ~state:D.Order.State.Filled ~fills:[ 100.0 ] 100;
       let legs =
         match D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[] ~scale:1.0 with
-        | Ok legs -> legs
+        | Ok (legs, _) -> legs
         | Error why -> Alcotest.failf "the plan: %s" why
       in
       Alcotest.(check (list (pair string int)))
@@ -972,7 +987,7 @@ let test_the_rebalance_asks_again_what_its_plan_read () =
       Graph.stabilize oms.D.Oms.graph;
       contains "I2, asked again"
         ~substring:"the account holds 60 AAPL, less than the strategy's own 100"
-        (refusal (D.Oms.check_rebalance oms ~source ~legs)))
+        (refusal (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source ~legs)))
     ();
   with_oms ~book_is_current:false
     ~f:(fun oms _ ->
@@ -981,7 +996,8 @@ let test_the_rebalance_asks_again_what_its_plan_read () =
           "the book's equity is unknown: the desk has not applied a recent read of the \
            account"
         (refusal
-           (D.Oms.check_rebalance oms ~source ~legs:[ leg aapl D.Order.Side.Buy 10 ])))
+           (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
+              ~legs:[ leg aapl D.Order.Side.Buy 10 ])))
     ()
 
 (* Invariant 10's other half: one submit site. What the compiler holds:
@@ -1080,9 +1096,115 @@ let test_the_venue's_submit_is_called_in_one_place () =
     ]
     (List.map (found ~word:"submit_now") ~f:(fun (file, _, line) -> (file, line)))
 
+(* ------------------------------------------------------------------------ *)
+(* Task 10: the intraday mode -- the limit, the floor, the day order         *)
+(* ------------------------------------------------------------------------ *)
+
+let price_check what expected got = Alcotest.(check (float 1e-9)) what expected got
+
+(* 100.00 x (1 + 10 / 1e4) = 100.00 x 1.001 = 100.10 *)
+let test_limit_price_buy () =
+  price_check "100.00 moved 10 bps up" 100.10
+    (D.Rebalance.limit_price ~side:D.Order.Side.Buy ~mark:100.0 ~slip_bps:10.0)
+
+(* 100.00 x (1 - 10 / 1e4) = 100.00 x 0.999 = 99.90 *)
+let test_limit_price_sell () =
+  price_check "100.00 moved 10 bps down" 99.90
+    (D.Rebalance.limit_price ~side:D.Order.Side.Sell ~mark:100.0 ~slip_bps:10.0)
+
+(* 123.455 x 1.001 = 123.578455: 12357.8455 cents, nearest 12358, 123.58.
+   And a true half: 0.125 at no slip is 12.5 cents exactly (0.125 is a binary
+   fraction), which half to even makes 12 -- 0.12, where half away from zero
+   would make 0.13. *)
+let test_limit_price_rounds_half_even () =
+  price_check "123.455 x 1.001 = 123.578455 -> 123.58" 123.58
+    (D.Rebalance.limit_price ~side:D.Order.Side.Buy ~mark:123.455 ~slip_bps:10.0);
+  price_check "12.5 cents -> 12, not 13" 0.12
+    (D.Rebalance.limit_price ~side:D.Order.Side.Buy ~mark:0.125 ~slip_bps:0.0)
+
+(* A floor of 200: one share at 150.00 is 150 < 200, dropped; two are 300,
+   kept. A sell is measured the same, |qty x price|. *)
+let test_drop_small () =
+  let at150 qty side = { (leg spy side qty) with Leg.price = 150.0 } in
+  let names (ls : Leg.t list) =
+    List.map ls ~f:(fun l ->
+        sprintf "%s %d" (D.Order.Side.to_string l.Leg.side) l.Leg.qty)
+  in
+  let kept, dropped =
+    D.Rebalance.drop_small
+      ~legs:
+        [ at150 1 D.Order.Side.Buy; at150 2 D.Order.Side.Buy; at150 1 D.Order.Side.Sell ]
+      ~min_leg_notional:200.0
+  in
+  Alcotest.(check (pair (list string) (list string)))
+    "1 x 150 = 150 dropped, 2 x 150 = 300 kept"
+    ([ "buy 2" ], [ "buy 1"; "sell 1" ])
+    (names kept, names dropped);
+  (* And Oms.plan_rebalance drops at the book's floor, 200 by default. E is
+     1,070,000 and the fraction 0.1: a weight of 0.002 is 214 of AAPL at its
+     close of 149, 1.44 -> 1 share, 149 < 200, dropped; a weight of 0.003 is
+     321 / 149 = 2.15 -> 2 shares, 298, kept. *)
+  with_oms
+    ~f:(fun oms _ ->
+      let planned w =
+        match
+          D.Oms.plan_rebalance oms ~strategy:tech_strategy
+            ~targets:[ (aapl, w) ]
+            ~scale:1.0
+        with
+        | Ok (kept, dropped) -> (names kept, names dropped)
+        | Error why -> Alcotest.failf "no targets: %s" why
+      in
+      Alcotest.(check (pair (list string) (list string)))
+        "1 share at 149 dropped" ([], [ "buy 1" ]) (planned 0.002);
+      Alcotest.(check (pair (list string) (list string)))
+        "2 shares at 149 kept" ([ "buy 2" ], []) (planned 0.003))
+    ()
+
+(* Tuesday 15 September at 11:00 EDT (15:00Z): the clock read on Monday
+   evening names Tuesday's open at 13:30Z and close at 20:00Z, so the session
+   is open; Monday's close is still the newest whose 16:00 has come, so the
+   calendar passes. An intraday leg is a day limit order at the LIVE mark
+   moved 10 bps toward the far side, judged as a day order and gated at its
+   limit: XOM +10 covers part of the short of 200 (it shrinks, so it goes
+   first), at 100 x 1.001 = 100.10; AAPL +10 at 150 x 1.001 = 150.15 -- the
+   live marks, not the recorded closes of 100 and 149. *)
+let test_intraday_legs_are_day_limits_at_the_live_mark () =
+  with_oms ~now:(at "2026-09-15T15:00:00Z")
+    ~f:(fun oms _ ->
+      match
+        D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Intraday ~source
+          ~legs:[ leg aapl D.Order.Side.Buy 10; leg xom D.Order.Side.Buy 10 ]
+      with
+      | Error why -> Alcotest.failf "refused: %s" why
+      | Ok checked ->
+          Alcotest.(check (list (pair string (pair string (float 1e-9)))))
+            "XOM then AAPL, each a day limit at its live mark plus 10 bps, gated there"
+            [ ("XOM day", ("limit", 100.10)); ("AAPL day", ("limit", 150.15)) ]
+            (List.map checked.D.Oms.Checked_rebalance.orders ~f:(fun (r, _) ->
+                 ( sprintf "%s %s"
+                     (Symbol.to_string r.D.Order.Request.symbol)
+                     (D.Order.Tif.to_string r.D.Order.Request.tif),
+                   ( D.Order.Kind.to_string r.D.Order.Request.kind,
+                     Price.to_float
+                       (Option.value_exn
+                          (D.Order.Kind.limit_price r.D.Order.Request.kind)) ) )));
+          Alcotest.(check (list (float 1e-9)))
+            "gated at the limits" [ 100.10; 150.15 ]
+            (List.map checked.D.Oms.Checked_rebalance.orders ~f:(fun (_, p) ->
+                 Price.to_float p)))
+    ()
+
 let suite =
   ( "rebalance",
     [
+      Alcotest.test_case "limit_price buy" `Quick test_limit_price_buy;
+      Alcotest.test_case "limit_price sell" `Quick test_limit_price_sell;
+      Alcotest.test_case "limit_price rounds half even" `Quick
+        test_limit_price_rounds_half_even;
+      Alcotest.test_case "drop_small" `Quick test_drop_small;
+      Alcotest.test_case "intraday legs are day limits at the live mark" `Quick
+        test_intraday_legs_are_day_limits_at_the_live_mark;
       Alcotest.test_case "targets on both sides of a share boundary" `Quick
         test_targets_on_both_sides_of_a_share_boundary;
       Alcotest.test_case "a negative weight rounds toward zero" `Quick

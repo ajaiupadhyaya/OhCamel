@@ -82,6 +82,7 @@ let suites =
     Test_desk_routes.suite;
     Test_intake.suite;
     Test_rebalance.suite;
+    Test_waves.suite;
     Test_example_book.suite;
   ]
 

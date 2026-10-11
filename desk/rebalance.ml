@@ -81,6 +81,39 @@ end
 
 let positive_finite x = Float.is_finite x && Float.( > ) x 0.0
 
+(* How a rebalance's orders go (design §4.3). [Open]: market-on-open orders,
+   sent between 19:00 ET and the open, priced at the recorded close -- a
+   daily signal's. [Intraday]: day limit orders sent during the regular
+   session, each at the live mark moved [limit_price]'s slip toward the far
+   side, in waves when there are more than [max_legs] of them
+   (desk/waves.ml). The rules, the gate, the journal and the wire are the
+   same for both. *)
+module Mode = struct
+  type t = Open | Intraday [@@deriving sexp_of, compare, equal]
+
+  (* The sizing row's word for it (Journal.record_sizing's [mode]). *)
+  let to_string = function Open -> "open" | Intraday -> "intraday"
+end
+
+(* An intraday leg's limit: the mark moved [slip_bps] toward the far side --
+   up for a buy, down for a sell -- so the order is marketable at once while
+   the quote is within the slip, and never far: the slip is validated below
+   the collar (Desk_spec). Rounded to the cent, half to even, because the
+   rules' tick refuses a limit that is not a whole cent and the venue is sent
+   two decimals: 123.455 x 1.001 = 123.578455, 12357.8455 cents, 123.58. *)
+let limit_price ~(side : Order.Side.t) ~(mark : float) ~(slip_bps : float) : float =
+  let moved = mark *. (1.0 +. (Order.Side.sign side *. slip_bps /. 10_000.0)) in
+  Float.round_nearest_half_to_even (moved *. 100.0) /. 100.0
+
+(* Legs worth less than [min_leg_notional] at their price, |qty x price|, are
+   not sent: an order that small costs more in spread and attention than it
+   moves the strategy. (kept, dropped), each in the order given; the caller
+   says what it dropped. *)
+let drop_small ~(legs : Leg.t list) ~(min_leg_notional : float) : Leg.t list * Leg.t list
+    =
+  List.partition_tf legs ~f:(fun (l : Leg.t) ->
+      Float.( >= ) (Float.abs (Float.of_int l.Leg.qty *. l.Leg.price)) min_leg_notional)
+
 (* Whether an order GROWS its name's position: opens one from flat, takes it
    further from zero, or crosses zero -- a long sold into a short, a short
    bought into a long, which opens a position in the other direction even

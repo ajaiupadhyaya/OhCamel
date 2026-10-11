@@ -961,17 +961,37 @@ let rebalance t ~oms ~(scale : unit -> float) (a : Accepted.t) : string Deferred
                 log t "%S %d: its sizing could not be recorded: %s" doc.strategy
                   doc.sequence (Error.to_string_hum e))
       in
+      (* The legs under the book's floor (Oms.plan_rebalance drops them),
+         said as part of the sentence, so the record shows what was not sent
+         and why. *)
+      let floor_sentence dropped =
+        sprintf "dropped below the $%g floor: %s"
+          (Oms.spec oms).Ohcamel.Config.Book.Desk_spec.min_leg_notional
+          (String.concat ~sep:"; "
+             (List.map dropped ~f:(fun (l : Rebalance.Leg.t) ->
+                  sprintf "%s %s %d (%.2f)" (Symbol.to_string l.symbol)
+                    (Order.Side.to_string l.side) l.qty l.price)))
+      in
       match planned with
       | Error why -> return ("no targets, and no order: " ^ why)
-      | Ok [] ->
+      | Ok ([], []) ->
           sized ();
           return "no order: the strategy's own position already equals every target"
-      | Ok legs ->
-          let%map outcome = Oms.propose_rebalance oms ~source ~legs in
-          (match outcome with Refused _ -> () | Sent _ | Stopped _ -> sized ());
-          sprintf "%s. Targets: %s"
+      | Ok ([], dropped) ->
+          sized ();
+          return ("no order: every order was " ^ floor_sentence dropped)
+      | Ok (legs, dropped) ->
+          let%map outcome =
+            Oms.propose_rebalance oms ~source ~legs ~mode:Rebalance.Mode.Open
+          in
+          (match outcome with
+          | Refused _ -> ()
+          | Sent _ | Stopped _ | Waved _ -> sized ());
+          sprintf "%s. Targets: %s%s"
             (Oms.Rebalance_outcome.to_string outcome)
-            (String.concat ~sep:"; " (List.map legs ~f:Rebalance.Leg.describe)))
+            (String.concat ~sep:"; " (List.map legs ~f:Rebalance.Leg.describe))
+            (if List.is_empty dropped then ""
+             else ". " ^ String.capitalize (floor_sentence dropped)))
 
 (* The pass's accepted documents, one at a time: planned, proposed, and the
    outcome written over the pending sentence. Nothing here raises out: a
