@@ -61,6 +61,7 @@ let suites =
     Test_properties.suite;
     Test_desk_ids.suite;
     Test_contract.suite;
+    Test_overlay.suite;
     Test_desk_order.suite;
     Test_journal.suite;
     Test_journal_backup.suite;
