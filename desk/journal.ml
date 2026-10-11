@@ -971,7 +971,8 @@ let record_signal t (s : Signal.t) =
 
 (* The rebalance's outcome, written over the sentence the judgement was
    recorded with ([from]) and only over that: the intake records an accepted
-   judgement with a pending sentence before it proposes anything, and this
+   (or accepted_incubation) judgement with a pending sentence before it
+   proposes anything, and this
    replaces it once, with what happened. The judgement's own verdict, rule and
    detail are never touched. A row that no longer holds [from] -- an outcome
    already written, or no such accepted judgement -- raises, because a second
@@ -980,7 +981,7 @@ let record_rebalance t ~strategy ~sequence ~from ~outcome =
   write t ~what:"signal rebalance" (fun () ->
       run t ~what:"signal rebalance"
         "UPDATE signals SET rebalance = ? WHERE strategy = ? AND sequence = ? AND \
-         verdict = 'accepted' AND rebalance = ?"
+         verdict IN ('accepted', 'accepted_incubation') AND rebalance = ?"
         [ text outcome; text strategy; Data.INT (Int64.of_int sequence); text from ];
       if Sqlite3.changes t.db <> 1 then
         failwithf "journal: %s %d holds no pending rebalance to record an outcome over"

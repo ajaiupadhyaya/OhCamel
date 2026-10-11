@@ -42,6 +42,10 @@ module Recent = struct
     side : Order.Side.t;
     qty : int;
     at : Time_ns.Alternate_sexp.t;
+    (* Who proposed it: the order's journal source -- "ticket", "manual",
+       signal:<slug>:<sequence>. The duplicate rule is one proposer's double
+       click, so two strategies wanting the same order are not duplicates. *)
+    source : string;
   }
   [@@deriving sexp_of]
 end
@@ -177,6 +181,8 @@ module Context = struct
     adv20 : float option;
     recent : Recent.t list;
     open_orders : int;
+    (* The proposal's own source, as [Recent.source] names one. *)
+    source : string;
     now : Time_ns.t;
   }
 end
@@ -300,6 +306,7 @@ let check (c : Context.t) (r : Order.Request.t) : Failure.t list =
              Symbol.equal x.Recent.symbol r.Order.Request.symbol
              && Order.Side.equal x.Recent.side r.Order.Request.side
              && x.Recent.qty = r.Order.Request.qty
+             && String.equal x.Recent.source c.source
              && Float.( < )
                   (Time_ns.Span.to_sec (Time_ns.diff c.now x.Recent.at))
                   c.spec.Desk_spec.duplicate_window_s)

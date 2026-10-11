@@ -99,13 +99,22 @@
 
    THE VERDICTS:
    - accepted: passes all of it, and its strategy is (sizing live);
+   - accepted_incubation: its strategy is (sizing incubation), the charter's
+     paper tier, and it passes all of it but R6, which it may fail: the
+     contract is asked to carry an R6 failure (Contract.validate ~r6:`Record)
+     and R7 and the desk's checks still run. The rule column is "R6" when
+     the status failed, else empty; the detail is journaled behind
+     "[tier=incubation] ", and the validation block stays in the document,
+     unchanged. It is sized on a paper venue only (Oms.incubation_permitted);
    - advisory: the contract's first failure is R6 -- R1-R5 passed, and R7
-     was never reached -- or it passes all of it and its strategy is
-     (sizing advisory). The rule column says which: "R6" or "sizing";
+     was never reached -- for a strategy that is not incubation, or it
+     passes all of it and its strategy is (sizing advisory). The rule column
+     says which: "R6" or "sizing";
    - rejected: any other first failure, with its rule.
 
-   R5's baseline is the highest sequence among the strategy's accepted and
-   advisory judgements: both passed R1-R5, and a signal whose sequence is
+   R5's baseline is the highest sequence among the strategy's accepted,
+   accepted_incubation and advisory judgements: all passed R1-R5, and a
+   signal whose sequence is
    not above one the desk has already shown is a replay. A document whose
    (strategy, sequence) is already recorded is skipped, never judged a second
    time. Within a pass documents are judged in (strategy, sequence) order,
@@ -385,32 +394,55 @@ let weekday_bound ~as_of ~latest ~bars ~max_age : (unit, string) Result.t =
          weekday_slack max_age)
   else Ok ()
 
+(* [tier] is the strategy's sizing word -- "advisory", "incubation" or
+   "live", and "advisory" for a strategy the book does not register -- on
+   every judgement, whatever its verdict. An incubation judgement's detail is
+   journaled behind [tier_label] ([record]), which is what /api/research
+   reads its tier back from; the other tiers' details are journaled as they
+   always were. *)
 module Judgement = struct
-  type t = { verdict : Verdict.t; rule : string option; detail : string }
+  type t = { verdict : Verdict.t; rule : string option; detail : string; tier : string }
   [@@deriving sexp_of, compare, equal]
 end
 
-let rejected rule detail =
-  { Judgement.verdict = Verdict.Rejected; rule = Some rule; detail }
+let tier_label = "[tier=incubation] "
+
+let tier_of (spec : Signals_spec.Strategy.t option) =
+  match spec with
+  | None -> Signals_spec.sizing_to_string Advisory
+  | Some s -> Signals_spec.sizing_to_string s.Signals_spec.Strategy.sizing
+
+let rejected ~tier rule detail =
+  { Judgement.verdict = Verdict.Rejected; rule = Some rule; detail; tier }
 
 let duplicate (targets : Contract.target list) =
   List.find_a_dup targets ~compare:(fun (a : Contract.target) b ->
       Symbol.compare a.symbol b.symbol)
 
+(* Check 2 of the header, for a document whose contract failure came after
+   R4 or never: R4's weekday bound. *)
+let r4_gap ~latest ~bars_after ~(spec : Signals_spec.Strategy.t option) (doc : Contract.t)
+    =
+  match spec with
+  | None -> Ok ()
+  | Some s ->
+      weekday_bound ~as_of:doc.as_of ~latest ~bars:(bars_after doc.as_of)
+        ~max_age:s.Signals_spec.Strategy.max_age
+
 (* One document's judgement, from the contract's verdict: pure, so every
    branch is a test with a hand-built clock. [`Defer why] is R3 -- the caller
    decides between waiting and giving up. [spec] is the document's strategy,
-   None when it is not registered (R2 has then failed first). *)
-let decide ~(latest : Date.t) ~(bars_after : Date.t -> int)
+   None when it is not registered (R2 has then failed first).
+   [Accepted_unvalidated] comes only from the contract's `Record mode, which
+   [judge_pass] asks for only for an incubation strategy: it is judged as
+   [Accepted] is, carrying R6's reason, and for any other strategy -- which
+   cannot happen -- it is judged as the contract's own R6 failure would be. *)
+let rec decide ~(latest : Date.t) ~(bars_after : Date.t -> int)
     ~(spec : Signals_spec.Strategy.t option) (doc : Contract.t)
     (verdict : Contract.verdict) : [ `Defer of string | `Judged of Judgement.t ] =
-  let r4_gap () =
-    match spec with
-    | None -> Ok ()
-    | Some s ->
-        weekday_bound ~as_of:doc.as_of ~latest ~bars:(bars_after doc.as_of)
-          ~max_age:s.Signals_spec.Strategy.max_age
-  in
+  let tier = tier_of spec in
+  let rejected = rejected ~tier in
+  let r4_gap () = r4_gap ~latest ~bars_after ~spec doc in
   match verdict with
   | Contract.Rejected (R3, why) -> (
       match spec with
@@ -440,63 +472,96 @@ let decide ~(latest : Date.t) ~(bars_after : Date.t -> int)
               detail =
                 why
                 ^ "; R1-R5 passed and R7 was not reached, so it is shown and never sized";
+              tier;
             }
       | Ok (), _ -> `Judged (rejected (Contract.Rule.to_string rule) why))
-  | Accepted doc -> (
-      match (r4_gap (), duplicate doc.targets, spec) with
-      | Error gap, _, _ -> `Judged (rejected "R4" gap)
-      | Ok (), Some t, _ ->
-          `Judged
-            (rejected "R7"
-               (sprintf "%S is named twice in targets" (Symbol.to_string t.symbol)))
-      | Ok (), None, None ->
-          (* R2 passed, so the strategy is registered; failing closed all the
+  | Accepted_unvalidated (doc, why) -> (
+      match spec with
+      | Some { Signals_spec.Strategy.sizing = Incubation; _ } ->
+          sound ~latest ~bars_after ~spec ~unvalidated:(Some why) doc
+      | Some _ | None ->
+          decide ~latest ~bars_after ~spec doc (Contract.Rejected (R6, why)))
+  | Accepted doc -> sound ~latest ~bars_after ~spec ~unvalidated:None doc
+
+(* A document the contract let through -- whole, or with R6's failure
+   [unvalidated] beside it for an incubation strategy -- judged on the
+   desk's own checks: R4's weekday bound, a symbol named twice, the
+   strategy's own symbols; then its strategy's sizing decides the verdict. *)
+and sound ~latest ~bars_after ~spec ~(unvalidated : string option) (doc : Contract.t) =
+  let tier = tier_of spec in
+  let rejected = rejected ~tier in
+  let r4_gap () = r4_gap ~latest ~bars_after ~spec doc in
+  match (r4_gap (), duplicate doc.targets, spec) with
+  | Error gap, _, _ -> `Judged (rejected "R4" gap)
+  | Ok (), Some t, _ ->
+      `Judged
+        (rejected "R7"
+           (sprintf "%S is named twice in targets" (Symbol.to_string t.symbol)))
+  | Ok (), None, None ->
+      (* R2 passed, so the strategy is registered; failing closed all the
              same if that ever stops being true. *)
-          `Judged (rejected "R2" (sprintf "%S is not registered" doc.strategy))
-      | Ok (), None, Some s -> (
-          let own = s.Signals_spec.Strategy.symbols in
-          match
-            List.find doc.targets ~f:(fun t ->
-                not (List.mem own (Symbol.to_string t.symbol) ~equal:String.equal))
-          with
-          | Some t ->
+      `Judged (rejected "R2" (sprintf "%S is not registered" doc.strategy))
+  | Ok (), None, Some s -> (
+      let own = s.Signals_spec.Strategy.symbols in
+      match
+        List.find doc.targets ~f:(fun t ->
+            not (List.mem own (Symbol.to_string t.symbol) ~equal:String.equal))
+      with
+      | Some t ->
+          `Judged
+            (rejected "strategy"
+               (sprintf "%S is not one of %s's symbols (%s)" (Symbol.to_string t.symbol)
+                  s.name (String.concat ~sep:", " own)))
+      | None -> (
+          match s.sizing with
+          | Live ->
               `Judged
-                (rejected "strategy"
-                   (sprintf "%S is not one of %s's symbols (%s)"
-                      (Symbol.to_string t.symbol) s.name (String.concat ~sep:", " own)))
-          | None -> (
-              match s.sizing with
-              | Live ->
-                  `Judged
-                    {
-                      verdict = Accepted;
-                      rule = None;
-                      detail =
-                        "passed R1-R7 and names only its strategy's own symbols; the \
-                         strategy is live";
-                    }
-              | Advisory ->
-                  `Judged
-                    {
-                      verdict = Advisory;
-                      rule = Some "sizing";
-                      detail =
-                        "passed R1-R7 and names only its strategy's own symbols; the \
-                         strategy's sizing is advisory, so it is shown and never sized";
-                    }
-              | Incubation ->
-                  (* The book admits the incubation tier before the desk sizes
-                     it: until the intake learns to, an incubation strategy is
-                     judged as an advisory one is, and says which it is. *)
-                  `Judged
-                    {
-                      verdict = Advisory;
-                      rule = Some "sizing";
-                      detail =
-                        "passed R1-R7 and names only its strategy's own symbols; the \
-                         strategy's sizing is incubation, which this desk does not size \
-                         yet, so it is shown and never sized";
-                    })))
+                {
+                  verdict = Accepted;
+                  rule = None;
+                  detail =
+                    "passed R1-R7 and names only its strategy's own symbols; the \
+                     strategy is live";
+                  tier;
+                }
+          | Advisory ->
+              `Judged
+                {
+                  verdict = Advisory;
+                  rule = Some "sizing";
+                  detail =
+                    "passed R1-R7 and names only its strategy's own symbols; the \
+                     strategy's sizing is advisory, so it is shown and never sized";
+                  tier;
+                }
+          | Incubation ->
+              (* The charter's paper tier: sized whatever its validation
+                     says, on the paper venue only ([rebalance] asks
+                     Oms.incubation_permitted), labelled, never live. The
+                     validation block itself is carried unchanged in the
+                     document beside the judgement. *)
+              `Judged
+                {
+                  verdict = Accepted_incubation;
+                  rule = Option.map unvalidated ~f:(fun _ -> "R6");
+                  detail =
+                    (match unvalidated with
+                    | Some why ->
+                        sprintf
+                          "R6 alone would not size it (%s); R1-R5 and R7 passed and it \
+                           names only its strategy's own symbols, and the strategy's \
+                           sizing is incubation, so it is sized on the paper venue \
+                           whatever its validation says, labelled, and never live"
+                          why
+                    | None ->
+                        sprintf
+                          "validation.status is %S; passed R1-R7 and names only its \
+                           strategy's own symbols, and the strategy's sizing is \
+                           incubation, so it is sized on the paper venue, labelled, and \
+                           never live"
+                          doc.validation.status);
+                  tier;
+                }))
 
 (* ------------------------------------------------------------------------ *)
 (* The intake                                                                *)
@@ -597,7 +662,10 @@ let record t ~name ~ident ~text (doc : Contract.t) (j : Judgement.t) =
       received_at = t.now ();
       verdict = j.verdict;
       rule = j.rule;
-      detail = j.detail;
+      detail =
+        (if String.equal j.tier (Signals_spec.sizing_to_string Incubation) then
+           tier_label ^ j.detail
+         else j.detail);
       document = text;
       rebalance =
         (match j.verdict with
@@ -758,7 +826,7 @@ let judge_pass t : Accepted.t list =
               in
               let baseline =
                 Journal.highest_sequence t.journal ~strategy:doc.strategy
-                  ~verdicts:[ Accepted; Advisory ]
+                  ~verdicts:[ Accepted; Accepted_incubation; Advisory ]
               in
               let registry =
                 {
@@ -770,15 +838,23 @@ let judge_pass t : Accepted.t list =
               in
               (* An unregistered strategy fails R2 before max_age is read. *)
               let max_age = Option.value_map spec ~default:0 ~f:(fun s -> s.max_age) in
+              (* The incubation tier asks the contract to carry an R6
+                 failure rather than stop at it; every other strategy is
+                 judged by the contract as it has always been. *)
+              let r6 =
+                match spec with
+                | Some { Signals_spec.Strategy.sizing = Incubation; _ } -> `Record
+                | Some _ | None -> `Enforce
+              in
               let verdict =
-                Contract.validate ~clock ~registry ~universe:t.universe ~max_age doc
+                Contract.validate ~r6 ~clock ~registry ~universe:t.universe ~max_age doc
               in
               match decide ~latest ~bars_after ~spec doc verdict with
               | `Judged j -> (
                   record t ~name ~ident ~text doc j;
                   (* Recorded above before it is handed on: see the header. *)
                   match (j.verdict, spec) with
-                  | Verdict.Accepted, Some strategy ->
+                  | (Verdict.Accepted | Accepted_incubation), Some strategy ->
                       accepted := { Accepted.strategy; doc } :: !accepted
                   | _ -> ())
               | `Defer why ->
@@ -798,7 +874,7 @@ let judge_pass t : Accepted.t list =
                   let passed = bars_after since in
                   if passed >= max_age then
                     record t ~name ~ident ~text doc
-                      (rejected "R3"
+                      (rejected ~tier:(tier_of spec) "R3"
                          (sprintf
                             "%s; first deferred when the latest session was %s, and %d \
                              sessions have been recorded since with none on or after its \
@@ -817,9 +893,19 @@ let judge_pass t : Accepted.t list =
 
 let pass t = ignore (judge_pass t : Accepted.t list)
 
-(* One accepted document's rebalance, as the sentence recorded beside it. *)
-let rebalance ~oms (a : Accepted.t) : string Deferred.t =
+(* One accepted document's rebalance, as the sentence recorded beside it.
+   An incubation strategy is sized only on a paper venue
+   (Oms.incubation_permitted), and refused as a rebalance is, before anything
+   is planned, anywhere else. Its fraction is the effective one under the
+   book's incubation_cap (Signals_spec.effective_fraction; a live strategy's
+   is its own), and [scale] is the effective scale -- 1 until the overlay
+   sets it. What the strategy was sized to -- its tier, the scale and the
+   dollars allocated, f x scale x E -- is recorded in [sizings] once the plan
+   stands and the proposal was not refused: E is read with the plan, before
+   anything is proposed. *)
+let rebalance t ~oms ~(scale : unit -> float) (a : Accepted.t) : string Deferred.t =
   let doc = a.Accepted.doc in
+  let strategy = a.Accepted.strategy in
   let source =
     {
       Rebalance.Source.strategy = doc.strategy;
@@ -827,25 +913,66 @@ let rebalance ~oms (a : Accepted.t) : string Deferred.t =
       as_of = doc.as_of;
     }
   in
-  match
-    Oms.plan_rebalance oms ~strategy:a.Accepted.strategy
-      ~targets:
-        (List.map doc.targets ~f:(fun (x : Contract.target) -> (x.symbol, x.weight)))
-  with
-  | Error why -> return ("no targets, and no order: " ^ why)
-  | Ok [] -> return "no order: the strategy's own position already equals every target"
-  | Ok legs ->
-      let%map outcome = Oms.propose_rebalance oms ~source ~legs in
-      sprintf "%s. Targets: %s"
-        (Oms.Rebalance_outcome.to_string outcome)
-        (String.concat ~sep:"; " (List.map legs ~f:Rebalance.Leg.describe))
+  let permitted =
+    match strategy.Signals_spec.Strategy.sizing with
+    | Incubation -> Oms.incubation_permitted oms
+    | Live | Advisory -> Ok ()
+  in
+  match permitted with
+  | Error why -> return (Oms.Rebalance_outcome.to_string (Refused why))
+  | Ok () -> (
+      let fraction =
+        Signals_spec.effective_fraction
+          ~incubation_cap:(Oms.spec oms).Ohcamel.Config.Book.Desk_spec.incubation_cap
+          { Signals_spec.strategies = t.strategies }
+          strategy
+      in
+      let scale = scale () in
+      let planned =
+        Oms.plan_rebalance oms
+          ~strategy:{ strategy with capital_fraction = fraction }
+          ~targets:
+            (List.map doc.targets ~f:(fun (x : Contract.target) -> (x.symbol, x.weight)))
+          ~scale
+      in
+      let equity = Oms.sizing_equity oms in
+      let sized () =
+        match equity with
+        | Error _ -> ()
+        | Ok equity -> (
+            match
+              Or_error.try_with (fun () ->
+                  Journal.record_sizing t.journal ~strategy:doc.strategy
+                    ~sequence:doc.sequence ~at:(t.now ())
+                    ~tier:(Signals_spec.sizing_to_string strategy.sizing)
+                    ~scale
+                    ~allocated:(fraction *. scale *. equity)
+                    ~mode:"open")
+            with
+            | Ok () -> ()
+            | Error e ->
+                log t "%S %d: its sizing could not be recorded: %s" doc.strategy
+                  doc.sequence (Error.to_string_hum e))
+      in
+      match planned with
+      | Error why -> return ("no targets, and no order: " ^ why)
+      | Ok [] ->
+          sized ();
+          return "no order: the strategy's own position already equals every target"
+      | Ok legs ->
+          let%map outcome = Oms.propose_rebalance oms ~source ~legs in
+          (match outcome with Refused _ -> () | Sent _ | Stopped _ -> sized ());
+          sprintf "%s. Targets: %s"
+            (Oms.Rebalance_outcome.to_string outcome)
+            (String.concat ~sep:"; " (List.map legs ~f:Rebalance.Leg.describe)))
 
 (* The pass's accepted documents, one at a time: planned, proposed, and the
    outcome written over the pending sentence. Nothing here raises out: a
    rebalance that raises is recorded as having raised, with where to look,
    and one whose outcome cannot be written is said in the log. [oms] is None
    only for an intake with no order manager, which sizes nothing and says so. *)
-let size t ~(oms : Oms.t option) (accepted : Accepted.t list) : unit Deferred.t =
+let size t ~(oms : Oms.t option) ~(scale : unit -> float) (accepted : Accepted.t list) :
+    unit Deferred.t =
   Deferred.List.iter ~how:`Sequential accepted ~f:(fun (a : Accepted.t) ->
       let doc = a.Accepted.doc in
       let source =
@@ -870,7 +997,9 @@ let size t ~(oms : Oms.t option) (accepted : Accepted.t list) : unit Deferred.t 
                  b.Accepted.doc.sequence)
         | None, None -> return "not sized: this intake runs with no order manager"
         | None, Some oms -> (
-            match%map Monitor.try_with ~extract_exn:true (fun () -> rebalance ~oms a) with
+            match%map
+              Monitor.try_with ~extract_exn:true (fun () -> rebalance t ~oms ~scale a)
+            with
             | Ok outcome -> outcome
             | Error exn ->
                 sprintf
@@ -905,7 +1034,11 @@ let run ?(time_source = Time_source.wall_clock ()) ?oms t : unit Deferred.t =
         []
     in
     let%bind () =
-      match%map Monitor.try_with ~extract_exn:true (fun () -> size t ~oms accepted) with
+      (* The effective scale is 1 until the overlay sets it (Task 11). *)
+      match%map
+        Monitor.try_with ~extract_exn:true (fun () ->
+            size t ~oms ~scale:(fun () -> 1.0) accepted)
+      with
       | Ok () -> ()
       | Error exn -> log t "sizing raised: %s" (Exn.to_string exn)
     in
@@ -924,13 +1057,26 @@ let jopt f = function None -> `Null | Some x -> f x
 (* The weights and the validation block, from the recorded document parsed
    again -- never the document's own JSON passed through, so what reaches the
    page is exactly these fields, each a string or a finite number. *)
-let judgement_json (s : Journal.Signal.t) : Yojson.Safe.t =
+let judgement_json ~(sizing : Signals_spec.sizing) (s : Journal.Signal.t) : Yojson.Safe.t
+    =
   let doc = match parse s.document with Ok d -> Some d | Error _ -> None in
   `Assoc
     [
       ("verdict", `String (Verdict.to_string s.verdict));
       ("rule", jopt (fun r -> `String r) s.rule);
       ("detail", `String s.detail);
+      (* The judgement's tier: "incubation" when its detail was journaled
+         behind the label, else its strategy's sizing word -- "advisory" for
+         an incubation strategy's unlabelled judgement, which only a desk
+         that did not yet size the tier could have recorded. *)
+      ( "tier",
+        `String
+          (if String.is_prefix s.detail ~prefix:tier_label then
+             Signals_spec.sizing_to_string Incubation
+           else
+             match sizing with
+             | Incubation -> Signals_spec.sizing_to_string Advisory
+             | Live | Advisory -> Signals_spec.sizing_to_string sizing) );
       (* An accepted judgement's rebalance: pending, then what came of it.
          Null for every other verdict. *)
       ("rebalance", jopt (fun r -> `String r) s.rebalance);
@@ -988,8 +1134,9 @@ let research_json ~journal ~(strategies : Signals_spec.Strategy.t list) (status 
                    ("sizing", `String (Signals_spec.sizing_to_string s.sizing));
                    ("capital_fraction", jnum s.capital_fraction);
                    ( "latest",
-                     jopt judgement_json (Journal.latest_signal journal ~strategy:s.name)
-                   );
+                     jopt
+                       (judgement_json ~sizing:s.sizing)
+                       (Journal.latest_signal journal ~strategy:s.name) );
                  ])) );
       ("r8", `String r8_sentence);
     ]

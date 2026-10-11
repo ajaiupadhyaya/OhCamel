@@ -113,6 +113,13 @@ let judge s =
   | Ok s -> Contract.validate ~clock ~registry ~universe ~max_age s
   | Error e -> failwithf "test document did not parse: %s" e ()
 
+(* The incubation tier's mode (Task 9): an R6 failure is carried, not
+   refused, and R7 still runs. *)
+let judge_record s =
+  match Contract.parse_string s with
+  | Ok s -> Contract.validate ~r6:`Record ~clock ~registry ~universe ~max_age s
+  | Error e -> failwithf "test document did not parse: %s" e ()
+
 let judge_with_clock c s =
   match Contract.parse_string s with
   | Ok s -> Contract.validate ~clock:c ~registry ~universe ~max_age s
@@ -141,6 +148,8 @@ let expect_clock_create_raises ~earliest_bar ~latest_bar ~bars_after =
 let expect_accept v =
   match v with
   | Contract.Accepted _ -> ()
+  | Contract.Accepted_unvalidated (_, why) ->
+      Alcotest.failf "expected ACCEPT, got ACCEPT-UNVALIDATED: %s" why
   | Contract.Rejected (r, why) ->
       Alcotest.failf "expected ACCEPT, got %s: %s" (Contract.Rule.to_string r) why
 
@@ -151,7 +160,7 @@ let expect_rule rule v =
         "rule"
         (Contract.Rule.to_string rule)
         (Contract.Rule.to_string r)
-  | Contract.Accepted _ ->
+  | Contract.Accepted _ | Contract.Accepted_unvalidated _ ->
       Alcotest.failf "expected %s, got ACCEPT" (Contract.Rule.to_string rule)
 
 (* ------------------------------------------------------------------------ *)
@@ -203,6 +212,7 @@ let oracle_clock_and_config () =
 
 let core_label = function
   | Contract.Accepted _ -> "ACCEPT"
+  | Contract.Accepted_unvalidated _ -> "ACCEPT-UNVALIDATED"
   | Contract.Rejected (r, _) -> sprintf "REJECT %s" (Contract.Rule.to_string r)
 
 (* I2: the set of *.json files actually in interface/examples/, minus
@@ -304,7 +314,8 @@ let suite =
                 (String.is_substring why ~substring:"is 4 bars old")
           | Contract.Rejected (r, why) ->
               Alcotest.failf "expected R4, got %s: %s" (Contract.Rule.to_string r) why
-          | Contract.Accepted _ -> Alcotest.fail "expected R4, got ACCEPT");
+          | Contract.Accepted _ | Contract.Accepted_unvalidated _ ->
+              Alcotest.fail "expected R4, got ACCEPT");
       t "R4 boundary: exactly max_age bars old, inside the clock's history" (fun () ->
           expect_accept (judge_with_clock long_clock (doc ~as_of:"2020-12-28" ())));
       t "R5: a replayed sequence" (fun () ->
@@ -333,6 +344,26 @@ let suite =
       t "R6 before R7" (fun () ->
           expect_rule Contract.Rule.R6
             (judge (doc ~status:"fail" ~targets:[ ("TSLA", 1.0) ] ())));
+      (* The incubation tier (Task 9). A status of "fail" with SPY 1.0, which
+         R7 allows: R1-R5 pass, R6 fails, R7 passes -- so `Record carries
+         R6's own sentence beside the document. SPY 1.5 fails R7 whatever R6
+         says, and `Record still refuses it at R7. And the default is today's
+         contract: R6 refuses. *)
+      t "record mode carries R6" (fun () ->
+          match judge_record (doc ~status:"fail" ()) with
+          | Contract.Accepted_unvalidated (_, why) ->
+              Alcotest.(check string)
+                "R6's own reason, verbatim"
+                "validation.status is \"fail\" -- advisory, not traded" why
+          | Contract.Accepted _ -> Alcotest.fail "expected ACCEPT-UNVALIDATED, got ACCEPT"
+          | Contract.Rejected (r, why) ->
+              Alcotest.failf "expected ACCEPT-UNVALIDATED, got %s: %s"
+                (Contract.Rule.to_string r) why);
+      t "record mode still rejects R7" (fun () ->
+          expect_rule Contract.Rule.R7
+            (judge_record (doc ~status:"fail" ~targets:[ ("SPY", 1.5) ] ())));
+      t "enforce is unchanged" (fun () ->
+          expect_rule Contract.Rule.R6 (judge (doc ~status:"fail" ())));
       t "a missing required field is an error, not a default" (fun () ->
           let s =
             String.substr_replace_first (doc ()) ~pattern:{|"sequence":6,|} ~with_:""

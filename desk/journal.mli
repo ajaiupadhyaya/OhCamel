@@ -207,8 +207,9 @@ val record_signal : t -> Signal.t -> unit
 
 val record_rebalance :
   t -> strategy:string -> sequence:int -> from:string -> outcome:string -> unit
-(** Replaces an accepted judgement's rebalance, when it still reads [from], with
-    [outcome]; raises when no such row holds [from], so an outcome is written once. *)
+(** Replaces an accepted or accepted_incubation judgement's rebalance, when it still reads
+    [from], with [outcome]; raises when no such row holds [from], so an outcome is written
+    once. *)
 
 val signal_judged : t -> strategy:string -> sequence:int -> bool
 

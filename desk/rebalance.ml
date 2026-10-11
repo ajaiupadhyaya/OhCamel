@@ -1,7 +1,9 @@
-(* A live strategy's targets, as orders: pure, so every number is a test.
+(* A sized strategy's targets, as orders: pure, so every number is a test.
 
    The intake judges a signal accepted only when it passes R1-R7 and its
-   strategy is (sizing live) -- ruling 2, which no code sets. Then this turns
+   strategy is (sizing live) -- ruling 2, which no code sets -- or
+   accepted_incubation when its strategy is (sizing incubation), on the
+   paper venue only, whatever its validation status. Then this turns
    its weights into whole shares, and the order manager proposes them as one
    rebalance of market-on-open orders (Oms.propose_rebalance), through the
    same rules, the same gate and the same journal as a ticket.
@@ -12,10 +14,12 @@
    symbols, each at the signal's weight or at 0 when the signal does not name
    it -- without that, going flat would sell nothing.
 
-   For each symbol, with capital_fraction f, equity E, weight w and the
-   opening-auction price p (the last recorded close):
+   For each symbol, with capital_fraction f (an incubation strategy's
+   effective fraction under the book's incubation_cap), the effective scale
+   s in [0, 1] (1 until the overlay sets it; 0 flattens), equity E, weight w
+   and the opening-auction price p (the last recorded close):
 
-     target  = trunc(w x f x E / p)          toward zero: whole shares, and
+     target  = trunc(w x f x s x E / p)      toward zero: whole shares, and
                                              never more than the weight asks
      current = the strategy's OWN position: the net of the desk's fills of
                orders whose source is signal:<slug>:*
@@ -234,7 +238,7 @@ let account_refusal ~(symbol : Symbol.t) ~(held : float) ~(own : float) : string
        held (Symbol.to_string symbol) own)
 
 let plan ~(symbols : Symbol.t list) ~(weights : (Symbol.t * float) list)
-    ~(capital_fraction : float) ~(equity : (float, string) Result.t)
+    ~(capital_fraction : float) ~(scale : float) ~(equity : (float, string) Result.t)
     ~(account : float Symbol.Map.t) ~(marks : (float, string) Result.t Symbol.Map.t)
     ~(current : (float Symbol.Map.t, string) Result.t) : (Leg.t list, string) Result.t =
   let open Result.Let_syntax in
@@ -245,6 +249,12 @@ let plan ~(symbols : Symbol.t list) ~(weights : (Symbol.t * float) list)
   let%bind () =
     if Float.( > ) capital_fraction 0.0 && Float.( <= ) capital_fraction 1.0 then Ok ()
     else Error (sprintf "capital_fraction %g is not in (0, 1]" capital_fraction)
+  in
+  (* Written as two positive comparisons, so a NaN -- for which both are
+     false -- is refused, never sized. 0 is a flatten, not an error. *)
+  let%bind () =
+    if Float.( >= ) scale 0.0 && Float.( <= ) scale 1.0 then Ok ()
+    else Error (sprintf "scale %g is not in [0, 1]" scale)
   in
   let%bind equity =
     match equity with
@@ -304,7 +314,8 @@ let plan ~(symbols : Symbol.t list) ~(weights : (Symbol.t * float) list)
         in
         let%bind target =
           match
-            Float.iround_towards_zero (weight *. capital_fraction *. equity /. price)
+            Float.iround_towards_zero
+              (weight *. capital_fraction *. scale *. equity /. price)
           with
           | Some n -> Ok n
           | None ->

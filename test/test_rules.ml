@@ -42,6 +42,7 @@ let context =
     adv20 = Some 16_600.0;
     recent = [];
     open_orders = 0;
+    source = "manual";
     now;
   }
 
@@ -168,6 +169,7 @@ let test_a_duplicate_within_the_window () =
       side = Order.Side.Buy;
       qty;
       at = Time_ns.sub now (Time_ns.Span.of_sec seconds_ago);
+      source = "manual";
     }
   in
   check_rules "the same order 9 s ago" [ "duplicate" ]
@@ -179,6 +181,35 @@ let test_a_duplicate_within_the_window () =
   check_rules "a different quantity 1 s ago" []
     { context with recent = [ recent 1.0 11 ] }
     (request 10)
+
+(* Two strategies may want the same order: the rule is one proposer's
+   double-click, not two strategies' agreement (Task 9). SPY Buy 10 from
+   signal:a:1, 5 s ago, inside the 10 s window: signal:b:1's SPY Buy 10
+   passes, and signal:a:1's again is the duplicate. *)
+let test_duplicate_is_per_source () =
+  let spy = Symbol.of_string "SPY" in
+  let ctx =
+    {
+      context with
+      universe = Set.add context.universe spy;
+      recent =
+        [
+          {
+            Rules.Recent.symbol = spy;
+            side = Order.Side.Buy;
+            qty = 10;
+            at = Time_ns.sub now (Time_ns.Span.of_sec 5.0);
+            source = "signal:a:1";
+          };
+        ];
+    }
+  in
+  check_rules "another source" []
+    { ctx with source = "signal:b:1" }
+    (request ~symbol:spy 10);
+  check_rules "the same source" [ "duplicate" ]
+    { ctx with source = "signal:a:1" }
+    (request ~symbol:spy 10)
 
 let test_open_orders () =
   (* The default max_open_orders, 200 (lib/config.ml): 199 rest and one more
@@ -408,6 +439,7 @@ let suite =
         test_participation_in_twenty_day_volume;
       Alcotest.test_case "a duplicate within the window" `Quick
         test_a_duplicate_within_the_window;
+      Alcotest.test_case "duplicate is per source" `Quick test_duplicate_is_per_source;
       Alcotest.test_case "open orders" `Quick test_open_orders;
       Alcotest.test_case "every failure is reported, in rule order" `Quick
         test_every_failure_is_reported_in_rule_order;

@@ -290,7 +290,8 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
                 respond_error server `Method_not_allowed "POST a ticket to preview it"
               else
                 with_ticket server r ~f:(fun ticket ->
-                    respond server (Oms.Preview.to_json (Oms.preview oms ticket)))));
+                    respond server
+                      (Oms.Preview.to_json (Oms.preview oms ~source:"ticket" ticket)))));
     };
     {
       Server.path = "/api/desk/orders";

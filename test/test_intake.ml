@@ -8,6 +8,8 @@
 
    Two strategies unless a case says otherwise: exp_a01_spy on SPY, LIVE, and
    exp_a01_tlt on TLT, advisory, each at half the capital and max_age 3. The
+   incubation cases (Task 9) add a third, inc_spy on SPY, (sizing incubation),
+   also at half and max_age 3 -- they judge it, and test/desk_async sizes it. The
    universe is SPY, TLT and QQQ, so QQQ is a name R7 allows and neither
    strategy owns. Session dates are real weekdays of September 2026: the 14th
    is a Monday and the 18th a Friday. *)
@@ -44,6 +46,8 @@ let strategy ?(sizing = Signals_spec.Advisory) ?(max_age = 3) name symbols =
 
 let spy_live = strategy ~sizing:Signals_spec.Live "exp_a01_spy" [ "SPY" ]
 let tlt_advisory = strategy "exp_a01_tlt" [ "TLT" ]
+let spy_incubation = strategy ~sizing:Signals_spec.Incubation "inc_spy" [ "SPY" ]
+let three = [ spy_live; tlt_advisory; spy_incubation ]
 let zeros = "sha256:" ^ String.make 64 '0'
 
 (* One document, as the research service writes it, with every field the
@@ -1174,6 +1178,7 @@ let test_api_research's_shape () =
                   "verdict";
                   "rule";
                   "detail";
+                  "tier";
                   "rebalance";
                   "sequence";
                   "as_of";
@@ -1191,6 +1196,9 @@ let test_api_research's_shape () =
                   Int.to_string (Yojson.Safe.Util.to_int (field latest "sequence"));
                   Yojson.Safe.Util.to_string (field latest "as_of");
                 ];
+              Alcotest.(check string)
+                "a live strategy's judgement is the live tier" "live"
+                (Yojson.Safe.Util.to_string (field latest "tier"));
               Alcotest.(check string)
                 "an advisory judgement has no rebalance" "null"
                 (Yojson.Safe.to_string (field latest "rebalance"));
@@ -1445,6 +1453,167 @@ let test_the_manifests_carry_every_line_the_page_reads () =
                | _ -> Alcotest.fail "no sources")
                ~f:(fun (_, v) -> Yojson.Safe.Util.to_int v))))
 
+(* ------------------------------------------------------------------------ *)
+(* The incubation tier (Task 9)                                              *)
+(* ------------------------------------------------------------------------ *)
+
+(* inc_spy is (sizing incubation): a document whose battery FAILED is sized
+   all the same, on the paper venue, labelled. R1-R5 and R7 pass, R6's own
+   sentence is carried as the rule, the verdict is accepted_incubation, the
+   detail names the status and the tier, and the document is handed to
+   sizing with its rebalance pending -- never "not sized". *)
+let test_incubation_sizes_a_failing_status () =
+  with_intake ~strategies:three ~sessions:week
+    ~f:(fun f ->
+      write f.dir "inc.json"
+        (doc ~strategy:"inc_spy" ~sequence:7 ~status:"fail" "2026-09-18");
+      let accepted = Intake.judge_pass f.intake in
+      Alcotest.check judgement "accepted_incubation, at R6"
+        (Some ("accepted_incubation", Some "R6"))
+        (judged f "inc_spy" 7);
+      let d = detail f "inc_spy" 7 in
+      contains "the detail is labelled" ~substring:"[tier=incubation] " d;
+      contains "the detail names the status" ~substring:{|validation.status is "fail"|} d;
+      contains "the detail names the tier" ~substring:"incubation" d;
+      Alcotest.(check (list (pair string int)))
+        "handed to sizing"
+        [ ("inc_spy", 7) ]
+        (accepted_keys accepted);
+      let r = Option.value_exn (rebalance_of f "inc_spy" 7) in
+      Alcotest.(check string)
+        "its rebalance pending"
+        (Intake.pending ~strategy:"inc_spy" ~sequence:7)
+        r;
+      Alcotest.(check bool)
+        (sprintf "never 'not sized': %S" r)
+        false
+        (String.is_prefix r ~prefix:"not sized"))
+    ()
+
+(* The same strategy's passing document: accepted_incubation with no rule --
+   the tier, not the status, is what sizes it. *)
+let test_incubation_sizes_a_pass_too () =
+  with_intake ~strategies:three ~sessions:week
+    ~f:(fun f ->
+      write f.dir "inc.json" (doc ~strategy:"inc_spy" ~sequence:7 "2026-09-18");
+      let accepted = Intake.judge_pass f.intake in
+      Alcotest.check judgement "accepted_incubation, no rule"
+        (Some ("accepted_incubation", None))
+        (judged f "inc_spy" 7);
+      contains "the detail names the status" ~substring:{|validation.status is "pass"|}
+        (detail f "inc_spy" 7);
+      Alcotest.(check (list (pair string int)))
+        "handed to sizing"
+        [ ("inc_spy", 7) ]
+        (accepted_keys accepted))
+    ()
+
+(* The tier changes nothing for a live strategy: in the same pass, beside
+   inc_spy's failing document, exp_a01_spy's failing one is advisory at R6,
+   unlabelled and never sized, exactly as before. And an incubation
+   document that fails R7 is still rejected at R7: the tier carries R6, and
+   nothing else. *)
+let test_live_still_advisory_on_fail () =
+  with_intake ~strategies:three ~sessions:week
+    ~f:(fun f ->
+      write f.dir "live.json" (doc ~sequence:7 ~status:"fail" "2026-09-18");
+      write f.dir "inc.json"
+        (doc ~strategy:"inc_spy" ~sequence:7 ~status:"fail"
+           ~targets:[ ("SPY", 1.5) ]
+           "2026-09-18");
+      let accepted = Intake.judge_pass f.intake in
+      Alcotest.check judgement "live: advisory at R6"
+        (Some ("advisory", Some "R6"))
+        (judged f "exp_a01_spy" 7);
+      Alcotest.(check string)
+        "live: the detail as before"
+        {|validation.status is "fail" -- advisory, not traded; R1-R5 passed and R7 was not reached, so it is shown and never sized|}
+        (detail f "exp_a01_spy" 7);
+      Alcotest.check judgement "incubation over-levered: rejected at R7"
+        (Some ("rejected", Some "R7"))
+        (judged f "inc_spy" 7);
+      Alcotest.(check (list (pair string int)))
+        "nothing sized" [] (accepted_keys accepted))
+    ()
+
+(* /api/research serves each latest judgement's tier: inc_spy's is
+   "incubation", from the label its detail was journaled with. *)
+let test_tier_served () =
+  with_intake ~strategies:three ~sessions:week
+    ~f:(fun f ->
+      write f.dir "inc.json"
+        (doc ~strategy:"inc_spy" ~sequence:7 ~status:"fail" "2026-09-18");
+      Intake.pass f.intake;
+      let json =
+        Intake.research_json ~journal:f.journal ~strategies:three
+          (Intake.Running f.intake)
+      in
+      match
+        List.find
+          (Yojson.Safe.Util.to_list (field json "strategies"))
+          ~f:(fun s ->
+            String.equal (Yojson.Safe.Util.to_string (field s "name")) "inc_spy")
+      with
+      | None -> Alcotest.fail "inc_spy is not served"
+      | Some inc ->
+          Alcotest.(check string)
+            "its sizing" "incubation"
+            (Yojson.Safe.Util.to_string (field inc "sizing"));
+          let latest = field inc "latest" in
+          Alcotest.(check (list string))
+            "verdict and tier"
+            [ "accepted_incubation"; "incubation" ]
+            [
+              Yojson.Safe.Util.to_string (field latest "verdict");
+              Yojson.Safe.Util.to_string (field latest "tier");
+            ])
+    ()
+
+(* Invariant 15: the validation block is never rewritten. The file is
+   written by hand, with spacing and number spellings no serialiser of ours
+   produces (0.310, 7.2e-1, 2E-1), so a re-serialised document could not
+   equal it: the signals row's document is the file's bytes, and parsing it
+   back gives the file's own validation fields. *)
+let test_the_validation_block_is_journaled_byte_for_byte () =
+  with_intake ~strategies:three ~sessions:week
+    ~f:(fun f ->
+      let text =
+        sprintf
+          {|{ "schema_version": 1, "strategy": "inc_spy", "params_hash": "%s",
+  "as_of": "2026-09-18", "computed_at": "2026-09-18T23:15:00Z", "data_hash": "%s",
+  "sequence": 7,
+  "validation": { "status": "fail", "gates_version": "2026-09-02",
+                  "dsr": 0.310, "psr": 7.2e-1, "pbo": 2E-1, "manifest": "m.json" },
+  "targets": [ { "symbol": "SPY", "weight": 1 } ] }|}
+          zeros zeros
+      in
+      write f.dir "inc.json" text;
+      Intake.pass f.intake;
+      let row =
+        Option.value_exn (Journal.signal f.journal ~strategy:"inc_spy" ~sequence:7)
+      in
+      Alcotest.(check string)
+        "the document is the file's bytes" text row.Journal.Signal.document;
+      let validation s =
+        let v =
+          match D.Contract.parse_string s with
+          | Ok d -> d.D.Contract.validation
+          | Error why -> Alcotest.failf "not a signal: %s" why
+        in
+        ( (v.D.Contract.status, v.D.Contract.gates_version),
+          (v.D.Contract.dsr, v.D.Contract.psr, v.D.Contract.pbo),
+          v.D.Contract.manifest )
+      in
+      let file = validation text in
+      Alcotest.(check bool)
+        "parsed back, its validation is the file's" true
+        (Poly.equal file (validation row.Journal.Signal.document));
+      Alcotest.(check bool)
+        "and the file's is what was written" true
+        (Poly.equal file
+           (("fail", "2026-09-02"), (Some 0.31, Some 0.72, Some 0.2), Some "m.json")))
+    ()
+
 let suite =
   ( "intake",
     [
@@ -1515,6 +1684,15 @@ let suite =
       Alcotest.test_case "a crash between judging and proposing does not re-size" `Quick
         test_a_crash_between_judging_and_proposing_does_not_re_size;
       Alcotest.test_case "/api/research's shape" `Quick test_api_research's_shape;
+      Alcotest.test_case "incubation sizes a failing status" `Quick
+        test_incubation_sizes_a_failing_status;
+      Alcotest.test_case "incubation sizes a pass too" `Quick
+        test_incubation_sizes_a_pass_too;
+      Alcotest.test_case "live still advisory on fail" `Quick
+        test_live_still_advisory_on_fail;
+      Alcotest.test_case "tier served" `Quick test_tier_served;
+      Alcotest.test_case "the validation block is journaled byte for byte" `Quick
+        test_the_validation_block_is_journaled_byte_for_byte;
       Alcotest.test_case "/api/research on the demo" `Quick test_api_research_on_the_demo;
       Alcotest.test_case "the latest judgement is one index seek" `Quick
         test_the_latest_judgement_is_one_index_seek;

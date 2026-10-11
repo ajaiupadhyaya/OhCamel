@@ -117,7 +117,11 @@ end
    anything held only for one command. *)
 type registry = { strategies : string list; last_sequence : (string * int) list }
 type universe = Ohcamel.Types.Symbol.t list
-type verdict = Accepted of t | Rejected of Rule.t * string
+
+type verdict =
+  | Accepted of t
+  | Accepted_unvalidated of t * string
+  | Rejected of Rule.t * string
 
 (* ------------------------------------------------------------------------ *)
 (* Parsing. Lenient about nothing: a missing or mistyped required field is a
@@ -259,23 +263,43 @@ let r7 (universe : universe) s =
         Error (Rule.R7, sprintf "sum |weight| = %g > 1" sum_abs)
       else Ok ()
 
-let validate ~clock ~registry ~universe ~max_age (s : t) : verdict =
+(* [validate]'s optional argument is named for the rule it governs, and
+   would shadow the rule's function inside it. *)
+let validation_rule = r6
+
+(* `Enforce: R1 through R7, the first failure reported -- the contract as it
+   has always been. `Record (the incubation tier, and only the intake asks
+   for it): R1-R5 as before, then an R6 failure is NOT the first failure --
+   its reason is kept, R7 still runs, and a document that passes R7 is
+   Accepted_unvalidated with R6's own reason beside it. R7's failure is
+   Rejected either way: the tier carries the validation status, never a
+   malformed target list. *)
+let validate ?(r6 = `Enforce) ~clock ~registry ~universe ~max_age (s : t) : verdict =
   let ( >>= ) r f = match r with Ok () -> f () | Error e -> Error e in
-  match
+  let through_r5 =
     r1 s >>= fun () ->
     r2 registry s >>= fun () ->
     r3 clock s >>= fun () ->
-    r4 clock ~max_age s >>= fun () ->
-    r5 registry s >>= fun () ->
-    r6 s >>= fun () -> r7 universe s
-  with
-  | Ok () -> Accepted s
-  | Error (rule, why) -> Rejected (rule, why)
+    r4 clock ~max_age s >>= fun () -> r5 registry s
+  in
+  match (through_r5, validation_rule s, r6) with
+  | Error (rule, why), _, _ | Ok (), Error (rule, why), `Enforce -> Rejected (rule, why)
+  | Ok (), Ok (), _ -> (
+      match r7 universe s with
+      | Ok () -> Accepted s
+      | Error (rule, why) -> Rejected (rule, why))
+  | Ok (), Error (_, unvalidated), `Record -> (
+      match r7 universe s with
+      | Ok () -> Accepted_unvalidated (s, unvalidated)
+      | Error (rule, why) -> Rejected (rule, why))
 
 let verdict_to_string = function
   | Accepted s ->
       sprintf "ACCEPT %s seq=%d as_of=%s targets=%d" s.strategy s.sequence
         (Date.to_string s.as_of) (List.length s.targets)
+  | Accepted_unvalidated (s, why) ->
+      sprintf "ACCEPT-UNVALIDATED %s seq=%d as_of=%s targets=%d: %s" s.strategy s.sequence
+        (Date.to_string s.as_of) (List.length s.targets) why
   | Rejected (rule, why) ->
       sprintf "REJECT %s: %s (%s)" (Rule.to_string rule) why (Rule.describe rule)
 

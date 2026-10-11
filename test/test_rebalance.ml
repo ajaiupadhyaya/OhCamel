@@ -37,14 +37,14 @@ let evening = at "2026-09-14T23:15:00Z"
 
 (* The account holds whatever the strategy does unless a case says otherwise:
    [account] defaults to the strategy's own position. *)
-let plan ?(symbols = [ spy ]) ?(capital_fraction = 0.5) ?(equity = Ok 100_000.0)
-    ?(current = Ok Symbol.Map.empty) ?account ~price weights =
+let plan ?(symbols = [ spy ]) ?(capital_fraction = 0.5) ?(scale = 1.0)
+    ?(equity = Ok 100_000.0) ?(current = Ok Symbol.Map.empty) ?account ~price weights =
   let account =
     match account with
     | Some a -> a
     | None -> Result.ok current |> Option.value ~default:Symbol.Map.empty
   in
-  D.Rebalance.plan ~symbols ~weights ~capital_fraction ~equity ~account
+  D.Rebalance.plan ~symbols ~weights ~capital_fraction ~scale ~equity ~account
     ~marks:(Symbol.Map.of_alist_exn (List.map symbols ~f:(fun s -> (s, Ok price))))
     ~current
 
@@ -107,7 +107,7 @@ let test_every_unknown_makes_no_targets_and_says_why () =
   refused "no price" ~substring:"SPY has no recorded session close"
     (D.Rebalance.plan ~symbols:[ spy ]
        ~weights:[ (spy, 1.0) ]
-       ~capital_fraction:0.5 ~equity:(Ok 100_000.0) ~account:Symbol.Map.empty
+       ~capital_fraction:0.5 ~scale:1.0 ~equity:(Ok 100_000.0) ~account:Symbol.Map.empty
        ~marks:(Symbol.Map.singleton spy (Error "SPY has no recorded session close"))
        ~current:(Ok Symbol.Map.empty));
   refused "a price of zero" ~substring:"not a positive number"
@@ -119,6 +119,67 @@ let test_every_unknown_makes_no_targets_and_says_why () =
     (plan ~price:500.0 ~current:(Ok (Symbol.Map.singleton aapl 5.0)) [ (spy, 1.0) ]);
   refused "a position that is not whole" ~substring:"not a whole number"
     (plan ~price:500.0 ~current:(Ok (Symbol.Map.singleton spy 10.5)) [ (spy, 1.0) ])
+
+(* The effective scale (Task 9; Task 11 wires the overlay that sets it):
+   target = trunc(w x f x scale x E / p).
+     scale 0.5: 1.0 x 0.5 x 0.5 x 100,000 / 100 = 250 -> buy 250 from 0
+     scale 0:   1.0 x 0.5 x 0   x 100,000 / 100 = 0   -> sell the 300 held
+   A scale outside [0, 1] is no targets: it would lever the strategy past
+   its fraction, and a NaN is not in it either. *)
+let test_scale_halves_the_target () =
+  Alcotest.(check (list (triple string int int)))
+    "250 bought"
+    [ ("buy", 250, 250) ]
+    (legs (plan ~scale:0.5 ~price:100.0 [ (spy, 1.0) ]))
+
+let test_scale_zero_flattens () =
+  Alcotest.(check (list (triple string int int)))
+    "the 300 held sold"
+    [ ("sell", 300, 0) ]
+    (legs
+       (plan ~scale:0.0 ~price:100.0
+          ~current:(Ok (Symbol.Map.singleton spy 300.0))
+          [ (spy, 1.0) ]))
+
+let test_scale_1_5_refused () =
+  List.iter [ 1.5; -0.1; Float.nan ] ~f:(fun scale ->
+      match plan ~scale ~price:100.0 [ (spy, 1.0) ] with
+      | Ok _ -> Alcotest.failf "scale %g was sized" scale
+      | Error why ->
+          Alcotest.(check bool)
+            (sprintf "scale %g: %S" scale why)
+            true
+            (String.is_substring why ~substring:"is not in [0, 1]"))
+
+(* Three incubation strategies at 0.025 under (incubation_cap 0.05): their
+   fractions sum to 0.075, so each is sized at
+     0.025 x min(1, 0.05 / 0.075) = 0.025 x 0.6667 = 0.016667,
+   and with E 100,000, p 100, w 1.0, scale 1:
+     1.0 x 0.016667 x 1 x 100,000 / 100 = 16.667 -> 16. *)
+let test_an_incubation_strategy_is_sized_at_its_effective_fraction () =
+  let inc name =
+    {
+      Signals_spec.Strategy.name;
+      symbols = [ "SPY" ];
+      max_age = 3;
+      sizing = Signals_spec.Incubation;
+      capital_fraction = 0.025;
+      cadence = Signals_spec.Cadence.Daily;
+      adjust = Signals_spec.Adjust.Intraday;
+      max_age_minutes = 20;
+      horizon = Signals_spec.Horizon.Carry;
+      stop = None;
+      reinstated = None;
+    }
+  in
+  let a = inc "inc_a" in
+  let roster = { Signals_spec.strategies = [ a; inc "inc_b"; inc "inc_c" ] } in
+  let f = Signals_spec.effective_fraction ~incubation_cap:0.05 roster a in
+  Alcotest.(check (float 1e-9)) "0.025 x 0.05 / 0.075" (0.025 *. 0.05 /. 0.075) f;
+  Alcotest.(check (list (triple string int int)))
+    "16 bought"
+    [ ("buy", 16, 16) ]
+    (legs (plan ~capital_fraction:f ~price:100.0 [ (spy, 1.0) ]))
 
 (* ------------------------------------------------------------------------ *)
 (* The order manager's half                                                  *)
@@ -359,7 +420,7 @@ let test_a_flat_signal_sells_exactly_the_strategy's_own_shares () =
         [ ("AAPL", 100.0) ]
         (List.map (D.Journal.source_fills journal ~prefix:"signal:exp_a01_tech:")
            ~f:(fun (s, q) -> (Symbol.to_string s, q)));
-      match D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[] with
+      match D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[] ~scale:1.0 with
       | Error why -> Alcotest.failf "no targets: %s" why
       | Ok legs ->
           Alcotest.(check (list (triple string int int)))
@@ -382,12 +443,16 @@ let test_a_strategy_with_an_order_that_may_still_fill_is_not_sized () =
       Alcotest.(check bool)
         "a hand order resting: sized" true
         (Result.is_ok
-           (D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[ (aapl, 1.0) ]));
+           (D.Oms.plan_rebalance oms ~strategy:tech_strategy
+              ~targets:[ (aapl, 1.0) ]
+              ~scale:1.0));
       journal_order journal ~n:5 ~source:"signal:exp_a01_tech:1"
         ~state:D.Order.State.Submitted 10;
       contains "its own order resting" ~substring:"1 of its orders may still fill"
         (refusal
-           (D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[ (aapl, 1.0) ]));
+           (D.Oms.plan_rebalance oms ~strategy:tech_strategy
+              ~targets:[ (aapl, 1.0) ]
+              ~scale:1.0));
       contains "and check_rebalance says the same" ~substring:"may still fill"
         (refusal
            (D.Oms.check_rebalance oms ~source ~legs:[ leg aapl D.Order.Side.Buy 1 ]));
@@ -399,7 +464,9 @@ let test_a_strategy_with_an_order_that_may_still_fill_is_not_sized () =
         ~state:D.Order.State.Failed 10;
       contains "a failed one the venue may still work" ~substring:"may still fill"
         (refusal
-           (D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[ (aapl, 1.0) ]));
+           (D.Oms.plan_rebalance oms ~strategy:tech_strategy
+              ~targets:[ (aapl, 1.0) ]
+              ~scale:1.0));
       let failed =
         (Option.value_exn (D.Journal.load_order journal (cid 6)))
           .D.Journal.Order_row.order
@@ -409,7 +476,9 @@ let test_a_strategy_with_an_order_that_may_still_fill_is_not_sized () =
       Alcotest.(check bool)
         "once the venue reports it expired: sized" true
         (Result.is_ok
-           (D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[ (aapl, 1.0) ])))
+           (D.Oms.plan_rebalance oms ~strategy:tech_strategy
+              ~targets:[ (aapl, 1.0) ]
+              ~scale:1.0)))
     ()
 
 (* ------------------------------------------------------------------------ *)
@@ -689,7 +758,9 @@ let test_no_targets_while_the_book_is_not_the_account's () =
           "the book's equity is unknown: the desk has not applied a recent read of the \
            account"
         (refusal
-           (D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[ (aapl, 1.0) ])))
+           (D.Oms.plan_rebalance oms ~strategy:tech_strategy
+              ~targets:[ (aapl, 1.0) ]
+              ~scale:1.0)))
     ()
 
 (* I2: the account must hold at least the strategy's own position in its
@@ -726,7 +797,9 @@ let test_a_rebalance_is_sized_and_priced_at_the_close_not_the_live_mark () =
   with_oms
     ~f:(fun oms _ ->
       (match
-         D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[ (aapl, 1.0) ]
+         D.Oms.plan_rebalance oms ~strategy:tech_strategy
+           ~targets:[ (aapl, 1.0) ]
+           ~scale:1.0
        with
       | Error why -> Alcotest.failf "no targets: %s" why
       | Ok ls ->
@@ -879,7 +952,7 @@ let test_the_rebalance_asks_again_what_its_plan_read () =
       journal_order journal ~n:8 ~source:"signal:exp_a01_tech:1"
         ~state:D.Order.State.Filled ~fills:[ 100.0 ] 100;
       let legs =
-        match D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[] with
+        match D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[] ~scale:1.0 with
         | Ok legs -> legs
         | Error why -> Alcotest.failf "the plan: %s" why
       in
@@ -1052,4 +1125,9 @@ let suite =
         test_a_rebalance_of_more_than_six_orders_is_refused;
       Alcotest.test_case "the rebalance asks again what its plan read" `Quick
         test_the_rebalance_asks_again_what_its_plan_read;
+      Alcotest.test_case "scale halves the target" `Quick test_scale_halves_the_target;
+      Alcotest.test_case "scale zero flattens" `Quick test_scale_zero_flattens;
+      Alcotest.test_case "scale 1.5 refused" `Quick test_scale_1_5_refused;
+      Alcotest.test_case "an incubation strategy is sized at its effective fraction"
+        `Quick test_an_incubation_strategy_is_sized_at_its_effective_fraction;
     ] )

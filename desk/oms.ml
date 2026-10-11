@@ -154,6 +154,7 @@ let create ~graph ~journal ~spec ~read ~trade ~halt ~accepts_tickets ~adv ~now ~
   }
 
 let halt t = t.halt
+let spec t = t.spec
 let journal t = t.journal
 let accepts_tickets t = t.accepts_tickets
 let open_count t = Map.length t.open_
@@ -227,7 +228,8 @@ let recent_within t ~now =
         (Time_ns.Span.to_sec (Time_ns.diff now r.Rules.Recent.at))
         t.spec.Desk_spec.duplicate_window_s)
 
-let context ?(tif = Order.Tif.Day) t ~(symbol : Symbol.t) : Rules.Context.t =
+let context ?(tif = Order.Tif.Day) t ~(source : string) ~(symbol : Symbol.t) :
+    Rules.Context.t =
   let now = t.now () in
   let universe = Symbol.Set.of_list (Graph.symbols t.graph) in
   let held = Set.mem universe symbol in
@@ -263,6 +265,7 @@ let context ?(tif = Order.Tif.Day) t ~(symbol : Symbol.t) : Rules.Context.t =
       | Adv.From_venue -> Map.find t.adv20 symbol);
     recent = recent_within t ~now;
     open_orders = Map.length t.open_;
+    source;
     now;
   }
 
@@ -667,13 +670,13 @@ let gate_orders t (priced : (Order.Request.t * Price.t) list) =
    ticket wants to know what the trade would do to the limits as well as why
    it cannot be sent. A market order is gated at the mark, a limit order at
    its limit (§3.7). *)
-let preview t (ticket : Ticket.t) : Preview.t =
+let preview ?(source = "manual") t (ticket : Ticket.t) : Preview.t =
   let now = t.now () in
   let request =
     Ticket.to_request ticket
       ~client_order_id:(Ids.Client_order_id.generate ~now ~rng:t.rng)
   in
-  let ctx = context t ~symbol:ticket.Ticket.symbol in
+  let ctx = context t ~source ~symbol:ticket.Ticket.symbol in
   let decision_price =
     match ticket.Ticket.kind with
     | Order.Kind.Limit p -> Some p
@@ -1003,6 +1006,7 @@ let admit t (orders : Journal.Insert.t list) =
           side = r.Order.Request.side;
           qty = r.Order.Request.qty;
           at = now;
+          source = i.Journal.Insert.source;
         }
         :: recent_within t ~now);
   t.on_change ()
@@ -1042,7 +1046,7 @@ let submit_journaled t (o : Order.t) :
 let propose t ?(source = "manual") (ticket : Ticket.t) : (Preview.t * Order.t) Deferred.t
     =
   enqueue t (fun () ->
-      let p = preview t ticket in
+      let p = preview t ~source ticket in
       if not (Preview.passed p) then return (p, refuse t p ~source)
       else
         let request = p.Preview.request in
@@ -1137,9 +1141,13 @@ let strategy_position t ~(strategy : string) : (float Symbol.Map.t, string) Resu
 (* The targets for an accepted signal, as legs, or no targets and why: E from
    [sizing_equity], each price from the newest recorded close
    ([opening_price], the price the rules and the gate will read), and the
-   strategy's own position from [strategy_position]. Rebalance.plan decides. *)
+   strategy's own position from [strategy_position], at [strategy]'s
+   capital_fraction -- the caller's to set to the effective fraction an
+   incubation strategy is sized at -- times [scale], which Rebalance.plan
+   refuses outside [0, 1]. Rebalance.plan decides. *)
 let plan_rebalance t ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
-    ~(targets : (Symbol.t * float) list) : (Rebalance.Leg.t list, string) Result.t =
+    ~(targets : (Symbol.t * float) list) ~(scale : float) :
+    (Rebalance.Leg.t list, string) Result.t =
   let module S = Ohcamel.Config.Book.Signals_spec.Strategy in
   let symbols = List.map strategy.S.symbols ~f:Symbol.of_string in
   let marks =
@@ -1167,7 +1175,7 @@ let plan_rebalance t ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
              (s, Qty.to_float (Graph.qty t.graph s))))
   in
   Rebalance.plan ~symbols ~weights:targets ~capital_fraction:strategy.S.capital_fraction
-    ~equity:(sizing_equity t) ~account ~marks
+    ~scale ~equity:(sizing_equity t) ~account ~marks
     ~current:(strategy_position t ~strategy:strategy.S.name)
 
 (* What a rebalance came to, in the words the intake records beside the
@@ -1357,7 +1365,11 @@ let check_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t li
             tif = Order.Tif.Opg;
           }
         in
-        let ctx = context ~tif:Order.Tif.Opg t ~symbol:leg.Rebalance.Leg.symbol in
+        let ctx =
+          context ~tif:Order.Tif.Opg t
+            ~source:(Rebalance.Source.to_string source)
+            ~symbol:leg.Rebalance.Leg.symbol
+        in
         let ctx =
           { ctx with Rules.Context.open_orders = ctx.Rules.Context.open_orders + i }
         in
@@ -2083,6 +2095,15 @@ let refresh_forever t ~every : unit Deferred.t =
   loop ()
 
 let venue_name t = Option.value_map t.read ~default:"none" ~f:(fun r -> r.Venue.Read.name)
+
+(* The incubation tier sizes on a paper venue only (the charter's paper
+   tier, design §4.3): Alpaca's paper account (desk/alpaca_paper.ml) or the
+   demo's simulator (desk/sim_venue.ml), by the name the read half gives.
+   Any other venue -- one this desk does not know to be paper -- refuses. *)
+let incubation_permitted t : (unit, string) Result.t =
+  match venue_name t with
+  | "alpaca-paper" | "simulated" -> Ok ()
+  | name -> Error (sprintf "incubation sizing is refused on venue %s" name)
 
 let fills_json t (rows : Journal.Fill_row.t list) : Yojson.Safe.t =
   `List

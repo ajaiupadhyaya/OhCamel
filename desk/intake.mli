@@ -1,6 +1,7 @@
 (** The signal intake: signal files in, judgements out, and an accepted signal on a live
-    strategy handed to the order manager as one rebalance (desk/intake.ml's header says
-    how, and why every doubt refuses).
+    strategy -- or on an incubation strategy, on the paper venue only -- handed to the
+    order manager as one rebalance (desk/intake.ml's header says how, and why every doubt
+    refuses).
 
     The interface exists for one promise above all: {!Accepted.t} is private. Only this
     module can build one, and it builds one only for a document it judged accepted in the
@@ -91,10 +92,12 @@ val judge_pass : t -> Accepted.t list
 val pass : t -> unit
 (** [judge_pass], its accepted documents dropped: a pass that sizes nothing. *)
 
-val size : t -> oms:Oms.t option -> Accepted.t list -> unit Deferred.t
-(** Each accepted document planned, proposed as one rebalance, and its outcome written
-    over the pending sentence. Only the highest sequence of a strategy is sized. Never
-    raises. *)
+val size :
+  t -> oms:Oms.t option -> scale:(unit -> float) -> Accepted.t list -> unit Deferred.t
+(** Each accepted document planned at the effective [scale] (asked once per rebalance;
+    [run] passes 1 until the overlay sets it), proposed as one rebalance, its sizing
+    recorded, and its outcome written over the pending sentence. Only the highest sequence
+    of a strategy is sized; an incubation strategy only on a paper venue. Never raises. *)
 
 val run : ?time_source:Time_source.t -> ?oms:Oms.t -> t -> unit Deferred.t
 (** A pass at once and then once a minute, each pass's accepted documents sized before the

@@ -112,8 +112,16 @@ end
     only. Nothing here reads [data_hash]; R7 is the last rule applied. Task 14 depends on
     this order: a first failure of R6 means R1 through R5 passed and R7 was never reached,
     which is exactly what makes an R6 rejection "advisory, and everything else about the
-    signal is otherwise sound". *)
-type verdict = Accepted of t | Rejected of Rule.t * string
+    signal is otherwise sound".
+
+    [Accepted_unvalidated (doc, why)] is returned only by [validate ~r6:`Record], the
+    incubation tier's mode: R1 through R5 passed, R6 failed with [why] -- R6's own
+    sentence, verbatim -- and R7 then passed too. Under the default [`Enforce] it is never
+    returned. *)
+type verdict =
+  | Accepted of t
+  | Accepted_unvalidated of t * string
+  | Rejected of Rule.t * string
 
 val parse : Yojson.Safe.t -> (t, string) Result.t
 (** Lenient about nothing: a missing or mistyped required field is a parse error, not a
@@ -125,10 +133,22 @@ val parse : Yojson.Safe.t -> (t, string) Result.t
 val parse_string : string -> (t, string) Result.t
 
 val validate :
-  clock:Clock.t -> registry:registry -> universe:universe -> max_age:int -> t -> verdict
+  ?r6:[ `Enforce | `Record ] ->
+  clock:Clock.t ->
+  registry:registry ->
+  universe:universe ->
+  max_age:int ->
+  t ->
+  verdict
 (** Applies R1 through R7 in order against [clock], [registry], [universe] and [max_age]
     (R4's default is 3 trading days; the caller states it explicitly here rather than this
-    module assuming a default it cannot justify on its own). *)
+    module assuming a default it cannot justify on its own).
+
+    [r6] defaults to [`Enforce], the contract as it has always been: R6's failure is the
+    first failure, and R7 is never reached. [`Record] is the incubation tier's mode (the
+    charter's paper tier, which sizes a strategy whatever its validation says): an R6
+    failure is carried as [Accepted_unvalidated (doc, why)] and R7 still runs; R1-R5 and
+    R7 failures are [Rejected] as before. *)
 
 val verdict_to_string : verdict -> string
 

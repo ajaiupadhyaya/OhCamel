@@ -26,7 +26,7 @@ let limit name scope n = { Limit.name; scope; kind = Limit.Gross_notional (money
    lets that default be taken, as test_gate.ml's [with_book] takes its own:
    an optional argument before the last labelled one is never erased. *)
 let with_oms ?(book_is_current = true) ?(now = Time_ns.now) ?(extra_limits = [])
-    ?equity_history ~f () =
+    ?equity_history ?venue_name ~f () =
   let graph =
     Graph.create ~starting_cash:(money 1_000_000.0)
       ~instruments:
@@ -69,7 +69,12 @@ let with_oms ?(book_is_current = true) ?(now = Time_ns.now) ?(extra_limits = [])
       let oms =
         D.Oms.create ~graph ~journal
           ~spec:{ Desk_spec.default with Desk_spec.trading = Desk_spec.Enabled }
-          ~read:(Some (D.Sim_venue.read venue))
+          ~read:
+            (Some
+               (let read = D.Sim_venue.read venue in
+                match venue_name with
+                | None -> read
+                | Some name -> { read with D.Venue.Read.name }))
           ~trade:(Ok (D.Sim_venue.trade ~auto:false venue))
           ~halt:(D.Halt.create D.Halt.Source.none)
           ~accepts_tickets:false ~adv:(D.Oms.Adv.Fixed 1_000_000.0) ~now
@@ -146,6 +151,19 @@ let rest oms journal ~seed symbol side qty kind =
 let cancel_resting oms o =
   let o = D.Oms.record oms o D.Order.Event.Cancel_requested in
   D.Oms.record oms o D.Order.Event.Venue_cancelled
+
+(* The incubation tier sizes on a paper venue only (Task 9): Alpaca's paper
+   account, "alpaca-paper", or the demo's simulator, "simulated". Any other
+   venue the read half names refuses it, in one sentence the intake records
+   as the rebalance's refusal. *)
+let test_incubation_is_permitted_on_the_paper_venues_only () =
+  let permitted name =
+    with_oms ~venue_name:name ~f:(fun oms _ -> D.Oms.incubation_permitted oms) ()
+  in
+  let check what expected r = Alcotest.(check (result unit string)) what expected r in
+  check "alpaca-paper" (Ok ()) (permitted "alpaca-paper");
+  check "simulated" (Ok ()) (permitted "simulated");
+  check "other" (Error "incubation sizing is refused on venue other") (permitted "other")
 
 let test_a_preview_that_takes_tech_over_its_cap_names_it_and_creates_nothing () =
   with_oms
@@ -1097,4 +1115,6 @@ let suite =
       Alcotest.test_case "a failed order's DELETE is journaled before it is sent" `Quick
         test_a_failed_order's_delete_is_journaled_before_it_is_sent;
       Alcotest.test_case "which venue statuses rest" `Quick test_which_venue_statuses_rest;
+      Alcotest.test_case "incubation is permitted on the paper venues only" `Quick
+        test_incubation_is_permitted_on_the_paper_venues_only;
     ] )

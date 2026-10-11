@@ -115,7 +115,7 @@ let managers_built = ref 0
    started unless a case starts it itself, to watch what it returns. *)
 let manager ?trade ?read ?(now = Time_ns.now) ?(book_is_current = fun () -> true)
     ?(halt = D.Halt.create D.Halt.Source.none) ?(on_change = ignore) ?(on_event = ignore)
-    ?(run = true) f =
+    ?(run = true) ?(incubation_cap = 0.0) f =
   let trade =
     match trade with Some t -> t | None -> D.Sim_venue.trade ~auto:false f.venue
   in
@@ -123,7 +123,8 @@ let manager ?trade ?read ?(now = Time_ns.now) ?(book_is_current = fun () -> true
   incr managers_built;
   let oms =
     D.Oms.create ~graph:f.graph ~journal:f.journal
-      ~spec:{ Desk_spec.default with Desk_spec.trading = Desk_spec.Enabled }
+      ~spec:
+        { Desk_spec.default with Desk_spec.trading = Desk_spec.Enabled; incubation_cap }
       ~read:(Some read) ~trade:(Ok trade) ~halt ~accepts_tickets:true
       ~adv:(D.Oms.Adv.Fixed 1_000_000.0) ~now
       ~rng:(Random.State.make [| 7; !managers_built |])
@@ -2182,7 +2183,7 @@ let test_an_accepted_signal_on_a_live_strategy_becomes_one_rebalance () =
   Alcotest.(check (list int))
     "both accepted in one pass" [ 1; 2 ]
     (List.map accepted ~f:(fun a -> a.D.Intake.Accepted.doc.sequence));
-  let%bind () = D.Intake.size intake ~oms:(Some oms) accepted in
+  let%bind () = D.Intake.size intake ~oms:(Some oms) ~scale:(fun () -> 1.0) accepted in
   let%bind () = settle () in
   let rebalance sequence =
     Option.value_exn
@@ -2214,6 +2215,124 @@ let test_an_accepted_signal_on_a_live_strategy_becomes_one_rebalance () =
   Core_unix.rmdir dir;
   Graph.destroy f.graph;
   return ()
+
+(* The incubation tier (Task 9), from files to the venue. inc_aapl on AAPL
+   is (sizing incubation) at a capital fraction of 0.01, under
+   (incubation_cap 0.005): it is the roster's only incubation strategy, so
+   its effective fraction is 0.01 x min(1, 0.005 / 0.01) = 0.005, and with
+   E 1,000,000 (nothing held, a million in cash), w 1.0, scale 1 and AAPL's
+   close of 100 the target is 1.0 x 0.005 x 1 x 1,000,000 / 100 = 50 shares.
+   Its one document FAILED its battery, and is sized all the same: one
+   market-on-open order, AAPL +50, journaled under signal:inc_aapl:1 -- the
+   strategy's one range, the tier being on the judgement and the sizing row,
+   not the source -- and sent. The sizing row says what it was sized to:
+   sequence 1, scale 1, allocated 0.005 x 1 x 1,000,000 = 5,000. [venue_name]
+   renames the venue's read half; on a venue that is neither the paper
+   account nor the simulator, nothing is journaled or sent, and the
+   refusal is the rebalance's sentence. *)
+let incubation_signal ?venue_name () =
+  let f = fixture () in
+  record_close f;
+  let read =
+    Option.map venue_name ~f:(fun name ->
+        { (D.Sim_venue.read f.venue) with D.Venue.Read.name })
+  in
+  let oms = manager ?read ~incubation_cap:0.005 ~now:(fun () -> evening) f in
+  after_the_close f oms;
+  let dir = Filename_unix.temp_dir "ohcamel-signals-" "" in
+  let intake =
+    D.Intake.create ~journal:f.journal ~dir
+      ~strategies:
+        [
+          {
+            Ohcamel.Config.Book.Signals_spec.Strategy.name = "inc_aapl";
+            symbols = [ "AAPL" ];
+            max_age = 3;
+            sizing = Ohcamel.Config.Book.Signals_spec.Incubation;
+            capital_fraction = 0.01;
+            cadence = Ohcamel.Config.Book.Signals_spec.Cadence.Daily;
+            adjust = Ohcamel.Config.Book.Signals_spec.Adjust.Intraday;
+            max_age_minutes = 20;
+            horizon = Ohcamel.Config.Book.Signals_spec.Horizon.Carry;
+            stop = None;
+            reinstated = None;
+          };
+        ]
+      ~universe:[ aapl; msft; xom ] ~on_event:ignore
+      ~now:(fun () -> evening)
+  in
+  let zeros = "sha256:" ^ String.make 64 '0' in
+  Out_channel.write_all
+    (Filename.concat dir "inc_aapl-1.json")
+    ~data:
+      (sprintf
+         {|{"schema_version":1,"strategy":"inc_aapl","params_hash":"%s","as_of":"2026-09-14","computed_at":"2026-09-14T23:15:00Z","data_hash":"%s","sequence":1,"validation":{"status":"fail","gates_version":"2026-09-02"},"targets":[{"symbol":"AAPL","weight":1.0}]}|}
+         zeros zeros);
+  let accepted = D.Intake.judge_pass intake in
+  let%bind () = D.Intake.size intake ~oms:(Some oms) ~scale:(fun () -> 1.0) accepted in
+  let%map () = settle () in
+  let signal =
+    Option.value_exn (D.Journal.signal f.journal ~strategy:"inc_aapl" ~sequence:1)
+  in
+  let orders =
+    List.map (D.Journal.recent_orders f.journal ~limit:10) ~f:(fun r ->
+        let q = r.D.Journal.Order_row.order.D.Order.request in
+        ( r.D.Journal.Order_row.source,
+          Symbol.to_string q.D.Order.Request.symbol,
+          q.D.Order.Request.qty ))
+  in
+  let result =
+    ( signal,
+      orders,
+      D.Sim_venue.received f.venue,
+      D.Journal.latest_sizing f.journal ~strategy:"inc_aapl" )
+  in
+  Array.iter (Sys_unix.readdir dir) ~f:(fun name ->
+      Core_unix.unlink (Filename.concat dir name));
+  Core_unix.rmdir dir;
+  Graph.destroy f.graph;
+  result
+
+let test_an_incubation_strategy's_failing_signal_is_sized_on_the_paper_venue () =
+  let%map signal, orders, received, sizing = incubation_signal () in
+  let rebalance = Option.value_exn signal.D.Journal.Signal.rebalance in
+  Alcotest.(check (pair string (option string)))
+    "accepted_incubation at R6"
+    ("accepted_incubation", Some "R6")
+    ( D.Journal.Signal.Verdict.to_string signal.D.Journal.Signal.verdict,
+      signal.D.Journal.Signal.rule );
+  Alcotest.(check bool)
+    (sprintf "sized, not 'not sized': %S" rebalance)
+    true
+    (String.is_prefix rebalance ~prefix:"1 market-on-open order journaled, then sent");
+  Alcotest.(check bool)
+    (sprintf "as AAPL +50: %S" rebalance)
+    true
+    (String.is_substring rebalance
+       ~substring:"AAPL buy 50 (target 50 at 100.00, weight 1; the strategy holds 0)");
+  Alcotest.(check (list (triple string string int)))
+    "one order, in the strategy's one range"
+    [ ("signal:inc_aapl:1", "AAPL", 50) ]
+    orders;
+  Alcotest.(check int) "sent once" 1 received;
+  match sizing with
+  | None -> Alcotest.fail "no sizing row"
+  | Some (sequence, scale, allocated, _) ->
+      Alcotest.(check (triple int (float 1e-9) (float 1e-6)))
+        "the sizing row: sequence 1, scale 1, 5,000 allocated" (1, 1.0, 5_000.0)
+        (sequence, scale, allocated)
+
+let test_incubation_refused_on_a_foreign_venue () =
+  let%map signal, orders, received, sizing = incubation_signal ~venue_name:"other" () in
+  Alcotest.(check (option string))
+    "the rebalance's sentence"
+    (Some
+       "refused, and nothing journaled or sent: incubation sizing is refused on venue \
+        other")
+    signal.D.Journal.Signal.rebalance;
+  Alcotest.(check int) "nothing journaled" 0 (List.length orders);
+  Alcotest.(check int) "nothing sent" 0 received;
+  Alcotest.(check bool) "and no sizing row" true (Option.is_none sizing)
 
 (* The review's case (C1). AAPL -200 and MSFT +120, sells first, pass the
    gate on every subset on this empty book (TECH is a net sum: whole
@@ -2461,6 +2580,10 @@ let suites =
           test_a_leg_the_venue_does_not_acknowledge_stops_the_legs_after_it;
         case "run sizes only what its own pass accepted"
           test_run_sizes_only_what_its_own_pass_accepted;
+        case "an incubation strategy's failing signal is sized on the paper venue"
+          test_an_incubation_strategy's_failing_signal_is_sized_on_the_paper_venue;
+        case "incubation refused on a foreign venue"
+          test_incubation_refused_on_a_foreign_venue;
       ] );
     ( "desk",
       [
