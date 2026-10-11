@@ -208,9 +208,10 @@ module Book = struct
       max_open_orders : int; [@sexp.default 200]
       spread_bps_default : float; [@sexp.default 5.0]
       spread_bps : (string * float) list; [@sexp.default []]
-      (* The incubation tier's share of equity: the incubation strategies'
-         capital fractions may sum to at most this (design §4.3). 0 admits
-         none, so a book that does not say admits none. *)
+      (* Scales the incubation roster: each incubation strategy's effective
+         fraction is its capital_fraction x min(1, this / their sum)
+         (Signals_spec.effective_fraction; design §4.3). 0 sizes every
+         incubation strategy to nothing. *)
       incubation_cap : float; [@sexp.default 0.0]
       (* The overlay's annualised volatility target, and how it is read: an
          overlay older than [overlay_max_age_minutes] is stale, a stale one
@@ -359,8 +360,8 @@ module Book = struct
      be a typo discovered one signal at a time. *)
   module Signals_spec = struct
     (* INCUBATION (the charter's paper tier, docs/CHARTER.md): a strategy the
-       desk sizes on the paper venue whatever its validation says, inside
-       [Desk_spec.incubation_cap], labelled and scored, never live. *)
+       desk sizes on the paper venue whatever its validation says, scaled
+       by [Desk_spec.incubation_cap], labelled and scored, never live. *)
     type sizing = Advisory | Live | Incubation [@@deriving sexp, compare, equal]
 
     let sizing_to_string = function

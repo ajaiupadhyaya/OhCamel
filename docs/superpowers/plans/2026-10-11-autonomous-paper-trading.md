@@ -12,6 +12,14 @@
 
 **Ledger:** `.superpowers/sdd/2026-10-11-autonomous-paper-trading/progress.md` (gitignored). Branches: one per stage, `auto/s0-governance` … `auto/s5-unattended`, each from `main` after the previous stage merges. Conventions: `.superpowers/sdd/conventions.md` and `implementer-howto.md` bind every task (opam switch, `dune build @fmt`, hermetic tests, `lib/verified.ml` counts bumped in the same commit, never `git add -A`, the owner's three untracked root files never touched). Commit trailer: `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
+**Rulings applied during execution (read before any task):**
+- `incubation_cap` is a proportional ceiling (Task 4 fix round): `Signals_spec.effective_fraction ~incubation_cap` gives each incubation strategy's effective fraction `f × min(1, cap / Σ incubation f)`; the validator bounds Σ incubation f ≤ 1, not ≤ cap. Task 9 sizes with the effective fraction. Task 2's "sum over cap" sentence and the 0.0375 split are superseded: every roster fraction is 0.025 (23 × 0.025 = 0.575; Q01 joins at 0.025 in Task 34).
+- The enumerations are submodules `Signals_spec.Cadence.t = Daily | Intraday`, `Signals_spec.Adjust.t = Intraday | Open`, `Signals_spec.Horizon.t = Carry | Close`; later tasks read `Adjust.Intraday` / `Horizon.Close` where this plan writes `Intraday_adjust` / `Close`. `flatten_ofday` lives in `Desk_spec`. `stop` and `reinstated` are `[@sexp.option]`.
+- `horizon close` exits are market-on-close orders (`Tif.Cls`) sent on the 15:45 zero-target document; the 15:50 flatten is the backstop. Task 10 adds `Tif.Cls` to the order kinds the rules, OMS, sim venue and Alpaca trading half accept; Task 19's `session_pnl` fills the exit at the close; Tasks 23–24 build it so. EXP-I02 is evaluated on 15-minute marks only.
+- Task 33 (short legs) runs in Stage 2 immediately after Task 22, before Task 23.
+- `max_open_orders` default is 200; `intraday_slip_bps` ≥ 0 and `overlay_max_age_minutes` ≥ 1 are validated (Task 2 fix round).
+- The ledger is `.superpowers/sdd/2026-10-11-autonomous-paper-trading/progress.md`.
+
 ## Global Constraints
 
 - **No gate is loosened and no validation block is rewritten.** `research/.../battery/gates.py` thresholds, `quant/.../models/verdict.py` constants and every committed manifest are byte-identical at the end of every stage; the desk copies a document's `validation` into the journal unchanged (spec invariant 15).
@@ -106,7 +114,7 @@ Branch `auto/s0-governance` from `main`. No trading behaviour changes in this st
 - `Signals_spec.validate` refuses: incubation fractions summing above `incubation_cap` (+1e-9); live + incubation above 1; `stop.drawdown` not in (0, 1]; `stop.sessions` < 1; `max_age_minutes` < 1; a `reinstated` date with no `stop`. `Desk_spec.validate` refuses: `incubation_cap` not in [0, 1]; `vol_target` not in (0, 1]; `overlay_fallback`/`overlay_band` not in [0, 1]; `intraday_slip_bps` ≥ `price_collar × 1e4`; `min_leg_notional` < 0; `wave_timeout_s` ≤ 0; `flatten_at` not `HH:MM` inside [09:30, 16:00); `stream` naming a symbol outside the universe or more than `stream_cap`.
 
 - [ ] **Step 1: Failing tests.** In the config test file add, each as its own Alcotest case with the exact message checked:
-  - `incubation sum over cap`: two strategies `(sizing incubation) (capital_fraction 0.4)` with `(incubation_cap 0.6)` → `Error` containing `incubation strategies' capital_fraction values sum to 0.8, more than incubation_cap 0.6`.
+  - `incubation sum over one`: two strategies `(sizing incubation) (capital_fraction 0.6)` → `Error` containing `incubation strategies' capital_fraction values sum to 1.2, more than 1`.
   - `live plus incubation over one`: live 0.5 + incubation 0.6 with cap 0.6 → `sum to 1.1, more than 1`.
   - `stop drawdown range`: `(stop ((drawdown 1.5) (sessions 250)))` → `stop.drawdown must be in (0, 1], got 1.5`.
   - `flatten_at parses`: `"15:50"` → `Ok` of 15:50; `"16:00"` → `Error "flatten_at must be inside the regular session [09:30, 16:00), got 16:00"`; `"3pm"` → `Error` containing `HH:MM`.
@@ -116,7 +124,7 @@ Branch `auto/s0-governance` from `main`. No trading behaviour changes in this st
 - [ ] **Step 2: Run** `make test` → every new case fails to compile or fails. Record RED.
 - [ ] **Step 3: Implement** the types and validations above in `lib/config.ml`. `flatten_ofday` parses with `Time_ns.Ofday.of_string` after checking the `^[0-9]{2}:[0-9]{2}$` shape and compares against `Time_ns.Ofday.create ~hr:9 ~min:30 ()` and `~hr:16 ()`. Keep every existing message unchanged.
 - [ ] **Step 4: `book.example.sexp`:** extend the `desk` block with every new field at the spec's defaults, comments in the file's voice (one or two sentences each, saying what the engine does with it); rewrite the `signals` block to the full roster: `exp_a01_spy`, `exp_a01_tlt` (`(sizing incubation) (capital_fraction 0.025) (cadence daily) (adjust intraday) (stop ((drawdown 0.15) (sessions 250)))`), then the 21 farm cells (slug `farm_<strategy>_<universe>` over `backtest/strategies.py`'s `suggested_universes`, symbols from `quant/src/ohcamel_quant/universes.json`), each with the same incubation fields; `(incubation_cap 0.60)`; positions gain every one of the 42 site ETFs at `(qty 0.0)` with a sector per universe group (`INDEX`, `SECTOR`, `STYLE`, `RATES`, `CREDIT`, `INTL`, `COMMODITY`); `(trading disabled)` stays. Update the block comments: incubation is explained in four sentences and points at the charter.
-- [ ] **Step 5: `test/test_example_book.ml`:** the existing parse-and-check case passes; add `roster fractions sum to the cap` (23 × 0.025 + … = 0.60 within 1e-9 — write the exact arithmetic beside it: 23 strategies at 0.025 is 0.575; make the two EXP-A01 entries 0.0375 each so the sum is exactly 0.600) and `every roster symbol is a position`.
+- [ ] **Step 5: `test/test_example_book.ml`:** the existing parse-and-check case passes; add `roster fractions sum to the cap` (23 × 0.025 + … = 0.60 within 1e-9 — write the exact arithmetic beside it: 23 strategies at 0.025 is 0.575; every entry is 0.025, so 23 strategies sum to 0.575 under the 0.60 cap) and `every roster symbol is a position`.
 - [ ] **Step 6: `check-book`:** run `dune exec -- ohcamel check-book book.example.sexp` → exits 0; run it on a copy with `(incubation_cap 0.5)` → exits 1 naming the sum.
 - [ ] **Step 7: Run** `make test`, bump `lib/verified.ml`; `dune build @fmt`. GREEN.
 - [ ] **Step 8: Commit** `book: the incubation tier, the overlay fields and a 64-name universe, every one validated by check-book` — `lib/config.ml`, `book.example.sexp`, the two test files, `lib/verified.ml`.
@@ -166,7 +174,7 @@ vol_target: 0.10
 strategies:
   - slug: exp_a01_spy
     producer: research-service        # exists; unchanged
-    capital_fraction: 0.0375
+    capital_fraction: 0.025
   - slug: farm_tsmom_rates
     producer: signals.daily
     strategy: tsmom
