@@ -141,6 +141,8 @@ let suite =
           expect_rule `O4 (judge (doc ~scale:"1.2" ()));
           expect_rule `O4 (judge (doc ~scale:"-0.1" ())));
       t "O4 accepts the closed ends 0 and 1" (fun () ->
+          (* 0 >= 0 and 0 <= 1; 1 >= 0 and 1 <= 1: both bounds are inclusive,
+             and integer spellings read as the same floats. *)
           List.iter [ "0"; "1"; "0.0"; "1.0" ] ~f:(fun s ->
               match judge (doc ~scale:s ()) with
               | Overlay.Accepted _ -> ()
@@ -175,6 +177,30 @@ let suite =
           with
           | Error _ -> ()
           | Ok _ -> fail "defaulted a missing exposure_scale");
+      t "parse refuses a missing inputs" (fun () ->
+          match
+            Overlay.parse_string
+              {|{"schema_version":1,"kind":"overlay","as_of":"2026-10-13T15:30:00Z","computed_at":"x","sequence":7,"exposure_scale":0.5,"reported":{}}|}
+          with
+          | Error e ->
+              Alcotest.(check bool)
+                "names inputs" true
+                (String.is_substring e ~substring:"inputs")
+          | Ok _ -> fail "defaulted a missing inputs");
+      t "parse refuses a reported that is not an object" (fun () ->
+          match
+            Overlay.parse_string
+              {|{"schema_version":1,"kind":"overlay","as_of":"2026-10-13T15:30:00Z","computed_at":"x","sequence":7,"exposure_scale":0.5,"inputs":{},"reported":"none"}|}
+          with
+          | Error e ->
+              Alcotest.(check bool)
+                "names reported" true
+                (String.is_substring e ~substring:"reported")
+          | Ok _ -> fail "accepted a string as reported");
+      t "O1 refuses a record whose kind is not overlay" (fun () ->
+          (* parse_string refuses such a kind first, so build the record by hand. *)
+          let o = { (parsed (doc ())) with kind = "signal" } in
+          expect_rule `O1 (Overlay.validate ~clock ~max_age_minutes:60 ~last_sequence:6 o));
       t "parse refuses an as_of that is not an instant" (fun () ->
           match Overlay.parse_string (doc ~as_of:"yesterday" ()) with
           | Error _ -> ()

@@ -31,6 +31,11 @@ let parse_string raw : (t, string) Result.t =
     | `Float f -> f
     | _ -> raise (Type_error ("expected a number", j))
   in
+  let obj name j =
+    match j with
+    | `Assoc _ -> j
+    | _ -> raise (Type_error (sprintf "%s must be a JSON object" name, j))
+  in
   match Yojson.Safe.from_string raw with
   | exception Yojson.Json_error msg -> Error ("not JSON: " ^ msg)
   | json -> (
@@ -51,8 +56,8 @@ let parse_string raw : (t, string) Result.t =
                   computed_at = member "computed_at" json |> to_string;
                   sequence = member "sequence" json |> to_int;
                   exposure_scale = member "exposure_scale" json |> number;
-                  inputs = member "inputs" json;
-                  reported = member "reported" json;
+                  inputs = member "inputs" json |> obj "inputs";
+                  reported = member "reported" json |> obj "reported";
                   raw;
                 }
       with
