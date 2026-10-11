@@ -1,0 +1,25 @@
+{
+  "schema_version": 2,
+  "strategy": "exp_i01_spy",
+  "params_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "as_of": "2026-10-13T14:40:00Z",
+  "computed_at": "2026-10-13T15:30:05Z",
+  "data_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "sequence": 43,
+  "validation": {
+    "status": "pass",
+    "gates_version": "2026-09-02",
+    "dsr": 0.31,
+    "psr": 0.72,
+    "pbo": 0.2,
+    "manifest": null
+  },
+  "targets": [
+    {
+      "symbol": "SPY",
+      "weight": 0.9
+    }
+  ],
+  "bar": "30Min",
+  "horizon": "close"
+}

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ajaiupadhyaya/ohcamel-alpha/interface/overlay.schema.json",
+  "title": "OhCamel exposure overlay, v1",
+  "description": "The research layer's exposure scale for the desk: one number in [0, 1] that multiplies every incubation and live target, with the inputs it was computed from. See interface/README.md, section \"Overlay\", for rules O1-O4.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "as_of",
+    "computed_at",
+    "sequence",
+    "exposure_scale",
+    "inputs",
+    "reported"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "overlay"
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$",
+      "description": "The instant, RFC 3339 UTC, the overlay was computed for. Checked against the venue clock (O2)."
+    },
+    "computed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Wall-clock time of computation, RFC 3339 UTC. Informational."
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonic. At or below the last accepted sequence is rejected (O3)."
+    },
+    "exposure_scale": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Multiplier on every incubation and live target (O4)."
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vol_target",
+        "vol_forecast",
+        "vol_model",
+        "cov_estimator",
+        "vol_artifact",
+        "cov_artifact"
+      ],
+      "properties": {
+        "vol_target": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Annualised volatility the book aims for."
+        },
+        "vol_forecast": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Annualised portfolio volatility forecast."
+        },
+        "vol_model": {
+          "type": "string",
+          "description": "Volatility model slug, e.g. har."
+        },
+        "cov_estimator": {
+          "type": "string",
+          "description": "Covariance estimator slug, e.g. lw."
+        },
+        "vol_artifact": {
+          "type": "string",
+          "description": "Id of the stored volatility model artifact."
+        },
+        "cov_artifact": {
+          "type": "string",
+          "description": "Id of the stored covariance artifact."
+        }
+      }
+    },
+    "reported": {
+      "type": "object",
+      "description": "Figures the page shows and the desk does not act on, e.g. regime_p_high, mc_var_99_1d_core."
+    }
+  }
+}

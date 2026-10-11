@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -22,7 +23,9 @@ from ohcamel_research.battery import GATES_VERSION  # the date of docs/CHARTER.m
 
 __all__ = [
     "GATES_VERSION",
+    "OVERLAY_SCHEMA_PATH",
     "SCHEMA_PATH",
+    "V2_SCHEMA_PATH",
     "canonical_json",
     "check",
     "data_hash",
@@ -32,10 +35,23 @@ __all__ = [
 ]
 
 SCHEMA_PATH = REPO_ROOT / "interface" / "signal.schema.json"
+V2_SCHEMA_PATH = REPO_ROOT / "interface" / "signal.v2.schema.json"
+OVERLAY_SCHEMA_PATH = REPO_ROOT / "interface" / "overlay.schema.json"
 
 
-def load_schema() -> dict[str, Any]:
-    return json.loads(SCHEMA_PATH.read_text())
+def schema_path_for(doc: Any) -> Path:
+    """The schema a document is held to, chosen by its content: an overlay by
+    ``kind``, a v2 signal by ``schema_version``, anything else by the v1 schema."""
+    if isinstance(doc, dict):
+        if doc.get("kind") == "overlay":
+            return OVERLAY_SCHEMA_PATH
+        if doc.get("schema_version") == 2:
+            return V2_SCHEMA_PATH
+    return SCHEMA_PATH
+
+
+def load_schema(path: Path = SCHEMA_PATH) -> dict[str, Any]:
+    return json.loads(path.read_text())
 
 
 def canonical_json(obj: Any) -> str:
@@ -64,9 +80,15 @@ def data_hash(bars: pd.DataFrame) -> str:
 
 
 def check(doc: dict[str, Any]) -> list[str]:
-    """Every problem with a signal document, as messages. Empty means valid."""
-    validator = Draft202012Validator(load_schema())
+    """Every problem with a document, as messages. Empty means valid.
+
+    The schema is chosen by content (``schema_path_for``); R7's sum applies to
+    signals only, never to an overlay."""
+    path = schema_path_for(doc)
+    validator = Draft202012Validator(load_schema(path))
     errors = [f"schema: {e.json_path}: {e.message}" for e in validator.iter_errors(doc)]
+    if path == OVERLAY_SCHEMA_PATH:
+        return errors
     targets = doc.get("targets")
     if isinstance(targets, list):
         total = 0.0

@@ -245,24 +245,30 @@ let test_every_example_matches_the_shared_oracle () =
   let failures =
     List.filter_map cases ~f:(fun (name, spec) ->
         let expected_core = member "core" spec |> to_string in
-        (* I2: a row naming a file that is not there is reported here, by
+        (* Contract v2 and the overlay arrive in plan task 22; until then
+           their rows are the schema half's alone and the desk skips them. *)
+        if String.equal expected_core "pending-task-22" then (
+          printf "oracle: %s skipped (pending-task-22)\n" name;
+          None)
+        else
+          (* I2: a row naming a file that is not there is reported here, by
            name, alongside whatever else disagrees -- not an uncaught
            exception that stops the other rows from being checked at all. *)
-        match In_channel.read_all (examples_dir ^ name) with
-        | exception exn ->
-            Some (sprintf "%s: could not be read: %s" name (Exn.to_string exn))
-        | text -> (
-            match Contract.parse_string text with
-            | Error e -> Some (sprintf "%s: did not parse: %s" name e)
-            | Ok doc ->
-                let got =
-                  core_label (Contract.validate ~clock ~registry ~universe ~max_age doc)
-                in
-                if String.equal got expected_core then None
-                else
-                  Some
-                    (sprintf "%s: expected.json says %s, core says %s" name expected_core
-                       got)))
+          match In_channel.read_all (examples_dir ^ name) with
+          | exception exn ->
+              Some (sprintf "%s: could not be read: %s" name (Exn.to_string exn))
+          | text -> (
+              match Contract.parse_string text with
+              | Error e -> Some (sprintf "%s: did not parse: %s" name e)
+              | Ok doc ->
+                  let got =
+                    core_label (Contract.validate ~clock ~registry ~universe ~max_age doc)
+                  in
+                  if String.equal got expected_core then None
+                  else
+                    Some
+                      (sprintf "%s: expected.json says %s, core says %s" name
+                         expected_core got)))
   in
   match failures with [] -> () | fs -> Alcotest.failf "%s" (String.concat ~sep:"; " fs)
 

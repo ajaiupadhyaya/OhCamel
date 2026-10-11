@@ -21,6 +21,7 @@ from ohcamel_research.contract import check as check_doc
 from ohcamel_research.replay import DEFAULT_FIXTURES, to_jsonl
 
 EXAMPLES = REPO_ROOT / "interface" / "examples"
+PENDING_CORE = "pending-task-22"  # expected.json rows the desk cannot judge yet
 
 
 def _date(_ctx: object, _param: object, value: str | None) -> date | None:
@@ -233,7 +234,11 @@ def contract_check(core: Path | None, fixtures: Path) -> None:
         schema_ok = check_doc(doc) == []
         s_mark = "ok" if schema_ok == exp["schema_valid"] else "MISMATCH"
         c_mark = "-"
-        if core is not None and bars_file is not None:
+        if core is not None and exp["core"] == PENDING_CORE:
+            # The desk learns v2 and the overlay in plan task 22; until then the
+            # row is held to the schema only, and says so.
+            c_mark = "skipped"
+        elif core is not None and bars_file is not None:
             args = [
                 str(core),
                 "intake",
@@ -254,11 +259,14 @@ def contract_check(core: Path | None, fixtures: Path) -> None:
             first = (r.stdout.splitlines() or [""])[0]
             got = first.split(":")[0].strip() if first.startswith("REJECT") else first.split(" ")[0]
             c_mark = "ok" if got == exp["core"] else f"MISMATCH got {first[:40]!r}"
-        if s_mark != "ok" or (c_mark not in ("ok", "-")):
+        if s_mark != "ok" or (c_mark not in ("ok", "-", "skipped")):
             failures += 1
         click.echo(f"{name:26} {s_mark:8} {c_mark:16}")
     if failures:
         raise click.ClickException(f"{failures} contract mismatch(es)")
+    skipped = sum(1 for e in expected["cases"].values() if e["core"] == PENDING_CORE)
+    if core is not None and skipped:
+        click.echo(f"contract: {skipped} row(s) skipped on the core side ({PENDING_CORE})")
     click.echo("contract: both sides agree with expected.json")
 
 

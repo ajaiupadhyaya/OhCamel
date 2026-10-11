@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "kind": "overlay",
+  "as_of": "2026-10-13T15:30:00Z",
+  "computed_at": "2026-10-13T15:30:05Z",
+  "sequence": 7,
+  "exposure_scale": 0.7071,
+  "inputs": {
+    "vol_target": 0.1,
+    "vol_forecast": 0.1414,
+    "vol_model": "har",
+    "cov_estimator": "lw",
+    "vol_artifact": "01M00000000000000000000000",
+    "cov_artifact": "01M11111111111111111111111"
+  },
+  "reported": {
+    "regime_p_high": 0.12,
+    "mc_var_99_1d_core": 0.0131
+  }
+}

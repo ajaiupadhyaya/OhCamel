@@ -7,7 +7,11 @@
       "2020-12-30",
       "2020-12-31"
     ],
-    "max_age": 3
+    "max_age": 3,
+    "now": "2026-10-13T15:31:00Z",
+    "last_tick": {
+      "SPY": "2026-10-13T15:30:58Z"
+    }
   },
   "registry": {
     "strategies": [
@@ -84,6 +88,41 @@
     "order_r2_before_r6.json": {
       "schema_valid": true,
       "core": "REJECT R2"
+    },
+    "v2_pass.json": {
+      "schema_valid": true,
+      "core": "pending-task-22",
+      "verdict": "ACCEPT",
+      "max_age_minutes": 20
+    },
+    "v2_r9_uncorroborated.json": {
+      "schema_valid": true,
+      "core": "pending-task-22",
+      "verdict": "REJECT R9",
+      "max_age_minutes": 20,
+      "clock": {
+        "last_tick": {
+          "SPY": "2026-10-13T14:59:00Z"
+        }
+      }
+    },
+    "v2_r4_stale.json": {
+      "schema_valid": true,
+      "core": "pending-task-22",
+      "verdict": "REJECT R4",
+      "max_age_minutes": 20
+    },
+    "overlay_pass.json": {
+      "schema_valid": true,
+      "core": "pending-task-22",
+      "verdict": "ACCEPT",
+      "max_age_minutes": 20
+    },
+    "overlay_o4_range.json": {
+      "schema_valid": false,
+      "core": "pending-task-22",
+      "verdict": "REJECT O4",
+      "max_age_minutes": 20
     }
   }
 }
