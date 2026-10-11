@@ -1010,7 +1010,7 @@ let test_parse_latest_trades_two_names () =
     [ "2026-10-13 15:30:58.120000000Z"; "2026-10-13 15:30:58.120000000Z" ]
     (List.map ticks ~f:(fun (_, t) -> Time_ns.to_string_utc (Tick.time t)))
 
-let test_parse_latest_trades_skips_a_bad_price () =
+let test_parse_latest_trades_skips_a_nan_price () =
   (* NaN is not JSON, so the unreadable price is a string; TLT keeps its own. *)
   let payload =
     {|{"trades":{"SPY":{"t":"2026-10-13T15:30:58.12Z","p":"x","s":100},"TLT":{"t":"2026-10-13T15:30:58.12Z","p":91.50,"s":200}}}|}
@@ -1022,6 +1022,54 @@ let test_parse_latest_trades_skips_a_bad_price () =
   Alcotest.(check (list feq))
     "at 91.50" [ 91.50 ]
     (List.map ticks ~f:(fun (_, t) -> Price.to_float (Tick.price t)))
+
+(* Each payload holds SPY with the defect under test and TLT whole at 91.50,
+   so "only TLT" shows the defect skipped and nothing else lost. *)
+let only_tlt name ~spy =
+  let payload =
+    sprintf {|{"trades":{%s,"TLT":{"t":"2026-10-13T15:30:58.12Z","p":91.50,"s":200}}}|}
+      spy
+  in
+  let ticks = Alpaca_rest.parse_latest_trades (Yojson.Safe.from_string payload) in
+  Alcotest.(check (list string))
+    (name ^ ": only TLT") [ "TLT" ]
+    (List.map ticks ~f:(fun (s, _) -> Symbol.to_string s))
+
+let test_parse_latest_trades_skips_no_t () =
+  only_tlt "no t" ~spy:{|"SPY":{"p":567.12,"s":100}|}
+
+let test_parse_latest_trades_skips_an_empty_symbol () =
+  only_tlt "empty symbol" ~spy:{|"":{"t":"2026-10-13T15:30:58.12Z","p":567.12,"s":100}|}
+
+let test_parse_latest_trades_skips_an_undatable_t () =
+  (* The stream would stamp this print with the time of receipt; the poll,
+     which re-reads it every ten seconds, must not. *)
+  only_tlt "unparseable t" ~spy:{|"SPY":{"t":"yesterday","p":567.12,"s":100}|}
+
+let test_poll_applies_a_repeated_trade_once () =
+  (* Two polls of the same answer: AAPL's latest trade at 15:30:58.12Z, then
+     the identical print again ten seconds later. The first marks it and counts
+     one trade; the second is not newer than the last tick, so it is skipped --
+     one trade counted, the last tick still 15:30:58.12. *)
+  with_graph ~f:(fun graph ->
+      let stats = Alpaca.Stats.create () in
+      let answer =
+        Alpaca_rest.parse_latest_trades
+          (Yojson.Safe.from_string
+             {|{"trades":{"AAPL":{"t":"2026-10-13T15:30:58.12Z","p":150.25,"s":100}}}|})
+      in
+      let aapl = Symbol.of_string "AAPL" in
+      Alcotest.(check int)
+        "first poll marks one" 1
+        (Ohcamel.Alpaca_poll.apply ~graph ~stats answer);
+      Alcotest.(check int)
+        "second poll marks none" 0
+        (Ohcamel.Alpaca_poll.apply ~graph ~stats answer);
+      Alcotest.(check int) "one trade counted" 1 stats.Alpaca.Stats.trades;
+      Alcotest.check feq "AAPL at 150.25" 150.25 (Price.to_float (Graph.price graph aapl));
+      Alcotest.(check (option string))
+        "the last tick is the print's own instant" (Some "2026-10-13 15:30:58.120000000Z")
+        (Option.map (Graph.last_tick graph aapl) ~f:Time_ns.to_string_utc))
 
 let test_latest_trades_uri () =
   Alcotest.(check string)
@@ -1069,8 +1117,16 @@ let suite =
         test_bars_request_is_adjusted;
       Alcotest.test_case "poll: parse_latest_trades two names" `Quick
         test_parse_latest_trades_two_names;
-      Alcotest.test_case "poll: parse_latest_trades skips a bad price" `Quick
-        test_parse_latest_trades_skips_a_bad_price;
+      Alcotest.test_case "poll: parse_latest_trades skips a NaN price" `Quick
+        test_parse_latest_trades_skips_a_nan_price;
+      Alcotest.test_case "poll: parse_latest_trades skips an entry with no t" `Quick
+        test_parse_latest_trades_skips_no_t;
+      Alcotest.test_case "poll: parse_latest_trades skips an empty symbol" `Quick
+        test_parse_latest_trades_skips_an_empty_symbol;
+      Alcotest.test_case "poll: parse_latest_trades skips a t it cannot date" `Quick
+        test_parse_latest_trades_skips_an_undatable_t;
+      Alcotest.test_case "poll: a repeated unchanged trade is applied once" `Quick
+        test_poll_applies_a_repeated_trade_once;
       Alcotest.test_case "poll: latest_trades_uri" `Quick test_latest_trades_uri;
       Alcotest.test_case "fred: \".\" is a missing observation, not zero" `Quick
         test_fred_missing_observations;

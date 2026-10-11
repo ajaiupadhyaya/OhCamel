@@ -125,12 +125,15 @@ module Message = struct
      format. The reverse trade-off, accepting a bad price to keep a good
      timestamp, would be indefensible, which is why prices are handled the
      opposite way. *)
+  let parse_time_opt (s : string) : Time_ns.t option =
+    Option.try_with (fun () -> Time_ns.of_string_with_utc_offset s)
+
+  (* The stream's reading: an instant it cannot date is the time of receipt.
+     The poll cannot take that fallback -- it re-reads the same print every
+     ten seconds -- so it calls [parse_time_opt] and skips on None. *)
   let parse_time = function
     | None -> Types.Time.now ()
-    | Some s -> (
-        match Option.try_with (fun () -> Time_ns.of_string_with_utc_offset s) with
-        | Some t -> t
-        | None -> Types.Time.now ())
+    | Some s -> Option.value (parse_time_opt s) ~default:(Types.Time.now ())
 
   (* A price that reaches a Var is a price the whole engine will believe.
 

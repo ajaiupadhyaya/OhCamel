@@ -188,17 +188,20 @@ let latest_trades_uri ~(symbols : Types.Symbol.t list) ~(feed : string) : Uri.t 
 
    Each entry is built by the websocket's own trade reader
    (Alpaca_ws.Message.trade_tick), so a price is refused here exactly as it is
-   on the stream. Skipped, never zeroed: an entry with no [t] -- the stream
-   would stamp it with the time of receipt, but a poll that re-reads the same
-   old print every ten seconds would then make a quiet name look fresh -- one
-   whose price is not a finite positive number, and one with an empty symbol.
+   on the stream. Skipped, never zeroed: an entry with no [t], or a [t] that
+   does not parse -- the stream would stamp it with the time of receipt, but a
+   poll that re-reads the same old print every ten seconds would then make a
+   quiet name look fresh -- one whose price is not a finite positive number,
+   and one with an empty symbol.
    A name skipped stays at whatever it last had, and stale. *)
 let parse_latest_trades (json : Yojson.Safe.t) : (Types.Symbol.t * Types.Tick.t) list =
   match Alpaca_ws.Message.member "trades" json with
   | Some (`Assoc per_symbol) ->
       List.filter_map per_symbol ~f:(fun (symbol, trade) ->
           match Alpaca_ws.Message.member "t" trade with
-          | Some (`String _) when not (String.is_empty symbol) ->
+          | Some (`String t)
+            when (not (String.is_empty symbol))
+                 && Option.is_some (Alpaca_ws.Message.parse_time_opt t) ->
               Option.map (Alpaca_ws.Message.trade_tick ~symbol trade) ~f:(fun tick ->
                   (Types.Tick.symbol tick, tick))
           | _ -> None)

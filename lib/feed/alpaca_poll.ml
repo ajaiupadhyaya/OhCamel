@@ -89,6 +89,35 @@ let fetch ~(credentials : Config.Credentials.t) ~(feed : string)
           detail = sprintf "GET %s returned %s (%s)" where status (String.prefix body 200);
         }
 
+(* Apply one batch's answer and return how many trades it marked.
+
+   The call answers with each name's LATEST trade, which in a quiet minute -- or
+   with the market closed -- is the same print every ten seconds. A print is
+   applied only when it is newer than the name's last tick: re-applying an old
+   one would count it again in [Stats.trades], which is the denominator of the
+   live display's nodes-per-trade figure and is published on /api/ops, and
+   would mark the cells again for nothing. A symbol the book does not hold is
+   dropped -- the poll asked only for book names -- rather than counted every
+   ten seconds as [unknown_symbol]. *)
+let apply ~(graph : Graph.t) ~(stats : Alpaca_ws.Stats.t)
+    (ticks : (Types.Symbol.t * Types.Tick.t) list) : int =
+  let fresh =
+    List.filter ticks ~f:(fun (_, tick) ->
+        let symbol = Types.Tick.symbol tick in
+        Graph.knows_symbol graph symbol
+        &&
+        match Graph.last_tick graph symbol with
+        | None -> true
+        | Some last -> Time_ns.( > ) (Types.Tick.time tick) last)
+  in
+  (* The websocket's own frame applier: each trade marks its cells and is
+     counted, and the graph settles once. *)
+  let (_ : Alpaca_ws.Message.t list) =
+    Alpaca_ws.apply_frame ~graph ~stats
+      (List.map fresh ~f:(fun (_, tick) -> Alpaca_ws.Message.Trade tick))
+  in
+  List.length fresh
+
 let run ~(graph : Graph.t) ~(credentials : Config.Credentials.t)
     ~(runtime : Config.Runtime.t) ~(symbols : Types.Symbol.t list)
     ~(every : Time_ns.Span.t) ~(stats : Alpaca_ws.Stats.t) ~(on_event : string -> unit) :
@@ -106,18 +135,12 @@ let run ~(graph : Graph.t) ~(credentials : Config.Credentials.t)
       Monitor.try_with ~extract_exn:true (fun () ->
           match%map fetch ~credentials ~feed batch with
           | Error _ as error -> error
-          | Ok ticks ->
-              (* The websocket's own frame applier: an unknown symbol is
-                 counted, each trade marks its cells, one stabilize. *)
-              let (_ : Alpaca_ws.Message.t list) =
-                Alpaca_ws.apply_frame ~graph ~stats
-                  (List.map ticks ~f:(fun (_, tick) -> Alpaca_ws.Message.Trade tick))
-              in
-              Ok (List.length ticks))
+          | Ok ticks -> Ok (apply ~graph ~stats ticks))
     with
     | Ok (Ok marked) ->
         note "ok"
-          (sprintf "poll: marking %d names by latest trade every %s (%d in this answer)"
+          (sprintf
+             "poll: marking %d names by latest trade every %s (%d new in this answer)"
              (List.length symbols)
              (Time_ns.Span.to_string_hum every)
              marked)
