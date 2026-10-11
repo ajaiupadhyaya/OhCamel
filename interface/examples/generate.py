@@ -41,7 +41,8 @@ def variant(**changes: object) -> dict[str, object]:
 # name -> (document, schema_valid, core verdict)
 CASES = {
     "pass.json": (variant(), True, "ACCEPT"),
-    "r1_schema_version.json": (variant(schema_version=2), False, "REJECT R1"),
+    # 3, not 2: version 2 is a real contract now (signal.v2.schema.json); R1 needs a version no side knows.
+    "r1_schema_version.json": (variant(schema_version=3), False, "REJECT R1"),
     "r2_unregistered.json": (variant(strategy="nobody"), True, "REJECT R2"),
     "r3_future.json": (variant(as_of="2021-01-04"), True, "REJECT R3"),
     "r4_stale.json": (variant(as_of="2020-12-24"), True, "REJECT R4"),
