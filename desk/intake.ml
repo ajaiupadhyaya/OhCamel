@@ -536,10 +536,10 @@ and sound ~latest ~bars_after ~spec ~(unvalidated : string option) (doc : Contra
                 }
           | Incubation ->
               (* The charter's paper tier: sized whatever its validation
-                     says, on the paper venue only ([rebalance] asks
-                     Oms.incubation_permitted), labelled, never live. The
-                     validation block itself is carried unchanged in the
-                     document beside the judgement. *)
+                 says, only on a paper venue ([rebalance] asks
+                 Oms.incubation_permitted) and under the incubation cap,
+                 labelled, never live. The validation block itself is
+                 carried unchanged in the document beside the judgement. *)
               `Judged
                 {
                   verdict = Accepted_incubation;
@@ -550,15 +550,16 @@ and sound ~latest ~bars_after ~spec ~(unvalidated : string option) (doc : Contra
                         sprintf
                           "R6 alone would not size it (%s); R1-R5 and R7 passed and it \
                            names only its strategy's own symbols, and the strategy's \
-                           sizing is incubation, so it is sized on the paper venue \
-                           whatever its validation says, labelled, and never live"
+                           sizing is incubation, so it is sized only on a paper venue, \
+                           under the incubation cap, whatever its validation says, \
+                           labelled, and never live"
                           why
                     | None ->
                         sprintf
                           "validation.status is %S; passed R1-R7 and names only its \
                            strategy's own symbols, and the strategy's sizing is \
-                           incubation, so it is sized on the paper venue, labelled, and \
-                           never live"
+                           incubation, so it is sized only on a paper venue, under the \
+                           incubation cap, labelled, and never live"
                           doc.validation.status);
                   tier;
                 }))
@@ -896,11 +897,12 @@ let pass t = ignore (judge_pass t : Accepted.t list)
 (* One accepted document's rebalance, as the sentence recorded beside it.
    An incubation strategy is sized only on a paper venue
    (Oms.incubation_permitted), and refused as a rebalance is, before anything
-   is planned, anywhere else. Its fraction is the effective one under the
-   book's incubation_cap (Signals_spec.effective_fraction; a live strategy's
-   is its own), and [scale] is the effective scale -- 1 until the overlay
-   sets it. What the strategy was sized to -- its tier, the scale and the
-   dollars allocated, f x scale x E -- is recorded in [sizings] once the plan
+   is planned, anywhere else. It is sized at its own capital_fraction f and
+   at [scale] -- the effective scale, 1 until the overlay sets it -- times
+   the book's incubation ratio (Signals_spec.incubation_ratio; 1 for a live
+   strategy). What the strategy was sized to -- its tier, that product as
+   the scale, and the dollars allocated, f x scale x E -- is recorded in
+   [sizings] once the plan
    stands and the proposal was not refused: E is read with the plan, before
    anything is proposed. *)
 let rebalance t ~oms ~(scale : unit -> float) (a : Accepted.t) : string Deferred.t =
@@ -921,16 +923,21 @@ let rebalance t ~oms ~(scale : unit -> float) (a : Accepted.t) : string Deferred
   match permitted with
   | Error why -> return (Oms.Rebalance_outcome.to_string (Refused why))
   | Ok () -> (
-      let fraction =
-        Signals_spec.effective_fraction
-          ~incubation_cap:(Oms.spec oms).Ohcamel.Config.Book.Desk_spec.incubation_cap
-          { Signals_spec.strategies = t.strategies }
-          strategy
+      (* The cap is a ratio on the scale, never on the fraction: a cap of 0
+         is a scale of 0, which flattens, where a fraction of 0 would be no
+         targets and the strategy's shares held for good. *)
+      let ratio =
+        match strategy.sizing with
+        | Incubation ->
+            Signals_spec.incubation_ratio
+              ~incubation_cap:(Oms.spec oms).Ohcamel.Config.Book.Desk_spec.incubation_cap
+              { Signals_spec.strategies = t.strategies }
+        | Live | Advisory -> 1.0
       in
-      let scale = scale () in
+      let fraction = strategy.capital_fraction in
+      let scale = scale () *. ratio in
       let planned =
-        Oms.plan_rebalance oms
-          ~strategy:{ strategy with capital_fraction = fraction }
+        Oms.plan_rebalance oms ~strategy
           ~targets:
             (List.map doc.targets ~f:(fun (x : Contract.target) -> (x.symbol, x.weight)))
           ~scale

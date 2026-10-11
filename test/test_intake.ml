@@ -1474,7 +1474,8 @@ let test_incubation_sizes_a_failing_status () =
       let d = detail f "inc_spy" 7 in
       contains "the detail is labelled" ~substring:"[tier=incubation] " d;
       contains "the detail names the status" ~substring:{|validation.status is "fail"|} d;
-      contains "the detail names the tier" ~substring:"incubation" d;
+      contains "the detail states the policy"
+        ~substring:"sized only on a paper venue, under the incubation cap" d;
       Alcotest.(check (list (pair string int)))
         "handed to sizing"
         [ ("inc_spy", 7) ]

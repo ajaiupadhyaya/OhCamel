@@ -424,9 +424,9 @@ val record_sizing :
 (** What a strategy was sized to at [at]: its tier ("advisory", "incubation" or "live"),
     the scale and the dollars allocated, and the mode ("open", "adjust" or "flatten"). *)
 
-val latest_sizing : t -> strategy:string -> (int * float * float * string) option
-(** The sizing with the newest [at] for [strategy], as (sequence, scale, allocated, at);
-    one seek on sizings_by_strategy. *)
+val latest_sizing : t -> strategy:string -> (int * float * float * string * string) option
+(** The sizing with the newest [at] for [strategy], as (sequence, scale, allocated, at,
+    tier); one seek on sizings_by_strategy. *)
 
 val set_strategy_state :
   t ->

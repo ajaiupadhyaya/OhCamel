@@ -548,14 +548,17 @@ let test_sizings_round_trip_and_the_latest_is_the_newest_at () =
     ~scale:0.2 ~allocated:2500.5 ~mode:"adjust";
   Journal.record_sizing j ~strategy:"exp_a01_spy" ~sequence:2 ~at:t1 ~tier:"incubation"
     ~scale:0.15 ~allocated:1500.0 ~mode:"flatten";
-  Alcotest.(check (option (pair int (pair (float 0.0) (pair (float 0.0) string)))))
+  Alcotest.(
+    check (option (pair int (pair (float 0.0) (pair (float 0.0) (pair string string))))))
     "latest_sizing is the newest at"
-    (Some (3, (0.2, (2500.5, Ohcamel_desk.Desk_time.rfc3339 t2))))
-    (Option.map (Journal.latest_sizing j ~strategy:"exp_a01_spy") ~f:(fun (a, b, c, d) ->
-         (a, (b, (c, d)))));
-  Alcotest.(check (option int))
-    "and the other strategy's own" (Some 9)
-    (Option.map (Journal.latest_sizing j ~strategy:"other") ~f:(fun (n, _, _, _) -> n));
+    (Some (3, (0.2, (2500.5, (Ohcamel_desk.Desk_time.rfc3339 t2, "incubation")))))
+    (Option.map (Journal.latest_sizing j ~strategy:"exp_a01_spy")
+       ~f:(fun (a, b, c, d, e) -> (a, (b, (c, (d, e))))));
+  Alcotest.(check (option (pair int string)))
+    "and the other strategy's own, with its tier"
+    (Some (9, "live"))
+    (Option.map (Journal.latest_sizing j ~strategy:"other") ~f:(fun (n, _, _, _, tier) ->
+         (n, tier)));
   Journal.close j
 
 let test_a_strategy_state_round_trips_and_absent_is_none () =

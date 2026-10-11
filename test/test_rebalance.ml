@@ -152,10 +152,12 @@ let test_scale_1_5_refused () =
             (String.is_substring why ~substring:"is not in [0, 1]"))
 
 (* Three incubation strategies at 0.025 under (incubation_cap 0.05): their
-   fractions sum to 0.075, so each is sized at
-     0.025 x min(1, 0.05 / 0.075) = 0.025 x 0.6667 = 0.016667,
-   and with E 100,000, p 100, w 1.0, scale 1:
-     1.0 x 0.016667 x 1 x 100,000 / 100 = 16.667 -> 16. *)
+   fractions sum to 0.075, so the cap's ratio is
+     min(1, 0.05 / 0.075) = 0.666667,
+   folded into the scale, never the fraction: f stays 0.025, and with
+   E 100,000, p 100, w 1.0 and an effective scale of 1:
+     1.0 x 0.025 x (1 x 0.666667) x 100,000 / 100 = 16.667 -> 16,
+   the same 0.016667 of E that check-book prints as the effective fraction. *)
 let test_an_incubation_strategy_is_sized_at_its_effective_fraction () =
   let inc name =
     {
@@ -174,12 +176,17 @@ let test_an_incubation_strategy_is_sized_at_its_effective_fraction () =
   in
   let a = inc "inc_a" in
   let roster = { Signals_spec.strategies = [ a; inc "inc_b"; inc "inc_c" ] } in
-  let f = Signals_spec.effective_fraction ~incubation_cap:0.05 roster a in
-  Alcotest.(check (float 1e-9)) "0.025 x 0.05 / 0.075" (0.025 *. 0.05 /. 0.075) f;
+  let ratio = Signals_spec.incubation_ratio ~incubation_cap:0.05 roster in
+  Alcotest.(check (float 1e-9)) "0.05 / 0.075" (0.05 /. 0.075) ratio;
+  Alcotest.(check (float 1e-9))
+    "the effective fraction, 0.025 x 0.666667"
+    (0.025 *. 0.05 /. 0.075)
+    (Signals_spec.effective_fraction ~incubation_cap:0.05 roster a);
   Alcotest.(check (list (triple string int int)))
     "16 bought"
     [ ("buy", 16, 16) ]
-    (legs (plan ~capital_fraction:f ~price:100.0 [ (spy, 1.0) ]))
+    (legs
+       (plan ~capital_fraction:0.025 ~scale:(1.0 *. ratio) ~price:100.0 [ (spy, 1.0) ]))
 
 (* ------------------------------------------------------------------------ *)
 (* The order manager's half                                                  *)

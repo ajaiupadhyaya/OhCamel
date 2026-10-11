@@ -1646,10 +1646,11 @@ let record_sizing t ~strategy ~sequence ~at ~tier ~scale ~allocated ~mode =
 let latest_sizing t ~strategy =
   List.hd
     (query t ~what:"latest sizing"
-       "SELECT sequence, scale, allocated, at FROM sizings WHERE strategy = ? ORDER BY \
-        at DESC LIMIT 1"
+       "SELECT sequence, scale, allocated, at, tier FROM sizings WHERE strategy = ? \
+        ORDER BY at DESC LIMIT 1"
        [ text strategy ]
-       ~row:(fun r -> (Data.to_int_exn r.(0), col_real r 1, col_real r 2, col_text r 3)))
+       ~row:(fun r ->
+         (Data.to_int_exn r.(0), col_real r 1, col_real r 2, col_text r 3, col_text r 4)))
 
 let set_strategy_state t ~strategy ~state ~rule ~at ~detail =
   write t ~what:"strategy state" (fun () ->

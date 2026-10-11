@@ -1030,6 +1030,44 @@ let test_effective_fraction_scales_the_roster () =
     "a live strategy keeps its own fraction" 0.025
     (S.effective_fraction ~incubation_cap:0.10 roster (strategy "l_a" S.Live))
 
+(* The ratio the desk folds into an incubation strategy's scale, by hand.
+   23 at 0.025 sum to 0.575:
+   - cap 0.10: min(1, 0.10 / 0.575) = 0.173913...;
+   - cap 0.60: min(1, 0.60 / 0.575 = 1.0435) = 1.0;
+   - cap 0: 0.0 -- a scale of nothing, which flattens;
+   - no incubation strategy (the sum is 0): 0.0;
+   - a NaN cap: 0.0, never NaN. *)
+let test_the_incubation_ratio () =
+  let module S = Ohcamel.Config.Book.Signals_spec in
+  let strategy name sizing =
+    {
+      S.Strategy.name;
+      symbols = [ "SPY" ];
+      max_age = 3;
+      sizing;
+      capital_fraction = 0.025;
+      cadence = S.Cadence.Daily;
+      adjust = S.Adjust.Intraday;
+      max_age_minutes = 20;
+      horizon = S.Horizon.Carry;
+      stop = None;
+      reinstated = None;
+    }
+  in
+  let roster =
+    {
+      S.strategies = List.init 23 ~f:(fun i -> strategy (sprintf "s_%02d" i) S.Incubation);
+    }
+  in
+  let ratio cap = S.incubation_ratio ~incubation_cap:cap roster in
+  Alcotest.(check (float 1e-12)) "cap 0.10" 0.1739130434782609 (ratio 0.10);
+  Alcotest.(check (float 0.0)) "cap 0.60" 1.0 (ratio 0.60);
+  Alcotest.(check (float 0.0)) "cap 0" 0.0 (ratio 0.0);
+  Alcotest.(check (float 0.0))
+    "no incubation strategy" 0.0
+    (S.incubation_ratio ~incubation_cap:0.10 { S.strategies = [ strategy "l_a" S.Live ] });
+  Alcotest.(check (float 0.0)) "a NaN cap" 0.0 (ratio Float.nan)
+
 (* The canary as the owner books it: the example book with (incubation_cap
    0.10) and nothing else changed checks clean, and the summary prints each
    strategy's effective fraction, 0.025 x 0.10 / 0.575 = 0.0043478... *)
@@ -1239,6 +1277,7 @@ let suite =
         test_roster_fractions_sum_to_the_cap;
       Alcotest.test_case "effective fraction scales the roster" `Quick
         test_effective_fraction_scales_the_roster;
+      Alcotest.test_case "the incubation ratio" `Quick test_the_incubation_ratio;
       Alcotest.test_case "the canary book checks clean" `Quick
         test_the_canary_book_checks_clean;
       Alcotest.test_case "every roster symbol is a position" `Quick

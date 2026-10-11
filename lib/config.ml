@@ -516,26 +516,34 @@ module Book = struct
               else Ok ())
 
     (* [Desk_spec.incubation_cap] is a proportional ceiling, not a bound the
-       fractions must fit under: each incubation strategy's effective fraction
-       is capital_fraction x min(1, incubation_cap / the incubation fractions'
-       sum), so the canary is (incubation_cap 0.10) over the same roster and
-       raising it is one edit. A live or advisory strategy's fraction is its
-       own, unchanged. Pure: the desk sizes with it, check-book prints it. *)
+       fractions must fit under: the incubation roster is scaled by
+       min(1, incubation_cap / the incubation fractions' sum), so the canary is
+       (incubation_cap 0.10) over the same roster and raising it is one edit.
+       The ratio is 0 when the cap or the sum is not positive -- a NaN cap
+       included, the comparison being written positively -- so a cap of 0
+       sizes every incubation strategy to nothing. The desk applies it to the
+       SCALE (desk/intake.ml), never to the fraction, so a cap of 0 flattens
+       as a scale of 0 does. Pure. *)
+    let incubation_ratio ~(incubation_cap : float) (t : t) : float =
+      let sum =
+        List.sum
+          (module Float)
+          t.strategies
+          ~f:(fun x ->
+            if equal_sizing x.Strategy.sizing Incubation then x.Strategy.capital_fraction
+            else 0.0)
+      in
+      if Float.(incubation_cap > 0.0) && Float.(sum > 0.0) then
+        Float.min 1.0 (incubation_cap /. sum)
+      else 0.0
+
+    (* What a strategy is sized at, as check-book prints it: an incubation
+       strategy's capital_fraction x [incubation_ratio]; a live or advisory
+       strategy's fraction is its own, unchanged. *)
     let effective_fraction ~(incubation_cap : float) (t : t) (s : Strategy.t) : float =
       match s.Strategy.sizing with
       | Advisory | Live -> s.Strategy.capital_fraction
-      | Incubation ->
-          let sum =
-            List.sum
-              (module Float)
-              t.strategies
-              ~f:(fun x ->
-                if equal_sizing x.Strategy.sizing Incubation then
-                  x.Strategy.capital_fraction
-                else 0.0)
-          in
-          if Float.(sum <= 0.0) then 0.0
-          else s.Strategy.capital_fraction *. Float.min 1.0 (incubation_cap /. sum)
+      | Incubation -> s.Strategy.capital_fraction *. incubation_ratio ~incubation_cap t
   end
 
   module Limit_spec = struct

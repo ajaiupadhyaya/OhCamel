@@ -362,6 +362,10 @@ let suite =
       t "record mode still rejects R7" (fun () ->
           expect_rule Contract.Rule.R7
             (judge_record (doc ~status:"fail" ~targets:[ ("SPY", 1.5) ] ())));
+      (* `Record carries R6 and nothing before it: a failed status on a
+         replayed sequence (5, the registry's last) is still R5. *)
+      t "record still rejects R1-R5" (fun () ->
+          expect_rule Contract.Rule.R5 (judge_record (doc ~status:"fail" ~seq:5 ())));
       t "enforce is unchanged" (fun () ->
           expect_rule Contract.Rule.R6 (judge (doc ~status:"fail" ())));
       t "a missing required field is an error, not a default" (fun () ->
