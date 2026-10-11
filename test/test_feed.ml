@@ -982,6 +982,56 @@ let test_feed_source_reads_at_call_time () =
     [ "kind"; "alpaca_feed"; "fred_series"; "alpaca"; "fred" ]
     (match second with `Assoc fields -> List.map fields ~f:fst | _ -> [])
 
+(* ------------------------------------------------------------------------ *)
+(* The latest-trades poll: the names past the stream's thirty                *)
+(* ------------------------------------------------------------------------ *)
+
+(* Alpaca's documented shape for GET /v2/stocks/trades/latest, written out
+   by hand: one object per symbol under "trades", keyed by the symbol, with
+   the same t/p/s fields a websocket trade carries. *)
+let latest_trades_payload =
+  {|{"trades":{"SPY":{"t":"2026-10-13T15:30:58.12Z","p":567.12,"s":100,"x":"V","i":1,"c":["@"],"z":"B"},"TLT":{"t":"2026-10-13T15:30:58.12Z","p":91.50,"s":200,"x":"V","i":2,"c":["@"],"z":"B"}}}|}
+
+let test_parse_latest_trades_two_names () =
+  let ticks =
+    Alpaca_rest.parse_latest_trades (Yojson.Safe.from_string latest_trades_payload)
+  in
+  Alcotest.(check (list string))
+    "SPY then TLT, keyed as the payload keys them" [ "SPY"; "TLT" ]
+    (List.map ticks ~f:(fun (s, _) -> Symbol.to_string s));
+  Alcotest.(check (list string))
+    "each tick names its own symbol" [ "SPY"; "TLT" ]
+    (List.map ticks ~f:(fun (_, t) -> Symbol.to_string (Tick.symbol t)));
+  Alcotest.(check (list feq))
+    "the prices as printed" [ 567.12; 91.50 ]
+    (List.map ticks ~f:(fun (_, t) -> Price.to_float (Tick.price t)));
+  Alcotest.(check (list string))
+    "the trade's own instant, not the time of receipt"
+    [ "2026-10-13 15:30:58.120000000Z"; "2026-10-13 15:30:58.120000000Z" ]
+    (List.map ticks ~f:(fun (_, t) -> Time_ns.to_string_utc (Tick.time t)))
+
+let test_parse_latest_trades_skips_a_bad_price () =
+  (* NaN is not JSON, so the unreadable price is a string; TLT keeps its own. *)
+  let payload =
+    {|{"trades":{"SPY":{"t":"2026-10-13T15:30:58.12Z","p":"x","s":100},"TLT":{"t":"2026-10-13T15:30:58.12Z","p":91.50,"s":200}}}|}
+  in
+  let ticks = Alpaca_rest.parse_latest_trades (Yojson.Safe.from_string payload) in
+  Alcotest.(check (list string))
+    "only TLT" [ "TLT" ]
+    (List.map ticks ~f:(fun (s, _) -> Symbol.to_string s));
+  Alcotest.(check (list feq))
+    "at 91.50" [ 91.50 ]
+    (List.map ticks ~f:(fun (_, t) -> Price.to_float (Tick.price t)))
+
+let test_latest_trades_uri () =
+  Alcotest.(check string)
+    "the multi-symbol latest-trades call on the data host"
+    "https://data.alpaca.markets/v2/stocks/trades/latest?symbols=SPY%2CTLT&feed=iex"
+    (Uri.to_string
+       (Alpaca_rest.latest_trades_uri
+          ~symbols:[ Symbol.of_string "SPY"; Symbol.of_string "TLT" ]
+          ~feed:"iex"))
+
 let suite =
   ( "feed",
     [
@@ -1017,6 +1067,11 @@ let suite =
         test_backfill_carries_a_mark;
       Alcotest.test_case "backfill: the request asks for adjusted daily bars" `Quick
         test_bars_request_is_adjusted;
+      Alcotest.test_case "poll: parse_latest_trades two names" `Quick
+        test_parse_latest_trades_two_names;
+      Alcotest.test_case "poll: parse_latest_trades skips a bad price" `Quick
+        test_parse_latest_trades_skips_a_bad_price;
+      Alcotest.test_case "poll: latest_trades_uri" `Quick test_latest_trades_uri;
       Alcotest.test_case "fred: \".\" is a missing observation, not zero" `Quick
         test_fred_missing_observations;
       Alcotest.test_case "fred: levels become changes" `Quick test_fred_changes;

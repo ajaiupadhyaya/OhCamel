@@ -1080,12 +1080,12 @@ let run_live ~book_path ~(serve_port : int option) =
       let runtime = config.Config.runtime in
       let instruments = Config.Book.instruments book in
       let limits = Config.Book.limits book in
-      (* Alpaca's free plan streams at most Config.universe_cap symbols; the
-         reason is on the constant. A larger book would subscribe, be told no
-         for the excess, and watch a fraction of itself while the page drew all
-         of it. Refused here, with the number -- and check-book refuses the same
-         book by the same number, so a deploy that runs it first never reaches
-         this line with a book that fails it. *)
+      (* The engine carries at most Config.universe_cap names: Config.stream_cap
+         on Alpaca's free websocket and the rest marked by the latest-trades
+         poll; the reason is on the constant. A larger book is refused here,
+         with the number -- and check-book refuses the same book by the same
+         number, so a deploy that runs it first never reaches this line with a
+         book that fails it. *)
       (* Every refusal below exits through Async's [exit], bound, rather than
          [Stdlib.exit]. Under [open Async], [prerr_endline] writes to a buffered
          writer that only Async's shutdown flushes: followed by Stdlib.exit, the
@@ -1095,9 +1095,8 @@ let run_live ~book_path ~(serve_port : int option) =
         if List.length instruments > Config.universe_cap then (
           prerr_endline
             (sprintf
-               "ohcamel: the book declares %d names and the free Alpaca plan streams at \
-                most %d. Remove names, or move to a paid feed and raise \
-                Config.universe_cap."
+               "ohcamel: the book declares %d names and this engine carries at most %d \
+                (thirty on the stream, the rest polled every ten seconds)"
                (List.length instruments) Config.universe_cap);
           exit 1)
         else return ()
@@ -1522,13 +1521,26 @@ let run_live ~book_path ~(serve_port : int option) =
               | Alpaca_ws.Message.Success msg -> live_line ("alpaca  " ^ msg)
               | Alpaca_ws.Message.Subscription raw -> live_line ("alpaca  " ^ raw)
               | _ -> ())
-            ~graph ~credentials:config.Config.credentials ~runtime ~stats:alpaca_stats ()
+            ~graph ~credentials:config.Config.credentials ~runtime
+            ~symbols:(Config.Book.stream_names book)
+            ~stats:alpaca_stats ()
         with
         | Ok () -> Deferred.unit
         | Error fatal ->
             prerr_endline "";
             prerr_endline fatal;
             exit 1
+      in
+      (* The names past the stream's thirty, marked by the latest-trades call
+         every ten seconds. Started here, beside the websocket, so no startup
+         step waits on its first request; it never finishes and never raises. *)
+      let poll =
+        match Config.Book.polled_names book with
+        | [] -> Deferred.unit
+        | symbols ->
+            Alpaca_poll.run ~graph ~credentials:config.Config.credentials ~runtime
+              ~symbols ~every:(Time_ns.Span.of_sec 10.) ~stats:alpaca_stats
+              ~on_event:(fun e -> live_line ("alpaca  " ^ e))
       in
       let http =
         match serve_port with
@@ -1582,6 +1594,7 @@ let run_live ~book_path ~(serve_port : int option) =
       Deferred.all_unit
         [
           alpaca;
+          poll;
           Deferred.ignore_m clock;
           Deferred.ignore_m display;
           fred;

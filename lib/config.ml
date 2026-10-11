@@ -600,6 +600,29 @@ module Book = struct
 
   let limits (t : t) : Types.Limit.t list = List.map t.limits ~f:Limit_spec.to_limit
 
+  (* The names the websocket carries (design D7, §4.3): the desk's (stream ...)
+     names in their order, then the book's other positions in book order, cut
+     at [stream_cap]. No name twice -- a stream name is not counted again where
+     it stands in the book. *)
+  let stream_names (t : t) : Types.Symbol.t list =
+    let ordered =
+      t.desk.Desk_spec.stream @ List.map t.positions ~f:(fun p -> p.Position_spec.symbol)
+    in
+    let unique =
+      List.fold ordered ~init:[] ~f:(fun seen s ->
+          if List.mem seen s ~equal:String.equal then seen else s :: seen)
+      |> List.rev
+    in
+    List.map (List.take unique stream_cap) ~f:Types.Symbol.of_string
+
+  (* The rest of the universe, in book order: marked by the latest-trades poll
+     rather than the stream. *)
+  let polled_names (t : t) : Types.Symbol.t list =
+    let streamed = stream_names t in
+    List.filter_map t.positions ~f:(fun p ->
+        let symbol = Types.Symbol.of_string p.Position_spec.symbol in
+        if List.mem streamed symbol ~equal:Types.Symbol.equal then None else Some symbol)
+
   (* The parse alone, with nothing validated. [of_string] is the startup path and
      stops at the first failure; [Config.check] wants a parsed book it can hand to
      every validator, so the two steps are separable here.
@@ -694,9 +717,8 @@ module Book = struct
         if count > universe_cap then
           Some
             (sprintf
-               "universe: the book declares %d names and the free Alpaca plan streams at \
-                most %d; remove names, or move to a paid feed and raise \
-                Config.universe_cap"
+               "universe: the book declares %d names and this engine carries at most %d \
+                (thirty on the stream, the rest polled every ten seconds); remove names"
                count universe_cap)
         else None
       in

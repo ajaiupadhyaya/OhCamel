@@ -903,6 +903,59 @@ let test_stream_cap () =
         "naming the 31 and the 30" true
         (names "stream names 31 symbols; at most 30 stream" errors))
 
+let test_stream_names_prefer_the_stream_list () =
+  (* 35 names: S01..S33 with GLD after S02 and TLT after S10, and (stream (GLD
+     TLT)). The stream is GLD, TLT, then the first 28 OTHER positions in book
+     order -- S01..S28, GLD and TLT not repeated where they stand -- which is
+     30; the poll is the rest, S29..S33. *)
+  let s i = sprintf "S%02d" i in
+  let names =
+    List.concat
+      [
+        [ s 1; s 2; "GLD" ];
+        List.init 8 ~f:(fun i -> s (i + 3));
+        [ "TLT" ];
+        List.init 23 ~f:(fun i -> s (i + 11));
+      ]
+  in
+  Alcotest.(check int) "35 names" 35 (List.length names);
+  let contents =
+    sprintf "((cash 1000000.0) (positions (%s)) (limits ()) (desk ((stream (GLD TLT)))))"
+      (String.concat ~sep:" "
+         (List.map names ~f:(sprintf "((symbol %s) (sector TECH) (qty 1.0))")))
+  in
+  let book =
+    match Book.parse contents with
+    | Ok b -> b
+    | Error exn -> Alcotest.failf "did not parse: %s" (Exn.to_string exn)
+  in
+  let strings = List.map ~f:Ohcamel.Types.Symbol.to_string in
+  Alcotest.(check (list string))
+    "GLD, TLT, then S01..S28"
+    ([ "GLD"; "TLT" ] @ List.init 28 ~f:(fun i -> s (i + 1)))
+    (strings (Book.stream_names book));
+  Alcotest.(check (list string))
+    "the other five, S29..S33"
+    (List.init 5 ~f:(fun i -> s (i + 29)))
+    (strings (Book.polled_names book))
+
+let test_a_book_without_stream_streams_the_first_thirty () =
+  let book =
+    match Book.parse (book_of_n_names 35) with
+    | Ok b -> b
+    | Error exn -> Alcotest.failf "did not parse: %s" (Exn.to_string exn)
+  in
+  let s i = sprintf "S%02d" i in
+  let strings = List.map ~f:Ohcamel.Types.Symbol.to_string in
+  Alcotest.(check (list string))
+    "S01..S30"
+    (List.init 30 ~f:(fun i -> s (i + 1)))
+    (strings (Book.stream_names book));
+  Alcotest.(check (list string))
+    "S31..S35"
+    (List.init 5 ~f:(fun i -> s (i + 31)))
+    (strings (Book.polled_names book))
+
 let test_desk_defaults () =
   let d = Desk_spec.default in
   Alcotest.(check (float 0.0)) "incubation_cap 0.0" 0.0 d.Desk_spec.incubation_cap;
@@ -1177,6 +1230,10 @@ let suite =
       Alcotest.test_case "stop drawdown range" `Quick test_stop_drawdown_range;
       Alcotest.test_case "flatten_at parses" `Quick test_flatten_at_parses;
       Alcotest.test_case "stream cap" `Quick test_stream_cap;
+      Alcotest.test_case "stream_names prefers the stream list" `Quick
+        test_stream_names_prefer_the_stream_list;
+      Alcotest.test_case "a book without stream streams the first thirty" `Quick
+        test_a_book_without_stream_streams_the_first_thirty;
       Alcotest.test_case "defaults" `Quick test_desk_defaults;
       Alcotest.test_case "roster fractions sum under the cap" `Quick
         test_roster_fractions_sum_to_the_cap;
