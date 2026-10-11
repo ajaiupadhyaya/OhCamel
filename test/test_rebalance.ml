@@ -331,6 +331,12 @@ let tech_strategy =
     max_age = 3;
     sizing = Signals_spec.Live;
     capital_fraction = 0.1;
+    cadence = Signals_spec.Cadence.Daily;
+    adjust = Signals_spec.Adjust.Intraday;
+    max_age_minutes = 20;
+    horizon = Signals_spec.Horizon.Carry;
+    stop = None;
+    reinstated = None;
   }
 
 (* The account holds AAPL 400 (the book above), and the journal says whose:

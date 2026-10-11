@@ -32,11 +32,61 @@
    ((symbol JPM)  (sector FINANCIALS) (qty 250.0))
    ((symbol XOM)  (sector ENERGY)     (qty -500.0))
    ((symbol CVX)  (sector ENERGY)     (qty -300.0))
-   ; SPY and TLT are here, at zero, because the signals block below names
-   ; nothing else: a signal may name only a symbol the book declares (R7).
-   ; On a host with a paper key the account says what is held; here, nothing.
+   ; Every other name is here at zero, because a signal may name only a
+   ; symbol the book declares (R7). On a host with a paper key the account
+   ; says what is held; here, nothing. SPY and TLT are EXP-A01's two names.
    ((symbol SPY)  (sector INDEX)      (qty 0.0))
-   ((symbol TLT)  (sector TREASURIES) (qty 0.0))))
+   ((symbol TLT)  (sector TREASURIES) (qty 0.0))
+   ; The rest of the site's 42 ETFs (quant/src/ohcamel_quant/universes.json,
+   ; less its crypto and volatility groups), one sector per group, for the
+   ; farm's strategies below. SPY and TLT above are two of the 42.
+   ; US equity indices: INDEX.
+   ((symbol QQQ)  (sector INDEX)      (qty 0.0))
+   ((symbol DIA)  (sector INDEX)      (qty 0.0))
+   ((symbol IWM)  (sector INDEX)      (qty 0.0))
+   ((symbol MDY)  (sector INDEX)      (qty 0.0))
+   ; S&P 500 sectors: SECTOR.
+   ((symbol XLK)  (sector SECTOR)     (qty 0.0))
+   ((symbol XLF)  (sector SECTOR)     (qty 0.0))
+   ((symbol XLE)  (sector SECTOR)     (qty 0.0))
+   ((symbol XLV)  (sector SECTOR)     (qty 0.0))
+   ((symbol XLI)  (sector SECTOR)     (qty 0.0))
+   ((symbol XLY)  (sector SECTOR)     (qty 0.0))
+   ((symbol XLP)  (sector SECTOR)     (qty 0.0))
+   ((symbol XLU)  (sector SECTOR)     (qty 0.0))
+   ((symbol XLB)  (sector SECTOR)     (qty 0.0))
+   ((symbol XLRE) (sector SECTOR)     (qty 0.0))
+   ((symbol XLC)  (sector SECTOR)     (qty 0.0))
+   ; Style factors: STYLE.
+   ((symbol MTUM) (sector STYLE)      (qty 0.0))
+   ((symbol QUAL) (sector STYLE)      (qty 0.0))
+   ((symbol VLUE) (sector STYLE)      (qty 0.0))
+   ((symbol USMV) (sector STYLE)      (qty 0.0))
+   ((symbol SIZE) (sector STYLE)      (qty 0.0))
+   ; US Treasuries: RATES.
+   ((symbol BIL)  (sector RATES)      (qty 0.0))
+   ((symbol SHY)  (sector RATES)      (qty 0.0))
+   ((symbol IEI)  (sector RATES)      (qty 0.0))
+   ((symbol IEF)  (sector RATES)      (qty 0.0))
+   ((symbol TIP)  (sector RATES)      (qty 0.0))
+   ; Credit: CREDIT.
+   ((symbol LQD)  (sector CREDIT)     (qty 0.0))
+   ((symbol HYG)  (sector CREDIT)     (qty 0.0))
+   ((symbol EMB)  (sector CREDIT)     (qty 0.0))
+   ; International equity: INTL.
+   ((symbol EFA)  (sector INTL)       (qty 0.0))
+   ((symbol EEM)  (sector INTL)       (qty 0.0))
+   ((symbol VGK)  (sector INTL)       (qty 0.0))
+   ((symbol EWJ)  (sector INTL)       (qty 0.0))
+   ((symbol FXI)  (sector INTL)       (qty 0.0))
+   ((symbol INDA) (sector INTL)       (qty 0.0))
+   ; Commodities: COMMODITY.
+   ((symbol GLD)  (sector COMMODITY)  (qty 0.0))
+   ((symbol SLV)  (sector COMMODITY)  (qty 0.0))
+   ((symbol USO)  (sector COMMODITY)  (qty 0.0))
+   ((symbol UNG)  (sector COMMODITY)  (qty 0.0))
+   ((symbol DBA)  (sector COMMODITY)  (qty 0.0))
+   ((symbol DBC)  (sector COMMODITY)  (qty 0.0))))
  (limits
   (((name aapl-cap)   (scope (Instrument AAPL))  (kind (Gross_notional 150000.0)))
    ((name nvda-cap)   (scope (Instrument NVDA))  (kind (Gross_notional 60000.0)))
@@ -109,26 +159,59 @@
  ;   duplicate_window_s      a same-name, same-side, same-quantity order inside
  ;                           this window is refused as a double-click.
  ;   max_open_orders         how many of the desk's own orders may rest at once.
+ ;                           200, because a roster of two dozen strategies rests
+ ;                           more than twenty market-on-open orders at once.
  ;   spread_bps_default      the half-spread assumed when costing a fill, in
  ;                           basis points, for a name not named below.
  ;   spread_bps              per-name half-spreads, e.g. ((AAPL 2.0) (XOM 8.0)).
+ ;   incubation_cap          the most of equity the incubation strategies below
+ ;                           may size, together. 0, the default, sizes none.
+ ;   vol_target              the overlay's annualised volatility target. The
+ ;                           overlay scales every incubation and live target.
+ ;   overlay_max_age_minutes an overlay older than this is stale; the desk
+ ;                           holds its last value until then.
+ ;   overlay_fallback        the scale used once the overlay is stale. The page
+ ;                           says OVERLAY STALE.
+ ;   overlay_band            a move in the scale larger than this re-sizes every
+ ;                           strategy that adjusts intraday.
+ ;   intraday_slip_bps       an intraday leg is a limit order this far past the
+ ;                           mark, toward the far side. Below the collar.
+ ;   min_leg_notional        an intraday leg smaller than this, in dollars, is
+ ;                           dropped, and the drop journaled.
+ ;   wave_timeout_s          how long the desk waits on one wave of legs before
+ ;                           it cancels what is left.
+ ;   flatten_at              New York time, HH:MM inside the session, at which a
+ ;                           strategy with (horizon close) is flattened.
+ ;   stream                  the names streamed first. The stream carries
+ ;                           thirty; every other name is polled.
  ;
  ; The values below are the engine's own defaults, written out so that turning
- ; the desk on is one word rather than a guess.
+ ; the desk on is one word rather than a guess. Two are not: incubation_cap,
+ ; which the roster below fills, and stream, which names five of its names.
  (desk
   ((trading disabled)
    (max_order_notional 25000.0)
    (max_adv_participation 0.01)
    (price_collar 0.05)
    (duplicate_window_s 10.0)
-   (max_open_orders 20)
+   (max_open_orders 200)
    (spread_bps_default 5.0)
    ; SPY and TLT are research/config/friction_v1.yaml's spreads, halved: that
    ; file's 2.0 and 3.0 are the full round-trip spread EXP-A01 was tested at
    ; ("per-symbol spread, halved per fill", its pre-registration), and this is
    ; a per-fill half-spread. One cost configuration for the backtest and the
    ; desk; test/test_example_book.ml reads both files and holds them to it.
-   (spread_bps ((SPY 1.0) (TLT 1.5)))))
+   (spread_bps ((SPY 1.0) (TLT 1.5)))
+   (incubation_cap 0.60)
+   (vol_target 0.10)
+   (overlay_max_age_minutes 60)
+   (overlay_fallback 0.5)
+   (overlay_band 0.10)
+   (intraday_slip_bps 10.0)
+   (min_leg_notional 200.0)
+   (wave_timeout_s 180.0)
+   (flatten_at "15:50")
+   (stream (SPY QQQ IWM TLT GLD))))
 
  ; ---------------------------------------------------------------------------
  ; Phase A3: signals. OPTIONAL -- omit this block and the desk registers no
@@ -147,22 +230,104 @@
  ;                     the positions above. A signal naming any other is
  ;                     rejected.
  ;   max_age           R4: how many recorded sessions old a signal may be.
- ;   sizing            advisory | live. Advisory, the default, shows a passing
- ;                     signal with its weights and never sizes it. Only live
- ;                     is sized.
+ ;   sizing            advisory | live | incubation. Advisory, the default,
+ ;                     shows a passing signal with its weights and never sizes
+ ;                     it. Live is sized when its signal passes validation;
+ ;                     incubation, below, whatever its validation says.
  ;   capital_fraction  the share of equity the strategy's weights apply to, in
  ;                     (0, 1]. The live strategies' fractions may sum to at
- ;                     most 1.
+ ;                     most 1, the incubation ones to at most the desk's
+ ;                     incubation_cap, and the two together to at most 1.
+ ;   cadence           daily | intraday: how often its documents arrive.
+ ;   adjust            intraday | open: whether an overlay move re-sizes it
+ ;                     during the session or at the next open.
+ ;   max_age_minutes   R4 for an intraday document, in minutes. Default 20.
+ ;   horizon           carry | close. Close is flattened at the desk's
+ ;                     flatten_at. Default carry.
+ ;   stop              ((drawdown F) (sessions N)): the strategy is stopped
+ ;                     when its drawdown from peak reaches F, or N sessions
+ ;                     after its first fill, and is sized no more.
+ ;   reinstated        a date the owner writes after a stop to resume it.
  ;
- ; Both strategies ship advisory. Promoting one to live is the owner's
- ; decision, made after reading its manifest
- ; (research/experiments/EXP-A01/manifest.<name>.json), and no code makes it.
- ; Promotion also needs the desk's max_order_notional to be at least the
- ; strategy's largest target order: at $100k of equity and a fraction of 0.5
- ; that is about $50k, against the default of $25k above. Leave it lower and
- ; the notional rule refuses every rebalance -- visibly, on the page, but
- ; every one.
+ ; Incubation is the charter's paper tier (docs/CHARTER.md). An incubation
+ ; strategy is sized on the paper venue whatever its validation status, inside
+ ; incubation_cap, and every order, page and report it touches says so. Its
+ ; record is scored against the stop rules written here before it trades, and
+ ; promotion to live never follows from that record by itself. It is not
+ ; evidence of edge.
+ ;
+ ; The roster: EXP-A01's two strategies, then one strategy per farm cell --
+ ; each strategy in quant/src/ohcamel_quant/backtest/strategies.py on each of
+ ; its suggested universes -- every one incubation. 21 cells at 0.025 and the
+ ; two EXP-A01 entries at 0.0375 sum to 0.60, the incubation_cap above.
  (signals
   ((strategies
-    (((name exp_a01_spy) (symbols (SPY)) (max_age 3) (sizing advisory) (capital_fraction 0.5))
-     ((name exp_a01_tlt) (symbols (TLT)) (max_age 3) (sizing advisory) (capital_fraction 0.5)))))))
+    (((name exp_a01_spy) (symbols (SPY)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.0375) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name exp_a01_tlt) (symbols (TLT)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.0375) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_tsmom_us_equity_indices) (symbols (SPY QQQ DIA IWM MDY)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_tsmom_rates) (symbols (BIL SHY IEI IEF TLT TIP)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_tsmom_commodities) (symbols (GLD SLV USO UNG DBA DBC)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_tsmom_international) (symbols (EFA EEM VGK EWJ FXI INDA)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_tsmom_credit) (symbols (LQD HYG EMB)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_xsmom_sectors) (symbols (XLK XLF XLE XLV XLI XLY XLP XLU XLB XLRE XLC)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_xsmom_international) (symbols (EFA EEM VGK EWJ FXI INDA)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_dual_momentum_us_equity_indices) (symbols (SPY QQQ DIA IWM MDY)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_dual_momentum_international) (symbols (EFA EEM VGK EWJ FXI INDA)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_sma_trend_us_equity_indices) (symbols (SPY QQQ DIA IWM MDY)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_sma_trend_commodities) (symbols (GLD SLV USO UNG DBA DBC)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_sma_trend_international) (symbols (EFA EEM VGK EWJ FXI INDA)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_vol_managed_us_equity_indices) (symbols (SPY QQQ DIA IWM MDY)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_risk_parity_rates) (symbols (BIL SHY IEI IEF TLT TIP)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_risk_parity_credit) (symbols (LQD HYG EMB)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_risk_parity_commodities) (symbols (GLD SLV USO UNG DBA DBC)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_risk_parity_us_equity_indices) (symbols (SPY QQQ DIA IWM MDY)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_low_beta_sectors) (symbols (XLK XLF XLE XLV XLI XLY XLP XLU XLB XLRE XLC)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_st_reversal_sectors) (symbols (XLK XLF XLE XLV XLI XLY XLP XLU XLB XLRE XLC)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_pairs_distance_sectors) (symbols (XLK XLF XLE XLV XLI XLY XLP XLU XLB XLRE XLC)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250))))
+     ((name farm_pairs_coint_sectors) (symbols (XLK XLF XLE XLV XLI XLY XLP XLU XLB XLRE XLC)) (max_age 3) (sizing incubation)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
+      (stop ((drawdown 0.15) (sessions 250)))))))))

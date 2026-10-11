@@ -181,8 +181,10 @@ let test_a_duplicate_within_the_window () =
     (request 10)
 
 let test_open_orders () =
-  check_rules "19 open" [] { context with open_orders = 19 } (request 10);
-  check_rules "20 open" [ "open_orders" ] { context with open_orders = 20 } (request 10)
+  (* The default max_open_orders, 200 (lib/config.ml): 199 rest and one more
+     may, 200 rest and none may. *)
+  check_rules "199 open" [] { context with open_orders = 199 } (request 10);
+  check_rules "200 open" [ "open_orders" ] { context with open_orders = 200 } (request 10)
 
 let test_every_failure_is_reported_in_rule_order () =
   check_rules "three at once"

@@ -170,14 +170,18 @@ end
 (* The universe cap                                                          *)
 (* ------------------------------------------------------------------------ *)
 
-(* Alpaca's free plan streams at most 30 symbols. A larger book would subscribe,
-   be told no for the excess, and watch a fraction of itself while the page drew
-   all of it. run_live (bin/main.ml) refuses such a book before it connects, and
-   [Book.errors] below reports it, and both read THIS number: check-book exists
-   so the engine never dies on a book at startup, and a cap the checker spelled
-   for itself would be a second number, free to drift from the one the engine
-   enforces. Moving to a paid feed means raising it here, once. *)
-let universe_cap = 30
+(* The most names a book may declare. Alpaca's free plan streams at most
+   [stream_cap] of them; the rest are marked by polling the latest trades
+   (design §4.3), so the cap is the engine's and not the plan's. run_live
+   (bin/main.ml) refuses a larger book before it connects, and [Book.errors]
+   below reports it, and both read THIS number: check-book exists so the engine
+   never dies on a book at startup, and a cap the checker spelled for itself
+   would be a second number, free to drift from the one the engine enforces. *)
+let universe_cap = 64
+
+(* How many names the free plan's websocket carries. A book's (stream ...) list
+   may name at most this many, and they are streamed first. *)
+let stream_cap = 30
 
 module Book = struct
   module Position_spec = struct
@@ -198,15 +202,73 @@ module Book = struct
       max_adv_participation : float; [@sexp.default 0.01]
       price_collar : float; [@sexp.default 0.05]
       duplicate_window_s : float; [@sexp.default 10.0]
-      max_open_orders : int; [@sexp.default 20]
+      (* 200: a roster of two dozen strategies rests more than twenty
+         market-on-open orders at once; the example book says so beside the
+         field. *)
+      max_open_orders : int; [@sexp.default 200]
       spread_bps_default : float; [@sexp.default 5.0]
       spread_bps : (string * float) list; [@sexp.default []]
+      (* The incubation tier's share of equity: the incubation strategies'
+         capital fractions may sum to at most this (design §4.3). 0 admits
+         none, so a book that does not say admits none. *)
+      incubation_cap : float; [@sexp.default 0.0]
+      (* The overlay's annualised volatility target, and how it is read: an
+         overlay older than [overlay_max_age_minutes] is stale, a stale one
+         falls back to [overlay_fallback], and a move of more than
+         [overlay_band] in the effective scale re-sizes the strategies that
+         adjust intraday. *)
+      vol_target : float; [@sexp.default 0.10]
+      overlay_max_age_minutes : int; [@sexp.default 60]
+      overlay_fallback : float; [@sexp.default 0.5]
+      overlay_band : float; [@sexp.default 0.10]
+      (* The intraday rebalance: limit legs priced this far past the mark,
+         legs below [min_leg_notional] dropped, each wave waited on for at
+         most [wave_timeout_s]. *)
+      intraday_slip_bps : float; [@sexp.default 10.0]
+      min_leg_notional : float; [@sexp.default 200.0]
+      wave_timeout_s : float; [@sexp.default 180.0]
+      (* New York wall-clock HH:MM at which a (horizon close) strategy is
+         flattened. *)
+      flatten_at : string; [@sexp.default "15:50"]
+      (* The names streamed first; the rest of the universe fills the stream
+         to [stream_cap] in book order, and anything past it is polled. *)
+      stream : string list; [@sexp.default []]
     }
     [@@deriving sexp, compare, equal]
 
     let default = t_of_sexp (Sexp.List [])
 
-    let validate (t : t) : unit Or_error.t =
+    (* [flatten_at] as a time of day, refused unless it is HH:MM inside the
+       regular session: at or after the 09:30 open and before the 16:00
+       close, because a flatten at the close is a flatten nobody can fill. *)
+    let flatten_ofday (s : string) : (Time_ns.Ofday.t, string) Result.t =
+      let shape =
+        String.length s = 5
+        && Char.is_digit s.[0]
+        && Char.is_digit s.[1]
+        && Char.equal s.[2] ':'
+        && Char.is_digit s.[3]
+        && Char.is_digit s.[4]
+      in
+      let not_hh_mm () = Error (sprintf "flatten_at must be HH:MM, got %S" s) in
+      if not shape then not_hh_mm ()
+      else
+        match Time_ns.Ofday.of_string s with
+        | exception _ -> not_hh_mm ()
+        | ofday ->
+            let opens = Time_ns.Ofday.create ~hr:9 ~min:30 () in
+            let closes = Time_ns.Ofday.create ~hr:16 () in
+            if Time_ns.Ofday.(ofday >= opens && ofday < closes) then Ok ofday
+            else
+              Error
+                (sprintf
+                   "flatten_at must be inside the regular session [09:30, 16:00), got %s"
+                   s)
+
+    (* The bounds after the spread table are written positively too, for the
+       reason the spread comment gives: "not (0 <= x && x <= 1)" refuses a nan
+       where "x < 0 || x > 1" lets it through. *)
+    let validate ~(universe : string list) (t : t) : unit Or_error.t =
       let fail field why value = Or_error.errorf "desk: %s %s, got %g" field why value in
       if Float.( <= ) t.max_order_notional 0.0 then
         fail "max_order_notional" "must be positive" t.max_order_notional
@@ -238,7 +300,41 @@ module Book = struct
         with
         | Some (symbol, b) ->
             fail ("spread_bps for " ^ symbol) "must be finite and may not be negative" b
-        | None -> Ok ()
+        | None -> (
+            let unit_interval x = Float.(x >= 0.0 && x <= 1.0) in
+            let collar_bps = t.price_collar *. 1e4 in
+            if not (unit_interval t.incubation_cap) then
+              fail "incubation_cap" "must be in [0, 1]" t.incubation_cap
+            else if not Float.(t.vol_target > 0.0 && t.vol_target <= 1.0) then
+              fail "vol_target" "must be in (0, 1]" t.vol_target
+            else if not (unit_interval t.overlay_fallback) then
+              fail "overlay_fallback" "must be in [0, 1]" t.overlay_fallback
+            else if not (unit_interval t.overlay_band) then
+              fail "overlay_band" "must be in [0, 1]" t.overlay_band
+            else if not Float.(t.intraday_slip_bps < collar_bps) then
+              fail "intraday_slip_bps"
+                (sprintf "must be below price_collar x 1e4 (%g)" collar_bps)
+                t.intraday_slip_bps
+            else if not Float.(t.min_leg_notional >= 0.0) then
+              fail "min_leg_notional" "may not be negative" t.min_leg_notional
+            else if not Float.(t.wave_timeout_s > 0.0) then
+              fail "wave_timeout_s" "must be positive" t.wave_timeout_s
+            else
+              match flatten_ofday t.flatten_at with
+              | Error why -> Or_error.errorf "desk: %s" why
+              | Ok _ -> (
+                  if List.length t.stream > stream_cap then
+                    Or_error.errorf "desk: stream names %d symbols; at most %d stream"
+                      (List.length t.stream) stream_cap
+                  else
+                    match
+                      List.find t.stream ~f:(fun sym ->
+                          not (List.mem universe sym ~equal:String.equal))
+                    with
+                    | Some sym ->
+                        Or_error.errorf
+                          "desk: stream names %s, which is not in the book's universe" sym
+                    | None -> Ok ()))
   end
 
   (* The strategies whose signals the desk reads (design §3.12). Configuration
@@ -255,9 +351,40 @@ module Book = struct
      a symbol the book does not hold could never pass R7 and would only ever
      be a typo discovered one signal at a time. *)
   module Signals_spec = struct
-    type sizing = Advisory | Live [@@deriving sexp, compare, equal]
+    (* INCUBATION (the charter's paper tier, docs/CHARTER.md): a strategy the
+       desk sizes on the paper venue whatever its validation says, inside
+       [Desk_spec.incubation_cap], labelled and scored, never live. *)
+    type sizing = Advisory | Live | Incubation [@@deriving sexp, compare, equal]
 
-    let sizing_to_string = function Advisory -> "advisory" | Live -> "live"
+    let sizing_to_string = function
+      | Advisory -> "advisory"
+      | Live -> "live"
+      | Incubation -> "incubation"
+
+    (* How often the strategy's documents arrive: once a session, or through
+       it. *)
+    module Cadence = struct
+      type t = Daily | Intraday [@@deriving sexp, compare, equal]
+    end
+
+    (* When an overlay move re-sizes the strategy: intraday, or at the next
+       open only. *)
+    module Adjust = struct
+      type t = Intraday | Open [@@deriving sexp, compare, equal]
+    end
+
+    (* Whether a position is carried overnight or flattened at the desk's
+       [flatten_at]. *)
+    module Horizon = struct
+      type t = Carry | Close [@@deriving sexp, compare, equal]
+    end
+
+    (* The stop rules: the strategy is stopped when its drawdown from peak on
+       allocated capital reaches [drawdown], or [sessions] sessions have passed
+       since its first fill. *)
+    module Stop = struct
+      type t = { drawdown : float; sessions : int } [@@deriving sexp, compare, equal]
+    end
 
     module Strategy = struct
       type t = {
@@ -267,6 +394,15 @@ module Book = struct
         max_age : int; [@sexp.default 3]
         sizing : sizing; [@sexp.default Advisory]
         capital_fraction : float;
+        cadence : Cadence.t; [@sexp.default Cadence.Daily]
+        adjust : Adjust.t; [@sexp.default Adjust.Intraday]
+        (* R4's bound for an intraday document, in minutes. *)
+        max_age_minutes : int; [@sexp.default 20]
+        horizon : Horizon.t; [@sexp.default Horizon.Carry]
+        (* [@sexp.option], so the book writes (stop ((drawdown F) (sessions N)))
+           and (reinstated DATE) bare, and an absent field is None. *)
+        stop : Stop.t option; [@sexp.option]
+        reinstated : Date.t option; [@sexp.option]
       }
       [@@deriving sexp, compare, equal]
     end
@@ -287,8 +423,9 @@ module Book = struct
        false, so "not (f > 0 && f <= 1)" refuses a NaN fraction where
        "f <= 0 || f > 1" would let it through. The live sum carries R7's own
        1e-9, so that fractions like 0.1 x 10 are not refused for the last bit
-       of a float. *)
-    let validate ~(universe : string list) (t : t) : unit Or_error.t =
+       of a float, and so do the incubation sum and the two tiers' together. *)
+    let validate ~(universe : string list) ~(incubation_cap : float) (t : t) :
+        unit Or_error.t =
       let fail name fmt =
         Printf.ksprintf (fun s -> Or_error.errorf "signals: %s: %s" name s) fmt
       in
@@ -306,17 +443,36 @@ module Book = struct
           with
           | Some sym, _ -> fail s.name "%s is not in the book's universe" sym
           | None, Some sym -> fail s.name "symbols lists %s twice" sym
-          | None, None ->
-              (* At least 1: with 0 no signal could ever be deferred -- the one
+          | None, None -> (
+              if
+                (* At least 1: with 0 no signal could ever be deferred -- the one
                  the service writes before its close is recorded would be
                  rejected at R3 on its first look. *)
-              if s.max_age < 1 then
-                fail s.name "max_age must be at least 1, got %d" s.max_age
+                s.max_age < 1
+              then fail s.name "max_age must be at least 1, got %d" s.max_age
               else if not Float.(s.capital_fraction > 0.0 && s.capital_fraction <= 1.0)
               then
                 fail s.name "capital_fraction must be in (0, 1], got %g"
                   s.capital_fraction
-              else Ok ()
+              else if s.max_age_minutes < 1 then
+                fail s.name "max_age_minutes must be at least 1, got %d" s.max_age_minutes
+              else
+                match (s.stop, s.reinstated) with
+                | Some stop, _
+                  when not Float.(stop.Stop.drawdown > 0.0 && stop.Stop.drawdown <= 1.0)
+                  ->
+                    fail s.name "stop.drawdown must be in (0, 1], got %g"
+                      stop.Stop.drawdown
+                | Some stop, _ when stop.Stop.sessions < 1 ->
+                    fail s.name "stop.sessions must be at least 1, got %d"
+                      stop.Stop.sessions
+                | None, Some date ->
+                    (* Reinstating is the owner's answer to a stop, and the
+                       desk never un-stops on its own: with no stop there is
+                       nothing for the date to answer. *)
+                    fail s.name "reinstated is %s but the strategy has no stop"
+                      (Date.to_string date)
+                | _ -> Ok ())
       in
       match List.find_a_dup names ~compare:String.compare with
       | Some name -> fail name "two strategies have this name"
@@ -324,20 +480,32 @@ module Book = struct
           match List.find_map t.strategies ~f:(fun s -> Result.error (check s)) with
           | Some e -> Error e
           | None ->
-              let live =
+              let tier sizing =
                 List.sum
                   (module Float)
                   t.strategies
                   ~f:(fun s ->
-                    match s.Strategy.sizing with
-                    | Live -> s.Strategy.capital_fraction
-                    | Advisory -> 0.0)
+                    if equal_sizing s.Strategy.sizing sizing then
+                      s.Strategy.capital_fraction
+                    else 0.0)
               in
+              let live = tier Live in
+              let incubation = tier Incubation in
               if not Float.(live <= 1.0 +. 1e-9) then
                 Or_error.errorf
                   "signals: the live strategies' capital_fraction values sum to %g, more \
                    than 1"
                   live
+              else if not Float.(incubation <= incubation_cap +. 1e-9) then
+                Or_error.errorf
+                  "signals: the incubation strategies' capital_fraction values sum to \
+                   %g, more than incubation_cap %g"
+                  incubation incubation_cap
+              else if not Float.(live +. incubation <= 1.0 +. 1e-9) then
+                Or_error.errorf
+                  "signals: the live and incubation strategies' capital_fraction values \
+                   sum to %g, more than 1"
+                  (live +. incubation)
               else Ok ())
   end
 
@@ -531,14 +699,17 @@ module Book = struct
         ~wholes:[ raised (fun () -> Limits.validate ~instruments each) ]
     in
     let alert_errors = Option.to_list (returned (Alerts.validate t.alerts)) in
-    let desk_errors = Option.to_list (returned (Desk_spec.validate t.desk)) in
+    let universe = List.map t.positions ~f:(fun p -> p.Position_spec.symbol) in
+    let desk_errors = Option.to_list (returned (Desk_spec.validate ~universe t.desk)) in
     let signal_errors =
       match t.signals with
       | None -> []
       | Some signals ->
-          let universe = List.map t.positions ~f:(fun p -> p.Position_spec.symbol) in
           let whole strategies =
-            returned (Signals_spec.validate ~universe { Signals_spec.strategies })
+            returned
+              (Signals_spec.validate ~universe
+                 ~incubation_cap:t.desk.Desk_spec.incubation_cap
+                 { Signals_spec.strategies })
           in
           let verdicts =
             List.map signals.Signals_spec.strategies ~f:(fun s -> (s, whole [ s ]))
@@ -556,14 +727,14 @@ module Book = struct
   let of_string (contents : string) : t Or_error.t =
     let open Or_error.Let_syntax in
     let%bind book = Result.map_error (parse contents) ~f:Error.of_exn in
-    let%bind () = Desk_spec.validate book.desk in
+    let universe = List.map book.positions ~f:(fun p -> p.Position_spec.symbol) in
+    let%bind () = Desk_spec.validate ~universe book.desk in
     let%map () =
       match book.signals with
       | None -> Ok ()
       | Some signals ->
-          Signals_spec.validate
-            ~universe:(List.map book.positions ~f:(fun p -> p.Position_spec.symbol))
-            signals
+          Signals_spec.validate ~universe
+            ~incubation_cap:book.desk.Desk_spec.incubation_cap signals
     in
     book
 

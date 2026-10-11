@@ -1777,6 +1777,12 @@ let test_a_raising_pass_is_logged_and_the_next_still_runs () =
             max_age = 3;
             sizing = Ohcamel.Config.Book.Signals_spec.Advisory;
             capital_fraction = 0.5;
+            cadence = Ohcamel.Config.Book.Signals_spec.Cadence.Daily;
+            adjust = Ohcamel.Config.Book.Signals_spec.Adjust.Intraday;
+            max_age_minutes = 20;
+            horizon = Ohcamel.Config.Book.Signals_spec.Horizon.Carry;
+            stop = None;
+            reinstated = None;
           };
         ]
       ~universe:[ Symbol.of_string "SPY" ]
@@ -2151,6 +2157,12 @@ let test_an_accepted_signal_on_a_live_strategy_becomes_one_rebalance () =
             max_age = 3;
             sizing = Ohcamel.Config.Book.Signals_spec.Live;
             capital_fraction = 0.01;
+            cadence = Ohcamel.Config.Book.Signals_spec.Cadence.Daily;
+            adjust = Ohcamel.Config.Book.Signals_spec.Adjust.Intraday;
+            max_age_minutes = 20;
+            horizon = Ohcamel.Config.Book.Signals_spec.Horizon.Carry;
+            stop = None;
+            reinstated = None;
           };
         ]
       ~universe:[ aapl; msft; xom ] ~on_event:ignore
@@ -2328,6 +2340,12 @@ let test_run_sizes_only_what_its_own_pass_accepted () =
         max_age = 3;
         sizing = Ohcamel.Config.Book.Signals_spec.Live;
         capital_fraction = 0.01;
+        cadence = Ohcamel.Config.Book.Signals_spec.Cadence.Daily;
+        adjust = Ohcamel.Config.Book.Signals_spec.Adjust.Intraday;
+        max_age_minutes = 20;
+        horizon = Ohcamel.Config.Book.Signals_spec.Horizon.Carry;
+        stop = None;
+        reinstated = None;
       };
     ]
   in
