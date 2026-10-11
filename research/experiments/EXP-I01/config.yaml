@@ -1,0 +1,33 @@
+# EXP-I01 -- frozen design. Source: research/experiments/EXP-I01/preregistration.md.
+# Changing anything here after the holdout is evaluated is a new experiment and goes to
+# the owner (docs/CHARTER.md).
+id: EXP-I01
+title: "Does the first half-hour's return predict the last half-hour's on five liquid ETFs, after friction?"
+universe: [SPY, QQQ, IWM, TLT, GLD]
+strategies:                 # one per name, as EXP-A01
+  - {slug: exp_i01_spy, symbol: SPY}
+  - {slug: exp_i01_qqq, symbol: QQQ}
+  - {slug: exp_i01_iwm, symbol: IWM}
+  - {slug: exp_i01_tlt, symbol: TLT}
+  - {slug: exp_i01_gld, symbol: GLD}
+bars: minute                # warehouse bars_minute, Alpaca IEX, regular session only
+session_series: true        # one net return per session
+# The selection window starts 2016-06-01, or at the first full session after the name's
+# first minute bar plus the rule's warm-up if that is later; the backfill records the first
+# bar and the later of the two is written here before the battery runs (pre-registration, Data).
+selection_window: {start: "2016-06-01", end: "2023-12-31"}
+holdout_window: {start: "2024-01-01", end: "2026-09-30"}   # evaluated once
+regimes: research           # battery/gates.py REGIMES: 2018 Q4, 2020 COVID, 2022, 2023, 2024
+friction: {version: "1.0.0", file: research/config/friction_v1.yaml}
+mode: walkforward
+n_folds: 4
+dsr: {unit: fold_trials, family: all_strategies}   # 2 configurations x 4 folds x 5 names = 40
+cost_sweep_bps_round_trip: [0, 5, 15, 30]
+bootstrap: {resamples: 1000, method: stationary_block}
+seed: 42
+rule:
+  first_window: ["09:30", "10:00"]
+  confirm_window: ["15:00", "15:30"]
+  entry: "15:30"            # decided on the bar closing 15:30, filled at the next bar's open
+  exit: close               # market-on-close, sent at the 15:45 mark
+grid: {condition: [none, last_half_hour_agrees]}   # 2 configurations

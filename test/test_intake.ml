@@ -28,7 +28,19 @@ let spy = Symbol.of_string "SPY"
 let universe = List.map [ "SPY"; "TLT"; "QQQ" ] ~f:Symbol.of_string
 
 let strategy ?(sizing = Signals_spec.Advisory) ?(max_age = 3) name symbols =
-  { Signals_spec.Strategy.name; symbols; max_age; sizing; capital_fraction = 0.5 }
+  {
+    Signals_spec.Strategy.name;
+    symbols;
+    max_age;
+    sizing;
+    capital_fraction = 0.5;
+    cadence = Signals_spec.Cadence.Daily;
+    adjust = Signals_spec.Adjust.Intraday;
+    max_age_minutes = 20;
+    horizon = Signals_spec.Horizon.Carry;
+    stop = None;
+    reinstated = None;
+  }
 
 let spy_live = strategy ~sizing:Signals_spec.Live "exp_a01_spy" [ "SPY" ]
 let tlt_advisory = strategy "exp_a01_tlt" [ "TLT" ]

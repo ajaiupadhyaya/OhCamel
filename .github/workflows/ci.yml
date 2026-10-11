@@ -445,8 +445,8 @@ jobs:
           fi
           plutil -lint "$plist"
 
-      # The two pages, the three crisis CSVs and the quoted tables are OCaml
-      # quoted string literals: lib/dune cats web/* and docs/crisis/*.csv into
+      # The two pages, the three crisis CSVs, the quoted tables and the charter are OCaml
+      # quoted string literals: lib/dune cats web/*, docs/crisis/*.csv and docs/CHARTER.md into
       # generated modules using delimiters of the form
       # {ohcamel_NAME|...|ohcamel_NAME}. A CLOSING delimiter inside one of
       # those sources ends the literal early. In practice the trailing bytes
@@ -462,11 +462,12 @@ jobs:
       # fails rather than searching nothing.
       #
       # The pattern list is derived from lib/dune itself, not retyped by hand
-      # here: lib/dune currently defines four such delimiters (the fourth,
+      # here: lib/dune currently defines five such delimiters (the fourth,
       # {ohcamel_build|...}, wraps the build stamp's env-sourced strings, and
       # is included even though it cannot be reached from web/ or
-      # docs/crisis/, so a fifth delimiter added anywhere in lib/dune is
-      # guarded automatically instead of silently unguarded). And the check
+      # docs/crisis/; the fifth, {ohcamel_md|...}, wraps docs/CHARTER.md,
+      # which is searched beside them; so a sixth delimiter added anywhere in
+      # lib/dune is guarded automatically instead of silently unguarded). And the check
       # only trusts grep's two documented outcomes — 0 (found, so fail loud
       # naming the file) and 1 (not found, so pass) — because a grep exit
       # code of 2 (a missing or unreadable directory, e.g. web/ absent from
@@ -498,7 +499,7 @@ jobs:
             echo "no research/experiments/*/manifest.*.json in the checkout -- desk/dune embeds them, so this check would search nothing."
             exit 1
           fi
-          matches=$(grep -rnF -f <(printf '%s\n' "$patterns") web docs/crisis "${manifests[@]}") && status=0 || status=$?
+          matches=$(grep -rnF -f <(printf '%s\n' "$patterns") web docs/crisis docs/CHARTER.md "${manifests[@]}") && status=0 || status=$?
           case "$status" in
             0)
               echo "$matches"
@@ -507,7 +508,7 @@ jobs:
               exit 1
               ;;
             1)
-              echo "no stray delimiters in web/, docs/crisis/ or the ${#manifests[@]} committed manifests"
+              echo "no stray delimiters in web/, docs/crisis/, docs/CHARTER.md or the ${#manifests[@]} committed manifests"
               ;;
             *)
               echo "grep failed (exit $status) — the check did not run"

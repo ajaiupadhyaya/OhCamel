@@ -483,6 +483,19 @@ let decide ~(latest : Date.t) ~(bars_after : Date.t -> int)
                       detail =
                         "passed R1-R7 and names only its strategy's own symbols; the \
                          strategy's sizing is advisory, so it is shown and never sized";
+                    }
+              | Incubation ->
+                  (* The book admits the incubation tier before the desk sizes
+                     it: until the intake learns to, an incubation strategy is
+                     judged as an advisory one is, and says which it is. *)
+                  `Judged
+                    {
+                      verdict = Advisory;
+                      rule = Some "sizing";
+                      detail =
+                        "passed R1-R7 and names only its strategy's own symbols; the \
+                         strategy's sizing is incubation, which this desk does not size \
+                         yet, so it is shown and never sized";
                     })))
 
 (* ------------------------------------------------------------------------ *)

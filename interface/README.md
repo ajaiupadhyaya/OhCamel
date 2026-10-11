@@ -53,12 +53,71 @@ fails R2 and R6 is reported as R2.
   core's job, after R1–R7 (R8 is not enforced, ruling 3) and after OhCamel's
   pre-trade check.
 
+## v2 — intraday
+
+[`signal.v2.schema.json`](signal.v2.schema.json) is the shape of a signal
+computed from intraday bars. v1 (daily) is unchanged and its schema stays
+byte-identical; a producer picks the version and the core judges each document
+by its own `schema_version`. A v2 document is a v1 document with three changes:
+`as_of` is an RFC 3339 UTC **instant** (the close of the bar the signal was
+computed from), and two required fields, `bar` (`1Min`, `5Min`, `15Min`,
+`30Min`) and `horizon` (`carry`, or `close`: the desk flattens the position at
+the book's `flatten_at`).
+
+R3 and R4 for v2 use the **venue clock** (the desk's cached copy of the
+venue's own clock) in **minutes**; the daily bar clock plays no part. R9 needs
+a tick at or after `as_of − bar` for every target: the desk's own, not the
+producer's.
+
+| | Rule | What it catches |
+|---|---|---|
+| **R1** | `schema_version` is exactly `2` | a producer the core does not understand |
+| **R2** | `strategy` is registered with the core | a slug nobody configured limits for |
+| **R3** | `as_of` is not after the venue clock's `now` | a signal from the future |
+| **R4** | `now − as_of` is within `max_age_minutes` | a stale signal, counted in minutes of venue time |
+| **R5** | `sequence` is greater than the last accepted sequence for that strategy | a replayed, duplicated, or out-of-order file |
+| **R6** | `validation.status` is `pass` | an unvalidated or failed strategy (advisory, as in v1) |
+| **R7** | every symbol is in the universe; each \|weight\| ≤ 1; Σ\|weight\| ≤ 1 + 1e-9 | malformed or over-levered targets |
+| **R9** | for every target symbol, the desk's own last tick is at or after `as_of − bar` | a bar the desk cannot corroborate: the producer claims to have read data the desk never received |
+
+Rules apply in order and the first failure is reported. R8 is not part of v2.
+The desk learns v2 in the plan's task 22; until then
+[`examples/expected.json`](examples/expected.json) marks the v2 and overlay
+rows `"core": "pending-task-22"`, every consumer that runs the core skips them
+and says so, and the schema half still checks them.
+
+## Overlay
+
+[`overlay.schema.json`](overlay.schema.json) is a second document kind:
+the research layer's **exposure scale**, one number in [0, 1] that multiplies
+every incubation and live target, with the inputs it came from (`inputs`, six
+required keys) and figures the page shows and the desk does not act on
+(`reported`). It is told apart from a signal by `"kind": "overlay"`. It carries
+no targets and no strategy, so R2, R6 and R7 do not apply.
+
+| | Rule | What it catches |
+|---|---|---|
+| **O1** | `schema_version` is exactly `1` | a producer the core does not understand |
+| **O2** | `as_of` is not after the venue clock's `now`, and `now − as_of` is within `max_age_minutes` | an overlay from the future, or a stale one (a stale overlay holds its last value for `max_age_minutes`, then the book's fallback applies) |
+| **O3** | `sequence` is greater than the last accepted overlay's | a replayed, duplicated, or out-of-order file |
+| **O4** | `exposure_scale` is in [0, 1] | a scale that would lever the book up or flip it |
+
 ## Examples
 
 [`examples/`](examples/) holds one document per rule, plus one that passes, and
 [`examples/expected.json`](examples/expected.json) states the outcome each
 should produce under a stated core clock. Both test suites read that manifest,
 so the two sides cannot drift apart without a test noticing.
+
+`expected.json`'s `clock` holds the daily clock (`bar_dates`, `max_age`) and,
+for v2 and the overlay, two more keys: `now`, the venue clock's instant, and
+`last_tick`, the desk's last tick time per symbol. A row may override part of
+the clock with its own `clock` (`v2_r9_uncorroborated.json` states an earlier
+SPY tick) and may state `max_age_minutes`. A row whose `core` is
+`pending-task-22` has `verdict` for what the desk must say once it learns the
+document, and is skipped, visibly, by everything that runs the core. The files
+are written by [`examples/generate.py`](examples/generate.py); edit that, not
+the outputs.
 
 ## Versioning
 

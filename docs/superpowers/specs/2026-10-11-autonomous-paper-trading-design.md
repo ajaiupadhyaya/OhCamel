@@ -80,7 +80,7 @@ and D9 are the charter-level ones the owner must actively affirm.
 | **D1** | **Paper incubation**: a third sizing tier, `(sizing incubation)`, beside `advisory` and `live`. An incubated strategy is sized on the paper venue whatever its validation status, under caps, labelled INCUBATION on every page, route, journal row and report. Its validation block is never rewritten. | The owner wants the strategies to trade; none passes; the charter must change explicitly, not be worked around. §3 has the amendment. |
 | **D2** | **The live paper record is the test.** Each incubated strategy's realised record (fills, marks, costs) is scored with the charter's statistics after 60 sessions, with pre-stated stop rules that the desk executes and promotion that only the owner makes. | Incubation without scoring is just trading; scoring makes it an out-of-sample experiment the charter can recognise. |
 | **D3** | **Producers in Python, judgement and execution in OCaml.** Signals and the risk overlay are written by jobs in `ohcamel-worker` into the signals volume; the desk judges, sizes, sends. The core never trusts a producer's timing. | The strategies, the warehouse and the analytics are Python; the invariants put every order through the engine. |
-| **D4** | **The roster** (§5): EXP-A01 ×2, the farm's 21 cells with parameters frozen monthly from the nightly sweep's own selection, EXP-Q01's monthly long-short quintile portfolio. Equal capital split under `incubation_cap`. | "All the built-out strategies." A monthly freeze keeps the farm from re-fitting the live book every night. |
+| **D4** | **The roster** (§5): EXP-A01 ×2, the farm's 21 cells with parameters frozen monthly from the nightly sweep's own selection, EXP-Q01's monthly long-short quintile portfolio. Equal capital split under `incubation_cap`. (0.025 each; the cap scales the roster proportionally.) | "All the built-out strategies." A monthly freeze keeps the farm from re-fitting the live book every night. |
 | **D5** | **The risk overlay** is one number, `exposure_scale ∈ [0, 1]`, from volatility targeting (Moreira & Muir 2017) on the combined targets, using P2's current best volatility model and P3's current best covariance estimator, multiplied in the desk by a drawdown governor read from the graph. Regime probabilities (Q02) and P1's Monte Carlo VaR are shown beside it and never inside it. | Vol targeting is a literature rule with a mechanism; Q02 earned DESCRIPTIVE ONLY and may not size; P1 computes reference books, not this one. |
 | **D6** | **Intraday execution**: a second rebalance mode sends `Day` limit orders during regular hours (marketable, inside the collar), in waves (shrinking legs first), each wave gated against the real book; the overlay's moves re-size held strategies intraday; the kill switch keeps halting and never liquidating. | Trading through the day without a second order path: the rules, gate, journal and wire are unchanged. |
 | **D7** | **The universe cap rises to 64**, the stream keeps 30 names, the rest are marked by Alpaca's multi-symbol latest-trade REST call every 10 s. The book declares the 42 tradable site ETFs. | The roster needs 42 names; one free stream carries 30. |
@@ -166,7 +166,9 @@ anything else.
   contract-v2 signal with `as_of` = that bar's close instant, `bar` = its
   length, `horizon: close` and `max_age_minutes`. At 15:45 it writes zero
   targets for every `horizon: close` strategy. Stage 2, after the owner
-  approves §6.
+  approves §6. An intraday rule is evaluated only at the producer's marks
+  (:00, :15, :30, :45) on the bar closes available then, never tick by tick,
+  and each pre-registration says so.
 - **`signals.overlay`** — 09:40, then every 15 minutes to 15:45, and 18:50.
   Reads the roster's newest targets, the warehouse's daily returns, P2's
   newest artifact (the best model per name by QLIKE; EWMA(0.94) when absent)
@@ -190,9 +192,11 @@ in the artifact. The rule is written in INC-01 (§5) before the first run.
 ### 4.3 The desk (OCaml)
 
 **Sizing tier.** `lib/config.ml` `Signals_spec`: `sizing advisory | live |
-incubation`; a new desk-level `(incubation_cap F)` with the incubation
-fractions summing to at most it, and live + incubation fractions summing to
-at most 1. `desk/intake.ml` `decide`: a document that passes R1–R5, R7 (and
+incubation`; a new desk-level `(incubation_cap F)` that scales the roster: each
+incubation strategy's effective fraction is `capital_fraction × min(1,
+incubation_cap / Σ incubation capital_fraction)` (`Signals_spec.effective_fraction`),
+so the canary and every later cap change is one book edit; the validator
+requires Σ incubation fractions ≤ 1 and live + incubation ≤ 1. `desk/intake.ml` `decide`: a document that passes R1–R5, R7 (and
 R9 for v2) whose strategy is `incubation` becomes `Accepted_incubation`
 whatever R6 says; R6's own result is still recorded on the judgement row.
 `Accepted_incubation` sizes exactly as `Accepted` does; the order's `source`
@@ -237,9 +241,12 @@ venue clock; R4 is `now − as_of ≤ max_age_minutes`; R5–R7 unchanged; **R9*
 for every target symbol the desk's own last tick time is at or after
 `as_of − bar` (the bar the producer claims to have read is corroborated by
 data the desk received itself). The daily-session clock plays no part. A v2
-document with `horizon: close` names a strategy the desk **flattens at
-`flatten_at`** (book; default 15:50) by a zero-target intraday rebalance if
-its position is not already zero, journaled `end-of-day flatten`.
+document with `horizon: close` names a strategy whose exit is a
+market-on-close order (`Tif.Cls`, Alpaca `cls`; the sim venue fills it at the
+session's last mark), sent when the producer's 15:45 zero-target document
+arrives; the desk **flattens at `flatten_at`** (book; default 15:50) by a
+zero-target intraday rebalance only as the backstop, when no `cls` order of
+that strategy rests, journaled `end-of-day flatten`.
 
 **Stop rules.** `(stop ((drawdown F) (sessions N)))` per strategy. The desk
 keeps a per-strategy realised record (§4.5); when its drawdown from peak on
@@ -334,6 +341,8 @@ literal string a test pins in the built page.
 
 ## 5. INC-01 — the incubation pre-registration
 
+*Written: [`research/experiments/INC-01/preregistration.md`](../../../research/experiments/INC-01/preregistration.md), with its roster [`roster.yaml`](../../../research/experiments/INC-01/roster.yaml).*
+
 `research/experiments/INC-01/preregistration.md`, approved by the owner
 before the first incubated order, states in full:
 
@@ -356,6 +365,8 @@ before the first incubated order, states in full:
   reconcile — the desk is halted and the owner decides.
 
 ## 6. Intraday hypotheses — drafts for the owner
+
+*Written: [EXP-I01](../../../research/experiments/EXP-I01/preregistration.md), [EXP-I02](../../../research/experiments/EXP-I02/preregistration.md), [EXP-I03](../../../research/experiments/EXP-I03/preregistration.md), each with its `config.yaml`.*
 
 Three pre-registrations in `research/experiments/EXP-I0x/`, drafted from the
 literature in EXP-A01's form (paper, hypothesis, rationale, data, assumptions,
@@ -409,9 +420,9 @@ The desk design's thirteen stay in force. Three are added:
 |---|---|---|
 | 0 Governance | The charter amendment, INC-01, the three EXP-I0x drafts, the book schema and `check-book`, contract v2 and the overlay schema in `interface/` | approves this document |
 | 1 The desk trades | Universe 64 + REST marks; incubation tier; overlay + governor; intraday mode + waves; `signals.daily`, `signals.overlay`, `desk.report`; pages; deploy; three canary sessions | approves INC-01 |
-| 2 Intraday | Minute backfill to 2016 (five names); the battery's session-level mode; EXP-I01–I03 run; contract v2 + R9 in the desk; `signals.intraday`; end-of-day flatten; the roster grows per verdict | approves each EXP-I0x |
+| 2 Intraday | Minute backfill to 2016 (five names); the battery's session-level mode; EXP-I01–I03 run; contract v2 + R9 in the desk; short legs (Task 33, moved here from Stage 4); `signals.intraday`; end-of-day flatten; the roster grows per verdict | approves each EXP-I0x |
 | 3 The record | Per-strategy live record, PSR after 60, shadow record, book VaR coverage, stop rules, `replay`, the Research page's record | — |
-| 4 Q01 and shorts | `signals.q01`; short legs through the intraday and open modes; the page | — |
+| 4 Q01 and shorts | `signals.q01`; the page | — |
 | 5 Unattended | Watchdog, producer liveness in `watch.sh`, alert kinds, runbook, a ten-session soak, `docs/status.md` | raises the cap after the canary |
 
 ## 9. Testing

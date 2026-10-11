@@ -1,0 +1,30 @@
+# EXP-I03 -- frozen design. Source: research/experiments/EXP-I03/preregistration.md.
+# Changing anything here after the holdout is evaluated is a new experiment and goes to
+# the owner (docs/CHARTER.md).
+id: EXP-I03
+title: "Does distance-method pairs trading on 30-minute bars survive friction among five liquid ETFs?"
+universe: [SPY, QQQ, IWM, TLT, GLD]
+strategies:                 # one strategy over the five names
+  - {slug: exp_i03_pairs, symbols: [SPY, QQQ, IWM, TLT, GLD]}
+bars: minute                # warehouse bars_minute, Alpaca IEX, regular session only,
+resample: 30Min             # aggregated to 30-minute bars inside each session
+session_series: true        # one net return per session
+# The selection window starts 2016-06-01, or at the first full session after the name's
+# first minute bar plus the rule's warm-up if that is later; the backfill records the first
+# bar and the later of the two is written here before the battery runs (pre-registration, Data).
+selection_window: {start: "2016-06-01", end: "2023-12-31"}
+holdout_window: {start: "2024-01-01", end: "2026-09-30"}   # evaluated once
+regimes: research           # battery/gates.py REGIMES: 2018 Q4, 2020 COVID, 2022, 2023, 2024
+friction: {version: "1.0.0", file: research/config/friction_v1.yaml}
+mode: walkforward
+n_folds: 4
+dsr: {unit: fold_trials}    # 2 configurations x 4 folds = 8
+cost_sweep_bps_round_trip: [0, 5, 15, 30]
+bootstrap: {resamples: 1000, method: stationary_block}
+seed: 42
+rule:
+  function: pairs_distance  # quant/src/ohcamel_quant/backtest/strategies.py
+  formation_sessions: 20    # the trailing 20 sessions of 30-minute bars, re-formed each session
+  trading_sessions: 1       # positions close at 0 or at the session's end
+  n_pairs: 1                # of the 10 pairs among five names
+grid: {entry_sd: [2.0, 2.5]}   # 2 configurations

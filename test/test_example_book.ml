@@ -9,10 +9,11 @@
    file must not trade until someone edits it: the desk block is present so that
    enabling it is one word rather than a guess, and it says disabled.
 
-   Eight names since phase A3: the six the documentation describes, and SPY and
-   TLT at zero, because a signal may target only a name the book declares (R7)
-   and EXP-A01's two strategies trade those two. The demo's synthetic book keeps
-   its six; this is the file a live host copies.
+   Forty-eight names since the incubation roster: the six the documentation
+   describes, then SPY and TLT and the site's other forty ETFs at zero, because
+   a signal may target only a name the book declares (R7) and the roster's
+   strategies trade those 42. The demo's synthetic book keeps its six; this is
+   the file a live host copies.
 
    The second half of this file is [Config.check] and the CLI that calls it
    (Task 13). Everything here still runs without the scheduler: [check-book] is
@@ -46,17 +47,15 @@ let load () =
 let test_the_example_book_parses_and_ships_inert () =
   let book = load () in
   (* The universe and the limits the rest of the documentation describes. *)
-  Alcotest.(check int) "eight instruments" 8 (List.length book.Book.positions);
+  Alcotest.(check int) "forty-eight instruments" 48 (List.length book.Book.positions);
   Alcotest.(check (list string))
     "the six the documentation describes, then SPY and TLT"
     [ "AAPL"; "MSFT"; "NVDA"; "JPM"; "XOM"; "CVX"; "SPY"; "TLT" ]
-    (List.map book.Book.positions ~f:(fun p -> p.Book.Position_spec.symbol));
+    (List.take (List.map book.Book.positions ~f:(fun p -> p.Book.Position_spec.symbol)) 8);
   Alcotest.(check (list (float 0.0)))
-    "SPY and TLT held at zero" [ 0.0; 0.0 ]
-    (List.filter_map book.Book.positions ~f:(fun p ->
-         match p.Book.Position_spec.symbol with
-         | "SPY" | "TLT" -> Some p.Book.Position_spec.qty
-         | _ -> None));
+    "SPY, TLT and the forty ETFs after them held at zero"
+    (List.init 42 ~f:(fun _ -> 0.0))
+    (List.map (List.drop book.Book.positions 6) ~f:(fun p -> p.Book.Position_spec.qty));
   Alcotest.(check int) "seven limits" 7 (List.length book.Book.limits);
   (* Inert as shipped: no orders, and no alerting, until a person edits it. *)
   Alcotest.(check bool)
@@ -71,26 +70,35 @@ let test_the_example_book_parses_and_ships_inert () =
     "the kill switch ships disarmed" false
     book.Book.alerts.Ohcamel.Config.Alerts.kill_switch_enabled
 
-(* Ruling 2, as shipped: two strategies, one per symbol, both advisory. A book
-   copied from this file shows a passing signal and sizes nothing until the
-   owner writes (sizing live) by hand. *)
-let test_the_example_book_registers_two_advisory_strategies () =
+(* The roster, as shipped: EXP-A01's two strategies and the farm's 21 cells,
+   every one incubation and none live, each with the stop rules written before
+   it trades. Promotion to live is still the owner's, by hand (ruling 2); the
+   desk ships disabled, so a copied book sizes nothing until it is enabled. *)
+let test_the_example_book_registers_the_incubation_roster () =
   let book = load () in
   let module S = Ohcamel.Config.Book.Signals_spec in
   match book.Book.signals with
   | None -> Alcotest.fail "the example book has no signals block"
   | Some { S.strategies } ->
       Alcotest.(check (list (triple string (list string) (float 0.0))))
-        "one strategy per symbol, each at half the capital"
-        [ ("exp_a01_spy", [ "SPY" ], 0.5); ("exp_a01_tlt", [ "TLT" ], 0.5) ]
-        (List.map strategies ~f:(fun s ->
+        "EXP-A01's two first, one per symbol, at 0.025 each"
+        [ ("exp_a01_spy", [ "SPY" ], 0.025); ("exp_a01_tlt", [ "TLT" ], 0.025) ]
+        (List.map (List.take strategies 2) ~f:(fun s ->
              (s.S.Strategy.name, s.S.Strategy.symbols, s.S.Strategy.capital_fraction)));
+      Alcotest.(check int)
+        "then 21 farm cells" 21
+        (List.count strategies ~f:(fun s ->
+             String.is_prefix s.S.Strategy.name ~prefix:"farm_"));
       Alcotest.(check (list string))
-        "both advisory, neither live" [ "advisory"; "advisory" ]
+        "every one incubation, none live"
+        (List.init 23 ~f:(fun _ -> "incubation"))
         (List.map strategies ~f:(fun s -> S.sizing_to_string s.S.Strategy.sizing));
-      Alcotest.(check (list int))
-        "max_age 3, as written" [ 3; 3 ]
-        (List.map strategies ~f:(fun s -> s.S.Strategy.max_age))
+      Alcotest.(check bool)
+        "max_age 3 and the stop at 15% or 250 sessions, on every one" true
+        (List.for_all strategies ~f:(fun s ->
+             s.S.Strategy.max_age = 3
+             && Option.equal S.Stop.equal s.S.Strategy.stop
+                  (Some { S.Stop.drawdown = 0.15; sessions = 250 })))
 
 (* One cost configuration (Task 15). research/config/friction_v1.yaml is the
    file the backtest was costed with, and EXP-A01's pre-registration reads its
@@ -197,12 +205,27 @@ let test_check_accepts_the_example_book_and_says_what_it_holds () =
       Alcotest.failf "the example book was refused: %s" (String.concat ~sep:"; " errors)
   | Ok summary ->
       Alcotest.(check (list string))
-        "the universe, in book order"
+        "the universe, in book order: the eight, then the forty ETFs"
         [ "AAPL"; "MSFT"; "NVDA"; "JPM"; "XOM"; "CVX"; "SPY"; "TLT" ]
-        (List.map summary.Summary.universe ~f:(fun h -> h.Summary.Holding.symbol));
+        (List.take
+           (List.map summary.Summary.universe ~f:(fun h -> h.Summary.Holding.symbol))
+           8);
+      Alcotest.(check int) "48 names" 48 (List.length summary.Summary.universe);
       Alcotest.(check (list string))
-        "the five sectors those names sit in"
-        [ "ENERGY"; "FINANCIALS"; "INDEX"; "TECH"; "TREASURIES" ]
+        "the eleven sectors those names sit in"
+        [
+          "COMMODITY";
+          "CREDIT";
+          "ENERGY";
+          "FINANCIALS";
+          "INDEX";
+          "INTL";
+          "RATES";
+          "SECTOR";
+          "STYLE";
+          "TECH";
+          "TREASURIES";
+        ]
         summary.Summary.sectors;
       (* Rendered through the graph's own renderers, so the summary says what the
          engine will call each scope and each threshold rather than a second
@@ -235,10 +258,18 @@ let test_check_accepts_the_example_book_and_says_what_it_holds () =
         ]
         (List.map summary.Summary.limits ~f:(fun l -> l.Summary.Limit_line.kind));
       Alcotest.(check (list (pair string string)))
-        "two strategies, both advisory"
-        [ ("exp_a01_spy", "advisory"); ("exp_a01_tlt", "advisory") ]
-        (List.map summary.Summary.strategies ~f:(fun s ->
+        "EXP-A01's two first, both incubation"
+        [ ("exp_a01_spy", "incubation"); ("exp_a01_tlt", "incubation") ]
+        (List.map (List.take summary.Summary.strategies 2) ~f:(fun s ->
              (s.Summary.Strategy_line.name, s.Summary.Strategy_line.sizing)));
+      Alcotest.(check int)
+        "23 strategies, every one incubation" 23
+        (List.count summary.Summary.strategies ~f:(fun s ->
+             String.equal s.Summary.Strategy_line.sizing "incubation"));
+      Alcotest.(check bool)
+        "each at an effective 0.025: 0.575 is under the cap of 0.60" true
+        (List.for_all summary.Summary.strategies ~f:(fun s ->
+             Float.equal s.Summary.Strategy_line.effective_fraction 0.025));
       Alcotest.(check (option string))
         "the desk ships disabled" (Some "disabled")
         (List.Assoc.find summary.Summary.desk "trading" ~equal:String.equal);
@@ -350,8 +381,8 @@ let test_check_on_a_file_that_is_not_there_is_one_sentence () =
 
 (* Three refusals the startup path applies to the instrument list, none of them
    in Book.of_string: Graph.create refuses an empty list and a duplicate symbol
-   (lib/graph.ml), and run_live refuses more names than the free Alpaca plan
-   streams (bin/main.ml, reading Config.universe_cap). Round 1's review found
+   (lib/graph.ml), and run_live refuses more names than the engine carries
+   (bin/main.ml, reading Config.universe_cap). Round 1's review found
    check-book accepting all three and printing "is a book this build would start
    on" for each. deploy.sh will run check-book before the restart precisely so
    the engine never dies on a book at startup, and for each of these the deploy
@@ -411,30 +442,27 @@ let test_check_refuses_an_empty_universe () =
       Alcotest.(check bool)
         "saying the graph needs at least one" true (names "at least one" errors))
 
-let test_check_refuses_a_book_over_the_universe_cap_and_accepts_one_at_it () =
-  (* The cap is 30 because Alpaca's free plan streams at most 30 symbols. It is
-     pinned as a number here so that moving it is a deliberate edit to this case
-     as well as to the constant. 31 = 30 + 1 is the smallest book over the cap
-     and 30 the largest book under it, so the pair fixes the boundary exactly: a
-     cap of 29 fails the second half, a cap of 31 -- or no cap at all -- fails
-     the first. *)
-  Alcotest.(check int) "the cap is Alpaca's free-plan 30" 30 Config.universe_cap;
-  with_book (book_of_n_names 31) ~f:(fun p ->
-      let errors = refusal_of p in
-      Alcotest.(check int) "one problem: the size" 1 (List.length errors);
-      Alcotest.(check bool) "naming the 31 names" true (names "31 names" errors);
-      Alcotest.(check bool) "and the cap of 30" true (names "at most 30" errors));
-  with_book (book_of_n_names 30) ~f:(fun p ->
-      match Config.check p with
-      | Error errors ->
-          Alcotest.failf "30 names were refused: %s" (String.concat ~sep:"; " errors)
-      | Ok summary ->
-          Alcotest.(check int)
-            "30 names, accepted" 30
-            (List.length summary.Summary.universe));
+let test_sixty_four_names_load_sixty_five_refuse () =
+  (* The cap is 64: thirty names on Alpaca's free stream and the rest polled
+     (Config.stream_cap). It is pinned as a number here so that moving it is a
+     deliberate edit to this case as well as to the constant. 65 = 64 + 1 is
+     the smallest book over the cap and 64 the largest book under it, so the
+     pair fixes the boundary exactly: a cap of 63 fails the first half, a cap
+     of 65 -- or no cap at all -- fails the second. *)
+  Alcotest.(check int) "the cap is 64" 64 Config.universe_cap;
+  let errors_of n =
+    match Book.parse (book_of_n_names n) with
+    | Ok book -> Book.errors book
+    | Error exn -> Alcotest.failf "%d names did not parse: %s" n (Exn.to_string exn)
+  in
+  Alcotest.(check (list string)) "64 names: no errors" [] (errors_of 64);
+  let errors = errors_of 65 in
+  Alcotest.(check int) "65 names: one problem, the size" 1 (List.length errors);
+  Alcotest.(check bool) "naming the 65 names" true (names "65 names" errors);
+  Alcotest.(check bool) "and the cap of 64" true (names "at most 64" errors);
   (* run_live applies the same cap before it connects, and the live case in
-     the CLI section observes both halves of it (31 refused with its sentence,
-     30 let through to the fuse). What that cannot show is the NUMBER as the
+     the CLI section observes both halves of it (65 refused with its sentence,
+     64 let through to the fuse). What that cannot show is the NUMBER as the
      engine spells it -- the sentence prints the constant whatever the
      comparison reads -- so the one line that carries the comparison is held
      here as text, the way the shared-minimum case reads lib/factor_model.ml.
@@ -621,7 +649,7 @@ let test_check_book_exits_one_on_a_book_the_engine_refuses_at_startup () =
     [
       ("a duplicate symbol", duplicate_symbol_book, "\"AAPL\" appears twice");
       ("an empty universe", empty_universe_book, "at least one");
-      ("31 names", book_of_n_names 31, "31 names");
+      ("65 names", book_of_n_names 65, "65 names");
     ]
     ~f:(fun (what, contents, sentence) ->
       with_book contents ~f:(fun p ->
@@ -643,34 +671,34 @@ let test_check_book_exits_one_on_a_book_the_engine_refuses_at_startup () =
 
 let test_live_applies_the_universe_cap_before_it_connects () =
   (* The engine's half of the cap, APPLIED, which no source line can show. Both
-     halves, as in the library case: 31 = 30 + 1 is the smallest book over the
-     cap and 30 the largest under it. With the dummy values and the fuse as the
-     child's whole environment, live on 31 names is exit 1 with run_live's own
-     sentence and never reaches the fuse; live on 30 names passes the cap -- the
+     halves, as in the library case: 65 = 64 + 1 is the smallest book over the
+     cap and 64 the largest under it. With the dummy values and the fuse as the
+     child's whole environment, live on 65 names is exit 1 with run_live's own
+     sentence and never reaches the fuse; live on 64 names passes the cap -- the
      sentence is absent -- and is stopped by the fuse one act later, naming
-     COHTTP_DEBUG, before the journal, the reports or a feed. A cap of 29 fails
-     the second half, a cap of 31 or none fails the first. The comparison line
+     COHTTP_DEBUG, before the journal, the reports or a feed. A cap of 63 fails
+     the second half, a cap of 65 or none fails the first. The comparison line
      pinned in the library case holds the number as text; this holds what the
      binary does with it. *)
-  let cap_sentence out = String.is_substring out ~substring:"at most 30" in
+  let cap_sentence out = String.is_substring out ~substring:"at most 64" in
   let fuse_sentence out = String.is_substring out ~substring:"COHTTP_DEBUG is set" in
-  with_book (book_of_n_names 31) ~f:(fun p ->
+  with_book (book_of_n_names 65) ~f:(fun p ->
       let status, out = run ~env:cleared_environment [ "live"; p ] in
-      Alcotest.(check int) "31 names: exit 1" 1 status;
+      Alcotest.(check int) "65 names: exit 1" 1 status;
       Alcotest.(check bool)
-        "31 names: naming the 31" true
-        (String.is_substring out ~substring:"31 names");
-      Alcotest.(check bool) "31 names: and the cap of 30" true (cap_sentence out);
+        "65 names: naming the 65" true
+        (String.is_substring out ~substring:"65 names");
+      Alcotest.(check bool) "65 names: and the cap of 64" true (cap_sentence out);
       Alcotest.(check bool)
-        "31 names: refused at the cap, before the fuse" false (fuse_sentence out);
-      Alcotest.(check bool) "31 names: no backtrace" true (no_backtrace out));
-  with_book (book_of_n_names 30) ~f:(fun p ->
+        "65 names: refused at the cap, before the fuse" false (fuse_sentence out);
+      Alcotest.(check bool) "65 names: no backtrace" true (no_backtrace out));
+  with_book (book_of_n_names 64) ~f:(fun p ->
       let status, out = run ~env:cleared_environment [ "live"; p ] in
-      Alcotest.(check int) "30 names: exit 1, at the fuse" 1 status;
-      Alcotest.(check bool) "30 names: the cap let it through" false (cap_sentence out);
+      Alcotest.(check int) "64 names: exit 1, at the fuse" 1 status;
+      Alcotest.(check bool) "64 names: the cap let it through" false (cap_sentence out);
       Alcotest.(check bool)
-        "30 names: and the fuse stopped it, naming COHTTP_DEBUG" true (fuse_sentence out);
-      Alcotest.(check bool) "30 names: no backtrace" true (no_backtrace out))
+        "64 names: and the fuse stopped it, naming COHTTP_DEBUG" true (fuse_sentence out);
+      Alcotest.(check bool) "64 names: no backtrace" true (no_backtrace out))
 
 let test_check_book_prints_a_multi_line_parse_error_as_one_bullet () =
   (* Sexplib's parse error echoes the input, so an unclosed book written over
@@ -779,13 +807,327 @@ let test_serve_takes_a_port_and_then_a_book () =
     "and no mode hands run_live the default outright any more" false
     (String.is_substring source ~substring:"~book_path:Config.default_book_path")
 
+(* ------------------------------------------------------------------------- *)
+(* The incubation tier, the overlay fields and the caps                       *)
+(* ------------------------------------------------------------------------- *)
+
+(* The two-name book above with a desk and a signals block of a case's own.
+   Each case breaks one rule and expects that rule's sentence alone. *)
+let tiered ~desk ~strategies =
+  book ~limits:""
+    ~extra:(sprintf "(desk (%s)) (signals ((strategies (%s))))" desk strategies)
+
+let test_incubation_sum_over_one () =
+  (* incubation_cap is a proportional ceiling now (INC-01), not a bound: the
+     incubation fractions may sum past it, and only past 1 are they refused.
+     0.6 + 0.6 = 1.2, exact enough that %g prints "1.2"; each alone is under 1,
+     so the sentence is the set's. *)
+  with_book
+    (tiered ~desk:"(incubation_cap 0.6)"
+       ~strategies:
+         "((name s_a) (symbols (SPY)) (sizing incubation) (capital_fraction 0.6)) ((name \
+          s_b) (symbols (AAPL)) (sizing incubation) (capital_fraction 0.6))") ~f:(fun p ->
+      let errors = refusal_of p in
+      Alcotest.(check int) "one problem: the incubation sum" 1 (List.length errors);
+      Alcotest.(check bool)
+        "naming the sum and 1" true
+        (names "incubation strategies' capital_fraction values sum to 1.2, more than 1"
+           errors));
+  (* 0.4 + 0.4 = 0.8 over a cap of 0.6 was refused before; now it is scaled. *)
+  with_book
+    (tiered ~desk:"(incubation_cap 0.6)"
+       ~strategies:
+         "((name s_a) (symbols (SPY)) (sizing incubation) (capital_fraction 0.4)) ((name \
+          s_b) (symbols (AAPL)) (sizing incubation) (capital_fraction 0.4))") ~f:(fun p ->
+      match Config.check p with
+      | Ok _ -> ()
+      | Error errors ->
+          Alcotest.failf "0.8 over a cap of 0.6 was refused: %s"
+            (String.concat ~sep:"; " errors))
+
+let test_live_plus_incubation_over_one () =
+  (* Live 0.5 is under 1 and incubation 0.6 is at its cap of 0.6, so only the
+     two tiers together are over: 0.5 + 0.6 = 1.1. *)
+  with_book
+    (tiered ~desk:"(incubation_cap 0.6)"
+       ~strategies:
+         "((name s_a) (symbols (AAPL)) (sizing live) (capital_fraction 0.5)) ((name s_b) \
+          (symbols (SPY)) (sizing incubation) (capital_fraction 0.6))") ~f:(fun p ->
+      let errors = refusal_of p in
+      Alcotest.(check int) "one problem: the two tiers' sum" 1 (List.length errors);
+      Alcotest.(check bool)
+        "naming the sum of 1.1" true
+        (names "sum to 1.1, more than 1" errors))
+
+let test_stop_drawdown_range () =
+  with_book
+    (tiered ~desk:"(incubation_cap 0.6)"
+       ~strategies:
+         "((name s_a) (symbols (SPY)) (sizing incubation) (capital_fraction 0.1) (stop \
+          ((drawdown 1.5) (sessions 250))))") ~f:(fun p ->
+      let errors = refusal_of p in
+      Alcotest.(check int) "one problem: the stop" 1 (List.length errors);
+      Alcotest.(check bool)
+        "naming the drawdown" true
+        (names "stop.drawdown must be in (0, 1], got 1.5" errors))
+
+let test_flatten_at_parses () =
+  let ofday = Alcotest.testable Time_ns.Ofday.pp Time_ns.Ofday.equal in
+  Alcotest.(check (result ofday string))
+    "15:50 is ten minutes before the close"
+    (Ok (Time_ns.Ofday.create ~hr:15 ~min:50 ()))
+    (Desk_spec.flatten_ofday "15:50");
+  Alcotest.(check (result ofday string))
+    "16:00 is the close itself, outside the session"
+    (Error "flatten_at must be inside the regular session [09:30, 16:00), got 16:00")
+    (Desk_spec.flatten_ofday "16:00");
+  Alcotest.(check bool)
+    "3pm is not HH:MM" true
+    (match Desk_spec.flatten_ofday "3pm" with
+    | Ok _ -> false
+    | Error e -> String.is_substring e ~substring:"HH:MM")
+
+let test_stream_cap () =
+  (* 31 names, every one in the universe, so the count is the only problem. *)
+  let symbols = List.init 31 ~f:(fun i -> sprintf "S%02d" (i + 1)) in
+  let contents =
+    sprintf "((cash 1000000.0) (positions (%s)) (limits ()) (desk ((stream (%s)))))"
+      (String.concat ~sep:" "
+         (List.map symbols ~f:(sprintf "((symbol %s) (sector TECH) (qty 1.0))")))
+      (String.concat ~sep:" " symbols)
+  in
+  with_book contents ~f:(fun p ->
+      let errors = refusal_of p in
+      Alcotest.(check int) "one problem: the stream's length" 1 (List.length errors);
+      Alcotest.(check bool)
+        "naming the 31 and the 30" true
+        (names "stream names 31 symbols; at most 30 stream" errors))
+
+let test_desk_defaults () =
+  let d = Desk_spec.default in
+  Alcotest.(check (float 0.0)) "incubation_cap 0.0" 0.0 d.Desk_spec.incubation_cap;
+  Alcotest.(check (float 0.0)) "vol_target 0.10" 0.10 d.Desk_spec.vol_target;
+  Alcotest.(check string) "flatten_at 15:50" "15:50" d.Desk_spec.flatten_at;
+  Alcotest.(check int) "max_open_orders 200" 200 d.Desk_spec.max_open_orders
+
+(* The roster's fractions, as the example book ships them: equal, 0.025 each,
+   so 23 x 0.025 = 0.575, under the book's (incubation_cap 0.60); the other
+   0.025 is EXP-Q01's when it joins (24 x 0.025 = 0.600). At 0.575 <= 0.60 the
+   cap scales nothing: min(1, 0.60 / 0.575) = 1. *)
+let test_roster_fractions_sum_to_the_cap () =
+  let book = load () in
+  let module S = Ohcamel.Config.Book.Signals_spec in
+  match book.Book.signals with
+  | None -> Alcotest.fail "the example book has no signals block"
+  | Some { S.strategies } ->
+      Alcotest.(check int) "twenty-three strategies" 23 (List.length strategies);
+      Alcotest.(check (float 1e-9))
+        "the incubation fractions sum to 23 x 0.025 = 0.575" 0.575
+        (List.sum (module Float) strategies ~f:(fun s -> s.S.Strategy.capital_fraction));
+      Alcotest.(check bool)
+        "every fraction is 0.025" true
+        (List.for_all strategies ~f:(fun s ->
+             Float.equal s.S.Strategy.capital_fraction 0.025));
+      Alcotest.(check (float 0.0))
+        "and the cap is 0.60, at or above the sum" 0.60
+        book.Book.desk.Desk_spec.incubation_cap
+
+(* The cap as a proportional ceiling, by hand. 23 strategies at 0.025, sum
+   0.575:
+   - cap 0.10 (the canary): 0.025 x min(1, 0.10 / 0.575) = 0.025 x 0.173913...
+     = 0.0043478..., and the 23 together are 0.10 exactly;
+   - cap 0.60: min(1, 0.60 / 0.575) = 1, so 0.025 unchanged;
+   - cap 0.0: 0.025 x 0 = 0.0, nothing sized.
+   A live strategy's fraction is its own whatever the cap. *)
+let test_effective_fraction_scales_the_roster () =
+  let module S = Ohcamel.Config.Book.Signals_spec in
+  let strategy name sizing =
+    {
+      S.Strategy.name;
+      symbols = [ "SPY" ];
+      max_age = 3;
+      sizing;
+      capital_fraction = 0.025;
+      cadence = S.Cadence.Daily;
+      adjust = S.Adjust.Intraday;
+      max_age_minutes = 20;
+      horizon = S.Horizon.Carry;
+      stop = None;
+      reinstated = None;
+    }
+  in
+  let roster =
+    {
+      S.strategies = List.init 23 ~f:(fun i -> strategy (sprintf "s_%02d" i) S.Incubation);
+    }
+  in
+  let one = List.hd_exn roster.S.strategies in
+  let at cap = S.effective_fraction ~incubation_cap:cap roster one in
+  Alcotest.(check (float 1e-12))
+    "cap 0.10: 0.025 x 0.10 / 0.575" 0.0043478260869565 (at 0.10);
+  Alcotest.(check (float 1e-12))
+    "and the 23 together are the cap" 0.10
+    (List.sum
+       (module Float)
+       roster.S.strategies
+       ~f:(S.effective_fraction ~incubation_cap:0.10 roster));
+  Alcotest.(check (float 0.0)) "cap 0.60: unchanged" 0.025 (at 0.60);
+  Alcotest.(check (float 0.0)) "cap 0.0: nothing" 0.0 (at 0.0);
+  Alcotest.(check (float 0.0))
+    "a live strategy keeps its own fraction" 0.025
+    (S.effective_fraction ~incubation_cap:0.10 roster (strategy "l_a" S.Live))
+
+(* The canary as the owner books it: the example book with (incubation_cap
+   0.10) and nothing else changed checks clean, and the summary prints each
+   strategy's effective fraction, 0.025 x 0.10 / 0.575 = 0.0043478... *)
+let test_the_canary_book_checks_clean () =
+  let contents = In_channel.read_all path in
+  let canary =
+    String.substr_replace_all contents ~pattern:"(incubation_cap 0.60)"
+      ~with_:"(incubation_cap 0.10)"
+  in
+  Alcotest.(check bool) "the cap was there to edit" false (String.equal contents canary);
+  with_book canary ~f:(fun p ->
+      match Config.check p with
+      | Error errors ->
+          Alcotest.failf "the canary book was refused: %s"
+            (String.concat ~sep:"; " errors)
+      | Ok summary ->
+          Alcotest.(check bool)
+            "every strategy's effective fraction is 0.025 x 0.10 / 0.575" true
+            (List.for_all summary.Summary.strategies ~f:(fun s ->
+                 Float.(
+                   abs
+                     (s.Summary.Strategy_line.effective_fraction
+                     - (0.025 *. 0.10 /. 0.575))
+                   < 1e-12)));
+          Alcotest.(check bool)
+            "and the printed line says so" true
+            (List.exists (Summary.lines summary)
+               ~f:(String.is_substring ~substring:"effective 0.00434783")))
+
+let test_every_roster_symbol_is_a_position () =
+  let book = load () in
+  let module S = Ohcamel.Config.Book.Signals_spec in
+  let positions =
+    List.map book.Book.positions ~f:(fun p -> p.Book.Position_spec.symbol)
+  in
+  match book.Book.signals with
+  | None -> Alcotest.fail "the example book has no signals block"
+  | Some { S.strategies } ->
+      Alcotest.(check (list string))
+        "no roster symbol the book does not hold" []
+        (List.concat_map strategies ~f:(fun s ->
+             List.filter s.S.Strategy.symbols ~f:(fun sym ->
+                 not (List.mem positions sym ~equal:String.equal))))
+
+(* Every refusal the new fields add, one row each, and the accepting row at
+   each boundary. A row is (what the book says, the errors Book.errors gives
+   back): [] is accepted, and a refusal is exactly its one sentence, so a
+   flipped comparison, a dropped arm or a second sentence fails the row. The
+   nan rows pin the positive form of every float comparison: sexp reads "nan"
+   as Float.nan, and a bound written "x < lo || x > hi" would let it through.
+   Each row is parsed rather than written to a file -- Book.errors is what
+   Config.check lists. *)
+let errors_of contents =
+  match Book.parse contents with
+  | Ok book -> Book.errors book
+  | Error exn -> Alcotest.failf "%s did not parse: %s" contents (Exn.to_string exn)
+
+let check_rows rows ~book_of =
+  List.iter rows ~f:(fun (field, expected) ->
+      Alcotest.(check (list string)) field expected (errors_of (book_of field)))
+
+let test_every_new_desk_refusal_has_its_row () =
+  let refused field why got = [ sprintf "desk: %s %s, got %s" field why got ] in
+  check_rows
+  (* No signals block, so the desk's own sentence is the only one: a
+       signals block would also be judged against an out-of-range cap. *)
+    ~book_of:(fun field -> book ~limits:"" ~extra:(sprintf "(desk (%s))" field))
+    [
+      ("(incubation_cap 0.0)", []);
+      ("(incubation_cap 1.0)", []);
+      ("(incubation_cap -0.1)", refused "incubation_cap" "must be in [0, 1]" "-0.1");
+      ("(incubation_cap 1.5)", refused "incubation_cap" "must be in [0, 1]" "1.5");
+      ("(incubation_cap nan)", refused "incubation_cap" "must be in [0, 1]" "nan");
+      ("(vol_target 1.0)", []);
+      ("(vol_target 0.0)", refused "vol_target" "must be in (0, 1]" "0");
+      ("(vol_target 1.5)", refused "vol_target" "must be in (0, 1]" "1.5");
+      ("(vol_target nan)", refused "vol_target" "must be in (0, 1]" "nan");
+      ("(overlay_max_age_minutes 1)", []);
+      ( "(overlay_max_age_minutes 0)",
+        refused "overlay_max_age_minutes" "must be at least 1" "0" );
+      ("(overlay_fallback 0.0)", []);
+      ("(overlay_fallback 1.0)", []);
+      ("(overlay_fallback -0.1)", refused "overlay_fallback" "must be in [0, 1]" "-0.1");
+      ("(overlay_fallback 1.5)", refused "overlay_fallback" "must be in [0, 1]" "1.5");
+      ("(overlay_fallback nan)", refused "overlay_fallback" "must be in [0, 1]" "nan");
+      ("(overlay_band 0.0)", []);
+      ("(overlay_band 1.0)", []);
+      ("(overlay_band -0.1)", refused "overlay_band" "must be in [0, 1]" "-0.1");
+      ("(overlay_band 1.5)", refused "overlay_band" "must be in [0, 1]" "1.5");
+      ("(overlay_band nan)", refused "overlay_band" "must be in [0, 1]" "nan");
+      (* The default collar is 0.05, so the slip's bound is 500 bps. *)
+      ("(intraday_slip_bps 0.0)", []);
+      ("(intraday_slip_bps 499.0)", []);
+      ( "(intraday_slip_bps 500.0)",
+        refused "intraday_slip_bps" "must be in [0, price_collar x 1e4)" "500" );
+      ( "(intraday_slip_bps -1.0)",
+        refused "intraday_slip_bps" "must be in [0, price_collar x 1e4)" "-1" );
+      ( "(intraday_slip_bps nan)",
+        refused "intraday_slip_bps" "must be in [0, price_collar x 1e4)" "nan" );
+      ("(min_leg_notional 0.0)", []);
+      ("(min_leg_notional -1.0)", refused "min_leg_notional" "may not be negative" "-1");
+      ("(min_leg_notional nan)", refused "min_leg_notional" "may not be negative" "nan");
+      ("(wave_timeout_s 0.001)", []);
+      ("(wave_timeout_s 0.0)", refused "wave_timeout_s" "must be positive" "0");
+      ("(wave_timeout_s -1.0)", refused "wave_timeout_s" "must be positive" "-1");
+      ("(wave_timeout_s nan)", refused "wave_timeout_s" "must be positive" "nan");
+      ("(flatten_at 09:30)", []);
+      ("(flatten_at 15:59)", []);
+      ( "(flatten_at 09:29)",
+        [
+          "desk: flatten_at must be inside the regular session [09:30, 16:00), got 09:29";
+        ] );
+      ( "(flatten_at 16:00)",
+        [
+          "desk: flatten_at must be inside the regular session [09:30, 16:00), got 16:00";
+        ] );
+      ("(flatten_at 9:30)", [ "desk: flatten_at must be HH:MM, got \"9:30\"" ]);
+      ("(stream (SPY AAPL))", []);
+      ( "(stream (SPY GOOG))",
+        [ "desk: stream names GOOG, which is not in the book's universe" ] );
+    ]
+
+let test_every_new_strategy_refusal_has_its_row () =
+  let refused why = [ "signals: s_a: " ^ why ] in
+  check_rows
+    ~book_of:(fun field ->
+      tiered ~desk:""
+        ~strategies:
+          (sprintf "((name s_a) (symbols (SPY)) (capital_fraction 0.1) %s)" field))
+    [
+      ("(max_age_minutes 1)", []);
+      ("(max_age_minutes 0)", refused "max_age_minutes must be at least 1, got 0");
+      ("(stop ((drawdown 1.0) (sessions 1)))", []);
+      ( "(stop ((drawdown 0.0) (sessions 250)))",
+        refused "stop.drawdown must be in (0, 1], got 0" );
+      ( "(stop ((drawdown nan) (sessions 250)))",
+        refused "stop.drawdown must be in (0, 1], got nan" );
+      ( "(stop ((drawdown 0.15) (sessions 0)))",
+        refused "stop.sessions must be at least 1, got 0" );
+      ("(stop ((drawdown 0.15) (sessions 250))) (reinstated 2026-11-02)", []);
+      ( "(reinstated 2026-11-02)",
+        refused "reinstated is 2026-11-02 but the strategy has no stop" );
+    ]
+
 let suite =
   ( "example book",
     [
       Alcotest.test_case "the example book parses and ships inert" `Quick
         test_the_example_book_parses_and_ships_inert;
-      Alcotest.test_case "the example book registers two advisory strategies" `Quick
-        test_the_example_book_registers_two_advisory_strategies;
+      Alcotest.test_case "the example book registers the incubation roster" `Quick
+        test_the_example_book_registers_the_incubation_roster;
       Alcotest.test_case "the book's half-spreads are friction v1's, halved" `Quick
         test_the_book's_half_spreads_are_friction_v1's_halved;
       Alcotest.test_case "check accepts the example book and says what it holds" `Quick
@@ -809,9 +1151,8 @@ let suite =
         test_check_refuses_a_duplicate_position_symbol;
       Alcotest.test_case "check refuses an empty universe" `Quick
         test_check_refuses_an_empty_universe;
-      Alcotest.test_case
-        "check refuses a book over the universe cap and accepts one at it" `Quick
-        test_check_refuses_a_book_over_the_universe_cap_and_accepts_one_at_it;
+      Alcotest.test_case "sixty-four names load, sixty-five refuse" `Quick
+        test_sixty_four_names_load_sixty_five_refuse;
       Alcotest.test_case "check-book exits zero on the example book" `Quick
         test_check_book_exits_zero_on_the_example_book;
       Alcotest.test_case "check-book exits one and lists every problem" `Quick
@@ -830,4 +1171,23 @@ let suite =
         test_demo_with_a_port_that_is_not_a_number_prints_the_usage_and_exits_two;
       Alcotest.test_case "serve takes a port and then a book" `Quick
         test_serve_takes_a_port_and_then_a_book;
+      Alcotest.test_case "incubation sum over one" `Quick test_incubation_sum_over_one;
+      Alcotest.test_case "live plus incubation over one" `Quick
+        test_live_plus_incubation_over_one;
+      Alcotest.test_case "stop drawdown range" `Quick test_stop_drawdown_range;
+      Alcotest.test_case "flatten_at parses" `Quick test_flatten_at_parses;
+      Alcotest.test_case "stream cap" `Quick test_stream_cap;
+      Alcotest.test_case "defaults" `Quick test_desk_defaults;
+      Alcotest.test_case "roster fractions sum under the cap" `Quick
+        test_roster_fractions_sum_to_the_cap;
+      Alcotest.test_case "effective fraction scales the roster" `Quick
+        test_effective_fraction_scales_the_roster;
+      Alcotest.test_case "the canary book checks clean" `Quick
+        test_the_canary_book_checks_clean;
+      Alcotest.test_case "every roster symbol is a position" `Quick
+        test_every_roster_symbol_is_a_position;
+      Alcotest.test_case "every new desk refusal has its row" `Quick
+        test_every_new_desk_refusal_has_its_row;
+      Alcotest.test_case "every new strategy refusal has its row" `Quick
+        test_every_new_strategy_refusal_has_its_row;
     ] )
