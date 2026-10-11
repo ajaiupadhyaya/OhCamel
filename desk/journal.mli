@@ -29,7 +29,7 @@ val version : t -> int
 val open_read_only : string -> (t, string) Result.t
 (** Opens an existing journal with SQLITE_OPEN_READONLY and runs no [set_up]: no pragma,
     no CREATE TABLE, no schema-version insert, nothing that would write a page. That is
-    the whole point -- [open_] would happily add its eleven tables to a backup that was
+    the whole point -- [open_] would happily add its fourteen tables to a backup that was
     missing them, and then report the backup sound. A handle from here answers every read
     in this interface and raises on every write. *)
 
@@ -171,11 +171,13 @@ val recent_alerts : t -> limit:int -> Alert.t list
 (** One judgement of one signal document (desk/intake.ml): the [signals] table's row. *)
 module Signal : sig
   module Verdict : sig
-    type t = Accepted | Advisory | Rejected [@@deriving sexp_of, compare, equal]
+    type t = Accepted | Accepted_incubation | Advisory | Rejected
+    [@@deriving sexp_of, compare, equal]
 
     val to_string : t -> string
-    (** "accepted", "advisory", "rejected": the words the table holds and the page reads.
-    *)
+    (** "accepted", "accepted_incubation", "advisory", "rejected": the words the table
+        holds and the page reads. An incubation judgement is sized like an accepted one,
+        at the incubation tier. *)
 
     val of_string : string -> t option
   end
@@ -217,6 +219,11 @@ val highest_sequence :
 val latest_signal : t -> strategy:string -> Signal.t option
 (** The judgement recorded last for [strategy], by recording order (rowid), not by the
     wall clock; one seek on signals_by_strategy. *)
+
+val latest_accepted_document : t -> strategy:string -> (int * string) option
+(** The sequence and document text of the newest judgement of [strategy] whose verdict is
+    accepted or accepted_incubation, by recording order; one seek on signals_by_strategy.
+*)
 
 val signal : t -> strategy:string -> sequence:int -> Signal.t option
 (** One judgement, by the primary key. *)
@@ -381,3 +388,59 @@ module For_testing : sig
       SQLite's own planner uses ("SCAN f USING INDEX fills_by_at", "USE TEMP B-TREE FOR
       ORDER BY"). *)
 end
+
+val record_overlay :
+  t ->
+  sequence:int ->
+  as_of:string ->
+  received_at:Time_ns.t ->
+  exposure_scale:float ->
+  verdict:[ `Accepted | `Rejected ] ->
+  rule:string option ->
+  detail:string ->
+  document:string ->
+  unit
+(** One judgement of the exposure overlay, with its whole document. A plain INSERT: a
+    sequence already recorded raises rather than overwrite the first judgement. *)
+
+val latest_overlay : t -> (int * string * float * string) option
+(** The accepted overlay with the highest sequence, as (sequence, as_of, exposure_scale,
+    received_at); a rejected one is never returned. *)
+
+val highest_overlay_sequence : t -> int
+(** The highest overlay sequence judged, rejected ones included; 0 when none. *)
+
+val record_sizing :
+  t ->
+  strategy:string ->
+  sequence:int ->
+  at:Time_ns.t ->
+  tier:string ->
+  scale:float ->
+  allocated:float ->
+  mode:string ->
+  unit
+(** What a strategy was sized to at [at]: its tier ("advisory", "incubation" or "live"),
+    the scale and the dollars allocated, and the mode ("open", "adjust" or "flatten"). *)
+
+val latest_sizing : t -> strategy:string -> (int * float * float * string) option
+(** The sizing with the newest [at] for [strategy], as (sequence, scale, allocated, at);
+    one seek on sizings_by_strategy. *)
+
+val set_strategy_state :
+  t ->
+  strategy:string ->
+  state:[ `Active | `Stopped ] ->
+  rule:string option ->
+  at:Time_ns.t ->
+  detail:string ->
+  unit
+(** A strategy's standing, written over any earlier one: the rule that stopped it, if one
+    did, when, and why. *)
+
+val strategy_state :
+  t ->
+  strategy:string ->
+  ([ `Active | `Stopped ] * string option * string * string) option
+(** (state, rule, at, detail), the table's own column order; None for a strategy never
+    given one. *)

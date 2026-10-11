@@ -601,7 +601,8 @@ let record t ~name ~ident ~text (doc : Contract.t) (j : Judgement.t) =
       document = text;
       rebalance =
         (match j.verdict with
-        | Verdict.Accepted -> Some (pending ~strategy:doc.strategy ~sequence:doc.sequence)
+        | Verdict.Accepted | Accepted_incubation ->
+            Some (pending ~strategy:doc.strategy ~sequence:doc.sequence)
         | Advisory | Rejected -> None);
     };
   Hashtbl.set t.judged ~key:name ~data:ident;
