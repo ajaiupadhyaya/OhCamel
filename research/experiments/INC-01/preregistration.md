@@ -1,0 +1,239 @@
+# INC-01 — Paper incubation of the repository's strategies, scored live
+
+**Status: APPROVED 2026-10-11, by the owner's approval of the design's §5,
+recorded below. Two points under *Capital* go beyond what §5 fixed (the
+split is not exactly equal; the canary scales every fraction) and are the
+owner's to confirm.** Drafted by the agent 2026-10-11 for the owner. Under `docs/CHARTER.md` the owner owns hypotheses and kill decisions;
+no strategy is sized as incubation, and no incubation record is published,
+until the owner records approval at the bottom of this file. It implements
+§5 of `docs/superpowers/specs/2026-10-11-autonomous-paper-trading-design.md`.
+
+**This is not a hypothesis test with a pass mark.** No strategy below passes
+the charter's gates. Incubation records each one's first out-of-sample run on
+simulated money, under rules written here before the first order, so that
+the record can be scored with the charter's statistics and read for what it
+is. A strategy that loses money here is a recorded negative, and that is a
+complete result.
+
+## What incubation is and is not
+
+The charter, *The gates*, as amended 2026-10-11:
+
+> On the paper venue, and only there, the owner may register a strategy as
+> `incubation`: it is sized under the book's incubation caps whatever its
+> status, its validation block is carried unchanged, every order, page and
+> report it touches says INCUBATION, its realised record is scored with this
+> charter's statistics and stop rules the owner wrote before it traded, and
+> promotion to `live` never follows from that record by itself. Incubation
+> exists so that a strategy's first out-of-sample test on simulated money is
+> recorded; it is not evidence of edge and is never reported as such.
+
+Three consequences, stated now:
+
+- **The verdicts are unchanged.** EXP-A01's two manifests say **fail**; the
+  farm's cells carry whatever their newest nightly verdict says (none is a
+  charter pass as of 2026-10-11). The desk copies each document's
+  `validation` block byte for byte into its journal, and every page prints
+  the manifest's verdict beside every incubation figure.
+- **Paper only, twice over.** The sizing site refuses incubation unless the
+  trading host is the compiled-in paper constant, and that constant is the
+  only host there is.
+- **Nothing here can promote a strategy.** Promotion to `live` sizing is the
+  owner's decision alone, made in `book.sexp`, after a passing battery.
+
+## Roster
+
+`research/experiments/INC-01/roster.yaml` is the one list every producer
+reads, and it agrees row for row with the `signals` block of
+`book.example.sexp` (a research test holds the two together). Rules are the
+functions of `quant/src/ohcamel_quant/backtest/strategies.py` for the farm
+cells, called by `signals.daily` exactly as the farm's backtest calls them;
+universes are `quant/src/ohcamel_quant/universes.json`'s groups.
+
+| Slug | Producer | Rule | Universe | Fraction |
+|---|---|---|---|---|
+| `exp_a01_spy` | research service | EXP-A01: price above its N-day SMA (Faber 2007), long or flat | SPY | 0.0375 |
+| `exp_a01_tlt` | research service | EXP-A01: as above | TLT | 0.0375 |
+| `farm_tsmom_us_equity_indices` | `signals.daily` | `tsmom` (Moskowitz, Ooi & Pedersen 2012) | us_equity_indices: SPY QQQ DIA IWM MDY | 0.025 |
+| `farm_tsmom_rates` | `signals.daily` | `tsmom` | rates: BIL SHY IEI IEF TLT TIP | 0.025 |
+| `farm_tsmom_commodities` | `signals.daily` | `tsmom` | commodities: GLD SLV USO UNG DBA DBC | 0.025 |
+| `farm_tsmom_international` | `signals.daily` | `tsmom` | international: EFA EEM VGK EWJ FXI INDA | 0.025 |
+| `farm_tsmom_credit` | `signals.daily` | `tsmom` | credit: LQD HYG EMB | 0.025 |
+| `farm_xsmom_sectors` | `signals.daily` | `xsmom` (Jegadeesh & Titman 1993) | sectors: XLK XLF XLE XLV XLI XLY XLP XLU XLB XLRE XLC | 0.025 |
+| `farm_xsmom_international` | `signals.daily` | `xsmom` | international | 0.025 |
+| `farm_dual_momentum_us_equity_indices` | `signals.daily` | `dual_momentum` (Antonacci 2014) | us_equity_indices | 0.025 |
+| `farm_dual_momentum_international` | `signals.daily` | `dual_momentum` | international | 0.025 |
+| `farm_sma_trend_us_equity_indices` | `signals.daily` | `sma_trend` (Faber 2007) | us_equity_indices | 0.025 |
+| `farm_sma_trend_commodities` | `signals.daily` | `sma_trend` | commodities | 0.025 |
+| `farm_sma_trend_international` | `signals.daily` | `sma_trend` | international | 0.025 |
+| `farm_vol_managed_us_equity_indices` | `signals.daily` | `vol_managed` (Moreira & Muir 2017) | us_equity_indices | 0.025 |
+| `farm_risk_parity_rates` | `signals.daily` | `risk_parity` (inverse volatility to a volatility target) | rates | 0.025 |
+| `farm_risk_parity_credit` | `signals.daily` | `risk_parity` | credit | 0.025 |
+| `farm_risk_parity_commodities` | `signals.daily` | `risk_parity` | commodities | 0.025 |
+| `farm_risk_parity_us_equity_indices` | `signals.daily` | `risk_parity` | us_equity_indices | 0.025 |
+| `farm_low_beta_sectors` | `signals.daily` | `low_beta` (Frazzini & Pedersen 2014) | sectors | 0.025 |
+| `farm_st_reversal_sectors` | `signals.daily` | `st_reversal` (Lehmann 1990) | sectors | 0.025 |
+| `farm_pairs_distance_sectors` | `signals.daily` | `pairs_distance` (Gatev, Goetzmann & Rouwenhorst 2006) | sectors | 0.025 |
+| `farm_pairs_coint_sectors` | `signals.daily` | `pairs_coint` (Engle & Granger 1987) | sectors | 0.025 |
+| `q01_ls_quintile` | `signals.q01` | EXP-Q01's ranker: long the top quintile, short the bottom, equal weight, monthly | EXP-Q01's 34 ETFs | not yet on the roster (Stage 4) |
+
+The first 23 rows sum to 0.600. The last row joins the roster, and
+`roster.yaml` and the book, only in Stage 4. Each intraday strategy of
+EXP-I01–I03 joins only after the owner approves its pre-registration and its
+battery has run, and at the owner's word. Every change to the roster
+recomputes the fractions so that they sum to `incubation_cap`, and is
+recorded here, dated, before the first session it applies to.
+
+The research service keeps emitting EXP-A01's two signals unchanged: the same
+rule, the same parameters, the same `validation` block. Incubation changes how
+the desk sizes them, not what they say.
+
+## Capital
+
+- `incubation_cap` **0.60** of equity: the incubated fractions together may
+  size at most this.
+- **The split.** Design §5 says equal fractions across the roster. The
+  committed book does not split exactly equally: the two EXP-A01 strategies
+  have 0.0375 each and the 21 farm cells 0.025 each (0.075 + 0.525 = 0.600),
+  because 0.60 / 23 is not a round number. This is stated so the owner
+  approves the split that will trade, not the one the design described.
+- **The canary.** The first three sessions run at `canary_cap` **0.10**. The
+  book's fractions must then sum to at most 0.10, so each is the roster's
+  fraction × 0.10 / 0.60 (EXP-A01 0.00625, each farm cell 0.0041667). The
+  owner raises the cap to 0.60 after reading the three sessions' record.
+- `vol_target` **0.10** annualised, the overlay's target (below).
+- **Gross scaling.** A strategy whose Σ|w| exceeds 1 is scaled to Σ|w| = 1,
+  and the document records `gross_scaled: true` among its parameters (and
+  so in its `params_hash`). A strategy's fraction is therefore the most
+  gross exposure it can ever take, before the overlay.
+
+## The parameter-freeze rule
+
+On the first session of each month the newest `farm.sweep` artifact's
+`selected_params` for the cell are read and held for the month. A cell the
+farm reports SKIPPED or INSUFFICIENT DATA keeps last month's parameters. A
+cell with none is not emitted, and the reason is recorded in the producer's
+artifact. The farm's nightly re-selection never reaches the live book inside
+a month. The cell's `validation` is copied from its newest farm verdict
+(`PASS` → `pass`, `FAIL` → `fail`, anything else → `unvalidated`). A cell
+whose universe names a symbol outside the book is refused by the producer,
+with the reason, and never silently projected onto the book's names.
+
+## The overlay
+
+One number, `exposure_scale` in [0, 1], written by `signals.overlay` at
+09:40, every 15 minutes to 15:45, and at 18:50:
+
+    exposure_scale = min(1, σ_target / σ̂),   σ̂ = √(wᵀ Σ w), annualised
+
+- `w` is the combined targets of every roster strategy, each scaled by its
+  fraction; `σ_target` is the book's `vol_target`, 0.10.
+- `Σ` is the covariance league's (P3) current winner, by realised GMV
+  volatility; Ledoit–Wolf when no league artifact exists. Where the
+  volatility league (P2) has a current best model for a name (by QLIKE), its
+  forecast variance replaces that name's diagonal entry; EWMA(0.94) when
+  absent.
+- The document records every input: the models' names, the artifact ids and
+  `as_of`, the newest bar read.
+
+Volatility targeting is a rule with a mechanism (Moreira & Muir 2017): risk
+is forecastable, return mostly is not, so scaling down when forecast risk is
+high improves risk-adjusted return when that holds. It is not assumed to hold
+here; it is the sizing rule, not a hypothesis under test.
+
+**The drawdown governor**, computed in the desk from the graph's `drawdown`
+node and the book's `dd-cap`: 1 up to half `dd-cap`, falling linearly to 0 at
+the cap. The effective scale is `exposure_scale × governor`, and it
+multiplies every incubation and live target. With the example book's
+`dd-cap` of 0.02, the governor is 1 to a 1 % book drawdown and 0 at 2 %.
+
+**Staleness.** An overlay older than 60 minutes (`overlay_max_age_minutes`)
+is stale: the desk holds the last value until then, and after it uses
+`overlay_fallback` 0.5. The page says OVERLAY STALE.
+
+**Re-sizing.** When the effective scale moves more than `overlay_band` 0.10
+from the scale a strategy was last sized at, every strategy with
+`(adjust intraday)` is re-sized from its last accepted document through the
+intraday mode.
+
+**Reported beside sizing and never used in it.** EXP-Q02's regime
+probabilities, because Q02's verdict is DESCRIPTIVE ONLY and the charter does
+not let a descriptive model size anything. P1's Monte Carlo VaR, because P1
+computes reference books, not this one. Both appear in the overlay document
+for the reader; neither is multiplied in.
+
+## Execution
+
+- **At the open:** daily documents become market-on-open orders, as today.
+- **In the session:** `Day` limit orders at the mark moved
+  `intraday_slip_bps` **10 bps** toward the far side, inside the desk's 5 %
+  collar.
+- **Leg floor:** a leg below `min_leg_notional` **$200** is dropped, and the
+  drop is journaled.
+- **Waves:** a rebalance of more than 6 legs runs in waves of at most 6.
+  Wave 1 is every shrinking leg; later waves are growing legs by notional,
+  largest first. Each wave is gated against the real book as it then is. The
+  desk waits for each wave's legs to fill or cancel, up to `wave_timeout_s`
+  **180** seconds, then cancels what is left; an unfilled strategy is
+  re-sized on the next pass.
+- Every order passes the desk's rules, then the book's limits on a fork of
+  the live graph, then the journal, then the wire, as every order does. The
+  kill switch halts and never liquidates.
+
+## Stop rules
+
+Per strategy, written into the book before it trades:
+
+- **Drawdown 0.15** of allocated capital, from the strategy's peak.
+- **250 sessions** after its first fill.
+
+Either one stops the strategy: it is flattened by a zero-target rebalance,
+recorded with the rule that fired, shown STOPPED, and sized no more. Only the
+owner reinstates it, by a `(reinstated DATE)` in the book and a restart. The
+desk never un-stops.
+
+## Reporting
+
+Per strategy, from the journal: allocated capital each session (fraction ×
+scale × equity), the strategy's position net of its own fills, marks at each
+close, so a daily return on allocated capital, and costs per fill.
+
+- **Before 60 sessions:** "session n of 60", and no statistic.
+- **From 60 sessions:** annualised Sharpe, PSR (the research battery's own
+  formula), maximum drawdown, hit rate, turnover, and cost paid in bps.
+- **Always,** on every report and page that shows the record:
+  *incubation records are not evidence of edge; promotion to live sizing is
+  the owner's decision after a passing battery, never from this record
+  alone.*
+- The manifest's verdict is printed beside every incubation figure, and
+  every row is labelled INCUBATION. Advisory, incubation and live are
+  distinguished every time.
+
+## How it fails
+
+- **Sixty sessions is a short record.** A daily Sharpe estimated on 60
+  observations has a standard error near 2 annualised; PSR will say so. The
+  record is expected to be inconclusive for most strategies for most of a
+  year, and it will be reported as inconclusive.
+- **Twenty-three strategies, most sharing names.** Some will look good by
+  chance. The record is not deflated across the roster because nothing is
+  selected on it; if anyone ever selects on it, that selection is a new
+  experiment with its own DSR over all 23.
+- **Paper fills are Alpaca's simulator's,** marks are IEX, and per-strategy
+  orders are not netted: opposite legs pay both spreads. Costs here will be
+  higher than a netted book's.
+- **The overlay and the governor change every strategy's size together,** so
+  the per-strategy records are not independent of each other or of the
+  book's drawdown.
+
+## Kill criteria for the program
+
+Any one of these halts the desk, and the owner decides what happens next:
+
+- three strategies stopped within one calendar month;
+- a wave timeout on three consecutive sessions;
+- any order the journal cannot reconcile with the venue.
+
+## Approval
+
+Approved-by: owner (ajaiupadhyaya), 2026-10-11, approved the design §5/§6 in session ("Looks good, Everything approved"); recorded by the agent. A draft that departs from §5/§6 is not covered by this line.

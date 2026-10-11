@@ -1,0 +1,32 @@
+# EXP-I02 -- frozen design. Source: research/experiments/EXP-I02/preregistration.md.
+# Changing anything here after the holdout is evaluated is a new experiment and goes to
+# the owner (docs/CHARTER.md).
+id: EXP-I02
+title: "Does an opening-range breakout, stopped at the range's far side, survive friction on five liquid ETFs?"
+universe: [SPY, QQQ, IWM, TLT, GLD]
+strategies:                 # one per name, as EXP-A01
+  - {slug: exp_i02_spy, symbol: SPY}
+  - {slug: exp_i02_qqq, symbol: QQQ}
+  - {slug: exp_i02_iwm, symbol: IWM}
+  - {slug: exp_i02_tlt, symbol: TLT}
+  - {slug: exp_i02_gld, symbol: GLD}
+bars: minute                # warehouse bars_minute, Alpaca IEX, regular session only
+session_series: true        # one net return per session
+# The start is provisional: the minute backfill records each name's first bar, and this
+# start is fixed to it here before the battery runs (pre-registration, Data).
+selection_window: {start: "2016-06-01", end: "2023-12-31"}
+holdout_window: {start: "2024-01-01", end: "2026-09-30"}   # evaluated once
+regimes: research           # battery/gates.py REGIMES: 2018 Q4, 2020 COVID, 2022, 2023, 2024
+friction: {version: "1.0.0", file: research/config/friction_v1.yaml}
+mode: walkforward
+n_folds: 4
+dsr: {unit: fold_trials, family: all_strategies}   # 3 configurations x 4 folds x 5 names = 60
+cost_sweep_bps_round_trip: [0, 5, 15, 30]
+bootstrap: {resamples: 1000, method: stationary_block}
+seed: 42
+rule:
+  stop: range_far_side      # a resting stop at the other side of the opening range
+  entries_per_session: 1    # the first breakout either way; flat after a stop
+  exit: close
+  sizing: {atr_sessions: 14, risk_per_atr: 0.01, max_gross: 1.0}   # |w| = min(1, 0.01 / (ATR14 / prior close))
+grid: {range_minutes: [5, 15, 30]}   # 3 configurations

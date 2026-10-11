@@ -420,7 +420,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 - **Recomputation counts are asserted**, not claimed: `test_graph.ml` pins
   how many nodes a tick reaches.
 - **`make research-test`** runs the research layer's own suite separately:
-  <!-- count:research-tests -->406<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Reported
+  <!-- count:research-tests -->412<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Reported
   here rather than folded into `lib/verified.ml`, which counts the OCaml
   suites only.
 - **Production smoke suite** after every deploy: the dashboard renders,

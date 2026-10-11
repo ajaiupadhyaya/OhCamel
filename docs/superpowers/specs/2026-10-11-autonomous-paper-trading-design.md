@@ -334,6 +334,8 @@ literal string a test pins in the built page.
 
 ## 5. INC-01 — the incubation pre-registration
 
+*Written: [`research/experiments/INC-01/preregistration.md`](../../../research/experiments/INC-01/preregistration.md), with its roster [`roster.yaml`](../../../research/experiments/INC-01/roster.yaml).*
+
 `research/experiments/INC-01/preregistration.md`, approved by the owner
 before the first incubated order, states in full:
 
@@ -356,6 +358,8 @@ before the first incubated order, states in full:
   reconcile — the desk is halted and the owner decides.
 
 ## 6. Intraday hypotheses — drafts for the owner
+
+*Written: [EXP-I01](../../../research/experiments/EXP-I01/preregistration.md), [EXP-I02](../../../research/experiments/EXP-I02/preregistration.md), [EXP-I03](../../../research/experiments/EXP-I03/preregistration.md), each with its `config.yaml`.*
 
 Three pre-registrations in `research/experiments/EXP-I0x/`, drafted from the
 literature in EXP-A01's form (paper, hypothesis, rationale, data, assumptions,

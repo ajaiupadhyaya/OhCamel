@@ -1,0 +1,148 @@
+# INC-01's roster: the one list every producer reads (signals.daily, signals.overlay,
+# desk.report). It agrees row for row with the signals block of book.example.sexp --
+# slug, capital_fraction and symbols -- and research/tests/test_experiments_present.py
+# holds the two to it. Fractions sum to incubation_cap exactly: two EXP-A01 rows at
+# 0.0375 and 21 farm cells at 0.025 = 0.600.
+#
+# Not yet here, and added by a later change to both this file and the book, with every
+# fraction recomputed so the sum stays incubation_cap: each intraday strategy
+# (exp_i01..i03) after the owner approves its pre-registration and its battery has
+# run (plan Task 23), and EXP-Q01's monthly long-short quintile portfolio
+# (q01_ls_quintile, plan Task 34).
+version: 1
+incubation_cap: 0.60
+canary_cap: 0.10
+vol_target: 0.10
+strategies:
+  - slug: exp_a01_spy
+    producer: research-service        # exists; unchanged
+    capital_fraction: 0.0375
+  - slug: exp_a01_tlt
+    producer: research-service        # exists; unchanged
+    capital_fraction: 0.0375
+  - slug: farm_tsmom_us_equity_indices
+    producer: signals.daily
+    strategy: tsmom
+    universe: us_equity_indices
+    symbols: [SPY, QQQ, DIA, IWM, MDY]
+    capital_fraction: 0.025
+  - slug: farm_tsmom_rates
+    producer: signals.daily
+    strategy: tsmom
+    universe: rates
+    symbols: [BIL, SHY, IEI, IEF, TLT, TIP]
+    capital_fraction: 0.025
+  - slug: farm_tsmom_commodities
+    producer: signals.daily
+    strategy: tsmom
+    universe: commodities
+    symbols: [GLD, SLV, USO, UNG, DBA, DBC]
+    capital_fraction: 0.025
+  - slug: farm_tsmom_international
+    producer: signals.daily
+    strategy: tsmom
+    universe: international
+    symbols: [EFA, EEM, VGK, EWJ, FXI, INDA]
+    capital_fraction: 0.025
+  - slug: farm_tsmom_credit
+    producer: signals.daily
+    strategy: tsmom
+    universe: credit
+    symbols: [LQD, HYG, EMB]
+    capital_fraction: 0.025
+  - slug: farm_xsmom_sectors
+    producer: signals.daily
+    strategy: xsmom
+    universe: sectors
+    symbols: [XLK, XLF, XLE, XLV, XLI, XLY, XLP, XLU, XLB, XLRE, XLC]
+    capital_fraction: 0.025
+  - slug: farm_xsmom_international
+    producer: signals.daily
+    strategy: xsmom
+    universe: international
+    symbols: [EFA, EEM, VGK, EWJ, FXI, INDA]
+    capital_fraction: 0.025
+  - slug: farm_dual_momentum_us_equity_indices
+    producer: signals.daily
+    strategy: dual_momentum
+    universe: us_equity_indices
+    symbols: [SPY, QQQ, DIA, IWM, MDY]
+    capital_fraction: 0.025
+  - slug: farm_dual_momentum_international
+    producer: signals.daily
+    strategy: dual_momentum
+    universe: international
+    symbols: [EFA, EEM, VGK, EWJ, FXI, INDA]
+    capital_fraction: 0.025
+  - slug: farm_sma_trend_us_equity_indices
+    producer: signals.daily
+    strategy: sma_trend
+    universe: us_equity_indices
+    symbols: [SPY, QQQ, DIA, IWM, MDY]
+    capital_fraction: 0.025
+  - slug: farm_sma_trend_commodities
+    producer: signals.daily
+    strategy: sma_trend
+    universe: commodities
+    symbols: [GLD, SLV, USO, UNG, DBA, DBC]
+    capital_fraction: 0.025
+  - slug: farm_sma_trend_international
+    producer: signals.daily
+    strategy: sma_trend
+    universe: international
+    symbols: [EFA, EEM, VGK, EWJ, FXI, INDA]
+    capital_fraction: 0.025
+  - slug: farm_vol_managed_us_equity_indices
+    producer: signals.daily
+    strategy: vol_managed
+    universe: us_equity_indices
+    symbols: [SPY, QQQ, DIA, IWM, MDY]
+    capital_fraction: 0.025
+  - slug: farm_risk_parity_rates
+    producer: signals.daily
+    strategy: risk_parity
+    universe: rates
+    symbols: [BIL, SHY, IEI, IEF, TLT, TIP]
+    capital_fraction: 0.025
+  - slug: farm_risk_parity_credit
+    producer: signals.daily
+    strategy: risk_parity
+    universe: credit
+    symbols: [LQD, HYG, EMB]
+    capital_fraction: 0.025
+  - slug: farm_risk_parity_commodities
+    producer: signals.daily
+    strategy: risk_parity
+    universe: commodities
+    symbols: [GLD, SLV, USO, UNG, DBA, DBC]
+    capital_fraction: 0.025
+  - slug: farm_risk_parity_us_equity_indices
+    producer: signals.daily
+    strategy: risk_parity
+    universe: us_equity_indices
+    symbols: [SPY, QQQ, DIA, IWM, MDY]
+    capital_fraction: 0.025
+  - slug: farm_low_beta_sectors
+    producer: signals.daily
+    strategy: low_beta
+    universe: sectors
+    symbols: [XLK, XLF, XLE, XLV, XLI, XLY, XLP, XLU, XLB, XLRE, XLC]
+    capital_fraction: 0.025
+  - slug: farm_st_reversal_sectors
+    producer: signals.daily
+    strategy: st_reversal
+    universe: sectors
+    symbols: [XLK, XLF, XLE, XLV, XLI, XLY, XLP, XLU, XLB, XLRE, XLC]
+    capital_fraction: 0.025
+  - slug: farm_pairs_distance_sectors
+    producer: signals.daily
+    strategy: pairs_distance
+    universe: sectors
+    symbols: [XLK, XLF, XLE, XLV, XLI, XLY, XLP, XLU, XLB, XLRE, XLC]
+    capital_fraction: 0.025
+  - slug: farm_pairs_coint_sectors
+    producer: signals.daily
+    strategy: pairs_coint
+    universe: sectors
+    symbols: [XLK, XLF, XLE, XLV, XLI, XLY, XLP, XLU, XLB, XLRE, XLC]
+    capital_fraction: 0.025
