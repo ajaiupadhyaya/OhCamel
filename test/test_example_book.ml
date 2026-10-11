@@ -457,8 +457,8 @@ let test_sixty_four_names_load_sixty_five_refuse () =
   Alcotest.(check bool) "naming the 65 names" true (names "65 names" errors);
   Alcotest.(check bool) "and the cap of 64" true (names "at most 64" errors);
   (* run_live applies the same cap before it connects, and the live case in
-     the CLI section observes both halves of it (31 refused with its sentence,
-     30 let through to the fuse). What that cannot show is the NUMBER as the
+     the CLI section observes both halves of it (65 refused with its sentence,
+     64 let through to the fuse). What that cannot show is the NUMBER as the
      engine spells it -- the sentence prints the constant whatever the
      comparison reads -- so the one line that carries the comparison is held
      here as text, the way the shared-minimum case reads lib/factor_model.ml.
@@ -929,6 +929,106 @@ let test_every_roster_symbol_is_a_position () =
              List.filter s.S.Strategy.symbols ~f:(fun sym ->
                  not (List.mem positions sym ~equal:String.equal))))
 
+(* Every refusal the new fields add, one row each, and the accepting row at
+   each boundary. A row is (what the book says, the errors Book.errors gives
+   back): [] is accepted, and a refusal is exactly its one sentence, so a
+   flipped comparison, a dropped arm or a second sentence fails the row. The
+   nan rows pin the positive form of every float comparison: sexp reads "nan"
+   as Float.nan, and a bound written "x < lo || x > hi" would let it through.
+   Each row is parsed rather than written to a file -- Book.errors is what
+   Config.check lists. *)
+let errors_of contents =
+  match Book.parse contents with
+  | Ok book -> Book.errors book
+  | Error exn -> Alcotest.failf "%s did not parse: %s" contents (Exn.to_string exn)
+
+let check_rows rows ~book_of =
+  List.iter rows ~f:(fun (field, expected) ->
+      Alcotest.(check (list string)) field expected (errors_of (book_of field)))
+
+let test_every_new_desk_refusal_has_its_row () =
+  let refused field why got = [ sprintf "desk: %s %s, got %s" field why got ] in
+  check_rows
+  (* No signals block, so the desk's own sentence is the only one: a
+       signals block would also be judged against an out-of-range cap. *)
+    ~book_of:(fun field -> book ~limits:"" ~extra:(sprintf "(desk (%s))" field))
+    [
+      ("(incubation_cap 0.0)", []);
+      ("(incubation_cap 1.0)", []);
+      ("(incubation_cap -0.1)", refused "incubation_cap" "must be in [0, 1]" "-0.1");
+      ("(incubation_cap 1.5)", refused "incubation_cap" "must be in [0, 1]" "1.5");
+      ("(incubation_cap nan)", refused "incubation_cap" "must be in [0, 1]" "nan");
+      ("(vol_target 1.0)", []);
+      ("(vol_target 0.0)", refused "vol_target" "must be in (0, 1]" "0");
+      ("(vol_target 1.5)", refused "vol_target" "must be in (0, 1]" "1.5");
+      ("(vol_target nan)", refused "vol_target" "must be in (0, 1]" "nan");
+      ("(overlay_max_age_minutes 1)", []);
+      ( "(overlay_max_age_minutes 0)",
+        refused "overlay_max_age_minutes" "must be at least 1" "0" );
+      ("(overlay_fallback 0.0)", []);
+      ("(overlay_fallback 1.0)", []);
+      ("(overlay_fallback -0.1)", refused "overlay_fallback" "must be in [0, 1]" "-0.1");
+      ("(overlay_fallback 1.5)", refused "overlay_fallback" "must be in [0, 1]" "1.5");
+      ("(overlay_fallback nan)", refused "overlay_fallback" "must be in [0, 1]" "nan");
+      ("(overlay_band 0.0)", []);
+      ("(overlay_band 1.0)", []);
+      ("(overlay_band -0.1)", refused "overlay_band" "must be in [0, 1]" "-0.1");
+      ("(overlay_band 1.5)", refused "overlay_band" "must be in [0, 1]" "1.5");
+      ("(overlay_band nan)", refused "overlay_band" "must be in [0, 1]" "nan");
+      (* The default collar is 0.05, so the slip's bound is 500 bps. *)
+      ("(intraday_slip_bps 0.0)", []);
+      ("(intraday_slip_bps 499.0)", []);
+      ( "(intraday_slip_bps 500.0)",
+        refused "intraday_slip_bps" "must be in [0, price_collar x 1e4)" "500" );
+      ( "(intraday_slip_bps -1.0)",
+        refused "intraday_slip_bps" "must be in [0, price_collar x 1e4)" "-1" );
+      ( "(intraday_slip_bps nan)",
+        refused "intraday_slip_bps" "must be in [0, price_collar x 1e4)" "nan" );
+      ("(min_leg_notional 0.0)", []);
+      ("(min_leg_notional -1.0)", refused "min_leg_notional" "may not be negative" "-1");
+      ("(min_leg_notional nan)", refused "min_leg_notional" "may not be negative" "nan");
+      ("(wave_timeout_s 0.001)", []);
+      ("(wave_timeout_s 0.0)", refused "wave_timeout_s" "must be positive" "0");
+      ("(wave_timeout_s -1.0)", refused "wave_timeout_s" "must be positive" "-1");
+      ("(wave_timeout_s nan)", refused "wave_timeout_s" "must be positive" "nan");
+      ("(flatten_at 09:30)", []);
+      ("(flatten_at 15:59)", []);
+      ( "(flatten_at 09:29)",
+        [
+          "desk: flatten_at must be inside the regular session [09:30, 16:00), got 09:29";
+        ] );
+      ( "(flatten_at 16:00)",
+        [
+          "desk: flatten_at must be inside the regular session [09:30, 16:00), got 16:00";
+        ] );
+      ("(flatten_at 9:30)", [ "desk: flatten_at must be HH:MM, got \"9:30\"" ]);
+      ("(stream (SPY AAPL))", []);
+      ( "(stream (SPY GOOG))",
+        [ "desk: stream names GOOG, which is not in the book's universe" ] );
+    ]
+
+let test_every_new_strategy_refusal_has_its_row () =
+  let refused why = [ "signals: s_a: " ^ why ] in
+  check_rows
+    ~book_of:(fun field ->
+      tiered ~desk:""
+        ~strategies:
+          (sprintf "((name s_a) (symbols (SPY)) (capital_fraction 0.1) %s)" field))
+    [
+      ("(max_age_minutes 1)", []);
+      ("(max_age_minutes 0)", refused "max_age_minutes must be at least 1, got 0");
+      ("(stop ((drawdown 1.0) (sessions 1)))", []);
+      ( "(stop ((drawdown 0.0) (sessions 250)))",
+        refused "stop.drawdown must be in (0, 1], got 0" );
+      ( "(stop ((drawdown nan) (sessions 250)))",
+        refused "stop.drawdown must be in (0, 1], got nan" );
+      ( "(stop ((drawdown 0.15) (sessions 0)))",
+        refused "stop.sessions must be at least 1, got 0" );
+      ("(stop ((drawdown 0.15) (sessions 250))) (reinstated 2026-11-02)", []);
+      ( "(reinstated 2026-11-02)",
+        refused "reinstated is 2026-11-02 but the strategy has no stop" );
+    ]
+
 let suite =
   ( "example book",
     [
@@ -990,4 +1090,8 @@ let suite =
         test_roster_fractions_sum_to_the_cap;
       Alcotest.test_case "every roster symbol is a position" `Quick
         test_every_roster_symbol_is_a_position;
+      Alcotest.test_case "every new desk refusal has its row" `Quick
+        test_every_new_desk_refusal_has_its_row;
+      Alcotest.test_case "every new strategy refusal has its row" `Quick
+        test_every_new_strategy_refusal_has_its_row;
     ] )

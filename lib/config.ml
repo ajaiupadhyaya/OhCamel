@@ -307,13 +307,20 @@ module Book = struct
               fail "incubation_cap" "must be in [0, 1]" t.incubation_cap
             else if not Float.(t.vol_target > 0.0 && t.vol_target <= 1.0) then
               fail "vol_target" "must be in (0, 1]" t.vol_target
+            else if t.overlay_max_age_minutes < 1 then
+              fail "overlay_max_age_minutes" "must be at least 1"
+                (Float.of_int t.overlay_max_age_minutes)
             else if not (unit_interval t.overlay_fallback) then
               fail "overlay_fallback" "must be in [0, 1]" t.overlay_fallback
             else if not (unit_interval t.overlay_band) then
               fail "overlay_band" "must be in [0, 1]" t.overlay_band
-            else if not Float.(t.intraday_slip_bps < collar_bps) then
-              fail "intraday_slip_bps"
-                (sprintf "must be below price_collar x 1e4 (%g)" collar_bps)
+            else if
+              (* At least 0, because a negative slip prices the leg on the
+                 near side of the mark; below the collar, because the
+                 collar rule would refuse the leg. *)
+              not Float.(t.intraday_slip_bps >= 0.0 && t.intraday_slip_bps < collar_bps)
+            then
+              fail "intraday_slip_bps" "must be in [0, price_collar x 1e4)"
                 t.intraday_slip_bps
             else if not Float.(t.min_leg_notional >= 0.0) then
               fail "min_leg_notional" "may not be negative" t.min_leg_notional
