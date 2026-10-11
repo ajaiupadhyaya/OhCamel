@@ -12,8 +12,9 @@ strategies:                 # one per name, as EXP-A01
   - {slug: exp_i01_gld, symbol: GLD}
 bars: minute                # warehouse bars_minute, Alpaca IEX, regular session only
 session_series: true        # one net return per session
-# The start is provisional: the minute backfill records each name's first bar, and this
-# start is fixed to it here before the battery runs (pre-registration, Data).
+# The selection window starts 2016-06-01, or at the first full session after the name's
+# first minute bar plus the rule's warm-up if that is later; the backfill records the first
+# bar and the later of the two is written here before the battery runs (pre-registration, Data).
 selection_window: {start: "2016-06-01", end: "2023-12-31"}
 holdout_window: {start: "2024-01-01", end: "2026-09-30"}   # evaluated once
 regimes: research           # battery/gates.py REGIMES: 2018 Q4, 2020 COVID, 2022, 2023, 2024
@@ -28,5 +29,5 @@ rule:
   first_window: ["09:30", "10:00"]
   confirm_window: ["15:00", "15:30"]
   entry: "15:30"            # decided on the bar closing 15:30, filled at the next bar's open
-  exit: close               # the close of the session's last minute bar
+  exit: close               # market-on-close, sent at the 15:45 mark
 grid: {condition: [none, last_half_hour_agrees]}   # 2 configurations

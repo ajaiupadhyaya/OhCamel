@@ -1,11 +1,10 @@
 # EXP-I01 — Does the first half-hour's return predict the last half-hour's on five liquid ETFs, after friction?
 
-**Status: APPROVED 2026-10-11, by the owner's approval of the design's §6,
-recorded below.** Drafted by the agent 2026-10-11 for the owner. Under
-`docs/CHARTER.md` the owner owns hypotheses and kill decisions; the battery
-does not run, and no result is published, before that approval. Where this
-draft fixes something §6 left open, it says so in place ("not fixed by
-§6"); those points are the owner's to confirm.
+**Status: APPROVED 2026-10-11 for the design §5/§6 as written; the points
+marked *not fixed by §6* below await the owner's confirmation, and the
+battery does not run until it is recorded here.** Drafted by the agent
+2026-10-11 for the owner. Under `docs/CHARTER.md` the owner owns hypotheses
+and kill decisions; no result is published before that approval.
 
 **Paper.** Gao, L., Han, Y., Li, S. Z. & Zhou, G. (2018), "Market intraday
 momentum", *Journal of Financial Economics* 129(2). The finding: the S&P 500
@@ -46,8 +45,10 @@ rather than found later.
 
 **Data, stated exactly.** Alpaca IEX 1-minute bars, regular session only,
 from the earliest minute bar Alpaca serves for each name (expected 2016-01)
-through 2026-09-30, warehouse table `bars_minute`. The backfill records the
-actual first bar, and the selection window's start is fixed to it in
+through 2026-09-30, warehouse table `bars_minute`. The selection window
+starts 2016-06-01, or at the first full session after the name's first
+minute bar plus the rule's warm-up if that is later (the rule needs no warm-up beyond the session itself); the
+backfill records the first bar and the later of the two is written into
 `config.yaml` before the battery runs. Two facts bear on the result:
 - **IEX is one venue,** a few percent of consolidated volume. Its minute
   prices are noisier than the tape's, and a minute with no IEX trade has no
@@ -57,7 +58,7 @@ actual first bar, and the selection window's start is fixed to it in
   rule never holds overnight.
 
 **Assumptions.**
-- Selection window 2016-06-01 → 2023-12-31 (its start fixed as above);
+- Selection window 2016-06-01 → 2023-12-31 (its start as stated under Data);
   holdout 2024-01-01 → 2026-09-30, evaluated once, with the configuration
   selected before it.
 - One strategy per name (`exp_i01_spy`, `_qqq`, `_iwm`, `_tlt`, `_gld`), as
@@ -68,7 +69,7 @@ actual first bar, and the selection window's start is fixed to it in
   at 15:30 and filled at the next minute bar's open; it is closed at the
   close of the session's last minute bar. A zero first half-hour return is
   flat. An early-close session is flat (its 15:30 does not exist) and counts
-  as a session with return 0.
+  as a session with return 0; not fixed by §6.
 - The battery's unit is the session: one net return per session on the
   allocated capital, annualised over 252 sessions.
 - Friction model v1.0.0, `research/config/friction_v1.yaml`, per fill, as
@@ -93,12 +94,13 @@ Anything outside this grid is a new experiment, not a tweak.
 most recent and the most likely to show it. The expected return per trade is
 a few basis points against two fills a day, so the 15 and 30 bps cost levels
 may erase it by arithmetic alone. TLT and GLD may show nothing, since the
-hedging mechanism is an equity-index one. Holding to the close needs a fill
-near 16:00; the desk's `flatten_at` is 15:50 and the intraday producer zeroes
-`horizon: close` targets at 15:45, so a live strategy holds about 15 minutes
-of the 30 this experiment tests, and the live record would measure a
-different holding period unless the owner moves those times for it. Three
-regimes negative would refute it.
+hedging mechanism is an equity-index one. Live, the strategy enters on the
+producer's 15:30 document and exits by a market-on-close order (Alpaca
+`cls`) sent when the producer's 15:45 zero-target document arrives; the
+desk's 15:50 limit flatten is only a backstop when no `cls` order rests. So
+it is traded as tested, to the close; a 15:30 document that reaches the desk
+late shortens the holding, and the live record shows the actual entry
+times. Three regimes negative would refute it.
 
 **Kill criteria.** Any charter gate failing is a fail: holdout positive;
 DSR ≥ 0.30 over every configuration × fold; PSR ≥ 0.70; the stationary-block

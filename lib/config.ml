@@ -431,8 +431,7 @@ module Book = struct
        "f <= 0 || f > 1" would let it through. The live sum carries R7's own
        1e-9, so that fractions like 0.1 x 10 are not refused for the last bit
        of a float, and so do the incubation sum and the two tiers' together. *)
-    let validate ~(universe : string list) ~(incubation_cap : float) (t : t) :
-        unit Or_error.t =
+    let validate ~(universe : string list) (t : t) : unit Or_error.t =
       let fail name fmt =
         Printf.ksprintf (fun s -> Or_error.errorf "signals: %s: %s" name s) fmt
       in
@@ -503,17 +502,39 @@ module Book = struct
                   "signals: the live strategies' capital_fraction values sum to %g, more \
                    than 1"
                   live
-              else if not Float.(incubation <= incubation_cap +. 1e-9) then
+              else if not Float.(incubation <= 1.0 +. 1e-9) then
                 Or_error.errorf
                   "signals: the incubation strategies' capital_fraction values sum to \
-                   %g, more than incubation_cap %g"
-                  incubation incubation_cap
+                   %g, more than 1"
+                  incubation
               else if not Float.(live +. incubation <= 1.0 +. 1e-9) then
                 Or_error.errorf
                   "signals: the live and incubation strategies' capital_fraction values \
                    sum to %g, more than 1"
                   (live +. incubation)
               else Ok ())
+
+    (* [Desk_spec.incubation_cap] is a proportional ceiling, not a bound the
+       fractions must fit under: each incubation strategy's effective fraction
+       is capital_fraction x min(1, incubation_cap / the incubation fractions'
+       sum), so the canary is (incubation_cap 0.10) over the same roster and
+       raising it is one edit. A live or advisory strategy's fraction is its
+       own, unchanged. Pure: the desk sizes with it, check-book prints it. *)
+    let effective_fraction ~(incubation_cap : float) (t : t) (s : Strategy.t) : float =
+      match s.Strategy.sizing with
+      | Advisory | Live -> s.Strategy.capital_fraction
+      | Incubation ->
+          let sum =
+            List.sum
+              (module Float)
+              t.strategies
+              ~f:(fun x ->
+                if equal_sizing x.Strategy.sizing Incubation then
+                  x.Strategy.capital_fraction
+                else 0.0)
+          in
+          if Float.(sum <= 0.0) then 0.0
+          else s.Strategy.capital_fraction *. Float.min 1.0 (incubation_cap /. sum)
   end
 
   module Limit_spec = struct
@@ -713,10 +734,7 @@ module Book = struct
       | None -> []
       | Some signals ->
           let whole strategies =
-            returned
-              (Signals_spec.validate ~universe
-                 ~incubation_cap:t.desk.Desk_spec.incubation_cap
-                 { Signals_spec.strategies })
+            returned (Signals_spec.validate ~universe { Signals_spec.strategies })
           in
           let verdicts =
             List.map signals.Signals_spec.strategies ~f:(fun s -> (s, whole [ s ]))
@@ -739,9 +757,7 @@ module Book = struct
     let%map () =
       match book.signals with
       | None -> Ok ()
-      | Some signals ->
-          Signals_spec.validate ~universe
-            ~incubation_cap:book.desk.Desk_spec.incubation_cap signals
+      | Some signals -> Signals_spec.validate ~universe signals
     in
     book
 
@@ -786,6 +802,10 @@ module Summary = struct
       max_age : int;
       sizing : string;
       capital_fraction : float;
+      (* What the desk sizes with at the book's incubation_cap
+         (Signals_spec.effective_fraction): the fraction itself unless the
+         strategy is incubation and the cap scales the roster down. *)
+      effective_fraction : float;
     }
     [@@deriving sexp_of, compare, equal]
   end
@@ -848,6 +868,9 @@ module Summary = struct
                 sizing =
                   Book.Signals_spec.sizing_to_string s.Book.Signals_spec.Strategy.sizing;
                 capital_fraction = s.Book.Signals_spec.Strategy.capital_fraction;
+                effective_fraction =
+                  Book.Signals_spec.effective_fraction
+                    ~incubation_cap:book.Book.desk.Book.Desk_spec.incubation_cap signals s;
               }))
     in
     let desk = book.Book.desk in
@@ -920,8 +943,9 @@ module Summary = struct
            "strategies (none: the desk registers none and reads no signal file)"
          else sprintf "strategies (%d)" (List.length t.strategies))
     @ List.map t.strategies ~f:(fun s ->
-        sprintf "  %-16s %-10s max_age %d  capital_fraction %g  [%s]" s.Strategy_line.name
-          s.Strategy_line.sizing s.Strategy_line.max_age s.Strategy_line.capital_fraction
+        sprintf "  %-16s %-10s max_age %d  capital_fraction %g  effective %g  [%s]"
+          s.Strategy_line.name s.Strategy_line.sizing s.Strategy_line.max_age
+          s.Strategy_line.capital_fraction s.Strategy_line.effective_fraction
           (String.concat ~sep:" " s.Strategy_line.symbols))
 end
 

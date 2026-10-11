@@ -9,8 +9,9 @@ strategies:                 # one strategy over the five names
 bars: minute                # warehouse bars_minute, Alpaca IEX, regular session only,
 resample: 30Min             # aggregated to 30-minute bars inside each session
 session_series: true        # one net return per session
-# The start is provisional: the minute backfill records each name's first bar, and this
-# start is fixed to it here before the battery runs (pre-registration, Data).
+# The selection window starts 2016-06-01, or at the first full session after the name's
+# first minute bar plus the rule's warm-up if that is later; the backfill records the first
+# bar and the later of the two is written here before the battery runs (pre-registration, Data).
 selection_window: {start: "2016-06-01", end: "2023-12-31"}
 holdout_window: {start: "2024-01-01", end: "2026-09-30"}   # evaluated once
 regimes: research           # battery/gates.py REGIMES: 2018 Q4, 2020 COVID, 2022, 2023, 2024

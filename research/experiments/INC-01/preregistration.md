@@ -1,11 +1,11 @@
 # INC-01 — Paper incubation of the repository's strategies, scored live
 
-**Status: APPROVED 2026-10-11, by the owner's approval of the design's §5,
-recorded below. Two points under *Capital* go beyond what §5 fixed (the
-split is not exactly equal; the canary scales every fraction) and are the
-owner's to confirm.** Drafted by the agent 2026-10-11 for the owner. Under `docs/CHARTER.md` the owner owns hypotheses and kill decisions;
-no strategy is sized as incubation, and no incubation record is published,
-until the owner records approval at the bottom of this file. It implements
+**Status: APPROVED 2026-10-11 for the design §5/§6 as written; the points
+marked *not fixed by §5* below await the owner's confirmation, and nothing is
+sized until it is recorded here.** Drafted by the agent 2026-10-11 for the
+owner. Under `docs/CHARTER.md` the owner owns hypotheses and kill decisions;
+no incubation record is published until the owner's approval is recorded at
+the bottom of this file. It implements
 §5 of `docs/superpowers/specs/2026-10-11-autonomous-paper-trading-design.md`.
 
 **This is not a hypothesis test with a pass mark.** No strategy below passes
@@ -52,8 +52,8 @@ universes are `quant/src/ohcamel_quant/universes.json`'s groups.
 
 | Slug | Producer | Rule | Universe | Fraction |
 |---|---|---|---|---|
-| `exp_a01_spy` | research service | EXP-A01: price above its N-day SMA (Faber 2007), long or flat | SPY | 0.0375 |
-| `exp_a01_tlt` | research service | EXP-A01: as above | TLT | 0.0375 |
+| `exp_a01_spy` | research service | EXP-A01: price above its N-day SMA (Faber 2007), long or flat | SPY | 0.025 |
+| `exp_a01_tlt` | research service | EXP-A01: as above | TLT | 0.025 |
 | `farm_tsmom_us_equity_indices` | `signals.daily` | `tsmom` (Moskowitz, Ooi & Pedersen 2012) | us_equity_indices: SPY QQQ DIA IWM MDY | 0.025 |
 | `farm_tsmom_rates` | `signals.daily` | `tsmom` | rates: BIL SHY IEI IEF TLT TIP | 0.025 |
 | `farm_tsmom_commodities` | `signals.daily` | `tsmom` | commodities: GLD SLV USO UNG DBA DBC | 0.025 |
@@ -75,13 +75,13 @@ universes are `quant/src/ohcamel_quant/universes.json`'s groups.
 | `farm_st_reversal_sectors` | `signals.daily` | `st_reversal` (Lehmann 1990) | sectors | 0.025 |
 | `farm_pairs_distance_sectors` | `signals.daily` | `pairs_distance` (Gatev, Goetzmann & Rouwenhorst 2006) | sectors | 0.025 |
 | `farm_pairs_coint_sectors` | `signals.daily` | `pairs_coint` (Engle & Granger 1987) | sectors | 0.025 |
-| `q01_ls_quintile` | `signals.q01` | EXP-Q01's ranker: long the top quintile, short the bottom, equal weight, monthly | EXP-Q01's 34 ETFs | not yet on the roster (Stage 4) |
+| `q01_ls_quintile` | `signals.q01` | EXP-Q01's ranker: long the top quintile, short the bottom, equal weight, monthly | EXP-Q01's 34 ETFs | 0.025, held; joins in Stage 4 |
 
-The first 23 rows sum to 0.600. The last row joins the roster, and
-`roster.yaml` and the book, only in Stage 4. Each intraday strategy of
-EXP-I01–I03 joins only after the owner approves its pre-registration and its
-battery has run, and at the owner's word. Every change to the roster
-recomputes the fractions so that they sum to `incubation_cap`, and is
+The first 23 rows sum to 23 × 0.025 = 0.575. The last row joins the roster,
+and `roster.yaml` and the book, only in Stage 4, at the 0.025 held for it,
+making 0.600. Each intraday strategy of EXP-I01–I03 joins only after the
+owner approves its pre-registration and its battery has run, and at the
+owner's word. Every change to the roster keeps the fractions equal, and is
 recorded here, dated, before the first session it applies to.
 
 The research service keeps emitting EXP-A01's two signals unchanged: the same
@@ -90,17 +90,18 @@ the desk sizes them, not what they say.
 
 ## Capital
 
-- `incubation_cap` **0.60** of equity: the incubated fractions together may
-  size at most this.
-- **The split.** Design §5 says equal fractions across the roster. The
-  committed book does not split exactly equally: the two EXP-A01 strategies
-  have 0.0375 each and the 21 farm cells 0.025 each (0.075 + 0.525 = 0.600),
-  because 0.60 / 23 is not a round number. This is stated so the owner
-  approves the split that will trade, not the one the design described.
-- **The canary.** The first three sessions run at `canary_cap` **0.10**. The
-  book's fractions must then sum to at most 0.10, so each is the roster's
-  fraction × 0.10 / 0.60 (EXP-A01 0.00625, each farm cell 0.0041667). The
-  owner raises the cap to 0.60 after reading the three sessions' record.
+- **Equal fractions of 0.025.** Every roster strategy has
+  `capital_fraction` 0.025: 23 × 0.025 = 0.575, and the remaining 0.025 is
+  held for EXP-Q01's portfolio, which joins at 0.025 in Stage 4 (0.600).
+- `incubation_cap` **0.60** of equity, **a proportional ceiling** (not fixed
+  by §5): each incubation strategy's effective fraction is capital_fraction
+  × min(1, incubation_cap / Σ incubation capital_fraction). At 0.60 over a
+  sum of 0.575 it scales nothing, and each strategy sizes 0.025.
+- **The canary.** The first three sessions run at `canary_cap` **0.10**,
+  booked as `(incubation_cap 0.10)` over the same roster: each strategy's
+  effective fraction is 0.025 × 0.10 / 0.575 = 0.0043478, and the 23
+  together size 0.10. Raising it is one edit; the owner raises it to 0.60
+  after reading the three sessions' record.
 - `vol_target` **0.10** annualised, the overlay's target (below).
 - **Gross scaling.** A strategy whose Σ|w| exceeds 1 is scaled to Σ|w| = 1,
   and the document records `gross_scaled: true` among its parameters (and
@@ -132,7 +133,7 @@ One number, `exposure_scale` in [0, 1], written by `signals.overlay` at
   volatility; Ledoit–Wolf when no league artifact exists. Where the
   volatility league (P2) has a current best model for a name (by QLIKE), its
   forecast variance replaces that name's diagonal entry; EWMA(0.94) when
-  absent.
+  absent. How P2 and P3 combine is not fixed by §5.
 - The document records every input: the models' names, the artifact ids and
   `as_of`, the newest bar read.
 
@@ -170,12 +171,16 @@ for the reader; neither is multiplied in.
   collar.
 - **Leg floor:** a leg below `min_leg_notional` **$200** is dropped, and the
   drop is journaled.
-- **Waves:** a rebalance of more than 6 legs runs in waves of at most 6.
-  Wave 1 is every shrinking leg; later waves are growing legs by notional,
-  largest first. Each wave is gated against the real book as it then is. The
-  desk waits for each wave's legs to fill or cancel, up to `wave_timeout_s`
+- **Waves:** a rebalance of more than 6 legs runs in waves. Wave 1 is every
+  shrinking leg, gated as a set; later waves are growing legs, at most 6
+  each, by notional descending. Each wave is gated against the real book as
+  it then is. The desk waits for each wave's legs to fill or cancel, up to `wave_timeout_s`
   **180** seconds, then cancels what is left; an unfilled strategy is
   re-sized on the next pass.
+- **Exits at the close** (not fixed by §5): a strategy with `horizon close`
+  exits by a market-on-close order (Alpaca `cls`) sent when the producer's
+  15:45 zero-target document arrives; the 15:50 `Day` limit flatten is only
+  a backstop when no `cls` order rests.
 - Every order passes the desk's rules, then the book's limits on a fork of
   the live graph, then the journal, then the wire, as every order does. The
   kill switch halts and never liquidates.

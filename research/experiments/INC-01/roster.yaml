@@ -1,14 +1,17 @@
 # INC-01's roster: the one list every producer reads (signals.daily, signals.overlay,
 # desk.report). It agrees row for row with the signals block of book.example.sexp --
-# slug, capital_fraction and symbols -- and research/tests/test_experiments_present.py
-# holds the two to it. Fractions sum to incubation_cap exactly: two EXP-A01 rows at
-# 0.0375 and 21 farm cells at 0.025 = 0.600.
+# slug, capital_fraction and symbols -- and with its incubation_cap and vol_target;
+# research/tests/test_experiments_present.py holds the two to it.
 #
-# Not yet here, and added by a later change to both this file and the book, with every
-# fraction recomputed so the sum stays incubation_cap: each intraday strategy
-# (exp_i01..i03) after the owner approves its pre-registration and its battery has
-# run (plan Task 23), and EXP-Q01's monthly long-short quintile portfolio
-# (q01_ls_quintile, plan Task 34).
+# Equal fractions: 23 x 0.025 = 0.575, under incubation_cap 0.60; the other 0.025 is
+# EXP-Q01's long-short quintile portfolio (q01_ls_quintile) when it joins (plan Task 34),
+# making 0.600. incubation_cap is a proportional ceiling: each strategy's effective
+# fraction is capital_fraction x min(1, incubation_cap / the fractions' sum), so the
+# canary is incubation_cap 0.10 over these same rows.
+#
+# Not yet here, and added by a later change to both this file and the book: each
+# intraday strategy (exp_i01..i03) after the owner approves its pre-registration and
+# its battery has run (plan Task 23).
 version: 1
 incubation_cap: 0.60
 canary_cap: 0.10
@@ -16,10 +19,10 @@ vol_target: 0.10
 strategies:
   - slug: exp_a01_spy
     producer: research-service        # exists; unchanged
-    capital_fraction: 0.0375
+    capital_fraction: 0.025
   - slug: exp_a01_tlt
     producer: research-service        # exists; unchanged
-    capital_fraction: 0.0375
+    capital_fraction: 0.025
   - slug: farm_tsmom_us_equity_indices
     producer: signals.daily
     strategy: tsmom

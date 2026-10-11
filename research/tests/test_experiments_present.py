@@ -1,9 +1,10 @@
 """The pre-registrations of the autonomous-paper-trading plan exist in the form
 the charter needs before anything trades or any battery runs: each directory
 holds a ``preregistration.md`` whose last section is the owner's ``## Approval``,
-and INC-01's roster -- the one list every producer reads -- adds up to the
-book's ``incubation_cap`` and names exactly the strategies the example book
-registers, with the same fractions and symbols."""
+and INC-01's roster -- the one list every producer reads -- keeps its equal
+fractions within its own ``incubation_cap``, and agrees with the example book:
+the same strategies, fractions and symbols, the same ``incubation_cap`` and
+``vol_target``."""
 
 from __future__ import annotations
 
@@ -28,11 +29,13 @@ def test_preregistration_ends_with_the_owners_approval(name: str) -> None:
     assert headings[-1] == "## Approval", f"{doc}'s last heading is {headings[-1]!r}"
 
 
-def test_roster_fractions_sum_to_the_incubation_cap() -> None:
+def test_roster_fractions_are_equal_and_within_the_incubation_cap() -> None:
+    """23 x 0.025 = 0.575 <= 0.60: equal fractions, 0.025 held for EXP-Q01."""
     roster = yaml.safe_load(ROSTER.read_text())
     fractions = [s["capital_fraction"] for s in roster["strategies"]]
-    assert all(f > 0 for f in fractions)
-    assert abs(sum(fractions) - roster["incubation_cap"]) < 1e-9
+    assert fractions == [0.025] * 23
+    assert sum(fractions) == pytest.approx(0.575, abs=1e-9)
+    assert sum(fractions) <= roster["incubation_cap"] + 1e-9
 
 
 def _book_strategies() -> dict[str, tuple[float, list[str]]]:
@@ -52,8 +55,17 @@ def _book_strategies() -> dict[str, tuple[float, list[str]]]:
     return out
 
 
+def _book_desk_value(field: str) -> float:
+    text = "\n".join(ln.split(";", 1)[0] for ln in BOOK.read_text().splitlines())
+    m = re.search(rf"\({field} ([0-9.]+)\)", text)
+    assert m, f"book.example.sexp has no ({field} ...)"
+    return float(m.group(1))
+
+
 def test_roster_agrees_with_the_example_book() -> None:
     roster = yaml.safe_load(ROSTER.read_text())
+    assert roster["incubation_cap"] == _book_desk_value("incubation_cap")
+    assert roster["vol_target"] == _book_desk_value("vol_target")
     book = _book_strategies()
     assert len(book) == 23
     ours = {s["slug"]: s for s in roster["strategies"]}

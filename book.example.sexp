@@ -164,8 +164,12 @@
  ;   spread_bps_default      the half-spread assumed when costing a fill, in
  ;                           basis points, for a name not named below.
  ;   spread_bps              per-name half-spreads, e.g. ((AAPL 2.0) (XOM 8.0)).
- ;   incubation_cap          the most of equity the incubation strategies below
- ;                           may size, together. 0, the default, sizes none.
+ ;   incubation_cap          a proportional ceiling on the incubation
+ ;                           strategies below: each one's effective fraction is
+ ;                           capital_fraction x min(1, incubation_cap / the sum
+ ;                           of their capital_fraction values). The canary is
+ ;                           (incubation_cap 0.10) and raising it is one edit.
+ ;                           0, the default, sizes none.
  ;   vol_target              the overlay's annualised volatility target. The
  ;                           overlay scales every incubation and live target.
  ;   overlay_max_age_minutes an overlay older than this is stale; the desk
@@ -187,7 +191,7 @@
  ;
  ; The values below are the engine's own defaults, written out so that turning
  ; the desk on is one word rather than a guess. Two are not: incubation_cap,
- ; which the roster below fills, and stream, which names five of its names.
+ ; which sizes the roster below, and stream, which names five of its names.
  (desk
   ((trading disabled)
    (max_order_notional 25000.0)
@@ -236,8 +240,9 @@
  ;                     incubation, below, whatever its validation says.
  ;   capital_fraction  the share of equity the strategy's weights apply to, in
  ;                     (0, 1]. The live strategies' fractions may sum to at
- ;                     most 1, the incubation ones to at most the desk's
- ;                     incubation_cap, and the two together to at most 1.
+ ;                     most 1, the incubation ones to at most 1, and the two
+ ;                     together to at most 1. The desk's incubation_cap then
+ ;                     scales the incubation ones down in proportion.
  ;   cadence           daily | intraday: how often its documents arrive.
  ;   adjust            intraday | open: whether an overlay move re-sizes it
  ;                     during the session or at the next open.
@@ -250,23 +255,24 @@
  ;   reinstated        a date the owner writes after a stop to resume it.
  ;
  ; Incubation is the charter's paper tier (docs/CHARTER.md). An incubation
- ; strategy is sized on the paper venue whatever its validation status, inside
- ; incubation_cap, and every order, page and report it touches says so. Its
+ ; strategy is sized on the paper venue whatever its validation status, scaled
+ ; by incubation_cap, and every order, page and report it touches says so. Its
  ; record is scored against the stop rules written here before it trades, and
  ; promotion to live never follows from that record by itself. It is not
  ; evidence of edge.
  ;
  ; The roster: EXP-A01's two strategies, then one strategy per farm cell --
  ; each strategy in quant/src/ohcamel_quant/backtest/strategies.py on each of
- ; its suggested universes -- every one incubation. 21 cells at 0.025 and the
- ; two EXP-A01 entries at 0.0375 sum to 0.60, the incubation_cap above.
+ ; its suggested universes -- every one incubation. Every one at an equal
+ ; 0.025: 23 x 0.025 = 0.575, under the incubation_cap of 0.60, the other
+ ; 0.025 held for EXP-Q01's portfolio when it joins (INC-01).
  (signals
   ((strategies
     (((name exp_a01_spy) (symbols (SPY)) (max_age 3) (sizing incubation)
-      (capital_fraction 0.0375) (cadence daily) (adjust intraday)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
       (stop ((drawdown 0.15) (sessions 250))))
      ((name exp_a01_tlt) (symbols (TLT)) (max_age 3) (sizing incubation)
-      (capital_fraction 0.0375) (cadence daily) (adjust intraday)
+      (capital_fraction 0.025) (cadence daily) (adjust intraday)
       (stop ((drawdown 0.15) (sessions 250))))
      ((name farm_tsmom_us_equity_indices) (symbols (SPY QQQ DIA IWM MDY)) (max_age 3) (sizing incubation)
       (capital_fraction 0.025) (cadence daily) (adjust intraday)

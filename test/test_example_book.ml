@@ -81,8 +81,8 @@ let test_the_example_book_registers_the_incubation_roster () =
   | None -> Alcotest.fail "the example book has no signals block"
   | Some { S.strategies } ->
       Alcotest.(check (list (triple string (list string) (float 0.0))))
-        "EXP-A01's two first, one per symbol, at 0.0375 each"
-        [ ("exp_a01_spy", [ "SPY" ], 0.0375); ("exp_a01_tlt", [ "TLT" ], 0.0375) ]
+        "EXP-A01's two first, one per symbol, at 0.025 each"
+        [ ("exp_a01_spy", [ "SPY" ], 0.025); ("exp_a01_tlt", [ "TLT" ], 0.025) ]
         (List.map (List.take strategies 2) ~f:(fun s ->
              (s.S.Strategy.name, s.S.Strategy.symbols, s.S.Strategy.capital_fraction)));
       Alcotest.(check int)
@@ -266,6 +266,10 @@ let test_check_accepts_the_example_book_and_says_what_it_holds () =
         "23 strategies, every one incubation" 23
         (List.count summary.Summary.strategies ~f:(fun s ->
              String.equal s.Summary.Strategy_line.sizing "incubation"));
+      Alcotest.(check bool)
+        "each at an effective 0.025: 0.575 is under the cap of 0.60" true
+        (List.for_all summary.Summary.strategies ~f:(fun s ->
+             Float.equal s.Summary.Strategy_line.effective_fraction 0.025));
       Alcotest.(check (option string))
         "the desk ships disabled" (Some "disabled")
         (List.Assoc.find summary.Summary.desk "trading" ~equal:String.equal);
@@ -813,22 +817,33 @@ let tiered ~desk ~strategies =
   book ~limits:""
     ~extra:(sprintf "(desk (%s)) (signals ((strategies (%s))))" desk strategies)
 
-let test_incubation_sum_over_cap () =
-  (* 0.4 + 0.4 = 0.8, exact enough that %g prints "0.8", against a cap of 0.6.
-     Each strategy alone is under the cap, so the sentence is the set's. *)
+let test_incubation_sum_over_one () =
+  (* incubation_cap is a proportional ceiling now (INC-01), not a bound: the
+     incubation fractions may sum past it, and only past 1 are they refused.
+     0.6 + 0.6 = 1.2, exact enough that %g prints "1.2"; each alone is under 1,
+     so the sentence is the set's. *)
+  with_book
+    (tiered ~desk:"(incubation_cap 0.6)"
+       ~strategies:
+         "((name s_a) (symbols (SPY)) (sizing incubation) (capital_fraction 0.6)) ((name \
+          s_b) (symbols (AAPL)) (sizing incubation) (capital_fraction 0.6))") ~f:(fun p ->
+      let errors = refusal_of p in
+      Alcotest.(check int) "one problem: the incubation sum" 1 (List.length errors);
+      Alcotest.(check bool)
+        "naming the sum and 1" true
+        (names "incubation strategies' capital_fraction values sum to 1.2, more than 1"
+           errors));
+  (* 0.4 + 0.4 = 0.8 over a cap of 0.6 was refused before; now it is scaled. *)
   with_book
     (tiered ~desk:"(incubation_cap 0.6)"
        ~strategies:
          "((name s_a) (symbols (SPY)) (sizing incubation) (capital_fraction 0.4)) ((name \
           s_b) (symbols (AAPL)) (sizing incubation) (capital_fraction 0.4))") ~f:(fun p ->
-      let errors = refusal_of p in
-      Alcotest.(check int) "one problem: the incubation sum" 1 (List.length errors);
-      Alcotest.(check bool)
-        "naming the sum and the cap" true
-        (names
-           "incubation strategies' capital_fraction values sum to 0.8, more than \
-            incubation_cap 0.6"
-           errors))
+      match Config.check p with
+      | Ok _ -> ()
+      | Error errors ->
+          Alcotest.failf "0.8 over a cap of 0.6 was refused: %s"
+            (String.concat ~sep:"; " errors))
 
 let test_live_plus_incubation_over_one () =
   (* Live 0.5 is under 1 and incubation 0.6 is at its cap of 0.6, so only the
@@ -895,12 +910,10 @@ let test_desk_defaults () =
   Alcotest.(check string) "flatten_at 15:50" "15:50" d.Desk_spec.flatten_at;
   Alcotest.(check int) "max_open_orders 200" 200 d.Desk_spec.max_open_orders
 
-(* The roster's fractions, as the example book ships them: 21 farm cells at
-   0.025 each is 0.525, and the two EXP-A01 entries at 0.0375 each are 0.075,
-   so the incubation sum is 0.525 + 0.075 = 0.600 -- exactly the book's
-   (incubation_cap 0.60), every cent of the tier allocated and none over.
-   (23 strategies at 0.025 would be 0.575; the two EXP-A01 entries carry the
-   remaining 0.025 between them until a 24th strategy re-splits the roster.) *)
+(* The roster's fractions, as the example book ships them: equal, 0.025 each,
+   so 23 x 0.025 = 0.575, under the book's (incubation_cap 0.60); the other
+   0.025 is EXP-Q01's when it joins (24 x 0.025 = 0.600). At 0.575 <= 0.60 the
+   cap scales nothing: min(1, 0.60 / 0.575) = 1. *)
 let test_roster_fractions_sum_to_the_cap () =
   let book = load () in
   let module S = Ohcamel.Config.Book.Signals_spec in
@@ -909,10 +922,89 @@ let test_roster_fractions_sum_to_the_cap () =
   | Some { S.strategies } ->
       Alcotest.(check int) "twenty-three strategies" 23 (List.length strategies);
       Alcotest.(check (float 1e-9))
-        "the incubation fractions sum to incubation_cap" 0.60
+        "the incubation fractions sum to 23 x 0.025 = 0.575" 0.575
         (List.sum (module Float) strategies ~f:(fun s -> s.S.Strategy.capital_fraction));
+      Alcotest.(check bool)
+        "every fraction is 0.025" true
+        (List.for_all strategies ~f:(fun s ->
+             Float.equal s.S.Strategy.capital_fraction 0.025));
       Alcotest.(check (float 0.0))
-        "and the cap is 0.60" 0.60 book.Book.desk.Desk_spec.incubation_cap
+        "and the cap is 0.60, at or above the sum" 0.60
+        book.Book.desk.Desk_spec.incubation_cap
+
+(* The cap as a proportional ceiling, by hand. 23 strategies at 0.025, sum
+   0.575:
+   - cap 0.10 (the canary): 0.025 x min(1, 0.10 / 0.575) = 0.025 x 0.173913...
+     = 0.0043478..., and the 23 together are 0.10 exactly;
+   - cap 0.60: min(1, 0.60 / 0.575) = 1, so 0.025 unchanged;
+   - cap 0.0: 0.025 x 0 = 0.0, nothing sized.
+   A live strategy's fraction is its own whatever the cap. *)
+let test_effective_fraction_scales_the_roster () =
+  let module S = Ohcamel.Config.Book.Signals_spec in
+  let strategy name sizing =
+    {
+      S.Strategy.name;
+      symbols = [ "SPY" ];
+      max_age = 3;
+      sizing;
+      capital_fraction = 0.025;
+      cadence = S.Cadence.Daily;
+      adjust = S.Adjust.Intraday;
+      max_age_minutes = 20;
+      horizon = S.Horizon.Carry;
+      stop = None;
+      reinstated = None;
+    }
+  in
+  let roster =
+    {
+      S.strategies = List.init 23 ~f:(fun i -> strategy (sprintf "s_%02d" i) S.Incubation);
+    }
+  in
+  let one = List.hd_exn roster.S.strategies in
+  let at cap = S.effective_fraction ~incubation_cap:cap roster one in
+  Alcotest.(check (float 1e-12))
+    "cap 0.10: 0.025 x 0.10 / 0.575" 0.0043478260869565 (at 0.10);
+  Alcotest.(check (float 1e-12))
+    "and the 23 together are the cap" 0.10
+    (List.sum
+       (module Float)
+       roster.S.strategies
+       ~f:(S.effective_fraction ~incubation_cap:0.10 roster));
+  Alcotest.(check (float 0.0)) "cap 0.60: unchanged" 0.025 (at 0.60);
+  Alcotest.(check (float 0.0)) "cap 0.0: nothing" 0.0 (at 0.0);
+  Alcotest.(check (float 0.0))
+    "a live strategy keeps its own fraction" 0.025
+    (S.effective_fraction ~incubation_cap:0.10 roster (strategy "l_a" S.Live))
+
+(* The canary as the owner books it: the example book with (incubation_cap
+   0.10) and nothing else changed checks clean, and the summary prints each
+   strategy's effective fraction, 0.025 x 0.10 / 0.575 = 0.0043478... *)
+let test_the_canary_book_checks_clean () =
+  let contents = In_channel.read_all path in
+  let canary =
+    String.substr_replace_all contents ~pattern:"(incubation_cap 0.60)"
+      ~with_:"(incubation_cap 0.10)"
+  in
+  Alcotest.(check bool) "the cap was there to edit" false (String.equal contents canary);
+  with_book canary ~f:(fun p ->
+      match Config.check p with
+      | Error errors ->
+          Alcotest.failf "the canary book was refused: %s"
+            (String.concat ~sep:"; " errors)
+      | Ok summary ->
+          Alcotest.(check bool)
+            "every strategy's effective fraction is 0.025 x 0.10 / 0.575" true
+            (List.for_all summary.Summary.strategies ~f:(fun s ->
+                 Float.(
+                   abs
+                     (s.Summary.Strategy_line.effective_fraction
+                     - (0.025 *. 0.10 /. 0.575))
+                   < 1e-12)));
+          Alcotest.(check bool)
+            "and the printed line says so" true
+            (List.exists (Summary.lines summary)
+               ~f:(String.is_substring ~substring:"effective 0.00434783")))
 
 let test_every_roster_symbol_is_a_position () =
   let book = load () in
@@ -1079,15 +1171,19 @@ let suite =
         test_demo_with_a_port_that_is_not_a_number_prints_the_usage_and_exits_two;
       Alcotest.test_case "serve takes a port and then a book" `Quick
         test_serve_takes_a_port_and_then_a_book;
-      Alcotest.test_case "incubation sum over cap" `Quick test_incubation_sum_over_cap;
+      Alcotest.test_case "incubation sum over one" `Quick test_incubation_sum_over_one;
       Alcotest.test_case "live plus incubation over one" `Quick
         test_live_plus_incubation_over_one;
       Alcotest.test_case "stop drawdown range" `Quick test_stop_drawdown_range;
       Alcotest.test_case "flatten_at parses" `Quick test_flatten_at_parses;
       Alcotest.test_case "stream cap" `Quick test_stream_cap;
       Alcotest.test_case "defaults" `Quick test_desk_defaults;
-      Alcotest.test_case "roster fractions sum to the cap" `Quick
+      Alcotest.test_case "roster fractions sum under the cap" `Quick
         test_roster_fractions_sum_to_the_cap;
+      Alcotest.test_case "effective fraction scales the roster" `Quick
+        test_effective_fraction_scales_the_roster;
+      Alcotest.test_case "the canary book checks clean" `Quick
+        test_the_canary_book_checks_clean;
       Alcotest.test_case "every roster symbol is a position" `Quick
         test_every_roster_symbol_is_a_position;
       Alcotest.test_case "every new desk refusal has its row" `Quick
