@@ -36,6 +36,7 @@ max_age:
   # INC-01's producers: session kinds 78h, like Lane C's.
   signals.daily: 78h
   signals.overlay: 35m   # every 15 minutes in session, like risk.mc_intraday
+  desk.report: 30h       # once a session at 16:30: a missed weekday run is amber by the next evening
 
 schedules:
   - name: selftest-nightly
@@ -246,5 +247,15 @@ schedules:
     kind: signals.overlay
     params: {}
     priority: 2
+    mem_class: S
+    heavy: false
+
+  # INC-01: the session's report -- fills, each strategy's line, what the desk refused,
+  # the overlay's reading -- read from the live engine at 16:30, after the close.
+  - name: desk-report
+    cron: "30 16 * * 1-5"
+    kind: desk.report
+    params: {}
+    priority: 1
     mem_class: S
     heavy: false

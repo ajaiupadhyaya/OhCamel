@@ -21,7 +21,9 @@
 # What it pins: an all-good live host passes every live line; and each of the
 # four regressions Task 15 names -- a set last_error, a mutating route
 # answering 200, a sha mismatch, a clock.source of "unknown" -- is a FAIL that
-# names it. Plus the two things the suite promises never to do: POST
+# names it; and the exposure scale (Task 16 of the autonomous-paper-trading
+# plan): a finite number in [0, 1] and an overlay state of fresh, held, stale
+# or absent, each wrong value a FAIL. Plus the two things the suite promises never to do: POST
 # /api/desk/kill, or reach the engine any way other than from inside its own
 # container.
 
@@ -96,8 +98,8 @@ compose)
 	/api/desk)
 		if [ "${SHIM_LAST_SYNC:-fresh}" = null ]; then sync=null; else sync="\"$(now_stamp)\""; fi
 		if [ -n "${SHIM_LAST_ERROR:-}" ]; then err="\"$SHIM_LAST_ERROR\""; else err=null; fi
-		printf '{"status":"enabled","reason":null,"venue":"alpaca-paper","kill_switch":"armed","journal":"file","sessions":3,"last_sync":%s,"last_error":%s,"clock":{"is_open":false,"read_at":"%s","source":"%s"},"account":{"status":"ACTIVE","trading_blocked":false}}\n200' \
-			"$sync" "$err" "$(now_stamp)" "${SHIM_CLOCK_SOURCE:-venue-clock}"
+		printf '{"status":"enabled","reason":null,"venue":"alpaca-paper","kill_switch":"armed","journal":"file","sessions":3,"last_sync":%s,"last_error":%s,"clock":{"is_open":false,"read_at":"%s","source":"%s"},"exposure_scale":%s,"governor":1.0,"overlay":{"value":null,"as_of":null,"age_s":null,"state":"%s","reason":null,"governor_cap":0.15},"account":{"status":"ACTIVE","trading_blocked":false}}\n200' \
+			"$sync" "$err" "$(now_stamp)" "${SHIM_CLOCK_SOURCE:-venue-clock}" "${SHIM_SCALE:-1.0}" "${SHIM_OVERLAY_STATE:-absent}"
 		;;
 	/api/ops)
 		printf '{"mode":"live","uptime_s":42,"build":{"git_sha":"%s"}}\n200' "${SHIM_OPS_SHA:?}"
@@ -147,7 +149,7 @@ run_live() {
 	(
 		export SHIM_LOG="$work/log" SHIM_OPS_SHA="$sha" SHIM_RESEARCH_REV="$sha" SHIM_RESEARCH_ENV="$sha"
 		export SMOKE_SYNC_WAIT_S=0
-		unset COMPOSE_PROJECT_NAME SHIM_LAST_ERROR SHIM_OPEN_ROUTE SHIM_CLOCK_SOURCE SHIM_LAST_SYNC
+		unset COMPOSE_PROJECT_NAME SHIM_LAST_ERROR SHIM_OPEN_ROUTE SHIM_CLOCK_SOURCE SHIM_LAST_SYNC SHIM_SCALE SHIM_OVERLAY_STATE
 		for kv in "$@"; do export "${kv?}"; done
 		PATH="$work/bin:$PATH" bash "$smoke" http://127.0.0.1:9 --live-container --expect-sha "$sha" 2>&1 || true
 	) | sed $'s/\033\\[[0-9;]*m//g'
@@ -192,6 +194,7 @@ expect "last_sync fresh" "$out" PASS 'live: +/api/desk last_sync'
 expect "last_error null" "$out" PASS 'live: +/api/desk last_error'
 expect "account ACTIVE" "$out" PASS 'live: +/api/desk account.status'
 expect "trading not blocked" "$out" PASS 'live: +/api/desk account.trading_blocked'
+expect "exposure_scale and overlay state read" "$out" PASS 'live: +/api/desk exposure_scale +scale 1\.00 overlay absent$'
 expect "/api/ops mode live" "$out" PASS 'live: +/api/ops mode'
 expect "/api/ops sha matches" "$out" PASS 'live: +/api/ops build.git_sha'
 expect "/api/ops uptime under 300" "$out" PASS 'live: +/api/ops uptime_s'
@@ -262,6 +265,22 @@ expect "a research OHCAMEL_GIT_SHA from another sha fails" "$out" FAIL "live: +o
 
 out=$(run_live SHIM_LAST_SYNC=null)
 expect "no sync within the wait fails" "$out" FAIL 'live: +/api/desk last_sync +null'
+
+# --- 4. The overlay's exposure scale (autonomous-paper-trading Task 16) -----
+out=$(run_live SHIM_SCALE=0.85 SHIM_OVERLAY_STATE=held)
+expect "a held overlay at 0.85 passes, printing both" "$out" PASS 'live: +/api/desk exposure_scale +scale 0\.85 overlay held$'
+
+out=$(run_live SHIM_SCALE=null)
+expect "a null exposure_scale fails" "$out" FAIL 'live: +/api/desk exposure_scale +scale null'
+
+out=$(run_live SHIM_SCALE=1.5)
+expect "an exposure_scale above 1 fails" "$out" FAIL 'live: +/api/desk exposure_scale +scale 1\.5'
+
+out=$(run_live SHIM_SCALE='"1.0"')
+expect "an exposure_scale that is a string fails" "$out" FAIL 'live: +/api/desk exposure_scale +scale "1\.0"'
+
+out=$(run_live SHIM_OVERLAY_STATE=missing)
+expect "an overlay state outside fresh/held/stale/absent fails" "$out" FAIL 'live: +/api/desk exposure_scale .*overlay "missing"'
 
 printf '\n  %d passed, %d failed\n\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

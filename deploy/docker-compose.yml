@@ -264,8 +264,28 @@ services:
       OHCAMEL_QUANT_USER_AGENT: "${OHCAMEL_QUANT_USER_AGENT:-OhCamel-Quant/1.0 (research; contact: ${OHCAMEL_ACME_EMAIL:-unset})}"
       # The warehouse's only writer (Lane C ingest kinds in jobs/schedules.yaml).
       OHCAMEL_QUANT_WAREHOUSE_PATH: /data/warehouse.duckdb
+      # INC-01's producers (jobs/schedules.yaml: signals.daily, signals.overlay)
+      # write the desk's documents here -- the signals volume below. Unset,
+      # they refuse to run rather than write anywhere else.
+      OHCAMEL_QUANT_SIGNALS_DIR: /signals
+      # desk.report (16:30 New York) reads the live engine's /api/desk,
+      # /api/desk/tca, /api/research and /api/desk/sessions on the internal
+      # network, as the engine answers its own loopback: no password, no port.
+      # Not OHCAMEL_QUANT_ENGINE_URL, which is ohcamel-quant's PUBLIC bridge
+      # and off by default; this one publishes nothing, it only records an
+      # artifact. When the live profile is not running the report says so
+      # and the job still succeeds.
+      OHCAMEL_QUANT_LIVE_ENGINE_URL: http://ohcamel-live:8081
+    # signals is read-write here: the worker and ohcamel-research are both
+    # writers to it, each to file names the other never uses --
+    # signals.daily's <slug>-<date>.json, one a farm cell a session;
+    # signals.overlay's overlay-<n>.json; the research service's exp_a01_*
+    # -- and both through a temp file and a rename in the same directory, so
+    # the engine, which only ever reads (:ro, above), never opens half a
+    # document.
     volumes:
       - quant_data:/data
+      - signals:/signals
     read_only: true
     tmpfs:
       - /tmp
@@ -338,9 +358,11 @@ services:
     environment:
       OHCAMEL_JOURNAL: /data/desk.db
       # Task 16: where ohcamel-research writes one signal a strategy a
-      # trading day. Read-only here -- the engine only ever lists and opens
-      # what is already there (desk/intake.ml); ohcamel-research below is the
-      # only writer, on the same named volume mounted read-write at /signals.
+      # trading day, and ohcamel-worker writes INC-01's farm cells and the
+      # overlay. Read-only here -- the engine only ever lists and opens what
+      # is already there (desk/intake.ml); ohcamel-research and
+      # ohcamel-worker are both writers, to distinct file names, on the same
+      # named volume mounted read-write at /signals.
       # A fresh volume starts empty, and Intake.directory (desk/intake.ml)
       # only refuses a set-but-EMPTY-STRING variable or an unreadable/
       # non-directory path -- Sys_unix.readdir succeeds on an empty
@@ -493,11 +515,11 @@ volumes:
   quant_data:
   desk_data:
   # Task 16: one JSON signal a strategy a trading day, written by
-  # ohcamel-research (read-write, above) and read by ohcamel-live
-  # (read-only, above). Named, not a bind mount, for the same reason
+  # ohcamel-research and ohcamel-worker (both read-write, above, to distinct
+  # file names) and read by ohcamel-live (read-only, above). Named, not a bind mount, for the same reason
   # desk_data is: a rebuild or a `down` keeps every signal ever written.
-  # Owned by uid 10001 however it is first seeded: both images carry their
-  # mount point (/signals, /data/signals) owned by that uid, research runs
-  # as it, and the image job proves both orders on fresh volumes (finish
-  # plan Task 11).
+  # Owned by uid 10001 however it is first seeded: all three images carry
+  # their mount point (research's and the worker's /signals, the engine's
+  # /data/signals) owned by that uid, research runs as it, and the image job
+  # proves the research/engine orders on fresh volumes (finish plan Task 11).
   signals:

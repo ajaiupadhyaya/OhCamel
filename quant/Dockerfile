@@ -146,9 +146,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm 
 
 # Unprivileged, no login shell. uid 10002 so it never collides with the
 # engine image's 10001 on a shared volume.
+#
+# /signals is the worker's mount point for the `signals` volume, owned by
+# 10001 like the research image's /signals and the engine's /data/signals:
+# an empty named volume is seeded from whichever container mounts it first,
+# ownership included, and the worker is in the default profile, so it is
+# usually first on a fresh host. Owned by anything else, that seeding would
+# leave ohcamel-research unable to write its first signal.
 RUN useradd --system --uid 10002 --create-home --shell /usr/sbin/nologin quant \
- && mkdir -p /data \
- && chown quant:quant /data
+ && mkdir -p /data /signals \
+ && chown quant:quant /data \
+ && chown 10001:10001 /signals
 
 WORKDIR /app
 
@@ -160,6 +168,15 @@ COPY docs/crisis/ /app/docs/crisis/
 COPY docs/perf/kernels.json /app/docs/perf/kernels.json
 # The pre-registered experiments' frozen configs (EXP-Q01/Q02), read by their jobs at run time.
 COPY research/experiments/ /app/research/experiments/
+# The signal contract's JSON schemas, against which signals.daily and
+# signals.overlay validate every document before it is written
+# (signals/contract.py, REPO_ROOT / "interface"), and the example book whose
+# positions bound the universe signals.daily may emit (signals/daily.py,
+# REPO_ROOT / "book.example.sexp"). REPO_ROOT is /app here (asserted in the
+# pydeps stage). deploy/test/quant_image_test.sh holds these two lines and
+# their allow-list entries together.
+COPY interface/ /app/interface/
+COPY book.example.sexp /app/book.example.sexp
 
 COPY --from=pydeps /app/quant /app/quant
 COPY --from=web /src/quant/web/dist /app/quant/web/dist
@@ -201,6 +218,7 @@ ENV PATH=/app/quant/.venv/bin:$PATH \
 # leaves nothing behind.
 RUN python -c "import ohcamel_quant.api.app as a, ohcamel_quant.config as c, ohcamel_quant.kernels as k; \
 import lightgbm, pathlib; assert pathlib.Path('/app/research/experiments/EXP-Q01/config.yaml').is_file(); \
+assert pathlib.Path('/app/interface/signal.schema.json').is_file() and pathlib.Path('/app/book.example.sexp').is_file(); \
 assert a.WEB_DIST.is_dir(), a.WEB_DIST; assert (c.get_settings().fixtures_dir / 'history').is_dir(); \
 assert k.ENGINE == 'rust', k.ENGINE; assert all(k.engine_of(n) == 'rust' for n in k.API), [n for n in k.API if k.engine_of(n) != 'rust']; \
 print('routes:', len(a.app.routes), 'kernels:', k.ENGINE)"

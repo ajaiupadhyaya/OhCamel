@@ -122,3 +122,6 @@ _S = "ohcamel_quant.jobs.handlers.signals"
 register(KindSpec("signals.daily", f"{_S}:daily", "S", heavy=False))
 register(KindSpec("signals.freeze", f"{_S}:freeze", "S", heavy=False))
 register(KindSpec("signals.overlay", f"{_S}:overlay", "S", heavy=False))
+# The session's report (design §4.2): read from the live engine at 16:30, light,
+# so it may run inside the session window.
+register(KindSpec("desk.report", f"{_S}:report", "S", heavy=False))
