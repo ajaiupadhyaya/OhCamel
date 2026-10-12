@@ -77,6 +77,13 @@ type t = {
   (* The session count, re-read only when the journal has been written since:
      this object rides on every frame, and a frame is not a reason to query. *)
   mutable sessions_seen : int * int;
+  (* What the effective scale is read from (Intake.Gauge), handed in once
+     the order manager whose clock it reads exists; None for a desk built
+     without one, whose frame then says nothing it cannot know. *)
+  mutable gauge : Intake.Gauge.t option;
+  (* The latest accepted overlay, re-read only when the journal has been
+     written since, as [sessions_seen] is. *)
+  mutable overlay_seen : int * (int * string * float * string) option;
 }
 
 let create ~graph ~journal ~venue ~spec ~on_change ~on_first_sync =
@@ -102,12 +109,18 @@ let create ~graph ~journal ~venue ~spec ~on_change ~on_first_sync =
     clock = None;
     clock_read = `Idle;
     sessions_seen = (-1, 0);
+    gauge = None;
+    overlay_seen = (-1, None);
   }
 
 (* The order manager is made after the desk -- its fills re-read the account
    through [sync] -- and handed back here, so the frame can say what the desk
    can do. *)
 let set_oms t oms = t.oms <- Some oms
+
+(* The same gauge the intake sizes with, so the page shows the scale sizing
+   reads. *)
+let set_gauge t gauge = t.gauge <- Some gauge
 
 let venue_name t =
   match t.venue with Reads r -> r.Venue.Read.name | Unavailable { name; _ } -> name
@@ -272,6 +285,14 @@ let clock_freshness = Time_ns.Span.of_min 15.0
    scheduler, no venue. *)
 let set_clock t ~at (clock : Venue.Session_clock.t) = t.clock <- Some (clock, at)
 
+(* The venue's own clock as last read, advanced by the host's time since the
+   read was stamped: the overlay's clock (Intake.Gauge). A failed read leaves
+   the reading, so this stays an answer through one; None only before any
+   reading has ever arrived. *)
+let venue_now ?(now = Time_ns.now ()) t =
+  Option.map t.clock ~f:(fun (c, at) ->
+      Time_ns.add c.Venue.Session_clock.now (Time_ns.diff now at))
+
 (* Read the venue's clock and keep it. Called from bin/main.ml's existing clock
    timer and not awaited by it; one read at a time (see [clock_read]).
 
@@ -318,6 +339,22 @@ let sessions_count t =
     let count = Journal.session_count t.journal in
     t.sessions_seen <- (version, count);
     count
+
+let latest_overlay t =
+  let version = Journal.version t.journal in
+  let seen_version, latest = t.overlay_seen in
+  if version = seen_version then latest
+  else
+    let latest = Journal.latest_overlay t.journal in
+    t.overlay_seen <- (version, latest);
+    latest
+
+(* The effective scale, the governor and the overlay (design §4.6), from
+   the gauge; with none, nulls and "absent". *)
+let scale_fields t =
+  match t.gauge with
+  | Some gauge -> Intake.reading_fields (Intake.reading ~latest:(latest_overlay t) gauge)
+  | None -> Intake.absent_reading_fields
 
 (* THE ONE CONSTRUCTOR for the clock block (ruling 20). It is built here, in
    [summary_fields], which is both the desk block that rides on every frame
@@ -431,6 +468,8 @@ let summary_fields ?now t =
     (* Appended last, so nothing a reader indexes by position moves. *)
     ("clock", clock_json ?now t);
   ]
+  (* After "clock", for the same reason: exposure_scale, governor, overlay. *)
+  @ scale_fields t
 
 let summary_json ?now t : Yojson.Safe.t = `Assoc (summary_fields ?now t)
 
@@ -582,7 +621,7 @@ let research_evidence_body =
       "]}";
     ]
 
-let research_extensions ~(journal : Journal.t)
+let research_extensions ~(desk : t option) ~(journal : Journal.t)
     ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
     ~(intake : Intake.status) ~(on_event : string -> unit) : Server.extension list =
   [
@@ -593,7 +632,11 @@ let research_extensions ~(journal : Journal.t)
          files the intake is holding, and that R8 is not enforced";
       handle =
         (fun server _request ->
-          match Intake.research_json ~journal ~strategies intake with
+          match
+            Intake.research_json
+              ?scale:(Option.map desk ~f:scale_fields)
+              ~journal ~strategies intake
+          with
           | json -> Server.respond_json server (Yojson.Safe.to_string json)
           | exception exn ->
               on_event ("research  /api/research raised: " ^ Exn.to_string exn);

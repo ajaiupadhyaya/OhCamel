@@ -92,8 +92,22 @@
   function sizingWords(s) {
     if (s === "advisory") return "advisory: its signals are shown, never sized";
     if (s === "live") return "live: an accepted signal is sized";
+    if (s === "incubation") return "incubation: sized on the paper venue at a fraction, recorded, never live";
     return s;
   }
+
+  // The tier, as a stamp: the strategy's tier in capitals, or STOPPED once
+  // its stop rule has fired. Nothing else is a tier word; anything else the
+  // wire sends is printed as it came.
+  var TIER = { advisory: "ADVISORY", incubation: "INCUBATION", live: "LIVE" };
+  function tierWord(s) {
+    if (field(s, "state") === "stopped") return "STOPPED";
+    var t = str(field(s, "tier"));
+    return t !== null && Object.prototype.hasOwnProperty.call(TIER, t) ? TIER[t] : t;
+  }
+  // The charter's sentence, verbatim (docs/CHARTER.md, the incubation tier):
+  // every incubated figure on this page carries it.
+  var CHARTER = "incubation records are not evidence of edge; promotion to live sizing is the owner's decision after a passing battery, never from this record alone";
 
   function drawStrategies() {
     var line = $("intake"), t = $("strategies");
@@ -128,12 +142,14 @@
       if (!rows.some(function (r) { return r.name === slug; })) rows.push({ s: null, name: slug, m: m });
     });
     if (!rows.length) return;
-    head(t, ["strategy", "backtest verdict", "symbols", "sizing", "capital fraction", "max age"]);
+    head(t, ["strategy", "backtest verdict", "tier", "symbols", "sizing", "capital fraction", "max age"]);
     rows.forEach(function (r) {
       var v = r.m ? str(field(r.m, "verdict")) : null;
       var tr = el("tr");
       tr.appendChild(el("td", "num", dash(r.name)));
       tr.appendChild(el("td", "rs-v " + verdictClass(v), r.m ? dash(v) : "no manifest"));
+      var tw = r.s ? tierWord(r.s) : null;
+      tr.appendChild(el("td", "rs-v " + (tw === "STOPPED" ? "rs-fail" : tw === "ADVISORY" ? "rs-advisory" : ""), r.s ? dash(tw) : "—"));
       if (r.s) {
         tr.appendChild(el("td", "num", list(field(r.s, "symbols")).filter(function (x) { return typeof x === "string"; }).join(", ") || "—"));
         tr.appendChild(el("td", "rs-l", dash(sizingWords(str(field(r.s, "sizing"))))));
@@ -148,6 +164,16 @@
       }
       t.appendChild(tr);
     });
+    // An incubated row's footnote is the charter's sentence, once per
+    // incubated strategy, under the table.
+    var foot = $("tierfoot");
+    if (foot) {
+      foot.textContent = "";
+      strategies.forEach(function (s) {
+        if (str(field(s, "tier")) !== "incubation") return;
+        foot.appendChild(el("p", "rs-note", dash(str(field(s, "name"))) + ": " + CHARTER));
+      });
+    }
   }
 
   // ---- 2. the latest signal ----
@@ -202,7 +228,7 @@
     }
     strategies.forEach(function (s) {
       var div = el("div", "rs-sig");
-      div.appendChild(el("div", "rs-sig-name num", dash(str(field(s, "name")))));
+      div.appendChild(el("div", "rs-sig-name num", dash(str(field(s, "name"))) + " · " + dash(tierWord(s))));
       var latest = field(s, "latest");
       if (!isObj(latest)) {
         div.appendChild(el("p", "rs-line", "no signal judged yet"));
@@ -218,6 +244,7 @@
       kv(dl, "sequence", isNum(field(latest, "sequence")) ? String(field(latest, "sequence")) : null);
       kv(dl, "weights", weights(latest));
       kv(dl, "validation", validation(latest));
+      if (str(field(s, "tier")) === "incubation") kv(dl, "record", CHARTER);
       kv(dl, "received", str(field(latest, "received_at")));
       // Present for an accepted judgement only: "pending" until the
       // rebalance is proposed, then what came of it, in the desk's words.
@@ -513,7 +540,52 @@
     p.textContent = dash(str(field(research, "r8")));
   }
 
-  function drawResearch() { drawStrategies(); drawSignals(); drawR8(); }
+  // ---- 4. the overlay: the exposure scale the research service asks for ----
+
+  // The state, in the words the page stamps. An accepted overlay is fresh or
+  // held; a stale or absent one is said in capitals with the desk's reason.
+  var OVERLAY = { fresh: "OVERLAY FRESH", held: "OVERLAY HELD", stale: "OVERLAY STALE", absent: "OVERLAY ABSENT" };
+  function figures(dl, obj, suffix) {
+    if (!isObj(obj)) return;
+    Object.keys(obj).forEach(function (k) {
+      var v = obj[k];
+      kv(dl, k, isNum(v) ? String(v) : typeof v === "string" || typeof v === "boolean" ? String(v) : null);
+      if (suffix) dl.lastChild.appendChild(el("span", "rs-quiet", "  " + suffix));
+    });
+  }
+  function drawOverlay() {
+    var box = $("overlay");
+    if (!box) return;
+    box.textContent = "";
+    var o = field(research, "overlay");
+    if (!isObj(o)) {
+      box.appendChild(el("p", "rs-line", researchError ? "not read: /api/research did not answer" : "asking /api/research…"));
+      return;
+    }
+    var state = str(field(o, "state"));
+    var word = state !== null && Object.prototype.hasOwnProperty.call(OVERLAY, state) ? OVERLAY[state] : dash(state);
+    box.appendChild(el("p", "rs-verdict-line " + (state === "stale" || state === "absent" ? "rs-advisory" : ""), word));
+    var reason = str(field(o, "reason"));
+    if (reason) box.appendChild(el("p", "rs-note", reason));
+    var dl = el("dl", "rs-kv");
+    kv(dl, "overlay scale", fixed(field(o, "value"), 4));
+    kv(dl, "as of", str(field(o, "as_of")));
+    kv(dl, "age", isNum(field(o, "age_s")) ? field(o, "age_s") + " s" : null);
+    kv(dl, "drawdown governor", fixed(field(o, "governor"), 3));
+    kv(dl, "governor cap", fixed(field(o, "governor_cap"), 3));
+    box.appendChild(dl);
+    var inputs = field(o, "inputs"), reported = field(o, "reported");
+    if (isObj(inputs) || isObj(reported)) {
+      var d2 = el("dl", "rs-kv");
+      // The inputs ARE the number's inputs (vol_target, vol_forecast, the
+      // models); only the reported block is shown beside it and not used.
+      figures(d2, inputs, "inputs");
+      figures(d2, reported, "reported, not used");
+      box.appendChild(d2);
+    }
+  }
+
+  function drawResearch() { drawStrategies(); drawSignals(); drawOverlay(); drawR8(); }
 
   // ---- the reads ----
 

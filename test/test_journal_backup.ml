@@ -456,7 +456,7 @@ let test_verify_reports_the_version_the_counts_and_the_newest_rows () =
       Alcotest.(check (list string))
         "no table is missing" [] r.Journal.Report.missing_tables;
       Alcotest.(check (list (pair string int)))
-        "the eleven counts, in schema order"
+        "the fourteen counts, in schema order"
         [
           ("meta", 1);
           ("orders", 1);
@@ -469,6 +469,9 @@ let test_verify_reports_the_version_the_counts_and_the_newest_rows () =
           ("alerts", 1);
           ("signal_files", 1);
           ("signal_deferrals", 1);
+          ("overlays", 0);
+          ("sizings", 0);
+          ("strategy_state", 0);
         ]
         r.Journal.Report.counts;
       Alcotest.(check (option string))
@@ -507,7 +510,7 @@ let test_verify_reports_an_empty_journal_as_empty_not_broken () =
         "no newest order" None
         (Option.map r.Journal.Report.newest_order ~f:fst);
       Alcotest.(check int)
-        "every table counted, all but meta empty" 11
+        "every table counted, all but meta empty" 14
         (List.length r.Journal.Report.counts))
 
 (* A truncated copy is what a full disk or a killed container leaves behind,
@@ -698,7 +701,7 @@ let test_verify_names_a_missing_table () =
         "alerts is missing" [ "alerts" ] r.Journal.Report.missing_tables;
       Alcotest.(check bool) "so the copy is not clean" false (Journal.Report.clean r);
       Alcotest.(check int)
-        "ten tables counted, not eleven" 10
+        "thirteen tables counted, not fourteen" 13
         (List.length r.Journal.Report.counts);
       Alcotest.(check bool)
         "and the printed report names it" true
@@ -733,10 +736,10 @@ let test_verify_names_a_schema_version_this_build_does_not_know () =
              && String.is_substring p ~substring:(Int.to_string Journal.schema_version))))
 
 (* [Journal.tables] is read out of the schema rather than written down twice,
-   so this pins what the schema holds today: eleven tables, in the order the
-   CREATE TABLE statements appear. A twelfth is a line in this list and a
+   so this pins what the schema holds today: fourteen tables, in the order the
+   CREATE TABLE statements appear. A fifteenth is a line in this list and a
    count in the report, both in the task that adds it. *)
-let test_tables_is_the_schemas_eleven_in_order () =
+let test_tables_is_the_schemas_fourteen_in_order () =
   Alcotest.(check (list string))
     "the schema's tables, in its order"
     [
@@ -751,6 +754,9 @@ let test_tables_is_the_schemas_eleven_in_order () =
       "alerts";
       "signal_files";
       "signal_deferrals";
+      "overlays";
+      "sizings";
+      "strategy_state";
     ]
     Journal.tables
 
@@ -1553,8 +1559,8 @@ let suite =
         test_verify_names_a_missing_table;
       Alcotest.test_case "verify names a schema version this build does not know" `Quick
         test_verify_names_a_schema_version_this_build_does_not_know;
-      Alcotest.test_case "tables is the schema's eleven, in order" `Quick
-        test_tables_is_the_schemas_eleven_in_order;
+      Alcotest.test_case "tables is the schema's fourteen, in order" `Quick
+        test_tables_is_the_schemas_fourteen_in_order;
       Alcotest.test_case "the reckoning day is a Saturday" `Quick
         test_the_reckoning_day_is_a_saturday;
       Alcotest.test_case "retention keeps twenty of sixty-one dailies" `Quick

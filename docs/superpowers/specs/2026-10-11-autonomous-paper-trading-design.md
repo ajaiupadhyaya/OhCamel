@@ -146,14 +146,14 @@ read-write (`deploy/docker-compose.yml`). Every document is written to a temp
 file and renamed, as the research service does; the desk's intake refuses
 anything else.
 
-- **`signals.daily`** — weekdays 18:45 (after the 18:30 daily-bars ingest).
+- **`signals.daily`** — weekdays 18:45 (after the 18:30 daily-bars ingest). A cell's document is written only on its strategy's own rebalance dates (decided against the next exchange session, with NYSE holidays) and on the cell's first run; `signal`-cadence strategies write when the targets differ from the last document's beyond the engine's tolerance; other sessions write nothing and the artifact says `held`; a period end missed by the producer is caught up late on the next session, and said so. An all-NaN last row is `held`, an all-zero row is a flat document.
   For each roster cell `farm_<strategy>_<universe>`: load the cell's frozen
   parameters (§4.2.1), compute the strategy's target weights at yesterday's
   close with the *same* function the backtest engine calls
   (`backtest/strategies.py`, point-in-time, `assert_point_in_time` on the
   frame), write one contract-v1 signal with `as_of` = that session's date,
   `validation` copied from the cell's newest farm verdict (`PASS`→`pass`,
-  `FAIL`→`fail`, anything else→`unvalidated`), `sequence` = the session
+  `FAIL`→`fail`, anything else→`unvalidated`) only when that row's `selected_params` equal the frozen parameters, else `unvalidated` naming the mid-month re-selection, `sequence` = the session
   ordinal. A cell whose universe has a name outside the book is **refused by
   the producer** with a reason in the artifact, never silently projected.
 - **`signals.q01`** — the 2nd of the month 07:00, from the newest
@@ -174,9 +174,9 @@ anything else.
   newest artifact (the best model per name by QLIKE; EWMA(0.94) when absent)
   and P3's newest (the best estimator by realised GMV vol; Ledoit–Wolf when
   absent); forecasts the combined targets' annualised volatility
-  σ̂ = √(wᵀΣw); writes `exposure_scale = min(1, σ_target / σ̂)` with every
+  σ̂ = √(wᵀΣw) (a name with no P2 forecast takes an EWMA(0.94) variance on the diagonal, as INC-01 states; P3 supplies the correlations); writes `exposure_scale = min(1, σ_target / σ̂)` with every
   input, the models' names and artifact ids, and `as_of` = the newest bar it
-  read. `σ_target` comes from the book. Reported beside it in the same
+  read. `σ_target` comes from the book. A non-finite forecast writes nothing; the desk then holds its last overlay and goes stale. Reported beside it in the same
   document, never multiplied in: Q02's newest regime probabilities and P1's
   newest reference-book VaR.
 - **`desk.report`** — 16:30: the session's fills, P&L per strategy, rules and
@@ -213,24 +213,31 @@ O1–O4 in `desk/contract.ml`: version 1; `as_of` not after the venue clock's
 table). The effective scale is `overlay × governor`, where the **drawdown
 governor** is computed in the desk from the graph's `drawdown` node and the
 book's `dd-cap`: 1 up to half the cap, falling linearly to 0 at the cap (the
-kill switch, if armed on `dd-cap`, halts there anyway). A stale overlay holds
-its last value for `max_age_minutes`, then `overlay_fallback` from the book
-applies and the page says OVERLAY STALE. Sizing multiplies every incubation
+kill switch, if armed on `dd-cap`, halts there anyway). An accepted overlay holds for `overlay_max_age_minutes`, then `overlay_fallback` from the book applies and the page says OVERLAY STALE; a desk whose journal holds no accepted overlay at all reads 1.0 (the desk as it was before this plan) and the page says OVERLAY ABSENT; before the venue's clock has answered an overlay cannot be aged and reads stale. The overlay's clock is the venue's cached reading advanced by elapsed time, never the host's wall clock. A drawdown the graph cannot read holds the last governor and never sells; a book with no drawdown cap governs at 1, said once at startup. Sizing multiplies every incubation
 and live target by the effective scale. When the effective scale moves more
 than `overlay_band` from the scale a strategy was last sized at, every
 strategy with `(adjust intraday)` is re-sized from its last accepted document
-and the difference is proposed through the intraday mode.
+and the difference is proposed through the intraday mode. Like is compared with
+like: the effective scale against the last sizing's scale divided by the
+incubation ratio recorded beside it, and a change of that ratio re-sizes too.
+While the overlay reads stale the adjust pass holds every last sizing (said
+once a stale spell) and acts only on a governor move beyond the band, at the
+overlay factor the strategy was last sized with times the governor now; a new
+document sized while stale still takes the fallback. A sizing row is written
+only for a rebalance that went whole; a strategy holding a position with no
+sizing for its latest accepted document is re-sized on the next pass whatever
+the band. An accepted document whose rebalance is refused for timing alone
+(the opening auction's window, the session, no venue clock) stays pending and
+is tried every pass until it is sized, superseded (R5) or aged out (R4);
+nothing is sized before the venue's clock has answered.
 
 **Intraday rebalance mode.** `desk/rebalance.ml` gains `mode = Open | Intraday`.
 `Intraday` legs are `Kind.Limit` at the mark moved `intraday_slip_bps` toward
 the far side (default 10 bps, far inside the 5 % collar), `Tif.Day`; the
 `session` rule already requires the regular session for `Day` orders. Legs
 below `min_leg_notional` (book; default $200) are dropped and the drop is
-journaled. A rebalance with more than 6 legs runs in **waves**: wave 1 is
-every shrinking leg, gated as a set; the desk waits until each is filled or
-cancelled (bounded by `wave_timeout_s`, default 180, then cancel); wave 2 and
-on are growing legs, at most 6 per wave by notional descending, each wave
-gated against the real book as it is then. An unfilled intraday leg at its
+journaled -- in the `Intraday` mode only, and never a leg whose target is 0
+(a closing leg). A rebalance with more than 6 legs runs in **waves**: the shrinking legs first, by notional descending, in chunks of at most 6, then the growing legs the same way; each wave is gated against the real book as it is then, and every wave — a single one included — is awaited until its orders fill or `wave_timeout_s` (default 180) passes, when its open orders are cancelled and no later wave is sent. An unfilled intraday leg at its
 timeout is cancelled and the strategy is re-sized on the next pass; a newer
 document for the same strategy supersedes by R5.
 
@@ -266,7 +273,7 @@ and talk only to `data.alpaca.markets`.
 
 **Rules.** `duplicate` is scoped by `source` so two strategies buying the
 same quantity of the same name are not a double-click; `max_open_orders`'s
-default rises to 200 and the example book says why. Per-strategy orders are
+default rises to 200; `Tif.Cls` (market-on-close) is legal only while the session is open and before `next_close − 10 min` and the example book says why. Per-strategy orders are
 not netted (§10).
 
 ### 4.4 The book
@@ -323,8 +330,9 @@ INCUBATION · LIVE · STOPPED), its manifest verdict, its latest document and
 judgement, its frozen parameters, its live record (§4.5), the overlay's
 current value with its inputs and the two reported-only analytics. Execution:
 the waves, the flattens, the governor. Desk: the effective scale beside
-equity. `/api/desk` carries `exposure_scale`, `governor`, `overlay` (value,
-`as_of`, age, state) and per-strategy `tier`. Every INCUBATION label is a
+equity. `/api/desk` carries the book-level `exposure_scale`, `governor` and
+`overlay` (value, `as_of`, age, state); the per-strategy `tier` is on
+`/api/research`. Every INCUBATION label is a
 literal string a test pins in the built page.
 
 ### 4.7 Operations
@@ -338,6 +346,7 @@ literal string a test pins in the built page.
   kinds: `incubation stopped`, `overlay stale`, `wave timeout`.
 - Deploys outside 09:25–16:10 New York only (the existing rule); the first
   three sessions at the canary cap (D10).
+- The three images share the group `signals` (gid 10001); a root one-shot `signals-init` in the default compose profile sets the volume to `10001:10001 2775` on every `up`, and the worker, the research service and the live engine wait for it.
 
 ## 5. INC-01 — the incubation pre-registration
 

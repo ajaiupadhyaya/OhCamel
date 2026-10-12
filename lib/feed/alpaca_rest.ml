@@ -167,6 +167,47 @@ let returns_of_body (body : string) : Series.t list Or_error.t =
           Or_error.errorf "alpaca_rest: %s" message)
 
 (* ------------------------------------------------------------------------ *)
+(* Latest trades: the names past the stream                                  *)
+(* ------------------------------------------------------------------------ *)
+
+(* The free websocket carries Config.stream_cap names; the rest of a book is
+   marked from this call, one request per fifty names, by Alpaca_poll. *)
+let latest_trades_path = "/v2/stocks/trades/latest"
+
+let latest_trades_uri ~(symbols : Types.Symbol.t list) ~(feed : string) : Uri.t =
+  Uri.make ~scheme:"https" ~host ~path:latest_trades_path
+    ~query:
+      [
+        ( "symbols",
+          [ String.concat ~sep:"," (List.map symbols ~f:Types.Symbol.to_string) ] );
+        ("feed", [ feed ]);
+      ]
+    ()
+
+(* {"trades":{"SPY":{"t":"2026-10-13T15:30:58.12Z","p":567.12,"s":100,...}}}
+
+   Each entry is built by the websocket's own trade reader
+   (Alpaca_ws.Message.trade_tick), so a price is refused here exactly as it is
+   on the stream. Skipped, never zeroed: an entry with no [t], or a [t] that
+   does not parse -- the stream would stamp it with the time of receipt, but a
+   poll that re-reads the same old print every ten seconds would then make a
+   quiet name look fresh -- one whose price is not a finite positive number,
+   and one with an empty symbol.
+   A name skipped stays at whatever it last had, and stale. *)
+let parse_latest_trades (json : Yojson.Safe.t) : (Types.Symbol.t * Types.Tick.t) list =
+  match Alpaca_ws.Message.member "trades" json with
+  | Some (`Assoc per_symbol) ->
+      List.filter_map per_symbol ~f:(fun (symbol, trade) ->
+          match Alpaca_ws.Message.member "t" trade with
+          | Some (`String t)
+            when (not (String.is_empty symbol))
+                 && Option.is_some (Alpaca_ws.Message.parse_time_opt t) ->
+              Option.map (Alpaca_ws.Message.trade_tick ~symbol trade) ~f:(fun tick ->
+                  (Types.Tick.symbol tick, tick))
+          | _ -> None)
+  | _ -> []
+
+(* ------------------------------------------------------------------------ *)
 (* Fetching                                                                  *)
 (* ------------------------------------------------------------------------ *)
 

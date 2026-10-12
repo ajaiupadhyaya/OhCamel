@@ -19,6 +19,7 @@
 - Task 33 (short legs) runs in Stage 2 immediately after Task 22, before Task 23.
 - `max_open_orders` default is 200; `intraday_slip_bps` ≥ 0 and `overlay_max_age_minutes` ≥ 1 are validated (Task 2 fix round).
 - The ledger is `.superpowers/sdd/2026-10-11-autonomous-paper-trading/progress.md`.
+- Stage 1's whole-stage review (fix wave, 2026-10-12): A-I1 a judgement refused for timing (the Opg window, the session, no venue clock) stays pending and is retried each pass until sized, superseded or aged out; A-I2 nothing is sized before the venue clock answers; A-I3 the adjust pass holds while the overlay is stale and acts on a governor move at the last overlay factor; A-I4 the band compares effective with effective (the ratio stored on the sizing row) and a ratio change re-sizes; A-I5 a sizing row only for a whole rebalance, and an unsized strategy holding a position is re-sized; A-I6 the leg floor is intraday only and never on a closing leg (withdrawing Task 10's "both modes"); A-I7 the per-strategy tier is on `/api/research`, `/api/desk` carries the book-level scale, governor and overlay; B-C1 signals.overlay also runs at 09:20 and 18:40; B-I3 signals.daily keys hold and catch-up on the desk's latest judgement when the engine answers; B-I6 Stage 3's Task 27 adds a dated fills route, and the report's 20-fill note stands until then; C-I1 the watch requires a daily document only of the research service's names, and of a farm cell some document no older than 35 days.
 
 ## Global Constraints
 

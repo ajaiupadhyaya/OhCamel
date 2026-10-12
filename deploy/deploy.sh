@@ -66,8 +66,9 @@
 # warning, while an explicit --live in the same state exits 1
 # (resolve_live_profile, deploy/test/deploy_profile_test.sh). --public-only
 # touches caddy, ohcamel-quant, ohcamel-worker (the quant job worker, which
-# has no profile and so starts with the public services) and ohcamel-hostd
-# only, never the live profile, so the market guard has nothing to protect and
+# has no profile and so starts with the public services), signals-init (the
+# one-shot that sets the signals volume's group, which the worker waits on)
+# and ohcamel-hostd only, never the live profile, so the market guard has nothing to protect and
 # does not apply.
 #
 # Test seams, read from the environment and never set by the droplet:
@@ -329,7 +330,8 @@ as the deploy user, from ~/OhCamel.
                     behind the password on the live host. Needs
                     /etc/ohcamel/live.env readable by this user. Added on its
                     own when that file is readable or ohcamel-live exists.
-  --public-only     caddy, ohcamel-quant, ohcamel-worker and ohcamel-hostd only;
+  --public-only     caddy, ohcamel-quant, ohcamel-worker, signals-init and
+                    ohcamel-hostd only;
                     never touches the live profile, so it may run during market
                     hours. Not with --live.
   --build           build the four images here (one per Dockerfile, with the
@@ -422,7 +424,7 @@ main() {
 	read -r profile_on profile_auto_added refuse_live_deploy < <(
 		resolve_live_profile "$live_flag" "$live_env_readable" "$has_live_container" "$public_only"
 	)
-	[ "$public_only" = 1 ] && echo "deploy: --public-only -- caddy, ohcamel-quant, ohcamel-worker and ohcamel-hostd only; the live profile is not touched"
+	[ "$public_only" = 1 ] && echo "deploy: --public-only -- caddy, ohcamel-quant, ohcamel-worker, signals-init and ohcamel-hostd only; the live profile is not touched"
 	if [ "$profile_auto_added" = 1 ]; then
 		local why="$live_env exists"
 		[ "$live_env_readable" = 1 ] || why="an ohcamel-live container already exists"

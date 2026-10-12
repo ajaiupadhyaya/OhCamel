@@ -1080,12 +1080,12 @@ let run_live ~book_path ~(serve_port : int option) =
       let runtime = config.Config.runtime in
       let instruments = Config.Book.instruments book in
       let limits = Config.Book.limits book in
-      (* Alpaca's free plan streams at most Config.universe_cap symbols; the
-         reason is on the constant. A larger book would subscribe, be told no
-         for the excess, and watch a fraction of itself while the page drew all
-         of it. Refused here, with the number -- and check-book refuses the same
-         book by the same number, so a deploy that runs it first never reaches
-         this line with a book that fails it. *)
+      (* The engine carries at most Config.universe_cap names: Config.stream_cap
+         on Alpaca's free websocket and the rest marked by the latest-trades
+         poll; the reason is on the constant. A larger book is refused here,
+         with the number -- and check-book refuses the same book by the same
+         number, so a deploy that runs it first never reaches this line with a
+         book that fails it. *)
       (* Every refusal below exits through Async's [exit], bound, rather than
          [Stdlib.exit]. Under [open Async], [prerr_endline] writes to a buffered
          writer that only Async's shutdown flushes: followed by Stdlib.exit, the
@@ -1095,9 +1095,8 @@ let run_live ~book_path ~(serve_port : int option) =
         if List.length instruments > Config.universe_cap then (
           prerr_endline
             (sprintf
-               "ohcamel: the book declares %d names and the free Alpaca plan streams at \
-                most %d. Remove names, or move to a paid feed and raise \
-                Config.universe_cap."
+               "ohcamel: the book declares %d names and this engine carries at most %d \
+                (thirty on the stream, the rest polled every ten seconds)"
                (List.length instruments) Config.universe_cap);
           exit 1)
         else return ()
@@ -1440,8 +1439,19 @@ let run_live ~book_path ~(serve_port : int option) =
         Option.value_map book.Config.Book.signals ~default:[] ~f:(fun s ->
             s.Config.Book.Signals_spec.strategies)
       in
+      (* What every sizing is scaled by (design §4.3): the overlay, aged on the
+         venue's clock as the desk last read it, times the governor
+         on the graph's drawdown and the book's drawdown cap. The desk shows
+         the same numbers. *)
+      let gauge =
+        Ohcamel_desk.Intake.Gauge.create ~spec:book.Config.Book.desk
+          ~venue_now:(fun () -> Ohcamel_desk.Desk.venue_now desk)
+          ~drawdown:(fun () -> Some (Graph.current_drawdown graph))
+          ~dd_cap:(Ohcamel_desk.Intake.Gauge.dd_cap_of_limits limits)
+      in
+      Ohcamel_desk.Desk.set_gauge desk gauge;
       let intake =
-        Ohcamel_desk.Intake.setup ~journal
+        Ohcamel_desk.Intake.setup ~gauge ~journal
           ~universe:(List.map instruments ~f:(fun i -> i.Instrument.symbol))
           ~signals:book.Config.Book.signals ~dir:signals_dir ~on_event:live_line
           ~now:Time_ns.now
@@ -1522,13 +1532,26 @@ let run_live ~book_path ~(serve_port : int option) =
               | Alpaca_ws.Message.Success msg -> live_line ("alpaca  " ^ msg)
               | Alpaca_ws.Message.Subscription raw -> live_line ("alpaca  " ^ raw)
               | _ -> ())
-            ~graph ~credentials:config.Config.credentials ~runtime ~stats:alpaca_stats ()
+            ~graph ~credentials:config.Config.credentials ~runtime
+            ~symbols:(Config.Book.stream_names book)
+            ~stats:alpaca_stats ()
         with
         | Ok () -> Deferred.unit
         | Error fatal ->
             prerr_endline "";
             prerr_endline fatal;
             exit 1
+      in
+      (* The names past the stream's thirty, marked by the latest-trades call
+         every ten seconds. Started here, beside the websocket, so no startup
+         step waits on its first request; it never finishes and never raises. *)
+      let poll =
+        match Config.Book.polled_names book with
+        | [] -> Deferred.unit
+        | symbols ->
+            Alpaca_poll.run ~graph ~credentials:config.Config.credentials ~runtime
+              ~symbols ~every:(Time_ns.Span.of_sec 10.) ~stats:alpaca_stats
+              ~on_event:(fun e -> live_line ("alpaca  " ^ e))
       in
       let http =
         match serve_port with
@@ -1559,8 +1582,8 @@ let run_live ~book_path ~(serve_port : int option) =
                 ~extensions:
                   (Ohcamel_desk.Desk.extensions desk
                   @ Ohcamel_desk.Desk_routes.extensions ~host:`Live ~oms
-                  @ Ohcamel_desk.Desk.research_extensions ~journal ~strategies ~intake
-                      ~on_event:live_line)
+                  @ Ohcamel_desk.Desk.research_extensions ~desk:(Some desk) ~journal
+                      ~strategies ~intake ~on_event:live_line)
                 ~kill_switch_wired_to:"desk.submit" ~desk:true ~signals
                 ~frame_extra:(fun () -> [ ("desk", Ohcamel_desk.Desk.summary_json desk) ])
                 ()
@@ -1582,6 +1605,7 @@ let run_live ~book_path ~(serve_port : int option) =
       Deferred.all_unit
         [
           alpaca;
+          poll;
           Deferred.ignore_m clock;
           Deferred.ignore_m display;
           fred;
@@ -1742,6 +1766,14 @@ let run_demo ~port =
       ()
   in
   Ohcamel_desk.Desk.set_oms desk oms;
+  (* No intake runs here, but the page shows the scale one would size with:
+     no overlay is ever received, so it is absent and reads 1, times the
+     governor on the synthetic book's drawdown. *)
+  Ohcamel_desk.Desk.set_gauge desk
+    (Ohcamel_desk.Intake.Gauge.create ~spec:demo_desk_spec
+       ~venue_now:(fun () -> Ohcamel_desk.Desk.venue_now desk)
+       ~drawdown:(fun () -> Some (Graph.current_drawdown graph))
+       ~dd_cap:(Ohcamel_desk.Intake.Gauge.dd_cap_of_limits demo_limits));
   (* No reconciliation first, as the live host has: the journal is in memory
      and was opened empty above, so no earlier process left an order open for
      a trip to miss. *)
@@ -1767,7 +1799,7 @@ let run_demo ~port =
            serves EXP-A01's manifests here as on the live host; and no
            ~signals below, because no intake runs here, so Figure 1 draws no
            signals band and stays the figure it was. *)
-        @ Ohcamel_desk.Desk.research_extensions ~journal ~strategies:[]
+        @ Ohcamel_desk.Desk.research_extensions ~desk:(Some desk) ~journal ~strategies:[]
             ~intake:Ohcamel_desk.Intake.demo_status ~on_event:(fun e ->
               printf "  %s\n%!" e))
       ~kill_switch_wired_to:"desk.submit" ~desk:true

@@ -59,6 +59,7 @@ on:
     branches:
       - 'desk/**'
       - 'final/**'
+      - 'auto/**'
   pull_request:
   workflow_dispatch:
 
@@ -233,38 +234,117 @@ jobs:
 
       # Finish plan Task 11: the research image runs as uid 10001 and the
       # signals volume it writes is the one the engine reads read-only. On a
-      # fresh named volume each time, in both orders -- research first, then
+      # fresh named volume each time, in every order -- research first, then
       # the engine first, which is the order the old root departure was
-      # about: whichever image seeds an empty volume, it must come out
-      # writable by research's 10001 and readable through the engine's :ro
-      # mount, and a write through that mount must be refused. --entrypoint
-      # on every run: research's entrypoint is the service and the engine's
-      # is its binary.
-      - name: Signals volume -- research as 10001, engine read-only
+      # about, then the worker first (autonomous-paper-trading Task 16: the
+      # quant image, uid 10002, is the volume's second writer, through the
+      # `signals` group, gid 10001): whichever image seeds an empty volume,
+      # it must come out writable by research's 10001 AND by the worker,
+      # readable through the engine's :ro mount, and a write through that
+      # mount must be refused. Then the volume the droplet has -- seeded
+      # before the group, 10001:root 0755, and NOT empty (research has
+      # written there) -- refuses the worker until signals-init's own command
+      # (compose, as root) has run, and accepts it after. --entrypoint on
+      # every run: research's entrypoint is the service, the engine's is its
+      # binary, and the quant image's is its wrapper script, which execs
+      # ohcamel-quant and nothing else. --entrypoint does not touch the user:
+      # every worker run below has no --user, so it runs as the image's own
+      # `USER quant` (quant/Dockerfile) -- exactly how compose runs
+      # ohcamel-worker, which sets no user: -- and the write itself checks,
+      # in the same container, that it is uid 10002 with 10001 among its
+      # groups, and reports the root's owner and mode as it saw them.
+      #
+      # Why the old volume holds a file: Docker copies an image's directory
+      # (contents, owner AND mode) into a named volume that is EMPTY when a
+      # container mounts it. An empty 10001:root 0755 volume mounted at the
+      # quant image's /signals is re-seeded 10001:10001 2775 by that very
+      # mount, so the worker's "refused" write succeeded and the control
+      # proved nothing (run 38196040248). The droplet's volume is not empty,
+      # so Docker leaves it alone; the control now matches that.
+      - name: Signals volume -- research as 10001, the worker through gid 10001, engine read-only
         run: |
           set -euo pipefail
           research="ghcr.io/ajaiupadhyaya/ohcamel-research:$SHA"
           engine="ghcr.io/ajaiupadhyaya/ohcamel:$SHA"
-          for order in research-first engine-first; do
+          quant="ghcr.io/ajaiupadhyaya/ohcamel-quant:$SHA"
+          # Runs inside the quant image as whatever user the image gives it.
+          # Exit 97: not the worker's identity (never a pass, never a
+          # refusal); exit 1: touch refused; 0: written. stdout: the root's
+          # owner and mode as this container saw them, before the write.
+          IFS= read -r -d '' worker_script <<'SH' || true
+          u=$(id -u); g=$(id -G)
+          if [ "$u" != 10002 ]; then echo "worker runs as uid $u, expected 10002" >&2; exit 97; fi
+          case " $g " in *" 10001 "*) ;; *) echo "worker groups are '$g', expected 10001 among them" >&2; exit 97 ;; esac
+          stat -c '%u:%g %a' /signals
+          touch "/signals/$1" || exit 1
+          SH
+          worker_write() {
+            docker run --rm --entrypoint /bin/sh -v "$1:/signals" "$quant" -c "$worker_script" sh "$2"
+          }
+          for order in research-first engine-first worker-first; do
             vol="t11-signals-$order-$GITHUB_RUN_ID"
             docker volume create "$vol" >/dev/null
             if [ "$order" = engine-first ]; then
               docker run --rm --entrypoint ls -v "$vol:/data/signals:ro" "$engine" -ln /data/signals
+            fi
+            if [ "$order" = worker-first ]; then
+              docker run --rm --entrypoint ls -v "$vol:/signals" "$quant" -lnd /signals
             fi
             uid=$(docker run --rm --entrypoint id -v "$vol:/signals" "$research" -u)
             if [ "$uid" != "10001" ]; then
               echo "::error::$order: research runs as uid '$uid', expected 10001"
               exit 1
             fi
+            mode=$(docker run --rm --entrypoint stat -v "$vol:/signals" "$research" -c '%u:%g %a' /signals)
+            if [ "$mode" != "10001:10001 2775" ]; then
+              echo "::error::$order: the volume's root is '$mode', expected '10001:10001 2775'"
+              exit 1
+            fi
             docker run --rm --entrypoint touch -v "$vol:/signals" "$research" /signals/probe
+            if ! seen=$(worker_write "$vol" worker-probe); then
+              echo "::error::$order: the worker (uid 10002, gid 10001) could not write /signals/worker-probe"
+              exit 1
+            fi
+            if [ "$seen" != "10001:10001 2775" ]; then
+              echo "::error::$order: the worker saw the volume's root as '$seen', expected '10001:10001 2775'"
+              exit 1
+            fi
             docker run --rm --entrypoint cat -v "$vol:/data/signals:ro" "$engine" /data/signals/probe
+            docker run --rm --entrypoint cat -v "$vol:/data/signals:ro" "$engine" /data/signals/worker-probe
             if docker run --rm --entrypoint touch -v "$vol:/data/signals:ro" "$engine" /data/signals/engine-write 2>/dev/null; then
               echo "::error::$order: the engine wrote through its :ro mount"
               exit 1
             fi
-            echo "$order -- research (uid 10001) touched /signals/probe, the engine read it through :ro and was refused a second file"
+            echo "$order -- research (uid 10001) touched /signals/probe, the worker (checked uid 10002, groups with 10001) touched /signals/worker-probe, the engine read both through :ro and was refused a third file"
             docker volume rm "$vol" >/dev/null
           done
+          # The droplet's volume: seeded before the group existed, and holding
+          # research's earlier output, so no mount re-seeds it.
+          vol="t16-signals-old-$GITHUB_RUN_ID"
+          docker volume create "$vol" >/dev/null
+          docker run --rm --user 0:0 --entrypoint /bin/sh -v "$vol:/signals" "$engine" \
+            -c 'touch /signals/exp_a01_old.json && chown -R 10001:0 /signals && chmod 0644 /signals/exp_a01_old.json && chmod 0755 /signals'
+          rc=0
+          seen=$(worker_write "$vol" worker-probe 2>/dev/null) || rc=$?
+          if [ "$seen" != "10001:0 755" ]; then
+            echo "::error::old volume: the worker saw the root as '$seen', expected '10001:0 755' -- the volume was re-seeded and this control proves nothing"
+            exit 1
+          fi
+          case "$rc" in
+            1) ;;
+            0) echo "::error::old volume: the worker wrote to a 10001:root 0755 root before signals-init ran"; exit 1 ;;
+            *) echo "::error::old volume: the worker's write exited $rc, not as the worker's own user (uid 10002, groups with 10001)"; exit 1 ;;
+          esac
+          docker run --rm --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add FOWNER --cap-add FSETID \
+            --entrypoint /bin/sh -v "$vol:/signals" "$engine" -c 'chown 10001:10001 /signals && chmod 2775 /signals'
+          seen=$(worker_write "$vol" worker-probe)
+          if [ "$seen" != "10001:10001 2775" ]; then
+            echo "::error::old volume: after signals-init's command the worker saw the root as '$seen', expected '10001:10001 2775'"
+            exit 1
+          fi
+          docker run --rm --entrypoint touch -v "$vol:/signals" "$research" /signals/probe
+          echo "old volume -- the worker (uid 10002, groups with 10001) was refused at 10001:root 0755; after signals-init's command both writers wrote"
+          docker volume rm "$vol" >/dev/null
 
       # The base file plus the image job's own override: the sha tags just
       # loaded, pull_policy: never, deploy/ci.env for the two services that

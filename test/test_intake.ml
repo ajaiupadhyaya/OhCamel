@@ -8,6 +8,8 @@
 
    Two strategies unless a case says otherwise: exp_a01_spy on SPY, LIVE, and
    exp_a01_tlt on TLT, advisory, each at half the capital and max_age 3. The
+   incubation cases (Task 9) add a third, inc_spy on SPY, (sizing incubation),
+   also at half and max_age 3 -- they judge it, and test/desk_async sizes it. The
    universe is SPY, TLT and QQQ, so QQQ is a name R7 allows and neither
    strategy owns. Session dates are real weekdays of September 2026: the 14th
    is a Monday and the 18th a Friday. *)
@@ -44,6 +46,8 @@ let strategy ?(sizing = Signals_spec.Advisory) ?(max_age = 3) name symbols =
 
 let spy_live = strategy ~sizing:Signals_spec.Live "exp_a01_spy" [ "SPY" ]
 let tlt_advisory = strategy "exp_a01_tlt" [ "TLT" ]
+let spy_incubation = strategy ~sizing:Signals_spec.Incubation "inc_spy" [ "SPY" ]
+let three = [ spy_live; tlt_advisory; spy_incubation ]
 let zeros = "sha256:" ^ String.make 64 '0'
 
 (* One document, as the research service writes it, with every field the
@@ -110,14 +114,16 @@ type fixture = {
   events : string Queue.t;
 }
 
-let with_intake ?(strategies = [ spy_live; tlt_advisory ]) ?(sessions = []) ~f () =
+let with_intake ?gauge ?(strategies = [ spy_live; tlt_advisory ]) ?(sessions = []) ~f () =
   with_dir ~f:(fun dir ->
       let journal = Or_error.ok_exn (Journal.open_ ~path:":memory:") in
       List.iter sessions ~f:(session journal);
       let events = Queue.create () in
       let intake =
-        Intake.create ~journal ~dir ~strategies ~universe ~on_event:(Queue.enqueue events)
+        Intake.create ?gauge ~journal ~dir ~strategies ~universe
+          ~on_event:(Queue.enqueue events)
           ~now:(fun () -> at)
+          ()
       in
       Exn.protect
         ~f:(fun () -> f { journal; dir; intake; events })
@@ -241,15 +247,15 @@ let test_no_directory_means_no_intake () =
   in
   contains "no directory, a signals block" ~substring:"OHCAMEL_SIGNALS_DIR is not set"
     (off "no directory"
-       (Intake.setup ~journal ~universe ~signals ~dir:None ~on_event:ignore
-          ~now:(fun () -> at)));
+       (Intake.setup ~gauge:(Intake.Gauge.none ()) ~journal ~universe ~signals ~dir:None
+          ~on_event:ignore ~now:(fun () -> at)));
   contains "a directory, no signals block" ~substring:"the book has no signals block"
     (off "no block"
-       (Intake.setup ~journal ~universe ~signals:None ~dir:(Some "/tmp") ~on_event:ignore
-          ~now:(fun () -> at)));
+       (Intake.setup ~gauge:(Intake.Gauge.none ()) ~journal ~universe ~signals:None
+          ~dir:(Some "/tmp") ~on_event:ignore ~now:(fun () -> at)));
   (match
-     Intake.setup ~journal ~universe ~signals ~dir:(Some "/tmp") ~on_event:ignore
-       ~now:(fun () -> at)
+     Intake.setup ~gauge:(Intake.Gauge.none ()) ~journal ~universe ~signals
+       ~dir:(Some "/tmp") ~on_event:ignore ~now:(fun () -> at)
    with
   | Intake.Running _ -> ()
   | Intake.Off why -> Alcotest.failf "both halves, and no intake: %s" why);
@@ -394,8 +400,11 @@ let test_an_advisory_strategy_produces_no_order () =
    rebalance, simulated: the pass records it and hands it on, and nothing
    sizes it. The next pass -- and a restarted intake, with nothing in memory,
    over the same journal -- finds its (strategy, sequence) judged and hands
-   nothing on: the signal is never re-judged and never re-sized, and its
-   pending sentence stays to say what happened. *)
+   nothing on: the signal is never re-judged, and its pending sentence stays
+   to say what happened. What hands it back is the retry set (the stage
+   review's A-I1): collect_pending reads the pending judgement from the
+   journal, and -- no order having been journaled under its source -- it is
+   tried again; one with orders is closed instead (test/desk_async). *)
 let test_a_crash_between_judging_and_proposing_does_not_re_size () =
   with_intake ~sessions:week
     ~f:(fun f ->
@@ -409,7 +418,9 @@ let test_a_crash_between_judging_and_proposing_does_not_re_size () =
         (accepted_keys (Intake.judge_pass f.intake));
       let restarted =
         Intake.create ~journal:f.journal ~dir:f.dir ~strategies:[ spy_live; tlt_advisory ]
-          ~universe ~on_event:ignore ~now:(fun () -> at)
+          ~universe ~on_event:ignore
+          ~now:(fun () -> at)
+          ()
       in
       Alcotest.(check (list (pair string int)))
         "nor does a restarted intake" []
@@ -422,9 +433,13 @@ let test_a_crash_between_judging_and_proposing_does_not_re_size () =
          orders went -- so it names the journal's record of them. *)
       contains "the pending sentence names the orders' source"
         ~substring:
-          "the journal's orders whose source is signal:exp_a01_spy:5 are the record of \
+          "The journal's orders whose source is signal:exp_a01_spy:5 are the record of \
            anything sent"
         (Option.value_exn (rebalance_of f "exp_a01_spy" 5));
+      Alcotest.(check (list (pair string int)))
+        "the retry set hands it back"
+        [ ("exp_a01_spy", 5) ]
+        (accepted_keys (Intake.collect_pending restarted));
       Alcotest.(check int)
         "and nothing was ever proposed" 0
         (List.length (Journal.recent_orders f.journal ~limit:10)))
@@ -644,7 +659,9 @@ let test_r3_deferral_ends_rejected_after_max_age_sessions () =
 
 let restart f =
   Intake.create ~journal:f.journal ~dir:f.dir ~strategies:[ spy_live; tlt_advisory ]
-    ~universe ~on_event:ignore ~now:(fun () -> at)
+    ~universe ~on_event:ignore
+    ~now:(fun () -> at)
+    ()
 
 (* The review's case. A live strategy's file dated 18 September, first seen
    when the latest session is the 14th, and the engine restarted every two
@@ -1140,12 +1157,26 @@ let test_api_research's_shape () =
       let strategies = [ spy_live; tlt_advisory ] in
       with_server
         ~extensions:
-          (D.Desk.research_extensions ~journal:f.journal ~strategies
+          (D.Desk.research_extensions ~desk:None ~journal:f.journal ~strategies
              ~intake:(Intake.Running f.intake) ~on_event:ignore) ~f:(fun json ->
           Alcotest.(check (list string))
             "the top level"
-            [ "intake"; "reason"; "deferred"; "last_pass"; "strategies"; "r8" ]
+            [ "intake"; "reason"; "deferred"; "last_pass"; "strategies"; "overlay"; "r8" ]
             (keys json);
+          Alcotest.(check (list string))
+            "the overlay block"
+            [
+              "value";
+              "as_of";
+              "age_s";
+              "state";
+              "reason";
+              "governor";
+              "governor_cap";
+              "inputs";
+              "reported";
+            ]
+            (keys (field json "overlay"));
           Alcotest.(check string)
             "running" "running"
             (Yojson.Safe.Util.to_string (field json "intake"));
@@ -1159,8 +1190,42 @@ let test_api_research's_shape () =
           | [ spy_json; tlt_json ] ->
               Alcotest.(check (list string))
                 "a strategy"
-                [ "name"; "symbols"; "max_age"; "sizing"; "capital_fraction"; "latest" ]
+                [
+                  "name";
+                  "symbols";
+                  "max_age";
+                  "sizing";
+                  "tier";
+                  "state";
+                  "capital_fraction";
+                  "cadence";
+                  "adjust";
+                  "latest";
+                  "judgement";
+                  "validation";
+                  "record";
+                ]
                 (keys spy_json);
+              Alcotest.(check (list string))
+                "tier, state, cadence, adjust, record"
+                [ "live"; "active"; "daily"; "intraday"; "null" ]
+                [
+                  Yojson.Safe.Util.to_string (field spy_json "tier");
+                  Yojson.Safe.Util.to_string (field spy_json "state");
+                  Yojson.Safe.Util.to_string (field spy_json "cadence");
+                  Yojson.Safe.Util.to_string (field spy_json "adjust");
+                  Yojson.Safe.to_string (field spy_json "record");
+                ];
+              Alcotest.(check string)
+                "the judgement, summarised"
+                {|{"verdict":"advisory","rule":"R6","detail":"|}
+                (String.prefix
+                   (Yojson.Safe.to_string (field spy_json "judgement"))
+                   (String.length {|{"verdict":"advisory","rule":"R6","detail":"|}));
+              Alcotest.(check string)
+                "validation is the latest's"
+                (Yojson.Safe.to_string (field (field spy_json "latest") "validation"))
+                (Yojson.Safe.to_string (field spy_json "validation"));
               Alcotest.(check string)
                 "its sizing, in words" "live"
                 (Yojson.Safe.Util.to_string (field spy_json "sizing"));
@@ -1174,6 +1239,7 @@ let test_api_research's_shape () =
                   "verdict";
                   "rule";
                   "detail";
+                  "tier";
                   "rebalance";
                   "sequence";
                   "as_of";
@@ -1191,6 +1257,9 @@ let test_api_research's_shape () =
                   Int.to_string (Yojson.Safe.Util.to_int (field latest "sequence"));
                   Yojson.Safe.Util.to_string (field latest "as_of");
                 ];
+              Alcotest.(check string)
+                "a live strategy's judgement is the live tier" "live"
+                (Yojson.Safe.Util.to_string (field latest "tier"));
               Alcotest.(check string)
                 "an advisory judgement has no rebalance" "null"
                 (Yojson.Safe.to_string (field latest "rebalance"));
@@ -1212,11 +1281,11 @@ let test_api_research_on_the_demo () =
   let journal = Or_error.ok_exn (Journal.open_ ~path:":memory:") in
   with_server
     ~extensions:
-      (D.Desk.research_extensions ~journal ~strategies:[] ~intake:Intake.demo_status
-         ~on_event:ignore) ~f:(fun json ->
+      (D.Desk.research_extensions ~desk:None ~journal ~strategies:[]
+         ~intake:Intake.demo_status ~on_event:ignore) ~f:(fun json ->
       Alcotest.(check string)
         "the whole answer"
-        {|{"intake":"off","reason":"no strategy is registered on the demo: its synthetic book holds neither SPY nor TLT, and adding them would move Figure 1","deferred":0,"last_pass":null,"strategies":[],"r8":"R8 (data hash) is not enforced; see the design §3.12"}|}
+        {|{"intake":"off","reason":"no strategy is registered on the demo: its synthetic book holds neither SPY nor TLT, and adding them would move Figure 1","deferred":0,"last_pass":null,"strategies":[],"overlay":{"value":null,"as_of":null,"age_s":null,"state":"absent","reason":null,"governor":null,"governor_cap":null,"inputs":null,"reported":null},"r8":"R8 (data hash) is not enforced; see the design §3.12"}|}
         (Yojson.Safe.to_string json));
   Journal.close journal
 
@@ -1282,8 +1351,8 @@ let with_evidence ~f =
       let server =
         Server.create
           ~extensions:
-            (D.Desk.research_extensions ~journal ~strategies:[] ~intake:Intake.demo_status
-               ~on_event:ignore)
+            (D.Desk.research_extensions ~desk:None ~journal ~strategies:[]
+               ~intake:Intake.demo_status ~on_event:ignore)
           ~mode:`Demo ~graph ~factor:"SYNTHETIC" ()
       in
       match
@@ -1445,6 +1514,435 @@ let test_the_manifests_carry_every_line_the_page_reads () =
                | _ -> Alcotest.fail "no sources")
                ~f:(fun (_, v) -> Yojson.Safe.Util.to_int v))))
 
+(* ------------------------------------------------------------------------ *)
+(* The incubation tier (Task 9)                                              *)
+(* ------------------------------------------------------------------------ *)
+
+(* inc_spy is (sizing incubation): a document whose battery FAILED is sized
+   all the same, on the paper venue, labelled. R1-R5 and R7 pass, R6's own
+   sentence is carried as the rule, the verdict is accepted_incubation, the
+   detail names the status and the tier, and the document is handed to
+   sizing with its rebalance pending -- never "not sized". *)
+let test_incubation_sizes_a_failing_status () =
+  with_intake ~strategies:three ~sessions:week
+    ~f:(fun f ->
+      write f.dir "inc.json"
+        (doc ~strategy:"inc_spy" ~sequence:7 ~status:"fail" "2026-09-18");
+      let accepted = Intake.judge_pass f.intake in
+      Alcotest.check judgement "accepted_incubation, at R6"
+        (Some ("accepted_incubation", Some "R6"))
+        (judged f "inc_spy" 7);
+      let d = detail f "inc_spy" 7 in
+      contains "the detail is labelled" ~substring:"[tier=incubation] " d;
+      contains "the detail names the status" ~substring:{|validation.status is "fail"|} d;
+      contains "the detail states the policy"
+        ~substring:"sized only on a paper venue, under the incubation cap" d;
+      Alcotest.(check (list (pair string int)))
+        "handed to sizing"
+        [ ("inc_spy", 7) ]
+        (accepted_keys accepted);
+      let r = Option.value_exn (rebalance_of f "inc_spy" 7) in
+      Alcotest.(check string)
+        "its rebalance pending"
+        (Intake.pending ~strategy:"inc_spy" ~sequence:7)
+        r;
+      Alcotest.(check bool)
+        (sprintf "never 'not sized': %S" r)
+        false
+        (String.is_prefix r ~prefix:"not sized"))
+    ()
+
+(* The same strategy's passing document: accepted_incubation with no rule --
+   the tier, not the status, is what sizes it. *)
+let test_incubation_sizes_a_pass_too () =
+  with_intake ~strategies:three ~sessions:week
+    ~f:(fun f ->
+      write f.dir "inc.json" (doc ~strategy:"inc_spy" ~sequence:7 "2026-09-18");
+      let accepted = Intake.judge_pass f.intake in
+      Alcotest.check judgement "accepted_incubation, no rule"
+        (Some ("accepted_incubation", None))
+        (judged f "inc_spy" 7);
+      contains "the detail names the status" ~substring:{|validation.status is "pass"|}
+        (detail f "inc_spy" 7);
+      Alcotest.(check (list (pair string int)))
+        "handed to sizing"
+        [ ("inc_spy", 7) ]
+        (accepted_keys accepted))
+    ()
+
+(* The tier changes nothing for a live strategy: in the same pass, beside
+   inc_spy's failing document, exp_a01_spy's failing one is advisory at R6,
+   unlabelled and never sized, exactly as before. And an incubation
+   document that fails R7 is still rejected at R7: the tier carries R6, and
+   nothing else. *)
+let test_live_still_advisory_on_fail () =
+  with_intake ~strategies:three ~sessions:week
+    ~f:(fun f ->
+      write f.dir "live.json" (doc ~sequence:7 ~status:"fail" "2026-09-18");
+      write f.dir "inc.json"
+        (doc ~strategy:"inc_spy" ~sequence:7 ~status:"fail"
+           ~targets:[ ("SPY", 1.5) ]
+           "2026-09-18");
+      let accepted = Intake.judge_pass f.intake in
+      Alcotest.check judgement "live: advisory at R6"
+        (Some ("advisory", Some "R6"))
+        (judged f "exp_a01_spy" 7);
+      Alcotest.(check string)
+        "live: the detail as before"
+        {|validation.status is "fail" -- advisory, not traded; R1-R5 passed and R7 was not reached, so it is shown and never sized|}
+        (detail f "exp_a01_spy" 7);
+      Alcotest.check judgement "incubation over-levered: rejected at R7"
+        (Some ("rejected", Some "R7"))
+        (judged f "inc_spy" 7);
+      Alcotest.(check (list (pair string int)))
+        "nothing sized" [] (accepted_keys accepted))
+    ()
+
+(* /api/research serves each latest judgement's tier: inc_spy's is
+   "incubation", from the label its detail was journaled with. *)
+let test_tier_served () =
+  with_intake ~strategies:three ~sessions:week
+    ~f:(fun f ->
+      write f.dir "inc.json"
+        (doc ~strategy:"inc_spy" ~sequence:7 ~status:"fail" "2026-09-18");
+      Intake.pass f.intake;
+      let json =
+        Intake.research_json ~journal:f.journal ~strategies:three
+          (Intake.Running f.intake)
+      in
+      match
+        List.find
+          (Yojson.Safe.Util.to_list (field json "strategies"))
+          ~f:(fun s ->
+            String.equal (Yojson.Safe.Util.to_string (field s "name")) "inc_spy")
+      with
+      | None -> Alcotest.fail "inc_spy is not served"
+      | Some inc ->
+          Alcotest.(check string)
+            "its sizing" "incubation"
+            (Yojson.Safe.Util.to_string (field inc "sizing"));
+          let latest = field inc "latest" in
+          Alcotest.(check (list string))
+            "verdict and tier"
+            [ "accepted_incubation"; "incubation" ]
+            [
+              Yojson.Safe.Util.to_string (field latest "verdict");
+              Yojson.Safe.Util.to_string (field latest "tier");
+            ])
+    ()
+
+(* Invariant 15: the validation block is never rewritten. The file is
+   written by hand, with spacing and number spellings no serialiser of ours
+   produces (0.310, 7.2e-1, 2E-1), so a re-serialised document could not
+   equal it: the signals row's document is the file's bytes, and parsing it
+   back gives the file's own validation fields. *)
+let test_the_validation_block_is_journaled_byte_for_byte () =
+  with_intake ~strategies:three ~sessions:week
+    ~f:(fun f ->
+      let text =
+        sprintf
+          {|{ "schema_version": 1, "strategy": "inc_spy", "params_hash": "%s",
+  "as_of": "2026-09-18", "computed_at": "2026-09-18T23:15:00Z", "data_hash": "%s",
+  "sequence": 7,
+  "validation": { "status": "fail", "gates_version": "2026-09-02",
+                  "dsr": 0.310, "psr": 7.2e-1, "pbo": 2E-1, "manifest": "m.json" },
+  "targets": [ { "symbol": "SPY", "weight": 1 } ] }|}
+          zeros zeros
+      in
+      write f.dir "inc.json" text;
+      Intake.pass f.intake;
+      let row =
+        Option.value_exn (Journal.signal f.journal ~strategy:"inc_spy" ~sequence:7)
+      in
+      Alcotest.(check string)
+        "the document is the file's bytes" text row.Journal.Signal.document;
+      let validation s =
+        let v =
+          match D.Contract.parse_string s with
+          | Ok d -> d.D.Contract.validation
+          | Error why -> Alcotest.failf "not a signal: %s" why
+        in
+        ( (v.D.Contract.status, v.D.Contract.gates_version),
+          (v.D.Contract.dsr, v.D.Contract.psr, v.D.Contract.pbo),
+          v.D.Contract.manifest )
+      in
+      let file = validation text in
+      Alcotest.(check bool)
+        "parsed back, its validation is the file's" true
+        (Poly.equal file (validation row.Journal.Signal.document));
+      Alcotest.(check bool)
+        "and the file's is what was written" true
+        (Poly.equal file
+           (("fail", "2026-09-02"), (Some 0.31, Some 0.72, Some 0.2), Some "m.json")))
+    ()
+
+(* ------------------------------------------------------------------------ *)
+(* Task 11: the overlay                                                      *)
+(* ------------------------------------------------------------------------ *)
+
+(* An overlay document as the research service writes it, 16 minutes before
+   [at]: inside the book's default overlay_max_age_minutes of 60. *)
+let overlay_doc ?(as_of = "2026-09-18T23:00:00Z") ~sequence scale =
+  sprintf
+    {|{"schema_version":1,"kind":"overlay","as_of":"%s","computed_at":"2026-09-18T23:00:05Z","sequence":%d,"exposure_scale":%s,"inputs":{"vol_target":0.1},"reported":{"regime_p_high":0.12}}|}
+    as_of sequence scale
+
+(* The venue clock is [clock], a cell a case moves; the book is the default
+   one (fallback 0.5, band 0.10, 60 minutes). *)
+let gauge ?drawdown ?dd_cap clock =
+  Intake.Gauge.create ~spec:Book.Desk_spec.default
+    ~venue_now:(fun () -> !clock)
+    ~drawdown:(fun () -> drawdown)
+    ~dd_cap
+
+let overlay_rows journal =
+  let n = ref 0 in
+  ignore
+    (Sqlite3.exec_not_null_no_headers
+       (Journal.For_testing.db journal)
+       ~cb:(fun row -> n := Int.of_string row.(0))
+       "SELECT COUNT(*) FROM overlays"
+      : Sqlite3.Rc.t);
+  !n
+
+let state_of intake =
+  Intake.state_word (Intake.current_reading intake).Intake.Reading.state
+
+(* overlay-7.json, at 0.7071, judged by Overlay and not the contract: its
+   row is accepted with its scale, as_of and receipt on the venue clock, and
+   no signal is judged from it. Fresh, with no drawdown to govern, the
+   effective scale is the overlay's own. A file named overlay- that is not
+   an overlay is refused in signal_files, once, as a signal file would be. *)
+let test_overlay_accepted_and_journaled () =
+  let clock = ref (Some at) in
+  with_intake ~gauge:(gauge clock) ~sessions:[ "2026-09-18" ]
+    ~f:(fun f ->
+      write f.dir "overlay-7.json" (overlay_doc ~sequence:7 "0.7071");
+      write f.dir "overlay-8.json" {|{"kind":"overlay"}|};
+      Alcotest.(check int)
+        "no signal accepted" 0
+        (List.length (Intake.judge_pass f.intake));
+      Intake.pass f.intake;
+      (match Journal.latest_overlay f.journal with
+      | None -> Alcotest.fail "no accepted overlay row"
+      | Some (sequence, as_of, scale, received) ->
+          Alcotest.(check (pair (pair int (float 0.0)) (pair string string)))
+            "overlay 7, 0.7071, its as_of, received at the venue clock's now"
+            ((7, 0.7071), ("2026-09-18T23:00:00.000000000Z", D.Desk_time.rfc3339 at))
+            ((sequence, scale), (as_of, received)));
+      Alcotest.(check (float 1e-12))
+        "effective = 0.7071" 0.7071
+        (Intake.effective_scale f.intake);
+      Alcotest.(check string) "fresh" "fresh" (state_of f.intake);
+      Alcotest.(check (pair bool bool))
+        "overlay-7 is not a signal file; overlay-8, unparseable, is" (false, true)
+        ( Journal.signal_file_recorded f.journal ~name:"overlay-7.json",
+          Journal.signal_file_recorded f.journal ~name:"overlay-8.json" );
+      Alcotest.(check int) "one overlay row" 1 (overlay_rows f.journal);
+      (* /api/research carries the accepted document's inputs and its two
+         reported-only figures beside the reading. *)
+      let json =
+        Intake.research_json
+          ~scale:(Intake.reading_fields (Intake.current_reading f.intake))
+          ~journal:f.journal ~strategies:[] (Intake.Running f.intake)
+      in
+      let overlay = field json "overlay" in
+      Alcotest.(check (list string))
+        "state, inputs, reported"
+        [ "fresh"; {|{"vol_target":0.1}|}; {|{"regime_p_high":0.12}|} ]
+        [
+          Yojson.Safe.Util.to_string (field overlay "state");
+          Yojson.Safe.to_string (field overlay "inputs");
+          Yojson.Safe.to_string (field overlay "reported");
+        ])
+    ()
+
+(* Accepted at [at], then the clock moves. 30 minutes on it is held: 0.7071
+   times the governor, (0.02 - 0.015) / 0.01 = 0.5, is 0.35355. 61 minutes on
+   -- past the 60 -- it is stale: the fallback 0.5 times the governor 0.5 is
+   0.25, and the wire's state says stale. *)
+let test_overlay_stale_falls_back () =
+  let clock = ref (Some at) in
+  with_intake
+    ~gauge:(gauge ~drawdown:0.015 ~dd_cap:0.02 clock)
+    ~f:(fun f ->
+      write f.dir "overlay-7.json" (overlay_doc ~sequence:7 "0.7071");
+      Intake.pass f.intake;
+      clock := Some (Time_ns.add at (Time_ns.Span.of_min 30.0));
+      Alcotest.(check (pair (float 1e-12) string))
+        "held: 0.7071 x 0.5" (0.35355, "held")
+        (Intake.effective_scale f.intake, state_of f.intake);
+      clock := Some (Time_ns.add at (Time_ns.Span.of_min 61.0));
+      Alcotest.(check (float 1e-12))
+        "stale: overlay_fallback x governor = 0.5 x 0.5" 0.25
+        (Intake.effective_scale f.intake);
+      let wire = `Assoc (Intake.reading_fields (Intake.current_reading f.intake)) in
+      Alcotest.(check string)
+        "the wire says stale" "stale"
+        Yojson.Safe.Util.(to_string (member "state" (member "overlay" wire))))
+    ()
+
+(* The governor reads the graph. A book of 98,500 in cash whose recorded peak
+   is 100,000 is 1.5 % down: Graph.current_drawdown 0.015. Its Max_drawdown
+   limit of 0.02 is the cap, so the governor is (0.02 - 0.015) / (0.02 / 2) =
+   0.5; with no overlay ever accepted it is absent and reads 1, so the scale
+   is 0.5. *)
+let test_governor_read_from_the_graph () =
+  let limits =
+    [ { Limit.name = "dd-cap"; scope = Limit.Portfolio; kind = Limit.Max_drawdown 0.02 } ]
+  in
+  let graph =
+    Graph.create ~starting_cash:(Notional.of_float 98_500.0)
+      ~instruments:[ { Instrument.symbol = spy; sector = Sector.of_string "FUNDS" } ]
+      ~limits ~confidence:0.95 ~return_window:10 ()
+  in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      Graph.set_equity_history graph [| 100_000.0 |];
+      Graph.stabilize graph;
+      Alcotest.(check (float 1e-12))
+        "the graph's drawdown" 0.015
+        (Graph.current_drawdown graph);
+      let gauge =
+        Intake.Gauge.create ~spec:Book.Desk_spec.default
+          ~venue_now:(fun () -> Some at)
+          ~drawdown:(fun () -> Some (Graph.current_drawdown graph))
+          ~dd_cap:(Intake.Gauge.dd_cap_of_limits limits)
+      in
+      let r = Intake.reading ~latest:None gauge in
+      Alcotest.(check (triple (float 1e-12) (float 1e-12) (option (float 0.0))))
+        "governor 0.5, scale 1 x 0.5 (absent), cap 0.02" (0.5, 0.5, Some 0.02)
+        ( r.Intake.Reading.governor,
+          r.Intake.Reading.exposure_scale,
+          r.Intake.Reading.governor_cap ))
+
+(* Judged once per sequence. overlay-9 is accepted; overlay-5 is then
+   rejected at O3, its 5 not above the accepted 9. Neither is judged again --
+   not by a second pass, and not by a restarted intake that remembers no
+   file -- so the INSERT never meets a sequence twice: two rows, one line
+   for each judgement, and no raise. *)
+let test_overlay_judged_once () =
+  let clock = ref (Some at) in
+  with_intake ~gauge:(gauge clock)
+    ~f:(fun f ->
+      write f.dir "overlay-9.json" (overlay_doc ~sequence:9 "0.6");
+      Intake.pass f.intake;
+      write f.dir "overlay-5.json" (overlay_doc ~sequence:5 "0.8");
+      Intake.pass f.intake;
+      Intake.pass f.intake;
+      let restarted_events = Queue.create () in
+      let restarted =
+        Intake.create ~gauge:(gauge clock) ~journal:f.journal ~dir:f.dir
+          ~strategies:[ spy_live; tlt_advisory ] ~universe
+          ~on_event:(Queue.enqueue restarted_events)
+          ~now:(fun () -> at)
+          ()
+      in
+      Intake.pass restarted;
+      Alcotest.(check int) "two rows" 2 (overlay_rows f.journal);
+      Alcotest.(check (pair bool bool))
+        "both recorded" (true, true)
+        ( Journal.overlay_recorded f.journal ~sequence:9,
+          Journal.overlay_recorded f.journal ~sequence:5 );
+      Alcotest.(check (option int))
+        "9 is the accepted one" (Some 9)
+        (Option.map (Journal.latest_overlay f.journal) ~f:(fun (s, _, _, _) -> s));
+      let lines q ~substring =
+        List.count (Queue.to_list q) ~f:(String.is_substring ~substring)
+      in
+      Alcotest.(check (list int))
+        "accepted once, rejected at O3 once, nothing raised" [ 1; 1; 0; 0 ]
+        [
+          lines f.events ~substring:"overlay 9 accepted";
+          lines f.events ~substring:"overlay 5 rejected at O3";
+          lines f.events ~substring:"could not be judged";
+          Queue.length restarted_events;
+        ])
+    ()
+
+(* Before any venue reading an overlay can be neither judged nor aged: the
+   file waits, unrecorded, said once over two passes, and the scale reads
+   stale -- the fallback 0.5 -- with the reason "no venue clock yet". The
+   first pass with a clock judges it. *)
+let test_no_venue_clock_yet_reads_stale () =
+  let clock = ref None in
+  with_intake ~gauge:(gauge clock)
+    ~f:(fun f ->
+      write f.dir "overlay-7.json" (overlay_doc ~sequence:7 "0.7071");
+      Intake.pass f.intake;
+      Intake.pass f.intake;
+      Alcotest.(check (triple bool int int))
+        "unrecorded, waiting, said once" (false, 1, 1)
+        ( Journal.overlay_recorded f.journal ~sequence:7,
+          Intake.deferred f.intake,
+          List.count (Queue.to_list f.events)
+            ~f:(String.is_substring ~substring:"no venue clock has answered") );
+      let r = Intake.current_reading f.intake in
+      Alcotest.(check (triple (float 0.0) string (option string)))
+        "the fallback, stale, and why"
+        (0.5, "stale", Some "no venue clock yet")
+        (r.Intake.Reading.exposure_scale, state_of f.intake, r.Intake.Reading.reason);
+      clock := Some at;
+      Intake.pass f.intake;
+      Alcotest.(check (pair (float 1e-12) string))
+        "judged once a clock answers" (0.7071, "fresh")
+        (Intake.effective_scale f.intake, state_of f.intake))
+    ()
+
+(* Absent means only that no overlay was ever accepted, and it reads 1 --
+   the desk as it sized before overlays -- times the governor: a drawdown of
+   1.6 % against a 2 % cap is (0.02 - 0.016) / 0.01 = 0.4, so 0.4. Once an
+   overlay is accepted and has aged 61 minutes it is stale, and the fallback
+   applies instead: 0.5 x 0.4 = 0.2. *)
+let test_absent_reads_one () =
+  let clock = ref (Some at) in
+  with_intake
+    ~gauge:(gauge ~drawdown:0.016 ~dd_cap:0.02 clock)
+    ~f:(fun f ->
+      Alcotest.(check (pair (float 1e-12) string))
+        "absent: 1 x 0.4" (0.4, "absent")
+        (Intake.effective_scale f.intake, state_of f.intake);
+      write f.dir "overlay-7.json" (overlay_doc ~sequence:7 "0.7071");
+      Intake.pass f.intake;
+      clock := Some (Time_ns.add at (Time_ns.Span.of_min 61.0));
+      Alcotest.(check (pair (float 1e-12) string))
+        "stale: 0.5 x 0.4" (0.2, "stale")
+        (Intake.effective_scale f.intake, state_of f.intake))
+    ()
+
+(* A book with no Portfolio Max_drawdown limit governs at 1, and the intake
+   says so once, when it is set up; the wire's governor_cap is null. *)
+let test_no_drawdown_cap_governs_at_one_said_at_setup () =
+  let journal = Or_error.ok_exn (Journal.open_ ~path:":memory:") in
+  let events = Queue.create () in
+  let g =
+    Intake.Gauge.create ~spec:Book.Desk_spec.default
+      ~venue_now:(fun () -> Some at)
+      ~drawdown:(fun () -> Some 0.5)
+      ~dd_cap:(Intake.Gauge.dd_cap_of_limits [])
+  in
+  (match
+     Intake.setup ~gauge:g ~journal ~universe
+       ~signals:(Some { Signals_spec.strategies = [ spy_live ] })
+       ~dir:(Some "/tmp") ~on_event:(Queue.enqueue events)
+       ~now:(fun () -> at)
+   with
+  | Intake.Running intake ->
+      let r = Intake.current_reading intake in
+      Alcotest.(check (pair (float 0.0) string))
+        "governor 1, the cap null" (1.0, "null")
+        ( r.Intake.Reading.governor,
+          Yojson.Safe.to_string
+            (Yojson.Safe.Util.member "governor_cap"
+               (Yojson.Safe.Util.member "overlay" (`Assoc (Intake.reading_fields r)))) )
+  | Intake.Off why -> Alcotest.failf "no intake: %s" why);
+  Alcotest.(check (list string))
+    "said once"
+    [ "intake    no Portfolio Max_drawdown limit: the drawdown governor is 1" ]
+    (Queue.to_list events);
+  Journal.close journal
+
 let suite =
   ( "intake",
     [
@@ -1515,6 +2013,15 @@ let suite =
       Alcotest.test_case "a crash between judging and proposing does not re-size" `Quick
         test_a_crash_between_judging_and_proposing_does_not_re_size;
       Alcotest.test_case "/api/research's shape" `Quick test_api_research's_shape;
+      Alcotest.test_case "incubation sizes a failing status" `Quick
+        test_incubation_sizes_a_failing_status;
+      Alcotest.test_case "incubation sizes a pass too" `Quick
+        test_incubation_sizes_a_pass_too;
+      Alcotest.test_case "live still advisory on fail" `Quick
+        test_live_still_advisory_on_fail;
+      Alcotest.test_case "tier served" `Quick test_tier_served;
+      Alcotest.test_case "the validation block is journaled byte for byte" `Quick
+        test_the_validation_block_is_journaled_byte_for_byte;
       Alcotest.test_case "/api/research on the demo" `Quick test_api_research_on_the_demo;
       Alcotest.test_case "the latest judgement is one index seek" `Quick
         test_the_latest_judgement_is_one_index_seek;
@@ -1522,4 +2029,15 @@ let suite =
         test_the_evidence_is_both_manifests_as_committed;
       Alcotest.test_case "the manifests carry every line the page reads" `Quick
         test_the_manifests_carry_every_line_the_page_reads;
+      Alcotest.test_case "overlay accepted and journaled" `Quick
+        test_overlay_accepted_and_journaled;
+      Alcotest.test_case "overlay stale falls back" `Quick test_overlay_stale_falls_back;
+      Alcotest.test_case "governor read from the graph" `Quick
+        test_governor_read_from_the_graph;
+      Alcotest.test_case "overlay judged once" `Quick test_overlay_judged_once;
+      Alcotest.test_case "no venue clock yet reads stale" `Quick
+        test_no_venue_clock_yet_reads_stale;
+      Alcotest.test_case "absent reads one" `Quick test_absent_reads_one;
+      Alcotest.test_case "no drawdown cap governs at 1, said once at setup" `Quick
+        test_no_drawdown_cap_governs_at_one_said_at_setup;
     ] )

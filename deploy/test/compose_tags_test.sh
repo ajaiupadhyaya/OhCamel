@@ -158,14 +158,16 @@ A="$scratch/A.yml"
 RENDER_ENV=(OHCAMEL_TAG=deadbeef)
 if render "$A" "$scratch/A.err" --env-file "$harness_env" -f "$base" -f "$override" --profile live; then
 	ok "A1 base + live renders at OHCAMEL_TAG=deadbeef"
-	# 6 = caddy + ohcamel-quant + ohcamel-hostd + ohcamel-worker (default profile) + ohcamel-live +
-	# ohcamel-research (live); ohcamel-worker runs the ohcamel-quant image, so that ref appears twice.
-	expect_images "A2 the six live-profile images are caddy 2.11.4 and the four ghcr refs at :deadbeef (quant twice: the worker)" "$A" \
+	# 7 = caddy + ohcamel-quant + ohcamel-hostd + ohcamel-worker + signals-init (default profile) +
+	# ohcamel-live + ohcamel-research (live); ohcamel-worker runs the ohcamel-quant image and
+	# signals-init the engine image, so each of those refs appears twice.
+	expect_images "A2 the seven live-profile images are caddy 2.11.4 and the four ghcr refs at :deadbeef (quant twice: the worker; engine twice: signals-init)" "$A" \
 		"$(printf '%s\n' caddy:2.11.4-alpine \
 			ghcr.io/ajaiupadhyaya/ohcamel-hostd:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-research:deadbeef \
+			ghcr.io/ajaiupadhyaya/ohcamel:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel:deadbeef | sort)"
 	if grep -qE '^\s*build:' "$A"; then
 		no "A3 the base render has no build key" "found: $(grep -nE '^\s*build:' "$A" | tr '\n' ' ')"
@@ -198,12 +200,13 @@ fi
 C="$scratch/C.yml"
 RENDER_ENV=(OHCAMEL_TAG=deadbeef OHCAMEL_IMAGE=registry.example/mirror/ohcamel)
 if render "$C" "$scratch/C.err" --env-file "$harness_env" -f "$base" -f "$override" --profile live; then
-	expect_images "C1 OHCAMEL_IMAGE moves the engine ref alone; research, quant (and the worker) and hostd stay on ghcr" "$C" \
+	expect_images "C1 OHCAMEL_IMAGE moves the engine ref alone (ohcamel-live and signals-init); research, quant (and the worker) and hostd stay on ghcr" "$C" \
 		"$(printf '%s\n' caddy:2.11.4-alpine \
 			ghcr.io/ajaiupadhyaya/ohcamel-hostd:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-research:deadbeef \
+			registry.example/mirror/ohcamel:deadbeef \
 			registry.example/mirror/ohcamel:deadbeef | sort)"
 else
 	no "C1 base + live renders with OHCAMEL_IMAGE set" "$(head -c 400 "$scratch/C.err" | tr '\n' ' ')"
@@ -254,8 +257,9 @@ if render "$E" "$scratch/E.err" --env-file "$harness_env" -f "$base" -f "$local_
 	else
 		no "E2 exactly four Dockerfiles are built" "rendered dockerfiles: $(echo "$got" | tr '\n' ' ')"
 	fi
-	# 5 services carry a build block (2 engine services + research + quant + hostd); caddy never.
-	for svc in ohcamel-demo ohcamel-live ohcamel-research ohcamel-quant ohcamel-hostd; do
+	# 6 services carry a build block (3 engine-image services -- demo, live, signals-init -- +
+	# research + quant + hostd); caddy never.
+	for svc in ohcamel-demo ohcamel-live signals-init ohcamel-research ohcamel-quant ohcamel-hostd; do
 		if service_block "$E" "$svc" | grep -qE '^    build:'; then
 			ok "E3 $svc has a build block in the harness"
 		else
@@ -267,16 +271,18 @@ if render "$E" "$scratch/E.err" --env-file "$harness_env" -f "$base" -f "$local_
 	else
 		ok "E3 caddy has no build block"
 	fi
-	# 7 image lines with both profiles on: caddy, ohcamel-quant, ohcamel-hostd,
-	# ohcamel-worker, ohcamel-demo, ohcamel-live, ohcamel-research -- the engine
-	# ref twice, once per engine service, because both expand the same anchor,
-	# and the quant ref twice, because ohcamel-worker runs the ohcamel-quant image.
+	# 8 image lines with both profiles on: caddy, ohcamel-quant, ohcamel-hostd,
+	# ohcamel-worker, signals-init, ohcamel-demo, ohcamel-live, ohcamel-research
+	# -- the engine ref three times (the two engine services expand the same
+	# anchor, and signals-init runs the engine image as root), and the quant
+	# ref twice, because ohcamel-worker runs the ohcamel-quant image.
 	expect_images "E4 the harness runs the four ghcr refs at :local and caddy 2.11.4" "$E" \
 		"$(printf '%s\n' caddy:2.11.4-alpine \
 			ghcr.io/ajaiupadhyaya/ohcamel-hostd:local \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:local \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:local \
 			ghcr.io/ajaiupadhyaya/ohcamel-research:local \
+			ghcr.io/ajaiupadhyaya/ohcamel:local \
 			ghcr.io/ajaiupadhyaya/ohcamel:local \
 			ghcr.io/ajaiupadhyaya/ohcamel:local | sort)"
 else
@@ -328,12 +334,13 @@ fi
 FL="$scratch/FL.yml"
 if render "$FL" "$scratch/FL.err" --env-file "$harness_env" -f "$base" -f "$ci_yml" --profile live; then
 	ok "F2 base + ci renders, live profile, with no /etc/ohcamel and no scratch override"
-	expect_images "F3 the ci override runs caddy 2.11.4 and the four ghcr refs at :deadbeef (quant twice: the worker)" "$FL" \
+	expect_images "F3 the ci override runs caddy 2.11.4 and the four ghcr refs at :deadbeef (quant twice: the worker; engine twice: signals-init)" "$FL" \
 		"$(printf '%s\n' caddy:2.11.4-alpine \
 			ghcr.io/ajaiupadhyaya/ohcamel-hostd:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-quant:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel-research:deadbeef \
+			ghcr.io/ajaiupadhyaya/ohcamel:deadbeef \
 			ghcr.io/ajaiupadhyaya/ohcamel:deadbeef | sort)"
 	if grep -qE '^\s*build:' "$FL"; then
 		no "F3 the ci render has no build key" "found: $(grep -nE '^\s*build:' "$FL" | tr '\n' ' ')"

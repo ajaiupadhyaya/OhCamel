@@ -63,12 +63,21 @@ class Settings(BaseSettings):
     # minute. OHCAMEL_QUANT_RATE_LIMIT_PER_MIN=0 turns it off.
     rate_limit_per_min: float = Field(default=30.0, ge=0)
     rate_limit_burst: int = Field(default=30, ge=1)
+    # Where signals.daily writes the desk's signal documents (INC-01; the desk's
+    # signals directory, mounted read-write into the worker). Unset means the
+    # producer refuses to run: it never writes anywhere else.
+    signals_dir: Path | None = None
+    # Where desk.report reads the live engine (INC-01's session report): its
+    # in-network address, as ohcamel-worker reaches it. Not ``engine_url``,
+    # which is the public site's bridge and off by default; this one only
+    # records an artifact. Blank means unset, and the report then says so.
+    live_engine_url: str | None = "http://ohcamel-live:8081"
     # Directory of committed real-data fixtures (used offline and in tests).
     fixtures_dir: Path = Field(default=REPO_ROOT / "fixtures")
 
     @field_validator(
         "alpaca_key_id", "alpaca_secret_key", "fred_api_key", "engine_url", "hostd_url", "warehouse_path",
-        mode="before",
+        "signals_dir", "live_engine_url", mode="before",
     )
     @classmethod
     def _blank_is_unset(cls, v: object) -> object:

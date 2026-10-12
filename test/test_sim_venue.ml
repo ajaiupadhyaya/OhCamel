@@ -173,9 +173,63 @@ let test_a_closed_session_holds_an_opening_auction_order_until_it_opens () =
   | updates ->
       Alcotest.failf "expected one fill at the open, got %d updates" (List.length updates)
 
+(* A market-on-close order rests through the session and fills at its
+   close, at the session's last mark half a spread away: AAPL +10 taken at
+   15:30 EDT on a session closing at 16:00 EDT (20:00Z); a step at 15:59 fills
+   nothing; the last mark is 152, and at 16:00 it fills at 152 x 1.0005 =
+   152.076. It fills there even when the clock then reads closed. *)
+let test_a_market_on_close_order_fills_at_the_close () =
+  let now = ref (Time_ns.of_string_with_utc_offset "2026-09-14T19:30:00Z") in
+  let mark = ref 150.0 in
+  let v =
+    Sim.create ~opened_at:t0
+      ~marks:(fun _ -> Some (Price.of_float !mark))
+      ~now:(fun () -> !now)
+      ~half_spread_bps:(fun _ -> 5.0)
+      ~cash:(Notional.of_float 100_000.0) ~positions:[] ()
+  in
+  let close = Time_ns.of_string_with_utc_offset "2026-09-14T20:00:00Z" in
+  let next_open = Time_ns.of_string_with_utc_offset "2026-09-15T13:30:00Z" in
+  Sim.set_session v (Sim.Session.Open { next_close = close; next_open });
+  (match
+     Sim.For_testing.submit_now v
+       {
+         Ohcamel_desk.Order.Request.client_order_id =
+           Option.value_exn
+             (Ohcamel_desk.Ids.Client_order_id.of_string "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZZ2");
+         symbol = aapl;
+         side = Ohcamel_desk.Order.Side.Buy;
+         qty = 10;
+         kind = Ohcamel_desk.Order.Kind.Market;
+         tif = Ohcamel_desk.Order.Tif.Cls;
+       }
+   with
+  | Venue.Submission.Accepted _ -> ()
+  | _ -> Alcotest.fail "the venue did not take the order");
+  now := Time_ns.of_string_with_utc_offset "2026-09-14T19:59:00Z";
+  Alcotest.(check int)
+    "a minute before the close, still resting" 0
+    (List.length (Sim.step v));
+  mark := 152.0;
+  now := close;
+  Sim.set_session v
+    (Sim.Session.Closed
+       { next_open; next_close = Time_ns.add close (Time_ns.Span.of_day 1.0) });
+  match Sim.step v with
+  | [ { Venue.Update.event = "fill"; fill = Some f; _ } ] ->
+      Alcotest.(check (float 1e-9))
+        "at the last mark, 152 x 1.0005" 152.076
+        (Price.to_float f.Ohcamel_desk.Order.Fill.price);
+      Alcotest.(check (float 0.0)) "all 10" 10.0 f.Ohcamel_desk.Order.Fill.qty
+  | updates ->
+      Alcotest.failf "expected one fill at the close, got %d updates"
+        (List.length updates)
+
 let suite =
   ( "sim_venue",
     [
+      Alcotest.test_case "the sim fills a Cls order at the close" `Quick
+        test_a_market_on_close_order_fills_at_the_close;
       Alcotest.test_case "equity is cash plus signed market value" `Quick
         test_equity_is_cash_plus_signed_market_value;
       Alcotest.test_case "positions are signed and sorted" `Quick

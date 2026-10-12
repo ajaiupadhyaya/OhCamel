@@ -1,7 +1,9 @@
-(* A live strategy's targets, as orders: pure, so every number is a test.
+(* A sized strategy's targets, as orders: pure, so every number is a test.
 
    The intake judges a signal accepted only when it passes R1-R7 and its
-   strategy is (sizing live) -- ruling 2, which no code sets. Then this turns
+   strategy is (sizing live) -- ruling 2, which no code sets -- or
+   accepted_incubation when its strategy is (sizing incubation), on the
+   paper venue only, whatever its validation status. Then this turns
    its weights into whole shares, and the order manager proposes them as one
    rebalance of market-on-open orders (Oms.propose_rebalance), through the
    same rules, the same gate and the same journal as a ticket.
@@ -12,10 +14,12 @@
    symbols, each at the signal's weight or at 0 when the signal does not name
    it -- without that, going flat would sell nothing.
 
-   For each symbol, with capital_fraction f, equity E, weight w and the
-   opening-auction price p (the last recorded close):
+   For each symbol, with capital_fraction f (an incubation strategy's
+   effective fraction under the book's incubation_cap), the effective scale
+   s in [0, 1] (1 until the overlay sets it; 0 flattens), equity E, weight w
+   and the opening-auction price p (the last recorded close):
 
-     target  = trunc(w x f x E / p)          toward zero: whole shares, and
+     target  = trunc(w x f x s x E / p)      toward zero: whole shares, and
                                              never more than the weight asks
      current = the strategy's OWN position: the net of the desk's fills of
                orders whose source is signal:<slug>:*
@@ -76,6 +80,42 @@ module Leg = struct
 end
 
 let positive_finite x = Float.is_finite x && Float.( > ) x 0.0
+
+(* How a rebalance's orders go (design §4.3). [Open]: market-on-open orders,
+   sent between 19:00 ET and the open, priced at the recorded close -- a
+   daily signal's. [Intraday]: day limit orders sent during the regular
+   session, each at the live mark moved [limit_price]'s slip toward the far
+   side, in waves when there are more than [max_legs] of them
+   (desk/waves.ml). The rules, the gate, the journal and the wire are the
+   same for both. *)
+module Mode = struct
+  type t = Open | Intraday [@@deriving sexp_of, compare, equal]
+
+  (* The sizing row's word for it (Journal.record_sizing's [mode]). *)
+  let to_string = function Open -> "open" | Intraday -> "intraday"
+end
+
+(* An intraday leg's limit: the mark moved [slip_bps] toward the far side --
+   up for a buy, down for a sell -- so the order is marketable at once while
+   the quote is within the slip, and never far: the slip is validated below
+   the collar (Desk_spec). Rounded to the cent, half to even, because the
+   rules' tick refuses a limit that is not a whole cent and the venue is sent
+   two decimals: 123.455 x 1.001 = 123.578455, 12357.8455 cents, 123.58. *)
+let limit_price ~(side : Order.Side.t) ~(mark : float) ~(slip_bps : float) : float =
+  let moved = mark *. (1.0 +. (Order.Side.sign side *. slip_bps /. 10_000.0)) in
+  Float.round_nearest_half_to_even (moved *. 100.0) /. 100.0
+
+(* Legs worth less than [min_leg_notional] at their price, |qty x price|, are
+   not sent: an order that small costs more in spread and attention than it
+   moves the strategy. A leg whose target is 0 is NEVER dropped, however
+   small: it closes the name, and dropping it would leave a residue the desk
+   could never sell (an overlay of 0, a flat signal, a stop). (kept,
+   dropped), each in the order given; the caller says what it dropped. *)
+let drop_small ~(legs : Leg.t list) ~(min_leg_notional : float) : Leg.t list * Leg.t list
+    =
+  List.partition_tf legs ~f:(fun (l : Leg.t) ->
+      l.Leg.target = 0
+      || Float.( >= ) (Float.abs (Float.of_int l.Leg.qty *. l.Leg.price)) min_leg_notional)
 
 (* Whether an order GROWS its name's position: opens one from flat, takes it
    further from zero, or crosses zero -- a long sold into a short, a short
@@ -234,7 +274,7 @@ let account_refusal ~(symbol : Symbol.t) ~(held : float) ~(own : float) : string
        held (Symbol.to_string symbol) own)
 
 let plan ~(symbols : Symbol.t list) ~(weights : (Symbol.t * float) list)
-    ~(capital_fraction : float) ~(equity : (float, string) Result.t)
+    ~(capital_fraction : float) ~(scale : float) ~(equity : (float, string) Result.t)
     ~(account : float Symbol.Map.t) ~(marks : (float, string) Result.t Symbol.Map.t)
     ~(current : (float Symbol.Map.t, string) Result.t) : (Leg.t list, string) Result.t =
   let open Result.Let_syntax in
@@ -245,6 +285,12 @@ let plan ~(symbols : Symbol.t list) ~(weights : (Symbol.t * float) list)
   let%bind () =
     if Float.( > ) capital_fraction 0.0 && Float.( <= ) capital_fraction 1.0 then Ok ()
     else Error (sprintf "capital_fraction %g is not in (0, 1]" capital_fraction)
+  in
+  (* Written as two positive comparisons, so a NaN -- for which both are
+     false -- is refused, never sized. 0 is a flatten, not an error. *)
+  let%bind () =
+    if Float.( >= ) scale 0.0 && Float.( <= ) scale 1.0 then Ok ()
+    else Error (sprintf "scale %g is not in [0, 1]" scale)
   in
   let%bind equity =
     match equity with
@@ -304,7 +350,8 @@ let plan ~(symbols : Symbol.t list) ~(weights : (Symbol.t * float) list)
         in
         let%bind target =
           match
-            Float.iround_towards_zero (weight *. capital_fraction *. equity /. price)
+            Float.iround_towards_zero
+              (weight *. capital_fraction *. scale *. equity /. price)
           with
           | Some n -> Ok n
           | None ->

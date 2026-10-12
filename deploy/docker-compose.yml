@@ -237,6 +237,46 @@ services:
     logging: *logging
     networks: [ohcamel]
 
+  # The `signals` volume's owner and mode, set once on every `up`, before any
+  # container that mounts it starts. The volume has two writers --
+  # ohcamel-research (uid 10001) and ohcamel-worker (the quant image, uid
+  # 10002) -- and one reader, ohcamel-live, through :ro. One group makes that
+  # work: `signals`, gid 10001, created with the same number in all three
+  # images with each service user a member, and the volume's root owned
+  # 10001:10001, mode 2775 (group-writable; setgid, so every file either
+  # writer creates is the group's). The images seed a FRESH volume that way,
+  # but a volume seeded before they did -- the droplet's, 10001:root 0755 --
+  # keeps what it had, and seeding is a race over who mounts first. This
+  # service ends both questions: the engine image as root, `chown` and
+  # `chmod` and nothing else, idempotent, in the default profile so every
+  # `up` runs it (deploy.sh's --public-only and --live alike), and the three
+  # services that mount the volume wait for it to exit 0
+  # (service_completed_successfully). No network, a read-only root, every
+  # capability dropped but the three the two commands need (CHOWN; FOWNER to
+  # chmod a directory root does not own; FSETID so the setgid bit survives a
+  # group root is not in). The batch tier's budget, which it leaves in well
+  # under a second. Pinned by deploy/test/worker_signals_test.sh.
+  signals-init:
+    image: "${OHCAMEL_IMAGE:-ghcr.io/ajaiupadhyaya/ohcamel}:${OHCAMEL_TAG:?deploy.sh sets OHCAMEL_TAG}"
+    restart: "no"
+    init: true
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["chown 10001:10001 /signals && chmod 2775 /signals"]
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, FSETID]
+    security_opt:
+      - no-new-privileges:true
+    cgroup_parent: ohcamel-batch.slice
+    cpu_shares: 128
+    mem_limit: 32m
+    oom_score_adj: 800
+    volumes:
+      - signals:/signals
+    logging: *logging
+
   # The job worker (compute plan Lane B; contracts II.2-II.3): the batch tier.
   # The ohcamel-quant image with another command. It claims one queued job at a
   # time from /data/jobs.sqlite when admission control allows -- hostd's
@@ -264,8 +304,30 @@ services:
       OHCAMEL_QUANT_USER_AGENT: "${OHCAMEL_QUANT_USER_AGENT:-OhCamel-Quant/1.0 (research; contact: ${OHCAMEL_ACME_EMAIL:-unset})}"
       # The warehouse's only writer (Lane C ingest kinds in jobs/schedules.yaml).
       OHCAMEL_QUANT_WAREHOUSE_PATH: /data/warehouse.duckdb
+      # INC-01's producers (jobs/schedules.yaml: signals.daily, signals.overlay)
+      # write the desk's documents here -- the signals volume below. Unset,
+      # they refuse to run rather than write anywhere else.
+      OHCAMEL_QUANT_SIGNALS_DIR: /signals
+      # desk.report (16:30 New York) reads the live engine's /api/desk,
+      # /api/desk/tca, /api/research and /api/desk/sessions on the internal
+      # network, as the engine answers its own loopback: no password, no port.
+      # Not OHCAMEL_QUANT_ENGINE_URL, which is ohcamel-quant's PUBLIC bridge
+      # and off by default; this one publishes nothing, it only records an
+      # artifact. When the live profile is not running the report says so
+      # and the job still succeeds.
+      OHCAMEL_QUANT_LIVE_ENGINE_URL: http://ohcamel-live:8081
+    # signals is read-write here: the worker and ohcamel-research are both
+    # writers to it, each to file names the other never uses --
+    # signals.daily's <slug>-<date>.json, one a farm cell a session;
+    # signals.overlay's overlay-<n>.json; the research service's exp_a01_*
+    # -- and both through a temp file and a rename in the same directory, so
+    # the engine, which only ever reads (:ro, below), never opens half a
+    # document. The worker runs as uid 10002 and writes through the
+    # `signals` group (gid 10001) that signals-init, above, leaves the
+    # volume's root 2775 to.
     volumes:
       - quant_data:/data
+      - signals:/signals
     read_only: true
     tmpfs:
       - /tmp
@@ -288,6 +350,8 @@ services:
     depends_on:
       ohcamel-hostd:
         condition: service_started
+      signals-init:
+        condition: service_completed_successfully
     logging: *logging
     networks: [ohcamel]
 
@@ -338,9 +402,11 @@ services:
     environment:
       OHCAMEL_JOURNAL: /data/desk.db
       # Task 16: where ohcamel-research writes one signal a strategy a
-      # trading day. Read-only here -- the engine only ever lists and opens
-      # what is already there (desk/intake.ml); ohcamel-research below is the
-      # only writer, on the same named volume mounted read-write at /signals.
+      # trading day, and ohcamel-worker writes INC-01's farm cells and the
+      # overlay. Read-only here -- the engine only ever lists and opens what
+      # is already there (desk/intake.ml); ohcamel-research and
+      # ohcamel-worker are both writers, to distinct file names, on the same
+      # named volume mounted read-write at /signals.
       # A fresh volume starts empty, and Intake.directory (desk/intake.ml)
       # only refuses a set-but-EMPTY-STRING variable or an unreadable/
       # non-directory path -- Sys_unix.readdir succeeds on an empty
@@ -357,6 +423,9 @@ services:
       - desk_data:/data
       - signals:/data/signals:ro
     command: ["serve", "8081"]
+    depends_on:
+      signals-init:
+        condition: service_completed_successfully
     # Root-owned, 0640 and group-readable by the deploy user (compose reads
     # env_file as the invoking user, not as root), outside the repository, and
     # passed as environment rather than copied. Nothing about these three keys
@@ -408,6 +477,9 @@ services:
       # (service.py's AlpacaBarSource), so no row from an earlier, refused
       # fetch can reach a later one.
       FDQ_DATA_DIR: /tmp/fdq-data
+    depends_on:
+      signals-init:
+        condition: service_completed_successfully
     volumes:
       - signals:/signals
     read_only: true
@@ -493,11 +565,15 @@ volumes:
   quant_data:
   desk_data:
   # Task 16: one JSON signal a strategy a trading day, written by
-  # ohcamel-research (read-write, above) and read by ohcamel-live
-  # (read-only, above). Named, not a bind mount, for the same reason
+  # ohcamel-research and ohcamel-worker (both read-write, above, to distinct
+  # file names) and read by ohcamel-live (read-only, above). Named, not a bind mount, for the same reason
   # desk_data is: a rebuild or a `down` keeps every signal ever written.
-  # Owned by uid 10001 however it is first seeded: both images carry their
-  # mount point (/signals, /data/signals) owned by that uid, research runs
-  # as it, and the image job proves both orders on fresh volumes (finish
-  # plan Task 11).
+  # Owned 10001:10001, mode 2775, however it is first seeded: all three
+  # images carry their mount point (research's and the worker's /signals,
+  # the engine's /data/signals) that way, research runs as 10001, the worker
+  # writes through the `signals` group (gid 10001), and signals-init sets
+  # the same owner and mode on every `up`, so a volume seeded before the
+  # group existed is fixed too. The image job proves every seeding order on
+  # fresh volumes and the init on an old one (finish plan Task 11;
+  # autonomous-paper-trading Task 16).
   signals:

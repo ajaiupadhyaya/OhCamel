@@ -6,20 +6,27 @@
    (contract.ml) and three checks of the desk's own, and records every
    judgement in the journal with the whole document beside it.
 
-   AN ACCEPTED SIGNAL IS SIZED ONCE, AND ONLY FROM THIS PASS (Task 15). Only
-   a document judged accepted in the pass that is running is sized -- never
-   a row read back from the journal, which could be an R6-first advisory
-   that never saw R7, the duplicate rule or the strategy's own symbols. Its
-   judgement is recorded FIRST, with a pending sentence in the signal's
-   rebalance column, and only then is anything proposed: a crash between the
-   two leaves the document judged, so the next pass skips it and never sizes
-   it again, and the pending sentence says what happened. [size] then plans
-   the targets (Oms.plan_rebalance), proposes them as one rebalance
-   (Oms.propose_rebalance), and writes what came of it over the pending
-   sentence, once. The judgement's own verdict, rule and detail are never
-   rewritten. Of several documents of one strategy accepted in the same
-   pass, only the highest sequence is sized: the others' orders would rest
-   beside it until the open, and the strategy's position counts only fills.
+   AN ACCEPTED SIGNAL IS SIZED ONCE, FROM ITS PENDING SENTENCE (Task 15;
+   the stage review's A-I1). Its judgement is recorded FIRST, with a pending
+   sentence in the signal's rebalance column, and only then is anything
+   proposed. Every pass then sizes THE RETRY SET ([collect_pending]): the
+   accepted and accepted_incubation judgements whose column still holds that
+   sentence, read back from the journal -- never an advisory row, which is
+   never recorded with one. [size] plans the targets (Oms.plan_rebalance),
+   proposes them as one rebalance (Oms.propose_rebalance), and writes what
+   came of it over the pending sentence, once -- unless the rebalance was
+   refused for TIMING alone (Oms.Rebalance_outcome.Not_now: the opening
+   auction's window before 19:00 ET, the session, no venue clock yet), when
+   the sentence stays and the next pass tries again. A judgement leaves the
+   set when it is sized or finally refused, when a later document of its
+   strategy is accepted (R5), when it ages past max_age sessions (R4), or
+   when orders were journaled under its source -- a crash while proposing
+   it, whose orders are then the record, and which is never sized again.
+   Nothing is sized before the venue's clock has answered ([run]). The
+   judgement's own verdict, rule and detail are never rewritten. Of several
+   documents of one strategy, only the highest sequence is sized: the
+   others' orders would rest beside it until the open, and the strategy's
+   position counts only fills.
 
    THIS IS A TRUST BOUNDARY, AND EVERY DOUBT IS A REFUSAL. The files come
    from another process in another language, and the contract's own principle
@@ -99,13 +106,37 @@
 
    THE VERDICTS:
    - accepted: passes all of it, and its strategy is (sizing live);
+   - accepted_incubation: its strategy is (sizing incubation), the charter's
+     paper tier, and it passes all of it but R6, which it may fail: the
+     contract is asked to carry an R6 failure (Contract.validate ~r6:`Record)
+     and R7 and the desk's checks still run. The rule column is "R6" when
+     the status failed, else empty; the detail is journaled behind
+     "[tier=incubation] ", and the validation block stays in the document,
+     unchanged. It is sized on a paper venue only (Oms.incubation_permitted);
    - advisory: the contract's first failure is R6 -- R1-R5 passed, and R7
-     was never reached -- or it passes all of it and its strategy is
-     (sizing advisory). The rule column says which: "R6" or "sizing";
+     was never reached -- for a strategy that is not incubation, or it
+     passes all of it and its strategy is (sizing advisory). The rule column
+     says which: "R6" or "sizing";
    - rejected: any other first failure, with its rule.
 
-   R5's baseline is the highest sequence among the strategy's accepted and
-   advisory judgements: both passed R1-R5, and a signal whose sequence is
+   THE OVERLAY (design §4.3) is the second document kind, in files named
+   overlay-*.json, judged before the signals by Overlay's O1-O4 and never by
+   the contract, each sequence once, against the VENUE's clock as the desk
+   last read it -- the one exception to the sessions being the only clock,
+   because an overlay's age is minutes, not sessions. With no venue clock an
+   overlay waits and the book's fallback applies. Its scale, held for
+   overlay_max_age_minutes and then replaced by the fallback, times the
+   drawdown governor, is the effective scale every sizing multiplies by; and
+   when that moves more than overlay_band from where a strategy was last
+   sized, [adjust] re-sizes the strategies that adjust intraday from their
+   last ACCEPTED document -- the journal's, read back, and only an accepted
+   or accepted_incubation one. While the overlay is stale [adjust] holds
+   every last sizing and acts only on a governor move (see [adjust]). An
+   accepted overlay of zero is honoured, and alerted once.
+
+   R5's baseline is the highest sequence among the strategy's accepted,
+   accepted_incubation and advisory judgements: all passed R1-R5, and a
+   signal whose sequence is
    not above one the desk has already shown is a replay. A document whose
    (strategy, sequence) is already recorded is skipped, never judged a second
    time. Within a pass documents are judged in (strategy, sequence) order,
@@ -331,6 +362,26 @@ let parse text : (Contract.t, string) Result.t =
         | Error _ -> Error (shape_error json)
         | exception _ -> Error (shape_error json))
 
+(* An overlay file ([overlay_prefix]), parsed by Overlay rather than the
+   contract, and refused in the same words of the desk's: Overlay's own
+   messages quote what they choked on, which is the file's, so none of them
+   is recorded. *)
+let overlay_prefix = "overlay-"
+
+let parse_overlay text : (Overlay.t, string) Result.t =
+  if not (Stdlib.String.is_valid_utf_8 text) then Error "not valid UTF-8"
+  else
+    match Yojson.Safe.from_string text with
+    | exception Yojson.Json_error msg -> Error ("not JSON" ^ position msg)
+    | exception _ -> Error "not JSON"
+    | (_ : Yojson.Safe.t) -> (
+        match Overlay.parse_string text with
+        | Ok o -> Ok o
+        | Error _ | (exception _) ->
+            Error
+              "not an overlay: a field is absent, or not what the overlay reads \
+               (interface/overlay.schema.json)")
+
 (* ------------------------------------------------------------------------ *)
 (* The clock, and the judgement                                              *)
 (* ------------------------------------------------------------------------ *)
@@ -385,32 +436,55 @@ let weekday_bound ~as_of ~latest ~bars ~max_age : (unit, string) Result.t =
          weekday_slack max_age)
   else Ok ()
 
+(* [tier] is the strategy's sizing word -- "advisory", "incubation" or
+   "live", and "advisory" for a strategy the book does not register -- on
+   every judgement, whatever its verdict. An incubation judgement's detail is
+   journaled behind [tier_label] ([record]), which is what /api/research
+   reads its tier back from; the other tiers' details are journaled as they
+   always were. *)
 module Judgement = struct
-  type t = { verdict : Verdict.t; rule : string option; detail : string }
+  type t = { verdict : Verdict.t; rule : string option; detail : string; tier : string }
   [@@deriving sexp_of, compare, equal]
 end
 
-let rejected rule detail =
-  { Judgement.verdict = Verdict.Rejected; rule = Some rule; detail }
+let tier_label = "[tier=incubation] "
+
+let tier_of (spec : Signals_spec.Strategy.t option) =
+  match spec with
+  | None -> Signals_spec.sizing_to_string Advisory
+  | Some s -> Signals_spec.sizing_to_string s.Signals_spec.Strategy.sizing
+
+let rejected ~tier rule detail =
+  { Judgement.verdict = Verdict.Rejected; rule = Some rule; detail; tier }
 
 let duplicate (targets : Contract.target list) =
   List.find_a_dup targets ~compare:(fun (a : Contract.target) b ->
       Symbol.compare a.symbol b.symbol)
 
+(* Check 2 of the header, for a document whose contract failure came after
+   R4 or never: R4's weekday bound. *)
+let r4_gap ~latest ~bars_after ~(spec : Signals_spec.Strategy.t option) (doc : Contract.t)
+    =
+  match spec with
+  | None -> Ok ()
+  | Some s ->
+      weekday_bound ~as_of:doc.as_of ~latest ~bars:(bars_after doc.as_of)
+        ~max_age:s.Signals_spec.Strategy.max_age
+
 (* One document's judgement, from the contract's verdict: pure, so every
    branch is a test with a hand-built clock. [`Defer why] is R3 -- the caller
    decides between waiting and giving up. [spec] is the document's strategy,
-   None when it is not registered (R2 has then failed first). *)
-let decide ~(latest : Date.t) ~(bars_after : Date.t -> int)
+   None when it is not registered (R2 has then failed first).
+   [Accepted_unvalidated] comes only from the contract's `Record mode, which
+   [judge_pass] asks for only for an incubation strategy: it is judged as
+   [Accepted] is, carrying R6's reason, and for any other strategy -- which
+   cannot happen -- it is judged as the contract's own R6 failure would be. *)
+let rec decide ~(latest : Date.t) ~(bars_after : Date.t -> int)
     ~(spec : Signals_spec.Strategy.t option) (doc : Contract.t)
     (verdict : Contract.verdict) : [ `Defer of string | `Judged of Judgement.t ] =
-  let r4_gap () =
-    match spec with
-    | None -> Ok ()
-    | Some s ->
-        weekday_bound ~as_of:doc.as_of ~latest ~bars:(bars_after doc.as_of)
-          ~max_age:s.Signals_spec.Strategy.max_age
-  in
+  let tier = tier_of spec in
+  let rejected = rejected ~tier in
+  let r4_gap () = r4_gap ~latest ~bars_after ~spec doc in
   match verdict with
   | Contract.Rejected (R3, why) -> (
       match spec with
@@ -440,63 +514,275 @@ let decide ~(latest : Date.t) ~(bars_after : Date.t -> int)
               detail =
                 why
                 ^ "; R1-R5 passed and R7 was not reached, so it is shown and never sized";
+              tier;
             }
       | Ok (), _ -> `Judged (rejected (Contract.Rule.to_string rule) why))
-  | Accepted doc -> (
-      match (r4_gap (), duplicate doc.targets, spec) with
-      | Error gap, _, _ -> `Judged (rejected "R4" gap)
-      | Ok (), Some t, _ ->
-          `Judged
-            (rejected "R7"
-               (sprintf "%S is named twice in targets" (Symbol.to_string t.symbol)))
-      | Ok (), None, None ->
-          (* R2 passed, so the strategy is registered; failing closed all the
+  | Accepted_unvalidated (doc, why) -> (
+      match spec with
+      | Some { Signals_spec.Strategy.sizing = Incubation; _ } ->
+          sound ~latest ~bars_after ~spec ~unvalidated:(Some why) doc
+      | Some _ | None ->
+          decide ~latest ~bars_after ~spec doc (Contract.Rejected (R6, why)))
+  | Accepted doc -> sound ~latest ~bars_after ~spec ~unvalidated:None doc
+
+(* A document the contract let through -- whole, or with R6's failure
+   [unvalidated] beside it for an incubation strategy -- judged on the
+   desk's own checks: R4's weekday bound, a symbol named twice, the
+   strategy's own symbols; then its strategy's sizing decides the verdict. *)
+and sound ~latest ~bars_after ~spec ~(unvalidated : string option) (doc : Contract.t) =
+  let tier = tier_of spec in
+  let rejected = rejected ~tier in
+  let r4_gap () = r4_gap ~latest ~bars_after ~spec doc in
+  match (r4_gap (), duplicate doc.targets, spec) with
+  | Error gap, _, _ -> `Judged (rejected "R4" gap)
+  | Ok (), Some t, _ ->
+      `Judged
+        (rejected "R7"
+           (sprintf "%S is named twice in targets" (Symbol.to_string t.symbol)))
+  | Ok (), None, None ->
+      (* R2 passed, so the strategy is registered; failing closed all the
              same if that ever stops being true. *)
-          `Judged (rejected "R2" (sprintf "%S is not registered" doc.strategy))
-      | Ok (), None, Some s -> (
-          let own = s.Signals_spec.Strategy.symbols in
-          match
-            List.find doc.targets ~f:(fun t ->
-                not (List.mem own (Symbol.to_string t.symbol) ~equal:String.equal))
-          with
-          | Some t ->
+      `Judged (rejected "R2" (sprintf "%S is not registered" doc.strategy))
+  | Ok (), None, Some s -> (
+      let own = s.Signals_spec.Strategy.symbols in
+      match
+        List.find doc.targets ~f:(fun t ->
+            not (List.mem own (Symbol.to_string t.symbol) ~equal:String.equal))
+      with
+      | Some t ->
+          `Judged
+            (rejected "strategy"
+               (sprintf "%S is not one of %s's symbols (%s)" (Symbol.to_string t.symbol)
+                  s.name (String.concat ~sep:", " own)))
+      | None -> (
+          match s.sizing with
+          | Live ->
               `Judged
-                (rejected "strategy"
-                   (sprintf "%S is not one of %s's symbols (%s)"
-                      (Symbol.to_string t.symbol) s.name (String.concat ~sep:", " own)))
-          | None -> (
-              match s.sizing with
-              | Live ->
-                  `Judged
-                    {
-                      verdict = Accepted;
-                      rule = None;
-                      detail =
-                        "passed R1-R7 and names only its strategy's own symbols; the \
-                         strategy is live";
-                    }
-              | Advisory ->
-                  `Judged
-                    {
-                      verdict = Advisory;
-                      rule = Some "sizing";
-                      detail =
-                        "passed R1-R7 and names only its strategy's own symbols; the \
-                         strategy's sizing is advisory, so it is shown and never sized";
-                    }
-              | Incubation ->
-                  (* The book admits the incubation tier before the desk sizes
-                     it: until the intake learns to, an incubation strategy is
-                     judged as an advisory one is, and says which it is. *)
-                  `Judged
-                    {
-                      verdict = Advisory;
-                      rule = Some "sizing";
-                      detail =
-                        "passed R1-R7 and names only its strategy's own symbols; the \
-                         strategy's sizing is incubation, which this desk does not size \
-                         yet, so it is shown and never sized";
-                    })))
+                {
+                  verdict = Accepted;
+                  rule = None;
+                  detail =
+                    "passed R1-R7 and names only its strategy's own symbols; the \
+                     strategy is live";
+                  tier;
+                }
+          | Advisory ->
+              `Judged
+                {
+                  verdict = Advisory;
+                  rule = Some "sizing";
+                  detail =
+                    "passed R1-R7 and names only its strategy's own symbols; the \
+                     strategy's sizing is advisory, so it is shown and never sized";
+                  tier;
+                }
+          | Incubation ->
+              (* The charter's paper tier: sized whatever its validation
+                 says, only on a paper venue ([rebalance] asks
+                 Oms.incubation_permitted) and under the incubation cap,
+                 labelled, never live. The validation block itself is
+                 carried unchanged in the document beside the judgement. *)
+              `Judged
+                {
+                  verdict = Accepted_incubation;
+                  rule = Option.map unvalidated ~f:(fun _ -> "R6");
+                  detail =
+                    (match unvalidated with
+                    | Some why ->
+                        sprintf
+                          "R6 alone would not size it (%s); R1-R5 and R7 passed and it \
+                           names only its strategy's own symbols, and the strategy's \
+                           sizing is incubation, so it is sized only on a paper venue, \
+                           under the incubation cap, whatever its validation says, \
+                           labelled, and never live"
+                          why
+                    | None ->
+                        sprintf
+                          "validation.status is %S; passed R1-R7 and names only its \
+                           strategy's own symbols, and the strategy's sizing is \
+                           incubation, so it is sized only on a paper venue, under the \
+                           incubation cap, labelled, and never live"
+                          doc.validation.status);
+                  tier;
+                }))
+
+(* ------------------------------------------------------------------------ *)
+(* The effective scale                                                       *)
+(* ------------------------------------------------------------------------ *)
+
+(* What the effective scale is read from beyond the journal (design §4.3):
+   the book's three overlay numbers, the venue's clock, the graph's drawdown
+   and the book's drawdown cap. Thunks, so the intake names neither the graph
+   nor the desk: bin/main.ml builds one from both and hands the same one to
+   the desk, whose page shows what sizing reads.
+
+   [venue_now] is the venue's own clock as the desk last read it, advanced
+   by the host's time since that read (Desk.venue_now): a read that fails
+   leaves the reading standing, so one failure does not make an accepted
+   overlay unageable. None only before any reading has ever arrived.
+
+   [governor] is the last governor computed from a drawdown the graph could
+   read. A drawdown it cannot read -- the thunk raises, or answers a number
+   that is not finite -- HOLDS that value (1 before any): an unknown number
+   never governs to 0, and never sells. Kept here, in the one gauge the
+   intake and the desk share, so both say the same governor. *)
+module Gauge = struct
+  type t = {
+    spec : Ohcamel.Config.Book.Desk_spec.t;
+    venue_now : unit -> Time_ns.t option;
+    drawdown : unit -> float option;
+    dd_cap : float option;
+    mutable governor : float;
+  }
+
+  let create ~spec ~venue_now ~drawdown ~dd_cap =
+    { spec; venue_now; drawdown; dd_cap; governor = 1.0 }
+
+  let none () =
+    create ~spec:Ohcamel.Config.Book.Desk_spec.default
+      ~venue_now:(fun () -> None)
+      ~drawdown:(fun () -> None)
+      ~dd_cap:None
+
+  let spec t = t.spec
+  let dd_cap t = t.dd_cap
+
+  (* The book's drawdown cap: its Portfolio-scoped Max_drawdown limit, the
+     tightest if it names more than one; None when it names none, and the
+     governor is then 1 (said once, at [setup]). *)
+  let dd_cap_of_limits (limits : Limit.t list) =
+    List.filter_map limits ~f:(fun (l : Limit.t) ->
+        match (l.scope, l.kind) with
+        | Limit.Portfolio, Limit.Max_drawdown f -> Some f
+        | _ -> None)
+    |> List.min_elt ~compare:Float.compare
+end
+
+module Reading = struct
+  type t = {
+    exposure_scale : float;
+    (* What the governor multiplies: the overlay's scale, the fallback or
+       1, by the state -- the factor a sizing records beside its governor. *)
+    factor : float;
+    governor : float;
+    governor_cap : float option;
+    governor_held : bool;
+    overlay : float option;
+    as_of : string option;
+    age_s : int option;
+    state : Overlay.state;
+    reason : string option;
+  }
+end
+
+let state_word : Overlay.state -> string = function
+  | Fresh -> "fresh"
+  | Held _ -> "held"
+  | Stale -> "stale"
+  | Absent -> "absent"
+
+let no_venue_clock = "no venue clock yet"
+
+(* The effective scale, from the latest accepted overlay ([latest], as
+   Journal.latest_overlay answers) and the gauge, by the overlay's state:
+   - fresh or held: the overlay's scale;
+   - stale -- older than overlay_max_age_minutes, or no venue reading has
+     ever arrived to age it by ([reason] then says so): the book's
+     overlay_fallback;
+   - absent -- no overlay has ever been accepted: 1, the desk as it sized
+     before overlays existed (Overlay.effective is handed [Some 1.0]);
+   times the drawdown governor ([Gauge]'s note says what an unreadable
+   drawdown does). *)
+let reading ~(latest : (int * string * float * string) option) (g : Gauge.t) : Reading.t =
+  let spec = g.spec in
+  let drawdown =
+    match g.drawdown () with
+    | Some d when not (Float.is_finite d) -> `Unknown
+    | d -> `Read d
+    | exception _ -> `Unknown
+  in
+  let governor, governor_held =
+    match drawdown with
+    | `Read drawdown ->
+        let governor = Overlay.governor ~drawdown ~dd_cap:g.dd_cap in
+        g.governor <- governor;
+        (governor, false)
+    | `Unknown -> (g.governor, true)
+  in
+  let now = g.venue_now () in
+  let received_at =
+    Option.bind latest ~f:(fun (_, _, _, received) -> Desk_time.parse received)
+  in
+  let state, reason =
+    match (now, latest) with
+    | None, _ -> (Overlay.Stale, Some no_venue_clock)
+    | Some _, None -> (Overlay.Absent, None)
+    | Some now, Some _ -> (
+        match
+          Overlay.state ~clock:{ Overlay.now } ~received_at
+            ~max_age_minutes:spec.Ohcamel.Config.Book.Desk_spec.overlay_max_age_minutes
+        with
+        (* A row whose receipt does not parse cannot be aged: stale. *)
+        | Absent -> (Overlay.Stale, None)
+        | state -> (state, None))
+  in
+  let factor =
+    match (state, latest) with
+    | (Fresh | Held _), Some (_, _, scale, _) -> Some scale
+    | Absent, _ -> Some 1.0
+    | _ -> None
+  in
+  {
+    Reading.exposure_scale =
+      Overlay.effective ~overlay:factor ~fallback:spec.overlay_fallback ~governor;
+    factor = Option.value factor ~default:spec.overlay_fallback;
+    governor;
+    governor_cap = g.dd_cap;
+    governor_held;
+    overlay = Option.map latest ~f:(fun (_, _, scale, _) -> scale);
+    as_of = Option.map latest ~f:(fun (_, as_of, _, _) -> as_of);
+    age_s =
+      (match (now, received_at) with
+      | Some now, Some at ->
+          Some (Float.iround_towards_zero_exn (Time_ns.Span.to_sec (Time_ns.diff now at)))
+      | _ -> None);
+    state;
+    reason;
+  }
+
+(* /api/desk's three fields, appended after "clock" (Desk.summary_fields). *)
+let reading_fields (r : Reading.t) : (string * Yojson.Safe.t) list =
+  let num x = if Float.is_finite x then `Float x else `Null in
+  [
+    ("exposure_scale", num r.exposure_scale);
+    ("governor", num r.governor);
+    ( "overlay",
+      `Assoc
+        [
+          ("value", Option.value_map r.overlay ~default:`Null ~f:num);
+          ("as_of", Option.value_map r.as_of ~default:`Null ~f:(fun a -> `String a));
+          ("age_s", Option.value_map r.age_s ~default:`Null ~f:(fun a -> `Int a));
+          ("state", `String (state_word r.state));
+          ("reason", Option.value_map r.reason ~default:`Null ~f:(fun a -> `String a));
+          ("governor_cap", Option.value_map r.governor_cap ~default:`Null ~f:num);
+        ] );
+  ]
+
+let absent_reading_fields : (string * Yojson.Safe.t) list =
+  [
+    ("exposure_scale", `Null);
+    ("governor", `Null);
+    ( "overlay",
+      `Assoc
+        [
+          ("value", `Null);
+          ("as_of", `Null);
+          ("age_s", `Null);
+          ("state", `String "absent");
+          ("reason", `Null);
+          ("governor_cap", `Null);
+        ] );
+  ]
 
 (* ------------------------------------------------------------------------ *)
 (* The intake                                                                *)
@@ -527,9 +813,19 @@ type t = {
      with a different body -- by kind and name, so a stuck file costs one
      line, not one a minute. *)
   said : String.Hash_set.t;
+  gauge : Gauge.t;
+  (* Whether an adjust pass is running: [adjust] runs detached from the
+     minute loop, and a pass that finds the last one still out skips. *)
+  mutable adjusting : bool;
+  (* Whether this overlapping run's skip is said: reset when the pass ends. *)
+  mutable skip_said : bool;
+  (* Each strategy's last adjust outcome said, so a refusal repeated every
+     minute -- an intraday proposal outside the session -- costs one line. *)
+  adjust_said : string String.Table.t;
 }
 
-let create ~journal ~dir ~strategies ~universe ~on_event ~now =
+let create ?gauge ~journal ~dir ~strategies ~universe ~on_event ~now () =
+  let gauge = match gauge with Some g -> g | None -> Gauge.none () in
   {
     journal;
     dir;
@@ -537,6 +833,10 @@ let create ~journal ~dir ~strategies ~universe ~on_event ~now =
     universe;
     on_event;
     now;
+    gauge;
+    adjusting = false;
+    skip_said = false;
+    adjust_said = String.Table.create ();
     judged = String.Table.create ();
     refused = String.Hash_set.create ();
     unsettled = String.Map.empty;
@@ -548,21 +848,41 @@ let create ~journal ~dir ~strategies ~universe ~on_event ~now =
 let deferred t = t.deferred
 let last_pass t = t.last_pass
 
+(* The reading, and a drawdown the graph could not read said once while it
+   lasts. *)
+let current_reading t =
+  let r = reading ~latest:(Journal.latest_overlay t.journal) t.gauge in
+  let key = "drawdown\000" in
+  if r.Reading.governor_held then (
+    if not (Hash_set.mem t.said key) then (
+      Hash_set.add t.said key;
+      t.on_event
+        (sprintf
+           "intake    the graph's drawdown cannot be read, so the governor holds at %g; \
+            nothing is sized down on a number nobody knows"
+           r.governor)))
+  else Hash_set.remove t.said key;
+  r
+
+let effective_scale t = (current_reading t).Reading.exposure_scale
+
 type status = Running of t | Off of string
 
 (* Both halves, or no intake: the directory, and a book that registers
    strategies. The reason is what /api/research says. *)
-let setup ~journal ~universe ~(signals : Signals_spec.t option) ~(dir : string option)
-    ~on_event ~now : status =
+let setup ~gauge ~journal ~universe ~(signals : Signals_spec.t option)
+    ~(dir : string option) ~on_event ~now : status =
   match (dir, signals) with
   | None, _ -> Off (sprintf "%s is not set, so no signal file is read" env_var)
   | Some _, None ->
       Off
         "the book has no signals block, so no strategy is registered and no file is read"
   | Some dir, Some spec ->
+      if Option.is_none (Gauge.dd_cap gauge) then
+        on_event "intake    no Portfolio Max_drawdown limit: the drawdown governor is 1";
       Running
-        (create ~journal ~dir ~strategies:spec.Signals_spec.strategies ~universe ~on_event
-           ~now)
+        (create ~gauge ~journal ~dir ~strategies:spec.Signals_spec.strategies ~universe
+           ~on_event ~now ())
 
 let demo_status =
   Off
@@ -578,14 +898,18 @@ let once t ~kind ~name f =
     f ())
 
 (* The rebalance column of an accepted judgement until its outcome replaces
-   it. It names the orders' source, because a crash can come after some were
+   it. While it stands the judgement is tried again on every pass
+   ([collect_pending]): a rebalance refused for timing alone -- the opening
+   auction's window, the session, no venue clock yet -- leaves it standing.
+   It names the orders' source, because a crash can come after some were
    sent: the journal's orders with that source are then the record of what
-   went, and the signal is never sized again. *)
+   went, and a judgement that has any is never sized again. *)
 let pending ~strategy ~sequence =
   sprintf
-    "pending: the judgement is recorded, and what its rebalance came to is not; if this \
-     never changes, the desk stopped while proposing it, the journal's orders whose \
-     source is %s are the record of anything sent, and the signal is not sized again"
+    "pending: the judgement is recorded, and its rebalance is not yet sized; it is tried \
+     again each pass until it is sized, a later document of the strategy supersedes it, \
+     or it ages out. The journal's orders whose source is %s are the record of anything \
+     sent; if any exist the desk stopped while proposing it, and it is not sized again"
     (Rebalance.Source.name ~strategy ~sequence)
 
 let record t ~name ~ident ~text (doc : Contract.t) (j : Judgement.t) =
@@ -597,11 +921,15 @@ let record t ~name ~ident ~text (doc : Contract.t) (j : Judgement.t) =
       received_at = t.now ();
       verdict = j.verdict;
       rule = j.rule;
-      detail = j.detail;
+      detail =
+        (if String.equal j.tier (Signals_spec.sizing_to_string Incubation) then
+           tier_label ^ j.detail
+         else j.detail);
       document = text;
       rebalance =
         (match j.verdict with
-        | Verdict.Accepted -> Some (pending ~strategy:doc.strategy ~sequence:doc.sequence)
+        | Verdict.Accepted | Accepted_incubation ->
+            Some (pending ~strategy:doc.strategy ~sequence:doc.sequence)
         | Advisory | Rejected -> None);
     };
   Hashtbl.set t.judged ~key:name ~data:ident;
@@ -637,12 +965,109 @@ type candidate =
   | Refusal of string * string
   | Unparsed of string * ident * string
   | Parsed of string * ident * string * Contract.t
+  | Overlay_doc of string * ident * string * Overlay.t
 
 (* A document this pass judged accepted, with its strategy, held in memory
    for [size]: the only way a signal reaches a rebalance. *)
 module Accepted = struct
   type t = { strategy : Signals_spec.Strategy.t; doc : Contract.t }
 end
+
+(* The overlay alert's line (design §4.3; the plan's review focus 1): an
+   accepted overlay of zero is honoured -- the adjust pass flattens every
+   strategy that adjusts intraday -- and said once, when it is judged. *)
+let overlay_zero_line ~sequence =
+  sprintf
+    "overlay %d says zero exposure: every strategy that adjusts intraday is flattened"
+    sequence
+
+(* The pass's overlay documents, in sequence order, each judged once
+   (Overlay.validate, O1-O4) and recorded in [overlays] with its whole text:
+   a sequence the journal already holds is skipped, as [already_judged]
+   skips a signal, so the plain INSERT never meets a sequence twice. O3's
+   baseline is the highest ACCEPTED sequence, as R5's is: a rejected
+   document never raises the bar. The clock is the venue's, as the desk
+   last read it (Gauge's venue_now): with none, nothing can be judged or
+   aged, the file waits, and that is said once. The receipt is stamped on
+   the same clock, so [reading] ages it against the clock that judged it.
+   Returns how many wait. *)
+let judge_overlays t (docs : (string * ident * string * Overlay.t) list) : int =
+  let docs =
+    List.sort docs ~compare:(fun (n1, _, _, (a : Overlay.t)) (n2, _, _, b) ->
+        [%compare: int * string] (a.sequence, n1) (b.sequence, n2))
+  in
+  List.fold docs ~init:0 ~f:(fun waiting (name, ident, text, (o : Overlay.t)) ->
+      try
+        if Journal.overlay_recorded t.journal ~sequence:o.sequence then (
+          Hashtbl.set t.judged ~key:name ~data:ident;
+          waiting)
+        else
+          match t.gauge.venue_now () with
+          | None ->
+              once t ~kind:"overlay clock" ~name (fun () ->
+                  log t
+                    "%S waits: no venue clock has answered, so an overlay can be neither \
+                     judged nor aged, and the book's fallback applies"
+                    name);
+              waiting + 1
+          | Some now ->
+              let last_sequence =
+                Option.value_map (Journal.latest_overlay t.journal) ~default:0
+                  ~f:(fun (sequence, _, _, _) -> sequence)
+              in
+              let verdict =
+                Overlay.validate ~clock:{ Overlay.now }
+                  ~max_age_minutes:
+                    t.gauge.spec.Ohcamel.Config.Book.Desk_spec.overlay_max_age_minutes
+                  ~last_sequence o
+              in
+              let word, rule, detail =
+                match verdict with
+                | Overlay.Accepted _ ->
+                    ( `Accepted,
+                      None,
+                      sprintf "passed O1-O4; exposure scale %g" o.exposure_scale )
+                | Rejected (rule, why) ->
+                    ( `Rejected,
+                      Some
+                        (match rule with
+                        | `O1 -> "O1"
+                        | `O2 -> "O2"
+                        | `O3 -> "O3"
+                        | `O4 -> "O4"),
+                      why )
+              in
+              Journal.record_overlay t.journal ~sequence:o.sequence
+                ~as_of:(Desk_time.rfc3339 o.as_of) ~received_at:now
+                ~exposure_scale:
+                  (* SQLite stores NaN as NULL, which the column refuses; a
+                     NaN scale is O4's to reject, and the document beside it
+                     is the record of what it said. *)
+                  (if Float.is_nan o.exposure_scale then 0.0 else o.exposure_scale)
+                ~verdict:word ~rule ~detail ~document:text;
+              Hashtbl.set t.judged ~key:name ~data:ident;
+              log t "%S: overlay %d %s%s -- %S" name o.sequence
+                (match word with `Accepted -> "accepted" | `Rejected -> "rejected")
+                (match rule with Some r -> " at " ^ r | None -> "")
+                detail;
+              (match verdict with
+              | Overlay.Accepted _ when Float.equal o.exposure_scale 0.0 ->
+                  let line = overlay_zero_line ~sequence:o.sequence in
+                  Journal.record_alert t.journal
+                    {
+                      Journal.Alert.at = now;
+                      kind = "overlay_zero";
+                      limit_name = "overlay";
+                      line;
+                    };
+                  log t "%s" line
+              | _ -> ());
+              waiting
+      with exn ->
+        once t ~kind:"raised" ~name (fun () ->
+            log t "%S could not be judged, and is left unjudged: %s" name
+              (Exn.to_string exn));
+        waiting + 1)
 
 (* One pass: every step the header describes, synchronously, returning the
    documents it judged accepted, in the order it judged them. A raise leaves
@@ -699,11 +1124,16 @@ let judge_pass t : Accepted.t list =
                 | Text text -> (
                     Hash_set.remove t.said ("io\000" ^ name);
                     Hash_set.remove t.said ("changed\000" ^ name);
-                    match parse text with
-                    | Error why -> Some (Unparsed (name, ident, why))
-                    | Ok doc ->
-                        if already_judged t ~name ~ident ~text doc then None
-                        else Some (Parsed (name, ident, text, doc)))))
+                    if String.is_prefix name ~prefix:overlay_prefix then
+                      match parse_overlay text with
+                      | Error why -> Some (Unparsed (name, ident, why))
+                      | Ok o -> Some (Overlay_doc (name, ident, text, o))
+                    else
+                      match parse text with
+                      | Error why -> Some (Unparsed (name, ident, why))
+                      | Ok doc ->
+                          if already_judged t ~name ~ident ~text doc then None
+                          else Some (Parsed (name, ident, text, doc)))))
   in
   if !held > 0 then
     log t "%d files wait for the next pass: a pass reads at most %d" !held
@@ -718,6 +1148,14 @@ let judge_pass t : Accepted.t list =
   let unchanged name ident =
     Option.equal equal_ident (Map.find t.unsettled name) (Some ident)
   in
+  (* The overlays first, against the venue's clock and not the sessions:
+     the signals sized below read the effective scale they set. *)
+  deferred :=
+    !deferred
+    + judge_overlays t
+        (List.filter_map candidates ~f:(function
+          | Overlay_doc (name, ident, text, o) -> Some (name, ident, text, o)
+          | Refusal _ | Unparsed _ | Parsed _ -> None));
   (match clock with
   | None ->
       (* No session yet: nothing is recorded, a malformed file included, and
@@ -726,7 +1164,8 @@ let judge_pass t : Accepted.t list =
          clock can record it if it has not changed. *)
       List.iter candidates ~f:(function
         | Unparsed (name, ident, _) -> settle name ident
-        | Refusal _ | Parsed _ -> incr deferred)
+        | Refusal _ | Parsed _ -> incr deferred
+        | Overlay_doc _ -> ())
   | Some { clock; latest; bars_after } ->
       let parsed =
         List.filter_map candidates ~f:(function
@@ -736,7 +1175,8 @@ let judge_pass t : Accepted.t list =
           | Unparsed (name, ident, why) ->
               if unchanged name ident then refuse t ~name ~why else settle name ident;
               None
-          | Parsed (name, ident, text, doc) -> Some (name, ident, text, doc))
+          | Parsed (name, ident, text, doc) -> Some (name, ident, text, doc)
+          | Overlay_doc _ -> None)
         |> List.sort ~compare:(fun (n1, _, _, (d1 : Contract.t)) (n2, _, _, d2) ->
             [%compare: string * int * string]
               (d1.strategy, d1.sequence, n1)
@@ -757,7 +1197,7 @@ let judge_pass t : Accepted.t list =
               in
               let baseline =
                 Journal.highest_sequence t.journal ~strategy:doc.strategy
-                  ~verdicts:[ Accepted; Advisory ]
+                  ~verdicts:[ Accepted; Accepted_incubation; Advisory ]
               in
               let registry =
                 {
@@ -769,15 +1209,23 @@ let judge_pass t : Accepted.t list =
               in
               (* An unregistered strategy fails R2 before max_age is read. *)
               let max_age = Option.value_map spec ~default:0 ~f:(fun s -> s.max_age) in
+              (* The incubation tier asks the contract to carry an R6
+                 failure rather than stop at it; every other strategy is
+                 judged by the contract as it has always been. *)
+              let r6 =
+                match spec with
+                | Some { Signals_spec.Strategy.sizing = Incubation; _ } -> `Record
+                | Some _ | None -> `Enforce
+              in
               let verdict =
-                Contract.validate ~clock ~registry ~universe:t.universe ~max_age doc
+                Contract.validate ~r6 ~clock ~registry ~universe:t.universe ~max_age doc
               in
               match decide ~latest ~bars_after ~spec doc verdict with
               | `Judged j -> (
                   record t ~name ~ident ~text doc j;
                   (* Recorded above before it is handed on: see the header. *)
                   match (j.verdict, spec) with
-                  | Verdict.Accepted, Some strategy ->
+                  | (Verdict.Accepted | Accepted_incubation), Some strategy ->
                       accepted := { Accepted.strategy; doc } :: !accepted
                   | _ -> ())
               | `Defer why ->
@@ -797,7 +1245,7 @@ let judge_pass t : Accepted.t list =
                   let passed = bars_after since in
                   if passed >= max_age then
                     record t ~name ~ident ~text doc
-                      (rejected "R3"
+                      (rejected ~tier:(tier_of spec) "R3"
                          (sprintf
                             "%s; first deferred when the latest session was %s, and %d \
                              sessions have been recorded since with none on or after its \
@@ -816,9 +1264,75 @@ let judge_pass t : Accepted.t list =
 
 let pass t = ignore (judge_pass t : Accepted.t list)
 
-(* One accepted document's rebalance, as the sentence recorded beside it. *)
-let rebalance ~oms (a : Accepted.t) : string Deferred.t =
+(* One accepted document's rebalance, as the sentence recorded beside it.
+   An incubation strategy is sized only on a paper venue
+   (Oms.incubation_permitted), and refused as a rebalance is, before anything
+   is planned, anywhere else. It is sized at its own capital_fraction f and
+   at [scale] -- the effective scale, 1 until the overlay sets it -- times
+   the book's incubation ratio (Signals_spec.incubation_ratio; 1 for a live
+   strategy). What the strategy was sized to -- its tier, that product as
+   the scale, and the dollars allocated, f x scale x E -- is recorded in
+   [sizings] once the plan
+   stands and the proposal was not refused: E is read with the plan, before
+   anything is proposed. [mode] is how the legs go (Rebalance.Mode): Open
+   for an accepted document, Intraday for the adjust pass, whose sizing rows
+   say "adjust" ([sizing_mode]). An intraday rebalance whose wait ran out
+   records no sizing: its unfilled legs were cancelled, and the next pass
+   finds the strategy still sized at the old scale and re-sizes it. *)
+let incubation_ratio t ~oms (strategy : Signals_spec.Strategy.t) =
+  (* The cap is a ratio on the scale, never on the fraction: a cap of 0 is a
+     scale of 0, which flattens, where a fraction of 0 would be no targets
+     and the strategy's shares held for good. *)
+  match strategy.sizing with
+  | Incubation ->
+      Signals_spec.incubation_ratio
+        ~incubation_cap:(Oms.spec oms).Ohcamel.Config.Book.Desk_spec.incubation_cap
+        { Signals_spec.strategies = t.strategies }
+  | Live | Advisory -> 1.0
+
+(* What a sizing is the product of: the effective scale, and -- when the
+   reading it came from is known -- the overlay factor and the governor it
+   multiplies (Reading.factor, Reading.governor), recorded on the sizing row
+   beside the incubation ratio so the adjust pass can compare like with like
+   (the stage review's A-I3 and A-I4). *)
+module Parts = struct
+  type t = { effective : float; factor : float option; governor : float option }
+
+  let of_scale effective = { effective; factor = None; governor = None }
+
+  let of_reading (r : Reading.t) =
+    {
+      effective = r.Reading.exposure_scale;
+      factor = Some r.Reading.factor;
+      governor = Some r.Reading.governor;
+    }
+end
+
+(* What one rebalance came to: its sentence, and whether it was refused for
+   TIMING alone (Oms.Rebalance_outcome.Not_now) -- then the judgement stays
+   pending and is tried again, and the sentence is only said. *)
+module Rebalanced = struct
+  type t = { sentence : string; wait : bool }
+
+  let final sentence = { sentence; wait = false }
+end
+
+(* Whether a rebalance's outcome sized the strategy, so its sizing row may
+   be written (the stage review's A-I5): every order sent and acknowledged --
+   an Open rebalance's [Sent], an intraday wave's [Sent] once it settled, or
+   every wave of a [Waved] [Sent] and none timed out. A [Stopped] rebalance,
+   a refused or timed-out wave, holds part of the new size at most, and is
+   recorded at none: the next pass finds the strategy still at its last
+   sizing and sizes it again. *)
+let rec sized_whole : Oms.Rebalance_outcome.t -> bool = function
+  | Sent _ -> true
+  | Waved { waves; timed_out = false } -> List.for_all waves ~f:sized_whole
+  | Waved { timed_out = true; _ } | Stopped _ | Refused _ | Not_now _ -> false
+
+let rebalance ?(mode = Rebalance.Mode.Open) ?(sizing_mode = "open") ?note t ~oms
+    ~(scale : unit -> Parts.t) (a : Accepted.t) : Rebalanced.t Deferred.t =
   let doc = a.Accepted.doc in
+  let strategy = a.Accepted.strategy in
   let source =
     {
       Rebalance.Source.strategy = doc.strategy;
@@ -826,25 +1340,109 @@ let rebalance ~oms (a : Accepted.t) : string Deferred.t =
       as_of = doc.as_of;
     }
   in
-  match
-    Oms.plan_rebalance oms ~strategy:a.Accepted.strategy
-      ~targets:
-        (List.map doc.targets ~f:(fun (x : Contract.target) -> (x.symbol, x.weight)))
-  with
-  | Error why -> return ("no targets, and no order: " ^ why)
-  | Ok [] -> return "no order: the strategy's own position already equals every target"
-  | Ok legs ->
-      let%map outcome = Oms.propose_rebalance oms ~source ~legs in
-      sprintf "%s. Targets: %s"
-        (Oms.Rebalance_outcome.to_string outcome)
-        (String.concat ~sep:"; " (List.map legs ~f:Rebalance.Leg.describe))
+  let permitted =
+    match strategy.Signals_spec.Strategy.sizing with
+    | Incubation -> Oms.incubation_permitted oms
+    | Live | Advisory -> Ok ()
+  in
+  match permitted with
+  | Error why -> return (Rebalanced.final (Oms.Rebalance_outcome.to_string (Refused why)))
+  | Ok () -> (
+      let ratio = incubation_ratio t ~oms strategy in
+      let fraction = strategy.capital_fraction in
+      let parts = scale () in
+      let scale = parts.Parts.effective *. ratio in
+      let planned =
+        Oms.plan_rebalance oms ~mode ~strategy
+          ~targets:
+            (List.map doc.targets ~f:(fun (x : Contract.target) -> (x.symbol, x.weight)))
+          ~scale
+      in
+      let equity = Oms.sizing_equity oms in
+      let sized () =
+        match equity with
+        | Error _ -> ()
+        | Ok equity -> (
+            match
+              Or_error.try_with (fun () ->
+                  Journal.record_sizing t.journal ~strategy:doc.strategy
+                    ~sequence:doc.sequence ~at:(t.now ())
+                    ~tier:(Signals_spec.sizing_to_string strategy.sizing)
+                    ~scale
+                    ~allocated:(fraction *. scale *. equity)
+                    ~mode:sizing_mode ~ratio ?factor:parts.Parts.factor
+                    ?governor:parts.Parts.governor ?note)
+            with
+            | Ok () -> ()
+            | Error e ->
+                log t "%S %d: its sizing could not be recorded: %s" doc.strategy
+                  doc.sequence (Error.to_string_hum e))
+      in
+      (* The legs under the book's floor (Oms.plan_rebalance drops them in
+         the intraday mode only), said as part of the sentence, so the
+         record shows what was not sent and why. *)
+      let floor_sentence dropped =
+        sprintf "dropped below the $%.0f floor: %s"
+          (Oms.spec oms).Ohcamel.Config.Book.Desk_spec.min_leg_notional
+          (String.concat ~sep:"; "
+             (List.map dropped ~f:(fun (l : Rebalance.Leg.t) ->
+                  sprintf "%s %s %d (%.2f)" (Symbol.to_string l.symbol)
+                    (Order.Side.to_string l.side) l.qty l.price)))
+      in
+      match planned with
+      | Error why -> return (Rebalanced.final ("no targets, and no order: " ^ why))
+      | Ok ([], []) ->
+          sized ();
+          return
+            (Rebalanced.final
+               "no order: the strategy's own position already equals every target")
+      | Ok ([], dropped) ->
+          sized ();
+          return
+            (Rebalanced.final ("no order: every order was " ^ floor_sentence dropped))
+      | Ok (legs, dropped) ->
+          let%map outcome = Oms.propose_rebalance oms ~source ~legs ~mode in
+          if sized_whole outcome then sized ();
+          {
+            Rebalanced.sentence =
+              sprintf "%s. Targets: %s%s"
+                (Oms.Rebalance_outcome.to_string outcome)
+                (String.concat ~sep:"; " (List.map legs ~f:Rebalance.Leg.describe))
+                (if List.is_empty dropped then ""
+                 else ". " ^ String.capitalize (floor_sentence dropped));
+            wait = (match outcome with Not_now _ -> true | _ -> false);
+          })
 
-(* The pass's accepted documents, one at a time: planned, proposed, and the
-   outcome written over the pending sentence. Nothing here raises out: a
-   rebalance that raises is recorded as having raised, with where to look,
-   and one whose outcome cannot be written is said in the log. [oms] is None
-   only for an intake with no order manager, which sizes nothing and says so. *)
-let size t ~(oms : Oms.t option) (accepted : Accepted.t list) : unit Deferred.t =
+(* The outcome written over the pending sentence, once; or, when it cannot
+   be, said. *)
+let close t ~strategy ~sequence outcome =
+  match
+    Or_error.try_with (fun () ->
+        Journal.record_rebalance t.journal ~strategy ~sequence
+          ~from:(pending ~strategy ~sequence) ~outcome)
+  with
+  | Ok () -> log t "%S %d: rebalance %S" strategy sequence outcome
+  | Error e ->
+      log t "%S %d: rebalance %S, which could not be recorded: %s" strategy sequence
+        outcome (Error.to_string_hum e)
+
+(* The accepted documents to size, one at a time: planned, proposed, and the
+   outcome written over the pending sentence -- unless the rebalance was
+   refused for timing alone, when the sentence stays pending, the refusal is
+   said once, and [collect_pending] hands the judgement back next pass.
+   Nothing here raises out: a rebalance that raises is recorded as having
+   raised, with where to look, and one whose outcome cannot be written is
+   said in the log. [oms] is None only for an intake with no order manager,
+   which sizes nothing and says so. [reading], when given, is what the
+   sizing reads instead of [scale], and its factor and governor are recorded
+   on the sizing row. *)
+let size ?reading t ~(oms : Oms.t option) ~(scale : unit -> float)
+    (accepted : Accepted.t list) : unit Deferred.t =
+  let parts () =
+    match reading with
+    | Some r -> Parts.of_reading (r ())
+    | None -> Parts.of_scale (scale ())
+  in
   Deferred.List.iter ~how:`Sequential accepted ~f:(fun (a : Accepted.t) ->
       let doc = a.Accepted.doc in
       let source =
@@ -863,38 +1461,315 @@ let size t ~(oms : Oms.t option) (accepted : Accepted.t list) : unit Deferred.t 
         match (later, oms) with
         | Some b, _ ->
             return
-              (sprintf
-                 "not sized: sequence %d of the same strategy was accepted in the same \
-                  pass, and only the latest is sized"
-                 b.Accepted.doc.sequence)
-        | None, None -> return "not sized: this intake runs with no order manager"
+              (Rebalanced.final
+                 (sprintf
+                    "not sized: sequence %d of the same strategy was accepted in the \
+                     same pass, and only the latest is sized"
+                    b.Accepted.doc.sequence))
+        | None, None ->
+            return (Rebalanced.final "not sized: this intake runs with no order manager")
         | None, Some oms -> (
-            match%map Monitor.try_with ~extract_exn:true (fun () -> rebalance ~oms a) with
+            match%map
+              Monitor.try_with ~extract_exn:true (fun () ->
+                  rebalance t ~oms ~scale:parts a)
+            with
             | Ok outcome -> outcome
             | Error exn ->
-                sprintf
-                  "the rebalance raised (%s); the orders whose source is %s are the \
-                   record of anything journaled or sent"
-                  (Exn.to_string exn)
-                  (Rebalance.Source.to_string source))
+                Rebalanced.final
+                  (sprintf
+                     "the rebalance raised (%s); the orders whose source is %s are the \
+                      record of anything journaled or sent"
+                     (Exn.to_string exn)
+                     (Rebalance.Source.to_string source)))
       in
-      match
-        Or_error.try_with (fun () ->
-            Journal.record_rebalance t.journal ~strategy:doc.strategy
-              ~sequence:doc.sequence
-              ~from:(pending ~strategy:doc.strategy ~sequence:doc.sequence)
-              ~outcome)
-      with
-      | Ok () -> log t "%S %d: rebalance %S" doc.strategy doc.sequence outcome
-      | Error e ->
-          log t "%S %d: rebalance %S, which could not be recorded: %s" doc.strategy
-            doc.sequence outcome (Error.to_string_hum e))
+      if outcome.Rebalanced.wait then
+        once t ~kind:"waits" ~name:(Rebalance.Source.to_string source) (fun () ->
+            log t "%S %d: waits, still pending, and is tried again each pass: %S"
+              doc.strategy doc.sequence outcome.Rebalanced.sentence)
+      else
+        close t ~strategy:doc.strategy ~sequence:doc.sequence outcome.Rebalanced.sentence)
+
+(* THE RETRY SET (the stage review's A-I1): every accepted or
+   accepted_incubation judgement whose rebalance still holds its pending
+   sentence, read back from the journal each pass -- so a judgement whose
+   rebalance was refused for timing, or that a restart found unsized, is
+   tried again until it is sized. Before it is handed on, each is closed
+   instead, its reason written over the pending sentence, when:
+   - its strategy is no longer registered, or its sizing is no longer the
+     tier it was judged at (an accepted judgement needs a live strategy, an
+     accepted_incubation one an incubation strategy);
+   - a later document of the strategy was accepted (R5): only the latest is
+     sized;
+   - it aged out: more than its strategy's max_age sessions have been
+     recorded after its as_of (R4);
+   - orders were journaled under its source: the desk stopped while
+     proposing it, those orders are the record, and it is never sized
+     again;
+   - its recorded document no longer parses.
+   Only judgements recorded with the pending sentence come back, and only
+   accepted ones: an advisory row is never read here. *)
+let collect_pending t : Accepted.t list =
+  let clock = clock_of_dates (Journal.session_dates t.journal) in
+  List.filter_map (Journal.pending_signals t.journal) ~f:(fun (s : Journal.Signal.t) ->
+      let strategy_name = s.Journal.Signal.strategy and sequence = s.sequence in
+      if
+        not
+          (Option.equal String.equal s.rebalance
+             (Some (pending ~strategy:strategy_name ~sequence)))
+      then None
+      else
+        let closed why =
+          close t ~strategy:strategy_name ~sequence why;
+          None
+        in
+        match
+          List.find t.strategies ~f:(fun x ->
+              String.equal x.Signals_spec.Strategy.name strategy_name)
+        with
+        | None ->
+            closed
+              (sprintf "not sized: %S is no longer registered in the book" strategy_name)
+        | Some strategy -> (
+            match (s.verdict, strategy.sizing) with
+            | Verdict.Accepted, Live | Accepted_incubation, Incubation -> (
+                match
+                  Journal.highest_sequence t.journal ~strategy:strategy_name
+                    ~verdicts:[ Accepted; Accepted_incubation ]
+                with
+                | Some n when n > sequence ->
+                    closed
+                      (sprintf
+                         "not sized: sequence %d of the same strategy was accepted after \
+                          it, and only the latest is sized"
+                         n)
+                | _ -> (
+                    match clock with
+                    | Some c when c.bars_after s.as_of > strategy.max_age ->
+                        closed
+                          (sprintf
+                             "not sized: it aged out -- %d sessions are recorded after \
+                              its as_of %s, more than max_age %d"
+                             (c.bars_after s.as_of) (Date.to_string s.as_of)
+                             strategy.max_age)
+                    | _ -> (
+                        let source =
+                          Rebalance.Source.name ~strategy:strategy_name ~sequence
+                        in
+                        if Journal.source_has_orders t.journal ~source then
+                          closed
+                            (sprintf
+                               "orders were journaled under this source (%s); not sized \
+                                again"
+                               source)
+                        else
+                          match parse s.document with
+                          | Ok doc -> Some { Accepted.strategy; doc }
+                          | Error why ->
+                              closed
+                                ("not sized: its recorded document does not parse: " ^ why)
+                        )))
+            | verdict, sizing ->
+                closed
+                  (sprintf
+                     "not sized: the judgement is %s, and the strategy's sizing is now %s"
+                     (Verdict.to_string verdict)
+                     (Signals_spec.sizing_to_string sizing))))
+
+(* THE ADJUST PASS (design §4.3; the stage review's A-I3, A-I4 and A-I5):
+   a strategy that adjusts intraday, is not stopped, and has an accepted
+   document is re-sized from that document -- Journal's
+   latest_accepted_document, accepted or accepted_incubation and nothing
+   else, so never an advisory row -- in the intraday mode, its sizing row
+   saying "adjust", when:
+   - NOT SIZED: it has no sizing for its latest accepted document (none at
+     all, or an older one's: a rebalance that held only part of its size
+     records none) and it holds a position of its own -- whatever the band;
+   - the reading is FRESH, HELD or ABSENT and the effective scale moved more
+     than overlay_band from the effective scale it was last sized at --
+     like with like: the sizing's scale divided by the incubation ratio
+     recorded beside it -- or that ratio itself changed (a cap edited across
+     a restart), or an accepted overlay says exactly 0 and the last scale was
+     not (a product that is 0 for another reason moves by the band alone);
+   - the reading is STALE and the GOVERNOR moved more than the band from the
+     one the last sizing recorded: re-sized at the overlay factor that sizing
+     used times the governor now, its row noted "governor". Otherwise a
+     stale reading HOLDS every last sizing, said once a stale spell: the
+     overlay is stale from evening to the first morning run, and selling to
+     the fallback every morning only to buy back at the next overlay would
+     churn the book.
+
+   The strategies are proposed concurrently, at most eight at once: each
+   wave is its own sequencer job and the waits interleave, so one
+   strategy's wave timeout does not hold another's. A proposal outside the
+   regular session is refused by the session rule like any other, records
+   no sizing, and is tried again next minute; each strategy's outcome is
+   said when it differs from the last one said. The pass runs detached from
+   the minute loop, and a pass that finds the last still out skips, saying
+   so once for the whole overlap. Never raises. *)
+let adjust t ~(oms : Oms.t option) : unit Deferred.t =
+  match oms with
+  | None -> Deferred.unit
+  | Some _ when t.adjusting ->
+      if not t.skip_said then (
+        t.skip_said <- true;
+        log t
+          "the last adjust pass is still running, so later minutes' are skipped until it \
+           ends");
+      Deferred.unit
+  | Some oms -> (
+      t.adjusting <- true;
+      let%map result =
+        Monitor.try_with ~extract_exn:true (fun () ->
+            let reading = current_reading t in
+            let effective = reading.Reading.exposure_scale in
+            let stale =
+              match reading.state with Stale -> true | Fresh | Held _ | Absent -> false
+            in
+            let stale_key = "stale hold\000" in
+            if stale then (
+              if not (Hash_set.mem t.said stale_key) then (
+                Hash_set.add t.said stale_key;
+                log t
+                  "the overlay reads stale, so the adjust pass holds every strategy at \
+                   its last sizing, and acts only on a governor move beyond the band"))
+            else Hash_set.remove t.said stale_key;
+            (* The band is bypassed only by an accepted overlay that says
+               exactly 0 -- never by a product that is 0 for another
+               reason. *)
+            let overlay_zero =
+              match (reading.state, reading.overlay) with
+              | (Fresh | Held _), Some v -> Float.equal v 0.0
+              | _ -> false
+            in
+            let band = t.gauge.spec.Ohcamel.Config.Book.Desk_spec.overlay_band in
+            let beyond a b = Float.( > ) (Float.abs (a -. b)) band in
+            let now_parts = Parts.of_reading reading in
+            let holds (s : Signals_spec.Strategy.t) =
+              match Oms.strategy_position oms ~strategy:s.name with
+              | Ok own -> Map.exists own ~f:(fun q -> Float.( <> ) q 0.0)
+              | Error _ -> false
+            in
+            let due =
+              List.filter_map t.strategies ~f:(fun (s : Signals_spec.Strategy.t) ->
+                  let stopped =
+                    match Journal.strategy_state t.journal ~strategy:s.name with
+                    | Some (`Stopped, _, _, _) -> true
+                    | Some (`Active, _, _, _) | None -> false
+                  in
+                  match (s.adjust, s.sizing, stopped) with
+                  | Signals_spec.Adjust.Open, _, _ | _, Advisory, _ | _, _, true -> None
+                  | Intraday, (Live | Incubation), false -> (
+                      match
+                        Journal.latest_accepted_document t.journal ~strategy:s.name
+                      with
+                      | None -> None
+                      | Some (sequence, text) -> (
+                          let ratio = incubation_ratio t ~oms s in
+                          let last =
+                            Journal.latest_sizing_row t.journal ~strategy:s.name
+                          in
+                          let unsized =
+                            match last with
+                            | None -> true
+                            | Some z -> z.Journal.Sizing.sequence < sequence
+                          in
+                          let decision =
+                            (* An unsized strategy holds while the reading is
+                               Stale, like every other: re-sizing it at the
+                               fallback would sell what the first fresh overlay
+                               buys back. *)
+                            if unsized then
+                              if holds s && not stale then Some (now_parts, None)
+                              else None
+                            else
+                              let z = Option.value_exn last in
+                              let last_ratio =
+                                Option.value z.Journal.Sizing.ratio ~default:ratio
+                              in
+                              let ratio_changed =
+                                match z.ratio with
+                                | Some r -> Float.( > ) (Float.abs (r -. ratio)) 1e-12
+                                | None -> false
+                              in
+                              if not stale then
+                                let last_effective =
+                                  if Float.( > ) last_ratio 0.0 then z.scale /. last_ratio
+                                  else
+                                    match (z.factor, z.governor) with
+                                    | Some f, Some g -> f *. g
+                                    | _ -> effective
+                                in
+                                if
+                                  beyond effective last_effective
+                                  || ratio_changed
+                                  || (overlay_zero && Float.( > ) z.scale 0.0)
+                                then Some (now_parts, None)
+                                else None
+                              else
+                                match (z.factor, z.governor) with
+                                | Some f, Some g when beyond reading.governor g ->
+                                    Some
+                                      ( {
+                                          Parts.effective = f *. reading.governor;
+                                          factor = Some f;
+                                          governor = Some reading.governor;
+                                        },
+                                        Some "governor" )
+                                | _ -> None
+                          in
+                          match decision with
+                          | None -> None
+                          | Some (parts, note) -> (
+                              match parse text with
+                              | Ok doc ->
+                                  Some ({ Accepted.strategy = s; doc }, parts, note, ratio)
+                              | Error why ->
+                                  once t ~kind:"adjust parse" ~name:s.name (fun () ->
+                                      log t "%S %d: its document does not parse (%s)"
+                                        s.name sequence why);
+                                  None))))
+            in
+            Deferred.List.iter ~how:(`Max_concurrent_jobs 8) due
+              ~f:(fun ((a : Accepted.t), parts, note, ratio) ->
+                let name = a.Accepted.strategy.name in
+                let%map outcome =
+                  match%map
+                    Monitor.try_with ~extract_exn:true (fun () ->
+                        rebalance ~mode:Rebalance.Mode.Intraday ~sizing_mode:"adjust"
+                          ?note t ~oms
+                          ~scale:(fun () -> parts)
+                          a)
+                  with
+                  | Ok outcome -> outcome.Rebalanced.sentence
+                  | Error exn -> sprintf "the rebalance raised (%s)" (Exn.to_string exn)
+                in
+                let said = Hashtbl.find t.adjust_said name in
+                if not (Option.equal String.equal said (Some outcome)) then (
+                  Hashtbl.set t.adjust_said ~key:name ~data:outcome;
+                  log t "%S %d: adjusted to scale %g%s: %S" name a.Accepted.doc.sequence
+                    (parts.Parts.effective *. ratio)
+                    (match note with Some n -> " (" ^ n ^ ")" | None -> "")
+                    outcome)))
+      in
+      t.adjusting <- false;
+      t.skip_said <- false;
+      match result with
+      | Ok () -> ()
+      | Error exn -> log t "the adjust pass raised: %s" (Exn.to_string exn))
 
 (* Once a minute, from now: the first pass at once, so a restart judges what
    arrived while it was down without waiting a minute. [judge_pass] is
-   synchronous, so a plain try/with sees every raise it can make; its
-   accepted documents are sized before the minute's wait begins, so no pass
-   starts while a rebalance is still being proposed. *)
+   synchronous, so a plain try/with sees every raise it can make. Then THE
+   RETRY SET is sized ([collect_pending]: every accepted judgement still
+   pending, this pass's among them) at the reading as it is then, before the
+   minute's wait begins, so no pass starts while a rebalance is still being
+   proposed -- but only once the venue's clock has answered: before it, the
+   overlay cannot be aged and the session cannot be timed, so nothing is
+   sized at all and every judgement waits, pending (the stage review's
+   A-I1). An intake with no order manager writes its "not sized" sentence
+   over this pass's accepted judgements, as it always has. Then the adjust
+   pass is started and not waited for: its intraday waves can take minutes,
+   and the next pass must not. *)
 let run ?(time_source = Time_source.wall_clock ()) ?oms t : unit Deferred.t =
   let rec loop () =
     let accepted =
@@ -903,11 +1778,35 @@ let run ?(time_source = Time_source.wall_clock ()) ?oms t : unit Deferred.t =
         log t "a pass raised, and the next one runs in a minute: %s" (Exn.to_string exn);
         []
     in
+    let clock_key = "sizing clock\000" in
+    let to_size () =
+      match oms with
+      | None -> accepted
+      | Some _ -> (
+          match t.gauge.venue_now () with
+          | None ->
+              if not (Hash_set.mem t.said clock_key) then (
+                Hash_set.add t.said clock_key;
+                log t
+                  "no venue clock has answered, so nothing is sized: every accepted \
+                   judgement waits, pending, until one does");
+              []
+          | Some _ ->
+              Hash_set.remove t.said clock_key;
+              collect_pending t)
+    in
     let%bind () =
-      match%map Monitor.try_with ~extract_exn:true (fun () -> size t ~oms accepted) with
+      match%map
+        Monitor.try_with ~extract_exn:true (fun () ->
+            size t ~oms
+              ~reading:(fun () -> current_reading t)
+              ~scale:(fun () -> effective_scale t)
+              (to_size ()))
+      with
       | Ok () -> ()
       | Error exn -> log t "sizing raised: %s" (Exn.to_string exn)
     in
+    don't_wait_for (adjust t ~oms);
     let%bind () = Time_source.after time_source every in
     loop ()
   in
@@ -923,13 +1822,26 @@ let jopt f = function None -> `Null | Some x -> f x
 (* The weights and the validation block, from the recorded document parsed
    again -- never the document's own JSON passed through, so what reaches the
    page is exactly these fields, each a string or a finite number. *)
-let judgement_json (s : Journal.Signal.t) : Yojson.Safe.t =
+let judgement_json ~(sizing : Signals_spec.sizing) (s : Journal.Signal.t) : Yojson.Safe.t
+    =
   let doc = match parse s.document with Ok d -> Some d | Error _ -> None in
   `Assoc
     [
       ("verdict", `String (Verdict.to_string s.verdict));
       ("rule", jopt (fun r -> `String r) s.rule);
       ("detail", `String s.detail);
+      (* The judgement's tier: "incubation" when its detail was journaled
+         behind the label, else its strategy's sizing word -- "advisory" for
+         an incubation strategy's unlabelled judgement, which only a desk
+         that did not yet size the tier could have recorded. *)
+      ( "tier",
+        `String
+          (if String.is_prefix s.detail ~prefix:tier_label then
+             Signals_spec.sizing_to_string Incubation
+           else
+             match sizing with
+             | Incubation -> Signals_spec.sizing_to_string Advisory
+             | Live | Advisory -> Signals_spec.sizing_to_string sizing) );
       (* An accepted judgement's rebalance: pending, then what came of it.
          Null for every other verdict. *)
       ("rebalance", jopt (fun r -> `String r) s.rebalance);
@@ -965,8 +1877,52 @@ let judgement_json (s : Journal.Signal.t) : Yojson.Safe.t =
 
 (* Bounded by the book: one indexed seek per registered strategy, and the
    deferred count from the last pass, in memory. *)
-let research_json ~journal ~(strategies : Signals_spec.Strategy.t list) (status : status)
-    : Yojson.Safe.t =
+let research_json ?(scale = absent_reading_fields) ~journal
+    ~(strategies : Signals_spec.Strategy.t list) (status : status) : Yojson.Safe.t =
+  let cadence_word : Signals_spec.Cadence.t -> string = function
+    | Daily -> "daily"
+    | Intraday -> "intraday"
+  in
+  let adjust_word : Signals_spec.Adjust.t -> string = function
+    | Intraday -> "intraday"
+    | Open -> "open"
+  in
+  (* The overlay's reading as /api/desk serves it, with the governor beside
+     it and the accepted document's [inputs] and [reported] -- the document
+     parsed again, so only its two objects reach the page. *)
+  let overlay =
+    let reading =
+      match List.Assoc.find scale ~equal:String.equal "overlay" with
+      | Some (`Assoc fields) -> fields
+      | _ -> []
+    in
+    let get k =
+      Option.value (List.Assoc.find reading ~equal:String.equal k) ~default:`Null
+    in
+    let governor =
+      Option.value (List.Assoc.find scale ~equal:String.equal "governor") ~default:`Null
+    in
+    let inputs, reported =
+      match
+        Option.bind (Journal.latest_overlay_document journal) ~f:(fun d ->
+            match Overlay.parse_string d with Ok o -> Some o | Error _ -> None)
+      with
+      | Some o -> (o.Overlay.inputs, o.Overlay.reported)
+      | None -> (`Null, `Null)
+    in
+    `Assoc
+      [
+        ("value", get "value");
+        ("as_of", get "as_of");
+        ("age_s", get "age_s");
+        ("state", get "state");
+        ("reason", get "reason");
+        ("governor", governor);
+        ("governor_cap", get "governor_cap");
+        ("inputs", inputs);
+        ("reported", reported);
+      ]
+  in
   `Assoc
     [
       ("intake", `String (match status with Running _ -> "running" | Off _ -> "off"));
@@ -979,16 +1935,46 @@ let research_json ~journal ~(strategies : Signals_spec.Strategy.t list) (status 
       ( "strategies",
         `List
           (List.map strategies ~f:(fun (s : Signals_spec.Strategy.t) ->
+               let latest = Journal.latest_signal journal ~strategy:s.name in
+               let judgement =
+                 jopt
+                   (fun (j : Journal.Signal.t) ->
+                     `Assoc
+                       [
+                         ("verdict", `String (Verdict.to_string j.verdict));
+                         ("rule", jopt (fun r -> `String r) j.rule);
+                         ("detail", `String j.detail);
+                       ])
+                   latest
+               in
+               let validation =
+                 match Option.map latest ~f:(judgement_json ~sizing:s.sizing) with
+                 | Some (`Assoc l) ->
+                     Option.value
+                       (List.Assoc.find l ~equal:String.equal "validation")
+                       ~default:`Null
+                 | _ -> `Null
+               in
                `Assoc
                  [
                    ("name", `String s.name);
                    ("symbols", `List (List.map s.symbols ~f:(fun x -> `String x)));
                    ("max_age", `Int s.max_age);
                    ("sizing", `String (Signals_spec.sizing_to_string s.sizing));
+                   ("tier", `String (Signals_spec.sizing_to_string s.sizing));
+                   ( "state",
+                     `String
+                       (match Journal.strategy_state journal ~strategy:s.name with
+                       | Some (`Stopped, _, _, _) -> "stopped"
+                       | Some (`Active, _, _, _) | None -> "active") );
                    ("capital_fraction", jnum s.capital_fraction);
-                   ( "latest",
-                     jopt judgement_json (Journal.latest_signal journal ~strategy:s.name)
-                   );
+                   ("cadence", `String (cadence_word s.cadence));
+                   ("adjust", `String (adjust_word s.adjust));
+                   ("latest", jopt (judgement_json ~sizing:s.sizing) latest);
+                   ("judgement", judgement);
+                   ("validation", validation);
+                   ("record", `Null);
                  ])) );
+      ("overlay", overlay);
       ("r8", `String r8_sentence);
     ]

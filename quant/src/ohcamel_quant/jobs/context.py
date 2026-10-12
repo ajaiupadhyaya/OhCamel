@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 
@@ -38,6 +39,13 @@ class JobContext:
 
             self._market = MarketData()
         return self._market
+
+    @property
+    def signals_dir(self) -> Path | None:
+        """``Settings.signals_dir`` (``OHCAMEL_QUANT_SIGNALS_DIR``): where the signal
+        producers write the desk's documents; None when unset, and then they refuse to run."""
+        d = self.market.settings.signals_dir
+        return None if d is None else Path(d)
 
     @property
     def warehouse(self) -> Any:

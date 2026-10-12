@@ -292,7 +292,7 @@ if [ "$(rc G2)" = 0 ]; then ok "G3 --during-market overrides it"; else no "G3 --
 fresh G3 >/dev/null
 DEPLOY_NOW=2026-09-21T15:00Z run G3 --public-only --sha deadbeef --dry-run
 if [ "$(rc G3)" = 0 ]; then ok "G4 --public-only is never refused"; else no "G4 --public-only is never refused" "rc $(rc G3)"; fi
-if grep -q -- "--public-only -- caddy, ohcamel-quant, ohcamel-worker and ohcamel-hostd only" "$scratch/out-G3"; then ok "G4b --public-only names every service it starts, ohcamel-worker included"; else no "G4b --public-only names every service it starts, ohcamel-worker included" "$(grep -- '--public-only --' "$scratch/out-G3")"; fi
+if grep -q -- "--public-only -- caddy, ohcamel-quant, ohcamel-worker, signals-init and ohcamel-hostd only" "$scratch/out-G3"; then ok "G4b --public-only names every service it starts, ohcamel-worker and signals-init included"; else no "G4b --public-only names every service it starts, ohcamel-worker and signals-init included" "$(grep -- '--public-only --' "$scratch/out-G3")"; fi
 fresh G4 >/dev/null
 DEPLOY_NOW=1790002800 run G4 --live --sha deadbeef --dry-run
 if [ "$(rc G4)" = 1 ]; then ok "G5 DEPLOY_NOW still takes a Unix epoch (2026-09-21 15:00Z)"; else no "G5 DEPLOY_NOW still takes a Unix epoch" "rc $(rc G4)"; fi

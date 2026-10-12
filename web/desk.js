@@ -395,7 +395,16 @@
       ? "— " + d.venue + (d.venue === "simulated" ? ", in this process" : (d.trading ? ", trading" : ", read side"))
       : "— disabled: " + (d.reason || "no reason given");
     var rows = [
-      ["equity", d.equity === null ? "—" : F.money(d.equity)],
+      // The effective scale sizing reads (the overlay times the drawdown
+      // governor), beside the equity it scales: "scale 0.71". Null when the
+      // desk has no gauge, and then nothing is said. When it is not an
+      // overlay's, the strip says so: STALE (the fallback is in force) or
+      // ABSENT (no overlay ever accepted, so 1.0).
+      ["equity", (d.equity === null ? "—" : F.money(d.equity))
+        + (typeof d.exposure_scale === "number" && isFinite(d.exposure_scale)
+          ? " · scale " + d.exposure_scale.toFixed(2)
+            + (d.overlay && d.overlay.state === "stale" ? " STALE" : d.overlay && d.overlay.state === "absent" ? " ABSENT" : "")
+          : "")],
       ["cash", d.cash === null ? "—" : F.money(d.cash)],
       ["session P&L", d.session_pnl === null ? "—" : F.money(d.session_pnl)],
       // "on" beside a tripped, halted or stopped switch would read as orders
@@ -655,6 +664,13 @@
     });
   }
 
+  // A wave's order: its source is a signal, it rests for the day and it
+  // is a limit. The wire carries all three; nothing else is read.
+  function waveWord(o) {
+    return typeof o.source === "string" && o.source.indexOf("signal:") === 0
+      && o.time_in_force === "day" && o.type === "limit" ? " · intraday" : "";
+  }
+
   function renderBlotter(orders) {
     var t = document.getElementById("blotter"), F = window.OhCamelFormat;
     if (!t) return;
@@ -683,7 +699,7 @@
       tr.appendChild(F.el("td", "k", o.symbol));
       tr.appendChild(F.el("td", "k", o.side));
       tr.appendChild(F.el("td", "v num", known(o.qty) ? String(o.qty) : "—"));
-      tr.appendChild(F.el("td", "k", o.type === "limit" ? "limit " + fixed2(o.limit_price) : "market"));
+      tr.appendChild(F.el("td", "k", (o.type === "limit" ? "limit " + fixed2(o.limit_price) : "market") + waveWord(o)));
       tr.appendChild(F.el("td", "k state", String(o.state).replace(/_/g, " ")));
       tr.appendChild(F.el("td", "v num", known(o.filled_qty) ? String(o.filled_qty) : "—"));
       tr.appendChild(F.el("td", "v num", fixed2(o.avg_fill_price)));

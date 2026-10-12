@@ -903,6 +903,59 @@ let test_stream_cap () =
         "naming the 31 and the 30" true
         (names "stream names 31 symbols; at most 30 stream" errors))
 
+let test_stream_names_prefer_the_stream_list () =
+  (* 35 names: S01..S33 with GLD after S02 and TLT after S10, and (stream (GLD
+     TLT)). The stream is GLD, TLT, then the first 28 OTHER positions in book
+     order -- S01..S28, GLD and TLT not repeated where they stand -- which is
+     30; the poll is the rest, S29..S33. *)
+  let s i = sprintf "S%02d" i in
+  let names =
+    List.concat
+      [
+        [ s 1; s 2; "GLD" ];
+        List.init 8 ~f:(fun i -> s (i + 3));
+        [ "TLT" ];
+        List.init 23 ~f:(fun i -> s (i + 11));
+      ]
+  in
+  Alcotest.(check int) "35 names" 35 (List.length names);
+  let contents =
+    sprintf "((cash 1000000.0) (positions (%s)) (limits ()) (desk ((stream (GLD TLT)))))"
+      (String.concat ~sep:" "
+         (List.map names ~f:(sprintf "((symbol %s) (sector TECH) (qty 1.0))")))
+  in
+  let book =
+    match Book.parse contents with
+    | Ok b -> b
+    | Error exn -> Alcotest.failf "did not parse: %s" (Exn.to_string exn)
+  in
+  let strings = List.map ~f:Ohcamel.Types.Symbol.to_string in
+  Alcotest.(check (list string))
+    "GLD, TLT, then S01..S28"
+    ([ "GLD"; "TLT" ] @ List.init 28 ~f:(fun i -> s (i + 1)))
+    (strings (Book.stream_names book));
+  Alcotest.(check (list string))
+    "the other five, S29..S33"
+    (List.init 5 ~f:(fun i -> s (i + 29)))
+    (strings (Book.polled_names book))
+
+let test_a_book_without_stream_streams_the_first_thirty () =
+  let book =
+    match Book.parse (book_of_n_names 35) with
+    | Ok b -> b
+    | Error exn -> Alcotest.failf "did not parse: %s" (Exn.to_string exn)
+  in
+  let s i = sprintf "S%02d" i in
+  let strings = List.map ~f:Ohcamel.Types.Symbol.to_string in
+  Alcotest.(check (list string))
+    "S01..S30"
+    (List.init 30 ~f:(fun i -> s (i + 1)))
+    (strings (Book.stream_names book));
+  Alcotest.(check (list string))
+    "S31..S35"
+    (List.init 5 ~f:(fun i -> s (i + 31)))
+    (strings (Book.polled_names book))
+
 let test_desk_defaults () =
   let d = Desk_spec.default in
   Alcotest.(check (float 0.0)) "incubation_cap 0.0" 0.0 d.Desk_spec.incubation_cap;
@@ -976,6 +1029,44 @@ let test_effective_fraction_scales_the_roster () =
   Alcotest.(check (float 0.0))
     "a live strategy keeps its own fraction" 0.025
     (S.effective_fraction ~incubation_cap:0.10 roster (strategy "l_a" S.Live))
+
+(* The ratio the desk folds into an incubation strategy's scale, by hand.
+   23 at 0.025 sum to 0.575:
+   - cap 0.10: min(1, 0.10 / 0.575) = 0.173913...;
+   - cap 0.60: min(1, 0.60 / 0.575 = 1.0435) = 1.0;
+   - cap 0: 0.0 -- a scale of nothing, which flattens;
+   - no incubation strategy (the sum is 0): 0.0;
+   - a NaN cap: 0.0, never NaN. *)
+let test_the_incubation_ratio () =
+  let module S = Ohcamel.Config.Book.Signals_spec in
+  let strategy name sizing =
+    {
+      S.Strategy.name;
+      symbols = [ "SPY" ];
+      max_age = 3;
+      sizing;
+      capital_fraction = 0.025;
+      cadence = S.Cadence.Daily;
+      adjust = S.Adjust.Intraday;
+      max_age_minutes = 20;
+      horizon = S.Horizon.Carry;
+      stop = None;
+      reinstated = None;
+    }
+  in
+  let roster =
+    {
+      S.strategies = List.init 23 ~f:(fun i -> strategy (sprintf "s_%02d" i) S.Incubation);
+    }
+  in
+  let ratio cap = S.incubation_ratio ~incubation_cap:cap roster in
+  Alcotest.(check (float 1e-12)) "cap 0.10" 0.1739130434782609 (ratio 0.10);
+  Alcotest.(check (float 0.0)) "cap 0.60" 1.0 (ratio 0.60);
+  Alcotest.(check (float 0.0)) "cap 0" 0.0 (ratio 0.0);
+  Alcotest.(check (float 0.0))
+    "no incubation strategy" 0.0
+    (S.incubation_ratio ~incubation_cap:0.10 { S.strategies = [ strategy "l_a" S.Live ] });
+  Alcotest.(check (float 0.0)) "a NaN cap" 0.0 (ratio Float.nan)
 
 (* The canary as the owner books it: the example book with (incubation_cap
    0.10) and nothing else changed checks clean, and the summary prints each
@@ -1177,11 +1268,16 @@ let suite =
       Alcotest.test_case "stop drawdown range" `Quick test_stop_drawdown_range;
       Alcotest.test_case "flatten_at parses" `Quick test_flatten_at_parses;
       Alcotest.test_case "stream cap" `Quick test_stream_cap;
+      Alcotest.test_case "stream_names prefers the stream list" `Quick
+        test_stream_names_prefer_the_stream_list;
+      Alcotest.test_case "a book without stream streams the first thirty" `Quick
+        test_a_book_without_stream_streams_the_first_thirty;
       Alcotest.test_case "defaults" `Quick test_desk_defaults;
       Alcotest.test_case "roster fractions sum under the cap" `Quick
         test_roster_fractions_sum_to_the_cap;
       Alcotest.test_case "effective fraction scales the roster" `Quick
         test_effective_fraction_scales_the_roster;
+      Alcotest.test_case "the incubation ratio" `Quick test_the_incubation_ratio;
       Alcotest.test_case "the canary book checks clean" `Quick
         test_the_canary_book_checks_clean;
       Alcotest.test_case "every roster symbol is a position" `Quick

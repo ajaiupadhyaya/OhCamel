@@ -39,6 +39,7 @@ here too, so this file does not depend on another test file's internals.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import signal as os_signal
@@ -664,6 +665,7 @@ def test_sweep_orphaned_tmp_removes_only_the_dotted_tmp_convention(tmp_path: Pat
     signals_dir.mkdir()
     orphan = signals_dir / ".exp_test_spy-2020-12-31.json.tmp"
     orphan.write_text("half-written")
+    _age(orphan, 3600)
     real_signal = signals_dir / "exp_test_spy-2020-12-30.json"
     real_signal.write_text("{}")
     look_alike = signals_dir / "not-dotted.tmp"  # not write_signal's own naming convention
@@ -677,8 +679,63 @@ def test_sweep_orphaned_tmp_removes_only_the_dotted_tmp_convention(tmp_path: Pat
     assert look_alike.exists()
 
 
+def _age(path: Path, seconds: float) -> None:
+    then = time_module.time() - seconds
+    os.utime(path, (then, then))
+
+
+def test_sweep_orphaned_tmp_spares_a_young_temp_and_removes_an_old_one(tmp_path: Path):
+    signals_dir = tmp_path / "signals"
+    signals_dir.mkdir()
+    young = signals_dir / ".exp_test_spy-2020-12-31.json.4242.tmp"  # a worker mid-write
+    young.write_text("being written")
+    _age(young, 30)
+    old = signals_dir / ".exp_test_tlt-2020-12-31.json.tmp"
+    old.write_text("orphaned")
+    _age(old, 11 * 60)
+
+    removed = sweep_orphaned_tmp(signals_dir)
+
+    assert removed == [old]
+    assert young.exists()
+    assert not old.exists()
+
+
 def test_sweep_orphaned_tmp_on_a_missing_directory_is_a_noop(tmp_path: Path):
     assert sweep_orphaned_tmp(tmp_path / "does-not-exist") == []
+
+
+def test_sweep_orphaned_tmp_survives_a_temp_renamed_away_mid_sweep(tmp_path: Path, monkeypatch):
+    # The worker may rename its temp between the sweep's iterdir and its stat or unlink. Each
+    # FileNotFoundError is that race, not an error: the file is simply not the sweep's any more.
+    signals_dir = tmp_path / "signals"
+    signals_dir.mkdir()
+    gone_at_stat = signals_dir / ".a-2020-12-31.json.tmp"
+    gone_at_unlink = signals_dir / ".b-2020-12-31.json.tmp"
+    old = signals_dir / ".c-2020-12-31.json.tmp"
+    for p in (gone_at_stat, gone_at_unlink, old):
+        p.write_text("orphaned")
+        _age(p, 11 * 60)
+    real_stat, real_unlink = Path.stat, Path.unlink
+    seen: list[Path] = []
+
+    def stat(self, *a, **k):
+        # The listing's is_file sees it (the first stat); it is gone by the sweep's own stat.
+        if self == gone_at_stat:
+            seen.append(self)
+            if len(seen) > 1:
+                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(self))
+        return real_stat(self, *a, **k)
+
+    def unlink(self, *a, **k):
+        if self == gone_at_unlink:
+            real_unlink(self)  # renamed by the worker an instant before
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(self))
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    assert sweep_orphaned_tmp(signals_dir) == [old]
 
 
 # ---------------------------------------------------------------------------

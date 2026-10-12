@@ -42,6 +42,7 @@ let context =
     adv20 = Some 16_600.0;
     recent = [];
     open_orders = 0;
+    source = "manual";
     now;
   }
 
@@ -168,6 +169,7 @@ let test_a_duplicate_within_the_window () =
       side = Order.Side.Buy;
       qty;
       at = Time_ns.sub now (Time_ns.Span.of_sec seconds_ago);
+      source = "manual";
     }
   in
   check_rules "the same order 9 s ago" [ "duplicate" ]
@@ -179,6 +181,35 @@ let test_a_duplicate_within_the_window () =
   check_rules "a different quantity 1 s ago" []
     { context with recent = [ recent 1.0 11 ] }
     (request 10)
+
+(* Two strategies may want the same order: the rule is one proposer's
+   double-click, not two strategies' agreement (Task 9). SPY Buy 10 from
+   signal:a:1, 5 s ago, inside the 10 s window: signal:b:1's SPY Buy 10
+   passes, and signal:a:1's again is the duplicate. *)
+let test_duplicate_is_per_source () =
+  let spy = Symbol.of_string "SPY" in
+  let ctx =
+    {
+      context with
+      universe = Set.add context.universe spy;
+      recent =
+        [
+          {
+            Rules.Recent.symbol = spy;
+            side = Order.Side.Buy;
+            qty = 10;
+            at = Time_ns.sub now (Time_ns.Span.of_sec 5.0);
+            source = "signal:a:1";
+          };
+        ];
+    }
+  in
+  check_rules "another source" []
+    { ctx with source = "signal:b:1" }
+    (request ~symbol:spy 10);
+  check_rules "the same source" [ "duplicate" ]
+    { ctx with source = "signal:a:1" }
+    (request ~symbol:spy 10)
 
 let test_open_orders () =
   (* The default max_open_orders, 200 (lib/config.ml): 199 rest and one more
@@ -391,9 +422,68 @@ let test_the_window_in_the_weeks_the_clocks_change () =
     (nanosecond_before "2026-03-09T13:28:00Z");
   check "Mon 9 Mar 09:28 EDT" [ "session" ] spring (at "2026-03-09T13:28:00Z")
 
+(* ------------------------------------------------------------------------ *)
+(* A market-on-close order (Order.Tif.Cls): until ten minutes before close   *)
+(* ------------------------------------------------------------------------ *)
+
+(* Monday's session, its close at 16:00 EDT (20:00Z): the cut-off is 15:50
+   EDT (19:50Z). At 15:30 EDT (19:30Z) a market-on-close order passes, priced
+   at the live mark as a day order is; at 15:51 (19:51Z) it is refused,
+   naming 15:50; after the close, at 16:30 EDT (20:30Z) on a clock read then
+   -- naming Tuesday's open first -- it is refused because the session is
+   closed. *)
+let test_a_market_on_close_order_until_ten_minutes_before_the_close () =
+  let cls = request ~tif:Order.Tif.Cls in
+  let monday now = { context with now = at now; new_york } in
+  check_rules "15:30 EDT" [] (monday "2026-09-14T19:30:00Z") (cls 100);
+  check_rules "15:51 EDT" [ "session" ] (monday "2026-09-14T19:51:00Z") (cls 100);
+  says "the refusal names the cut-off"
+    ~substring:
+      "it is 2026-09-14 15:51 ET, not before 2026-09-14 15:50 ET, ten minutes before the \
+       close the clock names (2026-09-14 16:00 ET)"
+    (monday "2026-09-14T19:51:00Z")
+    (cls 100);
+  check_rules "16:30 EDT, closed" [ "session" ]
+    { (monday "2026-09-14T20:30:00Z") with session = after_monday }
+    (cls 100);
+  says "closed, in the rule's words" ~substring:"the regular session is closed"
+    { (monday "2026-09-14T20:30:00Z") with session = after_monday }
+    (cls 100)
+
+(* A refusal of timing alone (the stage review's A-I1): every failure the
+   session rule's -- or, for a day order, a stale mark beside it, since
+   outside the session every name is stale. Anything else beside it, or a
+   stale mark on a market-on-open order (priced at the close, so not a
+   matter of the hour), is final; no failure is no refusal. *)
+let test_a_timing_refusal_is_the_session_rule_alone () =
+  let f rule = { Rules.Failure.rule; why = "x" } in
+  let timing tif fs = Rules.is_timing_refusal ~tif fs in
+  Alcotest.(check (list bool))
+    "opg: session alone; session and notional; mark alone; none"
+    [ true; false; false; false ]
+    [
+      timing Order.Tif.Opg [ f "session" ];
+      timing Order.Tif.Opg [ f "session"; f "notional" ];
+      timing Order.Tif.Opg [ f "mark" ];
+      timing Order.Tif.Opg [];
+    ];
+  Alcotest.(check (list bool))
+    "day: session and a stale mark; the switch beside it; opg's stale mark"
+    [ true; false; false ]
+    [
+      timing Order.Tif.Day [ f "session"; f "mark" ];
+      timing Order.Tif.Day [ f "session"; f "kill_switch" ];
+      timing Order.Tif.Opg [ f "session"; f "mark" ];
+    ]
+
 let suite =
   ( "rules",
     [
+      Alcotest.test_case "a timing refusal is the session rule alone" `Quick
+        test_a_timing_refusal_is_the_session_rule_alone;
+      Alcotest.test_case
+        "Cls legal at 15:30, refused at 15:51 naming the cut-off, refused when closed"
+        `Quick test_a_market_on_close_order_until_ten_minutes_before_the_close;
       Alcotest.test_case "an order inside every line passes" `Quick
         test_an_order_inside_every_line_passes;
       Alcotest.test_case "the book and the desk decide whether to trade at all" `Quick
@@ -408,6 +498,7 @@ let suite =
         test_participation_in_twenty_day_volume;
       Alcotest.test_case "a duplicate within the window" `Quick
         test_a_duplicate_within_the_window;
+      Alcotest.test_case "duplicate is per source" `Quick test_duplicate_is_per_source;
       Alcotest.test_case "open orders" `Quick test_open_orders;
       Alcotest.test_case "every failure is reported, in rule order" `Quick
         test_every_failure_is_reported_in_rule_order;

@@ -114,3 +114,14 @@ register(KindSpec("farm.sweep", f"{_P}.farm:run", "L", heavy=True))
 register(KindSpec("vol.surface_history", f"{_P}.surface_history:run", "M", heavy=True))
 register(KindSpec("models.xs_lgbm", f"{_P}.q01:run", "M", heavy=True))
 register(KindSpec("regime.hmm", f"{_P}.q02:run", "M", heavy=True))
+
+# INC-01's producers (design §4.2). Private: scheduled only. signals.freeze is
+# published by signals.daily itself (signals/freeze.py), once a month, and is
+# registered for retention and reads; it has no schedule and never runs as a job.
+_S = "ohcamel_quant.jobs.handlers.signals"
+register(KindSpec("signals.daily", f"{_S}:daily", "S", heavy=False))
+register(KindSpec("signals.freeze", f"{_S}:freeze", "S", heavy=False))
+register(KindSpec("signals.overlay", f"{_S}:overlay", "S", heavy=False))
+# The session's report (design §4.2): read from the live engine at 16:30, light,
+# so it may run inside the session window.
+register(KindSpec("desk.report", f"{_S}:report", "S", heavy=False))

@@ -60,6 +60,7 @@ let journal_indexes =
     "orders_by_source";
     "orders_open";
     "signals_by_strategy";
+    "sizings_by_strategy";
   ]
 
 (* A restart is also how a journal written before the indexes existed meets
@@ -84,7 +85,7 @@ let test_a_session_survives_a_restart () =
         [ session "2026-09-09"; session "2026-09-10"; session "2026-09-11" ]
         (Journal.sessions j);
       Alcotest.(check (list string))
-        "reopened: the seven indexes, added at open" journal_indexes (own_indexes j);
+        "reopened: the eight indexes, added at open" journal_indexes (own_indexes j);
       let version = ref [] in
       ignore
         (Sqlite3.exec_not_null_no_headers (Journal.For_testing.db j)
@@ -472,7 +473,172 @@ let test_the_migration_adds_tif_and_rebalance_to_an_existing_file () =
            "SELECT value FROM meta WHERE key = 'schema_version'"
           : Sqlite3.Rc.t);
       Alcotest.(check (list string)) "and the file is still version 1" [ "1" ] !version;
+      Alcotest.(check bool)
+        "schema_version stays 1, and the new tables are added to the old file" true
+        (List.for_all [ "overlays"; "sizings"; "strategy_state" ] ~f:(fun table ->
+             not (List.is_empty (Journal.For_testing.columns j ~table))));
       Journal.close j)
+
+(* Stage 1's additions: the overlay, the sizing and a strategy's state. Each is
+   a round trip on an in-memory journal, with the values written asserted back. *)
+let test_the_incubation_verdict_round_trips () =
+  Alcotest.(check string)
+    "the word" "accepted_incubation"
+    (Journal.Signal.Verdict.to_string Journal.Signal.Verdict.Accepted_incubation);
+  Alcotest.(check (option string))
+    "and back" (Some "accepted_incubation")
+    (Option.map
+       (Journal.Signal.Verdict.of_string "accepted_incubation")
+       ~f:Journal.Signal.Verdict.to_string);
+  List.iter [ "accepted"; "advisory"; "rejected" ] ~f:(fun w ->
+      Alcotest.(check (option string))
+        ("the old word " ^ w ^ " is unchanged")
+        (Some w)
+        (Option.map
+           (Journal.Signal.Verdict.of_string w)
+           ~f:Journal.Signal.Verdict.to_string))
+
+let test_overlays_round_trip_and_the_latest_ignores_rejected () =
+  let j = open_exn ":memory:" in
+  Alcotest.(check bool)
+    "none yet: no latest" true
+    (Option.is_none (Journal.latest_overlay j));
+  let at2 = Time_ns.of_string_with_utc_offset "2026-09-12T20:05:00Z" in
+  Journal.record_overlay j ~sequence:3 ~as_of:"2026-09-11" ~received_at:at
+    ~exposure_scale:0.5 ~verdict:`Accepted ~rule:None ~detail:"ok" ~document:"{\"a\":1}";
+  Alcotest.(check (option (pair int (pair string (pair (float 0.0) string)))))
+    "the accepted overlay"
+    (Some (3, ("2026-09-11", (0.5, Ohcamel_desk.Desk_time.rfc3339 at))))
+    (Option.map (Journal.latest_overlay j) ~f:(fun (a, b, c, d) -> (a, (b, (c, d)))));
+  Journal.record_overlay j ~sequence:4 ~as_of:"2026-09-12" ~received_at:at2
+    ~exposure_scale:0.0 ~verdict:`Rejected ~rule:(Some "O2") ~detail:"bad" ~document:"{}";
+  Alcotest.(check (option int))
+    "latest_overlay ignores rejected" (Some 3)
+    (Option.map (Journal.latest_overlay j) ~f:(fun (n, _, _, _) -> n));
+  Journal.record_overlay j ~sequence:5 ~as_of:"2026-09-13" ~received_at:at2
+    ~exposure_scale:0.25 ~verdict:`Accepted ~rule:None ~detail:"ok" ~document:"{}";
+  Alcotest.(check (option (pair int (float 0.0))))
+    "the newest accepted"
+    (Some (5, 0.25))
+    (Option.map (Journal.latest_overlay j) ~f:(fun (n, _, s, _) -> (n, s)));
+  Alcotest.check_raises "a sequence recorded twice raises" (Failure "x") (fun () ->
+      try
+        Journal.record_overlay j ~sequence:5 ~as_of:"2026-09-13" ~received_at:at2
+          ~exposure_scale:0.1 ~verdict:`Accepted ~rule:None ~detail:"" ~document:"{}"
+      with _ -> failwith "x");
+  Journal.close j
+
+let test_sizings_round_trip_and_the_latest_is_the_newest_at () =
+  let j = open_exn ":memory:" in
+  Alcotest.(check bool)
+    "none yet" true
+    (Option.is_none (Journal.latest_sizing j ~strategy:"exp_a01_spy"));
+  let t1 = Time_ns.of_string_with_utc_offset "2026-09-11T20:05:00Z"
+  and t2 = Time_ns.of_string_with_utc_offset "2026-09-12T20:05:00Z" in
+  Journal.record_sizing j ~strategy:"exp_a01_spy" ~sequence:1 ~at:t1 ~tier:"incubation"
+    ~scale:0.1 ~allocated:1000.0 ~mode:"open";
+  Journal.record_sizing j ~strategy:"other" ~sequence:9 ~at:t2 ~tier:"live" ~scale:1.0
+    ~allocated:5000.0 ~mode:"open";
+  (* Recorded out of order: the newest [at] wins, not the last written. *)
+  Journal.record_sizing j ~strategy:"exp_a01_spy" ~sequence:3 ~at:t2 ~tier:"incubation"
+    ~scale:0.2 ~allocated:2500.5 ~mode:"adjust";
+  Journal.record_sizing j ~strategy:"exp_a01_spy" ~sequence:2 ~at:t1 ~tier:"incubation"
+    ~scale:0.15 ~allocated:1500.0 ~mode:"flatten";
+  Alcotest.(
+    check (option (pair int (pair (float 0.0) (pair (float 0.0) (pair string string))))))
+    "latest_sizing is the newest at"
+    (Some (3, (0.2, (2500.5, (Ohcamel_desk.Desk_time.rfc3339 t2, "incubation")))))
+    (Option.map (Journal.latest_sizing j ~strategy:"exp_a01_spy")
+       ~f:(fun (a, b, c, d, e) -> (a, (b, (c, (d, e))))));
+  Alcotest.(check (option (pair int string)))
+    "and the other strategy's own, with its tier"
+    (Some (9, "live"))
+    (Option.map (Journal.latest_sizing j ~strategy:"other") ~f:(fun (n, _, _, _, tier) ->
+         (n, tier)));
+  (* A row written without its parts reads them back as None; one written
+     with them (the stage review's A-I3/A-I4) reads them back whole. *)
+  Alcotest.(check (option (list (option (float 0.0)))))
+    "the parts of a row written without them"
+    (Some [ None; None; None ])
+    (Option.map (Journal.latest_sizing_row j ~strategy:"other") ~f:(fun z ->
+         [ z.Journal.Sizing.ratio; z.factor; z.governor ]));
+  let t3 = Time_ns.of_string_with_utc_offset "2026-09-13T20:05:00Z" in
+  Journal.record_sizing j ~strategy:"other" ~sequence:10 ~at:t3 ~tier:"incubation"
+    ~scale:0.0870 ~allocated:870.0 ~mode:"adjust" ~ratio:0.174 ~factor:1.0 ~governor:0.5
+    ~note:"governor";
+  Alcotest.(
+    check (option (pair (list (option (float 0.0))) (pair string (option string)))))
+    "ratio 0.174, factor 1, governor 0.5, mode adjust, note governor"
+    (Some ([ Some 0.174; Some 1.0; Some 0.5 ], ("adjust", Some "governor")))
+    (Option.map (Journal.latest_sizing_row j ~strategy:"other") ~f:(fun z ->
+         ([ z.Journal.Sizing.ratio; z.factor; z.governor ], (z.mode, z.note))));
+  Journal.close j
+
+let test_a_strategy_state_round_trips_and_absent_is_none () =
+  let j = open_exn ":memory:" in
+  Alcotest.(check bool)
+    "strategy_state absent is None" true
+    (Option.is_none (Journal.strategy_state j ~strategy:"exp_a01_spy"));
+  let t1 = Time_ns.of_string_with_utc_offset "2026-09-11T20:05:00Z"
+  and t2 = Time_ns.of_string_with_utc_offset "2026-09-12T20:05:00Z" in
+  Journal.set_strategy_state j ~strategy:"exp_a01_spy" ~state:`Stopped ~rule:(Some "S1")
+    ~at:t1 ~detail:"drawdown";
+  Alcotest.(check bool)
+    "stopped, with its rule, time and detail" true
+    (match Journal.strategy_state j ~strategy:"exp_a01_spy" with
+    | Some (`Stopped, Some "S1", a, d) ->
+        String.equal d "drawdown" && String.equal a (Ohcamel_desk.Desk_time.rfc3339 t1)
+    | _ -> false);
+  Journal.set_strategy_state j ~strategy:"exp_a01_spy" ~state:`Active ~rule:None ~at:t2
+    ~detail:"reinstated";
+  Alcotest.(check bool)
+    "set again replaces: active, no rule" true
+    (match Journal.strategy_state j ~strategy:"exp_a01_spy" with
+    | Some (`Active, None, a, d) ->
+        String.equal d "reinstated" && String.equal a (Ohcamel_desk.Desk_time.rfc3339 t2)
+    | _ -> false);
+  Alcotest.(check bool)
+    "another strategy still absent" true
+    (Option.is_none (Journal.strategy_state j ~strategy:"other"));
+  Journal.close j
+
+let test_the_latest_accepted_document_is_the_newest_accepted_or_incubation () =
+  let j = open_exn ":memory:" in
+  let judge strategy sequence verdict document =
+    Journal.record_signal j
+      {
+        Journal.Signal.strategy;
+        sequence;
+        as_of = date "2026-09-11";
+        received_at = at;
+        verdict;
+        rule = None;
+        detail = "d";
+        document;
+        rebalance = None;
+      }
+  in
+  Alcotest.(check (option (pair int string)))
+    "none yet" None
+    (Journal.latest_accepted_document j ~strategy:"s");
+  judge "s" 1 Journal.Signal.Verdict.Accepted "doc1";
+  judge "s" 2 Journal.Signal.Verdict.Advisory "doc2";
+  judge "s" 3 Journal.Signal.Verdict.Rejected "doc3";
+  judge "t" 7 Journal.Signal.Verdict.Accepted "other";
+  Alcotest.(check (option (pair int string)))
+    "advisory and rejected are passed over"
+    (Some (1, "doc1"))
+    (Journal.latest_accepted_document j ~strategy:"s");
+  judge "s" 4 Journal.Signal.Verdict.Accepted_incubation "doc4";
+  Alcotest.(check (option (pair int string)))
+    "an incubation judgement counts"
+    (Some (4, "doc4"))
+    (Journal.latest_accepted_document j ~strategy:"s");
+  Alcotest.(check (option int))
+    "highest_sequence takes it as a verdict" (Some 4)
+    (Journal.highest_sequence j ~strategy:"s"
+       ~verdicts:Journal.Signal.Verdict.[ Accepted; Accepted_incubation; Advisory ]);
+  Journal.close j
 
 (* A market-on-open order's price: the newest SESSION's close. Marks for the
    16th with no session row are a close that never finished -- the session
@@ -554,6 +720,16 @@ let suite =
         test_the_migration_adds_tif_and_rebalance_to_an_existing_file;
       Alcotest.test_case "the latest close is the newest session's" `Quick
         test_the_latest_close_is_the_newest_session's;
+      Alcotest.test_case "the incubation verdict round-trips" `Quick
+        test_the_incubation_verdict_round_trips;
+      Alcotest.test_case "overlays round-trip and the latest ignores rejected" `Quick
+        test_overlays_round_trip_and_the_latest_ignores_rejected;
+      Alcotest.test_case "sizings round-trip and the latest is the newest at" `Quick
+        test_sizings_round_trip_and_the_latest_is_the_newest_at;
+      Alcotest.test_case "a strategy state round-trips and absent is None" `Quick
+        test_a_strategy_state_round_trips_and_absent_is_none;
+      Alcotest.test_case "the latest accepted document counts incubation" `Quick
+        test_the_latest_accepted_document_is_the_newest_accepted_or_incubation;
       Alcotest.test_case "a strategy's fills are read through orders_by_source" `Quick
         test_a_strategy's_fills_are_read_through_orders_by_source;
     ] )

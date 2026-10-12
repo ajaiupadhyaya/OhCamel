@@ -209,6 +209,22 @@ let schema =
        range over this index ([source_range]), so the question costs the
        strategy's own orders and not the whole table. *)
     "CREATE INDEX IF NOT EXISTS orders_by_source ON orders (source, client_order_id)";
+    (* The autonomous loop's additions, all new tables and so schema version 1
+       still: the exposure overlay's judgements (one row per overlay sequence,
+       with the whole document), what each strategy was sized to (one row per
+       strategy, sequence and instant), and a strategy's standing (one row
+       each, written over). *)
+    "CREATE TABLE IF NOT EXISTS overlays (sequence INTEGER PRIMARY KEY, as_of TEXT NOT \
+     NULL, received_at TEXT NOT NULL, exposure_scale REAL NOT NULL, verdict TEXT NOT \
+     NULL, rule TEXT, detail TEXT, document TEXT NOT NULL)";
+    "CREATE TABLE IF NOT EXISTS sizings (strategy TEXT NOT NULL, sequence INTEGER NOT \
+     NULL, at TEXT NOT NULL, tier TEXT NOT NULL, scale REAL NOT NULL, allocated REAL NOT \
+     NULL, mode TEXT NOT NULL, PRIMARY KEY (strategy, sequence, at))";
+    "CREATE TABLE IF NOT EXISTS strategy_state (strategy TEXT PRIMARY KEY, state TEXT \
+     NOT NULL, rule TEXT, at TEXT NOT NULL, detail TEXT NOT NULL)";
+    (* A strategy's newest sizing is read through this index, which ends in the
+       rowid like the others; [latest_sizing] takes its last entry by [at]. *)
+    "CREATE INDEX IF NOT EXISTS sizings_by_strategy ON sizings (strategy, at)";
   ]
 
 (* The columns added after files existed, each with the declaration an older
@@ -216,7 +232,18 @@ let schema =
    because every order was; a judgement recorded before [rebalance] existed
    proposed nothing, which NULL says. *)
 let added_columns =
-  [ ("orders", "tif", "TEXT NOT NULL DEFAULT 'day'"); ("signals", "rebalance", "TEXT") ]
+  [
+    ("orders", "tif", "TEXT NOT NULL DEFAULT 'day'");
+    ("signals", "rebalance", "TEXT");
+    (* A sizing's parts (the stage review's A-I3 and A-I4): the incubation
+       ratio in force, the overlay factor and the governor its effective
+       scale was the product of, and a note ("governor" for a re-size on a
+       governor move). NULL on a row written before they were recorded. *)
+    ("sizings", "ratio", "REAL");
+    ("sizings", "factor", "REAL");
+    ("sizings", "governor", "REAL");
+    ("sizings", "note", "TEXT");
+  ]
 
 (* The refusal's decision alone, with no SQLite and no IO: [modes] is
    whatever PRAGMA journal_mode=WAL answered (zero, one, or -- if SQLite ever
@@ -328,7 +355,7 @@ let tables =
         ~f:(fun rest -> List.hd (String.split rest ~on:' ')))
 
 (* SQLITE_OPEN_READONLY, and NO [set_up]. A backup is checked by reading it,
-   and [open_] would write to it: eleven CREATE TABLEs, seven indexes, a
+   and [open_] would write to it: fourteen CREATE TABLEs, eight indexes, a
    schema-version insert, and -- on a file that came back missing a table --
    the table itself, after which the check would find it empty and call the
    file sound. So this opens the handle, sets the busy timeout that lets it
@@ -902,15 +929,18 @@ let recent_alerts t ~limit =
 
 module Signal = struct
   module Verdict = struct
-    type t = Accepted | Advisory | Rejected [@@deriving sexp_of, compare, equal]
+    type t = Accepted | Accepted_incubation | Advisory | Rejected
+    [@@deriving sexp_of, compare, equal]
 
     let to_string = function
       | Accepted -> "accepted"
+      | Accepted_incubation -> "accepted_incubation"
       | Advisory -> "advisory"
       | Rejected -> "rejected"
 
     let of_string = function
       | "accepted" -> Some Accepted
+      | "accepted_incubation" -> Some Accepted_incubation
       | "advisory" -> Some Advisory
       | "rejected" -> Some Rejected
       | _ -> None
@@ -952,7 +982,8 @@ let record_signal t (s : Signal.t) =
 
 (* The rebalance's outcome, written over the sentence the judgement was
    recorded with ([from]) and only over that: the intake records an accepted
-   judgement with a pending sentence before it proposes anything, and this
+   (or accepted_incubation) judgement with a pending sentence before it
+   proposes anything, and this
    replaces it once, with what happened. The judgement's own verdict, rule and
    detail are never touched. A row that no longer holds [from] -- an outcome
    already written, or no such accepted judgement -- raises, because a second
@@ -961,7 +992,7 @@ let record_rebalance t ~strategy ~sequence ~from ~outcome =
   write t ~what:"signal rebalance" (fun () ->
       run t ~what:"signal rebalance"
         "UPDATE signals SET rebalance = ? WHERE strategy = ? AND sequence = ? AND \
-         verdict = 'accepted' AND rebalance = ?"
+         verdict IN ('accepted', 'accepted_incubation') AND rebalance = ?"
         [ text outcome; text strategy; Data.INT (Int64.of_int sequence); text from ];
       if Sqlite3.changes t.db <> 1 then
         failwithf "journal: %s %d holds no pending rebalance to record an outcome over"
@@ -1025,6 +1056,19 @@ let latest_signal t ~strategy =
   List.hd
     (query t ~what:"latest signal" latest_signal_sql [ text strategy ] ~row:signal_of_row)
 
+(* The newest judgement for [strategy] that sized it: accepted or
+   accepted_incubation. Newest by recording order, the rowid, as
+   [latest_signal] is; signals_by_strategy holds (strategy, rowid), so the
+   seek is bounded by LIMIT 1 and walks back only past judgements that did not
+   size it. *)
+let latest_accepted_document t ~strategy =
+  List.hd
+    (query t ~what:"latest accepted document"
+       "SELECT sequence, document FROM signals WHERE strategy = ? AND verdict IN \
+        ('accepted', 'accepted_incubation') ORDER BY rowid DESC LIMIT 1"
+       [ text strategy ]
+       ~row:(fun r -> (Data.to_int_exn r.(0), col_text r 1)))
+
 let signal t ~strategy ~sequence =
   List.hd
     (query t ~what:"signal"
@@ -1032,6 +1076,27 @@ let signal t ~strategy ~sequence =
         rebalance FROM signals WHERE strategy = ? AND sequence = ?"
        [ text strategy; Data.INT (Int64.of_int sequence) ]
        ~row:signal_of_row)
+
+(* The accepted and accepted_incubation judgements whose rebalance column
+   still holds a sentence beginning "pending:" -- what the intake has
+   recorded and not yet sized -- oldest first by (strategy, sequence). A
+   scan: the table holds a row a strategy a day, and the column arrived after
+   files existed, so no index is built on it. *)
+let pending_signals t =
+  query t ~what:"pending signals"
+    "SELECT strategy, sequence, as_of, received_at, verdict, rule, detail, document, \
+     rebalance FROM signals WHERE verdict IN ('accepted', 'accepted_incubation') AND \
+     substr(rebalance, 1, 8) = 'pending:' ORDER BY strategy, sequence"
+    [] ~row:signal_of_row
+
+(* Whether any order was journaled with exactly [source]: one seek on
+   orders_by_source. *)
+let source_has_orders t ~source =
+  not
+    (List.is_empty
+       (query t ~what:"source has orders" "SELECT 1 FROM orders WHERE source = ? LIMIT 1"
+          [ text source ]
+          ~row:(fun _ -> ())))
 
 (* OR IGNORE: the intake asks [signal_file_recorded] first, and a name
    recorded twice is still one file that could not be read. *)
@@ -1548,3 +1613,152 @@ module For_testing = struct
     query t ~what:"query plan" ("EXPLAIN QUERY PLAN " ^ sql) params ~row:(fun r ->
         col_text r 3)
 end
+
+(* The overlay: the exposure scale a document on the desk's one overlay file
+   asks for, judged once per sequence. A plain INSERT, as [record_signal] is:
+   the sequence is the primary key, and a second judgement of one raises
+   rather than overwrite the first. *)
+let record_overlay t ~sequence ~as_of ~received_at ~exposure_scale ~verdict ~rule ~detail
+    ~document =
+  write t ~what:"overlay" (fun () ->
+      run t ~what:"overlay"
+        "INSERT INTO overlays (sequence, as_of, received_at, exposure_scale, verdict, \
+         rule, detail, document) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        [
+          Data.INT (Int64.of_int sequence);
+          text as_of;
+          time received_at;
+          real exposure_scale;
+          text (match verdict with `Accepted -> "accepted" | `Rejected -> "rejected");
+          (match rule with None -> Data.NULL | Some r -> text r);
+          text detail;
+          text document;
+        ])
+
+(* The accepted overlay with the highest sequence: the primary key is the
+   rowid, so this walks the table backwards from its end past rejected rows
+   only, and stops at the first accepted one. *)
+let latest_overlay t =
+  List.hd
+    (query t ~what:"latest overlay"
+       "SELECT sequence, as_of, exposure_scale, received_at FROM overlays WHERE verdict \
+        = 'accepted' ORDER BY sequence DESC LIMIT 1"
+       [] ~row:(fun r ->
+         (Data.to_int_exn r.(0), col_text r 1, col_real r 2, col_text r 3)))
+
+(* The whole document of the accepted overlay [latest_overlay] answers: the
+   page lists its inputs beside the scale. *)
+let latest_overlay_document t =
+  List.hd
+    (query t ~what:"latest overlay document"
+       "SELECT document FROM overlays WHERE verdict = 'accepted' ORDER BY sequence DESC \
+        LIMIT 1"
+       [] ~row:(fun r -> col_text r 0))
+
+(* Whether [sequence] is judged already, either way: one primary-key seek.
+   The intake asks it before judging a file, as [signal] is asked for a
+   signal, so [record_overlay]'s plain INSERT never meets a sequence twice. *)
+let overlay_recorded t ~sequence =
+  not
+    (List.is_empty
+       (query t ~what:"overlay recorded" "SELECT 1 FROM overlays WHERE sequence = ?"
+          [ Data.INT (Int64.of_int sequence) ]
+          ~row:(fun _ -> ())))
+
+(* One row per (strategy, sequence, instant), so a rebalance sized twice at
+   different instants keeps both; OR REPLACE only for the same instant. *)
+let record_sizing ?ratio ?factor ?governor ?note t ~strategy ~sequence ~at ~tier ~scale
+    ~allocated ~mode =
+  write t ~what:"sizing" (fun () ->
+      run t ~what:"sizing"
+        "INSERT OR REPLACE INTO sizings (strategy, sequence, at, tier, scale, allocated, \
+         mode, ratio, factor, governor, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        [
+          text strategy;
+          Data.INT (Int64.of_int sequence);
+          time at;
+          text tier;
+          real scale;
+          real allocated;
+          text mode;
+          opt_real ratio;
+          opt_real factor;
+          opt_real governor;
+          (match note with None -> Data.NULL | Some n -> text n);
+        ])
+
+module Sizing = struct
+  type t = {
+    sequence : int;
+    scale : float;
+    allocated : float;
+    at : string;
+    tier : string;
+    mode : string;
+    ratio : float option;
+    factor : float option;
+    governor : float option;
+    note : string option;
+  }
+  [@@deriving sexp_of, equal]
+end
+
+(* [latest_sizing]'s row, whole. *)
+let latest_sizing_row t ~strategy =
+  List.hd
+    (query t ~what:"latest sizing row"
+       "SELECT sequence, scale, allocated, at, tier, mode, ratio, factor, governor, note \
+        FROM sizings WHERE strategy = ? ORDER BY at DESC LIMIT 1"
+       [ text strategy ]
+       ~row:(fun r ->
+         {
+           Sizing.sequence = Data.to_int_exn r.(0);
+           scale = col_real r 1;
+           allocated = col_real r 2;
+           at = col_text r 3;
+           tier = col_text r 4;
+           mode = col_text r 5;
+           ratio = col_opt_real r 6;
+           factor = col_opt_real r 7;
+           governor = col_opt_real r 8;
+           note = col_opt_text r 9;
+         }))
+
+(* The newest [at] for [strategy]: one seek on sizings_by_strategy
+   (strategy, at, rowid), read backwards with LIMIT 1. The instants are
+   fixed-width RFC 3339 in UTC, so text order is time order. *)
+let latest_sizing t ~strategy =
+  List.hd
+    (query t ~what:"latest sizing"
+       "SELECT sequence, scale, allocated, at, tier FROM sizings WHERE strategy = ? \
+        ORDER BY at DESC LIMIT 1"
+       [ text strategy ]
+       ~row:(fun r ->
+         (Data.to_int_exn r.(0), col_real r 1, col_real r 2, col_text r 3, col_text r 4)))
+
+let set_strategy_state t ~strategy ~state ~rule ~at ~detail =
+  write t ~what:"strategy state" (fun () ->
+      run t ~what:"strategy state"
+        "INSERT OR REPLACE INTO strategy_state (strategy, state, rule, at, detail) \
+         VALUES (?, ?, ?, ?, ?)"
+        [
+          text strategy;
+          text (match state with `Active -> "active" | `Stopped -> "stopped");
+          (match rule with None -> Data.NULL | Some r -> text r);
+          time at;
+          text detail;
+        ])
+
+let strategy_state t ~strategy =
+  List.hd
+    (query t ~what:"strategy state"
+       "SELECT state, rule, at, detail FROM strategy_state WHERE strategy = ?"
+       [ text strategy ]
+       ~row:(fun r ->
+         let state =
+           match col_text r 0 with
+           | "active" -> `Active
+           | "stopped" -> `Stopped
+           | other -> failwithf "journal: unknown strategy state %S" other ()
+         in
+         (state, col_opt_text r 1, col_text r 2, col_text r 3)))

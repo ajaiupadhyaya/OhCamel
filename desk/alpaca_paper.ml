@@ -287,8 +287,10 @@ let bars_of_json (json : Yojson.Safe.t) :
    limit price goes with two decimals: the rules' tick refused any limit that
    is not a whole cent, at every price, before this was reached, so formatting
    here rounds nothing. time_in_force is the request's own: "day" for every
-   ticket, "opg" for a rebalance's market-on-open order, which Alpaca queues
-   for the next opening auction when it arrives after 19:00 ET. *)
+   ticket and an intraday rebalance's limit, "opg" for a rebalance's
+   market-on-open order, which Alpaca queues for the next opening auction when
+   it arrives after 19:00 ET, and "cls" for a market-on-close order, which it
+   takes until 15:50 ET for that day's closing auction. *)
 let order_request_json (r : Order.Request.t) : Yojson.Safe.t =
   `Assoc
     ([

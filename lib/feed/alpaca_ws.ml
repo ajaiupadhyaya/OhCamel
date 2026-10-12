@@ -125,12 +125,15 @@ module Message = struct
      format. The reverse trade-off, accepting a bad price to keep a good
      timestamp, would be indefensible, which is why prices are handled the
      opposite way. *)
+  let parse_time_opt (s : string) : Time_ns.t option =
+    Option.try_with (fun () -> Time_ns.of_string_with_utc_offset s)
+
+  (* The stream's reading: an instant it cannot date is the time of receipt.
+     The poll cannot take that fallback -- it re-reads the same print every
+     ten seconds -- so it calls [parse_time_opt] and skips on None. *)
   let parse_time = function
     | None -> Types.Time.now ()
-    | Some s -> (
-        match Option.try_with (fun () -> Time_ns.of_string_with_utc_offset s) with
-        | Some t -> t
-        | None -> Types.Time.now ())
+    | Some s -> Option.value (parse_time_opt s) ~default:(Types.Time.now ())
 
   (* A price that reaches a Var is a price the whole engine will believe.
 
@@ -142,18 +145,31 @@ module Message = struct
      book. That is an entire risk system switched off by one bad JSON field. *)
   let valid_price p = Float.is_finite p && Float.( > ) p 0.0
 
+  (* One trade's [p] and [t] as a tick for [symbol], or None when the price is
+     not one to believe. The websocket's trade message and the latest-trades
+     poll's per-symbol object carry the same two fields, so both build their
+     ticks here and there is one reading of a price and an instant. *)
+  let trade_tick ~symbol (json : Yojson.Safe.t) : Types.Tick.t option =
+    match to_float_opt (member "p" json) with
+    | Some price when valid_price price ->
+        Some
+          {
+            Types.Tick.symbol = Types.Symbol.of_string symbol;
+            price = Types.Price.of_float price;
+            time = parse_time (to_string_opt (member "t" json));
+          }
+    | _ -> None
+
   let of_json (json : Yojson.Safe.t) : t =
     match to_string_opt (member "T" json) with
     | Some "t" -> (
-        match (to_string_opt (member "S" json), to_float_opt (member "p" json)) with
-        | Some symbol, Some price when valid_price price ->
-            Trade
-              {
-                Types.Tick.symbol = Types.Symbol.of_string symbol;
-                price = Types.Price.of_float price;
-                time = parse_time (to_string_opt (member "t" json));
-              }
-        | _ -> Other (Yojson.Safe.to_string json))
+        match
+          Option.bind
+            (to_string_opt (member "S" json))
+            ~f:(fun symbol -> trade_tick ~symbol json)
+        with
+        | Some tick -> Trade tick
+        | None -> Other (Yojson.Safe.to_string json))
     | Some "success" ->
         Success (Option.value (to_string_opt (member "msg" json)) ~default:"")
     | Some "subscription" -> Subscription (Yojson.Safe.to_string json)
@@ -423,7 +439,7 @@ end
 
 (* One connection, handshake to disconnect. Never raises: every way a session can
    end is folded into a single [Outcome.t] at the bottom. *)
-let run_session ~graph ~credentials ~feed_uri ~stats ~on_control ~on_event =
+let run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~on_control ~on_event =
   (* Declared outside the connection callback because [with_connection] insists
      its callback return unit -- so the session's verdict has to be carried out
      by reference rather than returned. *)
@@ -457,7 +473,6 @@ let run_session ~graph ~credentials ~feed_uri ~stats ~on_control ~on_event =
                       send (auth_frame ~credentials)
                   | Message.Success "authenticated", Phase.Awaiting_auth ->
                       phase := Phase.Streaming;
-                      let symbols = Graph.symbols graph in
                       on_event
                         (sprintf "authenticated; subscribing to %d symbols"
                            (List.length symbols));
@@ -534,16 +549,22 @@ let run_session ~graph ~credentials ~feed_uri ~stats ~on_control ~on_event =
    writes, and of nothing else -- is what tells the operator the numbers have
    stopped moving. A feed that took the process down with it would at least be
    obvious; a feed that died quietly while the dashboard stayed green is the
-   failure this entire design is arranged against. *)
+   failure this entire design is arranged against.
+
+   [symbols] is what it subscribes to: the book's stream names, at most
+   Config.stream_cap, which the free plan carries. The rest of the universe is
+   marked by Alpaca_poll. *)
 let run ?(backoff = Backoff.default) ?(host = default_host)
     ?(on_control = fun (_ : Message.t) -> ()) ?(on_event = fun (_ : string) -> ())
     ~(graph : Graph.t) ~(credentials : Config.Credentials.t) ~(runtime : Config.Runtime.t)
-    ~(stats : Stats.t) () =
+    ~(symbols : Types.Symbol.t list) ~(stats : Stats.t) () =
   Lazy.force rng_initialized;
   let feed_uri = stream_uri ~host ~feed:runtime.Config.Runtime.alpaca_feed in
   let rec attempt n =
     on_event (sprintf "connecting to %s (attempt %d)" (Uri.to_string feed_uri) n);
-    match%bind run_session ~graph ~credentials ~feed_uri ~stats ~on_control ~on_event with
+    match%bind
+      run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~on_control ~on_event
+    with
     | Outcome.Fatal detail ->
         on_event (sprintf "STOPPING: %s" detail);
         return (Error detail)

@@ -241,7 +241,7 @@ may send one); on the public demo each answers 405.
 
 ## How it's checked
 
-- **<!-- count:ocaml-tests -->735<!-- /count --> tests**, plus <!-- count:scheduler-tests -->33<!-- /count --> scheduler cases in `test/desk_async`, all
+- **<!-- count:ocaml-tests -->827<!-- /count --> tests**, plus <!-- count:scheduler-tests -->60<!-- /count --> scheduler cases in `test/desk_async`, all
   hermetic: no network, no credentials, no waiting on a clock -- the
   scheduler's cases move a clock of their own. Expected values are derived by
   hand beside each assertion, and each suite checks its own count against
@@ -260,7 +260,7 @@ may send one); on the public demo each answers 405.
   check, every credential-free mode run end to end, and the README's quoted
   tables reproduced on both platforms.
 - **`make research-test`** runs the research layer's own suite separately:
-  <!-- count:research-tests -->412<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Not folded
+  <!-- count:research-tests -->414<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Not folded
   into [`lib/verified.ml`](../lib/verified.ml)'s counts, which cover the
   OCaml suites only.
 

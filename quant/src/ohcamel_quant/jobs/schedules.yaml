@@ -33,6 +33,10 @@ max_age:
   vol.surface_history: 78h
   models.xs_lgbm: 816h   # monthly (1st, 22:30) plus 2 days
   regime.hmm: 204h       # weekly (Saturday 09:00), like the weekly ingest kinds
+  # INC-01's producers: session kinds 78h, like Lane C's.
+  signals.daily: 78h
+  signals.overlay: 35m   # every 15 minutes in session, like risk.mc_intraday
+  desk.report: 30h       # once a session at 16:30: a missed weekday run is amber by the next evening
 
 schedules:
   - name: selftest-nightly
@@ -209,3 +213,69 @@ schedules:
     priority: 2
     mem_class: M
     heavy: true
+
+  # INC-01: every farm cell's targets at the last close as a contract-v1 document, after the
+  # 18:30 daily-bars ingest. Its first run in a month also takes that month's parameter freeze.
+  - name: signals-daily
+    cron: "45 18 * * 1-5"
+    kind: signals.daily
+    params: {}
+    priority: 2
+    mem_class: S
+    heavy: false
+
+  # INC-01: the overlay's exposure scale (volatility targeting on the roster's combined targets),
+  # at 09:20 (before the open's 09:30 sizing), 09:40, every 15 minutes 10:00-15:45, at 18:40 (after
+  # the 18:30 daily-bars ingest, before signals.daily's 18:45 documents) and at 18:50. Every moment
+  # the desk sizes at -- 18:45, the research service's 19:15, the 09:30 open -- has a run within the
+  # desk's overlay_max_age_minutes (60) before it (the stage review's B-C1; pinned by
+  # tests/test_signals_overlay.py), or it would size at the fallback.
+  - name: signals-overlay-premarket
+    cron: "20 9 * * 1-5"
+    kind: signals.overlay
+    params: {}
+    priority: 1
+    mem_class: S
+    heavy: false
+
+  - name: signals-overlay-preevening
+    cron: "40 18 * * 1-5"
+    kind: signals.overlay
+    params: {}
+    priority: 2
+    mem_class: S
+    heavy: false
+
+  - name: signals-overlay-open
+    cron: "40 9 * * 1-5"
+    kind: signals.overlay
+    params: {}
+    priority: 1
+    mem_class: S
+    heavy: false
+
+  - name: signals-overlay
+    cron: "*/15 10-15 * * 1-5"
+    kind: signals.overlay
+    params: {}
+    priority: 1
+    mem_class: S
+    heavy: false
+
+  - name: signals-overlay-evening
+    cron: "50 18 * * 1-5"
+    kind: signals.overlay
+    params: {}
+    priority: 2
+    mem_class: S
+    heavy: false
+
+  # INC-01: the session's report -- fills, each strategy's line, what the desk refused,
+  # the overlay's reading -- read from the live engine at 16:30, after the close.
+  - name: desk-report
+    cron: "30 16 * * 1-5"
+    kind: desk.report
+    params: {}
+    priority: 1
+    mem_class: S
+    heavy: false

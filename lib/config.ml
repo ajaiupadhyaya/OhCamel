@@ -516,26 +516,34 @@ module Book = struct
               else Ok ())
 
     (* [Desk_spec.incubation_cap] is a proportional ceiling, not a bound the
-       fractions must fit under: each incubation strategy's effective fraction
-       is capital_fraction x min(1, incubation_cap / the incubation fractions'
-       sum), so the canary is (incubation_cap 0.10) over the same roster and
-       raising it is one edit. A live or advisory strategy's fraction is its
-       own, unchanged. Pure: the desk sizes with it, check-book prints it. *)
+       fractions must fit under: the incubation roster is scaled by
+       min(1, incubation_cap / the incubation fractions' sum), so the canary is
+       (incubation_cap 0.10) over the same roster and raising it is one edit.
+       The ratio is 0 when the cap or the sum is not positive -- a NaN cap
+       included, the comparison being written positively -- so a cap of 0
+       sizes every incubation strategy to nothing. The desk applies it to the
+       SCALE (desk/intake.ml), never to the fraction, so a cap of 0 flattens
+       as a scale of 0 does. Pure. *)
+    let incubation_ratio ~(incubation_cap : float) (t : t) : float =
+      let sum =
+        List.sum
+          (module Float)
+          t.strategies
+          ~f:(fun x ->
+            if equal_sizing x.Strategy.sizing Incubation then x.Strategy.capital_fraction
+            else 0.0)
+      in
+      if Float.(incubation_cap > 0.0) && Float.(sum > 0.0) then
+        Float.min 1.0 (incubation_cap /. sum)
+      else 0.0
+
+    (* What a strategy is sized at, as check-book prints it: an incubation
+       strategy's capital_fraction x [incubation_ratio]; a live or advisory
+       strategy's fraction is its own, unchanged. *)
     let effective_fraction ~(incubation_cap : float) (t : t) (s : Strategy.t) : float =
       match s.Strategy.sizing with
       | Advisory | Live -> s.Strategy.capital_fraction
-      | Incubation ->
-          let sum =
-            List.sum
-              (module Float)
-              t.strategies
-              ~f:(fun x ->
-                if equal_sizing x.Strategy.sizing Incubation then
-                  x.Strategy.capital_fraction
-                else 0.0)
-          in
-          if Float.(sum <= 0.0) then 0.0
-          else s.Strategy.capital_fraction *. Float.min 1.0 (incubation_cap /. sum)
+      | Incubation -> s.Strategy.capital_fraction *. incubation_ratio ~incubation_cap t
   end
 
   module Limit_spec = struct
@@ -599,6 +607,29 @@ module Book = struct
         })
 
   let limits (t : t) : Types.Limit.t list = List.map t.limits ~f:Limit_spec.to_limit
+
+  (* The names the websocket carries (design D7, §4.3): the desk's (stream ...)
+     names in their order, then the book's other positions in book order, cut
+     at [stream_cap]. No name twice -- a stream name is not counted again where
+     it stands in the book. *)
+  let stream_names (t : t) : Types.Symbol.t list =
+    let ordered =
+      t.desk.Desk_spec.stream @ List.map t.positions ~f:(fun p -> p.Position_spec.symbol)
+    in
+    let unique =
+      List.fold ordered ~init:[] ~f:(fun seen s ->
+          if List.mem seen s ~equal:String.equal then seen else s :: seen)
+      |> List.rev
+    in
+    List.map (List.take unique stream_cap) ~f:Types.Symbol.of_string
+
+  (* The rest of the universe, in book order: marked by the latest-trades poll
+     rather than the stream. *)
+  let polled_names (t : t) : Types.Symbol.t list =
+    let streamed = stream_names t in
+    List.filter_map t.positions ~f:(fun p ->
+        let symbol = Types.Symbol.of_string p.Position_spec.symbol in
+        if List.mem streamed symbol ~equal:Types.Symbol.equal then None else Some symbol)
 
   (* The parse alone, with nothing validated. [of_string] is the startup path and
      stops at the first failure; [Config.check] wants a parsed book it can hand to
@@ -694,9 +725,8 @@ module Book = struct
         if count > universe_cap then
           Some
             (sprintf
-               "universe: the book declares %d names and the free Alpaca plan streams at \
-                most %d; remove names, or move to a paid feed and raise \
-                Config.universe_cap"
+               "universe: the book declares %d names and this engine carries at most %d \
+                (thirty on the stream, the rest polled every ten seconds); remove names"
                count universe_cap)
         else None
       in

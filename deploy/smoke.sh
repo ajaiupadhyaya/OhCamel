@@ -773,21 +773,29 @@ fi
 # deploy.sh runs the suite; the live host stays behind its password, and
 # section 6 asks of its /api/desk only that it refuses an anonymous caller. A
 # status and a venue name are asserted, not an equity: a paper account can be
-# empty, and "the desk said what it is" is the claim.
+# empty, and "the desk said what it is" is the claim. So is the exposure scale
+# every sizing is multiplied by (autonomous-paper-trading Task 16): a finite
+# number in [0, 1], beside the overlay's state -- on the demo no overlay is
+# ever received, so it reads absent and the scale is the governor's alone.
 # ---------------------------------------------------------------------------
 if command -v python3 >/dev/null 2>&1; then
 	desk=$(curl -sS --max-time 15 "$ENGINE/api/desk" 2>/dev/null | python3 -c '
-import json, sys
+import json, math, sys
 try:
     d = json.load(sys.stdin)
 except Exception as e:
     print("NOTJSON %s" % e); raise SystemExit
 if d.get("status") not in ("enabled", "disabled") or not d.get("venue"):
     print("SHAPE status=%r venue=%r" % (d.get("status"), d.get("venue"))); raise SystemExit
-print("OK %s %s %s" % (d["venue"], d["status"], d.get("sessions")))
+x = d.get("exposure_scale")
+st = (d.get("overlay") or {}).get("state") if isinstance(d.get("overlay"), (dict, type(None))) else None
+if not (isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and 0 <= x <= 1) \
+        or st not in ("fresh", "held", "stale", "absent"):
+    print("SCALE exposure_scale=%r overlay.state=%r, expected a finite number in [0, 1] and fresh/held/stale/absent" % (x, st)); raise SystemExit
+print("OK %s %s %s %.2f %s" % (d["venue"], d["status"], d.get("sessions"), x, st))
 ' 2>/dev/null)
 	case "$desk" in
-	OK*) read -r _ dvenue dstatus dsessions <<<"$desk"; ok "GET /api/desk               venue $dvenue, $dstatus, $dsessions sessions recorded" ;;
+	OK*) read -r _ dvenue dstatus dsessions dscale dstate <<<"$desk"; ok "GET /api/desk               venue $dvenue, $dstatus, $dsessions sessions recorded, scale $dscale overlay $dstate" ;;
 	*)   no "GET /api/desk               malformed" "${desk:-no response}" ;;
 	esac
 else
@@ -1115,7 +1123,7 @@ except Exception:
 	/bin/sleep 5
 done
 printf '%s' "$desk_raw" | python3 -c '
-import datetime, json, sys
+import datetime, json, math, sys
 raw = sys.stdin.read().rsplit("\n", 1)
 code = raw[-1] if len(raw) == 2 else "000"
 def say(ok, label, detail):
@@ -1150,6 +1158,15 @@ else:
         say(False, "/api/desk last_sync", "%r, unreadable" % (s,))
 e = d.get("last_error")
 say(e is None, "/api/desk last_error", "null" if e is None else "%r, expected null" % (e,))
+# The effective exposure scale and the overlay it came from (autonomous-paper-
+# trading Task 16; desk/intake.ml reading_fields): a finite number in [0, 1]
+# and one of the four states. Absent is a pass -- no overlay yet reads 1.
+x = d.get("exposure_scale")
+ov = d.get("overlay") if isinstance(d.get("overlay"), dict) else {}
+st = ov.get("state")
+x_ok = isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and 0 <= x <= 1
+st_ok = st in ("fresh", "held", "stale", "absent")
+say(x_ok and st_ok, "/api/desk exposure_scale", "scale %s overlay %s%s" % ("%.2f" % x if x_ok else json.dumps(x), st if st_ok else json.dumps(st), "" if x_ok and st_ok else ", expected a finite scale in [0, 1] and an overlay state of fresh, held, stale or absent"))
 a = d.get("account") if isinstance(d.get("account"), dict) else {}
 say(a.get("status") == "ACTIVE", "/api/desk account.status", "%s%s" % (a.get("status"), "" if a.get("status") == "ACTIVE" else ", expected ACTIVE"))
 say(a.get("trading_blocked") is False, "/api/desk account.trading_blocked", "%s%s" % (json.dumps(a.get("trading_blocked")), "" if a.get("trading_blocked") is False else ", expected false"))
