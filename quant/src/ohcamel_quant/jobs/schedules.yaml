@@ -33,6 +33,8 @@ max_age:
   vol.surface_history: 78h
   models.xs_lgbm: 816h   # monthly (1st, 22:30) plus 2 days
   regime.hmm: 204h       # weekly (Saturday 09:00), like the weekly ingest kinds
+  # INC-01's producers: session kinds 78h, like Lane C's.
+  signals.daily: 78h
 
 schedules:
   - name: selftest-nightly
@@ -209,3 +211,13 @@ schedules:
     priority: 2
     mem_class: M
     heavy: true
+
+  # INC-01: every farm cell's targets at the last close as a contract-v1 document, after the
+  # 18:30 daily-bars ingest. Its first run in a month also takes that month's parameter freeze.
+  - name: signals-daily
+    cron: "45 18 * * 1-5"
+    kind: signals.daily
+    params: {}
+    priority: 2
+    mem_class: S
+    heavy: false
