@@ -513,3 +513,23 @@ def test_a_short_history_bad_params_or_a_peeking_strategy_is_refused(market, mon
 
 def test_roster_symbols_that_differ_from_the_universe_are_refused(world):
     assert _refused(world["spec"])["farm_sma_trend_mismatch"] == "roster symbols differ from the farm's universe"
+
+
+def test_a_missed_month_end_is_caught_up_late_and_a_kept_one_holds(tmp_path, monkeypatch, wh):
+    # sma_trend, monthly. Both cells' first document is 05-27 (first run ever). May's period end is
+    # 05-29 (Fri; next session Mon 06-01). The "kept" cell runs on 05-29 and emits; the "missed" one
+    # does not (the worker was down for it). On 06-01 -- not a period end (next 06-02) -- the missed
+    # cell's last document (05-27) is older than the last period end (05-29): emitted late, sequence
+    # 2514 (SPY sessions through 06-01); the kept cell's last document is 05-29: it holds.
+    rows = [{"cell_id": "sma_trend@eq3", "verdict": "FAIL", "selected_params": '{"months": 10}'}]
+    run_at, sig = _mini(tmp_path, monkeypatch, wh, _row("farm_sma_trend_eq3", "sma_trend", "eq3"), rows)
+    assert _emitted(run_at(date(2026, 5, 27))).loc["farm_sma_trend_eq3", "status"] == "written"
+    assert _emitted(run_at(date(2026, 5, 29))).loc["farm_sma_trend_eq3", "status"] == "written"
+    kept = _emitted(run_at(LAST)).loc["farm_sma_trend_eq3"]
+    assert (kept["status"], kept["last_rebalance"]) == ("held", "2026-05-29")
+
+    (sig / "farm_sma_trend_eq3-2026-05-29.json").unlink()  # the month-end document never went out
+    late = _emitted(run_at(LAST)).loc["farm_sma_trend_eq3"]
+    assert (late["status"], late["sequence"]) == ("late", 2514)
+    assert "2026-05-29" in late["note"] and "2026-05-27" in late["note"]
+    assert json.loads((sig / f"farm_sma_trend_eq3-{LAST}.json").read_text())["as_of"] == "2026-06-01"

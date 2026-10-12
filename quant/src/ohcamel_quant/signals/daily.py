@@ -22,7 +22,10 @@ service's rows are not this producer's and are skipped silently):
   panel's final session is never a period end there); ``signal`` decides only
   when the targets move more than ``EngineConfig().signal_tolerance`` from the
   last EMITTED document's; ``daily`` always. A cell's first document ever is
-  always emitted. Every other session is a ``held`` row, naming the last
+  always emitted. A calendar cadence whose last period end passed with no
+  document (a worker down, an ingest failed, a refusal that evening) is caught
+  up on the next run: today's targets, emitted ``late``, naming the missed
+  period end. Every other session is a ``held`` row, naming the last
   rebalance;
 * NaN and zero weights are dropped -- an all-zero row is a flat decision, an
   empty valid document -- and a book over 1x gross is scaled to 1x, the
@@ -265,7 +268,10 @@ def _last_doc(out_dir: Path, slug: str) -> dict[str, Any] | None:
         return None
     try:
         doc = json.loads(paths[-1].read_text())
-        int(doc["sequence"]), str(doc["as_of"]), list(doc["targets"])
+        doc["sequence"] = int(doc["sequence"])
+        doc["as_of"] = date.fromisoformat(str(doc["as_of"])).isoformat()
+        if not isinstance(doc["targets"], list):
+            raise TypeError("targets is not a list")
     except (OSError, ValueError, KeyError, TypeError) as e:
         raise CellRefused(f"the last document {paths[-1].name} is unreadable ({e}): no sequence") from e
     return doc
@@ -304,25 +310,46 @@ def _bars(ctx: Any, symbols: list[str], sessions: pd.DatetimeIndex) -> pd.DataFr
     return df
 
 
+def _previous_session(d: date) -> date:
+    p = d - timedelta(days=1)
+    while p.weekday() >= 5 or p in _holidays(p.year):
+        p -= timedelta(days=1)
+    return p
+
+
+def _last_period_end(as_of: date, cadence: str) -> date:
+    """The most recent period end strictly before ``as_of`` (at most a quarter's sessions back)."""
+    d = _previous_session(as_of)
+    while not _period_end(d, cadence):
+        d = _previous_session(d)
+    return d
+
+
 def _hold_reason(cadence: str, as_of: date, targets: dict[str, float],
-                 last: dict[str, Any] | None) -> str | None:
-    """None when ``as_of`` is a decision session for this cadence, else why it holds."""
+                 last: dict[str, Any] | None) -> tuple[str | None, str | None]:
+    """``(None, None)`` when ``as_of`` is a decision session for this cadence; ``(None, missed)``
+    when a period end passed with no document since (the catch-up: emit late, naming it);
+    else ``(why it holds, None)``."""
     from ..backtest.engine import EngineConfig
 
     if last is None or cadence == "daily":
-        return None  # the first document ever is always emitted
+        return None, None  # the first document ever is always emitted
     if cadence in _PERIOD:
         if _period_end(as_of, cadence):
-            return None
-        return f"not a {cadence} rebalance date (next session {next_session(as_of)} is in the same period)"
+            return None, None
+        missed = _last_period_end(as_of, cadence)
+        if last["as_of"] < missed.isoformat():
+            return None, missed.isoformat()
+        return (f"not a {cadence} rebalance date (next session {next_session(as_of)} is in the same period)",
+                None)
     if cadence == "signal":
         before = {t["symbol"]: float(t["weight"]) for t in last["targets"]}
         names = set(before) | set(targets)
         moved = max((abs(targets.get(s, 0.0) - before.get(s, 0.0)) for s in names), default=0.0)
         if moved > EngineConfig().signal_tolerance:
-            return None
-        return "signal unchanged from the last document"
-    return f"{cadence}: decided once, at the first document"
+            return None, None
+        return "signal unchanged from the last document", None
+    return f"{cadence}: decided once, at the first document", None
 
 
 def _emit(cell: Cell, params: dict[str, Any], ctx: Any, out_dir: Path, farm_id: str | None,
@@ -344,7 +371,7 @@ def _emit(cell: Cell, params: dict[str, Any], ctx: Any, out_dir: Path, farm_id: 
     if raw is None:
         return {**row, "status": "held", "note": "no decision"}
     targets, scaled = targets_gross_scaled(raw)
-    hold = _hold_reason(cadence, as_of, targets, last)
+    hold, missed = _hold_reason(cadence, as_of, targets, last)
     if hold is not None:
         return {**row, "status": "held", "note": hold}
     sequence = _sequence(ctx, as_of, last)
@@ -353,8 +380,12 @@ def _emit(cell: Cell, params: dict[str, Any], ctx: Any, out_dir: Path, farm_id: 
                     validation=validation_for(cell, farm, manifest=farm_id, params=params), targets=targets,
                     bars=_bars(ctx, list(px.columns), px.index))
     write_atomic(doc, path)
-    return {**row, "status": "written", "sequence": sequence, "gross_scaled": scaled, "n_targets": len(targets),
-            "last_rebalance": as_of.isoformat(), "note": f"{cadence} decision"}
+    done = {**row, "sequence": sequence, "gross_scaled": scaled, "n_targets": len(targets),
+            "last_rebalance": as_of.isoformat()}
+    if missed is not None:
+        return {**done, "status": "late", "note": f"late: the {cadence} period end {missed} passed with no "
+                                                  f"document (the last is {last['as_of']})"}
+    return {**done, "status": "written", "note": f"{cadence} decision"}
 
 
 def _spec(emitted: list[dict], refused: list[dict], notes: list[str], *,
@@ -414,9 +445,9 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
             refused.append({"slug": c.slug, "reason": str(e)})
         except Exception as e:  # noqa: BLE001 - one cell's failure is its refusal, never the run's (h)
             refused.append({"slug": c.slug, "reason": f"{type(e).__name__}: {e}"[:500]})
-    n = {s: sum(r["status"] == s for r in emitted) for s in ("written", "held", "already_present")}
+    n = {s: sum(r["status"] == s for r in emitted) for s in ("written", "late", "held", "already_present")}
     return _spec(emitted, refused,
-                 [f"{n['written']} written, {n['held']} held, {n['already_present']} already present, "
+                 [f"{n['written']} written, {n['late']} written late, {n['held']} held, {n['already_present']} already present, "
                   f"{len(refused)} refused; parameters frozen for the month (INC-01); documents only on each "
                   "strategy's own decision sessions; validation from the newest farm verdict when it tested "
                   "the frozen parameters"],
