@@ -1155,7 +1155,7 @@ container as environment, never as a layer. The runbooks are in
 
 ## What's verified
 
-`make test` runs <!-- count:ocaml-tests -->735<!-- /count --> tests, plus <!-- count:scheduler-tests -->33<!-- /count --> in `test/desk_async` that run with
+`make test` runs <!-- count:ocaml-tests -->823<!-- /count --> tests, plus <!-- count:scheduler-tests -->51<!-- /count --> in `test/desk_async` that run with
 the scheduler -- the order manager's cases, a live strategy's rebalance, the
 transport's bound, the signal intake's minute loop and that suite's own count --
 all hermetic — no network, no credentials, and nothing that waits on the wall
@@ -1662,7 +1662,7 @@ loaded. Figure 1 draws a signals band into the orders band only where an
 intake actually runs, so the demo's own figure, which has none, stays
 byte-identical to the one before this phase.
 
-`research/` has its own test suite, run by `make research-test`: <!-- count:research-tests -->412<!-- /count --> Python
+`research/` has its own test suite, run by `make research-test`: <!-- count:research-tests -->413<!-- /count --> Python
 tests, hermetic, offline, seeded, checked with `ruff`. `lib/verified.ml`
 and this file's counts cover only the OCaml suites; the Python count is
 reported here and in `docs/status.md`, never folded into either.

@@ -664,6 +664,7 @@ def test_sweep_orphaned_tmp_removes_only_the_dotted_tmp_convention(tmp_path: Pat
     signals_dir.mkdir()
     orphan = signals_dir / ".exp_test_spy-2020-12-31.json.tmp"
     orphan.write_text("half-written")
+    _age(orphan, 3600)
     real_signal = signals_dir / "exp_test_spy-2020-12-30.json"
     real_signal.write_text("{}")
     look_alike = signals_dir / "not-dotted.tmp"  # not write_signal's own naming convention
@@ -675,6 +676,28 @@ def test_sweep_orphaned_tmp_removes_only_the_dotted_tmp_convention(tmp_path: Pat
     assert not orphan.exists()
     assert real_signal.exists()
     assert look_alike.exists()
+
+
+def _age(path: Path, seconds: float) -> None:
+    then = time_module.time() - seconds
+    os.utime(path, (then, then))
+
+
+def test_sweep_orphaned_tmp_spares_a_young_temp_and_removes_an_old_one(tmp_path: Path):
+    signals_dir = tmp_path / "signals"
+    signals_dir.mkdir()
+    young = signals_dir / ".exp_test_spy-2020-12-31.json.4242.tmp"  # a worker mid-write
+    young.write_text("being written")
+    _age(young, 30)
+    old = signals_dir / ".exp_test_tlt-2020-12-31.json.tmp"
+    old.write_text("orphaned")
+    _age(old, 11 * 60)
+
+    removed = sweep_orphaned_tmp(signals_dir)
+
+    assert removed == [old]
+    assert young.exists()
+    assert not old.exists()
 
 
 def test_sweep_orphaned_tmp_on_a_missing_directory_is_a_noop(tmp_path: Path):

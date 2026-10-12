@@ -12,6 +12,7 @@ on:
       - main
       - 'desk/**'
       - 'final/**'
+      - 'auto/**'
   pull_request:
   workflow_dispatch:
 

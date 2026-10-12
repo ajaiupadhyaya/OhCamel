@@ -91,6 +91,32 @@ committed real data and a fixture warehouse, and it passes on the Rust kernels a
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.
 
+## Autonomous trading
+
+Three tiers decide what a signal may do. **ADVISORY**: anything without `status: pass` is shown with its rule and
+never sized. **INCUBATION**: the charter's amended sentence is the whole licence, *On the paper venue, and only there, the owner may register a strategy as `incubation`: it is sized under the book's incubation caps whatever its status, its validation block is carried unchanged, every order, page and report it touches says INCUBATION, its realised record is scored with this charter's statistics and stop rules the owner wrote before it traded, and promotion to `live` never follows from that record by itself.* **LIVE**: only `status: pass`
+is sized as live, and nothing promotes a strategy to it but the owner. The pre-registration is
+[INC-01](../research/experiments/INC-01/preregistration.md), which is binding.
+
+**The roster.** 23 strategies at 0.025 of equity each under `incubation_cap 0.60`, with the canary sessions at
+`incubation_cap 0.10`. The list is `research/experiments/INC-01/roster.yaml`.
+
+| Producer | When (New York) | What it writes |
+|---|---|---|
+| `signals.daily` | weekdays 18:45 | one contract-v1 document per roster cell, on its own rebalance dates |
+| `signals.overlay` | 09:40, every 15 min 10:00–15:45, 18:50 | one `exposure_scale` from volatility targeting |
+| `desk.report` | weekdays 16:30 | the session's fills, P&L per strategy, refusals and overlay path |
+
+**The overlay rule.** `exposure_scale = min(1, σ_target / σ̂)` with `σ_target` 0.10 from the book, multiplied by the
+drawdown governor, sizes every incubation and live target; a stale overlay falls back to `overlay_fallback`, an
+absent one reads 1.0.
+
+**Stop rules and the record scoring:** Stage 3, not yet built. **Intraday strategies:** Stage 2, not yet built.
+
+**Limits.** Incubation records are not evidence of edge. Per-strategy orders are not netted. The overlay mostly
+reads 1.0 on the current roster (forecast volatility about 7 % against a 10 % target) and bites in stressed
+markets.
+
 ## OhCamel Quant: limits
 
 - **Survivorship.** Universes are current constituents (dated S&P 500 and Nasdaq-100 lists, the site's ETFs).
@@ -388,7 +414,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **<!-- count:ocaml-tests -->735<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->33<!-- /count --> scheduler cases in `test/desk_async` —
+- **<!-- count:ocaml-tests -->823<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->51<!-- /count --> scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler
@@ -420,7 +446,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 - **Recomputation counts are asserted**, not claimed: `test_graph.ml` pins
   how many nodes a tick reaches.
 - **`make research-test`** runs the research layer's own suite separately:
-  <!-- count:research-tests -->412<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Reported
+  <!-- count:research-tests -->413<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Reported
   here rather than folded into `lib/verified.ml`, which counts the OCaml
   suites only.
 - **Production smoke suite** after every deploy: the dashboard renders,

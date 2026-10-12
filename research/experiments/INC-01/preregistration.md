@@ -116,9 +116,19 @@ farm reports SKIPPED or INSUFFICIENT DATA keeps last month's parameters. A
 cell with none is not emitted, and the reason is recorded in the producer's
 artifact. The farm's nightly re-selection never reaches the live book inside
 a month. The cell's `validation` is copied from its newest farm verdict
-(`PASS` → `pass`, `FAIL` → `fail`, anything else → `unvalidated`). A cell
+(`PASS` → `pass`, `FAIL` → `fail`, anything else → `unvalidated`) only when
+that row's `selected_params` equal the frozen parameters, else `unvalidated`
+naming the mid-month re-selection. A cell
 whose universe names a symbol outside the book is refused by the producer,
 with the reason, and never silently projected onto the book's names.
+
+**When a document is written.** A cell's document is written only on its
+strategy's own rebalance dates (decided against the next exchange session,
+with NYSE holidays) and on the cell's first run; `signal`-cadence strategies
+write when the targets differ from the last document's beyond the engine's
+tolerance; other sessions write nothing and the artifact says `held`; a
+period end missed by the producer is caught up late on the next session, and
+said so. An all-NaN last row is `held`, an all-zero row is a flat document.
 
 ## The overlay
 
@@ -133,7 +143,8 @@ One number, `exposure_scale` in [0, 1], written by `signals.overlay` at
   volatility; Ledoit–Wolf when no league artifact exists. Where the
   volatility league (P2) has a current best model for a name (by QLIKE), its
   forecast variance replaces that name's diagonal entry; EWMA(0.94) when
-  absent. How P2 and P3 combine is not fixed by §5.
+  absent. How P2 and P3 combine is not fixed by §5. A non-finite forecast
+  writes nothing; the desk then holds its last overlay and goes stale.
 - The document records every input: the models' names, the artifact ids and
   `as_of`, the newest bar read.
 
@@ -148,9 +159,12 @@ the cap. The effective scale is `exposure_scale × governor`, and it
 multiplies every incubation and live target. With the example book's
 `dd-cap` of 0.02, the governor is 1 to a 1 % book drawdown and 0 at 2 %.
 
-**Staleness.** An overlay older than 60 minutes (`overlay_max_age_minutes`)
-is stale: the desk holds the last value until then, and after it uses
-`overlay_fallback` 0.5. The page says OVERLAY STALE.
+**Staleness.** An accepted overlay holds for 60 minutes
+(`overlay_max_age_minutes`), and after it the desk uses `overlay_fallback`
+0.5; the page says OVERLAY STALE. A desk whose journal holds no accepted
+overlay at all reads 1.0 (the desk as it was before this plan) and the page
+says OVERLAY ABSENT; before the venue's clock has answered, an overlay cannot
+be aged and reads stale.
 
 **Re-sizing.** When the effective scale moves more than `overlay_band` 0.10
 from the scale a strategy was last sized at, every strategy with
@@ -171,11 +185,12 @@ for the reader; neither is multiplied in.
   collar.
 - **Leg floor:** a leg below `min_leg_notional` **$200** is dropped, and the
   drop is journaled.
-- **Waves:** a rebalance of more than 6 legs runs in waves. Wave 1 is every
-  shrinking leg, gated as a set; later waves are growing legs, at most 6
-  each, by notional descending. Each wave is gated against the real book as
-  it then is. The desk waits for each wave's legs to fill or cancel, up to `wave_timeout_s`
-  **180** seconds, then cancels what is left; an unfilled strategy is
+- **Waves:** a rebalance of more than 6 legs runs in waves: the shrinking
+  legs first, by notional descending, in chunks of at most 6, then the
+  growing legs the same way; each wave is gated against the real book as it
+  then is, and every wave — a single one included — is awaited until its
+  orders fill or `wave_timeout_s` (**180** seconds) passes, when its open
+  orders are cancelled and no later wave is sent. An unfilled strategy is
   re-sized on the next pass.
 - **Exits at the close** (not fixed by §5): a strategy with `horizon close`
   exits by a market-on-close order (Alpaca `cls`) sent when the producer's

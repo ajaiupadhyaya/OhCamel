@@ -49,7 +49,7 @@ Each runs on a schedule (`quant/src/ohcamel_quant/jobs/schedules.yaml`, New York
 whose first field is its verdict: `PASS`, `FAIL`, `ADVISORY`, `INSUFFICIENT DATA` or `DESCRIPTIVE ONLY`. A
 measurement that is not a strategy is `DESCRIPTIVE ONLY` and has no gate to pass. Strategies are held to
 [`docs/CHARTER.md`](docs/CHARTER.md)'s gates, applied literally. A metric that cannot be computed fails its
-gate. Nothing any product computes reaches the desk.
+gate. Nothing any product computes reaches the desk except as a signal (see *Signals and research*).
 
 | | Product | Schedule | Verdict it can reach | Where |
 |---|---|---|---|---|
@@ -71,6 +71,14 @@ reasons. The farm's rows are expected to fail mostly, and the page lists the fai
 EXP-Q02 were pre-registered and approved by the owner on 2026-10-06
 ([`research/experiments/`](research/experiments/)). A deviation from either is a new experiment. Each product's
 live verdict is on its page and on `/ledger`. Methodology for every product and kernel: `/methodology`.
+
+## Signals and research
+
+Nothing a research product computes reaches the desk on its own. A signal carries a `validation` block, and three
+tiers follow from it: ADVISORY (shown with its rule, never sized), INCUBATION and LIVE. The charter's amended
+sentence: *On the paper venue, and only there, the owner may register a strategy as `incubation`: it is sized under the book's incubation caps whatever its status, its validation block is carried unchanged, every order, page and report it touches says INCUBATION, its realised record is scored with this charter's statistics and stop rules the owner wrote before it traded, and promotion to `live` never follows from that record by itself.* The tiers, the roster, the producers and the overlay are in the *Autonomous trading* section of
+[`docs/status.md`](docs/status.md); the pre-registration that binds them is
+[INC-01](research/experiments/INC-01/preregistration.md).
 
 ## The site: Paper Tape
 

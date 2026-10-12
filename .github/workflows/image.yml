@@ -59,6 +59,7 @@ on:
     branches:
       - 'desk/**'
       - 'final/**'
+      - 'auto/**'
   pull_request:
   workflow_dispatch:
 

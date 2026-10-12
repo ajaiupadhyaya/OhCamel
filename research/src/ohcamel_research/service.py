@@ -698,18 +698,27 @@ def run_once(
 # ---------------------------------------------------------------------------
 
 
+# The Quant worker writes ``.<name>.<pid>.tmp`` in this same directory and
+# renames it, so a temp file younger than this may be a live write, not an orphan.
+ORPHAN_TMP_MIN_AGE_SECONDS = 10 * 60
+
+
 def sweep_orphaned_tmp(signals_dir: Path) -> list[Path]:
-    """Remove every ``.<name>.tmp`` file directly under ``signals_dir``:
-    exactly what ``signal.write_signal``'s fsync-then-rename leaves behind
-    when the process dies between the two. The intake never reads a
-    dotfile and never will, so nothing else ever cleans these up. Only
+    """Remove every ``.<name>.tmp`` file directly under ``signals_dir``
+    that is older than ``ORPHAN_TMP_MIN_AGE_SECONDS``: exactly what
+    ``signal.write_signal``'s fsync-then-rename leaves behind when the
+    process dies between the two. The intake never reads a dotfile and
+    never will, so nothing else ever cleans these up. Only
     files matching that exact naming convention -- a dotfile ending in
     ``.tmp`` -- are touched; never anything ending in ``.json``."""
     removed: list[Path] = []
     if not signals_dir.is_dir():
         return removed
+    cutoff = time_module.time() - ORPHAN_TMP_MIN_AGE_SECONDS
     for p in sorted(signals_dir.iterdir()):
         if p.is_file() and p.name.startswith(".") and p.name.endswith(".tmp"):
+            if p.stat().st_mtime >= cutoff:
+                continue
             p.unlink()
             removed.append(p)
     return removed
