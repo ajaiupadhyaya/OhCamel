@@ -229,6 +229,13 @@ val latest_accepted_document : t -> strategy:string -> (int * string) option
 val signal : t -> strategy:string -> sequence:int -> Signal.t option
 (** One judgement, by the primary key. *)
 
+val pending_signals : t -> Signal.t list
+(** The accepted and accepted_incubation judgements whose rebalance still begins
+    "pending:" -- recorded and not yet sized -- by (strategy, sequence). *)
+
+val source_has_orders : t -> source:string -> bool
+(** Whether any order was journaled with exactly [source]. *)
+
 val record_signal_file : t -> name:string -> received_at:Time_ns.t -> error:string -> unit
 (** A file that could not be read as a signal, by name, once. *)
 
@@ -415,10 +422,11 @@ val overlay_recorded : t -> sequence:int -> bool
 (** Whether a judgement of overlay [sequence] is recorded, accepted or rejected: one
     primary-key seek, asked before a file is judged so a sequence is judged once. *)
 
-val highest_overlay_sequence : t -> int
-(** The highest overlay sequence judged, rejected ones included; 0 when none. *)
-
 val record_sizing :
+  ?ratio:float ->
+  ?factor:float ->
+  ?governor:float ->
+  ?note:string ->
   t ->
   strategy:string ->
   sequence:int ->
@@ -429,7 +437,29 @@ val record_sizing :
   mode:string ->
   unit
 (** What a strategy was sized to at [at]: its tier ("advisory", "incubation" or "live"),
-    the scale and the dollars allocated, and the mode ("open", "adjust" or "flatten"). *)
+    the scale and the dollars allocated, and the mode ("open", "adjust" or "flatten");
+    and, when given, the incubation ratio in force, the overlay factor and the governor
+    the scale was the product of (scale = factor x governor x ratio), and a note. *)
+
+module Sizing : sig
+  type t = {
+    sequence : int;
+    scale : float;
+    allocated : float;
+    at : string;
+    tier : string;
+    mode : string;
+    ratio : float option;
+    factor : float option;
+    governor : float option;
+    note : string option;
+  }
+  [@@deriving sexp_of, equal]
+end
+
+val latest_sizing_row : t -> strategy:string -> Sizing.t option
+(** [latest_sizing]'s row, whole: its parts are None on a row written before they were
+    recorded. *)
 
 val latest_sizing : t -> strategy:string -> (int * float * float * string * string) option
 (** The sizing with the newest [at] for [strategy], as (sequence, scale, allocated, at,

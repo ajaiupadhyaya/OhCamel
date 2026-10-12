@@ -1146,10 +1146,15 @@ let strategy_position t ~(strategy : string) : (float Symbol.Map.t, string) Resu
    strategy's own position from [strategy_position], at [strategy]'s
    capital_fraction -- the caller's to set to the effective fraction an
    incubation strategy is sized at -- times [scale], which Rebalance.plan
-   refuses outside [0, 1]. Rebalance.plan decides. Then every leg worth less
-   than the book's min_leg_notional is dropped (Rebalance.drop_small), in
-   either mode: (kept, dropped), so the caller can say what it dropped. *)
-let plan_rebalance t ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
+   refuses outside [0, 1]. Rebalance.plan decides. Then, in the [Intraday]
+   mode only, every leg worth less than the book's min_leg_notional is
+   dropped (Rebalance.drop_small) -- never a leg whose target is 0, which
+   closes a name and would otherwise leave a residue the desk could never
+   sell: (kept, dropped), so the caller can say what it dropped. An [Open]
+   rebalance drops nothing (the stage review's ruling, withdrawing the
+   floor in both modes). *)
+let plan_rebalance t ~(mode : Rebalance.Mode.t)
+    ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
     ~(targets : (Symbol.t * float) list) ~(scale : float) :
     (Rebalance.Leg.t list * Rebalance.Leg.t list, string) Result.t =
   let module S = Ohcamel.Config.Book.Signals_spec.Strategy in
@@ -1182,7 +1187,10 @@ let plan_rebalance t ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
     ~scale ~equity:(sizing_equity t) ~account ~marks
     ~current:(strategy_position t ~strategy:strategy.S.name)
   |> Result.map ~f:(fun legs ->
-      Rebalance.drop_small ~legs ~min_leg_notional:t.spec.Desk_spec.min_leg_notional)
+      match mode with
+      | Rebalance.Mode.Open -> (legs, [])
+      | Rebalance.Mode.Intraday ->
+          Rebalance.drop_small ~legs ~min_leg_notional:t.spec.Desk_spec.min_leg_notional)
 
 (* What a rebalance came to, in the words the intake records beside the
    judgement. [Refused]: nothing was journaled and nothing sent. [Sent]:
@@ -1199,10 +1207,16 @@ let plan_rebalance t ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
    out, each wave's own outcome in the order they went; a wave that was not
    [Sent] is the last, and so is one whose wait ran out, [timed_out], after
    which every open order of the rebalance was cancelled. Its first wave is never [Refused]: a rebalance
-   whose first wave is refused is [Refused]. *)
+   whose first wave is refused is [Refused]. [Not_now]: refused as [Refused]
+   is, nothing journaled and nothing sent, for a reason of TIMING alone
+   (Rules.is_timing_refusal: the opening auction's window, the session
+   closed for a day order, no venue clock yet) -- the same rebalance may go
+   later, and the intake keeps its judgement pending and tries it again. Its
+   sentence is a refusal's, word for word. *)
 module Rebalance_outcome = struct
   type t =
     | Refused of string
+    | Not_now of string
     | Sent of Order.t list
     | Stopped of { sent : Order.t list; unsent : Order.t list; why : string }
     | Waved of { waves : t list; timed_out : bool }
@@ -1232,7 +1246,7 @@ module Rebalance_outcome = struct
     | _ -> "rebalance"
 
   let rec to_string = function
-    | Refused why -> "refused, and nothing journaled or sent: " ^ why
+    | Refused why | Not_now why -> "refused, and nothing journaled or sent: " ^ why
     | Sent os ->
         sprintf "%d %s order%s journaled, then sent, and acknowledged: %s"
           (List.length os) (kind os)
@@ -1328,9 +1342,15 @@ end
    ticket's limit is gated at. A name with no live mark gets no limit; the
    mark rule refuses it. Everything else is the same, the max_legs refusal
    included: an intraday rebalance with more orders is split into waves
-   before it gets here ([propose_rebalance]). *)
-let check_rebalance t ~(mode : Rebalance.Mode.t) ~(source : Rebalance.Source.t)
-    ~(legs : Rebalance.Leg.t list) : (Checked_rebalance.t, string) Result.t =
+   before it gets here ([propose_rebalance]).
+
+   [timing], when given, is set when the refusal is the rules' and every
+   refused order failed for timing alone (Rules.is_timing_refusal): the
+   rebalance may go later unchanged ([Rebalance_outcome.Not_now]). Every
+   other refusal leaves it false. *)
+let check_rebalance ?(timing = ref false) t ~(mode : Rebalance.Mode.t)
+    ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t list) :
+    (Checked_rebalance.t, string) Result.t =
   let open Result.Let_syntax in
   (* The book as the gate reads it: a name it does not hold is flat here, and
      the universe rule refuses its order below. *)
@@ -1453,6 +1473,9 @@ let check_rebalance t ~(mode : Rebalance.Mode.t) ~(source : Rebalance.Source.t)
       List.filter judged ~f:(fun (_, _, _, failures) -> not (List.is_empty failures))
     with
     | _ :: _ as failed ->
+        timing :=
+          List.for_all failed ~f:(fun (_, (r : Order.Request.t), _, failures) ->
+              Rules.is_timing_refusal ~tif:r.Order.Request.tif failures);
         Error
           (String.concat ~sep:"; "
              (List.map failed ~f:(fun (i, r, _, failures) ->
@@ -1552,7 +1575,9 @@ let check_rebalance t ~(mode : Rebalance.Mode.t) ~(source : Rebalance.Source.t)
 let send_rebalance t ~(mode : Rebalance.Mode.t) ~(source : Rebalance.Source.t)
     ~(legs : Rebalance.Leg.t list) : Rebalance_outcome.t Deferred.t =
   enqueue t (fun () ->
-      match check_rebalance t ~mode ~source ~legs with
+      let timing = ref false in
+      match check_rebalance ~timing t ~mode ~source ~legs with
+      | Error why when !timing -> return (Rebalance_outcome.Not_now why)
       | Error why -> return (Rebalance_outcome.Refused why)
       | Ok { Checked_rebalance.orders; gate } -> (
           let n = List.length orders in
@@ -1567,10 +1592,13 @@ let send_rebalance t ~(mode : Rebalance.Mode.t) ~(source : Rebalance.Source.t)
                 | Error f -> Some (i, r, f))
           with
           | Some (i, r, f) ->
+              let why =
+                sprintf "after the arrival quotes, %s: %s" (name_leg ~i ~n r) (reason f)
+              in
               return
-                (Rebalance_outcome.Refused
-                   (sprintf "after the arrival quotes, %s: %s" (name_leg ~i ~n r)
-                      (reason f)))
+                (if Rules.is_timing_refusal ~tif:r.Order.Request.tif [ f ] then
+                   Rebalance_outcome.Not_now why
+                 else Rebalance_outcome.Refused why)
           | None ->
               let created = List.map orders ~f:(fun (r, _) -> Order.create r) in
               admit t
@@ -1740,9 +1768,11 @@ let propose_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t 
         | [] -> return (finish sent ~timed_out:false)
         | wave :: rest -> (
             match%bind send_rebalance t ~mode ~source ~legs:wave with
-            | Rebalance_outcome.Refused _ as refused when List.is_empty sent ->
+            | (Rebalance_outcome.Refused _ | Rebalance_outcome.Not_now _) as refused
+              when List.is_empty sent ->
                 return refused
-            | (Rebalance_outcome.Refused _ | Rebalance_outcome.Waved _) as last ->
+            | ( Rebalance_outcome.Refused _ | Rebalance_outcome.Not_now _
+              | Rebalance_outcome.Waved _ ) as last ->
                 return (finish (last :: sent) ~timed_out:false)
             | (Rebalance_outcome.Sent _ | Rebalance_outcome.Stopped _) as this -> (
                 match%bind await_settled t ~source ~timeout with

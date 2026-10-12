@@ -107,12 +107,15 @@ let limit_price ~(side : Order.Side.t) ~(mark : float) ~(slip_bps : float) : flo
 
 (* Legs worth less than [min_leg_notional] at their price, |qty x price|, are
    not sent: an order that small costs more in spread and attention than it
-   moves the strategy. (kept, dropped), each in the order given; the caller
-   says what it dropped. *)
+   moves the strategy. A leg whose target is 0 is NEVER dropped, however
+   small: it closes the name, and dropping it would leave a residue the desk
+   could never sell (an overlay of 0, a flat signal, a stop). (kept,
+   dropped), each in the order given; the caller says what it dropped. *)
 let drop_small ~(legs : Leg.t list) ~(min_leg_notional : float) : Leg.t list * Leg.t list
     =
   List.partition_tf legs ~f:(fun (l : Leg.t) ->
-      Float.( >= ) (Float.abs (Float.of_int l.Leg.qty *. l.Leg.price)) min_leg_notional)
+      l.Leg.target = 0
+      || Float.( >= ) (Float.abs (Float.of_int l.Leg.qty *. l.Leg.price)) min_leg_notional)
 
 (* Whether an order GROWS its name's position: opens one from flat, takes it
    further from zero, or crosses zero -- a long sold into a short, a short

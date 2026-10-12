@@ -450,9 +450,37 @@ let test_a_market_on_close_order_until_ten_minutes_before_the_close () =
     { (monday "2026-09-14T20:30:00Z") with session = after_monday }
     (cls 100)
 
+(* A refusal of timing alone (the stage review's A-I1): every failure the
+   session rule's -- or, for a day order, a stale mark beside it, since
+   outside the session every name is stale. Anything else beside it, or a
+   stale mark on a market-on-open order (priced at the close, so not a
+   matter of the hour), is final; no failure is no refusal. *)
+let test_a_timing_refusal_is_the_session_rule_alone () =
+  let f rule = { Rules.Failure.rule; why = "x" } in
+  let timing tif fs = Rules.is_timing_refusal ~tif fs in
+  Alcotest.(check (list bool))
+    "opg: session alone; session and notional; mark alone; none"
+    [ true; false; false; false ]
+    [
+      timing Order.Tif.Opg [ f "session" ];
+      timing Order.Tif.Opg [ f "session"; f "notional" ];
+      timing Order.Tif.Opg [ f "mark" ];
+      timing Order.Tif.Opg [];
+    ];
+  Alcotest.(check (list bool))
+    "day: session and a stale mark; the switch beside it; opg's stale mark"
+    [ true; false; false ]
+    [
+      timing Order.Tif.Day [ f "session"; f "mark" ];
+      timing Order.Tif.Day [ f "session"; f "kill_switch" ];
+      timing Order.Tif.Opg [ f "session"; f "mark" ];
+    ]
+
 let suite =
   ( "rules",
     [
+      Alcotest.test_case "a timing refusal is the session rule alone" `Quick
+        test_a_timing_refusal_is_the_session_rule_alone;
       Alcotest.test_case
         "Cls legal at 15:30, refused at 15:51 naming the cut-off, refused when closed"
         `Quick test_a_market_on_close_order_until_ten_minutes_before_the_close;

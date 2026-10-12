@@ -577,7 +577,9 @@
     var inputs = field(o, "inputs"), reported = field(o, "reported");
     if (isObj(inputs) || isObj(reported)) {
       var d2 = el("dl", "rs-kv");
-      figures(d2, inputs, "reported, not used");
+      // The inputs ARE the number's inputs (vol_target, vol_forecast, the
+      // models); only the reported block is shown beside it and not used.
+      figures(d2, inputs, "inputs");
       figures(d2, reported, "reported, not used");
       box.appendChild(d2);
     }

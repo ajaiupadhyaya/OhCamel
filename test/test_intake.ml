@@ -400,8 +400,11 @@ let test_an_advisory_strategy_produces_no_order () =
    rebalance, simulated: the pass records it and hands it on, and nothing
    sizes it. The next pass -- and a restarted intake, with nothing in memory,
    over the same journal -- finds its (strategy, sequence) judged and hands
-   nothing on: the signal is never re-judged and never re-sized, and its
-   pending sentence stays to say what happened. *)
+   nothing on: the signal is never re-judged, and its pending sentence stays
+   to say what happened. What hands it back is the retry set (the stage
+   review's A-I1): collect_pending reads the pending judgement from the
+   journal, and -- no order having been journaled under its source -- it is
+   tried again; one with orders is closed instead (test/desk_async). *)
 let test_a_crash_between_judging_and_proposing_does_not_re_size () =
   with_intake ~sessions:week
     ~f:(fun f ->
@@ -430,9 +433,13 @@ let test_a_crash_between_judging_and_proposing_does_not_re_size () =
          orders went -- so it names the journal's record of them. *)
       contains "the pending sentence names the orders' source"
         ~substring:
-          "the journal's orders whose source is signal:exp_a01_spy:5 are the record of \
+          "The journal's orders whose source is signal:exp_a01_spy:5 are the record of \
            anything sent"
         (Option.value_exn (rebalance_of f "exp_a01_spy" 5));
+      Alcotest.(check (list (pair string int)))
+        "the retry set hands it back"
+        [ ("exp_a01_spy", 5) ]
+        (accepted_keys (Intake.collect_pending restarted));
       Alcotest.(check int)
         "and nothing was ever proposed" 0
         (List.length (Journal.recent_orders f.journal ~limit:10)))

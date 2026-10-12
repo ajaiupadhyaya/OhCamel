@@ -237,6 +237,24 @@ module Failure = struct
   type t = { rule : string; why : string } [@@deriving sexp_of, compare, equal]
 end
 
+(* Whether a refusal of an order of [tif] is one of TIMING -- the order may
+   go later, unchanged, and nothing about it is wrong: its failures are all
+   the session rule's (a market-on-open order before 19:00 ET or after its
+   last call, a day order while the session is closed, no venue clock yet),
+   and, for a day or market-on-close order refused by the session rule, a
+   mark the feed calls stale or has not printed, because outside the session
+   every name is stale. Any other failure -- the switch, the mandate, a
+   price, a cap -- is final. The intake keeps a judgement whose rebalance
+   was refused for timing pending and tries it again (design §4.3); an empty
+   list is not a refusal at all. *)
+let is_timing_refusal ~(tif : Order.Tif.t) (failures : Failure.t list) =
+  let session (f : Failure.t) = String.equal f.Failure.rule "session" in
+  (not (List.is_empty failures))
+  && List.exists failures ~f:session
+  && List.for_all failures ~f:(fun f ->
+      session f
+      || (String.equal f.Failure.rule "mark" && not (Order.Tif.equal tif Order.Tif.Opg)))
+
 let names =
   [
     "universe";

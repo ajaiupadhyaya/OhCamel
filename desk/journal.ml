@@ -232,7 +232,18 @@ let schema =
    because every order was; a judgement recorded before [rebalance] existed
    proposed nothing, which NULL says. *)
 let added_columns =
-  [ ("orders", "tif", "TEXT NOT NULL DEFAULT 'day'"); ("signals", "rebalance", "TEXT") ]
+  [
+    ("orders", "tif", "TEXT NOT NULL DEFAULT 'day'");
+    ("signals", "rebalance", "TEXT");
+    (* A sizing's parts (the stage review's A-I3 and A-I4): the incubation
+       ratio in force, the overlay factor and the governor its effective
+       scale was the product of, and a note ("governor" for a re-size on a
+       governor move). NULL on a row written before they were recorded. *)
+    ("sizings", "ratio", "REAL");
+    ("sizings", "factor", "REAL");
+    ("sizings", "governor", "REAL");
+    ("sizings", "note", "TEXT");
+  ]
 
 (* The refusal's decision alone, with no SQLite and no IO: [modes] is
    whatever PRAGMA journal_mode=WAL answered (zero, one, or -- if SQLite ever
@@ -1066,6 +1077,27 @@ let signal t ~strategy ~sequence =
        [ text strategy; Data.INT (Int64.of_int sequence) ]
        ~row:signal_of_row)
 
+(* The accepted and accepted_incubation judgements whose rebalance column
+   still holds a sentence beginning "pending:" -- what the intake has
+   recorded and not yet sized -- oldest first by (strategy, sequence). A
+   scan: the table holds a row a strategy a day, and the column arrived after
+   files existed, so no index is built on it. *)
+let pending_signals t =
+  query t ~what:"pending signals"
+    "SELECT strategy, sequence, as_of, received_at, verdict, rule, detail, document, \
+     rebalance FROM signals WHERE verdict IN ('accepted', 'accepted_incubation') AND \
+     substr(rebalance, 1, 8) = 'pending:' ORDER BY strategy, sequence"
+    [] ~row:signal_of_row
+
+(* Whether any order was journaled with exactly [source]: one seek on
+   orders_by_source. *)
+let source_has_orders t ~source =
+  not
+    (List.is_empty
+       (query t ~what:"source has orders" "SELECT 1 FROM orders WHERE source = ? LIMIT 1"
+          [ text source ]
+          ~row:(fun _ -> ())))
+
 (* OR IGNORE: the intake asks [signal_file_recorded] first, and a name
    recorded twice is still one file that could not be read. *)
 let record_signal_file t ~name ~received_at ~error =
@@ -1633,22 +1665,14 @@ let overlay_recorded t ~sequence =
           [ Data.INT (Int64.of_int sequence) ]
           ~row:(fun _ -> ())))
 
-(* Rejected sequences count: the next document must exceed every one judged. *)
-let highest_overlay_sequence t =
-  match
-    query t ~what:"highest overlay sequence" "SELECT MAX(sequence) FROM overlays" []
-      ~row:(fun r -> match r.(0) with Data.INT n -> Int64.to_int_exn n | _ -> 0)
-  with
-  | [ n ] -> n
-  | _ -> 0
-
 (* One row per (strategy, sequence, instant), so a rebalance sized twice at
    different instants keeps both; OR REPLACE only for the same instant. *)
-let record_sizing t ~strategy ~sequence ~at ~tier ~scale ~allocated ~mode =
+let record_sizing ?ratio ?factor ?governor ?note t ~strategy ~sequence ~at ~tier ~scale
+    ~allocated ~mode =
   write t ~what:"sizing" (fun () ->
       run t ~what:"sizing"
         "INSERT OR REPLACE INTO sizings (strategy, sequence, at, tier, scale, allocated, \
-         mode) VALUES (?, ?, ?, ?, ?, ?, ?)"
+         mode, ratio, factor, governor, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         [
           text strategy;
           Data.INT (Int64.of_int sequence);
@@ -1657,7 +1681,48 @@ let record_sizing t ~strategy ~sequence ~at ~tier ~scale ~allocated ~mode =
           real scale;
           real allocated;
           text mode;
+          opt_real ratio;
+          opt_real factor;
+          opt_real governor;
+          (match note with None -> Data.NULL | Some n -> text n);
         ])
+
+module Sizing = struct
+  type t = {
+    sequence : int;
+    scale : float;
+    allocated : float;
+    at : string;
+    tier : string;
+    mode : string;
+    ratio : float option;
+    factor : float option;
+    governor : float option;
+    note : string option;
+  }
+  [@@deriving sexp_of, equal]
+end
+
+(* [latest_sizing]'s row, whole. *)
+let latest_sizing_row t ~strategy =
+  List.hd
+    (query t ~what:"latest sizing row"
+       "SELECT sequence, scale, allocated, at, tier, mode, ratio, factor, governor, note \
+        FROM sizings WHERE strategy = ? ORDER BY at DESC LIMIT 1"
+       [ text strategy ]
+       ~row:(fun r ->
+         {
+           Sizing.sequence = Data.to_int_exn r.(0);
+           scale = col_real r 1;
+           allocated = col_real r 2;
+           at = col_text r 3;
+           tier = col_text r 4;
+           mode = col_text r 5;
+           ratio = col_opt_real r 6;
+           factor = col_opt_real r 7;
+           governor = col_opt_real r 8;
+           note = col_opt_text r 9;
+         }))
 
 (* The newest [at] for [strategy]: one seek on sizings_by_strategy
    (strategy, at, rowid), read backwards with LIMIT 1. The instants are

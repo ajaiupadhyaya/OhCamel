@@ -500,7 +500,6 @@ let test_the_incubation_verdict_round_trips () =
 
 let test_overlays_round_trip_and_the_latest_ignores_rejected () =
   let j = open_exn ":memory:" in
-  Alcotest.(check int) "none yet: sequence 0" 0 (Journal.highest_overlay_sequence j);
   Alcotest.(check bool)
     "none yet: no latest" true
     (Option.is_none (Journal.latest_overlay j));
@@ -513,9 +512,6 @@ let test_overlays_round_trip_and_the_latest_ignores_rejected () =
     (Option.map (Journal.latest_overlay j) ~f:(fun (a, b, c, d) -> (a, (b, (c, d)))));
   Journal.record_overlay j ~sequence:4 ~as_of:"2026-09-12" ~received_at:at2
     ~exposure_scale:0.0 ~verdict:`Rejected ~rule:(Some "O2") ~detail:"bad" ~document:"{}";
-  Alcotest.(check int)
-    "the highest counts the rejected one" 4
-    (Journal.highest_overlay_sequence j);
   Alcotest.(check (option int))
     "latest_overlay ignores rejected" (Some 3)
     (Option.map (Journal.latest_overlay j) ~f:(fun (n, _, _, _) -> n));
@@ -559,6 +555,23 @@ let test_sizings_round_trip_and_the_latest_is_the_newest_at () =
     (Some (9, "live"))
     (Option.map (Journal.latest_sizing j ~strategy:"other") ~f:(fun (n, _, _, _, tier) ->
          (n, tier)));
+  (* A row written without its parts reads them back as None; one written
+     with them (the stage review's A-I3/A-I4) reads them back whole. *)
+  Alcotest.(check (option (list (option (float 0.0)))))
+    "the parts of a row written without them"
+    (Some [ None; None; None ])
+    (Option.map (Journal.latest_sizing_row j ~strategy:"other") ~f:(fun z ->
+         [ z.Journal.Sizing.ratio; z.factor; z.governor ]));
+  let t3 = Time_ns.of_string_with_utc_offset "2026-09-13T20:05:00Z" in
+  Journal.record_sizing j ~strategy:"other" ~sequence:10 ~at:t3 ~tier:"incubation"
+    ~scale:0.0870 ~allocated:870.0 ~mode:"adjust" ~ratio:0.174 ~factor:1.0 ~governor:0.5
+    ~note:"governor";
+  Alcotest.(
+    check (option (pair (list (option (float 0.0))) (pair string (option string)))))
+    "ratio 0.174, factor 1, governor 0.5, mode adjust, note governor"
+    (Some ([ Some 0.174; Some 1.0; Some 0.5 ], ("adjust", Some "governor")))
+    (Option.map (Journal.latest_sizing_row j ~strategy:"other") ~f:(fun z ->
+         ([ z.Journal.Sizing.ratio; z.factor; z.governor ], (z.mode, z.note))));
   Journal.close j
 
 let test_a_strategy_state_round_trips_and_absent_is_none () =

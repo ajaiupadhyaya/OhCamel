@@ -397,9 +397,14 @@
     var rows = [
       // The effective scale sizing reads (the overlay times the drawdown
       // governor), beside the equity it scales: "scale 0.71". Null when the
-      // desk has no gauge, and then nothing is said.
+      // desk has no gauge, and then nothing is said. When it is not an
+      // overlay's, the strip says so: STALE (the fallback is in force) or
+      // ABSENT (no overlay ever accepted, so 1.0).
       ["equity", (d.equity === null ? "—" : F.money(d.equity))
-        + (typeof d.exposure_scale === "number" && isFinite(d.exposure_scale) ? " · scale " + d.exposure_scale.toFixed(2) : "")],
+        + (typeof d.exposure_scale === "number" && isFinite(d.exposure_scale)
+          ? " · scale " + d.exposure_scale.toFixed(2)
+            + (d.overlay && d.overlay.state === "stale" ? " STALE" : d.overlay && d.overlay.state === "absent" ? " ABSENT" : "")
+          : "")],
       ["cash", d.cash === null ? "—" : F.money(d.cash)],
       ["session P&L", d.session_pnl === null ? "—" : F.money(d.session_pnl)],
       // "on" beside a tripped, halted or stopped switch would read as orders

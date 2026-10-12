@@ -81,6 +81,9 @@ module Reading : sig
     exposure_scale : float;
         (** What every sizing multiplies by: the overlay's scale when fresh or held, the
             book's fallback when stale, 1 when absent; times the governor. *)
+    factor : float;
+        (** What the governor multiplies: the overlay's scale, the fallback, or 1, by the
+            state. A sizing records it beside the governor. *)
     governor : float;
     governor_cap : float option;  (** The book's drawdown cap; None governs at 1. *)
     governor_held : bool;  (** The drawdown could not be read: the last governor holds. *)
@@ -141,7 +144,7 @@ val demo_status : status
 
 val pending : strategy:string -> sequence:int -> string
 (** The sentence an accepted judgement's rebalance column holds until its outcome replaces
-    it. *)
+    it. While it stands the judgement is tried again each pass ({!collect_pending}). *)
 
 (** A document the running pass judged accepted, with its strategy: readable anywhere,
     built only here. *)
@@ -168,25 +171,46 @@ val pass : t -> unit
 (** [judge_pass], its accepted documents dropped: a pass that sizes nothing. *)
 
 val size :
-  t -> oms:Oms.t option -> scale:(unit -> float) -> Accepted.t list -> unit Deferred.t
-(** Each accepted document planned at the effective [scale] (asked once per rebalance;
-    [run] passes {!effective_scale}), proposed as one rebalance, its sizing recorded, and
-    its outcome written over the pending sentence. Only the highest sequence of a strategy
-    is sized; an incubation strategy only on a paper venue. Never raises. *)
+  ?reading:(unit -> Reading.t) ->
+  t ->
+  oms:Oms.t option ->
+  scale:(unit -> float) ->
+  Accepted.t list ->
+  unit Deferred.t
+(** Each accepted document planned at the effective [scale] (asked once per rebalance), or
+    at [reading]'s when it is given ([run] passes {!current_reading}, and the sizing row
+    then records its factor and governor), proposed as one rebalance, and its outcome
+    written over the pending sentence -- unless the rebalance was refused for timing alone
+    (Oms.Rebalance_outcome.Not_now), when the sentence stays pending and the refusal is
+    said once. Its sizing is recorded only when every order went (A-I5). Only the highest
+    sequence of a strategy in the list is sized; an incubation strategy only on a paper
+    venue. Never raises. *)
+
+val collect_pending : t -> Accepted.t list
+(** The retry set: every accepted judgement whose rebalance still holds its pending
+    sentence, read back from the journal -- each closed instead, its reason written over
+    the pending sentence, when its strategy is gone or no longer at the tier it was judged
+    at, a later document of the strategy was accepted, it aged past max_age sessions, or
+    orders were journaled under its source (a crash while proposing it). *)
 
 val adjust : t -> oms:Oms.t option -> unit Deferred.t
 (** For each registered strategy that adjusts intraday, is not stopped, and has a latest
-    accepted document and a latest sizing: when the effective scale (times its incubation
-    ratio, as the sizing recorded it) is more than [overlay_band] from the last sizing's
-    scale -- or the accepted, fresh or held overlay says exactly 0 and that was not 0 --
-    the document is re-sized at the effective scale and proposed in the intraday mode, its
-    sizing journaled with mode "adjust". At most eight strategies at once. A pass that
-    finds the last one still running skips, said once for the whole overlap. Never raises.
-*)
+    accepted document, that document is re-sized in the intraday mode, its sizing
+    journaled with mode "adjust", when: it has no sizing for that document and holds a
+    position of its own; or the reading is fresh, held or absent and the effective scale
+    is more than [overlay_band] from the one it was last sized at (the sizing's scale over
+    the incubation ratio recorded with it), or that ratio changed, or the accepted overlay
+    says exactly 0 and the last scale was not; or the reading is stale and the governor
+    moved more than the band from the last sizing's -- then at that sizing's overlay
+    factor times the governor now, noted "governor". A stale reading otherwise holds every
+    last sizing, said once a spell. At most eight strategies at once. A pass that finds
+    the last one still running skips, said once for the whole overlap. Never raises. *)
 
 val run : ?time_source:Time_source.t -> ?oms:Oms.t -> t -> unit Deferred.t
-(** A pass at once and then once a minute, each pass's accepted documents sized at the
-    effective scale before the minute's wait, then the adjust pass started, detached. *)
+(** A pass at once and then once a minute; after each, the retry set ({!collect_pending})
+    sized at the current reading before the minute's wait -- only once the venue's clock
+    has answered: before it nothing is sized and every judgement waits, pending -- then
+    the adjust pass started, detached. *)
 
 val absent_reading_fields : (string * Yojson.Safe.t) list
 (** [reading_fields]' shape for a desk with no gauge: nulls and "absent". *)

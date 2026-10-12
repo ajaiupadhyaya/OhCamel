@@ -431,7 +431,10 @@ let test_a_flat_signal_sells_exactly_the_strategy's_own_shares () =
         [ ("AAPL", 100.0) ]
         (List.map (D.Journal.source_fills journal ~prefix:"signal:exp_a01_tech:")
            ~f:(fun (s, q) -> (Symbol.to_string s, q)));
-      match D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[] ~scale:1.0 with
+      match
+        D.Oms.plan_rebalance oms ~mode:D.Rebalance.Mode.Open ~strategy:tech_strategy
+          ~targets:[] ~scale:1.0
+      with
       | Error why -> Alcotest.failf "no targets: %s" why
       | Ok (legs, _) ->
           Alcotest.(check (list (triple string int int)))
@@ -454,14 +457,14 @@ let test_a_strategy_with_an_order_that_may_still_fill_is_not_sized () =
       Alcotest.(check bool)
         "a hand order resting: sized" true
         (Result.is_ok
-           (D.Oms.plan_rebalance oms ~strategy:tech_strategy
+           (D.Oms.plan_rebalance oms ~mode:D.Rebalance.Mode.Open ~strategy:tech_strategy
               ~targets:[ (aapl, 1.0) ]
               ~scale:1.0));
       journal_order journal ~n:5 ~source:"signal:exp_a01_tech:1"
         ~state:D.Order.State.Submitted 10;
       contains "its own order resting" ~substring:"1 of its orders may still fill"
         (refusal
-           (D.Oms.plan_rebalance oms ~strategy:tech_strategy
+           (D.Oms.plan_rebalance oms ~mode:D.Rebalance.Mode.Open ~strategy:tech_strategy
               ~targets:[ (aapl, 1.0) ]
               ~scale:1.0));
       contains "and check_rebalance says the same" ~substring:"may still fill"
@@ -476,7 +479,7 @@ let test_a_strategy_with_an_order_that_may_still_fill_is_not_sized () =
         ~state:D.Order.State.Failed 10;
       contains "a failed one the venue may still work" ~substring:"may still fill"
         (refusal
-           (D.Oms.plan_rebalance oms ~strategy:tech_strategy
+           (D.Oms.plan_rebalance oms ~mode:D.Rebalance.Mode.Open ~strategy:tech_strategy
               ~targets:[ (aapl, 1.0) ]
               ~scale:1.0));
       let failed =
@@ -488,7 +491,7 @@ let test_a_strategy_with_an_order_that_may_still_fill_is_not_sized () =
       Alcotest.(check bool)
         "once the venue reports it expired: sized" true
         (Result.is_ok
-           (D.Oms.plan_rebalance oms ~strategy:tech_strategy
+           (D.Oms.plan_rebalance oms ~mode:D.Rebalance.Mode.Open ~strategy:tech_strategy
               ~targets:[ (aapl, 1.0) ]
               ~scale:1.0)))
     ()
@@ -771,7 +774,7 @@ let test_no_targets_while_the_book_is_not_the_account's () =
           "the book's equity is unknown: the desk has not applied a recent read of the \
            account"
         (refusal
-           (D.Oms.plan_rebalance oms ~strategy:tech_strategy
+           (D.Oms.plan_rebalance oms ~mode:D.Rebalance.Mode.Open ~strategy:tech_strategy
               ~targets:[ (aapl, 1.0) ]
               ~scale:1.0)))
     ()
@@ -810,7 +813,7 @@ let test_a_rebalance_is_sized_and_priced_at_the_close_not_the_live_mark () =
   with_oms
     ~f:(fun oms _ ->
       (match
-         D.Oms.plan_rebalance oms ~strategy:tech_strategy
+         D.Oms.plan_rebalance oms ~mode:D.Rebalance.Mode.Open ~strategy:tech_strategy
            ~targets:[ (aapl, 1.0) ]
            ~scale:1.0
        with
@@ -974,7 +977,10 @@ let test_the_rebalance_asks_again_what_its_plan_read () =
       journal_order journal ~n:8 ~source:"signal:exp_a01_tech:1"
         ~state:D.Order.State.Filled ~fills:[ 100.0 ] 100;
       let legs =
-        match D.Oms.plan_rebalance oms ~strategy:tech_strategy ~targets:[] ~scale:1.0 with
+        match
+          D.Oms.plan_rebalance oms ~mode:D.Rebalance.Mode.Open ~strategy:tech_strategy
+            ~targets:[] ~scale:1.0
+        with
         | Ok (legs, _) -> legs
         | Error why -> Alcotest.failf "the plan: %s" why
       in
@@ -1123,9 +1129,16 @@ let test_limit_price_rounds_half_even () =
     (D.Rebalance.limit_price ~side:D.Order.Side.Buy ~mark:0.125 ~slip_bps:0.0)
 
 (* A floor of 200: one share at 150.00 is 150 < 200, dropped; two are 300,
-   kept. A sell is measured the same, |qty x price|. *)
+   kept. A sell is measured the same, |qty x price| -- here one that leaves 4
+   of 5 held, so its target is not 0. *)
 let test_drop_small () =
-  let at150 qty side = { (leg spy side qty) with Leg.price = 150.0 } in
+  let at150 qty side =
+    {
+      (leg spy side qty) with
+      Leg.price = 150.0;
+      target = (match side with D.Order.Side.Buy -> qty | D.Order.Side.Sell -> 4);
+    }
+  in
   let names (ls : Leg.t list) =
     List.map ls ~f:(fun l ->
         sprintf "%s %d" (D.Order.Side.to_string l.Leg.side) l.Leg.qty)
@@ -1140,15 +1153,15 @@ let test_drop_small () =
     "1 x 150 = 150 dropped, 2 x 150 = 300 kept"
     ([ "buy 2" ], [ "buy 1"; "sell 1" ])
     (names kept, names dropped);
-  (* And Oms.plan_rebalance drops at the book's floor, 200 by default. E is
-     1,070,000 and the fraction 0.1: a weight of 0.002 is 214 of AAPL at its
-     close of 149, 1.44 -> 1 share, 149 < 200, dropped; a weight of 0.003 is
-     321 / 149 = 2.15 -> 2 shares, 298, kept. *)
+  (* And Oms.plan_rebalance drops at the book's floor, 200 by default, in
+     the intraday mode. E is 1,070,000 and the fraction 0.1: a weight of
+     0.002 is 214 of AAPL at its close of 149, 1.44 -> 1 share, 149 < 200,
+     dropped; a weight of 0.003 is 321 / 149 = 2.15 -> 2 shares, 298, kept. *)
   with_oms
     ~f:(fun oms _ ->
       let planned w =
         match
-          D.Oms.plan_rebalance oms ~strategy:tech_strategy
+          D.Oms.plan_rebalance oms ~mode:D.Rebalance.Mode.Intraday ~strategy:tech_strategy
             ~targets:[ (aapl, w) ]
             ~scale:1.0
         with
@@ -1159,6 +1172,50 @@ let test_drop_small () =
         "1 share at 149 dropped" ([], [ "buy 1" ]) (planned 0.002);
       Alcotest.(check (pair (list string) (list string)))
         "2 shares at 149 kept" ([ "buy 2" ], []) (planned 0.003))
+    ()
+
+(* The floor in the intraday mode only, and never on a closing leg (the
+   stage review's A-I6, withdrawing Task 10's "both modes"):
+   - an overlay-0 flatten of a 1-share position at 150: the plan at scale 0
+     sells the 1 to a target of 0, 150 < 200, and drop_small keeps it --
+     a closing leg is never dropped, in either mode;
+   - an Open rebalance with a leg of 1 share at 149 (w 0.002 of E 1,070,000
+     x 0.1 = 214 -> 1 share) sends it: the Open plan drops nothing;
+   - the same leg in the intraday mode grows a position (target 1), is
+     dropped, and is handed back as dropped for the sentence to say. *)
+let test_the_floor_is_intraday_only_and_never_on_a_closing_leg () =
+  let names (ls : Leg.t list) =
+    List.map ls ~f:(fun l ->
+        sprintf "%s %d" (D.Order.Side.to_string l.Leg.side) l.Leg.qty)
+  in
+  (match
+     plan ~scale:0.0 ~price:150.0
+       ~current:(Ok (Symbol.Map.singleton spy 1.0))
+       [ (spy, 1.0) ]
+   with
+  | Error why -> Alcotest.failf "no targets: %s" why
+  | Ok legs ->
+      let kept, dropped = D.Rebalance.drop_small ~legs ~min_leg_notional:200.0 in
+      Alcotest.(check (pair (list string) (list string)))
+        "the flatten of 1 share at 150 is kept" ([ "sell 1" ], [])
+        (names kept, names dropped));
+  with_oms
+    ~f:(fun oms _ ->
+      let planned mode =
+        match
+          D.Oms.plan_rebalance oms ~mode ~strategy:tech_strategy
+            ~targets:[ (aapl, 0.002) ]
+            ~scale:1.0
+        with
+        | Ok (kept, dropped) -> (names kept, names dropped)
+        | Error why -> Alcotest.failf "no targets: %s" why
+      in
+      Alcotest.(check (pair (list string) (list string)))
+        "open: 1 share at 149 is sent" ([ "buy 1" ], [])
+        (planned D.Rebalance.Mode.Open);
+      Alcotest.(check (pair (list string) (list string)))
+        "intraday: the growing leg is dropped" ([], [ "buy 1" ])
+        (planned D.Rebalance.Mode.Intraday))
     ()
 
 (* Tuesday 15 September at 11:00 EDT (15:00Z): the clock read on Monday
@@ -1203,6 +1260,8 @@ let suite =
       Alcotest.test_case "limit_price rounds half even" `Quick
         test_limit_price_rounds_half_even;
       Alcotest.test_case "drop_small" `Quick test_drop_small;
+      Alcotest.test_case "the floor is intraday only, and never on a closing leg" `Quick
+        test_the_floor_is_intraday_only_and_never_on_a_closing_leg;
       Alcotest.test_case "intraday legs are day limits at the live mark" `Quick
         test_intraday_legs_are_day_limits_at_the_live_mark;
       Alcotest.test_case "targets on both sides of a share boundary" `Quick

@@ -2098,8 +2098,9 @@ let test_a_session_that_closes_while_the_quote_is_fetched_is_refused () =
 (* The same for a rebalance, and for the opening auction's own window. At
    09:27:59 EDT on Tuesday the rules pass -- the window closes at 09:28 --
    and the arrival quote is asked for; while it is in flight 09:28 comes. The
-   rebalance is refused, naming the boundary, before anything is written:
-   the journal holds no order, and the venue received none. *)
+   rebalance is refused -- for timing alone, Not_now, the session rule's
+   refusal (the stage review's A-I1) -- naming the boundary, before anything
+   is written: the journal holds no order, and the venue received none. *)
 let test_a_rebalance_whose_window_closes_while_its_quotes_are_fetched_is_refused () =
   let f = fixture () in
   record_close f;
@@ -2128,7 +2129,7 @@ let test_a_rebalance_whose_window_closes_while_its_quotes_are_fetched_is_refused
   let%bind outcome = proposal in
   let%bind () = settle () in
   (match outcome with
-  | D.Oms.Rebalance_outcome.Refused why ->
+  | D.Oms.Rebalance_outcome.Not_now why ->
       Alcotest.(check bool)
         (sprintf "naming the order and the boundary: %s" why)
         true
@@ -2555,89 +2556,6 @@ let test_a_leg_the_venue_does_not_acknowledge_stops_the_legs_after_it () =
     ([ "AAPL"; "MSFT" ], 1)
     (submits, D.Sim_venue.received f.venue);
   Graph.destroy f.graph
-
-(* [run], given an order manager, sizes what ITS OWN pass accepted, and
-   nothing it reads back (I4). A crash is left behind first: an intake judges
-   sequence 1 accepted and records it pending, and is never sized. A
-   restarted intake's loop, with the order manager, then passes at once: the
-   file is judged already, so nothing is accepted and nothing is proposed,
-   and 1 stays pending. A minute later a new signal, sequence 2, is in the
-   directory; that pass accepts it and sizes it -- one order, from 2 -- and 1
-   is still pending, never sized. *)
-let test_run_sizes_only_what_its_own_pass_accepted () =
-  let f = fixture () in
-  record_close ~sessions:[ "2026-09-11"; "2026-09-14" ] f;
-  let oms = manager ~now:(fun () -> evening) f in
-  after_the_close f oms;
-  let dir = Filename_unix.temp_dir "ohcamel-signals-" "" in
-  let strategies =
-    [
-      {
-        Ohcamel.Config.Book.Signals_spec.Strategy.name = "exp_a01_aapl";
-        symbols = [ "AAPL" ];
-        max_age = 3;
-        sizing = Ohcamel.Config.Book.Signals_spec.Live;
-        capital_fraction = 0.01;
-        cadence = Ohcamel.Config.Book.Signals_spec.Cadence.Daily;
-        adjust = Ohcamel.Config.Book.Signals_spec.Adjust.Intraday;
-        max_age_minutes = 20;
-        horizon = Ohcamel.Config.Book.Signals_spec.Horizon.Carry;
-        stop = None;
-        reinstated = None;
-      };
-    ]
-  in
-  let intake () =
-    D.Intake.create ~journal:f.journal ~dir ~strategies ~universe:[ aapl; msft; xom ]
-      ~on_event:ignore
-      ~now:(fun () -> evening)
-      ()
-  in
-  let zeros = "sha256:" ^ String.make 64 '0' in
-  let signal sequence =
-    Out_channel.write_all
-      (Filename.concat dir (sprintf "exp_a01_aapl-%d.json" sequence))
-      ~data:
-        (sprintf
-           {|{"schema_version":1,"strategy":"exp_a01_aapl","params_hash":"%s","as_of":"2026-09-14","computed_at":"2026-09-14T23:15:00Z","data_hash":"%s","sequence":%d,"validation":{"status":"pass","gates_version":"2026-09-02"},"targets":[{"symbol":"AAPL","weight":1.0}]}|}
-           zeros zeros sequence)
-  in
-  signal 1;
-  Alcotest.(check int)
-    "the crash: sequence 1 accepted, and never sized" 1
-    (List.length (D.Intake.judge_pass (intake ())));
-  let clock = Time_source.create ~now:evening () in
-  don't_wait_for
-    (D.Intake.run ~time_source:(Time_source.read_only clock) ~oms (intake ()));
-  let%bind () = settle () in
-  let orders () =
-    List.map (D.Journal.recent_orders f.journal ~limit:10) ~f:(fun r ->
-        r.D.Journal.Order_row.source)
-  in
-  let pending sequence =
-    Option.equal String.equal
-      (Option.bind (D.Journal.signal f.journal ~strategy:"exp_a01_aapl" ~sequence)
-         ~f:(fun s -> s.D.Journal.Signal.rebalance))
-      (Some (D.Intake.pending ~strategy:"exp_a01_aapl" ~sequence))
-  in
-  Alcotest.(check (pair (list string) bool))
-    "the restarted loop's first pass: no order, and 1 still pending" ([], true)
-    (orders (), pending 1);
-  signal 2;
-  let%bind () =
-    Time_source.advance_by_alarms ~wait_for:settle clock
-      ~to_:(Time_ns.add evening (Time_ns.Span.of_sec 60.0))
-  in
-  let%bind () = settle () in
-  Alcotest.(check (pair (list string) bool))
-    "a minute on: one order, from sequence 2, and 1 still pending"
-    ([ "signal:exp_a01_aapl:2" ], true)
-    (orders (), pending 1);
-  Array.iter (Sys_unix.readdir dir) ~f:(fun name ->
-      Core_unix.unlink (Filename.concat dir name));
-  Core_unix.rmdir dir;
-  Graph.destroy f.graph;
-  return ()
 
 (* ------------------------------------------------------------------------ *)
 (* Task 10: the intraday mode and its waves                                  *)
@@ -3148,12 +3066,12 @@ let test_two_waves_settle_and_the_second_is_gated_after_the_first_fills () =
   Graph.destroy f.graph;
   return ()
 
-(* The intake's floor sentences. exp_floor holds AAPL and XOM at 0.01 of
-   E 1,000,000. A weight of 0.01 on XOM is 100 / 50 = 2 shares, 100 < 200:
-   dropped. Beside AAPL at 0.99 (0.99 x 0.01 x 1,000,000 / 100 = 99 shares;
-   the weights sum to 1, R7's bound) the
-   sentence ends with the drop; alone, nothing goes and the sentence says
-   every order was dropped -- and the sizing row is still recorded. *)
+(* The floor in the Open mode (the stage review's A-I6, withdrawing Task 10's
+   "both modes"): nothing is dropped. exp_floor holds AAPL and XOM at 0.01
+   of E 1,000,000. A weight of 0.01 on XOM is 100 / 50 = 2 shares, 100,
+   under the $200 floor -- and a market-on-open rebalance sends it all the
+   same, beside AAPL at 0.99 (99 shares) or alone, and its sentence names no
+   floor. The intraday floor is test_rebalance's. *)
 let floor_signal targets =
   let f = fixture () in
   record_close f;
@@ -3208,24 +3126,26 @@ let floor_signal targets =
   Graph.destroy f.graph;
   result
 
-let test_the_intake_says_what_fell_below_the_floor () =
+let test_an_open_rebalance_sends_a_leg_under_the_floor () =
   let%bind one, sized_one, received_one =
     floor_signal {|{"symbol":"AAPL","weight":0.99},{"symbol":"XOM","weight":0.01}|}
   in
   Alcotest.(check bool)
-    (sprintf "one dropped, said after the targets: %S" one)
+    (sprintf "both sent, no floor named: %S" one)
     true
-    (String.is_prefix one ~prefix:"1 market-on-open order journaled, then sent"
-    && String.is_suffix one ~suffix:". Dropped below the $200 floor: XOM buy 2 (50.00)");
-  Alcotest.(check (pair bool int)) "sized, AAPL sent" (true, 1) (sized_one, received_one);
-  let%map every, sized_every, received_every =
+    (String.is_prefix one ~prefix:"2 market-on-open orders journaled, then sent"
+    && not (String.is_substring one ~substring:"floor"));
+  Alcotest.(check (pair bool int)) "sized, both sent" (true, 2) (sized_one, received_one);
+  let%map alone, sized_alone, received_alone =
     floor_signal {|{"symbol":"XOM","weight":0.01}|}
   in
-  Alcotest.(check string)
-    "every leg dropped"
-    "no order: every order was dropped below the $200 floor: XOM buy 2 (50.00)" every;
+  Alcotest.(check bool)
+    (sprintf "XOM alone, 2 x 50 = 100, sent: %S" alone)
+    true
+    (String.is_prefix alone ~prefix:"1 market-on-open order journaled, then sent"
+    && String.is_substring alone ~substring:"XOM buy 2");
   Alcotest.(check (pair bool int))
-    "the sizing row recorded, and nothing sent" (true, 0) (sized_every, received_every)
+    "sized, and sent" (true, 1) (sized_alone, received_alone)
 
 (* ------------------------------------------------------------------------ *)
 (* Task 11: the overlay and the adjust pass                                  *)
@@ -3256,15 +3176,15 @@ type adjust_fixture = {
    governor is 1, and an incubation cap of 0.5 over this one strategy's 0.5
    is a ratio of 1, so the effective scale is the overlay's, for either
    tier. The pass's waves are settled and waited on before it returns. *)
-let adjust_case ?(last_scale = 0.70) ?(drawdown = fun () -> None) ?dd_cap
-    ?(adjust_now = true) ~(sizing : Ohcamel.Config.Book.Signals_spec.sizing) ~overlay () =
+let adjust_case ?(last_scale = 0.70) ?last_ratio ?last_factor ?last_governor
+    ?(sizing_row = true) ?(stale = false) ?(incubation_cap = 0.5)
+    ?(drawdown = fun () -> None) ?dd_cap ?(adjust_now = true)
+    ~(sizing : Ohcamel.Config.Book.Signals_spec.sizing) ~overlay () =
   let name = "exp_adjust" in
   let f = fixture () in
   record_close f;
   let oms =
-    manager ~incubation_cap:0.5 ~max_order_notional:50_000.0
-      ~now:(fun () -> tuesday_mid)
-      f
+    manager ~incubation_cap ~max_order_notional:50_000.0 ~now:(fun () -> tuesday_mid) f
   in
   let source =
     {
@@ -3307,16 +3227,31 @@ let adjust_case ?(last_scale = 0.70) ?(drawdown = fun () -> None) ?dd_cap
           name zeros zeros;
       rebalance = Some "sent";
     };
-  D.Journal.record_sizing f.journal ~strategy:name ~sequence:1 ~at:evening
-    ~tier:(Ohcamel.Config.Book.Signals_spec.sizing_to_string sizing)
-    ~scale:last_scale ~allocated:35_000.0 ~mode:"open";
+  if sizing_row then
+    D.Journal.record_sizing f.journal ~strategy:name ~sequence:1 ~at:evening
+      ~tier:(Ohcamel.Config.Book.Signals_spec.sizing_to_string sizing)
+      ~scale:last_scale ~allocated:35_000.0 ~mode:"open" ?ratio:last_ratio
+      ?factor:last_factor ?governor:last_governor;
   let dir = Filename_unix.temp_dir "ohcamel-signals-" "" in
-  Out_channel.write_all
-    (Filename.concat dir "overlay-7.json")
-    ~data:
-      (sprintf
-         {|{"schema_version":1,"kind":"overlay","as_of":"2026-09-15T14:55:00Z","computed_at":"2026-09-15T14:55:05Z","sequence":7,"exposure_scale":%s,"inputs":{},"reported":{}}|}
-         overlay);
+  (* [stale]: the overlay was accepted fourteen hours before the venue's
+     11:00 -- last evening's -- and is recorded as the intake would have,
+     with no file left to judge. *)
+  if stale then
+    D.Journal.record_overlay f.journal ~sequence:7 ~as_of:"2026-09-14T22:50:00Z"
+      ~received_at:(Time_ns.sub tuesday_mid (Time_ns.Span.of_hr 14.0))
+      ~exposure_scale:(Float.of_string overlay) ~verdict:`Accepted ~rule:None
+      ~detail:"passed O1-O4"
+      ~document:
+        (sprintf
+           {|{"schema_version":1,"kind":"overlay","as_of":"2026-09-14T22:50:00Z","computed_at":"2026-09-14T22:50:05Z","sequence":7,"exposure_scale":%s,"inputs":{},"reported":{}}|}
+           overlay)
+  else
+    Out_channel.write_all
+      (Filename.concat dir "overlay-7.json")
+      ~data:
+        (sprintf
+           {|{"schema_version":1,"kind":"overlay","as_of":"2026-09-15T14:55:00Z","computed_at":"2026-09-15T14:55:05Z","sequence":7,"exposure_scale":%s,"inputs":{},"reported":{}}|}
+           overlay);
   let intake =
     D.Intake.create
       ~gauge:
@@ -3593,6 +3528,562 @@ let test_a_busy_adjust_is_skipped_and_said_once () =
     (strategy_orders a.a_f a.a_name);
   a.cleanup ()
 
+(* ------------------------------------------------------------------------ *)
+(* The stage review's fix wave: the retry set, the stale hold, the ratio,   *)
+(* and the sizing row only for a whole rebalance                             *)
+(* ------------------------------------------------------------------------ *)
+
+let live_strategy ?(name = "exp_a01_aapl") ?(symbols = [ "AAPL" ])
+    ?(capital_fraction = 0.01) ?(adjust = Ohcamel.Config.Book.Signals_spec.Adjust.Open) ()
+    =
+  {
+    Ohcamel.Config.Book.Signals_spec.Strategy.name;
+    symbols;
+    max_age = 3;
+    sizing = Ohcamel.Config.Book.Signals_spec.Live;
+    capital_fraction;
+    cadence = Ohcamel.Config.Book.Signals_spec.Cadence.Daily;
+    adjust;
+    max_age_minutes = 20;
+    horizon = Ohcamel.Config.Book.Signals_spec.Horizon.Carry;
+    stop = None;
+    reinstated = None;
+  }
+
+let write_signal dir ~strategy ~sequence ?(as_of = "2026-09-14")
+    ?(targets = {|[{"symbol":"AAPL","weight":1.0}]|}) () =
+  let zeros = "sha256:" ^ String.make 64 '0' in
+  Out_channel.write_all
+    (Filename.concat dir (sprintf "%s-%d.json" strategy sequence))
+    ~data:
+      (sprintf
+         {|{"schema_version":1,"strategy":"%s","params_hash":"%s","as_of":"%s","computed_at":"%sT22:45:00Z","data_hash":"%s","sequence":%d,"validation":{"status":"pass","gates_version":"2026-09-02"},"targets":%s}|}
+         strategy zeros as_of as_of zeros sequence targets)
+
+type evening_fixture = {
+  e_f : fixture;
+  e_oms : D.Oms.t;
+  e_dir : string;
+  e_clock : Time_source.Read_write.t;
+  e_venue : bool ref;
+  e_intake : D.Intake.t;
+  e_cleanup : unit -> unit;
+}
+
+(* An evening on its own clock, from [start]: Monday's close recorded,
+   the venue's session closed until Tuesday's open, and an intake whose
+   venue clock is the case's clock while [e_venue] holds -- unset, no venue
+   reading has arrived. The order manager's clock is the case's too, so the
+   opening auction's 19:00 ET is crossed by advancing it. *)
+let evening_case ?(venue = true) ?(max_order_notional = 25_000.0) ~start ~strategies () =
+  let f = fixture () in
+  record_close f;
+  let clock = Time_source.create ~now:(Time_ns.of_string_with_utc_offset start) () in
+  let now () = Time_source.now clock in
+  let oms = manager ~max_order_notional ~now f in
+  after_the_close f oms;
+  let dir = Filename_unix.temp_dir "ohcamel-signals-" "" in
+  let venue = ref venue in
+  let intake =
+    D.Intake.create
+      ~gauge:
+        (D.Intake.Gauge.create ~spec:(D.Oms.spec oms)
+           ~venue_now:(fun () -> if !venue then Some (now ()) else None)
+           ~drawdown:(fun () -> None)
+           ~dd_cap:None)
+      ~journal:f.journal ~dir ~strategies ~universe:[ aapl; msft; xom ]
+      ~on_event:(Queue.enqueue f.events) ~now ()
+  in
+  let cleanup () =
+    Array.iter (Sys_unix.readdir dir) ~f:(fun n ->
+        Core_unix.unlink (Filename.concat dir n));
+    Core_unix.rmdir dir;
+    Graph.destroy f.graph
+  in
+  {
+    e_f = f;
+    e_oms = oms;
+    e_dir = dir;
+    e_clock = clock;
+    e_venue = venue;
+    e_intake = intake;
+    e_cleanup = cleanup;
+  }
+
+let start_run e =
+  don't_wait_for
+    (D.Intake.run ~time_source:(Time_source.read_only e.e_clock) ~oms:e.e_oms e.e_intake);
+  settle ()
+
+let advance_clock e at =
+  let%bind () =
+    Time_source.advance_by_alarms ~wait_for:settle e.e_clock
+      ~to_:(Time_ns.of_string_with_utc_offset at)
+  in
+  settle ()
+
+let rebalance_of f ~strategy ~sequence =
+  Option.bind (D.Journal.signal f.journal ~strategy ~sequence) ~f:(fun s ->
+      s.D.Journal.Signal.rebalance)
+
+let orders_of f =
+  List.map (D.Journal.recent_orders f.journal ~limit:20) ~f:(fun r ->
+      let q = r.D.Journal.Order_row.order.D.Order.request in
+      ( r.D.Journal.Order_row.source,
+        Symbol.to_string q.D.Order.Request.symbol,
+        q.D.Order.Request.qty ))
+
+(* A-I1. A document judged at 18:46 EDT (22:46Z) is refused by the opening
+   auction's window -- before 19:00 ET -- and that refusal is one of timing:
+   the judgement stays pending, nothing is journaled, and it is tried again
+   every pass. Overlay 1, the 18:50 run's, judged at the 18:51 pass, says
+   0.8. At 18:59 it still waits; the pass at 19:00 sizes it at the overlay's
+   0.8 (held, nine minutes old: not stale; governor 1): trunc(1.0 x 0.01 x 0.8 x
+   1,000,000 / 100) = 80 shares of AAPL, one market-on-open order under
+   signal:exp_a01_aapl:1, its sizing row at 23:00:00Z with scale 0.8, ratio
+   1, factor 0.8 and governor 1. *)
+let test_a_document_judged_before_19_is_sized_at_the_first_pass_after () =
+  let e =
+    evening_case ~start:"2026-09-14T22:46:00Z" ~strategies:[ live_strategy () ] ()
+  in
+  write_signal e.e_dir ~strategy:"exp_a01_aapl" ~sequence:1 ();
+  let%bind () = start_run e in
+  let f = e.e_f in
+  Alcotest.(check (pair (option string) int))
+    "18:46: still pending, nothing journaled"
+    (Some (D.Intake.pending ~strategy:"exp_a01_aapl" ~sequence:1), 0)
+    (rebalance_of f ~strategy:"exp_a01_aapl" ~sequence:1, List.length (orders_of f));
+  let%bind () = advance_clock e "2026-09-14T22:50:00Z" in
+  Out_channel.write_all
+    (Filename.concat e.e_dir "overlay-1.json")
+    ~data:
+      {|{"schema_version":1,"kind":"overlay","as_of":"2026-09-14T22:50:00Z","computed_at":"2026-09-14T22:50:05Z","sequence":1,"exposure_scale":0.8,"inputs":{},"reported":{}}|};
+  let%bind () = advance_clock e "2026-09-14T22:59:00Z" in
+  Alcotest.(check (triple bool (option string) int))
+    "18:59: the overlay judged, the document still pending"
+    (true, Some (D.Intake.pending ~strategy:"exp_a01_aapl" ~sequence:1), 0)
+    ( D.Journal.overlay_recorded f.journal ~sequence:1,
+      rebalance_of f ~strategy:"exp_a01_aapl" ~sequence:1,
+      List.length (orders_of f) );
+  Alcotest.(check int)
+    "the wait said once, not once a minute" 1
+    (List.count (Queue.to_list f.events)
+       ~f:(String.is_substring ~substring:"waits, still pending"));
+  let%map () = advance_clock e "2026-09-14T23:00:00Z" in
+  Alcotest.(check (list (triple string string int)))
+    "19:00: one order, AAPL 80, from sequence 1"
+    [ ("signal:exp_a01_aapl:1", "AAPL", 80) ]
+    (orders_of f);
+  Alcotest.(check bool)
+    "its sentence: sent" true
+    (String.is_prefix
+       (Option.value ~default:"" (rebalance_of f ~strategy:"exp_a01_aapl" ~sequence:1))
+       ~prefix:"1 market-on-open order journaled, then sent");
+  (match D.Journal.latest_sizing_row f.journal ~strategy:"exp_a01_aapl" with
+  | None -> Alcotest.fail "no sizing row"
+  | Some z ->
+      Alcotest.(check (pair string (list (option (float 1e-12)))))
+        "sized at 23:00, scale 0.8: ratio 1, factor 0.8, governor 1"
+        ("2026-09-14T23:00:00.000000000Z", [ Some 0.8; Some 1.0; Some 0.8; Some 1.0 ])
+        (z.D.Journal.Sizing.at, [ Some z.scale; z.ratio; z.factor; z.governor ]));
+  e.e_cleanup ()
+
+(* A-I1 and A-I2. A restart at 19:15 EDT before any venue reading: the pass
+   judges the document accepted, and nothing is sized -- the overlay cannot
+   be aged and the session cannot be timed, and sizing now would be at the
+   fallback, 0.5. A minute later, still nothing, and the wait is said once.
+   The reading arrives; the next pass sizes it at the overlay's value, which
+   with no overlay ever accepted is absent: 1.0 x governor 1, so
+   trunc(1.0 x 0.01 x 1.0 x 1,000,000 / 100) = 100 shares, never the
+   fallback's 50. *)
+let test_a_restart_sizes_nothing_until_the_venue_clock_answers () =
+  let e =
+    evening_case ~venue:false ~start:"2026-09-14T23:15:00Z"
+      ~strategies:[ live_strategy () ]
+      ()
+  in
+  write_signal e.e_dir ~strategy:"exp_a01_aapl" ~sequence:1 ();
+  let%bind () = start_run e in
+  let f = e.e_f in
+  let%bind () = advance_clock e "2026-09-14T23:16:00Z" in
+  Alcotest.(check (pair (option string) int))
+    "no reading: pending, nothing journaled"
+    (Some (D.Intake.pending ~strategy:"exp_a01_aapl" ~sequence:1), 0)
+    (rebalance_of f ~strategy:"exp_a01_aapl" ~sequence:1, List.length (orders_of f));
+  Alcotest.(check int)
+    "said once" 1
+    (List.count (Queue.to_list f.events)
+       ~f:
+         (String.is_substring
+            ~substring:"no venue clock has answered, so nothing is sized"));
+  e.e_venue := true;
+  let%map () = advance_clock e "2026-09-14T23:17:00Z" in
+  Alcotest.(check (list (triple string string int)))
+    "the reading arrives: AAPL 100, at the absent overlay's 1.0, never the fallback's 50"
+    [ ("signal:exp_a01_aapl:1", "AAPL", 100) ]
+    (orders_of f);
+  Alcotest.(check (option (float 1e-12)))
+    "sized at 1.0" (Some 1.0)
+    (Option.map (D.Journal.latest_sizing_row f.journal ~strategy:"exp_a01_aapl")
+       ~f:(fun z -> z.D.Journal.Sizing.scale));
+  e.e_cleanup ()
+
+(* A-I1 and R5. Sequence 1 is judged at 18:46 and waits for 19:00; at 18:55
+   sequence 2 of the same strategy arrives and is accepted. Sequence 1's
+   retry is closed -- "not sized: sequence 2 of the same strategy was
+   accepted after it" -- and at 19:00 sequence 2 alone is sized: one order,
+   from 2. *)
+let test_a_superseding_document_cancels_the_older_retry () =
+  let e =
+    evening_case ~start:"2026-09-14T22:46:00Z" ~strategies:[ live_strategy () ] ()
+  in
+  write_signal e.e_dir ~strategy:"exp_a01_aapl" ~sequence:1 ();
+  let%bind () = start_run e in
+  let f = e.e_f in
+  write_signal e.e_dir ~strategy:"exp_a01_aapl" ~sequence:2 ();
+  let%bind () = advance_clock e "2026-09-14T22:55:00Z" in
+  Alcotest.(check (pair (option string) (option string)))
+    "1 closed as superseded, 2 pending"
+    ( Some
+        "not sized: sequence 2 of the same strategy was accepted after it, and only the \
+         latest is sized",
+      Some (D.Intake.pending ~strategy:"exp_a01_aapl" ~sequence:2) )
+    ( rebalance_of f ~strategy:"exp_a01_aapl" ~sequence:1,
+      rebalance_of f ~strategy:"exp_a01_aapl" ~sequence:2 );
+  let%map () = advance_clock e "2026-09-14T23:00:00Z" in
+  Alcotest.(check (list (triple string string int)))
+    "19:00: one order, from sequence 2"
+    [ ("signal:exp_a01_aapl:2", "AAPL", 100) ]
+    (orders_of f);
+  e.e_cleanup ()
+
+(* A-I1: a FINAL refusal still ends the judgement. At 19:15 EDT, a fraction
+   of 0.15 is 1,500 AAPL at 100 = 150,000 of TECH, over tech-cap's 100,000
+   (the order cap raised to 500,000 so the gate is what refuses): the gate's
+   refusal is written over the pending sentence, and a minute later nothing
+   is tried again. *)
+let test_a_final_refusal_still_ends_the_judgement () =
+  let e =
+    evening_case ~max_order_notional:500_000.0 ~start:"2026-09-14T23:15:00Z"
+      ~strategies:[ live_strategy ~capital_fraction:0.15 () ]
+      ()
+  in
+  write_signal e.e_dir ~strategy:"exp_a01_aapl" ~sequence:1 ();
+  let%bind () = start_run e in
+  let f = e.e_f in
+  let%map () = advance_clock e "2026-09-14T23:16:00Z" in
+  let sentence =
+    Option.value ~default:"" (rebalance_of f ~strategy:"exp_a01_aapl" ~sequence:1)
+  in
+  Alcotest.(check bool)
+    (sprintf "the gate's refusal is the outcome: %s" sentence)
+    true
+    (String.is_prefix sentence
+       ~prefix:"refused, and nothing journaled or sent: the gate refuses");
+  Alcotest.(check (pair int int))
+    "nothing journaled, no sizing row" (0, 0)
+    ( List.length (orders_of f),
+      Option.value_map (D.Journal.latest_sizing_row f.journal ~strategy:"exp_a01_aapl")
+        ~default:0 ~f:(fun _ -> 1) );
+  e.e_cleanup ()
+
+(* A-I3. The morning's first adjust, with last evening's overlay 14 hours
+   old: stale. The strategy was last sized at 1.0 (factor 1, governor 1,
+   ratio 1); the stale reading's effective scale is the fallback, 0.5, which
+   before the fix sold it to 0.5 every morning. Now the pass holds: nothing
+   is proposed, the sizing is untouched, and the hold is said once over two
+   passes. Then the governor falls to 0.5 -- a drawdown of 1.5 % against a
+   2 % cap -- while the overlay is still stale: a move of 0.5, beyond the
+   band, and the strategy is re-sized at the factor it was last sized with
+   times the governor now, 1.0 x 0.5 = 0.5 (not the fallback's 0.5 x 0.5):
+   trunc(1.0 x 0.5 x 0.5 x 100,000 / 100) = 250 from its own 350, Sell 100
+   as a day limit; the row at scale 0.5, mode adjust, note governor, factor
+   1, governor 0.5. *)
+let test_a_stale_overlay_holds_and_a_governor_move_re_sizes () =
+  let drawdown = ref 0.0 in
+  let%bind { a_f = f; a_name = name; pass_and_adjust; cleanup; _ } =
+    adjust_case ~stale:true ~last_scale:1.0 ~last_ratio:1.0 ~last_factor:1.0
+      ~last_governor:1.0
+      ~drawdown:(fun () -> Some !drawdown)
+      ~dd_cap:0.02 ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.9" ()
+  in
+  let%bind () = pass_and_adjust ~at:6.0 in
+  Alcotest.(check (pair (list (triple string int string)) string))
+    "stale: nothing proposed, still sized at the open's row"
+    ([ ("buy", 350, "limit day") ], "open")
+    (strategy_orders f name, latest_sizing_mode f name);
+  Alcotest.(check int)
+    "the hold said once over two passes" 1
+    (List.count (Queue.to_list f.events)
+       ~f:(String.is_substring ~substring:"holds every strategy at its last sizing"));
+  drawdown := 0.015;
+  let%map () = pass_and_adjust ~at:10.0 in
+  Alcotest.(check (list (triple string int string)))
+    "the governor's move: Sell 100"
+    [ ("buy", 350, "limit day"); ("sell", 100, "limit day") ]
+    (strategy_orders f name);
+  (match D.Journal.latest_sizing_row f.journal ~strategy:name with
+  | None -> Alcotest.fail "no sizing row"
+  | Some z ->
+      Alcotest.(
+        check
+          (pair
+             (pair (float 1e-12) (pair string (option string)))
+             (list (option (float 1e-12)))))
+        "scale 0.5, adjust, governor; factor 1, governor 0.5"
+        ((0.5, ("adjust", Some "governor")), [ Some 1.0; Some 0.5 ])
+        ((z.D.Journal.Sizing.scale, (z.mode, z.note)), [ z.factor; z.governor ]));
+  cleanup ()
+
+(* A-I4. An incubation strategy at the canary's ratio: a cap of 0.087 over
+   its fraction of 0.5 is 0.174. It was last sized at overlay 1.0, the
+   product 0.174, with that ratio recorded. The overlay falls to 0.85: the
+   PRODUCT moves only 1.0 x 0.174 - 0.85 x 0.174 = 0.0261, inside the band,
+   which before the fix held it; the EFFECTIVE scale moves 0.15, beyond it,
+   and it is re-sized: trunc(1.0 x 0.5 x 0.85 x 0.174 x 100,000 / 100) =
+   trunc(73.95) = 73 from 350, Sell 277; the row at 0.85 x 0.174 with the
+   ratio beside it. Then a ratio that changed alone (a cap edited across a
+   restart): last sized at 0.5 with a ratio of 1, the effective 0.5 unmoved,
+   the ratio now 0.174 -- re-sized to 0.5 x 0.174 = 0.087. *)
+let test_the_band_compares_effective_scales_at_the_canary_ratio () =
+  let%bind { a_f = f; a_name = name; cleanup; _ } =
+    adjust_case ~incubation_cap:0.087 ~last_scale:0.174 ~last_ratio:0.174 ~last_factor:1.0
+      ~last_governor:1.0 ~sizing:Ohcamel.Config.Book.Signals_spec.Incubation
+      ~overlay:"0.85" ()
+  in
+  Alcotest.(check (list (triple string int string)))
+    "re-sized: Sell 277"
+    [ ("buy", 350, "limit day"); ("sell", 277, "limit day") ]
+    (strategy_orders f name);
+  Alcotest.(check (option (pair (float 1e-12) (option (float 1e-12)))))
+    "scale 0.85 x 0.174, ratio 0.174"
+    (Some (0.85 *. 0.174, Some 0.174))
+    (Option.map (D.Journal.latest_sizing_row f.journal ~strategy:name) ~f:(fun z ->
+         (z.D.Journal.Sizing.scale, z.ratio)));
+  cleanup ();
+  let%map { a_f = f; a_name = name; cleanup; _ } =
+    adjust_case ~incubation_cap:0.087 ~last_scale:0.5 ~last_ratio:1.0 ~last_factor:0.5
+      ~last_governor:1.0 ~sizing:Ohcamel.Config.Book.Signals_spec.Incubation
+      ~overlay:"0.5" ()
+  in
+  Alcotest.(check (option (pair (float 1e-12) string)))
+    "the ratio's change alone re-sizes: 0.087, adjust"
+    (Some (0.5 *. 0.174, "adjust"))
+    (Option.map (D.Journal.latest_sizing_row f.journal ~strategy:name) ~f:(fun z ->
+         (z.D.Journal.Sizing.scale, z.mode)));
+  cleanup ()
+
+(* A-I5's addition. A strategy that holds 350 of its own and has an accepted
+   document but no sizing for it -- a rebalance that held part of its size
+   records none -- is re-sized on the next pass whatever the band: at 0.70
+   its target is trunc(0.5 x 0.70 x 100,000 / 100) = 350, which it holds,
+   so no order goes and the sizing row is written, mode adjust. *)
+let test_an_unsized_strategy_holding_a_position_is_re_sized () =
+  let%map { a_f = f; a_name = name; cleanup; _ } =
+    adjust_case ~sizing_row:false ~sizing:Ohcamel.Config.Book.Signals_spec.Live
+      ~overlay:"0.70" ()
+  in
+  Alcotest.(
+    check (pair (list (triple string int string)) (option (pair (float 1e-12) string))))
+    "no order, and the sizing row written at 0.70, adjust"
+    ([ ("buy", 350, "limit day") ], Some (0.70, "adjust"))
+    ( strategy_orders f name,
+      Option.map (D.Journal.latest_sizing_row f.journal ~strategy:name) ~f:(fun z ->
+          (z.D.Journal.Sizing.scale, z.mode)) );
+  cleanup ()
+
+(* A-I5. A two-wave intraday re-size through the adjust pass. exp_i_wide
+   holds nothing and was last sized at 0.3 (ratio 1); overlay 7 says 0.9,
+   so with E 1,000,000 and a fraction of 0.01 the targets are, for the six
+   weights of 0.16, 0.16 x 0.01 x 0.9 x 1,000,000 = 1,440 -- AAPL 14, MSFT 7,
+   IWM 7, QQQ 4, SPY 3, TLT 16 -- and for XOM's 0.04, 360 / 50 = 7: seven
+   orders, so two waves, XOM's 350 the smallest and the second. Wave 1 is
+   sent and fills. Then wave 2 is refused -- by the gate, ENERGY's cap of
+   300 under XOM's 7 x 50.05, or by the switch, set by hand between the
+   waves -- and the rebalance ends Waved [Sent 6; Refused]: no sizing row is
+   written, the strategy still reads 0.3, and the next pass tries again (the
+   band still beyond: 0.9 against 0.3) with XOM alone. Under the gate that
+   is refused again; with the switch reset, XOM goes, fills, and the sizing
+   row is written at last, at 0.9. *)
+let wide_adjust ~refuse_with () =
+  let energy_cap =
+    {
+      Limit.name = "energy-cap";
+      scope = Limit.Sector (Sector.of_string "ENERGY");
+      kind = Limit.Gross_notional (Notional.of_float 300.0);
+    }
+  in
+  let f =
+    fixture
+      ~limits:
+        (match refuse_with with
+        | `Gate -> [ tech_cap; energy_cap ]
+        | `Halt -> [ tech_cap ])
+      ~extra:
+        [
+          (iwm, "FUNDS", 200.0);
+          (qqq, "FUNDS", 300.0);
+          (spy, "FUNDS", 400.0);
+          (tlt, "FUNDS", 90.0);
+        ]
+      ()
+  in
+  record_close f;
+  D.Journal.record_marks f.journal
+    (List.map
+       [ (iwm, 200.0); (qqq, 300.0); (spy, 400.0); (tlt, 90.0) ]
+       ~f:(fun (symbol, close) ->
+         { D.Journal.Mark.date = Date.of_string "2026-09-14"; symbol; close; qty = 0.0 }));
+  let halt = D.Halt.create D.Halt.Source.none in
+  let oms = manager ~halt ~now:(fun () -> tuesday_mid) f in
+  let name = "exp_i_wide" in
+  let zeros = "sha256:" ^ String.make 64 '0' in
+  D.Journal.record_signal f.journal
+    {
+      D.Journal.Signal.strategy = name;
+      sequence = 1;
+      as_of = Date.of_string "2026-09-14";
+      received_at = evening;
+      verdict = D.Journal.Signal.Verdict.Accepted;
+      rule = None;
+      detail = "passed";
+      document =
+        sprintf
+          {|{"schema_version":1,"strategy":"%s","params_hash":"%s","as_of":"2026-09-14","computed_at":"2026-09-14T23:15:00Z","data_hash":"%s","sequence":1,"validation":{"status":"pass","gates_version":"2026-09-02"},"targets":[{"symbol":"AAPL","weight":0.16},{"symbol":"MSFT","weight":0.16},{"symbol":"IWM","weight":0.16},{"symbol":"QQQ","weight":0.16},{"symbol":"SPY","weight":0.16},{"symbol":"TLT","weight":0.16},{"symbol":"XOM","weight":0.04}]}|}
+          name zeros zeros;
+      rebalance = Some "sent";
+    };
+  D.Journal.record_sizing f.journal ~strategy:name ~sequence:1 ~at:evening ~tier:"live"
+    ~scale:0.3 ~allocated:3_000.0 ~mode:"open" ~ratio:1.0 ~factor:0.3 ~governor:1.0;
+  let dir = Filename_unix.temp_dir "ohcamel-signals-" "" in
+  Out_channel.write_all
+    (Filename.concat dir "overlay-7.json")
+    ~data:
+      {|{"schema_version":1,"kind":"overlay","as_of":"2026-09-15T14:55:00Z","computed_at":"2026-09-15T14:55:05Z","sequence":7,"exposure_scale":0.9,"inputs":{},"reported":{}}|};
+  let intake =
+    D.Intake.create
+      ~gauge:
+        (D.Intake.Gauge.create ~spec:(D.Oms.spec oms)
+           ~venue_now:(fun () -> Some tuesday_mid)
+           ~drawdown:(fun () -> None)
+           ~dd_cap:None)
+      ~journal:f.journal ~dir
+      ~strategies:
+        [
+          live_strategy ~name
+            ~symbols:[ "AAPL"; "MSFT"; "XOM"; "IWM"; "QQQ"; "SPY"; "TLT" ]
+            ~adjust:Ohcamel.Config.Book.Signals_spec.Adjust.Intraday ();
+        ]
+      ~universe:[ aapl; msft; xom; iwm; qqq; spy; tlt ]
+      ~on_event:(Queue.enqueue f.events)
+      ~now:(fun () -> tuesday_mid)
+      ()
+  in
+  let cleanup () =
+    Array.iter (Sys_unix.readdir dir) ~f:(fun n ->
+        Core_unix.unlink (Filename.concat dir n));
+    Core_unix.rmdir dir;
+    Graph.destroy f.graph
+  in
+  (f, oms, halt, intake, name, cleanup)
+
+let test_a_rebalance_held_in_part_records_no_sizing_and_is_retried () =
+  let check_case refuse_with =
+    let f, oms, halt, intake, name, cleanup = wide_adjust ~refuse_with () in
+    ignore (D.Intake.judge_pass intake : D.Intake.Accepted.t list);
+    let adjusted = D.Intake.adjust intake ~oms:(Some oms) in
+    let%bind () = settle () in
+    Alcotest.(check int) "wave 1: six sent" 6 (D.Sim_venue.received f.venue);
+    let%bind () = pump f in
+    (match refuse_with with
+    | `Halt -> D.Halt.halt halt ~why:"halted by hand, between two waves" ~at:tuesday_mid
+    | `Gate -> ());
+    let%bind () = advance_to f 2.0 in
+    if not (Deferred.is_determined adjusted) then
+      Alcotest.fail "the adjust is still waiting";
+    let sizing () =
+      Option.map (D.Journal.latest_sizing_row f.journal ~strategy:name) ~f:(fun z ->
+          (z.D.Journal.Sizing.scale, z.mode))
+    in
+    Alcotest.(check (pair (option (pair (float 1e-12) string)) int))
+      "wave 2 refused: no sizing row, still 0.3 open; six received"
+      (Some (0.3, "open"), 6)
+      (sizing (), D.Sim_venue.received f.venue);
+    Alcotest.(check bool)
+      "the outcome said: two waves" true
+      (List.exists (Queue.to_list f.events)
+         ~f:(String.is_substring ~substring:"in 2 waves"));
+    (match refuse_with with `Halt -> D.Halt.reset halt | `Gate -> ());
+    let again = D.Intake.adjust intake ~oms:(Some oms) in
+    let%bind () = settle () in
+    let%bind () = pump f in
+    let%bind () = advance_to f 4.0 in
+    if not (Deferred.is_determined again) then Alcotest.fail "the retry is still waiting";
+    (match refuse_with with
+    | `Gate ->
+        Alcotest.(check (pair bool (option (pair (float 1e-12) string))))
+          "retried next pass: XOM alone, refused by the gate again, still unsized"
+          (true, Some (0.3, "open"))
+          ( List.exists (Queue.to_list f.events)
+              ~f:
+                (String.is_substring
+                   ~substring:"refused, and nothing journaled or sent: the gate refuses"),
+            sizing () )
+    | `Halt ->
+        Alcotest.(check (pair int (option (pair (float 1e-12) string))))
+          "retried next pass: XOM sent and filled, sized at last at 0.9"
+          (7, Some (0.9, "adjust"))
+          (D.Sim_venue.received f.venue, sizing ()));
+    cleanup ();
+    return ()
+  in
+  let%bind () = check_case `Gate in
+  check_case `Halt
+
+(* I4, as the retry set has it now. Two live strategies, each of whose
+   judgements a crash left pending. exp_a01_aapl's crash came before anything
+   was journaled: the restarted loop's first pass, the venue clock answering,
+   tries it again and sizes it -- AAPL 100. exp_a01_msft's came after its
+   order was journaled and sent (MSFT +10 under signal:exp_a01_msft:1): its
+   judgement is closed, "not sized again", and nothing more is sent. *)
+let test_a_crash_left_pending_is_retried_unless_its_orders_were_journaled () =
+  let e =
+    evening_case ~start:"2026-09-14T23:15:00Z"
+      ~strategies:
+        [ live_strategy (); live_strategy ~name:"exp_a01_msft" ~symbols:[ "MSFT" ] () ]
+      ()
+  in
+  let f = e.e_f in
+  write_signal e.e_dir ~strategy:"exp_a01_aapl" ~sequence:1 ();
+  write_signal e.e_dir ~strategy:"exp_a01_msft" ~sequence:1
+    ~targets:{|[{"symbol":"MSFT","weight":1.0}]|} ();
+  Alcotest.(check int)
+    "the crash: both accepted, neither sized" 2
+    (List.length (D.Intake.judge_pass e.e_intake));
+  let%bind (_ : D.Oms.Rebalance_outcome.t) =
+    D.Oms.propose_rebalance e.e_oms ~mode:D.Rebalance.Mode.Open
+      ~source:
+        {
+          D.Rebalance.Source.strategy = "exp_a01_msft";
+          sequence = 1;
+          as_of = Date.of_string "2026-09-14";
+        }
+      ~legs:[ rebalance_leg msft D.Order.Side.Buy 10 ]
+  in
+  let%map () = start_run e in
+  Alcotest.(check (list (triple string string int)))
+    "the restart: AAPL sized; MSFT's one order, from before the crash"
+    [ ("signal:exp_a01_aapl:1", "AAPL", 100); ("signal:exp_a01_msft:1", "MSFT", 10) ]
+    (List.sort ~compare:[%compare: string * string * int] (orders_of f));
+  Alcotest.(check (option string))
+    "MSFT's judgement closed"
+    (Some
+       "not sized again: orders under signal:exp_a01_msft:1 were journaled before the \
+        desk stopped, and they are the record of what was sent")
+    (rebalance_of f ~strategy:"exp_a01_msft" ~sequence:1);
+  Alcotest.(check int) "two sent in all" 2 (D.Sim_venue.received f.venue);
+  e.e_cleanup ()
+
 let suites =
   [
     ( "transport",
@@ -3653,8 +4144,6 @@ let suites =
           test_an_accepted_signal_on_a_live_strategy_becomes_one_rebalance;
         case "a leg the venue does not acknowledge stops the legs after it"
           test_a_leg_the_venue_does_not_acknowledge_stops_the_legs_after_it;
-        case "run sizes only what its own pass accepted"
-          test_run_sizes_only_what_its_own_pass_accepted;
         case "an incubation strategy's failing signal is sized on the paper venue"
           test_an_incubation_strategy's_failing_signal_is_sized_on_the_paper_venue;
         case "incubation refused on a foreign venue"
@@ -3673,8 +4162,8 @@ let suites =
           test_a_stopped_wave's_orders_are_cancelled_at_the_timeout;
         case "two waves settle, the second gated after the first fills"
           test_two_waves_settle_and_the_second_is_gated_after_the_first_fills;
-        case "the intake says what fell below the floor"
-          test_the_intake_says_what_fell_below_the_floor;
+        case "an open rebalance sends a leg under the floor"
+          test_an_open_rebalance_sends_a_leg_under_the_floor;
         case "overlay zero flattens and alerts" test_overlay_zero_flattens_and_alerts;
         case "adjust within band does nothing" test_adjust_within_band_does_nothing;
         case "adjust beyond band re-sizes" test_adjust_beyond_band_re_sizes;
@@ -3686,6 +4175,24 @@ let suites =
           test_run_does_not_wait_for_the_adjust_pass;
         case "a busy adjust is skipped, and said once"
           test_a_busy_adjust_is_skipped_and_said_once;
+        case "a document judged before 19:00 is sized at the first pass after"
+          test_a_document_judged_before_19_is_sized_at_the_first_pass_after;
+        case "a restart sizes nothing until the venue clock answers"
+          test_a_restart_sizes_nothing_until_the_venue_clock_answers;
+        case "a superseding document cancels the older retry"
+          test_a_superseding_document_cancels_the_older_retry;
+        case "a final refusal still ends the judgement"
+          test_a_final_refusal_still_ends_the_judgement;
+        case "a stale overlay holds, and a governor move re-sizes"
+          test_a_stale_overlay_holds_and_a_governor_move_re_sizes;
+        case "the band compares effective scales at the canary ratio"
+          test_the_band_compares_effective_scales_at_the_canary_ratio;
+        case "an unsized strategy holding a position is re-sized"
+          test_an_unsized_strategy_holding_a_position_is_re_sized;
+        case "a rebalance held in part records no sizing, and is retried"
+          test_a_rebalance_held_in_part_records_no_sizing_and_is_retried;
+        case "a crash left pending is retried, unless its orders were journaled"
+          test_a_crash_left_pending_is_retried_unless_its_orders_were_journaled;
       ] );
     ( "desk",
       [
