@@ -35,6 +35,10 @@ docs/
 # and the image never builds -- rather than an image that serves a page with an
 # empty crisis table.
 !docs/crisis/*.csv
+# ...and the charter, which lib/dune embeds as Charter_md for the page's pin of
+# the gates: a build input too. deploy/test/engine_context_test.sh holds every
+# file a dune rule embeds to this list.
+!docs/CHARTER.md
 bench/
 test/
 *.md
