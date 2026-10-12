@@ -35,7 +35,7 @@ import pandas as pd
 
 from .roster import Cell
 
-__all__ = ["DB_PATH", "FREEZE_KIND", "frozen_params", "month_key", "newest_farm"]
+__all__ = ["DB_PATH", "FREEZE_KIND", "freeze_id", "frozen_params", "month_key", "newest_farm"]
 
 FREEZE_KIND = "signals.freeze"
 DB_PATH: Path | None = None   # tests point every artifact read and the freeze's publish at a temp jobs.sqlite
@@ -206,3 +206,13 @@ def frozen_params(ctx: Any, *, month: date, cells: list[Cell]) -> tuple[dict[str
         else:
             params[c.slug] = json.loads(sel)
     return params, refused
+
+
+def freeze_id(month: date) -> str | None:
+    """The id of ``month``'s ``signals.freeze`` artifact, or None when it has none:
+    ``signals.daily`` names it in its provenance, so a document's parameters can be
+    traced to the freeze that held them."""
+    from ..products.io import previous_artifact
+
+    got = previous_artifact(FREEZE_KIND, _phash(month_key(month)), db_path=_db())
+    return None if got is None else str(got[0]["id"])

@@ -25,6 +25,14 @@ for the desk, from volatility targeting on the roster's combined targets.
   largest-weight name; the ``names`` table names every name's source.
 * A non-finite forecast RAISES: the job fails and nothing is written, so the
   desk holds its last overlay until it is stale (the designed failure mode).
+  So does a materially negative ``w' Sigma w`` (below ``-1e-12 x w' diag(Sigma) w``):
+  a covariance that is not positive semi-definite is not a number to clamp to 0.
+* Stale bars RAISE too (the stage review's B-I5): returns whose last session
+  (``bars_asof``) is more than one session behind the previous NYSE session at
+  the run's New York date -- an ingest that failed twice -- write nothing, the
+  message naming both dates.
+* ``sources`` (B-I4): one row per cell whose document fed ``w`` -- slug,
+  sequence, as_of, capital_fraction, the file -- so the run can be re-derived.
 
 Reported beside the number and never used in it (INC-01: Q02 is DESCRIPTIVE
 ONLY; P1 computes reference books): the newest ``regime.hmm`` artifact's last
@@ -44,9 +52,10 @@ from __future__ import annotations
 import json
 import math
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -69,12 +78,15 @@ LOOKBACK = 252
 MIN_SESSIONS = 30   # below this the covariance and the EWMA seed are noise: refuse, nothing written
 EWMA_LAMBDA = 0.94
 TRADING_DAYS = 252
+NY = ZoneInfo("America/New_York")
 DB_PATH: Path | None = None   # tests point every artifact read at a temp jobs.sqlite
 _OVERLAY_FILE = re.compile(r"^overlay-(\d+)\.json$")
 OVERLAY_COLUMNS = ["as_of", "sequence", "exposure_scale", "vol_target", "vol_forecast", "vol_model",
                    "cov_estimator", "vol_artifact", "cov_artifact", "bars_asof", "n_names", "regime_p_high",
                    "mc_var_99_1d_core", "path"]
 NAMES_COLUMNS = ["symbol", "weight", "cov_vol", "vol_forecast", "diag_source", "p2_asof"]
+SOURCES_COLUMNS = ["slug", "sequence", "as_of", "capital_fraction", "path"]
+PSD_TOLERANCE = 1e-12
 
 
 def _now() -> datetime:
@@ -88,10 +100,11 @@ def _db() -> Path:
 
 
 # ------------------------------------------------------------------- targets
-def _newest_doc(signals_dir: Path, slug: str, notes: list[str]) -> dict[str, float] | None:
-    """The slug's document with the highest ``sequence``, as ``{symbol: weight}``;
-    every unreadable file is skipped and named in ``notes``."""
-    best: tuple[int, dict[str, float]] | None = None
+def _newest_doc(signals_dir: Path, slug: str,
+                notes: list[str]) -> tuple[int, dict[str, float], str | None, str] | None:
+    """The slug's document with the highest ``sequence``, as ``(sequence, {symbol: weight},
+    as_of, file name)``; every unreadable file is skipped and named in ``notes``."""
+    best: tuple[int, dict[str, float], str | None, str] | None = None
     for p in sorted(signals_dir.glob(f"{slug}-*.json")):
         try:
             doc = json.loads(p.read_text())
@@ -108,20 +121,29 @@ def _newest_doc(signals_dir: Path, slug: str, notes: list[str]) -> dict[str, flo
             notes.append(f"skipped {p.name}: unreadable ({e})")
             continue
         if best is None or seq > best[0]:
-            best = (seq, w)
-    return None if best is None else best[1]
+            as_of = doc.get("as_of")
+            best = (seq, w, str(as_of) if as_of is not None else None, p.name)
+    return best
 
 
-def combined_targets(signals_dir: Path, roster: Roster, *, notes: list[str] | None = None) -> dict[str, float]:
-    """``sum over cells of capital_fraction x weight`` from each slug's newest document."""
+def combined_targets(signals_dir: Path, roster: Roster, *, notes: list[str] | None = None,
+                     sources: list[dict[str, Any]] | None = None) -> dict[str, float]:
+    """``sum over cells of capital_fraction x weight`` from each slug's newest document;
+    each document used is appended to ``sources`` (:data:`SOURCES_COLUMNS`)."""
     notes = [] if notes is None else notes
     out: dict[str, float] = {}
     d = Path(signals_dir)
     if not d.is_dir():
         return out
     for cell in roster.cells:
-        w = _newest_doc(d, cell.slug, notes)
-        for s, v in (w or {}).items():
+        got = _newest_doc(d, cell.slug, notes)
+        if got is None:
+            continue
+        seq, w, as_of, name = got
+        if sources is not None:
+            sources.append({"slug": cell.slug, "sequence": seq, "as_of": as_of,
+                            "capital_fraction": cell.capital_fraction, "path": name})
+        for s, v in w.items():
             out[s] = out.get(s, 0.0) + cell.capital_fraction * v
     return {s: v for s, v in out.items() if v != 0.0}
 
@@ -178,6 +200,10 @@ def forecast_vol(targets: dict[str, float], cov: pd.DataFrame, vol_forecasts: di
     var = float(w @ sigma @ w)
     if not math.isfinite(var):
         raise ValueError(f"portfolio variance is {var}")
+    floor = -PSD_TOLERANCE * float(w @ np.diag(np.diag(sigma)) @ w)
+    if var < floor:
+        raise ValueError(f"portfolio variance is {var}, materially negative (below {floor}): the covariance "
+                         "is not positive semi-definite, no overlay")
     return math.sqrt(max(var, 0.0))
 
 
@@ -299,6 +325,19 @@ def _sequence(signals_dir: Path) -> int:
 
 
 # ------------------------------------------------------------------------ run
+def bars_refusal(bars_asof: date, today: date) -> str | None:
+    """Why returns ending ``bars_asof`` are too old for a run on New York date ``today``:
+    more than one session behind the previous NYSE session. None when they are not."""
+    from .calendar import previous_session
+
+    prev = previous_session(today)
+    floor = previous_session(prev)
+    if bars_asof < floor:
+        return (f"the bars end {bars_asof}, more than one session behind {prev}, the previous NYSE session "
+                f"at this run ({today}): the daily ingest has not run; no overlay")
+    return None
+
+
 def _returns(ctx: Any, names: list[str]) -> pd.DataFrame:
     px = ctx.market.prices(names, warehouse_first=True).data[names].dropna()
     r = px.pct_change().dropna().iloc[-LOOKBACK:]
@@ -344,7 +383,8 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     as_of = now.astimezone(UTC).replace(second=0, microsecond=0)
     roster = load_roster(ROSTER_PATH)
     notes: list[str] = []
-    targets = combined_targets(out_dir, roster, notes=notes)
+    sources: list[dict[str, Any]] = []
+    targets = combined_targets(out_dir, roster, notes=notes, sources=sources)
     estimator, cov_artifact = _cov_winner(now, notes)
     p2, vol_artifact = _p2_best(now, notes)
     names = sorted(targets)
@@ -356,6 +396,9 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         sigma_hat = 0.0
     else:
         r = _returns(ctx, names)
+        stale = bars_refusal(r.index[-1].date(), now.astimezone(NY).date())
+        if stale is not None:
+            raise ValueError(stale)
         bars_asof = r.index[-1].date().isoformat()
         cov = covariance(r, estimator)
         diag = diagonal_vols(r, p2)
@@ -389,7 +432,8 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                  "(EWMA(0.94) where P2 has none); regime p_high and core MC VaR are reported, never used")
     return ArtifactSpec(
         tables={"overlay": pd.DataFrame([row], columns=OVERLAY_COLUMNS),
-                "names": pd.DataFrame(rows, columns=NAMES_COLUMNS)},
+                "names": pd.DataFrame(rows, columns=NAMES_COLUMNS),
+                "sources": pd.DataFrame(sources, columns=SOURCES_COLUMNS)},
         data_asof=bars_asof,
         provenance=[{"source": COV_KIND, "artifact": cov_artifact}, {"source": VOL_KIND, "artifact": vol_artifact},
                     {"source": "roster", "path": str(ROSTER_PATH)},

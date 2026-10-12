@@ -106,7 +106,12 @@ the desk sizes them, not what they say.
 - **Gross scaling.** A strategy whose Σ|w| exceeds 1 is scaled to Σ|w| = 1,
   and the document records `gross_scaled: true` among its parameters (and
   so in its `params_hash`). A strategy's fraction is therefore the most
-  gross exposure it can ever take, before the overlay.
+  gross exposure it can ever take, before the overlay. The farm's backtests
+  run each cell at the strategy's `default_max_leverage` (2–3× gross for
+  `tsmom`, `risk_parity` and `low_beta`) while the desk trades these
+  de-levered 1× targets, so a cell's verdict was earned at the farm's
+  leverage, not at the leverage traded; `signals.daily`'s artifact says so on
+  every run. *(amended 2026-10-11 by the agent under a ruling; awaiting the owner's confirmation)*
 
 ## The parameter-freeze rule
 
@@ -115,10 +120,14 @@ On the first session of each month the newest `farm.sweep` artifact's
 farm reports SKIPPED or INSUFFICIENT DATA keeps last month's parameters. A
 cell with none is not emitted, and the reason is recorded in the producer's
 artifact. The farm's nightly re-selection never reaches the live book inside
-a month. The cell's `validation` is copied from its newest farm verdict
+a month. A cell the newest farm artifact does not carry at all, a month with
+no farm artifact at all, and an ok row that selected no parameters are each
+treated as the farm not reporting the cell: last month's parameters are kept
+when there are any, and otherwise the cell is not emitted, with the
+reason. *(amended 2026-10-11 by the agent under a ruling; awaiting the owner's confirmation)* The cell's `validation` is copied from its newest farm verdict
 (`PASS` → `pass`, `FAIL` → `fail`, anything else → `unvalidated`) only when
 that row's `selected_params` equal the frozen parameters, else `unvalidated`
-naming the mid-month re-selection. A cell
+naming the mid-month re-selection. *(amended 2026-10-11 by the agent under a ruling; awaiting the owner's confirmation)* A cell
 whose universe names a symbol outside the book is refused by the producer,
 with the reason, and never silently projected onto the book's names.
 
@@ -128,12 +137,20 @@ with NYSE holidays) and on the cell's first run; `signal`-cadence strategies
 write when the targets differ from the last document's beyond the engine's
 tolerance; other sessions write nothing and the artifact says `held`; a
 period end missed by the producer is caught up late on the next session, and
-said so. An all-NaN last row is `held`, an all-zero row is a flat document.
+said so. *(amended 2026-10-11 by the agent under a ruling; awaiting the owner's confirmation)* An all-NaN last row is `held`, an all-zero row is a flat
+document. *(amended 2026-10-11 by the agent under a ruling; awaiting the owner's confirmation)* When the live engine answers, a held cell whose last
+document the desk did not size -- judged other than accepted or
+accepted_incubation, or accepted and refused, not sized, or still pending --
+is written again with today's targets, said as `retry`; when the engine does
+not answer, the producer keys on the last document it wrote, and says
+so. *(amended 2026-10-11 by the agent under a ruling; awaiting the owner's confirmation)*
 
 ## The overlay
 
 One number, `exposure_scale` in [0, 1], written by `signals.overlay` at
-09:40, every 15 minutes to 15:45, and at 18:50:
+09:40, every 15 minutes to 15:45, and at 18:50; and at 09:20 and 18:40, so
+that every moment the desk sizes at (18:45, 19:15, the 09:30 open) has an
+overlay younger than `overlay_max_age_minutes` before it. *(amended 2026-10-11 by the agent under a ruling; awaiting the owner's confirmation)*
 
     exposure_scale = min(1, σ_target / σ̂),   σ̂ = √(wᵀ Σ w), annualised
 
@@ -144,7 +161,9 @@ One number, `exposure_scale` in [0, 1], written by `signals.overlay` at
   volatility league (P2) has a current best model for a name (by QLIKE), its
   forecast variance replaces that name's diagonal entry; EWMA(0.94) when
   absent. How P2 and P3 combine is not fixed by §5. A non-finite forecast
-  writes nothing; the desk then holds its last overlay and goes stale.
+  writes nothing; the desk then holds its last overlay and goes stale. *(amended 2026-10-11 by the agent under a ruling; awaiting the owner's confirmation)*
+  So do bars more than one session behind the previous NYSE session, and a
+  materially negative wᵀΣw. *(amended 2026-10-11 by the agent under a ruling; awaiting the owner's confirmation)*
 - The document records every input: the models' names, the artifact ids and
   `as_of`, the newest bar read.
 
@@ -161,15 +180,18 @@ multiplies every incubation and live target. With the example book's
 
 **Staleness.** An accepted overlay holds for 60 minutes
 (`overlay_max_age_minutes`), and after it the desk uses `overlay_fallback`
-0.5; the page says OVERLAY STALE. A desk whose journal holds no accepted
+0.5; the page says OVERLAY STALE. *(amended 2026-10-11 by the agent under a ruling; awaiting the owner's confirmation)* A desk whose journal holds no accepted
 overlay at all reads 1.0 (the desk as it was before this plan) and the page
 says OVERLAY ABSENT; before the venue's clock has answered, an overlay cannot
-be aged and reads stale.
+be aged and reads stale, and the desk sizes nothing until it has. *(amended 2026-10-11 by the agent under a ruling; awaiting the owner's confirmation)*
 
 **Re-sizing.** When the effective scale moves more than `overlay_band` 0.10
 from the scale a strategy was last sized at, every strategy with
 `(adjust intraday)` is re-sized from its last accepted document through the
-intraday mode.
+intraday mode. The comparison is of effective scales, before the incubation
+ratio; while the overlay is stale the desk holds every last sizing and
+re-sizes only on a governor move beyond the band, at the overlay factor the
+strategy was last sized with. *(amended 2026-10-11 by the agent under a ruling; awaiting the owner's confirmation)*
 
 **Reported beside sizing and never used in it.** EXP-Q02's regime
 probabilities, because Q02's verdict is DESCRIPTIVE ONLY and the charter does
@@ -180,18 +202,25 @@ for the reader; neither is multiplied in.
 ## Execution
 
 - **At the open:** daily documents become market-on-open orders, as today.
+  The backtest engine fills at the close of d+1 (`execution_lag=1`); the desk
+  fills at the open of d+1 by market-on-open, so the farm's fill is not the
+  desk's; `signals.daily`'s artifact says so on every run. *(amended 2026-10-11 by the agent under a ruling; awaiting the owner's confirmation)*
 - **In the session:** `Day` limit orders at the mark moved
   `intraday_slip_bps` **10 bps** toward the far side, inside the desk's 5 %
   collar.
 - **Leg floor:** a leg below `min_leg_notional` **$200** is dropped, and the
-  drop is journaled.
+  drop is journaled. The floor applies in the intraday mode only, and never
+  to a leg that closes a name. *(amended 2026-10-11 by the agent under a ruling; awaiting the owner's confirmation)*
+- **Timing:** a document the opening auction's window refuses (before
+  19:00 ET) stays pending and is sized at the first pass the window opens;
+  nothing is sized before the venue's clock has answered. *(amended 2026-10-11 by the agent under a ruling; awaiting the owner's confirmation)*
 - **Waves:** a rebalance of more than 6 legs runs in waves: the shrinking
   legs first, by notional descending, in chunks of at most 6, then the
   growing legs the same way; each wave is gated against the real book as it
   then is, and every wave — a single one included — is awaited until its
   orders fill or `wave_timeout_s` (**180** seconds) passes, when its open
   orders are cancelled and no later wave is sent. An unfilled strategy is
-  re-sized on the next pass.
+  re-sized on the next pass. *(amended 2026-10-11 by the agent under a ruling; awaiting the owner's confirmation)*
 - **Exits at the close** (not fixed by §5): a strategy with `horizon close`
   exits by a market-on-close order (Alpaca `cls`) sent when the producer's
   15:45 zero-target document arrives; the 15:50 `Day` limit flatten is only
@@ -250,7 +279,7 @@ close, so a daily return on allocated capital, and costs per fill.
 
 Any one of these halts the desk, and the owner decides what happens next:
 
-- three strategies stopped within one calendar month;
+- three strategies stopped within one calendar month; *(amended 2026-10-11 by the agent under a ruling; awaiting the owner's confirmation)*
 - a wave timeout on three consecutive sessions;
 - any order the journal cannot reconcile with the venue.
 

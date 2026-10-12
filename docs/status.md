@@ -86,7 +86,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->1393<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->1400<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.
@@ -446,7 +446,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 - **Recomputation counts are asserted**, not claimed: `test_graph.ml` pins
   how many nodes a tick reaches.
 - **`make research-test`** runs the research layer's own suite separately:
-  <!-- count:research-tests -->413<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Reported
+  <!-- count:research-tests -->414<!-- /count --> Python tests, hermetic and offline, checked with `ruff`. Reported
   here rather than folded into `lib/verified.ml`, which counts the OCaml
   suites only.
 - **Production smoke suite** after every deploy: the dashboard renders,

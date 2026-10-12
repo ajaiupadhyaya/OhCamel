@@ -704,6 +704,35 @@ def test_sweep_orphaned_tmp_on_a_missing_directory_is_a_noop(tmp_path: Path):
     assert sweep_orphaned_tmp(tmp_path / "does-not-exist") == []
 
 
+def test_sweep_orphaned_tmp_survives_a_temp_renamed_away_mid_sweep(tmp_path: Path, monkeypatch):
+    # The worker may rename its temp between the sweep's iterdir and its stat or unlink. Each
+    # FileNotFoundError is that race, not an error: the file is simply not the sweep's any more.
+    signals_dir = tmp_path / "signals"
+    signals_dir.mkdir()
+    gone_at_stat = signals_dir / ".a-2020-12-31.json.tmp"
+    gone_at_unlink = signals_dir / ".b-2020-12-31.json.tmp"
+    old = signals_dir / ".c-2020-12-31.json.tmp"
+    for p in (gone_at_stat, gone_at_unlink, old):
+        p.write_text("orphaned")
+        _age(p, 11 * 60)
+    real_stat, real_unlink = Path.stat, Path.unlink
+
+    def stat(self, *a, **k):
+        if self == gone_at_stat and not k and not a:
+            raise FileNotFoundError(str(self))
+        return real_stat(self, *a, **k)
+
+    def unlink(self, *a, **k):
+        if self == gone_at_unlink:
+            real_unlink(self)  # renamed by the worker an instant before
+            raise FileNotFoundError(str(self))
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    assert sweep_orphaned_tmp(signals_dir) == [old]
+
+
 # ---------------------------------------------------------------------------
 # research/service.yaml itself.
 # ---------------------------------------------------------------------------

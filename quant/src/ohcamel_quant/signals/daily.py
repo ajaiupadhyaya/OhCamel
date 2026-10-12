@@ -26,7 +26,16 @@ service's rows are not this producer's and are skipped silently):
   document (a worker down, an ingest failed, a refusal that evening) is caught
   up on the next run: today's targets, emitted ``late``, naming the missed
   period end. Every other session is a ``held`` row, naming the last
-  rebalance;
+  rebalance -- unless the DESK did not size the last document (the stage
+  review's B-I3): when the live engine answers (``OHCAMEL_QUANT_LIVE_ENGINE_URL``,
+  one GET of ``/api/research`` with ``desk.report``'s 10 s timeout), the last
+  document counts as done only when the desk's latest judgement for the slug is
+  of that sequence, accepted or accepted_incubation, with a rebalance sentence
+  that sized it (not one beginning "refused", "not sized", "pending", "no
+  targets" or "the rebalance raised"). Otherwise the cell is due again: today's
+  targets, emitted ``retry``, the note naming the desk's verdict. When the
+  engine does not answer, the hold is keyed on the last written document, as
+  before, and the run's notes say so;
 * NaN and zero weights are dropped -- an all-zero row is a flat decision, an
   empty valid document -- and a book over 1x gross is scaled to 1x, the
   document's params then carrying ``gross_scaled: true`` (INC-01);
@@ -45,8 +54,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date, datetime, timedelta
-from functools import lru_cache
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -56,8 +64,9 @@ import pandas as pd
 
 from ..config import REPO_ROOT
 from ..jobs.artifacts import ArtifactSpec
+from .calendar import holidays, next_session, previous_session
 from .contract import GATES_VERSION, params_hash, signal_v1, write_atomic
-from .freeze import frozen_params, newest_farm
+from .freeze import FREEZE_KIND, freeze_id, frozen_params, newest_farm
 from .roster import ROSTER_PATH, Cell, load_roster, targets_gross_scaled
 
 __all__ = ["BOOK_PATH", "book_symbols", "next_session", "run", "targets_for", "validation_for"]
@@ -68,6 +77,16 @@ NY = ZoneInfo("America/New_York")
 _SYMBOL = re.compile(r"\(symbol ([A-Z][A-Z0-9.]*)\)")
 _STATUS = {"PASS": "pass", "FAIL": "fail"}
 _PERIOD = {"weekly": "W", "monthly": "M", "quarterly": "Q"}   # engine.rebalance_mask's frequencies
+# A rebalance sentence that did not size the strategy (desk/intake.ml's outcomes).
+UNSIZED = ("refused", "not sized", "pending", "no targets", "the rebalance raised")
+# INC-01, *Gross scaling* / *Execution* (B-I2): what a farm verdict was earned under, noted on every run.
+EXECUTION_NOTES = [
+    "a farm verdict was earned at the strategy's default_max_leverage (2-3x gross for tsmom, risk_parity and "
+    "low_beta), while the desk trades these de-levered 1x targets: a cell's verdict is not evidence at the "
+    "leverage traded",
+    "the backtest engine fills at the close of d+1 (execution_lag=1); the desk fills at the open of d+1 by "
+    "market-on-open: the farm's fill price is not the desk's",
+]
 EMITTED = ["slug", "as_of", "sequence", "gross_scaled", "n_targets", "status", "note", "last_rebalance", "path"]
 REFUSED = ["slug", "reason"]
 
@@ -96,49 +115,10 @@ def book_symbols(path: Path = BOOK_PATH) -> frozenset[str]:
 
 
 # --------------------------------------------------------------- the calendar
-@lru_cache(maxsize=1)
-def _nyse_calendar() -> Any:
-    """NYSE's full-day holidays by rule, from pandas' own holiday rules (no new
-    dependency; the package has no exchange calendar -- warehouse/freshness.py and
-    deck/clock.py both count weekdays and say they cannot know holidays). Unscheduled
-    closures (a national day of mourning, a storm) are not known."""
-    from pandas.tseries.holiday import (
-        AbstractHolidayCalendar,
-        GoodFriday,
-        Holiday,
-        USLaborDay,
-        USMartinLutherKingJr,
-        USMemorialDay,
-        USPresidentsDay,
-        USThanksgivingDay,
-        nearest_workday,
-        sunday_to_monday,
-    )
-
-    class NYSE(AbstractHolidayCalendar):
-        rules = [
-            Holiday("New Year's Day", month=1, day=1, observance=sunday_to_monday),  # Saturday: no Friday close
-            USMartinLutherKingJr, USPresidentsDay, GoodFriday, USMemorialDay,
-            Holiday("Juneteenth", month=6, day=19, start_date="2022-01-01", observance=nearest_workday),
-            Holiday("Independence Day", month=7, day=4, observance=nearest_workday),
-            USLaborDay, USThanksgivingDay,
-            Holiday("Christmas", month=12, day=25, observance=nearest_workday),
-        ]
-
-    return NYSE()
-
-
-def _holidays(year: int) -> frozenset[date]:
-    days = _nyse_calendar().holidays(start=f"{year}-01-01", end=f"{year}-12-31")
-    return frozenset(d.date() for d in days)
-
-
-def next_session(d: date) -> date:
-    """The next weekday after ``d`` that is not an NYSE holiday."""
-    n = d + timedelta(days=1)
-    while n.weekday() >= 5 or n in _holidays(n.year):
-        n += timedelta(days=1)
-    return n
+# NYSE's sessions (weekdays less the rule holidays) live in .calendar, shared
+# with signals.overlay's bars-freshness refusal.
+_holidays = holidays
+_previous_session = previous_session
 
 
 def _period_end(as_of: date, cadence: str) -> bool:
@@ -310,19 +290,56 @@ def _bars(ctx: Any, symbols: list[str], sessions: pd.DatetimeIndex) -> pd.DataFr
     return df
 
 
-def _previous_session(d: date) -> date:
-    p = d - timedelta(days=1)
-    while p.weekday() >= 5 or p in _holidays(p.year):
-        p -= timedelta(days=1)
-    return p
-
-
 def _last_period_end(as_of: date, cadence: str) -> date:
     """The most recent period end strictly before ``as_of`` (at most a quarter's sessions back)."""
     d = _previous_session(as_of)
     while not _period_end(d, cadence):
         d = _previous_session(d)
     return d
+
+
+def desk_judgements(ctx: Any, notes: list[str]) -> dict[str, dict[str, Any]] | None:
+    """``{slug: latest judgement}`` from the live engine's ``/api/research`` (the
+    ``latest`` object desk/intake.ml's ``research_json`` serves per strategy), or None
+    -- with the note -- when no engine answers: the URL unset, no answer within
+    :data:`report.TIMEOUT_S`, an error status, or a body that is not the route's."""
+    import httpx
+
+    from .report import TIMEOUT_S
+
+    unreachable = "desk unreachable: keyed on the last written document"
+    base = (getattr(ctx.market.settings, "live_engine_url", None) or "").strip().rstrip("/")
+    if not base:
+        notes.append(f"{unreachable} (OHCAMEL_QUANT_LIVE_ENGINE_URL is unset)")
+        return None
+    try:
+        r = httpx.get(base + "/api/research", timeout=TIMEOUT_S)
+        body = r.json() if r.status_code == 200 else None
+    except (httpx.HTTPError, ValueError) as e:
+        notes.append(f"{unreachable} ({type(e).__name__}: {e})")
+        return None
+    if not isinstance(body, dict) or not isinstance(body.get("strategies"), list):
+        notes.append(f"{unreachable} (GET /api/research answered {r.status_code}, not the route's body)")
+        return None
+    return {str(s.get("name")): s.get("latest") for s in body["strategies"] if isinstance(s, dict)}
+
+
+def desk_verdict(latest: Any, last: dict[str, Any]) -> str | None:
+    """None when the desk sized ``last`` (its latest judgement is of ``last``'s sequence,
+    accepted or accepted_incubation, and its rebalance sentence sized it); else what the
+    desk did, in words for the retry's note."""
+    if not isinstance(latest, dict):
+        return "the desk holds no judgement of it"
+    seq = latest.get("sequence")
+    if seq != last["sequence"]:
+        return f"the desk's latest judgement is of sequence {seq}, not the last document's {last['sequence']}"
+    verdict, rule = latest.get("verdict"), latest.get("rule")
+    if verdict not in ("accepted", "accepted_incubation"):
+        return f"the desk judged sequence {seq} {verdict}" + (f" at {rule}" if rule else "")
+    rb = latest.get("rebalance")
+    if not isinstance(rb, str) or rb.startswith(UNSIZED):
+        return f"the desk accepted sequence {seq} and did not size it: {str(rb)[:160]}"
+    return None
 
 
 def _hold_reason(cadence: str, as_of: date, targets: dict[str, float],
@@ -353,7 +370,7 @@ def _hold_reason(cadence: str, as_of: date, targets: dict[str, float],
 
 
 def _emit(cell: Cell, params: dict[str, Any], ctx: Any, out_dir: Path, farm_id: str | None,
-          farm: pd.DataFrame | None) -> dict[str, Any]:
+          farm: pd.DataFrame | None, desk: dict[str, Any] | None = None) -> dict[str, Any]:
     from ..backtest.strategies import get_strategy
 
     cadence = get_strategy(str(cell.strategy)).default_rebalance
@@ -372,7 +389,10 @@ def _emit(cell: Cell, params: dict[str, Any], ctx: Any, out_dir: Path, farm_id: 
         return {**row, "status": "held", "note": "no decision"}
     targets, scaled = targets_gross_scaled(raw)
     hold, missed = _hold_reason(cadence, as_of, targets, last)
-    if hold is not None:
+    retry = None
+    if hold is not None and last is not None and desk is not None:
+        retry = desk_verdict(desk.get(cell.slug), last)
+    if hold is not None and retry is None:
         return {**row, "status": "held", "note": hold}
     sequence = _sequence(ctx, as_of, last)
     doc = signal_v1(strategy=cell.slug, params={**ran, "gross_scaled": True} if scaled else dict(ran),
@@ -382,6 +402,8 @@ def _emit(cell: Cell, params: dict[str, Any], ctx: Any, out_dir: Path, farm_id: 
     write_atomic(doc, path)
     done = {**row, "sequence": sequence, "gross_scaled": scaled, "n_targets": len(targets),
             "last_rebalance": as_of.isoformat()}
+    if retry is not None:
+        return {**done, "status": "retry", "note": f"retry: {retry} (the last document is {last['as_of']})"}
     if missed is not None:
         return {**done, "status": "late", "note": f"late: the {cadence} period end {missed} passed with no "
                                                   f"document (the last is {last['as_of']})"}
@@ -415,6 +437,10 @@ def _roster_refusal(c: Cell, book: frozenset[str]) -> str | None:
     return None
 
 
+def _todo_any(eligible: list[Cell], frozen: dict[str, dict]) -> bool:
+    return any(c.slug in frozen for c in eligible)
+
+
 def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     cells = [c for c in load_roster(ROSTER_PATH).cells if c.producer == PRODUCER]
     out_dir = ctx.signals_dir
@@ -434,24 +460,29 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     frozen, unfrozen = frozen_params(ctx, month=_today(), cells=eligible)
     refused.extend(unfrozen)
     farm_id, farm = newest_farm()
+    run_notes: list[str] = []
+    desk = desk_judgements(ctx, run_notes) if _todo_any(eligible, frozen) else None
     emitted: list[dict] = []
     todo = [c for c in eligible if c.slug in frozen]
     for i, c in enumerate(todo):
         ctx.check_cancelled()
         ctx.progress(i / max(1, len(todo)), c.slug)
         try:
-            emitted.append(_emit(c, frozen[c.slug], ctx, Path(out_dir), farm_id, farm))
+            emitted.append(_emit(c, frozen[c.slug], ctx, Path(out_dir), farm_id, farm, desk))
         except CellRefused as e:
             refused.append({"slug": c.slug, "reason": str(e)})
         except Exception as e:  # noqa: BLE001 - one cell's failure is its refusal, never the run's (h)
             refused.append({"slug": c.slug, "reason": f"{type(e).__name__}: {e}"[:500]})
-    n = {s: sum(r["status"] == s for r in emitted) for s in ("written", "late", "held", "already_present")}
+    n = {s: sum(r["status"] == s for r in emitted)
+         for s in ("written", "late", "retry", "held", "already_present")}
     return _spec(emitted, refused,
-                 [f"{n['written']} written, {n['late']} written late, {n['held']} held, {n['already_present']} already present, "
+                 [f"{n['written']} written, {n['late']} written late, {n['retry']} written again (the desk did not "
+                  f"size the last), {n['held']} held, {n['already_present']} already present, "
                   f"{len(refused)} refused; parameters frozen for the month (INC-01); documents only on each "
                   "strategy's own decision sessions; validation from the newest farm verdict when it tested "
-                  "the frozen parameters"],
+                  "the frozen parameters", *run_notes, *EXECUTION_NOTES],
                  provenance=[{"source": "farm.sweep", "artifact": farm_id},
+                             {"source": FREEZE_KIND, "artifact": freeze_id(_today())},
                              {"source": "roster", "path": str(ROSTER_PATH)},
                              {"source": "calendar", "note": "NYSE full-day holidays by rule (pandas); "
                                                            "unscheduled closures not known"}])

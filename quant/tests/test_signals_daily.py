@@ -113,7 +113,7 @@ FARM_ROWS = [
 
 def _ctx(world: dict, *, signals_dir: Path | None) -> JobContext:
     md = MarketData(Settings(offline=True, data_dir=world["tmp"], warehouse_path=world["wh"],
-                             signals_dir=signals_dir))
+                             signals_dir=signals_dir, live_engine_url=None))
     return JobContext(job_id="t", params={}, threads=1, progress_fn=lambda f, m: None,
                       cancelled_fn=lambda: False, _market=md)
 
@@ -346,8 +346,9 @@ def _mini(tmp: Path, monkeypatch, wh: Path, rows: str, farm_rows: list[dict]):
                      finished=datetime(2026, 5, 1, 23, 0, tzinfo=UTC))
     sig = tmp / "signals"
 
-    def run_at(end: date):
-        md = _CutMarket(Settings(offline=True, data_dir=tmp, warehouse_path=wh, signals_dir=sig), end)
+    def run_at(end: date, url: str | None = None):
+        md = _CutMarket(Settings(offline=True, data_dir=tmp, warehouse_path=wh, signals_dir=sig,
+                                 live_engine_url=url), end)
         ctx = JobContext(job_id="t", params={}, threads=1, progress_fn=lambda f, m: None,
                          cancelled_fn=lambda: False, _market=md)
         try:
@@ -533,3 +534,72 @@ def test_a_missed_month_end_is_caught_up_late_and_a_kept_one_holds(tmp_path, mon
     assert (late["status"], late["sequence"]) == ("late", 2514)
     assert "2026-05-29" in late["note"] and "2026-05-27" in late["note"]
     assert json.loads((sig / f"farm_sma_trend_eq3-{LAST}.json").read_text())["as_of"] == "2026-06-01"
+
+
+# ------------------------------------------------- the stage review's fix wave (B-I3, B-I2, freeze)
+def _research(slug: str, sequence: int, verdict: str, rebalance: str | None, rule: str | None = None) -> dict:
+    return {"strategies": [{"name": slug, "latest": {"verdict": verdict, "rule": rule, "rebalance": rebalance,
+                                                     "sequence": sequence, "as_of": "2026-05-27"}}]}
+
+
+def test_the_desk_decides_whether_the_last_document_is_done(tmp_path, monkeypatch, wh):
+    # sma_trend, monthly: 05-27's first document is written (sequence 2511); 05-28 is no period end,
+    # so keyed on the last WRITTEN document it holds. Keyed on the desk:
+    # * refused by the desk (a calendar refusal after a stale ingest) -> due again: today's targets,
+    #   status retry, the note naming the desk's verdict, a 05-28 document (sequence 2512);
+    # * sized -> held;
+    # * no engine answering -> held, as before, with the note.
+    from test_signals_report import _Engine, _ok
+
+    rows = [{"cell_id": "sma_trend@eq3", "verdict": "FAIL", "selected_params": '{"months": 10}'}]
+    slug = "farm_sma_trend_eq3"
+    run_at, sig = _mini(tmp_path, monkeypatch, wh, _row(slug, "sma_trend", "eq3"), rows)
+    assert _emitted(run_at(date(2026, 5, 27))).loc[slug, "sequence"] == 2511
+
+    sized = _research(slug, 2511, "accepted_incubation",
+                      "1 market-on-open order journaled, then sent, and acknowledged: ...")
+    with _Engine({"/api/research": _ok(sized)}) as engine:
+        held = _emitted(run_at(date(2026, 5, 28), engine.url)).loc[slug]
+    assert (held["status"], held["last_rebalance"]) == ("held", "2026-05-27")
+
+    unreachable = run_at(date(2026, 5, 28), "http://127.0.0.1:9")
+    assert _emitted(unreachable).loc[slug, "status"] == "held"
+    assert any(n.startswith("desk unreachable: keyed on the last written document") for n in unreachable.notes)
+
+    refused = _research(slug, 2511, "accepted_incubation",
+                        "refused, and nothing journaled or sent: the signal's as_of 2026-05-27 is not the newest "
+                        "recorded session")
+    with _Engine({"/api/research": _ok(refused)}) as engine:
+        spec = run_at(date(2026, 5, 28), engine.url)
+        assert engine.seen == ["/api/research"]
+    again = _emitted(spec).loc[slug]
+    assert (again["status"], again["sequence"]) == ("retry", 2512)
+    assert "did not size it: refused, and nothing journaled or sent" in again["note"]
+    assert "2026-05-27" in again["note"]
+    assert (sig / f"{slug}-2026-05-28.json").exists()
+    assert not any(n.startswith("desk unreachable") for n in spec.notes)
+
+
+def test_desk_verdict_reads_the_latest_judgement():
+    last = {"sequence": 7, "as_of": "2026-05-27"}
+    assert daily.desk_verdict({"sequence": 7, "verdict": "accepted", "rebalance": "2 market-on-open orders"},
+                              last) is None
+    assert "sequence 6, not the last document's 7" in daily.desk_verdict(
+        {"sequence": 6, "verdict": "accepted", "rebalance": "sent"}, last)
+    assert daily.desk_verdict({"sequence": 7, "verdict": "rejected", "rule": "R4", "rebalance": None},
+                              last) == "the desk judged sequence 7 rejected at R4"
+    for unsized in ("pending: the judgement is recorded", "not sized: sequence 8", "no targets, and no order: x"):
+        assert "did not size it" in daily.desk_verdict(
+            {"sequence": 7, "verdict": "accepted", "rebalance": unsized}, last)
+    assert daily.desk_verdict(None, last) == "the desk holds no judgement of it"
+
+
+def test_every_run_notes_the_leverage_and_the_fill_the_verdict_was_earned_at(world):
+    # B-I2: the farm backtests at default_max_leverage and fills at the close of d+1; the desk trades
+    # 1x and fills at the open. Both said on every run. And the freeze artifact is in the provenance.
+    notes = " ".join(world["spec"].notes)
+    assert "default_max_leverage" in notes and "de-levered 1x" in notes
+    assert "execution_lag=1" in notes and "market-on-open" in notes
+    prov = {p["source"]: p for p in world["spec"].provenance}
+    assert prov["signals.freeze"]["artifact"] == freeze.freeze_id(date(2026, 6, 1))
+    assert prov["signals.freeze"]["artifact"] is not None

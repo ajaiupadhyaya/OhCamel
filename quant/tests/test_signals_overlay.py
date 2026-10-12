@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import UTC, datetime, timedelta
+import re
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -405,3 +406,74 @@ def test_fewer_than_thirty_sessions_is_refused(world, db, tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="29 sessions"):
         _run(world, sig)
     assert not list(sig.glob("overlay-*.json"))
+
+
+# ------------------------------------------------------- the stage review's fix wave
+def _max_age_minutes() -> int:
+    """book.example.sexp's desk block: ``(overlay_max_age_minutes N)``."""
+    from ohcamel_quant.config import REPO_ROOT
+
+    text = (REPO_ROOT / "book.example.sexp").read_text()
+    m = re.search(r"\(overlay_max_age_minutes (\d+)\)", text)
+    assert m is not None
+    return int(m.group(1))
+
+
+def test_an_overlay_run_precedes_every_sizing_moment_within_the_desks_max_age():
+    # B-C1. The desk sizes at 18:45 (signals-daily's documents), 19:15 (the research service,
+    # a constant here) and 09:30 (the open). Each needs a scheduled signals.overlay run at most
+    # overlay_max_age_minutes (60, the book's) before it, or it sizes at the fallback.
+    from ohcamel_quant.deck.clock import NY
+    from ohcamel_quant.jobs.cron import fire_times, parse_cron
+    from ohcamel_quant.jobs.schedules import DEFAULT_PATH, load_schedules, parse_duration
+
+    sched = load_schedules(DEFAULT_PATH)
+    daily = [e for e in sched.entries if e.kind == "signals.daily"]
+    assert [e.cron for e in daily] == ["45 18 * * 1-5"]
+    runs = sorted(t for e in sched.entries if e.kind == "signals.overlay"
+                  for t in fire_times(parse_cron(e.cron), date(2026, 6, 2)))
+    max_age = _max_age_minutes()
+    assert max_age == 60
+    for hh, mm, who in ((18, 45, "signals-daily"), (19, 15, "the research service"), (9, 30, "the open")):
+        moment = datetime(2026, 6, 2, hh, mm, tzinfo=NY).astimezone(UTC)
+        before = [t for t in runs if t <= moment]
+        assert before, f"no overlay run before {who}"
+        age = (moment - before[-1]).total_seconds() / 60
+        assert 0 <= age <= max_age, f"{who}: the newest overlay is {age:.0f} min old"
+    assert parse_duration("35m") == sched.max_age_s["signals.overlay"]  # the kind's own max age is kept
+
+
+def test_the_sources_table_names_every_document_that_fed_the_targets(world, db, tmp_path):
+    # B-I4: one row per cell whose newest document fed combined_targets.
+    sig = _signals(tmp_path)
+    spec = _run(world, sig)
+    src = spec.tables["sources"].sort_values("slug").reset_index(drop=True)
+    assert list(src.columns) == ["slug", "sequence", "as_of", "capital_fraction", "path"]
+    assert src.to_dict("records") == [
+        {"slug": "exp_a01_spy", "sequence": 3, "as_of": None, "capital_fraction": 0.025,
+         "path": "exp_a01_spy-2026-06-01.json"},
+        {"slug": "farm_mix_fixture", "sequence": 2514, "as_of": None, "capital_fraction": 0.025,
+         "path": "farm_mix_fixture-2026-06-01.json"},
+    ]
+
+
+def test_bars_two_sessions_old_are_refused_and_nothing_is_written(world, db, tmp_path, monkeypatch):
+    # B-I5: the fixture's bars end Mon 2026-06-01. Run on Thu 06-04: the previous session is Wed
+    # 06-03, one behind it is Tue 06-02, and 06-01 is older: refused, naming both dates.
+    sig = _signals(tmp_path)
+    monkeypatch.setattr(overlay, "_now", lambda: datetime(2026, 6, 4, 14, 7, tzinfo=UTC))
+    with pytest.raises(ValueError, match=r"the bars end 2026-06-01, more than one session behind 2026-06-03"):
+        _run(world, sig)
+    assert not list(sig.glob("overlay-*.json"))
+    # One session behind the previous session is still fresh: Wed 06-03's run, previous 06-02.
+    assert overlay.bars_refusal(date(2026, 6, 1), date(2026, 6, 3)) is None
+
+
+def test_a_materially_negative_variance_raises():
+    # B minor: [[1, 2], [2, 1]] is not PSD; w = (1, -1): w'Sw = 1 - 4 + 1 = -2, far below
+    # -1e-12 x w' diag(S) w = -2e-12. A tiny negative from rounding is still 0.
+    cov = pd.DataFrame([[1.0, 2.0], [2.0, 1.0]], index=["A", "B"], columns=["A", "B"])
+    with pytest.raises(ValueError, match="materially negative"):
+        overlay.forecast_vol({"A": 1.0, "B": -1.0}, cov, None)
+    near = pd.DataFrame([[1.0, 1.0 + 1e-15], [1.0 + 1e-15, 1.0]], index=["A", "B"], columns=["A", "B"])
+    assert overlay.forecast_vol({"A": 1.0, "B": -1.0}, near, None) == 0.0

@@ -710,16 +710,21 @@ def sweep_orphaned_tmp(signals_dir: Path) -> list[Path]:
     process dies between the two. The intake never reads a dotfile and
     never will, so nothing else ever cleans these up. Only
     files matching that exact naming convention -- a dotfile ending in
-    ``.tmp`` -- are touched; never anything ending in ``.json``."""
+    ``.tmp`` -- are touched; never anything ending in ``.json``. The
+    worker may rename its temp between the listing and the stat or the
+    unlink: that FileNotFoundError is the race, and the file is skipped."""
     removed: list[Path] = []
     if not signals_dir.is_dir():
         return removed
     cutoff = time_module.time() - ORPHAN_TMP_MIN_AGE_SECONDS
     for p in sorted(signals_dir.iterdir()):
         if p.is_file() and p.name.startswith(".") and p.name.endswith(".tmp"):
-            if p.stat().st_mtime >= cutoff:
+            try:
+                if p.stat().st_mtime >= cutoff:
+                    continue
+                p.unlink()
+            except FileNotFoundError:
                 continue
-            p.unlink()
             removed.append(p)
     return removed
 

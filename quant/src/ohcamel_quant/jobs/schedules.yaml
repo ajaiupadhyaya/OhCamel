@@ -225,7 +225,27 @@ schedules:
     heavy: false
 
   # INC-01: the overlay's exposure scale (volatility targeting on the roster's combined targets),
-  # at 09:40, every 15 minutes 10:00-15:45, and at 18:50 after signals.daily's 18:45 documents.
+  # at 09:20 (before the open's 09:30 sizing), 09:40, every 15 minutes 10:00-15:45, at 18:40 (after
+  # the 18:30 daily-bars ingest, before signals.daily's 18:45 documents) and at 18:50. Every moment
+  # the desk sizes at -- 18:45, the research service's 19:15, the 09:30 open -- has a run within the
+  # desk's overlay_max_age_minutes (60) before it (the stage review's B-C1; pinned by
+  # tests/test_signals_overlay.py), or it would size at the fallback.
+  - name: signals-overlay-premarket
+    cron: "20 9 * * 1-5"
+    kind: signals.overlay
+    params: {}
+    priority: 1
+    mem_class: S
+    heavy: false
+
+  - name: signals-overlay-preevening
+    cron: "40 18 * * 1-5"
+    kind: signals.overlay
+    params: {}
+    priority: 2
+    mem_class: S
+    heavy: false
+
   - name: signals-overlay-open
     cron: "40 9 * * 1-5"
     kind: signals.overlay
