@@ -285,6 +285,14 @@ let clock_freshness = Time_ns.Span.of_min 15.0
    scheduler, no venue. *)
 let set_clock t ~at (clock : Venue.Session_clock.t) = t.clock <- Some (clock, at)
 
+(* The venue's own clock as last read, advanced by the host's time since the
+   read was stamped: the overlay's clock (Intake.Gauge). A failed read leaves
+   the reading, so this stays an answer through one; None only before any
+   reading has ever arrived. *)
+let venue_now ?(now = Time_ns.now ()) t =
+  Option.map t.clock ~f:(fun (c, at) ->
+      Time_ns.add c.Venue.Session_clock.now (Time_ns.diff now at))
+
 (* Read the venue's clock and keep it. Called from bin/main.ml's existing clock
    timer and not awaited by it; one read at a time (see [clock_read]).
 
@@ -357,6 +365,8 @@ let scale_fields t =
               ("as_of", `Null);
               ("age_s", `Null);
               ("state", `String "absent");
+              ("reason", `Null);
+              ("governor_cap", `Null);
             ] );
       ]
 

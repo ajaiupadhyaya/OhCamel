@@ -1440,16 +1440,14 @@ let run_live ~book_path ~(serve_port : int option) =
             s.Config.Book.Signals_spec.strategies)
       in
       (* What every sizing is scaled by (design §4.3): the overlay, aged on the
-         venue's clock as the order manager last read it, times the governor
+         venue's clock as the desk last read it, times the governor
          on the graph's drawdown and the book's drawdown cap. The desk shows
          the same numbers. *)
       let gauge =
-        {
-          Ohcamel_desk.Intake.Gauge.spec = book.Config.Book.desk;
-          venue_now = (fun () -> Ohcamel_desk.Oms.venue_now oms);
-          drawdown = (fun () -> Some (Graph.current_drawdown graph));
-          dd_cap = Ohcamel_desk.Intake.Gauge.dd_cap_of_limits limits;
-        }
+        Ohcamel_desk.Intake.Gauge.create ~spec:book.Config.Book.desk
+          ~venue_now:(fun () -> Ohcamel_desk.Desk.venue_now desk)
+          ~drawdown:(fun () -> Some (Graph.current_drawdown graph))
+          ~dd_cap:(Ohcamel_desk.Intake.Gauge.dd_cap_of_limits limits)
       in
       Ohcamel_desk.Desk.set_gauge desk gauge;
       let intake =
@@ -1769,15 +1767,13 @@ let run_demo ~port =
   in
   Ohcamel_desk.Desk.set_oms desk oms;
   (* No intake runs here, but the page shows the scale one would size with:
-     the book's fallback, as no overlay is ever received, times the governor
-     on the synthetic book's drawdown. *)
+     no overlay is ever received, so it is absent and reads 1, times the
+     governor on the synthetic book's drawdown. *)
   Ohcamel_desk.Desk.set_gauge desk
-    {
-      Ohcamel_desk.Intake.Gauge.spec = demo_desk_spec;
-      venue_now = (fun () -> Ohcamel_desk.Oms.venue_now oms);
-      drawdown = (fun () -> Some (Graph.current_drawdown graph));
-      dd_cap = Ohcamel_desk.Intake.Gauge.dd_cap_of_limits demo_limits;
-    };
+    (Ohcamel_desk.Intake.Gauge.create ~spec:demo_desk_spec
+       ~venue_now:(fun () -> Ohcamel_desk.Desk.venue_now desk)
+       ~drawdown:(fun () -> Some (Graph.current_drawdown graph))
+       ~dd_cap:(Ohcamel_desk.Intake.Gauge.dd_cap_of_limits demo_limits));
   (* No reconciliation first, as the live host has: the journal is in memory
      and was opened empty above, so no earlier process left an order open for
      a trip to miss. *)

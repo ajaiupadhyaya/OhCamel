@@ -48,34 +48,49 @@ val read : ?between:(unit -> unit) -> string -> ident -> read
 
 (** What the effective scale is read from beyond the journal (design §4.3): the book's
     overlay numbers ([overlay_max_age_minutes], [overlay_fallback], [overlay_band]), the
-    venue's clock as the desk last read it (Oms.venue_now), the graph's drawdown as a
-    fraction, and the book's drawdown cap. *)
+    venue's own clock as the desk last read it advanced by the host's time since
+    (Desk.venue_now; None only before any reading has ever arrived), the graph's drawdown
+    as a fraction, and the book's drawdown cap. It also keeps the last governor computed
+    from a drawdown that could be read: one the graph cannot read (the thunk raises, or
+    answers a non-finite number) holds that value, 1 before any, and never governs to 0.
+    One gauge is shared by the intake and the desk. *)
 module Gauge : sig
-  type t = {
-    spec : Ohcamel.Config.Book.Desk_spec.t;
-    venue_now : unit -> Time_ns.t option;
-    drawdown : unit -> float option;
-    dd_cap : float option;
-  }
+  type t
 
-  val none : t
-  (** The default book's numbers, no clock, no drawdown, no cap: the effective scale is
-      the fallback. *)
+  val create :
+    spec:Ohcamel.Config.Book.Desk_spec.t ->
+    venue_now:(unit -> Time_ns.t option) ->
+    drawdown:(unit -> float option) ->
+    dd_cap:float option ->
+    t
+
+  val none : unit -> t
+  (** The default book's numbers, no clock, no drawdown, no cap. *)
+
+  val spec : t -> Ohcamel.Config.Book.Desk_spec.t
+  val dd_cap : t -> float option
 
   val dd_cap_of_limits : Limit.t list -> float option
   (** The book's Portfolio-scoped [Max_drawdown] threshold, the tightest of several; None
-      when it has none. *)
+      when it has none, and the governor is then 1 ([setup] says so once). *)
 end
 
 (** The effective scale and what it was computed from, as [/api/desk] carries it. *)
 module Reading : sig
   type t = {
-    exposure_scale : float;  (** Overlay.effective: what every sizing multiplies by. *)
+    exposure_scale : float;
+        (** What every sizing multiplies by: the overlay's scale when fresh or held, the
+            book's fallback when stale, 1 when absent; times the governor. *)
     governor : float;
+    governor_cap : float option;  (** The book's drawdown cap; None governs at 1. *)
+    governor_held : bool;  (** The drawdown could not be read: the last governor holds. *)
     overlay : float option;  (** The latest accepted overlay's scale, whatever its age. *)
     as_of : string option;
     age_s : int option;  (** Seconds since it was received, on the venue clock. *)
-    state : Overlay.state;  (** Absent too when no venue clock has answered. *)
+    state : Overlay.state;
+        (** Absent only when no overlay was ever accepted; Stale too before any venue
+            reading has arrived, with [reason]. *)
+    reason : string option;  (** "no venue clock yet", or None. *)
   }
 end
 
@@ -83,14 +98,16 @@ val state_word : Overlay.state -> string
 (** "fresh", "held", "stale" or "absent": the wire's word. *)
 
 val reading : latest:(int * string * float * string) option -> Gauge.t -> Reading.t
-(** [latest] as Journal.latest_overlay answers it. *)
+(** [latest] as Journal.latest_overlay answers it. Updates the gauge's held governor when
+    the drawdown is read. *)
 
 val reading_fields : Reading.t -> (string * Yojson.Safe.t) list
-(** ["exposure_scale"], ["governor"] and ["overlay"] (value, as_of, age_s, state: "fresh",
-    "held", "stale" or "absent"), in that order. *)
+(** ["exposure_scale"], ["governor"] and ["overlay"] (value, as_of, age_s, state --
+    "fresh", "held", "stale" or "absent" -- reason, governor_cap), in that order. *)
 
 val overlay_zero_line : sequence:int -> string
-(** The alert line written once when an overlay of zero is accepted. *)
+(** The alert line written once when an overlay of zero is accepted: "overlay <n> says
+    zero exposure: every strategy that adjusts intraday is flattened". *)
 
 type t
 
@@ -142,7 +159,8 @@ val judge_pass : t -> Accepted.t list
 
 val effective_scale : t -> float
 (** [Overlay.effective ~overlay ~fallback ~governor]: the latest accepted overlay's scale
-    when it is fresh or held, else the book's fallback, times the drawdown governor. *)
+    when it is fresh or held, the book's fallback when stale, 1 when no overlay was ever
+    accepted; times the drawdown governor. *)
 
 val current_reading : t -> Reading.t
 
@@ -160,10 +178,11 @@ val adjust : t -> oms:Oms.t option -> unit Deferred.t
 (** For each registered strategy that adjusts intraday, is not stopped, and has a latest
     accepted document and a latest sizing: when the effective scale (times its incubation
     ratio, as the sizing recorded it) is more than [overlay_band] from the last sizing's
-    scale, or is zero where that was not, the document is re-sized at the effective scale
-    and proposed in the intraday mode, its sizing journaled with mode "adjust". At most
-    eight strategies at once. A pass that finds the last one still running skips and says
-    so. Never raises. *)
+    scale -- or the accepted, fresh or held overlay says exactly 0 and that was not 0 --
+    the document is re-sized at the effective scale and proposed in the intraday mode, its
+    sizing journaled with mode "adjust". At most eight strategies at once. A pass that
+    finds the last one still running skips, said once for the whole overlap. Never raises.
+*)
 
 val run : ?time_source:Time_source.t -> ?oms:Oms.t -> t -> unit Deferred.t
 (** A pass at once and then once a minute, each pass's accepted documents sized at the

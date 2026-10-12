@@ -62,8 +62,10 @@ val governor : drawdown:float option -> dd_cap:float option -> float
 
 val effective : overlay:float option -> fallback:float -> governor:float -> float
 (** [(overlay or fallback) * governor], clamped to [0, 1]. [overlay] is the accepted
-    overlay's scale, [None] when there is none the book may use. A non-finite input or
-    product gives [0.0]. *)
+    overlay's scale while it is fresh or held, [None] when it is stale (the fallback
+    applies). When no overlay was ever accepted ([Absent]) the desk passes [Some 1.0]: the
+    book sizes as it did before overlays existed, times the governor (Intake.reading). A
+    non-finite input or product gives [0.0]. *)
 
 (** How the last overlay received stands. *)
 type state =

@@ -247,15 +247,15 @@ let test_no_directory_means_no_intake () =
   in
   contains "no directory, a signals block" ~substring:"OHCAMEL_SIGNALS_DIR is not set"
     (off "no directory"
-       (Intake.setup ~gauge:Intake.Gauge.none ~journal ~universe ~signals ~dir:None
+       (Intake.setup ~gauge:(Intake.Gauge.none ()) ~journal ~universe ~signals ~dir:None
           ~on_event:ignore ~now:(fun () -> at)));
   contains "a directory, no signals block" ~substring:"the book has no signals block"
     (off "no block"
-       (Intake.setup ~gauge:Intake.Gauge.none ~journal ~universe ~signals:None
+       (Intake.setup ~gauge:(Intake.Gauge.none ()) ~journal ~universe ~signals:None
           ~dir:(Some "/tmp") ~on_event:ignore ~now:(fun () -> at)));
   (match
-     Intake.setup ~gauge:Intake.Gauge.none ~journal ~universe ~signals ~dir:(Some "/tmp")
-       ~on_event:ignore ~now:(fun () -> at)
+     Intake.setup ~gauge:(Intake.Gauge.none ()) ~journal ~universe ~signals
+       ~dir:(Some "/tmp") ~on_event:ignore ~now:(fun () -> at)
    with
   | Intake.Running _ -> ()
   | Intake.Off why -> Alcotest.failf "both halves, and no intake: %s" why);
@@ -1635,12 +1635,10 @@ let overlay_doc ?(as_of = "2026-09-18T23:00:00Z") ~sequence scale =
 (* The venue clock is [clock], a cell a case moves; the book is the default
    one (fallback 0.5, band 0.10, 60 minutes). *)
 let gauge ?drawdown ?dd_cap clock =
-  {
-    Intake.Gauge.spec = Book.Desk_spec.default;
-    venue_now = (fun () -> !clock);
-    drawdown = (fun () -> drawdown);
-    dd_cap;
-  }
+  Intake.Gauge.create ~spec:Book.Desk_spec.default
+    ~venue_now:(fun () -> !clock)
+    ~drawdown:(fun () -> drawdown)
+    ~dd_cap
 
 let overlay_rows journal =
   let n = ref 0 in
@@ -1716,7 +1714,8 @@ let test_overlay_stale_falls_back () =
 (* The governor reads the graph. A book of 98,500 in cash whose recorded peak
    is 100,000 is 1.5 % down: Graph.current_drawdown 0.015. Its Max_drawdown
    limit of 0.02 is the cap, so the governor is (0.02 - 0.015) / (0.02 / 2) =
-   0.5; with no overlay the fallback 0.5 applies, and the scale is 0.25. *)
+   0.5; with no overlay ever accepted it is absent and reads 1, so the scale
+   is 0.5. *)
 let test_governor_read_from_the_graph () =
   let limits =
     [ { Limit.name = "dd-cap"; scope = Limit.Portfolio; kind = Limit.Max_drawdown 0.02 } ]
@@ -1735,17 +1734,17 @@ let test_governor_read_from_the_graph () =
         "the graph's drawdown" 0.015
         (Graph.current_drawdown graph);
       let gauge =
-        {
-          Intake.Gauge.spec = Book.Desk_spec.default;
-          venue_now = (fun () -> Some at);
-          drawdown = (fun () -> Some (Graph.current_drawdown graph));
-          dd_cap = Intake.Gauge.dd_cap_of_limits limits;
-        }
+        Intake.Gauge.create ~spec:Book.Desk_spec.default
+          ~venue_now:(fun () -> Some at)
+          ~drawdown:(fun () -> Some (Graph.current_drawdown graph))
+          ~dd_cap:(Intake.Gauge.dd_cap_of_limits limits)
       in
       let r = Intake.reading ~latest:None gauge in
-      Alcotest.(check (pair (float 1e-12) (float 1e-12)))
-        "governor 0.5, scale 0.25" (0.5, 0.25)
-        (r.Intake.Reading.governor, r.Intake.Reading.exposure_scale))
+      Alcotest.(check (triple (float 1e-12) (float 1e-12) (option (float 0.0))))
+        "governor 0.5, scale 1 x 0.5 (absent), cap 0.02" (0.5, 0.5, Some 0.02)
+        ( r.Intake.Reading.governor,
+          r.Intake.Reading.exposure_scale,
+          r.Intake.Reading.governor_cap ))
 
 (* Judged once per sequence. overlay-9 is accepted; overlay-5 is then
    rejected at O3, its 5 not above the accepted 9. Neither is judged again --
@@ -1791,10 +1790,11 @@ let test_overlay_judged_once () =
         ])
     ()
 
-(* With no venue clock an overlay can be neither judged nor aged: the file
-   waits, unrecorded, said once over two passes, and the scale is the
-   fallback, the state absent. The first pass with a clock judges it. *)
-let test_no_venue_clock_is_absent () =
+(* Before any venue reading an overlay can be neither judged nor aged: the
+   file waits, unrecorded, said once over two passes, and the scale reads
+   stale -- the fallback 0.5 -- with the reason "no venue clock yet". The
+   first pass with a clock judges it. *)
+let test_no_venue_clock_yet_reads_stale () =
   let clock = ref None in
   with_intake ~gauge:(gauge clock)
     ~f:(fun f ->
@@ -1807,15 +1807,70 @@ let test_no_venue_clock_is_absent () =
           Intake.deferred f.intake,
           List.count (Queue.to_list f.events)
             ~f:(String.is_substring ~substring:"no venue clock has answered") );
-      Alcotest.(check (pair (float 0.0) string))
-        "the fallback, absent" (0.5, "absent")
-        (Intake.effective_scale f.intake, state_of f.intake);
+      let r = Intake.current_reading f.intake in
+      Alcotest.(check (triple (float 0.0) string (option string)))
+        "the fallback, stale, and why"
+        (0.5, "stale", Some "no venue clock yet")
+        (r.Intake.Reading.exposure_scale, state_of f.intake, r.Intake.Reading.reason);
       clock := Some at;
       Intake.pass f.intake;
       Alcotest.(check (pair (float 1e-12) string))
         "judged once a clock answers" (0.7071, "fresh")
         (Intake.effective_scale f.intake, state_of f.intake))
     ()
+
+(* Absent means only that no overlay was ever accepted, and it reads 1 --
+   the desk as it sized before overlays -- times the governor: a drawdown of
+   1.6 % against a 2 % cap is (0.02 - 0.016) / 0.01 = 0.4, so 0.4. Once an
+   overlay is accepted and has aged 61 minutes it is stale, and the fallback
+   applies instead: 0.5 x 0.4 = 0.2. *)
+let test_absent_reads_one () =
+  let clock = ref (Some at) in
+  with_intake
+    ~gauge:(gauge ~drawdown:0.016 ~dd_cap:0.02 clock)
+    ~f:(fun f ->
+      Alcotest.(check (pair (float 1e-12) string))
+        "absent: 1 x 0.4" (0.4, "absent")
+        (Intake.effective_scale f.intake, state_of f.intake);
+      write f.dir "overlay-7.json" (overlay_doc ~sequence:7 "0.7071");
+      Intake.pass f.intake;
+      clock := Some (Time_ns.add at (Time_ns.Span.of_min 61.0));
+      Alcotest.(check (pair (float 1e-12) string))
+        "stale: 0.5 x 0.4" (0.2, "stale")
+        (Intake.effective_scale f.intake, state_of f.intake))
+    ()
+
+(* A book with no Portfolio Max_drawdown limit governs at 1, and the intake
+   says so once, when it is set up; the wire's governor_cap is null. *)
+let test_no_drawdown_cap_governs_at_one_said_at_setup () =
+  let journal = Or_error.ok_exn (Journal.open_ ~path:":memory:") in
+  let events = Queue.create () in
+  let g =
+    Intake.Gauge.create ~spec:Book.Desk_spec.default
+      ~venue_now:(fun () -> Some at)
+      ~drawdown:(fun () -> Some 0.5)
+      ~dd_cap:(Intake.Gauge.dd_cap_of_limits [])
+  in
+  (match
+     Intake.setup ~gauge:g ~journal ~universe
+       ~signals:(Some { Signals_spec.strategies = [ spy_live ] })
+       ~dir:(Some "/tmp") ~on_event:(Queue.enqueue events)
+       ~now:(fun () -> at)
+   with
+  | Intake.Running intake ->
+      let r = Intake.current_reading intake in
+      Alcotest.(check (pair (float 0.0) string))
+        "governor 1, the cap null" (1.0, "null")
+        ( r.Intake.Reading.governor,
+          Yojson.Safe.to_string
+            (Yojson.Safe.Util.member "governor_cap"
+               (Yojson.Safe.Util.member "overlay" (`Assoc (Intake.reading_fields r)))) )
+  | Intake.Off why -> Alcotest.failf "no intake: %s" why);
+  Alcotest.(check (list string))
+    "said once"
+    [ "intake    no Portfolio Max_drawdown limit: the drawdown governor is 1" ]
+    (Queue.to_list events);
+  Journal.close journal
 
 let suite =
   ( "intake",
@@ -1909,5 +1964,9 @@ let suite =
       Alcotest.test_case "governor read from the graph" `Quick
         test_governor_read_from_the_graph;
       Alcotest.test_case "overlay judged once" `Quick test_overlay_judged_once;
-      Alcotest.test_case "no venue clock -> absent" `Quick test_no_venue_clock_is_absent;
+      Alcotest.test_case "no venue clock yet reads stale" `Quick
+        test_no_venue_clock_yet_reads_stale;
+      Alcotest.test_case "absent reads one" `Quick test_absent_reads_one;
+      Alcotest.test_case "no drawdown cap governs at 1, said once at setup" `Quick
+        test_no_drawdown_cap_governs_at_one_said_at_setup;
     ] )

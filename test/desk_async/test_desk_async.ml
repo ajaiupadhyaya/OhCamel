@@ -3231,6 +3231,16 @@ let test_the_intake_says_what_fell_below_the_floor () =
 (* Task 11: the overlay and the adjust pass                                  *)
 (* ------------------------------------------------------------------------ *)
 
+type adjust_fixture = {
+  a_f : fixture;
+  a_name : string;
+  a_oms : D.Oms.t;
+  a_intake : D.Intake.t;
+  a_dir : string;
+  pass_and_adjust : at:float -> unit Deferred.t;
+  cleanup : unit -> unit;
+}
+
 (* A strategy at half the capital, adjusting intraday, on AAPL, holding 350
    of its own on a book of exactly 100,000, last sized at 0.70; then
    overlay-7.json arrives at [overlay], and the adjust pass runs.
@@ -3246,7 +3256,8 @@ let test_the_intake_says_what_fell_below_the_floor () =
    governor is 1, and an incubation cap of 0.5 over this one strategy's 0.5
    is a ratio of 1, so the effective scale is the overlay's, for either
    tier. The pass's waves are settled and waited on before it returns. *)
-let adjust_case ~(sizing : Ohcamel.Config.Book.Signals_spec.sizing) ~overlay =
+let adjust_case ?(last_scale = 0.70) ?(drawdown = fun () -> None) ?dd_cap
+    ?(adjust_now = true) ~(sizing : Ohcamel.Config.Book.Signals_spec.sizing) ~overlay () =
   let name = "exp_adjust" in
   let f = fixture () in
   record_close f;
@@ -3298,7 +3309,7 @@ let adjust_case ~(sizing : Ohcamel.Config.Book.Signals_spec.sizing) ~overlay =
     };
   D.Journal.record_sizing f.journal ~strategy:name ~sequence:1 ~at:evening
     ~tier:(Ohcamel.Config.Book.Signals_spec.sizing_to_string sizing)
-    ~scale:0.70 ~allocated:35_000.0 ~mode:"open";
+    ~scale:last_scale ~allocated:35_000.0 ~mode:"open";
   let dir = Filename_unix.temp_dir "ohcamel-signals-" "" in
   Out_channel.write_all
     (Filename.concat dir "overlay-7.json")
@@ -3309,12 +3320,9 @@ let adjust_case ~(sizing : Ohcamel.Config.Book.Signals_spec.sizing) ~overlay =
   let intake =
     D.Intake.create
       ~gauge:
-        {
-          D.Intake.Gauge.spec = D.Oms.spec oms;
-          venue_now = (fun () -> D.Oms.venue_now oms);
-          drawdown = (fun () -> None);
-          dd_cap = None;
-        }
+        (D.Intake.Gauge.create ~spec:(D.Oms.spec oms)
+           ~venue_now:(fun () -> Some tuesday_mid)
+           ~drawdown ~dd_cap)
       ~journal:f.journal ~dir
       ~strategies:
         [
@@ -3346,18 +3354,28 @@ let adjust_case ~(sizing : Ohcamel.Config.Book.Signals_spec.sizing) ~overlay =
       Alcotest.fail "the adjust pass is still waiting";
     return ()
   in
-  let%map () = pass_and_adjust ~at:4.0 in
+  let%map () = if adjust_now then pass_and_adjust ~at:4.0 else return () in
   let cleanup () =
     Array.iter (Sys_unix.readdir dir) ~f:(fun n ->
         Core_unix.unlink (Filename.concat dir n));
     Core_unix.rmdir dir;
     Graph.destroy f.graph
   in
-  (f, name, pass_and_adjust, cleanup)
+  {
+    a_f = f;
+    a_name = name;
+    a_oms = oms;
+    a_intake = intake;
+    a_dir = dir;
+    pass_and_adjust;
+    cleanup;
+  }
 
-(* Every order of the strategy, oldest first, as (side, qty, kind tif). *)
+(* Every order of the strategy as (side, qty, kind tif), sorted: two orders
+   journaled inside one millisecond have no order of their own. *)
 let strategy_orders f name =
-  List.rev_filter_map (D.Journal.recent_orders f.journal ~limit:20) ~f:(fun r ->
+  List.sort ~compare:[%compare: string * int * string]
+  @@ List.rev_filter_map (D.Journal.recent_orders f.journal ~limit:20) ~f:(fun r ->
       if String.equal r.D.Journal.Order_row.source (sprintf "signal:%s:1" name) then
         let q = r.D.Journal.Order_row.order.D.Order.request in
         Some
@@ -3382,8 +3400,8 @@ let latest_sizing_mode f name =
 (* 0.70 to 0.65 is 0.05, inside the band of 0.10: nothing is proposed, and
    the sizing row is the open one. *)
 let test_adjust_within_band_does_nothing () =
-  let%map f, name, _, cleanup =
-    adjust_case ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.65"
+  let%map { a_f = f; a_name = name; cleanup; _ } =
+    adjust_case ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.65" ()
   in
   Alcotest.(check (list (triple string int string)))
     "the buy alone"
@@ -3402,8 +3420,8 @@ let test_adjust_within_band_does_nothing () =
    350: Sell 75, a day limit (the intraday mode), filled. The sizing row:
    scale 0.55, allocated 0.5 x 0.55 x 100,000 = 27,500, mode adjust. *)
 let test_adjust_beyond_band_re_sizes () =
-  let%map f, name, _, cleanup =
-    adjust_case ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.55"
+  let%map { a_f = f; a_name = name; cleanup; _ } =
+    adjust_case ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.55" ()
   in
   Alcotest.(check (list (triple string int string)))
     "the buy, then Sell 75 as a day limit"
@@ -3429,8 +3447,8 @@ let test_adjust_beyond_band_re_sizes () =
    and one overlay_zero alert says so. A second pass and adjust write no
    second alert and send nothing more: the strategy is sized at 0 now. *)
 let test_overlay_zero_flattens_and_alerts () =
-  let%bind f, name, pass_and_adjust, cleanup =
-    adjust_case ~sizing:Ohcamel.Config.Book.Signals_spec.Incubation ~overlay:"0.0"
+  let%bind { a_f = f; a_name = name; pass_and_adjust; cleanup; _ } =
+    adjust_case ~sizing:Ohcamel.Config.Book.Signals_spec.Incubation ~overlay:"0.0" ()
   in
   let alerts () =
     List.filter_map (D.Journal.recent_alerts f.journal ~limit:20) ~f:(fun a ->
@@ -3442,7 +3460,7 @@ let test_overlay_zero_flattens_and_alerts () =
   Alcotest.(check (list (pair string string))) "one alert" expected_alert (alerts ());
   Alcotest.(check string)
     "its line"
-    "overlay 7 says zero exposure: every incubated and live strategy is flattened"
+    "overlay 7 says zero exposure: every strategy that adjusts intraday is flattened"
     (D.Intake.overlay_zero_line ~sequence:7);
   Alcotest.(check (list (triple string int string)))
     "the buy, then the whole position sold"
@@ -3461,6 +3479,119 @@ let test_overlay_zero_flattens_and_alerts () =
     "still one alert, and nothing more sent" (expected_alert, received)
     (alerts (), D.Sim_venue.received f.venue);
   cleanup ()
+
+(* An unknown drawdown holds the governor (the fix round's ruling B). The
+   graph's drawdown reads 0 against a 2 % cap, a governor of 1, and the
+   overlay of 0.70 equals the last sizing: nothing moves. Then the drawdown
+   raises: the governor holds at 1 -- never NaN, never 0 -- so two more
+   passes sell nothing, and the hold is said once. *)
+let test_an_unknown_drawdown_holds_the_governor_and_sells_nothing () =
+  let read = ref (fun () -> Some 0.0) in
+  let%bind { a_f = f; a_name = name; a_intake = intake; pass_and_adjust; cleanup; _ } =
+    adjust_case
+      ~drawdown:(fun () -> !read ())
+      ~dd_cap:0.02 ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.70" ()
+  in
+  Alcotest.(check (float 0.0))
+    "governor 1 from a drawdown of 0" 1.0
+    (D.Intake.current_reading intake).D.Intake.Reading.governor;
+  (read := fun () -> failwith "the graph is not stabilized");
+  let%bind () = pass_and_adjust ~at:6.0 in
+  let%map () = pass_and_adjust ~at:8.0 in
+  let r = D.Intake.current_reading intake in
+  Alcotest.(check (pair (float 0.0) bool))
+    "held at 1" (1.0, true)
+    (r.D.Intake.Reading.governor, r.D.Intake.Reading.governor_held);
+  Alcotest.(check int)
+    "said once" 1
+    (List.count (Queue.to_list f.events)
+       ~f:(String.is_substring ~substring:"drawdown cannot be read"));
+  Alcotest.(check (list (triple string int string)))
+    "nothing sold"
+    [ ("buy", 350, "limit day") ]
+    (strategy_orders f name);
+  cleanup ()
+
+(* The band is bypassed only by an overlay of exactly 0 (ruling C). A
+   drawdown at its 2 % cap is a governor of 0, so with the overlay at 0.7 the
+   product is 0. Last sized at 0.05, that is a move of 0.05, inside the band:
+   nothing. Last sized at 0.70 it is a move of 0.70, beyond it: re-sized by
+   the band rule to a target of 0, Sell 350, scale 0, mode adjust. *)
+let test_a_product_of_zero_moves_by_the_band_alone () =
+  let%bind { a_f = f; a_name = name; cleanup; _ } =
+    adjust_case ~last_scale:0.05
+      ~drawdown:(fun () -> Some 0.02)
+      ~dd_cap:0.02 ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.7" ()
+  in
+  Alcotest.(check (pair (list (triple string int string)) string))
+    "inside the band: nothing"
+    ([ ("buy", 350, "limit day") ], "open")
+    (strategy_orders f name, latest_sizing_mode f name);
+  cleanup ();
+  let%map { a_f = f; a_name = name; cleanup; _ } =
+    adjust_case
+      ~drawdown:(fun () -> Some 0.02)
+      ~dd_cap:0.02 ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.7" ()
+  in
+  Alcotest.(
+    check (pair (list (triple string int string)) (pair (option (float 0.0)) string)))
+    "beyond it: sold to 0, by the band"
+    ([ ("buy", 350, "limit day"); ("sell", 350, "limit day") ], (Some 0.0, "adjust"))
+    ( strategy_orders f name,
+      ( Option.map (D.Journal.latest_sizing f.journal ~strategy:name)
+          ~f:(fun (_, s, _, _, _) -> s),
+        latest_sizing_mode f name ) );
+  cleanup ()
+
+(* The minute loop over the adjust case at 0.55, its Sell 75 never filled
+   (the venue is not pumped), so the adjust pass waits on its wave. [run]'s
+   first pass starts it at t0 + 2 s; the next pass, at t0 + 62 s, runs all
+   the same and judges overlay-8.json, written meanwhile, while the sell is
+   still open. *)
+let run_over_a_held_adjust () =
+  let%bind a =
+    adjust_case ~adjust_now:false ~sizing:Ohcamel.Config.Book.Signals_spec.Live
+      ~overlay:"0.55" ()
+  in
+  don't_wait_for
+    (D.Intake.run
+       ~time_source:(Time_source.read_only a.a_f.clock)
+       ~oms:a.a_oms a.a_intake);
+  let%map () = settle () in
+  Out_channel.write_all
+    (Filename.concat a.a_dir "overlay-8.json")
+    ~data:
+      {|{"schema_version":1,"kind":"overlay","as_of":"2026-09-15T14:56:00Z","computed_at":"2026-09-15T14:56:05Z","sequence":8,"exposure_scale":0.56,"inputs":{},"reported":{}}|};
+  a
+
+let open_of f name =
+  List.count (D.Journal.open_orders f.journal) ~f:(fun r ->
+      String.equal r.D.Journal.Order_row.source (sprintf "signal:%s:1" name))
+
+let test_run_does_not_wait_for_the_adjust_pass () =
+  let%bind a = run_over_a_held_adjust () in
+  Alcotest.(check int) "the sell rests" 1 (open_of a.a_f a.a_name);
+  let%map () = advance_to a.a_f 62.0 in
+  Alcotest.(check (pair bool int))
+    "the next pass judged overlay 8, the sell still open" (true, 1)
+    (D.Journal.overlay_recorded a.a_f.journal ~sequence:8, open_of a.a_f a.a_name);
+  a.cleanup ()
+
+let test_a_busy_adjust_is_skipped_and_said_once () =
+  let%bind a = run_over_a_held_adjust () in
+  let sent = D.Sim_venue.received a.a_f.venue in
+  let%bind () = advance_to a.a_f 62.0 in
+  let%map () = advance_to a.a_f 122.0 in
+  Alcotest.(check (pair int int))
+    "two passes skipped: said once, nothing more sent" (1, sent)
+    ( List.count (Queue.to_list a.a_f.events)
+        ~f:(String.is_substring ~substring:"the last adjust pass is still running"),
+      D.Sim_venue.received a.a_f.venue );
+  Alcotest.(check (list (triple string int string)))
+    "the buy and the one sell"
+    [ ("buy", 350, "limit day"); ("sell", 75, "limit day") ]
+    (strategy_orders a.a_f a.a_name);
+  a.cleanup ()
 
 let suites =
   [
@@ -3547,6 +3678,14 @@ let suites =
         case "overlay zero flattens and alerts" test_overlay_zero_flattens_and_alerts;
         case "adjust within band does nothing" test_adjust_within_band_does_nothing;
         case "adjust beyond band re-sizes" test_adjust_beyond_band_re_sizes;
+        case "an unknown drawdown holds the governor and sells nothing"
+          test_an_unknown_drawdown_holds_the_governor_and_sells_nothing;
+        case "a product of zero moves by the band alone"
+          test_a_product_of_zero_moves_by_the_band_alone;
+        case "run does not wait for the adjust pass"
+          test_run_does_not_wait_for_the_adjust_pass;
+        case "a busy adjust is skipped, and said once"
+          test_a_busy_adjust_is_skipped_and_said_once;
       ] );
     ( "desk",
       [

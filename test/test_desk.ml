@@ -324,12 +324,10 @@ let test_api_desk_carries_the_scale_the_governor_and_the_overlay () =
         ~received_at:at ~exposure_scale:0.7071 ~verdict:`Accepted ~rule:None
         ~detail:"passed O1-O4" ~document:"{}";
       Desk.set_gauge desk
-        {
-          Ohcamel_desk.Intake.Gauge.spec = Config.Book.Desk_spec.default;
-          venue_now = (fun () -> Some (Time_ns.add at (Time_ns.Span.of_min 61.0)));
-          drawdown = (fun () -> Some 0.015);
-          dd_cap = Some 0.02;
-        };
+        (Ohcamel_desk.Intake.Gauge.create ~spec:Config.Book.Desk_spec.default
+           ~venue_now:(fun () -> Some (Time_ns.add at (Time_ns.Span.of_min 61.0)))
+           ~drawdown:(fun () -> Some 0.015)
+           ~dd_cap:(Some 0.02));
       let j = round_trip () in
       Alcotest.(check (list string))
         "the three keys follow clock, in order"
@@ -344,9 +342,13 @@ let test_api_desk_carries_the_scale_the_governor_and_the_overlay () =
            [ field j "exposure_scale"; field j "governor"; field (overlay j) "value" ]
            ~f:Yojson.Safe.Util.to_number);
       Alcotest.(check (list string))
-        "the overlay's keys, as_of, age and state"
-        [ "value"; "as_of"; "age_s"; "state" ]
+        "the overlay's keys"
+        [ "value"; "as_of"; "age_s"; "state"; "reason"; "governor_cap" ]
         (Yojson.Safe.Util.keys (overlay j));
+      Alcotest.(check (pair string (float 0.0)))
+        "no reason, the cap 0.02" ("null", 0.02)
+        ( Yojson.Safe.to_string (field (overlay j) "reason"),
+          Yojson.Safe.Util.to_number (field (overlay j) "governor_cap") );
       Alcotest.(check (triple string int string))
         "as_of, 3660 s, stale"
         ("2026-09-14T13:55:00Z", 3660, "stale")
@@ -1121,6 +1123,25 @@ let test_the_kernel_does_not_name_the_venues_clock () =
                (String.is_substring line ~substring:"Session_clock")
                (file, String.strip line))))
 
+(* The overlay's clock (Task 11's fix round, ruling A): the venue's own
+   reading, advanced by the host's time since the read was stamped. None
+   before any reading. Venue 14:00:00, stamped on the host at 14:00:03; at
+   host 14:01:03 the venue clock reads 14:00:00 + 60 s = 14:01:00 -- the
+   venue's instant, not the host's. *)
+let test_the_overlay's_clock_is_the_venue_reading_advanced () =
+  with_desk
+    ~f:(fun desk _ _ ->
+      Alcotest.(check (option string))
+        "none before a reading" None
+        (Option.map (Desk.venue_now desk) ~f:Ohcamel_desk.Desk_time.rfc3339);
+      Desk.set_clock desk ~at:(Time_ns.add at (Time_ns.Span.of_sec 3.0)) monday_session;
+      Alcotest.(check (option string))
+        "14:01:00" (Some "2026-09-14T14:01:00.000000000Z")
+        (Option.map
+           (Desk.venue_now ~now:(Time_ns.add at (Time_ns.Span.of_sec 63.0)) desk)
+           ~f:Ohcamel_desk.Desk_time.rfc3339))
+    ()
+
 let suite =
   ( "desk",
     [
@@ -1142,6 +1163,8 @@ let suite =
         test_the_frame's_desk_object_has_exactly_these_twenty_keys;
       Alcotest.test_case "/api/desk keys round-trip: the scale, the governor, the overlay"
         `Quick test_api_desk_carries_the_scale_the_governor_and_the_overlay;
+      Alcotest.test_case "the overlay's clock is the venue reading, advanced" `Quick
+        test_the_overlay's_clock_is_the_venue_reading_advanced;
       Alcotest.test_case "with a manager the desk says what it can do" `Quick
         test_with_a_manager_the_desk_says_what_it_can_do;
       Alcotest.test_case "/api/desk answers through the server" `Quick
