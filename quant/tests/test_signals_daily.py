@@ -580,6 +580,34 @@ def test_the_desk_decides_whether_the_last_document_is_done(tmp_path, monkeypatc
     assert not any(n.startswith("desk unreachable") for n in spec.notes)
 
 
+def test_an_advisory_judgement_is_done_and_a_bad_engine_url_falls_back(tmp_path, monkeypatch, wh):
+    # An advisory judgement of the last document's sequence is done (the desk showed it; nothing is
+    # to be sized): held, no new document, no retry. A malformed engine URL (httpx.InvalidURL, not
+    # an HTTPError) takes the unreachable fallback with its note.
+    from test_signals_report import _Engine, _ok
+
+    rows = [{"cell_id": "sma_trend@eq3", "verdict": "FAIL", "selected_params": '{"months": 10}'}]
+    slug = "farm_sma_trend_eq3"
+    run_at, sig = _mini(tmp_path, monkeypatch, wh, _row(slug, "sma_trend", "eq3"), rows)
+    assert _emitted(run_at(date(2026, 5, 27))).loc[slug, "sequence"] == 2511
+
+    advisory = _research(slug, 2511, "advisory", None)
+    with _Engine({"/api/research": _ok(advisory)}) as engine:
+        spec = run_at(date(2026, 5, 28), engine.url)
+        assert engine.seen == ["/api/research"]
+    held = _emitted(spec).loc[slug]
+    assert (held["status"], held["last_rebalance"]) == ("held", "2026-05-27")
+    assert not (sig / f"{slug}-2026-05-28.json").exists()
+    assert not any(n.startswith("desk unreachable") for n in spec.notes)
+
+    # "not a url" raises UnsupportedProtocol (an HTTPError); a bad port raises InvalidURL, which is not
+    for url in ("not a url", "http://desk:notaport"):
+        bad = run_at(date(2026, 5, 28), url)
+        assert _emitted(bad).loc[slug, "status"] == "held"
+        assert any(n.startswith("desk unreachable: keyed on the last written document") for n in bad.notes)
+        assert not (sig / f"{slug}-2026-05-28.json").exists()
+
+
 def test_desk_verdict_reads_the_latest_judgement():
     last = {"sequence": 7, "as_of": "2026-05-27"}
     assert daily.desk_verdict({"sequence": 7, "verdict": "accepted", "rebalance": "2 market-on-open orders"},
@@ -592,6 +620,7 @@ def test_desk_verdict_reads_the_latest_judgement():
         assert "did not size it" in daily.desk_verdict(
             {"sequence": 7, "verdict": "accepted", "rebalance": unsized}, last)
     assert daily.desk_verdict(None, last) == "the desk holds no judgement of it"
+    assert daily.desk_verdict({"sequence": 7, "verdict": "advisory", "rebalance": None}, last) is None
 
 
 def test_every_run_notes_the_leverage_and_the_fill_the_verdict_was_earned_at(world):

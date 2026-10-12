@@ -3892,6 +3892,39 @@ let test_an_unsized_strategy_holding_a_position_is_re_sized () =
           (z.D.Journal.Sizing.scale, z.mode)) );
   cleanup ()
 
+(* The residuals: the unsized branch honours the stale hold. The same
+   unsized strategy, holding 350 of its own, on a morning whose overlay is
+   14 hours old: stale, so the pass holds it -- before the fix it was re-sized
+   to the fallback's 0.5, trunc(0.5 x 0.5 x 100,000 / 100) = 250, Sell 100,
+   and bought back at the first fresh overlay. No order, no sizing row. Then
+   the first fresh overlay, 0.6: re-sized whatever the band, trunc(0.5 x 0.6
+   x 100,000 / 100) = 300, Sell 50, the row at 0.6, adjust. *)
+let test_an_unsized_strategy_holds_while_the_overlay_is_stale () =
+  let%bind { a_f = f; a_name = name; a_dir = dir; pass_and_adjust; cleanup; _ } =
+    adjust_case ~sizing_row:false ~stale:true
+      ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.9" ()
+  in
+  Alcotest.(
+    check (pair (list (triple string int string)) (option (pair (float 1e-12) string))))
+    "stale: no order, no sizing row"
+    ([ ("buy", 350, "limit day") ], None)
+    ( strategy_orders f name,
+      Option.map (D.Journal.latest_sizing_row f.journal ~strategy:name) ~f:(fun z ->
+          (z.D.Journal.Sizing.scale, z.mode)) );
+  Out_channel.write_all
+    (Filename.concat dir "overlay-8.json")
+    ~data:
+      {|{"schema_version":1,"kind":"overlay","as_of":"2026-09-15T14:55:00Z","computed_at":"2026-09-15T14:55:05Z","sequence":8,"exposure_scale":0.6,"inputs":{},"reported":{}}|};
+  let%map () = pass_and_adjust ~at:6.0 in
+  Alcotest.(
+    check (pair (list (triple string int string)) (option (pair (float 1e-12) string))))
+    "the first fresh overlay: Sell 50, the row at 0.6, adjust"
+    ([ ("buy", 350, "limit day"); ("sell", 50, "limit day") ], Some (0.6, "adjust"))
+    ( strategy_orders f name,
+      Option.map (D.Journal.latest_sizing_row f.journal ~strategy:name) ~f:(fun z ->
+          (z.D.Journal.Sizing.scale, z.mode)) );
+  cleanup ()
+
 (* A-I5. A two-wave intraday re-size through the adjust pass. exp_i_wide
    holds nothing and was last sized at 0.3 (ratio 1); overlay 7 says 0.9,
    so with E 1,000,000 and a fraction of 0.01 the targets are, for the six
@@ -4078,8 +4111,7 @@ let test_a_crash_left_pending_is_retried_unless_its_orders_were_journaled () =
   Alcotest.(check (option string))
     "MSFT's judgement closed"
     (Some
-       "not sized again: orders under signal:exp_a01_msft:1 were journaled before the \
-        desk stopped, and they are the record of what was sent")
+       "orders were journaled under this source (signal:exp_a01_msft:1); not sized again")
     (rebalance_of f ~strategy:"exp_a01_msft" ~sequence:1);
   Alcotest.(check int) "two sent in all" 2 (D.Sim_venue.received f.venue);
   e.e_cleanup ()
@@ -4189,6 +4221,8 @@ let suites =
           test_the_band_compares_effective_scales_at_the_canary_ratio;
         case "an unsized strategy holding a position is re-sized"
           test_an_unsized_strategy_holding_a_position_is_re_sized;
+        case "an unsized strategy holds while the overlay is stale"
+          test_an_unsized_strategy_holds_while_the_overlay_is_stale;
         case "a rebalance held in part records no sizing, and is retried"
           test_a_rebalance_held_in_part_records_no_sizing_and_is_retried;
         case "a crash left pending is retried, unless its orders were journaled"

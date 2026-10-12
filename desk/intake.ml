@@ -1558,9 +1558,8 @@ let collect_pending t : Accepted.t list =
                         if Journal.source_has_orders t.journal ~source then
                           closed
                             (sprintf
-                               "not sized again: orders under %s were journaled before \
-                                the desk stopped, and they are the record of what was \
-                                sent"
+                               "orders were journaled under this source (%s); not sized \
+                                again"
                                source)
                         else
                           match parse s.document with
@@ -1675,8 +1674,13 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                             | Some z -> z.Journal.Sizing.sequence < sequence
                           in
                           let decision =
+                            (* An unsized strategy holds while the reading is
+                               Stale, like every other: re-sizing it at the
+                               fallback would sell what the first fresh overlay
+                               buys back. *)
                             if unsized then
-                              if holds s then Some (now_parts, None) else None
+                              if holds s && not stale then Some (now_parts, None)
+                              else None
                             else
                               let z = Option.value_exn last in
                               let last_ratio =

@@ -315,7 +315,7 @@ def desk_judgements(ctx: Any, notes: list[str]) -> dict[str, dict[str, Any]] | N
     try:
         r = httpx.get(base + "/api/research", timeout=TIMEOUT_S)
         body = r.json() if r.status_code == 200 else None
-    except (httpx.HTTPError, ValueError) as e:
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError) as e:  # InvalidURL is not an HTTPError
         notes.append(f"{unreachable} ({type(e).__name__}: {e})")
         return None
     if not isinstance(body, dict) or not isinstance(body.get("strategies"), list):
@@ -325,8 +325,9 @@ def desk_judgements(ctx: Any, notes: list[str]) -> dict[str, dict[str, Any]] | N
 
 
 def desk_verdict(latest: Any, last: dict[str, Any]) -> str | None:
-    """None when the desk sized ``last`` (its latest judgement is of ``last``'s sequence,
-    accepted or accepted_incubation, and its rebalance sentence sized it); else what the
+    """None when the desk is done with ``last``: its latest judgement is of ``last``'s
+    sequence and is either advisory (shown, nothing to size) or accepted /
+    accepted_incubation with a rebalance sentence that sized it; else what the
     desk did, in words for the retry's note."""
     if not isinstance(latest, dict):
         return "the desk holds no judgement of it"
@@ -334,6 +335,8 @@ def desk_verdict(latest: Any, last: dict[str, Any]) -> str | None:
     if seq != last["sequence"]:
         return f"the desk's latest judgement is of sequence {seq}, not the last document's {last['sequence']}"
     verdict, rule = latest.get("verdict"), latest.get("rule")
+    if verdict == "advisory":
+        return None  # the desk showed it; nothing is to be sized, so it is done
     if verdict not in ("accepted", "accepted_incubation"):
         return f"the desk judged sequence {seq} {verdict}" + (f" at {rule}" if rule else "")
     rb = latest.get("rebalance")
