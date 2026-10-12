@@ -39,6 +39,7 @@ here too, so this file does not depend on another test file's internals.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import signal as os_signal
@@ -716,16 +717,20 @@ def test_sweep_orphaned_tmp_survives_a_temp_renamed_away_mid_sweep(tmp_path: Pat
         p.write_text("orphaned")
         _age(p, 11 * 60)
     real_stat, real_unlink = Path.stat, Path.unlink
+    seen: list[Path] = []
 
     def stat(self, *a, **k):
-        if self == gone_at_stat and not k and not a:
-            raise FileNotFoundError(str(self))
+        # The listing's is_file sees it (the first stat); it is gone by the sweep's own stat.
+        if self == gone_at_stat:
+            seen.append(self)
+            if len(seen) > 1:
+                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(self))
         return real_stat(self, *a, **k)
 
     def unlink(self, *a, **k):
         if self == gone_at_unlink:
             real_unlink(self)  # renamed by the worker an instant before
-            raise FileNotFoundError(str(self))
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(self))
         return real_unlink(self, *a, **k)
 
     monkeypatch.setattr(Path, "stat", stat)
