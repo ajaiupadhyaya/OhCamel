@@ -10,16 +10,19 @@ book.example.sexp's positions -- plus one name (VTI) that is not."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 from lane_m_harness import publish_artifact
 
+from ohcamel_quant.backtest import strategies
 from ohcamel_quant.config import Settings
-from ohcamel_quant.data.market import MarketData
+from ohcamel_quant.data.market import Dataset, MarketData
 from ohcamel_quant.jobs.context import JobContext
 from ohcamel_quant.jobs.db import connect
 from ohcamel_quant.signals import daily, freeze
@@ -28,6 +31,9 @@ from ohcamel_quant.signals.roster import Cell
 from ohcamel_quant.warehouse.fixture_db import build_fixture_warehouse
 
 LAST = date(2026, 6, 1)  # every fixture's last session
+# The test cells' universes, standing in for universes.json (whose groups name non-fixture ETFs).
+UNIVERSES = {"eq3": ["SPY", "QQQ", "IWM"], "eq2": ["SPY", "QQQ"], "flat": ["SPY"], "bonds": ["TLT", "IEF", "GLD"],
+             "outside": ["SPY", "VTI"], "one": ["SPY"]}
 
 ROSTER = """\
 version: 1
@@ -41,13 +47,19 @@ strategies:
   - slug: farm_sma_trend_fixture
     producer: signals.daily
     strategy: sma_trend
-    universe: fixture
+    universe: eq3
     symbols: [SPY, QQQ, IWM]
+    capital_fraction: 0.025
+  - slug: farm_sma_trend_mismatch
+    producer: signals.daily
+    strategy: sma_trend
+    universe: eq3
+    symbols: [SPY, IWM]
     capital_fraction: 0.025
   - slug: farm_static_mix_fixture
     producer: signals.daily
     strategy: static_mix
-    universe: fixture
+    universe: eq2
     symbols: [SPY, QQQ]
     capital_fraction: 0.025
   - slug: farm_static_mix_flat
@@ -59,7 +71,7 @@ strategies:
   - slug: farm_tsmom_fixture
     producer: signals.daily
     strategy: tsmom
-    universe: fixture
+    universe: bonds
     symbols: [TLT, IEF, GLD]
     capital_fraction: 0.025
   - slug: farm_tsmom_outside
@@ -85,17 +97,17 @@ def _farm_tables(rows: list[dict]) -> dict[str, pd.DataFrame]:
 
 FARM_ROWS = [
     # sma_trend@fixture: a FAIL row with every gate input; its validation block must say fail.
-    {"cell_id": "sma_trend@fixture", "verdict": "FAIL", "selected_params": json.dumps({"months": 10}),
+    {"cell_id": "sma_trend@eq3", "verdict": "FAIL", "selected_params": json.dumps({"months": 10}),
      "dsr": 0.41, "psr": 0.62, "pbo": 0.55},
     # static_mix@fixture: 0.8 + 0.6 = 1.4 gross, so the producer scales it to 1.
-    {"cell_id": "static_mix@fixture", "verdict": "PASS",
+    {"cell_id": "static_mix@eq2", "verdict": "PASS",
      "selected_params": json.dumps({"weights": {"SPY": 0.8, "QQQ": 0.6}}), "dsr": 0.97, "psr": 0.99, "pbo": 0.1},
     # static_mix@flat: a zero weight -- flat, which is a valid document. No psr or pbo on its row.
     {"cell_id": "static_mix@flat", "verdict": "FAIL",
      "selected_params": json.dumps({"weights": {"SPY": 0.0}})},
     # tsmom@outside has params, but names VTI: refused before anything is read.
     {"cell_id": "tsmom@outside", "verdict": "FAIL", "selected_params": json.dumps({"lookback": 252})},
-    # tsmom@fixture is absent: no params, no last month -> refused with the reason.
+    # tsmom@bonds is absent: no params, no last month -> refused with the reason.
 ]
 
 
@@ -124,6 +136,7 @@ def world(tmp_path_factory):
     mp.setattr(freeze, "DB_PATH", db)
     mp.setattr(daily, "ROSTER_PATH", roster)
     mp.setattr(daily, "_today", lambda: date(2026, 6, 1))
+    mp.setattr(daily, "_universe", UNIVERSES.__getitem__)
     farm_id, _ = publish_artifact(db, root, "farm.sweep", _farm_tables(FARM_ROWS), verdict="PASS",
                                   finished=datetime(2026, 5, 29, 23, 0, tzinfo=UTC))
     w = {"tmp": tmp, "db": db, "root": root, "wh": build_fixture_warehouse(tmp / "wh.duckdb"),
@@ -292,3 +305,211 @@ def test_no_signals_dir_refuses_the_run(world):
     assert "OHCAMEL_QUANT_SIGNALS_DIR" in spec.tables["refused"]["reason"].iloc[0]
     assert spec.verdict == "INSUFFICIENT DATA" and any("OHCAMEL_QUANT_SIGNALS_DIR" in n for n in spec.notes)
     assert sorted(world["signals"].iterdir()) == before  # nothing written, anywhere it knows of
+
+
+# ------------------------------------------------------------------ fix round 1
+_HEAD = "version: 1\nincubation_cap: 0.60\ncanary_cap: 0.10\nvol_target: 0.10\nstrategies:\n"
+
+
+def _row(slug: str, strategy: str, universe: str) -> str:
+    syms = ", ".join(UNIVERSES[universe])
+    return (f"  - slug: {slug}\n    producer: signals.daily\n    strategy: {strategy}\n    universe: {universe}\n"
+            f"    symbols: [{syms}]\n    capital_fraction: 0.025\n")
+
+
+class _CutMarket(MarketData):
+    """The fixture market as it stood at the close of ``end``: the panel stops there."""
+
+    def __init__(self, settings: Settings, end: date) -> None:
+        super().__init__(settings)
+        self.end = end
+
+    def prices(self, tickers, start=None, end=None, field="adj_close", *, warehouse_first=False):
+        ds = super().prices(tickers, start, end, field, warehouse_first=warehouse_first)
+        return Dataset(ds.data.loc[: pd.Timestamp(self.end)], ds.provenance)
+
+
+@pytest.fixture(scope="module")
+def wh(tmp_path_factory):
+    return build_fixture_warehouse(tmp_path_factory.mktemp("wh") / "wh.duckdb")
+
+
+def _mini(tmp: Path, monkeypatch, wh: Path, rows: str, farm_rows: list[dict]):
+    """A roster, a farm artifact and a signals directory of their own; returns run_at(end)."""
+    db = tmp / "jobs.sqlite"
+    (tmp / "roster.yaml").write_text(_HEAD + rows)
+    monkeypatch.setattr(freeze, "DB_PATH", db)
+    monkeypatch.setattr(daily, "ROSTER_PATH", tmp / "roster.yaml")
+    monkeypatch.setattr(daily, "_today", lambda: date(2026, 5, 29))
+    monkeypatch.setattr(daily, "_universe", UNIVERSES.__getitem__)
+    publish_artifact(db, tmp / "artifacts", "farm.sweep", _farm_tables(farm_rows), verdict="FAIL",
+                     finished=datetime(2026, 5, 1, 23, 0, tzinfo=UTC))
+    sig = tmp / "signals"
+
+    def run_at(end: date):
+        md = _CutMarket(Settings(offline=True, data_dir=tmp, warehouse_path=wh, signals_dir=sig), end)
+        ctx = JobContext(job_id="t", params={}, threads=1, progress_fn=lambda f, m: None,
+                         cancelled_fn=lambda: False, _market=md)
+        try:
+            return daily.run({}, ctx)
+        finally:
+            ctx.close()
+
+    return run_at, sig
+
+
+def _fake(monkeypatch, key: str, fn, rebalance: str) -> None:
+    """A strategy registered for one test: static_mix's spec with its own function and cadence."""
+    monkeypatch.setitem(strategies.STRATEGIES, key, dataclasses.replace(
+        strategies.STRATEGIES["static_mix"], key=key, fn=fn, default_rebalance=rebalance))
+
+
+def _wctx(tmp: Path, wh: Path) -> JobContext:
+    md = MarketData(Settings(offline=True, data_dir=tmp, warehouse_path=wh))
+    return JobContext(job_id="t", params={}, threads=1, progress_fn=lambda f, m: None,
+                      cancelled_fn=lambda: False, _market=md)
+
+
+def _delete_spy(wh: Path, where: str) -> None:
+    from ohcamel_quant.warehouse.db import open_rw
+
+    with open_rw(wh) as con:
+        con.execute(f"DELETE FROM bars_daily WHERE ticker = 'SPY' AND {where}")
+
+
+def test_a_missing_spy_day_still_yields_a_strictly_increasing_sequence(tmp_path):
+    wh = build_fixture_warehouse(tmp_path / "wh.duckdb")
+    # The 2026-05-29 document went out with sequence 2513 (SPY's 2513th session). Then a
+    # re-fetch loses SPY's 05-29 bar: the count through 06-01 is 2514 - 1 = 2513, the same
+    # number again -- R5 would reject it. max(2513, 2513 + 1) = 2514.
+    _delete_spy(wh, "date = DATE '2026-05-29'")
+    ctx = _wctx(tmp_path, wh)
+    try:
+        assert daily._sequence(ctx, date(2026, 6, 1), {"sequence": 2513}) == 2514
+        # And a session SPY has no bar for is refused, never numbered.
+        with pytest.raises(daily.CellRefused, match="SPY has no bar on 2026-05-29"):
+            daily._sequence(ctx, date(2026, 5, 29), {"sequence": 2512})
+    finally:
+        ctx.close()
+
+
+def test_a_shrunken_count_yields_last_plus_one(tmp_path):
+    wh = build_fixture_warehouse(tmp_path / "wh.duckdb")
+    _delete_spy(wh, "date < DATE '2020-01-01'")  # a partial re-fetch: the count falls far below 2514
+    ctx = _wctx(tmp_path, wh)
+    try:
+        # Last document 3000 -> 3001, whatever the table now counts; first document ever -> the count.
+        assert daily._sequence(ctx, LAST, {"sequence": 3000}) == 3001
+        n = ctx.warehouse.execute("SELECT COUNT(*) FROM bars_daily WHERE ticker = 'SPY'").fetchone()[0]
+        assert n < 2514 and daily._sequence(ctx, LAST, None) == n
+    finally:
+        ctx.close()
+
+
+def test_an_all_nan_last_row_is_held_and_an_all_zero_row_is_flat(tmp_path, monkeypatch, wh):
+    def nan_from_june(ctx, weights=None):  # a decision on every session up to 05-29, none from 06-01
+        w = strategies.static_mix(ctx, weights)
+        w.loc[w.index >= pd.Timestamp("2026-06-01")] = np.nan
+        return w
+
+    _fake(monkeypatch, "nan_last", nan_from_june, "daily")
+    _fake(monkeypatch, "zero_daily", strategies.static_mix, "daily")
+    run_at, sig = _mini(tmp_path, monkeypatch, wh, _row("farm_nan_last", "nan_last", "one")
+                        + _row("farm_zero_daily", "zero_daily", "one"),
+                        [{"cell_id": "nan_last@one", "verdict": "FAIL", "selected_params": '{"weights": {"SPY": 0.5}}'},
+                         {"cell_id": "zero_daily@one", "verdict": "FAIL",
+                          "selected_params": '{"weights": {"SPY": 0.0}}'}])
+    em = _emitted(run_at(LAST))
+    assert (em.loc["farm_nan_last", "status"], em.loc["farm_nan_last", "note"]) == ("held", "no decision")
+    assert not list(sig.glob("farm_nan_last-*"))  # never an empty document: that would read as "go flat"
+    assert em.loc["farm_zero_daily", "status"] == "written"
+    assert json.loads((sig / f"farm_zero_daily-{LAST}.json").read_text())["targets"] == []
+
+
+def test_a_monthly_strategy_emits_on_the_months_last_session_and_holds_otherwise(tmp_path, monkeypatch, wh):
+    # sma_trend rebalances monthly. NYSE sessions around the month end: Mon 05-25 is Memorial Day;
+    # 05-27 (Wed) -> next 05-28, 05-28 (Thu) -> next 05-29, both May: not period ends.
+    # 05-29 (Fri) -> next Mon 06-01, June: May's period end. 06-01 -> next 06-02: not one.
+    # SPY sessions through 05-27 / 05-29: 2514 - 3 = 2511 / 2514 - 1 = 2513.
+    run_at, sig = _mini(tmp_path, monkeypatch, wh, _row("farm_sma_trend_eq3", "sma_trend", "eq3"),
+                        [{"cell_id": "sma_trend@eq3", "verdict": "FAIL", "selected_params": '{"months": 10}'}])
+    first = _emitted(run_at(date(2026, 5, 27))).loc["farm_sma_trend_eq3"]
+    assert (first["status"], first["sequence"]) == ("written", 2511)  # the first run ever always emits
+    held = _emitted(run_at(date(2026, 5, 28))).loc["farm_sma_trend_eq3"]
+    assert (held["status"], held["last_rebalance"]) == ("held", "2026-05-27") and "monthly" in held["note"]
+    end = _emitted(run_at(date(2026, 5, 29))).loc["farm_sma_trend_eq3"]
+    assert (end["status"], end["sequence"]) == ("written", 2513)
+    june = _emitted(run_at(LAST)).loc["farm_sma_trend_eq3"]
+    assert (june["status"], june["last_rebalance"]) == ("held", "2026-05-29")
+    assert sorted(p.name for p in sig.glob("*.json")) == ["farm_sma_trend_eq3-2026-05-27.json",
+                                                          "farm_sma_trend_eq3-2026-05-29.json"]
+    # The calendar knows the rule holidays: 2026-07-03 (July 4 is a Saturday) and Good Friday 2026-04-03.
+    assert daily.next_session(date(2026, 7, 2)) == date(2026, 7, 6)
+    assert daily.next_session(date(2026, 4, 2)) == date(2026, 4, 6)
+    assert daily._period_end(date(2026, 7, 2), "weekly") and not daily._period_end(date(2026, 7, 1), "weekly")
+
+
+def test_a_signal_strategy_emits_on_a_change_and_holds_on_a_repeat(tmp_path, monkeypatch, wh):
+    def step(ctx, weights=None):  # SPY 0.5 until 05-28, 0.6 from 05-29: causal, it reads only the date
+        w = strategies.static_mix(ctx, {"SPY": 0.5})
+        w.loc[w.index >= pd.Timestamp("2026-05-29")] = 0.6
+        return w
+
+    _fake(monkeypatch, "step_signal", step, "signal")
+    run_at, sig = _mini(tmp_path, monkeypatch, wh, _row("farm_step_signal", "step_signal", "one"),
+                        [{"cell_id": "step_signal@one", "verdict": "FAIL", "selected_params": "{}"}])
+    statuses = [_emitted(run_at(d)).loc["farm_step_signal", "status"]
+                for d in (date(2026, 5, 27), date(2026, 5, 28), date(2026, 5, 29), LAST)]
+    # first ever; 0.5 again (|dw| 0 <= 1e-6); 0.5 -> 0.6 (|dw| 0.1); 0.6 again.
+    assert statuses == ["written", "held", "written", "held"]
+    w = json.loads((sig / "farm_step_signal-2026-05-29.json").read_text())["targets"]
+    assert w == [{"symbol": "SPY", "weight": 0.6}]
+
+
+def test_validation_is_unvalidated_when_the_farm_re_selected_mid_month():
+    cell = Cell("x_y", "signals.daily", "sma_trend", "eq3", ("SPY",), 0.025)
+    rows = pd.DataFrame([{"cell_id": "sma_trend@eq3", "verdict": "PASS", "selected_params": '{"months": 12}',
+                          "dsr": 0.99, "psr": 0.99, "pbo": 0.01}])
+    frozen, newest = params_hash({"months": 10}), params_hash({"months": 12})
+    assert daily.validation_for(cell, rows, manifest="F1", params={"months": 10}) == {
+        "status": "unvalidated", "gates_version": "2026-09-02", "dsr": None, "psr": None, "pbo": None,
+        "manifest": f"F1: farm re-selected mid-month (frozen {frozen}, newest {newest})"}
+    assert daily.validation_for(cell, rows, manifest="F1", params={"months": 12})["status"] == "pass"
+
+
+def test_the_last_row_is_the_backtests_own_decision(market):
+    from ohcamel_quant.backtest.engine import EngineConfig, StrategyContext, run_backtest
+
+    px = market.prices(["SPY", "QQQ", "IWM"]).data.dropna()
+    cell = Cell("farm_sma_trend_eq3", "signals.daily", "sma_trend", "eq3", ("SPY", "QQQ", "IWM"), 0.025)
+    res = run_backtest(StrategyContext(prices=px), strategies.sma_trend, {"months": 10},
+                       EngineConfig(rebalance="monthly"))
+    d, e = res.decisions[-1], res.executions[-1]  # the last month-end decision and its execution close
+    got, as_of = daily.targets_for(cell, {"months": 10}, px.loc[:d], None)
+    assert as_of == d.date()
+    engine = {s: float(v) for s, v in res.weights.loc[e].items() if abs(v) > 0}
+    assert got == pytest.approx(engine, abs=1e-12)  # gross <= 1 here: nothing scaled
+
+
+def test_a_short_history_bad_params_or_a_peeking_strategy_is_refused(market, monkeypatch):
+    px = market.prices(["SPY", "QQQ", "IWM"]).data.dropna()
+    cell = Cell("farm_sma_trend_eq3", "signals.daily", "sma_trend", "eq3", ("SPY", "QQQ", "IWM"), 0.025)
+    # months 24 (the parameter's maximum): warm-up 24 x 21 + 5 = 509 sessions; cut the panel to 500.
+    with pytest.raises(daily.CellRefused, match="500 sessions of history < the 509-session warm-up"):
+        daily.targets_for(cell, {"months": 24}, px.iloc[:500], None)
+    with pytest.raises(daily.CellRefused, match="parameters: months=100 is above the maximum 24"):
+        daily.targets_for(cell, {"months": 100}, px, None)
+    with pytest.raises(daily.CellRefused, match="parameters: unknown parameter"):
+        daily.targets_for(cell, {"bogus": 1}, px, None)
+
+    def peek(ctx, weights=None):  # tomorrow's sign: the engine's audit must catch it
+        up = (ctx.prices.shift(-1) > ctx.prices).astype(float) / ctx.prices.shape[1]
+        return up.where(ctx.prices.shift(-1).notna())
+
+    _fake(monkeypatch, "peek", peek, "daily")
+    with pytest.raises(daily.CellRefused, match="look-ahead audit"):
+        daily.targets_for(dataclasses.replace(cell, strategy="peek"), {}, px, None)
+
+
+def test_roster_symbols_that_differ_from_the_universe_are_refused(world):
+    assert _refused(world["spec"])["farm_sma_trend_mismatch"] == "roster symbols differ from the farm's universe"
