@@ -11,9 +11,11 @@
 ; yojson: the market-clock refresh cases read the published block
 ; (Desk.summary_json), because what they hold is what /api/desk carries and
 ; not only what the cache field contains.
+; sqlite3: the adjust cases read a sizing row's mode, which no journal
+; reader returns.
 
 (test
  (name test_desk_async)
- (libraries ohcamel ohcamel_desk core async alcotest yojson)
+ (libraries ohcamel ohcamel_desk core async alcotest yojson sqlite3)
  (preprocess
   (pps ppx_jane)))

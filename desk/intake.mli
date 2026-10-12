@@ -46,15 +46,63 @@ val read : ?between:(unit -> unit) -> string -> ident -> read
 (** One file, no further than a signal can be long, and only if it is still the file
     [look] saw. [between] runs between the two, for the test that swaps a symlink in. *)
 
+(** What the effective scale is read from beyond the journal (design §4.3): the book's
+    overlay numbers ([overlay_max_age_minutes], [overlay_fallback], [overlay_band]), the
+    venue's clock as the desk last read it (Oms.venue_now), the graph's drawdown as a
+    fraction, and the book's drawdown cap. *)
+module Gauge : sig
+  type t = {
+    spec : Ohcamel.Config.Book.Desk_spec.t;
+    venue_now : unit -> Time_ns.t option;
+    drawdown : unit -> float option;
+    dd_cap : float option;
+  }
+
+  val none : t
+  (** The default book's numbers, no clock, no drawdown, no cap: the effective scale is
+      the fallback. *)
+
+  val dd_cap_of_limits : Limit.t list -> float option
+  (** The book's Portfolio-scoped [Max_drawdown] threshold, the tightest of several; None
+      when it has none. *)
+end
+
+(** The effective scale and what it was computed from, as [/api/desk] carries it. *)
+module Reading : sig
+  type t = {
+    exposure_scale : float;  (** Overlay.effective: what every sizing multiplies by. *)
+    governor : float;
+    overlay : float option;  (** The latest accepted overlay's scale, whatever its age. *)
+    as_of : string option;
+    age_s : int option;  (** Seconds since it was received, on the venue clock. *)
+    state : Overlay.state;  (** Absent too when no venue clock has answered. *)
+  }
+end
+
+val state_word : Overlay.state -> string
+(** "fresh", "held", "stale" or "absent": the wire's word. *)
+
+val reading : latest:(int * string * float * string) option -> Gauge.t -> Reading.t
+(** [latest] as Journal.latest_overlay answers it. *)
+
+val reading_fields : Reading.t -> (string * Yojson.Safe.t) list
+(** ["exposure_scale"], ["governor"] and ["overlay"] (value, as_of, age_s, state: "fresh",
+    "held", "stale" or "absent"), in that order. *)
+
+val overlay_zero_line : sequence:int -> string
+(** The alert line written once when an overlay of zero is accepted. *)
+
 type t
 
 val create :
+  ?gauge:Gauge.t ->
   journal:Journal.t ->
   dir:string ->
   strategies:Ohcamel.Config.Book.Signals_spec.Strategy.t list ->
   universe:Symbol.t list ->
   on_event:(string -> unit) ->
   now:(unit -> Time_ns.t) ->
+  unit ->
   t
 
 val deferred : t -> int
@@ -63,6 +111,7 @@ val last_pass : t -> Time_ns.t option
 type status = Running of t | Off of string
 
 val setup :
+  gauge:Gauge.t ->
   journal:Journal.t ->
   universe:Symbol.t list ->
   signals:Ohcamel.Config.Book.Signals_spec.t option ->
@@ -87,7 +136,15 @@ module Accepted : sig
 end
 
 val judge_pass : t -> Accepted.t list
-(** One pass: every judgement recorded, and the documents judged accepted returned. *)
+(** One pass: every judgement recorded, and the documents judged accepted returned. Files
+    named [overlay-*.json] are judged first, by Overlay (O1-O4) against the gauge's venue
+    clock, each sequence once, and recorded in [overlays]; never by the contract. *)
+
+val effective_scale : t -> float
+(** [Overlay.effective ~overlay ~fallback ~governor]: the latest accepted overlay's scale
+    when it is fresh or held, else the book's fallback, times the drawdown governor. *)
+
+val current_reading : t -> Reading.t
 
 val pass : t -> unit
 (** [judge_pass], its accepted documents dropped: a pass that sizes nothing. *)
@@ -95,13 +152,22 @@ val pass : t -> unit
 val size :
   t -> oms:Oms.t option -> scale:(unit -> float) -> Accepted.t list -> unit Deferred.t
 (** Each accepted document planned at the effective [scale] (asked once per rebalance;
-    [run] passes 1 until the overlay sets it), proposed as one rebalance, its sizing
-    recorded, and its outcome written over the pending sentence. Only the highest sequence
-    of a strategy is sized; an incubation strategy only on a paper venue. Never raises. *)
+    [run] passes {!effective_scale}), proposed as one rebalance, its sizing recorded, and
+    its outcome written over the pending sentence. Only the highest sequence of a strategy
+    is sized; an incubation strategy only on a paper venue. Never raises. *)
+
+val adjust : t -> oms:Oms.t option -> unit Deferred.t
+(** For each registered strategy that adjusts intraday, is not stopped, and has a latest
+    accepted document and a latest sizing: when the effective scale (times its incubation
+    ratio, as the sizing recorded it) is more than [overlay_band] from the last sizing's
+    scale, or is zero where that was not, the document is re-sized at the effective scale
+    and proposed in the intraday mode, its sizing journaled with mode "adjust". At most
+    eight strategies at once. A pass that finds the last one still running skips and says
+    so. Never raises. *)
 
 val run : ?time_source:Time_source.t -> ?oms:Oms.t -> t -> unit Deferred.t
-(** A pass at once and then once a minute, each pass's accepted documents sized before the
-    minute's wait. *)
+(** A pass at once and then once a minute, each pass's accepted documents sized at the
+    effective scale before the minute's wait, then the adjust pass started, detached. *)
 
 val research_json :
   journal:Journal.t ->

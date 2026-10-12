@@ -112,6 +112,20 @@
      says which: "R6" or "sizing";
    - rejected: any other first failure, with its rule.
 
+   THE OVERLAY (design §4.3) is the second document kind, in files named
+   overlay-*.json, judged before the signals by Overlay's O1-O4 and never by
+   the contract, each sequence once, against the VENUE's clock as the desk
+   last read it -- the one exception to the sessions being the only clock,
+   because an overlay's age is minutes, not sessions. With no venue clock an
+   overlay waits and the book's fallback applies. Its scale, held for
+   overlay_max_age_minutes and then replaced by the fallback, times the
+   drawdown governor, is the effective scale every sizing multiplies by; and
+   when that moves more than overlay_band from where a strategy was last
+   sized, [adjust] re-sizes the strategies that adjust intraday from their
+   last ACCEPTED document -- the journal's, read back, which is the one place
+   a row read back is sized, and only an accepted or accepted_incubation
+   one. An accepted overlay of zero is honoured, and alerted once.
+
    R5's baseline is the highest sequence among the strategy's accepted,
    accepted_incubation and advisory judgements: all passed R1-R5, and a
    signal whose sequence is
@@ -340,6 +354,26 @@ let parse text : (Contract.t, string) Result.t =
         | Error _ -> Error (shape_error json)
         | exception _ -> Error (shape_error json))
 
+(* An overlay file ([overlay_prefix]), parsed by Overlay rather than the
+   contract, and refused in the same words of the desk's: Overlay's own
+   messages quote what they choked on, which is the file's, so none of them
+   is recorded. *)
+let overlay_prefix = "overlay-"
+
+let parse_overlay text : (Overlay.t, string) Result.t =
+  if not (Stdlib.String.is_valid_utf_8 text) then Error "not valid UTF-8"
+  else
+    match Yojson.Safe.from_string text with
+    | exception Yojson.Json_error msg -> Error ("not JSON" ^ position msg)
+    | exception _ -> Error "not JSON"
+    | (_ : Yojson.Safe.t) -> (
+        match Overlay.parse_string text with
+        | Ok o -> Ok o
+        | Error _ | (exception _) ->
+            Error
+              "not an overlay: a field is absent, or not what the overlay reads \
+               (interface/overlay.schema.json)")
+
 (* ------------------------------------------------------------------------ *)
 (* The clock, and the judgement                                              *)
 (* ------------------------------------------------------------------------ *)
@@ -565,6 +599,115 @@ and sound ~latest ~bars_after ~spec ~(unvalidated : string option) (doc : Contra
                 }))
 
 (* ------------------------------------------------------------------------ *)
+(* The effective scale                                                       *)
+(* ------------------------------------------------------------------------ *)
+
+(* What the effective scale is read from beyond the journal (design §4.3):
+   the book's three overlay numbers, the venue's clock, the graph's drawdown
+   and the book's drawdown cap. Thunks, so the intake names neither the graph
+   nor the order manager's insides: bin/main.ml builds one from both and
+   hands the same one to the desk, whose page shows what sizing reads. *)
+module Gauge = struct
+  type t = {
+    spec : Ohcamel.Config.Book.Desk_spec.t;
+    venue_now : unit -> Time_ns.t option;
+    drawdown : unit -> float option;
+    dd_cap : float option;
+  }
+
+  let none =
+    {
+      spec = Ohcamel.Config.Book.Desk_spec.default;
+      venue_now = (fun () -> None);
+      drawdown = (fun () -> None);
+      dd_cap = None;
+    }
+
+  (* The book's drawdown cap: its Portfolio-scoped Max_drawdown limit, the
+     tightest if it names more than one; None when it names none. *)
+  let dd_cap_of_limits (limits : Limit.t list) =
+    List.filter_map limits ~f:(fun (l : Limit.t) ->
+        match (l.scope, l.kind) with
+        | Limit.Portfolio, Limit.Max_drawdown f -> Some f
+        | _ -> None)
+    |> List.min_elt ~compare:Float.compare
+end
+
+module Reading = struct
+  type t = {
+    exposure_scale : float;
+    governor : float;
+    overlay : float option;
+    as_of : string option;
+    age_s : int option;
+    state : Overlay.state;
+  }
+end
+
+let state_word : Overlay.state -> string = function
+  | Fresh -> "fresh"
+  | Held _ -> "held"
+  | Stale -> "stale"
+  | Absent -> "absent"
+
+(* The effective scale, from the latest accepted overlay ([latest], as
+   Journal.latest_overlay answers) and the gauge: the overlay's scale while it
+   is fresh or held, else the book's fallback, times the drawdown governor
+   (Overlay.effective). With no venue clock an overlay cannot be aged, so it
+   is Absent and the fallback applies. A drawdown the graph cannot answer is
+   a figure that exists and cannot be used: NaN, which the governor turns to
+   0 -- it stops sizing when the number it needs is unusable. *)
+let reading ~(latest : (int * string * float * string) option) (g : Gauge.t) : Reading.t =
+  let spec = g.spec in
+  let drawdown = match g.drawdown () with d -> d | exception _ -> Some Float.nan in
+  let governor = Overlay.governor ~drawdown ~dd_cap:g.dd_cap in
+  let now = g.venue_now () in
+  let received_at =
+    Option.bind latest ~f:(fun (_, _, _, received) -> Desk_time.parse received)
+  in
+  let state =
+    match now with
+    | None -> Overlay.Absent
+    | Some now ->
+        Overlay.state ~clock:{ Overlay.now } ~received_at
+          ~max_age_minutes:spec.Ohcamel.Config.Book.Desk_spec.overlay_max_age_minutes
+  in
+  let usable =
+    match (state, latest) with
+    | (Fresh | Held _), Some (_, _, scale, _) -> Some scale
+    | _ -> None
+  in
+  {
+    Reading.exposure_scale =
+      Overlay.effective ~overlay:usable ~fallback:spec.overlay_fallback ~governor;
+    governor;
+    overlay = Option.map latest ~f:(fun (_, _, scale, _) -> scale);
+    as_of = Option.map latest ~f:(fun (_, as_of, _, _) -> as_of);
+    age_s =
+      (match (now, received_at) with
+      | Some now, Some at ->
+          Some (Float.iround_towards_zero_exn (Time_ns.Span.to_sec (Time_ns.diff now at)))
+      | _ -> None);
+    state;
+  }
+
+(* /api/desk's three fields, appended after "clock" (Desk.summary_fields). *)
+let reading_fields (r : Reading.t) : (string * Yojson.Safe.t) list =
+  let num x = if Float.is_finite x then `Float x else `Null in
+  [
+    ("exposure_scale", num r.exposure_scale);
+    ("governor", num r.governor);
+    ( "overlay",
+      `Assoc
+        [
+          ("value", Option.value_map r.overlay ~default:`Null ~f:num);
+          ("as_of", Option.value_map r.as_of ~default:`Null ~f:(fun a -> `String a));
+          ("age_s", Option.value_map r.age_s ~default:`Null ~f:(fun a -> `Int a));
+          ("state", `String (state_word r.state));
+        ] );
+  ]
+
+(* ------------------------------------------------------------------------ *)
 (* The intake                                                                *)
 (* ------------------------------------------------------------------------ *)
 
@@ -593,9 +736,16 @@ type t = {
      with a different body -- by kind and name, so a stuck file costs one
      line, not one a minute. *)
   said : String.Hash_set.t;
+  gauge : Gauge.t;
+  (* Whether an adjust pass is running: [adjust] runs detached from the
+     minute loop, and a pass that finds the last one still out skips. *)
+  mutable adjusting : bool;
+  (* Each strategy's last adjust outcome said, so a refusal repeated every
+     minute -- an intraday proposal outside the session -- costs one line. *)
+  adjust_said : string String.Table.t;
 }
 
-let create ~journal ~dir ~strategies ~universe ~on_event ~now =
+let create ?(gauge = Gauge.none) ~journal ~dir ~strategies ~universe ~on_event ~now () =
   {
     journal;
     dir;
@@ -603,6 +753,9 @@ let create ~journal ~dir ~strategies ~universe ~on_event ~now =
     universe;
     on_event;
     now;
+    gauge;
+    adjusting = false;
+    adjust_said = String.Table.create ();
     judged = String.Table.create ();
     refused = String.Hash_set.create ();
     unsettled = String.Map.empty;
@@ -613,13 +766,15 @@ let create ~journal ~dir ~strategies ~universe ~on_event ~now =
 
 let deferred t = t.deferred
 let last_pass t = t.last_pass
+let current_reading t = reading ~latest:(Journal.latest_overlay t.journal) t.gauge
+let effective_scale t = (current_reading t).Reading.exposure_scale
 
 type status = Running of t | Off of string
 
 (* Both halves, or no intake: the directory, and a book that registers
    strategies. The reason is what /api/research says. *)
-let setup ~journal ~universe ~(signals : Signals_spec.t option) ~(dir : string option)
-    ~on_event ~now : status =
+let setup ~gauge ~journal ~universe ~(signals : Signals_spec.t option)
+    ~(dir : string option) ~on_event ~now : status =
   match (dir, signals) with
   | None, _ -> Off (sprintf "%s is not set, so no signal file is read" env_var)
   | Some _, None ->
@@ -627,8 +782,8 @@ let setup ~journal ~universe ~(signals : Signals_spec.t option) ~(dir : string o
         "the book has no signals block, so no strategy is registered and no file is read"
   | Some dir, Some spec ->
       Running
-        (create ~journal ~dir ~strategies:spec.Signals_spec.strategies ~universe ~on_event
-           ~now)
+        (create ~gauge ~journal ~dir ~strategies:spec.Signals_spec.strategies ~universe
+           ~on_event ~now ())
 
 let demo_status =
   Off
@@ -707,12 +862,108 @@ type candidate =
   | Refusal of string * string
   | Unparsed of string * ident * string
   | Parsed of string * ident * string * Contract.t
+  | Overlay_doc of string * ident * string * Overlay.t
 
 (* A document this pass judged accepted, with its strategy, held in memory
    for [size]: the only way a signal reaches a rebalance. *)
 module Accepted = struct
   type t = { strategy : Signals_spec.Strategy.t; doc : Contract.t }
 end
+
+(* The overlay alert's line (design §4.3; the plan's review focus 1): an
+   accepted overlay of zero is honoured -- the adjust pass flattens every
+   incubation and live strategy -- and said once, when it is judged. *)
+let overlay_zero_line ~sequence =
+  sprintf "overlay %d says zero exposure: every incubated and live strategy is flattened"
+    sequence
+
+(* The pass's overlay documents, in sequence order, each judged once
+   (Overlay.validate, O1-O4) and recorded in [overlays] with its whole text:
+   a sequence the journal already holds is skipped, as [already_judged]
+   skips a signal, so the plain INSERT never meets a sequence twice. O3's
+   baseline is the highest ACCEPTED sequence, as R5's is: a rejected
+   document never raises the bar. The clock is the venue's, as the desk
+   last read it (Gauge.venue_now): with none, nothing can be judged or
+   aged, the file waits, and that is said once. The receipt is stamped on
+   the same clock, so [reading] ages it against the clock that judged it.
+   Returns how many wait. *)
+let judge_overlays t (docs : (string * ident * string * Overlay.t) list) : int =
+  let docs =
+    List.sort docs ~compare:(fun (n1, _, _, (a : Overlay.t)) (n2, _, _, b) ->
+        [%compare: int * string] (a.sequence, n1) (b.sequence, n2))
+  in
+  List.fold docs ~init:0 ~f:(fun waiting (name, ident, text, (o : Overlay.t)) ->
+      try
+        if Journal.overlay_recorded t.journal ~sequence:o.sequence then (
+          Hashtbl.set t.judged ~key:name ~data:ident;
+          waiting)
+        else
+          match t.gauge.venue_now () with
+          | None ->
+              once t ~kind:"overlay clock" ~name (fun () ->
+                  log t
+                    "%S waits: no venue clock has answered, so an overlay can be neither \
+                     judged nor aged, and the book's fallback applies"
+                    name);
+              waiting + 1
+          | Some now ->
+              let last_sequence =
+                Option.value_map (Journal.latest_overlay t.journal) ~default:0
+                  ~f:(fun (sequence, _, _, _) -> sequence)
+              in
+              let verdict =
+                Overlay.validate ~clock:{ Overlay.now }
+                  ~max_age_minutes:
+                    t.gauge.spec.Ohcamel.Config.Book.Desk_spec.overlay_max_age_minutes
+                  ~last_sequence o
+              in
+              let word, rule, detail =
+                match verdict with
+                | Overlay.Accepted _ ->
+                    ( `Accepted,
+                      None,
+                      sprintf "passed O1-O4; exposure scale %g" o.exposure_scale )
+                | Rejected (rule, why) ->
+                    ( `Rejected,
+                      Some
+                        (match rule with
+                        | `O1 -> "O1"
+                        | `O2 -> "O2"
+                        | `O3 -> "O3"
+                        | `O4 -> "O4"),
+                      why )
+              in
+              Journal.record_overlay t.journal ~sequence:o.sequence
+                ~as_of:(Desk_time.rfc3339 o.as_of) ~received_at:now
+                ~exposure_scale:
+                  (* SQLite stores NaN as NULL, which the column refuses; a
+                     NaN scale is O4's to reject, and the document beside it
+                     is the record of what it said. *)
+                  (if Float.is_nan o.exposure_scale then 0.0 else o.exposure_scale)
+                ~verdict:word ~rule ~detail ~document:text;
+              Hashtbl.set t.judged ~key:name ~data:ident;
+              log t "%S: overlay %d %s%s -- %S" name o.sequence
+                (match word with `Accepted -> "accepted" | `Rejected -> "rejected")
+                (match rule with Some r -> " at " ^ r | None -> "")
+                detail;
+              (match verdict with
+              | Overlay.Accepted _ when Float.equal o.exposure_scale 0.0 ->
+                  let line = overlay_zero_line ~sequence:o.sequence in
+                  Journal.record_alert t.journal
+                    {
+                      Journal.Alert.at = now;
+                      kind = "overlay_zero";
+                      limit_name = "overlay";
+                      line;
+                    };
+                  log t "%s" line
+              | _ -> ());
+              waiting
+      with exn ->
+        once t ~kind:"raised" ~name (fun () ->
+            log t "%S could not be judged, and is left unjudged: %s" name
+              (Exn.to_string exn));
+        waiting + 1)
 
 (* One pass: every step the header describes, synchronously, returning the
    documents it judged accepted, in the order it judged them. A raise leaves
@@ -769,11 +1020,16 @@ let judge_pass t : Accepted.t list =
                 | Text text -> (
                     Hash_set.remove t.said ("io\000" ^ name);
                     Hash_set.remove t.said ("changed\000" ^ name);
-                    match parse text with
-                    | Error why -> Some (Unparsed (name, ident, why))
-                    | Ok doc ->
-                        if already_judged t ~name ~ident ~text doc then None
-                        else Some (Parsed (name, ident, text, doc)))))
+                    if String.is_prefix name ~prefix:overlay_prefix then
+                      match parse_overlay text with
+                      | Error why -> Some (Unparsed (name, ident, why))
+                      | Ok o -> Some (Overlay_doc (name, ident, text, o))
+                    else
+                      match parse text with
+                      | Error why -> Some (Unparsed (name, ident, why))
+                      | Ok doc ->
+                          if already_judged t ~name ~ident ~text doc then None
+                          else Some (Parsed (name, ident, text, doc)))))
   in
   if !held > 0 then
     log t "%d files wait for the next pass: a pass reads at most %d" !held
@@ -788,6 +1044,14 @@ let judge_pass t : Accepted.t list =
   let unchanged name ident =
     Option.equal equal_ident (Map.find t.unsettled name) (Some ident)
   in
+  (* The overlays first, against the venue's clock and not the sessions:
+     the signals sized below read the effective scale they set. *)
+  deferred :=
+    !deferred
+    + judge_overlays t
+        (List.filter_map candidates ~f:(function
+          | Overlay_doc (name, ident, text, o) -> Some (name, ident, text, o)
+          | Refusal _ | Unparsed _ | Parsed _ -> None));
   (match clock with
   | None ->
       (* No session yet: nothing is recorded, a malformed file included, and
@@ -796,7 +1060,8 @@ let judge_pass t : Accepted.t list =
          clock can record it if it has not changed. *)
       List.iter candidates ~f:(function
         | Unparsed (name, ident, _) -> settle name ident
-        | Refusal _ | Parsed _ -> incr deferred)
+        | Refusal _ | Parsed _ -> incr deferred
+        | Overlay_doc _ -> ())
   | Some { clock; latest; bars_after } ->
       let parsed =
         List.filter_map candidates ~f:(function
@@ -806,7 +1071,8 @@ let judge_pass t : Accepted.t list =
           | Unparsed (name, ident, why) ->
               if unchanged name ident then refuse t ~name ~why else settle name ident;
               None
-          | Parsed (name, ident, text, doc) -> Some (name, ident, text, doc))
+          | Parsed (name, ident, text, doc) -> Some (name, ident, text, doc)
+          | Overlay_doc _ -> None)
         |> List.sort ~compare:(fun (n1, _, _, (d1 : Contract.t)) (n2, _, _, d2) ->
             [%compare: string * int * string]
               (d1.strategy, d1.sequence, n1)
@@ -904,8 +1170,24 @@ let pass t = ignore (judge_pass t : Accepted.t list)
    the scale, and the dollars allocated, f x scale x E -- is recorded in
    [sizings] once the plan
    stands and the proposal was not refused: E is read with the plan, before
-   anything is proposed. *)
-let rebalance t ~oms ~(scale : unit -> float) (a : Accepted.t) : string Deferred.t =
+   anything is proposed. [mode] is how the legs go (Rebalance.Mode): Open
+   for an accepted document, Intraday for the adjust pass, whose sizing rows
+   say "adjust" ([sizing_mode]). An intraday rebalance whose wait ran out
+   records no sizing: its unfilled legs were cancelled, and the next pass
+   finds the strategy still sized at the old scale and re-sizes it. *)
+let incubation_ratio t ~oms (strategy : Signals_spec.Strategy.t) =
+  (* The cap is a ratio on the scale, never on the fraction: a cap of 0 is a
+     scale of 0, which flattens, where a fraction of 0 would be no targets
+     and the strategy's shares held for good. *)
+  match strategy.sizing with
+  | Incubation ->
+      Signals_spec.incubation_ratio
+        ~incubation_cap:(Oms.spec oms).Ohcamel.Config.Book.Desk_spec.incubation_cap
+        { Signals_spec.strategies = t.strategies }
+  | Live | Advisory -> 1.0
+
+let rebalance ?(mode = Rebalance.Mode.Open) ?(sizing_mode = "open") t ~oms
+    ~(scale : unit -> float) (a : Accepted.t) : string Deferred.t =
   let doc = a.Accepted.doc in
   let strategy = a.Accepted.strategy in
   let source =
@@ -923,17 +1205,7 @@ let rebalance t ~oms ~(scale : unit -> float) (a : Accepted.t) : string Deferred
   match permitted with
   | Error why -> return (Oms.Rebalance_outcome.to_string (Refused why))
   | Ok () -> (
-      (* The cap is a ratio on the scale, never on the fraction: a cap of 0
-         is a scale of 0, which flattens, where a fraction of 0 would be no
-         targets and the strategy's shares held for good. *)
-      let ratio =
-        match strategy.sizing with
-        | Incubation ->
-            Signals_spec.incubation_ratio
-              ~incubation_cap:(Oms.spec oms).Ohcamel.Config.Book.Desk_spec.incubation_cap
-              { Signals_spec.strategies = t.strategies }
-        | Live | Advisory -> 1.0
-      in
+      let ratio = incubation_ratio t ~oms strategy in
       let fraction = strategy.capital_fraction in
       let scale = scale () *. ratio in
       let planned =
@@ -954,7 +1226,7 @@ let rebalance t ~oms ~(scale : unit -> float) (a : Accepted.t) : string Deferred
                     ~tier:(Signals_spec.sizing_to_string strategy.sizing)
                     ~scale
                     ~allocated:(fraction *. scale *. equity)
-                    ~mode:"open")
+                    ~mode:sizing_mode)
             with
             | Ok () -> ()
             | Error e ->
@@ -981,12 +1253,10 @@ let rebalance t ~oms ~(scale : unit -> float) (a : Accepted.t) : string Deferred
           sized ();
           return ("no order: every order was " ^ floor_sentence dropped)
       | Ok (legs, dropped) ->
-          let%map outcome =
-            Oms.propose_rebalance oms ~source ~legs ~mode:Rebalance.Mode.Open
-          in
+          let%map outcome = Oms.propose_rebalance oms ~source ~legs ~mode in
           (match outcome with
-          | Refused _ -> ()
-          | Sent _ | Stopped _ | Waved _ -> sized ());
+          | Refused _ | Waved { timed_out = true; _ } -> ()
+          | Sent _ | Stopped _ | Waved { timed_out = false; _ } -> sized ());
           sprintf "%s. Targets: %s%s"
             (Oms.Rebalance_outcome.to_string outcome)
             (String.concat ~sep:"; " (List.map legs ~f:Rebalance.Leg.describe))
@@ -1047,11 +1317,102 @@ let size t ~(oms : Oms.t option) ~(scale : unit -> float) (accepted : Accepted.t
           log t "%S %d: rebalance %S, which could not be recorded: %s" doc.strategy
             doc.sequence outcome (Error.to_string_hum e))
 
+(* THE ADJUST PASS (design §4.3): when the effective scale moves more than
+   the book's overlay_band from the scale a strategy was last sized at, the
+   strategy is re-sized from its last accepted document -- Journal's
+   latest_accepted_document, accepted or accepted_incubation and nothing
+   else, so never an advisory row -- at the effective scale, and the
+   difference proposed in the intraday mode, its sizing row saying
+   "adjust". Only a strategy that adjusts intraday, is not stopped, and has
+   both a document and a sizing is looked at. Like is compared with like:
+   the sizing's scale is the product [rebalance] records, the effective
+   scale times the incubation ratio, so the new product is computed the same
+   way. Strictly more than the band; and a move to zero always counts, so an
+   overlay of zero flattens a strategy last sized inside the band of it.
+
+   The strategies are proposed concurrently, at most eight at once: each
+   wave is its own sequencer job and the waits interleave, so one
+   strategy's wave timeout does not hold another's. A proposal outside the
+   regular session is refused by the session rule like any other, records
+   no sizing, and is tried again next minute; each strategy's outcome is
+   said when it differs from the last one said. The pass runs detached from
+   the minute loop, and a pass that finds the last still out skips, saying
+   so. Never raises. *)
+let adjust t ~(oms : Oms.t option) : unit Deferred.t =
+  match oms with
+  | None -> Deferred.unit
+  | Some _ when t.adjusting ->
+      log t "the last adjust pass is still running, so this minute's is skipped";
+      Deferred.unit
+  | Some oms -> (
+      t.adjusting <- true;
+      let%map result =
+        Monitor.try_with ~extract_exn:true (fun () ->
+            let effective = effective_scale t in
+            let band = t.gauge.spec.Ohcamel.Config.Book.Desk_spec.overlay_band in
+            let due =
+              List.filter_map t.strategies ~f:(fun (s : Signals_spec.Strategy.t) ->
+                  let stopped =
+                    match Journal.strategy_state t.journal ~strategy:s.name with
+                    | Some (`Stopped, _, _, _) -> true
+                    | Some (`Active, _, _, _) | None -> false
+                  in
+                  match (s.adjust, s.sizing, stopped) with
+                  | Signals_spec.Adjust.Open, _, _ | _, Advisory, _ | _, _, true -> None
+                  | Intraday, (Live | Incubation), false -> (
+                      match
+                        ( Journal.latest_accepted_document t.journal ~strategy:s.name,
+                          Journal.latest_sizing t.journal ~strategy:s.name )
+                      with
+                      | Some (sequence, text), Some (_, last, _, _, _) -> (
+                          let product = effective *. incubation_ratio t ~oms s in
+                          let moved =
+                            Float.( > ) (Float.abs (product -. last)) band
+                            || (Float.equal product 0.0 && Float.( > ) last 0.0)
+                          in
+                          if not moved then None
+                          else
+                            match parse text with
+                            | Ok doc -> Some { Accepted.strategy = s; doc }
+                            | Error why ->
+                                once t ~kind:"adjust parse" ~name:s.name (fun () ->
+                                    log t "%S %d: its document does not parse (%s)" s.name
+                                      sequence why);
+                                None)
+                      | _ -> None))
+            in
+            Deferred.List.iter ~how:(`Max_concurrent_jobs 8) due
+              ~f:(fun (a : Accepted.t) ->
+                let name = a.Accepted.strategy.name in
+                let%map outcome =
+                  match%map
+                    Monitor.try_with ~extract_exn:true (fun () ->
+                        rebalance ~mode:Rebalance.Mode.Intraday ~sizing_mode:"adjust" t
+                          ~oms
+                          ~scale:(fun () -> effective)
+                          a)
+                  with
+                  | Ok outcome -> outcome
+                  | Error exn -> sprintf "the rebalance raised (%s)" (Exn.to_string exn)
+                in
+                let said = Hashtbl.find t.adjust_said name in
+                if not (Option.equal String.equal said (Some outcome)) then (
+                  Hashtbl.set t.adjust_said ~key:name ~data:outcome;
+                  log t "%S %d: adjusted to scale %g: %S" name a.Accepted.doc.sequence
+                    effective outcome)))
+      in
+      t.adjusting <- false;
+      match result with
+      | Ok () -> ()
+      | Error exn -> log t "the adjust pass raised: %s" (Exn.to_string exn))
+
 (* Once a minute, from now: the first pass at once, so a restart judges what
    arrived while it was down without waiting a minute. [judge_pass] is
    synchronous, so a plain try/with sees every raise it can make; its
-   accepted documents are sized before the minute's wait begins, so no pass
-   starts while a rebalance is still being proposed. *)
+   accepted documents are sized, at the effective scale, before the minute's
+   wait begins, so no pass starts while a rebalance is still being proposed.
+   Then the adjust pass is started and not waited for: its intraday waves
+   can take minutes, and the next pass must not. *)
 let run ?(time_source = Time_source.wall_clock ()) ?oms t : unit Deferred.t =
   let rec loop () =
     let accepted =
@@ -1061,14 +1422,14 @@ let run ?(time_source = Time_source.wall_clock ()) ?oms t : unit Deferred.t =
         []
     in
     let%bind () =
-      (* The effective scale is 1 until the overlay sets it (Task 11). *)
       match%map
         Monitor.try_with ~extract_exn:true (fun () ->
-            size t ~oms ~scale:(fun () -> 1.0) accepted)
+            size t ~oms ~scale:(fun () -> effective_scale t) accepted)
       with
       | Ok () -> ()
       | Error exn -> log t "sizing raised: %s" (Exn.to_string exn)
     in
+    don't_wait_for (adjust t ~oms);
     let%bind () = Time_source.after time_source every in
     loop ()
   in

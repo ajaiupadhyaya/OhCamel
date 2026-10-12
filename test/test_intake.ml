@@ -114,14 +114,16 @@ type fixture = {
   events : string Queue.t;
 }
 
-let with_intake ?(strategies = [ spy_live; tlt_advisory ]) ?(sessions = []) ~f () =
+let with_intake ?gauge ?(strategies = [ spy_live; tlt_advisory ]) ?(sessions = []) ~f () =
   with_dir ~f:(fun dir ->
       let journal = Or_error.ok_exn (Journal.open_ ~path:":memory:") in
       List.iter sessions ~f:(session journal);
       let events = Queue.create () in
       let intake =
-        Intake.create ~journal ~dir ~strategies ~universe ~on_event:(Queue.enqueue events)
+        Intake.create ?gauge ~journal ~dir ~strategies ~universe
+          ~on_event:(Queue.enqueue events)
           ~now:(fun () -> at)
+          ()
       in
       Exn.protect
         ~f:(fun () -> f { journal; dir; intake; events })
@@ -245,15 +247,15 @@ let test_no_directory_means_no_intake () =
   in
   contains "no directory, a signals block" ~substring:"OHCAMEL_SIGNALS_DIR is not set"
     (off "no directory"
-       (Intake.setup ~journal ~universe ~signals ~dir:None ~on_event:ignore
-          ~now:(fun () -> at)));
+       (Intake.setup ~gauge:Intake.Gauge.none ~journal ~universe ~signals ~dir:None
+          ~on_event:ignore ~now:(fun () -> at)));
   contains "a directory, no signals block" ~substring:"the book has no signals block"
     (off "no block"
-       (Intake.setup ~journal ~universe ~signals:None ~dir:(Some "/tmp") ~on_event:ignore
-          ~now:(fun () -> at)));
+       (Intake.setup ~gauge:Intake.Gauge.none ~journal ~universe ~signals:None
+          ~dir:(Some "/tmp") ~on_event:ignore ~now:(fun () -> at)));
   (match
-     Intake.setup ~journal ~universe ~signals ~dir:(Some "/tmp") ~on_event:ignore
-       ~now:(fun () -> at)
+     Intake.setup ~gauge:Intake.Gauge.none ~journal ~universe ~signals ~dir:(Some "/tmp")
+       ~on_event:ignore ~now:(fun () -> at)
    with
   | Intake.Running _ -> ()
   | Intake.Off why -> Alcotest.failf "both halves, and no intake: %s" why);
@@ -413,7 +415,9 @@ let test_a_crash_between_judging_and_proposing_does_not_re_size () =
         (accepted_keys (Intake.judge_pass f.intake));
       let restarted =
         Intake.create ~journal:f.journal ~dir:f.dir ~strategies:[ spy_live; tlt_advisory ]
-          ~universe ~on_event:ignore ~now:(fun () -> at)
+          ~universe ~on_event:ignore
+          ~now:(fun () -> at)
+          ()
       in
       Alcotest.(check (list (pair string int)))
         "nor does a restarted intake" []
@@ -648,7 +652,9 @@ let test_r3_deferral_ends_rejected_after_max_age_sessions () =
 
 let restart f =
   Intake.create ~journal:f.journal ~dir:f.dir ~strategies:[ spy_live; tlt_advisory ]
-    ~universe ~on_event:ignore ~now:(fun () -> at)
+    ~universe ~on_event:ignore
+    ~now:(fun () -> at)
+    ()
 
 (* The review's case. A live strategy's file dated 18 September, first seen
    when the latest session is the 14th, and the engine restarted every two
@@ -1615,6 +1621,202 @@ let test_the_validation_block_is_journaled_byte_for_byte () =
            (("fail", "2026-09-02"), (Some 0.31, Some 0.72, Some 0.2), Some "m.json")))
     ()
 
+(* ------------------------------------------------------------------------ *)
+(* Task 11: the overlay                                                      *)
+(* ------------------------------------------------------------------------ *)
+
+(* An overlay document as the research service writes it, 16 minutes before
+   [at]: inside the book's default overlay_max_age_minutes of 60. *)
+let overlay_doc ?(as_of = "2026-09-18T23:00:00Z") ~sequence scale =
+  sprintf
+    {|{"schema_version":1,"kind":"overlay","as_of":"%s","computed_at":"2026-09-18T23:00:05Z","sequence":%d,"exposure_scale":%s,"inputs":{"vol_target":0.1},"reported":{"regime_p_high":0.12}}|}
+    as_of sequence scale
+
+(* The venue clock is [clock], a cell a case moves; the book is the default
+   one (fallback 0.5, band 0.10, 60 minutes). *)
+let gauge ?drawdown ?dd_cap clock =
+  {
+    Intake.Gauge.spec = Book.Desk_spec.default;
+    venue_now = (fun () -> !clock);
+    drawdown = (fun () -> drawdown);
+    dd_cap;
+  }
+
+let overlay_rows journal =
+  let n = ref 0 in
+  ignore
+    (Sqlite3.exec_not_null_no_headers
+       (Journal.For_testing.db journal)
+       ~cb:(fun row -> n := Int.of_string row.(0))
+       "SELECT COUNT(*) FROM overlays"
+      : Sqlite3.Rc.t);
+  !n
+
+let state_of intake =
+  Intake.state_word (Intake.current_reading intake).Intake.Reading.state
+
+(* overlay-7.json, at 0.7071, judged by Overlay and not the contract: its
+   row is accepted with its scale, as_of and receipt on the venue clock, and
+   no signal is judged from it. Fresh, with no drawdown to govern, the
+   effective scale is the overlay's own. A file named overlay- that is not
+   an overlay is refused in signal_files, once, as a signal file would be. *)
+let test_overlay_accepted_and_journaled () =
+  let clock = ref (Some at) in
+  with_intake ~gauge:(gauge clock) ~sessions:[ "2026-09-18" ]
+    ~f:(fun f ->
+      write f.dir "overlay-7.json" (overlay_doc ~sequence:7 "0.7071");
+      write f.dir "overlay-8.json" {|{"kind":"overlay"}|};
+      Alcotest.(check int)
+        "no signal accepted" 0
+        (List.length (Intake.judge_pass f.intake));
+      Intake.pass f.intake;
+      (match Journal.latest_overlay f.journal with
+      | None -> Alcotest.fail "no accepted overlay row"
+      | Some (sequence, as_of, scale, received) ->
+          Alcotest.(check (pair (pair int (float 0.0)) (pair string string)))
+            "overlay 7, 0.7071, its as_of, received at the venue clock's now"
+            ((7, 0.7071), ("2026-09-18T23:00:00.000000000Z", D.Desk_time.rfc3339 at))
+            ((sequence, scale), (as_of, received)));
+      Alcotest.(check (float 1e-12))
+        "effective = 0.7071" 0.7071
+        (Intake.effective_scale f.intake);
+      Alcotest.(check string) "fresh" "fresh" (state_of f.intake);
+      Alcotest.(check (pair bool bool))
+        "overlay-7 is not a signal file; overlay-8, unparseable, is" (false, true)
+        ( Journal.signal_file_recorded f.journal ~name:"overlay-7.json",
+          Journal.signal_file_recorded f.journal ~name:"overlay-8.json" );
+      Alcotest.(check int) "one overlay row" 1 (overlay_rows f.journal))
+    ()
+
+(* Accepted at [at], then the clock moves. 30 minutes on it is held: 0.7071
+   times the governor, (0.02 - 0.015) / 0.01 = 0.5, is 0.35355. 61 minutes on
+   -- past the 60 -- it is stale: the fallback 0.5 times the governor 0.5 is
+   0.25, and the wire's state says stale. *)
+let test_overlay_stale_falls_back () =
+  let clock = ref (Some at) in
+  with_intake
+    ~gauge:(gauge ~drawdown:0.015 ~dd_cap:0.02 clock)
+    ~f:(fun f ->
+      write f.dir "overlay-7.json" (overlay_doc ~sequence:7 "0.7071");
+      Intake.pass f.intake;
+      clock := Some (Time_ns.add at (Time_ns.Span.of_min 30.0));
+      Alcotest.(check (pair (float 1e-12) string))
+        "held: 0.7071 x 0.5" (0.35355, "held")
+        (Intake.effective_scale f.intake, state_of f.intake);
+      clock := Some (Time_ns.add at (Time_ns.Span.of_min 61.0));
+      Alcotest.(check (float 1e-12))
+        "stale: overlay_fallback x governor = 0.5 x 0.5" 0.25
+        (Intake.effective_scale f.intake);
+      let wire = `Assoc (Intake.reading_fields (Intake.current_reading f.intake)) in
+      Alcotest.(check string)
+        "the wire says stale" "stale"
+        Yojson.Safe.Util.(to_string (member "state" (member "overlay" wire))))
+    ()
+
+(* The governor reads the graph. A book of 98,500 in cash whose recorded peak
+   is 100,000 is 1.5 % down: Graph.current_drawdown 0.015. Its Max_drawdown
+   limit of 0.02 is the cap, so the governor is (0.02 - 0.015) / (0.02 / 2) =
+   0.5; with no overlay the fallback 0.5 applies, and the scale is 0.25. *)
+let test_governor_read_from_the_graph () =
+  let limits =
+    [ { Limit.name = "dd-cap"; scope = Limit.Portfolio; kind = Limit.Max_drawdown 0.02 } ]
+  in
+  let graph =
+    Graph.create ~starting_cash:(Notional.of_float 98_500.0)
+      ~instruments:[ { Instrument.symbol = spy; sector = Sector.of_string "FUNDS" } ]
+      ~limits ~confidence:0.95 ~return_window:10 ()
+  in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      Graph.set_equity_history graph [| 100_000.0 |];
+      Graph.stabilize graph;
+      Alcotest.(check (float 1e-12))
+        "the graph's drawdown" 0.015
+        (Graph.current_drawdown graph);
+      let gauge =
+        {
+          Intake.Gauge.spec = Book.Desk_spec.default;
+          venue_now = (fun () -> Some at);
+          drawdown = (fun () -> Some (Graph.current_drawdown graph));
+          dd_cap = Intake.Gauge.dd_cap_of_limits limits;
+        }
+      in
+      let r = Intake.reading ~latest:None gauge in
+      Alcotest.(check (pair (float 1e-12) (float 1e-12)))
+        "governor 0.5, scale 0.25" (0.5, 0.25)
+        (r.Intake.Reading.governor, r.Intake.Reading.exposure_scale))
+
+(* Judged once per sequence. overlay-9 is accepted; overlay-5 is then
+   rejected at O3, its 5 not above the accepted 9. Neither is judged again --
+   not by a second pass, and not by a restarted intake that remembers no
+   file -- so the INSERT never meets a sequence twice: two rows, one line
+   for each judgement, and no raise. *)
+let test_overlay_judged_once () =
+  let clock = ref (Some at) in
+  with_intake ~gauge:(gauge clock)
+    ~f:(fun f ->
+      write f.dir "overlay-9.json" (overlay_doc ~sequence:9 "0.6");
+      Intake.pass f.intake;
+      write f.dir "overlay-5.json" (overlay_doc ~sequence:5 "0.8");
+      Intake.pass f.intake;
+      Intake.pass f.intake;
+      let restarted_events = Queue.create () in
+      let restarted =
+        Intake.create ~gauge:(gauge clock) ~journal:f.journal ~dir:f.dir
+          ~strategies:[ spy_live; tlt_advisory ] ~universe
+          ~on_event:(Queue.enqueue restarted_events)
+          ~now:(fun () -> at)
+          ()
+      in
+      Intake.pass restarted;
+      Alcotest.(check int) "two rows" 2 (overlay_rows f.journal);
+      Alcotest.(check (pair bool bool))
+        "both recorded" (true, true)
+        ( Journal.overlay_recorded f.journal ~sequence:9,
+          Journal.overlay_recorded f.journal ~sequence:5 );
+      Alcotest.(check (option int))
+        "9 is the accepted one" (Some 9)
+        (Option.map (Journal.latest_overlay f.journal) ~f:(fun (s, _, _, _) -> s));
+      let lines q ~substring =
+        List.count (Queue.to_list q) ~f:(String.is_substring ~substring)
+      in
+      Alcotest.(check (list int))
+        "accepted once, rejected at O3 once, nothing raised" [ 1; 1; 0; 0 ]
+        [
+          lines f.events ~substring:"overlay 9 accepted";
+          lines f.events ~substring:"overlay 5 rejected at O3";
+          lines f.events ~substring:"could not be judged";
+          Queue.length restarted_events;
+        ])
+    ()
+
+(* With no venue clock an overlay can be neither judged nor aged: the file
+   waits, unrecorded, said once over two passes, and the scale is the
+   fallback, the state absent. The first pass with a clock judges it. *)
+let test_no_venue_clock_is_absent () =
+  let clock = ref None in
+  with_intake ~gauge:(gauge clock)
+    ~f:(fun f ->
+      write f.dir "overlay-7.json" (overlay_doc ~sequence:7 "0.7071");
+      Intake.pass f.intake;
+      Intake.pass f.intake;
+      Alcotest.(check (triple bool int int))
+        "unrecorded, waiting, said once" (false, 1, 1)
+        ( Journal.overlay_recorded f.journal ~sequence:7,
+          Intake.deferred f.intake,
+          List.count (Queue.to_list f.events)
+            ~f:(String.is_substring ~substring:"no venue clock has answered") );
+      Alcotest.(check (pair (float 0.0) string))
+        "the fallback, absent" (0.5, "absent")
+        (Intake.effective_scale f.intake, state_of f.intake);
+      clock := Some at;
+      Intake.pass f.intake;
+      Alcotest.(check (pair (float 1e-12) string))
+        "judged once a clock answers" (0.7071, "fresh")
+        (Intake.effective_scale f.intake, state_of f.intake))
+    ()
+
 let suite =
   ( "intake",
     [
@@ -1701,4 +1903,11 @@ let suite =
         test_the_evidence_is_both_manifests_as_committed;
       Alcotest.test_case "the manifests carry every line the page reads" `Quick
         test_the_manifests_carry_every_line_the_page_reads;
+      Alcotest.test_case "overlay accepted and journaled" `Quick
+        test_overlay_accepted_and_journaled;
+      Alcotest.test_case "overlay stale falls back" `Quick test_overlay_stale_falls_back;
+      Alcotest.test_case "governor read from the graph" `Quick
+        test_governor_read_from_the_graph;
+      Alcotest.test_case "overlay judged once" `Quick test_overlay_judged_once;
+      Alcotest.test_case "no venue clock -> absent" `Quick test_no_venue_clock_is_absent;
     ] )

@@ -77,6 +77,13 @@ type t = {
   (* The session count, re-read only when the journal has been written since:
      this object rides on every frame, and a frame is not a reason to query. *)
   mutable sessions_seen : int * int;
+  (* What the effective scale is read from (Intake.Gauge), handed in once
+     the order manager whose clock it reads exists; None for a desk built
+     without one, whose frame then says nothing it cannot know. *)
+  mutable gauge : Intake.Gauge.t option;
+  (* The latest accepted overlay, re-read only when the journal has been
+     written since, as [sessions_seen] is. *)
+  mutable overlay_seen : int * (int * string * float * string) option;
 }
 
 let create ~graph ~journal ~venue ~spec ~on_change ~on_first_sync =
@@ -102,12 +109,18 @@ let create ~graph ~journal ~venue ~spec ~on_change ~on_first_sync =
     clock = None;
     clock_read = `Idle;
     sessions_seen = (-1, 0);
+    gauge = None;
+    overlay_seen = (-1, None);
   }
 
 (* The order manager is made after the desk -- its fills re-read the account
    through [sync] -- and handed back here, so the frame can say what the desk
    can do. *)
 let set_oms t oms = t.oms <- Some oms
+
+(* The same gauge the intake sizes with, so the page shows the scale sizing
+   reads. *)
+let set_gauge t gauge = t.gauge <- Some gauge
 
 let venue_name t =
   match t.venue with Reads r -> r.Venue.Read.name | Unavailable { name; _ } -> name
@@ -319,6 +332,34 @@ let sessions_count t =
     t.sessions_seen <- (version, count);
     count
 
+let latest_overlay t =
+  let version = Journal.version t.journal in
+  let seen_version, latest = t.overlay_seen in
+  if version = seen_version then latest
+  else
+    let latest = Journal.latest_overlay t.journal in
+    t.overlay_seen <- (version, latest);
+    latest
+
+(* The effective scale, the governor and the overlay (design §4.6), from
+   the gauge; with none, nulls and "absent". *)
+let scale_fields t =
+  match t.gauge with
+  | Some gauge -> Intake.reading_fields (Intake.reading ~latest:(latest_overlay t) gauge)
+  | None ->
+      [
+        ("exposure_scale", `Null);
+        ("governor", `Null);
+        ( "overlay",
+          `Assoc
+            [
+              ("value", `Null);
+              ("as_of", `Null);
+              ("age_s", `Null);
+              ("state", `String "absent");
+            ] );
+      ]
+
 (* THE ONE CONSTRUCTOR for the clock block (ruling 20). It is built here, in
    [summary_fields], which is both the desk block that rides on every frame
    (bin/main.ml's ?frame_extra) and the head of /api/desk's body -- and which
@@ -431,6 +472,8 @@ let summary_fields ?now t =
     (* Appended last, so nothing a reader indexes by position moves. *)
     ("clock", clock_json ?now t);
   ]
+  (* After "clock", for the same reason: exposure_scale, governor, overlay. *)
+  @ scale_fields t
 
 let summary_json ?now t : Yojson.Safe.t = `Assoc (summary_fields ?now t)
 

@@ -183,6 +183,13 @@ let set_clock t (clock : Venue.Session_clock.t option) =
           next_close = c.Venue.Session_clock.next_close;
         })
 
+(* The desk's clock, once the venue's has answered: [now], the instant the
+   session rule reads every order at, while [session] holds a reading -- None
+   until the first one answers, and after a read that failed. The overlay is
+   judged and aged against this (Intake), so an overlay is never aged by a
+   clock the venue has not vouched for. *)
+let venue_now t = Option.map t.session ~f:(fun _ -> t.now ())
+
 (* A market set by hand, for a caller with no clock to read: a session open
    with no close in sight -- both times at the end of representable time -- or
    none; and the twenty-day volumes. *)

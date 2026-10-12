@@ -1614,6 +1614,16 @@ let latest_overlay t =
        [] ~row:(fun r ->
          (Data.to_int_exn r.(0), col_text r 1, col_real r 2, col_text r 3)))
 
+(* Whether [sequence] is judged already, either way: one primary-key seek.
+   The intake asks it before judging a file, as [signal] is asked for a
+   signal, so [record_overlay]'s plain INSERT never meets a sequence twice. *)
+let overlay_recorded t ~sequence =
+  not
+    (List.is_empty
+       (query t ~what:"overlay recorded" "SELECT 1 FROM overlays WHERE sequence = ?"
+          [ Data.INT (Int64.of_int sequence) ]
+          ~row:(fun _ -> ())))
+
 (* Rejected sequences count: the next document must exceed every one judged. *)
 let highest_overlay_sequence t =
   match
