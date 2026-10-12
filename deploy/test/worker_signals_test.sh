@@ -135,7 +135,7 @@ fi
 for kind in signals.daily signals.overlay desk.report; do
 	if grep -qE "register\(KindSpec\(\"$kind\"" "$kinds" &&
 		grep -qE "^  $kind: [0-9]+[hm]" "$sched" &&
-		grep -qE "^[ \t]+kind: $kind[ \t]*$" "$sched"; then
+		grep -qE "^[[:blank:]]+kind: ${kind}[[:blank:]]*$" "$sched"; then
 		ok "$kinds, $sched: $kind is registered, aged and scheduled"
 	else
 		no "$kind" "not registered in $kinds, or without a max_age or a schedule entry in $sched"
