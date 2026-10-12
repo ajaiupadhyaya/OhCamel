@@ -34,7 +34,7 @@ Three layers, and the rule between them: **analytics are pure** (`risk/` .. `fun
 | `src/ohcamel_quant/jobs/handlers/` | Handlers for `ops.selftest`, `ingest.fred`, the four public `api.*` kinds (requests over the synchronous caps) and the warehouse ingests |
 | `src/ohcamel_quant/warehouse/` | DuckDB (`warehouse.duckdb`, written only by the worker), migrations, read-side helpers in `MarketData`'s shapes, freshness against the session clock, the offline fixture warehouse, committed dated S&P 500 / Nasdaq-100 constituent lists, `python -m ohcamel_quant.warehouse run / build-fixture / freshness` |
 | `src/ohcamel_quant/warehouse/ingest/` | Eight ingests: universes, daily bars, minute bars (Alpaca IEX, 50 names), FRED, factors, SEC facts, 13F holdings, option snapshots (Cboe, 30 underlyings) |
-| `src/ohcamel_quant/signals/` | The producers' side of the desk's contract: `contract` (v1, v2 and overlay documents, `params_hash` / `data_hash` byte-identical to the research package's, validated against `interface/*.schema.json`, written atomically), `roster` (INC-01's `roster.yaml`, loaded strictly), `freeze` (INC-01's monthly parameter freeze, its own `signals.freeze` artifact) and `daily` (the `signals.daily` job: every farm cell's targets at the last close, from the backtest's own strategy function, one v1 document per cell into `OHCAMEL_QUANT_SIGNALS_DIR`) |
+| `src/ohcamel_quant/signals/` | The producers' side of the desk's contract: `contract` (v1, v2 and overlay documents, `params_hash` / `data_hash` byte-identical to the research package's, validated against `interface/*.schema.json`, written atomically), `roster` (INC-01's `roster.yaml`, loaded strictly), `freeze` (INC-01's monthly parameter freeze, its own `signals.freeze` artifact) and `daily` (the `signals.daily` job: every farm cell's targets at the last close, from the backtest's own strategy function, one v1 document per cell into `OHCAMEL_QUANT_SIGNALS_DIR`) and `overlay` (the `signals.overlay` job: one exposure scale, `min(1, vol_target / σ̂)`, from volatility targeting on the roster's combined targets with the covariance league's winner and the volatility league's best model per name) |
 | `src/ohcamel_quant/models/` | Pure product analytics: `mc_risk` (P1), `vol_league` (P2), `cov_league` (P3), `farm` (P4), `xsec` + `features` + `cv` (P5, EXP-Q01), `hmm` + `q02` (P6, EXP-Q02), `surface_metrics` (P7), and `verdict` (the charter's gates, applied literally) |
 | `src/ohcamel_quant/products/` | The product job handlers, the only Lane M code that reads data: `atlas` (`risk.mc_atlas`, `risk.mc_intraday`), `vol_league`, `cov_league`, `farm`, `q01` (`models.xs_lgbm`, and the universe-freeze CLI), `q02` (`regime.hmm`), `surface_history`; `experiment.py` (frozen configs and the evaluate-once holdout rule), `io.py` (earlier artifacts read back) |
 
@@ -71,5 +71,5 @@ commit.
 
 <!-- quant-tests -->
 ```
-TESTS = 1351
+TESTS = 1371
 ```

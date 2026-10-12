@@ -121,3 +121,4 @@ register(KindSpec("regime.hmm", f"{_P}.q02:run", "M", heavy=True))
 _S = "ohcamel_quant.jobs.handlers.signals"
 register(KindSpec("signals.daily", f"{_S}:daily", "S", heavy=False))
 register(KindSpec("signals.freeze", f"{_S}:freeze", "S", heavy=False))
+register(KindSpec("signals.overlay", f"{_S}:overlay", "S", heavy=False))
