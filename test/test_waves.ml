@@ -28,7 +28,7 @@ let leg name side qty =
 let sell name = leg name D.Order.Side.Sell 10
 let buy name qty = leg name D.Order.Side.Buy qty
 
-let split legs =
+let split ?(position = position) legs =
   List.map (D.Waves.split ~legs ~position ~max_legs:6) ~f:(fun wave ->
       List.map wave ~f:(fun (l : Leg.t) -> Symbol.to_string l.Leg.symbol))
 
@@ -62,10 +62,29 @@ let test_no_shrinking () =
     [ [ "F"; "E"; "D" ] ]
     [ buy "D" 1; buy "E" 2; buy "F" 3 ]
 
+(* Eight shrinking and one growing: a long strategy selling eight names it
+   holds 100 of each, H1 1 share to H8 8, and buying 5 of a new one. The
+   shrinking legs are chunked as the growing ones are, largest first:
+   [[H8..H3]; [H2; H1]; [N]] -- where one unchunked wave of eight would be
+   refused at six, and the strategy could never exit. Given in ascending
+   order, so the sort is what puts them right. *)
+let test_eight_shrinking () =
+  let position s =
+    if String.is_prefix (Symbol.to_string s) ~prefix:"H" then 100.0 else 0.0
+  in
+  let sells =
+    List.init 8 ~f:(fun i -> leg (sprintf "H%d" (i + 1)) D.Order.Side.Sell (i + 1))
+  in
+  Alcotest.(check (list (list string)))
+    "six largest sells, the two smallest, then the buy"
+    [ [ "H8"; "H7"; "H6"; "H5"; "H4"; "H3" ]; [ "H2"; "H1" ]; [ "N" ] ]
+    (split ~position (sells @ [ buy "N" 5 ]))
+
 let suite =
   ( "waves",
     [
       Alcotest.test_case "Waves.split seven" `Quick test_seven;
       Alcotest.test_case "Waves.split fourteen" `Quick test_fourteen;
       Alcotest.test_case "Waves.split no shrinking" `Quick test_no_shrinking;
+      Alcotest.test_case "Waves.split eight shrinking" `Quick test_eight_shrinking;
     ] )

@@ -17,8 +17,8 @@ let split ~(legs : Rebalance.Leg.t list) ~(position : Ohcamel.Types.Symbol.t -> 
   let notional (l : Rebalance.Leg.t) =
     Float.abs (Float.of_int l.Rebalance.Leg.qty *. l.Rebalance.Leg.price)
   in
-  let growing =
-    List.stable_sort growing ~compare:(fun a b -> Float.compare (notional b) (notional a))
+  let waves legs =
+    List.stable_sort legs ~compare:(fun a b -> Float.compare (notional b) (notional a))
+    |> List.chunks_of ~length:(Int.max 1 max_legs)
   in
-  (if List.is_empty shrinking then [] else [ shrinking ])
-  @ List.chunks_of growing ~length:(Int.max 1 max_legs)
+  waves shrinking @ waves growing

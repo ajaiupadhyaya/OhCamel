@@ -1195,10 +1195,10 @@ let plan_rebalance t ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
    acknowledge was the last, [unsent] is empty: every order went, and the
    sentence says the last was not acknowledged rather than that all were
    sent. [Waved]: an intraday rebalance of more than Rebalance.max_legs
-   orders, sent in waves (desk/waves.ml), each wave's own outcome in the
-   order they went; a wave that was not [Sent] is the last, and so is one
-   whose wait ran out, [timed_out], after which every open order of the
-   rebalance was cancelled. Its first wave is never [Refused]: a rebalance
+   orders, sent in waves (desk/waves.ml), or one of any size whose wait ran
+   out, each wave's own outcome in the order they went; a wave that was not
+   [Sent] is the last, and so is one whose wait ran out, [timed_out], after
+   which every open order of the rebalance was cancelled. Its first wave is never [Refused]: a rebalance
    whose first wave is refused is [Refused]. *)
 module Rebalance_outcome = struct
   type t =
@@ -1689,58 +1689,72 @@ let cancel_rebalance t ~(source : Rebalance.Source.t) : unit Deferred.t =
 
 (* A strategy's rebalance in [mode] (Rebalance.Mode).
 
-   [Open], and [Intraday] with at most Rebalance.max_legs orders: one
-   [send_rebalance] -- one sequencer job, as above -- and its outcome, with
-   no wait: a day limit order the venue does not fill rests until it does,
-   or until the session's close ends it.
+   [Open]: one [send_rebalance] -- one sequencer job, as above -- and its
+   outcome. A market-on-open order waits for the auction; nothing here waits
+   with it.
 
-   [Intraday] with more: in waves (Waves.split: the orders that shrink a
-   position first, then the growing ones, largest first, six at a time).
-   Each wave is one [send_rebalance], checked and gated on the book as it is
-   when its turn comes -- after the waves before it have filled -- then
-   waited on ([await_settled], at most the book's wave_timeout_s). EACH WAVE
-   IS ITS OWN SEQUENCER JOB, and the wait is between them, not inside one:
-   the fills that settle a wave are journaled and applied to the book by
+   [Intraday]: in waves, EVERY ONE OF THEM WAITED ON. At most
+   Rebalance.max_legs orders are one wave; more are split (Waves.split: the
+   orders that shrink a position first, then the growing ones, each group
+   largest first, six at a time). Each wave is one [send_rebalance], checked
+   and gated on the book as it is when its turn comes -- after the waves
+   before it have filled -- then waited on ([await_settled], at most the
+   book's wave_timeout_s): an unfilled intraday order is cancelled at its
+   timeout and the strategy re-sized on the next pass (design §4.3). EACH
+   WAVE IS ITS OWN SEQUENCER JOB, and the wait is between them, not inside
+   one: the fills that settle a wave are journaled and applied to the book by
    sequencer jobs, and a wait that held the sequencer would see none of them
    -- nor let a kill's cancels through. What may run between two waves is
    any other job; none can size this strategy again, because
    [strategy_position] refuses while one of its orders may fill, and the
-   next wave's check asks it again. A wave that is refused or stopped ends
-   the rebalance, and so does one whose wait runs out: every open order of
-   the rebalance is cancelled ([cancel_rebalance]) and no later wave is sent.
-   A first wave refused is the rebalance refused, nothing journaled. *)
+   next wave's check asks it again.
+
+   A [Stopped] wave is waited on as a [Sent] one is -- what the venue
+   acknowledged rests there like any other order of the wave -- and ends the
+   rebalance; so does a refused wave. When a wait runs out, every open order
+   of the rebalance is cancelled ([cancel_rebalance]) and no later wave is
+   sent. The outcome: a first wave refused is [Refused], nothing journaled;
+   a rebalance of one wave that settled inside its wait is that wave's own
+   outcome ([Sent], or [Stopped]); anything else -- more than one wave, or a
+   wait that ran out -- is [Waved]. *)
 let propose_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t list)
     ~(mode : Rebalance.Mode.t) : Rebalance_outcome.t Deferred.t =
   match mode with
   | Rebalance.Mode.Open -> send_rebalance t ~mode ~source ~legs
-  | Rebalance.Mode.Intraday when List.length legs <= Rebalance.max_legs ->
-      send_rebalance t ~mode ~source ~legs
   | Rebalance.Mode.Intraday ->
       let position symbol =
         if Graph.knows_symbol t.graph symbol then Qty.to_float (Graph.qty t.graph symbol)
         else 0.0
       in
+      let waves =
+        if List.length legs <= Rebalance.max_legs then [ legs ]
+        else Waves.split ~legs ~position ~max_legs:Rebalance.max_legs
+      in
       let timeout = Time_ns.Span.of_sec t.spec.Desk_spec.wave_timeout_s in
-      let waved waves ~timed_out =
-        Rebalance_outcome.Waved { waves = List.rev waves; timed_out }
+      let finish sent ~timed_out =
+        match (List.rev sent, timed_out) with
+        | [ only ], false when List.length waves = 1 -> only
+        | waves, timed_out -> Rebalance_outcome.Waved { waves; timed_out }
       in
       let rec go sent = function
-        | [] -> return (waved sent ~timed_out:false)
+        | [] -> return (finish sent ~timed_out:false)
         | wave :: rest -> (
             match%bind send_rebalance t ~mode ~source ~legs:wave with
             | Rebalance_outcome.Refused _ as refused when List.is_empty sent ->
                 return refused
-            | ( Rebalance_outcome.Refused _ | Rebalance_outcome.Stopped _
-              | Rebalance_outcome.Waved _ ) as last ->
-                return (waved (last :: sent) ~timed_out:false)
-            | Rebalance_outcome.Sent _ as this -> (
+            | (Rebalance_outcome.Refused _ | Rebalance_outcome.Waved _) as last ->
+                return (finish (last :: sent) ~timed_out:false)
+            | (Rebalance_outcome.Sent _ | Rebalance_outcome.Stopped _) as this -> (
                 match%bind await_settled t ~source ~timeout with
-                | `Settled -> go (this :: sent) rest
+                | `Settled -> (
+                    match this with
+                    | Rebalance_outcome.Sent _ -> go (this :: sent) rest
+                    | _ -> return (finish (this :: sent) ~timed_out:false))
                 | `Timed_out ->
                     let%map () = cancel_rebalance t ~source in
-                    waved (this :: sent) ~timed_out:true))
+                    finish (this :: sent) ~timed_out:true))
       in
-      go [] (Waves.split ~legs ~position ~max_legs:Rebalance.max_legs)
+      go [] waves
 
 let apply_to_graph t (o : Order.t) (f : Order.Fill.t) =
   let symbol = o.Order.request.Order.Request.symbol in

@@ -2638,22 +2638,43 @@ let tuesday_mid = Time_ns.of_string_with_utc_offset "2026-09-15T15:00:00Z"
 
 (* An intraday rebalance of three, AAPL, MSFT and XOM +10 at marks of 100,
    200 and 50: three day limit orders at each mark x 1.001 -- 100.10, 200.20,
-   50.05 -- sent at once, one wave, with no wait. Each fills on the next pump,
-   the ask (mark x 1.0005) being inside its limit: AAPL at 100.05. *)
+   50.05 -- sent at once, one wave, then waited on. Each fills on the next
+   pump, the ask (mark x 1.0005) being inside its limit: AAPL at 100.05. The
+   wait's next poll, 2 s on, finds nothing open, and the outcome is the
+   wave's own: Sent, as a rebalance of one wave settled inside its wait. *)
+let three_buys =
+  [
+    rebalance_leg aapl D.Order.Side.Buy 10;
+    rebalance_leg msft D.Order.Side.Buy 10;
+    rebalance_leg xom D.Order.Side.Buy 10;
+  ]
+
+let advance_to f seconds =
+  let%bind () =
+    Time_source.advance_by_alarms ~wait_for:settle f.clock
+      ~to_:(Time_ns.add t0 (Time_ns.Span.of_sec seconds))
+  in
+  settle ()
+
 let test_intraday_single_wave_sends_day_limits () =
   let f = fixture () in
   record_close f;
   let oms = manager ~now:(fun () -> tuesday_mid) f in
-  let%bind outcome =
+  let waiting =
     D.Oms.propose_rebalance oms ~mode:D.Rebalance.Mode.Intraday ~source:aapl_source
-      ~legs:
-        [
-          rebalance_leg aapl D.Order.Side.Buy 10;
-          rebalance_leg msft D.Order.Side.Buy 10;
-          rebalance_leg xom D.Order.Side.Buy 10;
-        ]
+      ~legs:three_buys
   in
   let%bind () = settle () in
+  Alcotest.(check (pair int bool))
+    "three sent, and the wave waited on" (3, false)
+    (D.Sim_venue.received f.venue, Deferred.is_determined waiting);
+  let%bind () = pump f in
+  let%bind () = advance_to f 2.0 in
+  let outcome =
+    match Deferred.peek waiting with
+    | Some o -> o
+    | None -> Alcotest.fail "still waiting once every order filled"
+  in
   let sent =
     match outcome with
     | D.Oms.Rebalance_outcome.Sent os -> os
@@ -2679,7 +2700,6 @@ let test_intraday_single_wave_sends_day_limits () =
     (String.is_prefix
        (D.Oms.Rebalance_outcome.to_string outcome)
        ~prefix:"3 day limit orders journaled, then sent, and acknowledged");
-  let%bind () = pump f in
   Alcotest.(check (list string))
     "each filled on the next pump"
     [ "filled"; "filled"; "filled" ]
@@ -2947,6 +2967,252 @@ let test_restart_mid_wave_does_not_double_send () =
   Core_unix.rmdir dir;
   Graph.destroy f.graph
 
+(* A single wave withheld: the three day limits go, every mark moves up 1%
+   so no ask reaches its limit, and at 180 s the wave's wait runs out --
+   each order cancelled, journaled pending_cancel at its DELETE, and the
+   outcome Waved [Sent 3] with timed_out, where a settled single wave would
+   have been Sent. *)
+let test_a_single_intraday_wave_withheld_is_cancelled_at_its_timeout () =
+  let f = fixture () in
+  record_close f;
+  let oms = manager ~now:(fun () -> tuesday_mid) f in
+  let waiting =
+    D.Oms.propose_rebalance oms ~mode:D.Rebalance.Mode.Intraday ~source:aapl_source
+      ~legs:three_buys
+  in
+  let%bind () = settle () in
+  List.iter
+    [ (aapl, 100.0); (msft, 200.0); (xom, 50.0) ]
+    ~f:(fun (s, p) -> mark f s (p *. 1.01));
+  let%bind () = pump f in
+  let%bind () = advance_to f 179.0 in
+  Alcotest.(check bool) "at 179 s, still waiting" false (Deferred.is_determined waiting);
+  let%bind () = advance_to f 180.0 in
+  (match Deferred.peek waiting with
+  | Some
+      (D.Oms.Rebalance_outcome.Waved
+         { waves = [ D.Oms.Rebalance_outcome.Sent os ]; timed_out = true }) ->
+      Alcotest.(check (list string))
+        "all three cancelled"
+        [ "cancelled"; "cancelled"; "cancelled" ]
+        (List.map os ~f:(state f))
+  | Some other ->
+      Alcotest.failf "not timed out: %s" (D.Oms.Rebalance_outcome.to_string other)
+  | None -> Alcotest.fail "still waiting at 180 s");
+  Alcotest.(check int) "three received, nothing more" 3 (D.Sim_venue.received f.venue);
+  Graph.destroy f.graph;
+  return ()
+
+(* A wave the venue stops partway is waited on and cancelled like any other.
+   The venue acknowledges AAPL and MSFT and leaves XOM, the wave's last,
+   unacknowledged -- its submit answers unknown and never reached the venue
+   -- so the wave is Stopped, every order having gone. Nothing fills. XOM's
+   lookups find nothing at 2, 12 and 42 s, and it fails; the two the venue
+   holds rest until 180 s, when each is cancelled, journaled pending_cancel
+   at its DELETE. Outcome: Waved [Stopped] with timed_out. *)
+let test_a_stopped_wave's_orders_are_cancelled_at_the_timeout () =
+  let f = fixture () in
+  record_close f;
+  let sim = D.Sim_venue.trade ~auto:false f.venue in
+  let submits = ref 0 in
+  let at_the_delete = ref [] in
+  let scripted =
+    {
+      sim with
+      D.Venue.Trade.submit =
+        (fun permit r ->
+          incr submits;
+          if !submits = 3 then return (D.Venue.Submission.Unknown "timed out after 10 s")
+          else sim.D.Venue.Trade.submit permit r);
+      cancel =
+        (fun id ->
+          at_the_delete :=
+            List.filter_map (D.Journal.open_orders f.journal) ~f:(fun r ->
+                let o = r.D.Journal.Order_row.order in
+                Option.some_if
+                  (Option.equal String.equal o.D.Order.venue_order_id (Some id))
+                  (D.Order.State.to_string o.D.Order.state))
+            @ !at_the_delete;
+          sim.D.Venue.Trade.cancel id);
+    }
+  in
+  let oms = manager ~trade:scripted ~now:(fun () -> tuesday_mid) f in
+  let waiting =
+    D.Oms.propose_rebalance oms ~mode:D.Rebalance.Mode.Intraday ~source:aapl_source
+      ~legs:three_buys
+  in
+  let%bind () = settle () in
+  let%bind () = advance_to f 179.0 in
+  Alcotest.(check bool) "at 179 s, still waiting" false (Deferred.is_determined waiting);
+  let%bind () = advance_to f 180.0 in
+  (match Deferred.peek waiting with
+  | Some
+      (D.Oms.Rebalance_outcome.Waved
+         {
+           waves = [ D.Oms.Rebalance_outcome.Stopped { sent; unsent = []; _ } ];
+           timed_out = true;
+         }) ->
+      Alcotest.(check (list (pair string string)))
+        "the two acknowledged cancelled; the unknown one failed when nothing found it"
+        [ ("AAPL", "cancelled"); ("MSFT", "cancelled"); ("XOM", "failed") ]
+        (List.map sent ~f:(fun o ->
+             (Symbol.to_string o.D.Order.request.D.Order.Request.symbol, state f o)))
+  | Some other ->
+      Alcotest.failf "not timed out: %s" (D.Oms.Rebalance_outcome.to_string other)
+  | None -> Alcotest.fail "still waiting at 180 s");
+  Alcotest.(check (list string))
+    "each DELETE sent with its order journaled pending_cancel"
+    [ "pending_cancel"; "pending_cancel" ]
+    !at_the_delete;
+  Alcotest.(check int) "two reached the venue" 2 (D.Sim_venue.received f.venue);
+  Graph.destroy f.graph;
+  return ()
+
+(* Two waves that settle. Wave 1's six fill on a pump; between the waves the
+   strategy's own position is the six at 10 each. The wait's poll at 2 s
+   finds nothing open and wave 2, XOM +10, is checked and sent -- and at its
+   submit the book the gate read already holds wave 1's fills: 10 of each of
+   the six. XOM fills on the next pump, the poll at 4 s finds nothing open,
+   and the outcome is Waved [Sent 6; Sent 1], not timed out: seven received. *)
+let test_two_waves_settle_and_the_second_is_gated_after_the_first_fills () =
+  let f = wide () in
+  record_close f;
+  let sim = D.Sim_venue.trade ~auto:false f.venue in
+  let book_at_wave_2 = ref None in
+  let six = [ aapl; iwm; msft; qqq; spy; tlt ] in
+  let watched =
+    {
+      sim with
+      D.Venue.Trade.submit =
+        (fun permit r ->
+          if Symbol.equal r.D.Order.Request.symbol xom then
+            book_at_wave_2 :=
+              Some (List.map six ~f:(fun s -> Qty.to_float (Graph.qty f.graph s)));
+          sim.D.Venue.Trade.submit permit r);
+    }
+  in
+  let oms = manager ~trade:watched ~now:(fun () -> tuesday_mid) f in
+  let waiting =
+    D.Oms.propose_rebalance oms ~mode:D.Rebalance.Mode.Intraday ~source:wide_source
+      ~legs:seven
+  in
+  let%bind () = settle () in
+  Alcotest.(check int) "wave 1: six" 6 (D.Sim_venue.received f.venue);
+  let%bind () = pump f in
+  (match D.Oms.strategy_position oms ~strategy:"exp_i_wide" with
+  | Ok own ->
+      Alcotest.(check (list (pair string (float 0.0))))
+        "between the waves, the strategy's own: the six at 10"
+        (List.map [ "AAPL"; "IWM"; "MSFT"; "QQQ"; "SPY"; "TLT" ] ~f:(fun s -> (s, 10.0)))
+        (List.map (Map.to_alist own) ~f:(fun (s, q) -> (Symbol.to_string s, q)))
+  | Error why -> Alcotest.failf "unknown between the waves: %s" why);
+  let%bind () = advance_to f 2.0 in
+  Alcotest.(check int) "wave 2 sent at the poll" 7 (D.Sim_venue.received f.venue);
+  Alcotest.(check (option (list (float 0.0))))
+    "wave 2 gated on the book with wave 1's fills"
+    (Some (List.init 6 ~f:(fun _ -> 10.0)))
+    !book_at_wave_2;
+  let%bind () = pump f in
+  let%bind () = advance_to f 4.0 in
+  (match Deferred.peek waiting with
+  | Some
+      (D.Oms.Rebalance_outcome.Waved
+         {
+           waves =
+             [ D.Oms.Rebalance_outcome.Sent first; D.Oms.Rebalance_outcome.Sent second ];
+           timed_out = false;
+         }) ->
+      Alcotest.(check (pair int int))
+        "six, then one" (6, 1)
+        (List.length first, List.length second);
+      Alcotest.(check (list string))
+        "every order filled"
+        (List.init 7 ~f:(fun _ -> "filled"))
+        (List.map (first @ second) ~f:(state f))
+  | Some other ->
+      Alcotest.failf "not two waves: %s" (D.Oms.Rebalance_outcome.to_string other)
+  | None -> Alcotest.fail "still waiting");
+  Graph.destroy f.graph;
+  return ()
+
+(* The intake's floor sentences. exp_floor holds AAPL and XOM at 0.01 of
+   E 1,000,000. A weight of 0.01 on XOM is 100 / 50 = 2 shares, 100 < 200:
+   dropped. Beside AAPL at 0.99 (0.99 x 0.01 x 1,000,000 / 100 = 99 shares;
+   the weights sum to 1, R7's bound) the
+   sentence ends with the drop; alone, nothing goes and the sentence says
+   every order was dropped -- and the sizing row is still recorded. *)
+let floor_signal targets =
+  let f = fixture () in
+  record_close f;
+  let oms = manager ~now:(fun () -> evening) f in
+  after_the_close f oms;
+  let dir = Filename_unix.temp_dir "ohcamel-signals-" "" in
+  let intake =
+    D.Intake.create ~journal:f.journal ~dir
+      ~strategies:
+        [
+          {
+            Ohcamel.Config.Book.Signals_spec.Strategy.name = "exp_floor";
+            symbols = [ "AAPL"; "XOM" ];
+            max_age = 3;
+            sizing = Ohcamel.Config.Book.Signals_spec.Live;
+            capital_fraction = 0.01;
+            cadence = Ohcamel.Config.Book.Signals_spec.Cadence.Daily;
+            adjust = Ohcamel.Config.Book.Signals_spec.Adjust.Intraday;
+            max_age_minutes = 20;
+            horizon = Ohcamel.Config.Book.Signals_spec.Horizon.Carry;
+            stop = None;
+            reinstated = None;
+          };
+        ]
+      ~universe:[ aapl; msft; xom ] ~on_event:ignore
+      ~now:(fun () -> evening)
+  in
+  let zeros = "sha256:" ^ String.make 64 '0' in
+  Out_channel.write_all
+    (Filename.concat dir "exp_floor-1.json")
+    ~data:
+      (sprintf
+         {|{"schema_version":1,"strategy":"exp_floor","params_hash":"%s","as_of":"2026-09-14","computed_at":"2026-09-14T23:15:00Z","data_hash":"%s","sequence":1,"validation":{"status":"pass","gates_version":"2026-09-02"},"targets":[%s]}|}
+         zeros zeros targets);
+  let accepted = D.Intake.judge_pass intake in
+  let%bind () = D.Intake.size intake ~oms:(Some oms) ~scale:(fun () -> 1.0) accepted in
+  let%map () = settle () in
+  let sentence =
+    Option.value_exn
+      (Option.bind (D.Journal.signal f.journal ~strategy:"exp_floor" ~sequence:1)
+         ~f:(fun s -> s.D.Journal.Signal.rebalance))
+  in
+  let result =
+    ( sentence,
+      Option.is_some (D.Journal.latest_sizing f.journal ~strategy:"exp_floor"),
+      D.Sim_venue.received f.venue )
+  in
+  Array.iter (Sys_unix.readdir dir) ~f:(fun name ->
+      Core_unix.unlink (Filename.concat dir name));
+  Core_unix.rmdir dir;
+  Graph.destroy f.graph;
+  result
+
+let test_the_intake_says_what_fell_below_the_floor () =
+  let%bind one, sized_one, received_one =
+    floor_signal {|{"symbol":"AAPL","weight":0.99},{"symbol":"XOM","weight":0.01}|}
+  in
+  Alcotest.(check bool)
+    (sprintf "one dropped, said after the targets: %S" one)
+    true
+    (String.is_prefix one ~prefix:"1 market-on-open order journaled, then sent"
+    && String.is_suffix one ~suffix:". Dropped below the $200 floor: XOM buy 2 (50.00)");
+  Alcotest.(check (pair bool int)) "sized, AAPL sent" (true, 1) (sized_one, received_one);
+  let%map every, sized_every, received_every =
+    floor_signal {|{"symbol":"XOM","weight":0.01}|}
+  in
+  Alcotest.(check string)
+    "every leg dropped"
+    "no order: every order was dropped below the $200 floor: XOM buy 2 (50.00)" every;
+  Alcotest.(check (pair bool int))
+    "the sizing row recorded, and nothing sent" (true, 0) (sized_every, received_every)
+
 let suites =
   [
     ( "transport",
@@ -3021,6 +3287,14 @@ let suites =
         case "wave timeout cancels" test_wave_timeout_cancels;
         case "restart mid-wave does not double-send"
           test_restart_mid_wave_does_not_double_send;
+        case "a single intraday wave withheld is cancelled at its timeout"
+          test_a_single_intraday_wave_withheld_is_cancelled_at_its_timeout;
+        case "a stopped wave's orders are cancelled at the timeout"
+          test_a_stopped_wave's_orders_are_cancelled_at_the_timeout;
+        case "two waves settle, the second gated after the first fills"
+          test_two_waves_settle_and_the_second_is_gated_after_the_first_fills;
+        case "the intake says what fell below the floor"
+          test_the_intake_says_what_fell_below_the_floor;
       ] );
     ( "desk",
       [

@@ -965,7 +965,7 @@ let rebalance t ~oms ~(scale : unit -> float) (a : Accepted.t) : string Deferred
          said as part of the sentence, so the record shows what was not sent
          and why. *)
       let floor_sentence dropped =
-        sprintf "dropped below the $%g floor: %s"
+        sprintf "dropped below the $%.0f floor: %s"
           (Oms.spec oms).Ohcamel.Config.Book.Desk_spec.min_leg_notional
           (String.concat ~sep:"; "
              (List.map dropped ~f:(fun (l : Rebalance.Leg.t) ->
