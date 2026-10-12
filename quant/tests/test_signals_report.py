@@ -13,7 +13,7 @@ import json
 import socket
 import threading
 import time
-from datetime import date
+from datetime import UTC, date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -26,8 +26,6 @@ from ohcamel_quant.data.market import MarketData
 from ohcamel_quant.jobs.context import JobContext
 from ohcamel_quant.jobs.kinds import REGISTRY
 from ohcamel_quant.signals import report
-
-SESSION = date(2026, 10, 9)  # a Friday
 
 FILL_TODAY = {
     "execution_id": "e-1", "client_order_id": "oc-1", "symbol": "SPY", "side": "buy", "qty": 3.0,
@@ -142,9 +140,13 @@ def _ctx(tmp_path: Path, url: str | None) -> JobContext:
                       cancelled_fn=lambda: False, _market=md)
 
 
+# Friday 2026-10-09, 16:31 New York (EDT, UTC-4): one minute after the scheduled run.
+RUN_AT = datetime(2026, 10, 9, 20, 31, 7, tzinfo=UTC)
+
+
 @pytest.fixture(autouse=True)
 def _session(monkeypatch):
-    monkeypatch.setattr(report, "_session_date", lambda: SESSION)
+    monkeypatch.setattr(report, "_now", lambda: RUN_AT)
 
 
 def _free_port() -> int:
@@ -285,3 +287,42 @@ def test_an_error_status_and_bad_rows_are_named(tmp_path):
     assert "GET /api/research: HTTP 500" in notes
     assert "2 fill rows skipped" in notes
     assert spec.tables["fills"]["execution_id"].tolist() == ["e-1"]
+
+
+# ------------------------------------------------------------- the session
+@pytest.mark.parametrize(("at", "want"), [
+    (datetime(2026, 10, 9, 20, 30, tzinfo=UTC), date(2026, 10, 9)),    # Fri 16:30 NY: that session
+    (datetime(2026, 10, 9, 20, 29, tzinfo=UTC), date(2026, 10, 8)),    # Fri 16:29 NY: not yet; Thursday
+    (datetime(2026, 10, 10, 4, 30, tzinfo=UTC), date(2026, 10, 9)),    # Sat 00:30 NY: the previous weekday
+    (datetime(2026, 10, 12, 4, 30, tzinfo=UTC), date(2026, 10, 9)),    # Mon 00:30 NY: Friday
+    (datetime(2026, 10, 13, 4, 30, tzinfo=UTC), date(2026, 10, 12)),   # Tue 00:30 NY: Monday
+])
+def test_the_session_is_the_newest_weekday_whose_1630_has_passed(at, want):
+    assert report._session_date(at) == want
+
+
+def test_a_run_caught_up_after_midnight_reports_the_previous_weekday(tmp_path, monkeypatch):
+    monkeypatch.setattr(report, "_now", lambda: datetime(2026, 10, 10, 4, 30, tzinfo=UTC))  # Sat 00:30 NY
+    with _Engine(_full()) as eng:
+        spec = report.run({}, _ctx(tmp_path, eng.url))
+    assert spec.data_asof == "2026-10-09"
+    assert spec.tables["fills"]["execution_id"].tolist() == ["e-1"]
+    assert any("session close 2026-10-09" in n for n in spec.notes)
+    assert not any("the session is" in n for n in spec.notes)
+
+
+def test_a_monday_0030_run_reports_friday_even_with_the_engine_down(tmp_path, monkeypatch):
+    monkeypatch.setattr(report, "_now", lambda: datetime(2026, 10, 12, 4, 30, tzinfo=UTC))  # Mon 00:30 NY
+    spec = report.run({}, _ctx(tmp_path, f"http://127.0.0.1:{_free_port()}"))
+    assert spec.data_asof == "2026-10-09"
+
+
+def test_the_engines_newest_close_wins_when_it_differs_and_says_so(tmp_path):
+    # A holiday-shaped day: the engine's newest close is Thursday's.
+    routes = _full()
+    routes["/api/desk/sessions"] = _ok(SESSIONS[:1])
+    with _Engine(routes) as eng:
+        spec = report.run({}, _ctx(tmp_path, eng.url))
+    assert spec.data_asof == "2026-10-08"
+    assert spec.tables["fills"]["execution_id"].tolist() == ["e-0"]   # 19:50 NY on the 8th
+    assert any("the session is 2026-10-08" in n and "not 2026-10-09" in n for n in spec.notes)

@@ -357,6 +357,35 @@ let test_api_desk_carries_the_scale_the_governor_and_the_overlay () =
           Yojson.Safe.Util.to_string (field (overlay j) "state") ))
     ()
 
+(* A book with no signals block -- the droplet's, before INC-01's -- still
+   serves a number. bin/main.ml's run_live builds the gauge from the book's
+   desk block and its limits whatever the signals block says (the intake is
+   set up after it, and is Off without one), so the live desk's /api/desk
+   always carries the scale deploy/smoke.sh asserts. With the venue clock read
+   and no overlay ever received: absent, which reads 1, times a governor of
+   1 (the book names no drawdown cap), so exposure_scale 1.0. *)
+let test_a_book_without_signals_still_serves_a_numeric_scale () =
+  let book = Or_error.ok_exn (Config.Book.of_string (minimal_book "")) in
+  Alcotest.(check bool)
+    "the book has no signals block" true
+    (Option.is_none book.Config.Book.signals);
+  with_desk
+    ~f:(fun desk _ _ ->
+      Desk.set_gauge desk
+        (Ohcamel_desk.Intake.Gauge.create ~spec:book.Config.Book.desk
+           ~venue_now:(fun () -> Some at)
+           ~drawdown:(fun () -> Some 0.0)
+             (* (limits ()): no Portfolio Max_drawdown, so no cap. *)
+           ~dd_cap:(Ohcamel_desk.Intake.Gauge.dd_cap_of_limits []));
+      let j = Yojson.Safe.from_string (Yojson.Safe.to_string (Desk.body_json desk)) in
+      Alcotest.(check (float 1e-12))
+        "exposure_scale 1.0" 1.0
+        (Yojson.Safe.Util.to_number (field j "exposure_scale"));
+      Alcotest.(check string)
+        "overlay absent" "absent"
+        (Yojson.Safe.Util.to_string (field (field j "overlay") "state")))
+    ()
+
 (* With an order manager attached the desk says whether it can trade, what the
    switch reads and whether this host takes tickets; /api/desk lists the
    journal's orders. The order is journaled directly, as pending_submit --
@@ -1163,6 +1192,8 @@ let suite =
         test_the_frame's_desk_object_has_exactly_these_twenty_keys;
       Alcotest.test_case "/api/desk keys round-trip: the scale, the governor, the overlay"
         `Quick test_api_desk_carries_the_scale_the_governor_and_the_overlay;
+      Alcotest.test_case "a book without signals still serves a numeric scale" `Quick
+        test_a_book_without_signals_still_serves_a_numeric_scale;
       Alcotest.test_case "the overlay's clock is the venue reading, advanced" `Quick
         test_the_overlay's_clock_is_the_venue_reading_advanced;
       Alcotest.test_case "with a manager the desk says what it can do" `Quick

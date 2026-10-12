@@ -77,3 +77,8 @@ services:
   ohcamel-worker:
     image: "ghcr.io/ajaiupadhyaya/ohcamel-quant:${OHCAMEL_TAG:?the image job sets OHCAMEL_TAG to the sha it loaded}"
     pull_policy: never
+
+  # The volume's one-shot owner/mode fix runs the engine image as root.
+  signals-init:
+    image: "ghcr.io/ajaiupadhyaya/ohcamel:${OHCAMEL_TAG:?the image job sets OHCAMEL_TAG to the sha it loaded}"
+    pull_policy: never

@@ -158,7 +158,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Unprivileged, and with no login shell. The process reads market data and
 # serves HTML; nothing it does wants root, and a container escape should land
 # somewhere boring.
-RUN useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin ohcamel
+#
+# A member of the `signals` group (gid 10001, the same number in all three
+# images -- see /data/signals below), which the engine needs only to read.
+RUN useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin ohcamel \
+ && groupadd --gid 10001 signals \
+ && usermod -aG signals ohcamel
 
 # The journal's directory, and the one path in this image the engine writes.
 # A named volume mounted here for the first time is populated from the image,
@@ -169,9 +174,16 @@ RUN useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin ohcamel
 # volume is mounted there read-only, and read-write into ohcamel-research at
 # /signals, whose image runs as this same uid (10001) and owns its /signals
 # the same way. An empty named volume is seeded from whichever container
-# mounts it first; with both mount points 10001's, the order no longer
-# matters (deploy/research.Dockerfile, finish plan Task 11).
-RUN mkdir -p /data/signals && chown ohcamel:ohcamel /data /data/signals
+# mounts it first; with every mount point 10001's, the order no longer
+# matters (deploy/research.Dockerfile, finish plan Task 11). Owner 10001,
+# group `signals` (gid 10001), mode 2775: ohcamel-worker (the quant image,
+# uid 10002) is the volume's second writer, through the group, and the
+# setgid bit keeps every new file the group's. compose's signals-init
+# re-applies all three on every `up`.
+RUN mkdir -p /data/signals \
+ && chown ohcamel:ohcamel /data \
+ && chown 10001:10001 /data/signals \
+ && chmod 2775 /data/signals
 
 COPY --from=builder /home/opam/ohcamel.exe /usr/local/bin/ohcamel
 

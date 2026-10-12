@@ -18,6 +18,11 @@ Tables:
 
 * ``fills`` -- the fills ``/api/desk`` serves whose ``at`` falls on this
   session's New York date, every field the route carries (:data:`FILL_COLUMNS`).
+
+The session (:func:`_session_date`) is the newest weekday whose 16:30 New York
+is at or before the run's instant -- never the wall-clock date, so a late run
+reports the session it was scheduled for -- and, when ``/api/desk/sessions``
+answers with a different newest close, that close's date, with a note.
 * ``pnl_by_strategy`` -- one row a registered strategy: tier, state, capital
   fraction and its latest judgement. ``pnl`` is null: per-strategy P&L is not
   on the wire until Stage 3 (``/api/research``'s ``record`` is null), and
@@ -39,7 +44,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -58,6 +63,7 @@ ROUTES = ("/api/desk", "/api/desk/tca", "/api/research", "/api/desk/sessions")
 INC01_SENTENCE = ("incubation records are not evidence of edge; promotion to live sizing is the owner's decision "
                   "after a passing battery, never from this record alone")
 REFUSED_VERDICTS = ("rejected", "advisory")
+REPORT_TIME = time(16, 30)   # jobs/schedules.yaml's desk-report entry, New York
 
 FILL_COLUMNS = ["execution_id", "client_order_id", "symbol", "side", "qty", "price", "at", "decision_price",
                 "arrival_bid", "arrival_ask", "shortfall_bps", "delay_bps", "slippage_bps", "half_spread_bps",
@@ -70,8 +76,18 @@ OVERLAY_COLUMNS = ["read_at", "exposure_scale", "governor", "governor_cap", "val
 PNL_NOTE = "not on the wire until Stage 3"
 
 
-def _session_date() -> date:
-    return datetime.now(NY).date()
+def _session_date(now: datetime) -> date:
+    """The newest weekday whose 16:30 New York is at or before ``now``: the session this
+    run reports, so a 16:30 run the worker caught up after midnight -- or over a
+    weekend -- still reports the session it was scheduled for. Holidays are not
+    known here; ``run`` cross-checks against the engine's own newest session close."""
+    t = now.astimezone(NY)
+    d = t.date()
+    if not (d.weekday() < 5 and t.time() >= REPORT_TIME):
+        d -= timedelta(days=1)
+        while d.weekday() >= 5:
+            d -= timedelta(days=1)
+    return d
 
 
 def _now() -> datetime:
@@ -217,9 +233,20 @@ def _spec(session: date, fills: list[dict], pnl: list[dict], refusals: list[dict
         data_asof=session.isoformat(), provenance=provenance, notes=notes, verdict=None)
 
 
+def _newest_session(sessions: list[Any]) -> date | None:
+    dates = []
+    for s in sessions:
+        try:
+            dates.append(date.fromisoformat(s["date"]))
+        except (TypeError, KeyError, ValueError):
+            continue
+    return max(dates, default=None)
+
+
 def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
-    session = _session_date()
-    read_at = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = _now()
+    session = _session_date(now)
+    read_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     notes: list[str] = []
     base = (ctx.market.settings.live_engine_url or "").strip().rstrip("/")
     if not base:
@@ -236,6 +263,12 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                      "engine is down; the report is empty")
         return _spec(session, [], [], [], [], [{"source": "ohcamel-live", "url": base, "answered": False}], notes)
     desk, tca, research, sessions = (bodies[p] for p in ROUTES)
+    newest = _newest_session(sessions) if sessions is not None else None
+    if newest is not None and newest != session:
+        notes.append(f"the session is {newest}, the newest close /api/desk/sessions records, not {session}, the "
+                     f"newest weekday whose 16:30 New York is at or before this run ({read_at}): a holiday, or a "
+                     "close not yet recorded")
+        session = newest
     fills = _fills(desk, session, notes) if desk is not None else []
     pnl, refusals = _strategies(research, notes) if research is not None else ([], [])
     overlay = _overlay(desk, research, read_at)

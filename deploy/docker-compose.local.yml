@@ -35,10 +35,10 @@
 # job's is docker-compose.ci.yml, which names the sha tags it just loaded and
 # carries no build block. The droplet uses neither.
 
-# The engine's build, once, for the two services that share the engine anchor:
-# ohcamel-demo (--profile demo, the harness) and ohcamel-live (--profile live).
-# Both name the same image, so when both profiles are on the second build is
-# a cache hit.
+# The engine's build, once, for the services that run the engine image:
+# ohcamel-demo (--profile demo, the harness), ohcamel-live (--profile live)
+# and signals-init (default profile). All name the same image, so every
+# build after the first is a cache hit.
 x-engine-build: &engine-build
   context: ..
   dockerfile: deploy/Dockerfile
@@ -63,6 +63,10 @@ services:
     build: *engine-build
 
   ohcamel-live:
+    build: *engine-build
+
+  # The signals volume's one-shot owner/mode fix runs the engine image too.
+  signals-init:
     build: *engine-build
 
   ohcamel-research:

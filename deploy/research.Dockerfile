@@ -140,10 +140,22 @@ EOF
 # step) now runs both orders on fresh volumes and asserts the write and the
 # read-only read. No home directory: the root filesystem is read-only in
 # compose and the service writes only /signals and /tmp (FDQ_DATA_DIR).
+#
+# The volume has a second writer now, ohcamel-worker (the quant image, uid
+# 10002), so the mount point is also the `signals` group's: gid 10001,
+# created with the same number in all three images (here, deploy/Dockerfile,
+# quant/Dockerfile) with each image's service user a member, and the
+# directory 2775 -- group-writable, and setgid so every file either writer
+# creates is the group's too. compose's signals-init service re-applies the
+# owner and the mode on every `up`, which is what fixes a volume seeded
+# before this line existed. deploy/test/worker_signals_test.sh pins it.
 RUN useradd --system --uid 10001 --no-create-home --home-dir /nonexistent \
       --shell /usr/sbin/nologin research \
+ && groupadd --gid 10001 signals \
+ && usermod -aG signals research \
  && mkdir -p /signals \
- && chown 10001 /signals
+ && chown 10001:10001 /signals \
+ && chmod 2775 /signals
 
 USER 10001
 

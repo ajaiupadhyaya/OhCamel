@@ -147,16 +147,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm 
 # Unprivileged, no login shell. uid 10002 so it never collides with the
 # engine image's 10001 on a shared volume.
 #
-# /signals is the worker's mount point for the `signals` volume, owned by
-# 10001 like the research image's /signals and the engine's /data/signals:
-# an empty named volume is seeded from whichever container mounts it first,
-# ownership included, and the worker is in the default profile, so it is
-# usually first on a fresh host. Owned by anything else, that seeding would
-# leave ohcamel-research unable to write its first signal.
+# /signals is the worker's mount point for the `signals` volume, owned
+# 10001:10001 and 2775 like the research image's /signals and the engine's
+# /data/signals: an empty named volume is seeded from whichever container
+# mounts it first, ownership and mode included, and the worker is in the
+# default profile, so it is often first on a fresh host. The worker writes
+# there as a member of the `signals` group, gid 10001 -- the same number in
+# all three images -- and the setgid bit keeps every file it creates the
+# group's. compose's signals-init re-applies owner and mode on every `up`.
 RUN useradd --system --uid 10002 --create-home --shell /usr/sbin/nologin quant \
+ && groupadd --gid 10001 signals \
+ && usermod -aG signals quant \
  && mkdir -p /data /signals \
  && chown quant:quant /data \
- && chown 10001:10001 /signals
+ && chown 10001:10001 /signals \
+ && chmod 2775 /signals
 
 WORKDIR /app
 
