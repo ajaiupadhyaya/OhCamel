@@ -93,8 +93,9 @@ Rust crate, the web app and the deploy scripts have their own suites. CI runs al
 
 ## Autonomous trading
 
-Three tiers decide what a signal may do. **ADVISORY**: anything without `status: pass` is shown with its rule and
-never sized. **INCUBATION**: the charter's amended sentence is the whole licence, *On the paper venue, and only there, the owner may register a strategy as `incubation`: it is sized under the book's incubation caps whatever its status, its validation block is carried unchanged, every order, page and report it touches says INCUBATION, its realised record is scored with this charter's statistics and stop rules the owner wrote before it traded, and promotion to `live` never follows from that record by itself.* **LIVE**: only `status: pass`
+Three tiers decide what a signal may do: the book's `sizing` word sets a strategy's tier; the validation block
+decides only whether a `live` strategy may be sized (R6); an incubation strategy is sized whatever its status, under
+the cap, and labelled. **ADVISORY**: shown with its rule and never sized. **INCUBATION**: the charter's amended sentence is the whole licence, *On the paper venue, and only there, the owner may register a strategy as `incubation`: it is sized under the book's incubation caps whatever its status, its validation block is carried unchanged, every order, page and report it touches says INCUBATION, its realised record is scored with this charter's statistics and stop rules the owner wrote before it traded, and promotion to `live` never follows from that record by itself.* **LIVE**: only `status: pass`
 is sized as live, and nothing promotes a strategy to it but the owner. The pre-registration is
 [INC-01](../research/experiments/INC-01/preregistration.md), which is binding.
 
@@ -104,18 +105,20 @@ is sized as live, and nothing promotes a strategy to it but the owner. The pre-r
 | Producer | When (New York) | What it writes |
 |---|---|---|
 | `signals.daily` | weekdays 18:45 | one contract-v1 document per roster cell, on its own rebalance dates |
-| `signals.overlay` | 09:40, every 15 min 10:00–15:45, 18:50 | one `exposure_scale` from volatility targeting |
+| `signals.overlay` | 09:20, 09:40, every 15 min 10:00–15:45, 18:40, 18:50 | one `exposure_scale` from volatility targeting |
 | `desk.report` | weekdays 16:30 | the session's fills, P&L per strategy, refusals and overlay path |
 
 **The overlay rule.** `exposure_scale = min(1, σ_target / σ̂)` with `σ_target` 0.10 from the book, multiplied by the
 drawdown governor, sizes every incubation and live target; a stale overlay falls back to `overlay_fallback`, an
-absent one reads 1.0.
+absent one reads 1.0. A document the opening auction's window refuses (before 19:00 ET) stays pending and is sized at
+the first pass after 19:00; nothing is sized before the venue's clock has answered; the adjust pass holds while the
+overlay is stale and acts on governor moves.
 
 **Stop rules and the record scoring:** Stage 3, not yet built. **Intraday strategies:** Stage 2, not yet built.
 
-**Limits.** Incubation records are not evidence of edge. Per-strategy orders are not netted. The overlay mostly
-reads 1.0 on the current roster (forecast volatility about 7 % against a 10 % target) and bites in stressed
-markets.
+**Limits.** Incubation records are not evidence of edge. Per-strategy orders are not netted. The overlay is
+expected to read 1.0 on most days (the roster's forecast volatility sits below the 10 % target on the fixture data);
+the first canary overlays confirm.
 
 ## OhCamel Quant: limits
 
@@ -612,7 +615,7 @@ reference; the two commands a release uses are:
 
 ```
 deploy/deploy.sh --sha <sha> --live          # the public and live hosts together
-deploy/deploy.sh --sha <sha> --public-only   # caddy, ohcamel-quant, ohcamel-worker and ohcamel-hostd only; any time of day
+deploy/deploy.sh --sha <sha> --public-only   # caddy, ohcamel-quant, ohcamel-worker, signals-init and ohcamel-hostd only; any time of day
 ```
 
 `--sha` defaults to `origin/main`, resolved after `git fetch origin`. A run, in

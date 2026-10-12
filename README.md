@@ -74,8 +74,10 @@ live verdict is on its page and on `/ledger`. Methodology for every product and 
 
 ## Signals and research
 
-Nothing a research product computes reaches the desk on its own. A signal carries a `validation` block, and three
-tiers follow from it: ADVISORY (shown with its rule, never sized), INCUBATION and LIVE. The charter's amended
+Nothing a research product computes reaches the desk on its own. Three tiers -- ADVISORY (shown with its rule,
+never sized), INCUBATION and LIVE -- and the book's `sizing` word sets a strategy's tier; the validation block
+decides only whether a `live` strategy may be sized (R6); an incubation strategy is sized whatever its status, under
+the cap, and labelled. The charter's amended
 sentence: *On the paper venue, and only there, the owner may register a strategy as `incubation`: it is sized under the book's incubation caps whatever its status, its validation block is carried unchanged, every order, page and report it touches says INCUBATION, its realised record is scored with this charter's statistics and stop rules the owner wrote before it traded, and promotion to `live` never follows from that record by itself.* The tiers, the roster, the producers and the overlay are in the *Autonomous trading* section of
 [`docs/status.md`](docs/status.md); the pre-registration that binds them is
 [INC-01](research/experiments/INC-01/preregistration.md).

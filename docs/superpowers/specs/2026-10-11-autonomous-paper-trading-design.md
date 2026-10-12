@@ -217,14 +217,27 @@ kill switch, if armed on `dd-cap`, halts there anyway). An accepted overlay hold
 and live target by the effective scale. When the effective scale moves more
 than `overlay_band` from the scale a strategy was last sized at, every
 strategy with `(adjust intraday)` is re-sized from its last accepted document
-and the difference is proposed through the intraday mode.
+and the difference is proposed through the intraday mode. Like is compared with
+like: the effective scale against the last sizing's scale divided by the
+incubation ratio recorded beside it, and a change of that ratio re-sizes too.
+While the overlay reads stale the adjust pass holds every last sizing (said
+once a stale spell) and acts only on a governor move beyond the band, at the
+overlay factor the strategy was last sized with times the governor now; a new
+document sized while stale still takes the fallback. A sizing row is written
+only for a rebalance that went whole; a strategy holding a position with no
+sizing for its latest accepted document is re-sized on the next pass whatever
+the band. An accepted document whose rebalance is refused for timing alone
+(the opening auction's window, the session, no venue clock) stays pending and
+is tried every pass until it is sized, superseded (R5) or aged out (R4);
+nothing is sized before the venue's clock has answered.
 
 **Intraday rebalance mode.** `desk/rebalance.ml` gains `mode = Open | Intraday`.
 `Intraday` legs are `Kind.Limit` at the mark moved `intraday_slip_bps` toward
 the far side (default 10 bps, far inside the 5 % collar), `Tif.Day`; the
 `session` rule already requires the regular session for `Day` orders. Legs
 below `min_leg_notional` (book; default $200) are dropped and the drop is
-journaled. A rebalance with more than 6 legs runs in **waves**: the shrinking legs first, by notional descending, in chunks of at most 6, then the growing legs the same way; each wave is gated against the real book as it is then, and every wave — a single one included — is awaited until its orders fill or `wave_timeout_s` (default 180) passes, when its open orders are cancelled and no later wave is sent. An unfilled intraday leg at its
+journaled -- in the `Intraday` mode only, and never a leg whose target is 0
+(a closing leg). A rebalance with more than 6 legs runs in **waves**: the shrinking legs first, by notional descending, in chunks of at most 6, then the growing legs the same way; each wave is gated against the real book as it is then, and every wave — a single one included — is awaited until its orders fill or `wave_timeout_s` (default 180) passes, when its open orders are cancelled and no later wave is sent. An unfilled intraday leg at its
 timeout is cancelled and the strategy is re-sized on the next pass; a newer
 document for the same strategy supersedes by R5.
 
@@ -317,8 +330,9 @@ INCUBATION · LIVE · STOPPED), its manifest verdict, its latest document and
 judgement, its frozen parameters, its live record (§4.5), the overlay's
 current value with its inputs and the two reported-only analytics. Execution:
 the waves, the flattens, the governor. Desk: the effective scale beside
-equity. `/api/desk` carries `exposure_scale`, `governor`, `overlay` (value,
-`as_of`, age, state) and per-strategy `tier`. Every INCUBATION label is a
+equity. `/api/desk` carries the book-level `exposure_scale`, `governor` and
+`overlay` (value, `as_of`, age, state); the per-strategy `tier` is on
+`/api/research`. Every INCUBATION label is a
 literal string a test pins in the built page.
 
 ### 4.7 Operations

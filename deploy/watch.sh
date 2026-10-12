@@ -104,6 +104,7 @@ BACKUP_MAX_S=$((26 * 3600))
 DISK_MAX_PCT=80
 UNHEALTHY_RUNS=3
 SIGNAL_LAG_S=$((25 * 3600))
+SIGNAL_STALE_DAYS=35
 CLOSE_FORGET_S=$((7 * 86400))
 PROJECT=ohcamel
 
@@ -310,13 +311,34 @@ if [ -n "$desk_json" ]; then
 		strategies=$(sed 's/;.*//' "$book" | tr '\n' ' ' | sed -n 's/.*(signals\(.*\)/\1/p' |
 			grep -oE '\(name [a-z][a-z0-9_]{1,63}\)' | sed 's/^(name //; s/)$//')
 	fi
+	# Which documents are owed (the stage review's C-I1): the research
+	# service's strategies (exp_a01_*) write one every session, so each owes
+	# <name>-<owed>.json. Every other name is a farm cell that signals.daily
+	# writes only on its own rebalance dates, so it owes SOME document (the
+	# first run writes one) whose newest is no older than SIGNAL_STALE_DAYS
+	# calendar days -- a monthly cell's newest is at most a month and a few
+	# days old -- and is named with its newest date when it is.
 	if [ -n "$strategies" ]; then
 		owed=$(utc_date $((now - SIGNAL_LAG_S)))
+		oldest_ok=$(utc_date $((now - SIGNAL_LAG_S - SIGNAL_STALE_DAYS * 86400)))
 		if printf '%s\n' "$sessions" | grep -qx "$owed"; then
 			if listing=$(docker exec "$live_name" ls /data/signals 2>&1); then
 				missing=""
 				for s in $strategies; do
-					printf '%s\n' "$listing" | grep -qx "$s-$owed.json" || missing="${missing:+$missing, }$s"
+					case "$s" in
+					exp_a01_*)
+						printf '%s\n' "$listing" | grep -qx "$s-$owed.json" || missing="${missing:+$missing, }$s"
+						;;
+					*)
+						newest_doc=$(printf '%s\n' "$listing" | grep -E "^$s-[0-9]{4}-[0-9]{2}-[0-9]{2}\.json$" |
+							sed "s/^$s-//; s/\.json$//" | sort | tail -n 1)
+						if [ -z "$newest_doc" ]; then
+							missing="${missing:+$missing, }$s (no document)"
+						elif [ "$newest_doc" \< "$oldest_ok" ]; then
+							missing="${missing:+$missing, }$s (newest $newest_doc)"
+						fi
+						;;
+					esac
 				done
 				if [ -n "$missing" ]; then
 					fire signals "no signal for $owed from: $missing"

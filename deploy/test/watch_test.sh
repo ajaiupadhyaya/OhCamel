@@ -459,6 +459,33 @@ desk "$N0101" is_open=false sessions='"2026-09-17"'
 run "$N0101"
 expect_count "signal: a day with no session row owes no signal" "ALERT signals" 0
 
+# A farm cell writes only on its rebalance dates: it owes SOME document, the
+# newest no older than 35 days, never one for the day. Its newest at 10 days
+# old is fine; a cell with no document at all alarms, by name; and one whose
+# newest is 36 days old alarms, naming its date.
+farmbook="$work/farmbook.sexp"
+cat >"$farmbook" <<'EOF'
+((positions ((SPY 0.6) (TLT 0.4)))
+ (signals
+  ((strategies
+    (((name exp_a01_spy) (symbols (SPY)) (max_age 3) (sizing incubation) (capital_fraction 0.025))
+     ((name farm_tsmom_rates) (symbols (TLT)) (max_age 3) (sizing incubation) (capital_fraction 0.025))
+     ((name farm_sma_trend_commodities) (symbols (SPY)) (max_age 3) (sizing incubation) (capital_fraction 0.025)))))))
+EOF
+rm -rf "$state"
+desk "$N0101" is_open=false sessions='"2026-09-18"'
+printf 'exp_a01_spy-2026-09-18.json\nfarm_tsmom_rates-2026-09-08.json\nfarm_tsmom_rates-2026-08-31.json\nfarm_sma_trend_commodities-2026-09-08.json\n' >"$work/signals"
+BOOK=$farmbook run "$N0101"
+expect_count "signal: a farm cell's newest document 10 days old is fine" "ALERT signals" 0
+printf 'exp_a01_spy-2026-09-18.json\nfarm_tsmom_rates-2026-09-08.json\n' >"$work/signals"
+BOOK=$farmbook run "$N0101"
+expect_count "signal: a farm cell with no document at all alarms" "ALERT signals" 1
+expect_count "signal: naming it alone" "from: farm_sma_trend_commodities (no document)" 1
+printf 'exp_a01_spy-2026-09-18.json\nfarm_tsmom_rates-2026-08-13.json\nfarm_sma_trend_commodities-2026-09-08.json\n' >"$work/signals"
+rm -rf "$state"
+BOOK=$farmbook run "$N0101"
+expect_count "signal: a farm cell's newest document 36 days old alarms" "farm_tsmom_rates (newest 2026-08-13)" 1
+
 # ---------------------------------------------------------------------------
 # 7. Slack and the healthchecks.io ping
 # ---------------------------------------------------------------------------
