@@ -1150,12 +1150,26 @@ let test_api_research's_shape () =
       let strategies = [ spy_live; tlt_advisory ] in
       with_server
         ~extensions:
-          (D.Desk.research_extensions ~journal:f.journal ~strategies
+          (D.Desk.research_extensions ~desk:None ~journal:f.journal ~strategies
              ~intake:(Intake.Running f.intake) ~on_event:ignore) ~f:(fun json ->
           Alcotest.(check (list string))
             "the top level"
-            [ "intake"; "reason"; "deferred"; "last_pass"; "strategies"; "r8" ]
+            [ "intake"; "reason"; "deferred"; "last_pass"; "strategies"; "overlay"; "r8" ]
             (keys json);
+          Alcotest.(check (list string))
+            "the overlay block"
+            [
+              "value";
+              "as_of";
+              "age_s";
+              "state";
+              "reason";
+              "governor";
+              "governor_cap";
+              "inputs";
+              "reported";
+            ]
+            (keys (field json "overlay"));
           Alcotest.(check string)
             "running" "running"
             (Yojson.Safe.Util.to_string (field json "intake"));
@@ -1169,8 +1183,42 @@ let test_api_research's_shape () =
           | [ spy_json; tlt_json ] ->
               Alcotest.(check (list string))
                 "a strategy"
-                [ "name"; "symbols"; "max_age"; "sizing"; "capital_fraction"; "latest" ]
+                [
+                  "name";
+                  "symbols";
+                  "max_age";
+                  "sizing";
+                  "tier";
+                  "state";
+                  "capital_fraction";
+                  "cadence";
+                  "adjust";
+                  "latest";
+                  "judgement";
+                  "validation";
+                  "record";
+                ]
                 (keys spy_json);
+              Alcotest.(check (list string))
+                "tier, state, cadence, adjust, record"
+                [ "live"; "active"; "daily"; "intraday"; "null" ]
+                [
+                  Yojson.Safe.Util.to_string (field spy_json "tier");
+                  Yojson.Safe.Util.to_string (field spy_json "state");
+                  Yojson.Safe.Util.to_string (field spy_json "cadence");
+                  Yojson.Safe.Util.to_string (field spy_json "adjust");
+                  Yojson.Safe.to_string (field spy_json "record");
+                ];
+              Alcotest.(check string)
+                "the judgement, summarised"
+                {|{"verdict":"advisory","rule":"R6","detail":"|}
+                (String.prefix
+                   (Yojson.Safe.to_string (field spy_json "judgement"))
+                   (String.length {|{"verdict":"advisory","rule":"R6","detail":"|}));
+              Alcotest.(check string)
+                "validation is the latest's"
+                (Yojson.Safe.to_string (field (field spy_json "latest") "validation"))
+                (Yojson.Safe.to_string (field spy_json "validation"));
               Alcotest.(check string)
                 "its sizing, in words" "live"
                 (Yojson.Safe.Util.to_string (field spy_json "sizing"));
@@ -1226,11 +1274,11 @@ let test_api_research_on_the_demo () =
   let journal = Or_error.ok_exn (Journal.open_ ~path:":memory:") in
   with_server
     ~extensions:
-      (D.Desk.research_extensions ~journal ~strategies:[] ~intake:Intake.demo_status
-         ~on_event:ignore) ~f:(fun json ->
+      (D.Desk.research_extensions ~desk:None ~journal ~strategies:[]
+         ~intake:Intake.demo_status ~on_event:ignore) ~f:(fun json ->
       Alcotest.(check string)
         "the whole answer"
-        {|{"intake":"off","reason":"no strategy is registered on the demo: its synthetic book holds neither SPY nor TLT, and adding them would move Figure 1","deferred":0,"last_pass":null,"strategies":[],"r8":"R8 (data hash) is not enforced; see the design §3.12"}|}
+        {|{"intake":"off","reason":"no strategy is registered on the demo: its synthetic book holds neither SPY nor TLT, and adding them would move Figure 1","deferred":0,"last_pass":null,"strategies":[],"overlay":{"value":null,"as_of":null,"age_s":null,"state":"absent","reason":null,"governor":null,"governor_cap":null,"inputs":null,"reported":null},"r8":"R8 (data hash) is not enforced; see the design §3.12"}|}
         (Yojson.Safe.to_string json));
   Journal.close journal
 
@@ -1296,8 +1344,8 @@ let with_evidence ~f =
       let server =
         Server.create
           ~extensions:
-            (D.Desk.research_extensions ~journal ~strategies:[] ~intake:Intake.demo_status
-               ~on_event:ignore)
+            (D.Desk.research_extensions ~desk:None ~journal ~strategies:[]
+               ~intake:Intake.demo_status ~on_event:ignore)
           ~mode:`Demo ~graph ~factor:"SYNTHETIC" ()
       in
       match
@@ -1683,7 +1731,23 @@ let test_overlay_accepted_and_journaled () =
         "overlay-7 is not a signal file; overlay-8, unparseable, is" (false, true)
         ( Journal.signal_file_recorded f.journal ~name:"overlay-7.json",
           Journal.signal_file_recorded f.journal ~name:"overlay-8.json" );
-      Alcotest.(check int) "one overlay row" 1 (overlay_rows f.journal))
+      Alcotest.(check int) "one overlay row" 1 (overlay_rows f.journal);
+      (* /api/research carries the accepted document's inputs and its two
+         reported-only figures beside the reading. *)
+      let json =
+        Intake.research_json
+          ~scale:(Intake.reading_fields (Intake.current_reading f.intake))
+          ~journal:f.journal ~strategies:[] (Intake.Running f.intake)
+      in
+      let overlay = field json "overlay" in
+      Alcotest.(check (list string))
+        "state, inputs, reported"
+        [ "fresh"; {|{"vol_target":0.1}|}; {|{"regime_p_high":0.12}|} ]
+        [
+          Yojson.Safe.Util.to_string (field overlay "state");
+          Yojson.Safe.to_string (field overlay "inputs");
+          Yojson.Safe.to_string (field overlay "reported");
+        ])
     ()
 
 (* Accepted at [at], then the clock moves. 30 minutes on it is held: 0.7071

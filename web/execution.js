@@ -29,6 +29,14 @@
   /* What is still working. An order with no venue id has been journaled and not
      yet acknowledged -- a state worth showing rather than hiding, because it is
      the one the lookup schedule is about to resolve. */
+  /* A wave's order reads "intraday": its source is a signal, it rests for the
+     day and it is a limit -- all three on the wire already. */
+  function typeWords(o) {
+    var wave = typeof o.source === "string" && o.source.indexOf("signal:") === 0
+      && o.time_in_force === "day" && o.type === "limit";
+    return wave ? o.type + " · intraday" : o.type;
+  }
+
   function renderOpen(d) {
     var t = document.getElementById("openorders");
     if (!t) return;
@@ -42,7 +50,7 @@
       cell(r, o.symbol);
       cell(r, o.side);
       cell(r, o.qty, "num");
-      cell(r, o.type);
+      cell(r, typeWords(o));
       cell(r, o.state);
       cell(r, o.filled_qty, "num");
       cell(r, o.venue_order_id === null ? "not acknowledged" : o.venue_order_id);

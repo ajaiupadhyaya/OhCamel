@@ -1614,6 +1614,15 @@ let latest_overlay t =
        [] ~row:(fun r ->
          (Data.to_int_exn r.(0), col_text r 1, col_real r 2, col_text r 3)))
 
+(* The whole document of the accepted overlay [latest_overlay] answers: the
+   page lists its inputs beside the scale. *)
+let latest_overlay_document t =
+  List.hd
+    (query t ~what:"latest overlay document"
+       "SELECT document FROM overlays WHERE verdict = 'accepted' ORDER BY sequence DESC \
+        LIMIT 1"
+       [] ~row:(fun r -> col_text r 0))
+
 (* Whether [sequence] is judged already, either way: one primary-key seek.
    The intake asks it before judging a file, as [signal] is asked for a
    signal, so [record_overlay]'s plain INSERT never meets a sequence twice. *)

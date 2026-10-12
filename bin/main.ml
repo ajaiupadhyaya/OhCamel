@@ -1582,8 +1582,8 @@ let run_live ~book_path ~(serve_port : int option) =
                 ~extensions:
                   (Ohcamel_desk.Desk.extensions desk
                   @ Ohcamel_desk.Desk_routes.extensions ~host:`Live ~oms
-                  @ Ohcamel_desk.Desk.research_extensions ~journal ~strategies ~intake
-                      ~on_event:live_line)
+                  @ Ohcamel_desk.Desk.research_extensions ~desk:(Some desk) ~journal
+                      ~strategies ~intake ~on_event:live_line)
                 ~kill_switch_wired_to:"desk.submit" ~desk:true ~signals
                 ~frame_extra:(fun () -> [ ("desk", Ohcamel_desk.Desk.summary_json desk) ])
                 ()
@@ -1799,7 +1799,7 @@ let run_demo ~port =
            serves EXP-A01's manifests here as on the live host; and no
            ~signals below, because no intake runs here, so Figure 1 draws no
            signals band and stays the figure it was. *)
-        @ Ohcamel_desk.Desk.research_extensions ~journal ~strategies:[]
+        @ Ohcamel_desk.Desk.research_extensions ~desk:(Some desk) ~journal ~strategies:[]
             ~intake:Ohcamel_desk.Intake.demo_status ~on_event:(fun e ->
               printf "  %s\n%!" e))
       ~kill_switch_wired_to:"desk.submit" ~desk:true

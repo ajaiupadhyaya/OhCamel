@@ -408,6 +408,9 @@ val latest_overlay : t -> (int * string * float * string) option
 (** The accepted overlay with the highest sequence, as (sequence, as_of, exposure_scale,
     received_at); a rejected one is never returned. *)
 
+val latest_overlay_document : t -> string option
+(** The whole document of the accepted overlay [latest_overlay] answers. *)
+
 val overlay_recorded : t -> sequence:int -> bool
 (** Whether a judgement of overlay [sequence] is recorded, accepted or rejected: one
     primary-key seek, asked before a file is judged so a sequence is judged once. *)

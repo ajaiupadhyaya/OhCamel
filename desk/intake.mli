@@ -188,7 +188,11 @@ val run : ?time_source:Time_source.t -> ?oms:Oms.t -> t -> unit Deferred.t
 (** A pass at once and then once a minute, each pass's accepted documents sized at the
     effective scale before the minute's wait, then the adjust pass started, detached. *)
 
+val absent_reading_fields : (string * Yojson.Safe.t) list
+(** [reading_fields]' shape for a desk with no gauge: nulls and "absent". *)
+
 val research_json :
+  ?scale:(string * Yojson.Safe.t) list ->
   journal:Journal.t ->
   strategies:Ohcamel.Config.Book.Signals_spec.Strategy.t list ->
   status ->

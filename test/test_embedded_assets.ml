@@ -653,6 +653,36 @@ let test_the_research_page_names_an_advisory_judgements_rule () =
         true
         (String.is_substring Research_html.page ~substring:needle))
 
+(* The tier on the pages (design §4.6): the Research page says which tier a
+   strategy is in, carries the charter's sentence on an incubated row, and
+   says when the overlay is stale or absent; the Desk's account strip reads
+   the effective scale off the frame; the blotter labels a wave's order. *)
+let test_the_pages_say_the_tier_and_the_overlay () =
+  List.iter
+    [
+      "\"INCUBATION\"";
+      "\"ADVISORY\"";
+      "\"LIVE\"";
+      "\"STOPPED\"";
+      "not evidence of edge";
+      "\"OVERLAY STALE\"";
+      "\"OVERLAY ABSENT\"";
+      "reported, not used";
+    ] ~f:(fun needle ->
+      Alcotest.(check bool)
+        ("research.js carries " ^ needle)
+        true
+        (String.is_substring Research_html.page ~substring:needle));
+  Alcotest.(check bool)
+    "the Desk reads exposure_scale" true
+    (String.is_substring Dashboard_html.page ~substring:"exposure_scale");
+  Alcotest.(check bool)
+    "the Desk's blotter labels a wave" true
+    (String.is_substring Dashboard_html.page ~substring:"time_in_force");
+  Alcotest.(check bool)
+    "the Execution page labels a wave" true
+    (String.is_substring Execution_html.page ~substring:"intraday")
+
 (* The blotter and the fills stay where §4 puts them, on the Desk page. *)
 let test_the_desk_keeps_the_blotter_and_the_fills () =
   List.iter [ "id=\"blotter\""; "id=\"fills\"" ] ~f:(fun marker ->
@@ -747,4 +777,6 @@ let suite =
         test_the_research_script_writes_no_markup;
       Alcotest.test_case "the research page names an advisory judgement's rule" `Quick
         test_the_research_page_names_an_advisory_judgements_rule;
+      Alcotest.test_case "the pages say the tier and the overlay" `Quick
+        test_the_pages_say_the_tier_and_the_overlay;
     ] )

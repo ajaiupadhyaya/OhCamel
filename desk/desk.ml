@@ -354,21 +354,7 @@ let latest_overlay t =
 let scale_fields t =
   match t.gauge with
   | Some gauge -> Intake.reading_fields (Intake.reading ~latest:(latest_overlay t) gauge)
-  | None ->
-      [
-        ("exposure_scale", `Null);
-        ("governor", `Null);
-        ( "overlay",
-          `Assoc
-            [
-              ("value", `Null);
-              ("as_of", `Null);
-              ("age_s", `Null);
-              ("state", `String "absent");
-              ("reason", `Null);
-              ("governor_cap", `Null);
-            ] );
-      ]
+  | None -> Intake.absent_reading_fields
 
 (* THE ONE CONSTRUCTOR for the clock block (ruling 20). It is built here, in
    [summary_fields], which is both the desk block that rides on every frame
@@ -635,7 +621,7 @@ let research_evidence_body =
       "]}";
     ]
 
-let research_extensions ~(journal : Journal.t)
+let research_extensions ~(desk : t option) ~(journal : Journal.t)
     ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
     ~(intake : Intake.status) ~(on_event : string -> unit) : Server.extension list =
   [
@@ -646,7 +632,11 @@ let research_extensions ~(journal : Journal.t)
          files the intake is holding, and that R8 is not enforced";
       handle =
         (fun server _request ->
-          match Intake.research_json ~journal ~strategies intake with
+          match
+            Intake.research_json
+              ?scale:(Option.map desk ~f:scale_fields)
+              ~journal ~strategies intake
+          with
           | json -> Server.respond_json server (Yojson.Safe.to_string json)
           | exception exn ->
               on_event ("research  /api/research raised: " ^ Exn.to_string exn);

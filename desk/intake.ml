@@ -756,6 +756,22 @@ let reading_fields (r : Reading.t) : (string * Yojson.Safe.t) list =
         ] );
   ]
 
+let absent_reading_fields : (string * Yojson.Safe.t) list =
+  [
+    ("exposure_scale", `Null);
+    ("governor", `Null);
+    ( "overlay",
+      `Assoc
+        [
+          ("value", `Null);
+          ("as_of", `Null);
+          ("age_s", `Null);
+          ("state", `String "absent");
+          ("reason", `Null);
+          ("governor_cap", `Null);
+        ] );
+  ]
+
 (* ------------------------------------------------------------------------ *)
 (* The intake                                                                *)
 (* ------------------------------------------------------------------------ *)
@@ -1588,8 +1604,52 @@ let judgement_json ~(sizing : Signals_spec.sizing) (s : Journal.Signal.t) : Yojs
 
 (* Bounded by the book: one indexed seek per registered strategy, and the
    deferred count from the last pass, in memory. *)
-let research_json ~journal ~(strategies : Signals_spec.Strategy.t list) (status : status)
-    : Yojson.Safe.t =
+let research_json ?(scale = absent_reading_fields) ~journal
+    ~(strategies : Signals_spec.Strategy.t list) (status : status) : Yojson.Safe.t =
+  let cadence_word : Signals_spec.Cadence.t -> string = function
+    | Daily -> "daily"
+    | Intraday -> "intraday"
+  in
+  let adjust_word : Signals_spec.Adjust.t -> string = function
+    | Intraday -> "intraday"
+    | Open -> "open"
+  in
+  (* The overlay's reading as /api/desk serves it, with the governor beside
+     it and the accepted document's [inputs] and [reported] -- the document
+     parsed again, so only its two objects reach the page. *)
+  let overlay =
+    let reading =
+      match List.Assoc.find scale ~equal:String.equal "overlay" with
+      | Some (`Assoc fields) -> fields
+      | _ -> []
+    in
+    let get k =
+      Option.value (List.Assoc.find reading ~equal:String.equal k) ~default:`Null
+    in
+    let governor =
+      Option.value (List.Assoc.find scale ~equal:String.equal "governor") ~default:`Null
+    in
+    let inputs, reported =
+      match
+        Option.bind (Journal.latest_overlay_document journal) ~f:(fun d ->
+            match Overlay.parse_string d with Ok o -> Some o | Error _ -> None)
+      with
+      | Some o -> (o.Overlay.inputs, o.Overlay.reported)
+      | None -> (`Null, `Null)
+    in
+    `Assoc
+      [
+        ("value", get "value");
+        ("as_of", get "as_of");
+        ("age_s", get "age_s");
+        ("state", get "state");
+        ("reason", get "reason");
+        ("governor", governor);
+        ("governor_cap", get "governor_cap");
+        ("inputs", inputs);
+        ("reported", reported);
+      ]
+  in
   `Assoc
     [
       ("intake", `String (match status with Running _ -> "running" | Off _ -> "off"));
@@ -1602,17 +1662,46 @@ let research_json ~journal ~(strategies : Signals_spec.Strategy.t list) (status 
       ( "strategies",
         `List
           (List.map strategies ~f:(fun (s : Signals_spec.Strategy.t) ->
+               let latest = Journal.latest_signal journal ~strategy:s.name in
+               let judgement =
+                 jopt
+                   (fun (j : Journal.Signal.t) ->
+                     `Assoc
+                       [
+                         ("verdict", `String (Verdict.to_string j.verdict));
+                         ("rule", jopt (fun r -> `String r) j.rule);
+                         ("detail", `String j.detail);
+                       ])
+                   latest
+               in
+               let validation =
+                 match Option.map latest ~f:(judgement_json ~sizing:s.sizing) with
+                 | Some (`Assoc l) ->
+                     Option.value
+                       (List.Assoc.find l ~equal:String.equal "validation")
+                       ~default:`Null
+                 | _ -> `Null
+               in
                `Assoc
                  [
                    ("name", `String s.name);
                    ("symbols", `List (List.map s.symbols ~f:(fun x -> `String x)));
                    ("max_age", `Int s.max_age);
                    ("sizing", `String (Signals_spec.sizing_to_string s.sizing));
+                   ("tier", `String (Signals_spec.sizing_to_string s.sizing));
+                   ( "state",
+                     `String
+                       (match Journal.strategy_state journal ~strategy:s.name with
+                       | Some (`Stopped, _, _, _) -> "stopped"
+                       | Some (`Active, _, _, _) | None -> "active") );
                    ("capital_fraction", jnum s.capital_fraction);
-                   ( "latest",
-                     jopt
-                       (judgement_json ~sizing:s.sizing)
-                       (Journal.latest_signal journal ~strategy:s.name) );
+                   ("cadence", `String (cadence_word s.cadence));
+                   ("adjust", `String (adjust_word s.adjust));
+                   ("latest", jopt (judgement_json ~sizing:s.sizing) latest);
+                   ("judgement", judgement);
+                   ("validation", validation);
+                   ("record", `Null);
                  ])) );
+      ("overlay", overlay);
       ("r8", `String r8_sentence);
     ]
