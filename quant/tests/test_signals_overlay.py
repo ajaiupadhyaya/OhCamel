@@ -145,6 +145,23 @@ def test_covariance_of_one_name_is_its_annualised_variance():
     assert overlay.covariance(r, "oas").loc["A", "A"] == pytest.approx(0.04, rel=1e-12)
 
 
+def test_ewma_diagonal_hand_value():
+    # SYNTHETIC, test-only: three daily returns 0.01, -0.02, 0.015 for one name X, no P2 forecast.
+    # RiskMetrics EWMA(0.94), seeded with the mean square of the first min(30, 3) returns:
+    #   s0 = (0.01^2 + 0.02^2 + 0.015^2) / 3 = (1e-4 + 4e-4 + 2.25e-4) / 3 = 2.4166667e-4
+    #   s1 = 0.94 s0 + 0.06 (0.01)^2  = 2.2716667e-4 + 6e-6    = 2.3316667e-4
+    #   s2 = 0.94 s1 + 0.06 (0.02)^2  = 2.1917667e-4 + 2.4e-5  = 2.4317667e-4
+    #   s3 = 0.94 s2 + 0.06 (0.015)^2 = 2.2858607e-4 + 1.35e-5 = 2.4208607e-4  (next-day variance, daily)
+    # annualised: 2.4208607e-4 x 252 = 0.0610057; sigma_hat for w = 1 is sqrt(0.0610057) = 0.246993.
+    r = pd.DataFrame({"X": [0.01, -0.02, 0.015]}, index=pd.bdate_range("2026-01-05", periods=3))
+    vol, source, asof = overlay.diagonal_vols(r, {})["X"]
+    assert source == "ewma" and asof is None
+    replaced = overlay.replace_diagonal(overlay.covariance(r, "lw_constant_corr"), {"X": vol})
+    assert replaced.loc["X", "X"] == pytest.approx(2.42086067e-4 * 252, rel=1e-8)  # 0.0610057
+    sigma = overlay.forecast_vol({"X": 1.0}, overlay.covariance(r, "lw_constant_corr"), {"X": vol})
+    assert sigma == pytest.approx(0.246993, abs=1e-6)
+
+
 # ------------------------------------------------------------ combined targets
 def _doc(path: Path, sequence: int, targets: dict[str, float]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -245,6 +262,7 @@ def test_document_validates_and_records_its_inputs(world, db, tmp_path):
     assert names.loc["SPY", "weight"] == pytest.approx(0.04) and names.loc["TLT", "weight"] == pytest.approx(0.01)
     assert set(names["diag_source"]) == {"ewma"}
     assert any("lw_constant_corr" in n for n in spec.notes)
+    assert any("on 252 sessions" in n for n in spec.notes)  # the fixture has > 252: the last 252 are used
     assert spec.data_asof == "2026-06-01"
     assert not list(sig.glob(".*"))  # no temp file survives
 
@@ -347,3 +365,43 @@ def test_reported_regime_and_var_never_change_the_number(world, db, tmp_path):
     assert doc["reported"]["mc_var_99_1d_core"] == pytest.approx(0.0315)
     for col in ("exposure_scale", "vol_forecast"):
         assert again.tables["overlay"][col].iloc[0] == base.tables["overlay"][col].iloc[0]
+
+
+def test_a_reshaped_regime_artifact_never_stops_the_number(world, db, tmp_path):
+    sig = _signals(tmp_path)
+    probs = pd.DataFrame({"date": pd.to_datetime(["2026-06-01"]), "p_low": [0.4]})  # no p_high
+    aid, _ = publish_artifact(db, tmp_path / "artifacts", "regime.hmm", {"probs": probs})
+    spec = _run(world, sig)
+    doc = _overlay_doc(sig, 1)
+    validate(doc, OVERLAY_SCHEMA_PATH)
+    assert doc["reported"]["regime_p_high"] is None
+    assert any("regime.hmm" in n and aid in n and "p_high" in n for n in spec.notes)
+
+
+def test_a_corrupt_mc_artifact_never_stops_the_number(world, db, tmp_path):
+    sig = _signals(tmp_path)
+    summary = pd.DataFrame([{"book": "core", "method": "fhs", "alpha": 0.99, "horizon": 1, "var": 0.02}])
+    _, path = publish_artifact(db, tmp_path / "artifacts", "risk.mc_atlas", {"summary": summary})
+    (path / "summary.parquet").write_bytes(b"not a parquet file")
+    spec = _run(world, sig)
+    doc = _overlay_doc(sig, 1)
+    assert doc["reported"]["mc_var_99_1d_core"] is None
+    assert any("risk.mc_atlas" in n and "unreadable" in n for n in spec.notes)
+
+
+def test_a_non_finite_p2_variance_falls_back_to_ewma_with_a_note(world, db, tmp_path):
+    sig = _signals(tmp_path)
+    league = pd.DataFrame([{"ticker": "SPY", "model": "gjr", "qlike": -8.2, "rank_qlike": 1}])
+    fc = pd.DataFrame([{"ticker": "SPY", "asof": "2026-06-01", "var_1d_gjr": float("nan")}])
+    publish_artifact(db, tmp_path / "artifacts", "vol.forecast_league", {"league": league, "forecasts": fc})
+    spec = _run(world, sig)
+    assert spec.tables["names"].set_index("symbol").loc["SPY", "diag_source"] == "ewma"
+    assert any("SPY" in n and "gjr" in n and "EWMA(0.94)" in n for n in spec.notes)
+
+
+def test_fewer_than_thirty_sessions_is_refused(world, db, tmp_path, monkeypatch):
+    sig = _signals(tmp_path)
+    monkeypatch.setattr(overlay, "LOOKBACK", 29)  # 29 sessions of returns < the 30 floor
+    with pytest.raises(ValueError, match="29 sessions"):
+        _run(world, sig)
+    assert not list(sig.glob("overlay-*.json"))

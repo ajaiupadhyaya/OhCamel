@@ -71,5 +71,5 @@ commit.
 
 <!-- quant-tests -->
 ```
-TESTS = 1371
+TESTS = 1376
 ```

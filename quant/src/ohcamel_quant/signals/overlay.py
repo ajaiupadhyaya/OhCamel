@@ -55,8 +55,8 @@ from ..jobs.artifacts import ArtifactSpec
 from .contract import overlay_doc, write_atomic
 from .roster import ROSTER_PATH, Roster, load_roster
 
-__all__ = ["DB_PATH", "ROSTER_PATH", "combined_targets", "covariance", "exposure_scale", "forecast_vol",
-           "replace_diagonal", "run"]
+__all__ = ["DB_PATH", "ROSTER_PATH", "combined_targets", "covariance", "diagonal_vols", "exposure_scale",
+           "forecast_vol", "replace_diagonal", "run"]
 
 KIND = "signals.overlay"
 VOL_KIND = "vol.forecast_league"
@@ -66,6 +66,8 @@ MC_KINDS = ("risk.mc_atlas", "risk.mc_intraday")
 COV_UNIVERSE = "site_etfs"
 FALLBACK_ESTIMATOR = "lw_constant_corr"
 LOOKBACK = 252
+MIN_SESSIONS = 30   # below this the covariance and the EWMA seed are noise: refuse, nothing written
+EWMA_LAMBDA = 0.94
 TRADING_DAYS = 252
 DB_PATH: Path | None = None   # tests point every artifact read at a temp jobs.sqlite
 _OVERLAY_FILE = re.compile(r"^overlay-(\d+)\.json$")
@@ -243,6 +245,9 @@ def _p2_best(now: datetime, notes: list[str]) -> tuple[dict[str, tuple[str, floa
         v = pd.to_numeric(fc.loc[ticker, col], errors="coerce")
         if pd.notna(v) and math.isfinite(float(v)) and float(v) > 0:
             out[str(ticker)] = (str(best["model"]), float(v), str(fc.loc[ticker].get("asof", "")))
+        else:
+            notes.append(f"{VOL_KIND} {manifest['id']}: {ticker}'s rank-1 model {best['model']} has var_1d {v}, "
+                         "not a positive finite variance: EWMA(0.94) for its diagonal")
     return out, str(manifest["id"])
 
 
@@ -255,6 +260,7 @@ def _regime_p_high(now: datetime, notes: list[str]) -> tuple[float | None, str |
     manifest, path = got
     probs = read_table(path, "probs")
     if probs is None or probs.empty or "p_high" not in probs.columns:
+        notes.append(f"reported {REGIME_KIND} {manifest['id']}: no probs table with p_high; reported as null")
         return None, str(manifest["id"])
     v = pd.to_numeric(probs.sort_values("date")["p_high"], errors="coerce").iloc[-1]
     return (float(v) if pd.notna(v) else None), str(manifest["id"])
@@ -296,15 +302,37 @@ def _sequence(signals_dir: Path) -> int:
 def _returns(ctx: Any, names: list[str]) -> pd.DataFrame:
     px = ctx.market.prices(names, warehouse_first=True).data[names].dropna()
     r = px.pct_change().dropna().iloc[-LOOKBACK:]
-    if len(r) < 2:
-        raise ValueError(f"{len(r)} sessions of returns for {names}: no covariance")
+    if len(r) < MIN_SESSIONS:
+        raise ValueError(f"{len(r)} sessions of returns for {names} (< {MIN_SESSIONS}): no overlay")
     return r
 
 
-def _ewma_var(r: pd.Series) -> float:
+def diagonal_vols(returns: pd.DataFrame,
+                  p2: dict[str, tuple[str, float, str]]) -> dict[str, tuple[float, str, str | None]]:
+    """Each name's annualised vol for Sigma's diagonal, its source and P2's asof:
+    ``sqrt(var_1d x 252)`` from P2's best model where there is one, else
+    ``sqrt(EWMA(0.94) next-day variance x 252)`` on ``returns`` (risk.core's
+    RiskMetrics recursion, seeded with the mean square of the first 30 returns)."""
     from ..risk.core import ewma_variance_path
 
-    return float(ewma_variance_path(r.to_numpy(dtype=float), 0.94)[-1])
+    out: dict[str, tuple[float, str, str | None]] = {}
+    for s in returns.columns:
+        if s in p2:
+            model, v, asof = p2[s]
+            out[s] = (math.sqrt(v * TRADING_DAYS), f"p2:{model}", asof)
+        else:
+            v = float(ewma_variance_path(returns[s].to_numpy(dtype=float), EWMA_LAMBDA)[-1])
+            out[s] = (math.sqrt(v * TRADING_DAYS), "ewma", None)
+    return out
+
+
+def _reported(read: Any, kind: str, now: datetime, notes: list[str]) -> tuple[Any, str | None]:
+    """A reported-only read: never stops the number. Any error is ``None`` and a note."""
+    try:
+        return read(now, notes)
+    except Exception as e:  # noqa: BLE001 - a descriptive artifact may not keep the overlay from being written
+        notes.append(f"reported {kind}: unreadable ({type(e).__name__}: {e}); reported as null")
+        return None, None
 
 
 def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
@@ -330,22 +358,19 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         r = _returns(ctx, names)
         bars_asof = r.index[-1].date().isoformat()
         cov = covariance(r, estimator)
-        vols: dict[str, float] = {}
+        diag = diagonal_vols(r, p2)
+        vols = {s: diag[s][0] for s in names}
         for s in names:
-            if s in p2:
-                model, v, p2_asof = p2[s]
-                source = f"p2:{model}"
-            else:
-                v, source, p2_asof = _ewma_var(r[s]), "ewma", None
-            vols[s] = math.sqrt(v * TRADING_DAYS)
+            _, source, p2_asof = diag[s]
             rows.append({"symbol": s, "weight": targets[s], "cov_vol": math.sqrt(max(float(cov.loc[s, s]), 0.0)),
                          "vol_forecast": vols[s], "diag_source": source, "p2_asof": p2_asof})
         sigma_hat = forecast_vol(targets, cov, vols)
         largest = max(names, key=lambda s: (abs(targets[s]), s))
         vol_model = p2[largest][0] if largest in p2 else "ewma"
     scale = exposure_scale(roster.vol_target, sigma_hat)
-    p_high, regime_id = _regime_p_high(now, notes)
-    mc_var, mc_id = _mc_var(now, notes)
+    p_high, regime_id = _reported(_regime_p_high, REGIME_KIND, now, notes)
+    mc_var, mc_id = _reported(_mc_var, "risk.mc_atlas/risk.mc_intraday", now, notes)
+    n_sessions = len(r) if names else 0
     sequence = _sequence(out_dir)
     inputs = {"vol_target": roster.vol_target, "vol_forecast": sigma_hat, "vol_model": vol_model,
               "cov_estimator": estimator, "vol_artifact": vol_artifact, "cov_artifact": cov_artifact}
@@ -360,7 +385,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
            "bars_asof": bars_asof, "n_names": len(names), "regime_p_high": p_high, "mc_var_99_1d_core": mc_var,
            "path": path.name}
     notes.append(f"exposure_scale {scale:.6f} = min(1, {roster.vol_target:g} / {sigma_hat:.6f}); "
-                 f"covariance {estimator} on {LOOKBACK} sessions, diagonal from P2's best model by QLIKE "
+                 f"covariance {estimator} on {n_sessions} sessions, diagonal from P2's best model by QLIKE "
                  "(EWMA(0.94) where P2 has none); regime p_high and core MC VaR are reported, never used")
     return ArtifactSpec(
         tables={"overlay": pd.DataFrame([row], columns=OVERLAY_COLUMNS),
