@@ -49,10 +49,11 @@ def test_overview_metrics_match_closed_forms(client, market):
     assert spy["vol_1m_ann"] == pytest.approx(lr.std(ddof=1) * np.sqrt(spy["periods_per_year"]))
     assert 240 <= spy["periods_per_year"] <= 256
     assert spy["sparkline"]["values"][-1] == pytest.approx(px.iloc[-1], rel=1e-6)
-    # the fixture's 2026-02-02 SPY low of 69.005 (decimal-shift bad print) is
-    # repaired at load (data/fixtures.py) and the repair is stated in provenance
+    # the fixture's 2026-02-02 SPY low of 69.005 (decimal-shift bad print) was
+    # repaired at load (data/fixtures.py) until the file itself was fixed on
+    # 2026-10-19 (fixtures/archive/2026-10-19-vendor-defects): no repair is needed
     assert spy["low_52w"] > 400 and spy["bad_ticks_52w"] == 0
-    assert any("2026-02-02" in r for p in j["provenance"] for r in p["detail"].get("repairs", []))
+    assert not any("2026-02-02" in r for p in j["provenance"] for r in p["detail"].get("repairs", []))
     c = np.array(j["correlation_1y"]["matrix"])
     assert np.allclose(np.diag(c), 1) and np.allclose(c, c.T) and j["correlation_1y"]["n_obs"] >= 200
     assert j["provenance"] and all(p["synthetic"] is False for p in j["provenance"])
@@ -67,10 +68,12 @@ def test_overview_universe_partial_errors_are_reported(client):
     assert any("could not be loaded" in n for n in j["notes"])
 
 
-def test_overview_states_fixture_split_repair(client):
+def test_overview_needs_no_split_repair_once_the_fixture_is_fixed(client):
+    """XLK's 2025-12-05 split was repaired here at load time until the committed file itself was fixed
+    (2026-10-19, fixtures/archive/2026-10-19-vendor-defects). The load-time guard stays, unused."""
     j = client.get("/api/market/overview", params={"universe": "sectors"}).json()
     xlk = [p for p in j["provenance"] if p["detail"].get("symbol") == "XLK"]
-    assert xlk and any("split-adjusted 2:1" in r for r in xlk[0]["detail"]["repairs"])
+    assert xlk and not any("split-adjusted" in r for r in xlk[0]["detail"].get("repairs", []))
     assert not any("XLK" in n and "corporate action" in n for n in j["notes"])
 
 

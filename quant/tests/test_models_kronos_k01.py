@@ -203,6 +203,9 @@ def test_an_unadjusted_split_is_detected_not_repaired():
     assert K.split_suspects(r, pd.Timestamp("2025-07-01")) == [str(idx[25].date())]
     assert K.split_suspects(r, idx[26]) == []
     fx = K.repo_root() / "fixtures/history"
-    for s in ("XLE", "XLK"):          # the committed fixtures' known defect, pinned so a fix shows up here
-        assert K.split_suspects(K.fixture_returns(fx, s), pd.Timestamp("2025-07-01")) == ["2025-12-05"]
-    assert K.split_suspects(K.fixture_returns(fx, "SPY"), pd.Timestamp("2016-07-01")) == []
+    for s in ("SPY", "QQQ", "IWM", "TLT", "IEF", "GLD", "XLE", "XLF", "XLK"):   # XLE/XLK repaired 2026-10-19
+        assert K.split_suspects(K.fixture_returns(fx, s), pd.Timestamp("2016-07-01")) == [], s
+    old = K.repo_root() / "fixtures/archive/2026-10-19-vendor-defects/XLE.unadjusted.parquet"
+    px = pd.read_parquet(old)["close_adj"]
+    px.index = pd.DatetimeIndex(px.index)
+    assert K.split_suspects(px.pct_change().dropna(), pd.Timestamp("2025-07-01")) == ["2025-12-05"]   # the archive

@@ -282,3 +282,18 @@ def test_fetch_quotes_partial_failure_keeps_other_rows(tmp_path):
     ds = prices.fetch_quotes(["SPY", "NOPE"], s)
     assert ds.data.loc["SPY", "price"] == 2.0 and ds.data.loc["SPY", "prev_close"] == 1.0
     assert pd.isna(ds.data.loc["NOPE", "price"]) and "404" in ds.data.loc["NOPE", "error"]
+
+
+def test_the_load_time_repair_still_fixes_the_archived_vendor_files():
+    """fixtures/history no longer needs _repair (fixed 2026-10-19), so the archived originals keep it honest."""
+    from pathlib import Path
+
+    from ohcamel_quant.data.fixtures import _repair
+
+    arc = Path(__file__).resolve().parents[2] / "fixtures/archive/2026-10-19-vendor-defects"
+    for sym, want in (("XLK", "split-adjusted 2:1 before 2025-12-05"), ("SPY", "bad high/low print")):
+        raw = pd.read_parquet(arc / f"{sym}.unadjusted.parquet").rename(columns={"close_adj": "adj_close"})
+        fixed, notes = _repair(raw)
+        assert any(want in n for n in notes), (sym, notes)
+        cur = pd.read_parquet(arc.parents[1] / "history" / f"{sym}.parquet").rename(columns={"close_adj": "adj_close"})
+        pd.testing.assert_frame_equal(fixed[cur.columns], cur, check_dtype=False)   # the file now IS the repair

@@ -5,5 +5,18 @@
   "synthetic": false,
   "symbol": "SPY",
   "start": "2016-06-01",
-  "end": "2026-06-01"
+  "end": "2026-06-01",
+  "adjustments": [
+    {
+      "kind": "bad_print",
+      "session": "2026-02-02",
+      "column": "low",
+      "was": 69.005,
+      "now": 689.58,
+      "applied": "a low more than 25% below the session body replaced by min(open, close), the rule quant/src/ohcamel_quant/data/fixtures.py:_repair applies at load time",
+      "applied_at": "2026-10-19",
+      "by": "repository (EXP-K01 follow-up)",
+      "original": "fixtures/archive/2026-10-19-vendor-defects/SPY.unadjusted.parquet"
+    }
+  ]
 }

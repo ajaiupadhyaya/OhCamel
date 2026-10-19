@@ -51,6 +51,7 @@ def main(qlib_src: str, work: str) -> None:
     Path(f"{out}.meta.json").write_text(json.dumps({
         "source": "qlib", "qlib_version": qlib.__version__, "synthetic": False,
         "inputs": "fixtures/history SPY, XLE (Alpaca adjusted daily bars)", "generator": "tools/qlib_golden.py",
+        "generated": __import__("datetime").date.today().isoformat(),
         "note": "qlib stores and computes float32; VWAP0 is NaN (no VWAP field)"}, indent=2) + "\n")
 
 
