@@ -562,7 +562,17 @@ jobs:
 
       - name: System dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install pkg-config openblas libomp sqlite
+        run: brew install pkg-config openblas libomp sqlite openssl@3
+
+      # async_ssl v0.17.0's generated FFI stubs do not compile against OpenSSL 4
+      # ("incompatible integer to pointer conversion ... [-Wint-conversion]" in
+      # ffi_generated_stubs.c). The macos-latest image began shipping Homebrew's
+      # openssl@4 as the default in October 2026, and its pkg-config then wins.
+      # Point pkg-config at openssl@3, which every green run before that used.
+      # Linux is unaffected: Ubuntu's libssl-dev is 3.x.
+      - name: Pin OpenSSL 3 for async_ssl (macOS only)
+        if: runner.os == 'macOS'
+        run: echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
 
       # Written into GITHUB_ENV rather than the job's `env:` block because
       # these must apply to exactly one leg of the matrix, and `env:` has no
