@@ -78,6 +78,17 @@ def fixture_returns(fixtures: Path, symbol: str) -> pd.Series:
     return px.pct_change().dropna()
 
 
+SPLIT_SUSPECT = 0.40
+
+
+def split_suspects(ret: pd.Series, start: pd.Timestamp, threshold: float = SPLIT_SUSPECT) -> list[str]:
+    """Days in the evaluation window with |adjusted return| >= 40%: on a diversified ETF that is not a market move,
+    it is a split the vendor's adjusted close did not adjust (XLE and XLK on 2025-12-05 in the committed fixtures).
+    Detected and reported, never silently repaired: the fixture is a published input."""
+    w = ret.loc[start:]
+    return [str(d.date()) for d in w.index[w.abs() >= threshold]]
+
+
 def one_sided_dm(la: np.ndarray, lb: np.ndarray) -> dict[str, float]:
     """``dm_test``'s statistic with a one-sided p-value for H1: a's loss is lower (negative stat)."""
     d = V.dm_test(la, lb)
@@ -112,7 +123,12 @@ def incumbent_forecasts(r: np.ndarray, n: int, cfg: dict[str, Any]) -> tuple[dic
     fc: dict[str, np.ndarray] = {}
     dropped: dict[str, str] = {}
     for k in V.GARCH_KINDS:
-        f, _ = V.garch_oos(r, k, est_window=inc["est_window"], eval_days=n, refit_every=inc["refit_every"])
+        try:
+            f, _ = V.garch_oos(r, k, est_window=inc["est_window"], eval_days=n, refit_every=inc["refit_every"],
+                               next_day=False)
+        except ValueError as e:   # a refit that cannot be fitted: dropped and reported, as league_for drops a
+            dropped[k] = f"a refit failed ({e}); not scored"   # degenerate fit -- never a guessed number
+            continue
         if np.all(np.isfinite(f) & (f > 0)):
             fc[k] = f
         else:
@@ -205,6 +221,8 @@ class Result:
     var95: pd.DataFrame
     dropped: pd.DataFrame
     window: tuple[str, str]
+    defects: dict[str, list[str]] = field(default_factory=dict)       # symbol -> suspected unadjusted splits
+    clean: dict[str, Any] = field(default_factory=dict)               # the pass rule on the names without one
 
 
 def run(config_path: Path | None = None, forecasts: Path | None = None) -> Result:
@@ -213,13 +231,16 @@ def run(config_path: Path | None = None, forecasts: Path | None = None) -> Resul
     cfg = load_config(config_path)
     fk = load_forecasts(forecasts or config_path.parent / "forecasts.csv", config_path)
     fixtures = root / cfg["fixtures"]
-    scores, short = [], []
+    scores, short, defects = [], [], {}
     for sym in cfg["names"]:
         rows = fk[fk["symbol"] == sym]
         if len(rows) < cfg["sufficiency"]["min_eval_sessions"]:
             short.append(f"{sym} ({len(rows)} sessions)")
             continue
-        scores.append(score_name(sym, fixture_returns(fixtures, sym), rows, cfg))
+        ret = fixture_returns(fixtures, sym)
+        if hits := split_suspects(ret, pd.Timestamp(cfg["eval_start"])):
+            defects[sym] = hits
+        scores.append(score_name(sym, ret, rows, cfg))
     if short or not scores:
         v = verdict(pooled_p=math.nan, mcs_names=0, n_names=len(cfg["names"]), cfg=cfg, short=short or ["all"])
         empty = pd.DataFrame()
@@ -227,6 +248,16 @@ def run(config_path: Path | None = None, forecasts: Path | None = None) -> Resul
     pl, pa = pooled(scores), pooled(scores, "kronos_actual_anchor")
     v = verdict(pooled_p=pl["p_one_sided"], mcs_names=sum(bool(s.in_mcs) for s in scores),
                 n_names=len(scores), cfg=cfg)
+    clean: dict[str, Any] = {}
+    if defects:
+        v = Verdict(v.label, v.detail + " · DATA DEFECT: " + ", ".join(
+            f"{s} (unadjusted split? {', '.join(d)})" for s, d in defects.items()))
+        ok = [s for s in scores if s.symbol not in defects]
+        need = math.ceil(cfg["pass"]["mcs_min_names"] * len(ok) / len(scores))   # the same share of names
+        pc = pooled(ok)
+        mc = sum(bool(s.in_mcs) for s in ok)
+        clean = {"names": [s.symbol for s in ok], "pooled": pc, "mcs_names": mc, "mcs_need": need,
+                 "label": PASS if pc["p_one_sided"] < cfg["pass"]["pooled_dm_p_max"] and mc >= need else FAIL}
     dates = pd.DatetimeIndex(fk["date"])
     return Result(v, pl, pa,
                   pd.DataFrame([r for s in scores for r in s.rows]),
@@ -236,7 +267,7 @@ def run(config_path: Path | None = None, forecasts: Path | None = None) -> Resul
                   pd.DataFrame([{"symbol": s.symbol, "model": m, "reason": why}
                                 for s in scores for m, why in s.dropped.items()],
                                columns=["symbol", "model", "reason"]),
-                  (str(dates.min().date()), str(dates.max().date())))
+                  (str(dates.min().date()), str(dates.max().date())), defects, clean)
 
 
 def _md(df: pd.DataFrame, floatfmt: str = ".4g") -> str:
@@ -295,8 +326,23 @@ def report(res: Result) -> str:
             f"{res.pooled_actual_anchor['p_one_sided']:.3g}, mean QLIKE diff "
             f"{res.pooled_actual_anchor['mean_diff']:.3g}. The gap between this and the gated row measures how much "
             "of Kronos's variance is the tokenizer's level error rather than a forecast.", ""]
+    if res.defects:
+        c = res.clean
+        out += ["## Data defect", "",
+                "On " + ", ".join(f"{s} ({', '.join(d)})" for s, d in res.defects.items()) + " the committed "
+                "fixture's adjusted close moves by 40% or more in one session. That is a split the vendor did not "
+                "adjust (close_adj equals close throughout): every model on those names is scored against a "
+                "fictitious crash, and Kronos's input bars carry the unadjusted price. The fixture is a published "
+                "input and is NOT repaired here. The verdict above follows the rule as written; the same rule on "
+                f"the {len(c['names'])} names without a defect (MCS need scaled to the same share, {c['mcs_need']}):", "",
+                f"**{c['label']}** — pooled DM vs EWMA one-sided p = {c['pooled']['p_one_sided']:.3g}, "
+                f"in the 10% MCS on {c['mcs_names']} of {len(c['names'])} ({', '.join(c['names'])}).", ""]
     if not res.dropped.empty:
-        out += ["### Dropped", "", _md(res.dropped), ""]
+        out += ["## Deviations from the pre-registration", "",
+                "An incumbent whose refit could not be fitted is not scored on that name. This is how `league_for` "
+                "treats a degenerate fit: a number is never guessed for it. It REMOVES A COMPETITOR from that name's "
+                "MCS, which can only make Kronos's membership there easier, so read those names' MCS rows with that "
+                "in mind:", "", _md(res.dropped), ""]
     return "\n".join(out) + "\n"
 
 
@@ -315,6 +361,7 @@ def main(argv: list[str] | None = None) -> int:
         (d / "results.json").write_text(json.dumps({
             "verdict": res.verdict.label, "detail": res.verdict.detail, "window": res.window,
             "pooled": res.pooled, "pooled_actual_anchor_diagnostic": res.pooled_actual_anchor,
+            "data_defects": res.defects, "verdict_without_defects": res.clean,
             "league": res.league.to_dict("records"), "dm": res.dm.to_dict("records"),
             "calibration": res.calibration.to_dict("records"), "var95": res.var95.to_dict("records"),
             "dropped": res.dropped.to_dict("records")}, indent=2, default=str) + "\n")

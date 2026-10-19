@@ -165,3 +165,44 @@ def test_too_few_sessions_is_insufficient(tmp_path, spy):
     res = K.run(c, f)
     assert res.verdict.label == K.INSUFFICIENT and "SPY (40 sessions)" in res.verdict.detail
     assert K.report(res).startswith("# EXP-K01")
+
+
+def test_an_incumbent_whose_refit_fails_is_dropped_and_reported_not_guessed(spy, cfg, monkeypatch):
+    real = V.garch_oos
+
+    def flaky(r, kind, **kw):
+        if kind == "egarch":
+            raise ValueError("the GARCH fit ended at a non-finite likelihood")
+        return real(r, kind, **kw)
+    monkeypatch.setattr(V, "garch_oos", flaky)
+    s = K.score_name("SPY", spy, fake_kronos(spy, 1.0), cfg)
+    assert "egarch" in s.dropped and "non-finite" in s.dropped["egarch"]
+    assert "egarch" not in {r["model"] for r in s.rows} and "egarch" not in s.losses.columns
+
+
+def test_the_reference_egarch_fit_raises_garch_rs_error_instead_of_crashing(monkeypatch):
+    from ohcamel_quant.kernels import reference as R
+    y = 100 * np.random.default_rng(3).normal(0, 0.01, 300)
+    monkeypatch.setattr(R, "_variance_path", lambda *a, **k: None)   # the infeasible path garch.rs maps to Err
+    with pytest.raises(ValueError, match="non-finite likelihood"):
+        R.garch_fit(y, "egarch", None)
+
+
+def test_garch_oos_can_skip_the_next_day_fit_without_changing_the_past(spy):
+    r = spy.to_numpy(float)
+    a, nx = V.garch_oos(r, "garch", eval_days=42)
+    b, nb = V.garch_oos(r, "garch", eval_days=42, next_day=False)
+    np.testing.assert_array_equal(a, b)
+    assert np.isfinite(nx) and np.isnan(nb)
+
+
+def test_an_unadjusted_split_is_detected_not_repaired():
+    idx = pd.bdate_range("2025-11-01", periods=40)
+    r = pd.Series(0.001, index=idx)
+    r.iloc[25] = -0.5
+    assert K.split_suspects(r, pd.Timestamp("2025-07-01")) == [str(idx[25].date())]
+    assert K.split_suspects(r, idx[26]) == []
+    fx = K.repo_root() / "fixtures/history"
+    for s in ("XLE", "XLK"):          # the committed fixtures' known defect, pinned so a fix shows up here
+        assert K.split_suspects(K.fixture_returns(fx, s), pd.Timestamp("2025-07-01")) == ["2025-12-05"]
+    assert K.split_suspects(K.fixture_returns(fx, "SPY"), pd.Timestamp("2016-07-01")) == []

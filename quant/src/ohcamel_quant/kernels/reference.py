@@ -300,6 +300,8 @@ def garch_fit(r: np.ndarray, kind: str, x0: np.ndarray | None):
             converged = bool(res.success)
             break
     s2 = _variance_path(x, r, "egarch", _backcast(r))
+    if s2 is None:   # garch.rs returns Err here; raise the same error rather than crash on None
+        raise ValueError("the GARCH fit ended at a non-finite likelihood")
     e_last, s_last = float(r[-1] - x[0]), float(s2[-1])
     z = e_last / math.sqrt(s_last)
     nxt = math.exp(min(x[1] + x[2] * (abs(z) - SQRT2_OV_PI) + x[3] * z + x[4] * math.log(s_last), LNSIGMA_MAX))

@@ -12,7 +12,7 @@ licensed, and so is Kronos. Every ported file names its source and keeps the not
 
 | # | From | What | Where | Status |
 |---|---|---|---|---|
-| 1 | [Kronos](https://github.com/shiyu-coder/Kronos) | **EXP-K01.** Kronos-small's *sampled* next bar as a one-day variance forecast, scored against GARCH/GJR/EGARCH/EWMA with P2's own QLIKE, DM and MCS on sessions after the weights were frozen (2025-06-30) | `research/kronos/`, `quant/.../models/kronos_k01.py`, `research/experiments/EXP-K01/` | Pre-registration (DRAFT, owner unconfirmed) committed before any forecast. Machinery built and tested. The full forecast run is the one long step |
+| 1 | [Kronos](https://github.com/shiyu-coder/Kronos) | **EXP-K01.** Kronos-small's *sampled* next bar as a one-day variance forecast, scored against GARCH/GJR/EGARCH/EWMA with P2's own QLIKE, DM and MCS on sessions after the weights were frozen (2025-06-30) | `research/kronos/`, `quant/.../models/kronos_k01.py`, `research/experiments/EXP-K01/` | **Done. Verdict: DOES NOT BEAT THE INCUMBENTS** (pooled DM vs EWMA p = 0.969; in the 10% MCS on 3 of 9, where 5 were needed). The owner approved the pre-registration before any result existed. Kronos over-forecasts variance on every name (6.7× realised on SPY, 32× on GLD). The verdict is unchanged on the 7 names without the fixture defect below. See `research/experiments/EXP-K01/report.md` |
 | 2 | [qlib](https://github.com/microsoft/qlib) | **A factor expression language** with qlib's 41 operators, ported, and **Alpha158** on it | `quant/.../factors/expr.py`, `alpha158.py` | Done. 157 of 158 features equal qlib 0.9.7's own output (values and NaN pattern) |
 | 3 | qlib | **The signal report**: IC and rank IC with HAC t, IC decay by horizon, lag-1 rank autocorrelation, quantile-group and long-short returns | `quant/.../factors/workbench.py` | Done. Reported, never gated |
 | 4 | [RD-Agent](https://github.com/microsoft/RD-Agent) | **The research loop, honest**: hypothesis first, RD-Agent's factor lint and redundancy screen, exploration window only, and an append-only trial ledger that supplies `n_trials` | `quant/.../factors/workbench.py`, `make factor` | Done |
@@ -70,10 +70,13 @@ licensed, and so is Kronos. Every ported file names its source and keeps the not
 
 ## What is left, and whose it is
 
-1. **Owner:** confirm or amend `research/experiments/EXP-K01/preregistration.md`. Until then its verdict
-   is labelled DRAFT on every line.
-2. **Engineering:** finish the EXP-K01 forecast run (`make kronos-forecast`, hours on CPU), then
-   `make kronos-score`, review the `forecasts.csv` diff, and commit it with `report.md` and `results.json`.
+1. ~~Owner: confirm the EXP-K01 pre-registration~~ (approved 2026-10-19). ~~Engineering: run and score
+   EXP-K01~~ (done; FAIL, as above).
+2. **Owner, found by EXP-K01:** `fixtures/history/XLE.parquet` and `XLK.parquet` carry an UNADJUSTED 2-for-1
+   split on 2025-12-05 (`close_adj` equals `close`, a -50% one-day "return"). Any experiment that reads XLE or
+   XLK after that date sees a fictitious crash. That includes EXP-I01–I03 holdouts that run into 2026 and
+   INC-01's roster. Repairing a published fixture changes the evidence behind committed manifests, so it is the
+   owner's decision. It is detected and pinned by a test, not repaired.
 3. **Owner:** the first real `make factor` entry. The ledger starts empty on purpose. Every trial from now
    on is counted.
 4. **Optional, small:** POET as a covariance-league contestant (`qlib/model/riskmodel/poet.py`, numpy only).

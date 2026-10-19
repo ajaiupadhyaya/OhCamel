@@ -74,8 +74,9 @@ def variance_path(params: np.ndarray, y: np.ndarray, kind: str) -> np.ndarray:
 
 
 def garch_oos(r: np.ndarray, kind: str, *, est_window: int = EST_WINDOW, eval_days: int = EVAL_DAYS,
-              refit_every: int = REFIT_EVERY) -> tuple[np.ndarray, float]:
-    """1-day-ahead variance forecasts (DECIMAL^2) for the last ``eval_days`` days, and the next-day forecast."""
+              refit_every: int = REFIT_EVERY, next_day: bool = True) -> tuple[np.ndarray, float]:
+    """1-day-ahead variance forecasts (DECIMAL^2) for the last ``eval_days`` days, and the next-day forecast
+    (NaN with ``next_day=False``, which skips the extra fit a caller scoring only the past does not need)."""
     y = 100.0 * np.asarray(r, dtype=float)
     n = y.size
     start = n - eval_days
@@ -88,6 +89,8 @@ def garch_oos(r: np.ndarray, kind: str, *, est_window: int = EST_WINDOW, eval_da
         x0 = fit.params
         e = min(s + refit_every, n)
         out[s - start:e - start] = variance_path(fit.params, y[s - est_window:e], kind)[est_window:est_window + e - s]
+    if not next_day:
+        return out / 1e4, float("nan")
     fit = kernels.garch_fit(y[n - est_window:], kind, x0)
     return out / 1e4, float(fit.next_variance) / 1e4
 
