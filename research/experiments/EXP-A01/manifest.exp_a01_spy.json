@@ -281,8 +281,8 @@
   ],
   "gates_version": "2026-09-02",
   "hashes": {
-    "fixtures/history/SPY.parquet": "sha256:e990ccc2a544be237c848d16266d98a55f9331a808e1c4f1a4dbab1b5e08ccdf",
-    "fixtures/history/SPY.parquet.meta.json": "sha256:0703279315e94244e94ad40196acf2aaf226a5385558e757986d5998aea120e5",
+    "fixtures/history/SPY.parquet": "sha256:cf3ed91057d36f6c0d7dc8f3f0c7879c7ab625ca3545412a746c157cd68e3362",
+    "fixtures/history/SPY.parquet.meta.json": "sha256:21d59b201dbeeb08972eaf9c07f17cedb5d1bfc926adbcf9b1b054180fb4fd95",
     "fixtures/macro/macro.parquet": "sha256:4b05a2b74d89c6f987754ea9112aa9f69fad96d93feab18590f0753c78416cf0",
     "fixtures/macro/macro.parquet.meta.json": "sha256:f8d591f35fd7346bf5578a1f784017edf9a155e69495d32e9034c8a37a1c40d9",
     "research/config/friction_v1.yaml": "sha256:1c09f884a55487ca7bc228efc285b69a865d1df59ee4ea367d9b4c09dc1d4cc9",
@@ -312,7 +312,7 @@
   "pbo": 0.786013986013986,
   "psr": 0.9769533438969177,
   "python_version": "3.13.12",
-  "ran_at": "2026-09-19T04:12:20Z",
+  "ran_at": "2026-10-19T21:44:47Z",
   "selected_params": {
     "fast": 1,
     "slow": 150,
