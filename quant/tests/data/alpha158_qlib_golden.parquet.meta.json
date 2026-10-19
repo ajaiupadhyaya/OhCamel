@@ -1,0 +1,9 @@
+{
+  "source": "qlib",
+  "qlib_version": "0.9.7",
+  "synthetic": false,
+  "inputs": "fixtures/history SPY, XLE (Alpaca adjusted daily bars)",
+  "generator": "tools/qlib_golden.py",
+  "generated": "2026-10-19",
+  "note": "qlib stores and computes float32; VWAP0 is NaN (no VWAP field)"
+}
