@@ -88,7 +88,7 @@ export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 # repository root would make make declare that target up to date and run
 # nothing -- and for those two the symptom is a server that silently never
 # starts. run-live, serve and demo were the three that had been left out.
-.PHONY: kronos-test kronos-forecast kronos-score all build run run-live serve demo stress backtest backtest-crisis options garch test research-test research-reproduce bench coverage fmt clean deps doctor \
+.PHONY: factor kronos-test kronos-forecast kronos-score all build run run-live serve demo stress backtest backtest-crisis options garch test research-test research-reproduce bench coverage fmt clean deps doctor \
         check-counts \
         quant-deps quant-dev quant-test quant-live-test quant-web quant-serve quant-image hostd-image kernels-dev \
         deploy-build deploy-up deploy-down deploy-verify deploy-logs deploy-smoke
@@ -227,6 +227,15 @@ kronos-forecast:
 
 kronos-score:
 	cd quant && uv run --frozen python -m ohcamel_quant.models.kronos_k01 --write
+
+# Screen one factor expression (factors/workbench.py) on the exploration window
+# and append it to research/factor_trials.jsonl -- the ledger whose count of
+# distinct expressions is n_trials for any Deflated Sharpe on what comes out.
+#   make factor EXPR='Rsquare($$close, 30)' HYP='why it should predict returns, in words'
+# make expands $, so a field is written $$close here; or call the module directly:
+#   cd quant && uv run python -m ohcamel_quant.factors.workbench 'Rsquare($close, 30)' --hypothesis '...'
+factor:
+	cd quant && uv run --frozen python -m ohcamel_quant.factors.workbench "$(EXPR)" --hypothesis "$(HYP)"
 
 # Every committed battery manifest, re-derived: `ohcamel-research battery run`
 # for every experiment, on a temporary copy of HEAD's research/, fixtures/ and

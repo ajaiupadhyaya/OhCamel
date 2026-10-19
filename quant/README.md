@@ -18,6 +18,8 @@ Three layers, and the rule between them: **analytics are pure** (`risk/` .. `fun
 | `src/ohcamel_quant/risk/` | Nine VaR/ES models (historical, Gaussian, Student-t, Cornish-Fisher, EWMA, GARCH, GJR-GARCH, FHS, EVT-POT), out-of-sample backtests, Euler decomposition, 17 historical and conditional stress scenarios |
 | `src/ohcamel_quant/portfolio/` | Covariance estimators, expected returns and Black-Litterman, ten optimizers, walk-forward comparison against 1/N |
 | `src/ohcamel_quant/factors/` | Performance statistics, PSR/DSR, Fama-French and custom factor regressions with HAC errors, attribution |
+| `src/ohcamel_quant/factors/expr.py`, `alpha158.py` | A point-in-time factor expression language with qlib's 41 operators (`Mean($close, 20)/$close`), ported, not imported. Lookahead is a parse error, and a window that is not full is NaN. `compat=True` reproduces qlib, and qlib's Alpha158 on it matches qlib 0.9.7's own output on 157 of 158 features (VWAP0 omitted: no VWAP in the bars). `tools/qlib_golden.py` regenerates the reference |
+| `src/ohcamel_quant/factors/workbench.py` | RD-Agent's research loop with the owner in it: a written hypothesis first, RD-Agent's factor lint and duplicate screen (on \|corr\|, which also catches a negated duplicate), qlib's signal report (IC/rank IC with HAC t, decay, rank autocorrelation, group returns), exploration window only, and an append-only trial ledger whose distinct-expression count is the `n_trials` for any later DSR. `make factor EXPR=... HYP=...` |
 | `src/ohcamel_quant/backtest/` | Look-ahead-safe engine, twelve strategies (ten from the literature, buy-and-hold and a static mix as benchmarks), PBO (CSCV), DSR, SPA, stationary bootstrap, walk-forward, cost curves |
 | `src/ohcamel_quant/options/` | BSM/Black-76, IV, parity-implied forwards, SVI and the surface, VIX-style variance, risk-neutral density, realized vol, multi-leg payoffs |
 | `src/ohcamel_quant/macro/` | Curve bootstrap, NS/NSS, PCA, bonds and KRDs, recession probit, Sahm rule, Markov regimes, Taylor rules, the 26-series dashboard |
@@ -71,5 +73,5 @@ commit.
 
 <!-- quant-tests -->
 ```
-TESTS = 1401
+TESTS = 1489
 ```
