@@ -2,7 +2,9 @@
 experiment: EXP-K01
 preregistration: research/experiments/EXP-K01/preregistration.md
 approved: "2026-10-19"   # owner approved as written, before any scored result existed
-methodology_version: 1
+methodology_version: 2   # v2 2026-10-19: same design on repaired fixtures (XLE/XLK split, SPY bad print); v1 in v1/
+amendments:
+  - "v2 2026-10-19: fixtures/history XLE and XLK were adjusted for their 2025-12-05 2-for-1 split and SPY's 2026-02-02 low repaired (fixtures/archive/2026-10-19-vendor-defects). XLE, XLK and SPY are re-forecast; the other six names' rows are kept, which equals a full rerun because CPU sampling is bit-reproducible. Nothing else in the design changes. The v1 result (on the defective files) is kept in v1/."
 names: [SPY, QQQ, IWM, TLT, IEF, GLD, XLE, XLF, XLK]
 fixtures: fixtures/history
 eval_start: "2025-07-01"   # the day after the weights' commit (2025-06-30); fixed by the leakage guard, not chosen

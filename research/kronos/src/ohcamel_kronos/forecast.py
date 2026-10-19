@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform
 import zlib
 from dataclasses import dataclass
@@ -68,9 +69,16 @@ def load_models(cfg: dict) -> Models:
     from kronos_model import Kronos, KronosTokenizer
 
     k = cfg["kronos"]
-    # token=False: the weights are public, and a stale login on the machine must not be sent (or break the load)
-    tok = KronosTokenizer.from_pretrained(k["tokenizer"], revision=k["tokenizer_revision"], token=False)
-    mod = Kronos.from_pretrained(k["model"], revision=k["model_revision"], token=False)
+    local = os.environ.get("OHCAMEL_KRONOS_WEIGHTS")
+    if local:
+        # The image bakes the pinned revisions into plain directories (quant/Dockerfile, stage kronos), so a
+        # read-only container loads them by path and never touches the Hub, its cache or its lock files.
+        tok = KronosTokenizer.from_pretrained(str(Path(local) / k["tokenizer"].split("/")[-1]))
+        mod = Kronos.from_pretrained(str(Path(local) / k["model"].split("/")[-1]))
+    else:
+        # token=False: the weights are public, and a stale login on the machine must not be sent (or break it)
+        tok = KronosTokenizer.from_pretrained(k["tokenizer"], revision=k["tokenizer_revision"], token=False)
+        mod = Kronos.from_pretrained(k["model"], revision=k["model_revision"], token=False)
     dev = cfg["sampling"]["device"]
     return Models(tok.eval().to(dev), mod.eval().to(dev))
 
@@ -99,13 +107,25 @@ def sha256(path: Path) -> str:
 
 
 def run(config_path: Path, repo_root: Path, out: Path | None = None, symbols: list[str] | None = None,
-        limit_days: int | None = None, progress=print) -> Path:
+        limit_days: int | None = None, progress=print, update: list[str] | None = None,
+        reason: str | None = None) -> Path:
+    """Write every name-day's forecast. With ``update``, re-forecast only those symbols into an existing COMPLETE
+    file and keep every other row: equivalent to a full run because CPU sampling is bit-reproducible
+    (``test_forecast.py`` pins that), and recorded in the sidecar's ``amendments``."""
     cfg = load_config(config_path)
     config_sha = sha256(config_path)      # the rules the run STARTED under; checked again before writing
     s = cfg["sampling"]
     torch.set_num_threads(int(s["torch_threads"]))
     fixtures = repo_root / cfg["fixtures"]
     out = out or config_path.parent / "forecasts.csv"
+    prior_meta: dict | None = None
+    if update:
+        prior_meta = json.loads(Path(f"{out}.meta.json").read_text())
+        if not prior_meta.get("complete"):
+            raise ValueError(f"{out} is not a complete run; an update needs one")
+        if not reason:
+            raise ValueError("an update must say why (--reason)")
+        symbols = update
     models = load_models(cfg)
     rows, inputs = [], {}
     for sym in symbols or cfg["names"]:
@@ -118,10 +138,20 @@ def run(config_path: Path, repo_root: Path, out: Path | None = None, symbols: li
                 progress(f"{sym} {day.date()} ({j + 1}/{len(days)})")
     if sha256(config_path) != config_sha:
         raise RuntimeError(f"{config_path} changed during the run; the forecasts are not from one config")
-    pd.DataFrame(rows, columns=COLUMNS).to_csv(out, index=False, float_format="%.10g")
+    new = pd.DataFrame(rows, columns=COLUMNS)
+    if update:
+        kept = pd.read_csv(out, dtype={"date": str})
+        kept = kept[~kept["symbol"].isin(update)]
+        new = pd.concat([kept, new]).set_index("symbol").loc[cfg["names"]].reset_index()[COLUMNS]
+        inputs = {**prior_meta["fixtures_sha256"], **inputs}
+    new.to_csv(out, index=False, float_format="%.10g")
     meta = {"experiment": "EXP-K01", "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            "config_sha256": config_sha, "fixtures_sha256": inputs, "rows": len(rows),
-            "complete": symbols is None and limit_days is None,
+            "config_sha256": config_sha, "fixtures_sha256": inputs, "rows": len(new),
+            "complete": (symbols is None or bool(update)) and limit_days is None,
+            "amendments": [*(prior_meta or {}).get("amendments", []),
+                           *([{"at": datetime.now(UTC).isoformat(timespec="seconds"), "symbols": update,
+                               "reason": reason, "previous_config_sha256": prior_meta["config_sha256"]}]
+                             if update else [])],
             "torch": torch.__version__, "python": platform.python_version(), "machine": platform.machine(),
             "system": platform.system(), "kronos": cfg["kronos"], "sampling": s, "synthetic": False}
     Path(f"{out}.meta.json").write_text(json.dumps(meta, indent=2) + "\n")

@@ -24,6 +24,16 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+# torch's Linux wheels on PyPI pull ~2.5 GB of CUDA libraries the droplet has no use for. On Linux, take the
+# CPU-only build from PyTorch's own index; macOS wheels come from PyPI as before.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.3"]
 

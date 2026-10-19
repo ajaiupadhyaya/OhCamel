@@ -1,0 +1,43 @@
+{
+  "experiment": "EXP-K01",
+  "written_at": "2026-10-19T19:39:26+00:00",
+  "config_sha256": "b5ef06e312e151cec39993ff2fd0e2527619daab1f98decafd6f2c309199a93a",
+  "fixtures_sha256": {
+    "SPY": "e990ccc2a544be237c848d16266d98a55f9331a808e1c4f1a4dbab1b5e08ccdf",
+    "QQQ": "5d78eb20bf6e3a73ebeffd8186d469491c756b53f3c034f4fadaee991d8426df",
+    "IWM": "70aa6d6e720e177470f95a534d9d5b452b4f63667de959079cb315dae33285b9",
+    "TLT": "d749ba34cfb00152e8b0ed1edd02ef0f3e6d44897a6fe238e577593daa38c7f2",
+    "IEF": "0bf9a7a3d1d25b1ec974a7cb222f59fa72470636d12211d09800edc3f61958ac",
+    "GLD": "31beca4f61e43af3c42bf465cd2186e722c1a9fc2617c7b7103a982be9c223e1",
+    "XLE": "31dc0650e488cd494033cdc54d290f99bffd8f9606e46f550bc309e4352dbae1",
+    "XLF": "6103519a7d0d0ca8fb48e3f040ebdc413398267af38b1be48b8fd289c68ba9e3",
+    "XLK": "1d13c4cb9db16c7871ea5c8e9e98d6d71318b642687ff7f61b9d1e20af8bc7cf"
+  },
+  "rows": 2079,
+  "complete": true,
+  "torch": "2.14.1",
+  "python": "3.13.12",
+  "machine": "arm64",
+  "system": "Darwin",
+  "kronos": {
+    "code_commit": "67b630e67f6a18c9e9be918d9b4337c960db1e9a",
+    "model": "NeoQuasar/Kronos-small",
+    "model_revision": "901c26c1332695a2a8f243eb2f37243a37bea320",
+    "tokenizer": "NeoQuasar/Kronos-Tokenizer-base",
+    "tokenizer_revision": "0e0117387f39004a9016484a186a908917e22426",
+    "weights_committed": "2025-06-30",
+    "max_context": 512
+  },
+  "sampling": {
+    "lookback": 400,
+    "n_samples": 128,
+    "temperature": 1.0,
+    "top_k": 0,
+    "top_p": 1.0,
+    "clip": 5.0,
+    "device": "cpu",
+    "seed": 20261019,
+    "torch_threads": 4
+  },
+  "synthetic": false
+}

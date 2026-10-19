@@ -74,8 +74,18 @@ class Draws:
 @torch.no_grad()
 def sample_next(tokenizer, model, context: pd.DataFrame, next_ts: pd.Timestamp, *, n_samples: int,
                 T: float = 1.0, top_k: int = 0, top_p: float = 1.0, clip: float = 5.0,
-                max_context: int = 512, device: str = "cpu") -> Draws:
-    """``n_samples`` draws of the bar after ``context`` (DatetimeIndex, oldest first)."""
+                max_context: int = 512, device: str = "cpu", chunk: int | None = None) -> Draws:
+    """``n_samples`` draws of the bar after ``context`` (DatetimeIndex, oldest first).
+
+    ``chunk`` bounds memory: the draws are made ``chunk`` at a time (the batch's attention is
+    ``chunk x heads x L x L``). All 128 at once peaked at 2.5 GB resident; the droplet's worker has 1.25 GB.
+    Chunked draws come from the same distribution and are reproducible under the same seed, but they are not
+    bit-identical to one batch's, because the RNG is consumed in a different order. EXP-K01 used one batch."""
+    if chunk and chunk < n_samples:
+        parts = [sample_next(tokenizer, model, context, next_ts, n_samples=min(chunk, n_samples - i), T=T,
+                             top_k=top_k, top_p=top_p, clip=clip, max_context=max_context, device=device)
+                 for i in range(0, n_samples, chunk)]
+        return Draws(prev=np.concatenate([p.prev for p in parts]), next=np.concatenate([p.next for p in parts]))
     if len(context) > max_context:
         raise ValueError(f"context has {len(context)} bars; the model's max is {max_context}")
     if not next_ts > context.index[-1]:
