@@ -266,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("expression")
     ap.add_argument("--hypothesis", required=True, help="why it should predict returns, in words, written first")
     ap.add_argument("--ledger", type=Path,
-                    default=Path(__file__).resolve().parents[4] / "research/factor_trials.jsonl")
+                    default=Path(__file__).resolve().parents[4] / "research/experiments/FACTORS/trials.jsonl")
     ap.add_argument("--no-log", action="store_true", help="do not append to the ledger (tests and dry runs)")
     a = ap.parse_args(argv)
     try:

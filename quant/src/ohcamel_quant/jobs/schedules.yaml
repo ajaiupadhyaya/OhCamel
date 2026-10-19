@@ -33,6 +33,10 @@ max_age:
   vol.surface_history: 78h
   models.xs_lgbm: 816h   # monthly (1st, 22:30) plus 2 days
   regime.hmm: 204h       # weekly (Saturday 09:00), like the weekly ingest kinds
+  # 2026-10-19: Kronos shadow and the data-integrity sweep nightly (78h), the factor screen weekly (204h).
+  kronos.shadow: 78h
+  ops.data_integrity: 78h
+  factors.screen: 204h
   # INC-01's producers: session kinds 78h, like Lane C's.
   signals.daily: 78h
   signals.overlay: 35m   # every 15 minutes in session, like risk.mc_intraday
@@ -209,6 +213,36 @@ schedules:
   - name: exp-q02-weekly
     cron: "0 9 * * 6"
     kind: regime.hmm
+    params: {}
+    priority: 2
+    mem_class: M
+    heavy: true
+
+  # 2026-10-19: every daily series (warehouse + committed fixtures) checked for unadjusted splits, bad
+  # prints, non-positive prices, calendar faults and staleness, after the 18:30 daily-bars ingest. Detects only.
+  - name: data-integrity-nightly
+    cron: "15 19 * * 1-5"
+    kind: ops.data_integrity
+    params: {}
+    priority: 2
+    mem_class: S
+    heavy: false
+
+  # 2026-10-19: Kronos (EXP-K01's design, FAILED retrospectively) and the incumbents forecast the next session
+  # on the record; realised rows are scored. After the 21:30 league, before the 23:00 farm. ~1 GB peak (torch).
+  - name: kronos-shadow-nightly
+    cron: "15 22 * * 1-5"
+    kind: kronos.shadow
+    params: {}
+    priority: 2
+    mem_class: L
+    heavy: true
+
+  # 2026-10-19: every distinct expression in research/experiments/FACTORS/trials.jsonl re-screened on the
+  # warehouse universe, exploration window only, against all 157 Alpha158 features. After the weekend ingests.
+  - name: factors-screen-weekly
+    cron: "0 7 * * 0"
+    kind: factors.screen
     params: {}
     priority: 2
     mem_class: M

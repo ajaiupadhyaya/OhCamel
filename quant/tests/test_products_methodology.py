@@ -10,7 +10,7 @@ WEB = REPO_ROOT / "quant" / "web" / "src" / "pages" / "methodology"
 # entry id -> section. Each Lane M task appends its entry here.
 ENTRIES = {"p1-mc-atlas": "risk", "p2-vol-league": "options", "p3-cov-league": "portfolio", "p4-strategy-farm": "backtest",
            "p7-surface-history": "options", "p5-exp-q01": "backtest",
-           "p6-exp-q02": "macro"}
+           "p6-exp-q02": "macro", "k01-kronos-shadow": "options", "factor-workbench": "factors"}
 
 
 def test_each_product_has_an_entry_with_known_references():

@@ -28,6 +28,7 @@ import { CostsTab } from "./research/CostsTab";
 import { DEFAULT_STRATEGY, baseBody, initialConfig, type BaseBody, type LabConfig } from "./research/config";
 import { FarmView } from "./research/Farm";
 import { ModelsView } from "./research/Models";
+import { WatchView } from "./research/Watch";
 import { SetupRail } from "./research/Setup";
 import { useAvailability } from "./research/shared";
 import { SweepTab } from "./research/SweepTab";
@@ -35,13 +36,14 @@ import type { Catalog as CatalogT, RunOut } from "./research/types";
 import { WalkForwardTab } from "./research/WalkForwardTab";
 import "./research/research.css";
 
-type View = "lab" | "farm" | "models";
+type View = "lab" | "farm" | "models" | "watch";
 type Tab = "backtest" | "sweep" | "walkforward" | "costs";
 
 const VIEWS = [
   { id: "lab" as const, label: "Lab" },
   { id: "farm" as const, label: "Farm · P4" },
   { id: "models" as const, label: "Models · P5" },
+  { id: "watch" as const, label: "Watch" },
 ];
 
 export default function StrategyLab() {
@@ -61,7 +63,7 @@ export default function StrategyLab() {
       <div className="sl-sections">
         <Tabs<View> items={VIEWS} value={view} onChange={setView} />
       </div>
-      {view === "farm" ? <FarmView /> : view === "models" ? <ModelsView /> : <Lab catalog={catalog} />}
+      {view === "farm" ? <FarmView /> : view === "models" ? <ModelsView /> : view === "watch" ? <WatchView /> : <Lab catalog={catalog} />}
     </Page>
   );
 }

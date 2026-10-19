@@ -15,6 +15,9 @@ LANE_M_KINDS = {
     "vol.surface_history": ("M", True),
     "models.xs_lgbm": ("M", True),
     "regime.hmm": ("M", True),
+    "kronos.shadow": ("L", True),
+    "factors.screen": ("M", True),
+    "ops.data_integrity": ("S", False),
 }
 
 

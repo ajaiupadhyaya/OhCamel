@@ -20,6 +20,9 @@ export const KINDS = {
   models: "models.xs_lgbm",
   regimes: "regime.hmm",
   surface: "vol.surface_history",
+  shadow: "kronos.shadow",
+  screen: "factors.screen",
+  integrity: "ops.data_integrity",
 } as const;
 
 /** Nightly products are stale after a missed night plus slack (Review Focus 1). */

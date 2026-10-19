@@ -81,3 +81,28 @@ licensed, and so is Kronos. Every ported file names its source and keeps the not
    on is counted.
 4. **Optional, small:** POET as a covariance-league contestant (`qlib/model/riskmodel/poet.py`, numpy only).
    Not started.
+
+## On the droplet (2026-10-19, owner's request: "one safe, expansive, effective, efficient, fast package")
+
+Three scheduled kinds, shown on Strategy Lab → **Watch** (`/research?view=watch`), each with a Methodology entry
+and a Ledger row. None of them sizes, promotes, or writes a hypothesis.
+
+| Kind | When | Class | What it does |
+|---|---|---|---|
+| `ops.data_integrity` | weekdays 19:15 | S | Every warehouse series and committed fixture: split signatures the adjusted close did not absorb, bad prints, non-positive prices, calendar faults, staleness. FAIL names the series. Detects, never repairs |
+| `kronos.shadow` | weekdays 22:15 | L, heavy | Kronos (EXP-K01's design) and GARCH/GJR/EGARCH/EWMA forecast the next session before it exists. The ledger is append-only (a rerun cannot revise a forecast), and realised rows are scored by QLIKE with the pooled DM K01 used |
+| `factors.screen` | Sun 07:00 | M, heavy | Every distinct expression in `research/experiments/FACTORS/trials.jsonl`, on the warehouse universe, exploration window only, against all 157 Alpha158 features evaluated one at a time |
+
+**Efficiency, measured.** Kronos sampling all 128 draws in one batch peaked at **2.5 GB** resident, twice
+the worker's 1.25 GB cap. Drawing 8 at a time peaks at **0.58 GB** (0.29 GB of that is torch and the model
+loading), with the same wall time: 9 forecasts in about 75 s on two threads. Chunked draws are reproducible and
+come from the same distribution. They are not bit-identical to EXP-K01's single batch.
+
+**Safety.**
+- torch is CPU-only and lives in its own venv (`/opt/kronos`), run as a subprocess, so quant's lockfile and
+  tests never import it.
+- The pinned weights are baked into plain directories and loaded by path with the Hub disabled, which works
+  in the read-only container.
+- The image build runs one real forecast as the unprivileged user, so a broken Kronos fails the build, not
+  the night.
+- CI gained a `kronos-test` job.

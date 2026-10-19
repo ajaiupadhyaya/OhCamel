@@ -23,6 +23,11 @@
 !docs/perf/kernels.json
 # EXP-Q01/Q02's frozen configs (Lane M, M6/M7: COPY research/experiments/ in the runtime stage)
 !research/experiments/
+!research/kronos/pyproject.toml
+!research/kronos/uv.lock
+!research/kronos/README.md
+!research/kronos/src/
+!research/kronos/vendor/
 # The signal contract's schemas and the example book (autonomous-paper-trading
 # Task 16: COPY interface/ and COPY book.example.sexp in the runtime stage).
 !interface/

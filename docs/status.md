@@ -76,6 +76,9 @@ the next runs):
 | `cov.league` | Sat 08:00 | M heavy | P3 |
 | `regime.hmm` | Sat 09:00 | M heavy | P6 (EXP-Q02) |
 | `models.xs_lgbm` | 1st of the month 22:30 | M heavy | P5 (EXP-Q01) |
+| `ops.data_integrity` | weekdays 19:15 | S | Watch: unadjusted splits, bad prints, stale series (detects, never repairs) |
+| `kronos.shadow` | weekdays 22:15 | L heavy | Watch: Kronos (FAILED EXP-K01) vs the incumbents, prospective, append-only; torch in `/opt/kronos`, ~0.6 GB peak |
+| `factors.screen` | Sun 07:00 | M heavy | Watch: the owner's factor ledger re-screened on the warehouse universe, exploration window only |
 | `ops.selftest` | daily 04:05 | S | end-to-end check |
 
 Each kind's latest artifact counts as stale after its `max_age` in the same file, a little over one period, and
@@ -86,7 +89,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->1494<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->1506<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.

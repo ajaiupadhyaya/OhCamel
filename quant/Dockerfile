@@ -128,6 +128,36 @@ RUN find .venv/lib/python3.12/site-packages \
  && rm -rf .venv/lib/python3.12/site-packages/pyarrow/include
 
 # ---------------------------------------------------------------------------
+# Stage 3b -- Kronos (2026-10-19): research/kronos's own venv with CPU-only torch
+# (its uv.lock takes torch from PyTorch's CPU index on Linux, so no CUDA), and
+# the pinned EXP-K01 weights baked into plain directories. The worker's
+# kronos.shadow job runs it as a subprocess (OHCAMEL_KRONOS_PYTHON), so torch
+# never enters quant's venv, and the read-only container loads the weights by
+# path (OHCAMEL_KRONOS_WEIGHTS) without touching the Hub or its cache.
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS kronos
+COPY --from=ghcr.io/astral-sh/uv:0.10.4 /uv /usr/local/bin/uv
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PYTHON=/usr/local/bin/python3.12 \
+    UV_PROJECT_ENVIRONMENT=/opt/kronos/.venv
+WORKDIR /src/kronos
+COPY research/kronos/pyproject.toml research/kronos/uv.lock research/kronos/README.md ./
+COPY research/kronos/src/ ./src/
+COPY research/kronos/vendor/ ./vendor/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-editable \
+ && /opt/kronos/.venv/bin/python -c "import torch; assert '+cpu' in torch.__version__, torch.__version__"
+# The same revisions EXP-K01's config pins; a changed revision there must change here (test_products_dockerfile).
+RUN /opt/kronos/.venv/bin/python -c "\
+from huggingface_hub import snapshot_download as s; \
+s('NeoQuasar/Kronos-small', revision='901c26c1332695a2a8f243eb2f37243a37bea320', local_dir='/opt/kronos/weights/Kronos-small', token=False); \
+s('NeoQuasar/Kronos-Tokenizer-base', revision='0e0117387f39004a9016484a186a908917e22426', local_dir='/opt/kronos/weights/Kronos-Tokenizer-base', token=False)" \
+ && rm -rf /opt/kronos/weights/*/.cache \
+ && find /opt/kronos/.venv/lib/python3.12/site-packages -path '*/torch/test*' -prune -exec rm -rf {} +
+
+# ---------------------------------------------------------------------------
 # Stage 4 -- runtime
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS runtime
@@ -184,6 +214,10 @@ COPY interface/ /app/interface/
 COPY book.example.sexp /app/book.example.sexp
 
 COPY --from=pydeps /app/quant /app/quant
+COPY --from=kronos /opt/kronos /opt/kronos
+ENV OHCAMEL_KRONOS_PYTHON=/opt/kronos/.venv/bin/python \
+    OHCAMEL_KRONOS_WEIGHTS=/opt/kronos/weights \
+    HF_HUB_OFFLINE=1
 COPY --from=web /src/quant/web/dist /app/quant/web/dist
 
 # Settings reads APCA_API_KEY_ID / APCA_API_SECRET_KEY (config.py). The
@@ -229,6 +263,17 @@ assert k.ENGINE == 'rust', k.ENGINE; assert all(k.engine_of(n) == 'rust' for n i
 print('routes:', len(a.app.routes), 'kernels:', k.ENGINE)"
 
 USER quant
+
+# Kronos, end to end, as the unprivileged user against the read-only weight directories with the Hub
+# disabled: one real next-session forecast for SPY from its committed bars. A missing weight, a torch that
+# will not import, or a path the read-only worker cannot use fails the build here, not at 22:15 on the droplet.
+RUN python -c "from ohcamel_quant.data import fixtures; from ohcamel_quant.products.kronos_shadow import adjusted_bars; \
+b = adjusted_bars(fixtures.history('SPY')[0]).tail(420); b.assign(symbol='SPY', date=b.index).to_parquet('/tmp/k.parquet', index=False)" \
+ && /opt/kronos/.venv/bin/python -m ohcamel_kronos shadow /tmp/k.parquet /tmp/k.csv \
+      --config /app/research/experiments/EXP-K01/config.yaml --threads 2 \
+ && python -c "import pandas as pd; o = pd.read_csv('/tmp/k.csv'); assert len(o) == 1 and o['var_kronos'].iloc[0] > 0, o; print(o.to_string())" \
+ && rm -f /tmp/k.parquet /tmp/k.csv
+
 VOLUME ["/data"]
 EXPOSE 8090
 

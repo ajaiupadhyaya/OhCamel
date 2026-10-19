@@ -229,7 +229,7 @@ kronos-score:
 	cd quant && uv run --frozen python -m ohcamel_quant.models.kronos_k01 --write
 
 # Screen one factor expression (factors/workbench.py) on the exploration window
-# and append it to research/factor_trials.jsonl -- the ledger whose count of
+# and append it to research/experiments/FACTORS/trials.jsonl -- the ledger whose count of
 # distinct expressions is n_trials for any Deflated Sharpe on what comes out.
 #   make factor EXPR='Rsquare($$close, 30)' HYP='why it should predict returns, in words'
 # make expands $, so a field is written $$close here; or call the module directly:

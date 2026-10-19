@@ -5,14 +5,16 @@ import { MODELS } from "../methodology/models";
 import { LEDGER, LEDGER_AS_OF, SECTION_ORDER } from "./entries";
 
 describe("Ledger entries", () => {
-  it("ties each product P1-P7 to the job kind whose latest artifact the row reads (no claim ahead of the artifacts)", () => {
-    const products = LEDGER.filter((e) => /^P[1-7] /.test(e.item));
-    expect(products).toHaveLength(7);
+  // Products P1-P7, and the three WATCH kinds the worker runs on its own (2026-10-19).
+  const PRODUCT = /^(P[1-7]|WATCH) /;
+  it("ties each product P1-P7 and each WATCH kind to the job kind whose latest artifact the row reads (no claim ahead of the artifacts)", () => {
+    const products = LEDGER.filter((e) => PRODUCT.test(e.item));
+    expect(products).toHaveLength(10);
     const kinds = products.map((e) => e.kind);
     expect(new Set(kinds)).toEqual(new Set(Object.values(KINDS)));
   });
   it("gives no other row a kind", () => {
-    for (const e of LEDGER.filter((e) => !/^P[1-7] /.test(e.item))) expect(e.kind, e.item).toBeUndefined();
+    for (const e of LEDGER.filter((e) => !PRODUCT.test(e.item))) expect(e.kind, e.item).toBeUndefined();
   });
   it("points each product at its Methodology entry", () => {
     const ids = new Set(MODELS.map((m) => m.id));

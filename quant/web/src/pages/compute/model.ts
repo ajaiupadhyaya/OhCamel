@@ -81,6 +81,9 @@ const PRODUCT_PAGES: Record<string, { to: string; code: string }> = {
   "farm.sweep": { to: "/research?view=farm", code: "RSCH" },
   "models.xs_lgbm": { to: "/research?view=models", code: "RSCH" },
   "regime.hmm": { to: "/macro?tab=regimes", code: "RATES" },
+  "kronos.shadow": { to: "/research?view=watch", code: "RSCH" },
+  "factors.screen": { to: "/research?view=watch", code: "RSCH" },
+  "ops.data_integrity": { to: "/research?view=watch", code: "RSCH" },
 };
 
 /** The page that reads a job kind's artifacts; ingest kinds filter this page; others have none. */

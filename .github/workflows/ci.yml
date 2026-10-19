@@ -774,6 +774,23 @@ jobs:
   # with Rust and again on the NumPy reference, then the whole offline Quant
   # suite on Rust (gate GA: no synchronous result moves). The hostd image is
   # built and published by image.yml; the quant image builds its own wheel.
+  # research/kronos (EXP-K01 and the kronos.shadow subprocess): its own uv project with CPU-only torch
+  # on Linux. Hermetic: tiny random models, no weight download (the pinned-weight parity test is
+  # opt-in behind OHCAMEL_KRONOS_NETWORK=1; the image build runs a real forecast instead).
+  kronos-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.10.4"
+
+      - name: kronos-test
+        run: make kronos-test
+
   native:
     runs-on: ubuntu-latest
     timeout-minutes: 40

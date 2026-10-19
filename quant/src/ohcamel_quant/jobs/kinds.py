@@ -114,6 +114,12 @@ register(KindSpec("farm.sweep", f"{_P}.farm:run", "L", heavy=True))
 register(KindSpec("vol.surface_history", f"{_P}.surface_history:run", "M", heavy=True))
 register(KindSpec("models.xs_lgbm", f"{_P}.q01:run", "M", heavy=True))
 register(KindSpec("regime.hmm", f"{_P}.q02:run", "M", heavy=True))
+# 2026-10-19 (docs/superpowers/plans/2026-10-19-kronos-qlib-rdagent.md): Kronos in prospective shadow (EXP-K01's
+# design; torch runs in research/kronos's own venv, a subprocess), the owner's factor ledger re-screened on the
+# warehouse universe, and the nightly data-integrity sweep. Private: scheduled only.
+register(KindSpec("kronos.shadow", f"{_P}.kronos_shadow:run", "L", heavy=True))
+register(KindSpec("factors.screen", f"{_P}.factor_screen:run", "M", heavy=True))
+register(KindSpec("ops.data_integrity", f"{_P}.data_integrity:run", "S", heavy=False))
 
 # INC-01's producers (design §4.2). Private: scheduled only. signals.freeze is
 # published by signals.daily itself (signals/freeze.py), once a month, and is
