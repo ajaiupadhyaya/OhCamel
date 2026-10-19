@@ -101,6 +101,7 @@ def sha256(path: Path) -> str:
 def run(config_path: Path, repo_root: Path, out: Path | None = None, symbols: list[str] | None = None,
         limit_days: int | None = None, progress=print) -> Path:
     cfg = load_config(config_path)
+    config_sha = sha256(config_path)      # the rules the run STARTED under; checked again before writing
     s = cfg["sampling"]
     torch.set_num_threads(int(s["torch_threads"]))
     fixtures = repo_root / cfg["fixtures"]
@@ -115,9 +116,11 @@ def run(config_path: Path, repo_root: Path, out: Path | None = None, symbols: li
             rows.append(forecast_row(models, bars, sym, day, s, cfg["kronos"]["max_context"], s["seed"]))
             if j % 25 == 0:
                 progress(f"{sym} {day.date()} ({j + 1}/{len(days)})")
+    if sha256(config_path) != config_sha:
+        raise RuntimeError(f"{config_path} changed during the run; the forecasts are not from one config")
     pd.DataFrame(rows, columns=COLUMNS).to_csv(out, index=False, float_format="%.10g")
     meta = {"experiment": "EXP-K01", "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            "config_sha256": sha256(config_path), "fixtures_sha256": inputs, "rows": len(rows),
+            "config_sha256": config_sha, "fixtures_sha256": inputs, "rows": len(rows),
             "complete": symbols is None and limit_days is None,
             "torch": torch.__version__, "python": platform.python_version(), "machine": platform.machine(),
             "system": platform.system(), "kronos": cfg["kronos"], "sampling": s, "synthetic": False}

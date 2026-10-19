@@ -6,8 +6,8 @@ fixtures, runs the incumbents through P2's own functions on the same days (``vol
 ``ewma_oos``) and scores everything with P2's own QLIKE, Diebold-Mariano and MCS. So Kronos is judged by
 exactly the rules the incumbents are judged by. It never imports torch, and it never sizes anything.
 
-The pass rule is the pre-registration's, applied literally (``verdict``). Its config is DRAFT (``approved:
-null``) until the owner confirms it, and every verdict says so.
+The pass rule is the pre-registration's, applied literally (``verdict``). A config with ``approved: null`` is a
+DRAFT, and every verdict made from one says so.
 """
 
 from __future__ import annotations
@@ -257,8 +257,10 @@ def report(res: Result) -> str:
     v = res.verdict
     out = ["# EXP-K01 report: Kronos in the volatility league", "",
            f"**Verdict: {v.label}** — {v.detail}", "",
-           "Research only. Kronos sizes nothing, is not a graph node and reaches no desk. The pre-registration "
-           "is a DRAFT the owner has not confirmed, so this is a draft-pre-registration result.", ""]
+           "Research only. Kronos sizes nothing, is not a graph node and reaches no desk. "
+           + ("The pre-registration is a DRAFT the owner has not confirmed, so this is a draft-pre-registration "
+              "result." if "DRAFT" in v.detail else "The owner approved the pre-registration before any result "
+              "existed."), ""]
     if v.label == INSUFFICIENT:
         return "\n".join(out) + "\n"
     lg = res.league

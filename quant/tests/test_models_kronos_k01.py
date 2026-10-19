@@ -55,10 +55,13 @@ def fake_kronos(ret: pd.Series, scale: float, n: int = N, symbol: str = "SPY") -
                          "distinct_frac": 0.7, "prev_close_actual": 100.0, "prev_close_rec": 99.9, "seed": 1})
 
 
-def test_the_committed_config_is_a_draft_and_every_verdict_says_so(cfg):
-    assert cfg["approved"] is None
-    v = K.verdict(pooled_p=0.001, mcs_names=9, n_names=9, cfg=cfg)
+def test_the_committed_config_is_approved_and_a_draft_would_say_so(cfg):
+    assert cfg["approved"] == "2026-10-19"
+    assert "DRAFT" not in K.verdict(pooled_p=0.001, mcs_names=9, n_names=9, cfg=cfg).detail
+    v = K.verdict(pooled_p=0.001, mcs_names=9, n_names=9, cfg={**cfg, "approved": None})
     assert v.label == K.PASS and "DRAFT" in v.detail
+    short = K.verdict(pooled_p=0.0, mcs_names=0, n_names=9, cfg={**cfg, "approved": None}, short=["XLE"])
+    assert "draft-pre-registration result" in K.report(K.Result(short, {}, {}, *[pd.DataFrame()] * 5, ("", "")))
 
 
 @pytest.mark.parametrize("p, mcs, label", [

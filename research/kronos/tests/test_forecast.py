@@ -15,7 +15,7 @@ CONFIG = ROOT / "research/experiments/EXP-K01/config.yaml"
 
 def test_the_committed_config_is_the_preregistered_design():
     cfg = F.load_config(CONFIG)
-    assert cfg["approved"] is None                      # owner has not confirmed; the report must say so
+    assert cfg["approved"] == "2026-10-19"              # owner approved before any scored result existed
     assert cfg["eval_start"] == "2025-07-01" and cfg["kronos"]["weights_committed"] == "2025-06-30"
     s = cfg["sampling"]
     assert (s["lookback"], s["n_samples"], s["top_p"], s["top_k"], s["temperature"]) == (400, 128, 1.0, 0, 1.0)

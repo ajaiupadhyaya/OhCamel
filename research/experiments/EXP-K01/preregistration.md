@@ -1,11 +1,9 @@
 # EXP-K01 pre-registration: Kronos in the volatility league
 
-**Status: DRAFT. The owner has not confirmed it.** The engineering session of 2026-10-19 wrote it
-when the owner asked for Kronos to be brought into OhCamel. Every sentence below is
-**[unconfirmed]** until the owner signs it. The charter gives hypotheses to the owner. So whatever this
-experiment returns, the result is a *draft-pre-registration* result, reported as such. It is not
-evidence the charter recognises until the owner confirms the text as written, or amends it and the
-experiment is run again.
+**Status: APPROVED by the owner on 2026-10-19, as written.** The engineering session drafted it the same day
+and committed it (`486f0b5`) before any forecast existed. The owner approved it unchanged while the full forecast
+run was in progress. At that moment no forecast had been scored, no result had been computed, and the partial
+forecast file had not been read. Every sentence below is now the owner's.
 
 Written 2026-10-19, before any scored forecast existed. One thing was seen before writing:
 an engineering check of the sampler drew 64 samples for SPY on 2026-06-01, the last
@@ -21,7 +19,7 @@ quantizes each OHLCV bar into two hierarchical discrete tokens, and the transfor
 bar's tokens autoregressively. Because it *samples* the next bar, it implies a forecast distribution,
 not just a point forecast.
 
-## Hypothesis [unconfirmed]
+## Hypothesis
 
 > The one-day-ahead variance implied by Kronos-small's sampled next bar is a better forecast of the
 > next day's squared return than the incumbents of OhCamel's volatility league (GARCH, GJR, EGARCH and

@@ -1,7 +1,7 @@
-# EXP-K01 -- frozen design. Source: research/experiments/EXP-K01/preregistration.md (DRAFT, owner unconfirmed).
+# EXP-K01 -- frozen design. Source: research/experiments/EXP-K01/preregistration.md (APPROVED by the owner 2026-10-19).
 experiment: EXP-K01
 preregistration: research/experiments/EXP-K01/preregistration.md
-approved: null          # the owner has not confirmed the pre-registration
+approved: "2026-10-19"   # owner approved as written, before any scored result existed
 methodology_version: 1
 names: [SPY, QQQ, IWM, TLT, IEF, GLD, XLE, XLF, XLK]
 fixtures: fixtures/history
