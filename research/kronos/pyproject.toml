@@ -1,0 +1,49 @@
+[project]
+name = "ohcamel-kronos"
+version = "0.1.0"
+description = "EXP-K01: Kronos (a foundation model for K-lines) sampled as a one-day-ahead variance forecaster"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Ajai Upadhyaya" }]
+
+# Kept out of research/ and quant/ on purpose: torch is ~300 MB and neither
+# the droplet's images nor the research battery need it. This project only
+# WRITES research/experiments/EXP-K01/forecasts.csv; quant/ scores that file
+# without importing anything from here.
+dependencies = [
+    "torch>=2.4",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "pyarrow>=15.0",
+    "einops==0.8.1",          # upstream requirements.txt pins this
+    "huggingface_hub>=0.33,<1.0",
+    "safetensors>=0.4",
+    "tqdm>=4.66",
+    "click>=8.1",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.3"]
+
+[project.scripts]
+ohcamel-kronos = "ohcamel_kronos.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ohcamel_kronos", "vendor/kronos_model"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["vendor"]   # upstream code, kept byte-for-byte apart from the import patch
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

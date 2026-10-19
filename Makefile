@@ -88,7 +88,7 @@ export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 # repository root would make make declare that target up to date and run
 # nothing -- and for those two the symptom is a server that silently never
 # starts. run-live, serve and demo were the three that had been left out.
-.PHONY: all build run run-live serve demo stress backtest backtest-crisis options garch test research-test research-reproduce bench coverage fmt clean deps doctor \
+.PHONY: kronos-test kronos-forecast kronos-score all build run run-live serve demo stress backtest backtest-crisis options garch test research-test research-reproduce bench coverage fmt clean deps doctor \
         check-counts \
         quant-deps quant-dev quant-test quant-live-test quant-web quant-serve quant-image hostd-image kernels-dev \
         deploy-build deploy-up deploy-down deploy-verify deploy-logs deploy-smoke
@@ -207,6 +207,26 @@ research-test:
 	cd research && uv sync --locked --extra dev && uv run pytest && uv run ruff check
 	cd research && uv run ohcamel-research fixtures doctor --fixtures $(CURDIR)/fixtures/history
 	cd research && uv run ohcamel-research fixtures doctor --fixtures $(CURDIR)/fixtures/macro
+
+# EXP-K01 (research/experiments/EXP-K01): Kronos, a foundation model for
+# candlesticks, sampled as a one-day variance forecaster and scored against the
+# volatility league's incumbents. Three targets, because torch lives ONLY in
+# research/kronos (its own uv project) and never reaches quant/ or an image.
+#
+#   kronos-test      the sampler's hermetic suite (tiny random models, seconds)
+#   kronos-forecast  the full run: downloads the pinned weights, ~1.5 h on CPU,
+#                    rewrites forecasts.csv -- REVIEW THE DIFF, it is a
+#                    published input, exactly like docs/crisis/*.csv
+#   kronos-score     scores the committed forecasts with P2's own QLIKE, DM and
+#                    MCS and rewrites report.md + results.json (no torch)
+kronos-test:
+	cd research/kronos && uv sync --locked --extra dev && uv run pytest -q && uv run ruff check
+
+kronos-forecast:
+	cd research/kronos && uv sync --locked && uv run ohcamel-kronos forecast
+
+kronos-score:
+	cd quant && uv run --frozen python -m ohcamel_quant.models.kronos_k01 --write
 
 # Every committed battery manifest, re-derived: `ohcamel-research battery run`
 # for every experiment, on a temporary copy of HEAD's research/, fixtures/ and
