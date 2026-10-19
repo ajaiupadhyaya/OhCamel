@@ -1,20 +1,32 @@
 {
   "experiment": "EXP-K01",
-  "written_at": "2026-10-19T19:39:26+00:00",
-  "config_sha256": "b5ef06e312e151cec39993ff2fd0e2527619daab1f98decafd6f2c309199a93a",
+  "written_at": "2026-10-19T23:12:02+00:00",
+  "config_sha256": "8176f7768c1cbecedb06a01f62175349cab15ee1235ec897b1ae52ce1d3c006f",
   "fixtures_sha256": {
-    "SPY": "e990ccc2a544be237c848d16266d98a55f9331a808e1c4f1a4dbab1b5e08ccdf",
+    "SPY": "cf3ed91057d36f6c0d7dc8f3f0c7879c7ab625ca3545412a746c157cd68e3362",
     "QQQ": "5d78eb20bf6e3a73ebeffd8186d469491c756b53f3c034f4fadaee991d8426df",
     "IWM": "70aa6d6e720e177470f95a534d9d5b452b4f63667de959079cb315dae33285b9",
     "TLT": "d749ba34cfb00152e8b0ed1edd02ef0f3e6d44897a6fe238e577593daa38c7f2",
     "IEF": "0bf9a7a3d1d25b1ec974a7cb222f59fa72470636d12211d09800edc3f61958ac",
     "GLD": "31beca4f61e43af3c42bf465cd2186e722c1a9fc2617c7b7103a982be9c223e1",
-    "XLE": "31dc0650e488cd494033cdc54d290f99bffd8f9606e46f550bc309e4352dbae1",
+    "XLE": "d0ce764c3550bc4ee30775cac7f6f5d5a979fcf02b8246967e2349c3c59bd66c",
     "XLF": "6103519a7d0d0ca8fb48e3f040ebdc413398267af38b1be48b8fd289c68ba9e3",
-    "XLK": "1d13c4cb9db16c7871ea5c8e9e98d6d71318b642687ff7f61b9d1e20af8bc7cf"
+    "XLK": "1b388989c8795632978829c1bc8b161d4c5fef7a954580c16ea394b9808a407e"
   },
   "rows": 2079,
   "complete": true,
+  "amendments": [
+    {
+      "at": "2026-10-19T23:12:02+00:00",
+      "symbols": [
+        "SPY",
+        "XLE",
+        "XLK"
+      ],
+      "reason": "fixtures repaired 2026-10-19: XLE/XLK 2-for-1 split (2025-12-05) and SPY 2026-02-02 bad low; see fixtures/archive/2026-10-19-vendor-defects",
+      "previous_config_sha256": "b5ef06e312e151cec39993ff2fd0e2527619daab1f98decafd6f2c309199a93a"
+    }
+  ],
   "torch": "2.14.1",
   "python": "3.13.12",
   "machine": "arm64",

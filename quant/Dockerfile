@@ -154,8 +154,9 @@ RUN /opt/kronos/.venv/bin/python -c "\
 from huggingface_hub import snapshot_download as s; \
 s('NeoQuasar/Kronos-small', revision='901c26c1332695a2a8f243eb2f37243a37bea320', local_dir='/opt/kronos/weights/Kronos-small', token=False); \
 s('NeoQuasar/Kronos-Tokenizer-base', revision='0e0117387f39004a9016484a186a908917e22426', local_dir='/opt/kronos/weights/Kronos-Tokenizer-base', token=False)" \
- && rm -rf /opt/kronos/weights/*/.cache \
- && find /opt/kronos/.venv/lib/python3.12/site-packages -path '*/torch/test*' -prune -exec rm -rf {} +
+ && rm -rf /opt/kronos/weights/*/.cache
+# No pruning of torch's tree: torch imports torch.testing at start-up (a '*/torch/test*' prune broke the
+# build-time forecast below, which is what it is there to catch).
 
 # ---------------------------------------------------------------------------
 # Stage 4 -- runtime
