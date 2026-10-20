@@ -26,6 +26,7 @@ from ..factors import alpha158 as A
 from ..factors import expr as E
 from ..factors import workbench as W
 from ..jobs.artifacts import ArtifactSpec
+from .kronos_shadow import bars_of
 
 KIND = "factors.screen"
 LEDGER = Path(W.__file__).resolve().parents[4] / "research/experiments/FACTORS/trials.jsonl"
@@ -58,7 +59,7 @@ def load_fields(ctx: Any, names: list[str], end: pd.Timestamp) -> tuple[dict[str
     for t in names:
         ctx.check_cancelled()
         try:
-            df = ctx.market.ohlcv(t, end=end.date()).data.dropna()
+            df = bars_of(ctx, t, end=end.date()).data.dropna()   # warehouse first: never 560 vendor calls
         except DataUnavailable:
             missing.append(t)
             continue

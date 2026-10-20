@@ -5,6 +5,12 @@ sitting in committed data for months. ``data/fixtures.py`` repaired both at load
 that read the files directly scored against a fictitious crash. This job looks for that class of defect in
 the warehouse and in the committed fixtures every night, and names each finding (ticker, session, check).
 
+**What fails the lamp.** A defect in the committed fixtures, at any date: they are static, published inputs.
+In the warehouse, only a defect in the last ``RECENT_BDAYS`` business days: a new bar that arrived wrong.
+Older warehouse findings are listed, marked ``gating = False``. The first run on the droplet showed why:
+across ~560 single stocks since 1990, a 25% intraday range or a split-shaped gap is often real (APA fell 54% on
+2020-03-09; the 2010 flash crash printed absurd lows), and a lamp that is always red is a lamp nobody reads.
+
 It repairs nothing. A finding is a lamp, not a fix: changing a published input is the owner's decision, and
 the archive under ``fixtures/archive/`` is how a repair is recorded. Checks, all on the series' own evidence:
 
@@ -32,7 +38,9 @@ KIND = "ops.data_integrity"
 SPLIT_RATIOS = F._SPLIT_RATIOS
 JUMP = 0.40
 STALE_BDAYS = 5
-COLUMNS = ["source", "ticker", "date", "check", "detail"]
+RECENT_BDAYS = 10
+SERIOUS = ("split_suspect", "bad_print", "nonpositive", "calendar")
+COLUMNS = ["source", "ticker", "date", "check", "detail", "gating"]
 
 
 def check_bars(df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -121,12 +129,25 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         df.index = pd.DatetimeIndex(df.index)
         checked["fixtures"] += 1
         rows += [{"source": "fixtures", "ticker": p.stem, **f} for f in check_bars(df)]
+    newest = max(last.values()) if last else None
+    recent = (newest - pd.offsets.BDay(int(params.get("recent_bdays", RECENT_BDAYS)))) if newest is not None else None
+
+    def gates(r: dict[str, Any]) -> bool:
+        if r["check"] not in SERIOUS:
+            return False
+        if r["source"] == "fixtures" or not r["date"]:
+            return True
+        return recent is not None and pd.Timestamp(r["date"]) >= recent
+
+    rows = [{**r, "gating": gates(r)} for r in rows]
     findings = pd.DataFrame(rows, columns=COLUMNS)
-    serious = findings[findings["check"].isin(["split_suspect", "bad_print", "nonpositive", "calendar"])]
+    serious = findings[findings["gating"].astype(bool)]
     by = findings.groupby("check").size().to_dict() if len(findings) else {}
+    history = int((findings["check"].isin(SERIOUS) & ~findings["gating"].astype(bool)).sum()) if len(findings) else 0
     summary = pd.DataFrame([{"warehouse_series": checked["warehouse"], "fixture_series": checked["fixtures"],
                              **{f"n_{k}": int(by.get(k, 0)) for k in ("split_suspect", "jump", "bad_print",
-                                                                      "nonpositive", "calendar", "stale")}}])
+                                                                      "nonpositive", "calendar", "stale")},
+                             "n_gating": len(serious), "n_history": history}])
     n = checked["warehouse"] + checked["fixtures"]
     if n == 0:
         return ArtifactSpec(tables={"findings": findings, "summary": summary}, data_asof=None, provenance=[],
@@ -136,9 +157,9 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         verdict, detail = "FAIL", (f"{len(serious)} DEFECT(S) ON {serious['ticker'].nunique()} SERIES · "
                                    f"{', '.join(names)}{' …' if serious['ticker'].nunique() > 6 else ''}")
     else:
-        verdict, detail = "PASS", (f"{n} SERIES CLEAN · {int(by.get('jump', 0))} LARGE MOVES SHOWN · "
+        verdict, detail = "PASS", (f"{n} SERIES · NO NEW DEFECTS · {history} HISTORICAL FINDINGS LISTED · "
                                    f"{int(by.get('stale', 0))} STALE")
-    asof = max(last.values()).date().isoformat() if last else None
+    asof = newest.date().isoformat() if newest is not None else None
     return ArtifactSpec(tables={"findings": findings, "summary": summary}, data_asof=asof,
                         provenance=[{"source": "warehouse:bars_daily+fixtures/history", "fetched_at": "",
                                      "detail": {"series": n}}],

@@ -32,6 +32,7 @@ class Truncated:
 
     def __init__(self, market, end):
         self.m, self.end = market, pd.Timestamp(end)
+        self.settings = market.settings          # offline: no warehouse, so bars_of falls back to here
 
     def ohlcv(self, t, start=None, end=None):
         d = self.m.ohlcv(t).data
@@ -80,15 +81,20 @@ def test_a_made_forecast_is_never_rewritten_and_is_scored_once_realised(market, 
     nights = pd.bdate_range("2026-04-01", "2026-05-01")
     spec = None
     for night in nights:                                   # the worker, night after night, carrying the ledger
+        monkeypatch.setattr(KS, "now_utc", lambda n=night: pd.Timestamp(n, tz="UTC").to_pydatetime()
+                            + pd.Timedelta(hours=23))     # 19:00 New York: after this close, before the next
         spec = KS.run({"tickers": ["SPY", "TLT"]}, ctx(Truncated(market, night)))
         publish_artifact(db, root, KS.KIND, spec.tables, verdict=spec.verdict,
                          finished=pd.Timestamp(night, tz="UTC").to_pydatetime() + pd.Timedelta(hours=22))
     first = spec.tables["ledger"]
+    monkeypatch.setattr(KS, "now_utc", lambda: pd.Timestamp(nights[-1], tz="UTC").to_pydatetime()
+                        + pd.Timedelta(hours=23, minutes=30))
     again = KS.run({"tickers": ["SPY", "TLT"]}, ctx(Truncated(market, nights[-1])))
     pd.testing.assert_frame_equal(again.tables["ledger"][first.columns].reset_index(drop=True),
                                   first.reset_index(drop=True))           # a rerun adds nothing, rewrites nothing
     real = spec.tables["realised"]
     assert not real.empty and (pd.to_datetime(real["target"]) > pd.to_datetime(real["asof"])).all()
+    assert not real["late"].any()                          # every replayed night forecast before the next close
     sc = spec.tables["scores"].set_index(["symbol", "model"])
     assert sc.loc[("SPY", "kronos"), "qlike"] > sc.loc[("SPY", "ewma"), "qlike"]   # 3x EWMA loses to EWMA
     pooled = spec.tables["pooled"].iloc[0]
@@ -108,11 +114,11 @@ def test_realise_matches_each_forecast_to_the_first_bar_after_it():
     idx = pd.to_datetime(["2026-01-02", "2026-01-05", "2026-01-06"])
     rets = {"A": pd.Series([0.01, -0.02, 0.03], index=idx)}
     led = pd.DataFrame([{"symbol": "A", "asof": "2026-01-02", "model": "ewma", "var": 1e-4, "q05": np.nan,
-                         "made_at": "x"},
+                         "made_at": "2026-01-02T23:00:00+00:00"},
                         {"symbol": "A", "asof": "2026-01-06", "model": "ewma", "var": 1e-4, "q05": np.nan,
-                         "made_at": "x"}])
+                         "made_at": "2026-01-06T23:00:00+00:00"}])
     real = KS.realise(led, rets)
-    assert real[["asof", "target", "r"]].values.tolist() == [["2026-01-02", "2026-01-05", -0.02]]   # holiday-proof
+    assert real[["asof", "target", "r", "late"]].values.tolist() == [["2026-01-02", "2026-01-05", -0.02, False]]
 
 
 # ------------------------------------------------------------------ ops.data_integrity
@@ -205,3 +211,62 @@ def test_screen_job_on_the_fixture_etfs(market, tmp_path):
     spec = FS.run({"ledger": str(led), "library": "none"}, ctx(market))
     assert spec.verdict == "DESCRIPTIVE ONLY" and "1 TRIALS" in spec.verdict_detail and is_label(spec.verdict_detail)
     assert spec.tables["screens"].iloc[0]["lint_ok"]
+
+
+def test_old_warehouse_findings_are_listed_but_only_new_ones_fail_the_lamp(monkeypatch):
+    """The droplet's first run: 228 'defects' on single stocks since 1990, nearly all real crash-day gaps and
+    flash-crash prints. Only a defect in the last RECENT_BDAYS of warehouse data, or anywhere in the committed
+    fixtures, fails the lamp."""
+    idx = pd.bdate_range("2026-01-01", periods=200)
+    c = np.linspace(100, 110, len(idx))
+    clean = pd.DataFrame({"open": c, "high": c * 1.01, "low": c * 0.99, "close": c, "adj_close": c, "volume": 1e6},
+                         index=idx)
+    old = clean.copy()
+    old.iloc[20, old.columns.get_loc("low")] = 10.0           # months ago
+    new = clean.copy()
+    new.iloc[-3, new.columns.get_loc("low")] = 10.0           # this week
+
+    class WH:
+        def execute(self, *a, **k):
+            raise AssertionError("not used")
+
+    frames = {"OLD": old, "NEW": new, "OK": clean}
+
+    from ohcamel_quant.warehouse import readers
+    monkeypatch.setattr(readers, "ohlcv", lambda con, t, *a, **k: _DS(frames[t]))
+    c2 = ctx(None, {"tickers": ["OLD", "OK"]})
+    c2._warehouse = WH()
+    spec = DI.run({"tickers": ["OLD", "OK"]}, c2)
+    f = spec.tables["findings"]
+    assert spec.verdict == "PASS" and (f.loc[f["ticker"] == "OLD", "gating"] == False).all()  # noqa: E712
+    assert "1 HISTORICAL" in spec.verdict_detail and is_label(spec.verdict_detail)
+    spec = DI.run({"tickers": ["OLD", "NEW"]}, c2)
+    assert spec.verdict == "FAIL" and "NEW" in spec.verdict_detail and "OLD" not in spec.verdict_detail
+
+
+def test_a_forecast_made_after_its_session_closed_is_kept_but_never_scored():
+    """The droplet's first run forecast 'the session after 10-16' at 23:51 UTC on 10-19, after 10-19 had
+    closed (a pre-close Yahoo cache). Such a row is late: in the ledger, never in a score."""
+    idx = pd.to_datetime(["2026-10-16", "2026-10-19"])
+    rets = {"A": pd.Series([0.01, -0.02], index=idx)}
+    led = pd.DataFrame([{"symbol": "A", "asof": "2026-10-16", "model": m, "var": 1e-4, "q05": np.nan, "made_at": t}
+                        for m in ("kronos", "ewma")
+                        for t in ("2026-10-16T23:00:00+00:00",)] +
+                       [{"symbol": "B", "asof": "2026-10-16", "model": m, "var": 1e-4, "q05": np.nan,
+                         "made_at": "2026-10-19T23:51:00+00:00"} for m in ("kronos", "ewma")])
+    rets["B"] = rets["A"]
+    real = KS.realise(led, rets)
+    assert real.set_index("symbol")["late"].groupby(level=0).all().to_dict() == {"A": False, "B": True}
+    assert KS.target_close_utc("2026-10-19") == pd.Timestamp("2026-10-19 20:00", tz="UTC")   # EDT
+    sc, _ = KS.score(real)
+    assert set(sc["symbol"]) == {"A"}
+
+
+def test_bars_come_from_the_warehouse_when_there_is_one(market, monkeypatch):
+    from ohcamel_quant.warehouse import readers
+    seen = []
+    monkeypatch.setattr(readers, "ohlcv", lambda con, t, *a, **k: seen.append(t) or _DS(market.ohlcv(t).data))
+    c = ctx(market)
+    c._warehouse = object()
+    KS.bars_of(c, "SPY")
+    assert seen == ["SPY"]

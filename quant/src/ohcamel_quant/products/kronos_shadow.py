@@ -9,7 +9,10 @@ is the cleanest test a model can have. Each night, after the daily bars are in, 
    AFTER the last bar, so it is made before that session exists.
 2. **Never rewrite.** The ledger is carried forward from the previous artifact. A (symbol, asof) already in it
    is never replaced, so a rerun cannot improve a forecast after the fact.
-3. **Score.** A row is realised once the next bar arrives. Its loss is P2's QLIKE against the squared return,
+3. **Score.** A row is realised once the next bar arrives, and scored only if it was made before that session's
+   16:00 New York close. A row made later is ``late``: kept, never scored. The first droplet run read its bars
+   from a Yahoo cache filled before the close and forecast a session that had already closed. Bars now come
+   from the warehouse first, and the ``late`` rule makes "made before it existed" a check rather than a hope. Its loss is P2's QLIKE against the squared return,
    aggregated per name and pooled, with Kronos against EWMA by the one-sided DM K01 used.
 
 It sizes nothing and reaches no desk. The verdict is DESCRIPTIVE ONLY and always names EXP-K01's FAIL.
@@ -38,9 +41,15 @@ from .io import previous_artifact
 KIND = "kronos.shadow"
 MODELS = ("kronos", "garch", "gjr", "egarch", "ewma")
 LEDGER_COLUMNS = ["symbol", "asof", "model", "var", "q05", "made_at"]
+CLOSE_NY = (16, 0)
 MIN_POOLED_DAYS = 20
 CONFIG = K.repo_root() / "research/experiments/EXP-K01/config.yaml"
 DB_PATH: Path | None = None   # tests point this at their own jobs.sqlite
+
+
+def now_utc() -> datetime:
+    """The made_at clock (a function, so a test can replay nights)."""
+    return datetime.now(UTC)
 
 
 def kronos_python() -> Path | None:
@@ -49,6 +58,23 @@ def kronos_python() -> Path | None:
     env = os.environ.get("OHCAMEL_KRONOS_PYTHON")
     cands = [Path(env)] if env else [K.repo_root() / "research/kronos/.venv/bin/python"]
     return next((p for p in cands if p.exists()), None)
+
+
+def bars_of(ctx: Any, ticker: str, end: Any = None) -> Any:
+    """Daily bars from the warehouse (written by the 18:30 ingest, so tonight's close is in it); the market
+    facade only when there is no warehouse (offline tests, a fresh host). Never a vendor's intraday cache
+    when the warehouse has the bar."""
+    try:
+        from ..warehouse import readers
+
+        return readers.ohlcv(ctx.warehouse, ticker, end=end)
+    except DataUnavailable:
+        return ctx.market.ohlcv(ticker, end=end)
+
+
+def target_close_utc(target: str) -> pd.Timestamp:
+    t = pd.Timestamp(target).tz_localize("America/New_York") + pd.Timedelta(hours=CLOSE_NY[0], minutes=CLOSE_NY[1])
+    return t.tz_convert("UTC")
 
 
 def adjusted_bars(ds_frame: pd.DataFrame) -> pd.DataFrame:
@@ -103,13 +129,18 @@ def realise(ledger: pd.DataFrame, rets: dict[str, pd.Series]) -> pd.DataFrame:
             pos = idx.searchsorted(pd.Timestamp(asof), side="right")
             if pos >= len(idx):
                 continue                                    # tomorrow has not happened yet
-            out.append(h.assign(target=idx[pos].date().isoformat(), r=float(r.iloc[pos])))
-    return pd.concat(out, ignore_index=True) if out else pd.DataFrame(columns=[*LEDGER_COLUMNS, "target", "r"])
+            target = idx[pos].date().isoformat()
+            late = pd.to_datetime(h["made_at"], utc=True) >= target_close_utc(target)
+            out.append(h.assign(target=target, r=float(r.iloc[pos]), late=late.to_numpy()))
+    cols = [*LEDGER_COLUMNS, "target", "r", "late"]
+    return pd.concat(out, ignore_index=True)[cols] if out else pd.DataFrame(columns=cols)
 
 
 def score(real: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Per-name mean QLIKE per model on days where EVERY model forecast (a fair comparison), and the pooled
     Kronos-vs-EWMA DM over the cross-name daily mean of the loss differential."""
+    if not real.empty:
+        real = real[~real["late"].astype(bool)]          # made after its session closed: never scored
     if real.empty:
         return pd.DataFrame(columns=["symbol", "model", "n", "qlike", "rank"]), {"days": 0}
     real = real.assign(qlike=V.qlike(real["r"] ** 2, real["var"]))
@@ -134,13 +165,13 @@ def score(real: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
 def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     cfg = K.load_config(CONFIG)
     names = [str(t).upper() for t in params.get("tickers", cfg["names"])]
-    made_at = datetime.now(UTC).isoformat(timespec="seconds")
+    made_at = now_utc().isoformat(timespec="seconds")
     notes: list[str] = []
     bars, rets, prov, skipped = {}, {}, [], []
     for t in names:
         ctx.check_cancelled()
         try:
-            ds = ctx.market.ohlcv(t)
+            ds = bars_of(ctx, t)
         except DataUnavailable as e:
             skipped.append({"ticker": t, "reason": str(e)})
             continue
