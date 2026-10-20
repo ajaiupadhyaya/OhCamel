@@ -42,10 +42,20 @@ updates:
   # the builder silently stops receiving the base image's security updates,
   # which is a worse failure than a floating tag, not a better one.
   - package-ecosystem: "docker"
-    # deploy/ (the engine and research images), quant/ (the quant app's image,
-    # which also builds the Rust kernels wheel) and native/hostd/.
+    directory: "/deploy"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deploy"
+  # The same, for the two other Dockerfiles: quant/ (the quant app's image,
+  # which also builds the Rust kernels wheel) and native/hostd/. A separate
+  # entry so deploy/'s keeps the shape deploy/test/ci_hygiene_test.sh pins.
+  - package-ecosystem: "docker"
     directories:
-      - "/deploy"
       - "/quant"
       - "/native/hostd"
     schedule:
