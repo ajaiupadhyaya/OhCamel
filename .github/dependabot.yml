@@ -36,13 +36,18 @@ updates:
     # (`ci:`, `deploy:`, `docs:`, ...). A workflow's own dependencies are CI.
     commit-message:
       prefix: "ci"
-  # The base images in deploy/Dockerfile and deploy/research.Dockerfile, both
-  # of which are pinned to an exact version AND a digest -- which is what makes
+  # The base images in every Dockerfile, each
+  # pinned to a digest (deploy/ to an exact version as well) -- which is what makes
   # this entry the only way they ever move. Without it, pinning a digest means
   # the builder silently stops receiving the base image's security updates,
   # which is a worse failure than a floating tag, not a better one.
   - package-ecosystem: "docker"
-    directory: "/deploy"
+    # deploy/ (the engine and research images), quant/ (the quant app's image,
+    # which also builds the Rust kernels wheel) and native/hostd/.
+    directories:
+      - "/deploy"
+      - "/quant"
+      - "/native/hostd"
     schedule:
       interval: "weekly"
       day: "monday"
