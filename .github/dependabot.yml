@@ -53,6 +53,18 @@ updates:
     open-pull-requests-limit: 3
     commit-message:
       prefix: "deploy"
+    # Patch and digest updates only. A new Debian release, a new OCaml or a new
+    # Python is a toolchain change: CI pins ocaml-compiler 5.2.1 and Python
+    # 3.12 itself, and research/'s experiments hash the environment they ran
+    # in, so the image moving alone would put it out of step with both. Those
+    # move deliberately, in one commit with CI, not as a background PR.
+    ignore:
+      - dependency-name: "debian"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "ocaml/opam"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   # The same, for the two other Dockerfiles: quant/ (the quant app's image,
   # which also builds the Rust kernels wheel) and native/hostd/. A separate
   # entry so deploy/'s keeps the shape deploy/test/ci_hygiene_test.sh pins.
@@ -68,15 +80,13 @@ updates:
     open-pull-requests-limit: 3
     commit-message:
       prefix: "deploy"
-    # Patch and digest updates only. A new Debian release, a new OCaml or a new
-    # Python is a toolchain change: CI pins ocaml-compiler 5.2.1 and Python
-    # 3.12 itself, and research/'s experiments hash the environment they ran
-    # in, so the image moving alone would put it out of step with both. Those
-    # move deliberately, in one commit with CI, not as a background PR.
+    # Patch and digest updates only, as above. Rust moves with
+    # native/rust-toolchain.toml (test_kernels_docker holds the two equal),
+    # Python with CI's 3.12, Node with CI's setup-node 22.
     ignore:
-      - dependency-name: "debian"
-        update-types: ["version-update:semver-major"]
+      - dependency-name: "rust"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: "python"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
-      - dependency-name: "ocaml/opam"
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
