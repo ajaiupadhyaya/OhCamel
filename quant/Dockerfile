@@ -36,7 +36,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1 -- the single-page app
 # ---------------------------------------------------------------------------
-FROM node:22-slim AS web
+FROM node:22-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS web
 WORKDIR /src/quant/web
 # playwright is a devDependency for the screenshot script only; its browsers
 # are never wanted in a build.
@@ -59,14 +59,14 @@ RUN npm run build \
 # workflow need no separate artifact: the image is self-contained. The
 # toolchain is copied out of the rust image into a python:3.12-slim stage --
 # the runtime's own base -- so the wheel links against the runtime's glibc.
-# native/rust-toolchain.toml pins 1.80 (rustup fetches it if the copied
-# toolchain is another 1.80.x). --locked: exactly native/Cargo.lock. If the
+# native/rust-toolchain.toml pins 1.85 (rustup fetches it if the copied
+# toolchain is another 1.85.x). --locked: exactly native/Cargo.lock. If the
 # wheel does not build, this stage fails and so does the image: production
 # never runs without the kernels (the runtime sets OHCAMEL_QUANT_KERNELS=rust,
 # under which the dispatcher refuses to start without them).
-FROM rust:1.80-slim AS rust-toolchain
+FROM rust:1.85-slim@sha256:9f841bbe9e7d8e37ceb96ed907265a3a0df7f44e3737d0b100e7907a679acb36 AS rust-toolchain
 
-FROM python:3.12-slim AS kernels
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS kernels
 # The same maturin quant/uv.lock resolves for the dev extra
 # (quant/tests/test_kernels_docker.py holds the two equal).
 ARG MATURIN_VERSION=1.15.0
@@ -88,7 +88,7 @@ RUN maturin build --release --locked -m kernels/Cargo.toml -i python3.12 \
 # ---------------------------------------------------------------------------
 # Stage 3 -- the Python environment, resolved from quant/uv.lock
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS pydeps
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS pydeps
 # Pinned to the version research.Dockerfile and CI use.
 COPY --from=ghcr.io/astral-sh/uv:0.10.4 /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 \
@@ -135,7 +135,7 @@ RUN find .venv/lib/python3.12/site-packages \
 # never enters quant's venv, and the read-only container loads the weights by
 # path (OHCAMEL_KRONOS_WEIGHTS) without touching the Hub or its cache.
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS kronos
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS kronos
 COPY --from=ghcr.io/astral-sh/uv:0.10.4 /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -161,7 +161,7 @@ s('NeoQuasar/Kronos-Tokenizer-base', revision='0e0117387f39004a9016484a186a90891
 # ---------------------------------------------------------------------------
 # Stage 4 -- runtime
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS runtime
 
 # tzdata: the lockfile installs Python's tzdata package only on Windows and
 # Emscripten, so zoneinfo (pandas, market-hours logic) needs the system
