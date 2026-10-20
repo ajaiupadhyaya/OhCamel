@@ -8,7 +8,7 @@
 # /sys/fs/cgroup, which docker-compose.yml mounts read-only.
 #
 # The FROM is pinned to a tag and a digest, as deploy/'s Dockerfiles are, so
-# the build is reproducible and Dependabot can move it.
+# the build is reproducible.
 FROM rust:1.85-alpine@sha256:4333721398de61f53ccbe53b0b855bcc4bb49e55828e8f652d7a8ac33dd0c118 AS build
 RUN apk add --no-cache musl-dev
 WORKDIR /src

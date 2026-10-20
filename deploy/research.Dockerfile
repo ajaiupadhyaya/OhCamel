@@ -26,7 +26,7 @@
 # both moving parts explicit. That matters here because the apt line below
 # installs git, ca-certificates and tzdata from whatever release this image is,
 # and because the build-time zone check and `uv sync --locked` both run against
-# it. Dependabot moves this line (.github/dependabot.yml); a bump that also
+# it. It moves by hand, like deploy/Dockerfile's pins; a bump that also
 # changes the Debian release is a bump to read rather than merge.
 FROM python:3.12.14-slim@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9 AS research
 

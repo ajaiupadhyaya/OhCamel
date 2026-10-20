@@ -318,9 +318,8 @@ jobs:
       # deploy/research.Dockerfile until Task 10's image job, and a build
       # accepts a floating tag as readily as a digest -- so without this the
       # requirement held only for as long as the three lines happened to read
-      # that way, while Dependabot (.github/dependabot.yml) is precisely the
-      # process that rewrites them, weekly, as pull requests that would
-      # otherwise merge green with the digest dropped.
+      # that way, and any hand edit that bumps one is precisely the change
+      # that could otherwise merge green with the digest dropped.
       #
       # awk over the FROM lines and nothing else, in this job's character.
       # What it has to know about a Dockerfile: `FROM` is case-insensitive; a
@@ -331,13 +330,11 @@ jobs:
       # switched off, not fixed); and a heredoc (`RUN <<EOF` ... `EOF`) is data,
       # not instructions -- deploy/research.Dockerfile carries Python whose
       # `from` lines sit at column zero inside one. A digest without a tag
-      # fails too: the tag is the part a reader can act on and what Dependabot
-      # identifies the image by, and without it a digest bump is a bump of
+      # fails too: the tag is the part a reader can act on, and without it a digest bump is a bump of
       # whatever `latest` means that week.
       #
       # Scope is deploy/ deliberately: quant/Dockerfile's floating FROM lines
-      # are compute Task 0.2 Step 2's, which publishes that image, and its pins
-      # land there with that step's Dependabot entry.
+      # are compute Task 0.2 Step 2's, which publishes that image.
       - name: FROM lines are pinned to a tag and a digest (deploy/)
         run: |
           files=(deploy/Dockerfile deploy/research.Dockerfile)
@@ -399,7 +396,7 @@ jobs:
           fi
           printf '%s\n' "$report"
           if printf '%s\n' "$report" | grep -qE '^(unpinned|untagged) '; then
-            echo "a FROM line above is not pinned as image:tag@sha256:<digest> -- pin it (docker buildx imagetools inspect image:tag prints the digest) so the build is reproducible and Dependabot can move it"
+            echo "a FROM line above is not pinned as image:tag@sha256:<digest> -- pin it (docker buildx imagetools inspect image:tag prints the digest) so the build is reproducible and a bump names both"
             exit 1
           fi
 
