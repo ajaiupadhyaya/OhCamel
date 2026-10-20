@@ -55,7 +55,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PYTHONUNBUFFERED=1
 
 # uv, pinned to the version research-test's own CI job installs
-# (.github/workflows/ci.yml's astral-sh/setup-uv@v5 step) -- so a build here
+# (.github/workflows/ci.yml's astral-sh/setup-uv step) -- so a build here
 # and a research-test run in CI resolve the same lockfile the same way.
 # Copied from astral's own published image rather than `pip install uv`: no
 # extra Python dependency resolution for a tool that is not a dependency of

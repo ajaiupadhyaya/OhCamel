@@ -3,7 +3,7 @@
 #
 # What is NOT here, and why: the OCaml dependencies are resolved by opam from
 # dune-project, which Dependabot has no ecosystem for, and they are already
-# pinned by the switch CI sets up (ocaml/setup-ocaml@v3 with an explicit
+# pinned by the switch CI sets up (ocaml/setup-ocaml with an explicit
 # compiler) and by `opam install --deps-only` resolving against a lock nobody
 # floats. research/ is a uv project whose uv.lock CI refuses to run against a
 # drifted pyproject.toml (`--locked`, see the research-test job), so a version
@@ -20,10 +20,12 @@ updates:
   # workflows directory for this ecosystem, which is why the directory is "/"
   # and not "/.github/workflows".
   #
-  # These are the pinned-by-major references (actions/checkout@v4,
-  # ocaml/setup-ocaml@v3, astral-sh/setup-uv@v5, actions/upload-artifact@v4):
-  # a major tag is mutable, so what this entry actually buys is a PR when a
-  # NEW major is out, which is the change that breaks a workflow.
+  # Every reference is pinned to a full commit SHA with its release in a
+  # trailing comment (`actions/checkout@<sha> # v7.0.1`). A tag is mutable --
+  # whoever controls the action's repository can move it under a workflow that
+  # holds `packages: write` -- and a SHA is not. Dependabot reads the comment
+  # and moves the SHA and the comment together, so this entry is still how
+  # they move.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -51,3 +53,15 @@ updates:
     open-pull-requests-limit: 3
     commit-message:
       prefix: "deploy"
+    # Patch and digest updates only. A new Debian release, a new OCaml or a new
+    # Python is a toolchain change: CI pins ocaml-compiler 5.2.1 and Python
+    # 3.12 itself, and research/'s experiments hash the environment they ran
+    # in, so the image moving alone would put it out of step with both. Those
+    # move deliberately, in one commit with CI, not as a background PR.
+    ignore:
+      - dependency-name: "debian"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "ocaml/opam"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
