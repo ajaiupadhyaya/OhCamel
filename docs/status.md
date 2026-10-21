@@ -1,6 +1,6 @@
 # OhCamel — state of the project
 
-*As of 2026-10-08, against `ship/harden`. This is the document to read first when coming back to the repository
+*As of 2026-10-21 (the deployed state below was read off the droplet that day); the rest as of 2026-10-08, against `ship/harden`. This is the document to read first when coming back to the repository
 after time away, and the one to update when the facts in it change.*
 
 It is an inventory: what exists, where it runs, what is deployed, what it will not do, what was cut, and what
@@ -27,9 +27,8 @@ the `demo` compose profile). The live engine runs the paper desk on the live hos
 | Cost | $24/month, metered hourly, capped |
 | Proxy / TLS | Caddy, Let's Encrypt, HTTP→HTTPS 308, HSTS, a CSP measured per route. Only Caddy has a host port |
 | DNS | Porkbun: A records `ohcamel` and `live.ohcamel` on the owner's domain |
-| **Deployed — public** | **`64a75b3`** (Stage 1 of autonomous paper trading: the worker now runs `signals.daily`, `signals.overlay` and `desk.report`; `signals-init` set the signals volume to `10001:10001 2775`), 2026-10-12 15:03 ET, by `deploy/deploy.sh --sha 64a75b3 --public-only`; smoke 20 passed, 0 failed, 4 skipped. The first production overlay (`overlay-1.json`, scale 1.0) was written at 15:03 ET |
-| **Deployed — live** | **`23e739b`** still: the `--live` deploy of `64a75b3` is the owner's next step (the agent's live deploy was refused by its permission classifier on 2026-10-12 16:11 ET). Until it runs, the live engine ignores the signals volume (its book has no `signals` block) and serves no `exposure_scale` |
-| Not deployed | The live host: `64a75b3` waits for `deploy/deploy.sh --sha 64a75b3 --live` outside 09:25–16:10 New York |
+| **Deployed — both hosts** | **`0dfae1f`** (the droplet's own research: `kronos.shadow`, `factors.screen`, `ops.data_integrity`), deployed 2026-10-19 20:58 ET with `--live`; the pre-deploy journal copy is `/var/backups/ohcamel/pre-deploy-20261020T005821Z-0dfae1f1cd7b.db`. Read back 2026-10-21: every OhCamel container healthy, `/api/ops` reports `0dfae1f`, 0 failed jobs over 7 days, the integrity sweep PASS (572 series, no new defects, 1 stale), public smoke 18 passed with 4 skipped (the one fail, the build-sha check, needs the run on the droplet) |
+| Not deployed | Nothing: `main` and both hosts are at `0dfae1f` |
 
 **Data on the droplet (2026-10-08).** The warehouse backfill ran through the queue. `ingest.universes` finished,
 and `ingest.bars_daily` filled 563 keys to as-of 2026-10-07 in 322 cpu-s at 233 MB peak. The factors are as of
@@ -117,6 +116,16 @@ absent one reads 1.0. A document the opening auction's window refuses (before 19
 the first pass after 19:00; nothing is sized before the venue's clock has answered; the adjust pass holds while the
 overlay is stale and acts on governor moves.
 
+**State on 2026-10-21.** The live book runs the full roster: `(trading enabled)`, 23 `(sizing incubation)` cells in its
+`signals` block, `incubation_cap 0.60`. The desk reads `enabled`, kill switch `clear`, overlay 1.0 (governor 1.0).
+Every session from 2026-09-14 to 2026-10-20 closed flat; the **first fills came on 2026-10-21**: 10 fills, five
+positions (SPY, IWM, EWJ and LQD long, EEM short), about 5 % of the $1M paper equity gross, venue and graph
+quantities equal, nothing unmanaged. Two departures from the plan, both the owner's to settle: the cap went to 0.60
+without the three canary sessions at 0.10, and the book's `alerts` block has `(enabled false)` and
+`(kill_switch_enabled false)`, where the canary step called for alerts on and the switch armed on
+`(book-cap var-cap dd-cap)`. The engine's `/api/health` reads `healthy: false` because six thin ETFs (BIL, DBA,
+IEI, SHY, SIZE, VGK) had gone minutes without an IEX print, not because a feed failed.
+
 **Stop rules and the record scoring:** Stage 3, not yet built. **Intraday strategies:** Stage 2, not yet built.
 
 **Limits.** Incubation records are not evidence of edge. Per-strategy orders are not netted. The overlay is
@@ -155,9 +164,11 @@ From the Ship spec (`superpowers/specs/2026-10-05-the-ship-design.md` §2); each
 
 ## What the owner holds
 
-- **Root step:** `install -d -m 0770 -o 10001 -g ohcamel /var/backups/ohcamel`, then
-  `systemctl enable --now ohcamel-backup.timer ohcamel-watch.timer` (O12). This unblocks backups and the live
-  deploy.
+- **Root step, half done:** `/var/backups/ohcamel` exists and holds the pre-deploy journal copies; the timers do
+  not (`systemctl is-enabled ohcamel-backup.timer ohcamel-watch.timer` answers `not-found` on 2026-10-21), so there
+  are no nightly backups and no watch. Install and `systemctl enable --now` both (O12).
+- **The desk's safety settings:** alerts and the kill switch are off in the live book, and the cap sits at 0.60
+  without the canary sessions (see *Autonomous trading*).
 - **EXP-Q01:** the I-Q01-7 dollar-volume sign was recorded as −1, the default, on 2026-10-07, when the owner
   skipped the question. It is the owner's to confirm before the freeze, because changing it later is a new
   experiment.
@@ -165,8 +176,8 @@ From the Ship spec (`superpowers/specs/2026-10-05-the-ship-design.md` §2); each
   misses 09:00 New York.
 - **Engine bridge** (O-7): whether the public site shows the paper book's positions
   (`OHCAMEL_QUANT_ENGINE_URL`). It is off.
-- **The live book.** `book.sexp` is never edited by the agent. Merging SPY/TLT and the `signals` block from
-  `book.example.sexp`, any `(sizing live)` and `(trading enabled)` remain the owner's (see *The engine*, below).
+- **The live book.** `book.sexp` is never edited by the agent. The owner has merged the `signals` block and set
+  `(trading enabled)`; any `(sizing live)` and the `alerts` block remain the owner's (see *The engine*, below).
 - Accounts and money: the basic-auth password, the Alpaca, FRED and GitHub accounts, DNS, and every spending
   decision.
 
@@ -580,24 +591,19 @@ recorded), and the deployment design.
 ## Next (engine)
 
 The engine's remaining depth (finish-plan Stages 2A–6) is cut by the Ship spec; see *Cut*, above. What is left on
-the engine side is the owner's: the root step that unblocks the live deploy, and the live book's contents.
+the engine side is the owner's: the backup and watch timers, and the live book's alerts and cap (below).
 
 ## What the owner must do on the live host
 
-No task may touch the owner's `book.sexp`, so none of this happens by itself:
+No task may touch the owner's `book.sexp`, so none of this happens by itself. Done by 2026-10-21: the `signals`
+block (23 incubation cells), `(trading enabled)`, the `--live` deploy. Still open:
 
-- **Add SPY and TLT to the live book.** Merge the SPY and TLT positions and the `signals` block (which
-  registers `exp_a01_spy` and `exp_a01_tlt`, both `(sizing advisory)`) from `book.example.sexp` into the
-  owner's own `book.sexp` by hand. Copying the example over it would discard what the live book holds.
-- **Leave both strategies `advisory`.** EXP-A01's status is `fail`, so R6 refuses to size either signal
-  whatever `book.sexp` says.
-- **Before promoting either one,** raise `max_order_notional` in the book's `desk` block to at least that
-  strategy's largest target order, and set `(trading enabled)` in the same block. Without it the live desk
-  previews and places nothing.
-- **Redeploy with the `live` profile** after the root step above, so `ohcamel-research` runs; its first
-  post-close run (00:16 UTC at the earliest) is the first real signal in the project, shown on the engine's
-  `/research` as `advisory` with its reason.
-
+- **Arm the alerts and the kill switch** in the book's `alerts` block (`(enabled true)`,
+  `(kill_switch_enabled true)`, `(kill_switch_trips_on (book-cap var-cap dd-cap))`), then restart `ohcamel-live`
+  outside 09:25–16:10 New York.
+- **Decide the cap:** keep `incubation_cap 0.60`, or drop to 0.10 for three sessions as the plan had it.
+- **Install the backup and watch timers** (*What the owner holds*, above).
+- **Promoting to `(sizing live)`** stays the owner's alone, and needs `status: pass` (R6).
 
 ## Operating it
 
