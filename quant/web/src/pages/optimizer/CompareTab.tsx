@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { DataTable, NumberField, Panel, SegmentedControl, Toggle, type Column } from "../../components";
 import { CoefChart } from "../../charts/CoefChart";
 import { XYChart, type XYSeries } from "../../charts/XYChart";
-import { Note, Verdict } from "../../design";
+import { Verdict } from "../../design";
 import { fmtDate, fmtNum, fmtPct } from "../../lib/format";
 import { useApiPost } from "../../lib/query";
 import { COMPARE_DEFAULT, compareBody, shallowEqualJson, type CompareDraft } from "./config";
@@ -46,7 +46,6 @@ export function CompareTab({ enabled }: { enabled: boolean }) {
         title={
           <>
             Walk-forward · setup
-            <Note n={4} to="walkforward-opt" />
           </>
         }
         actions={

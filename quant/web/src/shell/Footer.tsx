@@ -1,4 +1,4 @@
-/** The footer: a double rule, the build, the data sources, Methodology and Ledger. */
+/** The footer: a double rule, the build, the data sources and the Ledger. */
 import { Link } from "react-router-dom";
 import { useOps } from "./ops";
 
@@ -14,7 +14,6 @@ export function Footer() {
       </span>
       <span className="oc-footer-sources">SOURCES {SOURCES}</span>
       <span className="oc-footer-links">
-        <Link to="/methodology">METHODOLOGY</Link>
         <Link to="/ledger">LEDGER</Link>
       </span>
     </footer>

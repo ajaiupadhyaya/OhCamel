@@ -6,7 +6,6 @@
 import { useMemo, useState, type CSSProperties } from "react";
 import { DataTable, Panel, SegmentedControl, StatGrid, StatTile, type Column } from "../../components";
 import { XYChart } from "../../charts/XYChart";
-import { Note } from "../../design";
 import { fmtDate, fmtNum, fmtPct, fmtSci, fmtSignedPct } from "../../lib/format";
 import { INFO } from "./info";
 import { Check, KV, Readline, expiryLabel, type useDensity, type useSurface } from "./shared";
@@ -22,7 +21,6 @@ export function DensityTab({ q, surface }: { q: ReturnType<typeof useDensity>; s
         title={
           <>
             {d ? `Density · ${expiryLabel({ expiry: d.expiry, dte: d.dte })}` : "Density"}
-            <Note n={1} to="density" />
           </>
         }
         query={q}

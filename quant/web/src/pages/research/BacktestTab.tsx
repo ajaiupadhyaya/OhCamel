@@ -9,7 +9,6 @@ import type { UseQueryResult } from "@tanstack/react-query";
 import { DataTable, InfoTip, Panel, Toggle, type Column } from "../../components";
 import { HeatmapChart } from "../../charts/UPlot";
 import { XYChart, type XYSeries } from "../../charts/XYChart";
-import { Note } from "../../design";
 import type { ApiError } from "../../lib/api";
 import { fmtDate, fmtMultiple, fmtNum, fmtPct } from "../../lib/format";
 import { backtestVerdict } from "./derive";
@@ -31,7 +30,6 @@ export function BacktestTab({ q }: { q: Q }) {
         title={
           <>
             Verdict · single run
-            <Note n={3} to="sharpe-inference" />
           </>
         }
         skeletonHeight={300}

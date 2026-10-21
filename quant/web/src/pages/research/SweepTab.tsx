@@ -10,7 +10,7 @@ import { useEffect, useMemo, useState } from "react";
 import { DataTable, Field, Panel, SegmentedControl, type Column } from "../../components";
 import { HeatmapChart } from "../../charts/UPlot";
 import { XYChart, type XYSeries } from "../../charts/XYChart";
-import { Absent, Note } from "../../design";
+import { Absent } from "../../design";
 import { fmtDate, fmtMultiple, fmtNum, fmtPct } from "../../lib/format";
 import { useApiPost } from "../../lib/query";
 import { humanize, sweepableParams, type BaseBody } from "./config";
@@ -51,7 +51,6 @@ export function SweepTab({ spec, base, maxCombos, onData }: { spec: StrategySpec
         title={
           <>
             Sweep · grid
-            <Note n={4} to="pbo" />
           </>
         }
         actions={
@@ -106,7 +105,6 @@ export function SweepTab({ spec, base, maxCombos, onData }: { spec: StrategySpec
               title={
                 <>
                   DSR · luck bar
-                  <Note n={5} to="dsr" />
                 </>
               }
               info={INFO.dsr}
@@ -119,7 +117,6 @@ export function SweepTab({ spec, base, maxCombos, onData }: { spec: StrategySpec
               title={
                 <>
                   SPA · vs buy-and-hold
-                  <Note n={6} to="bootstrap-spa" />
                 </>
               }
               info={INFO.spa}

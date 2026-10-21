@@ -12,7 +12,6 @@ import { useMemo } from "react";
 import { Link, useParams } from "react-router-dom";
 import { XYChart } from "../charts/XYChart";
 import { DataTable, HistogramChart, Page, Panel, SegmentedControl, StatGrid, StatTile, Toggle, useTabParam, type Column } from "../components";
-import { Note } from "../design";
 import { DataUnavailableError } from "../lib/api";
 import { fmtCompact, fmtDate, fmtNum, fmtPct, fmtSignedPct, signClass } from "../lib/format";
 import { useUniverses } from "../lib/market";
@@ -127,7 +126,6 @@ export default function Ticker() {
               title={
                 <>
                   RETURNS · SERVER
-                  <Note n={1} to="returns" />
                 </>
               }
               query={ov}
@@ -172,7 +170,6 @@ export default function Ticker() {
               title={
                 <>
                   REALIZED VOL · 21D 63D · ANN
-                  <Note n={2} to="realized-vol" />
                 </>
               }
               loading={hist.isLoading}

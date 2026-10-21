@@ -9,7 +9,6 @@ import { Panel, SegmentedControl, Select, Toggle } from "../../components";
 import type { ApiError } from "../../lib/api";
 import { useMediaQuery } from "../../lib/hooks";
 import { fmtNum, fmtPct } from "../../lib/format";
-import { Note } from "../../design";
 import { ChainTable, chainRows, type ChainView } from "./ChainTable";
 import { StrategyResults, Ticket, addLeg, buildPreset, type PresetId } from "./Strategy";
 import { Readline, expiryLabel, type useChain } from "./shared";
@@ -61,7 +60,6 @@ export function ChainTab({ chain, spread, setSpread, legs, setLegs, strategy, ru
           title={
             <>
               {c ? `Chain · ${expiryLabel({ expiry: c.slice.expiry, dte: c.slice.dte, settlement: c.slice.settlement })}` : "Chain"}
-              <Note n={1} to="implied-vol" />
             </>
           }
           query={chain}

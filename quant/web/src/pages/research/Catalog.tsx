@@ -1,9 +1,8 @@
 /**
  * The strategy catalog: every rule from GET /api/backtest/strategies as one ruled radio table
  * grouped by family (name, source, default universe size, rebalance), then the selected
- * rule's citation and terms. Explanations live in Methodology behind the Note marker.
+ * rule's citation and terms.
  */
-import { Note } from "../../design";
 import { fmtNum } from "../../lib/format";
 import { CATEGORY_LABEL, CATEGORY_ORDER, shortCite } from "./info";
 import { Readline } from "./shared";
@@ -43,13 +42,12 @@ export function Catalog({ strategies, selected, onSelect }: { strategies: Strate
   );
 }
 
-/** The selected rule: its citation (with the Methodology note) and its terms. */
+/** The selected rule: its citation and its terms. */
 export function StrategyFoot({ spec }: { spec: StrategySpec }) {
   return (
     <div className="sl-strat-foot">
       <div className="sl-cite">
         {spec.citation}
-        <Note n={1} to="strategies" />
       </div>
       <Readline
         items={[

@@ -7,7 +7,6 @@
 import { useState } from "react";
 import { DataTable, Panel, SegmentedControl, StatGrid, StatTile, Toggle, type Column } from "../../components";
 import { XYChart } from "../../charts/XYChart";
-import { Note } from "../../design";
 import { fmtDate, fmtNum, fmtPct } from "../../lib/format";
 import { useApiQuery } from "../../lib/query";
 import { nberBands } from "./derive";
@@ -22,9 +21,9 @@ const RANGES = [
   { value: "2005", label: "2005–" },
 ] as const;
 const LIVE_ITEMS = [
-  { k: "P(NBER RECESSION · t+h) · PROBIT · 10Y−3M", note: "recession" },
-  { k: "+ NFCI · HAC STANDARD ERRORS · PSEUDO-R²", note: "recession" },
-  { k: "SAHM RULE · 3M AVG UNRATE − 12M LOW", note: "recession" },
+  { k: "P(NBER RECESSION · t+h) · PROBIT · 10Y−3M" },
+  { k: "+ NFCI · HAC STANDARD ERRORS · PSEUDO-R²" },
+  { k: "SAHM RULE · 3M AVG UNRATE − 12M LOW" },
 ];
 const HAC_INFO = { title: "Newey–West s.e.", text: "Heteroskedasticity- and autocorrelation-consistent standard error; overlapping horizons make plain errors too small.", reference: "Newey & West (1987), Econometrica 55(3)" };
 
@@ -74,7 +73,6 @@ export function RecessionTab() {
         title={
           <>
             P(RECESSION) · {h}M · AT TARGET MONTH
-            <Note n={1} to="recession" />
           </>
         }
         query={q}
@@ -99,7 +97,6 @@ export function RecessionTab() {
         title={
           <>
             SAHM RULE · PP
-            <Note n={2} to="recession" />
           </>
         }
         query={q}

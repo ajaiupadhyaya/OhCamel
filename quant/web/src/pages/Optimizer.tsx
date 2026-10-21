@@ -11,8 +11,7 @@
  * Light endpoints re-query as inputs change (debounced); the walk-forward backtest runs on
  * RUN. Deep link (from Portfolio):
  *   /optimize?tickers=SPY,TLT&weights=0.6,0.4&start=YYYY-MM-DD&end=YYYY-MM-DD&from=portfolio
- * Paper Tape: ruled cells, caps labels, mono numbers; narrative lives in Methodology behind
- * Note markers. Page-local components live in ./optimizer/ (CSS prefix `op-`).
+ * Paper Tape: ruled cells, caps labels, mono numbers. Page-local components live in ./optimizer/ (CSS prefix `op-`).
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";

@@ -6,7 +6,6 @@
 import { useMemo, useState } from "react";
 import { BarChart, DataTable, Panel, SegmentedControl, StatGrid, StatTile, type Column } from "../../components";
 import { XYChart } from "../../charts/XYChart";
-import { Note } from "../../design";
 import { fmtDate, fmtNum, fmtPct } from "../../lib/format";
 import { useApiQuery } from "../../lib/query";
 import { inversions, tenorTicks, type Inversion } from "./derive";
@@ -30,9 +29,9 @@ const LINE_TENORS: [number, string][] = [
 ];
 const PC_NAME = ["LEVEL", "SLOPE", "CURV"];
 const LIVE_ITEMS = [
-  { k: "YIELDS · MONTH END · 3M 2Y 10Y 30Y", note: "curve" },
-  { k: "SLOPES · 2S10S · 3M10Y · 5S30S · INVERSIONS", note: "recession" },
-  { k: "PCA · LOADINGS · VARIANCE SHARE · FACTOR LEVELS", note: "yield-pca" },
+  { k: "YIELDS · MONTH END · 3M 2Y 10Y 30Y" },
+  { k: "SLOPES · 2S10S · 3M10Y · 5S30S · INVERSIONS" },
+  { k: "PCA · LOADINGS · VARIANCE SHARE · FACTOR LEVELS" },
 ];
 
 export function HistoryTab() {
@@ -84,7 +83,6 @@ export function HistoryTab() {
         title={
           <>
             YIELDS · MONTH END
-            <Note n={1} to="curve" />
           </>
         }
         query={q}
@@ -99,7 +97,6 @@ export function HistoryTab() {
           title={
             <>
               SLOPES · BP
-              <Note n={2} to="recession" />
             </>
           }
           query={q}
@@ -120,7 +117,6 @@ export function HistoryTab() {
           title={
             <>
               PCA · LOADINGS
-              <Note n={3} to="yield-pca" />
             </>
           }
           query={q}

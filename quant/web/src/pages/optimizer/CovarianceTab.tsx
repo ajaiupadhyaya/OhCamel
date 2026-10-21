@@ -8,7 +8,6 @@ import { useMemo, useState } from "react";
 import { DataTable, HeatmapChart, Select, StatGrid, StatTile, type Column } from "../../components";
 import { DendroChart } from "../../charts/DendroChart";
 import { XYChart } from "../../charts/XYChart";
-import { Note } from "../../design";
 import { fmtNum, fmtPct } from "../../lib/format";
 import { useDebounced } from "../../lib/hooks";
 import { useApiPost } from "../../lib/query";
@@ -34,7 +33,6 @@ export function CovarianceTab({ enabled }: { enabled: boolean }) {
         title={
           <>
             Σ · {COV_CODE[cfg.cov]}
-            <Note n={4} to="covariance" />
           </>
         }
         asOf={asOf}

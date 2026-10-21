@@ -662,9 +662,6 @@
 .op-sym {
   text-transform: none;
 }
-.op-layout .note {
-  margin-left: 3px;
-}
 .op-rail .oc-daterange-inputs {
   width: 100%;
 }

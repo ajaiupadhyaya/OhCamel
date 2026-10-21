@@ -6,7 +6,7 @@
 import { useMemo } from "react";
 import { DataTable, Panel, type Column } from "../../components";
 import { XYChart, type XYSeries } from "../../charts/XYChart";
-import { Absent, Note } from "../../design";
+import { Absent } from "../../design";
 import { fmtCurrency, fmtDate, fmtNum, fmtPct } from "../../lib/format";
 import { focusWindow } from "./derive";
 import { INFO } from "./info";
@@ -154,7 +154,6 @@ export function StrategyResults({ q }: { q: UseQueryResult<StrategyOut, ApiError
       title={
         <>
           {q.data ? `Position · P&L to ${fmtDate(q.data.horizon.expiry).toUpperCase()} · ${fmtNum(q.data.horizon.days, 0)}D` : "Position"}
-          <Note n={1} to="strategy-payoff" />
         </>
       }
       query={q}

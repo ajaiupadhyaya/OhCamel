@@ -8,7 +8,6 @@ import { useMemo, useState } from "react";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { DataTable, Toggle, type Column } from "../../components";
 import { MapChart, type MapCurve, type MapPoint } from "../../charts/MapChart";
-import { Note } from "../../design";
 import type { ApiError } from "../../lib/api";
 import { fmtNum, fmtPct } from "../../lib/format";
 import { frontierSlices } from "./derive";
@@ -32,7 +31,6 @@ export function FrontierTab({ q, opt, current }: { q: UseQueryResult<FrontierOut
         title={
           <>
             Frontier · ex-ante
-            <Note n={4} to="mean-variance" />
           </>
         }
         asOf={asOf}

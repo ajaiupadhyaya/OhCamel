@@ -7,7 +7,6 @@
 import { useState } from "react";
 import { NumberField, Panel, SegmentedControl, StatGrid, StatTile } from "../../components";
 import { XYChart } from "../../charts/XYChart";
-import { Note } from "../../design";
 import { fmtDate, fmtNum, fmtPctPoints } from "../../lib/format";
 import { useDebounced } from "../../lib/hooks";
 import { useApiQuery } from "../../lib/query";
@@ -22,9 +21,9 @@ const STARTS = [
   { value: "all", label: "ALL" },
 ] as const;
 const LIVE_ITEMS = [
-  { k: "TAYLOR 1993 · BALANCED APPROACH · VS EFFR", note: "taylor" },
-  { k: "POLICY GAP · RULE − EFFR · PP", note: "taylor" },
-  { k: "INPUTS · CORE PCE Y/Y · CBO OUTPUT GAP", note: "taylor" },
+  { k: "TAYLOR 1993 · BALANCED APPROACH · VS EFFR" },
+  { k: "POLICY GAP · RULE − EFFR · PP" },
+  { k: "INPUTS · CORE PCE Y/Y · CBO OUTPUT GAP" },
 ];
 
 export function PolicyTab() {
@@ -89,7 +88,6 @@ export function PolicyTab() {
         title={
           <>
             RULES VS EFFR · %
-            <Note n={1} to="taylor" />
           </>
         }
         query={q}

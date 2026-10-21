@@ -9,7 +9,7 @@
  */
 import { ArtifactCell, BarChart, DataTable, Section } from "../../components";
 import { XYChart } from "../../charts/XYChart";
-import { Absent, Note } from "../../design";
+import { Absent } from "../../design";
 import { KINDS, type Manifest } from "../../lib/artifacts";
 import { fmtCurrency, fmtDate, fmtMultiple, fmtNum, fmtPct } from "../../lib/format";
 import { GATE_CODE, growthCurve, paramsText, type LabGate } from "./derive";
@@ -35,7 +35,6 @@ export function ModelsView() {
       title={
         <>
           Models · P5 · EXP-Q01
-          <Note n={1} to="p5-exp-q01" />
         </>
       }
     >

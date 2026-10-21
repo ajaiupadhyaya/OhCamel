@@ -107,9 +107,7 @@ const KERNEL_COLS: Column<KernelRow>[] = [
     key: "name",
     label: "KERNEL",
     render: (r) => (
-      <a className="num cp-kernel" href={`/methodology#kernel-${r.name}`}>
-        {r.name}
-      </a>
+      <span className="num cp-kernel">{r.name}</span>
     ),
   },
   { key: "engine", label: "HERE", hideBelow: 600, render: (r) => <span className="num">{r.engine ? r.engine.toUpperCase() : "—"}</span> },

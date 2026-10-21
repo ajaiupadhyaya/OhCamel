@@ -6,7 +6,7 @@ const resolves = (url: string) => ROUTES.some((r) => matchPath({ path: r.path, e
 
 describe("routes (Review Focus 4)", () => {
   it("keeps every old bookmark", () => {
-    for (const u of ["/", "/deck", "/portfolio", "/optimize", "/research", "/options", "/macro", "/company/AAPL", "/ticker/SPY", "/engine", "/methodology"])
+    for (const u of ["/", "/deck", "/portfolio", "/optimize", "/research", "/options", "/macro", "/company/AAPL", "/ticker/SPY", "/engine"])
       expect(resolves(u), u).toBe(true);
   });
   it("adds the new pages", () => {

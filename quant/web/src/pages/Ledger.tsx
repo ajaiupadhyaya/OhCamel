@@ -23,8 +23,8 @@ const COLUMNS: Column<Row>[] = [
   { key: "n", label: "NO.", width: 48, render: (r) => <span className="num">{String(r.n).padStart(2, "0")}</span> },
   { key: "item", label: "ITEM", width: "30%", wrap: true, render: (r) => (
       <>
-        {r.methodology ? (
-          <Link className="lg-item lg-link" to={`/methodology#${r.methodology}`}>{r.item}</Link>
+        {r.to ? (
+          <Link className="lg-item lg-link" to={r.to}>{r.item}</Link>
         ) : (
           <span className="lg-item">{r.item}</span>
         )}

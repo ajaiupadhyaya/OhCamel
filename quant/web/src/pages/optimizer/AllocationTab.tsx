@@ -10,11 +10,10 @@ import { Link } from "react-router-dom";
 import { DataTable, Panel, StatGrid, StatTile, type Column } from "../../components";
 import { CoefChart } from "../../charts/CoefChart";
 import { DendroChart } from "../../charts/DendroChart";
-import { Note } from "../../design";
 import type { ApiError } from "../../lib/api";
 import { fmtNum, fmtPct } from "../../lib/format";
 import { currentInUniverse } from "./config";
-import { COV_CODE, INFO, METHOD_CODE, METHOD_DOC, RETURNS_CODE } from "./info";
+import { COV_CODE, INFO, METHOD_CODE, RETURNS_CODE } from "./info";
 import { BarCell, QPanel, Readline, sortBy, sym, useOpt } from "./shared";
 import type { OptimizeOut } from "./types";
 
@@ -70,7 +69,6 @@ export function AllocationTab({ q, onApply, applied }: { q: UseQueryResult<Optim
                 title={
                   <>
                     {d.result.method === "hrp" ? "HRP" : "HERC"} tree · {String(d.result.params.linkage ?? "").toUpperCase()}
-                    <Note n={4} to={METHOD_DOC[d.result.method]} />
                   </>
                 }
                 asOf={d.universe.end}

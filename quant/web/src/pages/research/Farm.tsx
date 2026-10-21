@@ -8,7 +8,7 @@
  */
 import { useState } from "react";
 import { ArtifactCell, DataTable, Section, type Column } from "../../components";
-import { Absent, Note } from "../../design";
+import { Absent } from "../../design";
 import { KINDS, type Manifest } from "../../lib/artifacts";
 import { fmtDate, fmtNum, fmtPct } from "../../lib/format";
 import { useApiQuery } from "../../lib/query";
@@ -27,7 +27,6 @@ export function FarmView() {
       title={
         <>
           Strategy farm · P4
-          <Note n={1} to="p4-strategy-farm" />
         </>
       }
     >

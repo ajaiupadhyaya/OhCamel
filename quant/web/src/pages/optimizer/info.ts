@@ -326,20 +326,6 @@ export const LINKAGE_INFO: Record<LinkageName, string> = {
   complete: "Complete: clusters merge at their farthest pair (tight clusters).",
 };
 
-/** The Methodology entry (anchor on /methodology) behind each method's Note marker. */
-export const METHOD_DOC: Record<MethodName, string> = {
-  equal_weight: "naive",
-  inverse_volatility: "naive",
-  min_variance: "mean-variance",
-  max_sharpe: "mean-variance",
-  mean_variance: "mean-variance",
-  risk_parity: "risk-parity",
-  hrp: "hrp",
-  herc: "hrp",
-  max_diversification: "risk-parity",
-  min_cvar: "min-cvar",
-};
-
 /** Caps code per method, for table rows and chart labels. */
 export const METHOD_CODE: Record<MethodName, string> = {
   equal_weight: "1/N",

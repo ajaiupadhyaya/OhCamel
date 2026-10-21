@@ -1,12 +1,11 @@
 /**
  * The input rail for the selected rule: its parameters (defaulted to the paper's), the
  * universe, the window and benchmark, execution and costs. Edits are a draft; RUN commits
- * them. Caps labels only; definitions live in Methodology behind the Note markers and in the
+ * them. Caps labels only; definitions live in the
  * metric InfoTips.
  */
 import type { ReactNode } from "react";
 import { DateRangePicker, Field, NumberField, ParamForm, SegmentedControl, Select, Slider, TickerChips, TickerInput, Toggle } from "../../components";
-import { Note } from "../../design";
 import { fmtPct } from "../../lib/format";
 import type { Portfolio } from "../../lib/portfolio";
 import { humanize, type LabConfig } from "./config";
@@ -63,7 +62,6 @@ export function SetupRail({ spec, catalog, cfg, set, avail, portfolio, onReset }
         title={
           <>
             Execution
-            <Note n={2} to="bt-engine" />
           </>
         }
       >

@@ -491,10 +491,6 @@
 .sl-sym {
   text-transform: none;
 }
-.sl-layout .note,
-.sl-products .note {
-  margin-left: 3px;
-}
 .sl-gate-line {
   margin: 0;
   font-size: var(--fs-xs);

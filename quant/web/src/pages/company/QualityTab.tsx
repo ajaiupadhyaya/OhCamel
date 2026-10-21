@@ -8,7 +8,6 @@
 import type { ReactNode } from "react";
 import { XYChart } from "../../charts/XYChart";
 import { DataTable, Panel, type Column } from "../../components";
-import { Note } from "../../design";
 import { EM_DASH, fmtNum, fmtPct } from "../../lib/format";
 import { ContributionBar, KV, ZoneTrack, useScores } from "./shared";
 import type { Altman, Component, PiotroskiSignal, Scores } from "./types";
@@ -76,7 +75,6 @@ export function QualityTab({ ticker }: { ticker: string }) {
           title={
             <>
               PIOTROSKI F{q.data && fy(q.data.piotroski.fiscal_years) ? ` · ${fy(q.data.piotroski.fiscal_years)}` : ""}
-              <Note n={1} to="piotroski" />
             </>
           }
           query={q}
@@ -91,7 +89,6 @@ export function QualityTab({ ticker }: { ticker: string }) {
             title={
               <>
                 ALTMAN Z · MANUFACTURERS{q.data?.altman_z.fiscal_year ? ` · FY${q.data.altman_z.fiscal_year.slice(2, 4)}` : ""}
-                <Note n={2} to="altman" />
               </>
             }
             query={q}
@@ -105,7 +102,6 @@ export function QualityTab({ ticker }: { ticker: string }) {
             title={
               <>
                 ALTMAN Z″ · NON-MANUFACTURERS{q.data?.altman_z2.fiscal_year ? ` · FY${q.data.altman_z2.fiscal_year.slice(2, 4)}` : ""}
-                <Note n={2} to="altman" />
               </>
             }
             query={q}
@@ -122,7 +118,6 @@ export function QualityTab({ ticker }: { ticker: string }) {
           title={
             <>
               BENEISH M{q.data && fy(q.data.beneish.fiscal_years) ? ` · ${fy(q.data.beneish.fiscal_years)}` : ""}
-              <Note n={3} to="beneish" />
             </>
           }
           query={q}
@@ -137,7 +132,6 @@ export function QualityTab({ ticker }: { ticker: string }) {
             title={
               <>
                 SLOAN ACCRUALS
-                <Note n={4} to="accruals-ohlson" />
               </>
             }
             query={q}
@@ -151,7 +145,6 @@ export function QualityTab({ ticker }: { ticker: string }) {
             title={
               <>
                 OHLSON O · P(FAIL 1Y)
-                <Note n={4} to="accruals-ohlson" />
               </>
             }
             query={q}

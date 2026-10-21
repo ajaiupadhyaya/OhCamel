@@ -8,7 +8,7 @@
  */
 import type { ReactNode } from "react";
 import { ArtifactCell, DataTable, Section, type Column } from "../../components";
-import { Absent, Note } from "../../design";
+import { Absent } from "../../design";
 import { KINDS, type Manifest } from "../../lib/artifacts";
 import { fmtDate, fmtNum, fmtPct } from "../../lib/format";
 import { useTable } from "../research/products";
@@ -26,7 +26,6 @@ export function ForecastsView({ ticker }: { ticker: string }) {
       title={
         <>
           Forecast league · P2
-          <Note n={1} to="p2-vol-league" />
         </>
       }
     >

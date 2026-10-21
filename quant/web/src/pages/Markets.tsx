@@ -5,7 +5,7 @@
  *  2. Every block is a Cell (<Panel query={q}>): loading, 503 DATA UNAVAILABLE, notes and the
  *     provenance line come from Panel; `asOf` goes in the header.
  *  3. Labels, not sentences: Archivo caps titles (`CURVE · UST PAR`), no subtitle or
- *     description strings, no question-shaped headers. Explanation lives in Methodology.
+ *     description strings, no question-shaped headers.
  *  4. Numbers only through lib/format, rendered in `.num` (Plex Mono, tabular). Gains ink with
  *     a "+", losses --signal (`signClass`, DataTable `color: "sign"`). No green.
  *  5. InfoTips only on metric labels (2S10S, 1D, YTD, VOL 1M, 52W RANGE, CORRELATION).

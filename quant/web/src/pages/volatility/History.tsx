@@ -7,7 +7,7 @@
  */
 import { ArtifactCell, DataTable, Section, type Column } from "../../components";
 import { XYChart } from "../../charts/XYChart";
-import { Absent, Note } from "../../design";
+import { Absent } from "../../design";
 import { KINDS, type Manifest } from "../../lib/artifacts";
 import { fmtDate, fmtNum, fmtPct } from "../../lib/format";
 import { useTable } from "../research/products";
@@ -21,7 +21,6 @@ export function HistoryView({ ticker }: { ticker: string }) {
       title={
         <>
           Surface history · P7
-          <Note n={1} to="p7-surface-history" />
         </>
       }
     >

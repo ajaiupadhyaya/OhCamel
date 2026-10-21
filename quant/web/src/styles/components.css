@@ -1555,24 +1555,6 @@
   background: transparent;
 }
 
-/* Note: a superscript footnote marker linking to Methodology. */
-.note {
-  font-family: var(--font-mono);
-  font-size: var(--fs-2xs);
-  font-weight: 500;
-  line-height: 0;
-  vertical-align: super;
-  padding-left: 1px;
-}
-.note a {
-  color: var(--ink);
-  text-decoration: none;
-}
-.note a:hover {
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
 /* Absent: a source with nothing yet. The stamp, the reason, the read it waits on. */
 .absent {
   display: flex;

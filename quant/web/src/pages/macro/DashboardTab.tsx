@@ -6,7 +6,6 @@
 import { useMemo } from "react";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { DataTable, Panel, Sparkline, StatGrid, StatTile, type Column } from "../../components";
-import { Note } from "../../design";
 import type { ApiError } from "../../lib/api";
 import { fmtDate, fmtNum } from "../../lib/format";
 import { CATEGORY_LABEL, INFO, TRANSFORM_LABEL } from "./info";
@@ -41,7 +40,6 @@ export function DashboardTab({ q, onExplore }: { q: UseQueryResult<Dashboard, Ap
         title={
           <>
             HEADLINE · FRED
-            <Note n={1} to="macro" />
           </>
         }
         query={q}

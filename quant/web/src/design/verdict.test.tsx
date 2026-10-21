@@ -1,8 +1,5 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
-import { ArtifactCell } from "../components/ArtifactCell";
 import { Verdict, verdictLabel } from "./Verdict";
 
 describe("verdictLabel (a verdict detail is a terse label)", () => {
@@ -20,15 +17,3 @@ describe("verdictLabel (a verdict detail is a terse label)", () => {
   });
 });
 
-describe("ArtifactCell note", () => {
-  it("a cell can footnote its methodology entry beside the title", () => {
-    const html = renderToStaticMarkup(
-      <QueryClientProvider client={new QueryClient()}>
-        <MemoryRouter>
-          <ArtifactCell title="MODELS" kind="models.xs_lgbm" note={{ n: 1, to: "p5-exp-q01" }} />
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
-    expect(html).toContain('href="/methodology#p5-exp-q01"');
-  });
-});

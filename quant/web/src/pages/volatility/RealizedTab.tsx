@@ -2,12 +2,12 @@
  * REALIZED (GET /api/options/realized/{ticker}; offline OK on committed OHLC + FRED VIX):
  * five estimators over the rolling window, today's reading by window, the Burghardt–Lane cone
  * (with implied ATM per expiry when a chain is live), and the volatility risk premium.
- * Narrative lives in Methodology (realized-vol); labels here are terse caps.
+ * Labels here are terse caps.
  */
 import { useMemo, type CSSProperties } from "react";
 import { DataTable, InfoTip, Panel, Section, SegmentedControl, Select, StatGrid, StatTile, TimeSeriesChart, type Column } from "../../components";
 import { XYChart, type XYSeries } from "../../charts/XYChart";
-import { Absent, Note } from "../../design";
+import { Absent } from "../../design";
 import { fmtNum, fmtPct } from "../../lib/format";
 import { frameColumn } from "../../lib/series";
 import { coneLines, signedParts } from "./derive";
@@ -31,7 +31,6 @@ export function RealizedTab({ q, window, setWindow, estimator, setEstimator, yea
         title={
           <>
             Realized · {window}D · ANN
-            <Note n={1} to="realized-vol" />
           </>
         }
         actions={
@@ -55,7 +54,6 @@ export function RealizedTab({ q, window, setWindow, estimator, setEstimator, yea
         title={
           <>
             Cone · {ESTIMATOR_SHORT[estimator]} · {years}Y
-            <Note n={2} to="realized-vol" />
           </>
         }
         actions={<Select<Estimator> ariaLabel="Cone estimator" value={estimator} onChange={setEstimator} options={ESTIMATORS.map((e) => ({ value: e, label: ESTIMATOR_LABEL[e].toUpperCase() }))} />}
@@ -74,7 +72,6 @@ export function RealizedTab({ q, window, setWindow, estimator, setEstimator, yea
         title={
           <>
             VRP · implied − realized
-            <Note n={3} to="realized-vol" />
           </>
         }
       >

@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { BarChart, DataTable, Field, NumberField, Panel, SegmentedControl, StatGrid, StatTile, Toggle, type Column } from "../../components";
 import { XYChart } from "../../charts/XYChart";
-import { Absent, Note } from "../../design";
+import { Absent } from "../../design";
 import { fmtCurrency, fmtDate, fmtNum, fmtPctPoints } from "../../lib/format";
 import { useApiPost, useApiQuery } from "../../lib/query";
 import { alignNumeric, tenorLabel } from "./derive";
@@ -105,7 +105,6 @@ export function BondsTab() {
             title={
               <>
                 PRICE · YIELD · RISK
-                <Note n={1} to="bonds" />
               </>
             }
             query={res}
@@ -130,7 +129,6 @@ export function BondsTab() {
           title={
             <>
               KEY-RATE DURATION
-              <Note n={2} to="bonds" />
             </>
           }
           query={res}
