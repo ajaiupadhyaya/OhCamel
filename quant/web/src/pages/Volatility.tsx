@@ -187,31 +187,31 @@ function Snapshot({ realized, surface, sel }: { realized: ReturnType<typeof useR
 }
 
 // ------------------------------------------------------------------ offline treatment
-const LIVE_COPY: Record<LiveTab, { title: string; items: { k: string }[] }> = {
+const LIVE_COPY: Record<LiveTab, { title: string; items: { k: string; note: string }[] }> = {
   surface: {
     title: "Surface",
     items: [
-      { k: "SMILE · SVI PER EXPIRY · BID–ASK" },
-      { k: "TERM · ATM · MODEL-FREE · 30D CONSTANT MATURITY" },
-      { k: "SKEW · RR · BF · 25Δ · 10Δ" },
-      { k: "SURFACE · 3-D · TOTAL VARIANCE IN T" },
-      { k: "ARBITRAGE · BUTTERFLY · CALENDAR" },
-      { k: "CARRY · PARITY F · r · q" },
+      { k: "SMILE · SVI PER EXPIRY · BID–ASK", note: "svi" },
+      { k: "TERM · ATM · MODEL-FREE · 30D CONSTANT MATURITY", note: "smile-metrics" },
+      { k: "SKEW · RR · BF · 25Δ · 10Δ", note: "smile-metrics" },
+      { k: "SURFACE · 3-D · TOTAL VARIANCE IN T", note: "svi" },
+      { k: "ARBITRAGE · BUTTERFLY · CALENDAR", note: "svi" },
+      { k: "CARRY · PARITY F · r · q", note: "implied-vol" },
     ],
   },
   density: {
     title: "Density",
     items: [
-      { k: "Q DENSITY · BREEDEN–LITZENBERGER · LOGNORMAL" },
-      { k: "P(MOVE) · Q" },
-      { k: "QUANTILES · MOMENTS · IMPLIED MOVE" },
+      { k: "Q DENSITY · BREEDEN–LITZENBERGER · LOGNORMAL", note: "density" },
+      { k: "P(MOVE) · Q", note: "density" },
+      { k: "QUANTILES · MOMENTS · IMPLIED MOVE", note: "density" },
     ],
   },
   chain: {
     title: "Chain",
     items: [
-      { k: "CHAIN · IV · VENDOR IV · GREEKS · OI · VOLUME" },
-      { k: "TICKET · ≤ 12 LEGS · P&L · BREAKEVENS · GREEKS" },
+      { k: "CHAIN · IV · VENDOR IV · GREEKS · OI · VOLUME", note: "implied-vol" },
+      { k: "TICKET · ≤ 12 LEGS · P&L · BREAKEVENS · GREEKS", note: "strategy-payoff" },
     ],
   },
 };

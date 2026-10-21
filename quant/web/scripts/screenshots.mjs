@@ -11,11 +11,11 @@ import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 
-const ROUTES = ["/", "/markets", "/risk", "/portfolio", "/optimize", "/optimize?tab=backtest", "/research", "/options", "/macro", "/company/AAPL", "/ticker/SPY", "/deck", "/system", "/compute", "/engine", "/ledger"];
+const ROUTES = ["/", "/markets", "/risk", "/portfolio", "/optimize", "/optimize?tab=backtest", "/research", "/options", "/macro", "/company/AAPL", "/ticker/SPY", "/deck", "/system", "/compute", "/engine", "/methodology", "/ledger"];
 
 // Paper Tape pages whose dense tables must keep one row height. Later P2 tasks add their routes.
 const RHYTHM_ROUTES = new Set(["/markets", "/risk", "/portfolio", "/optimize", "/research", "/options", "/macro", "/ticker/SPY", "/company/AAPL", "/engine", "/compute", "/system"]);
-// Not /ledger: its table is prose (ledger detail) whose rows wrap by design.
+// Not /methodology or /ledger: their tables are prose (sources, ledger detail) whose rows wrap by design.
 
 // Routes that need a step before the shot so a populated state is visible. Offline, the walk-forward
 // backtest has no 3M bill (no DGS3MO fixture) and reads INSUFFICIENT DATA; with the rail's MANUAL

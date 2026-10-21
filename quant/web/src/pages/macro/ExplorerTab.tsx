@@ -8,6 +8,7 @@ import { useMemo, useState } from "react";
 import { DataTable, Panel, SegmentedControl, Select, useTabParam, type Column } from "../../components";
 import { XYChart } from "../../charts/XYChart";
 import { alignSeries } from "../../charts/scales";
+import { Note } from "../../design";
 import { fmtDate, fmtNum } from "../../lib/format";
 import { useApiQuery } from "../../lib/query";
 import { seriesStyle } from "./derive";
@@ -111,6 +112,7 @@ export function ExplorerTab({ dashboard }: { dashboard?: Dashboard }) {
         title={
           <>
             SERIES · FRED
+            <Note n={1} to="macro" />
           </>
         }
         query={q}

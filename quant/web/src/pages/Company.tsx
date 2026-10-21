@@ -35,15 +35,15 @@ const TABS: TabItem<Tab>[] = [
 ];
 
 /** What the page computes when filings are available (shown in place of it when they are not). */
-export const COMPUTES: { k: string }[] = [
-  { k: "STATEMENTS · IS BS CF · 10Y · YOY" },
-  { k: "RATIOS · MARGINS ROIC LEVERAGE DUPONT CAGR" },
-  { k: "PIOTROSKI F · 9 TESTS" },
-  { k: "ALTMAN Z · Z″ · ZONES" },
-  { k: "BENEISH M · 8 INDICES" },
-  { k: "SLOAN ACCRUALS · OHLSON O" },
-  { k: "DCF · FCFF TWO-STAGE · SENSITIVITY" },
-  { k: "REVERSE DCF · IMPLIED GROWTH" },
+export const COMPUTES: { k: string; note: string }[] = [
+  { k: "STATEMENTS · IS BS CF · 10Y · YOY", note: "statements" },
+  { k: "RATIOS · MARGINS ROIC LEVERAGE DUPONT CAGR", note: "ratios" },
+  { k: "PIOTROSKI F · 9 TESTS", note: "piotroski" },
+  { k: "ALTMAN Z · Z″ · ZONES", note: "altman" },
+  { k: "BENEISH M · 8 INDICES", note: "beneish" },
+  { k: "SLOAN ACCRUALS · OHLSON O", note: "accruals-ohlson" },
+  { k: "DCF · FCFF TWO-STAGE · SENSITIVITY", note: "dcf" },
+  { k: "REVERSE DCF · IMPLIED GROWTH", note: "reverse-dcf" },
 ];
 
 export default function Company() {

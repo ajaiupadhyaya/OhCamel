@@ -7,7 +7,7 @@
 import { useMemo } from "react";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { DataTable, NumberField, Panel, SegmentedControl, Select, Slider, StatGrid, StatTile, type Column } from "../../components";
-import { Absent } from "../../design";
+import { Absent, Note } from "../../design";
 import type { ApiError } from "../../lib/api";
 import { fmtNum, fmtPct } from "../../lib/format";
 import { newViewId, validViews, type ViewDraft } from "./config";
@@ -43,6 +43,7 @@ export function BlackLittermanTab({ q }: { q: UseQueryResult<OptimizeOut, ApiErr
           title={
             <>
               Views · {validViews(cfg).filter((v) => v.confidence > 0).length}
+              <Note n={4} to="black-litterman" />
             </>
           }
         >

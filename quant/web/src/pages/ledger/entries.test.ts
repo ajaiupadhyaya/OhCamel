@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { KINDS } from "../../lib/artifacts";
-import { ROUTES } from "../../lib/routes";
-import { matchPath } from "react-router-dom";
+import { KERNEL_API } from "../methodology/compute";
+import { MODELS } from "../methodology/models";
 import { LEDGER, LEDGER_AS_OF, SECTION_ORDER } from "./entries";
 
 describe("Ledger entries", () => {
@@ -16,12 +16,9 @@ describe("Ledger entries", () => {
   it("gives no other row a kind", () => {
     for (const e of LEDGER.filter((e) => !PRODUCT.test(e.item))) expect(e.kind, e.item).toBeUndefined();
   });
-  it("links each product, and every row that has one, to a page that exists", () => {
-    for (const e of LEDGER.filter((e) => e.kind)) expect(e.to, e.item).toBeDefined();
-    for (const e of LEDGER.filter((e) => e.to)) {
-      const path = (e.to ?? "").split("?")[0];
-      expect(ROUTES.some((r) => matchPath({ path: r.path, end: true }, path)) || path === "/company", e.item).toBe(true);
-    }
+  it("points each product at its Methodology entry", () => {
+    const ids = new Set(MODELS.map((m) => m.id));
+    for (const e of LEDGER.filter((e) => e.kind)) expect(ids.has(e.methodology ?? ""), e.item).toBe(true);
   });
 });
 
@@ -29,7 +26,8 @@ describe("Ledger accuracy (re-dated 2026-10-08, Ship plan Lane H H2)", () => {
   it("is dated 2026-10-08", () => {
     expect(LEDGER_AS_OF).toBe("2026-10-08");
   });
-  it("counts ten kernels", () => {
+  it("counts the kernels the Methodology documents", () => {
+    expect(KERNEL_API).toHaveLength(10);
     expect(LEDGER.find((e) => e.item === "KERNELS")?.detail).toMatch(/^Ten Rust kernels/);
   });
   it("lists every cut of the Ship spec §2", () => {

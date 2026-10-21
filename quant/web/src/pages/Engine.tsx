@@ -5,9 +5,10 @@
  * docs/overview.md with its machine. GRAPH: an explanatory picture of a tick propagating through
  * the Incremental dependency graph (not live). Then the engine's live state via the read-only
  * bridge, GET /api/engine/{status,snapshot,history} (503 → INSUFFICIENT DATA, never stand-in
- * numbers).
+ * numbers). The narrative lives in Methodology (#engine-incremental), marked with a Note.
  */
 import { Page, Section, StatGrid, StatTile, Panel } from "../components";
+import { Note } from "../design";
 import { GraphDiagram } from "./engine/GraphDiagram";
 import { Kv, LIVE_HOST, LiveEngine } from "./engine/Live";
 import "./engine/engine.css";
@@ -36,6 +37,7 @@ export default function Engine() {
           title={
             <>
               ENGINE · SPEC
+              <Note n={1} to="engine-incremental" />
             </>
           }
         >
@@ -71,6 +73,7 @@ export default function Engine() {
         title={
           <>
             GRAPH · ONE TICK
+            <Note n={2} to="engine-incremental" />
           </>
         }
       >

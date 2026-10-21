@@ -1,7 +1,7 @@
 /**
  * Optimize — hand the current holdings to the Optimizer (/optimize) as its universe, current
  * weights as the start. Shows capital against 99% VaR share (POST /risk/decomposition): what
- * an optimizer would be fixing.
+ * an optimizer would be fixing. Method descriptions live in Methodology.
  */
 import { useMemo } from "react";
 import { Link } from "react-router-dom";

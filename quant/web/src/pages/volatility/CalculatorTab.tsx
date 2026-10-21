@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Field, NumberField, Panel, SegmentedControl } from "../../components";
 import { XYChart, type XYSeries } from "../../charts/XYChart";
-import { Absent } from "../../design";
+import { Absent, Note } from "../../design";
 import { isDataUnavailable } from "../../lib/api";
 import { fmtDate, fmtNum, fmtPct, fmtPctPoints, fmtSci } from "../../lib/format";
 import { useDebounced } from "../../lib/hooks";
@@ -110,6 +110,7 @@ function Calculator({ ticker, seed }: { ticker: string; seed: CalcSeed }) {
         title={
           <>
             Inputs · {ticker}
+            <Note n={1} to="bsm" />
           </>
         }
         asOf={seed.asOf}

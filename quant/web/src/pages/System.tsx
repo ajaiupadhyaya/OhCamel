@@ -2,6 +2,7 @@
  * System (/system): the index of the four back-office pages, each with a one-line mono status:
  *   COMPUTE  GET /api/ops (job counts) and GET /api/ops/host (CPU, memory)
  *   ENG      GET /api/engine/status (mode, feed; 503 → BRIDGE OFF / UNREACHABLE)
+ *   DOCS     the Methodology's own counts
  *   LEDGER   the Ledger's date and entry count
  * A read that fails says so; nothing is guessed.
  */
@@ -17,6 +18,8 @@ import { useApiQuery } from "../lib/query";
 import { useOps, type OpsOut } from "../shell/ops";
 import type { EngineStatus } from "./engine/types";
 import { LEDGER, LEDGER_AS_OF } from "./ledger/entries";
+import { KERNEL_API } from "./methodology/compute";
+import { MODELS } from "./methodology/models";
 import "./ledger/ledger.css";
 
 interface Row {
@@ -78,6 +81,12 @@ function rows(ops: Q<OpsOut>, host: Q<HostLite>, eng: Q<EngineStatus>): Row[] {
       title: "Live Engine",
       lamp: { state: e.lamp, label: "Engine" },
       status: e.text,
+    },
+    {
+      code: "DOCS",
+      to: "/methodology",
+      title: "Methodology",
+      status: `${fmtNum(MODELS.length, 0)} MODELS · ${fmtNum(KERNEL_API.length, 0)} KERNELS`,
     },
     {
       code: "LEDGER",

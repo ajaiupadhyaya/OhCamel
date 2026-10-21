@@ -169,7 +169,7 @@ export function FarmReport({ board, cells, names }: { board: FarmBoardRow[]; cel
 // ------------------------------------------------------------------ MODELS · P5
 export function ModelsCell() {
   return (
-    <ArtifactCell title="MODELS · EXP-Q01 · RANK IC" kind={KINDS.models} experiment="EXP-Q01" to="/research?view=models" go="RSCH">
+    <ArtifactCell title="MODELS · EXP-Q01 · RANK IC" kind={KINDS.models} experiment="EXP-Q01" note={{ n: 1, to: "p5-exp-q01" }} to="/research?view=models" go="RSCH">
       {(m) => (has(m, "holdout") ? <ModelsBody m={m} /> : null)}
     </ArtifactCell>
   );

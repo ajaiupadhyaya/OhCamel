@@ -9,6 +9,7 @@
  */
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { DataTable, InfoTip, NumberField, Panel, SegmentedControl, Slider, StatGrid, StatTile, Toggle, type Column } from "../../components";
+import { Note } from "../../design";
 import type { Info } from "../../lib/glossary";
 import { EM_DASH, fmtDate, fmtNum, fmtPct, fmtSignedPct } from "../../lib/format";
 import { INFO } from "./info";
@@ -119,6 +120,7 @@ export function DcfTab({ ticker }: { ticker: string }) {
         title={
           <>
             DCF · FCFF · TWO-STAGE
+            <Note n={1} to="dcf" />
           </>
         }
         query={base}
@@ -289,6 +291,7 @@ export function DcfTab({ ticker }: { ticker: string }) {
           title={
             <>
               VALUE / SHARE · FCFF · {years}Y
+              <Note n={1} to="dcf" />
             </>
           }
           query={run}
@@ -313,6 +316,7 @@ export function DcfTab({ ticker }: { ticker: string }) {
               title={
                 <>
                   REVERSE DCF · IMPLIED G
+                  <Note n={2} to="reverse-dcf" />
                 </>
               }
               notes={[]}

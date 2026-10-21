@@ -7,7 +7,7 @@
  */
 import type { CSSProperties, ReactNode } from "react";
 import { InfoTip, type InfoProp } from "../../components";
-import { Absent } from "../../design";
+import { Absent, Note } from "../../design";
 import { ApiError, isDataUnavailable } from "../../lib/api";
 import { EM_DASH, fmtCurrency, fmtNum, fmtPct } from "../../lib/format";
 import { useApiPost, useApiQuery } from "../../lib/query";
@@ -164,9 +164,9 @@ export function ContributionBar({ value, max }: { value: number | null | undefin
 /**
  * In place of the fundamentals when SEC EDGAR cannot be read (offline build, or not an SEC
  * filer): INSUFFICIENT DATA with the server's reason, then a ruled list of what the page
- * computes.
+ * computes, each with its Methodology note.
  */
-export function LiveOnly({ title, error, items, source }: { title: ReactNode; error: unknown; items: { k: string }[]; source: string }) {
+export function LiveOnly({ title, error, items, source }: { title: ReactNode; error: unknown; items: { k: string; note: string }[]; source: string }) {
   const reason = isDataUnavailable(error) ? "DATA UNAVAILABLE" : "SOURCE UNAVAILABLE";
   const detail = error instanceof ApiError ? error.detail : error instanceof Error ? error.message : null;
   return (
@@ -182,6 +182,7 @@ export function LiveOnly({ title, error, items, source }: { title: ReactNode; er
               <span className="co-live-n">{String(i + 1).padStart(2, "0")}</span>
               <span className="co-live-k">
                 {it.k}
+                <Note n={i + 1} to={it.note} />
               </span>
             </li>
           ))}

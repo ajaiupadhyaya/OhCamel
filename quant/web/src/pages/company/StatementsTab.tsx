@@ -6,6 +6,7 @@
  */
 import { Fragment, useMemo } from "react";
 import { Panel, SegmentedControl, Sparkline, Toggle, useTabParam } from "../../components";
+import { Note } from "../../design";
 import { EM_DASH, fmtNum, fmtPct, signClass } from "../../lib/format";
 import { Controls, Ctl, periodLabel, useStatements } from "./shared";
 import type { Period, StatementTable, Statements } from "./types";
@@ -60,6 +61,7 @@ export function StatementsTab({ ticker }: { ticker: string }) {
           title={
             <>
               {s.title} · {period === "annual" ? "FY" : period === "ttm" ? "TTM" : "QTR"}
+              {i === 0 && <Note n={1} to="statements" />}
             </>
           }
           query={q}

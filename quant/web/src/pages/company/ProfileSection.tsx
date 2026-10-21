@@ -2,6 +2,7 @@
 import { useMemo } from "react";
 import { XYChart } from "../../charts/XYChart";
 import { Panel, SegmentedControl, StatGrid, StatTile, useTabParam } from "../../components";
+import { Note } from "../../design";
 import { fmtCompact, fmtDate, fmtNum, fmtPct, fmtSignedPct } from "../../lib/format";
 import { useApiQuery } from "../../lib/query";
 import type { Envelope, FramePayload } from "../../lib/types";
@@ -29,6 +30,7 @@ export function ProfileSnapshot({ q }: { q: PQ }) {
         <>
           VALUATION · {p?.multiples_basis === "fy" ? "FY" : "TTM"}
           {p ? ` TO ${day(p.multiples_period_end)}` : ""}
+          <Note n={1} to="ratios" />
         </>
       }
       query={q}

@@ -7,7 +7,7 @@
 import { useMemo, useState } from "react";
 import { DataTable, Field, Panel, SegmentedControl, Toggle, type Column } from "../../components";
 import { XYChart, type XYSeries } from "../../charts/XYChart";
-import { Absent } from "../../design";
+import { Absent, Note } from "../../design";
 import { fmtDate, fmtPct } from "../../lib/format";
 import { useApiPost } from "../../lib/query";
 import { humanize, sweepableParams, type BaseBody } from "./config";
@@ -61,6 +61,7 @@ export function WalkForwardTab({ spec, base, maxCombos }: { spec: StrategySpec; 
         title={
           <>
             Walk-forward · setup
+            <Note n={4} to="wfo-costs" />
           </>
         }
         actions={

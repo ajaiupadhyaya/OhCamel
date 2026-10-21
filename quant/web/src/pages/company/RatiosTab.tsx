@@ -6,6 +6,7 @@
 import { useMemo } from "react";
 import { XYChart, type XYSeries } from "../../charts/XYChart";
 import { DataTable, Panel, SegmentedControl, StatGrid, StatTile, useTabParam, type Column } from "../../components";
+import { Note } from "../../design";
 import type { ValueFormat } from "../../charts/scales";
 import { fmtDate, fmtPct, fmtSignedPct } from "../../lib/format";
 import { INFO } from "./info";
@@ -74,11 +75,12 @@ export function RatiosTab({ ticker }: { ticker: string }) {
   const tag = useTtm ? "TTM" : "FY";
   const asOf = x.at(-1);
 
-  const chart = (title: string, series: XYSeries[], fmt: ValueFormat, digits: number, zero = true) => (
+  const chart = (title: string, series: XYSeries[], fmt: ValueFormat, digits: number, note?: { n: number; to: string }, zero = true) => (
     <Panel<Ratios>
       title={
         <>
           {title} · {tag}
+          {note && <Note n={note.n} to={note.to} />}
         </>
       }
       query={q}
@@ -112,6 +114,7 @@ export function RatiosTab({ ticker }: { ticker: string }) {
         title={
           <>
             LATEST · {q.data?.latest.basis === "ttm" ? "TTM" : "FY"}
+            <Note n={1} to="ratios" />
           </>
         }
         query={q}
@@ -152,6 +155,7 @@ export function RatiosTab({ ticker }: { ticker: string }) {
         title={
           <>
             DUPONT · ROE · {q.data?.latest.basis === "ttm" ? "TTM" : "FY"}
+            <Note n={2} to="ratios" />
           </>
         }
         query={q}

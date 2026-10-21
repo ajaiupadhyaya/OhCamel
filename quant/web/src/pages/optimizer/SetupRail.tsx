@@ -1,10 +1,11 @@
 /**
  * The input rail: universe, estimation window, estimators, risk-free rate and constraints.
  * Everything here edits the one OptConfig; results re-query as it changes. Inputs carry caps
- * labels only.
+ * labels only; the estimators' definitions live in Methodology behind the Note markers.
  */
 import { useMemo, useState, type ReactNode } from "react";
 import { DateRangePicker, Field, NumberField, SegmentedControl, Select, Slider, TickerChips, Toggle } from "../../components";
+import { Note } from "../../design";
 import { fmtDate, fmtNum, fmtPct, fmtPctPoints } from "../../lib/format";
 import { useUniverses } from "../../lib/market";
 import { useApiQuery } from "../../lib/query";
@@ -31,6 +32,7 @@ export function SetupRail({ cfg, set, portfolioName, onUsePortfolio, anchor }: {
           label={
             <>
               Σ · Covariance
+              <Note n={2} to="covariance" />
             </>
           }
         >
@@ -43,6 +45,7 @@ export function SetupRail({ cfg, set, portfolioName, onUsePortfolio, anchor }: {
           label={
             <>
               {sym("μ · Expected returns")}
+              <Note n={3} to={cfg.returns === "black_litterman" ? "black-litterman" : "expected-returns"} />
             </>
           }
           hint={cfg.returns === "capm" || cfg.returns === "black_litterman" ? <span className="num">BENCH {cfg.benchmark}</span> : undefined}

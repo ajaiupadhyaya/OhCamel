@@ -81,6 +81,7 @@ const r = useApiPost<VarOut>("/risk/var", { ...request, alpha: 0.99 });       //
 |---|---|
 | `Verdict` `{value: "PASS"\|"FAIL"\|"ADVISORY"\|"INSUFFICIENT DATA"\|"AWAITING PRE-REGISTRATION", detail?}` | Stamped verdict; `FAIL` in `--signal`. Every research and model result leads with one. |
 | `Lamp` `{state: "ok"\|"idle"\|"fault"\|"stale", label}` | 10px square status lamp. |
+| `Note` `{n, to}` | Superscript footnote linking to `/methodology#<to>`. |
 | `isStale(asOf, maxAgeSec, now)` / `fmtStamp(v)` | The stale rule (unknown, unparseable or future is stale) and the mono `05 OCT 16:02` stamp. |
 
 Formatters (`lib/format.ts`): `fmtNum`, `fmtPct`, `fmtSignedPct`, `fmtPctPoints`, `fmtBps`,
@@ -111,7 +112,7 @@ null, undefined or NaN.
 
 `lib/routes.ts` is the single registry (router, function-code nav, command line); its order is the
 sidebar order: Markets, Flight Deck · Portfolio Lab, Optimizer, Strategy Lab · Volatility, Rates & Macro,
-Company · Live Engine. `/company` (no ticker) renders the Company landing.
+Company · Live Engine, Methodology. `/company` (no ticker) renders the Company landing.
 The Flight Deck takes `/deck?source=reference` (the recorded reference book) or
 `?source=engine` (the OCaml engine bridge); the default is your portfolio.
 The Optimizer accepts `/optimize?tickers=A,B&weights=0.4,0.6&start=…&end=…&from=portfolio`.

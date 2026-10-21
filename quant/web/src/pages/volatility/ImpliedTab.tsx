@@ -9,6 +9,7 @@
 import { lazy, Suspense, useMemo, useState } from "react";
 import { ChartSkeleton, DataTable, Panel, Section, SegmentedControl, StatGrid, StatTile, Toggle, type Column } from "../../components";
 import { XYChart, type XYSeries } from "../../charts/XYChart";
+import { Note } from "../../design";
 import { fmtNum, fmtPct, fmtSci, fmtSignedPct } from "../../lib/format";
 import { dayTicks } from "./derive";
 import { INFO } from "./info";
@@ -49,6 +50,7 @@ export function ImpliedTab({ surface, chain, expiry }: { surface: ReturnType<typ
         title={
           <>
             Smile · SVI
+            <Note n={1} to="svi" />
           </>
         }
       >
@@ -61,6 +63,7 @@ export function ImpliedTab({ surface, chain, expiry }: { surface: ReturnType<typ
         title={
           <>
             Term · skew
+            <Note n={2} to="smile-metrics" />
           </>
         }
       >
@@ -85,6 +88,7 @@ export function ImpliedTab({ surface, chain, expiry }: { surface: ReturnType<typ
         title={
           <>
             Static arbitrage
+            <Note n={3} to="svi" />
           </>
         }
       >
@@ -97,6 +101,7 @@ export function ImpliedTab({ surface, chain, expiry }: { surface: ReturnType<typ
         title={
           <>
             Carry · put-call parity
+            <Note n={4} to="implied-vol" />
           </>
         }
       >

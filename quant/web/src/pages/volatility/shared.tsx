@@ -5,7 +5,7 @@
  */
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { InfoTip, Select, type InfoProp } from "../../components";
-import { Absent } from "../../design";
+import { Absent, Note } from "../../design";
 import { ApiError, isDataUnavailable } from "../../lib/api";
 import { fmtDate, fmtNum } from "../../lib/format";
 import { useApiQuery } from "../../lib/query";
@@ -140,9 +140,9 @@ export function GreekGrid({ cells }: { cells: { label: string; value: string; in
 /**
  * In place of a live-chain view when the chain is unavailable (503 offline): INSUFFICIENT
  * DATA with the server's reason, then a ruled list of what the view computes once Cboe is
- * reachable. No placeholder numbers.
+ * reachable, each with its Methodology note. No placeholder numbers.
  */
-export function LiveOnly({ title, error, items, source, actions }: { title: string; error: unknown; items: { k: string }[]; source: string; actions?: ReactNode }) {
+export function LiveOnly({ title, error, items, source, actions }: { title: string; error: unknown; items: { k: string; note: string }[]; source: string; actions?: ReactNode }) {
   const reason = isDataUnavailable(error) ? "DATA UNAVAILABLE" : error instanceof ApiError && error.status === 404 ? "NO OPTIONS LISTED" : "CHAIN UNAVAILABLE";
   const detail = error instanceof ApiError ? error.detail : error instanceof Error ? error.message : null;
   return (
@@ -159,6 +159,7 @@ export function LiveOnly({ title, error, items, source, actions }: { title: stri
               <span className="vx-live-n">{String(i + 1).padStart(2, "0")}</span>
               <span className="vx-live-k">
                 {it.k}
+                <Note n={i + 1} to={it.note} />
               </span>
             </li>
           ))}

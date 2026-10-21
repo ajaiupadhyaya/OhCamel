@@ -10,7 +10,7 @@
  *                       stale series, in the warehouse and the committed fixtures.
  */
 import { ArtifactCell, DataTable, Section } from "../../components";
-import { Absent } from "../../design";
+import { Absent, Note } from "../../design";
 import { KINDS, type Manifest } from "../../lib/artifacts";
 import { fmtDate, fmtNum } from "../../lib/format";
 import { useTable } from "./products";
@@ -32,17 +32,17 @@ export const annVol = (v: number | null) => (finite(v) && v > 0 ? Math.sqrt(252 
 export function WatchView() {
   return (
     <>
-      <Section title={<>Watch · Kronos shadow</>}>
+      <Section title={<>Watch · Kronos shadow<Note n={1} to="k01-kronos-shadow" /></>}>
         <ArtifactCell title="Prospective volatility forecasts · Kronos vs incumbents" kind={KINDS.shadow} span="all">
           {(m) => <ShadowTables m={m} />}
         </ArtifactCell>
       </Section>
-      <Section title={<>Watch · Factor ledger</>}>
+      <Section title={<>Watch · Factor ledger<Note n={2} to="factor-workbench" /></>}>
         <ArtifactCell title="Owner's trials re-screened · warehouse universe · to 2023-12-31" kind={KINDS.screen} span="all">
           {(m) => <ScreenTables m={m} />}
         </ArtifactCell>
       </Section>
-      <Section title={<>Watch · Data integrity</>}>
+      <Section title={<>Watch · Data integrity<Note n={3} to="data-integrity" /></>}>
         <ArtifactCell title="Every daily series · warehouse + committed fixtures" kind={KINDS.integrity} span="all">
           {(m) => <IntegrityTables m={m} />}
         </ArtifactCell>

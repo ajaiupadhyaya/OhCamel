@@ -8,6 +8,7 @@ import { useMemo, useState } from "react";
 import { BarChart, DataTable, Panel, StatGrid, StatTile, type Column } from "../../components";
 import { CurveChart, type CurveLine } from "../../charts/CurveChart";
 import { XYChart } from "../../charts/XYChart";
+import { Note } from "../../design";
 import { fmtDate, fmtNum, fmtPctPoints, toIsoDate } from "../../lib/format";
 import { useApiQuery } from "../../lib/query";
 import { alignNumeric, tenorLabel, tenorTicks } from "./derive";
@@ -29,10 +30,10 @@ const parAt = (c: { par?: { tenors: number[]; yields: number[] } } | undefined, 
 };
 
 const LIVE_ITEMS = [
-  { k: "PAR · CMT · NOW VS COMPARISON DATES" },
-  { k: "Δ BY TENOR · BP" },
-  { k: "ZERO · BOOTSTRAP · INST + 1Y FORWARD" },
-  { k: "NELSON–SIEGEL · SVENSSON · RMSE · RESIDUALS" },
+  { k: "PAR · CMT · NOW VS COMPARISON DATES", note: "curve" },
+  { k: "Δ BY TENOR · BP", note: "curve" },
+  { k: "ZERO · BOOTSTRAP · INST + 1Y FORWARD", note: "curve" },
+  { k: "NELSON–SIEGEL · SVENSSON · RMSE · RESIDUALS", note: "curve" },
 ];
 
 export function CurveTab() {
@@ -103,6 +104,7 @@ export function CurveTab() {
           title={
             <>
               PAR · CMT
+              <Note n={1} to="curve" />
             </>
           }
           query={q}
@@ -121,6 +123,7 @@ export function CurveTab() {
         title={
           <>
             PAR · ZERO · FORWARD
+            <Note n={2} to="curve" />
           </>
         }
         query={q}
@@ -135,6 +138,7 @@ export function CurveTab() {
         title={
           <>
             NELSON–SIEGEL · SVENSSON
+            <Note n={3} to="curve" />
           </>
         }
         query={q}

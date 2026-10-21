@@ -2,12 +2,14 @@
  * Method picker: the ten methods from GET /api/portfolio/methods as one ruled radio table
  * (code, name, family, and what each needs: expected returns, a risk-free rate, whether it
  * honours constraints), then the selected method's objective and its own parameters.
+ * Descriptions live in Methodology, reached through the Note marker.
  */
 import type { ReactNode } from "react";
 import { Formula, NumberField, SegmentedControl, Select, Slider } from "../../components";
+import { Note } from "../../design";
 import { fmtNum, fmtPct } from "../../lib/format";
 import type { MvTarget, OptConfig } from "./config";
-import { METHOD_CODE, METHOD_FAMILY, METHOD_FORMULA } from "./info";
+import { METHOD_CODE, METHOD_DOC, METHOD_FAMILY, METHOD_FORMULA } from "./info";
 import { sym } from "./shared";
 import type { LinkageName, MethodName, MethodSpec } from "./types";
 
@@ -54,7 +56,7 @@ export function methodInfo(m: MethodSpec | undefined) {
   return { title: m.label, text: m.description.replace(/--/g, "–"), formula: METHOD_FORMULA[m.name], reference: m.reference };
 }
 
-/** The selected method's objective in TeX. */
+/** The selected method's objective in TeX, with its Methodology note. */
 export function MethodHeader({ spec }: { spec: MethodSpec | undefined }) {
   if (!spec) return null;
   return (
@@ -63,6 +65,7 @@ export function MethodHeader({ spec }: { spec: MethodSpec | undefined }) {
       <span className="op-method-head-formula">
         <Formula tex={METHOD_FORMULA[spec.name]} />
       </span>
+      <Note n={1} to={METHOD_DOC[spec.name]} />
     </div>
   );
 }

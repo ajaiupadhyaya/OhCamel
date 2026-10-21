@@ -17,8 +17,8 @@ describe("LiveOnly (fundamentals without SEC EDGAR)", () => {
     expect(html).toContain("DATA UNAVAILABLE");
     expect(html).toContain("SEC filings are fetched online only");
   });
-  it("lists what the page computes", () => {
-    for (const c of COMPUTES) expect(html).toContain(c.k);
+  it("lists what the page computes, each with its methodology note", () => {
+    for (const c of COMPUTES) expect(html).toContain(`/methodology#${c.note}`);
     expect(html).toContain("PIOTROSKI F · 9 TESTS");
   });
 });

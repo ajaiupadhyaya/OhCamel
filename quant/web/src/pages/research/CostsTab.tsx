@@ -7,6 +7,7 @@
 import { useState } from "react";
 import { DataTable, Field, Panel, type Column } from "../../components";
 import { XYChart, type XYRule } from "../../charts/XYChart";
+import { Note } from "../../design";
 import { fmtMultiple, fmtNum, fmtPct } from "../../lib/format";
 import { useApiPost } from "../../lib/query";
 import type { BaseBody } from "./config";
@@ -47,6 +48,7 @@ export function CostsTab({ base, cap }: { base: BaseBody | null; cap: number }) 
         title={
           <>
             Cost ladder · setup
+            <Note n={4} to="wfo-costs" />
           </>
         }
         actions={

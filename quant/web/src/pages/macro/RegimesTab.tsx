@@ -14,7 +14,7 @@
 import { useMemo, useState } from "react";
 import { ArtifactCell, DataTable, Panel, Section, SegmentedControl, StatGrid, StatTile, TickerInput, type Column } from "../../components";
 import { XYChart } from "../../charts/XYChart";
-import { Absent } from "../../design";
+import { Absent, Note } from "../../design";
 import { KINDS, type Manifest } from "../../lib/artifacts";
 import { fmtDate, fmtNum, fmtPct, fmtPctPoints, fmtSignedPct } from "../../lib/format";
 import { usePortfolio } from "../../lib/portfolio";
@@ -42,6 +42,7 @@ export function RegimesTab() {
         title={
           <>
             Regimes · P6 · EXP-Q02
+            <Note n={1} to="p6-exp-q02" />
           </>
         }
       >
@@ -190,6 +191,7 @@ function Markov() {
       title={
         <>
           Markov · returns · descriptive
+          <Note n={2} to="regimes" />
         </>
       }
     >

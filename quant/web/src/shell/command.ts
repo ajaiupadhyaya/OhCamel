@@ -15,7 +15,7 @@ export type Command =
 const PAGES: Record<string, string> = {
   FRONT: "/", MKTS: "/markets", RISK: "/risk", PORT: "/portfolio", OPT: "/optimize",
   RSCH: "/research", VOL: "/options", RATES: "/macro", CO: "/company", DECK: "/deck",
-  SYS: "/system", COMPUTE: "/compute", ENG: "/engine", LEDGER: "/ledger",
+  SYS: "/system", COMPUTE: "/compute", ENG: "/engine", DOCS: "/methodology", LEDGER: "/ledger",
 };
 const TICKER = /^[A-Z][A-Z0-9.-]{0,9}$/;
 const FNS = new Set(["GP", "DES", "OMON"]);
