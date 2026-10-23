@@ -22,10 +22,10 @@
 # granularity this tag family publishes, there is no `-5.2.1` -- so the tag is
 # mutable, and two builds a month apart are builds against different bases. The
 # digest is what makes the version exact. The tag stays beside it because it is
-# the part a reader can act on, and because Dependabot identifies the image by
-# it; .github/dependabot.yml is what moves this line, weekly, as a pull request
-# that says what changed. Without that half, pinning a digest would only mean
-# the builder quietly stopped receiving the base image's security updates.
+# the part a reader can act on. Nothing moves this line automatically (the
+# owner turned Dependabot off, 2026-10-20), so a pinned digest stops receiving
+# the base image's security updates until someone bumps it by hand: re-resolve
+# the tag's manifest-list digest from the registry and change both together.
 #
 # Resolved 2026-09-20 from registry-1.docker.io: this is the manifest-list
 # digest the tag pointed at, so the pin changes nothing about what is pulled
@@ -119,7 +119,7 @@ RUN opam exec -- dune build --profile release bin/main.exe \
 # whose libssl3, libsqlite3-0 and tzdata the engine actually loads. Verified
 # 2026-09-20: `debian:12-slim` and `debian:12.15-slim` were the same manifest
 # digest, so this pin changed nothing about the image and everything about when
-# it changes. Dependabot moves it (.github/dependabot.yml).
+# it changes. It moves by hand, like the builder's pin above.
 FROM debian:12.15-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS runtime
 
 # The runtime halves of the -dev packages above, plus ca-certificates (live
