@@ -213,7 +213,7 @@ jobs:
         with:
           ref: ${{ env.SHA }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: image-*
           merge-multiple: true
@@ -400,7 +400,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: image-*
           merge-multiple: true
