@@ -120,7 +120,7 @@ RUN opam exec -- dune build --profile release bin/main.exe \
 # 2026-09-20: `debian:12-slim` and `debian:12.15-slim` were the same manifest
 # digest, so this pin changed nothing about the image and everything about when
 # it changes. Dependabot moves it (.github/dependabot.yml).
-FROM debian:12.15-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS runtime
+FROM debian:13.7-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS runtime
 
 # The runtime halves of the -dev packages above, plus ca-certificates (live
 # mode verifies Alpaca's and FRED's certificates and cannot without them),
