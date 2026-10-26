@@ -125,7 +125,7 @@ jobs:
         run: echo "built_at=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
 
       - name: Build ${{ matrix.image }}
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
