@@ -107,7 +107,7 @@ is sized as live, and nothing promotes a strategy to it but the owner. The pre-r
 | Producer | When (New York) | What it writes |
 |---|---|---|
 | `signals.daily` | weekdays 18:45 | one contract-v1 document per roster cell, on its own rebalance dates |
-| `signals.overlay` | 09:20, 09:40, every 15 min 10:00–15:45, 18:40, 18:50 | one `exposure_scale` from volatility targeting |
+| `signals.overlay` | 09:20, 09:40, every 15 min 10:00–15:45, 18:40, 18:50, 20:10 | one `exposure_scale` from volatility targeting |
 | `desk.report` | weekdays 16:30 | the session's fills, P&L per strategy, refusals and overlay path |
 
 **The overlay rule.** `exposure_scale = min(1, σ_target / σ̂)` with `σ_target` 0.10 from the book, multiplied by the

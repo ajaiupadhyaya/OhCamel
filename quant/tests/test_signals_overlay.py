@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -419,10 +419,16 @@ def _max_age_minutes() -> int:
     return int(m.group(1))
 
 
-def test_an_overlay_run_precedes_every_sizing_moment_within_the_desks_max_age():
-    # B-C1. The desk sizes at 18:45 (signals-daily's documents), 19:15 (the research service,
-    # a constant here) and 09:30 (the open). Each needs a scheduled signals.overlay run at most
+@pytest.mark.parametrize("day", [date(2026, 6, 2), date(2026, 12, 1)])  # a summer and a winter Tuesday
+def test_an_overlay_run_precedes_every_sizing_moment_within_the_desks_max_age(day):
+    # B-C1. The desk sizes at 18:45 (signals-daily's documents), at the research service's run
+    # and at 09:30 (the open). Each needs a scheduled signals.overlay run at most
     # overlay_max_age_minutes (60, the book's) before it, or it sizes at the fallback.
+    # The research service's run is not its nominal 19:15 New York: it holds until 00:16 UTC,
+    # when the session's last bar leaves the 15 minutes of SIP data a free plan may not query
+    # (research/src/ohcamel_research/service.py), and its documents reached the desk at
+    # 00:18:53Z on 2026-10-27 -- 20:18 New York in summer, 19:18 in winter. The cron runs are
+    # New York wall time, so the two halves of the year are two cases.
     from ohcamel_quant.deck.clock import NY
     from ohcamel_quant.jobs.cron import fire_times, parse_cron
     from ohcamel_quant.jobs.schedules import DEFAULT_PATH, load_schedules, parse_duration
@@ -431,15 +437,19 @@ def test_an_overlay_run_precedes_every_sizing_moment_within_the_desks_max_age():
     daily = [e for e in sched.entries if e.kind == "signals.daily"]
     assert [e.cron for e in daily] == ["45 18 * * 1-5"]
     runs = sorted(t for e in sched.entries if e.kind == "signals.overlay"
-                  for t in fire_times(parse_cron(e.cron), date(2026, 6, 2)))
+                  for t in fire_times(parse_cron(e.cron), day))
     max_age = _max_age_minutes()
     assert max_age == 60
-    for hh, mm, who in ((18, 45, "signals-daily"), (19, 15, "the research service"), (9, 30, "the open")):
-        moment = datetime(2026, 6, 2, hh, mm, tzinfo=NY).astimezone(UTC)
+    moments = [
+        (datetime(day.year, day.month, day.day, 18, 45, tzinfo=NY).astimezone(UTC), "signals-daily"),
+        (datetime(day.year, day.month, day.day, 9, 30, tzinfo=NY).astimezone(UTC), "the open"),
+        (datetime.combine(day + timedelta(days=1), time(0, 19), tzinfo=UTC), "the research service"),
+    ]
+    for moment, who in moments:
         before = [t for t in runs if t <= moment]
         assert before, f"no overlay run before {who}"
         age = (moment - before[-1]).total_seconds() / 60
-        assert 0 <= age <= max_age, f"{who}: the newest overlay is {age:.0f} min old"
+        assert 0 <= age <= max_age, f"{who} on {day}: the newest overlay is {age:.0f} min old"
     assert parse_duration("35m") == sched.max_age_s["signals.overlay"]  # the kind's own max age is kept
 
 

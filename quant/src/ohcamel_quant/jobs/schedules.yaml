@@ -260,15 +260,29 @@ schedules:
 
   # INC-01: the overlay's exposure scale (volatility targeting on the roster's combined targets),
   # at 09:20 (before the open's 09:30 sizing), 09:40, every 15 minutes 10:00-15:45, at 18:40 (after
-  # the 18:30 daily-bars ingest, before signals.daily's 18:45 documents) and at 18:50. Every moment
-  # the desk sizes at -- 18:45, the research service's 19:15, the 09:30 open -- has a run within the
-  # desk's overlay_max_age_minutes (60) before it (the stage review's B-C1; pinned by
-  # tests/test_signals_overlay.py), or it would size at the fallback.
+  # the 18:30 daily-bars ingest, before signals.daily's 18:45 documents), at 18:50, and at 20:10.
+  # Every moment the desk sizes at -- 18:45, the research service's run, the 09:30 open -- has a
+  # run within the desk's overlay_max_age_minutes (60) before it (the stage review's B-C1; pinned
+  # by tests/test_signals_overlay.py), or it would size at the fallback. The research service
+  # does not run at its nominal 19:15: it holds until 00:16 UTC, when the session's last bar is
+  # outside the 15 minutes of SIP data a free plan may not query (research/.../service.py) --
+  # 20:16 New York in summer, 19:16 in winter. The 20:10 run is for the summer; without it the
+  # 18:50 overlay was 86 minutes old when EXP-A01's documents arrived, every evening sizing read
+  # the fallback (0.5), and the first fresh overlay of the morning bought back at 1.0 what the
+  # evening had sold -- 15 SPY sold at the open and bought back three minutes later, 2026-10-27.
   - name: signals-overlay-premarket
     cron: "20 9 * * 1-5"
     kind: signals.overlay
     params: {}
     priority: 1
+    mem_class: S
+    heavy: false
+
+  - name: signals-overlay-late-evening
+    cron: "10 20 * * 1-5"
+    kind: signals.overlay
+    params: {}
+    priority: 2
     mem_class: S
     heavy: false
 
