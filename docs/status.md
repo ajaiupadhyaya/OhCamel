@@ -27,8 +27,8 @@ the `demo` compose profile). The live engine runs the paper desk on the live hos
 | Cost | $24/month, metered hourly, capped |
 | Proxy / TLS | Caddy, Let's Encrypt, HTTP→HTTPS 308, HSTS, a CSP measured per route. Only Caddy has a host port |
 | DNS | Porkbun: A records `ohcamel` and `live.ohcamel` on the owner's domain |
-| **Deployed — both hosts** | **`0dfae1f`** (the droplet's own research: `kronos.shadow`, `factors.screen`, `ops.data_integrity`), deployed 2026-10-19 20:58 ET with `--live`; the pre-deploy journal copy is `/var/backups/ohcamel/pre-deploy-20261020T005821Z-0dfae1f1cd7b.db`. Read back 2026-10-21: every OhCamel container healthy, `/api/ops` reports `0dfae1f`, 0 failed jobs over 7 days, the integrity sweep PASS (572 series, no new defects, 1 stale), public smoke 18 passed with 4 skipped (the one fail, the build-sha check, needs the run on the droplet) |
-| Not deployed | Nothing: `main` and both hosts are at `0dfae1f` |
+| **Deployed — both hosts** | **`8650c95`** (the first week's fixes, the alert hold, and PRs #12 and #14: actions pinned to SHAs, pyo3 0.29.3, digest-pinned quant images), deployed 2026-10-27 17:29 ET with `--live` after the droplet's reboot onto kernel 6.8.0-147; smoke 45 passed, 0 failed. Alerts armed and released on the account's book at startup, kill switch armed and clear, desk enabled, five positions intact |
+| Not deployed | Only the docs commit that wrote this row |
 
 **Data on the droplet (2026-10-08).** The warehouse backfill ran through the queue. `ingest.universes` finished,
 and `ingest.bars_daily` filled 563 keys to as-of 2026-10-07 in 322 cpu-s at 233 MB peak. The factors are as of
@@ -653,9 +653,10 @@ block (23 incubation cells), `(trading enabled)`, the `--live` deploy. Still ope
   `book-cap` of $500,000; the gate holds the last cells back once the rest have filled.
 - ~~**Reboot the droplet**~~ -- done 2026-10-27 20:51 UTC at the owner's word: kernel 6.8.0-124 → 6.8.0-147, every
   container back in under a minute, smoke 30 passed, 0 failed. O12 (the 10:00 UTC automatic reboot) is still open.
-- **Merge PRs #12 and #14** (#14 into #12's branch, then #12 into `main`): the auto-mode classifier refuses a merge
-  without review even with the owner's word. They merge cleanly onto `main` as of `1df30d4`; merging #12 deletes
-  `.github/dependabot.yml`, after which Dependabot PRs #15–#19 can be closed.
+- ~~**Merge PRs #12 and #14**~~ -- merged by the owner 2026-10-27 and deployed in `8650c95`.
+  `.github/dependabot.yml` is gone. Still open: **close Dependabot PRs #15–#19**
+  (`for n in 15 16 17 18 19; do gh pr close $n --delete-branch; done`) -- the classifier refuses it as an
+  external write.
 
 ## Operating it
 
