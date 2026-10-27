@@ -9,7 +9,7 @@
 #
 # The FROM is pinned to a tag and a digest, as deploy/'s Dockerfiles are, so
 # the build is reproducible.
-FROM rust:1.80-alpine@sha256:1f5aff501e02c1384ec61bb47f89e3eebf60e287e6ed5d1c598077afc82e83d5 AS build
+FROM rust:1.85-alpine@sha256:4333721398de61f53ccbe53b0b855bcc4bb49e55828e8f652d7a8ac33dd0c118 AS build
 RUN apk add --no-cache musl-dev
 WORKDIR /src
 COPY native/ ./

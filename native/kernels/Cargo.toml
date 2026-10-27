@@ -23,5 +23,5 @@ rand_chacha = "0.3"
 rand_distr = "0.4"
 rayon = "1.10"
 libm = "0.2"
-pyo3 = { version = "0.22", features = ["abi3-py312"], optional = true }
-numpy = { version = "0.22", optional = true }
+pyo3 = { version = "0.29.3", features = ["abi3-py312"], optional = true }
+numpy = { version = "0.29", optional = true }
