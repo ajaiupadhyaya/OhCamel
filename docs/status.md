@@ -1,6 +1,6 @@
 # OhCamel — state of the project
 
-*As of 2026-10-21 (the deployed state below was read off the droplet that day); the rest as of 2026-10-08, against `ship/harden`. This is the document to read first when coming back to the repository
+*As of 2026-10-27 (the desk's first week of paper trading, read off the droplet and off Alpaca's own order history that day, and the four fixes it called for); the deployed state as of 2026-10-21; the rest as of 2026-10-08, against `ship/harden`. This is the document to read first when coming back to the repository
 after time away, and the one to update when the facts in it change.*
 
 It is an inventory: what exists, where it runs, what is deployed, what it will not do, what was cut, and what
@@ -88,7 +88,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->1509<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->1510<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.
@@ -116,6 +116,46 @@ absent one reads 1.0. A document the opening auction's window refuses (before 19
 the first pass after 19:00; nothing is sized before the venue's clock has answered; the adjust pass holds while the
 overlay is stale and acts on governor moves.
 
+**What the first week of fills taught, and what changed (2026-10-27).** Alpaca's own order history for the paper
+account showed 55 of the desk's 59 market-on-open orders **expired at the opening auction unfilled** (two filled,
+three in part), and the desk had no answer to an expired order: the adjust pass compared scales, the scale had
+not moved, and a strategy whose auction orders expired held nothing all month. Four changes, each with its own
+commit and tests:
+
+- **The completion** (`desk/intake.ml`). Before the band, the adjust pass asks the journal for the orders of the
+  strategy's latest document that ended with shares unfilled after its latest sizing
+  (`Journal.source_orders_unfilled`: expired, cancelled, refused by the venue or before the wire, a partial fill
+  included). Any such order is a sizing that did not hold, and the strategy is sized again from its document in the
+  intraday mode -- day limit orders at the mark plus `intraday_slip_bps`, in waves, each waited on -- its sizing row
+  `complete`, noted `completion`. At most three completions a session for one strategy, counted only when orders
+  reached the venue. So an auction that expires an order is answered a few minutes after the open, at a limit
+  rather than the auction print; on a live account the auction would fill and the completion would find nothing to do.
+- **The wash rule** (`desk/rules.ml`). One strategy's BIL sell met another's BIL buy resting for the same auction, and
+  the venue's "403: potential wash trade detected" stopped the rest of the selling strategy's rebalance. An order
+  against an order of the desk's own resting on the other side of the name is now refused before the wire, for
+  timing: the judgement stays pending and goes unchanged once the resting order has filled or expired -- a session
+  later, at the next auction, when both were for the same one.
+- **Opening waves** (`desk/oms.ml`). The six-order cap, which bounds the gate's 2^n fill sets, applied to a whole
+  opening rebalance, and the three eleven-name sector cells were refused every evening. An opening rebalance of more
+  than six orders now goes in waves for the same auction, sent back to back with nothing waited on, each later wave
+  gated with the earlier ones resting.
+- **Per-name staleness** (`lib/graph.ml`, the book). On IEX a thin ETF prints minutes apart -- DBC went 34 minutes
+  without a trade that morning, BIL 20 -- and the engine's one 90 s threshold called fourteen names stale most of
+  the day, which refused every intraday order in them. A position may now carry `(stale_after_s N)`; the example
+  book sets 1800, 600 and 300 s in tiers over the longest silence each name showed (`tools/iex_gaps.py`), and
+  `/api/health` prints each name's threshold beside its state.
+
+Beside these, the research service's documents arrive at 20:18 ET in summer (it holds for Alpaca's 15-minute SIP
+embargo), 86 minutes after the last overlay, so every evening sizing of EXP-A01 read the fallback (0.5) and the
+first fresh overlay of the morning bought back what the evening had sold -- 15 SPY out at the open and back three
+minutes later on 2026-10-27. An overlay now runs at 20:10.
+
+Two things the fixes do not change, and the owner should know: the roster's 23 cells at 0.025 of equity are a gross
+of 57.5 % of $1M, above the book's `book-cap` of $500,000, so once the completions fill the gate will hold the last
+cells back (its job); and on the paper venue a market-on-open order is still mostly a lottery, so the realised
+record is of limit fills minutes after the open, not of auction prints -- which is what INC-01's execution note
+already says.
+
 **State on 2026-10-21.** The live book runs the full roster: `(trading enabled)`, 23 `(sizing incubation)` cells in its
 `signals` block, `incubation_cap 0.60`. The desk reads `enabled`, kill switch `clear`, overlay 1.0 (governor 1.0).
 Every session from 2026-09-14 to 2026-10-20 closed flat; the **first fills came on 2026-10-21**: 10 fills, five
@@ -123,12 +163,14 @@ positions (SPY, IWM, EWJ and LQD long, EEM short), about 5 % of the $1M paper eq
 quantities equal, nothing unmanaged. Two departures from the plan, both the owner's to settle: the cap went to 0.60
 without the three canary sessions at 0.10, and the book's `alerts` block has `(enabled false)` and
 `(kill_switch_enabled false)`, where the canary step called for alerts on and the switch armed on
-`(book-cap var-cap dd-cap)`. The engine's `/api/health` reads `healthy: false` because six thin ETFs (BIL, DBA,
-IEI, SHY, SIZE, VGK) had gone minutes without an IEX print, not because a feed failed.
+`(book-cap var-cap dd-cap)`. The engine's `/api/health` read `healthy: false` because six thin ETFs (BIL, DBA,
+IEI, SHY, SIZE, VGK) had gone minutes without an IEX print, not because a feed failed -- fourteen of them by
+2026-10-27, which is what the per-name thresholds above answer.
 
 **Stop rules and the record scoring:** Stage 3, not yet built. **Intraday strategies:** Stage 2, not yet built.
 
-**Limits.** Incubation records are not evidence of edge. Per-strategy orders are not netted. The overlay is
+**Limits.** Incubation records are not evidence of edge. Per-strategy orders are not netted: two strategies on
+opposite sides of one name trade a session apart (the wash rule), never against each other. The overlay is
 expected to read 1.0 on most days (the roster's forecast volatility sits below the 10 % target on the fixture data);
 the first canary overlays confirm.
 
@@ -583,6 +625,7 @@ line each (10 to 12 bind the order path, `desk/oms.ml`):
 | 2026-10-05 | The Ship approved: one finished, published product; the public site rebuilt in Paper Tape; the compute tier (Rust kernels, jobs, warehouse, P1–P7) on the droplet; the agent pushes and deploys. Finish-plan Stages 2A–6 and compute Lane E cut. Integration branch `ship/main` cut from `main` at `88ebc96` |
 | 2026-10-06 | Phase 0 (ops close, resource governance, hostd, latency baselines) and Lane P (the Paper Tape design system) merged, pushed and deployed public from `279d407`. Lanes A (kernels), B (jobs) and C (warehouse) integrated as `49a5c69`, pushed and deployed public; the worker and hostd started and the ingests began. The owner approved EXP-Q01 (ETF universe, option A) and EXP-Q02 |
 | 2026-10-08 | Lanes M (P1–P7), P2 (every page) and F (the Flight Deck) integrated as `557296a` and deployed public. Warehouse backfill through the queue: universes, then daily bars to 2026-10-07. Lane H hardening merged and deployed (`e02a4b2`, `a9d9cc3`). EXP-Q01 universe frozen (34 ETFs): verdict FAIL. EXP-Q02 amended to v2 (BAA10Y; owner-approved) and deployed as `40f8b46` |
+| 2026-10-27 | The first week of paper fills audited against Alpaca's own order history: 55 of 59 market-on-open orders expired at the auction, nothing sized them again, two strategies crossed as a wash trade, the three eleven-name cells never traded, fourteen thin names read stale all day, and EXP-A01 churned 15 SPY on the fallback. Five commits on `main`: the completion in the adjust pass, the wash rule, opening waves, per-name staleness thresholds (measured, `tools/iex_gaps.py`), and the 20:10 overlay. Tests 827 → 830 and 60 → 65 scheduler cases; Quant 1509 → 1510. |
 
 Plans and specs live under [`superpowers/`](superpowers/): the readable-front-door
 design (the README rewrite), the eight-phase roadmap (marked complete, with its three deviations
@@ -604,6 +647,9 @@ block (23 incubation cells), `(trading enabled)`, the `--live` deploy. Still ope
 - **Decide the cap:** keep `incubation_cap 0.60`, or drop to 0.10 for three sessions as the plan had it.
 - **Install the backup and watch timers** (*What the owner holds*, above).
 - **Promoting to `(sizing live)`** stays the owner's alone, and needs `status: pass` (R6).
+- **Raise `book-cap` or lower `incubation_cap`:** 23 cells at 0.025 are 57.5 % of equity gross against a
+  `book-cap` of $500,000; the gate holds the last cells back once the rest have filled.
+- **Reboot the droplet** (*The reboot window*, below): a kernel and libc have waited since 2026-10-15.
 
 ## Operating it
 
@@ -809,6 +855,13 @@ OHCAMEL_TAG="$(git rev-parse HEAD)" docker compose -f deploy/docker-compose.yml 
 `restart` re-reads the bind-mounted `book.sexp`; it does **not** re-read
 `env_file` (below). A restart of `ohcamel-live` drops the Alpaca stream, so do
 it outside 09:25-16:10 New York time.
+
+The live `book.sexp` is `book.example.sexp` with `(trading enabled)` and
+nothing else changed, so a change to the example -- the per-name
+`(stale_after_s N)` thresholds, say -- is carried over by regenerating it
+(`sed 's/(trading disabled)/(trading enabled)/' book.example.sexp > book.sexp`,
+the old one archived beside the earlier copies in `~/book-archive/`), then
+`check-book`, then the restart above.
 
 ### Credential rotation
 
