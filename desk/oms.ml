@@ -1115,7 +1115,8 @@ let sizing_equity t : (float, string) Result.t =
    order, or a failed one the venue may still work ([failed_still_working]'s
    rule). Sizing on top of such an order would count its shares once as
    resting and again as the target, and buy them twice. *)
-let strategy_position t ~(strategy : string) : (float Symbol.Map.t, string) Result.t =
+let strategy_position ?except_source t ~(strategy : string) :
+    (float Symbol.Map.t, string) Result.t =
   let prefix = Rebalance.Source.prefix ~strategy in
   match
     Or_error.try_with (fun () ->
@@ -1128,8 +1129,15 @@ let strategy_position t ~(strategy : string) : (float Symbol.Map.t, string) Resu
           Journal.source_orders_unsettled t.journal ~prefix ~since
           |> List.filter ~f:(fun (r : Journal.Order_row.t) ->
               let o = r.Journal.Order_row.order in
-              (not (Order.State.equal o.Order.state Order.State.Failed))
+              ((not (Order.State.equal o.Order.state Order.State.Failed))
               || Float.( > ) (Order.remaining_qty o) Order.epsilon)
+              (* [except_source]: the orders of THIS rebalance's earlier
+                 waves, resting for the same auction. The plan read the
+                 position before any of them, and a later wave trades other
+                 names, so they are not what makes it unknown. *)
+              && not
+                   (Option.exists except_source
+                      ~f:(String.equal r.Journal.Order_row.source)))
         in
         (unsettled, Journal.source_fills t.journal ~prefix))
   with
@@ -1346,8 +1354,11 @@ end
    mark, the tick and the collar -- and gated at its limit, the price a
    ticket's limit is gated at. A name with no live mark gets no limit; the
    mark rule refuses it. Everything else is the same, the max_legs refusal
-   included: an intraday rebalance with more orders is split into waves
-   before it gets here ([propose_rebalance]).
+   included: a rebalance with more orders is split into waves before it gets
+   here ([propose_rebalance]); in the [Open] mode the earlier waves' orders
+   rest for the same auction while a later wave is checked, and are not what
+   makes the strategy's position unknown ([strategy_position]'s
+   [except_source]).
 
    [timing], when given, is set when the refusal is the rules' and every
    refused order failed for timing alone (Rules.is_timing_refusal): the
@@ -1397,7 +1408,13 @@ let check_rebalance ?(timing = ref false) t ~(mode : Rebalance.Mode.t)
     | None -> Ok ()
   in
   let%bind own =
-    Result.map_error (strategy_position t ~strategy:source.Rebalance.Source.strategy)
+    Result.map_error
+      (strategy_position
+         ?except_source:
+           (match mode with
+           | Rebalance.Mode.Open -> Some (Rebalance.Source.to_string source)
+           | Rebalance.Mode.Intraday -> None)
+         t ~strategy:source.Rebalance.Source.strategy)
       ~f:(fun why -> "the strategy's fill history is unknown: " ^ why)
   in
   let%bind (_ : float) =
@@ -1722,9 +1739,17 @@ let cancel_rebalance t ~(source : Rebalance.Source.t) : unit Deferred.t =
 
 (* A strategy's rebalance in [mode] (Rebalance.Mode).
 
-   [Open]: one [send_rebalance] -- one sequencer job, as above -- and its
-   outcome. A market-on-open order waits for the auction; nothing here waits
-   with it.
+   [Open]: up to Rebalance.max_legs orders are one [send_rebalance] -- one
+   sequencer job, as above -- and its outcome. More are split into waves
+   (Waves.split, as below) and sent one after another WITHOUT WAITING: a
+   market-on-open order waits for the auction, and nothing here waits with
+   it. Each later wave is checked and gated with the earlier waves' orders
+   resting -- the gate's resting-order scenarios are made for exactly that
+   -- and sent only when every wave before it was [Sent]; a wave the venue
+   stopped, or the rules refused, ends the rebalance there, as it does
+   intraday. The roster's eleven-name sector cells (farm_st_reversal_sectors,
+   farm_xsmom_sectors, farm_low_beta_sectors) were refused at the auction
+   every evening for having more than six orders, nothing journaled.
 
    [Intraday]: in waves, EVERY ONE OF THEM WAITED ON. At most
    Rebalance.max_legs orders are one wave; more are split (Waves.split: the
@@ -1752,23 +1777,36 @@ let cancel_rebalance t ~(source : Rebalance.Source.t) : unit Deferred.t =
    wait that ran out -- is [Waved]. *)
 let propose_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t list)
     ~(mode : Rebalance.Mode.t) : Rebalance_outcome.t Deferred.t =
+  let position symbol =
+    if Graph.knows_symbol t.graph symbol then Qty.to_float (Graph.qty t.graph symbol)
+    else 0.0
+  in
+  let waves =
+    if List.length legs <= Rebalance.max_legs then [ legs ]
+    else Waves.split ~legs ~position ~max_legs:Rebalance.max_legs
+  in
+  let finish sent ~timed_out =
+    match (List.rev sent, timed_out) with
+    | [ only ], false when List.length waves = 1 -> only
+    | waves, timed_out -> Rebalance_outcome.Waved { waves; timed_out }
+  in
   match mode with
-  | Rebalance.Mode.Open -> send_rebalance t ~mode ~source ~legs
+  | Rebalance.Mode.Open ->
+      let rec go sent = function
+        | [] -> return (finish sent ~timed_out:false)
+        | wave :: rest -> (
+            match%bind send_rebalance t ~mode ~source ~legs:wave with
+            | (Rebalance_outcome.Refused _ | Rebalance_outcome.Not_now _) as refused
+              when List.is_empty sent ->
+                return refused
+            | Rebalance_outcome.Sent _ as this -> go (this :: sent) rest
+            | ( Rebalance_outcome.Refused _ | Rebalance_outcome.Not_now _
+              | Rebalance_outcome.Waved _ | Rebalance_outcome.Stopped _ ) as last ->
+                return (finish (last :: sent) ~timed_out:false))
+      in
+      go [] waves
   | Rebalance.Mode.Intraday ->
-      let position symbol =
-        if Graph.knows_symbol t.graph symbol then Qty.to_float (Graph.qty t.graph symbol)
-        else 0.0
-      in
-      let waves =
-        if List.length legs <= Rebalance.max_legs then [ legs ]
-        else Waves.split ~legs ~position ~max_legs:Rebalance.max_legs
-      in
       let timeout = Time_ns.Span.of_sec t.spec.Desk_spec.wave_timeout_s in
-      let finish sent ~timed_out =
-        match (List.rev sent, timed_out) with
-        | [ only ], false when List.length waves = 1 -> only
-        | waves, timed_out -> Rebalance_outcome.Waved { waves; timed_out }
-      in
       let rec go sent = function
         | [] -> return (finish sent ~timed_out:false)
         | wave :: rest -> (

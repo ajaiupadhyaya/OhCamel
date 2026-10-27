@@ -2999,6 +2999,63 @@ let test_a_stopped_wave's_orders_are_cancelled_at_the_timeout () =
   Graph.destroy f.graph;
   return ()
 
+(* An opening rebalance of more than six orders goes in waves too, sent one
+   after another for the same auction with nothing waited on: wave 1's six
+   rest, and wave 2 -- XOM, the smallest -- is checked with them resting
+   (the strategy's own position is still what the plan read, not unknown)
+   and sent. Seven market-on-open orders reach the venue, the outcome is
+   Waved [Sent 6; Sent 1], not timed out, and nothing fills before the
+   auction. Before, the seventh order refused the whole rebalance, and the
+   roster's eleven-name sector cells never traded. *)
+let test_an_open_rebalance_of_seven_legs_goes_in_two_waves () =
+  let f = wide () in
+  record_close f;
+  (* The four extra names' closes too: a market-on-open order is priced at
+     the recorded close, and a name without one is refused. *)
+  D.Journal.record_marks f.journal
+    (List.map
+       [ (iwm, 200.0); (qqq, 300.0); (spy, 400.0); (tlt, 90.0) ]
+       ~f:(fun (symbol, close) ->
+         { D.Journal.Mark.date = Date.of_string "2026-09-14"; symbol; close; qty = 0.0 }));
+  let oms = manager ~now:(fun () -> evening) f in
+  after_the_close f oms;
+  let%bind outcome =
+    D.Oms.propose_rebalance oms ~mode:D.Rebalance.Mode.Open ~source:wide_source
+      ~legs:seven
+  in
+  let%map () = settle () in
+  Alcotest.(check string)
+    "seven reached the venue" "7"
+    (if D.Sim_venue.received f.venue = 7 then "7"
+     else D.Oms.Rebalance_outcome.to_string outcome);
+  (match outcome with
+  | D.Oms.Rebalance_outcome.Waved
+      {
+        waves = [ D.Oms.Rebalance_outcome.Sent six; D.Oms.Rebalance_outcome.Sent one ];
+        timed_out = false;
+      } ->
+      Alcotest.(check (pair int (list string)))
+        "six, then XOM alone" (6, [ "XOM" ])
+        ( List.length six,
+          List.map one ~f:(fun o ->
+              Symbol.to_string o.D.Order.request.D.Order.Request.symbol) );
+      Alcotest.(check (list string))
+        "every one market-on-open, resting"
+        (List.init 7 ~f:(fun _ -> "market opg accepted"))
+        (List.map (six @ one) ~f:(fun o ->
+             let r = (journaled f o).D.Order.request in
+             sprintf "%s %s %s"
+               (D.Order.Kind.to_string r.D.Order.Request.kind)
+               (D.Order.Tif.to_string r.D.Order.Request.tif)
+               (state f o)))
+  | other -> Alcotest.failf "not two waves: %s" (D.Oms.Rebalance_outcome.to_string other));
+  Alcotest.(check bool)
+    "the sentence says two waves" true
+    (String.is_substring
+       (D.Oms.Rebalance_outcome.to_string outcome)
+       ~substring:"in 2 waves");
+  Graph.destroy f.graph
+
 (* Two waves that settle. Wave 1's six fill on a pump; between the waves the
    strategy's own position is the six at 10 each. The wait's poll at 2 s
    finds nothing open and wave 2, XOM +10, is checked and sent -- and at its
@@ -4403,6 +4460,8 @@ let suites =
           test_a_stopped_wave's_orders_are_cancelled_at_the_timeout;
         case "two waves settle, the second gated after the first fills"
           test_two_waves_settle_and_the_second_is_gated_after_the_first_fills;
+        case "an open rebalance of seven legs goes in two waves"
+          test_an_open_rebalance_of_seven_legs_goes_in_two_waves;
         case "an open rebalance sends a leg under the floor"
           test_an_open_rebalance_sends_a_leg_under_the_floor;
         case "overlay zero flattens and alerts" test_overlay_zero_flattens_and_alerts;
