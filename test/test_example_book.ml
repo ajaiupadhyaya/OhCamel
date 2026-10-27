@@ -292,6 +292,44 @@ let test_check_names_an_unknown_limit_kind () =
         "and it names the constructor nobody wrote a case for" true
         (names "Draw_down" errors))
 
+(* A position's stale_after_s -- its own staleness threshold, for a thin name
+   the engine's 90 s is wrong for -- must be a positive number, and the
+   checker names the position. The example book sets one on 38 of its names,
+   every one positive, and parses. *)
+let test_check_names_a_position_with_a_bad_staleness () =
+  with_book
+    "((cash 1000000.0) (positions (((symbol AAPL) (sector TECH) (qty 100.0) \
+     (stale_after_s -5)) ((symbol SPY) (sector INDEX) (qty 0.0)))) (limits ()))"
+    ~f:(fun p ->
+      let errors = refusal_of p in
+      Alcotest.(check int) "one problem" 1 (List.length errors);
+      Alcotest.(check bool) "it names the field" true (names "stale_after_s" errors);
+      Alcotest.(check bool) "beside the position" true (names "AAPL" errors));
+  let book = Or_error.ok_exn (Config.Book.load "../book.example.sexp") in
+  let own = Config.Book.staleness_overrides book in
+  Alcotest.(check int) "38 names carry a threshold of their own" 38 (List.length own);
+  Alcotest.(check bool)
+    "every one positive" true
+    (List.for_all own ~f:(fun (_, span) -> Time_ns.Span.( > ) span Time_ns.Span.zero));
+  Alcotest.(check (list (pair string (float 1e-9))))
+    "the thinnest at 1800 s, the thick at the engine's own"
+    [ ("BIL", 1800.0); ("DBC", 1800.0); ("IEF", 600.0); ("LQD", 300.0) ]
+    (List.filter_map own ~f:(fun (s, span) ->
+         if
+           List.mem
+             [ "DBC"; "BIL"; "IEF"; "LQD" ]
+             (Ohcamel.Types.Symbol.to_string s)
+             ~equal:String.equal
+         then Some (Ohcamel.Types.Symbol.to_string s, Time_ns.Span.to_sec span)
+         else None)
+    |> List.sort ~compare:(fun (a, x) (b, y) ->
+        match Float.compare y x with 0 -> String.compare a b | c -> c));
+  Alcotest.(check bool)
+    "SPY keeps the engine's" true
+    (not
+       (List.exists own ~f:(fun (s, _) ->
+            String.equal (Ohcamel.Types.Symbol.to_string s) "SPY")))
+
 let test_check_names_a_strategy_symbol_outside_the_universe () =
   with_book
     (book ~limits:""
@@ -1225,6 +1263,8 @@ let suite =
         test_check_accepts_the_example_book_and_says_what_it_holds;
       Alcotest.test_case "check names an unknown limit kind" `Quick
         test_check_names_an_unknown_limit_kind;
+      Alcotest.test_case "check names a position with a bad staleness" `Quick
+        test_check_names_a_position_with_a_bad_staleness;
       Alcotest.test_case "check names a strategy symbol outside the universe" `Quick
         test_check_names_a_strategy_symbol_outside_the_universe;
       Alcotest.test_case "check reports every problem in one run" `Quick

@@ -185,7 +185,29 @@ let stream_cap = 30
 
 module Book = struct
   module Position_spec = struct
-    type t = { symbol : string; sector : string; qty : float } [@@deriving sexp]
+    type t = {
+      symbol : string;
+      sector : string;
+      qty : float;
+      (* How long this name may go without a print before the feed calls it
+         stale, in seconds, when the engine's one threshold (Runtime's
+         staleness_threshold, 90 s) is wrong for it. A thin ETF on IEX prints
+         minutes apart in the regular session -- DBC went 34 minutes without
+         a trade on 2026-10-27, BIL 20 -- and at 90 s such a name read stale
+         most of the day, which refused every intraday order in it (the
+         desk's mark rule) and lit the health lamp for nothing. Absent: the
+         engine's threshold. *)
+      stale_after_s : float option; [@sexp.option]
+    }
+    [@@deriving sexp]
+
+    let validate (t : t) : unit Or_error.t =
+      match t.stale_after_s with
+      | None -> Ok ()
+      | Some s when Float.is_finite s && Float.( > ) s 0.0 -> Ok ()
+      | Some s ->
+          Or_error.errorf "position %s: stale_after_s must be a positive number, got %g"
+            t.symbol s
   end
 
   (* The desk's rules and the spread table its cost analysis compares against
@@ -758,6 +780,9 @@ module Book = struct
         ~wholes:[ raised (fun () -> Limits.validate ~instruments each) ]
     in
     let alert_errors = Option.to_list (returned (Alerts.validate t.alerts)) in
+    let position_errors =
+      List.filter_map t.positions ~f:(fun p -> returned (Position_spec.validate p))
+    in
     let universe = List.map t.positions ~f:(fun p -> p.Position_spec.symbol) in
     let desk_errors = Option.to_list (returned (Desk_spec.validate ~universe t.desk)) in
     let signal_errors =
@@ -778,11 +803,20 @@ module Book = struct
             ~parts:(List.filter_map verdicts ~f:snd)
             ~wholes:[ whole signals.Signals_spec.strategies; whole passed ]
     in
-    universe_errors @ limit_errors @ alert_errors @ desk_errors @ signal_errors
+    universe_errors @ limit_errors @ position_errors @ alert_errors @ desk_errors
+    @ signal_errors
+
+  (* The names whose book sets a staleness of its own, with it: what the graph
+     takes as staleness_overrides. *)
+  let staleness_overrides (t : t) : (Types.Symbol.t * Time_ns.Span.t) list =
+    List.filter_map t.positions ~f:(fun p ->
+        Option.map p.Position_spec.stale_after_s ~f:(fun s ->
+            (Types.Symbol.of_string p.Position_spec.symbol, Time_ns.Span.of_sec s)))
 
   let of_string (contents : string) : t Or_error.t =
     let open Or_error.Let_syntax in
     let%bind book = Result.map_error (parse contents) ~f:Error.of_exn in
+    let%bind () = Or_error.all_unit (List.map book.positions ~f:Position_spec.validate) in
     let universe = List.map book.positions ~f:(fun p -> p.Position_spec.symbol) in
     let%bind () = Desk_spec.validate ~universe book.desk in
     let%map () =

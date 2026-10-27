@@ -29,64 +29,79 @@
   (((symbol AAPL) (sector TECH)       (qty 400.0))
    ((symbol MSFT) (sector TECH)       (qty 200.0))
    ((symbol NVDA) (sector TECH)       (qty 60.0))
-   ((symbol JPM)  (sector FINANCIALS) (qty 250.0))
+   ((symbol JPM)  (sector FINANCIALS) (qty 250.0) (stale_after_s 300))
    ((symbol XOM)  (sector ENERGY)     (qty -500.0))
-   ((symbol CVX)  (sector ENERGY)     (qty -300.0))
+   ((symbol CVX)  (sector ENERGY)     (qty -300.0) (stale_after_s 300))
    ; Every other name is here at zero, because a signal may name only a
    ; symbol the book declares (R7). On a host with a paper key the account
    ; says what is held; here, nothing. SPY and TLT are EXP-A01's two names.
+   ;
+   ; stale_after_s: how long a name may go without a print before the feed
+   ; calls it stale, where the engine's 90 s is wrong for it. On IEX -- the
+   ; feed a free plan streams -- a thin ETF prints minutes apart in the
+   ; regular session, and at 90 s fourteen of these names read stale most
+   ; of the day, which refused every intraday order in them (the desk's mark
+   ; rule) and lit the health lamp for nothing. The values are tiers over
+   ; the longest silence each name showed on 2026-10-27, 09:30-14:00 ET
+   ; (tools/iex_gaps.py reproduces the measurement): 1800 for the names
+   ; that went 11-34 minutes without a trade (DBC 34, DBA 23, VLUE 23, BIL
+   ; 20, SHY 19, IEI 17, QUAL 15, MDY 12, TIP 11; SIZE printed not once in
+   ; four and a half hours, and MTUM and USMV are its kin), 600 for 3-8
+   ; minutes (IEF, EMB, INDA, FXI, DIA, VGK, UNG, USO, SLV), 300 for 90 s to
+   ; 3 minutes (XLRE, LQD, EWJ, EFA, TLT, CVX, XLU, HYG, XLI, XLB, GLD, XLP,
+   ; XLF, EEM, JPM, XLK, XLY). The rest never went a minute without one.
    ((symbol SPY)  (sector INDEX)      (qty 0.0))
-   ((symbol TLT)  (sector TREASURIES) (qty 0.0))
+   ((symbol TLT)  (sector TREASURIES) (qty 0.0) (stale_after_s 300))
    ; The rest of the site's 42 ETFs (quant/src/ohcamel_quant/universes.json,
    ; less its crypto and volatility groups), one sector per group, for the
    ; farm's strategies below. SPY and TLT above are two of the 42.
    ; US equity indices: INDEX.
    ((symbol QQQ)  (sector INDEX)      (qty 0.0))
-   ((symbol DIA)  (sector INDEX)      (qty 0.0))
+   ((symbol DIA)  (sector INDEX)      (qty 0.0) (stale_after_s 600))
    ((symbol IWM)  (sector INDEX)      (qty 0.0))
-   ((symbol MDY)  (sector INDEX)      (qty 0.0))
+   ((symbol MDY)  (sector INDEX)      (qty 0.0) (stale_after_s 1800))
    ; S&P 500 sectors: SECTOR.
-   ((symbol XLK)  (sector SECTOR)     (qty 0.0))
-   ((symbol XLF)  (sector SECTOR)     (qty 0.0))
+   ((symbol XLK)  (sector SECTOR)     (qty 0.0) (stale_after_s 300))
+   ((symbol XLF)  (sector SECTOR)     (qty 0.0) (stale_after_s 300))
    ((symbol XLE)  (sector SECTOR)     (qty 0.0))
    ((symbol XLV)  (sector SECTOR)     (qty 0.0))
-   ((symbol XLI)  (sector SECTOR)     (qty 0.0))
-   ((symbol XLY)  (sector SECTOR)     (qty 0.0))
-   ((symbol XLP)  (sector SECTOR)     (qty 0.0))
-   ((symbol XLU)  (sector SECTOR)     (qty 0.0))
-   ((symbol XLB)  (sector SECTOR)     (qty 0.0))
-   ((symbol XLRE) (sector SECTOR)     (qty 0.0))
+   ((symbol XLI)  (sector SECTOR)     (qty 0.0) (stale_after_s 300))
+   ((symbol XLY)  (sector SECTOR)     (qty 0.0) (stale_after_s 300))
+   ((symbol XLP)  (sector SECTOR)     (qty 0.0) (stale_after_s 300))
+   ((symbol XLU)  (sector SECTOR)     (qty 0.0) (stale_after_s 300))
+   ((symbol XLB)  (sector SECTOR)     (qty 0.0) (stale_after_s 300))
+   ((symbol XLRE) (sector SECTOR)     (qty 0.0) (stale_after_s 300))
    ((symbol XLC)  (sector SECTOR)     (qty 0.0))
    ; Style factors: STYLE.
-   ((symbol MTUM) (sector STYLE)      (qty 0.0))
-   ((symbol QUAL) (sector STYLE)      (qty 0.0))
-   ((symbol VLUE) (sector STYLE)      (qty 0.0))
-   ((symbol USMV) (sector STYLE)      (qty 0.0))
-   ((symbol SIZE) (sector STYLE)      (qty 0.0))
+   ((symbol MTUM) (sector STYLE)      (qty 0.0) (stale_after_s 1800))
+   ((symbol QUAL) (sector STYLE)      (qty 0.0) (stale_after_s 1800))
+   ((symbol VLUE) (sector STYLE)      (qty 0.0) (stale_after_s 1800))
+   ((symbol USMV) (sector STYLE)      (qty 0.0) (stale_after_s 1800))
+   ((symbol SIZE) (sector STYLE)      (qty 0.0) (stale_after_s 1800))
    ; US Treasuries: RATES.
-   ((symbol BIL)  (sector RATES)      (qty 0.0))
-   ((symbol SHY)  (sector RATES)      (qty 0.0))
-   ((symbol IEI)  (sector RATES)      (qty 0.0))
-   ((symbol IEF)  (sector RATES)      (qty 0.0))
-   ((symbol TIP)  (sector RATES)      (qty 0.0))
+   ((symbol BIL)  (sector RATES)      (qty 0.0) (stale_after_s 1800))
+   ((symbol SHY)  (sector RATES)      (qty 0.0) (stale_after_s 1800))
+   ((symbol IEI)  (sector RATES)      (qty 0.0) (stale_after_s 1800))
+   ((symbol IEF)  (sector RATES)      (qty 0.0) (stale_after_s 600))
+   ((symbol TIP)  (sector RATES)      (qty 0.0) (stale_after_s 1800))
    ; Credit: CREDIT.
-   ((symbol LQD)  (sector CREDIT)     (qty 0.0))
-   ((symbol HYG)  (sector CREDIT)     (qty 0.0))
-   ((symbol EMB)  (sector CREDIT)     (qty 0.0))
+   ((symbol LQD)  (sector CREDIT)     (qty 0.0) (stale_after_s 300))
+   ((symbol HYG)  (sector CREDIT)     (qty 0.0) (stale_after_s 300))
+   ((symbol EMB)  (sector CREDIT)     (qty 0.0) (stale_after_s 600))
    ; International equity: INTL.
-   ((symbol EFA)  (sector INTL)       (qty 0.0))
-   ((symbol EEM)  (sector INTL)       (qty 0.0))
-   ((symbol VGK)  (sector INTL)       (qty 0.0))
-   ((symbol EWJ)  (sector INTL)       (qty 0.0))
-   ((symbol FXI)  (sector INTL)       (qty 0.0))
-   ((symbol INDA) (sector INTL)       (qty 0.0))
+   ((symbol EFA)  (sector INTL)       (qty 0.0) (stale_after_s 300))
+   ((symbol EEM)  (sector INTL)       (qty 0.0) (stale_after_s 300))
+   ((symbol VGK)  (sector INTL)       (qty 0.0) (stale_after_s 600))
+   ((symbol EWJ)  (sector INTL)       (qty 0.0) (stale_after_s 300))
+   ((symbol FXI)  (sector INTL)       (qty 0.0) (stale_after_s 600))
+   ((symbol INDA) (sector INTL)       (qty 0.0) (stale_after_s 600))
    ; Commodities: COMMODITY.
-   ((symbol GLD)  (sector COMMODITY)  (qty 0.0))
-   ((symbol SLV)  (sector COMMODITY)  (qty 0.0))
-   ((symbol USO)  (sector COMMODITY)  (qty 0.0))
-   ((symbol UNG)  (sector COMMODITY)  (qty 0.0))
-   ((symbol DBA)  (sector COMMODITY)  (qty 0.0))
-   ((symbol DBC)  (sector COMMODITY)  (qty 0.0))))
+   ((symbol GLD)  (sector COMMODITY)  (qty 0.0) (stale_after_s 300))
+   ((symbol SLV)  (sector COMMODITY)  (qty 0.0) (stale_after_s 600))
+   ((symbol USO)  (sector COMMODITY)  (qty 0.0) (stale_after_s 600))
+   ((symbol UNG)  (sector COMMODITY)  (qty 0.0) (stale_after_s 600))
+   ((symbol DBA)  (sector COMMODITY)  (qty 0.0) (stale_after_s 1800))
+   ((symbol DBC)  (sector COMMODITY)  (qty 0.0) (stale_after_s 1800))))
  (limits
   (((name aapl-cap)   (scope (Instrument AAPL))  (kind (Gross_notional 150000.0)))
    ((name nvda-cap)   (scope (Instrument NVDA))  (kind (Gross_notional 60000.0)))

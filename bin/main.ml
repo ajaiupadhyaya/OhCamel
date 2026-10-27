@@ -1166,7 +1166,12 @@ let run_live ~book_path ~(serve_port : int option) =
           ~starting_cash:(Notional.of_float book.Config.Book.cash)
           ~instruments ~limits ~confidence:runtime.Config.Runtime.confidence
           ~return_window:runtime.Config.Runtime.return_window
-          ~staleness_threshold:runtime.Config.Runtime.staleness_threshold ()
+          ~staleness_threshold:runtime.Config.Runtime.staleness_threshold
+          ~staleness_overrides:
+            (Symbol.Map.of_alist_exn
+               (List.map (Config.Book.staleness_overrides book) ~f:(fun (s, span) ->
+                    (s, Time.Span.of_sec (Time_ns.Span.to_sec span)))))
+          ()
       in
       List.iter book.Config.Book.positions ~f:(fun p ->
           Graph.set_qty graph

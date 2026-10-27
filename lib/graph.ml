@@ -305,6 +305,11 @@ module Feed_health = struct
       last_tick : Time.t option;
       never_seen : bool;
       stale : bool;
+      (* The silence this name is allowed before it reads stale: the graph's
+         threshold, or the book's own for a thin name. Constant per symbol,
+         so it costs the cutoff nothing; carried so a reader of the health
+         can see what each age was measured against. *)
+      stale_after : Time.Span.t;
     }
     [@@deriving sexp_of, compare, equal, fields ~getters]
   end
@@ -512,6 +517,10 @@ type t = {
   option_positions : Options.Position.t String.Map.t;
   equity_history_limit : int;
   staleness_threshold : Time.Span.t;
+  (* Per-symbol thresholds that replace [staleness_threshold] for the names
+       they cover: a thin ETF on IEX prints minutes apart, and one threshold
+       sized for AAPL calls it stale all day. *)
+  staleness_overrides : Time.Span.t Symbol.Map.t;
   (* Inputs. These are the only mutable cells in the system; everything else
        is a function of them. *)
   price_vars : Price.t Inc.Var.t Symbol.Map.t;
@@ -650,6 +659,7 @@ let find_var (vars : 'a Inc.Var.t Symbol.Map.t) (symbol : Symbol.t) ~(what : str
 let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
     ?(starting_cash = Notional.zero) ?(equity_history_limit = 10_000)
     ?(staleness_threshold = Time.Span.of_sec 90.0)
+    ?(staleness_overrides : Time.Span.t Symbol.Map.t = Symbol.Map.empty)
     ?(ewma_lambda = Vol_estimators.Ewma.default_lambda)
     ?(covariance_for_attribution = Covariance_estimator.Equal_weighted)
     ?(options : Options.Position.t list = []) ?(rate = 0.04)
@@ -717,6 +727,15 @@ let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
     invalid_argf "graph: staleness_threshold must be positive, got %s"
       (Time.Span.to_string_hum staleness_threshold)
       ();
+  Map.iteri staleness_overrides ~f:(fun ~key:symbol ~data:span ->
+      if not (List.mem instrument_symbols symbol ~equal:Symbol.equal) then
+        invalid_argf "graph: staleness override for %S, which is not an instrument"
+          (Symbol.to_string symbol) ();
+      if Time.Span.( <= ) span Time.Span.zero then
+        invalid_argf "graph: staleness override for %S must be positive, got %s"
+          (Symbol.to_string symbol)
+          (Time.Span.to_string_hum span)
+          ());
   (* Validated before a single node exists, so that no node body can ever raise:
      an exception during stabilization leaves the graph in a state Incremental
      cannot recover, and a risk engine that dies on a bad limit definition is
@@ -1599,6 +1618,9 @@ let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
            holds no continuously-changing field -- see the note on [age] in
            Feed_health. So a clock tick that leaves every status alone genuinely
            produces the same value, and stops here. *)
+        let stale_after =
+          Option.value (Map.find staleness_overrides symbol) ~default:staleness_threshold
+        in
         named (Node_name.feed symbol)
           (cutoff ~equal:Feed_health.Symbol_state.equal
              (Inc.map2 (Inc.Var.watch last_tick_var) (Inc.Var.watch now_var)
@@ -1614,8 +1636,8 @@ let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
                       has never printed is a subscription that did not take; one
                       that printed and stopped is a feed that dropped. *)
                       | None -> false
-                      | Some tick ->
-                          Time.Span.( > ) (Time.diff now tick) staleness_threshold);
+                      | Some tick -> Time.Span.( > ) (Time.diff now tick) stale_after);
+                    stale_after;
                   }))))
   in
   (* Depends on the per-symbol states and NOT on [now] directly, so it changes
@@ -1651,6 +1673,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
       option_positions;
       equity_history_limit;
       staleness_threshold;
+      staleness_overrides;
       price_vars;
       qty_vars;
       returns_vars;
@@ -1733,7 +1756,8 @@ let fork ?on_compute ?(limits : Limit.t list option) (t : t) : t =
   let forked =
     create ?on_compute ~starting_cash:(Inc.Var.value t.cash_var)
       ~equity_history_limit:t.equity_history_limit
-      ~staleness_threshold:t.staleness_threshold ~ewma_lambda:t.ewma_lambda
+      ~staleness_threshold:t.staleness_threshold
+      ~staleness_overrides:t.staleness_overrides ~ewma_lambda:t.ewma_lambda
       ~covariance_for_attribution:t.covariance_for_attribution
       ~options:(Map.data t.option_positions) ~rate:(Inc.Var.value t.rate_var)
       ~instruments:(Map.data t.instruments) ~limits ~confidence:t.confidence
@@ -2396,6 +2420,12 @@ let symbols (t : t) : Symbol.t list = Map.keys t.instruments
    at 90, and age is the reader's to compute (see Feed_health above), so the
    threshold it computes against has to be on the wire beside the ages. *)
 let staleness_threshold (t : t) : Time.Span.t = t.staleness_threshold
+
+(* The silence [symbol] is allowed before it reads stale: the book's own
+   threshold for it when one was given, else the engine's. *)
+let staleness_threshold_for (t : t) (symbol : Symbol.t) : Time.Span.t =
+  Option.value (Map.find t.staleness_overrides symbol) ~default:t.staleness_threshold
+
 let knows_symbol (t : t) (symbol : Symbol.t) : bool = Map.mem t.instruments symbol
 
 let set_price (t : t) (symbol : Symbol.t) (price : Price.t) : unit =

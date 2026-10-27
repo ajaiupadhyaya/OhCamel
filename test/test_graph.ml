@@ -1338,6 +1338,70 @@ let test_clock_cannot_reach_the_risk_chain () =
         (List.map (Graph.Feed_health.never_seen health) ~f:Symbol.to_string))
     ()
 
+(* A name may carry a staleness threshold of its own. On IEX a thin ETF
+   prints minutes apart in the regular session, and the engine's one
+   threshold, sized for a name that prints every second, called fourteen of
+   the live book's names stale most of the day (2026-10-27). Here XOM is
+   allowed 300 s against the default 90: both print at t; at t + 120 AAPL and
+   MSFT are stale and XOM is not, and the health says what each was measured
+   against; at t + 400 all three are. An override for a name the graph does
+   not hold, or of nothing, is refused at construction. *)
+let test_a_per_symbol_staleness_threshold () =
+  let t = Time.epoch in
+  let graph =
+    Graph.create ~starting_cash:(dollars 100_000.0) ~instruments:book ~limits:book_limits
+      ~confidence:0.95 ~return_window:10
+      ~staleness_overrides:(Symbol.Map.singleton xom (Time.Span.of_sec 300.0))
+      ()
+  in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      List.iter [ aapl; msft; xom ] ~f:(fun symbol ->
+          Graph.apply_tick graph { Tick.symbol; price = Price.of_float 100.0; time = t });
+      Graph.set_now graph (Time.add t (Time.Span.of_sec 120.0));
+      Graph.stabilize graph;
+      let health = Graph.feed_health graph in
+      Alcotest.(check (list string))
+        "at 120 s the two default names are stale, XOM is not" [ "AAPL"; "MSFT" ]
+        (List.map (Graph.Feed_health.stale health) ~f:Symbol.to_string);
+      Alcotest.(check (list (pair string (float 1e-9))))
+        "each state carries the threshold it was measured against"
+        [ ("AAPL", 90.0); ("MSFT", 90.0); ("XOM", 300.0) ]
+        (List.map (Graph.Feed_health.symbols health) ~f:(fun s ->
+             ( Symbol.to_string s.Graph.Feed_health.Symbol_state.symbol,
+               Time.Span.to_sec s.Graph.Feed_health.Symbol_state.stale_after )));
+      Alcotest.(check (pair (float 1e-9) (float 1e-9)))
+        "and the graph answers the same" (90.0, 300.0)
+        ( Time.Span.to_sec (Graph.staleness_threshold_for graph aapl),
+          Time.Span.to_sec (Graph.staleness_threshold_for graph xom) );
+      Graph.set_now graph (Time.add t (Time.Span.of_sec 400.0));
+      Graph.stabilize graph;
+      Alcotest.(check (list string))
+        "at 400 s all three are stale" [ "AAPL"; "MSFT"; "XOM" ]
+        (List.map (Graph.Feed_health.stale (Graph.feed_health graph)) ~f:Symbol.to_string));
+  let refused overrides =
+    match
+      Graph.create ~starting_cash:(dollars 100_000.0) ~instruments:book
+        ~limits:book_limits ~confidence:0.95 ~return_window:10
+        ~staleness_overrides:overrides ()
+    with
+    | exception Invalid_argument msg -> msg
+    | g ->
+        Graph.destroy g;
+        "accepted"
+  in
+  Alcotest.(check bool)
+    "an override for a name the graph does not hold is refused" true
+    (String.is_substring
+       (refused (Symbol.Map.singleton (Symbol.of_string "GOOG") (Time.Span.of_sec 300.0)))
+       ~substring:"not an instrument");
+  Alcotest.(check bool)
+    "an override of nothing is refused" true
+    (String.is_substring
+       (refused (Symbol.Map.singleton xom Time.Span.zero))
+       ~substring:"must be positive")
+
 (* "Never printed" and "printed then went quiet" are different problems and are
    reported differently. The first is a subscription that did not take; the
    second is a feed that dropped. A single "no data" flag would hide which. *)
@@ -2155,4 +2219,6 @@ let suite =
         test_process_counters_move;
       Alcotest.test_case "the staleness threshold comes back out" `Quick
         test_staleness_threshold_round_trips;
+      Alcotest.test_case "a per-symbol staleness threshold" `Quick
+        test_a_per_symbol_staleness_threshold;
     ] )

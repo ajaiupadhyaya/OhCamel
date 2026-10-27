@@ -84,6 +84,7 @@ let json_of_feed_health (h : Graph.Feed_health.t) : Yojson.Safe.t =
                   | Some t -> jstring (Time_ns.to_string_utc t) );
                 ("never_seen", `Bool st.never_seen);
                 ("stale", `Bool st.stale);
+                ("stale_after_s", jfloat (Time_ns.Span.to_sec st.stale_after));
               ])
           (Graph.Feed_health.symbols h) );
     ]
