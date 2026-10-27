@@ -39,7 +39,7 @@ fn var_es_from_pnl(
     alpha: f64,
 ) -> PyResult<(f64, f64)> {
     let p = s1(&pnl, "pnl")?;
-    Ok(py.allow_threads(|| crate::tail::var_es_from_pnl(p, alpha)))
+    Ok(py.detach(|| crate::tail::var_es_from_pnl(p, alpha)))
 }
 
 #[pyfunction]
@@ -75,9 +75,9 @@ fn fhs_paths<'py>(
         threads,
     };
     let out = py
-        .allow_threads(|| crate::fhs::fhs_paths(z, n, k, &g, w, &sim))
+        .detach(|| crate::fhs::fhs_paths(z, n, k, &g, w, &sim))
         .map_err(err)?;
-    Ok(out.into_pyarray_bound(py))
+    Ok(out.into_pyarray(py))
 }
 
 #[pyfunction]
@@ -100,9 +100,9 @@ fn copula_t_paths<'py>(
         threads,
     };
     let out = py
-        .allow_threads(|| crate::copula::copula_t_paths(x, n, k, w, nu, &sim))
+        .detach(|| crate::copula::copula_t_paths(x, n, k, w, nu, &sim))
         .map_err(err)?;
-    Ok(out.into_pyarray_bound(py))
+    Ok(out.into_pyarray(py))
 }
 
 #[pyfunction]
@@ -114,9 +114,9 @@ fn kendall_corr_py<'py>(
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
     let (x, n, k) = s2(&returns, "returns")?;
     let out = py
-        .allow_threads(|| crate::copula::kendall_corr(x, n, k, threads))
+        .detach(|| crate::copula::kendall_corr(x, n, k, threads))
         .map_err(err)?;
-    Ok(out.into_pyarray_bound(py))
+    Ok(out.into_pyarray(py))
 }
 
 #[pyfunction]
@@ -130,11 +130,11 @@ fn stationary_bootstrap_means<'py>(
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
     let (v, n, k) = s2(&x, "x")?;
     let out = py
-        .allow_threads(|| {
+        .detach(|| {
             crate::bootstrap::stationary_bootstrap_means(v, n, k, mean_block, reps, seed, threads)
         })
         .map_err(err)?;
-    Ok(out.into_pyarray_bound(py))
+    Ok(out.into_pyarray(py))
 }
 
 #[pyfunction]
@@ -153,17 +153,17 @@ fn cscv_pbo<'py>(
 )> {
     let (m, t, nt) = s2(&perf, "perf")?;
     let r = py
-        .allow_threads(|| crate::cscv::cscv_pbo(m, t, nt, n_partitions, threads))
+        .detach(|| crate::cscv::cscv_pbo(m, t, nt, n_partitions, threads))
         .map_err(err)?;
     let n = r.logits.len();
     let sel: Vec<i64> = r.selected.iter().map(|&v| v as i64).collect();
     Ok((
         r.pbo,
-        r.logits.into_pyarray_bound(py),
+        r.logits.into_pyarray(py),
         n,
-        sel.into_pyarray_bound(py),
-        r.is_sharpe.into_pyarray_bound(py),
-        r.oos_sharpe.into_pyarray_bound(py),
+        sel.into_pyarray(py),
+        r.is_sharpe.into_pyarray(py),
+        r.oos_sharpe.into_pyarray(py),
     ))
 }
 
@@ -176,8 +176,7 @@ fn garch_nll(
 ) -> PyResult<f64> {
     let k = crate::garch::Kind::parse(&kind).map_err(err)?;
     let (p, y) = (s1(&params, "params")?, s1(&r, "r")?);
-    py.allow_threads(|| crate::garch::garch_nll(p, y, k))
-        .map_err(err)
+    py.detach(|| crate::garch::garch_nll(p, y, k)).map_err(err)
 }
 
 #[pyfunction]
@@ -203,16 +202,16 @@ fn garch_fit<'py>(
         None => None,
     };
     let f = py
-        .allow_threads(|| crate::garch::garch_fit(y, k, start))
+        .detach(|| crate::garch::garch_fit(y, k, start))
         .map_err(err)?;
     Ok((
-        f.params.into_pyarray_bound(py),
+        f.params.into_pyarray(py),
         f.nll,
         f.converged,
         f.iterations,
-        f.sigma2.into_pyarray_bound(py),
+        f.sigma2.into_pyarray(py),
         f.next_variance,
-        f.std_resid.into_pyarray_bound(py),
+        f.std_resid.into_pyarray(py),
     ))
 }
 
@@ -242,18 +241,18 @@ fn backtest_weights<'py>(
         .map_err(|_| err("decision_idx must be a C-contiguous int64 array".into()))?;
     let rfs = s1(&rf, "rf")?;
     let p = py
-        .allow_threads(|| {
+        .detach(|| {
             crate::backtest::backtest_weights(px, nt, na, tw, idx, cost_bps, borrow_bps, rfs)
         })
         .map_err(err)?;
     Ok((
-        p.gross.into_pyarray_bound(py),
-        p.net.into_pyarray_bound(py),
-        p.weights.into_pyarray_bound(py),
-        p.turnover.into_pyarray_bound(py),
-        p.trades.into_pyarray_bound(py),
-        p.costs.into_pyarray_bound(py),
-        p.borrow.into_pyarray_bound(py),
+        p.gross.into_pyarray(py),
+        p.net.into_pyarray(py),
+        p.weights.into_pyarray(py),
+        p.turnover.into_pyarray(py),
+        p.trades.into_pyarray(py),
+        p.costs.into_pyarray(py),
+        p.borrow.into_pyarray(py),
         p.ruined,
     ))
 }
@@ -266,9 +265,7 @@ fn svi_fit(
     weights: PyReadonlyArray1<'_, f64>,
 ) -> PyResult<(f64, f64, f64, f64, f64, f64, bool)> {
     let (kk, ww, wt) = (s1(&k, "k")?, s1(&w, "w")?, s1(&weights, "weights")?);
-    let f = py
-        .allow_threads(|| crate::svi::svi_fit(kk, ww, wt))
-        .map_err(err)?;
+    let f = py.detach(|| crate::svi::svi_fit(kk, ww, wt)).map_err(err)?;
     Ok((f.a, f.b, f.rho, f.m, f.sigma, f.sse, f.constrained_a))
 }
 
@@ -287,9 +284,9 @@ fn realized_vol_minute<'py>(
         .map_err(|_| err("session_bounds must be a C-contiguous int64 array".into()))?;
     let p = s1(&px, "px")?;
     let out = py
-        .allow_threads(|| crate::rv::realized_variance(ts, p, b))
+        .detach(|| crate::rv::realized_variance(ts, p, b))
         .map_err(err)?;
-    Ok(out.into_pyarray_bound(py))
+    Ok(out.into_pyarray(py))
 }
 
 #[pymodule]

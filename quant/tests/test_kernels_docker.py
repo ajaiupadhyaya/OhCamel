@@ -14,9 +14,22 @@ CI = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"
 IMAGE = (REPO_ROOT / ".github" / "workflows" / "image.yml").read_text(encoding="utf-8")
 
 
+_CHANNEL = re.search(
+    r'^channel = "([0-9.]+)"$',
+    (REPO_ROOT / "native" / "rust-toolchain.toml").read_text(encoding="utf-8"),
+    re.M,
+)
+assert _CHANNEL, "native/rust-toolchain.toml pins no channel"
+TOOLCHAIN = _CHANNEL.group(1)
+DIGEST = r"(@sha256:[0-9a-f]{64})?"
+
+
 def test_wheel_is_built_in_a_rust_stage():
-    assert re.search(r"^FROM rust:1\.80\S* AS rust-toolchain$", DOCKERFILE, re.M)
-    assert re.search(r"^FROM python:3\.12-slim AS kernels$", DOCKERFILE, re.M)
+    # The image's Rust is the one native/rust-toolchain.toml pins, so the wheel
+    # and `cargo clippy` in CI are built by the same compiler.
+    rust = re.escape(f"rust:{TOOLCHAIN}")
+    assert re.search(rf"^FROM {rust}-slim{DIGEST} AS rust-toolchain$", DOCKERFILE, re.M)
+    assert re.search(rf"^FROM python:3\.12-slim{DIGEST} AS kernels$", DOCKERFILE, re.M)
     assert "maturin build --release --locked -m kernels/Cargo.toml" in DOCKERFILE
     assert "ls /wheels/ohcamel_kernels-*.whl" in DOCKERFILE
 

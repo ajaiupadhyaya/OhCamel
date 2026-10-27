@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
 #
-# Pins, as text, the two files in this repository that no other check reads
-# and no green GitHub run reports on:
-#
-#   .github/workflows/ci.yml   -- its top-level token scope and push triggers
-#   .github/dependabot.yml     -- the two weekly entries the digest pins rely on
+# Pins, as text, what no other check reads and no green GitHub run reports
+# on in .github/workflows/ci.yml: its top-level token scope and push triggers.
 #
 #   deploy/test/ci_hygiene_test.sh
 #
-# Exits non-zero, naming the file and the line, if any of the three
-# assertions below fails or either file is missing. grep and awk only, no
+# Exits non-zero, naming the file and the line, if either assertion below
+# fails or the file is missing. grep and awk only, no
 # yq and no python; runs from any directory; picked up by the lint job's
 # deploy/test/*.sh step with no change to the workflow.
 #
 # Why this exists. A run that goes green does not report what was NOT
-# granted, NOT triggered or NOT bumped, and nothing under deploy/, scripts/
-# or the Makefile read either file, so each of these edits used to leave
+# granted or NOT triggered, and nothing under deploy/, scripts/ or the
+# Makefile reads the file, so each of these edits used to leave
 # every check green:
 #   - deleting the top-level `permissions: contents: read` -- every job
 #     without a block of its own silently inherits the repository's Actions
@@ -24,10 +21,7 @@
 #   - dropping `final/**` (or `desk/**`) from `on.push.branches` -- a stage
 #     branch silently stops running CI before its merge, and ruling 1's
 #     "green before the merge" becomes a claim about a run that never
-#     happened;
-#   - deleting dependabot's `docker` entry -- the digest pins under deploy/
-#     stop moving for ever, which deploy/Dockerfile's own FROM comment calls
-#     a worse failure than a floating tag.
+#     happened.
 #
 # Assertion 1: ci.yml has exactly one column-zero `permissions:` block, and
 #   its only entry is `contents: read`. A job-level block does not satisfy
@@ -38,13 +32,11 @@
 #   takes it at the job, where the exception is visible at the job taking it.
 # Assertion 2: `on.push.branches` lists `main`, `desk/**` and `final/**`,
 #   one `- <pattern>` per line. Further patterns are allowed.
-# Assertion 3: dependabot.yml is `version: 2` and carries a `github-actions`
-#   entry at directory "/" and a `docker` entry at directory "/deploy", each
-#   with `interval: "weekly"`. Further entries are allowed -- the compute
-#   program expects a `docker` entry at "/quant" -- so this does not forbid
-#   one.
 #
-# The YAML reader below covers the subset these two files use: block
+# (Assertion 3 pinned .github/dependabot.yml; the owner turned Dependabot off
+# for this repository on 2026-10-20, and the file went with it.)
+#
+# The YAML reader below covers the subset this file uses: block
 # mappings, block sequences, scalars, comments. It tracks indentation to
 # give every line a key path, so `permissions:` at column zero and a job's
 # `permissions:` are different paths, and `pull_request: branches:` is never
@@ -56,7 +48,6 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 ci=.github/workflows/ci.yml
-dep=.github/dependabot.yml
 
 pass=0
 fail=0
@@ -67,13 +58,11 @@ finish() {
 	[ "$fail" -eq 0 ] || exit 1
 }
 
-for f in "$ci" "$dep"; do
-	if [ ! -f "$f" ]; then
-		no "$f" "missing -- expected at exactly this path; if it moved, this test's paths move with it"
-	fi
-done
-# Nothing below can be read without both files.
-[ "$fail" -eq 0 ] || finish
+if [ ! -f "$ci" ]; then
+	no "$ci" "missing -- expected at exactly this path; if it moved, this test's paths move with it"
+	# Nothing below can be read without it.
+	finish
+fi
 
 # walk FILE: one tab-separated record per line that carries structure.
 #   KEY   ITEM PATH LINE VALUE   a `key:` or `key: value` line; VALUE is what
@@ -208,73 +197,5 @@ else
 		fi
 	done
 fi
-
-# --- 3. Dependabot: version 2, github-actions at "/", docker at "/deploy",
-# both weekly. ------------------------------------------------------------
-dep_walk=$(walk "$dep")
-
-version_line=""
-version_val=""
-items="" # LINE<TAB>ECOSYSTEM<TAB>DIRECTORY<TAB>INTERVAL per updates entry
-in_item=0
-cur_line=""
-cur_eco=""
-cur_dir=""
-cur_intv=""
-flush_item() {
-	if [ "$in_item" -eq 1 ]; then
-		items="${items}${cur_line}"$'\t'"${cur_eco}"$'\t'"${cur_dir}"$'\t'"${cur_intv}"$'\n'
-	fi
-}
-while IFS=$'\t' read -r kind _ p line val; do
-	[ -n "$kind" ] || continue
-	case "$kind:$p" in
-	KEY:version)
-		version_line=$line
-		version_val=$val
-		;;
-	ITEM:updates)
-		flush_item
-		in_item=1
-		cur_line=$line
-		cur_eco=""
-		cur_dir=""
-		cur_intv=""
-		;;
-	KEY:updates/package-ecosystem) cur_eco=$val ;;
-	KEY:updates/directory) cur_dir=$val ;;
-	KEY:updates/schedule/interval) cur_intv=$val ;;
-	esac
-done <<<"$dep_walk"
-flush_item
-
-if [ -z "$version_line" ]; then
-	no "$dep: version" "no top-level 'version:' -- expected 'version: 2'"
-elif [ "$version_val" != 2 ]; then
-	no "$dep:$version_line: 'version: $version_val'" "expected 'version: 2'"
-else
-	ok "$dep:$version_line: version 2"
-fi
-
-# want_entry ECOSYSTEM DIRECTORY: that entry exists and is weekly.
-want_entry() {
-	local eco="$1" dir="$2" line e d i hit=0
-	while IFS=$'\t' read -r line e d i; do
-		[ -n "$line" ] || continue
-		if [ "$e" = "$eco" ] && [ "$d" = "$dir" ]; then
-			hit=1
-			if [ "$i" = weekly ]; then
-				ok "$dep:$line: $eco at \"$dir\", weekly"
-			else
-				no "$dep:$line: $eco at \"$dir\"" "interval is '${i:-unset}' -- expected \"weekly\"; a bump that arrives every morning is a bump nobody reads"
-			fi
-		fi
-	done <<<"$items"
-	if [ "$hit" -eq 0 ]; then
-		no "$dep: updates" "no 'package-ecosystem: \"$eco\"' entry at 'directory: \"$dir\"' (entries found:$(awk -F '\t' 'NF { printf " %s@%s", $2, $3 }' <<<"$items")) -- expected one, with 'interval: \"weekly\"'"
-	fi
-}
-want_entry github-actions /
-want_entry docker /deploy
 
 finish

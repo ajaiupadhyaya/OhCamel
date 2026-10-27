@@ -55,7 +55,7 @@ jobs:
     # anything, and a slow registry should not be what turns this job red.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # ubuntu-latest normally carries shellcheck already; installed here only
       # if a runner image ever drops it, so this step is never the reason the
@@ -318,9 +318,8 @@ jobs:
       # deploy/research.Dockerfile until Task 10's image job, and a build
       # accepts a floating tag as readily as a digest -- so without this the
       # requirement held only for as long as the three lines happened to read
-      # that way, while Dependabot (.github/dependabot.yml) is precisely the
-      # process that rewrites them, weekly, as pull requests that would
-      # otherwise merge green with the digest dropped.
+      # that way, and any hand edit that bumps one is precisely the change
+      # that could otherwise merge green with the digest dropped.
       #
       # awk over the FROM lines and nothing else, in this job's character.
       # What it has to know about a Dockerfile: `FROM` is case-insensitive; a
@@ -331,13 +330,11 @@ jobs:
       # switched off, not fixed); and a heredoc (`RUN <<EOF` ... `EOF`) is data,
       # not instructions -- deploy/research.Dockerfile carries Python whose
       # `from` lines sit at column zero inside one. A digest without a tag
-      # fails too: the tag is the part a reader can act on and what Dependabot
-      # identifies the image by, and without it a digest bump is a bump of
+      # fails too: the tag is the part a reader can act on, and without it a digest bump is a bump of
       # whatever `latest` means that week.
       #
       # Scope is deploy/ deliberately: quant/Dockerfile's floating FROM lines
-      # are compute Task 0.2 Step 2's, which publishes that image, and its pins
-      # land there with that step's Dependabot entry.
+      # are compute Task 0.2 Step 2's, which publishes that image.
       - name: FROM lines are pinned to a tag and a digest (deploy/)
         run: |
           files=(deploy/Dockerfile deploy/research.Dockerfile)
@@ -399,7 +396,7 @@ jobs:
           fi
           printf '%s\n' "$report"
           if printf '%s\n' "$report" | grep -qE '^(unpinned|untagged) '; then
-            echo "a FROM line above is not pinned as image:tag@sha256:<digest> -- pin it (docker buildx imagetools inspect image:tag prints the digest) so the build is reproducible and Dependabot can move it"
+            echo "a FROM line above is not pinned as image:tag@sha256:<digest> -- pin it (docker buildx imagetools inspect image:tag prints the digest) so the build is reproducible and a bump names both"
             exit 1
           fi
 
@@ -424,7 +421,7 @@ jobs:
     # slow. The default 360 would hide a genuine hang; 60 will not.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The launchd plist that runs deploy/pull-backups.sh on the owner's
       # laptop, linted by the tool that will actually load it. This lives on the
@@ -584,7 +581,7 @@ jobs:
           echo "OWL_CFLAGS=-g -O1 -funroll-loops -fno-math-errno -fno-rounding-math -fno-signaling-nans -fexcess-precision=fast -DSFMT_MEXP=19937 -fno-strict-aliasing" >> "$GITHUB_ENV"
           echo "OWL_LDLIBS=-lm -L/opt/homebrew/opt/libomp/lib -lomp" >> "$GITHUB_ENV"
 
-      - uses: ocaml/setup-ocaml@v3
+      - uses: ocaml/setup-ocaml@93303b622b2522e4411e295f9e77411a24912ac7 # v3.9.0
         with:
           ocaml-compiler: "5.2.1"
           dune-cache: true
@@ -633,7 +630,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: System dependencies
         run: |
@@ -641,7 +638,7 @@ jobs:
           sudo apt-get install -y pkg-config libopenblas-dev liblapacke-dev \
                                   libffi-dev libssl-dev libsqlite3-dev
 
-      - uses: ocaml/setup-ocaml@v3
+      - uses: ocaml/setup-ocaml@93303b622b2522e4411e295f9e77411a24912ac7 # v3.9.0
         with:
           ocaml-compiler: "5.2.1"
           dune-cache: true
@@ -667,7 +664,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: System dependencies
         run: |
@@ -675,7 +672,7 @@ jobs:
           sudo apt-get install -y pkg-config libopenblas-dev liblapacke-dev \
                                   libffi-dev libssl-dev libsqlite3-dev
 
-      - uses: ocaml/setup-ocaml@v3
+      - uses: ocaml/setup-ocaml@93303b622b2522e4411e295f9e77411a24912ac7 # v3.9.0
         with:
           ocaml-compiler: "5.2.1"
           dune-cache: true
@@ -730,7 +727,7 @@ jobs:
           awk -v p="$percent" 'BEGIN { exit !(p >= 60) }' \
             || { echo "coverage ${percent}% is below the 60% floor"; exit 1; }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-html
           path: _coverage/html
@@ -742,10 +739,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: "0.10.4"
 
@@ -768,7 +765,7 @@ jobs:
 
   # The Rust workspace (native/): hostd and the kernels crate (compute plan
   # II.1). rustup reads native/rust-toolchain.toml, so the toolchain is the
-  # pinned 1.80 with rustfmt and clippy. --locked: exactly native/Cargo.lock.
+  # pinned 1.85 with rustfmt and clippy. --locked: exactly native/Cargo.lock.
   # Then the kernels' Python side (compute plan A1): build the ohcamel_kernels
   # wheel with maturin, install it into quant/.venv, and run the parity suite
   # with Rust and again on the NumPy reference, then the whole offline Quant
@@ -781,10 +778,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: "0.10.4"
 
@@ -800,7 +797,7 @@ jobs:
       run:
         working-directory: native
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Toolchain (native/rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
@@ -815,7 +812,7 @@ jobs:
         run: cargo test --locked
 
       - name: Install uv and Python 3.12
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: "0.10.4"
           python-version: "3.12"
@@ -868,7 +865,7 @@ jobs:
             --measured-on "github-actions ubuntu-latest: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs), $(nproc) vCPU" \
             --json "$RUNNER_TEMP/kernels.json" --md "$RUNNER_TEMP/kernels.md"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kernels-bench
           path: |
@@ -888,10 +885,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv and Python 3.12
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: "0.10.4"
           python-version: "3.12"
@@ -918,7 +915,7 @@ jobs:
       - name: check-counts --verify (TESTS = collected)
         run: scripts/check-counts.sh --verify
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: npm
@@ -950,10 +947,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv and Python 3.12
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: "0.10.4"
           python-version: "3.12"
@@ -1071,7 +1068,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: docker build
         run: |

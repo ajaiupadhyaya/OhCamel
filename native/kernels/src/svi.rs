@@ -120,7 +120,7 @@ fn box_qp(g: &M3, h: &[f64; 3], lo: &[f64; 3], hi: &[f64; 3], a_boxed: bool) -> 
             }
             if feasible(&x) {
                 let obj = quad(g, h, &x);
-                if cand.map_or(true, |(_, o)| obj < o) {
+                if cand.is_none_or(|(_, o)| obj < o) {
                     cand = Some((x, obj));
                 }
             }
@@ -238,7 +238,7 @@ pub fn svi_fit(k: &[f64], w: &[f64], wt: &[f64]) -> Result<SviFit, String> {
     let mut best: Option<crate::optim::NmResult> = None;
     for &(_, m0, s0) in starts.iter().take(3) {
         let r = nelder_mead(obj, &[m0, s0.ln()], &opts);
-        if best.as_ref().map_or(true, |b| r.fun < b.fun) {
+        if best.as_ref().is_none_or(|b| r.fun < b.fun) {
             best = Some(r);
         }
     }
