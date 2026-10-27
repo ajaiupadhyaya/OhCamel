@@ -822,7 +822,19 @@ type t = {
   (* Each strategy's last adjust outcome said, so a refusal repeated every
      minute -- an intraday proposal outside the session -- costs one line. *)
   adjust_said : string String.Table.t;
+  (* How many times the adjust pass has completed each strategy -- sized it
+     again because orders of its latest sizing ended unfilled -- with orders
+     that reached the venue, as (the session's UTC date, the count): at most
+     [max_completions] a session ([adjust]). In memory: a restart starts the
+     count again, which costs at most three more waves. *)
+  completions : (string * int) String.Table.t;
 }
+
+(* The most times a session the adjust pass sends a completion for one
+   strategy. A completion whose day limit does not fill is cancelled at its
+   wave's timeout and is itself unfilled, so without a bound a name whose
+   mark is wrong would be sent and cancelled every few minutes all day. *)
+let max_completions = 3
 
 let create ?gauge ~journal ~dir ~strategies ~universe ~on_event ~now () =
   let gauge = match gauge with Some g -> g | None -> Gauge.none () in
@@ -837,6 +849,7 @@ let create ?gauge ~journal ~dir ~strategies ~universe ~on_event ~now () =
     adjusting = false;
     skip_said = false;
     adjust_said = String.Table.create ();
+    completions = String.Table.create ();
     judged = String.Table.create ();
     refused = String.Hash_set.create ();
     unsettled = String.Map.empty;
@@ -1312,9 +1325,12 @@ end
    TIMING alone (Oms.Rebalance_outcome.Not_now) -- then the judgement stays
    pending and is tried again, and the sentence is only said. *)
 module Rebalanced = struct
-  type t = { sentence : string; wait : bool }
+  (* [attempted]: orders of it left the desk -- sent, stopped between
+     submits, or waved -- so the venue saw it; a refusal, for timing or
+     for good, and a plan with nothing to send did not. *)
+  type t = { sentence : string; wait : bool; attempted : bool }
 
-  let final sentence = { sentence; wait = false }
+  let final sentence = { sentence; wait = false; attempted = false }
 end
 
 (* Whether a rebalance's outcome sized the strategy, so its sizing row may
@@ -1411,6 +1427,10 @@ let rebalance ?(mode = Rebalance.Mode.Open) ?(sizing_mode = "open") ?note t ~oms
                 (if List.is_empty dropped then ""
                  else ". " ^ String.capitalize (floor_sentence dropped));
             wait = (match outcome with Not_now _ -> true | _ -> false);
+            attempted =
+              (match outcome with
+              | Sent _ | Stopped _ | Waved _ -> true
+              | Refused _ | Not_now _ -> false);
           })
 
 (* The outcome written over the pending sentence, once; or, when it cannot
@@ -1644,6 +1664,12 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
             let band = t.gauge.spec.Ohcamel.Config.Book.Desk_spec.overlay_band in
             let beyond a b = Float.( > ) (Float.abs (a -. b)) band in
             let now_parts = Parts.of_reading reading in
+            (* The session the completions are counted in: a regular session
+               lies inside one UTC date (13:30-21:00Z at the latest), so the
+               UTC date of now names it without a zone. *)
+            let today =
+              Date.to_string (Time_ns.to_date (t.now ()) ~zone:Time_float.Zone.utc)
+            in
             let holds (s : Signals_spec.Strategy.t) =
               match Oms.strategy_position oms ~strategy:s.name with
               | Ok own -> Map.exists own ~f:(fun q -> Float.( <> ) q 0.0)
@@ -1673,12 +1699,70 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                             | None -> true
                             | Some z -> z.Journal.Sizing.sequence < sequence
                           in
+                          (* THE COMPLETION. Orders of this document that ended
+                             with shares unfilled after the strategy's latest
+                             sizing -- expired at the opening auction, which
+                             Alpaca's paper venue does to most market-on-open
+                             orders; cancelled at a wave's timeout; refused by
+                             the venue or before the wire -- are a sizing that
+                             did not hold, and no overlay move would ever
+                             answer them: the band compares scales, and the
+                             scale is unchanged. So the strategy is sized again
+                             from its document, intraday, whatever the band,
+                             its row "complete". A stale reading holds the
+                             factor the last sizing used, as the governor
+                             branch does, rather than sizing to the fallback.
+                             At most [max_completions] a session, counted
+                             only when orders reached the venue, and said
+                             once a session when the count is spent. *)
+                          let unfilled =
+                            Journal.source_orders_unfilled t.journal
+                              ~source:(Rebalance.Source.name ~strategy:s.name ~sequence)
+                              ~after:(Option.map last ~f:(fun z -> z.Journal.Sizing.at))
+                          in
+                          let completion =
+                            match unfilled with
+                            | [] -> None
+                            | _ :: _ -> (
+                                match Hashtbl.find t.completions s.name with
+                                | Some (day, n)
+                                  when String.equal day today && n >= max_completions ->
+                                    once t ~kind:"completion cap"
+                                      ~name:(s.name ^ "\000" ^ day)
+                                      (fun () ->
+                                        log t
+                                          "%S %d: %d of its orders ended unfilled, and \
+                                           its completion was tried %d times this \
+                                           session; it waits for the next"
+                                          s.name sequence (List.length unfilled)
+                                          max_completions);
+                                    None
+                                | _ ->
+                                    let parts =
+                                      match (stale, last) with
+                                      | ( true,
+                                          Some
+                                            {
+                                              Journal.Sizing.factor = Some f;
+                                              governor = Some _;
+                                              _;
+                                            } ) ->
+                                          {
+                                            Parts.effective = f *. reading.governor;
+                                            factor = Some f;
+                                            governor = Some reading.governor;
+                                          }
+                                      | _ -> now_parts
+                                    in
+                                    Some (parts, Some "completion"))
+                          in
                           let decision =
                             (* An unsized strategy holds while the reading is
                                Stale, like every other: re-sizing it at the
                                fallback would sell what the first fresh overlay
                                buys back. *)
-                            if unsized then
+                            if Option.is_some completion then completion
+                            else if unsized then
                               if holds s && not stale then Some (now_parts, None)
                               else None
                             else
@@ -1732,15 +1816,22 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
             Deferred.List.iter ~how:(`Max_concurrent_jobs 8) due
               ~f:(fun ((a : Accepted.t), parts, note, ratio) ->
                 let name = a.Accepted.strategy.name in
+                let completing = Option.equal String.equal note (Some "completion") in
                 let%map outcome =
                   match%map
                     Monitor.try_with ~extract_exn:true (fun () ->
-                        rebalance ~mode:Rebalance.Mode.Intraday ~sizing_mode:"adjust"
+                        rebalance ~mode:Rebalance.Mode.Intraday
+                          ~sizing_mode:(if completing then "complete" else "adjust")
                           ?note t ~oms
                           ~scale:(fun () -> parts)
                           a)
                   with
-                  | Ok outcome -> outcome.Rebalanced.sentence
+                  | Ok outcome ->
+                      if completing && outcome.Rebalanced.attempted then
+                        Hashtbl.update t.completions name ~f:(function
+                          | Some (day, n) when String.equal day today -> (day, n + 1)
+                          | Some _ | None -> (today, 1));
+                      outcome.Rebalanced.sentence
                   | Error exn -> sprintf "the rebalance raised (%s)" (Exn.to_string exn)
                 in
                 let said = Hashtbl.find t.adjust_said name in

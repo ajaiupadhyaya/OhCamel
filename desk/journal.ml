@@ -1544,6 +1544,25 @@ let source_orders_unsettled t ~prefix ~(since : Date.t option) : Order_row.t lis
     ~row:(fun r -> col_text r 0)
   |> orders_of_ids t
 
+(* The orders under [source] -- one sequence's, signal:<slug>:<sequence> --
+   that ENDED WITH SHARES UNFILLED: expired at the opening auction (Alpaca's
+   paper venue expires most market-on-open orders there), cancelled at an
+   intraday wave's timeout, refused by the venue, or refused before the wire
+   when the order ahead of them was; a partial fill counts, the rest of it
+   being unfilled. With [after] -- a journal instant as Sizing.at reads it --
+   only those the venue finished after it: the ones no sizing since has
+   answered, which is what the adjust pass's completion asks. A failed order
+   is not here: the venue may still work it ([source_orders_unsettled]), and
+   the strategy's position is unknown while it does. Oldest first. *)
+let source_orders_unfilled t ~source ~(after : string option) : Order_row.t list =
+  query t ~what:"unfilled source orders"
+    "SELECT client_order_id FROM orders WHERE source = ? AND state IN \
+     ('rejected_pre_trade','cancelled','expired','rejected_by_venue') AND filled_qty < \
+     qty - 1e-9 AND updated_at > ? ORDER BY created_at, client_order_id"
+    [ text source; text (Option.value after ~default:"") ]
+    ~row:(fun r -> col_text r 0)
+  |> orders_of_ids t
+
 let recent_orders t ~limit : Order_row.t list =
   query t ~what:"recent orders"
     "SELECT client_order_id FROM orders ORDER BY created_at DESC, client_order_id DESC \

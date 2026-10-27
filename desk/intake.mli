@@ -203,8 +203,18 @@ val adjust : t -> oms:Oms.t option -> unit Deferred.t
     says exactly 0 and the last scale was not; or the reading is stale and the governor
     moved more than the band from the last sizing's -- then at that sizing's overlay
     factor times the governor now, noted "governor". A stale reading otherwise holds every
-    last sizing, said once a spell. At most eight strategies at once. A pass that finds
-    the last one still running skips, said once for the whole overlap. Never raises. *)
+    last sizing, said once a spell.
+
+    Before any of that, THE COMPLETION: when orders of that document ended with shares
+    unfilled after the strategy's latest sizing ({!Journal.source_orders_unfilled}) --
+    expired at the opening auction, cancelled at a wave's timeout, refused -- the strategy
+    is sized again from the document whatever the band, its row "complete" and noted
+    "completion": at the reading, or at the last sizing's factor times the governor when
+    the reading is stale. At most three times a session for one strategy, counted when
+    orders reached the venue, and said once a session when the count is spent.
+
+    At most eight strategies at once. A pass that finds the last one still running skips,
+    said once for the whole overlap. Never raises. *)
 
 val run : ?time_source:Time_source.t -> ?oms:Oms.t -> t -> unit Deferred.t
 (** A pass at once and then once a minute; after each, the retry set ({!collect_pending})

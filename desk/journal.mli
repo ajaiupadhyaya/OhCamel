@@ -339,6 +339,12 @@ val source_orders_unsettled :
     failed with no finishing venue report and created at or after [since] (every one, when
     None). Oldest first. *)
 
+val source_orders_unfilled : t -> source:string -> after:string option -> Order_row.t list
+(** The orders whose source is exactly [source] that ended with shares unfilled --
+    expired, cancelled, refused by the venue or before the wire, a partial fill included
+    -- and, with [after] (a journal instant, as {!Sizing.t}'s [at] reads), only those
+    finished after it. Never a failed order, which may still work. Oldest first. *)
+
 val recent_orders : t -> limit:int -> Order_row.t list
 (** Newest first. *)
 
