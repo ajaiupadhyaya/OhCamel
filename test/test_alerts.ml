@@ -415,6 +415,64 @@ let test_firing_and_tripped_at_are_readable () =
             (Alerts.config a).Config.Alerts.kill_switch_trips_on)
     ~finally:(fun () -> Graph.destroy graph)
 
+(* The live engine starts on the BOOK FILE's quantities and replaces them with
+   the account's at its first sync. On 2026-10-27 the live book's file still
+   held its demo positions -- about $500k gross -- and the account $53k: the
+   switch, armed for the first time, tripped on book-cap in the second the
+   engine started, on a book nobody held, and latched. [hold] holds every
+   evaluation until the caller says the graph is the book it means; [release]
+   is then one pass over the graph as it stands.
+
+   Here aapl-cap is 100 and the "file" holds 150 of AAPL: breached, and held,
+   so nothing fires and nothing trips. Then the "account" lands at 50, and
+   [release] finds nothing. A second case: the account itself is in breach --
+   200 -- and [release] raises it and trips the switch, which the observer
+   alone would never do, because the breach set did not change when the
+   account landed. *)
+let test_nothing_is_evaluated_until_the_book_is_ready () =
+  let with_attached ~f =
+    let graph =
+      Graph.create
+        ~instruments:[ { Instrument.symbol = aapl; sector = tech } ]
+        ~limits:[ cap ] ~confidence:0.95 ~return_window:10 ()
+    in
+    Exn.protect
+      ~finally:(fun () -> Graph.destroy graph)
+      ~f:(fun () ->
+        match
+          Alerts.attach ~graph
+            ~config:(alerts_config ~kill:true ~trips_on:[ "aapl-cap" ] ())
+        with
+        | Error e -> Alcotest.failf "attach: %s" (Error.to_string_hum e)
+        | Ok None -> Alcotest.fail "an enabled config must produce a notifier"
+        | Ok (Some a) ->
+            Alerts.hold a;
+            f graph a)
+  in
+  with_attached ~f:(fun graph a ->
+      Graph.set_price graph aapl (Price.of_float 1.0);
+      Graph.set_qty graph aapl (Qty.of_float 150.0);
+      Graph.stabilize graph;
+      Alcotest.(check (pair (list string) bool))
+        "the file's breach: nothing firing, nothing tripped" ([], false)
+        (Alerts.firing_limits a, Option.is_some (Alerts.tripped_at a));
+      Graph.set_qty graph aapl (Qty.of_float 50.0);
+      Graph.stabilize graph;
+      Alerts.release a ~graph;
+      Alcotest.(check (pair (list string) bool))
+        "the account's book, inside the cap: still nothing" ([], false)
+        (Alerts.firing_limits a, Option.is_some (Alerts.tripped_at a)));
+  with_attached ~f:(fun graph a ->
+      Graph.set_price graph aapl (Price.of_float 1.0);
+      Graph.set_qty graph aapl (Qty.of_float 150.0);
+      Graph.stabilize graph;
+      Graph.set_qty graph aapl (Qty.of_float 200.0);
+      Graph.stabilize graph;
+      Alerts.release a ~graph;
+      Alcotest.(check (pair (list string) bool))
+        "the account's own breach: firing, and tripped" ([ "aapl-cap" ], true)
+        (Alerts.firing_limits a, Option.is_some (Alerts.tripped_at a)))
+
 let suite =
   ( "alerts",
     [
@@ -446,4 +504,6 @@ let suite =
         test_book_with_alerts_parses;
       Alcotest.test_case "firing limits and the trip time are readable" `Quick
         test_firing_and_tripped_at_are_readable;
+      Alcotest.test_case "nothing is evaluated until the book is ready" `Quick
+        test_nothing_is_evaluated_until_the_book_is_ready;
     ] )

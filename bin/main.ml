@@ -1211,9 +1211,20 @@ let run_live ~book_path ~(serve_port : int option) =
             exit 1
         | Ok alerts -> return alerts
       in
+      (* Held until the graph holds the account's book: until the desk's first
+         sync it holds the book file's quantities, and a breach of those is a
+         breach of nothing anyone holds -- the armed switch latched on one in
+         the engine's first second on 2026-10-27. Released at the first sync,
+         or below at once when there is no account to read. *)
+      Option.iter alerts ~f:Alerts.hold;
       (match alerts with
       | None -> live_line "alerts    disabled (default) -- breaches are displayed only"
-      | Some a -> live_line (sprintf "alerts    %s" (Alerts.status a)));
+      | Some a ->
+          live_line
+            (sprintf
+               "alerts    %s; held until the first sync puts the account's book in the \
+                graph"
+               (Alerts.status a)));
       let alpaca_stats = Alpaca_ws.Stats.create () in
       let fred_stats = Fred_client.Stats.create () in
       (* Backfill the return windows before anything else runs.
@@ -1293,6 +1304,9 @@ let run_live ~book_path ~(serve_port : int option) =
             live_line
               ("desk      DISABLED -- " ^ reason
              ^ " The book's quantities stay the file's.");
+            (* No account will ever replace the file's book, so it is the book
+               alerting watches. *)
+            Option.iter alerts ~f:(fun a -> Alerts.release a ~graph);
             Ohcamel_desk.Desk.Unavailable
               { name = Ohcamel_desk.Alpaca_paper.name; reason }
       in
@@ -1306,7 +1320,12 @@ let run_live ~book_path ~(serve_port : int option) =
               (sprintf
                  "journal   the first sync succeeded, so %d session closes are restored \
                   into the equity trail"
-                 restored))
+                 restored);
+            Option.iter alerts ~f:(fun a ->
+                Alerts.release a ~graph;
+                live_line
+                  (sprintf "alerts    released on the account's book: %s"
+                     (Alerts.status a))))
       in
       (* Awaited, so the first frame shows the account rather than the file; and
          bounded, because a paper host that never answers would otherwise hold

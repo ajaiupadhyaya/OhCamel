@@ -473,7 +473,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **<!-- count:ocaml-tests -->830<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->65<!-- /count --> scheduler cases in `test/desk_async` —
+- **<!-- count:ocaml-tests -->831<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->65<!-- /count --> scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler
@@ -641,15 +641,21 @@ the engine side is the owner's: the backup and watch timers, and the live book's
 No task may touch the owner's `book.sexp`, so none of this happens by itself. Done by 2026-10-21: the `signals`
 block (23 incubation cells), `(trading enabled)`, the `--live` deploy. Still open:
 
-- **Arm the alerts and the kill switch** in the book's `alerts` block (`(enabled true)`,
-  `(kill_switch_enabled true)`, `(kill_switch_trips_on (book-cap var-cap dd-cap))`), then restart `ohcamel-live`
-  outside 09:25–16:10 New York.
+- ~~**Arm the alerts and the kill switch**~~ -- done 2026-10-27 at the owner's word: `(enabled true)`, sinks `(Log)`
+  (no Slack webhook is configured), `(kill_switch_enabled true)`, `(kill_switch_trips_on (book-cap var-cap dd-cap))`.
+  Armed, it tripped in the engine's first second on the book FILE's demo positions (about $500k gross) before the
+  first sync replaced them with the account's $53k -- fixed the same day: alerting now holds until the first
+  sync and evaluates once on the account's book (`Alerts.hold` / `Alerts.release`).
 - **Decide the cap:** keep `incubation_cap 0.60`, or drop to 0.10 for three sessions as the plan had it.
 - **Install the backup and watch timers** (*What the owner holds*, above).
 - **Promoting to `(sizing live)`** stays the owner's alone, and needs `status: pass` (R6).
 - **Raise `book-cap` or lower `incubation_cap`:** 23 cells at 0.025 are 57.5 % of equity gross against a
   `book-cap` of $500,000; the gate holds the last cells back once the rest have filled.
-- **Reboot the droplet** (*The reboot window*, below): a kernel and libc have waited since 2026-10-15.
+- ~~**Reboot the droplet**~~ -- done 2026-10-27 20:51 UTC at the owner's word: kernel 6.8.0-124 → 6.8.0-147, every
+  container back in under a minute, smoke 30 passed, 0 failed. O12 (the 10:00 UTC automatic reboot) is still open.
+- **Merge PRs #12 and #14** (#14 into #12's branch, then #12 into `main`): the auto-mode classifier refuses a merge
+  without review even with the owner's word. They merge cleanly onto `main` as of `1df30d4`; merging #12 deletes
+  `.github/dependabot.yml`, after which Dependabot PRs #15–#19 can be closed.
 
 ## Operating it
 
@@ -856,11 +862,13 @@ OHCAMEL_TAG="$(git rev-parse HEAD)" docker compose -f deploy/docker-compose.yml 
 `env_file` (below). A restart of `ohcamel-live` drops the Alpaca stream, so do
 it outside 09:25-16:10 New York time.
 
-The live `book.sexp` is `book.example.sexp` with `(trading enabled)` and
-nothing else changed, so a change to the example -- the per-name
-`(stale_after_s N)` thresholds, say -- is carried over by regenerating it
-(`sed 's/(trading disabled)/(trading enabled)/' book.example.sexp > book.sexp`,
-the old one archived beside the earlier copies in `~/book-archive/`), then
+The live `book.sexp` is `book.example.sexp` with two blocks changed: `(trading
+enabled)`, and the `alerts` block armed (`(enabled true)`,
+`(kill_switch_enabled true)`, `(kill_switch_trips_on (book-cap var-cap dd-cap))`,
+since 2026-10-27). A change to the example -- the per-name `(stale_after_s N)`
+thresholds, say -- is carried over by regenerating it with both edits, the old
+one archived beside the earlier copies in `~/book-archive/`, then a `diff`
+against the archived book that shows only the example's own change, then
 `check-book`, then the restart above.
 
 ### Credential rotation

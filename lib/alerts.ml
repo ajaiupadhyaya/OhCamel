@@ -294,6 +294,8 @@ type t = {
   mutable failed : int;
   (* Readers that must act on a trip rather than report it. See [on_trip]. *)
   mutable trip_handlers : (Event.t -> unit) list;
+  (* While true, nothing is evaluated: see [hold]. *)
+  mutable held : bool;
 }
 
 let history_limit = 50
@@ -351,6 +353,21 @@ let deliver t (event : Event.t) =
                   t.failed <- t.failed + 1;
                   eprintf "  ALERT slack failed: %s\n%!" (Error.to_string_hum error))))
 
+(* One pass of the tracker over [results], and the switch over what it says.
+   Enqueue only: called inside stabilization by the observer, and by
+   [evaluate] after one. *)
+let step t ~(results : (Types.Limit.t * Types.Breach.t option) list) =
+  let at = Types.Time.now () in
+  let events = Tracker.step t.tracker ~at results in
+  List.iter events ~f:(fun event ->
+      if not (Pipe.is_closed t.writer) then Pipe.write_without_pushback t.writer event;
+      match Kill_switch.consider t.kill_switch ~at event with
+      | None -> ()
+      | Some tripped ->
+          if not (Pipe.is_closed t.writer) then
+            Pipe.write_without_pushback t.writer tripped;
+          List.iter t.trip_handlers ~f:(fun f -> f tripped))
+
 (* Attach to a graph.
 
    Returns [None] when alerting is disabled, which is the default -- so the
@@ -381,22 +398,34 @@ let attach ~(graph : Graph.t) ~(config : Config.Alerts.t) : t option Or_error.t 
         sent = 0;
         failed = 0;
         trip_handlers = [];
+        held = false;
       }
     in
     (* The observer hook the brief asks for. Everything it does is enqueue. *)
     Graph.on_breaches graph ~f:(fun _results ->
-        let at = Types.Time.now () in
-        let events = Tracker.step t.tracker ~at (Graph.limit_results graph) in
-        List.iter events ~f:(fun event ->
-            if not (Pipe.is_closed writer) then Pipe.write_without_pushback writer event;
-            match Kill_switch.consider t.kill_switch ~at event with
-            | None -> ()
-            | Some tripped ->
-                if not (Pipe.is_closed writer) then
-                  Pipe.write_without_pushback writer tripped;
-                List.iter t.trip_handlers ~f:(fun f -> f tripped)));
+        if not t.held then step t ~results:(Graph.limit_results graph));
     don't_wait_for (Pipe.iter reader ~f:(fun event -> deliver t event));
     Some t
+
+(* [hold]: nothing is evaluated until [release]. For a graph that does not
+   yet hold the book it is meant to: the live engine starts on the BOOK
+   FILE's quantities and replaces them with the account's at its first sync,
+   and a breach of the file's book is a breach of nothing anyone holds -- an
+   armed switch latched on one on 2026-10-27, tripped on book-cap at $500,593
+   in the engine's first second with $53,088 held. Called straight after
+   [attach], before any stabilize.
+
+   [release]: the hold ends, and the graph as it stands is evaluated once --
+   what the observer would have done had it fired now. Once, because the
+   observer hears a CHANGE in the breach set, and an account that is itself
+   in breach changes nothing when it lands on a file that was. Stabilizes
+   first, so the limits read are settled. *)
+let hold t = t.held <- true
+
+let release t ~(graph : Graph.t) =
+  t.held <- false;
+  Graph.stabilize graph;
+  step t ~results:(Graph.limit_results graph)
 
 let kill_switch t = t.kill_switch
 let halted t = Kill_switch.halt_new_orders t.kill_switch
