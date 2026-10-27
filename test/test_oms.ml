@@ -478,7 +478,10 @@ let test_a_resting_sell_of_the_same_name_makes_no_room_either () =
         D.Oms.preview oms
           (ticket ~kind:(D.Order.Kind.Limit (price 150.0)) aapl D.Order.Side.Buy 160)
       in
-      Alcotest.(check (list string)) "by no rule" [] (rules p);
+      (* A buy against the desk's own resting sell is also what the venue
+         refuses as a wash trade, and the rule says so; the gate still runs
+         and is what this case is about. *)
+      Alcotest.(check (list string)) "by the wash rule" [ "wash" ] (rules p);
       Alcotest.(check bool) "refused" false (D.Oms.Preview.passed p);
       Alcotest.(check (option (triple string (list string) (list string))))
         "by aapl-cap and tech-cap, on the book as it stands"
@@ -590,7 +593,9 @@ let test_only_the_growing_side_catches_a_gross_breach () =
       ignore (rest oms journal ~seed:115 xom D.Order.Side.Sell 800 (at 100.0) : D.Order.t);
       ignore (rest oms journal ~seed:116 xom D.Order.Side.Buy 800 (at 100.0) : D.Order.t);
       let p = D.Oms.preview oms (ticket xom D.Order.Side.Sell 50) in
-      Alcotest.(check (list string)) "by no rule" [] (rules p);
+      (* XOM's resting buy makes the sell a wash trade at the venue; the
+         scenarios below are the case. *)
+      Alcotest.(check (list string)) "by the wash rule" [ "wash" ] (rules p);
       Alcotest.(check (list string))
         "five distinct bases"
         [ as_it_stands; if_buys; if_sells; if_growing; if_every ]
@@ -637,7 +642,9 @@ let test_growing_side_takes_the_proposals_own_direction_not_the_larger_side () =
       ignore
         (rest oms journal ~seed:132 msft D.Order.Side.Sell 548 (at 300.0) : D.Order.t);
       let p = D.Oms.preview oms (ticket xom D.Order.Side.Buy 10) in
-      Alcotest.(check (list string)) "by no rule" [] (rules p);
+      (* XOM's resting sell makes the buy a wash trade at the venue; the
+         scenarios below are the case. *)
+      Alcotest.(check (list string)) "by the wash rule" [ "wash" ] (rules p);
       Alcotest.(check (list string))
         "five distinct bases"
         [ as_it_stands; if_buys; if_sells; if_growing; if_every ]
@@ -673,7 +680,14 @@ let test_a_breach_the_resting_orders_make_is_theirs_not_the_proposal's () =
       let sell = D.Oms.preview oms (ticket aapl D.Order.Side.Sell 20) in
       Alcotest.(check (list string))
         "the sell: two distinct bases" [ as_it_stands; if_buys ] (scenarios sell);
-      Alcotest.(check bool) "the sell passes" true (D.Oms.Preview.passed sell);
+      (* The gate passes the sell; the wash rule, not the gate, is what
+         refuses it while the desk's own buy rests. *)
+      Alcotest.(check (pair bool (list string)))
+        "the sell passes the gate, and only the wash rule refuses it" (true, [ "wash" ])
+        ( (match sell.D.Oms.Preview.gate with
+          | Some (Ok s) -> D.Oms.Scenarios.passed s
+          | Some (Error _) | None -> false),
+          rules sell );
       let add = D.Oms.preview oms (ticket msft D.Order.Side.Buy 10) in
       Alcotest.(check bool) "the MSFT add is refused" false (D.Oms.Preview.passed add);
       Alcotest.(check (option (triple string (list string) (list string))))

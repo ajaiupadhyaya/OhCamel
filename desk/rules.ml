@@ -227,6 +227,11 @@ module Context = struct
     adv20 : float option;
     recent : Recent.t list;
     open_orders : int;
+    (* The desk's own orders resting at the venue, each as its name and
+       side: the wash rule's reading. Alpaca refuses an order while one of
+       the account's own rests on the other side of the same name ("403:
+       potential wash trade detected"), whoever proposed either. *)
+    resting : (Symbol.t * Order.Side.t) list;
     (* The proposal's own source, as [Recent.source] names one. *)
     source : string;
     now : Time_ns.t;
@@ -240,20 +245,25 @@ end
 (* Whether a refusal of an order of [tif] is one of TIMING -- the order may
    go later, unchanged, and nothing about it is wrong: its failures are all
    the session rule's (a market-on-open order before 19:00 ET or after its
-   last call, a day order while the session is closed, no venue clock yet),
-   and, for a day or market-on-close order refused by the session rule, a
-   mark the feed calls stale or has not printed, because outside the session
-   every name is stale. Any other failure -- the switch, the mandate, a
-   price, a cap -- is final. The intake keeps a judgement whose rebalance
-   was refused for timing pending and tries it again (design §4.3); an empty
-   list is not a refusal at all. *)
+   last call, a day order while the session is closed, no venue clock yet)
+   or the wash rule's (an order of the desk's own rests on the other side of
+   the name, and will have filled or expired by a later pass), and, for a
+   day or market-on-close order refused by the session rule, a mark the feed
+   calls stale or has not printed, because outside the session every name
+   is stale. Any other failure -- the switch, the mandate, a price, a cap --
+   is final. The intake keeps a judgement whose rebalance was refused for
+   timing pending and tries it again (design §4.3); an empty list is not a
+   refusal at all. *)
 let is_timing_refusal ~(tif : Order.Tif.t) (failures : Failure.t list) =
   let session (f : Failure.t) = String.equal f.Failure.rule "session" in
+  let timing (f : Failure.t) = session f || String.equal f.Failure.rule "wash" in
   (not (List.is_empty failures))
-  && List.exists failures ~f:session
+  && List.exists failures ~f:timing
   && List.for_all failures ~f:(fun f ->
-      session f
-      || (String.equal f.Failure.rule "mark" && not (Order.Tif.equal tif Order.Tif.Opg)))
+      timing f
+      || String.equal f.Failure.rule "mark"
+         && (not (Order.Tif.equal tif Order.Tif.Opg))
+         && List.exists failures ~f:session)
 
 let names =
   [
@@ -268,6 +278,7 @@ let names =
     "notional";
     "adv";
     "duplicate";
+    "wash";
     "open_orders";
   ]
 
@@ -379,6 +390,25 @@ let check (c : Context.t) (r : Order.Request.t) : Failure.t list =
            (sprintf "the same order was proposed less than %g s ago"
               c.spec.Desk_spec.duplicate_window_s)
        else None);
+      (* The venue's own rule, asked here so the desk never sends what it
+         would refuse: on 2026-10-20 one strategy's BIL sell met another's
+         BIL buy resting for the same auction, Alpaca answered "403:
+         potential wash trade detected", and the refusal stopped the rest
+         of the selling strategy's rebalance. A timing refusal
+         ([is_timing_refusal]): the resting order fills or expires, and the
+         proposal goes unchanged. *)
+      (match
+         List.find c.resting ~f:(fun (s, side) ->
+             Symbol.equal s r.Order.Request.symbol
+             && not (Order.Side.equal side r.Order.Request.side))
+       with
+      | Some (_, side) ->
+          fail "wash"
+            (sprintf
+               "a %s of %s of the desk's own rests at the venue, which refuses an order \
+                on the other side of the name as a wash trade until it is done"
+               (Order.Side.to_string side) sym)
+      | None -> None);
       (if c.open_orders < c.spec.Desk_spec.max_open_orders then None
        else
          fail "open_orders"

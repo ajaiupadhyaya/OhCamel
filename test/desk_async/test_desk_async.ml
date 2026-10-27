@@ -3743,6 +3743,46 @@ let test_a_document_judged_before_19_is_sized_at_the_first_pass_after () =
         (z.D.Journal.Sizing.at, [ Some z.scale; z.ratio; z.factor; z.governor ]));
   e.e_cleanup ()
 
+(* The wash rule across strategies (2026-10-20: one strategy's BIL sell met
+   another's BIL buy resting for the same auction, the venue answered "403:
+   potential wash trade detected", and the refusal stopped the rest of the
+   selling strategy's rebalance). Two live strategies on AAPL, judged in
+   the evening: exp_long's document (sequence 1, w 1.0) is sized first, Buy
+   100 at the auction, which rests; exp_short's (sequence 2, w -1.0) would
+   Sell 100 against it, and the rule refuses it before the wire -- for
+   timing, so its judgement stays pending and nothing of it is journaled.
+   The venue never sees the pair. *)
+let test_a_strategy_crossing_another's_resting_order_waits () =
+  (* From 19:00:30 ET, inside the auction's window, so the first refusal
+     exp_short meets is the wash rule's and not the session's: the wait is
+     said once per judgement, and the case reads what it says. *)
+  let e =
+    evening_case ~start:"2026-09-14T23:00:30Z"
+      ~strategies:
+        [ live_strategy ~name:"exp_long" (); live_strategy ~name:"exp_short" () ]
+      ()
+  in
+  write_signal e.e_dir ~strategy:"exp_long" ~sequence:1 ();
+  write_signal e.e_dir ~strategy:"exp_short" ~sequence:2
+    ~targets:{|[{"symbol":"AAPL","weight":-1.0}]|} ();
+  let%bind () = start_run e in
+  let%map () = advance_clock e "2026-09-14T23:01:30Z" in
+  let f = e.e_f in
+  Alcotest.(check (list (triple string string int)))
+    "19:00: exp_long's buy alone rests for the auction"
+    [ ("signal:exp_long:1", "AAPL", 100) ]
+    (orders_of f);
+  Alcotest.(check (option string))
+    "exp_short's judgement is still pending"
+    (Some (D.Intake.pending ~strategy:"exp_short" ~sequence:2))
+    (rebalance_of f ~strategy:"exp_short" ~sequence:2);
+  Alcotest.(check bool)
+    "and the wait names the wash rule" true
+    (List.exists (Queue.to_list f.events) ~f:(fun line ->
+         String.is_substring line ~substring:"exp_short"
+         && String.is_substring line ~substring:"wash trade"));
+  e.e_cleanup ()
+
 (* A-I1 and A-I2. A restart at 19:15 EDT before any venue reading: the pass
    judges the document accepted, and nothing is sized -- the overlay cannot
    be aged and the session cannot be timed, and sizing now would be at the
@@ -4382,6 +4422,8 @@ let suites =
           test_a_restart_sizes_nothing_until_the_venue_clock_answers;
         case "a superseding document cancels the older retry"
           test_a_superseding_document_cancels_the_older_retry;
+        case "a strategy crossing another's resting order waits"
+          test_a_strategy_crossing_another's_resting_order_waits;
         case "a final refusal still ends the judgement"
           test_a_final_refusal_still_ends_the_judgement;
         case "a stale overlay holds, and a governor move re-sizes"

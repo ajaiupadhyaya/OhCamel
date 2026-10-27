@@ -267,6 +267,11 @@ let context ?(tif = Order.Tif.Day) t ~(source : string) ~(symbol : Symbol.t) :
       | Adv.From_venue -> Map.find t.adv20 symbol);
     recent = recent_within t ~now;
     open_orders = Map.length t.open_;
+    resting =
+      List.filter_map (Map.data t.open_) ~f:(fun o ->
+          if Float.( > ) (Order.remaining_qty o) Order.epsilon then
+            Some (o.Order.request.Order.Request.symbol, o.Order.request.Order.Request.side)
+          else None);
     source;
     now;
   }

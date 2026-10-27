@@ -42,6 +42,7 @@ let context =
     adv20 = Some 16_600.0;
     recent = [];
     open_orders = 0;
+    resting = [];
     source = "manual";
     now;
   }
@@ -216,6 +217,35 @@ let test_open_orders () =
      may, 200 rest and none may. *)
   check_rules "199 open" [] { context with open_orders = 199 } (request 10);
   check_rules "200 open" [ "open_orders" ] { context with open_orders = 200 } (request 10)
+
+(* The venue's wash-trade rule, asked before the wire: an order of the
+   desk's own resting on the other side of the name refuses the proposal,
+   whoever proposed either; the same side does not, nor another name. It is
+   a timing refusal -- the resting order fills or expires -- so an intake
+   keeps the judgement pending rather than closing it. *)
+let test_an_opposite_resting_order_is_a_wash () =
+  let spy = Symbol.of_string "SPY" in
+  let ctx =
+    { context with resting = [ (aapl, Order.Side.Sell); (spy, Order.Side.Buy) ] }
+  in
+  check_rules "a buy against the desk's own resting sell" [ "wash" ] ctx (request 10);
+  check_rules "a sell beside it" [] ctx (request ~side:Order.Side.Sell 10);
+  check_rules "another name" [] ctx (request ~symbol:(Symbol.of_string "MSFT") 10);
+  Alcotest.(check bool)
+    "it names the resting side and the name" true
+    (List.exists
+       (Rules.check ctx (request 10))
+       ~f:(fun f ->
+         String.equal f.Rules.Failure.rule "wash"
+         && String.is_substring f.Rules.Failure.why ~substring:"a sell of AAPL"));
+  let f rule = { Rules.Failure.rule; why = "x" } in
+  Alcotest.(check (list bool))
+    "timing: wash alone, wash with session; final: wash with a cap" [ true; true; false ]
+    [
+      Rules.is_timing_refusal ~tif:Order.Tif.Opg [ f "wash" ];
+      Rules.is_timing_refusal ~tif:Order.Tif.Day [ f "session"; f "wash" ];
+      Rules.is_timing_refusal ~tif:Order.Tif.Day [ f "wash"; f "notional" ];
+    ]
 
 let test_every_failure_is_reported_in_rule_order () =
   check_rules "three at once"
@@ -502,6 +532,8 @@ let suite =
       Alcotest.test_case "open orders" `Quick test_open_orders;
       Alcotest.test_case "every failure is reported, in rule order" `Quick
         test_every_failure_is_reported_in_rule_order;
+      Alcotest.test_case "an opposite resting order is a wash" `Quick
+        test_an_opposite_resting_order_is_a_wash;
       Alcotest.test_case
         "the opening auction's window on both sides of 19:00 ET, in EDT and in EST" `Quick
         test_the_window_on_both_sides_of_19_00_in_both_seasons;
