@@ -18,7 +18,7 @@
 #   0. FILE must be in /var/backups/ohcamel (OHCAMEL_BACKUP_DIR), because the
 #      restore container is the backup service, which sees that directory as
 #      /backups and nothing else of the host; copy a pulled-back file there
-#      first. Refused on a weekday inside 09:25-16:10 America/New_York unless
+#      first. Refused on a weekday inside 09:25-17:10 America/New_York unless
 #      --during-market, by the same two functions deploy.sh's guard uses,
 #      sourced from it (deploy/test/deploy_guard_test.sh owns the DST cases).
 #      DEPLOY_NOW overrides the clock the way it does there.
@@ -138,7 +138,7 @@ usage: deploy/restore.sh --drill FILE [--dry-run]
               copy FILE in, start the engine, wait for its first sync, and
               check /api/desk's session count against the drill's
   --dry-run   print every command and run none
-  --during-market   override the weekday 09:25-16:10 America/New_York refusal
+  --during-market   override the weekday 09:25-17:10 America/New_York refusal
 EOF
 	exit 2
 }
@@ -194,7 +194,7 @@ restore_main() {
 		dow=${wall%% *}
 		hhmm=${wall##* }
 		if should_refuse_live_deploy "$during" "$dow" "$hhmm"; then
-			restore_err "refusing a restore -- it is $hhmm America/New_York time (ISO weekday $dow), inside the 09:25-16:10 trading window; stopping the engine drops the one allowed stream and forces reconciliation; pass --during-market to override"
+			restore_err "refusing a restore -- it is $hhmm America/New_York time (ISO weekday $dow), inside the 09:25-17:10 trading window; stopping the engine drops the one allowed stream and forces reconciliation; pass --during-market to override"
 			return 1
 		fi
 	fi

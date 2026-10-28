@@ -24,7 +24,7 @@
 #       the wait: it builds all four here instead, one per Dockerfile, with
 #       the OHCAMEL_GIT_SHA and OHCAMEL_BUILT_AT build args, and the pull
 #       below is skipped for the images it just built.
-#    4. Refuses a live deploy on a weekday inside 09:25-16:10 America/New_York
+#    4. Refuses a live deploy on a weekday inside 09:25-17:10 America/New_York
 #       unless --during-market (Task 4's guard, kept -- ruling 12): a restart
 #       drops the one allowed Alpaca stream and forces reconciliation. Asked
 #       again after the wait, because the wait can carry an 08:50 start past
@@ -95,15 +95,19 @@ set -euo pipefail
 # database, not in any arithmetic here.
 #
 # Returns 0 (true) when a live deploy at that wall-clock reading should be
-# REFUSED: a weekday, 09:25-16:10 (a 5-minute lead and 10-minute tail around
-# the 09:30-16:00 session). Returns 1 otherwise.
+# REFUSED: a weekday, 09:25-17:10 (a 5-minute lead before the 09:30 open, and
+# a tail past the 16:00 close that covers the session close: due at 16:05, it
+# retries a late daily bar every 10 minutes up to six times, so it can still
+# be writing the day's session at 16:55, and that retry lives only in the
+# engine's memory -- the 16:12 deploy of 2026-10-27 lost that day's session).
+# Returns 1 otherwise.
 in_market_window() {
 	local dow="$1" hhmm="$2"
 	case "$dow" in
 	6 | 7) return 1 ;; # Saturday, Sunday: never refused
 	esac
 	hhmm=$((10#$hhmm))
-	[ "$hhmm" -ge 925 ] && [ "$hhmm" -lt 1610 ]
+	[ "$hhmm" -ge 925 ] && [ "$hhmm" -lt 1710 ]
 }
 
 # ny_wall_clock [EPOCH]
@@ -257,7 +261,7 @@ market_guard() {
 	fi
 	read -r dow hhmm <<<"$wall"
 	if should_refuse_live_deploy "$during" "$dow" "$hhmm"; then
-		echo "deploy: refusing a live deploy -- it is $hhmm America/New_York time (ISO weekday $dow), inside the 09:25-16:10 trading window; a restart drops the one allowed stream and forces reconciliation; pass --during-market to override" >&2
+		echo "deploy: refusing a live deploy -- it is $hhmm America/New_York time (ISO weekday $dow), inside the 09:25-17:10 trading window; a restart drops the one allowed stream and forces reconciliation; pass --during-market to override" >&2
 		return 1
 	fi
 	return 0
@@ -336,7 +340,7 @@ as the deploy user, from ~/OhCamel.
                     hours. Not with --live.
   --build           build the four images here (one per Dockerfile, with the
                     build stamp) instead of waiting for CI to publish them
-  --during-market   allow a live deploy inside 09:25-16:10 America/New_York
+  --during-market   allow a live deploy inside 09:25-17:10 America/New_York
   --dry-run         print every step's command; run none of them
   -h, --help        this text
 

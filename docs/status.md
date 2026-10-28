@@ -473,7 +473,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **<!-- count:ocaml-tests -->831<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->65<!-- /count --> scheduler cases in `test/desk_async` —
+- **<!-- count:ocaml-tests -->833<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->65<!-- /count --> scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler
@@ -694,7 +694,7 @@ good deploy, every image tag but the three most recent good shas' removed.
 Exit 0 only when the smoke suite passed. `--dry-run` prints every command
 and runs none.
 
-A `--live` deploy is refused on a weekday inside 09:25-16:10
+A `--live` deploy is refused on a weekday inside 09:25-17:10
 America/New_York -- a restart drops the one allowed Alpaca stream and forces
 reconciliation -- unless `--during-market` is passed. `--live` is also added
 on its own when `/etc/ohcamel/live.env` is readable or an `ohcamel-live`
@@ -861,7 +861,7 @@ OHCAMEL_TAG="$(git rev-parse HEAD)" docker compose -f deploy/docker-compose.yml 
 
 `restart` re-reads the bind-mounted `book.sexp`; it does **not** re-read
 `env_file` (below). A restart of `ohcamel-live` drops the Alpaca stream, so do
-it outside 09:25-16:10 New York time.
+it outside 09:25-17:10 New York time.
 
 The live `book.sexp` is `book.example.sexp` with two blocks changed: `(trading
 enabled)`, and the `alerts` block armed (`(enabled true)`,

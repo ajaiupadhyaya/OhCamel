@@ -87,11 +87,17 @@ check_override() {
 check "Monday    13:24 UTC = 09:24 EDT, just before the window" 1789392240 1 0924 allowed
 check "Monday    13:25 UTC = 09:25 EDT, the window opens"       1789392300 1 0925 refused
 check "Wednesday 20:09 UTC = 16:09 EDT, still inside the window" 1789589340 3 1609 refused
-check "Wednesday 20:10 UTC = 16:10 EDT, the window closes"       1789589400 3 1610 allowed
 check "Saturday  15:00 UTC = 11:00 EDT, a weekend"                1789830000 6 1100 allowed
 
+# --- The session close's tail. The close is due at 16:05 and retries a late
+# bar every 10 minutes up to six times, in memory only: 2026-10-27's 16:12
+# deploy lost that day's session. So 16:10 is inside now, and 17:10 closes it.
+check "Wednesday 20:10 UTC = 16:10 EDT, the session close is still retrying" 1789589400 3 1610 refused
+check "Wednesday 21:09 UTC = 17:09 EDT, still inside the window" 1789592940 3 1709 refused
+check "Wednesday 21:10 UTC = 17:10 EDT, the window closes"       1789593000 3 1710 allowed
+
 # --- Winter (EST: UTC-5). 2026-01-15 is a Thursday. ---
-# 20:30 UTC - 5:00 = 15:30 EST, inside [09:25, 16:10) -> refused. This is the
+# 20:30 UTC - 5:00 = 15:30 EST, inside [09:25, 17:10) -> refused. This is the
 # exact case a fixed-EDT UTC band got wrong: 20:30 UTC sits outside a band
 # tuned to [13:25, 20:10) UTC, which would have let this one through.
 check "Winter afternoon: 20:30 UTC = 15:30 EST, inside" 1768509000 4 1530 refused
@@ -101,8 +107,10 @@ check "Winter morning:   13:45 UTC = 08:45 EST, before" 1768484700 4 0845 allowe
 check "Winter morning:   14:45 UTC = 09:45 EST, inside" 1768488300 4 0945 refused
 
 # --- Summer (EDT: UTC-4). 2026-07-15 is a Wednesday. ---
-# 20:30 UTC - 4:00 = 16:30 EDT, past the window's 16:10 close -> allowed.
-check "Summer afternoon: 20:30 UTC = 16:30 EDT, outside" 1784147400 3 1630 allowed
+# 20:30 UTC - 4:00 = 16:30 EDT, the session close's tail -> refused; 21:30
+# UTC = 17:30 EDT, past the window's 17:10 close -> allowed.
+check "Summer afternoon: 20:30 UTC = 16:30 EDT, the close's tail" 1784147400 3 1630 refused
+check "Summer evening:   21:30 UTC = 17:30 EDT, outside"          1784151000 3 1730 allowed
 
 # --- Spring forward, 2026-03-08 (a Sunday, so both sides are weekend and
 # allowed regardless of clock time -- what this pins is that ny_wall_clock

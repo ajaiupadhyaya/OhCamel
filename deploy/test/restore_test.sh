@@ -26,7 +26,7 @@
 #      that is not FILE's own and is removed afterwards; FILE is byte-identical
 #      after; the live volume is never named. --dry-run prints those commands
 #      and runs nothing. A failing verify is a failing drill.
-#   G. --restore refuses inside the 09:25-16:10 America/New_York window on a
+#   G. --restore refuses inside the 09:25-17:10 America/New_York window on a
 #      weekday unless --during-market, before any docker call -- the same
 #      functions deploy.sh's guard uses, sourced from it, so the two cannot
 #      drift (deploy/test/deploy_guard_test.sh owns the DST cases).
@@ -300,7 +300,7 @@ fresh
 run_restore DEPLOY_NOW=$monday_0925 -- --restore --dry-run "$file"
 expect_rc "G1 Monday 09:25 EDT: a restore is refused" 1
 expect_eq "G1 before any docker call" "$(calls)" "0"
-expect_has "G1 the refusal names the window" "$scratch/err" "09:25-16:10"
+expect_has "G1 the refusal names the window" "$scratch/err" "09:25-17:10"
 expect_has "G1 and the override" "$scratch/err" "--during-market"
 expect_untouched "G1"
 
