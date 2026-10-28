@@ -41,7 +41,9 @@
    the close it is priced at and the newest recorded session must all be the
    same day, and no weekday may have passed since that day with no session
    recorded: after an outage, a signal from before it would otherwise be
-   sized at a close weeks old and sent to the next open. *)
+   sized at a close weeks old and sent to the next open. A document already
+   sized on its own close is re-sized at the newest one ([calendar_refusal]'s
+   standing case). *)
 
 open Core
 open Ohcamel.Types
@@ -201,9 +203,19 @@ let weekdays_between a b =
        (a close before 16:00, or a clock that is wrong).
    A holiday is a weekday with no session, so it can only make (b) refuse,
    never pass: an owner who sees that refusal the day after a holiday reads
-   why. The zone is the tz database's; none refuses. *)
+   why. The zone is the tz database's; none refuses.
+
+   A STANDING DOCUMENT is one the desk already sent orders for -- so it
+   passed this check once, on its own close -- and is being sized again: an
+   overlay move, or the completion of orders the auction let expire. Its
+   weights hold until its strategy's next document, a month for a monthly
+   strategy, so (a) asks of it only that its as_of is not after the newest
+   session; the closes are still all the newest session's and (b) still
+   holds, so it is never priced at a close older than the last. Without this,
+   no move of the overlay, a flatten included, reached a monthly strategy
+   after the first session of its month. *)
 let calendar_refusal ~(zone : Timezone.t option) ~(now : Time_ns.t) ~(as_of : Date.t)
-    ~(latest : Date.t option) ~(closes : Date.t list) : string option =
+    ~(standing : bool) ~(latest : Date.t option) ~(closes : Date.t list) : string option =
   match (zone, latest) with
   | None, _ ->
       Some
@@ -212,7 +224,13 @@ let calendar_refusal ~(zone : Timezone.t option) ~(now : Time_ns.t) ~(as_of : Da
   | _, None -> Some "no session is recorded, so there is no close to size at"
   | Some zone, Some latest -> (
       match List.find closes ~f:(fun d -> not (Date.equal d latest)) with
-      | _ when not (Date.equal as_of latest) ->
+      | _ when standing && Date.( > ) as_of latest ->
+          Some
+            (sprintf
+               "the signal is as of %s, after the newest recorded session (%s): its \
+                close is not recorded"
+               (Date.to_string as_of) (Date.to_string latest))
+      | _ when (not standing) && not (Date.equal as_of latest) ->
           Some
             (sprintf
                "the signal is as of %s, but the newest recorded session is %s: a \

@@ -523,7 +523,7 @@ let new_york = Timezone.find "America/New_York"
 let test_the_calendar_ties_the_signal_and_the_close_to_the_newest_session () =
   let d = Date.of_string in
   let refusal ?(zone = new_york) ?(closes = []) ~now ~as_of latest =
-    D.Rebalance.calendar_refusal ~zone ~now:(at now) ~as_of:(d as_of)
+    D.Rebalance.calendar_refusal ~zone ~now:(at now) ~as_of:(d as_of) ~standing:false
       ~latest:(Option.map latest ~f:d) ~closes:(List.map closes ~f:d)
   in
   let passes what r = Alcotest.(check (option string)) what None r in
@@ -575,6 +575,77 @@ let test_the_calendar_ties_the_signal_and_the_close_to_the_newest_session () =
   refused "no zone" ~substring:"time zone could not be loaded"
     (refusal ~zone:None ~now:"2026-09-18T23:15:00Z" ~as_of:"2026-09-18"
        (Some "2026-09-18"))
+
+(* C2 for a STANDING document: one the desk has already sent orders for, on
+   its own close. A monthly strategy's document holds until its next one, so
+   re-sizing it -- an overlay move, or completing orders the auction let
+   expire -- is sized at the newest close, not the signal's.
+   - The case found live: the farm's documents are of Tuesday 20 October,
+     their market-on-open orders expired at the 21st's auction, the newest
+     recorded session is Wednesday the 28th, and it is 10:00 EDT on the 29th.
+     Standing: passes. Not standing -- a first sizing -- the same reading is
+     refused, as before.
+   - The rest of C2 still holds a standing document to the newest session: a
+     close of another day, a weekday closed unrecorded since it (the 27th,
+     read on the 28th at 10:00 EDT with the newest session the 26th), and a
+     signal dated after the newest session, each refused. *)
+let test_a_standing_document_is_resized_at_the_newest_close () =
+  let d = Date.of_string in
+  let refusal ?(closes = []) ~standing ~now ~as_of latest =
+    D.Rebalance.calendar_refusal ~zone:new_york ~now:(at now) ~as_of:(d as_of) ~standing
+      ~latest:(Some (d latest))
+      ~closes:(List.map closes ~f:d)
+  in
+  let refused what ~substring r =
+    match r with
+    | None -> Alcotest.failf "%s: not refused" what
+    | Some why -> contains what ~substring why
+  in
+  Alcotest.(check (option string))
+    "standing: 20 Oct's document, 28 Oct the newest session, 29 Oct 10:00 EDT" None
+    (refusal ~standing:true ~closes:[ "2026-10-28" ] ~now:"2026-10-29T14:00:00Z"
+       ~as_of:"2026-10-20" "2026-10-28");
+  refused "a first sizing of the same document"
+    ~substring:
+      "the signal is as of 2026-10-20, but the newest recorded session is 2026-10-28"
+    (refusal ~standing:false ~now:"2026-10-29T14:00:00Z" ~as_of:"2026-10-20" "2026-10-28");
+  refused "standing, a close of another day"
+    ~substring:"is 2026-10-27's, not the newest session's"
+    (refusal ~standing:true ~closes:[ "2026-10-27" ] ~now:"2026-10-29T14:00:00Z"
+       ~as_of:"2026-10-20" "2026-10-28");
+  refused "standing, a weekday closed unrecorded since the newest session"
+    ~substring:
+      "1 weekday after the newest recorded session (2026-10-26) has closed by 2026-10-27"
+    (refusal ~standing:true ~now:"2026-10-28T14:00:00Z" ~as_of:"2026-10-20" "2026-10-26");
+  refused "standing, a signal dated after the newest session"
+    ~substring:
+      "the signal is as of 2026-10-29, after the newest recorded session (2026-10-28)"
+    (refusal ~standing:true ~now:"2026-10-29T23:15:00Z" ~as_of:"2026-10-29" "2026-10-28")
+
+(* C2 where the rebalance is checked, for a standing document: an older
+   document (as of 10 September, the newest session the 14th) is refused
+   while the journal holds no order of its source -- its first sizing, late
+   -- and passes the calendar once an order of that source is there, which
+   only a check of this kind on the document's own close let through. *)
+let test_a_document_through_the_gate_once_is_resized_at_a_later_close () =
+  let older = { source with D.Rebalance.Source.as_of = Date.of_string "2026-09-10" } in
+  let check oms =
+    D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source:older
+      ~legs:[ leg aapl D.Order.Side.Buy 10 ]
+  in
+  with_oms
+    ~f:(fun oms journal ->
+      contains "a first sizing, late"
+        ~substring:
+          "the signal is as of 2026-09-10, but the newest recorded session is 2026-09-14"
+        (refusal (check oms));
+      journal_order journal ~n:1
+        ~source:(D.Rebalance.Source.to_string older)
+        ~state:D.Order.State.Expired 10;
+      match check oms with
+      | Ok _ -> ()
+      | Error why -> Alcotest.failf "standing, refused: %s" why)
+    ()
 
 (* C2, where the rebalance is checked: the review's case end to end. The
    newest recorded session is 28 August, the signal is of that day, and it is
@@ -1285,6 +1356,10 @@ let suite =
       Alcotest.test_case
         "the calendar ties the signal and the close to the newest session" `Quick
         test_the_calendar_ties_the_signal_and_the_close_to_the_newest_session;
+      Alcotest.test_case "a standing document is re-sized at the newest close" `Quick
+        test_a_standing_document_is_resized_at_the_newest_close;
+      Alcotest.test_case "a document through the gate once is re-sized at a later close"
+        `Quick test_a_document_through_the_gate_once_is_resized_at_a_later_close;
       Alcotest.test_case
         "a signal from before an outage is not sized at a weeks-old close" `Quick
         test_a_signal_from_before_an_outage_is_not_sized_at_a_weeks_old_close;

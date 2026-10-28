@@ -1320,7 +1320,8 @@ end
      it has one in, in its direction (Rebalance.account_refusal);
    - THE CALENDAR (Rebalance.calendar_refusal): the signal's as_of, the
      closes and the newest recorded session are one date, and no weekday
-     has closed since it unrecorded;
+     has closed since it unrecorded -- for a document with an order of its
+     source in the journal (standing), the as_of no later than that date;
    - one order per name: a name twice is refused, since which order shrinks
      and which grows it would depend on which filled first;
    - THE RULES, PER ORDER, the orders that shrink a position first and those
@@ -1435,6 +1436,9 @@ let check_rebalance ?(timing = ref false) t ~(mode : Rebalance.Mode.t)
       Rebalance.calendar_refusal
         ~zone:(Lazy.force Desk_time.new_york)
         ~now ~as_of:source.Rebalance.Source.as_of
+        ~standing:
+          (Journal.source_has_orders t.journal
+             ~source:(Rebalance.Source.to_string source))
         ~latest:
           (Option.map
              (List.hd (Journal.recent_sessions t.journal ~limit:1))
