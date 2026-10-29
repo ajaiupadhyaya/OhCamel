@@ -1,6 +1,6 @@
 # OhCamel — state of the project
 
-*As of 2026-10-27 (the desk's first week of paper trading, read off the droplet and off Alpaca's own order history that day, and the four fixes it called for); the deployed state as of 2026-10-21; the rest as of 2026-10-08, against `ship/harden`. This is the document to read first when coming back to the repository
+*As of 2026-10-27 (the desk's first week of paper trading, read off the droplet and off Alpaca's own order history that day, and the four fixes it called for); the deployed state as of 2026-10-28; the rest as of 2026-10-08, against `ship/harden`. This is the document to read first when coming back to the repository
 after time away, and the one to update when the facts in it change.*
 
 It is an inventory: what exists, where it runs, what is deployed, what it will not do, what was cut, and what
@@ -27,7 +27,7 @@ the `demo` compose profile). The live engine runs the paper desk on the live hos
 | Cost | $24/month, metered hourly, capped |
 | Proxy / TLS | Caddy, Let's Encrypt, HTTP→HTTPS 308, HSTS, a CSP measured per route. Only Caddy has a host port |
 | DNS | Porkbun: A records `ohcamel` and `live.ohcamel` on the owner's domain |
-| **Deployed — both hosts** | **`8650c95`** (the first week's fixes, the alert hold, and PRs #12 and #14: actions pinned to SHAs, pyo3 0.29.3, digest-pinned quant images), deployed 2026-10-27 17:29 ET with `--live` after the droplet's reboot onto kernel 6.8.0-147; smoke 45 passed, 0 failed. Alerts armed and released on the account's book at startup, kill switch armed and clear, desk enabled, five positions intact |
+| **Deployed — both hosts** | **`d017a93`** (a standing document re-sized at the newest close, `006cc09`, and the `--live` window closing at 17:10), deployed 2026-10-28 21:35 ET with `--live`; the pre-deploy journal copy is `/var/backups/ohcamel/pre-deploy-20261029T013404Z-8650c95eb485.db`; smoke 45 passed, 0 failed, 2 skipped. Kill switch armed and clear, desk enabled, five positions intact, 23 strategies registered |
 | Not deployed | Only the docs commit that wrote this row |
 
 **Data on the droplet (2026-10-08).** The warehouse backfill ran through the queue. `ingest.universes` finished,
@@ -626,6 +626,7 @@ line each (10 to 12 bind the order path, `desk/oms.ml`):
 | 2026-10-06 | Phase 0 (ops close, resource governance, hostd, latency baselines) and Lane P (the Paper Tape design system) merged, pushed and deployed public from `279d407`. Lanes A (kernels), B (jobs) and C (warehouse) integrated as `49a5c69`, pushed and deployed public; the worker and hostd started and the ingests began. The owner approved EXP-Q01 (ETF universe, option A) and EXP-Q02 |
 | 2026-10-08 | Lanes M (P1–P7), P2 (every page) and F (the Flight Deck) integrated as `557296a` and deployed public. Warehouse backfill through the queue: universes, then daily bars to 2026-10-07. Lane H hardening merged and deployed (`e02a4b2`, `a9d9cc3`). EXP-Q01 universe frozen (34 ETFs): verdict FAIL. EXP-Q02 amended to v2 (BAA10Y; owner-approved) and deployed as `40f8b46` |
 | 2026-10-27 | The first week of paper fills audited against Alpaca's own order history: 55 of 59 market-on-open orders expired at the auction, nothing sized them again, two strategies crossed as a wash trade, the three eleven-name cells never traded, fourteen thin names read stale all day, and EXP-A01 churned 15 SPY on the fallback. Five commits on `main`: the completion in the adjust pass, the wash rule, opening waves, per-name staleness thresholds (measured, `tools/iex_gaps.py`), and the 20:10 overlay. Tests 827 → 830 and 60 → 65 scheduler cases; Quant 1509 → 1510. |
+| 2026-10-28 | The completion was dead on arrival: the calendar sized a rebalance only on the close of the signal's own day, so once a monthly document's first session had passed, no completion or overlay move could reach it, and the book stayed about 5 % invested. A document with an order of its source in the journal (standing) is now re-sized at the newest recorded close; a first sizing still waits for its own day's (`006cc09`). The 10-27 session was never recorded -- the 16:12 deploy, then the reboot, dropped the close's in-memory retries -- so a `--live` deploy or restore is now refused until 17:10 (`d017a93`). Both deployed 21:35 ET. Tests 831 → 833. Still open: SIZE's late daily bar left the 10-28 windows unrolled, and SHY, DBC and SIZE still read stale in the session. |
 
 Plans and specs live under [`superpowers/`](superpowers/): the readable-front-door
 design (the README rewrite), the eight-phase roadmap (marked complete, with its three deviations
