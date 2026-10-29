@@ -36,3 +36,14 @@ describe("route function codes", () => {
     expect(ROUTES.find((r) => r.path === "/markets")?.code).toBe("MKTS");
   });
 });
+
+describe("The Tape at /tape (the machine takes / in a later task)", () => {
+  it("resolves /tape and carries the TAPE function code", () => {
+    expect(resolves("/tape")).toBe(true);
+    expect(ROUTES.find((r) => r.path === "/tape")?.code).toBe("TAPE");
+  });
+  it("keeps TAPE out of the nav row, whose codes are unchanged", () => {
+    expect(navRoutes().some((r) => r.code === "TAPE")).toBe(false);
+    expect(navRoutes().map((r) => r.code)).toEqual(["FRONT", "MKTS", "RISK", "PORT", "OPT", "RSCH", "VOL", "RATES", "CO", "DECK", "SYS"]);
+  });
+});

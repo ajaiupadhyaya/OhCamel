@@ -19,6 +19,9 @@
  * Contrast (WCAG, checked by tokens.test.ts): --ink, --ink-2 and --signal reach
  * 4.5:1 on --paper and --paper-2 in both themes. --ink-3 is for rules and
  * gridlines, never for text a reader must read.
+ *
+ * The --mx-* tokens are the machine's own palette and faces (the dark front page). They are
+ * not themed: the machine is always dark, so they live in the plain :root block only.
  */
 
 :root {
@@ -36,6 +39,21 @@
   --font-display: "Archivo Variable", "Archivo", "Helvetica Neue", Arial, sans-serif;
   --font-ui: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+
+  /* the machine (the front page, a dark instrument): theme-independent, so neither the carbon
+     block nor the media-query block redefines these. Ink and dim read on the ground at 7:1 and
+     4.5:1; --mx-bright is PASS (white); none of them is green (tokens.test.ts). */
+  --mx-ground: #000000;
+  --mx-ink: #d4d4d4;
+  --mx-bright: #f2f2f2;
+  --mx-dim: #8a8a8a;
+  --mx-line: #252525;
+  --mx-structure: #2c3a42;
+  --mx-reads: #ffb547;
+  --mx-feeds: #38c8ff;
+  --mx-fail: #ff4f9a;
+  --mx-font-ui: system-ui, -apple-system, "SF Pro Text", "IBM Plex Sans", sans-serif;
+  --mx-font-mono: ui-monospace, "SF Mono", "IBM Plex Mono", monospace;
 
   /* rules */
   --rule: 1px solid var(--ink);

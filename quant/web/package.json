@@ -22,6 +22,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^7.18.4",
+    "three": "^0.169.0",
     "uplot": "^1.6.32"
   },
   "devDependencies": {
@@ -31,6 +32,7 @@
     "@types/plotly.js-dist-min": "^2.3.4",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
+    "@types/three": "^0.169.0",
     "@vitejs/plugin-react": "^6.1.1",
     "axe-core": "^4.14.0",
     "eslint": "^10.11.0",

@@ -6,6 +6,7 @@ describe("parseCommand", () => {
     expect(parseCommand("rates")).toEqual({ kind: "go", path: "/macro" });
     expect(parseCommand("GO VOL")).toEqual({ kind: "go", path: "/options" });
     expect(parseCommand("sys")).toEqual({ kind: "go", path: "/system" });
+    expect(parseCommand("TAPE")).toEqual({ kind: "go", path: "/tape" });
   });
   it("ticker functions", () => {
     expect(parseCommand("spy gp")).toEqual({ kind: "ticker", ticker: "SPY", fn: "GP" });

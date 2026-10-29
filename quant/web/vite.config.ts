@@ -21,8 +21,10 @@ export default defineConfig({
       output: {
         // Plotly is only ever reached through a dynamic import() from the 3-D surface view
         // (src/pages/volatility/SurfaceView.tsx, lazy); scripts/check-bundle.mjs enforces it.
+        // So is three.js, from the machine alone (src/pages/machine/** and src/pages/Machine.tsx).
         manualChunks(id: string) {
           if (id.includes("plotly.js-dist-min")) return "plotly";
+          if (id.includes("node_modules/three/")) return "three";
           if (id.includes("katex")) return "katex";
           if (/node_modules\/(react|react-dom|react-router|react-router-dom|scheduler|@tanstack)\//.test(id)) return "vendor";
           return undefined;
