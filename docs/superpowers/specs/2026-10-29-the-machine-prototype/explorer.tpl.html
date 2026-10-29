@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OhCamel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --panel: rgba(10, 12, 14, 0.8); --raise: rgba(255, 255, 255, 0.06); --raise2: rgba(255, 255, 255, 0.1);
+    --ink: #d4d4d4; --bright: #f2f2f2; --dim: #8a8a8a; --faint: #555; --line: #252525;
+    --up: #ffb547; --down: #38c8ff; --fail: #ff4f9a; --pass: #c8f5d6;
+    --font: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; color: var(--ink); font: 14px/1.5 var(--font); overflow: hidden; -webkit-font-smoothing: antialiased; }
+  button, input { font: inherit; color: inherit; }
+  button { background: none; border: 0; padding: 0; cursor: pointer; }
+  .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .dim { color: var(--dim); }
+  #gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+  #gl.drag { cursor: grabbing; }
+  #gl.point { cursor: pointer; }
+  #labels { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+  .lb { position: absolute; left: 0; top: 0; white-space: nowrap; font: 500 10.5px/1.2 var(--mono); color: #b9c6cd; letter-spacing: .02em; will-change: transform, opacity; }
+  .lb small { color: var(--dim); font-weight: 400; margin-left: 6px; letter-spacing: 0; }
+  .lb.big { font-size: 11.5px; color: #e8eff3; }
+  .lb.hour { color: #6f7b82; font-weight: 400; }
+  .lb.sect { color: #7d8b93; font-weight: 400; letter-spacing: .08em; }
+  .lb.fail { color: var(--fail); }
+  .lb.up { color: var(--up); } .lb.down { color: var(--down); } .lb.sel { color: #fff; }
+  .lb.now { color: #fff; }
+
+  header { position: fixed; top: 0; left: 0; right: 0; height: 46px; display: flex; align-items: center; gap: 14px; padding: 0 14px; z-index: 5; }
+  .brand { font-weight: 600; color: var(--bright); letter-spacing: -.01em; margin-right: 4px; }
+  .seg { display: flex; gap: 1px; background: rgba(255,255,255,.04); border-radius: 6px; padding: 2px; }
+  .seg > * { padding: 3px 9px; border-radius: 4px; color: var(--dim); font-size: 13.5px; text-decoration: none; white-space: nowrap; }
+  .seg > .on { background: var(--raise2); color: var(--bright); }
+  .seg > *:hover { color: var(--bright); }
+  .search { position: relative; flex: 0 1 300px; margin-left: auto; }
+  .search input { width: 100%; background: var(--raise); border: 0; border-radius: 5px; padding: 6px 10px; outline: none; font-size: 13px; }
+  .search input:focus { background: var(--raise2); }
+  #results { position: absolute; top: 34px; left: 0; right: 0; background: rgba(12,14,16,.97); border: 1px solid rgba(255,255,255,.08); border-radius: 6px; display: none; max-height: 340px; overflow: auto; z-index: 9; }
+  #results button { display: flex; width: 100%; justify-content: space-between; gap: 10px; padding: 6px 10px; text-align: left; font-size: 13px; }
+  #results button:hover, #results button.hi { background: var(--raise2); }
+  #results span { font: 11px var(--mono); color: var(--dim); white-space: nowrap; }
+  .status { font: 11.5px var(--mono); color: var(--dim); white-space: nowrap; }
+
+  .panel { position: fixed; z-index: 4; background: var(--panel); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); border: 1px solid rgba(255,255,255,.06); border-radius: 8px; }
+  .panel::-webkit-scrollbar { width: 6px; } .panel::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+
+  #focus { left: 14px; top: 56px; width: 380px; max-height: calc(100vh - 70px); overflow: auto; padding: 14px 16px 16px; display: none; }
+  #focus.on { display: block; }
+  .idl { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font: 11.5px var(--mono); color: var(--dim); }
+  .idl b { color: var(--bright); font-weight: 500; }
+  .idl .x { color: var(--dim); font-size: 15px; line-height: 1; }
+  .idl .x:hover { color: #fff; }
+  #focus h1 { font-size: 22px; line-height: 1.25; font-weight: 600; color: #fff; margin: 8px 0 6px; letter-spacing: -.01em; }
+  .verdict { display: inline-block; font: 600 11px var(--mono); letter-spacing: .06em; padding: 2px 7px; border-radius: 3px; border: 1px solid currentColor; margin-right: 8px; }
+  .verdict.fail { color: var(--fail); } .verdict.pass { color: var(--pass); } .verdict.desc { color: #9fb3bf; }
+  .vdetail { font: 11.5px/1.5 var(--mono); color: var(--dim); }
+  .prov { font: 11px/1.6 var(--mono); color: var(--dim); margin: 10px 0 2px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .prov b { color: #cfcfcf; font-weight: 400; }
+  .sec { margin-top: 14px; }
+  .sec h3 { margin: 0 0 7px; font: 500 12px var(--mono); color: var(--dim); display: flex; align-items: center; gap: 7px; }
+  .sec h3 b { color: var(--bright); font-weight: 500; }
+  .sw { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+  .sw.up { background: var(--up); } .sw.down { background: var(--down); } .sw.fail { background: var(--fail); } .sw.sel { background: #fff; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip { font: 12px var(--mono); background: var(--raise); border-radius: 3px; padding: 1px 6px; color: #e3e3e3; white-space: nowrap; }
+  .chip:hover { background: var(--raise2); color: #fff; }
+  .chip sub { color: var(--dim); font-size: 10px; margin-left: 4px; vertical-align: 0; }
+  .chip.fail { color: var(--fail); }
+  .chip.more { color: var(--dim); }
+  table.kv { width: 100%; border-collapse: collapse; font: 12px var(--mono); }
+  table.kv td { padding: 3px 0; border-bottom: 1px solid #1c1c1c; color: #cfcfcf; }
+  table.kv td.n { text-align: right; color: #fff; }
+  table.kv td.f { color: var(--fail); text-align: right; }
+  table.kv tr.hd td { color: var(--dim); font-size: 11px; }
+  .spark { display: block; width: 100%; height: 54px; margin: 2px 0 6px; }
+  .stats3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; font: 11px var(--mono); color: var(--dim); }
+  .stats3 b { display: block; font: 500 15px var(--mono); color: #fff; }
+
+  #side { right: 14px; top: 56px; width: 410px; max-height: calc(100vh - 70px); display: flex; flex-direction: column; }
+  .tabs { display: flex; gap: 18px; padding: 12px 16px 0; font-size: 13.5px; color: var(--dim); border-bottom: 1px solid var(--line); }
+  .tabs button { padding-bottom: 8px; border-bottom: 2px solid transparent; color: var(--dim); }
+  .tabs button.on { color: #fff; border-bottom-color: #fff; }
+  .tabs .sp { margin-left: auto; font: 11px var(--mono); color: var(--faint); padding-top: 3px; }
+  .pane { padding: 14px 16px 16px; overflow: auto; display: none; }
+  .pane.on { display: block; }
+  .pane p { margin: 0 0 11px; color: #cfcfcf; font-size: 14.5px; line-height: 1.6; }
+  .pane p b { color: #fff; font-weight: 600; }
+  .pane h2 { font-size: 19px; line-height: 1.3; color: #fff; font-weight: 600; margin: 4px 0 10px; letter-spacing: -.01em; }
+  .tok { font: 12.5px var(--mono); background: var(--raise); border-radius: 3px; padding: 0 5px; color: #e6e6e6; white-space: nowrap; }
+  .tok:hover { background: var(--raise2); color: #fff; cursor: pointer; }
+  .up-t { color: var(--up); } .down-t { color: var(--down); } .fail-t { color: var(--fail); }
+  .tstep { font: 11.5px var(--mono); color: var(--dim); display: flex; justify-content: space-between; align-items: center; }
+  .dots { display: flex; gap: 5px; }
+  .dots button { width: 7px; height: 7px; border-radius: 50%; background: #333; }
+  .dots button.on { background: #fff; }
+  .tnav { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); font: 12px var(--mono); color: var(--dim); }
+  .tnav button { color: var(--ink); background: var(--raise); border-radius: 4px; padding: 3px 10px; }
+  .tnav button:hover { background: var(--raise2); color: #fff; }
+  .tnav button:disabled { opacity: .3; cursor: default; }
+  .runs { font: 12px var(--mono); }
+  .runs .r { display: grid; grid-template-columns: 62px 1fr 64px; gap: 8px; padding: 3px 4px; border-radius: 3px; color: #c9c9c9; cursor: pointer; }
+  .runs .r:hover { background: var(--raise); }
+  .runs .r.on { background: rgba(255,255,255,.12); color: #fff; }
+  .runs .r span:last-child { text-align: right; color: var(--dim); }
+  .play { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
+  .play button { background: var(--raise); border-radius: 4px; padding: 4px 12px; color: #fff; font-size: 13px; }
+  .play button:hover { background: var(--raise2); }
+  .play .t { font: 12px var(--mono); color: var(--dim); }
+
+  #legend { position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 3; display: flex; gap: 16px; font: 11px var(--mono); color: var(--dim); white-space: nowrap; }
+  #legend span { display: flex; align-items: center; gap: 6px; }
+  #tip { position: fixed; z-index: 8; pointer-events: none; background: rgba(10,12,14,.94); border: 1px solid rgba(255,255,255,.1); border-radius: 5px; padding: 6px 9px; font: 12px/1.45 var(--mono); color: var(--ink); opacity: 0; max-width: 320px; }
+  #tip b { color: #fff; font-weight: 500; }
+  @media (max-width: 1100px) { #views { display: none; } }
+  @media (max-width: 860px) {
+    #focus { display: none !important; }
+    #side { left: 10px; right: 10px; width: auto; top: auto; bottom: 10px; max-height: 46vh; }
+    #legend { display: none; }
+    .status { display: none; }
+  }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="labels"></div>
+
+<header>
+  <span class="brand">OhCamel</span>
+  <nav class="seg" id="views">
+    <a class="on" href="#">machine</a><a href="#">markets</a><a href="#">risk</a><a href="#">portfolios</a><a href="#">research</a><a href="#">volatility</a><a href="#">rates</a><a href="#">companies</a><a href="#">desk</a>
+  </nav>
+  <div class="seg" id="webmode">
+    <button data-m="both" class="on">web</button><button data-m="up">reads</button><button data-m="down">feeds</button><button data-m="none">no web</button>
+  </div>
+  <div class="search"><input id="q" placeholder="find a ticker, job, model, strategy" autocomplete="off" spellcheck="false"><div id="results"></div></div>
+  <div class="status">WED 28 OCT · 11:15 PM ET · market closed</div>
+</header>
+
+<aside id="focus" class="panel"></aside>
+
+<aside id="side" class="panel">
+  <div class="tabs">
+    <button data-t="tour" class="on">Tour</button><button data-t="read">Reading</button><button data-t="day">The day</button>
+    <span class="sp" id="tabhint">scroll ↓</span>
+  </div>
+  <div class="pane on" id="p-tour"></div>
+  <div class="pane" id="p-read"><p class="dim">Click anything in the machine, or search for it, to read what it is and what it did.</p></div>
+  <div class="pane" id="p-day"></div>
+</aside>
+
+<div id="legend">
+  <span><i class="sw sel"></i>selected</span><span><i class="sw up"></i>what it reads</span><span><i class="sw down"></i>what it feeds</span><span><i class="sw fail"></i>failed a gate</span><span>drag to turn · click to select</span>
+</div>
+<div id="tip"></div>
+
+<script id="graph" type="application/json">__GRAPH__</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const G = JSON.parse(document.getElementById("graph").textContent);
+const N = G.nodes, E = G.edges, X = G.x;
+const byId = new Map(N.map((n, i) => [n.id, i]));
+const outE = N.map(() => []), inE = N.map(() => []);
+E.forEach(([a, b], ei) => { outE[a].push(ei); inE[b].push(ei); });
+const $ = s => document.querySelector(s);
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const pct = (x, d = 1) => x == null ? "—" : (x >= 0 ? "+" : "−") + Math.abs(x * 100).toFixed(d) + "%";
+const num = (x, d = 0) => x == null ? "—" : Number(x).toLocaleString("en-US", { maximumFractionDigits: d, minimumFractionDigits: d });
+const tET = iso => iso ? new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }) : "—";
+const dShort = iso => iso ? new Date(iso.length <= 10 ? iso + "T12:00:00Z" : iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "America/New_York" }) : "—";
+const hh = h => { const m = Math.round((h % 1) * 60), H = Math.floor(h) % 24; return `${(H % 12) || 12}:${String(m).padStart(2, "0")} ${H < 12 ? "AM" : "PM"}`; };
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// ------------------------------------------------------------------ geometry: rings narrowing to the book
+const HGT = r => 0.34 * r;
+const pos = n => new THREE.Vector3(n.r * Math.sin(n.a), HGT(n.r), -n.r * Math.cos(n.a));
+const P = N.map(pos);
+const isTrack = n => n.k === "series" && n.m.track !== "daily" && n.m.track !== "macro" && n.m.track !== "factors" && n.m.track !== "13f";
+
+const canvas = $("#gl");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+const PR = Math.min(devicePixelRatio, 2);
+renderer.setPixelRatio(PR); renderer.setClearColor(0x000000, 1);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 400);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true; controls.dampingFactor = 0.08; controls.rotateSpeed = 0.55;
+controls.minDistance = 4; controls.maxDistance = 60; controls.minPolarAngle = 0.12; controls.maxPolarAngle = 1.38; controls.enablePan = false;
+
+// structure: the rings, the clock's hours and every scheduled fire
+{
+  const v = [], ring = (R, segs = 256) => { for (let i = 0; i < segs; i++) { const a0 = i / segs * Math.PI * 2, a1 = (i + 1) / segs * Math.PI * 2; v.push(R * Math.sin(a0), HGT(R), -R * Math.cos(a0), R * Math.sin(a1), HGT(R), -R * Math.cos(a1)); } };
+  [8.4, 7.0, 6.6, 6.25, 5.9, 4.25, 3.25, 2.35, 1.45, 0.78].forEach(R => ring(R));
+  for (let h = 0; h < 24; h++) { const a = h / 24 * Math.PI * 2, r0 = 4.25, r1 = h % 6 ? 4.42 : 4.6; v.push(r0 * Math.sin(a), HGT(r0), -r0 * Math.cos(a), r1 * Math.sin(a), HGT(r0), -r1 * Math.cos(a)); }
+  const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.Float32BufferAttribute(v, 3));
+  scene.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0x2c3a42, transparent: true, opacity: 0.9 })));
+  const f = [];
+  X.fires.forEach(([kind, h]) => { const a = h / 24 * Math.PI * 2, r0 = 4.07, r1 = 4.2; f.push(r0 * Math.sin(a), HGT(4.25), -r0 * Math.cos(a), r1 * Math.sin(a), HGT(4.25), -r1 * Math.cos(a)); });
+  const fg = new THREE.BufferGeometry(); fg.setAttribute("position", new THREE.Float32BufferAttribute(f, 3));
+  scene.add(new THREE.LineSegments(fg, new THREE.LineBasicMaterial({ color: 0x7d97a6 })));
+  const s = [];
+  for (let i = 0; i < 80; i++) { const h0 = 9.5 + i / 80 * 6.5, h1 = 9.5 + (i + 1) / 80 * 6.5, R = 4.62; const a0 = h0 / 24 * Math.PI * 2, a1 = h1 / 24 * Math.PI * 2; s.push(R * Math.sin(a0), HGT(4.25), -R * Math.cos(a0), R * Math.sin(a1), HGT(4.25), -R * Math.cos(a1)); }
+  const sg = new THREE.BufferGeometry(); sg.setAttribute("position", new THREE.Float32BufferAttribute(s, 3));
+  scene.add(new THREE.LineSegments(sg, new THREE.LineBasicMaterial({ color: 0xffb547, transparent: true, opacity: 0.45 })));
+}
+// the hand: the time of this snapshot
+const NOW_H = 23.25;
+{
+  const a = NOW_H / 24 * Math.PI * 2, g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, HGT(4.25), 0), new THREE.Vector3(4.75 * Math.sin(a), HGT(4.25), -4.75 * Math.cos(a))]);
+  scene.add(new THREE.Line(g, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 })));
+}
+const replayHand = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), new THREE.LineBasicMaterial({ color: 0xffffff }));
+replayHand.visible = false; scene.add(replayHand);
+
+// ------------------------------------------------------------------ nodes
+const SIZE = { series: 2.4, job: 6, product: 9, result: 5.5, strategy: 5.5, feed: 11, limit: 5.5, book: 18, kill: 8 };
+function baseColor(n) {
+  const c = new THREE.Color();
+  const v = n.m.verdict || "";
+  if (n.k === "series") return c.setRGB(...({ daily: [0.55, 0.67, 0.74], filings: [0.36, 0.44, 0.49], minute: [0.5, 0.64, 0.72], options: [0.62, 0.68, 0.74], macro: [0.6, 0.62, 0.78], factors: [0.6, 0.62, 0.78], "13f": [0.6, 0.62, 0.78] }[n.m.track]));
+  if (n.k === "product" || n.k === "result") {
+    if (n.m.status === "skipped") return c.setRGB(0.35, 0.37, 0.4);
+    if (/FAIL/.test(v)) return c.set("#ff4f9a");
+    if (/PASS/.test(v)) return c.set("#c8f5d6");
+    return c.setRGB(0.78, 0.87, 0.93);
+  }
+  if (n.k === "strategy") return c.setRGB(0.93, 0.88, 0.78);
+  if (n.k === "limit") return c.setRGB(0.68, 0.74, 0.79);
+  return c.setRGB(0.93, 0.96, 1.0);
+}
+const nPos = new Float32Array(N.length * 3), nCol = new Float32Array(N.length * 3), nSize = new Float32Array(N.length), nGlow = new Float32Array(N.length);
+N.forEach((n, i) => {
+  P[i].toArray(nPos, i * 3); baseColor(n).toArray(nCol, i * 3);
+  nSize[i] = isTrack(n) ? 1.8 : SIZE[n.k] || 3; nGlow[i] = 0.75;
+});
+const nGeo = new THREE.BufferGeometry();
+nGeo.setAttribute("position", new THREE.BufferAttribute(nPos, 3));
+nGeo.setAttribute("color", new THREE.BufferAttribute(nCol, 3));
+nGeo.setAttribute("aSize", new THREE.BufferAttribute(nSize, 1));
+nGeo.setAttribute("aGlow", new THREE.BufferAttribute(nGlow, 1));
+const nMat = new THREE.ShaderMaterial({
+  uniforms: { uPR: { value: PR } },
+  vertexShader: `
+    uniform float uPR; attribute vec3 color; attribute float aSize, aGlow; varying vec3 vC; varying float vG;
+    void main() {
+      vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * mv;
+      gl_PointSize = aSize * uPR * clamp(24.0 / -mv.z, 0.55, 2.4) * (0.8 + 0.35 * clamp(aGlow, 0.0, 1.5));
+      vC = color; vG = aGlow;
+    }`,
+  fragmentShader: `
+    varying vec3 vC; varying float vG;
+    void main() {
+      float r = length(gl_PointCoord - 0.5); if (r > 0.5) discard;
+      float core = 1.0 - smoothstep(0.2, 0.34, r), halo = (1.0 - smoothstep(0.3, 0.5, r)) * 0.28;
+      float b = vG < 0.05 ? 0.13 : mix(0.13, 1.0, clamp(vG, 0.0, 1.0)) * (1.0 + 0.5 * max(vG - 1.0, 0.0));
+      gl_FragColor = vec4(vC * (core + halo) * b, 1.0);
+    }`,
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+});
+const nodesObj = new THREE.Points(nGeo, nMat); nodesObj.frustumCulled = false; scene.add(nodesObj);
+
+// ------------------------------------------------------------------ edges: every real dependency, drawn as a fibre that arches toward its target
+const SEG = 16;
+const ePos = new Float32Array(E.length * SEG * 2 * 3), eT = new Float32Array(E.length * SEG * 2), eHi = new Float32Array(E.length * SEG * 2), eW = new Float32Array(E.length * SEG * 2), eSeed = new Float32Array(E.length * SEG * 2);
+{
+  const A = new THREE.Vector3(), B = new THREE.Vector3(), Cc = new THREE.Vector3(), q = new THREE.Vector3(), p0 = new THREE.Vector3();
+  const qbez = (t, out) => out.set(0, 0, 0).addScaledVector(A, (1 - t) * (1 - t)).addScaledVector(Cc, 2 * (1 - t) * t).addScaledVector(B, t * t);
+  E.forEach(([a, b], ei) => {
+    const na = N[a], nb = N[b]; A.copy(P[a]); B.copy(P[b]);
+    let ta = na.r ? na.a : nb.a, tb = nb.r ? nb.a : na.a;
+    let d = tb - ta; d = Math.atan2(Math.sin(d), Math.cos(d));
+    const ang = ta + d * 0.72, R = (na.r + nb.r) / 2, h = Math.max(HGT(na.r), HGT(nb.r)) + 0.25 + 0.12 * Math.abs(na.r - nb.r);
+    Cc.set(R * Math.sin(ang), h, -R * Math.cos(ang));
+    const seed = Math.random();
+    for (let s = 0; s < SEG; s++) {
+      const t0 = s / SEG, t1 = (s + 1) / SEG, k = (ei * SEG + s) * 2;
+      qbez(t0, p0); qbez(t1, q);
+      p0.toArray(ePos, k * 3); q.toArray(ePos, (k + 1) * 3);
+      eT[k] = t0; eT[k + 1] = t1; eSeed[k] = eSeed[k + 1] = seed;
+    }
+  });
+}
+const eGeo = new THREE.BufferGeometry();
+eGeo.setAttribute("position", new THREE.BufferAttribute(ePos, 3));
+eGeo.setAttribute("aT", new THREE.BufferAttribute(eT, 1));
+eGeo.setAttribute("aHi", new THREE.BufferAttribute(eHi, 1));
+eGeo.setAttribute("aW", new THREE.BufferAttribute(eW, 1));
+eGeo.setAttribute("aSeed", new THREE.BufferAttribute(eSeed, 1));
+const eMat = new THREE.ShaderMaterial({
+  uniforms: { uTime: { value: 0 }, uBase: { value: 0.07 } },
+  vertexShader: `
+    attribute float aT, aHi, aW, aSeed; varying float vT, vHi, vW, vSeed;
+    void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); vT = aT; vHi = aHi; vW = aW; vSeed = aSeed; }`,
+  fragmentShader: `
+    uniform float uTime, uBase; varying float vT, vHi, vW, vSeed;
+    void main() {
+      vec3 c = vHi > 2.5 ? vec3(1.0) : vHi > 1.5 ? vec3(0.22, 0.78, 1.0) : vHi > 0.5 ? vec3(1.0, 0.71, 0.28) : vec3(0.42, 0.55, 0.62);
+      float p = fract(vT - uTime * 0.42 + vSeed);
+      float pulse = smoothstep(0.0, 0.11, p) * (1.0 - smoothstep(0.11, 0.14, p));
+      float b = vHi > 0.5 ? (0.10 + 0.42 * vW + pulse * 1.3 * vW) : uBase;
+      gl_FragColor = vec4(c * b, 1.0);
+    }`,
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+});
+const edgesObj = new THREE.LineSegments(eGeo, eMat); edgesObj.frustumCulled = false; scene.add(edgesObj);
+
+// ------------------------------------------------------------------ labels
+const labelsDiv = $("#labels"), labels = [];
+function addLabel(v, html, cls = "", opts = {}) {
+  const el = document.createElement("div"); el.className = "lb " + cls; el.innerHTML = html; labelsDiv.appendChild(el);
+  const L = { el, v, node: opts.node ?? null, show: opts.show || "always", pri: opts.pri ?? 3, w: 0 }; labels.push(L); return L;
+}
+const ring = (R, a, dy = 0) => new THREE.Vector3(R * Math.sin(a), HGT(R) + dy, -R * Math.cos(a));
+[0, 3, 6, 9, 12, 15, 18, 21].forEach(h => addLabel(ring(4.95, h / 24 * Math.PI * 2), hh(h).replace(":00", ""), "hour", { pri: 2 }));
+addLabel(ring(5.05, 12.75 / 24 * Math.PI * 2), "market session", "hour", { pri: 2 });
+addLabel(ring(5.05, NOW_H / 24 * Math.PI * 2, 0.1), "now", "now", { pri: 4 });
+const SECT = { etf: "ETFS", eq: "S&P 500 + NASDAQ-100", fred: "FRED", ff: "FACTORS", "13f": "13F" };
+Object.entries(X.sections).forEach(([k, [a0, a1]]) => addLabel(ring(7.55, (a0 + a1) / 2, 0.05), SECT[k], "sect", { pri: 3 }));
+N.forEach((n, i) => {
+  const v = P[i].clone();
+  if (n.k === "feed") addLabel(v.clone().add(new THREE.Vector3(0, 0.32, 0)), `${esc(n.l)}<small>${esc(n.m.who)}</small>`, "big", { node: i, pri: 9 });
+  else if (n.k === "product") addLabel(v.clone().add(new THREE.Vector3(0, 0.22, 0)), `${esc(n.l)}<small>${esc(n.n)}</small>`, /FAIL/.test(n.m.verdict || "") ? "fail" : "", { node: i, pri: 8 });
+  else if (n.k === "job") addLabel(v.clone().add(new THREE.Vector3(0, 0.16, 0)), esc(n.l), "", { node: i, show: "near", pri: 5 });
+  else if (n.k === "book") addLabel(v.clone().add(new THREE.Vector3(0, 0.34, 0)), "THE BOOK<small>paper · Alpaca</small>", "big", { node: i, pri: 10 });
+  else if (n.k === "kill") addLabel(v.clone().add(new THREE.Vector3(0, 0.18, 0)), "kill switch<small>armed</small>", "", { node: i, show: "near", pri: 7 });
+  else if (n.k === "limit" || n.k === "strategy" || n.k === "result") addLabel(v.clone().add(new THREE.Vector3(0, 0.14, 0)), esc(n.l), "", { node: i, show: "web", pri: 6 });
+  else if (n.k === "series" && n.m.track === "daily") addLabel(v.clone().add(new THREE.Vector3(0, 0.12, 0)), esc(n.l), "", { node: i, show: "web", pri: 1 });
+});
+
+// ------------------------------------------------------------------ the web of a selection
+let sel = -1, webMode = "both", web = { up: new Map(), down: new Map() };
+function bfs(start, dir, limit = 7) {
+  const seen = new Map([[start, 0]]), q = [start];
+  while (q.length) {
+    const u = q.shift(), d = seen.get(u); if (d >= limit) continue;
+    for (const ei of (dir < 0 ? inE[u] : outE[u])) { const v = E[ei][dir < 0 ? 0 : 1]; if (!seen.has(v)) { seen.set(v, d + 1); q.push(v); } }
+  }
+  seen.delete(start); return seen;
+}
+function applyWeb(i, transient = false) {
+  const up = i >= 0 && webMode !== "down" && webMode !== "none" ? bfs(i, -1) : new Map();
+  const down = i >= 0 && webMode !== "up" && webMode !== "none" ? bfs(i, 1) : new Map();
+  if (!transient) web = { up, down };
+  for (let k = 0; k < N.length; k++) {
+    nGlow[k] = i < 0 ? 0.75 : k === i ? 1.8 : up.has(k) ? 1.15 - 0.09 * up.get(k) : down.has(k) ? 1.15 - 0.09 * down.get(k) : 0.0;
+  }
+  E.forEach(([a, b], ei) => {
+    let hi = 0, w = 0;
+    if (i >= 0) {
+      if ((b === i || up.has(b)) && up.has(a)) { hi = 1; w = 1 / (1 + 0.55 * (up.get(b) || 0)); }
+      else if ((a === i || down.has(a)) && down.has(b)) { hi = 2; w = 1 / (1 + 0.55 * (down.get(a) || 0)); }
+    }
+    for (let s = 0; s < SEG * 2; s++) { const k = ei * SEG * 2 + s; eHi[k] = hi; eW[k] = w; }
+  });
+  nGeo.attributes.aGlow.needsUpdate = true; eGeo.attributes.aHi.needsUpdate = true; eGeo.attributes.aW.needsUpdate = true;
+  eMat.uniforms.uBase.value = i < 0 ? 0.07 : 0.014;
+}
+
+// ------------------------------------------------------------------ the focus panel
+const KIND_LABEL = { series: "SERIES", job: "JOB", product: "PRODUCT", result: "RESULT", strategy: "STRATEGY", feed: "FEED", limit: "LIMIT", book: "THE BOOK", kill: "KILL SWITCH" };
+const chip = (i, extra = "") => { const n = N[i]; return `<button class="chip ${/FAIL/.test(n.m.verdict || "") ? "fail" : ""}" data-sel="${i}">${esc(n.l)}${extra ? `<sub>${extra}</sub>` : ""}</button>`; };
+function chipsFor(set, max = 48) {
+  const arr = [...set.entries()].sort((a, b) => a[1] - b[1] || (N[a[0]].k === "series") - (N[b[0]].k === "series") || N[a[0]].l.localeCompare(N[b[0]].l));
+  const shown = arr.slice(0, max).map(([k]) => chip(k)).join("");
+  return shown + (arr.length > max ? `<span class="chip more">+${arr.length - max} more</span>` : "");
+}
+function countBy(set) { const c = {}; for (const k of set.keys()) { const t = N[k].k === "series" ? "series" : N[k].k; c[t] = (c[t] || 0) + 1; } return c; }
+const plural = (n, w) => `${num(n)} ${w}${n === 1 ? "" : "s"}`;
+function summary(c) {
+  const order = [["series", "series", "series"], ["feed", "feed"], ["job", "job"], ["product", "product"], ["result", "result"], ["strategy", "strategy", "strategies"], ["limit", "limit"], ["book", "book"]];
+  return order.filter(([k]) => c[k]).map(([k, s, p]) => c[k] === 1 ? `1 ${s}` : `${num(c[k])} ${p || s + "s"}`).join(" · ");
+}
+function verdictTag(v) { if (!v) return ""; const cls = /FAIL/.test(v) ? "fail" : /PASS/.test(v) ? "pass" : "desc"; return `<span class="verdict ${cls}">${esc(v)}</span>`; }
+function spark(vals) {
+  if (!vals || vals.length < 2) return "";
+  const lo = Math.min(...vals), hi = Math.max(...vals), w = 340, h = 50;
+  const pts = vals.map((v, i) => `${(i / (vals.length - 1) * w).toFixed(1)},${(h - 3 - (v - lo) / (hi - lo || 1) * (h - 6)).toFixed(1)}`).join(" ");
+  const up = vals[vals.length - 1] >= vals[0];
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><polyline points="${pts}" fill="none" stroke="${up ? "#ffb547" : "#ff4f9a"}" stroke-width="1.3" vector-effect="non-scaling-stroke"/></svg>`;
+}
+function lens(n, i) {
+  const m = n.m;
+  if (n.k === "series" && m.track === "daily") {
+    const tracks = ["daily bars"].concat(byId.has("m:" + n.l) ? ["minute bars"] : [], byId.has("o:" + n.l) ? ["option chain"] : [], byId.has("s:" + n.l) ? ["SEC filings"] : []);
+    return `<div class="sec">${spark(m.spark)}<div class="stats3"><div><b>${m.last ? "$" + num(m.last, 2) : "—"}</b>last close</div><div><b>${pct(m.ret1y)}</b>one year</div><div><b>${m.vol ? (m.vol * 100).toFixed(1) + "%" : "—"}</b>volatility</div></div></div>
+      <div class="sec"><h3>on ${tracks.length} track${tracks.length > 1 ? "s" : ""}</h3><div class="chips">${tracks.map(t => `<span class="chip">${t}</span>`).join("")}</div></div>
+      ${m.peers ? `<div class="sec"><h3>moves most with</h3><div class="chips">${m.peers.map(([t, c]) => byId.has("d:" + t) ? chip(byId.get("d:" + t), c.toFixed(2)) : "").join("")}</div></div>` : ""}`;
+  }
+  if (n.k === "job") {
+    const runs = G.runs.filter(r => r.kind === m.kind);
+    const fires = m.fires.length > 6 ? `${m.fires.length} times a day, ${hh(m.fires[0])}–${hh(m.fires[m.fires.length - 1])}` : m.fires.map(hh).join(", ");
+    return `<div class="sec"><h3>scheduled</h3><div class="vdetail">${esc(m.when.join(", "))} · ${fires} ET${m.heavy ? " · heavy: never during the session" : ""} · memory class ${m.mem}</div></div>
+      <div class="sec"><h3>in the last day <b>${runs.length}</b> run${runs.length === 1 ? "" : "s"}</h3><table class="kv">${runs.slice(-8).map(r => `<tr><td>${tET(r.start)}–${tET(r.end)}</td><td class="n">${num(r.cpu, 1)} cpu-s</td></tr>`).join("") || `<tr><td class="dim">none (it runs ${esc(m.when.join(", "))})</td></tr>`}</table></div>`;
+  }
+  if (n.k === "product") {
+    if (m.kind === "farm.sweep") {
+      const cells = N.filter(x => x.id.startsWith("c:") && x.m.status === "ok").sort((a, b) => (b.m.oos_sharpe_ann ?? -9) - (a.m.oos_sharpe_ann ?? -9));
+      return `<div class="sec"><h3>leaderboard, chosen variant per cell</h3><table class="kv"><tr class="hd"><td>cell</td><td class="n">Sharpe</td><td class="n">DSR</td><td class="n"></td></tr>${cells.slice(0, 8).map(c => `<tr><td><button class="tok" data-sel="${byId.get(c.id)}">${esc(c.l)}</button></td><td class="n">${num(c.m.oos_sharpe_ann, 2)}</td><td class="n">${num(c.m.dsr_farm, 2)}</td><td class="f">${esc(c.m.verdict)}</td></tr>`).join("")}</table></div>`;
+    }
+    if (m.kind === "vol.forecast_league") return `<div class="sec"><h3>models, out of sample</h3><table class="kv"><tr class="hd"><td>model</td><td class="n">best set</td><td class="n">mean rank</td></tr>${N.filter(x => x.id.startsWith("lm:")).sort((a, b) => a.m.mean_rank - b.m.mean_rank).map(x => `<tr><td>${x.l}</td><td class="n">${Math.round(x.m.mcs_rate * 100)}%</td><td class="n">${x.m.mean_rank.toFixed(2)}</td></tr>`).join("")}</table></div>`;
+    if (m.kind === "cov.league") return `<div class="sec"><h3>realized vol of each estimator's minimum-variance book</h3><table class="kv"><tr class="hd"><td>estimator</td><td class="n">Nasdaq-100</td><td class="n">sectors</td></tr>${N.filter(x => x.id.startsWith("ce:")).map(x => `<tr><td>${esc(x.l)}</td><td class="n">${(x.m.ndx100.vol * 100).toFixed(1)}% <span class="dim">#${x.m.ndx100.rank}</span></td><td class="n">${(x.m.sectors.vol * 100).toFixed(1)}% <span class="dim">#${x.m.sectors.rank}</span></td></tr>`).join("")}</table></div>`;
+    if (m.kind === "risk.mc_atlas") return `<div class="sec"><h3>core book, 99%</h3><table class="kv"><tr class="hd"><td>method</td><td class="n">VaR</td><td class="n">ES</td></tr>${N.filter(x => x.id.startsWith("am:")).map(x => `<tr><td>${esc(x.l)}</td><td class="n">${pct(-x.m.var, 2)}</td><td class="n">${pct(-x.m.es, 2)}</td></tr>`).join("")}</table></div>`;
+    if (m.kind === "models.xs_lgbm") { const d = X.xs.deciles, mx = Math.max(...d.map(Math.abs)); return `<div class="sec"><h3>next-month return by score decile</h3><svg class="spark" viewBox="0 0 340 54">${d.map((v, k) => `<rect x="${k * 34 + 4}" y="${v >= 0 ? 27 - v / mx * 24 : 27}" width="26" height="${Math.abs(v) / mx * 24}" fill="${v >= 0 ? "#ffb547" : "#ff4f9a"}"/>`).join("")}<line x1="0" x2="340" y1="27" y2="27" stroke="#444"/></svg><div class="vdetail">lowest decile → highest. A working model climbs left to right.</div></div>`; }
+    if (m.kind === "vol.surface_history") return `<div class="sec"><div class="stats3"><div><b>${(X.surface.atm30 * 100).toFixed(1)}%</b>SPY 30-day ATM vol</div><div><b>${num(X.surface.contracts)}</b>SPY contracts</div><div><b>30</b>underlyings</div></div></div>`;
+    if (m.kind === "regime.hmm") return `<div class="sec"><div class="stats3"><div><b>${X.regime.p_high.toFixed(2)}</b>p(high vol) now</div><div><b>${num(X.regime.weeks)}</b>weeks read</div><div><b>${dShort(X.regime.last)}</b>last week</div></div></div>`;
+    return m.notes ? `<div class="sec"><h3>notes</h3><div class="vdetail">${m.notes.map(esc).join("<br>")}</div></div>` : "";
+  }
+  if (n.k === "result" && n.id.startsWith("c:")) {
+    if (m.status !== "ok") return `<div class="sec"><div class="vdetail">Skipped tonight: ${esc(m.reason || "")}</div></div>`;
+    return `<div class="sec"><table class="kv"><tr><td>variants tested</td><td class="n">${num(m.combos)}</td></tr><tr><td>chosen variant's Sharpe, out of sample</td><td class="n">${num(m.oos_sharpe_ann, 2)}</td></tr><tr><td>probabilistic Sharpe</td><td class="n">${num(m.psr, 2)}</td></tr><tr><td>deflated Sharpe, all ${num(X.farm.trials)} trials</td><td class="n">${num(m.dsr_farm, 2)}</td></tr><tr><td>probability of overfitting</td><td class="n">${num(m.pbo, 2)}</td></tr></table><div class="vdetail" style="margin-top:8px">${esc(m.detail || "")}</div></div>`;
+  }
+  if (n.k === "strategy") return `<div class="sec"><div class="stats3"><div><b>${(m.capital * 100).toFixed(1)}%</b>of capital</div><div><b>${m.symbols.length || "—"}</b>symbols</div><div><b>${esc(m.producer)}</b>producer</div></div></div>${m.symbols.length ? `<div class="sec"><h3>trades</h3><div class="chips">${m.symbols.map(t => byId.has("d:" + t) ? chip(byId.get("d:" + t)) : `<span class="chip">${t}</span>`).join("")}</div></div>` : ""}`;
+  if (n.k === "feed") return `<div class="sec"><div class="stats3"><div><b>${num(m.keys)}</b>series</div><div><b>${dShort(m.asof)}</b>data as of</div><div><b>${tET(m.ok)}</b>${dShort(m.ok)}, last pull</div></div></div>`;
+  if (n.k === "book") return `<div class="sec"><div class="stats3"><div><b>${m.strategies}</b>strategies</div><div><b>${m.positions}</b>positions</div><div><b>${Math.round(m.incubation_cap * 100)}%</b>incubation cap</div></div></div>`;
+  return "";
+}
+function focus(i) {
+  const el = $("#focus");
+  if (i < 0) { el.classList.remove("on"); return; }
+  const n = N[i], m = n.m;
+  const upC = countBy(web.up), downC = countBy(web.down);
+  const prov = n.k === "product" && m.code ? `<div class="prov">code <b>${esc(m.code)}</b> · data <b>${dShort(m.asof)}</b> · <b>${num(m.cpu, 0)}</b> cpu-s · <b>${esc(m.engine || "")}</b> · finished <b>${tET(m.finished)}</b> ${dShort(m.finished)}</div>` : "";
+  const sub = n.k === "series" ? (m.full || n.n) : n.k === "job" ? m.kind : n.k === "product" ? m.kind : n.k === "strategy" ? n.n : "";
+  el.innerHTML = `
+    <div class="idl"><span><b>${KIND_LABEL[n.k]}</b> · ${esc(n.id)}</span><button class="x" data-close>×</button></div>
+    <h1>${esc(n.k === "series" ? n.l : n.n)}</h1>
+    ${sub ? `<div class="vdetail">${esc(sub)}</div>` : ""}
+    ${m.verdict ? `<div style="margin-top:10px">${verdictTag(m.verdict)}<span class="vdetail">${esc(m.detail || "")}</span></div>` : ""}
+    ${prov}
+    ${lens(n, i)}
+    ${web.up.size ? `<div class="sec"><h3><i class="sw up"></i>reads <b>${summary(upC)}</b></h3><div class="chips">${chipsFor(web.up)}</div></div>` : ""}
+    ${web.down.size ? `<div class="sec"><h3><i class="sw down"></i>feeds <b>${summary(downC)}</b></h3><div class="chips">${chipsFor(web.down)}</div></div>` : ""}`;
+  el.classList.add("on"); el.scrollTop = 0;
+}
+
+// ------------------------------------------------------------------ readings: what it is and what it did, in plain words
+const T = (id, text) => byId.has(id) ? `<button class="tok" data-sel="${byId.get(id)}">${text ?? esc(N[byId.get(id)].l)}</button>` : esc(text || id);
+function reaches() {
+  const st = [...web.down.keys()].filter(k => N[k].k === "strategy").length, book = [...web.down.keys()].some(k => N[k].k === "book");
+  return { st, book };
+}
+function reading(i) {
+  const n = N[i], m = n.m, { st, book } = reaches();
+  const direct = [...web.down.keys()].filter(k => N[k].k === "job" && web.down.get(k) === 1);
+  const jobsReading = direct.map(k => T(N[k].id)).join(", ");
+  if (n.k === "series" && m.track === "daily") {
+    const others = ["m:", "o:", "s:"].filter(p => byId.has(p + n.l)).map(p => ({ "m:": "one-minute bars from Alpaca", "o:": "an option chain from Cboe", "s:": "SEC filings" }[p]));
+    return `<h2>${esc(n.l)}${m.full ? `, ${esc(m.full)}` : ""}</h2>
+      <p>One of 563 tickers whose closing prices the warehouse refreshes every weekday at 6:30 PM.${others.length ? ` It also has ${others.join(", ").replace(/, ([^,]*)$/, " and $1")}.` : ""}${m.ret1y != null ? ` Over the last year it returned <b>${pct(m.ret1y)}</b> with <b>${(m.vol * 100).toFixed(1)}%</b> annualized volatility.` : ""}</p>
+      <p>Tonight <b>${plural(direct.length, "job")}</b> read it directly: ${jobsReading || "none"}.${st ? ` Through them it reaches <b>${plural(st, "strategy").replace("strategys", "strategies")}</b> on the desk${book ? " and the book itself" : ""}.` : ""}</p>
+      ${m.peers ? `<p>It moved most with ${m.peers.slice(0, 3).map(([t, c]) => `${T("d:" + t)} (${c.toFixed(2)})`).join(", ")} over the last year.</p>` : ""}`;
+  }
+  if (n.k === "series") return `<h2>${esc(n.n)}</h2><p>A series in the warehouse's ${esc(m.track)} track. Tonight it is read by ${jobsReading || "no scheduled job"}.</p>`;
+  if (n.k === "feed") return `<h2>${esc(n.n)}</h2><p>The warehouse keeps <b>${num(m.keys)}</b> series from this feed. The newest data is from <b>${dShort(m.asof)}</b>; the last successful pull finished at <b>${tET(m.ok)}</b> on ${dShort(m.ok)}.${m.behind ? ` ${num(m.behind)} of them are behind their own publication schedule, which for slow series (monthly macro, quarterly filings) is normal.` : ""}</p><p>From here the data reaches <b>${num([...web.down.keys()].filter(k => N[k].k === "product").length)}</b> research products${st ? ` and <b>${st}</b> of the desk's strategies` : ""}.</p>`;
+  if (n.k === "job") {
+    const runs = G.runs.filter(r => r.kind === m.kind), cpu = runs.reduce((a, r) => a + r.cpu, 0);
+    return `<h2>${esc(n.l)}</h2><p><span class="tok">${esc(m.kind)}</span> runs ${esc(m.when.join(", "))}${m.fires.length <= 3 ? ` at ${m.fires.map(hh).join(", ")}` : `, ${m.fires.length} times a day`} New York time.${m.heavy ? " It is heavy, so it never starts during the market session, and it waits until the server has the memory for it." : ""}</p>
+      <p>${runs.length ? `In the last day it ran <b>${runs.length}</b> time${runs.length > 1 ? "s" : ""} for <b>${num(cpu, 0)}</b> CPU-seconds.` : "It didn't run in the last day."} It reads <b>${summary(countBy(new Map([...web.up].filter(([k]) => web.up.get(k) === 1))))}</b> directly${st ? `, and what it publishes reaches <b>${st}</b> strategies on the desk` : ""}.</p>`;
+  }
+  if (n.k === "product") {
+    const lead = `<h2>${esc(n.n)}</h2>`;
+    const v = m.verdict ? `<p>Verdict: <b class="${/FAIL/.test(m.verdict) ? "fail-t" : ""}">${esc(m.verdict.toLowerCase())}</b>. <span class="dim">${esc(m.detail || "")}</span></p>` : "";
+    const S = {
+      "farm.sweep": () => { const c = N.filter(x => x.id.startsWith("c:") && x.m.status === "ok").sort((a, b) => b.m.oos_sharpe_ann - a.m.oos_sharpe_ann)[0];
+        return `<p>Tonight the farm re-tested <b>21</b> strategy-and-universe cells with every parameter combination: <b>${num(X.farm.trials)}</b> variants. The best chosen variant was ${T(c.id)} with an out-of-sample Sharpe of <b>${num(c.m.oos_sharpe_ann, 2)}</b>. Deflated by every trial in the farm, its DSR is <b>${num(c.m.dsr_farm, 2)}</b>, and like every other cell it fails a gate.</p><p>The verdict is advisory. These same 21 cells are 21 of the desk's 23 strategies, each incubating at <b>2.5%</b> of capital, which is why a gate failure here is shown, not hidden.</p>`; },
+      "vol.forecast_league": () => `<p>Every weeknight four volatility models forecast the next day for <b>421</b> names, scored out of sample on the last 250 sessions. GARCH stays in the statistical best set for <b>96%</b> of names; EWMA, the simplest, for <b>90%</b>.</p><p>It matters downstream: the ${T("j:signals.overlay", "exposure overlay")} takes each name's best model to size the desk.</p>`,
+      "cov.league": () => `<p>Seven ways to estimate the covariance matrix compete each weekend: the league builds a minimum-variance book with each and measures what it actually did. On the Nasdaq-100, Ledoit–Wolf shrinkage to the identity wins (<b>14.8%</b> realized vol against <b>16.0%</b> for the raw sample matrix); on the sectors, OAS.</p><p>The ${T("j:signals.overlay", "exposure overlay")} uses the winner.</p>`,
+      "risk.mc_atlas": () => { const a = N[byId.get("am:fhs:10")].m; return `<p>For a $1M multi-asset book the atlas simulates <b>1,000,000</b> ten-day paths by filtered historical simulation, and again with a t-copula, in Rust. The ten-day 99% VaR is <b>${pct(-a.var, 2)}</b> (about $${num(a.var_usd)}) and the ES <b>${pct(-a.es, 2)}</b>.</p><p>It reads all <b>563</b> tickers because it also measures each name on its own.</p>`; },
+      "models.xs_lgbm": () => `<p>A gradient-boosted model ranks 34 ETFs every month. If its scores meant anything, next month's returns would climb decile by decile; they don't (the top tenth earned <b>0.89%</b>, the fourth <b>1.19%</b>). It fails its gates, so nothing downstream uses it.</p>`,
+      "regime.hmm": () => `<p>A four-state hidden Markov model reads SPY's weekly returns and the VIX since 1996. Its high-volatility state lit up in 2008, 2011, 2020, 2022 and April 2025; right now its probability is <b>${X.regime.p_high.toFixed(2)}</b>.</p><p>It adds nothing over a simple moving average of volatility, so it stays descriptive.</p>`,
+      "vol.surface_history": () => `<p>From Cboe's delayed quotes the server fits a volatility smile per expiry for <b>30</b> underlyings and keeps the history. SPY's 30-day at-the-money vol is <b>${(X.surface.atm30 * 100).toFixed(1)}%</b> from ${num(X.surface.contracts)} contracts.</p>`,
+      "kronos.shadow": () => `<p>Kronos, a foundation model for price series, failed its pre-registered test (EXP-K01). It still runs every night in the shadow, scored against the incumbents on days it has never seen, so the verdict can be revisited on evidence rather than hope.</p>`,
+      "ops.data_integrity": () => `<p>Every weeknight it checks all daily series for unadjusted splits, bad prints and stale data. It detects and never repairs: a repair to a published input is the owner's call.</p>`,
+      "signals.daily": () => { const n0 = (m.notes || [])[0] || "", g = k => (n0.match(new RegExp("(\\d+) " + k)) || [])[1];
+        return `<p>This is where research becomes orders. For each farm cell on the roster it takes the month's frozen parameters, runs the strategy's own backtest function, and turns its last row into a signed document for the desk to judge.</p>
+        <p>Last night: <b>${g("written") ?? "—"}</b> new documents, <b>${(n0.match(/(\d+) written again/) || [])[1] ?? "—"}</b> written again because the desk hadn't sized the last one, <b>${g("held") ?? "—"}</b> held (not a decision day for that strategy) and <b>${g("refused") ?? "—"}</b> refused.</p>
+        <p>Two caveats it states about itself: a farm verdict was earned at the strategy's default leverage (<b>2–3×</b> for some), while the desk trades de-levered <b>1×</b> targets; and backtests fill at the next close while the desk fills at the next open. So a cell's verdict isn't evidence at the leverage and price the desk actually trades.</p>`; },
+      "signals.overlay": () => { const all = (m.notes || []).join(" "), s = all.match(/exposure_scale ([\d.]+) = min\(1, ([\d.]+) \/ ([\d.]+)\)/), fb = /no rank-1 row for site_etfs: (\w+)/.exec(all);
+        return `<p>One number for the whole desk: an exposure scale toward a volatility target. It combines the roster's targets with a covariance matrix from the ${T("p:cov.league", "covariance league")} and each name's best volatility model from the ${T("p:vol.forecast_league", "vol league")}.</p>
+        ${s ? `<p>Tonight the combined book forecasts <b>${(s[3] * 100).toFixed(1)}%</b> volatility against a <b>${(s[2] * 100).toFixed(0)}%</b> target, so the scale is <b>${(+s[1]).toFixed(2)}</b>: the desk is nowhere near its risk budget.${fb ? ` The league had no winner for the desk's ETF universe, so it fell back to <span class="tok">${fb[1].replace(/_/g, " ")}</span>.` : ""} The regime model and the risk atlas are reported alongside, and deliberately never used.</p>` : ""}
+        <p>If a forecast isn't finite the job fails loudly, and the desk holds its last scale until that goes stale.</p>`; },
+    };
+    return lead + v + (S[m.kind] ? S[m.kind]() : `<p>${esc(n.n)} is published by ${T("j:" + m.kind)}.</p>`);
+  }
+  if (n.k === "result" && n.id.startsWith("c:")) {
+    const s = N.find(x => x.k === "strategy" && x.m.strategy === m.strategy && x.m.universe === n.l.split("@")[1]);
+    return `<h2>${esc(n.n)}</h2>${m.status !== "ok" ? `<p>Skipped tonight: ${esc(m.reason || "")}.</p>` : `<p><b>${num(m.combos)}</b> parameter variants. The chosen one scored an out-of-sample Sharpe of <b>${num(m.oos_sharpe_ann, 2)}</b>; deflated for the farm's ${num(X.farm.trials)} trials that is a DSR of <b>${num(m.dsr_farm, 2)}</b>. Verdict <b class="fail-t">${esc((m.verdict || "").toLowerCase())}</b>.</p>`}${s ? `<p>On the desk it trades as ${T(s.id)} at 2.5% of capital.</p>` : ""}`;
+  }
+  if (n.k === "result") return `<h2>${esc(n.n)}</h2><p>A result inside ${[...web.up.keys()].filter(k => N[k].k === "product").map(k => T(N[k].id)).join(", ")}.</p>`;
+  if (n.k === "strategy") return `<h2>${esc(n.n)}</h2><p>One of the desk's 23 strategies, with <b>${(m.capital * 100).toFixed(1)}%</b> of capital. ${m.producer === "signals.daily" ? `Its signals come from ${T("p:signals.daily", "daily signals")}, using the farm cell ${T(`c:${m.strategy}@${m.universe}`)}.` : "Its signals come from the research service (EXP-A01)."}</p>`;
+  if (n.k === "book") return `<h2>The book</h2><p>Everything outside it exists to feed this: a paper account at Alpaca run by OhCamel's OCaml engine. <b>23</b> strategies send it signals, 21 from the farm and 2 from the research service, each at <b>2.5%</b> of capital under a <b>60%</b> incubation cap. The ${T("p:signals.overlay", "overlay")} scales total exposure toward a volatility target.</p><p>Seven limits bound it, and three of them (book size, VaR and drawdown) trip the ${T("kill", "kill switch")}, which is armed. On 28 October it held <b>5</b> positions.</p>`;
+  if (n.k === "limit") return `<h2>${esc(n.l)}</h2><p>${esc(m.scope)}: ${esc(m.what)}.${m.trips ? " Breaking it trips the kill switch, which halts every new order." : " Breaking it raises an alert."}</p><p class="dim">Thresholds here are the public example book's; the live book's values are private.</p>`;
+  if (n.k === "kill") return `<h2>The kill switch</h2><p>Armed. If ${T("lim:book-cap")}, ${T("lim:var-cap")} or ${T("lim:dd-cap")} breaks, it halts the desk: every new order is refused until the owner clears it.</p>`;
+  return `<h2>${esc(n.n)}</h2>`;
+}
+
+// ------------------------------------------------------------------ selection
+let tab = "tour";
+function select(i, opts = {}) {
+  sel = i; applyWeb(i); focus(i);
+  if (i >= 0) { $("#p-read").innerHTML = reading(i); if (!opts.keepTab) setTab("read"); }
+  if (opts.frame !== false && i >= 0) frameNode(i);
+}
+function setTab(t) {
+  tab = t;
+  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.t === t));
+  document.querySelectorAll(".pane").forEach(p => p.classList.toggle("on", p.id === "p-" + t));
+  controls.enableZoom = t !== "tour";
+  $("#tabhint").textContent = t === "tour" ? "scroll ↓" : t === "day" ? "" : "scroll to zoom";
+}
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => { setTab(b.dataset.t); if (b.dataset.t === "tour") goStep(step); if (b.dataset.t === "day") renderDay(); });
+document.addEventListener("click", e => {
+  const s = e.target.closest("[data-sel]"); if (s) { e.preventDefault(); select(+s.dataset.sel); return; }
+  if (e.target.closest("[data-close]")) { select(-1); $("#p-read").innerHTML = `<p class="dim">Click anything in the machine, or search for it.</p>`; }
+});
+document.querySelectorAll("#webmode button").forEach(b => b.onclick = () => {
+  webMode = b.dataset.m; document.querySelectorAll("#webmode button").forEach(x => x.classList.toggle("on", x === b));
+  if (sel >= 0) { applyWeb(sel); focus(sel); }
+});
+
+// ------------------------------------------------------------------ camera
+const goal = { active: false, t0: 0, dur: 1.5, fromT: new THREE.Vector3(), toT: new THREE.Vector3(), fromS: new THREE.Spherical(), toS: new THREE.Spherical() };
+function sph(d, pol, az) { return new THREE.Spherical(d, pol, az); }
+function flyTo(target, s, dur = 1.5) {
+  goal.fromT.copy(controls.target); goal.toT.copy(target);
+  goal.fromS.setFromVector3(camera.position.clone().sub(controls.target)); goal.toS.copy(s);
+  let d = goal.toS.theta - goal.fromS.theta; goal.toS.theta = goal.fromS.theta + Math.atan2(Math.sin(d), Math.cos(d));
+  goal.t0 = performance.now() / 1000; goal.dur = reduced ? 0.01 : dur; goal.active = true;
+}
+const azFor = a => Math.PI - a;  // puts a ring angle on the near side
+function frameNode(i) {
+  const n = N[i], p = P[i];
+  if (n.k === "book" || n.k === "limit" || n.k === "kill" || n.k === "strategy") return flyTo(new THREE.Vector3(0, 0.3, 0), sph(9.5, 0.95, azFor(n.k === "book" ? 0.25 : n.a)));
+  const big = web.up.size + web.down.size > 60;
+  const t = p.clone().multiplyScalar(big ? 0.3 : 0.55); t.y = big ? 1.2 : HGT(n.r) * 0.6 + 0.4;
+  flyTo(t, sph(big ? 19.5 : n.r > 6 ? 15 : 12.5, big ? 0.82 : 0.98, azFor(n.a)));
+}
+
+// ------------------------------------------------------------------ the tour: scroll walks inward from the world to the book
+const STEPS = [
+  { sel: null, cam: () => [new THREE.Vector3(0, 1.4, 0), sph(27, 0.92, 0.35)], title: "The machine, at 11:15 PM on a Wednesday",
+    body: () => `<p>This is OhCamel drawn as what it is: rings that narrow to one book. The outer ring is the world's data. The clock is the machine's day, with every scheduled job at its time. Inside are what the jobs publish, the desk's 23 strategies, and at the centre a paper account that trades.</p><p>Every line is a real dependency, read from the system's own schedules and provenance. Scroll to walk inward. Click anything to take over.</p>` },
+  { sel: "feed:prices", title: "Outside: six feeds",
+    body: () => `<p>Every weekday at 6:30 PM the server pulls closing prices for <b>563</b> tickers. Around them: one-minute bars for 50 names, option chains for 30, 35 FRED series, Ken French's factors, and SEC filings for 518 companies. The tracks of the outer ring are those datasets, <b>1,204</b> series in all.</p>` },
+  { sel: "d:NVDA", title: "One stock, followed inward",
+    body: () => `<p>${T("d:NVDA", "NVDA")} sits on all four tracks: daily bars, minute bars, an option chain and SEC filings. Its daily bars are read by <b>four jobs</b> tonight and watched by a position limit; its minute bars feed the ${T("j:vol.forecast_league", "vol league")} and its option chain the ${T("j:vol.surface_history", "surface")} job.</p><p>The cyan lines are where its influence goes. ${(() => { const st = [...web.down.keys()].filter(k => N[k].k === "strategy").length; return st ? `It reaches <b>${st}</b> strategies and the book.` : `None of the desk's strategies trade it, yet it still reaches the book: through the ${T("p:signals.overlay", "exposure overlay")}, which sizes everything, and through its own position limit.`; })()} Click any ticker on the outer ring to see its own web.</p>` },
+  { sel: "j:vol.forecast_league", title: "The clock",
+    body: () => `<p>The middle ring is a 24-hour dial. Each tick is a scheduled run; the amber arc is the market session, when nothing heavy is allowed to start. The heaviest job last night was the ${T("j:vol.forecast_league", "vol forecast league")}: it read <b>421</b> names for <b>64</b> minutes and <b>3,846</b> CPU-seconds.</p><p>Open <b>The day</b> tab to replay the last 24 hours.</p>` },
+  { sel: "p:farm.sweep", title: "The farm, and an honest failure",
+    body: () => `<p>At 11 PM the ${T("p:farm.sweep", "strategy farm")} re-tests the desk's strategies: 21 cells, <b>${num(X.farm.trials)}</b> parameter variants. The best scored a Sharpe of 2.39, but after deflating for every trial, <b>no cell passes</b>. The pink is shown, not hidden.</p>` },
+  { sel: "p:signals.overlay", title: "Where research becomes orders",
+    body: () => `<p>Two jobs connect the research to the desk. ${T("j:signals.daily", "Daily signals")} turns each farm cell's backtest into a signed document. The ${T("p:signals.overlay", "exposure overlay")} sizes the whole desk toward a 10% volatility target from the covariance and vol leagues. Tonight the book forecast 3.4%, so it runs at full scale.</p><p>Open <b>Reading</b> for the caveats these jobs record about themselves.</p>` },
+  { sel: "book", title: "The book",
+    body: () => `<p>Everything ends here. <b>23</b> strategies at <b>2.5%</b> of capital each, under a 60% incubation cap; seven limits; and a kill switch, armed, that halts every new order if the book size, VaR or drawdown limit breaks.</p>` },
+  { sel: null, cam: () => [new THREE.Vector3(0, 1.2, 0), sph(23, 0.62, -0.5)], title: "Now it's yours",
+    body: () => `<p>Drag to turn the machine, click anything to read it, or search above. Some places to start:</p><p>${["d:SPY", "p:risk.mc_atlas", "p:kronos.shadow", "kill", "f:VIXCLS", "c:xsmom@sectors", "feed:sec"].map(id => T(id)).join(" ")}</p><p>Each ring also has a page where you work with it directly: Markets, Risk, Portfolios, Research, Volatility, Rates and Companies, along the top.</p>` },
+];
+let step = 0;
+function goStep(k) {
+  step = clamp(k, 0, STEPS.length - 1);
+  const S = STEPS[step];
+  const i = S.sel ? byId.get(S.sel) : -1;
+  sel = i; applyWeb(i); focus(i);
+  if (i >= 0) $("#p-read").innerHTML = reading(i);
+  if (S.cam) { const [t, s] = S.cam(); flyTo(t, s, 1.8); } else if (i >= 0) frameNode(i);
+  $("#p-tour").innerHTML = `
+    <div class="tstep"><span>${step + 1} / ${STEPS.length}</span><span class="dots">${STEPS.map((_, k) => `<button class="${k === step ? "on" : ""}" data-step="${k}" aria-label="step ${k + 1}"></button>`).join("")}</span></div>
+    <h2>${S.title}</h2>${S.body()}
+    <div class="tnav"><button data-prev ${step === 0 ? "disabled" : ""}>↑ back</button><span>scroll or use the arrow keys</span><button data-next ${step === STEPS.length - 1 ? "disabled" : ""}>next ↓</button></div>`;
+}
+$("#p-tour").addEventListener("click", e => {
+  if (e.target.closest("[data-next]")) goStep(step + 1);
+  else if (e.target.closest("[data-prev]")) goStep(step - 1);
+  else if (e.target.closest("[data-step]")) goStep(+e.target.closest("[data-step]").dataset.step);
+});
+let wheelAcc = 0, wheelLock = 0;
+addEventListener("wheel", e => {
+  if (tab !== "tour" || e.target.closest(".panel")) return;
+  const now = performance.now(); wheelAcc += e.deltaY;
+  if (now < wheelLock) return;
+  if (Math.abs(wheelAcc) > 60) { goStep(step + Math.sign(wheelAcc)); wheelAcc = 0; wheelLock = now + 900; }
+}, { passive: true });
+addEventListener("keydown", e => {
+  if (e.target.closest("input")) return;
+  if (tab === "tour" && (e.key === "ArrowDown" || e.key === "PageDown" || e.key === " ")) { e.preventDefault(); goStep(step + 1); }
+  if (tab === "tour" && (e.key === "ArrowUp" || e.key === "PageUp")) { e.preventDefault(); goStep(step - 1); }
+  if (e.key === "Escape") { select(-1); }
+  if (e.key === "/") { e.preventDefault(); $("#q").focus(); }
+});
+
+// ------------------------------------------------------------------ the day: replay the last 24 hours on the clock
+const runs = G.runs.map(r => ({ ...r, t0: Date.parse(r.start), t1: Date.parse(r.end) }));
+const R0 = Math.min(...runs.map(r => r.t0)), R1 = Math.max(...runs.map(r => r.t1));
+let replay = null;
+function renderDay() {
+  const cpu = runs.reduce((a, r) => a + r.cpu, 0);
+  $("#p-day").innerHTML = `
+    <div class="play"><button id="playbtn">${replay ? "■ stop" : "▶ replay the day"}</button><span class="t" id="playt">${runs.length} runs · ${num(cpu, 0)} cpu-s on 2 cores</span></div>
+    <div class="runs">${runs.map((r, k) => `<div class="r" data-run="${k}" data-sel="${byId.get("j:" + r.kind) ?? ""}"><span>${tET(r.start)}</span><span>${esc(N[byId.get("j:" + r.kind)]?.l || r.kind)}</span><span>${num(r.cpu, 0)} s</span></div>`).join("")}</div>`;
+  $("#playbtn").onclick = () => { replay ? stopReplay() : startReplay(); };
+}
+function startReplay() { replay = { t0: performance.now() / 1000, dur: 26, last: -1 }; select(-1, { frame: false }); flyTo(new THREE.Vector3(0, 1.2, 0), sph(19, 0.5, 0.2)); replayHand.visible = true; renderDay(); }
+function stopReplay() { replay = null; replayHand.visible = false; applyWeb(sel); renderDay(); }
+function tickReplay(now) {
+  if (!replay) return;
+  const f = (now - replay.t0) / replay.dur;
+  if (f >= 1) { stopReplay(); return; }
+  const t = R0 + f * (R1 - R0), d = new Date(t);
+  const h = +d.toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: "America/New_York" }) % 24 + d.getMinutes() / 60;
+  const a = h / 24 * Math.PI * 2;
+  replayHand.geometry.setFromPoints([new THREE.Vector3(0, HGT(4.25), 0), new THREE.Vector3(4.8 * Math.sin(a), HGT(4.25), -4.8 * Math.cos(a))]);
+  const k = runs.findLastIndex(r => r.t0 <= t);
+  if (k !== replay.last && k >= 0) {
+    replay.last = k; const ji = byId.get("j:" + runs[k].kind);
+    if (ji !== undefined) { applyWeb(ji, true); nGlow[ji] = 2.2; nGeo.attributes.aGlow.needsUpdate = true; }
+    document.querySelectorAll(".runs .r").forEach(r => r.classList.toggle("on", +r.dataset.run === k));
+    document.querySelector(`.runs .r[data-run="${k}"]`)?.scrollIntoView({ block: "nearest" });
+  }
+  const el = $("#playt"); if (el) el.textContent = d.toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }) + " ET";
+}
+
+// ------------------------------------------------------------------ search
+const q = $("#q"), res = $("#results");
+const searchIndex = N.map((n, i) => ({ i, s: `${n.l} ${n.n} ${n.id} ${n.m.full || ""} ${n.m.kind || ""}`.toLowerCase() }));
+let hits = [], hiIdx = 0;
+q.addEventListener("input", () => {
+  const s = q.value.trim().toLowerCase(); if (!s) { res.style.display = "none"; return; }
+  const pri = n => ({ book: 0, product: 1, feed: 1, job: 2, strategy: 2, result: 3, limit: 3, kill: 3, series: n.m.track === "daily" ? 4 : 6 }[n.k]);
+  hits = searchIndex.filter(x => x.s.includes(s)).map(x => x.i).sort((a, b) => (N[a].l.toLowerCase() === s ? -10 : 0) - (N[b].l.toLowerCase() === s ? -10 : 0) || pri(N[a]) - pri(N[b])).slice(0, 12);
+  hiIdx = 0;
+  res.innerHTML = hits.map((i, k) => `<button class="${k === 0 ? "hi" : ""}" data-pick="${i}">${esc(N[i].k === "series" ? N[i].l + " · " + (N[i].m.full || N[i].n) : N[i].n)}<span>${N[i].k}${N[i].m.track && N[i].m.track !== "daily" ? " · " + N[i].m.track : ""}</span></button>`).join("") || `<button disabled>no match</button>`;
+  res.style.display = "block";
+});
+q.addEventListener("keydown", e => {
+  if (e.key === "Enter" && hits.length) { select(hits[hiIdx]); res.style.display = "none"; q.blur(); }
+  if (e.key === "Escape") { res.style.display = "none"; q.blur(); }
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); hiIdx = clamp(hiIdx + (e.key === "ArrowDown" ? 1 : -1), 0, hits.length - 1); [...res.children].forEach((b, k) => b.classList.toggle("hi", k === hiIdx)); }
+});
+res.addEventListener("mousedown", e => { const b = e.target.closest("[data-pick]"); if (b) { select(+b.dataset.pick); res.style.display = "none"; q.value = ""; } });
+q.addEventListener("blur", () => setTimeout(() => res.style.display = "none", 150));
+
+// ------------------------------------------------------------------ hover and click on the machine
+const tip = $("#tip"), scr = new Float32Array(N.length * 2), tmp = new THREE.Vector3();
+let mouse = null, hover = -1, down = null;
+canvas.addEventListener("pointermove", e => { mouse = { x: e.clientX, y: e.clientY }; });
+canvas.addEventListener("pointerleave", () => { mouse = null; });
+canvas.addEventListener("pointerdown", e => { down = { x: e.clientX, y: e.clientY }; canvas.classList.add("drag"); });
+addEventListener("pointerup", e => {
+  canvas.classList.remove("drag");
+  if (!down) return; const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y); down = null;
+  if (moved > 5 || e.target !== canvas) return;
+  if (hover >= 0) select(hover); else if (sel >= 0) { select(-1); }
+});
+function pick() {
+  if (!mouse) { hover = -1; tip.style.opacity = 0; canvas.classList.remove("point"); return; }
+  let best = -1, bd = 1e9;
+  for (let i = 0; i < N.length; i++) {
+    tmp.copy(P[i]).project(camera); if (tmp.z > 1) continue;
+    const x = (tmp.x * 0.5 + 0.5) * innerWidth, y = (-tmp.y * 0.5 + 0.5) * innerHeight;
+    const r = N[i].k === "series" ? 6 : 12, d = Math.hypot(x - mouse.x, y - mouse.y);
+    const score = d - (N[i].k === "series" ? 0 : 4);
+    if (d < r && score < bd) { bd = score; best = i; }
+  }
+  hover = best; canvas.classList.toggle("point", best >= 0);
+  if (best < 0) { tip.style.opacity = 0; return; }
+  const n = N[best];
+  tip.innerHTML = `<b>${esc(n.k === "series" ? n.l : n.n)}</b>${n.k === "series" ? `<br>${esc(n.m.full || n.n)}` : ""}${n.m.verdict ? `<br><span style="color:${/FAIL/.test(n.m.verdict) ? "var(--fail)" : "#9fb3bf"}">${esc(n.m.verdict)}</span>` : ""}<br><span class="dim">${n.k}${n.m.track ? " · " + n.m.track : ""} · click to select</span>`;
+  tip.style.opacity = 1;
+  tip.style.transform = `translate(${Math.min(mouse.x + 14, innerWidth - 330)}px, ${mouse.y + 14}px)`;
+}
+
+// ------------------------------------------------------------------ frame loop
+function resize() { renderer.setSize(innerWidth, innerHeight, false); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); }
+addEventListener("resize", resize); resize();
+camera.position.set(0, 14, 24); controls.target.set(0, 1.4, 0); controls.update();
+const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+let frameNo = 0; const viewOff = { x: 212, y: 0 };
+function frame() {
+  const now = performance.now() / 1000;
+  if (goal.active) {
+    const f = clamp((now - goal.t0) / goal.dur), e = ease(f);
+    controls.target.lerpVectors(goal.fromT, goal.toT, e);
+    const s = new THREE.Spherical(lerp(goal.fromS.radius, goal.toS.radius, e), lerp(goal.fromS.phi, goal.toS.phi, e), lerp(goal.fromS.theta, goal.toS.theta, e));
+    camera.position.copy(controls.target).add(new THREE.Vector3().setFromSpherical(s));
+    if (f >= 1) goal.active = false;
+  }
+  controls.update();
+  const narrowNow = innerWidth < 860, focusOn = $("#focus").classList.contains("on");
+  const wantX = narrowNow ? 0 : ((424) - (focusOn ? 394 : 0)) / 2, wantY = narrowNow ? innerHeight * 0.2 : 0;
+  viewOff.x += (wantX - viewOff.x) * 0.08; viewOff.y += (wantY - viewOff.y) * 0.08;
+  camera.setViewOffset(innerWidth, innerHeight, viewOff.x, viewOff.y, innerWidth, innerHeight);
+  eMat.uniforms.uTime.value = reduced ? 0 : now;
+  tickReplay(now);
+  if (frameNo++ % 2 === 0) pick();
+  const placed = [], cand = [];
+  for (const L of labels) {
+    let vis = 1;
+    if (L.node !== null) {
+      const g = nGlow[L.node];
+      vis = L.show === "web" ? (sel >= 0 && g > 0.5 && (N[L.node].k !== "series" || web.up.size + web.down.size < 140 || L.node === sel) ? 1 : 0)
+        : L.show === "near" ? (sel < 0 ? 0.55 : g > 0.5 ? 1 : 0.12) : (sel < 0 ? 0.9 : g > 0.5 ? 1 : 0.25);
+      L.el.classList.toggle("sel", L.node === sel);
+      L.el.classList.toggle("up", sel >= 0 && L.node !== sel && web.up.has(L.node) && !/FAIL/.test(N[L.node].m.verdict || ""));
+      L.el.classList.toggle("down", sel >= 0 && L.node !== sel && web.down.has(L.node) && !/FAIL/.test(N[L.node].m.verdict || ""));
+    } else vis = sel >= 0 ? 0.45 : 0.9;
+    if (vis < 0.02) { if (L.shown !== 0) { L.el.style.opacity = 0; L.shown = 0; } continue; }
+    tmp.copy(L.v).project(camera);
+    if (tmp.z > 1) { if (L.shown !== 0) { L.el.style.opacity = 0; L.shown = 0; } continue; }
+    const x = (tmp.x * 0.5 + 0.5) * innerWidth, y = (-tmp.y * 0.5 + 0.5) * innerHeight;
+    const pri = L.pri + (L.node === sel ? 20 : L.node !== null && nGlow[L.node] > 0.5 && sel >= 0 ? 4 : 0);
+    cand.push({ L, x, y, vis, pri });
+  }
+  cand.sort((a, b) => b.pri - a.pri);
+  for (const c of cand) {
+    const L = c.L; if (!L.w) L.w = L.el.offsetWidth || 60;
+    const r = [c.x - L.w / 2 - 3, c.y - 15, c.x + L.w / 2 + 3, c.y];
+    if (placed.some(q => r[0] < q[2] && r[2] > q[0] && r[1] < q[3] && r[3] > q[1])) { if (L.shown !== 0) { L.el.style.opacity = 0; L.shown = 0; } continue; }
+    placed.push(r);
+    L.el.style.opacity = c.vis; L.shown = 1;
+    L.el.style.transform = `translate(${c.x.toFixed(1)}px, ${c.y.toFixed(1)}px) translate(-50%, -100%)`;
+  }
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+function lerp(a, b, t) { return a + (b - a) * t; }
+goStep(0);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
