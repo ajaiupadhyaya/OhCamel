@@ -14,7 +14,7 @@ import pytest
 
 from ohcamel_quant.jobs.cron import parse_cron
 from ohcamel_quant.jobs.schedules import ScheduleEntry, Schedules, load_schedules
-from ohcamel_quant.machine.clock import job_clock, ny_hour, place_hour
+from ohcamel_quant.machine.clock import JobClock, job_clock, ny_hour, place_hour
 from ohcamel_quant.machine.graph import (
     FEEDS,
     PROD,
@@ -24,6 +24,7 @@ from ohcamel_quant.machine.graph import (
     build_graph,
     provenance_symbols,
 )
+from ohcamel_quant.machine.lenses import LENS_TABLES, extras, product_lens
 from ohcamel_quant.machine.readouts import cluster_order, ticker_readouts
 from ohcamel_quant.machine.world import load_world
 from ohcamel_quant.signals.report import BOOK_COLUMNS
@@ -284,8 +285,9 @@ def _products():
                            "var_usd": 1000.0 * h * k, "es_usd": 1500.0 * h * k, "n_paths": 20000}
                           for m in ("fhs", "copula_t") for h in (1, 10) for a, k in ((0.95, 0.5), (0.99, 1))])
     members = pd.DataFrame({"ticker": ["XLK", "XLE", "XLK"], "universe": ["sectors"] * 3})
+    trials = pd.DataFrame({"cell_id": ["x@y"] * 48, "combo": range(48), "sr_pp": np.linspace(-0.1, 0.1, 48)})
     special = {
-        "farm.sweep": _product("farm.sweep", {"cells": cells, "leaderboard": board},
+        "farm.sweep": _product("farm.sweep", {"cells": cells, "leaderboard": board, "trials": trials},
                                [{"source": "ohcamel-farm", "cells_run_tonight": 3, "cells_total": 21}],
                                verdict="FAIL", verdict_detail="NO CELL PASSES"),
         "vol.forecast_league": _product("vol.forecast_league", {"summary": vol}, [_bars("SPY")]),
@@ -640,3 +642,208 @@ def test_jobs_and_products_sit_on_the_clock():
     assert len(_edges_from(g, "p:signals.daily", "signal")) == 21
     assert _edges_from(g, "p:signals.overlay", "scale") == ["book"]
     assert len(_edges_into(g, "book", "trade")) == 23
+
+
+# ---------------------------------------------------------------- product lenses and the clock's extras
+def _lens_tables():
+    """One small, awkward frame per lens (unsorted, NaN, inf, unrounded, a float where a count belongs):
+    ``{kind: {table: frame}}``, each holding exactly the tables ``LENS_TABLES`` says the lens reads."""
+    board = pd.DataFrame({
+        "cell_id": ["a@x", "b@x", "c@x", "d@x", "e@x"], "verdict": ["FAIL", "PASS", "FAIL", "FAIL", "FAIL"],
+        "detail": ["DSR BELOW 0.95"] * 5,                         # a column the lens leaves out
+        "dsr_farm": [0.41, 0.9712345, np.nan, 0.2, 0.3], "psr": [0.62, 0.99, 0.48, 0.5, 0.4],
+        "oos_sharpe_ann": [0.35, 1.23456789, np.nan, -0.1, np.inf], "pbo": [0.3, 0.1, 0.7, np.inf, 0.2],
+        "n_combos": [24, 24, 24, 24, 24]})
+    vol = pd.DataFrame({"model": ["gjr", "har"], "mcs_rate": [0.8123456, np.nan], "mean_rank": [1.4, 2.1],
+                        "names": [40.0, 38.0]})                  # whole floats are counts
+    league = pd.DataFrame({"universe": ["ndx100", "ndx100", "sectors"], "rank": [2, 1, 1],
+                           "estimator": ["sample", "lw_constant_corr", "sample"],
+                           "realized_vol": [0.123456, 0.16, np.nan]})
+    atlas = pd.DataFrame([{"book": "core", "method": m, "horizon": h, "alpha": a, "var": 0.01 * h * k,
+                           "es": 0.015 * h * k, "var_usd": 1000.0 * h, "es_usd": 1500.0 * h, "n_paths": 20000}
+                          for m in ("fhs", "copula_t") for h in (1, 10) for a, k in ((0.95, 0.5), (0.99, 1))])
+    deciles = pd.DataFrame({"decile": [1, 2, 3], "mean_next_month_return": [-0.0123456, -0.00001, 0.0212345]})
+    probs = pd.DataFrame({"date": pd.to_datetime(["2026-10-02", "2026-10-09", "2026-10-16", "2026-10-23"]),
+                          "p_high": [np.nan, 0.1234567, 0.8765432, np.nan], "p_low": [np.nan, 0.9, 0.1, np.nan]})
+    history = pd.DataFrame({
+        "underlying": ["SPY", "QQQ", "SPY", "AAPL"], "asof": ["2026-10-28", "2026-10-28", "2026-10-27", "2026-10-28"],
+        "atm_iv_30d": [0.1834567, 0.2, 0.17, np.nan], "n_slices": [11.0, 12.0, 10.0, 9.0],
+        "spot": [580.0, 500.0, 579.0, 230.0]})                    # SPY's newest row is its first listed
+    return {"farm.sweep": {"leaderboard": board}, "vol.forecast_league": {"summary": vol},
+            "cov.league": {"league": league}, "risk.mc_atlas": {"summary": atlas},
+            "models.xs_lgbm": {"holdout_deciles": deciles}, "regime.hmm": {"probs": probs},
+            "vol.surface_history": {"history": history}}
+
+
+def _lensed(kind, tables):
+    """The product for ``kind``. The farm's trials are counted, not carried (the loader reads the
+    parquet metadata): 1008 rows listed, no table."""
+    p = _product(kind, tables)
+    return replace(p, rows={**p.rows, "trials": 1008}) if kind == "farm.sweep" else p
+
+
+def test_each_lens_reads_its_table():
+    t = _lens_tables()
+    assert set(t) == set(LENS_TABLES) and all(set(t[k]) == set(LENS_TABLES[k]) for k in t)   # all it reads, only that
+    lens = {k: product_lens(k, _lensed(k, t[k])) for k in t}
+    assert all(why is None for _, why in lens.values())
+    assert lens["farm.sweep"][0] == {"cells": 5, "trials": 1008, "board": [   # best out-of-sample Sharpe first
+        ["b@x", "PASS", 1.2346, 0.9712, 0.99, 0.1, 24], ["a@x", "FAIL", 0.35, 0.41, 0.62, 0.3, 24],
+        ["d@x", "FAIL", -0.1, 0.2, 0.5, None, 24],                # an infinite figure is none
+        ["c@x", "FAIL", None, None, 0.48, 0.7, 24],                # a cell with no Sharpe is last, and so is
+        ["e@x", "FAIL", None, 0.3, 0.4, 0.2, 24]]}                 # one whose Sharpe is infinite (a table order tie)
+    assert lens["vol.forecast_league"][0] == {"models": [["gjr", 0.8123, 1.4, 40], ["har", None, 2.1, 38]]}
+    assert lens["cov.league"][0] == {"estimators": [["sample", "ndx100", 0.1235, 2],
+                                                    ["lw_constant_corr", "ndx100", 0.16, 1],
+                                                    ["sample", "sectors", None, 1]]}
+    assert lens["risk.mc_atlas"][0] == {"measures": [["fhs", 1, 0.01, 0.015, 20000], ["fhs", 10, 0.1, 0.15, 20000],
+                                                     ["copula_t", 1, 0.01, 0.015, 20000],
+                                                     ["copula_t", 10, 0.1, 0.15, 20000]]}   # alpha 0.99 only
+    assert lens["models.xs_lgbm"][0] == {"deciles": [[1, -0.0123], [2, 0.0], [3, 0.0212]]}
+    assert "-0.0]" not in json.dumps(lens["models.xs_lgbm"][0])   # a rounded negative zero is a zero
+    assert lens["regime.hmm"][0] == {"date": "2026-10-16", "p_high": 0.8765, "weeks": 4}   # the last non-null p_high
+    assert lens["vol.surface_history"][0] == {"underlying": "SPY", "asof": "2026-10-28", "atm30": 0.1835,
+                                              "slices": 11, "names": 3}
+    for payload, _ in lens.values():
+        json.dumps(payload, allow_nan=False)                     # plain JSON: no NaN, no inf, no numpy
+    assert type(lens["farm.sweep"][0]["trials"]) is int and type(lens["vol.forecast_league"][0]["models"][0][3]) is int
+    assert type(lens["vol.surface_history"][0]["slices"]) is int
+
+
+def test_the_farm_counts_its_trials_from_the_row_count_and_never_reads_the_table():
+    p = _lensed("farm.sweep", _lens_tables()["farm.sweep"])
+    assert "trials" not in p.tables and p.rows["trials"] == 1008
+    assert product_lens("farm.sweep", p)[0]["trials"] == 1008
+    assert product_lens("farm.sweep", replace(p, rows={})) == (None, "no trials table")   # not listed: no count to give
+    assert product_lens("farm.sweep", replace(p, rows={"trials": 0}))[0]["trials"] == 0   # an empty table is a real zero
+
+
+def test_a_lens_does_not_change_its_table():
+    t = _lens_tables()["farm.sweep"]
+    before = t["leaderboard"].copy()
+    product_lens("farm.sweep", _lensed("farm.sweep", t))
+    pd.testing.assert_frame_equal(t["leaderboard"], before)       # the board is sorted on a copy
+
+
+def test_a_lens_with_a_missing_column_is_omitted_with_the_reason():   # Review Focus 5
+    board = _lens_tables()["farm.sweep"]["leaderboard"]
+    broken = _lensed("farm.sweep", {"leaderboard": board.drop(columns="oos_sharpe_ann")})
+    assert product_lens("farm.sweep", broken) == (None, "leaderboard has no column oos_sharpe_ann")
+    gone = _lensed("farm.sweep", {"leaderboard": board.drop(columns=["pbo", "psr"])})
+    assert product_lens("farm.sweep", gone) == (None, "leaderboard has no columns psr, pbo")   # all of them, in the lens's order
+    farm = _inputs().products["farm.sweep"]                        # the fixture's farm, its leaderboard cut down
+    cut = replace(farm, tables={**farm.tables, "leaderboard": farm.tables["leaderboard"].drop(columns="oos_sharpe_ann")})
+    g = build_graph(_inputs(products={**_inputs().products, "farm.sweep": cut}))
+    n = _node(g, "p:farm.sweep")
+    assert "status" not in n and n["m"]["verdict"] == "FAIL"      # the node stays, with its manifest
+    assert "lens" not in n["m"] and n["m"]["lens_why"] == "leaderboard has no column oos_sharpe_ann"
+    assert len(_edges_from(g, "p:farm.sweep", "result")) == 3     # and its cells, which the cells table gives
+    assert "NaN" not in json.dumps(g)                              # the fixture's own NaNs went out as null
+    json.dumps(g, allow_nan=False)
+
+
+@pytest.mark.parametrize(("kind", "column"), [
+    ("farm.sweep", "cell_id"), ("farm.sweep", "n_combos"), ("vol.forecast_league", "mcs_rate"),
+    ("vol.forecast_league", "names"), ("cov.league", "estimator"), ("cov.league", "rank"),
+    ("risk.mc_atlas", "alpha"), ("risk.mc_atlas", "n_paths"), ("models.xs_lgbm", "mean_next_month_return"),
+    ("regime.hmm", "p_high"), ("regime.hmm", "date"), ("vol.surface_history", "underlying"),
+    ("vol.surface_history", "n_slices"), ("vol.surface_history", "atm_iv_30d")])
+def test_each_lens_names_the_column_it_is_missing(kind, column):
+    name = LENS_TABLES[kind][0]
+    table = _lens_tables()[kind][name].drop(columns=column)
+    assert product_lens(kind, _lensed(kind, {name: table})) == (None, f"{name} has no column {column}")
+
+
+@pytest.mark.parametrize("kind", sorted(LENS_TABLES))
+def test_a_lens_without_its_table_or_rows_is_omitted_with_the_reason(kind):
+    name = LENS_TABLES[kind][0]
+    table = _lens_tables()[kind][name]
+    assert product_lens(kind, _lensed(kind, {})) == (None, f"no {name} table")
+    assert product_lens(kind, replace(_lensed(kind, {}), tables={name: None})) == (None, f"no {name} table")   # not a frame
+    assert product_lens(kind, _lensed(kind, {name: table.iloc[:0]})) == (None, f"{name} has no rows")
+    assert product_lens(kind, _lensed(kind, {name: pd.DataFrame()})) == (None, f"{name} has no rows")
+
+
+def test_a_lens_with_nothing_to_show_says_what_is_missing():
+    t = _lens_tables()
+    atlas = t["risk.mc_atlas"]["summary"]
+    assert product_lens("risk.mc_atlas", _lensed("risk.mc_atlas", {"summary": atlas[atlas["alpha"] != 0.99]})) == (
+        None, "summary has no alpha 0.99 rows")
+    probs = t["regime.hmm"]["probs"].assign(p_high=np.nan)
+    assert product_lens("regime.hmm", _lensed("regime.hmm", {"probs": probs})) == (None, "probs has no p_high value")
+    hist = t["vol.surface_history"]["history"]
+    no_spy = _lensed("vol.surface_history", {"history": hist[hist["underlying"] != "SPY"]})
+    assert product_lens("vol.surface_history", no_spy) == (None, "history has no SPY row")
+
+
+def test_a_lens_reads_the_dates_as_the_artifacts_write_them():
+    t = _lens_tables()
+    probs = t["regime.hmm"]["probs"].assign(date=["2026-10-02", "2026-10-09", "2026-10-16", "2026-10-23"])   # as text
+    assert product_lens("regime.hmm", _lensed("regime.hmm", {"probs": probs}))[0]["date"] == "2026-10-16"
+    hist = t["vol.surface_history"]["history"].assign(asof=lambda d: pd.to_datetime(d["asof"]))              # as dates
+    assert product_lens("vol.surface_history", _lensed("vol.surface_history", {"history": hist}))[0]["asof"] == "2026-10-28"
+
+
+def test_a_lens_never_raises():
+    hist = _lens_tables()["vol.surface_history"]["history"].astype({"underlying": object})
+    hist.at[1, "underlying"] = ["QQQ", "IWM"]                      # a value no one can count distinct: schema drift
+    odd = _lensed("vol.surface_history", {"history": hist})
+    lens, why = product_lens("vol.surface_history", odd)
+    assert lens is None and why == "vol.surface_history lens could not be read (TypeError)"
+    g = build_graph(_inputs(products={**_inputs().products, "vol.surface_history": odd}))
+    assert _node(g, "p:vol.surface_history")["m"]["lens_why"] == why   # and the graph builds
+
+
+def test_a_kind_with_no_lens_has_neither_a_lens_nor_a_reason():
+    assert set(LENS_TABLES) == {"farm.sweep", "vol.forecast_league", "cov.league", "risk.mc_atlas", "models.xs_lgbm",
+                                "regime.hmm", "vol.surface_history"}
+    for kind in set(PROD) - set(LENS_TABLES):
+        assert product_lens(kind, _product(kind, {"summary": pd.DataFrame({"x": [1]})})) == (None, None)
+    assert product_lens("desk.report", _desk("usable")) == (None, None)   # the desk report is never lensed
+
+
+def test_product_nodes_carry_their_lens_or_the_reason():
+    t = _lens_tables()
+    t.pop("models.xs_lgbm")                                        # left as the fixture has it: present, no deciles table
+    products = {**_inputs().products, **{k: _lensed(k, v) for k, v in t.items()}}
+    g = build_graph(_inputs(products=products))
+    for kind in t:
+        m = _node(g, f"p:{kind}")["m"]
+        assert m["lens"] == product_lens(kind, products[kind])[0] and "lens_why" not in m, kind
+    assert _node(g, "p:farm.sweep")["m"]["lens"]["cells"] == 5
+    assert _node(g, "p:regime.hmm")["m"]["lens"] == {"date": "2026-10-16", "p_high": 0.8765, "weeks": 4}
+    m = _node(g, "p:models.xs_lgbm")["m"]
+    assert "lens" not in m and m["lens_why"] == "no holdout_deciles table"
+    for kind in set(PROD) - set(LENS_TABLES):
+        assert not {"lens", "lens_why"} & set(_node(g, f"p:{kind}")["m"]), kind
+    assert set(_node(g, "p:desk.report")["m"]) == {"kind", "finished", "stale"}
+    gone = _node(build_graph(_inputs(drop="farm.sweep")), "p:farm.sweep")
+    assert gone["status"] == "missing" and gone["m"] == {"kind": "farm.sweep"}   # no artifact: no lens and no reason
+
+
+def test_the_default_fixture_lenses_serialise_without_nan():
+    g = build_graph(_inputs())
+    farm = _node(g, "p:farm.sweep")["m"]["lens"]
+    assert farm["trials"] == 48 and farm["cells"] == 2 and farm["board"][0][2] == 0.35   # sorted: 0.35 before -0.1
+    assert _node(g, "p:vol.forecast_league")["m"]["lens"]["models"][1][1] is None        # a NaN mcs_rate is null
+    json.dumps(g, allow_nan=False)
+
+
+def test_extras_list_every_fire():
+    inp = _inputs()
+    x = extras(inp)
+    assert set(x) == {"fires"}
+    assert len(x["fires"]) == sum(len(j.fires) for j in inp.clock.values()) > len(inp.clock)   # the overlay fires often
+    assert x["fires"] == sorted(x["fires"])                        # by kind, then hour
+    assert ["farm.sweep", 23.0] in x["fires"] and ["ingest.bars_daily", 18.5] in x["fires"]
+    overlay = [h for k, h in x["fires"] if k == "signals.overlay"]
+    assert overlay == sorted(round(h, 3) for h in inp.clock["signals.overlay"].fires) and len(overlay) > 1
+    json.dumps(x, allow_nan=False)
+
+
+def test_extras_round_hours_to_three_places_and_keep_repeats():
+    clock = {"b.job": JobClock("b.job", (9.6666667, 9.6666667, 18.3333333), 14.0, ("x",), False, "S", ("daily",)),
+             "a.job": JobClock("a.job", (23.0,), 23.0, ("y",), True, "L", ("weekdays",))}
+    assert extras(replace(_inputs(), clock=clock)) == {"fires": [["a.job", 23.0], ["b.job", 9.667], ["b.job", 9.667],
+                                                                 ["b.job", 18.333]]}
+    assert extras(replace(_inputs(), clock={})) == {"fires": []}

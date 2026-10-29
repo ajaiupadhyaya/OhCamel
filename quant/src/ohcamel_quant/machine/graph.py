@@ -282,13 +282,23 @@ def _table(inp: Inputs, kind: str, name: str, needs: Sequence[str]) -> pd.DataFr
 
 
 def _product_m(kind: str, p: Product | None) -> dict[str, Any]:
-    """A product node's ``m``: its manifest fields and stale flag; ``desk.report`` only its run times."""
+    """A product node's ``m``: its manifest fields and stale flag, then its ``lens`` or, when the lens
+    cannot be read, ``lens_why``; ``desk.report`` only its run times."""
+    # imported here because lenses.py imports this module's types and _plain
+    from .lenses import product_lens
+
     if not _present(p):
         return {"kind": kind}
     mf = p.manifest
     if kind in RUN_TIMES_ONLY:
         return {"kind": kind, "finished": mf.get("finished_at"), "stale": p.stale}
-    return {"kind": kind, **{k: mf.get(src) for k, src in MANIFEST.items()}, "stale": p.stale}
+    m = {"kind": kind, **{k: mf.get(src) for k, src in MANIFEST.items()}, "stale": p.stale}
+    lens, why = product_lens(kind, p)
+    if lens is not None:
+        m["lens"] = lens
+    elif why:
+        m["lens_why"] = why
+    return m
 
 
 def _series_reads(kind: str, p: Product | None, inp: Inputs, tracks: dict[str, list[str]]) -> list[str]:
