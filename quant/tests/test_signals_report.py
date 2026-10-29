@@ -1,11 +1,13 @@
 """desk.report (Task 16; design §4.2): the session's fills, each strategy's line,
-what the desk refused, and the overlay's reading, read from the live engine at
-16:30 New York.
+what the desk refused, the overlay's reading, and the book's configuration and
+counts, read from the live engine at 16:30 New York.
 
 Hermetic: the engine is a stdlib ``http.server`` on 127.0.0.1 serving canned
-bodies shaped exactly as desk/desk.ml, desk/oms.ml and desk/intake.ml build
-them (``/api/desk``'s ``fills``, ``/api/desk/tca``, ``/api/research``,
-``/api/desk/sessions``). An unreachable engine is a port nothing listens on."""
+bodies shaped exactly as desk/desk.ml, desk/oms.ml, desk/intake.ml and
+lib/server.ml build them (``/api/desk``'s ``fills`` and ``positions``,
+``/api/desk/tca``, ``/api/research``, ``/api/desk/sessions``, ``/api/graph``'s
+nodes with their ``limit``, ``/api/ops``'s ``alerts``). An unreachable engine
+is a port nothing listens on."""
 
 from __future__ import annotations
 
@@ -87,6 +89,19 @@ SESSIONS = [{"date": "2026-10-08", "equity_close": 100012.5, "cash_close": 40000
             {"date": "2026-10-09", "equity_close": 100000.0, "cash_close": 39000.0, "gross_close": 0.61,
              "net_close": 0.61}]
 
+# /api/graph's nodes (lib/server.ml); a node's `limit` is {name, kind, scope} or null.
+GRAPH = {"nodes": [
+    {"name": "limit/aapl-cap", "limit": {"name": "aapl-cap", "kind": "gross_notional", "scope": "instrument:AAPL",
+                                         "threshold": 150000.0}},          # an extra key must never be copied
+    {"name": "breach/aapl-cap", "limit": {"name": "aapl-cap", "kind": "gross_notional", "scope": "instrument:AAPL"}},
+    {"name": "limit/dd-cap", "limit": {"name": "dd-cap", "kind": "max_drawdown", "scope": "portfolio"}},
+    {"name": "price/AAPL", "limit": None}]}
+# /api/ops's alerts (json_of_alerts ~recent:false); `firing` and `recent` are on the wire and must not be copied.
+OPS = {"alerts": {"enabled": True, "kill_switch": "armed", "trips_on": ["dd-cap"], "firing": ["aapl-cap"],
+                  "recent": [{"line": "Instrument AAPL over 150000"}]}}
+DESK_HELD = {**DESK, "positions": [{"symbol": "AAPL", "graph_qty": 400.0}, {"symbol": "MSFT", "graph_qty": 200.0},
+                                   {"symbol": "SPY", "graph_qty": 0.0}]}
+
 
 class _Engine:
     """routes: path -> (status, body bytes, delay seconds)."""
@@ -131,7 +146,7 @@ def _ok(body: Any) -> tuple[int, bytes, float]:
 
 def _full() -> dict[str, tuple[int, bytes, float]]:
     return {"/api/desk": _ok(DESK), "/api/desk/tca": _ok(TCA), "/api/research": _ok(RESEARCH),
-            "/api/desk/sessions": _ok(SESSIONS)}
+            "/api/desk/sessions": _ok(SESSIONS), "/api/graph": _ok(GRAPH), "/api/ops": _ok(OPS)}
 
 
 def _ctx(tmp_path: Path, url: str | None) -> JobContext:
@@ -182,7 +197,7 @@ def test_a_full_report(tmp_path):
     assert sorted(eng.seen) == sorted(report.ROUTES)
     assert spec.verdict is None
     assert spec.data_asof == "2026-10-09"
-    assert set(spec.tables) == {"fills", "pnl_by_strategy", "refusals", "overlay_path"}
+    assert set(spec.tables) == {"fills", "pnl_by_strategy", "refusals", "overlay_path", "book_summary"}
 
     fills = spec.tables["fills"]
     # Only this session's fill (13:30Z is 09:30 New York on the 9th), with every field the route serves.
@@ -237,8 +252,9 @@ def test_an_unreachable_engine_is_a_done_job_that_says_so(tmp_path):
     spec = report.run({}, _ctx(tmp_path, url))
     assert spec.verdict is None
     assert all(df.empty for df in spec.tables.values())
-    assert set(spec.tables) == {"fills", "pnl_by_strategy", "refusals", "overlay_path"}
+    assert set(spec.tables) == {"fills", "pnl_by_strategy", "refusals", "overlay_path", "book_summary"}
     assert list(spec.tables["fills"].columns) == report.FILL_COLUMNS
+    assert len(spec.tables["book_summary"]) == 0 and list(spec.tables["book_summary"].columns) == report.BOOK_COLUMNS
     notes = " | ".join(spec.notes)
     assert "did not answer" in notes and url in notes
     assert "live profile" in notes
@@ -247,6 +263,7 @@ def test_an_unreachable_engine_is_a_done_job_that_says_so(tmp_path):
 def test_an_unset_engine_url_is_a_done_job_that_says_so(tmp_path):
     spec = report.run({}, _ctx(tmp_path, ""))
     assert all(df.empty for df in spec.tables.values())
+    assert len(spec.tables["book_summary"]) == 0
     assert any("OHCAMEL_QUANT_LIVE_ENGINE_URL is unset" in n for n in spec.notes)
 
 
@@ -326,3 +343,79 @@ def test_the_engines_newest_close_wins_when_it_differs_and_says_so(tmp_path):
     assert spec.data_asof == "2026-10-08"
     assert spec.tables["fills"]["execution_id"].tolist() == ["e-0"]   # 19:50 NY on the 8th
     assert any("the session is 2026-10-08" in n and "not 2026-10-09" in n for n in spec.notes)
+
+
+# ------------------------------------------------------------- the book summary
+# The public front page may show the live book's configuration and counts, nothing else (owner, 2026-10-29).
+def test_book_summary_is_config_and_counts(tmp_path):
+    routes = {**_full(), "/api/desk": _ok(DESK_HELD)}
+    with _Engine(routes) as eng:
+        spec = report.run({}, _ctx(tmp_path, eng.url))
+    b = spec.tables["book_summary"]
+    assert list(b.columns) == report.BOOK_COLUMNS and len(b) == 1
+    row = b.iloc[0]
+    assert row["as_of"] == "2026-10-09T20:31:07Z"
+    assert row["positions"] == 2 and row["kill_switch"] == "armed"      # AAPL and MSFT; SPY is flat
+    assert json.loads(row["trips_on"]) == ["dd-cap"]
+    assert json.loads(row["limits"]) == [
+        {"name": "aapl-cap", "kind": "gross_notional", "scope": "instrument:AAPL"},
+        {"name": "dd-cap", "kind": "max_drawdown", "scope": "portfolio"}]
+    text = b.to_json()
+    for leaked in ("threshold", "150000", "MSFT", "400", "firing", "recent"):
+        assert leaked not in text
+    assert "book_summary: configuration and counts only (owner, 2026-10-29)" in " | ".join(spec.notes)
+
+
+@pytest.mark.parametrize(("alerts", "want"), [
+    ({"enabled": False, "kill_switch": "off"}, "disabled"), ({"enabled": True, "kill_switch": "off"}, "disabled"),
+    ({"enabled": True, "kill_switch": "armed"}, "armed"), ({"enabled": True, "kill_switch": "tripped"}, "halted"),
+    ({"enabled": True, "kill_switch": "sideways"}, None)])
+def test_the_kill_switch_in_the_page_words(tmp_path, alerts, want):
+    routes = {**_full(), "/api/ops": _ok({"alerts": alerts})}
+    with _Engine(routes) as eng:
+        spec = report.run({}, _ctx(tmp_path, eng.url))
+    row = spec.tables["book_summary"].iloc[0]
+    if want is None:
+        assert pd.isna(row["kill_switch"])
+        assert any("book_summary" in n and "sideways" in n for n in spec.notes)
+    else:
+        assert row["kill_switch"] == want
+    assert pd.isna(row["trips_on"])   # these bodies carry no trips_on: not read, never an invented empty list
+
+
+def test_a_missing_graph_route_leaves_limits_unread(tmp_path):
+    routes = {p: v for p, v in _full().items() if p != "/api/graph"}
+    with _Engine(routes) as eng:
+        spec = report.run({}, _ctx(tmp_path, eng.url))
+    b = spec.tables["book_summary"]
+    assert len(b) == 1
+    row = b.iloc[0]
+    assert pd.isna(row["limits"])
+    assert row["kill_switch"] == "armed" and json.loads(row["trips_on"]) == ["dd-cap"]   # /api/ops still read
+    assert any("GET /api/graph: HTTP 404" in n for n in spec.notes)
+    assert any("book_summary" in n and "limits" in n and "GET /api/graph" in n for n in spec.notes)
+
+
+def test_a_book_with_no_positions_list_or_limits_says_what_was_not_read(tmp_path):
+    # DESK carries no `positions`; a graph with no limit nodes is a read book with no limits, not an unread one.
+    routes = {**_full(), "/api/graph": _ok({"nodes": [{"name": "price/AAPL", "limit": None}]})}
+    with _Engine(routes) as eng:
+        spec = report.run({}, _ctx(tmp_path, eng.url))
+    row = spec.tables["book_summary"].iloc[0]
+    assert pd.isna(row["positions"])
+    assert row["limits"] == "[]"
+    assert any("book_summary" in n and "positions" in n and "GET /api/desk" in n for n in spec.notes)
+
+
+def test_a_limit_with_a_malformed_field_is_skipped_not_guessed(tmp_path):
+    graph = {"nodes": [
+        {"name": "limit/a", "limit": {"name": "a", "kind": "gross_notional", "scope": 7}},
+        {"name": "limit/b", "limit": {"name": "b", "kind": None, "scope": "portfolio"}},
+        {"name": "limit/c", "limit": {"name": "c", "kind": "max_drawdown", "scope": "portfolio"}},
+        "not a node"]}
+    routes = {**_full(), "/api/graph": _ok(graph)}
+    with _Engine(routes) as eng:
+        spec = report.run({}, _ctx(tmp_path, eng.url))
+    assert json.loads(spec.tables["book_summary"].iloc[0]["limits"]) == [
+        {"name": "c", "kind": "max_drawdown", "scope": "portfolio"}]
+    assert any("3 limit rows skipped" in n for n in spec.notes)

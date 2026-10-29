@@ -12,7 +12,10 @@ GET per route with a :data:`TIMEOUT_S` timeout each:
   per-fill rows: those ride on ``/api/desk``'s fills), into the notes;
 * ``/api/research`` -- each registered strategy with its latest judgement
   and the overlay with its document's ``inputs`` and ``reported``;
-* ``/api/desk/sessions`` -- the session closes, the day's into the notes.
+* ``/api/desk/sessions`` -- the session closes, the day's into the notes;
+* ``/api/graph`` -- each node's ``limit`` (``{name, kind, scope}``, lib/server.ml);
+* ``/api/ops`` -- ``alerts``: whether the kill switch is enabled, its state and
+  the limits it trips on (lib/server.ml ``json_of_alerts``).
 
 Tables:
 
@@ -33,6 +36,13 @@ answers with a different newest close, that close's date, with a note.
   a strategy, whatever session received it; ``received_at`` dates each.
 * ``overlay_path`` -- one row: the overlay's reading at this run. The intraday
   path is the sequence of ``signals.overlay`` artifacts, which keeps every one.
+* ``book_summary`` -- one row, none when the engine is unset or unreachable: the
+  live book's configuration and counts for the public front page, and nothing
+  more (owner, 2026-10-29). ``positions`` counts the symbols whose ``graph_qty``
+  is non-zero; ``kill_switch`` is ``disabled``, ``armed`` or ``halted``;
+  ``trips_on`` and ``limits`` are JSON lists, the limits only as ``{name, kind,
+  scope}`` copied field by field and sorted by name. Never a position's name or
+  size, never a threshold. A null is a field not read, and the notes say why.
 
 ``verdict`` is None: a report records, it does not judge. An unset URL, an
 engine that does not answer (the ``live`` profile not running, say), an error
@@ -53,12 +63,12 @@ import pandas as pd
 
 from ..jobs.artifacts import ArtifactSpec
 
-__all__ = ["FILL_COLUMNS", "KIND", "ROUTES", "TIMEOUT_S", "run"]
+__all__ = ["BOOK_COLUMNS", "FILL_COLUMNS", "KIND", "ROUTES", "TIMEOUT_S", "run"]
 
 KIND = "desk.report"
 TIMEOUT_S = 10.0
 NY = ZoneInfo("America/New_York")
-ROUTES = ("/api/desk", "/api/desk/tca", "/api/research", "/api/desk/sessions")
+ROUTES = ("/api/desk", "/api/desk/tca", "/api/research", "/api/desk/sessions", "/api/graph", "/api/ops")
 # INC-01, *Reporting*: "on every report and page that shows the record".
 INC01_SENTENCE = ("incubation records are not evidence of edge; promotion to live sizing is the owner's decision "
                   "after a passing battery, never from this record alone")
@@ -73,7 +83,14 @@ PNL_COLUMNS = ["strategy", "tier", "sizing", "state", "capital_fraction", "verdi
 REFUSAL_COLUMNS = ["strategy", "source", "verdict", "rule", "detail", "sequence", "as_of", "received_at"]
 OVERLAY_COLUMNS = ["read_at", "exposure_scale", "governor", "governor_cap", "value", "as_of", "age_s", "state",
                    "reason", "vol_target", "vol_forecast", "vol_model", "cov_estimator", "inputs", "reported"]
+BOOK_COLUMNS = ["as_of", "positions", "kill_switch", "trips_on", "limits"]
 PNL_NOTE = "not on the wire until Stage 3"
+# /api/ops `alerts.kill_switch` (json_of_alerts: off | armed | tripped) in the front page's words. "off" is the
+# Disarmed state; an `enabled: false` book has no switch at all, whatever it says, and reads "disabled" too.
+KILL_SWITCH_WORDS = {"off": "disabled", "armed": "armed", "tripped": "halted"}
+LIMIT_FIELDS = ("name", "kind", "scope")   # the whitelist: nothing else on a limit row is copied
+BOOK_NOTE = ("book_summary: configuration and counts only (owner, 2026-10-29): no position names or sizes, "
+             "no limit thresholds")
 
 
 def _session_date(now: datetime) -> date:
@@ -222,14 +239,88 @@ def _session_notes(sessions: list[Any], session: date, notes: list[str]) -> None
         notes.append(f"no session close recorded for {session} yet in /api/desk/sessions")
 
 
+def _positions_held(desk: dict[str, Any] | None, notes: list[str]) -> int | None:
+    """How many symbols the graph holds a non-zero quantity of: a count, never which, never how much."""
+    raw = desk.get("positions") if desk is not None else None
+    if not isinstance(raw, list):
+        notes.append("book_summary: positions not read: GET /api/desk "
+                     + ("was not read" if desk is None else "serves no positions list"))
+        return None
+    return sum(1 for p in raw if isinstance(p, dict) and _num(p.get("graph_qty")) not in (None, 0.0))
+
+
+def _kill_switch(ops: dict[str, Any] | None, notes: list[str]) -> tuple[str | None, list[str] | None]:
+    """(``disabled`` | ``armed`` | ``halted``, the limit names it trips on) from ``/api/ops``'s ``alerts``;
+    each None when not read."""
+    alerts = ops.get("alerts") if ops is not None else None
+    if not isinstance(alerts, dict):
+        notes.append("book_summary: kill_switch and trips_on not read: GET /api/ops "
+                     + ("was not read" if ops is None else "serves no alerts object"))
+        return None, None
+    state = alerts.get("kill_switch")
+    if alerts.get("enabled") is False:   # no alerts configured: there is no switch, whatever it says
+        word = "disabled"
+    else:
+        word = KILL_SWITCH_WORDS.get(state) if isinstance(state, str) else None
+        if word is None:
+            notes.append(f"book_summary: kill_switch not read: GET /api/ops serves state {state!r}, "
+                         f"not one of {', '.join(KILL_SWITCH_WORDS)}")
+    trips = alerts.get("trips_on")
+    if not (isinstance(trips, list) and all(isinstance(t, str) for t in trips)):
+        notes.append("book_summary: trips_on not read: GET /api/ops alerts serves no list of limit names")
+        trips = None
+    return word, trips
+
+
+def _limits(graph: dict[str, Any] | None, notes: list[str]) -> list[dict[str, str]] | None:
+    """Each limit's name, kind and scope, copied field by field (a row copied whole could carry a
+    threshold), once a name, sorted by name; None when not read."""
+    nodes = graph.get("nodes") if graph is not None else None
+    if not isinstance(nodes, list):
+        notes.append("book_summary: limits not read: GET /api/graph "
+                     + ("was not read" if graph is None else "serves no nodes list"))
+        return None
+    found: dict[str, dict[str, str]] = {}
+    bad = 0
+    for n in nodes:
+        if not isinstance(n, dict):
+            bad += 1
+            continue
+        limit = n.get("limit")
+        if limit is None:
+            continue
+        fields = [limit.get(k) for k in LIMIT_FIELDS] if isinstance(limit, dict) else []
+        if not (len(fields) == len(LIMIT_FIELDS) and all(isinstance(v, str) for v in fields)):
+            bad += 1
+            continue
+        found.setdefault(fields[0], dict(zip(LIMIT_FIELDS, fields, strict=True)))
+    if bad:
+        notes.append(f"book_summary: {bad} limit rows skipped (not a node with a limit of string name, kind, scope)")
+    return [found[name] for name in sorted(found)]
+
+
+def _book_summary(desk: dict[str, Any] | None, graph: dict[str, Any] | None, ops: dict[str, Any] | None,
+                  read_at: str, notes: list[str]) -> list[dict[str, Any]]:
+    if desk is None and graph is None and ops is None:
+        return []
+    positions = _positions_held(desk, notes)
+    kill_switch, trips_on = _kill_switch(ops, notes)
+    limits = _limits(graph, notes)
+    notes.append(BOOK_NOTE)
+    return [{"as_of": read_at, "positions": positions, "kill_switch": kill_switch,
+             "trips_on": None if trips_on is None else json.dumps(trips_on),
+             "limits": None if limits is None else json.dumps(limits, sort_keys=True)}]
+
+
 def _spec(session: date, fills: list[dict], pnl: list[dict], refusals: list[dict], overlay: list[dict],
-          provenance: list[dict], notes: list[str]) -> ArtifactSpec:
+          provenance: list[dict], notes: list[str], *, book: list[dict]) -> ArtifactSpec:
     notes.append(INC01_SENTENCE)
     return ArtifactSpec(
         tables={"fills": pd.DataFrame(fills, columns=FILL_COLUMNS),
                 "pnl_by_strategy": pd.DataFrame(pnl, columns=PNL_COLUMNS),
                 "refusals": pd.DataFrame(refusals, columns=REFUSAL_COLUMNS),
-                "overlay_path": pd.DataFrame(overlay, columns=OVERLAY_COLUMNS)},
+                "overlay_path": pd.DataFrame(overlay, columns=OVERLAY_COLUMNS),
+                "book_summary": pd.DataFrame(book, columns=BOOK_COLUMNS)},
         data_asof=session.isoformat(), provenance=provenance, notes=notes, verdict=None)
 
 
@@ -251,9 +342,10 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     base = (ctx.market.settings.live_engine_url or "").strip().rstrip("/")
     if not base:
         notes.append("OHCAMEL_QUANT_LIVE_ENGINE_URL is unset: no engine to read, the report is empty")
-        return _spec(session, [], [], [], [], [{"source": "ohcamel-live", "url": None}], notes)
+        return _spec(session, [], [], [], [], [{"source": "ohcamel-live", "url": None}], notes, book=[])
     bodies: dict[str, Any] = {}
-    want = {"/api/desk": dict, "/api/desk/tca": dict, "/api/research": dict, "/api/desk/sessions": list}
+    want = {"/api/desk": dict, "/api/desk/tca": dict, "/api/research": dict, "/api/desk/sessions": list,
+            "/api/graph": dict, "/api/ops": dict}
     try:
         with httpx.Client(timeout=TIMEOUT_S) as client:
             for path in ROUTES:
@@ -261,8 +353,9 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     except _Unreachable as e:
         notes.append(f"the live engine at {base} did not answer ({e}): the live profile is not running, or the "
                      "engine is down; the report is empty")
-        return _spec(session, [], [], [], [], [{"source": "ohcamel-live", "url": base, "answered": False}], notes)
-    desk, tca, research, sessions = (bodies[p] for p in ROUTES)
+        return _spec(session, [], [], [], [], [{"source": "ohcamel-live", "url": base, "answered": False}], notes,
+                     book=[])
+    desk, tca, research, sessions, graph, ops = (bodies[p] for p in ROUTES)
     newest = _newest_session(sessions) if sessions is not None else None
     if newest is not None and newest != session:
         notes.append(f"the session is {newest}, the newest close /api/desk/sessions records, not {session}, the "
@@ -272,6 +365,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     fills = _fills(desk, session, notes) if desk is not None else []
     pnl, refusals = _strategies(research, notes) if research is not None else ([], [])
     overlay = _overlay(desk, research, read_at)
+    book = _book_summary(desk, graph, ops, read_at, notes)
     if tca is not None:
         _tca_notes(tca, notes)
     if sessions is not None:
@@ -279,4 +373,4 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     if desk is not None:
         notes.append(f"account session_pnl {desk.get('session_pnl')} (the whole paper account, not per strategy)")
     provenance = [{"source": "ohcamel-live", "url": base, "route": p, "read": bodies[p] is not None} for p in ROUTES]
-    return _spec(session, fills, pnl, refusals, overlay, provenance, notes)
+    return _spec(session, fills, pnl, refusals, overlay, provenance, notes, book=book)
