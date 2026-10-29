@@ -2,8 +2,9 @@
 
 Pure functions of one wide frame of warehouse closes (``adj_close``: dates ascending by ticker,
 NaN where a ticker has no bar). Nothing is fetched or invented; a ticker with no usable closes has
-no readout. Output is plain Python (floats rounded for the wire, lists not arrays) and carries no
-NaN or inf, so it goes straight into a node's ``m``.
+no readout. Each readout carries ``n``, the closes behind its figures, so a short history is never
+passed off as a year. Output is plain Python (floats rounded for the wire, lists not arrays) and
+carries no NaN or inf, so it goes straight into a node's ``m``.
 
 Returns are log returns between consecutive rows, so a missing close drops the returns on either
 side of it rather than stretching one over the gap. Correlations are Pearson over the pairs of days
@@ -52,9 +53,11 @@ def ticker_readouts(
 ) -> dict[str, dict]:
     """One readout per ticker with at least two usable closes in the last ``window + 1`` rows:
     ``spark`` (closes over the first), ``ret1y`` (last / first - 1), ``vol`` (sample std of daily log
-    returns, annualised), ``last`` and ``peers`` (``[ticker, corr]``, correlation of log returns over
-    the window, only among names with ``min_overlap`` shared returns). ``vol`` is left out when the
-    ticker has fewer than two returns, since a sample std of one number is undefined."""
+    returns, annualised), ``last``, ``n`` and ``peers`` (``[ticker, corr]``, correlation of log
+    returns over the window, only among names with ``min_overlap`` shared returns). ``n`` is how many
+    closes every figure rests on: ``ret1y`` is a one-year return only when ``n == window + 1``, and
+    otherwise the return over the last ``n`` sessions. ``vol`` is left out when the ticker has fewer
+    than two returns, since a sample std of one number is undefined."""
     tail, ret = _window(closes, window)
     out: dict[str, dict] = {}
     for t in tail.columns:
@@ -66,6 +69,7 @@ def ticker_readouts(
         if len(r) >= 2:
             read["vol"] = round(float(np.std(r, ddof=1) * math.sqrt(TRADING_DAYS)), 4)
         read["last"] = round(float(px[-1]), 2)
+        read["n"] = len(px)
         out[str(t)] = read
     if out:
         corr = ret.corr(min_periods=min_overlap)

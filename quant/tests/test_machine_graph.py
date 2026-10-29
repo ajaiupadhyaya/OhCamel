@@ -121,6 +121,7 @@ def test_readouts_on_known_series(closes):
     assert a["vol"] < 0.01                                        # constant growth: next to no volatility
     assert a["ret1y"] == round(1.001**252 - 1, 4)                 # 252 returns in the 253-close window
     assert a["last"] == round(closes["A"].iloc[-1], 2)
+    assert a["n"] == 253 == r["B"]["n"]                           # window + 1 closes: a full year
     assert len(a["spark"]) <= 61 and a["spark"][0] == 1.0         # every 5th of 253 closes (51), plus the last
     assert a["spark"][-1] == round(closes["A"].iloc[-1] / closes["A"].iloc[-253], 4)
     assert set(r) == {"A", "B", "C"}                              # D has no closes, so no key
@@ -149,7 +150,8 @@ def test_peers_need_overlap(closes):
     e[-50:] = 3 * closes["A"].iloc[-50:] * (1 + 2e-5 * np.random.default_rng(3).standard_normal(50))
     with_e = closes.assign(E=e)
     r = ticker_readouts(with_e)
-    assert {"spark", "ret1y", "vol", "last", "peers"} <= set(r["E"])    # it has a readout ...
+    assert {"spark", "ret1y", "vol", "last", "n", "peers"} <= set(r["E"])   # it has a readout ...
+    assert r["E"]["n"] == 50                                             # ... of 50 closes, not a year ...
     assert r["E"]["peers"] == []                                         # ... no peers ...
     assert all("E" not in peer_names(x) for x in r.values())             # ... and is no one's
     assert r["A"]["peers"]
@@ -170,6 +172,7 @@ def test_readouts_are_plain_json_with_no_nan(closes):
     short.loc[short.index[-1], "H"] = 10.0                        # one close: no readout
     r = ticker_readouts(short)
     assert "H" not in r and "vol" not in r["G"] and r["G"]["ret1y"] == 0.1 and r["G"]["spark"] == [1.0, 1.1]
+    assert r["G"]["n"] == 2 and type(r["G"]["n"]) is int          # an int, so it serialises as one
     json.dumps(r, allow_nan=False)                                # raises on NaN or inf
     assert type(r["A"]["vol"]) is float and type(r["A"]["spark"][0]) is float
 
@@ -179,6 +182,7 @@ def test_non_positive_and_infinite_closes_are_absent(closes):
     bad.iloc[-5:, 0] = [0.0, -1.0, np.inf, -np.inf, np.nan]       # A's last five rows
     a = ticker_readouts(bad)["A"]
     assert a["last"] == round(closes["A"].iloc[-6], 2)            # the newest usable close
+    assert a["n"] == 253 - 5                                      # and n counts only the usable ones
     json.dumps(a, allow_nan=False)
 
 
