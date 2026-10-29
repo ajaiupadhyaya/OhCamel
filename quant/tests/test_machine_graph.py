@@ -4,6 +4,7 @@ assembly of spec §5's rings with one rule per edge kind."""
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from functools import cache
 
@@ -416,6 +417,24 @@ def test_an_artifact_missing_a_table_stays_present_and_says_which():   # Review 
     assert "status" not in n and n["why"] == "farm.sweep has no leaderboard table" and n["m"]["verdict"] == "FAIL"
     cells = _edges_from(g, "p:farm.sweep", "result")
     assert len(cells) == 3 and not [c for c in cells if "verdict" in _node(g, c)["m"]]
+
+
+def test_a_malformed_provenance_degrades_only_its_own_node():
+    products = _inputs().products
+    bad = {"signals.overlay": 5,                                   # not a list at all
+           "signals.daily": ["farm.sweep", 7, None,                # entries that are not dicts ...
+                             {"source": ["cov.league", "farm.sweep"]}, {"source": {"farm.sweep": 1}}]}  # ... or no str source
+    broken = {k: replace(products[k], manifest={**products[k].manifest, "provenance": v}) for k, v in bad.items()}
+    broken["kronos.shadow"] = replace(products["kronos.shadow"], manifest=["not", "a", "manifest"])
+    g = build_graph(_inputs(products={**products, **broken}))   # builds: one bad artifact never takes down the graph
+    json.dumps(g, allow_nan=False)
+    for kind in bad:
+        n = _node(g, f"p:{kind}")
+        assert "status" not in n and n["m"]["verdict"] is None and n["m"]["art"]   # present, with its manifest
+        assert not _edges_into(g, f"j:{kind}", "read")             # and nothing read from the bad entries
+    assert _node(g, "p:kronos.shadow")["status"] == "missing"     # a manifest that is no mapping is no manifest
+    assert _edge(g, "d:NVDA", "j:cov.league", "read") and len(_edges_from(g, "p:signals.daily", "signal")) == 21   # the rest stands
+    assert provenance_symbols({"provenance": 5}) == provenance_symbols(["x"]) == []
 
 
 def test_product_reads_come_from_provenance():

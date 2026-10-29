@@ -109,14 +109,19 @@ class Inputs:
     why: Mapping[str, str]
 
 
+def _provenance(manifest: Any) -> list[dict]:
+    """A manifest's provenance entries that are dicts; none when the manifest or its list is malformed,
+    so one bad artifact degrades only its own node, never the graph."""
+    prov = manifest.get("provenance") if isinstance(manifest, dict) else None
+    return [e for e in prov if isinstance(e, dict)] if isinstance(prov, list) else []
+
+
 def provenance_symbols(manifest: dict | None) -> list[tuple[str, str]]:
     """``(dataset, SYMBOL)`` for every symbol a manifest's provenance names, in ``detail.symbol``,
     ``detail.tickers``, ``symbol`` or ``tickers``, once each, in order. ``dataset`` is the entry's
     ``detail.dataset``, else ``bars_daily``. A count where a list belongs names nothing."""
     out: list[tuple[str, str]] = []
-    for e in (manifest or {}).get("provenance") or []:
-        if not isinstance(e, dict):
-            continue
+    for e in _provenance(manifest):
         detail = e.get("detail") if isinstance(e.get("detail"), dict) else {}
         dataset = detail.get("dataset") if isinstance(detail.get("dataset"), str) else "bars_daily"
         for src in (detail, e):
@@ -266,7 +271,7 @@ def _feeds(g: _Graph, inp: Inputs, tracks: dict[str, list[str]]) -> None:
 
 # ------------------------------------------------------------------ products: what each job publishes, and what it read
 def _present(p: Product | None) -> bool:
-    return p is not None and p.manifest is not None
+    return p is not None and isinstance(p.manifest, dict)   # a manifest that is not a mapping is no manifest
 
 
 def _table(inp: Inputs, kind: str, name: str, needs: Sequence[str]) -> pd.DataFrame | None:
@@ -322,9 +327,10 @@ def _products(g: _Graph, inp: Inputs, tracks: dict[str, list[str]]) -> None:
         p = inp.products.get(kind)
         for s in _series_reads(kind, p, inp, tracks):
             g.edge(s, f"j:{kind}", "read")
-        for e in (p.manifest.get("provenance") or []) if _present(p) else []:
-            if isinstance(e, dict) and e.get("source") in PROD:   # "reported only" and the like are not reads
-                g.edge(f"p:{e['source']}", f"j:{kind}", "read")
+        for e in _provenance(p.manifest) if _present(p) else []:
+            src = e.get("source")
+            if isinstance(src, str) and src in PROD:   # "reported only" and the like are not reads
+                g.edge(f"p:{src}", f"j:{kind}", "read")
 
 
 # ------------------------------------------------------------------ results inside the products
