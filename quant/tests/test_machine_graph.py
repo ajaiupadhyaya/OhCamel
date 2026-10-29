@@ -1,9 +1,11 @@
-"""The Machine's graph, built from repo config: the world (names) and the clock (every job's hour)."""
+"""The Machine's graph: the world (names), the clock (every job's hour), the ticker readouts, and the
+assembly of spec §5's rings with one rule per edge kind."""
 
 from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime
+from functools import cache
 
 import numpy as np
 import pandas as pd
@@ -12,8 +14,19 @@ import pytest
 from ohcamel_quant.jobs.cron import parse_cron
 from ohcamel_quant.jobs.schedules import ScheduleEntry, Schedules, load_schedules
 from ohcamel_quant.machine.clock import job_clock, ny_hour, place_hour
+from ohcamel_quant.machine.graph import (
+    FEEDS,
+    PROD,
+    RULES,
+    Inputs,
+    Product,
+    build_graph,
+    provenance_symbols,
+)
 from ohcamel_quant.machine.readouts import cluster_order, ticker_readouts
 from ohcamel_quant.machine.world import load_world
+from ohcamel_quant.signals.report import BOOK_COLUMNS
+from ohcamel_quant.signals.roster import load_roster
 from ohcamel_quant.warehouse.constituents import load_constituents
 
 
@@ -198,3 +211,413 @@ def test_cluster_order_lists_every_input_name_once(closes):
     assert cluster_order(closes, []) == [] and cluster_order(closes, ["Z", "Y"]) == ["Y", "Z"]
     assert cluster_order(closes, ["C"]) == ["C"]                  # one name has nothing to cluster against
     assert cluster_order(closes.iloc[:0], ["B", "A"]) == ["A", "B"]
+
+
+# ---------------------------------------------------------------- the graph: spec §5's rings and edge rules
+RINGS = {"feeds", "daily", "filings", "minute", "options", "clock", "products", "results", "strategies", "limits", "book"}
+LIMITS = [{"name": "aapl-cap", "kind": "gross_notional", "scope": "instrument:AAPL"},
+          {"name": "dd-cap", "kind": "max_drawdown", "scope": "portfolio"},
+          {"name": "tech-cap", "kind": "gross_notional", "scope": "sector:TECH"}]
+READOUTS = {"NVDA": {"spark": [1.0, 1.4, 2.1], "ret1y": 1.1, "vol": 0.52, "last": 191.2, "n": 253, "peers": [["AMD", 0.71]]},
+            "AAPL": {"spark": [1.0, 1.1], "ret1y": 0.1, "last": 230.1, "n": 2}}   # Ruling 10: no vol, no peers
+ORDER = ["NVDA", "AAPL", "MSFT"]   # the cluster order puts these first; the other equities follow alphabetically
+
+
+@cache
+def _static():
+    """The real world, clock and roster: the graph's skeleton is the repo's own config."""
+    return load_world(), job_clock(load_schedules(), date(2026, 10, 28)), load_roster()
+
+
+def _daily_cells():
+    return [c for c in _static()[2].cells if c.producer == "signals.daily"]
+
+
+def _product(kind, tables=None, provenance=(), *, stale=False, why=None, **manifest):
+    tables = tables or {}
+    m = {"id": f"01J{kind.replace('.', '').upper()}", "kind": kind, "code_sha": "a1b2c3d", "data_asof": "2026-10-28",
+         "finished_at": "2026-10-28T23:41:00Z", "cpu_seconds": 61.5, "engine": "python", "provenance": list(provenance),
+         "notes": [f"{kind}: a note the job wrote"], "tables": list(tables), "verdict": None, "verdict_detail": None,
+         **manifest}
+    return Product(kind, m, stale, tables, {k: len(v) for k, v in tables.items()}, why)
+
+
+def _summary(**over):
+    row = {"as_of": "2026-10-28T20:31:07Z", "positions": 5, "kill_switch": "armed",
+           "trips_on": json.dumps(["dd-cap"]), "limits": json.dumps(LIMITS), **over}
+    return pd.DataFrame([row], columns=BOOK_COLUMNS)
+
+
+def _desk(book_summary):
+    live = [{"source": "ohcamel-live", "url": "http://engine", "route": "/api/graph", "read": True}]
+    if isinstance(book_summary, pd.DataFrame):
+        return _product("desk.report", {"book_summary": book_summary}, live)
+    if book_summary == "absent":
+        return None
+    if book_summary == "untabled":
+        return _product("desk.report", {"fills": pd.DataFrame({"symbol": ["AAPL"]})}, live)
+    table = {"usable": _summary(), "stale": _summary(), "empty": _summary().iloc[:0],
+             "unlimited": _summary(limits=None)}[book_summary]
+    return _product("desk.report", {"book_summary": table}, live, stale=book_summary == "stale")
+
+
+def _bars(symbol, dataset="bars_daily"):
+    """A warehouse reader's provenance entry (``warehouse/readers.py`` ``ohlcv``)."""
+    return {"source": "warehouse:yahoo", "fetched_at": "", "synthetic": False,
+            "detail": {"dataset": dataset, "path": "warehouse", "symbol": symbol}}
+
+
+def _products():
+    cs = _daily_cells()[:3]
+    cells = pd.DataFrame({"cell_id": [f"{c.strategy}@{c.universe}" for c in cs], "strategy": [c.strategy for c in cs],
+                          "universe": [c.universe for c in cs], "status": ["ok", "ok", "skipped"],
+                          "reason": [None, None, "no common history"], "n_combos": [24, 24, 0]})
+    board = pd.DataFrame({"cell_id": cells["cell_id"][:2], "verdict": ["FAIL", "FAIL"],
+                          "detail": ["DSR BELOW 0.95", "PBO ABOVE 0.5"], "dsr_farm": [0.41, np.nan], "psr": [0.62, 0.48],
+                          "oos_sharpe_ann": [0.35, -0.1], "pbo": [0.3, 0.7], "n_combos": [24, 24]})
+    vol = pd.DataFrame({"model": ["gjr", "har"], "mcs_rate": [0.8, np.nan], "mean_rank": [1.4, 2.1], "names": [40, 38]})
+    league = pd.DataFrame({"universe": ["ndx100", "ndx100", "sectors", "sectors"],
+                           "estimator": ["sample", "lw_constant_corr", "sample", "lw_constant_corr"],
+                           "realized_vol": [0.18, 0.16, 0.14, 0.13], "rank": [2, 1, 2, 1]})
+    atlas = pd.DataFrame([{"book": "core", "method": m, "horizon": h, "alpha": a, "var": 0.01 * h * k, "es": 0.015 * h * k,
+                           "var_usd": 1000.0 * h * k, "es_usd": 1500.0 * h * k, "n_paths": 20000}
+                          for m in ("fhs", "copula_t") for h in (1, 10) for a, k in ((0.95, 0.5), (0.99, 1))])
+    members = pd.DataFrame({"ticker": ["XLK", "XLE", "XLK"], "universe": ["sectors"] * 3})
+    special = {
+        "farm.sweep": _product("farm.sweep", {"cells": cells, "leaderboard": board},
+                               [{"source": "ohcamel-farm", "cells_run_tonight": 3, "cells_total": 21}],
+                               verdict="FAIL", verdict_detail="NO CELL PASSES"),
+        "vol.forecast_league": _product("vol.forecast_league", {"summary": vol}, [_bars("SPY")]),
+        "cov.league": _product("cov.league", {"league": league},
+                               [_bars("NVDA"), {"source": "ohcamel-cov-league", "universe": "ndx100",
+                                                "tickers": ["nvda", "MSFT"]}]),
+        "risk.mc_atlas": _product("risk.mc_atlas", {"summary": atlas, "members": members}, [_bars("TSLA")]),
+        "risk.mc_intraday": _product("risk.mc_intraday", {}, [_bars("QQQ", "bars_minute"), _bars("QQQ")]),
+        "signals.daily": _product("signals.daily", {}, [{"source": "farm.sweep", "artifact": "01JFARMSWEEP"},
+                                                        {"source": "signals.freeze", "artifact": "01JFREEZE"},
+                                                        {"source": "roster", "path": "roster.yaml"}]),
+        "signals.overlay": _product("signals.overlay", {}, [
+            {"source": "cov.league", "artifact": "01JCOV"}, {"source": "vol.forecast_league", "artifact": "01JVOL"},
+            {"source": "roster", "path": "roster.yaml"},
+            {"source": "reported only", "regime.hmm": "01JHMM", "mc": "01JMC"}]),
+    }
+    return {k: special.get(k) or _product(k) for k in PROD if k != "desk.report"}
+
+
+def _inputs(*, book_summary="usable", drop=None, **over):
+    """A small, whole ``Inputs``: the real world, clock and roster; artifacts built from small frames.
+    ``book_summary``: usable | absent | untabled | empty | unlimited | stale, or a frame to use as the table.
+    ``drop``: an artifact kind with no artifact. Any other keyword replaces that ``Inputs`` field."""
+    world, clock, roster = _static()
+    products = _products()
+    desk = _desk(book_summary)
+    if desk is not None:
+        products["desk.report"] = desk
+    products.pop(drop, None)
+    fresh = {f[4]: {"data_asof": "2026-10-28", "last_ok_at": "2026-10-28T22:41:00", "keys": 12, "keys_behind": 1,
+                    "stale": False} for f in FEEDS}
+    fields = {"world": world, "clock": clock, "roster": roster, "products": products, "freshness": fresh,
+              "readouts": READOUTS, "order": ORDER, "why": {}, **over}
+    return Inputs(**fields)
+
+
+def _ix(g):
+    return {n["id"]: i for i, n in enumerate(g["nodes"])}
+
+
+def _ids(g):
+    return {n["id"] for n in g["nodes"]}
+
+
+def _node(g, id_):
+    return g["nodes"][_ix(g)[id_]]
+
+
+def _edge(g, a, b, kind):
+    ix = _ix(g)
+    return a in ix and b in ix and [ix[a], ix[b], kind] in g["edges"]
+
+
+def _edges_into(g, b, kind=None):
+    """The ids of the nodes with an edge into ``b`` (of ``kind``, when given), in edge order."""
+    ix = _ix(g)
+    return [g["nodes"][a]["id"] for a, to, k in g["edges"] if to == ix[b] and kind in (None, k)]
+
+
+def _edges_from(g, a, kind=None):
+    ix = _ix(g)
+    return [g["nodes"][b]["id"] for fr, b, k in g["edges"] if fr == ix[a] and kind in (None, k)]
+
+
+def test_every_edge_follows_a_rule():                          # spec §5: "an edge with no rule is a bug"
+    g = build_graph(_inputs())
+    k = [n["k"] for n in g["nodes"]]
+    for a, b, kind in g["edges"]:
+        assert (k[a], k[b]) in RULES[kind], (g["nodes"][a]["id"], g["nodes"][b]["id"], kind)
+    assert {e[2] for e in g["edges"]} <= set(RULES)
+    pairs = {(k[a], k[b], kind) for a, b, kind in g["edges"]}
+    assert pairs == {(f, t, kind) for kind, r in RULES.items() for f, t in r}   # and the fixture uses every rule
+
+
+def test_the_roster_gives_23_strategies():
+    g = build_graph(_inputs())
+    st = [n for n in g["nodes"] if n["k"] == "strategy"]
+    assert len(st) == 23
+    assert sum(n["m"]["producer"] == "signals.daily" for n in st) == 21
+
+
+def test_the_book_comes_from_book_summary():
+    g = build_graph(_inputs())
+    ids = _ids(g)
+    assert {"lim:aapl-cap", "lim:tech-cap", "lim:dd-cap", "kill"} <= ids
+    assert _edge(g, "d:AAPL", "lim:aapl-cap", "read") and not _edges_into(g, "lim:tech-cap", "read")
+    assert _edge(g, "lim:dd-cap", "kill", "trip") and _edge(g, "kill", "book", "halt")
+
+
+@pytest.mark.parametrize("why", ["absent", "untabled", "empty", "unlimited", "stale"])
+def test_without_a_usable_summary_there_are_no_limits(why):
+    g = build_graph(_inputs(book_summary=why))
+    assert not [n for n in g["nodes"] if n["k"] in ("limit", "kill")]
+    assert not [e for e in g["edges"] if e[2] in ("limit", "trip", "halt")]
+    assert _node(g, "book")["m"]["summary_why"]
+
+
+def test_each_unusable_summary_says_which_case_it_is():
+    whys = {w: _node(build_graph(_inputs(book_summary=w)), "book")["m"]["summary_why"]
+            for w in ("absent", "untabled", "empty", "unlimited", "stale")}
+    assert len(set(whys.values())) == 5                         # five cases, five different sentences
+    assert "stale" in whys["stale"] and "book_summary" in whys["untabled"] and "limits" in whys["unlimited"]
+    m = _node(build_graph(_inputs(book_summary="stale")), "book")["m"]
+    assert not {"positions", "kill", "limits", "summary_asof"} & set(m)   # a stale row is never shown as the book
+
+
+def test_a_missing_artifact_is_a_missing_node():
+    n = _node(build_graph(_inputs(drop="cov.league")), "p:cov.league")
+    assert n["status"] == "missing" and n["why"]
+
+
+def test_a_missing_artifact_reads_nothing_and_has_no_results():
+    g = build_graph(_inputs(drop="cov.league", why={"cov.league": "the artifact root is not mounted"}))
+    n = _node(g, "p:cov.league")
+    assert n["why"] == "the artifact root is not mounted" and n["m"] == {"kind": "cov.league"}
+    assert not _edges_into(g, "j:cov.league", "read")          # no provenance to read from
+    assert not [i for i in _ids(g) if i.startswith("ce:")]
+    assert _edge(g, "j:cov.league", "p:cov.league", "publish")
+    assert _edge(g, "p:cov.league", "j:signals.overlay", "read")   # the overlay's own provenance still names it
+
+
+def test_an_artifact_missing_a_table_stays_present_and_says_which():   # Review Focus 5
+    products = _inputs().products
+    farm = products["farm.sweep"]
+    cells_only = Product(farm.kind, farm.manifest, False, {"cells": farm.tables["cells"]}, farm.rows,
+                         "farm.sweep has no leaderboard table")
+    g = build_graph(_inputs(products={**products, "farm.sweep": cells_only}))
+    n = _node(g, "p:farm.sweep")
+    assert "status" not in n and n["why"] == "farm.sweep has no leaderboard table" and n["m"]["verdict"] == "FAIL"
+    cells = _edges_from(g, "p:farm.sweep", "result")
+    assert len(cells) == 3 and not [c for c in cells if "verdict" in _node(g, c)["m"]]
+
+
+def test_product_reads_come_from_provenance():
+    g = build_graph(_inputs())
+    assert _edge(g, "p:farm.sweep", "j:signals.daily", "read")
+    assert _edge(g, "p:cov.league", "j:signals.overlay", "read")
+    assert _edge(g, "d:NVDA", "j:cov.league", "read")
+
+
+def test_reported_only_provenance_is_not_a_read():
+    g = build_graph(_inputs())
+    assert sorted(_edges_into(g, "j:signals.overlay", "read")) == ["p:cov.league", "p:vol.forecast_league"]
+    assert _edges_into(g, "j:signals.daily", "read") == ["p:farm.sweep"]   # signals.freeze and the roster are no products
+
+
+def test_the_desk_report_node_carries_only_its_run_times():
+    assert set(_node(build_graph(_inputs()), "p:desk.report")["m"]) == {"kind", "finished", "stale"}
+
+
+def test_the_wire_shape():
+    g = build_graph(_inputs())
+    json.dumps(g, allow_nan=False)                              # raises on NaN or inf (the fixture holds two NaNs)
+    ids = [n["id"] for n in g["nodes"]]
+    idset = set(ids)
+    assert len(ids) == len(idset)
+    shapes = {"feed": [set()], "book": [set()], "job": [{"h"}], "product": [{"of"}, {"beside"}],
+              "result": [{"of", "i", "n"}], "strategy": [{"i", "n"}], "limit": [{"i", "n"}], "kill": [{"i", "n"}],
+              "series": [{"sec", "i"}, {"of"}]}
+    for n in g["nodes"]:
+        assert {"id", "k", "l", "n", "ring", "at", "m"} <= set(n) <= {"id", "k", "l", "n", "ring", "at", "m", "status", "why"}
+        assert n["ring"] in RINGS and set(n["at"]) in shapes[n["k"]], n["id"]
+        assert isinstance(n["l"], str) and isinstance(n["n"], str) and n["l"] and n["n"], n["id"]
+        assert (n["ring"] == "daily") == ("sec" in n["at"]), n["id"]
+        assert n["at"].get("of", "book") in idset and n["at"].get("beside", "book") in idset, n["id"]   # names a node
+    assert all(type(a) is int and type(b) is int and isinstance(k, str) for a, b, k in g["edges"])
+    assert len({tuple(e) for e in g["edges"]}) == len(g["edges"])   # no edge twice
+
+
+def test_the_book_and_its_limits_read_from_the_summary():
+    g = build_graph(_inputs())
+    _, _, roster = _static()
+    assert _node(g, "book")["m"] == {
+        "strategies": 23, "capital": round(sum(c.capital_fraction for c in roster.cells), 6),
+        "incubation_cap": roster.incubation_cap, "canary_cap": roster.canary_cap, "vol_target": roster.vol_target,
+        "positions": 5, "kill": "armed", "limits": 3, "summary_asof": "2026-10-28T20:31:07Z"}
+    assert _node(g, "lim:aapl-cap")["m"] == {"kind": "gross_notional", "scope": "instrument:AAPL", "trips": False}
+    assert _node(g, "lim:dd-cap")["m"]["trips"] is True
+    assert _node(g, "kill")["m"] == {"state": "armed", "trips_on": ["dd-cap"]}
+    assert sorted(_edges_into(g, "book", "limit")) == ["lim:aapl-cap", "lim:dd-cap", "lim:tech-cap"]
+    assert _edges_into(g, "kill", "trip") == ["lim:dd-cap"]
+    assert _edges_into(g, "lim:aapl-cap") == ["d:AAPL"] and not _edges_into(g, "lim:dd-cap", "read")
+    assert sorted((n["at"]["i"], n["at"]["n"]) for n in g["nodes"] if n["k"] in ("limit", "kill")) == [
+        (0, 4), (1, 4), (2, 4), (3, 4)]                          # one ring of four slots ...
+    assert _node(g, "kill")["at"] == {"i": 3, "n": 4}           # ... the kill switch in the last
+    assert _edges_from(g, "book") == ["j:desk.report"]
+
+
+@pytest.mark.parametrize(("state", "halts"), [("armed", True), ("halted", True), ("disabled", False), (None, False)])
+def test_the_kill_switch_halts_the_book_only_when_armed_or_halted(state, halts):
+    g = build_graph(_inputs(book_summary=_summary(kill_switch=state)))
+    assert _node(g, "kill")["m"]["state"] == state
+    assert _edge(g, "kill", "book", "halt") is halts
+    assert _edge(g, "lim:dd-cap", "kill", "trip")
+
+
+def test_an_unread_count_or_trip_list_is_unread_not_zero():
+    g = build_graph(_inputs(book_summary=_summary(positions=np.nan, trips_on=None)))
+    assert _node(g, "book")["m"]["positions"] is None
+    assert _node(g, "kill")["m"]["trips_on"] is None and _node(g, "lim:dd-cap")["m"]["trips"] is None
+    assert not [e for e in g["edges"] if e[2] == "trip"]
+    json.dumps(g, allow_nan=False)
+
+
+def test_feeds_pull_their_jobs_and_the_first_writes_the_track():
+    g = build_graph(_inputs())
+    world, _, _ = _static()
+    assert sorted(_edges_from(g, "feed:fred", "pull")) == ["j:ingest.fred", "j:ingest.fred_warehouse"]
+    assert sorted(_edges_from(g, "j:ingest.fred_warehouse", "write")) == sorted(f"f:{s}" for s, _ in world.fred)
+    assert not _edges_from(g, "j:ingest.fred", "write")
+    assert sorted(_edges_from(g, "j:ingest.bars_daily", "write")) == sorted(f"d:{t}" for t in world.daily())
+    assert len(_edges_from(g, "j:ingest.sec_facts", "write")) == len(world.equities)
+    assert sorted(_edges_from(g, "j:ingest.factors", "write")) == ["ff:FF5", "ff:MOM"]
+    assert len(_edges_from(g, "j:ingest.holdings_13f", "write")) == len(world.filers)
+    assert len(_edges_from(g, "j:ingest.bars_minute", "write")) == len(world.minute)
+    assert len(_edges_from(g, "j:ingest.option_snapshots", "write")) == len(world.options)
+    f = _node(g, "feed:prices")
+    assert f["m"] == {"who": "Yahoo, Alpaca, Stooq", "dataset": "bars_daily", "keys": 12, "asof": "2026-10-28",
+                      "ok": "2026-10-28T22:41:00", "behind": 1}
+    assert "status" not in f and f["n"] == "Prices from Yahoo, Alpaca, Stooq"
+
+
+def test_a_feed_without_freshness_is_missing():
+    g = build_graph(_inputs(freshness=None, why={"warehouse": "warehouse locked by the nightly writer"}))
+    feeds = [n for n in g["nodes"] if n["k"] == "feed"]
+    assert len(feeds) == len(FEEDS) == 7
+    assert all(n["status"] == "missing" and n["why"] == "warehouse locked by the nightly writer" for n in feeds)
+    assert _edge(g, "feed:prices", "j:ingest.bars_daily", "pull")   # the wiring is config, not freshness
+    fresh = {k: v for k, v in _inputs().freshness.items() if k != "sec_facts"}
+    g = build_graph(_inputs(freshness=fresh))
+    assert _node(g, "feed:sec")["status"] == "missing" and _node(g, "feed:sec")["why"]
+    assert "status" not in _node(g, "feed:sec13f")
+
+
+def test_series_reads_follow_the_spec_exceptions():
+    g = build_graph(_inputs())
+    world, _, _ = _static()
+
+    def reads(job):
+        return set(_edges_into(g, f"j:{job}", "read"))
+
+    assert reads("farm.sweep") == {f"d:{s}" for c in _daily_cells() for s in c.symbols}
+    assert reads("regime.hmm") == {"d:SPY", "f:VIXCLS"}
+    assert reads("vol.forecast_league") == {"d:SPY"} | {f"m:{t}" for t in world.minute}
+    assert reads("vol.surface_history") == {f"o:{t}" for t in world.options}
+    assert reads("ops.data_integrity") == {f"d:{t}" for t in world.daily()}
+    assert reads("factors.screen") == {"ff:FF5", "ff:MOM"}
+    assert reads("risk.mc_atlas") == {"d:XLK", "d:XLE"}            # its members, not its provenance's TSLA
+    assert reads("risk.mc_intraday") == {"m:QQQ", "d:QQQ"}         # a bars_minute entry reads the minute track
+    assert reads("cov.league") == {"d:NVDA", "d:MSFT"}             # detail.symbol and tickers, upper-cased
+    assert not reads("kronos.shadow") and not reads("models.xs_lgbm")   # no symbols in their provenance
+
+
+def test_provenance_symbols():
+    m = {"provenance": [
+        {"source": "warehouse:yahoo", "detail": {"dataset": "bars_daily", "symbol": "nvda"}},
+        {"source": "warehouse:alpaca", "detail": {"dataset": "bars_minute", "symbol": "SPY", "tickers": ["QQQ"]}},
+        {"source": "ohcamel-cov-league", "tickers": ["AAPL", "NVDA", 7]},
+        {"source": "warehouse:bars_daily", "symbol": "IWM"},
+        {"source": "ohcamel-cov-league", "detail": {"tickers": 3}},   # a count, not a list: nothing
+        {"source": "reported only", "regime.hmm": "01J"}, "not a dict", {"detail": "not a dict"}]}
+    assert provenance_symbols(m) == [("bars_daily", "NVDA"), ("bars_minute", "SPY"), ("bars_minute", "QQQ"),
+                                     ("bars_daily", "AAPL"), ("bars_daily", "IWM")]
+    assert provenance_symbols(None) == provenance_symbols({}) == provenance_symbols({"provenance": None}) == []
+
+
+def test_results_come_from_their_tables():
+    g = build_graph(_inputs())
+    cs = _daily_cells()[:3]
+    farm = [n for n in g["nodes"] if n["id"].startswith("c:")]
+    assert [n["id"] for n in farm] == [f"c:{c.strategy}@{c.universe}" for c in cs]
+    assert [n["at"] for n in farm] == [{"of": "p:farm.sweep", "i": i, "n": 3} for i in range(3)]
+    first = farm[0]["m"]
+    assert first["verdict"] == "FAIL" and first["oos_sharpe_ann"] == 0.35 and first["status"] == "ok"
+    assert first["combos"] == 24 and farm[1]["m"]["dsr_farm"] is None   # a NaN is null, never NaN
+    assert "verdict" not in farm[2]["m"] and farm[2]["m"]["reason"] == "no common history"   # not on the leaderboard
+    for c in cs:
+        assert _edge(g, f"c:{c.strategy}@{c.universe}", f"st:{c.slug}", "roster")
+    assert sorted(_edges_from(g, "p:vol.forecast_league", "result")) == ["lm:gjr", "lm:har"]
+    assert _node(g, "lm:har")["m"] == {"mcs_rate": None, "mean_rank": 2.1, "names": 38}
+    assert _node(g, "ce:lw_constant_corr")["m"] == {"ndx100": {"vol": 0.16, "rank": 1}, "sectors": {"vol": 0.13, "rank": 1}}
+    assert len(_edges_from(g, "p:cov.league", "result")) == 2
+    am = sorted(_edges_from(g, "p:risk.mc_atlas", "result"))
+    assert am == ["am:copula_t:1", "am:copula_t:10", "am:fhs:1", "am:fhs:10"]   # alpha 0.99 only
+    assert _node(g, "am:fhs:10")["m"] == {"var": 0.1, "es": 0.15, "var_usd": 10000.0, "es_usd": 15000.0, "paths": 20000}
+
+
+def test_the_daily_ring_in_section_order():
+    g = build_graph(_inputs())
+    world, _, _ = _static()
+    at = {n["id"]: n["at"] for n in g["nodes"]}
+    assert [at[f"d:{t}"] for t, _, _ in world.etfs] == [{"sec": "etf", "i": i} for i in range(len(world.etfs))]
+    eq = sorted((n for n in g["nodes"] if n["at"].get("sec") == "eq"), key=lambda n: n["at"]["i"])
+    assert [n["id"] for n in eq] == [f"d:{t}" for t in ORDER + sorted(set(world.equities) - set(ORDER))]
+    assert [n["at"]["i"] for n in eq] == list(range(len(world.equities)))
+    assert [at[f"f:{s}"] for s, _ in world.fred] == [{"sec": "fred", "i": i} for i in range(len(world.fred))]
+    assert (at["ff:FF5"], at["ff:MOM"]) == ({"sec": "ff", "i": 0}, {"sec": "ff", "i": 1})
+    assert [at[f"13f:{f['cik']}"] for f in world.filers] == [{"sec": "13f", "i": i} for i in range(len(world.filers))]
+    assert at["s:NVDA"] == {"of": "d:NVDA"} and at["m:SPY"] == {"of": "d:SPY"} and at["o:XLK"] == {"of": "d:XLK"}
+    assert {n["ring"] for n in g["nodes"] if n["k"] == "series"} == {"daily", "filings", "minute", "options"}
+
+
+def test_series_carry_their_readouts():
+    g = build_graph(_inputs())
+    assert _node(g, "d:NVDA")["m"] == {"track": "daily", **READOUTS["NVDA"]}
+    assert _node(g, "d:AAPL")["m"] == {"track": "daily", **READOUTS["AAPL"]}   # no vol, no peers: none invented
+    spy = _node(g, "d:SPY")["m"]
+    assert spy["unis"] and "spark" not in spy                       # an ETF with its universes; no closes, no readout
+    assert _node(g, "m:SPY")["m"] == {"track": "minute"} and _node(g, "s:NVDA")["m"] == {"track": "filings"}
+    world, _, _ = _static()
+    f = world.filers[0]
+    assert _node(g, f"13f:{f['cik']}")["m"] == {"track": "13f", "manager": f["manager"]}
+
+
+def test_jobs_and_products_sit_on_the_clock():
+    g = build_graph(_inputs())
+    _, clock, _ = _static()
+    j = _node(g, "j:farm.sweep")
+    assert j["at"] == {"h": 23.0} and j["l"] == "Strategy farm"
+    assert j["m"] == {"kind": "farm.sweep", "fires": [23.0], "cron": list(clock["farm.sweep"].cron), "heavy": True,
+                      "mem": "L", "when": ["weekdays"]}
+    assert len([n for n in g["nodes"] if n["k"] == "job"]) == len(clock)
+    for kind in PROD:
+        assert _edge(g, f"j:{kind}", f"p:{kind}", "publish")
+        assert _node(g, f"p:{kind}")["at"] == {"of": f"j:{kind}"}
+    p = _node(g, "p:farm.sweep")
+    assert p["m"].items() >= {"kind": "farm.sweep", "verdict": "FAIL", "detail": "NO CELL PASSES", "code": "a1b2c3d",
+                              "asof": "2026-10-28", "finished": "2026-10-28T23:41:00Z", "cpu": 61.5, "engine": "python",
+                              "notes": ["farm.sweep: a note the job wrote"], "art": "01JFARMSWEEP",
+                              "stale": False}.items()
+    r = _node(g, "p:research")
+    assert r["at"] == {"beside": "p:signals.daily"} and r["m"] == {"producer": "research-service", "strategies": 2}
+    assert sorted(_edges_from(g, "p:research", "signal")) == ["st:exp_a01_spy", "st:exp_a01_tlt"]
+    assert len(_edges_from(g, "p:signals.daily", "signal")) == 21
+    assert _edges_from(g, "p:signals.overlay", "scale") == ["book"]
+    assert len(_edges_into(g, "book", "trade")) == 23
