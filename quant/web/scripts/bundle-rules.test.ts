@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isMachineSource, isThree, staticClosure, threeManifestFailures, threeSourceFailures } from "./bundle-rules.mjs";
-
-type Chunk = { file: string; src?: string; name?: string; isEntry?: boolean; imports?: string[]; dynamicImports?: string[] };
-type Manifest = Record<string, Chunk>;
+import { isMachineSource, isThree, staticClosure, threeManifestFailures, threeSourceFailures, type Manifest, type ManifestChunk as Chunk } from "./bundle-rules.mjs";
 
 const THREE: Chunk = { file: "assets/three-a1.js", name: "three" };
 const manifest = (extra: Manifest = {}, entry: Partial<Chunk> = {}): Manifest => ({

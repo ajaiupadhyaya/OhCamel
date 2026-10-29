@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { Manifest, ManifestChunk as Chunk } from "./bundle-rules.mjs";
 
 // The real script, run against a fake dist/ and src/ (like check-style.test.ts): proves the
 // three.js rule is wired into the build, not only correct in isolation (bundle-rules.test.ts).
@@ -11,10 +12,8 @@ const SURFACE = "src/pages/volatility/SurfaceView.tsx";
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
 
-type Chunk = { file: string; src?: string; name?: string; isEntry?: boolean; imports?: string[]; dynamicImports?: string[] };
-
 // What the real build emits today: an entry, the vendor chunk, Plotly, and the surface view alone importing it.
-function baseManifest(): Record<string, Chunk> {
+function baseManifest(): Manifest {
   return {
     "index.html": { file: "assets/index-a1.js", src: "index.html", isEntry: true, imports: ["_vendor-a1.js"], dynamicImports: [SURFACE] },
     "_vendor-a1.js": { file: "assets/vendor-a1.js", name: "vendor" },
@@ -23,7 +22,7 @@ function baseManifest(): Record<string, Chunk> {
   };
 }
 
-function run(manifest: Record<string, Chunk>, sources: Record<string, string> = { "App.tsx": "export const a = 1;\n" }) {
+function run(manifest: Manifest, sources: Record<string, string> = { "App.tsx": "export const a = 1;\n" }) {
   const root = mkdtempSync(join(tmpdir(), "check-bundle-"));
   dirs.push(root);
   const put = (path: string, text: string) => {
@@ -50,15 +49,21 @@ describe("check-bundle confines three.js to the machine", () => {
     const m = baseManifest();
     m["_three-a1.js"] = { file: "assets/three-a1.js", name: "three" };
     m["importer"] = { ...importer, [via]: ["_three-a1.js"] };
+    m["index.html"].dynamicImports!.push("importer"); // the page is lazy: reached from the entry, not part of it
     return m;
   };
-  it("passes when only the machine's scene imports it", () => {
-    const m = withThree({ file: "assets/scene-a1.js", src: "src/pages/machine/scene.ts" });
-    m["index.html"].dynamicImports!.push("importer");
-    expect(run(m).status).toBe(0);
+  // The script lists each importer as "static" or "dynamic": asserting it proves which path ran.
+  it("passes when only the machine's scene imports it, dynamically", () => {
+    const r = run(withThree({ file: "assets/scene-a1.js", src: "src/pages/machine/scene.ts" }, "dynamicImports"));
+    expect(r.stderr).toBe("");
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("assets/scene-a1.js (src/pages/machine/scene.ts) dynamic");
   });
-  it("passes when the Machine page itself imports it", () => {
-    expect(run(withThree({ file: "assets/Machine-a1.js", src: "src/pages/Machine.tsx" }), "imports").status).toBe(0);
+  it("passes when the Machine page itself imports it, statically", () => {
+    const r = run(withThree({ file: "assets/Machine-a1.js", src: "src/pages/Machine.tsx" }, "imports"));
+    expect(r.stderr).toBe("");
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("assets/Machine-a1.js (src/pages/Machine.tsx) static");
   });
   it("fails when a chunk outside the machine imports it", () => {
     const r = run(withThree({ file: "assets/Front-a1.js", src: "src/pages/Front.tsx" }));
