@@ -655,9 +655,8 @@ block (23 incubation cells), `(trading enabled)`, the `--live` deploy. Still ope
 - ~~**Reboot the droplet**~~ -- done 2026-10-27 20:51 UTC at the owner's word: kernel 6.8.0-124 → 6.8.0-147, every
   container back in under a minute, smoke 30 passed, 0 failed. O12 (the 10:00 UTC automatic reboot) is still open.
 - ~~**Merge PRs #12 and #14**~~ -- merged by the owner 2026-10-27 and deployed in `8650c95`.
-  `.github/dependabot.yml` is gone. Still open: **close Dependabot PRs #15–#19**
-  (`for n in 15 16 17 18 19; do gh pr close $n --delete-branch; done`) -- the classifier refuses it as an
-  external write.
+  `.github/dependabot.yml` is gone, and the orphaned Dependabot PRs #15–#19 were closed with their branches
+  on 2026-10-28 at the owner's word.
 
 ## Operating it
 
