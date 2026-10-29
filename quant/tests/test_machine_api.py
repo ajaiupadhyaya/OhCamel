@@ -16,6 +16,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
+import duckdb
 import numpy as np
 import pandas as pd
 import pytest
@@ -241,17 +242,74 @@ def test_a_corrupt_jobs_database_gives_every_product_missing(store):
 
 # ------------------------------------------------------------------ the warehouse
 def test_a_locked_warehouse_leaves_the_graph_whole(store, monkeypatch):      # Review Focus 1
+    said = f"warehouse {store.settings.warehouse_path.name}: locked by the other process (writer or reader)"
+
     def locked(*a, **k):
-        raise WarehouseUnavailable("locked")
+        raise WarehouseUnavailable(said)
 
     monkeypatch.setattr(load, "open_ro", locked)
     inp = load_inputs(store.db, store.settings, NOW)
-    assert inp.freshness is None and inp.readouts == {} and inp.why["warehouse"] == "locked"
+    assert inp.freshness is None and inp.readouts == {} and inp.why["warehouse"] == said
     assert list(inp.order) == sorted(inp.world.equities)
     by = nodes(build_graph(inp))
     feeds = [n for n in by.values() if n["k"] == "feed"]
-    assert feeds and all(n["status"] == "missing" and n["why"] == "locked" for n in feeds)
+    assert feeds and all(n["status"] == "missing" and n["why"] == said for n in feeds)
     assert "d:SPY" in by and "spark" not in by["d:SPY"]["m"]
+
+
+def test_a_real_lock_keeps_the_authored_sentence_and_not_duckdbs(warehouse, tmp_path, monkeypatch):
+    """The lock sentence is the one ``warehouse/db.py`` writes when DuckDB reports a lock, not DuckDB's own."""
+    real = load.open_ro
+    monkeypatch.setattr(load, "open_ro", lambda **kw: real(timeout_s=0, **kw))      # no 2 s of retries
+
+    def busy(*a, **k):
+        raise duckdb.IOException(f'IO Error: Could not set lock on file "{warehouse}": Conflicting lock is held in /usr/bin/python3 (PID 7)')
+
+    monkeypatch.setattr(duckdb, "connect", busy)
+    _, readouts, _, why = load_warehouse(Settings(warehouse_path=warehouse, data_dir=tmp_path), load_world(), NOW)
+    assert readouts == {} and why == {"warehouse": f"warehouse {warehouse.name}: locked by the other process (writer or reader)"}
+
+
+def test_a_warehouse_failure_with_no_authored_words_is_one_fixed_sentence(tmp_path, monkeypatch, caplog):
+    raw = 'warehouse wh.duckdb: IO Error: The file "/srv/data/wh.duckdb" exists, but it is not a valid DuckDB database file!'
+
+    def broken(*a, **k):
+        raise WarehouseUnavailable(raw)
+
+    monkeypatch.setattr(load, "open_ro", broken)
+    with caplog.at_level("WARNING", logger="ohcamel_quant.machine.load"):
+        _, _, _, why = load_warehouse(Settings(warehouse_path=tmp_path / "wh.duckdb", data_dir=tmp_path), load_world(), NOW)
+    assert why == {"warehouse": load.UNREADABLE}
+    assert "/srv" not in why["warehouse"] and "/srv/data/wh.duckdb" in caplog.text    # whole, in the server's log only
+
+
+@pytest.mark.parametrize("how", ["relative", "symlinked"])
+def test_a_corrupt_warehouse_file_tells_the_public_only_that_it_could_not_be_read(store, tmp_path, monkeypatch, caplog, how):
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    (real_dir / "wh.duckdb").write_bytes(b"this is not a duckdb database file at all" * 50)
+    if how == "relative":
+        monkeypatch.chdir(real_dir)
+        path = Path("wh.duckdb")
+    else:
+        (tmp_path / "link").symlink_to(real_dir, target_is_directory=True)
+        path = tmp_path / "link" / "wh.duckdb"
+    connect(store.db).close()
+    with caplog.at_level("WARNING", logger="ohcamel_quant.machine.load"):
+        m = build_machine(store.db, Settings(warehouse_path=path, data_dir=tmp_path), NOW)
+    feeds = [n for n in m["nodes"] if n["k"] == "feed"]
+    assert feeds and all(n["status"] == "missing" and n["why"] == "the warehouse could not be read" for n in feeds)
+    public = json.dumps([m["notes"], [n["why"] for n in feeds]])
+    assert "The warehouse could not be read." in m["notes"]
+    for private in ("/", "IO Error", "wh.duckdb", "duckdb", "valid"):
+        assert private not in public
+    assert "IO Error" in caplog.text                                                  # the original is kept, in the log
+
+
+def test_an_absent_warehouse_at_a_relative_path_names_only_its_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _, _, _, why = load_warehouse(Settings(warehouse_path=Path("deep/dir/wh.duckdb"), data_dir=tmp_path), load_world(), NOW)
+    assert why == {"warehouse": "warehouse wh.duckdb does not exist yet (no ingest has run)"}
 
 
 def test_an_absent_warehouse_is_unavailable_and_names_no_path(tmp_path):
@@ -267,8 +325,6 @@ def test_an_unconfigured_warehouse_is_unavailable(tmp_path):
 
 
 def test_a_warehouse_without_its_tables_is_unavailable_not_a_crash(tmp_path):
-    import duckdb
-
     path = tmp_path / "empty.duckdb"
     duckdb.connect(str(path)).close()
     fresh, readouts, order, why = load_warehouse(Settings(warehouse_path=path, data_dir=tmp_path), load_world(), NOW)
@@ -493,6 +549,33 @@ def test_a_clock_that_went_backwards_rebuilds_rather_than_serving_a_future_build
     cache.get(NOW)
     cache.get(NOW - timedelta(hours=3))
     assert len(build.calls) == 2
+
+
+def test_a_clock_a_little_behind_the_build_is_handed_it():
+    build = Counted()
+    cache = MachineCache(build, lambda: None)
+    cache.get(NOW)
+    cache.get(NOW - timedelta(microseconds=100))
+    cache.get(NOW - timedelta(seconds=59))
+    assert len(build.calls) == 1
+    cache.get(NOW - timedelta(seconds=61))                      # past the skew: a clock that was stepped back
+    assert len(build.calls) == 2
+
+
+def test_waiters_whose_clocks_read_earlier_are_handed_the_build_they_waited_for():
+    """Each request takes its ``now`` before it waits for the lock, so lock order is not clock order."""
+    build = Counted(pause=0.05)
+    cache = MachineCache(build, lambda: None)
+    nows = [NOW + timedelta(milliseconds=ms) for ms in (3, 2, 1, 0)]      # the latest clock wins the lock, the earlier wait
+    got, threads = [], []
+    for now in nows:
+        t = threading.Thread(target=lambda now=now: got.append(cache.get(now)))
+        t.start()
+        threads.append(t)
+        time.sleep(0.005)
+    for t in threads:
+        t.join(timeout=10)
+    assert build.calls == [nows[0]] and len(got) == 4 and all(g is got[0] for g in got)
 
 
 def test_an_artifact_that_lands_during_a_build_is_not_hidden_by_it():

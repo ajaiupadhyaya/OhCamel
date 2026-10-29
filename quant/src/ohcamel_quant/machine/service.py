@@ -31,6 +31,7 @@ from .load import load_inputs
 log = logging.getLogger("ohcamel_quant.machine.service")
 
 TTL_S = 300.0   # the graph is at most this old, unless a newer artifact has finished since
+SKEW_S = 60.0   # a caller's clock may read this much earlier than the build it is handed: see MachineCache
 
 
 def sentence(text: str) -> str:
@@ -77,14 +78,20 @@ class MachineCache:
     """One built graph, kept until ``ttl_s`` seconds have passed or ``mark()`` has changed since it was built.
 
     ``mark`` is read on every ``get``, so it must be cheap (``watermark`` is one ``MAX`` over the artifacts
-    table, which retention keeps small). It is read before a build and stored with it, so an artifact that lands while the graph is
-    being built still shows at the next ``get``. A build that raises is not kept: the error goes to the caller
-    and the next ``get`` tries again. ``now`` is the caller's clock and is timezone-aware; a ``now`` earlier
-    than the build it holds counts as expired, so a clock that went backwards cannot pin an old graph.
+    table, which retention keeps small). It is read before a build and stored with it, so an artifact that
+    lands while the graph is being built still shows at the next ``get``. A build that raises is not kept: the
+    error goes to the caller and the next ``get`` tries again.
+
+    ``now`` is the caller's clock and is timezone-aware. Each request takes its own ``now`` before it waits
+    for the lock, so the build a waiter is handed can carry a later ``now`` than its own, by the milliseconds
+    the wait took: that build is fresh, and an age down to ``-skew_s`` counts as zero. A ``now`` further back
+    than that is a clock that was stepped backwards, and counts as expired, so it cannot pin an old graph.
     """
 
-    def __init__(self, build: Callable[[datetime], dict], mark: Callable[[], str | None], ttl_s: float = TTL_S) -> None:
+    def __init__(self, build: Callable[[datetime], dict], mark: Callable[[], str | None], ttl_s: float = TTL_S,
+                 skew_s: float = SKEW_S) -> None:
         self._build, self._mark, self._ttl = build, mark, timedelta(seconds=ttl_s)
+        self._skew = timedelta(seconds=skew_s)
         self._lock = threading.Lock()
         self._held: tuple[dict, datetime, str | None] | None = None   # (value, built for, mark when built)
 
@@ -93,7 +100,7 @@ class MachineCache:
         if held is None:
             return None
         value, built, marked = held
-        return value if marked == mark and timedelta(0) <= now - built < self._ttl else None
+        return value if marked == mark and -self._skew <= now - built < self._ttl else None
 
     def get(self, now: datetime) -> dict:
         value = self._fresh(now, self._mark())

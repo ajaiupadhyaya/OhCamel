@@ -142,10 +142,28 @@ def _closes(con: Any, tickers: list[str]) -> pd.DataFrame:
     return df.pivot(index="date", columns="ticker", values="adj_close").sort_index()
 
 
-def _without_path(e: Exception, settings: Settings) -> str:
-    """The error's words with the warehouse's directory taken out: the page is public."""
-    path = settings.warehouse_path
-    return str(e).replace(str(path), Path(path).name) if path is not None else str(e)
+UNREADABLE = "the warehouse could not be read"   # the one sentence for every failure that has no authored words
+
+
+def _public_why(e: WarehouseUnavailable, settings: Settings) -> str:
+    """Why the warehouse is unavailable, in words the public may read. Only the three sentences
+    ``warehouse/db.py`` writes by hand are passed on (not configured, does not exist yet, locked), the last two
+    with the file's name for its path. Anything else (a DuckDB error with the file's own path in it, a
+    message a later change adds) is the one fixed ``UNREADABLE`` and goes to the log, whole, instead."""
+    path, text = settings.warehouse_path, str(e)
+    if path is None:
+        authored = {"warehouse not configured (OHCAMEL_QUANT_WAREHOUSE_PATH unset)": text}
+    else:
+        name = Path(path).name
+        authored = {
+            f"warehouse {Path(path)} does not exist yet (no ingest has run)":
+                f"warehouse {name} does not exist yet (no ingest has run)",
+            f"warehouse {name}: locked by the other process (writer or reader)": text,
+        }
+    if text in authored:
+        return authored[text]
+    log.warning("warehouse unavailable; the page says only that it could not be read", exc_info=e)
+    return UNREADABLE
 
 
 def load_warehouse(settings: Settings, world: World, now: datetime) -> tuple[dict | None, dict[str, dict], list[str], dict[str, str]]:
@@ -157,10 +175,10 @@ def load_warehouse(settings: Settings, world: World, now: datetime) -> tuple[dic
             fresh = dataset_freshness(con, now)["datasets"]
             closes = _closes(con, world.daily())
     except WarehouseUnavailable as e:
-        return None, {}, sorted(equities), {"warehouse": _without_path(e, settings)}
+        return None, {}, sorted(equities), {"warehouse": _public_why(e, settings)}
     except duckdb.Error:   # opened, but it is not a warehouse we can read
         log.warning("warehouse unreadable", exc_info=True)
-        return None, {}, sorted(equities), {"warehouse": "the warehouse could not be read"}
+        return None, {}, sorted(equities), {"warehouse": UNREADABLE}
     return fresh, ticker_readouts(closes), cluster_order(closes, equities), {}
 
 
