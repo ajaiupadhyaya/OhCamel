@@ -72,12 +72,23 @@ export function bfs(adj: number[][], start: number, limit = REACH): Map<number, 
 /** Which side of the selected node to light: both, what it reads, what it feeds, or neither. */
 export type WebMode = "web" | "reads" | "feeds" | "none";
 
+/** A selected node's web: each node reached, by its hop depth. The selected node is in neither map. */
+export interface WebSets {
+  up: Map<number, number>;
+  down: Map<number, number>;
+}
+
 /**
  * The web of node `i`: `up` is what it reads, `down` what it feeds, each node mapped to its hop depth (1 is
  * adjacent). The selected node is in neither map: it is depth 0, and `edgeLevel(0)` is its brightness. "reads"
  * gives `up` only, "feeds" `down` only, "none" nothing; so does an `i` that is not a node.
+ *
+ * Because `i` is in neither map, an edge's place in the web is not a plain lookup of its ends. Edge a->b is in the
+ * up web when `(b === i || up.has(b)) && up.has(a)`, at depth `up.get(b) ?? 0`, and in the down web when
+ * `(a === i || down.has(a)) && down.has(b)`, at depth `down.get(a) ?? 0`. On a cycle a node can be in both maps
+ * and up wins. `edgeInWeb` is that rule.
  */
-export function webOf(gi: GraphIndex, i: number, mode: WebMode): { up: Map<number, number>; down: Map<number, number> } {
+export function webOf(gi: GraphIndex, i: number, mode: WebMode): WebSets {
   const reach = (adj: number[][]): Map<number, number> => {
     const m = bfs(adj, i);
     m.delete(i);
@@ -87,6 +98,17 @@ export function webOf(gi: GraphIndex, i: number, mode: WebMode): { up: Map<numbe
     up: mode === "web" || mode === "reads" ? reach(gi.up) : new Map(),
     down: mode === "web" || mode === "feeds" ? reach(gi.down) : new Map(),
   };
+}
+
+/**
+ * Where edge a->b sits in the web of node `i` (what `webOf(gi, i, ...)` returned), or null when it is outside it.
+ * `depth` is the hop depth of the edge's nearer end, so an edge touching `i` is at depth 0, the brightest; pass it
+ * to `edgeLevel`. An edge on a cycle that is in both directions is "up", as a node in both maps is.
+ */
+export function edgeInWeb(a: number, b: number, i: number, web: WebSets): { dir: "up" | "down"; depth: number } | null {
+  if ((b === i || web.up.has(b)) && web.up.has(a)) return { dir: "up", depth: web.up.get(b) ?? 0 };
+  if ((a === i || web.down.has(a)) && web.down.has(b)) return { dir: "down", depth: web.down.get(a) ?? 0 };
+  return null;
 }
 
 /** How bright an edge is at hop depth `depth` of a web: 1 at the selected node, falling away from it. */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FIXTURE } from "./fixture";
-import { bfs, countKinds, directReaders, edgeLevel, indexGraph, summaryLine, webOf } from "./web";
+import { bfs, countKinds, directReaders, edgeInWeb, edgeLevel, indexGraph, summaryLine, webOf } from "./web";
 import type { WebMode } from "./web";
 import type { Edge, MachineOut, MNode, NodeKind } from "./types";
 
@@ -295,5 +295,64 @@ describe("summaryLine", () => {
 
   it("groups a large count with fmt.num", () => {
     expect(summaryLine(counts({ series: 1234, job: 12 }))).toBe("1,234 series · 12 jobs");
+  });
+});
+
+describe("edgeInWeb", () => {
+  // 0 -> 1 -> 2 -> 3 -> 4, selecting 2
+  const chain = graphOf(5, [[0, 1], [1, 2], [2, 3], [3, 4]]);
+  const web = webOf(chain, 2, "web");
+
+  it("puts an edge into the selected node in the up web at depth 0, and an edge out of it in the down web at depth 0", () => {
+    expect(edgeInWeb(1, 2, 2, web)).toEqual({ dir: "up", depth: 0 });
+    expect(edgeInWeb(2, 3, 2, web)).toEqual({ dir: "down", depth: 0 });
+  });
+
+  it("gives an edge further out the depth of its nearer end", () => {
+    expect(edgeInWeb(0, 1, 2, web)).toEqual({ dir: "up", depth: 1 });
+    expect(edgeInWeb(3, 4, 2, web)).toEqual({ dir: "down", depth: 1 });
+  });
+
+  it("leaves out an edge with an end outside the web, and an edge between its two sides", () => {
+    const g = graphOf(6, [[0, 1], [1, 2], [2, 3], [0, 3], [4, 5]]);
+    const w = webOf(g, 2, "web");
+    expect(edgeInWeb(0, 3, 2, w)).toBeNull(); // 0 is upstream of 2 and 3 downstream, but this edge does not pass through 2
+    expect(edgeInWeb(4, 5, 2, w)).toBeNull();
+  });
+
+  it("lights only the side the mode lit", () => {
+    const reads = webOf(chain, 2, "reads");
+    expect(edgeInWeb(1, 2, 2, reads)).toEqual({ dir: "up", depth: 0 });
+    expect(edgeInWeb(2, 3, 2, reads)).toBeNull();
+    const feeds = webOf(chain, 2, "feeds");
+    expect(edgeInWeb(1, 2, 2, feeds)).toBeNull();
+    expect(edgeInWeb(2, 3, 2, feeds)).toEqual({ dir: "down", depth: 0 });
+    const none = webOf(chain, 2, "none");
+    expect(edgeInWeb(1, 2, 2, none)).toBeNull();
+    expect(edgeInWeb(2, 3, 2, none)).toBeNull();
+  });
+
+  it("lets up win on a cycle, where a node is in both maps", () => {
+    // 0 -> 1 -> 2 -> 0: selecting 0, nodes 1 and 2 are both upstream and downstream of it
+    const cycle = graphOf(3, [[0, 1], [1, 2], [2, 0]]);
+    const w = webOf(cycle, 0, "web");
+    expect(w.up.has(1) && w.down.has(1)).toBe(true);
+    expect(edgeInWeb(1, 2, 0, w)).toEqual({ dir: "up", depth: 1 });
+    expect(edgeInWeb(2, 0, 0, w)).toEqual({ dir: "up", depth: 0 });
+    // the edge out of the selected node has no end in `up` to start from, so it is down
+    expect(edgeInWeb(0, 1, 0, w)).toEqual({ dir: "down", depth: 0 });
+  });
+
+  it("matches the web on the fixture: every edge of NVDA's web is reached, and nothing else", () => {
+    const nvda = at("d:NVDA");
+    const w = webOf(gi, nvda, "web");
+    for (const [a, b] of FIXTURE.edges) {
+      const hit = edgeInWeb(a, b, nvda, w);
+      if (hit?.dir === "up") expect([...w.up.keys(), nvda]).toContain(b);
+      if (hit?.dir === "down") expect([...w.down.keys(), nvda]).toContain(a);
+    }
+    const ingest = at("j:ingest.bars_daily");
+    expect(edgeInWeb(ingest, nvda, nvda, w)).toEqual({ dir: "up", depth: 0 });
+    expect(edgeInWeb(ingest, at("d:SPY"), nvda, w)).toBeNull();
   });
 });
