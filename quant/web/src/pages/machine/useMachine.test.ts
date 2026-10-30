@@ -3,9 +3,13 @@ import { atMostEvery, POLL_DOWN_MS, POLL_MS, REFETCH_GAP_MS, RETRY_MS, watchJobs
 
 /** Just enough of an EventSource: what watchJobs touches, and a way to drive it. */
 class FakeSource {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSED = 2;
   static all: FakeSource[] = [];
   onopen: (() => void) | null = null;
   onerror: (() => void) | null = null;
+  readyState = FakeSource.CONNECTING;
   closed = false;
   private listeners = new Map<string, (m: { data: string }) => void>();
   constructor(readonly url: string) {
@@ -16,9 +20,25 @@ class FakeSource {
   }
   close() {
     this.closed = true;
+    this.readyState = FakeSource.CLOSED;
   }
   job(data: string) {
     this.listeners.get("job")?.({ data });
+  }
+  /** The connection came up. */
+  open() {
+    this.readyState = FakeSource.OPEN;
+    this.onopen?.();
+  }
+  /** The server ended the stream (its lifetime or idle limit): the browser reports an error and will reconnect. */
+  ended() {
+    this.readyState = FakeSource.CONNECTING;
+    this.onerror?.();
+  }
+  /** The connection was refused, or its response was not an event stream: the browser gives up. */
+  refused() {
+    this.readyState = FakeSource.CLOSED;
+    this.onerror?.();
   }
 }
 const latest = () => FakeSource.all[FakeSource.all.length - 1];
@@ -57,33 +77,86 @@ describe("watchJobs", () => {
   it("says the stream is up when it opens", () => {
     const h = on();
     watchJobs(h);
-    latest().onopen?.();
+    latest().open();
     expect(h.up).toHaveBeenCalledTimes(1);
     expect(h.down).not.toHaveBeenCalled();
   });
 
-  it("on an error closes the stream, says it is down, and opens a new one only after five minutes", () => {
+  // The server ends every stream at its lifetime (300 s) or idle limit (120 s). The browser reports that as an
+  // error with readyState CONNECTING and reconnects by itself with Last-Event-ID (controller ruling 18).
+  it("leaves a stream that opened alone when the server ends it: no close, no polling, no retry timer", () => {
+    const h = on();
+    watchJobs(h);
+    const s = latest();
+    s.open();
+    s.ended();
+    expect(s.closed).toBe(false);
+    expect(h.down).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(RETRY_MS * 2);
+    expect(FakeSource.all).toHaveLength(1);
+  });
+
+  it("takes the browser's own reconnections as the same stream: events flow and it is up again each time", () => {
+    const h = on();
+    watchJobs(h);
+    const s = latest();
+    for (let i = 0; i < 3; i++) {
+      s.open();
+      s.ended();
+    }
+    s.open();
+    s.job(JOB);
+    expect(h.up).toHaveBeenCalledTimes(4);
+    expect(h.job).toHaveBeenCalledTimes(1);
+    expect(h.down).not.toHaveBeenCalled();
+    expect(FakeSource.all).toHaveLength(1);
+  });
+
+  it("gives up when the browser's reconnection fails: a second error with no open between", () => {
+    const h = on();
+    watchJobs(h);
+    const s = latest();
+    s.open();
+    s.ended();
+    s.ended();
+    expect(s.closed).toBe(true);
+    expect(h.down).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes a stream that opened and then failed hard (readyState CLOSED), says it is down, and retries after five minutes", () => {
     const h = on();
     watchJobs(h);
     const first = latest();
-    first.onerror?.();
+    first.open();
+    first.refused();
     expect(first.closed).toBe(true);
     expect(h.down).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(RETRY_MS - 1);
     expect(FakeSource.all).toHaveLength(1);
     vi.advanceTimersByTime(1);
     expect(FakeSource.all).toHaveLength(2);
-    latest().onopen?.();
-    expect(h.up).toHaveBeenCalledTimes(1);
+    latest().open();
+    expect(h.up).toHaveBeenCalledTimes(2);
     latest().job(JOB);
     expect(h.job).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats an error before the stream ever opened as a hard failure, even with readyState CONNECTING", () => {
+    const h = on();
+    watchJobs(h);
+    const first = latest();
+    first.ended();
+    expect(first.closed).toBe(true);
+    expect(h.down).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(RETRY_MS);
+    expect(FakeSource.all).toHaveLength(2);
   });
 
   it("keeps trying, five minutes apart, while the stream keeps failing", () => {
     const h = on();
     watchJobs(h);
     for (let i = 1; i <= 3; i++) {
-      latest().onerror?.();
+      latest().refused();
       vi.advanceTimersByTime(RETRY_MS);
       expect(FakeSource.all).toHaveLength(i + 1);
     }
@@ -91,15 +164,28 @@ describe("watchJobs", () => {
     expect(h.down).toHaveBeenCalledTimes(3);
   });
 
-  it("closes the stream when it is stopped", () => {
+  it("gives a retried stream that opens the same patience: the server's end is again left alone", () => {
+    const h = on();
+    watchJobs(h);
+    latest().refused();
+    vi.advanceTimersByTime(RETRY_MS);
+    latest().open();
+    latest().ended();
+    expect(latest().closed).toBe(false);
+    expect(h.down).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes the stream when it is stopped, also after the server ended it", () => {
     const stop = watchJobs(on());
+    latest().open();
+    latest().ended();
     stop();
     expect(latest().closed).toBe(true);
   });
 
   it("stopped while waiting to retry, never opens another", () => {
     const stop = watchJobs(on());
-    latest().onerror?.();
+    latest().refused();
     stop();
     vi.advanceTimersByTime(RETRY_MS * 2);
     expect(FakeSource.all).toHaveLength(1);

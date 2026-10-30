@@ -6,8 +6,11 @@
  * and all twelve kinds appear.
  *
  * Read it as of 2026-10-28 18:51 in New York. The 18:45 daily signals run is under way, the 18:50 overlay
- * run is queued behind it, and the rest of the day's runs are done. AAPL's readout rests on two closes (a
- * short history: no `vol`, and `ret1y` is not a year's return); NVDA's rests on 253 (a year).
+ * run is queued behind it, and the rest of the day's runs are done, bar one that failed. AAPL's readout rests
+ * on two closes (a short history: no `vol`, and `ret1y` is not a year's return); NVDA's rests on 253 (a year).
+ *
+ * Each export is its own copy, frozen all the way down, so a test cannot change what the next one reads: it
+ * throws instead. A test that needs a variation clones first (`structuredClone(FIXTURE)`) and changes the clone.
  *
  * `FIXTURE_NO_SUMMARY` is the book when desk.report's summary cannot be shown: no limits, no kill switch,
  * `book.m.summary_why` says why. `FIXTURE_BROKEN` is the farm product whose lens could not be read.
@@ -213,8 +216,12 @@ const run = (id: string, kind: string, state: Run["state"], start: string | null
 const RUNS: Run[] = [
   run("01M6021RA4P60KNJAPA96SPAVR", "vol.forecast_league", "done", "2026-10-28T01:30:02.115Z", "2026-10-28T01:48:11.904Z", 1043.9, 1, null),
   run("01M6076HR4Y1Y3G4CZQVWJEXHY", "farm.sweep", "done", "2026-10-28T03:00:01.804Z", "2026-10-28T04:31:27.440Z", 5231.8, 1, null),
+  // a re-run of the league by hand that died part-way: msg is the last ticker it reported, as load_runs gives it
+  // (job_progress.message); the error itself is on no run
+  run("01M61TT5A4PF1MN8TVBQADPFW8", "vol.forecast_league", "failed", "2026-10-28T18:02:03.552Z", "2026-10-28T18:05:21.307Z", 197.4, 0.38, "ADBE"),
   run("01M62395641CESN081A6974NQ3", "desk.report", "done", "2026-10-28T20:30:01.118Z", "2026-10-28T20:30:44.907Z", 6.2, 1, null),
-  run("01M62A4WE49XXBSPV775XG3DNE", "ingest.bars_daily", "done", "2026-10-28T22:30:01.402Z", "2026-10-28T22:33:40.214Z", 128.4, 1, null),
+  // an ingest's last progress message, as base.py reports it
+  run("01M62A4WE49XXBSPV775XG3DNE", "ingest.bars_daily", "done", "2026-10-28T22:30:01.402Z", "2026-10-28T22:33:40.214Z", 128.4, 1, "bars_daily done: ok"),
   run("01M62AQ6C4CPX3DEJZDNW4GCA5", "signals.overlay", "done", "2026-10-28T22:40:01.350Z", "2026-10-28T22:40:19.866Z", 17.3, 1, null),
   run("01M62B0BB49PABRJV2BRWE853B", "signals.daily", "running", "2026-10-28T22:45:01.221Z", null, null, 0.7, "farm_tsmom_credit"),
   run("01M62B9GA4XD47RXN7Z58E12E6", "signals.overlay", "queued", null, null, null, null, null),
@@ -231,6 +238,15 @@ function firesOf(nodes: MNode[]): [string, number][] {
     .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1]));
 }
 
+/** `v` and everything inside it frozen, so a test that tries to change a fixture throws instead of changing the next test's. */
+function deepFreeze<T>(v: T): T {
+  if (typeof v === "object" && v !== null && !Object.isFrozen(v)) {
+    Object.freeze(v);
+    Object.values(v).forEach(deepFreeze);
+  }
+  return v;
+}
+
 function build(opts: { summary: boolean; lens: boolean }): MachineOut {
   const nodes = [...WORLD, ...CLOCK, ...FEEDS, ...products(opts.lens), ...RESULTS, ...desk(opts.summary)];
   const at = new Map(nodes.map((n, i) => [n.id, i]));
@@ -239,7 +255,8 @@ function build(opts: { summary: boolean; lens: boolean }): MachineOut {
     const to = at.get(b);
     return from === undefined || to === undefined ? [] : [[from, to, kind]];
   });
-  return {
+  // cloned, so no variant shares an object with another or with the parts above; then frozen
+  return deepFreeze(structuredClone({
     asof: "2026-10-28T22:51:12.388Z",
     nodes,
     edges,
@@ -247,7 +264,7 @@ function build(opts: { summary: boolean; lens: boolean }): MachineOut {
     x: { fires: firesOf(nodes) },
     provenance: [{ source: "ohcamel-machine", fetched_at: "2026-10-28T22:51:12.388114+00:00", synthetic: false, detail: { store: "jobs.sqlite+warehouse" } }],
     notes: opts.summary ? [] : [`${SUMMARY_WHY}.`],
-  };
+  }));
 }
 
 export const FIXTURE: MachineOut = build({ summary: true, lens: true });

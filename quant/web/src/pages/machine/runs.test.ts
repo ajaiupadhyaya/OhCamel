@@ -44,7 +44,48 @@ describe("applyJobEvent", () => {
     const out = applyJobEvent([run("A")], event("A", { state: "queued", progress: null, message: "retrying after: boom" }));
     expect(out.runs[0]).toMatchObject({ state: "queued", progress: null });
   });
+});
 
+// Controller ruling 16: only a running event carries progress text. The others carry error text or free text
+// (queue.py: failed `error[:500]`, the retry's "retrying after: {error}", the worker-died error), which
+// load_runs never puts on the wire, so a run's msg is null for every failed, cancelled and queued event.
+describe("applyJobEvent: error text never reaches msg", () => {
+  const ERROR = "FileNotFoundError: /srv/ohcamel/warehouse/bars.duckdb";
+
+  it.each(["failed", "cancelled"] as const)("a %s event carrying text leaves msg null", (state) => {
+    const out = applyJobEvent([run("A")], event("A", { state, progress: null, message: ERROR }));
+    expect(out.runs[0]).toMatchObject({ state, progress: null, msg: null });
+    expect(JSON.stringify(out.runs)).not.toContain("duckdb");
+  });
+
+  it.each([
+    ["the retry", "retrying after: " + ERROR],
+    ["the worker's death", "re-queued: the worker stopped heartbeating (killed, or out of memory?)"],
+    ["a shutdown requeue", "interrupted by worker shutdown; re-queued"],
+  ])("a queued event for %s leaves msg null", (_what, message) => {
+    const out = applyJobEvent([run("A")], event("A", { state: "queued", progress: null, message }));
+    expect(out.runs[0]).toMatchObject({ state: "queued", progress: null, msg: null });
+    expect(JSON.stringify(out.runs)).not.toContain(message);
+  });
+
+  it("keeps the message of a running event: that is progress text", () => {
+    const out = applyJobEvent([run("A", { msg: null })], event("A", { state: "running", progress: 0.3, message: "farm_tsmom_credit" }));
+    expect(out.runs[0]).toMatchObject({ state: "running", progress: 0.3, msg: "farm_tsmom_credit" });
+  });
+
+  it("compares with what would be stored: a queued event with text on a run that already reads queued changes nothing", () => {
+    const queued = [run("Q", { state: "queued", start: null, progress: null, msg: null })];
+    const out = applyJobEvent(queued, event("Q", { state: "queued", progress: null, message: "retrying after: boom" }));
+    expect(out.runs).toBe(queued);
+  });
+
+  it("a run's old progress text goes when it is queued again", () => {
+    const out = applyJobEvent([run("A", { msg: "farm_tsmom_rates" })], event("A", { state: "queued", progress: null, message: "retrying after: boom" }));
+    expect(out.runs[0].msg).toBeNull();
+  });
+});
+
+describe("applyJobEvent: the rest", () => {
   it("answers an unseen id with unknown: true and the very same runs", () => {
     const runs = [run("A")];
     const out = applyJobEvent(runs, event("Z"));

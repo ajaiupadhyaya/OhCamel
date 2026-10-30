@@ -3,14 +3,22 @@
  *
  * `GET /api/machine` carries the runs as they were when it answered; `GET /api/jobs/events` then says how
  * each job moves. An event is the job's newest reading (state, progress and message together), so it replaces
- * those three fields of the run it names. It carries no times or cpu: a run that has just started or finished
- * keeps its `start`, `end` and `cpu` until the next read of the machine, which an unseen id asks for.
+ * those three fields of the run it names, except that its message is kept only when it is progress text (below).
+ * It carries no times or cpu: a run that has just started or finished keeps its `start`, `end` and `cpu`
+ * until the next read of the machine, which an unseen id asks for.
  */
 import type { JobEvent, Run, RunState } from "./types";
 
 const STATES: readonly RunState[] = ["queued", "running", "done", "failed", "cancelled"];
 /** The jobs database never moves a job out of these (a retry goes running to queued, never done to anything). */
 const FINAL: readonly RunState[] = ["done", "failed", "cancelled"];
+/**
+ * Controller ruling 16. Progress text arrives only with a `running` event. A `failed` event carries the job's
+ * error, a retry's `queued` event "retrying after: <error>", and the other `queued` events free text (queue.py),
+ * and `/api/machine` never carries any of that (load_runs: "a run carries neither its error nor its params").
+ * So a run read from these events has no msg.
+ */
+const NO_TEXT: readonly RunState[] = ["queued", "failed", "cancelled"];
 
 /**
  * `runs` with the event applied. An id the runs do not hold comes back `unknown: true` with the runs
@@ -23,9 +31,10 @@ export function applyJobEvent(runs: Run[], e: JobEvent): { runs: Run[]; unknown:
   if (i < 0) return { runs, unknown: true };
   const cur = runs[i];
   if (FINAL.includes(cur.state)) return { runs, unknown: false };
-  if (cur.state === e.state && cur.progress === e.progress && cur.msg === e.message) return { runs, unknown: false };
+  const msg = NO_TEXT.includes(e.state) ? null : e.message;
+  if (cur.state === e.state && cur.progress === e.progress && cur.msg === msg) return { runs, unknown: false };
   const next = runs.slice();
-  next[i] = { ...cur, state: e.state, progress: e.progress, msg: e.message };
+  next[i] = { ...cur, state: e.state, progress: e.progress, msg };
   return { runs: next, unknown: false };
 }
 

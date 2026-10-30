@@ -275,3 +275,79 @@ describe("FIXTURE_BROKEN", () => {
     expect(FIXTURE_BROKEN.runs).toEqual(FIXTURE.runs);
   });
 });
+
+// Every test in the Machine shares these, so none may change them (controller ruling 19). A test that needs
+// to change one clones it first: structuredClone(FIXTURE).
+const isDeepFrozen = (v: unknown): boolean =>
+  typeof v !== "object" || v === null || (Object.isFrozen(v) && Object.values(v).every(isDeepFrozen));
+
+describe.each(VARIANTS)("%s cannot be changed by a test", (_name, out) => {
+  it("is frozen all the way down, so a mutation throws", () => {
+    expect(isDeepFrozen(out)).toBe(true);
+    expect(() => { out.nodes[0].m.last = 1; }).toThrow(TypeError);
+    expect(() => { out.nodes[0].at.i = 9; }).toThrow(TypeError);
+    expect(() => { out.runs[0].state = "failed"; }).toThrow(TypeError);
+    expect(() => out.runs.push(out.runs[0])).toThrow(TypeError);
+    expect(() => out.edges.pop()).toThrow(TypeError);
+    expect(() => out.x.fires.sort()).toThrow(TypeError);
+  });
+
+  it("can be cloned into something a test may change", () => {
+    const copy = structuredClone(out);
+    copy.runs[0].state = "failed";
+    copy.nodes[0].m.last = 1;
+    expect(copy).not.toEqual(out);
+    expect(out.runs[0].state).toBe("done");
+  });
+});
+
+describe("the variants share no objects", () => {
+  it("has its own node, run and edge objects in each", () => {
+    for (const [a, b] of [[FIXTURE, FIXTURE_NO_SUMMARY], [FIXTURE, FIXTURE_BROKEN], [FIXTURE_NO_SUMMARY, FIXTURE_BROKEN]]) {
+      expect(a.nodes).not.toBe(b.nodes);
+      expect(a.runs).not.toBe(b.runs);
+      expect(a.edges).not.toBe(b.edges);
+      for (const n of a.nodes) {
+        const twin = b.nodes.find((x) => x.id === n.id);
+        if (twin) {
+          expect(twin, n.id).not.toBe(n);
+          expect(twin.m, n.id).not.toBe(n.m);
+        }
+      }
+      a.runs.forEach((r, i) => expect(b.runs[i]).not.toBe(r));
+    }
+  });
+});
+
+describe("FIXTURE's runs", () => {
+  const runs = FIXTURE.runs;
+
+  it("are oldest first, as load_runs sends them, the queued run (no start) last", () => {
+    const started = runs.filter((r) => r.start !== null).map((r) => r.start as string);
+    expect([...started].sort()).toEqual(started);
+    expect(runs[runs.length - 1].state).toBe("queued");
+  });
+
+  it("include a failed run: it ended, it cost cpu, and its msg is the last progress text, never error text", () => {
+    const failed = runs.filter((r) => r.state === "failed");
+    expect(failed.length).toBeGreaterThan(0);
+    for (const r of failed) {
+      expect(r.end).not.toBeNull();
+      expect(r.cpu).not.toBeNull();
+      expect(r.progress).toBeGreaterThan(0);
+      expect(r.progress).toBeLessThan(1);
+      expect(typeof r.msg).toBe("string");
+      expect(r.msg).not.toMatch(/error|exception|traceback|retrying|\/|\\|failed/i);
+    }
+  });
+
+  it("include a done run with the handler's last progress message", () => {
+    const done = runs.filter((r) => r.state === "done" && r.msg !== null);
+    expect(done.length).toBeGreaterThan(0);
+    expect(done.every((r) => r.progress === 1)).toBe(true);
+  });
+
+  it("carry error text in none of them", () => {
+    expect(JSON.stringify(runs)).not.toMatch(/retrying after|Traceback|Error:/);
+  });
+});
