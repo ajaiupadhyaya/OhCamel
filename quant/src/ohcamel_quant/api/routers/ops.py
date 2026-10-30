@@ -33,8 +33,9 @@ interval; a group's ``cpu`` is in cores; memory is in bytes. History holds up
 to 720 samples (an hour at 5 s).
 
 ``GET /api/ops`` -- the Quant app's operations summary: the image build
-(``build.git_sha`` from ``OHCAMEL_GIT_SHA``, read by the site footer) and the job
-queue (Lane B, B6).
+(``build.git_sha`` from ``OHCAMEL_GIT_SHA``, read by the site footer), the job
+queue (Lane B, B6) and the US session clock (read by the masthead's dateline and
+the machine's top bar).
 """
 
 from __future__ import annotations
@@ -53,6 +54,7 @@ from fastapi.responses import JSONResponse
 from ... import __version__, kernels
 from ...config import REPO_ROOT, get_settings
 from ...data.base import Provenance
+from ...deck.clock import session_clock
 from ...kernels import bench as kernel_bench
 from .jobs import JobsDb
 
@@ -229,16 +231,17 @@ def build_info() -> dict[str, str | None]:
 
 @router.get("")
 def ops_index(db: JobsDb) -> dict[str, Any]:
-    """The Quant app's operations summary: the image build (the site footer's BUILD) and the job queue's
-    counts (compute plan B6)."""
+    """The Quant app's operations summary: the image build (the site footer's BUILD), the job queue's counts
+    (compute plan B6) and the session clock (Alpaca's, cached 30 s, else the wall-clock rule, which says so)."""
     from ...jobs.db import connect, utcnow
     from ...jobs.summary import jobs_summary
 
     provenance = [Provenance.now("ohcamel-jobs", store="jobs.sqlite").to_dict()]
     build = build_info()
+    clock = session_clock(get_settings()).to_dict()
     if not Path(db).exists():
-        return {"build": build, "jobs": None, "provenance": provenance,
+        return {"build": build, "clock": clock, "jobs": None, "provenance": provenance,
                 "notes": ["No job has been queued on this server yet (jobs.sqlite does not exist)."]}
     with closing(connect(db)) as conn:
-        return {"build": build, "jobs": jobs_summary(conn, utcnow()), "provenance": provenance,
+        return {"build": build, "clock": clock, "jobs": jobs_summary(conn, utcnow()), "provenance": provenance,
                 "notes": ["done_24h, failed_24h and cpu_seconds_24h count jobs that finished in the last 24 hours."]}

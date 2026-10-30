@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from fastapi import FastAPI
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.testclient import TestClient
 from lane_m_harness import publish_artifact
 
@@ -42,7 +43,7 @@ from ohcamel_quant.machine.load import (
     load_warehouse,
     missed_fire,
 )
-from ohcamel_quant.machine.service import MachineCache, build_machine, sentence, watermark
+from ohcamel_quant.machine.service import MachineCache, build_machine, degraded, sentence, watermark
 from ohcamel_quant.machine.world import load_world
 from ohcamel_quant.signals.report import BOOK_COLUMNS
 from ohcamel_quant.warehouse.db import WarehouseUnavailable
@@ -586,6 +587,15 @@ class Counted:
         return {"built": len(self.calls)}
 
 
+def run_now(refresh):
+    """A cache's ``spawn`` for a test that wants to see a refresh's result: it runs there and then."""
+    refresh()
+
+
+def now_cache(build, mark=lambda: None, **kw):
+    return MachineCache(build, mark, spawn=run_now, **kw)
+
+
 def test_the_watermark_is_the_newest_artifact_and_creates_nothing(store):
     assert watermark(store.db) is None and not store.db.exists()       # no jobs database: nothing, and none made
     connect(store.db).close()
@@ -601,9 +611,17 @@ def test_the_watermark_of_a_corrupt_store_is_none_not_a_crash(store):
     assert watermark(store.db) is None
 
 
+def test_a_public_job_does_not_move_the_watermark(store):
+    publish(store, "cov.league", {"league": LEAGUE}, finished=NOW - 2 * HOUR)
+    publish(store, "api.heavy", {"t": pd.DataFrame({"x": [1]})}, finished=NOW - HOUR)     # any visitor's job
+    assert watermark(store.db) == iso(NOW - 2 * HOUR)
+    publish(store, "ops.selftest", {"t": pd.DataFrame({"x": [1]})}, finished=NOW - HOUR)  # a job the graph draws no product for
+    assert watermark(store.db) == iso(NOW - 2 * HOUR)
+
+
 def test_it_builds_once_per_ttl_and_on_a_new_artifact(store):
     build = Counted()
-    cache = MachineCache(build, lambda: watermark(store.db))
+    cache = now_cache(build, lambda: watermark(store.db))
     first = cache.get(NOW)
     assert cache.get(NOW + timedelta(seconds=1)) is first and len(build.calls) == 1   # two gets, one build
     publish(store, "cov.league", {"league": LEAGUE}, finished=NOW)                    # the watermark moves
@@ -616,7 +634,7 @@ def test_it_builds_once_per_ttl_and_on_a_new_artifact(store):
 
 def test_the_ttl_is_five_minutes_to_the_second():
     build = Counted()
-    cache = MachineCache(build, lambda: None)
+    cache = now_cache(build)
     cache.get(NOW)
     cache.get(NOW + timedelta(seconds=299.9))
     assert len(build.calls) == 1
@@ -628,7 +646,7 @@ def test_the_ttl_is_five_minutes_to_the_second():
 
 def test_a_clock_that_went_backwards_rebuilds_rather_than_serving_a_future_build():
     build = Counted()
-    cache = MachineCache(build, lambda: None)
+    cache = now_cache(build)
     cache.get(NOW)
     cache.get(NOW - timedelta(hours=3))
     assert len(build.calls) == 2
@@ -636,7 +654,7 @@ def test_a_clock_that_went_backwards_rebuilds_rather_than_serving_a_future_build
 
 def test_a_clock_a_little_behind_the_build_is_handed_it():
     build = Counted()
-    cache = MachineCache(build, lambda: None)
+    cache = now_cache(build)
     cache.get(NOW)
     cache.get(NOW - timedelta(microseconds=100))
     cache.get(NOW - timedelta(seconds=59))
@@ -671,7 +689,7 @@ def test_an_artifact_that_lands_during_a_build_is_not_hidden_by_it():
         store["mark"] = "b"                                      # the artifact lands mid-build, after the graph read "a"
         return {}
 
-    cache = MachineCache(build, lambda: store["mark"])
+    cache = now_cache(build, lambda: store["mark"])
     cache.get(NOW)
     cache.get(NOW)
     assert len(calls) == 2
@@ -696,13 +714,180 @@ def test_two_first_requests_build_once():
     assert len(build.calls) == 1 and len(got) == 4 and all(g is got[0] for g in got)
 
 
-def test_a_failed_build_is_not_cached():
+def test_a_failed_first_build_goes_to_the_caller_and_is_not_kept():
     build = Counted(fail_first=True)
     cache = MachineCache(build, lambda: None)
     with pytest.raises(RuntimeError):
         cache.get(NOW)
     assert cache.get(NOW) == {"built": 2}                        # the next request tries again, and succeeds
     assert cache.get(NOW) == {"built": 2} and len(build.calls) == 2
+
+
+class Gated:
+    """A build that waits at a gate from its ``hold``-th call on, and says when it has got there."""
+
+    def __init__(self, hold=2):
+        self.calls, self.hold, self.gate, self.there = [], hold, threading.Event(), threading.Event()
+
+    def __call__(self, now):
+        self.calls.append(now)
+        if len(self.calls) >= self.hold:
+            self.there.set()
+            assert self.gate.wait(10)
+        return {"built": len(self.calls)}
+
+
+def threaded(threads):
+    """A cache's ``spawn`` that runs on a thread and keeps it, so that a test can wait for it."""
+    def spawn(refresh):
+        threads.append(threading.Thread(target=refresh))
+        threads[-1].start()
+    return spawn
+
+
+def test_a_refresh_runs_behind_the_old_build_and_only_one_runs():
+    build, threads = Gated(), []
+    cache = MachineCache(build, lambda: None, spawn=threaded(threads))
+    first = cache.get(NOW)
+    later = NOW + timedelta(minutes=6)
+    assert cache.get(later) is first                             # expired: answered at once, and a refresh started
+    assert build.there.wait(10)
+    assert cache.get(later + timedelta(seconds=1)) is first      # it is still running: served the same, and no second one
+    assert len(build.calls) == 2 and len(threads) == 1
+    build.gate.set()
+    threads[0].join(10)
+    assert cache.get(later + timedelta(seconds=2)) == {"built": 2} and len(build.calls) == 2
+
+
+def test_the_first_request_waits_for_the_build_a_warm_started():
+    build, threads, got = Gated(hold=1), [], []
+    cache = MachineCache(build, lambda: None, spawn=threaded(threads))
+    cache.refresh(NOW)                                           # returns while the build sits at its gate
+    assert build.there.wait(10)
+    visitor = threading.Thread(target=lambda: got.append(cache.get(NOW)))
+    visitor.start()
+    time.sleep(0.05)
+    assert got == []                                             # there is nothing to serve, so it waits
+    build.gate.set()
+    visitor.join(10)
+    threads[0].join(10)
+    assert got == [{"built": 1}] and len(build.calls) == 1
+
+
+def test_a_failed_refresh_keeps_the_old_build_logs_and_backs_off_for_a_minute(caplog):
+    outcomes = iter([{"built": 1}, RuntimeError("the second fails"), {"built": 3}])
+    calls = []
+
+    def build(now):
+        calls.append(now)
+        got = next(outcomes)
+        if isinstance(got, Exception):
+            raise got
+        return got
+
+    cache = now_cache(build)
+    first = cache.get(NOW)
+    failed = NOW + timedelta(seconds=301)
+    with caplog.at_level("ERROR", logger="ohcamel_quant.machine.service"):
+        assert cache.get(failed) is first and len(calls) == 2
+    assert "the last good build stays" in caplog.text and "the second fails" in caplog.text
+    assert cache.get(failed + timedelta(seconds=59)) is first and len(calls) == 2    # no retry for a minute
+    assert cache.get(failed + timedelta(seconds=60)) == {"built": 3} and len(calls) == 3
+
+
+def test_a_refresh_that_cannot_start_a_thread_does_not_wedge_the_cache():
+    build = Counted()
+    tries = [RuntimeError("can't start new thread"), None]
+
+    def spawn(refresh):
+        if (e := tries.pop(0)) is not None:
+            raise e
+        refresh()
+
+    cache = MachineCache(build, lambda: None, spawn=spawn)
+    first = cache.get(NOW)
+    assert cache.get(NOW + timedelta(minutes=6)) is first and len(build.calls) == 1
+    assert cache.get(NOW + timedelta(minutes=6)) == {"built": 2}
+
+
+def test_a_degraded_build_lasts_a_minute_and_a_whole_one_five():
+    feeds = [{"k": "feed", "status": "missing"}, {"k": "feed", "status": "missing"}]
+    outcomes = iter([{"nodes": feeds}, {"nodes": [{"k": "feed"}]}, {"nodes": [{"k": "feed"}, {"k": "n"}]}])
+    calls = []
+
+    def build(now):
+        calls.append(now)
+        return next(outcomes)
+
+    cache = now_cache(build, degraded=degraded)
+    cache.get(NOW)
+    cache.get(NOW + timedelta(seconds=59))
+    assert len(calls) == 1
+    cache.get(NOW + timedelta(seconds=60))                       # the warehouse has come back
+    assert len(calls) == 2
+    cache.get(NOW + timedelta(seconds=60 + 299))
+    assert len(calls) == 2
+    cache.get(NOW + timedelta(seconds=60 + 300))
+    assert len(calls) == 3
+
+
+def test_a_locked_warehouse_makes_a_degraded_build_and_a_whole_one_does_not(store, monkeypatch):
+    connect(store.db).close()
+    assert not degraded(build_machine(store.db, store.settings, NOW))
+
+    def locked(*a, **k):
+        raise WarehouseUnavailable(f"warehouse {store.settings.warehouse_path.name}: locked by the other process (writer or reader)")
+
+    monkeypatch.setattr(load, "open_ro", locked)
+    assert degraded(build_machine(store.db, store.settings, NOW))
+
+
+def test_the_process_cache_knows_what_a_degraded_build_is(monkeypatch, tmp_path):
+    monkeypatch.setattr(machine_router, "jobs_db_path", lambda: tmp_path / "jobs.sqlite")
+    assert machine_router.new_machine_cache()._degraded is degraded
+
+
+# ------------------------------------------------------------------ warming at startup
+class Warmable:
+    def __init__(self, raises=False):
+        self.at, self.raises = [], raises
+
+    def refresh(self, now):
+        self.at.append(now)
+        if self.raises:
+            raise RuntimeError("no warm for you")
+
+
+def test_warming_starts_the_process_caches_build(monkeypatch):
+    cache = Warmable()
+    monkeypatch.setattr(machine_router, "get_settings", lambda: Settings(offline=False))
+    monkeypatch.setattr(machine_router, "get_machine_cache", lambda: cache)
+    monkeypatch.setattr(machine_router, "utcnow", lambda: NOW)
+    machine_router.warm_machine()
+    assert cache.at == [NOW]
+
+
+def test_warming_never_fails_the_app(monkeypatch, caplog):
+    monkeypatch.setattr(machine_router, "get_settings", lambda: Settings(offline=False))
+    monkeypatch.setattr(machine_router, "get_machine_cache", lambda: Warmable(raises=True))
+    with caplog.at_level("ERROR", logger="ohcamel_quant.api.machine"):
+        machine_router.warm_machine()
+    assert "could not be warmed" in caplog.text
+
+
+def test_tests_and_laptops_do_not_warm(monkeypatch):
+    cache = Warmable()
+    monkeypatch.setattr(machine_router, "get_machine_cache", lambda: cache)
+    machine_router.warm_machine()                                # this suite runs offline
+    assert cache.at == []
+
+
+def test_the_app_warms_the_machine_as_it_starts(monkeypatch):
+    warmed = []
+    monkeypatch.setattr(machine_router, "warm_machine", lambda: warmed.append(True))
+    assert warmed == []                                          # building the app reads nothing
+    with TestClient(create_app()):
+        assert warmed == [True]
 
 
 # ------------------------------------------------------------------ build_machine
@@ -759,7 +944,7 @@ def cache_for(s: Store, builds: list) -> MachineCache:
         builds.append(now)
         return build_machine(s.db, s.settings, now)
 
-    return MachineCache(build, lambda: watermark(s.db))
+    return MachineCache(build, lambda: watermark(s.db), spawn=run_now)
 
 
 def serve(s: Store, monkeypatch) -> Served:
@@ -852,6 +1037,14 @@ def publish_every_lens(s: Store) -> None:
         "limits": json.dumps([{"name": f"lim-{i}", "kind": "weight", "scope": "portfolio"} for i in range(7)]
                              + [{"name": "dd-cap", "kind": "drawdown", "scope": "portfolio"}])}],
         columns=BOOK_COLUMNS)})
+
+
+def test_the_app_gzips_at_level_six(served, store):
+    gzip_layer = next(m for m in create_app().user_middleware if m.cls is GZipMiddleware)
+    assert gzip_layer.kwargs["compresslevel"] == 6
+    publish_every_lens(store)
+    r = served.client.get("/api/machine", headers={"Accept-Encoding": "gzip"})
+    assert r.headers["content-encoding"] == "gzip"
 
 
 def test_it_fits_the_budget(served, store, monkeypatch):
@@ -1009,3 +1202,15 @@ def test_a_build_that_fails_is_a_plain_503_that_says_nothing(store, tmp_path):
     r = TestClient(app).get("/api/machine")
     assert r.status_code == 503 and r.json()["error"] == "machine_unavailable"
     assert "secret" not in r.text and str(tmp_path) not in r.text
+
+
+def test_a_refresh_that_fails_still_answers_with_the_last_good_graph(served, store, monkeypatch):
+    first = served.client.get("/api/machine").json()
+
+    def broken(*a, **k):
+        raise ValueError("cannot read")
+
+    monkeypatch.setattr("ohcamel_quant.machine.service.load_inputs", broken)
+    served.clock[0] = NOW + timedelta(minutes=6)
+    r = served.client.get("/api/machine")
+    assert r.status_code == 200 and r.json()["asof"] == first["asof"]

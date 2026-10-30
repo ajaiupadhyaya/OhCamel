@@ -116,6 +116,7 @@ def test_api_ops_has_the_jobs_block(tmp_path):
     client = TestClient(app)
     r = client.get("/api/ops")
     assert r.status_code == 200 and r.json()["jobs"] is None and r.json()["notes"]
+    assert r.json()["clock"]["source"] == "rule"  # the session clock, with or without a queue
     assert not db.exists()  # reading /api/ops never creates the queue
     c = connect(db)
     enqueue(c, kind="ops.selftest", params={}, priority=2, mem_class="S", heavy=False,
@@ -124,6 +125,24 @@ def test_api_ops_has_the_jobs_block(tmp_path):
     j = client.get("/api/ops").json()
     assert j["jobs"] == {"queued": 1, "running": 0, "done_24h": 0, "failed_24h": 0, "cpu_seconds_24h": 0.0}
     assert j["provenance"][0]["source"] == "ohcamel-jobs"
+    assert isinstance(j["clock"]["is_open"], bool) and j["clock"]["session"] and j["clock"]["next_open"]
+
+
+def test_ops_states_the_session_as_the_shared_clock_does(tmp_path, monkeypatch):
+    """/api/ops is the masthead's and the machine's top bar's session: the same clock the Flight Deck reads."""
+    from fastapi.testclient import TestClient
+
+    from ohcamel_quant.api.app import create_app
+    from ohcamel_quant.api.routers import ops
+    from ohcamel_quant.api.routers.jobs import get_jobs_db_path
+    from ohcamel_quant.deck.clock import Clock
+
+    clock = Clock(True, "2026-10-30T15:00:00+00:00", "2026-11-02T14:30:00+00:00", "2026-10-30T20:00:00+00:00",
+                  "2026-10-30", "alpaca")
+    monkeypatch.setattr(ops, "session_clock", lambda settings: clock)
+    app = create_app()
+    app.dependency_overrides[get_jobs_db_path] = lambda: tmp_path / "jobs.sqlite"
+    assert TestClient(app).get("/api/ops").json()["clock"] == clock.to_dict()
 
 
 def test_the_worker_prunes_its_kind_after_publishing(tmp_path, monkeypatch):

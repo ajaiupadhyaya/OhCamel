@@ -41,11 +41,18 @@ def _spark(px: np.ndarray, points: int) -> list[float]:
     return [round(float(px[i] / px[0]), 4) for i in idx]
 
 
-def _peers(corr: pd.Series, name: str, n_peers: int) -> list[list]:
-    """The ``n_peers`` best-correlated other names, best first (ties by name); NaN pairs are out."""
-    others = corr.drop(name).dropna().sort_index()
-    top = others.sort_values(ascending=False, kind="stable").head(n_peers)
-    return [[str(t), round(float(c), 2)] for t, c in top.items()]
+def _peers(corr: pd.DataFrame, n_peers: int) -> dict[str, list[list]]:
+    """Each name's ``n_peers`` best-correlated other names, best first (ties by name); NaN pairs are out. One
+    stable sort of the whole matrix with its names in order, which is what puts a tie in name order, and a NaN
+    sorts last, so five hundred names cost one sort and no pandas Series each."""
+    order = corr.columns.argsort()
+    names = [str(t) for t in corr.columns[order]]
+    values = corr.to_numpy(dtype=float)[np.ix_(order, order)]
+    np.fill_diagonal(values, np.nan)                            # no name is its own peer
+    best = np.argsort(-values, axis=1, kind="stable")[:, :n_peers]
+    top = np.take_along_axis(values, best, axis=1)
+    return {t: [[names[j], round(float(c), 2)] for j, c in zip(row, cs, strict=True) if not math.isnan(c)]
+            for t, row, cs in zip(names, best, top, strict=True)}
 
 
 def ticker_readouts(
@@ -72,9 +79,9 @@ def ticker_readouts(
         read["n"] = len(px)
         out[str(t)] = read
     if out:
-        corr = ret.corr(min_periods=min_overlap)
+        peers = _peers(ret.corr(min_periods=min_overlap), n_peers)
         for t, read in out.items():
-            read["peers"] = _peers(corr[t], t, n_peers)
+            read["peers"] = peers[t]
     return out
 
 

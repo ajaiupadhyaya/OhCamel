@@ -30,7 +30,7 @@ from ohcamel_quant.machine.graph import (
     public_notes,
 )
 from ohcamel_quant.machine.lenses import LENS_TABLES, extras, product_lens
-from ohcamel_quant.machine.readouts import cluster_order, ticker_readouts
+from ohcamel_quant.machine.readouts import _peers, cluster_order, ticker_readouts
 from ohcamel_quant.machine.world import load_world
 from ohcamel_quant.signals.daily import EXECUTION_NOTES
 from ohcamel_quant.signals.report import BOOK_COLUMNS
@@ -164,6 +164,32 @@ def test_peers_are_the_top_n_best_first(closes):
     peers = ticker_readouts(closes.assign(**noisy), n_peers=3)["A"]["peers"]
     assert len(peers) == 3 and peers[0][0] == "B"
     assert [c for _, c in peers] == sorted((c for _, c in peers), reverse=True)
+
+
+def _peers_by_series(corr, name, n_peers):
+    """What ``_peers`` replaced, kept as the reference for its output: best first, ties by name, NaN pairs out."""
+    others = corr[name].drop(name).dropna().sort_index()
+    top = others.sort_values(ascending=False, kind="stable").head(n_peers)
+    return [[str(t), round(float(c), 2)] for t, c in top.items()]
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_peers_are_exactly_a_stable_sort_by_name_then_correlation(seed):
+    rng = np.random.default_rng(seed)
+    names = [f"T{i:02d}" for i in rng.permutation(40)]         # the columns in no order
+    corr = np.round(rng.uniform(-1, 1, (40, 40)), 1)           # one decimal: ties everywhere
+    corr = (corr + corr.T) / 2
+    gaps = rng.uniform(size=corr.shape) < 0.15
+    corr[gaps | gaps.T] = np.nan                               # and NaN pairs, some of them on the diagonal
+    frame = pd.DataFrame(corr, index=names, columns=names)
+    for n_peers in (0, 1, 6, 39, 60):
+        got = _peers(frame, n_peers)
+        assert got == {t: _peers_by_series(frame, t, n_peers) for t in names}
+
+
+def test_peers_put_a_tie_in_name_order():
+    corr = pd.DataFrame(np.full((4, 4), 0.5), index=list("DBCA"), columns=list("DBCA"))
+    assert [t for t, _ in _peers(corr, 2)["D"]] == ["A", "B"]
 
 
 def test_peers_need_overlap(closes):

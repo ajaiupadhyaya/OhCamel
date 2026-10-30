@@ -35,14 +35,17 @@ WEB_DIST = Path(__file__).resolve().parents[3] / "web" / "dist"
 
 @asynccontextmanager
 async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
-    # Periodic cache refresh of the landing-page datasets, and the Flight Deck's
+    # Periodic cache refresh of the landing-page datasets, the Flight Deck's
     # recorder (one reading of the reference book a minute while the US session
-    # is open). Both are no-ops offline.
+    # is open), and the machine's first build, in the background. All are no-ops
+    # offline.
     from ..data.market import start_background_refresh, stop_background_refresh
     from .routers.deck import start_recorder, stop_recorder
+    from .routers.machine import warm_machine
 
     start_background_refresh()
     start_recorder()
+    warm_machine()
     try:
         yield
     finally:
@@ -59,7 +62,7 @@ def create_app() -> FastAPI:
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
     )
-    app.add_middleware(GZipMiddleware, minimum_size=1024)
+    app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
     s = get_settings()
     app.add_middleware(RateLimit, per_min=s.rate_limit_per_min, burst=s.rate_limit_burst)  # outermost: before gzip
 
