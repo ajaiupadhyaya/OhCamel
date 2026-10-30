@@ -31,13 +31,24 @@ describe("route function codes", () => {
   it("keeps non-nav routes out of the row", () => {
     for (const c of ["GP", "COMPUTE", "ENG", "DOCS", "LEDGER"]) expect(navRoutes().some((r) => r.code === c), c).toBe(false);
   });
-  it("Markets content lives at /markets and the Front Page takes /", () => {
+  it("Markets content lives at /markets and the machine takes /", () => {
     expect(ROUTES.find((r) => r.path === "/")?.code).toBe("FRONT");
     expect(ROUTES.find((r) => r.path === "/markets")?.code).toBe("MKTS");
   });
 });
 
-describe("The Tape at /tape (the machine takes / in a later task)", () => {
+describe("The Machine at /", () => {
+  it("is titled The machine, under the FRONT code", () => {
+    const front = ROUTES.find((r) => r.path === "/");
+    expect(front?.title).toBe("The machine");
+    expect(front?.code).toBe("FRONT");
+  });
+  it("leaves the command line one The Tape, not two", () => {
+    expect(ROUTES.filter((r) => r.title === "The Tape").map((r) => r.path)).toEqual(["/tape"]);
+  });
+});
+
+describe("The Tape at /tape", () => {
   it("resolves /tape and carries the TAPE function code", () => {
     expect(resolves("/tape")).toBe(true);
     expect(ROUTES.find((r) => r.path === "/tape")?.code).toBe("TAPE");

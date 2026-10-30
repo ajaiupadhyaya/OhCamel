@@ -5,7 +5,7 @@
  * does not convert them (`renderer.outputColorSpace` in scene.ts). The brightness levels of spec section 6.6, 0.07
  * and 0.014 and the additive blending over them, were tuned that way in the approved prototype; in linear space
  * they would read several times brighter. So a colour here is taken as linear on purpose: `Color` then leaves the
- * numbers alone, and #ffb547 on the page is #ffb547 on the canvas.
+ * numbers alone, and a token on the page is the same colour on the canvas.
  */
 import { Color, LinearSRGBColorSpace } from "three";
 

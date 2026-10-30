@@ -8,7 +8,7 @@
  */
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useDebounced, useLocalStorage } from "../lib/hooks";
 import { useTickerSearch } from "../lib/market";
 import { ROUTES } from "../lib/routes";
@@ -225,6 +225,8 @@ const GRAMMAR: [string, string][] = [
 export function KeyMap({ open, onClose }: { open: boolean; onClose: () => void }) {
   const box = useRef<HTMLDivElement>(null);
   const uid = useId();
+  const { pathname } = useLocation();
+  const keys = pathname === "/" ? GLOBAL_KEYS.map(([k, a]): [string, string] => (k === "/" ? [k, "SEARCH THE MACHINE"] : [k, a])) : GLOBAL_KEYS;
   useEffect(() => {
     if (!open) return;
     const prev = document.activeElement as HTMLElement | null;
@@ -258,7 +260,7 @@ export function KeyMap({ open, onClose }: { open: boolean; onClose: () => void }
         <table className="oc-keymap-table">
           <caption className="oc-keymap-cap">KEYS</caption>
           <tbody>
-            {GLOBAL_KEYS.map(([k, a]) => (
+            {keys.map(([k, a]) => (
               <tr key={k}>
                 <th scope="row" className="num">
                   {k}

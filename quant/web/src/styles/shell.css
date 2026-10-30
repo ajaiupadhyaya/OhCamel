@@ -10,6 +10,15 @@
   min-height: 100vh;
 }
 
+/* `/` is the machine. Its own CSS comes with its lazy chunk; only the ground is here, so the first paint is already dark. */
+.oc-app-machine {
+  background: var(--mx-ground);
+}
+.oc-app-machine .oc-page {
+  min-height: 100vh;
+  background: var(--paper); /* the page boundary's error state, which is paper */
+}
+
 .oc-skip {
   position: absolute;
   left: var(--sp-4);

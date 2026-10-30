@@ -1,5 +1,5 @@
 /**
- * The Front Page (/): the broadsheet. Headline figures, the curve, then the products the
+ * The Tape (/tape): the broadsheet. Headline figures, the curve, then the products the
  * droplet computes overnight (regime, risk atlas, farm, models), last night's compute and
  * data freshness. Every block links to its page; a product that has not run says so.
  * Page-local code lives in ./front/ (CSS prefix `fp-`).
@@ -24,7 +24,7 @@ export default function Front() {
   return (
     <Page
       title="The Tape"
-      docTitle="Front Page"
+      docTitle="The Tape"
       meta={
         <>
           <span>EDITION {formatDateline(new Date(), sessionOf(ops.data)).split(" · ")[0]}</span>

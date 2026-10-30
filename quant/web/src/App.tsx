@@ -43,7 +43,7 @@ function RoutedPages() {
   const loc = useLocation();
   return (
     <PageBoundary resetKey={loc.pathname}>
-      <Suspense fallback={<PageFallback />}>
+      <Suspense fallback={loc.pathname === "/" ? null : <PageFallback />}>
         <Routes>
           {ROUTES.map((r) => (
             <Route key={r.path} path={r.path} element={<r.component />} />

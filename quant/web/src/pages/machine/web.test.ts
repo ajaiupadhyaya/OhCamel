@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FIXTURE } from "./fixture";
-import { bfs, countKinds, directReaders, edgeInWeb, edgeLevel, indexGraph, summaryLine, webOf } from "./web";
+import { bfs, countKinds, directReaders, drawnShape, edgeInWeb, edgeLevel, indexGraph, nearestFirst, summaryLine, webOf } from "./web";
 import type { WebMode } from "./web";
 import type { Edge, MachineOut, MNode, NodeKind } from "./types";
 
@@ -354,5 +354,60 @@ describe("edgeInWeb", () => {
     const ingest = at("j:ingest.bars_daily");
     expect(edgeInWeb(ingest, nvda, nvda, w)).toEqual({ dir: "up", depth: 0 });
     expect(edgeInWeb(ingest, at("d:SPY"), nvda, w)).toBeNull();
+  });
+});
+
+describe("nearestFirst", () => {
+  it("orders by hop depth, then everything else before series, then by label", () => {
+    const m = new Map([[at("d:SPY"), 1], [at("j:farm.sweep"), 2], [at("d:AAPL"), 1], [at("j:signals.daily"), 1], [at("d:NVDA"), 2]]);
+    expect(nearestFirst(gi, m, 48).shown.map((i) => FIXTURE.nodes[i].id)).toEqual(["j:signals.daily", "d:AAPL", "d:SPY", "j:farm.sweep", "d:NVDA"]);
+  });
+
+  it("stops at the limit and says how many are left", () => {
+    const m = new Map([[at("d:SPY"), 1], [at("d:AAPL"), 1], [at("d:NVDA"), 2]]);
+    const { shown, more } = nearestFirst(gi, m, 2);
+    expect(shown).toHaveLength(2);
+    expect(more).toBe(1);
+  });
+
+  it("has nothing left over when all fit", () => {
+    expect(nearestFirst(gi, new Map([[at("d:SPY"), 1]]), 48).more).toBe(0);
+  });
+});
+
+describe("drawnShape", () => {
+  const moved = (over: (m: MachineOut) => void): MachineOut => {
+    const copy = structuredClone(FIXTURE) as MachineOut;
+    over(copy);
+    return copy;
+  };
+  const before = drawnShape(FIXTURE);
+
+  it("ignores what the panels read: a newer read of the same machine needs no new scene", () => {
+    const after = moved((m) => {
+      m.asof = "2027-01-01T00:00:00Z";
+      m.runs = [];
+      const farm = m.nodes.find((n) => n.id === "p:farm.sweep")!;
+      farm.m.cpu = 1;
+      farm.m.finished = "2027-01-01T00:00:00Z";
+      farm.m.detail = "NEW";
+    });
+    expect(drawnShape(after)).toBe(before);
+  });
+
+  it("changes with what the scene draws", () => {
+    const changes: ((m: MachineOut) => void)[] = [
+      (m) => void m.nodes.pop(),
+      (m) => void m.nodes.reverse(),
+      (m) => void m.edges.pop(),
+      (m) => { m.x.fires = []; },
+      (m) => { m.nodes.find((n) => n.id === "p:farm.sweep")!.m.verdict = "FAIL"; },
+      (m) => { m.nodes.find((n) => n.id === "p:farm.sweep")!.status = "missing"; },
+      (m) => { m.nodes.find((n) => n.id === "d:NVDA")!.l = "NV"; },
+      (m) => { m.nodes.find((n) => n.id === "kill")!.m.state = "tripped"; },
+      (m) => { m.nodes.find((n) => n.id === "feed:prices")!.m.who = "Someone else"; },
+      (m) => { m.nodes.find((n) => n.id === "d:NVDA")!.at.i = 99; },
+    ];
+    for (const change of changes) expect(drawnShape(moved(change))).not.toBe(before);
   });
 });

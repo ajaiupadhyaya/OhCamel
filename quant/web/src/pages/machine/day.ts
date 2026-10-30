@@ -82,3 +82,24 @@ export function replayFrame(runs: Run[], now: Date, frac: number): { at: Date; a
     .sort(newestFirst);
   return { at, active };
 }
+
+/**
+ * The run the replay holds lit when the hand is `frac` of the way across the day: the last to have started. It
+ * stays lit until the next one starts, so the machine does not go dark between runs and a three-minute run, about
+ * 54 ms of the sweep, can be seen at all. The runs are the ones `replayFrame` draws from, here with a start and with
+ * or without an end; a tie of starts goes to the later id. Null before the first run of the day.
+ */
+export function replayHold(runs: Run[], now: Date, frac: number): Run | null {
+  const t = replayFrame([], now, frac).at.getTime();
+  let held: Run | null = null;
+  let latest = -Infinity;
+  for (const r of runs) {
+    const start = instant(r.start);
+    if (start === null || start > t || !ranInLastDay(r, now)) continue;
+    if (held === null || start > latest || (start === latest && r.id > held.id)) {
+      held = r;
+      latest = start;
+    }
+  }
+  return held;
+}

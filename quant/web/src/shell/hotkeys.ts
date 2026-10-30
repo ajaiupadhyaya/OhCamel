@@ -1,6 +1,6 @@
 /**
- * Global keys: `/` and Cmd/Ctrl-K open the command line, `?` opens the key map, and
- * `g` then a letter (within CHORD_MS) jumps to a section. The chord is a small pure state
+ * Global keys: `/` and Cmd/Ctrl-K open the command line (a page may take `/` for itself
+ * with onSlash), `?` opens the key map, and `g` then a letter (within CHORD_MS) jumps to a section. The chord is a small pure state
  * machine (chordStep) so it can be tested without a DOM; useHotkeys wires it to window.
  * Plain keys are ignored while the user is typing in a field.
  */
@@ -41,6 +41,8 @@ export function isTypingTarget(el: { tagName?: string; isContentEditable?: boole
 
 export interface HotkeyHandlers {
   onCommand: () => void;
+  /** When set, `/` calls this instead of onCommand. Cmd/Ctrl-K is unchanged. */
+  onSlash?: () => void;
   onHelp: () => void;
   onNavigate: (path: string) => void;
 }
@@ -65,7 +67,7 @@ export function useHotkeys(handlers: HotkeyHandlers): void {
       if (e.key === "/") {
         e.preventDefault();
         chord = IDLE;
-        h.onCommand();
+        (h.onSlash ?? h.onCommand)();
         return;
       }
       if (e.key === "?") {

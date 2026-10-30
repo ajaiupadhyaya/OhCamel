@@ -1,0 +1,762 @@
+/*
+ * The machine's screen (spec sections 6.4, 6.6, 6.7): ported from the approved prototype. Square corners, 1 px
+ * hairlines, translucent panels over the canvas. Every colour comes from the --mx-* tokens in styles/tokens.css; a tint
+ * is one of those mixed toward transparent. Loaded with the page, so it stays in the lazy chunk; the ground of the
+ * first paint is in styles/shell.css.
+ */
+
+.mx-root {
+  --mx-panel: color-mix(in srgb, var(--mx-ground) 78%, transparent);
+  --mx-solid: color-mix(in srgb, var(--mx-ground) 94%, transparent);
+  --mx-raise: color-mix(in srgb, var(--mx-bright) 6%, transparent);
+  --mx-raise-2: color-mix(in srgb, var(--mx-bright) 10%, transparent);
+  --mx-raise-3: color-mix(in srgb, var(--mx-bright) 12%, transparent);
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--mx-ground);
+  color: var(--mx-ink);
+  font: 14px/1.5 var(--mx-font-ui);
+  -webkit-font-smoothing: antialiased;
+}
+.mx-root button,
+.mx-root input {
+  font: inherit;
+  color: inherit;
+}
+.mx-root button {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  cursor: pointer;
+}
+.mx-root :focus-visible {
+  outline: 1px solid var(--mx-bright);
+  outline-offset: 1px;
+}
+.mx-dim {
+  color: var(--mx-dim);
+}
+.mx-vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- canvas and labels */
+.mx-canvas {
+  position: fixed;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.mx-labels {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  clip-path: inset(46px 0 0 0); /* no label reads through the top bar's words */
+  pointer-events: none;
+}
+.mx-lb {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(var(--x), var(--y)) translate(-50%, -100%);
+  white-space: nowrap;
+  font: 500 10.5px/1.2 var(--mx-font-mono);
+  letter-spacing: 0.02em;
+  color: var(--mx-ink);
+  opacity: 0.9;
+  will-change: transform;
+}
+.mx-lb.big {
+  font-size: 11.5px;
+  color: var(--mx-bright);
+}
+.mx-lb.hour,
+.mx-lb.sect {
+  font-weight: 400;
+  color: var(--mx-dim);
+}
+.mx-lb.sect {
+  letter-spacing: 0.08em;
+}
+.mx-lb.fail {
+  color: var(--mx-fail);
+  opacity: 1;
+}
+.mx-lb.up {
+  color: var(--mx-reads);
+  opacity: 1;
+}
+.mx-lb.down {
+  color: var(--mx-feeds);
+  opacity: 1;
+}
+.mx-lb.sel,
+.mx-lb.now {
+  color: var(--mx-bright);
+  opacity: 1;
+}
+.mx-lb.near {
+  opacity: 0.55;
+}
+.mx-lb.off {
+  opacity: 0.25;
+}
+.mx-lb.hour.off,
+.mx-lb.sect.off,
+.mx-lb.now.off {
+  opacity: 0.45;
+}
+
+/* ---------------------------------------------------------------- top bar */
+.mx-top {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 46px;
+  padding: 0 14px;
+}
+.mx-brand {
+  margin-right: 2px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--mx-bright);
+  text-decoration: none;
+}
+.mx-seg {
+  display: flex;
+  flex: none;
+  gap: 1px;
+  padding: 2px;
+  background: var(--mx-raise);
+}
+.mx-root .mx-seg > * {
+  padding: 3px 6px;
+  font-size: 13px;
+  color: var(--mx-dim);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.mx-root .mx-seg > .on {
+  background: var(--mx-raise-2);
+  color: var(--mx-bright);
+}
+.mx-root .mx-seg > *:hover {
+  color: var(--mx-bright);
+}
+.mx-search {
+  position: relative;
+  flex: 1 1 200px;
+  min-width: 120px;
+  margin-left: auto;
+}
+.mx-search input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 0;
+  background: var(--mx-raise);
+  font-size: 13px;
+  outline: none;
+}
+.mx-root .mx-search input {
+  font-size: 13px;
+}
+.mx-search input::placeholder {
+  color: var(--mx-dim);
+}
+.mx-search input:focus {
+  background: var(--mx-raise-2);
+}
+.mx-results {
+  position: absolute;
+  top: 34px;
+  left: 0;
+  width: max(100%, 340px);
+  max-height: 340px;
+  overflow: auto;
+  z-index: 9;
+  background: var(--mx-solid);
+  border: 1px solid var(--mx-line);
+}
+.mx-root .mx-results button {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  text-align: left;
+  font-size: 13px;
+}
+.mx-root .mx-results button.hi {
+  background: var(--mx-raise-2);
+}
+.mx-results span {
+  font: 11px var(--mx-font-mono);
+  color: var(--mx-dim);
+  white-space: nowrap;
+}
+.mx-results p {
+  margin: 0;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--mx-dim);
+}
+.mx-status {
+  flex: none;
+  font: 11px var(--mx-font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--mx-dim);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- panels */
+.mx-panel {
+  position: fixed;
+  z-index: 4;
+  box-sizing: border-box;
+  background: var(--mx-panel);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--mx-line);
+  scrollbar-width: thin;
+  scrollbar-color: var(--mx-line) transparent;
+}
+.mx-focus {
+  left: 14px;
+  top: 56px;
+  width: 380px;
+  max-height: calc(100vh - 70px);
+  overflow: auto;
+  padding: 14px 16px 16px;
+}
+.mx-idl {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  font: 11.5px var(--mx-font-mono);
+  color: var(--mx-dim);
+}
+.mx-idl-id {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mx-idl b {
+  font-weight: 500;
+  color: var(--mx-bright);
+}
+.mx-root .mx-x {
+  font-size: 15px;
+  line-height: 1;
+  color: var(--mx-dim);
+}
+.mx-root .mx-x:hover {
+  color: var(--mx-bright);
+}
+.mx-name {
+  margin: 8px 0 6px;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--mx-bright);
+  overflow-wrap: anywhere;
+}
+.mx-stamps {
+  margin-top: 10px;
+}
+.mx-verdict {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 2px 7px;
+  border: 1px solid currentColor;
+  font: 600 11px var(--mx-font-mono);
+  letter-spacing: 0.06em;
+}
+.mx-verdict.fail {
+  color: var(--mx-fail);
+}
+.mx-verdict.pass {
+  color: var(--mx-bright);
+}
+.mx-verdict.desc {
+  color: var(--mx-dim);
+}
+.mx-vdetail {
+  font: 11.5px/1.5 var(--mx-font-mono);
+  color: var(--mx-dim);
+}
+.mx-prov {
+  margin: 10px 0 2px;
+  padding-top: 10px;
+  border-top: 1px solid var(--mx-line);
+  font: 11px/1.6 var(--mx-font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--mx-dim);
+}
+.mx-prov b {
+  font-weight: 400;
+  color: var(--mx-ink);
+}
+.mx-sec {
+  margin-top: 14px;
+}
+.mx-h3 {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin: 0 0 7px;
+  font: 500 12px var(--mx-font-mono);
+  color: var(--mx-dim);
+}
+.mx-h3 b {
+  font-weight: 500;
+  color: var(--mx-bright);
+}
+.mx-sw {
+  flex: none;
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+}
+.mx-sw.sel {
+  background: var(--mx-bright);
+}
+.mx-sw.up {
+  background: var(--mx-reads);
+}
+.mx-sw.down {
+  background: var(--mx-feeds);
+}
+.mx-sw.fail {
+  background: var(--mx-fail);
+}
+.mx-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.mx-root .mx-chip {
+  padding: 1px 6px;
+  background: var(--mx-raise);
+  font: 12px var(--mx-font-mono);
+  color: var(--mx-ink);
+  white-space: nowrap;
+}
+.mx-root button.mx-chip:hover {
+  background: var(--mx-raise-2);
+  color: var(--mx-bright);
+}
+.mx-chip sub {
+  margin-left: 4px;
+  font-size: 10px;
+  color: var(--mx-dim);
+  vertical-align: 0;
+}
+.mx-root .mx-chip.fail {
+  color: var(--mx-fail);
+}
+.mx-root .mx-chip.more {
+  color: var(--mx-dim);
+}
+.mx-kv {
+  width: 100%;
+  border-collapse: collapse;
+  font: 12px var(--mx-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.mx-kv th,
+.mx-kv td {
+  padding: 3px 0;
+  border-bottom: 1px solid var(--mx-line);
+  text-align: left;
+  font-weight: 400;
+  color: var(--mx-ink);
+}
+.mx-kv th {
+  font-size: 11px;
+  color: var(--mx-dim);
+}
+.mx-kv .n {
+  padding-left: 10px;
+  text-align: right;
+  white-space: nowrap;
+  color: var(--mx-bright);
+}
+.mx-kv th.n {
+  color: var(--mx-dim);
+}
+.mx-kv .mx-f {
+  color: var(--mx-fail);
+}
+.mx-kv td:first-child {
+  width: 100%;
+  max-width: 0; /* the first column takes what the figures leave, and a long name ends in an ellipsis */
+}
+.mx-root .mx-kv .mx-tok {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mx-more {
+  margin-top: 4px;
+}
+.mx-spark {
+  display: block;
+  width: 100%;
+  height: 54px;
+  margin: 2px 0 6px;
+}
+.mx-spark polyline {
+  fill: none;
+  stroke: var(--mx-ink);
+  stroke-width: 1.3;
+}
+.mx-bars {
+  display: block;
+  width: 100%;
+  height: 54px;
+}
+.mx-bars rect {
+  fill: var(--mx-ink);
+}
+.mx-bars rect.neg {
+  fill: var(--mx-dim);
+}
+.mx-bars line {
+  stroke: var(--mx-line);
+}
+.mx-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  font: 11px var(--mx-font-mono);
+  color: var(--mx-dim);
+}
+.mx-stats b {
+  display: block;
+  font: 500 15px var(--mx-font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--mx-bright);
+}
+
+/* ---------------------------------------------------------------- side panel */
+.mx-side {
+  right: 14px;
+  top: 56px;
+  display: flex;
+  flex-direction: column;
+  width: 410px;
+  max-height: calc(100vh - 70px);
+}
+.mx-tabs {
+  flex: none;
+  display: flex;
+  gap: 18px;
+  padding: 12px 16px 0;
+  border-bottom: 1px solid var(--mx-line);
+  font-size: 13.5px;
+}
+.mx-root .mx-tabs button {
+  padding-bottom: 8px;
+  border-bottom: 2px solid transparent;
+  color: var(--mx-dim);
+}
+.mx-root .mx-tabs button.on {
+  border-bottom-color: var(--mx-bright);
+  color: var(--mx-bright);
+}
+.mx-hint {
+  margin-left: auto;
+  padding-top: 3px;
+  font: 11px var(--mx-font-mono);
+  color: var(--mx-dim);
+}
+.mx-pane {
+  min-height: 0;
+  padding: 14px 16px 16px;
+  overflow: auto;
+}
+.mx-pane p {
+  margin: 0 0 11px;
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--mx-ink);
+}
+.mx-pane p.mx-dim {
+  color: var(--mx-dim);
+}
+.mx-pane h2 {
+  margin: 4px 0 10px;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--mx-bright);
+}
+.mx-pane .mx-h3 {
+  margin-top: 14px;
+}
+.mx-fig {
+  font-family: var(--mx-font-mono);
+  font-size: 0.93em;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--mx-bright);
+}
+.mx-root .mx-tok {
+  padding: 0 5px;
+  background: var(--mx-raise);
+  font: 12.5px var(--mx-font-mono);
+  color: var(--mx-ink);
+  white-space: nowrap;
+}
+.mx-root .mx-tok:hover {
+  background: var(--mx-raise-2);
+  color: var(--mx-bright);
+}
+.mx-notes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font: 12px/1.55 var(--mx-font-mono);
+  color: var(--mx-dim);
+}
+.mx-notes li + li {
+  margin-top: 8px;
+}
+.mx-tstep {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font: 11.5px var(--mx-font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--mx-dim);
+}
+.mx-dots {
+  display: flex;
+  gap: 5px;
+}
+.mx-root .mx-dots button {
+  width: 7px;
+  height: 7px;
+  background: var(--mx-line);
+}
+.mx-root .mx-dots button.on {
+  background: var(--mx-bright);
+}
+.mx-tnav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--mx-line);
+  font: 12px var(--mx-font-mono);
+  color: var(--mx-dim);
+}
+.mx-root .mx-tnav button {
+  padding: 3px 10px;
+  background: var(--mx-raise);
+  color: var(--mx-ink);
+}
+.mx-root .mx-tnav button:hover:not(:disabled) {
+  background: var(--mx-raise-2);
+  color: var(--mx-bright);
+}
+.mx-root .mx-tnav button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.mx-play {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.mx-root .mx-play button {
+  padding: 4px 12px;
+  background: var(--mx-raise);
+  font-size: 13px;
+  color: var(--mx-bright);
+}
+.mx-root .mx-play button:hover:not(:disabled) {
+  background: var(--mx-raise-2);
+}
+.mx-root .mx-play button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.mx-play-t {
+  font: 12px var(--mx-font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--mx-dim);
+}
+.mx-runs {
+  font: 12px var(--mx-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.mx-root .mx-run {
+  position: relative;
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr) 46px 84px;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 4px;
+  text-align: left;
+  color: var(--mx-ink);
+}
+.mx-root .mx-run:hover:not(:disabled) {
+  background: var(--mx-raise);
+}
+.mx-root .mx-run:disabled {
+  cursor: default;
+}
+.mx-root .mx-run.on {
+  background: var(--mx-raise-3);
+  color: var(--mx-bright);
+}
+.mx-root .mx-run.fail {
+  color: var(--mx-fail);
+}
+.mx-root .mx-run.running {
+  color: var(--mx-reads);
+}
+.mx-run span:nth-child(n + 3) {
+  text-align: right;
+  white-space: nowrap;
+  color: var(--mx-dim);
+}
+.mx-run-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mx-run-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--mx-reads);
+  transform: scaleX(var(--p));
+  transform-origin: left;
+}
+
+/* ---------------------------------------------------------------- legend and tooltip */
+.mx-legend {
+  position: fixed;
+  left: 50%;
+  bottom: 12px;
+  z-index: 3;
+  display: flex;
+  gap: 16px;
+  transform: translateX(-50%);
+  font: 11px var(--mx-font-mono);
+  color: var(--mx-dim);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.mx-legend span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mx-tip {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 8;
+  max-width: 320px;
+  padding: 6px 9px;
+  background: var(--mx-solid);
+  border: 1px solid var(--mx-line);
+  transform: translate(var(--x), var(--y));
+  font: 12px/1.45 var(--mx-font-mono);
+  color: var(--mx-ink);
+  pointer-events: none;
+}
+.mx-tip b {
+  font-weight: 500;
+  color: var(--mx-bright);
+}
+.mx-tip .fail {
+  color: var(--mx-fail);
+}
+.mx-tip .verdict,
+.mx-tip .dim {
+  color: var(--mx-dim);
+}
+
+/* ---------------------------------------------------------------- waiting and failing */
+.mx-wait {
+  position: fixed;
+  left: 14px;
+  top: 14px;
+  z-index: 6;
+  margin: 0;
+  font: 13px var(--mx-font-mono);
+  color: var(--mx-dim);
+}
+.mx-wait-low {
+  top: auto;
+  bottom: 12px;
+  max-width: 340px;
+}
+.mx-root .mx-wait button {
+  color: var(--mx-bright);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------- the shell's command line and key map, on the machine's ground */
+.oc-app-machine .oc-cmd,
+body:has(.oc-app-machine) .oc-keymap {
+  --paper: var(--mx-ground);
+  --paper-2: var(--mx-line);
+  --ink: var(--mx-ink);
+  --ink-2: var(--mx-dim);
+  --ink-3: var(--mx-line);
+  --rule: 1px solid var(--mx-line);
+  --rule-heavy: 1px solid var(--mx-line);
+  --rule-double: 1px solid var(--mx-line);
+  --rule-faint: 1px solid var(--mx-line);
+  color: var(--mx-ink);
+}
+.oc-app-machine .oc-cmd {
+  position: fixed;
+  top: 46px;
+  left: 0;
+  right: 0;
+  z-index: 12;
+}
+
+/* ---------------------------------------------------------------- width */
+@media (max-width: 1320px) {
+  .mx-status {
+    display: none;
+  }
+}
+@media (max-width: 1100px) {
+  .mx-views {
+    display: none;
+  }
+}

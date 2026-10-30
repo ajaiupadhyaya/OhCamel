@@ -80,7 +80,7 @@ export function watchJobs(on: { job: (e: JobEvent) => void; up: () => void; down
   };
 }
 
-export function useMachine(): { data: MachineOut | undefined; error: unknown; runs: Run[] } {
+export function useMachine(): { data: MachineOut | undefined; error: unknown; runs: Run[]; retry: () => void } {
   const [down, setDown] = useState(typeof EventSource === "undefined");
   const { data, error, refetch } = useApiQuery<MachineOut>("/machine", undefined, {
     staleTime: 60_000,
@@ -118,5 +118,5 @@ export function useMachine(): { data: MachineOut | undefined; error: unknown; ru
     [refetchSoon],
   );
 
-  return { data, error, runs };
+  return { data, error, runs, retry: () => void refetch() };
 }

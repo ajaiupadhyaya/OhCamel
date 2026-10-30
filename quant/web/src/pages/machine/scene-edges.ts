@@ -15,7 +15,7 @@ const PHASE_STEP = 0.618033988749895;
 /**
  * The loom's colour is `structure` at this many times its brightness, which is the approved prototype's fibre colour
  * (0.42, 0.55, 0.62), from the token. A level of 0.07 is multiplied by this colour, so a darker one loses the loom: at
- * `line` (#252525) a fibre comes to 3 parts in 255 and all but the densest crossings go black.
+ * `line` a fibre comes to 3 parts in 255 and all but the densest crossings go black.
  */
 const LOOM_GAIN = 2.4;
 

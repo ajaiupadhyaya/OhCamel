@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dayRuns, heaviest, REPLAY_S, replayFrame, runningRuns } from "./day";
+import { dayRuns, heaviest, REPLAY_S, replayFrame, replayHold, runningRuns } from "./day";
 import { FIXTURE } from "./fixture";
 import { jobRuns } from "./prose";
 import type { Run } from "./types";
@@ -382,5 +382,69 @@ describe("replayFrame", () => {
   it("does not throw with no runs or a clock that does not read", () => {
     expect(replayFrame([], NOW, 0.5).active).toEqual([]);
     expect(() => replayFrame(FIXTURE.runs, new Date(Number.NaN), 0.5)).not.toThrow();
+  });
+});
+
+describe("replayHold", () => {
+  const first = run("01A", { start: ago(20 * H), end: ago(20 * H - 3 * S) });
+  const second = run("01B", { start: ago(10 * H), end: ago(9 * H) });
+  const all = [second, first];
+  const frac = (msBeforeNow: number): number => 1 - msBeforeNow / DAY;
+
+  it("is nothing before the first run of the day has started", () => {
+    expect(replayHold(all, NOW, 0)).toBeNull();
+    expect(replayHold(all, NOW, frac(21 * H))).toBeNull();
+  });
+
+  it("is a run from the moment it starts, inclusive", () => {
+    expect(replayHold(all, NOW, frac(20 * H))?.id).toBe("01A");
+  });
+
+  it("holds a short run after it ends, until the next one starts", () => {
+    const between = frac(15 * H);
+    expect(replayFrame(all, NOW, between).active).toEqual([]);
+    expect(replayHold(all, NOW, between)?.id).toBe("01A");
+    expect(replayHold(all, NOW, frac(10 * H))?.id).toBe("01B");
+  });
+
+  it("holds the last run to the end of the sweep", () => {
+    expect(replayHold(all, NOW, 1)?.id).toBe("01B");
+  });
+
+  it("moves to the later start when runs overlap", () => {
+    const long = run("01L", { start: ago(12 * H), end: ago(2 * H) });
+    const inside = run("01S", { start: ago(11 * H), end: ago(10.5 * H) });
+    expect(replayHold([long, inside], NOW, frac(5 * H))?.id).toBe("01S");
+  });
+
+  it("breaks a tie of starts by the later id, so the choice never varies", () => {
+    const a = run("01A", { start: ago(5 * H), end: ago(4 * H) });
+    const b = run("01B", { start: ago(5 * H), end: ago(4 * H) });
+    expect(replayHold([a, b], NOW, 1)?.id).toBe("01B");
+    expect(replayHold([b, a], NOW, 1)?.id).toBe("01B");
+  });
+
+  it("holds a run the day lists, and no other", () => {
+    const before = run("01O", { start: ago(25 * H), end: ago(23 * H) });
+    const going = run("01R", { state: "running", start: ago(H), end: null });
+    const queued = run("01Q", { state: "queued", start: null, end: null });
+    const unstarted = run("01C", { state: "cancelled", start: null, end: ago(H) });
+    expect(replayHold([before, going, queued, unstarted], NOW, 1)).toBeNull();
+  });
+
+  it("holds a failed or cancelled run: it ran, and it took the time", () => {
+    const failed = run("01F", { state: "failed", start: ago(3 * H), end: ago(2 * H) });
+    expect(replayHold([failed], NOW, 1)?.id).toBe("01F");
+  });
+
+  it("holds a run whose end it does not know", () => {
+    const open = run("01E", { start: ago(3 * H), end: null });
+    expect(replayHold([open], NOW, 1)?.id).toBe("01E");
+  });
+
+  it("keeps `frac` inside the day, as replayFrame does", () => {
+    expect(replayHold(all, NOW, -3)).toBeNull();
+    expect(replayHold(all, NOW, 4)?.id).toBe("01B");
+    expect(replayHold(all, NOW, Number.NaN)).toBeNull();
   });
 });

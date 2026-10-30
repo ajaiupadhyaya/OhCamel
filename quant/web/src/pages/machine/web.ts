@@ -131,6 +131,27 @@ export function countKinds(gi: GraphIndex, ids: Iterable<number>): Record<NodeKi
   return c;
 }
 
+/**
+ * A web's nodes as chips: closest first, then everything else before the series, then by label. `shown` is the first
+ * `limit` of them; `more` counts the rest.
+ */
+export function nearestFirst(gi: GraphIndex, web: Map<number, number>, limit: number): { shown: number[]; more: number } {
+  const { nodes } = gi.out;
+  const order = [...web.entries()].sort(([a, da], [b, db]) =>
+    da - db || Number(nodes[a].k === "series") - Number(nodes[b].k === "series") || nodes[a].l.localeCompare(nodes[b].l));
+  return { shown: order.slice(0, limit).map(([i]) => i), more: Math.max(0, order.length - limit) };
+}
+
+/**
+ * Everything of a payload the scene draws, as one string: where each node goes, its colour and label, the edges and
+ * the fires. Two reads with the same shape have the same node at the same index, so the page keeps its scene and only
+ * its panels take the newer read; a read that changes it needs a new scene.
+ */
+export function drawnShape(out: MachineOut): string {
+  const nodes = out.nodes.map((n) => [n.id, n.k, n.l, n.n, n.ring, n.at, n.status, n.m.verdict, n.m.status, n.m.track, n.m.who, n.m.state]);
+  return JSON.stringify([nodes, out.edges, out.x.fires]);
+}
+
 /** Each kind's word, singular then plural, in the order a web is described. */
 const WORDS: [NodeKind, string, string][] = [
   ["series", "series", "series"],

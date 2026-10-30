@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dur, hm, instant, num, nyDay, nyTime, nyWeekday, nyYear, pct, plural } from "./fmt";
+import { dur, hm, instant, num, nyDay, nyHour, nyTime, nyWeekday, nyYear, pct, plural } from "./fmt";
 
 const MINUS = "−";
 const DASH = "—";
@@ -210,5 +210,21 @@ describe("nyWeekday", () => {
 
   it("is an em dash for anything that is not a date", () => {
     for (const v of [null, undefined, "", "yesterday", "2026-13-45", 42]) expect(nyWeekday(v as string)).toBe(DASH);
+  });
+});
+
+describe("nyHour", () => {
+  it("is the hour on the New York clock, with minutes and seconds as a fraction", () => {
+    expect(nyHour(new Date("2026-10-28T22:30:00Z"))).toBe(18.5);       // EDT
+    expect(nyHour(new Date("2026-12-28T23:30:00Z"))).toBe(18.5);       // EST
+    expect(nyHour(new Date("2026-10-28T13:30:36Z"))).toBeCloseTo(9.51, 10);
+  });
+
+  it("is under 24 at midnight", () => {
+    expect(nyHour(new Date("2026-10-29T04:00:00Z"))).toBe(0);
+  });
+
+  it("is 0, a place on the dial, for a date that is not one", () => {
+    expect(nyHour(new Date(Number.NaN))).toBe(0);
   });
 });

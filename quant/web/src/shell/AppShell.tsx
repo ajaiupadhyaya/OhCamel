@@ -3,6 +3,9 @@
  * (sticky), the command line when open, the routed page, footer (double rule).
  * No sidebar, no icons. Keys: `/` or Cmd/Ctrl-K for the command line, `g` + letter
  * to jump, `?` for the key map (see hotkeys.ts).
+ *
+ * `/` is the machine, which brings its own top bar: the masthead, tape, function codes and
+ * footer step aside there, and its `/` key focuses the machine's search.
  */
 import { useCallback, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -26,8 +29,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const closeCmd = useCallback(() => setCmd(false), []);
   const closeKeys = useCallback(() => setKeys(false), []);
 
+  const machine = loc.pathname === "/";
+
   useHotkeys({
     onCommand: toggleCmd,
+    onSlash: machine ? () => document.getElementById("mx-search")?.focus() : undefined,
     onHelp: () => {
       setCmd(false);
       setKeys((o) => !o);
@@ -45,18 +51,18 @@ export function AppShell({ children }: { children: ReactNode }) {
   // The Flight Deck is the one dark room: its masthead, nav and footer are inverted
   // (ink ground). The tokens for oc-app-ink live with the deck (pages/deck/deck.css).
   return (
-    <div className={`oc-app${deck ? " oc-app-ink" : ""}${focus ? " dk-focus" : ""}`}>
+    <div className={`oc-app${machine ? " oc-app-machine" : ""}${deck ? " oc-app-ink" : ""}${focus ? " dk-focus" : ""}`}>
       <a className="oc-skip" href="#main">
         Skip to content
       </a>
-      <Masthead />
-      <Tape />
-      <FunctionNav onCommand={toggleCmd} commandOpen={cmd} />
+      {!machine && <Masthead />}
+      {!machine && <Tape />}
+      {!machine && <FunctionNav onCommand={toggleCmd} commandOpen={cmd} />}
       <CommandLine open={cmd} onClose={closeCmd} />
       <main className="oc-content" id="main">
         {children}
       </main>
-      <Footer />
+      {!machine && <Footer />}
       <KeyMap open={keys} onClose={closeKeys} />
     </div>
   );

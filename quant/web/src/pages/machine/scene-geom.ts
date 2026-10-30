@@ -187,6 +187,8 @@ export interface Shot {
 /** The two fixed views of the whole machine (tour.ts, `TourCam`). */
 export const OVERVIEW: Shot = { target: [0, 1.4, 0], radius: 27, phi: 0.92, theta: 0.35 };
 export const YOURS: Shot = { target: [0, 1.2, 0], radius: 23, phi: 0.62, theta: -0.5 };
+/** The replay's view: the clock from above, close enough to read the jobs on it. */
+export const CLOCK: Shot = { target: [0, 1.2, 0], radius: 19, phi: 0.5, theta: 0.2 };
 
 /** Above this many nodes a web is framed whole, not by its node. */
 const BIG_WEB = 60;

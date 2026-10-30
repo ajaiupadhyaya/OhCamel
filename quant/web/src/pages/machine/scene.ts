@@ -14,7 +14,7 @@ import { layout } from "./layout";
 import type { Palette } from "./palette";
 import { createFlight } from "./scene-camera";
 import { createEdges } from "./scene-edges";
-import { nearestNode, nodeShot, OVERVIEW, projectNodes, radiusOf, sameView, YOURS, zoomDistance } from "./scene-geom";
+import { CLOCK, nearestNode, nodeShot, OVERVIEW, projectNodes, radiusOf, sameView, YOURS, zoomDistance } from "./scene-geom";
 import type { CentreWeb, Shot, Vec3 } from "./scene-geom";
 import { labelBook, placeFrame } from "./scene-labels";
 import type { LabelSpec, PlacedLabel } from "./scene-labels";
@@ -38,11 +38,14 @@ export interface SceneHandlers {
   onLabels(placed: PlacedLabel[]): void;
 }
 
+/** Where `focus` flies: a fixed view of the whole machine, the node's own shot, or nowhere. */
+export type FocusCam = "overview" | "node" | "yours" | "clock" | "keep";
+
 export interface SceneApi {
   /** Light the web of node `i` in `mode` and dim the rest; null lights nothing. */
   setWeb(i: number | null, mode: WebMode): void;
   /** Fly (or, under reduced motion, cut) to a view. "node" frames `i`, or the whole machine when `i` is null; "keep" stays put. */
-  focus(i: number | null, cam: "overview" | "node" | "yours" | "keep"): void;
+  focus(i: number | null, cam: FocusCam): void;
   /** The pixels open panels take at the left, right and bottom, so the machine centres in what is left. */
   setViewOffset(leftPx: number, rightPx: number, bottomPx: number): void;
   /** The runs as they stand: the running ones pulse at their job, with a progress arc when they report one. */
@@ -160,6 +163,9 @@ export function createScene(
     renderer.setSize(w, tall, false);
     camera.aspect = w / tall;
     applyOffset();
+    // a size that keeps the aspect leaves the matrix as it was, and every screen position is still out of date
+    projectionStale = true;
+    labelsStale = true;
   };
   const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resize);
   observer?.observe(canvas);
@@ -284,7 +290,7 @@ export function createScene(
     },
     focus(i, cam) {
       if (cam === "keep") return;
-      let shot: Shot = cam === "yours" ? YOURS : OVERVIEW;
+      let shot: Shot = cam === "yours" ? YOURS : cam === "clock" ? CLOCK : OVERVIEW;
       if (cam === "node" && isNode(i)) {
         const web = webOf(gi, i, mode);
         const p: Vec3 = [pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]];

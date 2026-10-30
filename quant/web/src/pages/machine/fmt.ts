@@ -85,7 +85,16 @@ const NY = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", hourCycle: "h23",
 });
 
+const NY_CLOCK = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "numeric", second: "numeric", hourCycle: "h23" });
+
 type Day = { year: number; month: number; day: number };
+
+/** Where an instant falls on the New York clock, as an hour of the day: 6:30 PM -> 18.5. 0 for a date that is not one. */
+export function nyHour(d: Date): number {
+  if (Number.isNaN(d.getTime())) return 0;
+  const p = Object.fromEntries(NY_CLOCK.formatToParts(d).map((x) => [x.type, x.value]));
+  return (Number(p.hour) % 24) + Number(p.minute) / 60 + Number(p.second) / 3600;
+}
 
 /** A date ("2026-10-27") as its calendar day, checked to be a real one; null otherwise. */
 function calendarDay(v: string): Day | null {

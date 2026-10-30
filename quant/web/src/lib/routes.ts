@@ -24,8 +24,7 @@ export interface RouteDef {
 }
 
 export const ROUTES: RouteDef[] = [
-  { path: "/", to: "/", title: "The Tape", code: "FRONT", nav: true, blurb: "Front page: indices, the curve, regime, risk atlas, farm, models, last night's compute, data freshness.", keywords: "home front page broadsheet today", component: lazy(() => import("../pages/Front")) },
-  // The Tape keeps its own address so the machine can take "/" (it renders the same page until then).
+  { path: "/", to: "/", title: "The machine", code: "FRONT", nav: true, blurb: "OhCamel's real dependency graph as an instrument: what each thing reads and feeds, on live data.", keywords: "home front page graph lineage web tour replay day", component: lazy(() => import("../pages/Machine")) },
   { path: "/tape", to: "/tape", title: "The Tape", code: "TAPE", nav: false, blurb: "The Tape: indices, the curve, regime, risk atlas, farm, models, last night's compute, data freshness.", keywords: "front page broadsheet today", component: lazy(() => import("../pages/Front")) },
   { path: "/markets", to: "/markets", title: "Markets", code: "MKTS", nav: true, blurb: "Indices, sectors, rates, credit, commodities and volatility.", keywords: "overview heatmap sectors", component: lazy(() => import("../pages/Markets")) },
   { path: "/risk", to: "/risk", title: "Risk", code: "RISK", nav: true, blurb: "VaR and ES across models, Euler split, backtests, GARCH; Monte Carlo atlas.", keywords: "var es expected shortfall euler garch atlas monte carlo", component: lazy(() => import("../pages/Risk")) },

@@ -215,7 +215,9 @@ router, `api/routers/machine.py`, serves it.
   - **The day** (the runs of the last 24 hours, with replay).
 - A **legend** along the bottom: selected, what it reads, what it feeds, failed a gate, and
   "drag to turn · click to select".
-- **View offset.** `camera.setViewOffset` keeps the open panels from ever covering the machine.
+- **View offset.** `camera.setViewOffset` keeps the framed subject centred in the free space
+  between the open panels; the panels are translucent and the outer rings pass under them, as in
+  the approved prototype.
 - **URL state.** `?sel=<node id>&tab=tour|read|day&step=<n>` makes every view a deep link.
 
 ### 6.5 Readings and lenses (`pages/machine/readings.ts`)
