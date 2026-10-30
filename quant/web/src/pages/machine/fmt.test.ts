@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dur, hm, num, pct, plural } from "./fmt";
+import { dur, hm, num, nyDay, nyTime, pct, plural } from "./fmt";
 
 const MINUS = "−";
 const DASH = "—";
@@ -135,5 +135,38 @@ describe("a missing or non-finite value", () => {
     expect(hm(0)).not.toBe(DASH);
     expect(dur(0)).not.toBe(DASH);
     expect(plural(0, "job")).not.toBe(DASH);
+  });
+});
+
+describe("nyDay and nyTime", () => {
+  it("write an instant as its New York day and time of day (an evening UTC instant is the day before in New York)", () => {
+    expect(nyDay("2026-10-28T01:48:11.904Z")).toBe("27 Oct");
+    expect(nyTime("2026-10-28T01:48:11.904Z")).toBe("9:48 PM");
+    expect(nyDay("2026-10-28T20:30:12Z")).toBe("28 Oct");
+    expect(nyTime("2026-10-28T20:30:12Z")).toBe("4:30 PM");
+    expect(nyTime("2026-10-28T22:51:12.388114+00:00")).toBe("6:51 PM");
+  });
+
+  it("read a timestamp with no offset as UTC, as the warehouse writes last_ok_at (warehouse/freshness.py)", () => {
+    expect(nyTime("2026-10-28T22:33:38.771204")).toBe("6:33 PM");
+    expect(nyDay("2026-10-28T22:33:38.771204")).toBe("28 Oct");
+  });
+
+  it("follow New York's clock across daylight saving", () => {
+    expect(nyTime("2026-01-15T14:30:00Z")).toBe("9:30 AM");
+    expect(nyTime("2026-07-15T13:30:00Z")).toBe("9:30 AM");
+  });
+
+  it("take a date as the calendar day it names, in no time zone, and give it no time of day", () => {
+    expect(nyDay("2026-10-27")).toBe("27 Oct");
+    expect(nyDay("2026-01-01")).toBe("1 Jan");
+    expect(nyTime("2026-10-27")).toBe(DASH);
+  });
+
+  it("are an em dash for anything that is not a date", () => {
+    for (const v of [null, undefined, "", "yesterday", "2026-13-45", 42]) {
+      expect(nyDay(v as string)).toBe(DASH);
+      expect(nyTime(v as string)).toBe(DASH);
+    }
   });
 });

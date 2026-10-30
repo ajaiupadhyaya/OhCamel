@@ -75,3 +75,47 @@ export function plural(n: number | null | undefined, word: string, many = `${wor
   if (!ok(n)) return EM_DASH;
   return `${num(n)} ${n === 1 ? word : many}`;
 }
+
+// ---------------------------------------------------------------- New York days and times
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
+/** A wire timestamp with no offset: the warehouse writes `last_ok_at` naive, in UTC (warehouse/freshness.py). */
+const NAIVE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
+const NY = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", hourCycle: "h23",
+});
+
+/** A date ("2026-10-27") as its calendar day, checked to be a real one; null otherwise. */
+function calendarDay(v: string): { month: number; day: number } | null {
+  const m = DATE_ONLY.exec(v);
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const t = new Date(Date.UTC(y, mo - 1, d));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d ? { month: mo, day: d } : null;
+}
+
+/** A timestamp as its New York month, day, hour and minute; null when it is not one. */
+function nyParts(v: string): { month: number; day: number; hour: number; minute: number } | null {
+  if (DATE_ONLY.test(v)) return null;
+  const t = Date.parse(NAIVE.test(v) ? `${v}Z` : v);
+  if (Number.isNaN(t)) return null;
+  const p = Object.fromEntries(NY.formatToParts(new Date(t)).map((x) => [x.type, x.value]));
+  return { month: Number(p.month), day: Number(p.day), hour: Number(p.hour) % 24, minute: Number(p.minute) };
+}
+
+/**
+ * The New York day of a date or timestamp from the wire: "2026-10-28T01:48:11Z" -> "27 Oct" (evening in New
+ * York). A date ("2026-10-27") is the calendar day it names, in no time zone. Anything else is an em dash.
+ */
+export function nyDay(v: string | null | undefined): string {
+  if (typeof v !== "string") return EM_DASH;
+  const d = calendarDay(v) ?? nyParts(v);
+  return d ? `${d.day} ${MONTHS[d.month - 1]}` : EM_DASH;
+}
+
+/** The New York time of day of a timestamp from the wire, as `hm` writes it: "2026-10-28T20:30:12Z" -> "4:30 PM". A date has none. */
+export function nyTime(v: string | null | undefined): string {
+  if (typeof v !== "string") return EM_DASH;
+  const p = nyParts(v);
+  return p ? hm(p.hour + p.minute / 60) : EM_DASH;
+}
