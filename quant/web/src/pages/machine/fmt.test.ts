@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dur, hm, instant, num, nyDay, nyTime, nyYear, pct, plural } from "./fmt";
+import { dur, hm, instant, num, nyDay, nyTime, nyWeekday, nyYear, pct, plural } from "./fmt";
 
 const MINUS = "−";
 const DASH = "—";
@@ -192,5 +192,23 @@ describe("nyYear", () => {
 
   it("is null for what is not a date", () => {
     for (const v of [null, undefined, "", "2026-13-45", "soon"]) expect(nyYear(v)).toBeNull();
+  });
+});
+
+describe("nyWeekday", () => {
+  it("is an instant's weekday in New York, as a word (an evening UTC instant is the day before in New York)", () => {
+    expect(nyWeekday("2026-10-28T22:51:12.388Z")).toBe("Wednesday");
+    expect(nyWeekday("2026-10-29T02:05:00Z")).toBe("Wednesday");
+    expect(nyWeekday("2026-10-29T14:00:00Z")).toBe("Thursday");
+    expect(nyWeekday("2026-11-01T12:00:00")).toBe("Sunday");   // no offset: UTC, as the warehouse writes it
+  });
+
+  it("is a date's own weekday, in no time zone", () => {
+    expect(nyWeekday("2026-10-28")).toBe("Wednesday");
+    expect(nyWeekday("2026-01-03")).toBe("Saturday");
+  });
+
+  it("is an em dash for anything that is not a date", () => {
+    for (const v of [null, undefined, "", "yesterday", "2026-13-45", 42]) expect(nyWeekday(v as string)).toBe(DASH);
   });
 });

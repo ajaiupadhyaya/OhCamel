@@ -1,8 +1,8 @@
 /**
- * The kit the Machine's readings are written with (readings.ts, products.ts): text segments, defensive reads
- * of the payload, and the few phrases about the graph that every kind shares. Pure, no DOM.
+ * The kit the Machine's copy is written with (readings.ts, products.ts, tour.ts): text segments, defensive
+ * reads of the payload, and the few phrases about the graph that the readings and the tour share. Pure, no DOM.
  */
-import { instant, num, nyDay, nyTime, nyYear, pct, plural } from "./fmt";
+import { hm, instant, num, nyDay, nyTime, nyYear, pct, plural } from "./fmt";
 import type { MNode, Run } from "./types";
 import { directReaders, webOf } from "./web";
 import type { GraphIndex } from "./web";
@@ -148,6 +148,45 @@ export function readers(gi: GraphIndex, i: number): Seg[] {
 export function estimator(gi: GraphIndex, e: string): Seg {
   const i = gi.byId.get(`ce:${e}`);
   return ref(gi, `ce:${e}`, (i !== undefined && node(gi, i).l) || e.replace(/_/g, " "));
+}
+/** A farm cell by its key ("tsmom@us_equity_indices"): its node's name, or the key in words when there is no node. */
+export function cellRef(gi: GraphIndex, key: string): Seg {
+  const id = `c:${key}`;
+  return ref(gi, id, gi.byId.has(id) ? undefined : key.replace("@", " on ").replace(/_/g, " "));
+}
+
+const WHEN: Record<string, string> = { daily: "every day", weekdays: "on weekdays", weekly: "once a week", monthly: "once a month" };
+/** A job's schedule: "on weekdays at 6:30 PM", or "on weekdays, 29 times a day, from 9:20 AM to 8:10 PM". */
+export function schedule(m: Record<string, unknown>): Seg[] {
+  const when = strs(m.when).map((w) => WHEN[w] ?? w);
+  const fires = (Array.isArray(m.fires) ? m.fires : []).map(fin).filter((h): h is number => h !== null).sort((a, b) => a - b);
+  const w = when.length ? list(when) : null;
+  if (fires.length === 0) return w ?? [];
+  if (fires.length <= 3) return S`${w && [w, " "]}at ${list(fires.map((h) => B(hm(h))))}`;
+  return S`${w && [w, ", "]}${B(num(fires.length))} times a day, from ${B(hm(fires[0]))} to ${B(hm(fires[fires.length - 1]))}`;
+}
+
+/** What job `i` reads directly, as a list ("1 series and the Strategy farm"): all it reads but the feeds it pulls. Empty when nothing. */
+export function inputs(gi: GraphIndex, i: number): Seg[] {
+  const up = gi.up[i].filter((j) => node(gi, j).k !== "feed");
+  const series = up.filter((j) => node(gi, j).k === "series").length;
+  const named = up.filter((j) => node(gi, j).k !== "series").map((j) => (node(gi, j).k === "product" ? S`the ${refAt(gi, j)}` : refAt(gi, j)));
+  return list([series > 0 && B(plural(series, "series", "series")), ...named]);
+}
+
+/**
+ * How ticker `i` still reaches the book when no strategy depends on it, as a sentence: through the exposure
+ * overlay when the overlay is in its web, and through a limit only when one reads it (spec §5: only an
+ * instrument-scoped limit reads a ticker). `down` is its downstream web.
+ */
+export function sideRoute(gi: GraphIndex, i: number, down: Map<number, number>): Seg[] {
+  const overlay = gi.byId.get("p:signals.overlay");
+  const limits = downs(gi, i, "limit");
+  const ways = [
+    overlay !== undefined && down.has(overlay) && S`through the ${ref(gi, "p:signals.overlay", "exposure overlay")}, which scales the whole book`,
+    limits.length > 0 && S`through its own ${limits.length === 1 ? "limit" : "limits"}, ${list(limits.map((j) => refAt(gi, j)))}`,
+  ].filter((x): x is Seg[] => Array.isArray(x));
+  return S`No strategy on the desk depends on it, but it still reaches the book${ways.length > 0 && [": ", segs(...ways.map((w, k) => [k ? ", and " : "", w]))]}.`;
 }
 
 // ------------------------------------------------------------------ runs

@@ -7,9 +7,10 @@
  * readings can print: the fields they read, through the formatters they use, and the counts they can make,
  * so a figure the payload does not carry ("23 strategies" on a desk of 2, "99%") fails.
  */
-import { hm, num, nyDay, nyTime, pct } from "./fmt";
+import { heaviest } from "./day";
+import { dur, hm, instant, num, nyDay, nyTime, pct } from "./fmt";
 import { parseDailyNote, parseOverlayNote } from "./notes";
-import { cpuTotal, jobRuns, reason, share } from "./prose";
+import { cpuTotal, fin, jobRuns, reason, share } from "./prose";
 import type { Reading } from "./readings";
 import type { MachineOut } from "./types";
 import { countKinds, directReaders, indexGraph, webOf } from "./web";
@@ -62,7 +63,10 @@ const FINAL = ["done", "failed", "cancelled"];
  *   limit's kind), with any date in them written as `reason` writes it;
  * - the counts a reading can make: nodes by kind and track, each node's neighbours and web by kind, its direct
  *   readers, a job's fires, the farm's board rows and passes and its strategies, and each job kind's runs by
- *   state with their CPU-seconds, over the same last day the readings use (`jobRuns`, `cpuTotal`).
+ *   state with their CPU-seconds, over the same last day the readings use (`jobRuns`, `cpuTotal`);
+ * - what the tour prints besides: the payload's own New York time (its first title), and the heaviest run of
+ *   the last day (`heaviest`): its start in New York, its span `dur(end − start)` and its CPU-seconds. No
+ *   other run's time or span, since nothing prints them.
  */
 export function allowedNumbers(out: MachineOut, now = new Date(out.asof)): Set<string> {
   const gi = indexGraph(out);
@@ -132,6 +136,15 @@ export function allowedNumbers(out: MachineOut, now = new Date(out.asof)): Set<s
     const cpu = cpuTotal(ran);
     if (cpu !== null) count(cpu);
     running.forEach((r) => typeof r.progress === "number" && add(pct(r.progress, 0)));
+  }
+
+  add(nyTime(out.asof));
+  const top = heaviest(out.runs, now);
+  if (top) {
+    [nyDay(top.start), nyTime(top.start)].forEach(add);
+    const start = instant(top.start), end = instant(top.end), cpu = fin(top.cpu);
+    if (start !== null && end !== null && end >= start) add(dur((end - start) / 1000));
+    if (cpu !== null) count(cpu);
   }
   return allowed;
 }

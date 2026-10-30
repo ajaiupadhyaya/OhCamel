@@ -7,11 +7,11 @@
  * This file dispatches by kind and reads the world, the clock, results, strategies and the desk; products.ts
  * reads the products, and prose.ts is the kit both write with.
  */
-import { hm, num, nyDay, pct, plural } from "./fmt";
+import { num, nyDay, pct, plural } from "./fmt";
 import { product } from "./products";
 import {
-  at, B, cpuTotal, downs, fin, jobRuns, known, list, node, obj, ofDesk, paras, reach, reaches, readers, reason, ref, refAt, rows, S, segs, share, str,
-  strategyCount, strs, ups,
+  at, B, cpuTotal, downs, fin, inputs, jobRuns, known, list, node, obj, ofDesk, paras, reach, reaches, readers, reason, ref, refAt, rows, S, schedule,
+  segs, share, sideRoute, str, strategyCount, strs, ups,
 } from "./prose";
 import type { Reading, ReadingCtx, Seg } from "./prose";
 import type { MNode } from "./types";
@@ -19,17 +19,6 @@ import { directReaders } from "./web";
 import type { GraphIndex } from "./web";
 
 export type { Reading, ReadingCtx, Seg } from "./prose";
-
-const WHEN: Record<string, string> = { daily: "every day", weekdays: "on weekdays", weekly: "once a week", monthly: "once a month" };
-/** A job's schedule: "on weekdays at 6:30 PM", or "on weekdays, 29 times a day, from 9:20 AM to 8:10 PM". */
-function schedule(m: Record<string, unknown>): Seg[] {
-  const when = strs(m.when).map((w) => WHEN[w] ?? w);
-  const fires = (Array.isArray(m.fires) ? m.fires : []).map(fin).filter((h): h is number => h !== null).sort((a, b) => a - b);
-  const w = when.length ? list(when) : null;
-  if (fires.length === 0) return w ?? [];
-  if (fires.length <= 3) return S`${w && [w, " "]}at ${list(fires.map((h) => B(hm(h))))}`;
-  return S`${w && [w, ", "]}${B(num(fires.length))} times a day, from ${B(hm(fires[0]))} to ${B(hm(fires[fires.length - 1]))}`;
-}
 
 // ------------------------------------------------------------------ the world
 const TRACKS: [string, string][] = [["s:", "SEC filings"], ["m:", "one-minute bars"], ["o:", "an option chain"]];
@@ -54,15 +43,7 @@ function ticker(gi: GraphIndex, i: number, n: MNode): Reading {
   const { down, st, book } = reach(gi, i);
   let route: Seg[] = [];
   if (st > 0) route = S` ${r.length ? "Through them it" : "It"} reaches ${list([ofDesk(gi, st), book && "the book"])}.`;
-  else if (book) {
-    const overlay = gi.byId.get("p:signals.overlay");
-    const limits = downs(gi, i, "limit");
-    const ways = [
-      overlay !== undefined && down.has(overlay) && S`through the ${ref(gi, "p:signals.overlay", "exposure overlay")}, which scales the whole book`,
-      limits.length > 0 && S`through its own ${limits.length === 1 ? "limit" : "limits"}, ${list(limits.map((j) => refAt(gi, j)))}`,
-    ].filter((x): x is Seg[] => Array.isArray(x));
-    route = S` No strategy on the desk depends on it, but it still reaches the book${ways.length > 0 && [": ", segs(...ways.map((w, k) => [k ? ", and " : "", w]))]}.`;
-  }
+  else if (book) route = segs(" ", sideRoute(gi, i, down));
 
   const peers = rows(m.peers)
     .map(([t, c]) => [str(t), fin(c)] as const)
@@ -128,16 +109,14 @@ function job(gi: GraphIndex, i: number, n: MNode, ctx: ReadingCtx): Reading {
   );
 
   const feeds = ups(gi, i, "feed");
-  const inputs = gi.up[i].filter((j) => node(gi, j).k !== "feed");
-  const series = inputs.filter((j) => node(gi, j).k === "series").length;
-  const named = inputs.filter((j) => node(gi, j).k !== "series").map((j) => (node(gi, j).k === "product" ? S`the ${refAt(gi, j)}` : refAt(gi, j)));
+  const reads = inputs(gi, i);
   const written = downs(gi, i, "series").length;
   const published = downs(gi, i, "product");
   const wiring = segs(
     feeds.length > 0 && S`It pulls the ${list(feeds.map((j) => refAt(gi, j)))} ${feeds.length === 1 ? "feed" : "feeds"}`,
     feeds.length > 0 && (written > 0 ? S` and writes ${B(plural(written, "series", "series"))}. ` : ". "),
     !feeds.length && written > 0 && S`It writes ${B(plural(written, "series", "series"))}. `,
-    (series > 0 || named.length > 0) && S`It reads ${list([series > 0 && B(plural(series, "series", "series")), ...named])} directly. `,
+    reads.length > 0 && S`It reads ${reads} directly. `,
     published.length > 0 && S`It publishes the ${list(published.map((j) => refAt(gi, j)))}. `,
     reaches(gi, i, "Downstream it"),
   );

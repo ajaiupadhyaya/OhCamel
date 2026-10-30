@@ -130,6 +130,17 @@ export function nyDay(v: string | null | undefined): string {
   return d ? `${d.day} ${MONTHS[d.month - 1]}` : EM_DASH;
 }
 
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+/**
+ * The New York weekday of a date or timestamp from the wire, as a word: "2026-10-29T02:05:00Z" -> "Wednesday"
+ * (evening in New York). A date is the weekday of the calendar day it names. Anything else is an em dash.
+ */
+export function nyWeekday(v: string | null | undefined): string {
+  if (typeof v !== "string") return EM_DASH;
+  const d = calendarDay(v) ?? nyParts(v);
+  return d ? WEEKDAYS[new Date(Date.UTC(d.year, d.month - 1, d.day)).getUTCDay()] : EM_DASH;
+}
+
 /** The New York time of day of a timestamp from the wire, as `hm` writes it: "2026-10-28T20:30:12Z" -> "4:30 PM". A date has none. */
 export function nyTime(v: string | null | undefined): string {
   if (typeof v !== "string") return EM_DASH;

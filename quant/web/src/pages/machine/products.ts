@@ -7,7 +7,7 @@
 import { num, nyDay, pct, plural } from "./fmt";
 import { parseDailyNote, parseOverlayFallback, parseOverlayNote } from "./notes";
 import {
-  at, B, capital, estimator, fin, known, list, node, obj, ofDesk, paras, readers, reaches, reason, ref, refAt, rows, S, segs, share, shares, str, strs, ups, downs,
+  at, B, capital, cellRef, estimator, fin, known, list, node, obj, ofDesk, paras, readers, reaches, reason, ref, refAt, rows, S, segs, share, shares, str, strs, ups, downs,
 } from "./prose";
 import type { Reading, Seg } from "./prose";
 import type { MNode } from "./types";
@@ -33,7 +33,7 @@ const farm: ProductReading = (gi, i, m, notes) => {
     first = segs(
       withResult !== null && S`Its latest run has ${B(plural(withResult, "cell"))} with a result${total > withResult && S` out of ${B(num(total))}`}${
         trials !== null && S`, and every DSR here is deflated by all ${B(num(trials))} trials in the farm`}. `,
-      best && str(best[0]) && S`The best out-of-sample Sharpe is ${B(num(best[2] as number, 2))}, from ${ref(gi, `c:${best[0]}`, gi.byId.has(`c:${best[0]}`) ? undefined : String(best[0]).replace("@", " on ").replace(/_/g, " "))}${
+      best && str(best[0]) && S`The best out-of-sample Sharpe is ${B(num(best[2] as number, 2))}, from ${cellRef(gi, best[0] as string)}${
         fin(best[3]) !== null && S`, with a DSR of ${B(num(best[3] as number, 2))}`}. `,
       board.length > 0 && (pass === 0 ? "No cell passes." : S`${B(num(pass))} of the ${num(board.length)} cells ${pass === 1 ? "passes" : "pass"} every gate.`),
     );
