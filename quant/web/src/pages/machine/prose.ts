@@ -152,18 +152,30 @@ export function estimator(gi: GraphIndex, e: string): Seg {
 
 // ------------------------------------------------------------------ runs
 const FINAL = new Set<Run["state"]>(["done", "failed", "cancelled"]);
-const DAY_MS = 24 * 60 * 60 * 1000;
+/** The last day, in milliseconds. */
+export const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * A job kind's runs in `runs`, by state (ruling 17). `ran` is the finished runs of the day before `now`: dated
- * by start, else by end, and counted when neither is known yet (a run seen only through the job stream). A run
- * cancelled while still queued (no start) never ran, so it is not among them.
+ * Whether `r` is among the runs of the day before `now`: the one rule for "the last day", which the readings
+ * (`jobRuns`) and the day tab (day.ts) both use, so they cannot disagree on which runs fall in it (ruling 17).
+ * A finished run is dated by start, else by end, and counted when neither is known yet (a run seen only
+ * through the job stream) or one does not read. A run cancelled while still queued (no start) never ran, so it
+ * is not among them. The window is open at the later end: a run dated after `now` (the server's clock may lead
+ * the page's) is in the day. A queued or running run is not "ran" here; those are listed by state.
+ */
+export function ranInLastDay(r: Run, now: Date): boolean {
+  if (!FINAL.has(r.state) || (r.state === "cancelled" && r.start === null)) return false;
+  return !((instant(r.start ?? r.end) ?? Infinity) < now.getTime() - DAY_MS);
+}
+
+/**
+ * A job kind's runs in `runs`, by state (ruling 17). `ran` is the finished runs of the day before `now`
+ * (`ranInLastDay`); `running` and `queued` are listed whenever they are, whatever their start.
  */
 export function jobRuns(runs: Run[], kind: string, now: Date): { ran: Run[]; running: Run[]; queued: Run[] } {
-  const from = now.getTime() - DAY_MS;
   const mine = runs.filter((r) => r.kind === kind);
   return {
-    ran: mine.filter((r) => FINAL.has(r.state) && !(r.state === "cancelled" && r.start === null) && !((instant(r.start ?? r.end) ?? Infinity) < from)),
+    ran: mine.filter((r) => ranInLastDay(r, now)),
     running: mine.filter((r) => r.state === "running"),
     queued: mine.filter((r) => r.state === "queued"),
   };
