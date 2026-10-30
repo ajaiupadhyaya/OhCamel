@@ -236,6 +236,17 @@ if body.get("offline") is not False:
 print("OK ok, version %s, online" % body.get("version"))
 '
 
+# The Machine, the front page's one request: it only reads, and it never runs a job.
+qjson "GET /api/machine           " GET /api/machine "" '
+body = body if isinstance(body, dict) else {}
+missing = [k for k in ("nodes", "edges", "runs") if not isinstance(body.get(k), list)]
+if missing:
+    print("SHAPE no %s in %s" % (", ".join(missing), str(body)[:200])); raise SystemExit
+if not any(isinstance(n, dict) and n.get("k") == "book" for n in body["nodes"]):
+    print("NOBOOK no book node among %d nodes" % len(body["nodes"])); raise SystemExit
+print("OK %d nodes, %d edges, %d runs" % (len(body["nodes"]), len(body["edges"]), len(body["runs"])))
+'
+
 qjson "GET /api/market/universes  " GET /api/market/universes "" '
 names = list(body.keys()) if isinstance(body, dict) else []
 if isinstance(body, dict) and isinstance(body.get("universes"), (list, dict)):

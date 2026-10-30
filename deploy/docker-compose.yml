@@ -309,8 +309,9 @@ services:
       # they refuse to run rather than write anywhere else.
       OHCAMEL_QUANT_SIGNALS_DIR: /signals
       # desk.report (16:30 New York) reads the live engine's /api/desk,
-      # /api/desk/tca, /api/research and /api/desk/sessions on the internal
-      # network, as the engine answers its own loopback: no password, no port.
+      # /api/desk/tca, /api/research, /api/desk/sessions, /api/graph and
+      # /api/ops on the internal network, as the engine answers its own
+      # loopback: no password, no port.
       # Not OHCAMEL_QUANT_ENGINE_URL, which is ohcamel-quant's PUBLIC bridge
       # and off by default; this one publishes nothing, it only records an
       # artifact. When the live profile is not running the report says so

@@ -79,9 +79,11 @@
 #
 # One upstream serves everything: /api/* (JSON), /assets/* (Vite's hashed
 # bundles) and every other path, which FastAPI answers with index.html so
-# client-side routes (/portfolio, /company/AAPL ...) survive a reload. No SSE
-# here, so no streaming directives; FastAPI already gzips JSON over 1 KB, and
-# Caddy's encode (ohcamel_common) leaves an already-encoded body alone.
+# client-side routes (/portfolio, /company/AAPL ...) survive a reload. The one
+# stream here is the job stream, /api/jobs/events, which needs no directives:
+# Caddy flushes text/event-stream at once (see the note above) and
+# ohcamel_common keeps it out of encode. FastAPI already gzips JSON over 1 KB,
+# and Caddy's encode leaves an already-encoded body alone.
 #
 # The Content-Security-Policy, directive by directive -- exactly what the
 # bundle needs, measured (Harden H4) by loading every route of the built SPA
