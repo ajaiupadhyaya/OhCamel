@@ -4,6 +4,7 @@
  */
 import { hm, instant, num, nyDay, nyTime, nyYear, pct, plural } from "./fmt";
 import type { MNode, Run } from "./types";
+import { shownLabel } from "./shown";
 import { directReaders, webOf } from "./web";
 import type { GraphIndex } from "./web";
 
@@ -106,7 +107,7 @@ export function reason(gi: GraphIndex, s: string): string {
 export const node = (gi: GraphIndex, i: number): MNode => gi.out.nodes[i];
 /** How a node is named in running text: its plain name where its label is a code or a slug. */
 function refText(n: MNode): string {
-  if (n.k === "product" || n.k === "result") return n.n || n.l;
+  if (n.k === "product" || n.k === "result") return n.n || shownLabel(n);
   if (n.k === "book") return "the book";
   if (n.k === "kill") return "the kill switch";
   return n.l || n.id;
@@ -147,7 +148,7 @@ export function readers(gi: GraphIndex, i: number): Seg[] {
 /** A covariance estimator by its node's label ("lw constant corr"), or its id in words when there is no node. */
 export function estimator(gi: GraphIndex, e: string): Seg {
   const i = gi.byId.get(`ce:${e}`);
-  return ref(gi, `ce:${e}`, (i !== undefined && node(gi, i).l) || e.replace(/_/g, " "));
+  return ref(gi, `ce:${e}`, (i !== undefined && shownLabel(node(gi, i))) || e.replace(/_/g, " "));
 }
 /** A farm cell by its key ("tsmom@us_equity_indices"): its node's name, or the key in words when there is no node. */
 export function cellRef(gi: GraphIndex, key: string): Seg {

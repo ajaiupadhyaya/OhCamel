@@ -11,7 +11,10 @@ a verdict, and most of the verdicts are not flattering.
 **Live:** [ohcamel.ajaiupadhyaya.com](https://ohcamel.ajaiupadhyaya.com) · what exists, what was cut and what
 is only advisory: [`/ledger`](https://ohcamel.ajaiupadhyaya.com/ledger)
 
-![Front page](docs/media/quant/paper/final/front/front-1440-paper.png)
+![The Machine](docs/media/quant/machine/machine-step1-1440.png)
+
+The front page is The Machine: the system's own dependency graph, from the feeds in to the paper book, drawn from
+its live data.
 
 Every number comes from a real source, and every payload and artifact carries its **provenance** (source, fetch
 time, `data_asof`) and its caveats. When a source is unreachable, the page says so and shows nothing. Nothing is

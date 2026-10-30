@@ -16,6 +16,7 @@ import type { LabelCand } from "./labels";
 import { circularMean, hourAngle, RADIUS, toXYZ } from "./layout";
 import { failed, isSideTrack, toScreen } from "./scene-geom";
 import type { CentreWeb, Vec3 } from "./scene-geom";
+import { shownLabel } from "./shown";
 import type { MNode } from "./types";
 import type { GraphIndex } from "./web";
 
@@ -53,10 +54,11 @@ const withNote = (label: string, note: unknown): string => (typeof note === "str
 
 /** What a node's label says: the short label, and for a feed who it comes from, for a product its name, for the kill switch its state. */
 function textOf(n: MNode): string {
-  if (n.k === "feed") return withNote(n.l, n.m.who);
-  if (n.k === "product") return withNote(n.l, n.n);
-  if (n.k === "kill") return withNote(n.l, n.m.state);
-  return n.l;
+  const l = shownLabel(n);
+  if (n.k === "feed") return withNote(l, n.m.who);
+  if (n.k === "product") return withNote(l, n.n);
+  if (n.k === "kill") return withNote(l, n.m.state);
+  return l;
 }
 
 /** The kinds labelled with nothing selected, by their priority; any other kind has a label only in a web. */

@@ -21,6 +21,12 @@ describe("Segs", () => {
     expect(out).toContain(">NVDA</button>");
   });
 
+  it("gives a link its own text as a title only when asked, for a name a table may cut short", () => {
+    const segs: Seg[] = [{ ref: "c:tsmom@rates", t: "tsmom on rates" }];
+    expect(html(segs)).not.toContain("title=");
+    expect(renderToStaticMarkup(<Segs segs={segs} has={() => true} onSelect={() => {}} titled />)).toContain('title="tsmom on rates"');
+  });
+
   it("writes a ref as the page's link when it has one, and plain text when the node is not in the graph", () => {
     const link = (id: string, t: string) => <a href={`?sel=${id}`}>{t}</a>;
     const out = renderToStaticMarkup(<Segs segs={[{ ref: "d:NVDA", t: "NVDA" }, { ref: "d:GONE", t: "GONE" }]} has={(id) => id === "d:NVDA"} onSelect={() => {}} link={link} />);

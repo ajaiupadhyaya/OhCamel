@@ -13,6 +13,7 @@ import { num } from "./fmt";
 import { RADIUS } from "./layout";
 import { reading } from "./readings";
 import { Paras } from "./Segs";
+import { chipLabel } from "./shown";
 import { hitName, TopBar } from "./TopBar";
 import { stepView } from "./tour";
 import type { Ring, Run } from "./types";
@@ -215,7 +216,7 @@ function Side({ gi, view, tone, word, web }: { gi: GraphIndex; view: View; tone:
         {shown.map((j) => (
           <li key={j}>
             <NodeLink id={gi.out.nodes[j].id} view={view} className="mx-chip">
-              {gi.out.nodes[j].l}
+              {chipLabel(gi.out.nodes[j])}
             </NodeLink>
           </li>
         ))}

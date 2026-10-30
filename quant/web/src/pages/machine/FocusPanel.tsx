@@ -8,6 +8,7 @@ import { instant, num, nyDay, nyTime, pct, plural } from "./fmt";
 import { cellRef, estimator, fin, jobRuns, known, obj, reason, rows, schedule, str } from "./prose";
 import type { Seg } from "./prose";
 import { Segs } from "./Segs";
+import { chipLabel } from "./shown";
 import type { MNode, NodeKind, Run } from "./types";
 import { countKinds, nearestFirst, summaryLine, webOf } from "./web";
 import type { GraphIndex, WebMode } from "./web";
@@ -94,7 +95,7 @@ function Side({ gi, tone, word, web, onSelect }: { gi: GraphIndex; tone: string;
 function Chip({ n, note, onSelect }: { n: MNode; note?: string; onSelect(id: string): void }) {
   return (
     <button type="button" className={`mx-chip${/FAIL/.test(str(n.m.verdict) ?? "") ? " fail" : ""}`} title={n.n} onClick={() => onSelect(n.id)}>
-      {n.l}
+      {chipLabel(n)}
       {note && <sub>{note}</sub>}
     </button>
   );
@@ -286,7 +287,7 @@ function JobLens({ gi, n, runs, now, onSelect }: LensProps) {
 }
 
 function Tok({ gi, seg, onSelect }: { gi: GraphIndex; seg: Seg; onSelect(id: string): void }) {
-  return <Segs segs={[seg]} has={(id) => gi.byId.has(id)} onSelect={onSelect} />;
+  return <Segs segs={[seg]} has={(id) => gi.byId.has(id)} onSelect={onSelect} titled />;
 }
 
 function Table({ title, head, body, more }: { title: string; head: string[]; body: ReactNode[][]; more?: number }) {

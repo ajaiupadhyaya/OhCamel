@@ -178,6 +178,18 @@ describe("FocusPanel", () => {
     expect(focus(FIXTURE, "p:farm.sweep")).not.toMatch(/<th[^>]*><\/th>/);
   });
 
+  it("gives each cell of the leaderboard its full plain name as a title, for when the name is cut short", () => {
+    const html = focus(FIXTURE, "p:farm.sweep");
+    expect(html).toMatch(/<button[^>]*class="mx-tok"[^>]*title="tsmom on us equity indices"/);
+  });
+
+  it("writes a farm cell's chip in words, and a ticker's minute chip as such", () => {
+    const farm = focus(FIXTURE, "p:farm.sweep");
+    expect(farm).toMatch(/class="mx-chip[^"]*"[^>]*>tsmom on us equity indices</);
+    expect(farm).not.toContain(">tsmom@us_equity_indices<");
+    expect(focus(FIXTURE, "p:vol.forecast_league")).toMatch(/>NVDA minute</);
+  });
+
   it("says a job's schedule in the readings' words, never the wire's", () => {
     const weekly = focus(FIXTURE, "j:regime.hmm");
     expect(weekly).toContain("once a week");

@@ -287,6 +287,11 @@
 }
 .mx-status {
   flex: none;
+  /* a tile like the controls', so the edges behind the bar cannot wash it out; the negative margin takes the padding
+     back, so the bar lays out exactly as it did without it */
+  padding: 3px 5px;
+  margin: 0 -5px;
+  background: var(--mx-raise);
   font: 11px var(--mx-font-mono);
   font-variant-numeric: tabular-nums;
   color: var(--mx-dim);

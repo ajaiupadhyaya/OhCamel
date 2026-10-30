@@ -8,6 +8,7 @@ import { commandPath, parseCommand } from "../../shell/command";
 import { formatDateline } from "../../shell/dateline";
 import { sessionOf, useOps } from "../../shell/ops";
 import { search } from "./search";
+import { shownLabel } from "./shown";
 import type { MNode } from "./types";
 import { viewSearch } from "./url";
 import type { View } from "./url";
@@ -127,7 +128,7 @@ export function TopBar({ gi, now, view, mode, onMode, onSelect, drawable }: TopB
   );
 }
 
-export const hitName = (n: MNode): string => (n.k === "series" && n.n && n.n !== n.l ? `${n.l} · ${n.n}` : n.n || n.l);
+export const hitName = (n: MNode): string => (n.k === "series" && n.n && n.n !== n.l ? `${n.l} · ${n.n}` : n.n || shownLabel(n));
 const hitKind = (n: MNode): string => (typeof n.m.track === "string" && n.m.track !== "daily" ? `${n.k} · ${n.m.track}` : n.k);
 
 function Search({ gi, onSelect }: { gi: GraphIndex; onSelect(id: string): void }) {

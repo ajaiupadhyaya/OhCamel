@@ -136,6 +136,13 @@ describe("ListView", () => {
     expect(body).not.toContain("<button");
   });
 
+  it("writes a farm cell's chip in words and a ticker's other tracks by name", () => {
+    const farm = list(FIXTURE, "?sel=p:farm.sweep&view=list");
+    expect(farm).toMatch(/class="mx-chip"[^>]*>tsmom on us equity indices</);
+    expect(farm).not.toContain(">tsmom@us_equity_indices<");
+    expect(list(FIXTURE, "?sel=p:vol.forecast_league&view=list")).toMatch(/class="mx-chip"[^>]*>NVDA minute</);
+  });
+
   it("opens the node a tour address's step names, as the machine would select it", () => {
     expect(list(FIXTURE, "?step=3&view=list")).toContain("mx-node-body");
     expect(openNodes(list(FIXTURE, "?step=1&view=list"))).toBe(0);
