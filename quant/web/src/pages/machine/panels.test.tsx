@@ -14,7 +14,7 @@ const quiet = () => {};
 
 function focus(out: MachineOut, id: string, mode: WebMode = "web"): string {
   const gi = indexGraph(out);
-  return renderToStaticMarkup(<FocusPanel gi={gi} i={gi.byId.get(id)!} mode={mode} runs={out.runs} now={NOW} onSelect={quiet} onClose={quiet} />);
+  return renderToStaticMarkup(<FocusPanel gi={gi} i={gi.byId.get(id)!} mode={mode} runs={out.runs} now={NOW} heading={createRef<HTMLHeadingElement>()} onSelect={quiet} onClose={quiet} />);
 }
 
 function side(out: MachineOut, tab: Tab, over: Partial<SidePanelProps["view"]> = {}, held: string | null = null): string {
@@ -131,6 +131,25 @@ describe("FocusPanel", () => {
     expect(xs.match(/<rect/g)).toHaveLength(2);
     expect(xs).toContain('class="neg"');
     expect(xs.indexOf("Decile 1")).toBeLessThan(xs.indexOf("Decile 2"));
+  });
+
+  it("heads every column of the leaderboard, the verdict's too", () => {
+    expect(focus(FIXTURE, "p:farm.sweep")).toMatch(/<th[^>]*>verdict<\/th>/);
+    expect(focus(FIXTURE, "p:farm.sweep")).not.toMatch(/<th[^>]*><\/th>/);
+  });
+
+  it("says a job's schedule in the readings' words, never the wire's", () => {
+    const weekly = focus(FIXTURE, "j:regime.hmm");
+    expect(weekly).toContain("once a week");
+    expect(weekly).not.toContain("weekly");
+    expect(weekly).toContain("heavy: never during the session");
+    expect(weekly).toContain("memory class M");
+    expect(focus(FIXTURE, "j:ingest.bars_daily")).toContain("on weekdays");
+    expect(focus(FIXTURE, "j:signals.overlay")).toMatch(/times a day, from/);
+  });
+
+  it("lets the heading take focus, so a hop can land on it", () => {
+    expect(focus(FIXTURE, "book")).toMatch(/<h2 class="mx-name" tabindex="-1">/);
   });
 
   it("draws no lens from a table it cannot read", () => {

@@ -49,13 +49,25 @@ export function CommandLine({ open, onClose }: { open: boolean; onClose: () => v
     returnTo.current = document.activeElement as HTMLElement | null;
     setV("");
     setHi(-1);
-    const t = setTimeout(() => input.current?.focus(), 0);
+    input.current?.focus();
     return () => {
-      clearTimeout(t);
       const el = returnTo.current;
       if (el && el.isConnected && el !== document.body) el.focus({ preventScroll: true });
     };
   }, [open]);
+
+  // Esc closes the line wherever focus is, and goes no further: it is the topmost thing, so a page never sees that Esc.
+  useEffect(() => {
+    if (!open) return;
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", key, true);
+    return () => window.removeEventListener("keydown", key, true);
+  }, [open, onClose]);
 
   // A press outside the strip closes it.
   useEffect(() => {
@@ -114,10 +126,7 @@ export function CommandLine({ open, onClose }: { open: boolean; onClose: () => v
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      onClose();
-    } else if (e.key === "ArrowDown") {
+    if (e.key === "ArrowDown") {
       e.preventDefault();
       if (rows.length) setHi((h) => Math.min(h + 1, rows.length - 1));
     } else if (e.key === "ArrowUp") {

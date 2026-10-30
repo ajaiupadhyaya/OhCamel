@@ -2,7 +2,7 @@
  * The machine's 46 px bar (spec section 6.4): the wordmark, the site in plain words, the web mode, search and the New
  * York clock. It stands in for the masthead, tape and function codes, which step aside on `/`.
  */
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { commandPath, parseCommand } from "../../shell/command";
 import { formatDateline } from "../../shell/dateline";
@@ -25,20 +25,62 @@ export interface TopBarProps {
   onSelect(id: string): void;
 }
 
+const links = PAGES.map(([word, path]) => (
+  <Link key={path} to={path}>
+    {word}
+  </Link>
+));
+
+/**
+ * The links as a menu, for a bar too narrow to hold them (machine.css says when), so the machine always reaches the
+ * rest of the site. Open, it is the topmost thing: Esc closes it and goes no further, and so does a press outside.
+ */
+function PagesMenu() {
+  const box = useRef<HTMLDetailsElement>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const close = (): void => {
+      if (box.current) box.current.open = false;
+    };
+    const key = (e: KeyboardEvent): void => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+      box.current?.querySelector("summary")?.focus();
+    };
+    const press = (e: PointerEvent): void => {
+      if (!box.current?.contains(e.target as Node)) close();
+    };
+    window.addEventListener("keydown", key, true);
+    document.addEventListener("pointerdown", press, true);
+    return () => {
+      window.removeEventListener("keydown", key, true);
+      document.removeEventListener("pointerdown", press, true);
+    };
+  }, [open]);
+  return (
+    <details ref={box} className="mx-pages" onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary>Pages</summary>
+      <nav aria-label="Pages">{links}</nav>
+    </details>
+  );
+}
+
 export function TopBar({ gi, now, mode, onMode, onSelect }: TopBarProps) {
   const ops = useOps();
+  const line = formatDateline(now, sessionOf(ops.data));
+  const date = line.indexOf(" · ") + 3; // the calendar date is the first thing the bar gives up
   return (
     <header className="mx-top">
       <Link to="/" className="mx-brand">
         OhCamel
       </Link>
       <nav className="mx-seg mx-views" aria-label="Pages">
-        {PAGES.map(([word, path]) => (
-          <Link key={path} to={path}>
-            {word}
-          </Link>
-        ))}
+        {links}
       </nav>
+      <PagesMenu />
       <div className="mx-seg" role="group" aria-label="Web mode">
         {MODES.map(([m, word]) => (
           <button key={m} type="button" className={m === mode ? "on" : undefined} aria-pressed={m === mode} onClick={() => onMode(m)}>
@@ -47,7 +89,10 @@ export function TopBar({ gi, now, mode, onMode, onSelect }: TopBarProps) {
         ))}
       </div>
       <Search gi={gi} onSelect={onSelect} />
-      <span className="mx-status">{formatDateline(now, sessionOf(ops.data))}</span>
+      <span className="mx-status">
+        <span className="mx-status-date">{line.slice(0, date)}</span>
+        {line.slice(date)}
+      </span>
     </header>
   );
 }

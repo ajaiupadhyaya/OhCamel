@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FIXTURE } from "./fixture";
-import { parseView, TABS, viewSearch } from "./url";
-import type { Tab, View } from "./url";
+import { arrival, parseView, TABS, viewCam, viewSearch } from "./url";
+import type { StepView, Tab, View } from "./url";
 
 const KNOWN = new Set(FIXTURE.nodes.map((n) => n.id));
 const has = (id: string): boolean => KNOWN.has(id);
@@ -218,5 +218,51 @@ describe("the round trip", () => {
   it("writes a normal form: the same view is the same address whatever order it was read in", () => {
     expect(viewSearch(parseView("?step=3&tab=read&sel=book", has))).toBe("?sel=book&tab=read&step=3");
     expect(viewSearch(parseView("?sel=book&tab=read&step=3", has))).toBe("?sel=book&tab=read&step=3");
+  });
+});
+
+describe("arrival: what arriving at an address does", () => {
+  const nvda: StepView = { sel: "d:NVDA", cam: "node" };
+  const overview: StepView = { sel: null, cam: "overview" };
+  const yours: StepView = { sel: null, cam: "yours" };
+
+  it("takes a tour address's selection and camera from its step", () => {
+    expect(arrival({ sel: null, tab: "tour", step: 3 }, nvda)).toEqual({ view: { sel: "d:NVDA", tab: "tour", step: 3 }, cam: "node" });
+    expect(arrival({ sel: null, tab: "tour", step: 8 }, yours)).toEqual({ view: { sel: null, tab: "tour", step: 8 }, cam: "yours" });
+  });
+
+  it("is the first step, from the whole machine, for the bare address the wordmark goes to", () => {
+    expect(arrival(DEFAULT, overview)).toEqual({ view: DEFAULT, cam: "overview" });
+  });
+
+  it("keeps a step that names the selection it is given", () => {
+    const v: View = { sel: "d:NVDA", tab: "tour", step: 3 };
+    expect(arrival(v, nvda)).toEqual({ view: v, cam: "node" });
+  });
+
+  it("opens the reading of a selection its step does not name", () => {
+    expect(arrival({ sel: "d:AAPL", tab: "tour", step: 1 }, overview)).toEqual({ view: { sel: "d:AAPL", tab: "read", step: 1 }, cam: "node" });
+    expect(arrival({ sel: "d:AAPL", tab: "tour", step: 3 }, nvda)).toEqual({ view: { sel: "d:AAPL", tab: "read", step: 3 }, cam: "node" });
+  });
+
+  it("leaves a reading or the day as the address says, framing the selection or the whole machine", () => {
+    const read: View = { sel: "book", tab: "read", step: 2 };
+    expect(arrival(read, nvda)).toEqual({ view: read, cam: "node" });
+    const day: View = { sel: null, tab: "day", step: 1 };
+    expect(arrival(day, overview)).toEqual({ view: day, cam: "overview" });
+  });
+});
+
+describe("viewCam: a view's own camera, for a new scene", () => {
+  const nvda: StepView = { sel: "d:NVDA", cam: "node" };
+
+  it("is the step's on the tour, even with the step deselected", () => {
+    expect(viewCam({ sel: null, tab: "tour", step: 3 }, nvda)).toBe("node");
+    expect(viewCam({ sel: null, tab: "tour", step: 8 }, { sel: null, cam: "yours" })).toBe("yours");
+  });
+
+  it("frames the selection elsewhere, or the whole machine with none", () => {
+    expect(viewCam({ sel: "book", tab: "read", step: 1 }, nvda)).toBe("node");
+    expect(viewCam({ sel: null, tab: "day", step: 1 }, nvda)).toBe("overview");
   });
 });

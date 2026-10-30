@@ -424,12 +424,20 @@ describe("replayHold", () => {
     expect(replayHold([b, a], NOW, 1)?.id).toBe("01B");
   });
 
-  it("holds a run the day lists, and no other", () => {
+  it("holds no run that did not start inside the day", () => {
     const before = run("01O", { start: ago(25 * H), end: ago(23 * H) });
-    const going = run("01R", { state: "running", start: ago(H), end: null });
+    const stillGoing = run("01G", { state: "running", start: ago(25 * H), end: null });
     const queued = run("01Q", { state: "queued", start: null, end: null });
     const unstarted = run("01C", { state: "cancelled", start: null, end: ago(H) });
-    expect(replayHold([before, going, queued, unstarted], NOW, 1)).toBeNull();
+    expect(replayHold([before, stillGoing, queued, unstarted], NOW, 1)).toBeNull();
+  });
+
+  it("holds a running job from its start: it is the last started, with no end", () => {
+    const going = run("01R", { state: "running", start: ago(H), end: null });
+    expect(replayFrame([going], NOW, 1).active).toEqual([]);
+    expect(replayHold([first, going], NOW, frac(2 * H))?.id).toBe("01A");
+    expect(replayHold([first, going], NOW, frac(H))?.id).toBe("01R");
+    expect(replayHold([first, going], NOW, 1)?.id).toBe("01R");
   });
 
   it("holds a failed or cancelled run: it ran, and it took the time", () => {

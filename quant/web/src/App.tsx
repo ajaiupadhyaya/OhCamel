@@ -43,7 +43,7 @@ function RoutedPages() {
   const loc = useLocation();
   return (
     <PageBoundary resetKey={loc.pathname}>
-      <Suspense fallback={loc.pathname === "/" ? null : <PageFallback />}>
+      <Suspense fallback={loc.pathname === "/" ? <p className="mx-wait">Reading the machine…</p> : <PageFallback />}>
         <Routes>
           {ROUTES.map((r) => (
             <Route key={r.path} path={r.path} element={<r.component />} />

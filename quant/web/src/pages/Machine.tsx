@@ -4,7 +4,9 @@
  *
  * The address is the view: `sel`, `tab` and `step` are read from it on every render and written to it on every change,
  * so a view is always a deep link and nothing here can drift from it. The camera is the one thing the address does not
- * hold; `go` moves it, because a flight belongs to the act of going somewhere, not to where the page is.
+ * hold; `go` moves it, because a flight belongs to the act of going somewhere, not to where the page is. An address the
+ * page did not write (the wordmark, `FRONT`, back and forward) is an arrival, and moves it too. A new scene puts the
+ * camera back on the view as it stands and changes nothing else.
  *
  * Per-frame work never reaches this component: labels and the tooltip take their updates in Overlay.tsx, and the replay
  * runs in useReplay.ts. Page-local code lives in ./machine/ (CSS prefix `mx-`).
@@ -20,10 +22,11 @@ import type { FocusCam } from "./machine/scene";
 import type { PlacedLabel } from "./machine/scene-labels";
 import { SidePanel } from "./machine/SidePanel";
 import { TopBar } from "./machine/TopBar";
+import { escapeAction, tourDir } from "./machine/keys";
 import { STEPS } from "./machine/tour";
 import type { Run } from "./machine/types";
-import { parseView, viewSearch } from "./machine/url";
-import type { Tab, View } from "./machine/url";
+import { arrival, parseView, viewCam, viewSearch } from "./machine/url";
+import type { StepView, Tab, View } from "./machine/url";
 import { useMachine } from "./machine/useMachine";
 import { useReplay } from "./machine/useReplay";
 import { useScene } from "./machine/useScene";
@@ -95,9 +98,6 @@ function Instrument({ gi, runs }: { gi: GraphIndex; runs: Run[] }) {
 
   // The view as the page last asked for it, ahead of the router's render: two keys in a row must both count.
   const asked = useRef(view);
-  useEffect(() => {
-    asked.current = view;
-  }, [view]);
 
   const go = (next: View, cam: FocusCam): void => {
     asked.current = next;
@@ -116,12 +116,29 @@ function Instrument({ gi, runs }: { gi: GraphIndex; runs: Run[] }) {
     else if (v.sel !== null) go({ ...v, sel: null }, "keep");
   }
 
+  /**
+   * A selection made inside a panel. The control that made it can go with the old selection, and focus would fall to
+   * the body, so it follows to the new heading.
+   */
+  const heading = useRef<HTMLHeadingElement>(null);
+  const hopping = useRef(false);
+  const hop = (id: string): void => {
+    if (id === asked.current.sel) heading.current?.focus({ preventScroll: true });
+    else hopping.current = true;
+    select(id);
+  };
+
+  const stepView = (step: number): StepView => {
+    const s = STEPS[step - 1];
+    const i = s.sel(gi, { runs, now });
+    return { sel: i === null ? null : gi.out.nodes[i].id, cam: s.cam };
+  };
+
   const goStep = (step: number): void => {
     replay.stop();
     const k = Math.max(1, Math.min(STEPS.length, step));
-    const s = STEPS[k - 1];
-    const i = s.sel(gi, { runs, now });
-    go({ sel: i === null ? null : gi.out.nodes[i].id, tab: "tour", step: k }, s.cam);
+    const s = stepView(k);
+    go({ sel: s.sel, tab: "tour", step: k }, s.cam);
   };
   const stepBy = (dir: number): void => {
     const { step } = asked.current;
@@ -141,27 +158,31 @@ function Instrument({ gi, runs }: { gi: GraphIndex; runs: Run[] }) {
     replay.start();
   };
 
-  /** Arriving: the address says where. A tour step brings its own selection; a selection the step does not name opens its reading. */
+  /** The address changed, or the page has just loaded: go where it says. */
   const arrive = (): void => {
+    replay.stop();
     const v = asked.current;
-    if (v.tab !== "tour") {
-      go(v, v.sel === null ? "overview" : "node");
-      return;
-    }
-    const own = STEPS[v.step - 1].sel(gi, { runs, now });
-    if (v.sel === null || v.sel === (own === null ? null : gi.out.nodes[own].id)) goStep(v.step);
-    else go({ ...v, tab: "read" }, "node");
+    const a = arrival(v, stepView(v.step));
+    go(a.view, a.cam);
   };
 
+  /** A new scene: the same view, with the camera back on it. A rebuild never moves the page. */
+  const restore = (): void => go(view, viewCam(view, stepView(view.step)));
+
   const onKey = (e: KeyboardEvent): void => {
-    if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target as HTMLElement | null)) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const typing = isTypingTarget(e.target as HTMLElement | null);
     if (e.key === "Escape") {
-      if (replay.playing) replay.stop();
-      else select(null);
-    } else if (asked.current.tab === "tour" && ["ArrowDown", "PageDown", "ArrowUp", "PageUp"].includes(e.key)) {
-      e.preventDefault();
-      stepBy(e.key === "ArrowDown" || e.key === "PageDown" ? 1 : -1);
+      const overlay = document.querySelector(".oc-cmd, .oc-keymap, .mx-pages[open]") !== null;
+      const action = escapeAction({ overlay, handled: e.defaultPrevented, typing, replaying: replay.playing, selected: asked.current.sel !== null });
+      if (action === "stop-replay") replay.stop();
+      else if (action === "deselect") select(null);
+      return;
     }
+    const dir = tourDir(e.key);
+    if (dir === 0 || e.defaultPrevented || typing || asked.current.tab !== "tour") return;
+    e.preventDefault();
+    stepBy(dir);
   };
 
   const wheelState = useRef(WHEEL_IDLE);
@@ -176,11 +197,24 @@ function Instrument({ gi, runs }: { gi: GraphIndex; runs: Run[] }) {
     if (dir !== 0) stepBy(dir);
   };
 
-  // Listeners and the arrival read the latest of these.
-  const latest = useRef({ arrive, onKey, onWheel });
+  // Listeners and the effects below read the latest of these.
+  const latest = useRef({ arrive, restore, onKey, onWheel });
   useEffect(() => {
-    latest.current = { arrive, onKey, onWheel };
+    latest.current = { arrive, restore, onKey, onWheel };
   });
+
+  // Every address the page writes goes through `go` first, so one it did not ask for came from outside it.
+  useEffect(() => {
+    const outside = viewSearch(view) !== viewSearch(asked.current);
+    asked.current = view;
+    if (outside) latest.current.arrive();
+  }, [view]);
+
+  useEffect(() => {
+    if (!hopping.current) return;
+    hopping.current = false;
+    heading.current?.focus({ preventScroll: true });
+  }, [view.sel]);
 
   // What the address says is lit, however it came to say it.
   useEffect(() => {
@@ -193,8 +227,12 @@ function Instrument({ gi, runs }: { gi: GraphIndex; runs: Run[] }) {
   useEffect(() => {
     scene?.setViewOffset(selected === null ? 0 : FOCUS_ROOM, SIDE_ROOM, 0);
   }, [scene, selected]);
+  const placed = useRef(false);
   useEffect(() => {
-    if (scene) latest.current.arrive();
+    if (!scene) return;
+    if (placed.current) latest.current.restore();
+    else latest.current.arrive();
+    placed.current = true;
   }, [scene]);
 
   useEffect(() => {
@@ -215,9 +253,9 @@ function Instrument({ gi, runs }: { gi: GraphIndex; runs: Run[] }) {
       <Labels sink={labels} />
       <TopBar gi={gi} now={now} mode={mode} onMode={setMode} onSelect={select} />
       {selected !== null && (
-        <FocusPanel key={view.sel} gi={gi} i={selected} mode={mode} runs={runs} now={now} onSelect={select} onClose={() => select(null)} />
+        <FocusPanel gi={gi} i={selected} mode={mode} runs={runs} now={now} heading={heading} onSelect={hop} onClose={() => select(null)} />
       )}
-      <SidePanel gi={gi} view={view} runs={runs} now={now} replay={replay} onTab={setTab} onStep={goStep} onSelect={select} onReplay={startReplay} onStopReplay={replay.stop} />
+      <SidePanel gi={gi} view={view} runs={runs} now={now} replay={replay} onTab={setTab} onStep={goStep} onSelect={hop} onReplay={startReplay} onStopReplay={replay.stop} />
       <Legend />
       <Tooltip gi={gi} sink={tip} />
     </>

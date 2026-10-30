@@ -3,9 +3,9 @@
  * kind, and what it reads and feeds. Every figure comes from the response through `fmt`; a figure the response lacks is
  * left out, never shown as a dash, and a lens with nothing to show is not drawn.
  */
-import { useMemo, type ReactNode } from "react";
-import { hm, instant, num, nyDay, nyTime, pct, plural } from "./fmt";
-import { cellRef, estimator, fin, jobRuns, known, obj, reason, rows, str, strs } from "./prose";
+import { useEffect, useMemo, useRef, type ReactNode, type RefObject } from "react";
+import { instant, num, nyDay, nyTime, pct, plural } from "./fmt";
+import { cellRef, estimator, fin, jobRuns, known, obj, reason, rows, schedule, str } from "./prose";
 import type { Seg } from "./prose";
 import { Segs } from "./Segs";
 import type { MNode, NodeKind, Run } from "./types";
@@ -26,18 +26,24 @@ export interface FocusPanelProps {
   mode: WebMode;
   runs: Run[];
   now: Date;
+  /** The name's heading, where focus goes after a selection made inside a panel. */
+  heading: RefObject<HTMLHeadingElement>;
   onSelect(id: string): void;
   onClose(): void;
 }
 
-export function FocusPanel({ gi, i, mode, runs, now, onSelect, onClose }: FocusPanelProps) {
+export function FocusPanel({ gi, i, mode, runs, now, heading, onSelect, onClose }: FocusPanelProps) {
   const n = gi.out.nodes[i];
   const web = useMemo(() => webOf(gi, i, mode), [gi, i, mode]);
+  const panel = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (panel.current) panel.current.scrollTop = 0; // a new selection starts at its own top
+  }, [n.id]);
   const verdict = str(n.m.verdict), detail = str(n.m.detail);
   const sub = n.k === "series" ? n.n : n.k === "job" || n.k === "product" ? str(n.m.kind) : null;
   const lens = n.status === "missing" ? null : <Lens gi={gi} i={i} n={n} runs={runs} now={now} onSelect={onSelect} />;
   return (
-    <aside className="mx-panel mx-focus" aria-label="The selection">
+    <aside ref={panel} className="mx-panel mx-focus" aria-label="The selection">
       <div className="mx-idl">
         <span className="mx-idl-id">
           <b>{KIND[n.k] ?? n.k}</b> · {n.id}
@@ -46,7 +52,9 @@ export function FocusPanel({ gi, i, mode, runs, now, onSelect, onClose }: FocusP
           ×
         </button>
       </div>
-      <h2 className="mx-name">{n.k === "series" ? n.l : n.n}</h2>
+      <h2 ref={heading} className="mx-name" tabIndex={-1}>
+        {n.k === "series" ? n.l : n.n}
+      </h2>
       {sub && sub !== (n.k === "series" ? n.l : n.n) && <div className="mx-vdetail">{sub}</div>}
       {(verdict || n.status === "missing" || n.m.stale === true) && (
         <div className="mx-stamps">
@@ -235,21 +243,25 @@ function FeedLens({ n }: LensProps) {
   );
 }
 
-function JobLens({ n, runs, now }: LensProps) {
+function JobLens({ gi, n, runs, now, onSelect }: LensProps) {
   const m = n.m;
-  const fires = (Array.isArray(m.fires) ? m.fires : []).map(fin).filter((h): h is number => h !== null).sort((a, b) => a - b);
-  const when = strs(m.when).join(", ");
-  const times = fires.length > 6 ? `${num(fires.length)} times a day, ${hm(fires[0])} to ${hm(fires[fires.length - 1])}` : fires.map((h) => hm(h)).join(", ");
-  const schedule = [when, times && `${times} ET`, m.heavy === true && "heavy: never during the session", str(m.mem) && `memory class ${str(m.mem)}`].filter(Boolean).join(" · ");
+  const when = schedule(m); // the readings' own words, so a wire word such as "weekdays" is never printed as it comes
+  const timed = when.some((s) => "b" in s);
+  const notes = [m.heavy === true && "heavy: never during the session", str(m.mem) && `memory class ${str(m.mem)}`].filter(Boolean);
   const { ran } = jobRuns(runs, str(m.kind) ?? n.id.replace(/^j:/, ""), now);
   const dated = (r: Run): number => instant(r.start ?? r.end) ?? 0;
   const recent = [...ran].sort((a, b) => dated(b) - dated(a)).slice(0, MAX_ROWS);
   return (
     <>
-      {schedule && (
+      {(when.length > 0 || notes.length > 0) && (
         <section className="mx-sec">
           <h3 className="mx-h3">scheduled</h3>
-          <div className="mx-vdetail">{schedule}</div>
+          <div className="mx-vdetail">
+            <Segs segs={when} has={(id) => gi.byId.has(id)} onSelect={onSelect} />
+            {timed && " ET"}
+            {when.length > 0 && notes.length > 0 && " · "}
+            {notes.join(" · ")}
+          </div>
         </section>
       )}
       <section className="mx-sec">
@@ -314,7 +326,7 @@ function FarmLens({ gi, n, onSelect }: LensProps) {
   return (
     <Table
       title="leaderboard, chosen variant per cell"
-      head={["cell", "Sharpe", "DSR", ""]}
+      head={["cell", "Sharpe", "DSR", "verdict"]}
       body={board.slice(0, MAX_ROWS).map(([cell, verdict, sharpe, dsr]) => [
         <Tok key="c" gi={gi} seg={cellRef(gi, cell as string)} onSelect={onSelect} />,
         fin(sharpe) === null ? "" : num(sharpe as number, 2),

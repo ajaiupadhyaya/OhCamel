@@ -1,5 +1,5 @@
 /**
- * The replay of the last day: a hand sweeps it in `REPLAY_S`, and the last job to have started stays lit (`replayHold`).
+ * The replay of the last day: a hand sweeps it in `REPLAY_S`, and the last job to have started, running or not, stays lit (`replayHold`).
  * The sweep runs off React: each frame goes straight to the scene and the clock's text, and the page re-renders only
  * when the held run changes, to light its row. `now` is fixed when the sweep starts, so the day does not slide under it.
  */

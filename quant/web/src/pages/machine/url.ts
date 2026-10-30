@@ -6,6 +6,7 @@
  * field that is not valid falls back to its default on its own, so a bad `sel` does not cost the tab or the
  * step. Nothing read here is ever written as HTML.
  */
+import type { TourCam } from "./tour";
 
 export const TABS = ["tour", "read", "day"] as const;
 export type Tab = (typeof TABS)[number];
@@ -64,4 +65,27 @@ export function viewSearch(v: View): string {
   if (isTab(v.tab) && v.tab !== DEFAULT_TAB) parts.push(`tab=${v.tab}`);
   if (isStep(v.step) && v.step !== DEFAULT_STEP) parts.push(`step=${v.step}`);
   return parts.length ? `?${parts.join("&")}` : "";
+}
+
+/** A tour step as a view sees it: the node it selects, by id, and where it puts the camera. */
+export interface StepView {
+  sel: string | null;
+  cam: TourCam;
+}
+
+/** Where a view's camera belongs, with `step` its tour step: what a new scene is flown back to. It never changes the view. */
+export function viewCam(v: View, step: StepView): TourCam {
+  if (v.tab === "tour") return step.cam;
+  return v.sel === null ? "overview" : "node";
+}
+
+/**
+ * What arriving at an address does, on loading the page or when the address changes from outside it (the wordmark,
+ * `FRONT`, back and forward): the view to go to, and the camera's way there. A tour step brings its own selection. A
+ * selection its step does not name opens its reading, so `/?sel=d:AAPL` is not step 1 with an unrelated panel.
+ */
+export function arrival(v: View, step: StepView): { view: View; cam: TourCam } {
+  if (v.tab !== "tour") return { view: v, cam: viewCam(v, step) };
+  if (v.sel === null || v.sel === step.sel) return { view: { ...v, sel: step.sel }, cam: step.cam };
+  return { view: { ...v, tab: "read" }, cam: "node" };
 }

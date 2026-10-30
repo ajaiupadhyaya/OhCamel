@@ -31,9 +31,16 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const machine = loc.pathname === "/";
 
+  // While the machine loads, or has failed, it has no search; the key then does what it does everywhere else.
+  const focusMachineSearch = () => {
+    const search = document.getElementById("mx-search");
+    if (search) search.focus();
+    else toggleCmd();
+  };
+
   useHotkeys({
     onCommand: toggleCmd,
-    onSlash: machine ? () => document.getElementById("mx-search")?.focus() : undefined,
+    onSlash: machine ? focusMachineSearch : undefined,
     onHelp: () => {
       setCmd(false);
       setKeys((o) => !o);

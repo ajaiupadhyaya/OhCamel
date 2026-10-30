@@ -7,7 +7,7 @@
 
 .mx-root {
   --mx-panel: color-mix(in srgb, var(--mx-ground) 78%, transparent);
-  --mx-solid: color-mix(in srgb, var(--mx-ground) 94%, transparent);
+  --mx-solid: color-mix(in srgb, var(--mx-ground) 97%, transparent);
   --mx-raise: color-mix(in srgb, var(--mx-bright) 6%, transparent);
   --mx-raise-2: color-mix(in srgb, var(--mx-bright) 10%, transparent);
   --mx-raise-3: color-mix(in srgb, var(--mx-bright) 12%, transparent);
@@ -158,10 +158,52 @@
 .mx-root .mx-seg > *:hover {
   color: var(--mx-bright);
 }
+.mx-pages {
+  position: relative;
+  flex: none;
+  z-index: 9;
+}
+.mx-pages summary {
+  padding: 5px 9px;
+  background: var(--mx-raise);
+  font-size: 13px;
+  color: var(--mx-dim);
+  list-style: none;
+  cursor: pointer;
+}
+.mx-pages summary::-webkit-details-marker {
+  display: none;
+}
+.mx-pages[open] summary,
+.mx-pages summary:hover {
+  background: var(--mx-raise-2);
+  color: var(--mx-bright);
+}
+.mx-pages nav {
+  position: absolute;
+  top: 34px;
+  left: 0;
+  display: grid;
+  min-width: 170px;
+  padding: 4px 0;
+  background: var(--mx-solid);
+  border: 1px solid var(--mx-line);
+}
+.mx-pages nav a {
+  padding: 4px 10px;
+  font-size: 13.5px;
+  color: var(--mx-ink);
+  text-decoration: none;
+}
+.mx-pages nav a:hover {
+  background: var(--mx-raise-2);
+  color: var(--mx-bright);
+}
 .mx-search {
   position: relative;
   flex: 1 1 200px;
   min-width: 120px;
+  max-width: 300px;
   margin-left: auto;
 }
 .mx-search input {
@@ -707,15 +749,6 @@
 }
 
 /* ---------------------------------------------------------------- waiting and failing */
-.mx-wait {
-  position: fixed;
-  left: 14px;
-  top: 14px;
-  z-index: 6;
-  margin: 0;
-  font: 13px var(--mx-font-mono);
-  color: var(--mx-dim);
-}
 .mx-wait-low {
   top: auto;
   bottom: 12px;
@@ -749,14 +782,24 @@ body:has(.oc-app-machine) .oc-keymap {
   z-index: 12;
 }
 
-/* ---------------------------------------------------------------- width */
-@media (max-width: 1320px) {
-  .mx-status {
+/* ---------------------------------------------------------------- width
+ * The bar gives up what it can spare, in order. First the calendar date: the spec's status is the New York time and the
+ * session, and those stay. Then the row of links, for the Pages menu, so `/` always reaches the rest of the site.
+ * Widths measured with the longest session word, "AFTER HOURS".
+ */
+.mx-pages {
+  display: none;
+}
+@media (max-width: 1410px) {
+  .mx-status-date {
     display: none;
   }
 }
-@media (max-width: 1100px) {
+@media (max-width: 1290px) {
   .mx-views {
     display: none;
+  }
+  .mx-pages {
+    display: block;
   }
 }

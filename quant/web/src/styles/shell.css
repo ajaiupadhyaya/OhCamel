@@ -10,9 +10,19 @@
   min-height: 100vh;
 }
 
-/* `/` is the machine. Its own CSS comes with its lazy chunk; only the ground is here, so the first paint is already dark. */
+/* `/` is the machine. Its own CSS comes with its lazy chunk; what the first paint needs is here: the ground, and the
+   one line that says it is coming, which the page also uses while it reads. */
 .oc-app-machine {
   background: var(--mx-ground);
+}
+.mx-wait {
+  position: fixed;
+  left: 14px;
+  top: 14px;
+  z-index: 6;
+  margin: 0;
+  font: 13px var(--mx-font-mono);
+  color: var(--mx-dim);
 }
 .oc-app-machine .oc-page {
   min-height: 100vh;
