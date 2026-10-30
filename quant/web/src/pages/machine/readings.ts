@@ -170,7 +170,7 @@ function cell(gi: GraphIndex, i: number, n: MNode): Reading {
   const cap = st === undefined ? null : fin(node(gi, st).m.capital);
   const becomes = st !== undefined && S`On the desk it trades as ${refAt(gi, st)}${cap !== null && S`, at ${B(share(cap))} of capital`}.`;
   if (str(m.status) && m.status !== "ok") {
-    return { title: n.n || n.l, paras: paras(S`This cell has no result from the latest run${str(m.reason) && `: ${reason(str(m.reason)!)}`}.`, becomes), caveats: [] };
+    return { title: n.n || n.l, paras: paras(S`This cell has no result from the latest run${str(m.reason) && `: ${reason(gi, str(m.reason)!)}`}.`, becomes), caveats: [] };
   }
   const combos = fin(m.combos) ?? fin(m.n_combos), sharpe = fin(m.oos_sharpe_ann), psr = fin(m.psr), dsr = fin(m.dsr_farm), pbo = fin(m.pbo);
   const verdict = str(m.verdict), detail = str(m.detail);
@@ -233,7 +233,7 @@ function book(gi: GraphIndex, i: number, n: MNode): Reading {
     ];
     summary = S`${asof.length > 0 ? S`As of ${asof}, the` : "The"} desk report's book summary shows ${list(parts)}.`;
   } else if (str(m.summary_why)) {
-    summary = S`Its limits, kill switch and position count are not shown here. The system's reason: “${reason(str(m.summary_why)!)}”.`;
+    summary = S`Its limits, kill switch and position count are not shown here. The system's reason: “${reason(gi, str(m.summary_why)!)}”.`;
   }
   return { title: n.n || n.l, paras: paras(first, summary), caveats: [] };
 }
@@ -288,7 +288,7 @@ export function reading(gi: GraphIndex, i: number, ctx: ReadingCtx): Reading {
   const n = node(gi, i);
   if (n.status === "missing") {
     const why = str(n.why);
-    return { title: n.n || n.l, paras: paras(why ? S`This is missing from the machine: ${reason(why)}.` : segs("This is missing from the machine.")), caveats: [] };
+    return { title: n.n || n.l, paras: paras(why ? S`This is missing from the machine: ${reason(gi, why)}.` : segs("This is missing from the machine.")), caveats: [] };
   }
   switch (n.k) {
     case "series": return n.m.track === "daily" ? ticker(gi, i, n) : series(gi, i, n);

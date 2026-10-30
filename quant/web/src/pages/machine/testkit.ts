@@ -50,7 +50,7 @@ const ROWS: Record<string, (Fmt[] | "q" | null)[]> = {
 /** The timestamps and dates a reading prints, as `nyDay` and `nyTime` write them. */
 const TIMES = new Set(["asof", "ok", "finished", "summary_asof", "date"]);
 /** The strings a reading quotes whole: a reason, a verdict's detail, a scope, a name; never a note (those are caveats). */
-const QUOTED = new Set(["why", "detail", "reason", "scope", "summary_why", "lens_why", "verdict", "symbols", "trips_on", "kind", "underlying", "when", "producer", "state", "kill"]);
+const QUOTED = new Set(["why", "detail", "reason", "scope", "summary_why", "lens_why", "verdict", "symbols", "trips_on", "underlying", "when", "producer", "state", "kill"]);
 const FINAL = ["done", "failed", "cancelled"];
 
 /**
@@ -58,16 +58,17 @@ const FINAL = ["done", "failed", "cancelled"];
  * - each field a reading prints (`PRINTED`, `ROWS`), through the formatter it is printed with;
  * - the figures parsed from notes (`parseDailyNote`, `parseOverlayNote`);
  * - each timestamp a reading prints, through `nyDay` and `nyTime`;
- * - the numbers inside the strings a reading quotes whole (a node's label, name and `why`, `QUOTED`), with any
- *   date in them written as `reason` writes it;
+ * - the numbers inside the strings a reading quotes whole (a node's label, name and `why`, `QUOTED`, and a
+ *   limit's kind), with any date in them written as `reason` writes it;
  * - the counts a reading can make: nodes by kind and track, each node's neighbours and web by kind, its direct
  *   readers, a job's fires, the farm's board rows and passes and its strategies, and each job kind's runs by
  *   state with their CPU-seconds, over the same last day the readings use (`jobRuns`, `cpuTotal`).
  */
 export function allowedNumbers(out: MachineOut, now = new Date(out.asof)): Set<string> {
+  const gi = indexGraph(out);
   const allowed = new Set<string>();
   const add = (s: string): void => numbersIn(s).forEach((n) => allowed.add(n));
-  const quote = (s: string): void => add(reason(s));
+  const quote = (s: string): void => add(reason(gi, s));
   const count = (k: number): void => add(num0(k));
 
   const walk = (v: unknown, key: string): void => {
@@ -89,7 +90,6 @@ export function allowedNumbers(out: MachineOut, now = new Date(out.asof)): Set<s
     else if (v && typeof v === "object") Object.entries(v).forEach(([k, x]) => walk(x, k));
   };
 
-  const gi = indexGraph(out);
   const kinds = (ids: Iterable<number>): void => Object.values(countKinds(gi, ids)).forEach(count);
   kinds(out.nodes.keys());
   const tracks = new Map<unknown, number>();
@@ -100,6 +100,7 @@ export function allowedNumbers(out: MachineOut, now = new Date(out.asof)): Set<s
   out.nodes.forEach((n, i) => {
     [n.l, n.n, n.why ?? ""].forEach(quote);
     walk(n.m, "");
+    if (n.k === "limit" && typeof n.m.kind === "string") quote(n.m.kind);   // only a limit's kind is printed ("a max drawdown limit")
     if (n.id.startsWith("ce:")) Object.keys(n.m).forEach(quote);   // a covariance estimator's universes, named in its reading
     const notes = Array.isArray(n.m.notes) ? n.m.notes.filter((x): x is string => typeof x === "string") : [];
     Object.values(parseDailyNote(notes) ?? {}).forEach(count);

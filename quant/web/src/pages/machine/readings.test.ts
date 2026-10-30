@@ -50,6 +50,16 @@ describe("testkit", () => {
     expect(numbersIn(flatten(fake)).filter((n) => !allowed.has(n))).toEqual(["23", "99%"]);
   });
 
+  it("allowedNumbers takes numbers from a limit's kind, which a reading prints, and not from a job's, which it does not", () => {
+    const fx = clone();
+    nodeOf(fx, "j:regime.hmm").m.kind = "ingest.holdings_13f";
+    nodeOf(fx, "lim:aapl-cap").m.kind = "var_99";
+    const allowed = allowedNumbers(fx);
+    expect(allowed).not.toContain("13");
+    expect(allowed).toContain("99");
+    expect(text(fx, "lim:aapl-cap")).toContain("It is a var 99 limit");
+  });
+
   it("allowedNumbers counts runs over the same last day as the readings", () => {
     const later = new Date("2026-10-29T03:30:00Z");   // the 01:30Z league run is now over a day old
     expect(allowedNumbers(FIXTURE)).toContain("1,241");
@@ -128,6 +138,19 @@ describe("reading: the exposure overlay", () => {
     expect(r.caveats).toEqual(["no targets yet: no roster document in the signals directory, exposure_scale 1"]);
   });
 
+  it("quotes the fallback note when, with no targets, the reading does not say it fell back", () => {
+    const fx = clone();
+    const fallback = "no cov.league artifact: lw_constant_corr (Ledoit-Wolf)";
+    nodeOf(fx, "p:signals.overlay").m.notes = [
+      fallback,
+      "no targets yet: no roster document in the signals directory, exposure_scale 1",
+      "exposure_scale 1.000000 = min(1, 0.1 / 0.000000); covariance lw_constant_corr on 0 sessions, diagonal from P2's best model by QLIKE",
+    ];
+    const r = read(fx, "p:signals.overlay");
+    expect(flatten(r)).not.toMatch(/fell back|covariance/);
+    expect(r.caveats).toEqual([fallback, "no targets yet: no roster document in the signals directory, exposure_scale 1"]);
+  });
+
   it("says the overlay fell back to its estimator only when a note says so", () => {
     expect(text(FIXTURE, "p:signals.overlay")).not.toMatch(/fell back/);
     const fx = clone();
@@ -136,12 +159,17 @@ describe("reading: the exposure overlay", () => {
     expect(text(fx, "p:signals.overlay")).toMatch(/fell back to lw constant corr/);
   });
 
-  it("quotes the first note whole when no note gives the scale, and states no figure of its own", () => {
+  it("quotes every note whole when no note gives the scale, and states no figure of its own", () => {
     const fx = clone();
-    nodeOf(fx, "p:signals.overlay").m.notes = ["no targets yet: no roster document in the signals directory, exposure_scale 1"];
+    const notes = [
+      "cov.league artifact 01M5ZZ is stale (used, as the newest there is)",
+      "no targets yet: no roster document in the signals directory, exposure_scale 1",
+      "exposure scale written in a form this page does not read",
+    ];
+    nodeOf(fx, "p:signals.overlay").m.notes = notes;
     const r = read(fx, "p:signals.overlay");
-    expect(r.caveats).toEqual(["no targets yet: no roster document in the signals directory, exposure_scale 1"]);
-    expect(flatten(r)).toContain("Its first note could not be read as a scale, so it is quoted as written.");
+    expect(r.caveats).toEqual(notes);
+    expect(flatten(r)).toContain("No note gives its scale, so its notes are quoted as written.");
     expect(flatten(r)).not.toMatch(/forecast|%/);
   });
 });
@@ -291,6 +319,16 @@ describe("reading: the farm", () => {
     expect(refsOf(r)).toContain("c:tsmom@us_equity_indices");
   });
 
+  it("names a best cell that has no node in words, never by its raw id", () => {
+    const fx = clone();
+    const lens = nodeOf(fx, "p:farm.sweep").m.lens as { board: unknown[][] };
+    lens.board[0][0] = "low_vol@sector_etfs";
+    const r = read(fx, "p:farm.sweep");
+    expect(flatten(r)).toContain("from low vol on sector etfs, with a DSR of 0.97");
+    expect(flatten(r)).not.toMatch(/c:|@|low_vol/);
+    expect(refsOf(r)).not.toContain("c:low_vol@sector_etfs");
+  });
+
   it("says no cell passes when none does", () => {
     const fx = clone();
     const lens = nodeOf(fx, "p:farm.sweep").m.lens as { board: unknown[][] };
@@ -349,10 +387,15 @@ describe("reading: other products", () => {
     expect(t).toContain("436 weeks");
   });
 
-  it("gives desk.report only its run times, and says its contents stay on the research pages (spec §7 Q1)", () => {
-    const t = text(FIXTURE, "p:desk.report");
-    expect(t).toContain("Its latest report finished at 4:30 PM on 28 Oct. This page shows only when it ran.");
-    expect(t).not.toMatch(/research pages|fill|P&L|refus|position/i);
+  it("gives desk.report its run times, and of its contents only that the book summary is shown on the book (spec §7 Q1)", () => {
+    const r = read(FIXTURE, "p:desk.report");
+    expect(flatten(r)).toContain("Its latest report finished at 4:30 PM on 28 Oct. Of what it reports, this page shows only the book summary, on the book.");
+    expect(refsOf(r)).toEqual(["book"]);
+    expect(flatten(r)).not.toMatch(/research pages|only when it ran|fill|P&L|refus|position/i);
+    // with no summary on the book, it says nothing of its contents at all
+    const none = read(FIXTURE_NO_SUMMARY, "p:desk.report");
+    expect(flatten(none)).toBe("Desk report\nIts latest report finished at 4:30 PM on 28 Oct.");
+    expect(refsOf(none)).toEqual([]);
   });
 
   it("gives the research service its strategies and no verdict", () => {
@@ -382,6 +425,15 @@ describe("reading: other products", () => {
     node.why = "the regime.hmm artifact of 2026-10-24T13:07:33.610Z is past its max age; data as of 2026-10-23";
     node.m = { kind: "regime.hmm" };
     expect(text(fx, "p:regime.hmm")).toContain("the regime.hmm artifact of 9:07 AM on 24 Oct is past its max age; data as of 23 Oct.");
+  });
+
+  it("keeps the year of a date or instant in a reason when it is not the payload's own year", () => {
+    const fx = clone();
+    nodeOf(fx, "c:xsmom@sectors").m = { status: "skipped", reason: "the universe starts 2019-01-02; last run 2025-12-31T15:00:00Z; bad 2026-13-45", combos: 24 };
+    const t = text(fx, "c:xsmom@sectors");
+    expect(t).toContain("the universe starts 2 Jan 2019; last run 10:00 AM on 31 Dec 2025; bad 2026-13-45.");
+    const allowed = allowedNumbers(fx);
+    for (const n of numbersIn(t)) expect(allowed, n).toContain(n);
   });
 
   it("says a stale product is past its schedule's max age", () => {

@@ -85,13 +85,15 @@ const NY = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", hourCycle: "h23",
 });
 
+type Day = { year: number; month: number; day: number };
+
 /** A date ("2026-10-27") as its calendar day, checked to be a real one; null otherwise. */
-function calendarDay(v: string): { month: number; day: number } | null {
+function calendarDay(v: string): Day | null {
   const m = DATE_ONLY.exec(v);
   if (!m) return null;
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
   const t = new Date(Date.UTC(y, mo - 1, d));
-  return t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d ? { month: mo, day: d } : null;
+  return t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d ? { year: y, month: mo, day: d } : null;
 }
 
 /**
@@ -104,12 +106,18 @@ export function instant(v: string | null | undefined): number | null {
   return Number.isNaN(t) ? null : t;
 }
 
-/** A timestamp as its New York month, day, hour and minute; null when it is not one. */
-function nyParts(v: string): { month: number; day: number; hour: number; minute: number } | null {
+/** A timestamp as its New York date, hour and minute; null when it is not one. */
+function nyParts(v: string): (Day & { hour: number; minute: number }) | null {
   const t = instant(v);
   if (t === null) return null;
   const p = Object.fromEntries(NY.formatToParts(new Date(t)).map((x) => [x.type, x.value]));
-  return { month: Number(p.month), day: Number(p.day), hour: Number(p.hour) % 24, minute: Number(p.minute) };
+  return { year: Number(p.year), month: Number(p.month), day: Number(p.day), hour: Number(p.hour) % 24, minute: Number(p.minute) };
+}
+
+/** The year of a date, or of a timestamp in New York; null for anything else. */
+export function nyYear(v: string | null | undefined): number | null {
+  if (typeof v !== "string") return null;
+  return (calendarDay(v) ?? nyParts(v))?.year ?? null;
 }
 
 /**

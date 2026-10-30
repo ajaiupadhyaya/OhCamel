@@ -2,7 +2,7 @@
  * The kit the Machine's readings are written with (readings.ts, products.ts): text segments, defensive reads
  * of the payload, and the few phrases about the graph that every kind shares. Pure, no DOM.
  */
-import { instant, num, nyDay, nyTime, pct, plural } from "./fmt";
+import { instant, num, nyDay, nyTime, nyYear, pct, plural } from "./fmt";
 import type { MNode, Run } from "./types";
 import { directReaders, webOf } from "./web";
 import type { GraphIndex } from "./web";
@@ -89,12 +89,16 @@ export function at(iso: unknown): Seg[] {
 const STAMP = /\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?/g;
 /**
  * A reason the server wrote for the page, to quote: any date or instant in it written as the page writes
- * times ("the desk.report artifact of 4:30 PM on 28 Oct is stale"), never as raw ISO text.
+ * times ("the desk.report artifact of 4:30 PM on 28 Oct is stale"), never as raw ISO text. A day outside the
+ * payload's own year keeps its year ("starts 2 Jan 2019"); one that does not parse is left as written.
  */
-export function reason(s: string): string {
+export function reason(gi: GraphIndex, s: string): string {
+  const year = nyYear(gi.out.asof);
   return s.replace(STAMP, (m) => {
-    const t = nyTime(m), d = nyDay(m);
-    return known(t) && known(d) ? `${t} on ${d}` : known(d) ? d : m;
+    const t = nyTime(m), d = nyDay(m), y = nyYear(m);
+    if (!known(d)) return m;
+    const day = y !== null && y === year ? d : `${d} ${y}`;
+    return known(t) ? `${t} on ${day}` : day;
   });
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dur, hm, instant, num, nyDay, nyTime, pct, plural } from "./fmt";
+import { dur, hm, instant, num, nyDay, nyTime, nyYear, pct, plural } from "./fmt";
 
 const MINUS = "−";
 const DASH = "—";
@@ -180,5 +180,17 @@ describe("instant", () => {
 
   it("is null for a date (a day, not an instant) and for what does not parse", () => {
     for (const v of [null, undefined, "", "2026-10-28", "soon"]) expect(instant(v)).toBeNull();
+  });
+});
+
+describe("nyYear", () => {
+  it("is a date's own year, and an instant's year in New York", () => {
+    expect(nyYear("2019-01-02")).toBe(2019);
+    expect(nyYear("2026-01-01T03:00:00Z")).toBe(2025);   // 10 PM on 31 Dec in New York
+    expect(nyYear("2026-10-28T22:33:38.771204")).toBe(2026);
+  });
+
+  it("is null for what is not a date", () => {
+    for (const v of [null, undefined, "", "2026-13-45", "soon"]) expect(nyYear(v)).toBeNull();
   });
 });

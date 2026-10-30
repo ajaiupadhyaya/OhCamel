@@ -19,8 +19,8 @@ type Body = { paras: Seg[][]; caveats: string[] };
 type ProductReading = (gi: GraphIndex, i: number, m: Record<string, unknown>, notes: string[]) => Body;
 
 /** A lens that could not be read, said plainly, with the reason the server gives. */
-const lensWhy = (m: Record<string, unknown>, what: string): Seg[] =>
-  str(m.lens_why) ? S`${what} could not be read, so its figures are not given here: ${reason(str(m.lens_why)!)}.` : [];
+const lensWhy = (gi: GraphIndex, m: Record<string, unknown>, what: string): Seg[] =>
+  str(m.lens_why) ? S`${what} could not be read, so its figures are not given here: ${reason(gi, str(m.lens_why)!)}.` : [];
 
 const farm: ProductReading = (gi, i, m, notes) => {
   const lens = obj(m.lens), board = rows(lens.board);
@@ -33,12 +33,12 @@ const farm: ProductReading = (gi, i, m, notes) => {
     first = segs(
       withResult !== null && S`Its latest run has ${B(plural(withResult, "cell"))} with a result${total > withResult && S` out of ${B(num(total))}`}${
         trials !== null && S`, and every DSR here is deflated by all ${B(num(trials))} trials in the farm`}. `,
-      best && str(best[0]) && S`The best out-of-sample Sharpe is ${B(num(best[2] as number, 2))}, from ${ref(gi, `c:${best[0]}`)}${
+      best && str(best[0]) && S`The best out-of-sample Sharpe is ${B(num(best[2] as number, 2))}, from ${ref(gi, `c:${best[0]}`, gi.byId.has(`c:${best[0]}`) ? undefined : String(best[0]).replace("@", " on ").replace(/_/g, " "))}${
         fin(best[3]) !== null && S`, with a DSR of ${B(num(best[3] as number, 2))}`}. `,
       board.length > 0 && (pass === 0 ? "No cell passes." : S`${B(num(pass))} of the ${num(board.length)} cells ${pass === 1 ? "passes" : "pass"} every gate.`),
     );
   } else {
-    first = segs(total > 0 && S`Its latest run has ${B(plural(total, "cell"))}. `, lensWhy(m, "Its leaderboard"));
+    first = segs(total > 0 && S`Its latest run has ${B(plural(total, "cell"))}. `, lensWhy(gi, m, "Its leaderboard"));
   }
   const st = gi.out.nodes.map((_, j) => j).filter((j) => node(gi, j).k === "strategy" && ups(gi, j, "result").some((c) => node(gi, c).id.startsWith("c:")));
   const caps = st.map((j) => fin(node(gi, j).m.capital)).filter((c): c is number => c !== null);
@@ -75,12 +75,12 @@ const daily: ProductReading = (_gi, _i, _m, notes) => {
 const overlay: ProductReading = (gi, _i, _m, notes) => {
   const lead = "One number for the whole desk: an exposure scale toward a volatility target.";
   const o = parseOverlayNote(notes);
-  if (!o) return { paras: paras(segs(lead, notes.length > 0 && " Its first note could not be read as a scale, so it is quoted as written.")), caveats: notes.slice(0, 1) };
+  if (!o) return { paras: paras(segs(lead, notes.length > 0 && " No note gives its scale, so its notes are quoted as written.")), caveats: notes };
   // the notes this reading states in words; every other note is quoted (stale inputs, a missing league, a bad variance)
   const exposure = notes.find((s) => parseOverlayNote([s]) !== null);
   const fellBack = o.estimator !== null && parseOverlayFallback(notes) === o.estimator;
-  const fallback = fellBack ? notes.find((s) => parseOverlayFallback([s]) !== null) : undefined;
   const est = o.estimator && o.sessions !== 0 && estimator(gi, o.estimator);
+  const fallback = est && fellBack ? notes.find((s) => parseOverlayFallback([s]) !== null) : undefined;
   const sessions = o.sessions !== null && o.sessions > 0 && S` over ${B(num(o.sessions))} sessions`;
   return {
     paras: paras(segs(
@@ -103,14 +103,14 @@ const volLeague: ProductReading = (gi, _i, m, notes) => {
   const item = (r: unknown[], k: number): Seg[] => S`${ref(gi, `lm:${r[0]}`, String(r[0]).toUpperCase())}${k === 0 && " stays in the statistical best set"} for ${
     B(pct(r[1] as number, 1))}${same && k === 0 && " of them"}${!same && fin(r[3]) !== null && S` of its ${B(num(r[3] as number))} names`}`;
   const body = models.length > 0 && S`${same && S`Scored across ${B(num(models[0][3] as number))} names, `}${list(models.map(item))}.`;
-  return { paras: paras(body || lensWhy(m, "Its model table")), caveats: notes };
+  return { paras: paras(body || lensWhy(gi, m, "Its model table")), caveats: notes };
 };
 
 const covLeague: ProductReading = (gi, _i, m, notes) => {
   const wins = rows(obj(m.lens).estimators).filter((r) => r[3] === 1 && str(r[0]) && str(r[1]) && fin(r[2]) !== null);
   const body = wins.length > 0 && S`The winner on each universe: ${list(wins.map((r, k) =>
     S`${estimator(gi, String(r[0]))} on ${String(r[1]).replace(/_/g, " ")} (${B(pct(r[2] as number, 1))}${k === 0 && " realized volatility"})`))}.`;
-  return { paras: paras(body || lensWhy(m, "Its league table")), caveats: notes };
+  return { paras: paras(body || lensWhy(gi, m, "Its league table")), caveats: notes };
 };
 
 const METHOD: Record<string, string> = { fhs: "FHS", copula_t: "t-copula" };
@@ -120,22 +120,22 @@ const atlas: ProductReading = (gi, _i, m, notes) => {
   // a measure named by its node, whose name carries the confidence level; else its method and horizon
   const body = all.filter((r) => r[1] === h).map((r) => S`${gi.byId.has(`am:${r[0]}:${h}`) ? ref(gi, `am:${r[0]}:${h}`) : `${METHOD[r[0] as string] ?? r[0]} ${num(h)}-day VaR and ES`} are ${
     B(pct(r[2] as number, 2))} and ${B(pct(r[3] as number, 2))}${fin(r[4]) !== null && S`, from ${B(num(r[4] as number))} paths`}.`);
-  return { paras: paras(body.length > 0 ? segs(...body.map((b, k) => [k ? " " : "", b])) : lensWhy(m, "Its measures table")), caveats: notes };
+  return { paras: paras(body.length > 0 ? segs(...body.map((b, k) => [k ? " " : "", b])) : lensWhy(gi, m, "Its measures table")), caveats: notes };
 };
 
-const xs: ProductReading = (_gi, _i, m, notes) => {
+const xs: ProductReading = (gi, _i, m, notes) => {
   const d = rows(obj(m.lens).deciles).filter((r) => fin(r[0]) !== null && fin(r[1]) !== null).sort((a, b) => (a[0] as number) - (b[0] as number));
   const r = d.map((x) => x[1] as number);
   const body = d.length > 1 && S`On its holdout, the top decile by score had a mean next-month return of ${B(pct(r[r.length - 1], 2))} and the bottom decile ${
     B(pct(r[0], 2))}. Returns ${r.every((x, k) => k === 0 || x >= r[k - 1]) ? "climb" : "do not climb"} decile by decile.`;
-  return { paras: paras(body || lensWhy(m, "Its decile table")), caveats: notes };
+  return { paras: paras(body || lensWhy(gi, m, "Its decile table")), caveats: notes };
 };
 
-const regime: ProductReading = (_gi, _i, m, notes) => {
+const regime: ProductReading = (gi, _i, m, notes) => {
   const lens = obj(m.lens), p = fin(lens.p_high), day = nyDay(str(lens.date)), weeks = fin(lens.weeks);
   const body = p !== null && S`${known(day) && S`As of ${B(day)}, `}it puts the probability of the high-volatility state at ${B(num(p, 2))}${
     weeks !== null && S`, from ${B(num(weeks))} weeks of data`}.`;
-  return { paras: paras(body ? capital(body) : lensWhy(m, "Its probabilities")), caveats: notes };
+  return { paras: paras(body ? capital(body) : lensWhy(gi, m, "Its probabilities")), caveats: notes };
 };
 
 const surface: ProductReading = (gi, _i, m, notes) => {
@@ -145,7 +145,7 @@ const surface: ProductReading = (gi, _i, m, notes) => {
     name && atm !== null && S`${known(day) && S`On ${B(day)}, `}${ref(gi, `d:${name}`, name)}'s one-month at-the-money implied volatility was ${B(pct(atm, 1))}${
       slices !== null && S`, from ${B(plural(slices, "expiry slice"))}`}.`,
   );
-  return { paras: paras(body.length > 0 ? capital(body) : lensWhy(m, "Its history")), caveats: notes };
+  return { paras: paras(body.length > 0 ? capital(body) : lensWhy(gi, m, "Its history")), caveats: notes };
 };
 
 const BY_KIND: Record<string, ProductReading> = {
@@ -160,9 +160,11 @@ export function product(gi: GraphIndex, i: number, n: MNode): Reading {
   const kind = str(m.kind) ?? n.id.replace(/^p:/, "");
   const stale = m.stale === true && "That artifact is past its schedule's max age.";
   if (kind === "desk.report") {
-    // spec §7 Q1: its node shows only its run times; nothing of what it reports
+    // spec §7 Q1: its node shows only its run times; of its tables, only the book summary is shown, on the book
     const done = at(m.finished);
-    return { title, paras: paras(segs(done.length > 0 && S`Its latest report finished at ${done}. `, stale && [stale, " "], "This page shows only when it ran.")), caveats: [] };
+    const book = gi.byId.get("book");
+    const shown = book !== undefined && str(node(gi, book).m.summary_asof) && S`Of what it reports, this page shows only the book summary, on ${ref(gi, "book")}.`;
+    return { title, paras: paras(segs(done.length > 0 && S`Its latest report finished at ${done}. `, stale && [stale, " "], shown)), caveats: [] };
   }
   const verdict = str(m.verdict), detail = str(m.detail), done = at(m.finished), asof = nyDay(str(m.asof));
   const head = segs(
