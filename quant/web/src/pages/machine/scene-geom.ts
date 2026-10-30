@@ -214,6 +214,16 @@ export function nodeShot(k: NodeKind, r: number, a: number, p: Vec3, webSize: nu
   };
 }
 
+/** The width over height the shots above were composed for: the outer ring just fits across it. */
+const SHOT_ASPECT = 1.2;
+
+/**
+ * How far back the camera stands on a canvas `aspect` wide, as a factor of a shot's radius. The field of view is
+ * vertical, so a narrow canvas sees less of the machine's width: on a phone the outer ring would leave the screen, and
+ * a selected series with it. A canvas as wide as the shots or wider changes nothing.
+ */
+export const frameFit = (aspect: number): number => (aspect > 0 && Number.isFinite(aspect) ? Math.max(1, SHOT_ASPECT / aspect) : 1);
+
 /** Ease-in-out cubic, 0 to 1. */
 export const ease = (t: number): number => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 
@@ -275,22 +285,26 @@ export function projectNodes(m: ArrayLike<number>, pos: Float32Array, w: number,
 /** How close the pointer must be to a series, and to anything else, in pixels. */
 const PICK_SERIES = 6;
 const PICK_OTHER = 12;
+/** A fingertip lands less exactly than a pointer, so a tap reaches this much further. */
+export const TOUCH_REACH = 2;
 /** A node other than a series wins a near tie with one: hundreds of series sit round every job and product. */
 const PICK_BIAS = 4;
 
 /**
- * The node nearest (x, y): within 6 pixels of a series or 12 of anything else, or null. `screen` is what `projectNodes`
- * wrote; `series[i]` is 1 for a series. Scored as the prototype scored it, the distance less 4 pixels for what is not a series.
+ * The node nearest (x, y): within 6 pixels of a series or 12 of anything else, times `reach`, or null. `screen` is what
+ * `projectNodes` wrote; `series[i]` is 1 for a series. Scored as the prototype scored it, the distance less 4 pixels for
+ * what is not a series.
  */
-export function nearestNode(screen: Float32Array, series: Uint8Array, x: number, y: number): number | null {
+export function nearestNode(screen: Float32Array, series: Uint8Array, x: number, y: number, reach = 1): number | null {
+  const other = PICK_OTHER * reach, near = PICK_SERIES * reach;
   let best: number | null = null;
   let bestScore = Infinity;
   for (let i = 0; i < series.length; i++) {
     const dx = screen[2 * i] - x, dy = screen[2 * i + 1] - y;
-    if (!(Math.abs(dx) < PICK_OTHER && Math.abs(dy) < PICK_OTHER)) continue; // also skips a node behind the camera (NaN)
+    if (!(Math.abs(dx) < other && Math.abs(dy) < other)) continue; // also skips a node behind the camera (NaN)
     const d = Math.sqrt(dx * dx + dy * dy);
     const isSeries = series[i] === 1;
-    if (d >= (isSeries ? PICK_SERIES : PICK_OTHER)) continue;
+    if (d >= (isSeries ? near : other)) continue;
     const score = isSeries ? d : d - PICK_BIAS;
     if (score < bestScore) {
       bestScore = score;

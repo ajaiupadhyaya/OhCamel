@@ -43,9 +43,21 @@ describe("threeManifestFailures", () => {
   it("passes a build with no three chunk", () => {
     expect(failures({ "index.html": manifest()["index.html"], "_vendor.js": manifest()["_vendor.js"] })).toEqual([]);
   });
-  it("passes a machine-only build: the scene or the Machine page imports it, the entry does not", () => {
+  it("passes a machine-only build: the instrument imports it, and the page and the entry do not", () => {
     expect(failures(manifest({ s: { file: "assets/scene-a1.js", src: "src/pages/machine/scene.ts", dynamicImports: ["_three.js"] } }))).toEqual([]);
-    expect(failures(manifest({ s: { file: "assets/Machine-a1.js", src: "src/pages/Machine.tsx", imports: ["_three.js"] } }))).toEqual([]);
+    expect(failures(manifest({
+      p: { file: "assets/Machine-a1.js", src: "src/pages/Machine.tsx", dynamicImports: ["i"] },
+      i: { file: "assets/Instrument-a1.js", src: "src/pages/machine/Instrument.tsx", imports: ["_three.js"] },
+    }))).toEqual([]);
+  });
+  it("fails when the Machine page reaches three statically: the list must show without it", () => {
+    const direct = failures(manifest({ p: { file: "assets/Machine-a1.js", src: "src/pages/Machine.tsx", imports: ["_three.js"] } }));
+    expect(direct).toEqual(["three (assets/three-a1.js) is statically reachable from src/pages/Machine.tsx; only the lazy instrument may load it"]);
+    const through = failures(manifest({
+      p: { file: "assets/Machine-a1.js", src: "src/pages/Machine.tsx", imports: ["s"] },
+      s: { file: "assets/scene-a1.js", src: "src/pages/machine/scene.ts", imports: ["_three.js"] },
+    }));
+    expect(through.join("\n")).toContain("statically reachable from src/pages/Machine.tsx");
   });
   it("fails when the entry reaches three through static imports, directly or through a shared chunk", () => {
     // the entry is itself a chunk outside the machine that imports three, so it is named too

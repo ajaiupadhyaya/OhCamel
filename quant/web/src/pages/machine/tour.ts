@@ -16,6 +16,7 @@ import {
 } from "./prose";
 import type { ReadingCtx, Seg } from "./prose";
 import { reading } from "./readings";
+import type { StepView } from "./url";
 import { countKinds, directReaders } from "./web";
 import type { GraphIndex } from "./web";
 
@@ -357,3 +358,10 @@ const yours: TourStep = {
 
 /** The tour, in order: inward from the world's data to the book, then the machine handed over. */
 export const STEPS: TourStep[] = [overview, prices, nvda, clock, farm, overlay, book, yours];
+
+/** Step `step` (1 to 8) as a view sees it: the node it selects, by id, and where it puts the camera. */
+export function stepView(gi: GraphIndex, step: number, ctx: ReadingCtx): StepView {
+  const s = STEPS[step - 1];
+  const i = s.sel(gi, ctx);
+  return { sel: i === null ? null : gi.out.nodes[i].id, cam: s.cam };
+}

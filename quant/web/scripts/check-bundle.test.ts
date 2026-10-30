@@ -59,11 +59,16 @@ describe("check-bundle confines three.js to the machine", () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toContain("assets/scene-a1.js (src/pages/machine/scene.ts) dynamic");
   });
-  it("passes when the Machine page itself imports it, statically", () => {
-    const r = run(withThree({ file: "assets/Machine-a1.js", src: "src/pages/Machine.tsx" }, "imports"));
+  it("passes when the lazy instrument imports it, statically", () => {
+    const r = run(withThree({ file: "assets/Instrument-a1.js", src: "src/pages/machine/Instrument.tsx" }, "imports"));
     expect(r.stderr).toBe("");
     expect(r.status).toBe(0);
-    expect(r.stdout).toContain("assets/Machine-a1.js (src/pages/Machine.tsx) static");
+    expect(r.stdout).toContain("assets/Instrument-a1.js (src/pages/machine/Instrument.tsx) static");
+  });
+  it("fails when the Machine page itself imports it, statically: the list shows without it", () => {
+    const r = run(withThree({ file: "assets/Machine-a1.js", src: "src/pages/Machine.tsx" }, "imports"));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/statically reachable from src\/pages\/Machine\.tsx/);
   });
   it("fails when a chunk outside the machine imports it", () => {
     const r = run(withThree({ file: "assets/Front-a1.js", src: "src/pages/Front.tsx" }));

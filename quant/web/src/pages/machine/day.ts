@@ -12,6 +12,8 @@ import type { Run } from "./types";
 
 /** How long the replay takes to sweep the day, in seconds. */
 export const REPLAY_S = 26;
+/** How long the replay stays on each run under reduced motion, where it steps and does not sweep, in ms. */
+export const REPLAY_STEP_MS = 1000;
 
 /** When a run is dated: its start, else its end. A run with neither (or one that does not read) is dated Infinity, as new as can be. */
 const dated = (r: Run): number => instant(r.start ?? r.end) ?? Infinity;
@@ -83,6 +85,9 @@ export function replayFrame(runs: Run[], now: Date, frac: number): { at: Date; a
   return { at, active };
 }
 
+/** Whether the replay shows run `r`, which started at `start`: one that ran in the last day, or one still running that started inside it. */
+const inReplay = (r: Run, start: number, now: Date): boolean => (r.state === "running" ? start >= now.getTime() - DAY_MS : ranInLastDay(r, now));
+
 /**
  * The run the replay holds lit when the hand is `frac` of the way across the day: the last to have started. It
  * stays lit until the next one starts, so the machine does not go dark between runs and a three-minute run, about
@@ -92,17 +97,31 @@ export function replayFrame(runs: Run[], now: Date, frac: number): { at: Date; a
  */
 export function replayHold(runs: Run[], now: Date, frac: number): Run | null {
   const t = replayFrame([], now, frac).at.getTime();
-  const from = now.getTime() - DAY_MS;
   let held: Run | null = null;
   let latest = -Infinity;
   for (const r of runs) {
     const start = instant(r.start);
-    if (start === null || start > t) continue;
-    if (!(r.state === "running" ? start >= from : ranInLastDay(r, now))) continue;
+    if (start === null || start > t || !inReplay(r, start, now)) continue;
     if (held === null || start > latest || (start === latest && r.id > held.id)) {
       held = r;
       latest = start;
     }
   }
   return held;
+}
+
+/**
+ * The replay without its sweep, for reduced motion: the runs `replayHold` can hold, each once, in the order they
+ * started (a tie of starts in id order, so the one `replayHold` prefers comes last), each with how far across the day
+ * it started.
+ */
+export function replayStops(runs: Run[], now: Date): { run: Run; frac: number }[] {
+  const from = now.getTime() - DAY_MS;
+  const stops: { run: Run; start: number }[] = [];
+  for (const run of runs) {
+    const start = instant(run.start);
+    if (start !== null && start <= now.getTime() && inReplay(run, start, now)) stops.push({ run, start });
+  }
+  stops.sort((a, b) => a.start - b.start || (a.run.id < b.run.id ? -1 : a.run.id > b.run.id ? 1 : 0));
+  return stops.map(({ run, start }) => ({ run, frac: (start - from) / DAY_MS }));
 }

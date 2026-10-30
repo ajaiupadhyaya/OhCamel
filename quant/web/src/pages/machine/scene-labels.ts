@@ -139,16 +139,18 @@ const screen = new Float32Array(2);
 
 /**
  * The labels to show this frame: `specs` projected through view-projection matrix `m` on a `w` by `h` canvas, those
- * behind the camera or wholly off the canvas left out, the rest through `placeLabels`, which takes a rectangle's
- * top-left corner while a label hangs from its anchor at the middle of its bottom edge.
+ * behind the camera or wholly off the canvas left out, those partly off it moved on, the rest through `placeLabels`,
+ * which takes a rectangle's top-left corner while a label hangs from its anchor at the middle of its bottom edge.
  */
 export function placeFrame(specs: readonly LabelSpec[], m: ArrayLike<number>, w: number, h: number): PlacedLabel[] {
   const cands: LabelCand[] = [];
   const shown = new Map<string, PlacedLabel>();
   for (const s of specs) {
     if (!toScreen(m, s.at[0], s.at[1], s.at[2], w, h, screen)) continue;
-    const x = screen[0], y = screen[1];
-    if (x + s.w / 2 < 0 || x - s.w / 2 > w || y < 0 || y - s.h > h) continue;
+    const y = screen[1];
+    if (screen[0] + s.w / 2 < 0 || screen[0] - s.w / 2 > w || y < 0 || y - s.h > h) continue;
+    // one running off the side slides in, so a long name at the edge of a narrow screen is read and not cut
+    const x = s.w < w ? Math.min(w - s.w / 2, Math.max(s.w / 2, screen[0])) : screen[0];
     cands.push({ key: s.key, x: x - s.w / 2, y: y - s.h, w: s.w, h: s.h, pri: s.pri });
     shown.set(s.key, { key: s.key, text: s.text, x, y, cls: s.cls });
   }

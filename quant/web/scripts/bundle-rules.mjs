@@ -30,9 +30,9 @@ export function staticClosure(manifest, entryKey) {
 }
 
 /**
- * Failures of the three.js rule on a manifest: three.js statically reachable from the entry,
- * and any chunk outside the machine that imports it (statically or dynamically; a shared chunk
- * with no `src` counts as outside).
+ * Failures of the three.js rule on a manifest: three.js statically reachable from the entry or
+ * from the Machine page, and any chunk outside the machine that imports it (statically or
+ * dynamically; a shared chunk with no `src` counts as outside).
  */
 export function threeManifestFailures(manifest, entryKey) {
   const failures = [];
@@ -43,6 +43,12 @@ export function threeManifestFailures(manifest, entryKey) {
     if (isThree(k, c) || !importsOf(c).some((i) => threeKeys.includes(i))) continue;
     if (isMachineSource(c.src)) continue;
     failures.push(`${c.file} (${c.src ?? k}) imports three; only ${WHERE} may`);
+  }
+  // The page shows the list without three, so three must be a lazy step past it: a browser that cannot draw never fetches it.
+  const page = Object.keys(manifest).find((k) => manifest[k].src === MACHINE_PAGE);
+  if (page) {
+    const reached = staticClosure(manifest, page);
+    for (const k of threeKeys) if (reached.has(k)) failures.push(`three (${manifest[k].file}) is statically reachable from ${MACHINE_PAGE}; only the lazy instrument may load it`);
   }
   return failures;
 }

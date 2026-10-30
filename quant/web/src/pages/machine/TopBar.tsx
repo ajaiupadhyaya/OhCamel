@@ -2,13 +2,16 @@
  * The machine's 46 px bar (spec section 6.4): the wordmark, the site in plain words, the web mode, search and the New
  * York clock. It stands in for the masthead, tape and function codes, which step aside on `/`.
  */
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { commandPath, parseCommand } from "../../shell/command";
 import { formatDateline } from "../../shell/dateline";
 import { sessionOf, useOps } from "../../shell/ops";
 import { search } from "./search";
 import type { MNode } from "./types";
+import { viewSearch } from "./url";
+import type { View } from "./url";
+import { PHONE, useMedia } from "./useMedia";
 import type { GraphIndex, WebMode } from "./web";
 
 const PAGES: [string, string][] = [
@@ -20,9 +23,14 @@ const MODES: [WebMode, string][] = [["web", "web"], ["reads", "reads"], ["feeds"
 export interface TopBarProps {
   gi: GraphIndex;
   now: Date;
-  mode: WebMode;
-  onMode(mode: WebMode): void;
+  /** The view, so that moving between the machine and the list keeps the selection. */
+  view: View;
+  /** The web mode, on the machine; the list lights nothing, so it has none. */
+  mode?: WebMode;
+  onMode?(mode: WebMode): void;
   onSelect(id: string): void;
+  /** Whether this browser can draw the machine; the list links back to it only then. */
+  drawable: boolean;
 }
 
 const links = PAGES.map(([word, path]) => (
@@ -35,7 +43,7 @@ const links = PAGES.map(([word, path]) => (
  * The links as a menu, for a bar too narrow to hold them (machine.css says when), so the machine always reaches the
  * rest of the site. Open, it is the topmost thing: Esc closes it and goes no further, and so does a press outside.
  */
-function PagesMenu() {
+function PagesMenu({ other }: { other: ReactNode }) {
   const box = useRef<HTMLDetailsElement>(null);
   const [open, setOpen] = useState(false);
   useEffect(() => {
@@ -63,15 +71,20 @@ function PagesMenu() {
   return (
     <details ref={box} className="mx-pages" onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary>Pages</summary>
-      <nav aria-label="Pages">{links}</nav>
+      <nav aria-label="Pages">
+        {links}
+        {other}
+      </nav>
     </details>
   );
 }
 
-export function TopBar({ gi, now, mode, onMode, onSelect }: TopBarProps) {
+export function TopBar({ gi, now, view, mode, onMode, onSelect, drawable }: TopBarProps) {
   const ops = useOps();
-  const line = formatDateline(now, sessionOf(ops.data));
-  const date = line.indexOf(" · ") + 3; // the calendar date is the first thing the bar gives up
+  const [date, time, session] = formatDateline(now, sessionOf(ops.data)).split(" · ");
+  const to = { search: viewSearch({ ...view, list: !view.list }) };
+  // the same place in the other form: the bar has room for one short word, and the menu for the whole name
+  const other = !drawable ? null : view.list ? ["machine", "The machine, drawn"] : ["list", "The machine as a list"];
   return (
     <header className="mx-top">
       <Link to="/" className="mx-brand">
@@ -80,28 +93,46 @@ export function TopBar({ gi, now, mode, onMode, onSelect }: TopBarProps) {
       <nav className="mx-seg mx-views" aria-label="Pages">
         {links}
       </nav>
-      <PagesMenu />
-      <div className="mx-seg" role="group" aria-label="Web mode">
-        {MODES.map(([m, word]) => (
-          <button key={m} type="button" className={m === mode ? "on" : undefined} aria-pressed={m === mode} onClick={() => onMode(m)}>
-            {word}
-          </button>
-        ))}
-      </div>
+      <PagesMenu
+        other={
+          other && (
+            <Link className="mx-other" to={to}>
+              {other[1]}
+            </Link>
+          )
+        }
+      />
+      {mode && onMode && (
+        <div className="mx-seg mx-modes" role="group" aria-label="Web mode">
+          {MODES.map(([m, word]) => (
+            <button key={m} type="button" className={m === mode ? "on" : undefined} aria-pressed={m === mode} onClick={() => onMode(m)}>
+              {word}
+            </button>
+          ))}
+        </div>
+      )}
+      {other && (
+        <Link className="mx-aslist" to={to} aria-label={other[1]}>
+          {other[0]}
+        </Link>
+      )}
       <Search gi={gi} onSelect={onSelect} />
       <span className="mx-status">
-        <span className="mx-status-date">{line.slice(0, date)}</span>
-        {line.slice(date)}
+        <span className="mx-status-date">{date} · </span>
+        <span className="mx-status-time">{time} · </span>
+        <span className="mx-status-word">{session.slice(0, session.indexOf(" ") + 1)}</span>
+        {session.slice(session.indexOf(" ") + 1)}
       </span>
     </header>
   );
 }
 
-const hitName = (n: MNode): string => (n.k === "series" && n.n && n.n !== n.l ? `${n.l} · ${n.n}` : n.n || n.l);
+export const hitName = (n: MNode): string => (n.k === "series" && n.n && n.n !== n.l ? `${n.l} · ${n.n}` : n.n || n.l);
 const hitKind = (n: MNode): string => (typeof n.m.track === "string" && n.m.track !== "daily" ? `${n.k} · ${n.m.track}` : n.k);
 
 function Search({ gi, onSelect }: { gi: GraphIndex; onSelect(id: string): void }) {
   const nav = useNavigate();
+  const phone = useMedia(PHONE);
   const uid = useId();
   const input = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState("");
@@ -147,7 +178,7 @@ function Search({ gi, onSelect }: { gi: GraphIndex; onSelect(id: string): void }
         id="mx-search"
         ref={input}
         value={q}
-        placeholder="find a ticker, job, model"
+        placeholder={phone ? "find" : "find a ticker, job, model"}
         aria-label="Search the machine"
         role="combobox"
         aria-expanded={showing}

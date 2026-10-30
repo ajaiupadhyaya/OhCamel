@@ -1,7 +1,8 @@
 /**
  * The scene's life in React: made once on the canvas, and made again only when a newer read of the machine changes
- * what it draws (`drawnShape`); panels take every read, the scene only those. The handlers may change on every render;
- * the scene always calls the latest.
+ * what it draws (`drawnShape`), or when the visitor's reduced-motion setting changes; panels take every read, the scene
+ * only those. The handlers may change on every render; the scene always calls the latest. A browser that cannot make a
+ * scene after all is the same as one that lost it: `onLost`.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { nyHour } from "./fmt";
@@ -11,7 +12,7 @@ import type { SceneApi, SceneHandlers } from "./scene";
 import { drawnShape } from "./web";
 import type { GraphIndex } from "./web";
 
-export function useScene(gi: GraphIndex, handlers: SceneHandlers) {
+export function useScene(gi: GraphIndex, handlers: SceneHandlers, reducedMotion: boolean) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [scene, setScene] = useState<SceneApi | null>(null);
   const latest = useRef({ gi, handlers });
@@ -23,20 +24,19 @@ export function useScene(gi: GraphIndex, handlers: SceneHandlers) {
   useEffect(() => {
     const el = canvas.current;
     if (!el) return;
-    const made = createScene(
-      el,
-      gi,
-      {
-        palette: readPalette(el),
-        reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-        nowNY: () => nyHour(new Date()),
-      },
-      {
-        onHover: (i, x, y) => latest.current.handlers.onHover(i, x, y),
-        onPick: (i) => latest.current.handlers.onPick(i),
-        onLabels: (placed) => latest.current.handlers.onLabels(placed),
-      },
-    );
+    const relay: SceneHandlers = {
+      onHover: (i, x, y) => latest.current.handlers.onHover(i, x, y),
+      onPick: (i) => latest.current.handlers.onPick(i),
+      onLabels: (placed) => latest.current.handlers.onLabels(placed),
+      onLost: () => latest.current.handlers.onLost(),
+    };
+    let made: SceneApi;
+    try {
+      made = createScene(el, gi, { palette: readPalette(el), reducedMotion, nowNY: () => nyHour(new Date()) }, relay);
+    } catch {
+      relay.onLost();
+      return;
+    }
     setScene(made);
     return () => {
       made.dispose();
@@ -44,7 +44,7 @@ export function useScene(gi: GraphIndex, handlers: SceneHandlers) {
     };
     // the shape stands for the graph here: a read with the same shape keeps this scene
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shape]);
+  }, [shape, reducedMotion]);
 
   return { canvas, scene };
 }

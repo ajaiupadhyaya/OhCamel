@@ -9,8 +9,9 @@
 //   - fails if any other source file renders a raw <Chart>, imports Plotly or calls loadPlotly;
 //   - three.js (the machine's 3-D scene) is confined the same way, to src/pages/machine/** and
 //     src/pages/Machine.tsx: fails if three is reachable from the entry through static imports,
-//     if any chunk whose src is outside those paths imports it, or if any source file outside
-//     them imports "three" (the rules are in scripts/bundle-rules.mjs, tested by bundle-rules.test.ts).
+//     if any chunk whose src is outside those paths imports it, if the Machine page reaches it
+//     statically (it shows the list without three; the instrument is lazy), or if any source file
+//     outside them imports "three" (the rules are in scripts/bundle-rules.mjs, tested by bundle-rules.test.ts).
 // Usage: node scripts/check-bundle.mjs [distDir] [srcDir]   (defaults ./dist and ./src)
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";

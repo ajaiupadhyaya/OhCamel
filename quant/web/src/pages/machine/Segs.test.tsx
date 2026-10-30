@@ -21,6 +21,12 @@ describe("Segs", () => {
     expect(out).toContain(">NVDA</button>");
   });
 
+  it("writes a ref as the page's link when it has one, and plain text when the node is not in the graph", () => {
+    const link = (id: string, t: string) => <a href={`?sel=${id}`}>{t}</a>;
+    const out = renderToStaticMarkup(<Segs segs={[{ ref: "d:NVDA", t: "NVDA" }, { ref: "d:GONE", t: "GONE" }]} has={(id) => id === "d:NVDA"} onSelect={() => {}} link={link} />);
+    expect(out).toBe('<a href="?sel=d:NVDA">NVDA</a>GONE');
+  });
+
   it("writes a ref to a node that is not in the graph as plain text", () => {
     expect(html([{ ref: "d:GONE", t: "GONE" }], () => false)).toBe("GONE");
   });

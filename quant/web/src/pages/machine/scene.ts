@@ -14,7 +14,7 @@ import { layout } from "./layout";
 import type { Palette } from "./palette";
 import { createFlight } from "./scene-camera";
 import { createEdges } from "./scene-edges";
-import { CLOCK, nearestNode, nodeShot, OVERVIEW, projectNodes, radiusOf, sameView, YOURS, zoomDistance } from "./scene-geom";
+import { CLOCK, frameFit, nearestNode, nodeShot, OVERVIEW, projectNodes, radiusOf, sameView, TOUCH_REACH, YOURS, zoomDistance } from "./scene-geom";
 import type { CentreWeb, Shot, Vec3 } from "./scene-geom";
 import { labelBook, placeFrame } from "./scene-labels";
 import type { LabelSpec, PlacedLabel } from "./scene-labels";
@@ -36,6 +36,8 @@ export interface SceneHandlers {
    * middle of the label's bottom edge; scene-labels.ts lists the names `cls` holds.
    */
   onLabels(placed: PlacedLabel[]): void;
+  /** The WebGL context went and did not come back: this scene will draw nothing more. */
+  onLost(): void;
 }
 
 /** Where `focus` flies: a fixed view of the whole machine, the node's own shot, or nowhere. */
@@ -60,6 +62,8 @@ const FOV = 30;
 const MAX_PIXEL_RATIO = 2;
 /** A press that moves further than this is a drag, not a click. */
 const CLICK_SLOP = 5;
+/** A fingertip rolls as it presses, so a tap may move this far. */
+const TOUCH_SLOP = 10;
 /** Pulses along a fibre, and running jobs' rings, in cycles a second. */
 const PULSE_RATE = 0.42;
 const RUN_RATE = 0.5;
@@ -67,16 +71,10 @@ const RUN_RATE = 0.5;
 const HAND_EVERY_S = 10;
 /** How much of the way to its target the view offset eases each frame. */
 const OFFSET_EASE = 0.08;
-
-export function webglAvailable(): boolean {
-  try {
-    const gl = document.createElement("canvas").getContext("webgl2");
-    gl?.getExtension("WEBGL_lose_context")?.loseContext();
-    return gl !== null;
-  } catch {
-    return false;
-  }
-}
+/** The furthest the camera goes, before `frameFit` stands it further back on a narrow canvas. */
+const MAX_DISTANCE = 60;
+/** How long a lost WebGL context has to come back, with the page in sight, before the scene gives up on it. */
+const LOST_GRACE_MS = 3000;
 
 export function createScene(
   canvas: HTMLCanvasElement,
@@ -105,7 +103,7 @@ export function createScene(
   controls.dampingFactor = 0.08;
   controls.rotateSpeed = 0.55;
   controls.minDistance = 4;
-  controls.maxDistance = 60;
+  controls.maxDistance = MAX_DISTANCE;
   controls.minPolarAngle = 0.12;
   controls.maxPolarAngle = 1.38;
   controls.enablePan = false;
@@ -152,6 +150,7 @@ export function createScene(
   // ------------------------------------------------------------------ the view
   let width = 1;
   let height = 1;
+  let fit = 1;
   const offset = { x: 0, y: 0, wantX: 0, wantY: 0, placed: false };
   const applyOffset = (): void => camera.setViewOffset(width, height, offset.x, offset.y, width, height);
 
@@ -163,6 +162,10 @@ export function createScene(
     renderer.setSize(w, tall, false);
     camera.aspect = w / tall;
     applyOffset();
+    const nextFit = frameFit(w / tall);
+    camera.position.sub(controls.target).multiplyScalar(nextFit / fit).add(controls.target);
+    fit = nextFit;
+    controls.maxDistance = MAX_DISTANCE * fit;
     // a size that keeps the aspect leaves the matrix as it was, and every screen position is still out of date
     projectionStale = true;
     labelsStale = true;
@@ -181,14 +184,16 @@ export function createScene(
   let press: { x: number; y: number } | null = null;
   let hover: number | null = null;
   let pointerStale = false;
+  /** The fingers on the canvas. */
+  const touches = new Set<number>();
 
-  const pickAt = (clientX: number, clientY: number): number | null => {
+  const pickAt = (clientX: number, clientY: number, reach = 1): number | null => {
     if (projectionStale) {
       projectNodes(viewProjection.elements, pos, width, height, screen);
       projectionStale = false;
     }
     const box = canvas.getBoundingClientRect();
-    return nearestNode(screen, isSeries, clientX - box.left, clientY - box.top);
+    return nearestNode(screen, isSeries, clientX - box.left, clientY - box.top, reach);
   };
 
   const refreshHover = (): void => {
@@ -211,19 +216,27 @@ export function createScene(
   const onPointerDown = (e: PointerEvent): void => {
     press = e.isPrimary && e.button === 0 ? { x: e.clientX, y: e.clientY } : null;
     pointerStale = true;
-    // a pinch is the visitor's own zoom, and only a touch can make one; the wheel stays the page's
-    controls.enableZoom = e.pointerType === "touch";
+    if (e.pointerType === "touch") touches.add(e.pointerId);
+    // a pinch is the visitor's own zoom, and only fingers can make one; the wheel stays the page's, also on a laptop with a touch screen
+    controls.enableZoom = touches.size > 0;
+  };
+  const lift = (e: PointerEvent): void => {
+    touches.delete(e.pointerId);
+    controls.enableZoom = touches.size > 0;
   };
   const onPointerUp = (e: PointerEvent): void => {
     const start = press;
+    const touch = e.pointerType === "touch";
     press = null;
-    pointer = e.pointerType === "touch" ? null : { x: e.clientX, y: e.clientY };
+    pointer = touch ? null : { x: e.clientX, y: e.clientY };
     pointerStale = true;
-    if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) <= CLICK_SLOP) h.onPick(pickAt(e.clientX, e.clientY));
+    lift(e);
+    if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) <= (touch ? TOUCH_SLOP : CLICK_SLOP)) h.onPick(pickAt(e.clientX, e.clientY, touch ? TOUCH_REACH : 1));
   };
-  const onPointerCancel = (): void => {
+  const onPointerCancel = (e: PointerEvent): void => {
     press = null;
     pointerStale = true;
+    lift(e);
   };
   const onControlStart = (): void => flight.cancel();
 
@@ -235,6 +248,27 @@ export function createScene(
   canvas.addEventListener("pointercancel", onPointerCancel);
   controls.addEventListener("start", onControlStart);
   canvas.style.cursor = "grab";
+
+  // ------------------------------------------------------------------ a lost context
+  // three holds the context ready to come back and redraws when it does. Browsers restore it only for a page in sight
+  // (a phone takes it from a page in the background), so the grace runs only then.
+  let lost = false;
+  let grace = 0;
+  const waitForContext = (): void => {
+    clearTimeout(grace);
+    if (lost && !document.hidden) grace = window.setTimeout(() => h.onLost(), LOST_GRACE_MS);
+  };
+  const onContextLost = (): void => {
+    lost = true;
+    waitForContext();
+  };
+  const onContextRestored = (): void => {
+    lost = false;
+    waitForContext();
+  };
+  canvas.addEventListener("webglcontextlost", onContextLost);
+  canvas.addEventListener("webglcontextrestored", onContextRestored);
+  document.addEventListener("visibilitychange", waitForContext);
 
   // ------------------------------------------------------------------ the frame
   let frame = 0;
@@ -255,10 +289,10 @@ export function createScene(
     if (!reducedMotion) {
       edges.setPulse((nowS * PULSE_RATE) % 1);
       rings.setPhase((nowS * RUN_RATE) % 1);
-      if (nowS - lastHand >= HAND_EVERY_S) {
-        lastHand = nowS;
-        readHand();
-      }
+    }
+    if (nowS - lastHand >= HAND_EVERY_S) {
+      lastHand = nowS;
+      readHand();
     }
 
     camera.updateMatrixWorld();
@@ -296,7 +330,7 @@ export function createScene(
         const p: Vec3 = [pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]];
         shot = nodeShot(nodes[i].k, radiusOf(nodes[i].ring), angle[i], p, web.up.size + web.down.size);
       }
-      flight.to(shot, performance.now() / 1000);
+      flight.to({ ...shot, radius: shot.radius * fit }, performance.now() / 1000);
     },
     setViewOffset(leftPx, rightPx, bottomPx) {
       offset.wantX = (rightPx - leftPx) / 2;
@@ -317,8 +351,6 @@ export function createScene(
         byNode.set(node, { node, progress: typeof p === "number" && Number.isFinite(p) ? Math.min(1, Math.max(0, p)) : null });
       }
       rings.set([...byNode.values()]);
-      // under reduced motion the hand has no frame to move it; it moves, as a cut, when the page's data does, so it cannot go stale
-      if (reducedMotion) readHand();
       const next = new Set(byNode.keys());
       if (next.size === running.size && [...next].every((n) => running.has(n))) return;
       running = next;
@@ -348,7 +380,11 @@ export function createScene(
     },
     dispose() {
       cancelAnimationFrame(frame);
+      clearTimeout(grace);
       observer?.disconnect();
+      canvas.removeEventListener("webglcontextlost", onContextLost);
+      canvas.removeEventListener("webglcontextrestored", onContextRestored);
+      document.removeEventListener("visibilitychange", waitForContext);
       canvas.removeEventListener("pointerdown", onPointerDown, { capture: true });
       canvas.removeEventListener("pointermove", onPointerMove);
       canvas.removeEventListener("pointerleave", onPointerLeave);

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { FIXTURE } from "./fixture";
 import { HEIGHT, hourAngle, RADIUS, toXYZ } from "./layout";
 import {
-  ease, edgeStyle, fibreControl, FLOW, fireTickVerts, glowOf, hourTickVerts, isSideTrack, LOOM, nearestNode, nodeShot, nodeSize, nodeTone, OUTSIDE, OVERVIEW,
+  ease, edgeStyle, fibreControl, FLOW, fireTickVerts, frameFit, glowOf, hourTickVerts, isSideTrack, LOOM, nearestNode, nodeShot, nodeSize, nodeTone, OUTSIDE, OVERVIEW,
   projectNodes, radiusOf, ringVerts, sameView, SEGMENTS, sessionVerts, shortTheta, shotAt, toScreen, writeFibre, YOURS, zoomDistance,
 } from "./scene-geom";
 import type { CentreWeb, Vec3 } from "./scene-geom";
@@ -331,7 +331,32 @@ describe("the screen", () => {
   });
 });
 
+describe("frameFit: how far back a narrow canvas stands the camera", () => {
+  it("changes nothing on a canvas as wide as the shots, or wider", () => {
+    for (const aspect of [1.2, 1.6, 2.4, 16 / 9]) expect(frameFit(aspect)).toBe(1);
+  });
+
+  it("stands back in proportion on a narrow one, so the same width of the machine fits", () => {
+    expect(frameFit(0.6)).toBeCloseTo(2, 9);
+    expect(frameFit(375 / 812) * (375 / 812)).toBeCloseTo(1.2, 9);
+  });
+
+  it("is 1 for a canvas with no size yet", () => {
+    for (const aspect of [0, -1, Number.NaN, Infinity]) expect(frameFit(aspect)).toBe(1);
+  });
+});
+
 describe("nearestNode", () => {
+  it("reaches further for a fingertip, by `reach`", () => {
+    const screen = new Float32Array([100, 100, 200, 200]);
+    const series = Uint8Array.from([1, 0]);
+    expect(nearestNode(screen, series, 110, 100)).toBeNull();
+    expect(nearestNode(screen, series, 110, 100, 2)).toBe(0);
+    expect(nearestNode(screen, series, 220, 200)).toBeNull();
+    expect(nearestNode(screen, series, 220, 200, 2)).toBe(1);
+    expect(nearestNode(screen, series, 130, 100, 2)).toBeNull();
+  });
+
   const pick = (points: [number, number][], series: number[], x: number, y: number): number | null =>
     nearestNode(new Float32Array(points.flat()), Uint8Array.from(series), x, y);
 

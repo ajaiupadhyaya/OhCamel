@@ -2,12 +2,25 @@ import { describe, expect, it } from "vitest";
 import { FIXTURE, FIXTURE_BROKEN, FIXTURE_NO_SUMMARY } from "./fixture";
 import type { ReadingCtx, Seg } from "./prose";
 import { allowedNumbers, numbersIn } from "./testkit";
-import { STEPS } from "./tour";
+import { STEPS, stepView } from "./tour";
 import type { TourStep } from "./tour";
 import type { MachineOut, MNode, Run } from "./types";
 import { indexGraph } from "./web";
 
 const ctxOf = (fx: MachineOut): ReadingCtx => ({ runs: fx.runs, now: new Date(fx.asof) });
+
+describe("stepView: a step as a view sees it", () => {
+  const gi = indexGraph(FIXTURE);
+
+  it("names a step's node by id, with its camera", () => {
+    expect(stepView(gi, 3, ctxOf(FIXTURE))).toEqual({ sel: "d:NVDA", cam: "node" });
+  });
+
+  it("names nothing for a step that selects nothing", () => {
+    expect(stepView(gi, 1, ctxOf(FIXTURE))).toEqual({ sel: null, cam: "overview" });
+    expect(stepView(gi, 8, ctxOf(FIXTURE))).toEqual({ sel: null, cam: "yours" });
+  });
+});
 const step = (key: string): TourStep => {
   const s = STEPS.find((x) => x.key === key);
   if (!s) throw new Error(`no step ${key}`);

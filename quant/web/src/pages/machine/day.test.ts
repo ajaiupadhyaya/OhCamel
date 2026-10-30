@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dayRuns, heaviest, REPLAY_S, replayFrame, replayHold, runningRuns } from "./day";
+import { dayRuns, heaviest, REPLAY_S, replayFrame, replayHold, replayStops, runningRuns } from "./day";
 import { FIXTURE } from "./fixture";
 import { jobRuns } from "./prose";
 import type { Run } from "./types";
@@ -454,5 +454,54 @@ describe("replayHold", () => {
     expect(replayHold(all, NOW, -3)).toBeNull();
     expect(replayHold(all, NOW, 4)?.id).toBe("01B");
     expect(replayHold(all, NOW, Number.NaN)).toBeNull();
+  });
+});
+
+describe("replayStops: the replay run by run, for reduced motion", () => {
+  const frac = (msAgo: number): number => (DAY - msAgo) / DAY;
+  const first = run("01A", { start: ago(20 * H), end: ago(19 * H) });
+  const second = run("01B", { start: ago(10 * H), end: ago(9 * H) });
+  const stops = (rs: Run[]): string[] => replayStops(rs, NOW).map((s) => s.run.id);
+
+  it("takes the runs in the order they started, each at how far across the day that was", () => {
+    const out = replayStops([second, first], NOW);
+    expect(out.map((s) => s.run.id)).toEqual(["01A", "01B"]);
+    expect(out[0].frac).toBeCloseTo(frac(20 * H), 9);
+    expect(out[1].frac).toBeCloseTo(frac(10 * H), 9);
+  });
+
+  it("is what the sweep would hold at each of those moments", () => {
+    const going = run("01R", { state: "running", start: ago(H), end: null });
+    const all = [first, second, going];
+    for (const s of replayStops(all, NOW)) expect(replayHold(all, NOW, s.frac)?.id).toBe(s.run.id);
+    expect(stops(all)).toEqual(["01A", "01B", "01R"]);
+  });
+
+  it("holds the same set as the sweep: a running job from inside the day, and a failed run", () => {
+    const failed = run("01F", { state: "failed", start: ago(3 * H), end: ago(2 * H) });
+    const going = run("01R", { state: "running", start: ago(H), end: null });
+    expect(stops([going, failed])).toEqual(["01F", "01R"]);
+  });
+
+  it("stops at no run that did not start inside the day", () => {
+    const before = run("01O", { start: ago(25 * H), end: ago(23 * H) });
+    const stillGoing = run("01G", { state: "running", start: ago(25 * H), end: null });
+    const queued = run("01Q", { state: "queued", start: null, end: null });
+    const unstarted = run("01C", { state: "cancelled", start: null, end: ago(H) });
+    expect(stops([before, stillGoing, queued, unstarted])).toEqual([]);
+  });
+
+  it("orders a tie of starts by id, whatever the input, so the later id ends the tie as the sweep's does", () => {
+    const a = run("01A", { start: ago(5 * H), end: ago(4 * H) });
+    const b = run("01B", { start: ago(5 * H), end: ago(4 * H) });
+    expect(stops([b, a])).toEqual(["01A", "01B"]);
+    expect(stops([a, b])).toEqual(["01A", "01B"]);
+  });
+
+  it("is nothing for no runs, and leaves its input as it was", () => {
+    expect(replayStops([], NOW)).toEqual([]);
+    const input = [second, first];
+    replayStops(input, NOW);
+    expect(ids(input)).toEqual(["01B", "01A"]);
   });
 });

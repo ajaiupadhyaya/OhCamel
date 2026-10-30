@@ -1,6 +1,6 @@
 /**
- * The Machine's view as an address: `?sel=<node id>&tab=tour|read|day&step=<1-8>`, so that every view is a deep
- * link. Pure, no DOM and no router.
+ * The Machine's view as an address: `?sel=<node id>&tab=tour|read|day&step=<1-8>&view=list`, so that every view is a
+ * deep link. Pure, no DOM and no router.
  *
  * The address is untrusted input (anyone can write one): `parseView` keeps only what the page can show. A
  * field that is not valid falls back to its default on its own, so a bad `sel` does not cost the tab or the
@@ -20,6 +20,8 @@ export interface View {
   tab: Tab;
   /** The tour's step, 1 to 8. */
   step: number;
+  /** The machine as a list (`?view=list`), whether or not this browser can draw it. */
+  list: boolean;
 }
 
 const DEFAULT_TAB: Tab = "tour";
@@ -27,15 +29,16 @@ const DEFAULT_STEP = 1;
 
 const isTab = (v: unknown): v is Tab => TABS.some((t) => t === v);
 const isStep = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= STEPS;
+const LIST = "list";
 
 /**
  * The view an address names. `has` says whether a node id exists in the graph: a `sel` it does not know is
  * dropped. A `tab` that is not one of the three is "tour"; a `step` that is not a plain whole number from 1 to 8
- * (leading zeros allowed) is 1. A field given twice reads as the first. It never throws, whatever the address
- * holds, malformed percent-encoding included.
+ * (leading zeros allowed) is 1; a `view` that is not "list" is the instrument. A field given twice reads as the
+ * first. It never throws, whatever the address holds, malformed percent-encoding included.
  */
 export function parseView(search: string, has: (id: string) => boolean): View {
-  const view: View = { sel: null, tab: DEFAULT_TAB, step: DEFAULT_STEP };
+  const view: View = { sel: null, tab: DEFAULT_TAB, step: DEFAULT_STEP, list: false };
   if (typeof search !== "string") return view;
   let params: URLSearchParams;
   try {
@@ -49,6 +52,7 @@ export function parseView(search: string, has: (id: string) => boolean): View {
   if (isTab(tab)) view.tab = tab;
   const step = params.get("step");
   if (step !== null && /^0*[1-8]$/.test(step)) view.step = Number(step);
+  view.list = params.get("view") === LIST;
   return view;
 }
 
@@ -56,15 +60,24 @@ export function parseView(search: string, has: (id: string) => boolean): View {
 const encode = (s: string): string => encodeURIComponent(s).replace(/%3A/g, ":").replace(/%40/g, "@");
 
 /**
- * The address of a view: `?sel=…&tab=…&step=…`, with every field that is its default left out, so the default
- * view is the empty string. A tab or step that `parseView` would not accept is left out too.
+ * The address of a view: `?sel=…&tab=…&step=…&view=list`, with every field that is its default left out, so the
+ * default view is the empty string. A tab or step that `parseView` would not accept is left out too.
  */
 export function viewSearch(v: View): string {
   const parts: string[] = [];
   if (typeof v.sel === "string" && v.sel !== "") parts.push(`sel=${encode(v.sel)}`);
   if (isTab(v.tab) && v.tab !== DEFAULT_TAB) parts.push(`tab=${v.tab}`);
   if (isStep(v.step) && v.step !== DEFAULT_STEP) parts.push(`step=${v.step}`);
+  if (v.list === true) parts.push(`view=${LIST}`);
   return parts.length ? `?${parts.join("&")}` : "";
+}
+
+/**
+ * The address of a selection in the list. The list has no tabs and no tour, so it keeps only `sel` and whether the
+ * address asked for the list: an address there is the same however it was reached, and a node's link can be shared.
+ */
+export function listSearch(v: View, sel: string | null): string {
+  return viewSearch({ sel, tab: DEFAULT_TAB, step: DEFAULT_STEP, list: v.list });
 }
 
 /** A tour step as a view sees it: the node it selects, by id, and where it puts the camera. */

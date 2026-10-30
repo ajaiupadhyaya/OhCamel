@@ -168,6 +168,15 @@ describe("placeFrame", () => {
     expect(placed.map((p) => p.key)).toEqual(["edge"]);
   });
 
+  it("slides a label partly off the side onto the canvas, unless it is wider than the canvas", () => {
+    const [left] = placeFrame([spec("left", -1, 0, 1)], IDENTITY, 800, 600);
+    expect(left.x).toBe(30);
+    const [right] = placeFrame([spec("right", 1, 0, 1)], IDENTITY, 800, 600);
+    expect(right.x).toBe(770);
+    const [wide] = placeFrame([spec("wide", 0.5, 0, 1, 0, 900)], IDENTITY, 800, 600);
+    expect(wide.x).toBe(600);
+  });
+
   it("offers nothing for no labels", () => {
     expect(placeFrame([], IDENTITY, 800, 600)).toEqual([]);
   });

@@ -11,10 +11,13 @@ import { Paras } from "./Segs";
 import { STEPS } from "./tour";
 import type { Run } from "./types";
 import type { Tab, View } from "./url";
+import { REDUCED_MOTION } from "./useMedia";
 import type { GraphIndex } from "./web";
 
 const TABS: [Tab, string][] = [["tour", "Tour"], ["read", "Reading"], ["day", "The day"]];
 const HINT: Record<Tab, string> = { tour: "scroll ↓", read: "scroll to zoom", day: "" };
+/** How long a scroll the page started may take; what the sheet reports until then is that scroll passing, not the visitor reading. */
+const GLIDE_MS = 900;
 
 export interface SidePanelProps {
   gi: GraphIndex;
@@ -27,6 +30,8 @@ export interface SidePanelProps {
   onSelect(id: string): void;
   onReplay(): void;
   onStopReplay(): void;
+  /** The panel is the phone's sheet: the tour is one long read, and the words are for a finger. */
+  phone?: boolean;
 }
 
 export function SidePanel(p: SidePanelProps) {
@@ -42,7 +47,7 @@ export function SidePanel(p: SidePanelProps) {
         <span className="mx-hint">{HINT[view.tab]}</span>
       </div>
       <div className="mx-pane" id="mx-pane" role="tabpanel" aria-labelledby={`mx-tab-${view.tab}`}>
-        {view.tab === "tour" && <TourPane {...p} />}
+        {view.tab === "tour" && (p.phone ? <TourStack {...p} /> : <TourPane {...p} />)}
         {view.tab === "read" && <ReadingPane {...p} />}
         {view.tab === "day" && <DayPane {...p} />}
       </div>
@@ -83,10 +88,88 @@ function TourPane({ gi, view, runs, now, onStep, onSelect }: SidePanelProps) {
   );
 }
 
-function ReadingPane({ gi, view, runs, now, onSelect }: SidePanelProps) {
+/**
+ * The tour on a phone: the eight steps one after another, in one scroll. The step at the sheet's reading line is the
+ * step, so reading on is what moves the machine, and back and next (or a key, or a deep link) scroll to the step they
+ * name. A step's selection is not shown above it here: the step's own words are about it, and Reading has the rest.
+ */
+function TourStack({ gi, view, runs, now, onStep, onSelect }: SidePanelProps) {
+  const has = (id: string) => gi.byId.has(id);
+  const ctx = { runs, now };
+  const box = useRef<HTMLDivElement>(null);
+  /** The step the sheet stands at; 0 until it has been placed. */
+  const at = useRef(0);
+  /** Steps the sheet has passed and the address has yet to catch up with: a fast scroll is ahead of the page's renders. */
+  const passed = useRef(new Set<number>());
+  /** Until this time the sheet is moving because the page moved it. */
+  const glidingUntil = useRef(0);
+  const report = useRef(onStep);
+  useEffect(() => {
+    report.current = onStep;
+  });
+
+  const { step } = view;
+  useEffect(() => {
+    if (step === at.current) {
+      passed.current.clear();
+      return;
+    }
+    if (passed.current.delete(step)) return;
+    const smooth = at.current !== 0 && !window.matchMedia(REDUCED_MOTION).matches;
+    at.current = step;
+    if (smooth) glidingUntil.current = performance.now() + GLIDE_MS;
+    box.current?.children[step - 1]?.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "auto" });
+  }, [step]);
+
+  useEffect(() => {
+    const steps = box.current;
+    if (!steps) return;
+    const seen = new IntersectionObserver(
+      (entries) => {
+        if (performance.now() < glidingUntil.current) return;
+        for (const e of entries) {
+          const k = [...steps.children].indexOf(e.target) + 1;
+          if (!e.isIntersecting || k === at.current) continue;
+          at.current = k;
+          passed.current.add(k);
+          report.current(k);
+        }
+      },
+      { root: steps.closest(".mx-panels"), rootMargin: "-40% 0px -59% 0px" }, // the reading line, two fifths down the sheet
+    );
+    for (const s of steps.children) seen.observe(s);
+    return () => seen.disconnect();
+  }, []);
+
+  return (
+    <>
+      <div ref={box} className="mx-tstack">
+        {STEPS.map((s, k) => (
+          <section key={s.key} className="mx-tsec" aria-current={k + 1 === step ? "step" : undefined}>
+            <h2>{s.title(gi, ctx)}</h2>
+            <Paras paras={s.body(gi, ctx)} has={has} onSelect={onSelect} />
+          </section>
+        ))}
+      </div>
+      <div className="mx-tnav">
+        <button type="button" disabled={step === 1} onClick={() => onStep(step - 1)}>
+          ↑ back
+        </button>
+        <span aria-live="polite">
+          {step} / {STEPS.length}
+        </span>
+        <button type="button" disabled={step === STEPS.length} onClick={() => onStep(step + 1)}>
+          next ↓
+        </button>
+      </div>
+    </>
+  );
+}
+
+function ReadingPane({ gi, view, runs, now, phone, onSelect }: SidePanelProps) {
   const i = view.sel === null ? undefined : gi.byId.get(view.sel);
   const read = useMemo(() => (i === undefined ? null : reading(gi, i, { runs, now })), [gi, i, runs, now]);
-  if (!read) return <p className="mx-dim">Click anything in the machine, or search for it, to read what it is and what it did.</p>;
+  if (!read) return <p className="mx-dim">{phone ? "Tap" : "Click"} anything in the machine, or search for it, to read what it is and what it did.</p>;
   return (
     <div aria-live="polite">
       <h2>{read.title}</h2>

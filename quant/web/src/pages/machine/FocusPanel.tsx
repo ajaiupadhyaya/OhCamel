@@ -16,7 +16,7 @@ const KIND: Record<NodeKind, string> = {
   series: "SERIES", job: "JOB", product: "PRODUCT", result: "RESULT", strategy: "STRATEGY", feed: "FEED", limit: "LIMIT", book: "THE BOOK", kill: "KILL SWITCH",
 };
 /** The chips a side of the web shows, closest first. */
-const MAX_CHIPS = 48;
+export const MAX_CHIPS = 48;
 /** The rows a lens's table shows before "+N more". */
 const MAX_ROWS = 8;
 

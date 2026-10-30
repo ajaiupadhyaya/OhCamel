@@ -49,6 +49,11 @@
   white-space: nowrap;
 }
 
+/* ---------------------------------------------------------------- the panels: on a wide screen they float apart, on a phone this is the sheet */
+.mx-panels {
+  display: contents;
+}
+
 /* ---------------------------------------------------------------- canvas and labels */
 .mx-canvas {
   position: fixed;
@@ -199,10 +204,27 @@
   background: var(--mx-raise-2);
   color: var(--mx-bright);
 }
+.mx-pages nav .mx-other {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--mx-line);
+}
+.mx-aslist {
+  flex: none;
+  padding: 5px 8px;
+  background: var(--mx-raise);
+  font-size: 13px;
+  color: var(--mx-dim);
+  text-decoration: none;
+}
+.mx-aslist:hover {
+  background: var(--mx-raise-2);
+  color: var(--mx-bright);
+}
 .mx-search {
   position: relative;
   flex: 1 1 200px;
-  min-width: 120px;
+  min-width: 100px;
   max-width: 300px;
   margin-left: auto;
 }
@@ -748,11 +770,140 @@
   color: var(--mx-dim);
 }
 
+/* ---------------------------------------------------------------- the machine as a list */
+.mx-list {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-top: 46px;
+  scrollbar-color: var(--mx-line) transparent;
+}
+.mx-list .mx-top {
+  background: var(--mx-ground);
+  border-bottom: 1px solid var(--mx-line);
+}
+.mx-list-body {
+  box-sizing: border-box;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 22px 16px 64px;
+}
+.mx-list-body h1 {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--mx-bright);
+}
+.mx-list-body > p {
+  margin: 0 0 10px;
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+.mx-rings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.mx-rings a {
+  display: block;
+  padding: 4px 8px;
+  background: var(--mx-raise);
+  font-size: 13px;
+  color: var(--mx-ink);
+  text-decoration: none;
+}
+.mx-rings a:hover {
+  background: var(--mx-raise-2);
+  color: var(--mx-bright);
+}
+.mx-rings span,
+.mx-list-body h2 span {
+  font: 11px var(--mx-font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--mx-dim);
+}
+.mx-list-body h2 {
+  margin: 30px 0 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--mx-line);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--mx-bright);
+  scroll-margin-top: 58px;
+}
+.mx-node {
+  border-bottom: 1px solid var(--mx-line);
+  scroll-margin-top: 50px;
+}
+.mx-node summary {
+  padding: 7px 0;
+  font-size: 14px;
+  color: var(--mx-ink);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.mx-node summary::marker {
+  color: var(--mx-dim);
+}
+.mx-node summary:hover,
+.mx-node[open] summary {
+  color: var(--mx-bright);
+}
+.mx-node summary span {
+  margin-left: 8px;
+  font: 11px var(--mx-font-mono);
+  color: var(--mx-dim);
+}
+.mx-node summary span.fail {
+  color: var(--mx-fail);
+}
+.mx-node-body {
+  padding: 2px 0 16px 16px;
+}
+.mx-node-body h3 {
+  margin: 4px 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--mx-bright);
+}
+.mx-node-body p {
+  margin: 0 0 10px;
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--mx-ink);
+}
+.mx-node-body .mx-h3 {
+  margin-top: 14px;
+}
+.mx-node-body .mx-chips {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.mx-list a.mx-tok,
+.mx-list a.mx-chip {
+  text-decoration: none;
+}
+.mx-list a.mx-tok:hover,
+.mx-list a.mx-chip:hover {
+  background: var(--mx-raise-2);
+  color: var(--mx-bright);
+}
+
 /* ---------------------------------------------------------------- waiting and failing */
-.mx-wait-low {
+.mx-wait.mx-wait-low {
   top: auto;
   bottom: 12px;
-  max-width: 340px;
+  max-width: min(340px, calc(100vw - 44px));
+  padding: 4px 8px;
+  background: var(--mx-solid);
 }
 .mx-root .mx-wait button {
   color: var(--mx-bright);
@@ -784,22 +935,240 @@ body:has(.oc-app-machine) .oc-keymap {
 
 /* ---------------------------------------------------------------- width
  * The bar gives up what it can spare, in order. First the calendar date: the spec's status is the New York time and the
- * session, and those stay. Then the row of links, for the Pages menu, so `/` always reaches the rest of the site.
- * Widths measured with the longest session word, "AFTER HOURS".
+ * session, and those stay. Then the row of links, for the Pages menu, so `/` always reaches the rest of the site. Each
+ * width leaves about 40 px spare with the longest session word, "AFTER HOURS", because system-ui is not the same width
+ * on every platform. On a phone the web mode leaves the bar, and the status goes down to the session's own word.
  */
 .mx-pages {
   display: none;
 }
-@media (max-width: 1410px) {
+@media (max-width: 1470px) {
   .mx-status-date {
     display: none;
   }
 }
-@media (max-width: 1290px) {
-  .mx-views {
+@media (max-width: 1355px) {
+  .mx-views,
+  .mx-aslist {
     display: none;
   }
   .mx-pages {
     display: block;
+  }
+}
+/* below this a tall focus panel would cover the legend's first keys; that panel's own headings carry the same colours */
+@media (max-width: 1420px) {
+  .mx-root:has(.mx-focus) .mx-legend {
+    display: none;
+  }
+}
+
+/* ---------------------------------------------------------------- the phone
+ * The screen divides: the machine above and one sheet below, solid so that the words read over nothing. The canvas runs
+ * on under the sheet and the view offset centres the machine in what the sheet leaves. In the sheet the focus content
+ * comes first and the tabs follow it, stuck to the sheet's bottom edge until they are reached and to its top edge after,
+ * so they are always under a thumb. The tour is one long read (SidePanel.tsx). Anything to press is at least 32 px.
+ */
+@media (max-width: 860px) {
+  .mx-top {
+    gap: 8px;
+    padding: 0 12px;
+  }
+  .mx-pages summary {
+    padding: 7px 10px;
+  }
+  .mx-pages nav {
+    max-height: calc(100vh - 56px);
+    overflow: auto;
+  }
+  .mx-pages nav a {
+    padding: 9px 14px;
+    font-size: 14.5px;
+  }
+  .mx-pages nav .mx-other {
+    padding-top: 13px;
+  }
+  .mx-search {
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: none;
+  }
+  /* a field under 16 px makes iOS zoom the page when it takes focus */
+  .mx-root .mx-search input {
+    padding: 4px 8px;
+    font-size: 16px;
+  }
+  /* a finger's search takes the whole bar while it is in use */
+  .mx-search:focus-within {
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    z-index: 10;
+    background: var(--mx-ground);
+  }
+  .mx-results {
+    width: 100%;
+    max-height: 46vh;
+  }
+  .mx-root .mx-results button {
+    padding: 10px;
+  }
+  .mx-status-word {
+    display: none;
+  }
+  .mx-modes {
+    position: fixed;
+    left: 12px;
+    bottom: calc(40% + 10px);
+    background: var(--mx-solid);
+  }
+  .mx-root .mx-modes > * {
+    padding: 6px 9px;
+  }
+  .mx-legend {
+    display: none;
+  }
+
+  .mx-panels {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 4;
+    display: block;
+    height: 40%;
+    overflow: auto;
+    overscroll-behavior: contain;
+    background: var(--mx-solid);
+    border-top: 1px solid var(--mx-line);
+    scrollbar-width: thin;
+    scrollbar-color: var(--mx-line) transparent;
+  }
+  .mx-panels .mx-panel {
+    position: static;
+    width: auto;
+    max-height: none;
+    background: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border: 0;
+  }
+  .mx-panels .mx-focus {
+    overflow: visible;
+    padding: 14px 14px 16px;
+  }
+  .mx-panels .mx-side {
+    display: contents;
+  }
+  .mx-root .mx-x {
+    width: 40px;
+    height: 40px;
+    margin: -12px -12px -12px 0;
+    font-size: 18px;
+  }
+  .mx-tabs {
+    position: sticky;
+    top: -1px; /* its top line is for when it stands at the bottom; at the top the sheet has one */
+    bottom: 0;
+    z-index: 1;
+    gap: 22px;
+    margin-top: -1px;
+    padding: 0 14px;
+    background: var(--mx-ground);
+    border-top: 1px solid var(--mx-line);
+    font-size: 14.5px;
+  }
+  .mx-root .mx-tabs button {
+    padding: 11px 0 9px;
+  }
+  .mx-hint {
+    display: none;
+  }
+  .mx-pane {
+    overflow: visible;
+    padding: 12px 14px 16px;
+  }
+  .mx-pane p {
+    font-size: 15px;
+  }
+  .mx-root .mx-chip {
+    padding: 7px 9px;
+  }
+  .mx-chips {
+    gap: 6px;
+  }
+  .mx-root .mx-tok {
+    padding: 2px 6px;
+  }
+  .mx-tstack {
+    margin-top: -12px;
+  }
+  .mx-tsec {
+    min-height: 30vh;
+    padding: 12px 0;
+    scroll-margin-top: 46px;
+  }
+  .mx-tsec + .mx-tsec {
+    border-top: 1px solid var(--mx-line);
+  }
+  .mx-tnav {
+    position: sticky;
+    bottom: 0;
+    margin: 0 -14px -16px;
+    padding: 8px 14px;
+    background: var(--mx-ground);
+  }
+  .mx-root .mx-tnav button {
+    padding: 8px 16px;
+  }
+  .mx-play {
+    flex-wrap: wrap;
+  }
+  .mx-root .mx-play button {
+    padding: 8px 14px;
+    white-space: nowrap;
+  }
+  .mx-root .mx-run {
+    grid-template-columns: 58px minmax(0, 1fr) 40px 72px;
+    padding: 8px 4px;
+  }
+
+  .mx-node summary {
+    padding: 10px 0;
+  }
+  .mx-node-body {
+    padding-left: 0;
+  }
+}
+/* below this a clock and the longest session word would leave search too little room */
+@media (max-width: 520px) {
+  .mx-status-time {
+    display: none;
+  }
+}
+/* a run's name needs the room more than how long it took, which its reading has */
+@media (max-width: 360px) {
+  .mx-root .mx-run {
+    grid-template-columns: 58px minmax(0, 1fr) 72px;
+  }
+  .mx-run span:nth-child(3) {
+    display: none;
+  }
+}
+/* a phone on its side: the sheet stands at the right, under the bar, and leaves the machine the wide part (useMedia.ts, SIDEWAYS) */
+@media (max-width: 860px) and (min-width: 560px) and (max-height: 500px) {
+  .mx-panels {
+    top: 46px;
+    left: auto;
+    width: 46%;
+    height: auto;
+    border-top: 0;
+    border-left: 1px solid var(--mx-line);
+  }
+  .mx-modes {
+    bottom: 10px;
+  }
+  .mx-tsec {
+    min-height: 60vh;
   }
 }

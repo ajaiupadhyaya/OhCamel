@@ -17,11 +17,11 @@ function focus(out: MachineOut, id: string, mode: WebMode = "web"): string {
   return renderToStaticMarkup(<FocusPanel gi={gi} i={gi.byId.get(id)!} mode={mode} runs={out.runs} now={NOW} heading={createRef<HTMLHeadingElement>()} onSelect={quiet} onClose={quiet} />);
 }
 
-function side(out: MachineOut, tab: Tab, over: Partial<SidePanelProps["view"]> = {}, held: string | null = null): string {
+function side(out: MachineOut, tab: Tab, over: Partial<SidePanelProps["view"]> = {}, held: string | null = null, phone = false): string {
   return renderToStaticMarkup(
     <SidePanel
       gi={indexGraph(out)}
-      view={{ sel: null, tab, step: 1, ...over }}
+      view={{ sel: null, tab, step: 1, list: false, ...over }}
       runs={out.runs}
       now={NOW}
       replay={{ playing: false, held, clock: createRef<HTMLSpanElement>() }}
@@ -30,6 +30,7 @@ function side(out: MachineOut, tab: Tab, over: Partial<SidePanelProps["view"]> =
       onSelect={quiet}
       onReplay={quiet}
       onStopReplay={quiet}
+      phone={phone}
     />,
   );
 }
@@ -51,6 +52,45 @@ describe("the panels, on every node of every fixture", () => {
       expect(side(out, "day")).not.toMatch(CLEAN);
     });
   }
+});
+
+describe("SidePanel on a phone", () => {
+  it("writes the whole tour as one read, with every step's title, and back and next", () => {
+    const html = side(FIXTURE, "tour", { step: 3 }, null, true);
+    const ctx = { runs: FIXTURE.runs, now: NOW };
+    const gi = indexGraph(FIXTURE);
+    expect(html.match(/class="mx-tsec"/g)).toHaveLength(STEPS.length);
+    for (const s of STEPS) expect(html).toContain(renderToStaticMarkup(<h2>{s.title(gi, ctx)}</h2>));
+    expect(html).toContain("back");
+    expect(html).toContain("next");
+    expect(html).toContain("3 / 8");
+  });
+
+  it("marks the step the view stands at, and only that one", () => {
+    const html = side(FIXTURE, "tour", { step: 3 }, null, true);
+    expect(html.match(/aria-current="step"/g)).toHaveLength(1);
+    expect(html.indexOf('aria-current="step"')).toBeGreaterThan(html.indexOf('class="mx-tsec"'));
+  });
+
+  it("stops back at the first step and next at the last", () => {
+    expect(side(FIXTURE, "tour", { step: 1 }, null, true)).toMatch(/<button type="button" disabled="">↑ back/);
+    expect(side(FIXTURE, "tour", { step: 8 }, null, true)).toMatch(/<button type="button" disabled="">next ↓/);
+  });
+
+  it("has no dots and no keyboard hint: those are for a pointer", () => {
+    const html = side(FIXTURE, "tour", { step: 1 }, null, true);
+    expect(html).not.toContain("mx-dots");
+    expect(html).not.toContain("arrow keys");
+  });
+
+  it("says tap, not click", () => {
+    expect(side(FIXTURE, "read", {}, null, true)).toContain("Tap anything");
+    expect(side(FIXTURE, "read")).toContain("Click anything");
+  });
+
+  it("prints no empty value in any step, on any fixture", () => {
+    for (const [name, out] of VARIANTS) expect(side(out, "tour", {}, null, true), name).not.toMatch(CLEAN);
+  });
 });
 
 describe("FocusPanel", () => {
