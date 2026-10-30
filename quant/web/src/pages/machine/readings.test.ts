@@ -23,7 +23,7 @@ const clone = (): MachineOut => structuredClone(FIXTURE) as MachineOut;
 describe("testkit", () => {
   it("numbersIn finds every number, including those inside words, percents, times and grouped thousands", () => {
     expect(numbersIn("It returned +41.3% at 6:30 PM on 28 Oct, for 1,241 CPU-seconds, −1.2% and 0.78 (exp a01).")).toEqual([
-      "+41.3%", "6:30", "28", "1,241", "−1.2%", "0.78", "01",
+      "+41.3%", "6:30 PM", "28 Oct", "1,241", "−1.2%", "0.78", "01",
     ]);
     expect(numbersIn("17 held, 3 refused.")).toEqual(["17", "3"]);
     expect(numbersIn("no figures here")).toEqual([]);
@@ -31,13 +31,31 @@ describe("testkit", () => {
 
   it("allowedNumbers holds the fixture's figures as the readings print them, and not a number the fixture lacks", () => {
     const allowed = allowedNumbers(FIXTURE);
-    // a numeric value through each formatter, a parsed note, a date through the New York formatters, a run total, a count
-    const counts = String(FIXTURE.nodes.length + FIXTURE.edges.length);
-    for (const n of ["+41.3%", "43.9%", "1.00", "3.4%", "10%", "504", "6:30", "9:48", "27", "1,241", "0.81", "586", "0", counts]) {
+    // a printed field through its formatter, a parsed note, a timestamp in New York time, a run total, counts
+    for (const n of ["+41.3%", "43.9%", "1.00", "3.4%", "10%", "504", "6:30 PM", "9:48 PM", "27 Oct", "1,241", "0.81", "586", "0", "3", "29"]) {
       expect(allowed, n).toContain(n);
     }
-    // the prototype's hard-coded figures, which this fixture does not carry
-    for (const n of ["563", "2.39", "421", "3,846", "1,000,000", "14.8%"]) expect(allowed, n).not.toContain(n);
+    // the prototype's hard-coded figures, which this fixture does not carry; and a date never vouches for its day alone
+    for (const n of ["23", "21", "30", "34", "99%", "96%", "1.50", "563", "2.39", "421", "3,846", "1,000,000", "14.8%", "28"]) {
+      expect(allowed, n).not.toContain(n);
+    }
+    // a figure the readings do not print is not vouched for: a sparkline point, the last close, a done run's progress
+    for (const n of ["1.19", "688.63", "172.35", "100%"]) expect(allowed, n).not.toContain(n);
+    expect(allowed.size).toBeLessThan(200);
+  });
+
+  it("the honesty check fails a reading that carries a figure the fixture lacks", () => {
+    const allowed = allowedNumbers(FIXTURE);
+    const fake: Reading = { title: "The book", paras: [[{ t: "One of the desk's " }, { b: "23" }, { t: " strategies, each at 99% of capital, as of 6:30 PM on 28 Oct." }]], caveats: [] };
+    expect(numbersIn(flatten(fake)).filter((n) => !allowed.has(n))).toEqual(["23", "99%"]);
+  });
+
+  it("allowedNumbers counts runs over the same last day as the readings", () => {
+    const later = new Date("2026-10-29T03:30:00Z");   // the 01:30Z league run is now over a day old
+    expect(allowedNumbers(FIXTURE)).toContain("1,241");
+    const allowed = allowedNumbers(FIXTURE, later);
+    expect(allowed).not.toContain("1,241");
+    expect(allowed).toContain("197");
   });
 });
 
@@ -79,9 +97,35 @@ describe("reading: the exposure overlay", () => {
     expect(t).toContain("3.4%");
     expect(t).toContain("10%");
     expect(t).toContain("1.00");
-    expect(t).toContain("lw_constant_corr");
-    expect(t).toContain("504");
+    expect(t).toContain("the combined book forecasts 3.4% volatility against a 10% target, so the scale is 1.00");
+    expect(t).toContain("It estimates covariance with lw constant corr over 504 sessions");
+    expect(t).not.toContain("lw_constant_corr");
     expect(t).toMatch(/reported .*never used/);
+  });
+
+  it("quotes every overlay note but the ones it states: a stale input and a missing league are caveats", () => {
+    const fx = clone();
+    const node = nodeOf(fx, "p:signals.overlay");
+    const stale = "cov.league artifact 01M5ZZ is stale (used, as the newest there is)";
+    const noLeague = "no vol.forecast_league artifact: EWMA(0.94) on every name's diagonal";
+    const fallback = "cov.league 01M5ZZ has no rank-1 row for site_etfs: lw_constant_corr";
+    node.m.notes = [stale, noLeague, fallback, ...(node.m.notes as string[])];
+    const r = read(fx, "p:signals.overlay");
+    expect(r.caveats).toEqual([stale, noLeague]);   // the fallback and the exposure note are said in words
+    expect(flatten(r)).toMatch(/fell back to lw constant corr/);
+    expect(read(FIXTURE, "p:signals.overlay").caveats).toEqual([]);
+  });
+
+  it("says nothing of covariance or sessions when the book had no targets to forecast", () => {
+    const fx = clone();
+    nodeOf(fx, "p:signals.overlay").m.notes = [
+      "no targets yet: no roster document in the signals directory, exposure_scale 1",
+      "exposure_scale 1.000000 = min(1, 0.1 / 0.000000); covariance lw_constant_corr on 0 sessions, diagonal from P2's best model by QLIKE",
+    ];
+    const r = read(fx, "p:signals.overlay");
+    expect(flatten(r)).toContain("forecasts no volatility against a 10% target, so the scale is 1.00");
+    expect(flatten(r)).not.toMatch(/covariance|sessions|0\.0%/);
+    expect(r.caveats).toEqual(["no targets yet: no roster document in the signals directory, exposure_scale 1"]);
   });
 
   it("says the overlay fell back to its estimator only when a note says so", () => {
@@ -89,7 +133,7 @@ describe("reading: the exposure overlay", () => {
     const fx = clone();
     const notes = nodeOf(fx, "p:signals.overlay").m.notes as string[];
     notes.unshift("cov.league 01M5 has no rank-1 row for site_etfs: lw_constant_corr");
-    expect(text(fx, "p:signals.overlay")).toMatch(/fell back to lw_constant_corr/);
+    expect(text(fx, "p:signals.overlay")).toMatch(/fell back to lw constant corr/);
   });
 
   it("quotes the first note whole when no note gives the scale, and states no figure of its own", () => {
@@ -97,6 +141,7 @@ describe("reading: the exposure overlay", () => {
     nodeOf(fx, "p:signals.overlay").m.notes = ["no targets yet: no roster document in the signals directory, exposure_scale 1"];
     const r = read(fx, "p:signals.overlay");
     expect(r.caveats).toEqual(["no targets yet: no roster document in the signals directory, exposure_scale 1"]);
+    expect(flatten(r)).toContain("Its first note could not be read as a scale, so it is quoted as written.");
     expect(flatten(r)).not.toMatch(/forecast|%/);
   });
 });
@@ -220,6 +265,18 @@ describe("reading: a job", () => {
     const later = { runs: FIXTURE.runs, now: new Date("2026-10-29T03:30:00Z") };   // the 01:30Z league run is now over a day old
     expect(flatten(read(FIXTURE, "j:vol.forecast_league", later))).toContain("In the last day it ran once, which failed, for 197 CPU-seconds");
   });
+
+  it("does not count a run cancelled while queued, and dates a run with no start by its end", () => {
+    const fx = clone();
+    fx.runs.push(
+      { id: "x1", kind: "regime.hmm", state: "cancelled", start: null, end: "2026-10-28T20:00:00Z", cpu: null, progress: null, msg: null },
+      { id: "x2", kind: "farm.sweep", state: "done", start: null, end: "2026-10-27T10:00:00Z", cpu: 9, progress: 1, msg: null },
+      { id: "x3", kind: "farm.sweep", state: "done", start: null, end: null, cpu: 4, progress: 1, msg: null },
+    );
+    expect(text(fx, "j:regime.hmm")).toContain("It has no run in the last day");
+    // x2 ended over a day ago; x3, seen only through the job stream, has no times yet and counts
+    expect(text(fx, "j:farm.sweep")).toContain("In the last day it ran 2 times for 5,236 CPU-seconds");
+  });
 });
 
 describe("reading: the farm", () => {
@@ -228,7 +285,7 @@ describe("reading: the farm", () => {
     const t = flatten(r);
     expect(t).toContain("2 cells with a result");
     expect(t).toContain("48 trials");
-    expect(t).toMatch(/best out-of-sample Sharpe is 0\.81, from tsmom@us_equity_indices, with a DSR of 0\.97/);
+    expect(t).toMatch(/best out-of-sample Sharpe is 0\.81, from tsmom on us equity indices, with a DSR of 0\.97/);
     expect(t).toContain("1 of the 2 cells passes every gate");
     expect(t).toContain("1 of the desk's 2 strategies is a farm cell, at 2.5% of capital");
     expect(refsOf(r)).toContain("c:tsmom@us_equity_indices");
@@ -294,9 +351,8 @@ describe("reading: other products", () => {
 
   it("gives desk.report only its run times, and says its contents stay on the research pages (spec §7 Q1)", () => {
     const t = text(FIXTURE, "p:desk.report");
-    expect(t).toContain("4:30 PM on 28 Oct");
-    expect(t).toMatch(/research pages/);
-    expect(t).not.toMatch(/fill|P&L|refus|position/i);
+    expect(t).toContain("Its latest report finished at 4:30 PM on 28 Oct. This page shows only when it ran.");
+    expect(t).not.toMatch(/research pages|fill|P&L|refus|position/i);
   });
 
   it("gives the research service its strategies and no verdict", () => {
@@ -317,6 +373,15 @@ describe("reading: other products", () => {
     expect(flatten(r)).toContain("This is missing from the machine: no regime.hmm artifact has been published.");
     expect(numbersIn(r.paras.flat().map((s) => ("b" in s ? s.b : s.t)).join(""))).toEqual([]);
     expect(r.caveats).toEqual([]);
+  });
+
+  it("writes a date or instant inside a server's reason as the page writes times, never as raw ISO text", () => {
+    const fx = clone();
+    const node = nodeOf(fx, "p:regime.hmm");
+    node.status = "missing";
+    node.why = "the regime.hmm artifact of 2026-10-24T13:07:33.610Z is past its max age; data as of 2026-10-23";
+    node.m = { kind: "regime.hmm" };
+    expect(text(fx, "p:regime.hmm")).toContain("the regime.hmm artifact of 9:07 AM on 24 Oct is past its max age; data as of 23 Oct.");
   });
 
   it("says a stale product is past its schedule's max age", () => {
@@ -354,7 +419,7 @@ describe("reading: lenses the fixture does not carry", () => {
   );
 
   it("gives each lens a sentence from its own figures", () => {
-    expect(text(fx, "p:cov.league")).toMatch(/lw_identity on ndx100 \(14\.8% realized volatility\).*oas on sectors \(12\.1%\)/);
+    expect(text(fx, "p:cov.league")).toMatch(/lw identity on ndx100 \(14\.8% realized volatility\).*oas on sectors \(12\.1%\)/);
     const atlas = text(fx, "p:risk.mc_atlas");
     expect(atlas).toContain("10-day");
     expect(atlas).toContain("4.21%");
@@ -407,6 +472,7 @@ describe("reading: results and strategies", () => {
     expect(flatten(farm)).toContain("2.5% of capital");
     expect(flatten(farm)).toContain("SPY, QQQ, DIA, IWM and MDY");
     expect(refsOf(farm)).toEqual(expect.arrayContaining(["p:signals.daily", "c:tsmom@us_equity_indices", "d:SPY"]));
+    expect(farm.title).toBe("tsmom us equity indices");
     const research = read(FIXTURE, "st:exp_a01_spy");
     expect(refsOf(research)).toContain("p:research");
     expect(flatten(research)).not.toMatch(/trades /);
@@ -425,14 +491,20 @@ describe("reading: the book, its limits and kill switch", () => {
   it("gives the book its strategies and capital, and with a summary its positions, limits and kill switch as of the summary", () => {
     const r = read(FIXTURE, "book");
     const t = flatten(r);
-    expect(t).toContain("2 strategies send it signals");
-    expect(t).toContain("5% of capital");
-    expect(t).toContain("60% incubation cap");
+    expect(t).toContain("2 strategies send it signals, 1 from the research service and 1 from daily signals.");
+    expect(t).toContain("Their allocations add up to 5% of capital, under a 60% incubation cap.");
     expect(t).toContain("10% volatility target");
-    expect(t).toContain("As of 4:30 PM on 28 Oct it held 14 positions");
-    expect(t).toContain("2 limits bound it");
-    expect(t).toContain("kill switch is armed");
+    expect(t).toContain("As of 4:30 PM on 28 Oct, the desk report's book summary shows 14 positions, 2 limits (aapl-cap and dd-cap) and the kill switch armed.");
     expect(refsOf(r)).toEqual(expect.arrayContaining(["lim:aapl-cap", "lim:dd-cap", "kill", "p:signals.overlay"]));
+  });
+
+  it("says the live book only from a summary's time, and nothing of limits with neither a summary nor its reason", () => {
+    const fx = clone();
+    delete nodeOf(fx, "book").m.summary_asof;
+    expect(text(fx, "book")).not.toMatch(/positions|limit|kill/);
+    const stale = structuredClone(FIXTURE_NO_SUMMARY) as MachineOut;
+    nodeOf(stale, "book").m.summary_why = "the desk.report artifact of 2026-10-28T20:30:44.907Z is stale, so its book_summary is not shown as the live book";
+    expect(text(stale, "book")).toContain("“the desk.report artifact of 4:30 PM on 28 Oct is stale, so its book_summary is not shown as the live book”");
   });
 
   it("gives a limit its kind, scope and whether it trips the kill switch, as of the summary, and never a threshold", () => {

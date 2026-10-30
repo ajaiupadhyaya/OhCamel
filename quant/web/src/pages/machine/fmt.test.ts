@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dur, hm, num, nyDay, nyTime, pct, plural } from "./fmt";
+import { dur, hm, instant, num, nyDay, nyTime, pct, plural } from "./fmt";
 
 const MINUS = "−";
 const DASH = "—";
@@ -168,5 +168,17 @@ describe("nyDay and nyTime", () => {
       expect(nyDay(v as string)).toBe(DASH);
       expect(nyTime(v as string)).toBe(DASH);
     }
+  });
+});
+
+describe("instant", () => {
+  it("reads a timestamp with an offset as given, and one without as UTC", () => {
+    expect(instant("2026-10-28T20:30:12Z")).toBe(Date.UTC(2026, 9, 28, 20, 30, 12));
+    expect(instant("2026-10-28T16:30:12-04:00")).toBe(Date.UTC(2026, 9, 28, 20, 30, 12));
+    expect(instant("2026-10-28T22:33:38.771204")).toBe(Date.UTC(2026, 9, 28, 22, 33, 38, 771));
+  });
+
+  it("is null for a date (a day, not an instant) and for what does not parse", () => {
+    for (const v of [null, undefined, "", "2026-10-28", "soon"]) expect(instant(v)).toBeNull();
   });
 });

@@ -94,11 +94,20 @@ function calendarDay(v: string): { month: number; day: number } | null {
   return t.getUTCFullYear() === y && t.getUTCMonth() === mo - 1 && t.getUTCDate() === d ? { month: mo, day: d } : null;
 }
 
+/**
+ * A timestamp from the wire as epoch milliseconds, one with no offset read as UTC; null for a date (it names
+ * a day, not an instant) and for anything that does not parse. The one rule for every instant the page reads.
+ */
+export function instant(v: string | null | undefined): number | null {
+  if (typeof v !== "string" || DATE_ONLY.test(v)) return null;
+  const t = Date.parse(NAIVE.test(v) ? `${v}Z` : v);
+  return Number.isNaN(t) ? null : t;
+}
+
 /** A timestamp as its New York month, day, hour and minute; null when it is not one. */
 function nyParts(v: string): { month: number; day: number; hour: number; minute: number } | null {
-  if (DATE_ONLY.test(v)) return null;
-  const t = Date.parse(NAIVE.test(v) ? `${v}Z` : v);
-  if (Number.isNaN(t)) return null;
+  const t = instant(v);
+  if (t === null) return null;
   const p = Object.fromEntries(NY.formatToParts(new Date(t)).map((x) => [x.type, x.value]));
   return { month: Number(p.month), day: Number(p.day), hour: Number(p.hour) % 24, minute: Number(p.minute) };
 }
