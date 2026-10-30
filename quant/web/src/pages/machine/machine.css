@@ -134,6 +134,10 @@
   gap: 10px;
   height: 46px;
   padding: 0 14px;
+  /* The bar stands over the machine, and a fan of edges behind its links drowned them. The controls' raised ground now
+     sits on the solid ground, so it looks as before over black and reads over anything the machine draws there. */
+  --mx-raise: color-mix(in srgb, var(--mx-bright) 6%, var(--mx-solid));
+  --mx-raise-2: color-mix(in srgb, var(--mx-bright) 10%, var(--mx-solid));
 }
 .mx-brand {
   margin-right: 2px;
@@ -529,7 +533,7 @@
   display: flex;
   flex-direction: column;
   width: 410px;
-  max-height: calc(100vh - 70px);
+  max-height: calc(100vh - 88px); /* ends above the legend (12 px up, 16 px tall): the day's long list would cover its last words */
 }
 .mx-tabs {
   flex: none;
