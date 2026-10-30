@@ -95,7 +95,10 @@ function TourPane({ gi, view, runs, now, onStep, onSelect }: SidePanelProps) {
  */
 function TourStack({ gi, view, runs, now, onStep, onSelect }: SidePanelProps) {
   const has = (id: string) => gi.byId.has(id);
-  const ctx = { runs, now };
+  const written = useMemo(() => {
+    const ctx = { runs, now };
+    return STEPS.map((s) => ({ key: s.key, title: s.title(gi, ctx), body: s.body(gi, ctx) }));
+  }, [gi, runs, now]);
   const box = useRef<HTMLDivElement>(null);
   /** The step the sheet stands at; 0 until it has been placed. */
   const at = useRef(0);
@@ -144,10 +147,10 @@ function TourStack({ gi, view, runs, now, onStep, onSelect }: SidePanelProps) {
   return (
     <>
       <div ref={box} className="mx-tstack">
-        {STEPS.map((s, k) => (
+        {written.map((s, k) => (
           <section key={s.key} className="mx-tsec" aria-current={k + 1 === step ? "step" : undefined}>
-            <h2>{s.title(gi, ctx)}</h2>
-            <Paras paras={s.body(gi, ctx)} has={has} onSelect={onSelect} />
+            <h2>{s.title}</h2>
+            <Paras paras={s.body} has={has} onSelect={onSelect} />
           </section>
         ))}
       </div>

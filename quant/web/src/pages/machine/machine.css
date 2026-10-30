@@ -891,6 +891,9 @@
 .mx-list a.mx-chip {
   text-decoration: none;
 }
+.mx-list a.mx-chip {
+  display: block; /* a link's padding only takes up room in its row as a block */
+}
 .mx-list a.mx-tok:hover,
 .mx-list a.mx-chip:hover {
   background: var(--mx-raise-2);
@@ -967,12 +970,16 @@ body:has(.oc-app-machine) .oc-keymap {
  * The screen divides: the machine above and one sheet below, solid so that the words read over nothing. The canvas runs
  * on under the sheet and the view offset centres the machine in what the sheet leaves. In the sheet the focus content
  * comes first and the tabs follow it, stuck to the sheet's bottom edge until they are reached and to its top edge after,
- * so they are always under a thumb. The tour is one long read (SidePanel.tsx). Anything to press is at least 32 px.
+ * so they are always under a thumb. The tour is one long read (SidePanel.tsx). Anything to press is at least 32 px tall,
+ * but for a link inside a sentence, which the sentence's own line spacing keeps apart.
  */
 @media (max-width: 860px) {
   .mx-top {
     gap: 8px;
     padding: 0 12px;
+  }
+  .mx-brand {
+    padding: 6px 0;
   }
   .mx-pages summary {
     padding: 7px 10px;
@@ -1023,7 +1030,7 @@ body:has(.oc-app-machine) .oc-keymap {
     background: var(--mx-solid);
   }
   .mx-root .mx-modes > * {
-    padding: 6px 9px;
+    padding: 7px 9px;
   }
   .mx-legend {
     display: none;
@@ -1092,13 +1099,16 @@ body:has(.oc-app-machine) .oc-keymap {
     font-size: 15px;
   }
   .mx-root .mx-chip {
-    padding: 7px 9px;
+    padding: 9px;
   }
   .mx-chips {
     gap: 6px;
   }
   .mx-root .mx-tok {
     padding: 2px 6px;
+  }
+  .mx-root .mx-kv .mx-tok {
+    padding: 8px 6px;
   }
   .mx-tstack {
     margin-top: -12px;
@@ -1119,7 +1129,7 @@ body:has(.oc-app-machine) .oc-keymap {
     background: var(--mx-ground);
   }
   .mx-root .mx-tnav button {
-    padding: 8px 16px;
+    padding: 9px 16px;
   }
   .mx-play {
     flex-wrap: wrap;
@@ -1130,9 +1140,12 @@ body:has(.oc-app-machine) .oc-keymap {
   }
   .mx-root .mx-run {
     grid-template-columns: 58px minmax(0, 1fr) 40px 72px;
-    padding: 8px 4px;
+    padding: 9px 4px;
   }
 
+  .mx-rings a {
+    padding: 8px 10px;
+  }
   .mx-node summary {
     padding: 10px 0;
   }

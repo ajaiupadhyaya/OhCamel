@@ -37,6 +37,23 @@ export function outline(gi: GraphIndex): { ring: string; word: string; nodes: nu
 
 const anchor = (i: number): string => `mx-node-${i}`;
 
+/** Where the list last took the reader: the node the address named, and how many searches had found that same node. */
+export interface Place {
+  named: string | null;
+  found: number;
+}
+
+/**
+ * Whether the list takes the reader to a node. Only the reader's own asking does: the address coming to name a different
+ * node, or a search finding the node it already names. The graph is not an input, because a new read of it arrives every
+ * five minutes and must leave a reader, and whatever they are typing, where they are. `opened` is a node the reader
+ * opened where it stands, so they are there already.
+ */
+export function takesReader(was: Place, is: Place, opened: string | null): boolean {
+  if (is.named === null) return false;
+  return is.found !== was.found || (is.named !== was.named && is.named !== opened);
+}
+
 export interface ListViewProps {
   gi: GraphIndex;
   view: View;
@@ -46,7 +63,8 @@ export interface ListViewProps {
   drawable: boolean;
   /** Why the list is standing in for the machine, when it is. */
   note: string | null;
-  onSelect(id: string | null): void;
+  /** `replace` for a reader's own opening and closing, which should not be steps for Back to walk. */
+  onSelect(id: string | null, how?: { replace: boolean }): void;
 }
 
 export function ListView({ gi, view, runs, now, drawable, note, onSelect }: ListViewProps) {
@@ -60,18 +78,25 @@ export function ListView({ gi, view, runs, now, drawable, note, onSelect }: List
     if (named !== null) setOpen(new Set(open).add(named));
   }
 
-  /** The visitor opened this node where it stands, so the page need not take them to it. */
-  const opened = useRef<string | null>(null);
+  // the latest graph, for the effect below to read: a new one alone must not run it
+  const graph = useRef(gi);
   useEffect(() => {
-    if (named === null) return;
-    if (named === opened.current) {
-      opened.current = null;
-      return;
-    }
-    const el = document.getElementById(anchor(gi.byId.get(named) ?? -1));
+    graph.current = gi;
+  });
+
+  const [found, setFound] = useState(0);
+  const opened = useRef<string | null>(null);
+  const place = useRef<Place>({ named: null, found: 0 });
+  useEffect(() => {
+    const is = { named, found };
+    const take = takesReader(place.current, is, opened.current);
+    place.current = is;
+    opened.current = null;
+    if (!take || named === null) return;
+    const el = document.getElementById(anchor(graph.current.byId.get(named) ?? -1));
     el?.scrollIntoView({ block: "start" });
     el?.querySelector("summary")?.focus({ preventScroll: true });
-  }, [named, gi]);
+  }, [named, found]);
 
   const toggle = (id: string, on: boolean): void => {
     if (on === open.has(id)) return;
@@ -80,13 +105,20 @@ export function ListView({ gi, view, runs, now, drawable, note, onSelect }: List
     else next.delete(id);
     setOpen(next);
     opened.current = on ? id : null;
-    if (on) onSelect(id);
-    else if (id === view.sel) onSelect(null);
+    if (on) onSelect(id, { replace: true });
+    else if (id === view.sel) onSelect(null, { replace: true });
+  };
+
+  /** A search found this node. The address takes the reader there, unless it already names it. */
+  const seek = (id: string): void => {
+    setOpen(new Set(open).add(id));
+    if (id === named) setFound((n) => n + 1);
+    else onSelect(id);
   };
 
   return (
     <div className="mx-list">
-      <TopBar gi={gi} now={now} view={view} onSelect={onSelect} drawable={drawable} />
+      <TopBar gi={gi} now={now} view={view} onSelect={seek} drawable={drawable} />
       <div className="mx-list-body">
         <h1>The machine as a list</h1>
         {note && <p role="status">{note}</p>}
@@ -116,7 +148,7 @@ export function ListView({ gi, view, runs, now, drawable, note, onSelect }: List
               return (
                 <details key={n.id} id={anchor(i)} className="mx-node" open={isOpen} onToggle={(e) => toggle(n.id, e.currentTarget.open)}>
                   <summary>
-                    {hitName(n)}
+                    {hitName(n)}{" "}
                     {verdict && <span className={/FAIL/.test(verdict) ? "fail" : undefined}>{verdict}</span>}
                   </summary>
                   {isOpen && <Reading gi={gi} i={i} view={view} runs={runs} now={now} onSelect={onSelect} />}

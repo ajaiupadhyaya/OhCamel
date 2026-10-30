@@ -33,7 +33,8 @@ export function useScene(gi: GraphIndex, handlers: SceneHandlers, reducedMotion:
     let made: SceneApi;
     try {
       made = createScene(el, gi, { palette: readPalette(el), reducedMotion, nowNY: () => nyHour(new Date()) }, relay);
-    } catch {
+    } catch (e) {
+      console.error(e); // the page falls back to the list either way, and a bug here must not pass for a lost context
       relay.onLost();
       return;
     }

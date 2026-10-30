@@ -5,7 +5,8 @@ import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import { FIXTURE, FIXTURE_BROKEN, FIXTURE_NO_SUMMARY } from "./fixture";
 import { RADIUS } from "./layout";
-import { ListView, outline } from "./ListView";
+import { ListView, outline, takesReader } from "./ListView";
+import type { Place } from "./ListView";
 import type { MachineOut } from "./types";
 import { parseView } from "./url";
 import { indexGraph } from "./web";
@@ -25,6 +26,38 @@ function list(out: MachineOut, address = "?view=list", over: { drawable?: boolea
 
 const CLEAN = /NaN|undefined|\[object/;
 const openNodes = (html: string): number => (html.match(/<details[^>]* open=""/g) ?? []).length;
+
+describe("takesReader: what moves the reader in the list", () => {
+  const at = (named: string | null, found = 0): Place => ({ named, found });
+
+  it("takes them to the node an address names on arrival", () => {
+    expect(takesReader(at(null), at("d:NVDA"), null)).toBe(true);
+  });
+
+  it("takes them to a different node, from a link or a search", () => {
+    expect(takesReader(at("d:NVDA"), at("d:AAPL"), null)).toBe(true);
+  });
+
+  it("leaves them alone when nothing they asked for changed: a new read of the graph", () => {
+    expect(takesReader(at("d:NVDA"), at("d:NVDA"), null)).toBe(false);
+    expect(takesReader(at("d:NVDA", 2), at("d:NVDA", 2), null)).toBe(false);
+  });
+
+  it("leaves them alone when the address names nothing", () => {
+    expect(takesReader(at("d:NVDA"), at(null), null)).toBe(false);
+    expect(takesReader(at(null), at(null), null)).toBe(false);
+    expect(takesReader(at(null, 0), at(null, 1), null)).toBe(false);
+  });
+
+  it("leaves them where they are for a node they opened themselves", () => {
+    expect(takesReader(at("d:NVDA"), at("d:AAPL"), "d:AAPL")).toBe(false);
+    expect(takesReader(at(null), at("d:AAPL"), "d:AAPL")).toBe(false);
+  });
+
+  it("takes them to the node they searched for, though the address already names it", () => {
+    expect(takesReader(at("d:NVDA", 0), at("d:NVDA", 1), null)).toBe(true);
+  });
+});
 
 describe("outline: the nodes by ring", () => {
   const gi = indexGraph(FIXTURE);
@@ -72,6 +105,11 @@ describe("ListView", () => {
       last = at;
       expect(html).toContain(`href="#mx-ring-${ring}"`);
     }
+  });
+
+  it("reads a node's verdict as a word of its own", () => {
+    expect(list(FIXTURE)).toContain("Strategy farm <span>PASS</span>");
+    expect(list(FIXTURE)).toContain('xsmom on sectors <span class="fail">FAIL</span>');
   });
 
   it("has the machine's bar: its search, under the id the / key looks for, and its status, but no web to light", () => {
