@@ -163,9 +163,13 @@ router, `api/routers/machine.py`, serves it.
   manifest appears. Read the warehouse read-only and memoise in process. `runs` is cheap and
   always fresh. Response budget: ≤ 250 KB gzip.
 - **Honesty.** A missing or failed source leaves the node present with `status: "missing"` and
-  the reason. It never fabricates a value. An artifact past its max age carries the existing
-  `stale` flag. Ticker readouts come only from the warehouse; a name with no bars has no
-  readout.
+  the reason, in a plain sentence; the operator's text goes to the log. It never fabricates a
+  value. An artifact is `stale` when a scheduled run has been missed: the next cron fire after
+  its `finished_at`, plus a 2-hour grace, has passed (a kind with no schedule entry is never
+  stale). `schedules.yaml`'s `max_age` stays the other pages' lamp; it marks a healthy system
+  stale most of the week, so the machine does not use it. A feed carries the warehouse
+  freshness `stale` flag. Ticker readouts come only from the warehouse; a name with no bars has
+  no readout.
 - **Live.** The page also subscribes to the existing `GET /api/jobs/events` (SSE) and patches
   `runs` in place. No new stream is needed.
 
@@ -255,7 +259,9 @@ Per kind (the prototype's copy is the reference):
     its two leverage and fill caveats.
   - **Exposure overlay.** Forecast volatility against the target and the resulting scale, parsed
     from its `exposure_scale` note, plus its fallback estimator when the note says so.
-  - **Anything else.** Its notes, verbatim.
+  - **Anything else.** Its notes, verbatim, except that a note carrying internal detail (an
+    absolute path, a traceback or exception text, config JSON) is withheld and says so, on every
+    product, and every note is capped at 400 characters.
 - **Farm cell.** Variants, Sharpe, PSR, DSR, PBO, verdict and detail, and the roster strategy it
   becomes.
 - **Strategy.** Capital fraction, symbols, producer, and its farm cell.
@@ -391,9 +397,10 @@ How (*designer's call*, chosen to open no new path from the public host to the e
 - Strip the thresholds in the job, so they never reach the artifact store.
 - `/api/machine` reads that table like any artifact. The book, limits and kill switch come from
   it, labelled "as of" its time. There's no compose change and no bridge on the public host.
-- Until the table exists, or if it's stale, the book node shows the roster and the overlay only,
-  with the limits and kill switch absent and the reason stated. The example book is never
-  presented as the live one.
+- Until the table exists, or if a scheduled `desk.report` has been missed since it (§6.1's rule,
+  so a weekend is not stale), the book node shows the roster and the overlay only, with the
+  limits and kill switch absent and the reason stated. The example book is never presented as
+  the live one.
 - `desk.report`'s other tables (fills, per-strategy P&L, refusals) are not rendered on `/`.
   They stay where they already are, at `/api/artifacts`. On the machine, its node shows only
   its run times.

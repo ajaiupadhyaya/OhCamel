@@ -17,16 +17,22 @@ from ohcamel_quant.jobs.schedules import ScheduleEntry, Schedules, load_schedule
 from ohcamel_quant.machine.clock import JobClock, job_clock, ny_hour, place_hour
 from ohcamel_quant.machine.graph import (
     FEEDS,
+    LENS_WHY,
+    NOTE_CAP,
     PROD,
     RULES,
+    WITHHELD,
     Inputs,
     Product,
     build_graph,
     provenance_symbols,
+    public_note,
+    public_notes,
 )
 from ohcamel_quant.machine.lenses import LENS_TABLES, extras, product_lens
 from ohcamel_quant.machine.readouts import cluster_order, ticker_readouts
 from ohcamel_quant.machine.world import load_world
+from ohcamel_quant.signals.daily import EXECUTION_NOTES
 from ohcamel_quant.signals.report import BOOK_COLUMNS
 from ohcamel_quant.signals.roster import load_roster
 from ohcamel_quant.warehouse.constituents import load_constituents
@@ -389,7 +395,10 @@ def test_each_unusable_summary_says_which_case_it_is():
     whys = {w: _node(build_graph(_inputs(book_summary=w)), "book")["m"]["summary_why"]
             for w in ("absent", "untabled", "empty", "unlimited", "stale")}
     assert len(set(whys.values())) == 5                         # five cases, five different sentences
-    assert "stale" in whys["stale"] and "book_summary" in whys["untabled"] and "limits" in whys["unlimited"]
+    assert whys["absent"] == "The nightly desk report that carries the book's limits has not published them yet."
+    assert whys["empty"] == "The desk report ran but could not read the live book."
+    assert "scheduled one has been missed" in whys["stale"] and "limits" in whys["unlimited"]
+    assert not any(word in w for w in whys.values() for word in ("book_summary", "desk.report", "artifact", "table", "stale"))
     m = _node(build_graph(_inputs(book_summary="stale")), "book")["m"]
     assert not {"positions", "kill", "limits", "summary_asof"} & set(m)   # a stale row is never shown as the book
 
@@ -409,14 +418,14 @@ def test_a_missing_artifact_reads_nothing_and_has_no_results():
     assert _edge(g, "p:cov.league", "j:signals.overlay", "read")   # the overlay's own provenance still names it
 
 
-def test_an_artifact_missing_a_table_stays_present_and_says_which():   # Review Focus 5
+def test_an_artifact_missing_a_table_stays_present_and_says_so():   # Review Focus 5
     products = _inputs().products
     farm = products["farm.sweep"]
     cells_only = Product(farm.kind, farm.manifest, False, {"cells": farm.tables["cells"]}, farm.rows,
-                         "farm.sweep has no leaderboard table")
+                         "Part of the latest run could not be read.")
     g = build_graph(_inputs(products={**products, "farm.sweep": cells_only}))
     n = _node(g, "p:farm.sweep")
-    assert "status" not in n and n["why"] == "farm.sweep has no leaderboard table" and n["m"]["verdict"] == "FAIL"
+    assert "status" not in n and n["why"] == "Part of the latest run could not be read." and n["m"]["verdict"] == "FAIL"
     cells = _edges_from(g, "p:farm.sweep", "result")
     assert len(cells) == 3 and not [c for c in cells if "verdict" in _node(g, c)["m"]]
 
@@ -524,8 +533,14 @@ def test_feeds_pull_their_jobs_and_the_first_writes_the_track():
     assert len(_edges_from(g, "j:ingest.option_snapshots", "write")) == len(world.options)
     f = _node(g, "feed:prices")
     assert f["m"] == {"who": "Yahoo, Alpaca, Stooq", "dataset": "bars_daily", "keys": 12, "asof": "2026-10-28",
-                      "ok": "2026-10-28T22:41:00", "behind": 1}
+                      "ok": "2026-10-28T22:41:00", "behind": 1, "stale": False}
     assert "status" not in f and f["n"] == "Prices from Yahoo, Alpaca, Stooq"
+
+
+def test_a_feed_carries_the_warehouses_stale_flag():
+    fresh = {k: {**v, "stale": k == "bars_daily"} for k, v in _inputs().freshness.items()}
+    g = build_graph(_inputs(freshness=fresh))
+    assert _node(g, "feed:prices")["m"]["stale"] is True and _node(g, "feed:fred")["m"]["stale"] is False
 
 
 def test_a_feed_without_freshness_is_missing():
@@ -582,6 +597,7 @@ def test_results_come_from_their_tables():
     assert first["verdict"] == "FAIL" and first["oos_sharpe_ann"] == 0.35 and first["status"] == "ok"
     assert first["combos"] == 24 and farm[1]["m"]["dsr_farm"] is None   # a NaN is null, never NaN
     assert "verdict" not in farm[2]["m"] and farm[2]["m"]["reason"] == "no common history"   # not on the leaderboard
+
     for c in cs:
         assert _edge(g, f"c:{c.strategy}@{c.universe}", f"st:{c.slug}", "roster")
     assert sorted(_edges_from(g, "p:vol.forecast_league", "result")) == ["lm:gjr", "lm:har"]
@@ -642,6 +658,78 @@ def test_jobs_and_products_sit_on_the_clock():
     assert len(_edges_from(g, "p:signals.daily", "signal")) == 21
     assert _edges_from(g, "p:signals.overlay", "scale") == ["book"]
     assert len(_edges_into(g, "book", "trade")) == 23
+
+
+def test_a_skipped_cells_exception_text_is_not_its_reason():
+    cells = pd.DataFrame({"cell_id": ["momo@etf"], "strategy": ["momo"], "universe": ["etf"], "status": ["skipped"],
+                          "reason": ["warehouse /data/warehouse.duckdb does not exist yet (no ingest has run)"],
+                          "n_combos": [0]})
+    farm = _product("farm.sweep", {"cells": cells})
+    g = build_graph(_inputs(products={"farm.sweep": farm}))
+    assert _node(g, "c:momo@etf")["m"]["reason"] is None
+
+
+# ---------------------------------------------------------------- what a job wrote about itself
+# what the readings parse or quote, as the jobs write them: signals/overlay.py:430, :258, :231, :240, :246, daily.py:482
+KEPT = [
+    "exposure_scale 0.750000 = min(1, 0.1 / 0.133333); covariance lw_constant_corr on 756 sessions, diagonal from P2's "
+    "best model by QLIKE (EWMA(0.94) where P2 has none); regime p_high and core MC VaR are reported, never used",
+    "no vol.forecast_league artifact: EWMA(0.94) on every name's diagonal",
+    "cov.league artifact 01M5ZZ is stale (used, as the newest there is)",
+    "no cov.league artifact: lw_constant_corr (Ledoit-Wolf)",
+    "cov.league 01M5ZZ has no rank-1 row for core: lw_constant_corr",
+    "21 written, 0 written late, 0 written again (the desk did not size the last), 2 held, 0 already present, 0 refused; "
+    "parameters frozen for the month (INC-01); documents only on each strategy's own decision sessions; validation from "
+    "the newest farm verdict when it tested the frozen parameters",
+    "desk unreachable: keyed on the last written document (OHCAMEL_QUANT_LIVE_ENGINE_URL is unset)",
+    "desk unreachable: keyed on the last written document (GET /api/research answered 503, not the route's body)",
+    "Kronos runtime unavailable (no research/kronos venv): tonight's ledger has the incumbents only",
+    "regime gate measured on the selected configuration's full walk-forward OOS record (I-Q01-6)",
+    "holdout evidence predates methodology v2 / config ab12cd; re-evaluating the holdout is an owner decision",
+    "core: no live mark for NVDA, AMD (held at the previous close)",
+    *EXECUTION_NOTES,
+]
+
+
+@pytest.mark.parametrize("note", KEPT)
+def test_a_real_caveat_is_kept_word_for_word(note):
+    assert public_notes([note]) == [note]
+
+
+@pytest.mark.parametrize("note", [
+    "see /data/warehouse.duckdb", "members skipped: '/tmp/x'", "read ~/secrets", r"C:\jobs\x failed", "at /signals",
+    "Traceback (most recent call last):", "boom: ValueError: nope", "Exception in thread", 'File "job.py", line 1',
+    "failed (TimeoutExpired): ", "(ReadTimeout: timed out)", "[Errno 2] No such file", 'config {"a": 1}', "{\n}",
+    "warehouse wh.duckdb: locked", "unreadable (bad json)",
+])
+def test_a_note_with_internal_detail_is_withheld(note):
+    assert public_note(note) is None and public_notes([note]) == [WITHHELD]
+
+
+def test_withheld_notes_are_one_sentence_where_the_first_stood():
+    assert public_notes(["kept", "at /a/b", "also kept", "at /c/d", "Traceback"]) == ["kept", WITHHELD, "also kept"]
+
+
+def test_a_note_is_capped_at_a_word():
+    long = " ".join(["word"] * 200)
+    out = public_note(long)
+    assert len(out) <= NOTE_CAP and out.endswith("word…") and long.startswith(out[:-1])
+    assert public_note("x" * (NOTE_CAP + 50)) == "x" * (NOTE_CAP - 1) + "…"   # one long word is cut where it stands
+    assert public_note("y" * NOTE_CAP) == "y" * NOTE_CAP
+
+
+@pytest.mark.parametrize("notes", [None, "a string", {"a": 1}, 7])
+def test_notes_that_are_not_a_list_are_none(notes):
+    assert public_notes(notes) == []
+
+
+def test_a_note_that_is_not_text_is_dropped():
+    assert public_notes(["kept", 7, None, "", {"a": "/etc/passwd"}]) == ["kept"]
+
+
+def test_the_products_notes_on_the_wire_are_filtered():
+    farm = _product("farm.sweep", {}, notes=["a caveat", "EXP-K01 config {\"model_revision\": \"abc\"}"])
+    assert _node(build_graph(_inputs(products={"farm.sweep": farm})), "p:farm.sweep")["m"]["notes"] == ["a caveat", WITHHELD]
 
 
 # ---------------------------------------------------------------- product lenses and the clock's extras
@@ -736,7 +824,7 @@ def test_a_lens_with_a_missing_column_is_omitted_with_the_reason():   # Review F
     g = build_graph(_inputs(products={**_inputs().products, "farm.sweep": cut}))
     n = _node(g, "p:farm.sweep")
     assert "status" not in n and n["m"]["verdict"] == "FAIL"      # the node stays, with its manifest
-    assert "lens" not in n["m"] and n["m"]["lens_why"] == "leaderboard has no column oos_sharpe_ann"
+    assert "lens" not in n["m"] and n["m"]["lens_why"] == LENS_WHY         # no table or column is named on the page
     assert len(_edges_from(g, "p:farm.sweep", "result")) == 3     # and its cells, which the cells table gives
     assert "NaN" not in json.dumps(g)                              # the fixture's own NaNs went out as null
     json.dumps(g, allow_nan=False)
@@ -791,7 +879,7 @@ def test_a_lens_never_raises():
     lens, why = product_lens("vol.surface_history", odd)
     assert lens is None and why == "vol.surface_history lens could not be read (TypeError)"
     g = build_graph(_inputs(products={**_inputs().products, "vol.surface_history": odd}))
-    assert _node(g, "p:vol.surface_history")["m"]["lens_why"] == why   # and the graph builds
+    assert _node(g, "p:vol.surface_history")["m"]["lens_why"] == LENS_WHY   # and the graph builds
 
 
 def test_a_kind_with_no_lens_has_neither_a_lens_nor_a_reason():
@@ -813,7 +901,7 @@ def test_product_nodes_carry_their_lens_or_the_reason():
     assert _node(g, "p:farm.sweep")["m"]["lens"]["cells"] == 5
     assert _node(g, "p:regime.hmm")["m"]["lens"] == {"date": "2026-10-16", "p_high": 0.8765, "weeks": 4}
     m = _node(g, "p:models.xs_lgbm")["m"]
-    assert "lens" not in m and m["lens_why"] == "no holdout_deciles table"
+    assert "lens" not in m and m["lens_why"] == LENS_WHY
     for kind in set(PROD) - set(LENS_TABLES):
         assert not {"lens", "lens_why"} & set(_node(g, f"p:{kind}")["m"]), kind
     assert set(_node(g, "p:desk.report")["m"]) == {"kind", "finished", "stale"}

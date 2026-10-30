@@ -7,6 +7,9 @@ exactly one rule in ``RULES``. "An edge with no rule is a bug" (spec §5), and a
 edge to it. Nothing here is invented. A source that is absent leaves its node present with
 ``status: "missing"`` and a ``why``, and it never fabricates a value.
 
+Every ``why`` is a plain sentence for the public page, and what a job wrote about itself passes
+``public_notes`` first: the specific, operator's text goes to the log and never to the response.
+
 ``build_graph`` is pure. Task 6's loader does the I/O and hands it an ``Inputs``. It sends
 semantics, not coordinates: each node's ``ring`` and its ``at`` (section and index, an hour, or
 the node it sits beside). The client lays the rings out (spec §6.3). The sections follow the
@@ -17,7 +20,9 @@ then the desk.
 from __future__ import annotations
 
 import json
+import logging
 import math
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -29,6 +34,8 @@ import pandas as pd
 from ..signals.roster import Cell, Roster
 from .clock import PRETTY, JobClock
 from .world import World
+
+log = logging.getLogger("ohcamel_quant.machine.graph")
 
 # kind -> (code, name): every artifact kind the clock publishes (the prototype's list)
 PROD: dict[str, tuple[str, str]] = {
@@ -80,11 +87,25 @@ LEADERBOARD = ("cell_id", "verdict", "detail", "dsr_farm", "psr", "oos_sharpe_an
 MANIFEST = {"verdict": "verdict", "detail": "verdict_detail", "code": "code_sha", "asof": "data_asof",
             "finished": "finished_at", "cpu": "cpu_seconds", "engine": "engine", "notes": "notes", "art": "id"}
 
+LENS_WHY = "This figure could not be read from the latest run."   # the one public sentence; the log has which
+WITHHELD = "A note from this job holds internal detail and is not shown here."
+NOTE_CAP = 400
+# What a job's note must not carry to the public page: jobs put exception text and a subprocess's stderr in their notes.
+INTERNAL = re.compile(r"""
+    (?<![\w.:/~-])(?:/(?!api\b)[A-Za-z_.][\w.-]*|~/|[A-Za-z]:\\)    # a path on a host, and not a route of the API
+    | \b[\w-]+\.(?:duckdb|sqlite|parquet|py)\b                       # a store or a module by its file's name
+    | Traceback | Error: | Exception | File\ " | \[Errno\ \d+\]       # a traceback, or an exception's text
+    | \b[A-Z][a-z0-9]+[A-Z]\w*[:)]                                    # an exception's class: "(TimeoutExpired):"
+    | \bunreadable\ \(                                               # the overlay's "unreadable (<exception>)"
+    | \{.*\}                                                         # a body of config JSON
+""", re.VERBOSE | re.DOTALL)
+
 
 @dataclass(frozen=True)
 class Product:
-    """The latest artifact of one kind: its manifest (None when there is none), whether it is past its
-    max age, the tables the graph reads, every listed table's row count, and why anything is missing."""
+    """The latest artifact of one kind: its manifest (None when there is none), whether a scheduled run has
+    been missed since it (``load.missed_fire``), the tables the graph reads, every listed table's row count,
+    and why anything is missing, in a sentence for the page."""
 
     kind: str
     manifest: dict | None
@@ -255,12 +276,12 @@ def _feeds(g: _Graph, inp: Inputs, tracks: dict[str, list[str]]) -> None:
         m: dict[str, Any] = {"who": who, "dataset": dataset}
         why = None
         if inp.freshness is None:
-            why = inp.why.get("warehouse") or "the warehouse's freshness was not read"
+            why = inp.why.get("warehouse") or "The warehouse could not be read."
         elif fr is None:
-            why = f"the warehouse's freshness lists no {dataset} dataset"
+            why = "The warehouse has no record of this feed yet."
         else:
             m |= {"keys": fr.get("keys"), "asof": fr.get("data_asof"), "ok": fr.get("last_ok_at"),
-                  "behind": fr.get("keys_behind")}
+                  "behind": fr.get("keys_behind"), "stale": fr.get("stale")}
         g.node(f"feed:{key}", "feed", label, f"{label} from {who}", "feeds", {}, m,
                status="missing" if why else None, why=why)
         for job in jobs:
@@ -281,9 +302,31 @@ def _table(inp: Inputs, kind: str, name: str, needs: Sequence[str]) -> pd.DataFr
     return df if df is not None and set(needs) <= set(df.columns) else None
 
 
+def public_note(note: Any) -> str | None:
+    """A job's own words as the public may read them: None when they hold internal detail or are not text,
+    and otherwise whole, up to ``NOTE_CAP`` characters, cut at a word."""
+    if not isinstance(note, str) or INTERNAL.search(note):
+        return None
+    if len(note) <= NOTE_CAP:
+        return note
+    cut = note[:NOTE_CAP - 1]
+    return f"{cut.rsplit(' ', 1)[0] if ' ' in cut else cut}…"
+
+
+def public_notes(notes: Any) -> list[str]:
+    """A manifest's notes for the public page: each through ``public_note``, every note withheld replaced by
+    the one sentence ``WITHHELD``, once. A withheld note says so; it is never dropped in silence."""
+    out: list[str] = []
+    for note in notes if isinstance(notes, list) else []:
+        text = public_note(note) or WITHHELD
+        if isinstance(note, str) and note and (text != WITHHELD or WITHHELD not in out):
+            out.append(text)
+    return out
+
+
 def _product_m(kind: str, p: Product | None) -> dict[str, Any]:
     """A product node's ``m``: its manifest fields and stale flag, then its ``lens`` or, when the lens
-    cannot be read, ``lens_why``; ``desk.report`` only its run times."""
+    cannot be read, ``lens_why``; ``desk.report`` only its run times. Its notes pass ``public_notes``."""
     # imported here because lenses.py imports this module's types and _plain
     from .lenses import product_lens
 
@@ -293,11 +336,13 @@ def _product_m(kind: str, p: Product | None) -> dict[str, Any]:
     if kind in RUN_TIMES_ONLY:
         return {"kind": kind, "finished": mf.get("finished_at"), "stale": p.stale}
     m = {"kind": kind, **{k: mf.get(src) for k, src in MANIFEST.items()}, "stale": p.stale}
+    m["notes"] = public_notes(m["notes"])
     lens, why = product_lens(kind, p)
     if lens is not None:
         m["lens"] = lens
     elif why:
-        m["lens_why"] = why
+        log.warning("%s: its lens was not read: %s", kind, why)
+        m["lens_why"] = LENS_WHY
     return m
 
 
@@ -327,9 +372,9 @@ def _products(g: _Graph, inp: Inputs, tracks: dict[str, list[str]]) -> None:
     for kind, (code, name) in PROD.items():
         p = inp.products.get(kind)
         at = {"of": f"j:{kind}"} if g.has(f"j:{kind}") else {}
-        why = p.why if p else None   # a present artifact may still miss a table; it says which
+        why = p.why if p else None   # a present artifact may still miss a table
         if not _present(p):
-            why = why or inp.why.get(kind) or f"no {kind} artifact has been published"
+            why = why or inp.why.get(kind) or "Its job has not published anything yet."
         g.node(f"p:{kind}", "product", code, name, "products", at, _product_m(kind, p),
                status=None if _present(p) else "missing", why=why)
         g.edge(f"j:{kind}", f"p:{kind}", "publish")
@@ -366,6 +411,8 @@ def _farm_cells(inp: Inputs) -> list[Result]:
     for row in _records(cells, {"cell_id": "cell_id", "strategy": "s", "universe": "u", "status": "status",
                                 "reason": "reason", "n_combos": "combos"}):
         s, u, cid = row.pop("s"), row.pop("u"), row.pop("cell_id", None)
+        if "reason" in row:                             # a skipped cell's reason is its exception's text
+            row["reason"] = public_note(row["reason"])
         if isinstance(s, str) and isinstance(u, str):
             name = f"{s.replace('_', ' ')} on {u.replace('_', ' ')}"
             out.append((f"c:{s}@{u}", f"{s}@{u}", name, {**row, **lead.get(cid or f"{s}@{u}", {})}))
@@ -427,23 +474,25 @@ def _json_list(v: Any) -> list | None:
 
 
 def _book_summary(p: Product | None) -> tuple[dict | None, str | None]:
-    """``desk.report``'s ``book_summary``, parsed, when it is usable: present, fresh, a row, and limits
-    read. Otherwise None and which case it is, in plain words (spec §7 Q1: the book then shows the
-    roster and the overlay only, and the reason)."""
+    """``desk.report``'s ``book_summary``, parsed, when it is usable: present, no scheduled run missed since,
+    a row, and limits read. Otherwise None and which case it is, in a sentence for the page (spec §7 Q1: the
+    book then shows the roster and the overlay only, and the reason). The date in the stale sentence is the
+    manifest's own timestamp, which the page writes as it writes every time (prose.ts ``reason``)."""
     if not _present(p):
-        return None, "desk.report has published no artifact, so the live book's limits and kill switch are not shown"
+        return None, "The nightly desk report that carries the book's limits has not published them yet."
     if p.stale:
-        return None, (f"the desk.report artifact of {p.manifest.get('finished_at')} is stale, so its book_summary "
-                      "is not shown as the live book")
+        return None, f"The last desk report is from {p.manifest.get('finished_at')}, and a scheduled one has been missed since."
     t = p.tables.get("book_summary")
     if t is None:
-        return None, "the desk.report artifact has no book_summary table"
+        return None, "The latest desk report does not carry the book's summary."
     if t.empty:
-        return None, "book_summary has no row: the engine was unreachable when desk.report last ran"
+        log.warning("book_summary has no row: the engine was unreachable when desk.report last ran")
+        return None, "The desk report ran but could not read the live book."
     row = {k: _plain(v) for k, v in t.iloc[0].items()}
     limits = _json_list(row.get("limits"))
     if limits is None:
-        return None, "book_summary did not read the book's limits"
+        log.warning("book_summary did not read the book's limits")
+        return None, "The desk report could not read the book's limits."
     trips = _json_list(row.get("trips_on"))
     pos, kill = row.get("positions"), row.get("kill_switch")
     return {

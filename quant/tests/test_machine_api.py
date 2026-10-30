@@ -15,6 +15,7 @@ from contextlib import closing, contextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
+from zoneinfo import ZoneInfo
 
 import duckdb
 import numpy as np
@@ -30,10 +31,17 @@ from ohcamel_quant.api.routers import machine as machine_router
 from ohcamel_quant.config import Settings
 from ohcamel_quant.jobs.db import connect, iso
 from ohcamel_quant.jobs.queue import claim_next, enqueue, fail, set_progress
+from ohcamel_quant.jobs.schedules import load_schedules
 from ohcamel_quant.machine import load
-from ohcamel_quant.machine.graph import PROD, build_graph
+from ohcamel_quant.machine.graph import LENS_WHY, PROD, WITHHELD, build_graph
 from ohcamel_quant.machine.lenses import LENS_TABLES
-from ohcamel_quant.machine.load import load_inputs, load_products, load_runs, load_warehouse
+from ohcamel_quant.machine.load import (
+    load_inputs,
+    load_products,
+    load_runs,
+    load_warehouse,
+    missed_fire,
+)
 from ohcamel_quant.machine.service import MachineCache, build_machine, sentence, watermark
 from ohcamel_quant.machine.world import load_world
 from ohcamel_quant.signals.report import BOOK_COLUMNS
@@ -41,6 +49,7 @@ from ohcamel_quant.warehouse.db import WarehouseUnavailable
 from ohcamel_quant.warehouse.fixture_db import build_fixture_warehouse
 
 NOW = datetime(2026, 6, 2, 15, 0, tzinfo=UTC)   # the day after the fixture warehouse's last bar
+ET = ZoneInfo("America/New_York")
 HOUR = timedelta(hours=1)
 LEAGUE = pd.DataFrame({"estimator": ["sample", "ledoit_wolf"], "universe": ["core", "core"],
                        "realized_vol": [0.11, 0.1], "rank": [2, 1]})
@@ -142,8 +151,79 @@ def test_the_book_summary_reaches_the_graph(store):
 
 
 def test_an_old_artifact_is_stale(store):
-    publish(store, "cov.league", {"league": LEAGUE}, finished=NOW - timedelta(days=30))   # max age 204 h
+    publish(store, "cov.league", {"league": LEAGUE}, finished=NOW - timedelta(days=30))   # weekly: fires were missed
     assert load_products(store.db, NOW)["cov.league"].stale is True
+
+
+# ------------------------------------------------------------------ stale: a scheduled fire was missed (a normal week)
+def ny(day, hour, minute=0):
+    """New York wall time in the week of Monday 2 November 2026 (day 2), and the Friday before it (30 October)."""
+    return datetime(2026, 10 if day == 30 else 11, day, hour, minute, tzinfo=ET)
+
+
+def missed(kind, finished, now):
+    return missed_fire(kind, iso(finished), now, load_schedules())
+
+
+def test_a_weekend_is_not_a_missed_fire():
+    friday_last = ny(30, 20, 12)                                       # the overlay's last fire of the week is 20:10
+    assert not missed("signals.overlay", friday_last, ny(1, 12))        # Sunday noon: nothing was due
+    assert not missed("risk.mc_intraday", ny(30, 15, 46), ny(1, 12))
+    assert not missed("desk.report", ny(30, 16, 31), ny(1, 12))
+    assert not missed("signals.overlay", friday_last, ny(2, 9, 30))     # Monday's first fire is 9:20: still in its grace
+
+
+def test_a_quiet_weekday_evening_is_not_a_missed_fire():
+    assert not missed("risk.mc_intraday", ny(2, 15, 46), ny(2, 19))     # 35 m after it, yet its next fire is tomorrow
+
+
+def test_a_missed_night_is_a_missed_fire_by_the_next_morning():
+    friday = ny(30, 23, 40)                                             # the farm fires at 23:00 on weekdays
+    assert not missed("farm.sweep", friday, ny(2, 23, 30))              # Monday night: in its grace
+    assert missed("farm.sweep", friday, ny(3, 12))                      # Tuesday, and Monday night's run never came
+
+
+def test_a_missed_weekday_report_is_a_missed_fire():
+    friday = ny(30, 16, 31)
+    assert not missed("desk.report", friday, ny(2, 18, 29))             # 16:30 plus two hours
+    assert missed("desk.report", friday, ny(2, 18, 31))
+    assert missed("desk.report", ny(30, 16, 31), ny(3, 9))
+
+
+def test_the_earliest_entry_of_a_kind_decides():
+    assert missed("risk.mc_intraday", ny(30, 15, 46), ny(2, 11, 46))    # 9:45's entry, not the 10:00-15:45 one
+    assert not missed("risk.mc_intraday", ny(30, 15, 46), ny(2, 11, 44))
+
+
+@pytest.mark.parametrize("finished", [None, 7, "", "not a time", "2026-10-30T12:00:00"])
+def test_a_time_that_does_not_read_is_not_stale(finished):
+    assert missed_fire("desk.report", finished, ny(3, 9), load_schedules()) is False
+
+
+def test_a_kind_with_no_schedule_entry_is_never_stale():
+    assert not missed("api.anything", NOW - timedelta(days=400), NOW)
+
+
+def test_the_loader_uses_the_schedule_and_not_max_age(store):
+    publish(store, "signals.overlay", {"overlay": pd.DataFrame({"x": [1]})}, finished=ny(30, 20, 12))   # max_age is 35 m
+    assert load_products(store.db, ny(1, 12))["signals.overlay"].stale is False
+    assert load_products(store.db, ny(3, 12))["signals.overlay"].stale is True
+
+
+def book_row():
+    return pd.DataFrame([{"as_of": iso(ny(30, 16, 30)), "positions": 5, "kill_switch": "armed", "trips_on": json.dumps([]),
+                          "limits": json.dumps([{"name": "dd-cap", "kind": "drawdown", "scope": "portfolio"}])}],
+                        columns=BOOK_COLUMNS)
+
+
+def test_the_book_is_shown_all_weekend_and_withheld_when_a_report_is_missed(store):
+    publish(store, "desk.report", {"book_summary": book_row()}, finished=ny(30, 16, 31))    # max_age is 30 h
+    weekend = nodes(build_graph(load_inputs(store.db, store.settings, ny(2, 12))))
+    assert weekend["book"]["m"]["positions"] == 5 and "kill" in weekend
+    missed_one = nodes(build_graph(load_inputs(store.db, store.settings, ny(3, 12))))
+    assert "kill" not in missed_one and "positions" not in missed_one["book"]["m"]
+    assert missed_one["book"]["m"]["summary_why"] == (f"The last desk report is from {iso(ny(30, 16, 31))}, "
+                                                      "and a scheduled one has been missed since.")
 
 
 # ------------------------------------------------------------------ what is read from disk is untrusted
@@ -152,7 +232,7 @@ def test_a_malformed_manifest_degrades_only_its_own_node(store):
     _, bad = publish(store, "regime.hmm", {"probs": pd.DataFrame({"date": ["2026-05-30"], "p_high": [0.2]})})
     (bad / "manifest.json").write_text("{not json")
     products = load_products(store.db, NOW)
-    assert products["regime.hmm"].manifest is None and "manifest" in products["regime.hmm"].why
+    assert products["regime.hmm"].manifest is None and products["regime.hmm"].why == load.RECORD_UNREADABLE
     assert products["cov.league"].manifest is not None
     assert nodes(build_graph(load_inputs(store.db, store.settings, NOW)))["p:regime.hmm"]["status"] == "missing"
 
@@ -177,15 +257,16 @@ def test_a_row_that_leaves_the_root_is_absent(store, tmp_path):
     assert p.manifest is None and not p.tables
 
 
-def test_a_table_that_leaves_the_root_is_not_read(store, tmp_path):
+def test_a_table_that_leaves_the_root_is_not_read(store, tmp_path, caplog):
     _, d = publish(store, "cov.league", {"league": LEAGUE})
     outside = tmp_path / "outside.parquet"
     LEAGUE.to_parquet(outside, index=False)
     (d / "league.parquet").unlink()
     (d / "league.parquet").symlink_to(outside)
-    p = load_products(store.db, NOW)["cov.league"]
+    with caplog.at_level("WARNING", logger="ohcamel_quant.machine.load"):
+        p = load_products(store.db, NOW)["cov.league"]
     assert p.manifest is not None and "league" not in p.tables and "league" not in p.rows
-    assert "league" in p.why and "outside" in p.why and str(tmp_path) not in p.why
+    assert p.why == load.PART_UNREADABLE and "league lies outside" in caplog.text    # the page's words, the log's detail
 
 
 def test_an_unreadable_table_costs_only_that_table(store):
@@ -193,9 +274,9 @@ def test_an_unreadable_table_costs_only_that_table(store):
     (d / "leaderboard.parquet").write_bytes(b"this is not parquet")
     farm = load_products(store.db, NOW)["farm.sweep"]
     assert set(farm.tables) == {"cells"} and farm.rows == {"cells": 2, "trials": 5}
-    assert "leaderboard" in farm.why and str(d) not in farm.why
+    assert farm.why == load.PART_UNREADABLE
     node = nodes(build_graph(load_inputs(store.db, store.settings, NOW)))["p:farm.sweep"]
-    assert "status" not in node and "leaderboard" in node["why"] and node["m"]["lens_why"]
+    assert "status" not in node and node["why"] == load.PART_UNREADABLE and node["m"]["lens_why"] == LENS_WHY
 
 
 @pytest.mark.parametrize("art_id", [["a"], {"a": 1}, 7, None, "01NOSUCHARTIFACT"])
@@ -205,16 +286,17 @@ def test_a_manifest_naming_no_artifact_has_no_tables(store, art_id):
     manifest["id"] = art_id
     (d / "manifest.json").write_text(json.dumps(manifest))
     p = load_products(store.db, NOW)["cov.league"]
-    assert p.manifest is not None and not p.tables and "located" in p.why
+    assert p.manifest is not None and not p.tables and p.why == load.FILES_GONE
 
 
-def test_a_table_the_manifest_does_not_list_is_missing_not_guessed(store):
+def test_a_table_the_manifest_does_not_list_is_missing_not_guessed(store, caplog):
     _, d = publish(store, "cov.league", {"league": LEAGUE, "extra": LEAGUE})
     manifest = json.loads((d / "manifest.json").read_text())
     manifest["tables"] = ["extra"]                              # league.parquet is on disk but the manifest omits it
     (d / "manifest.json").write_text(json.dumps(manifest))
-    p = load_products(store.db, NOW)["cov.league"]
-    assert not p.tables and p.why == "no league table"
+    with caplog.at_level("WARNING", logger="ohcamel_quant.machine.load"):
+        p = load_products(store.db, NOW)["cov.league"]
+    assert not p.tables and p.why == load.PART_UNREADABLE and "no league table" in caplog.text
 
 
 def test_a_hostile_table_name_in_the_manifest_is_never_opened(store):
@@ -226,11 +308,12 @@ def test_a_hostile_table_name_in_the_manifest_is_never_opened(store):
     assert p.rows == {"league": 2} and set(p.tables) == {"league"}
 
 
-def test_a_runaway_table_is_not_loaded(store, monkeypatch):
+def test_a_runaway_table_is_not_loaded(store, monkeypatch, caplog):
     publish(store, "cov.league", {"league": LEAGUE})
     monkeypatch.setattr(load, "MAX_TABLE_ROWS", 1)
-    p = load_products(store.db, NOW)["cov.league"]
-    assert not p.tables and p.rows == {"league": 2} and "league" in p.why and "rows" in p.why
+    with caplog.at_level("WARNING", logger="ohcamel_quant.machine.load"):
+        p = load_products(store.db, NOW)["cov.league"]
+    assert not p.tables and p.rows == {"league": 2} and p.why == load.PART_UNREADABLE and "2 rows" in caplog.text
 
 
 def test_a_corrupt_jobs_database_gives_every_product_missing(store):
@@ -242,10 +325,10 @@ def test_a_corrupt_jobs_database_gives_every_product_missing(store):
 
 # ------------------------------------------------------------------ the warehouse
 def test_a_locked_warehouse_leaves_the_graph_whole(store, monkeypatch):      # Review Focus 1
-    said = f"warehouse {store.settings.warehouse_path.name}: locked by the other process (writer or reader)"
+    said = load.WAREHOUSE_LOCKED
 
     def locked(*a, **k):
-        raise WarehouseUnavailable(said)
+        raise WarehouseUnavailable(f"warehouse {store.settings.warehouse_path.name}: locked by the other process (writer or reader)")
 
     monkeypatch.setattr(load, "open_ro", locked)
     inp = load_inputs(store.db, store.settings, NOW)
@@ -258,7 +341,7 @@ def test_a_locked_warehouse_leaves_the_graph_whole(store, monkeypatch):      # R
 
 
 def test_a_real_lock_keeps_the_authored_sentence_and_not_duckdbs(warehouse, tmp_path, monkeypatch):
-    """The lock sentence is the one ``warehouse/db.py`` writes when DuckDB reports a lock, not DuckDB's own."""
+    """A lock is recognised by the sentence ``warehouse/db.py`` writes when DuckDB reports one, not by DuckDB's own."""
     real = load.open_ro
     monkeypatch.setattr(load, "open_ro", lambda **kw: real(timeout_s=0, **kw))      # no 2 s of retries
 
@@ -267,7 +350,7 @@ def test_a_real_lock_keeps_the_authored_sentence_and_not_duckdbs(warehouse, tmp_
 
     monkeypatch.setattr(duckdb, "connect", busy)
     _, readouts, _, why = load_warehouse(Settings(warehouse_path=warehouse, data_dir=tmp_path), load_world(), NOW)
-    assert readouts == {} and why == {"warehouse": f"warehouse {warehouse.name}: locked by the other process (writer or reader)"}
+    assert readouts == {} and why == {"warehouse": "The warehouse is busy with its nightly update."}
 
 
 def test_a_warehouse_failure_with_no_authored_words_is_one_fixed_sentence(tmp_path, monkeypatch, caplog):
@@ -298,7 +381,7 @@ def test_a_corrupt_warehouse_file_tells_the_public_only_that_it_could_not_be_rea
     with caplog.at_level("WARNING", logger="ohcamel_quant.machine.load"):
         m = build_machine(store.db, Settings(warehouse_path=path, data_dir=tmp_path), NOW)
     feeds = [n for n in m["nodes"] if n["k"] == "feed"]
-    assert feeds and all(n["status"] == "missing" and n["why"] == "the warehouse could not be read" for n in feeds)
+    assert feeds and all(n["status"] == "missing" and n["why"] == "The warehouse could not be read." for n in feeds)
     public = json.dumps([m["notes"], [n["why"] for n in feeds]])
     assert "The warehouse could not be read." in m["notes"]
     for private in ("/", "IO Error", "wh.duckdb", "duckdb", "valid"):
@@ -306,22 +389,22 @@ def test_a_corrupt_warehouse_file_tells_the_public_only_that_it_could_not_be_rea
     assert "IO Error" in caplog.text                                                  # the original is kept, in the log
 
 
-def test_an_absent_warehouse_at_a_relative_path_names_only_its_file(tmp_path, monkeypatch):
+def test_an_absent_warehouse_at_a_relative_path_has_the_plain_sentence(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _, _, _, why = load_warehouse(Settings(warehouse_path=Path("deep/dir/wh.duckdb"), data_dir=tmp_path), load_world(), NOW)
-    assert why == {"warehouse": "warehouse wh.duckdb does not exist yet (no ingest has run)"}
+    assert why == {"warehouse": "The warehouse has no data yet."}
 
 
-def test_an_absent_warehouse_is_unavailable_and_names_no_path(tmp_path):
+def test_an_absent_warehouse_is_unavailable_in_plain_words(tmp_path):
     gone = tmp_path / "deep" / "dir" / "wh.duckdb"
     fresh, readouts, order, why = load_warehouse(Settings(warehouse_path=gone, data_dir=tmp_path), load_world(), NOW)
     assert fresh is None and readouts == {} and order == sorted(load_world().equities)
-    assert "wh.duckdb" in why["warehouse"] and str(tmp_path) not in why["warehouse"]
+    assert why == {"warehouse": "The warehouse has no data yet."}
 
 
 def test_an_unconfigured_warehouse_is_unavailable(tmp_path):
     fresh, readouts, _, why = load_warehouse(Settings(warehouse_path=None, data_dir=tmp_path), load_world(), NOW)
-    assert fresh is None and readouts == {} and "not configured" in why["warehouse"]
+    assert fresh is None and readouts == {} and why == {"warehouse": "This host has no warehouse."}
 
 
 def test_a_warehouse_without_its_tables_is_unavailable_not_a_crash(tmp_path):
@@ -637,9 +720,8 @@ def test_the_machine_is_the_graph_with_its_extras_provenance_and_notes(store):
 def test_the_notes_say_in_words_what_is_missing(store):
     # a fresh host: no jobs database, a warehouse, and no desk report. The notes say the first and the last
     notes = build_machine(store.db, store.settings, NOW)["notes"]
-    assert notes[0] == "No jobs database exists on this host yet."
-    assert notes[1].startswith("desk.report has published no artifact") and len(notes) == 2
-    assert all(n.endswith(".") for n in notes)
+    assert notes == ["The job system has not started on this host yet.",
+                     "The nightly desk report that carries the book's limits has not published them yet."]
 
 
 def test_the_notes_are_empty_when_nothing_is_missing(store):
@@ -653,8 +735,7 @@ def test_the_notes_carry_the_warehouse_reason_without_its_path(store, tmp_path):
     gone = Settings(warehouse_path=tmp_path / "deep" / "dir" / "wh.duckdb", data_dir=tmp_path)
     connect(store.db).close()
     notes = build_machine(store.db, gone, NOW)["notes"]
-    (warehouse,) = [n for n in notes if "wh.duckdb" in n]
-    assert warehouse[0].isupper() and warehouse.endswith(".") and str(tmp_path) not in json.dumps(notes)
+    assert "The warehouse has no data yet." in notes and str(tmp_path) not in json.dumps(notes)
 
 
 def test_a_note_is_a_sentence():
@@ -869,14 +950,37 @@ def test_without_overrides_it_reads_the_hosts_own_stores(tmp_path, monkeypatch):
     app.include_router(machine_router.router, prefix="/api")
     r = TestClient(app).get("/api/machine")
     assert r.status_code == 200 and not (tmp_path / "jobs.sqlite").exists()   # reading the machine creates nothing
-    assert "No jobs database exists on this host yet." in r.json()["notes"]
+    assert "The job system has not started on this host yet." in r.json()["notes"]
 
 
 # ------------------------------------------------------------------ nothing private reaches a public body
+# each real shape of a note that carries a job's internals: the file and line that writes it, with invented values
+PRIVATE_NOTES = [
+    "Kronos subprocess failed (CalledProcessError): stderr tail with no path and no error word",   # kronos_shadow.py:195
+    "Kronos subprocess failed (TimeoutExpired): ",                                                  # kronos_shadow.py:195
+    "no warehouse (warehouse /data/warehouse.duckdb does not exist yet (no ingest has run)): universes.json ETFs only",   # vol_league.py:34
+    "members skipped: warehouse warehouse.duckdb: locked by the other process (writer or reader)",  # atlas.py:85
+    "skipped overlay-3.json: unreadable ([Errno 13] Permission denied: '/signals/overlay-3.json')", # overlay.py:121
+    "skipped overlay-4.json: unreadable (Expecting value: line 1 column 1 (char 0))",               # overlay.py:121
+    "reported risk.mc_atlas: unreadable (KeyError: 'var'); reported as null",                       # overlay.py:373
+    "desk unreachable: keyed on the last written document (ConnectError: [Errno 111] refused)",     # daily.py:319
+    "desk unreachable: keyed on the last written document (ConnectTimeout: timed out)",             # daily.py:319
+    'EXP-K01 config {"model_revision": "abc", "n_samples": 30}',                                    # kronos_shadow.py:223
+    'Traceback (most recent call last):\n  File "/app/job.py", line 3, in run\nValueError: boom',
+]
+
+
+def with_notes(directory, notes):
+    """The artifact in ``directory`` with these notes in its manifest, as a job writes them."""
+    manifest = json.loads((directory / "manifest.json").read_text())
+    (directory / "manifest.json").write_text(json.dumps({**manifest, "notes": notes}))
+
+
 def test_nothing_private_is_in_the_body(store, tmp_path, monkeypatch):
     gone = Settings(warehouse_path=tmp_path / "deep" / "dir" / "wh.duckdb", data_dir=tmp_path)
     served = serve(Store(store.db, store.root, gone), monkeypatch)
-    publish(store, "cov.league", {"league": LEAGUE})
+    _, league = publish(store, "cov.league", {"league": LEAGUE})
+    with_notes(league, PRIVATE_NOTES)
     _, bad = publish(store, "regime.hmm", {"probs": pd.DataFrame({"date": ["2026-05-30"], "p_high": [0.2]})})
     (bad / "manifest.json").write_text("{not json")
     with closing(connect(store.db)) as conn:
@@ -887,8 +991,10 @@ def test_nothing_private_is_in_the_body(store, tmp_path, monkeypatch):
              peak_rss_bytes=1, now=NOW - HOUR)
     r = served.client.get("/api/machine")
     body = r.json()
-    assert "failed" in {run["state"] for run in body["runs"]} and any("wh.duckdb" in n for n in body["notes"])
-    for private in (str(tmp_path), str(store.root), "hunter2", "SECRETERROR", "Traceback"):
+    assert "failed" in {run["state"] for run in body["runs"]} and "The warehouse has no data yet." in body["notes"]
+    assert {n["id"]: n for n in body["nodes"]}["p:cov.league"]["m"]["notes"] == [WITHHELD]    # every shape, one sentence
+    for private in (str(tmp_path), str(store.root), "hunter2", "SECRETERROR", "Traceback", "duckdb", "stderr tail",
+                    "model_revision", "ConnectError", "Permission denied", "TimeoutExpired", "CalledProcessError"):
         assert private not in r.text
 
 

@@ -8,8 +8,13 @@ the world and the schedules are the repo's own config.
 Everything read from a store is untrusted, and a source that is absent or fails degrades only its
 own node (spec §6.1, "Honesty"): a manifest that will not parse, a table whose path leaves the root
 or whose file will not open, a locked or missing warehouse, a missing jobs database. Each gives a
-``why`` in plain words and never an exception, and none of those words carries a path. Nothing is
-ever created or written: a host with no ``jobs.sqlite`` stays without one.
+``why`` as a plain sentence for the page and never an exception. The specific text, a table's name or
+a path, goes to the log. Nothing is ever created or written: a host with no ``jobs.sqlite`` stays
+without one.
+
+A product is stale when a scheduled run has been missed since it (``missed_fire``), not at
+schedules.yaml's ``max_age``, which stays the other pages' lamp: 35 minutes for an intraday kind marks
+a healthy system stale every evening and weekend, and this page says what is broken, not what is asleep.
 """
 
 from __future__ import annotations
@@ -29,7 +34,8 @@ import pyarrow.parquet as pq
 
 from ..config import Settings
 from ..jobs.artifacts import TABLE_NAME, inside
-from ..jobs.db import connect, iso
+from ..jobs.cron import next_due
+from ..jobs.db import connect, iso, parse_iso
 from ..jobs.schedules import Schedules, load_schedules, read_latest
 from ..signals.roster import load_roster
 from ..warehouse.db import WarehouseUnavailable, open_ro
@@ -50,6 +56,30 @@ GRAPH_TABLES: dict[str, tuple[str, ...]] = {
 MAX_TABLE_ROWS = 500_000   # a table longer than this is counted, not loaded: no lens table is near it
 LOOKBACK_DAYS = 380        # calendar days of closes before the newest bar: a year of sessions, with slack
 RUN_WINDOW = timedelta(hours=24)
+GRACE = timedelta(hours=2)   # a scheduled run has this long past its fire to publish before it counts as missed
+
+# what the page says, each a whole sentence; the specific text goes to the log
+UNREADABLE = "The warehouse could not be read."
+WAREHOUSE_LOCKED = "The warehouse is busy with its nightly update."
+WAREHOUSE_EMPTY = "The warehouse has no data yet."
+NO_WAREHOUSE = "This host has no warehouse."
+NO_JOBS = "The job system has not started on this host yet."
+JOBS_UNREADABLE = "The job system's records could not be read."
+RECORD_UNREADABLE = "The latest run's record could not be read."
+FILES_GONE = "The latest run's files could not be found."
+PART_UNREADABLE = "Part of the latest run could not be read."
+
+
+def missed_fire(kind: str, finished: Any, now: datetime, schedules: Schedules) -> bool:
+    """Whether a scheduled run of ``kind`` has been missed since ``finished``: the next fire of any of the
+    kind's schedule entries after that time, plus ``GRACE``, has passed. A kind with no schedule entry is
+    never stale, and neither is a time that does not read (a manifest is untrusted)."""
+    try:
+        done = parse_iso(finished)
+        fires = [t for e in schedules.entries if e.kind == kind and (t := next_due(e.parsed, done)) is not None]
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return bool(fires) and now > min(fires) + GRACE
 
 
 def wanted(kind: str) -> tuple[str, ...]:
@@ -92,38 +122,44 @@ def _product(conn: sqlite3.Connection, root: Path, kind: str, now: datetime, sch
     try:
         got = read_latest(conn, kind, now=now, schedules=schedules, root=root)
     except (ValueError, OSError, RecursionError):   # a manifest that is not JSON or not UTF-8, or a bad timestamp
-        return Product(kind, None, why="the latest manifest could not be read")
+        log.warning("%s: its latest manifest could not be read", kind, exc_info=True)
+        return Product(kind, None, why=RECORD_UNREADABLE)
     if got is None:
         return Product(kind, None)                   # nothing published: the graph says so
-    manifest, stale = got["manifest"], bool(got["stale"])
+    manifest = got["manifest"]
     if not isinstance(manifest, dict):
-        return Product(kind, None, why="the latest manifest is not a mapping")
+        log.warning("%s: its latest manifest is not a mapping", kind)
+        return Product(kind, None, why=RECORD_UNREADABLE)
+    stale = missed_fire(kind, manifest.get("finished_at"), now, schedules)
     art_id = manifest.get("id")
     row = conn.execute("SELECT path FROM artifacts WHERE id = ? AND kind = ?", (art_id, kind)).fetchone() \
         if isinstance(art_id, str) else None
     if row is None:
-        return Product(kind, manifest, stale, why="the artifact's files could not be located")
+        log.warning("%s: the latest artifact's files could not be located", kind)
+        return Product(kind, manifest, stale, why=FILES_GONE)
     tables, rows, problems = _tables(root, Path(row["path"]), manifest, kind)
-    return Product(kind, manifest, stale, tables, rows, "; ".join(problems) or None)
+    if problems:
+        log.warning("%s: %s", kind, "; ".join(problems))
+    return Product(kind, manifest, stale, tables, rows, PART_UNREADABLE if problems else None)
 
 
 def _read_products(db: Path, now: datetime, schedules: Schedules) -> tuple[dict[str, Product], str | None]:
     """Every product, and why the jobs database could not be read (None when it could)."""
     if not db.exists():   # ``connect`` would create it, and a read of the machine must not
-        why = "no jobs database exists on this host yet"
+        why = NO_JOBS
     else:
         try:
             with closing(connect(db)) as conn:
                 return {k: _product(conn, db.parent / "artifacts", k, now, schedules) for k in PROD}, None
         except sqlite3.Error:
             log.warning("jobs database unreadable; every product is shown missing", exc_info=True)
-            why = "the jobs database could not be read"
+            why = JOBS_UNREADABLE
     return {k: Product(k, None, why=why) for k in PROD}, why
 
 
 def load_products(db: Path, now: datetime, schedules: Schedules | None = None) -> dict[str, Product]:
-    """One ``Product`` per ``PROD`` kind (``desk.report`` among them): the latest artifact's manifest,
-    stale flag, the tables the graph reads and the row count of every table it lists. The artifacts root is
+    """One ``Product`` per ``PROD`` kind (``desk.report`` among them): the latest artifact's manifest, stale
+    flag (``missed_fire``), the tables the graph reads and the row count of every table it lists. The artifacts root is
     ``db.parent / "artifacts"``, where ``jobs.sqlite`` keeps them."""
     return _read_products(db, now, schedules or load_schedules())[0]
 
@@ -142,25 +178,21 @@ def _closes(con: Any, tickers: list[str]) -> pd.DataFrame:
     return df.pivot(index="date", columns="ticker", values="adj_close").sort_index()
 
 
-UNREADABLE = "the warehouse could not be read"   # the one sentence for every failure that has no authored words
-
-
 def _public_why(e: WarehouseUnavailable, settings: Settings) -> str:
-    """Why the warehouse is unavailable, in words the public may read. Only the three sentences
-    ``warehouse/db.py`` writes by hand are passed on (not configured, does not exist yet, locked), the last two
-    with the file's name for its path. Anything else (a DuckDB error with the file's own path in it, a
-    message a later change adds) is the one fixed ``UNREADABLE`` and goes to the log, whole, instead."""
+    """Why the warehouse is unavailable, as a sentence the public may read. The three sentences ``warehouse/db.py``
+    writes by hand (not configured, does not exist yet, locked) each have their plain one. Anything else (a DuckDB
+    error with the file's own path in it, a message a later change adds) is the one fixed ``UNREADABLE``. The
+    server's own text goes to the log, whole."""
     path, text = settings.warehouse_path, str(e)
     if path is None:
-        authored = {"warehouse not configured (OHCAMEL_QUANT_WAREHOUSE_PATH unset)": text}
+        authored = {"warehouse not configured (OHCAMEL_QUANT_WAREHOUSE_PATH unset)": NO_WAREHOUSE}
     else:
-        name = Path(path).name
         authored = {
-            f"warehouse {Path(path)} does not exist yet (no ingest has run)":
-                f"warehouse {name} does not exist yet (no ingest has run)",
-            f"warehouse {name}: locked by the other process (writer or reader)": text,
+            f"warehouse {Path(path)} does not exist yet (no ingest has run)": WAREHOUSE_EMPTY,
+            f"warehouse {Path(path).name}: locked by the other process (writer or reader)": WAREHOUSE_LOCKED,
         }
     if text in authored:
+        log.info("warehouse unavailable: %s", text)
         return authored[text]
     log.warning("warehouse unavailable; the page says only that it could not be read", exc_info=e)
     return UNREADABLE

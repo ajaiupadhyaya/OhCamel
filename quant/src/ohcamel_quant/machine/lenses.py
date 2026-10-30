@@ -2,8 +2,9 @@
 
 A lens is a small, plain payload read from the product's own tables: the farm's leaderboard, the vol
 league's models, the regime model's latest ``p_high``. ``product_lens`` never raises. A lens it cannot
-read is ``None`` with the reason in words ("leaderboard has no column oos_sharpe_ann"), and the graph
-puts that reason on the node as ``m.lens_why`` instead of a lens. Nothing is invented to fill a gap.
+read is ``None`` with the reason in words ("leaderboard has no column oos_sharpe_ann"). The graph logs that
+reason and puts one plain sentence on the node as ``m.lens_why`` instead of a lens, so no table or column
+is named on the page. Nothing is invented to fill a gap.
 
 Floats are rounded to four places and anything not finite is ``None``, so a lens is plain JSON.
 Counts are ints even when a NaN in their column made them floats.
