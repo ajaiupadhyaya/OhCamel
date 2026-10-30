@@ -14,14 +14,15 @@ export function shownLabel(n: Pick<MNode, "k" | "l">): string {
 }
 
 /** The tracks whose series carry a ticker's label, the same as its daily bars' ("AAPL"), so a chip must say which it is. */
-const TRACK_WORD: Record<string, string> = { minute: "minute", options: "options", filings: "filings" };
+const TRACK_WORD = new Map([["minute", "minute"], ["options", "options"], ["filings", "filings"]]);
 
 /**
- * A node's label on a chip: `shownLabel`, and for a series that is not the ticker's daily bars, its track
- * ("AAPL minute", "AAPL options", "AAPL filings"). A daily series, and the series whose labels are their own names
- * (a FRED series, a factor, a filer), stay as they are.
+ * A node's label on a chip: `shownLabel`, a product's plain name (its label is a code: "SO", "DR"), and for a series
+ * that is not the ticker's daily bars, its track ("AAPL minute", "AAPL options", "AAPL filings"). A daily series, and
+ * the series whose labels are their own names (a FRED series, a factor, a filer), stay as they are.
  */
-export function chipLabel(n: Pick<MNode, "k" | "l" | "m">): string {
-  const track = n.k === "series" && typeof n.m.track === "string" ? TRACK_WORD[n.m.track] : undefined;
+export function chipLabel(n: Pick<MNode, "k" | "l" | "n" | "m">): string {
+  if (n.k === "product" && n.n) return n.n;
+  const track = n.k === "series" && typeof n.m.track === "string" ? TRACK_WORD.get(n.m.track) : undefined;
   return track ? `${shownLabel(n)} ${track}` : shownLabel(n);
 }

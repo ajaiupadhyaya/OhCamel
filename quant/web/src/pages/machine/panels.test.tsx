@@ -118,14 +118,14 @@ describe("FocusPanel", () => {
     const out = structuredClone(FIXTURE) as MachineOut;
     const farm = out.nodes.find((n) => n.id === "p:farm.sweep")!;
     farm.status = "missing";
-    farm.why = "no farm.sweep artifact has been published";
+    farm.why = "Its job has not published anything yet.";
     const html = focus(out, "p:farm.sweep");
     expect(html).toContain("MISSING");
     expect(html).toContain(farm.why);
     expect(html).not.toContain("leaderboard");
   });
 
-  it("marks an artifact past its schedule's max age", () => {
+  it("marks an artifact when a scheduled run has been missed since", () => {
     const out = structuredClone(FIXTURE) as MachineOut;
     out.nodes.find((n) => n.id === "p:farm.sweep")!.m.stale = true;
     expect(focus(out, "p:farm.sweep")).toContain("STALE");

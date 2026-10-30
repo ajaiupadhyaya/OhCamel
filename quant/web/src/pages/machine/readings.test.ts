@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FIXTURE, FIXTURE_BROKEN, FIXTURE_NO_SUMMARY } from "./fixture";
+import { executionNotes } from "./products";
 import { reading } from "./readings";
 import type { Reading } from "./readings";
 import { allowedNumbers, flatten, numbersIn, refsOf } from "./testkit";
@@ -107,7 +108,7 @@ describe("reading: the exposure overlay", () => {
     expect(t).toContain("3.4%");
     expect(t).toContain("10%");
     expect(t).toContain("1.00");
-    expect(t).toContain("the combined book forecasts 3.4% volatility against a 10% target, so the scale is 1.00");
+    expect(t).toContain("As of 6:40 PM on 28 Oct, the combined book forecasts 3.4% volatility against a 10% target, so the scale is 1.00");
     expect(t).toContain("It estimates covariance with lw constant corr over 504 sessions");
     expect(t).not.toContain("lw_constant_corr");
     expect(t).toMatch(/reported .*never used/);
@@ -338,8 +339,7 @@ describe("reading: the farm", () => {
 
   it("says in plain words that the board's figures are not given when its lens could not be read", () => {
     const t = text(FIXTURE_BROKEN, "p:farm.sweep");
-    expect(t).toMatch(/could not be read/);
-    expect(t).toContain("leaderboard has no column oos_sharpe_ann");
+    expect(t).toContain("Its leaderboard is not given here. This figure could not be read from the latest run.");
     expect(t).not.toMatch(/Sharpe is|DSR of|passes/);
   });
 
@@ -362,12 +362,51 @@ describe("reading: daily signals", () => {
     expect(t).not.toMatch(/\blate\b|already/);
   });
 
-  it("finds the two caveats by what they say, not by a stray word, in any order", () => {
+  it("finds the two execution notes by what they say, not by a stray word, in any order", () => {
     const fx = clone();
     const node = nodeOf(fx, "p:signals.daily");
     const [first, lev, fill] = node.m.notes as string[];
-    node.m.notes = [first, "desk judgements unreachable (ConnectionError: could not open a connection)", fill, lev];
-    expect(read(fx, "p:signals.daily").caveats).toEqual([lev, fill]);
+    const stray = "an open question about the close of the books";
+    node.m.notes = [first, stray, fill, lev];
+    expect(executionNotes(node.m.notes as string[])).toEqual([lev, fill]);
+    expect(text(fx, "p:signals.daily")).toContain("It notes 2 ways the farm's tests differ from what the desk trades.");
+  });
+
+  it("quotes every note it did not state, a desk that did not answer among them", () => {
+    const fx = clone();
+    const node = nodeOf(fx, "p:signals.daily");
+    const [first, lev, fill] = node.m.notes as string[];
+    const desk = "desk unreachable: keyed on the last written document (OHCAMEL_QUANT_LIVE_ENGINE_URL is unset)";
+    const withheld = "A note from this job holds internal detail and is not shown here.";
+    node.m.notes = [first, desk, withheld, lev, fill];
+    expect(read(fx, "p:signals.daily").caveats).toEqual([desk, withheld, lev, fill]);
+  });
+
+  it("quotes every note when its counts note does not parse, and states no count", () => {
+    const fx = clone();
+    const node = nodeOf(fx, "p:signals.daily");
+    const notes = ["desk unreachable: keyed on the last written document", ...(node.m.notes as string[]).slice(1)];
+    node.m.notes = notes;
+    const r = read(fx, "p:signals.daily");
+    expect(r.caveats).toEqual(notes);
+    expect(flatten(r)).not.toMatch(/wrote|held|refused/);
+  });
+});
+
+describe("reading: a stale feed", () => {
+  it("says its data is older than its schedule allows, by the feed's date and with no word of an artifact", () => {
+    const fx = clone();
+    nodeOf(fx, "feed:prices").m.stale = true;
+    const t = text(fx, "feed:prices");
+    expect(t).toContain("Its newest data is from 28 Oct, older than its schedule allows.");
+    expect(t).not.toMatch(/artifact|run/);
+    expect(text(FIXTURE, "feed:prices")).not.toMatch(/older|schedule/);
+  });
+
+  it("says so without a date when the feed has none", () => {
+    const fx = clone();
+    Object.assign(nodeOf(fx, "feed:prices").m, { stale: true, asof: null });
+    expect(text(fx, "feed:prices")).toContain("Its newest data is older than its schedule allows.");
   });
 });
 
@@ -409,11 +448,11 @@ describe("reading: other products", () => {
     const fx = clone();
     const node = nodeOf(fx, "p:regime.hmm");
     node.status = "missing";
-    node.why = "no regime.hmm artifact has been published";
+    node.why = "Its job has not published anything yet.";
     node.m = { kind: "regime.hmm" };
     const r = read(fx, "p:regime.hmm");
     expect(r.paras).toHaveLength(1);
-    expect(flatten(r)).toContain("This is missing from the machine: no regime.hmm artifact has been published.");
+    expect(flatten(r)).toContain("This is missing from the machine. Its job has not published anything yet.");
     expect(numbersIn(r.paras.flat().map((s) => ("b" in s ? s.b : s.t)).join(""))).toEqual([]);
     expect(r.caveats).toEqual([]);
   });
@@ -422,9 +461,9 @@ describe("reading: other products", () => {
     const fx = clone();
     const node = nodeOf(fx, "p:regime.hmm");
     node.status = "missing";
-    node.why = "the regime.hmm artifact of 2026-10-24T13:07:33.610Z is past its max age; data as of 2026-10-23";
+    node.why = "The last run is from 2026-10-24T13:07:33.610Z, on data as of 2026-10-23.";
     node.m = { kind: "regime.hmm" };
-    expect(text(fx, "p:regime.hmm")).toContain("the regime.hmm artifact of 9:07 AM on 24 Oct is past its max age; data as of 23 Oct.");
+    expect(text(fx, "p:regime.hmm")).toContain("The last run is from 9:07 AM on 24 Oct, on data as of 23 Oct.");
   });
 
   it("keeps the year of a date or instant in a reason when it is not the payload's own year", () => {
@@ -436,11 +475,11 @@ describe("reading: other products", () => {
     for (const n of numbersIn(t)) expect(allowed, n).toContain(n);
   });
 
-  it("says a stale product is past its schedule's max age", () => {
+  it("says a scheduled run has been missed since a stale product, and only then", () => {
     const fx = clone();
     nodeOf(fx, "p:regime.hmm").m.stale = true;
-    expect(text(fx, "p:regime.hmm")).toContain("past its schedule's max age");
-    expect(text(FIXTURE, "p:regime.hmm")).not.toContain("max age");
+    expect(text(fx, "p:regime.hmm")).toContain("A scheduled run has been missed since.");
+    expect(text(FIXTURE, "p:regime.hmm")).not.toContain("missed");
   });
 
   it("gives any other product its notes, verbatim", () => {
@@ -555,8 +594,9 @@ describe("reading: the book, its limits and kill switch", () => {
     delete nodeOf(fx, "book").m.summary_asof;
     expect(text(fx, "book")).not.toMatch(/positions|limit|kill/);
     const stale = structuredClone(FIXTURE_NO_SUMMARY) as MachineOut;
-    nodeOf(stale, "book").m.summary_why = "the desk.report artifact of 2026-10-28T20:30:44.907Z is stale, so its book_summary is not shown as the live book";
-    expect(text(stale, "book")).toContain("“the desk.report artifact of 4:30 PM on 28 Oct is stale, so its book_summary is not shown as the live book”");
+    nodeOf(stale, "book").m.summary_why = "The last desk report is from 2026-10-28T20:30:44.907Z, and a scheduled one has been missed since.";
+    expect(text(stale, "book")).toContain("The last desk report is from 4:30 PM on 28 Oct, and a scheduled one has been missed since.");
+    expect(text(stale, "book")).not.toMatch(/system's reason|“/);
   });
 
   it("gives a limit its kind, scope and whether it trips the kill switch, as of the summary, and never a threshold", () => {

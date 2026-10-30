@@ -3,7 +3,7 @@ import { FIXTURE } from "./fixture";
 import { chipLabel, shownLabel } from "./shown";
 import type { MNode } from "./types";
 
-const at = (k: MNode["k"], l: string, m: Record<string, unknown> = {}): Pick<MNode, "k" | "l" | "m"> => ({ k, l, m });
+const at = (k: MNode["k"], l: string, m: Record<string, unknown> = {}, n = ""): Pick<MNode, "k" | "l" | "n" | "m"> => ({ k, l, n, m });
 
 describe("shownLabel", () => {
   it("writes a farm cell's key in words: the at sign is 'on', underscores are spaces", () => {
@@ -43,6 +43,17 @@ describe("chipLabel", () => {
   it("gives a result its plain words and names no track for anything but a series", () => {
     expect(chipLabel(at("result", "xsmom@sectors", { track: "minute" }))).toBe("xsmom on sectors");
     expect(chipLabel(at("strategy", "pairs distance sectors", { track: "minute" }))).toBe("pairs distance sectors");
+  });
+
+  it("gives a product its plain name, not its code", () => {
+    expect(chipLabel(at("product", "SO", {}, "Exposure overlay"))).toBe("Exposure overlay");
+    for (const n of FIXTURE.nodes.filter((x) => x.k === "product")) expect(chipLabel(n)).toBe(n.n);
+    expect(chipLabel(at("product", "SO"))).toBe("SO");   // a nameless product keeps what it has
+  });
+
+  it("names no track for a wire value that happens to be a property of every object", () => {
+    expect(chipLabel(at("series", "AAPL", { track: "constructor" }))).toBe("AAPL");
+    expect(chipLabel(at("series", "AAPL", { track: "toString" }))).toBe("AAPL");
   });
 
   it("makes the chips of one ticker's tracks different from each other", () => {

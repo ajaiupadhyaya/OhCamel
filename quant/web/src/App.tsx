@@ -7,6 +7,7 @@ import { queryClient } from "./lib/query";
 import { NotFoundPage, ROUTES } from "./lib/routes";
 import { ThemeProvider } from "./lib/theme";
 import { AppShell } from "./shell/AppShell";
+import { MachineWait } from "./shell/MachineWait";
 
 /** Catches render errors in a page so the chrome survives. Resets on navigation. */
 class PageBoundary extends Component<{ children: ReactNode; resetKey: string }, { error: unknown }> {
@@ -43,7 +44,7 @@ function RoutedPages() {
   const loc = useLocation();
   return (
     <PageBoundary resetKey={loc.pathname}>
-      <Suspense fallback={loc.pathname === "/" ? <p className="mx-wait">Reading the machine…</p> : <PageFallback />}>
+      <Suspense fallback={loc.pathname === "/" ? <MachineWait>Reading the machine…</MachineWait> : <PageFallback />}>
         <Routes>
           {ROUTES.map((r) => (
             <Route key={r.path} path={r.path} element={<r.component />} />

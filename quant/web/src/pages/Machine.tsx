@@ -8,6 +8,7 @@
  */
 import { lazy, Suspense, useEffect, useMemo, useState, type ComponentType } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { MachineWait } from "../shell/MachineWait";
 import type { InstrumentProps } from "./machine/Instrument";
 import { ListView } from "./machine/ListView";
 import type { Run } from "./machine/types";
@@ -72,17 +73,28 @@ export default function Machine() {
   return (
     <div className="mx-root">
       {gi ? <Page gi={gi} runs={runs} address={address} webgl={webgl} /> : <h1 className="mx-vh">The machine</h1>}
-      {!gi && !error && <p className="mx-wait">Reading the machine…</p>}
-      {Boolean(error) && (
-        <p className={gi ? "mx-wait mx-wait-low" : "mx-wait"} role="alert">
-          {gi ? "The latest read of the machine failed, so this is the last one that worked: " : "The machine could not be read: "}
-          {error instanceof Error ? error.message : String(error)}{" "}
-          <button type="button" onClick={retry}>
-            retry
-          </button>
+      {!gi && !error && <MachineWait>Reading the machine…</MachineWait>}
+      {Boolean(error) && !gi && (
+        <MachineWait alert>
+          The machine could not be read: {why(error)} <Retry onClick={retry} />
+        </MachineWait>
+      )}
+      {Boolean(error) && gi && (
+        <p className="mx-wait mx-wait-low" role="alert">
+          The latest read of the machine failed, so this is the last one that worked: {why(error)} <Retry onClick={retry} />
         </p>
       )}
     </div>
+  );
+}
+
+const why = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+function Retry({ onClick }: { onClick(): void }) {
+  return (
+    <button type="button" onClick={onClick}>
+      retry
+    </button>
   );
 }
 
@@ -99,7 +111,7 @@ function Page({ gi, runs, address, webgl }: { gi: GraphIndex; runs: Run[]; addre
   return (
     <>
       <h1 className="mx-vh">The machine</h1>
-      <Suspense fallback={<p className="mx-wait">Reading the machine…</p>}>
+      <Suspense fallback={<MachineWait>Reading the machine…</MachineWait>}>
         <Instrument gi={gi} runs={runs} view={view} now={now} onLost={() => setLost(true)} />
       </Suspense>
     </>

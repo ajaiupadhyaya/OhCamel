@@ -64,9 +64,9 @@ const FINAL = ["done", "failed", "cancelled"];
  * - the counts a reading can make: nodes by kind and track, each node's neighbours and web by kind, its direct
  *   readers, a job's fires, the farm's board rows and passes and its strategies, and each job kind's runs by
  *   state with their CPU-seconds, over the same last day the readings use (`jobRuns`, `cpuTotal`);
- * - what the tour prints besides: the payload's own New York time (its first title), and the heaviest run of
- *   the last day (`heaviest`): its start in New York, its span `dur(end − start)` and its CPU-seconds. No
- *   other run's time or span, since nothing prints them.
+ * - what the tour prints besides: the New York time of `now` (its first title), and the heaviest run of the
+ *   last day (`heaviest`): its start in New York, its span `dur(end − start)` and its CPU-seconds. No other
+ *   run's time or span, since nothing prints them.
  */
 export function allowedNumbers(out: MachineOut, now = new Date(out.asof)): Set<string> {
   const gi = indexGraph(out);
@@ -138,7 +138,7 @@ export function allowedNumbers(out: MachineOut, now = new Date(out.asof)): Set<s
     running.forEach((r) => typeof r.progress === "number" && add(pct(r.progress, 0)));
   }
 
-  add(nyTime(out.asof));
+  if (!Number.isNaN(now.getTime())) add(nyTime(now.toISOString()));
   const top = heaviest(out.runs, now);
   if (top) {
     [nyDay(top.start), nyTime(top.start)].forEach(add);

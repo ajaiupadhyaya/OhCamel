@@ -250,7 +250,7 @@ describe("FIXTURE_NO_SUMMARY", () => {
     const book = byId(FIXTURE_NO_SUMMARY, "book").m;
     expect(keys(byId(FIXTURE_NO_SUMMARY, "book"))).toEqual(["canary_cap", "capital", "incubation_cap", "strategies", "summary_why", "vol_target"]);
     expect(typeof book.summary_why).toBe("string");
-    expect(FIXTURE_NO_SUMMARY.notes).toEqual([`${book.summary_why as string}.`]);
+    expect(FIXTURE_NO_SUMMARY.notes).toEqual([book.summary_why]);
   });
 
   it("is otherwise the fixture", () => {

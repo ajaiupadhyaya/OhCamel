@@ -4,14 +4,16 @@
  * text segments out, for React to render as text, never as HTML.
  *
  * Every figure is read from the response when the step is shown. The approved prototype's STEPS are the
- * wording reference, never the numbers. A step whose subject is not in the graph, is missing, or is past its
- * schedule's max age says so, and gives none of that subject's figures.
+ * wording reference, never the numbers. A step whose subject is not in the graph, is missing, or has missed a
+ * scheduled run says so, and gives none of that subject's figures. A subject that is current gives its figures
+ * with their date.
  */
 import { heaviest, runningRuns } from "./day";
 import { dur, instant, num, nyTime, nyWeekday, pct, plural } from "./fmt";
 import { parseOverlayNote } from "./notes";
+import { executionNotes } from "./products";
 import {
-  at, B, capital, cellRef, fin, inputs, known, list, node, obj, ofDesk, paras, ranInLastDay, reach, reason, ref, refAt, rows, S, schedule, segs, share,
+  at, B, capital, cellRef, feedLate, fin, inputs, list, node, obj, ofDesk, paras, ranInLastDay, reach, reason, ref, refAt, rows, S, schedule, segs, share,
   shares, sideRoute, str, strategyCount, strs, ups,
 } from "./prose";
 import type { ReadingCtx, Seg } from "./prose";
@@ -56,8 +58,8 @@ const indexOf = (gi: GraphIndex, s: Subject): number | null => gi.byId.get(s.id)
 
 /**
  * What a step says in place of its subject's figures when the subject cannot vouch for them: it is not in the
- * graph, it is missing (with the system's own reason), or its latest artifact is past its schedule's max age.
- * Null when the subject is there and current.
+ * graph, it is missing (with the server's reason), or a scheduled run has been missed since its latest artifact
+ * (a feed: its data is older than its schedule allows). Null when the subject is there and current.
  */
 function unavailable(gi: GraphIndex, s: Subject): Seg[] | null {
   const i = gi.byId.get(s.id);
@@ -66,11 +68,13 @@ function unavailable(gi: GraphIndex, s: Subject): Seg[] | null {
   const n = node(gi, i);
   if (n.status === "missing") {
     const why = str(n.why);
-    return S`${who} is missing from the machine${why && [": ", reason(gi, why)]}.`;
+    return S`${who} is missing from the machine.${why && ` ${reason(gi, why)}`}`;
   }
   if (n.m.stale === true) {
+    if (n.k === "feed") return S`${who}'s ${feedLate(n.m)}`;
     const done = at(n.m.finished);
-    return S`${who}'s latest artifact${done.length > 0 && S`, finished at ${done},`} is past its schedule's max age, so its figures are not given here. The Reading tab gives them with that warning.`;
+    const late = done.length > 0 ? S`${who}'s latest run finished at ${done}, and a scheduled one has been missed since` : S`${who} has missed a scheduled run`;
+    return S`${late}, so its figures are not given here. The Reading tab gives them with that warning.`;
   }
   return null;
 }
@@ -86,9 +90,11 @@ const overview: TourStep = {
   key: "overview",
   cam: "overview",
   sel: () => null,
-  title: (gi) => {
-    const t = nyTime(gi.out.asof), d = nyWeekday(gi.out.asof);
-    return known(t) && known(d) ? `The machine at ${t} on a ${d}` : "The machine";
+  // the page's own clock, as the top bar's, not the time of the graph's last build
+  title: (_gi, ctx) => {
+    if (Number.isNaN(ctx.now.getTime())) return "The machine";
+    const when = ctx.now.toISOString();
+    return `The machine at ${nyTime(when)} on a ${nyWeekday(when)}`;
   },
   body: (gi) => {
     const st = strategyCount(gi), book = gi.byId.has("book");
@@ -235,10 +241,10 @@ const farm: TourStep = {
     const reruns = capital(S`${when.length > 0 && [when, " "]}the ${ref(gi, FARM.id, FARM.name)} re-runs its backtests.`);
     if (!Array.isArray(lens.board)) {
       const why = str(m.lens_why);
-      return paras(segs(reruns, why && S` Its leaderboard could not be read, so its figures are not given here: ${reason(gi, why)}.`));
+      return paras(segs(reruns, why && ` Its leaderboard is not given here. ${reason(gi, why)}`));
     }
 
-    const cells = fin(lens.cells), trials = fin(lens.trials), board = rows(lens.board);
+    const cells = fin(lens.cells), trials = fin(lens.trials), board = rows(lens.board), done = at(m.finished);
     const best = board.filter((r) => str(r[0]) && fin(r[2]) !== null).sort((a, b) => (b[2] as number) - (a[2] as number))[0];
     const pass = board.filter((r) => r[1] === "PASS").length;
     const top = best && S`The best out-of-sample Sharpe is ${B(num(best[2] as number, 2))}, from ${cellRef(gi, best[0] as string)}`;
@@ -249,7 +255,8 @@ const farm: TourStep = {
       verdict = S`${top && [top, ". "]}After deflating for every trial, ${B(num(pass))} of the ${num(board.length)} cells ${pass === 1 ? "passes" : "pass"} every gate.`;
     }
     return paras(
-      segs(reruns, cells !== null && S` Its latest run has ${B(plural(cells, "cell"))} with a result${trials !== null && S`, and the farm has run ${B(num(trials))} trials in all`}.`),
+      segs(reruns, cells !== null && S` ${done.length > 0 ? S`As of ${done}, its` : "Its"} latest run has ${B(plural(cells, "cell"))} with a result${
+        trials !== null && S`, and the farm has run ${B(num(trials))} trials in all`}.`),
       verdict,
     );
   },
@@ -265,8 +272,8 @@ const overlay: TourStep = {
     const d = gi.byId.get("p:signals.daily");
     const daily = d !== undefined && node(gi, d).status !== "missing" ? d : undefined;
     const writes = daily !== undefined && S`${refAt(gi, daily)} writes each farm strategy's signal document for the desk to size.`;
-    // daily signals' caveats are exactly its leverage and fill notes (products.ts), so this names what they say
-    const tests = daily !== undefined && reading(gi, daily, ctx).caveats.length > 0 &&
+    // only when it wrote its leverage and fill notes (products.ts), which is what this names
+    const tests = daily !== undefined && executionNotes(strs(node(gi, daily).m.notes)).length > 0 &&
       S`Select ${refAt(gi, daily)} to read, in its own notes, how the farm's tests differ from what the desk trades.`;
 
     const off = unavailable(gi, OVERLAY);
@@ -278,7 +285,7 @@ const overlay: TourStep = {
     const sets = S`The ${refAt(gi, o, OVERLAY.name)}${reads} sets one exposure scale for the whole desk, toward a volatility target.`;
     const n = parseOverlayNote(strs(m.notes)), done = at(m.finished);
     const scale = n
-      ? S`Its latest run${done.length > 0 && S`, at ${done},`} forecast ${n.forecast > 0 ? S`the combined book's volatility at ${B(pct(n.forecast, 1))}` : "no volatility for the combined book"} against a ${
+      ? S`${done.length > 0 ? S`As of ${done}, it forecasts` : "Its latest run forecasts"} ${n.forecast > 0 ? S`the combined book's volatility at ${B(pct(n.forecast, 1))}` : "no volatility for the combined book"} against a ${
         B(share(n.target))} target, so the scale is ${B(num(n.scale, 2))}${n.scale >= 1 && ", the most it can be"}.`
       : segs("No note from its latest run states the scale, so none is given here.");
     const own = reading(gi, o, ctx).caveats.length > 0 && " The Reading tab quotes the caveats it records about itself.";
@@ -323,7 +330,7 @@ const book: TourStep = {
           S` If ${list(trips.map((t) => ref(gi, `lim:${t}`, t)))} ${trips.length === 1 ? "breaks" : "break"}, the kill switch halts the book.`,
       );
     } else if (str(m.summary_why)) {
-      live = S`Its limits, kill switch and position count are not shown here. The system's reason: “${reason(gi, str(m.summary_why)!)}”.`;
+      live = S`Its limits, kill switch and position count are not shown here. ${reason(gi, str(m.summary_why)!)}`;
     }
     return paras(first, live);
   },

@@ -24,6 +24,30 @@
   font: 13px var(--mx-font-mono);
   color: var(--mx-dim);
 }
+div.mx-wait {
+  right: 14px;
+}
+.mx-wait p {
+  margin: 6px 0;
+}
+.mx-wait a {
+  color: var(--mx-bright);
+}
+a.mx-wait-brand {
+  display: inline-block;
+  padding: 4px 0;
+  font-weight: 600;
+  text-decoration: none;
+}
+.mx-wait nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 16px;
+}
+.mx-wait nav a {
+  padding: 8px 0; /* a finger's height on a phone */
+  text-underline-offset: 2px;
+}
 .oc-app-machine .oc-page {
   min-height: 100vh;
   background: var(--paper); /* the page boundary's error state, which is paper */

@@ -10,7 +10,7 @@
 import { num, nyDay, pct, plural } from "./fmt";
 import { product } from "./products";
 import {
-  at, B, cpuTotal, downs, fin, inputs, jobRuns, known, list, node, obj, ofDesk, paras, reach, reaches, readers, reason, ref, refAt, rows, S, schedule,
+  at, B, cpuTotal, downs, feedLate, fin, inputs, jobRuns, known, list, node, obj, ofDesk, paras, reach, reaches, readers, reason, ref, refAt, rows, S, schedule,
   segs, share, sideRoute, str, strategyCount, strs, ups,
 } from "./prose";
 import type { Reading, ReadingCtx, Seg } from "./prose";
@@ -61,12 +61,12 @@ function ticker(gi: GraphIndex, i: number, n: MNode): Reading {
   };
 }
 
-const TRACK_WORD: Record<string, string> = {
-  filings: "SEC filings", minute: "one-minute bars", options: "option chain", macro: "a macro series", factors: "a factor series", "13f": "a fund manager's holdings",
-};
+const TRACK_WORD = new Map([
+  ["filings", "SEC filings"], ["minute", "one-minute bars"], ["options", "option chain"], ["macro", "a macro series"], ["factors", "a factor series"], ["13f", "a fund manager's holdings"],
+]);
 function series(gi: GraphIndex, i: number, n: MNode): Reading {
   const track = str(n.m.track) ?? "";
-  const word = TRACK_WORD[track] ?? `a series on the ${track || "warehouse's"} track`;
+  const word = TRACK_WORD.get(track) ?? `a series on the ${track || "warehouse's"} track`;
   const of = str(n.at.of);
   const first = of ? S`This is the warehouse's record of ${ref(gi, of)}'s ${word}.` : S`This is ${word} in the warehouse.`;
   return { title: n.n || n.l, paras: paras(first, segs(readers(gi, i), reaches(gi, i, " Downstream it"))), caveats: [] };
@@ -84,7 +84,7 @@ function feed(gi: GraphIndex, i: number, n: MNode): Reading {
   const { down, st, book } = reach(gi, i);
   const products = [...down.keys()].filter((j) => node(gi, j).k === "product").length;
   const parts = [products > 0 && B(plural(products, "product")), st > 0 && ofDesk(gi, st), book && "the book"].filter(Boolean);
-  return { title: n.n || n.l, paras: paras(first, parts.length > 0 && S`From here its data reaches ${list(parts)}.`), caveats: [] };
+  return { title: n.n || n.l, paras: paras(first, m.stale === true && S`Its ${feedLate(m)}`, parts.length > 0 && S`From here its data reaches ${list(parts)}.`), caveats: [] };
 }
 
 // ------------------------------------------------------------------ the clock
@@ -212,7 +212,7 @@ function book(gi: GraphIndex, i: number, n: MNode): Reading {
     ];
     summary = S`${asof.length > 0 ? S`As of ${asof}, the` : "The"} desk report's book summary shows ${list(parts)}.`;
   } else if (str(m.summary_why)) {
-    summary = S`Its limits, kill switch and position count are not shown here. The system's reason: “${reason(gi, str(m.summary_why)!)}”.`;
+    summary = S`Its limits, kill switch and position count are not shown here. ${reason(gi, str(m.summary_why)!)}`;
   }
   return { title: n.n || n.l, paras: paras(first, summary), caveats: [] };
 }
@@ -267,7 +267,7 @@ export function reading(gi: GraphIndex, i: number, ctx: ReadingCtx): Reading {
   const n = node(gi, i);
   if (n.status === "missing") {
     const why = str(n.why);
-    return { title: n.n || n.l, paras: paras(why ? S`This is missing from the machine: ${reason(gi, why)}.` : segs("This is missing from the machine.")), caveats: [] };
+    return { title: n.n || n.l, paras: paras(S`This is missing from the machine.${why && ` ${reason(gi, why)}`}`), caveats: [] };
   }
   switch (n.k) {
     case "series": return n.m.track === "daily" ? ticker(gi, i, n) : series(gi, i, n);

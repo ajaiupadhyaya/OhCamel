@@ -154,10 +154,13 @@ describe("the tour: 1, the overview", () => {
     expect(step("overview").title(indexGraph(fx), ctxOf(fx))).toBe("The machine at 10:05 PM on a Wednesday");
   });
 
-  it("is just the machine when the payload's time does not read", () => {
-    const fx = clone();
-    fx.asof = "not a time";
-    expect(step("overview").title(indexGraph(fx), { runs: fx.runs, now: new Date(FIXTURE.asof) })).toBe("The machine");
+  it("is the page's own time, as the top bar's, and not the time of the graph's last build", () => {
+    const gi = indexGraph(FIXTURE);
+    expect(step("overview").title(gi, { runs: FIXTURE.runs, now: new Date("2026-10-30T19:45:00Z") })).toBe("The machine at 3:45 PM on a Friday");
+  });
+
+  it("is just the machine when the page's clock does not read", () => {
+    expect(step("overview").title(indexGraph(FIXTURE), { runs: FIXTURE.runs, now: new Date(NaN) })).toBe("The machine");
   });
 
   it("counts the desk's strategies from the graph", () => {
@@ -193,9 +196,17 @@ describe("the tour: 2, the price feed", () => {
     expect(body(fy, "prices")).not.toMatch(/one-minute|option/);
   });
 
+  it("says a stale feed's data is older than its schedule allows, with no word of an artifact, instead of what it pulls", () => {
+    const fx = clone();
+    nodeOf(fx, "feed:prices").m.stale = true;
+    const t = body(fx, "prices");
+    expect(t).toContain("The price feed's newest data is from 28 Oct, older than its schedule allows.");
+    expect(t).not.toMatch(/artifact|pulls/);
+  });
+
   it("says the feed is missing, and why, instead of saying what it pulls", () => {
-    const t = body(missing(FIXTURE, "feed:prices", "the warehouse's freshness lists no bars_daily dataset"), "prices");
-    expect(t).toContain("The price feed is missing from the machine: the warehouse's freshness lists no bars_daily dataset.");
+    const t = body(missing(FIXTURE, "feed:prices", "The warehouse has no record of this feed yet."), "prices");
+    expect(t).toContain("The price feed is missing from the machine. The warehouse has no record of this feed yet.");
     expect(t).not.toMatch(/pulls/);
     expect(t).toContain("That is 7 series in all.");   // the warehouse's tracks are other nodes, still there
   });
@@ -252,8 +263,8 @@ describe("the tour: 3, one stock", () => {
   });
 
   it("says NVDA is missing, and why, and asserts nothing of it", () => {
-    const t = body(missing(FIXTURE, "d:NVDA", "the warehouse holds no bars for NVDA"), "nvda");
-    expect(t).toContain("NVDA is missing from the machine: the warehouse holds no bars for NVDA.");
+    const t = body(missing(FIXTURE, "d:NVDA", "The warehouse holds no bars for it."), "nvda");
+    expect(t).toContain("NVDA is missing from the machine. The warehouse holds no bars for it.");
     expect(t).not.toMatch(/keeps|read directly|reaches/);
     expect(body(without(FIXTURE, "d:NVDA"), "nvda")).toContain("NVDA is not in the machine.");
   });
@@ -313,8 +324,8 @@ describe("the tour: 4, the clock", () => {
     const ctx = { runs: [run("a", "ingest.sec", "done", "2026-10-28T03:00:00Z", "2026-10-28T03:10:00Z", 600)], now };
     expect(step("clock").sel(indexGraph(FIXTURE), ctx)).toBeNull();
     expect(body(FIXTURE, "clock", ctx)).toContain("The heaviest job of the last day was the ingest.sec job: its run at 11:00 PM on 27 Oct took 10 min and 600 CPU-seconds.");
-    const t = body(missing(FIXTURE, "j:farm.sweep", "farm.sweep is not in jobs/schedules.yaml"), "clock");
-    expect(t).toContain("The job is missing from the machine: farm.sweep is not in jobs/schedules.yaml.");
+    const t = body(missing(FIXTURE, "j:farm.sweep", "It is not on the schedule."), "clock");
+    expect(t).toContain("The job is missing from the machine. It is not on the schedule.");
     expect(t).not.toMatch(/reads 1 series/);
   });
 });
@@ -323,7 +334,7 @@ describe("the tour: 5, the farm", () => {
   it("gives the cells, trials, best Sharpe and how many pass, from its leaderboard", () => {
     const t = body(FIXTURE, "farm");
     expect(t).toContain("On weekdays at 11:00 PM the strategy farm re-runs its backtests.");
-    expect(t).toContain("Its latest run has 2 cells with a result, and the farm has run 48 trials in all.");
+    expect(t).toContain("As of 12:31 AM on 28 Oct, its latest run has 2 cells with a result, and the farm has run 48 trials in all.");
     expect(t).toContain("The best out-of-sample Sharpe is 0.81, from tsmom on us equity indices. After deflating for every trial, 1 of the 2 cells passes every gate.");
     expect(refs(FIXTURE, "farm")).toEqual(expect.arrayContaining(["p:farm.sweep", "c:tsmom@us_equity_indices"]));
   });
@@ -337,21 +348,21 @@ describe("the tour: 5, the farm", () => {
 
   it("says plainly that the leaderboard could not be read, and gives none of its figures", () => {
     const t = body(FIXTURE_BROKEN, "farm");
-    expect(t).toContain("Its leaderboard could not be read, so its figures are not given here: leaderboard has no column oos_sharpe_ann.");
+    expect(t).toContain("Its leaderboard is not given here. This figure could not be read from the latest run.");
     expect(t).not.toMatch(/0\.81|passes|48/);
   });
 
   it("says the farm is missing, and why, and gives none of its figures", () => {
-    const t = body(missing(FIXTURE, "p:farm.sweep", "no farm.sweep artifact has been published"), "farm");
-    expect(t).toBe("The strategy farm is missing from the machine: no farm.sweep artifact has been published.");
+    const t = body(missing(FIXTURE, "p:farm.sweep", "Its job has not published anything yet."), "farm");
+    expect(t).toBe("The strategy farm is missing from the machine. Its job has not published anything yet.");
     expect(body(without(FIXTURE, "p:farm.sweep"), "farm")).toBe("The strategy farm is not in the machine.");
   });
 
-  it("says a stale farm artifact is past its max age, and gives none of its figures", () => {
+  it("says a scheduled run of the farm was missed, and gives none of its figures", () => {
     const fx = clone();
     nodeOf(fx, "p:farm.sweep").m.stale = true;
     const t = body(fx, "farm");
-    expect(t).toContain("The strategy farm's latest artifact, finished at 12:31 AM on 28 Oct, is past its schedule's max age");
+    expect(t).toContain("The strategy farm's latest run finished at 12:31 AM on 28 Oct, and a scheduled one has been missed since, so its figures are not given here.");
     expect(t).not.toMatch(/0\.81|passes|48 trials/);
   });
 });
@@ -359,16 +370,16 @@ describe("the tour: 5, the farm", () => {
 describe("the tour: 6, the overlay", () => {
   it("gives the forecast, target and scale parsed from the overlay's note, as of its latest run", () => {
     const t = body(FIXTURE, "overlay");
-    expect(t).toContain("Its latest run, at 6:40 PM on 28 Oct, forecast the combined book's volatility at 3.4% against a 10% target, so the scale is 1.00, the most it can be.");
+    expect(t).toContain("As of 6:40 PM on 28 Oct, it forecasts the combined book's volatility at 3.4% against a 10% target, so the scale is 1.00, the most it can be.");
     expect(t).toContain("Daily signals writes each farm strategy's signal document for the desk to size.");
     expect(t).toContain("The exposure overlay reads the Vol forecast league and sets one exposure scale for the whole desk, toward a volatility target.");
     expect(refs(FIXTURE, "overlay")).toEqual(expect.arrayContaining(["p:signals.daily", "p:signals.overlay", "p:vol.forecast_league"]));
   });
 
-  it("points to daily signals' own caveats only when its reading quotes some", () => {
+  it("points to daily signals' own notes only when they say how the farm's tests differ", () => {
     expect(body(FIXTURE, "overlay")).toContain("Select Daily signals to read, in its own notes, how the farm's tests differ from what the desk trades.");
     const fx = clone();
-    nodeOf(fx, "p:signals.daily").m.notes = [];
+    nodeOf(fx, "p:signals.daily").m.notes = ["desk unreachable: keyed on the last written document"];   // a caveat, but not that one
     expect(body(fx, "overlay")).not.toMatch(/own notes/);
   });
 
@@ -381,17 +392,17 @@ describe("the tour: 6, the overlay", () => {
   });
 
   it("says the overlay is missing, and why, and gives none of its figures", () => {
-    const t = body(missing(FIXTURE, "p:signals.overlay", "no signals.overlay artifact has been published"), "overlay");
-    expect(t).toContain("The exposure overlay is missing from the machine: no signals.overlay artifact has been published.");
+    const t = body(missing(FIXTURE, "p:signals.overlay", "Its job has not published anything yet."), "overlay");
+    expect(t).toContain("The exposure overlay is missing from the machine. Its job has not published anything yet.");
     expect(t).not.toMatch(/3\.4%|1\.00|10%|exposure scale/);
     expect(body(without(FIXTURE, "p:signals.overlay"), "overlay")).toContain("The exposure overlay is not in the machine.");
   });
 
-  it("says a stale overlay artifact is past its max age, and gives none of its figures", () => {
+  it("says a scheduled run of the overlay was missed, and gives none of its figures", () => {
     const fx = clone();
     nodeOf(fx, "p:signals.overlay").m.stale = true;
     const t = body(fx, "overlay");
-    expect(t).toContain("The exposure overlay's latest artifact, finished at 6:40 PM on 28 Oct, is past its schedule's max age");
+    expect(t).toContain("The exposure overlay's latest run finished at 6:40 PM on 28 Oct, and a scheduled one has been missed since, so its figures are not given here.");
     expect(t).not.toMatch(/3\.4%|1\.00/);
   });
 });
@@ -409,9 +420,10 @@ describe("the tour: 7, the book", () => {
     expect(body(fx, "book")).toContain("2 strategies at 1% to 2.5% of capital, under a 60% incubation cap.");
   });
 
-  it("gives the system's reason when there is no summary, and no limit, kill switch or position", () => {
+  it("gives the plain reason when there is no summary, and no limit, kill switch or position", () => {
     const t = body(FIXTURE_NO_SUMMARY, "book");
-    expect(t).toContain("book_summary has no row: the engine was unreachable when desk.report last ran");
+    expect(t).toContain("Its limits, kill switch and position count are not shown here. The desk report ran but could not read the live book.");
+    expect(t).not.toMatch(/system's reason|“/);
     expect(t).not.toMatch(/armed|positions|2 limits|dd-cap/);
   });
 
@@ -423,8 +435,8 @@ describe("the tour: 7, the book", () => {
   });
 
   it("says the book is missing, and why, and gives none of its figures", () => {
-    const t = body(missing(FIXTURE, "book", "the roster was not read"), "book");
-    expect(t).toBe("The book is missing from the machine: the roster was not read.");
+    const t = body(missing(FIXTURE, "book", "The roster was not read."), "book");
+    expect(t).toBe("The book is missing from the machine. The roster was not read.");
     expect(body(without(FIXTURE, "book"), "book")).toBe("The book is not in the machine.");
   });
 });

@@ -22,7 +22,8 @@ export const SECTION_ORDER: LedgerSection[] = ["BUILT", "CUT", "ADVISORY", "LIMI
 
 export const LEDGER: LedgerEntry[] = [
   // ---------------------------------------------------------------- built
-  { section: "BUILT", item: "FRONT", detail: "Front page: index figures, UST curve and 2s10s, regime, atlas, farm and model headlines, last night's compute, data freshness." },
+  { section: "BUILT", item: "FRONT", detail: "The machine: the system's real dependency graph as a 3-D instrument, from the world's data through the jobs and products to the book, with a guided tour, the day's runs and a list form." },
+  { section: "BUILT", item: "TAPE", detail: "The Tape: index figures, UST curve and 2s10s, regime, atlas, farm and model headlines, last night's compute, data freshness." },
   { section: "BUILT", item: "MKTS", detail: "Markets: indices, sectors, rates, credit, commodities, volatility, cross-asset correlation." },
   { section: "BUILT", item: "RISK", detail: "Portfolio VaR/ES under nine models, Euler decomposition, out-of-sample VaR backtests, GARCH; the Monte Carlo atlas." },
   { section: "BUILT", item: "PORT", detail: "Portfolio Lab: holdings and 13F import, performance, factors, 17 historical stress scenarios, covariance league." },

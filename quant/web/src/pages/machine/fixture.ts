@@ -22,7 +22,7 @@ const node = (
 ): MNode => ({ id, k, l, n, ring, at, m });
 
 const SHA = "0dfae1f";
-const SUMMARY_WHY = "book_summary has no row: the engine was unreachable when desk.report last ran";
+const SUMMARY_WHY = "The desk report ran but could not read the live book.";
 
 // ------------------------------------------------------------------ the world: series
 const SPARK_SPY = [
@@ -102,7 +102,7 @@ const EXECUTION_NOTES = [
 const product = (kind: string, code: string, name: string, m: Record<string, unknown>): MNode =>
   node(`p:${kind}`, "product", code, name, "products", { of: `j:${kind}` }, { kind, ...m });
 
-// a manifest's fields; `stale` is the artifact's own flag, false for all of these
+// a manifest's fields; `stale` says a scheduled run was missed since, false for all of these
 const made = (art: string, finished: string, cpu: number, asof: string, engine: string) =>
   ({ code: SHA, asof, finished, cpu, engine, notes: [] as string[], art, stale: false });
 
@@ -113,7 +113,7 @@ const FARM_LENS = {
     ["xsmom@sectors", "FAIL", 0.2217, 0.3871, 0.7142, 0.5612, 24],
   ],
 };
-const FARM_LENS_WHY = "leaderboard has no column oos_sharpe_ann";
+const FARM_LENS_WHY = "This figure could not be read from the latest run.";
 
 const products = (lens: boolean): MNode[] => [
   product("vol.forecast_league", "P2", "Vol forecast league", {
@@ -263,7 +263,7 @@ function build(opts: { summary: boolean; lens: boolean }): MachineOut {
     runs: RUNS,
     x: { fires: firesOf(nodes) },
     provenance: [{ source: "ohcamel-machine", fetched_at: "2026-10-28T22:51:12.388114+00:00", synthetic: false, detail: { store: "jobs.sqlite+warehouse" } }],
-    notes: opts.summary ? [] : [`${SUMMARY_WHY}.`],
+    notes: opts.summary ? [] : [SUMMARY_WHY],
   }));
 }
 

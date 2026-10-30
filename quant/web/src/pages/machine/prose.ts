@@ -89,8 +89,8 @@ export function at(iso: unknown): Seg[] {
 
 const STAMP = /\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?/g;
 /**
- * A reason the server wrote for the page, to quote: any date or instant in it written as the page writes
- * times ("the desk.report artifact of 4:30 PM on 28 Oct is stale"), never as raw ISO text. A day outside the
+ * A reason the server wrote for the page, to print: any date or instant in it written as the page writes
+ * times ("The last desk report is from 4:30 PM on 28 Oct"), never as raw ISO text. A day outside the
  * payload's own year keeps its year ("starts 2 Jan 2019"); one that does not parse is left as written.
  */
 export function reason(gi: GraphIndex, s: string): string {
@@ -101,6 +101,15 @@ export function reason(gi: GraphIndex, s: string): string {
     const day = y !== null && y === year ? d : `${d} ${y}`;
     return known(t) ? `${t} on ${day}` : day;
   });
+}
+
+/**
+ * What is wrong with a stale feed, for a sentence to open ("Its", "The price feed's"): its data, and only its data.
+ * The warehouse's flag says the newest data is behind the schedule; a feed has no run of its own to name.
+ */
+export function feedLate(m: Record<string, unknown>): Seg[] {
+  const asof = nyDay(str(m.asof));
+  return known(asof) ? S`newest data is from ${B(asof)}, older than its schedule allows.` : segs("newest data is older than its schedule allows.");
 }
 
 // ------------------------------------------------------------------ the graph
