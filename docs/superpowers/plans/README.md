@@ -2,6 +2,8 @@
 
 This directory is the project's plan history. Every file that was ever committed here stays, unedited except for one status header line each: it is either the historical record of a finished, merged phase, or a superseded draft. The active plan is named below first.
 
+**Finished (2026-10-31):** The Showcase, a shared link, the engine's own evidence, liquidity and overlays: `docs/superpowers/specs/2026-10-31-the-showcase-design.md`, which carries its own short plan.
+
 **Active plan (2026-10-11):** `docs/superpowers/plans/2026-10-11-autonomous-paper-trading.md` — autonomous paper trading. Design doc: `docs/superpowers/specs/2026-10-11-autonomous-paper-trading-design.md`. Ledger: `.superpowers/sdd/2026-10-11-autonomous-paper-trading/progress.md`.
 
 **Active program (2026-09-24):** `docs/superpowers/plans/2026-09-24-quant-compute-program.md` — the compute program: a three-tier droplet (protected engine, interactive API, preemptible batch), Rust kernels and telemetry, a job system, a DuckDB warehouse, trained models, the Terminal UI and the Flight Deck console. It absorbs the finish plan's Stage 1 into its Phase 0 and runs the finish plan's Stages 2A–6 as its Lane E; the finish plan below stays binding for those stages.
