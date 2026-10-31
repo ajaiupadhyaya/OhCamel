@@ -15,7 +15,7 @@ Three layers, and the rule between them: **analytics are pure** (`risk/` .. `fun
 | Path | Contents |
 |---|---|
 | `src/ohcamel_quant/data/` | `MarketData` facade (warehouse first, then vendors, then committed fixtures), the Parquet + provenance store, providers (Alpaca, Yahoo, Stooq, FRED, Ken French, Cboe, SEC EDGAR, OpenFIGI) |
-| `src/ohcamel_quant/risk/` | Nine VaR/ES models (historical, Gaussian, Student-t, Cornish-Fisher, EWMA, GARCH, GJR-GARCH, FHS, EVT-POT), out-of-sample backtests, Euler decomposition, 17 historical and conditional stress scenarios |
+| `src/ohcamel_quant/risk/` | Nine VaR/ES models (historical, Gaussian, Student-t, Cornish-Fisher, EWMA, GARCH, GJR-GARCH, FHS, EVT-POT), out-of-sample backtests, Euler decomposition, liquidity (days to liquidate, square-root impact, L-VaR), 17 historical and conditional stress scenarios |
 | `src/ohcamel_quant/portfolio/` | Covariance estimators, expected returns and Black-Litterman, ten optimizers, walk-forward comparison against 1/N |
 | `src/ohcamel_quant/factors/` | Performance statistics, PSR/DSR, Fama-French and custom factor regressions with HAC errors, attribution |
 | `src/ohcamel_quant/factors/expr.py`, `alpha158.py` | A point-in-time factor expression language with qlib's 41 operators (`Mean($close, 20)/$close`), ported, not imported. Lookahead is a parse error, and a window that is not full is NaN. `compat=True` reproduces qlib, and qlib's Alpha158 on it matches qlib 0.9.7's own output on 157 of 158 features (VWAP0 omitted: no VWAP in the bars). `tools/qlib_golden.py` regenerates the reference |
@@ -73,5 +73,5 @@ commit.
 
 <!-- quant-tests -->
 ```
-TESTS = 1765
+TESTS = 1817
 ```

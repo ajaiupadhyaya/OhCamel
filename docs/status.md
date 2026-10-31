@@ -24,6 +24,15 @@ reaches the page as `book_summary`, a table on the `desk.report` artifact: the k
 names, kinds and scopes, and the position count, and never a position's name or size or a limit's threshold. The
 page's own "stale" means a scheduled fire was missed by more than two hours, not `max_age` below.
 
+A page says what it is without JavaScript. FastAPI fills the shell per path from `api/seo.py`: title, description,
+canonical URL, preview tags and a short plain description inside `#root`, which React replaces. `/robots.txt` and
+`/sitemap.xml` are what they say, and an unknown path is a 404 that still boots the app's own not-found page. `/engine`
+replays `docs/perf/propagation.json`, a recording of what each kind of input recomputes in the real graph on an example
+book of real closes (`make propagation`), because the live graph's node names are the book's positions; regenerate it
+when the graph changes. `/risk` has liquidity (days to liquidate, square-root impact, L-VaR), the first place
+`lib/liquidity.ml`'s definitions run, on half-spreads that are stated assumptions. A 13F import can carry the filing's
+options as an overlay at an assumed delta; a 13F gives no strike or expiry, so they are not priced.
+
 ---
 
 ## Where it runs
@@ -98,7 +107,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->1765<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->1817<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.
@@ -226,8 +235,9 @@ From the Ship spec (`superpowers/specs/2026-10-05-the-ship-design.md` §2); each
   experiment.
 - **Droplet size** (O-1): resize if hostd shows steal above 10 % for sustained periods, or the nightly batch
   misses 09:00 New York.
-- **Engine bridge** (O-7): whether the public site shows the paper book's positions
-  (`OHCAMEL_QUANT_ENGINE_URL`). It is off.
+- **Engine bridge** (O-7): `OHCAMEL_QUANT_ENGINE_URL` turns on the public `/engine` page's live vitals, which carry
+  no book data. Whether the public site shows the paper book's positions is a second switch,
+  `OHCAMEL_QUANT_ENGINE_BOOK_PUBLIC`, and it stays off.
 - **The live book.** `book.sexp` is never edited by the agent. The owner has merged the `signals` block and set
   `(trading enabled)`; any `(sizing live)` and the `alerts` block remain the owner's (see *The engine*, below).
 - Accounts and money: the basic-auth password, the Alpaca, FRED and GitHub accounts, DNS, and every spending
@@ -1052,7 +1062,9 @@ the prefix `OHCAMEL_QUANT_`, plus two plain names):
 | `OHCAMEL_QUANT_HTTP_TIMEOUT_S`, `OHCAMEL_QUANT_HTTP_RETRIES` | 20, 3 | outbound requests |
 | `OHCAMEL_QUANT_TTL_PRICES_S`, `_TTL_INTRADAY_QUOTE_S`, `_TTL_MACRO_S`, `_TTL_FACTORS_S`, `_TTL_OPTIONS_S`, `_TTL_FILINGS_S` | per family | cache freshness |
 | `OHCAMEL_QUANT_PRICE_PROVIDERS` | alpaca, yahoo, stooq | provider order |
-| `OHCAMEL_QUANT_ENGINE_URL` | unset; compose passes it through, empty by default | the read-only bridge to the engine |
+| `OHCAMEL_QUANT_ENGINE_URL` | unset; compose passes it through, empty by default | the read-only bridge to the engine: `/api/engine/vitals`, numbers with no book data |
+| `OHCAMEL_QUANT_ENGINE_BOOK_PUBLIC` | off | lets the bridge pass the book through (`snapshot`, `history`, symbols in `status`); on only for the local harness and its synthetic book |
+| `OHCAMEL_QUANT_PUBLIC_URL` | `https://ohcamel.ajaiupadhyaya.com` | canonical URLs, link previews and the sitemap |
 | `OHCAMEL_QUANT_HOSTD_URL` | `http://ohcamel-hostd:9100` in compose | host telemetry for `/api/ops/host` |
 | `OHCAMEL_QUANT_RECORDER`, `_RECORDER_INTERVAL_S`, `_RECORDER_KEEP_SESSIONS` | on, 60, 30 | the Flight Deck's recorder |
 | `OHCAMEL_QUANT_RATE_LIMIT_PER_MIN`, `_RATE_LIMIT_BURST` | 30, 30 | per-client token bucket on the expensive synchronous `POST /api/*` (429 + `Retry-After`; 0 turns it off; `/api/jobs`, the deck poll and the option/bond calculators exempt) |

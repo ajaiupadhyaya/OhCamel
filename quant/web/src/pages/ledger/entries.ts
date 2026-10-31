@@ -80,5 +80,5 @@ export const LEDGER: LedgerEntry[] = [
   { section: "OWNER", item: "PRE-REGISTRATIONS", detail: "EXP-Q01 and EXP-Q02 approved 2026-10-06; any deviation is a new experiment and goes back to the owner." },
   { section: "OWNER", item: "EXP-Q01 UNIVERSE", detail: "Freeze runs once after the bars backfill. I-Q01-7 dollar-volume sign recorded as −1, the default, 2026-10-07; the owner's to confirm." },
   { section: "OWNER", item: "DROPLET SIZE", detail: "Resize if steal stays above 10 % or the nightly batch misses 09:00 NY." },
-  { section: "OWNER", item: "ENGINE BRIDGE", detail: "Whether the public site shows the paper book's positions; off." },
+  { section: "OWNER", item: "ENGINE BRIDGE", detail: "The public /engine page's vitals carry no book data; whether the public site shows the paper book's positions is a second switch, off." },
 ];
