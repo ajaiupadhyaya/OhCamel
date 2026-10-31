@@ -1,19 +1,19 @@
 /**
  * Risk (/risk) on the active portfolio: VaR/ES across nine models (POST /risk/summary), Euler
- * split (/risk/decomposition), out-of-sample backtests (/risk/backtest, explicit RUN) and GARCH
- * (/risk/garch). Paper Tape: caps labels, ruled tables, readout lines instead of sentences;
+ * split (/risk/decomposition), liquidity (/risk/liquidity), out-of-sample backtests
+ * (/risk/backtest, explicit RUN) and GARCH (/risk/garch). Paper Tape: caps labels, ruled tables, readout lines instead of sentences;
  * signal only for losses, breaches and rejected tests.
  */
 import { useMemo, useState } from "react";
 import { BarChart, DataTable, HeatmapChart, InfoTip, Panel, Section, SegmentedControl, Select, StatGrid, StatTile, TimeSeriesChart, Toggle, type Column } from "../../components";
 import { XYChart } from "../../charts/XYChart";
-import { fmtMultiple, fmtNum, fmtPct } from "../../lib/format";
+import { fmtCompact, fmtMultiple, fmtNum, fmtPct } from "../../lib/format";
 import { useApiPost } from "../../lib/query";
 import { frameToMatrix } from "../../lib/series";
 import type { PortfolioIn } from "../../lib/types";
 import { CONDITIONAL_MODELS, INFO, modelInfo, modelLabel } from "../portfolio/info";
 import { KV, PValue, PctUsd, Readline, RunButton, ShareRows, ZoneChip, asDates, esVerdict, useCommitted, usd } from "../portfolio/shared";
-import type { BacktestOut, DecompPosition, DecompositionOut, Estimate, GarchOut, RiskSummaryOut, Scorecard } from "../portfolio/types";
+import type { BacktestOut, DecompPosition, DecompositionOut, Estimate, GarchOut, LiquidityLine, LiquidityOut, RiskSummaryOut, Scorecard } from "../portfolio/types";
 import { splitBreaches } from "./breaches";
 
 type Alpha = "0.95" | "0.99";
@@ -30,6 +30,7 @@ export function RiskSections({ req, alpha = "0.99", horizon = "1" }: { req: Port
     <>
       <ModelsSection req={req} seedAlpha={alpha} seedHorizon={horizon} />
       <DecompositionSection req={req} seedAlpha={alpha} />
+      <LiquiditySection req={req} seedAlpha={alpha} />
       <BacktestSection req={req} seedAlpha={alpha} />
       <GarchSection req={req} />
     </>
@@ -184,6 +185,60 @@ function DistributionFit({ d }: { d: RiskSummaryOut }) {
         ]}
       />
     </>
+  );
+}
+
+// =================================================================== liquidity
+
+const PARTICIPATION = [
+  { value: "0.05", label: "5%" },
+  { value: "0.1", label: "10%" },
+  { value: "0.25", label: "25%" },
+];
+
+/** A small book clears in a sliver of a day; 0.00 would read as no time at all. */
+const fmtDays = (d: number | null | undefined) => (d != null && d > 0 && d < 0.01 ? "< 0.01" : fmtNum(d, 2));
+
+const LIQUIDITY_COLS: Column<LiquidityLine>[] = [
+  { key: "ticker", label: "NAME", render: (r) => <span className="num">{r.ticker}</span> },
+  { key: "exposure_usd", label: "EXPOSURE", numeric: true, format: (v) => usd(v as number) },
+  { key: "adv20", label: "ADV 20D", numeric: true, format: (v) => fmtCompact(v as number | null, 1) },
+  { key: "days_to_liquidate", label: "DAYS", numeric: true, format: (v) => fmtDays(v as number | null) },
+  { key: "half_spread_bps", label: "HALF-SPREAD", numeric: true, render: (r) => <span className="num">{fmtNum(r.half_spread_bps, 1)} BP · {r.half_spread_source.toUpperCase()}</span> },
+  { key: "spread_cost_usd", label: "SPREAD $", numeric: true, format: (v) => usd(v as number | null) },
+  { key: "impact_cost_usd", label: "IMPACT $", numeric: true, format: (v) => usd(v as number | null) },
+];
+
+function LiquiditySection({ req, seedAlpha }: { req: PortfolioIn; seedAlpha: Alpha }) {
+  const [alpha, setAlpha] = useState<Alpha>(seedAlpha);
+  const [participation, setParticipation] = useState("0.1");
+  const body = useMemo(() => ({ ...req, alpha: Number(alpha), participation: Number(participation) }), [req, alpha, participation]);
+  const q = useApiPost<LiquidityOut>("/risk/liquidity", body);
+  return (
+    <Section
+      title={`Liquidity · VaR ${lvl(alpha)}`}
+      actions={
+        <>
+          <SegmentedControl size="sm" ariaLabel="Confidence" options={ALPHAS} value={alpha} onChange={setAlpha} />
+          <SegmentedControl size="sm" ariaLabel="Share of daily volume" options={PARTICIPATION} value={participation} onChange={setParticipation} />
+        </>
+      }
+    >
+      <Panel<LiquidityOut> title={`Share of daily volume · ${fmtPct(Number(participation), 0)}`} info={INFO.liquidity} query={q} skeletonHeight={260} flush>
+        {(d) => (
+          <>
+            <StatGrid min={140}>
+              <StatTile size="sm" label="VAR" value={d.var_usd} format={(v) => usd(v)} caption="HISTORICAL" />
+              <StatTile size="sm" label="L-VAR" value={d.lvar_usd} format={(v) => usd(v)} caption={d.lvar != null ? fmtPct(d.lvar, 2) : "A SPREAD IS UNKNOWN"} />
+              <StatTile size="sm" label="SPREAD COST" value={d.spread_cost_usd} format={(v) => usd(v)} caption="IN L-VAR" />
+              <StatTile size="sm" label="IMPACT COST" value={d.impact_cost_usd} format={(v) => usd(v)} caption="BESIDE L-VAR" />
+              <StatTile size="sm" label="SLOWEST NAME" value={d.max_days_to_liquidate} format={(v) => `${fmtDays(v)} D`} caption="DAYS TO LIQUIDATE" />
+            </StatGrid>
+            <DataTable compact columns={LIQUIDITY_COLS} rows={d.lines} rowKey={(r) => r.ticker} scrollLabel="Liquidity by name" />
+          </>
+        )}
+      </Panel>
+    </Section>
   );
 }
 

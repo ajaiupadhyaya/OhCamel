@@ -21,7 +21,7 @@ export interface Model {
 }
 
 export const SECTIONS: { id: SectionId; title: string; blurb: string }[] = [
-  { id: "risk", title: "Risk", blurb: "How much could the portfolio lose, how often, and where does that risk come from? Value-at-Risk and Expected Shortfall under seven models, their out-of-sample backtests, risk decomposition and stress tests." },
+  { id: "risk", title: "Risk", blurb: "How much could the portfolio lose, how often, and where does that risk come from? Value-at-Risk and Expected Shortfall under nine models, liquidity, their out-of-sample backtests, risk decomposition and stress tests." },
   { id: "portfolio", title: "Portfolio construction", blurb: "Turning return histories into weights: covariance estimation, expected-return models, optimizers from Markowitz to hierarchical risk parity, and honest walk-forward comparison." },
   { id: "factors", title: "Factors & performance", blurb: "Describing a return series and explaining it: tear-sheet statistics, the statistical uncertainty of a Sharpe ratio, and Fama–French factor regressions with robust standard errors." },
   { id: "backtest", title: "Backtesting & validation", blurb: "A causal backtester for published strategies, and the diagnostics that tell a real edge from a lucky or overfitted one." },
@@ -110,6 +110,20 @@ export const MODELS: Model[] = [
     appears: [PL_RISK],
     refs: ["mcneil_frey_2000", "mcneil_2015"],
     keywords: "evt gpd generalized pareto tail",
+  },
+  {
+    id: "liquidity",
+    name: "Liquidity: days to liquidate, impact and L-VaR",
+    section: "risk",
+    summary: "VaR assumes a position can be closed at its mark. L-VaR adds the cost of crossing the spread on every position, today. Days to liquidate says how long unwinding takes at a set share of daily volume, and the square-root law estimates the price concession for trading a large order, reported beside L-VaR rather than added to it.",
+    formulas: [
+      { tex: T`\text{L-VaR} = \text{VaR} + \sum_i |x_i|\, h_i`, caption: "x is the dollar exposure, h the half-spread; the spread-volatility term of Bangia et al. is zero" },
+      { tex: T`\text{days}_i = \frac{|q_i|}{p \cdot \text{ADV}_i},\quad \text{impact}_i = Y \sigma_i \sqrt{|q_i| / \text{ADV}_i}` },
+    ],
+    assumptions: ["The half-spread is an assumption, not a measurement: there is no quote history here, and daily high-low estimators read volatility rather than spread on liquid names. Each line says where its figure came from.", "ADV and σ are the last 20 sessions, as the source reports volume.", "A name whose ADV or volatility is unknown leaves the totals unknown, not understated.", "The same definitions as the engine's kernel, lib/liquidity.ml."],
+    appears: [PL_RISK],
+    refs: ["bangia_1999", "toth_2011"],
+    keywords: "liquidity l-var lvar spread bid ask impact square root adv participation",
   },
   {
     id: "garch",

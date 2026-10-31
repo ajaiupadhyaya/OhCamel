@@ -460,3 +460,34 @@ export interface FactorDef {
   long: string;
   short: string | null;
 }
+
+export interface LiquidityLine {
+  ticker: string;
+  weight: number;
+  exposure_usd: number;
+  shares: number;
+  price: number;
+  adv20: number | null;
+  daily_stddev: number | null;
+  half_spread_bps: number;
+  half_spread_source: "book" | "default" | "request";
+  days_to_liquidate: number | null;
+  impact_fraction: number | null;
+  impact_cost_usd: number | null;
+  spread_cost_usd: number | null;
+}
+
+/** POST /risk/liquidity. A null total means one line is unknown: unknown is not zero. */
+export interface LiquidityOut extends Envelope {
+  alpha: number;
+  horizon: number;
+  var: number;
+  var_usd: number;
+  lvar: number | null;
+  lvar_usd: number | null;
+  spread_cost_usd: number | null;
+  impact_cost_usd: number | null;
+  max_days_to_liquidate: number | null;
+  lines: LiquidityLine[];
+  method: { participation: number; impact_coefficient: number; adv_window: number };
+}

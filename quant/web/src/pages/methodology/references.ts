@@ -13,6 +13,8 @@ export interface Ref {
 }
 
 export const REFS: Record<string, Ref> = {
+  bangia_1999: { authors: "Bangia, A., Diebold, F. X., Schuermann, T. & Stroughair, J. D.", year: "1999", title: "Liquidity on the outside", venue: "Risk 12, 68–73" },
+  toth_2011: { authors: "Tóth, B., Lempérière, Y., Deremble, C., de Lataillade, J., Kockelkoren, J. & Bouchaud, J.-P.", year: "2011", title: "Anomalous price impact and the critical nature of liquidity in financial markets", venue: "Physical Review X 1, 021006" },
   acerbi_szekely_2014: { authors: "Acerbi, C. & Szekely, B.", year: "2014", title: "Backtesting expected shortfall", venue: "Risk, December" },
   acerbi_tasche_2002: { authors: "Acerbi, C. & Tasche, D.", year: "2002", title: "On the coherence of expected shortfall", venue: "Journal of Banking & Finance 26(7), 1487–1503" },
   acar_2005: { authors: "Acar, U. A.", year: "2005", title: "Self-Adjusting Computation", venue: "PhD thesis, Carnegie Mellon University" },

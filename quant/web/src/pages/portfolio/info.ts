@@ -188,6 +188,11 @@ export const INFO = {
     reference: "Patton, Ziegel & Chen (2019), Journal of Econometrics 211(2)",
   },
   // ---------------------------------------------------------------- decomposition
+  liquidity: {
+    title: "Liquidity and L-VaR",
+    text: "L-VaR adds the cost of crossing the spread today to VaR. The half-spread is an assumption: each line says whether it is the book's figure or the default. Impact is the square-root law's estimate for trading the position, shown beside L-VaR and not added to it.",
+    formula: "\\text{L-VaR} = \\text{VaR} + \\sum_i |x_i| h_i",
+  },
   component_var: {
     title: "Component (Euler) VaR",
     text: "Each position's share of total VaR. Components add up exactly to portfolio VaR, so they show where the risk really sits — not where the money sits.",

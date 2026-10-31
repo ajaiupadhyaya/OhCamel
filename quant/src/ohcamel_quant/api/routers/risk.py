@@ -27,6 +27,7 @@ from ...data.market import MarketData, get_market
 from ...risk import backtest as bt
 from ...risk import decomposition as dec
 from ...risk import garch as gm
+from ...risk import liquidity as lq
 from ...risk import stress as st
 from ...risk import var as vm
 from ...risk.core import (
@@ -106,6 +107,25 @@ class GarchIn(PortfolioIn):
     horizon: int = Field(default=10, ge=1, le=250)
     forecast_days: int = Field(default=63, ge=1, le=504)
     ewma_lambda: float = Field(default=0.94, gt=0.5, lt=1.0)
+
+
+class LiquidityIn(PortfolioIn):
+    alpha: float = Field(default=0.99, gt=0.5, lt=1.0)
+    horizon: int = Field(default=1, ge=1, le=250)
+    participation: float = Field(default=lq.DEFAULT_PARTICIPATION, gt=0.0, le=1.0)
+    impact_coefficient: float = Field(default=lq.DEFAULT_IMPACT_COEFFICIENT, ge=0.0, le=10.0)
+    spread_bps_default: float = Field(default=lq.DEFAULT_HALF_SPREAD_BPS, ge=0.0, le=1000.0)
+    spread_bps: dict[str, float] = Field(default_factory=dict, max_length=100)
+
+    @field_validator("spread_bps")
+    @classmethod
+    def _spreads(cls, v: dict[str, float]) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for k, x in v.items():
+            if not 0.0 <= x <= 1000.0:
+                raise ValueError("a half-spread must be in [0, 1000] bps")
+            out[k.strip().upper()] = x
+        return out
 
 
 class HistoricalStressIn(PortfolioIn):
@@ -284,6 +304,72 @@ def _summary(body: SummaryIn, market: MarketData) -> dict[str, Any]:
             "ewma_lambda": body.ewma_lambda, "evt_threshold_quantile": body.evt_threshold,
             "fhs_filter": "GJR-GARCH(1,1,1)-t", "garch_fit_units": "percent returns",
             "reference": "Jorion (2007); McNeil, Frey & Embrechts (2015) QRM; model-specific references in each estimate",
+        },
+        "notes": notes,
+        "provenance": prov,
+    })
+
+
+@router.post("/liquidity")
+def liquidity(body: LiquidityIn, market: Market) -> dict[str, Any]:
+    """Days to liquidate, square-root impact and Bangia L-VaR for the portfolio."""
+    return _cached("liquidity", body, lambda: _liquidity(body, market))
+
+
+def _liquidity(body: LiquidityIn, market: MarketData) -> dict[str, Any]:
+    _, rp, prov, notes = _load_portfolio(body, market)
+    est = vm.historical(rp.to_numpy(), body.alpha, body.horizon)
+    var_usd = float(est.var) * body.notional
+
+    def position(ticker: str, weight: float) -> tuple[lq.Position, str]:
+        bars = market.ohlcv(ticker).data
+        close = bars["adj_close"].dropna()
+        volume = bars["volume"].dropna().tail(lq.ADV_WINDOW)
+        returns = close.pct_change().dropna().tail(lq.ADV_WINDOW)
+        price = float(bars["close"].dropna().iloc[-1])
+        bps, source = lq.half_spread(ticker, body.spread_bps_default, body.spread_bps)
+        return lq.Position(
+            ticker,
+            qty=weight * body.notional / price if price > 0 else math.nan,
+            price=price,
+            adv20=float(volume.mean()) if len(volume) == lq.ADV_WINDOW else None,
+            daily_stddev=float(returns.std(ddof=1)) if len(returns) == lq.ADV_WINDOW else None,
+            half_spread_bps=bps,
+        ), source
+
+    held = [(position(t, w), w) for t, w in body.weights.items()]
+    positions = [p for (p, _), _ in held]
+    t = lq.compute(positions, body.participation, body.impact_coefficient)
+    lines = [
+        {
+            "ticker": p.ticker, "weight": w, "exposure_usd": abs(p.qty * p.price), "shares": abs(p.qty),
+            "price": p.price, "adv20": p.adv20, "daily_stddev": p.daily_stddev,
+            "half_spread_bps": p.half_spread_bps, "half_spread_source": source,
+            "days_to_liquidate": x.days_to_liquidate, "impact_fraction": x.impact_fraction,
+            "impact_cost_usd": x.impact_cost, "spread_cost_usd": x.spread_cost,
+        }
+        for ((p, source), w), x in zip(held, t.lines, strict=True)
+    ]
+    lvar_usd = lq.lvar(var_usd, t)
+    notes.append(
+        "The half-spread is an assumption, not a measurement: there is no quote history here, and "
+        "each line says whether it came from the book's defaults or this request."
+    )
+    notes.append(f"VaR is historical at {body.alpha:.3g} over {body.horizon} day(s); the spread is crossed once.")
+    return clean({
+        "portfolio": _portfolio_meta(body, rp),
+        "alpha": body.alpha, "horizon": body.horizon,
+        "var": float(est.var), "var_usd": var_usd,
+        "lvar": None if lvar_usd is None else lvar_usd / body.notional, "lvar_usd": lvar_usd,
+        "spread_cost_usd": t.spread_cost, "impact_cost_usd": t.impact_cost,
+        "max_days_to_liquidate": t.max_days_to_liquidate,
+        "lines": lines,
+        "method": {
+            "lvar": "L-VaR = VaR + sum_i |x_i| h_i (Bangia et al. 1999, spread-volatility term at zero)",
+            "impact": "Y sigma sqrt(|q| / ADV) (Toth et al. 2011), reported beside L-VaR and not added to it",
+            "days": "|q| / (participation x ADV)",
+            "participation": body.participation, "impact_coefficient": body.impact_coefficient,
+            "adv_window": lq.ADV_WINDOW,
         },
         "notes": notes,
         "provenance": prov,
