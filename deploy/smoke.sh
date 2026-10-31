@@ -171,6 +171,28 @@ case "$index_code:$index_ctype:$index" in
 *) no "GET /                       ${index_code:-no response} ${index_ctype:-}" "the Quant app did not render" ;;
 esac
 
+# A page must say what it is without JavaScript: a link preview and a crawler
+# read this and nothing else. Each failure names the page's own table.
+case "$index" in
+*'property="og:image"'*'class="oc-static"'*) ok "GET /                       preview tags and fallback text" ;;
+*) no "GET /                       no preview tags or fallback text" "the markers in quant/web/index.html or api/seo.py" ;;
+esac
+robots=$(curl -sS --max-time 15 -w '\n%{content_type}' "$BASE/robots.txt" 2>/dev/null)
+case "$robots" in
+*Sitemap:*text/plain*) ok "GET /robots.txt             a robots file" ;;
+*) no "GET /robots.txt             not a robots file" "quant/web/public/robots.txt is missing from the bundle" ;;
+esac
+code=$(curl -sS -o /dev/null -w '%{http_code}:%{content_type}' --max-time 15 "$BASE/sitemap.xml" 2>/dev/null)
+case "$code" in
+200:application/xml*) ok "GET /sitemap.xml            200, application/xml" ;;
+*) no "GET /sitemap.xml            ${code:-no response}, expected 200 application/xml" "the route in api/app.py" ;;
+esac
+code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$BASE/no/such/page" 2>/dev/null)
+case "$code" in
+404) ok "GET /no/such/page           404" ;;
+*) no "GET /no/such/page           ${code:-no response}, expected 404" "unknown paths must not answer 200" ;;
+esac
+
 # A client-side route must come back as the same shell, or a reload on
 # /portfolio is a 404.
 code=$(curl -sS -o /dev/null -w '%{http_code}:%{content_type}' --max-time 15 "$BASE/portfolio" 2>/dev/null)
@@ -362,6 +384,15 @@ print("OK cpu %.2f, steal %.2f, swap_used %d MiB, %d MiB available" % (
 # unless the owner opts in (OHCAMEL_QUANT_ENGINE_URL in deploy/.env), so a 503
 # there is the documented, honest answer and is only reported.
 if [ "$have_py" = 1 ]; then
+	# Vitals are the public read: numbers, and nothing from the book.
+	vitals=$(curl -sS --compressed --max-time 15 -w '\n%{http_code}' "$BASE/api/engine/vitals" 2>/dev/null)
+	case "$vitals" in
+	*'
+200') ok "GET /api/engine/vitals     200" ;;
+	*'
+503') meh "GET /api/engine/vitals     503 -- the bridge is off" ;;
+	*) no "GET /api/engine/vitals     ${vitals##*$'\n'}, expected 200 or 503" "${vitals%%$'\n'*}" ;;
+	esac
 	bridge=$(curl -sS --max-time 15 -w '\n%{http_code}' "$BASE/api/engine/status" 2>/dev/null | python3 -c '
 import json, sys
 raw = sys.stdin.read().rsplit("\n", 1)
@@ -371,14 +402,15 @@ except Exception as e:
     print("NOTJSON %s" % e); raise SystemExit
 if code == "200" and body.get("reachable") is True:
     ops = body.get("ops") or {}
-    print("OK %s %s" % (ops.get("mode") or "unknown", "healthy" if (body.get("health") or {}).get("healthy") else "feed-stale"))
+    print("OK %s %s %s" % (ops.get("mode") or "unknown", "healthy" if (body.get("health") or {}).get("healthy") else "feed-stale",
+                           "book" if body.get("book_public") else "private"))
 elif code == "503":
     print("DOWN %s" % body.get("detail"))
 else:
     print("CODE %s" % code)
 ' 2>&1)
 	case "$bridge" in
-	OK*) read -r _ bmode bfeed <<<"$bridge"; ok "GET /api/engine/status     reachable, engine mode $bmode, feed $bfeed" ;;
+	OK*) read -r _ bmode bfeed bbook <<<"$bridge"; ok "GET /api/engine/status     reachable, engine mode $bmode, feed $bfeed" ;;
 	DOWN*)
 		if [ -n "$ENGINE" ]; then
 			no "GET /api/engine/status     503, but an engine should be running" "${bridge#DOWN }"
@@ -388,10 +420,10 @@ else:
 		;;
 	*) no "GET /api/engine/status     malformed" "${bridge:-no response}" ;;
 	esac
-	# The snapshot is asked only of a bridge that answered: since the Quant
-	# cutover the public host serves no engine, and a --live run against it
-	# must not fail on a bridge the status check already called absent.
-	if [ -n "$ENGINE" ] || [ "${bridge#OK}" != "$bridge" ]; then
+	# The snapshot is asked only of a bridge that answered and publishes the
+	# book: the public host's bridge, when on, carries vitals alone, and a
+	# --live run against it must not fail on a refusal that is the design.
+	if [ -n "$ENGINE" ] || [ "${bbook:-}" = book ]; then
 		esnap=$(curl -sS --compressed --max-time 15 "$BASE/api/engine/snapshot" 2>/dev/null | python3 -c '
 import json, sys
 try:

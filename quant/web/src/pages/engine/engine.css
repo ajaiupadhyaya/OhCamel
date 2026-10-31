@@ -28,10 +28,15 @@
   letter-spacing: 0.06em;
   color: var(--ink-2);
 }
-.en-graph-count {
-  margin-left: auto;
-  font-size: var(--fs-xs);
-  color: var(--ink-2);
+.en-graph-names {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.en-reading {
+  max-width: 76ch;
+  margin: var(--sp-3) 0;
+  font-size: var(--fs-sm);
 }
 .en-graph-scroll {
   overflow-x: auto;
@@ -44,60 +49,54 @@
   min-width: 760px;
   height: auto;
 }
-.en-edge {
+.en-flow {
+  fill: none;
+  stroke: var(--rule-color, var(--ink-3));
+  stroke-width: 0.5;
+  opacity: 0.35;
+}
+.en-flow.near {
+  stroke: var(--ink-2);
+  stroke-width: 1;
+  opacity: 1;
+}
+.en-flow.lit {
+  stroke: var(--ink);
+  stroke-width: 1.25;
+  opacity: 1;
+}
+.en-cell text {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  fill: var(--ink-3);
+  /* A lit edge may pass behind a label; the halo keeps the label readable. */
+  paint-order: stroke;
+  stroke: var(--paper);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+.en-cell-hit {
+  fill: transparent;
+}
+.en-cell-mark {
   fill: none;
   stroke: var(--ink-3);
   stroke-width: 1;
 }
-.en-edge.lit {
-  stroke: var(--ink);
-  stroke-width: 1.5;
-}
-.en-arrow {
-  fill: var(--ink-3);
-}
-.en-arrow-lit {
+.en-cell.input text,
+.en-cell.changed text,
+.en-cell.held text {
   fill: var(--ink);
+  font-weight: 500;
 }
-.en-node rect {
-  rx: 0;
-  ry: 0;
-  fill: var(--paper);
-  stroke: var(--ink-3);
-  stroke-width: 1;
-}
-.en-node-input rect {
-  stroke-dasharray: 3 3;
-}
-.en-node.dirty rect {
-  stroke: var(--ink);
-}
-.en-node.lit rect {
+.en-cell.input .en-cell-mark,
+.en-cell.changed .en-cell-mark {
   fill: var(--ink);
   stroke: var(--ink);
 }
-.en-node.clickable {
-  cursor: pointer;
-}
-.en-node-label {
-  font-family: var(--font-display);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  fill: var(--ink);
-}
-.en-node-sub {
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  fill: var(--ink-2);
-}
-.en-node:not(.dirty) .en-node-label,
-.en-node:not(.dirty) .en-node-sub {
-  fill: var(--ink-2);
-}
-.en-node.lit .en-node-label,
-.en-node.lit .en-node-sub {
-  fill: var(--paper);
+.en-cell.held .en-cell-mark {
+  stroke: var(--ink);
+  stroke-width: 2;
 }
 .en-legend {
   display: flex;
@@ -116,15 +115,39 @@
   margin-right: 4px;
   border: 1px solid var(--ink);
 }
-.en-swatch.input {
-  border-style: dashed;
-  border-color: var(--ink-3);
-}
-.en-swatch.lit {
+.en-swatch.moved {
   background: var(--ink);
+}
+.en-swatch.held {
+  border-width: 2px;
 }
 .en-swatch.idle {
   border-color: var(--ink-3);
+}
+
+.en-legend-focus {
+  margin-left: auto;
+}
+.en-lists {
+  margin: var(--sp-3) 0 0;
+  font-size: var(--fs-2xs);
+}
+.en-lists > div {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: var(--sp-3);
+  padding: 4px 0;
+  border-top: var(--rule-faint);
+}
+.en-lists dt {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+}
+.en-lists dd {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 /* ---------------------------------------------------------------- live */
@@ -221,7 +244,7 @@
   .en-off {
     grid-template-columns: minmax(0, 1fr);
   }
-  .en-graph-count {
-    margin-left: 0;
+  .en-legend-focus {
+    display: none;
   }
 }

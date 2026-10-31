@@ -1,22 +1,31 @@
 /**
  * Live Engine (/engine) -- the repository's original project, the OCaml real-time risk engine.
  *
- * SPEC: what the engine reads and computes. BENCH: the repository's own benchmark, quoted from
- * docs/overview.md with its machine. GRAPH: an explanatory picture of a tick propagating through
- * the Incremental dependency graph (not live). Then the engine's live state via the read-only
- * bridge, GET /api/engine/{status,snapshot,history} (503 → INSUFFICIENT DATA, never stand-in
- * numbers). The narrative lives in Methodology (#engine-incremental), marked with a Note.
+ * SPEC: what the engine reads and computes. BENCH and GRAPH read one recording of the real
+ * graph, GET /api/engine/propagation (`make propagation`), so no figure here is typed. Then the
+ * engine's live state through the read-only bridge: GET /api/engine/vitals, which carries no
+ * book data, and the book itself only where the deployment publishes it (503 → INSUFFICIENT
+ * DATA, never stand-in numbers). The narrative lives in Methodology (#engine-incremental),
+ * marked with a Note.
  */
 import { Page, Section, StatGrid, StatTile, Panel } from "../components";
 import { Note } from "../design";
-import { GraphDiagram } from "./engine/GraphDiagram";
+import { fmtMultiple, fmtNum } from "../lib/format";
+import { useApiQuery } from "../lib/query";
 import { Kv, LIVE_HOST, LiveEngine } from "./engine/Live";
+import { Propagation, Scaling } from "./engine/Propagation";
+import { fmtNs } from "./engine/replay";
+import type { Recording } from "./engine/types";
 import "./engine/engine.css";
 
 const REPO = "https://github.com/ajaiupadhyaya/OhCamel";
 const OVERVIEW = `${REPO}/blob/main/docs/overview.md`;
+const RECORDER = `${REPO}/blob/main/bench/propagation.ml`;
 
 export default function Engine() {
+  const recording = useApiQuery<Recording>("/engine/propagation", undefined, { staleTime: Infinity });
+  const rec = recording.data;
+  const largest = rec?.scaling[rec.scaling.length - 1];
   return (
     <Page
       eyebrow="OCAML 5 · INCREMENTAL"
@@ -53,32 +62,52 @@ export default function Engine() {
             ]}
           />
         </Panel>
-        <Panel title="BENCH · MAKE BENCH">
-          <StatGrid min={120}>
-            <StatTile size="md" label="NODES / TICK" value="≈25" caption="10 OR 400 NAMES" />
-            <StatTile size="md" label="TICK · 400 NAMES" value="≈0.5 MS" caption="INCREMENTAL" />
-            <StatTile size="md" label="FULL · 400 NAMES" value="53 MS" caption="RECOMPUTE ALL" />
-          </StatGrid>
-          <div className="oc-provenance num en-bench-src">
-            <span className="oc-provenance-label">SOURCE</span>
-            <a href={OVERVIEW} target="_blank" rel="noreferrer">
-              docs/overview.md
-            </a>
-            <span>· M2 PRO · UNDATED · NOT THE DROPLET</span>
-          </div>
+        <Panel<Recording> title="BENCH · ONE TICK" query={recording} skeletonHeight={120} notes={[]} provenance={[]}>
+          {() =>
+            largest ? (
+              <>
+                <StatGrid min={120}>
+                  <StatTile size="md" label="RAN / TICK" value={fmtNum(largest.nodes_per_tick, 0)} caption={`OF ${fmtNum(largest.named_nodes, 0)} BODIES`} />
+                  <StatTile size="md" label={`TICK · ${fmtNum(largest.instruments, 0)} NAMES`} value={fmtNs(largest.incremental_ns)} caption="INCREMENTAL" />
+                  <StatTile size="md" label={`FULL · ${fmtNum(largest.instruments, 0)} NAMES`} value={fmtNs(largest.full_ns)} caption={`${fmtMultiple(largest.full_ns / largest.incremental_ns, 0)} A TICK`} />
+                </StatGrid>
+                <div className="oc-provenance num en-bench-src">
+                  <span className="oc-provenance-label">SOURCE</span>
+                  <a href={RECORDER} target="_blank" rel="noreferrer">
+                    make propagation
+                  </a>
+                  <span>
+                    · {rec!.sha.slice(0, 7)} · {rec!.machine.toUpperCase()}
+                  </span>
+                </div>
+              </>
+            ) : null
+          }
         </Panel>
       </div>
 
       <Section
         title={
           <>
-            GRAPH · ONE TICK
+            GRAPH · WHAT RAN
             <Note n={2} to="engine-incremental" />
           </>
         }
       >
-        <GraphDiagram />
+        <Panel<Recording>
+          title={rec ? `RECORDED · ${rec.book.label.toUpperCase()} · CLOSES TO ${rec.book.as_of}` : "RECORDED"}
+          query={recording}
+          skeletonHeight={420}
+        >
+          {(d) => <Propagation rec={d} />}
+        </Panel>
       </Section>
+
+      {rec && (
+        <Section title="COST · AS THE BOOK GROWS">
+          <Scaling rec={rec} title="ONE TICK AGAINST RECOMPUTING EVERYTHING" />
+        </Section>
+      )}
 
       <Section title="ENGINE · NOW">
         <LiveEngine />

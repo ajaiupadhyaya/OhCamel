@@ -1,18 +1,20 @@
 /**
- * The engine's live state through the read-only bridge: GET /api/engine/{status,snapshot,history}.
- * Polls every 5 s while the engine answers. A 503 renders INSUFFICIENT DATA · BRIDGE OFF
+ * The engine's live state through the read-only bridge. GET /api/engine/vitals carries numbers
+ * and no book data, and is all a public deployment shows; GET /api/engine/{snapshot,history} are
+ * asked only where vitals says the book is published. Polls every 5 s while the engine answers. A 503 renders INSUFFICIENT DATA · BRIDGE OFF
  * (OHCAMEL_QUANT_ENGINE_URL unset) or · DATA UNAVAILABLE (configured, unreachable); never a
  * stand-in number. Paper Tape: ruled Cells, caps labels, mono numbers, signal red only for a
  * breached limit or an unhealthy feed.
  */
+import type { UseQueryResult } from "@tanstack/react-query";
 import { useMemo, type CSSProperties } from "react";
 import { XYChart } from "../../charts/XYChart";
 import { DataTable, Panel, StatGrid, StatTile, type Column } from "../../components";
 import { Absent } from "../../design";
-import { DataUnavailableError } from "../../lib/api";
+import { DataUnavailableError, type ApiError } from "../../lib/api";
 import { fmtCurrency, fmtMultiple, fmtNum, fmtPct } from "../../lib/format";
 import { useApiQuery } from "../../lib/query";
-import type { EngineLimit, EnginePosition, EngineStatus, HistoryOut, SnapshotOut } from "./types";
+import type { EngineLimit, EnginePosition, EngineVitals, HistoryOut, SnapshotOut } from "./types";
 
 export const LIVE_HOST = "https://live.ohcamel.ajaiupadhyaya.com";
 const POLL = 5000;
@@ -42,8 +44,8 @@ export function Kv({ rows }: { rows: [string, string, string?][] }) {
 }
 
 export function LiveEngine() {
-  const status = useApiQuery<EngineStatus>("/engine/status", undefined, { refetchInterval: (q) => (q.state.status === "success" ? POLL : false), staleTime: 0 });
-  const up = status.isSuccess;
+  const status = useApiQuery<EngineVitals>("/engine/vitals", undefined, { refetchInterval: (q) => (q.state.status === "success" ? POLL : false), staleTime: 0 });
+  const up = status.isSuccess && status.data.book_public;
   const snap = useApiQuery<SnapshotOut>("/engine/snapshot", undefined, { enabled: up, refetchInterval: up ? POLL : false, staleTime: 0 });
   const hist = useApiQuery<HistoryOut>("/engine/history", undefined, { enabled: up, refetchInterval: up ? POLL : false, staleTime: 0 });
 
@@ -54,26 +56,54 @@ export function LiveEngine() {
     return <BridgeOff off={off} detail={err instanceof DataUnavailableError ? err.detail : String(err)} />;
   }
   const st = status.data!;
+  const healthy = st.feed.healthy === true;
+  return (
+    <>
+      <div className="grid-2">
+        <Panel<EngineVitals> title="ENGINE · STATUS" query={status} skeletonHeight={120}>
+          {() => (
+            <Kv
+              rows={[
+                ["MODE", st.mode ? st.mode.toUpperCase() : "UNKNOWN"],
+                ["FEED", healthy ? "HEALTHY" : `${fmtNum(st.feed.stale, 0)} STALE · ${fmtNum(st.feed.never_seen, 0)} NEVER SEEN`, healthy ? "" : "loss"],
+                ["SYMBOLS", fmtNum(st.feed.symbols, 0)],
+                ["UPTIME", uptime(st.uptime_s ?? undefined)],
+                ["ROUND TRIP", `${fmtNum(st.latency_ms, 0)} MS`],
+                ["BUILD", st.git_sha ? st.git_sha.slice(0, 7) : "—"],
+                ["NODES RECOMPUTED", fmtNum(st.process.nodes_recomputed, 0)],
+              ]}
+            />
+          )}
+        </Panel>
+        <Panel<EngineVitals> title="STABILIZE · LIVE" query={status} skeletonHeight={120} notes={[]} provenance={[]}>
+          {() => (
+            <StatGrid min={120}>
+              <StatTile size="sm" label="P50" value={st.stabilize_ms.p50} format={(v) => `${fmtNum(v, 3)} MS`} caption={`LAST ${fmtNum(st.stabilize_ms.n, 0)}`} />
+              <StatTile size="sm" label="P99" value={st.stabilize_ms.p99} format={(v) => `${fmtNum(v, 3)} MS`} />
+              <StatTile size="sm" label="MAX" value={st.stabilize_ms.max} format={(v) => `${fmtNum(v, 3)} MS`} />
+              <StatTile size="sm" label="STABILIZES" value={st.process.stabilizes} format={(v) => fmtNum(v, 0)} caption="WHOLE PROCESS" />
+            </StatGrid>
+          )}
+        </Panel>
+      </div>
+
+      {st.book_public ? (
+        <BookPanels snap={snap} hist={hist} />
+      ) : (
+        <p className="en-reading">
+          These are the running engine's own figures. Its book stays private: the graph above is a recording on an example book, because the live graph's nodes are named for its positions.
+        </p>
+      )}
+    </>
+  );
+}
+
+function BookPanels({ snap, hist }: { snap: UseQueryResult<SnapshotOut, ApiError>; hist: UseQueryResult<HistoryOut, ApiError> }) {
   const s = snap.data?.snapshot;
   const asOf = asIso(s?.as_of);
   return (
     <>
       <div className="grid-2">
-        <Panel<EngineStatus> title="ENGINE · STATUS" query={status} skeletonHeight={120} asOf={asOf} maxAgeSec={120}>
-          {() => (
-            <Kv
-              rows={[
-                ["MODE", st.ops?.mode ? st.ops.mode.toUpperCase() : "UNKNOWN"],
-                ["FEED", st.health.healthy ? "HEALTHY" : `${fmtNum(st.health.stale.length, 0)} STALE · ${fmtNum(st.health.never_seen.length, 0)} NEVER SEEN`, st.health.healthy ? "" : "loss"],
-                ["SYMBOLS", fmtNum(st.health.symbols.length, 0)],
-                ["UPTIME", uptime(st.ops?.uptime_s)],
-                ["ROUND TRIP", `${fmtNum(st.latency_ms, 0)} MS`],
-                ["BUILD", st.ops?.build?.git_sha ? st.ops.build.git_sha.slice(0, 7) : "—"],
-                ...(s ? ([["NODES RECOMPUTED", `${fmtNum(s.nodes_recomputed, 0)}${s.nodes_recomputed_delta ? ` · +${fmtNum(s.nodes_recomputed_delta, 0)}` : ""}`]] as [string, string][]) : []),
-              ]}
-            />
-          )}
-        </Panel>
         <Panel<SnapshotOut> title="BOOK · 1D" query={snap} skeletonHeight={120} asOf={asOf} maxAgeSec={120}>
           {(d) => {
             const x = d.snapshot;
@@ -131,7 +161,8 @@ function BridgeOff({ off, detail }: { off: boolean; detail: string }) {
         <Kv
           rows={[
             ["SWITCH", "OHCAMEL_QUANT_ENGINE_URL"],
-            ["READS", "HEALTH · OPS · SNAPSHOT · HISTORY"],
+            ["READS", "OPS · NUMBERS ONLY"],
+            ["BOOK", "PRIVATE"],
             ["ACCESS", "GET ONLY · 2 S CACHE"],
             ["LIVE DESK", "GATED"],
           ]}

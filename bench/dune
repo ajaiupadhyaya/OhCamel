@@ -10,8 +10,30 @@
 ; Not run by `make test` either: benchmarks take minutes and answer a different
 ; question from correctness.
 
+; The book and the baseline, in a library of their own so propagation.exe needs
+; neither core_bench nor bench_graph's command line.
+
+(library
+ (name bench_baseline)
+ (wrapped false)
+ (modules baseline)
+ (libraries ohcamel core)
+ (preprocess
+  (pps ppx_jane)))
+
 (executable
  (name bench_graph)
- (libraries ohcamel core core_bench core_unix.command_unix)
+ (modules bench_graph)
+ (libraries bench_baseline ohcamel core core_bench core_unix.command_unix)
+ (preprocess
+  (pps ppx_jane)))
+
+; What each kind of input really recomputes, for the /engine page. `make
+; propagation` writes docs/perf/propagation.json from it.
+
+(executable
+ (name propagation)
+ (modules propagation)
+ (libraries bench_baseline ohcamel core yojson)
  (preprocess
   (pps ppx_jane)))

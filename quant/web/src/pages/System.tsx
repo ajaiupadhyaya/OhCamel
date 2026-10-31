@@ -60,7 +60,7 @@ function engineStatus(st: Q<EngineStatus>): { lamp: LampState; text: string } {
   const d = st.data!;
   return {
     lamp: d.health?.healthy ? "ok" : "fault",
-    text: `${(d.ops?.mode ?? "MODE —").toUpperCase()} · FEED ${d.health?.healthy ? "HEALTHY" : "STALE"} · ${fmtNum(d.health?.symbols?.length, 0)} SYMBOLS · RTT ${fmtNum(d.latency_ms, 0)} MS`,
+    text: `${(d.ops?.mode ?? "MODE —").toUpperCase()} · FEED ${d.health?.healthy ? "HEALTHY" : "STALE"} · ${fmtNum(d.ops?.feed?.symbols, 0)} SYMBOLS · RTT ${fmtNum(d.latency_ms, 0)} MS`,
   };
 }
 

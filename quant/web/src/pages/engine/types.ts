@@ -109,3 +109,65 @@ export interface History {
 export interface HistoryOut extends Envelope {
   history: History;
 }
+
+/** GET /api/engine/vitals: numbers, the mode and a commit hash; nothing from the book. */
+export interface EngineVitals extends Envelope {
+  configured: boolean;
+  reachable: boolean;
+  book_public: boolean;
+  latency_ms: number;
+  mode: "demo" | "live" | null;
+  git_sha: string | null;
+  uptime_s: number | null;
+  stabilize_ms: { n: number | null; p50: number | null; p99: number | null; max: number | null; window: number | null };
+  process: { nodes_recomputed: number | null; stabilizes: number | null };
+  feed: { healthy: boolean | null; symbols: number | null; stale: number | null; never_seen: number | null };
+}
+
+export interface GraphNode {
+  name: string;
+  family: "input" | "per_symbol" | "per_sector" | "per_limit" | "per_option" | "singleton";
+  kind: string;
+  rank: number;
+  cutoff: string;
+  cost: string | null;
+  symbol: string | null;
+}
+
+export interface RecordedEvent {
+  id: string;
+  kind: "tick" | "repeat" | "fill" | "roll" | "factor" | "cash";
+  label: string;
+  symbol: string | null;
+  ran: string[];
+  changed: string[];
+  stabilize_ns: number;
+}
+
+export interface ScalingRow {
+  instruments: number;
+  named_nodes: number;
+  nodes_per_tick: number;
+  incremental_ns: number;
+  full_ns: number;
+}
+
+/** GET /api/engine/propagation: docs/perf/propagation.json, from `make propagation`. */
+export interface Recording extends Envelope {
+  schema: number;
+  generated_at: string;
+  sha: string;
+  machine: string;
+  ocaml: string;
+  samples: number;
+  book: {
+    as_of: string;
+    label: string;
+    source: string;
+    positions: { symbol: string; sector: string; price: number; qty: number }[];
+  };
+  graph: { nodes: GraphNode[]; edges: [string, string][]; counts: { named: number; instruments: number } };
+  events: RecordedEvent[];
+  scaling: ScalingRow[];
+  scaling_book: string;
+}

@@ -346,7 +346,7 @@ def _feeds(settings: Settings, clock: Clock, marks: list[dict[str, Any]], quote_
     out.append({"key": "recorder", "label": "Flight recorder", "state": rec_state, "detail": rec_detail,
                 "age_s": None})
 
-    configured = bool((settings.engine_url or "").strip())
+    configured = bool((settings.engine_url or "").strip()) and settings.engine_book_public
     out.append({"key": "engine", "label": "OCaml engine bridge", "state": "unknown" if configured else "off",
                 "detail": "configured, connectivity unchecked (select the engine source)" if configured else "not configured on this server",
                 "age_s": None})

@@ -19,6 +19,17 @@ or the password -- and it is deliberately narrow:
   connection, a timeout, a non-200 answer or a body that is not JSON all
   return HTTP 503 ``{"error": "engine_unavailable", "detail": ..., "configured":
   bool, "reachable": false}``. Nothing is ever synthesised in its place.
+* **The book stays private unless the deployment publishes it.** ``snapshot``
+  and ``history`` carry positions, and status's ``health`` carries symbols, so
+  they answer only with ``OHCAMEL_QUANT_ENGINE_BOOK_PUBLIC`` set, which production
+  leaves unset. ``vitals`` is what the public page reads: named numeric fields
+  copied out of ``/api/ops``, never a body passed through, so a field the engine
+  adds tomorrow cannot reach the page by default.
+
+``propagation`` reads no engine at all. It serves ``docs/perf/propagation.json``,
+a recording of what each kind of input recomputes in the real graph on a labelled
+example book (``make propagation``), because the live graph's node names are the
+book's positions.
 
 Engine wire shapes (from ``lib/server.ml``; all money in USD as plain floats,
 ``null`` where a number does not exist yet, e.g. while the covariance window
@@ -79,14 +90,17 @@ is built on (Acar, U. A. (2005), *Self-Adjusting Computation*, PhD thesis, CMU).
 
 from __future__ import annotations
 
+import json
+import re
 import time
-from typing import Any
+from pathlib import Path
+from typing import Annotated, Any
 
 import httpx
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
-from ...config import get_settings
+from ...config import REPO_ROOT, get_settings
 from ...data.base import Provenance
 
 router = APIRouter(prefix="/engine", tags=["engine"])
@@ -102,6 +116,11 @@ ENGINE_PATHS: dict[str, str] = {
 
 TIMEOUT = httpx.Timeout(4.0, connect=1.5)
 CACHE_TTL_S = 2.0
+
+#: The committed recording; quant/Dockerfile copies it to the same repo-relative path.
+PROPAGATION = REPO_ROOT / "docs" / "perf" / "propagation.json"
+
+_GIT_SHA = re.compile(r"^[0-9a-f]{7,40}$")
 
 _cache: dict[tuple[str, str], tuple[float, Any, str]] = {}
 
@@ -123,6 +142,27 @@ def get_engine_url() -> str | None:
     """
     url = (get_settings().engine_url or "").strip()
     return url.rstrip("/") or None
+
+
+def get_book_public() -> bool:
+    return get_settings().engine_book_public
+
+
+def get_propagation_path() -> Path:
+    return PROPAGATION
+
+
+def _book_private() -> JSONResponse:
+    # configured: false is deliberate: to every page this is the bridge being off.
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "engine_book_private",
+            "detail": "the engine's book is not published on this server (OHCAMEL_QUANT_ENGINE_BOOK_PUBLIC is unset)",
+            "configured": False,
+            "reachable": False,
+        },
+    )
 
 
 def _unavailable(exc: EngineUnavailable) -> JSONResponse:
@@ -189,15 +229,98 @@ def _mode_notes(mode: str | None) -> list[str]:
     return []
 
 
+def _number(x: Any) -> int | float | None:
+    return x if isinstance(x, int | float) and not isinstance(x, bool) else None
+
+
+def _numbers(section: Any, keys: tuple[str, ...]) -> dict[str, int | float | None]:
+    source = section if isinstance(section, dict) else {}
+    return {k: _number(source.get(k)) for k in keys}
+
+
+@router.get("/vitals")
+async def vitals(
+    base: Annotated[str | None, Depends(get_engine_url)],
+    book_public: Annotated[bool, Depends(get_book_public)],
+) -> Any:
+    """How the live engine is running, with no book data: stabilize latency, the
+    process's counters, the feed's counts, mode and build.
+
+    Every field is copied by name and checked for type, so this can only ever
+    carry numbers, the two engine modes and a commit hash. 503 when unset or
+    unreachable.
+    """
+    t0 = time.perf_counter()
+    try:
+        ops, fetched_at = await _fetch(base, "ops")
+    except EngineUnavailable as e:
+        return _unavailable(e)
+    latency_ms = (time.perf_counter() - t0) * 1000.0
+    body = ops if isinstance(ops, dict) else {}
+    mode = body.get("mode") if body.get("mode") in ("demo", "live") else None
+    build = body.get("build")
+    sha = build.get("git_sha") if isinstance(build, dict) else None
+    feed = body.get("feed") if isinstance(body.get("feed"), dict) else {}
+    healthy = feed.get("healthy")
+    return {
+        "configured": True,
+        "reachable": True,
+        "book_public": book_public,
+        "latency_ms": round(latency_ms, 1),
+        "mode": mode,
+        "git_sha": sha if isinstance(sha, str) and _GIT_SHA.match(sha) else None,
+        "uptime_s": _number(body.get("uptime_s")),
+        "stabilize_ms": _numbers(body.get("stabilize_ms"), ("n", "p50", "p99", "max", "window")),
+        "process": _numbers(body.get("process"), ("nodes_recomputed", "stabilizes")),
+        "feed": {
+            "healthy": healthy if isinstance(healthy, bool) else None,
+            **_numbers(feed, ("symbols", "stale", "never_seen")),
+        },
+        "provenance": [_provenance(ENGINE_PATHS["ops"], fetched_at, mode)],
+        "notes": _mode_notes(mode),
+    }
+
+
+@router.get("/propagation")
+def propagation(path: Annotated[Path, Depends(get_propagation_path)]) -> Any:
+    """What each kind of input recomputes, recorded from the real graph.
+
+    The recording's own fields (``graph``, ``events``, ``scaling``, ``book``,
+    ``machine``, ``sha``...) with ``provenance`` and ``notes``. 503
+    ``{"error": "propagation_unavailable", "detail"}`` when the file is absent
+    from this build or invalid.
+    """
+    try:
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return JSONResponse(status_code=503, content={
+            "error": "propagation_unavailable", "detail": f"{path.name} is not present in this build"})
+    except ValueError as e:
+        return JSONResponse(status_code=503, content={
+            "error": "propagation_unavailable", "detail": f"{path.name} is invalid: {e}"})
+    return {
+        **body,
+        "provenance": [Provenance.now("docs/perf/propagation.json", sha=body.get("sha")).to_dict()],
+        "notes": [
+            "A recording of the real engine on an example book of real closes, not the live book "
+            "and not a simulation. `make propagation` regenerates it.",
+            "Timings are medians on the machine named in `machine`, and speak for that machine only.",
+        ],
+    }
+
+
 @router.get("/status")
-async def status(base: str | None = Depends(get_engine_url)) -> Any:
+async def status(
+    base: Annotated[str | None, Depends(get_engine_url)],
+    book_public: Annotated[bool, Depends(get_book_public)],
+) -> Any:
     """Is the engine reachable, and how healthy is its feed?
 
-    Returns ``{"configured", "reachable", "latency_ms", "health", "ops",
-    "provenance", "notes"}`` where ``health`` is the engine's ``/api/health``
-    body and ``ops`` a subset of ``/api/ops`` (mode, uptime, build, feed and
-    stream counters) or ``null`` if that read failed. 503 when unset or
-    unreachable.
+    Returns ``{"configured", "reachable", "book_public", "latency_ms", "health",
+    "ops", "provenance", "notes"}`` where ``health`` is the engine's
+    ``/api/health`` body, or only its ``healthy`` flag unless the book is public,
+    and ``ops`` a subset of ``/api/ops`` (mode, uptime, build, feed and stream
+    counters) or ``null`` if that read failed. 503 when unset or unreachable.
     """
     t0 = time.perf_counter()
     try:
@@ -217,10 +340,13 @@ async def status(base: str | None = Depends(get_engine_url)) -> Any:
     if ops is None:
         notes.append("The engine's /api/ops could not be read; mode and build are unknown.")
     if isinstance(health, dict) and health.get("healthy") is False:
-        notes.append("The engine reports stale or never-seen symbols (see health.stale).")
+        notes.append("The engine reports stale or never-seen symbols.")
+    if not book_public and isinstance(health, dict):
+        health = {"healthy": health.get("healthy")}
     return {
         "configured": True,
         "reachable": True,
+        "book_public": book_public,
         "latency_ms": round(latency_ms, 1),
         "health": health,
         "ops": ops,
@@ -230,12 +356,17 @@ async def status(base: str | None = Depends(get_engine_url)) -> Any:
 
 
 @router.get("/snapshot")
-async def snapshot(base: str | None = Depends(get_engine_url)) -> Any:
+async def snapshot(
+    base: Annotated[str | None, Depends(get_engine_url)],
+    book_public: Annotated[bool, Depends(get_book_public)],
+) -> Any:
     """The engine's whole book as of now (its ``/api/snapshot``, unchanged).
 
     Returns ``{"snapshot": <engine JSON>, "provenance", "notes"}``; 503 when
-    the engine is unset or unreachable.
+    the engine is unset or unreachable, or the book is not public.
     """
+    if not book_public:
+        return _book_private()
     try:
         body, fetched_at = await _fetch(base, "snapshot")
     except EngineUnavailable as e:
@@ -258,12 +389,17 @@ async def snapshot(base: str | None = Depends(get_engine_url)) -> Any:
 
 
 @router.get("/history")
-async def history(base: str | None = Depends(get_engine_url)) -> Any:
+async def history(
+    base: Annotated[str | None, Depends(get_engine_url)],
+    book_public: Annotated[bool, Depends(get_book_public)],
+) -> Any:
     """The engine's in-memory trail (its ``/api/history``, unchanged).
 
     Returns ``{"history": <engine JSON>, "provenance", "notes"}``; 503 when the
-    engine is unset or unreachable.
+    engine is unset or unreachable, or the book is not public.
     """
+    if not book_public:
+        return _book_private()
     try:
         body, fetched_at = await _fetch(base, "history")
     except EngineUnavailable as e:

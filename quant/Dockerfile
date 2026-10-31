@@ -202,6 +202,8 @@ COPY fixtures/ /app/fixtures/
 COPY docs/crisis/ /app/docs/crisis/
 # The kernel benchmark table GET /api/ops/kernels serves (repo-relative, like the fixtures).
 COPY docs/perf/kernels.json /app/docs/perf/kernels.json
+# The recording GET /api/engine/propagation serves (make propagation).
+COPY docs/perf/propagation.json /app/docs/perf/propagation.json
 # The pre-registered experiments' frozen configs (EXP-Q01/Q02), read by their jobs at run time.
 COPY research/experiments/ /app/research/experiments/
 # The signal contract's JSON schemas, against which signals.daily and

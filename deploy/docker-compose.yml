@@ -148,11 +148,15 @@ services:
       # /api/health, /api/ops, /api/snapshot, /api/history only, over the
       # internal network, so the public /engine page can show it. Unreachable
       # (live profile not running) is a 503 the page renders, not an error.
-      # OFF by default: the snapshot carries the paper book's positions, which
-      # have only ever been shown behind the live host's password. To publish
-      # them on the public /engine page, set in deploy/.env:
+      # OFF by default. Set in deploy/.env to show the engine's vitals on the
+      # public /engine page, numbers with no book data in them:
       #   OHCAMEL_QUANT_ENGINE_URL=http://ohcamel-live:8081
+      # The snapshot and the trail carry the paper book, which has only ever
+      # been shown behind the live host's password. They stay refused unless
+      # OHCAMEL_QUANT_ENGINE_BOOK_PUBLIC=1 is set too, which production never
+      # does; the local harness does, for its synthetic demo book.
       OHCAMEL_QUANT_ENGINE_URL: "${OHCAMEL_QUANT_ENGINE_URL-}"
+      OHCAMEL_QUANT_ENGINE_BOOK_PUBLIC: "${OHCAMEL_QUANT_ENGINE_BOOK_PUBLIC:-0}"
       # Host telemetry (api/routers/ops.py -> ohcamel-hostd below), served at
       # /api/ops/host. On by default: it carries no positions, only the box's
       # CPU and memory. Set OHCAMEL_QUANT_HOSTD_URL= in deploy/.env to turn

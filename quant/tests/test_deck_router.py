@@ -200,7 +200,8 @@ def test_partial_marks_never_certify_limits_or_equity(market):
 
 
 def test_source_age_and_engine_configuration_are_not_health(market, monkeypatch):
-    settings = market.settings.model_copy(update={"offline": False, "engine_url": "http://engine"})
+    settings = market.settings.model_copy(update={"offline": False, "engine_url": "http://engine",
+                                                   "engine_book_public": True})
     monkeypatch.setattr(deck, "recorder_status", lambda _: {"enabled": True, "running": True,
                         "last_error": None, "last_write": "2026-09-24T14:00:00+00:00"})
     marks = [{"source": "old", "price": 100, "error": None, "age_s": 301},
@@ -211,6 +212,9 @@ def test_source_age_and_engine_configuration_are_not_health(market, monkeypatch)
     assert feeds["source:fresh"]["state"] == "ok"
     assert feeds["source:undated"]["state"] == "unknown"
     assert feeds["engine"]["state"] == "unknown"
+    # The Deck's engine source is the book; a bridge carrying only vitals offers it nothing.
+    private = market.settings.model_copy(update={"engine_url": "http://engine", "engine_book_public": False})
+    assert {f["key"]: f for f in deck._feeds(private, OPEN, marks, None, NOW.date())}["engine"]["state"] == "off"
     assert feeds["recorder"]["state"] == "stale"
     from dataclasses import replace
     closed = replace(OPEN, is_open=False)

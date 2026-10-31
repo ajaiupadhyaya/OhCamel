@@ -88,7 +88,7 @@ export OWL_LDLIBS := -lm -L/opt/homebrew/opt/libomp/lib -lomp
 # repository root would make make declare that target up to date and run
 # nothing -- and for those two the symptom is a server that silently never
 # starts. run-live, serve and demo were the three that had been left out.
-.PHONY: factor kronos-test kronos-forecast kronos-score all build run run-live serve demo stress backtest backtest-crisis options garch test research-test research-reproduce bench coverage fmt clean deps doctor \
+.PHONY: factor kronos-test kronos-forecast kronos-score all build run run-live serve demo stress backtest backtest-crisis options garch test research-test research-reproduce bench propagation coverage fmt clean deps doctor \
         check-counts \
         quant-deps quant-dev quant-test quant-live-test quant-web quant-serve quant-image hostd-image kernels-dev \
         deploy-build deploy-up deploy-down deploy-verify deploy-logs deploy-smoke
@@ -270,6 +270,18 @@ check-counts:
 #   dune exec bench/bench_graph.exe -- -quota 10
 bench:
 	$(OPAM_ENV) && dune exec bench/bench_graph.exe
+
+# What each kind of input really recomputes, recorded from the real graph on
+# real closes (docs/perf/propagation_book.csv, from fixtures/ by
+# tools/perf/propagation_book.py), with a tick's cost against the benchmark's
+# full recompute. The API serves the result at GET /api/engine/propagation and
+# /engine draws it. Timings belong to MACHINE, which the file states.
+PROPAGATION_MACHINE ?= developer laptop: $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m) -- NOT the droplet's CPU class
+
+propagation:
+	$(OPAM_ENV) && dune exec bench/propagation.exe -- docs/perf/propagation_book.csv \
+	  "$$(git rev-parse --short=12 HEAD)" "$(PROPAGATION_MACHINE)" > docs/perf/propagation.json.tmp
+	mv docs/perf/propagation.json.tmp docs/perf/propagation.json
 
 # Line coverage, via bisect_ppx.
 #
