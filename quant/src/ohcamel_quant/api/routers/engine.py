@@ -123,6 +123,8 @@ PROPAGATION = REPO_ROOT / "docs" / "perf" / "propagation.json"
 _GIT_SHA = re.compile(r"^[0-9a-f]{7,40}$")
 
 _cache: dict[tuple[str, str], tuple[float, Any, str]] = {}
+#: The last real request's duration: a cached read took no round trip to report.
+_round_trip_ms: dict[tuple[str, str], float] = {}
 
 
 class EngineUnavailable(Exception):
@@ -190,6 +192,7 @@ async def _fetch(base: str | None, key: str) -> tuple[Any, str]:
     hit = _cache.get((base, key))
     if hit is not None and now - hit[0] < CACHE_TTL_S:
         return hit[1], hit[2]
+    started = time.perf_counter()
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False) as client:
             resp = await client.get(f"{base}{path}", headers={"Accept": "application/json"})
@@ -205,6 +208,7 @@ async def _fetch(base: str | None, key: str) -> tuple[Any, str]:
         raise EngineUnavailable(f"the engine's {path} answer is not JSON") from e
     fetched_at = Provenance.now("ohcamel-engine").fetched_at
     _cache[(base, key)] = (now, body, fetched_at)
+    _round_trip_ms[(base, key)] = (time.perf_counter() - started) * 1000.0
     return body, fetched_at
 
 
@@ -238,6 +242,22 @@ def _numbers(section: Any, keys: tuple[str, ...]) -> dict[str, int | float | Non
     return {k: _number(source.get(k)) for k in keys}
 
 
+def _status_ops(ops: dict[str, Any]) -> dict[str, Any]:
+    """The subset of ``/api/ops`` status shows, copied field by field: a nested field the
+    engine adds later stays behind until it is named here."""
+    build = ops.get("build") if isinstance(ops.get("build"), dict) else {}
+    feed = ops.get("feed") if isinstance(ops.get("feed"), dict) else {}
+    healthy = feed.get("healthy")
+    return {
+        "mode": ops.get("mode"),
+        "uptime_s": _number(ops.get("uptime_s")),
+        "build": {k: build.get(k) for k in ("git_sha", "built_at")},
+        "feed": {"healthy": healthy if isinstance(healthy, bool) else None,
+                 **_numbers(feed, ("symbols", "stale", "never_seen"))},
+        "stream": _numbers(ops.get("stream"), ("frames_sent", "subscribers")),
+    }
+
+
 @router.get("/vitals")
 async def vitals(
     base: Annotated[str | None, Depends(get_engine_url)],
@@ -250,12 +270,10 @@ async def vitals(
     carry numbers, the two engine modes and a commit hash. 503 when unset or
     unreachable.
     """
-    t0 = time.perf_counter()
     try:
         ops, fetched_at = await _fetch(base, "ops")
     except EngineUnavailable as e:
         return _unavailable(e)
-    latency_ms = (time.perf_counter() - t0) * 1000.0
     body = ops if isinstance(ops, dict) else {}
     mode = body.get("mode") if body.get("mode") in ("demo", "live") else None
     build = body.get("build")
@@ -266,7 +284,7 @@ async def vitals(
         "configured": True,
         "reachable": True,
         "book_public": book_public,
-        "latency_ms": round(latency_ms, 1),
+        "latency_ms": round(_round_trip_ms.get((base or "", "ops"), 0.0), 1),
         "mode": mode,
         "git_sha": sha if isinstance(sha, str) and _GIT_SHA.match(sha) else None,
         "uptime_s": _number(body.get("uptime_s")),
@@ -305,6 +323,9 @@ def propagation(path: Annotated[Path, Depends(get_propagation_path)]) -> Any:
             "A recording of the real engine on an example book of real closes, not the live book "
             "and not a simulation. `make propagation` regenerates it.",
             "Timings are medians on the machine named in `machine`, and speak for that machine only.",
+            "The example book starts at its high-water mark, so a rise cannot move its drawdown and a fall "
+            "does. A fill at the mark can still move equity by a floating-point residue, and the graph's "
+            "cutoffs compare exactly, so a few names show equity moving on a fill.",
         ],
     }
 
@@ -322,17 +343,15 @@ async def status(
     and ``ops`` a subset of ``/api/ops`` (mode, uptime, build, feed and stream
     counters) or ``null`` if that read failed. 503 when unset or unreachable.
     """
-    t0 = time.perf_counter()
     try:
         health, fetched_at = await _fetch(base, "health")
     except EngineUnavailable as e:
         return _unavailable(e)
-    latency_ms = (time.perf_counter() - t0) * 1000.0
     ops: dict[str, Any] | None = None
     try:
         raw_ops, _ = await _fetch(base, "ops")
         if isinstance(raw_ops, dict):
-            ops = {k: raw_ops.get(k) for k in ("mode", "uptime_s", "build", "feed", "stream")}
+            ops = _status_ops(raw_ops)
     except EngineUnavailable:
         ops = None
     mode = ops.get("mode") if ops else None
@@ -347,7 +366,7 @@ async def status(
         "configured": True,
         "reachable": True,
         "book_public": book_public,
-        "latency_ms": round(latency_ms, 1),
+        "latency_ms": round(_round_trip_ms.get((base or "", "health"), 0.0), 1),
         "health": health,
         "ops": ops,
         "provenance": [_provenance(ENGINE_PATHS["health"], fetched_at, mode)],

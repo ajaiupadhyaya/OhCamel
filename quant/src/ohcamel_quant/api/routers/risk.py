@@ -322,7 +322,7 @@ def _liquidity(body: LiquidityIn, market: MarketData) -> dict[str, Any]:
     var_usd = float(est.var) * body.notional
 
     def position(ticker: str, weight: float) -> tuple[lq.Position, str]:
-        bars = market.ohlcv(ticker).data
+        bars = market.ohlcv(ticker, body.start, body.end).data
         close = bars["adj_close"].dropna()
         volume = bars["volume"].dropna().tail(lq.ADV_WINDOW)
         returns = close.pct_change().dropna().tail(lq.ADV_WINDOW)

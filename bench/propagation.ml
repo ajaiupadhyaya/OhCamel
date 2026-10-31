@@ -9,6 +9,10 @@
    recording, and /engine replays it. Nothing here is modelled; a node is lit on
    that page because it ran here.
 
+   THE BOOK STARTS AT ITS HIGH-WATER MARK. So a rise cannot move drawdown and a
+   fall can, which is why both are recorded: one direction alone would present
+   what a rise does as what a tick does.
+
    ONE EVENT, THEN BACK. Every event starts from the same state. It is applied,
    recorded and undone before the next, so "a tick in SPY" means the same thing
    for each name, and the difference between two events is the event.
@@ -240,8 +244,12 @@ let recorded (book : book) =
         in
         [
           record graph log ~id:("tick:" ^ symbol) ~kind:"tick" ~symbol:(Some symbol)
-            ~label:(sprintf "A %.1f%% tick in %s" (100.0 *. tick_move) symbol)
+            ~label:(sprintf "A %.1f%% rise in %s" (100.0 *. tick_move) symbol)
             ~apply:(fun () -> tick_to (n.price *. (1.0 +. tick_move)))
+            ~undo:(fun () -> tick_to n.price);
+          record graph log ~id:("fall:" ^ symbol) ~kind:"fall" ~symbol:(Some symbol)
+            ~label:(sprintf "A %.1f%% fall in %s" (100.0 *. tick_move) symbol)
+            ~apply:(fun () -> tick_to (n.price *. (1.0 -. tick_move)))
             ~undo:(fun () -> tick_to n.price);
           record graph log ~id:("repeat:" ^ symbol) ~kind:"repeat" ~symbol:(Some symbol)
             ~label:(sprintf "A repeat of %s's price at a new time" symbol)
@@ -250,7 +258,10 @@ let recorded (book : book) =
           record graph log ~id:("fill:" ^ symbol) ~kind:"fill" ~symbol:(Some symbol)
             ~label:(sprintf "A fill of %.0f %s shares" fill_shares symbol)
             ~apply:(fun () -> fill fill_shares)
-            ~undo:(fun () -> fill (-.fill_shares));
+            ~undo:(fun () ->
+              (* Set back, not traded back: a reverse fill leaves a cash residue. *)
+              Graph.set_qty graph n.symbol (Qty.of_float n.qty);
+              Graph.set_cash graph (Notional.of_float starting_cash));
           record graph log ~id:("roll:" ^ symbol) ~kind:"roll" ~symbol:(Some symbol)
             ~label:(sprintf "A new day's return for %s" symbol)
             ~apply:(fun () -> Graph.set_returns graph n.symbol (rolled n.window n.next))

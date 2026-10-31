@@ -15,7 +15,8 @@ import type { RecordedEvent, Recording, ScalingRow } from "./types";
 import { edgeLit, fmtNs, layoutGraph, nodeStates, reading, tally } from "./replay";
 
 const KINDS = [
-  { value: "tick", label: "TICK" },
+  { value: "tick", label: "RISE" },
+  { value: "fall", label: "FALL" },
   { value: "repeat", label: "SAME PRICE" },
   { value: "fill", label: "FILL" },
   { value: "roll", label: "NEW DAY" },
@@ -156,7 +157,7 @@ const ROWS: Column<ScalingRow>[] = [
 /** The benchmark's own book as it grows; the cost of a tick against recomputing everything. */
 export function Scaling({ rec, title }: { rec: Recording; title: ReactNode }) {
   return (
-    <Panel title={title} flush notes={[`${rec.scaling_book}. Median tick; the full recompute is the baseline in bench/baseline.ml, using the same pure functions.`]} provenance={[]}>
+    <Panel title={title} flush notes={[`${rec.scaling_book}. A median price change; a tick from the feed also runs that name's feed nodes, as the figure above shows. The full recompute is the baseline in bench/baseline.ml, using the same pure functions.`]} provenance={[]}>
       <DataTable compact columns={ROWS} rows={rec.scaling} rowKey={(r) => String(r.instruments)} scrollLabel="Tick cost by book size" />
     </Panel>
   );

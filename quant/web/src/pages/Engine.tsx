@@ -67,7 +67,7 @@ export default function Engine() {
             largest ? (
               <>
                 <StatGrid min={120}>
-                  <StatTile size="md" label="RAN / TICK" value={fmtNum(largest.nodes_per_tick, 0)} caption={`OF ${fmtNum(largest.named_nodes, 0)} BODIES`} />
+                  <StatTile size="md" label="RAN / PRICE" value={fmtNum(largest.nodes_per_tick, 0)} caption={`OF ${fmtNum(largest.named_nodes, 0)} BODIES`} />
                   <StatTile size="md" label={`TICK · ${fmtNum(largest.instruments, 0)} NAMES`} value={fmtNs(largest.incremental_ns)} caption="INCREMENTAL" />
                   <StatTile size="md" label={`FULL · ${fmtNum(largest.instruments, 0)} NAMES`} value={fmtNs(largest.full_ns)} caption={`${fmtMultiple(largest.full_ns / largest.incremental_ns, 0)} A TICK`} />
                 </StatGrid>

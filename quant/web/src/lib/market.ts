@@ -160,7 +160,7 @@ export interface Filing13F extends Envelope {
   url?: string;
   holdings: Holding13F[];
   options: Option13F[];
-  summary?: { n_positions?: number; total_value_usd?: number; top10_weight?: number; hhi?: number; effective_n?: number; calls_value_usd?: number; puts_value_usd?: number };
+  summary?: { n_positions?: number; total_value_usd?: number; top10_weight?: number; hhi?: number; effective_n?: number; calls_value_usd?: number; puts_value_usd?: number; option_rows_unmapped?: number };
 }
 
 export function normalize13F(raw: unknown): Filing13F {

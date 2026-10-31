@@ -23,7 +23,7 @@
 #                                     With --engine, off the engine's own
 #                                     /api/snapshot. Without it, through the
 #                                     public host's read-only bridge
-#                                     (/api/engine/snapshot); the bridge is off
+#                                     (/api/engine/vitals); the bridge is off
 #                                     unless the owner opts in, and a 503 whose
 #                                     body says "configured": false is then a
 #                                     SKIP, not a failure -- the public host
@@ -103,9 +103,9 @@ counter() {
 	code=${raw##*$'\n'}
 	body=${raw%$'\n'*}
 	[ "$raw" = "$code" ] && body=""
-	# The bridge wraps the engine's snapshot as {"snapshot": {...}}; the
-	# engine's own /api/snapshot is the bare object. The first
-	# "nodes_recomputed" in either is the one.
+	# The bridge's vitals carry it under "process"; the engine's own
+	# /api/snapshot at the top level. The first "nodes_recomputed" in either
+	# is the one.
 	local n off=-
 	n=$(printf '%s' "$body" | grep -o '"nodes_recomputed": *[0-9]*' | head -1 | grep -o '[0-9]*$')
 	printf '%s' "$body" | grep -q '"configured": *false' && off=off
@@ -115,7 +115,7 @@ counter() {
 if [ -n "$ENGINE" ]; then
 	src="$ENGINE/api/snapshot"
 else
-	src="https://$PUBLIC/api/engine/snapshot"
+	src="https://$PUBLIC/api/engine/vitals"
 fi
 read -r code_a n_a off_a <<<"$(counter "$src")"
 [ "$n_a" = - ] && n_a=""

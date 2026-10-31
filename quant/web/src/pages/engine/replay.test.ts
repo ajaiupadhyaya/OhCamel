@@ -51,11 +51,20 @@ describe("what the figure's inputs show", () => {
   });
 });
 
+describe("a tick's direction is part of what it does", () => {
+  it("a rise from the high-water mark holds drawdown; a fall moves it and runs its limit", () => {
+    expect(nodeStates(rec.graph.nodes, ev("tick:SPY")).get("current_drawdown")).toBe("held");
+    expect(nodeStates(rec.graph.nodes, ev("fall:SPY")).get("current_drawdown")).toBe("changed");
+    expect(ev("tick:SPY").ran).not.toContain("limit:dd-cap");
+    expect(ev("fall:SPY").ran).toContain("limit:dd-cap");
+  });
+});
+
 describe("the reading quotes the recording", () => {
   it("states the event's label and its counts", () => {
     const t = tally(rec, ev("tick:SPY"));
     const text = reading(rec, ev("tick:SPY"));
-    expect(text).toContain("A 0.5% tick in SPY");
+    expect(text).toContain("A 0.5% rise in SPY");
     expect(text).toContain(`ran ${t.ran} of the graph's ${t.named} bodies`);
   });
   it("names what held, and says nothing of it when nothing did", () => {

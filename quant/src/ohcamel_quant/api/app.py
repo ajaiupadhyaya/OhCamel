@@ -94,7 +94,7 @@ def create_app() -> FastAPI:
 
         base_url = s.public_url.rstrip("/")
 
-        @app.get("/sitemap.xml", include_in_schema=False)
+        @app.api_route("/sitemap.xml", methods=["GET", "HEAD"], include_in_schema=False)
         def sitemap() -> Response:
             return Response(seo.sitemap(base_url), media_type="application/xml")
 
@@ -105,8 +105,11 @@ def create_app() -> FastAPI:
             if path == "api" or path.startswith("api/"):
                 return JSONResponse(status_code=404, content={"error": "not_found", "detail": f"/{path}"})
             candidate = WEB_DIST / path
-            if path and candidate.is_file() and WEB_DIST.resolve() in candidate.resolve().parents:
-                return FileResponse(candidate)
+            try:
+                if path and candidate.is_file() and WEB_DIST.resolve() in candidate.resolve().parents:
+                    return FileResponse(candidate)
+            except OSError:  # a segment longer than the filesystem allows is simply not a file
+                pass
             page = seo.resolve(path)
             # Read per request, as a FileResponse would: a rebuild renames the bundles it names.
             shell = (WEB_DIST / "index.html").read_text(encoding="utf-8")

@@ -140,6 +140,14 @@ def test_route_honours_the_request_and_says_so(client):
     assert d["method"]["participation"] == 0.05
 
 
+def test_route_prices_and_volumes_are_those_of_the_analysis_window(client):
+    whole = client.post("/api/risk/liquidity", json=BODY).json()
+    early = client.post("/api/risk/liquidity", json={**BODY, "end": "2021-12-31"}).json()
+    assert early["portfolio"]["end"].startswith("2021-12-")
+    assert early["lines"][0]["price"] != whole["lines"][0]["price"]
+    assert early["lines"][0]["adv20"] != whole["lines"][0]["adv20"]
+
+
 @pytest.mark.parametrize("patch", [{"participation": 0.0}, {"participation": 1.5}, {"spread_bps_default": -1.0},
                                    {"spread_bps": {"SPY": -1.0}}, {"impact_coefficient": -0.5}])
 def test_route_refuses_nonsense(client, patch):

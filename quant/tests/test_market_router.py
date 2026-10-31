@@ -142,6 +142,30 @@ def test_13f_summary_math(monkeypatch):
     assert s["puts_value_usd"] == 500.0 and s["calls_value_usd"] == 0.0
     assert j["options"] == [{"issuer": "D", "ticker": "D", "put_call": "Put", "value_usd": 500.0,
                              "weight_on_equity": 0.5}]
+    assert s["option_rows_unmapped"] == 0
+
+
+def test_13f_options_come_one_row_a_name_and_side_past_any_top_cut(monkeypatch):
+    from ohcamel_quant.data.base import Provenance
+    from ohcamel_quant.data.market import Dataset
+
+    rows = [("A", "1", None, 100.0, None, 1.0)]
+    rows += [(f"N{i}", f"c{i}", f"T{i}", 1.0, "Put", np.nan) for i in range(400)]
+    rows += [("Same", "s1", "SAME", 2.0, "Call", np.nan), ("Same", "s2", "SAME", 3.0, "Call", np.nan),
+             ("Odd", "o1", None, 9.0, "Put", np.nan)]
+    h = pd.DataFrame(rows, columns=["issuer", "cusip", "ticker", "value_usd", "put_call", "weight"])
+    h["title"], h["shares"], h["shares_type"] = "COM", 1.0, "SH"
+
+    class Stub:
+        def holdings_13f(self, cik):
+            return Dataset({"filer": "X", "cik": "1", "period": "p", "filed": "f", "form": "13F-HR",
+                            "accession": "a", "url": "u", "holdings": h, "amendments": [], "notes": []},
+                           [Provenance.now("sec-edgar")])
+
+    j = mr._f13(Stub(), "1", 5)
+    assert len(j["options"]) == 401
+    assert next(o for o in j["options"] if o["ticker"] == "SAME")["value_usd"] == 5.0
+    assert j["summary"]["option_rows_unmapped"] == 1
 
 
 def test_clean_range_clips_only_bad_prints():

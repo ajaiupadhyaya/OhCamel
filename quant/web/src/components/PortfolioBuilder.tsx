@@ -163,6 +163,7 @@ function Import13F({ onUse }: { onUse: (name: string, hs: Holding[]) => void }) 
   const [delta, setDelta] = useState(0.5);
   const filing = use13F(loadCik);
   const overlay = useMemo(() => optionOverlay(filing.data?.options ?? [], delta), [filing.data, delta]);
+  const unmappedOptions = overlay.unmapped + (filing.data?.summary?.option_rows_unmapped ?? 0);
   const hasOptions = (filing.data?.options.length ?? 0) > 0;
   const load = (id: string) => {
     setCik(id);
@@ -233,7 +234,7 @@ function Import13F({ onUse }: { onUse: (name: string, hs: Holding[]) => void }) 
                   <Callout>
                     A 13F reports an option's underlying notional with no strike or expiry, so it cannot be priced. This is an assumption: calls long and puts short at the delta above, on the same equity base, netted by name.
                     {overlay.left_out > 0 && ` The ${OVERLAY_NAMES} largest names are kept; ${overlay.left_out} smaller ones are left out.`}
-                    {overlay.unmapped > 0 && ` ${overlay.unmapped} rows have no ticker and are left out.`}
+                    {unmappedOptions > 0 && ` ${unmappedOptions} rows have no ticker and are left out.`}
                   </Callout>
                 </>
               )}

@@ -106,6 +106,7 @@ def test_status_reports_health_and_ops_subset():
     assert body["health"] == HEALTH
     assert body["ops"]["mode"] == "live" and body["ops"]["build"]["git_sha"] == "abc1234"
     assert "gc" not in body["ops"]  # only the documented subset is passed through
+    assert body["ops"]["feed"] == {"healthy": True, "symbols": 1, "stale": 0, "never_seen": 0}
     assert body["provenance"][0]["source"] == "ohcamel-engine"
     assert body["provenance"][0]["synthetic"] is False
     assert isinstance(body["latency_ms"], float)
@@ -226,6 +227,26 @@ def test_status_without_the_book_keeps_counts_and_loses_names():
     assert body["book_public"] is False
 
 
+@respx.mock
+def test_status_names_what_it_copies_so_a_new_nested_field_stays_behind():
+    ops = {**OPS, "feed": {**OPS["feed"], "staleness_threshold_s": 90.0},
+           "build": {**OPS["build"], "executable": "/app/secret-path"},
+           "stream": {**OPS["stream"], "next_thing": "AAPL"}}
+    respx.get(f"{ENGINE}/api/health").mock(return_value=httpx.Response(200, json=HEALTH))
+    respx.get(f"{ENGINE}/api/ops").mock(return_value=httpx.Response(200, json=ops))
+    r = _client(ENGINE, book_public=False).get("/api/engine/status")
+    for private in ("staleness_threshold_s", "secret-path", "AAPL"):
+        assert private not in r.text
+
+
+@respx.mock
+def test_a_cached_read_reports_the_real_round_trip_not_zero():
+    respx.get(f"{ENGINE}/api/ops").mock(return_value=httpx.Response(200, json=OPS))
+    client = _client(ENGINE, book_public=False)
+    first = client.get("/api/engine/vitals").json()["latency_ms"]
+    assert client.get("/api/engine/vitals").json()["latency_ms"] == first
+
+
 # ------------------------------------------------------------------------- vitals
 @respx.mock
 def test_vitals_copy_numbers_and_nothing_else():
@@ -306,7 +327,7 @@ def test_the_committed_recording_is_consistent_with_its_own_graph():
                     todo.append(x)
         return seen
 
-    assert len(d["events"]) == 38
+    assert len(d["events"]) == 47
     for e in d["events"]:
         ran, changed = set(e["ran"]), set(e["changed"])
         assert ran <= set(nodes), e["id"]
@@ -316,6 +337,10 @@ def test_the_committed_recording_is_consistent_with_its_own_graph():
         assert inputs, e["id"]
         assert ran <= downstream(inputs), e["id"]
         assert not any(nodes[x]["family"] == "input" for x in ran), e["id"]
+    # A rise from the high-water mark cannot move drawdown, and a fall does: the page says which.
+    assert "current_drawdown" not in next(e for e in d["events"] if e["id"] == "tick:SPY")["changed"]
+    fall = next(e for e in d["events"] if e["id"] == "fall:SPY")
+    assert "current_drawdown" in fall["changed"] and "limit:dd-cap" in fall["ran"]
     # The claim the page makes: one tick is a fraction of the graph.
     tick = next(e for e in d["events"] if e["id"] == "tick:SPY")
     assert 0 < len(tick["ran"]) < d["graph"]["counts"]["named"]

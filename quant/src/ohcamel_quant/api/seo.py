@@ -103,7 +103,7 @@ ROUTES_BY_PATH = {r.path: r for r in ROUTES}
 
 # A path segment that can be a ticker: letters, digits, the dot of BRK.B, the caret
 # of ^VIX and the hyphen and equals of vendor symbols. Anything else is not a page.
-_TICKER = re.compile(r"^[A-Za-z0-9.^=-]{1,12}$")
+_TICKER = re.compile(r"[A-Za-z0-9.^=-]{1,12}")
 
 
 @dataclass(frozen=True)
@@ -115,17 +115,19 @@ class Page:
 
 def resolve(path: str) -> Page | None:
     """The page at a request path (no leading slash), or None if there is none."""
+    # React Router matches case-insensitively, so /Risk is the risk page here too.
     clean = "/" + path.strip("/")
-    hit = ROUTES_BY_PATH.get(clean)
-    if hit is not None:
-        return Page(hit, clean, hit.title)
+    hit = ROUTES_BY_PATH.get(clean.lower())
+    if hit is not None and ":" not in hit.path:
+        return Page(hit, clean.lower(), hit.title)
     head, _, tail = clean[1:].partition("/")
+    head = head.lower()
     if head not in ("company", "ticker"):
         return None
     route = ROUTES_BY_PATH[f"/{head}/:ticker"]
     if not tail:
-        return Page(route, clean, route.title)
-    if not _TICKER.match(tail):
+        return Page(route, f"/{head}", route.title)
+    if not _TICKER.fullmatch(tail):
         return None
     ticker = tail.upper()
     return Page(route, f"/{head}/{ticker}", f"{ticker} · {route.title}")

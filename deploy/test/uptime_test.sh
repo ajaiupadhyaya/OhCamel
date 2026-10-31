@@ -76,10 +76,10 @@ code=000 body="" redir=""
 case "$url" in
 https://pub.test/) code=${S_PUB_ROOT:-200}; body='<!doctype html><div id="root"></div>' ;;
 https://pub.test/api/health) code=${S_PUB_HEALTH:-200}; body='{"status":"ok","offline":false}' ;;
-https://pub.test/api/engine/snapshot)
+https://pub.test/api/engine/vitals)
 	code=${S_BRIDGE:-200}
 	if [ "$code" = 200 ]; then
-		body="{\"snapshot\":{\"gross_exposure\":1000.0,\"nodes_recomputed\":$(counter bridge),\"positions\":[{}]}}"
+		body="{\"process\":{\"nodes_recomputed\":$(counter bridge)}}"
 	else
 		# The bridge's 503 says whether it is switched on: configured false
 		# when OHCAMEL_QUANT_ENGINE_URL is unset, true when the engine behind

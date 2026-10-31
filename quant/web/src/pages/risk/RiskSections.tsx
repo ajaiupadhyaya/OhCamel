@@ -5,7 +5,7 @@
  * signal only for losses, breaches and rejected tests.
  */
 import { useMemo, useState } from "react";
-import { BarChart, DataTable, HeatmapChart, InfoTip, Panel, Section, SegmentedControl, Select, StatGrid, StatTile, TimeSeriesChart, Toggle, type Column } from "../../components";
+import { BarChart, DataTable, HeatmapChart, InfoTip, NumberField, Panel, Section, SegmentedControl, Select, StatGrid, StatTile, TimeSeriesChart, Toggle, type Column } from "../../components";
 import { XYChart } from "../../charts/XYChart";
 import { fmtCompact, fmtMultiple, fmtNum, fmtPct } from "../../lib/format";
 import { useApiPost } from "../../lib/query";
@@ -212,7 +212,8 @@ const LIQUIDITY_COLS: Column<LiquidityLine>[] = [
 function LiquiditySection({ req, seedAlpha }: { req: PortfolioIn; seedAlpha: Alpha }) {
   const [alpha, setAlpha] = useState<Alpha>(seedAlpha);
   const [participation, setParticipation] = useState("0.1");
-  const body = useMemo(() => ({ ...req, alpha: Number(alpha), participation: Number(participation) }), [req, alpha, participation]);
+  const [spread, setSpread] = useState(5);
+  const body = useMemo(() => ({ ...req, alpha: Number(alpha), participation: Number(participation), spread_bps_default: spread }), [req, alpha, participation, spread]);
   const q = useApiPost<LiquidityOut>("/risk/liquidity", body);
   return (
     <Section
@@ -221,6 +222,7 @@ function LiquiditySection({ req, seedAlpha }: { req: PortfolioIn; seedAlpha: Alp
         <>
           <SegmentedControl size="sm" ariaLabel="Confidence" options={ALPHAS} value={alpha} onChange={setAlpha} />
           <SegmentedControl size="sm" ariaLabel="Share of daily volume" options={PARTICIPATION} value={participation} onChange={setParticipation} />
+          <NumberField ariaLabel="Default half-spread in basis points" value={spread} onChange={setSpread} min={0} max={1000} step={1} unit="BP" width={84} />
         </>
       }
     >

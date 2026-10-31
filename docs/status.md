@@ -24,6 +24,12 @@ reaches the page as `book_summary`, a table on the `desk.report` artifact: the k
 names, kinds and scopes, and the position count, and never a position's name or size or a limit's threshold. The
 page's own "stale" means a scheduled fire was missed by more than two hours, not `max_age` below.
 
+The live book is off the public API. `/api/artifacts` serves `desk.report`'s `book_summary` and nothing else of it,
+and `signals.overlay`'s `overlay` and `sources` but not `names`, by an allowlist (`PUBLIC_TABLES` in
+`api/routers/artifacts.py`), so a table added to either is private until someone lists it. Until 2026-10-31 the fills
+by symbol, per-strategy P&L, the account's closing figures and the desk's target weights by symbol were all public
+there. The files stay on the droplet, and the desk's own reporting is unchanged.
+
 A page says what it is without JavaScript. FastAPI fills the shell per path from `api/seo.py`: title, description,
 canonical URL, preview tags and a short plain description inside `#root`, which React replaces. `/robots.txt` and
 `/sitemap.xml` are what they say, and an unknown path is a 404 that still boots the app's own not-found page. `/engine`
@@ -107,7 +113,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->1817<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->1834<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.

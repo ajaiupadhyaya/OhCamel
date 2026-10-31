@@ -42,6 +42,14 @@ revisited without new information:
   numerics. It is a library split and an Owl replacement, for a demo a recording
   can make honestly.
 
+**Found while building: the book was already on the public API.** `desk.report`'s
+tables and notes held the session's fills by symbol, per-strategy P&L and the
+account's closing figures, and `signals.overlay`'s `names` held the desk's target
+weight by symbol, all served by `/api/artifacts`. The Machine's spec recorded that
+they "stay where they already are" without weighing it against the rule that no name
+or size goes public. An allowlist (`PUBLIC_TABLES`) now closes them, and `/engine`'s
+statement that the book stays private is true because of it.
+
 ## Goals
 
 - `curl` of any public page returns that page's title, description, canonical
@@ -105,8 +113,9 @@ engine's. There is no quote history to measure a spread from, and the daily
 high-low estimators were tried on the nine fixture ETFs and rejected: over the
 last year Corwin-Schultz (2012) and Abdi-Ranaldo (2017) put SPY at 18 and 15 bps
 against a half-spread near 1 bp, because on names this liquid the day's range is
-volatility, not spread. So the half-spread is a stated, editable assumption (the
-engine's own: 5 bps by default, SPY 1.0, TLT 1.5), and the page says so.
+volatility, not spread. So the half-spread is a stated assumption (the book's own:
+5 bps by default, SPY 1.0, TLT 1.5). The page edits the default and the API takes
+per-name overrides, and every line says which it used.
 
 **The overlay states its assumption.** A 13F reports an option's underlying
 notional, with no strike or expiry, so it cannot be priced. The overlay is a

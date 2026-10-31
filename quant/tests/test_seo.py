@@ -115,6 +115,28 @@ def test_an_unknown_path_is_a_real_404_that_still_boots_the_app(client):
     assert 'rel="canonical"' not in r.text
 
 
+@pytest.mark.parametrize("path", ["/company/:ticker", "/ticker/:ticker", "/" + "x" * 300])
+def test_a_route_pattern_and_an_overlong_name_are_not_pages(client, path):
+    assert client.get(path).status_code == 404
+
+
+def test_a_ticker_must_be_all_ticker():
+    assert seo.resolve("ticker/AAPL\n") is None
+    assert seo.resolve("ticker/AA PL") is None
+
+
+def test_a_page_in_another_case_is_the_page_react_would_render(client):
+    r = client.get("/Risk")
+    assert r.status_code == 200
+    assert re.search(r'rel="canonical" href="[^"]+/risk"', r.text)
+
+
+def test_head_answers_as_get_does(client):
+    assert client.head("/sitemap.xml").status_code == 200
+    assert client.head("/risk").status_code == 200
+    assert client.head("/no/such/page").status_code == 404
+
+
 def test_a_trailing_slash_and_a_query_keep_the_page(client):
     assert client.get("/risk/").status_code == 200
     html = client.get("/risk?alpha=0.99").text

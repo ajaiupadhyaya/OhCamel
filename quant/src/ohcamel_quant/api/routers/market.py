@@ -359,10 +359,6 @@ def f13_filers() -> dict[str, Any]:
     return {"filers": load_universes()["notable_13f_filers"], "provenance": []}
 
 
-#: Largest option rows a filing returns; a portfolio holds at most 100 names.
-OPTION_ROWS = 300
-
-
 def _f13(market: MarketData, cik: str, top: int) -> dict[str, Any]:
     ds = market.holdings_13f(cik)
     d = ds.data
@@ -378,6 +374,7 @@ def _f13(market: MarketData, cik: str, top: int) -> dict[str, Any]:
         "option_underlying_value_usd": float(opts["value_usd"].sum()),
         "calls_value_usd": float(opts.loc[opts["put_call"] == "Call", "value_usd"].sum()),
         "puts_value_usd": float(opts.loc[opts["put_call"] == "Put", "value_usd"].sum()),
+        "option_rows_unmapped": int(opts["ticker"].isna().sum()),
         "top10_weight": float(np.sort(w)[::-1][:10].sum()) if len(w) else None,
         "hhi": hhi, "effective_n": 1.0 / hhi if hhi else None,
     }
@@ -385,11 +382,14 @@ def _f13(market: MarketData, cik: str, top: int) -> dict[str, Any]:
         "filer": d["filer"], "cik": d["cik"], "period": d["period"], "filed": d["filed"], "form": d["form"],
         "accession": d["accession"], "url": d["url"], "summary": summary,
         "holdings": records(h.head(top)), "n_total_rows": int(len(h)), "amendments": d["amendments"],
-        # A 13F's option rows are the underlying's notional, with no strike or expiry.
+        # A 13F's option rows are the underlying's notional, with no strike or expiry. One row a name and
+        # side, every one of them, so a client nets the whole filing and not its largest rows.
         "options": [
             {"issuer": r.issuer, "ticker": r.ticker, "put_call": r.put_call, "value_usd": float(r.value_usd),
              "weight_on_equity": float(r.value_usd) / equity_value if equity_value > 0 else None}
-            for r in opts.head(OPTION_ROWS).itertuples()
+            for r in (opts[opts["ticker"].notna()].groupby(["ticker", "put_call"], as_index=False, sort=False)
+                      .agg(issuer=("issuer", "first"), value_usd=("value_usd", "sum"))
+                      .sort_values("value_usd", ascending=False).itertuples())
         ],
         "method": {"weights": "value / sum of non-option values", "hhi": "sum w_i^2 (Herfindahl 1950; "
                    "Hirschman 1945)", "effective_n": "1/HHI"},

@@ -136,7 +136,7 @@ export interface GraphNode {
 
 export interface RecordedEvent {
   id: string;
-  kind: "tick" | "repeat" | "fill" | "roll" | "factor" | "cash";
+  kind: "tick" | "fall" | "repeat" | "fill" | "roll" | "factor" | "cash";
   label: string;
   symbol: string | null;
   ran: string[];
