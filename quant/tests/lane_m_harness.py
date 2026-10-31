@@ -18,7 +18,7 @@ def is_label(detail: str | None) -> bool:
 
 
 def publish_artifact(db, root, kind, tables, *, verdict=None, finished=T0, params=None, mem="S",
-                     data_asof="2026-06-01"):
+                     data_asof="2026-06-01", notes=()):
     """Queue, claim, write and finish one job; returns (artifact id, artifact directory)."""
     conn = connect(db)
     enqueue(conn, kind=kind, params=params or {"t": iso(finished)}, priority=2, mem_class=mem, heavy=False,
@@ -27,7 +27,7 @@ def publish_artifact(db, root, kind, tables, *, verdict=None, finished=T0, param
                      now=finished - timedelta(seconds=4))
     staging = root / ".staging" / job.id
     names = write_tables(staging, tables)
-    m = build_manifest(job, {"data_asof": data_asof, "provenance": [{"source": "test"}], "notes": [],
+    m = build_manifest(job, {"data_asof": data_asof, "provenance": [{"source": "test"}], "notes": list(notes),
                              "survivorship": None, "engine": "python", "tables": names, "verdict": verdict,
                              "verdict_detail": None if verdict is None else "test"},
                        code_sha="abc", finished_at=iso(finished), cpu_seconds=1.0, peak_rss_bytes=1)

@@ -150,3 +150,55 @@ def test_a_row_whose_path_leaves_the_root_is_refused(api, tmp_path):
                     "/api/artifacts/ops.selftest/latest"):
             r = client.get(url)
             assert r.status_code == 404 and "s3cr3t" not in r.text, (bad, url)
+
+
+# ------------------------------------------------------------ the live book stays off this API
+ACCOUNT_NOTE = "session close 2026-10-29: equity_close 1000000 gross_close 50000 net_close 50000"
+
+
+def _desk_report(db, root):
+    tables = {name: pd.DataFrame({"symbol": ["AAPL"], "qty": [400.0]})
+              for name in ("fills", "pnl_by_strategy", "refusals", "overlay_path")}
+    tables["book_summary"] = pd.DataFrame({"limits": ["[]"]})
+    aid, _ = publish_artifact(db, root, "desk.report", tables, finished=utcnow(), notes=[ACCOUNT_NOTE])
+    return aid
+
+
+@pytest.mark.parametrize("name", ["fills", "pnl_by_strategy", "refusals", "overlay_path"])
+def test_the_desks_report_serves_none_of_the_book(api, name):
+    client, db, root = api
+    aid = _desk_report(db, root)
+    r = client.get(f"/api/artifacts/desk.report/{aid}/{name}")
+    assert r.status_code == 404 and r.json()["error"] == "no_table"
+    assert "AAPL" not in r.text
+
+
+def test_the_desks_report_lists_only_its_summary_and_quotes_no_account_figure(api):
+    client, db, root = api
+    aid = _desk_report(db, root)
+    for url in ("/api/artifacts/desk.report/latest", f"/api/artifacts/desk.report/{aid}"):
+        r = client.get(url)
+        assert r.status_code == 200
+        assert r.json()["manifest"]["tables"] == ["book_summary"]
+        assert "equity_close" not in r.text and "gross_close" not in r.text
+    assert client.get(f"/api/artifacts/desk.report/{aid}/book_summary").status_code == 200
+
+
+def test_the_overlay_serves_its_scale_and_not_the_target_book(api):
+    client, db, root = api
+    aid, _ = publish_artifact(db, root, "signals.overlay", {
+        "overlay": pd.DataFrame({"exposure_scale": [1.0]}),
+        "names": pd.DataFrame({"symbol": ["AAPL"], "weight": [0.05]}),
+        "sources": pd.DataFrame({"slug": ["x"], "capital_fraction": [0.1]}),
+    }, finished=utcnow())
+    assert client.get(f"/api/artifacts/signals.overlay/{aid}/overlay").status_code == 200
+    assert client.get(f"/api/artifacts/signals.overlay/{aid}/sources").status_code == 200
+    r = client.get(f"/api/artifacts/signals.overlay/{aid}/names")
+    assert r.status_code == 404 and "AAPL" not in r.text
+    assert "names" not in client.get("/api/artifacts/signals.overlay/latest").json()["manifest"]["tables"]
+
+
+def test_a_table_added_to_a_book_kind_is_private_until_someone_lists_it(api):
+    client, db, root = api
+    aid, _ = publish_artifact(db, root, "desk.report", {"brand_new": pd.DataFrame({"x": [1]})}, finished=utcnow())
+    assert client.get(f"/api/artifacts/desk.report/{aid}/brand_new").status_code == 404

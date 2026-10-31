@@ -14,6 +14,15 @@ Every file read must also resolve (symlinks and ``..`` followed) under
 ``<data>/artifacts`` -- the directory beside jobs.sqlite, as jobs/paths.py lays
 them out -- so a tampered row or a link on disk is refused, not followed
 (Harden H4).
+
+**The live book stays off this API.** ``desk.report`` copies the desk's fills,
+per-strategy P&L and the account's closing figures into its tables and notes, and
+``signals.overlay``'s ``names`` is the desk's combined target weight by symbol. Every
+route here is public and the owner's rule is no position name or size on the public
+site, so for those kinds ``PUBLIC_TABLES`` lists what may be served. It is an
+allowlist so that a table added later is private until someone decides otherwise.
+The files stay on disk: ``/api/machine`` reads ``book_summary`` from them itself,
+and the desk's own reporting is untouched.
 """
 
 from __future__ import annotations
@@ -40,6 +49,16 @@ ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_ROWS = 50_000
 
+#: The tables a kind may serve, for the kinds that hold the live book. A kind absent
+#: here serves every table its manifest lists.
+PUBLIC_TABLES: dict[str, frozenset[str]] = {
+    "desk.report": frozenset({"book_summary"}),
+    "signals.overlay": frozenset({"overlay", "sources"}),
+}
+#: Kinds whose notes quote the book: the session's equity, gross, net and P&L.
+NOTES_WITHHELD = frozenset({"desk.report"})
+WITHHELD_NOTE = "This report's other tables and its notes carry the live book and are not public."
+
 
 def get_artifacts_db_path() -> Path:
     return jobs_db_path()
@@ -58,6 +77,17 @@ def _outside() -> JSONResponse:
 
 def _err(status: int, error: str, detail: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": error, "detail": detail})
+
+
+def _public(kind: str, m: dict[str, Any]) -> dict[str, Any]:
+    """The manifest as this API may show it: listed tables only, and no notes that quote the book."""
+    allowed = PUBLIC_TABLES.get(kind)
+    if allowed is None:
+        return m
+    out = {**m, "tables": [t for t in m.get("tables") or [] if t in allowed]}
+    if kind in NOTES_WITHHELD:
+        out["notes"] = [WITHHELD_NOTE]
+    return out
 
 
 def _head(m: dict[str, Any]) -> dict[str, Any]:
@@ -100,7 +130,7 @@ def latest(kind: str, db: Db, params_hash: str | None = None) -> Any:
         got = read_latest(conn, kind, params_hash, now=utcnow(), root=_root(db))
     if got is None:
         return _err(404, "not_found", f"no {kind} artifact yet")
-    m = got["manifest"]
+    m = _public(kind, got["manifest"])
     return {**_head(m), "stale": got["stale"], "manifest": m, **_meta(m)}
 
 
@@ -111,7 +141,7 @@ def manifest(kind: str, art_id: str, db: Db) -> Any:
     got = _manifest(db, kind, art_id)
     if isinstance(got, JSONResponse):
         return got
-    m, _ = got
+    m = _public(kind, got[0])
     return {**_head(m), "manifest": m, **_meta(m)}
 
 
@@ -123,7 +153,7 @@ def table(kind: str, art_id: str, table: str, db: Db, limit: int = Query(default
     got = _manifest(db, kind, art_id)
     if isinstance(got, JSONResponse):
         return got
-    m, path = got
+    m, path = _public(kind, got[0]), got[1]
     if not TABLE_NAME.match(table) or table not in (m.get("tables") or []):
         return _err(404, "no_table", f"artifact {art_id} has no table {table!r}")
     f = path / f"{table}.parquet"
