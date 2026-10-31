@@ -81,6 +81,7 @@ def test_a_clock_that_did_not_answer_is_not_asked_again_for_thirty_seconds(monke
     assert session_clock(keys, now) is first and len(calls) == 1      # a page's every poll does not wait out the retries
     assert first.source == "rule" and "did not answer (ConnectionError)" in first.note
 
-    monkeypatch.setattr(clock.time, "monotonic", lambda: clock._cached[0] + clock.CACHE_S)
+    later = clock._cached[0] + clock.CACHE_S + 1
+    monkeypatch.setattr(clock.time, "monotonic", lambda: later)
     session_clock(keys, now)
     assert len(calls) == 2                                             # and it is asked again once the thirty seconds are up
