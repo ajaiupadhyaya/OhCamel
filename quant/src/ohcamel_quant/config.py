@@ -43,8 +43,14 @@ class Settings(BaseSettings):
     ttl_filings_s: int = 24 * 3600
     # Price provider order; the first that returns data wins.
     price_providers: list[str] = Field(default_factory=lambda: ["alpaca", "yahoo", "stooq"])
+    # The public address, for canonical URLs, link previews and the sitemap.
+    public_url: str = "https://ohcamel.ajaiupadhyaya.com"
     # Optional URL of the OCaml real-time engine (read-only JSON), for the Live page.
     engine_url: str | None = None
+    # Whether that bridge may pass the book through: positions, symbols and the
+    # trail. Off, the public site reads only the engine's vitals, which carry
+    # none of them. On only for the local harness and its synthetic demo book.
+    engine_book_public: bool = False
     # Optional URL of ohcamel-hostd, the host telemetry daemon (contract II.6
     # of the compute plan), proxied at /api/ops/host.
     hostd_url: str | None = None

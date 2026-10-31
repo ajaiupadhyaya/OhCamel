@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+
+Sitemap: https://ohcamel.ajaiupadhyaya.com/sitemap.xml

@@ -19,13 +19,14 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
 from ..config import get_settings
 from ..data.base import DataUnavailable
 from . import routers as routers_pkg
+from . import seo
 from .ratelimit import RateLimit
 
 log = logging.getLogger("ohcamel_quant")
@@ -91,16 +92,26 @@ def create_app() -> FastAPI:
         if assets.exists():
             app.mount("/assets", StaticFiles(directory=assets), name="assets")
 
+        base_url = s.public_url.rstrip("/")
+
+        @app.get("/sitemap.xml", include_in_schema=False)
+        def sitemap() -> Response:
+            return Response(seo.sitemap(base_url), media_type="application/xml")
+
         @app.api_route(
             "/{path:path}", methods=["GET", "HEAD"], include_in_schema=False, response_model=None
         )
-        def spa(path: str) -> FileResponse | JSONResponse:
+        def spa(path: str) -> Response:
             if path == "api" or path.startswith("api/"):
                 return JSONResponse(status_code=404, content={"error": "not_found", "detail": f"/{path}"})
             candidate = WEB_DIST / path
-            if path and candidate.is_file() and WEB_DIST in candidate.resolve().parents:
+            if path and candidate.is_file() and WEB_DIST.resolve() in candidate.resolve().parents:
                 return FileResponse(candidate)
-            return FileResponse(WEB_DIST / "index.html")
+            page = seo.resolve(path)
+            # Read per request, as a FileResponse would: a rebuild renames the bundles it names.
+            shell = (WEB_DIST / "index.html").read_text(encoding="utf-8")
+            html = seo.render(shell, page, base_url)
+            return HTMLResponse(html, status_code=200 if page else 404)
 
     return app
 

@@ -383,6 +383,27 @@ textarea.input:focus {
   }
 }
 
+/* What a page says before its JavaScript runs (api/seo.py). React replaces it on mount, so
+   a reader with JavaScript never sees it: it stays transparent past the mount, and only a
+   browser with no JavaScript reaches the end of the delay. */
+.oc-static {
+  max-width: 68ch;
+  margin: 0 auto;
+  padding: 48px 16px;
+  opacity: 0;
+  animation: oc-static-show 0s linear 1.5s forwards;
+}
+.oc-static ul {
+  columns: 2;
+  padding: 0;
+  list-style: none;
+}
+@keyframes oc-static-show {
+  to {
+    opacity: 1;
+  }
+}
+
 /* scrollbars */
 * {
   scrollbar-width: thin;
