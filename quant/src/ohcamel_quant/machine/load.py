@@ -77,9 +77,9 @@ def missed_fire(kind: str, finished: Any, now: datetime, schedules: Schedules) -
     try:
         done = parse_iso(finished)
         fires = [t for e in schedules.entries if e.kind == kind and (t := next_due(e.parsed, done)) is not None]
-    except (AttributeError, TypeError, ValueError):
+        return bool(fires) and now > min(fires) + GRACE
+    except (AttributeError, OverflowError, TypeError, ValueError):
         return False
-    return bool(fires) and now > min(fires) + GRACE
 
 
 def wanted(kind: str) -> tuple[str, ...]:

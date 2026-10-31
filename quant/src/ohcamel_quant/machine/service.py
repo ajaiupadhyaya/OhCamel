@@ -134,7 +134,8 @@ class MachineCache:
         return marked != self._mark() or not -self._skew <= now - built < limit
 
     def _backing_off(self, now: datetime) -> bool:
-        return self._retry_at is not None and timedelta(0) < self._retry_at - now <= self._backoff
+        retry_at = self._retry_at           # read once: a refresh on another thread may clear it
+        return retry_at is not None and timedelta(0) < retry_at - now <= self._backoff
 
     def _refresh(self, now: datetime) -> None:
         try:

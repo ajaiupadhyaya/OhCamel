@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
-from ohcamel_quant.deck.clock import parse_alpaca_clock, rule_clock
+from ohcamel_quant.deck import clock
+from ohcamel_quant.deck.clock import parse_alpaca_clock, rule_clock, session_clock
 
 # 2026-09-24 is a Thursday; New York is on EDT (UTC-4) until 2026-11-01.
 
@@ -61,3 +63,24 @@ def test_alpaca_clock_is_parsed():
     c = parse_alpaca_clock(body, at("2026-11-27T17:30:00"))    # the day after Thanksgiving: early close
     assert c.is_open and c.source == "alpaca" and c.session == "2026-11-27"
     assert c.next_close == "2026-11-27T18:00:00+00:00"
+
+
+def test_a_clock_that_did_not_answer_is_not_asked_again_for_thirty_seconds(monkeypatch):
+    calls = []
+
+    def refused(*args, **kwargs):
+        calls.append(args)
+        raise ConnectionError("no route")
+
+    monkeypatch.setattr("ohcamel_quant.data.http.get_json", refused)
+    monkeypatch.setattr(clock, "_cached", None)
+    keys = SimpleNamespace(offline=False, alpaca_key_id="key", alpaca_secret_key="secret")
+    now = at("2026-09-24T15:00:00")
+
+    first = session_clock(keys, now)
+    assert session_clock(keys, now) is first and len(calls) == 1      # a page's every poll does not wait out the retries
+    assert first.source == "rule" and "did not answer (ConnectionError)" in first.note
+
+    monkeypatch.setattr(clock.time, "monotonic", lambda: clock._cached[0] + clock.CACHE_S)
+    session_clock(keys, now)
+    assert len(calls) == 2                                             # and it is asked again once the thirty seconds are up

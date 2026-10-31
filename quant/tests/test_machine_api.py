@@ -196,7 +196,8 @@ def test_the_earliest_entry_of_a_kind_decides():
     assert not missed("risk.mc_intraday", ny(30, 15, 46), ny(2, 11, 44))
 
 
-@pytest.mark.parametrize("finished", [None, 7, "", "not a time", "2026-10-30T12:00:00"])
+@pytest.mark.parametrize("finished", [None, 7, "", "not a time", "2026-10-30T12:00:00", "0001-01-01T00:00:00+00:00",
+                                      "9999-12-31T23:59:59+00:00", "9999-12-31T02:00:00+00:00"])
 def test_a_time_that_does_not_read_is_not_stale(finished):
     assert missed_fire("desk.report", finished, ny(3, 9), load_schedules()) is False
 
@@ -793,6 +794,24 @@ def test_a_failed_refresh_keeps_the_old_build_logs_and_backs_off_for_a_minute(ca
     assert "the last good build stays" in caplog.text and "the second fails" in caplog.text
     assert cache.get(failed + timedelta(seconds=59)) is first and len(calls) == 2    # no retry for a minute
     assert cache.get(failed + timedelta(seconds=60)) == {"built": 3} and len(calls) == 3
+
+
+def test_a_refresh_landing_during_the_backoff_check_does_not_raise():
+    class Racing(MachineCache):
+        """A refresh on another thread lands, clearing ``_retry_at``, just after the check first reads it."""
+
+        @property
+        def _retry_at(self):
+            value, self._stored = self._stored, None
+            return value
+
+        @_retry_at.setter
+        def _retry_at(self, value):
+            self._stored = value
+
+    cache = Racing(Counted(), lambda: None, spawn=run_now)
+    cache._retry_at = NOW + timedelta(seconds=30)
+    assert cache._backing_off(NOW) is True
 
 
 def test_a_refresh_that_cannot_start_a_thread_does_not_wedge_the_cache():

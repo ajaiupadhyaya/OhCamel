@@ -107,7 +107,8 @@ _cached: tuple[float, Clock] | None = None
 
 
 def session_clock(settings: Settings, now: datetime | None = None) -> Clock:
-    """Alpaca's clock when keys exist and it answers (cached 30 s), else the rule."""
+    """Alpaca's clock when keys exist and it answers, else the rule. Either answer is kept 30 s, so an
+    outage costs one caller its retries every 30 s, not every caller."""
     global _cached
     now = now or datetime.now(UTC)
     if settings.offline or not (settings.alpaca_key_id and settings.alpaca_secret_key):
@@ -124,7 +125,7 @@ def session_clock(settings: Settings, now: datetime | None = None) -> Clock:
     except Exception as e:  # noqa: BLE001 - any failure falls back to the stated rule
         log.info("alpaca clock failed, using the wall-clock rule: %s", e)
         rule = rule_clock(now)
-        return Clock(**{**rule.to_dict(), "note": f"Alpaca's clock did not answer ({type(e).__name__}); {RULE_NOTE}"})
+        clk = Clock(**{**rule.to_dict(), "note": f"Alpaca's clock did not answer ({type(e).__name__}); {RULE_NOTE}"})
     with _lock:
         _cached = (time.monotonic(), clk)
     return clk
