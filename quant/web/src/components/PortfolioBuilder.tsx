@@ -9,12 +9,13 @@
  */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { fmtCurrency, fmtDate, fmtPct } from "../lib/format";
+import { fmtCurrency, fmtDate, fmtNum, fmtPct } from "../lib/format";
 import { use13F, use13FFilers, useUniverses, type Holding13F } from "../lib/market";
+import { OVERLAY_NAMES, optionOverlay, withOverlay } from "../lib/overlay13f";
 import { consolidate, equalWeight, grossWeight, normalizeWeights, parseHoldingsCsv, totalWeight, usePortfolio, type Portfolio } from "../lib/portfolio";
 import { seriesVar } from "../lib/theme";
 import type { Holding } from "../lib/types";
-import { Field, NumberField, SegmentedControl, Slider } from "./Controls";
+import { Field, NumberField, SegmentedControl, Slider, Toggle } from "./Controls";
 import { DateRangePicker } from "./DateRangePicker";
 import { Icon } from "./Icon";
 import { Provenance } from "./Provenance";
@@ -158,7 +159,15 @@ function Import13F({ onUse }: { onUse: (name: string, hs: Holding[]) => void }) 
   const [cik, setCik] = useState<string>("");
   const [loadCik, setLoadCik] = useState<string | null>(null);
   const [topN, setTopN] = useState(20);
+  const [overlayOn, setOverlayOn] = useState(false);
+  const [delta, setDelta] = useState(0.5);
   const filing = use13F(loadCik);
+  const overlay = useMemo(() => optionOverlay(filing.data?.options ?? [], delta), [filing.data, delta]);
+  const hasOptions = (filing.data?.options.length ?? 0) > 0;
+  const load = (id: string) => {
+    setCik(id);
+    setLoadCik(id);
+  };
 
   const preview = useMemo(() => {
     const all = (filing.data?.holdings ?? []).filter((h) => !h.put_call);
@@ -169,6 +178,15 @@ function Import13F({ onUse }: { onUse: (name: string, hs: Holding[]) => void }) 
 
   return (
     <div className="stack" style={{ gap: 12 }}>
+      {filers.data && filers.data.length > 0 && (
+        <div className="row-wrap" role="group" aria-label="Load a fund's latest 13F">
+          {filers.data.map((f) => (
+            <button key={f.cik} type="button" className={`btn btn-sm ${loadCik === f.cik ? "btn-primary" : ""}`} onClick={() => load(f.cik)}>
+              {f.manager ?? f.name}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="row-wrap">
         {filers.data && filers.data.length > 0 ? (
           <select className="select" value={cik} onChange={(e) => setCik(e.target.value)} aria-label="13F filer" style={{ minWidth: 220 }}>
@@ -205,10 +223,33 @@ function Import13F({ onUse }: { onUse: (name: string, hs: Holding[]) => void }) 
               </div>
             ))}
           </div>
-          {preview.unmapped > 0 && <Callout>{preview.unmapped} positions could not be mapped to a ticker (e.g. private placements or delisted CUSIPs) and are excluded; option rows are always excluded.</Callout>}
+          {preview.unmapped > 0 && <Callout>{preview.unmapped} positions could not be mapped to a ticker (e.g. private placements or delisted CUSIPs) and are excluded.</Callout>}
+          {hasOptions && (
+            <div className="stack" style={{ gap: 8 }}>
+              <Toggle label={`Add the filing's options as an overlay · calls ${fmtCurrency(filing.data.summary?.calls_value_usd, { compact: true, digits: 1 })} · puts ${fmtCurrency(filing.data.summary?.puts_value_usd, { compact: true, digits: 1 })} notional`} checked={overlayOn} onChange={setOverlayOn} />
+              {overlayOn && (
+                <>
+                  <Slider label="Assumed |delta|" value={delta} min={0.1} max={1} step={0.05} onChange={setDelta} format={(v) => fmtNum(v, 2)} />
+                  <Callout>
+                    A 13F reports an option's underlying notional with no strike or expiry, so it cannot be priced. This is an assumption: calls long and puts short at the delta above, on the same equity base, netted by name.
+                    {overlay.left_out > 0 && ` The ${OVERLAY_NAMES} largest names are kept; ${overlay.left_out} smaller ones are left out.`}
+                    {overlay.unmapped > 0 && ` ${overlay.unmapped} rows have no ticker and are left out.`}
+                  </Callout>
+                </>
+              )}
+            </div>
+          )}
           <div className="row">
-            <button className="btn btn-sm btn-primary" disabled={!preview.top.length} onClick={() => onUse(`${filing.data!.filer} (13F top ${preview.top.length})`, normalizeWeights(preview.top.map((h) => ({ ticker: h.ticker!, weight: h.weight }))))}>
-              Use top {preview.top.length}, rescaled to 100%
+            <button
+              className="btn btn-sm btn-primary"
+              disabled={!preview.top.length}
+              onClick={() => {
+                const equity = normalizeWeights(preview.top.map((h) => ({ ticker: h.ticker!, weight: h.weight })));
+                const withOptions = overlayOn && hasOptions;
+                onUse(`${filing.data!.filer} (13F top ${preview.top.length}${withOptions ? ` + options at |Δ| ${fmtNum(delta, 2)}` : ""})`, withOptions ? withOverlay(equity, overlay.holdings) : equity);
+              }}
+            >
+              Use top {preview.top.length}, rescaled to 100%{overlayOn && hasOptions ? ", with the overlay" : ""}
             </button>
           </div>
           <Provenance items={filing.data.provenance} />

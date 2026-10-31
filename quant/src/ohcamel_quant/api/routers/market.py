@@ -359,17 +359,25 @@ def f13_filers() -> dict[str, Any]:
     return {"filers": load_universes()["notable_13f_filers"], "provenance": []}
 
 
+#: Largest option rows a filing returns; a portfolio holds at most 100 names.
+OPTION_ROWS = 300
+
+
 def _f13(market: MarketData, cik: str, top: int) -> dict[str, Any]:
     ds = market.holdings_13f(cik)
     d = ds.data
     h: pd.DataFrame = d["holdings"]
     eq = h[h["put_call"].isna()]
+    opts = h[h["put_call"].notna()]
+    equity_value = float(eq["value_usd"].sum())
     w = eq["weight"].dropna().to_numpy()
     hhi = float(np.sum(w**2)) if len(w) else None
     summary = {
         "n_positions": int(len(eq)), "n_option_rows": int(h["put_call"].notna().sum()),
-        "total_value_usd": float(eq["value_usd"].sum()),
-        "option_underlying_value_usd": float(h.loc[h["put_call"].notna(), "value_usd"].sum()),
+        "total_value_usd": equity_value,
+        "option_underlying_value_usd": float(opts["value_usd"].sum()),
+        "calls_value_usd": float(opts.loc[opts["put_call"] == "Call", "value_usd"].sum()),
+        "puts_value_usd": float(opts.loc[opts["put_call"] == "Put", "value_usd"].sum()),
         "top10_weight": float(np.sort(w)[::-1][:10].sum()) if len(w) else None,
         "hhi": hhi, "effective_n": 1.0 / hhi if hhi else None,
     }
@@ -377,6 +385,12 @@ def _f13(market: MarketData, cik: str, top: int) -> dict[str, Any]:
         "filer": d["filer"], "cik": d["cik"], "period": d["period"], "filed": d["filed"], "form": d["form"],
         "accession": d["accession"], "url": d["url"], "summary": summary,
         "holdings": records(h.head(top)), "n_total_rows": int(len(h)), "amendments": d["amendments"],
+        # A 13F's option rows are the underlying's notional, with no strike or expiry.
+        "options": [
+            {"issuer": r.issuer, "ticker": r.ticker, "put_call": r.put_call, "value_usd": float(r.value_usd),
+             "weight_on_equity": float(r.value_usd) / equity_value if equity_value > 0 else None}
+            for r in opts.head(OPTION_ROWS).itertuples()
+        ],
         "method": {"weights": "value / sum of non-option values", "hhi": "sum w_i^2 (Herfindahl 1950; "
                    "Hirschman 1945)", "effective_n": "1/HHI"},
         "notes": d["notes"], "provenance": ds.provenance_dicts(),

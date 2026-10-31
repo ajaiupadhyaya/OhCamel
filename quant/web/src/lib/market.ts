@@ -143,6 +143,15 @@ export interface Holding13F {
   put_call: string | null; // option rows ("Put"/"Call") are excluded from imports
 }
 
+/** One option row: the underlying's notional as filed, with no strike or expiry. */
+export interface Option13F {
+  ticker: string | null;
+  issuer: string;
+  put_call: string;
+  value_usd: number;
+  weight_on_equity: number | null;
+}
+
 export interface Filing13F extends Envelope {
   filer: string;
   cik?: string;
@@ -150,7 +159,8 @@ export interface Filing13F extends Envelope {
   filed?: string;
   url?: string;
   holdings: Holding13F[];
-  summary?: { n_positions?: number; total_value_usd?: number; top10_weight?: number; hhi?: number; effective_n?: number };
+  options: Option13F[];
+  summary?: { n_positions?: number; total_value_usd?: number; top10_weight?: number; hhi?: number; effective_n?: number; calls_value_usd?: number; puts_value_usd?: number };
 }
 
 export function normalize13F(raw: unknown): Filing13F {
@@ -182,6 +192,7 @@ export function normalize13F(raw: unknown): Filing13F {
     url: r.url ?? undefined,
     summary: r.summary ?? undefined,
     holdings,
+    options: Array.isArray(r.options) ? r.options : [],
     provenance: r.provenance as ProvenanceRecord[] | undefined,
     notes: r.notes,
   };

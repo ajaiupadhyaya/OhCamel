@@ -138,6 +138,10 @@ def test_13f_summary_math(monkeypatch):
     assert s["effective_n"] == pytest.approx(1 / 0.46)
     assert s["top10_weight"] == pytest.approx(1.0) and s["n_positions"] == 3 and s["n_option_rows"] == 1
     assert s["total_value_usd"] == 1000.0 and len(j["holdings"]) == 2
+    # Every option row comes through whatever `top` cut, weighed on the equity base.
+    assert s["puts_value_usd"] == 500.0 and s["calls_value_usd"] == 0.0
+    assert j["options"] == [{"issuer": "D", "ticker": "D", "put_call": "Put", "value_usd": 500.0,
+                             "weight_on_equity": 0.5}]
 
 
 def test_clean_range_clips_only_bad_prints():
