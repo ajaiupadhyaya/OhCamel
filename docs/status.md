@@ -1,6 +1,6 @@
 # OhCamel — state of the project
 
-*As of 2026-10-27 (the desk's first week of paper trading, read off the droplet and off Alpaca's own order history that day, and the four fixes it called for); the deployed state as of 2026-10-28; the rest as of 2026-10-08, against `ship/harden`. This is the document to read first when coming back to the repository
+*As of 2026-10-27 (the desk's first week of paper trading, read off the droplet and off Alpaca's own order history that day, and the four fixes it called for); the deployed state and the front page as of 2026-10-31; the rest as of 2026-10-08, against `ship/harden`. This is the document to read first when coming back to the repository
 after time away, and the one to update when the facts in it change.*
 
 It is an inventory: what exists, where it runs, what is deployed, what it will not do, what was cut, and what
@@ -15,6 +15,15 @@ backtesting, options, rates and macro, and fundamentals. It also shows seven sch
 computed on the droplet. The synthetic demo engine no longer runs on the public host (`ohcamel-demo` sits behind
 the `demo` compose profile). The live engine runs the paper desk on the live host.
 
+The front page, `/`, is **The Machine**: the system's own dependency graph, read live from `GET /api/machine`,
+from the world's data through the warehouse, the jobs' 24-hour clock, the products and the strategies to the
+book. It has an eight-step tour, a plain reading of every node and a replay of the day, and `?view=list` holds the
+same content without WebGL. The endpoint serves its last good build and refreshes it in the background; its runs
+are read on every request and move live through `/api/jobs/events`. The Tape moved to `/tape`. The live book
+reaches the page as `book_summary`, a table on the `desk.report` artifact: the kill-switch state and trips, limit
+names, kinds and scopes, and the position count, and never a position's name or size or a limit's threshold. The
+page's own "stale" means a scheduled fire was missed by more than two hours, not `max_age` below.
+
 ---
 
 ## Where it runs
@@ -27,8 +36,9 @@ the `demo` compose profile). The live engine runs the paper desk on the live hos
 | Cost | $24/month, metered hourly, capped |
 | Proxy / TLS | Caddy, Let's Encrypt, HTTP→HTTPS 308, HSTS, a CSP measured per route. Only Caddy has a host port |
 | DNS | Porkbun: A records `ohcamel` and `live.ohcamel` on the owner's domain |
-| **Deployed — both hosts** | **`d017a93`** (a standing document re-sized at the newest close, `006cc09`, and the `--live` window closing at 17:10), deployed 2026-10-28 21:35 ET with `--live`; the pre-deploy journal copy is `/var/backups/ohcamel/pre-deploy-20261029T013404Z-8650c95eb485.db`; smoke 45 passed, 0 failed, 2 skipped. Kill switch armed and clear, desk enabled, five positions intact, 23 strategies registered |
-| Not deployed | Only the docs commit that wrote this row |
+| **Deployed — public host** | **`791f297`** (The Machine), deployed 2026-10-31 11:49 ET with `--public-only`; smoke 21 passed, 0 failed, 4 skipped. `/api/machine` is 142 KB gzipped and answers in 0.2 s; a cold build takes 1.9 s and peaks near 310 MiB on the droplet. `book_summary` first appears with the next weekday 16:30 `desk.report` |
+| **Deployed — live host** | **`d017a93`** (a standing document re-sized at the newest close, `006cc09`, and the `--live` window closing at 17:10), deployed 2026-10-28 21:35 ET with `--live`; the pre-deploy journal copy is `/var/backups/ohcamel/pre-deploy-20261029T013404Z-8650c95eb485.db`; smoke 45 passed, 0 failed, 2 skipped. Kill switch armed and clear, desk enabled, five positions intact, 23 strategies registered |
+| Not deployed | Only the docs commit that wrote these rows. The live host needs no change for The Machine: the worker reads the engine's existing `/api/graph` and `/api/ops` |
 
 **Data on the droplet (2026-10-08).** The warehouse backfill ran through the queue. `ingest.universes` finished,
 and `ingest.bars_daily` filled 563 keys to as-of 2026-10-07 in 322 cpu-s at 233 MB peak. The factors are as of
@@ -108,7 +118,7 @@ is sized as live, and nothing promotes a strategy to it but the owner. The pre-r
 |---|---|---|
 | `signals.daily` | weekdays 18:45 | one contract-v1 document per roster cell, on its own rebalance dates |
 | `signals.overlay` | 09:20, 09:40, every 15 min 10:00–15:45, 18:40, 18:50, 20:10 | one `exposure_scale` from volatility targeting |
-| `desk.report` | weekdays 16:30 | the session's fills, P&L per strategy, refusals and overlay path |
+| `desk.report` | weekdays 16:30 | the session's fills, P&L per strategy, refusals and overlay path, and `book_summary` for the front page |
 
 **The overlay rule.** `exposure_scale = min(1, σ_target / σ̂)` with `σ_target` 0.10 from the book, multiplied by the
 drawdown governor, sizes every incubation and live target; a stale overlay falls back to `overlay_fallback`, an
