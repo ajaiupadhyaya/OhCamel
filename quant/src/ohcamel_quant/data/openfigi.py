@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from typing import Any
@@ -34,6 +35,8 @@ URL = "https://api.openfigi.com/v3/mapping"
 FAMILY = "openfigi"
 KEY = "cusip_map"
 _lock = threading.Lock()
+# A root and at most a share class: BRK.B, PBR.A.
+_LISTED = re.compile(r"[A-Z0-9-]{1,9}(\.[A-Z0-9]{1,2})?")
 
 
 def _api_key() -> str | None:
@@ -43,6 +46,13 @@ def _api_key() -> str | None:
 def normalize_ticker(t: str) -> str:
     """OpenFIGI writes share classes with a slash (``BRK/B``); we use a dot."""
     return t.strip().upper().replace("/", ".").replace(" ", "")
+
+
+def listed(ticker: str | None) -> str | None:
+    """The symbol, if it can be a listed one. A preferred or a note comes back as a
+    description of itself (``BRKR 6.375 09/01/28``), which no price source knows and
+    the API's holdings refuse, so that CUSIP counts as unmapped."""
+    return ticker if ticker and _LISTED.fullmatch(ticker) else None
 
 
 def pick_ticker(data: list[dict[str, Any]]) -> str | None:
@@ -85,7 +95,7 @@ def map_cusips(cusips: list[str], settings: Settings, budget_s: float = 20.0) ->
     known = cached_map(settings)
     todo = [c for c in wanted if c not in known]
     if not todo or settings.offline:
-        return {c: known[c] for c in wanted if c in known}
+        return {c: listed(known[c]) for c in wanted if c in known}
     key = _api_key()
     batch = 100 if key else 10
     headers = {"Content-Type": "application/json"}
@@ -113,4 +123,4 @@ def map_cusips(cusips: list[str], settings: Settings, budget_s: float = 20.0) ->
             merged = {**cached_map(settings), **fresh}
             get_store(settings).put(FAMILY, KEY, merged, Provenance.now("openfigi", url=URL, n=len(merged)))
         known.update(fresh)
-    return {c: known[c] for c in wanted if c in known}
+    return {c: listed(known[c]) for c in wanted if c in known}

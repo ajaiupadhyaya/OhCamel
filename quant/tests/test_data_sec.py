@@ -14,8 +14,9 @@ import respx
 
 from ohcamel_quant.config import Settings
 from ohcamel_quant.data import http, openfigi, sec
-from ohcamel_quant.data.base import DataUnavailable
+from ohcamel_quant.data.base import DataUnavailable, Provenance
 from ohcamel_quant.data.market import MarketData
+from ohcamel_quant.data.store import get_store
 
 
 def online(tmp_path, **kw) -> Settings:
@@ -270,6 +271,21 @@ def test_openfigi_parsing():
     ]
     out = openfigi.parse_mapping_response(["A", "B", "C", "D"], payload)
     assert out == {"A": "AAPL", "B": "BRK.B", "C": None}  # errors are not cached
+
+
+@respx.mock
+def test_a_preferred_or_a_note_has_no_ticker(tmp_path):
+    # Scion's 2025-09-30 filing holds Bruker's 6.375% preferred, which OpenFIGI names
+    # "BRKR 6.375 09/01/28". As a ticker it failed every panel of an imported portfolio with a 422.
+    s = online(tmp_path)
+    cached = {"116794207": "BRKR6.37509.01.28", "037833100": "AAPL", "084670702": "BRK.B", "71654V408": "PBR.A"}
+    store = get_store(s)
+    store.put(openfigi.FAMILY, openfigi.KEY, cached, Provenance.now("openfigi", url=openfigi.URL, n=len(cached)))
+    respx.post(openfigi.URL).mock(return_value=httpx.Response(200, json=[
+        {"data": [{"ticker": "BAC 6.5 01/01/30", "exchCode": "US", "marketSector": "Corp"}]}]))
+    out = openfigi.map_cusips([*cached, "060505104"], s)
+    assert out == {"116794207": None, "037833100": "AAPL", "084670702": "BRK.B", "71654V408": "PBR.A",
+                   "060505104": None}
 
 
 @respx.mock
