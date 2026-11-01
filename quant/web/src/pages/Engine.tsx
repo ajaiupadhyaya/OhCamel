@@ -57,7 +57,7 @@ export default function Engine() {
               ["FACTOR", "FRED DGS10 · DAILY CHANGE"],
               ["RISK", "HIST · PARAM · EWMA VAR/ES · EULER"],
               ["CHECKS", "VAR COVERAGE BACKTESTS · LIMITS"],
-              ["BOOK", "EXAMPLE FILE · PRICES REAL"],
+              ["BOOK", "PAPER · PRIVATE · PRICES REAL"],
               ["PROCESS", "OHCAMEL-LIVE · 24/7 · GATED"],
             ]}
           />
