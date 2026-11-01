@@ -682,7 +682,7 @@ main() {
 	if [ "$DRY" = 1 ]; then
 		act deploy/smoke.sh "${SMOKE_ARGS[@]}"
 		printf '+ echo "<UTC> %s ok|failed" >> %s\n' "$TAG" "$log"
-		echo "+ (keep the 3 newest ok shas' tags of the four images; docker image rm the rest; docker image prune -f; docker builder prune -f --keep-storage 5GB)"
+		echo "+ (keep the 3 newest ok shas' tags of the four images and any sha a container runs; docker image rm the rest; docker image prune -f; docker builder prune -f --keep-storage 5GB)"
 		return 0
 	fi
 	deploy/smoke.sh "${SMOKE_ARGS[@]}" || result=failed
@@ -710,15 +710,18 @@ main() {
 	# --- 12. keep the last 3 good tags, prune the rest ------------------------
 	say "Pruning"
 	local keep tag
-	keep=" $(good_shas "$log" 3 | tr '\n' ' ') $TAG "
+	# A sha a container is running from stays too: --public-only leaves the live
+	# profile on its own, which three newer public deploys push out of the log's last 3.
+	keep=" $(good_shas "$log" 3 | tr '\n' ' ') $TAG $(docker ps --format '{{.Image}}' | sed 's/.*://' | tr '\n' ' ') "
 	echo "  keeping:$keep"
 	for entry in "${DEPLOY_IMAGES[@]}"; do
 		read -r name dockerfile <<<"$entry"
 		while IFS= read -r tag; do
 			case "$tag" in '' | '<none>') continue ;; esac
 			case "$keep" in *" $tag "*) continue ;; esac
-			docker image rm "$DEPLOY_REGISTRY/$name:$tag" >/dev/null || true
-			echo "  removed $DEPLOY_REGISTRY/$name:$tag"
+			if docker image rm "$DEPLOY_REGISTRY/$name:$tag" >/dev/null; then
+				echo "  removed $DEPLOY_REGISTRY/$name:$tag"
+			fi
 		done < <(docker image ls "$DEPLOY_REGISTRY/$name" --format '{{.Tag}}' 2>/dev/null || true)
 	done
 	# Dangling layers and old build cache. --keep-storage: bounded, not

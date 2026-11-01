@@ -118,6 +118,8 @@ export interface PerformanceOut extends Envelope {
     rebalance: Rebalance;
     current_weights: Record<string, number>;
     turnover: { rebalances: number; mean_per_rebalance: number; annual: number | null } | null;
+    /** The first day the book lost all its equity: nothing compounds past it. */
+    ruined: { date: string; return: number } | null;
     cash_weight: number;
   };
   summary: PerfSummary;

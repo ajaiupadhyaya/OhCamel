@@ -103,13 +103,19 @@ case "$all" in
 esac
 case "${1:-}" in
 ps)
-	# wait_healthy's lookup, and resolve_live_profile's
-	echo cafe0001
+	# wait_healthy's lookup, and resolve_live_profile's; the prune asks for images
+	case "$*" in
+	*Image*) printf '%s\n' ${SHIM_RUNNING_IMAGES:-} ;;
+	*) echo cafe0001 ;;
+	esac
 	;;
 inspect) echo healthy ;;
 image)
 	if [ "${2:-}" = ls ]; then
 		printf '%s\n' ${SHIM_IMAGE_TAGS:-}
+	fi
+	if [ "${2:-}" = rm ] && [ -n "${SHIM_IMAGE_RM_RC:-}" ]; then
+		exit "$SHIM_IMAGE_RM_RC"
 	fi
 	;;
 esac
@@ -325,6 +331,17 @@ for t in bbbb dddd "$SHA"; do
 	if has log-P "image rm ghcr.io/ajaiupadhyaya/ohcamel:$t"; then no "P3 $t is kept" "removed"; else ok "P3 $t is kept"; fi
 done
 if has log-P "docker image rm ghcr.io/ajaiupadhyaya/ohcamel-quant:aaaa" && has log-P "docker image rm ghcr.io/ajaiupadhyaya/ohcamel-research:aaaa" && has log-P "docker image rm ghcr.io/ajaiupadhyaya/ohcamel-hostd:aaaa"; then ok "P4 all four images are pruned alike"; else no "P4 all four images are pruned alike" "$(grep 'image rm' "$scratch/log-P" | tr '\n' ' ')"; fi
+
+fresh R >/dev/null
+printf '2026-09-26T10:00:00Z dddd ok\n' >"$scratch/log-R"
+SHIM_RUNNING_IMAGES="ghcr.io/ajaiupadhyaya/ohcamel:aaaa caddy:2.11.4-alpine" SHIM_IMAGE_TAGS="aaaa cccc dddd $SHA" run R --public-only --sha "$SHA"
+if has log-R "image rm ghcr.io/ajaiupadhyaya/ohcamel:aaaa"; then no "P5 a running sha is kept" "removed"; else ok "P5 a running sha is kept"; fi
+if has log-R "docker image rm ghcr.io/ajaiupadhyaya/ohcamel:cccc"; then ok "P6 a sha nothing runs is still pruned"; else no "P6 a sha nothing runs is still pruned" "$(grep 'image rm' "$scratch/log-R" | tr '\n' ' ')"; fi
+
+fresh F >/dev/null
+printf '2026-09-26T10:00:00Z dddd ok\n' >"$scratch/log-F"
+SHIM_IMAGE_RM_RC=1 SHIM_IMAGE_TAGS="cccc dddd $SHA" run F --public-only --sha "$SHA"
+if grep -q "removed ghcr.io" "$scratch/out-F"; then no "P7 a refused removal is not reported as done" "$(grep removed "$scratch/out-F" | head -1)"; else ok "P7 a refused removal is not reported as done"; fi
 
 # --- H. --help ----------------------------------------------------------------------
 

@@ -4,7 +4,7 @@
  * rolling statistics, return distribution and the PSR / MinTRL "is this luck?" read-out.
  */
 import { useMemo, useState, type CSSProperties } from "react";
-import { DataTable, NumberField, Panel, Section, SegmentedControl, StatGrid, StatTile, TimeSeriesChart, Toggle, type Column, type LineSeries } from "../../components";
+import { Callout, DataTable, NumberField, Panel, Section, SegmentedControl, StatGrid, StatTile, TimeSeriesChart, Toggle, type Column, type LineSeries } from "../../components";
 import { XYChart } from "../../charts/XYChart";
 import { Absent, Verdict } from "../../design";
 import { fmtCurrency, fmtDate, fmtMultiple, fmtNum, fmtPct, fmtSignedPct } from "../../lib/format";
@@ -33,10 +33,22 @@ export function OverviewTab({ req }: { req: PortfolioIn }) {
   const bench = req.benchmark || "SPY";
   const notional = req.notional ?? 1_000_000;
   const asOf = q.data?.portfolio.end ?? undefined;
+  const ruined = q.data?.portfolio.ruined;
+  const rebalanceControl = <SegmentedControl ariaLabel="Rebalancing" size="sm" options={REBALANCE} value={rebalance} onChange={setRebalance} />;
+
+  if (ruined) {
+    return (
+      <Section title={`Performance · vs ${bench}`} actions={rebalanceControl}>
+        <Callout tone="warn">
+          This book returned {fmtSignedPct(ruined.return, 0)} on {fmtDate(ruined.date)}, losing all its equity in one day. Nothing compounds past that day, so the tear sheet is not shown. The Risk page's one-day figures do not compound and still read.
+        </Callout>
+      </Section>
+    );
+  }
 
   return (
     <>
-      <Section title={`Performance · vs ${bench}`} actions={<SegmentedControl ariaLabel="Rebalancing" size="sm" options={REBALANCE} value={rebalance} onChange={setRebalance} />}>
+      <Section title={`Performance · vs ${bench}`} actions={rebalanceControl}>
         <Panel<PerformanceOut> query={q} skeletonHeight={120} compact asOf={asOf}>
           {(d) => <Headline d={d} bench={bench} />}
         </Panel>

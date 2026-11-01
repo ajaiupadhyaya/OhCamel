@@ -51,9 +51,9 @@ options as an overlay at an assumed delta; a 13F gives no strike or expiry, so t
 | Cost | $24/month, metered hourly, capped |
 | Proxy / TLS | Caddy, Let's Encrypt, HTTP→HTTPS 308, HSTS, a CSP measured per route. Only Caddy has a host port |
 | DNS | Porkbun: A records `ohcamel` and `live.ohcamel` on the owner's domain |
-| **Deployed — public host** | **`94766bd`** (crawler metadata, the `/engine` replay, liquidity on `/risk`, the 13F option overlay, and the live book off `/api/artifacts`), deployed by the owner the evening of 2026-10-31 with `--public-only`, then again with `OHCAMEL_QUANT_ENGINE_URL` set in `deploy/.env`, so the bridge is on; smoke 27 passed, 0 failed, 3 skipped. Checked after it: `desk.report`'s fills and `pnl_by_strategy` and `signals.overlay`'s `names` answer 404, a `desk.report` note says the rest is withheld, `/api/engine/vitals` and `status` carry no symbol, limit or quantity, and `snapshot` and `history` answer 503. `/api/machine` is 142 KB gzipped and answers in 0.2 s; a cold build takes 1.9 s and peaks near 310 MiB on the droplet. `book_summary` first appears with the next weekday 16:30 `desk.report` |
+| **Deployed — public host** | **`e442de6`** (crawler metadata, the `/engine` replay, liquidity on `/risk`, the 13F option overlay, and the live book off `/api/artifacts`), deployed by the owner the evening of 2026-10-31 with `--public-only` and `OHCAMEL_QUANT_ENGINE_URL` set in `deploy/.env`, so the bridge is on; smoke 27 passed, 0 failed, 3 skipped. Checked after it: `desk.report`'s fills and `pnl_by_strategy` and `signals.overlay`'s `names` answer 404, a `desk.report` note says the rest is withheld, `/api/engine/vitals` and `status` carry no symbol, limit or quantity, and `snapshot` and `history` answer 503. `/api/machine` is 142 KB gzipped and answers in 0.2 s; a cold build takes 1.9 s and peaks near 310 MiB on the droplet. `book_summary` first appears with the next weekday 16:30 `desk.report` |
 | **Deployed — live host** | **`d017a93`** (a standing document re-sized at the newest close, `006cc09`, and the `--live` window closing at 17:10), deployed 2026-10-28 21:35 ET with `--live`; the pre-deploy journal copy is `/var/backups/ohcamel/pre-deploy-20261029T013404Z-8650c95eb485.db`; smoke 45 passed, 0 failed, 2 skipped. Kill switch armed and clear, desk enabled, five positions intact, 23 strategies registered |
-| Not deployed | The fix for a 13F holding that is not a listed share: Scion's filing holds a preferred, whose OpenFIGI symbol failed every panel of an imported portfolio with a 422. `/engine`'s book row, which still said the running engine's book was an example file. The live host needs no change for either |
+| Not deployed | The tear sheet's handling of a book that loses all its equity in a day. Scion's filing with the option overlay does, on 2020-11-05, and the compounded figures past that day were shown as a max drawdown of -1,171% and a volatility of 5,235%. Also a prune that keeps any sha a container runs, which only takes effect on the deploy after this one. The live host needs no change for either |
 
 **Data on the droplet (2026-10-08).** The warehouse backfill ran through the queue. `ingest.universes` finished,
 and `ingest.bars_daily` filled 563 keys to as-of 2026-10-07 in 322 cpu-s at 233 MB peak. The factors are as of
@@ -113,7 +113,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->1835<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->1836<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.

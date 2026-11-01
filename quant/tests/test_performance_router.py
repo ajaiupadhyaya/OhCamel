@@ -23,6 +23,7 @@ def test_analyze_full(client):
     assert j["portfolio"]["observations"] > 2400
     assert j["portfolio"]["cash_weight"] == pytest.approx(0.1)
     assert j["portfolio"]["rebalance"] == "monthly"
+    assert j["portfolio"]["ruined"] is None
     assert s["max_drawdown"] < 0 and s["vol_ann"] > 0
     assert s["cvar"] >= s["var"] > 0
     # rf is unavailable offline -> 0 and the payload says so.
@@ -49,6 +50,15 @@ def test_analyze_full(client):
     assert sum(cw.values()) == pytest.approx(1.0)
     assert j["portfolio"]["turnover"]["rebalances"] > 100
     assert sum(j["returns_histogram"]["counts"]) == s["n_obs"]
+
+
+def test_analyze_says_when_a_book_lost_all_its_equity(client):
+    # Short 15 times equity, SPY's best days are a loss past 100%: compounding beyond one is meaningless.
+    j = _ok(client.post("/api/performance/analyze", json={
+        "holdings": [{"ticker": "SPY", "weight": -15}], "benchmark": "SPY", "rebalance": "daily"}))
+    ruined = j["portfolio"]["ruined"]
+    assert ruined["return"] <= -1
+    assert any(ruined["date"][:10] in n and "compound" in n for n in j["notes"])
 
 
 def test_analyze_buy_and_hold_vs_daily(client):

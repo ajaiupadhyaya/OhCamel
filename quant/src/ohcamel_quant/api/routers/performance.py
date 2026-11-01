@@ -178,6 +178,14 @@ def _analyze(body: PerformanceIn, market: MarketData) -> dict[str, Any]:
         sr_benchmark=body.sr_benchmark, psr_confidence=body.psr_confidence,
         n_trials=body.n_trials, sr_variance=body.sr_variance, nw_lags=body.nw_lags)
 
+    # A leveraged book can lose more than its equity in a day. W_t then crosses zero and
+    # the product keeps running on a negative base, so every compounded figure after it
+    # is an artefact: a max drawdown past -100%, a volatility in the thousands of percent.
+    wiped = rp[rp <= -1.0]
+    ruined = {"date": wiped.index[0], "return": float(wiped.iloc[0])} if len(wiped) else None
+    if ruined:
+        notes.append(f"The book lost all its equity on {wiped.index[0].date()}: nothing compounds past "
+                     "that day, so the compounded figures here mean nothing.")
     notes.append(REBALANCE_NOTE[body.rebalance])
     notes.append("Cash (1 - sum of weights) earns the daily risk-free rate." if rf is not None
                  else "Cash (1 - sum of weights) earns 0%.")
@@ -215,7 +223,7 @@ def _analyze(body: PerformanceIn, market: MarketData) -> dict[str, Any]:
     return clean({
         "portfolio": {**portfolio_meta(weights, body.rebalance), "benchmark": bench or None,
                       "observations": len(rp), "start": rp.index[0], "end": rp.index[-1],
-                      "current_weights": current.to_dict(), "turnover": to_stats},
+                      "current_weights": current.to_dict(), "turnover": to_stats, "ruined": ruined},
         "summary": report["summary"],
         "benchmark_summary": bench_summary,
         "sharpe_inference": report["sharpe_inference"],
