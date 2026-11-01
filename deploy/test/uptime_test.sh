@@ -15,7 +15,7 @@
 # What it pins:
 #   - an all-good pair of hosts passes every check and exits 0;
 #   - each check Task 17 names fails, by name, when its answer goes wrong:
-#     the public / and /api/health, the engine counter frozen across 2 s,
+#     the public / and /api/health, the engine counter frozen across 30 s,
 #     /api/desk's shape (on --engine), the HTTP -> HTTPS redirect on either
 #     host, the live host answering an anonymous caller, a certificate with
 #     10 days or fewer left;
@@ -233,7 +233,7 @@ case "$out" in
 *"9 pass, 0 warn, 0 fail, 1 skip"*) ok "all good: the summary counts nine passes and the desk SKIP" ;;
 *) no "all good" "summary line: $(printf '%s\n' "$out" | tail -1)" ;;
 esac
-if grep -q '^SLEEP 2' "$log"; then ok "all good: the counter is read 2 s apart"; else no "all good" "no sleep 2 between the counter reads"; fi
+if grep -q '^SLEEP 30' "$log"; then ok "all good: the counter is read 30 s apart"; else no "all good" "no sleep 30 between the counter reads"; fi
 if grep -q -- '-checkend 864000' "$log" && grep -q -- '-checkend 1814400' "$log"; then
 	ok "all good: certificates checked at 10 d and 21 d"
 else

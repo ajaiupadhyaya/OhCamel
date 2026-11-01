@@ -859,8 +859,8 @@ noticed too. The file is read for those two keys only and never sourced.
 
 **From outside: `scripts/uptime.sh`**, run every 15 minutes by
 `.github/workflows/uptime.yml` (read-only GETs, no secrets): the public `/`
-and `/api/health`; the engine's counter advancing (a SKIP while the public
-bridge is off, as it is by default); HTTP redirecting to HTTPS on both hosts;
+and `/api/health`; the engine's counter advancing across 30 s (a SKIP while
+the public bridge is off, the default; production has it on); HTTP redirecting to HTTPS on both hosts;
 the live host refusing an anonymous caller; each certificate with more than
 21 days left (warn) and more than 10 (fail). It alerts by failing, which
 reaches the owner once O11 sets GitHub's failed-workflow notifications.

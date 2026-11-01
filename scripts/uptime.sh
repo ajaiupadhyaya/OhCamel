@@ -19,7 +19,10 @@
 #
 # The checks, each printed as one PASS / WARN / FAIL / SKIP line:
 #   https://PUBLIC/ and /api/health   answer 200
-#   engine counter                    nodes_recomputed advances across 2 s.
+#   engine counter                    nodes_recomputed advances across 30 s:
+#                                     with the market closed the engine
+#                                     stabilizes every 2 to 7 s, so a shorter
+#                                     window reads a healthy engine as frozen.
 #                                     With --engine, off the engine's own
 #                                     /api/snapshot. Without it, through the
 #                                     public host's read-only bridge
@@ -92,7 +95,7 @@ for path in / /api/health; do
 done
 
 # ---------------------------------------------------------------------------
-# The engine is recomputing: nodes_recomputed advances across 2 s
+# The engine is recomputing: nodes_recomputed advances across 30 s
 # ---------------------------------------------------------------------------
 # counter URL -- prints "CODE N OFF": N empty when the body carries no
 # counter; OFF is "off" only when the body says "configured": false (the
@@ -126,15 +129,15 @@ elif [ "$code_a" = 503 ]; then
 elif [ "$code_a" != 200 ] || [ -z "$n_a" ]; then
 	no "engine counter" "$src answered ${code_a:-000} with no nodes_recomputed"
 else
-	sleep 2
+	sleep 30
 	read -r code_b n_b _ <<<"$(counter "$src")"
 	[ "$n_b" = - ] && n_b=""
 	if [ "$code_b" != 200 ] || [ -z "$n_b" ]; then
 		no "engine counter" "$src answered ${code_b:-000} on the second read"
 	elif [ "$n_b" -le "$n_a" ]; then
-		no "engine counter" "frozen: nodes_recomputed stuck at $n_a across 2 s ($src)"
+		no "engine counter" "frozen: nodes_recomputed stuck at $n_a across 30 s ($src)"
 	else
-		ok "engine counter" "$((n_b - n_a)) nodes recomputed in 2 s ($src)"
+		ok "engine counter" "$((n_b - n_a)) nodes recomputed in 30 s ($src)"
 	fi
 fi
 
