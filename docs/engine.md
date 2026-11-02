@@ -3,8 +3,12 @@
 [![ci](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml/badge.svg)](https://github.com/ajaiupadhyaya/OhCamel/actions/workflows/ci.yml)
 [![coverage 80%](https://img.shields.io/badge/coverage-80%25-brightgreen)](#coverage-and-what-it-is-not-measuring)
 
-**Live:** [ohcamel.ajaiupadhyaya.com](https://ohcamel.ajaiupadhyaya.com) — the
-synthetic demo, no credentials, always on. [How it is deployed](#watching-it).
+**Live:** the engine runs a paper desk behind a password at
+`live.ohcamel.ajaiupadhyaya.com`. The public site,
+[ohcamel.ajaiupadhyaya.com](https://ohcamel.ajaiupadhyaya.com), is OhCamel Quant
+(see the [README](../README.md)), and nothing synthetic is served there. To watch
+this engine without credentials, run `make demo`.
+[How it is deployed](#watching-it).
 
 A reactive risk and limits engine. Positions and market data go in; per-instrument
 and per-sector exposure, gross and net, VaR, expected shortfall, portfolio beta,
@@ -73,29 +77,43 @@ the graph does, so the difference is incrementality and not one side having a
 slower covariance routine.
 
 ```
-  Name                 Time/Run       mWd/Run    mjWd/Run   Percentage
- ----------------- ------------- ------------- ----------- ------------
-  incremental/10        19.5us         9.08kw      27.3w         0.04%
-  incremental/100       89.1us        44.52kw     603.2w         0.17%
-  incremental/400      492.7us       180.69kw   9_212.2w         0.92%
-  polled/10             51.7us        47.94kw       9.8w         0.10%
-  polled/100         3_387.7us      3_756.06kw    325.8w         6.34%
-  polled/400        53_426.8us     59_345.84kw  3_948.8w       100.00%
+  Name                 Time/Run       mWd/Run    mjWd/Run    Prom/Run   Percentage
+ ----------------- ------------- ------------- ----------- ----------- ------------
+  incremental/10        19.93us        9.32kw      28.18w      28.18w        0.03%
+  incremental/100       93.28us       44.76kw     609.06w     609.06w        0.12%
+  incremental/400      492.08us      180.93kw   9_205.26w   6_795.66w        0.62%
+  polled/10             72.29us       63.25kw      12.07w      12.07w        0.09%
+  polled/100         5_108.27us    5_005.00kw     337.71w     329.71w        6.43%
+  polled/400        79_443.61us   78_980.88kw   4_288.73w   1_874.73w      100.00%
 ```
 
-Apple M2 Pro, macOS 26.5, OCaml 5.2.1, Owl's C kernels at `-O1` because of the
-clang bug the Makefile documents. Run-to-run variance is 3–5% on time and
-essentially zero on allocation. Numbers from your machine will differ; the
-ratios should not.
+Run on 2026-10-30 at commit `b5daef3`: Apple M2 Pro, macOS 26.6.2, OCaml 5.2.1,
+Owl's C kernels at `-O1` because of the clang bug the Makefile documents, load
+average near 5. Three consecutive runs differed by at most 6% on time and
+essentially not at all on allocation. Numbers from your machine will differ.
 
-At 400 names a full recompute costs **53 milliseconds**, which is not a slow
-number so much as a disqualifying one: it caps the engine at about nineteen
+At 400 names a full recompute costs **79 milliseconds**, which is not a slow
+number so much as a disqualifying one: it caps the engine at about thirteen
 events a second before it falls behind the market it is supposed to be watching.
-The incremental path is **108× faster** and allocates **330× fewer words**.
+The incremental path is **about 160× faster** and allocates **about 440× fewer
+words**.
+
+Those two ratios are not purely the architecture's. When this benchmark was first
+quoted, on the same chip in August 2026, polled/400 cost 53.4 ms and 59,346 kw,
+for 108× on time and 330× on words. The incremental rows have barely moved since;
+the polled rows have, and the cause is in the code. On 2026-09-20 `3de6f87` put a
+finiteness check in `Risk_metrics.mean`, and `covariance_core` calls `mean` twice
+per pair, so every covariance rebuild re-checks each series about n times, the
+sweep `covariance_matrix` hoists out of its inner loop to avoid exactly that. In a
+scratch copy with an unguarded mean inside `covariance_core`, polled/400 measures
+55.1 ms and 59,412 kw with the incremental rows unchanged, which is about 112× on
+time and 330× on words. A tick never rebuilds the matrix, so the cost lands on the
+baseline alone. Read 160× and 440× as this commit's measurement, and 112× and 330×
+as the ratios without that redundant check.
 
 And now the honest part, which the node-count table above hides. **The
-incremental engine's cost per tick is not flat in wall-clock** — 19.5µs, 89µs,
-493µs across the three sizes — even though the node count is (25.6, 25.2, 26.0).
+incremental engine's cost per tick is not flat in wall-clock** — 19.9µs, 93µs,
+492µs across the three sizes — even though the node count is (25.6, 25.2, 26.0).
 Both are true and the second does not imply the first. A tick reaches about
 twenty-five nodes at every book size, but *those* nodes are not all O(1): the
 weights are O(n), the portfolio return series is O(n·w), and the Euler
@@ -103,7 +121,7 @@ decomposition is a matrix-vector product at O(n²). What incrementality buys is
 that the covariance matrix — O(n²·w), the single most expensive thing here — is
 not among them. The polling baseline scales as n² because it rebuilds that
 matrix on every event; this one scales as the *cheap* part of n², which is why
-the gap widens from 2.7× to 108× as the book grows rather than staying constant.
+the gap widens from 3.6× to 160× as the book grows rather than staying constant.
 
 CI does not run this. Benchmark numbers from a shared runner are noise wearing a
 lab coat, so `make bench` is a local command and the table above is a quoted run
@@ -701,11 +719,23 @@ two facts is what this section is about.
 ### Why the model survived, and why that is not reassuring
 
 Part of it is real. This book is genuinely hedged — long technology and
-financials against a short energy leg — and in the second half of 2008 energy
-fell harder than technology did, so the short side paid on the worst days. The
-book's daily volatility through the GFC window is 1.6%, rising to 2.5% in the
-Lehman quarter. That is a 1.5× regime change, not the 4× one the synthetic
-`vol-regime` series inflicts, and a 60-day window absorbs 1.5× tolerably.
+financials against a short energy leg. Over the second half of 2008 technology
+fell far harder than energy: from the close of 30 June to the close of 31
+December, AAPL, MSFT and NVDA lost 49%, 29% and 57%, and XOM and CVX lost 8% and
+24%. But energy fell on the days that mattered, so the short side paid on the
+worst days. It made money on eight of the ten worst days of that half, and on 29
+September, the book's worst day, it turned −9.76% on the long leg into −7.02%.
+Without it the same long weights run at 1.99% daily volatility through the window,
+against the book's 1.61%.
+
+That 1.61% is the whole GFC window, 630 returns, by `Risk_metrics.stddev`, which
+divides by n. In calendar Q3 2008, the quarter Lehman failed in, the figure is
+2.05%, only 1.3× the window's, because that quarter holds just twelve sessions
+from 15 September on. The step a 60-day window actually had to absorb is sharper:
+1.58% over the 60 sessions before 15 September and 2.75% over the 60 from it, and
+no 60-session stretch in the window is higher. That is a 1.7× regime change, not
+the 4× one the synthetic `vol-regime` series inflicts, and a 60-day window absorbs
+1.7× tolerably.
 
 The rest of it is the tests not seeing what is in front of them, and this window
 is what put a fourth statistic in the battery.
@@ -722,18 +752,19 @@ to mean "the exceedances were well scattered" has read something the statistic
 never said.
 
 COVID is worse. `covid`/`parametric` takes **10 exceptions in a single
-21-session window** — ten times the independent expectation — with a joint
-p-value of 0.073, which does not reject at 5%. A model breaching its 95% VaR ten
-times in a month is not a calibrated model.
+21-session window** — more than double the 4 its worst window would typically
+hold if its 22 exceptions fell at random — with a joint p-value of 0.073, which
+does not reject at 5%. A model breaching its 95% VaR ten times in a month is not
+a calibrated model.
 
 **The duration test says so: p = 0.0033, shape 0.65.** A shape well below 1 is a
 decreasing hazard — a breach makes the next one arrive sooner than chance, which
 is the definition of clustering — and because the statistic works on waiting
-times rather than on adjacency, the three-day spacing that hid the cluster from
-the Markov test does not hide it here. `covid`/`historical` rejects too, at
-0.016 with a shape of 0.66.
+times rather than on adjacency, the two- and three-session gaps that kept most of
+the cluster from the Markov test do not hide it here. `covid`/`historical` rejects
+too, at 0.016 with a shape of 0.66.
 
-**And it still does not catch the GFC**, at p = 0.75 with a shape of 0.95. That
+**And it does not flag the GFC**, at p = 0.75 with a shape of 0.95. That
 is not a defect being glossed over; it is what the test is. It is a **global**
 fit over the whole duration distribution, and twenty-five durations spread
 across 570 days still look roughly exponential in aggregate even with five of
@@ -742,8 +773,22 @@ moves it.
 
 Which is why the `burst` column stays. It is not a hypothesis test and is
 labelled as such — just the most exceptions any 21 consecutive sessions
-contained, against roughly 1.1 expected under independence — and it is the only
-one of the three that sees a *local* cluster. Three instruments, three different
+contained — and it is the only one of the three that sees a *local* cluster.
+
+Its reference has to be a maximum too. One fixed 21-session window expects 1.05
+exceptions at 95%, but the column reports the worst of every window in the series,
+and that is larger by construction. Place each row's exceptions uniformly at
+random across its sessions and the worst window typically holds 4: the median is
+4 on all nine rows and the 95th percentile is 5 or 6. Those figures are a Monte
+Carlo run outside the battery, 100,000 trials per row and 1,000,000 for the COVID
+tails below, and `make backtest-crisis` does not compute them.
+
+Against that, COVID's bursts are far outside chance: random placement reaches 8 on
+the historical row in about 2 of 10,000 trials, and 10 on the parametric row in 4
+of 1,000,000. The GFC's 5 is not: random placement reaches it in 13% to 44% of
+trials, depending on the row. Five exceptions in seventeen sessions around Lehman
+was a bad month, but as a count it does not establish a cluster, so the duration
+test's silence there is not evidence of a miss. Three instruments, three different
 blind spots: adjacency, aggregation, and no distribution theory at all. Reading
 one of them alone is how a model breaching ten times in a month gets a passing
 grade.
@@ -910,7 +955,7 @@ venue (invariant 12), and turns a venue's answer into an event for
 [`desk/order.ml`](../desk/order.ml), a pure state machine that does no IO, reads
 no clock and knows no venue. [`desk/venue.ml`](../desk/venue.ml) is the
 interface a venue satisfies, as a record of closures chosen at run time:
-[`desk/sim_venue.ml`](../desk/sim_venue.ml) on the demo host and in tests,
+[`desk/sim_venue.ml`](../desk/sim_venue.ml) in the demo and in tests,
 [`desk/alpaca_paper.ml`](../desk/alpaca_paper.ml) and
 [`desk/alpaca_trade.ml`](../desk/alpaca_trade.ml) (assembled with the
 order-updates socket in [`desk/trade_updates.ml`](../desk/trade_updates.ml)) on
@@ -1073,24 +1118,28 @@ routes change the desk -- orders, cancel, kill and its reset -- and each
 refuses a request without the page's header, and one that carries neither
 the browser's `Sec-Fetch-Site: same-origin` label nor an `Origin` equal to
 its `Host`, which a cross-site page cannot forge (the password, not this
-check, decides who else may send one; see *Orders*); on the public demo
-each answers 405.
+check, decides who else may send one; see *Orders*); on the demo each
+answers 405.
 
 ## Watching it
 
-None of the above is required to see it move. The demo is deployed:
+None of the above is required to see it move. `make demo` is the synthetic feed
+with no credentials, CVX going stale on schedule, and it works at three in the
+morning on a Sunday because the feed is generated rather than received.
 
-**https://ohcamel.ajaiupadhyaya.com**
+In production the engine is `live.ohcamel.ajaiupadhyaya.com`, against Alpaca and
+FRED: real prints, the real ten-year yield, real staleness. It runs on one small
+droplet behind Caddy with a Let's Encrypt certificate, restarts on its own after
+a crash or a reboot, and sits behind a password, because it holds credentials and
+shows a real book.
 
-That is `make demo` — the synthetic feed, no credentials, CVX going stale on
-schedule — on one small droplet behind Caddy with a Let's Encrypt certificate,
-restarting on its own after a crash or a reboot. It is up at three in the
-morning on a Sunday because the feed is generated rather than received. A second
-host, `live.ohcamel.ajaiupadhyaya.com`, is the same image against Alpaca and
-FRED: real prints, the real ten-year yield, real staleness. It sits behind a
-password, because it holds credentials and shows a real book.
+The public address, https://ohcamel.ajaiupadhyaya.com, no longer serves the demo.
+It serves OhCamel Quant, on real market data only. The synthetic engine is not
+routed anywhere in production ([`deploy/Caddyfile`](../deploy/Caddyfile)); it
+remains as the `ohcamel-demo` compose service behind the `demo` profile, for the
+localhost harness.
 
-The page at that address is the Desk, and it is the engine drawn from itself.
+The page the engine serves is the Desk, and it is the engine drawn from itself.
 Figure 1 is the dependency graph taken from Incremental's own node table, and
 each frame's work travels across it rank by rank: a print in AAPL pulses its
 price cell, lights its exposure, the aggregates, the estimators and the
@@ -1654,8 +1703,8 @@ arithmetic.
 Argument — reads `/api/research` (the registered strategies with their
 sizing and capital fraction, each one's latest judgement, how many files the
 intake is holding, and the R8 sentence) and `/api/research/evidence` (the
-two manifests above) and computes nothing itself. On the public demo no
-strategy is registered — its synthetic book holds neither SPY nor TLT — so
+two manifests above) and computes nothing itself. On the demo no strategy
+is registered — its synthetic book holds neither SPY nor TLT — so
 the page says exactly that, and shows the EXP-A01 evidence regardless,
 because the evidence is a fact about the build and not about which book is
 loaded. Figure 1 draws a signals band into the orders band only where an
@@ -1693,8 +1742,8 @@ for that detail than here. OCaml 5.1.0 or newer is required; this switch is on
 
 Orders go to one place, Alpaca's paper account, and only after the rules and
 the book's limits pass them (see *Orders*). Nothing here can reach a
-live-money endpoint, and the public demo trades a venue simulated in this
-process. Persistence is one journal, `desk/journal.ml`: every order, its
+live-money endpoint, and the demo trades a venue simulated in this process.
+Persistence is one journal, `desk/journal.ml`: every order, its
 events and its fills, and each session's close, marks and VaR forecasts.
 `run-live` and `serve` keep it in a file, `/data/desk.db` on the live host,
 and restore the drawdown trail from it at the first successful sync after
