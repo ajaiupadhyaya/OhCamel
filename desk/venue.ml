@@ -178,5 +178,6 @@ module Read = struct
     latest_quote : Symbol.t -> Quote.t option Or_error.t Deferred.t;
     daily_bars :
       Symbol.t list -> days:int -> Bar.t list Symbol.Map.t Or_error.t Deferred.t;
+    last_prints : Symbol.t list -> Time_ns.t Symbol.Map.t Or_error.t Deferred.t;
   }
 end

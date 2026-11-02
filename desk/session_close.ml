@@ -19,6 +19,16 @@
    stay incomplete it records the session without rolling any window, and
    says so.
 
+   A NAME THAT DID NOT TRADE IS NOT A LATE BAR. SIZE printed nothing on IEX on
+   six of the ten sessions to 2026-10-30, and each time the rule above held back
+   every window in the book, for a bar that does not exist at the close. The
+   venue files it hours later with no trades and yesterday's close, which is a
+   return of zero, and that is what a restart reads back. So a missing bar is
+   checked against the name's latest print: older than the session, and the name
+   rolls at zero with the rest at once; printed today, or unknown, and it is a
+   late bar, and the close waits. If every bar is late, every name printed today
+   and nothing is zeroed.
+
    A CLOSE RECORDS THE ACCOUNT, OR NOTHING. A session row is the account's
    equity, and [restore] puts it back into the drawdown's trail on every start
    after. Until a sync has applied the account's book, and while the last one
@@ -68,11 +78,21 @@ let session_return ~(date : Date.t) (bars : Venue.Bar.t list) : float option =
       Some ((latest.Venue.Bar.close /. previous.Venue.Bar.close) -. 1.0)
   | _ -> None
 
-let roll_plan ~(date : Date.t) ~(symbols : Symbol.t list)
+(* The names whose latest print is older than the session: they did not trade in
+   it, on the feed the bars come from. Absence is not silence -- a name with no
+   print on record is unknown, and stays a missing bar. *)
+let silent ~(date : Date.t) ~zone ~(prints : Time_ns.t Symbol.Map.t) =
+  Map.filter prints ~f:(fun at -> Date.( < ) (Time_ns.to_date at ~zone) date)
+  |> Map.keys |> Symbol.Set.of_list
+
+let roll_plan ~(date : Date.t) ~(symbols : Symbol.t list) ~(silent : Symbol.Set.t)
     (bars : Venue.Bar.t list Symbol.Map.t) =
   let results =
     List.map symbols ~f:(fun s ->
-        (s, Option.bind (Map.find bars s) ~f:(session_return ~date)))
+        ( s,
+          match Option.bind (Map.find bars s) ~f:(session_return ~date) with
+          | None when Set.mem silent s -> Some 0.0
+          | return -> return ))
   in
   match
     List.filter_map results ~f:(fun (s, r) -> if Option.is_none r then Some s else None)
@@ -198,6 +218,25 @@ let record_if_current ~(book_is_current : unit -> bool) ~graph ~journal ~date ~r
 let retry_every = Time_ns.Span.of_min 10.0
 let attempts = 6
 
+(* Asked only for the names with no bar, so an ordinary close makes no extra
+   call. A read that fails silences nobody: the bars stay missing and the close
+   tries again, as it would have. *)
+let ask_silent ~(read : Venue.Read.t) ~(date : Date.t) ~(symbols : Symbol.t list)
+    (bars : Venue.Bar.t list Symbol.Map.t) =
+  match
+    List.filter symbols ~f:(fun s ->
+        Option.is_none (Option.bind (Map.find bars s) ~f:(session_return ~date)))
+  with
+  | [] -> return Symbol.Set.empty
+  | missing -> (
+      match%map read.Venue.Read.last_prints missing with
+      | Error _ -> Symbol.Set.empty
+      | Ok prints ->
+          let zone =
+            Option.value (Lazy.force Desk_time.new_york) ~default:Time_float.Zone.utc
+          in
+          silent ~date ~zone ~prints)
+
 let not_current =
   "the desk has not applied a recent read of the account, so the book may not be the \
    account's"
@@ -227,10 +266,12 @@ let run_forever ~(read : Venue.Read.t) ~(graph : Graph.t) ~(journal : Journal.t)
     let%bind () = Clock_ns.at (due clock) in
     close clock.Venue.Session_clock.next_close_date 1
   and close date attempt =
-    let%bind plan =
-      match%map read.Venue.Read.daily_bars symbols ~days:2 with
-      | Error e -> Error (Error.to_string_hum e)
-      | Ok bars -> roll_plan ~date ~symbols bars
+    let%bind plan, silent_names =
+      match%bind read.Venue.Read.daily_bars symbols ~days:2 with
+      | Error e -> return (Error (Error.to_string_hum e), Symbol.Set.empty)
+      | Ok bars ->
+          let%map silent = ask_silent ~read ~date ~symbols bars in
+          (roll_plan ~date ~symbols ~silent bars, silent)
     in
     let last = attempt >= attempts in
     match plan with
@@ -244,7 +285,14 @@ let run_forever ~(read : Venue.Read.t) ~(graph : Graph.t) ~(journal : Journal.t)
     | _ -> (
         let returns, how =
           match plan with
-          | Ok r -> (r, sprintf "%d windows rolled" (List.length r))
+          | Ok r ->
+              ( r,
+                sprintf "%d windows rolled%s" (List.length r)
+                  (if Set.is_empty silent_names then ""
+                   else
+                     sprintf ", at zero for %s: no print in the session"
+                       (String.concat ~sep:", "
+                          (List.map (Set.to_list silent_names) ~f:Symbol.to_string))) )
           | Error why -> ([], "windows NOT rolled: " ^ why)
         in
         match record_now date returns with

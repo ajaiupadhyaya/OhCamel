@@ -53,7 +53,7 @@ options as an overlay at an assumed delta; a 13F gives no strike or expiry, so t
 | DNS | Porkbun: A records `ohcamel` and `live.ohcamel` on the owner's domain |
 | **Deployed — public host** | **`b223aad`** (crawler metadata, the `/engine` replay, liquidity on `/risk`, the 13F option overlay, the live book off `/api/artifacts`, and the tear sheet's notice for a book that loses all its equity in a day), deployed by the owner on 2026-11-01 with `--public-only`; `OHCAMEL_QUANT_ENGINE_URL` is set in `deploy/.env`, so the bridge is on; smoke 27 passed, 0 failed, 3 skipped. Scion's filing with the option overlay shows the notice in place of the tear sheet: -122% on 2020-11-05 at the default monthly rebalance, and its Risk page figures still answer. Checked after it: `desk.report`'s fills and `pnl_by_strategy` and `signals.overlay`'s `names` answer 404, a `desk.report` note says the rest is withheld, `/api/engine/vitals` and `status` carry no symbol, limit or quantity, and `snapshot` and `history` answer 503. `/api/machine` is 142 KB gzipped and answers in 0.2 s; a cold build takes 1.9 s and peaks near 310 MiB on the droplet. `book_summary` first appears with the next weekday 16:30 `desk.report` |
 | **Deployed — live host** | **`d017a93`** (a standing document re-sized at the newest close, `006cc09`, and the `--live` window closing at 17:10), deployed 2026-10-28 21:35 ET with `--live`; the pre-deploy journal copy is `/var/backups/ohcamel/pre-deploy-20261029T013404Z-8650c95eb485.db`; smoke 45 passed, 0 failed, 2 skipped. Kill switch armed and clear, desk enabled, five positions intact, 23 strategies registered |
-| Not deployed | Nothing the site runs: `007e1a6` onward changes `scripts/uptime.sh` and this page, and the uptime workflow reads the script from the repository |
+| Not deployed | `auto/feed-reconnect`, on main once CI is green, needs `--live` after 17:10 New York: a 406 is retried in the process and a name that printed nothing rolls at zero (*What the first weeks taught*, below). `007e1a6` changes only `scripts/uptime.sh` and this page, and the uptime workflow reads the script from the repository |
 
 **Data on the droplet (2026-10-08).** The warehouse backfill ran through the queue. `ingest.universes` finished,
 and `ingest.bars_daily` filled 563 keys to as-of 2026-10-07 in 322 cpu-s at 233 MB peak. The factors are as of
@@ -169,6 +169,8 @@ commit and tests:
   the day, which refused every intraday order in them. A position may now carry `(stale_after_s N)`; the example
   book sets 1800, 600 and 300 s in tiers over the longest silence each name showed (`tools/iex_gaps.py`), and
   `/api/health` prints each name's threshold beside its state.
+
+**What the first weeks taught (2026-11-01).** Two things held the desk's risk figures back, and neither shows on a page. `SIZE` printed nothing on IEX on six of the ten sessions to 2026-10-30 (10-20, 10-23 and 10-27 through 10-30). A session with no print has no daily bar at the close; Alpaca files one hours later with no trades and the previous close. The close's all-or-nothing roll therefore waited its 55 minutes and rolled no window for any of the 48 names, and the session's return was gone, because a recorded date is never rolled again; the two closes whose log survived both read `windows NOT rolled`. A missing bar is now checked against the name's latest print (`Venue.Read.last_prints`): older than the session, and the name rolls at zero with the rest, at once; printed today or unknown, and it is a late bar and the close waits. If every bar is late, every name printed today and nothing is zeroed. Separately, a 406 stopped the process, and on 2026-10-31 it restarted eleven times in 158 s until Alpaca let go of what was most likely our own dropped connection. A restart between the close and the record loses the day, so a 406 is now `Failure.Refused`: the session closes its own side, and the feed backs off and reconnects.
 
 Beside these, the research service's documents arrive at 20:18 ET in summer (it holds for Alpaca's 15-minute SIP
 embargo), 86 minutes after the last overlay, so every evening sizing of EXP-A01 read the fallback (0.5) and the
@@ -499,7 +501,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **<!-- count:ocaml-tests -->835<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->65<!-- /count --> scheduler cases in `test/desk_async` —
+- **<!-- count:ocaml-tests -->838<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->65<!-- /count --> scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler

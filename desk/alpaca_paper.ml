@@ -261,6 +261,20 @@ let bar_of_json (json : Yojson.Safe.t) : Venue.Bar.t option =
       | None -> None)
   | _ -> None
 
+let last_prints_of_json (json : Yojson.Safe.t) : Time_ns.t Symbol.Map.t Or_error.t =
+  match field json "trades" with
+  | Some (`Assoc per_symbol) ->
+      Ok
+        (Symbol.Map.of_alist_reduce
+           ~f:(fun a _ -> a)
+           (List.filter_map per_symbol ~f:(fun (symbol, trade) ->
+                Option.map
+                  (Option.bind (field trade "t") ~f:(function
+                    | `String s -> Desk_time.parse s
+                    | _ -> None))
+                  ~f:(fun at -> (Symbol.of_string symbol, at)))))
+  | _ -> Or_error.error_string "alpaca_paper: no trades object"
+
 let bars_of_json (json : Yojson.Safe.t) :
     (Venue.Bar.t list Symbol.Map.t * string option) Or_error.t =
   match field json "bars" with
@@ -566,4 +580,16 @@ let read ~(credentials : Credentials.t) ~(feed : string) : Venue.Read.t =
              quotes_of_json)
           ~f:(fun qs -> Option.join (Map.find qs symbol)));
     daily_bars;
+    last_prints =
+      (fun symbols ->
+        get
+          (data_uri
+             ~query:
+               [
+                 ( "symbols",
+                   [ String.concat ~sep:"," (List.map symbols ~f:Symbol.to_string) ] );
+                 ("feed", [ feed ]);
+               ]
+             "/v2/stocks/trades/latest")
+          last_prints_of_json);
   }

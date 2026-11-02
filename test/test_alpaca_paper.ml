@@ -104,6 +104,20 @@ let test_daily_bars_carry_their_dates_and_the_page_token () =
        ~f:(fun b -> sprintf "%s %g" (Date.to_string b.Venue.Bar.date) b.Venue.Bar.close));
   Alcotest.(check (option string)) "the token" (Some "abc") token
 
+let test_latest_trades_carry_their_instants () =
+  let prints =
+    Or_error.ok_exn
+      (Alpaca.last_prints_of_json
+         (json
+            {|{"trades":{"SIZE":{"t":"2026-10-26T17:25:13.443641311Z","p":180.2,"s":100},
+                         "SPY":{"p":756.0}}}|}))
+  in
+  Alcotest.(check (list string))
+    "the instant, and a trade with none is no print" [ "SIZE 2026-10-26" ]
+    (List.map (Map.to_alist prints) ~f:(fun (s, at) ->
+         sprintf "%s %s" (Symbol.to_string s)
+           (Date.to_string (Time_ns.to_date at ~zone:Time_float.Zone.utc))))
+
 let data_credentials key =
   (* Config.Credentials.t has no constructor; build it the way Config does, from strings. *)
   {
@@ -172,6 +186,8 @@ let suite =
         test_the_clock's_date_is_new_york's;
       Alcotest.test_case "a one-sided quote has no mid" `Quick
         test_a_one_sided_quote_has_no_mid;
+      Alcotest.test_case "latest trades carry their instants" `Quick
+        test_latest_trades_carry_their_instants;
       Alcotest.test_case "daily bars carry their dates and the page token" `Quick
         test_daily_bars_carry_their_dates_and_the_page_token;
       Alcotest.test_case "only a paper key can trade, and the error never echoes it"

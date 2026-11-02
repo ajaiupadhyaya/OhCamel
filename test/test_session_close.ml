@@ -4,8 +4,9 @@
    What is pinned is ordering and all-or-nothing. The windows roll BEFORE the
    forecast is taken, so the forecast for the next session knows this one. A
    return missing for one name rolls no name, because a window that moved for
-   AAPL and not for XOM would pair one day's return with another day's. And a
-   date already recorded rolls nothing twice. *)
+   AAPL and not for XOM would pair one day's return with another day's, unless
+   the name did not trade, when its return is zero. And a date already recorded
+   rolls nothing twice. *)
 
 open Core
 open Ohcamel.Types
@@ -134,7 +135,10 @@ let test_a_missing_name_rolls_no_name () =
         (xom, [ bar "2026-09-10" 50.0; bar "2026-09-11" 49.0 ]);
       ]
   in
-  (match Close.roll_plan ~date:(date "2026-09-11") ~symbols:[ aapl; xom ] bars with
+  (match
+     Close.roll_plan ~date:(date "2026-09-11") ~symbols:[ aapl; xom ]
+       ~silent:Symbol.Set.empty bars
+   with
   | Ok returns ->
       (* 102/100 - 1 = 0.02; 49/50 - 1 = -0.02 *)
       Alcotest.(check (list (pair string (float 1e-12))))
@@ -143,12 +147,60 @@ let test_a_missing_name_rolls_no_name () =
         (List.map returns ~f:(fun (s, r) -> (Symbol.to_string s, r)))
   | Error why -> Alcotest.failf "a complete set was refused: %s" why);
   let partial = Map.set bars ~key:xom ~data:[ bar "2026-09-10" 50.0 ] in
-  match Close.roll_plan ~date:(date "2026-09-11") ~symbols:[ aapl; xom ] partial with
+  match
+    Close.roll_plan ~date:(date "2026-09-11") ~symbols:[ aapl; xom ]
+      ~silent:Symbol.Set.empty partial
+  with
   | Ok _ -> Alcotest.fail "AAPL rolled while XOM had no bar for the session"
   | Error why ->
       Alcotest.(check bool)
         "the error names XOM" true
         (String.is_substring why ~substring:"XOM")
+
+(* SIZE printed nothing on IEX on six of the ten sessions to 2026-10-30, and each
+   time held 47 other names' windows back. A session with no print has no bar to
+   wait for, and the venue files it later at yesterday's close: a return of zero. *)
+let test_a_name_that_printed_nothing_rolls_at_zero () =
+  let bars =
+    Symbol.Map.of_alist_exn
+      [
+        (aapl, [ bar "2026-09-10" 100.0; bar "2026-09-11" 102.0 ]);
+        (xom, [ bar "2026-09-09" 50.0; bar "2026-09-10" 49.0 ]);
+      ]
+  in
+  match
+    Close.roll_plan ~date:(date "2026-09-11") ~symbols:[ aapl; xom ]
+      ~silent:(Symbol.Set.singleton xom) bars
+  with
+  | Ok returns ->
+      Alcotest.(check (list (pair string (float 1e-12))))
+        "AAPL's own return, and nothing for XOM"
+        [ ("AAPL", 0.02); ("XOM", 0.0) ]
+        (List.map returns ~f:(fun (s, r) -> (Symbol.to_string s, r)))
+  | Error why -> Alcotest.failf "a silent name held the roll back: %s" why
+
+(* A name is silent only on a print dated before the session, by New York's date.
+   Late bars are the other reason a bar is missing, and in that case the name
+   printed today: it stays out, and the close waits as it always did. *)
+let test_a_name_is_silent_only_on_a_print_before_the_session () =
+  let zone = Time_float.Zone.of_utc_offset ~hours:(-4) in
+  let at = Time_ns.of_string_with_utc_offset in
+  let silent =
+    Close.silent ~date:(date "2026-10-30") ~zone
+      ~prints:
+        (Symbol.Map.of_alist_exn
+           [
+             (Symbol.of_string "SIZE", at "2026-10-26T17:25:13Z");
+             (Symbol.of_string "EVENING", at "2026-10-29T23:50:00Z");
+             (Symbol.of_string "TODAY", at "2026-10-30T19:59:55Z");
+             (Symbol.of_string "AFTER", at "2026-10-31T00:30:00Z");
+           ])
+  in
+  Alcotest.(check (list string))
+    "an old print and last evening's, not today's nor tonight's, and a name with no \
+     print on record is not one"
+    [ "EVENING"; "SIZE" ]
+    (List.map (Set.to_list silent) ~f:Symbol.to_string)
 
 let returns = [| -0.05; -0.04; -0.03; -0.02; -0.01; 0.01; 0.02; 0.03; 0.04; 0.05 |]
 
@@ -364,6 +416,10 @@ let suite =
         test_a_session's_return_needs_the_session's_own_bar;
       Alcotest.test_case "a missing name rolls no name" `Quick
         test_a_missing_name_rolls_no_name;
+      Alcotest.test_case "a name that printed nothing rolls at zero" `Quick
+        test_a_name_that_printed_nothing_rolls_at_zero;
+      Alcotest.test_case "a name is silent only on a print before the session" `Quick
+        test_a_name_is_silent_only_on_a_print_before_the_session;
       Alcotest.test_case "the close rolls, then marks, then records" `Quick
         test_the_close_rolls_then_marks_then_records;
       Alcotest.test_case "a recorded date rolls nothing twice" `Quick

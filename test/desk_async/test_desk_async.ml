@@ -1514,6 +1514,7 @@ let test_a_raising_restore_idles_fill_read_and_a_later_read_still_runs () =
       clock = (fun () -> return (Or_error.error_string "unused in this test"));
       latest_quote = (fun _ -> return (Or_error.error_string "unused in this test"));
       daily_bars = (fun _ ~days:_ -> return (Or_error.error_string "unused in this test"));
+      last_prints = (fun _ -> return (Or_error.error_string "unused in this test"));
     }
   in
   let armed = ref true in
@@ -1599,6 +1600,7 @@ let clock_only_read clock : D.Venue.Read.t =
     clock;
     latest_quote = (fun _ -> return (Or_error.error_string "unused in this test"));
     daily_bars = (fun _ ~days:_ -> return (Or_error.error_string "unused in this test"));
+    last_prints = (fun _ -> return (Or_error.error_string "unused in this test"));
   }
 
 let clock_desk f venue =

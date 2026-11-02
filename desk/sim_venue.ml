@@ -196,6 +196,7 @@ let read (t : t) : Venue.Read.t =
           (Or_error.error_string
              "simulated venue: it keeps no bar history; the demo's returns come from its \
               own synthetic bars"));
+    last_prints = (fun _ -> return (Ok Symbol.Map.empty));
   }
 
 (* The trading half. A limit fills against the side of the quote the order
