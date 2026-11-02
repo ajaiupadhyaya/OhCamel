@@ -247,11 +247,12 @@ let test_failure_classification () =
   let is_fatal code =
     match Alpaca.Failure.of_code ~code ~msg:"" with
     | Alpaca.Failure.Fatal _ -> true
-    | Alpaca.Failure.Retryable _ -> false
+    | Alpaca.Failure.Refused _ | Alpaca.Failure.Retryable _ -> false
   in
   Alcotest.(check bool) "402 auth failed: no retry can fix bad keys" true (is_fatal 402);
   Alcotest.(check bool)
-    "406 connection limit: another session holds the slot" true (is_fatal 406);
+    "406 connection limit: our own dropped connection clears by itself" false
+    (is_fatal 406);
   Alcotest.(check bool)
     "409 insufficient subscription: a plan problem" true (is_fatal 409);
   Alcotest.(check bool) "405 symbol limit: a plan problem" true (is_fatal 405);
@@ -262,14 +263,37 @@ let test_failure_classification () =
   Alcotest.(check bool) "500 internal error" false (is_fatal 500);
   Alcotest.(check bool)
     "an undocumented code is retryable by default" false (is_fatal 9999);
-  (* The fatal messages have to say what to go and do; that is their whole
-     purpose. *)
+  (* A 406 that never clears still needs a person, so its sentence has to say
+     what to go and look for. Refused and not Retryable: only Refused ends the
+     session from this side, and nothing promises the server will close. *)
   match Alpaca.Failure.of_code ~code:406 ~msg:"connection limit exceeded" with
-  | Alpaca.Failure.Fatal detail ->
+  | Alpaca.Failure.Refused detail ->
       Alcotest.(check bool)
         "the 406 message explains the one-connection limit" true
         (String.is_substring detail ~substring:"ONE")
-  | _ -> Alcotest.fail "406 must be fatal"
+  | _ -> Alcotest.fail "406 must be a refused connection"
+
+(* One session's verdict, decided in one place. A refusal and the socket closing
+   behind it are the same event seen twice, and the refusal is the reading that
+   says why; a fatal condition outranks both. *)
+let test_session_verdict () =
+  let verdict ~fatal ~refused =
+    Alpaca.Outcome.of_session ~fatal ~refused ~socket:"stream closed"
+  in
+  let reason = function
+    | Alpaca.Outcome.Disconnected reason -> reason
+    | Alpaca.Outcome.Fatal _ -> Alcotest.fail "the session was not fatal"
+  in
+  Alcotest.(check string)
+    "a refused session reconnects and says why" "refused"
+    (reason (verdict ~fatal:None ~refused:(Some "refused")));
+  Alcotest.(check string)
+    "an ordinary session reports its socket" "stream closed"
+    (reason (verdict ~fatal:None ~refused:None));
+  match verdict ~fatal:(Some "fatal") ~refused:(Some "refused") with
+  | Alpaca.Outcome.Fatal detail ->
+      Alcotest.(check string) "fatal outranks a refusal" "fatal" detail
+  | Alpaca.Outcome.Disconnected _ -> Alcotest.fail "a fatal session must stop"
 
 (* ------------------------------------------------------------------------ *)
 (* Alpaca: backoff                                                           *)
@@ -300,6 +324,21 @@ let test_backoff_schedule () =
   match Alpaca.Backoff.base_delay b ~attempt:0 with
   | exception Invalid_argument _ -> ()
   | _ -> Alcotest.fail "attempt 0 is a caller bug and should raise"
+
+(* The count of consecutive failures, which sets the wait. It starts again only
+   after a session that streamed longer than the longest wait: seven ordinary
+   drops over a week must not leave every later reconnect waiting a minute, and a
+   stream that drops straight after subscribing must not reconnect once a second.
+   The same rule as desk/trade_updates.ml's, which got there first. *)
+let test_backoff_failures () =
+  let b = Alpaca.Backoff.default in
+  let after ~before streamed = Alpaca.Backoff.failures b ~before ~streamed in
+  let secs s = Some (Time_ns.Span.of_sec s) in
+  Alcotest.(check int) "a session that never streamed counts" 7 (after ~before:6 None);
+  Alcotest.(check int) "so does a brief one" 7 (after ~before:6 (secs 8.0));
+  Alcotest.(check int) "exactly the cap counts" 7 (after ~before:6 (secs 60.0));
+  Alcotest.(check int) "longer than the cap starts again" 1 (after ~before:6 (secs 61.0));
+  Alcotest.(check int) "a day's session starts again" 1 (after ~before:6 (secs 86_400.0))
 
 let test_backoff_jitter () =
   let b = Alpaca.Backoff.default in
@@ -1106,6 +1145,10 @@ let suite =
         test_backoff_schedule;
       Alcotest.test_case "alpaca: backoff jitter stays under the cap" `Quick
         test_backoff_jitter;
+      Alcotest.test_case "alpaca: failures start again after a session that held" `Quick
+        test_backoff_failures;
+      Alcotest.test_case "alpaca: one verdict for a session, refusal and socket" `Quick
+        test_session_verdict;
       Alcotest.test_case "backfill: daily bars become returns" `Quick test_bars_to_returns;
       Alcotest.test_case "backfill: impossible closes never enter the window" `Quick
         test_bars_reject_impossible_closes;

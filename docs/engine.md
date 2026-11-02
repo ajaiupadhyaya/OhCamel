@@ -1110,7 +1110,8 @@ $ make serve
 A missing key is fatal by design. The engine refuses to start rather than
 degrading into something that looks live and is showing made-up numbers. Note also
 that a free Alpaca plan allows **one concurrent market-data stream per account**;
-if anything else is using the same keys, this gets a 406 and stops.
+if anything else is using the same keys, this gets a 406, and the feed reads stale
+and retries on its capped backoff until the stream comes free.
 
 The dashboard is unauthenticated at the engine, and should be bound to
 localhost or put behind a password, as the live host's proxy does. Four
@@ -1204,7 +1205,7 @@ container as environment, never as a layer. The runbooks are in
 
 ## What's verified
 
-`make test` runs <!-- count:ocaml-tests -->833<!-- /count --> tests, plus <!-- count:scheduler-tests -->65<!-- /count --> in `test/desk_async` that run with
+`make test` runs <!-- count:ocaml-tests -->835<!-- /count --> tests, plus <!-- count:scheduler-tests -->65<!-- /count --> in `test/desk_async` that run with
 the scheduler -- the order manager's cases, a live strategy's rebalance, the
 transport's bound, the signal intake's minute loop and that suite's own count --
 all hermetic — no network, no credentials, and nothing that waits on the wall

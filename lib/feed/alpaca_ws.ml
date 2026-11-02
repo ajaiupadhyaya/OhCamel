@@ -80,6 +80,16 @@ module Backoff = struct
   (* Jitter is applied downward only, so the cap stays a genuine cap. *)
   let delay ?(random = Random.float) t ~attempt =
     Time_ns.Span.scale (base_delay t ~attempt) (1.0 -. (t.jitter *. random 1.0))
+
+  (* Consecutive failures, counting the session that just ended, which is the
+     attempt to wait for. It starts again after a session that streamed longer
+     than the cap, so a stream that held and then dropped is a first failure and
+     not the latest of a lifetime's; and only then, or a stream that drops as it
+     subscribes would be retried every second. *)
+  let failures t ~before ~streamed =
+    match streamed with
+    | Some held when Time_ns.Span.( > ) held t.cap -> 1
+    | _ -> before + 1
 end
 
 (* ------------------------------------------------------------------------ *)
@@ -199,12 +209,20 @@ end
    could possibly help.
 
    That distinction is the entire point of this module. Reconnecting after "auth
-   failed" or "connection limit exceeded" fails identically every time, forever,
-   while printing a reconnect message that looks like progress. Those conditions
-   need a person, so they stop the feed with an explanation of what to go and
-   do. *)
+   failed" fails identically every time, forever, while printing a reconnect
+   message that looks like progress. Those conditions need a person, so they stop
+   the feed with an explanation of what to go and do.
+
+   A connection limit looked like one of those and is not. On 2026-10-31 a drop
+   was followed by 406 on every attempt for 158 s, then an acceptance with nothing
+   changed: most likely Alpaca still counting our own dead connection. Stopping
+   for it costs a process restart, and a restart between the close and the
+   session's record loses the day. So 406 is [Refused]: this connection is over
+   and a later one may not be. One that never clears leaves the feed stale, which
+   refuses orders and shows on the page, and [last_error] says what to look for. *)
 module Failure = struct
-  type t = Fatal of string | Retryable of string [@@deriving sexp_of]
+  type t = Fatal of string | Refused of string | Retryable of string
+  [@@deriving sexp_of]
 
   let of_code ~code ~msg =
     let detail = sprintf "alpaca: error %d (%s)" code msg in
@@ -213,10 +231,12 @@ module Failure = struct
     | 402 ->
         fatal "the credentials were rejected. Check ALPACA_API_KEY and ALPACA_SECRET_KEY."
     | 406 ->
-        fatal
-          "this account already has as many concurrent streams as its plan allows. A \
-           free Alpaca plan permits ONE. Something else is holding it open -- another \
-           OhCamel, or another system using the same keys."
+        Refused
+          (detail
+         ^ " -- this account already has as many concurrent streams as its plan allows. \
+            A free Alpaca plan permits ONE. After a drop that is usually our own \
+            connection, and it clears in minutes. If it does not, something else is \
+            holding it open -- another OhCamel, or another system using the same keys.")
     | 409 ->
         fatal
           "the account's plan does not include this data feed. A free plan gets iex; sip \
@@ -435,6 +455,15 @@ module Outcome = struct
   type t =
     | Fatal of string (* no retry can fix this; stop and say why *)
     | Disconnected of string (* the ordinary case; back off and reconnect *)
+
+  (* Order matters, and it is the whole point of this function. A fatal error and
+     the socket closing behind it are the SAME event seen twice, and so are a
+     refusal and its socket; the first reading is the one that says why. *)
+  let of_session ~fatal ~refused ~socket =
+    match (fatal, refused) with
+    | Some detail, _ -> Fatal detail
+    | None, Some detail -> Disconnected detail
+    | None, None -> Disconnected socket
 end
 
 (* One connection, handshake to disconnect. Never raises: every way a session can
@@ -444,7 +473,9 @@ let run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~on_control ~on_ev
      its callback return unit -- so the session's verdict has to be carried out
      by reference rather than returned. *)
   let fatal = ref None in
+  let refused = ref None in
   let phase = ref Phase.Awaiting_greeting in
+  let streaming_since = ref None in
   let handshake_error = ref None in
   let%map connection =
     Monitor.try_with ~extract_exn:true (fun () ->
@@ -456,7 +487,7 @@ let run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~on_control ~on_ev
             let received_frames, ws_to_app = Pipe.create () in
             let initialized = Ivar.create () in
             let send text =
-              Pipe.write send_frame
+              Pipe.write_if_open send_frame
                 (Websocket.Frame.create ~opcode:Websocket.Frame.Opcode.Text ~content:text
                    ())
             in
@@ -473,6 +504,7 @@ let run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~on_control ~on_ev
                       send (auth_frame ~credentials)
                   | Message.Success "authenticated", Phase.Awaiting_auth ->
                       phase := Phase.Streaming;
+                      streaming_since := Some (Time_ns.now ());
                       on_event
                         (sprintf "authenticated; subscribing to %d symbols"
                            (List.length symbols));
@@ -482,6 +514,9 @@ let run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~on_control ~on_ev
                       | Failure.Fatal detail ->
                           stats.Stats.last_error <- Some detail;
                           fatal := Some detail
+                      | Failure.Refused detail ->
+                          stats.Stats.last_error <- Some detail;
+                          refused := Some detail
                       | Failure.Retryable detail ->
                           stats.Stats.last_error <- Some detail;
                           on_event detail);
@@ -496,7 +531,7 @@ let run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~on_control ~on_ev
               Pipe.iter received_frames ~f:(fun (frame : Websocket.Frame.t) ->
                   match frame.Websocket.Frame.opcode with
                   | Websocket.Frame.Opcode.Ping ->
-                      Pipe.write send_frame
+                      Pipe.write_if_open send_frame
                         (Websocket.Frame.create ~opcode:Websocket.Frame.Opcode.Pong
                            ~content:frame.Websocket.Frame.content ())
                   | Websocket.Frame.Opcode.Close ->
@@ -504,7 +539,11 @@ let run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~on_control ~on_ev
                       Deferred.unit
                   | Websocket.Frame.Opcode.Text | Websocket.Frame.Opcode.Binary ->
                       let%bind () = handle_payload frame.Websocket.Frame.content in
-                      if Option.is_some !fatal then Pipe.close send_frame;
+                      (* Closed from this side: nothing promises the server will,
+                         and a refused session left open would sit silent with the
+                         retry that clears it never starting. *)
+                      if Option.is_some !fatal || Option.is_some !refused then
+                        Pipe.close send_frame;
                       Deferred.unit
                   | Websocket.Frame.Opcode.Pong | _ -> Deferred.unit)
             in
@@ -519,28 +558,25 @@ let run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~on_control ~on_ev
             | Ok () -> ()
             | Error error -> handshake_error := Some (Error.to_string_hum error)))
   in
-  (* Order matters, and it is the whole point of this block. A fatal error and
-     the socket closing behind it are the SAME event seen twice; the fatal
-     reading is the one that tells you what to do. *)
-  match !fatal with
-  | Some detail -> Outcome.Fatal detail
-  | None ->
-      (* A session that closes without ever reaching Streaming is not an
-         ordinary disconnect, and saying so is the difference between a readable
-         log and a mystery. *)
-      let context =
-        if Phase.equal !phase Phase.Streaming then ""
-        else
-          sprintf " while still %s -- the handshake did not complete"
-            (Sexp.to_string (Phase.sexp_of_t !phase))
-      in
-      let reason =
-        match (!handshake_error, connection) with
-        | Some detail, _ -> detail
-        | None, Error exn -> Exn.to_string exn
-        | None, Ok () -> "stream closed"
-      in
-      Outcome.Disconnected (reason ^ context)
+  (* A session that closes without ever reaching Streaming is not an
+     ordinary disconnect, and saying so is the difference between a readable
+     log and a mystery. *)
+  let context =
+    if Phase.equal !phase Phase.Streaming then ""
+    else
+      sprintf " while still %s -- the handshake did not complete"
+        (Sexp.to_string (Phase.sexp_of_t !phase))
+  in
+  let reason =
+    match (!handshake_error, connection) with
+    | Some detail, _ -> detail
+    | None, Error exn -> Exn.to_string exn
+    | None, Ok () -> "stream closed"
+  in
+  let streamed =
+    Option.map !streaming_since ~f:(fun since -> Time_ns.diff (Time_ns.now ()) since)
+  in
+  (Outcome.of_session ~fatal:!fatal ~refused:!refused ~socket:(reason ^ context), streamed)
 
 (* The supervisor. Reconnects with backoff until a fatal condition.
 
@@ -565,10 +601,11 @@ let run ?(backoff = Backoff.default) ?(host = default_host)
     match%bind
       run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~on_control ~on_event
     with
-    | Outcome.Fatal detail ->
+    | Outcome.Fatal detail, _ ->
         on_event (sprintf "STOPPING: %s" detail);
         return (Error detail)
-    | Outcome.Disconnected reason -> retry (n + 1) ~reason
+    | Outcome.Disconnected reason, streamed ->
+        retry (Backoff.failures backoff ~before:(n - 1) ~streamed + 1) ~reason
   and retry n ~reason =
     stats.Stats.reconnects <- stats.Stats.reconnects + 1;
     let delay = Backoff.delay backoff ~attempt:(n - 1) in
