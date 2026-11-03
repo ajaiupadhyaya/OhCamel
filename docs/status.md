@@ -233,9 +233,12 @@ From the Ship spec (`superpowers/specs/2026-10-05-the-ship-design.md` §2); each
 
 ## What the owner holds
 
-- **Root step, half done:** `/var/backups/ohcamel` exists and holds the pre-deploy journal copies; the timers do
-  not (`systemctl is-enabled ohcamel-backup.timer ohcamel-watch.timer` answers `not-found` on 2026-10-21), so there
-  are no nightly backups and no watch. Install and `systemctl enable --now` both (O12).
+- **Backups and the watch run from cron, not the timers (2026-11-03).** The `ohcamel` user's crontab runs
+  `deploy/backup.sh` at 06:30 UTC and `deploy/watch.sh` every 5 minutes, logging to `~/backup.log` and `~/watch.log`:
+  the timers' schedule, as the same user, needing no sudo, which the owner does not have for `ohcamel`. The first run by
+  hand wrote and verified every copy. Cron does not catch up a run missed across a reboot, as `Persistent=true` would.
+  Moving to the timers (O12) needs root once: reset the password from DigitalOcean's console, then install the units and
+  remove the two cron lines.
 - **The desk's safety settings:** alerts and the kill switch are off in the live book, and the cap sits at 0.60
   without the canary sessions (see *Autonomous trading*).
 - **EXP-Q01:** the I-Q01-7 dollar-volume sign was recorded as −1, the default, on 2026-10-07, when the owner
@@ -676,7 +679,7 @@ block (23 incubation cells), `(trading enabled)`, the `--live` deploy. Still ope
   first sync replaced them with the account's $53k -- fixed the same day: alerting now holds until the first
   sync and evaluates once on the account's book (`Alerts.hold` / `Alerts.release`).
 - **Decide the cap:** keep `incubation_cap 0.60`, or drop to 0.10 for three sessions as the plan had it.
-- **Install the backup and watch timers** (*What the owner holds*, above).
+- ~~**Install the backup and watch timers**~~ -- running from cron since 2026-11-03 (*What the owner holds*, above).
 - **Promoting to `(sizing live)`** stays the owner's alone, and needs `status: pass` (R6).
 - **Raise `book-cap` or lower `incubation_cap`:** 23 cells at 0.025 are 57.5 % of equity gross against a
   `book-cap` of $500,000; the gate holds the last cells back once the rest have filled.
