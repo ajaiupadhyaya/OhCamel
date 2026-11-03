@@ -33,6 +33,69 @@ type summary = {
   cost_bps : float option;
 }
 
+type fill = { date : Date.t; symbol : Ohcamel.Types.Symbol.t; qty : float; price : float }
+
+(* A strategy's P&L marked to each close: what it held is worth this close less
+   what it was worth at the last, less what its fills cost. So the sessions sum to
+   its cash and what it still holds, whatever the path.
+
+   It is counted from the strategy's own fills and never from the account, as
+   Journal.source_fills counts its position. A fill on a date with no recorded
+   session lands in the next one, and a name with no close that day holds its
+   last, or its fill's price before it has one: a session lost to a restart moves
+   a strategy's P&L a day and loses none of it. *)
+let sessions_of ~dates ~close ~allocated fills =
+  let module Symbol = Ohcamel.Types.Symbol in
+  let value positions marks =
+    Map.fold positions ~init:0.0 ~f:(fun ~key ~data acc ->
+        acc +. (data *. Option.value (Map.find marks key) ~default:0.0))
+  in
+  let _, _, _, sessions =
+    List.fold
+      (List.sort dates ~compare:Date.compare)
+      ~init:
+        ( List.sort fills ~compare:(fun (a : fill) (b : fill) ->
+              Date.compare a.date b.date),
+          Symbol.Map.empty,
+          Symbol.Map.empty,
+          [] )
+      ~f:(fun (pending, positions, marks, sessions) date ->
+        let today, pending =
+          List.split_while pending ~f:(fun (f : fill) -> Date.( <= ) f.date date)
+        in
+        let before = value positions marks in
+        let positions =
+          List.fold today ~init:positions ~f:(fun acc f ->
+              Map.update acc f.symbol ~f:(fun q -> Option.value q ~default:0.0 +. f.qty))
+        in
+        let marks =
+          List.fold today ~init:marks ~f:(fun acc f ->
+              Map.update acc f.symbol ~f:(fun known ->
+                  Option.value known ~default:f.price))
+        in
+        let marks =
+          List.fold (Map.keys positions) ~init:marks ~f:(fun acc symbol ->
+              match close date symbol with
+              | Some c -> Map.set acc ~key:symbol ~data:c
+              | None -> acc)
+        in
+        if Map.is_empty positions then (pending, positions, marks, sessions)
+        else
+          let traded (f : fill) = f.qty *. f.price in
+          let session =
+            {
+              date;
+              allocated = allocated date;
+              pnl =
+                value positions marks -. before -. List.sum (module Float) today ~f:traded;
+              cost = 0.0;
+              turnover = List.sum (module Float) today ~f:(fun f -> Float.abs (traded f));
+            }
+          in
+          (pending, positions, marks, session :: sessions))
+  in
+  List.rev sessions
+
 let periods_a_year = 252.0
 let held s = Float.( > ) s.allocated 0.0
 

@@ -22,6 +22,18 @@ type summary = {
   cost_bps : float option;  (** Of dollars traded. *)
 }
 
+type fill = { date : Date.t; symbol : Ohcamel.Types.Symbol.t; qty : float; price : float }
+(** One of a strategy's fills; [qty] is signed, bought positive. *)
+
+val sessions_of :
+  dates:Date.t list ->
+  close:(Date.t -> Ohcamel.Types.Symbol.t -> float option) ->
+  allocated:(Date.t -> float) ->
+  fill list ->
+  session list
+(** The strategy's sessions from its first fill, on the recorded [dates]. [cost] is zero:
+    the journal's fills carry none. *)
+
 val returns : session list -> float list
 (** [pnl / allocated], skipping a session with nothing allocated. *)
 

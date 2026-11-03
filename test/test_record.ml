@@ -65,6 +65,69 @@ let test_cost_and_turnover () =
   Alcotest.(check (option (float 1e-9))) "cost" (Some 100.0) s.Record.cost_bps;
   Alcotest.(check (option (float 1e-9))) "turnover" (Some 0.2) s.Record.turnover_mean
 
+let d = Date.of_string
+let aapl = Ohcamel.Types.Symbol.of_string "AAPL"
+let fill date qty price = { Record.date = d date; symbol = aapl; qty; price }
+
+let of_book ?(allocated = fun _ -> 1_000.0) ~closes ~dates fills =
+  Record.sessions_of ~dates:(List.map dates ~f:d)
+    ~close:(fun date _ ->
+      List.Assoc.find closes (Date.to_string date) ~equal:String.equal)
+    ~allocated fills
+
+let pnls sessions = List.map sessions ~f:(fun s -> s.Record.pnl)
+
+(* Buy 10 at 100, close 102: 1,020 - 1,000 = +20. Close 99: 990 - 1,020 = -30. Sell 4
+   at 101, close 100: 600 - 990 + 404 = +14. The three sum to +4, which is the account:
+   cash -1,000 + 404 = -596, and 6 held at 100 is +600. *)
+let test_a_strategy's_pnl_is_marked_to_each_close () =
+  let sessions =
+    of_book
+      ~dates:[ "2026-10-20"; "2026-10-21"; "2026-10-22" ]
+      ~closes:[ ("2026-10-20", 102.0); ("2026-10-21", 99.0); ("2026-10-22", 100.0) ]
+      [ fill "2026-10-20" 10.0 100.0; fill "2026-10-22" (-4.0) 101.0 ]
+  in
+  Alcotest.(check (list approx)) "marked daily" [ 20.0; -30.0; 14.0 ] (pnls sessions);
+  Alcotest.(check (list approx))
+    "turnover is dollars traded, either way" [ 1_000.0; 0.0; 404.0 ]
+    (List.map sessions ~f:(fun s -> s.Record.turnover));
+  Alcotest.(check approx)
+    "and the sessions sum to the account" 4.0
+    (List.sum (module Float) sessions ~f:(fun s -> s.Record.pnl))
+
+let test_a_record_starts_at_the_first_fill () =
+  let sessions =
+    of_book
+      ~dates:[ "2026-10-19"; "2026-10-20" ]
+      ~closes:[ ("2026-10-19", 100.0); ("2026-10-20", 101.0) ]
+      [ fill "2026-10-20" 1.0 100.0 ]
+  in
+  Alcotest.(check (list string))
+    "no session before it" [ "2026-10-20" ]
+    (List.map sessions ~f:(fun s -> Date.to_string s.Record.date))
+
+(* 2026-10-27's session was lost: no row and no marks. A fill that day still happened, so
+   it lands in the next recorded session, and that session's move runs from the last
+   close there was. Buy 1 at 100 on the lost day; the 26th closed 90 and the 28th 110,
+   so the 28th earns 110 - 100 = +10. A held share marks 90 to 110, +20, on top. *)
+let test_a_lost_session's_fill_lands_in_the_next () =
+  let sessions =
+    of_book
+      ~dates:[ "2026-10-26"; "2026-10-28" ]
+      ~closes:[ ("2026-10-26", 90.0); ("2026-10-28", 110.0) ]
+      [ fill "2026-10-26" 1.0 90.0; fill "2026-10-27" 1.0 100.0 ]
+  in
+  Alcotest.(check (list approx)) "nothing dropped" [ 0.0; 30.0 ] (pnls sessions)
+
+let test_a_close_that_is_missing_holds_the_last () =
+  let sessions =
+    of_book
+      ~dates:[ "2026-10-20"; "2026-10-21"; "2026-10-22" ]
+      ~closes:[ ("2026-10-20", 100.0); ("2026-10-22", 105.0) ]
+      [ fill "2026-10-20" 2.0 100.0 ]
+  in
+  Alcotest.(check (list approx)) "flat, then the move" [ 0.0; 0.0; 10.0 ] (pnls sessions)
+
 let suite =
   ( "record",
     [
@@ -78,4 +141,12 @@ let suite =
         test_psr_needs_a_series_with_a_spread;
       Alcotest.test_case "nothing to score" `Quick test_nothing_to_score;
       Alcotest.test_case "cost and turnover" `Quick test_cost_and_turnover;
+      Alcotest.test_case "a strategy's P&L is marked to each close" `Quick
+        test_a_strategy's_pnl_is_marked_to_each_close;
+      Alcotest.test_case "a record starts at the first fill" `Quick
+        test_a_record_starts_at_the_first_fill;
+      Alcotest.test_case "a lost session's fill lands in the next" `Quick
+        test_a_lost_session's_fill_lands_in_the_next;
+      Alcotest.test_case "a close that is missing holds the last" `Quick
+        test_a_close_that_is_missing_holds_the_last;
     ] )
