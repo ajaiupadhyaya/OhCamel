@@ -70,6 +70,7 @@ let suites =
     Test_book_sync.suite;
     Test_session_close.suite;
     Test_record.suite;
+    Test_stop.suite;
     Test_desk.suite;
     Test_rules.suite;
     Test_sim_trade.suite;

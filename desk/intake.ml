@@ -1456,6 +1456,15 @@ let close t ~strategy ~sequence outcome =
    which sizes nothing and says so. [reading], when given, is what the
    sizing reads instead of [scale], and its factor and governor are recorded
    on the sizing row. *)
+(* The stop rule that stopped a strategy, and its sentence (desk/stop.ml): a
+   stopped strategy is sized no more, and no document of its is, since one would
+   buy back what the stop sold. *)
+let stopped_by t name =
+  match Journal.strategy_state t.journal ~strategy:name with
+  | Some (`Stopped, rule, _, detail) ->
+      Some (sprintf "%s: %s" (Option.value rule ~default:"a stop rule") detail)
+  | Some (`Active, _, _, _) | None -> None
+
 let size ?reading t ~(oms : Oms.t option) ~(scale : unit -> float)
     (accepted : Accepted.t list) : unit Deferred.t =
   let parts () =
@@ -1488,6 +1497,11 @@ let size ?reading t ~(oms : Oms.t option) ~(scale : unit -> float)
                     b.Accepted.doc.sequence))
         | None, None ->
             return (Rebalanced.final "not sized: this intake runs with no order manager")
+        | None, Some _ when Option.is_some (stopped_by t doc.strategy) ->
+            return
+              (Rebalanced.final
+                 (sprintf "not sized: the strategy is stopped (%s)"
+                    (Option.value_exn (stopped_by t doc.strategy))))
         | None, Some oms -> (
             match%map
               Monitor.try_with ~extract_exn:true (fun () ->
@@ -1682,8 +1696,42 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                     | Some (`Stopped, _, _, _) -> true
                     | Some (`Active, _, _, _) | None -> false
                   in
+                  (* THE STOP'S FLATTEN (INC-01): a stopped strategy that still
+                     holds shares is sized at scale 0 from its last accepted
+                     document, intraday whatever its adjust word, and again
+                     each pass until it holds nothing. [holds] reads false
+                     while any of its orders may still fill, so one flatten
+                     is in flight at a time. *)
+                  let flatten () =
+                    if not (holds s) then None
+                    else
+                      match
+                        Journal.latest_accepted_document t.journal ~strategy:s.name
+                      with
+                      | None ->
+                          once t ~kind:"stop flatten" ~name:s.name (fun () ->
+                              log t
+                                "%S is stopped and holds shares, but has no accepted \
+                                 document to flatten from"
+                                s.name);
+                          None
+                      | Some (sequence, text) -> (
+                          match parse text with
+                          | Ok doc ->
+                              Some
+                                ( { Accepted.strategy = s; doc },
+                                  Parts.of_scale 0.0,
+                                  Some "stop",
+                                  incubation_ratio t ~oms s )
+                          | Error why ->
+                              once t ~kind:"adjust parse" ~name:s.name (fun () ->
+                                  log t "%S %d: its document does not parse (%s)" s.name
+                                    sequence why);
+                              None)
+                  in
                   match (s.adjust, s.sizing, stopped) with
-                  | Signals_spec.Adjust.Open, _, _ | _, Advisory, _ | _, _, true -> None
+                  | _, (Live | Incubation), true -> flatten ()
+                  | Signals_spec.Adjust.Open, _, _ | _, Advisory, _ -> None
                   | Intraday, (Live | Incubation), false -> (
                       match
                         Journal.latest_accepted_document t.journal ~strategy:s.name

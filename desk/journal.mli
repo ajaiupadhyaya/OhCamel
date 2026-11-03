@@ -478,6 +478,13 @@ val latest_sizing : t -> strategy:string -> (int * float * float * string * stri
 (** The sizing with the newest [at] for [strategy], as (sequence, scale, allocated, at,
     tier); one seek on sizings_by_strategy. *)
 
+val source_fill_rows : t -> prefix:string -> (Symbol.t * float * float * Time_ns.t) list
+(** [source_fills]' fills one by one: symbol, signed quantity, price, instant; oldest
+    first. *)
+
+val closes_since : t -> since:Date.t -> (Date.t * Symbol.t * float) list
+val allocations : t -> strategy:string -> (Time_ns.t * float) list
+
 val set_strategy_state :
   t ->
   strategy:string ->

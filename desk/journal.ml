@@ -832,6 +832,12 @@ let latest_close t (symbol : Symbol.t) : (Date.t * float) option =
        [ text (Symbol.to_string symbol) ]
        ~row:(fun r -> (col_date r 0, col_real r 1)))
 
+(* Every recorded close from [since], for a strategy's record. *)
+let closes_since t ~(since : Date.t) =
+  query t ~what:"closes since" "SELECT date, symbol, close FROM marks WHERE date >= ?"
+    [ date since ]
+    ~row:(fun r -> (col_date r 0, Symbol.of_string (col_text r 1), col_real r 2))
+
 let marks t d =
   query t ~what:"marks"
     "SELECT date, symbol, close, qty FROM marks WHERE date = ? ORDER BY symbol"
@@ -1549,6 +1555,20 @@ let source_fills t ~prefix : (Symbol.t * float) list =
       Map.update acc symbol ~f:(fun x -> Option.value x ~default:0.0 +. q))
   |> Map.to_alist
 
+(* The same fills with their prices and instants, oldest first: a strategy's
+   record (desk/stop.ml) marks what it held to each close from these. *)
+let source_fill_rows t ~prefix : (Symbol.t * float * float * Time_ns.t) list =
+  let lo, hi = source_range prefix in
+  query t ~what:"source fill rows"
+    "SELECT o.symbol, o.side, f.qty, f.price, f.at FROM orders o JOIN fills f ON \
+     f.client_order_id = o.client_order_id WHERE o.source >= ? AND o.source < ? ORDER BY \
+     f.at, f.execution_id"
+    [ lo; hi ] ~row:(fun r ->
+      ( Symbol.of_string (col_text r 0),
+        Order.Side.sign (side_of_text (col_text r 1)) *. col_real r 2,
+        col_real r 3,
+        col_time r 4 ))
+
 (* The orders whose source begins with [prefix] that may still fill: every
    one not in a terminal state, and every failed one [unfinished_failed_orders]
    would count -- created at or after [since], with no venue report since that
@@ -1743,6 +1763,14 @@ module Sizing = struct
   }
   [@@deriving sexp_of, equal]
 end
+
+(* Each sizing's instant and dollars, oldest first: what a strategy held in capital
+   on each session of its record. *)
+let allocations t ~strategy =
+  query t ~what:"allocations"
+    "SELECT at, allocated FROM sizings WHERE strategy = ? ORDER BY at"
+    [ text strategy ]
+    ~row:(fun r -> (col_time r 0, col_real r 1))
 
 (* [latest_sizing]'s row, whole. *)
 let latest_sizing_row t ~strategy =

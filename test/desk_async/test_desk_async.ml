@@ -3446,6 +3446,72 @@ let latest_sizing_mode f name =
       : Sqlite3.Rc.t);
   !mode
 
+(* INC-01: a stopped strategy is flattened. The adjust pass sells everything it
+   holds, as day limits like any intraday re-size and whatever the band says: 0.70
+   to 0.70 would size nothing, and the stop sells all 350. *)
+let test_a_stopped_strategy_is_flattened_by_the_adjust_pass () =
+  let%bind { a_f = f; a_name = name; pass_and_adjust; cleanup; _ } =
+    adjust_case ~adjust_now:false ~sizing:Ohcamel.Config.Book.Signals_spec.Live
+      ~overlay:"0.70" ()
+  in
+  D.Journal.set_strategy_state f.journal ~strategy:name ~state:`Stopped
+    ~rule:(Some "drawdown") ~at:evening ~detail:"drawdown 20.0% reached its line of 15.0%";
+  let%map () = pass_and_adjust ~at:4.0 in
+  Alcotest.(check (list (triple string int string)))
+    "the buy, then Sell 350 as a day limit"
+    [ ("buy", 350, "limit day"); ("sell", 350, "limit day") ]
+    (strategy_orders f name);
+  Alcotest.(check (list (pair string (float 0.0))))
+    "and it holds nothing"
+    [ ("AAPL", 0.0) ]
+    (List.map
+       (D.Journal.source_fills f.journal ~prefix:(sprintf "signal:%s:" name))
+       ~f:(fun (s, q) -> (Symbol.to_string s, q)));
+  cleanup ()
+
+(* And no document of a stopped strategy is sized: a new one would buy back what the
+   stop sold. *)
+let test_a_stopped_strategy's_document_is_not_sized () =
+  let%bind {
+    a_f = f;
+    a_name = name;
+    a_oms = oms;
+    a_intake = intake;
+    a_dir = dir;
+    cleanup;
+    _;
+  } =
+    adjust_case ~adjust_now:false ~sizing:Ohcamel.Config.Book.Signals_spec.Live
+      ~overlay:"0.70" ()
+  in
+  D.Journal.set_strategy_state f.journal ~strategy:name ~state:`Stopped
+    ~rule:(Some "drawdown") ~at:evening ~detail:"drawdown 20.0% reached its line of 15.0%";
+  let zeros = "sha256:" ^ String.make 64 '0' in
+  Out_channel.write_all
+    (Filename.concat dir (sprintf "%s-2026-09-14b.json" name))
+    ~data:
+      (sprintf
+         {|{"schema_version":1,"strategy":"%s","params_hash":"%s","as_of":"2026-09-14","computed_at":"2026-09-14T23:15:00Z","data_hash":"%s","sequence":2,"validation":{"status":"pass","gates_version":"2026-09-02"},"targets":[{"symbol":"AAPL","weight":1.0}]}|}
+         name zeros zeros);
+  let accepted = D.Intake.judge_pass intake in
+  Alcotest.(check (list int))
+    "the judge accepts it: the stop is the sizing's to refuse" [ 2 ]
+    (List.map accepted ~f:(fun a -> a.D.Intake.Accepted.doc.sequence));
+  let%bind () = D.Intake.size intake ~oms:(Some oms) ~scale:(fun () -> 1.0) accepted in
+  let%map () = settle () in
+  Alcotest.(check (list (triple string int string)))
+    "the fixture's buy alone"
+    [ ("buy", 350, "limit day") ]
+    (strategy_orders f name);
+  Alcotest.(check bool)
+    "and the record says why" true
+    (String.is_substring
+       (Option.value ~default:""
+          (Option.bind (D.Journal.signal f.journal ~strategy:name ~sequence:2)
+             ~f:(fun s -> s.D.Journal.Signal.rebalance)))
+       ~substring:"not sized: the strategy is stopped");
+  cleanup ()
+
 (* 0.70 to 0.65 is 0.05, inside the band of 0.10: nothing is proposed, and
    the sizing row is the open one. *)
 let test_adjust_within_band_does_nothing () =
@@ -4468,6 +4534,10 @@ let suites =
           test_an_open_rebalance_sends_a_leg_under_the_floor;
         case "overlay zero flattens and alerts" test_overlay_zero_flattens_and_alerts;
         case "adjust within band does nothing" test_adjust_within_band_does_nothing;
+        case "a stopped strategy is flattened by the adjust pass"
+          test_a_stopped_strategy_is_flattened_by_the_adjust_pass;
+        case "a stopped strategy's document is not sized"
+          test_a_stopped_strategy's_document_is_not_sized;
         case "adjust beyond band re-sizes" test_adjust_beyond_band_re_sizes;
         case "an unknown drawdown holds the governor and sells nothing"
           test_an_unknown_drawdown_holds_the_governor_and_sells_nothing;

@@ -1480,6 +1480,15 @@ let run_live ~book_path ~(serve_port : int option) =
           ~dd_cap:(Ohcamel_desk.Intake.Gauge.dd_cap_of_limits limits)
       in
       Ohcamel_desk.Desk.set_gauge desk gauge;
+      (* A (reinstated DATE) later than a strategy's stop re-activates it here,
+         before the intake reads a file: the owner's answer, and the only way
+         a stop is lifted (desk/stop.ml). *)
+      Ohcamel_desk.Stop.reinstate ~journal
+        ~zone:
+          (Option.value
+             (Lazy.force Ohcamel_desk.Desk_time.new_york)
+             ~default:Time_float.Zone.utc)
+        ~strategies ~on_event:live_line;
       let intake =
         Ohcamel_desk.Intake.setup ~gauge ~journal
           ~universe:(List.map instruments ~f:(fun i -> i.Instrument.symbol))
@@ -1508,7 +1517,7 @@ let run_live ~book_path ~(serve_port : int option) =
              refused; a book older than that has a sync that is failing or
              stalled, and is not recorded as the account's. *)
           don't_wait_for
-            (Ohcamel_desk.Session_close.run_forever ~read ~graph ~journal
+            (Ohcamel_desk.Session_close.run_forever ~strategies ~read ~graph ~journal
                ~confidence:runtime.Config.Runtime.confidence
                ~book_is_current:(fun () ->
                  Ohcamel_desk.Desk.book_is_current desk ~now:(Time_ns.now ())
