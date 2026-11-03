@@ -323,25 +323,23 @@ let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
       | `Recorded -> sprintf "session %s recorded, %s" (day date) how
       | `Already_recorded -> sprintf "session %s was already recorded" (day date));
     (* INC-01's stop rules, once the session is on the record: its marks are
-       what each strategy's drawdown is read from (desk/stop.ml). A failure is
-       said and does not stop the close's loop. *)
-    (match outcome with
-    | `Recorded -> (
-        match
-          Or_error.try_with (fun () ->
-              Stop.evaluate ~journal ~strategies
-                ~zone:
-                  (Option.value
-                     (Lazy.force Desk_time.new_york)
-                     ~default:Time_float.Zone.utc)
-                ~at:(Time_ns.now ()) ~on_event)
-        with
-        | Ok _ -> ()
-        | Error e ->
-            on_event
-              (sprintf "session %s: the stop rules could not be evaluated: %s" (day date)
-                 (Error.to_string_hum e)))
-    | `Already_recorded -> ());
+       what each strategy's drawdown is read from (desk/stop.ml). Already
+       recorded too, since the process that recorded it may have stopped before
+       evaluating; a stopped strategy is never stopped twice. A failure is said
+       and does not stop the close's loop. [outcome] only words the line above. *)
+    ignore (outcome : [ `Recorded | `Already_recorded ]);
+    (match
+       Or_error.try_with (fun () ->
+           Stop.evaluate ~journal ~strategies
+             ~zone:
+               (Option.value (Lazy.force Desk_time.new_york) ~default:Time_float.Zone.utc)
+             ~at:(Time_ns.now ()) ~on_event)
+     with
+    | Ok _ -> ()
+    | Error e ->
+        on_event
+          (sprintf "session %s: the stop rules could not be evaluated: %s" (day date)
+             (Error.to_string_hum e)));
     match held with
     | Some clock -> close_when_due clock
     | None ->

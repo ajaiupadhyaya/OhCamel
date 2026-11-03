@@ -165,6 +165,33 @@ let test_only_a_later_reinstatement_brings_it_back () =
        ~zone ~at:(at "2026-10-22T21:05:00Z") ~on_event:ignore);
   D.Journal.close j
 
+(* The review's false stop: s_dd is cut from 1,000 to 200 at 09:45 on the 21st, as
+   the governor does when the book is losing, but the day's -200 was earned on the
+   full position. Divided by the 200 in force at the close it reads -100%; the
+   capital is the most the strategy held in force since the last close, 1,000, so
+   it reads -20%. *)
+let test_a_scale_cut_in_the_session_does_not_inflate_its_loss () =
+  let j = journal_with_two_strategies () in
+  D.Journal.record_sizing j ~strategy:"s_dd" ~sequence:1 ~at:(at "2026-10-21T13:45:00Z")
+    ~tier:"incubation" ~scale:0.2 ~allocated:200.0 ~mode:"adjust";
+  let record = D.Stop.sessions ~journal:j ~zone ~strategy:"s_dd" ~since:None in
+  Alcotest.(check (list (float 1e-9)))
+    "the capital each session" [ 1_000.0; 1_000.0 ]
+    (List.map record ~f:(fun s -> s.D.Record.allocated));
+  Alcotest.(check (float 1e-9))
+    "so 20% down, not 100%" 0.2 (D.Record.summarise record).D.Record.max_drawdown;
+  D.Journal.close j
+
+(* And a session sized to 0 still counts the loss it took before the sale. *)
+let test_a_session_sized_to_zero_still_counts () =
+  let j = journal_with_two_strategies () in
+  D.Journal.record_sizing j ~strategy:"s_dd" ~sequence:1 ~at:(at "2026-10-21T14:00:00Z")
+    ~tier:"incubation" ~scale:0.0 ~allocated:0.0 ~mode:"adjust";
+  let record = D.Stop.sessions ~journal:j ~zone ~strategy:"s_dd" ~since:None in
+  Alcotest.(check int)
+    "both sessions count" 2 (D.Record.summarise record).D.Record.sessions;
+  D.Journal.close j
+
 let suite =
   ( "stop",
     [
@@ -172,6 +199,10 @@ let suite =
         test_the_drawdown_rule_fires_at_its_line;
       Alcotest.test_case "the sessions rule fires at its count" `Quick
         test_the_sessions_rule_fires_at_its_count;
+      Alcotest.test_case "a scale cut in the session does not inflate its loss" `Quick
+        test_a_scale_cut_in_the_session_does_not_inflate_its_loss;
+      Alcotest.test_case "a session sized to zero still counts" `Quick
+        test_a_session_sized_to_zero_still_counts;
       Alcotest.test_case "the close stops the strategy past its line" `Quick
         test_the_close_stops_the_strategy_past_its_line;
       Alcotest.test_case "only a later reinstatement brings it back" `Quick

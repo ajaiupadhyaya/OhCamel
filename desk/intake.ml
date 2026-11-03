@@ -1460,10 +1460,15 @@ let close t ~strategy ~sequence outcome =
    stopped strategy is sized no more, and no document of its is, since one would
    buy back what the stop sold. *)
 let stopped_by t name =
-  match Journal.strategy_state t.journal ~strategy:name with
-  | Some (`Stopped, rule, _, detail) ->
+  match Or_error.try_with (fun () -> Journal.strategy_state t.journal ~strategy:name) with
+  | Ok (Some (`Stopped, rule, _, detail)) ->
       Some (sprintf "%s: %s" (Option.value rule ~default:"a stop rule") detail)
-  | Some (`Active, _, _, _) | None -> None
+  | Ok (Some (`Active, _, _, _) | None) -> None
+  (* Unreadable is not clear: no document is sized until the state reads. *)
+  | Error e ->
+      Some
+        (sprintf "its stop state could not be read (%s), so it waits until it can be"
+           (Error.to_string_hum e))
 
 let size ?reading t ~(oms : Oms.t option) ~(scale : unit -> float)
     (accepted : Accepted.t list) : unit Deferred.t =
@@ -1703,7 +1708,21 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                      while any of its orders may still fill, so one flatten
                      is in flight at a time. *)
                   let flatten () =
+                    let tried =
+                      match Hashtbl.find t.completions (s.name ^ "\000stop") with
+                      | Some (day, n) when String.equal day today -> n
+                      | Some _ | None -> 0
+                    in
                     if not (holds s) then None
+                    else if tried >= max_completions then (
+                      once t ~kind:"stop flatten cap"
+                        ~name:(s.name ^ "\000" ^ today)
+                        (fun () ->
+                          log t
+                            "%S is stopped and still holds shares; its flatten was tried \
+                             %d times this session and waits for the next"
+                            s.name tried);
+                      None)
                     else
                       match
                         Journal.latest_accepted_document t.journal ~strategy:s.name
@@ -1865,6 +1884,7 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
               ~f:(fun ((a : Accepted.t), parts, note, ratio) ->
                 let name = a.Accepted.strategy.name in
                 let completing = Option.equal String.equal note (Some "completion") in
+                let flattening = Option.equal String.equal note (Some "stop") in
                 let%map outcome =
                   match%map
                     Monitor.try_with ~extract_exn:true (fun () ->
@@ -1875,10 +1895,15 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                           a)
                   with
                   | Ok outcome ->
-                      if completing && outcome.Rebalanced.attempted then
-                        Hashtbl.update t.completions name ~f:(function
-                          | Some (day, n) when String.equal day today -> (day, n + 1)
-                          | Some _ | None -> (today, 1));
+                      (* A flatten is capped as a completion is, and for the same
+                         reason: an order that cannot fill would otherwise be sent
+                         and cancelled every pass all session. *)
+                      if (completing || flattening) && outcome.Rebalanced.attempted then
+                        Hashtbl.update t.completions
+                          (if flattening then name ^ "\000stop" else name)
+                          ~f:(function
+                            | Some (day, n) when String.equal day today -> (day, n + 1)
+                            | Some _ | None -> (today, 1));
                       outcome.Rebalanced.sentence
                   | Error exn -> sprintf "the rebalance raised (%s)" (Exn.to_string exn)
                 in

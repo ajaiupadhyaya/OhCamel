@@ -1483,12 +1483,20 @@ let run_live ~book_path ~(serve_port : int option) =
       (* A (reinstated DATE) later than a strategy's stop re-activates it here,
          before the intake reads a file: the owner's answer, and the only way
          a stop is lifted (desk/stop.ml). *)
-      Ohcamel_desk.Stop.reinstate ~journal
-        ~zone:
-          (Option.value
-             (Lazy.force Ohcamel_desk.Desk_time.new_york)
-             ~default:Time_float.Zone.utc)
-        ~strategies ~on_event:live_line;
+      (match
+         Or_error.try_with (fun () ->
+             Ohcamel_desk.Stop.reinstate ~journal
+               ~zone:
+                 (Option.value
+                    (Lazy.force Ohcamel_desk.Desk_time.new_york)
+                    ~default:Time_float.Zone.utc)
+               ~strategies ~on_event:live_line)
+       with
+      | Ok () -> ()
+      | Error e ->
+          live_line
+            ("stop      the book's reinstatements could not be applied: "
+           ^ Error.to_string_hum e));
       let intake =
         Ohcamel_desk.Intake.setup ~gauge ~journal
           ~universe:(List.map instruments ~f:(fun i -> i.Instrument.symbol))
