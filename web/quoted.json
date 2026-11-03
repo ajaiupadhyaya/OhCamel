@@ -33,7 +33,7 @@
   },
 
   "crisis": {
-    "note": "README.md, `make backtest-crisis`. The same battery over three real windows from docs/crisis/*.csv, at today's book held at constant weights. `burst` is the largest number of exceptions in any 21 consecutive sessions -- about 1.1 expected under independence -- and is descriptive, not a test.",
+    "note": "README.md, `make backtest-crisis`. The same battery over three real windows from docs/crisis/*.csv, at today's book held at constant weights. `burst` is the largest number of exceptions in any 21 consecutive sessions -- one fixed window expects about 1.05, and the worst of every window typically holds 4 at random -- and is descriptive, not a test.",
     "confidence": 0.95,
     "window": 60,
     "burst_span": 21,

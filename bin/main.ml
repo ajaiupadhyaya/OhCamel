@@ -940,10 +940,11 @@ let run_backtest_crisis () =
     \  duration p  Weibull on the waiting times: sees a cluster at any spacing,\n\
     \              but it is a GLOBAL fit -- one local burst inside a long calm\n\
     \              series barely moves it.\n\
-    \  burst       the most exceptions any %d consecutive sessions held, against\n\
-    \              about %.1f expected under independence. Not a hypothesis test\n\
-    \              and labelled as such -- it is the only one of the three that\n\
-    \              sees a LOCAL cluster.\n"
+    \  burst       the most exceptions any %d consecutive sessions held. One fixed\n\
+    \              window expects about %.1f, but this is the worst of every window,\n\
+    \              which at random typically holds 4. Not a hypothesis test and\n\
+    \              labelled as such -- it is the only one of the three that sees\n\
+    \              a LOCAL cluster.\n"
     burst_span
     (float_of_int burst_span *. (1.0 -. report.Validation_report.confidence));
   printf "\n  %d of %d configurations rejected at 5%%.\n"

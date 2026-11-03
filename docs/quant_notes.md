@@ -414,7 +414,10 @@ $$LR_{ind} = -2\Big[(n_{00}+n_{10})\ln(1-\pi) + (n_{01}+n_{11})\ln\pi
 > September and 7 October 2008** — seventeen sessions spanning Lehman, against
 > 0.85 expected — and $LR_{ind}$ returns $p = 0.92$, because exactly one pair in
 > that 570-day series falls on adjacent days. The test is not wrong; it is
-> answering a narrower question than a reader assumes. §7.4 is the response.
+> answering a narrower question than a reader assumes. §7.4 is the response. The
+> 0.85 is one fixed window's mean: placed at random, the worst window reaches five
+> in 13% to 44% of trials by row, so these five show the blindness and do not
+> establish a cluster. COVID's bursts do, at 2 in 10,000 and rarer.
 
 ### 7.4 Christoffersen–Pelletier, duration-based independence
 
@@ -491,8 +494,9 @@ it.
 **What it still cannot do.** It is a **global** fit over the whole duration
 distribution. A single localised burst inside a long otherwise-calm series moves
 $\hat b$ very little: on the GFC window it returns $\hat b = 0.95$, $p = 0.75$
-despite the five exceedances around Lehman, because twenty-five durations spread
-over 570 days still look roughly exponential in aggregate. `backtest-crisis`
+on the five exceedances around Lehman, which is no miss by itself (§7.3's note), and
+twenty-five durations spread over 570 days still look roughly exponential in
+aggregate. `backtest-crisis`
 therefore also prints a plain worst-burst count, labelled a descriptive statistic
 and not a test, because it is the only one of the three that sees a local
 cluster. Three instruments, three blind spots — adjacency, aggregation, and no
