@@ -335,7 +335,7 @@ let test_a_ticket_that_cannot_be_read_is_a_400_naming_the_field () =
 let test_a_reset_must_say_so () =
   with_routes ~host:`Live ~on_event:ignore ~f:(fun server oms ->
       let halt = D.Oms.halt oms in
-      D.Halt.halt halt ~why:"a test" ~at:(Time_ns.now ());
+      D.Oms.halt_by_hand oms ~why:"a test";
       let code, _ =
         dispatched server
           (request ~headers:from_this_site ~body:"{}" "/api/desk/kill/reset")
@@ -360,6 +360,9 @@ let test_a_reset_must_say_so () =
              "/api/desk/kill/reset")
       in
       Alcotest.(check int) "confirmed: 200" 200 code;
+      Alcotest.(check bool)
+        "and off the record, or the next start would halt again" true
+        (Option.is_none (D.Journal.recorded_halt (D.Oms.journal oms)));
       Alcotest.(check string)
         "clear" "clear"
         Yojson.Safe.Util.(to_string (member "state" (Yojson.Safe.from_string text))));

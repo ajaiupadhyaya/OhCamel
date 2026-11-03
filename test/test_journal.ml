@@ -689,9 +689,30 @@ let test_a_strategy's_fills_are_read_through_orders_by_source () =
     (String.is_substring plan ~substring:"SCAN o ");
   Journal.close j
 
+(* The switch's one fact a restart must not forget. A person pressed it, for a
+   reason no limit measures, and only a deliberate reset answers that. *)
+let test_a_halt_by_hand_is_on_the_record_until_it_is_cleared () =
+  let j = open_exn ":memory:" in
+  let at = Time_ns.of_string_with_utc_offset "2026-11-02T15:04:05Z" in
+  let halt = Alcotest.(option (pair string string)) in
+  let read () =
+    Option.map (Journal.recorded_halt j) ~f:(fun (why, at) ->
+        (why, Ohcamel_desk.Desk_time.rfc3339 at))
+  in
+  Alcotest.check halt "nothing yet" None (read ());
+  Journal.record_halt j ~why:"the venue looks wrong" ~at;
+  Alcotest.check halt "the reason and the instant"
+    (Some ("the venue looks wrong", Ohcamel_desk.Desk_time.rfc3339 at))
+    (read ());
+  Journal.clear_halt j;
+  Alcotest.check halt "and gone once cleared" None (read ());
+  Journal.close j
+
 let suite =
   ( "journal",
     [
+      Alcotest.test_case "a halt by hand is on the record until it is cleared" `Quick
+        test_a_halt_by_hand_is_on_the_record_until_it_is_cleared;
       Alcotest.test_case "a session survives a restart" `Quick
         test_a_session_survives_a_restart;
       Alcotest.test_case "recent fills reads by the index, not a sort" `Quick

@@ -21,7 +21,9 @@
 
    A HAND OUTRANKS A LIMIT. A halt by hand is reported ahead of a trip, and
    only a deliberate reset lifts it: whoever pressed it knew something the
-   limits did not.
+   limits did not. The journal holds it, so a restart does not: Oms.restore_halt
+   sets it on the new switch. A limit's trip is not held there; it comes back
+   only if the limit is still breached.
 
    THE DEMO RESETS ITSELF, AND ONLY THE DEMO. The public demo trips its switch
    on purpose -- nvda-cap sits 200 dollars above NVDA's exposure -- and a

@@ -2094,9 +2094,30 @@ let cancel_all t : unit Deferred.t =
    with the switch already set -- which is what lets the kill route answer
    the person who pressed it, and still send the cancels. *)
 let halt_by_hand t ~why =
-  Halt.halt t.halt ~why ~at:(t.now ());
+  let at = t.now () in
+  Halt.halt t.halt ~why ~at;
+  (* The first press only, as the switch keeps it: its reason is the one the
+     reset has to answer. *)
+  if Option.is_none (Journal.recorded_halt t.journal) then
+    Journal.record_halt t.journal ~why ~at;
   t.on_event ("desk      HALTED by hand: " ^ why);
   t.on_change ()
+
+(* The deliberate reset. The journal first: if that write fails the switch stays
+   as it was and the route says so, where the other order would lift the halt
+   here and bring it back at the next start. Nothing while the engine has stopped
+   the desk, which [Halt.reset] does not lift and the route refuses. *)
+let reset_switch t =
+  match Halt.state t.halt with
+  | Halt.State.Stopped _ -> ()
+  | Halt.State.Clear | Halt.State.Tripped _ | Halt.State.Halted _ ->
+      Journal.clear_halt t.journal;
+      Halt.reset t.halt
+
+(* A new switch at startup takes up the halt the last process left standing. *)
+let restore_halt ~(halt : Halt.t) ~(journal : Journal.t) =
+  Option.iter (Journal.recorded_halt journal) ~f:(fun (why, at) ->
+      Halt.halt halt ~why ~at)
 
 (* The halt, then the cancels -- the cancels whether or not anything after the
    halt raised, as the kill route sends them, because the halt is set and

@@ -156,6 +156,36 @@ let cancel_resting oms o =
    account, "alpaca-paper", or the demo's simulator, "simulated". Any other
    venue the read half names refuses it, in one sentence the intake records
    as the rebalance's refusal. *)
+(* The halt.ml rule: only a deliberate reset lifts a hand's halt. Until
+   2026-11-02 a restart did too, silently, so a crash or a deploy put a desk
+   someone had stopped back to trading. A restart here is a new switch built on
+   the same journal, which is what bin/main.ml does. *)
+let test_a_halt_by_hand_survives_a_restart () =
+  with_oms
+    ~f:(fun oms journal ->
+      let restarted () =
+        let halt = D.Halt.create D.Halt.Source.none in
+        D.Oms.restore_halt ~halt ~journal;
+        halt
+      in
+      Alcotest.(check string)
+        "a desk nobody halted starts clear" "clear"
+        (D.Halt.State.name (D.Halt.state (restarted ())));
+      D.Oms.halt_by_hand oms ~why:"first";
+      D.Oms.halt_by_hand oms ~why:"second";
+      (match D.Halt.state (restarted ()) with
+      | D.Halt.State.Halted { why; _ } ->
+          Alcotest.(check string) "the first press's reason" "first" why
+      | state -> Alcotest.failf "a restart lifted the halt: %s" (D.Halt.State.name state));
+      D.Oms.reset_switch oms;
+      Alcotest.(check string)
+        "a reset lifts it now" "clear"
+        (D.Halt.State.name (D.Halt.state (D.Oms.halt oms)));
+      Alcotest.(check string)
+        "and for the next start too" "clear"
+        (D.Halt.State.name (D.Halt.state (restarted ()))))
+    ()
+
 let test_incubation_is_permitted_on_the_paper_venues_only () =
   let permitted name =
     with_oms ~venue_name:name ~f:(fun oms _ -> D.Oms.incubation_permitted oms) ()
@@ -1129,6 +1159,8 @@ let suite =
       Alcotest.test_case "a failed order's DELETE is journaled before it is sent" `Quick
         test_a_failed_order's_delete_is_journaled_before_it_is_sent;
       Alcotest.test_case "which venue statuses rest" `Quick test_which_venue_statuses_rest;
+      Alcotest.test_case "a halt by hand survives a restart" `Quick
+        test_a_halt_by_hand_survives_a_restart;
       Alcotest.test_case "incubation is permitted on the paper venues only" `Quick
         test_incubation_is_permitted_on_the_paper_venues_only;
     ] )

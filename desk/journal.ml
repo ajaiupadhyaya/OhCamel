@@ -920,6 +920,28 @@ let recent_alerts t ~limit =
         line = col_text r 3;
       })
 
+(* A halt by hand, in [meta]: one standing fact and not a history, which the log
+   and the alerts keep, so no table of its own and no new schema version. *)
+let record_halt t ~why ~at =
+  write t ~what:"halt" (fun () ->
+      run t ~what:"halt"
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('halt_why', ?), ('halt_at', ?)"
+        [ text why; time at ])
+
+let recorded_halt t =
+  match
+    query t ~what:"halt"
+      "SELECT w.value, a.value FROM meta w, meta a WHERE w.key = 'halt_why' AND a.key = \
+       'halt_at'"
+      [] ~row:(fun r -> (col_text r 0, col_time r 1))
+  with
+  | [ halt ] -> Some halt
+  | _ -> None
+
+let clear_halt t =
+  write t ~what:"halt" (fun () ->
+      run t ~what:"halt" "DELETE FROM meta WHERE key IN ('halt_why', 'halt_at')" [])
+
 (* Signals: A3's addition to the record. Every judgement the intake makes is
    one row of [signals], keyed by (strategy, sequence) -- the table schema
    version 1 has always declared -- with the whole document beside it; every

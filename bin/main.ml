@@ -1366,6 +1366,7 @@ let run_live ~book_path ~(serve_port : int option) =
           | Some a -> Ohcamel_desk.Halt.Source.of_alerts a
           | None -> Ohcamel_desk.Halt.Source.none)
       in
+      Ohcamel_desk.Oms.restore_halt ~halt ~journal;
       let reconcile_on_connect = ref (fun () -> Deferred.unit) in
       let trade =
         match (book.Config.Book.desk.Desk_spec.trading, trading_credentials) with
@@ -1441,11 +1442,15 @@ let run_live ~book_path ~(serve_port : int option) =
             ("desk      the kill switch tripped on " ^ limit
            ^ " before it was wired: cancelling every open order");
           don't_wait_for (Ohcamel_desk.Oms.cancel_all oms)
-      (* Nothing to catch up for a hand, and the engine's stop is set only
-         below, when the update stream ends. *)
-      | Ohcamel_desk.Halt.State.Clear | Ohcamel_desk.Halt.State.Halted _
-      | Ohcamel_desk.Halt.State.Stopped _ ->
-          ());
+      (* A hand's halt restored from the journal, for the same reason: the kill's
+         cancels may have been cut short by whatever restarted the process. *)
+      | Ohcamel_desk.Halt.State.Halted { why; _ } ->
+          live_line
+            ("desk      HALTED by hand before this restart, and still: " ^ why
+           ^ ". Cancelling every open order; a reset lifts the halt");
+          don't_wait_for (Ohcamel_desk.Oms.cancel_all oms)
+      (* The engine's stop is set only below, when the update stream ends. *)
+      | Ohcamel_desk.Halt.State.Clear | Ohcamel_desk.Halt.State.Stopped _ -> ());
       (* The venue's order updates end only when the stream has given up for
          good -- the paper host refused the key, and nothing reconnects. [run]
          then stops the desk itself (Oms.stop): the switch, the cancels, the

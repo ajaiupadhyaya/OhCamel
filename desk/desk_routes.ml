@@ -416,7 +416,7 @@ let extensions ~(host : host) ~(oms : Oms.t) : Server.extension list =
                            and only a restart clears that";
                         respond_error server `Conflict stopped_sentence
                     | Halt.State.Clear | Halt.State.Tripped _ | Halt.State.Halted _ ->
-                        Halt.reset (Oms.halt oms);
+                        Oms.reset_switch oms;
                         (* M6: a reset is exactly as deliberate a change as a
                            kill, and gets the same line kill already writes. *)
                         Oms.on_event oms "desk      the switch was reset by request";

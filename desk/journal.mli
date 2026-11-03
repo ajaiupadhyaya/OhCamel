@@ -168,6 +168,13 @@ end
 val record_alert : t -> Alert.t -> unit
 val recent_alerts : t -> limit:int -> Alert.t list
 
+val record_halt : t -> why:string -> at:Time_ns.t -> unit
+(** The standing halt by hand, so a restart cannot lift it: halt.ml's rule is that only a
+    deliberate reset does. Written once per halt; [clear_halt] is the reset's. *)
+
+val recorded_halt : t -> (string * Time_ns.t) option
+val clear_halt : t -> unit
+
 (** One judgement of one signal document (desk/intake.ml): the [signals] table's row. *)
 module Signal : sig
   module Verdict : sig
