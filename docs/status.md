@@ -51,9 +51,9 @@ options as an overlay at an assumed delta; a 13F gives no strike or expiry, so t
 | Cost | $24/month, metered hourly, capped |
 | Proxy / TLS | Caddy, Let's Encrypt, HTTP→HTTPS 308, HSTS, a CSP measured per route. Only Caddy has a host port |
 | DNS | Porkbun: A records `ohcamel` and `live.ohcamel` on the owner's domain |
-| **Deployed — public host** | **`b81260c`**, deployed by the owner on 2026-11-02 21:43 ET with `--live` (both hosts); smoke 52 passed, 0 failed, 1 skipped. The bridge stays on |
-| **Deployed — live host** | **`b81260c`** (a 406 retried in the process, a name that printed nothing rolling at zero, a halt by hand surviving a restart), deployed 2026-11-02 21:43 ET with `--live`; the pre-deploy journal copy is `/var/backups/ohcamel/pre-deploy-20261103T024330Z-b223aad47b5e.db`, verified. Checked after: 35 session closes restored, one open order reconciled, 31 positions matching the venue, kill switch armed and clear, no halt restored, no restart |
-| Not deployed | INC-01's stop rules (`desk/stop.ml`), which need `--live` outside 09:25-17:10 New York. Read on the 2026-11-03 journal copy, no strategy is near a line (worst drawdown 4.9% against 15%, none past 8 sessions of 250), and the strategies' P&L sums to -$5,774 against the account's -$5,776 |
+| **Deployed — public host** | **`831491b`**, deployed by the owner on 2026-11-02 23:32 ET with `--live` (both hosts). The bridge stays on |
+| **Deployed — live host** | **`831491b`** (INC-01's stop rules, on top of `b81260c`'s 406 retry, zero-return roll and restart-proof halt), deployed 2026-11-02 23:32 ET with `--live`; the pre-deploy journal copy is `/var/backups/ohcamel/pre-deploy-20261103T043206Z-b81260c97d7e.db`. Checked after: 35 session closes restored, one open order reconciled, 31 positions matching the venue, 23 strategies registered and active, kill switch armed and clear, no restart. The first stop evaluation runs at the 2026-11-03 close |
+| Not deployed | Only the docs commit that wrote this row |
 
 **Data on the droplet (2026-10-08).** The warehouse backfill ran through the queue. `ingest.universes` finished,
 and `ingest.bars_daily` filled 563 keys to as-of 2026-10-07 in 322 cpu-s at 233 MB peak. The factors are as of
