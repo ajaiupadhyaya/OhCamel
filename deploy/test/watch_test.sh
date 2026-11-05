@@ -328,6 +328,14 @@ expect_count "sync: venue-clock with read_at 60 s in the future is silent" "ALER
 expect_count "sync: the future read_at logs the skip once" "skipped" 1
 expect_count "sync: the skip line says the read_at is in the future" "60 s in this host's future" 1
 
+# The race, not a clock step: the watch takes its now as it starts and reads the
+# desk afterwards, so a reading a second ahead is ordinary. On the droplet 18 of
+# about 240 runs in 2026-11-03 skipped both checks for exactly that.
+desk "$T0" last_sync=$((T0 - 181)) read_at=$((T0 + 1))
+run "$T0"
+expect_count "sync: read_at 1 s ahead still runs the check, and 181 s alerts" "ALERT sync" 1
+expect_count "sync: and logs no skip" "skipped" 0
+
 # ---------------------------------------------------------------------------
 # 3. The 30-minute session rule
 # ---------------------------------------------------------------------------

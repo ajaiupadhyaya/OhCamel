@@ -39,7 +39,9 @@
 # generator. The future read_at is the case the desk itself cannot catch
 # (plan commit 08972b1, and the comment at desk/desk.ml's clock_json): the
 # desk compares read_at with its own wall clock, so after a backward step of
-# the host clock a stale reading still says "venue-clock".
+# the host clock a stale reading still says "venue-clock". "Future" allows
+# CLOCK_SLACK_S: this script takes its now before it reads the desk, and on
+# 2026-11-03 a read_at one second ahead skipped both checks in 18 runs of 240.
 #
 # THE SESSION RULE learns each close while the clock is trustworthy: every
 # trustworthy reading records next_close_date and next_close under
@@ -106,6 +108,9 @@ UNHEALTHY_RUNS=3
 SIGNAL_LAG_S=$((25 * 3600))
 SIGNAL_STALE_DAYS=35
 CLOSE_FORGET_S=$((7 * 86400))
+# A read_at at most this far ahead is the race between this script taking its
+# [now] as it starts and reading the desk afterwards, not a backward clock step.
+CLOCK_SLACK_S=5
 PROJECT=ohcamel
 
 now=${OHCAMEL_WATCH_NOW:-$(date -u +%s)}
@@ -264,7 +269,7 @@ if [ -n "$desk_json" ]; then
 		say "clock.source is \"$source\"; the sync-staleness and session-row checks are skipped this run"
 	elif [ -z "$read_at" ]; then
 		say "clock.read_at is unreadable; the sync-staleness and session-row checks are skipped this run"
-	elif [ "$read_at" -gt "$now" ]; then
+	elif [ "$read_at" -gt "$((now + CLOCK_SLACK_S))" ]; then
 		say "clock.read_at is $((read_at - now)) s in this host's future, so the reading is treated as stale; the sync-staleness and session-row checks are skipped this run"
 	else
 		trusted=1
