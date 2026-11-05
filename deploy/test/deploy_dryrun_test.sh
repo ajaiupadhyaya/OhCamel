@@ -242,7 +242,7 @@ if grep -qE "^(sleep|/bin/sleep) 15" "$scratch/log-O" || grep -q "sleep 15" "$he
 
 auth="$scratch/smoke-auth-O"
 if grep -qE '^user = "smoke:[0-9a-f]{48}"$' "$auth" 2>/dev/null; then ok "A1 the password file is one curl config line for the smoke user"; else no "A1 the password file is one curl config line for the smoke user" "$(cat "$auth" 2>/dev/null || echo missing)"; fi
-mode=$(stat -f '%Lp' "$auth" 2>/dev/null || stat -c '%a' "$auth" 2>/dev/null)
+mode=$(stat -c '%a' "$auth" 2>/dev/null || stat -f '%Lp' "$auth" 2>/dev/null)
 if [ "$mode" = 600 ]; then ok "A2 the password file is 0600"; else no "A2 the password file is 0600" "mode $mode"; fi
 if grep -qxF 'OHCAMEL_SMOKE_HASH=$$2a$$14$$shimhashshimhashshimhashshimhashshimhashshimhashshimh' "$scratch/repo-O/deploy/.env"; then ok "A3 deploy/.env gains the hash, every dollar doubled"; else no "A3 deploy/.env gains the hash, every dollar doubled" "$(grep SMOKE "$scratch/repo-O/deploy/.env")"; fi
 if grep -qx 'OHCAMEL_DEMO_HOST=demo.example' "$scratch/repo-O/deploy/.env"; then ok "A4 the rest of deploy/.env is kept"; else no "A4 the rest of deploy/.env is kept" "$(cat "$scratch/repo-O/deploy/.env")"; fi
