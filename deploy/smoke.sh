@@ -89,6 +89,29 @@ BASE="${BASE%/}"
 LIVE="${LIVE%/}"
 ENGINE="${ENGINE%/}"
 
+# The public host's password (deploy/Caddyfile: closed until the site is
+# finished). deploy.sh passes the smoke account's curl config -- one
+# `user = "smoke:..."` line -- in OHCAMEL_SMOKE_AUTH. Every curl to an https
+# BASE, and only to it, carries it: never the live host, an engine, or a
+# plain-http URL. Unset (the localhost harness, which has no gate), curl is
+# curl. Section Q's first check says which of the two this run is.
+SMOKE_AUTH="${OHCAMEL_SMOKE_AUTH:-}"
+if [ -n "$SMOKE_AUTH" ] && [ ! -r "$SMOKE_AUTH" ]; then
+	echo "smoke: OHCAMEL_SMOKE_AUTH names $SMOKE_AUTH, which is not readable" >&2
+	exit 2
+fi
+if [ -n "$SMOKE_AUTH" ] && [ "${BASE#https://}" != "$BASE" ]; then
+	curl() {
+		local a
+		for a in "$@"; do
+			case "$a" in
+			"$BASE" | "$BASE"/*) command curl -K "$SMOKE_AUTH" "$@"; return ;;
+			esac
+		done
+		command curl "$@"
+	}
+fi
+
 pass=0; fail=0; skip=0
 ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$1"; pass=$((pass + 1)); }
 no()   { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; [ -n "${2:-}" ] && printf '        %s\n' "$2"; fail=$((fail + 1)); }
@@ -161,6 +184,25 @@ exec(os.environ["QCHECK"])
 # On the localhost harness it is a warning (see qjson).
 # ---------------------------------------------------------------------------
 printf '\nOhCamel smoke -- %s\n\n' "$BASE"
+
+# The gate. An anonymous caller is refused everywhere but /api/health, which
+# scripts/uptime.sh reads from outside. Asked with `command curl`, so with no
+# credential whatever this run holds.
+anon=$(command curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$BASE/" 2>/dev/null)
+if [ -n "$SMOKE_AUTH" ]; then
+	case "$anon" in
+	401)
+		ok "GET / anonymous            401: the site asks for its password"
+		code=$(command curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$BASE/api/health" 2>/dev/null)
+		[ "$code" = 200 ] && ok "GET /api/health anonymous  200: open for the uptime watch" ||
+			no "GET /api/health anonymous  ${code:-no response}, expected 200" "the gate's matcher in deploy/Caddyfile must leave /api/health open"
+		;;
+	200) meh "GET / anonymous            200: the public host has no password (deploy/Caddyfile)" ;;
+	*) no "GET / anonymous            ${anon:-no response}, expected 401" "the public host did not answer an anonymous caller" ;;
+	esac
+elif [ "$anon" = 401 ]; then
+	no "GET / anonymous            401, and this run has no password" "deploy.sh passes OHCAMEL_SMOKE_AUTH; by hand, point it at ~/.config/ohcamel/smoke-auth"
+fi
 
 index=$(curl -sS --compressed --max-time 15 -D - "$BASE/" 2>/dev/null | tr -d '\r')
 index_code=$(printf '%s\n' "$index" | sed -n '1s/^HTTP[^ ]* \([0-9]*\).*/\1/p')

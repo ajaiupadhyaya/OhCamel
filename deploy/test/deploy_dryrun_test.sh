@@ -30,6 +30,11 @@
 #      the previous good sha as the rollback.
 #   P. after a good deploy, the last three logged shas' tags are kept and
 #      every other tag of the four images is removed.
+#   A. the public host's smoke account: made once, before the manifest wait,
+#      as a 0600 curl config line and a doubled-dollar OHCAMEL_SMOKE_HASH in
+#      deploy/.env; not made again while both halves exist; handed to smoke as
+#      OHCAMEL_SMOKE_AUTH; a hash-password failure exits 1 before any pull,
+#      with the checkout put back on the old sha.
 #   H. --help documents --sha, --live, --build, --during-market, --dry-run
 #      and --public-only (which also starts ohcamel-worker), and exits 0.
 #
@@ -99,6 +104,11 @@ case "$all" in
 *" manifest inspect "*) exit "${SHIM_MANIFEST_RC:-0}" ;;
 *" journal-backup "*) exit "${SHIM_BACKUP_RC:-0}" ;;
 *" check-book "*) exit "${SHIM_CHECKBOOK_RC:-0}" ;;
+*" hash-password "*)
+	[ "${SHIM_HASH_RC:-0}" = 0 ] || exit "$SHIM_HASH_RC"
+	printf '%s\n' '$2a$14$shimhashshimhashshimhashshimhashshimhashshimhashshimh'
+	exit 0
+	;;
 *" exec -T caddy "*) exit 1 ;; # nothing to compare: caddy is recreated
 esac
 case "${1:-}" in
@@ -138,7 +148,7 @@ fresh() {
 	cp "$here/book.example.sexp" "$repo/"
 	cat >"$repo/deploy/smoke.sh" <<'EOF'
 #!/usr/bin/env bash
-printf 'smoke %s\n' "$*" >>"$SHIM_LOG"
+printf 'smoke %s auth=%s\n' "$*" "${OHCAMEL_SMOKE_AUTH:-}" >>"$SHIM_LOG"
 exit "${SHIM_SMOKE_RC:-0}"
 EOF
 	chmod +x "$repo/deploy/smoke.sh"
@@ -164,6 +174,7 @@ run() {
 			SHIM_TARGET_SHA="${SHIM_TARGET_SHA:-$SHA}" \
 			DEPLOY_LOG="$scratch/log-$c" \
 			DEPLOY_LIVE_ENV="$scratch/live.env" \
+			DEPLOY_SMOKE_AUTH="$scratch/smoke-auth-$c" \
 			DEPLOY_NOW="${DEPLOY_NOW:-2026-09-19T15:00Z}" \
 			DEPLOY_MANIFEST_WAIT_S="${DEPLOY_MANIFEST_WAIT_S:-0}" \
 			DEPLOY_POLL_S=0 \
@@ -226,6 +237,34 @@ if grep -F smoke "$scratch/log-O" | grep -q -- "https://demo.example --expect-sh
 if grep -qE "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z $SHA ok$" "$scratch/log-O"; then ok "O10 deploys.log gains 'UTC sha ok'"; else no "O10 deploys.log gains 'UTC sha ok'" "$(tail -3 "$scratch/log-O")"; fi
 if grep -q "^docker build " "$scratch/log-O"; then no "O11 nothing is built without --build" "$(grep '^docker build ' "$scratch/log-O")"; else ok "O11 nothing is built without --build"; fi
 if grep -qE "^(sleep|/bin/sleep) 15" "$scratch/log-O" || grep -q "sleep 15" "$here/deploy/deploy.sh"; then no "O12 the fixed sleep 15 is gone" "still in deploy.sh"; else ok "O12 the fixed sleep 15 is gone"; fi
+
+# --- A. the public host's smoke account ------------------------------------------
+
+auth="$scratch/smoke-auth-O"
+if grep -qE '^user = "smoke:[0-9a-f]{48}"$' "$auth" 2>/dev/null; then ok "A1 the password file is one curl config line for the smoke user"; else no "A1 the password file is one curl config line for the smoke user" "$(cat "$auth" 2>/dev/null || echo missing)"; fi
+mode=$(stat -f '%Lp' "$auth" 2>/dev/null || stat -c '%a' "$auth" 2>/dev/null)
+if [ "$mode" = 600 ]; then ok "A2 the password file is 0600"; else no "A2 the password file is 0600" "mode $mode"; fi
+if grep -qxF 'OHCAMEL_SMOKE_HASH=$$2a$$14$$shimhashshimhashshimhashshimhashshimhashshimhashshimh' "$scratch/repo-O/deploy/.env"; then ok "A3 deploy/.env gains the hash, every dollar doubled"; else no "A3 deploy/.env gains the hash, every dollar doubled" "$(grep SMOKE "$scratch/repo-O/deploy/.env")"; fi
+if grep -qx 'OHCAMEL_DEMO_HOST=demo.example' "$scratch/repo-O/deploy/.env"; then ok "A4 the rest of deploy/.env is kept"; else no "A4 the rest of deploy/.env is kept" "$(cat "$scratch/repo-O/deploy/.env")"; fi
+first=$(grep -nE 'hash-password|manifest inspect' "$scratch/log-O" | head -1)
+case "$first" in *hash-password*) ok "A5 the account is made before the manifest wait" ;; *) no "A5 the account is made before the manifest wait" "$first" ;; esac
+if grep -F smoke "$scratch/log-O" | grep -q -- "auth=$auth$"; then ok "A6 smoke is handed the password file as OHCAMEL_SMOKE_AUTH"; else no "A6 smoke is handed the password file as OHCAMEL_SMOKE_AUTH" "$(grep '^smoke' "$scratch/log-O")"; fi
+: >"$scratch/log-O"
+run O --live --sha "$SHA"
+if [ "$(rc O)" = 0 ] && ! grep -q hash-password "$scratch/log-O" && [ "$(grep -c '^OHCAMEL_SMOKE_HASH=' "$scratch/repo-O/deploy/.env")" = 1 ]; then ok "A7 a second deploy keeps the account"; else no "A7 a second deploy keeps the account" "rc $(rc O), $(grep -c hash-password "$scratch/log-O") hash-password calls"; fi
+rm -f "$auth"
+: >"$scratch/log-O"
+run O --live --sha "$SHA"
+if grep -q hash-password "$scratch/log-O" && [ "$(grep -c '^OHCAMEL_SMOKE_HASH=' "$scratch/repo-O/deploy/.env")" = 1 ] && [ -s "$auth" ]; then ok "A8 a lost password file makes both halves again, one hash line"; else no "A8 a lost password file makes both halves again, one hash line" "$(grep -c '^OHCAMEL_SMOKE_HASH=' "$scratch/repo-O/deploy/.env") hash lines"; fi
+fresh A >/dev/null
+SHIM_HASH_RC=1 run A --live --sha "$SHA"
+if [ "$(rc A)" = 1 ]; then ok "A9 a failed hash-password exits 1"; else no "A9 a failed hash-password exits 1" "rc $(rc A)"; fi
+if grep -qE 'manifest inspect| pull| up -d' "$scratch/log-A"; then no "A10 nothing is waited on, pulled or started" "$(grep -E 'manifest| pull| up -d' "$scratch/log-A" | head -2 | tr '\n' ' ')"; else ok "A10 nothing is waited on, pulled or started"; fi
+if [ "$(grep 'git checkout --detach' "$scratch/log-A" | tail -1)" = "git checkout --detach ${OLD:0:12}" ]; then ok "A11 the checkout is put back on the old sha"; else no "A11 the checkout is put back on the old sha" "$(grep checkout "$scratch/log-A" | tr '\n' ' ')"; fi
+if grep -q '^OHCAMEL_SMOKE_HASH=' "$scratch/repo-A/deploy/.env"; then no "A12 deploy/.env is untouched" "it gained a hash"; else ok "A12 deploy/.env is untouched"; fi
+fresh AD >/dev/null
+run AD --dry-run --live --sha "$SHA"
+if grep -q "make the public host's smoke account" "$scratch/out-AD" && ! grep -q hash-password "$scratch/log-AD"; then ok "A13 --dry-run says it would make the account and does not"; else no "A13 --dry-run says it would make the account and does not" "$(grep -i smoke "$scratch/out-AD" | head -2 | tr '\n' ' ')"; fi
 
 # --- F. a failing check-book ------------------------------------------------------
 

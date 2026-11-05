@@ -44,7 +44,7 @@ services:
         required: true
 YAML
 
-export OHCAMEL_DEMO_HOST=x OHCAMEL_LIVE_HOST=x OHCAMEL_LIVE_USER=x OHCAMEL_LIVE_HASH=x \
+export OHCAMEL_DEMO_HOST=x OHCAMEL_LIVE_HOST=x OHCAMEL_LIVE_USER=x OHCAMEL_LIVE_HASH=x OHCAMEL_SMOKE_HASH=x \
        OHCAMEL_PUBLIC_HOST=x OHCAMEL_ACME_EMAIL=x OHCAMEL_TAG=deadbeef
 json="$scratch/render.json"
 docker compose -f deploy/docker-compose.yml -f "$override" --profile live --profile demo \

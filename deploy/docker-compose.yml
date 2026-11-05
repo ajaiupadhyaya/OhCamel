@@ -120,6 +120,9 @@ services:
       OHCAMEL_LIVE_HOST: ${OHCAMEL_LIVE_HOST:?set it in deploy/deploy.env}
       OHCAMEL_LIVE_USER: ${OHCAMEL_LIVE_USER:?set it in deploy/deploy.env}
       OHCAMEL_LIVE_HASH: ${OHCAMEL_LIVE_HASH:?run `caddy hash-password`}
+      # The public host's second account, for deploy/smoke.sh. deploy.sh writes
+      # it into deploy/.env on the droplet before anything here is pulled.
+      OHCAMEL_SMOKE_HASH: ${OHCAMEL_SMOKE_HASH:?deploy/deploy.sh writes it}
     # The public host is the Quant app now; Caddy starts once it answers.
     depends_on:
       ohcamel-quant:
