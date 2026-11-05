@@ -227,7 +227,6 @@ jobs:
             -e OHCAMEL_LIVE_HOST=live.example.com \
             -e OHCAMEL_LIVE_USER=ci \
             -e 'OHCAMEL_LIVE_HASH=$2a$14$Zkx19XLiW6VYouLHR5NmfOFU0z2GTNmpkT/5qqR7hx4IjWJPDhjvG' \
-            -e 'OHCAMEL_SMOKE_HASH=$2a$14$Zkx19XLiW6VYouLHR5NmfOFU0z2GTNmpkT/5qqR7hx4IjWJPDhjvG' \
             "$caddy_image" \
             caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
 

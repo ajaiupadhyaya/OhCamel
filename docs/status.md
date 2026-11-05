@@ -45,7 +45,7 @@ options as an overlay at an assumed delta; a 13F gives no strike or expiry, so t
 
 | | |
 |---|---|
-| Public site | **https://ohcamel.ajaiupadhyaya.com** — OhCamel Quant on real data. **Closed behind a password until the site is finished** (the owner, 2026-11-05): Caddy's `basic_auth` on every path but `/api/health`, the live host's login, plus a `smoke` account `deploy.sh` makes for the post-deploy checks. Takes effect at the next deploy; to reopen, delete the gate in `deploy/Caddyfile` and `OHCAMEL_PUBLIC_GATED` in the uptime workflow |
+| Public site | **https://ohcamel.ajaiupadhyaya.com** — OhCamel Quant on real data, no credentials. Every `/api` route is public |
 | Live host | `https://live.ohcamel.ajaiupadhyaya.com` — the OCaml engine against Alpaca (IEX) and FRED, behind basic auth; the owner holds the password |
 | Host | One DigitalOcean droplet, `s-2vcpu-4gb` (two shared vCPUs), Ubuntu 24.04, nyc3, `138.197.116.165` |
 | Cost | $24/month, metered hourly, capped |
@@ -53,7 +53,7 @@ options as an overlay at an assumed delta; a 13F gives no strike or expiry, so t
 | DNS | Porkbun: A records `ohcamel` and `live.ohcamel` on the owner's domain |
 | **Deployed — public host** | **`831491b`**, deployed by the owner on 2026-11-02 23:32 ET with `--live` (both hosts). The bridge stays on |
 | **Deployed — live host** | **`831491b`** (INC-01's stop rules, on top of `b81260c`'s 406 retry, zero-return roll and restart-proof halt), deployed 2026-11-02 23:32 ET with `--live`; the pre-deploy journal copy is `/var/backups/ohcamel/pre-deploy-20261103T043206Z-b81260c97d7e.db`. Checked after: 35 session closes restored, one open order reconciled, 31 positions matching the venue, 23 strategies registered and active, kill switch armed and clear, no restart. The first stop evaluation runs at the 2026-11-03 close |
-| Not deployed | `b3d11cb` (the watch's five-second slack) and the public host's password gate, which is a public-only deploy |
+| Not deployed | Only the docs commit that wrote this row |
 
 **Data on the droplet (2026-10-08).** The warehouse backfill ran through the queue. `ingest.universes` finished,
 and `ingest.bars_daily` filled 563 keys to as-of 2026-10-07 in 322 cpu-s at 233 MB peak. The factors are as of

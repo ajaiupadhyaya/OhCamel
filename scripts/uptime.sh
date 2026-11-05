@@ -9,8 +9,6 @@
 #   scripts/uptime.sh ... --engine http://localhost:8001
 #                                                      # + an engine reachable
 #                                                      #   without a password
-#   scripts/uptime.sh --public-gated                   # the public host is
-#                                                      #   behind its password
 #
 # Hosts default to OHCAMEL_DEMO_HOST / OHCAMEL_LIVE_HOST from the environment
 # (deploy.env's names), then to the production names, which are public.
@@ -19,14 +17,8 @@
 # no credential is sent and none is needed. The live host is checked only for
 # refusing an anonymous caller.
 #
-# --public-gated (or OHCAMEL_PUBLIC_GATED=1): the public host is closed until
-# the site is finished (deploy/Caddyfile asks every caller for a password but
-# /api/health). Then https://PUBLIC/ is expected to answer 401 -- a 200 WARNs
-# that the gate is off -- and an engine counter read through the public
-# bridge that answers 401 is a SKIP.
-#
 # The checks, each printed as one PASS / WARN / FAIL / SKIP line:
-#   https://PUBLIC/ and /api/health   answer 200 (/ answers 401 when gated)
+#   https://PUBLIC/ and /api/health   answer 200
 #   engine counter                    nodes_recomputed advances across 30 s:
 #                                     with the market closed the engine
 #                                     stabilizes every 2 to 7 s, so a shorter
@@ -66,7 +58,6 @@ set -uo pipefail
 PUBLIC="${OHCAMEL_DEMO_HOST:-ohcamel.ajaiupadhyaya.com}"
 LIVE="${OHCAMEL_LIVE_HOST:-live.ohcamel.ajaiupadhyaya.com}"
 ENGINE=""
-GATED="${OHCAMEL_PUBLIC_GATED:-0}"
 
 # Seconds: a certificate with this much life left or less warns / fails.
 WARN_SECS=$((21 * 86400))
@@ -77,7 +68,6 @@ while [ $# -gt 0 ]; do
 	--public) [ $# -ge 2 ] || { echo "uptime: --public requires a value" >&2; exit 2; }; PUBLIC="$2"; shift 2 ;;
 	--live) [ $# -ge 2 ] || { echo "uptime: --live requires a value" >&2; exit 2; }; LIVE="$2"; shift 2 ;;
 	--engine) [ $# -ge 2 ] || { echo "uptime: --engine requires a value" >&2; exit 2; }; ENGINE="${2%/}"; shift 2 ;;
-	--public-gated) GATED=1; shift ;;
 	-h | --help) sed -n '2,/^$/s/^# \{0,1\}//p' "$0"; exit 0 ;;
 	*) echo "uptime: unknown argument $1" >&2; exit 2 ;;
 	esac
@@ -101,13 +91,7 @@ printf '\nOhCamel uptime -- public %s, live %s%s\n\n' "$PUBLIC" "$LIVE" "${ENGIN
 for path in / /api/health; do
 	url="https://$PUBLIC$path"
 	code=$(status "$url")
-	if [ "$GATED" = 1 ] && [ "$path" = / ]; then
-		case "$code" in
-		401) ok "$url " "401: closed behind its password" ;;
-		200) hmm "$url " "200: expected 401 -- the public host's password gate is off" ;;
-		*) no "$url " "${code:-000}, expected 401 (gated)" ;;
-		esac
-	elif [ "$code" = 200 ]; then ok "$url " "200"; else no "$url " "${code:-000}, expected 200"; fi
+	if [ "$code" = 200 ]; then ok "$url " "200"; else no "$url " "${code:-000}, expected 200"; fi
 done
 
 # ---------------------------------------------------------------------------
@@ -138,9 +122,7 @@ else
 fi
 read -r code_a n_a off_a <<<"$(counter "$src")"
 [ "$n_a" = - ] && n_a=""
-if [ -z "$ENGINE" ] && [ "$GATED" = 1 ] && [ "$code_a" = 401 ]; then
-	meh "engine counter" "the public host is behind its password (401 from $src); nothing to read without it"
-elif [ -z "$ENGINE" ] && [ "$code_a" = 503 ] && [ "$off_a" = off ]; then
+if [ -z "$ENGINE" ] && [ "$code_a" = 503 ] && [ "$off_a" = off ]; then
 	meh "engine counter" "the public bridge is off (503, configured false, from $src); nothing to read without a password"
 elif [ "$code_a" = 503 ]; then
 	no "engine counter" "$src answered 503: the engine behind the bridge is unreachable, slow or not answering 200"

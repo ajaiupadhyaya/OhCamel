@@ -40,7 +40,4 @@ jobs:
         env:
           OHCAMEL_DEMO_HOST: ${{ vars.OHCAMEL_DEMO_HOST || 'ohcamel.ajaiupadhyaya.com' }}
           OHCAMEL_LIVE_HOST: ${{ vars.OHCAMEL_LIVE_HOST || 'live.ohcamel.ajaiupadhyaya.com' }}
-          # The public host is closed behind a password until the site is
-          # finished (deploy/Caddyfile); remove this when it opens.
-          OHCAMEL_PUBLIC_GATED: '1'
         run: bash scripts/uptime.sh

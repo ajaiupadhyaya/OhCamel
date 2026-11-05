@@ -22,9 +22,6 @@
 #   - a certificate with 21 days or fewer (but more than 10) warns and does
 #     not fail;
 #   - the public bridge being off (503, the documented default) is a SKIP;
-#   - --public-gated (or OHCAMEL_PUBLIC_GATED=1): the public / answering 401
-#     passes, a 200 there warns that the gate is off, the bridge's 401 is a
-#     SKIP; without the flag a 401 on / still fails;
 #   - the script only ever GETs: no -X, no body, no credential, no header
 #     carrying one;
 #   - the workflow: every 15 minutes and on dispatch, `contents: read` and
@@ -326,33 +323,6 @@ case "$out" in *"::warning::"*"cert pub.test"*) ok "annotations: ::warning:: for
 case "$out" in *"::error::"*"https://live.test/"*) ok "annotations: ::error:: for a FAIL" ;; *) no "annotations" "no ::error:: line for the open live host" ;; esac
 
 # ---------------------------------------------------------------------------
-# 3b. --public-gated: the public host behind its password
-# ---------------------------------------------------------------------------
-run gated S_PUB_ROOT=401 S_BRIDGE=401 -- --public-gated
-expect_rc "gated" 0
-expect_line "gated" PASS "https://pub.test/ "
-expect_line "gated" PASS "https://pub.test/api/health"
-expect_line "gated" SKIP "engine counter"
-case "$(line "https://pub.test/ ")" in *401*) ok "gated: the line says 401" ;; *) no "gated" "the line does not say 401: $(line "https://pub.test/ ")" ;; esac
-
-run gated-env OHCAMEL_PUBLIC_GATED=1 S_PUB_ROOT=401 S_BRIDGE=401 --
-expect_rc "gated by env" 0
-expect_line "gated by env" PASS "https://pub.test/ "
-
-run gated-open -- --public-gated
-expect_rc "gated, but open" 0
-expect_line "gated, but open" WARN "https://pub.test/ "
-expect_line "gated, but open" PASS "engine counter"
-
-run gated-down S_PUB_ROOT=502 -- --public-gated
-expect_rc "gated, / 502" 1
-expect_line "gated, / 502" FAIL "https://pub.test/ "
-
-run ungated-401 S_PUB_ROOT=401 --
-expect_rc "not gated, / 401" 1
-expect_line "not gated, / 401" FAIL "https://pub.test/ "
-
-# ---------------------------------------------------------------------------
 # 4. --engine: a directly reachable engine (the local harness)
 # ---------------------------------------------------------------------------
 run engine -- --engine http://engine.test:8001
@@ -395,7 +365,6 @@ else
 	ok "workflow: no secret, no write scope"
 fi
 if printf '%s\n' "$wf" | grep -q 'scripts/uptime.sh'; then ok "workflow: runs scripts/uptime.sh"; else no "workflow" "does not run scripts/uptime.sh"; fi
-if printf '%s\n' "$wf" | grep -q "OHCAMEL_PUBLIC_GATED: '1'"; then ok "workflow: the public host is checked as gated"; else no "workflow" "no OHCAMEL_PUBLIC_GATED: '1' while deploy/Caddyfile gates the public host"; fi
 if printf '%s\n' "$wf" | grep -q 'timeout-minutes:'; then ok "workflow: bounded by timeout-minutes"; else no "workflow" "no timeout-minutes"; fi
 
 printf '\nuptime_test: %d passed, %d failed\n' "$pass" "$fail"

@@ -313,38 +313,6 @@ previous_good() {
 	awk -v cur="$2" '$3 == "ok" && $2 != cur { p = $2 } END { if (p != "") print p }' "$1"
 }
 
-# provision_smoke_account FILE: a fresh password for the public host's "smoke"
-# account into FILE (0600, one curl config line, read by smoke.sh with -K) and
-# its bcrypt hash into deploy/.env as OHCAMEL_SMOKE_HASH, every `$` doubled for
-# compose (deploy.env.example says why). Hashed by the caddy image compose
-# runs, so the binary that checks it made it. The password is on that one
-# docker command line for the second it runs; the droplet has one user.
-# Returns non-zero, having said why, on any failure.
-provision_smoke_account() {
-	local file="$1" image pass hash rest
-	image=$(grep -oE 'image: caddy:[0-9A-Za-z.+_-]+' deploy/docker-compose.yml | head -n 1 | sed 's/^image: //')
-	[ -n "$image" ] || { echo "deploy: deploy/docker-compose.yml names no caddy image" >&2; return 1; }
-	pass=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
-	[ ${#pass} -eq 48 ] || { echo "deploy: could not read 24 random bytes" >&2; return 1; }
-	hash=$(docker run --rm "$image" caddy hash-password --plaintext "$pass") || {
-		echo "deploy: $image caddy hash-password failed" >&2
-		return 1
-	}
-	case "$hash" in
-	'$2'?'$'*) ;;
-	*) echo "deploy: caddy hash-password answered '$hash', not a bcrypt hash" >&2; return 1 ;;
-	esac
-	mkdir -p "$(dirname "$file")" || return 1
-	(umask 077 && printf 'user = "smoke:%s"\n' "$pass" >"$file") || return 1
-	# Rewritten in place (cat >, not mv) so the file keeps its owner and mode.
-	rest=$(grep -v '^OHCAMEL_SMOKE_HASH=' deploy/.env || true)
-	{
-		[ -z "$rest" ] || printf '%s\n' "$rest"
-		printf 'OHCAMEL_SMOKE_HASH=%s\n' "${hash//\$/\$\$}"
-	} >deploy/smoke-tmp.env || return 1
-	cat deploy/smoke-tmp.env >deploy/.env && rm -f deploy/smoke-tmp.env
-}
-
 deploy_quoted() {
 	local out="" a
 	for a in "$@"; do out="$out $(printf '%q' "$a")"; done
@@ -554,34 +522,6 @@ main() {
 			exec "$REPO/deploy/deploy.sh" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
 	fi
 
-	# --- the public host's smoke account --------------------------------------
-	#
-	# The public host asks every caller for a password (deploy/Caddyfile), and
-	# smoke.sh must still read every page of it after a deploy, so it has an
-	# account of its own. Made once, and again only when either half -- the
-	# password file or deploy/.env's OHCAMEL_SMOKE_HASH -- is missing. compose
-	# refuses to render without the hash, and the cron jobs run compose from
-	# this checkout, so it is made before anything else, and a failure puts
-	# the checkout back where it was.
-	local smoke_auth="${DEPLOY_SMOKE_AUTH:-$HOME/.config/ohcamel/smoke-auth}"
-	if [ -f deploy/.env ] && grep -q '^OHCAMEL_SMOKE_HASH=' deploy/.env && [ -s "$smoke_auth" ]; then
-		:
-	elif [ "$DRY" = 1 ]; then
-		echo "+ (make the public host's smoke account: a password in $smoke_auth, its hash as OHCAMEL_SMOKE_HASH in deploy/.env)"
-	else
-		say "Making the public host's smoke account"
-		if provision_smoke_account "$smoke_auth"; then
-			echo "  password in $smoke_auth, hash in deploy/.env"
-		else
-			echo "deploy: the smoke account could not be made (above); nothing was pulled or restarted" >&2
-			if [ "$old_sha" != none ]; then
-				git -C "$REPO" checkout --detach "$old_sha" >/dev/null 2>&1 &&
-					echo "deploy: the checkout is back at $old_sha" >&2
-			fi
-			exit 1
-		fi
-	fi
-
 	# --- 3. the images: CI's, or built here -----------------------------------
 	local entry name dockerfile
 	if [ "$build" = 1 ]; then
@@ -745,7 +685,7 @@ main() {
 		echo "+ (keep the 3 newest ok shas' tags of the four images and any sha a container runs; docker image rm the rest; docker image prune -f; docker builder prune -f --keep-storage 5GB)"
 		return 0
 	fi
-	OHCAMEL_SMOKE_AUTH="$smoke_auth" deploy/smoke.sh "${SMOKE_ARGS[@]}" || result=failed
+	deploy/smoke.sh "${SMOKE_ARGS[@]}" || result=failed
 	[ "$health_ok" = 1 ] || result=failed
 
 	# --- 11. the log: the rollback reference ----------------------------------

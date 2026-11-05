@@ -32,20 +32,6 @@ import Caddyfile.snippets
 	# HTTPS, and it must not be made by the localhost harness, which cannot.
 	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
 
-	# Closed until the site is finished (the owner, 2026-11-05): every path
-	# asks for a password except /api/health, which says only "ok", the
-	# version and whether the app is offline, and lets scripts/uptime.sh see
-	# the app alive from outside. Two accounts: the owner's, the same login as
-	# the live host, and "smoke", whose password deploy.sh generates on the
-	# droplet (OHCAMEL_SMOKE_HASH in deploy/.env, the plaintext in
-	# ~/.config/ohcamel/smoke-auth) so deploy/smoke.sh can still read every
-	# page after a deploy. To open the site, delete this matcher and block.
-	@gated not path /api/health
-	basic_auth @gated {
-		{$OHCAMEL_LIVE_USER} {$OHCAMEL_LIVE_HASH}
-		smoke {$OHCAMEL_SMOKE_HASH}
-	}
-
 	import ohcamel_quant
 }
 
