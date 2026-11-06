@@ -356,6 +356,7 @@ def test_book_summary_is_config_and_counts(tmp_path):
     row = b.iloc[0]
     assert row["as_of"] == "2026-10-09T20:31:07Z"
     assert row["positions"] == 2 and row["kill_switch"] == "armed"      # AAPL and MSFT; SPY is flat
+    assert pd.isna(row["tripped_by"])
     assert json.loads(row["trips_on"]) == ["dd-cap"]
     assert json.loads(row["limits"]) == [
         {"name": "aapl-cap", "kind": "gross_notional", "scope": "instrument:AAPL"},
@@ -381,6 +382,15 @@ def test_the_kill_switch_in_the_page_words(tmp_path, alerts, want):
     else:
         assert row["kill_switch"] == want
     assert pd.isna(row["trips_on"])   # these bodies carry no trips_on: not read, never an invented empty list
+
+
+def test_a_tripped_switch_publishes_the_limit_name_only(tmp_path):
+    routes = _full()
+    routes["/api/ops"] = _ok({**OPS, "alerts": {**OPS["alerts"], "kill_switch": "tripped", "tripped_by": "dd-cap"}})
+    with _Engine(routes) as eng:
+        row = report.run({}, _ctx(tmp_path, eng.url)).tables["book_summary"].iloc[0]
+    assert row["kill_switch"] == "halted" and row["tripped_by"] == "dd-cap"
+    assert "0.02" not in row.to_json() and "threshold" not in row.to_json()
 
 
 def test_a_missing_graph_route_leaves_limits_unread(tmp_path):

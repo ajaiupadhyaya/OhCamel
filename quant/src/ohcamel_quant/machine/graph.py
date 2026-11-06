@@ -495,10 +495,12 @@ def _book_summary(p: Product | None) -> tuple[dict | None, str | None]:
         return None, "The desk report could not read the book's limits."
     trips = _json_list(row.get("trips_on"))
     pos, kill = row.get("positions"), row.get("kill_switch")
+    named = row.get("tripped_by")
     return {
         "as_of": row.get("as_of"),
         "positions": int(pos) if isinstance(pos, int | float) and not isinstance(pos, bool) else None,
         "kill": kill if kill in KILL_STATES else None,
+        "tripped_by": named if isinstance(named, str) and named else None,
         "trips_on": [x for x in trips if isinstance(x, str)] if trips is not None else None,
         # name, kind and scope only, copied field by field: a row copied whole could carry a threshold
         "limits": [{k: x[k] for k in ("name", "kind", "scope")} for x in limits
@@ -553,8 +555,11 @@ def _limits(g: _Graph, s: dict) -> None:
         g.edge(f"lim:{name}", "book", "limit")
         if scope.startswith("instrument:"):
             g.edge(f"d:{scope.split(':', 1)[1].upper()}", f"lim:{name}", "read")
-    g.node("kill", "kill", "KILL SWITCH", f"Kill switch: {state or 'not read'}", "limits",
-           {"i": len(lims), "n": slots}, {"state": state, "trips_on": trips})
+    named = s.get("tripped_by")
+    named = named if isinstance(named, str) and named else None
+    title = f"Kill switch: halted by {named}" if state == "halted" and named else f"Kill switch: {state or 'not read'}"
+    g.node("kill", "kill", "KILL SWITCH", title, "limits",
+           {"i": len(lims), "n": slots}, {"state": state, "trips_on": trips, "tripped_by": named})
     for name in trips or []:
         g.edge(f"lim:{name}", "kill", "trip")
     if state in HALTS:

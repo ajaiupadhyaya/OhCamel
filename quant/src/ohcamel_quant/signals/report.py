@@ -83,7 +83,7 @@ PNL_COLUMNS = ["strategy", "tier", "sizing", "state", "capital_fraction", "verdi
 REFUSAL_COLUMNS = ["strategy", "source", "verdict", "rule", "detail", "sequence", "as_of", "received_at"]
 OVERLAY_COLUMNS = ["read_at", "exposure_scale", "governor", "governor_cap", "value", "as_of", "age_s", "state",
                    "reason", "vol_target", "vol_forecast", "vol_model", "cov_estimator", "inputs", "reported"]
-BOOK_COLUMNS = ["as_of", "positions", "kill_switch", "trips_on", "limits"]
+BOOK_COLUMNS = ["as_of", "positions", "kill_switch", "tripped_by", "trips_on", "limits"]
 PNL_NOTE = "not on the wire until Stage 3"
 # /api/ops `alerts.kill_switch` (json_of_alerts: off | armed | tripped) in the front page's words. "off" is the
 # Disarmed state; an `enabled: false` book has no switch at all, whatever it says, and reads "disabled" too.
@@ -249,14 +249,15 @@ def _positions_held(desk: dict[str, Any] | None, notes: list[str]) -> int | None
     return sum(1 for p in raw if isinstance(p, dict) and _num(p.get("graph_qty")) not in (None, 0.0))
 
 
-def _kill_switch(ops: dict[str, Any] | None, notes: list[str]) -> tuple[str | None, list[str] | None]:
-    """(``disabled`` | ``armed`` | ``halted``, the limit names it trips on) from ``/api/ops``'s ``alerts``;
-    each None when not read."""
+def _kill_switch(ops: dict[str, Any] | None, notes: list[str]) -> tuple[str | None, list[str] | None, str | None]:
+    """(``disabled`` | ``armed`` | ``halted``, the limit names it trips on, the limit that halted it)
+    from ``/api/ops``'s ``alerts``; each None when not read. The name is copied only when the switch
+    is halted. Firing rows, recent lines and thresholds are never read."""
     alerts = ops.get("alerts") if ops is not None else None
     if not isinstance(alerts, dict):
         notes.append("book_summary: kill_switch and trips_on not read: GET /api/ops "
                      + ("was not read" if ops is None else "serves no alerts object"))
-        return None, None
+        return None, None, None
     state = alerts.get("kill_switch")
     if alerts.get("enabled") is False:   # no alerts configured: there is no switch, whatever it says
         word = "disabled"
@@ -269,7 +270,9 @@ def _kill_switch(ops: dict[str, Any] | None, notes: list[str]) -> tuple[str | No
     if not (isinstance(trips, list) and all(isinstance(t, str) for t in trips)):
         notes.append("book_summary: trips_on not read: GET /api/ops alerts serves no list of limit names")
         trips = None
-    return word, trips
+    named = alerts.get("tripped_by")
+    tripped_by = named if word == "halted" and isinstance(named, str) and named else None
+    return word, trips, tripped_by
 
 
 def _limits(graph: dict[str, Any] | None, notes: list[str]) -> list[dict[str, str]] | None:
@@ -304,10 +307,11 @@ def _book_summary(desk: dict[str, Any] | None, graph: dict[str, Any] | None, ops
     if desk is None and graph is None and ops is None:
         return []
     positions = _positions_held(desk, notes)
-    kill_switch, trips_on = _kill_switch(ops, notes)
+    kill_switch, trips_on, tripped_by = _kill_switch(ops, notes)
     limits = _limits(graph, notes)
     notes.append(BOOK_NOTE)
     return [{"as_of": read_at, "positions": positions, "kill_switch": kill_switch,
+             "tripped_by": tripped_by,
              "trips_on": None if trips_on is None else json.dumps(trips_on),
              "limits": None if limits is None else json.dumps(limits, sort_keys=True)}]
 
