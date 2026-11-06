@@ -20,7 +20,9 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
+from starlette.routing import Match
 
 from .. import __version__
 from ..config import get_settings
@@ -75,7 +77,7 @@ def create_app() -> FastAPI:
     async def _bad_input(_: Request, exc: ValueError) -> JSONResponse:
         return JSONResponse(status_code=422, content={"error": "invalid_input", "detail": str(exc)})
 
-    @app.get("/api/health")
+    @app.api_route("/api/health", methods=["GET", "HEAD"])
     def health() -> dict:
         s = get_settings()
         return {"status": "ok", "version": __version__, "offline": s.offline}
@@ -94,16 +96,21 @@ def create_app() -> FastAPI:
 
         base_url = s.public_url.rstrip("/")
 
+        class _ShellRoute(APIRoute):
+            """The page shell never owns /api. A missing API path stays a 404, and
+            HEAD on a GET-only API route stays a 405."""
+
+            def matches(self, scope):
+                path = scope.get("path") or ""
+                if path == "/api" or path.startswith("/api/"):
+                    return Match.NONE, {}
+                return super().matches(scope)
+
         @app.api_route("/sitemap.xml", methods=["GET", "HEAD"], include_in_schema=False)
         def sitemap() -> Response:
             return Response(seo.sitemap(base_url), media_type="application/xml")
 
-        @app.api_route(
-            "/{path:path}", methods=["GET", "HEAD"], include_in_schema=False, response_model=None
-        )
         def spa(path: str) -> Response:
-            if path == "api" or path.startswith("api/"):
-                return JSONResponse(status_code=404, content={"error": "not_found", "detail": f"/{path}"})
             candidate = WEB_DIST / path
             try:
                 if path and candidate.is_file() and WEB_DIST.resolve() in candidate.resolve().parents:
@@ -115,6 +122,16 @@ def create_app() -> FastAPI:
             shell = (WEB_DIST / "index.html").read_text(encoding="utf-8")
             html = seo.render(shell, page, base_url)
             return HTMLResponse(html, status_code=200 if page else 404)
+
+        # The decorator cannot set the route class; the router can.
+        app.router.add_api_route(
+            "/{path:path}",
+            spa,
+            methods=["GET", "HEAD"],
+            include_in_schema=False,
+            response_model=None,
+            route_class_override=_ShellRoute,
+        )
 
     return app
 
