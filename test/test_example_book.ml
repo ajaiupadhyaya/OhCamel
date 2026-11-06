@@ -237,9 +237,9 @@ let test_check_accepts_the_example_book_and_says_what_it_holds () =
           ("nvda-cap", "instrument:NVDA", "$60000.00");
           ("tech-cap", "sector:TECH", "$260000.00");
           ("energy-cap", "sector:ENERGY", "$150000.00");
-          ("book-cap", "portfolio", "$500000.00");
-          ("var-cap", "portfolio", "$12000.00");
-          ("dd-cap", "portfolio", "2.00%");
+          ("book-cap", "portfolio", "$700000.00");
+          ("var-cap", "portfolio", "$30000.00");
+          ("dd-cap", "portfolio", "10.00%");
         ]
         (List.map summary.Summary.limits ~f:(fun l ->
              ( l.Summary.Limit_line.name,
