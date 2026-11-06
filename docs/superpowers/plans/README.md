@@ -2,6 +2,8 @@
 
 This directory is the project's plan history. Every file that was ever committed here stays, unedited except for one status header line each: it is either the historical record of a finished, merged phase, or a superseded draft. The active plan is named below first.
 
+**Active plan (2026-11-05):** `docs/superpowers/plans/2026-11-05-honest-book.md` — the paper book's limits, the unadjusted-split print, the ledger, and a read-only option-snapshot export. Design: `docs/superpowers/specs/2026-11-05-honest-book.md`.
+
 **Finished (2026-10-31):** The Showcase, a shared link, the engine's own evidence, liquidity and overlays: `docs/superpowers/specs/2026-10-31-the-showcase-design.md`, which carries its own short plan.
 
 **Active plan (2026-10-11):** `docs/superpowers/plans/2026-10-11-autonomous-paper-trading.md` — autonomous paper trading. Design doc: `docs/superpowers/specs/2026-10-11-autonomous-paper-trading-design.md`. Ledger: `.superpowers/sdd/2026-10-11-autonomous-paper-trading/progress.md`.
