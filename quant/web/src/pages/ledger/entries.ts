@@ -71,7 +71,7 @@ export const LEDGER: LedgerEntry[] = [
   { section: "LIMITS", item: "OPTIONS DELAYED", detail: "Option quotes are Cboe delayed data; snapshot history starts on the first night and cannot be re-fetched." },
   { section: "LIMITS", item: "SHARED VCPU", detail: "One 2-vCPU, 4 GB droplet; CPU steal from neighbours is measured, not prevented." },
   { section: "LIMITS", item: "NO WAREHOUSE BACKUP", detail: "The warehouse and the artifacts are not backed up; the warehouse is rebuilt from vendors, option snapshots excepted." },
-  { section: "LIMITS", item: "WAREHOUSE FILE NOT COPIED", detail: "The journal, the recorder, and jobs.sqlite are copied nightly. warehouse.duckdb is not file-copied. Option snapshots cannot be re-fetched and are not in the nightly copy." },
+  { section: "LIMITS", item: "WAREHOUSE FILE NOT COPIED", detail: "The journal, the recorder, and jobs.sqlite are copied nightly. warehouse.duckdb is not file-copied. Option snapshots are exported read-only; they cannot be re-fetched." },
   { section: "LIMITS", item: "KERNEL BENCHMARKS", detail: "The recorded table was measured on a developer laptop, not the droplet's CPU class; two kernels are slower in Rust there." },
   // ---------------------------------------------------------------- owner
   { section: "OWNER", item: "LIVE TRADING SWITCH", detail: "book.sexp on the droplet; never edited by the agent." },

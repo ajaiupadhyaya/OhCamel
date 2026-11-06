@@ -38,8 +38,9 @@
 # file and line named. An empty list is refused too: a timer that exits 0
 # having copied nothing is the failure mode this file exists to prevent.
 #
-# Later lanes APPEND here rather than editing backup.sh:
-#   quant_data /data/warehouse.duckdb duckdb 10002    Lane C, once `duckdb` exists
+# Later lanes APPEND here rather than editing backup.sh.
+# The warehouse file itself is not copied. `duckdb` stays reserved.
+# Option snapshots cannot be re-fetched, so they are exported read-only.
 
 # The desk's journal: every order, event, fill, session close, mark and
 # forecast (desk/journal.ml). ohcamel-live writes it at OHCAMEL_JOURNAL.
@@ -57,3 +58,7 @@ quant_data /data/deck/recorder.sqlite sqlite 10002
 # {OHCAMEL_QUANT_DATA_DIR}/jobs.sqlite, data_dir=/data in ohcamel-quant and
 # ohcamel-worker (both uid 10002). Absent until the first job is queued.
 quant_data /data/jobs.sqlite sqlite 10002
+
+# option_snapshots only, read-only, from the Quant image (uid 10002). The
+# live warehouse.duckdb file is not copied.
+quant_data /data/warehouse.duckdb snapshot 10002
