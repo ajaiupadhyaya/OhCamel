@@ -23,6 +23,8 @@ import pandas as pd
 
 from ..config import get_settings
 from .base import Provenance
+from .splits import SPLIT_RATIOS as _SPLIT_RATIOS  # noqa: F401  # the name callers already import
+from .splits import present
 
 # FRED ids -> the column names used in macro.parquet.
 FRED_FIXTURE_COLUMNS = {"VIXCLS": "vix", "DGS10": "dgs10", "DGS2": "dgs2"}
@@ -36,38 +38,16 @@ def fixture_symbols() -> list[str]:
     return sorted(p.stem for p in (_root() / "history").glob("*.parquet"))
 
 
-# Split ratios a one-session close-to-close jump is tested against.
-_SPLIT_RATIOS = (2.0, 3.0, 4.0, 5.0, 10.0, 20.0, 1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 10, 1 / 20, 1.5, 2 / 3)
-
-
 def _repair(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     """Repair two vendor defects found in the committed files, and say so.
 
-    1. Unadjusted splits. The committed Alpaca ``close_adj`` equals ``close``
-       and misses at least one split (XLK 2-for-1, 2025-12-05), which reads as
-       a -50% session. A split is recognised only when the overnight ratio
-       prev_close/open is within 3% of a standard split ratio AND the
-       close-to-close move exceeds 30% -- a price series' own evidence, applied
-       as the vendor's adjusted series would: earlier prices divided by the
-       ratio, earlier volumes multiplied by it.
+    1. Unadjusted splits, via :func:`ohcamel_quant.data.splits.present`.
     2. Decimal-shift prints. A high/low more than 25% outside the session's
        open/close (e.g. SPY 2026-02-02 low 69.005 on a 695 close) is replaced
-       by the nearer of open/close.
+       by the nearer of open/close. This half stays here: the page repair
+       does not rewrite a bad print.
     """
-    notes: list[str] = []
-    df = df.copy()
-    prev_close = df["close"].shift(1)
-    jump = df["close"] / prev_close - 1.0
-    overnight = prev_close / df["open"]
-    for day in df.index[(jump.abs() > 0.30).fillna(False)]:
-        ratio = float(overnight.loc[day])
-        match = min(_SPLIT_RATIOS, key=lambda r: abs(ratio / r - 1.0))
-        if abs(ratio / match - 1.0) <= 0.03:
-            before = df.index < day
-            for col in ("open", "high", "low", "close", "adj_close"):
-                df.loc[before, col] = df.loc[before, col] / match
-            df.loc[before, "volume"] = df.loc[before, "volume"] * match
-            notes.append(f"split-adjusted {match:g}:1 before {day.date()} (unadjusted in vendor file)")
+    df, notes = present(df)
     body_lo = df[["open", "close"]].min(axis=1)
     body_hi = df[["open", "close"]].max(axis=1)
     bad_lo = df["low"] < 0.75 * body_lo
