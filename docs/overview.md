@@ -52,7 +52,7 @@ The prices are real. The portfolio is not.
 | Macro factor | FRED: the daily change in the 10-year Treasury yield (`DGS10`) | Yes |
 | Crisis backtests | Adjusted daily closes from Yahoo Finance, committed under [`crisis/`](crisis/) | Yes |
 | Positions | [`book.example.sexp`](../book.example.sexp): long AAPL, MSFT, NVDA and JPM, short XOM and CVX, SPY and TLT held at zero for the signal strategies, $1M cash | No. It is an example book |
-| Public demo | A generated feed, so it runs with no keys and outside market hours | No, on purpose |
+| Public site | OhCamel Quant on real vendor data, no credentials | Yes |
 | Options | A generated volatility surface, labelled synthetic wherever it prints | No, and switched off in live mode |
 
 Checked on 2026-09-12: the live host's last session delivered 80,679 trades
@@ -148,7 +148,7 @@ target, and every target enters the project-local opam switch itself
 
 | `make` | Keys? | What you see |
 |---|---|---|
-| `demo` | No | The web page at `localhost:8080` on a generated feed, which is what the public site runs. One name ticks every 400 ms, CVX never ticks so it goes stale, and one limit is rigged to breach at startup |
+| `demo` | No | The web page at `localhost:8080` on synthetic ticks. One name ticks every 400 ms, CVX never ticks so it goes stale, and one limit is rigged to breach at startup |
 | `run` | No | In the terminal: 60 events over a generated book, a breach and recovery, the risk decomposition and the recompute-count table. Then it exits |
 | `stress` | No | The scenario suite |
 | `backtest` | No | The coverage battery on three generated return series |
@@ -220,12 +220,9 @@ may send one); on the public demo each answers 405.
 
 ## Where it runs
 
-- **Public demo:** [ohcamel.ajaiupadhyaya.com](https://ohcamel.ajaiupadhyaya.com),
-  on the generated feed and always on.
-- **Live host:** `live.ohcamel.ajaiupadhyaya.com`, the same image on Alpaca and
-  FRED, behind a password.
-- **Infrastructure:** one DigitalOcean droplet (2 vCPU, 4 GB, $24/month), Docker
-  Compose, and Caddy for TLS. Last deployed 2026-09-17 from `e0f5a71`.
+- **Public site:** [ohcamel.ajaiupadhyaya.com](https://ohcamel.ajaiupadhyaya.com), OhCamel Quant on real data. No credentials.
+- **Live host:** `live.ohcamel.ajaiupadhyaya.com`, the OCaml engine and the paper desk, behind a password.
+- **Infrastructure:** one DigitalOcean droplet (2 vCPU, 4 GB). What is deployed is `docs/status.md`.
 - **Deploy check:** `deploy/deploy.sh` runs the smoke suite after every
   deploy, with `--expect-sha` so the containers answering must be the commit
   just deployed, and a failure fails the deploy. The live host is checked from
