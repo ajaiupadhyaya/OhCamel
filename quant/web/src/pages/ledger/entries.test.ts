@@ -22,9 +22,21 @@ describe("Ledger entries", () => {
   });
 });
 
-describe("Ledger accuracy (re-dated 2026-10-08, Ship plan Lane H H2)", () => {
-  it("is dated 2026-10-08", () => {
-    expect(LEDGER_AS_OF).toBe("2026-10-08");
+describe("Ledger accuracy (re-dated 2026-11-05)", () => {
+  it("is dated 2026-11-05 and does not pin a deploy", () => {
+    expect(LEDGER_AS_OF).toBe("2026-11-05");
+    for (const e of LEDGER) expect(`${e.item} ${e.detail}`).not.toMatch(/\b[0-9a-f]{7}\b/);
+    expect(LEDGER.map((e) => e.item)).not.toContain("BACKUPS PAUSED");
+    expect(LEDGER.map((e) => e.item)).not.toContain("LIVE HOST BEHIND");
+  });
+  it("says incubation is sized on the paper book and the warehouse file is not copied", () => {
+    const text = LEDGER.map((e) => `${e.section} ${e.item} ${e.detail}`).join("\n");
+    expect(text).toMatch(/twenty-three strategies are sized as incubation/i);
+    expect(text).not.toMatch(/No strategy on this site trades/);
+    expect(text).toMatch(/option snapshots/);
+    expect(text).toMatch(/\$700,000/);
+    expect(text).toMatch(/\$30,000/);
+    expect(text).toMatch(/10%/);
   });
   it("counts the kernels the Methodology documents", () => {
     expect(KERNEL_API).toHaveLength(10);
@@ -34,16 +46,8 @@ describe("Ledger accuracy (re-dated 2026-10-08, Ship plan Lane H H2)", () => {
     const cut = LEDGER.filter((e) => e.section === "CUT").map((e) => e.item);
     for (const item of ["ENGINE DEPTH", "P8 SCENARIO GRID", "C STUBS", "KIOSK MODE", "SAVED LAYOUTS", "DENSITY MODES"]) expect(cut).toContain(item);
   });
-  it("names the owner's outstanding root step for backups and the live host", () => {
-    const owner = LEDGER.filter((e) => e.section === "OWNER").map((e) => `${e.item} ${e.detail}`).join("\n");
-    expect(owner).toMatch(/\/var\/backups\/ohcamel/);
-  });
-  it("claims no public-host build: it ships with that deploy, and the footer's BUILD shows this host's", () => {
+  it("claims no public-host build: the footer's BUILD shows this host's", () => {
     for (const e of LEDGER) expect(`${e.item} ${e.detail}`, e.item).not.toMatch(/public host/i);
-    const live = LEDGER.find((e) => e.item === "LIVE HOST BEHIND")?.detail ?? "";
-    expect(live).toMatch(/88ebc96/);
-    expect(live).toMatch(/\/var\/backups\/ohcamel/);
-    expect(live.match(/\b[0-9a-f]{7}\b/g)).toEqual(["88ebc96"]);
   });
   it("has one row per item, and every section non-empty", () => {
     const items = LEDGER.map((e) => `${e.section}:${e.item}`);
