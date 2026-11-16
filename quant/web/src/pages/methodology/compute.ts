@@ -228,7 +228,7 @@ export const KERNELS: Entry[] = [
     name: "american_iv — implied volatility of American options",
     summary: "The volatility at which american_price equals a quote: from a Black–Scholes guess it steps by 1.25 times the Black–Scholes Newton step, doubling until the pricing error changes sign, then runs Brent's method on the bracket. NaN where no volatility reproduces the quote (at or below immediate exercise, at or above the underlying for a call or the strike for a put).",
     formulas: [{ tex: T`\sigma^* :\ V_{\text{American}}(\sigma^*) = \text{quote}` }],
-    assumptions: ["A guess the tree already prices within 3e-5 × vega is kept after one Newton step; otherwise Brent stops at xtol 1e-7 or within 3e-7 of vol along the bracket. No IV moves more than 1e-6 from the exact root of the same price (parity test).", "Parallel over contracts.", "Deterministic: Rust matches the NumPy reference to 1e-8 (parity test)."],
+    assumptions: ["A guess the tree already prices within 3e-5 × vega is kept after one Newton step; otherwise Brent stops at xtol 1e-7 or within 3e-7 of vol along the bracket. No IV moves more than 1e-6 from the exact root of the same price (parity test).", "Every root must move the price by at least a tolerance (default 1e-7 × K) when the vol moves one point up and down; a price flat in vol gives NaN, never an arbitrary point of the flat stretch.", "Parallel over contracts.", "Rust and the NumPy reference give the same NaN pattern and IVs within 1e-6 (the Brent stops' guarantee; parity test)."],
     appears: [VOL_CHAIN, VOL_SURF, COMPUTE],
     refs: ["cox_ross_rubinstein_1979", "broadie_detemple_1996"],
     keywords: "american implied volatility brent early exercise",

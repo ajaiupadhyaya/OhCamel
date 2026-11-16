@@ -383,6 +383,10 @@ AM_SIG_FLOOR, AM_SIG_HI, AM_SIG_START = 1e-3, 5.0, 0.25
 AM_XTOL, AM_RTOL, AM_MAXITER = 1e-7, 4.0 * np.finfo(float).eps, 100
 #: The screen: a guess the tree prices within AM_SCREEN x vega of the quote is kept after one Newton step.
 AM_SCREEN = 3e-5
+#: The identifiability guard's vol step (one vol point) and its skip factor (american.rs ``identified``).
+AM_VOL_PT, AM_GUARD_SKIP = 0.01, 100.0
+#: Brent's slope stop and the guard's skip use the bracket's secant only when it is this narrow.
+AM_LOCAL_W = 1e-3
 #: Brent stops once the pricing error is within AM_FTOL in vol at the bracket's secant slope (or AM_XTOL).
 AM_FTOL = 3e-7
 #: A dividend counts at tree level i when t_d / dt >= i - AM_DIV_EPS (exercise just before ex counts).
@@ -535,6 +539,7 @@ def _brent_vec(f, xpre, xcur, fpre, fcur):
     spre = np.zeros_like(xcur)
     scur = np.zeros_like(xcur)
     out = np.full(xcur.shape, np.nan)
+    out_slope = np.full(xcur.shape, np.nan)
     act = np.ones(xcur.shape, dtype=bool)
     for _ in range(AM_MAXITER):
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -548,9 +553,12 @@ def _brent_vec(f, xpre, xcur, fpre, fcur):
             fpre, fcur, fblk = np.where(sw, fcur, fpre), np.where(sw, fblk, fcur), np.where(sw, fcur, fblk)
             delta = (AM_XTOL + AM_RTOL * np.abs(xcur)) / 2.0
             sbis = (xblk - xcur) / 2.0
-            slope = np.abs((fblk - fcur) / (xblk - xcur))
+            # the secant only over a bracket narrower than AM_LOCAL_W (american.rs: a wide bracket's
+            # secant can be far steeper than the function at xcur)
+            slope = np.where(np.abs(xblk - xcur) <= AM_LOCAL_W, np.abs((fblk - fcur) / (xblk - xcur)), 0.0)
             conv = act & ((fcur == 0) | (np.abs(sbis) < delta) | (np.abs(fcur) <= AM_FTOL * slope))
             out = np.where(conv, xcur, out)
+            out_slope = np.where(conv, slope, out_slope)
             act &= ~conv
             if not act.any():
                 break
@@ -567,15 +575,33 @@ def _brent_vec(f, xpre, xcur, fpre, fcur):
             xcur = np.where(act, xcur + np.where(np.abs(scur) > delta, scur, np.where(sbis > 0, delta, -delta)), xcur)
         rows = np.flatnonzero(act)
         fcur[rows] = f(xcur[rows], rows)
+    return out, out_slope
+
+
+def _identified(f, x, slope, tol, lo, hi):
+    """The identifiability guard (american.rs ``identified``), one lane per root: a root stands only
+    if one vol point up and down (clipped to [lo, hi]) each move the price by at least ``tol``; the
+    two prices are skipped where the slope already shows GUARD_SKIP x tol per point."""
+    out = x.copy()
+    with np.errstate(invalid="ignore"):
+        need = np.isfinite(x) & ~(np.isfinite(slope) & (slope * AM_VOL_PT >= AM_GUARD_SKIP * tol))
+    up, dn = np.minimum(x + AM_VOL_PT, hi), np.maximum(x - AM_VOL_PT, lo)
+    rows = np.flatnonzero(need & (up > x) & (dn < x))
+    out[need & ~((up > x) & (dn < x))] = np.nan
+    if rows.size:
+        ok = (f(up[rows], rows) >= tol[rows]) & (-f(dn[rows], rows) >= tol[rows])
+        out[rows[~ok]] = np.nan
     return out
 
 
-def _am_iv_block(price, S, K, T, r, q, phi, guess, div_t, div_amt, n, s0):
-    """american_iv on validated rows: bracket from the guess, then Brent (see american_iv)."""
+def _am_iv_block(price, S, K, T, r, q, phi, guess, flat_tol, div_t, div_amt, n, s0):
+    """american_iv on validated rows: bracket from the guess, then Brent, then the identifiability
+    guard (see american_iv)."""
     m = price.size
     lo = _sig_floor(T, r, q, n)
     hi = np.full(m, AM_SIG_HI)
     out = np.full(m, np.nan)
+    slope = np.zeros(m)                      # the local slope each root comes with (0: unknown)
 
     def f(x, rows):
         return _am_price(S[rows], K[rows], T[rows], r[rows], q[rows], x, phi[rows], div_t, div_amt, n,
@@ -601,6 +627,7 @@ def _am_iv_block(price, S, K, T, r, q, phi, guess, div_t, div_amt, n, s0):
     with np.errstate(invalid="ignore"):
         scr = alive & np.isfinite(vega) & (vega > 0) & (np.abs(f0) <= AM_SCREEN * vega)
     out[scr] = (x0 - f0 / vega)[scr]
+    slope[scr] = vega[scr]
     alive &= ~scr
     step = np.where(np.isfinite(step) & (step != 0), step, np.where(f0 > 0, lo - x0, hi - x0))
     x1, f1 = x0.copy(), f0.copy()
@@ -631,11 +658,12 @@ def _am_iv_block(price, S, K, T, r, q, phi, guess, div_t, div_amt, n, s0):
     if br.size:
         def fb(x, rr):
             return f(x, br[rr])
-        out[br] = _brent_vec(fb, x0[br], x1[br], f0[br], f1[br])
-    return out
+        out[br], slope[br] = _brent_vec(fb, x0[br], x1[br], f0[br], f1[br])
+    return _identified(f, out, slope, flat_tol, lo, hi)
 
 
-def american_iv(price, S, K, T, r, q, phi, guess, div_t, div_amt, steps: int, threads: int) -> np.ndarray:
+def american_iv(price, S, K, T, r, q, phi, guess, flat_tol, div_t, div_amt, steps: int,
+                threads: int) -> np.ndarray:
     """The volatility at which american_price equals ``price``; NaN where no volatility in the
     search interval does (a price at or below immediate exercise, at or above the underlying for a
     call or the strike for a put, or below the tree's value at the volatility floor).
@@ -644,7 +672,13 @@ def american_iv(price, S, K, T, r, q, phi, guess, div_t, div_amt, steps: int, th
     the Black-Scholes Newton step -- doubling each time the sign of the pricing error does not
     change -- until it brackets the root, then runs Brent (scipy's brentq, xtol 1e-7). When the
     tree at the guess is already within 3e-5 x vega of the price, the guess is kept after one
-    Newton step instead (the screen). The guess changes only the work, not the root (to 1e-6)."""
+    Newton step instead (the screen). The guess changes only the work, not the root (to 1e-6).
+
+    Every root then passes the identifiability guard: moving the vol one point up and one point
+    down must each move the price by at least ``flat_tol`` (per contract), else NaN -- a price flat
+    in vol has no identifiable root, and any returned point of the flat stretch would be decided by
+    the last bits of the arithmetic (a root at the volatility floor fails it: it cannot move down).
+    """
     out = np.full(price.shape, np.nan)
     s0 = _escrowed(S, T, r, div_t, div_amt)
     with np.errstate(invalid="ignore"):
@@ -654,8 +688,8 @@ def american_iv(price, S, K, T, r, q, phi, guess, div_t, div_amt, steps: int, th
     idx = np.flatnonzero(ok)
     for lo in range(0, idx.size, AM_BLOCK):
         b = idx[lo:lo + AM_BLOCK]
-        out[b] = _am_iv_block(price[b], S[b], K[b], T[b], r[b], q[b], phi[b], guess[b], div_t, div_amt,
-                              steps, s0[b])
+        out[b] = _am_iv_block(price[b], S[b], K[b], T[b], r[b], q[b], phi[b], guess[b], flat_tol[b], div_t,
+                              div_amt, steps, s0[b])
     return out
 
 

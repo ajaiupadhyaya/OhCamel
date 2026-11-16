@@ -365,17 +365,15 @@ def test_european_chain_keeps_its_arb_bound_and_gets_statuses():
 
 
 def test_a_price_flat_in_vol_identifies_no_vol():
-    """chain._drop_flat on real tree prices: a deep in-the-money put whose price moves by d per vol
-    point keeps its IV when d is at least 1% of the half-spread, loses it (no_vol) when it is not."""
+    """The kernel's identifiability guard on real tree prices: a deep in-the-money put whose price
+    moves by d per vol point keeps its IV when flat_tol is d / 2 and loses it (NaN) at 2 d."""
     from ohcamel_quant.options import american
-    from ohcamel_quant.options.chain import _drop_flat
 
-    K, T, sig = np.array([600.0]), np.array([0.25]), 0.30
-    args = (K, T, np.array([R]), np.array([Q]), np.array([False]))
-    mid = american.prices(S0, K, T, R, Q, sig, False)
-    d = min(float((american.prices(S0, K, T, R, Q, sig + 0.01, False) - mid)[0]),
-            float((mid - american.prices(S0, K, T, R, Q, sig - 0.01, False))[0]))
+    K, T, sig = 600.0, 0.25, 0.30
+    mid = float(american.prices(S0, K, T, R, Q, sig, False))
+    d = min(float(american.prices(S0, K, T, R, Q, sig + 0.01, False)) - mid,
+            mid - float(american.prices(S0, K, T, R, Q, sig - 0.01, False)))
     assert d > 0
-    iv = np.array([sig])
-    assert np.isfinite(_drop_flat(iv, mid, np.array([50.0 * d]), S0, *args)).all()      # 1 point = 2% of it
-    assert np.isnan(_drop_flat(iv, mid, np.array([200.0 * d]), S0, *args)).all()        # 1 point = 0.5%
+    iv = lambda tol: float(american.implied_vols(mid, S0, K, T, R, Q, False, flat_tol=tol))  # noqa: E731
+    assert iv(0.5 * d) == pytest.approx(sig, abs=1e-6)
+    assert math.isnan(iv(2.0 * d))

@@ -33,4 +33,4 @@ mod py;
 /// The binding surface's version. The Python dispatcher refuses a wheel whose
 /// value it does not know (a stale build), so bump it with any signature or
 /// semantics change in `py.rs`.
-pub const API_VERSION: u32 = 2;
+pub const API_VERSION: u32 = 3;

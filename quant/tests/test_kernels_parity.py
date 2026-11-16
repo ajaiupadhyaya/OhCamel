@@ -327,27 +327,86 @@ def test_american_price_parity(both, divs):
     assert np.abs(on("rust", kernels.american_price, *args, 402, 1) - p).max() > 1e-8
 
 
+#: What two engines can be asked to agree on for an American IV. Each stops Brent within xtol 1e-7
+#: of vol, or where |price error| <= 3e-7 x the local slope (<= 3e-7 of vol), and the screen keeps a
+#: Black-Scholes guess only within 3e-5 x |1 - vega_BS / vega_tree| -- bounded below 1e-6 by the
+#: full-width accuracy test. So each engine is within 5e-7 of the root of its own (bit-different)
+#: tree, and two engines within 1e-6 of each other: a tighter tolerance tests the stops' last bits.
+IV_AGREE = 1e-6
+
+
+def _guard_margin(px, S, K, T, r, q, call, iv, divs=((), ())):
+    """min(price(iv + 1pt) - px, px - price(iv - 1pt)) / flat_tol (default FLAT_REL K): the guard's
+    margin, > 1 where it passes. NaN where iv is NaN."""
+    up = on("python", kernels.american_price, S, K, T, r, q, np.where(np.isfinite(iv), iv + 0.01, 0.2), call, *divs)
+    dn = on("python", kernels.american_price, S, K, T, r, q, np.where(np.isfinite(iv), np.maximum(iv - 0.01, 1e-3), 0.2),
+            call, *divs)
+    return np.where(np.isfinite(iv), np.minimum(up - px, px - dn) / (kernels.FLAT_REL * np.asarray(K)), np.nan)
+
+
 @pytest.mark.parametrize("divs", [((), ()), ((0.02, 0.3, 1.2), (0.8, 0.8, 0.9))], ids=["no-div", "three-divs"])
 def test_american_iv_parity_round_trip(both, divs):
+    """Rust and the reference: the same NaN pattern (no contract of this grid is within 1% of the
+    identifiability guard's threshold, where a bit-level difference could decide it), and finite
+    IVs within IV_AGREE. On Linux the old 1e-8 tolerance failed by 3e-8 (Brent's stop) and, at the
+    70-strike call, by 0.17: a price flat in vol (1e-12 per vol point) returned a different point of
+    its flat stretch on each platform. The guard now returns NaN there on both."""
     K, T, q, is_call, sig = _american_grid()
     px = on("python", kernels.american_price, 100.0, K, T, 0.045, q, sig, is_call, *divs)
     args = (px, 100.0, K, T, 0.045, q, is_call, *divs)
     r, p = on("rust", kernels.american_iv, *args, 400, 3), on("python", kernels.american_iv, *args, 400, 1)
+    m = _guard_margin(px, 100.0, K, T, 0.045, q, is_call, np.where(np.isfinite(p), p, r), divs)
+    assert not np.any(np.abs(m - 1.0) < 0.01)                    # nothing sits on the guard's edge
     assert np.array_equal(np.isnan(r), np.isnan(p))
-    np.testing.assert_allclose(r, p, rtol=0, atol=1e-8)
+    np.testing.assert_allclose(r, p, rtol=0, atol=IV_AGREE)
+    assert np.isnan(p[0])                                        # the 70 call: flat in vol, no IV
     # the vol is identified where a point of vol either way moves the price by more than 1e-4 (the
     # tree's fp noise is ~1e-12); deep in the money the price is flat in vol, or immediate exercise
     up, dn = (on("python", kernels.american_price, 100.0, K, T, 0.045, q, sig + h, is_call, *divs) for h in (0.01, -0.01))
     ident = (up - px > 1e-4) & (px - dn > 1e-4)
     assert ident.sum() >= 70 and np.isfinite(p[ident]).all()
     np.testing.assert_allclose(p[ident], sig[ident], rtol=0, atol=1e-6)
-    assert np.all(np.isnan(p) <= ~ident)
+
+
+def _stress(n, seed):
+    rng = np.random.default_rng(seed)
+    S = 750.0
+    K = S * np.exp(rng.uniform(np.log(0.55), np.log(1.8), n))
+    T = np.exp(rng.uniform(np.log(1 / 365), np.log(3.0), n))
+    r, q = rng.uniform(0.0, 0.10, n), rng.choice([0.0, 0.01, 0.05, 0.15, 0.4], n)
+    sig = np.exp(rng.uniform(np.log(0.03), np.log(3.0), n))
+    return S, K, T, r, q, sig, rng.random(n) < 0.5
+
+
+@pytest.mark.parametrize("which", ["round-trip", "round-trip-divs", "stress"])
+def test_american_iv_is_stable_under_ulp_scale_input_changes(which):
+    """The regression test for the Linux failure, runnable on any platform and engine: moving every
+    price by a relative +-1e-12 or +-4e-12 (thousands of ulps -- more than any libm difference)
+    changes no IV by more than IV_AGREE and flips no IV between finite and NaN, except for contracts
+    within 1% of the identifiability guard's threshold (counted: none in these sets). Before the
+    fix, one ulp of price moved the 70-strike call's IV by 0.014, and Brent's slope stop -- taken
+    over a bracket 4.75 vol wide -- returned the flat end of a flat-then-steep price as a root."""
+    divs = ((0.02, 0.3, 1.2), (0.8, 0.8, 0.9)) if which == "round-trip-divs" else ((), ())
+    if which == "stress":
+        S, K, T, r, q, sig, call = _stress(600, 7)
+    else:
+        K, T, q, call, sig = _american_grid()
+        S, r = 100.0, np.full(K.size, 0.045)
+    px = kernels.american_price(S, K, T, r, q, sig, call, *divs)
+    base = kernels.american_iv(px, S, K, T, r, q, call, *divs)
+    edge = np.abs(_guard_margin(px, S, K, T, r, q, call, base, divs) - 1.0) < 0.01
+    assert edge.sum() == 0
+    assert np.isfinite(base).sum() >= (300 if which == "stress" else 70)
+    for rel in (-4e-12, -1e-12, 1e-12, 4e-12):
+        iv = kernels.american_iv(px * (1.0 + rel), S, K, T, r, q, call, *divs)
+        assert np.array_equal(np.isnan(iv), np.isnan(base)), (which, rel, np.flatnonzero(np.isnan(iv) != np.isnan(base)))
+        np.testing.assert_allclose(iv, base, rtol=0, atol=IV_AGREE, err_msg=f"{which} {rel}")
 
 
 def test_american_iv_parity_on_the_spy_chain(both, spy_2026_11_15_american):
     """Mid, bid and ask of 600 valid quotes of the real chain (a fixed sample over every expiry the
-    fixture holds), on the slices' r and q: Rust and the reference agree to 1e-8, NaN for NaN.
-    Measured (macOS arm64): within 5e-11."""
+    fixture holds), on the slices' r and q: Rust and the reference give the same NaN pattern and
+    agree to IV_AGREE. Measured (macOS arm64): within 5e-11."""
     ca = spy_2026_11_15_american[0]
     q = ca.quotes[ca.quotes["valid"]].sample(600, random_state=7)
     for col in ("mid", "bid", "ask"):
@@ -356,7 +415,7 @@ def test_american_iv_parity_on_the_spy_chain(both, spy_2026_11_15_american):
         r, p = on("rust", kernels.american_iv, *args, 400, 4), on("python", kernels.american_iv, *args, 400, 1)
         assert np.array_equal(np.isnan(r), np.isnan(p)), col
         assert np.isfinite(p).sum() > 400, col
-        np.testing.assert_allclose(r, p, rtol=0, atol=1e-8, err_msg=col)
+        np.testing.assert_allclose(r, p, rtol=0, atol=IV_AGREE, err_msg=col)
 
 
 def test_american_iv_is_within_1e6_of_the_exact_root(both, spy_2026_11_15_american):

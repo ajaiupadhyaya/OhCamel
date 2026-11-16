@@ -336,6 +336,7 @@ fn american_iv<'py>(
     q: PyReadonlyArray1<'py, f64>,
     phi: PyReadonlyArray1<'py, f64>,
     guess: PyReadonlyArray1<'py, f64>,
+    flat_tol: PyReadonlyArray1<'py, f64>,
     div_t: PyReadonlyArray1<'py, f64>,
     div_amt: PyReadonlyArray1<'py, f64>,
     steps: usize,
@@ -353,10 +354,14 @@ fn american_iv<'py>(
         s1(&phi, "phi")?,
         s1(&guess, "guess")?,
     );
-    let (dt, da) = (s1(&div_t, "div_t")?, s1(&div_amt, "div_amt")?);
+    let (dt, da, ft) = (
+        s1(&div_t, "div_t")?,
+        s1(&div_amt, "div_amt")?,
+        s1(&flat_tol, "flat_tol")?,
+    );
     let out = py
         .detach(|| {
-            crate::american::american_iv(pr, s_, k_, t_, r_, q_, ph, g, dt, da, steps, threads)
+            crate::american::american_iv(pr, s_, k_, t_, r_, q_, ph, g, ft, dt, da, steps, threads)
         })
         .map_err(err)?;
     Ok(out.into_pyarray(py))

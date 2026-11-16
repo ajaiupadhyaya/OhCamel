@@ -59,11 +59,13 @@ def prices(S: Any, K: Any, T: Any, r: Any, q: Any, sigma: Any, is_call: Any,
 
 def implied_vols(price: Any, S: Any, K: Any, T: Any, r: Any, q: Any, is_call: Any,
                  dividends: Sequence[tuple[float, float]] = (), steps: int = STEPS,
-                 threads: int | None = None) -> np.ndarray:
-    """Vectorized :func:`implied_vol` (NaN where no volatility reproduces the price)."""
+                 threads: int | None = None, flat_tol: Any = None) -> np.ndarray:
+    """Vectorized :func:`implied_vol` (NaN where no volatility reproduces the price, or where the
+    price is flat in vol: one vol point either way moves it by less than ``flat_tol``, default
+    ``kernels.FLAT_REL`` x K)."""
     dt, da = _divs(dividends)
     return kernels.american_iv(price, S, K, T, r, q, is_call, dt, da, steps,
-                               iv_threads() if threads is None else threads)
+                               iv_threads() if threads is None else threads, flat_tol=flat_tol)
 
 
 def price(S: float, K: float, T: float, r: float, sigma: float, *, is_call: bool,

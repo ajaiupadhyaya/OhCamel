@@ -40,7 +40,7 @@ log = logging.getLogger(__name__)
 
 ENV = "OHCAMEL_QUANT_KERNELS"
 #: The wheel API this dispatcher speaks (native/kernels/src/lib.rs API_VERSION).
-API_VERSION = 2
+API_VERSION = 3
 #: Contract II.4's functions, in its order.
 API: tuple[str, ...] = (
     "fhs_paths", "copula_t_paths", "var_es_from_pnl", "stationary_bootstrap_means", "cscv_pbo",
@@ -392,11 +392,18 @@ def american_price(S: Any, K: Any, T: Any, r: Any, q: Any, sigma: Any, is_call: 
     return np.asarray(out).reshape(shape)
 
 
+#: The identifiability guard's default tolerance: one vol point must move the price by FLAT_REL x K.
+FLAT_REL = 1e-7
+
+
 def american_iv(price: Any, S: Any, K: Any, T: Any, r: Any, q: Any, is_call: Any, div_t: Any = (),
-                div_amt: Any = (), steps: int = 400, threads: int = 1, guess: Any = None) -> np.ndarray:
+                div_amt: Any = (), steps: int = 400, threads: int = 1, guess: Any = None,
+                flat_tol: Any = None) -> np.ndarray:
     """The volatility at which american_price equals ``price`` (NaN where none does), broadcast over
     the contracts. ``guess`` only changes the work, not the root; by default the Black-Scholes
-    implied vol on the escrowed spot. See native/kernels/src/american.rs."""
+    implied vol on the escrowed spot. A root stands only if one vol point up and down each move the
+    price by at least ``flat_tol`` (per contract; default FLAT_REL x K), else NaN: a price flat in
+    vol identifies no vol. See native/kernels/src/american.rs."""
     p = np.asarray(price, dtype=np.float64)
     S_, K_, T_, r_, q_, p_, phi, dt, da, n, t, shape = _american_args(S, K, T, r, q, p, is_call, div_t,
                                                                       div_amt, steps, threads)
@@ -408,7 +415,14 @@ def american_iv(price: Any, S: Any, K: Any, T: Any, r: Any, q: Any, is_call: Any
             g = np.asarray(implied_vol(p_, np.where(s0 > 0, s0, np.nan), K_, T_, r_, q_, phi), dtype=np.float64)
     else:
         g = np.ascontiguousarray(np.broadcast_to(np.asarray(guess, dtype=np.float64), shape).reshape(-1))
-    out = _impl("american_iv")(p_, S_, K_, T_, r_, q_, phi, np.ascontiguousarray(g), dt, da, n, t)
+    if flat_tol is None:
+        ft = FLAT_REL * K_
+    else:
+        ft = np.ascontiguousarray(np.broadcast_to(np.asarray(flat_tol, dtype=np.float64), shape).reshape(-1))
+    if not np.all(np.isfinite(ft) & (ft > 0)):
+        raise ValueError("flat_tol must be finite and positive")
+    out = _impl("american_iv")(p_, S_, K_, T_, r_, q_, phi, np.ascontiguousarray(g), np.ascontiguousarray(ft),
+                               dt, da, n, t)
     return np.asarray(out).reshape(shape)
 
 

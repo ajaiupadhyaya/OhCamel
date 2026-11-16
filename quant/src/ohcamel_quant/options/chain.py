@@ -41,6 +41,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .. import kernels
 from . import american, bsm, parity
 
 CONTRACT_MULTIPLIER = 100.0
@@ -197,23 +198,24 @@ def analyze_chain(
         q["arb_bound"] = cross
         r_, q_ = q["r"].to_numpy(float), q["q"].to_numpy(float)
 
-        def ivs(px: np.ndarray) -> np.ndarray:
+        def ivs(px: np.ndarray, flat_tol: np.ndarray | None = None) -> np.ndarray:
             ok = np.isfinite(px)
             out = np.full(px.shape, np.nan)
-            out[ok] = american.implied_vols(px[ok], S, K[ok], T[ok], r_[ok], q_[ok], typ[ok] == "C")
+            ft = None if flat_tol is None else flat_tol[ok]
+            out[ok] = american.implied_vols(px[ok], S, K[ok], T[ok], r_[ok], q_[ok], typ[ok] == "C", flat_tol=ft)
             return out
     else:
         lower, upper = intrinsic, np.where(typ == "C", D * F, D * K)
         q["arb_bound"] = q["valid"] & ((mid <= lower) | (mid >= upper))
         at_intr = below_fwd = np.zeros(len(q), dtype=bool)
 
-        def ivs(px: np.ndarray) -> np.ndarray:
+        def ivs(px: np.ndarray, flat_tol: np.ndarray | None = None) -> np.ndarray:
             return bsm.implied_vol_black(px, F, K, T, D, typ)
     good_mid = valid & ~q["arb_bound"].to_numpy() & ~at_intr & ~below_fwd
-    iv_mid = ivs(np.where(good_mid, mid, np.nan))
-    if am:
-        iv_mid = _drop_flat(iv_mid, mid, (ask_a - bid_a) / 2.0, S, K, T, r_, q_, typ == "C")
-    q["iv"] = iv_mid
+    # American mids: the kernel's identifiability guard at the larger of its default (FLAT_REL x K
+    # per vol point) and FLAT_FRACTION of the quote's own half-spread
+    flat_mid = np.maximum(kernels.FLAT_REL * K, FLAT_FRACTION * np.where(valid, (ask_a - bid_a) / 2.0, 0.0))
+    q["iv"] = ivs(np.where(good_mid, mid, np.nan), flat_mid)
     q["iv_bid"] = ivs(np.where(bid_a > 0, bid_a, np.nan))
     q["iv_ask"] = ivs(np.where(ask_a > 0, ask_a, np.nan))
     q["iv_status"] = iv_status(q, at_intr, below_fwd)
@@ -288,7 +290,8 @@ def analyze_chain(
         if (st == "no_vol").any():
             notes.append(f"no_vol: {side('no_vol')} valid quotes have no identifiable volatility: none in the search "
                          "interval reproduces the mid, or one vol point either side of the root moves the price by "
-                         f"less than {FLAT_FRACTION:.0%} of the quote's half-spread (IV blank)")
+                         f"less than the larger of {FLAT_FRACTION:.0%} of the quote's half-spread and {kernels.FLAT_REL:g} K "
+                         "(IV blank)")
         notes.append(f"American-style options: every IV inverts a {american.STEPS}-step CRR binomial price "
                      "(Black-Scholes at the last step, Richardson-extrapolated; Broadie & Detemple 1996) on spot "
                      "with the expiry's r and a continuous yield q, by Brent's method")
@@ -337,30 +340,10 @@ def iv_status(q: pd.DataFrame, at_intrinsic: Any, below_model_forward: Any) -> n
     return out
 
 
-#: An American IV is identified only if one vol point either side of it moves the price by at least
-#: this fraction of the quote's own half-spread (otherwise the quote pins the vol to no better than
-#: 1 / FLAT_FRACTION points, and solvers can disagree arbitrarily inside that).
+#: An American mid's IV is identified only if one vol point either side of it moves the price by at
+#: least this fraction of the quote's own half-spread (otherwise the quote pins the vol to no better
+#: than 1 / FLAT_FRACTION points); the kernel applies it (``flat_tol``) before returning a root.
 FLAT_FRACTION = 0.01
-
-
-def _drop_flat(iv: np.ndarray, mid: np.ndarray, half: np.ndarray, S: float, K: np.ndarray, T: np.ndarray,
-               r: np.ndarray, q: np.ndarray, is_call: np.ndarray) -> np.ndarray:
-    """``iv`` with NaN where the American price is flat in vol at the root: the price at
-    ``iv +- 0.01`` (``iv / 2`` below when ``iv <= 0.02``) differs from the mid by less than
-    ``FLAT_FRACTION`` x the half-spread on either side (status ``no_vol``)."""
-    out = iv.copy()
-    i = np.flatnonzero(np.isfinite(iv))
-    if i.size == 0:
-        return out
-    up = iv[i] + 0.01
-    dn = np.where(iv[i] > 0.02, iv[i] - 0.01, iv[i] / 2.0)
-    pr = american.prices(S, np.concatenate([K[i], K[i]]), np.concatenate([T[i], T[i]]),
-                         np.concatenate([r[i], r[i]]), np.concatenate([q[i], q[i]]), np.concatenate([up, dn]),
-                         np.concatenate([is_call[i], is_call[i]]))
-    tol = FLAT_FRACTION * half[i]
-    flat = ~((pr[: i.size] - mid[i] >= tol) & (mid[i] - pr[i.size:] >= tol))
-    out[i[flat]] = np.nan
-    return out
 
 
 def _premium_free_parity_rmse(g: pd.DataFrame, f: parity.ParityFit, spot: float) -> float:

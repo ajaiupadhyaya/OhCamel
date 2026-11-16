@@ -14,7 +14,8 @@
 //!   the quote, one Newton step with the Black-Scholes vega (the screen); else steps of 1.25 x that
 //!   Newton step, doubled while the error keeps its sign, until a bracket; then scipy's brentq (xtol
 //!   1e-7, rtol 4 eps, 100 iterations) also stopping at |f| <= 3e-7 x the bracket's slope; NaN
-//!   where no root.
+//!   where no root. Every root then passes the identifiability guard: one vol point up and down
+//!   must each move the price by at least the contract's `flat_tol`, else NaN (flat in vol).
 //!
 //! Every contract is independent: the rayon pool only splits the list.
 use crate::par;
@@ -31,6 +32,11 @@ pub const FTOL: f64 = 3e-7;
 pub const RTOL: f64 = 4.0 * f64::EPSILON;
 pub const MAXITER: usize = 100;
 pub const DIV_EPS: f64 = 1e-9;
+/// The identifiability guard's vol step (one vol point) and its skip factor (see `identified`).
+pub const VOL_PT: f64 = 0.01;
+pub const GUARD_SKIP: f64 = 100.0;
+/// Brent's slope stop and the guard's skip use the bracket's secant only when it is this narrow.
+pub const LOCAL_W: f64 = 1e-3;
 /// A quote within EX_TOL x K of immediate exercise identifies no vol (the tree is flat there).
 pub const EX_TOL: f64 = 1e-10;
 pub const MIN_STEPS: usize = 10;
@@ -267,7 +273,7 @@ fn brent<F: FnMut(f64) -> f64>(
     mut xcur: f64,
     mut fpre: f64,
     mut fcur: f64,
-) -> f64 {
+) -> (f64, f64) {
     let (mut xblk, mut fblk, mut spre, mut scur) = (0.0, 0.0, 0.0, 0.0);
     for _ in 0..MAXITER {
         if fpre != 0.0 && fcur != 0.0 && (fpre.is_sign_negative() != fcur.is_sign_negative()) {
@@ -286,9 +292,16 @@ fn brent<F: FnMut(f64) -> f64>(
         }
         let delta = (XTOL + RTOL * xcur.abs()) / 2.0;
         let sbis = (xblk - xcur) / 2.0;
-        let slope = ((fblk - fcur) / (xblk - xcur)).abs();
+        // the secant slope only over a bracket narrower than LOCAL_W: a wide bracket's secant can be
+        // far steeper than the function at xcur (flat, then steep), which would stop Brent -- and
+        // skip the identifiability guard -- at a point of the flat stretch
+        let slope = if (xblk - xcur).abs() <= LOCAL_W {
+            ((fblk - fcur) / (xblk - xcur)).abs()
+        } else {
+            0.0
+        };
         if fcur == 0.0 || sbis.abs() < delta || fcur.abs() <= FTOL * slope {
-            return xcur;
+            return (xcur, slope);
         }
         if spre.abs() > delta && fcur.abs() < fpre.abs() {
             let stry = if xpre == xblk {
@@ -320,7 +333,37 @@ fn brent<F: FnMut(f64) -> f64>(
         };
         fcur = f(xcur);
     }
-    f64::NAN
+    (f64::NAN, f64::NAN)
+}
+
+/// The identifiability guard, applied to every root before it is returned: the root stands only
+/// if moving the vol one point (VOL_PT) up and down -- clipped to [lo, hi] -- moves the price by at
+/// least `tol` each way; otherwise the price is flat in vol there and any root is arbitrary (NaN).
+/// The two extra prices are skipped when the local slope already shows a move of GUARD_SKIP x tol
+/// per point (the slope is then far above floating-point noise).
+fn identified<F: FnMut(f64) -> f64>(
+    f: &mut F,
+    x: f64,
+    slope: f64,
+    tol: f64,
+    lo: f64,
+    hi: f64,
+) -> f64 {
+    if !x.is_finite() {
+        return f64::NAN;
+    }
+    if slope.is_finite() && slope * VOL_PT >= GUARD_SKIP * tol {
+        return x;
+    }
+    let (up, dn) = ((x + VOL_PT).min(hi), (x - VOL_PT).max(lo));
+    if !(up > x && dn < x) {
+        return f64::NAN;
+    }
+    if f(up) >= tol && -f(dn) >= tol {
+        x
+    } else {
+        f64::NAN
+    }
 }
 
 /// One contract's implied volatility (NaN where none).
@@ -331,6 +374,7 @@ pub fn american_iv_one(
     div_t: &[f64],
     div_amt: &[f64],
     n: usize,
+    flat_tol: f64,
     b: &mut Buf,
 ) -> f64 {
     let s0 = escrowed(c, div_t, div_amt);
@@ -352,7 +396,7 @@ pub fn american_iv_one(
     let mut x0 = g.max(lo).min(hi);
     let mut f0 = f(x0);
     if f0 == 0.0 {
-        return x0;
+        return identified(&mut f, x0, 0.0, flat_tol, lo, hi);
     }
     let sd = x0 * c.t.sqrt();
     let d1 = ((s0 / c.k).ln() + (c.r - c.q + 0.5 * x0 * x0) * c.t) / sd;
@@ -363,7 +407,7 @@ pub fn american_iv_one(
     // -- the early-exercise premium and the tree's error are negligible -- so one Newton step with
     // the Black-Scholes vega lands within SCREEN |1 - vega_BS / vega_tree| of the root.
     if vega.is_finite() && vega > 0.0 && f0.abs() <= SCREEN * vega {
-        return x0 - f0 / vega;
+        return identified(&mut f, x0 - f0 / vega, vega, flat_tol, lo, hi);
     }
     let mut step = -1.25 * f0 / vega;
     if !(step.is_finite() && step != 0.0) {
@@ -373,10 +417,11 @@ pub fn american_iv_one(
         let xn = (x0 + step).max(lo).min(hi);
         let fnew = f(xn);
         if fnew == 0.0 {
-            return xn;
+            return identified(&mut f, xn, 0.0, flat_tol, lo, hi);
         }
         if fnew.is_sign_negative() != f0.is_sign_negative() {
-            return brent(&mut f, x0, xn, f0, fnew);
+            let (x, slope) = brent(&mut f, x0, xn, f0, fnew);
+            return identified(&mut f, x, slope, flat_tol, lo, hi);
         }
         if xn <= lo || xn >= hi {
             return f64::NAN;
@@ -465,6 +510,7 @@ pub fn american_iv(
     q: &[f64],
     phi: &[f64],
     guess: &[f64],
+    flat_tol: &[f64],
     div_t: &[f64],
     div_amt: &[f64],
     steps: usize,
@@ -479,6 +525,7 @@ pub fn american_iv(
         q.len(),
         phi.len(),
         guess.len(),
+        flat_tol.len(),
     ];
     check(steps, div_t, div_amt, &lens)?;
     let cs = contracts(s, k, t, r, q, phi);
@@ -486,7 +533,16 @@ pub fn american_iv(
         (0..cs.len())
             .into_par_iter()
             .map_init(Buf::default, |b, i| {
-                american_iv_one(&cs[i], price[i], guess[i], div_t, div_amt, steps, b)
+                american_iv_one(
+                    &cs[i],
+                    price[i],
+                    guess[i],
+                    div_t,
+                    div_amt,
+                    steps,
+                    flat_tol[i],
+                    b,
+                )
             })
             .collect()
     });
@@ -574,7 +630,7 @@ mod tests {
                 phi,
             };
             let p = american_price_one(&c, 0.3, &[], &[], 400, &mut b);
-            let iv = american_iv_one(&c, p, f64::NAN, &[], &[], 400, &mut b);
+            let iv = american_iv_one(&c, p, f64::NAN, &[], &[], 400, 1e-5, &mut b);
             assert!((iv - 0.3).abs() < 1e-6, "{k} {phi}: {iv}");
         }
         let c = Contract {
@@ -585,8 +641,50 @@ mod tests {
             q: 0.0,
             phi: -1.0,
         };
-        assert!(american_iv_one(&c, 20.0, 0.2, &[], &[], 400, &mut b).is_nan());
-        assert!(american_iv_one(&c, 120.0, 0.2, &[], &[], 400, &mut b).is_nan());
+        assert!(american_iv_one(&c, 20.0, 0.2, &[], &[], 400, 1e-5, &mut b).is_nan());
+        assert!(american_iv_one(&c, 120.0, 0.2, &[], &[], 400, 1e-5, &mut b).is_nan());
+    }
+
+    #[test]
+    fn a_price_flat_in_vol_identifies_no_vol() {
+        // the 70-strike 18-day call on 100 (q = 0): its price moves ~1e-12 per vol point below 25%
+        // vol, so any root there is arbitrary -- the CI case that came out 0.0588 on one platform
+        // and 0.2315 on the other; and the stress put whose flat-then-steep price let a wide
+        // bracket's secant stop Brent on the flat stretch
+        let mut b = Buf::default();
+        let c = Contract {
+            s: 100.0,
+            k: 70.0,
+            t: 0.05,
+            r: 0.045,
+            q: 0.0,
+            phi: 1.0,
+        };
+        let p = american_price_one(&c, 0.12, &[], &[], 400, &mut b);
+        assert!(american_iv_one(&c, p, f64::NAN, &[], &[], 400, 7e-6, &mut b).is_nan());
+        let c = Contract {
+            s: 750.0,
+            k: 588.49,
+            t: 1.345 / 365.0,
+            r: 0.05,
+            q: 0.01,
+            phi: 1.0,
+        };
+        let p = american_price_one(&c, 0.0693, &[], &[], 400, &mut b);
+        assert!(american_iv_one(&c, p, f64::NAN, &[], &[], 400, 5.9e-5, &mut b).is_nan());
+        // an identifiable one keeps its root
+        let c = Contract {
+            s: 100.0,
+            k: 100.0,
+            t: 0.5,
+            r: 0.045,
+            q: 0.0,
+            phi: -1.0,
+        };
+        let p = american_price_one(&c, 0.25, &[], &[], 400, &mut b);
+        assert!(
+            (american_iv_one(&c, p, f64::NAN, &[], &[], 400, 1e-5, &mut b) - 0.25).abs() < 1e-6
+        );
     }
 
     #[test]
