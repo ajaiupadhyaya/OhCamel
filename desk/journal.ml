@@ -948,6 +948,40 @@ let clear_halt t =
   write t ~what:"halt" (fun () ->
       run t ~what:"halt" "DELETE FROM meta WHERE key IN ('halt_why', 'halt_at')" [])
 
+(* A limit's trip, in [meta] beside the halt and for the same reason: one
+   standing fact. The trip's two keys are written in one statement and deleted
+   by the reset's, so the standing trip is the last one written with no reset
+   after it -- by the order of the writes, not by comparing two clocks' instants.
+   The reset keeps its instant, the trip's keys gone, so the record says when the
+   last trip was lifted. These two return an Or_error where the halt's writes raise:
+   [record_trip] is called inside the graph's stabilization (Oms.watch_alerts),
+   where a raise would reach the engine and not the log. *)
+let record_trip t ~limit ~at =
+  Or_error.try_with (fun () ->
+      write t ~what:"trip" (fun () ->
+          run t ~what:"trip"
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('trip_limit', ?), \
+             ('trip_at', ?)"
+            [ text limit; time at ]))
+
+let standing_trip t =
+  match
+    query t ~what:"trip"
+      "SELECT l.value, a.value FROM meta l, meta a WHERE l.key = 'trip_limit' AND a.key \
+       = 'trip_at'"
+      [] ~row:(fun r -> (col_text r 0, col_time r 1))
+  with
+  | [ trip ] -> Some trip
+  | _ -> None
+
+let record_reset t ~at =
+  Or_error.try_with (fun () ->
+      write t ~what:"reset" (fun () ->
+          run t ~what:"reset" "DELETE FROM meta WHERE key IN ('trip_limit', 'trip_at')" [];
+          run t ~what:"reset"
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('trip_reset_at', ?)"
+            [ time at ]))
+
 (* Signals: A3's addition to the record. Every judgement the intake makes is
    one row of [signals], keyed by (strategy, sequence) -- the table schema
    version 1 has always declared -- with the whole document beside it; every

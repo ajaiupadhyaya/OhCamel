@@ -175,6 +175,18 @@ val record_halt : t -> why:string -> at:Time_ns.t -> unit
 val recorded_halt : t -> (string * Time_ns.t) option
 val clear_halt : t -> unit
 
+val record_trip : t -> limit:string -> at:Time_ns.t -> unit Or_error.t
+(** A limit's trip of the kill switch, so a restart cannot lift it: a fresh tracker inside
+    the hysteresis band reads the limit as quiet. A second trip before a reset replaces
+    the first. An error, never a raise: it is written inside stabilization. *)
+
+val standing_trip : t -> (string * Time_ns.t) option
+(** The limit and instant of the last trip with no later reset, by the order of the
+    writes. *)
+
+val record_reset : t -> at:Time_ns.t -> unit Or_error.t
+(** The deliberate reset: no trip stands after it. *)
+
 (** One judgement of one signal document (desk/intake.ml): the [signals] table's row. *)
 module Signal : sig
   module Verdict : sig

@@ -21,9 +21,18 @@
 
    A HAND OUTRANKS A LIMIT. A halt by hand is reported ahead of a trip, and
    only a deliberate reset lifts it: whoever pressed it knew something the
-   limits did not. The journal holds it, so a restart does not: Oms.restore_halt
-   sets it on the new switch. A limit's trip is not held there; it comes back
-   only if the limit is still breached.
+   limits did not. The journal holds it, so a restart does not: Oms.restore_switch
+   sets it on the new switch.
+
+   A LIMIT'S TRIP SURVIVES A RESTART TOO. Until 2026-11-16 it did not: the
+   kernel's switch lives in this process, and a restart's fresh tracker reads a
+   limit inside the hysteresis band -- back under the line but not under
+   clear_below -- as quiet, so the desk came back clear on a book still too
+   close to the limit that tripped it. Oms journals each trip as it happens and
+   Oms.restore_switch hands the standing one to [restore_trip], which holds it
+   here, apart from the source: the new process's source may read clear, and
+   the switch is tripped all the same. Only [reset] lifts it -- never the
+   demo's clock, which only ever judges a trip its own source made.
 
    THE DEMO RESETS ITSELF, AND ONLY THE DEMO. The public demo trips its switch
    on purpose -- nvda-cap sits 200 dollars above NVDA's exposure -- and a
@@ -80,6 +89,9 @@ type t = {
   source : Source.t;
   auto_reset_after : Time_ns.Span.t option;
   mutable by_hand : (string * Time_ns.t) option;
+  (* A trip an earlier process left standing, from the journal. The source
+     cannot clear it; only [reset] does. *)
+  mutable restored : (string * Time_ns.t) option;
   (* The engine's stop. Nothing clears it but a new [t]. *)
   mutable stopped : (string * Time_ns.t) option;
   (* When the limit that tripped the switch was first seen clear, since it
@@ -88,14 +100,24 @@ type t = {
 }
 
 let create ?auto_reset_after source =
-  { source; auto_reset_after; by_hand = None; stopped = None; clear_since = None }
+  {
+    source;
+    auto_reset_after;
+    by_hand = None;
+    restored = None;
+    stopped = None;
+    clear_since = None;
+  }
 
+(* A trip this process's source made is reported ahead of a restored one: it is
+   the later of the two, as the journal's standing trip is the last one. *)
 let state t : State.t =
-  match (t.stopped, t.by_hand, t.source.Source.tripped ()) with
-  | Some (why, at), _, _ -> State.Stopped { why; at }
-  | None, Some (why, at), _ -> State.Halted { why; at }
-  | None, None, Some (limit, at) -> State.Tripped { limit; at }
-  | None, None, None -> State.Clear
+  match (t.stopped, t.by_hand, t.source.Source.tripped (), t.restored) with
+  | Some (why, at), _, _, _ -> State.Stopped { why; at }
+  | None, Some (why, at), _, _ -> State.Halted { why; at }
+  | None, None, Some (limit, at), _ | None, None, None, Some (limit, at) ->
+      State.Tripped { limit; at }
+  | None, None, None, None -> State.Clear
 
 let reason t =
   match state t with
@@ -114,6 +136,11 @@ let reason t =
    the one the reset has to answer. *)
 let halt t ~why ~at = if Option.is_none t.by_hand then t.by_hand <- Some (why, at)
 
+(* Likewise, a second restore does not overwrite the first; a start calls it
+   once, before anything else can touch the switch. *)
+let restore_trip t ~limit ~at =
+  if Option.is_none t.restored then t.restored <- Some (limit, at)
+
 (* The engine's own halt. Likewise, a second stop does not overwrite the
    first. *)
 let stop t ~why ~at = if Option.is_none t.stopped then t.stopped <- Some (why, at)
@@ -127,12 +154,17 @@ let reset t =
   | Some _ -> ()
   | None ->
       t.by_hand <- None;
+      t.restored <- None;
       t.clear_since <- None;
       t.source.Source.reset ()
 
 let tick t ~now =
-  match (t.auto_reset_after, t.stopped, t.by_hand, t.source.Source.tripped ()) with
-  | Some after, None, None, Some (limit, _) ->
+  (* Never while a restored trip stands: [reset] would lift it with the
+     source's, and the clock has judged only the source's. *)
+  match
+    (t.auto_reset_after, t.stopped, t.by_hand, t.restored, t.source.Source.tripped ())
+  with
+  | Some after, None, None, None, Some (limit, _) ->
       if List.mem (t.source.Source.firing ()) limit ~equal:String.equal then (
         t.clear_since <- None;
         false)

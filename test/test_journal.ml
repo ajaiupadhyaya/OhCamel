@@ -708,9 +708,54 @@ let test_a_halt_by_hand_is_on_the_record_until_it_is_cleared () =
   Alcotest.check halt "and gone once cleared" None (read ());
   Journal.close j
 
+(* A limit's trip, the switch's other fact a restart must not forget: a fresh
+   tracker inside the hysteresis band reads the limit as quiet, so the kernel's
+   switch alone would come back armed. The trip stands from the moment it is
+   written until a reset is, and only a trip after that reset stands again. *)
+let trip_t = Alcotest.(option (pair string string))
+
+let read_trip j =
+  Option.map (Journal.standing_trip j) ~f:(fun (limit, at) ->
+      (limit, Ohcamel_desk.Desk_time.rfc3339 at))
+
+let test_journal_trip_then_reset_is_none () =
+  let j = open_exn ":memory:" in
+  let tripped = Time_ns.of_string_with_utc_offset "2026-11-03T20:00:01.123456789Z" in
+  let reset = Time_ns.of_string_with_utc_offset "2026-11-03T20:15:00Z" in
+  Alcotest.check trip_t "nothing yet" None (read_trip j);
+  Or_error.ok_exn (Journal.record_trip j ~limit:"book-cap" ~at:tripped);
+  Or_error.ok_exn (Journal.record_reset j ~at:reset);
+  Alcotest.check trip_t "a reset after the trip: none stands" None (read_trip j);
+  let again = Time_ns.of_string_with_utc_offset "2026-11-03T20:30:00Z" in
+  Or_error.ok_exn (Journal.record_trip j ~limit:"nvda-cap" ~at:again);
+  Alcotest.check trip_t "a trip after the reset stands"
+    (Some ("nvda-cap", Ohcamel_desk.Desk_time.rfc3339 again))
+    (read_trip j);
+  Journal.close j
+
+(* On a file, closed and opened again: what a restart reads. *)
+let test_journal_trip_without_reset_is_some () =
+  with_temp_path ~f:(fun path ->
+      let tripped = Time_ns.of_string_with_utc_offset "2026-11-03T20:00:01.123456789Z" in
+      let j = open_exn path in
+      Or_error.ok_exn (Journal.record_trip j ~limit:"book-cap" ~at:tripped);
+      Journal.close j;
+      let j = open_exn path in
+      (match Journal.standing_trip j with
+      | Some (limit, at) ->
+          Alcotest.(check string) "the limit's name" "book-cap" limit;
+          Alcotest.(check bool)
+            "the instant, to the nanosecond" true (Time_ns.equal at tripped)
+      | None -> Alcotest.fail "a restart forgot the trip");
+      Journal.close j)
+
 let suite =
   ( "journal",
     [
+      Alcotest.test_case "journal_trip_then_reset_is_none" `Quick
+        test_journal_trip_then_reset_is_none;
+      Alcotest.test_case "journal_trip_without_reset_is_some" `Quick
+        test_journal_trip_without_reset_is_some;
       Alcotest.test_case "a halt by hand is on the record until it is cleared" `Quick
         test_a_halt_by_hand_is_on_the_record_until_it_is_cleared;
       Alcotest.test_case "a session survives a restart" `Quick

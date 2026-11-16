@@ -1367,7 +1367,7 @@ let run_live ~book_path ~(serve_port : int option) =
           | Some a -> Ohcamel_desk.Halt.Source.of_alerts a
           | None -> Ohcamel_desk.Halt.Source.none)
       in
-      Ohcamel_desk.Oms.restore_halt ~halt ~journal;
+      Ohcamel_desk.Oms.restore_switch ~halt ~journal;
       let reconcile_on_connect = ref (fun () -> Deferred.unit) in
       let trade =
         match (book.Config.Book.desk.Desk_spec.trading, trading_credentials) with
@@ -1436,7 +1436,9 @@ let run_live ~book_path ~(serve_port : int option) =
          orders a previous process left open would otherwise stay at the venue
          and could fill into the breach. The open set is the reconciliation's,
          filled from the journal as its job starts, so this holds even when
-         that job ran past its bound. *)
+         that job ran past its bound. A trip the journal held across the
+         restart (Oms.restore_switch) reads Tripped too, and is cancelled for
+         the same reason. *)
       (match Ohcamel_desk.Halt.state halt with
       | Ohcamel_desk.Halt.State.Tripped { limit; _ } ->
           live_line

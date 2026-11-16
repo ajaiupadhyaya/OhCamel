@@ -3,8 +3,9 @@
 
     [t] is abstract so that what lifts each state is a fact of this interface, not a
     convention: a hand's halt and a limit's trip are lifted only by [reset] (and, on the
-    demo only, a limit's trip by [tick]); the engine's stop by nothing here at all -- only
-    a new [t], which is a restart. *)
+    demo only, a trip its own source made by [tick]); a trip restored from the journal
+    only by [reset]; the engine's stop by nothing here at all -- only a new [t], which is
+    a restart. *)
 
 open Core
 
@@ -47,17 +48,24 @@ val reason : t -> string option
 val halt : t -> why:string -> at:Time_ns.t -> unit
 (** A halt by hand. A second press does not overwrite the first. *)
 
+val restore_trip : t -> limit:string -> at:Time_ns.t -> unit
+(** A limit's trip an earlier process left standing (Journal.standing_trip). The switch
+    reads [Tripped] even while the source reads clear -- a fresh tracker inside the
+    hysteresis band does -- and only [reset] lifts it. A second restore does not overwrite
+    the first. *)
+
 val stop : t -> why:string -> at:Time_ns.t -> unit
 (** The engine's stop. A second stop does not overwrite the first, and nothing in this
     interface clears it. *)
 
 val reset : t -> unit
-(** Lifts a hand's halt and a limit's trip; changes nothing while stopped. *)
+(** Lifts a hand's halt and a limit's trip, restored or not; changes nothing while
+    stopped. *)
 
 val tick : t -> now:Time_ns.t -> bool
 (** The demo's clock: resets a limit's trip once the limit has been clear for
-    [auto_reset_after], and says whether it did. Never a hand's halt or the engine's stop.
-*)
+    [auto_reset_after], and says whether it did. Never a hand's halt, a restored trip or
+    the engine's stop, and nothing while a restored trip stands. *)
 
 val to_json : t -> now:Time_ns.t -> Yojson.Safe.t
 (** The switch whole, for /api/desk and the kill routes. *)

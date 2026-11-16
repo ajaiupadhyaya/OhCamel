@@ -25,8 +25,8 @@ let limit name scope n = { Limit.name; scope; kind = Limit.Gross_notional (money
    gates an order against a book the account holds. The trailing unit is what
    lets that default be taken, as test_gate.ml's [with_book] takes its own:
    an optional argument before the last labelled one is never erased. *)
-let with_oms ?(book_is_current = true) ?(now = Time_ns.now) ?(extra_limits = [])
-    ?equity_history ?venue_name ~f () =
+let with_oms_graph ?(book_is_current = true) ?(now = Time_ns.now) ?(extra_limits = [])
+    ?equity_history ?venue_name ?alerts ~f () =
   let graph =
     Graph.create ~starting_cash:(money 1_000_000.0)
       ~instruments:
@@ -59,6 +59,12 @@ let with_oms ?(book_is_current = true) ?(now = Time_ns.now) ?(extra_limits = [])
       Graph.set_now graph (Time.now ());
       Graph.stabilize graph;
       let journal = Or_error.ok_exn (D.Journal.open_ ~path:":memory:") in
+      (* [alerts]: the kernel's alerts on this graph, the switch's source, wired
+         to the manager as bin/main.ml wires them. *)
+      let alerts =
+        Option.bind alerts ~f:(fun config ->
+            Or_error.ok_exn (Ohcamel.Alerts.attach ~graph ~config))
+      in
       let venue =
         D.Sim_venue.create ~opened_at:(Time_ns.now ())
           ~marks:(fun s -> Some (Graph.price graph s))
@@ -76,7 +82,11 @@ let with_oms ?(book_is_current = true) ?(now = Time_ns.now) ?(extra_limits = [])
                 | None -> read
                 | Some name -> { read with D.Venue.Read.name }))
           ~trade:(Ok (D.Sim_venue.trade ~auto:false venue))
-          ~halt:(D.Halt.create D.Halt.Source.none)
+          ~halt:
+            (D.Halt.create
+               (match alerts with
+               | Some a -> D.Halt.Source.of_alerts a
+               | None -> D.Halt.Source.none))
           ~accepts_tickets:false ~adv:(D.Oms.Adv.Fixed 1_000_000.0) ~now
           ~rng:(Random.State.make [| 3 |]) ~on_change:ignore ~on_event:ignore
           ~after_fill:ignore
@@ -84,7 +94,13 @@ let with_oms ?(book_is_current = true) ?(now = Time_ns.now) ?(extra_limits = [])
           ()
       in
       D.Oms.set_market oms ~session_open:true ~adv20:[];
-      f oms journal)
+      Option.iter alerts ~f:(D.Oms.watch_alerts oms);
+      f graph oms journal)
+
+let with_oms ?book_is_current ?now ?extra_limits ?equity_history ?venue_name ~f () =
+  with_oms_graph ?book_is_current ?now ?extra_limits ?equity_history ?venue_name
+    ~f:(fun _ oms journal -> f oms journal)
+    ()
 
 let ticket ?(kind = D.Order.Kind.Market) symbol side qty =
   { D.Ticket.symbol; side; qty; kind }
@@ -165,7 +181,7 @@ let test_a_halt_by_hand_survives_a_restart () =
     ~f:(fun oms journal ->
       let restarted () =
         let halt = D.Halt.create D.Halt.Source.none in
-        D.Oms.restore_halt ~halt ~journal;
+        D.Oms.restore_switch ~halt ~journal;
         halt
       in
       Alcotest.(check string)
@@ -184,6 +200,70 @@ let test_a_halt_by_hand_survives_a_restart () =
       Alcotest.(check string)
         "and for the next start too" "clear"
         (D.Halt.State.name (D.Halt.state (restarted ()))))
+    ()
+
+(* The review's case: a restart while tripped, inside the hysteresis band. The
+   kernel's switch trips on aapl-cap (80,000) when AAPL goes to 600 x 150 =
+   90,000; then AAPL comes down to 520 x 150 = 78,000, 97.5% of the cap --
+   under the line but above clear_below's 95%, so the limit is still firing
+   and the switch still tripped. A restart builds fresh alerts on that book: a
+   fresh tracker has never seen aapl-cap fire, 78,000 is no breach, and the
+   kernel's switch comes back armed. Until 2026-11-16 that was the whole
+   story, and the desk came back clear. The journal now holds the trip, so the
+   new switch is tripped, and stays so until a reset -- after which the next
+   start is clear. *)
+let test_a_restart_inside_the_hysteresis_band_comes_back_tripped () =
+  let config =
+    {
+      Ohcamel.Config.Alerts.default with
+      Ohcamel.Config.Alerts.enabled = true;
+      sinks = [];
+      kill_switch_enabled = true;
+      kill_switch_trips_on = [ "aapl-cap" ];
+    }
+  in
+  with_oms_graph ~alerts:config
+    ~f:(fun graph oms journal ->
+      let name halt = D.Halt.State.name (D.Halt.state halt) in
+      Graph.set_qty graph aapl (Qty.of_float 600.0);
+      Graph.stabilize graph;
+      Alcotest.(check string) "90,000 trips the switch" "tripped" (name (D.Oms.halt oms));
+      Alcotest.(check (option string))
+        "and the journal holds the trip" (Some "aapl-cap")
+        (Option.map (D.Journal.standing_trip journal) ~f:fst);
+      Graph.set_qty graph aapl (Qty.of_float 520.0);
+      Graph.stabilize graph;
+      Alcotest.(check string)
+        "78,000 is inside the band: still tripped" "tripped"
+        (name (D.Oms.halt oms));
+      let restart () =
+        let alerts =
+          Option.value_exn (Or_error.ok_exn (Ohcamel.Alerts.attach ~graph ~config))
+        in
+        Ohcamel.Alerts.hold alerts;
+        Ohcamel.Alerts.release alerts ~graph;
+        D.Halt.create (D.Halt.Source.of_alerts alerts)
+      in
+      Alcotest.(check string)
+        "the fresh kernel switch alone reads clear in the band" "clear"
+        (name (restart ()));
+      let restarted = restart () in
+      D.Oms.restore_switch ~halt:restarted ~journal;
+      (match D.Halt.state restarted with
+      | D.Halt.State.Tripped { limit; _ } ->
+          Alcotest.(check string) "the restart is tripped, by aapl-cap" "aapl-cap" limit
+      | state ->
+          Alcotest.failf "a restart in the band came back %s" (D.Halt.State.name state));
+      Alcotest.(check bool)
+        "and refuses new orders" true
+        (Option.is_some (D.Halt.reason restarted));
+      D.Oms.reset_switch oms;
+      Alcotest.(check (option string))
+        "a reset is on the record" None
+        (Option.map (D.Journal.standing_trip journal) ~f:fst);
+      let after_reset = restart () in
+      D.Oms.restore_switch ~halt:after_reset ~journal;
+      Alcotest.(check string) "so the next start is clear" "clear" (name after_reset))
     ()
 
 let test_incubation_is_permitted_on_the_paper_venues_only () =
@@ -1161,6 +1241,8 @@ let suite =
       Alcotest.test_case "which venue statuses rest" `Quick test_which_venue_statuses_rest;
       Alcotest.test_case "a halt by hand survives a restart" `Quick
         test_a_halt_by_hand_survives_a_restart;
+      Alcotest.test_case "a restart inside the hysteresis band comes back tripped" `Quick
+        test_a_restart_inside_the_hysteresis_band_comes_back_tripped;
       Alcotest.test_case "incubation is permitted on the paper venues only" `Quick
         test_incubation_is_permitted_on_the_paper_venues_only;
     ] )

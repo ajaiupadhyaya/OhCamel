@@ -206,9 +206,40 @@ let test_alerts_call_on_trip_once_and_the_desk_reads_the_switch () =
       Halt.reset halt;
       Alcotest.(check string) "and resets the kernel's switch" "clear" (state halt))
 
+(* A trip the journal held across a restart (Oms.restore_switch). The new
+   process's source reads clear -- a fresh tracker inside the hysteresis band
+   sees no breach -- and the switch is tripped all the same: only a reset
+   lifts it, and the demo's clock never does. *)
+let test_restored_trip_outranks_clear_source () =
+  let t = Halt.create ~auto_reset_after:(Time_ns.Span.of_sec 90.0) Halt.Source.none in
+  Halt.restore_trip t ~limit:"book-cap" ~at:t0;
+  Alcotest.(check string) "tripped over a clear source" "tripped" (state t);
+  Alcotest.(check bool)
+    "a reason: new orders are refused" true
+    (Option.is_some (Halt.reason t));
+  Alcotest.(check bool) "it names the limit" true (says t "tripped by book-cap");
+  Alcotest.(check bool)
+    "an hour of the demo's clock does not lift it" false
+    (Halt.tick t ~now:(at 3600.0));
+  Alcotest.(check string) "still tripped" "tripped" (state t);
+  Halt.halt t ~why:"by hand" ~at:(at 5.0);
+  Alcotest.(check string) "a hand still outranks it" "halted" (state t)
+
+let test_reset_lifts_restored_trip () =
+  let source, _, _, resets = fake () in
+  let t = Halt.create source in
+  Halt.restore_trip t ~limit:"book-cap" ~at:t0;
+  Halt.reset t;
+  Alcotest.(check string) "a reset lifts it" "clear" (state t);
+  Alcotest.(check (option string)) "and nothing is refused" None (Halt.reason t);
+  Alcotest.(check int) "the kernel's switch reset with it" 1 !resets
+
 let suite =
   ( "halt",
     [
+      Alcotest.test_case "restored_trip_outranks_clear_source" `Quick
+        test_restored_trip_outranks_clear_source;
+      Alcotest.test_case "reset_lifts_restored_trip" `Quick test_reset_lifts_restored_trip;
       Alcotest.test_case "a limit trips it and the reason names the limit" `Quick
         test_a_limit_trips_it_and_the_reason_names_the_limit;
       Alcotest.test_case "a hand outranks a limit, and a reset lifts both" `Quick

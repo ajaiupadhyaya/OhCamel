@@ -2103,8 +2103,9 @@ let halt_by_hand t ~why =
   t.on_event ("desk      HALTED by hand: " ^ why);
   t.on_change ()
 
-(* The deliberate reset. The journal first: if that write fails the switch stays
-   as it was and the route says so, where the other order would lift the halt
+(* The deliberate reset. The journal first -- the halt's record, then the
+   reset's, which ends the standing trip: if either write fails the switch stays
+   as it was and the route says so, where the other order would lift the switch
    here and bring it back at the next start. Nothing while the engine has stopped
    the desk, which [Halt.reset] does not lift and the route refuses. *)
 let reset_switch t =
@@ -2112,12 +2113,18 @@ let reset_switch t =
   | Halt.State.Stopped _ -> ()
   | Halt.State.Clear | Halt.State.Tripped _ | Halt.State.Halted _ ->
       Journal.clear_halt t.journal;
+      Or_error.ok_exn (Journal.record_reset t.journal ~at:(t.now ()));
       Halt.reset t.halt
 
-(* A new switch at startup takes up the halt the last process left standing. *)
-let restore_halt ~(halt : Halt.t) ~(journal : Journal.t) =
+(* A new switch at startup takes up what the last process left standing: the
+   halt by hand, and the limit's trip no reset has lifted. The trip matters
+   most inside the hysteresis band, where the new process's fresh tracker
+   reads the limit as quiet and its kernel switch comes back armed. *)
+let restore_switch ~(halt : Halt.t) ~(journal : Journal.t) =
   Option.iter (Journal.recorded_halt journal) ~f:(fun (why, at) ->
-      Halt.halt halt ~why ~at)
+      Halt.halt halt ~why ~at);
+  Option.iter (Journal.standing_trip journal) ~f:(fun (limit, at) ->
+      Halt.restore_trip halt ~limit ~at)
 
 (* The halt, then the cancels -- the cancels whether or not anything after the
    halt raised, as the kill route sends them, because the halt is set and
@@ -2181,16 +2188,40 @@ let run t : unit Deferred.t =
             open and nothing on this connection will report them again"
            (Map.length t.open_))
 
+(* A limit's trip, journaled so a restart takes it up ([restore_switch]). The
+   write is a few rows in SQLite and touches no graph, so it is made at once,
+   leaving no window in which a crash forgets a trip that happened; it returns
+   an error rather than raising, and [report] is how the failure is said. *)
+let journal_trip t ~limit ~at ~(report : string -> unit) =
+  match Journal.record_trip t.journal ~limit ~at with
+  | Ok () -> ()
+  | Error e ->
+      report
+        (sprintf
+           "desk      the trip on %s could NOT be journaled (%s): the switch is tripped \
+            now, but a restart inside the limit's hysteresis band would come back clear"
+           limit (Error.to_string_hum e))
+
 (* The other half of §3.8. The switch already refuses new orders through
    [Halt.reason]; a trip must also cancel the open ones. The handler runs
-   inside stabilization, so it only schedules. *)
+   inside stabilization, so beyond the journal's write it only schedules --
+   the failure's line too. A trip that came before the wiring -- the live
+   host's first sync can trip it, before the reconciliation this waits for --
+   is journaled here as the handler would have. *)
 let watch_alerts t (alerts : Ohcamel.Alerts.t) =
+  (match Ohcamel.Alerts.Kill_switch.state (Ohcamel.Alerts.kill_switch alerts) with
+  | Ohcamel.Alerts.Kill_switch.Tripped { by; at } ->
+      journal_trip t ~limit:by ~at ~report:t.on_event
+  | Ohcamel.Alerts.Kill_switch.Armed | Ohcamel.Alerts.Kill_switch.Disarmed -> ());
   Ohcamel.Alerts.on_trip alerts ~f:(fun event ->
+      let limit = event.Ohcamel.Alerts.Event.limit_name in
+      journal_trip t ~limit ~at:event.Ohcamel.Alerts.Event.at ~report:(fun line ->
+          upon Deferred.unit (fun () -> t.on_event line));
       upon Deferred.unit (fun () ->
           t.on_event
             (sprintf
                "desk      the kill switch tripped on %s: cancelling every open order"
-               event.Ohcamel.Alerts.Event.limit_name);
+               limit);
           t.on_change ();
           don't_wait_for (cancel_all t)))
 
