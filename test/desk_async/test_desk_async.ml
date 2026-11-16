@@ -4620,6 +4620,23 @@ let test_a_governor_cut_sells_through_an_unevaluable_trip_limit () =
     (strategy_legs f name, D.Sim_venue.received f.venue);
   cleanup ()
 
+(* A governor's cut beyond the band drops its growing leg with no gate in
+   the way (F1's (d)): the same two names, the same cut to 0.5, no
+   trip-limit at all. The cut is a known fall, so the re-size only shrinks:
+   Sell 238 AAPL, and the MSFT buy of 6 is not sent. *)
+let test_a_governor_cut_beyond_the_band_drops_its_growing_leg () =
+  let%map { a_f = f; a_name = name; cleanup; _ } =
+    adjust_case ~two_names:true ~last_scale:0.9 ~last_ratio:1.0 ~last_factor:0.9
+      ~last_governor:1.0
+      ~drawdown:(fun () -> Some 0.015)
+      ~dd_cap:0.02 ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.9" ()
+  in
+  Alcotest.(check (list (triple string string int)))
+    "Sell 238 AAPL; no MSFT buy"
+    [ ("AAPL", "buy", 350); ("AAPL", "sell", 238); ("MSFT", "buy", 50) ]
+    (strategy_legs f name);
+  cleanup ()
+
 (* A governor's rise still buys. Last sized at 0.45 (factor 0.9, governor
    0.5), the drawdown now 0 -- a governor of 1 -- and the overlay 0.9: the
    effective scale 0.9 is above the last 0.45, so the re-size may grow:
@@ -4768,6 +4785,45 @@ let test_an_order_expired_at_the_auction_is_completed_intraday () =
     "the next pass: nothing more sent, the row still the completion's"
     (received, Some (0.70, "complete", Some "completion"))
     (D.Sim_venue.received f.venue, sizing ());
+  cleanup ()
+
+(* A completion at the same reading is sent whole (the fix round 3's F1). An
+   incubation strategy at the canary's ratio, 0.087 / 0.5 = 0.174, was sized
+   at the open at overlay 0.75 -- its row 0.75 x 0.174 with that ratio -- and
+   its one order, Buy at the auction, expired unfilled; it holds nothing.
+   The overlay still reads 0.75, so the completion's scale is the row's
+   own; but the row's scale over its ratio reads 0.7500000000000001, one ulp
+   above, and a bare "below the last" would have taken it for a cut and
+   dropped the buy. Nothing is unknown, so it buys: trunc(0.5 x 0.75 x 0.174
+   x 100,000 / 100) = 65, Buy 65 as a day limit. *)
+let test_a_completion_at_the_same_reading_buys_through_an_incubation_ratio () =
+  let%map { a_f = f; a_name = name; cleanup; _ } =
+    adjust_case ~bought:false ~incubation_cap:0.087
+      ~unfilled:[ (D.Order.Side.Buy, 65, `Expired) ]
+      ~last_scale:(0.75 *. 0.174) ~last_ratio:0.174 ~last_factor:0.75 ~last_governor:1.0
+      ~sizing:Ohcamel.Config.Book.Signals_spec.Incubation ~overlay:"0.75" ()
+  in
+  Alcotest.(check (list (triple string int string)))
+    "the expired auction order, then Buy 65"
+    [ ("buy", 65, "limit day"); ("buy", 65, "market opg") ]
+    (strategy_orders f name);
+  cleanup ()
+
+(* A fresh overlay a hair below the last row still completes (F1). The row
+   is 0.70 and the fresh overlay 0.69: a trusted reading, inside the band,
+   and the completion buys what the auction did not fill at it:
+   trunc(0.5 x 0.69 x 100,000 / 100) = 345, Buy 345. *)
+let test_a_fresh_overlay_just_below_the_last_row_still_completes () =
+  let%map { a_f = f; a_name = name; cleanup; _ } =
+    adjust_case ~bought:false
+      ~unfilled:[ (D.Order.Side.Buy, 350, `Expired) ]
+      ~last_factor:0.70 ~last_governor:1.0 ~last_ratio:1.0
+      ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.69" ()
+  in
+  Alcotest.(check (list (triple string int string)))
+    "the expired auction order, then Buy 345"
+    [ ("buy", 345, "limit day"); ("buy", 350, "market opg") ]
+    (strategy_orders f name);
   cleanup ()
 
 (* The same, unsized: the evening's rebalance was stopped at its first order
@@ -5131,6 +5187,12 @@ let suites =
         case "a governor cut sells through an unevaluable trip-limit"
           test_a_governor_cut_sells_through_an_unevaluable_trip_limit;
         case "a governor rise still buys" test_a_governor_rise_still_buys;
+        case "a governor cut beyond the band drops its growing leg"
+          test_a_governor_cut_beyond_the_band_drops_its_growing_leg;
+        case "a completion at the same reading buys through an incubation ratio"
+          test_a_completion_at_the_same_reading_buys_through_an_incubation_ratio;
+        case "a fresh overlay just below the last row still completes"
+          test_a_fresh_overlay_just_below_the_last_row_still_completes;
         case "a decay never buys from a factorless row"
           test_a_decay_never_buys_from_a_factorless_row;
         case "a stale hold is capped by the latest accepted overlay"

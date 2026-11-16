@@ -1449,15 +1449,6 @@ let rec sized_whole : Oms.Rebalance_outcome.t -> bool = function
   | Waved { waves; timed_out = false } -> List.for_all waves ~f:sized_whole
   | Waved { timed_out = true; _ } | Stopped _ | Refused _ | Not_now _ -> false
 
-(* The effective scale a sizing row was taken at, like with like with a
-   reading's: its scale over the incubation ratio recorded beside it (the
-   ratio now when it recorded none), or its factor times its governor when
-   that ratio is 0; None when neither can be told. *)
-let last_effective (z : Journal.Sizing.t) ~ratio =
-  let last_ratio = Option.value z.ratio ~default:ratio in
-  if Float.( > ) last_ratio 0.0 then Some (z.scale /. last_ratio)
-  else match (z.factor, z.governor) with Some f, Some g -> Some (f *. g) | _ -> None
-
 (* Whether a leg takes the strategy's own position in its name further from
    zero. A position that cannot be read is treated as growing: unknown is not
    permission. *)
@@ -1802,11 +1793,12 @@ let collect_pending t : Accepted.t list =
      "governor" when the governor moved too). Session hours, so the
      evening-to-morning spell the hold exists for does not count, and a
      producer that died at 10:00 has the book at the fallback by 14:00 at
-     the latest. These re-sizes ONLY SHRINK, as does any re-size whose
-     effective scale is below the last sizing's (a governor's cut): a leg
-     that would grow the strategy's own position is dropped, named, the rest
-     sent, and no sizing row written while any is dropped ([rebalance]'s
-     only_shrink). A
+     the latest. These re-sizes ONLY SHRINK, as do a governor's cut beyond
+     the band (or on an unread drawdown) and a stale completion whose held
+     factor fell (a fresh, trusted re-size is sent whole): a leg that would
+     grow the strategy's own position is dropped, named, the rest sent, and
+     no sizing row written while any is dropped ([rebalance]'s only_shrink).
+     A
      sizing row with no factor recorded is re-sized at the reading once the
      overlay has decayed, and only when that is below it; an unsized
      strategy that holds a position is re-sized at the reading too, only
@@ -2109,27 +2101,47 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                 let name = a.Accepted.strategy.name in
                 let completing = Option.equal String.equal note (Some "completion") in
                 let flattening = Option.equal String.equal note (Some "stop") in
-                (* A re-size that lowers the strategy's size only ever
-                   shrinks: legs that would grow its own position are dropped,
-                   named, and the rest sent ([rebalance]). That is every
-                   re-size because the overlay can no longer be trusted, and
-                   any other whose effective scale is below the last
-                   sizing's -- a governor's cut, the unread drawdown's
-                   sell-down -- whose growing leg would otherwise raise gross
-                   and, with a trip-limit unknown, have the gate refuse the
-                   sells beside it. A re-size that raises size may buy, as
-                   before. *)
+                (* Only shrinking, where something IS unknown or the gate
+                   would refuse: legs that would grow the strategy's own
+                   position are dropped, named, and the rest sent
+                   ([rebalance]). Exactly:
+                   - a re-size because the overlay can no longer be trusted
+                     ("decay", "overlay");
+                   - a governor's cut: the governor fell beyond the band from
+                     the last sizing's, or the drawdown cannot be read --
+                     when a growing leg's buy-only fills would raise gross
+                     and, a trip-limit unknown, have the gate refuse the
+                     sells beside it;
+                   - a completion on a stale reading whose held factor fell.
+                   Everything else -- a fresh, trusted reading, a completion
+                   at the same scale, a fresh band move either way, a
+                   governor's rise -- is sent whole through the gate, as it
+                   was: the 2026-10-27 completion buys its unfilled legs.
+                   Scales are compared with a tolerance, never a bare < on a
+                   float that has been round-tripped through a ratio. *)
                 let only_shrink =
+                  let last = Journal.latest_sizing_row t.journal ~strategy:name in
+                  let governor_cut =
+                    reading.governor_unread
+                    ||
+                    match Option.bind last ~f:(fun z -> z.Journal.Sizing.governor) with
+                    | Some g ->
+                        Float.( < ) reading.governor g && beyond reading.governor g
+                    | None -> false
+                  in
                   match note with
                   | Some ("decay" | "overlay") -> true
                   | Some "stop" -> false
-                  | Some _ | None -> (
-                      match Journal.latest_sizing_row t.journal ~strategy:name with
-                      | None -> false
-                      | Some z -> (
-                          match last_effective z ~ratio with
-                          | Some last -> Float.( < ) parts.Parts.effective last
-                          | None -> false))
+                  | Some "completion" -> (
+                      stale
+                      &&
+                      match
+                        ( Option.bind last ~f:(fun z -> z.Journal.Sizing.factor),
+                          parts.Parts.factor )
+                      with
+                      | Some f, Some f' -> Float.( < ) f' (f -. 1e-9)
+                      | _ -> false)
+                  | Some _ | None -> governor_cut
                 in
                 let%map outcome =
                   match%map
