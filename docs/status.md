@@ -75,6 +75,7 @@ memory ceilings are caps, not reservations.
 | `ohcamel-live` | `ohcamel` (OCaml) | live | rt, 4096, 512 MB | The live engine and paper desk |
 | `ohcamel-research` | `ohcamel-research` | live | batch, 256, 384 MB | The research service's post-close signal run |
 | `ohcamel-backup` | `ohcamel` | backup | — | One-shot copies for `deploy/backup.sh` and `deploy/restore.sh` |
+| `ohcamel-backup-status` | `ohcamel-quant` | backup | — | One-shot: writes the nightly backup's record, `/data/ops/backup.json`, for the Ledger |
 | `ohcamel-demo` | `ohcamel` | demo | rt | The synthetic engine; harness only |
 
 **Admission** (`quant/src/ohcamel_quant/jobs/admission.py`): a job starts only when hostd's `mem_available`
@@ -113,7 +114,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->1971<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->1977<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.
@@ -796,6 +797,7 @@ rollback plan written before it ships, and no task has bumped it yet.
 - A backup is a copy of the journal, written to the host, and the engine
   neither writes nor reads it -- invariant 13 holds.
 - Nightly copies run from the ohcamel user's cron (see *What the owner holds*). The warehouse file is not among them. Option snapshots are exported by the snapshot method in deploy/backup.list.
+- Every run that reaches its steps ends by recording itself in `quant_data:/data/ops/backup.json` (`{finished_at, ok, failed, steps, failed_steps}`, step names only), written atomically by the one-shot `ohcamel-backup-status` container on success and on failure; the public Ledger reads it as fresh, paused (older than 36 h), failed (naming the step) or unknown. A record that cannot be written is logged and does not fail the backup.
 - The directory is created once by root (owner step O12) and the timers
   enabled then: `install -d -m 0770 -o 10001 -g ohcamel /var/backups/ohcamel`,
   then `systemctl enable --now ohcamel-backup.timer ohcamel-watch.timer`, and

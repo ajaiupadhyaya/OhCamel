@@ -352,6 +352,8 @@ def test_book_summary_is_config_and_counts(tmp_path):
     with _Engine(routes) as eng:
         spec = report.run({}, _ctx(tmp_path, eng.url))
     b = spec.tables["book_summary"]
+    # the allowlist, pinned: a column added here is public through /api/artifacts (PUBLIC_TABLES) and the Ledger
+    assert report.BOOK_COLUMNS == ["as_of", "positions", "kill_switch", "tripped_by", "trips_on", "limits", "desk_switch"]
     assert list(b.columns) == report.BOOK_COLUMNS and len(b) == 1
     row = b.iloc[0]
     assert row["as_of"] == "2026-10-09T20:31:07Z"

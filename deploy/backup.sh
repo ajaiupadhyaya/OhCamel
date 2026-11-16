@@ -44,6 +44,17 @@
 #      The journal's dailies are pruned by `ohcamel journal-backup` itself and
 #      are not this script's to touch. /etc/ohcamel/live.env -- the trading
 #      keys -- is never copied, never mounted, never named by a running command.
+#   6. Records the run for the public Ledger: one `ohcamel-backup-status`
+#      container (the Quant image, uid 10002, quant_data its only mount) writes
+#      /data/ops/backup.json atomically -- {finished_at, ok, failed, steps,
+#      failed_steps}, where a step is named by its copy's stem (desk, recorder,
+#      jobs, option-snapshots, book, deploy-env) and nothing else is said: no
+#      path, no copy's file name, no size. It is written on success and on
+#      failure, and for a backup directory refused in step 2 (step backup-dir).
+#      A record that cannot be written is reported on stderr and does not
+#      change the run's exit status: a good backup stays good. A malformed
+#      list (step 1) and a run with no image tag to name (step 3) write no
+#      record; the Ledger shows the record going stale instead.
 #
 # OHCAMEL_TAG, OHCAMEL_BACKUP_VOLUME and OHCAMEL_BACKUP_DIR are passed to each
 # docker command as a per-command prefix, never exported, so nothing here can
@@ -165,6 +176,33 @@ try:
 finally:
     con.close()
 os.replace(part, final)
+'
+
+# The record, run by python inside the Quant image (uid 10002) as
+# `python -c SCRIPT DIR FINISHED_AT OK FAILED STEPS [FAILED_STEP...]`: the JSON
+# written to DIR/backup.json.part, flushed, then renamed over DIR/backup.json,
+# so a reader sees the old record or the new one, never half of one. Anything
+# that goes wrong exits non-zero and leaves no .part behind.
+status_script='import json, os, sys
+directory, finished, ok, failed, steps = sys.argv[1:6]
+body = {"finished_at": finished, "ok": ok == "true", "failed": int(failed), "steps": int(steps),
+        "failed_steps": sys.argv[6:]}
+part = os.path.join(directory, "backup.json.part")
+try:
+    os.makedirs(directory, exist_ok=True)
+    with open(part, "w", encoding="utf-8") as f:
+        json.dump(body, f, sort_keys=True)
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(part, 0o644)
+    os.replace(part, os.path.join(directory, "backup.json"))
+except OSError as exc:
+    try:
+        os.remove(part)
+    except OSError:
+        pass
+    sys.stderr.write("backup: the record could not be written: %s\n" % exc.strerror)
+    sys.exit(1)
 '
 
 # --- the list ------------------------------------------------------------------
@@ -401,6 +439,28 @@ run_entry() {
 	esac
 }
 
+# record_status COMPOSE TAG GID DRY OK FAILED STEPS [FAILED_STEP...]: step 6.
+# Never fails the run: a record that cannot be written is said on stderr and
+# the function still returns 0. BACKUP_FINISHED_AT pins the time for a test.
+record_status() {
+	local compose="$1" tag="$2" gid="$3" dry="$4" ok="$5" failed="$6" steps="$7" rc=0
+	shift 7
+	local finished="${BACKUP_FINISHED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+	local cmd=(docker compose -f "$compose" --profile backup run --rm -T --user "10002:$gid"
+		ohcamel-backup-status "$status_script" /data/ops "$finished" "$ok" "$failed" "$steps" "$@")
+	if [ "$dry" = 1 ]; then
+		printf '+ OHCAMEL_TAG=%s %s\n' "$(printf '%q' "$tag")" "$(quoted "${cmd[@]}")"
+		return 0
+	fi
+	OHCAMEL_TAG="$tag" "${cmd[@]}" || rc=$?
+	if [ "$rc" -eq 0 ]; then
+		backup_say "recorded the run for the Ledger: ok=$ok, $failed of $steps steps failed${*:+ ($*)}"
+	else
+		backup_err "the run's record (quant_data:/data/ops/backup.json) could not be written, exit $rc -- the backup itself is unaffected, and the Ledger will show the record going stale"
+	fi
+	return 0
+}
+
 usage() {
 	cat >&2 <<'EOF'
 usage: deploy/backup.sh [--dry-run | --check]
@@ -430,7 +490,8 @@ backup_main() {
 	# BACKUP_TODAY pins the date for a test; the timer's today is UTC, like
 	# `ohcamel journal-backup`'s.
 	local today="${BACKUP_TODAY:-$(date -u +%F)}"
-	local i n tag gid failures=0
+	local i n tag gid steps failures=0
+	local failed_steps=()
 
 	read_list "$list" "$compose" "$today"
 	n=${#entry_line[@]}
@@ -445,17 +506,21 @@ backup_main() {
 		return 0
 	fi
 
+	tag=$(engine_tag "$compose" "$root") || return 1
+	gid=$(id -g)
+	steps=$((n + 2))
+
 	if [ ! -d "$dir" ]; then
 		backup_err "$dir does not exist; nothing runs until it does. Create it once, group-writable for the three uids that write into it: install -d -m 0770 -o 10001 -g ohcamel $dir"
+		[ "$dry" = 1 ] || record_status "$compose" "$tag" "$gid" 0 false "$steps" "$steps" backup-dir
 		return 1
 	fi
 	if [ ! -w "$dir" ]; then
 		backup_err "$dir is not writable by $(id -un) (uid $(id -u), gid $(id -g)); nothing runs. It must be group-writable, because uid 10001 writes the journal's copies, uid 10002 the recorder's and this user the book's: install -d -m 0770 -o 10001 -g ohcamel $dir"
+		[ "$dry" = 1 ] || record_status "$compose" "$tag" "$gid" 0 false "$steps" "$steps" backup-dir
 		return 1
 	fi
 
-	tag=$(engine_tag "$compose" "$root") || return 1
-	gid=$(id -g)
 	if [ "$dry" = 1 ]; then
 		backup_say "dry run -- $n entr$([ "$n" = 1 ] && echo y || echo ies), engine image tag $tag, into $dir; nothing below is run"
 	else
@@ -464,16 +529,27 @@ backup_main() {
 
 	i=0
 	while [ "$i" -lt "$n" ]; do
-		run_entry "$i" "$compose" "$tag" "$dir" "$gid" "$dry" || failures=$((failures + 1))
+		if ! run_entry "$i" "$compose" "$tag" "$dir" "$gid" "$dry"; then
+			failures=$((failures + 1))
+			failed_steps+=("${entry_stem[$i]}")
+		fi
 		i=$((i + 1))
 	done
-	copy_config "$root/book.sexp" "$dir" "book-$today.sexp" book sexp "$dry" || failures=$((failures + 1))
-	copy_config "$backup_here/.env" "$dir" "deploy-$today.env" deploy env "$dry" || failures=$((failures + 1))
+	if ! copy_config "$root/book.sexp" "$dir" "book-$today.sexp" book sexp "$dry"; then
+		failures=$((failures + 1))
+		failed_steps+=(book)
+	fi
+	if ! copy_config "$backup_here/.env" "$dir" "deploy-$today.env" deploy env "$dry"; then
+		failures=$((failures + 1))
+		failed_steps+=(deploy-env)
+	fi
 
 	if [ "$failures" -ne 0 ]; then
-		backup_err "$failures of $((n + 2)) steps FAILED (above)"
+		backup_err "$failures of $steps steps FAILED (above)"
+		record_status "$compose" "$tag" "$gid" "$dry" false "$failures" "$steps" "${failed_steps[@]}"
 		return 1
 	fi
+	record_status "$compose" "$tag" "$gid" "$dry" true 0 "$steps"
 	if [ "$dry" = 0 ]; then
 		backup_say "done: $n copies and the two configuration files, in $dir"
 	fi

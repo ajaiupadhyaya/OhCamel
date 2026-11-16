@@ -8,9 +8,10 @@ rows are of two kinds.
   against the code, and is ``stale`` when that is more than ``STALE_AFTER_DAYS`` before ``as_of``.
 * **Computed**, read from the system on every build, each with a ``source`` naming where:
 
-  - LIMITS, the nightly backup: the record ``{data_dir}/ops/backup.json`` (``BACKUP_RECORD``), fresh, paused,
-    failed, or unknown. The backup runs on the host and, today, records its runs only there: until it writes
-    this record into the volume this server mounts, the row says it cannot see it.
+  - LIMITS, the nightly backup: the record ``{data_dir}/ops/backup.json`` (``BACKUP_RECORD``) that
+    ``deploy/backup.sh`` writes at the end of every run, on success and on failure, through its
+    ``ohcamel-backup-status`` container: fresh, paused, failed (naming the steps), or unknown. A host whose
+    backup has not yet written one says it cannot see the backup.
   - LIMITS, the hosts' builds: this server's image stamp (``OHCAMEL_GIT_SHA``) against the live engine's
     ``/api/ops`` ``build.git_sha``, read through the engine bridge's URL (``OHCAMEL_QUANT_ENGINE_URL``). Words
     only: no row names a commit (``/system`` and the footer do).
@@ -134,6 +135,26 @@ def load_static(path: Path, as_of: date) -> list[Row]:
 
 
 # ------------------------------------------------------------------ the backup
+# deploy/backup.sh names a step by its copy's stem (desk, recorder, jobs, option-snapshots, book, deploy-env), and
+# a refused backup directory as backup-dir.
+_STEP = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
+_STEP_WORDS = {"backup-dir": "the backup directory", "desk": "the desk's journal", "recorder": "the recorder",
+               "jobs": "jobs.sqlite", "option-snapshots": "the option snapshots", "book": "book.sexp",
+               "deploy-env": "the deploy settings"}
+
+
+def _failure(failed: Any, steps: Any, names: list[str]) -> str:
+    """What failed, in words: the steps by name when the record gives them, with the count of all its steps."""
+    counted = isinstance(failed, int) and isinstance(steps, int) and 0 < failed <= steps
+    named = [_STEP_WORDS.get(n, n) for n in names]
+    which = (", ".join(named[:-1]) + " and " + named[-1]) if len(named) > 1 else (named[0] if named else "")
+    if which and counted:
+        return f"failed at {which} ({failed} of its {steps} steps)"
+    if which:
+        return f"failed at {which}"
+    return f"failed {failed} of its {steps} steps" if counted else "failed"
+
+
 def backup_row(settings: Settings, now: datetime) -> Row:
     source = "the backup's record · ops/backup.json"
     f = Path(settings.data_dir) / BACKUP_RECORD
@@ -145,7 +166,9 @@ def backup_row(settings: Settings, now: datetime) -> Row:
         rec = json.loads(f.read_text(encoding="utf-8"))
         finished = parse_iso(rec["finished_at"])
         ok, failed, steps = rec["ok"], rec.get("failed"), rec.get("steps")
-        if not isinstance(ok, bool) or finished.tzinfo is None:
+        names = rec.get("failed_steps", [])
+        if not isinstance(ok, bool) or finished.tzinfo is None or not isinstance(names, list) \
+                or not all(isinstance(x, str) and _STEP.match(x) for x in names):
             raise ValueError("malformed")
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         log.warning("the backup record could not be read", exc_info=True)
@@ -154,13 +177,12 @@ def backup_row(settings: Settings, now: datetime) -> Row:
     if age < -CLOCK_SKEW:
         return _unknown("LIMITS", "BACKUP STATE UNKNOWN", "the backup's record is dated ahead of this server's clock",
                         source)
+    what = _failure(failed, steps, names)
     if age > BACKUP_STALE:
-        tail = ", and it failed" if not ok else ""
+        tail = f", and it {what}" if not ok else ""
         return Row("LIMITS", "BACKUPS PAUSED", f"No nightly backup has finished for {_age(age)}: the last finished on "
                    f"{finished.astimezone(UTC).date().isoformat()}{tail}.", "attention", source)
     if not ok:
-        counted = isinstance(failed, int) and isinstance(steps, int) and 0 < failed <= steps
-        what = f"failed {failed} of its {steps} steps" if counted else "failed"
         return Row("LIMITS", "BACKUP FAILED", f"The nightly backup {_age(age)} ago {what}; that night's copies are "
                    "not to be trusted.", "attention", source)
     return Row("LIMITS", "BACKUPS NIGHTLY", f"The nightly backup last finished cleanly {_age(max(age, timedelta(0)))} ago.",

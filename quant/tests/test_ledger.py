@@ -73,11 +73,16 @@ def publish_desk(tmp_path: Path, *, pnl: pd.DataFrame | None = None, summary: pd
                      data_asof="2026-11-13")
 
 
-def write_backup(tmp_path: Path, finished: datetime | str, *, ok: bool = True, failed: int = 0, steps: int = 6) -> None:
+def write_backup(tmp_path: Path, finished: datetime | str, *, ok: bool = True, failed: int = 0, steps: int = 6,
+                 failed_steps: list[str] | None = None) -> None:
+    """The record deploy/backup.sh's ohcamel-backup-status writes (its status_script's five fields)."""
     f = tmp_path / "ops" / "backup.json"
     f.parent.mkdir(parents=True, exist_ok=True)
     stamp = finished if isinstance(finished, str) else finished.strftime("%Y-%m-%dT%H:%M:%SZ")
-    f.write_text(json.dumps({"finished_at": stamp, "ok": ok, "failed": failed, "steps": steps}))
+    body = {"finished_at": stamp, "ok": ok, "failed": failed, "steps": steps}
+    if failed_steps is not None:
+        body["failed_steps"] = failed_steps
+    f.write_text(json.dumps(body, sort_keys=True))
 
 
 def prereg(root: Path, name: str, text: str) -> None:
@@ -179,12 +184,46 @@ def test_a_failed_backup_is_its_own_row(tmp_path):
     assert r.state == "attention" and "1 of its 6 steps" in r.detail
 
 
+@pytest.mark.parametrize(("names", "words"), [
+    (["recorder"], "failed at the recorder (1 of its 6 steps)"),
+    (["desk", "book"], "failed at the desk's journal and book.sexp (2 of its 6 steps)"),
+    (["backup-dir"], "failed at the backup directory"),
+])
+def test_a_failed_run_record_names_the_step(tmp_path, names, words):
+    failed = 6 if names == ["backup-dir"] else len(names)
+    write_backup(tmp_path, NOW - 7 * HOUR, ok=False, failed=failed, steps=6, failed_steps=names)
+    led = build(tmp_path)
+    r = item(led, "BACKUP FAILED")
+    assert r.state == "attention" and words in r.detail
+    assert "BACKUPS NIGHTLY" not in items(led) and "BACKUPS PAUSED" not in items(led)
+
+
+def test_a_stale_failed_record_is_paused_and_says_what_failed(tmp_path):
+    write_backup(tmp_path, NOW - timedelta(days=3), ok=False, failed=1, steps=6, failed_steps=["jobs"])
+    r = item(build(tmp_path), "BACKUPS PAUSED")
+    assert "3 days" in r.detail and "failed at jobs.sqlite" in r.detail
+
+
+def test_the_record_deploy_backup_sh_writes_is_read(tmp_path):
+    """The record exactly as deploy/backup.sh's status_script writes it, run with this python."""
+    import subprocess
+
+    script = (REPO_ROOT / "deploy" / "backup.sh").read_text()
+    body = script[script.index("status_script='") + len("status_script='"):]
+    body = body[:body.index("\n'\n")]
+    subprocess.run(["python3", "-c", body, str(tmp_path / "ops"), "2026-11-16T06:31:00Z", "false", "1", "6", "recorder"],
+                   check=True)
+    r = item(build(tmp_path), "BACKUP FAILED")
+    assert "failed at the recorder (1 of its 6 steps)" in r.detail and "8 hours ago" in r.detail
+
+
 @pytest.mark.parametrize(("setup", "why"), [
     (None, "no record of the nightly backup is in this server's volume"),
     ("{not json", "could not be read"),
     ('{"finished_at": "yesterday", "ok": true}', "could not be read"),
     ('{"finished_at": "2026-11-16T14:00:00Z", "ok": "yes"}', "could not be read"),
     ('{"finished_at": "2026-11-16T18:00:00Z", "ok": true}', "ahead of this server's clock"),
+    ('{"finished_at": "2026-11-16T14:00:00Z", "ok": false, "failed_steps": ["/var/backups/x.db"]}', "could not be read"),
 ])
 def test_a_backup_record_that_is_missing_or_unreadable_is_unknown(tmp_path, setup, why):
     if setup is not None:
