@@ -3,21 +3,20 @@
  *   COMPUTE  GET /api/ops (job counts) and GET /api/ops/host (CPU, memory)
  *   ENG      GET /api/engine/status (mode, feed; 503 → BRIDGE OFF / UNREACHABLE)
  *   DOCS     the Methodology's own counts
- *   LEDGER   the Ledger's date and entry count
+ *   LEDGER   GET /api/ledger: its date, entry count, and the rows needing attention, unknown or stale
  * A read that fails says so; nothing is guessed.
  */
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Page } from "../components";
 import { Lamp, type LampState } from "../design";
-import { fmtStamp } from "../design/stamp";
 import { absentLabel } from "../lib/artifacts";
 import { DataUnavailableError } from "../lib/api";
 import { fmtNum, fmtPct } from "../lib/format";
 import { useApiQuery } from "../lib/query";
 import { useOps, type OpsOut } from "../shell/ops";
 import type { EngineStatus } from "./engine/types";
-import { LEDGER, LEDGER_AS_OF } from "./ledger/entries";
+import { ledgerStatus, type LedgerOut } from "./ledger/ledger";
 import { KERNEL_API } from "./methodology/compute";
 import { MODELS } from "./methodology/models";
 import "./ledger/ledger.css";
@@ -64,7 +63,7 @@ function engineStatus(st: Q<EngineStatus>): { lamp: LampState; text: string } {
   };
 }
 
-function rows(ops: Q<OpsOut>, host: Q<HostLite>, eng: Q<EngineStatus>): Row[] {
+function rows(ops: Q<OpsOut>, host: Q<HostLite>, eng: Q<EngineStatus>, led: Q<LedgerOut>): Row[] {
   const j = ops.data?.jobs;
   const e = engineStatus(eng);
   return [
@@ -92,7 +91,7 @@ function rows(ops: Q<OpsOut>, host: Q<HostLite>, eng: Q<EngineStatus>): Row[] {
       code: "LEDGER",
       to: "/ledger",
       title: "Ledger",
-      status: `AS OF ${fmtStamp(LEDGER_AS_OF)} · ${fmtNum(LEDGER.length, 0)} ENTRIES`,
+      status: ledgerStatus(led.data, led.error, led.isLoading),
     },
   ];
 }
@@ -101,10 +100,11 @@ export default function System() {
   const ops = useOps();
   const host = useApiQuery<HostLite>("/ops/host", undefined, { staleTime: 15_000 });
   const eng = useApiQuery<EngineStatus>("/engine/status", undefined, { staleTime: 15_000 });
+  const led = useApiQuery<LedgerOut>("/ledger", undefined, { staleTime: 60_000 });
   return (
     <Page title="System">
       <ul className="sys-rows">
-        {rows(ops, host, eng).map((r) => (
+        {rows(ops, host, eng, led).map((r) => (
           <li key={r.code} className="sys-row">
             <Link to={r.to} className="sys-link">
               <span className="sys-code">{r.code}</span>
