@@ -221,9 +221,15 @@ def test_the_record_deploy_backup_sh_writes_is_read(tmp_path):
     (None, "no record of the nightly backup is in this server's volume"),
     ("{not json", "could not be read"),
     ('{"finished_at": "yesterday", "ok": true}', "could not be read"),
-    ('{"finished_at": "2026-11-16T14:00:00Z", "ok": "yes"}', "could not be read"),
-    ('{"finished_at": "2026-11-16T18:00:00Z", "ok": true}', "ahead of this server's clock"),
-    ('{"finished_at": "2026-11-16T14:00:00Z", "ok": false, "failed_steps": ["/var/backups/x.db"]}', "could not be read"),
+    ('{"finished_at": "2026-11-16T14:00:00Z", "ok": "yes", "failed": 0}', "could not be read"),
+    ('{"finished_at": "2026-11-16T14:00:00Z", "ok": true}', "could not be read"),
+    ('{"finished_at": "2026-11-16T18:00:00Z", "ok": true, "failed": 0}', "ahead of this server's clock"),
+    ('{"finished_at": "2026-11-16T14:00:00Z", "ok": false, "failed": 1, "failed_steps": ["/var/backups/x.db"]}',
+     "could not be read"),
+    ('{"finished_at": "2026-11-16T14:00:00Z", "ok": true, "failed": 2, "steps": 6}', "contradicts itself"),
+    ('{"finished_at": "2026-11-16T14:00:00Z", "ok": false, "failed": 0, "steps": 6}', "contradicts itself"),
+    ('{"finished_at": "2026-11-16T14:00:00Z", "ok": true, "failed": 0, "steps": 6, "failed_steps": ["jobs"]}',
+     "contradicts itself"),
 ])
 def test_a_backup_record_that_is_missing_or_unreadable_is_unknown(tmp_path, setup, why):
     if setup is not None:
@@ -305,8 +311,10 @@ def test_a_report_without_the_roster_table_is_unknown(tmp_path):
      ["dd-cap", "kill switch has tripped"]),
     ({"desk_switch": "stopped"}, "DESK STOPPED", "attention", ["engine has stopped the desk"]),
     ({"desk_switch": None}, "DESK SWITCH UNKNOWN", "unknown", ["does not carry the desk's switch"]),
-    ({"desk_switch": "clear", "kill_switch": "disabled"}, "DESK CLEAR", "ok", ["kill switch is disabled"]),
-    ({"desk_switch": "clear", "kill_switch": None}, "DESK CLEAR", "ok", ["kill switch's state was not read"]),
+    ({"desk_switch": "clear", "kill_switch": "disabled"}, "DESK CLEAR", "attention", ["kill switch is disabled"]),
+    ({"desk_switch": "clear", "kill_switch": None}, "DESK CLEAR", "unknown", ["kill switch's state was not read"]),
+    ({"desk_switch": "clear", "kill_switch": "halted", "tripped_by": "var-cap"}, "KILL SWITCH TRIPPED", "attention",
+     ["tripped on var-cap", "disagree"]),
 ])
 def test_the_switch_row_takes_each_state(tmp_path, over, name, state, words):
     publish_desk(tmp_path, summary=book(**over))
@@ -315,6 +323,25 @@ def test_the_switch_row_takes_each_state(tmp_path, over, name, state, words):
     for w in words:
         assert w in r.detail
     assert "book_summary" in r.source
+
+
+CLAIM = "trade on the paper book"
+
+
+@pytest.mark.parametrize("kill", ["armed", "disabled", "halted", None, "sideways"])
+@pytest.mark.parametrize("desk", ["clear", "tripped", "halted", "stopped", None, "sideways"])
+def test_no_switch_combination_claims_trading_unless_both_are_clear(tmp_path, desk, kill):
+    publish_desk(tmp_path, summary=book(desk_switch=desk, kill_switch=kill,
+                                        tripped_by="dd-cap" if kill == "halted" else None))
+    led = build(tmp_path)
+    r = next(x for x in led.rows if x.section == "ADVISORY" and x.source.endswith("book_summary"))
+    both_clear = desk == "clear" and kill in ("armed", "disabled")
+    assert (CLAIM in r.detail) == both_clear, (desk, kill, r.detail)
+    assert (r.state == "ok") == (desk == "clear" and kill == "armed"), (desk, kill, r.state)
+    if kill == "halted" or desk in ("tripped", "halted", "stopped"):
+        assert r.state == "attention"
+    if desk not in ("clear", "tripped", "halted", "stopped") and kill != "halted":
+        assert r.state == "unknown"   # a known trip outranks an unread desk switch
 
 
 def test_a_report_from_before_the_desk_switch_column_is_unknown(tmp_path):
@@ -365,6 +392,47 @@ def test_the_hosts_row_takes_each_state(tmp_path, engine, own, name, state, word
         assert w in r.detail
 
 
+def boom(*_a, **_k):
+    raise RuntimeError("an error no handler expected")
+
+
+def test_a_source_raising_unexpectedly_makes_only_its_row_unknown(tmp_path):
+    publish_desk(tmp_path)
+    write_backup(tmp_path, NOW - 5 * HOUR)
+    good = build(tmp_path)
+    bad = ledger.build(settings(tmp_path), now=NOW, engine_build=boom, own_build=lambda: SHA_A,
+                       experiments=REPO_ROOT / "research" / "experiments")
+    r = item(bad, "LIVE HOST BUILD UNKNOWN")
+    assert r.state == "unknown" and "could not be read just now" in r.detail and "RuntimeError" not in r.detail
+    assert [x for x in bad.rows if x.section != "LIMITS" or "HOST" not in x.item] == \
+           [x for x in good.rows if x.section != "LIMITS" or "HOST" not in x.item]
+
+
+def test_a_desk_read_raising_unexpectedly_leaves_the_rest_served(tmp_path, monkeypatch):
+    publish_desk(tmp_path)
+    write_backup(tmp_path, NOW - 5 * HOUR)
+    monkeypatch.setattr(ledger, "load_schedules", boom)     # outside read_desk's own handlers
+    led = build(tmp_path)
+    for name in ("DESK STATE UNKNOWN", "DESK SWITCH UNKNOWN"):
+        assert item(led, name).state == "unknown"
+    assert item(led, "BOOK LIMITS").state == "unknown"
+    assert item(led, "BACKUPS NIGHTLY").state == "ok" and item(led, "ONE BUILD ON BOTH HOSTS").state == "ok"
+    assert item(led, "PRE-REGISTRATIONS").state == "ok"
+
+
+def test_missing_values_in_the_report_do_not_break_the_rows(tmp_path):
+    pnl = strategies({"incubation": 2})
+    pnl["tier"] = pd.array(["incubation", pd.NA], dtype="string")
+    pnl["state"] = pd.array(["active", pd.NA], dtype="string")
+    summary = book()
+    summary["desk_switch"] = pd.array([pd.NA], dtype="string")
+    summary["kill_switch"] = pd.array([pd.NA], dtype="string")
+    publish_desk(tmp_path, pnl=pnl, summary=summary)
+    led = build(tmp_path)
+    assert "2 strategies" in item(led, "NO LIVE STRATEGY").detail
+    assert item(led, "DESK SWITCH UNKNOWN").state == "unknown"
+
+
 def test_reading_the_live_hosts_build(tmp_path, monkeypatch):
     import httpx
     import respx
@@ -388,6 +456,9 @@ def test_reading_the_live_hosts_build(tmp_path, monkeypatch):
     with respx.mock:
         respx.get("http://live.test/api/ops").mock(side_effect=httpx.ConnectError("refused"))
         assert ledger.read_engine_build(s) == (None, "the live host could not be reached")
+    ledger._engine_cache.clear()
+    bad = Settings(data_dir=tmp_path, engine_url="http://live.test:notaport", offline=False)
+    assert ledger.read_engine_build(bad) == (None, "the bridge's URL is not valid")
     ledger._engine_cache.clear()
 
 
@@ -450,10 +521,27 @@ def every_state(tmp_path: Path, experiments: Path) -> list[ledger.Ledger]:
     return out
 
 
-def test_no_row_names_a_commit(tmp_path, experiments):
+COMMIT = re.compile(r"(?i)\b[0-9a-f]{7,40}\b")
+
+
+def commits(led: ledger.Ledger) -> list[str]:
+    """Every hex run of 7 to 40 characters anywhere in the served payload: rows, provenance and notes."""
+    return COMMIT.findall(json.dumps(led.to_dict()))
+
+
+def test_no_part_of_the_payload_names_a_commit(tmp_path, experiments):
     for led in every_state(tmp_path, experiments):
-        for r in led.rows:
-            assert not re.search(r"\b[0-9a-f]{7}\b", f"{r.item} {r.detail} {r.source}"), r
+        assert commits(led) == [], commits(led)
+
+
+@pytest.mark.parametrize("leak", [SHA_A, SHA_A[:7], SHA_B.upper(), SHA_B[:12]])
+def test_the_commit_guard_catches_a_row_carrying_a_build(tmp_path, leak):
+    led = build(tmp_path)
+    leaky = ledger.Ledger(led.as_of, [*led.rows, ledger.Row("LIMITS", "X", f"The live host runs {leak}.", "attention")],
+                          led.provenance, led.notes)
+    assert commits(leaky) == [leak]
+    leaky = ledger.Ledger(led.as_of, led.rows, [{"source": "x", "detail": {"sha": leak}}], led.notes)
+    assert commits(leaky) == [leak]                      # provenance is scanned too
 
 
 def test_no_book_number_reaches_the_payload(tmp_path, experiments):

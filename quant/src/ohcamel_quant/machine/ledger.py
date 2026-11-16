@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import re
 import sqlite3
@@ -165,14 +164,18 @@ def backup_row(settings: Settings, now: datetime) -> Row:
     try:
         rec = json.loads(f.read_text(encoding="utf-8"))
         finished = parse_iso(rec["finished_at"])
-        ok, failed, steps = rec["ok"], rec.get("failed"), rec.get("steps")
+        ok, failed, steps = rec["ok"], rec["failed"], rec.get("steps")
         names = rec.get("failed_steps", [])
         if not isinstance(ok, bool) or finished.tzinfo is None or not isinstance(names, list) \
-                or not all(isinstance(x, str) and _STEP.match(x) for x in names):
+                or not all(isinstance(x, str) and _STEP.match(x) for x in names) \
+                or not isinstance(failed, int) or isinstance(failed, bool) or failed < 0:
             raise ValueError("malformed")
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         log.warning("the backup record could not be read", exc_info=True)
         return _unknown("LIMITS", "BACKUP STATE UNKNOWN", "the backup's record on this server could not be read", source)
+    if ok != (failed == 0) or (ok and names):
+        return _unknown("LIMITS", "BACKUP STATE UNKNOWN", "the backup's record contradicts itself: its ok and its "
+                        "failed steps disagree", source)
     age = now - finished
     if age < -CLOCK_SKEW:
         return _unknown("LIMITS", "BACKUP STATE UNKNOWN", "the backup's record is dated ahead of this server's clock",
@@ -224,6 +227,8 @@ def read_engine_build(settings: Settings) -> tuple[str | None, str | None]:
             got = (sha, None) if _SHA.match(sha) else (None, "the live host's image carries no build stamp")
     except httpx.TimeoutException:
         got = None, "the live host did not answer within 2 s"
+    except httpx.InvalidURL:
+        got = None, "the bridge's URL is not valid"
     except httpx.HTTPError:
         got = None, "the live host could not be reached"
     except ValueError:
@@ -304,6 +309,14 @@ def read_desk(db: Path, now: datetime) -> Desk:
                 _table(root, directory, manifest, "book_summary"))
 
 
+def _plain(v: Any) -> Any:
+    """A parquet cell as a plain value: NaN, None, pd.NA and NaT all become None (pd.NA cannot be compared)."""
+    try:
+        return None if pd.isna(v) is True else v
+    except (TypeError, ValueError):   # a list or an array: not missing
+        return v
+
+
 def _word(v: Any) -> str | None:
     return v if isinstance(v, str) and v else None
 
@@ -325,8 +338,7 @@ def _summary(desk: Desk) -> tuple[dict | None, str | None]:
         return None, "the latest desk report does not carry the book's summary"
     if desk.book.empty:
         return None, "the latest desk report could not read the live desk"
-    row = {k: (None if isinstance(v, float) and math.isnan(v) else v) for k, v in desk.book.iloc[0].items()}
-    return row, None
+    return {k: _plain(v) for k, v in desk.book.iloc[0].items()}, None
 
 
 def _source(desk: Desk, table: str) -> str:
@@ -347,10 +359,10 @@ def strategies_row(desk: Desk) -> Row:
                             source)
         return Row("ADVISORY", "NO STRATEGY REGISTERED", "The latest desk report lists no registered strategy.", "ok",
                    source)
-    tiers = [t if t in _TIERS else "other" for t in desk.pnl["tier"]]
+    tiers = [t if isinstance(t, str) and t in _TIERS else "other" for t in map(_plain, desk.pnl["tier"])]
     counts = {t: tiers.count(t) for t in (*_TIERS, "other") if tiers.count(t)}
     n, live = len(tiers), counts.get("live", 0)
-    stopped = int((desk.pnl["state"] == "stopped").sum())
+    stopped = sum(1 for v in map(_plain, desk.pnl["state"]) if v == "stopped")
     lead = f"{_plural(n, 'strategy', 'strategies')} {'is' if n == 1 else 'are'} registered on the paper book: "
     detail = lead + ", ".join(f"{c} {t}" for t, c in counts.items()) + "."
     if stopped:
@@ -373,27 +385,39 @@ def _kill_sentence(row: dict) -> str:
 
 
 def switch_row(desk: Desk) -> Row:
-    """The desk's own switch (``desk_switch``) and the kill switch beside it, from ``book_summary``."""
+    """The desk's own switch (``desk_switch``) and the kill switch beside it, from ``book_summary``. Trading is
+    claimed only when both are known and neither stops it: the desk's switch clear and the kill switch armed (ok)
+    or disabled (attention: nothing would stop it). A tripped kill switch is attention whatever the desk's switch
+    reads, and an unread switch is unknown."""
     source = _source(desk, "book_summary")
     row, why = _summary(desk)
     if row is None:
         return _unknown("ADVISORY", "DESK SWITCH UNKNOWN", why or "", source)
-    kill = _kill_sentence(row)
-    word = row.get("desk_switch")
-    if word not in _DESK_SWITCH:
-        return Row("ADVISORY", "DESK SWITCH UNKNOWN", f"Unknown: the latest desk report does not carry the desk's "
-                   f"switch. {kill}", "unknown", source)
+    word, kill = row.get("desk_switch"), row.get("kill_switch")
+    word = word if word in _DESK_SWITCH else None
+    kill = kill if kill in _KILL else None
+    kill_line = _kill_sentence(row)
     named = _word(row.get("tripped_by"))
-    item, state, detail = {
-        "clear": ("DESK CLEAR", "ok", "The desk's switch is clear: registered strategies trade on the paper book."),
-        "halted": ("DESK HALTED", "attention", "The desk is halted by hand: nothing trades until the owner lifts "
-                                               "the halt."),
-        "tripped": ("DESK TRIPPED", "attention", f"The desk is halted by a limit's trip{f' ({named})' if named else ''}"
-                                                 ": nothing trades until it is cleared."),
-        "stopped": ("DESK STOPPED", "attention", "The engine has stopped the desk: nothing trades until it is "
-                                                 "restarted."),
-    }[word]
-    return Row("ADVISORY", item, f"{detail} {kill}", state, source)
+    if word in ("halted", "tripped", "stopped"):
+        item, detail = {
+            "halted": ("DESK HALTED", "The desk is halted by hand: nothing trades until the owner lifts the halt."),
+            "tripped": ("DESK TRIPPED", f"The desk is halted by a limit's trip{f' ({named})' if named else ''}: "
+                                        "nothing trades until it is cleared."),
+            "stopped": ("DESK STOPPED", "The engine has stopped the desk: nothing trades until it is restarted."),
+        }[word]
+        return Row("ADVISORY", item, f"{detail} {kill_line}", "attention", source)
+    if kill == "halted":
+        lead = ("The desk's own switch reads clear, so the two disagree; nothing here says the desk trades."
+                if word == "clear" else "The desk's own switch was not read.")
+        return Row("ADVISORY", "KILL SWITCH TRIPPED", f"{kill_line} {lead}", "attention", source)
+    if word is None:
+        return Row("ADVISORY", "DESK SWITCH UNKNOWN", f"Unknown: the latest desk report does not carry the desk's "
+                   f"switch. {kill_line}", "unknown", source)
+    if kill is None:
+        return Row("ADVISORY", "DESK CLEAR", f"The desk's own switch is clear. {kill_line} Whether anything would "
+                   "stop the desk is unknown.", "unknown", source)
+    detail = f"The desk's switch is clear: registered strategies trade on the paper book. {kill_line}"
+    return Row("ADVISORY", "DESK CLEAR", detail, "ok" if kill == "armed" else "attention", source)
 
 
 def limits_row(desk: Desk) -> Row:
@@ -468,6 +492,19 @@ NOTES = [
 ]
 
 
+UNEXPECTED = "this row's source could not be read just now"
+
+
+def _guarded(section: str, item: str, make: Callable[[], Row]) -> Row:
+    """``make()``, or the row unknown when its source fails in a way no reader above expected. The exception goes
+    to the log, never to the page."""
+    try:
+        return make()
+    except Exception:   # noqa: BLE001 -- one bad source makes one row unknown; the rest of the ledger is served
+        log.exception("the ledger's %s row could not be computed", item)
+        return _unknown(section, item, UNEXPECTED, "")
+
+
 def build(settings: Settings, *, now: datetime,
           engine_build: Callable[[Settings], tuple[str | None, str | None]] = read_engine_build,
           own_build: Callable[[], str | None] = own_build, experiments: Path = EXPERIMENTS,
@@ -476,9 +513,19 @@ def build(settings: Settings, *, now: datetime,
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
     as_of = now.astimezone(NY).date()
-    desk = read_desk(jobs_db_path(settings), now)
-    computed = [strategies_row(desk), switch_row(desk), backup_row(settings, now),
-                hosts_row(own_build(), engine_build(settings)), limits_row(desk), preregistrations_row(experiments)]
+    try:
+        desk = read_desk(jobs_db_path(settings), now)
+    except Exception:   # noqa: BLE001 -- one bad source makes its rows unknown, never the whole ledger
+        log.exception("the desk report could not be read")
+        desk = Desk(UNEXPECTED)
+    computed = [
+        _guarded("ADVISORY", "DESK STATE UNKNOWN", lambda: strategies_row(desk)),
+        _guarded("ADVISORY", "DESK SWITCH UNKNOWN", lambda: switch_row(desk)),
+        _guarded("LIMITS", "BACKUP STATE UNKNOWN", lambda: backup_row(settings, now)),
+        _guarded("LIMITS", "LIVE HOST BUILD UNKNOWN", lambda: hosts_row(own_build(), engine_build(settings))),
+        _guarded("OWNER", "BOOK LIMITS", lambda: limits_row(desk)),
+        _guarded("OWNER", "PRE-REGISTRATIONS", lambda: preregistrations_row(experiments)),
+    ]
     rows = load_static(static, as_of) + computed
     rows.sort(key=lambda r: SECTIONS.index(r.section))   # stable: file order, then the computed rows, per section
     provenance = [Provenance.now("ohcamel-ledger", store="ledger.yaml+jobs.sqlite+engine /api/ops+backup record",

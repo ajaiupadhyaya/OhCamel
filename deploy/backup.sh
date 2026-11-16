@@ -441,12 +441,16 @@ run_entry() {
 
 # record_status COMPOSE TAG GID DRY OK FAILED STEPS [FAILED_STEP...]: step 6.
 # Never fails the run: a record that cannot be written is said on stderr and
-# the function still returns 0. BACKUP_FINISHED_AT pins the time for a test.
+# the function still returns 0. The run is bounded by `timeout` at
+# STATUS_TIMEOUT_S, so a hung pull or container cannot hold the unit until
+# systemd's limit and turn a good backup into a failed one; a timeout is said
+# and is not a failure either. BACKUP_FINISHED_AT pins the time for a test.
+STATUS_TIMEOUT_S=120
 record_status() {
 	local compose="$1" tag="$2" gid="$3" dry="$4" ok="$5" failed="$6" steps="$7" rc=0
 	shift 7
 	local finished="${BACKUP_FINISHED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-	local cmd=(docker compose -f "$compose" --profile backup run --rm -T --user "10002:$gid"
+	local cmd=(timeout "$STATUS_TIMEOUT_S" docker compose -f "$compose" --profile backup run --rm -T --user "10002:$gid"
 		ohcamel-backup-status "$status_script" /data/ops "$finished" "$ok" "$failed" "$steps" "$@")
 	if [ "$dry" = 1 ]; then
 		printf '+ OHCAMEL_TAG=%s %s\n' "$(printf '%q' "$tag")" "$(quoted "${cmd[@]}")"
@@ -455,6 +459,8 @@ record_status() {
 	OHCAMEL_TAG="$tag" "${cmd[@]}" || rc=$?
 	if [ "$rc" -eq 0 ]; then
 		backup_say "recorded the run for the Ledger: ok=$ok, $failed of $steps steps failed${*:+ ($*)}"
+	elif [ "$rc" -eq 124 ]; then
+		backup_err "the run's record (quant_data:/data/ops/backup.json) timed out after ${STATUS_TIMEOUT_S} s and was not written -- the backup itself is unaffected, and the Ledger will show the record going stale"
 	else
 		backup_err "the run's record (quant_data:/data/ops/backup.json) could not be written, exit $rc -- the backup itself is unaffected, and the Ledger will show the record going stale"
 	fi

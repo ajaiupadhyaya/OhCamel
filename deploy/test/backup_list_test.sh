@@ -79,6 +79,7 @@ today=2026-09-27
 gid=$(id -g)
 log="$scratch/docker.log"
 status_log="$scratch/status.log"
+timeout_log="$scratch/timeout.log"
 backups="$scratch/backups"
 repo="$scratch/repo"
 
@@ -145,6 +146,20 @@ esac
 exit 0
 SHIM
 chmod +x "$scratch/bin/docker"
+# The status run goes through `timeout SECONDS docker ...`. This shim logs the
+# bound and runs the rest, or answers 124 (what timeout(1) exits with when it
+# kills the command) for the record's run when a case asks it to hang.
+cat >"$scratch/bin/timeout" <<'SHIM'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$1" >>"$SHIM_TIMEOUT_LOG"
+shift
+case " $* " in
+*" ohcamel-backup-status "*) [ "${SHIM_HANG_STATUS:-0}" = 1 ] && exit 124 ;;
+esac
+exec "$@"
+SHIM
+chmod +x "$scratch/bin/timeout"
 
 # fresh: a new scratch checkout, an empty backup directory, an empty log.
 fresh() {
@@ -157,6 +172,7 @@ fresh() {
 	printf '%s\n' 'OHCAMEL_DEMO_HOST=backup-test.invalid' >"$repo/deploy/.env"
 	: >"$log"
 	: >"$status_log"
+	: >"$timeout_log"
 }
 
 # run_backup [VAR=value ...] -- [backup.sh arguments ...]
@@ -174,6 +190,7 @@ run_backup() {
 	env -u OHCAMEL_TAG -u OHCAMEL_IMAGE -u OHCAMEL_BACKUP_VOLUME -u OHCAMEL_BACKUP_LIST \
 		-u COMPOSE_PROJECT_NAME \
 		PATH="$scratch/bin:$PATH" SHIM_LOG="$log" SHIM_TODAY="$today" SHIM_STATUS_LOG="$status_log" \
+		SHIM_TIMEOUT_LOG="$timeout_log" \
 		BACKUP_FINISHED_AT=2026-09-27T06:31:00Z \
 		OHCAMEL_BACKUP_DIR="$backups" BACKUP_TODAY="$today" \
 		SHIM_PS_IMAGE="ghcr.io/ajaiupadhyaya/ohcamel:cafe1234" \
@@ -677,9 +694,21 @@ fresh
 run_backup SHIM_EXIT_STATUS=1 SHIM_EXIT_SQLITE=1 --
 expect_rc "S5 nor turn a failed backup into a good one" 1
 
+expect_eq "S5 the record's run, and only it, is bounded at 120 s" "$(cat "$timeout_log")" "120"
+
+fresh
+run_backup SHIM_HANG_STATUS=1 --
+expect_rc "S13 a record that times out does not fail a good backup" 0
+expect_has "S13 and the timeout is said" "$scratch/err" "timed out after 120 s"
+expect_eq "S13 and nothing was recorded" "$(status)" ""
+fresh
+run_backup SHIM_HANG_STATUS=1 SHIM_EXIT_SQLITE=1 --
+expect_rc "S13 nor does it change a failed backup's exit" 1
+
 fresh
 run_backup -- --dry-run
 expect_eq "S6 --dry-run runs no record" "$(status_runs)" "0"
+expect_has "S6 --dry-run prints the record's bound" "$scratch/out" "timeout 120 docker compose"
 expect_has "S6 --dry-run prints the record's command" "$scratch/out" "ohcamel-backup-status"
 fresh
 run_backup -- --check
