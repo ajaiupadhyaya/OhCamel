@@ -178,8 +178,9 @@ def test_live_surface(live_client, ticker):
 @pytest.mark.live
 def test_live_spy_density_and_realized(live_client):
     d = _ok(live_client.get("/api/options/density/SPY"))
-    assert abs(d["checks"]["integral"] - 1) < 0.02
-    assert abs(d["checks"]["mean"] / d["forward"] - 1) < 0.01
+    c = d["checks"]
+    assert abs(c["integral"] + c["tail_mass_left"] + c["tail_mass_right"] - 1) < 0.01
+    assert abs(c["mean"] / d["forward"] - 1) < 0.005
     r = _ok(live_client.get("/api/options/realized/SPY"))
     assert r["vrp"] is not None and math.isfinite(r["vrp"]["implied"])
 

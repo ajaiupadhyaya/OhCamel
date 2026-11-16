@@ -366,7 +366,8 @@ def backtest_weights(prices: np.ndarray, target_w: np.ndarray, decision_idx: np.
 
 # ------------------------------------------------------------------ A7: options
 def svi_fit(k: np.ndarray, w: np.ndarray, weights: np.ndarray):
-    """options.svi.calibrate, unchanged (the legacy SVI calibration)."""
+    """options.svi.calibrate, unchanged: wings within Lee's bound, the vertex inside the quotes,
+    and no butterfly arbitrage on [-K_MAX, K_MAX]."""
     from ..options.svi import calibrate
     from .types import SviFitResult
 

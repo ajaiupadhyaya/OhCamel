@@ -255,8 +255,10 @@ def surface(ticker: str, market: Market) -> dict[str, Any]:
         "atm_30d": vs.atm_30d,
         "expiries": _slice_summary(ca),
         "method": {"smile": "raw SVI per expiry, weighted by inverse bid-ask total-variance spread",
-                   "calibration": "quasi-explicit: exact inner box-QP over (a, c, d), outer grid + Nelder-Mead",
-                   "arbitrage": "Durrleman g(k) >= 0 (butterfly); w(k,T) non-decreasing in T (calendar)",
+                   "calibration": "quasi-explicit: exact inner box-QP over (a, c, d), outer grid + Nelder-Mead; "
+                                  "wing slopes b(1 +- rho) <= 2 (Lee), vertex m inside the quoted k",
+                   "arbitrage": "Durrleman g(k) >= 0 on k in [-3, 3], required of every fit (butterfly); "
+                                "w(k,T) non-decreasing in T (calendar), checked",
                    "interpolation": "total variance linear in T at fixed k = ln(K/F); no extrapolation",
                    "rr_bf": "spot-delta 25/10 RR = iv_call - iv_put; BF = mean - ATMF vol",
                    "model_free": REFS["mfiv"], "reference": REFS["svi"]},
@@ -299,7 +301,10 @@ def rn_density(ticker: str, market: Market, expiry: str | None = None) -> dict[s
     f = vs.fits[sid]
     s = ca.slices.loc[sid]
     F, D, T = float(s["forward"]), float(s["discount"]), float(s["T"])
-    d = density.breeden_litzenberger(F, D, T, f.params.w)
+    try:
+        d = density.breeden_litzenberger(F, D, T, f.params.w)
+    except density.DensityError as e:
+        raise DataUnavailable(f"{ca.underlying} {sid}: no risk-neutral density ({e})") from e
     atm = float(np.sqrt(f.params.w(0.0) / T))
     # same strike grid as the SVI density so `lognormal_density` lines up with `strikes`
     ln = density.breeden_litzenberger(F, D, T, lambda k: np.full_like(np.asarray(k, float), atm * atm * T),
@@ -311,8 +316,14 @@ def rn_density(ticker: str, market: Market, expiry: str | None = None) -> dict[s
     moves = list(DENSITY_MOVES)
     mny = [*(1 - m for m in reversed(moves)), 1.0, *(1 + m for m in moves)]
     notes = list(ca.notes)
-    if abs(d.integral - 1) > 0.01:
-        notes.append(f"density integrates to {d.integral:.4f} (not ~1): tail mass outside the grid or arbitrage")
+    tails = d.tail_mass_left + d.tail_mass_right
+    if abs(d.integral + tails - 1) > 0.01:
+        notes.append(f"density on the grid ({d.integral:.4f}) plus the mass beyond it ({tails:.2e}) is "
+                     f"{d.integral + tails:.4f}, not ~1")
+    if tails > 1e-3:
+        notes.append(f"{tails:.2%} of the probability lies beyond the strike grid (k = ln(K/F) in "
+                     f"[{d.k_range[0]:.2f}, {d.k_range[1]:.2f}]): {d.tail_mass_left:.2%} below, "
+                     f"{d.tail_mass_right:.2%} above")
     if d.negative_mass > 1e-4:
         notes.append(f"negative density mass {d.negative_mass:.2e}: the smile violates the butterfly condition")
     notes.append("risk-neutral (Q) probabilities embed risk premia; they are not real-world forecasts")
@@ -320,7 +331,8 @@ def rn_density(ticker: str, market: Market, expiry: str | None = None) -> dict[s
         **_header(ca), "expiry": sid, "T": T, "dte": T * 365.0, "forward": F, "discount": D,
         "strikes": d.strikes[sl], "density": d.density[sl], "cdf": d.cdf[sl],
         "lognormal_density": ln.density[sl], "atm_iv": atm,
-        "checks": {"integral": d.integral, "mean": d.mean, "forward": F, "mean_minus_forward": d.mean - F,
+        "checks": {"integral": d.integral, "tail_mass_left": d.tail_mass_left, "tail_mass_right": d.tail_mass_right,
+                   "mean": d.mean, "forward": F, "mean_minus_forward": d.mean - F,
                    "negative_mass": d.negative_mass, "butterfly": f.butterfly},
         "moments": d.moments(), "lognormal_moments": ln.moments(),
         "quantiles": [{"p": p, "level": float(v), "return": float(v / ca.spot - 1)}

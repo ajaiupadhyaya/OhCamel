@@ -8,8 +8,8 @@ import pytest
 from scipy.stats import norm
 
 from ohcamel_quant.options import bsm, metrics
-from ohcamel_quant.options.density import breeden_litzenberger
-from ohcamel_quant.options.svi import SVIParams
+from ohcamel_quant.options.density import DensityError, breeden_litzenberger
+from ohcamel_quant.options.svi import K_MAX, SVIParams, butterfly_check
 
 F, D, T, SIG = 100.0, np.exp(-0.04 * 30 / 365), 30 / 365, 0.20
 
@@ -97,11 +97,22 @@ def test_implied_move_and_market_atm():
 def test_bl_density_lognormal_closed_form(T_, sig):
     D_ = np.exp(-0.03 * T_)
     d = breeden_litzenberger(F, D_, T_, _flat(sig * sig * T_))
-    assert d.integral == pytest.approx(1.0, abs=1e-5)
-    assert d.mean == pytest.approx(F, rel=1e-5)
+    s = sig * np.sqrt(T_)
+    # the grid stops at |k| = K_MAX; what lies beyond is reported, and is the lognormal's own tails
+    assert -K_MAX <= d.k_range[0] and d.k_range[1] <= K_MAX
+    k_lo, k_hi = np.log(d.strikes[[0, -1]] / F)
+
+    def moment(n):  # E[(S_T/F)^n; K_lo < S_T < K_hi] for the lognormal with E[S_T] = F
+        return np.exp(n * (n - 1) * s * s / 2) * (norm.cdf((-k_lo + (n - 0.5) * s * s) / s)
+                                                  - norm.cdf((-k_hi + (n - 0.5) * s * s) / s))
+
+    assert d.tail_mass_left == pytest.approx(norm.cdf((k_lo + 0.5 * s * s) / s), abs=1e-6)
+    assert d.tail_mass_right == pytest.approx(norm.sf((k_hi + 0.5 * s * s) / s), abs=1e-6)
+    assert d.integral == pytest.approx(moment(0), abs=1e-5)
+    assert d.integral + d.tail_mass_left + d.tail_mass_right == pytest.approx(1.0, abs=1e-5)
+    assert d.mean == pytest.approx(F * moment(1), rel=1e-5)
     assert d.negative_mass < 1e-8
     # lognormal pdf and cdf
-    s = sig * np.sqrt(T_)
     x = d.strikes
     pdf = norm.pdf((np.log(x / F) + 0.5 * s * s) / s) / (x * s)
     i = np.abs(np.log(x / F)) < 2 * s
@@ -112,7 +123,8 @@ def test_bl_density_lognormal_closed_form(T_, sig):
     exact = F * np.exp(-0.5 * s * s + s * norm.ppf([0.05, 0.5, 0.95]))
     np.testing.assert_allclose(qs, exact, rtol=1e-4)
     mo = d.moments()
-    assert mo["std"] == pytest.approx(np.sqrt(np.exp(s * s) - 1), rel=1e-3)
+    # moments() renormalizes the density on the grid: the truncated lognormal's
+    assert mo["std"] == pytest.approx(np.sqrt(moment(2) / moment(0) - (moment(1) / moment(0)) ** 2), rel=1e-3)
     assert mo["skew"] > 0
 
 
@@ -152,3 +164,54 @@ def test_bl_k_range_reuses_the_grid_of_a_skewed_density():
     np.testing.assert_allclose(ln.density[i], pdf[i], rtol=1e-4)
     with pytest.raises(ValueError):
         breeden_litzenberger(F, D, T_, _flat(atm_w), k_range=(0.1, -0.1))
+
+
+def test_bl_left_slope_045_stops_at_k_max_and_reports_its_left_tail():
+    """The review's runaway case: a short-dated smile whose left wing rises at dw/dk = 0.45 put
+    so much mass below the strikes that widening by 1.5x a dozen times reached k ~ -200. Now the
+    grid stops at K_MAX and the mass it leaves out is reported, so the total still adds to one."""
+    b, rho = 0.45 / 1.9, -0.9
+    runaway = SVIParams(a=0.00005, b=b, rho=rho, m=0.02, sigma=0.03)     # the review's case, T = 8 days
+    assert runaway.wing_slopes()[0] == pytest.approx(0.45)
+    with pytest.raises(DensityError):         # it is also arbitrageable near the money: g < 0 there
+        breeden_litzenberger(670.0, 1.0, 8 / 365, runaway.w)
+    # the same wing on an arbitrage-free slice: 3 months, ATM vol 50%, g >= 0 on [-K_MAX, K_MAX]
+    T_ = 0.25
+    p = SVIParams(a=0.0, b=b, rho=rho, m=0.0, sigma=0.1)
+    p = SVIParams(a=0.5**2 * T_ - float(p.w(0.0)), b=b, rho=rho, m=0.0, sigma=0.1)
+    assert p.wing_slopes()[0] == pytest.approx(0.45) and butterfly_check(p)["arbitrage_free"]
+    d = breeden_litzenberger(670.0, 1.0, T_, p.w)
+    assert -K_MAX <= d.k_range[0] < d.k_range[1] <= K_MAX
+    assert d.k_range[0] == -K_MAX                      # it did need the whole range
+    assert d.tail_mass_left > 1e-6                     # and still left mass below it, reported
+    assert 0.99 <= d.integral + d.tail_mass_left + d.tail_mass_right <= 1.01
+
+
+def test_bl_raises_on_a_non_monotone_cdf_instead_of_clipping_it():
+    # Axel Vogt's arbitrageable slice (Gatheral & Jacquier 2014, section 2.2): g < 0 on k in
+    # about (0.4, 1.3), so the density is negative there and the CDF falls
+    vogt = SVIParams(a=-0.0410, b=0.1331, rho=0.3060, m=0.3586, sigma=0.4153)
+    with pytest.raises(DensityError, match="not monotone"):
+        breeden_litzenberger(F, D, 1.0, vogt.w)
+
+
+def test_spy_2026_11_15_every_density_integrates_to_one_and_prices_the_forward(spy_2026_11_15):
+    """On the real chain of the review: every slice's density, with the tail mass beyond its grid,
+    adds to one within 1%, and its mean is the forward within 0.5% (the martingale condition). Before
+    the wings were capped at Lee's bound the totals ran to 1.24 and mean/forward to 1.40."""
+    ca, vs, _ = spy_2026_11_15
+    assert len(vs.fits) == 31
+    bad = {}
+    for sid, f in vs.fits.items():
+        s = ca.slices.loc[sid]
+        F_, D_, T_ = float(s["forward"]), float(s["discount"]), float(s["T"])
+        try:
+            d = breeden_litzenberger(F_, D_, T_, f.params.w)
+        except DensityError as e:
+            bad[sid] = str(e)
+            continue
+        total = d.integral + d.tail_mass_left + d.tail_mass_right
+        if not (0.99 <= total <= 1.01 and abs(d.mean / F_ - 1.0) <= 0.005):
+            bad[sid] = f"integral {d.integral:.4f} + tails {d.tail_mass_left:.2e}, {d.tail_mass_right:.2e}; " \
+                       f"mean/F {d.mean / F_:.4f}"
+    assert not bad, bad

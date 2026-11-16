@@ -251,6 +251,26 @@ def test_svi_parity(both, noisy):
         assert r.constrained_a == p.constrained_a
 
 
+def test_svi_parity_on_the_spy_chain(both, spy_2026_11_15):
+    """Every slice of the review's real SPY chain, Rust vs the reference (inputs as fit_svi passes
+    them: total variance and mean-one weights).
+
+    Not 1e-10: the engines sum the inner QP's normal equations in different orders (BLAS vs a
+    loop) and solve them differently (LAPACK vs elimination), so the objective differs in the last
+    bits, and Nelder-Mead (xatol 1e-7) on a surface cut by the butterfly rejection amplifies that:
+    perturbing w by 2e-16 moves the reference's own parameters by up to 2.7e-7. Measured Rust vs
+    reference on this chain (macOS arm64): 27 slices within 1.3e-13, four at 3.4e-8 to 3.4e-7."""
+    _, _, inputs = spy_2026_11_15
+    assert len(inputs) == 31
+    for sid, (k, iv, T, wt) in inputs.items():
+        w, wt = iv * iv * T, wt / wt.mean()
+        r, p = on("rust", kernels.svi_fit, k, w, wt), on("python", kernels.svi_fit, k, w, wt)
+        for f in ("a", "b", "rho", "m", "sigma"):
+            assert getattr(r, f) == pytest.approx(getattr(p, f), rel=1e-5, abs=1e-9), (sid, f)
+        assert r.sse == pytest.approx(p.sse, rel=1e-8)
+        assert r.constrained_a == p.constrained_a, sid
+
+
 def test_rv_parity(both):
     # 30 sessions x 390 minutes of a deterministic +-1bp zigzag with a drift; RV exact both ways
     day, minute = 86_400 * 10**9, 60 * 10**9
