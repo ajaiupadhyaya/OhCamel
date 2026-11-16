@@ -84,8 +84,10 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         h = None if har is None else har[(har["ticker"] == und) & (har["asof"] <= asof)]
         if h is None or h.empty or "har_22d" not in h or pd.isna(h["har_22d"].iloc[-1]):
             v, why = float("nan"), "no HAR forecast dated on or before the snapshot (minute bars cover ~50 names)"
+        elif "har_covers" not in h or h["har_covers"].iloc[-1] != "close_to_close":
+            v, why = float("nan"), "the HAR forecast on or before the snapshot is of open-to-close variance only"
         else:
-            v, why = vrp(m["mf_var_30d"], float(h["har_22d"].iloc[-1])), None
+            v, why = vrp(m["mf_var_30d"], float(h["har_22d"].iloc[-1]), covers=str(h["har_covers"].iloc[-1])), None
         rows.append({"underlying": und, "asof": asof, **m, "vrp": v, "vrp_note": why, "spot": chain.spot})
         ctx.progress((i + 1) / max(len(todo), 1), f"{und} {asof}")
     if rows:

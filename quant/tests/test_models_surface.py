@@ -39,5 +39,7 @@ def test_day_metrics_and_vrp():
     assert m["term_slope"] is None and m["n_slices"] == 2
     assert m["mf_var_30d"] == pytest.approx((0.05 * 0.05 * (0.15 - 30 / 365) + 0.15 * 0.10 * (30 / 365 - 0.05))
                                             / 0.10 / (30 / 365))  # Cboe total-variance interpolation
-    assert vrp(0.04, 1e-4) == pytest.approx(0.04 - 252e-4)
-    assert math.isnan(vrp(float("nan"), 1e-4))
+    assert vrp(0.04, 1e-4, covers="close_to_close") == pytest.approx(0.04 - 252e-4)
+    assert math.isnan(vrp(float("nan"), 1e-4, covers="close_to_close"))
+    assert math.isnan(vrp(0.04, 1e-4, covers="open_to_close"))   # the overnight share would stay in the premium
+    assert math.isnan(vrp(0.04, 1e-4, covers=None))

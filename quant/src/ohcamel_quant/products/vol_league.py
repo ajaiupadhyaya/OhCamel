@@ -36,18 +36,58 @@ def _names(ctx: Any, params: dict[str, Any], notes: list[str]) -> tuple[list[str
         return sorted({m["ticker"] for v in u.values() for m in v["members"]}), False
 
 
-def _minute_rv(ctx: Any, ticker: str, days: pd.DatetimeIndex) -> np.ndarray | None:
+MIN_PRINTS = 100  # IEX is ~2-3% of consolidated volume: a thin name can print only a handful of minutes in a session
+
+
+def _minute_only(ctx: Any, ticker: str, days: pd.DatetimeIndex, *, min_prints: int = MIN_PRINTS,
+                 notes: list[str] | None = None) -> np.ndarray:
+    """Open-to-close realized variance per session (sum of squared 1-minute log returns, 09:30-16:00 New
+    York, kernel ``realized_vol_minute``); NaN where the warehouse has no bars or fewer than ``min_prints``
+    bars (every stored bar is a minute with a print) in the session. Excluded sessions are named in ``notes``."""
+    nan = np.full(len(days), np.nan)
     try:
         df = ctx.warehouse.execute("SELECT ts, close FROM bars_minute WHERE ticker = ? ORDER BY ts", [ticker]).df()
     except DataUnavailable:
-        return None
+        return nan
     if df.empty:
-        return None
+        return nan
     ts = pd.DatetimeIndex(df["ts"]).tz_localize("UTC")  # bars_minute.ts is naive UTC (warehouse/ingest/minute.py)
     opens = pd.DatetimeIndex([pd.Timestamp(d.date()).tz_localize(NY) + pd.Timedelta(hours=9, minutes=30) for d in days])
-    bounds = np.column_stack([opens.asi8, (opens + pd.Timedelta(hours=6, minutes=30)).asi8])
+    closes = opens + pd.Timedelta(hours=6, minutes=30)
+    bounds = np.column_stack([opens.asi8, closes.asi8])
     rv = V.kernels.realized_vol_minute(ts.asi8, df["close"].to_numpy(float), bounds)
-    return rv if np.isfinite(rv).sum() >= V.HAR_WINDOW + 60 else None
+    prints = np.searchsorted(ts.asi8, closes.asi8, side="left") - np.searchsorted(ts.asi8, opens.asi8, side="left")
+    stored = (closes.asi8 > ts.asi8[0]) & (opens.asi8 <= ts.asi8[-1])   # sessions inside the stored minute history
+    thin = stored & (prints < min_prints)                                  # includes a session with no print at all
+    if thin.any() and notes is not None:
+        notes.append(f"{ticker}: {int(thin.sum())} session(s) with fewer than {min_prints} IEX prints "
+                     f"(median {int(np.median(prints[thin]))}) excluded from the minute target; a name left without a "
+                     "complete target is scored on the squared daily return")
+    return np.where(thin, np.nan, rv)
+
+
+def _overnight_return(ctx: Any, ticker: str, days: pd.DatetimeIndex) -> np.ndarray:
+    """``open_t / close_{t-1} - 1`` on ``days`` from the daily bars table (the official open and close, not the
+    first and last IEX print), split-repaired (``data.splits.present``, as MarketData.ohlcv does on its way
+    out) and total-return adjusted (``realized.adjusted_ohlc``: O/H/L/C scaled by adj_close / close), so a
+    split or an ex-dividend date is not an overnight move. NaN where either price is missing."""
+    from ..data.splits import present
+    from ..options.realized import adjusted_ohlc
+    from ..warehouse.readers import ohlcv
+
+    adj = adjusted_ohlc(present(ohlcv(ctx.warehouse, ticker).data)[0])
+    o, c = adj["open"].reindex(days), adj["close"].reindex(days)
+    return (o / c.shift(1) - 1.0).to_numpy(float)   # shift on ``days``: a missing session leaves NaN, not a stale close
+
+
+def _daily_rv(ctx: Any, ticker: str, days: pd.DatetimeIndex, *, min_prints: int = MIN_PRINTS,
+              notes: list[str] | None = None) -> np.ndarray:
+    """The league's one scoring target: close-to-close daily variance of session ``t``,
+    ``RV_open_to_close(t) + (open_t / close_{t-1} - 1)^2``. GARCH, GJR, EGARCH and EWMA forecast the
+    close-to-close variance (it includes the overnight move), so the target must too; HAR is trained on it.
+    Known at the close of ``t`` and nothing later. NaN where the minute part or the overnight return is missing."""
+    return _minute_only(ctx, ticker, days, min_prints=min_prints, notes=notes) \
+        + _overnight_return(ctx, ticker, days) ** 2
 
 
 def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
@@ -64,8 +104,11 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
             if len(s) < V.EST_WINDOW + eval_days:
                 raise ValueError(f"{len(s)} sessions (< {V.EST_WINDOW + eval_days})")
             r = s.to_numpy(float)
-            mrv = _minute_rv(ctx, t, s.index)
-            ok = mrv is not None and np.isfinite(mrv[-(V.HAR_WINDOW + eval_days + 22):]).all()
+            try:
+                mrv = _daily_rv(ctx, t, s.index, notes=notes)
+            except DataUnavailable:  # no warehouse, or the name is not in its daily bars
+                mrv = np.full(len(s), np.nan)
+            ok = np.isfinite(mrv).sum() >= V.HAR_WINDOW + 60 and np.isfinite(mrv[-(V.HAR_WINDOW + eval_days + 22):]).all()
             target = mrv if ok else r * r
             nl = V.league_for(r, target, has_minute=ok, eval_days=eval_days, refit_every=refit)
         except (DataUnavailable, ValueError, KeyError, np.linalg.LinAlgError) as e:
@@ -95,7 +138,11 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                 "dropped": pd.DataFrame(dropped, columns=["ticker", "model", "reason"])},
         data_asof=str(min(last).date()), provenance=prov,
         notes=[*notes, f"out of sample: last {eval_days} sessions, refit every {refit}, window {V.EST_WINDOW}; "
-                       "target is minute RV where stored, else the squared daily return (QLIKE is robust to it)"],
+                       "target: close-to-close daily variance of the session = open-to-close minute RV (09:30-16:00, "
+                       f"IEX, sessions with fewer than {MIN_PRINTS} prints excluded) + (open_t / close_{{t-1}} - 1)^2, "
+                       "the overnight move from the daily bars table's official open and close (split-repaired, "
+                       "total-return adjusted); names without it are scored on the squared daily return, "
+                       "also close-to-close"],
         survivorship=SURVIVORSHIP if surv else None, engine=V.kernels.engine_of("garch_fit"),
         verdict="DESCRIPTIVE ONLY",
         verdict_detail=f"FORECAST LEAGUE · {best['model'].upper()} IN 10% MCS · {best['mcs_rate']:.0%} OF "

@@ -60,7 +60,8 @@ def test_one_day_of_history_from_a_known_smile(market, wh, tmp_path, monkeypatch
     db, root = tmp_path / "jobs.sqlite", tmp_path / "artifacts"
     monkeypatch.setattr(surface_history, "DB_PATH", db)
     publish_artifact(db, root, "vol.forecast_league",
-                     {"forecasts": pd.DataFrame({"ticker": ["SPY"], "asof": ["2026-05-29"], "har_22d": [1e-4]})})
+                     {"forecasts": pd.DataFrame({"ticker": ["SPY"], "asof": ["2026-05-29"], "har_22d": [1e-4],
+                                                         "har_covers": ["close_to_close"]})})
     spec = surface_history.run({}, ctx(market, wh))
     assert spec.verdict == "DESCRIPTIVE ONLY" and "1 DAY" in spec.verdict_detail and is_label(spec.verdict_detail)
     h = spec.tables["history"].iloc[0]
@@ -107,3 +108,14 @@ def test_empty_history_errors_table_keeps_its_columns(market, tmp_path, monkeypa
         pass
     spec = surface_history.run({}, ctx(market, path))
     assert list(spec.tables["errors"].columns) == ["underlying", "asof", "error"]
+
+
+def test_a_forecast_of_the_open_to_close_part_alone_gives_no_vrp(market, wh, tmp_path, monkeypatch):
+    """A league artifact written before the target included the overnight move (no ``har_covers``) would
+    leave the overnight share in the premium: the row is blank and says why."""
+    db, root = tmp_path / "jobs.sqlite", tmp_path / "artifacts"
+    monkeypatch.setattr(surface_history, "DB_PATH", db)
+    publish_artifact(db, root, "vol.forecast_league",
+                     {"forecasts": pd.DataFrame({"ticker": ["SPY"], "asof": ["2026-05-29"], "har_22d": [1e-4]})})
+    h = surface_history.run({}, ctx(market, wh)).tables["history"].iloc[0]
+    assert pd.isna(h["vrp"]) and "open-to-close" in h["vrp_note"] and h["mf_var_30d"] > 0

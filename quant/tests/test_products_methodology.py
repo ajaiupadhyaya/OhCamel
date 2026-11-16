@@ -36,3 +36,17 @@ def test_atlas_entry_says_what_members_get():
     assert "universe member is measured alone by filtered historical simulation only" in summary
     assert "97.5 and 99%" in summary and "no copula is run for members" in summary
     assert "every universe member, by" not in summary
+
+
+def test_vol_league_entry_states_the_target_the_code_computes():
+    from ohcamel_quant.products import vol_league
+
+    models = (WEB / "models.ts").read_text()
+    start = models.index('id: "p2-vol-league"')
+    block = models[start:models.index("\n  },", start)]
+    assert "close-to-close variance of the next session" in block
+    assert "plus the squared overnight return O_t / C_{t-1} − 1" in block
+    assert f"fewer than {vol_league.MIN_PRINTS} IEX prints" in block
+    assert "O_t}{C_{t-1}} - 1" in block          # the formula carries the overnight term
+    vrp_block = models[models.index('id: "p7-surface-history"'):]
+    assert "close-to-close variance" in vrp_block[:vrp_block.index("\n  },")]

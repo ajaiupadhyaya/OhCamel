@@ -99,3 +99,16 @@ def test_adjusted_ohlc_removes_split_jump():
     r = np.log(a["close"]).diff().dropna()
     assert (r.abs() < 0.02).all()
     assert a["high"].iloc[0] == pytest.approx(102.0)
+
+
+def test_every_estimator_says_which_variance_it_measures(spy):
+    """Parkinson, Garman-Klass and Rogers-Satchell see 09:30-16:00 only; close-to-close and Yang-Zhang
+    (which adds the overnight term) see the whole close-to-close day."""
+    want = {"close_to_close": "close_to_close", "yang_zhang": "close_to_close", "parkinson": "open_to_close",
+            "garman_klass": "open_to_close", "rogers_satchell": "open_to_close"}
+    assert rv.ESTIMATOR_COVERS == want
+    for e, c in want.items():
+        assert rv.rolling_vol(spy, 21, e).attrs["covers"] == c
+    assert rv.all_estimators(spy, 21).attrs["covers"] == want
+    assert rv.vol_cone(spy, estimator="parkinson").attrs["covers"] == "open_to_close"
+    assert rv.vol_cone(spy).attrs["covers"] == "close_to_close"

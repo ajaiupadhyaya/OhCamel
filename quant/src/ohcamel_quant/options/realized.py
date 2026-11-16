@@ -17,6 +17,11 @@ Per-day variance estimators (``O, H, L, C`` today, ``C_{-1}`` yesterday; all log
 
 Annualized vol ``= sqrt(252 x variance)``. Rolling windows are trailing.
 
+Coverage: Parkinson, Garman-Klass and Rogers-Satchell are open-to-close (09:30-16:00) variances and
+omit the overnight move; close-to-close and Yang-Zhang are close-to-close. ``ESTIMATOR_COVERS`` names
+each, and every output carries it in ``.attrs["covers"]`` -- do not set an open-to-close estimate beside
+a close-to-close one as if they measured the same thing.
+
 Volatility cone (Burghardt & Lane 1990, "How to tell if options are cheap",
 J. Portfolio Management 16): for each horizon ``h`` the distribution (min,
 percentiles, max) of rolling ``h``-day realized vol over the history, against
@@ -30,7 +35,7 @@ variance units.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -38,6 +43,14 @@ import pandas as pd
 TRADING_DAYS = 252
 CONE_HORIZONS = (10, 21, 42, 63, 126, 252)
 ESTIMATORS = ("close_to_close", "parkinson", "garman_klass", "rogers_satchell", "yang_zhang")
+Covers = Literal["open_to_close", "close_to_close"]
+#: Which part of the day each estimator's variance covers. The range estimators see only the session
+#: (open to close), so they exclude the overnight move that close-to-close and Yang-Zhang include; they run
+#: below close-to-close for that reason, not because the stock was calmer. Every output carries this in
+#: ``.attrs["covers"]``.
+ESTIMATOR_COVERS: dict[str, Covers] = {
+    "close_to_close": "close_to_close", "parkinson": "open_to_close", "garman_klass": "open_to_close",
+    "rogers_satchell": "open_to_close", "yang_zhang": "close_to_close"}
 
 
 def adjusted_ohlc(df: pd.DataFrame) -> pd.DataFrame:
@@ -88,11 +101,15 @@ def rolling_vol(ohlc: pd.DataFrame, window: int, estimator: str = "close_to_clos
                + (1 - kk) * t["rs"].rolling(window).mean())
     else:
         raise ValueError(f"unknown estimator {estimator!r}; choose from {ESTIMATORS}")
-    return np.sqrt(var.clip(lower=0.0) * TRADING_DAYS).rename(estimator)
+    out = np.sqrt(var.clip(lower=0.0) * TRADING_DAYS).rename(estimator)
+    out.attrs["covers"] = ESTIMATOR_COVERS[estimator]
+    return out
 
 
 def all_estimators(ohlc: pd.DataFrame, window: int) -> pd.DataFrame:
-    return pd.concat([rolling_vol(ohlc, window, e) for e in ESTIMATORS], axis=1)
+    out = pd.concat([rolling_vol(ohlc, window, e) for e in ESTIMATORS], axis=1)
+    out.attrs["covers"] = dict(ESTIMATOR_COVERS)
+    return out
 
 
 def vol_cone(
@@ -112,7 +129,9 @@ def vol_cone(
         row["current_pctile"] = float((s <= s.iloc[-1]).mean())
         row["n_windows"] = len(s)
         rows.append(row)
-    return pd.DataFrame(rows).set_index("horizon") if rows else pd.DataFrame()
+    out = pd.DataFrame(rows).set_index("horizon") if rows else pd.DataFrame()
+    out.attrs["covers"] = ESTIMATOR_COVERS[estimator]
+    return out
 
 
 def vrp(implied_vol: float, realized_vol: float) -> dict[str, float]:
