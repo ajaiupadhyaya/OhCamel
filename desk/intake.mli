@@ -231,8 +231,11 @@ val adjust : t -> oms:Oms.t option -> unit Deferred.t
     overlay's scale, and once that overlay is older than [overlay_max_age] session hours
     (or of no age that can be told) it decays to the fallback or less; a held factor that
     so moves more than the band re-sizes the strategy, noted "overlay" or "decay". Those
-    re-sizes only ever shrink: one whose legs would grow the strategy's own position is
-    held whole, and a sizing with no factor recorded is re-sized on a decay only downward.
+    re-sizes, and any other whose effective scale is below the last sizing's (a governor's
+    cut), only ever shrink: a leg that would grow the strategy's own position is dropped
+    and named, the rest sent, and no sizing row is written while any is dropped, so the
+    next pass plans again. A re-size that raises size may buy, through the gate. A sizing
+    with no factor recorded is re-sized on a decay only downward.
 
     Before any of that, THE COMPLETION: when orders of that document ended with shares
     unfilled after the strategy's latest sizing ({!Journal.source_orders_unfilled}) --

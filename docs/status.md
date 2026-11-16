@@ -148,7 +148,9 @@ gone unread for the alerts' `raise_after_n` adjust passes over `raise_after_s` s
 trips on that cannot be evaluated refuses any order that raises gross notional -- at once, rotations included. On the
 live book that is both `dd-cap` and `var-cap`, and the historical VaR behind `var-cap` cannot be evaluated whenever
 ANY name in the universe has an empty return window: after a restart until the daily bars load, or for as long as one
-symbol's bars keep failing. For that whole time the desk can reduce, but cannot add gross.
+symbol's bars keep failing. For that whole time the desk can reduce, but cannot add gross. A re-size that lowers a
+strategy's size -- a decay, a governor's cut -- sends only the legs that shrink its own positions and drops, by name,
+any that would grow one, so the gate's refusal of a growing leg never holds the sells beside it.
 
 **What the first week of fills taught, and what changed (2026-10-27).** Alpaca's own order history for the paper
 account showed 55 of the desk's 59 market-on-open orders **expired at the opening auction unfilled** (two filled,
@@ -513,7 +515,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **<!-- count:ocaml-tests -->926<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->79<!-- /count --> scheduler cases in `test/desk_async` —
+- **<!-- count:ocaml-tests -->926<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->82<!-- /count --> scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler

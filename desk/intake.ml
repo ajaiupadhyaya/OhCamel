@@ -1449,6 +1449,15 @@ let rec sized_whole : Oms.Rebalance_outcome.t -> bool = function
   | Waved { waves; timed_out = false } -> List.for_all waves ~f:sized_whole
   | Waved { timed_out = true; _ } | Stopped _ | Refused _ | Not_now _ -> false
 
+(* The effective scale a sizing row was taken at, like with like with a
+   reading's: its scale over the incubation ratio recorded beside it (the
+   ratio now when it recorded none), or its factor times its governor when
+   that ratio is 0; None when neither can be told. *)
+let last_effective (z : Journal.Sizing.t) ~ratio =
+  let last_ratio = Option.value z.ratio ~default:ratio in
+  if Float.( > ) last_ratio 0.0 then Some (z.scale /. last_ratio)
+  else match (z.factor, z.governor) with Some f, Some g -> Some (f *. g) | _ -> None
+
 (* Whether a leg takes the strategy's own position in its name further from
    zero. A position that cannot be read is treated as growing: unknown is not
    permission. *)
@@ -1531,13 +1540,35 @@ let rebalance ?(mode = Rebalance.Mode.Open) ?(sizing_mode = "open") ?(only_shrin
           sized ();
           return
             (Rebalanced.final ("no order: every order was " ^ floor_sentence dropped))
-      | Ok (legs, _) when only_shrink && List.exists legs ~f:(grows oms strategy) ->
+      | Ok (legs, _) when only_shrink && List.for_all legs ~f:(grows oms strategy) ->
           return
             (Rebalanced.final
                (sprintf
-                  "held: a re-size on an overlay that no longer stands only shrinks, and \
-                   this one would grow the strategy's own position: %s"
+                  "held: this re-size lowers the strategy's size and only shrinks, and \
+                   every leg would grow its own position: %s"
                   (String.concat ~sep:"; " (List.map legs ~f:Rebalance.Leg.describe))))
+      | Ok (legs, dropped) when only_shrink && List.exists legs ~f:(grows oms strategy) ->
+          (* The shrinking legs go and the growing ones are dropped, named;
+             no sizing row, so the next pass plans again -- the shrunk names
+             are then at their targets and only the growing legs remain, held. *)
+          let growing, shrinking = List.partition_tf legs ~f:(grows oms strategy) in
+          let%map outcome = Oms.propose_rebalance oms ~source ~legs:shrinking ~mode in
+          {
+            Rebalanced.sentence =
+              sprintf
+                "%s. Targets: %s. Not sent, because this re-size lowers the strategy's \
+                 size and only shrinks: %s; no sizing recorded%s"
+                (Oms.Rebalance_outcome.to_string outcome)
+                (String.concat ~sep:"; " (List.map shrinking ~f:Rebalance.Leg.describe))
+                (String.concat ~sep:"; " (List.map growing ~f:Rebalance.Leg.describe))
+                (if List.is_empty dropped then ""
+                 else ". " ^ String.capitalize (floor_sentence dropped));
+            wait = (match outcome with Not_now _ -> true | _ -> false);
+            attempted =
+              (match outcome with
+              | Sent _ | Stopped _ | Waved _ -> true
+              | Refused _ | Not_now _ -> false);
+          }
       | Ok (legs, dropped) ->
           let%map outcome = Oms.propose_rebalance oms ~source ~legs ~mode in
           if sized_whole outcome then sized ();
@@ -1771,8 +1802,11 @@ let collect_pending t : Accepted.t list =
      "governor" when the governor moved too). Session hours, so the
      evening-to-morning spell the hold exists for does not count, and a
      producer that died at 10:00 has the book at the fallback by 14:00 at
-     the latest. These re-sizes ONLY SHRINK: one whose legs would grow the
-     strategy's own position is held whole ([rebalance]'s only_shrink). A
+     the latest. These re-sizes ONLY SHRINK, as does any re-size whose
+     effective scale is below the last sizing's (a governor's cut): a leg
+     that would grow the strategy's own position is dropped, named, the rest
+     sent, and no sizing row written while any is dropped ([rebalance]'s
+     only_shrink). A
      sizing row with no factor recorded is re-sized at the reading once the
      overlay has decayed, and only when that is below it; an unsized
      strategy that holds a position is re-sized at the reading too, only
@@ -2075,13 +2109,27 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                 let name = a.Accepted.strategy.name in
                 let completing = Option.equal String.equal note (Some "completion") in
                 let flattening = Option.equal String.equal note (Some "stop") in
-                (* A re-size because the overlay can no longer be trusted only
-                   ever shrinks: any leg that would grow the strategy's own
-                   position holds the whole re-size. *)
+                (* A re-size that lowers the strategy's size only ever
+                   shrinks: legs that would grow its own position are dropped,
+                   named, and the rest sent ([rebalance]). That is every
+                   re-size because the overlay can no longer be trusted, and
+                   any other whose effective scale is below the last
+                   sizing's -- a governor's cut, the unread drawdown's
+                   sell-down -- whose growing leg would otherwise raise gross
+                   and, with a trip-limit unknown, have the gate refuse the
+                   sells beside it. A re-size that raises size may buy, as
+                   before. *)
                 let only_shrink =
                   match note with
                   | Some ("decay" | "overlay") -> true
-                  | Some _ | None -> false
+                  | Some "stop" -> false
+                  | Some _ | None -> (
+                      match Journal.latest_sizing_row t.journal ~strategy:name with
+                      | None -> false
+                      | Some z -> (
+                          match last_effective z ~ratio with
+                          | Some last -> Float.( < ) parts.Parts.effective last
+                          | None -> false))
                 in
                 let%map outcome =
                   match%map

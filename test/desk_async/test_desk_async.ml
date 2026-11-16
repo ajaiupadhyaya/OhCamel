@@ -3244,7 +3244,7 @@ type adjust_fixture = {
 let adjust_case ?(last_scale = 0.70) ?last_ratio ?last_factor ?last_governor
     ?(sizing_row = true) ?(stale = false) ?stale_at ?(incubation_cap = 0.5)
     ?(drawdown = fun () -> None) ?dd_cap ?(adjust_now = true) ?(bought = true) ?unfilled
-    ?halt ?reduce_through_trip ?limits ?trips_on ?unread_after
+    ?halt ?reduce_through_trip ?limits ?trips_on ?unread_after ?(two_names = false)
     ~(sizing : Ohcamel.Config.Book.Signals_spec.sizing) ~overlay () =
   let name = "exp_adjust" in
   let f = fixture ?limits () in
@@ -3271,19 +3271,23 @@ let adjust_case ?(last_scale = 0.70) ?last_ratio ?last_factor ?last_governor
       Graph.set_cash f.graph (Notional.of_float 100_000.0);
       return ())
     else
+      (* [two_names]: MSFT beside AAPL, 50 at 200 = 10,000 of it. *)
       let bought =
         D.Oms.propose_rebalance oms ~mode:D.Rebalance.Mode.Intraday ~source
-          ~legs:[ rebalance_leg aapl D.Order.Side.Buy 350 ]
+          ~legs:
+            (rebalance_leg aapl D.Order.Side.Buy 350
+            :: (if two_names then [ rebalance_leg msft D.Order.Side.Buy 50 ] else []))
       in
       let%bind () = settle () in
       let%bind () = pump f in
       let%map () = advance_to f 2.0 in
       (match Deferred.peek bought with
-      | Some (D.Oms.Rebalance_outcome.Sent [ _ ]) -> ()
+      | Some (D.Oms.Rebalance_outcome.Sent (_ :: _)) -> ()
       | Some other ->
           Alcotest.failf "not bought: %s" (D.Oms.Rebalance_outcome.to_string other)
       | None -> Alcotest.fail "the buy is still waiting");
-      Graph.set_cash f.graph (Notional.of_float 65_000.0)
+      Graph.set_cash f.graph
+        (Notional.of_float (if two_names then 55_000.0 else 65_000.0))
   in
   (* [unfilled]: a market-on-open order of the strategy's, journaled under
      its source as the evening's rebalance would have -- sent and
@@ -3349,8 +3353,11 @@ let adjust_case ?(last_scale = 0.70) ?last_ratio ?last_factor ?last_governor
       detail = "passed";
       document =
         sprintf
-          {|{"schema_version":1,"strategy":"%s","params_hash":"%s","as_of":"2026-09-14","computed_at":"2026-09-14T23:15:00Z","data_hash":"%s","sequence":1,"validation":{"status":"pass","gates_version":"2026-09-02"},"targets":[{"symbol":"AAPL","weight":1.0}]}|}
-          name zeros zeros;
+          {|{"schema_version":1,"strategy":"%s","params_hash":"%s","as_of":"2026-09-14","computed_at":"2026-09-14T23:15:00Z","data_hash":"%s","sequence":1,"validation":{"status":"pass","gates_version":"2026-09-02"},"targets":%s}|}
+          name zeros zeros
+          (if two_names then
+             {|[{"symbol":"AAPL","weight":0.5},{"symbol":"MSFT","weight":0.5}]|}
+           else {|[{"symbol":"AAPL","weight":1.0}]|});
       rebalance = Some "sent";
     };
   if sizing_row then
@@ -3396,7 +3403,7 @@ let adjust_case ?(last_scale = 0.70) ?last_ratio ?last_factor ?last_governor
         [
           {
             Ohcamel.Config.Book.Signals_spec.Strategy.name;
-            symbols = [ "AAPL" ];
+            symbols = (if two_names then [ "AAPL"; "MSFT" ] else [ "AAPL" ]);
             max_age = 3;
             sizing;
             capital_fraction = 0.5;
@@ -4349,6 +4356,9 @@ let test_a_stale_overlay_holds_and_a_governor_move_re_sizes () =
       ~drawdown:(fun () -> Some !drawdown)
       ~dd_cap:0.02 ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.9" ()
   in
+  (* On the band's edge: the held factor is min(1.0, 0.9) = 0.9, and 1.0 -
+     0.9 is the 0.10 band itself (0.0999... in floating point); the band
+     re-sizes only beyond it (strict >), so this holds. *)
   let%bind () = pass_and_adjust ~at:6.0 in
   Alcotest.(check (pair (list (triple string int string)) string))
     "stale: nothing proposed, still sized at the open's row"
@@ -4528,6 +4538,102 @@ let test_a_flatten_passes_an_unevaluable_trip_limit_and_a_buy_is_refused () =
     ( D.Oms.Preview.passed buy,
       List.exists (D.Oms.Preview.reasons buy)
         ~f:(String.is_substring ~substring:"var-cap cannot be evaluated") );
+  cleanup ()
+
+(* Every order of the strategy as (symbol, side, qty), sorted. *)
+let strategy_legs f name =
+  List.sort ~compare:[%compare: string * string * int]
+  @@ List.rev_filter_map (D.Journal.recent_orders f.journal ~limit:20) ~f:(fun r ->
+      if String.equal r.D.Journal.Order_row.source (sprintf "signal:%s:1" name) then
+        let q = r.D.Journal.Order_row.order.D.Order.request in
+        Some
+          ( Symbol.to_string q.D.Order.Request.symbol,
+            D.Order.Side.to_string q.D.Order.Request.side,
+            q.D.Order.Request.qty )
+      else None)
+
+(* A re-size that lowers size drops its growing legs and sends the rest
+   (the fix round 2's N1). A two-name strategy -- AAPL and MSFT at 0.5 each
+   -- holds 350 AAPL (35,000) and 50 MSFT (10,000) of E = 100,000, last
+   sized at 0.9 (factor 0.9, governor 1). The overlay, 0.9, is stale and 5
+   session hours old: the held factor decays to 0.5. The targets are 0.5 x
+   0.5 x 100,000 x 0.5 = 12,500 a name: AAPL 125, Sell 225; MSFT 62, a Buy
+   of 12 that would grow it. The sell goes; the buy is dropped and named;
+   no sizing row is written. The next pass plans again: AAPL is at its
+   target, only the MSFT buy remains, and it is held -- nothing more sent. *)
+let test_a_decay_sells_the_names_over_target_and_buys_nothing () =
+  let monday s = Time_ns.of_string_with_utc_offset ("2026-09-14T" ^ s ^ "Z") in
+  let%bind { a_f = f; a_name = name; pass_and_adjust; cleanup; _ } =
+    adjust_case ~two_names:true ~stale:true ~stale_at:(monday "16:30:00") ~last_scale:0.9
+      ~last_ratio:1.0 ~last_factor:0.9 ~last_governor:1.0
+      ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.9" ()
+  in
+  let sent = [ ("AAPL", "buy", 350); ("AAPL", "sell", 225); ("MSFT", "buy", 50) ] in
+  Alcotest.(check (pair (list (triple string string int)) string))
+    "Sell 225 AAPL, no MSFT buy, no row" (sent, "open")
+    (strategy_legs f name, latest_sizing_mode f name);
+  Alcotest.(check bool)
+    "the dropped buy is named" true
+    (List.exists (Queue.to_list f.events) ~f:(fun e ->
+         String.is_substring e ~substring:"only shrinks: MSFT buy 12"));
+  let received = D.Sim_venue.received f.venue in
+  let%map () = pass_and_adjust ~at:8.0 in
+  Alcotest.(check (pair (list (triple string string int)) int))
+    "the next pass sends nothing more" (sent, received)
+    (strategy_legs f name, D.Sim_venue.received f.venue);
+  cleanup ()
+
+(* The same for a governor's cut, with a trip-limit unknown (N1b). The
+   overlay is fresh at 0.9 and the strategy last sized at 0.9; the drawdown
+   reads 1.5 % against a 2 % cap, a governor of 0.5, so the effective scale
+   0.45 is below the last sizing's 0.9. var-cap, in kill_switch_trips_on,
+   cannot be evaluated (XOM's return window emptied) -- in the fixture a
+   drawdown that cannot be measured would need a live equity that is not a
+   number, so the VaR limit stands in for dd-cap: the gate treats every
+   unevaluable trip-limit alike. Targets 0.5 x 0.45 x 100,000 x 0.5 = 11,250
+   a name: AAPL 112, Sell 238; MSFT 56, a Buy of 6. Sent whole, the buy's
+   fill subset would raise gross and the gate would refuse the rebalance,
+   the sell with it; dropped, the sell reaches the venue and the buy is
+   not sent. *)
+let test_a_governor_cut_sells_through_an_unevaluable_trip_limit () =
+  let var_cap =
+    {
+      Limit.name = "var-cap";
+      scope = Limit.Portfolio;
+      kind = Limit.Value_at_risk (Notional.of_float 1e9);
+    }
+  in
+  let%bind { a_f = f; a_name = name; pass_and_adjust; cleanup; _ } =
+    adjust_case ~adjust_now:false ~two_names:true ~limits:[ tech_cap; var_cap ]
+      ~trips_on:[ "var-cap" ] ~last_scale:0.9 ~last_ratio:1.0 ~last_factor:0.9
+      ~last_governor:1.0
+      ~drawdown:(fun () -> Some 0.015)
+      ~dd_cap:0.02 ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.9" ()
+  in
+  Graph.set_returns f.graph xom [||];
+  Graph.stabilize f.graph;
+  let received = D.Sim_venue.received f.venue in
+  let%map () = pass_and_adjust ~at:4.0 in
+  Alcotest.(check (pair (list (triple string string int)) int))
+    "Sell 238 AAPL reaches the venue; the MSFT buy is not sent"
+    ([ ("AAPL", "buy", 350); ("AAPL", "sell", 238); ("MSFT", "buy", 50) ], received + 1)
+    (strategy_legs f name, D.Sim_venue.received f.venue);
+  cleanup ()
+
+(* A governor's rise still buys. Last sized at 0.45 (factor 0.9, governor
+   0.5), the drawdown now 0 -- a governor of 1 -- and the overlay 0.9: the
+   effective scale 0.9 is above the last 0.45, so the re-size may grow:
+   trunc(0.5 x 0.9 x 100,000 / 100) = 450 from 350, Buy 100. *)
+let test_a_governor_rise_still_buys () =
+  let%map { a_f = f; a_name = name; cleanup; _ } =
+    adjust_case ~last_scale:0.45 ~last_ratio:1.0 ~last_factor:0.9 ~last_governor:0.5
+      ~drawdown:(fun () -> Some 0.0)
+      ~dd_cap:0.02 ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.9" ()
+  in
+  Alcotest.(check (list (triple string int string)))
+    "Buy 100"
+    [ ("buy", 100, "limit day"); ("buy", 350, "limit day") ]
+    (strategy_orders f name);
   cleanup ()
 
 (* A-I4. An incubation strategy at the canary's ratio: a cap of 0.087 over
@@ -5020,6 +5126,11 @@ let suites =
           test_a_readable_pass_restarts_the_unread_count;
         case "an unread drawdown with no debounce sells at once"
           test_an_unread_drawdown_with_no_debounce_sells_at_once;
+        case "a decay sells the names over target and buys nothing"
+          test_a_decay_sells_the_names_over_target_and_buys_nothing;
+        case "a governor cut sells through an unevaluable trip-limit"
+          test_a_governor_cut_sells_through_an_unevaluable_trip_limit;
+        case "a governor rise still buys" test_a_governor_rise_still_buys;
         case "a decay never buys from a factorless row"
           test_a_decay_never_buys_from_a_factorless_row;
         case "a stale hold is capped by the latest accepted overlay"
