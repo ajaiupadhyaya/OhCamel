@@ -161,6 +161,7 @@ def test_butterfly_check_finds_a_dip_between_the_scan_points():
     chk = butterfly_check(p)
     assert not chk["arbitrage_free"]
     assert chk["g_min"] == pytest.approx(-7.709e-6, rel=1e-3) and chk["k_at_g_min"] == pytest.approx(0.3272, abs=1e-4)
+    assert chk["violation_k"] == [chk["k_at_g_min"]]          # no scan point is in violation; the minimiser is
     assert not butterfly_free(p)
 
 

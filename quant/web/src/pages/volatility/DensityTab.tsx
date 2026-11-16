@@ -128,23 +128,25 @@ export function showTails(c: Density["checks"]): boolean {
 }
 
 /**
- * The checks shown with ✓/✗ are the API's `checks.passed`, the ones that can fail: negative mass,
- * negative tail mass, the grid integral against the smile's closed-form density, the mean against
- * the forward. Grid integral + tail masses is a plain figure: it telescopes to 1 for any smile.
+ * The marks (PASS / FAIL) are the API's `checks.passed`, the checks that can fail: negative mass
+ * (butterfly arbitrage), the mean against the forward (martingale), and a numerical cross-check of
+ * the finite-difference density against the smile's closed form (a broken stencil or an unresolved
+ * grid; it cannot detect arbitrage). Grid integral + tail masses and the tail masses themselves are
+ * plain figures: the sum telescopes to 1 for any smile, and a bad tail has already failed the API.
  */
 export function Checks({ d }: { d: Density }) {
   const c = d.checks;
   const ok = c.passed;
   const tails = showTails(c)
     ? [
-        { label: "Mass below grid", value: <>{fmtPct(c.tail_mass_left, 2)} <Check ok={ok.tails} /></>, info: { text: "Probability that the expiry price is below the lowest strike of the grid (the grid stops at ln(K/F) = −3). Negative beyond finite-difference error is a failure." } },
-        { label: "Mass above grid", value: <>{fmtPct(c.tail_mass_right, 2)} <Check ok={ok.tails} /></>, info: { text: "Probability that the expiry price is above the highest strike of the grid (the grid stops at ln(K/F) = +3). Negative beyond finite-difference error is a failure." } },
+        { label: "Mass below grid", value: fmtPct(c.tail_mass_left, 2), info: { text: "Probability that the expiry price is below the lowest strike of the grid (the grid stops at ln(K/F) = −3)." } },
+        { label: "Mass above grid", value: fmtPct(c.tail_mass_right, 2), info: { text: "Probability that the expiry price is above the highest strike of the grid (the grid stops at ln(K/F) = +3)." } },
       ]
-    : [{ label: "Mass beyond grid", value: <>{fmtSci(c.tail_mass_left + c.tail_mass_right, 2)} <Check ok={ok.tails} /></>, info: { text: "Probability outside the strike grid (ln(K/F) in [−3, 3]), both ends together. Negative beyond finite-difference error is a failure." } }];
+    : [{ label: "Mass beyond grid", value: fmtSci(c.tail_mass_left + c.tail_mass_right, 2), info: { text: "Probability outside the strike grid (ln(K/F) in [−3, 3]), both ends together." } }];
   return (
     <KV
       rows={[
-        { label: <span className="vx-sym">∫ q(K) dK</span>, value: <>{fmtNum(c.integral, 5)} <Check ok={ok.analytic} /></>, hint: `CLOSED FORM ${fmtNum(c.analytic_integral, 5)}`, info: { text: "Probability on the strike grid from the finite-difference density, against the same integral of the smile's closed-form density (Gatheral & Jacquier 2014); they must agree to 0.001.", formula: "\\int q(K)\\,dK" } },
+        { label: "Numerical cross-check", value: <>{fmtNum(c.integral, 5)} <Check ok={ok.analytic} /></>, hint: `CLOSED FORM ${fmtNum(c.analytic_integral, 5)}`, info: { text: "The finite-difference density's probability on the strike grid against the same integral of the smile's closed-form density (Gatheral & Jacquier 2014); they must agree to 0.001. It catches a broken difference stencil or a grid too coarse for the smile. It cannot detect arbitrage: both are the same function of the same smile.", formula: "\\int q_{FD}(K)\\,dK \\;\\text{vs}\\; \\int q_{closed}(K)\\,dK" } },
         ...tails,
         { label: <span className="vx-sym">∫ q dK + tails</span>, value: fmtNum(c.integral_plus_tails, 5), info: { text: "Grid probability plus the mass beyond the grid. Information, not a check: it adds to 1 for any smile, arbitrage or not." } },
         { label: <>MEAN − <span className="vx-sym">F</span></>, value: <>{fmtNum(c.mean_minus_forward, 4)} <Check ok={ok.mean} /></>, hint: `${fmtSignedPct(c.mean_minus_forward / d.forward, 4)} OF F`, info: { text: "Martingale condition: the expected expiry price equals the forward.", formula: "\\mathbb E_Q[S_T] = F" } },

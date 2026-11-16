@@ -131,7 +131,10 @@ def _g_min(p: SVIParams) -> tuple[float, float, bool]:
     minima (and the scan point nearest the vertex ``m``) refined by two zooms, each 101 points over
     the bracket of the previous best point and its neighbours (steps 1e-4, then 2e-6). A fit held at
     ``g >= 0`` only on the scan dips below zero between its points (by up to 8e-6 on the 2026-11-15
-    SPY chain); after the zooms the step is 2e-6, so a dip between points is ``g'' * 5e-13``.
+    SPY chain); after the zooms the step is 2e-6, so a dip between points is ``g'' * 5e-13``. On that
+    chain, with the fit held at g >= 0 here, g on an independent 6,000,000-point grid offset from
+    these points still goes negative on most slices, by at most ~1e-12 (-8.8e-13 or -1.1e-12 by the
+    grid's offset): not zero, but far inside butterfly_check's -1e-10.
     Returns (g_min, its k, ``w > 0`` at every point evaluated); g_min is -inf if ``g`` is not
     finite somewhere. native/kernels/src/svi.rs repeats this step for step."""
     k = _K_GRID
@@ -190,11 +193,14 @@ def butterfly_check(p: SVIParams, k_grid: Any = None, tol: float = G_TOL) -> dic
         bad_refined = not (g_min >= -tol and w_ok)
     else:
         bad_refined = False
+    violation_k = k[bad].tolist()[:: max(1, int(bad.sum()) // 25)] if bad.any() else []
+    if bad_refined and np.isfinite(k_at) and k_at not in violation_k:
+        violation_k = sorted([*violation_k, k_at])     # a violation the scan points miss: its minimiser
     return {
         "arbitrage_free": bool(not bad.any() and not bad_refined),
         "g_min": g_min,
         "k_at_g_min": k_at,
-        "violation_k": k[bad].tolist()[:: max(1, int(bad.sum()) // 25)] if bad.any() else [],
+        "violation_k": violation_k,
         "k_range": [float(k.min()), float(k.max())],
     }
 

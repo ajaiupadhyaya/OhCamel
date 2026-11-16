@@ -21,11 +21,14 @@ CDF being clipped into one. Quantiles invert it by linear interpolation.
 
 ``integral + tail_mass_left + tail_mass_right`` is information, not a check: ``q``
 is the derivative of the same CDF whose end values are the tails, so the sum
-telescopes to one (to O(h^2)) for ANY smile, arbitrageable or not. The checks
-that can fail are :func:`density_checks`: no negative mass, no negative tail
-mass, the grid integral against the closed-form density of the smile on the same
-grid, and the mean against the forward (the martingale condition). Reported,
-never forced.
+telescopes to one (to O(h^2)) for ANY smile, arbitrageable or not. So are the
+tail masses: a tail below the CDF tolerance has already raised. The checks that
+can fail are :func:`density_checks`: no negative mass (butterfly arbitrage), the
+mean against the forward (the martingale condition), and a numerical cross-check
+of the finite-difference density against the smile's closed-form density on the
+same grid (it catches a broken stencil or an unresolved grid; it cannot detect
+arbitrage, since both are the same function of the same smile). Reported, never
+forced.
 """
 
 from __future__ import annotations
@@ -46,7 +49,7 @@ CDF_TOL = 1e-8
 
 
 NEGATIVE_MASS_TOL = 1e-6   # integral of max(-q, 0) above this: butterfly arbitrage
-ANALYTIC_TOL = 1e-3        # |grid integral of the finite-difference q - that of the closed form|
+ANALYTIC_TOL = 1e-3        # numerical cross-check: |grid integral of finite-difference q - closed form's|
 MEAN_TOL = 0.005           # |mean / F - 1|
 
 
@@ -179,22 +182,21 @@ def density_checks(d: RNDensity, analytic: np.ndarray) -> dict[str, Any]:
     """The checks that can fail, with ``analytic`` an independent density on ``d.strikes`` (per USD;
     for an SVI smile ``svi.density_k(p, ln(K/F)) / K``, the closed form in Gatheral & Jacquier 2014):
 
-    * ``negative_mass``: ``d.negative_mass <= NEGATIVE_MASS_TOL``;
-    * ``tails``: both tail masses ``>= -h^2`` (h the log-strike step: the CDF's own finite-difference bias);
-    * ``analytic``: the grid integrals of ``d.density`` and ``analytic`` agree to ``ANALYTIC_TOL``;
-    * ``mean``: ``|mean / F - 1| <= MEAN_TOL``.
+    * ``negative_mass``: ``d.negative_mass <= NEGATIVE_MASS_TOL`` (butterfly arbitrage);
+    * ``analytic``: a numerical cross-check -- the grid integrals of the finite-difference ``d.density``
+      and of ``analytic`` agree to ``ANALYTIC_TOL``. Both are d2C/dK2 of the same smile, so this catches
+      a broken stencil or a grid that does not resolve the smile; it cannot detect arbitrage;
+    * ``mean``: ``|mean / F - 1| <= MEAN_TOL`` (the martingale condition).
 
-    (A non-monotone CDF never gets here: :func:`breeden_litzenberger` raises.) ``integral_plus_tails`` is
-    returned as information only (module docstring)."""
-    h = (d.k_range[1] - d.k_range[0]) / (d.strikes.size + 1)
+    A non-monotone CDF, or a tail mass below the CDF tolerance, never gets here:
+    :func:`breeden_litzenberger` raises. ``integral_plus_tails`` and the tail masses are information
+    only (module docstring)."""
     an = float(np.trapezoid(np.asarray(analytic, float), d.strikes))
     return {
         "integral_plus_tails": d.integral + d.tail_mass_left + d.tail_mass_right,
         "analytic_integral": an,
-        "tail_tol": h * h,
         "passed": {
             "negative_mass": bool(d.negative_mass <= NEGATIVE_MASS_TOL),
-            "tails": bool(min(d.tail_mass_left, d.tail_mass_right) >= -h * h),
             "analytic": bool(abs(d.integral - an) <= ANALYTIC_TOL),
             "mean": bool(abs(d.mean / d.forward - 1.0) <= MEAN_TOL),
         },

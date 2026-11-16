@@ -321,12 +321,10 @@ def rn_density(ticker: str, market: Market, expiry: str | None = None) -> dict[s
     passed = chk["passed"]
     if not passed["negative_mass"]:
         notes.append(f"negative density mass {d.negative_mass:.2e}: the smile violates the butterfly condition")
-    if not passed["tails"]:
-        notes.append(f"negative tail mass ({d.tail_mass_left:.2e} below, {d.tail_mass_right:.2e} above the grid): "
-                     "the call prices are not consistent with a distribution at the grid ends")
     if not passed["analytic"]:
-        notes.append(f"the finite-difference density integrates to {d.integral:.6f} on the grid, the smile's "
-                     f"closed-form density to {chk['analytic_integral']:.6f}: the grid does not resolve the smile")
+        notes.append(f"numerical cross-check failed: the finite-difference density integrates to {d.integral:.6f} "
+                     f"on the grid, the smile's closed-form density to {chk['analytic_integral']:.6f} -- the "
+                     "stencil or the grid does not resolve this smile (a numerical fault, not arbitrage)")
     if not passed["mean"]:
         notes.append(f"the density's mean is {d.mean / F - 1:+.3%} off the forward: the martingale condition fails")
     if tails > 1e-3:
@@ -340,7 +338,7 @@ def rn_density(ticker: str, market: Market, expiry: str | None = None) -> dict[s
         "lognormal_density": ln.density[sl], "atm_iv": atm,
         "checks": {"integral": d.integral, "tail_mass_left": d.tail_mass_left, "tail_mass_right": d.tail_mass_right,
                    "integral_plus_tails": chk["integral_plus_tails"], "analytic_integral": chk["analytic_integral"],
-                   "tail_tol": chk["tail_tol"], "passed": passed,
+                   "passed": passed,
                    "mean": d.mean, "forward": F, "mean_minus_forward": d.mean - F,
                    "negative_mass": d.negative_mass, "butterfly": f.butterfly},
         "moments": d.moments(), "lognormal_moments": ln.moments(),

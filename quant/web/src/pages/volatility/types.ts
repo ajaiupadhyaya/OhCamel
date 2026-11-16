@@ -265,9 +265,8 @@ export interface Density extends ChainHeader {
     tail_mass_left: number; // P(S_T below the grid)
     tail_mass_right: number; // P(S_T above the grid)
     integral_plus_tails: number; // information only: telescopes to 1 for any smile
-    analytic_integral: number; // grid integral of the smile's closed-form density
-    tail_tol: number; // tail masses below -tail_tol fail
-    passed: { negative_mass: boolean; tails: boolean; analytic: boolean; mean: boolean };
+    analytic_integral: number; // grid integral of the smile's closed-form density (numerical cross-check)
+    passed: { negative_mass: boolean; analytic: boolean; mean: boolean }; // analytic: stencil/grid, not arbitrage
     mean: number; forward: number; mean_minus_forward: number; negative_mass: number; butterfly: SviFit["butterfly"];
   };
   moments: Moments;

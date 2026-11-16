@@ -167,15 +167,18 @@ def test_bl_k_range_reuses_the_grid_of_a_skewed_density():
 
 
 def _failed(F_, D_, T_, p):
-    """The density checks (a)-(e) that p's density fails: (a) breeden_litzenberger raises
-    DensityError; (b) negative mass; (c) negative tail mass; (d) the grid integral against the
-    closed-form density of the smile; (e) the mean against the forward."""
+    """The density checks that p's density fails: (a) breeden_litzenberger raises DensityError (the
+    CDF falls, or a tail mass is below the CDF tolerance); (b) negative mass (butterfly arbitrage);
+    (d) the numerical cross-check -- the grid integral of the finite-difference density against the
+    smile's closed form on the same grid, which catches a broken stencil or an unresolved grid and
+    cannot detect arbitrage; (e) the mean against the forward (martingale). There is no (c): a
+    tail-mass check could only fail where (a) has already raised."""
     try:
         d = breeden_litzenberger(F_, D_, T_, p.w)
     except DensityError:
         return {"a"}
     chk = density_checks(d, density_k(p, np.log(d.strikes / F_)) / d.strikes)
-    names = {"negative_mass": "b", "tails": "c", "analytic": "d", "mean": "e"}
+    names = {"negative_mass": "b", "analytic": "d", "mean": "e"}
     return {names[n] for n, ok in chk["passed"].items() if not ok}
 
 
@@ -224,14 +227,14 @@ def test_integral_plus_tails_is_one_for_any_smile_so_the_checks_are_others():
         q, cdf = (Ckk - Ck) / Ki**2, 1.0 + Ck / Ki
         assert np.trapezoid(q, Ki) + cdf[0] + (1.0 - cdf[-1]) == pytest.approx(1.0, abs=1e-5)
         assert np.trapezoid(np.clip(-q, 0, None), Ki) > 1e-5          # yet the density goes negative
-        assert _failed(100.0, 1.0, T_, p) & {"a", "b", "c", "d"}
+        assert _failed(100.0, 1.0, T_, p) & {"a", "b", "d"}
 
 
 def test_spy_2026_11_15_every_density_passes_the_checks_that_can_fail(spy_2026_11_15):
-    """On the real chain of the review, every slice's density passes (a)-(e): no DensityError, no
-    negative mass, no negative tail mass, the grid integral within 1e-3 of the smile's closed-form
-    density on the same grid, and the mean within 0.5% of the forward. Before the wings were capped at
-    Lee's bound, mean/forward ran to 1.40."""
+    """On the real chain of the review, every slice's density passes (a), (b), (d) and (e): no
+    DensityError, no negative mass, the numerical cross-check (finite-difference grid integral within
+    1e-3 of the closed form's on the same grid), and the mean within 0.5% of the forward. Before the
+    wings were capped at Lee's bound, mean/forward ran to 1.40."""
     ca, vs, _ = spy_2026_11_15
     assert len(vs.fits) == 31
     bad = {}
