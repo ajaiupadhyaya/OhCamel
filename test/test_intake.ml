@@ -1951,9 +1951,11 @@ let test_no_drawdown_cap_governs_at_one_said_at_setup () =
    the last governor that was. A fresh gauge, as after a restart, with a 2 %
    cap: a thunk that raises, one that answers nan, and one that answers
    nothing all read governor 0.5, and with no overlay ever accepted the scale
-   is 1 x 0.5. A gauge that read a drawdown of 0 (governor 1) and then cannot
-   read falls to 0.5; one that read 0.02 (at the cap, governor 0) stays at 0:
-   an unknown number never sizes a capped book back up. *)
+   is 1 x 0.5. A gauge that has read a governor HOLDS it while the unread
+   spell is shorter than the debounce (the fix round's ruling on (f); no
+   adjust pass has counted one here): read 1, then unread, still 1; read 0
+   at the cap, then unread, still 0. test_desk_async drives the debounce
+   through to the fallback. *)
 let test_after_a_restart_with_no_drawdown_reading_the_governor_is_the_fallback () =
   let unread_by thunk =
     let r =
@@ -1984,9 +1986,9 @@ let test_after_a_restart_with_no_drawdown_reading_the_governor_is_the_fallback (
     (before, (Intake.reading ~latest:None g).Intake.Reading.governor)
   in
   Alcotest.(check (pair (float 0.0) (float 0.0)))
-    "read 1, then unread: 0.5" (1.0, 0.5) (read_then_lost 0.0);
+    "read 1, then unread: held at 1" (1.0, 1.0) (read_then_lost 0.0);
   Alcotest.(check (pair (float 0.0) (float 0.0)))
-    "read 0 at the cap, then unread: still 0" (0.0, 0.0) (read_then_lost 0.02)
+    "read 0 at the cap, then unread: held at 0" (0.0, 0.0) (read_then_lost 0.02)
 
 (* The overlay's age is counted in SESSION hours (overlay_max_age, 4 by
    default). The book here holds an accepted overlay for 100 wall-clock hours

@@ -145,7 +145,15 @@
  ;                           limit breaks" and "act when a limit breaks" are
  ;                           different levels of trust.
  ;   kill_switch_trips_on    which limits are hard enough to trip it. Empty
- ;                           means none, even when enabled.
+ ;                           means none, even when enabled. The names here
+ ;                           also bind the pre-trade gate, whatever
+ ;                           kill_switch_enabled and enabled say: while one
+ ;                           of these limits cannot be evaluated (a VaR whose
+ ;                           return window is not yet full, a drawdown that
+ ;                           cannot be measured), every proposal that raises
+ ;                           gross notional is refused, naming it. A proposal
+ ;                           that lowers gross or leaves it equal still
+ ;                           passes.
  ;
  ; What the kill switch actually does: it halts the desk. Every new order is
  ; refused, every open order the desk owns is cancelled, and positions are left

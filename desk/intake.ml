@@ -632,6 +632,18 @@ and sound ~latest ~bars_after ~spec ~(unvalidated : string option) (doc : Contra
    governor is 1 whatever the drawdown reads. Kept here, in the one gauge the
    intake and the desk share, so both say the same governor.
 
+   THE SELL-DOWN IS DEBOUNCED (Task 1.5's fix round, the coordinator's
+   ruling on (f)), as a held breach is (Config.Alerts' raise_after_n and
+   raise_after_s, Task 1.3): while a governor has been read, an unread
+   drawdown HOLDS it until the drawdown has gone unread for [unread_after]'s
+   n consecutive adjust passes spanning at least its s seconds on the
+   intake's injected clock ([count_pass]); only then does it fall to the
+   smaller of it and the fallback. One readable pass restarts the count.
+   With no governor ever read -- a restart, nothing read yet -- there is
+   nothing to hold, and it is the fallback at once. Raises are not waited
+   for: the gate refuses a gross-raising order at once while a trip-limit
+   cannot be evaluated. With n = 1 and s = 0 it is immediate.
+
    [zone] is the exchange's, America/New_York: the overlay's age is counted
    in its session hours (Desk_time.session_span). None when the tz database
    cannot be loaded, and then no overlay can be aged, and none stands. *)
@@ -642,12 +654,57 @@ module Gauge = struct
     drawdown : unit -> float option;
     dd_cap : float option;
     zone : Timezone.t option;
+    unread_after : int * float;
     mutable governor : float option;
+    (* Consecutive adjust passes that could not read the drawdown, the first
+       one's time, and whether they have passed [unread_after]. *)
+    mutable unread_passes : int;
+    mutable unread_from : Time_ns.t option;
+    mutable unread_settled : bool;
   }
 
-  let create ?(zone = Lazy.force Desk_time.new_york) ~spec ~venue_now ~drawdown ~dd_cap ()
-      =
-    { spec; venue_now; drawdown; dd_cap; zone; governor = None }
+  let create ?(zone = Lazy.force Desk_time.new_york)
+      ?(unread_after =
+        ( Ohcamel.Config.Alerts.default.Ohcamel.Config.Alerts.raise_after_n,
+          Ohcamel.Config.Alerts.default.Ohcamel.Config.Alerts.raise_after_s )) ~spec
+      ~venue_now ~drawdown ~dd_cap () =
+    {
+      spec;
+      venue_now;
+      drawdown;
+      dd_cap;
+      zone;
+      unread_after;
+      governor = None;
+      unread_passes = 0;
+      unread_from = None;
+      unread_settled = false;
+    }
+
+  (* The drawdown, when it can be read: None when the thunk raises, answers
+     nothing, or answers a number that is not finite. *)
+  let read_drawdown t =
+    match t.drawdown () with
+    | Some d when Float.is_finite d -> Some d
+    | Some _ | None -> None
+    | exception _ -> None
+
+  (* One adjust pass's count: a pass with no cap, or whose drawdown reads,
+     restarts it. *)
+  let count_pass t ~(now : Time_ns.t) =
+    let readable = Option.is_none t.dd_cap || Option.is_some (read_drawdown t) in
+    if readable then (
+      t.unread_passes <- 0;
+      t.unread_from <- None;
+      t.unread_settled <- false)
+    else
+      let from = Option.value t.unread_from ~default:now in
+      let n, s = t.unread_after in
+      t.unread_passes <- t.unread_passes + 1;
+      t.unread_from <- Some from;
+      t.unread_settled <-
+        t.unread_passes >= n
+        && Float.( >= ) (Time_ns.Span.to_sec (Time_ns.diff now from)) s
 
   let none () =
     create ~spec:Ohcamel.Config.Book.Desk_spec.default
@@ -724,14 +781,17 @@ let reading ~(latest : (int * string * float * string) option) (g : Gauge.t) : R
     match g.dd_cap with
     | None -> (1.0, false)
     | Some _ -> (
-        let unread () = (Overlay.unread_governor ~fallback ~last:g.governor, true) in
-        match g.drawdown () with
-        | Some d when Float.is_finite d ->
+        match Gauge.read_drawdown g with
+        | Some d ->
             let governor = Overlay.governor ~drawdown:(Some d) ~dd_cap:g.dd_cap in
             g.governor <- Some governor;
             (governor, false)
-        | Some _ | None -> unread ()
-        | exception _ -> unread ())
+        | None -> (
+            (* Held while the unread spell is shorter than the debounce;
+               nothing to hold before any read. *)
+            match g.governor with
+            | Some last when not g.unread_settled -> (last, true)
+            | last -> (Overlay.unread_governor ~fallback ~last, true)))
   in
   let now = g.venue_now () in
   let received_at =
@@ -913,9 +973,11 @@ let current_reading t =
       t.on_event
         (sprintf
            "intake    the graph's drawdown cannot be read, so the governor is %g: the \
-            book's overlay_fallback, or the last governor read if smaller -- a number \
-            nobody knows sizes down, never up"
-           r.governor)))
+            last one read holds until the drawdown has gone unread for %d adjust passes \
+            over %gs, then the book's overlay_fallback or that last governor if smaller \
+            (with none read, the fallback at once) -- a number nobody knows sizes down, \
+            never up"
+           r.governor (fst t.gauge.unread_after) (snd t.gauge.unread_after))))
   else Hash_set.remove t.said key;
   r
 
@@ -1387,8 +1449,19 @@ let rec sized_whole : Oms.Rebalance_outcome.t -> bool = function
   | Waved { waves; timed_out = false } -> List.for_all waves ~f:sized_whole
   | Waved { timed_out = true; _ } | Stopped _ | Refused _ | Not_now _ -> false
 
-let rebalance ?(mode = Rebalance.Mode.Open) ?(sizing_mode = "open") ?note t ~oms
-    ~(scale : unit -> Parts.t) (a : Accepted.t) : Rebalanced.t Deferred.t =
+(* Whether a leg takes the strategy's own position in its name further from
+   zero. A position that cannot be read is treated as growing: unknown is not
+   permission. *)
+let grows oms (strategy : Signals_spec.Strategy.t) (l : Rebalance.Leg.t) =
+  match Oms.strategy_position oms ~strategy:strategy.name with
+  | Error _ -> true
+  | Ok own ->
+      let q = Option.value (Map.find own l.Rebalance.Leg.symbol) ~default:0.0 in
+      let after = q +. (Order.Side.sign l.side *. Float.of_int l.qty) in
+      Float.( > ) (Float.abs after) (Float.abs q)
+
+let rebalance ?(mode = Rebalance.Mode.Open) ?(sizing_mode = "open") ?(only_shrink = false)
+    ?note t ~oms ~(scale : unit -> Parts.t) (a : Accepted.t) : Rebalanced.t Deferred.t =
   let doc = a.Accepted.doc in
   let strategy = a.Accepted.strategy in
   let source =
@@ -1458,6 +1531,13 @@ let rebalance ?(mode = Rebalance.Mode.Open) ?(sizing_mode = "open") ?note t ~oms
           sized ();
           return
             (Rebalanced.final ("no order: every order was " ^ floor_sentence dropped))
+      | Ok (legs, _) when only_shrink && List.exists legs ~f:(grows oms strategy) ->
+          return
+            (Rebalanced.final
+               (sprintf
+                  "held: a re-size on an overlay that no longer stands only shrinks, and \
+                   this one would grow the strategy's own position: %s"
+                  (String.concat ~sep:"; " (List.map legs ~f:Rebalance.Leg.describe))))
       | Ok (legs, dropped) ->
           let%map outcome = Oms.propose_rebalance oms ~source ~legs ~mode in
           if sized_whole outcome then sized ();
@@ -1679,17 +1759,24 @@ let collect_pending t : Accepted.t list =
      the fallback every morning only to buy back at the next overlay would
      churn the book.
    - BUT A HOLD ENDS WITH THE OVERLAY (Task 1.5: unknown is not
-     permission). Once the latest overlay is older than overlay_max_age
-     SESSION hours, or its age cannot be told (Reading.decayed), the factor
-     a stale reading holds decays to the fallback -- or stays where it is,
-     if it is already smaller (Overlay.factor) -- and a decay that moves it
-     more than the band re-sizes the strategy at it, its row noted "decay"
-     (or "governor" when the governor moved too). Session hours, so the
+     permission). The factor a stale reading holds is never above the
+     latest ACCEPTED overlay's scale: an evening overlay is accepted and
+     sizes nothing, and a lower one must not be overruled the next morning
+     by the daytime factor it followed. And once the latest overlay is
+     older than overlay_max_age SESSION hours, or its age cannot be told
+     (Reading.decayed), the held factor decays to the fallback -- or stays
+     where it is, if it is already smaller (Overlay.factor). A held factor
+     that so moves more than the band re-sizes the strategy at it, its row
+     noted "overlay" (capped by the latest overlay) or "decay" (or
+     "governor" when the governor moved too). Session hours, so the
      evening-to-morning spell the hold exists for does not count, and a
      producer that died at 10:00 has the book at the fallback by 14:00 at
-     the latest. A sizing row with no factor recorded is re-sized at the
-     reading, by the band, once the overlay has decayed; an unsized
-     strategy that holds a position is re-sized at the reading too.
+     the latest. These re-sizes ONLY SHRINK: one whose legs would grow the
+     strategy's own position is held whole ([rebalance]'s only_shrink). A
+     sizing row with no factor recorded is re-sized at the reading once the
+     overlay has decayed, and only when that is below it; an unsized
+     strategy that holds a position is re-sized at the reading too, only
+     shrinking.
 
    The strategies are proposed concurrently, at most eight at once: each
    wave is its own sequencer job and the waits interleave, so one
@@ -1713,6 +1800,7 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
       t.adjusting <- true;
       let%map result =
         Monitor.try_with ~extract_exn:true (fun () ->
+            Gauge.count_pass t.gauge ~now:(t.now ());
             let reading = current_reading t in
             let effective = reading.Reading.exposure_scale in
             let stale =
@@ -1737,11 +1825,19 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                   t.gauge.spec.Ohcamel.Config.Book.Desk_spec.overlay_max_age
                   t.gauge.spec.Ohcamel.Config.Book.Desk_spec.overlay_fallback))
             else Hash_set.remove t.said decay_key;
-            (* The factor a stale reading holds: the last sizing's, while the
-               overlay stands; past overlay_max_age session hours, or of no
-               age that can be told, the fallback or less. *)
+            (* The factor a stale reading holds: the last sizing's, but never
+               above the latest ACCEPTED overlay's scale (an evening overlay is
+               accepted and sizes nothing, and a lower one must not be
+               overruled by the daytime factor before it), while the overlay
+               stands; past overlay_max_age session hours, or of no age that
+               can be told, the fallback or less. *)
+            let capped f =
+              match reading.overlay with Some v -> Float.min f v | None -> f
+            in
             let held f =
-              Overlay.factor ~overlay:(Some f) ~age:reading.session_age
+              Overlay.factor
+                ~overlay:(Some (capped f))
+                ~age:reading.session_age
                 ~max_age:
                   (Time_ns.Span.of_hr
                      t.gauge.spec.Ohcamel.Config.Book.Desk_spec.overlay_max_age)
@@ -1907,8 +2003,9 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                             else if unsized then
                               (* ... until the overlay has decayed: then the
                                  position it holds is sized at the reading. *)
-                              if holds s && ((not stale) || decayed) then
-                                Some (now_parts, None)
+                              if holds s && not stale then Some (now_parts, None)
+                              else if holds s && decayed then
+                                Some (now_parts, Some "decay")
                               else None
                             else
                               let z = Option.value_exn last in
@@ -1948,11 +2045,17 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                                           },
                                           Some
                                             (if governor_moved then "governor"
-                                             else "decay") )
+                                             else if Float.( < ) f' (capped f) then
+                                               "decay"
+                                             else "overlay") )
                                     else None
                                 | _ ->
-                                    if decayed && beyond effective last_effective then
-                                      Some (now_parts, Some "decay")
+                                    (* Downward only: a decay never buys. *)
+                                    if
+                                      decayed
+                                      && Float.( < ) effective last_effective
+                                      && beyond effective last_effective
+                                    then Some (now_parts, Some "decay")
                                     else None
                           in
                           match decision with
@@ -1972,12 +2075,20 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                 let name = a.Accepted.strategy.name in
                 let completing = Option.equal String.equal note (Some "completion") in
                 let flattening = Option.equal String.equal note (Some "stop") in
+                (* A re-size because the overlay can no longer be trusted only
+                   ever shrinks: any leg that would grow the strategy's own
+                   position holds the whole re-size. *)
+                let only_shrink =
+                  match note with
+                  | Some ("decay" | "overlay") -> true
+                  | Some _ | None -> false
+                in
                 let%map outcome =
                   match%map
                     Monitor.try_with ~extract_exn:true (fun () ->
                         rebalance ~mode:Rebalance.Mode.Intraday
                           ~sizing_mode:(if completing then "complete" else "adjust")
-                          ?note t ~oms
+                          ~only_shrink ?note t ~oms
                           ~scale:(fun () -> parts)
                           a)
                   with

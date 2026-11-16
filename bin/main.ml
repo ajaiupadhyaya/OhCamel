@@ -1491,6 +1491,9 @@ let run_live ~book_path ~(serve_port : int option) =
          the same numbers. *)
       let gauge =
         Ohcamel_desk.Intake.Gauge.create ~spec:book.Config.Book.desk
+          ~unread_after:
+            ( book.Config.Book.alerts.Config.Alerts.raise_after_n,
+              book.Config.Book.alerts.Config.Alerts.raise_after_s )
           ~venue_now:(fun () -> Ohcamel_desk.Desk.venue_now desk)
           ~drawdown:(fun () -> Some (Graph.current_drawdown graph))
           ~dd_cap:(Ohcamel_desk.Intake.Gauge.dd_cap_of_limits limits)
@@ -1843,6 +1846,8 @@ let run_demo ~port =
      governor on the synthetic book's drawdown. *)
   Ohcamel_desk.Desk.set_gauge desk
     (Ohcamel_desk.Intake.Gauge.create ~spec:demo_desk_spec
+       ~unread_after:
+         (demo_alerts.Config.Alerts.raise_after_n, demo_alerts.Config.Alerts.raise_after_s)
        ~venue_now:(fun () -> Ohcamel_desk.Desk.venue_now desk)
        ~drawdown:(fun () -> Some (Graph.current_drawdown graph))
        ~dd_cap:(Ohcamel_desk.Intake.Gauge.dd_cap_of_limits demo_limits)

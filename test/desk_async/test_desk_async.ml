@@ -122,14 +122,14 @@ let manager ?trade ?read ?(now = Time_ns.now) ?(book_is_current = fun () -> true
     ?(halt = D.Halt.create D.Halt.Source.none) ?(on_change = ignore) ?(on_event = ignore)
     ?(run = true) ?(incubation_cap = 0.0)
     ?(max_order_notional = Desk_spec.default.Desk_spec.max_order_notional)
-    ?(reduce_through_trip = false) f =
+    ?(reduce_through_trip = false) ?(trips_on = []) f =
   let trade =
     match trade with Some t -> t | None -> D.Sim_venue.trade ~auto:false f.venue
   in
   let read = match read with Some r -> r | None -> D.Sim_venue.read f.venue in
   incr managers_built;
   let oms =
-    D.Oms.create ~graph:f.graph ~journal:f.journal ~trips_on:[]
+    D.Oms.create ~graph:f.graph ~journal:f.journal ~trips_on
       ~spec:
         {
           Desk_spec.default with
@@ -3244,10 +3244,10 @@ type adjust_fixture = {
 let adjust_case ?(last_scale = 0.70) ?last_ratio ?last_factor ?last_governor
     ?(sizing_row = true) ?(stale = false) ?stale_at ?(incubation_cap = 0.5)
     ?(drawdown = fun () -> None) ?dd_cap ?(adjust_now = true) ?(bought = true) ?unfilled
-    ?halt ?reduce_through_trip ~(sizing : Ohcamel.Config.Book.Signals_spec.sizing)
-    ~overlay () =
+    ?halt ?reduce_through_trip ?limits ?trips_on ?unread_after
+    ~(sizing : Ohcamel.Config.Book.Signals_spec.sizing) ~overlay () =
   let name = "exp_adjust" in
-  let f = fixture () in
+  let f = fixture ?limits () in
   record_close f;
   (* 11:00 EDT on Tuesday when the case starts, and then the case's clock:
      the duplicate rule reads the manager's now, and a case that proposes
@@ -3255,7 +3255,8 @@ let adjust_case ?(last_scale = 0.70) ?last_ratio ?last_factor ?last_governor
      a double-click because the clock never moved. *)
   let now () = Time_ns.add tuesday_mid (Time_ns.diff (Time_source.now f.clock) t0) in
   let oms =
-    manager ?halt ?reduce_through_trip ~incubation_cap ~max_order_notional:50_000.0 ~now f
+    manager ?halt ?reduce_through_trip ?trips_on ~incubation_cap
+      ~max_order_notional:50_000.0 ~now f
   in
   let source =
     {
@@ -3387,7 +3388,7 @@ let adjust_case ?(last_scale = 0.70) ?last_ratio ?last_factor ?last_governor
   let intake =
     D.Intake.create
       ~gauge:
-        (D.Intake.Gauge.create ~spec:(D.Oms.spec oms)
+        (D.Intake.Gauge.create ?unread_after ~spec:(D.Oms.spec oms)
            ~venue_now:(fun () -> Some (now ()))
            ~drawdown ~dd_cap ())
       ~journal:f.journal ~dir
@@ -3612,14 +3613,17 @@ let test_overlay_zero_flattens_and_alerts () =
   cleanup ()
 
 (* An unknown drawdown governs at the fallback (Task 1.5, which replaces the
-   fix round's ruling B: the last governor no longer holds). The graph's
-   drawdown reads 0 against a 2 % cap, a governor of 1, and the overlay of
-   0.70 equals the last sizing: nothing moves. Then the drawdown raises: the
-   governor is the book's overlay_fallback, 0.5 -- the smaller of it and the
-   last governor read, 1 -- so the effective scale is 0.70 x 0.5 = 0.35, a
-   move of 0.35, beyond the band: re-sized to trunc(0.5 x 0.35 x 100,000 /
-   100) = 175 from 350, Sell 175. The next pass sells nothing more, and the
-   unread drawdown is said once. *)
+   fix round's ruling B), and the sell-down waits out the debounce of a held
+   breach (the fix round's ruling on (f)): 3 consecutive adjust passes over
+   at least 30 s, the alerts' defaults. The graph's drawdown reads 0 against
+   a 2 % cap, a governor of 1, and the overlay of 0.70 equals the last
+   sizing: nothing moves. Then the drawdown raises. One unread pass sells
+   nothing -- the governor holds at 1. Once the drawdown has gone unread for
+   3 passes over at least 30 s the governor is the book's overlay_fallback,
+   0.5 (the smaller of it and the last governor read, 1), so the effective
+   scale is 0.70 x 0.5 = 0.35, beyond the band: re-sized to trunc(0.5 x 0.35
+   x 100,000 / 100) = 175 from 350, Sell 175, once. The unread drawdown is
+   said once. *)
 let test_an_unknown_drawdown_governs_at_the_fallback () =
   let read = ref (fun () -> Some 0.0) in
   let%bind { a_f = f; a_name = name; a_intake = intake; pass_and_adjust; cleanup; _ } =
@@ -3632,10 +3636,21 @@ let test_an_unknown_drawdown_governs_at_the_fallback () =
     (D.Intake.current_reading intake).D.Intake.Reading.governor;
   (read := fun () -> failwith "the graph is not stabilized");
   let%bind () = pass_and_adjust ~at:6.0 in
-  let%map () = pass_and_adjust ~at:8.0 in
   let r = D.Intake.current_reading intake in
   Alcotest.(check (pair (float 0.0) bool))
-    "the fallback, 0.5" (0.5, true)
+    "one unread pass: held at 1" (1.0, true)
+    (r.D.Intake.Reading.governor, r.D.Intake.Reading.governor_unread);
+  Alcotest.(check (list (triple string int string)))
+    "one unread pass sells nothing"
+    [ ("buy", 350, "limit day") ]
+    (strategy_orders f name);
+  let%bind () = pass_and_adjust ~at:20.0 in
+  let%bind () = pass_and_adjust ~at:60.0 in
+  let%bind () = pass_and_adjust ~at:100.0 in
+  let%map () = pass_and_adjust ~at:140.0 in
+  let r = D.Intake.current_reading intake in
+  Alcotest.(check (pair (float 0.0) bool))
+    "past both thresholds: the fallback, 0.5" (0.5, true)
     (r.D.Intake.Reading.governor, r.D.Intake.Reading.governor_unread);
   Alcotest.(check int)
     "said once" 1
@@ -3643,6 +3658,56 @@ let test_an_unknown_drawdown_governs_at_the_fallback () =
        ~f:(String.is_substring ~substring:"drawdown cannot be read"));
   Alcotest.(check (list (triple string int string)))
     "sold to the fallback's size, once"
+    [ ("buy", 350, "limit day"); ("sell", 175, "limit day") ]
+    (strategy_orders f name);
+  cleanup ()
+
+(* One readable pass restarts the count. Unread for two passes, then
+   readable for one, then unread for two more -- two since the restart, short
+   of 3 however long they span: nothing is sold. The third unread pass since
+   the restart, more than 30 s after its first, sells to the fallback: Sell
+   175. *)
+let test_a_readable_pass_restarts_the_unread_count () =
+  let read = ref (fun () -> Some 0.0) in
+  let unread () = read := fun () -> Some Float.nan in
+  let readable () = read := fun () -> Some 0.0 in
+  let%bind { a_f = f; a_name = name; pass_and_adjust; cleanup; _ } =
+    adjust_case
+      ~drawdown:(fun () -> !read ())
+      ~dd_cap:0.02 ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.70" ()
+  in
+  unread ();
+  let%bind () = pass_and_adjust ~at:20.0 in
+  let%bind () = pass_and_adjust ~at:60.0 in
+  readable ();
+  let%bind () = pass_and_adjust ~at:100.0 in
+  unread ();
+  let%bind () = pass_and_adjust ~at:140.0 in
+  let%bind () = pass_and_adjust ~at:180.0 in
+  Alcotest.(check (list (triple string int string)))
+    "two unread passes since the readable one: nothing sold"
+    [ ("buy", 350, "limit day") ]
+    (strategy_orders f name);
+  let%map () = pass_and_adjust ~at:220.0 in
+  Alcotest.(check (list (triple string int string)))
+    "the third: Sell 175"
+    [ ("buy", 350, "limit day"); ("sell", 175, "limit day") ]
+    (strategy_orders f name);
+  cleanup ()
+
+(* The debounce's n = 1 and s = 0 is the immediate rule: the first unread
+   pass sells to the fallback, Sell 175. *)
+let test_an_unread_drawdown_with_no_debounce_sells_at_once () =
+  let read = ref (fun () -> Some 0.0) in
+  let%bind { a_f = f; a_name = name; pass_and_adjust; cleanup; _ } =
+    adjust_case ~unread_after:(1, 0.0)
+      ~drawdown:(fun () -> !read ())
+      ~dd_cap:0.02 ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.70" ()
+  in
+  (read := fun () -> None);
+  let%map () = pass_and_adjust ~at:6.0 in
+  Alcotest.(check (list (triple string int string)))
+    "Sell 175 at once"
     [ ("buy", 350, "limit day"); ("sell", 175, "limit day") ]
     (strategy_orders f name);
   cleanup ()
@@ -4270,11 +4335,12 @@ let test_a_final_refusal_still_ends_the_judgement () =
    is proposed, the sizing is untouched, and the hold is said once over two
    passes. Then the governor falls to 0.5 -- a drawdown of 1.5 % against a
    2 % cap -- while the overlay is still stale: a move of 0.5, beyond the
-   band, and the strategy is re-sized at the factor it was last sized with
-   times the governor now, 1.0 x 0.5 = 0.5 (not the fallback's 0.5 x 0.5):
-   trunc(1.0 x 0.5 x 0.5 x 100,000 / 100) = 250 from its own 350, Sell 100
-   as a day limit; the row at scale 0.5, mode adjust, note governor, factor
-   1, governor 0.5. *)
+   band, and the strategy is re-sized at the factor it held times the
+   governor now (not the fallback's 0.5 x 0.5). The held factor is the one
+   it was last sized with, 1.0, capped by the latest accepted overlay's 0.9
+   (the fix round's I-2): 0.9 x 0.5 = 0.45, trunc(0.5 x 0.45 x 100,000 /
+   100) = 225 from its own 350, Sell 125 as a day limit; the row at scale
+   0.45, mode adjust, note governor, factor 0.9, governor 0.5. *)
 let test_a_stale_overlay_holds_and_a_governor_move_re_sizes () =
   let drawdown = ref 0.0 in
   let%bind { a_f = f; a_name = name; pass_and_adjust; cleanup; _ } =
@@ -4295,8 +4361,8 @@ let test_a_stale_overlay_holds_and_a_governor_move_re_sizes () =
   drawdown := 0.015;
   let%map () = pass_and_adjust ~at:10.0 in
   Alcotest.(check (list (triple string int string)))
-    "the governor's move: Sell 100"
-    [ ("buy", 350, "limit day"); ("sell", 100, "limit day") ]
+    "the governor's move: Sell 125"
+    [ ("buy", 350, "limit day"); ("sell", 125, "limit day") ]
     (strategy_orders f name);
   (match D.Journal.latest_sizing_row f.journal ~strategy:name with
   | None -> Alcotest.fail "no sizing row"
@@ -4306,8 +4372,8 @@ let test_a_stale_overlay_holds_and_a_governor_move_re_sizes () =
           (pair
              (pair (float 1e-12) (pair string (option string)))
              (list (option (float 1e-12)))))
-        "scale 0.5, adjust, governor; factor 1, governor 0.5"
-        ((0.5, ("adjust", Some "governor")), [ Some 1.0; Some 0.5 ])
+        "scale 0.45, adjust, governor; factor 0.9, governor 0.5"
+        ((0.45, ("adjust", Some "governor")), [ Some 0.9; Some 0.5 ])
         ((z.D.Journal.Sizing.scale, (z.mode, z.note)), [ z.factor; z.governor ]));
   cleanup ()
 
@@ -4357,6 +4423,111 @@ let test_a_held_sizing_decays_to_the_fallback_after_four_session_hours () =
     "the decay said once" 1
     (List.count (Queue.to_list f.events)
        ~f:(String.is_substring ~substring:"every held sizing decays to the fallback"));
+  cleanup ()
+
+(* A decay never buys (the fix round's I-1). The strategy holds nothing
+   (all 100,000 in cash) and its last sizing row is at scale 0 with no
+   factor recorded -- a stop's flatten row, say, on a strategy since
+   reinstated. The overlay, 0.9, is stale and 5 session hours old: decayed,
+   and the reading is min(0.9, 0.5) = 0.5, above the row's 0. Re-sizing at
+   it would buy trunc(0.5 x 0.5 x 100,000 / 100) = 250; a decay re-sizes
+   only downward, so nothing is proposed and the row stands. *)
+let test_a_decay_never_buys_from_a_factorless_row () =
+  let monday s = Time_ns.of_string_with_utc_offset ("2026-09-14T" ^ s ^ "Z") in
+  let%map { a_f = f; a_name = name; cleanup; _ } =
+    adjust_case ~bought:false ~stale:true ~stale_at:(monday "16:30:00") ~last_scale:0.0
+      ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.9" ()
+  in
+  Alcotest.(check (pair (list (triple string int string)) string))
+    "nothing bought, the row stands" ([], "open")
+    (strategy_orders f name, latest_sizing_mode f name);
+  cleanup ()
+
+(* The held factor is capped by the latest ACCEPTED overlay (the fix round's
+   I-2). The strategy was sized in the day at 0.9 (factor 0.9, governor 1);
+   the 20:10 overlay said 0.3 and was accepted, sizing nothing, and then the
+   producer died. Next morning at 11:00 the reading is stale, the overlay
+   1.5 session hours old: within overlay_max_age, so this is a hold -- but a
+   hold of the 0.3 the desk was last told, not the daytime 0.9:
+   trunc(0.5 x 0.3 x 100,000 / 100) = 150 from 350, Sell 200, the row at
+   0.3, adjust, noted "overlay", factor 0.3, governor 1. *)
+let test_a_stale_hold_is_capped_by_the_latest_accepted_overlay () =
+  let%map { a_f = f; a_name = name; cleanup; _ } =
+    adjust_case ~stale:true
+      ~stale_at:(Time_ns.of_string_with_utc_offset "2026-09-15T00:10:00Z")
+      ~last_scale:0.9 ~last_ratio:1.0 ~last_factor:0.9 ~last_governor:1.0
+      ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.3" ()
+  in
+  Alcotest.(check (list (triple string int string)))
+    "held at the 0.3: Sell 200"
+    [ ("buy", 350, "limit day"); ("sell", 200, "limit day") ]
+    (strategy_orders f name);
+  (match D.Journal.latest_sizing_row f.journal ~strategy:name with
+  | None -> Alcotest.fail "no sizing row"
+  | Some z ->
+      Alcotest.(
+        check
+          (pair
+             (pair (float 1e-12) (pair string (option string)))
+             (list (option (float 1e-12)))))
+        "scale 0.3, adjust, overlay; factor 0.3, governor 1"
+        ((0.3, ("adjust", Some "overlay")), [ Some 0.3; Some 1.0 ])
+        ((z.D.Journal.Sizing.scale, (z.mode, z.note)), [ z.factor; z.governor ]));
+  cleanup ()
+
+(* Task 1.2 and this task together (the fix round's m6). The switch is
+   tripped, the book's reduce_through_trip is on, and var-cap -- a VaR limit
+   on the portfolio, named in kill_switch_trips_on -- cannot be evaluated:
+   XOM's return window is emptied, so the aligned window is empty. A stopped
+   strategy's flatten lowers gross, so the unknown limit does not refuse it,
+   and the trip lets it through as a reduction: Sell 350 reaches the venue.
+   A buy of 10 AAPL raises gross and is refused, naming var-cap. *)
+let test_a_flatten_passes_an_unevaluable_trip_limit_and_a_buy_is_refused () =
+  let halt, trip = trippable () in
+  let var_cap =
+    {
+      Limit.name = "var-cap";
+      scope = Limit.Portfolio;
+      kind = Limit.Value_at_risk (Notional.of_float 1e9);
+    }
+  in
+  let%bind { a_f = f; a_name = name; a_oms = oms; pass_and_adjust; cleanup; _ } =
+    adjust_case ~adjust_now:false ~halt ~reduce_through_trip:true
+      ~limits:[ tech_cap; var_cap ] ~trips_on:[ "var-cap" ]
+      ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.70" ()
+  in
+  Graph.set_returns f.graph xom [||];
+  Graph.stabilize f.graph;
+  Alcotest.(check bool)
+    "var-cap is unevaluable" true
+    (List.exists (Graph.limit_results f.graph) ~f:(fun (l, b) ->
+         String.equal (Limit.name l) "var-cap" && Option.is_none b));
+  D.Journal.set_strategy_state f.journal ~strategy:name ~state:`Stopped
+    ~rule:(Some "drawdown") ~at:evening ~detail:"drawdown 20.0% reached its line of 15.0%";
+  trip ();
+  let received = D.Sim_venue.received f.venue in
+  let%map () = pass_and_adjust ~at:4.0 in
+  Alcotest.(check (list (triple string int string)))
+    "the buy, then the flatten's Sell 350"
+    [ ("buy", 350, "limit day"); ("sell", 350, "limit day") ]
+    (strategy_orders f name);
+  Alcotest.(check int)
+    "the sell reached the venue" (received + 1)
+    (D.Sim_venue.received f.venue);
+  let buy =
+    D.Oms.preview oms
+      {
+        D.Ticket.symbol = aapl;
+        side = D.Order.Side.Buy;
+        qty = 10;
+        kind = D.Order.Kind.Market;
+      }
+  in
+  Alcotest.(check (pair bool bool))
+    "the buy is refused, naming var-cap" (false, true)
+    ( D.Oms.Preview.passed buy,
+      List.exists (D.Oms.Preview.reasons buy)
+        ~f:(String.is_substring ~substring:"var-cap cannot be evaluated") );
   cleanup ()
 
 (* A-I4. An incubation strategy at the canary's ratio: a cap of 0.087 over
@@ -4845,6 +5016,16 @@ let suites =
         case "adjust beyond band re-sizes" test_adjust_beyond_band_re_sizes;
         case "an unknown drawdown governs at the fallback"
           test_an_unknown_drawdown_governs_at_the_fallback;
+        case "a readable pass restarts the unread count"
+          test_a_readable_pass_restarts_the_unread_count;
+        case "an unread drawdown with no debounce sells at once"
+          test_an_unread_drawdown_with_no_debounce_sells_at_once;
+        case "a decay never buys from a factorless row"
+          test_a_decay_never_buys_from_a_factorless_row;
+        case "a stale hold is capped by the latest accepted overlay"
+          test_a_stale_hold_is_capped_by_the_latest_accepted_overlay;
+        case "a flatten passes an unevaluable trip-limit and a buy is refused"
+          test_a_flatten_passes_an_unevaluable_trip_limit_and_a_buy_is_refused;
         case "a held sizing decays to the fallback after four session hours"
           test_a_held_sizing_decays_to_the_fallback_after_four_session_hours;
         case "a product of zero moves by the band alone"

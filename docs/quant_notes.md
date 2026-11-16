@@ -721,9 +721,9 @@ bool and an excess magnitude). A limit is:
 
 Unknown is not permission: when a limit named in the book's
 `kill_switch_trips_on` is unevaluable and the proposal **raises gross
-notional** -- $G_	ext{after} > G_	ext{before}$ strictly, $G$ the
+notional** -- $G_\text{after} > G_\text{before}$ strictly, $G$ the
 portfolio's gross exposure (the quantity a Portfolio `Gross_notional`
-limit reads), with no $arepsilon$, and a $G$ that is not a number
+limit reads), with no $\varepsilon$, and a $G$ that is not a number
 counted as a raise -- the proposal is refused (`Refused_unevaluable`),
 naming those limits in the book's order. Equal gross is not a raise; a
 swap that lowers one name and raises another by more is one.

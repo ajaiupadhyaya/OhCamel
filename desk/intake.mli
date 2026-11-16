@@ -55,15 +55,20 @@ val read : ?between:(unit -> unit) -> string -> ident -> read
     (the thunk raises, or answers nothing or a non-finite number) -- including the first
     read after a restart -- governs at the book's [overlay_fallback], or at the last
     governor read when that is smaller ({!Overlay.unread_governor}): unknown is not
-    permission. With no cap the governor is 1. [zone] (America/New_York by default) is the
-    exchange's, whose session hours age the overlay ({!Desk_time.session_span}); with
-    none, no overlay can be aged and none stands. One gauge is shared by the intake and
-    the desk. *)
+    permission. The sell-down is debounced: while a governor has been read, an unread
+    drawdown holds it until it has gone unread for [unread_after]'s n consecutive adjust
+    passes spanning at least its s seconds on the intake's clock (by default the alerts'
+    [raise_after_n] and [raise_after_s], 3 and 30 s); one readable pass restarts the
+    count; with none ever read it is the fallback at once. With no cap the governor is 1.
+    [zone] (America/New_York by default) is the exchange's, whose session hours age the
+    overlay ({!Desk_time.session_span}); with none, no overlay can be aged and none
+    stands. One gauge is shared by the intake and the desk. *)
 module Gauge : sig
   type t
 
   val create :
     ?zone:Timezone.t option ->
+    ?unread_after:int * float ->
     spec:Ohcamel.Config.Book.Desk_spec.t ->
     venue_now:(unit -> Time_ns.t option) ->
     drawdown:(unit -> float option) ->
@@ -96,8 +101,9 @@ module Reading : sig
     governor : float;
     governor_cap : float option;  (** The book's drawdown cap; None governs at 1. *)
     governor_unread : bool;
-        (** The drawdown could not be read: the governor is the fallback, or the last
-            governor read if smaller. *)
+        (** The drawdown could not be read: the last governor read holds until the unread
+            spell passes [unread_after], then the fallback or that governor if smaller;
+            with none read, the fallback. *)
     overlay : float option;  (** The latest accepted overlay's scale, whatever its age. *)
     as_of : string option;
     age_s : int option;  (** Seconds since it was received, on the venue clock. *)
@@ -221,7 +227,12 @@ val adjust : t -> oms:Oms.t option -> unit Deferred.t
     says exactly 0 and the last scale was not; or the reading is stale and the governor
     moved more than the band from the last sizing's -- then at that sizing's overlay
     factor times the governor now, noted "governor". A stale reading otherwise holds every
-    last sizing, said once a spell.
+    last sizing, said once a spell. The factor it holds is never above the latest accepted
+    overlay's scale, and once that overlay is older than [overlay_max_age] session hours
+    (or of no age that can be told) it decays to the fallback or less; a held factor that
+    so moves more than the band re-sizes the strategy, noted "overlay" or "decay". Those
+    re-sizes only ever shrink: one whose legs would grow the strategy's own position is
+    held whole, and a sizing with no factor recorded is re-sized on a decay only downward.
 
     Before any of that, THE COMPLETION: when orders of that document ended with shares
     unfilled after the strategy's latest sizing ({!Journal.source_orders_unfilled}) --

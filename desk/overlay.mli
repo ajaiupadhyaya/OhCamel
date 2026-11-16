@@ -66,7 +66,11 @@ val unread_governor : fallback:float -> last:float option -> float
     non-finite number or nothing -- including the first read after a restart: the book's
     [overlay_fallback], or the [last] governor read when that is smaller. Unknown is not
     permission: it never sizes above the fallback, nor above what the last readable
-    drawdown allowed (a book at its cap stays at 0). A non-finite result gives [0.0]. *)
+    drawdown allowed (a book at its cap stays at 0). A non-finite result gives [0.0]. The
+    desk does not ask it at once: while a governor has been read, Intake holds that last
+    governor until the drawdown has gone unread for the alerts' [raise_after_n]
+    consecutive adjust passes spanning [raise_after_s] seconds (one readable pass restarts
+    the count), and only then governs by this; with none read it asks at once. *)
 
 val within : age:Time_ns.Span.t option -> max_age:Time_ns.Span.t -> bool
 (** [age] is known, not negative, and at most [max_age]. *)

@@ -142,8 +142,13 @@ absent one reads 1.0. A document the opening auction's window refuses (before 19
 the first pass after 19:00; nothing is sized before the venue's clock has answered; the adjust pass holds while the
 overlay is stale and acts on governor moves -- until the overlay is older than `overlay_max_age` (4 session hours by
 default) or its age cannot be told, when every held sizing decays to `overlay_fallback` (never above the overlay's own
-value). A drawdown that cannot be read governs at `overlay_fallback` (never above the last governor read), and a
-limit the kill switch trips on that cannot be evaluated refuses any order that raises gross notional.
+value), and the factor it holds is never above the latest accepted overlay's scale. A drawdown that cannot be read
+governs at `overlay_fallback` (never above the last governor read; with a governor already read, only after it has
+gone unread for the alerts' `raise_after_n` adjust passes over `raise_after_s` seconds), and a limit the kill switch
+trips on that cannot be evaluated refuses any order that raises gross notional -- at once, rotations included. On the
+live book that is both `dd-cap` and `var-cap`, and the historical VaR behind `var-cap` cannot be evaluated whenever
+ANY name in the universe has an empty return window: after a restart until the daily bars load, or for as long as one
+symbol's bars keep failing. For that whole time the desk can reduce, but cannot add gross.
 
 **What the first week of fills taught, and what changed (2026-10-27).** Alpaca's own order history for the paper
 account showed 55 of the desk's 59 market-on-open orders **expired at the opening auction unfilled** (two filled,
@@ -508,7 +513,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **<!-- count:ocaml-tests -->926<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->74<!-- /count --> scheduler cases in `test/desk_async` —
+- **<!-- count:ocaml-tests -->926<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->79<!-- /count --> scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler

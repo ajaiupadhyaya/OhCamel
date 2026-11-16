@@ -216,6 +216,11 @@ let suite =
             (Time_ns.Span.to_hr (span "2026-11-16 11:00" "2026-11-17 11:00"));
           Alcotest.check hrs "backwards: none" 0.0
             (Time_ns.Span.to_hr (span "2026-11-16 12:00" "2026-11-16 11:00"));
+          (* Across the spring-forward Sunday, 2026-03-08: Friday 15:00-16:00
+             at UTC-5 and Monday 09:30-10:30 at UTC-4, an hour each. A fixed
+             offset would count Monday's an hour off. *)
+          Alcotest.check hrs "Fri 2026-03-06 15:00 to Mon 2026-03-09 10:30" 2.0
+            (Time_ns.Span.to_hr (span "2026-03-06 15:00" "2026-03-09 10:30"));
           (* A summer day, on the same wall clock: the zone, not an offset. *)
           Alcotest.check hrs "Mon 10:00 to 12:00 in July" 2.0
             (Time_ns.Span.to_hr (span "2026-07-13 10:00" "2026-07-13 12:00")));
