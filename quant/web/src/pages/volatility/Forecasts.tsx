@@ -48,6 +48,14 @@ function League({ m, ticker }: { m: Manifest; ticker: string }) {
   return <LeagueReport summary={summary.rows ?? []} league={league.rows} dm={dm.rows} forecasts={fc.rows} skipped={skipped.rows ?? []} dropped={dropped.rows ?? []} ticker={ticker} pending={league.block ?? fc.block} />;
 }
 
+/** `full_day_rv`: minute RV plus the overnight move and the first and last minutes; `minute_rv`: the open-to-close
+ *  target of artifacts published before that change. */
+export function targetLabel(target: string | null): string {
+  if (target === "full_day_rv") return "MINUTE RV + OVERNIGHT";
+  if (target === "minute_rv") return "MINUTE RV · OPEN→CLOSE ONLY";
+  return "SQUARED DAILY RETURN";
+}
+
 export function LeagueReport({ summary, league, dm, forecasts, skipped, dropped, ticker, pending }: { summary: LeagueSummaryRow[]; league: LeagueRow[] | null; dm: DmRow[] | null; forecasts: ForecastRow[] | null; skipped: SkipRow[]; dropped: SkipRow[]; ticker: string; pending?: ReactNode }) {
   const t = ticker.toUpperCase();
   const mine = league ? leagueFor(league, t) : [];
@@ -116,7 +124,7 @@ export function LeagueReport({ summary, league, dm, forecasts, skipped, dropped,
             ) : (
               <Absent reason="NO FORECAST ROW" source={`${KINDS.forecasts} · forecasts · ${t}`} />
             )}
-            <div className="vx-target num">TARGET {mine[0].target === "minute_rv" ? "MINUTE RV" : "SQUARED DAILY RETURN"}</div>
+            <div className="vx-target num">TARGET {targetLabel(mine[0].target)}</div>
           </div>
         </div>
       ) : (

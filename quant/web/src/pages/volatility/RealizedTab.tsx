@@ -109,9 +109,13 @@ function EstimatorChart({ r }: { r: Realized }) {
   return <TimeSeriesChart series={series} yFormat="pct" digits={1} height={340} rangeSelector layout={{ yaxis: { rangemode: "tozero" } } as never} />;
 }
 
+export const coversTag = (c: string | undefined) => (c === "open_to_close" ? "OPEN→CLOSE" : c === "close_to_close" ? "CLOSE→CLOSE" : "—");
+export const coversTitle = (c: string | undefined) =>
+  c === "open_to_close" ? "Session only (09:30–16:00): leaves out the overnight move, so it runs below a close-to-close estimate" : c === "close_to_close" ? "Whole close-to-close day, overnight move included" : undefined;
+
 type CurRow = { est: Estimator } & Record<string, number | null | Estimator>;
 
-function CurrentTable({ r }: { r: Realized }) {
+export function CurrentTable({ r }: { r: Realized }) {
   const wins = Object.keys(r.current).sort((a, b) => +a - +b);
   const rows: CurRow[] = ESTIMATORS.map((e) => ({ est: e, ...Object.fromEntries(wins.map((w) => [w, r.current[w]?.[e] ?? null])) }) as CurRow);
   const all = rows.flatMap((row) => wins.map((w) => row[w] as number | null)).filter((v): v is number => v != null);
@@ -128,6 +132,12 @@ function CurrentTable({ r }: { r: Realized }) {
           <InfoTip info={INFO[row.est]} size={12} label={ESTIMATOR_LABEL[row.est]} />
         </span>
       ),
+    },
+    {
+      key: "covers",
+      label: "Covers",
+      sortable: false,
+      render: (row) => <span className="num" title={coversTitle(r.covers?.[row.est])}>{coversTag(r.covers?.[row.est])}</span>,
     },
     ...wins.map((w) => ({ key: w, label: `${w}D`, numeric: true, sortable: false, format: (v: number | null) => fmtPct(v, 1), heat: { min: lo, max: hi, diverging: false } }) as Column<CurRow>),
   ];

@@ -4,13 +4,13 @@ pipeline against a known smile, as tests/test_options_svi_parity.py does; nothin
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import duckdb
 import numpy as np
 import pandas as pd
 import pytest
-from lane_m_harness import is_label, publish_artifact
+from lane_m_harness import T0, is_label, publish_artifact
 
 from ohcamel_quant.jobs.context import JobContext
 from ohcamel_quant.options import bsm
@@ -119,3 +119,24 @@ def test_a_forecast_of_the_open_to_close_part_alone_gives_no_vrp(market, wh, tmp
                      {"forecasts": pd.DataFrame({"ticker": ["SPY"], "asof": ["2026-05-29"], "har_22d": [1e-4]})})
     h = surface_history.run({}, ctx(market, wh)).tables["history"].iloc[0]
     assert pd.isna(h["vrp"]) and "open-to-close" in h["vrp_note"] and h["mf_var_30d"] > 0
+
+
+def test_a_carried_row_published_on_the_old_basis_is_blanked_with_its_reason(market, wh, tmp_path, monkeypatch):
+    """History rows are carried forward and never recomputed, so a VRP published before the league's target
+    included the overnight move (no ``vrp_covers``) would keep its overstated value for ever: it is blanked.
+    A row marked close_to_close keeps its number."""
+    db, root = tmp_path / "jobs.sqlite", tmp_path / "artifacts"
+    monkeypatch.setattr(surface_history, "DB_PATH", db)
+    cols = ["underlying", "asof", "atm_iv_30d", "atm_iv_90d", "term_slope", "rr25_30d", "bf25_30d", "mf_var_30d",
+            "vrp", "vrp_note", "n_slices", "spot"]
+    old = pd.DataFrame([["SPY", "2026-05-20", 0.2, 0.22, 0.02, -0.04, 0.01, 0.04, 0.0148, None, 8, 600.0]], columns=cols)
+    publish_artifact(db, root, "vol.surface_history", {"history": old})
+    spec = surface_history.run({}, ctx(market, wh))
+    h = spec.tables["history"].set_index("asof")
+    assert pd.isna(h.loc["2026-05-20", "vrp"]) and "open-to-close" in h.loc["2026-05-20", "vrp_note"]
+    assert h.loc["2026-05-20", "mf_var_30d"] == 0.04                       # the rest of the row is untouched
+    # a row already on the new basis is kept as it is
+    new = old.assign(vrp_covers="close_to_close")
+    publish_artifact(db, root, "vol.surface_history", {"history": new}, finished=T0 + timedelta(hours=1))
+    kept = surface_history.run({}, ctx(market, wh)).tables["history"].set_index("asof")
+    assert kept.loc["2026-05-20", "vrp"] == 0.0148 and pd.isna(kept.loc["2026-05-20", "vrp_note"])

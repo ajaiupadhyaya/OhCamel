@@ -46,6 +46,8 @@ export interface Realized extends Envelope {
   estimator: Estimator;
   rolling: FramePayload;
   current: Record<string, Record<Estimator, number | null>>;
+  /** Which part of the day each estimator's variance covers: the range estimators leave out the overnight move. */
+  covers: Record<Estimator, "open_to_close" | "close_to_close">;
   cone: ConeRow[];
   implied_term: { dte: (number | null)[]; atm_iv: (number | null)[] } | null;
   vrp: VrpNow | null;

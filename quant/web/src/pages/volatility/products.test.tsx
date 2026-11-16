@@ -10,6 +10,8 @@ vi.mock("../../charts/theme", async (orig) => ({
 import { ThemeProvider } from "../../lib/theme";
 import { LeagueReport } from "./Forecasts";
 import { HistoryReport } from "./History";
+import { CurrentTable } from "./RealizedTab";
+import type { Realized } from "./types";
 import type { DmRow, HistoryRow, LeagueRow, LeagueSummaryRow } from "./derive";
 
 function render(node: ReactNode) {
@@ -56,6 +58,14 @@ describe("LeagueReport (P2 vol.forecast_league)", () => {
     expect(h.match(/OFFLINE · NO FIXTURE/g)).toHaveLength(1);
     expect(h).not.toContain(">ABNB: offline mode");
   });
+  it("names the target by its label: the full-day target, the old open-to-close one, the fallback", () => {
+    const show = (target: string) =>
+      render(<LeagueReport summary={summary} league={league.map((l) => ({ ...l, target }))} dm={dm} forecasts={[]} skipped={[]} dropped={[]} ticker="spy" />);
+    expect(show("full_day_rv")).toContain("TARGET MINUTE RV + OVERNIGHT");
+    expect(show("minute_rv")).toContain("TARGET MINUTE RV · OPEN→CLOSE ONLY");
+    expect(show("squared_return")).toContain("TARGET SQUARED DAILY RETURN");
+    expect(show("full_day_rv")).not.toContain("SQUARED DAILY RETURN");
+  });
   it("a name outside the league says so instead of showing numbers", () => {
     const h = render(<LeagueReport summary={summary} league={league} dm={dm} forecasts={[]} skipped={[]} dropped={[]} ticker="IWM" />);
     expect(h).toContain("IWM NOT IN THE LEAGUE");
@@ -73,6 +83,13 @@ describe("HistoryReport (P7 vol.surface_history)", () => {
     expect(html).toContain("20.0%"); // sqrt(0.04)
     expect(html).toContain("+4.1"); // 0.2 - sqrt(0.0252) = 0.0413 -> +4.1 pts
   });
+  it("a row blanked for its open-to-close basis reads OLD TARGET in the cell, the reason in the tooltip", () => {
+    const old = { ...row("2026-10-05", 0.0361, null), vrp_note: "the HAR forecast behind this VRP was of open-to-close variance only: it overstates the premium by the overnight share, so it is not shown" };
+    const html = render(<HistoryReport history={[old, row("2026-10-06", 0.04, 0.0148)]} summary={[]} errors={[]} ticker="SPY" />);
+    expect(html).toContain(">OLD TARGET<");
+    expect(html).toContain("overstates the premium by the overnight share");
+    expect(html).not.toContain(">NO HAR<");
+  });
   it("a day without a HAR forecast reads NO HAR, never a number; an absent underlying says so", () => {
     const html = render(<HistoryReport history={[row("2026-10-05", 0.0361, null), row("2026-10-06", 0.04, 0.0148)]} summary={[]} errors={[{ underlying: "QQQ", asof: "2026-10-06", error: "no ingest_log row" }]} ticker="SPY" />);
     expect(html).toContain("SPY · 2 DAYS");
@@ -80,5 +97,15 @@ describe("HistoryReport (P7 vol.surface_history)", () => {
     expect(html).toContain("no ingest_log row");
     const none = render(<HistoryReport history={[row("2026-10-06", 0.04, null)]} summary={[]} errors={[]} ticker="TLT" />);
     expect(none).toContain("NO SNAPSHOTS FOR TLT");
+  });
+});
+
+describe("Realized estimators say what they cover", () => {
+  it("the range estimators read OPEN→CLOSE, close-to-close and Yang–Zhang CLOSE→CLOSE", () => {
+    const cur = { close_to_close: 0.15, parkinson: 0.12, garman_klass: 0.12, rogers_satchell: 0.12, yang_zhang: 0.15 };
+    const covers = { close_to_close: "close_to_close", parkinson: "open_to_close", garman_klass: "open_to_close", rogers_satchell: "open_to_close", yang_zhang: "close_to_close" };
+    const html = render(<CurrentTable r={{ current: { "21": cur }, covers } as unknown as Realized} />);
+    expect(html.match(/OPEN→CLOSE/g)).toHaveLength(3);
+    expect(html.match(/CLOSE→CLOSE/g)).toHaveLength(2);
   });
 });

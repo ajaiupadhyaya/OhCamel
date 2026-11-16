@@ -46,6 +46,9 @@ def test_realized_spy_offline(client):
     assert j["ticker"] == "SPY" and j["estimator"] == "yang_zhang"
     assert set(j["rolling"]["columns"]) == {"close_to_close", "parkinson", "garman_klass", "rogers_satchell", "yang_zhang"}
     assert [c["horizon"] for c in j["cone"]] == [10, 21, 42, 63, 126, 252]
+    # the payload says which part of the day each estimator measures (the range estimators leave out the overnight move)
+    assert j["covers"] == {"close_to_close": "close_to_close", "yang_zhang": "close_to_close", "parkinson": "open_to_close",
+                           "garman_klass": "open_to_close", "rogers_satchell": "open_to_close"}
     assert all(0 < v < 2 for v in j["current"]["21"].values())
     # chain is online-only -> VRP falls back to VIX (FRED fixture) and says so
     assert any("option chain unavailable" in n for n in j["notes"])

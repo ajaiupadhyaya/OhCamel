@@ -452,7 +452,7 @@ def realized_vol(
         notes.append("fewer than 252 sessions: the 252-day cone horizon is missing or thin")
     return clean({
         "ticker": t, "price_symbol": sym, "as_of": ohlc.index[-1], "window": window, "estimator": estimator,
-        "rolling": frame(est), "current": current,
+        "rolling": frame(est), "current": current, "covers": dict(realized.ESTIMATOR_COVERS),
         "cone": records(cone, index_name="horizon") if not cone.empty else [],
         "implied_term": implied_term, "vrp": vrp_now, "vrp_history": history,
         "close": series(ohlc["close"][ohlc.index >= cutoff]),
