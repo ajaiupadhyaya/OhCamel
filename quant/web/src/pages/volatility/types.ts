@@ -260,7 +260,12 @@ export interface Density extends ChainHeader {
   cdf: (number | null)[];
   lognormal_density: (number | null)[];
   atm_iv: number;
-  checks: { integral: number; mean: number; forward: number; mean_minus_forward: number; negative_mass: number; butterfly: SviFit["butterfly"] };
+  checks: {
+    integral: number; // of q over the strike grid, which stops at |ln(K/F)| = 3
+    tail_mass_left: number; // P(S_T below the grid)
+    tail_mass_right: number; // P(S_T above the grid)
+    mean: number; forward: number; mean_minus_forward: number; negative_mass: number; butterfly: SviFit["butterfly"];
+  };
   moments: Moments;
   lognormal_moments: Moments;
   quantiles: { p: number; level: number; return: number }[];

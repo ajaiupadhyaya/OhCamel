@@ -271,6 +271,28 @@ def test_svi_parity_on_the_spy_chain(both, spy_2026_11_15):
         assert r.constrained_a == p.constrained_a, sid
 
 
+def test_svi_parity_on_what_the_fit_outputs(both, spy_2026_11_15):
+    """The parameters are ill-conditioned (above); what the model outputs is not. On every slice of
+    the real chain, Rust and the reference agree on the fitted total variance w(k) at the slice's
+    quoted k, and on the density's integral + tail masses, to 1e-8 absolute. Measured (macOS arm64):
+    w(k) within 1.1e-10, integral + tails within 2.5e-12."""
+    from ohcamel_quant.options.density import breeden_litzenberger
+    from ohcamel_quant.options.svi import SVIParams
+
+    ca, _, inputs = spy_2026_11_15
+    assert len(inputs) == 31
+    for sid, (k, iv, T, wt) in inputs.items():
+        w, wt = iv * iv * T, wt / wt.mean()
+        fits = [on(e, kernels.svi_fit, k, w, wt) for e in ("rust", "python")]
+        r, p = (SVIParams(f.a, f.b, f.rho, f.m, f.sigma) for f in fits)
+        np.testing.assert_allclose(r.w(k), p.w(k), rtol=0, atol=1e-8, err_msg=sid)
+        F, D = float(ca.slices.loc[sid, "forward"]), float(ca.slices.loc[sid, "discount"])
+        dr, dp = (breeden_litzenberger(F, D, T, q.w) for q in (r, p))
+        total_r = dr.integral + dr.tail_mass_left + dr.tail_mass_right
+        total_p = dp.integral + dp.tail_mass_left + dp.tail_mass_right
+        assert total_r == pytest.approx(total_p, rel=0, abs=1e-8), sid
+
+
 def test_rv_parity(both):
     # 30 sessions x 390 minutes of a deterministic +-1bp zigzag with a drift; RV exact both ways
     day, minute = 86_400 * 10**9, 60 * 10**9

@@ -119,15 +119,31 @@ function DensityChart({ d }: { d: Density }) {
   );
 }
 
-function Checks({ d }: { d: Density }) {
+/** Tail masses above this are shown as their own figures. */
+export const TAIL_SHOWN = 0.001;
+
+/** The normalisation check: probability on the grid plus the mass the grid leaves out on each side. */
+export function normalization(c: Density["checks"]): { total: number; ok: boolean; showTails: boolean } {
+  const total = c.integral + c.tail_mass_left + c.tail_mass_right;
+  return { total, ok: Math.abs(total - 1) <= 0.01, showTails: c.tail_mass_left > TAIL_SHOWN || c.tail_mass_right > TAIL_SHOWN };
+}
+
+export function Checks({ d }: { d: Density }) {
   const c = d.checks;
-  const intOk = Math.abs(c.integral - 1) <= 0.01;
+  const norm = normalization(c);
   const meanOk = Math.abs(c.mean_minus_forward / d.forward) <= 0.005;
   const negOk = c.negative_mass <= 1e-4;
+  const tails = norm.showTails
+    ? [
+        { label: "Mass below grid", value: fmtPct(c.tail_mass_left, 2), info: { text: "Probability that the expiry price is below the lowest strike of the grid (the grid stops at ln(K/F) = −3)." } },
+        { label: "Mass above grid", value: fmtPct(c.tail_mass_right, 2), info: { text: "Probability that the expiry price is above the highest strike of the grid (the grid stops at ln(K/F) = +3)." } },
+      ]
+    : [];
   return (
     <KV
       rows={[
-        { label: <span className="vx-sym">∫ q(K) dK</span>, value: <>{fmtNum(c.integral, 5)} <Check ok={intOk} /></>, info: { text: "Total probability on the strike grid; should be 1.", formula: "\\int q(K)\\,dK" } },
+        { label: <span className="vx-sym">∫ q(K) dK + tails</span>, value: <>{fmtNum(norm.total, 5)} <Check ok={norm.ok} /></>, hint: `ON GRID ${fmtNum(c.integral, 5)}`, info: { text: "Total probability: on the strike grid plus the mass beyond each end of it; should be 1.", formula: "\\int q(K)\\,dK + P(S_T < K_{lo}) + P(S_T > K_{hi})" } },
+        ...tails,
         { label: <>MEAN − <span className="vx-sym">F</span></>, value: <>{fmtNum(c.mean_minus_forward, 4)} <Check ok={meanOk} /></>, hint: `${fmtSignedPct(c.mean_minus_forward / d.forward, 4)} OF F`, info: { text: "Martingale condition: the expected expiry price equals the forward.", formula: "\\mathbb E_Q[S_T] = F" } },
         { label: "Negative mass", value: <>{fmtSci(c.negative_mass, 2)} <Check ok={negOk} /></>, info: { text: "Probability mass below zero: possible only if the smile admits butterfly arbitrage." } },
         { label: "Smile butterfly", value: <Check ok={c.butterfly.arbitrage_free} />, info: INFO.butterfly_g },
