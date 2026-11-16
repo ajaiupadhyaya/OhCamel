@@ -256,13 +256,14 @@ module Book = struct
       (* The names streamed first; the rest of the universe fills the stream
          to [stream_cap] in book order, and anything past it is polled. *)
       stream : string list; [@sexp.default []]
-      (* The owner's ruling R2 (2026-11-15): while a LIMIT has tripped the
-         kill switch, an order that only shrinks a position -- a stop's
-         flatten, a governor's cut -- still passes it (Rules.reduces says
-         which). Never through a hand's halt or the engine's stop. Off unless
-         a book says otherwise, because INC-01 promised a switch that "halts
-         and never liquidates", and a host keeps that promise until its book
-         says it does not. *)
+      (* Ruling R2 of the completion spec, which is the spec's default and
+         awaits the owner's approval: while a LIMIT has tripped the kill
+         switch, an order that only shrinks a position -- a stop's flatten, a
+         governor's cut -- still passes it (Rules.reduces says which). Never
+         through a hand's halt or the engine's stop. Off unless a book says
+         otherwise, because INC-01 promised a switch that "halts and never
+         liquidates": the word stays false on any real book until the owner
+         approves R2. *)
       reduce_through_trip : bool; [@sexp.default false]
     }
     [@@deriving sexp, compare, equal]

@@ -3793,6 +3793,112 @@ let test_a_hand's_halt_or_the_word_off_still_refuses_the_flatten () =
     (strategy_orders f name, D.Sim_venue.received f.venue);
   cleanup ()
 
+(* The exemption ends when the switch worsens mid-flight. A limit's trip
+   stands (restored from the journal), the word is on, and the strategy
+   exp_a01_aapl owns AAPL 50 of the account's 50: its flatten -- the sell of
+   its whole own position, the order a stop's flatten sends -- passes the
+   trip, and the venue's submit is held on an Ivar while the case moves the
+   switch. Then the venue accepts. Worsened to a hand's halt or the engine's
+   stop, the order is cancelled the moment it is named, as any order named
+   under the switch is: the trip let it out, the halt does not. Lifted to
+   clear, it rests uncancelled. *)
+let flatten_held ~(move : D.Oms.t -> D.Halt.t -> unit) =
+  let f = fixture () in
+  record_close f;
+  Graph.set_qty f.graph aapl (Qty.of_float 50.0);
+  Graph.stabilize f.graph;
+  let bought =
+    D.Order.create
+      {
+        D.Order.Request.client_order_id =
+          D.Ids.Client_order_id.generate ~now:evening ~rng:(Random.State.make [| 41 |]);
+        symbol = aapl;
+        side = D.Order.Side.Buy;
+        qty = 50;
+        kind = D.Order.Kind.Market;
+        tif = D.Order.Tif.Opg;
+      }
+  in
+  D.Journal.insert_order f.journal
+    { bought with D.Order.state = D.Order.State.Filled }
+    ~source:"signal:exp_a01_aapl:0" ~decision_price:(Price.of_float 100.0) ~arrival:None
+    ~verdict:`Null
+    ~at:(Time_ns.sub evening (Time_ns.Span.of_day 1.0));
+  ignore
+    (D.Journal.record_fill f.journal bought
+       {
+         D.Order.Fill.execution_id = "x-bought";
+         qty = 50.0;
+         price = Price.of_float 100.0;
+         at = Time_ns.sub evening (Time_ns.Span.of_day 1.0);
+         position_qty = None;
+       }
+      : bool);
+  let halt = D.Halt.create D.Halt.Source.none in
+  D.Halt.restore_trip halt ~limit:"aapl-cap" ~at:evening;
+  let sim = D.Sim_venue.trade ~auto:false f.venue in
+  let at_the_venue = Ivar.create () and release = Ivar.create () in
+  let cancels = ref 0 in
+  let held =
+    {
+      sim with
+      D.Venue.Trade.submit =
+        (fun permit r ->
+          Ivar.fill_if_empty at_the_venue ();
+          let%bind () = Ivar.read release in
+          sim.D.Venue.Trade.submit permit r);
+      cancel =
+        (fun id ->
+          incr cancels;
+          sim.D.Venue.Trade.cancel id);
+    }
+  in
+  let oms =
+    manager ~trade:held ~halt ~reduce_through_trip:true ~now:(fun () -> evening) f
+  in
+  after_the_close f oms;
+  let outcome =
+    D.Oms.propose_rebalance oms ~mode:D.Rebalance.Mode.Open ~source:aapl_source
+      ~legs:[ rebalance_leg aapl D.Order.Side.Sell 50 ]
+  in
+  let%bind () = Ivar.read at_the_venue in
+  move oms halt;
+  Ivar.fill_exn release ();
+  let%bind outcome = outcome in
+  let%map () = settle () in
+  let o =
+    match outcome with
+    | D.Oms.Rebalance_outcome.Sent [ o ] -> o
+    | other ->
+        Alcotest.failf "not one order sent: %s" (D.Oms.Rebalance_outcome.to_string other)
+  in
+  let result = (state f o, !cancels, D.Sim_venue.received f.venue) in
+  Graph.destroy f.graph;
+  result
+
+let test_a_hand's_halt_mid_flight_cancels_a_flatten_the_trip_let_out () =
+  let%map result =
+    flatten_held ~move:(fun oms _ -> D.Oms.halt_by_hand oms ~why:"halted mid-flight")
+  in
+  Alcotest.(check (triple string int int))
+    "sent, named, and cancelled: one DELETE" ("cancelled", 1, 1) result
+
+let test_the_engine's_stop_mid_flight_cancels_a_flatten_the_trip_let_out () =
+  let%map result =
+    flatten_held ~move:(fun oms _ -> D.Oms.stop oms ~why:"the stream ended mid-flight")
+  in
+  Alcotest.(check (triple string int int))
+    "sent, named, and cancelled: one DELETE" ("cancelled", 1, 1) result
+
+let test_a_reset_mid_flight_leaves_the_flatten_resting () =
+  let%map result =
+    flatten_held ~move:(fun oms halt ->
+        D.Oms.reset_switch oms;
+        Alcotest.(check string) "clear" "clear" (D.Halt.State.name (D.Halt.state halt)))
+  in
+  Alcotest.(check (triple string int int))
+    "sent and accepted, never cancelled" ("accepted", 0, 1) result
+
 (* The minute loop over the adjust case at 0.55, its Sell 75 never filled
    (the venue is not pumped), so the adjust pass waits on its wave. [run]'s
    first pass starts it at t0 + 2 s; the next pass, at t0 + 62 s, runs all
@@ -4684,6 +4790,12 @@ let suites =
           test_a_governor's_cut_reaches_the_venue_through_a_restored_trip;
         case "a hand's halt or the word off still refuses the flatten"
           test_a_hand's_halt_or_the_word_off_still_refuses_the_flatten;
+        case "a hand's halt mid-flight cancels a flatten the trip let out"
+          test_a_hand's_halt_mid_flight_cancels_a_flatten_the_trip_let_out;
+        case "the engine's stop mid-flight cancels a flatten the trip let out"
+          test_the_engine's_stop_mid_flight_cancels_a_flatten_the_trip_let_out;
+        case "a reset mid-flight leaves the flatten resting"
+          test_a_reset_mid_flight_leaves_the_flatten_resting;
         case "run does not wait for the adjust pass"
           test_run_does_not_wait_for_the_adjust_pass;
         case "a busy adjust is skipped, and said once"

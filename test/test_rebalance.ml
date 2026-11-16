@@ -556,6 +556,38 @@ let test_a_resting_reduction_in_the_name_shrinks_the_room_under_a_trip () =
         (Result.is_ok (check [ leg aapl D.Order.Side.Sell 50 ])))
     ()
 
+(* And a failed order is counted as the open one is: a hand's sell of 350
+   AAPL every lookup missed, created in the latest session and finished by no
+   venue report, may still be worked and fill, so it takes the account's room
+   to 50 as the resting one did. *)
+let test_a_failed_reduction_the_venue_may_still_work_shrinks_the_room_too () =
+  let halt = D.Halt.create D.Halt.Source.none in
+  D.Halt.restore_trip halt ~limit:"aapl-cap" ~at:(at "2026-09-14T21:00:00Z");
+  let on =
+    {
+      Desk_spec.default with
+      Desk_spec.trading = Desk_spec.Enabled;
+      reduce_through_trip = true;
+    }
+  in
+  with_oms ~halt ~spec:on
+    ~f:(fun oms journal ->
+      journal_order journal ~n:1 ~source:"signal:exp_a01_tech:1"
+        ~state:D.Order.State.Filled ~fills:[ 100.0 ] 100;
+      journal_order journal ~n:9 ~source:"manual" ~side:D.Order.Side.Sell
+        ~state:D.Order.State.Failed 350;
+      let check legs =
+        D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source ~legs
+      in
+      let why = refusal (check [ leg aapl D.Order.Side.Sell 100 ]) in
+      contains "sell 100 beside the failed 350: refused"
+        ~substring:"(AAPL sell 100 market-on-open): kill_switch:" why;
+      contains "naming the room left" ~substring:"the account's (50)" why;
+      Alcotest.(check bool)
+        "sell 50 fits what is left" true
+        (Result.is_ok (check [ leg aapl D.Order.Side.Sell 50 ])))
+    ()
+
 (* An order of the strategy's that may still fill makes its position
    unknown: an open one (submitted, resting at the venue until the open), and
    a failed one the venue has not said it finished. Sizing on top of either
@@ -1466,6 +1498,9 @@ let suite =
         test_a_strategy's_reduction_passes_a_limit's_trip_and_a_flip_is_refused_whole;
       Alcotest.test_case "a resting reduction in the name shrinks the room under a trip"
         `Quick test_a_resting_reduction_in_the_name_shrinks_the_room_under_a_trip;
+      Alcotest.test_case
+        "a failed reduction the venue may still work shrinks the room too" `Quick
+        test_a_failed_reduction_the_venue_may_still_work_shrinks_the_room_too;
       Alcotest.test_case "a strategy with an order that may still fill is not sized"
         `Quick test_a_strategy_with_an_order_that_may_still_fill_is_not_sized;
       Alcotest.test_case "the venue's submit is called in one place" `Quick

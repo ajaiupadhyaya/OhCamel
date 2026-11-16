@@ -245,10 +245,11 @@
    (flatten_at "15:50")
    (stream (SPY QQQ IWM TLT GLD))
    ; true here, false by default. This DEPARTS from INC-01, which promised
-   ; that "the kill switch halts and never liquidates": under INC-02 (the
-   ; owner's ruling R2, 2026-11-15), a limit's trip lets through the orders
-   ; that only take risk off. A live host keeps INC-01's switch until its
-   ; own book says true.
+   ; that "the kill switch halts and never liquidates": under INC-02, ruling
+   ; R2 -- the completion spec's default, which awaits the owner's approval
+   ; -- lets a limit's trip pass the orders that only take risk off. Until
+   ; the owner approves R2 the word stays false on any real book, and a live
+   ; host keeps INC-01's switch.
    (reduce_through_trip true)))
 
  ; ---------------------------------------------------------------------------

@@ -242,27 +242,100 @@ let account_position t symbol =
   if Graph.knows_symbol t.graph symbol then Qty.to_float (Graph.qty t.graph symbol)
   else 0.0
 
+(* Failed orders the venue may still be working. A Failed order is one every
+   lookup missed, and a lookup that misses does not mean the venue never took
+   the order: it may still hold it, and the first thing the desk hears of it
+   may be a fill. So the gate counts it, at its remaining quantity -- ordered
+   less filled, the fills rebuilt from the journal -- until a venue report
+   finishes it: a fill of the whole of it, or its cancel, expiry or rejection,
+   which [on_update] journals against the failed order (Order.apply keeps the
+   state and records the event beside an anomaly), so the journal is the
+   record that the venue is done with it.
+
+   And only while its session lasts. A day order does not outlive its
+   session's close, and a market-on-open order, sent after one close, is
+   worked at the next open and not after it -- before the next close either
+   way. The bound is
+   the latest recorded session's DATE, not when that row was RECORDED
+   (Session_close writes it a few minutes after the close): a close recorded
+   late, during the following session -- Session_close missed one and caught
+   up, or a restart re-ran it -- must not drop a failed order that is still
+   live in that following session, which bounding by [recorded_at] would do.
+   A failed order counts only if it was created at or after the start of the
+   latest recorded session's date ([Journal.unfinished_failed_orders]); one
+   created before that is over, whatever the venue said or did not say. When
+   [created_at] is compared as UTC text, "the start of that date" reads as
+   midnight UTC, which is earlier than the exchange's own midnight -- so this
+   errs toward counting one already-dead session's failed orders once more,
+   never toward dropping a live one. A close that went unrecorded -- a book
+   not current, an engine down at the close -- leaves the order counted until
+   the next one is recorded: longer than it lives, never shorter.
+   [failed_cancels] is not the test: a DELETE the venue took is not the venue
+   saying the order is done, and until it says so the order may fill.
+   [reconcile_failed] cancels one it finds still resting; the venue's answer
+   to that cancel is the report that ends its count.
+
+   A journal that cannot be read is an Error, as an order that cannot be
+   priced is ([resting_fills]): the proposal is refused, saying so, and
+   [preview] does not raise. *)
+let failed_still_working t : (Order.t list, string) Result.t =
+  match
+    Or_error.try_with (fun () ->
+        let since =
+          Option.map
+            (List.hd (Journal.recent_sessions t.journal ~limit:1))
+            ~f:(fun s -> s.Journal.Session.date)
+        in
+        Journal.unfinished_failed_orders t.journal ~since)
+  with
+  | Error e ->
+      Error
+        (sprintf
+           "the journal's failed orders could not be read (%s), so the gate cannot count \
+            any the venue may still be working; the proposal is refused rather than \
+            judged without them"
+           (Error.to_string_hum e))
+  | Ok rows ->
+      Ok
+        (List.map rows ~f:(fun r -> r.Journal.Order_row.order)
+        |> List.filter ~f:(fun o ->
+            Float.( > ) (Order.remaining_qty o) Order.epsilon
+            && not (Map.mem t.open_ (key o))))
+
 (* The account's position in [symbol] if every order of the desk's own that
-   rests in it and would shrink it filled -- the room a reduction through a
-   limit's trip is judged against (Rules.reduces). Two reductions in one name
-   (two strategies, or a hand's sell resting) are each no larger than the
-   account, and together could take it through zero; netting the resting
-   ones out refuses the second. Orders that would grow it are not counted:
-   they may never fill. [except] is the order being judged, which [admit]
-   has already put among the open ones by the time [submit_journaled] asks. *)
+   may still work in it and would shrink it filled -- the room a reduction
+   through a limit's trip is judged against (Rules.reduces). Two reductions
+   in one name (two strategies, or a hand's sell resting) are each no larger
+   than the account, and together could take it through zero; netting the
+   others out refuses the second. Counted: every open order, and every failed
+   one the venue may still be working ([failed_still_working], the orders
+   [strategy_position] also calls "may still fill"), at its remaining
+   quantity. Orders that would grow it are not counted: they may never fill.
+   [except] is the order being judged, which [admit] has already put among
+   the open ones by the time [submit_journaled] asks. A journal whose failed
+   orders cannot be read leaves the room unknown -- nan, which [reduces]
+   never passes -- rather than judged without them. *)
 let reducible_account ?except t symbol =
   let held = account_position t symbol in
-  Map.fold t.open_ ~init:held ~f:(fun ~key ~data:(o : Order.t) room ->
-      let r = o.Order.request in
-      if
-        (not (Symbol.equal r.Order.Request.symbol symbol))
-        || Option.exists except ~f:(String.equal key)
-      then room
-      else
-        match r.Order.Request.side with
-        | Order.Side.Sell when Float.( > ) held 0.0 -> room -. Order.remaining_qty o
-        | Order.Side.Buy when Float.( < ) held 0.0 -> room +. Order.remaining_qty o
-        | Order.Side.Sell | Order.Side.Buy -> room)
+  let shrinking (o : Order.t) =
+    let r = o.Order.request in
+    if
+      (not (Symbol.equal r.Order.Request.symbol symbol))
+      || Option.exists except ~f:(String.equal (key o))
+    then 0.0
+    else
+      match r.Order.Request.side with
+      | Order.Side.Sell when Float.( > ) held 0.0 -> Order.remaining_qty o
+      | Order.Side.Buy when Float.( < ) held 0.0 -> Order.remaining_qty o
+      | Order.Side.Sell | Order.Side.Buy -> 0.0
+  in
+  match failed_still_working t with
+  | Error _ -> Float.nan
+  | Ok failed ->
+      let taken = List.sum (module Float) (Map.data t.open_ @ failed) ~f:shrinking in
+      if Float.( > ) held 0.0 then held -. taken
+      else if Float.( < ) held 0.0 then held +. taken
+      else held
 
 (* [own]: the proposer's own position in [symbol] -- a strategy's, from its
    fills; 0 for a ticket, which is no strategy's. *)
@@ -498,66 +571,6 @@ module Preview = struct
         ("reasons", `List (List.map (reasons t) ~f:(fun s -> `String s)));
       ]
 end
-
-(* Failed orders the venue may still be working. A Failed order is one every
-   lookup missed, and a lookup that misses does not mean the venue never took
-   the order: it may still hold it, and the first thing the desk hears of it
-   may be a fill. So the gate counts it, at its remaining quantity -- ordered
-   less filled, the fills rebuilt from the journal -- until a venue report
-   finishes it: a fill of the whole of it, or its cancel, expiry or rejection,
-   which [on_update] journals against the failed order (Order.apply keeps the
-   state and records the event beside an anomaly), so the journal is the
-   record that the venue is done with it.
-
-   And only while its session lasts. A day order does not outlive its
-   session's close, and a market-on-open order, sent after one close, is
-   worked at the next open and not after it -- before the next close either
-   way. The bound is
-   the latest recorded session's DATE, not when that row was RECORDED
-   (Session_close writes it a few minutes after the close): a close recorded
-   late, during the following session -- Session_close missed one and caught
-   up, or a restart re-ran it -- must not drop a failed order that is still
-   live in that following session, which bounding by [recorded_at] would do.
-   A failed order counts only if it was created at or after the start of the
-   latest recorded session's date ([Journal.unfinished_failed_orders]); one
-   created before that is over, whatever the venue said or did not say. When
-   [created_at] is compared as UTC text, "the start of that date" reads as
-   midnight UTC, which is earlier than the exchange's own midnight -- so this
-   errs toward counting one already-dead session's failed orders once more,
-   never toward dropping a live one. A close that went unrecorded -- a book
-   not current, an engine down at the close -- leaves the order counted until
-   the next one is recorded: longer than it lives, never shorter.
-   [failed_cancels] is not the test: a DELETE the venue took is not the venue
-   saying the order is done, and until it says so the order may fill.
-   [reconcile_failed] cancels one it finds still resting; the venue's answer
-   to that cancel is the report that ends its count.
-
-   A journal that cannot be read is an Error, as an order that cannot be
-   priced is ([resting_fills]): the proposal is refused, saying so, and
-   [preview] does not raise. *)
-let failed_still_working t : (Order.t list, string) Result.t =
-  match
-    Or_error.try_with (fun () ->
-        let since =
-          Option.map
-            (List.hd (Journal.recent_sessions t.journal ~limit:1))
-            ~f:(fun s -> s.Journal.Session.date)
-        in
-        Journal.unfinished_failed_orders t.journal ~since)
-  with
-  | Error e ->
-      Error
-        (sprintf
-           "the journal's failed orders could not be read (%s), so the gate cannot count \
-            any the venue may still be working; the proposal is refused rather than \
-            judged without them"
-           (Error.to_string_hum e))
-  | Ok rows ->
-      Ok
-        (List.map rows ~f:(fun r -> r.Journal.Order_row.order)
-        |> List.filter ~f:(fun o ->
-            Float.( > ) (Order.remaining_qty o) Order.epsilon
-            && not (Map.mem t.open_ (key o))))
 
 (* An order as a refusal names it: its client id, its state, and what of it
    rests. *)

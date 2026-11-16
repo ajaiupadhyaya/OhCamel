@@ -299,8 +299,9 @@ let reduces ~(own : float) ~(account : float) ~(side : Order.Side.t) ~(qty : int
    (Oms.pre_wire) and the two must never answer differently -- the reason
    [session_refusal] is one function.
 
-   A LIMIT'S TRIP LETS A REDUCTION THROUGH, AND NOTHING ELSE DOES (the
-   owner's ruling R2, 2026-11-15). With the book's (reduce_through_trip)
+   A LIMIT'S TRIP LETS A REDUCTION THROUGH, AND NOTHING ELSE DOES (ruling R2,
+   the completion spec's default, awaiting the owner's approval; the word
+   stays false on any real book until then). With the book's (reduce_through_trip)
    word on, an order [reduces] passes while the switch is Tripped -- a trip
    this process's source made, or one restored from the journal, which
    Halt.state reads the same -- so a stop's flatten and a governor's cut are
@@ -309,7 +310,11 @@ let reduces ~(own : float) ~(account : float) ~(side : Order.Side.t) ~(qty : int
    the limits did not, and after the engine's stop no fill would be heard.
    The refusal quotes the switch's own words ([halt_why], Halt.reason), and
    under a trip with the word on says what would have passed. A context
-   whose words and state disagree -- words with no state -- is refused. *)
+   whose words and state disagree -- words with no state -- is refused. In
+   production Rebalance.account_refusal has already refused a rebalance when
+   the account holds less than the strategy's own position, so it is the
+   account side, netted of the desk's resting reductions
+   (Oms.reducible_account), that binds here. *)
 let switch_refusal ~(spec : Desk_spec.t) ~(halt_state : Halt.State.t)
     ~(halt_why : string option) ~own ~account ~side ~qty : string option =
   let words =
@@ -325,8 +330,8 @@ let switch_refusal ~(spec : Desk_spec.t) ~(halt_state : Halt.State.t)
         Some
           (sprintf
              "%s; under a limit's trip only an order that shrinks both the strategy's \
-              own position (%g) and the account's (%g), by no more than either, passes, \
-              and a %s of %d does not"
+              own position (%.17g) and the account's (%.17g), by no more than either, \
+              passes, and a %s of %d does not"
              words own account (Order.Side.to_string side) qty)
   | Halt.State.Clear, Some _
   | Halt.State.Tripped _, _
