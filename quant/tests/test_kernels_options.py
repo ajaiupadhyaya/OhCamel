@@ -53,14 +53,16 @@ def test_fit_svi_on_the_kernel_matches_and_keeps_the_butterfly_check(smiles):
 def test_fit_svi_on_the_kernel_keeps_lees_bound_and_the_vertex_on_the_spy_chain(spy_2026_11_15):
     """The kernel path (Rust when the wheel is loaded) holds the same three rules as the reference
     on every slice of the real chain: wings within Lee's 2, vertex inside the quotes, g >= 0 on
-    [-K_MAX, K_MAX]."""
+    [-K_MAX, K_MAX] -- checked on a grid 500x finer than the fit's scan."""
     _, _, inputs = spy_2026_11_15
+    fine = np.linspace(-S.K_MAX, S.K_MAX, 600_001)     # step 1e-5, independent of the fit's own scan
     for sid, (k, iv, T, wt) in inputs.items():
         f = S.fit_svi(k, iv, T, weights=wt, use_kernels=True)
         p = f.params
         assert p.b * (1 + abs(p.rho)) <= S.SLOPE_CAP + 1e-9, sid
         assert f.k_min <= p.m <= f.k_max, sid
         assert f.butterfly["arbitrage_free"] and f.butterfly["k_range"] == [-S.K_MAX, S.K_MAX], sid
+        assert float(S.butterfly_g(p, fine).min()) >= -1e-10, sid
 
 
 def test_svi_rejects_bad_input():

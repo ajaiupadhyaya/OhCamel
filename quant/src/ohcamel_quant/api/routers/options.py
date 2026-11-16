@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ...data.base import DataUnavailable
 from ...data.market import MarketData, get_market
-from ...options import bsm, density, realized, strategy
+from ...options import bsm, density, realized, strategy, svi
 from ...options.chain import CONTRACT_MULTIPLIER, ChainAnalytics, analyze_chain
 from ...options.parity import EUROPEAN_UNDERLYINGS, InsufficientQuotes
 from ...options.surface import VolSurface, build_surface, svi_weights
@@ -317,21 +317,30 @@ def rn_density(ticker: str, market: Market, expiry: str | None = None) -> dict[s
     mny = [*(1 - m for m in reversed(moves)), 1.0, *(1 + m for m in moves)]
     notes = list(ca.notes)
     tails = d.tail_mass_left + d.tail_mass_right
-    if abs(d.integral + tails - 1) > 0.01:
-        notes.append(f"density on the grid ({d.integral:.4f}) plus the mass beyond it ({tails:.2e}) is "
-                     f"{d.integral + tails:.4f}, not ~1")
+    chk = density.density_checks(d, svi.density_k(f.params, np.log(d.strikes / F)) / d.strikes)
+    passed = chk["passed"]
+    if not passed["negative_mass"]:
+        notes.append(f"negative density mass {d.negative_mass:.2e}: the smile violates the butterfly condition")
+    if not passed["tails"]:
+        notes.append(f"negative tail mass ({d.tail_mass_left:.2e} below, {d.tail_mass_right:.2e} above the grid): "
+                     "the call prices are not consistent with a distribution at the grid ends")
+    if not passed["analytic"]:
+        notes.append(f"the finite-difference density integrates to {d.integral:.6f} on the grid, the smile's "
+                     f"closed-form density to {chk['analytic_integral']:.6f}: the grid does not resolve the smile")
+    if not passed["mean"]:
+        notes.append(f"the density's mean is {d.mean / F - 1:+.3%} off the forward: the martingale condition fails")
     if tails > 1e-3:
         notes.append(f"{tails:.2%} of the probability lies beyond the strike grid (k = ln(K/F) in "
                      f"[{d.k_range[0]:.2f}, {d.k_range[1]:.2f}]): {d.tail_mass_left:.2%} below, "
                      f"{d.tail_mass_right:.2%} above")
-    if d.negative_mass > 1e-4:
-        notes.append(f"negative density mass {d.negative_mass:.2e}: the smile violates the butterfly condition")
     notes.append("risk-neutral (Q) probabilities embed risk premia; they are not real-world forecasts")
     return clean({
         **_header(ca), "expiry": sid, "T": T, "dte": T * 365.0, "forward": F, "discount": D,
         "strikes": d.strikes[sl], "density": d.density[sl], "cdf": d.cdf[sl],
         "lognormal_density": ln.density[sl], "atm_iv": atm,
         "checks": {"integral": d.integral, "tail_mass_left": d.tail_mass_left, "tail_mass_right": d.tail_mass_right,
+                   "integral_plus_tails": chk["integral_plus_tails"], "analytic_integral": chk["analytic_integral"],
+                   "tail_tol": chk["tail_tol"], "passed": passed,
                    "mean": d.mean, "forward": F, "mean_minus_forward": d.mean - F,
                    "negative_mass": d.negative_mass, "butterfly": f.butterfly},
         "moments": d.moments(), "lognormal_moments": ln.moments(),

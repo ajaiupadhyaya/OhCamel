@@ -14,13 +14,18 @@ are central finite differences on a uniform grid in ``k = ln(K/F)``.
 The grid never extends past ``|k| = K_MAX``, the range on which a fitted SVI
 slice is certified free of butterfly arbitrage (:mod:`.svi`). The probability
 beyond each end is reported (``tail_mass_left = P(S_T < K_lo)``,
-``tail_mass_right = P(S_T > K_hi)``, both from the first-derivative CDF), so
-``integral + tail_mass_left + tail_mass_right`` should be ~1, and ``mean`` (the
-mean over the grid) ~F: the martingale condition. Both are reported, never
-forced. The first-derivative CDF is used as computed: one that falls anywhere,
-or leaves [0, 1], is not a distribution, and :class:`DensityError` says so
-instead of the CDF being clipped into one. Quantiles invert it by linear
-interpolation.
+``tail_mass_right = P(S_T > K_hi)``, both from the first-derivative CDF). The
+first-derivative CDF is used as computed: one that falls anywhere, or leaves
+[0, 1], is not a distribution, and :class:`DensityError` says so instead of the
+CDF being clipped into one. Quantiles invert it by linear interpolation.
+
+``integral + tail_mass_left + tail_mass_right`` is information, not a check: ``q``
+is the derivative of the same CDF whose end values are the tails, so the sum
+telescopes to one (to O(h^2)) for ANY smile, arbitrageable or not. The checks
+that can fail are :func:`density_checks`: no negative mass, no negative tail
+mass, the grid integral against the closed-form density of the smile on the same
+grid, and the mean against the forward (the martingale condition). Reported,
+never forced.
 """
 
 from __future__ import annotations
@@ -38,6 +43,11 @@ from .svi import K_MAX
 #: (with the grid step h: the central difference of C carries a relative bias of h^2 / 6 -- the
 #: CDF is -h^2 / 6 at a deep in-the-money end -- so the tolerance is max(CDF_TOL, h^2)).
 CDF_TOL = 1e-8
+
+
+NEGATIVE_MASS_TOL = 1e-6   # integral of max(-q, 0) above this: butterfly arbitrage
+ANALYTIC_TOL = 1e-3        # |grid integral of the finite-difference q - that of the closed form|
+MEAN_TOL = 0.005           # |mean / F - 1|
 
 
 class DensityError(ValueError):
@@ -163,3 +173,29 @@ def breeden_litzenberger(
                      integral=integral, mean=mean, negative_mass=neg,
                      k_range=(float(k_lo), float(k_hi)),
                      tail_mass_left=float(cdf[0]), tail_mass_right=float(1.0 - cdf[-1]))
+
+
+def density_checks(d: RNDensity, analytic: np.ndarray) -> dict[str, Any]:
+    """The checks that can fail, with ``analytic`` an independent density on ``d.strikes`` (per USD;
+    for an SVI smile ``svi.density_k(p, ln(K/F)) / K``, the closed form in Gatheral & Jacquier 2014):
+
+    * ``negative_mass``: ``d.negative_mass <= NEGATIVE_MASS_TOL``;
+    * ``tails``: both tail masses ``>= -h^2`` (h the log-strike step: the CDF's own finite-difference bias);
+    * ``analytic``: the grid integrals of ``d.density`` and ``analytic`` agree to ``ANALYTIC_TOL``;
+    * ``mean``: ``|mean / F - 1| <= MEAN_TOL``.
+
+    (A non-monotone CDF never gets here: :func:`breeden_litzenberger` raises.) ``integral_plus_tails`` is
+    returned as information only (module docstring)."""
+    h = (d.k_range[1] - d.k_range[0]) / (d.strikes.size + 1)
+    an = float(np.trapezoid(np.asarray(analytic, float), d.strikes))
+    return {
+        "integral_plus_tails": d.integral + d.tail_mass_left + d.tail_mass_right,
+        "analytic_integral": an,
+        "tail_tol": h * h,
+        "passed": {
+            "negative_mass": bool(d.negative_mass <= NEGATIVE_MASS_TOL),
+            "tails": bool(min(d.tail_mass_left, d.tail_mass_right) >= -h * h),
+            "analytic": bool(abs(d.integral - an) <= ANALYTIC_TOL),
+            "mean": bool(abs(d.mean / d.forward - 1.0) <= MEAN_TOL),
+        },
+    }

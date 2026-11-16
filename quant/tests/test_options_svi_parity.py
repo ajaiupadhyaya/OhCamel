@@ -12,6 +12,7 @@ from ohcamel_quant.options.svi import (
     K_MAX,
     SVIParams,
     butterfly_check,
+    butterfly_free,
     butterfly_g,
     calendar_check,
     fit_svi,
@@ -150,18 +151,34 @@ def test_butterfly_check_scans_the_wings_by_default():
     assert not chk["arbitrage_free"] and chk["g_min"] < 0 and chk["k_at_g_min"] > 0.19
 
 
+def test_butterfly_check_finds_a_dip_between_the_scan_points():
+    """The 2026-12-24 SPY slice as the calibration fitted it when g was tested only at the scan's
+    1201 points: g >= -1e-10 at every one of them, yet -7.7e-6 at k = 0.3272, inside a negative
+    region ~0.004 wide that holds no scan point. The refined minimum finds it."""
+    p = SVIParams(a=-0.014811311097864086, b=0.07379408242339407, rho=-0.26197197026385555,
+                  m=0.01951695314816534, sigma=0.22904056711078535)
+    assert butterfly_check(p, np.linspace(-K_MAX, K_MAX, 1201))["arbitrage_free"]      # the scan alone
+    chk = butterfly_check(p)
+    assert not chk["arbitrage_free"]
+    assert chk["g_min"] == pytest.approx(-7.709e-6, rel=1e-3) and chk["k_at_g_min"] == pytest.approx(0.3272, abs=1e-4)
+    assert not butterfly_free(p)
+
+
 def test_spy_2026_11_15_every_slice_obeys_lee_and_keeps_its_vertex_inside_its_quotes(spy_2026_11_15):
     """On the real chain of the review, where 13 of 31 slices had fitted rho ~ +0.9, a right wing
     at the old cap of 4 and a vertex m ~ 0.6 beyond the last quote: every wing slope is within
     Lee's bound of 2, every vertex inside the quoted k, and g >= 0 over [-K_MAX, K_MAX]."""
     _, vs, _ = spy_2026_11_15
     assert len(vs.fits) == 31 and not vs.errors
+    fine = np.linspace(-K_MAX, K_MAX, 600_001)         # step 1e-5, independent of the fit's own scan
     bad = {}
     for sid, f in vs.fits.items():
         p = f.params
         slope = p.b * (1 + abs(p.rho))
-        if not (slope <= 2.0 + 1e-9 and f.k_min <= p.m <= f.k_max and f.butterfly["arbitrage_free"]):
-            bad[sid] = (round(slope, 4), round(p.m, 4), (round(f.k_min, 4), round(f.k_max, 4)), f.butterfly["g_min"])
+        g_fine = float(butterfly_g(p, fine).min())
+        if not (slope <= 2.0 + 1e-9 and f.k_min <= p.m <= f.k_max and f.butterfly["arbitrage_free"]
+                and g_fine >= -1e-10):
+            bad[sid] = (round(slope, 4), round(p.m, 4), (round(f.k_min, 4), round(f.k_max, 4)), g_fine)
     assert not bad, bad
 
 

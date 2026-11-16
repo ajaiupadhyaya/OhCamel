@@ -507,7 +507,7 @@ export const MODELS: Model[] = [
     section: "options",
     summary: "The second derivative of call prices with respect to strike is the market's probability density for the price at expiry. It turns an option chain into implied probabilities, e.g. of a 10% fall.",
     formulas: [{ tex: T`q(K) = \frac1D\frac{\partial^2 C}{\partial K^2},\qquad P(S_T \le K) = 1 + \frac1D\frac{\partial C}{\partial K}` }],
-    assumptions: ["Computed from the fitted smile, not raw quotes; the integral (≈ 1) and mean (≈ F) are reported as checks, never forced.", "These are risk-neutral probabilities, which embed risk premia — not real-world forecasts."],
+    assumptions: ["Computed from the fitted smile, not raw quotes, on ln(K/F) in [−3, 3], with the mass beyond reported; the checks — no negative mass, no negative tail mass, the grid integral against the smile's closed-form density, the mean against F — are reported, never forced.", "These are risk-neutral probabilities, which embed risk premia — not real-world forecasts."],
     appears: [VOL_DENS],
     refs: ["breeden_litzenberger_1978", "ait_sahalia_lo_1998"],
     keywords: "risk neutral probability density",

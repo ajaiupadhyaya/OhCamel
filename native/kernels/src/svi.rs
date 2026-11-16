@@ -9,15 +9,17 @@
 //! grid, then Nelder-Mead (optim.rs, scipy's) from the three best grid points
 //! (xatol 1e-7, fatol 1e-14, 600 iterations), with a quadratic penalty outside m in
 //! [kmin, kmax] (the vertex stays inside the quotes), sigma in [1e-4, 4 span + 1],
-//! and a candidate rejected (objective +inf) when Durrleman's g < -1e-10 or w <= 0
-//! anywhere on 1201 points of [-3, 3] (K_MAX). Then b = c/sigma, rho = d/c
-//! (clipped to +-0.999999; 0 when c <= 1e-14).
+//! and a candidate rejected (objective +inf) when Durrleman's g < 0 or w <= 0
+//! anywhere on [-3, 3] (K_MAX): a 1201-point scan whose local minima (and the scan
+//! point nearest m) are each refined by two 101-point zooms (svi._g_min). Then
+//! b = c/sigma, rho = d/c (clipped to +-0.999999; 0 when c <= 1e-14).
 use crate::optim::{nelder_mead, NmOptions};
 
 const SLOPE_CAP: f64 = 2.0;
 const K_MAX: f64 = 3.0;
-const G_TOL: f64 = 1e-10;
 const N_GRID: usize = 1201;
+const ZOOM_N: usize = 101;
+const ZOOMS: usize = 2;
 
 pub struct SviFit {
     pub a: f64,
@@ -190,21 +192,71 @@ fn params(x: &[f64; 3], s: f64) -> (f64, f64, f64) {
     (a, c / s, rho)
 }
 
-/// options/svi.butterfly_free: g >= -G_TOL and w > 0 on every grid point, with SVIParams'
-/// w, dw, d2w and butterfly_g evaluated in the same operation order (bit-for-bit the same).
+/// (g(k), w(k)) with SVIParams' w, dw, d2w and butterfly_g in the same operation order
+/// (bit-for-bit the reference's values).
+fn g_and_w(a: f64, b: f64, rho: f64, m: f64, s: f64, k: f64) -> (f64, f64) {
+    let xk = k - m;
+    let q = xk * xk + s * s;
+    let r = q.sqrt();
+    let w = a + b * (rho * xk + r);
+    let w1 = b * (rho + xk / r);
+    let w2 = b * (s * s) / (q * r);
+    let t = 1.0 - k * w1 / (2.0 * w);
+    (t * t - (w1 * w1 / 4.0) * (1.0 / w + 0.25) + w2 / 2.0, w)
+}
+
+/// options/svi.butterfly_free via svi._g_min, step for step: g on the scan; each scan point no
+/// higher than its neighbours, and the scan point nearest m, bracketed by its neighbours and
+/// zoomed twice (101 points over the bracket of the previous best point); free iff every value
+/// is finite, the minimum is >= 0 and w > 0 at every point evaluated.
 fn butterfly_free(x: &[f64; 3], m: f64, s: f64, grid: &[f64]) -> bool {
     let (a, b, rho) = params(x, s);
-    grid.iter().all(|&k| {
-        let xk = k - m;
-        let q = xk * xk + s * s;
-        let r = q.sqrt();
-        let w = a + b * (rho * xk + r);
-        let w1 = b * (rho + xk / r);
-        let w2 = b * (s * s) / (q * r);
-        let t = 1.0 - k * w1 / (2.0 * w);
-        let g = t * t - (w1 * w1 / 4.0) * (1.0 / w + 0.25) + w2 / 2.0;
-        g >= -G_TOL && w > 0.0
-    })
+    let n = grid.len();
+    let mut g = Vec::with_capacity(n);
+    for &k in grid {
+        let (gk, wk) = g_and_w(a, b, rho, m, s, k);
+        if !gk.is_finite() || wk <= 0.0 {
+            return false;
+        }
+        g.push(gk);
+    }
+    let mut best = g.iter().cloned().fold(f64::INFINITY, f64::min);
+    let mut cand: Vec<usize> = (0..n)
+        .filter(|&i| (i == 0 || g[i] <= g[i - 1]) && (i == n - 1 || g[i] <= g[i + 1]))
+        .collect();
+    let iv = ((m + K_MAX) / (grid[1] - grid[0])).round_ties_even();
+    cand.push(iv.clamp(0.0, (n - 1) as f64) as usize);
+    for &i in &cand {
+        let (mut lo, mut hi) = (grid[i.saturating_sub(1)], grid[(i + 1).min(n - 1)]);
+        for _ in 0..ZOOMS {
+            let step = (hi - lo) / (ZOOM_N - 1) as f64;
+            let xs: Vec<f64> = (0..ZOOM_N)
+                .map(|j| {
+                    if j == ZOOM_N - 1 {
+                        hi
+                    } else {
+                        lo + step * j as f64
+                    }
+                })
+                .collect();
+            let mut jbest = 0;
+            let mut gbest = f64::INFINITY;
+            for (j, &k) in xs.iter().enumerate() {
+                let (gk, wk) = g_and_w(a, b, rho, m, s, k);
+                if !gk.is_finite() || wk <= 0.0 {
+                    return false;
+                }
+                if gk < gbest {
+                    gbest = gk;
+                    jbest = j;
+                }
+            }
+            best = best.min(gbest);
+            lo = xs[jbest.saturating_sub(1)];
+            hi = xs[(jbest + 1).min(ZOOM_N - 1)];
+        }
+    }
+    best >= 0.0
 }
 
 fn linspace(a: f64, b: f64, n: usize) -> Vec<f64> {
@@ -377,6 +429,26 @@ mod tests {
             .collect();
         let f = svi_fit(&k, &w, &vec![1.0; 41]).unwrap();
         assert!((-0.4..=0.3).contains(&f.m), "{}", f.m);
+    }
+
+    #[test]
+    fn finds_a_dip_between_the_scan_points() {
+        // the 2026-12-24 SPY slice as fitted when g was tested only at the scan points: g >= -1e-10
+        // at all 1201 of them, -7.7e-6 at k = 0.3272 between two (svi.py's test of the same smile)
+        let (a, b, rho, m, s) = (
+            -0.014811311097864086,
+            0.07379408242339407,
+            -0.26197197026385555,
+            0.01951695314816534,
+            0.22904056711078535,
+        );
+        let grid = linspace(-K_MAX, K_MAX, N_GRID);
+        assert!(grid
+            .iter()
+            .all(|&k| g_and_w(a, b, rho, m, s, k).0 >= -1e-10));
+        assert!(g_and_w(a, b, rho, m, s, 0.3272).0 < -7e-6);
+        let x = [a, b * s, rho * b * s];
+        assert!(!butterfly_free(&x, m, s, &grid));
     }
 
     #[test]

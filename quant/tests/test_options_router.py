@@ -116,6 +116,8 @@ def test_surface_and_density(chain_client):
     d = _ok(chain_client.get("/api/options/density/TESTX", params={"expiry": "2026-12-18"}))
     assert d["checks"]["integral"] == pytest.approx(1.0, abs=1e-4)
     assert d["checks"]["mean"] == pytest.approx(d["forward"], rel=1e-4)
+    assert d["checks"]["passed"] == {"negative_mass": True, "tails": True, "analytic": True, "mean": True}
+    assert d["checks"]["analytic_integral"] == pytest.approx(d["checks"]["integral"], abs=1e-3)
     p = [x["p"] for x in d["prob_below"]]
     assert all(b >= a for a, b in zip(p, p[1:], strict=False))
     assert d["moments"]["skew"] < d["lognormal_moments"]["skew"]
@@ -179,7 +181,8 @@ def test_live_surface(live_client, ticker):
 def test_live_spy_density_and_realized(live_client):
     d = _ok(live_client.get("/api/options/density/SPY"))
     c = d["checks"]
-    assert abs(c["integral"] + c["tail_mass_left"] + c["tail_mass_right"] - 1) < 0.01
+    assert all(c["passed"].values()), c["passed"]     # negative mass, tail masses, closed form, mean
+    assert abs(c["integral"] - c["analytic_integral"]) <= 1e-3
     assert abs(c["mean"] / d["forward"] - 1) < 0.005
     r = _ok(live_client.get("/api/options/realized/SPY"))
     assert r["vrp"] is not None and math.isfinite(r["vrp"]["implied"])

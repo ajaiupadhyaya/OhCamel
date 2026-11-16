@@ -29,7 +29,8 @@ minimum variance, the inner problem is re-solved with ``a >= 0`` (Zeliade's
 original domain, which guarantees it). The outer problem over ``(m, sigma)`` is a
 coarse grid search followed by Nelder-Mead (Nelder & Mead 1965), with the vertex
 ``m`` held inside the quoted ``k`` and a candidate rejected when its ``g`` (below)
-is negative anywhere on ``[-K_MAX, K_MAX]``, the range the density integrates over.
+is negative anywhere on ``[-K_MAX, K_MAX]``, the range the density integrates over
+(found by a scan refined at its local minima, :func:`_g_min`).
 A slice fitted without these two rules can match its quotes and still put its
 vertex far beyond them with a wing that breaks the butterfly condition there.
 
@@ -60,8 +61,9 @@ from .. import kernels
 
 SLOPE_CAP = 2.0          # Lee (2004): each wing's dw/dk is at most 2
 K_MAX = 3.0              # |k| range a fitted slice is arbitrage-free on, and densities stop at
-G_TOL = 1e-10            # g below -G_TOL is a butterfly violation
+G_TOL = 1e-10            # butterfly_check's slack: g below -G_TOL is reported as a violation
 _K_GRID = np.linspace(-K_MAX, K_MAX, 1201)   # the butterfly scan: steps of 0.005 in k
+_ZOOM_N, _ZOOMS = 101, 2                     # each scan minimum refined twice, 101 points a time
 
 
 @dataclass(frozen=True)
@@ -113,24 +115,85 @@ def butterfly_g(p: SVIParams, k: Any) -> np.ndarray:
         return t * t - (w1 * w1 / 4.0) * (1.0 / w + 0.25) + w2 / 2.0
 
 
-def butterfly_free(p: SVIParams) -> bool:
-    """``g >= -G_TOL`` and ``w > 0`` everywhere on the scan of ``[-K_MAX, K_MAX]``."""
+def density_k(p: SVIParams, k: Any) -> np.ndarray:
+    """Risk-neutral density of ``x = ln(S_T / F)`` at ``k``, in closed form from the smile
+    (Gatheral & Jacquier 2014, eq. 2.2): ``g(k) n(d2(k)) / sqrt(w(k))``, ``d2 = -k/sqrt(w) - sqrt(w)/2``,
+    ``n`` the standard normal pdf. The density of ``S_T`` at ``K = F e^k`` is this over ``K``."""
+    k = np.asarray(k, dtype=float)
     with np.errstate(divide="ignore", invalid="ignore"):
-        return bool(np.all((butterfly_g(p, _K_GRID) >= -G_TOL) & (p.w(_K_GRID) > 0)))
+        sw = np.sqrt(p.w(k))
+        d2 = -k / sw - 0.5 * sw
+        return butterfly_g(p, k) * np.exp(-0.5 * d2 * d2) / (np.sqrt(2.0 * np.pi) * sw)
+
+
+def _g_min(p: SVIParams) -> tuple[float, float, bool]:
+    """Minimum of ``g`` over ``[-K_MAX, K_MAX]``: the scan (step 0.005), then each of its local
+    minima (and the scan point nearest the vertex ``m``) refined by two zooms, each 101 points over
+    the bracket of the previous best point and its neighbours (steps 1e-4, then 2e-6). A fit held at
+    ``g >= 0`` only on the scan dips below zero between its points (by up to 8e-6 on the 2026-11-15
+    SPY chain); after the zooms the step is 2e-6, so a dip between points is ``g'' * 5e-13``.
+    Returns (g_min, its k, ``w > 0`` at every point evaluated); g_min is -inf if ``g`` is not
+    finite somewhere. native/kernels/src/svi.rs repeats this step for step."""
+    k = _K_GRID
+    with np.errstate(divide="ignore", invalid="ignore"):
+        g, w = butterfly_g(p, k), p.w(k)
+    if not np.all(np.isfinite(g)):
+        return -np.inf, float("nan"), False
+    w_ok = bool(np.all(w > 0))
+    n = k.size
+    left = np.concatenate(([True], g[1:] <= g[:-1]))
+    right = np.concatenate((g[:-1] <= g[1:], [True]))
+    cand = set(np.flatnonzero(left & right).tolist())
+    cand.add(int(np.clip(np.rint((p.m + K_MAX) / (k[1] - k[0])), 0, n - 1)))
+    idx = np.array(sorted(cand))
+    lo, hi = k[np.maximum(idx - 1, 0)], k[np.minimum(idx + 1, n - 1)]
+    i0 = int(np.argmin(g))
+    best, k_best = float(g[i0]), float(k[i0])
+    J = np.arange(_ZOOM_N, dtype=float)
+    rows = np.arange(idx.size)
+    for _ in range(_ZOOMS):
+        X = lo[:, None] + ((hi - lo) / (_ZOOM_N - 1))[:, None] * J[None, :]
+        X[:, -1] = hi
+        with np.errstate(divide="ignore", invalid="ignore"):
+            G, W = butterfly_g(p, X), p.w(X)
+        if not np.all(np.isfinite(G)):
+            return -np.inf, float("nan"), False
+        w_ok = w_ok and bool(np.all(W > 0))
+        j = np.argmin(G, axis=1)
+        if float(G[rows, j].min()) < best:
+            r = int(np.argmin(G[rows, j]))
+            best, k_best = float(G[r, j[r]]), float(X[r, j[r]])
+        lo, hi = X[rows, np.maximum(j - 1, 0)], X[rows, np.minimum(j + 1, _ZOOM_N - 1)]
+    return best, k_best, w_ok
+
+
+def butterfly_free(p: SVIParams) -> bool:
+    """``g >= 0`` and ``w > 0`` on ``[-K_MAX, K_MAX]`` (the scan refined at its minima, :func:`_g_min`):
+    the calibration's test. Zero, not ``-G_TOL``: the optimizer settles on the boundary, so any slack
+    here is spent, and between the last zoom's points ``g`` can still sit ~1e-12 lower."""
+    g_min, _, w_ok = _g_min(p)
+    return bool(g_min >= 0.0 and w_ok)
 
 
 def butterfly_check(p: SVIParams, k_grid: Any = None, tol: float = G_TOL) -> dict[str, Any]:
-    """Minimum of ``g`` on ``k_grid`` (default: ``[-K_MAX, K_MAX]`` in steps of 0.005) and
-    the sub-intervals where ``g < 0``."""
+    """Minimum of ``g`` and the points where ``g < 0``: on ``k_grid``, or by default on
+    ``[-K_MAX, K_MAX]`` (the scan in steps of 0.005, each local minimum refined: :func:`_g_min`)."""
     k = _K_GRID if k_grid is None else np.asarray(k_grid, dtype=float)
     g = butterfly_g(p, k)
     w = p.w(k)
     bad = (g < -tol) | (w <= 0)
     i = int(np.nanargmin(g)) if np.isfinite(g).any() else 0
+    g_min = float(np.nanmin(g)) if np.isfinite(g).any() else float("nan")
+    k_at = float(k[i])
+    if k_grid is None:
+        g_min, k_at, w_ok = _g_min(p)
+        bad_refined = not (g_min >= -tol and w_ok)
+    else:
+        bad_refined = False
     return {
-        "arbitrage_free": bool(not bad.any()),
-        "g_min": float(np.nanmin(g)) if np.isfinite(g).any() else float("nan"),
-        "k_at_g_min": float(k[i]),
+        "arbitrage_free": bool(not bad.any() and not bad_refined),
+        "g_min": g_min,
+        "k_at_g_min": k_at,
         "violation_k": k[bad].tolist()[:: max(1, int(bad.sum()) // 25)] if bad.any() else [],
         "k_range": [float(k.min()), float(k.max())],
     }

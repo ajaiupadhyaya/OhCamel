@@ -8,8 +8,8 @@ import pytest
 from scipy.stats import norm
 
 from ohcamel_quant.options import bsm, metrics
-from ohcamel_quant.options.density import DensityError, breeden_litzenberger
-from ohcamel_quant.options.svi import K_MAX, SVIParams, butterfly_check
+from ohcamel_quant.options.density import DensityError, breeden_litzenberger, density_checks
+from ohcamel_quant.options.svi import K_MAX, SVIParams, butterfly_check, density_k
 
 F, D, T, SIG = 100.0, np.exp(-0.04 * 30 / 365), 30 / 365, 0.20
 
@@ -166,10 +166,23 @@ def test_bl_k_range_reuses_the_grid_of_a_skewed_density():
         breeden_litzenberger(F, D, T_, _flat(atm_w), k_range=(0.1, -0.1))
 
 
+def _failed(F_, D_, T_, p):
+    """The density checks (a)-(e) that p's density fails: (a) breeden_litzenberger raises
+    DensityError; (b) negative mass; (c) negative tail mass; (d) the grid integral against the
+    closed-form density of the smile; (e) the mean against the forward."""
+    try:
+        d = breeden_litzenberger(F_, D_, T_, p.w)
+    except DensityError:
+        return {"a"}
+    chk = density_checks(d, density_k(p, np.log(d.strikes / F_)) / d.strikes)
+    names = {"negative_mass": "b", "tails": "c", "analytic": "d", "mean": "e"}
+    return {names[n] for n, ok in chk["passed"].items() if not ok}
+
+
 def test_bl_left_slope_045_stops_at_k_max_and_reports_its_left_tail():
     """The review's runaway case: a short-dated smile whose left wing rises at dw/dk = 0.45 put
     so much mass below the strikes that widening by 1.5x a dozen times reached k ~ -200. Now the
-    grid stops at K_MAX and the mass it leaves out is reported, so the total still adds to one."""
+    grid stops at K_MAX and the mass it leaves out is reported."""
     b, rho = 0.45 / 1.9, -0.9
     runaway = SVIParams(a=0.00005, b=b, rho=rho, m=0.02, sigma=0.03)     # the review's case, T = 8 days
     assert runaway.wing_slopes()[0] == pytest.approx(0.45)
@@ -183,8 +196,8 @@ def test_bl_left_slope_045_stops_at_k_max_and_reports_its_left_tail():
     d = breeden_litzenberger(670.0, 1.0, T_, p.w)
     assert -K_MAX <= d.k_range[0] < d.k_range[1] <= K_MAX
     assert d.k_range[0] == -K_MAX                      # it did need the whole range
-    assert d.tail_mass_left > 1e-6                     # and still left mass below it, reported
-    assert 0.99 <= d.integral + d.tail_mass_left + d.tail_mass_right <= 1.01
+    assert d.tail_mass_left > 1e-3                     # and still left mass below it, reported
+    assert _failed(670.0, 1.0, T_, p) == set()
 
 
 def test_bl_raises_on_a_non_monotone_cdf_instead_of_clipping_it():
@@ -195,23 +208,36 @@ def test_bl_raises_on_a_non_monotone_cdf_instead_of_clipping_it():
         breeden_litzenberger(F, D, 1.0, vogt.w)
 
 
-def test_spy_2026_11_15_every_density_integrates_to_one_and_prices_the_forward(spy_2026_11_15):
-    """On the real chain of the review: every slice's density, with the tail mass beyond its grid,
-    adds to one within 1%, and its mean is the forward within 0.5% (the martingale condition). Before
-    the wings were capped at Lee's bound the totals ran to 1.24 and mean/forward to 1.40."""
+def test_integral_plus_tails_is_one_for_any_smile_so_the_checks_are_others():
+    """integral + tail masses telescopes to one for an arbitrageable smile too (q is the derivative
+    of the CDF whose ends are the tails): computed with the CDF left unchecked, Vogt's slice and the
+    review's bad slice both give 1.0000004. The checks that can fail do fail on both."""
+    b, rho, sigma = 3.9 / 1.9, 0.9, 0.2
+    bad = SVIParams(a=-b * sigma * np.sqrt(1 - rho * rho) + 0.0005, b=b, rho=rho, m=0.58, sigma=sigma)
+    vogt = SVIParams(a=-0.0410, b=0.1331, rho=0.3060, m=0.3586, sigma=0.4153)
+    for p, T_ in ((bad, 0.28), (vogt, 1.0)):
+        k = np.linspace(-3.0, 3.0, 4001)
+        K = 100.0 * np.exp(k)
+        C = bsm.black76_price(100.0, K, T_, np.sqrt(np.maximum(p.w(k), 1e-14) / T_), 1.0, "C")
+        h = k[1] - k[0]
+        Ck, Ckk, Ki = (C[2:] - C[:-2]) / (2 * h), (C[2:] - 2 * C[1:-1] + C[:-2]) / h**2, K[1:-1]
+        q, cdf = (Ckk - Ck) / Ki**2, 1.0 + Ck / Ki
+        assert np.trapezoid(q, Ki) + cdf[0] + (1.0 - cdf[-1]) == pytest.approx(1.0, abs=1e-5)
+        assert np.trapezoid(np.clip(-q, 0, None), Ki) > 1e-5          # yet the density goes negative
+        assert _failed(100.0, 1.0, T_, p) & {"a", "b", "c", "d"}
+
+
+def test_spy_2026_11_15_every_density_passes_the_checks_that_can_fail(spy_2026_11_15):
+    """On the real chain of the review, every slice's density passes (a)-(e): no DensityError, no
+    negative mass, no negative tail mass, the grid integral within 1e-3 of the smile's closed-form
+    density on the same grid, and the mean within 0.5% of the forward. Before the wings were capped at
+    Lee's bound, mean/forward ran to 1.40."""
     ca, vs, _ = spy_2026_11_15
     assert len(vs.fits) == 31
     bad = {}
     for sid, f in vs.fits.items():
         s = ca.slices.loc[sid]
-        F_, D_, T_ = float(s["forward"]), float(s["discount"]), float(s["T"])
-        try:
-            d = breeden_litzenberger(F_, D_, T_, f.params.w)
-        except DensityError as e:
-            bad[sid] = str(e)
-            continue
-        total = d.integral + d.tail_mass_left + d.tail_mass_right
-        if not (0.99 <= total <= 1.01 and abs(d.mean / F_ - 1.0) <= 0.005):
-            bad[sid] = f"integral {d.integral:.4f} + tails {d.tail_mass_left:.2e}, {d.tail_mass_right:.2e}; " \
-                       f"mean/F {d.mean / F_:.4f}"
+        failed = _failed(float(s["forward"]), float(s["discount"]), float(s["T"]), f.params)
+        if failed:
+            bad[sid] = sorted(failed)
     assert not bad, bad

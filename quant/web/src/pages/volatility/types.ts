@@ -264,6 +264,10 @@ export interface Density extends ChainHeader {
     integral: number; // of q over the strike grid, which stops at |ln(K/F)| = 3
     tail_mass_left: number; // P(S_T below the grid)
     tail_mass_right: number; // P(S_T above the grid)
+    integral_plus_tails: number; // information only: telescopes to 1 for any smile
+    analytic_integral: number; // grid integral of the smile's closed-form density
+    tail_tol: number; // tail masses below -tail_tol fail
+    passed: { negative_mass: boolean; tails: boolean; analytic: boolean; mean: boolean };
     mean: number; forward: number; mean_minus_forward: number; negative_mass: number; butterfly: SviFit["butterfly"];
   };
   moments: Moments;

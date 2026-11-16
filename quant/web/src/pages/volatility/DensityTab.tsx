@@ -122,30 +122,33 @@ function DensityChart({ d }: { d: Density }) {
 /** Tail masses above this are shown as their own figures. */
 export const TAIL_SHOWN = 0.001;
 
-/** The normalisation check: probability on the grid plus the mass the grid leaves out on each side. */
-export function normalization(c: Density["checks"]): { total: number; ok: boolean; showTails: boolean } {
-  const total = c.integral + c.tail_mass_left + c.tail_mass_right;
-  return { total, ok: Math.abs(total - 1) <= 0.01, showTails: c.tail_mass_left > TAIL_SHOWN || c.tail_mass_right > TAIL_SHOWN };
+/** Whether to show the two tail masses as their own rows. */
+export function showTails(c: Density["checks"]): boolean {
+  return c.tail_mass_left > TAIL_SHOWN || c.tail_mass_right > TAIL_SHOWN;
 }
 
+/**
+ * The checks shown with ✓/✗ are the API's `checks.passed`, the ones that can fail: negative mass,
+ * negative tail mass, the grid integral against the smile's closed-form density, the mean against
+ * the forward. Grid integral + tail masses is a plain figure: it telescopes to 1 for any smile.
+ */
 export function Checks({ d }: { d: Density }) {
   const c = d.checks;
-  const norm = normalization(c);
-  const meanOk = Math.abs(c.mean_minus_forward / d.forward) <= 0.005;
-  const negOk = c.negative_mass <= 1e-4;
-  const tails = norm.showTails
+  const ok = c.passed;
+  const tails = showTails(c)
     ? [
-        { label: "Mass below grid", value: fmtPct(c.tail_mass_left, 2), info: { text: "Probability that the expiry price is below the lowest strike of the grid (the grid stops at ln(K/F) = −3)." } },
-        { label: "Mass above grid", value: fmtPct(c.tail_mass_right, 2), info: { text: "Probability that the expiry price is above the highest strike of the grid (the grid stops at ln(K/F) = +3)." } },
+        { label: "Mass below grid", value: <>{fmtPct(c.tail_mass_left, 2)} <Check ok={ok.tails} /></>, info: { text: "Probability that the expiry price is below the lowest strike of the grid (the grid stops at ln(K/F) = −3). Negative beyond finite-difference error is a failure." } },
+        { label: "Mass above grid", value: <>{fmtPct(c.tail_mass_right, 2)} <Check ok={ok.tails} /></>, info: { text: "Probability that the expiry price is above the highest strike of the grid (the grid stops at ln(K/F) = +3). Negative beyond finite-difference error is a failure." } },
       ]
-    : [];
+    : [{ label: "Mass beyond grid", value: <>{fmtSci(c.tail_mass_left + c.tail_mass_right, 2)} <Check ok={ok.tails} /></>, info: { text: "Probability outside the strike grid (ln(K/F) in [−3, 3]), both ends together. Negative beyond finite-difference error is a failure." } }];
   return (
     <KV
       rows={[
-        { label: <span className="vx-sym">∫ q(K) dK + tails</span>, value: <>{fmtNum(norm.total, 5)} <Check ok={norm.ok} /></>, hint: `ON GRID ${fmtNum(c.integral, 5)}`, info: { text: "Total probability: on the strike grid plus the mass beyond each end of it; should be 1.", formula: "\\int q(K)\\,dK + P(S_T < K_{lo}) + P(S_T > K_{hi})" } },
+        { label: <span className="vx-sym">∫ q(K) dK</span>, value: <>{fmtNum(c.integral, 5)} <Check ok={ok.analytic} /></>, hint: `CLOSED FORM ${fmtNum(c.analytic_integral, 5)}`, info: { text: "Probability on the strike grid from the finite-difference density, against the same integral of the smile's closed-form density (Gatheral & Jacquier 2014); they must agree to 0.001.", formula: "\\int q(K)\\,dK" } },
         ...tails,
-        { label: <>MEAN − <span className="vx-sym">F</span></>, value: <>{fmtNum(c.mean_minus_forward, 4)} <Check ok={meanOk} /></>, hint: `${fmtSignedPct(c.mean_minus_forward / d.forward, 4)} OF F`, info: { text: "Martingale condition: the expected expiry price equals the forward.", formula: "\\mathbb E_Q[S_T] = F" } },
-        { label: "Negative mass", value: <>{fmtSci(c.negative_mass, 2)} <Check ok={negOk} /></>, info: { text: "Probability mass below zero: possible only if the smile admits butterfly arbitrage." } },
+        { label: <span className="vx-sym">∫ q dK + tails</span>, value: fmtNum(c.integral_plus_tails, 5), info: { text: "Grid probability plus the mass beyond the grid. Information, not a check: it adds to 1 for any smile, arbitrage or not." } },
+        { label: <>MEAN − <span className="vx-sym">F</span></>, value: <>{fmtNum(c.mean_minus_forward, 4)} <Check ok={ok.mean} /></>, hint: `${fmtSignedPct(c.mean_minus_forward / d.forward, 4)} OF F`, info: { text: "Martingale condition: the expected expiry price equals the forward.", formula: "\\mathbb E_Q[S_T] = F" } },
+        { label: "Negative mass", value: <>{fmtSci(c.negative_mass, 2)} <Check ok={ok.negative_mass} /></>, info: { text: "Probability mass below zero: possible only if the smile admits butterfly arbitrage." } },
         { label: "Smile butterfly", value: <Check ok={c.butterfly.arbitrage_free} />, info: INFO.butterfly_g },
         { label: <span className="vx-sym">min g(k)</span>, value: fmtNum(c.butterfly.g_min, 4), info: INFO.butterfly_g },
         { label: <span className="vx-sym">D</span>, value: fmtNum(d.discount, 5), info: { title: "Discount factor", text: "Parity-implied for this expiry; the density is the second strike-derivative of calls over D." } },

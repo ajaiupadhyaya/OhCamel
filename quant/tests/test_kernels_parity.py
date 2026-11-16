@@ -259,7 +259,8 @@ def test_svi_parity_on_the_spy_chain(both, spy_2026_11_15):
     loop) and solve them differently (LAPACK vs elimination), so the objective differs in the last
     bits, and Nelder-Mead (xatol 1e-7) on a surface cut by the butterfly rejection amplifies that:
     perturbing w by 2e-16 moves the reference's own parameters by up to 2.7e-7. Measured Rust vs
-    reference on this chain (macOS arm64): 27 slices within 1.3e-13, four at 3.4e-8 to 3.4e-7."""
+    reference on this chain (macOS arm64): 27 slices within 1e-12, four at 1.2e-9 to 4.7e-6
+    (2026-12-18)."""
     _, _, inputs = spy_2026_11_15
     assert len(inputs) == 31
     for sid, (k, iv, T, wt) in inputs.items():
@@ -274,8 +275,9 @@ def test_svi_parity_on_the_spy_chain(both, spy_2026_11_15):
 def test_svi_parity_on_what_the_fit_outputs(both, spy_2026_11_15):
     """The parameters are ill-conditioned (above); what the model outputs is not. On every slice of
     the real chain, Rust and the reference agree on the fitted total variance w(k) at the slice's
-    quoted k, and on the density's integral + tail masses, to 1e-8 absolute. Measured (macOS arm64):
-    w(k) within 1.1e-10, integral + tails within 2.5e-12."""
+    quoted k, and on the density's grid integral and its integral + tail masses, to 1e-8 absolute.
+    Measured (macOS arm64): w(k) within 6.4e-9 (2028-06-16; 1.4e-9 on 2026-12-18, the others under
+    2e-11), the grid integral within 9e-11, integral + tails within 1e-12."""
     from ohcamel_quant.options.density import breeden_litzenberger
     from ohcamel_quant.options.svi import SVIParams
 
@@ -288,6 +290,7 @@ def test_svi_parity_on_what_the_fit_outputs(both, spy_2026_11_15):
         np.testing.assert_allclose(r.w(k), p.w(k), rtol=0, atol=1e-8, err_msg=sid)
         F, D = float(ca.slices.loc[sid, "forward"]), float(ca.slices.loc[sid, "discount"])
         dr, dp = (breeden_litzenberger(F, D, T, q.w) for q in (r, p))
+        assert dr.integral == pytest.approx(dp.integral, rel=0, abs=1e-8), sid
         total_r = dr.integral + dr.tail_mass_left + dr.tail_mass_right
         total_p = dp.integral + dp.tail_mass_left + dp.tail_mass_right
         assert total_r == pytest.approx(total_p, rel=0, abs=1e-8), sid
