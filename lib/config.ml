@@ -140,15 +140,18 @@ module Alerts = struct
        when the switch is enabled -- so a misconfigured file cannot arm
        something that trips on everything. *)
     kill_switch_trips_on : string list;
-    (* A HELD breach raises, not one print (the completion spec's "debounced";
-       Task 1.3). A limit raises -- and so trips the switch when it is one it
-       trips on -- after at least [raise_after_n] consecutive breached
-       evaluations, the first of them at least [raise_after_s] seconds before
-       the one that raises. Both conditions, never either: three bad prints
-       inside a second are not a held breach, and neither is one bad print
-       that sat on the book for a minute. An unevaluable round neither counts
-       nor resets the run; a clear one resets it. (raise_after_n 1)
-       (raise_after_s 0) is the rule before 2026-11-16: one breached
+    (* A HELD breach raises, not a transient one (the completion spec's
+       "debounced"; Task 1.3). A limit raises -- and so trips the switch when
+       it is one it trips on -- once it has stood breached, with no clear
+       evaluation between, for [raise_after_s] seconds and been observed
+       breached [raise_after_n] times. Both conditions, never either. An
+       observation is graph-wide: any change of the graph's breach list
+       observes every limit, and the engine's clock observes them again when
+       the graph is quiet (Alerts.recheck), so a held breach raises in a busy
+       graph or a still one. An unevaluable round neither counts nor resets
+       the run; a clear one resets it. A single bad PRINT is the feed's
+       deviation filter's to stop (Feed.max_print_deviation). (raise_after_n
+       1) (raise_after_s 0) is the rule before 2026-11-16: one breached
        evaluation raises. Defaulted, so an alerts block written before the
        words existed takes the engine's rule rather than failing to parse. *)
     raise_after_n : int; [@sexp.default 3]

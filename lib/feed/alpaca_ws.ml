@@ -104,10 +104,11 @@ module Message = struct
      would make the feed brittle against a routine vendor release. *)
   type t =
     | Trade of Types.Tick.t
-    (* A quote's midpoint, or None when the quote has none to give: crossed,
-       a side missing or zero, or a price that is not a number. None is a
-       quote the deviation filter treats as no quote (Print_filter). *)
-    | Quote of { symbol : Types.Symbol.t; mid : float option }
+    (* A quote's (bid, ask), or None when it is not a two-sided quote:
+       crossed, a side missing or zero, or a price that is not a number. None
+       is a quote the deviation filter treats as no quote (Print_filter), and
+       so is one too wide to judge a print by. *)
+    | Quote of { symbol : Types.Symbol.t; bid_ask : (float * float) option }
     | Success of string
     | Subscription of string
     | Error of { code : int; msg : string }
@@ -174,16 +175,24 @@ module Message = struct
           }
     | _ -> None
 
-  (* The midpoint of a bid and an ask, when the pair is a quote: both prices
-     to believe and the ask at or above the bid. A locked quote (ask = bid) is
+  (* A bid and an ask, when the pair is a two-sided quote: both prices to
+     believe and the ask at or above the bid. A locked quote (ask = bid) is
      one; a crossed one is not -- one of its sides is wrong, and the filter
      cannot tell which. Alpaca writes 0 for an absent side. *)
-  let quote_mid ~(bid : float option) ~(ask : float option) : float option =
+  let quote_sides ~(bid : float option) ~(ask : float option) : (float * float) option =
     match (bid, ask) with
     | Some bid, Some ask when valid_price bid && valid_price ask && Float.( >= ) ask bid
       ->
-        Some ((bid +. ask) /. 2.0)
+        Some (bid, ask)
     | _ -> None
+
+  (* Whether a subscription confirmation carries quotes: the quotes request's
+     own answer, after which a refusal can no longer be the quotes'. *)
+  let subscription_has_quotes (raw : string) : bool =
+    match Option.try_with (fun () -> Yojson.Safe.from_string raw) with
+    | Some json -> (
+        match member "quotes" json with Some (`List (_ :: _)) -> true | _ -> false)
+    | None -> false
 
   let of_json (json : Yojson.Safe.t) : t =
     match to_string_opt (member "T" json) with
@@ -193,8 +202,8 @@ module Message = struct
             Quote
               {
                 symbol = Types.Symbol.of_string symbol;
-                mid =
-                  quote_mid
+                bid_ask =
+                  quote_sides
                     ~bid:(to_float_opt (member "bp" json))
                     ~ask:(to_float_opt (member "ap" json));
               }
@@ -284,20 +293,23 @@ module Failure = struct
 
   (* A code as it arrives inside a session. The quotes are a second
      subscription, asked for once the trades' is confirmed (see
-     [request_quotes]), so a 405 after that is the plan refusing the QUOTES:
-     Alpaca leaves the subscriptions as they were before a refused request, the
-     trades stream on, and the deviation filter has no quote and marks every
-     print as it always has. Retryable in that sense -- the session goes on and
-     the sentence is kept in last_error. Every other code, and a 405 before
-     the quotes were asked for, reads as [of_code]. *)
-  let in_session ~quotes_requested ~code ~msg =
+     [request_quotes]). While that request is PENDING -- sent, and no
+     confirmation carrying quotes yet -- a plan refusal (405 symbol limit, 409
+     insufficient subscription, 410 channel not on this feed) is the plan
+     refusing the QUOTES: Alpaca leaves the subscriptions as they were before
+     a refused request, the trades stream on, and the deviation filter has no
+     quote and marks every print as it always has. Retryable in that sense --
+     the session goes on and the sentence is kept in last_error. Every code
+     before the quotes are asked for, and after they are confirmed, reads as
+     [of_code]. *)
+  let in_session ~quotes_pending ~code ~msg =
     match code with
-    | 405 when quotes_requested ->
+    | (405 | 409 | 410) when quotes_pending ->
         Retryable
           (sprintf
-             "alpaca: error 405 (%s) -- the quotes subscription was refused; the trades \
+             "alpaca: error %d (%s) -- the quotes subscription was refused; the trades \
               stream on, and their prints mark without the deviation filter"
-             msg)
+             code msg)
     | _ -> of_code ~code ~msg
 end
 
@@ -316,8 +328,8 @@ module Stats = struct
   type t = {
     mutable frames : int;
     mutable trades : int;
-    (* Quotes taken, two-sided or not: the evidence the deviation filter has
-       something to compare against. *)
+    (* Quotes taken for names the book holds, two-sided or not: the evidence
+       the deviation filter has something to compare against. *)
     mutable quotes : int;
     mutable rejected : int;
     (* Valid prints the deviation filter held off the mark: more than
@@ -390,19 +402,46 @@ end
    that has moved moves its midpoint and its prints mark again. A name with no
    quote -- none yet, one crossed, zero or one-sided, the poll's names, which
    have no quotes at all, or a session whose quotes the plan refused -- marks
-   every valid print as it always has. A new session forgets the last one's
-   quotes ([forget_quotes]), so a midpoint never outlives the stream that
-   carried it. *)
+   every valid print as it always has. So does a name whose quote is too wide
+   to judge by -- a spread wider, as a fraction of its midpoint, than the
+   deviation itself, where "5% from the midpoint" is inside the quote -- or
+   older than [max_quote_age] by this process's receipt clock. A new session
+   forgets the last one's quotes ([forget_quotes]), so a midpoint never
+   outlives the stream that carried it. *)
 module Print_filter = struct
-  type t = { max_deviation : float; mids : float Types.Symbol.Table.t }
+  (* How long a quote's midpoint stands without a newer quote. Past it the
+     name has no quote: a midpoint a quiet book stopped refreshing a minute
+     ago is not where the market is, and holding prints against it could keep
+     a moved market off the mark. *)
+  let max_quote_age = Time_ns.Span.of_sec 60.0
 
-  let create ~max_deviation = { max_deviation; mids = Types.Symbol.Table.create () }
+  type t = {
+    max_deviation : float;
+    (* The receipt clock: Time_ns.now unless [create] is handed another,
+       which the tests do. *)
+    now : unit -> Time_ns.t;
+    mids : (float * Time_ns.t) Types.Symbol.Table.t;
+  }
 
+  let create ?(now = Time_ns.now) ~max_deviation () =
+    { max_deviation; now; mids = Types.Symbol.Table.create () }
+
+  (* Written positively, so a nan spread is no quote. *)
   let observe_quote t symbol = function
-    | Some mid -> Hashtbl.set t.mids ~key:symbol ~data:mid
+    | Some (bid, ask) ->
+        let mid = (bid +. ask) /. 2.0 in
+        if Float.( <= ) ((ask -. bid) /. mid) t.max_deviation then
+          Hashtbl.set t.mids ~key:symbol ~data:(mid, t.now ())
+        else Hashtbl.remove t.mids symbol
     | None -> Hashtbl.remove t.mids symbol
 
-  let midpoint t symbol = Hashtbl.find t.mids symbol
+  let midpoint t symbol =
+    match Hashtbl.find t.mids symbol with
+    | Some (mid, received)
+      when Time_ns.Span.( <= ) (Time_ns.diff (t.now ()) received) max_quote_age ->
+        Some mid
+    | Some _ | None -> None
+
   let forget_quotes t = Hashtbl.clear t.mids
 
   (* Whether [tick] may mark. A price that is not one to believe never may,
@@ -438,13 +477,13 @@ let apply_frame ~(graph : Graph.t) ~(stats : Stats.t) ~(filter : Print_filter.t)
   let applied = ref 0 in
   List.iter messages ~f:(fun message ->
       match message with
-      | Message.Quote { symbol; mid } ->
+      | Message.Quote { symbol; bid_ask } ->
           (* In frame order, so a quote moves the midpoint for the trades
              after it in the same frame. A quote marks nothing, so a frame of
              quotes alone settles nothing. *)
-          stats.Stats.quotes <- stats.Stats.quotes + 1;
-          if Graph.knows_symbol graph symbol then
-            Print_filter.observe_quote filter symbol mid
+          if Graph.knows_symbol graph symbol then (
+            stats.Stats.quotes <- stats.Stats.quotes + 1;
+            Print_filter.observe_quote filter symbol bid_ask)
       | Message.Trade tick ->
           if not (Graph.knows_symbol graph (Types.Tick.symbol tick)) then
             (* Not an error. A subscription can legitimately outlive a position,
@@ -572,6 +611,29 @@ let request_quotes ~(phase : Phase.t) ~quotes_requested (message : Message.t) =
   | Message.Subscription _, Phase.Streaming -> not quotes_requested
   | _ -> false
 
+(* Whether [message] confirms the quotes: a subscription carrying them, once
+   they were asked for. After it a refusal is not the quotes' any more. *)
+let confirms_quotes ~quotes_requested (message : Message.t) =
+  match message with
+  | Message.Subscription raw -> quotes_requested && Message.subscription_has_quotes raw
+  | _ -> false
+
+(* What one error message does to a session: its sentence goes to last_error,
+   a fatal one or a refusal ends the session, and anything else -- the quotes'
+   own refusal among them ([Failure.in_session]) -- lets the stream go on. *)
+let session_error ~(stats : Stats.t) ~quotes_pending ~code ~msg :
+    [ `Fatal of string | `Refused of string | `Stream_on of string ] =
+  match Failure.in_session ~quotes_pending ~code ~msg with
+  | Failure.Fatal detail ->
+      stats.Stats.last_error <- Some detail;
+      `Fatal detail
+  | Failure.Refused detail ->
+      stats.Stats.last_error <- Some detail;
+      `Refused detail
+  | Failure.Retryable detail ->
+      stats.Stats.last_error <- Some detail;
+      `Stream_on detail
+
 (* How a session ended, and therefore whether to try again.
 
    This is a type rather than a bool because of a bug it exists to prevent. A
@@ -612,6 +674,7 @@ let run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~filter ~on_contro
   let streaming_since = ref None in
   let handshake_error = ref None in
   let quotes_requested = ref false in
+  let quotes_confirmed = ref false in
   (* A midpoint never outlives the stream that carried it: this session's
      quotes may never come (a refused subscription), and the last session's
      would hold its prints against a market that has since moved. *)
@@ -654,19 +717,19 @@ let run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~filter ~on_contro
                     when request_quotes ~phase ~quotes_requested:!quotes_requested m ->
                       quotes_requested := true;
                       send (quotes_frame ~symbols)
+                  | (Message.Subscription _ as m), _
+                    when confirms_quotes ~quotes_requested:!quotes_requested m ->
+                      quotes_confirmed := true;
+                      Deferred.unit
                   | Message.Error { code; msg }, _ ->
                       (match
-                         Failure.in_session ~quotes_requested:!quotes_requested ~code ~msg
+                         session_error ~stats
+                           ~quotes_pending:(!quotes_requested && not !quotes_confirmed)
+                           ~code ~msg
                        with
-                      | Failure.Fatal detail ->
-                          stats.Stats.last_error <- Some detail;
-                          fatal := Some detail
-                      | Failure.Refused detail ->
-                          stats.Stats.last_error <- Some detail;
-                          refused := Some detail
-                      | Failure.Retryable detail ->
-                          stats.Stats.last_error <- Some detail;
-                          on_event detail);
+                      | `Fatal detail -> fatal := Some detail
+                      | `Refused detail -> refused := Some detail
+                      | `Stream_on detail -> on_event detail);
                       Deferred.unit
                   | _ -> Deferred.unit)
             in

@@ -1237,7 +1237,7 @@ let run_live ~book_path ~(serve_port : int option) =
          midpoints; the poll's names have none, and mark as they always have. *)
       let print_filter =
         Alpaca_ws.Print_filter.create
-          ~max_deviation:book.Config.Book.feed.Config.Feed.max_print_deviation
+          ~max_deviation:book.Config.Book.feed.Config.Feed.max_print_deviation ()
       in
       let fred_stats = Fred_client.Stats.create () in
       (* Backfill the return windows before anything else runs.

@@ -263,28 +263,32 @@ let test_one_evaluation_and_no_time_is_the_old_rule () =
         [ 1; 0 ]
         (counts (run t [ (0.0, evaluated 150.0); (1.0, evaluated 151.0) ])))
 
-(* The recheck re-reads the graph's standing evaluation on the clock: it raises
-   a breach that has met its count and is waiting only on time, and it never
-   counts as an evaluation itself -- so a single print the market never moved
-   off is still one evaluation. *)
-let test_recheck_raises_on_time_and_never_counts () =
+(* A recheck is an observation like any other for a quiet limit: in a still
+   graph one evaluation, then the engine's clock, raises once the breach has
+   stood thirty seconds and been seen three times. A standing clear ends the
+   run, and a firing limit is left to the evaluations that move. *)
+let test_a_recheck_is_an_observation () =
+  let recheck t s value =
+    List.length (Alerts.Tracker.recheck t ~at:(at_s s) [ evaluated value ])
+  in
   let t = held () in
-  ignore
-    (run t [ (0.0, evaluated 150.0); (5.0, evaluated 151.0); (10.0, evaluated 152.0) ]);
+  ignore (run t [ (0.0, evaluated 150.0) ]);
+  Alcotest.(check (list int))
+    "one evaluation, rechecks at 5 to 25 s: silent" [ 0; 0; 0; 0; 0 ]
+    (List.map [ 5.0; 10.0; 15.0; 20.0; 25.0 ] ~f:(fun s -> recheck t s 150.0));
+  Alcotest.(check int) "the recheck at 30 s raises" 1 (recheck t 30.0 150.0);
+  Alcotest.(check int) "and a firing limit is not raised again" 0 (recheck t 35.0 150.0);
   Alcotest.(check int)
-    "recheck at 20 s: not yet thirty" 0
-    (List.length (Alerts.Tracker.recheck t ~at:(at_s 20.0) [ evaluated 152.0 ]));
-  Alcotest.(check int)
-    "recheck at 31 s: raised" 1
-    (List.length (Alerts.Tracker.recheck t ~at:(at_s 31.0) [ evaluated 152.0 ]));
-  let single = held () in
-  ignore (run single [ (0.0, evaluated 150.0) ]);
-  List.iter [ 31.0; 62.0; 93.0 ] ~f:(fun s ->
-      Alcotest.(check int)
-        (sprintf "one print, recheck at %.0f s: silent" s)
-        0
-        (List.length (Alerts.Tracker.recheck single ~at:(at_s s) [ evaluated 150.0 ])));
-  Alcotest.(check bool) "never firing" false (Alerts.Tracker.firing single "aapl-cap")
+    "nor cleared by a recheck: clearing is the moving evaluations'" 0
+    (recheck t 40.0 50.0);
+  Alcotest.(check bool) "still firing" true (Alerts.Tracker.firing t "aapl-cap");
+  let cleared = held () in
+  ignore (run cleared [ (0.0, evaluated 150.0) ]);
+  Alcotest.(check int) "a standing clear at 10 s" 0 (recheck cleared 10.0 90.0);
+  Alcotest.(check (list int))
+    "ends the run: breaches from 31 s are a new one" [ 0; 0; 0 ]
+    (List.map [ 31.0; 35.0; 40.0 ] ~f:(fun s -> recheck cleared s 150.0));
+  Alcotest.(check int) "raised thirty seconds into it" 1 (recheck cleared 61.0 150.0)
 
 (* ------------------------------------------------------------------------ *)
 (* Rendering                                                                 *)
@@ -589,6 +593,99 @@ let test_the_switch_trips_on_a_held_breach () =
           mark 40.0 153.0;
           Alcotest.(check int) "and only once" 1 !trips)
 
+let msft = Symbol.of_string "MSFT"
+
+let msft_cap =
+  {
+    Limit.name = "msft-cap";
+    scope = Limit.Instrument msft;
+    kind = Limit.Gross_notional (Notional.of_float 1_000_000.0);
+  }
+
+(* The engine's defaults on a graph with an injected clock, and the notifier
+   handed to [f] with a count of [on_trip] calls. *)
+let with_held_notifier ~instruments ~limits ~f =
+  let graph = Graph.create ~instruments ~limits ~confidence:0.95 ~return_window:10 () in
+  let clock = ref 0.0 in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      let d = Config.Alerts.default in
+      match
+        Alerts.attach
+          ~now:(fun () -> at_s !clock)
+          ~graph
+          ~config:
+            (alerts_config ~kill:true ~trips_on:[ "aapl-cap" ]
+               ~raise_after_n:d.Config.Alerts.raise_after_n
+               ~raise_after_s:d.Config.Alerts.raise_after_s ())
+          ()
+      with
+      | Error e -> Alcotest.failf "attach: %s" (Error.to_string_hum e)
+      | Ok None -> Alcotest.fail "an enabled config must produce a notifier"
+      | Ok (Some a) ->
+          let trips = ref 0 in
+          Alerts.on_trip a ~f:(fun _ -> Int.incr trips);
+          f graph a clock trips)
+
+(* An observation is graph-wide: aapl-cap stands breached at an unchanged
+   150 while only MSFT moves, and MSFT's changes observe it -- three over 31 s
+   raise it and trip the switch. *)
+let test_another_limit's_changes_observe_a_breach () =
+  with_held_notifier
+    ~instruments:
+      [
+        { Instrument.symbol = aapl; sector = tech };
+        { Instrument.symbol = msft; sector = tech };
+      ]
+    ~limits:[ cap; msft_cap ]
+    ~f:(fun graph a clock trips ->
+      Graph.set_qty graph aapl (Qty.of_float 1.0);
+      Graph.set_price graph aapl (Price.of_float 150.0);
+      Graph.set_qty graph msft (Qty.of_float 1.0);
+      let msft_at s price =
+        clock := s;
+        Graph.set_price graph msft (Price.of_float price);
+        Graph.stabilize graph
+      in
+      msft_at 0.0 300.0;
+      msft_at 10.0 301.0;
+      Alcotest.(check (pair bool int))
+        "two observations: not tripped" (false, 0)
+        (Alerts.halted a, !trips);
+      msft_at 31.0 302.0;
+      Alcotest.(check (pair bool int))
+        "MSFT's third change, 31 s on, trips aapl-cap's switch" (true, 1)
+        (Alerts.halted a, !trips);
+      Alcotest.(check (list string))
+        "aapl-cap fires; msft-cap was never breached" [ "aapl-cap" ]
+        (Alerts.firing_limits a))
+
+(* A graph that goes quiet after ONE breached evaluation -- the first sync
+   outside hours, a feed outage -- still trips, on the engine's clock: not
+   before thirty seconds, and at the first recheck at or after it. *)
+let test_a_quiet_graph's_breach_trips_on_the_clock () =
+  with_held_notifier
+    ~instruments:[ { Instrument.symbol = aapl; sector = tech } ]
+    ~limits:[ cap ]
+    ~f:(fun graph a clock trips ->
+      Graph.set_qty graph aapl (Qty.of_float 1.0);
+      Graph.set_price graph aapl (Price.of_float 150.0);
+      Graph.stabilize graph;
+      let tick s =
+        clock := s;
+        Graph.stabilize graph;
+        Alerts.recheck a ~graph;
+        (Alerts.halted a, !trips)
+      in
+      List.iter [ 5.0; 10.0; 15.0; 20.0; 25.0 ] ~f:(fun s ->
+          Alcotest.(check (pair bool int))
+            (sprintf "clock at %.0f s: not tripped" s)
+            (false, 0) (tick s));
+      Alcotest.(check (pair bool int))
+        "clock at 30 s: tripped, on_trip heard once" (true, 1) (tick 30.0);
+      Alcotest.(check (pair bool int)) "and once only" (true, 1) (tick 35.0))
+
 (* What the wire could not say before.
 
    /api/snapshot has reported `enabled` and a kill-switch word since Phase 4,
@@ -735,8 +832,8 @@ let suite =
         test_an_unevaluable_round_neither_counts_nor_resets;
       Alcotest.test_case "one evaluation and no time is the old rule" `Quick
         test_one_evaluation_and_no_time_is_the_old_rule;
-      Alcotest.test_case "the recheck raises on time and never counts" `Quick
-        test_recheck_raises_on_time_and_never_counts;
+      Alcotest.test_case "a recheck is an observation" `Quick
+        test_a_recheck_is_an_observation;
       Alcotest.test_case "units survive into the message" `Quick test_units_in_messages;
       Alcotest.test_case "slack payload shape" `Quick test_slack_payload_shape;
       Alcotest.test_case "the kill switch is off by default" `Quick
@@ -757,6 +854,10 @@ let suite =
         test_book_with_raise_after_parses;
       Alcotest.test_case "the switch trips on a held breach, not one print" `Quick
         test_the_switch_trips_on_a_held_breach;
+      Alcotest.test_case "another limit's changes observe a breach" `Quick
+        test_another_limit's_changes_observe_a_breach;
+      Alcotest.test_case "a quiet graph's breach trips on the clock" `Quick
+        test_a_quiet_graph's_breach_trips_on_the_clock;
       Alcotest.test_case "firing limits and the trip time are readable" `Quick
         test_firing_and_tripped_at_are_readable;
       Alcotest.test_case "nothing is evaluated until the book is ready" `Quick

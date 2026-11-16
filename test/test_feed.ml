@@ -166,7 +166,7 @@ let test_book =
    valid print is applied, which is what these cases predate. *)
 let filter () =
   Alpaca.Print_filter.create
-    ~max_deviation:Config.Feed.default.Config.Feed.max_print_deviation
+    ~max_deviation:Config.Feed.default.Config.Feed.max_print_deviation ()
 
 let with_graph ~f =
   let graph =
@@ -257,9 +257,9 @@ let aapl = Symbol.of_string "AAPL"
 
 let quote_mid payload =
   match single payload with
-  | Alpaca.Message.Quote { symbol; mid } ->
+  | Alpaca.Message.Quote { symbol; bid_ask } ->
       Alcotest.(check string) "the quote's symbol" "AAPL" (Symbol.to_string symbol);
-      mid
+      Option.map bid_ask ~f:(fun (bid, ask) -> (bid +. ask) /. 2.0)
   | other ->
       Alcotest.failf "expected a quote, got %s"
         (Sexp.to_string_hum (Alpaca.Message.sexp_of_t other))
@@ -362,7 +362,7 @@ let test_the_filter_admits_only_real_prints () =
     [ false; false; false; false; true ]
     (List.map [ Float.nan; Float.infinity; 0.0; -1.0; 100.0 ] ~f:(fun p ->
          Alpaca.Print_filter.admits filter (tick p)));
-  Alpaca.Print_filter.observe_quote filter aapl (Some 100.0);
+  Alpaca.Print_filter.observe_quote filter aapl (Some (99.9, 100.1));
   Alcotest.(check bool)
     "a quote holds 150 off" false
     (Alpaca.Print_filter.admits filter (tick 150.0));
@@ -371,14 +371,87 @@ let test_the_filter_admits_only_real_prints () =
     "forgotten: 150 marks" true
     (Alpaca.Print_filter.admits filter (tick 150.0))
 
+(* A midpoint stands for [max_quote_age] by the receipt clock (injected here,
+   never the wall clock): a quote 59 s old still holds a far print off, one
+   61 s old is no quote and the print marks. *)
+let test_a_stale_midpoint_is_no_quote () =
+  let clock = ref Time_ns.epoch in
+  let filter =
+    Alpaca.Print_filter.create
+      ~now:(fun () -> !clock)
+      ~max_deviation:Config.Feed.default.Config.Feed.max_print_deviation ()
+  in
+  let tick price =
+    { Tick.symbol = aapl; price = Price.of_float price; time = Time.epoch }
+  in
+  let at s = clock := Time_ns.add Time_ns.epoch (Time_ns.Span.of_sec s) in
+  Alcotest.check feq "the bound is sixty seconds" 60.0
+    (Time_ns.Span.to_sec Alpaca.Print_filter.max_quote_age);
+  at 0.0;
+  Alpaca.Print_filter.observe_quote filter aapl (Some (99.9, 100.1));
+  at 59.0;
+  Alcotest.(check bool)
+    "59 s old: held off" false
+    (Alpaca.Print_filter.admits filter (tick 150.0));
+  at 61.0;
+  Alcotest.(check bool)
+    "61 s old: no quote, marks" true
+    (Alpaca.Print_filter.admits filter (tick 150.0));
+  Alcotest.(check (option (float 1e-9)))
+    "and no midpoint" None
+    (Alpaca.Print_filter.midpoint filter aapl);
+  Alpaca.Print_filter.observe_quote filter aapl (Some (99.9, 100.1));
+  Alcotest.(check bool)
+    "a fresh quote holds it off again" false
+    (Alpaca.Print_filter.admits filter (tick 150.0))
+
+(* A two-sided quote wider than the deviation itself -- spread / mid above
+   5% -- is no quote, like a crossed one: "5% from the midpoint" would be
+   inside its own spread. Exactly 5% is a quote. *)
+let test_a_quote_too_wide_to_judge_by_is_no_quote () =
+  with_graph ~f:(fun graph ->
+      let stats = Alpaca.Stats.create () in
+      let filter = filter () in
+      apply graph stats filter [ trade 1 100.0; quote 90.0 110.0; trade 2 120.0 ];
+      Alcotest.check feq "a 20% spread is no quote: 120 marks" 120.0 (mark graph);
+      Alcotest.(check (option (float 1e-9)))
+        "no midpoint kept" None
+        (Alpaca.Print_filter.midpoint filter aapl);
+      apply graph stats filter [ quote 97.5 102.5; trade 3 106.0 ];
+      Alcotest.check feq "a 5% spread is a quote: 106 is held off" 120.0 (mark graph);
+      Alcotest.(check int) "one dropped" 1 stats.Alpaca.Stats.dropped_prints;
+      (* A quote for a name the book does not hold is not taken, or counted. *)
+      apply graph stats filter [ {|{"T":"q","S":"NVDA","bp":99.0,"ap":101.0}|} ];
+      Alcotest.(check int) "two quotes counted, not NVDA's" 2 stats.Alpaca.Stats.quotes)
+
+(* The poll's count is what it marked: a fresh print the filter holds off is
+   not one of them. *)
+let test_the_poll_counts_what_it_marked () =
+  with_graph ~f:(fun graph ->
+      let stats = Alpaca.Stats.create () in
+      let filter = filter () in
+      Alpaca.Print_filter.observe_quote filter aapl (Some (99.9, 100.1));
+      let answer =
+        Alpaca_rest.parse_latest_trades
+          (Yojson.Safe.from_string
+             {|{"trades":{"AAPL":{"t":"2026-10-13T15:30:58.12Z","p":150.25,"s":100}}}|})
+      in
+      Alcotest.(check int)
+        "a fresh print 50% off its quote: marked none" 0
+        (Ohcamel.Alpaca_poll.apply ~graph ~stats ~filter answer);
+      Alcotest.(check int) "dropped one" 1 stats.Alpaca.Stats.dropped_prints)
+
 (* Quotes are a second subscription, sent once the trades are in force, so a
-   plan that refuses them (405) refuses the quotes alone -- Alpaca leaves the
-   subscriptions as they were -- and the trades keep streaming unfiltered.
-   Before the trades are confirmed a 405 is the plan refusing the book, as
-   ever. *)
+   plan that refuses them -- 405, 409 or 410 while the request is pending --
+   refuses the quotes alone (Alpaca leaves the subscriptions as they were) and
+   the trades keep streaming unfiltered. Before the quotes are asked for, and
+   after they are confirmed, a refusal is classified as ever. *)
 let test_quotes_are_asked_for_after_the_trades () =
   let open Alpaca in
   let subscription = Message.Subscription {|{"T":"subscription","trades":["AAPL"]}|} in
+  let with_quotes =
+    Message.Subscription {|{"T":"subscription","trades":["AAPL"],"quotes":["AAPL"]}|}
+  in
   Alcotest.(check bool)
     "the trades' confirmation asks for quotes" true
     (request_quotes ~phase:Phase.Streaming ~quotes_requested:false subscription);
@@ -391,20 +464,59 @@ let test_quotes_are_asked_for_after_the_trades () =
   Alcotest.(check string)
     "the quotes frame" {|{"action":"subscribe","quotes":["AAPL","MSFT"]}|}
     (quotes_frame ~symbols:[ aapl; Symbol.of_string "MSFT" ]);
-  let fatal ~quotes_requested =
-    match Failure.in_session ~quotes_requested ~code:405 ~msg:"symbol limit exceeded" with
+  Alcotest.(check (list bool))
+    "confirmed by a subscription carrying quotes, once they were asked for"
+    [ true; false; false ]
+    [
+      confirms_quotes ~quotes_requested:true with_quotes;
+      confirms_quotes ~quotes_requested:true subscription;
+      confirms_quotes ~quotes_requested:false with_quotes;
+    ];
+  let fatal ~quotes_pending code =
+    match Failure.in_session ~quotes_pending ~code ~msg:"refused" with
     | Failure.Fatal _ -> true
     | Failure.Refused _ | Failure.Retryable _ -> false
   in
-  Alcotest.(check bool) "405 for the book: fatal" true (fatal ~quotes_requested:false);
+  List.iter [ 405; 409; 410 ] ~f:(fun code ->
+      Alcotest.(check bool)
+        (sprintf "%d outside a pending quotes request: fatal, as ever" code)
+        true
+        (fatal ~quotes_pending:false code);
+      Alcotest.(check bool)
+        (sprintf "%d while the quotes are pending: not fatal" code)
+        false
+        (fatal ~quotes_pending:true code));
   Alcotest.(check bool)
-    "405 for the quotes: the trades stream on" false
-    (fatal ~quotes_requested:true);
-  Alcotest.(check bool)
-    "another code is classified as ever" true
-    (match Failure.in_session ~quotes_requested:true ~code:402 ~msg:"" with
-    | Failure.Fatal _ -> true
-    | _ -> false)
+    "402 is fatal whenever it comes" true
+    (fatal ~quotes_pending:true 402);
+  (* And the session goes on: the refusal is on last_error, and the next
+     frame's trade marks. *)
+  List.iter [ 405; 409; 410 ] ~f:(fun code ->
+      with_graph ~f:(fun graph ->
+          let stats = Stats.create () in
+          (match session_error ~stats ~quotes_pending:true ~code ~msg:"refused" with
+          | `Stream_on _ -> ()
+          | `Fatal d | `Refused d ->
+              Alcotest.failf "%d for the quotes ended the session: %s" code d);
+          Alcotest.(check bool)
+            (sprintf "%d: last_error says the quotes were refused" code)
+            true
+            (match stats.Stats.last_error with
+            | Some e -> String.is_substring e ~substring:"quotes subscription was refused"
+            | None -> false);
+          let filter = filter () in
+          ignore
+            (apply_frame ~graph ~stats ~filter
+               (Message.of_frame (frame [ trade 1 100.0 ]))
+              : Message.t list);
+          Alcotest.(check int)
+            (sprintf "%d: the trade stream marks on" code)
+            1 stats.Stats.trades));
+  match
+    session_error ~stats:(Stats.create ()) ~quotes_pending:false ~code:409 ~msg:""
+  with
+  | `Fatal _ -> ()
+  | `Refused _ | `Stream_on _ -> Alcotest.fail "a 409 for the book must stop the feed"
 
 (* ------------------------------------------------------------------------ *)
 (* Alpaca: error classification                                              *)
@@ -1379,6 +1491,12 @@ let suite =
         test_the_filter_admits_only_real_prints;
       Alcotest.test_case "alpaca: quotes are asked for after the trades" `Quick
         test_quotes_are_asked_for_after_the_trades;
+      Alcotest.test_case "alpaca: a stale midpoint is no quote" `Quick
+        test_a_stale_midpoint_is_no_quote;
+      Alcotest.test_case "alpaca: a quote too wide to judge by is no quote" `Quick
+        test_a_quote_too_wide_to_judge_by_is_no_quote;
+      Alcotest.test_case "poll: counts what it marked" `Quick
+        test_the_poll_counts_what_it_marked;
       Alcotest.test_case "alpaca: fatal errors are distinguished from retryable" `Quick
         test_failure_classification;
       Alcotest.test_case "alpaca: backoff schedule, capped and overflow-free" `Quick

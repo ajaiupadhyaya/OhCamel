@@ -140,15 +140,28 @@ end
      unevaluable -- the VaR input vanishes, the feed dies -- the alert stays
      firing. "I can no longer tell" is not "it is fine", and treating it as
      resolution is the exact failure this whole engine is arranged against. *)
-(* - A HELD BREACH RAISES, NOT ONE PRINT (Task 1.3). A quiet limit raises
-     only after [raise_after_n] consecutive breached evaluations, the first at
-     least [raise_after_s] seconds before the one that raises -- both. Each
-     limit's run is its [pending]: when it started and how many breached
-     evaluations it holds. A clear evaluation ends the run; an unevaluable one
-     neither adds to it nor ends it, for the third rule's reason. Time is the
-     evaluation's own [at], never the wall clock read here. Clearing is
-     unchanged: hysteresis, and never on lost data. n <= 1 with no time is the
-     rule before it: one breached evaluation raises. *)
+(* - A HELD BREACH RAISES, NOT A TRANSIENT ONE (Task 1.3). A quiet limit
+     raises once it has stood breached, with no clear evaluation between, for
+     [raise_after_s] seconds and been observed breached [raise_after_n] times
+     -- both. Each limit's run is its [pending]: when it started and how many
+     breached observations it holds.
+
+     An observation is GRAPH-WIDE: [step] runs over every limit whenever the
+     graph's breach list changes (Graph.on_breaches), so any limit's
+     recompute -- a tick in another name, the book's equity -- observes every
+     breached limit again, and [recheck] observes them on the engine's clock
+     when the graph is quiet. So a breach raises in a busy graph or a still
+     one; what it cannot do is raise on one transient evaluation.
+
+     A clear evaluation ends the run; an unevaluable one neither adds to it
+     nor ends it, for the third rule's reason. Time is the evaluation's own
+     [at], never the wall clock read here. Clearing is unchanged: hysteresis,
+     and never on lost data. n <= 1 with no time is the rule before it: one
+     breached evaluation raises.
+
+     The defence against a single bad PRINT is the feed's deviation filter
+     (Alpaca_ws.Print_filter); this rule is the defence against a breach that
+     does not last. *)
 module Tracker = struct
   type state = Ok_ | Firing [@@deriving sexp_of, compare, equal]
   type pending = { first_breach_at : Types.Time.t; consecutive : int }
@@ -238,24 +251,19 @@ module Tracker = struct
                 None
             | Firing, true -> None))
 
-  (* The standing evaluations read again on a clock, for a breach that has
-     its count and is waiting only on time: the graph's observer fires on a
-     CHANGE, so a breach whose inputs then go quiet would otherwise wait for
-     the next print to be raised. A recheck is NOT an evaluation -- it adds
-     nothing to a run's count and ends none -- so one bad print the market
-     never moved off is one evaluation however long it sits, and still raises
-     nothing. Only quiet limits with a run are looked at; clearing is left to
-     real evaluations. *)
+  (* The standing evaluations observed again, on the engine's clock: the
+     graph's observer fires only on a CHANGE, so in a quiet graph -- the first
+     sync outside hours, a feed outage, a book that has stopped moving -- a
+     breach would otherwise be observed once and never raised, where before
+     this rule it raised at once. A recheck is an observation like any other
+     for a quiet limit: a standing breach adds to its run (or starts one), a
+     standing clear ends it, and an unevaluable one does neither. A firing
+     limit is left alone -- clearing stays with the evaluations that move. *)
   let recheck t ~(at : Types.Time.t)
       (results : (Types.Limit.t * Types.Breach.t option) list) : Event.t list =
-    List.filter_map results ~f:(fun (limit, breach) ->
-        let name = Types.Limit.name limit in
-        match (state t name, Hashtbl.find t.pending name, breach) with
-        | Ok_, Some p, Some breach when Types.Breach.breached breach && held t p ~at ->
-            Hashtbl.remove t.pending name;
-            Hashtbl.set t.states ~key:name ~data:Firing;
-            Some (Event.of_breach ~kind:Event.Raised ~at breach)
-        | _ -> None)
+    step t ~at
+      (List.filter results ~f:(fun (limit, _) ->
+           equal_state (state t (Types.Limit.name limit)) Ok_))
 end
 
 (* ------------------------------------------------------------------------ *)
@@ -508,10 +516,9 @@ let release t ~(graph : Graph.t) =
   Graph.stabilize graph;
   step t ~results:(Graph.limit_results graph)
 
-(* [recheck]: the graph's standing evaluations read again, on the caller's
-   clock, so a breach that has its count raises when its time is up rather
-   than at the next print (Tracker.recheck). Counts nothing; held, it does
-   nothing. Reads the observer as the last stabilize left it, so the caller
+(* [recheck]: the graph's standing evaluations observed again, on the
+   caller's clock, so a breach in a quiet graph is raised once it has stood
+   for its time and its count (Tracker.recheck). Held, it does nothing. Reads the observer as the last stabilize left it, so the caller
    stabilizes first, as the engine's staleness clock already does. *)
 let recheck t ~(graph : Graph.t) =
   if not t.held then

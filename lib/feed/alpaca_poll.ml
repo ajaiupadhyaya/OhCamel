@@ -112,12 +112,14 @@ let apply ~(graph : Graph.t) ~(stats : Alpaca_ws.Stats.t)
         | Some last -> Time_ns.( > ) (Types.Tick.time tick) last)
   in
   (* The websocket's own frame applier: each trade marks its cells and is
-     counted, and the graph settles once. *)
+     counted, and the graph settles once. What it marked is what [trades]
+     gained: a print the deviation filter held off is fresh and not marked. *)
+  let before = stats.Alpaca_ws.Stats.trades in
   let (_ : Alpaca_ws.Message.t list) =
     Alpaca_ws.apply_frame ~graph ~stats ~filter
       (List.map fresh ~f:(fun (_, tick) -> Alpaca_ws.Message.Trade tick))
   in
-  List.length fresh
+  stats.Alpaca_ws.Stats.trades - before
 
 let run ~(graph : Graph.t) ~(credentials : Config.Credentials.t)
     ~(runtime : Config.Runtime.t) ~(symbols : Types.Symbol.t list)
