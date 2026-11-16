@@ -74,3 +74,12 @@ def test_ci_native_job_builds_the_wheel_and_runs_parity_both_ways():
 
 def test_image_asserts_every_kernel_runs_on_rust():
     assert "all(k.engine_of(n) == 'rust' for n in k.API)" in DOCKERFILE
+
+
+def test_image_checks_the_wheel_against_the_dispatchers_own_api_version():
+    # The build once asserted `API_VERSION == 1` as a literal; the kernels moved to 3 and
+    # every local suite passed while the image could not be built. The image must compare
+    # the wheel with the constant the dispatcher ships, so the two cannot drift apart.
+    assert "from ohcamel_quant.kernels import API_VERSION as want" in DOCKERFILE
+    assert "k.API_VERSION == want" in DOCKERFILE
+    assert not re.search(r"API_VERSION\s*==\s*\d", DOCKERFILE)

@@ -113,7 +113,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # locked above.
 COPY --from=kernels /wheels/ /wheels/
 RUN uv pip install --python /app/quant/.venv/bin/python --no-deps /wheels/ohcamel_kernels-*.whl \
- && .venv/bin/python -c "import ohcamel_kernels as k; assert k.API_VERSION == 1, k.API_VERSION"
+ && .venv/bin/python -c "import ohcamel_kernels as k; from ohcamel_quant.kernels import API_VERSION as want; assert k.API_VERSION == want, (k.API_VERSION, want)"
 # The scientific stack ships its own test suites (pandas alone ~40 MB with
 # bytecode); none is imported at run time. Pruned here, in the stage that is
 # thrown away, so the runtime layer never contains them. The runtime stage
