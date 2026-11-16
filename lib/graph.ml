@@ -516,6 +516,9 @@ type t = {
        below. *)
   option_positions : Options.Position.t String.Map.t;
   equity_history_limit : int;
+  (* How many recorded closes the drawdown's peak is taken over, beside the
+       live equity (Config.Risk, Task 1.4). *)
+  drawdown_window : int;
   staleness_threshold : Time.Span.t;
   (* Per-symbol thresholds that replace [staleness_threshold] for the names
        they cover: a thin ETF on IEX prints minutes apart, and one threshold
@@ -658,6 +661,7 @@ let find_var (vars : 'a Inc.Var.t Symbol.Map.t) (symbol : Symbol.t) ~(what : str
 
 let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
     ?(starting_cash = Notional.zero) ?(equity_history_limit = 10_000)
+    ?(drawdown_window = Config.Risk.default.Config.Risk.drawdown_window)
     ?(staleness_threshold = Time.Span.of_sec 90.0)
     ?(staleness_overrides : Time.Span.t Symbol.Map.t = Symbol.Map.empty)
     ?(ewma_lambda = Vol_estimators.Ewma.default_lambda)
@@ -688,6 +692,11 @@ let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
   if equity_history_limit < 1 then
     invalid_argf "graph: equity_history_limit must be positive, got %d"
       equity_history_limit ();
+  if drawdown_window < 1 then
+    invalid_argf
+      "graph: drawdown_window must be at least one close (one is the last close and the \
+       live equity), got %d"
+      drawdown_window ();
   (* Validated here rather than left to the first stabilize. Vol_estimators
      raises on a lambda outside (0, 1), and an exception inside a node body
      leaves the graph in a state Incremental cannot recover -- so the same rule
@@ -1470,17 +1479,29 @@ let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
      the running peak is real history while the trough is current -- which is
      what a circuit breaker needs.
 
-     Deliberately [current_drawdown], not [max_drawdown]: a breaker keyed to the
+     Deliberately a CURRENT drawdown, not [max_drawdown]: a breaker keyed to the
      historical maximum would latch on forever after one bad morning and could
-     never be cleared by recovery. risk_metrics.ml makes the same point. *)
+     never be cleared by recovery. risk_metrics.ml makes the same point.
+
+     And from a WINDOWED peak (Task 1.4): the peak of the last
+     [drawdown_window] closes and the live equity, measured at the live
+     equity -- Risk_metrics.drawdown over the history with the live value
+     appended, so its window is [drawdown_window] + 1 points. From the
+     all-time peak a book the governor had cut could never earn its size back
+     by holding still. What a close IS depends on the driver: on the live host
+     it is one journaled session close (Session_close.record, and restore on
+     every start, so the trail survives a restart), so 250 closes is a trading
+     year; the demo marks every fifteen-second bar; a graph with fewer closes
+     than the window measures from its whole trail. *)
+  let drawdown_points = Int.min drawdown_window equity_history_limit + 1 in
   let drawdown_node =
     named Node_name.drawdown
       (cutoff ~equal:Float.equal
          (Inc.map2 (Inc.Var.watch equity_history_var) equity_node
             ~f:(fun history equity ->
               note Node_name.drawdown;
-              Risk_metrics.current_drawdown
-                ~equity:(Array.append history [| Notional.to_float equity |]))))
+              Risk_metrics.drawdown ~window:drawdown_points
+                (Array.append history [| Notional.to_float equity |]))))
   in
   (* --- limits ------------------------------------------------------------ *)
   (* One node per limit, hanging off the single quantity that limit measures.
@@ -1511,10 +1532,15 @@ let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
               note name;
               Option.map v ~f:(fun v ->
                   Limits.evaluate ~limit ~observed:(Notional.to_float v)))
+      (* A drawdown that cannot be measured (nan: no finite current equity) is
+         an unevaluable limit, as a VaR without its window is -- not an
+         evaluation of nan, which compares under every threshold and would
+         read to Alerts as a clear. *)
       | Limit.Max_drawdown _, Limit.Portfolio ->
           Inc.map drawdown_node ~f:(fun d ->
               note name;
-              Some (Limits.evaluate ~limit ~observed:d))
+              if Float.is_finite d then Some (Limits.evaluate ~limit ~observed:d)
+              else None)
       (* Component VaR limits. Note what is NOT here: [Float.abs].
 
        [of_magnitude] above absolute-values an exposure, because a $50,000 short
@@ -1672,6 +1698,7 @@ let create ?(on_compute = fun (_ : string) -> ()) ?on_value_change
       covariance_for_attribution;
       option_positions;
       equity_history_limit;
+      drawdown_window;
       staleness_threshold;
       staleness_overrides;
       price_vars;
@@ -1755,7 +1782,7 @@ let fork ?on_compute ?(limits : Limit.t list option) (t : t) : t =
   let limits = Option.value limits ~default:t.limits in
   let forked =
     create ?on_compute ~starting_cash:(Inc.Var.value t.cash_var)
-      ~equity_history_limit:t.equity_history_limit
+      ~equity_history_limit:t.equity_history_limit ~drawdown_window:t.drawdown_window
       ~staleness_threshold:t.staleness_threshold
       ~staleness_overrides:t.staleness_overrides ~ewma_lambda:t.ewma_lambda
       ~covariance_for_attribution:t.covariance_for_attribution
@@ -2545,6 +2572,7 @@ let returns (t : t) (symbol : Symbol.t) : float array =
   Inc.Var.value (find_var t.returns_vars symbol ~what:"return window")
 
 let equity_history (t : t) : float array = Inc.Var.value t.equity_history_var
+let drawdown_window (t : t) : int = t.drawdown_window
 
 (* The macro factor's return window. Set wholesale rather than appended to,
    because fred_client.ml re-fetches the whole series on each poll -- FRED

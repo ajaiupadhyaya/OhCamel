@@ -1447,6 +1447,110 @@ let find_breach snapshot name =
   | Some b -> b
   | None -> Alcotest.failf "no result for limit %S" name
 
+(* The drawdown the live book reads (Task 1.4): from the peak of the last
+   [drawdown_window] closes -- the marks [mark_equity] and
+   [set_equity_history] write -- and the live equity, measured at the live
+   equity. One instrument holding nothing, so live equity is the cash: 92.
+   A 5% Max_drawdown limit hangs off it. *)
+let with_dd_graph ?drawdown_window ~f () =
+  let graph =
+    Graph.create ?drawdown_window ~starting_cash:(dollars 92.0)
+      ~instruments:[ { Instrument.symbol = aapl; sector = tech } ]
+      ~limits:[ limit "dd-cap" Limit.Portfolio (Limit.Max_drawdown 0.05) ]
+      ~confidence:0.95 ~return_window:10 ()
+  in
+  Graph.set_price graph aapl (Price.of_float 150.0);
+  Graph.set_qty graph aapl (Qty.of_float 0.0);
+  Exn.protect ~f:(fun () -> f graph) ~finally:(fun () -> Graph.destroy graph)
+
+let dd_cap_result graph =
+  List.Assoc.find_exn (Graph.limit_results graph)
+    ~equal:(fun a b -> String.equal (Limit.name a) (Limit.name b))
+    (limit "dd-cap" Limit.Portfolio (Limit.Max_drawdown 0.05))
+
+(* 250 closes: 100, then 249 at 92. The default window is 250 closes, so the
+   100 is the window's oldest close and the live 92 reads (100 - 92) / 100 =
+   0.08, over the 5% line. One more close at 92 and the 100 is 251 closes old:
+   out of the window, every close and the live point are 92, drawdown 0.0 and
+   the limit clear -- held still, the book has earned its size back. *)
+let test_drawdown_window_forgets_an_old_peak () =
+  with_dd_graph
+    ~f:(fun graph ->
+      Alcotest.(check int) "the default window" 250 (Graph.drawdown_window graph);
+      Graph.set_equity_history graph
+        (Array.append [| 100.0 |] (Array.create ~len:249 92.0));
+      let s = Graph.snapshot graph in
+      Alcotest.check float_eq "the peak is the window's oldest close" 0.08
+        (Graph.Snapshot.current_drawdown s);
+      Alcotest.(check bool)
+        "dd-cap breached" true
+        (Breach.breached (find_breach s "dd-cap"));
+      Graph.set_equity_history graph
+        (Array.append [| 100.0 |] (Array.create ~len:250 92.0));
+      let s = Graph.snapshot graph in
+      Alcotest.check float_eq "251 closes old, the peak is forgotten" 0.0
+        (Graph.Snapshot.current_drawdown s);
+      Alcotest.(check bool)
+        "dd-cap clear" false
+        (Breach.breached (find_breach s "dd-cap")))
+    ()
+
+(* The live equity is the current point and is in the peak's window too. With
+   a window of one close: the last close 100 and live 92 read 0.08; a close at
+   92 makes 92 the peak, 0.0; the cash falling to 80 reads (92 - 80) / 92
+   against that close, before any new close is marked; and a live equity above
+   the close is at its peak, 0.0, never negative. *)
+let test_drawdown_live_point_counts () =
+  with_dd_graph ~drawdown_window:1
+    ~f:(fun graph ->
+      Graph.set_equity_history graph [| 100.0 |];
+      Graph.stabilize graph;
+      Alcotest.check float_eq "live 92 against the close at 100" 0.08
+        (Graph.current_drawdown graph);
+      Graph.set_equity_history graph [| 100.0; 92.0 |];
+      Graph.stabilize graph;
+      Alcotest.check float_eq "the 100 is out of a one-close window" 0.0
+        (Graph.current_drawdown graph);
+      Graph.set_cash graph (dollars 80.0);
+      Graph.stabilize graph;
+      Alcotest.check float_eq "an intraday fall counts at once" (12.0 /. 92.0)
+        (Graph.current_drawdown graph);
+      Graph.set_cash graph (dollars 95.0);
+      Graph.stabilize graph;
+      Alcotest.check float_eq "above the close is the peak" 0.0
+        (Graph.current_drawdown graph))
+    ()
+
+(* A drawdown that cannot be measured -- here a live equity that is not a
+   number -- is an unevaluable limit, not a clear one: Alerts' tracker neither
+   counts it toward a raise nor ends a run or a firing alert on it. Before the
+   window it was a Some with a nan observed, which the tracker read as clear. *)
+let test_drawdown_unmeasurable_is_unevaluable () =
+  with_dd_graph
+    ~f:(fun graph ->
+      Graph.set_equity_history graph [| 100.0 |];
+      Graph.stabilize graph;
+      Alcotest.(check bool)
+        "measurable: evaluated" true
+        (Option.is_some (dd_cap_result graph));
+      Graph.set_cash graph (dollars Float.nan);
+      Graph.stabilize graph;
+      Alcotest.(check bool)
+        "nan equity: unevaluable" true
+        (Option.is_none (dd_cap_result graph)))
+    ()
+
+let test_drawdown_window_refused () =
+  List.iter [ 0; -1 ] ~f:(fun w ->
+      match
+        Graph.create ~drawdown_window:w ~instruments:book ~limits:[] ~confidence:0.95
+          ~return_window:10 ()
+      with
+      | exception Invalid_argument _ -> ()
+      | g ->
+          Graph.destroy g;
+          Alcotest.failf "drawdown_window %d should be refused" w)
+
 let test_breaches () =
   with_graph
     ~f:(fun graph _ ->
@@ -2207,6 +2311,14 @@ let suite =
         test_never_seen_is_not_staleness;
       Alcotest.test_case "limit breaches" `Quick test_breaches;
       Alcotest.test_case "drawdown circuit breaker" `Quick test_drawdown_breaker;
+      Alcotest.test_case "drawdown forgets a peak older than its window" `Quick
+        test_drawdown_window_forgets_an_old_peak;
+      Alcotest.test_case "drawdown: the live equity is the current point" `Quick
+        test_drawdown_live_point_counts;
+      Alcotest.test_case "drawdown: unmeasurable is an unevaluable limit" `Quick
+        test_drawdown_unmeasurable_is_unevaluable;
+      Alcotest.test_case "drawdown: a window below one close is refused" `Quick
+        test_drawdown_window_refused;
       Alcotest.test_case "warming up reports unknown, not zero" `Quick test_warming_up;
       Alcotest.test_case "a fill conserves equity" `Quick test_fill_conserves_equity;
       Alcotest.test_case "the return window is bounded" `Quick

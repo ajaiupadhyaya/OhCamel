@@ -87,6 +87,30 @@ let suite =
             (Overlay.governor ~drawdown:(Some 0.01) ~dd_cap:(Some Float.nan));
           Alcotest.check close "zero cap" 0.0
             (Overlay.governor ~drawdown:(Some 0.0) ~dd_cap:(Some 0.0)));
+      t "a cut book earns its size back once its peak leaves the window" (fun () ->
+          (* Task 1.4, the brief's path (test_risk_metrics.ml derives its
+             drawdowns): close 1 at 100, then 92 for 251 closes. With cap
+             0.10 the band is 0.05 to 0.10.
+               close 250: dd 0.08 -> (0.10 - 0.08) / 0.05 = 0.4
+               close 252: dd 0.0  -> 1.0, full size again
+             From the all-time peak the drawdown stays 0.08 and the governor
+             0.4 for as long as the book holds 92 -- it could never earn its
+             size back by holding still, only by making a new high. *)
+          let path = Array.append [| 100.0 |] (Array.create ~len:251 92.0) in
+          let governor_at k =
+            Overlay.governor
+              ~drawdown:
+                (Some
+                   (Ohcamel.Risk_metrics.drawdown ~window:250
+                      (Array.sub path ~pos:0 ~len:k)))
+              ~dd_cap:(Some 0.10)
+          in
+          Alcotest.check close "close 250: cut to 0.4" 0.4 (governor_at 250);
+          Alcotest.check close "close 252: back to 1.0" 1.0 (governor_at 252);
+          Alcotest.check close "from the all-time peak it stays cut" 0.4
+            (Overlay.governor
+               ~drawdown:(Some (Ohcamel.Risk_metrics.current_drawdown ~equity:path))
+               ~dd_cap:(Some 0.10)));
       (* --- effective --- *)
       t "effective multiplies the overlay by the governor" (fun () ->
           (* 0.7071 * 0.5 = 0.35355 *)

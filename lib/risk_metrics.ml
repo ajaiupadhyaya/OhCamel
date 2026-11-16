@@ -483,7 +483,12 @@ let cornish_fisher_var ~returns ~confidence =
    running peak to the latest point, and recovers as the book does.
 
    The circuit breaker in limits.ml uses the current value, not the max: a
-   breaker keyed to the max would latch on forever after one bad morning. *)
+   breaker keyed to the max would latch on forever after one bad morning. Both
+   of these measure over the WHOLE series, and [max_drawdown] is the
+   full-path statistic a backtest reports; neither is what the live book's
+   limit or the drawdown governor read since Task 1.4 -- that is [drawdown]
+   below, from a windowed peak, because from the all-time peak a book the
+   governor has cut can never earn its size back by holding still. *)
 let max_drawdown ~equity =
   validate_non_empty ~name:"equity" equity;
   let worst, _ =
@@ -501,3 +506,57 @@ let current_drawdown ~equity =
   let peak = Array.fold equity ~init:Float.neg_infinity ~f:Float.max in
   let latest = equity.(Array.length equity - 1) in
   if Float.( > ) peak 0.0 then (peak -. latest) /. peak else 0.0
+
+(* [drawdown ~window path]: the decline of the LATEST point of [path] from the
+   peak of its last [window] points -- the latest included -- as a positive
+   fraction of that peak. What the live book's Max_drawdown limit and the
+   drawdown governor read (graph.ml's drawdown node).
+
+   Precisely, with n = length path and w = min window n, the points considered
+   are path.(n - w) .. path.(n - 1); the latest is path.(n - 1); the peak is
+   the largest FINITE point among them. So a window of 1 is the latest alone
+   (its own peak: 0.0), a single point is its own peak, and a window longer
+   than the path is the whole path ([current_drawdown], on good data). The
+   answer is never negative: the latest is one of the points the peak is taken
+   over.
+
+   Bad data is decided so that it never makes the drawdown smaller and never
+   raises -- graph.ml calls this inside a node body, where an exception would
+   poison the graph:
+   - an empty path, or a latest point that is not finite: nan, "cannot be
+     measured". The graph's limit takes a non-finite drawdown as unevaluable,
+     so Alerts neither counts it toward a raise nor clears on it, and the
+     intake's governor holds its last value -- an unknown is never a clear.
+   - a non-finite point before the latest is no peak: it is skipped. An
+     infinite one taken as a peak would make the answer nan for as long as it
+     stood in the window -- a year of an unevaluable limit for one bad mark.
+   - a non-positive point is a real mark (equity at or below zero), counted as
+     any other: a latest of -5 against a peak of 100 reads 1.05.
+   - a window with no positive point has no peak to take a fraction of: a
+     negative latest is everything gone, 1.0; a zero latest is an unfunded
+     book (a graph before its cash is set), 0.0, as [current_drawdown] has
+     always said.
+
+   [window] < 1 is a programming error and raises [Invalid_argument];
+   Config.Risk refuses such a book word at load and Graph.create refuses such
+   an argument, so the live path never reaches it. *)
+let drawdown ~window path =
+  if window < 1 then
+    invalid_arg
+      (Printf.sprintf "risk_metrics: drawdown window must be >= 1, got %d" window);
+  let n = Array.length path in
+  if n = 0 then Float.nan
+  else
+    let latest = path.(n - 1) in
+    if not (Float.is_finite latest) then Float.nan
+    else
+      let w = Int.min window n in
+      let peak = ref latest in
+      for i = n - w to n - 2 do
+        let v = path.(i) in
+        if Float.is_finite v && Float.( > ) v !peak then peak := v
+      done;
+      let peak = !peak in
+      if Float.( > ) peak 0.0 then (peak -. latest) /. peak
+      else if Float.( < ) latest 0.0 then 1.0
+      else 0.0

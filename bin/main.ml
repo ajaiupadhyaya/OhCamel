@@ -1165,7 +1165,8 @@ let run_live ~book_path ~(serve_port : int option) =
             Recompute_log.note log name)
           ~on_value_change:(Recompute_log.note_change log)
           ~starting_cash:(Notional.of_float book.Config.Book.cash)
-          ~instruments ~limits ~confidence:runtime.Config.Runtime.confidence
+          ~drawdown_window:book.Config.Book.risk.Config.Risk.drawdown_window ~instruments
+          ~limits ~confidence:runtime.Config.Runtime.confidence
           ~return_window:runtime.Config.Runtime.return_window
           ~staleness_threshold:runtime.Config.Runtime.staleness_threshold
           ~staleness_overrides:

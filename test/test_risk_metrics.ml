@@ -208,6 +208,141 @@ let test_drawdown_monotonic () =
   Alcotest.check feq "never down, no max drawdown" 0.0 (RM.max_drawdown ~equity);
   Alcotest.check feq "never down, no current drawdown" 0.0 (RM.current_drawdown ~equity)
 
+(* The windowed drawdown (Task 1.4): the decline of the latest point from the
+   peak of the last [window] points, the latest included.
+
+   The brief's path, in the brief's indexing: closes are numbered from 1, the
+   peak is close 1 at 100, and the book falls 8% to 92 and holds there for 251
+   closes, closes 2 to 252. "Reads x at close k" is the drawdown of the path
+   through close k -- its first k closes -- with a window of 250.
+     close 250: the window is closes 1..250 and holds the peak, so
+                (100 - 92) / 100 = 0.08.
+     close 251: the window is closes 2..251; the peak has left it, every
+                close is 92, so 0.0. The boundary, one past the brief's case.
+     close 252: the window is closes 3..252, so 0.0. *)
+let brief_path = Array.append [| 100.0 |] (Array.create ~len:251 92.0)
+let through k = Array.sub brief_path ~pos:0 ~len:k
+
+let test_windowed_drawdown_forgets_an_old_peak () =
+  Alcotest.(check int) "252 closes" 252 (Array.length brief_path);
+  Alcotest.check feq "close 250: the peak is the window's oldest close" 0.08
+    (RM.drawdown ~window:250 (through 250));
+  Alcotest.check feq "close 251: the peak has just left the window" 0.0
+    (RM.drawdown ~window:250 (through 251));
+  Alcotest.check feq "close 252: the brief's case" 0.0
+    (RM.drawdown ~window:250 (through 252));
+  (* The full-history measures keep the old peak for ever: the reason for the
+     window, and the published statistic that stays the full path's. *)
+  Alcotest.check feq "current_drawdown still reads the all-time peak" 0.08
+    (RM.current_drawdown ~equity:brief_path);
+  Alcotest.check feq "max_drawdown is still the full path's" 0.08
+    (RM.max_drawdown ~equity:brief_path)
+
+(* A window longer than the history is the whole history: [100;120;90;110]
+   with any window of 4 or more reads (120 - 110) / 120, as current_drawdown
+   does. *)
+let test_windowed_drawdown_longer_than_history () =
+  let equity = [| 100.; 120.; 90.; 110. |] in
+  Alcotest.check feq "window 1000" (10.0 /. 120.0) (RM.drawdown ~window:1000 equity);
+  Alcotest.check feq "window 4, exactly the history" (10.0 /. 120.0)
+    (RM.drawdown ~window:4 equity);
+  Alcotest.check feq "window 3 drops the 100 and keeps the 120" (10.0 /. 120.0)
+    (RM.drawdown ~window:3 equity);
+  (* window 2 is [90; 110]: the latest is the peak. *)
+  Alcotest.check feq "window 2 has 110 as its own peak" 0.0 (RM.drawdown ~window:2 equity);
+  Alcotest.check feq "agrees with current_drawdown on the whole history"
+    (RM.current_drawdown ~equity)
+    (RM.drawdown ~window:Int.max_value equity)
+
+(* The edges. A window of 1 is the latest point alone, its own peak, so 0.0 for
+   any positive mark. A single point is its own peak too. A window below 1 is a
+   programming error -- Config.Risk and Graph.create refuse one before any call
+   -- and raises. *)
+let test_windowed_drawdown_edges () =
+  Alcotest.check feq "window 1" 0.0 (RM.drawdown ~window:1 [| 100.; 50. |]);
+  Alcotest.check feq "a single point" 0.0 (RM.drawdown ~window:250 [| 100. |]);
+  (* Equity above every earlier mark is at the peak, never a negative drawdown. *)
+  Alcotest.check feq "at a new high" 0.0 (RM.drawdown ~window:3 [| 100.; 90.; 130. |]);
+  check_invalid_arg "window 0" (fun () -> RM.drawdown ~window:0 [| 100. |]);
+  check_invalid_arg "negative window" (fun () -> RM.drawdown ~window:(-5) [| 100. |])
+
+(* Bad data, decided conservatively: never a smaller drawdown because of it,
+   and never an exception.
+   - Empty: nothing to measure -> nan, which the graph's limit takes as
+     unevaluable (it neither counts toward a raise nor clears one).
+   - A latest point that is not finite: the current point is unknown -> nan.
+   - A non-finite mark before the latest is no peak: [100; nan; 90] reads
+     (100 - 90) / 100 = 0.1 from the good marks; [100; inf; 90] reads the same,
+     where an infinite peak would have made the answer nan.
+   - A non-positive mark is a real mark: [100; -5] is (100 - (-5)) / 100 =
+     1.05, all of it and more.
+   - A window with no positive mark has no peak to take a fraction of: a
+     negative latest is everything gone, 1.0; a zero latest is an unfunded
+     book (the graph before its cash is set), 0.0, as current_drawdown says. *)
+let test_windowed_drawdown_bad_data () =
+  let is_nan name x =
+    Alcotest.(check bool) (sprintf "%s is nan (got %g)" name x) true (Float.is_nan x)
+  in
+  is_nan "empty" (RM.drawdown ~window:250 [||]);
+  is_nan "nan latest" (RM.drawdown ~window:250 [| 100.; Float.nan |]);
+  is_nan "inf latest" (RM.drawdown ~window:250 [| 100.; Float.infinity |]);
+  is_nan "-inf latest" (RM.drawdown ~window:250 [| 100.; Float.neg_infinity |]);
+  Alcotest.check feq "a nan mark is no peak" 0.1
+    (RM.drawdown ~window:250 [| 100.; Float.nan; 90. |]);
+  Alcotest.check feq "an infinite mark is no peak" 0.1
+    (RM.drawdown ~window:250 [| 100.; Float.infinity; 90. |]);
+  Alcotest.check feq "a negative latest against a positive peak" 1.05
+    (RM.drawdown ~window:250 [| 100.; -5. |]);
+  Alcotest.check feq "no positive mark, negative latest: all of it" 1.0
+    (RM.drawdown ~window:2 [| 100.; -5.; -10. |]);
+  Alcotest.check feq "no positive mark, zero latest: an unfunded book" 0.0
+    (RM.drawdown ~window:250 [| 0.; 0. |])
+
+(* The word that sets the window: 250 unless the book says otherwise, and a
+   window below one close or past the graph's ten thousand is refused at load
+   and by check-book, as the other words are. *)
+let test_drawdown_window_config () =
+  let module Config = Ohcamel.Config in
+  let book risk =
+    sprintf
+      {|((cash 1.0) (positions (((symbol AAPL) (sector TECH) (qty 1.0)))) (limits ()) %s)|}
+      risk
+  in
+  Alcotest.(check int)
+    "the default is 250" 250 Config.Risk.default.Config.Risk.drawdown_window;
+  (match Config.Book.of_string (book "") with
+  | Error e -> Alcotest.failf "no risk block should parse: %s" (Error.to_string_hum e)
+  | Ok b ->
+      Alcotest.(check int)
+        "absent: 250" 250 b.Config.Book.risk.Config.Risk.drawdown_window);
+  (match Config.Book.of_string (book "(risk ((drawdown_window 60)))") with
+  | Error e -> Alcotest.failf "a risk block should parse: %s" (Error.to_string_hum e)
+  | Ok b ->
+      Alcotest.(check int) "written: 60" 60 b.Config.Book.risk.Config.Risk.drawdown_window);
+  (match Config.Book.of_string (book "(risk ((drawdown_window 1)))") with
+  | Error e -> Alcotest.failf "a window of 1 should load: %s" (Error.to_string_hum e)
+  | Ok _ -> ());
+  List.iter [ "0"; "-250"; "10001"; "1000000000" ] ~f:(fun v ->
+      let body = book (sprintf "(risk ((drawdown_window %s)))" v) in
+      (match Config.Book.of_string body with
+      | Ok _ -> Alcotest.failf "drawdown_window %s should be refused at load" v
+      | Error e ->
+          Alcotest.(check bool)
+            (sprintf "%s: the refusal names the word" v)
+            true
+            (String.is_substring (Error.to_string_hum e) ~substring:"drawdown_window"));
+      match Config.Book.parse body with
+      | Error _ -> Alcotest.failf "%s should parse before it is validated" v
+      | Ok b ->
+          Alcotest.(check bool)
+            (sprintf "%s: check-book lists it" v)
+            true
+            (List.exists (Config.Book.errors b) ~f:(fun s ->
+                 String.is_substring s ~substring:"drawdown_window")));
+  match Config.Book.parse (book "(risk ((drawdown_window 2.5)))") with
+  | Ok _ -> Alcotest.fail "a fractional window should not parse"
+  | Error _ -> ()
+
 (* Structurally invalid input must raise rather than return a plausible number.
    An empty window returning 0.0 would render as "no risk", which is the most
    dangerous wrong answer available. *)
@@ -580,6 +715,16 @@ let suite =
       Alcotest.test_case "covariance matrix" `Quick test_covariance_matrix;
       Alcotest.test_case "drawdown" `Quick test_drawdown;
       Alcotest.test_case "drawdown on a monotonic curve" `Quick test_drawdown_monotonic;
+      Alcotest.test_case "windowed drawdown forgets a peak 250 closes old" `Quick
+        test_windowed_drawdown_forgets_an_old_peak;
+      Alcotest.test_case "windowed drawdown: a window longer than the history" `Quick
+        test_windowed_drawdown_longer_than_history;
+      Alcotest.test_case "windowed drawdown: window 1, one point, a bad window" `Quick
+        test_windowed_drawdown_edges;
+      Alcotest.test_case "windowed drawdown: bad data never shrinks it, never raises"
+        `Quick test_windowed_drawdown_bad_data;
+      Alcotest.test_case "drawdown_window: default, written, refused" `Quick
+        test_drawdown_window_config;
       Alcotest.test_case "invalid inputs raise" `Quick test_invalid_inputs;
       Alcotest.test_case "a non-finite observation raises rather than returning nan"
         `Quick test_non_finite_observations_are_refused;

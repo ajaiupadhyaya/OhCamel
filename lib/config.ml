@@ -225,6 +225,39 @@ module Feed = struct
 end
 
 (* ------------------------------------------------------------------------ *)
+(* The book's risk measures                                                  *)
+(* ------------------------------------------------------------------------ *)
+
+(* How many closes the live drawdown's peak is taken over (Task 1.4). The live
+   book's Max_drawdown limit and the drawdown governor read the decline of the
+   live equity from the peak of the last [drawdown_window] equity closes and
+   the live equity itself (Graph.create's [drawdown_window],
+   Risk_metrics.drawdown). From the all-time peak instead, a book the governor
+   had cut could never earn its size back by holding still: the peak it was
+   measured from would stand for ever. 250 closes is a trading year of session
+   closes on the live host, where one close is journaled per session.
+
+   A whole number from 1 to [max_drawdown_window]: 1 is the last close alone,
+   and the graph keeps at most ten thousand closes (Graph.create's
+   equity_history_limit), so a longer window would only claim a memory the
+   engine does not have. A backtest's reported maximum drawdown is a
+   different number, the full path's, and this word does not touch it. *)
+module Risk = struct
+  type t = { drawdown_window : int [@sexp.default 250] } [@@deriving sexp]
+
+  let default = t_of_sexp (Sexp.List [])
+  let max_drawdown_window = 10_000
+
+  let validate (t : t) : unit Or_error.t =
+    if t.drawdown_window >= 1 && t.drawdown_window <= max_drawdown_window then Ok ()
+    else
+      Or_error.errorf
+        "risk: drawdown_window must be a whole number of closes from 1 to %d, got %d -- \
+         it is how many closes the live drawdown's peak is taken over"
+        max_drawdown_window t.drawdown_window
+end
+
+(* ------------------------------------------------------------------------ *)
 (* The universe cap                                                          *)
 (* ------------------------------------------------------------------------ *)
 
@@ -684,6 +717,9 @@ module Book = struct
     desk : Desk_spec.t; [@sexp.default Desk_spec.default] [@sexp_drop_default.sexp]
     (* Optional, and absent means the engine's default deviation (5%). *)
     feed : Feed.t; [@sexp.default Feed.default] [@sexp_drop_default.sexp]
+    (* Optional, and absent means the engine's default drawdown window (250
+       closes). *)
+    risk : Risk.t; [@sexp.default Risk.default] [@sexp_drop_default.sexp]
     (* Optional, and absent means no intake: the desk registers no strategy and
        reads no signal file. An existing book keeps parsing unchanged. *)
     signals : Signals_spec.t option; [@sexp.option]
@@ -745,7 +781,7 @@ module Book = struct
      The order is the order the engine applies them in once the file has
      parsed: the universe (run_live's cap on the count, then the graph's two
      rules about the list), the limits (graph construction), the alerts (sink
-     construction), the desk, the feed, then the signals.
+     construction), the desk, the feed, the risk words, then the signals.
 
      Every sentence below is one of two kinds. Most come from the validator that
      owns them -- Limits.validate, Alerts.validate, Desk_spec.validate and
@@ -855,6 +891,7 @@ module Book = struct
     let universe = List.map t.positions ~f:(fun p -> p.Position_spec.symbol) in
     let desk_errors = Option.to_list (returned (Desk_spec.validate ~universe t.desk)) in
     let feed_errors = Option.to_list (returned (Feed.validate t.feed)) in
+    let risk_errors = Option.to_list (returned (Risk.validate t.risk)) in
     let signal_errors =
       match t.signals with
       | None -> []
@@ -874,7 +911,7 @@ module Book = struct
             ~wholes:[ whole signals.Signals_spec.strategies; whole passed ]
     in
     universe_errors @ limit_errors @ position_errors @ alert_errors @ desk_errors
-    @ feed_errors @ signal_errors
+    @ feed_errors @ risk_errors @ signal_errors
 
   (* The names whose book sets a staleness of its own, with it: what the graph
      takes as staleness_overrides. *)
@@ -890,6 +927,7 @@ module Book = struct
     let universe = List.map book.positions ~f:(fun p -> p.Position_spec.symbol) in
     let%bind () = Desk_spec.validate ~universe book.desk in
     let%bind () = Feed.validate book.feed in
+    let%bind () = Risk.validate book.risk in
     let%map () =
       match book.signals with
       | None -> Ok ()

@@ -70,7 +70,7 @@ marks and the file says what is held.
 
 | Area | What you get | Code |
 |---|---|---|
-| Exposure | Per-instrument and per-sector exposure, gross and net, weights, equity, drawdown from peak | [`graph.ml`](../lib/graph.ml) |
+| Exposure | Per-instrument and per-sector exposure, gross and net, weights, equity, drawdown from the peak of the last 250 closes (the book's `drawdown_window`) | [`graph.ml`](../lib/graph.ml) |
 | Risk measures | Historical VaR and expected shortfall at 95%; parametric VaR from an equal-weighted *and* an EWMA (λ = 0.94) covariance, side by side; portfolio beta to the macro factor | [`risk_metrics.ml`](../lib/risk_metrics.ml), [`vol_estimators.ml`](../lib/vol_estimators.ml) |
 | Attribution | Marginal, component and standalone risk per name and sector. Contributions are signed, so a hedge shows negative, and component VaRs sum exactly to portfolio VaR. Also a diversification ratio and a residual check | [`attribution.ml`](../lib/attribution.ml) |
 | Validation | Kupiec, Christoffersen independence, conditional coverage, a Weibull duration test, the Basel traffic light and a 21-session burst count, all over rolling point-in-time forecasts | [`var_backtest.ml`](../lib/var_backtest.ml), [`validation_report.ml`](../lib/validation_report.ml) |
@@ -238,7 +238,7 @@ may send one); on the public demo each answers 405.
 
 ## How it's checked
 
-- **<!-- count:ocaml-tests -->898<!-- /count --> tests**, plus <!-- count:scheduler-tests -->73<!-- /count --> scheduler cases in `test/desk_async`, all
+- **<!-- count:ocaml-tests -->908<!-- /count --> tests**, plus <!-- count:scheduler-tests -->73<!-- /count --> scheduler cases in `test/desk_async`, all
   hermetic: no network, no credentials, no waiting on a clock -- the
   scheduler's cases move a clock of their own. Expected values are derived by
   hand beside each assertion, and each suite checks its own count against

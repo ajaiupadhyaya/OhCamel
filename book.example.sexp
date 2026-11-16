@@ -113,6 +113,18 @@
    ((name dd-cap)     (scope Portfolio)          (kind (Max_drawdown 0.10)))))
 
  ; ---------------------------------------------------------------------------
+ ; The drawdown's window. OPTIONAL -- omit it and the window is 250 closes.
+ ;
+ ;   drawdown_window         the live drawdown -- what a Max_drawdown limit and
+ ;                           the drawdown governor read -- is the live equity's
+ ;                           decline from the peak of the last this-many
+ ;                           session closes and the live equity. 250 is a
+ ;                           trading year. From the all-time peak instead, a
+ ;                           book the governor had cut could never earn its
+ ;                           size back by holding still. 1 to 10000.
+ (risk ((drawdown_window 250)))
+
+ ; ---------------------------------------------------------------------------
  ; Phase 4: alerting and the kill switch. OPTIONAL -- omit this block entirely
  ; and the engine computes breaches, displays them, and does nothing else.
  ; That is the default, and it is the right one.
