@@ -319,3 +319,48 @@ def test_implied_spot_falls_back_to_the_vendor_spot_and_says_why():
     # an index (European) chain never implies one
     ce = analyze_chain(make_chain())
     assert math.isnan(ce.implied_spot) and ce.iv_spot == ce.spot and ce.iv_spot_source == "vendor"
+
+
+def _set(ch, expiry, strike, cp, bid, ask):
+    q = ch.quotes
+    i = q.index[(q["expiry"] == pd.Timestamp(expiry)) & (q["strike"] == strike) & (q["type"] == cp)][0]
+    q.loc[i, ["bid", "ask"]] = [bid, ask]
+    return q.loc[i, "contract"]
+
+
+def test_each_iv_status_on_a_constructed_quote():
+    """One quote per status on the American test chain (S0 = 500, no front expiry: the vendor spot
+    is used, tolerance 0), and the invariant: 'ok' exactly when the IV is finite."""
+    ch = make_american_chain()
+    long, short = AM_EXPIRIES[1], AM_EXPIRIES[0]
+    T = float(parity.year_fraction(AS_OF, parity.expiry_timestamp(long, "AMX"))[0])
+    fwd_floor = S0 * np.exp(-Q * T) - 420.0 * np.exp(-R * T)          # D (F - K) for the 420 call
+    want = {
+        _set(ch, short, 580.0, "P", 78.0, 79.0): "arb_bound",        # ask 79 < intrinsic 80: buy, exercise
+        _set(ch, short, 440.0, "C", 500.5, 501.0): "arb_bound",      # bid above S: sell a call worth < S
+        _set(ch, short, 560.0, "P", 59.5, 60.6): "at_intrinsic",     # mid 60.05: 0.05 over 60, half-spread 0.55
+        _set(ch, long, 420.0, "C", fwd_floor - 1.1, fwd_floor - 0.9): "below_model_forward",  # 80 + ~30 < floor
+        _set(ch, long, 440.0, "C", 499.0, 502.0): "no_vol",           # mid 500.5 >= S, bid not above it
+        _set(ch, long, 460.0, "C", 0.0, 0.05): "zero_bid",
+        _set(ch, long, 480.0, "P", 5.0, 4.0): "crossed",
+        _set(ch, long, 500.0, "P", 10.0, 30.0): "wide",
+        _set(ch, long, 520.0, "P", np.nan, 40.0): "no_quote",
+    }
+    ca = analyze_chain(ch, rate_curve=lambda T: R)
+    q = ca.quotes.set_index("contract")
+    assert {c: q.loc[c, "iv_status"] for c in want} == want
+    assert q.loc[list(want), "iv"].isna().all()
+    assert (q["iv_status"] == "ok").sum() >= 20 and np.isfinite(q.loc[q["iv_status"] == "ok", "iv"]).all()
+    assert not (q["iv"].isna() & (q["iv_status"] == "ok")).any()
+    assert q["arb_bound"].sum() == 2                       # model-free crossings only
+    assert any(n.startswith("below_model_forward: 1 calls, 0 puts") for n in ca.notes)
+    assert any(n.startswith("at_intrinsic: 0 calls, 1 puts") for n in ca.notes)
+
+
+def test_european_chain_keeps_its_arb_bound_and_gets_statuses():
+    ch = make_chain()
+    ca = analyze_chain(ch)
+    st = ca.quotes["iv_status"]
+    assert set(st) <= {"ok", "zero_bid", "arb_bound", "no_vol", "wide", "crossed", "no_quote"}
+    assert ((st == "ok") == ca.quotes["iv"].notna()).all()
+    assert not (st == "at_intrinsic").any() and not (st == "below_model_forward").any()

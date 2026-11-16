@@ -182,7 +182,7 @@ def expiries(ticker: str, market: Market) -> dict[str, Any]:
 
 QUOTE_COLS = ["contract", "root", "strike", "type", "bid", "ask", "mid", "last", "volume", "open_interest",
               "k", "otm", "valid", "wide", "zero_bid", "crossed", "no_quote", "stale", "arb_bound", "use_smile",
-              "iv", "iv_bid", "iv_ask", "vendor_iv", "iv_minus_vendor", "model_price", "delta", "gamma", "vega",
+              "iv", "iv_status", "iv_bid", "iv_ask", "vendor_iv", "iv_minus_vendor", "model_price", "delta", "gamma", "vega",
               "theta_day", "rho", "vanna", "volga", "charm_day"]
 
 

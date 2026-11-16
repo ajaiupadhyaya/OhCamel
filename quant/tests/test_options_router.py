@@ -99,6 +99,9 @@ def test_expiries_and_chain(chain_client):
     assert j["implied_spot"] is None and j["iv_spot"] == j["spot"] and j["iv_spot_source"] == "vendor"
     q = [x for x in j["quotes"] if x["use_smile"]]
     assert len(q) > 40 and all(abs(x["iv"] - x["vendor_iv"]) < 2e-4 for x in q)
+    # every quote says why it has, or has not, an IV
+    assert all((x["iv_status"] == "ok") == (x["iv"] is not None) for x in j["quotes"])
+    assert {x["iv_status"] for x in j["quotes"] if x["iv"] is None} <= {"zero_bid", "arb_bound", "no_vol", "wide"}
     assert j["smile"]["fit"]["rmse_vol_pts"] < 0.01
     calls = [x for x in j["quotes"] if x["type"] == "C" and x["iv"] is not None]
     assert all(0 <= x["delta"] <= 1 for x in calls)

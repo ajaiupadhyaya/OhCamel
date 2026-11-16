@@ -108,6 +108,9 @@ export interface Expiries extends ChainHeader {
 }
 
 // ------------------------------------------------------------------ chain
+export type IvStatus =
+  | "ok" | "no_quote" | "zero_bid" | "crossed" | "wide" | "arb_bound" | "at_intrinsic" | "below_model_forward" | "no_vol";
+
 export interface Quote {
   contract: string;
   root: string;
@@ -130,6 +133,8 @@ export interface Quote {
   arb_bound: boolean;
   use_smile: boolean;
   iv: number | null;
+  /** Why the quote has, or has not, an IV: "ok" exactly when iv is a number (options/chain.py IV_STATUSES). */
+  iv_status: IvStatus;
   iv_bid: number | null;
   iv_ask: number | null;
   vendor_iv: number | null;

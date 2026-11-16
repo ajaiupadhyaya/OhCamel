@@ -16,8 +16,11 @@ Pipeline (each step is recorded in ``ChainAnalytics.notes`` / per-row flags):
    priced as American (:func:`.parity.american_pair_forward`);
 5. implied vol from the mid (and from bid / ask): Black-76 for European exercise,
    the American CRR tree (:mod:`.american`, on spot with the slice's ``r`` and ``q``)
-   for American exercise; NaN where the mid violates the no-arbitrage bounds (flag
-   ``arb_bound``) or no volatility reproduces it;
+   for American exercise; NaN where no volatility reproduces the mid, with the reason in
+   ``iv_status`` (:data:`IV_STATUSES`): ``arb_bound`` is a crossing of the no-arbitrage bounds
+   (Black-76's for European exercise; for American exercise only a tradeable crossing of the
+   model-free exercise bounds), ``at_intrinsic`` (American: no time value) and
+   ``below_model_forward`` (American: under the model forward's ``D (F - K)+``);
 6. OTM selection for smile construction: puts for ``K < F``, calls for ``K >= F``
    (standard practice, e.g. Cboe VIX white paper; Ait-Sahalia & Lo 1998) because
    OTM quotes are the liquid ones;
@@ -177,9 +180,20 @@ def analyze_chain(
     intrinsic = D * np.maximum(phi * (F - K), 0.0)
     mid = q["mid"].to_numpy(float)
     bid_a, ask_a = q["bid"].to_numpy(float), q["ask"].to_numpy(float)
+    valid = q["valid"].to_numpy()
     if am:
-        # American bounds: worth at least immediate exercise, at most the underlying (call) / strike (put)
-        lower, upper = np.maximum(intrinsic, phi * (S - K)), np.where(typ == "C", S, K)
+        # Model-free American bounds (Hull 2018, ch. 11): worth at least immediate exercise against the
+        # level the IVs use, at most the underlying (call) / the strike (put). arb_bound is a TRADEABLE
+        # crossing of them: the ask below exercise value by more than the level's own uncertainty (the
+        # front pair's half-spread), or the bid above the upper bound. D (F - K)+ is not a bound here:
+        # F rests on our r and q, so a quote under it is a model misfit, not arbitrage.
+        exer = np.maximum(phi * (S - K), 0.0)
+        upper = np.where(typ == "C", S, K)
+        tol = isp.half_spread if np.isfinite(isp.half_spread) else 0.0
+        cross = valid & ((ask_a < exer - tol) | (bid_a > upper))
+        at_intr = valid & ~cross & (mid - exer <= (ask_a - bid_a) / 2.0)     # no time value: no vol
+        below_fwd = valid & ~cross & ~at_intr & (mid <= intrinsic)          # under the model's D (F - K)+
+        q["arb_bound"] = cross
         r_, q_ = q["r"].to_numpy(float), q["q"].to_numpy(float)
 
         def ivs(px: np.ndarray) -> np.ndarray:
@@ -189,14 +203,16 @@ def analyze_chain(
             return out
     else:
         lower, upper = intrinsic, np.where(typ == "C", D * F, D * K)
+        q["arb_bound"] = q["valid"] & ((mid <= lower) | (mid >= upper))
+        at_intr = below_fwd = np.zeros(len(q), dtype=bool)
 
         def ivs(px: np.ndarray) -> np.ndarray:
             return bsm.implied_vol_black(px, F, K, T, D, typ)
-    q["arb_bound"] = q["valid"] & ((mid <= lower) | (mid >= upper))
-    good_mid = q["valid"].to_numpy()
+    good_mid = valid & ~q["arb_bound"].to_numpy() & ~at_intr & ~below_fwd
     q["iv"] = ivs(np.where(good_mid, mid, np.nan))
     q["iv_bid"] = ivs(np.where(bid_a > 0, bid_a, np.nan))
     q["iv_ask"] = ivs(np.where(ask_a > 0, ask_a, np.nan))
+    q["iv_status"] = iv_status(q, at_intr, below_fwd)
     q["use_smile"] = q["valid"] & q["otm"] & np.isfinite(q["iv"])
     g = bsm.bsm_greeks(S, K, T, q["iv"].to_numpy(float), q["r"].to_numpy(float), q["q"].to_numpy(float), typ)
     for name in ("delta", "gamma", "vega", "theta_day", "rho", "vanna", "volga", "charm_day"):
@@ -250,6 +266,23 @@ def analyze_chain(
     elif am:
         notes.append(f"American IVs use the vendor spot {spot:.2f}: {isp.reason}")
     if am:
+        st = q["iv_status"]
+        side = lambda s_: ", ".join(f"{int(((st == s_) & (q['type'] == t)).sum())} {n}"  # noqa: E731
+                                    for t, n in (("C", "calls"), ("P", "puts")))
+        notes.append(f"arb_bound on an American chain is model-free: a tradeable crossing of an exercise bound "
+                     f"(ask below intrinsic against {S:.2f} by more than {tol:.3f}, or a call bid above it / a put "
+                     f"bid above its strike): {side('arb_bound')}. The European bound D(F - K)+ is not used -- "
+                     "F rests on our r and q")
+        notes.append(f"at_intrinsic: {side('at_intrinsic')} have a mid within their own half-spread of intrinsic "
+                     "-- no time value, so no volatility is identified (IV blank), not arbitrage")
+        if (st == "below_model_forward").any():
+            notes.append(f"below_model_forward: {side('below_model_forward')} have a mid below D(F - K)+ for the "
+                         "expiry's forward, so no volatility fits (IV blank). A single dividend yield per expiry, "
+                         "taken from the pair nearest the money, cannot fit deep in-the-money long-dated calls; "
+                         "discrete dividends are not available to this chain yet")
+        if (st == "no_vol").any():
+            notes.append(f"no_vol: {side('no_vol')} valid quotes have no volatility in the search interval that "
+                         "reproduces their mid (IV blank)")
         notes.append(f"American-style options: every IV inverts a {american.STEPS}-step CRR binomial price "
                      "(Black-Scholes at the last step, Richardson-extrapolated; Broadie & Detemple 1996) on spot "
                      "with the expiry's r and a continuous yield q, by Brent's method")
@@ -273,6 +306,27 @@ def analyze_chain(
                 "max_rate_se": max_rate_se,
                 "rate_source": "treasury" if rate_curve is not None else "parity", "exercise": style},
     )
+
+
+#: Why a quote has, or has not, an IV (``quotes['iv_status']``): 'ok' (IV from the mid); the quote
+#: filters 'no_quote', 'zero_bid', 'crossed', 'wide'; 'arb_bound' (crosses a no-arbitrage bound --
+#: model-free on American chains, Black-76's bounds on European ones); American only: 'at_intrinsic'
+#: (mid within its own half-spread of exercise value: no time value), 'below_model_forward' (mid
+#: under the model forward's D (F - K)+); 'no_vol' (no volatility in the search interval fits).
+IV_STATUSES = ("ok", "no_quote", "zero_bid", "crossed", "wide", "arb_bound", "at_intrinsic",
+               "below_model_forward", "no_vol")
+
+
+def iv_status(q: pd.DataFrame, at_intrinsic: Any, below_model_forward: Any) -> np.ndarray:
+    """One status per quote, the first that applies in IV_STATUSES' order after 'ok'; a quote has
+    status 'ok' exactly when its IV is finite."""
+    iv_ok = np.isfinite(q["iv"].to_numpy(float))
+    conds = [q["no_quote"].to_numpy(), q["zero_bid"].to_numpy(), q["crossed"].to_numpy(), q["wide"].to_numpy(),
+             q["arb_bound"].to_numpy(), np.asarray(at_intrinsic), np.asarray(below_model_forward)]
+    out = np.where(iv_ok, "ok", "no_vol").astype(object)
+    for name, c in zip(reversed(IV_STATUSES[1:8]), reversed(conds), strict=True):
+        out = np.where(c & ~iv_ok, name, out)
+    return out
 
 
 def _premium_free_parity_rmse(g: pd.DataFrame, f: parity.ParityFit, spot: float) -> float:

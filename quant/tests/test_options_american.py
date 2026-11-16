@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from ohcamel_quant.options import american, bsm
+from ohcamel_quant.options import chain as chain_mod
 
 
 def plain_crr(S, K, T, r, sigma, *, is_call, q=0.0, steps):
@@ -225,26 +226,53 @@ def test_spy_ivs_use_the_option_implied_underlying(spy_2026_11_15_american):
     assert math.isnan(ce.implied_spot) and ce.iv_spot == ce.spot     # European: unaffected
 
 
-def test_spy_flags_and_unidentified_itm_calls_are_counted(spy_2026_11_15_american):
-    """NOT the ruling's target. The ruling asks that the arb_bound count and the count of valid
-    in-the-money calls without an IV be no worse than before this work (87 and 87 on the whole
-    chain). They are worse: on the whole chain 747 and 480 (Rust); on the five expiries the
-    reference engine keeps, the numbers pinned below (Black-76 before: 20 and 20).
-
-    What drives them (see the task report): 267 deep in-the-money puts whose mids sit at intrinsic
-    against the 16:15 level (no vol is identified at the exercise boundary), and long-dated deep
-    in-the-money calls whose mids fall below D (F - K) for the forward the pair nearest the money
-    implies under a continuous yield -- 107 of them even at the ask, so that forward is the thing
-    the deep calls contradict. Pinned so any change shows."""
+def _reference_expiries(c):
     from conftest import SPY_REFERENCE_EXPIRIES
 
+    return c.quotes[c.quotes["expiry"].dt.strftime("%Y-%m-%d").isin(SPY_REFERENCE_EXPIRIES)]
+
+
+def test_spy_every_blank_iv_has_a_status_and_the_counts_are_exact(spy_2026_11_15_american):
+    """Every quote says why it has, or has not, an IV; 'ok' exactly when the IV is finite. Counts per
+    status and side on the five expiries both engines hold (whole chain, Rust: ok 4523 C / 4023 P,
+    at_intrinsic 750 / 1949, below_model_forward 251 / 0, wide 306 / 112, zero_bid 480 / 226)."""
+    ca = spy_2026_11_15_american[0]
+    st, iv = ca.quotes["iv_status"], ca.quotes["iv"]
+    assert not (iv.isna() & (st == "ok")).any() and not (iv.notna() & (st != "ok")).any()
+    assert set(st) <= set(chain_mod.IV_STATUSES)
+    q = _reference_expiries(ca)
+    got = {k: int(v) for k, v in q.groupby(["iv_status", "type"]).size().items()}
+    assert got == {("ok", "C"): 628, ("ok", "P"): 577, ("at_intrinsic", "C"): 178, ("at_intrinsic", "P"): 362,
+                   ("below_model_forward", "C"): 54, ("wide", "C"): 53, ("wide", "P"): 30,
+                   ("zero_bid", "C"): 113, ("zero_bid", "P"): 57}
+    note = next(n for n in ca.notes if n.startswith("below_model_forward:"))
+    assert "single dividend yield" in note and "discrete dividends are not available" in note
+
+
+def test_spy_has_no_model_free_arbitrage(spy_2026_11_15_american):
+    """arb_bound on the American chain is a tradeable crossing of an exercise bound against the
+    implied 752.61 (tolerance: the front pair's half-spread, 0.025): none on the whole chain,
+    against 87 forward-bound flags before this work -- which the European twin still shows (20 on
+    the five expiries, e.g. the 0.7-day 565 call at 186.28 / 189.05 against D (F - K) = 187.67).
+
+    Hand-check of the two quotes closest to crossing (both 0.7-day puts, intrinsic K - 752.61):
+      768 P: ask 15.58 vs intrinsic 15.387 -> ask is 0.193 ABOVE it: no crossing (at_intrinsic: mid
+             15.37 is within its half-spread 0.21 of intrinsic);
+      763 P: ask 10.62 vs intrinsic 10.387 -> 0.233 above: no crossing (at_intrinsic).
+    No bid exceeds S (calls) or K (puts)."""
     ca, ce, _, _ = spy_2026_11_15_american
-    keep = lambda c: c.quotes[c.quotes["expiry"].dt.strftime("%Y-%m-%d").isin(SPY_REFERENCE_EXPIRIES)]  # noqa: E731
-    q, qe = keep(ca), keep(ce)
-    itm_call = q["valid"] & (q["type"] == "C") & ~q["otm"]
-    itm_call_e = qe["valid"] & (qe["type"] == "C") & ~qe["otm"]
-    assert (int(qe["arb_bound"].sum()), int((itm_call_e & qe["iv"].isna()).sum())) == (20, 20)
-    assert (int(q["arb_bound"].sum()), int((itm_call & q["iv"].isna()).sum())) == (114, 102)
+    q = ca.quotes
+    assert int(q["arb_bound"].sum()) == 0
+    S, phi = ca.iv_spot, np.where(q["type"] == "C", 1.0, -1.0)
+    exer = np.maximum(phi * (S - q["strike"]), 0.0)
+    v = q["valid"]
+    assert (q.loc[v, "ask"] - exer[v]).min() > -0.025                  # the definition, recomputed
+    row = q[(q["slice"] == "2026-11-16") & (q["strike"] == 768.0) & (q["type"] == "P")].iloc[0]
+    assert row["ask"] == 15.58 and row["ask"] - (768.0 - S) == pytest.approx(0.193, abs=1e-3)
+    assert row["iv_status"] == "at_intrinsic"
+    assert int(_reference_expiries(ce)["arb_bound"].sum()) == 20
+    if len(ce.slices) == 32:                                          # the whole chain (Rust)
+        assert int(ce.quotes["arb_bound"].sum()) == 87
 
 
 def test_spy_parity_residual_after_early_exercise_is_within_half_a_dollar_beyond_six_months(spy_2026_11_15_american):
