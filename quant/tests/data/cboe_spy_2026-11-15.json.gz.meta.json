@@ -1,0 +1,21 @@
+{
+  "source": "cboe",
+  "synthetic": false,
+  "symbol": "SPY",
+  "url": "https://cdn.cboe.com/api/global/delayed_quotes/options/SPY.json",
+  "fetched": "2026-11-15",
+  "payload_timestamp": "2026-11-15 22:22:02",
+  "quotes_as_of": "2026-11-13 16:00:00 America/New_York (last_trade_time; the payload was fetched on a Sunday)",
+  "n_contracts": 12620,
+  "original_sha256": "57e1a39c36526f869fbface7ff4ca5f398c4fd65bcd34dfaedc3a75a437fc0c3",
+  "original_bytes": 5626513,
+  "trimmed": "every contract of every expiry kept; per-contract fields cut to the ones data/cboe.parse_chain reads (option, bid, ask, last_trade_price, volume, open_interest, iv, delta, gamma, theta, vega, rho); the data header kept whole; gzip",
+  "used_by": "the 2026-11-15 review of the SVI fits and risk-neutral densities (completion task 4.1)",
+  "treasury_curve": {
+    "source": "fred",
+    "note": "the latest constant-maturity curve FRED served on 2026-11-15, i.e. what the options router's _treasury_rate_curve reads for this chain; percent, bond-equivalent",
+    "date": "2026-11-12",
+    "tenor_years": [0.08333333333333333, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 20.0, 30.0],
+    "yield_pct": [4.12, 4.32, 4.42, 4.65, 4.86, 4.90, 4.95, 5.02, 5.10, 5.48, 5.43]
+  }
+}

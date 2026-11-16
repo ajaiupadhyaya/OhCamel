@@ -23,9 +23,9 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ...data.base import DataUnavailable
 from ...data.market import MarketData, get_market
-from ...options import bsm, density, realized, strategy
+from ...options import bsm, density, realized, strategy, svi
 from ...options.chain import CONTRACT_MULTIPLIER, ChainAnalytics, analyze_chain
-from ...options.parity import EUROPEAN_UNDERLYINGS, InsufficientQuotes
+from ...options.parity import InsufficientQuotes, exercise_style
 from ...options.surface import VolSurface, build_surface, svi_weights
 from ...options.svi import fit_svi
 from ..serialize import clean, frame, records, series
@@ -46,7 +46,8 @@ IMPLIED_INDEX = {"SPY": "VIXCLS", "SPX": "VIXCLS", "XSP": "VIXCLS", "^GSPC": "VI
 REFS = {
     "bsm": "Black & Scholes (1973); Merton (1973); Black (1976); greeks per Haug (2007)",
     "iv": "Corrado & Miller (1996) initial guess; safeguarded Newton (Numerical Recipes rtsafe) + Brent (1973)",
-    "parity": "Put-call parity (Stoll 1969) regression with Huber (1964) IRLS; Cboe VIX white paper forward",
+    "american": "Cox, Ross & Rubinstein (1979) tree; Broadie & Detemple (1996) BBSR; Brent (1973) on price",
+    "parity":"Put-call parity (Stoll 1969) regression with Huber (1964) IRLS; Cboe VIX white paper forward",
     "svi": "Gatheral (2004) raw SVI; Zeliade (2009) quasi-explicit calibration; Gatheral & Jacquier (2014)",
     "mfiv": "Demeterfi, Derman, Kamal & Zou (1999); Britten-Jones & Neuberger (2000); Cboe VIX white paper",
     "bl": "Breeden & Litzenberger (1978)",
@@ -113,7 +114,7 @@ def _bundle(ticker: str, market: MarketData, max_rel_spread: float = 0.5) -> _Bu
     ds = market.option_chain(t)
     provenance = ds.provenance_dicts()
     rate_curve, curve_note = None, None
-    if t.lstrip("_^") not in EUROPEAN_UNDERLYINGS:
+    if (getattr(ds.data, "exercise", None) or exercise_style(t)) == "american":
         try:
             rate_curve, curve_prov = _treasury_rate_curve(market)
             provenance += curve_prov
@@ -148,13 +149,15 @@ def _surface(b: _Bundle) -> VolSurface:
 
 def _header(ca: ChainAnalytics) -> dict[str, Any]:
     return {"underlying": ca.underlying, "spot": ca.spot, "as_of": ca.as_of.isoformat(),
-            "exercise_style": "European" if ca.european else "American"}
+            "exercise_style": "European" if ca.european else "American",
+            # the level the IVs and greeks use: the vendor spot, or (American) the option-implied one
+            "implied_spot": ca.implied_spot, "iv_spot": ca.iv_spot, "iv_spot_source": ca.iv_spot_source}
 
 
 def _slice_summary(ca: ChainAnalytics) -> list[dict[str, Any]]:
     cols = ["expiry", "settlement", "roots", "T", "dte", "forward", "discount", "rate", "div_yield",
-            "rate_source", "rate_se", "forward_se", "parity_rmse", "parity_strikes", "n_contracts", "n_valid",
-            "n_smile", "n_arb_bound", "vendor_iv_mad"]
+            "rate_source", "rate_se", "forward_se", "parity_rmse", "parity_strikes", "n_parity_bound_violations",
+            "pair_vol", "n_contracts", "n_valid", "n_smile", "n_arb_bound", "vendor_iv_mad"]
     s = ca.slices[cols].copy()
     s["expiry_ts"] = ca.slices["expiry_ts"].map(lambda x: pd.Timestamp(x).isoformat())
     return records(s, index_name="slice")
@@ -168,7 +171,10 @@ def expiries(ticker: str, market: Market) -> dict[str, Any]:
     ca = b.ca
     return clean({
         **_header(ca), "expiries": _slice_summary(ca),
-        "method": {"forward": "put-call parity regression per expiry", "day_count": "ACT/365 to settlement",
+        "method": {"forward": ("put-call parity regression per expiry" if ca.european else
+                               "the strike pair nearest the money priced as American (call and put share one "
+                               "vol); parity elsewhere is a bound"),
+                   "day_count": "ACT/365 to settlement",
                    "reference": REFS["parity"]},
         "notes": ca.notes, "errors": ca.errors, "provenance": b.provenance,
     })
@@ -176,7 +182,7 @@ def expiries(ticker: str, market: Market) -> dict[str, Any]:
 
 QUOTE_COLS = ["contract", "root", "strike", "type", "bid", "ask", "mid", "last", "volume", "open_interest",
               "k", "otm", "valid", "wide", "zero_bid", "crossed", "no_quote", "stale", "arb_bound", "use_smile",
-              "iv", "iv_bid", "iv_ask", "vendor_iv", "iv_minus_vendor", "model_price", "delta", "gamma", "vega",
+              "iv", "iv_status", "iv_bid", "iv_ask", "vendor_iv", "iv_minus_vendor", "model_price", "delta", "gamma", "vega",
               "theta_day", "rho", "vanna", "volga", "charm_day"]
 
 
@@ -220,7 +226,10 @@ def chain(
         "quotes": records(q[QUOTE_COLS].reset_index(drop=True)),
         "smile": smile,
         "multiplier": CONTRACT_MULTIPLIER, "greeks_units": greeks_units,
-        "method": {"iv": "Black-76 on the mid with parity-implied F and D", "iv_solver": REFS["iv"],
+        "method": {"iv": ("Black-76 on the mid with parity-implied F and D" if ca.european else
+                          "American CRR binomial price (400 steps, BBSR) on spot with the expiry's r and "
+                          "pair-implied q, inverted by Brent's method"),
+                   "iv_solver": REFS["iv"] if ca.european else REFS["american"],
                    "greeks": REFS["bsm"], "otm_rule": "puts for K < F, calls for K >= F",
                    "filters": ca.params, "reference": REFS["parity"]},
         "notes": notes, "provenance": b.provenance,
@@ -255,8 +264,10 @@ def surface(ticker: str, market: Market) -> dict[str, Any]:
         "atm_30d": vs.atm_30d,
         "expiries": _slice_summary(ca),
         "method": {"smile": "raw SVI per expiry, weighted by inverse bid-ask total-variance spread",
-                   "calibration": "quasi-explicit: exact inner box-QP over (a, c, d), outer grid + Nelder-Mead",
-                   "arbitrage": "Durrleman g(k) >= 0 (butterfly); w(k,T) non-decreasing in T (calendar)",
+                   "calibration": "quasi-explicit: exact inner box-QP over (a, c, d), outer grid + Nelder-Mead; "
+                                  "wing slopes b(1 +- rho) <= 2 (Lee), vertex m inside the quoted k",
+                   "arbitrage": "Durrleman g(k) >= 0 on k in [-3, 3], required of every fit (butterfly); "
+                                "w(k,T) non-decreasing in T (calendar), checked",
                    "interpolation": "total variance linear in T at fixed k = ln(K/F); no extrapolation",
                    "rr_bf": "spot-delta 25/10 RR = iv_call - iv_put; BF = mean - ATMF vol",
                    "model_free": REFS["mfiv"], "reference": REFS["svi"]},
@@ -299,7 +310,10 @@ def rn_density(ticker: str, market: Market, expiry: str | None = None) -> dict[s
     f = vs.fits[sid]
     s = ca.slices.loc[sid]
     F, D, T = float(s["forward"]), float(s["discount"]), float(s["T"])
-    d = density.breeden_litzenberger(F, D, T, f.params.w)
+    try:
+        d = density.breeden_litzenberger(F, D, T, f.params.w)
+    except density.DensityError as e:
+        raise DataUnavailable(f"{ca.underlying} {sid}: no risk-neutral density ({e})") from e
     atm = float(np.sqrt(f.params.w(0.0) / T))
     # same strike grid as the SVI density so `lognormal_density` lines up with `strikes`
     ln = density.breeden_litzenberger(F, D, T, lambda k: np.full_like(np.asarray(k, float), atm * atm * T),
@@ -311,23 +325,37 @@ def rn_density(ticker: str, market: Market, expiry: str | None = None) -> dict[s
     moves = list(DENSITY_MOVES)
     mny = [*(1 - m for m in reversed(moves)), 1.0, *(1 + m for m in moves)]
     notes = list(ca.notes)
-    if abs(d.integral - 1) > 0.01:
-        notes.append(f"density integrates to {d.integral:.4f} (not ~1): tail mass outside the grid or arbitrage")
-    if d.negative_mass > 1e-4:
+    tails = d.tail_mass_left + d.tail_mass_right
+    chk = density.density_checks(d, svi.density_k(f.params, np.log(d.strikes / F)) / d.strikes)
+    passed = chk["passed"]
+    if not passed["negative_mass"]:
         notes.append(f"negative density mass {d.negative_mass:.2e}: the smile violates the butterfly condition")
+    if not passed["analytic"]:
+        notes.append(f"numerical cross-check failed: the finite-difference density integrates to {d.integral:.6f} "
+                     f"on the grid, the smile's closed-form density to {chk['analytic_integral']:.6f} -- the "
+                     "stencil or the grid does not resolve this smile (a numerical fault, not arbitrage)")
+    if not passed["mean"]:
+        notes.append(f"the density's mean is {d.mean / F - 1:+.3%} off the forward: the martingale condition fails")
+    if tails > 1e-3:
+        notes.append(f"{tails:.2%} of the probability lies beyond the strike grid (k = ln(K/F) in "
+                     f"[{d.k_range[0]:.2f}, {d.k_range[1]:.2f}]): {d.tail_mass_left:.2%} below, "
+                     f"{d.tail_mass_right:.2%} above")
     notes.append("risk-neutral (Q) probabilities embed risk premia; they are not real-world forecasts")
     return clean({
         **_header(ca), "expiry": sid, "T": T, "dte": T * 365.0, "forward": F, "discount": D,
         "strikes": d.strikes[sl], "density": d.density[sl], "cdf": d.cdf[sl],
         "lognormal_density": ln.density[sl], "atm_iv": atm,
-        "checks": {"integral": d.integral, "mean": d.mean, "forward": F, "mean_minus_forward": d.mean - F,
+        "checks": {"integral": d.integral, "tail_mass_left": d.tail_mass_left, "tail_mass_right": d.tail_mass_right,
+                   "integral_plus_tails": chk["integral_plus_tails"], "analytic_integral": chk["analytic_integral"],
+                   "passed": passed,
+                   "mean": d.mean, "forward": F, "mean_minus_forward": d.mean - F,
                    "negative_mass": d.negative_mass, "butterfly": f.butterfly},
         "moments": d.moments(), "lognormal_moments": ln.moments(),
-        "quantiles": [{"p": p, "level": float(v), "return": float(v / ca.spot - 1)}
+        "quantiles": [{"p": p, "level": float(v), "return": float(v / ca.iv_spot - 1)}
                       for p, v in zip(probs, d.quantiles(probs), strict=True)],
-        "prob_below": [{"level": float(ca.spot * m), "moneyness": float(m), "p": float(d.prob_below(ca.spot * m))}
+        "prob_below": [{"level": float(ca.iv_spot * m), "moneyness": float(m), "p": float(d.prob_below(ca.iv_spot * m))}
                        for m in mny],
-        "prob_move": [{"move": m, "p": float(d.prob_move(ca.spot, m)), "p_lognormal": float(ln.prob_move(ca.spot, m))}
+        "prob_move": [{"move": m, "p": float(d.prob_move(ca.iv_spot, m)), "p_lognormal": float(ln.prob_move(ca.iv_spot, m))}
                       for m in moves],
         "move_grid": moves,
         "method": {"density": "q(K) = (1/D) d2C/dK2 on a uniform strike grid, C from Black-76 at SVI vols",
@@ -424,7 +452,7 @@ def realized_vol(
         notes.append("fewer than 252 sessions: the 252-day cone horizon is missing or thin")
     return clean({
         "ticker": t, "price_symbol": sym, "as_of": ohlc.index[-1], "window": window, "estimator": estimator,
-        "rolling": frame(est), "current": current,
+        "rolling": frame(est), "current": current, "covers": dict(realized.ESTIMATOR_COVERS),
         "cone": records(cone, index_name="horizon") if not cone.empty else [],
         "implied_term": implied_term, "vrp": vrp_now, "vrp_history": history,
         "close": series(ohlc["close"][ohlc.index >= cutoff]),
@@ -481,6 +509,10 @@ def strategy_endpoint(body: StrategyIn, market: Market) -> dict[str, Any]:
     notes.extend(out.pop("notes"))
     notes.append("values before expiry assume sticky strike (each leg keeps today's IV) and the expiry's "
                  "parity-implied r and q; stock legs ignore dividends")
+    if not ca.european:
+        notes.append("American legs are valued before expiry with Black-Scholes at their American IV (no early "
+                     "exercise): an in-the-money put's value today sits below its mid by its early-exercise "
+                     "premium (the chain's mid - model_price)")
     notes.append(f"contract multiplier {CONTRACT_MULTIPLIER:g} (standard equity/index options)")
     return clean({
         **_header(ca), **out,

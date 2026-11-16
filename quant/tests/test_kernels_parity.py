@@ -251,6 +251,51 @@ def test_svi_parity(both, noisy):
         assert r.constrained_a == p.constrained_a
 
 
+def test_svi_parity_on_the_spy_chain(both, spy_2026_11_15):
+    """Every slice of the review's real SPY chain, Rust vs the reference (inputs as fit_svi passes
+    them: total variance and mean-one weights).
+
+    Not 1e-10: the engines sum the inner QP's normal equations in different orders (BLAS vs a
+    loop) and solve them differently (LAPACK vs elimination), so the objective differs in the last
+    bits, and Nelder-Mead (xatol 1e-7) on a surface cut by the butterfly rejection amplifies that:
+    perturbing w by 2e-16 moves the reference's own parameters by up to 2.7e-7. Measured Rust vs
+    reference on this chain (macOS arm64): 27 slices within 1e-12, four at 1.2e-9 to 4.7e-6
+    (2026-12-18)."""
+    _, _, inputs = spy_2026_11_15
+    assert len(inputs) == 31
+    for sid, (k, iv, T, wt) in inputs.items():
+        w, wt = iv * iv * T, wt / wt.mean()
+        r, p = on("rust", kernels.svi_fit, k, w, wt), on("python", kernels.svi_fit, k, w, wt)
+        for f in ("a", "b", "rho", "m", "sigma"):
+            assert getattr(r, f) == pytest.approx(getattr(p, f), rel=1e-5, abs=1e-9), (sid, f)
+        assert r.sse == pytest.approx(p.sse, rel=1e-8)
+        assert r.constrained_a == p.constrained_a, sid
+
+
+def test_svi_parity_on_what_the_fit_outputs(both, spy_2026_11_15):
+    """The parameters are ill-conditioned (above); what the model outputs is not. On every slice of
+    the real chain, Rust and the reference agree on the fitted total variance w(k) at the slice's
+    quoted k, and on the density's grid integral and its integral + tail masses, to 1e-8 absolute.
+    Measured (macOS arm64): w(k) within 6.4e-9 (2028-06-16; 1.4e-9 on 2026-12-18, the others under
+    2e-11), the grid integral within 9e-11, integral + tails within 1e-12."""
+    from ohcamel_quant.options.density import breeden_litzenberger
+    from ohcamel_quant.options.svi import SVIParams
+
+    ca, _, inputs = spy_2026_11_15
+    assert len(inputs) == 31
+    for sid, (k, iv, T, wt) in inputs.items():
+        w, wt = iv * iv * T, wt / wt.mean()
+        fits = [on(e, kernels.svi_fit, k, w, wt) for e in ("rust", "python")]
+        r, p = (SVIParams(f.a, f.b, f.rho, f.m, f.sigma) for f in fits)
+        np.testing.assert_allclose(r.w(k), p.w(k), rtol=0, atol=1e-8, err_msg=sid)
+        F, D = float(ca.slices.loc[sid, "forward"]), float(ca.slices.loc[sid, "discount"])
+        dr, dp = (breeden_litzenberger(F, D, T, q.w) for q in (r, p))
+        assert dr.integral == pytest.approx(dp.integral, rel=0, abs=1e-8), sid
+        total_r = dr.integral + dr.tail_mass_left + dr.tail_mass_right
+        total_p = dp.integral + dp.tail_mass_left + dp.tail_mass_right
+        assert total_r == pytest.approx(total_p, rel=0, abs=1e-8), sid
+
+
 def test_rv_parity(both):
     # 30 sessions x 390 minutes of a deterministic +-1bp zigzag with a drift; RV exact both ways
     day, minute = 86_400 * 10**9, 60 * 10**9
@@ -259,3 +304,115 @@ def test_rv_parity(both):
     bounds = np.column_stack([np.arange(30) * day + 34_200 * 10**9, np.arange(30) * day + 57_600 * 10**9])
     np.testing.assert_allclose(on("rust", kernels.realized_vol_minute, ts, px, bounds),
                                on("python", kernels.realized_vol_minute, ts, px, bounds), rtol=1e-12)
+
+
+# ---------------------------------------------------------------- American options
+def _american_grid():
+    K = np.tile(np.linspace(70.0, 140.0, 15), 6)
+    T = np.repeat([0.05, 0.5, 2.0], 30)
+    q = np.tile(np.repeat([0.0, 0.03], 15), 3)
+    is_call = np.arange(K.size) % 2 == 0
+    sig = 0.12 + 0.3 * (np.arange(K.size) % 7) / 6
+    return K, T, q, is_call, sig
+
+
+@pytest.mark.parametrize("divs", [((), ()), ((0.02, 0.3, 1.2), (0.8, 0.8, 0.9))], ids=["no-div", "three-divs"])
+def test_american_price_parity(both, divs):
+    K, T, q, is_call, sig = _american_grid()
+    args = (100.0, K, T, 0.045, q, sig, is_call, *divs)
+    r, p = on("rust", kernels.american_price, *args, 400, 3), on("python", kernels.american_price, *args, 400, 1)
+    assert np.isfinite(p).all()
+    np.testing.assert_allclose(r, p, rtol=0, atol=1e-8)
+    # the tolerance tells trees apart: 402 steps is another price
+    assert np.abs(on("rust", kernels.american_price, *args, 402, 1) - p).max() > 1e-8
+
+
+@pytest.mark.parametrize("divs", [((), ()), ((0.02, 0.3, 1.2), (0.8, 0.8, 0.9))], ids=["no-div", "three-divs"])
+def test_american_iv_parity_round_trip(both, divs):
+    K, T, q, is_call, sig = _american_grid()
+    px = on("python", kernels.american_price, 100.0, K, T, 0.045, q, sig, is_call, *divs)
+    args = (px, 100.0, K, T, 0.045, q, is_call, *divs)
+    r, p = on("rust", kernels.american_iv, *args, 400, 3), on("python", kernels.american_iv, *args, 400, 1)
+    assert np.array_equal(np.isnan(r), np.isnan(p))
+    np.testing.assert_allclose(r, p, rtol=0, atol=1e-8)
+    # the vol is identified where a point of vol either way moves the price by more than 1e-4 (the
+    # tree's fp noise is ~1e-12); deep in the money the price is flat in vol, or immediate exercise
+    up, dn = (on("python", kernels.american_price, 100.0, K, T, 0.045, q, sig + h, is_call, *divs) for h in (0.01, -0.01))
+    ident = (up - px > 1e-4) & (px - dn > 1e-4)
+    assert ident.sum() >= 70 and np.isfinite(p[ident]).all()
+    np.testing.assert_allclose(p[ident], sig[ident], rtol=0, atol=1e-6)
+    assert np.all(np.isnan(p) <= ~ident)
+
+
+def test_american_iv_parity_on_the_spy_chain(both, spy_2026_11_15_american):
+    """Mid, bid and ask of 600 valid quotes of the real chain (a fixed sample over every expiry the
+    fixture holds), on the slices' r and q: Rust and the reference agree to 1e-8, NaN for NaN.
+    Measured (macOS arm64): within 5e-11."""
+    ca = spy_2026_11_15_american[0]
+    q = ca.quotes[ca.quotes["valid"]].sample(600, random_state=7)
+    for col in ("mid", "bid", "ask"):
+        args = (q[col].to_numpy(), ca.iv_spot, q["strike"].to_numpy(), q["T"].to_numpy(), q["r"].to_numpy(),
+                q["q"].to_numpy(), (q["type"] == "C").to_numpy())
+        r, p = on("rust", kernels.american_iv, *args, 400, 4), on("python", kernels.american_iv, *args, 400, 1)
+        assert np.array_equal(np.isnan(r), np.isnan(p)), col
+        assert np.isfinite(p).sum() > 400, col
+        np.testing.assert_allclose(r, p, rtol=0, atol=1e-8, err_msg=col)
+
+
+def test_american_iv_is_within_1e6_of_the_exact_root(both, spy_2026_11_15_american):
+    """The inversion's shortcuts (the screen that keeps a Black-Scholes guess after one Newton step,
+    Brent's xtol 1e-7 and its stop at 3e-7 of vol along the bracket's slope) move no IV more than
+    1e-6 (1e-4 vol points) from the exact root of the same 400-step price, found here by scipy's
+    brentq to 1e-13 on 300 real quotes (measured 3.3e-7). The bound can fail: a screen of 1e-3
+    instead of 3e-5 misses by 1.1e-5 on the same quotes (reference engine, measured)."""
+    from scipy.optimize import brentq
+
+    ca = spy_2026_11_15_american[0]
+    q = ca.quotes[ca.quotes["valid"]].sample(300, random_state=11)
+    S, K, T, r, qy = ca.iv_spot, q["strike"].to_numpy(), q["T"].to_numpy(), q["r"].to_numpy(), q["q"].to_numpy()
+    c, mid = (q["type"] == "C").to_numpy(), q["mid"].to_numpy()
+    iv = on("rust", kernels.american_iv, mid, S, K, T, r, qy, c, threads=4)
+    worst, n = 0.0, 0
+    for i in np.flatnonzero(np.isfinite(iv)):
+        def f(s, i=i):
+            return float(on("rust", kernels.american_price, S, K[i], T[i], r[i], qy[i], s, c[i])) - mid[i]
+        a, b = iv[i] - 1e-4, iv[i] + 1e-4
+        if f(a) * f(b) >= 0:
+            continue                           # flat in vol here (deep in the money): nothing to pin
+        worst, n = max(worst, abs(brentq(f, a, b, xtol=1e-13, rtol=1e-15) - iv[i])), n + 1
+    assert n >= 200 and worst < 1e-6, (n, worst)
+
+
+def test_shipped_american_ivs_match_a_full_width_unscreened_inversion(monkeypatch):
+    """The band (8 binomial sd beyond the drift) and the saturated last step change the price
+    function; the screen and the Brent stops change the search. Against the reference engine with
+    all four off -- full-width tree, exact Black-Scholes last step, no screen, xtol 1e-12 -- the
+    shipped IVs (whichever engine runs) stay within 1e-6 (1e-4 vol points) on a seeded stress set:
+    K/S 0.55-1.8, T 1 day to 3 years, r 0-10%, q up to 40%, vol 0.03-3. Compared where the vol is
+    identifiable (one vol point either way moves the price by at least 1e-4); prices come from the
+    full-width tree, so the shipped inversion also absorbs the band's pricing error. Measured: 2.9e-7.
+    It can fail: a band of 2 sd misses by 2.3, a screen of 1e-3 by 7.8e-6 (reference engine)."""
+    from ohcamel_quant.kernels import reference as R
+
+    rng = np.random.default_rng(42)
+    n, S = 400, 750.0
+    K = S * np.exp(rng.uniform(np.log(0.55), np.log(1.8), n))
+    T = np.exp(rng.uniform(np.log(1 / 365), np.log(3.0), n))
+    r, q = rng.uniform(0.0, 0.10, n), rng.choice([0.0, 0.01, 0.05, 0.15, 0.4], n)
+    sig = np.exp(rng.uniform(np.log(0.03), np.log(3.0), n))
+    call = rng.random(n) < 0.5
+    shipped = kernels.american_iv
+    with kernels.forced("python"):
+        for name, v in (("AM_BAND", 1e9), ("AM_SAT", 1e9), ("AM_SCREEN", 0.0), ("AM_FTOL", 0.0), ("AM_XTOL", 1e-12)):
+            monkeypatch.setattr(R, name, v)
+        px = kernels.american_price(S, K, T, r, q, sig, call)
+        up = kernels.american_price(S, K, T, r, q, sig + 0.01, call)
+        dn = kernels.american_price(S, K, T, r, q, np.maximum(sig - 0.01, sig / 2), call)
+        truth = kernels.american_iv(px, S, K, T, r, q, call)
+    monkeypatch.undo()
+    got = shipped(px, S, K, T, r, q, call, threads=2)
+    ident = np.isfinite(truth) & (up - px >= 1e-4) & (px - dn >= 1e-4)
+    assert ident.sum() >= 200
+    assert np.isfinite(got[ident]).all()
+    worst = float(np.abs(got - truth)[ident].max())
+    assert worst < 1e-6, worst

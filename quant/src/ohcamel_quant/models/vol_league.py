@@ -8,6 +8,12 @@ is the kernels' own recursion (native/kernels/src/garch.rs, reference
 ``kernels.reference._variance_path``), pinned equal to the kernel's
 ``next_variance`` by a test. QLIKE (Patton 2011) is robust to a noisy RV
 proxy, so names without minute bars are scored on squared daily returns.
+
+One quantity: every forecast here is of the CLOSE-TO-CLOSE variance of the next session, which includes the
+overnight move, so the target is close-to-close too: minute realized variance over 09:30-16:00 plus the
+squared overnight return (products/vol_league.py ``_daily_rv``), or the squared daily return. HAR-RV is
+trained on that target, so its forecasts are close-to-close as well (``har_covers``), and QLIKE compares
+like with like. Scoring against open-to-close variance would favour the one model trained on it.
 """
 
 from __future__ import annotations
@@ -193,7 +199,8 @@ class NameLeague:
 
 def league_for(r: np.ndarray, rv: np.ndarray, *, has_minute: bool, est_window: int = EST_WINDOW,
                eval_days: int = EVAL_DAYS, refit_every: int = REFIT_EVERY) -> NameLeague:
-    """``r`` daily returns; ``rv`` the realized-variance target on the same days (minute RV or r^2)."""
+    """``r`` daily returns; ``rv`` the close-to-close realized-variance target on the same days
+    (minute RV + squared overnight return, or r^2)."""
     target = np.asarray(rv, dtype=float)[-eval_days:]
     fc: dict[str, np.ndarray] = {}
     nxt: dict[str, float] = {}
@@ -208,6 +215,7 @@ def league_for(r: np.ndarray, rv: np.ndarray, *, has_minute: bool, est_window: i
     if has_minute:
         fc["har"], nxt["har"] = har_oos(rv, eval_days=eval_days, refit_every=refit_every)
         out.forecast["har_22d"] = har_22d(rv)
+        out.forecast["har_covers"] = "close_to_close"   # the target includes the overnight move
     losses = pd.DataFrame({m: qlike(target, f) for m, f in fc.items()})
     try:
         keep: set[str] | None = mcs_members(losses) if losses.shape[1] > 1 else set(losses.columns)
@@ -219,7 +227,7 @@ def league_for(r: np.ndarray, rv: np.ndarray, *, has_minute: bool, est_window: i
         out.rows.append({"model": m, "qlike": float(losses[m].mean()), "mse": float(mse(target, f).mean()),
                          "n": int(eval_days), "in_mcs": None if keep is None else m in keep,
                          "rank_qlike": int(ranks[m]),
-                         "target": "minute_rv" if has_minute else "squared_return"})
+                         "target": "full_day_rv" if has_minute else "squared_return"})
     names = list(fc)
     for i, a in enumerate(names):
         for b in names[i + 1:]:

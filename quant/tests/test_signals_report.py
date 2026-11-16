@@ -352,6 +352,8 @@ def test_book_summary_is_config_and_counts(tmp_path):
     with _Engine(routes) as eng:
         spec = report.run({}, _ctx(tmp_path, eng.url))
     b = spec.tables["book_summary"]
+    # the allowlist, pinned: a column added here is public through /api/artifacts (PUBLIC_TABLES) and the Ledger
+    assert report.BOOK_COLUMNS == ["as_of", "positions", "kill_switch", "tripped_by", "trips_on", "limits", "desk_switch"]
     assert list(b.columns) == report.BOOK_COLUMNS and len(b) == 1
     row = b.iloc[0]
     assert row["as_of"] == "2026-10-09T20:31:07Z"
@@ -382,6 +384,25 @@ def test_the_kill_switch_in_the_page_words(tmp_path, alerts, want):
     else:
         assert row["kill_switch"] == want
     assert pd.isna(row["trips_on"])   # these bodies carry no trips_on: not read, never an invented empty list
+
+
+@pytest.mark.parametrize("word", ["clear", "tripped", "halted", "stopped"])
+def test_the_desks_own_switch_is_copied_as_its_word(tmp_path, word):
+    # /api/desk's kill_switch is desk/halt.ml's State.name: the desk's switch, which a halt by hand sets, and
+    # not /api/ops's alerts switch. Only the word is copied; the halt's `why` is free text and is never read.
+    desk = {**DESK_HELD, "kill_switch": word, "switch": {"state": word, "why": "owner: until 731500 clears"}}
+    with _Engine({**_full(), "/api/desk": _ok(desk)}) as eng:
+        row = report.run({}, _ctx(tmp_path, eng.url)).tables["book_summary"].iloc[0]
+    assert row["desk_switch"] == word
+    assert "731500" not in row.to_json() and "owner:" not in row.to_json()
+
+
+@pytest.mark.parametrize(("desk", "why"), [(DESK, "serves no kill_switch"), ({**DESK, "kill_switch": "open"}, "'open'")])
+def test_a_desk_switch_not_read_is_null_and_says_why(tmp_path, desk, why):
+    with _Engine({**_full(), "/api/desk": _ok(desk)}) as eng:
+        spec = report.run({}, _ctx(tmp_path, eng.url))
+    assert pd.isna(spec.tables["book_summary"].iloc[0]["desk_switch"])
+    assert any("book_summary: desk_switch not read" in n and why in n for n in spec.notes)
 
 
 def test_a_tripped_switch_publishes_the_limit_name_only(tmp_path):

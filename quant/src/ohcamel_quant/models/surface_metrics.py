@@ -4,7 +4,9 @@ ATM IV interpolates in total variance w = sigma^2 T (calendar-arbitrage-free bet
 slices); RR/BF interpolate linearly in T; neither extrapolates (None outside the
 quoted terms). The 30-day model-free variance is Cboe's constant-maturity
 interpolation (options.metrics.constant_maturity_variance), refused when it would
-extrapolate. VRP = 30-day implied variance - 252 x the HAR 22-day daily-variance forecast.
+extrapolate. VRP = 30-day implied variance - 252 x the HAR 22-day daily-variance forecast. Implied variance
+covers the overnight move, so the forecast must be a close-to-close one (the league's HAR is trained on
+minute RV + overnight; a forecast of the open-to-close part alone overstates the premium, and is refused).
 """
 
 from __future__ import annotations
@@ -63,8 +65,10 @@ def day_metrics(term: pd.DataFrame) -> dict[str, float | None]:
             "mf_var_30d": mf, "n_slices": int(len(term))}
 
 
-def vrp(mf_var_30d: float | None, har_22d_daily: float | None) -> float:
-    if mf_var_30d is None or har_22d_daily is None:
+def vrp(mf_var_30d: float | None, har_22d_daily: float | None, *, covers: str | None) -> float:
+    """NaN unless the forecast ``covers`` the close-to-close day: 252 x an open-to-close variance leaves the
+    overnight share of realized variance in the premium."""
+    if mf_var_30d is None or har_22d_daily is None or covers != "close_to_close":
         return float("nan")
     return float(mf_var_30d) - 252.0 * float(har_22d_daily)
 

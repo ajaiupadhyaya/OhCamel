@@ -31,7 +31,7 @@ Three layers, and the rule between them: **analytics are pure** (`risk/` .. `fun
 
 | Path | Contents |
 |---|---|
-| `src/ohcamel_quant/kernels/` | The dispatcher: ten kernels, each with a Rust implementation (`native/kernels`, PyO3 + rayon) and a NumPy reference (`reference.py`) of the same signature. `OHCAMEL_QUANT_KERNELS=rust` (the image) fails at import without the wheel; `=python` forces the reference; unset uses Rust when it imports. `bench.py` validates the benchmark table served at `/api/ops/kernels` |
+| `src/ohcamel_quant/kernels/` | The dispatcher: twelve kernels, each with a Rust implementation (`native/kernels`, PyO3 + rayon) and a NumPy reference (`reference.py`) of the same signature. `OHCAMEL_QUANT_KERNELS=rust` (the image) fails at import without the wheel; `=python` forces the reference; unset uses Rust when it imports. `bench.py` validates the benchmark table served at `/api/ops/kernels` |
 | `src/ohcamel_quant/jobs/` | `jobs.sqlite` (queue, artifact ledger, scheduler record), the worker (`python -m ohcamel_quant worker`: one job at a time in a child process), admission control (hostd memory, the session window), the cron scheduler and `schedules.yaml`, immutable artifacts with retention, the operator CLI (`python -m ohcamel_quant.jobs status / run-schedule / cancel`) |
 | `src/ohcamel_quant/jobs/handlers/` | Handlers for `ops.selftest`, `ingest.fred`, the four public `api.*` kinds (requests over the synchronous caps) and the warehouse ingests |
 | `src/ohcamel_quant/warehouse/` | DuckDB (`warehouse.duckdb`, written only by the worker), migrations, read-side helpers in `MarketData`'s shapes, freshness against the session clock, the offline fixture warehouse, committed dated S&P 500 / Nasdaq-100 constituent lists, `python -m ohcamel_quant.warehouse run / build-fixture / freshness` |
@@ -73,5 +73,5 @@ commit.
 
 <!-- quant-tests -->
 ```
-TESTS = 1844
+TESTS = 2019
 ```

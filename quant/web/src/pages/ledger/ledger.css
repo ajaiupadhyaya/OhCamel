@@ -99,3 +99,26 @@
     grid-column: 1 / -1;
   }
 }
+
+/* The mono line under an item: when a prose row was checked, or a computed row's state and source. */
+.lg-mark {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+.lg-mark-attention,
+.lg-item-attention {
+  color: var(--signal);
+}
+.lg-mark-unknown,
+.lg-mark-stale {
+  font-weight: 700;
+}
+/* A prose row last checked past the stale age: hatched, so it reads as unverified at a glance. */
+.lg-hatch {
+  background: repeating-linear-gradient(135deg, transparent 0 4px, var(--ink-3) 4px 5px);
+}

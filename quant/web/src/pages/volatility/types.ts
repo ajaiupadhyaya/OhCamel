@@ -46,6 +46,8 @@ export interface Realized extends Envelope {
   estimator: Estimator;
   rolling: FramePayload;
   current: Record<string, Record<Estimator, number | null>>;
+  /** Which part of the day each estimator's variance covers: the range estimators leave out the overnight move. */
+  covers: Record<Estimator, "open_to_close" | "close_to_close">;
   cone: ConeRow[];
   implied_term: { dte: (number | null)[]; atm_iv: (number | null)[] } | null;
   vrp: VrpNow | null;
@@ -77,6 +79,10 @@ export interface SliceSummary {
   forward_se: number | null;
   parity_rmse: number | null;
   parity_strikes: number | null;
+  /** American: strikes whose bid/ask cross S e^{-qT} - K <= C - P <= S - K D (null for European). */
+  n_parity_bound_violations: number | null;
+  /** American: the vol the call and put nearest the money share (null for European). */
+  pair_vol: number | null;
   n_contracts: number;
   n_valid: number;
   n_smile: number;
@@ -90,6 +96,11 @@ interface ChainHeader extends Envelope {
   spot: number;
   as_of: string;
   exercise_style: "European" | "American";
+  /** American chains: the underlying the option quotes imply (null when it cannot be formed or the chain is European). */
+  implied_spot: number | null;
+  /** The level the IVs and greeks use: the vendor spot, or the option-implied one. */
+  iv_spot: number;
+  iv_spot_source: "vendor" | "implied";
 }
 
 export interface Expiries extends ChainHeader {
@@ -99,6 +110,9 @@ export interface Expiries extends ChainHeader {
 }
 
 // ------------------------------------------------------------------ chain
+export type IvStatus =
+  | "ok" | "no_quote" | "zero_bid" | "crossed" | "wide" | "arb_bound" | "at_intrinsic" | "below_model_forward" | "no_vol";
+
 export interface Quote {
   contract: string;
   root: string;
@@ -121,6 +135,8 @@ export interface Quote {
   arb_bound: boolean;
   use_smile: boolean;
   iv: number | null;
+  /** Why the quote has, or has not, an IV: "ok" exactly when iv is a number (options/chain.py IV_STATUSES). */
+  iv_status: IvStatus;
   iv_bid: number | null;
   iv_ask: number | null;
   vendor_iv: number | null;
@@ -260,7 +276,15 @@ export interface Density extends ChainHeader {
   cdf: (number | null)[];
   lognormal_density: (number | null)[];
   atm_iv: number;
-  checks: { integral: number; mean: number; forward: number; mean_minus_forward: number; negative_mass: number; butterfly: SviFit["butterfly"] };
+  checks: {
+    integral: number; // of q over the strike grid, which stops at |ln(K/F)| = 3
+    tail_mass_left: number; // P(S_T below the grid)
+    tail_mass_right: number; // P(S_T above the grid)
+    integral_plus_tails: number; // information only: telescopes to 1 for any smile
+    analytic_integral: number; // grid integral of the smile's closed-form density (numerical cross-check)
+    passed: { negative_mass: boolean; analytic: boolean; mean: boolean }; // analytic: stencil/grid, not arbitrage
+    mean: number; forward: number; mean_minus_forward: number; negative_mass: number; butterfly: SviFit["butterfly"];
+  };
   moments: Moments;
   lognormal_moments: Moments;
   quantiles: { p: number; level: number; return: number }[];

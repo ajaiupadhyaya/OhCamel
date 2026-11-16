@@ -36,7 +36,7 @@ def reload_kernels(monkeypatch):
 def test_api_is_contract_ii4_in_order():
     assert kernels.API == ("fhs_paths", "copula_t_paths", "var_es_from_pnl", "stationary_bootstrap_means",
                            "cscv_pbo", "garch_nll", "garch_fit", "backtest_weights", "svi_fit",
-                           "realized_vol_minute")
+                           "realized_vol_minute", "american_price", "american_iv")
 
 
 def test_python_env_selects_the_reference(reload_kernels):

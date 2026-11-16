@@ -34,7 +34,15 @@
 #      not a failure.
 #   D. retention of what backup.sh itself writes: the 14 newest of each.
 #   E. --dry-run and --check run no container and write nothing.
-#   F. a missing backup directory is refused before any container runs.
+#   F. a missing backup directory is refused before any backup container
+#      runs, and is recorded as a failed run.
+#   S. every run that reaches its steps is recorded for the Ledger by ONE
+#      ohcamel-backup-status container: ok on success, ok false with the
+#      failed steps named on failure; a record that cannot be written is
+#      reported and leaves the run's exit status alone; the record itself is
+#      written atomically, says nothing but step names, booleans, counts and
+#      a time, and leaves nothing half-written when its directory is not
+#      writable.
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
@@ -70,6 +78,8 @@ trap 'rm -rf "$scratch"' EXIT
 today=2026-09-27
 gid=$(id -g)
 log="$scratch/docker.log"
+status_log="$scratch/status.log"
+timeout_log="$scratch/timeout.log"
 backups="$scratch/backups"
 repo="$scratch/repo"
 
@@ -106,6 +116,16 @@ ps)
 	;;
 run)
 	case " $* " in
+	*" ohcamel-backup-status "*)
+		# The record's arguments follow the script: DIR FINISHED OK FAILED STEPS [STEP...].
+		rec="" seen=0
+		for a in "$@"; do
+			if [ "$seen" = 1 ]; then rec="$rec${rec:+ }$a"; fi
+			if [ "$a" = /data/ops ]; then seen=1; fi
+		done
+		printf '%s\n' "$rec" >>"$SHIM_STATUS_LOG"
+		exit "${SHIM_EXIT_STATUS:-0}"
+		;;
 	*" journal-backup "*)
 		[ "${SHIM_EXIT_JOURNAL:-0}" = 0 ] || exit "$SHIM_EXIT_JOURNAL"
 		: >"$OHCAMEL_BACKUP_DIR/desk-$SHIM_TODAY.db"
@@ -126,6 +146,20 @@ esac
 exit 0
 SHIM
 chmod +x "$scratch/bin/docker"
+# The status run goes through `timeout SECONDS docker ...`. This shim logs the
+# bound and runs the rest, or answers 124 (what timeout(1) exits with when it
+# kills the command) for the record's run when a case asks it to hang.
+cat >"$scratch/bin/timeout" <<'SHIM'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$1" >>"$SHIM_TIMEOUT_LOG"
+shift
+case " $* " in
+*" ohcamel-backup-status "*) [ "${SHIM_HANG_STATUS:-0}" = 1 ] && exit 124 ;;
+esac
+exec "$@"
+SHIM
+chmod +x "$scratch/bin/timeout"
 
 # fresh: a new scratch checkout, an empty backup directory, an empty log.
 fresh() {
@@ -137,6 +171,8 @@ fresh() {
 	printf '%s\n' '((book backup-test-fixture))' >"$repo/book.sexp"
 	printf '%s\n' 'OHCAMEL_DEMO_HOST=backup-test.invalid' >"$repo/deploy/.env"
 	: >"$log"
+	: >"$status_log"
+	: >"$timeout_log"
 }
 
 # run_backup [VAR=value ...] -- [backup.sh arguments ...]
@@ -153,7 +189,9 @@ run_backup() {
 	rc=0
 	env -u OHCAMEL_TAG -u OHCAMEL_IMAGE -u OHCAMEL_BACKUP_VOLUME -u OHCAMEL_BACKUP_LIST \
 		-u COMPOSE_PROJECT_NAME \
-		PATH="$scratch/bin:$PATH" SHIM_LOG="$log" SHIM_TODAY="$today" \
+		PATH="$scratch/bin:$PATH" SHIM_LOG="$log" SHIM_TODAY="$today" SHIM_STATUS_LOG="$status_log" \
+		SHIM_TIMEOUT_LOG="$timeout_log" \
+		BACKUP_FINISHED_AT=2026-09-27T06:31:00Z \
 		OHCAMEL_BACKUP_DIR="$backups" BACKUP_TODAY="$today" \
 		SHIM_PS_IMAGE="ghcr.io/ajaiupadhyaya/ohcamel:cafe1234" \
 		${envs[@]+"${envs[@]}"} \
@@ -161,8 +199,11 @@ run_backup() {
 }
 
 calls() { grep -c . "$log" || true; }
-runs() { grep -c '^verb=run ' "$log" || true; }
-run_line() { grep '^verb=run ' "$log" | sed -n "${1}p"; }
+# A backup run: a container that copies something. The record's run is counted apart (status_runs).
+runs() { grep '^verb=run ' "$log" | grep -vc ' ohcamel-backup-status ' || true; }
+status_runs() { grep '^verb=run ' "$log" | grep -c ' ohcamel-backup-status ' || true; }
+run_line() { grep '^verb=run ' "$log" | grep -v ' ohcamel-backup-status ' | sed -n "${1}p"; }
+status() { cat "$status_log"; }
 listing() { (cd "$backups" && find . -mindepth 1 | sed 's|^\./||' | sort | tr '\n' ' ' | sed 's/ $//'); }
 mode_of() { find "$1" -maxdepth 0 -exec ls -ld {} \; | cut -c1-10; }
 
@@ -348,7 +389,7 @@ fresh
 run_backup OHCAMEL_TAG=feedface --
 expect_rc "A8 OHCAMEL_TAG given" 0
 expect_eq "A8 an explicit OHCAMEL_TAG wins over the running container's" \
-	"$(grep -c '^verb=run tag=feedface ' "$log" || true)" "$n_entries"
+	"$(grep '^verb=run tag=feedface ' "$log" | grep -vc ' ohcamel-backup-status ' || true)" "$n_entries"
 
 fresh
 git -C "$repo" init -q
@@ -357,7 +398,7 @@ head_sha=$(git -C "$repo" rev-parse HEAD)
 run_backup SHIM_PS_IMAGE= --
 expect_rc "A9 no engine container: the checkout's HEAD names the image" 0
 expect_eq "A9 with no engine container the tag is the checkout's HEAD" \
-	"$(grep -c "^verb=run tag=$head_sha " "$log" || true)" "$n_entries"
+	"$(grep "^verb=run tag=$head_sha " "$log" | grep -vc ' ohcamel-backup-status ' || true)" "$n_entries"
 
 fresh
 run_backup SHIM_PS_IMAGE= GIT_CEILING_DIRECTORIES="$scratch" --
@@ -587,7 +628,7 @@ expect_eq "E1 --dry-run runs no container" "$(runs)" "0"
 expect_eq "E1 --dry-run writes nothing" "$(listing)" ""
 # One printed command a list line, each beginning `+ ` and naming compose run.
 expect_eq "E2 --dry-run prints one container run a list line" \
-	"$(grep -c '^+ .*docker compose .* run ' "$scratch/out" || true)" "$n_entries"
+	"$(grep '^+ .*docker compose .* run ' "$scratch/out" | grep -vc ohcamel-backup-status || true)" "$n_entries"
 expect_has "E2 --dry-run prints the journal's command" "$scratch/out" "journal-backup /data/desk.db /backups"
 expect_has "E2 --dry-run prints the recorder's destination" "$scratch/out" "recorder-$today.sqlite"
 
@@ -611,12 +652,125 @@ fresh
 rmdir "$backups"
 run_backup --
 expect_rc "F1 a missing backup directory is refused" 1
-expect_eq "F1 before any container runs" "$(runs)" "0"
+expect_eq "F1 before any backup container runs" "$(runs)" "0"
+expect_eq "F1 and the refusal is recorded as a failed run, step backup-dir" "$(status)" "2026-09-27T06:31:00Z false 6 6 backup-dir"
 expect_has "F1 and the refusal names the directory" "$scratch/err" "$backups"
 if [ -e "$backups" ]; then
 	no "F1 and the directory was not created behind the owner's back" "it exists now"
 else
 	ok "F1 and the directory was not created behind the owner's back"
+fi
+
+# --- S. the run's record, for the Ledger ----------------------------------------------
+fresh
+run_backup --
+expect_rc "S1 a clean run" 0
+expect_eq "S1 is recorded once" "$(status_runs)" "1"
+expect_eq "S1 as ok: finished_at, ok, failed, steps, no failed step" "$(status)" "2026-09-27T06:31:00Z true 0 6"
+srun=$(grep ' ohcamel-backup-status ' "$log")
+case "$srun" in
+*" tag=cafe1234 "*" --profile backup run --rm -T --user 10002:$gid ohcamel-backup-status "*) ok "S1 the record runs the status service as uid 10002 at the engine's tag" ;;
+*) no "S1 the record runs the status service as uid 10002 at the engine's tag" "$(printf '%s' "$srun" | cut -c1-300)" ;;
+esac
+expect_has "S1 the run says it recorded itself" "$scratch/out" "recorded the run for the Ledger: ok=true"
+# The record is the LAST container: it records what happened, after it happened.
+expect_eq "S1 the record is the last docker call" "$(tail -n 1 "$log" | grep -c ' ohcamel-backup-status ')" "1"
+
+fresh
+run_backup SHIM_EXIT_SQLITE=1 --
+expect_rc "S2 a failing step fails the run" 1
+expect_eq "S2 and is recorded as failed, naming the two sqlite steps" "$(status)" "2026-09-27T06:31:00Z false 2 6 recorder jobs"
+
+fresh
+rm "$repo/book.sexp"
+run_backup SHIM_EXIT_JOURNAL=1 --
+expect_eq "S3 the journal and the book failing are both named" "$(status)" "2026-09-27T06:31:00Z false 2 6 desk book"
+
+fresh
+run_backup SHIM_EXIT_STATUS=1 --
+expect_rc "S4 a record that cannot be written does not fail a good backup" 0
+expect_has "S4 but it is reported" "$scratch/err" "could not be written"
+fresh
+run_backup SHIM_EXIT_STATUS=1 SHIM_EXIT_SQLITE=1 --
+expect_rc "S5 nor turn a failed backup into a good one" 1
+
+expect_eq "S5 the record's run, and only it, is bounded at 120 s" "$(cat "$timeout_log")" "120"
+
+fresh
+run_backup SHIM_HANG_STATUS=1 --
+expect_rc "S13 a record that times out does not fail a good backup" 0
+expect_has "S13 and the timeout is said" "$scratch/err" "timed out after 120 s"
+expect_eq "S13 and nothing was recorded" "$(status)" ""
+fresh
+run_backup SHIM_HANG_STATUS=1 SHIM_EXIT_SQLITE=1 --
+expect_rc "S13 nor does it change a failed backup's exit" 1
+
+fresh
+run_backup -- --dry-run
+expect_eq "S6 --dry-run runs no record" "$(status_runs)" "0"
+expect_has "S6 --dry-run prints the record's bound" "$scratch/out" "timeout 120 docker compose"
+expect_has "S6 --dry-run prints the record's command" "$scratch/out" "ohcamel-backup-status"
+fresh
+run_backup -- --check
+expect_eq "S6 --check makes no docker call, the record's included" "$(calls)" "0"
+malformed "S7 a malformed list writes no record either" 1 "four fields" <<'LIST'
+quant_data /data/deck/recorder.sqlite sqlite
+LIST
+expect_eq "S7 no record" "$(status_runs)" "0"
+
+# The compose service: the Quant image, one mount (quant_data), read-only
+# root, no network -- and never the backup directory or an env file.
+svc=$(awk '/^  ohcamel-backup-status:/{f=1; print; next} f && /^  [a-z]/{f=0} f' "$compose")
+for want in 'image: "ghcr.io/ajaiupadhyaya/ohcamel-quant:${OHCAMEL_TAG:?' 'profiles: ["backup"]' \
+	'network_mode: none' 'read_only: true' '- quant_data:/data' 'entrypoint: ["python", "-c"]'; do
+	case "$svc" in
+	*"$want"*) ok "S8 ohcamel-backup-status has $want" ;;
+	*) no "S8 ohcamel-backup-status has $want" "service block: $(printf '%s' "$svc" | tr '\n' ' ' | cut -c1-300)" ;;
+	esac
+done
+expect_eq "S8 ohcamel-backup-status has exactly one mount" "$(printf '%s\n' "$svc" | grep -cE '^      - [a-z_]+:/')" "1"
+case "$(printf '%s\n' "$svc" | grep -v '^ *#')" in
+*backups* | *env_file* | *book.sexp*) no "S8 ohcamel-backup-status mounts no backup directory, book or env file" "it does" ;;
+*) ok "S8 ohcamel-backup-status mounts no backup directory, book or env file" ;;
+esac
+
+# The record's script itself, run here with the host's python against a scratch
+# directory: the JSON it writes, atomically, and what it does when it cannot.
+status_script=$(
+	# shellcheck source=/dev/null
+	. "$script" && printf '%s' "$status_script"
+)
+sdir="$scratch/ops"
+rm -rf "$sdir"
+if python3 -c "$status_script" "$sdir" 2026-09-27T06:31:00Z false 1 6 recorder 2>"$scratch/err"; then
+	got=$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(sorted(d.items()))' "$sdir/backup.json")
+	expect_eq "S9 the record is the five fields, the failed step by name" "$got" \
+		"[('failed', 1), ('failed_steps', ['recorder']), ('finished_at', '2026-09-27T06:31:00Z'), ('ok', False), ('steps', 6)]"
+	expect_eq "S9 and leaves no .part behind" "$(find "$sdir" -name '*.part' | grep -c . || true)" "0"
+	expect_eq "S9 and is readable by the API's uid (0644)" "$(mode_of "$sdir/backup.json")" "-rw-r--r--"
+else
+	no "S9 the record's script writes backup.json" "$(head -c 300 "$scratch/err")"
+fi
+python3 -c "$status_script" "$sdir" 2026-09-28T06:31:00Z true 0 6 2>"$scratch/err" || true
+expect_eq "S10 a second record replaces the first" \
+	"$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["ok"])' "$sdir/backup.json")" "True"
+chmod 0555 "$sdir"
+src=0
+python3 -c "$status_script" "$sdir" 2026-09-29T06:31:00Z true 0 6 2>"$scratch/err" || src=$?
+chmod 0755 "$sdir"
+if [ "$(id -u)" = 0 ]; then
+	ok "S11 an unwritable record directory (skipped as root, which writes anyway)"
+else
+	expect_eq "S11 an unwritable record directory exits non-zero" "$src" "1"
+	expect_has "S11 and says the record could not be written" "$scratch/err" "the record could not be written"
+	expect_eq "S11 and the previous record is untouched" \
+		"$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["finished_at"])' "$sdir/backup.json")" "2026-09-28T06:31:00Z"
+	expect_eq "S11 and no .part is left" "$(find "$sdir" -name '*.part' | grep -c . || true)" "0"
+fi
+if grep -qE '/var/backups|\.db|\.sqlite|\.parquet|size' <<<"$status_script"; then
+	no "S12 the record's script names no backup path, copy or size" "it does"
+else
+	ok "S12 the record's script names no backup path, copy or size"
 fi
 
 finish

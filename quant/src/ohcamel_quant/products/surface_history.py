@@ -23,7 +23,9 @@ KIND = "vol.surface_history"
 DB_PATH: Path | None = None
 ERR_COLS = ["underlying", "asof", "error"]
 COLS = ["underlying", "asof", "atm_iv_30d", "atm_iv_90d", "term_slope", "rr25_30d", "bf25_30d", "mf_var_30d",
-        "vrp", "vrp_note", "n_slices", "spot"]
+        "vrp", "vrp_covers", "vrp_note", "n_slices", "spot"]
+OPEN_TO_CLOSE_NOTE = ("the HAR forecast behind this VRP was of open-to-close variance only: it overstates the "
+                      "premium by the overnight share, so it is not shown")
 
 
 def _pending(con: Any, done: set[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -45,6 +47,20 @@ def _chain(con: Any, und: str, asof: str) -> OptionChain:
                        quotes=quotes)
 
 
+def _blank_old_basis(hist: pd.DataFrame) -> pd.DataFrame:
+    """Rows carried forward from an earlier artifact keep their numbers, except a VRP not marked as computed
+    against a close-to-close forecast (every row published before the league's target included the overnight
+    move): that value is blanked, with the reason, so the series has no level break on the deploy date."""
+    hist = hist.copy()
+    if "vrp_covers" not in hist:
+        hist["vrp_covers"] = None
+    old = hist["vrp"].notna() & (hist["vrp_covers"] != "close_to_close")
+    if old.any():
+        hist["vrp"] = hist["vrp"].astype(float).mask(old)
+        hist["vrp_note"] = hist["vrp_note"].astype(object).mask(old, OPEN_TO_CLOSE_NOTE)
+    return hist.reindex(columns=[*COLS, *[c for c in hist.columns if c not in COLS]])
+
+
 def _har(prev_league: tuple[dict, Path] | None) -> pd.DataFrame | None:
     from .io import read_table
 
@@ -57,6 +73,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     prev = previous_artifact(KIND, db_path=DB_PATH)
     hist = read_table(prev[1], "history") if prev else None
     hist = hist if hist is not None else pd.DataFrame(columns=COLS)
+    hist = _blank_old_basis(hist)
     done = set(zip(hist["underlying"], hist["asof"], strict=True))
     try:
         todo = _pending(ctx.warehouse, done)
@@ -84,9 +101,12 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         h = None if har is None else har[(har["ticker"] == und) & (har["asof"] <= asof)]
         if h is None or h.empty or "har_22d" not in h or pd.isna(h["har_22d"].iloc[-1]):
             v, why = float("nan"), "no HAR forecast dated on or before the snapshot (minute bars cover ~50 names)"
+        elif "har_covers" not in h or h["har_covers"].iloc[-1] != "close_to_close":
+            v, why = float("nan"), OPEN_TO_CLOSE_NOTE
         else:
-            v, why = vrp(m["mf_var_30d"], float(h["har_22d"].iloc[-1])), None
-        rows.append({"underlying": und, "asof": asof, **m, "vrp": v, "vrp_note": why, "spot": chain.spot})
+            v, why = vrp(m["mf_var_30d"], float(h["har_22d"].iloc[-1]), covers=str(h["har_covers"].iloc[-1])), None
+        rows.append({"underlying": und, "asof": asof, **m, "vrp": v, "vrp_note": why, "spot": chain.spot,
+                     "vrp_covers": "close_to_close" if why is None else None})
         ctx.progress((i + 1) / max(len(todo), 1), f"{und} {asof}")
     if rows:
         new = pd.DataFrame(rows, columns=COLS)

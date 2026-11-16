@@ -557,6 +557,32 @@ services:
     logging: *logging
     command: ["journal-backup", "/data/desk.db", "/backups"]
 
+  # The nightly backup's record, for the public Ledger (quant/src/ohcamel_quant/
+  # machine/ledger.py reads {data_dir}/ops/backup.json). backup.sh runs this
+  # once at the end of every run that reached its steps, success or failure,
+  # with a fixed python script that writes /data/ops/backup.json and nothing
+  # else: {finished_at, ok, failed, steps, failed_steps}, step names only --
+  # no path under /var/backups, no copy's file name, no size, no secret. The
+  # Quant image as uid 10002, which owns quant_data and is the uid the API
+  # reads it as. Its ONE mount is quant_data, the volume the record lives on:
+  # no /backups, no book, no env file, no network, a read-only root. It is the
+  # whole volume rather than ops/ alone because a compose volume `subpath`
+  # must already exist, and ops/ does not until this writes it the first time.
+  ohcamel-backup-status:
+    image: "ghcr.io/ajaiupadhyaya/ohcamel-quant:${OHCAMEL_TAG:?deploy.sh sets OHCAMEL_TAG}"
+    profiles: ["backup"]
+    init: true
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - quant_data:/data
+    logging: *logging
+    entrypoint: ["python", "-c"]
+
 networks:
   ohcamel:
     driver: bridge

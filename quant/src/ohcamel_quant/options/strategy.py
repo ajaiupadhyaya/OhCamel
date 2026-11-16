@@ -32,7 +32,7 @@ import pandas as pd
 
 from . import bsm
 from .chain import CONTRACT_MULTIPLIER, ChainAnalytics
-from .density import RNDensity, breeden_litzenberger
+from .density import DensityError, RNDensity, breeden_litzenberger
 from .svi import SVIParams
 
 GREEK_KEYS = ("delta", "gamma", "vega", "theta_day", "rho", "vanna", "volga", "charm_day")
@@ -69,7 +69,8 @@ def resolve_legs(ca: ChainAnalytics, legs: list[dict[str, Any]], fits: dict[str,
         if qty == 0 or not np.isfinite(qty):
             raise ValueError(f"leg {i + 1}: qty must be a non-zero number")
         if spec.get("kind", "option") == "stock":
-            out.append(Leg(kind="stock", qty=qty, mid=ca.spot, bid=ca.spot, ask=ca.spot))
+            # at the level the option legs were solved at (ca.iv_spot): the stock at the quotes' time
+            out.append(Leg(kind="stock", qty=qty, mid=ca.iv_spot, bid=ca.iv_spot, ask=ca.iv_spot))
             continue
         if spec.get("contract"):
             row = qt[qt["contract"] == str(spec["contract"]).strip().upper()]
@@ -98,7 +99,7 @@ def resolve_legs(ca: ChainAnalytics, legs: list[dict[str, Any]], fits: dict[str,
         else:
             raise ValueError(f"leg {i + 1}: no usable implied volatility for {leg.contract}")
         if not np.isfinite(leg.mid) or leg.mid <= 0:
-            leg.mid = float(bsm.bsm_price(ca.spot, leg.strike, leg.T, leg.iv, leg.r, leg.q, leg.type))
+            leg.mid = float(bsm.bsm_price(ca.iv_spot, leg.strike, leg.T, leg.iv, leg.r, leg.q, leg.type))
             leg.iv_source += "; mid replaced by model value (no two-sided quote)"
         out.append(leg)
     return out
@@ -160,7 +161,9 @@ def analyze_position(
     fits = fits or {}
     notes: list[str] = []
     opts = [lg for lg in legs if lg.kind == "option"]
-    spot = ca.spot
+    # the level each leg's IV and its expiry's q were solved at (the vendor spot on European chains, the
+    # option-implied one on American chains): pricing at another level moves every forward and delta
+    spot = ca.iv_spot
     cost_mid, cost_nat = _cost(legs, multiplier)
 
     # greeks today
@@ -195,15 +198,19 @@ def analyze_position(
 
     # density of the first expiry
     dens: RNDensity | None = None
+    why_flat = f"no SVI fit for {first.slice}"
     if first.slice in fits:
         p = fits[first.slice]
-        dens = breeden_litzenberger(first.F, np.exp(-first.r * first.T), first.T, p.w)
-        dens_src = f"Breeden-Litzenberger density from the SVI smile of {first.slice}"
-    else:
+        try:
+            dens = breeden_litzenberger(first.F, np.exp(-first.r * first.T), first.T, p.w)
+            dens_src = f"Breeden-Litzenberger density from the SVI smile of {first.slice}"
+        except DensityError as e:
+            why_flat = f"the SVI smile of {first.slice} gives no density ({e})"
+    if dens is None:
         dens = breeden_litzenberger(first.F, np.exp(-first.r * first.T), first.T,
                                     lambda k: np.full_like(np.asarray(k, float), first.iv**2 * first.T))
-        dens_src = f"lognormal density at the leg IV ({first.iv:.2%}): no SVI fit for {first.slice}"
-        notes.append("probability of profit uses a flat-vol lognormal density (no fitted smile)")
+        dens_src = f"lognormal density at the leg IV ({first.iv:.2%}): {why_flat}"
+        notes.append(f"probability of profit uses a flat-vol lognormal density ({why_flat})")
 
     lo = min(float(dens.quantiles([0.001])[0]), *(lg.strike for lg in opts)) * 0.9
     hi = max(float(dens.quantiles([0.999])[0]), *(lg.strike for lg in opts)) * 1.1

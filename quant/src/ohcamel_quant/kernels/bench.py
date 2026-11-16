@@ -24,6 +24,8 @@ SIZES: dict[str, str] = {
     "backtest_weights": "9 fixture ETFs, every session, monthly executions",
     "svi_fit": "one 41-point smile",
     "realized_vol_minute": "252 sessions x 390 one-minute prices",
+    "american_price": "200 American contracts (strikes 600..900 on 750, calls and puts, 0.1-2 years), 400 steps",
+    "american_iv": "the same 200 contracts' implied vols from their prices, 400 steps",
 }
 
 _SHA = re.compile(r"^[0-9a-f]{7,40}$")

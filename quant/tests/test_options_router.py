@@ -46,6 +46,9 @@ def test_realized_spy_offline(client):
     assert j["ticker"] == "SPY" and j["estimator"] == "yang_zhang"
     assert set(j["rolling"]["columns"]) == {"close_to_close", "parkinson", "garman_klass", "rogers_satchell", "yang_zhang"}
     assert [c["horizon"] for c in j["cone"]] == [10, 21, 42, 63, 126, 252]
+    # the payload says which part of the day each estimator measures (the range estimators leave out the overnight move)
+    assert j["covers"] == {"close_to_close": "close_to_close", "yang_zhang": "close_to_close", "parkinson": "open_to_close",
+                           "garman_klass": "open_to_close", "rogers_satchell": "open_to_close"}
     assert all(0 < v < 2 for v in j["current"]["21"].values())
     # chain is online-only -> VRP falls back to VIX (FRED fixture) and says so
     assert any("option chain unavailable" in n for n in j["notes"])
@@ -94,9 +97,13 @@ def test_expiries_and_chain(chain_client):
     assert [e["slice"] for e in j["expiries"]] == EXPIRIES
     assert all(abs(e["rate"] - 0.045) < 1e-4 and abs(e["div_yield"] - 0.013) < 1e-3 for e in j["expiries"])
     j = _ok(chain_client.get("/api/options/chain/TESTX", params={"expiry": "2026-11-20"}))
-    assert j["expiry"] == "2026-11-20" and j["exercise_style"] == "American"
+    assert j["expiry"] == "2026-11-20" and j["exercise_style"] == "European"   # the test chain says so
+    # the level the IVs use is carried apart from the vendor spot; a European chain never implies one
+    assert j["implied_spot"] is None and j["iv_spot"] == j["spot"] and j["iv_spot_source"] == "vendor"
     q = [x for x in j["quotes"] if x["use_smile"]]
     assert len(q) > 40 and all(abs(x["iv"] - x["vendor_iv"]) < 2e-4 for x in q)
+    # every quote says why it has, or has not, an IV
+    assert {x["iv_status"] for x in j["quotes"] if x["iv"] is None} <= {"zero_bid", "arb_bound", "no_vol", "wide"}
     assert j["smile"]["fit"]["rmse_vol_pts"] < 0.01
     calls = [x for x in j["quotes"] if x["type"] == "C" and x["iv"] is not None]
     assert all(0 <= x["delta"] <= 1 for x in calls)
@@ -116,6 +123,8 @@ def test_surface_and_density(chain_client):
     d = _ok(chain_client.get("/api/options/density/TESTX", params={"expiry": "2026-12-18"}))
     assert d["checks"]["integral"] == pytest.approx(1.0, abs=1e-4)
     assert d["checks"]["mean"] == pytest.approx(d["forward"], rel=1e-4)
+    assert d["checks"]["passed"] == {"negative_mass": True, "analytic": True, "mean": True}
+    assert d["checks"]["analytic_integral"] == pytest.approx(d["checks"]["integral"], abs=1e-3)
     p = [x["p"] for x in d["prob_below"]]
     assert all(b >= a for a, b in zip(p, p[1:], strict=False))
     assert d["moments"]["skew"] < d["lognormal_moments"]["skew"]
@@ -178,8 +187,10 @@ def test_live_surface(live_client, ticker):
 @pytest.mark.live
 def test_live_spy_density_and_realized(live_client):
     d = _ok(live_client.get("/api/options/density/SPY"))
-    assert abs(d["checks"]["integral"] - 1) < 0.02
-    assert abs(d["checks"]["mean"] / d["forward"] - 1) < 0.01
+    c = d["checks"]
+    assert all(c["passed"].values()), c["passed"]     # negative mass, cross-check, mean
+    assert abs(c["integral"] - c["analytic_integral"]) <= 1e-3
+    assert abs(c["mean"] / d["forward"] - 1) < 0.005
     r = _ok(live_client.get("/api/options/realized/SPY"))
     assert r["vrp"] is not None and math.isfinite(r["vrp"]["implied"])
 

@@ -366,12 +366,297 @@ def backtest_weights(prices: np.ndarray, target_w: np.ndarray, decision_idx: np.
 
 # ------------------------------------------------------------------ A7: options
 def svi_fit(k: np.ndarray, w: np.ndarray, weights: np.ndarray):
-    """options.svi.calibrate, unchanged (the legacy SVI calibration)."""
+    """options.svi.calibrate, unchanged: wings within Lee's bound, the vertex inside the quotes,
+    and no butterfly arbitrage on [-K_MAX, K_MAX]."""
     from ..options.svi import calibrate
     from .types import SviFitResult
 
     p, sse, constrained = calibrate(k, w, weights)
     return SviFitResult(float(p.a), float(p.b), float(p.rho), float(p.m), float(p.sigma), float(sse), bool(constrained))
+
+
+# ------------------------------------------------------------------ American options
+#: Volatility search interval of american_iv: a floor (raised per contract so the coarse tree's
+#: CRR probability stays in (0, 1)), a ceiling of 500%, the start when no usable guess is given.
+AM_SIG_FLOOR, AM_SIG_HI, AM_SIG_START = 1e-3, 5.0, 0.25
+#: Brent's tolerances (scipy brentq's convention: |step| < (xtol + rtol |x|) / 2) and its cap.
+AM_XTOL, AM_RTOL, AM_MAXITER = 1e-7, 4.0 * np.finfo(float).eps, 100
+#: The screen: a guess the tree prices within AM_SCREEN x vega of the quote is kept after one Newton step.
+AM_SCREEN = 3e-5
+#: Brent stops once the pricing error is within AM_FTOL in vol at the bracket's secant slope (or AM_XTOL).
+AM_FTOL = 3e-7
+#: A dividend counts at tree level i when t_d / dt >= i - AM_DIV_EPS (exercise just before ex counts).
+AM_DIV_EPS = 1e-9
+#: A quote within AM_EX_TOL x K of immediate exercise identifies no vol (the tree is flat there).
+AM_EX_TOL = 1e-10
+#: The tree keeps offsets within AM_BAND sqrt(n) steps beyond the drift's whole move (weight beyond ~1e-14).
+AM_BAND = 8.0
+#: The last step's Black-Scholes value saturates beyond |phi d| > AM_SAT (N(9) = 1 - 1e-19).
+AM_SAT = 9.0
+#: American options per block: the tree's arrays stay cache-sized.
+AM_BLOCK = 256
+
+
+def _ndtr(x: np.ndarray) -> np.ndarray:
+    from scipy.special import ndtr
+
+    return ndtr(x)
+
+
+def _escrowed(S, T, r, div_t, div_amt):
+    """Spot less the present value of the dividends paid in (0, T), summed in schedule order."""
+    pv = np.zeros_like(S)
+    for td, a in zip(div_t.tolist(), div_amt.tolist(), strict=True):
+        live = (td > 0.0) & (td < T)
+        pv = pv + np.where(live, a * np.exp(-r * np.where(live, td, 0.0)), 0.0)
+    return S - pv
+
+
+def _bbs_tree(s0, K, T, r, q, sig, phi, div_t, div_amt, n):
+    """Root value of an n-step CRR tree on the escrowed spot ``s0`` (one row per contract),
+    the last step replaced by the Black-Scholes value (Broadie & Detemple 1996) and every node
+    floored at exercise -- whose value adds back the dividends still to come before T."""
+    dt = T / n
+    sq = sig * np.sqrt(dt)
+    u = np.exp(sq)
+    d = 1.0 / u
+    p = (np.exp((r - q) * dt) - d) / (u - d)
+    disc = np.exp(-r * dt)
+    pu, pd = disc * p, disc * (1.0 - p)
+    divs = list(zip(div_t.tolist(), div_amt.tolist(), strict=True))
+
+    def pv(i: int) -> np.ndarray:
+        ti = i * dt
+        out = np.zeros_like(s0)
+        for td, a in divs:
+            live = (td < T) & (td / dt >= i - AM_DIV_EPS)
+            out = out + np.where(live, a * np.exp(-r * (td - ti)), 0.0)
+        return out
+
+    # Node (i, j) sits at log-offset o = 2j - i (units of sigma sqrt dt), grid index o + m on one
+    # grid S* e^{o sigma sqrt dt}, o in -m..m, stored by index parity: rows idx // 2 of the arrays
+    # for idx % 2 (level i lives on parity (m - i) % 2). Only offsets within each contract's band
+    # are computed; a child outside reads its exercise value phi (g - K).
+    m = n - 1
+    # each contract's band covers AM_BAND sqrt(n) steps beyond its drift's whole move; the block
+    # runs on its widest band and puts the slots outside a contract's own band back to exercise
+    bands = np.minimum(np.ceil(AM_BAND * math.sqrt(n) + np.abs((r - q - 0.5 * sig * sig) * T / sq)), m)
+    band = int(bands.max())
+    offs = np.arange(2 * m + 1) - m
+    g = s0[None, :] * np.exp(offs[:, None] * sq[None, :])
+    gp = (g[0::2], g[1::2])
+    xp = tuple(phi * (gg - K) for gg in gp)
+    vp = (xp[0].copy(), xp[1].copy())
+    out_band = np.abs(offs)[:, None] > bands[None, :]
+    oob = (out_band[0::2], out_band[1::2])
+    trim = bool(out_band.any())
+
+    def rng(i: int) -> tuple[int, int]:
+        h = min(i, band if (band + i) % 2 == 0 else band - 1)
+        return (m - h) // 2, (m + h) // 2
+
+    ta, tb = rng(m)
+    s = gp[0][ta: tb + 1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        d1 = (np.log(s / K) + (r - q + 0.5 * sig * sig) * dt) / sq
+    d2 = d1 - sq
+    z1, z2 = phi * d1, phi * d2
+    eq_, er_ = np.exp(-q * dt), np.exp(-r * dt)
+    # N(z) is 1.0 in double above AM_SAT and below N(-AM_SAT) s < 1e-18 s: no erf there
+    v = np.where(np.minimum(z1, z2) > AM_SAT, phi * (s * eq_ - K * er_),
+                 np.where(np.maximum(z1, z2) < -AM_SAT, 0.0, phi * (s * eq_ * _ndtr(z1) - K * er_ * _ndtr(z2))))
+    np.maximum(v, phi * (s + pv(m) - K) if divs else xp[0][ta: tb + 1], out=vp[0][ta: tb + 1])
+    if trim:
+        np.copyto(vp[0][ta: tb + 1], xp[0][ta: tb + 1], where=oob[0][ta: tb + 1])
+    tmp = np.empty_like(vp[0])
+    ex = np.empty_like(vp[0])
+    for i in range(m - 1, -1, -1):
+        par = (m - i) % 2
+        ta, tb = rng(i)
+        du = 0 if par == 0 else 1          # children of slot t: up t + du, down t + du - 1
+        src = vp[1 - par]
+        c, e = tmp[: tb - ta + 1], ex[: tb - ta + 1]
+        np.multiply(src[ta + du: tb + du + 1], pu, out=c)
+        np.multiply(src[ta + du - 1: tb + du], pd, out=e)
+        np.add(c, e, out=c)
+        if divs:
+            np.add(gp[par][ta: tb + 1], pv(i), out=e)
+            np.subtract(e, K, out=e)
+            np.multiply(e, phi, out=e)
+            np.maximum(c, e, out=vp[par][ta: tb + 1])
+        else:
+            np.maximum(c, xp[par][ta: tb + 1], out=vp[par][ta: tb + 1])
+        if trim:
+            np.copyto(vp[par][ta: tb + 1], xp[par][ta: tb + 1], where=oob[par][ta: tb + 1])
+    return vp[m % 2][m // 2].copy()
+
+
+def _am_valid(S, K, T, r, q, phi, s0, n):
+    return (np.isfinite(S) & np.isfinite(K) & np.isfinite(T) & np.isfinite(r) & np.isfinite(q)
+            & (S > 0) & (K > 0) & (T > 0) & (s0 > 0) & (np.abs(phi) == 1.0))
+
+
+def _sig_floor(T, r, q, n):
+    """The coarse (n/2-step) tree's CRR probability is in (0, 1) iff sigma sqrt(dt) > |r - q| dt."""
+    return np.maximum(AM_SIG_FLOOR, 1.5 * np.abs(r - q) * np.sqrt(2.0 * T / n))
+
+
+def _am_price(S, K, T, r, q, sig, phi, div_t, div_amt, n, s0):
+    """BBSR (2 V_n - V_{n/2}), floored at immediate exercise; rows already validated."""
+    v = 2.0 * _bbs_tree(s0, K, T, r, q, sig, phi, div_t, div_amt, n) \
+        - _bbs_tree(s0, K, T, r, q, sig, phi, div_t, div_amt, n // 2)
+    return np.maximum(v, np.maximum(phi * (S - K), 0.0))
+
+
+def american_price(S, K, T, r, q, sigma, phi, div_t, div_amt, steps: int, threads: int) -> np.ndarray:
+    """American option values (options/american.py's model): a ``steps``-step CRR tree on the
+    escrowed spot with the Black-Scholes value at the last step, Richardson-extrapolated against
+    the ``steps/2`` tree (BBSR, Broadie & Detemple 1996), floored at immediate exercise. NaN for an
+    invalid contract (non-positive S, K, T, sigma or escrowed spot, or a sigma at which the coarse
+    tree's CRR probability leaves (0, 1)). ``threads`` is ignored (no randomness)."""
+    out = np.full(S.shape, np.nan)
+    s0 = _escrowed(S, T, r, div_t, div_amt)
+    with np.errstate(invalid="ignore"):
+        ok = _am_valid(S, K, T, r, q, phi, s0, steps) & np.isfinite(sigma) & (sigma > 0)
+        ok &= sigma * np.sqrt(2.0 * T / steps) > np.abs(r - q) * (2.0 * T / steps)
+    idx = np.flatnonzero(ok)
+    for lo in range(0, idx.size, AM_BLOCK):
+        b = idx[lo:lo + AM_BLOCK]
+        out[b] = _am_price(S[b], K[b], T[b], r[b], q[b], sigma[b], phi[b], div_t, div_amt, steps, s0[b])
+    return out
+
+
+def _brent_vec(f, xpre, xcur, fpre, fcur):
+    """scipy's brentq (scipy/optimize/Zeros/brentq.c), one lane per contract, from a bracket with
+    known values, also stopping once |f| is within AM_FTOL in x at the bracket's secant slope;
+    ``f(x, rows)`` evaluates the rows still searching. NaN where not converged."""
+    xblk = np.zeros_like(xcur)
+    fblk = np.zeros_like(xcur)
+    spre = np.zeros_like(xcur)
+    scur = np.zeros_like(xcur)
+    out = np.full(xcur.shape, np.nan)
+    act = np.ones(xcur.shape, dtype=bool)
+    for _ in range(AM_MAXITER):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            sc = act & (fpre != 0) & (fcur != 0) & (np.signbit(fpre) != np.signbit(fcur))
+            xblk = np.where(sc, xpre, xblk)
+            fblk = np.where(sc, fpre, fblk)
+            spre = np.where(sc, xcur - xpre, spre)
+            scur = np.where(sc, xcur - xpre, scur)
+            sw = act & (np.abs(fblk) < np.abs(fcur))
+            xpre, xcur, xblk = np.where(sw, xcur, xpre), np.where(sw, xblk, xcur), np.where(sw, xcur, xblk)
+            fpre, fcur, fblk = np.where(sw, fcur, fpre), np.where(sw, fblk, fcur), np.where(sw, fcur, fblk)
+            delta = (AM_XTOL + AM_RTOL * np.abs(xcur)) / 2.0
+            sbis = (xblk - xcur) / 2.0
+            slope = np.abs((fblk - fcur) / (xblk - xcur))
+            conv = act & ((fcur == 0) | (np.abs(sbis) < delta) | (np.abs(fcur) <= AM_FTOL * slope))
+            out = np.where(conv, xcur, out)
+            act &= ~conv
+            if not act.any():
+                break
+            interp = (np.abs(spre) > delta) & (np.abs(fcur) < np.abs(fpre))
+            dpre = (fpre - fcur) / (xpre - xcur)
+            dblk = (fblk - fcur) / (xblk - xcur)
+            stry = np.where(xpre == xblk, -fcur * (xcur - xpre) / (fcur - fpre),
+                            -fcur * (fblk * dblk - fpre * dpre) / (dblk * dpre * (fblk - fpre)))
+            take = interp & (2.0 * np.abs(stry) < np.minimum(np.abs(spre), 3.0 * np.abs(sbis) - delta))
+            spre = np.where(act, np.where(take, scur, sbis), spre)
+            scur = np.where(act, np.where(take, stry, sbis), scur)
+            xpre = np.where(act, xcur, xpre)
+            fpre = np.where(act, fcur, fpre)
+            xcur = np.where(act, xcur + np.where(np.abs(scur) > delta, scur, np.where(sbis > 0, delta, -delta)), xcur)
+        rows = np.flatnonzero(act)
+        fcur[rows] = f(xcur[rows], rows)
+    return out
+
+
+def _am_iv_block(price, S, K, T, r, q, phi, guess, div_t, div_amt, n, s0):
+    """american_iv on validated rows: bracket from the guess, then Brent (see american_iv)."""
+    m = price.size
+    lo = _sig_floor(T, r, q, n)
+    hi = np.full(m, AM_SIG_HI)
+    out = np.full(m, np.nan)
+
+    def f(x, rows):
+        return _am_price(S[rows], K[rows], T[rows], r[rows], q[rows], x, phi[rows], div_t, div_amt, n,
+                         s0[rows]) - price[rows]
+
+    g = np.where(np.isfinite(guess), guess, AM_SIG_START)
+    x0 = np.clip(g, lo, hi)
+    alive = lo < hi
+    rows = np.flatnonzero(alive)
+    f0 = np.full(m, np.nan)
+    f0[rows] = f(x0[rows], rows)
+    hit = alive & (f0 == 0)
+    out[hit] = x0[hit]
+    alive &= ~hit
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        sd = x0 * np.sqrt(T)
+        d1 = (np.log(s0 / K) + (r - q + 0.5 * x0 * x0) * T) / sd
+        vega = s0 * np.exp(-q * T) * np.exp(-0.5 * d1 * d1) / math.sqrt(2.0 * math.pi) * np.sqrt(T)
+        step = -1.25 * f0 / vega
+    # the screen: one tree at the guess within AM_SCREEN vol of the price (negligible early-exercise
+    # premium and tree error) -> one Newton step with the Black-Scholes vega lands within
+    # AM_SCREEN |1 - vega_BS / vega_tree| of the root
+    with np.errstate(invalid="ignore"):
+        scr = alive & np.isfinite(vega) & (vega > 0) & (np.abs(f0) <= AM_SCREEN * vega)
+    out[scr] = (x0 - f0 / vega)[scr]
+    alive &= ~scr
+    step = np.where(np.isfinite(step) & (step != 0), step, np.where(f0 > 0, lo - x0, hi - x0))
+    x1, f1 = x0.copy(), f0.copy()
+    bracketed = np.zeros(m, dtype=bool)
+    for _ in range(64):
+        srch = alive & ~bracketed
+        if not srch.any():
+            break
+        xn = np.clip(x0 + step, lo, hi)
+        rows = np.flatnonzero(srch)
+        fn = np.full(m, np.nan)
+        fn[rows] = f(xn[rows], rows)
+        hit = srch & (fn == 0)
+        out[hit] = xn[hit]
+        alive &= ~hit
+        srch &= ~hit
+        flip = srch & (np.signbit(fn) != np.signbit(f0))
+        x1 = np.where(flip, xn, x1)
+        f1 = np.where(flip, fn, f1)
+        bracketed |= flip
+        stuck = srch & ~flip & ((xn <= lo) | (xn >= hi))
+        alive &= ~stuck
+        move = srch & ~flip & ~stuck
+        x0 = np.where(move, xn, x0)
+        f0 = np.where(move, fn, f0)
+        step = np.where(move, 2.0 * step, step)
+    br = np.flatnonzero(alive & bracketed)
+    if br.size:
+        def fb(x, rr):
+            return f(x, br[rr])
+        out[br] = _brent_vec(fb, x0[br], x1[br], f0[br], f1[br])
+    return out
+
+
+def american_iv(price, S, K, T, r, q, phi, guess, div_t, div_amt, steps: int, threads: int) -> np.ndarray:
+    """The volatility at which american_price equals ``price``; NaN where no volatility in the
+    search interval does (a price at or below immediate exercise, at or above the underlying for a
+    call or the strike for a put, or below the tree's value at the volatility floor).
+
+    From ``guess`` (clipped to [floor, 500%]; 25% when not finite) the search steps by 1.25 times
+    the Black-Scholes Newton step -- doubling each time the sign of the pricing error does not
+    change -- until it brackets the root, then runs Brent (scipy's brentq, xtol 1e-7). When the
+    tree at the guess is already within 3e-5 x vega of the price, the guess is kept after one
+    Newton step instead (the screen). The guess changes only the work, not the root (to 1e-6)."""
+    out = np.full(price.shape, np.nan)
+    s0 = _escrowed(S, T, r, div_t, div_amt)
+    with np.errstate(invalid="ignore"):
+        upper = np.where(phi > 0, S, K)
+        ok = _am_valid(S, K, T, r, q, phi, s0, steps) & np.isfinite(price)
+        ok &= (price - np.maximum(phi * (S - K), 0.0) > AM_EX_TOL * K) & (price < upper)
+    idx = np.flatnonzero(ok)
+    for lo in range(0, idx.size, AM_BLOCK):
+        b = idx[lo:lo + AM_BLOCK]
+        out[b] = _am_iv_block(price[b], S[b], K[b], T[b], r[b], q[b], phi[b], guess[b], div_t, div_amt,
+                              steps, s0[b])
+    return out
 
 
 def realized_vol_minute(ts_ns: np.ndarray, px: np.ndarray, session_bounds: np.ndarray) -> np.ndarray:

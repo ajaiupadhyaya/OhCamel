@@ -2,17 +2,24 @@
 //! for step: Zeliade's quasi-explicit method (De Marco & Martini 2009). For fixed
 //! (m, sigma), y = (k - m)/sigma and w = a + u (y + z)/2 + v (z - y)/2, z =
 //! sqrt(y^2 + 1), is linear in (a, u, v); the weighted least-squares problem over
-//! the box 0 <= u, v <= 4 sigma, a <= max w (a >= 0 when the free fit has
-//! negative minimum variance) is solved exactly by enumerating the box's faces
-//! (the fast path takes the unconstrained solution when it is feasible). The
-//! outer problem over (m, ln sigma) is a 9 x 7 grid, then Nelder-Mead (optim.rs,
-//! scipy's) from the three best grid points (xatol 1e-7, fatol 1e-14, 600
-//! iterations), with fit_svi's quadratic penalty outside m in [kmin - span,
-//! kmax + span], sigma in [1e-4, 4 span + 1]. Then b = c/sigma, rho = d/c
-//! (clipped to +-0.999999; 0 when c <= 1e-14).
+//! the box 0 <= u, v <= 2 sigma (both wing slopes b (1 +- rho) <= 2, Lee's bound),
+//! a <= max w (a >= 0 when the free fit has negative minimum variance) is solved
+//! exactly by enumerating the box's faces (the fast path takes the unconstrained
+//! solution when it is feasible). The outer problem over (m, ln sigma) is a 9 x 7
+//! grid, then Nelder-Mead (optim.rs, scipy's) from the three best grid points
+//! (xatol 1e-7, fatol 1e-14, 600 iterations), with a quadratic penalty outside m in
+//! [kmin, kmax] (the vertex stays inside the quotes), sigma in [1e-4, 4 span + 1],
+//! and a candidate rejected (objective +inf) when Durrleman's g < 0 or w <= 0
+//! anywhere on [-3, 3] (K_MAX): a 1201-point scan whose local minima (and the scan
+//! point nearest m) are each refined by two 101-point zooms (svi._g_min). Then
+//! b = c/sigma, rho = d/c (clipped to +-0.999999; 0 when c <= 1e-14).
 use crate::optim::{nelder_mead, NmOptions};
 
-const SLOPE_CAP: f64 = 4.0;
+const SLOPE_CAP: f64 = 2.0;
+const K_MAX: f64 = 3.0;
+const N_GRID: usize = 1201;
+const ZOOM_N: usize = 101;
+const ZOOMS: usize = 2;
 
 pub struct SviFit {
     pub a: f64,
@@ -174,6 +181,84 @@ fn inner(
     Some(([a, 0.5 * (u + v), 0.5 * (u - v)], sse, a_nonneg))
 }
 
+/// (a, b, rho) from the inner solution (a, c, d), as options/svi._to_params.
+fn params(x: &[f64; 3], s: f64) -> (f64, f64, f64) {
+    let (a, c, d) = (x[0], x[1], x[2]);
+    let rho = if c > 1e-14 {
+        (d / c).clamp(-0.999_999, 0.999_999)
+    } else {
+        0.0
+    };
+    (a, c / s, rho)
+}
+
+/// (g(k), w(k)) with SVIParams' w, dw, d2w and butterfly_g in the same operation order
+/// (bit-for-bit the reference's values).
+fn g_and_w(a: f64, b: f64, rho: f64, m: f64, s: f64, k: f64) -> (f64, f64) {
+    let xk = k - m;
+    let q = xk * xk + s * s;
+    let r = q.sqrt();
+    let w = a + b * (rho * xk + r);
+    let w1 = b * (rho + xk / r);
+    let w2 = b * (s * s) / (q * r);
+    let t = 1.0 - k * w1 / (2.0 * w);
+    (t * t - (w1 * w1 / 4.0) * (1.0 / w + 0.25) + w2 / 2.0, w)
+}
+
+/// options/svi.butterfly_free via svi._g_min, step for step: g on the scan; each scan point no
+/// higher than its neighbours, and the scan point nearest m, bracketed by its neighbours and
+/// zoomed twice (101 points over the bracket of the previous best point); free iff every value
+/// is finite, the minimum is >= 0 and w > 0 at every point evaluated.
+fn butterfly_free(x: &[f64; 3], m: f64, s: f64, grid: &[f64]) -> bool {
+    let (a, b, rho) = params(x, s);
+    let n = grid.len();
+    let mut g = Vec::with_capacity(n);
+    for &k in grid {
+        let (gk, wk) = g_and_w(a, b, rho, m, s, k);
+        if !gk.is_finite() || wk <= 0.0 {
+            return false;
+        }
+        g.push(gk);
+    }
+    let mut best = g.iter().cloned().fold(f64::INFINITY, f64::min);
+    let mut cand: Vec<usize> = (0..n)
+        .filter(|&i| (i == 0 || g[i] <= g[i - 1]) && (i == n - 1 || g[i] <= g[i + 1]))
+        .collect();
+    let iv = ((m + K_MAX) / (grid[1] - grid[0])).round_ties_even();
+    cand.push(iv.clamp(0.0, (n - 1) as f64) as usize);
+    for &i in &cand {
+        let (mut lo, mut hi) = (grid[i.saturating_sub(1)], grid[(i + 1).min(n - 1)]);
+        for _ in 0..ZOOMS {
+            let step = (hi - lo) / (ZOOM_N - 1) as f64;
+            let xs: Vec<f64> = (0..ZOOM_N)
+                .map(|j| {
+                    if j == ZOOM_N - 1 {
+                        hi
+                    } else {
+                        lo + step * j as f64
+                    }
+                })
+                .collect();
+            let mut jbest = 0;
+            let mut gbest = f64::INFINITY;
+            for (j, &k) in xs.iter().enumerate() {
+                let (gk, wk) = g_and_w(a, b, rho, m, s, k);
+                if !gk.is_finite() || wk <= 0.0 {
+                    return false;
+                }
+                if gk < gbest {
+                    gbest = gk;
+                    jbest = j;
+                }
+            }
+            best = best.min(gbest);
+            lo = xs[jbest.saturating_sub(1)];
+            hi = xs[(jbest + 1).min(ZOOM_N - 1)];
+        }
+    }
+    best >= 0.0
+}
+
 fn linspace(a: f64, b: f64, n: usize) -> Vec<f64> {
     let step = (b - a) / (n - 1) as f64;
     (0..n)
@@ -197,7 +282,8 @@ pub fn svi_fit(k: &[f64], w: &[f64], wt: &[f64]) -> Result<SviFit, String> {
     let kmin = k.iter().cloned().fold(f64::INFINITY, f64::min);
     let kmax = k.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let span = (kmax - kmin).max(1e-3);
-    let (m_lo, m_hi, s_lo, s_hi) = (kmin - span, kmax + span, 1e-4, 4.0 * span + 1.0);
+    let (m_lo, m_hi, s_lo, s_hi) = (kmin, kmax, 1e-4, 4.0 * span + 1.0);
+    let grid = linspace(-K_MAX, K_MAX, N_GRID);
     let obj = |th: &[f64]| -> f64 {
         let (mut m, ls) = (th[0], th[1]);
         let mut s = ls.exp();
@@ -210,9 +296,13 @@ pub fn svi_fit(k: &[f64], w: &[f64], wt: &[f64]) -> Result<SviFit, String> {
             pen += 1e3 * (s_lo.ln() - ls).max(ls - s_hi.ln()).powi(2);
             s = s.clamp(s_lo, s_hi);
         }
-        inner(k, w, wt, m, s, false).map_or(f64::INFINITY, |r| r.1) + pen
+        let sse = match inner(k, w, wt, m, s, false) {
+            Some((x, sse, _)) if butterfly_free(&x, m, s, &grid) => sse,
+            _ => f64::INFINITY, // no feasible face, or arbitrage somewhere on [-K_MAX, K_MAX]
+        };
+        sse + pen
     };
-    let m_grid = linspace(kmin - 0.25 * span, kmax + 0.25 * span, 9);
+    let m_grid = linspace(kmin, kmax, 9);
     let s_grid: Vec<f64> = linspace((0.01 * span + 1e-4).ln(), (1.5 * span + 1e-3).ln(), 7)
         .iter()
         .map(|v| v.exp())
@@ -243,19 +333,20 @@ pub fn svi_fit(k: &[f64], w: &[f64], wt: &[f64]) -> Result<SviFit, String> {
         }
     }
     let best = best.expect("three starts");
+    if !best.fun.is_finite() {
+        return Err(format!(
+            "SVI: no smile with its vertex inside the quotes is free of butterfly arbitrage on k in [{}, {}]",
+            -K_MAX, K_MAX
+        ));
+    }
     let m = best.x[0].clamp(m_lo, m_hi);
     let s = best.x[1].exp().clamp(s_lo, s_hi);
     let (x, sse, constrained_a) = inner(k, w, wt, m, s, false)
         .ok_or_else(|| "SVI inner problem: no feasible face".to_string())?;
-    let (a, c, d) = (x[0], x[1], x[2]);
-    let rho = if c > 1e-14 {
-        (d / c).clamp(-0.999_999, 0.999_999)
-    } else {
-        0.0
-    };
+    let (a, b, rho) = params(&x, s);
     Ok(SviFit {
         a,
-        b: c / s,
+        b,
         rho,
         m,
         sigma: s,
@@ -295,27 +386,69 @@ mod tests {
     }
 
     #[test]
-    fn recovers_a_steep_smile_under_the_slope_cap() {
-        // raw SVI (a, b, rho, m, sigma) = (0.01, 2.5, 0.3, 0.0, 0.1): the right wing slope
-        // b (1 + rho) = 3.25 and the left b (1 - rho) = 1.75 are inside Lee's bound of 4
-        // (SLOPE_CAP), so the box u, v <= 4 sigma holds u = 0.325, v = 0.175 and the fit is
-        // exact. A cap of 2 would clip u at 0.2 and miss.
+    fn caps_both_wings_at_lees_bound() {
+        // raw SVI (a, b, rho, m, sigma) = (0.3, 1.25, 0.7, 0.0, 0.5) has a right wing slope
+        // b (1 + rho) = 2.125, past Lee's bound of 2 (SLOPE_CAP): the fit cannot reproduce it
+        // exactly, and its wings stay within the bound
+        let k: Vec<f64> = (0..41).map(|i| -0.4 + 0.7 * i as f64 / 40.0).collect();
+        let w: Vec<f64> = k
+            .iter()
+            .map(|&x| raw(0.3, 1.25, 0.7, 0.0, 0.5, x))
+            .collect();
+        let f = svi_fit(&k, &w, &vec![1.0; 41]).unwrap();
+        assert!(
+            f.b * (1.0 + f.rho.abs()) <= SLOPE_CAP + 1e-9,
+            "{} {}",
+            f.b,
+            f.rho
+        );
+        assert!(f.sse > 1e-6, "{}", f.sse);
+    }
+
+    #[test]
+    fn rejects_a_smile_with_no_arbitrage_free_fit() {
+        // (0.01, 2.5, 0.3, 0.0, 0.1): right wing 3.25 on a narrow vertex; every candidate inside
+        // the quotes breaks g >= 0 somewhere on [-3, 3], so there is no fit to return
         let k: Vec<f64> = (0..41).map(|i| -0.4 + 0.7 * i as f64 / 40.0).collect();
         let w: Vec<f64> = k
             .iter()
             .map(|&x| raw(0.01, 2.5, 0.3, 0.0, 0.1, x))
             .collect();
+        let e = svi_fit(&k, &w, &vec![1.0; 41]).err().expect("no fit");
+        assert!(e.contains("butterfly"), "{e}");
+    }
+
+    #[test]
+    fn keeps_the_vertex_inside_the_quotes() {
+        // an exact raw SVI smile whose vertex m = 0.5 lies beyond the last quote at k = 0.3:
+        // the fit may not put m there, so m ends inside [kmin, kmax]
+        let k: Vec<f64> = (0..41).map(|i| -0.4 + 0.7 * i as f64 / 40.0).collect();
+        let w: Vec<f64> = k
+            .iter()
+            .map(|&x| raw(0.02, 0.1, 0.2, 0.5, 0.1, x))
+            .collect();
         let f = svi_fit(&k, &w, &vec![1.0; 41]).unwrap();
-        for (got, want) in [
-            (f.a, 0.01),
-            (f.b, 2.5),
-            (f.rho, 0.3),
-            (f.m, 0.0),
-            (f.sigma, 0.1),
-        ] {
-            assert!((got - want).abs() < 1e-6, "{got} vs {want}");
-        }
-        assert!(f.sse < 1e-14, "{}", f.sse);
+        assert!((-0.4..=0.3).contains(&f.m), "{}", f.m);
+    }
+
+    #[test]
+    fn finds_a_dip_between_the_scan_points() {
+        // the 2026-12-24 SPY slice as fitted when g was tested only at the scan points: g >= -1e-10
+        // at all 1201 of them, -7.7e-6 at k = 0.3272 between two (svi.py's test of the same smile)
+        let (a, b, rho, m, s) = (
+            -0.014811311097864086,
+            0.07379408242339407,
+            -0.26197197026385555,
+            0.01951695314816534,
+            0.22904056711078535,
+        );
+        let grid = linspace(-K_MAX, K_MAX, N_GRID);
+        assert!(grid
+            .iter()
+            .all(|&k| g_and_w(a, b, rho, m, s, k).0 >= -1e-10));
+        assert!(g_and_w(a, b, rho, m, s, 0.3272).0 < -7e-6);
+        let x = [a, b * s, rho * b * s];
+        assert!(!butterfly_free(&x, m, s, &grid));
     }
 
     #[test]

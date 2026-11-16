@@ -40,6 +40,9 @@ function History({ m, ticker }: { m: Manifest; ticker: string }) {
   return <HistoryReport history={history.rows ?? []} summary={summary.rows ?? []} errors={errors.rows ?? []} ticker={ticker} />;
 }
 
+/** The cell's short label for a blank VRP; the full reason stays in the tooltip. */
+export const vrpBlank = (note: string | null | undefined): string => (note?.includes("open-to-close") ? "OLD TARGET" : "NO HAR");
+
 export function HistoryReport({ history, summary, errors, ticker }: { history: HistoryRow[]; summary: HistorySummaryRow[]; errors: HistoryErrorRow[]; ticker: string }) {
   const t = ticker.toUpperCase();
   const pts = historyFor(history, t);
@@ -55,7 +58,7 @@ export function HistoryReport({ history, summary, errors, ticker }: { history: H
     { key: "bf25_30d", label: "BF 25Δ", numeric: true, format: (v) => fmtVolPts(v, 2), info: INFO.bf, hideBelow: 900 },
     { key: "mf_vol_30d", label: "MF 30D", numeric: true, format: (v) => fmtPct(v, 1), info: INFO.model_free },
     { key: "har_vol_22d", label: "HAR 22D", numeric: true, format: (v) => fmtPct(v, 1), hideBelow: 1200 },
-    { key: "vrp_pts", label: "VRP · pts", numeric: true, render: (r) => <span className="num" title={r.vrp_note ?? undefined}>{r.vrp_pts === null ? "NO HAR" : fmtVolPts(r.vrp_pts, 1)}</span>, info: INFO.vrp },
+    { key: "vrp_pts", label: "VRP · pts", numeric: true, render: (r) => <span className="num" title={r.vrp_note ?? undefined}>{r.vrp_pts === null ? vrpBlank(r.vrp_note) : fmtVolPts(r.vrp_pts, 1)}</span>, info: INFO.vrp },
     { key: "n_slices", label: "Slices", numeric: true, format: (v) => fmtNum(v, 0), hideBelow: 1200 },
   ];
   const sumCols: Column<HistorySummaryRow>[] = [
@@ -93,7 +96,7 @@ export function HistoryReport({ history, summary, errors, ticker }: { history: H
                 { k: "LAST", v: fmtDate(last.asof, "iso") },
                 { k: "ATM 30D", v: fmtPct(last.atm_iv_30d, 1) },
                 { k: "MF 30D", v: fmtPct(last.mf_vol_30d, 1) },
-                { k: "VRP", v: last.vrp_pts === null ? "NO HAR" : `${fmtVolPts(last.vrp_pts, 1)} PTS` },
+                { k: "VRP", v: last.vrp_pts === null ? vrpBlank(last.vrp_note) : `${fmtVolPts(last.vrp_pts, 1)} PTS` },
               ]}
             />
           )}

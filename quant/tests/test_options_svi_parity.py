@@ -9,8 +9,10 @@ import pytest
 
 from ohcamel_quant.options import bsm, parity
 from ohcamel_quant.options.svi import (
+    K_MAX,
     SVIParams,
     butterfly_check,
+    butterfly_free,
     butterfly_g,
     calendar_check,
     fit_svi,
@@ -133,6 +135,58 @@ def test_butterfly_flags_vogt_example():
     assert not chk["arbitrage_free"] and chk["g_min"] < 0
     assert 0.4 < chk["k_at_g_min"] < 1.3
     assert butterfly_check(TRUE, np.linspace(-1.5, 1.5, 601))["arbitrage_free"]
+
+
+def test_butterfly_check_scans_the_wings_by_default():
+    """The review's bad slice shape (rho = 0.9, vertex m = 0.58 beyond the quotes, right wing
+    dw/dk = 3.9 > Lee's 2): on the old grid -- the quotes (k in [-0.34, 0.19]) plus half their span
+    each side -- g stays positive and the check said arbitrage-free; on the default grid over
+    [-K_MAX, K_MAX] it finds g < 0 beyond the quotes."""
+    b, rho, sigma = 3.9 / 1.9, 0.9, 0.2
+    p = SVIParams(a=-b * sigma * np.sqrt(1 - rho * rho) + 0.0005, b=b, rho=rho, m=0.58, sigma=sigma)
+    assert p.wing_slopes()[1] == pytest.approx(3.9) and p.min_variance() > 0
+    assert butterfly_check(p, np.linspace(-0.34 - 0.265, 0.19 + 0.265, 401))["arbitrage_free"]
+    chk = butterfly_check(p)
+    assert chk["k_range"] == [-K_MAX, K_MAX]
+    assert not chk["arbitrage_free"] and chk["g_min"] < 0 and chk["k_at_g_min"] > 0.19
+
+
+def test_butterfly_check_finds_a_dip_between_the_scan_points():
+    """The 2026-12-24 SPY slice as the calibration fitted it when g was tested only at the scan's
+    1201 points: g >= -1e-10 at every one of them, yet -7.7e-6 at k = 0.3272, inside a negative
+    region ~0.004 wide that holds no scan point. The refined minimum finds it."""
+    p = SVIParams(a=-0.014811311097864086, b=0.07379408242339407, rho=-0.26197197026385555,
+                  m=0.01951695314816534, sigma=0.22904056711078535)
+    assert butterfly_check(p, np.linspace(-K_MAX, K_MAX, 1201))["arbitrage_free"]      # the scan alone
+    chk = butterfly_check(p)
+    assert not chk["arbitrage_free"]
+    assert chk["g_min"] == pytest.approx(-7.709e-6, rel=1e-3) and chk["k_at_g_min"] == pytest.approx(0.3272, abs=1e-4)
+    assert chk["violation_k"] == [chk["k_at_g_min"]]          # no scan point is in violation; the minimiser is
+    assert not butterfly_free(p)
+
+
+def test_spy_2026_11_15_every_slice_obeys_lee_and_keeps_its_vertex_inside_its_quotes(spy_2026_11_15):
+    """On the real chain of the review, where 13 of 31 slices had fitted rho ~ +0.9, a right wing
+    at the old cap of 4 and a vertex m ~ 0.6 beyond the last quote: every wing slope is within
+    Lee's bound of 2, every vertex inside the quoted k, and g >= 0 over [-K_MAX, K_MAX]."""
+    _, vs, _ = spy_2026_11_15
+    assert len(vs.fits) == 31 and not vs.errors
+    fine = np.linspace(-K_MAX, K_MAX, 600_001)         # step 1e-5, independent of the fit's own scan
+    bad = {}
+    for sid, f in vs.fits.items():
+        p = f.params
+        slope = p.b * (1 + abs(p.rho))
+        g_fine = float(butterfly_g(p, fine).min())
+        if not (slope <= 2.0 + 1e-9 and f.k_min <= p.m <= f.k_max and f.butterfly["arbitrage_free"]
+                and g_fine >= -1e-10):
+            bad[sid] = (round(slope, 4), round(p.m, 4), (round(f.k_min, 4), round(f.k_max, 4)), g_fine)
+    assert not bad, bad
+
+
+def test_spy_2026_11_15_every_slice_fits_within_one_vol_point(spy_2026_11_15):
+    _, vs, _ = spy_2026_11_15
+    rmse = {sid: round(f.rmse_vol_pts, 3) for sid, f in vs.fits.items()}
+    assert all(v < 1.0 for v in rmse.values()), rmse
 
 
 def test_g_equals_one_for_flat_smile():

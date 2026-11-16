@@ -597,3 +597,21 @@ The project is a showcase of methods, so the order is what a visitor sees first.
 Within a wave, tasks that share no files may run side by side: 4.1/4.2/4.3 share none; 3.1 and 3.2 both touch `readers.py` and run in order; Stage 1 tasks all touch `desk/oms.ml` or `desk/intake.ml` and run in order.
 
 Deploys, each the owner's: after wave A; after wave B; after 1.5; after wave C; after wave D; after 1.12 with 2.2; after wave F; after wave G.
+
+## Day-by-day schedule
+
+One phase a day, in execution order. A day's phase is done when every task in it is implemented, reviewed clean and recorded in the ledger; an owner step (a deploy, an approval) closes the day but never blocks the next one. Tasks run one at a time, and the first two took 1.5 and 3 hours each with their reviews, so the days marked *long* need the session left running; a phase that does not finish carries its remaining tasks to the next morning, ahead of that day's phase.
+
+| Day | Phase | Tasks | Owner step at the end |
+|---|---|---|---|
+| 0 (2026-11-15, done) | Ship what is built | 0.1, 0.2, 4.1 | Deployed `fff8933`; desk halted by hand |
+| 1 | Wrong numbers on the page | finish 4.2 (round 3, then review), 4.3, 5.1 | Deploy `--public-only`, any time of day |
+| 2 | The desk's safety core | 1.1, 1.2, 1.3, 1.4, 1.5 | Deploy `--live`, outside 09:25–17:10 ET. The halt stays |
+| 3 | The desk's record is true | 1.6, 1.7, 1.8 | Deploy `--live` |
+| 4 (*long*) | Every number regenerates; the data widens | 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8 | Deploy `--public-only`; decide on the EODHD subscription and, if bought, run `tools/accept_delisted.py` |
+| 5 (*long*) | Verdicts about what trades; the desk redeployed | 2.3, 2.4, 2.5, 2.1, then 1.9, 1.10, 1.11, 1.12 | Read and approve INC-02 line by line; deploy `--live` |
+| 6 | The reset | 2.2 | Regenerate `book.sexp`, deploy `--live`, lift the halt. Only after INC-02 is approved and Day 2's deploy is live |
+| 7 (*long*) | Depth, each as a scored product | 4.4, 4.5, 4.6, 4.7, 4.8, 4.9 | Deploy `--public-only` |
+| 8 | The site says what is true; done is checked | 5.2, 5.3, then the whole-branch review | Deploy; run `scripts/check-done.sh` |
+
+Not on this calendar because nothing here can hurry them: the 30 clean days before the raw-bars cut-over (Task 3.2's last step) and the 500 sessions of the pooled test.

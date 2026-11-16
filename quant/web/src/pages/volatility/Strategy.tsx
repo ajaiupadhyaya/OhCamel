@@ -168,7 +168,7 @@ export function StrategyResults({ q }: { q: UseQueryResult<StrategyOut, ApiError
 
 function Results({ d }: { d: StrategyOut }) {
   const { x, series } = useMemo(() => {
-    const [lo, hi] = focusWindow({ spot: d.spot, breakevens: d.breakevens, strikes: d.legs.map((l) => l.strike).filter((k): k is number => k != null), grid: [d.grid.spot[0], d.grid.spot[d.grid.spot.length - 1]] });
+    const [lo, hi] = focusWindow({ spot: d.iv_spot, breakevens: d.breakevens, strikes: d.legs.map((l) => l.strike).filter((k): k is number => k != null), grid: [d.grid.spot[0], d.grid.spot[d.grid.spot.length - 1]] });
     const keep = d.grid.spot.map((v, i) => (v >= lo && v <= hi ? i : -1)).filter((i) => i >= 0);
     const pick = (a: (number | null)[]) => keep.map((i) => a[i] ?? null);
     const curves = Object.entries(d.grid.curves).sort((a, b) => a[1].t_years - b[1].t_years);
@@ -193,7 +193,7 @@ function Results({ d }: { d: StrategyOut }) {
             height={360}
             xTitle={`${d.underlying} price`}
             hlines={[{ at: 0, label: "0", tone: "ink2", dash: "solid" }]}
-            vlines={[{ at: d.spot, label: "SPOT", tone: "ink2", dash: "dot" }, ...d.breakevens.map((b) => ({ at: b, label: `BE ${fmtNum(b, 2)}`, tone: "ink3" as const, dash: "dash" as const }))]}
+            vlines={[{ at: d.iv_spot, label: d.iv_spot_source === "implied" ? "SPOT (IMPLIED)" : "SPOT", tone: "ink2", dash: "dot" }, ...d.breakevens.map((b) => ({ at: b, label: `BE ${fmtNum(b, 2)}`, tone: "ink3" as const, dash: "dash" as const }))]}
             ariaLabel={`Strategy P&L across ${d.underlying} prices`}
           />
         </div>

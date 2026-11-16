@@ -1,8 +1,8 @@
 """svi_fit and realized_vol_minute through the dispatcher, and fit_svi's kernel path (compute plan A7).
 
-There is no committed real Cboe chain at 0b87dec; the SVI inputs are the suite's numerical
-BSM/SSVI test chain (test_options_chain_strategy.make_chain) pushed through the real chain
-pipeline (analyze_chain), plus a perturbed copy -- test input to a numerical kernel, never data."""
+The SVI inputs are the suite's numerical BSM/SSVI test chain (test_options_chain_strategy.make_chain)
+pushed through the real chain pipeline (analyze_chain) -- test input to a numerical kernel, never
+data -- and the real 2026-11-15 SPY chain committed under tests/data (conftest.spy_2026_11_15)."""
 
 from __future__ import annotations
 
@@ -48,6 +48,21 @@ def test_fit_svi_on_the_kernel_matches_and_keeps_the_butterfly_check(smiles):
     assert job.butterfly["g_min"] == pytest.approx(legacy.butterfly["g_min"], abs=1e-6)
     assert job.to_dict()["engine"] == kernels.engine_of("svi_fit")
     assert "engine" not in legacy.to_dict()          # the synchronous payload is unchanged
+
+
+def test_fit_svi_on_the_kernel_keeps_lees_bound_and_the_vertex_on_the_spy_chain(spy_2026_11_15):
+    """The kernel path (Rust when the wheel is loaded) holds the same three rules as the reference
+    on every slice of the real chain: wings within Lee's 2, vertex inside the quotes, g >= 0 on
+    [-K_MAX, K_MAX] -- checked on a grid 500x finer than the fit's scan."""
+    _, _, inputs = spy_2026_11_15
+    fine = np.linspace(-S.K_MAX, S.K_MAX, 600_001)     # step 1e-5, independent of the fit's own scan
+    for sid, (k, iv, T, wt) in inputs.items():
+        f = S.fit_svi(k, iv, T, weights=wt, use_kernels=True)
+        p = f.params
+        assert p.b * (1 + abs(p.rho)) <= S.SLOPE_CAP + 1e-9, sid
+        assert f.k_min <= p.m <= f.k_max, sid
+        assert f.butterfly["arbitrage_free"] and f.butterfly["k_range"] == [-S.K_MAX, S.K_MAX], sid
+        assert float(S.butterfly_g(p, fine).min()) >= -1e-10, sid
 
 
 def test_svi_rejects_bad_input():

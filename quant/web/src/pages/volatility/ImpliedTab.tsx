@@ -30,6 +30,7 @@ export function ImpliedTab({ surface, chain, expiry }: { surface: ReturnType<typ
             <Readline
               items={[
                 { k: "SPOT", v: fmtNum(d.spot, 2) },
+                ...(d.iv_spot_source === "implied" ? [{ k: "IV SPOT", v: `${fmtNum(d.iv_spot, 2)} · OPTION-IMPLIED` }] : []),
                 { k: "EXPIRIES", v: fmtNum(d.term_structure.length, 0) },
                 { k: "STYLE", v: d.exercise_style.toUpperCase() },
               ]}
@@ -106,7 +107,7 @@ export function ImpliedTab({ surface, chain, expiry }: { surface: ReturnType<typ
         }
       >
         <Panel<Surface> title="Forward · rate · yield" info={INFO.parity} query={surface} flush notes={[d_note(s)]} skeletonHeight={300} asOf={asOf}>
-          {(d) => <ParityTable rows={d.expiries} spot={d.spot} />}
+          {(d) => <ParityTable rows={d.expiries} spot={d.iv_spot} />}
         </Panel>
       </Section>
     </>
@@ -114,7 +115,9 @@ export function ImpliedTab({ surface, chain, expiry }: { surface: ReturnType<typ
 }
 
 const d_note = (s: Surface | undefined) =>
-  s?.exercise_style === "American" ? "American exercise: parity is approximate; fitted on near-the-money strikes where early-exercise value is smallest." : "European exercise: parity holds exactly.";
+  s?.exercise_style === "American"
+    ? "American exercise: F and q come from the strike pair nearest the money, priced as American so its call and put share one vol; elsewhere parity is only a bound. RMSE is after removing each leg's early-exercise premium."
+    : "European exercise: parity holds exactly.";
 
 // ------------------------------------------------------------------ smile
 function SmilePanel({ c }: { c: Chain }) {
@@ -157,7 +160,7 @@ function SmilePanel({ c }: { c: Chain }) {
     return { x: xs, series: out };
   }, [c, axis, showAll]);
   const fwd = axis === "strike" ? F : 0;
-  const spot = axis === "strike" ? c.spot : Math.log(c.spot / F);
+  const spot = axis === "strike" ? c.iv_spot : Math.log(c.iv_spot / F);
   const bfly = fit?.butterfly;
   return (
     <div className="vx-smile">

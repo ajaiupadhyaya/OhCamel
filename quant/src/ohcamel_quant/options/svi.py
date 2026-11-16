@@ -16,15 +16,23 @@ Calibration -- quasi-explicit method (De Marco & Martini / Zeliade Systems 2009,
     w = a + d y + c sqrt(y^2 + 1),     c = b sigma,  d = rho b sigma
 
 is *linear* in ``(a, c, d)`` for fixed ``(m, sigma)``. The inner problem is a
-weighted least squares over the Zeliade domain ``0 <= c <= 4 sigma``,
-``|d| <= c``, ``|d| <= 4 sigma - c``, ``a <= max(w_i)`` (the slope cap 4 is the
-Rogers & Tehranchi 2010 bound ``|dw/dk| <= 4``). Substituting ``u = c + d``,
-``v = c - d`` turns the domain into a box ``u, v in [0, 4 sigma]`` and the
+weighted least squares over the Zeliade domain ``0 <= c <= 2 sigma``,
+``|d| <= c``, ``|d| <= 2 sigma - c``, ``a <= max(w_i)``: both wing slopes
+``b(1 +- rho) <= 2``, Lee's (2004) moment-formula bound on total variance
+(Zeliade's 4 is Rogers & Tehranchi's bound on ``|dw/dk|``, which lets a wing
+grow too fast for the call price to vanish at large strikes: a density that
+integrates past one and a mean above the forward). Substituting ``u = c + d``,
+``v = c - d`` turns the domain into a box ``u, v in [0, 2 sigma]`` and the
 convex QP is solved *exactly* by enumerating the faces of the box (the minimizer
 lies in the relative interior of one face). If the fitted smile has negative
 minimum variance, the inner problem is re-solved with ``a >= 0`` (Zeliade's
 original domain, which guarantees it). The outer problem over ``(m, sigma)`` is a
-coarse grid search followed by Nelder-Mead (Nelder & Mead 1965).
+coarse grid search followed by Nelder-Mead (Nelder & Mead 1965), with the vertex
+``m`` held inside the quoted ``k`` and a candidate rejected when its ``g`` (below)
+is negative anywhere on ``[-K_MAX, K_MAX]``, the range the density integrates over
+(found by a scan refined at its local minima, :func:`_g_min`).
+A slice fitted without these two rules can match its quotes and still put its
+vertex far beyond them with a wing that breaks the butterfly condition there.
 
 Static arbitrage (Gatheral & Jacquier 2014, "Arbitrage-free SVI volatility
 surfaces", Quantitative Finance 14):
@@ -51,7 +59,11 @@ from scipy.optimize import minimize
 
 from .. import kernels
 
-SLOPE_CAP = 4.0
+SLOPE_CAP = 2.0          # Lee (2004): each wing's dw/dk is at most 2
+K_MAX = 3.0              # |k| range a fitted slice is arbitrage-free on, and densities stop at
+G_TOL = 1e-10            # butterfly_check's slack: g below -G_TOL is reported as a violation
+_K_GRID = np.linspace(-K_MAX, K_MAX, 1201)   # the butterfly scan: steps of 0.005 in k
+_ZOOM_N, _ZOOMS = 101, 2                     # each scan minimum refined twice, 101 points a time
 
 
 @dataclass(frozen=True)
@@ -62,18 +74,21 @@ class SVIParams:
     m: float
     sigma: float
 
+    # sqrt and the four operations only, in this order: native/kernels/src/svi.rs evaluates the
+    # same expressions, so the calibration's butterfly test is bit-for-bit the same in both engines
     def w(self, k: Any) -> np.ndarray:
         """Total implied variance ``w(k)``."""
         x = np.asarray(k, dtype=float) - self.m
-        return self.a + self.b * (self.rho * x + np.sqrt(x * x + self.sigma**2))
+        return self.a + self.b * (self.rho * x + np.sqrt(x * x + self.sigma * self.sigma))
 
     def dw(self, k: Any) -> np.ndarray:
         x = np.asarray(k, dtype=float) - self.m
-        return self.b * (self.rho + x / np.sqrt(x * x + self.sigma**2))
+        return self.b * (self.rho + x / np.sqrt(x * x + self.sigma * self.sigma))
 
     def d2w(self, k: Any) -> np.ndarray:
         x = np.asarray(k, dtype=float) - self.m
-        return self.b * self.sigma**2 / (x * x + self.sigma**2) ** 1.5
+        q = x * x + self.sigma * self.sigma
+        return self.b * (self.sigma * self.sigma) / (q * np.sqrt(q))
 
     def implied_vol(self, k: Any, T: float) -> np.ndarray:
         w = self.w(k)
@@ -96,21 +111,96 @@ def butterfly_g(p: SVIParams, k: Any) -> np.ndarray:
     k = np.asarray(k, dtype=float)
     w, w1, w2 = p.w(k), p.dw(k), p.d2w(k)
     with np.errstate(divide="ignore", invalid="ignore"):
-        return (1.0 - k * w1 / (2.0 * w)) ** 2 - (w1 * w1 / 4.0) * (1.0 / w + 0.25) + w2 / 2.0
+        t = 1.0 - k * w1 / (2.0 * w)
+        return t * t - (w1 * w1 / 4.0) * (1.0 / w + 0.25) + w2 / 2.0
 
 
-def butterfly_check(p: SVIParams, k_grid: Any, tol: float = 1e-10) -> dict[str, Any]:
-    """Minimum of ``g`` on ``k_grid`` and the sub-intervals where ``g < 0``."""
-    k = np.asarray(k_grid, dtype=float)
+def density_k(p: SVIParams, k: Any) -> np.ndarray:
+    """Risk-neutral density of ``x = ln(S_T / F)`` at ``k``, in closed form from the smile
+    (Gatheral & Jacquier 2014, eq. 2.2): ``g(k) n(d2(k)) / sqrt(w(k))``, ``d2 = -k/sqrt(w) - sqrt(w)/2``,
+    ``n`` the standard normal pdf. The density of ``S_T`` at ``K = F e^k`` is this over ``K``."""
+    k = np.asarray(k, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        sw = np.sqrt(p.w(k))
+        d2 = -k / sw - 0.5 * sw
+        return butterfly_g(p, k) * np.exp(-0.5 * d2 * d2) / (np.sqrt(2.0 * np.pi) * sw)
+
+
+def _g_min(p: SVIParams) -> tuple[float, float, bool]:
+    """Minimum of ``g`` over ``[-K_MAX, K_MAX]``: the scan (step 0.005), then each of its local
+    minima (and the scan point nearest the vertex ``m``) refined by two zooms, each 101 points over
+    the bracket of the previous best point and its neighbours (steps 1e-4, then 2e-6). A fit held at
+    ``g >= 0`` only on the scan dips below zero between its points (by up to 8e-6 on the 2026-11-15
+    SPY chain); after the zooms the step is 2e-6, so a dip between points is ``g'' * 5e-13``. On that
+    chain, with the fit held at g >= 0 here, g on an independent 6,000,000-point grid offset from
+    these points still goes negative on most slices, by at most ~1e-12 (-8.8e-13 or -1.1e-12 by the
+    grid's offset): not zero, but far inside butterfly_check's -1e-10.
+    Returns (g_min, its k, ``w > 0`` at every point evaluated); g_min is -inf if ``g`` is not
+    finite somewhere. native/kernels/src/svi.rs repeats this step for step."""
+    k = _K_GRID
+    with np.errstate(divide="ignore", invalid="ignore"):
+        g, w = butterfly_g(p, k), p.w(k)
+    if not np.all(np.isfinite(g)):
+        return -np.inf, float("nan"), False
+    w_ok = bool(np.all(w > 0))
+    n = k.size
+    left = np.concatenate(([True], g[1:] <= g[:-1]))
+    right = np.concatenate((g[:-1] <= g[1:], [True]))
+    cand = set(np.flatnonzero(left & right).tolist())
+    cand.add(int(np.clip(np.rint((p.m + K_MAX) / (k[1] - k[0])), 0, n - 1)))
+    idx = np.array(sorted(cand))
+    lo, hi = k[np.maximum(idx - 1, 0)], k[np.minimum(idx + 1, n - 1)]
+    i0 = int(np.argmin(g))
+    best, k_best = float(g[i0]), float(k[i0])
+    J = np.arange(_ZOOM_N, dtype=float)
+    rows = np.arange(idx.size)
+    for _ in range(_ZOOMS):
+        X = lo[:, None] + ((hi - lo) / (_ZOOM_N - 1))[:, None] * J[None, :]
+        X[:, -1] = hi
+        with np.errstate(divide="ignore", invalid="ignore"):
+            G, W = butterfly_g(p, X), p.w(X)
+        if not np.all(np.isfinite(G)):
+            return -np.inf, float("nan"), False
+        w_ok = w_ok and bool(np.all(W > 0))
+        j = np.argmin(G, axis=1)
+        if float(G[rows, j].min()) < best:
+            r = int(np.argmin(G[rows, j]))
+            best, k_best = float(G[r, j[r]]), float(X[r, j[r]])
+        lo, hi = X[rows, np.maximum(j - 1, 0)], X[rows, np.minimum(j + 1, _ZOOM_N - 1)]
+    return best, k_best, w_ok
+
+
+def butterfly_free(p: SVIParams) -> bool:
+    """``g >= 0`` and ``w > 0`` on ``[-K_MAX, K_MAX]`` (the scan refined at its minima, :func:`_g_min`):
+    the calibration's test. Zero, not ``-G_TOL``: the optimizer settles on the boundary, so any slack
+    here is spent, and between the last zoom's points ``g`` can still sit ~1e-12 lower."""
+    g_min, _, w_ok = _g_min(p)
+    return bool(g_min >= 0.0 and w_ok)
+
+
+def butterfly_check(p: SVIParams, k_grid: Any = None, tol: float = G_TOL) -> dict[str, Any]:
+    """Minimum of ``g`` and the points where ``g < 0``: on ``k_grid``, or by default on
+    ``[-K_MAX, K_MAX]`` (the scan in steps of 0.005, each local minimum refined: :func:`_g_min`)."""
+    k = _K_GRID if k_grid is None else np.asarray(k_grid, dtype=float)
     g = butterfly_g(p, k)
     w = p.w(k)
     bad = (g < -tol) | (w <= 0)
     i = int(np.nanargmin(g)) if np.isfinite(g).any() else 0
+    g_min = float(np.nanmin(g)) if np.isfinite(g).any() else float("nan")
+    k_at = float(k[i])
+    if k_grid is None:
+        g_min, k_at, w_ok = _g_min(p)
+        bad_refined = not (g_min >= -tol and w_ok)
+    else:
+        bad_refined = False
+    violation_k = k[bad].tolist()[:: max(1, int(bad.sum()) // 25)] if bad.any() else []
+    if bad_refined and np.isfinite(k_at) and k_at not in violation_k:
+        violation_k = sorted([*violation_k, k_at])     # a violation the scan points miss: its minimiser
     return {
-        "arbitrage_free": bool(not bad.any()),
-        "g_min": float(np.nanmin(g)) if np.isfinite(g).any() else float("nan"),
-        "k_at_g_min": float(k[i]),
-        "violation_k": k[bad].tolist()[:: max(1, int(bad.sum()) // 25)] if bad.any() else [],
+        "arbitrage_free": bool(not bad.any() and not bad_refined),
+        "g_min": g_min,
+        "k_at_g_min": k_at,
+        "violation_k": violation_k,
         "k_range": [float(k.min()), float(k.max())],
     }
 
@@ -234,7 +324,7 @@ def calibrate(k: np.ndarray, w: np.ndarray, wt: np.ndarray) -> tuple[SVIParams, 
     The ``svi_fit`` kernel's reference."""
     kmin, kmax = float(k.min()), float(k.max())
     span = max(kmax - kmin, 1e-3)
-    m_lo, m_hi = kmin - span, kmax + span
+    m_lo, m_hi = kmin, kmax
     s_lo, s_hi = 1e-4, 4.0 * span + 1.0
 
     cache: dict[tuple[float, float], tuple[np.ndarray, float, bool]] = {}
@@ -252,12 +342,15 @@ def calibrate(k: np.ndarray, w: np.ndarray, wt: np.ndarray) -> tuple[SVIParams, 
         key = (round(m, 12), round(s, 12))
         if key not in cache:
             try:
-                cache[key] = _inner(k, w, wt, m, s)
+                x, sse, con = _inner(k, w, wt, m, s)
+                if not butterfly_free(_to_params(x, m, s)):
+                    sse = np.inf            # rejected: arbitrage somewhere on [-K_MAX, K_MAX]
+                cache[key] = (x, sse, con)
             except np.linalg.LinAlgError:
                 cache[key] = (np.full(3, np.nan), np.inf, False)
         return cache[key][1] + pen
 
-    m_grid = np.linspace(kmin - 0.25 * span, kmax + 0.25 * span, 9)
+    m_grid = np.linspace(kmin, kmax, 9)
     s_grid = np.exp(np.linspace(np.log(0.01 * span + 1e-4), np.log(1.5 * span + 1e-3), 7))
     starts = sorted((obj(np.array([m, np.log(s)])), m, s) for m in m_grid for s in s_grid)[:3]
     best = None
@@ -266,6 +359,9 @@ def calibrate(k: np.ndarray, w: np.ndarray, wt: np.ndarray) -> tuple[SVIParams, 
                      options={"xatol": 1e-7, "fatol": 1e-14, "maxiter": 600})
         if best is None or r.fun < best.fun:
             best = r
+    if not np.isfinite(best.fun):
+        raise ValueError("SVI: no smile with its vertex inside the quotes is free of butterfly arbitrage "
+                         f"on k in [{-K_MAX:g}, {K_MAX:g}]")
     m = float(np.clip(best.x[0], m_lo, m_hi))
     s = float(np.clip(np.exp(best.x[1]), s_lo, s_hi))
     x, sse, constrained = _inner(k, w, wt, m, s)
@@ -304,14 +400,13 @@ def fit_svi(
     else:
         p, sse, constrained = calibrate(k, w, wt)
     kmin, kmax = float(k.min()), float(k.max())
-    span = max(kmax - kmin, 1e-3)
     fit_iv = p.implied_vol(k, T)
     err = (fit_iv - iv) * 100.0
-    grid = np.linspace(kmin - 0.5 * span, kmax + 0.5 * span, 401) if butterfly_grid is None else butterfly_grid
     return SVIFit(
         params=p, T=float(T), n=int(k.size), rmse_w=float(np.sqrt(sse / k.size)),
         rmse_vol_pts=float(np.sqrt(np.nanmean(err * err))), max_abs_err_vol_pts=float(np.nanmax(np.abs(err))),
-        k_min=kmin, k_max=kmax, constrained_a=constrained, butterfly=butterfly_check(p, grid), engine=engine,
+        k_min=kmin, k_max=kmax, constrained_a=constrained, butterfly=butterfly_check(p, butterfly_grid),
+        engine=engine,
     )
 
 

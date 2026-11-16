@@ -41,8 +41,11 @@ answers with a different newest close, that close's date, with a note.
   more (owner, 2026-10-29). ``positions`` counts the symbols whose ``graph_qty``
   is non-zero; ``kill_switch`` is ``disabled``, ``armed`` or ``halted``;
   ``trips_on`` and ``limits`` are JSON lists, the limits only as ``{name, kind,
-  scope}`` copied field by field and sorted by name. Never a position's name or
-  size, never a threshold. A null is a field not read, and the notes say why.
+  scope}`` copied field by field and sorted by name; ``desk_switch`` is the desk's
+  own switch from ``/api/desk`` (``clear``, ``tripped``, ``halted`` -- by hand --
+  or ``stopped``), the word only, never the halt's free-text reason. Never a
+  position's name or size, never a threshold. A null is a field not read, and
+  the notes say why.
 
 ``verdict`` is None: a report records, it does not judge. An unset URL, an
 engine that does not answer (the ``live`` profile not running, say), an error
@@ -83,11 +86,13 @@ PNL_COLUMNS = ["strategy", "tier", "sizing", "state", "capital_fraction", "verdi
 REFUSAL_COLUMNS = ["strategy", "source", "verdict", "rule", "detail", "sequence", "as_of", "received_at"]
 OVERLAY_COLUMNS = ["read_at", "exposure_scale", "governor", "governor_cap", "value", "as_of", "age_s", "state",
                    "reason", "vol_target", "vol_forecast", "vol_model", "cov_estimator", "inputs", "reported"]
-BOOK_COLUMNS = ["as_of", "positions", "kill_switch", "tripped_by", "trips_on", "limits"]
+BOOK_COLUMNS = ["as_of", "positions", "kill_switch", "tripped_by", "trips_on", "limits", "desk_switch"]
 PNL_NOTE = "not on the wire until Stage 3"
 # /api/ops `alerts.kill_switch` (json_of_alerts: off | armed | tripped) in the front page's words. "off" is the
 # Disarmed state; an `enabled: false` book has no switch at all, whatever it says, and reads "disabled" too.
 KILL_SWITCH_WORDS = {"off": "disabled", "armed": "armed", "tripped": "halted"}
+# /api/desk `kill_switch` (desk/halt.ml State.name): the desk's own switch, which a halt by hand sets.
+DESK_SWITCH_WORDS = ("clear", "tripped", "halted", "stopped")
 LIMIT_FIELDS = ("name", "kind", "scope")   # the whitelist: nothing else on a limit row is copied
 BOOK_NOTE = ("book_summary: configuration and counts only (owner, 2026-10-29): no position names or sizes, "
              "no limit thresholds")
@@ -249,6 +254,21 @@ def _positions_held(desk: dict[str, Any] | None, notes: list[str]) -> int | None
     return sum(1 for p in raw if isinstance(p, dict) and _num(p.get("graph_qty")) not in (None, 0.0))
 
 
+def _desk_switch(desk: dict[str, Any] | None, notes: list[str]) -> str | None:
+    """The desk's own switch word from ``/api/desk``'s ``kill_switch``; None, with a note, when not read."""
+    word = desk.get("kill_switch") if desk is not None else None
+    if word in DESK_SWITCH_WORDS:
+        return word
+    if desk is None:
+        why = "was not read"
+    elif word is None:
+        why = "serves no kill_switch"
+    else:
+        why = f"serves {str(word)[:40]!r}, not one of {', '.join(DESK_SWITCH_WORDS)}"
+    notes.append(f"book_summary: desk_switch not read: GET /api/desk {why}")
+    return None
+
+
 def _kill_switch(ops: dict[str, Any] | None, notes: list[str]) -> tuple[str | None, list[str] | None, str | None]:
     """(``disabled`` | ``armed`` | ``halted``, the limit names it trips on, the limit that halted it)
     from ``/api/ops``'s ``alerts``; each None when not read. The name is copied only when the switch
@@ -309,11 +329,13 @@ def _book_summary(desk: dict[str, Any] | None, graph: dict[str, Any] | None, ops
     positions = _positions_held(desk, notes)
     kill_switch, trips_on, tripped_by = _kill_switch(ops, notes)
     limits = _limits(graph, notes)
+    desk_switch = _desk_switch(desk, notes)
     notes.append(BOOK_NOTE)
     return [{"as_of": read_at, "positions": positions, "kill_switch": kill_switch,
              "tripped_by": tripped_by,
              "trips_on": None if trips_on is None else json.dumps(trips_on),
-             "limits": None if limits is None else json.dumps(limits, sort_keys=True)}]
+             "limits": None if limits is None else json.dumps(limits, sort_keys=True),
+             "desk_switch": desk_switch}]
 
 
 def _spec(session: date, fills: list[dict], pnl: list[dict], refusals: list[dict], overlay: list[dict],

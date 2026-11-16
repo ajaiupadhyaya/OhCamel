@@ -289,6 +289,79 @@ fn realized_vol_minute<'py>(
     Ok(out.into_pyarray(py))
 }
 
+#[pyfunction]
+fn american_price<'py>(
+    py: Python<'py>,
+    s: PyReadonlyArray1<'py, f64>,
+    k: PyReadonlyArray1<'py, f64>,
+    t: PyReadonlyArray1<'py, f64>,
+    r: PyReadonlyArray1<'py, f64>,
+    q: PyReadonlyArray1<'py, f64>,
+    sigma: PyReadonlyArray1<'py, f64>,
+    phi: PyReadonlyArray1<'py, f64>,
+    div_t: PyReadonlyArray1<'py, f64>,
+    div_amt: PyReadonlyArray1<'py, f64>,
+    steps: usize,
+    threads: usize,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let (s_, k_, t_, r_, q_) = (
+        s1(&s, "S")?,
+        s1(&k, "K")?,
+        s1(&t, "T")?,
+        s1(&r, "r")?,
+        s1(&q, "q")?,
+    );
+    let (sg, ph, dt, da) = (
+        s1(&sigma, "sigma")?,
+        s1(&phi, "phi")?,
+        s1(&div_t, "div_t")?,
+        s1(&div_amt, "div_amt")?,
+    );
+    let out = py
+        .detach(|| {
+            crate::american::american_price(s_, k_, t_, r_, q_, sg, ph, dt, da, steps, threads)
+        })
+        .map_err(err)?;
+    Ok(out.into_pyarray(py))
+}
+
+#[pyfunction]
+fn american_iv<'py>(
+    py: Python<'py>,
+    price: PyReadonlyArray1<'py, f64>,
+    s: PyReadonlyArray1<'py, f64>,
+    k: PyReadonlyArray1<'py, f64>,
+    t: PyReadonlyArray1<'py, f64>,
+    r: PyReadonlyArray1<'py, f64>,
+    q: PyReadonlyArray1<'py, f64>,
+    phi: PyReadonlyArray1<'py, f64>,
+    guess: PyReadonlyArray1<'py, f64>,
+    div_t: PyReadonlyArray1<'py, f64>,
+    div_amt: PyReadonlyArray1<'py, f64>,
+    steps: usize,
+    threads: usize,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let (pr, s_, k_, t_) = (
+        s1(&price, "price")?,
+        s1(&s, "S")?,
+        s1(&k, "K")?,
+        s1(&t, "T")?,
+    );
+    let (r_, q_, ph, g) = (
+        s1(&r, "r")?,
+        s1(&q, "q")?,
+        s1(&phi, "phi")?,
+        s1(&guess, "guess")?,
+    );
+    let (dt, da) = (s1(&div_t, "div_t")?, s1(&div_amt, "div_amt")?);
+    let out = py
+        .detach(|| {
+            crate::american::american_iv(pr, s_, k_, t_, r_, q_, ph, g, dt, da, steps, threads)
+        })
+        .map_err(err)?;
+    Ok(out.into_pyarray(py))
+}
+
 #[pymodule]
 fn ohcamel_kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("API_VERSION", crate::API_VERSION)?;
@@ -305,5 +378,7 @@ fn ohcamel_kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(backtest_weights, m)?)?;
     m.add_function(wrap_pyfunction!(svi_fit, m)?)?;
     m.add_function(wrap_pyfunction!(realized_vol_minute, m)?)?;
+    m.add_function(wrap_pyfunction!(american_price, m)?)?;
+    m.add_function(wrap_pyfunction!(american_iv, m)?)?;
     Ok(())
 }

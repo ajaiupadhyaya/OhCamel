@@ -7,7 +7,7 @@ import { Fragment, useEffect, useMemo, useRef, type CSSProperties } from "react"
 import { InfoTip, type InfoProp } from "../../components";
 import { fmtCompact, fmtNum, fmtPct } from "../../lib/format";
 import { INFO } from "./info";
-import type { Chain, Quote } from "./types";
+import type { Chain, IvStatus, Quote } from "./types";
 
 export type ChainView = "pricing" | "greeks";
 type ColKey = "oi" | "volume" | "vendor_iv" | "iv" | "delta" | "gamma" | "vega" | "theta_day" | "bid" | "ask";
@@ -38,6 +38,25 @@ const FLAG_TEXT: [keyof Quote, string][] = [
   ["stale", "stale"],
   ["arb_bound", "outside no-arbitrage bounds"],
 ];
+
+/** Short label and explanation for a blank IV (the chain's own note replaces the text when it has one). */
+export const IV_STATUS_TEXT: Record<Exclude<IvStatus, "ok">, [string, string]> = {
+  no_quote: ["NO QUOTE", "No two-sided quote: nothing to invert."],
+  zero_bid: ["0 BID", "Zero bid: the quote is not a usable market."],
+  crossed: ["CROSSED", "Bid at or above ask: the quote is not a usable market."],
+  wide: ["WIDE", "Bid-ask spread wider than the filter (a fraction of the mid): the mid is not used."],
+  arb_bound: ["ARB", "The quote crosses a no-arbitrage bound, so no volatility reproduces it."],
+  at_intrinsic: ["INTR", "Bid at or below exercise value (mid within its own half-spread of it): the quote does not exclude zero time value, so no volatility is identified. Not arbitrage."],
+  below_model_forward: ["FWD", "Mid below the model forward's lower bound D(F - K): one dividend yield per expiry cannot fit it."],
+  no_vol: ["NO VOL", "No identifiable volatility: none reproduces the mid, or the price barely moves with vol at the root."],
+};
+
+/** The chain note that explains a status (notes for American statuses start with the status name). */
+export function ivStatusInfo(status: Exclude<IvStatus, "ok">, notes: string[] | string | undefined): { title: string; text: string } {
+  const list = Array.isArray(notes) ? notes : notes ? [notes] : [];
+  const note = list.find((n) => n.startsWith(`${status}:`) || n.startsWith(`${status} `));
+  return { title: `No IV: ${status.replace(/_/g, " ")}`, text: note ?? IV_STATUS_TEXT[status][1] };
+}
 
 export interface RowPair {
   strike: number;
@@ -106,7 +125,14 @@ export function ChainTable({ c, rows, view, onTrade, maxHeight = 600 }: { c: Cha
         const flags = FLAG_TEXT.filter(([f]) => q[f]).map(([, t]) => t);
         return (
           <td key={key} className={`${cls} ${q.use_smile ? "vx-ch-iv-used" : ""}`} title={flags.length ? `Flags: ${flags.join(", ")}` : q.use_smile ? "Used in the SVI fit" : undefined}>
-            {fmtPct(q.iv, 1)}
+            {q.iv == null && q.iv_status && q.iv_status !== "ok" ? (
+              <span className="vx-ch-ivstatus subtle">
+                {IV_STATUS_TEXT[q.iv_status][0]}
+                <InfoTip info={ivStatusInfo(q.iv_status, c.notes)} size={10} label={IV_STATUS_TEXT[q.iv_status][0]} />
+              </span>
+            ) : (
+              fmtPct(q.iv, 1)
+            )}
             {flags.length > 0 && <span className="vx-flag" aria-label={flags.join(", ")} />}
           </td>
         );
@@ -155,7 +181,7 @@ export function ChainTable({ c, rows, view, onTrade, maxHeight = 600 }: { c: Cha
               {i === fwdIdx && (
                 <tr className="vx-fwd-row">
                   <td colSpan={callCols.length * 2 + 1}>
-                    <span className="vx-fwd-label num">FWD {fmtNum(F, 2)} · SPOT {fmtNum(c.spot, 2)}</span>
+                    <span className="vx-fwd-label num">FWD {fmtNum(F, 2)} · SPOT {fmtNum(c.spot, 2)}{c.iv_spot_source === "implied" ? ` · IV SPOT ${fmtNum(c.iv_spot, 2)} (OPTION-IMPLIED)` : ""}</span>
                   </td>
                 </tr>
               )}
