@@ -42,7 +42,7 @@
 - Consumes: `create_app`, `WEB_DIST`
 - Produces: `HEAD /api/health` → 200 with the same JSON keys as GET when a body is returned; status 200 either way. Unknown `/api/*` stays 404.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Mount a temporary dist so the catch-all exists. Patch `ohcamel_quant.api.app.WEB_DIST` to a directory that contains `index.html` with the literal text `SHELL`, then `create_app()`.
 
@@ -59,23 +59,23 @@ def test_head_health_is_not_stolen_by_the_shell(tmp_path, monkeypatch):
     assert c.head("/").status_code == 200
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd quant && OHCAMEL_QUANT_OFFLINE=1 .venv/bin/pytest tests/test_scaffold.py::test_head_health_is_not_stolen_by_the_shell -q`
 
 Expected: FAIL, `HEAD /api/health` is 404.
 
-- [ ] **Step 3: Stop the SPA route from owning `/api`**
+- [x] **Step 3: Stop the SPA route from owning `/api`**
 
 In `app.py`, replace the catch-all `Route` with a subclass whose `matches` returns `Match.NONE` for path `/api` and any path starting `/api/`. Keep methods `GET` and `HEAD` for every other path. Do not change the health handler's body. If, after the catch-all steps aside, `HEAD /api/health` is 405, declare that route with methods `GET` and `HEAD` explicitly. The handler is unchanged.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd quant && OHCAMEL_QUANT_OFFLINE=1 .venv/bin/pytest tests/test_scaffold.py::test_head_health_is_not_stolen_by_the_shell tests/test_scaffold.py::test_health -q`
 
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add quant/src/ohcamel_quant/api/app.py quant/tests/test_scaffold.py
@@ -100,7 +100,7 @@ EOF
 - Consumes: nothing from Task 1
 - Produces: `LEDGER_AS_OF === "2026-11-05"`. No item named `BACKUPS PAUSED` or `LIVE HOST BEHIND`. Rows below, exact detail strings.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Replace the assertions that require `2026-10-08`, `/var/backups/ohcamel` as an outstanding root step, and `88ebc96`. Keep the tests that every product row has a real kind, every cut is listed, labels are unique, and no detail ends in `?`.
 
@@ -123,13 +123,13 @@ it("says incubation is sized on the paper book and the warehouse file is not cop
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd quant/web && npm test -- src/pages/ledger/entries.test.ts`
 
 Expected: FAIL on the date and the missing rows. Use the web package's existing vitest script if `npm test` is not that script (`package.json` `test`).
 
-- [ ] **Step 3: Replace the stale rows**
+- [x] **Step 3: Replace the stale rows**
 
 Set `LEDGER_AS_OF` to `2026-11-05`.
 
@@ -141,13 +141,13 @@ Set `LEDGER_AS_OF` to `2026-11-05`.
 - Replace owner `BACKUP DIRECTORY` with `BOOK LIMITS`, detail `book-cap $700,000, var-cap $30,000, dd-cap 10%. The kill switch stays armed on those three.`
 - Replace owner `EXP-Q01 UNIVERSE` detail with `Frozen 2026-10-08. The I-Q01-7 dollar-volume sign stays −1 until a new experiment.`
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd quant/web && npm test -- src/pages/ledger/entries.test.ts`
 
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add quant/web/src/pages/ledger/entries.ts quant/web/src/pages/ledger/entries.test.ts
@@ -172,7 +172,7 @@ EOF
 - Consumes: the limit numbers and the ledger decisions from the spec
 - Produces: no remaining sentence that the stop rules are unbuilt; no remaining sentence that the public host is a generated feed
 
-- [ ] **Step 1: Write the failing check**
+- [x] **Step 1: Write the failing check**
 
 There is no docs test harness. The check is `rg`.
 
@@ -183,11 +183,11 @@ rg -n "generated feed" docs/overview.md
 
 Expected before the edit: both match.
 
-- [ ] **Step 2: Confirm they match**
+- [x] **Step 2: Confirm they match**
 
 Run the two commands. Expected: one match each.
 
-- [ ] **Step 3: Replace those sentences and nothing around them**
+- [x] **Step 3: Replace those sentences and nothing around them**
 
 In `docs/status.md`, replace `**Stop rules and the record scoring:** Stage 3, not yet built. **Intraday strategies:** Stage 2, not yet built.` with `**Stop rules** run at the close (`desk/stop.ml`). **Intraday strategies** are not built.`
 
@@ -202,7 +202,7 @@ In `docs/overview.md`, replace the four bullets under `## Where it runs` with:
 
 Leave the rest of `overview.md` and the rest of `status.md` alone, including the engine essay and the historical log.
 
-- [ ] **Step 4: Run the check**
+- [x] **Step 4: Run the check**
 
 ```bash
 rg -n "Stage 3, not yet built|generated feed" docs/status.md docs/overview.md
@@ -210,7 +210,7 @@ rg -n "Stage 3, not yet built|generated feed" docs/status.md docs/overview.md
 
 Expected: no matches. `rg` exits 1, which is success for this step.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/status.md docs/overview.md
@@ -239,7 +239,7 @@ EOF
 - Consumes: engine `/api/ops` field `alerts.tripped_by` (string limit name, or JSON null)
 - Produces: `BOOK_COLUMNS` includes `tripped_by` after `kill_switch`. `_book_summary` returns `tripped_by: str | None`. Kill node metric `tripped_by`. Node title `Kill switch: halted by <name>` when state is `halted` and the name is a non-empty string; otherwise the title stays `Kill switch: <state>`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 In `test_signals_report.py`, extend `test_book_summary_is_config_and_counts` so an armed book has `tripped_by` null, and add:
 
@@ -259,7 +259,7 @@ In `test_machine_graph.py`, build a summary whose kill word is `halted` and `tri
 
 In `tour.test.ts`, add a case that clones the fixture, sets the book's `kill` to `halted` and the kill node's `tripped_by` to `dd-cap`, and expects the book step to contain `The kill switch is halted by dd-cap.` The existing armed sentence stays on the unmodified fixture.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 cd quant && OHCAMEL_QUANT_OFFLINE=1 .venv/bin/pytest tests/test_signals_report.py::test_a_tripped_switch_publishes_the_limit_name_only tests/test_machine_graph.py -q -k "halted by"
@@ -268,7 +268,7 @@ cd quant/web && npm test -- src/pages/machine/tour.test.ts
 
 Expected: FAIL because `tripped_by` is absent.
 
-- [ ] **Step 3: Thread the name through, and only the name**
+- [x] **Step 3: Thread the name through, and only the name**
 
 `_kill_switch` returns a third value, `tripped_by: str | None`. It is the engine's string when `kill_switch` maps to `halted` and that string is non-empty. Otherwise null. Do not read `firing`, `recent`, or any numeric alert field.
 
@@ -276,7 +276,7 @@ Add `tripped_by` to `BOOK_COLUMNS` immediately after `kill_switch`. Write null a
 
 `_book_summary` copies it onto the dict. The kill node title uses it only in the halted case. Tour step 7, when `kill` is `halted` and the kill node has a non-empty `tripped_by`, adds the sentence `The kill switch is halted by <name>.` When halted with no name, the sentence is `The kill switch is halted.` The armed sentence is unchanged.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 cd quant && OHCAMEL_QUANT_OFFLINE=1 .venv/bin/pytest tests/test_signals_report.py tests/test_machine_graph.py -q
@@ -285,7 +285,7 @@ cd quant/web && npm test -- src/pages/machine/tour.test.ts src/pages/machine/rea
 
 Expected: PASS. `readings.test.ts` must still refuse position names in the reading that is not the book summary.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add quant/src/ohcamel_quant/signals/report.py quant/src/ohcamel_quant/machine/graph.py \
@@ -325,7 +325,7 @@ def present(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     """Copy of df with prior bars divided through each unadjusted split. Notes are the spec's sentence, one per ex-date, oldest first. Idempotent on an already adjusted series."""
 ```
 
-- [ ] **Step 1: Write the failing tests** in `quant/tests/test_splits.py`
+- [x] **Step 1: Write the failing tests** in `quant/tests/test_splits.py`
 
 Build a two-row frame, index `2026-11-04` and `2026-11-05`. First row OHLC and `adj_close` all `272.86`, volume `1_000_000`. Second row open `66.76` (overnight ratio `272.86 / 66.76` ≈ 4.087, within 3% of 4), high `68`, low `62`, close `62.60`, `adj_close` `62.60`, volume `8_000_000`.
 
@@ -359,13 +359,13 @@ def test_an_adjusted_history_is_unchanged():
 
 Add one integrity test, in `test_products_research_ops.py` or `test_splits.py`, that runs `data_integrity.check_bars` on the raw MTUM-shaped frame and asserts a `split_suspect` row. That function must not import `present`.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd quant && OHCAMEL_QUANT_OFFLINE=1 .venv/bin/pytest tests/test_splits.py -q`
 
 Expected: FAIL, `present` is not defined.
 
-- [ ] **Step 3: Implement `present` and call it on the way out**
+- [x] **Step 3: Implement `present` and call it on the way out**
 
 Move the ratio tuple to `splits.SPLIT_RATIOS`. `fixtures._SPLIT_RATIOS` becomes an alias so existing imports keep working. `fixtures._repair` calls `present` first, then does the decimal-shift repair it already does, and concatenates notes.
 
@@ -375,7 +375,7 @@ Move the ratio tuple to `splits.SPLIT_RATIOS`. `fixtures._SPLIT_RATIOS` becomes 
 
 `_warehouse_bars` calls `present` on each ticker frame before the frames are returned. Attach the notes to the dataset `warehouse_returns` and `warehouse_prices` build. `readers.ohlcv` does not call `present`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 cd quant && OHCAMEL_QUANT_OFFLINE=1 .venv/bin/pytest tests/test_splits.py tests/test_data_prices.py::test_the_load_time_repair_still_fixes_the_archived_vendor_files tests/test_products_research_ops.py -q -k "integrity or split or repair"
@@ -383,7 +383,7 @@ cd quant && OHCAMEL_QUANT_OFFLINE=1 .venv/bin/pytest tests/test_splits.py tests/
 
 Expected: PASS, including the archived XLK repair and the integrity tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add quant/src/ohcamel_quant/data/splits.py quant/src/ohcamel_quant/data/fixtures.py \
@@ -411,11 +411,11 @@ EOF
 - Consumes: the three numbers from the spec
 - Produces: `check-book` accepts the file. The test expects `("book-cap", "portfolio", "$700000.00")`, `("var-cap", "portfolio", "$30000.00")`, `("dd-cap", "portfolio", "10.00%")`.
 
-- [ ] **Step 1: Change the expected strings in `test/test_example_book.ml`**
+- [x] **Step 1: Change the expected strings in `test/test_example_book.ml`**
 
 Those three tuples only. Do not change tests that build their own books with `dd_cap:0.02`; those are fixtures, not this book.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run the example-book test the repo already uses for that file (`test/dune` builds it into the suite). From the repo root, with the project opam switch:
 
@@ -425,7 +425,7 @@ opam exec -- dune exec test/test_ohcamel.exe -- test example book
 
 If that filter is not how Alcotest names it, run the executable with `--help` once and use the printed name. Expected: FAIL on `$500000.00`.
 
-- [ ] **Step 3: Edit the three limits**
+- [x] **Step 3: Edit the three limits**
 
 ```sexp
 ((name book-cap) (scope Portfolio) (kind (Gross_notional 700000.0)))
@@ -435,11 +435,11 @@ If that filter is not how Alcotest names it, run the executable with `--help` on
 
 Update the comment block that tells the next reader the old numbers are the incubation ceiling. One sentence: steady-state gross is $575,000; $700,000 is the bug trip; 10% drawdown is the book halt; $30,000 VaR is about three times the 10% target's one-day 95% VaR.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Same command as Step 2. Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add book.example.sexp test/test_example_book.ml
@@ -472,29 +472,29 @@ quant_data /data/warehouse.duckdb snapshot 10002
 
 Destination name `option-snapshots-YYYY-MM-DD.parquet`. The copy is produced by the Quant image, `duckdb.connect(path, read_only=True)`, then `COPY (SELECT * FROM option_snapshots) TO ? (FORMAT PARQUET)`. No `CHECKPOINT`. No write to `/data/warehouse.duckdb`. If the table is missing, that line fails the run with the file and the reason, and does not delete the previous day's parquet.
 
-- [ ] **Step 1: Write the failing shell test**
+- [x] **Step 1: Write the failing shell test**
 
 Follow the style of `malformed "B4 duckdb is reserved..."`. Add a case `snapshot line is accepted` whose list is the real `backup.list` plus the new line, and assert `--check` exits 0. Keep the existing test that a `duckdb` method is refused. Add a dry-run assertion that the printed command contains `read_only=True` and `option_snapshots`, and does not contain `CHECKPOINT`.
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `bash deploy/test/backup_list_test.sh`
 
 Expected: FAIL on the new case. The reserved-duckdb case still passes.
 
-- [ ] **Step 3: Implement method `snapshot`**
+- [x] **Step 3: Implement method `snapshot`**
 
 In the parser, `snapshot` is a fourth method. Destination `option-snapshots-$today.parquet`. Stem `option-snapshots`, extension `parquet`. The same stem rules as sqlite apply, so the name cannot collide with `desk`.
 
 The copy runs as uid 10002 in the Quant image (the image `backup.sh` already uses for sqlite on `quant_data`; use that service, not the OCaml image). The Python is one short script passed to `python -c`. It connects read-only, copies the table, closes, and exits non-zero if the table is absent. It does not open the database read-write.
 
-- [ ] **Step 4: Run the shell tests**
+- [x] **Step 4: Run the shell tests**
 
 Run: `bash deploy/test/backup_list_test.sh`
 
 Expected: PASS, including the still-reserved `duckdb` method.
 
-- [ ] **Step 5: Update the ledger row, then commit**
+- [x] **Step 5: Update the ledger row, then commit**
 
 Change the `WAREHOUSE FILE NOT COPIED` detail's last sentence to `Option snapshots are exported read-only; they cannot be re-fetched.` The test that matches `/option snapshots/` still passes. Run `cd quant/web && npm test -- src/pages/ledger/entries.test.ts`.
 
