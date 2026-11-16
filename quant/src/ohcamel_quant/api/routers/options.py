@@ -25,7 +25,7 @@ from ...data.base import DataUnavailable
 from ...data.market import MarketData, get_market
 from ...options import bsm, density, realized, strategy, svi
 from ...options.chain import CONTRACT_MULTIPLIER, ChainAnalytics, analyze_chain
-from ...options.parity import EUROPEAN_UNDERLYINGS, InsufficientQuotes
+from ...options.parity import InsufficientQuotes, exercise_style
 from ...options.surface import VolSurface, build_surface, svi_weights
 from ...options.svi import fit_svi
 from ..serialize import clean, frame, records, series
@@ -46,7 +46,8 @@ IMPLIED_INDEX = {"SPY": "VIXCLS", "SPX": "VIXCLS", "XSP": "VIXCLS", "^GSPC": "VI
 REFS = {
     "bsm": "Black & Scholes (1973); Merton (1973); Black (1976); greeks per Haug (2007)",
     "iv": "Corrado & Miller (1996) initial guess; safeguarded Newton (Numerical Recipes rtsafe) + Brent (1973)",
-    "parity": "Put-call parity (Stoll 1969) regression with Huber (1964) IRLS; Cboe VIX white paper forward",
+    "american": "Cox, Ross & Rubinstein (1979) tree; Broadie & Detemple (1996) BBSR; Brent (1973) on price",
+    "parity":"Put-call parity (Stoll 1969) regression with Huber (1964) IRLS; Cboe VIX white paper forward",
     "svi": "Gatheral (2004) raw SVI; Zeliade (2009) quasi-explicit calibration; Gatheral & Jacquier (2014)",
     "mfiv": "Demeterfi, Derman, Kamal & Zou (1999); Britten-Jones & Neuberger (2000); Cboe VIX white paper",
     "bl": "Breeden & Litzenberger (1978)",
@@ -113,7 +114,7 @@ def _bundle(ticker: str, market: MarketData, max_rel_spread: float = 0.5) -> _Bu
     ds = market.option_chain(t)
     provenance = ds.provenance_dicts()
     rate_curve, curve_note = None, None
-    if t.lstrip("_^") not in EUROPEAN_UNDERLYINGS:
+    if (getattr(ds.data, "exercise", None) or exercise_style(t)) == "american":
         try:
             rate_curve, curve_prov = _treasury_rate_curve(market)
             provenance += curve_prov
@@ -153,8 +154,8 @@ def _header(ca: ChainAnalytics) -> dict[str, Any]:
 
 def _slice_summary(ca: ChainAnalytics) -> list[dict[str, Any]]:
     cols = ["expiry", "settlement", "roots", "T", "dte", "forward", "discount", "rate", "div_yield",
-            "rate_source", "rate_se", "forward_se", "parity_rmse", "parity_strikes", "n_contracts", "n_valid",
-            "n_smile", "n_arb_bound", "vendor_iv_mad"]
+            "rate_source", "rate_se", "forward_se", "parity_rmse", "parity_strikes", "n_parity_bound_violations",
+            "pair_vol", "n_contracts", "n_valid", "n_smile", "n_arb_bound", "vendor_iv_mad"]
     s = ca.slices[cols].copy()
     s["expiry_ts"] = ca.slices["expiry_ts"].map(lambda x: pd.Timestamp(x).isoformat())
     return records(s, index_name="slice")
@@ -168,7 +169,10 @@ def expiries(ticker: str, market: Market) -> dict[str, Any]:
     ca = b.ca
     return clean({
         **_header(ca), "expiries": _slice_summary(ca),
-        "method": {"forward": "put-call parity regression per expiry", "day_count": "ACT/365 to settlement",
+        "method": {"forward": ("put-call parity regression per expiry" if ca.european else
+                               "the strike pair nearest the money priced as American (call and put share one "
+                               "vol); parity elsewhere is a bound"),
+                   "day_count": "ACT/365 to settlement",
                    "reference": REFS["parity"]},
         "notes": ca.notes, "errors": ca.errors, "provenance": b.provenance,
     })
@@ -220,7 +224,10 @@ def chain(
         "quotes": records(q[QUOTE_COLS].reset_index(drop=True)),
         "smile": smile,
         "multiplier": CONTRACT_MULTIPLIER, "greeks_units": greeks_units,
-        "method": {"iv": "Black-76 on the mid with parity-implied F and D", "iv_solver": REFS["iv"],
+        "method": {"iv": ("Black-76 on the mid with parity-implied F and D" if ca.european else
+                          "American CRR binomial price (400 steps, BBSR) on spot with the expiry's r and "
+                          "pair-implied q, inverted by Brent's method"),
+                   "iv_solver": REFS["iv"] if ca.european else REFS["american"],
                    "greeks": REFS["bsm"], "otm_rule": "puts for K < F, calls for K >= F",
                    "filters": ca.params, "reference": REFS["parity"]},
         "notes": notes, "provenance": b.provenance,
@@ -500,6 +507,10 @@ def strategy_endpoint(body: StrategyIn, market: Market) -> dict[str, Any]:
     notes.extend(out.pop("notes"))
     notes.append("values before expiry assume sticky strike (each leg keeps today's IV) and the expiry's "
                  "parity-implied r and q; stock legs ignore dividends")
+    if not ca.european:
+        notes.append("American legs are valued before expiry with Black-Scholes at their American IV (no early "
+                     "exercise): an in-the-money put's value today sits below its mid by its early-exercise "
+                     "premium (the chain's mid - model_price)")
     notes.append(f"contract multiplier {CONTRACT_MULTIPLIER:g} (standard equity/index options)")
     return clean({
         **_header(ca), **out,

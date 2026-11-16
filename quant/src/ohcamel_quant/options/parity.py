@@ -23,13 +23,22 @@ reliably-fitted slices (linear interpolation in T, flat extrapolation) and
 re-estimates ``F`` with ``D`` fixed; the slice is flagged ``rate_source =
 'borrowed'``.
 
-American-style options (single stocks, ETFs) satisfy parity only as an inequality:
-the early-exercise premium of in-the-money puts bends ``C - P`` in ``K``, so the
-regression slope -- hence ``D`` and ``r`` -- is biased (live SPY chains give
-implausible rates on some expiries). For those underlyings callers pass
-``rate_curve`` (the Treasury curve, as the Cboe VIX white paper does), ``D`` is
-fixed from it and only ``F`` is estimated; the implied ``q`` then also absorbs the
-early-exercise premium near the money -- callers must say so.
+American-style options (single stocks, ETFs; :func:`exercise_style`) satisfy parity
+only as bounds (Hull 2018, ch. 11; continuous yield ``q``)::
+
+    S e^{-qT} - K  <=  C - P  <=  S - K D
+
+the early-exercise premium of in-the-money puts bends ``C - P`` in ``K`` (on the
+2026-11-15 SPY chain the European regression's RMSE grew from $0.11 at 33 days to
+$4.31 at two years), so neither the slope (``D``) nor a location over many strikes
+(``F``) is unbiased. For those underlyings callers pass ``rate_curve`` (the Treasury
+curve, as the Cboe VIX white paper does) and ``D`` is fixed from it; ``F`` comes from
+the strike pair nearest the money ``K*`` alone, solved with American prices
+(:func:`american_pair_forward`): ``(sigma, q)`` such that the American call and put
+at ``K*`` (:mod:`.american`, on spot with the slice's ``r``) both reprice their mids,
+so the pair shares one volatility; ``F = S e^{(r-q)T}``. Elsewhere parity is only
+the bounds above (:func:`bound_violations`). No dividend schedule is used: discrete
+dividends are carried by the pair-implied continuous ``q``.
 
 Timing: ``T`` is ACT/365 from the quote instant to the settlement instant, both
 US/Eastern wall-clock: 16:00 for PM-settled contracts, 09:30 (the opening print
@@ -42,19 +51,29 @@ Early-close sessions (13:00 ET) are not modelled: T is overstated by 3 hours the
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from typing import Any
+from dataclasses import asdict, dataclass, field, replace
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
+from scipy.special import ndtr
 
 SECONDS_PER_YEAR = 365.0 * 86400.0
 AM_SETTLED_ROOTS = frozenset({"SPX", "NDX", "RUT", "DJX", "VIX", "VIXW"})
 EUROPEAN_UNDERLYINGS = frozenset({"SPX", "XSP", "NDX", "RUT", "MRUT", "DJX", "VIX", "XEO", "NANOS"})
 
 
+Exercise = Literal["american", "european"]
+
+
 class InsufficientQuotes(ValueError):
     """Not enough two-sided quotes to identify the forward / discount factor."""
+
+
+def exercise_style(underlying: str) -> Exercise:
+    """'european' for cash-settled index roots (SPX, NDX, RUT, ... -- ``EUROPEAN_UNDERLYINGS``),
+    'american' for everything else (ETF and single-name options). The one classification."""
+    return "european" if str(underlying).upper().lstrip("_^") in EUROPEAN_UNDERLYINGS else "american"
 
 
 def settlement_style(root: str) -> str:
@@ -93,10 +112,12 @@ class ParityFit:
     n_strikes: int
     rate_se: float              # standard error of r implied by the slope (NaN if not estimated)
     forward_se: float
-    residual_rmse: float        # of C - P, USD
-    rate_source: str = "regression"   # 'regression' | 'borrowed'
+    residual_rmse: float        # of C - P, USD (NaN for an American fit: chain.py computes it)
+    rate_source: str = "regression"   # 'regression' | 'borrowed' | 'treasury'
     k_star: float = float("nan")      # strike with the smallest |C - P|
     strikes: list[float] = field(default_factory=list)
+    exercise: str = "european"        # 'american': F from the K* pair with American prices
+    pair_vol: float = float("nan")    # American: the vol the K* call and put share
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -166,18 +187,88 @@ def pair_quotes(slice_quotes: pd.DataFrame) -> pd.DataFrame:
     return j.rename(columns={"mid_c": "c_mid", "mid_p": "p_mid", "spread_c": "c_spread", "spread_p": "p_spread"})
 
 
+def american_pair_forward(
+    c_mid: float, p_mid: float, K: float, spot: float, T: float, D: float, maxiter: int = 100,
+) -> tuple[float, float, float]:
+    """``(F, q, sigma)`` at which the American call and put struck at ``K`` (:mod:`.american`, on
+    ``spot`` with ``r = -ln D / T`` and continuous yield ``q``) both reprice their mids.
+
+    Start from European parity (``F0 = K + (C - P)/D``, ``sigma0`` its Black-76 vol) and iterate
+    Newton steps whose Jacobian is the Black-Scholes one (vega, and ``dV/dq = -phi T S e^{-qT}
+    N(phi d1)``) -- exact for the European part, so the iteration contracts at the rate the
+    early-exercise premium moves with ``(sigma, q)``. Stops when ``|dq| T < 1e-13`` and ``|dsigma| <
+    1e-11``; :class:`InsufficientQuotes` if the pair has no such solution."""
+    from . import american, bsm
+
+    r = -np.log(D) / T
+    F0 = K + (c_mid - p_mid) / D
+    if not F0 > 0:
+        raise InsufficientQuotes(f"the K={K:g} pair implies a non-positive forward")
+    q = float(r - np.log(F0 / spot) / T)
+    sig = float(bsm.implied_vol_black(c_mid, F0, K, T, D, "C"))
+    if not np.isfinite(sig):
+        raise InsufficientQuotes(f"the K={K:g} call has no implied volatility")
+    typ = np.array([True, False])
+    for _ in range(maxiter):
+        a = american.prices(spot, K, T, r, q, sig, typ, threads=1)
+        rc, rp = float(a[0]) - c_mid, float(a[1]) - p_mid
+        g = T * spot * np.exp(-q * T)
+        sd = sig * np.sqrt(T)
+        d1 = (np.log(spot / K) + (r - q + 0.5 * sig * sig) * T) / sd
+        vega = spot * np.exp(-q * T) * np.exp(-0.5 * d1 * d1) / np.sqrt(2.0 * np.pi) * np.sqrt(T)
+        dq = (rc - rp) / g
+        dsig = (-rc + g * float(ndtr(d1)) * dq) / vega
+        if not (np.isfinite(dq) and np.isfinite(dsig)):
+            break
+        q, sig = q + dq, sig + dsig
+        if not sig > 0:
+            break
+        if abs(dq) * T < 1e-13 and abs(dsig) < 1e-11:
+            return float(spot * np.exp((r - q) * T)), q, sig
+    raise InsufficientQuotes(f"no (vol, yield) reprices the K={K:g} American call and put")
+
+
+def bound_violations(paired: pd.DataFrame, spot: float, T: float, D: float, q: float) -> int:
+    """Strikes whose two-sided quotes cross the American parity bounds tradeably:
+    ``C_bid - P_ask > S - K D`` or ``C_ask - P_bid < S e^{-qT} - K`` (``paired`` from
+    :func:`pair_quotes`; bid/ask = mid -/+ spread / 2)."""
+    K = paired.index.to_numpy(dtype=float)
+    cb, ca = paired["c_mid"] - paired["c_spread"] / 2, paired["c_mid"] + paired["c_spread"] / 2
+    pb, pa = paired["p_mid"] - paired["p_spread"] / 2, paired["p_mid"] + paired["p_spread"] / 2
+    upper = (cb - pa).to_numpy() > spot - K * D
+    lower = (ca - pb).to_numpy() < spot * np.exp(-q * T) - K
+    return int((upper | lower).sum())
+
+
 def fit_parity(
     slice_quotes: pd.DataFrame, spot: float, T: float, n_strikes: int = 12,
     fixed_discount: float | None = None, paired: pd.DataFrame | None = None,
-    rate_source: str = "borrowed",
+    rate_source: str = "borrowed", exercise: Exercise = "european",
 ) -> ParityFit:
     """Estimate ``F, D`` for one expiry from strike-paired two-sided mids.
 
     Uses the ``n_strikes`` strikes closest (in log-strike) to ``K*``, the strike
     minimizing ``|C - P|``. With ``fixed_discount`` the slope is fixed and only
     ``F`` is estimated (weighted Huber location of ``K + (C - P)/D``). ``paired`` may
-    pass a precomputed :func:`pair_quotes` result.
+    pass a precomputed :func:`pair_quotes` result. With ``exercise='american'``, ``D``
+    is found as above and ``F`` then comes from the ``K*`` pair alone
+    (:func:`american_pair_forward`); ``residual_rmse`` is left to the caller (NaN).
     """
+    fit = _fit_european(slice_quotes, spot, T, n_strikes, fixed_discount, paired, rate_source)
+    if exercise != "american":
+        return fit
+    pq = pair_quotes(slice_quotes) if paired is None else paired
+    row = pq.loc[fit.k_star]
+    F, q, sig = american_pair_forward(float(row["c_mid"]), float(row["p_mid"]), fit.k_star, spot, T, fit.discount)
+    f_se = float(np.sqrt((row["c_spread"] ** 2 + row["p_spread"] ** 2) / 12.0) / fit.discount)
+    return replace(fit, forward=F, div_yield=q, forward_se=f_se, residual_rmse=float("nan"),
+                   exercise="american", pair_vol=sig)
+
+
+def _fit_european(
+    slice_quotes: pd.DataFrame, spot: float, T: float, n_strikes: int,
+    fixed_discount: float | None, paired: pd.DataFrame | None, rate_source: str,
+) -> ParityFit:
     if T <= 0:
         raise InsufficientQuotes("expiry is not in the future")
     pq = pair_quotes(slice_quotes) if paired is None else paired
@@ -236,14 +327,14 @@ def fit_parity(
 
 def fit_all(
     slices: dict[Any, tuple[pd.DataFrame, float]], spot: float, n_strikes: int = 12,
-    max_rate_se: float = 0.005, rate_curve: Any = None,
+    max_rate_se: float = 0.005, rate_curve: Any = None, exercise: Exercise = "european",
 ) -> tuple[dict[Any, ParityFit], dict[Any, str]]:
     """Fit every slice; slices with an unidentified rate borrow it (see module doc).
 
     ``slices`` maps a slice id to ``(quotes, T)``. With ``rate_curve`` (a callable
     ``T -> continuously-compounded r``, e.g. the Treasury curve), every slice fixes
     ``D = exp(-r(T) T)`` and estimates only ``F`` (``rate_source = 'treasury'``).
-    Returns (fits, errors-by-slice).
+    ``exercise`` is passed to :func:`fit_parity`. Returns (fits, errors-by-slice).
     """
     fits: dict[Any, ParityFit] = {}
     errors: dict[Any, str] = {}
@@ -253,13 +344,13 @@ def fit_all(
             r = float(rate_curve(T))
             try:
                 fits[sid] = fit_parity(q, spot, T, n_strikes, fixed_discount=float(np.exp(-r * T)),
-                                       paired=pairs[sid], rate_source="treasury")
+                                       paired=pairs[sid], rate_source="treasury", exercise=exercise)
             except InsufficientQuotes as e:
                 errors[sid] = str(e)
         return fits, errors
     for sid, (q, T) in slices.items():
         try:
-            fits[sid] = fit_parity(q, spot, T, n_strikes, paired=pairs[sid])
+            fits[sid] = fit_parity(q, spot, T, n_strikes, paired=pairs[sid], exercise=exercise)
         except InsufficientQuotes as e:
             errors[sid] = str(e)
     good = {s: f for s, f in fits.items()
@@ -280,7 +371,8 @@ def fit_all(
             continue
         r = float(np.interp(T, gT, gr))  # flat extrapolation outside the fitted range
         try:
-            fits[sid] = fit_parity(q, spot, T, n_strikes, fixed_discount=float(np.exp(-r * T)), paired=pairs[sid])
+            fits[sid] = fit_parity(q, spot, T, n_strikes, fixed_discount=float(np.exp(-r * T)), paired=pairs[sid],
+                                   exercise=exercise)
             errors.pop(sid, None)
         except InsufficientQuotes as e:
             errors[sid] = str(e)

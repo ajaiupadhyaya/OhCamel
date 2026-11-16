@@ -114,7 +114,9 @@ export function ImpliedTab({ surface, chain, expiry }: { surface: ReturnType<typ
 }
 
 const d_note = (s: Surface | undefined) =>
-  s?.exercise_style === "American" ? "American exercise: parity is approximate; fitted on near-the-money strikes where early-exercise value is smallest." : "European exercise: parity holds exactly.";
+  s?.exercise_style === "American"
+    ? "American exercise: F and q come from the strike pair nearest the money, priced as American so its call and put share one vol; elsewhere parity is only a bound. RMSE is after removing each leg's early-exercise premium."
+    : "European exercise: parity holds exactly.";
 
 // ------------------------------------------------------------------ smile
 function SmilePanel({ c }: { c: Chain }) {

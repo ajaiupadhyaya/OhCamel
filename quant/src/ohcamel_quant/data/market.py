@@ -71,13 +71,16 @@ class OptionChain:
     ``quotes`` columns: expiry (Timestamp), strike, type ('C'|'P'), bid, ask,
     last, volume, open_interest, vendor_iv (decimal, may be NaN),
     contract (OCC symbol). Rows with no two-sided market are kept; analytics
-    decide what to filter and say so.
+    decide what to filter and say so. ``exercise`` ('american' | 'european') is set
+    only by a source that states the style; otherwise analytics classify the
+    underlying (options.parity.exercise_style).
     """
 
     underlying: str
     spot: float
     as_of: pd.Timestamp
     quotes: pd.DataFrame
+    exercise: str | None = None
 
 
 def _window(df: pd.DataFrame, start: date | None, end: date | None) -> pd.DataFrame:

@@ -17,7 +17,7 @@ export interface ExtraSection {
   entries: Entry[];
 }
 
-/** The ten functions of contract II.4, in its order (kernels/__init__.py API). */
+/** The twelve functions of contract II.4, in its order (kernels/__init__.py API). */
 export const KERNEL_API = [
   "fhs_paths",
   "copula_t_paths",
@@ -29,6 +29,8 @@ export const KERNEL_API = [
   "backtest_weights",
   "svi_fit",
   "realized_vol_minute",
+  "american_price",
+  "american_iv",
 ] as const;
 
 const COMPUTE = { label: "Compute · Kernels", to: "/compute" };
@@ -41,6 +43,7 @@ const OPT_BT = { label: "Optimizer · Backtest", to: "/optimize?tab=backtest" };
 const VOL_FC = { label: "Volatility · Forecasts", to: "/options?tab=forecasts" };
 const VOL_SURF = { label: "Volatility · Surface", to: "/options?tab=surface" };
 const VOL_HIST = { label: "Volatility · History", to: "/options?tab=history" };
+const VOL_CHAIN = { label: "Volatility · Chain & strategies", to: "/options?tab=chain" };
 
 const THREADED = "Parallel over rows in fixed 16k chunks: chunk c goes to worker c mod threads, which draws from ChaCha20 seeded by seed on stream = worker index; the same (seed, threads) is bit-identical on any machine.";
 const RANDOM_PARITY = "Rust and the NumPy reference draw from different generators (ChaCha20, PCG64), so they agree in distribution; the parity tests check moments to a stated tolerance.";
@@ -206,6 +209,29 @@ export const KERNELS: Entry[] = [
     appears: [VOL_FC, COMPUTE],
     refs: ["andersen_bollerslev_1998"],
     keywords: "realized variance minute bars intraday har",
+  },
+  {
+    id: "kernel-american_price",
+    name: "american_price — American options on a binomial tree",
+    summary: "Values American calls and puts on a Cox–Ross–Rubinstein tree over the escrowed spot (spot less the present value of cash dividends before expiry), with a continuous yield q. Each node is worth the larger of holding and exercising against the cum-dividend price; the last step is the Black–Scholes value and two trees (N and N/2 steps) are combined by Richardson extrapolation.",
+    formulas: [
+      { tex: T`u = e^{\sigma\sqrt{\Delta t}},\quad p = \frac{e^{(r-q)\Delta t} - 1/u}{u - 1/u},\quad V_{i,j} = \max\big(e^{-r\Delta t}[pV_{i+1,j+1} + (1-p)V_{i+1,j}],\ \phi(S_{i,j} - K)\big)` },
+      { tex: T`V = \max\big(2V_N - V_{N/2},\ \phi(S - K),\ 0\big)`, caption: "BBSR: Black–Scholes last step, Richardson-extrapolated" },
+    ],
+    assumptions: ["400 steps by default; within about 1e-3 of the limit on a 100 underlying.", "Parallel over contracts; the result does not depend on the thread count.", "Deterministic: Rust matches the NumPy reference to 1e-8 (parity test; measured 1e-13)."],
+    appears: [VOL_CHAIN, VOL_SURF, COMPUTE],
+    refs: ["cox_ross_rubinstein_1979", "broadie_detemple_1996"],
+    keywords: "american option binomial tree crr early exercise dividend",
+  },
+  {
+    id: "kernel-american_iv",
+    name: "american_iv — implied volatility of American options",
+    summary: "The volatility at which american_price equals a quote: from a Black–Scholes guess it steps by 1.25 times the Black–Scholes Newton step, doubling until the pricing error changes sign, then runs Brent's method on the bracket. NaN where no volatility reproduces the quote (at or below immediate exercise, at or above the underlying for a call or the strike for a put).",
+    formulas: [{ tex: T`\sigma^* :\ V_{\text{American}}(\sigma^*) = \text{quote}` }],
+    assumptions: ["Brent's xtol is 1e-10; the guess changes only the work, not the root.", "Parallel over contracts.", "Deterministic: Rust matches the NumPy reference to 1e-8 (parity test; measured 5e-11)."],
+    appears: [VOL_CHAIN, VOL_SURF, COMPUTE],
+    refs: ["cox_ross_rubinstein_1979", "broadie_detemple_1996"],
+    keywords: "american implied volatility brent early exercise",
   },
 ];
 

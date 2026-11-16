@@ -39,8 +39,8 @@ describe("Ledger accuracy (re-dated 2026-11-05)", () => {
     expect(text).toMatch(/10%/);
   });
   it("counts the kernels the Methodology documents", () => {
-    expect(KERNEL_API).toHaveLength(10);
-    expect(LEDGER.find((e) => e.item === "KERNELS")?.detail).toMatch(/^Ten Rust kernels/);
+    expect(KERNEL_API).toHaveLength(12);
+    expect(LEDGER.find((e) => e.item === "KERNELS")?.detail).toMatch(/^Twelve Rust kernels/);
   });
   it("lists every cut of the Ship spec §2", () => {
     const cut = LEDGER.filter((e) => e.section === "CUT").map((e) => e.item);

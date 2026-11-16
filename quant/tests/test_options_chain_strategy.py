@@ -44,7 +44,8 @@ def make_chain(spot: float = S0, root: str = "TESTX", half_spread: float = 0.01)
                 rows.append({"contract": occ, "root": root, "expiry": pd.Timestamp(e), "strike": K, "type": cp,
                              "bid": bid, "ask": ask, "last": mid, "volume": 10.0, "open_interest": 100.0,
                              "vendor_iv": iv})
-    return OptionChain(underlying=root, spot=spot, as_of=AS_OF, quotes=pd.DataFrame(rows))
+    # priced with Black-Scholes, so the chain states European exercise whatever its root
+    return OptionChain(underlying=root, spot=spot, as_of=AS_OF, quotes=pd.DataFrame(rows), exercise="european")
 
 
 @pytest.fixture(scope="module")
@@ -73,7 +74,7 @@ def test_chain_recovers_forward_rate_yield_and_iv(ca):
     assert (sm["otm"]).all()
     assert ((sm["type"] == "P") == (sm["k"] < 0)).all()
     assert ca.quotes["zero_bid"].any() and not ca.quotes.loc[ca.quotes["zero_bid"], "valid"].any()
-    assert not ca.european and any("American" in n for n in ca.notes)
+    assert ca.european and ca.exercise == "european" and not any("American" in n for n in ca.notes)
 
 
 def test_chain_flags_bad_quotes_and_drops_adjusted_roots():
@@ -186,3 +187,89 @@ def test_value_today_equals_mid_cost(ca, vs):
     today = out["grid"]["curves"]["today"]["pnl"]
     i = int(np.argmin(np.abs(S - S0)))
     assert S[i] == pytest.approx(S0) and today[i] == pytest.approx(0.0, abs=0.02)
+
+
+# ------------------------------------------------------------------ American exercise
+AM_SIG = 0.25
+AM_EXPIRIES = ["2026-12-18", "2027-09-17"]
+
+
+def make_american_chain(half_spread: float = 0.005) -> OptionChain:
+    """Every quote is the American model price (options.american) at one flat vol, with the yield
+    Q and the rate R: the chain analytics must give back AM_SIG at every strike, call or put."""
+    from ohcamel_quant.options import american
+
+    rows = []
+    for e in AM_EXPIRIES:
+        T = float(parity.year_fraction(AS_OF, parity.expiry_timestamp(e, "AMX"))[0])
+        K = np.arange(420.0, 581.0, 20.0)
+        for cp in ("C", "P"):
+            mid = american.prices(S0, K, T, R, Q, AM_SIG, cp == "C")
+            for k_, m in zip(K, mid, strict=True):
+                rows.append({"contract": f"AMX{pd.Timestamp(e):%y%m%d}{cp}{int(k_ * 1000):08d}", "root": "AMX",
+                             "expiry": pd.Timestamp(e), "strike": k_, "type": cp, "bid": m - half_spread,
+                             "ask": m + half_spread, "last": m, "volume": 1.0, "open_interest": 1.0,
+                             "vendor_iv": np.nan})
+    return OptionChain(underlying="AMX", spot=S0, as_of=AS_OF, quotes=pd.DataFrame(rows))
+
+
+@pytest.fixture(scope="module")
+def am_pair():
+    ch = make_american_chain()
+    return (analyze_chain(ch, rate_curve=lambda T: R),
+            analyze_chain(ch, rate_curve=lambda T: R, exercise="european"))
+
+
+def test_exercise_style_is_classified_in_one_place():
+    for t in ("SPX", "_SPX", "^spx", "XSP", "NDX", "RUT", "VIX"):
+        assert parity.exercise_style(t) == "european", t
+    for t in ("SPY", "QQQ", "AAPL", "TESTX", "AMX"):
+        assert parity.exercise_style(t) == "american", t
+    assert analyze_chain(make_chain()).exercise == "european"                # the chain states it
+    with pytest.raises(ValueError, match="exercise"):
+        analyze_chain(make_chain(), exercise="bermudan")
+
+
+def test_american_chain_gives_back_one_vol_for_every_put_and_call(am_pair):
+    ca, _ = am_pair
+    assert ca.exercise == "american" and not ca.european
+    q = ca.quotes[ca.quotes["valid"]]
+    assert len(q) == 2 * 9 * 2 and q["iv"].notna().all()
+    np.testing.assert_allclose(q["iv"], AM_SIG, atol=1e-6)
+    np.testing.assert_allclose(ca.slices["div_yield"], Q, atol=1e-7)
+    np.testing.assert_allclose(ca.slices["forward"], S0 * np.exp((R - Q) * ca.slices["T"]), rtol=1e-9)
+    np.testing.assert_allclose(ca.slices["pair_vol"], AM_SIG, atol=1e-7)
+    assert (ca.slices["parity_rmse"] < 1e-4).all()
+    assert (ca.slices["n_parity_bound_violations"] == 0).all()
+    assert any("CRR binomial" in n for n in ca.notes) and any("no dividend schedule" in n for n in ca.notes)
+
+
+def test_european_inversion_of_the_same_chain_shows_the_early_exercise_as_vol(am_pair):
+    """What the review found, on a chain where the answer is known: Black-76 on American prices
+    puts in-the-money put IVs above the call IVs, and bends parity."""
+    _, ce = am_pair
+    q = ce.quotes[ce.quotes["valid"]]
+    itm_puts = q[(q["type"] == "P") & (q["k"] > 0.1)]
+    assert (itm_puts["iv"] - AM_SIG > 0.01).all()
+    assert (ce.slices["parity_rmse"] > 0.05).all()
+
+
+def test_parity_bound_violations_count_tradeable_crossings():
+    pq = pd.DataFrame({"c_mid": [3.0, 1.5, 0.2], "p_mid": [1.0, 1.0, 1.0], "c_spread": [0.2, 0.2, 0.02],
+                       "p_spread": [0.2, 0.2, 0.02]}, index=pd.Index([100.0, 100.5, 100.0001], name="strike"))
+    # S - K D = 1.0 at K = 100 (D = 0.99): 2.9 - 1.1 = 1.8 crosses the upper bound; 1.4 - 1.1 does not;
+    # the lower bound S - K = ~0 (q = 0): 0.21 - 0.99 = -0.78 crosses it
+    assert parity.bound_violations(pq, 100.0, 1.0, 0.99, 0.0) == 2
+    assert parity.bound_violations(pq.iloc[[1]], 100.0, 1.0, 0.99, 0.0) == 0
+
+
+def test_american_pair_forward_reprices_both_legs():
+    from ohcamel_quant.options import american
+
+    T, D = 0.75, np.exp(-R * 0.75)
+    c, p = (float(v) for v in american.prices(S0, 540.0, T, R, 0.02, 0.3, np.array([True, False])))
+    F, q, sig = parity.american_pair_forward(c, p, 540.0, S0, T, D)
+    assert q == pytest.approx(0.02, abs=1e-9) and sig == pytest.approx(0.3, abs=1e-9)
+    assert F == pytest.approx(S0 * np.exp((R - 0.02) * T), rel=1e-12)
+    with pytest.raises(parity.InsufficientQuotes):
+        parity.american_pair_forward(c, c + 600.0, 540.0, S0, T, D)       # implies a negative forward

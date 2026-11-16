@@ -40,11 +40,12 @@ log = logging.getLogger(__name__)
 
 ENV = "OHCAMEL_QUANT_KERNELS"
 #: The wheel API this dispatcher speaks (native/kernels/src/lib.rs API_VERSION).
-API_VERSION = 1
+API_VERSION = 2
 #: Contract II.4's functions, in its order.
 API: tuple[str, ...] = (
     "fhs_paths", "copula_t_paths", "var_es_from_pnl", "stationary_bootstrap_means", "cscv_pbo",
     "garch_nll", "garch_fit", "backtest_weights", "svi_fit", "realized_vol_minute",
+    "american_price", "american_iv",
 )
 MAX_THREADS = 64
 #: Largest simulation output accepted (80 MB of float64); Rust refuses more too.
@@ -357,6 +358,60 @@ def svi_fit(k: Any, w: Any, weights: Any) -> SviFitResult:
     return reference.svi_fit(ka, wa, wt)
 
 
+#: Tree sizes american_price / american_iv accept (even: the Richardson step halves the tree).
+AM_MIN_STEPS, AM_MAX_STEPS = 10, 10_000
+
+
+def _american_args(S: Any, K: Any, T: Any, r: Any, q: Any, x: Any, is_call: Any, div_t: Any, div_amt: Any,
+                   steps: Any, threads: Any) -> tuple:
+    """Broadcast the per-contract inputs to C-contiguous float64 vectors; validate the shared ones."""
+    from ..options.bsm import option_sign
+
+    phi = option_sign(np.asarray(is_call))
+    arrs = np.broadcast_arrays(*(np.asarray(v, dtype=np.float64) for v in (S, K, T, r, q, x)), phi)
+    S_, K_, T_, r_, q_, x_, phi_ = (np.ascontiguousarray(a.reshape(-1), dtype=np.float64) for a in arrs)
+    dt, da = _arr(div_t, "div_t", 1), _arr(div_amt, "div_amt", 1)
+    if dt.size != da.size:
+        raise ValueError(f"div_t has {dt.size} dividend times for {da.size} dividend amounts")
+    if not (np.all(np.isfinite(dt)) and np.all(np.isfinite(da)) and np.all(da >= 0)):
+        raise ValueError("dividend times must be finite and dividend amounts finite and non-negative")
+    n = int(steps)
+    if not (AM_MIN_STEPS <= n <= AM_MAX_STEPS and n % 2 == 0):
+        raise ValueError(f"steps must be an even number in {AM_MIN_STEPS}..{AM_MAX_STEPS}; got {steps!r}")
+    return S_, K_, T_, r_, q_, x_, phi_, dt, da, n, _threads(threads), arrs[0].shape
+
+
+def american_price(S: Any, K: Any, T: Any, r: Any, q: Any, sigma: Any, is_call: Any, div_t: Any = (),
+                   div_amt: Any = (), steps: int = 400, threads: int = 1) -> np.ndarray:
+    """American option values (options/american.py has the model), broadcast over the contract
+    inputs; ``div_t`` / ``div_amt`` (years from now, cash) are one schedule for every contract.
+    NaN for an invalid contract. See native/kernels/src/american.rs."""
+    S_, K_, T_, r_, q_, s_, phi, dt, da, n, t, shape = _american_args(S, K, T, r, q, sigma, is_call, div_t,
+                                                                      div_amt, steps, threads)
+    out = _impl("american_price")(S_, K_, T_, r_, q_, s_, phi, dt, da, n, t)
+    return np.asarray(out).reshape(shape)
+
+
+def american_iv(price: Any, S: Any, K: Any, T: Any, r: Any, q: Any, is_call: Any, div_t: Any = (),
+                div_amt: Any = (), steps: int = 400, threads: int = 1, guess: Any = None) -> np.ndarray:
+    """The volatility at which american_price equals ``price`` (NaN where none does), broadcast over
+    the contracts. ``guess`` only changes the work, not the root; by default the Black-Scholes
+    implied vol on the escrowed spot. See native/kernels/src/american.rs."""
+    p = np.asarray(price, dtype=np.float64)
+    S_, K_, T_, r_, q_, p_, phi, dt, da, n, t, shape = _american_args(S, K, T, r, q, p, is_call, div_t,
+                                                                      div_amt, steps, threads)
+    if guess is None:
+        from ..options.bsm import implied_vol
+
+        s0 = reference._escrowed(S_, T_, r_, dt, da)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            g = np.asarray(implied_vol(p_, np.where(s0 > 0, s0, np.nan), K_, T_, r_, q_, phi), dtype=np.float64)
+    else:
+        g = np.ascontiguousarray(np.broadcast_to(np.asarray(guess, dtype=np.float64), shape).reshape(-1))
+    out = _impl("american_iv")(p_, S_, K_, T_, r_, q_, phi, np.ascontiguousarray(g), dt, da, n, t)
+    return np.asarray(out).reshape(shape)
+
+
 def realized_vol_minute(ts_ns: Any, px: Any, session_bounds: Any) -> np.ndarray:
     """Daily realized VARIANCE (sum of squared intraday log returns; Andersen &
     Bollerslev 1998) per session [open, close) in nanosecond epoch time; NaN for a
@@ -376,8 +431,9 @@ def realized_vol_minute(ts_ns: Any, px: Any, session_bounds: Any) -> np.ndarray:
 
 
 __all__ = [
-    "API", "API_VERSION", "ENGINE", "ENV", "GARCH_KINDS", "MAX_HORIZON", "MAX_PARTITIONS", "MAX_PATHS", "MAX_THREADS",
+    "AM_MAX_STEPS", "AM_MIN_STEPS", "API", "API_VERSION", "ENGINE", "ENV", "GARCH_KINDS", "MAX_HORIZON",
+    "MAX_PARTITIONS", "MAX_PATHS", "MAX_THREADS",
     "BacktestPath", "GarchFitResult", "GarchParams", "SviFitResult",
-    "backtest_weights", "copula_t_paths", "cscv_pbo", "engine_of", "fhs_paths", "forced", "garch_fit", "garch_nll", "realized_vol_minute", "stationary_bootstrap_means",
+    "american_iv", "american_price", "backtest_weights", "copula_t_paths", "cscv_pbo", "engine_of", "fhs_paths", "forced", "garch_fit", "garch_nll", "realized_vol_minute", "stationary_bootstrap_means",
     "svi_fit", "tail_count", "var_es_from_pnl",
 ]

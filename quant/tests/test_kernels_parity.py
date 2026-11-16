@@ -304,3 +304,56 @@ def test_rv_parity(both):
     bounds = np.column_stack([np.arange(30) * day + 34_200 * 10**9, np.arange(30) * day + 57_600 * 10**9])
     np.testing.assert_allclose(on("rust", kernels.realized_vol_minute, ts, px, bounds),
                                on("python", kernels.realized_vol_minute, ts, px, bounds), rtol=1e-12)
+
+
+# ---------------------------------------------------------------- American options
+def _american_grid():
+    K = np.tile(np.linspace(70.0, 140.0, 15), 6)
+    T = np.repeat([0.05, 0.5, 2.0], 30)
+    q = np.tile(np.repeat([0.0, 0.03], 15), 3)
+    is_call = np.arange(K.size) % 2 == 0
+    sig = 0.12 + 0.3 * (np.arange(K.size) % 7) / 6
+    return K, T, q, is_call, sig
+
+
+@pytest.mark.parametrize("divs", [((), ()), ((0.02, 0.3, 1.2), (0.8, 0.8, 0.9))], ids=["no-div", "three-divs"])
+def test_american_price_parity(both, divs):
+    K, T, q, is_call, sig = _american_grid()
+    args = (100.0, K, T, 0.045, q, sig, is_call, *divs)
+    r, p = on("rust", kernels.american_price, *args, 400, 3), on("python", kernels.american_price, *args, 400, 1)
+    assert np.isfinite(p).all()
+    np.testing.assert_allclose(r, p, rtol=0, atol=1e-8)
+    # the tolerance tells trees apart: 402 steps is another price
+    assert np.abs(on("rust", kernels.american_price, *args, 402, 1) - p).max() > 1e-8
+
+
+@pytest.mark.parametrize("divs", [((), ()), ((0.02, 0.3, 1.2), (0.8, 0.8, 0.9))], ids=["no-div", "three-divs"])
+def test_american_iv_parity_round_trip(both, divs):
+    K, T, q, is_call, sig = _american_grid()
+    px = on("python", kernels.american_price, 100.0, K, T, 0.045, q, sig, is_call, *divs)
+    args = (px, 100.0, K, T, 0.045, q, is_call, *divs)
+    r, p = on("rust", kernels.american_iv, *args, 400, 3), on("python", kernels.american_iv, *args, 400, 1)
+    assert np.array_equal(np.isnan(r), np.isnan(p))
+    np.testing.assert_allclose(r, p, rtol=0, atol=1e-8)
+    # the vol is identified where a point of vol either way moves the price by more than 1e-4 (the
+    # tree's fp noise is ~1e-12); deep in the money the price is flat in vol, or immediate exercise
+    up, dn = (on("python", kernels.american_price, 100.0, K, T, 0.045, q, sig + h, is_call, *divs) for h in (0.01, -0.01))
+    ident = (up - px > 1e-4) & (px - dn > 1e-4)
+    assert ident.sum() >= 70 and np.isfinite(p[ident]).all()
+    np.testing.assert_allclose(p[ident], sig[ident], rtol=0, atol=1e-8)
+    assert np.all(np.isnan(p) <= ~ident)
+
+
+def test_american_iv_parity_on_the_spy_chain(both, spy_2026_11_15_american):
+    """Mid, bid and ask of 600 valid quotes of the real chain (a fixed sample over every expiry the
+    fixture holds), on the slices' r and q: Rust and the reference agree to 1e-8, NaN for NaN.
+    Measured (macOS arm64): within 5e-11."""
+    ca = spy_2026_11_15_american[0]
+    q = ca.quotes[ca.quotes["valid"]].sample(600, random_state=7)
+    for col in ("mid", "bid", "ask"):
+        args = (q[col].to_numpy(), ca.spot, q["strike"].to_numpy(), q["T"].to_numpy(), q["r"].to_numpy(),
+                q["q"].to_numpy(), (q["type"] == "C").to_numpy())
+        r, p = on("rust", kernels.american_iv, *args, 400, 4), on("python", kernels.american_iv, *args, 400, 1)
+        assert np.array_equal(np.isnan(r), np.isnan(p)), col
+        assert np.isfinite(p).sum() > 400, col
+        np.testing.assert_allclose(r, p, rtol=0, atol=1e-8, err_msg=col)

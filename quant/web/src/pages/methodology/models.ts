@@ -468,9 +468,9 @@ export const MODELS: Model[] = [
     section: "options",
     summary: "The volatility that makes the model price equal the market price. Forwards and discount factors come from put–call parity across strikes, so no external rate or dividend forecast is needed.",
     formulas: [{ tex: T`C(K) - P(K) = D(F - K)\ \Rightarrow\ D = -\beta,\ F = -\alpha/\beta,\ q = r - \tfrac{\ln(F/S)}{T}` }],
-    assumptions: ["Inversion uses the out-of-the-money equivalent price (better conditioned), a Corrado–Miller start and safeguarded Newton on log price, then Brent.", "American-style options satisfy parity only as an inequality: the implied q absorbs early-exercise premium.", "T is ACT/365 from the quote instant to the AM or PM settlement instant."],
+    assumptions: ["European (index) options: inversion uses the out-of-the-money equivalent price (better conditioned), a Corrado–Miller start and safeguarded Newton on log price, then Brent.", "American (ETF and single-name) options: every IV inverts a 400-step Cox–Ross–Rubinstein tree on spot (Black–Scholes at the last step, Richardson-extrapolated) by Brent's method; the forward and q come from the strike pair nearest the money, solved so its call and put share one vol, and parity elsewhere is only a bound. No dividend schedule is used: discrete dividends are carried as that yield.", "T is ACT/365 from the quote instant to the AM or PM settlement instant."],
     appears: [VOL_CHAIN, VOL_SURF],
-    refs: ["corrado_miller_1996", "stoll_1969", "cboe_vix"],
+    refs: ["corrado_miller_1996", "cox_ross_rubinstein_1979", "broadie_detemple_1996", "stoll_1969", "cboe_vix"],
     keywords: "iv put call parity forward discount",
   },
   {

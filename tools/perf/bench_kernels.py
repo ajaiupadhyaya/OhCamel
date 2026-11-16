@@ -82,6 +82,13 @@ def cases() -> dict[str, Case]:
     pxm = 100.0 * np.exp(np.cumsum(np.tile([1e-4, -1e-4], 252 * 195)))
     sbm = np.column_stack([np.arange(252) * day, np.arange(252) * day + 390 * minute])
     out["realized_vol_minute"] = (lambda t: kernels.realized_vol_minute(tsm, pxm, sbm), False)
+    # American: 200 contracts (strikes 0.8..1.2 x spot, calls and puts, 0.1 to 2 years) at SPY-like inputs
+    ka = np.tile(np.linspace(600.0, 900.0, 50), 4)
+    ta = np.repeat([0.1, 0.5, 1.0, 2.0], 50)
+    ca_ = np.arange(200) % 2 == 0
+    pa = kernels.american_price(750.0, ka, ta, 0.045, 0.013, 0.18, ca_)
+    out["american_price"] = (lambda t: kernels.american_price(750.0, ka, ta, 0.045, 0.013, 0.18, ca_, threads=t), True)
+    out["american_iv"] = (lambda t: kernels.american_iv(pa, 750.0, ka, ta, 0.045, 0.013, ca_, threads=t), True)
 
     return out
 

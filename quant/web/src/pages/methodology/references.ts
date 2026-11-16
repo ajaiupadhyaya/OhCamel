@@ -45,6 +45,8 @@ export const REFS: Record<string, Ref> = {
   choueifaty_2008: { authors: "Choueifaty, Y. & Coignard, Y.", year: "2008", title: "Toward maximum diversification", venue: "Journal of Portfolio Management 35(1), 40–51" },
   christoffersen_1998: { authors: "Christoffersen, P. F.", year: "1998", title: "Evaluating interval forecasts", venue: "International Economic Review 39(4), 841–862" },
   cornish_fisher_1937: { authors: "Cornish, E. A. & Fisher, R. A.", year: "1937", title: "Moments and cumulants in the specification of distributions", venue: "Revue de l'Institut International de Statistique 5(4), 307–320" },
+  cox_ross_rubinstein_1979: { authors: "Cox, J. C., Ross, S. A. & Rubinstein, M.", year: "1979", title: "Option pricing: a simplified approach", venue: "Journal of Financial Economics 7(3), 229–263" },
+  broadie_detemple_1996: { authors: "Broadie, M. & Detemple, J.", year: "1996", title: "American option valuation: new bounds, approximations, and a comparison of existing methods", venue: "Review of Financial Studies 9(4), 1211–1250" },
   corrado_miller_1996: { authors: "Corrado, C. J. & Miller, T. W.", year: "1996", title: "A note on a simple, accurate formula to compute implied standard deviations", venue: "Journal of Banking & Finance 20(3), 595–603" },
   damodaran_2012: { authors: "Damodaran, A.", year: "2012", title: "Investment Valuation, 3rd ed.", venue: "Wiley" },
   demeterfi_1999: { authors: "Demeterfi, K., Derman, E., Kamal, M. & Zou, J.", year: "1999", title: "More than you ever wanted to know about volatility swaps", venue: "Goldman Sachs Quantitative Strategies Research Notes" },

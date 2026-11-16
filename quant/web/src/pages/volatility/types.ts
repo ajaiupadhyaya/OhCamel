@@ -77,6 +77,10 @@ export interface SliceSummary {
   forward_se: number | null;
   parity_rmse: number | null;
   parity_strikes: number | null;
+  /** American: strikes whose bid/ask cross S e^{-qT} - K <= C - P <= S - K D (null for European). */
+  n_parity_bound_violations: number | null;
+  /** American: the vol the call and put nearest the money share (null for European). */
+  pair_vol: number | null;
   n_contracts: number;
   n_valid: number;
   n_smile: number;
