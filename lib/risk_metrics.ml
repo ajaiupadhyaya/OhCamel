@@ -525,8 +525,9 @@ let current_drawdown ~equity =
    poison the graph:
    - an empty path, or a latest point that is not finite: nan, "cannot be
      measured". The graph's limit takes a non-finite drawdown as unevaluable,
-     so Alerts neither counts it toward a raise nor clears on it, and the
-     intake's governor holds its last value -- an unknown is never a clear.
+     so Alerts neither counts it toward a raise nor clears on it, the gate
+     refuses a proposal that raises gross while the switch trips on it, and
+     the intake's governor reads the fallback -- an unknown is never a clear.
    - a non-finite point before the latest is no peak: it is skipped. An
      infinite one taken as a peak would make the answer nan for as long as it
      stood in the window -- a year of an unevaluable limit for one bad mark.

@@ -72,7 +72,7 @@ let with_routes ?(on_event = ignore) ~(host : D.Desk_routes.host) ~f =
           ~positions:[] ()
       in
       let oms =
-        D.Oms.create ~graph ~journal
+        D.Oms.create ~graph ~journal ~trips_on:[]
           ~spec:{ Desk_spec.default with Desk_spec.trading = Desk_spec.Enabled }
           ~read:(Some (D.Sim_venue.read venue))
           ~trade:(Ok (D.Sim_venue.trade ~auto:false venue))

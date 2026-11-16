@@ -1397,6 +1397,7 @@ let run_live ~book_path ~(serve_port : int option) =
       in
       let oms =
         Ohcamel_desk.Oms.create ~graph ~journal ~spec:book.Config.Book.desk
+          ~trips_on:book.Config.Book.alerts.Config.Alerts.kill_switch_trips_on
           ~read:
             (match venue with
             | Ohcamel_desk.Desk.Reads r -> Some r
@@ -1493,6 +1494,7 @@ let run_live ~book_path ~(serve_port : int option) =
           ~venue_now:(fun () -> Ohcamel_desk.Desk.venue_now desk)
           ~drawdown:(fun () -> Some (Graph.current_drawdown graph))
           ~dd_cap:(Ohcamel_desk.Intake.Gauge.dd_cap_of_limits limits)
+          ()
       in
       Ohcamel_desk.Desk.set_gauge desk gauge;
       (* A (reinstated DATE) later than a strategy's stop re-activates it here,
@@ -1819,6 +1821,7 @@ let run_demo ~port =
   in
   let oms =
     Ohcamel_desk.Oms.create ~graph ~journal ~spec:demo_desk_spec
+      ~trips_on:demo_alerts.Config.Alerts.kill_switch_trips_on
       ~read:(Some (Ohcamel_desk.Sim_venue.read venue))
       ~trade:(Ok (Ohcamel_desk.Sim_venue.trade venue))
       ~halt ~accepts_tickets:false ~adv:(Ohcamel_desk.Oms.Adv.Fixed 2_000_000.0)
@@ -1842,7 +1845,8 @@ let run_demo ~port =
     (Ohcamel_desk.Intake.Gauge.create ~spec:demo_desk_spec
        ~venue_now:(fun () -> Ohcamel_desk.Desk.venue_now desk)
        ~drawdown:(fun () -> Some (Graph.current_drawdown graph))
-       ~dd_cap:(Ohcamel_desk.Intake.Gauge.dd_cap_of_limits demo_limits));
+       ~dd_cap:(Ohcamel_desk.Intake.Gauge.dd_cap_of_limits demo_limits)
+       ());
   (* No reconciliation first, as the live host has: the journal is in memory
      and was opened empty above, so no earlier process left an order open for
      a trip to miss. *)

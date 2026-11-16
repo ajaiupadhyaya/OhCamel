@@ -622,27 +622,38 @@ and sound ~latest ~bars_after ~spec ~(unvalidated : string option) (doc : Contra
    overlay unageable. None only before any reading has ever arrived.
 
    [governor] is the last governor computed from a drawdown the graph could
-   read. A drawdown it cannot read -- the thunk raises, or answers a number
-   that is not finite -- HOLDS that value (1 before any): an unknown number
-   never governs to 0, and never sells. Kept here, in the one gauge the
-   intake and the desk share, so both say the same governor. *)
+   read, None before any. A drawdown it cannot read -- the thunk raises, or
+   answers nothing or a number that is not finite -- governs at the book's
+   overlay_fallback, or at that last governor when it is smaller
+   (Overlay.unread_governor): unknown is not permission, so an unknown
+   number never sizes above the fallback, nor a capped book back up (Task
+   1.5; it replaces the fix round's ruling B, which held the last governor,
+   1 before any). With no cap there is nothing to govern by, and the
+   governor is 1 whatever the drawdown reads. Kept here, in the one gauge the
+   intake and the desk share, so both say the same governor.
+
+   [zone] is the exchange's, America/New_York: the overlay's age is counted
+   in its session hours (Desk_time.session_span). None when the tz database
+   cannot be loaded, and then no overlay can be aged, and none stands. *)
 module Gauge = struct
   type t = {
     spec : Ohcamel.Config.Book.Desk_spec.t;
     venue_now : unit -> Time_ns.t option;
     drawdown : unit -> float option;
     dd_cap : float option;
-    mutable governor : float;
+    zone : Timezone.t option;
+    mutable governor : float option;
   }
 
-  let create ~spec ~venue_now ~drawdown ~dd_cap =
-    { spec; venue_now; drawdown; dd_cap; governor = 1.0 }
+  let create ?(zone = Lazy.force Desk_time.new_york) ~spec ~venue_now ~drawdown ~dd_cap ()
+      =
+    { spec; venue_now; drawdown; dd_cap; zone; governor = None }
 
   let none () =
     create ~spec:Ohcamel.Config.Book.Desk_spec.default
       ~venue_now:(fun () -> None)
       ~drawdown:(fun () -> None)
-      ~dd_cap:None
+      ~dd_cap:None ()
 
   let spec t = t.spec
   let dd_cap t = t.dd_cap
@@ -666,10 +677,17 @@ module Reading = struct
     factor : float;
     governor : float;
     governor_cap : float option;
-    governor_held : bool;
+    governor_unread : bool;
     overlay : float option;
     as_of : string option;
     age_s : int option;
+    (* The latest overlay's age in session hours, from the older of its
+       as_of and its receipt; None when it cannot be told. *)
+    session_age : Time_ns.Span.t option;
+    (* The latest overlay cannot be shown to be within overlay_max_age
+       session hours: a factor taken from it -- a held sizing's -- stands no
+       longer, and sizes at the fallback or less (Overlay.factor). *)
+    decayed : bool;
     state : Overlay.state;
     reason : string option;
   }
@@ -685,33 +703,53 @@ let no_venue_clock = "no venue clock yet"
 
 (* The effective scale, from the latest accepted overlay ([latest], as
    Journal.latest_overlay answers) and the gauge, by the overlay's state:
-   - fresh or held: the overlay's scale;
+   - fresh or held: the overlay's scale, while it is no older than
+     overlay_max_age session hours (Overlay.factor) -- which, against the
+     sixty wall-clock minutes a held overlay has, binds only on a book that
+     sets it lower -- and past that, or of no age that can be told, the
+     smaller of it and the fallback;
    - stale -- older than overlay_max_age_minutes, or no venue reading has
      ever arrived to age it by ([reason] then says so): the book's
-     overlay_fallback;
+     overlay_fallback, or the stale overlay's own scale if that is smaller;
    - absent -- no overlay has ever been accepted: 1, the desk as it sized
-     before overlays existed (Overlay.effective is handed [Some 1.0]);
+     before overlays existed (Overlay.effective is handed [Some 1.0] at age
+     zero: there is no overlay to age);
    times the drawdown governor ([Gauge]'s note says what an unreadable
    drawdown does). *)
 let reading ~(latest : (int * string * float * string) option) (g : Gauge.t) : Reading.t =
   let spec = g.spec in
-  let drawdown =
-    match g.drawdown () with
-    | Some d when not (Float.is_finite d) -> `Unknown
-    | d -> `Read d
-    | exception _ -> `Unknown
-  in
-  let governor, governor_held =
-    match drawdown with
-    | `Read drawdown ->
-        let governor = Overlay.governor ~drawdown ~dd_cap:g.dd_cap in
-        g.governor <- governor;
-        (governor, false)
-    | `Unknown -> (g.governor, true)
+  let fallback = spec.Ohcamel.Config.Book.Desk_spec.overlay_fallback in
+  let max_age = Time_ns.Span.of_hr spec.overlay_max_age in
+  let governor, governor_unread =
+    match g.dd_cap with
+    | None -> (1.0, false)
+    | Some _ -> (
+        let unread () = (Overlay.unread_governor ~fallback ~last:g.governor, true) in
+        match g.drawdown () with
+        | Some d when Float.is_finite d ->
+            let governor = Overlay.governor ~drawdown:(Some d) ~dd_cap:g.dd_cap in
+            g.governor <- Some governor;
+            (governor, false)
+        | Some _ | None -> unread ()
+        | exception _ -> unread ())
   in
   let now = g.venue_now () in
   let received_at =
     Option.bind latest ~f:(fun (_, _, _, received) -> Desk_time.parse received)
+  in
+  (* Aged from the older of its as_of and its receipt: as_of is not after
+     the receipt for a document O2 accepted, so this can only make it older. *)
+  let aged_from =
+    Option.bind latest ~f:(fun (_, as_of, _, _) ->
+        match (Desk_time.parse as_of, received_at) with
+        | Some a, Some r -> Some (Time_ns.min a r)
+        | _ -> None)
+  in
+  let session_age =
+    match (now, aged_from, g.zone) with
+    | Some now, Some at, Some zone when Time_ns.( <= ) at now ->
+        Some (Desk_time.session_span ~stop_after:max_age ~zone ~from:at ~until:now ())
+    | _ -> None
   in
   let state, reason =
     match (now, latest) with
@@ -720,32 +758,35 @@ let reading ~(latest : (int * string * float * string) option) (g : Gauge.t) : R
     | Some now, Some _ -> (
         match
           Overlay.state ~clock:{ Overlay.now } ~received_at
-            ~max_age_minutes:spec.Ohcamel.Config.Book.Desk_spec.overlay_max_age_minutes
+            ~max_age_minutes:spec.overlay_max_age_minutes
         with
         (* A row whose receipt does not parse cannot be aged: stale. *)
         | Absent -> (Overlay.Stale, None)
         | state -> (state, None))
   in
-  let factor =
-    match (state, latest) with
-    | (Fresh | Held _), Some (_, _, scale, _) -> Some scale
-    | Absent, _ -> Some 1.0
-    | _ -> None
+  let scale = Option.map latest ~f:(fun (_, _, scale, _) -> scale) in
+  let overlay, age =
+    match state with
+    | Fresh | Held _ -> (scale, session_age)
+    | Absent -> (Some 1.0, Some Time_ns.Span.zero)
+    (* Stale by the minutes rule: no age makes it stand. *)
+    | Stale -> (scale, None)
   in
   {
-    Reading.exposure_scale =
-      Overlay.effective ~overlay:factor ~fallback:spec.overlay_fallback ~governor;
-    factor = Option.value factor ~default:spec.overlay_fallback;
+    Reading.exposure_scale = Overlay.effective ~overlay ~age ~max_age ~fallback ~governor;
+    factor = Overlay.factor ~overlay ~age ~max_age ~fallback;
     governor;
     governor_cap = g.dd_cap;
-    governor_held;
-    overlay = Option.map latest ~f:(fun (_, _, scale, _) -> scale);
+    governor_unread;
+    overlay = scale;
     as_of = Option.map latest ~f:(fun (_, as_of, _, _) -> as_of);
     age_s =
       (match (now, received_at) with
       | Some now, Some at ->
           Some (Float.iround_towards_zero_exn (Time_ns.Span.to_sec (Time_ns.diff now at)))
       | _ -> None);
+    session_age;
+    decayed = not (Overlay.within ~age:session_age ~max_age);
     state;
     reason;
   }
@@ -866,13 +907,14 @@ let last_pass t = t.last_pass
 let current_reading t =
   let r = reading ~latest:(Journal.latest_overlay t.journal) t.gauge in
   let key = "drawdown\000" in
-  if r.Reading.governor_held then (
+  if r.Reading.governor_unread then (
     if not (Hash_set.mem t.said key) then (
       Hash_set.add t.said key;
       t.on_event
         (sprintf
-           "intake    the graph's drawdown cannot be read, so the governor holds at %g; \
-            nothing is sized down on a number nobody knows"
+           "intake    the graph's drawdown cannot be read, so the governor is %g: the \
+            book's overlay_fallback, or the last governor read if smaller -- a number \
+            nobody knows sizes down, never up"
            r.governor)))
   else Hash_set.remove t.said key;
   r
@@ -1636,6 +1678,18 @@ let collect_pending t : Accepted.t list =
      overlay is stale from evening to the first morning run, and selling to
      the fallback every morning only to buy back at the next overlay would
      churn the book.
+   - BUT A HOLD ENDS WITH THE OVERLAY (Task 1.5: unknown is not
+     permission). Once the latest overlay is older than overlay_max_age
+     SESSION hours, or its age cannot be told (Reading.decayed), the factor
+     a stale reading holds decays to the fallback -- or stays where it is,
+     if it is already smaller (Overlay.factor) -- and a decay that moves it
+     more than the band re-sizes the strategy at it, its row noted "decay"
+     (or "governor" when the governor moved too). Session hours, so the
+     evening-to-morning spell the hold exists for does not count, and a
+     producer that died at 10:00 has the book at the fallback by 14:00 at
+     the latest. A sizing row with no factor recorded is re-sized at the
+     reading, by the band, once the overlay has decayed; an unsized
+     strategy that holds a position is re-sized at the reading too.
 
    The strategies are proposed concurrently, at most eight at once: each
    wave is its own sequencer job and the waits interleave, so one
@@ -1665,6 +1719,8 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
               match reading.state with Stale -> true | Fresh | Held _ | Absent -> false
             in
             let stale_key = "stale hold\000" in
+            let decay_key = "stale decay\000" in
+            let decayed = stale && reading.decayed in
             if stale then (
               if not (Hash_set.mem t.said stale_key) then (
                 Hash_set.add t.said stale_key;
@@ -1672,6 +1728,25 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                   "the overlay reads stale, so the adjust pass holds every strategy at \
                    its last sizing, and acts only on a governor move beyond the band"))
             else Hash_set.remove t.said stale_key;
+            if decayed then (
+              if not (Hash_set.mem t.said decay_key) then (
+                Hash_set.add t.said decay_key;
+                log t
+                  "the overlay is older than overlay_max_age (%g session hours), or its \
+                   age cannot be told, so every held sizing decays to the fallback %g"
+                  t.gauge.spec.Ohcamel.Config.Book.Desk_spec.overlay_max_age
+                  t.gauge.spec.Ohcamel.Config.Book.Desk_spec.overlay_fallback))
+            else Hash_set.remove t.said decay_key;
+            (* The factor a stale reading holds: the last sizing's, while the
+               overlay stands; past overlay_max_age session hours, or of no
+               age that can be told, the fallback or less. *)
+            let held f =
+              Overlay.factor ~overlay:(Some f) ~age:reading.session_age
+                ~max_age:
+                  (Time_ns.Span.of_hr
+                     t.gauge.spec.Ohcamel.Config.Book.Desk_spec.overlay_max_age)
+                ~fallback:t.gauge.spec.Ohcamel.Config.Book.Desk_spec.overlay_fallback
+            in
             (* The band is bypassed only by an accepted overlay that says
                exactly 0 -- never by a product that is 0 for another
                reason. *)
@@ -1815,8 +1890,8 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                                               _;
                                             } ) ->
                                           {
-                                            Parts.effective = f *. reading.governor;
-                                            factor = Some f;
+                                            Parts.effective = held f *. reading.governor;
+                                            factor = Some (held f);
                                             governor = Some reading.governor;
                                           }
                                       | _ -> now_parts
@@ -1830,7 +1905,10 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                                buys back. *)
                             if Option.is_some completion then completion
                             else if unsized then
-                              if holds s && not stale then Some (now_parts, None)
+                              (* ... until the overlay has decayed: then the
+                                 position it holds is sized at the reading. *)
+                              if holds s && ((not stale) || decayed) then
+                                Some (now_parts, None)
                               else None
                             else
                               let z = Option.value_exn last in
@@ -1842,14 +1920,14 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                                 | Some r -> Float.( > ) (Float.abs (r -. ratio)) 1e-12
                                 | None -> false
                               in
+                              let last_effective =
+                                if Float.( > ) last_ratio 0.0 then z.scale /. last_ratio
+                                else
+                                  match (z.factor, z.governor) with
+                                  | Some f, Some g -> f *. g
+                                  | _ -> effective
+                              in
                               if not stale then
-                                let last_effective =
-                                  if Float.( > ) last_ratio 0.0 then z.scale /. last_ratio
-                                  else
-                                    match (z.factor, z.governor) with
-                                    | Some f, Some g -> f *. g
-                                    | _ -> effective
-                                in
                                 if
                                   beyond effective last_effective
                                   || ratio_changed
@@ -1858,15 +1936,24 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                                 else None
                               else
                                 match (z.factor, z.governor) with
-                                | Some f, Some g when beyond reading.governor g ->
-                                    Some
-                                      ( {
-                                          Parts.effective = f *. reading.governor;
-                                          factor = Some f;
-                                          governor = Some reading.governor;
-                                        },
-                                        Some "governor" )
-                                | _ -> None
+                                | Some f, Some g ->
+                                    let f' = held f in
+                                    let governor_moved = beyond reading.governor g in
+                                    if governor_moved || beyond f' f then
+                                      Some
+                                        ( {
+                                            Parts.effective = f' *. reading.governor;
+                                            factor = Some f';
+                                            governor = Some reading.governor;
+                                          },
+                                          Some
+                                            (if governor_moved then "governor"
+                                             else "decay") )
+                                    else None
+                                | _ ->
+                                    if decayed && beyond effective last_effective then
+                                      Some (now_parts, Some "decay")
+                                    else None
                           in
                           match decision with
                           | None -> None

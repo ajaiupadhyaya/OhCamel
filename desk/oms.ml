@@ -80,6 +80,9 @@ type t = {
   graph : Graph.t;
   journal : Journal.t;
   spec : Desk_spec.t;
+  (* The book's kill_switch_trips_on: a limit named here that the gate
+     cannot evaluate refuses a proposal that raises gross (Gate.check). *)
+  trips_on : string list;
   read : Venue.Read.t option;
   trade : (Wire.permit Venue.Trade.t, string) Result.t;
   halt : Halt.t;
@@ -127,8 +130,8 @@ type t = {
   through_trip : String.Hash_set.t;
 }
 
-let create ~graph ~journal ~spec ~read ~trade ~halt ~accepts_tickets ~adv ~now ~rng
-    ~on_change ~on_event ~after_fill ~book_is_current
+let create ~graph ~journal ~spec ~trips_on ~read ~trade ~halt ~accepts_tickets ~adv ~now
+    ~rng ~on_change ~on_event ~after_fill ~book_is_current
     ?(resolve_delays =
       [ Time_ns.Span.of_sec 2.0; Time_ns.Span.of_sec 10.0; Time_ns.Span.of_sec 30.0 ])
     ?(time_source = Time_source.wall_clock ()) () =
@@ -136,6 +139,7 @@ let create ~graph ~journal ~spec ~read ~trade ~halt ~accepts_tickets ~adv ~now ~
     graph;
     journal;
     spec;
+    trips_on;
     read;
     trade;
     halt;
@@ -448,9 +452,9 @@ end
 module Scenarios = struct
   type t = (Scenario.t * Gate.Verdict.t) list
 
-  let passed (t : t) = List.for_all t ~f:(fun (_, v) -> v.Gate.Verdict.passed)
+  let passed (t : t) = List.for_all t ~f:(fun (_, v) -> Gate.Verdict.passed v)
   let as_it_stands (t : t) = snd (List.hd_exn t)
-  let first_failure (t : t) = List.find t ~f:(fun (_, v) -> not v.Gate.Verdict.passed)
+  let first_failure (t : t) = List.find t ~f:(fun (_, v) -> not (Gate.Verdict.passed v))
 
   (* The first failing scenario's reasons, each naming it. *)
   let reasons (t : t) =
@@ -503,6 +507,17 @@ module Preview = struct
             ("breached", `Bool b.Breach.breached);
           ]
 
+  (* The gate's answer as a word (Gate.Outcome.word, matched whole), and
+     the trip-limits refused for being unknown -- names only, as every other
+     refusal names its limits; they stand beside a breach that outranked
+     them too. *)
+  let outcome_json (v : Gate.Verdict.t) =
+    let names = v.Gate.Verdict.unknown_trips in
+    [
+      ("outcome", `String (Gate.Outcome.word v.Gate.Verdict.outcome));
+      ("refused_unevaluable", `List (List.map names ~f:(fun n -> `String n)));
+    ]
+
   let moves_json moves =
     `List
       (List.map moves ~f:(fun (m : Gate.Move.t) ->
@@ -547,27 +562,31 @@ module Preview = struct
           | Some (Ok s) ->
               let v = Scenarios.as_it_stands s in
               `Assoc
-                [
-                  ("passed", `Bool (Scenarios.passed s));
-                  ("created", moves_json v.Gate.Verdict.created);
-                  ("worsened", moves_json v.Gate.Verdict.worsened);
-                  ("cleared", moves_json v.Gate.Verdict.cleared);
-                  ("unevaluable", moves_json v.Gate.Verdict.unevaluable);
-                  ("gross_before", money v.Gate.Verdict.gross_before);
-                  ("gross_after", money v.Gate.Verdict.gross_after);
-                  ("equity_before", money v.Gate.Verdict.equity_before);
-                  ("equity_after", money v.Gate.Verdict.equity_after);
-                  ( "scenarios",
-                    `List
-                      (List.map s ~f:(fun (scenario, v) ->
-                           `Assoc
-                             [
-                               ("scenario", `String (Scenario.describe scenario));
-                               ("passed", `Bool v.Gate.Verdict.passed);
-                               ("created", moves_json v.Gate.Verdict.created);
-                               ("worsened", moves_json v.Gate.Verdict.worsened);
-                             ])) );
-                ] );
+                ([ ("passed", `Bool (Scenarios.passed s)) ]
+                @ outcome_json v
+                @ [
+                    ("created", moves_json v.Gate.Verdict.created);
+                    ("worsened", moves_json v.Gate.Verdict.worsened);
+                    ("cleared", moves_json v.Gate.Verdict.cleared);
+                    ("unevaluable", moves_json v.Gate.Verdict.unevaluable);
+                    ("gross_before", money v.Gate.Verdict.gross_before);
+                    ("gross_after", money v.Gate.Verdict.gross_after);
+                    ("equity_before", money v.Gate.Verdict.equity_before);
+                    ("equity_after", money v.Gate.Verdict.equity_after);
+                    ( "scenarios",
+                      `List
+                        (List.map s ~f:(fun (scenario, v) ->
+                             `Assoc
+                               ([
+                                  ("scenario", `String (Scenario.describe scenario));
+                                  ("passed", `Bool (Gate.Verdict.passed v));
+                                ]
+                               @ outcome_json v
+                               @ [
+                                   ("created", moves_json v.Gate.Verdict.created);
+                                   ("worsened", moves_json v.Gate.Verdict.worsened);
+                                 ]))) );
+                  ]) );
         ("reasons", `List (List.map (reasons t) ~f:(fun s -> `String s)));
       ]
 end
@@ -708,7 +727,7 @@ let gate_scenarios t ~(fills : Gate.Fill.t list) : (Scenarios.t, string) Result.
             List.filter_map (List.zip_exn resting taken) ~f:(fun (f, took) ->
                 Option.some_if took f)
           in
-          (scenario, Gate.check t.graph ~base ~fills)))
+          (scenario, Gate.check t.graph ~base ~trips_on:t.trips_on ~fills)))
 
 (* The gate for orders at their decision prices, each signed by its side:
    what [preview] runs for a ticket's one order and [check_rebalance] for a

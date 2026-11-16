@@ -140,7 +140,10 @@ is sized as live, and nothing promotes a strategy to it but the owner. The pre-r
 drawdown governor, sizes every incubation and live target; a stale overlay falls back to `overlay_fallback`, an
 absent one reads 1.0. A document the opening auction's window refuses (before 19:00 ET) stays pending and is sized at
 the first pass after 19:00; nothing is sized before the venue's clock has answered; the adjust pass holds while the
-overlay is stale and acts on governor moves.
+overlay is stale and acts on governor moves -- until the overlay is older than `overlay_max_age` (4 session hours by
+default) or its age cannot be told, when every held sizing decays to `overlay_fallback` (never above the overlay's own
+value). A drawdown that cannot be read governs at `overlay_fallback` (never above the last governor read), and a
+limit the kill switch trips on that cannot be evaluated refuses any order that raises gross notional.
 
 **What the first week of fills taught, and what changed (2026-10-27).** Alpaca's own order history for the paper
 account showed 55 of the desk's 59 market-on-open orders **expired at the opening auction unfilled** (two filled,
@@ -505,7 +508,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **<!-- count:ocaml-tests -->908<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->73<!-- /count --> scheduler cases in `test/desk_async` —
+- **<!-- count:ocaml-tests -->926<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->74<!-- /count --> scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler

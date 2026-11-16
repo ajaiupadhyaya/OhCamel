@@ -42,6 +42,19 @@ let state_to_string = function
   | Overlay.Absent -> "Absent"
 
 let state_t = Alcotest.testable (Fmt.of_to_string state_to_string) Poly.equal
+let hours = Time_ns.Span.of_hr
+
+(* [Overlay.effective] with the book's default max age, 4 session hours, and
+   an age of zero unless a case gives one. *)
+let effective ?(age = Some Time_ns.Span.zero) ~overlay ~fallback ~governor () =
+  Overlay.effective ~overlay ~age ~max_age:(hours 4.0) ~fallback ~governor
+
+let ny = Timezone.find_exn "America/New_York"
+
+let ny_at s =
+  Time_ns.of_date_ofday ~zone:ny
+    (Date.of_string (String.prefix s 10))
+    (Time_ns.Ofday.of_string (String.drop_prefix s 11))
 
 let suite =
   ( "overlay",
@@ -74,11 +87,12 @@ let suite =
           Alcotest.check close "" 1.0
             (Overlay.governor ~drawdown:(Some (-0.01)) ~dd_cap:(Some 0.02)));
       t "governor fails closed on a number it cannot use" (fun () ->
-          (* A known-but-unusable input is not "unknown": unknown is None and
-             sizes freely (nothing to govern with), whereas NaN or inf says a
-             figure exists and is garbage, and the governor's job is to stop
-             sizing when the number it needs is unusable. Likewise a cap that
-             is zero or negative cannot define a band. *)
+          (* A known-but-unusable input gives 0: NaN or inf says a figure
+             exists and is garbage, and the governor's job is to stop sizing
+             when the number it needs is unusable. Likewise a cap that is zero
+             or negative cannot define a band. (A drawdown the desk cannot
+             read at all is not asked of this function: Intake.reading
+             governs it with [unread_governor], at the fallback.) *)
           Alcotest.check close "nan drawdown" 0.0
             (Overlay.governor ~drawdown:(Some Float.nan) ~dd_cap:(Some 0.02));
           Alcotest.check close "inf drawdown" 0.0
@@ -115,26 +129,111 @@ let suite =
       t "effective multiplies the overlay by the governor" (fun () ->
           (* 0.7071 * 0.5 = 0.35355 *)
           Alcotest.check close "" 0.35355
-            (Overlay.effective ~overlay:(Some 0.7071) ~fallback:0.5 ~governor:0.5));
+            (effective ~overlay:(Some 0.7071) ~fallback:0.5 ~governor:0.5 ()));
       t "effective falls back when there is no overlay" (fun () ->
           (* 0.5 * 1 = 0.5 *)
           Alcotest.check close "" 0.5
-            (Overlay.effective ~overlay:None ~fallback:0.5 ~governor:1.0));
+            (effective ~overlay:None ~fallback:0.5 ~governor:1.0 ()));
       t "effective is clamped to [0, 1]" (fun () ->
           Alcotest.check close "above" 1.0
-            (Overlay.effective ~overlay:(Some 1.5) ~fallback:0.5 ~governor:1.0);
+            (effective ~overlay:(Some 1.5) ~fallback:0.5 ~governor:1.0 ());
           Alcotest.check close "below" 0.0
-            (Overlay.effective ~overlay:(Some (-0.5)) ~fallback:0.5 ~governor:1.0));
+            (effective ~overlay:(Some (-0.5)) ~fallback:0.5 ~governor:1.0 ()));
       t "effective fails closed on a non-finite number" (fun () ->
           (* NaN * 1 = NaN, inf * 0 = NaN, inf * 1 = inf: none is a size. *)
           Alcotest.check close "nan overlay" 0.0
-            (Overlay.effective ~overlay:(Some Float.nan) ~fallback:0.5 ~governor:1.0);
+            (effective ~overlay:(Some Float.nan) ~fallback:0.5 ~governor:1.0 ());
           Alcotest.check close "inf overlay, zero governor" 0.0
-            (Overlay.effective ~overlay:(Some Float.infinity) ~fallback:0.5 ~governor:0.0);
+            (effective ~overlay:(Some Float.infinity) ~fallback:0.5 ~governor:0.0 ());
           Alcotest.check close "nan fallback" 0.0
-            (Overlay.effective ~overlay:None ~fallback:Float.nan ~governor:1.0);
+            (effective ~overlay:None ~fallback:Float.nan ~governor:1.0 ());
           Alcotest.check close "nan governor" 0.0
-            (Overlay.effective ~overlay:(Some 0.7) ~fallback:0.5 ~governor:Float.nan));
+            (effective ~overlay:(Some 0.7) ~fallback:0.5 ~governor:Float.nan ()));
+      (* --- the overlay's age, in session hours (Task 1.5); max age 4 h --- *)
+      t "a 5-hour-old overlay of 0.9 with fallback 0.5 sizes at 0.5" (fun () ->
+          Alcotest.check close "" 0.5
+            (effective ~overlay:(Some 0.9)
+               ~age:(Some (hours 5.0))
+               ~fallback:0.5 ~governor:1.0 ()));
+      t "a 3-hour-old one sizes at 0.9" (fun () ->
+          Alcotest.check close "" 0.9
+            (effective ~overlay:(Some 0.9)
+               ~age:(Some (hours 3.0))
+               ~fallback:0.5 ~governor:1.0 ()));
+      t "exactly the max age still stands; a minute past it does not" (fun () ->
+          Alcotest.check close "4 h" 0.9
+            (effective ~overlay:(Some 0.9)
+               ~age:(Some (hours 4.0))
+               ~fallback:0.5 ~governor:1.0 ());
+          Alcotest.check close "4 h 1 min" 0.5
+            (effective ~overlay:(Some 0.9)
+               ~age:(Some Time_ns.Span.(hours 4.0 + of_min 1.0))
+               ~fallback:0.5 ~governor:1.0 ()));
+      t "an overlay of unknown age sizes at the fallback" (fun () ->
+          (* Unknown is not permission: 0.9 of no known age is 0.5 x 0.8. *)
+          Alcotest.check close "" 0.4
+            (effective ~overlay:(Some 0.9) ~age:None ~fallback:0.5 ~governor:0.8 ()));
+      t "an age that runs backwards is no age" (fun () ->
+          Alcotest.check close "" 0.5
+            (effective ~overlay:(Some 0.9)
+               ~age:(Some (Time_ns.Span.neg (hours 1.0)))
+               ~fallback:0.5 ~governor:1.0 ()));
+      t "an old overlay below the fallback is never raised to it" (fun () ->
+          (* min(0.2, 0.5) = 0.2: the fallback is a ceiling on what a dead
+             overlay may size at, never a floor that buys. *)
+          Alcotest.check close "" 0.2
+            (effective ~overlay:(Some 0.2)
+               ~age:(Some (hours 5.0))
+               ~fallback:0.5 ~governor:1.0 ());
+          Alcotest.check close "factor" 0.2
+            (Overlay.factor ~overlay:(Some 0.2) ~age:None ~max_age:(hours 4.0)
+               ~fallback:0.5));
+      t "an unread drawdown governs at the fallback, never above the last read" (fun () ->
+          Alcotest.check close "none read yet: the fallback" 0.5
+            (Overlay.unread_governor ~fallback:0.5 ~last:None);
+          Alcotest.check close "last 1.0: the fallback" 0.5
+            (Overlay.unread_governor ~fallback:0.5 ~last:(Some 1.0));
+          Alcotest.check close "last 0.3: 0.3" 0.3
+            (Overlay.unread_governor ~fallback:0.5 ~last:(Some 0.3));
+          Alcotest.check close "last 0 (at the cap): 0" 0.0
+            (Overlay.unread_governor ~fallback:0.5 ~last:(Some 0.0));
+          Alcotest.check close "a nan fallback: 0" 0.0
+            (Overlay.unread_governor ~fallback:Float.nan ~last:None));
+      (* --- session hours: 09:30-16:00 New York, weekdays --- *)
+      t "session hours count only the regular session" (fun () ->
+          let span a b =
+            Ohcamel_desk.Desk_time.session_span ~zone:ny ~from:(ny_at a) ~until:(ny_at b)
+              ()
+          in
+          let hrs = Alcotest.float 1e-9 in
+          Alcotest.check hrs "Mon 09:00 to 18:00: the whole session, 6.5 h" 6.5
+            (Time_ns.Span.to_hr (span "2026-11-16 09:00" "2026-11-16 18:00"));
+          Alcotest.check hrs "Fri 15:50 to Mon 09:45: 10 + 15 minutes" (25.0 /. 60.0)
+            (Time_ns.Span.to_hr (span "2026-11-13 15:50" "2026-11-16 09:45"));
+          Alcotest.check hrs "Fri 16:00 to Mon 09:30: none" 0.0
+            (Time_ns.Span.to_hr (span "2026-11-13 16:00" "2026-11-16 09:30"));
+          Alcotest.check hrs "Mon 11:00 to Tue 11:00: 5 + 1.5" 6.5
+            (Time_ns.Span.to_hr (span "2026-11-16 11:00" "2026-11-17 11:00"));
+          Alcotest.check hrs "backwards: none" 0.0
+            (Time_ns.Span.to_hr (span "2026-11-16 12:00" "2026-11-16 11:00"));
+          (* A summer day, on the same wall clock: the zone, not an offset. *)
+          Alcotest.check hrs "Mon 10:00 to 12:00 in July" 2.0
+            (Time_ns.Span.to_hr (span "2026-07-13 10:00" "2026-07-13 12:00")));
+      t "a Friday-close overlay is not stale at Monday's open" (fun () ->
+          (* Received 15:50 Friday; at 09:45 Monday it is 66 wall-clock hours
+             old and 25 session minutes old: it stands. At 13:45 Monday it is
+             4 h 10 min old in session: the fallback. *)
+          let age now =
+            Some
+              (Ohcamel_desk.Desk_time.session_span ~zone:ny
+                 ~from:(ny_at "2026-11-13 15:50") ~until:(ny_at now) ())
+          in
+          Alcotest.check close "Monday 09:45" 0.9
+            (effective ~overlay:(Some 0.9) ~age:(age "2026-11-16 09:45") ~fallback:0.5
+               ~governor:1.0 ());
+          Alcotest.check close "Monday 13:45" 0.5
+            (effective ~overlay:(Some 0.9) ~age:(age "2026-11-16 13:45") ~fallback:0.5
+               ~governor:1.0 ()));
       (* --- the rules --- *)
       t "a good document is accepted" (fun () ->
           match judge (doc ()) with

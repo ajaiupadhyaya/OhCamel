@@ -51,17 +51,24 @@ val read : ?between:(unit -> unit) -> string -> ident -> read
     venue's own clock as the desk last read it advanced by the host's time since
     (Desk.venue_now; None only before any reading has ever arrived), the graph's drawdown
     as a fraction, and the book's drawdown cap. It also keeps the last governor computed
-    from a drawdown that could be read: one the graph cannot read (the thunk raises, or
-    answers a non-finite number) holds that value, 1 before any, and never governs to 0.
-    One gauge is shared by the intake and the desk. *)
+    from a drawdown that could be read. Beside a cap, a drawdown the graph cannot read
+    (the thunk raises, or answers nothing or a non-finite number) -- including the first
+    read after a restart -- governs at the book's [overlay_fallback], or at the last
+    governor read when that is smaller ({!Overlay.unread_governor}): unknown is not
+    permission. With no cap the governor is 1. [zone] (America/New_York by default) is the
+    exchange's, whose session hours age the overlay ({!Desk_time.session_span}); with
+    none, no overlay can be aged and none stands. One gauge is shared by the intake and
+    the desk. *)
 module Gauge : sig
   type t
 
   val create :
+    ?zone:Timezone.t option ->
     spec:Ohcamel.Config.Book.Desk_spec.t ->
     venue_now:(unit -> Time_ns.t option) ->
     drawdown:(unit -> float option) ->
     dd_cap:float option ->
+    unit ->
     t
 
   val none : unit -> t
@@ -79,17 +86,28 @@ end
 module Reading : sig
   type t = {
     exposure_scale : float;
-        (** What every sizing multiplies by: the overlay's scale when fresh or held, the
-            book's fallback when stale, 1 when absent; times the governor. *)
+        (** What every sizing multiplies by: the overlay's scale when fresh or held and no
+            older than [overlay_max_age] session hours; otherwise the book's fallback, or
+            the overlay's scale when that is smaller; 1 when absent; times the governor.
+        *)
     factor : float;
         (** What the governor multiplies: the overlay's scale, the fallback, or 1, by the
             state. A sizing records it beside the governor. *)
     governor : float;
     governor_cap : float option;  (** The book's drawdown cap; None governs at 1. *)
-    governor_held : bool;  (** The drawdown could not be read: the last governor holds. *)
+    governor_unread : bool;
+        (** The drawdown could not be read: the governor is the fallback, or the last
+            governor read if smaller. *)
     overlay : float option;  (** The latest accepted overlay's scale, whatever its age. *)
     as_of : string option;
     age_s : int option;  (** Seconds since it was received, on the venue clock. *)
+    session_age : Time_ns.Span.t option;
+        (** The latest overlay's age in session hours, from the older of its [as_of] and
+            its receipt (counted no further than [overlay_max_age]); None when it cannot
+            be told. *)
+    decayed : bool;
+        (** The latest overlay cannot be shown to be within [overlay_max_age] session
+            hours: a factor taken from it -- a held sizing's -- no longer stands. *)
     state : Overlay.state;
         (** Absent only when no overlay was ever accepted; Stale too before any venue
             reading has arrived, with [reason]. *)
@@ -101,7 +119,7 @@ val state_word : Overlay.state -> string
 (** "fresh", "held", "stale" or "absent": the wire's word. *)
 
 val reading : latest:(int * string * float * string) option -> Gauge.t -> Reading.t
-(** [latest] as Journal.latest_overlay answers it. Updates the gauge's held governor when
+(** [latest] as Journal.latest_overlay answers it. Updates the gauge's last governor when
     the drawdown is read. *)
 
 val reading_fields : Reading.t -> (string * Yojson.Safe.t) list

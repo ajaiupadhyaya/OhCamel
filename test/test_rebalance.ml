@@ -259,7 +259,7 @@ let with_oms ?(now = evening) ?(session_date = "2026-09-14")
           ~positions:[] ()
       in
       let oms =
-        D.Oms.create ~graph ~journal ~spec
+        D.Oms.create ~graph ~journal ~spec ~trips_on:[]
           ~read:(Some (D.Sim_venue.read venue))
           ~trade:(Ok (D.Sim_venue.trade ~auto:false venue))
           ~halt ~accepts_tickets:false ~adv:(D.Oms.Adv.Fixed 1_000_000.0)

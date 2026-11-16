@@ -1693,7 +1693,7 @@ let gauge ?drawdown ?dd_cap clock =
   Intake.Gauge.create ~spec:Book.Desk_spec.default
     ~venue_now:(fun () -> !clock)
     ~drawdown:(fun () -> drawdown)
-    ~dd_cap
+    ~dd_cap ()
 
 let overlay_rows journal =
   let n = ref 0 in
@@ -1809,6 +1809,7 @@ let test_governor_read_from_the_graph () =
           ~venue_now:(fun () -> Some at)
           ~drawdown:(fun () -> Some (Graph.current_drawdown graph))
           ~dd_cap:(Intake.Gauge.dd_cap_of_limits limits)
+          ()
       in
       let r = Intake.reading ~latest:None gauge in
       Alcotest.(check (triple (float 1e-12) (float 1e-12) (option (float 0.0))))
@@ -1921,6 +1922,7 @@ let test_no_drawdown_cap_governs_at_one_said_at_setup () =
       ~venue_now:(fun () -> Some at)
       ~drawdown:(fun () -> Some 0.5)
       ~dd_cap:(Intake.Gauge.dd_cap_of_limits [])
+      ()
   in
   (match
      Intake.setup ~gauge:g ~journal ~universe
@@ -1943,9 +1945,98 @@ let test_no_drawdown_cap_governs_at_one_said_at_setup () =
     (Queue.to_list events);
   Journal.close journal
 
+(* UNKNOWN IS NOT PERMISSION (Task 1.5): a drawdown that cannot be read
+   governs at the book's overlay_fallback, 0.5 -- including the first read
+   after a restart, when no governor has ever been read -- and never above
+   the last governor that was. A fresh gauge, as after a restart, with a 2 %
+   cap: a thunk that raises, one that answers nan, and one that answers
+   nothing all read governor 0.5, and with no overlay ever accepted the scale
+   is 1 x 0.5. A gauge that read a drawdown of 0 (governor 1) and then cannot
+   read falls to 0.5; one that read 0.02 (at the cap, governor 0) stays at 0:
+   an unknown number never sizes a capped book back up. *)
+let test_after_a_restart_with_no_drawdown_reading_the_governor_is_the_fallback () =
+  let unread_by thunk =
+    let r =
+      Intake.reading ~latest:None
+        (Intake.Gauge.create ~spec:Book.Desk_spec.default
+           ~venue_now:(fun () -> Some at)
+           ~drawdown:thunk ~dd_cap:(Some 0.02) ())
+    in
+    ( r.Intake.Reading.governor,
+      r.Intake.Reading.exposure_scale,
+      r.Intake.Reading.governor_unread )
+  in
+  let trio = Alcotest.(triple (float 0.0) (float 0.0) bool) in
+  Alcotest.check trio "raises" (0.5, 0.5, true)
+    (unread_by (fun () -> failwith "the graph is not stabilized"));
+  Alcotest.check trio "nan" (0.5, 0.5, true) (unread_by (fun () -> Some Float.nan));
+  Alcotest.check trio "nothing" (0.5, 0.5, true) (unread_by (fun () -> None));
+  let read_then_lost first =
+    let read = ref (fun () -> Some first) in
+    let g =
+      Intake.Gauge.create ~spec:Book.Desk_spec.default
+        ~venue_now:(fun () -> Some at)
+        ~drawdown:(fun () -> !read ())
+        ~dd_cap:(Some 0.02) ()
+    in
+    let before = (Intake.reading ~latest:None g).Intake.Reading.governor in
+    (read := fun () -> Some Float.nan);
+    (before, (Intake.reading ~latest:None g).Intake.Reading.governor)
+  in
+  Alcotest.(check (pair (float 0.0) (float 0.0)))
+    "read 1, then unread: 0.5" (1.0, 0.5) (read_then_lost 0.0);
+  Alcotest.(check (pair (float 0.0) (float 0.0)))
+    "read 0 at the cap, then unread: still 0" (0.0, 0.0) (read_then_lost 0.02)
+
+(* The overlay's age is counted in SESSION hours (overlay_max_age, 4 by
+   default). The book here holds an accepted overlay for 100 wall-clock hours
+   (overlay_max_age_minutes 6000) so that only the session count decides.
+   Overlay 7 says 0.9, as_of 15:45 and received 15:50 New York on Friday
+   2026-11-13. At 09:45 Monday it is 66 wall-clock hours old but 30 session
+   minutes old (from its as_of, the older of the two): held, 0.9. At 13:45 it
+   is 4 h 30 min old in session: the fallback, 0.5, and [decayed] says so. *)
+let test_an_overlay_ages_in_session_hours () =
+  let ny = Timezone.find_exn "America/New_York" in
+  let ny_at s =
+    Time_ns.of_date_ofday ~zone:ny
+      (Date.of_string (String.prefix s 10))
+      (Time_ns.Ofday.of_string (String.drop_prefix s 11))
+  in
+  let clock = ref (Some (ny_at "2026-11-13 15:50")) in
+  let gauge =
+    Intake.Gauge.create
+      ~spec:{ Book.Desk_spec.default with overlay_max_age_minutes = 6000 }
+      ~venue_now:(fun () -> !clock)
+      ~drawdown:(fun () -> None)
+      ~dd_cap:None ()
+  in
+  with_intake ~gauge
+    ~f:(fun f ->
+      write f.dir "overlay-7.json"
+        (overlay_doc
+           ~as_of:(D.Desk_time.rfc3339 (ny_at "2026-11-13 15:45"))
+           ~sequence:7 "0.9");
+      Intake.pass f.intake;
+      let read now =
+        clock := Some (ny_at now);
+        let r = Intake.current_reading f.intake in
+        (r.Intake.Reading.exposure_scale, state_of f.intake, r.Intake.Reading.decayed)
+      in
+      let trio = Alcotest.(triple (float 1e-12) string bool) in
+      Alcotest.check trio "Monday 09:45: it stands" (0.9, "held", false)
+        (read "2026-11-16 09:45");
+      Alcotest.check trio "Monday 13:45: the fallback" (0.5, "held", true)
+        (read "2026-11-16 13:45"))
+    ()
+
 let suite =
   ( "intake",
     [
+      Alcotest.test_case
+        "after a restart with no drawdown reading the governor is the fallback" `Quick
+        test_after_a_restart_with_no_drawdown_reading_the_governor_is_the_fallback;
+      Alcotest.test_case "an overlay ages in session hours" `Quick
+        test_an_overlay_ages_in_session_hours;
       Alcotest.test_case "a signals block parses, and sizing defaults to advisory" `Quick
         test_a_signals_block_parses_and_sizing_defaults_to_advisory;
       Alcotest.test_case "a signals block is refused when it cannot be fed" `Quick

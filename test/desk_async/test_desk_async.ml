@@ -129,7 +129,7 @@ let manager ?trade ?read ?(now = Time_ns.now) ?(book_is_current = fun () -> true
   let read = match read with Some r -> r | None -> D.Sim_venue.read f.venue in
   incr managers_built;
   let oms =
-    D.Oms.create ~graph:f.graph ~journal:f.journal
+    D.Oms.create ~graph:f.graph ~journal:f.journal ~trips_on:[]
       ~spec:
         {
           Desk_spec.default with
@@ -3242,7 +3242,7 @@ type adjust_fixture = {
    is a ratio of 1, so the effective scale is the overlay's, for either
    tier. The pass's waves are settled and waited on before it returns. *)
 let adjust_case ?(last_scale = 0.70) ?last_ratio ?last_factor ?last_governor
-    ?(sizing_row = true) ?(stale = false) ?(incubation_cap = 0.5)
+    ?(sizing_row = true) ?(stale = false) ?stale_at ?(incubation_cap = 0.5)
     ?(drawdown = fun () -> None) ?dd_cap ?(adjust_now = true) ?(bought = true) ?unfilled
     ?halt ?reduce_through_trip ~(sizing : Ohcamel.Config.Book.Signals_spec.sizing)
     ~overlay () =
@@ -3361,15 +3361,22 @@ let adjust_case ?(last_scale = 0.70) ?last_ratio ?last_factor ?last_governor
   (* [stale]: the overlay was accepted fourteen hours before the venue's
      11:00 -- last evening's -- and is recorded as the intake would have,
      with no file left to judge. *)
+  (* [stale_at]: as_of and received at that instant instead, for a case
+     about the overlay's age in session hours. *)
+  let stale_as_of =
+    Option.value_map stale_at ~default:"2026-09-14T22:50:00Z" ~f:D.Desk_time.rfc3339
+  in
   if stale then
-    D.Journal.record_overlay f.journal ~sequence:7 ~as_of:"2026-09-14T22:50:00Z"
-      ~received_at:(Time_ns.sub tuesday_mid (Time_ns.Span.of_hr 14.0))
+    D.Journal.record_overlay f.journal ~sequence:7 ~as_of:stale_as_of
+      ~received_at:
+        (Option.value stale_at
+           ~default:(Time_ns.sub tuesday_mid (Time_ns.Span.of_hr 14.0)))
       ~exposure_scale:(Float.of_string overlay) ~verdict:`Accepted ~rule:None
       ~detail:"passed O1-O4"
       ~document:
         (sprintf
-           {|{"schema_version":1,"kind":"overlay","as_of":"2026-09-14T22:50:00Z","computed_at":"2026-09-14T22:50:05Z","sequence":7,"exposure_scale":%s,"inputs":{},"reported":{}}|}
-           overlay)
+           {|{"schema_version":1,"kind":"overlay","as_of":"%s","computed_at":"2026-09-14T22:50:05Z","sequence":7,"exposure_scale":%s,"inputs":{},"reported":{}}|}
+           stale_as_of overlay)
   else
     Out_channel.write_all
       (Filename.concat dir "overlay-7.json")
@@ -3382,7 +3389,7 @@ let adjust_case ?(last_scale = 0.70) ?last_ratio ?last_factor ?last_governor
       ~gauge:
         (D.Intake.Gauge.create ~spec:(D.Oms.spec oms)
            ~venue_now:(fun () -> Some (now ()))
-           ~drawdown ~dd_cap)
+           ~drawdown ~dd_cap ())
       ~journal:f.journal ~dir
       ~strategies:
         [
@@ -3604,12 +3611,16 @@ let test_overlay_zero_flattens_and_alerts () =
     (alerts (), D.Sim_venue.received f.venue);
   cleanup ()
 
-(* An unknown drawdown holds the governor (the fix round's ruling B). The
-   graph's drawdown reads 0 against a 2 % cap, a governor of 1, and the
-   overlay of 0.70 equals the last sizing: nothing moves. Then the drawdown
-   raises: the governor holds at 1 -- never NaN, never 0 -- so two more
-   passes sell nothing, and the hold is said once. *)
-let test_an_unknown_drawdown_holds_the_governor_and_sells_nothing () =
+(* An unknown drawdown governs at the fallback (Task 1.5, which replaces the
+   fix round's ruling B: the last governor no longer holds). The graph's
+   drawdown reads 0 against a 2 % cap, a governor of 1, and the overlay of
+   0.70 equals the last sizing: nothing moves. Then the drawdown raises: the
+   governor is the book's overlay_fallback, 0.5 -- the smaller of it and the
+   last governor read, 1 -- so the effective scale is 0.70 x 0.5 = 0.35, a
+   move of 0.35, beyond the band: re-sized to trunc(0.5 x 0.35 x 100,000 /
+   100) = 175 from 350, Sell 175. The next pass sells nothing more, and the
+   unread drawdown is said once. *)
+let test_an_unknown_drawdown_governs_at_the_fallback () =
   let read = ref (fun () -> Some 0.0) in
   let%bind { a_f = f; a_name = name; a_intake = intake; pass_and_adjust; cleanup; _ } =
     adjust_case
@@ -3624,15 +3635,15 @@ let test_an_unknown_drawdown_holds_the_governor_and_sells_nothing () =
   let%map () = pass_and_adjust ~at:8.0 in
   let r = D.Intake.current_reading intake in
   Alcotest.(check (pair (float 0.0) bool))
-    "held at 1" (1.0, true)
-    (r.D.Intake.Reading.governor, r.D.Intake.Reading.governor_held);
+    "the fallback, 0.5" (0.5, true)
+    (r.D.Intake.Reading.governor, r.D.Intake.Reading.governor_unread);
   Alcotest.(check int)
     "said once" 1
     (List.count (Queue.to_list f.events)
        ~f:(String.is_substring ~substring:"drawdown cannot be read"));
   Alcotest.(check (list (triple string int string)))
-    "nothing sold"
-    [ ("buy", 350, "limit day") ]
+    "sold to the fallback's size, once"
+    [ ("buy", 350, "limit day"); ("sell", 175, "limit day") ]
     (strategy_orders f name);
   cleanup ()
 
@@ -4015,7 +4026,7 @@ let evening_case ?(venue = true) ?(max_order_notional = 25_000.0) ~start ~strate
         (D.Intake.Gauge.create ~spec:(D.Oms.spec oms)
            ~venue_now:(fun () -> if !venue then Some (now ()) else None)
            ~drawdown:(fun () -> None)
-           ~dd_cap:None)
+           ~dd_cap:None ())
       ~journal:f.journal ~dir ~strategies ~universe:[ aapl; msft; xom ]
       ~on_event:(Queue.enqueue f.events) ~now ()
   in
@@ -4300,6 +4311,54 @@ let test_a_stale_overlay_holds_and_a_governor_move_re_sizes () =
         ((z.D.Journal.Sizing.scale, (z.mode, z.note)), [ z.factor; z.governor ]));
   cleanup ()
 
+(* A HOLD ENDS WITH THE OVERLAY (Task 1.5). The strategy was last sized at
+   0.9 (factor 0.9, governor 1, ratio 1) and the overlay, 0.9, is stale: no
+   fresh one has come. Received at 14:30 New York on Monday, by Tuesday's
+   11:00 it is 3 session hours old (14:30-16:00 and 09:30-11:00): within
+   overlay_max_age, 4, so the pass holds -- the 3-hour-old overlay sizes at
+   0.9. Received at 12:30 instead it is 5 session hours old: the held factor
+   decays to the fallback, 0.5, a move of 0.4, beyond the band, and the
+   strategy is re-sized at trunc(0.5 x 0.5 x 1 x 100,000 / 100) = 250 from
+   its 350, Sell 100; the row at 0.5, adjust, noted "decay", factor 0.5,
+   governor 1. The decay is said once. *)
+let test_a_held_sizing_decays_to_the_fallback_after_four_session_hours () =
+  let monday s = Time_ns.of_string_with_utc_offset ("2026-09-14T" ^ s ^ "Z") in
+  let%bind { a_f = f; a_name = name; cleanup; _ } =
+    adjust_case ~stale:true ~stale_at:(monday "18:30:00") ~last_scale:0.9 ~last_ratio:1.0
+      ~last_factor:0.9 ~last_governor:1.0 ~sizing:Ohcamel.Config.Book.Signals_spec.Live
+      ~overlay:"0.9" ()
+  in
+  Alcotest.(check (pair (list (triple string int string)) string))
+    "3 session hours: held at 0.9, nothing proposed"
+    ([ ("buy", 350, "limit day") ], "open")
+    (strategy_orders f name, latest_sizing_mode f name);
+  cleanup ();
+  let%map { a_f = f; a_name = name; cleanup; _ } =
+    adjust_case ~stale:true ~stale_at:(monday "16:30:00") ~last_scale:0.9 ~last_ratio:1.0
+      ~last_factor:0.9 ~last_governor:1.0 ~sizing:Ohcamel.Config.Book.Signals_spec.Live
+      ~overlay:"0.9" ()
+  in
+  Alcotest.(check (list (triple string int string)))
+    "5 session hours: Sell 100"
+    [ ("buy", 350, "limit day"); ("sell", 100, "limit day") ]
+    (strategy_orders f name);
+  (match D.Journal.latest_sizing_row f.journal ~strategy:name with
+  | None -> Alcotest.fail "no sizing row"
+  | Some z ->
+      Alcotest.(
+        check
+          (pair
+             (pair (float 1e-12) (pair string (option string)))
+             (list (option (float 1e-12)))))
+        "scale 0.5, adjust, decay; factor 0.5, governor 1"
+        ((0.5, ("adjust", Some "decay")), [ Some 0.5; Some 1.0 ])
+        ((z.D.Journal.Sizing.scale, (z.mode, z.note)), [ z.factor; z.governor ]));
+  Alcotest.(check int)
+    "the decay said once" 1
+    (List.count (Queue.to_list f.events)
+       ~f:(String.is_substring ~substring:"every held sizing decays to the fallback"));
+  cleanup ()
+
 (* A-I4. An incubation strategy at the canary's ratio: a cap of 0.087 over
    its fraction of 0.5 is 0.174. It was last sized at overlay 1.0, the
    product 0.174, with that ratio recorded. The overlay falls to 0.85: the
@@ -4578,7 +4637,7 @@ let wide_adjust ~refuse_with () =
         (D.Intake.Gauge.create ~spec:(D.Oms.spec oms)
            ~venue_now:(fun () -> Some tuesday_mid)
            ~drawdown:(fun () -> None)
-           ~dd_cap:None)
+           ~dd_cap:None ())
       ~journal:f.journal ~dir
       ~strategies:
         [
@@ -4784,8 +4843,10 @@ let suites =
         case "a stopped strategy's document is not sized"
           test_a_stopped_strategy's_document_is_not_sized;
         case "adjust beyond band re-sizes" test_adjust_beyond_band_re_sizes;
-        case "an unknown drawdown holds the governor and sells nothing"
-          test_an_unknown_drawdown_holds_the_governor_and_sells_nothing;
+        case "an unknown drawdown governs at the fallback"
+          test_an_unknown_drawdown_governs_at_the_fallback;
+        case "a held sizing decays to the fallback after four session hours"
+          test_a_held_sizing_decays_to_the_fallback_after_four_session_hours;
         case "a product of zero moves by the band alone"
           test_a_product_of_zero_moves_by_the_band_alone;
         case "a stop's flatten reaches the venue through a limit's trip"

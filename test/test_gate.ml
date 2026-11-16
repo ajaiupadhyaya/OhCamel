@@ -59,7 +59,7 @@ let test_a_buy_that_takes_tech_over_its_cap_fails_naming_it () =
     ~f:(fun graph ->
       (* AAPL 500 x 150 = 75,000 (under 80,000); TECH 75,000 + 30,000 = 105,000 (over 100,000) *)
       let v = Gate.check graph ~fills:[ fill aapl 100.0 150.0 ] in
-      Alcotest.(check bool) "fails" false v.Gate.Verdict.passed;
+      Alcotest.(check bool) "fails" false (Gate.Verdict.passed v);
       Alcotest.(check (list string))
         "created: tech-cap only" [ "tech-cap" ]
         (names v.Gate.Verdict.created);
@@ -77,7 +77,7 @@ let test_the_same_trade_the_other_way_passes () =
     ~f:(fun graph ->
       (* TECH 45,000 + 30,000 = 75,000 *)
       let v = Gate.check graph ~fills:[ fill aapl (-100.0) 150.0 ] in
-      Alcotest.(check bool) "passes" true v.Gate.Verdict.passed;
+      Alcotest.(check bool) "passes" true (Gate.Verdict.passed v);
       Alcotest.(check (list string)) "nothing created" [] (names v.Gate.Verdict.created);
       Alcotest.(check (float 1e-9))
         "gross 110,000 - 15,000" 95_000.0
@@ -90,13 +90,13 @@ let test_worsening_a_breach_fails_and_reducing_it_passes () =
     ~f:(fun graph ->
       (* +10 MSFT: TECH 123,000, 23,000 over > 20,000 *)
       let up = Gate.check graph ~fills:[ fill msft 10.0 300.0 ] in
-      Alcotest.(check bool) "worsening fails" false up.Gate.Verdict.passed;
+      Alcotest.(check bool) "worsening fails" false (Gate.Verdict.passed up);
       Alcotest.(check (list string))
         "worsened: tech-cap" [ "tech-cap" ]
         (names up.Gate.Verdict.worsened);
       (* -10 MSFT: TECH 117,000, 17,000 over < 20,000 -- still breached, and better *)
       let down = Gate.check graph ~fills:[ fill msft (-10.0) 300.0 ] in
-      Alcotest.(check bool) "reducing passes" true down.Gate.Verdict.passed;
+      Alcotest.(check bool) "reducing passes" true (Gate.Verdict.passed down);
       Alcotest.(check (list string)) "not worsened" [] (names down.Gate.Verdict.worsened);
       Alcotest.(check (list string))
         "not cleared either: still over" []
@@ -111,7 +111,7 @@ let test_a_rebalance_is_gated_as_one_set_of_fills () =
       let v =
         Gate.check graph ~fills:[ fill aapl 100.0 150.0; fill msft (-100.0) 300.0 ]
       in
-      Alcotest.(check bool) "the pair passes" true v.Gate.Verdict.passed)
+      Alcotest.(check bool) "the pair passes" true (Gate.Verdict.passed v))
     ()
 
 let test_a_price_away_from_the_mark_moves_equity_by_exactly_the_difference () =
@@ -200,7 +200,7 @@ let test_a_base_that_breaches_and_a_proposal_that_reduces_it_passes () =
     ~f:(fun graph ->
       let base = [ fill aapl 100.0 150.0 ] and fills = [ fill aapl (-20.0) 150.0 ] in
       let v = Gate.check ~base graph ~fills in
-      Alcotest.(check bool) "passes" true v.Gate.Verdict.passed;
+      Alcotest.(check bool) "passes" true (Gate.Verdict.passed v);
       Alcotest.(check (list string)) "nothing created" [] (names v.Gate.Verdict.created);
       Alcotest.(check (list string)) "nothing worsened" [] (names v.Gate.Verdict.worsened);
       Alcotest.(check (list string))
@@ -227,7 +227,7 @@ let test_a_base_that_breaches_and_a_proposal_that_worsens_it_fails () =
       let v =
         Gate.check ~base:[ fill aapl 100.0 150.0 ] graph ~fills:[ fill msft 10.0 300.0 ]
       in
-      Alcotest.(check bool) "fails" false v.Gate.Verdict.passed;
+      Alcotest.(check bool) "fails" false (Gate.Verdict.passed v);
       Alcotest.(check (list string))
         "worsened: tech-cap" [ "tech-cap" ]
         (names v.Gate.Verdict.worsened);
@@ -247,7 +247,7 @@ let test_a_clear_base_and_a_proposal_that_breaches_on_it_fails () =
     ~f:(fun graph ->
       let fills = [ fill msft 10.0 300.0 ] in
       let v = Gate.check ~base:[ fill aapl 50.0 150.0 ] graph ~fills in
-      Alcotest.(check bool) "fails" false v.Gate.Verdict.passed;
+      Alcotest.(check bool) "fails" false (Gate.Verdict.passed v);
       Alcotest.(check (list string))
         "created: tech-cap" [ "tech-cap" ]
         (names v.Gate.Verdict.created);
@@ -256,7 +256,159 @@ let test_a_clear_base_and_a_proposal_that_breaches_on_it_fails () =
         (Notional.to_float v.Gate.Verdict.gross_before);
       Alcotest.(check bool)
         "the live book alone would take it" true
-        (Gate.check graph ~fills).Gate.Verdict.passed)
+        (Gate.Verdict.passed (Gate.check graph ~fills)))
+    ()
+
+(* UNKNOWN IS NOT PERMISSION (Task 1.5). The book above with a VaR limit
+   whose window is never filled: no returns are set, so var-cap -- a
+   Value_at_risk limit -- cannot be evaluated, before or after any fill.
+   [trips_on] names the limits the kill switch trips on; [var2] adds a
+   second VaR limit, configured after the first. *)
+let var_limit name =
+  { Limit.name; scope = Limit.Portfolio; kind = Limit.Value_at_risk (money 1e9) }
+
+let with_warming_book ?(var2 = false) ~f () =
+  let graph =
+    Graph.create ~starting_cash:(money 1_000_000.0)
+      ~instruments:
+        [
+          { Instrument.symbol = aapl; sector = Sector.of_string "TECH" };
+          { Instrument.symbol = msft; sector = Sector.of_string "TECH" };
+          { Instrument.symbol = xom; sector = Sector.of_string "ENERGY" };
+        ]
+      ~limits:
+        ([
+           limit "aapl-cap" (Limit.Instrument aapl) 80_000.0;
+           limit "tech-cap" (Limit.Sector (Sector.of_string "TECH")) 100_000.0;
+           var_limit "var-cap";
+           limit "book-cap" Limit.Portfolio 200_000.0;
+         ]
+        @ if var2 then [ var_limit "var-cap-2" ] else [])
+      ~confidence:0.95 ~return_window:10 ()
+  in
+  List.iter
+    [ (aapl, 150.0, 400.0); (msft, 300.0, 100.0); (xom, 100.0, -200.0) ]
+    ~f:(fun (s, p, q) ->
+      Graph.set_price graph s (Price.of_float p);
+      Graph.set_qty graph s (Qty.of_float q));
+  Graph.stabilize graph;
+  Exn.protect ~f:(fun () -> f graph) ~finally:(fun () -> Graph.destroy graph)
+
+let outcome =
+  Alcotest.testable
+    (Fmt.of_to_string (fun o -> Sexp.to_string (Gate.Outcome.sexp_of_t o)))
+    Gate.Outcome.equal
+
+(* +10 AAPL: gross 110,000 -> 111,500, a raise, with var-cap unevaluable and
+   named in kill_switch_trips_on: refused, naming it. *)
+let test_an_unevaluable_trip_limit_refuses_a_gross_raising_proposal () =
+  with_warming_book
+    ~f:(fun graph ->
+      let v = Gate.check ~trips_on:[ "var-cap" ] graph ~fills:[ fill aapl 10.0 150.0 ] in
+      Alcotest.check outcome "refused, naming var-cap"
+        (Gate.Outcome.Refused_unevaluable [ "var-cap" ]) v.Gate.Verdict.outcome;
+      Alcotest.(check bool) "does not pass" false (Gate.Verdict.passed v);
+      Alcotest.(check (list string))
+        "var-cap is unevaluable" [ "var-cap" ]
+        (names v.Gate.Verdict.unevaluable);
+      Alcotest.(check bool)
+        "the reason names the limit" true
+        (List.exists (Gate.Verdict.reasons v)
+           ~f:(String.is_substring ~substring:"var-cap cannot be evaluated")))
+    ()
+
+(* -10 AAPL: gross 110,000 -> 108,500. The same unevaluable trip-limit lets a
+   proposal that lowers gross through: it is still reported unevaluable. *)
+let test_the_same_with_a_gross_lowering_proposal_passes () =
+  with_warming_book
+    ~f:(fun graph ->
+      let v =
+        Gate.check ~trips_on:[ "var-cap" ] graph ~fills:[ fill aapl (-10.0) 150.0 ]
+      in
+      Alcotest.check outcome "passes" Gate.Outcome.Passed v.Gate.Verdict.outcome;
+      Alcotest.(check bool) "passes" true (Gate.Verdict.passed v);
+      Alcotest.(check (list string))
+        "still reported" [ "var-cap" ]
+        (names v.Gate.Verdict.unevaluable);
+      (* Covering 10 XOM of the -200 short lowers gross too. *)
+      let cover =
+        Gate.check ~trips_on:[ "var-cap" ] graph ~fills:[ fill xom 10.0 100.0 ]
+      in
+      Alcotest.check outcome "a cover passes" Gate.Outcome.Passed
+        cover.Gate.Verdict.outcome)
+    ()
+
+(* The boundary. +10 MSFT (+3,000) beside -20 AAPL (-3,000): gross 110,000
+   either side, exactly -- equal is not a raise, and it passes. -10 AAPL
+   (-1,500) beside +10 MSFT (+3,000) lowers one name and raises another by
+   more: gross 111,500, a raise, refused. *)
+let test_equal_gross_is_not_a_raise_and_a_swap_that_raises_it_is () =
+  with_warming_book
+    ~f:(fun graph ->
+      let equal =
+        Gate.check ~trips_on:[ "var-cap" ] graph
+          ~fills:[ fill msft 10.0 300.0; fill aapl (-20.0) 150.0 ]
+      in
+      Alcotest.(check (float 0.0))
+        "gross unchanged"
+        (Notional.to_float equal.Gate.Verdict.gross_before)
+        (Notional.to_float equal.Gate.Verdict.gross_after);
+      Alcotest.check outcome "equal passes" Gate.Outcome.Passed equal.Gate.Verdict.outcome;
+      let swap =
+        Gate.check ~trips_on:[ "var-cap" ] graph
+          ~fills:[ fill aapl (-10.0) 150.0; fill msft 10.0 300.0 ]
+      in
+      Alcotest.(check (float 1e-9))
+        "gross 111,500" 111_500.0
+        (Notional.to_float swap.Gate.Verdict.gross_after);
+      Alcotest.check outcome "the raising swap is refused"
+        (Gate.Outcome.Refused_unevaluable [ "var-cap" ]) swap.Gate.Verdict.outcome)
+    ()
+
+(* An unevaluable limit the switch does not trip on behaves as before: a
+   raise passes, the limit reported unevaluable. *)
+let test_an_unevaluable_limit_that_is_not_a_trip_limit_passes_as_before () =
+  with_warming_book
+    ~f:(fun graph ->
+      List.iter [ []; [ "tech-cap" ] ] ~f:(fun trips_on ->
+          let v = Gate.check ~trips_on graph ~fills:[ fill aapl 10.0 150.0 ] in
+          Alcotest.check outcome "passes" Gate.Outcome.Passed v.Gate.Verdict.outcome;
+          Alcotest.(check (list string))
+            "reported" [ "var-cap" ]
+            (names v.Gate.Verdict.unevaluable));
+      let v = Gate.check graph ~fills:[ fill aapl 10.0 150.0 ] in
+      Alcotest.check outcome "no trips_on passes" Gate.Outcome.Passed
+        v.Gate.Verdict.outcome)
+    ()
+
+(* Two unevaluable trip-limits are named in the order the book configures
+   its limits, whatever order kill_switch_trips_on lists them in. *)
+let test_the_refusal_names_the_limits_in_the_order_they_are_configured () =
+  with_warming_book ~var2:true
+    ~f:(fun graph ->
+      let v =
+        Gate.check ~trips_on:[ "var-cap-2"; "var-cap" ] graph
+          ~fills:[ fill aapl 10.0 150.0 ]
+      in
+      Alcotest.check outcome "both, in book order"
+        (Gate.Outcome.Refused_unevaluable [ "var-cap"; "var-cap-2" ])
+        v.Gate.Verdict.outcome)
+    ()
+
+(* A breach created outranks the unevaluable refusal in the outcome, and the
+   reasons say both: +100 AAPL takes TECH to 105,000 with var-cap unknown. *)
+let test_a_breach_and_an_unevaluable_trip_limit_both_give_reasons () =
+  with_warming_book
+    ~f:(fun graph ->
+      let v = Gate.check ~trips_on:[ "var-cap" ] graph ~fills:[ fill aapl 100.0 150.0 ] in
+      Alcotest.check outcome "refused for the breach" Gate.Outcome.Refused_breach
+        v.Gate.Verdict.outcome;
+      let reasons = Gate.Verdict.reasons v in
+      Alcotest.(check (pair bool bool))
+        "tech-cap and var-cap both named" (true, true)
+        ( List.exists reasons ~f:(String.is_substring ~substring:"tech-cap"),
+          List.exists reasons
+            ~f:(String.is_substring ~substring:"var-cap cannot be evaluated") ))
     ()
 
 (* Isolation over arbitrary proposals: whatever is proposed, the live book's
@@ -312,7 +464,7 @@ let prop_what_the_gate_passes_creates_no_breach_when_traded =
                    | _ -> None)
              in
              let v = Gate.check graph ~fills in
-             (not v.Gate.Verdict.passed)
+             (not (Gate.Verdict.passed v))
              ||
              (List.iter fills ~f:(fun (f : Gate.Fill.t) ->
                   Graph.apply_fill graph
@@ -352,6 +504,18 @@ let suite =
         `Quick test_a_base_that_breaches_and_a_proposal_that_worsens_it_fails;
       Alcotest.test_case "a clear base and a proposal that breaches on it fails" `Quick
         test_a_clear_base_and_a_proposal_that_breaches_on_it_fails;
+      Alcotest.test_case "an unevaluable trip-limit refuses a gross-raising proposal"
+        `Quick test_an_unevaluable_trip_limit_refuses_a_gross_raising_proposal;
+      Alcotest.test_case "the same with a gross-lowering proposal passes" `Quick
+        test_the_same_with_a_gross_lowering_proposal_passes;
+      Alcotest.test_case "equal gross is not a raise, and a swap that raises it is" `Quick
+        test_equal_gross_is_not_a_raise_and_a_swap_that_raises_it_is;
+      Alcotest.test_case "an unevaluable limit that is not a trip-limit passes as before"
+        `Quick test_an_unevaluable_limit_that_is_not_a_trip_limit_passes_as_before;
+      Alcotest.test_case "the refusal names the limits in the order they are configured"
+        `Quick test_the_refusal_names_the_limits_in_the_order_they_are_configured;
+      Alcotest.test_case "a breach and an unevaluable trip-limit both give reasons" `Quick
+        test_a_breach_and_an_unevaluable_trip_limit_both_give_reasons;
       prop_the_gate_never_moves_the_live_book;
       prop_what_the_gate_passes_creates_no_breach_when_traded;
     ] )

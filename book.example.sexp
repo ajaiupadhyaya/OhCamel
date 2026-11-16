@@ -205,6 +205,13 @@
  ;                           overlay scales every incubation and live target.
  ;   overlay_max_age_minutes an overlay older than this is stale; the desk
  ;                           holds its last value until then.
+ ;   overlay_max_age         how long an overlay's value may stand at all, in
+ ;                           SESSION hours (09:30-16:00 New York, weekdays):
+ ;                           past it, or when its age cannot be told, a sizing
+ ;                           the adjust pass was holding decays to the
+ ;                           fallback (never above the overlay's own value).
+ ;                           An overlay written after Friday's close still
+ ;                           stands at Monday's open. Positive and finite.
  ;   overlay_fallback        the scale used once the overlay is stale. The page
  ;                           says OVERLAY STALE.
  ;   overlay_band            a move in the scale larger than this re-sizes every
@@ -249,6 +256,7 @@
    (incubation_cap 0.60)
    (vol_target 0.10)
    (overlay_max_age_minutes 60)
+   (overlay_max_age 4.0)
    (overlay_fallback 0.5)
    (overlay_band 0.10)
    (intraday_slip_bps 10.0)

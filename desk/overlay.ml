@@ -125,11 +125,33 @@ let governor ~drawdown ~dd_cap =
       else if Float.(dd < cap) then (cap -. dd) /. (cap /. 2.)
       else 0.0
 
-let effective ~overlay ~fallback ~governor =
-  let base = Option.value overlay ~default:fallback in
+(* Within [max_age] only for an age that is known and runs forwards: an age
+   of None, or one below zero, cannot show the overlay is young enough. *)
+let within ~age ~max_age =
+  match age with Some a -> Time_ns.Span.(a >= zero && a <= max_age) | None -> false
+
+(* The fallback is a ceiling on what an overlay that no longer stands may
+   size at, never a floor: an old 0.2 stays 0.2, and only an old 0.9 comes
+   down to 0.5. Float.min is nan when either is, and [effective] then sizes
+   nothing. *)
+let factor ~overlay ~age ~max_age ~fallback =
+  match overlay with
+  | None -> fallback
+  | Some v -> if within ~age ~max_age then v else Float.min v fallback
+
+let effective ~overlay ~age ~max_age ~fallback ~governor =
+  let base = factor ~overlay ~age ~max_age ~fallback in
   let x = base *. governor in
   if not (finite base && finite governor && finite x) then 0.0
   else Float.clamp_exn x ~min:0. ~max:1.
+
+let unread_governor ~fallback ~last =
+  let g =
+    match last with
+    | Some g when finite g -> Float.min g fallback
+    | Some _ | None -> fallback
+  in
+  if finite g then g else 0.0
 
 type state = Fresh | Held of Time_ns.Span.t | Stale | Absent
 

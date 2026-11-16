@@ -1205,6 +1205,20 @@ let test_every_new_desk_refusal_has_its_row () =
       ("(overlay_max_age_minutes 1)", []);
       ( "(overlay_max_age_minutes 0)",
         refused "overlay_max_age_minutes" "must be at least 1" "0" );
+      ("(overlay_max_age 4.0)", []);
+      ("(overlay_max_age 0.25)", []);
+      ( "(overlay_max_age 0.0)",
+        refused "overlay_max_age" "must be a positive, finite number of session hours" "0"
+      );
+      ( "(overlay_max_age -1.0)",
+        refused "overlay_max_age" "must be a positive, finite number of session hours"
+          "-1" );
+      ( "(overlay_max_age nan)",
+        refused "overlay_max_age" "must be a positive, finite number of session hours"
+          "nan" );
+      ( "(overlay_max_age inf)",
+        refused "overlay_max_age" "must be a positive, finite number of session hours"
+          "inf" );
       ("(overlay_fallback 0.0)", []);
       ("(overlay_fallback 1.0)", []);
       ("(overlay_fallback -0.1)", refused "overlay_fallback" "must be in [0, 1]" "-0.1");

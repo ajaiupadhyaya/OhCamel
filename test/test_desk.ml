@@ -327,7 +327,7 @@ let test_api_desk_carries_the_scale_the_governor_and_the_overlay () =
         (Ohcamel_desk.Intake.Gauge.create ~spec:Config.Book.Desk_spec.default
            ~venue_now:(fun () -> Some (Time_ns.add at (Time_ns.Span.of_min 61.0)))
            ~drawdown:(fun () -> Some 0.015)
-           ~dd_cap:(Some 0.02));
+           ~dd_cap:(Some 0.02) ());
       let j = round_trip () in
       Alcotest.(check (list string))
         "the three keys follow clock, in order"
@@ -376,7 +376,8 @@ let test_a_book_without_signals_still_serves_a_numeric_scale () =
            ~venue_now:(fun () -> Some at)
            ~drawdown:(fun () -> Some 0.0)
              (* (limits ()): no Portfolio Max_drawdown, so no cap. *)
-           ~dd_cap:(Ohcamel_desk.Intake.Gauge.dd_cap_of_limits []));
+           ~dd_cap:(Ohcamel_desk.Intake.Gauge.dd_cap_of_limits [])
+           ());
       let j = Yojson.Safe.from_string (Yojson.Safe.to_string (Desk.body_json desk)) in
       Alcotest.(check (float 1e-12))
         "exposure_scale 1.0" 1.0
@@ -402,7 +403,7 @@ let test_with_a_manager_the_desk_says_what_it_can_do () =
           ~cash:Notional.zero ~positions:[] ()
       in
       let oms =
-        Ohcamel_desk.Oms.create ~graph ~journal
+        Ohcamel_desk.Oms.create ~graph ~journal ~trips_on:[]
           ~spec:
             {
               Config.Book.Desk_spec.default with

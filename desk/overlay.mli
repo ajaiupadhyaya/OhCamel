@@ -53,19 +53,51 @@ val validate : clock:clock -> max_age_minutes:int -> last_sequence:int -> t -> v
 val governor : drawdown:float option -> dd_cap:float option -> float
 (** The drawdown governor: a size multiplier in [0, 1]. [drawdown] is the graph's drawdown
     as a fraction (0.015 is 1.5 %); [dd_cap] the book's [Max_drawdown] limit as a
-    fraction. Either [None] -> [1.0] (nothing to govern with). Otherwise [1.0] while
+    fraction. No cap -> [1.0] (the book names nothing to govern by). Otherwise [1.0] while
     [drawdown <= dd_cap / 2] (including a negative drawdown, equity above its peak),
     falling linearly as [(dd_cap - drawdown) / (dd_cap / 2)] between half the cap and the
     cap, and [0.0] at and beyond the cap. A figure that exists but cannot be used -- a
-    non-finite drawdown or cap, or a cap that is not positive -- gives [0.0]: the
-    governor's job is to stop sizing when the number it needs is unusable. *)
+    non-finite drawdown or cap, or a cap that is not positive -- gives [0.0]. A [None]
+    drawdown beside a cap answers [1.0] here, but the desk never asks it: a drawdown it
+    cannot read is governed by {!unread_governor} instead (Intake.reading). *)
 
-val effective : overlay:float option -> fallback:float -> governor:float -> float
-(** [(overlay or fallback) * governor], clamped to [0, 1]. [overlay] is the accepted
-    overlay's scale while it is fresh or held, [None] when it is stale (the fallback
-    applies). When no overlay was ever accepted ([Absent]) the desk passes [Some 1.0]: the
-    book sizes as it did before overlays existed, times the governor (Intake.reading). A
-    non-finite input or product gives [0.0]. *)
+val unread_governor : fallback:float -> last:float option -> float
+(** The governor while the drawdown cannot be read -- the thunk raises, answers a
+    non-finite number or nothing -- including the first read after a restart: the book's
+    [overlay_fallback], or the [last] governor read when that is smaller. Unknown is not
+    permission: it never sizes above the fallback, nor above what the last readable
+    drawdown allowed (a book at its cap stays at 0). A non-finite result gives [0.0]. *)
+
+val within : age:Time_ns.Span.t option -> max_age:Time_ns.Span.t -> bool
+(** [age] is known, not negative, and at most [max_age]. *)
+
+val factor :
+  overlay:float option ->
+  age:Time_ns.Span.t option ->
+  max_age:Time_ns.Span.t ->
+  fallback:float ->
+  float
+(** What the governor multiplies. [overlay] is the factor the caller would size at -- the
+    latest accepted overlay's scale, or the factor a held sizing used -- and [age] how
+    long the overlay behind it has stood, counted in session hours
+    ({!Desk_time.session_span}). While [age] is known, not negative and at most [max_age]
+    (the book's [overlay_max_age]), [overlay] itself; otherwise -- older, or of unknown
+    age -- the smaller of [overlay] and [fallback]: the fallback is a ceiling on what an
+    overlay that no longer stands may size at, never a floor that buys. No overlay:
+    [fallback]. *)
+
+val effective :
+  overlay:float option ->
+  age:Time_ns.Span.t option ->
+  max_age:Time_ns.Span.t ->
+  fallback:float ->
+  governor:float ->
+  float
+(** [factor ~overlay ~age ~max_age ~fallback * governor], clamped to [0, 1]: older than
+    [max_age] session hours, or of unknown age, [fallback x governor] (or less, as
+    {!factor} says). When no overlay was ever accepted ([Absent]) the desk passes
+    [Some 1.0] at age zero: the book sizes as it did before overlays existed, times the
+    governor (Intake.reading). A non-finite input or product gives [0.0]. *)
 
 (** How the last overlay received stands. *)
 type state =

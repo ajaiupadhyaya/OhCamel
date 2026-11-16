@@ -1205,7 +1205,7 @@ container as environment, never as a layer. The runbooks are in
 
 ## What's verified
 
-`make test` runs <!-- count:ocaml-tests -->908<!-- /count --> tests, plus <!-- count:scheduler-tests -->73<!-- /count --> in `test/desk_async` that run with
+`make test` runs <!-- count:ocaml-tests -->926<!-- /count --> tests, plus <!-- count:scheduler-tests -->74<!-- /count --> in `test/desk_async` that run with
 the scheduler -- the order manager's cases, a live strategy's rebalance, the
 transport's bound, the signal intake's minute loop and that suite's own count --
 all hermetic — no network, no credentials, and nothing that waits on the wall
@@ -1488,7 +1488,10 @@ equity closes and the live equity (the book's `(risk ((drawdown_window N)))`,
 1 to 10,000), not from the all-time peak: from the all-time peak a book the
 drawdown governor had cut could never earn its size back by holding still. On
 the live host a close is one journaled session close, so 250 is a trading year.
-A drawdown that cannot be measured leaves the limit unevaluable, never clear. A
+A drawdown that cannot be measured leaves the limit unevaluable, never clear,
+and the desk's governor reads the book's `overlay_fallback` instead (never above
+the last governor it read); a limit the kill switch trips on that the gate
+cannot evaluate refuses any proposal that raises gross notional. A
 backtest's reported maximum drawdown is still the full path's.
 
 A breach is computed as data and displayed. Everything beyond that is off unless

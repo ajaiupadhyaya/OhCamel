@@ -26,7 +26,8 @@ let limit name scope n = { Limit.name; scope; kind = Limit.Gross_notional (money
    lets that default be taken, as test_gate.ml's [with_book] takes its own:
    an optional argument before the last labelled one is never erased. *)
 let with_oms_graph ?(book_is_current = true) ?(now = Time_ns.now) ?(extra_limits = [])
-    ?equity_history ?venue_name ?alerts ?(reduce_through_trip = false) ?halt ~f () =
+    ?equity_history ?venue_name ?alerts ?(reduce_through_trip = false) ?halt
+    ?(trips_on = []) ?(returns = true) ~f () =
   let graph =
     Graph.create ~starting_cash:(money 1_000_000.0)
       ~instruments:
@@ -51,8 +52,9 @@ let with_oms_graph ?(book_is_current = true) ?(now = Time_ns.now) ?(extra_limits
         [ (aapl, 150.0, 400.0); (msft, 300.0, 100.0); (xom, 100.0, -200.0) ]
         ~f:(fun (s, p, q) ->
           Graph.set_qty graph s (Qty.of_float q);
-          Graph.set_returns graph s
-            [| -0.02; -0.01; 0.0; 0.01; 0.02; -0.02; -0.01; 0.0; 0.01; 0.02 |];
+          if returns then
+            Graph.set_returns graph s
+              [| -0.02; -0.01; 0.0; 0.01; 0.02; -0.02; -0.01; 0.0; 0.01; 0.02 |];
           Graph.apply_tick graph
             { Tick.symbol = s; price = Price.of_float p; time = Time.now () });
       Option.iter equity_history ~f:(Graph.set_equity_history graph);
@@ -73,7 +75,7 @@ let with_oms_graph ?(book_is_current = true) ?(now = Time_ns.now) ?(extra_limits
           ~cash:(money 1_000_000.0) ~positions:[] ()
       in
       let oms =
-        D.Oms.create ~graph ~journal
+        D.Oms.create ~graph ~journal ~trips_on
           ~spec:
             {
               Desk_spec.default with
@@ -106,9 +108,9 @@ let with_oms_graph ?(book_is_current = true) ?(now = Time_ns.now) ?(extra_limits
       f graph oms journal)
 
 let with_oms ?book_is_current ?now ?extra_limits ?equity_history ?venue_name
-    ?reduce_through_trip ?halt ~f () =
+    ?reduce_through_trip ?halt ?trips_on ?returns ~f () =
   with_oms_graph ?book_is_current ?now ?extra_limits ?equity_history ?venue_name
-    ?reduce_through_trip ?halt
+    ?reduce_through_trip ?halt ?trips_on ?returns
     ~f:(fun _ oms journal -> f oms journal)
     ()
 
@@ -1264,9 +1266,46 @@ let test_which_venue_statuses_rest () =
     "resting, and not" (resting, not_resting)
     (List.partition_tf (resting @ not_resting) ~f:rests)
 
+(* UNKNOWN IS NOT PERMISSION, as the desk runs it (Task 1.5). No returns,
+   so var-cap -- a Value_at_risk limit -- cannot be evaluated; the book trips
+   on it. A buy of 10 AAPL raises gross and is refused, the reason naming
+   var-cap and the gate's JSON saying "refused_unevaluable" with the name
+   alone; a sell of 10 AAPL lowers gross and passes. With var-cap off the
+   trip list, the same buy passes as before. *)
+let test_an_unevaluable_trip_limit_refuses_a_buy_that_raises_gross () =
+  let var_cap =
+    {
+      Limit.name = "var-cap";
+      scope = Limit.Portfolio;
+      kind = Limit.Value_at_risk (money 1e9);
+    }
+  in
+  with_oms ~returns:false ~extra_limits:[ var_cap ] ~trips_on:[ "var-cap" ]
+    ~f:(fun oms _ ->
+      let buy = D.Oms.preview oms (ticket aapl D.Order.Side.Buy 10) in
+      Alcotest.(check bool) "the buy is refused" false (D.Oms.Preview.passed buy);
+      Alcotest.(check bool) "naming var-cap" true (says buy "var-cap cannot be evaluated");
+      let gate = Yojson.Safe.Util.member "gate" (D.Oms.Preview.to_json buy) in
+      Alcotest.(check (pair string (list string)))
+        "the JSON says why, by name"
+        ("refused_unevaluable", [ "var-cap" ])
+        ( Yojson.Safe.Util.(member "outcome" gate |> to_string),
+          Yojson.Safe.Util.(member "refused_unevaluable" gate |> to_list |> filter_string)
+        );
+      let sell = D.Oms.preview oms (ticket aapl D.Order.Side.Sell 10) in
+      Alcotest.(check bool) "the sell passes" true (D.Oms.Preview.passed sell))
+    ();
+  with_oms ~returns:false ~extra_limits:[ var_cap ] ~trips_on:[]
+    ~f:(fun oms _ ->
+      let buy = D.Oms.preview oms (ticket aapl D.Order.Side.Buy 10) in
+      Alcotest.(check bool) "not a trip-limit: passes" true (D.Oms.Preview.passed buy))
+    ()
+
 let suite =
   ( "oms",
     [
+      Alcotest.test_case "an unevaluable trip-limit refuses a buy that raises gross"
+        `Quick test_an_unevaluable_trip_limit_refuses_a_buy_that_raises_gross;
       Alcotest.test_case
         "a preview that takes TECH over its cap names it and creates nothing" `Quick
         test_a_preview_that_takes_tech_over_its_cap_names_it_and_creates_nothing;

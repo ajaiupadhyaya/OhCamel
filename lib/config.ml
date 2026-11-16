@@ -333,6 +333,14 @@ module Book = struct
          adjust intraday. *)
       vol_target : float; [@sexp.default 0.10]
       overlay_max_age_minutes : int; [@sexp.default 60]
+      (* How long an overlay's value may stand at all, in SESSION hours
+         (Desk_time.session_span): past it -- or when its age cannot be told
+         -- what sizes is the fallback, or the overlay's own value if that is
+         smaller, even where a stale reading would otherwise hold a sizing at
+         the last overlay's factor (Intake.adjust). Session hours, so an
+         overlay written after Friday's close still stands at Monday's open.
+         Unknown is not permission (Task 1.5). *)
+      overlay_max_age : float; [@sexp.default 4.0]
       overlay_fallback : float; [@sexp.default 0.5]
       overlay_band : float; [@sexp.default 0.10]
       (* The intraday rebalance: limit legs priced this far past the mark,
@@ -433,6 +441,10 @@ module Book = struct
             else if t.overlay_max_age_minutes < 1 then
               fail "overlay_max_age_minutes" "must be at least 1"
                 (Float.of_int t.overlay_max_age_minutes)
+            else if not Float.(is_finite t.overlay_max_age && t.overlay_max_age > 0.0)
+            then
+              fail "overlay_max_age" "must be a positive, finite number of session hours"
+                t.overlay_max_age
             else if not (unit_interval t.overlay_fallback) then
               fail "overlay_fallback" "must be in [0, 1]" t.overlay_fallback
             else if not (unit_interval t.overlay_band) then

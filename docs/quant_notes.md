@@ -716,9 +716,20 @@ bool and an excess magnitude). A limit is:
   not touch;
 - **cleared** when $B$ was breached and $A$ is evaluable and not breached;
 - **unevaluable** when $A$ is `None` (a VaR still warming up, say) --
-  reported, and counted as neither a pass nor a fail.
+  reported, and counted as neither a pass nor a fail -- unless the kill
+  switch trips on it (below).
 
-The proposal **passes** iff `created` and `worsened` are both empty: a
+Unknown is not permission: when a limit named in the book's
+`kill_switch_trips_on` is unevaluable and the proposal **raises gross
+notional** -- $G_	ext{after} > G_	ext{before}$ strictly, $G$ the
+portfolio's gross exposure (the quantity a Portfolio `Gross_notional`
+limit reads), with no $arepsilon$, and a $G$ that is not a number
+counted as a raise -- the proposal is refused (`Refused_unevaluable`),
+naming those limits in the book's order. Equal gross is not a raise; a
+swap that lowers one name and raises another by more is one.
+
+The proposal **passes** iff `created` and `worsened` are both empty and no
+such refusal applies: a
 proposal that reduces a breach still passes, breached, because a desk must
 be able to trade *out of* a breach without the gate holding it exactly
 where it should not stay. An optional `base` -- fills applied to the fork

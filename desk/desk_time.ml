@@ -37,3 +37,39 @@ let local_date (s : string) : Date.t option =
 
 let new_york : Timezone.t option Lazy.t =
   lazy (Option.try_with (fun () -> Timezone.find "America/New_York") |> Option.join)
+
+(* THE SESSION'S HOURS: how much of [from, until] fell inside a regular
+   session, 09:30 to 16:00 on a weekday in [zone] (America/New_York, from
+   [new_york]). The overlay's age is counted in these (Overlay.factor): an
+   overlay written after Friday's close has not aged by Monday's open.
+
+   There is no holiday table here, as there is none in sim_venue.ml: a
+   holiday and an early close count as full sessions, so an age is never
+   UNDER-counted -- an overlay can only be judged older than it is, and
+   size down sooner, never later. Zero when [until] is not after [from].
+   [stop_after] ends the count once it is passed, for a caller that only
+   compares the age with a bound: past the bound, by how much is not asked. *)
+let session_opens = Time_ns.Ofday.create ~hr:9 ~min:30 ()
+let session_closes = Time_ns.Ofday.create ~hr:16 ()
+
+let session_span ?stop_after ~(zone : Timezone.t) ~(from : Time_ns.t) ~(until : Time_ns.t)
+    () : Time_ns.Span.t =
+  if Time_ns.(until <= from) then Time_ns.Span.zero
+  else
+    let last = Time_ns.to_date until ~zone in
+    let passed acc =
+      match stop_after with Some bound -> Time_ns.Span.(acc > bound) | None -> false
+    in
+    let rec count day acc =
+      if Date.( > ) day last || passed acc then acc
+      else
+        let acc =
+          if not (Date.is_weekday day) then acc
+          else
+            let lo = Time_ns.max from (Time_ns.of_date_ofday ~zone day session_opens) in
+            let hi = Time_ns.min until (Time_ns.of_date_ofday ~zone day session_closes) in
+            if Time_ns.(hi > lo) then Time_ns.Span.(acc + Time_ns.diff hi lo) else acc
+        in
+        count (Date.add_days day 1) acc
+    in
+    count (Time_ns.to_date from ~zone) Time_ns.Span.zero

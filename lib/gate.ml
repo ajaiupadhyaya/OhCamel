@@ -19,10 +19,26 @@
    Excess is compared within one limit, in that limit's own unit, so "further
    over" needs no conversion; [epsilon] keeps a difference of float rounding
    in a limit the fills did not touch from reading as a worsening. A limit the
-   fork cannot evaluate -- a VaR still warming up -- is reported as
-   unevaluable and does not fail the proposal: unknown is not a breach, and it
-   is not a pass either, which is why it is reported rather than folded into
+   fork cannot evaluate -- a VaR still warming up, a drawdown that cannot be
+   measured -- is reported as unevaluable: unknown is not a breach, and it is
+   not a pass either, which is why it is reported rather than folded into
    one.
+
+   UNKNOWN IS NOT PERMISSION (Task 1.5). A limit the caller names in
+   [trips_on] -- the book's kill_switch_trips_on, the limits hard enough to
+   stop the desk -- that the fork cannot evaluate after the fills refuses a
+   proposal that RAISES GROSS NOTIONAL: [Refused_unevaluable], naming every
+   such limit in the order the book configures its limits. "Raises" is the
+   portfolio's gross exposure after the fills against before them -- the
+   snapshot's [gross_exposure], the quantity a Portfolio Gross_notional limit
+   reads, and "before" is the base's book when there is one -- strictly
+   greater, with no epsilon: equal gross is not a raise, and a swap that
+   lowers one name and raises another by more is one. A gross either side
+   that is not a number counts as a raise: it cannot be shown not to be. A
+   proposal that lowers gross or leaves it equal passes as before, so a desk
+   can still trade out of risk it cannot measure; an unevaluable limit the
+   switch does not trip on behaves as before. A breach created or worsened
+   outranks it in the outcome, and the reasons say both.
 
    THE BASE. A caller may pass [base], fills applied to the fork before
    anything is read: the book as it would stand if resting orders filled.
@@ -49,13 +65,35 @@ module Move = struct
   [@@deriving sexp_of]
 end
 
+(* What the gate answers. Every consumer matches it whole: there is no
+   wildcard that could read a new refusal as a pass. *)
+module Outcome = struct
+  type t =
+    | Passed
+    | Refused_breach  (** a limit's breach created or worsened *)
+    | Refused_unevaluable of string list
+        (** trip-limits that cannot be evaluated, and the proposal raises gross *)
+  [@@deriving sexp_of, equal]
+
+  let passed = function Passed -> true | Refused_breach | Refused_unevaluable _ -> false
+
+  let word = function
+    | Passed -> "passed"
+    | Refused_breach -> "refused_breach"
+    | Refused_unevaluable _ -> "refused_unevaluable"
+end
+
 module Verdict = struct
   type t = {
-    passed : bool;
+    outcome : Outcome.t;
     created : Move.t list;
     worsened : Move.t list;
     cleared : Move.t list;
     unevaluable : Move.t list;
+    (* The trip-limits among [unevaluable] when the proposal raises gross,
+       in book order; empty otherwise. Kept beside [outcome] so a breach
+       that outranks them still leaves them in the reasons. *)
+    unknown_trips : string list;
     gross_before : Notional.t;
     gross_after : Notional.t;
     equity_before : Notional.t;
@@ -69,9 +107,23 @@ module Verdict = struct
     | Some after ->
         sprintf "%s would be %s: %s" m.Move.limit verb (Limits.to_string after)
 
+  let passed t = Outcome.passed t.outcome
+
   let reasons t =
     List.map t.created ~f:(describe "breached")
     @ List.map t.worsened ~f:(describe "further over its line")
+    @
+    match t.unknown_trips with
+    | [] -> []
+    | names ->
+        [
+          sprintf
+            "%s cannot be evaluated, and the kill switch trips on %s: a proposal that \
+             raises gross notional is refused while %s unknown"
+            (String.concat ~sep:", " names)
+            (match names with [ _ ] -> "it" | _ -> "them")
+            (match names with [ _ ] -> "it is" | _ -> "they are");
+        ]
 end
 
 let breached = function Some b -> Breach.breached b | None -> false
@@ -84,8 +136,8 @@ let apply (graph : Graph.t) (fills : Fill.t list) =
 (* [base] is optional and comes first so that it is erased by the graph
    argument: every call without one reads exactly as it did before it
    existed. *)
-let check ?(base : Fill.t list = []) (graph : Graph.t) ~(fills : Fill.t list) : Verdict.t
-    =
+let check ?(base : Fill.t list = []) ?(trips_on : string list = []) (graph : Graph.t)
+    ~(fills : Fill.t list) : Verdict.t =
   (* The live snapshot first: it stabilizes, so any write the live graph had
      not settled is settled before the fork copies its cells. *)
   let live = Graph.snapshot graph in
@@ -126,14 +178,38 @@ let check ?(base : Fill.t list = []) (graph : Graph.t) ~(fills : Fill.t list) : 
             && match m.after with Some a -> not (Breach.breached a) | None -> false)
       in
       let unevaluable = List.filter moves ~f:(fun m -> Option.is_none m.after) in
+      let gross_before = before.Graph.Snapshot.gross_exposure in
+      let gross_after = after.Graph.Snapshot.gross_exposure in
+      (* Written as "not (after <= before)": a gross that is not a number
+         compares false, and counts as a raise. *)
+      let raises_gross =
+        not Float.(Notional.to_float gross_after <= Notional.to_float gross_before)
+      in
+      let unknown_trips =
+        if not raises_gross then []
+        else
+          List.filter_map unevaluable ~f:(fun m ->
+              Option.some_if
+                (List.mem trips_on m.Move.limit ~equal:String.equal)
+                m.Move.limit)
+      in
+      let outcome =
+        if not (List.is_empty created && List.is_empty worsened) then
+          Outcome.Refused_breach
+        else
+          match unknown_trips with
+          | [] -> Outcome.Passed
+          | names -> Outcome.Refused_unevaluable names
+      in
       {
-        Verdict.passed = List.is_empty created && List.is_empty worsened;
+        Verdict.outcome;
         created;
         worsened;
         cleared;
         unevaluable;
-        gross_before = before.Graph.Snapshot.gross_exposure;
-        gross_after = after.Graph.Snapshot.gross_exposure;
+        unknown_trips;
+        gross_before;
+        gross_after;
         equity_before = before.Graph.Snapshot.equity;
         equity_after = after.Graph.Snapshot.equity;
       })
