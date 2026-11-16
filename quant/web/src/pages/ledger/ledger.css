@@ -120,5 +120,5 @@
 }
 /* A prose row last checked past the stale age: hatched, so it reads as unverified at a glance. */
 .lg-hatch {
-  background: repeating-linear-gradient(135deg, transparent 0 4px, var(--ink-3) 4px 5px);
+  background-image: var(--hatch);
 }
