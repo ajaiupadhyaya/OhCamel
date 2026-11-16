@@ -113,7 +113,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->1836<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->1844<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.
@@ -194,7 +194,7 @@ without the three canary sessions at 0.10, and the book's `alerts` block has `(e
 IEI, SHY, SIZE, VGK) had gone minutes without an IEX print, not because a feed failed -- fourteen of them by
 2026-10-27, which is what the per-name thresholds above answer.
 
-**Stop rules and the record scoring:** Stage 3, not yet built. **Intraday strategies:** Stage 2, not yet built.
+**Stop rules** run at the close (`desk/stop.ml`). **Intraday strategies** are not built.
 
 **Limits.** Incubation records are not evidence of edge. Per-strategy orders are not netted: two strategies on
 opposite sides of one name trade a session apart (the wash rule), never against each other. The overlay is
@@ -795,9 +795,7 @@ rollback plan written before it ships, and no task has bumped it yet.
   `--dry-run` prints every container run and copy and writes nothing.
 - A backup is a copy of the journal, written to the host, and the engine
   neither writes nor reads it -- invariant 13 holds.
-- **Not running yet (2026-10-08):** `/var/backups/ohcamel` does not exist on the droplet, and `backup.sh`
-  refuses a missing directory before any container starts. The warehouse and the artifacts are not in
-  `backup.list` at all (the `duckdb` method is reserved); the compute runbook covers rebuilding them.
+- Nightly copies run from the ohcamel user's cron (see *What the owner holds*). The warehouse file is not among them. Option snapshots are exported by the snapshot method in deploy/backup.list.
 - The directory is created once by root (owner step O12) and the timers
   enabled then: `install -d -m 0770 -o 10001 -g ohcamel /var/backups/ohcamel`,
   then `systemctl enable --now ohcamel-backup.timer ohcamel-watch.timer`, and

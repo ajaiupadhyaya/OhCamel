@@ -139,7 +139,19 @@ def _warehouse_bars(settings: Settings, want: list[str], start: date | None,
                     parts.append(f"window: start {from_} before stored history: "
                                  + ", ".join(f"{t} (from {cover[t][0]})" for t in short))
                 return None, "warehouse not used (" + "; ".join(parts) + "); served from providers"
-            frames = {t: ohlcv(con, t, path=str(path)) for t in want}
+            from ..data.splits import present as split_present
+
+            frames = {}
+            for t in want:
+                ds = ohlcv(con, t, path=str(path))
+                fixed, notes = split_present(ds.data)
+                provs = list(ds.provenance)
+                if notes and provs:
+                    head = provs[0]
+                    detail = dict(head.detail)
+                    detail["notes"] = [*(detail.get("notes") or []), *notes]
+                    provs[0] = Provenance(head.source, head.fetched_at, head.synthetic, detail)
+                frames[t] = Dataset(fixed, provs)
     except WarehouseUnavailable as e:
         return None, f"warehouse not used ({e}); served from providers"
     return _WarehouseBars(settings, frames), None

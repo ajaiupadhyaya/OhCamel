@@ -114,8 +114,19 @@ class MarketData:
             df, prov = hit
             return Dataset(_window(df, start, end), [prov])
         from . import prices  # online providers
+        from .splits import present
 
-        return prices.fetch_ohlcv(ticker, start, end, self.settings)
+        ds = prices.fetch_ohlcv(ticker, start, end, self.settings)
+        fixed, notes = present(ds.data)
+        if not notes:
+            return ds
+        provs = list(ds.provenance)
+        if provs:
+            head = provs[0]
+            detail = dict(head.detail)
+            detail["notes"] = [*(detail.get("notes") or []), *notes]
+            provs[0] = Provenance(head.source, head.fetched_at, head.synthetic, detail)
+        return Dataset(fixed, provs)
 
     def prices(
         self, tickers: list[str], start: date | None = None, end: date | None = None,

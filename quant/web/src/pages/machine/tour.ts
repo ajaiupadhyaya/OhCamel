@@ -320,6 +320,7 @@ const book: TourStep = {
       const lim = fin(m.limits) ?? ups(gi, b, "limit").length;
       const ks = gi.byId.get("kill");
       const trips = ks === undefined ? [] : strs(node(gi, ks).m.trips_on);
+      const by = ks === undefined ? null : str(node(gi, ks).m.tripped_by);
       live = segs(
         S`${asof.length > 0 ? S`As of ${asof}, the` : "The"} desk report's book summary shows ${list([
           positions !== null && B(plural(positions, "position")),
@@ -328,6 +329,7 @@ const book: TourStep = {
         ])}.`,
         kill === "armed" && trips.length > 0 &&
           S` If ${list(trips.map((t) => ref(gi, `lim:${t}`, t)))} ${trips.length === 1 ? "breaks" : "break"}, the kill switch halts the book.`,
+        kill === "halted" && (by ? S` The kill switch is halted by ${by}.` : S` The kill switch is halted.`),
       );
     } else if (str(m.summary_why)) {
       live = S`Its limits, kill switch and position count are not shown here. ${reason(gi, str(m.summary_why)!)}`;

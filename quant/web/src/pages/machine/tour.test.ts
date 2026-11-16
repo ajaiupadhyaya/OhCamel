@@ -408,6 +408,13 @@ describe("the tour: 6, the overlay", () => {
 });
 
 describe("the tour: 7, the book", () => {
+  it("names the limit when the kill switch is halted", () => {
+    const fx = clone();
+    nodeOf(fx, "book").m.kill = "halted";
+    nodeOf(fx, "kill").m.tripped_by = "dd-cap";
+    expect(body(fx, "book")).toContain("The kill switch is halted by dd-cap.");
+  });
+
   it("gives the strategies, their capital, the cap, and the live book as of the summary's time", () => {
     const t = body(FIXTURE, "book");
     expect(t).toContain("Everything ends here: 2 strategies at 2.5% of capital each, under a 60% incubation cap.");

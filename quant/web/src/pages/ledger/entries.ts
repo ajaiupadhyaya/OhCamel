@@ -16,7 +16,7 @@ export interface LedgerEntry {
   methodology?: string;
 }
 
-export const LEDGER_AS_OF = "2026-10-08";
+export const LEDGER_AS_OF = "2026-11-05";
 
 export const SECTION_ORDER: LedgerSection[] = ["BUILT", "CUT", "ADVISORY", "LIMITS", "OWNER"];
 
@@ -41,7 +41,7 @@ export const LEDGER: LedgerEntry[] = [
   { section: "BUILT", item: "P2 VOL FORECAST LEAGUE", kind: "vol.forecast_league", methodology: "p2-vol-league", detail: "GARCH, GJR, EGARCH, HAR-RV, EWMA scored by QLIKE and MSE; Diebold–Mariano; model confidence set. Nightly." },
   { section: "BUILT", item: "P3 COVARIANCE LEAGUE", kind: "cov.league", methodology: "p3-cov-league", detail: "Seven estimators ranked weekly by the realized volatility of their minimum-variance portfolio; HAC test against the sample covariance. Descriptive only." },
   { section: "BUILT", item: "P4 STRATEGY FARM", kind: "farm.sweep", methodology: "p4-strategy-farm", detail: "Strategy Lab strategies × universes × grids up to 256, walk-forward; farm-wide DSR, PSR, CSCV PBO, SPA, costs 0/5/15/30 bps; verdict first. Nightly, 90-min budget." },
-  { section: "BUILT", item: "P5 CROSS-SECTIONAL MODEL", kind: "models.xs_lgbm", methodology: "p5-exp-q01", detail: "EXP-Q01: LightGBM ETF ranker vs a linear composite, purged walk-forward, 2022 holdout evaluated once; the charter's gates decide. Monthly. Insufficient data until the universe is frozen." },
+  { section: "BUILT", item: "P5 CROSS-SECTIONAL MODEL", kind: "models.xs_lgbm", methodology: "p5-exp-q01", detail: "EXP-Q01: LightGBM ETF ranker vs a linear composite, purged walk-forward, 2022 holdout evaluated once; the charter's gates decide. Monthly." },
   { section: "BUILT", item: "P6 REGIME HMM", kind: "regime.hmm", methodology: "p6-exp-q02", detail: "EXP-Q02: Gaussian HMM on four weekly features, 2–4 states by BIC; high-volatility probability vs EWMA for next-month SPY variance. Weekly." },
   { section: "BUILT", item: "WATCH KRONOS SHADOW", kind: "kronos.shadow", methodology: "k01-kronos-shadow", detail: "EXP-K01 FAILED: Kronos-small over-forecasts variance against GARCH and EWMA. The nightly shadow keeps measuring it prospectively, append-only, next to the incumbents. Sizes nothing." },
   { section: "BUILT", item: "WATCH FACTOR SCREEN", kind: "factors.screen", methodology: "factor-workbench", detail: "qlib's operators and Alpha158, ported and point-in-time; RD-Agent's loop with the owner writing every hypothesis; the trial ledger re-screened weekly on the warehouse universe, exploration window only." },
@@ -62,8 +62,8 @@ export const LEDGER: LedgerEntry[] = [
   { section: "CUT", item: "SAVED LAYOUTS", detail: "Per-route saved panel layouts." },
   { section: "CUT", item: "DENSITY MODES", detail: "Compact and comfortable table densities." },
   // ---------------------------------------------------------------- advisory
-  { section: "ADVISORY", item: "MODEL OUTPUT", detail: "Every model and research result is advisory; none reaches the desk." },
-  { section: "ADVISORY", item: "NO LIVE STRATEGY", detail: "No strategy on this site trades. Backtests are not track records." },
+  { section: "ADVISORY", item: "MODEL OUTPUT", detail: "A research verdict does not promote a strategy. Incubation sizing is the book's, under the cap. Live sizing requires a passing battery and the owner." },
+  { section: "ADVISORY", item: "NO LIVE STRATEGY", detail: "Twenty-three strategies are sized as incubation on the paper book. None is live. The public site shows the count and the kill switch, not a position." },
   { section: "ADVISORY", item: "PRE-REGISTERED ONLY", detail: "P5 and P6 run only as their approved pre-registrations; each holdout is evaluated once." },
   // ---------------------------------------------------------------- limits
   { section: "LIMITS", item: "SURVIVORSHIP", detail: "Universes are current constituents; delisted names are absent." },
@@ -71,14 +71,13 @@ export const LEDGER: LedgerEntry[] = [
   { section: "LIMITS", item: "OPTIONS DELAYED", detail: "Option quotes are Cboe delayed data; snapshot history starts on the first night and cannot be re-fetched." },
   { section: "LIMITS", item: "SHARED VCPU", detail: "One 2-vCPU, 4 GB droplet; CPU steal from neighbours is measured, not prevented." },
   { section: "LIMITS", item: "NO WAREHOUSE BACKUP", detail: "The warehouse and the artifacts are not backed up; the warehouse is rebuilt from vendors, option snapshots excepted." },
-  { section: "LIMITS", item: "BACKUPS PAUSED", detail: "Nightly backups refuse to run until /var/backups/ohcamel exists." },
-  { section: "LIMITS", item: "LIVE HOST BEHIND", detail: "The live host serves 88ebc96 until its deploy, which waits on /var/backups/ohcamel." },
+  { section: "LIMITS", item: "WAREHOUSE FILE NOT COPIED", detail: "The journal, the recorder, and jobs.sqlite are copied nightly. warehouse.duckdb is not file-copied. Option snapshots are exported read-only; they cannot be re-fetched." },
   { section: "LIMITS", item: "KERNEL BENCHMARKS", detail: "The recorded table was measured on a developer laptop, not the droplet's CPU class; two kernels are slower in Rust there." },
   // ---------------------------------------------------------------- owner
   { section: "OWNER", item: "LIVE TRADING SWITCH", detail: "book.sexp on the droplet; never edited by the agent." },
-  { section: "OWNER", item: "BACKUP DIRECTORY", detail: "Root: install -d -m 0770 -o 10001 -g ohcamel /var/backups/ohcamel. Unblocks nightly backups and the live deploy." },
+  { section: "OWNER", item: "BOOK LIMITS", detail: "book-cap $700,000, var-cap $30,000, dd-cap 10%. The kill switch stays armed on those three." },
   { section: "OWNER", item: "PRE-REGISTRATIONS", detail: "EXP-Q01 and EXP-Q02 approved 2026-10-06; any deviation is a new experiment and goes back to the owner." },
-  { section: "OWNER", item: "EXP-Q01 UNIVERSE", detail: "Freeze runs once after the bars backfill. I-Q01-7 dollar-volume sign recorded as −1, the default, 2026-10-07; the owner's to confirm." },
+  { section: "OWNER", item: "EXP-Q01 UNIVERSE", detail: "Frozen 2026-10-08. The I-Q01-7 dollar-volume sign stays −1 until a new experiment." },
   { section: "OWNER", item: "DROPLET SIZE", detail: "Resize if steal stays above 10 % or the nightly batch misses 09:00 NY." },
   { section: "OWNER", item: "ENGINE BRIDGE", detail: "The public /engine page's vitals carry no book data; whether the public site shows the paper book's positions is a second switch, off." },
 ];

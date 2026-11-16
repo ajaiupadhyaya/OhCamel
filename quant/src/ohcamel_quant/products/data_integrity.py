@@ -32,10 +32,10 @@ import pandas as pd
 
 from ..data import fixtures as F
 from ..data.base import DataUnavailable
+from ..data.splits import SPLIT_RATIOS
 from ..jobs.artifacts import ArtifactSpec
 
 KIND = "ops.data_integrity"
-SPLIT_RATIOS = F._SPLIT_RATIOS
 JUMP = 0.40
 STALE_BDAYS = 5
 RECENT_BDAYS = 10

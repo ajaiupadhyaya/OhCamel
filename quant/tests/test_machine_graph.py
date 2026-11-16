@@ -519,7 +519,7 @@ def test_the_book_and_its_limits_read_from_the_summary():
         "positions": 5, "kill": "armed", "limits": 3, "summary_asof": "2026-10-28T20:31:07Z"}
     assert _node(g, "lim:aapl-cap")["m"] == {"kind": "gross_notional", "scope": "instrument:AAPL", "trips": False}
     assert _node(g, "lim:dd-cap")["m"]["trips"] is True
-    assert _node(g, "kill")["m"] == {"state": "armed", "trips_on": ["dd-cap"]}
+    assert _node(g, "kill")["m"] == {"state": "armed", "trips_on": ["dd-cap"], "tripped_by": None}
     assert sorted(_edges_into(g, "book", "limit")) == ["lim:aapl-cap", "lim:dd-cap", "lim:tech-cap"]
     assert _edges_into(g, "kill", "trip") == ["lim:dd-cap"]
     assert _edges_into(g, "lim:aapl-cap") == ["d:AAPL"] and not _edges_into(g, "lim:dd-cap", "read")
@@ -527,6 +527,14 @@ def test_the_book_and_its_limits_read_from_the_summary():
         (0, 4), (1, 4), (2, 4), (3, 4)]                          # one ring of four slots ...
     assert _node(g, "kill")["at"] == {"i": 3, "n": 4}           # ... the kill switch in the last
     assert _edges_from(g, "book") == ["j:desk.report"]
+
+
+def test_the_kill_node_is_titled_halted_by_the_limit():
+    halted = build_graph(_inputs(book_summary=_summary(kill_switch="halted", tripped_by="dd-cap")))
+    assert _node(halted, "kill")["n"] == "Kill switch: halted by dd-cap"
+    assert _node(halted, "kill")["m"]["tripped_by"] == "dd-cap"
+    armed = build_graph(_inputs(book_summary=_summary(kill_switch="armed", tripped_by=None)))
+    assert _node(armed, "kill")["n"] == "Kill switch: armed"
 
 
 @pytest.mark.parametrize(("state", "halts"), [("armed", True), ("halted", True), ("disabled", False), (None, False)])

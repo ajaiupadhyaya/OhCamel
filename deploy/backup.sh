@@ -139,6 +139,34 @@ fi
 mv -- "$part" "$dir/$dest"
 '
 
+# The `snapshot` method, run by python inside the Quant image (uid 10002) as
+# `python -c SCRIPT SRC DIR DEST`. It opens the warehouse read-only and copies
+# option_snapshots to a parquet. It never checkpoints and never writes the
+# live database. A missing table or a missing file fails this line and leaves
+# the previous day's parquet where it is.
+snapshot_script='import os, sys, duckdb
+src, directory, dest = sys.argv[1], sys.argv[2], sys.argv[3]
+part = os.path.join(directory, dest + ".part")
+final = os.path.join(directory, dest)
+try:
+    con = duckdb.connect(src, read_only=True)
+except Exception as exc:
+    sys.stderr.write("backup: %s: %s\n" % (src, exc))
+    sys.exit(1)
+try:
+    found = con.execute(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+        ["option_snapshots"],
+    ).fetchone()[0]
+    if not found:
+        sys.stderr.write("backup: %s has no option_snapshots table\n" % src)
+        sys.exit(1)
+    con.execute("COPY (SELECT * FROM option_snapshots) TO ? (FORMAT PARQUET)", [part])
+finally:
+    con.close()
+os.replace(part, final)
+'
+
 # --- the list ------------------------------------------------------------------
 
 # Filled by read_list, one element a list entry, in file order.
@@ -233,8 +261,13 @@ read_list() {
 		duckdb)
 			refuse "$list" "$lineno" "method 'duckdb' is reserved for Lane C (CHECKPOINT, then a file copy) and is not implemented yet"
 			;;
+		snapshot)
+			stem=option-snapshots
+			ext=parquet
+			dest="option-snapshots-$today.parquet"
+			;;
 		*)
-			refuse "$list" "$lineno" "unknown method '$method' -- journal or sqlite (duckdb is reserved for Lane C)"
+			refuse "$list" "$lineno" "unknown method '$method' -- journal, sqlite or snapshot (duckdb is reserved for Lane C)"
 			;;
 		esac
 		i=0
@@ -325,21 +358,34 @@ run_entry() {
 	local volume="${entry_volume[$i]}" path="${entry_path[$i]}" method="${entry_method[$i]}"
 	local uid="${entry_uid[$i]}" dest="${entry_dest[$i]}" rc=0
 	local cmd=(docker compose -f "$compose" --profile backup run --rm -T --user "$uid:$gid")
+	local image=""
 	case "$method" in
 	journal) cmd+=(ohcamel-backup journal-backup "$path" /backups) ;;
 	sqlite) cmd+=(--entrypoint sh ohcamel-backup -ec "$sqlite_backup_script" sqlite-backup "$path" /backups "$dest") ;;
+	snapshot)
+		# The Quant image, not the engine image: duckdb is installed there, and
+		# uid 10002 owns quant_data. OHCAMEL_IMAGE selects it for this run only.
+		image=ghcr.io/ajaiupadhyaya/ohcamel-quant
+		cmd+=(--entrypoint python ohcamel-backup -c "$snapshot_script" "$path" /backups "$dest")
+		;;
 	esac
 	if [ "$dry" = 1 ]; then
-		printf '+ OHCAMEL_TAG=%s OHCAMEL_BACKUP_VOLUME=%s OHCAMEL_BACKUP_DIR=%s %s\n' \
-			"$(printf '%q' "$tag")" "$volume" "$(printf '%q' "$dir")" "$(quoted "${cmd[@]}")"
+		printf '+ OHCAMEL_TAG=%s OHCAMEL_BACKUP_VOLUME=%s OHCAMEL_BACKUP_DIR=%s' \
+			"$(printf '%q' "$tag")" "$volume" "$(printf '%q' "$dir")"
+		if [ -n "$image" ]; then printf ' OHCAMEL_IMAGE=%s' "$image"; fi
+		printf ' %s\n' "$(quoted "${cmd[@]}")"
 		return 0
 	fi
 	backup_say "$volume:$path ($method, as uid $uid) -> $dir/$dest"
-	OHCAMEL_TAG="$tag" OHCAMEL_BACKUP_VOLUME="$volume" OHCAMEL_BACKUP_DIR="$dir" "${cmd[@]}" || rc=$?
+	if [ -n "$image" ]; then
+		OHCAMEL_TAG="$tag" OHCAMEL_IMAGE="$image" OHCAMEL_BACKUP_VOLUME="$volume" OHCAMEL_BACKUP_DIR="$dir" "${cmd[@]}" || rc=$?
+	else
+		OHCAMEL_TAG="$tag" OHCAMEL_BACKUP_VOLUME="$volume" OHCAMEL_BACKUP_DIR="$dir" "${cmd[@]}" || rc=$?
+	fi
 	case "$method:$rc" in
 	*:0)
 		backup_say "$volume:$path -> $dest ok"
-		if [ "$method" = sqlite ]; then
+		if [ "$method" = sqlite ] || [ "$method" = snapshot ]; then
 			prune_dated "$dir" "${entry_stem[$i]}" "${entry_ext[$i]}"
 		fi
 		return 0

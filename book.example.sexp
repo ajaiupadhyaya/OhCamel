@@ -17,7 +17,8 @@
 ; Limit kinds:    (Gross_notional DOLLARS)   |exposure| may not exceed this
 ;                 (Value_at_risk DOLLARS)    portfolio VaR, Portfolio scope only
 ;                 (Component_var DOLLARS)    a name's or sector's share of portfolio VaR
-;                 (Max_drawdown FRACTION)    0.02 = 2%, Portfolio scope only
+;                 (Max_drawdown FRACTION)    0.10 = 10%, Portfolio scope only
+; Steady-state gross is $575,000; $700,000 is the bug trip; 10% drawdown is the book halt; $30,000 VaR is about three times the 10% target's one-day 95% VaR.
 ;
 ; Value_at_risk and Max_drawdown are portfolio statistics and this engine keeps
 ; no per-name version of either, so a sector- or instrument-scoped one is
@@ -107,9 +108,9 @@
    ((name nvda-cap)   (scope (Instrument NVDA))  (kind (Gross_notional 60000.0)))
    ((name tech-cap)   (scope (Sector TECH))      (kind (Gross_notional 260000.0)))
    ((name energy-cap) (scope (Sector ENERGY))    (kind (Gross_notional 150000.0)))
-   ((name book-cap)   (scope Portfolio)          (kind (Gross_notional 500000.0)))
-   ((name var-cap)    (scope Portfolio)          (kind (Value_at_risk 12000.0)))
-   ((name dd-cap)     (scope Portfolio)          (kind (Max_drawdown 0.02)))))
+   ((name book-cap)   (scope Portfolio)          (kind (Gross_notional 700000.0)))
+   ((name var-cap)    (scope Portfolio)          (kind (Value_at_risk 30000.0)))
+   ((name dd-cap)     (scope Portfolio)          (kind (Max_drawdown 0.10)))))
 
  ; ---------------------------------------------------------------------------
  ; Phase 4: alerting and the kill switch. OPTIONAL -- omit this block entirely

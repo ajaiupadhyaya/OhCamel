@@ -110,6 +110,10 @@ run)
 		[ "${SHIM_EXIT_JOURNAL:-0}" = 0 ] || exit "$SHIM_EXIT_JOURNAL"
 		: >"$OHCAMEL_BACKUP_DIR/desk-$SHIM_TODAY.db"
 		;;
+	*"option_snapshots"*)
+		[ "${SHIM_EXIT_SNAPSHOT:-0}" = 0 ] || exit "$SHIM_EXIT_SNAPSHOT"
+		: >"$OHCAMEL_BACKUP_DIR/${!#}"
+		;;
 	*)
 		[ "${SHIM_EXIT_SQLITE:-0}" = 0 ] || exit "$SHIM_EXIT_SQLITE"
 		# The destination's name is the run's last argument.
@@ -184,7 +188,8 @@ n_entries=$(printf '%s\n' "$entries" | grep -c . || true)
 
 for want in 'desk_data /data/desk.db journal 10001' \
 	'quant_data /data/deck/recorder.sqlite sqlite 10002' \
-	'quant_data /data/jobs.sqlite sqlite 10002'; do
+	'quant_data /data/jobs.sqlite sqlite 10002' \
+	'quant_data /data/warehouse.duckdb snapshot 10002'; do
 	if printf '%s\n' "$entries" | grep -qxF -- "$want"; then
 		ok "L1 backup.list carries '$want'"
 	else
@@ -258,6 +263,20 @@ while IFS=' ' read -r volume path method uid; do
 		*) ok "$label keeps the image's entrypoint" ;;
 		esac
 		;;
+	snapshot)
+		case "$line" in
+		*"read_only=True"*"option_snapshots"*) ok "$label exports option_snapshots read-only" ;;
+		*) no "$label exports option_snapshots read-only" "run $i was: $(printf '%s' "$line" | cut -c1-200)" ;;
+		esac
+		case "$line" in
+		*CHECKPOINT*) no "$label does not checkpoint the live file" "CHECKPOINT was in the command" ;;
+		*) ok "$label does not checkpoint the live file" ;;
+		esac
+		case "$line" in
+		*" --entrypoint python "*) ok "$label runs python in the backup container" ;;
+		*) no "$label runs python in the backup container" "run $i was: $(printf '%s' "$line" | cut -c1-200)" ;;
+		esac
+		;;
 	sqlite)
 		base=${path##*/}
 		dest="${base%.*}-$today.${base##*.}"
@@ -293,7 +312,7 @@ EOF
 # What is in the directory afterwards: the three files the (simulated)
 # containers wrote and the two backup.sh copies itself. 3 + 2 = 5.
 expect_eq "A5 the directory holds the three copies and the two configuration files" "$(listing)" \
-	"book-$today.sexp deploy-$today.env desk-$today.db jobs-$today.sqlite recorder-$today.sqlite"
+	"book-$today.sexp deploy-$today.env desk-$today.db jobs-$today.sqlite option-snapshots-$today.parquet recorder-$today.sqlite"
 if cmp -s "$repo/book.sexp" "$backups/book-$today.sexp"; then
 	ok "A6 book-$today.sexp is book.sexp, byte for byte"
 else
@@ -375,6 +394,23 @@ EOF
 malformed "B4 duckdb is reserved for Lane C, and says so" 1 "reserved" <<'EOF'
 quant_data /data/warehouse.duckdb duckdb 10002
 EOF
+
+# The snapshot line is a fourth method. It is accepted, and a dry run shows a
+# read-only copy of option_snapshots with no checkpoint of the live file.
+fresh
+run_backup -- --check
+expect_rc "snapshot line is accepted" 0
+expect_has "snapshot line is accepted: the destination" "$scratch/out" "option-snapshots-$today.parquet"
+fresh
+run_backup -- --dry-run
+expect_rc "snapshot dry-run" 0
+expect_has "snapshot dry-run connects read-only" "$scratch/out" "read_only=True"
+expect_has "snapshot dry-run copies option_snapshots" "$scratch/out" "option_snapshots"
+if grep -q 'CHECKPOINT' "$scratch/out"; then
+	no "snapshot dry-run does not checkpoint" "CHECKPOINT was printed"
+else
+	ok "snapshot dry-run does not checkpoint"
+fi
 malformed "B5 a relative path is refused" 1 "/data/" <<'EOF'
 quant_data deck/recorder.sqlite sqlite 10002
 EOF
@@ -439,14 +475,14 @@ run_backup SHIM_EXIT_SQLITE=1 --
 expect_rc "C1 the recorder's copy failing fails the run" 1
 expect_eq "C1 and every line still ran" "$(runs)" "$n_entries"
 expect_eq "C1 and the journal and the configuration were still copied" "$(listing)" \
-	"book-$today.sexp deploy-$today.env desk-$today.db"
+	"book-$today.sexp deploy-$today.env desk-$today.db option-snapshots-$today.parquet"
 
 fresh
 run_backup SHIM_EXIT_JOURNAL=1 --
 expect_rc "C2 the journal's copy failing fails the run" 1
 expect_eq "C2 and every line still ran" "$(runs)" "$n_entries"
 expect_eq "C2 and the recorder, the job queue and the configuration were still copied" "$(listing)" \
-	"book-$today.sexp deploy-$today.env jobs-$today.sqlite recorder-$today.sqlite"
+	"book-$today.sexp deploy-$today.env jobs-$today.sqlite option-snapshots-$today.parquet recorder-$today.sqlite"
 
 # Exit 3 is the container saying "the file is not in the volume": the recorder
 # writes its first row the first minute a US session is open, so a host
@@ -462,7 +498,7 @@ rm "$repo/book.sexp"
 run_backup --
 expect_rc "C4 a missing book.sexp fails the run" 1
 expect_eq "C4 and everything else was still copied" "$(listing)" \
-	"deploy-$today.env desk-$today.db jobs-$today.sqlite recorder-$today.sqlite"
+	"deploy-$today.env desk-$today.db jobs-$today.sqlite option-snapshots-$today.parquet recorder-$today.sqlite"
 
 # --- D. retention of what backup.sh writes ---------------------------------------
 # The journal's dailies are pruned by `ohcamel journal-backup` (ruling 11) and
