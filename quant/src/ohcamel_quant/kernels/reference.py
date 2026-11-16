@@ -643,7 +643,7 @@ def american_iv(price, S, K, T, r, q, phi, guess, div_t, div_amt, steps: int, th
     From ``guess`` (clipped to [floor, 500%]; 25% when not finite) the search steps by 1.25 times
     the Black-Scholes Newton step -- doubling each time the sign of the pricing error does not
     change -- until it brackets the root, then runs Brent (scipy's brentq, xtol 1e-7). When the
-    tree at the guess is already within 1e-5 x vega of the price, the guess is kept after one
+    tree at the guess is already within 3e-5 x vega of the price, the guess is kept after one
     Newton step instead (the screen). The guess changes only the work, not the root (to 1e-6)."""
     out = np.full(price.shape, np.nan)
     s0 = _escrowed(S, T, r, div_t, div_amt)

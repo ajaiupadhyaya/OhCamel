@@ -46,9 +46,9 @@ export const IV_STATUS_TEXT: Record<Exclude<IvStatus, "ok">, [string, string]> =
   crossed: ["CROSSED", "Bid at or above ask: the quote is not a usable market."],
   wide: ["WIDE", "Bid-ask spread wider than the filter (a fraction of the mid): the mid is not used."],
   arb_bound: ["ARB", "The quote crosses a no-arbitrage bound, so no volatility reproduces it."],
-  at_intrinsic: ["INTR", "Mid within its own half-spread of intrinsic value: no time value, so no volatility is identified. Not arbitrage."],
+  at_intrinsic: ["INTR", "Bid at or below exercise value (mid within its own half-spread of it): the quote does not exclude zero time value, so no volatility is identified. Not arbitrage."],
   below_model_forward: ["FWD", "Mid below the model forward's lower bound D(F - K): one dividend yield per expiry cannot fit it."],
-  no_vol: ["NO VOL", "No volatility in the search interval reproduces the mid."],
+  no_vol: ["NO VOL", "No identifiable volatility: none reproduces the mid, or the price barely moves with vol at the root."],
 };
 
 /** The chain note that explains a status (notes for American statuses start with the status name). */

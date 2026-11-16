@@ -351,7 +351,7 @@ def test_american_iv_parity_on_the_spy_chain(both, spy_2026_11_15_american):
     ca = spy_2026_11_15_american[0]
     q = ca.quotes[ca.quotes["valid"]].sample(600, random_state=7)
     for col in ("mid", "bid", "ask"):
-        args = (q[col].to_numpy(), ca.spot, q["strike"].to_numpy(), q["T"].to_numpy(), q["r"].to_numpy(),
+        args = (q[col].to_numpy(), ca.iv_spot, q["strike"].to_numpy(), q["T"].to_numpy(), q["r"].to_numpy(),
                 q["q"].to_numpy(), (q["type"] == "C").to_numpy())
         r, p = on("rust", kernels.american_iv, *args, 400, 4), on("python", kernels.american_iv, *args, 400, 1)
         assert np.array_equal(np.isnan(r), np.isnan(p)), col
@@ -381,3 +381,38 @@ def test_american_iv_is_within_1e6_of_the_exact_root(both, spy_2026_11_15_americ
             continue                           # flat in vol here (deep in the money): nothing to pin
         worst, n = max(worst, abs(brentq(f, a, b, xtol=1e-13, rtol=1e-15) - iv[i])), n + 1
     assert n >= 200 and worst < 1e-6, (n, worst)
+
+
+def test_shipped_american_ivs_match_a_full_width_unscreened_inversion(monkeypatch):
+    """The band (8 binomial sd beyond the drift) and the saturated last step change the price
+    function; the screen and the Brent stops change the search. Against the reference engine with
+    all four off -- full-width tree, exact Black-Scholes last step, no screen, xtol 1e-12 -- the
+    shipped IVs (whichever engine runs) stay within 1e-6 (1e-4 vol points) on a seeded stress set:
+    K/S 0.55-1.8, T 1 day to 3 years, r 0-10%, q up to 40%, vol 0.03-3. Compared where the vol is
+    identifiable (one vol point either way moves the price by at least 1e-4); prices come from the
+    full-width tree, so the shipped inversion also absorbs the band's pricing error. Measured: 2.9e-7.
+    It can fail: a band of 2 sd misses by 2.3, a screen of 1e-3 by 7.8e-6 (reference engine)."""
+    from ohcamel_quant.kernels import reference as R
+
+    rng = np.random.default_rng(42)
+    n, S = 400, 750.0
+    K = S * np.exp(rng.uniform(np.log(0.55), np.log(1.8), n))
+    T = np.exp(rng.uniform(np.log(1 / 365), np.log(3.0), n))
+    r, q = rng.uniform(0.0, 0.10, n), rng.choice([0.0, 0.01, 0.05, 0.15, 0.4], n)
+    sig = np.exp(rng.uniform(np.log(0.03), np.log(3.0), n))
+    call = rng.random(n) < 0.5
+    shipped = kernels.american_iv
+    with kernels.forced("python"):
+        for name, v in (("AM_BAND", 1e9), ("AM_SAT", 1e9), ("AM_SCREEN", 0.0), ("AM_FTOL", 0.0), ("AM_XTOL", 1e-12)):
+            monkeypatch.setattr(R, name, v)
+        px = kernels.american_price(S, K, T, r, q, sig, call)
+        up = kernels.american_price(S, K, T, r, q, sig + 0.01, call)
+        dn = kernels.american_price(S, K, T, r, q, np.maximum(sig - 0.01, sig / 2), call)
+        truth = kernels.american_iv(px, S, K, T, r, q, call)
+    monkeypatch.undo()
+    got = shipped(px, S, K, T, r, q, call, threads=2)
+    ident = np.isfinite(truth) & (up - px >= 1e-4) & (px - dn >= 1e-4)
+    assert ident.sum() >= 200
+    assert np.isfinite(got[ident]).all()
+    worst = float(np.abs(got - truth)[ident].max())
+    assert worst < 1e-6, worst

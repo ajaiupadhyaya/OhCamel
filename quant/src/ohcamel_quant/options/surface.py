@@ -134,7 +134,7 @@ def build_surface(
             errors.setdefault(str(sid), f"model-free variance: {e}")
         mk, mids = _strike_table(q[q["valid"]], ("mid",))
         if np.isfinite(mids[("mid", "C")]).any() and np.isfinite(mids[("mid", "P")]).any():
-            im = metrics.implied_move(mk, mids[("mid", "C")], mids[("mid", "P")], F, ca.spot)
+            im = metrics.implied_move(mk, mids[("mid", "C")], mids[("mid", "P")], F, ca.iv_spot)
             row.update({"implied_move": im["move"], "straddle": im["straddle"], "straddle_strike": im["strike"]})
         rows.append(row)
 

@@ -19,7 +19,8 @@ Pipeline (each step is recorded in ``ChainAnalytics.notes`` / per-row flags):
    for American exercise; NaN where no volatility reproduces the mid, with the reason in
    ``iv_status`` (:data:`IV_STATUSES`): ``arb_bound`` is a crossing of the no-arbitrage bounds
    (Black-76's for European exercise; for American exercise only a tradeable crossing of the
-   model-free exercise bounds), ``at_intrinsic`` (American: no time value) and
+   model-free exercise bounds), ``at_intrinsic`` (American: the bid is at or below exercise
+   value, so the quote does not exclude zero time value), ``no_vol`` and
    ``below_model_forward`` (American: under the model forward's ``D (F - K)+``);
 6. OTM selection for smile construction: puts for ``K < F``, calls for ``K >= F``
    (standard practice, e.g. Cboe VIX white paper; Ait-Sahalia & Lo 1998) because
@@ -191,7 +192,7 @@ def analyze_chain(
         upper = np.where(typ == "C", S, K)
         tol = isp.half_spread if np.isfinite(isp.half_spread) else 0.0
         cross = valid & ((ask_a < exer - tol) | (bid_a > upper))
-        at_intr = valid & ~cross & (mid - exer <= (ask_a - bid_a) / 2.0)     # no time value: no vol
+        at_intr = valid & ~cross & (mid - exer <= (ask_a - bid_a) / 2.0)     # i.e. bid <= exercise value
         below_fwd = valid & ~cross & ~at_intr & (mid <= intrinsic)          # under the model's D (F - K)+
         q["arb_bound"] = cross
         r_, q_ = q["r"].to_numpy(float), q["q"].to_numpy(float)
@@ -209,7 +210,10 @@ def analyze_chain(
         def ivs(px: np.ndarray) -> np.ndarray:
             return bsm.implied_vol_black(px, F, K, T, D, typ)
     good_mid = valid & ~q["arb_bound"].to_numpy() & ~at_intr & ~below_fwd
-    q["iv"] = ivs(np.where(good_mid, mid, np.nan))
+    iv_mid = ivs(np.where(good_mid, mid, np.nan))
+    if am:
+        iv_mid = _drop_flat(iv_mid, mid, (ask_a - bid_a) / 2.0, S, K, T, r_, q_, typ == "C")
+    q["iv"] = iv_mid
     q["iv_bid"] = ivs(np.where(bid_a > 0, bid_a, np.nan))
     q["iv_ask"] = ivs(np.where(ask_a > 0, ask_a, np.nan))
     q["iv_status"] = iv_status(q, at_intr, below_fwd)
@@ -259,10 +263,10 @@ def analyze_chain(
         notes.append(f"American IVs, greeks and q use the option-implied underlying {isp.level:.2f}, not the "
                      f"vendor spot {spot:.2f}: the vendor spot is the stock's last trade (the 16:00 ET close "
                      "after the bell) while equity option quotes run to 16:15 ET, and an American tree "
-                     "exercises against spot, so the gap would read as early exercise and yield. The level is "
-                     f"European parity on the {isp.slice} call and put nearest the money (S = K D + C - P; "
-                     "q and early exercise taken as nil over that front expiry); each expiry's q then comes "
-                     "from its own pair with that level fixed")
+                     "exercises against spot, so the gap would read as early exercise and yield. The level is the "
+                     f"spot at which the {isp.slice} call and put nearest the money, priced as American with "
+                     "q = 0 (no dividend going ex before that front expiry), both reprice their mids; each "
+                     "expiry's q then comes from its own pair with that level fixed")
     elif am:
         notes.append(f"American IVs use the vendor spot {spot:.2f}: {isp.reason}")
     if am:
@@ -273,16 +277,18 @@ def analyze_chain(
                      f"(ask below intrinsic against {S:.2f} by more than {tol:.3f}, or a call bid above it / a put "
                      f"bid above its strike): {side('arb_bound')}. The European bound D(F - K)+ is not used -- "
                      "F rests on our r and q")
-        notes.append(f"at_intrinsic: {side('at_intrinsic')} have a mid within their own half-spread of intrinsic "
-                     "-- no time value, so no volatility is identified (IV blank), not arbitrage")
+        notes.append(f"at_intrinsic: {side('at_intrinsic')} have a bid at or below exercise value (mid within "
+                     "its own half-spread of it), so the quote does not exclude zero time value and identifies no "
+                     "volatility (IV blank); not arbitrage")
         if (st == "below_model_forward").any():
             notes.append(f"below_model_forward: {side('below_model_forward')} have a mid below D(F - K)+ for the "
                          "expiry's forward, so no volatility fits (IV blank). A single dividend yield per expiry, "
                          "taken from the pair nearest the money, cannot fit deep in-the-money long-dated calls; "
                          "discrete dividends are not available to this chain yet")
         if (st == "no_vol").any():
-            notes.append(f"no_vol: {side('no_vol')} valid quotes have no volatility in the search interval that "
-                         "reproduces their mid (IV blank)")
+            notes.append(f"no_vol: {side('no_vol')} valid quotes have no identifiable volatility: none in the search "
+                         "interval reproduces the mid, or one vol point either side of the root moves the price by "
+                         f"less than {FLAT_FRACTION:.0%} of the quote's half-spread (IV blank)")
         notes.append(f"American-style options: every IV inverts a {american.STEPS}-step CRR binomial price "
                      "(Black-Scholes at the last step, Richardson-extrapolated; Broadie & Detemple 1996) on spot "
                      "with the expiry's r and a continuous yield q, by Brent's method")
@@ -311,8 +317,10 @@ def analyze_chain(
 #: Why a quote has, or has not, an IV (``quotes['iv_status']``): 'ok' (IV from the mid); the quote
 #: filters 'no_quote', 'zero_bid', 'crossed', 'wide'; 'arb_bound' (crosses a no-arbitrage bound --
 #: model-free on American chains, Black-76's bounds on European ones); American only: 'at_intrinsic'
-#: (mid within its own half-spread of exercise value: no time value), 'below_model_forward' (mid
-#: under the model forward's D (F - K)+); 'no_vol' (no volatility in the search interval fits).
+#: (bid at or below exercise value, i.e. mid within its own half-spread of it: the quote does not
+#: exclude zero time value), 'below_model_forward' (mid under the model forward's D (F - K)+);
+#: 'no_vol' (no volatility in the search interval fits, or -- American -- the price is flat in vol
+#: at the root: see FLAT_FRACTION).
 IV_STATUSES = ("ok", "no_quote", "zero_bid", "crossed", "wide", "arb_bound", "at_intrinsic",
                "below_model_forward", "no_vol")
 
@@ -326,6 +334,32 @@ def iv_status(q: pd.DataFrame, at_intrinsic: Any, below_model_forward: Any) -> n
     out = np.where(iv_ok, "ok", "no_vol").astype(object)
     for name, c in zip(reversed(IV_STATUSES[1:8]), reversed(conds), strict=True):
         out = np.where(c & ~iv_ok, name, out)
+    return out
+
+
+#: An American IV is identified only if one vol point either side of it moves the price by at least
+#: this fraction of the quote's own half-spread (otherwise the quote pins the vol to no better than
+#: 1 / FLAT_FRACTION points, and solvers can disagree arbitrarily inside that).
+FLAT_FRACTION = 0.01
+
+
+def _drop_flat(iv: np.ndarray, mid: np.ndarray, half: np.ndarray, S: float, K: np.ndarray, T: np.ndarray,
+               r: np.ndarray, q: np.ndarray, is_call: np.ndarray) -> np.ndarray:
+    """``iv`` with NaN where the American price is flat in vol at the root: the price at
+    ``iv +- 0.01`` (``iv / 2`` below when ``iv <= 0.02``) differs from the mid by less than
+    ``FLAT_FRACTION`` x the half-spread on either side (status ``no_vol``)."""
+    out = iv.copy()
+    i = np.flatnonzero(np.isfinite(iv))
+    if i.size == 0:
+        return out
+    up = iv[i] + 0.01
+    dn = np.where(iv[i] > 0.02, iv[i] - 0.01, iv[i] / 2.0)
+    pr = american.prices(S, np.concatenate([K[i], K[i]]), np.concatenate([T[i], T[i]]),
+                         np.concatenate([r[i], r[i]]), np.concatenate([q[i], q[i]]), np.concatenate([up, dn]),
+                         np.concatenate([is_call[i], is_call[i]]))
+    tol = FLAT_FRACTION * half[i]
+    flat = ~((pr[: i.size] - mid[i] >= tol) & (mid[i] - pr[i.size:] >= tol))
+    out[i[flat]] = np.nan
     return out
 
 

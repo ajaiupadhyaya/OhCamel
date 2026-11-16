@@ -256,16 +256,17 @@ def implied_spot(
 
     How the level is implied, and from which quotes: from the FRONT expiry -- the shortest one
     within ``max_T`` (7 days) with a two-sided call and put at one strike -- and there from the
-    call and put at ``K*``, the strike minimizing ``|C - P|`` (the pair nearest the money), by
-    European parity: ``S = (K* + (C - P)/D) D = K* D + C - P``, ``D`` from ``rate_curve`` when
-    given, else the expiry's own parity regression.
+    call and put at ``K*``, the strike minimizing ``|C - P|`` (the pair nearest the money):
+    ``(S, sigma)`` such that the AMERICAN call and put at ``K*`` with q = 0 both reprice their mids
+    (:func:`american_pair_spot`), starting from European parity ``S0 = K* D + C - P``. ``D`` from
+    ``rate_curve`` when given, else the expiry's own parity regression. Pricing the pair as
+    American removes the early-exercise bias of the European start (the at-the-money put's premium
+    grows with T: about 3.5-3.9 cents on 750 at 7 days, a fraction of a cent at 0.7 days).
 
-    Separation: one pair identifies only ``S e^{-qT}`` (with its early-exercise premia), never S
-    and q apart. So the level is taken where q and early exercise are negligible -- the front
-    expiry, assuming q = 0 and no early-exercise premium there (at 0.7 days on the 2026-11-15 SPY
-    chain, q T is ~1e-5 and the at-the-money premia are fractions of a cent) -- and then held
-    fixed while every expiry's q comes from its own pair (:func:`american_pair_forward`). A
-    dividend going ex inside the front expiry would be absorbed into the level.
+    Separation: one pair identifies only ``S e^{-qT}``, never S and q apart, so the level assumes
+    q = 0 over the front expiry -- i.e. no dividend goes ex before it expires (a dividend that does
+    is absorbed into the level) -- and is then held fixed while every expiry's q comes from its own
+    pair (:func:`american_pair_forward`).
 
     Falls back to the vendor spot when no expiry within ``max_T`` has a usable pair, or when the
     implied level is within that pair's half-spread ``(c_spread + p_spread) / 2`` of the spot.
@@ -284,9 +285,10 @@ def implied_spot(
             continue
         k_star = float((pq["c_mid"] - pq["p_mid"]).abs().idxmin())
         row = pq.loc[k_star]
-        level = float(k_star * D + row["c_mid"] - row["p_mid"])
         hs = float((row["c_spread"] + row["p_spread"]) / 2.0)
-        if not (np.isfinite(level) and level > 0):
+        try:
+            level = american_pair_spot(float(row["c_mid"]), float(row["p_mid"]), k_star, T, D)
+        except InsufficientQuotes:
             continue
         if abs(level - spot) < hs:
             return ImpliedSpot(level, spot, "vendor", sid, hs,
@@ -296,6 +298,39 @@ def implied_spot(
     return ImpliedSpot(float("nan"), spot, "vendor", None, float("nan"),
                        f"no expiry within {max_T * 365:.0f} days has a two-sided near-the-money pair to imply "
                        "the underlying from")
+
+
+def american_pair_spot(c_mid: float, p_mid: float, K: float, T: float, D: float, maxiter: int = 100) -> float:
+    """The spot ``S`` at which an American call and put struck at ``K`` with q = 0 (and one shared
+    vol) reprice their mids. Newton steps with the Black-Scholes Jacobian (deltas ``N(d1)``,
+    ``N(d1) - 1``; vega), from European parity ``S0 = K D + C - P``: ``dS = -(r_C - r_P)`` since the
+    deltas differ by 1. Stops at ``|dS| < 1e-10 S`` and ``|dsigma| < 1e-11``."""
+    from . import american, bsm
+
+    r = -np.log(D) / T
+    S = K * D + c_mid - p_mid
+    if not S > 0:
+        raise InsufficientQuotes(f"the K={K:g} pair implies a non-positive spot")
+    sig = float(bsm.implied_vol_black(c_mid, S / D, K, T, D, "C"))
+    if not np.isfinite(sig):
+        raise InsufficientQuotes(f"the K={K:g} call has no implied volatility")
+    typ = np.array([True, False])
+    for _ in range(maxiter):
+        a = american.prices(S, K, T, r, 0.0, sig, typ, threads=1)
+        rc, rp = float(a[0]) - c_mid, float(a[1]) - p_mid
+        sd = sig * np.sqrt(T)
+        d1 = (np.log(S / K) + (r + 0.5 * sig * sig) * T) / sd
+        vega = S * np.exp(-0.5 * d1 * d1) / np.sqrt(2.0 * np.pi) * np.sqrt(T)
+        dS = -(rc - rp)
+        dsig = (-rc - float(ndtr(d1)) * dS) / vega
+        if not (np.isfinite(dS) and np.isfinite(dsig)):
+            break
+        S, sig = S + dS, sig + dsig
+        if not (S > 0 and sig > 0):
+            break
+        if abs(dS) < 1e-10 * S and abs(dsig) < 1e-11:
+            return float(S)
+    raise InsufficientQuotes(f"no (spot, vol) reprices the K={K:g} American call and put")
 
 
 def bound_violations(paired: pd.DataFrame, spot: float, T: float, D: float, q: float) -> int:

@@ -351,11 +351,11 @@ def rn_density(ticker: str, market: Market, expiry: str | None = None) -> dict[s
                    "mean": d.mean, "forward": F, "mean_minus_forward": d.mean - F,
                    "negative_mass": d.negative_mass, "butterfly": f.butterfly},
         "moments": d.moments(), "lognormal_moments": ln.moments(),
-        "quantiles": [{"p": p, "level": float(v), "return": float(v / ca.spot - 1)}
+        "quantiles": [{"p": p, "level": float(v), "return": float(v / ca.iv_spot - 1)}
                       for p, v in zip(probs, d.quantiles(probs), strict=True)],
-        "prob_below": [{"level": float(ca.spot * m), "moneyness": float(m), "p": float(d.prob_below(ca.spot * m))}
+        "prob_below": [{"level": float(ca.iv_spot * m), "moneyness": float(m), "p": float(d.prob_below(ca.iv_spot * m))}
                        for m in mny],
-        "prob_move": [{"move": m, "p": float(d.prob_move(ca.spot, m)), "p_lognormal": float(ln.prob_move(ca.spot, m))}
+        "prob_move": [{"move": m, "p": float(d.prob_move(ca.iv_spot, m)), "p_lognormal": float(ln.prob_move(ca.iv_spot, m))}
                       for m in moves],
         "move_grid": moves,
         "method": {"density": "q(K) = (1/D) d2C/dK2 on a uniform strike grid, C from Black-76 at SVI vols",

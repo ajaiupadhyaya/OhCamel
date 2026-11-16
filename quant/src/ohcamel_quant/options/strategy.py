@@ -69,7 +69,8 @@ def resolve_legs(ca: ChainAnalytics, legs: list[dict[str, Any]], fits: dict[str,
         if qty == 0 or not np.isfinite(qty):
             raise ValueError(f"leg {i + 1}: qty must be a non-zero number")
         if spec.get("kind", "option") == "stock":
-            out.append(Leg(kind="stock", qty=qty, mid=ca.spot, bid=ca.spot, ask=ca.spot))
+            # at the level the option legs were solved at (ca.iv_spot): the stock at the quotes' time
+            out.append(Leg(kind="stock", qty=qty, mid=ca.iv_spot, bid=ca.iv_spot, ask=ca.iv_spot))
             continue
         if spec.get("contract"):
             row = qt[qt["contract"] == str(spec["contract"]).strip().upper()]
@@ -98,7 +99,7 @@ def resolve_legs(ca: ChainAnalytics, legs: list[dict[str, Any]], fits: dict[str,
         else:
             raise ValueError(f"leg {i + 1}: no usable implied volatility for {leg.contract}")
         if not np.isfinite(leg.mid) or leg.mid <= 0:
-            leg.mid = float(bsm.bsm_price(ca.spot, leg.strike, leg.T, leg.iv, leg.r, leg.q, leg.type))
+            leg.mid = float(bsm.bsm_price(ca.iv_spot, leg.strike, leg.T, leg.iv, leg.r, leg.q, leg.type))
             leg.iv_source += "; mid replaced by model value (no two-sided quote)"
         out.append(leg)
     return out
@@ -160,7 +161,9 @@ def analyze_position(
     fits = fits or {}
     notes: list[str] = []
     opts = [lg for lg in legs if lg.kind == "option"]
-    spot = ca.spot
+    # the level each leg's IV and its expiry's q were solved at (the vendor spot on European chains, the
+    # option-implied one on American chains): pricing at another level moves every forward and delta
+    spot = ca.iv_spot
     cost_mid, cost_nat = _cost(legs, multiplier)
 
     # greeks today

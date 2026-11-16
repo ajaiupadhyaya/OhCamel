@@ -107,7 +107,7 @@ export function ImpliedTab({ surface, chain, expiry }: { surface: ReturnType<typ
         }
       >
         <Panel<Surface> title="Forward · rate · yield" info={INFO.parity} query={surface} flush notes={[d_note(s)]} skeletonHeight={300} asOf={asOf}>
-          {(d) => <ParityTable rows={d.expiries} spot={d.spot} />}
+          {(d) => <ParityTable rows={d.expiries} spot={d.iv_spot} />}
         </Panel>
       </Section>
     </>
@@ -160,7 +160,7 @@ function SmilePanel({ c }: { c: Chain }) {
     return { x: xs, series: out };
   }, [c, axis, showAll]);
   const fwd = axis === "strike" ? F : 0;
-  const spot = axis === "strike" ? c.spot : Math.log(c.spot / F);
+  const spot = axis === "strike" ? c.iv_spot : Math.log(c.iv_spot / F);
   const bfly = fit?.butterfly;
   return (
     <div className="vx-smile">

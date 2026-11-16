@@ -187,7 +187,7 @@ export const INFO = {
   iv: {
     title: "Implied volatility (ours)",
     text: "The volatility that makes the model reproduce the option's mid price: Black-76 with the parity-implied forward and discount factor for European (index) options; for American (ETF, single-name) options a 400-step binomial tree on spot with the expiry's r and q, so early exercise is priced rather than read as volatility.",
-    formula: "C_{mid} = D\\,[F N(d_1) - K N(d_2)],\\quad d_{1,2} = \\frac{\\ln(F/K) \\pm \\tfrac12\\sigma^2T}{\\sigma\\sqrt T}",
+    formula: "\\text{European: } C_{mid} = D\\,[F N(d_1) - K N(d_2)];\\quad \\text{American: } C_{mid} = V^{\\text{CRR}}_{400}(S, K, T, r, q, \\sigma)",
     reference: "Black (1976); Cox, Ross & Rubinstein (1979) with Broadie & Detemple (1996) BBSR; solvers: Corrado & Miller (1996) start, safeguarded Newton + Brent (1973)",
   },
   vendor_iv: { title: "Vendor IV", text: "The implied vol published by the data vendor (Cboe). Shown faintly for comparison; differences usually come from a different rate, dividend or price convention." },

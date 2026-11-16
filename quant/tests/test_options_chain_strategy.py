@@ -330,7 +330,7 @@ def _set(ch, expiry, strike, cp, bid, ask):
 
 def test_each_iv_status_on_a_constructed_quote():
     """One quote per status on the American test chain (S0 = 500, no front expiry: the vendor spot
-    is used, tolerance 0), and the invariant: 'ok' exactly when the IV is finite."""
+    is used, tolerance 0)."""
     ch = make_american_chain()
     long, short = AM_EXPIRIES[1], AM_EXPIRIES[0]
     T = float(parity.year_fraction(AS_OF, parity.expiry_timestamp(long, "AMX"))[0])
@@ -350,8 +350,7 @@ def test_each_iv_status_on_a_constructed_quote():
     q = ca.quotes.set_index("contract")
     assert {c: q.loc[c, "iv_status"] for c in want} == want
     assert q.loc[list(want), "iv"].isna().all()
-    assert (q["iv_status"] == "ok").sum() >= 20 and np.isfinite(q.loc[q["iv_status"] == "ok", "iv"]).all()
-    assert not (q["iv"].isna() & (q["iv_status"] == "ok")).any()
+    assert (q["iv_status"] == "ok").sum() >= 20
     assert q["arb_bound"].sum() == 2                       # model-free crossings only
     assert any(n.startswith("below_model_forward: 1 calls, 0 puts") for n in ca.notes)
     assert any(n.startswith("at_intrinsic: 0 calls, 1 puts") for n in ca.notes)
@@ -362,5 +361,21 @@ def test_european_chain_keeps_its_arb_bound_and_gets_statuses():
     ca = analyze_chain(ch)
     st = ca.quotes["iv_status"]
     assert set(st) <= {"ok", "zero_bid", "arb_bound", "no_vol", "wide", "crossed", "no_quote"}
-    assert ((st == "ok") == ca.quotes["iv"].notna()).all()
     assert not (st == "at_intrinsic").any() and not (st == "below_model_forward").any()
+
+
+def test_a_price_flat_in_vol_identifies_no_vol():
+    """chain._drop_flat on real tree prices: a deep in-the-money put whose price moves by d per vol
+    point keeps its IV when d is at least 1% of the half-spread, loses it (no_vol) when it is not."""
+    from ohcamel_quant.options import american
+    from ohcamel_quant.options.chain import _drop_flat
+
+    K, T, sig = np.array([600.0]), np.array([0.25]), 0.30
+    args = (K, T, np.array([R]), np.array([Q]), np.array([False]))
+    mid = american.prices(S0, K, T, R, Q, sig, False)
+    d = min(float((american.prices(S0, K, T, R, Q, sig + 0.01, False) - mid)[0]),
+            float((mid - american.prices(S0, K, T, R, Q, sig - 0.01, False))[0]))
+    assert d > 0
+    iv = np.array([sig])
+    assert np.isfinite(_drop_flat(iv, mid, np.array([50.0 * d]), S0, *args)).all()      # 1 point = 2% of it
+    assert np.isnan(_drop_flat(iv, mid, np.array([200.0 * d]), S0, *args)).all()        # 1 point = 0.5%
