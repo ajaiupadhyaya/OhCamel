@@ -1218,6 +1218,12 @@ let run_live ~book_path ~(serve_port : int option) =
          the engine's first second on 2026-10-27. Released at the first sync,
          or below at once when there is no account to read. *)
       Option.iter alerts ~f:Alerts.hold;
+      (* Every trip goes on the journal from here on, before the release below
+         or at the first sync can make one: the order manager's own handler is
+         wired only after the reconciliation, up to twenty seconds later, and a
+         restart inside the hysteresis band reads a trip only from the journal
+         (Oms.restore_switch). *)
+      Option.iter alerts ~f:(Ohcamel_desk.Oms.journal_trips ~journal ~on_event:live_line);
       (match alerts with
       | None -> live_line "alerts    disabled (default) -- breaches are displayed only"
       | Some a ->

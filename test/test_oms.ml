@@ -266,6 +266,55 @@ let test_a_restart_inside_the_hysteresis_band_comes_back_tripped () =
       Alcotest.(check string) "so the next start is clear" "clear" (name after_reset))
     ()
 
+let aapl_cap_alerts =
+  {
+    Ohcamel.Config.Alerts.default with
+    Ohcamel.Config.Alerts.enabled = true;
+    sinks = [];
+    kill_switch_enabled = true;
+    kill_switch_trips_on = [ "aapl-cap" ];
+  }
+
+let standing journal = Option.map (D.Journal.standing_trip journal) ~f:fst
+
+(* The live host's order: the alerts are held from attach until the first
+   sync, whose release can trip the switch -- twenty seconds and a
+   reconciliation before the manager's [watch_alerts] is wired. The hook
+   bin/main.ml registers between the hold and the release journals that trip at
+   once, with no manager at all. *)
+let test_a_trip_at_the_first_sync_is_journaled_before_the_manager_is_wired () =
+  with_oms_graph
+    ~f:(fun graph _oms journal ->
+      let alerts =
+        Option.value_exn
+          (Or_error.ok_exn (Ohcamel.Alerts.attach ~graph ~config:aapl_cap_alerts))
+      in
+      Ohcamel.Alerts.hold alerts;
+      D.Oms.journal_trips ~journal ~on_event:ignore alerts;
+      Graph.set_qty graph aapl (Qty.of_float 600.0);
+      Ohcamel.Alerts.release alerts ~graph;
+      Alcotest.(check (option string))
+        "the first sync's trip is on the record" (Some "aapl-cap") (standing journal))
+    ()
+
+(* And a trip that came before [watch_alerts] with no hook to hear it -- the
+   demo's order, or any caller that wires late -- is journaled when it is
+   wired. *)
+let test_watch_alerts_journals_a_trip_that_came_before_it () =
+  with_oms_graph
+    ~f:(fun graph oms journal ->
+      let alerts =
+        Option.value_exn
+          (Or_error.ok_exn (Ohcamel.Alerts.attach ~graph ~config:aapl_cap_alerts))
+      in
+      Graph.set_qty graph aapl (Qty.of_float 600.0);
+      Graph.stabilize graph;
+      Alcotest.(check (option string)) "tripped, unheard" None (standing journal);
+      D.Oms.watch_alerts oms alerts;
+      Alcotest.(check (option string))
+        "on the record once wired" (Some "aapl-cap") (standing journal))
+    ()
+
 let test_incubation_is_permitted_on_the_paper_venues_only () =
   let permitted name =
     with_oms ~venue_name:name ~f:(fun oms _ -> D.Oms.incubation_permitted oms) ()
@@ -1243,6 +1292,11 @@ let suite =
         test_a_halt_by_hand_survives_a_restart;
       Alcotest.test_case "a restart inside the hysteresis band comes back tripped" `Quick
         test_a_restart_inside_the_hysteresis_band_comes_back_tripped;
+      Alcotest.test_case
+        "a trip at the first sync is journaled before the manager is wired" `Quick
+        test_a_trip_at_the_first_sync_is_journaled_before_the_manager_is_wired;
+      Alcotest.test_case "watch_alerts journals a trip that came before it" `Quick
+        test_watch_alerts_journals_a_trip_that_came_before_it;
       Alcotest.test_case "incubation is permitted on the paper venues only" `Quick
         test_incubation_is_permitted_on_the_paper_venues_only;
     ] )

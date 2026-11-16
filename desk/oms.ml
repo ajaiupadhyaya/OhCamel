@@ -2103,16 +2103,15 @@ let halt_by_hand t ~why =
   t.on_event ("desk      HALTED by hand: " ^ why);
   t.on_change ()
 
-(* The deliberate reset. The journal first -- the halt's record, then the
-   reset's, which ends the standing trip: if either write fails the switch stays
-   as it was and the route says so, where the other order would lift the switch
+(* The deliberate reset. The journal first, in one transaction that lifts the
+   halt by hand and the standing trip together: if it fails the switch stays as
+   it was and the route says so, where the other order would lift the switch
    here and bring it back at the next start. Nothing while the engine has stopped
    the desk, which [Halt.reset] does not lift and the route refuses. *)
 let reset_switch t =
   match Halt.state t.halt with
   | Halt.State.Stopped _ -> ()
   | Halt.State.Clear | Halt.State.Tripped _ | Halt.State.Halted _ ->
-      Journal.clear_halt t.journal;
       Or_error.ok_exn (Journal.record_reset t.journal ~at:(t.now ()));
       Halt.reset t.halt
 
@@ -2192,8 +2191,8 @@ let run t : unit Deferred.t =
    write is a few rows in SQLite and touches no graph, so it is made at once,
    leaving no window in which a crash forgets a trip that happened; it returns
    an error rather than raising, and [report] is how the failure is said. *)
-let journal_trip t ~limit ~at ~(report : string -> unit) =
-  match Journal.record_trip t.journal ~limit ~at with
+let journal_trip journal ~limit ~at ~(report : string -> unit) =
+  match Journal.record_trip journal ~limit ~at with
   | Ok () -> ()
   | Error e ->
       report
@@ -2202,20 +2201,36 @@ let journal_trip t ~limit ~at ~(report : string -> unit) =
             now, but a restart inside the limit's hysteresis band would come back clear"
            limit (Error.to_string_hum e))
 
+(* The journal's own ear on the kernel's switch, with no manager behind it:
+   bin/main.ml registers it as soon as the alerts and the journal both exist,
+   between the alerts' hold and their release at the first sync -- a release
+   that can trip the switch twenty seconds and a reconciliation before
+   [watch_alerts] is wired. It writes to SQLite and nothing else, and its
+   failure's line is scheduled, as the handler runs inside stabilization. The
+   handler [watch_alerts] adds writes the same trip again, which changes
+   nothing: the standing trip is one row pair, replaced. *)
+let journal_trips ~(journal : Journal.t) ~(on_event : string -> unit)
+    (alerts : Ohcamel.Alerts.t) =
+  Ohcamel.Alerts.on_trip alerts ~f:(fun event ->
+      journal_trip journal ~limit:event.Ohcamel.Alerts.Event.limit_name
+        ~at:event.Ohcamel.Alerts.Event.at ~report:(fun line ->
+          upon Deferred.unit (fun () -> on_event line)))
+
 (* The other half of §3.8. The switch already refuses new orders through
    [Halt.reason]; a trip must also cancel the open ones. The handler runs
    inside stabilization, so beyond the journal's write it only schedules --
-   the failure's line too. A trip that came before the wiring -- the live
-   host's first sync can trip it, before the reconciliation this waits for --
-   is journaled here as the handler would have. *)
+   the failure's line too. A trip that came before the wiring is journaled
+   here as the handler would have: on the live host [journal_trips] has
+   already written it, and writing it again changes nothing; a caller with no
+   such hook -- the demo -- is covered all the same. *)
 let watch_alerts t (alerts : Ohcamel.Alerts.t) =
   (match Ohcamel.Alerts.Kill_switch.state (Ohcamel.Alerts.kill_switch alerts) with
   | Ohcamel.Alerts.Kill_switch.Tripped { by; at } ->
-      journal_trip t ~limit:by ~at ~report:t.on_event
+      journal_trip t.journal ~limit:by ~at ~report:t.on_event
   | Ohcamel.Alerts.Kill_switch.Armed | Ohcamel.Alerts.Kill_switch.Disarmed -> ());
   Ohcamel.Alerts.on_trip alerts ~f:(fun event ->
       let limit = event.Ohcamel.Alerts.Event.limit_name in
-      journal_trip t ~limit ~at:event.Ohcamel.Alerts.Event.at ~report:(fun line ->
+      journal_trip t.journal ~limit ~at:event.Ohcamel.Alerts.Event.at ~report:(fun line ->
           upon Deferred.unit (fun () -> t.on_event line));
       upon Deferred.unit (fun () ->
           t.on_event

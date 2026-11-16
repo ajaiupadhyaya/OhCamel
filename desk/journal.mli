@@ -185,7 +185,8 @@ val standing_trip : t -> (string * Time_ns.t) option
     writes. *)
 
 val record_reset : t -> at:Time_ns.t -> unit Or_error.t
-(** The deliberate reset: no trip stands after it. *)
+(** The deliberate reset: no halt by hand and no trip stands after it. One transaction, so
+    on an error both stand as they were. *)
 
 (** One judgement of one signal document (desk/intake.ml): the [signals] table's row. *)
 module Signal : sig

@@ -36,7 +36,10 @@ let test_a_limit_trips_it_and_the_reason_names_the_limit () =
   Alcotest.(check (option string)) "no reason" None (Halt.reason t);
   tripped := Some ("nvda-cap", t0);
   Alcotest.(check string) "tripped" "tripped" (state t);
-  Alcotest.(check bool) "the reason names the limit" true (says t "tripped by nvda-cap")
+  Alcotest.(check bool) "the reason names the limit" true (says t "tripped by nvda-cap");
+  Alcotest.(check bool)
+    "a trip this process made is not held across a restart" false
+    (says t "held across a restart")
 
 let test_a_hand_outranks_a_limit_and_a_reset_lifts_both () =
   let source, tripped, _, resets = fake () in
@@ -218,6 +221,9 @@ let test_restored_trip_outranks_clear_source () =
     "a reason: new orders are refused" true
     (Option.is_some (Halt.reason t));
   Alcotest.(check bool) "it names the limit" true (says t "tripped by book-cap");
+  Alcotest.(check bool)
+    "and says it was held across a restart" true
+    (says t "(held across a restart)");
   Alcotest.(check bool)
     "an hour of the demo's clock does not lift it" false
     (Halt.tick t ~now:(at 3600.0));

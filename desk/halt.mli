@@ -43,7 +43,8 @@ val state : t -> State.t
 (** Stopped outranks halted, which outranks tripped. *)
 
 val reason : t -> string option
-(** Why new orders are refused, or [None] when they are not. *)
+(** Why new orders are refused, or [None] when they are not. A restored trip's reason ends
+    "(held across a restart)". *)
 
 val halt : t -> why:string -> at:Time_ns.t -> unit
 (** A halt by hand. A second press does not overwrite the first. *)

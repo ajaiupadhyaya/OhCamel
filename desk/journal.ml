@@ -952,8 +952,9 @@ let clear_halt t =
    standing fact. The trip's two keys are written in one statement and deleted
    by the reset's, so the standing trip is the last one written with no reset
    after it -- by the order of the writes, not by comparing two clocks' instants.
-   The reset keeps its instant, the trip's keys gone, so the record says when the
-   last trip was lifted. These two return an Or_error where the halt's writes raise:
+   The reset lifts the halt's keys in the same transaction, so a write that fails
+   halfway leaves both standing rather than the trip without the halt; and it
+   keeps its instant, so the record says when the switch was last reset. These two return an Or_error where the halt's writes raise:
    [record_trip] is called inside the graph's stabilization (Oms.watch_alerts),
    where a raise would reach the engine and not the log. *)
 let record_trip t ~limit ~at =
@@ -977,7 +978,10 @@ let standing_trip t =
 let record_reset t ~at =
   Or_error.try_with (fun () ->
       write t ~what:"reset" (fun () ->
-          run t ~what:"reset" "DELETE FROM meta WHERE key IN ('trip_limit', 'trip_at')" [];
+          run t ~what:"reset"
+            "DELETE FROM meta WHERE key IN ('halt_why', 'halt_at', 'trip_limit', \
+             'trip_at')"
+            [];
           run t ~what:"reset"
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('trip_reset_at', ?)"
             [ time at ]))

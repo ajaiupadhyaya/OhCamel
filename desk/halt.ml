@@ -123,8 +123,15 @@ let reason t =
   match state t with
   | State.Clear -> None
   | State.Tripped { limit; at } ->
+      (* A trip the source does not report is the restored one: the operator
+         is told, because the limit may read clear now. *)
+      let held =
+        if Option.is_none (t.source.Source.tripped ()) then " (held across a restart)"
+        else ""
+      in
       Some
-        (sprintf "the kill switch was tripped by %s at %s" limit (Desk_time.rfc3339 at))
+        (sprintf "the kill switch was tripped by %s at %s%s" limit (Desk_time.rfc3339 at)
+           held)
   | State.Halted { why; at } ->
       Some (sprintf "the desk was halted by hand at %s: %s" (Desk_time.rfc3339 at) why)
   | State.Stopped { why; at } ->

@@ -749,9 +749,53 @@ let test_journal_trip_without_reset_is_some () =
       | None -> Alcotest.fail "a restart forgot the trip");
       Journal.close j)
 
+(* The reset is one transaction: the halt's keys and the trip's go together,
+   or neither does. A second connection to the file adds a trigger that refuses
+   the reset's own row, the last statement the reset runs, so the deletes before
+   it have already happened when the write fails -- and must be rolled back. *)
+let test_a_failed_reset_leaves_the_halt_and_the_trip_standing () =
+  with_temp_path ~f:(fun path ->
+      let j = open_exn path in
+      Journal.record_halt j ~why:"the venue looks wrong" ~at;
+      Or_error.ok_exn (Journal.record_trip j ~limit:"book-cap" ~at);
+      let other = Sqlite3.db_open path in
+      (match
+         Sqlite3.exec other
+           "CREATE TRIGGER refuse_reset BEFORE INSERT ON meta WHEN NEW.key = \
+            'trip_reset_at' BEGIN SELECT RAISE(ABORT, 'refused by the test'); END"
+       with
+      | Sqlite3.Rc.OK -> ()
+      | rc -> Alcotest.failf "the trigger: %s" (Sqlite3.Rc.to_string rc));
+      ignore (Sqlite3.db_close other : bool);
+      Alcotest.(check bool)
+        "the reset fails" true
+        (Result.is_error (Journal.record_reset j ~at));
+      Alcotest.(check (option string))
+        "the halt still stands" (Some "the venue looks wrong")
+        (Option.map (Journal.recorded_halt j) ~f:fst);
+      Alcotest.(check (option string))
+        "and the trip" (Some "book-cap")
+        (Option.map (Journal.standing_trip j) ~f:fst);
+      Journal.close j)
+
+let test_a_reset_lifts_the_halt_and_the_trip_together () =
+  let j = open_exn ":memory:" in
+  Journal.record_halt j ~why:"the venue looks wrong" ~at;
+  Or_error.ok_exn (Journal.record_trip j ~limit:"book-cap" ~at);
+  let version = Journal.version j in
+  Or_error.ok_exn (Journal.record_reset j ~at);
+  Alcotest.(check int) "one write" (version + 1) (Journal.version j);
+  Alcotest.(check bool) "no halt" true (Option.is_none (Journal.recorded_halt j));
+  Alcotest.(check bool) "no trip" true (Option.is_none (Journal.standing_trip j));
+  Journal.close j
+
 let suite =
   ( "journal",
     [
+      Alcotest.test_case "a failed reset leaves the halt and the trip standing" `Quick
+        test_a_failed_reset_leaves_the_halt_and_the_trip_standing;
+      Alcotest.test_case "a reset lifts the halt and the trip together" `Quick
+        test_a_reset_lifts_the_halt_and_the_trip_together;
       Alcotest.test_case "journal_trip_then_reset_is_none" `Quick
         test_journal_trip_then_reset_is_none;
       Alcotest.test_case "journal_trip_without_reset_is_some" `Quick
