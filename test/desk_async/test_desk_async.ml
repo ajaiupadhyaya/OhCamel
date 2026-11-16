@@ -4637,6 +4637,52 @@ let test_a_governor_cut_beyond_the_band_drops_its_growing_leg () =
     (strategy_legs f name);
   cleanup ()
 
+(* A governor's cut that the adjust pass routes as a completion is filtered
+   too (the fix round 4's G1). The two names again, holding 350 AAPL and 50
+   MSFT, last sized at 0.9; an auction buy of 10 AAPL expired unfilled after
+   that sizing, so the pass takes a completion first. The drawdown reads
+   1.5 % against a 2 % cap, a governor of 0.5 -- a cut beyond the band -- and
+   var-cap, in kill_switch_trips_on, cannot be evaluated. The completion is
+   planned at the reading, 0.45: AAPL 112, Sell 238; MSFT 56, a Buy of 6.
+   Sent whole, the buy's fill subset would raise gross and the gate would
+   refuse it all, every pass; carried as the cut it is, the sell reaches the
+   venue and the MSFT buy is dropped and named. *)
+let test_a_governor_cut_carried_by_a_completion_drops_its_growing_leg () =
+  let var_cap =
+    {
+      Limit.name = "var-cap";
+      scope = Limit.Portfolio;
+      kind = Limit.Value_at_risk (Notional.of_float 1e9);
+    }
+  in
+  let%bind { a_f = f; a_name = name; pass_and_adjust; cleanup; _ } =
+    adjust_case ~adjust_now:false ~two_names:true ~limits:[ tech_cap; var_cap ]
+      ~trips_on:[ "var-cap" ]
+      ~unfilled:[ (D.Order.Side.Buy, 10, `Expired) ]
+      ~last_scale:0.9 ~last_ratio:1.0 ~last_factor:0.9 ~last_governor:1.0
+      ~drawdown:(fun () -> Some 0.015)
+      ~dd_cap:0.02 ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.9" ()
+  in
+  Graph.set_returns f.graph xom [||];
+  Graph.stabilize f.graph;
+  let received = D.Sim_venue.received f.venue in
+  let%map () = pass_and_adjust ~at:4.0 in
+  Alcotest.(check (pair (list (triple string string int)) int))
+    "Sell 238 AAPL reaches the venue; the MSFT buy is not sent"
+    ( [
+        ("AAPL", "buy", 10);
+        ("AAPL", "buy", 350);
+        ("AAPL", "sell", 238);
+        ("MSFT", "buy", 50);
+      ],
+      received + 1 )
+    (strategy_legs f name, D.Sim_venue.received f.venue);
+  Alcotest.(check bool)
+    "the dropped buy is named" true
+    (List.exists (Queue.to_list f.events) ~f:(fun e ->
+         String.is_substring e ~substring:"only shrinks: MSFT buy 6"));
+  cleanup ()
+
 (* A governor's rise still buys. Last sized at 0.45 (factor 0.9, governor
    0.5), the drawdown now 0 -- a governor of 1 -- and the overlay 0.9: the
    effective scale 0.9 is above the last 0.45, so the re-size may grow:
@@ -5187,6 +5233,8 @@ let suites =
         case "a governor cut sells through an unevaluable trip-limit"
           test_a_governor_cut_sells_through_an_unevaluable_trip_limit;
         case "a governor rise still buys" test_a_governor_rise_still_buys;
+        case "a governor cut carried by a completion drops its growing leg"
+          test_a_governor_cut_carried_by_a_completion_drops_its_growing_leg;
         case "a governor cut beyond the band drops its growing leg"
           test_a_governor_cut_beyond_the_band_drops_its_growing_leg;
         case "a completion at the same reading buys through an incubation ratio"

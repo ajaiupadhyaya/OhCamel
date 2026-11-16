@@ -1794,8 +1794,8 @@ let collect_pending t : Accepted.t list =
      evening-to-morning spell the hold exists for does not count, and a
      producer that died at 10:00 has the book at the fallback by 14:00 at
      the latest. These re-sizes ONLY SHRINK, as do a governor's cut beyond
-     the band (or on an unread drawdown) and a stale completion whose held
-     factor fell (a fresh, trusted re-size is sent whole): a leg that would
+     the band (or on an unread drawdown), a completion while such a cut
+     stands, and a stale completion whose held factor fell (a fresh, trusted re-size is sent whole): a leg that would
      grow the strategy's own position is dropped, named, the rest sent, and
      no sizing row written while any is dropped ([rebalance]'s only_shrink).
      A
@@ -2112,7 +2112,10 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                      when a growing leg's buy-only fills would raise gross
                      and, a trip-limit unknown, have the gate refuse the
                      sells beside it;
-                   - a completion on a stale reading whose held factor fell.
+                   - a completion that is itself a governor's cut (the
+                     decision takes a completion first, so a cut that lands
+                     while orders are unfilled is noted "completion"), or one
+                     on a stale reading whose held factor fell.
                    Everything else -- a fresh, trusted reading, a completion
                    at the same scale, a fresh band move either way, a
                    governor's rise -- is sent whole through the gate, as it
@@ -2132,15 +2135,18 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                   match note with
                   | Some ("decay" | "overlay") -> true
                   | Some "stop" -> false
+                  (* A completion is taken before a governor's move, so a cut
+                     that lands while orders are unfilled is routed here. *)
                   | Some "completion" -> (
-                      stale
-                      &&
-                      match
-                        ( Option.bind last ~f:(fun z -> z.Journal.Sizing.factor),
-                          parts.Parts.factor )
-                      with
-                      | Some f, Some f' -> Float.( < ) f' (f -. 1e-9)
-                      | _ -> false)
+                      governor_cut
+                      || stale
+                         &&
+                         match
+                           ( Option.bind last ~f:(fun z -> z.Journal.Sizing.factor),
+                             parts.Parts.factor )
+                         with
+                         | Some f, Some f' -> Float.( < ) f' (f -. 1e-9)
+                         | _ -> false)
                   | Some _ | None -> governor_cut
                 in
                 let%map outcome =
