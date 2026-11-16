@@ -13,8 +13,9 @@ def test_health(client):
 def test_head_health_is_not_stolen_by_the_shell(tmp_path, monkeypatch):
     (tmp_path / "index.html").write_text("SHELL", encoding="utf-8")
     monkeypatch.setattr("ohcamel_quant.api.app.WEB_DIST", tmp_path)
-    from ohcamel_quant.api.app import create_app
     from fastapi.testclient import TestClient
+
+    from ohcamel_quant.api.app import create_app
 
     c = TestClient(create_app())
     assert c.get("/api/health").status_code == 200
