@@ -340,7 +340,7 @@ def test_american_iv_parity_round_trip(both, divs):
     up, dn = (on("python", kernels.american_price, 100.0, K, T, 0.045, q, sig + h, is_call, *divs) for h in (0.01, -0.01))
     ident = (up - px > 1e-4) & (px - dn > 1e-4)
     assert ident.sum() >= 70 and np.isfinite(p[ident]).all()
-    np.testing.assert_allclose(p[ident], sig[ident], rtol=0, atol=1e-8)
+    np.testing.assert_allclose(p[ident], sig[ident], rtol=0, atol=1e-6)
     assert np.all(np.isnan(p) <= ~ident)
 
 
@@ -357,3 +357,27 @@ def test_american_iv_parity_on_the_spy_chain(both, spy_2026_11_15_american):
         assert np.array_equal(np.isnan(r), np.isnan(p)), col
         assert np.isfinite(p).sum() > 400, col
         np.testing.assert_allclose(r, p, rtol=0, atol=1e-8, err_msg=col)
+
+
+def test_american_iv_is_within_1e6_of_the_exact_root(both, spy_2026_11_15_american):
+    """The inversion's shortcuts (the screen that keeps a Black-Scholes guess after one Newton step,
+    Brent's xtol 1e-7 and its stop at 3e-7 of vol along the bracket's slope) move no IV more than
+    1e-6 (1e-4 vol points) from the exact root of the same 400-step price, found here by scipy's
+    brentq to 1e-13 on 300 real quotes (measured 3.3e-7). The bound can fail: a screen of 1e-3
+    instead of 3e-5 misses by 1.1e-5 on the same quotes (reference engine, measured)."""
+    from scipy.optimize import brentq
+
+    ca = spy_2026_11_15_american[0]
+    q = ca.quotes[ca.quotes["valid"]].sample(300, random_state=11)
+    S, K, T, r, qy = ca.iv_spot, q["strike"].to_numpy(), q["T"].to_numpy(), q["r"].to_numpy(), q["q"].to_numpy()
+    c, mid = (q["type"] == "C").to_numpy(), q["mid"].to_numpy()
+    iv = on("rust", kernels.american_iv, mid, S, K, T, r, qy, c, threads=4)
+    worst, n = 0.0, 0
+    for i in np.flatnonzero(np.isfinite(iv)):
+        def f(s, i=i):
+            return float(on("rust", kernels.american_price, S, K[i], T[i], r[i], qy[i], s, c[i])) - mid[i]
+        a, b = iv[i] - 1e-4, iv[i] + 1e-4
+        if f(a) * f(b) >= 0:
+            continue                           # flat in vol here (deep in the money): nothing to pin
+        worst, n = max(worst, abs(brentq(f, a, b, xtol=1e-13, rtol=1e-15) - iv[i])), n + 1
+    assert n >= 200 and worst < 1e-6, (n, worst)

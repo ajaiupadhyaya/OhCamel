@@ -3,6 +3,8 @@ BSM/SSVI-generated chain (a test fixture: the analytics must recover the inputs)
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -194,23 +196,25 @@ AM_SIG = 0.25
 AM_EXPIRIES = ["2026-12-18", "2027-09-17"]
 
 
-def make_american_chain(half_spread: float = 0.005) -> OptionChain:
-    """Every quote is the American model price (options.american) at one flat vol, with the yield
-    Q and the rate R: the chain analytics must give back AM_SIG at every strike, call or put."""
+def make_american_chain(half_spread: float = 0.005, expiries=tuple(AM_EXPIRIES), q: float = Q,
+                        vendor_spot: float = S0) -> OptionChain:
+    """Every quote is the American model price (options.american) at one flat vol on the underlying
+    S0, with the yield ``q`` and the rate R: the chain analytics must give back AM_SIG at every
+    strike, call or put. ``vendor_spot`` is the spot the chain reports (a stale print if != S0)."""
     from ohcamel_quant.options import american
 
     rows = []
-    for e in AM_EXPIRIES:
+    for e in expiries:
         T = float(parity.year_fraction(AS_OF, parity.expiry_timestamp(e, "AMX"))[0])
         K = np.arange(420.0, 581.0, 20.0)
         for cp in ("C", "P"):
-            mid = american.prices(S0, K, T, R, Q, AM_SIG, cp == "C")
+            mid = american.prices(S0, K, T, R, q, AM_SIG, cp == "C")
             for k_, m in zip(K, mid, strict=True):
                 rows.append({"contract": f"AMX{pd.Timestamp(e):%y%m%d}{cp}{int(k_ * 1000):08d}", "root": "AMX",
                              "expiry": pd.Timestamp(e), "strike": k_, "type": cp, "bid": m - half_spread,
                              "ask": m + half_spread, "last": m, "volume": 1.0, "open_interest": 1.0,
                              "vendor_iv": np.nan})
-    return OptionChain(underlying="AMX", spot=S0, as_of=AS_OF, quotes=pd.DataFrame(rows))
+    return OptionChain(underlying="AMX", spot=vendor_spot, as_of=AS_OF, quotes=pd.DataFrame(rows))
 
 
 @pytest.fixture(scope="module")
@@ -273,3 +277,45 @@ def test_american_pair_forward_reprices_both_legs():
     assert F == pytest.approx(S0 * np.exp((R - 0.02) * T), rel=1e-12)
     with pytest.raises(parity.InsufficientQuotes):
         parity.american_pair_forward(c, c + 600.0, 540.0, S0, T, D)       # implies a negative forward
+
+
+FRONT = "2026-09-25"         # 1.2 days after AS_OF: q T and early exercise are fractions of a cent
+
+
+def test_implied_spot_replaces_a_stale_vendor_spot():
+    """A chain priced on S0 = 500 that reports a stale spot of 501.50: the front expiry's pair
+    nearest the money gives the underlying back, the vendor spot stays as reported, and the later
+    expiries' American IVs come back to AM_SIG. Without a front expiry the stale spot is used, and
+    the same IVs miss by more than a point."""
+    exp = (FRONT, *AM_EXPIRIES)
+    ca = analyze_chain(make_american_chain(expiries=exp, q=0.0, vendor_spot=S0 + 1.5), rate_curve=lambda T: R)
+    assert ca.spot == S0 + 1.5 and ca.iv_spot_source == "implied" and ca.iv_spot == ca.implied_spot
+    assert ca.implied_spot == pytest.approx(S0, abs=0.01)
+    assert any("option-implied underlying 500.00, not the vendor spot 501.50" in n for n in ca.notes)
+    later = ca.quotes[ca.quotes["valid"] & ca.quotes["expiry"].isin(pd.to_datetime(AM_EXPIRIES))]
+    assert later["iv"].notna().all() and np.abs(later["iv"] - AM_SIG).max() < 2e-3
+    stale = analyze_chain(make_american_chain(q=0.0, vendor_spot=S0 + 1.5), rate_curve=lambda T: R)
+    assert stale.iv_spot_source == "vendor" and stale.iv_spot == S0 + 1.5
+    sv = stale.quotes[stale.quotes["valid"]]
+    assert np.abs(sv["iv"] - AM_SIG).max() > 1e-2
+
+
+def test_implied_spot_falls_back_to_the_vendor_spot_and_says_why():
+    # no expiry within a week: nothing to imply the level from
+    ca = analyze_chain(make_american_chain(q=0.0), rate_curve=lambda T: R)
+    assert ca.iv_spot_source == "vendor" and math.isnan(ca.implied_spot) and ca.iv_spot == S0
+    assert any("American IVs use the vendor spot 500.00: no expiry within 7 days" in n for n in ca.notes)
+    # the implied level is within the front pair's half-spread (0.01) of the vendor spot
+    ch = make_american_chain(expiries=(FRONT, *AM_EXPIRIES), q=0.0, vendor_spot=S0 + 0.003)
+    ca = analyze_chain(ch, rate_curve=lambda T: R)
+    assert ca.iv_spot_source == "vendor" and ca.iv_spot == S0 + 0.003
+    assert ca.implied_spot == pytest.approx(S0, abs=0.01)
+    assert any("within their half-spread 0.010" in n for n in ca.notes)
+    # the function itself, on the same slices
+    groups = {sid: (g, float(g["T"].iloc[0])) for sid, g in ca.quotes.groupby("slice")}
+    isp = parity.implied_spot(groups, S0 + 0.003, rate_curve=lambda T: R)
+    assert (isp.source, isp.used, isp.slice) == ("vendor", S0 + 0.003, FRONT) and isp.half_spread == pytest.approx(0.01)
+    assert parity.implied_spot(groups, S0 + 0.5, rate_curve=lambda T: R).source == "implied"
+    # an index (European) chain never implies one
+    ce = analyze_chain(make_chain())
+    assert math.isnan(ce.implied_spot) and ce.iv_spot == ce.spot and ce.iv_spot_source == "vendor"

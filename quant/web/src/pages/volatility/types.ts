@@ -94,6 +94,11 @@ interface ChainHeader extends Envelope {
   spot: number;
   as_of: string;
   exercise_style: "European" | "American";
+  /** American chains: the underlying the option quotes imply (null when it cannot be formed or the chain is European). */
+  implied_spot: number | null;
+  /** The level the IVs and greeks use: the vendor spot, or the option-implied one. */
+  iv_spot: number;
+  iv_spot_source: "vendor" | "implied";
 }
 
 export interface Expiries extends ChainHeader {

@@ -90,11 +90,11 @@ def spy_2026_11_15_american():
     """The same chain as the router reads it now: SPY options are American, so every IV inverts the
     CRR tree (options.american) and each forward comes from the pair nearest the money.
 
-    On the Rust kernel that is the whole chain (~36,000 inversions, about 2 s on four threads). The
-    NumPy reference takes about 1.5 ms an inversion (~55 s for the chain), so on it -- the default
-    offline suite, where `uv sync` drops the wheel -- the chain is cut to the five expiries in
-    SPY_REFERENCE_EXPIRIES (0.7, 2.7, 33, 214 and 761 days; every strike). CI's native job runs the
-    suite on Rust, over the whole chain. Returns (ChainAnalytics, its European twin over the same
+    On the Rust kernel that is the whole chain (~36,000 inversions: 2.3 s at one thread, 0.85 s at
+    four, macOS arm64). The NumPy reference takes 14 s for the chain, so on it -- the default offline
+    suite, where `uv sync` drops the wheel -- the chain is cut to the five expiries in
+    SPY_REFERENCE_EXPIRIES (0.7, 2.7, 33, 214 and 761 days; every strike; 2.3 s). CI's native job
+    runs the suite on Rust, over the whole chain. Returns (ChainAnalytics, its European twin over the same
     quotes, OptionChain analyzed, rate_curve)."""
     from ohcamel_quant import kernels
     from ohcamel_quant.options.chain import analyze_chain

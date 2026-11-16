@@ -95,6 +95,8 @@ def test_expiries_and_chain(chain_client):
     assert all(abs(e["rate"] - 0.045) < 1e-4 and abs(e["div_yield"] - 0.013) < 1e-3 for e in j["expiries"])
     j = _ok(chain_client.get("/api/options/chain/TESTX", params={"expiry": "2026-11-20"}))
     assert j["expiry"] == "2026-11-20" and j["exercise_style"] == "European"   # the test chain says so
+    # the level the IVs use is carried apart from the vendor spot; a European chain never implies one
+    assert j["implied_spot"] is None and j["iv_spot"] == j["spot"] and j["iv_spot_source"] == "vendor"
     q = [x for x in j["quotes"] if x["use_smile"]]
     assert len(q) > 40 and all(abs(x["iv"] - x["vendor_iv"]) < 2e-4 for x in q)
     assert j["smile"]["fit"]["rmse_vol_pts"] < 0.01

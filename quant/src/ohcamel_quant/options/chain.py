@@ -53,6 +53,9 @@ class ChainAnalytics:
     params: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     errors: dict[str, str] = field(default_factory=dict)
+    implied_spot: float = float("nan")   # option-implied underlying (American; NaN if not formed)
+    iv_spot: float = float("nan")        # the level the IVs and greeks use (vendor spot or implied)
+    iv_spot_source: str = "vendor"       # 'vendor' | 'implied'
 
     @property
     def european(self) -> bool:
@@ -148,8 +151,12 @@ def analyze_chain(
     q["valid"] = ~(q["no_quote"] | q["zero_bid"] | q["crossed"] | q["wide"])
 
     groups = {sid: (g, float(g["T"].iloc[0])) for sid, g in q.groupby("slice", sort=False)}
-    fits, errors = parity.fit_all(groups, spot, n_parity_strikes, max_rate_se, rate_curve=rate_curve,
-                                  exercise=style)
+    # American trees exercise against the underlying, so it must be the level at the quotes' time
+    pairs = {sid: parity.pair_quotes(g) for sid, (g, _) in groups.items()}
+    isp = parity.implied_spot(groups, spot, n_parity_strikes, rate_curve, pairs=pairs) if am else None
+    S = isp.used if am else spot
+    fits, errors = parity.fit_all(groups, S, n_parity_strikes, max_rate_se, rate_curve=rate_curve,
+                                  exercise=style, pairs=pairs)
     for sid, msg in errors.items():
         notes.append(f"{sid}: forward not identified ({msg}); slice excluded")
     q = q[q["slice"].isin(list(fits))].reset_index(drop=True)
@@ -172,13 +179,13 @@ def analyze_chain(
     bid_a, ask_a = q["bid"].to_numpy(float), q["ask"].to_numpy(float)
     if am:
         # American bounds: worth at least immediate exercise, at most the underlying (call) / strike (put)
-        lower, upper = np.maximum(intrinsic, phi * (spot - K)), np.where(typ == "C", spot, K)
+        lower, upper = np.maximum(intrinsic, phi * (S - K)), np.where(typ == "C", S, K)
         r_, q_ = q["r"].to_numpy(float), q["q"].to_numpy(float)
 
         def ivs(px: np.ndarray) -> np.ndarray:
             ok = np.isfinite(px)
             out = np.full(px.shape, np.nan)
-            out[ok] = american.implied_vols(px[ok], spot, K[ok], T[ok], r_[ok], q_[ok], typ[ok] == "C")
+            out[ok] = american.implied_vols(px[ok], S, K[ok], T[ok], r_[ok], q_[ok], typ[ok] == "C")
             return out
     else:
         lower, upper = intrinsic, np.where(typ == "C", D * F, D * K)
@@ -191,7 +198,7 @@ def analyze_chain(
     q["iv_bid"] = ivs(np.where(bid_a > 0, bid_a, np.nan))
     q["iv_ask"] = ivs(np.where(ask_a > 0, ask_a, np.nan))
     q["use_smile"] = q["valid"] & q["otm"] & np.isfinite(q["iv"])
-    g = bsm.bsm_greeks(spot, K, T, q["iv"].to_numpy(float), q["r"].to_numpy(float), q["q"].to_numpy(float), typ)
+    g = bsm.bsm_greeks(S, K, T, q["iv"].to_numpy(float), q["r"].to_numpy(float), q["q"].to_numpy(float), typ)
     for name in ("delta", "gamma", "vega", "theta_day", "rho", "vanna", "volga", "charm_day"):
         q[name] = g[name]
     q["model_price"] = g["price"]
@@ -203,8 +210,8 @@ def analyze_chain(
         ivd = g_.loc[g_["use_smile"], "iv_minus_vendor"].abs()
         parity_rmse, n_bound = f.residual_rmse, float("nan")
         if am:
-            parity_rmse = _premium_free_parity_rmse(g_, f, spot)
-            n_bound = parity.bound_violations(parity.pair_quotes(groups[sid][0]), spot, f.T, f.discount, f.div_yield)
+            parity_rmse = _premium_free_parity_rmse(g_, f, S)
+            n_bound = parity.bound_violations(pairs[sid], S, f.T, f.discount, f.div_yield)
         rows.append({
             "slice": sid, "expiry": g_["expiry"].iloc[0], "expiry_ts": g_["expiry_ts"].iloc[0],
             "settlement": g_["settlement"].iloc[0], "roots": ",".join(sorted(g_["root"].unique())),
@@ -232,6 +239,16 @@ def analyze_chain(
     if borrowed:
         notes.append(f"{len(borrowed)} short/illiquid expiries borrow r from better-identified expiries "
                      "(parity slope not identified by the quotes)")
+    if am and isp.source == "implied":
+        notes.append(f"American IVs, greeks and q use the option-implied underlying {isp.level:.2f}, not the "
+                     f"vendor spot {spot:.2f}: the vendor spot is the stock's last trade (the 16:00 ET close "
+                     "after the bell) while equity option quotes run to 16:15 ET, and an American tree "
+                     "exercises against spot, so the gap would read as early exercise and yield. The level is "
+                     f"European parity on the {isp.slice} call and put nearest the money (S = K D + C - P; "
+                     "q and early exercise taken as nil over that front expiry); each expiry's q then comes "
+                     "from its own pair with that level fixed")
+    elif am:
+        notes.append(f"American IVs use the vendor spot {spot:.2f}: {isp.reason}")
     if am:
         notes.append(f"American-style options: every IV inverts a {american.STEPS}-step CRR binomial price "
                      "(Black-Scholes at the last step, Richardson-extrapolated; Broadie & Detemple 1996) on spot "
@@ -251,6 +268,7 @@ def analyze_chain(
     return ChainAnalytics(
         underlying=str(chain.underlying), spot=spot, as_of=as_of, quotes=q, slices=slices,
         exercise=style, notes=notes, errors={str(k): v for k, v in errors.items()},
+        implied_spot=isp.level if am else float("nan"), iv_spot=S, iv_spot_source=isp.source if am else "vendor",
         params={"max_rel_spread": max_rel_spread, "n_parity_strikes": n_parity_strikes,
                 "max_rate_se": max_rate_se,
                 "rate_source": "treasury" if rate_curve is not None else "parity", "exercise": style},

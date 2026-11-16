@@ -30,6 +30,7 @@ export function ImpliedTab({ surface, chain, expiry }: { surface: ReturnType<typ
             <Readline
               items={[
                 { k: "SPOT", v: fmtNum(d.spot, 2) },
+                ...(d.iv_spot_source === "implied" ? [{ k: "IV SPOT", v: `${fmtNum(d.iv_spot, 2)} · OPTION-IMPLIED` }] : []),
                 { k: "EXPIRIES", v: fmtNum(d.term_structure.length, 0) },
                 { k: "STYLE", v: d.exercise_style.toUpperCase() },
               ]}

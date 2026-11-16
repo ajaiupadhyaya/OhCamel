@@ -228,6 +228,76 @@ def american_pair_forward(
     raise InsufficientQuotes(f"no (vol, yield) reprices the K={K:g} American call and put")
 
 
+#: The front expiry implies the underlying only while q T and early exercise are negligible there.
+IMPLIED_SPOT_MAX_T = 7.0 / 365.0
+
+
+@dataclass
+class ImpliedSpot:
+    """The underlying level the option quotes imply, and whether the chain uses it."""
+
+    level: float              # the option-implied level (NaN when it cannot be formed)
+    used: float               # what the American IVs use: ``level``, or the vendor spot on fallback
+    source: str               # 'implied' | 'vendor'
+    slice: Any = None         # the front expiry it came from
+    half_spread: float = float("nan")   # the front pair's (call + put) half-spread at K*
+    reason: str = ""
+
+
+def implied_spot(
+    slices: dict[Any, tuple[pd.DataFrame, float]], spot: float, n_strikes: int = 12, rate_curve: Any = None,
+    max_T: float = IMPLIED_SPOT_MAX_T, pairs: dict[Any, pd.DataFrame] | None = None,
+) -> ImpliedSpot:
+    """The underlying level at the option quotes' own time, for American pricing.
+
+    A vendor spot is the stock's last trade (Cboe's ``current_price``: the 16:00 ET close after the
+    bell) while equity option quotes run to 16:15 ET, so the two can disagree; Black-76 never sees
+    spot, but an American tree exercises against it.
+
+    How the level is implied, and from which quotes: from the FRONT expiry -- the shortest one
+    within ``max_T`` (7 days) with a two-sided call and put at one strike -- and there from the
+    call and put at ``K*``, the strike minimizing ``|C - P|`` (the pair nearest the money), by
+    European parity: ``S = (K* + (C - P)/D) D = K* D + C - P``, ``D`` from ``rate_curve`` when
+    given, else the expiry's own parity regression.
+
+    Separation: one pair identifies only ``S e^{-qT}`` (with its early-exercise premia), never S
+    and q apart. So the level is taken where q and early exercise are negligible -- the front
+    expiry, assuming q = 0 and no early-exercise premium there (at 0.7 days on the 2026-11-15 SPY
+    chain, q T is ~1e-5 and the at-the-money premia are fractions of a cent) -- and then held
+    fixed while every expiry's q comes from its own pair (:func:`american_pair_forward`). A
+    dividend going ex inside the front expiry would be absorbed into the level.
+
+    Falls back to the vendor spot when no expiry within ``max_T`` has a usable pair, or when the
+    implied level is within that pair's half-spread ``(c_spread + p_spread) / 2`` of the spot.
+    ``pairs`` may pass precomputed :func:`pair_quotes` results by slice.
+    """
+    front = sorted(((T, sid) for sid, (_, T) in slices.items() if 0 < T <= max_T), key=lambda x: x[0])
+    for T, sid in front:
+        q = slices[sid][0]
+        pq = pair_quotes(q) if pairs is None else pairs[sid]
+        if pq.empty:
+            continue
+        try:
+            D = (float(np.exp(-float(rate_curve(T)) * T)) if rate_curve is not None
+                 else _fit_european(q, spot, T, n_strikes, None, pq, "regression").discount)
+        except InsufficientQuotes:
+            continue
+        k_star = float((pq["c_mid"] - pq["p_mid"]).abs().idxmin())
+        row = pq.loc[k_star]
+        level = float(k_star * D + row["c_mid"] - row["p_mid"])
+        hs = float((row["c_spread"] + row["p_spread"]) / 2.0)
+        if not (np.isfinite(level) and level > 0):
+            continue
+        if abs(level - spot) < hs:
+            return ImpliedSpot(level, spot, "vendor", sid, hs,
+                               f"the option-implied level {level:.2f} (the {sid} call and put at {k_star:g}) "
+                               f"is within their half-spread {hs:.3f} of it")
+        return ImpliedSpot(level, level, "implied", sid, hs, "")
+    return ImpliedSpot(float("nan"), spot, "vendor", None, float("nan"),
+                       f"no expiry within {max_T * 365:.0f} days has a two-sided near-the-money pair to imply "
+                       "the underlying from")
+
+
 def bound_violations(paired: pd.DataFrame, spot: float, T: float, D: float, q: float) -> int:
     """Strikes whose two-sided quotes cross the American parity bounds tradeably:
     ``C_bid - P_ask > S - K D`` or ``C_ask - P_bid < S e^{-qT} - K`` (``paired`` from
@@ -328,17 +398,20 @@ def _fit_european(
 def fit_all(
     slices: dict[Any, tuple[pd.DataFrame, float]], spot: float, n_strikes: int = 12,
     max_rate_se: float = 0.005, rate_curve: Any = None, exercise: Exercise = "european",
+    pairs: dict[Any, pd.DataFrame] | None = None,
 ) -> tuple[dict[Any, ParityFit], dict[Any, str]]:
     """Fit every slice; slices with an unidentified rate borrow it (see module doc).
 
     ``slices`` maps a slice id to ``(quotes, T)``. With ``rate_curve`` (a callable
     ``T -> continuously-compounded r``, e.g. the Treasury curve), every slice fixes
     ``D = exp(-r(T) T)`` and estimates only ``F`` (``rate_source = 'treasury'``).
-    ``exercise`` is passed to :func:`fit_parity`. Returns (fits, errors-by-slice).
+    ``exercise`` is passed to :func:`fit_parity`; ``pairs`` may pass precomputed :func:`pair_quotes`
+    results by slice. Returns (fits, errors-by-slice).
     """
     fits: dict[Any, ParityFit] = {}
     errors: dict[Any, str] = {}
-    pairs = {sid: pair_quotes(q) for sid, (q, _) in slices.items()}
+    if pairs is None:
+        pairs = {sid: pair_quotes(q) for sid, (q, _) in slices.items()}
     if rate_curve is not None:
         for sid, (q, T) in slices.items():
             r = float(rate_curve(T))

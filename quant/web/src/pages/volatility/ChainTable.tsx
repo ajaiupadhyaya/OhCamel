@@ -155,7 +155,7 @@ export function ChainTable({ c, rows, view, onTrade, maxHeight = 600 }: { c: Cha
               {i === fwdIdx && (
                 <tr className="vx-fwd-row">
                   <td colSpan={callCols.length * 2 + 1}>
-                    <span className="vx-fwd-label num">FWD {fmtNum(F, 2)} · SPOT {fmtNum(c.spot, 2)}</span>
+                    <span className="vx-fwd-label num">FWD {fmtNum(F, 2)} · SPOT {fmtNum(c.spot, 2)}{c.iv_spot_source === "implied" ? ` · IV SPOT ${fmtNum(c.iv_spot, 2)} (OPTION-IMPLIED)` : ""}</span>
                   </td>
                 </tr>
               )}

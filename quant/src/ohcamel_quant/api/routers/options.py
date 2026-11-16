@@ -149,7 +149,9 @@ def _surface(b: _Bundle) -> VolSurface:
 
 def _header(ca: ChainAnalytics) -> dict[str, Any]:
     return {"underlying": ca.underlying, "spot": ca.spot, "as_of": ca.as_of.isoformat(),
-            "exercise_style": "European" if ca.european else "American"}
+            "exercise_style": "European" if ca.european else "American",
+            # the level the IVs and greeks use: the vendor spot, or (American) the option-implied one
+            "implied_spot": ca.implied_spot, "iv_spot": ca.iv_spot, "iv_spot_source": ca.iv_spot_source}
 
 
 def _slice_summary(ca: ChainAnalytics) -> list[dict[str, Any]]:
