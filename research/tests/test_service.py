@@ -716,15 +716,23 @@ def test_sweep_orphaned_tmp_survives_a_temp_renamed_away_mid_sweep(tmp_path: Pat
     for p in (gone_at_stat, gone_at_unlink, old):
         p.write_text("orphaned")
         _age(p, 11 * 60)
-    real_stat, real_unlink = Path.stat, Path.unlink
-    seen: list[Path] = []
+    real_stat, real_unlink, real_is_file = Path.stat, Path.unlink, Path.is_file
+    listing = False
+
+    def is_file(self, *a, **k):
+        # The listing's is_file sees the file. Whether is_file reaches Path.stat is the
+        # interpreter's business (3.12 does, 3.14 does not), so the test does not count calls.
+        nonlocal listing
+        listing = True
+        try:
+            return real_is_file(self, *a, **k)
+        finally:
+            listing = False
 
     def stat(self, *a, **k):
-        # The listing's is_file sees it (the first stat); it is gone by the sweep's own stat.
-        if self == gone_at_stat:
-            seen.append(self)
-            if len(seen) > 1:
-                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(self))
+        # It is gone by the sweep's own stat.
+        if self == gone_at_stat and not listing:
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(self))
         return real_stat(self, *a, **k)
 
     def unlink(self, *a, **k):
@@ -733,6 +741,7 @@ def test_sweep_orphaned_tmp_survives_a_temp_renamed_away_mid_sweep(tmp_path: Pat
             raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(self))
         return real_unlink(self, *a, **k)
 
+    monkeypatch.setattr(Path, "is_file", is_file)
     monkeypatch.setattr(Path, "stat", stat)
     monkeypatch.setattr(Path, "unlink", unlink)
     assert sweep_orphaned_tmp(signals_dir) == [old]

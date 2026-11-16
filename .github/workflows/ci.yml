@@ -415,7 +415,9 @@ jobs:
       # not", which fail-fast would destroy.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # ubuntu-24.04, not ubuntu-latest: on 2026-11-15 -latest became 26.04, whose gcc 15
+        # defaults to C23 and cannot compile owl 1.2 (an empty parameter list is now (void)).
+        os: [ubuntu-24.04, macos-latest]
     runs-on: ${{ matrix.os }}
     # Generous, because Owl is built from source on both platforms and it is
     # slow. The default 360 would hide a genuine hang; 60 will not.
@@ -627,7 +629,7 @@ jobs:
   # is the part that rots silently. Its numbers are for reading, not gating.
   bench:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # owl 1.2 does not compile under 26.04's gcc 15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -661,7 +663,7 @@ jobs:
     # Separate from the matrix because instrumentation changes what is compiled,
     # and the build whose tests everyone reads should not be the instrumented
     # one. Linux only — coverage is a property of the tests, not the platform.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # owl 1.2 does not compile under 26.04's gcc 15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
