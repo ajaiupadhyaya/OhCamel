@@ -190,10 +190,14 @@ let test_alerts_call_on_trip_once_and_the_desk_reads_the_switch () =
           sinks = [];
           kill_switch_enabled = true;
           kill_switch_trips_on = [ "aapl-cap" ];
+          (* One breached evaluation trips: these cases drive one
+             stabilize to a breach (test_alerts.ml tests the held rule). *)
+          raise_after_n = 1;
+          raise_after_s = 0.0;
         }
       in
       let alerts =
-        Option.value_exn (Or_error.ok_exn (Ohcamel.Alerts.attach ~graph ~config))
+        Option.value_exn (Or_error.ok_exn (Ohcamel.Alerts.attach ~graph ~config ()))
       in
       let calls = ref 0 in
       Ohcamel.Alerts.on_trip alerts ~f:(fun _ -> incr calls);

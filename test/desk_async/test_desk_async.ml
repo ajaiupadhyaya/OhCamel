@@ -823,10 +823,14 @@ let test_a_limit's_trip_cancels_the_open_orders () =
       sinks = [];
       kill_switch_enabled = true;
       kill_switch_trips_on = [ "aapl-cap" ];
+      (* One breached evaluation trips: these cases drive one
+         stabilize to a breach (test_alerts.ml tests the held rule). *)
+      raise_after_n = 1;
+      raise_after_s = 0.0;
     }
   in
   let alerts =
-    Option.value_exn (Or_error.ok_exn (Ohcamel.Alerts.attach ~graph:f.graph ~config))
+    Option.value_exn (Or_error.ok_exn (Ohcamel.Alerts.attach ~graph:f.graph ~config ()))
   in
   let oms = manager ~halt:(D.Halt.create (D.Halt.Source.of_alerts alerts)) f in
   D.Oms.watch_alerts oms alerts;

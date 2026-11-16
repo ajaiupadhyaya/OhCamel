@@ -140,13 +140,49 @@ end
      unevaluable -- the VaR input vanishes, the feed dies -- the alert stays
      firing. "I can no longer tell" is not "it is fine", and treating it as
      resolution is the exact failure this whole engine is arranged against. *)
+(* - A HELD BREACH RAISES, NOT ONE PRINT (Task 1.3). A quiet limit raises
+     only after [raise_after_n] consecutive breached evaluations, the first at
+     least [raise_after_s] seconds before the one that raises -- both. Each
+     limit's run is its [pending]: when it started and how many breached
+     evaluations it holds. A clear evaluation ends the run; an unevaluable one
+     neither adds to it nor ends it, for the third rule's reason. Time is the
+     evaluation's own [at], never the wall clock read here. Clearing is
+     unchanged: hysteresis, and never on lost data. n <= 1 with no time is the
+     rule before it: one breached evaluation raises. *)
 module Tracker = struct
   type state = Ok_ | Firing [@@deriving sexp_of, compare, equal]
-  type t = { clear_below : float; states : state String.Table.t }
+  type pending = { first_breach_at : Types.Time.t; consecutive : int }
 
-  let create ~clear_below = { clear_below; states = String.Table.create () }
+  type t = {
+    clear_below : float;
+    raise_after_n : int;
+    raise_after : Types.Time.Span.t;
+    states : state String.Table.t;
+    pending : pending String.Table.t;
+  }
+
+  (* Config.Alerts.validate refuses n < 1 and a negative or non-finite time; a
+     tracker built without it reads n < 1 as 1 and such a time as none, so it
+     can never be laxer than one breached evaluation. *)
+  let create ~clear_below ~raise_after_n ~raise_after_s =
+    {
+      clear_below;
+      raise_after_n = Int.max 1 raise_after_n;
+      raise_after =
+        (if Float.is_finite raise_after_s && Float.( > ) raise_after_s 0.0 then
+           Types.Time.Span.of_sec raise_after_s
+         else Types.Time.Span.zero);
+      states = String.Table.create ();
+      pending = String.Table.create ();
+    }
+
   let state t name = Option.value (Hashtbl.find t.states name) ~default:Ok_
   let firing t name = equal_state (state t name) Firing
+
+  (* Whether [p] has been held long enough, by count and by time, at [at]. *)
+  let held t (p : pending) ~(at : Types.Time.t) =
+    p.consecutive >= t.raise_after_n
+    && Types.Time.Span.( >= ) (Types.Time.diff at p.first_breach_at) t.raise_after
 
   (* Every limit currently in the Firing state, sorted.
 
@@ -177,8 +213,22 @@ module Tracker = struct
             let breached = Types.Breach.breached breach in
             match (previous, breached) with
             | Ok_, true ->
-                Hashtbl.set t.states ~key:name ~data:Firing;
-                Some (Event.of_breach ~kind:Event.Raised ~at breach)
+                let p =
+                  match Hashtbl.find t.pending name with
+                  | None -> { first_breach_at = at; consecutive = 1 }
+                  | Some p -> { p with consecutive = p.consecutive + 1 }
+                in
+                if held t p ~at then (
+                  Hashtbl.remove t.pending name;
+                  Hashtbl.set t.states ~key:name ~data:Firing;
+                  Some (Event.of_breach ~kind:Event.Raised ~at breach))
+                else (
+                  Hashtbl.set t.pending ~key:name ~data:p;
+                  None)
+            | Ok_, false ->
+                (* A clear evaluation: the run, if there was one, is over. *)
+                Hashtbl.remove t.pending name;
+                None
             | Firing, false when Float.( < ) utilisation t.clear_below ->
                 Hashtbl.set t.states ~key:name ~data:Ok_;
                 Some (Event.of_breach ~kind:Event.Cleared ~at breach)
@@ -186,7 +236,26 @@ module Tracker = struct
                 (* Inside the hysteresis band: back under the line but not far
                    enough to call it resolved. *)
                 None
-            | Firing, true | Ok_, false -> None))
+            | Firing, true -> None))
+
+  (* The standing evaluations read again on a clock, for a breach that has
+     its count and is waiting only on time: the graph's observer fires on a
+     CHANGE, so a breach whose inputs then go quiet would otherwise wait for
+     the next print to be raised. A recheck is NOT an evaluation -- it adds
+     nothing to a run's count and ends none -- so one bad print the market
+     never moved off is one evaluation however long it sits, and still raises
+     nothing. Only quiet limits with a run are looked at; clearing is left to
+     real evaluations. *)
+  let recheck t ~(at : Types.Time.t)
+      (results : (Types.Limit.t * Types.Breach.t option) list) : Event.t list =
+    List.filter_map results ~f:(fun (limit, breach) ->
+        let name = Types.Limit.name limit in
+        match (state t name, Hashtbl.find t.pending name, breach) with
+        | Ok_, Some p, Some breach when Types.Breach.breached breach && held t p ~at ->
+            Hashtbl.remove t.pending name;
+            Hashtbl.set t.states ~key:name ~data:Firing;
+            Some (Event.of_breach ~kind:Event.Raised ~at breach)
+        | _ -> None)
 end
 
 (* ------------------------------------------------------------------------ *)
@@ -296,6 +365,10 @@ type t = {
   mutable trip_handlers : (Event.t -> unit) list;
   (* While true, nothing is evaluated: see [hold]. *)
   mutable held : bool;
+  (* The time an evaluation is stamped with, and so the clock the held-breach
+     rule counts its seconds on. Types.Time.now unless [attach] is handed
+     another, which the tests do. *)
+  now : unit -> Types.Time.t;
 }
 
 let history_limit = 50
@@ -353,12 +426,10 @@ let deliver t (event : Event.t) =
                   t.failed <- t.failed + 1;
                   eprintf "  ALERT slack failed: %s\n%!" (Error.to_string_hum error))))
 
-(* One pass of the tracker over [results], and the switch over what it says.
-   Enqueue only: called inside stabilization by the observer, and by
-   [evaluate] after one. *)
-let step t ~(results : (Types.Limit.t * Types.Breach.t option) list) =
-  let at = Types.Time.now () in
-  let events = Tracker.step t.tracker ~at results in
+(* The tracker's events, and the switch over what they say. Enqueue only:
+   called inside stabilization by the observer, and by [release] and
+   [recheck] after one. *)
+let enqueue t ~at events =
   List.iter events ~f:(fun event ->
       if not (Pipe.is_closed t.writer) then Pipe.write_without_pushback t.writer event;
       match Kill_switch.consider t.kill_switch ~at event with
@@ -368,11 +439,17 @@ let step t ~(results : (Types.Limit.t * Types.Breach.t option) list) =
             Pipe.write_without_pushback t.writer tripped;
           List.iter t.trip_handlers ~f:(fun f -> f tripped))
 
+(* One pass of the tracker over [results]: an evaluation, stamped [now ()]. *)
+let step t ~(results : (Types.Limit.t * Types.Breach.t option) list) =
+  let at = t.now () in
+  enqueue t ~at (Tracker.step t.tracker ~at results)
+
 (* Attach to a graph.
 
    Returns [None] when alerting is disabled, which is the default -- so the
    caller cannot accidentally get a live notifier by forgetting a flag. *)
-let attach ~(graph : Graph.t) ~(config : Config.Alerts.t) : t option Or_error.t =
+let attach ?(now = Types.Time.now) ~(graph : Graph.t) ~(config : Config.Alerts.t) () :
+    t option Or_error.t =
   if not config.Config.Alerts.enabled then Ok None
   else
     let open Or_error.Let_syntax in
@@ -390,7 +467,10 @@ let attach ~(graph : Graph.t) ~(config : Config.Alerts.t) : t option Or_error.t 
     let t =
       {
         config;
-        tracker = Tracker.create ~clear_below:config.Config.Alerts.clear_below;
+        tracker =
+          Tracker.create ~clear_below:config.Config.Alerts.clear_below
+            ~raise_after_n:config.Config.Alerts.raise_after_n
+            ~raise_after_s:config.Config.Alerts.raise_after_s;
         kill_switch = Kill_switch.create ~config;
         slack_webhook;
         writer;
@@ -399,6 +479,7 @@ let attach ~(graph : Graph.t) ~(config : Config.Alerts.t) : t option Or_error.t 
         failed = 0;
         trip_handlers = [];
         held = false;
+        now;
       }
     in
     (* The observer hook the brief asks for. Everything it does is enqueue. *)
@@ -426,6 +507,16 @@ let release t ~(graph : Graph.t) =
   t.held <- false;
   Graph.stabilize graph;
   step t ~results:(Graph.limit_results graph)
+
+(* [recheck]: the graph's standing evaluations read again, on the caller's
+   clock, so a breach that has its count raises when its time is up rather
+   than at the next print (Tracker.recheck). Counts nothing; held, it does
+   nothing. Reads the observer as the last stabilize left it, so the caller
+   stabilizes first, as the engine's staleness clock already does. *)
+let recheck t ~(graph : Graph.t) =
+  if not t.held then
+    let at = t.now () in
+    enqueue t ~at (Tracker.recheck t.tracker ~at (Graph.limit_results graph))
 
 let kill_switch t = t.kill_switch
 let halted t = Kill_switch.halt_new_orders t.kill_switch

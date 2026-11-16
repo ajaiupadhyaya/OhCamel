@@ -1206,7 +1206,7 @@ let run_live ~book_path ~(serve_port : int option) =
          alerts block meant to be alerted, and starting up with it quietly
          disabled would be the worst of both. *)
       let%bind alerts =
-        match Alerts.attach ~graph ~config:book.Config.Book.alerts with
+        match Alerts.attach ~graph ~config:book.Config.Book.alerts () with
         | Error error ->
             prerr_endline (Error.to_string_hum error);
             exit 1
@@ -1233,6 +1233,12 @@ let run_live ~book_path ~(serve_port : int option) =
                 graph"
                (Alerts.status a)));
       let alpaca_stats = Alpaca_ws.Stats.create () in
+      (* One filter for the stream and the poll: the stream's quotes are the
+         midpoints; the poll's names have none, and mark as they always have. *)
+      let print_filter =
+        Alpaca_ws.Print_filter.create
+          ~max_deviation:book.Config.Book.feed.Config.Feed.max_print_deviation
+      in
       let fred_stats = Fred_client.Stats.create () in
       (* Backfill the return windows before anything else runs.
 
@@ -1563,6 +1569,9 @@ let run_live ~book_path ~(serve_port : int option) =
         Clock_ns.every' runtime.Config.Runtime.clock_interval (fun () ->
             Graph.set_now graph (Time.now ());
             Graph.stabilize graph;
+            (* A held breach whose inputs went quiet raises when its time is
+               up, not at the next print (Alerts.recheck). *)
+            Option.iter alerts ~f:(fun a -> Alerts.recheck a ~graph);
             don't_wait_for (Ohcamel_desk.Desk.refresh_clock desk);
             Deferred.unit);
         Deferred.never ()
@@ -1589,7 +1598,7 @@ let run_live ~book_path ~(serve_port : int option) =
               | _ -> ())
             ~graph ~credentials:config.Config.credentials ~runtime
             ~symbols:(Config.Book.stream_names book)
-            ~stats:alpaca_stats ()
+            ~stats:alpaca_stats ~filter:print_filter ()
         with
         | Ok () -> Deferred.unit
         | Error fatal ->
@@ -1606,7 +1615,7 @@ let run_live ~book_path ~(serve_port : int option) =
         | symbols ->
             Alpaca_poll.run ~graph ~credentials:config.Config.credentials ~runtime
               ~symbols ~every:(Time_ns.Span.of_sec 10.) ~stats:alpaca_stats
-              ~on_event:(fun e -> live_line ("alpaca  " ^ e))
+              ~filter:print_filter ~on_event:(fun e -> live_line ("alpaca  " ^ e))
       in
       let http =
         match serve_port with
@@ -1783,10 +1792,14 @@ let run_demo ~port =
       clear_below = 0.95;
       kill_switch_enabled = true;
       kill_switch_trips_on = [ "nvda-cap" ];
+      (* The engine's own held-breach rule, so the demo shows it: nvda-cap
+         trips after three breached evaluations over thirty seconds. *)
+      raise_after_n = Config.Alerts.default.Config.Alerts.raise_after_n;
+      raise_after_s = Config.Alerts.default.Config.Alerts.raise_after_s;
     }
   in
   let%bind alerts =
-    match Alerts.attach ~graph ~config:demo_alerts with
+    match Alerts.attach ~graph ~config:demo_alerts () with
     | Error error ->
         prerr_endline (Error.to_string_hum error);
         exit 1
@@ -1939,6 +1952,7 @@ let run_demo ~port =
   Clock_ns.every' (Time_ns.Span.of_sec 3.0) (fun () ->
       Graph.set_now graph (Time.now ());
       Graph.stabilize graph;
+      Option.iter alerts ~f:(fun a -> Alerts.recheck a ~graph);
       don't_wait_for (Ohcamel_desk.Desk.refresh_clock desk);
       Deferred.unit);
   (* The demo's switch resets itself; this is the clock it resets by. *)

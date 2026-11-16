@@ -275,7 +275,11 @@
       ["feed", fs.alpaca_feed],
       ["frames", int(fs.alpaca.frames)],
       ["trades", int(fs.alpaca.trades)],
+      ["quotes", int(fs.alpaca.quotes)],
       ["rejected", int(fs.alpaca.rejected), fs.alpaca.rejected > 0 ? "over" : ""],
+      // Prints held off the mark: more than the book's deviation from their
+      // quote's midpoint. A count, never the prices.
+      ["dropped prints", int(fs.alpaca.dropped_prints), fs.alpaca.dropped_prints > 0 ? "over" : ""],
       ["unknown symbol", int(fs.alpaca.unknown_symbol)],
       ["reconnects", int(fs.alpaca.reconnects), fs.alpaca.reconnects > 0 ? "over" : ""],
       ["last error", fs.alpaca.last_error, fs.alpaca.last_error ? "over" : ""]

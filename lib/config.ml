@@ -140,6 +140,19 @@ module Alerts = struct
        when the switch is enabled -- so a misconfigured file cannot arm
        something that trips on everything. *)
     kill_switch_trips_on : string list;
+    (* A HELD breach raises, not one print (the completion spec's "debounced";
+       Task 1.3). A limit raises -- and so trips the switch when it is one it
+       trips on -- after at least [raise_after_n] consecutive breached
+       evaluations, the first of them at least [raise_after_s] seconds before
+       the one that raises. Both conditions, never either: three bad prints
+       inside a second are not a held breach, and neither is one bad print
+       that sat on the book for a minute. An unevaluable round neither counts
+       nor resets the run; a clear one resets it. (raise_after_n 1)
+       (raise_after_s 0) is the rule before 2026-11-16: one breached
+       evaluation raises. Defaulted, so an alerts block written before the
+       words existed takes the engine's rule rather than failing to parse. *)
+    raise_after_n : int; [@sexp.default 3]
+    raise_after_s : float; [@sexp.default 30.0]
   }
   [@@deriving sexp]
 
@@ -150,20 +163,62 @@ module Alerts = struct
       clear_below = 0.95;
       kill_switch_enabled = false;
       kill_switch_trips_on = [];
+      raise_after_n = 3;
+      raise_after_s = 30.0;
     }
 
+  (* The bounds are written positively, for the reason Desk_spec gives: a nan
+     compares false against every bound, so "not (s >= 0)" refuses it where
+     "s < 0" would let it through. *)
   let validate (t : t) : unit Or_error.t =
     if not (Float.( > ) t.clear_below 0.0 && Float.( <= ) t.clear_below 1.0) then
       Or_error.errorf
         "alerts: clear_below must be in (0, 1], got %f -- it is the fraction of the \
          limit an alert must fall back inside before it is called resolved"
         t.clear_below
+    else if t.raise_after_n < 1 then
+      Or_error.errorf
+        "alerts: raise_after_n must be at least 1, got %d -- it is how many consecutive \
+         breached evaluations a limit needs before it raises"
+        t.raise_after_n
+    else if not (Float.is_finite t.raise_after_s && Float.( >= ) t.raise_after_s 0.0) then
+      Or_error.errorf
+        "alerts: raise_after_s must be a finite number of seconds, at least 0, got %g -- \
+         it is how long a breach must be held before it raises"
+        t.raise_after_s
     else if t.kill_switch_enabled && List.is_empty t.kill_switch_trips_on then
       Or_error.error_string
         "alerts: the kill switch is enabled but trips on no limits. Name the limits it \
          should act on, or disable it -- an armed switch with no trigger is a \
          configuration someone will misread."
     else Ok ()
+end
+
+(* ------------------------------------------------------------------------ *)
+(* The feed                                                                  *)
+(* ------------------------------------------------------------------------ *)
+
+(* How far a trade print may stand from its name's latest quote midpoint and
+   still become a mark (the completion spec's "debounced"; Task 1.3). A print
+   more than [max_print_deviation] from the midpoint, as a fraction of it, is
+   dropped from marks and counted (Alpaca_ws.Print_filter). With no quote, or
+   a crossed, zero or one-sided one, the print marks as it always has. The
+   midpoint is the latest quote's and quotes arrive on their own messages, so a
+   market that has moved moves its midpoint: the filter holds off a print the
+   market is not at, never a market. *)
+module Feed = struct
+  type t = { max_print_deviation : float [@sexp.default 0.05] } [@@deriving sexp]
+
+  let default = t_of_sexp (Sexp.List [])
+
+  let validate (t : t) : unit Or_error.t =
+    if Float.is_finite t.max_print_deviation && Float.( > ) t.max_print_deviation 0.0 then
+      Ok ()
+    else
+      Or_error.errorf
+        "feed: max_print_deviation must be a finite fraction above 0, got %g -- it is \
+         how far a print may stand from its quote's midpoint and still mark"
+        t.max_print_deviation
 end
 
 (* ------------------------------------------------------------------------ *)
@@ -624,6 +679,8 @@ module Book = struct
        An existing book file keeps parsing and the desk it feeds keeps its
        venue read-only. *)
     desk : Desk_spec.t; [@sexp.default Desk_spec.default] [@sexp_drop_default.sexp]
+    (* Optional, and absent means the engine's default deviation (5%). *)
+    feed : Feed.t; [@sexp.default Feed.default] [@sexp_drop_default.sexp]
     (* Optional, and absent means no intake: the desk registers no strategy and
        reads no signal file. An existing book keeps parsing unchanged. *)
     signals : Signals_spec.t option; [@sexp.option]
@@ -685,7 +742,7 @@ module Book = struct
      The order is the order the engine applies them in once the file has
      parsed: the universe (run_live's cap on the count, then the graph's two
      rules about the list), the limits (graph construction), the alerts (sink
-     construction), the desk, then the signals.
+     construction), the desk, the feed, then the signals.
 
      Every sentence below is one of two kinds. Most come from the validator that
      owns them -- Limits.validate, Alerts.validate, Desk_spec.validate and
@@ -794,6 +851,7 @@ module Book = struct
     in
     let universe = List.map t.positions ~f:(fun p -> p.Position_spec.symbol) in
     let desk_errors = Option.to_list (returned (Desk_spec.validate ~universe t.desk)) in
+    let feed_errors = Option.to_list (returned (Feed.validate t.feed)) in
     let signal_errors =
       match t.signals with
       | None -> []
@@ -813,7 +871,7 @@ module Book = struct
             ~wholes:[ whole signals.Signals_spec.strategies; whole passed ]
     in
     universe_errors @ limit_errors @ position_errors @ alert_errors @ desk_errors
-    @ signal_errors
+    @ feed_errors @ signal_errors
 
   (* The names whose book sets a staleness of its own, with it: what the graph
      takes as staleness_overrides. *)
@@ -828,6 +886,7 @@ module Book = struct
     let%bind () = Or_error.all_unit (List.map book.positions ~f:Position_spec.validate) in
     let universe = List.map book.positions ~f:(fun p -> p.Position_spec.symbol) in
     let%bind () = Desk_spec.validate ~universe book.desk in
+    let%bind () = Feed.validate book.feed in
     let%map () =
       match book.signals with
       | None -> Ok ()
@@ -897,6 +956,7 @@ module Summary = struct
        render them differently. *)
     desk : (string * string) list;
     alerts : (string * string) list;
+    feed : (string * string) list;
   }
   [@@deriving sexp_of]
 
@@ -993,6 +1053,14 @@ module Summary = struct
           ( "kill_switch_trips_on",
             if List.is_empty alerts.Alerts.kill_switch_trips_on then "(none)"
             else String.concat ~sep:" " alerts.Alerts.kill_switch_trips_on );
+          ( "raise_after",
+            sprintf "%d breached evaluations over %gs" alerts.Alerts.raise_after_n
+              alerts.Alerts.raise_after_s );
+        ];
+      feed =
+        [
+          ( "max_print_deviation",
+            sprintf "%.2f%%" (book.Book.feed.Feed.max_print_deviation *. 100.0) );
         ];
     }
 
@@ -1012,7 +1080,8 @@ module Summary = struct
     @ List.map t.limits ~f:(fun l ->
         sprintf "  %-14s %-18s %-16s %s" l.Limit_line.name l.Limit_line.scope
           l.Limit_line.kind l.Limit_line.threshold)
-    @ section "desk" @ pairs t.desk @ section "alerts" @ pairs t.alerts
+    @ section "desk" @ pairs t.desk @ section "alerts" @ pairs t.alerts @ section "feed"
+    @ pairs t.feed
     @ section
         (if List.is_empty t.strategies then
            "strategies (none: the desk registers none and reads no signal file)"

@@ -162,6 +162,12 @@ let test_book =
     { Instrument.symbol = Symbol.of_string "MSFT"; sector = Sector.of_string "TECH" };
   ]
 
+(* The deviation filter at the engine's default, with no quote yet: every
+   valid print is applied, which is what these cases predate. *)
+let filter () =
+  Alpaca.Print_filter.create
+    ~max_deviation:Config.Feed.default.Config.Feed.max_print_deviation
+
 let with_graph ~f =
   let graph =
     Graph.create ~instruments:test_book ~limits:[] ~confidence:0.95 ~return_window:10 ()
@@ -176,7 +182,10 @@ let test_apply_frame () =
            {"T":"t","S":"MSFT","p":200.0,"t":"2021-02-22T15:51:44.209Z"},
            {"T":"t","S":"AAPL","p":101.0,"t":"2021-02-22T15:51:44.210Z"}]|}
       in
-      let control = Alpaca.apply_frame ~graph ~stats (Alpaca.Message.of_frame payload) in
+      let control =
+        Alpaca.apply_frame ~graph ~stats ~filter:(filter ())
+          (Alpaca.Message.of_frame payload)
+      in
       Alcotest.(check int)
         "no control messages in a pure trade frame" 0 (List.length control);
       Alcotest.(check int) "three trades applied" 3 stats.Alpaca.Stats.trades;
@@ -207,7 +216,9 @@ let test_unknown_symbol_is_counted_not_fatal () =
         {|[{"T":"t","S":"NVDA","p":900.0,"t":"2021-02-22T15:51:44.208Z"},
            {"T":"t","S":"AAPL","p":100.0,"t":"2021-02-22T15:51:44.209Z"}]|}
       in
-      ignore (Alpaca.apply_frame ~graph ~stats (Alpaca.Message.of_frame payload));
+      ignore
+        (Alpaca.apply_frame ~graph ~stats ~filter:(filter ())
+           (Alpaca.Message.of_frame payload));
       Alcotest.(check int) "the known symbol was applied" 1 stats.Alpaca.Stats.trades;
       Alcotest.(check int)
         "the unknown one was counted" 1 stats.Alpaca.Stats.unknown_symbol;
@@ -220,7 +231,9 @@ let test_rejected_prints_are_counted () =
         {|[{"T":"t","S":"AAPL","p":-5.0,"t":"2021-02-22T15:51:44.208Z"},
            {"T":"t","S":"AAPL","p":100.0,"t":"2021-02-22T15:51:44.209Z"}]|}
       in
-      ignore (Alpaca.apply_frame ~graph ~stats (Alpaca.Message.of_frame payload));
+      ignore
+        (Alpaca.apply_frame ~graph ~stats ~filter:(filter ())
+           (Alpaca.Message.of_frame payload));
       Alcotest.(check int) "one good print applied" 1 stats.Alpaca.Stats.trades;
       Alcotest.(check int) "one bad print rejected" 1 stats.Alpaca.Stats.rejected;
       Alcotest.check feq "and the bad price never reached the graph" 100.0
@@ -230,11 +243,168 @@ let test_control_messages_are_returned () =
   with_graph ~f:(fun graph ->
       let stats = Alpaca.Stats.create () in
       let control =
-        Alpaca.apply_frame ~graph ~stats
+        Alpaca.apply_frame ~graph ~stats ~filter:(filter ())
           (Alpaca.Message.of_frame {|[{"T":"error","code":406,"msg":"connection limit"}]|})
       in
       Alcotest.(check int)
         "the error came back for the caller to act on" 1 (List.length control))
+
+(* ------------------------------------------------------------------------ *)
+(* Alpaca: quotes, and a print far from its quote (Task 1.3)                 *)
+(* ------------------------------------------------------------------------ *)
+
+let aapl = Symbol.of_string "AAPL"
+
+let quote_mid payload =
+  match single payload with
+  | Alpaca.Message.Quote { symbol; mid } ->
+      Alcotest.(check string) "the quote's symbol" "AAPL" (Symbol.to_string symbol);
+      mid
+  | other ->
+      Alcotest.failf "expected a quote, got %s"
+        (Sexp.to_string_hum (Alpaca.Message.sexp_of_t other))
+
+(* The documented quote message, with the fields this engine ignores. A
+   crossed, one-sided or zero quote has no midpoint, and counts as no quote. *)
+let test_parse_quote () =
+  Alcotest.(check (option (float 1e-9)))
+    "a two-sided quote's midpoint" (Some 100.0)
+    (quote_mid
+       {|[{"T":"q","S":"AAPL","bx":"U","bp":99.0,"bs":1,"ax":"Q","ap":101.0,"as":4,"t":"2021-02-22T15:51:45.335689322Z","c":["R"],"z":"C"}]|});
+  Alcotest.(check (option (float 1e-9)))
+    "a locked quote is a quote" (Some 100.0)
+    (quote_mid {|[{"T":"q","S":"AAPL","bp":100.0,"ap":100.0}]|});
+  List.iter
+    [
+      ("crossed", {|[{"T":"q","S":"AAPL","bp":101.0,"ap":99.0}]|});
+      ("no bid (0)", {|[{"T":"q","S":"AAPL","bp":0,"ap":101.0}]|});
+      ("no ask (0)", {|[{"T":"q","S":"AAPL","bp":99.0,"ap":0}]|});
+      ("one-sided: ask missing", {|[{"T":"q","S":"AAPL","bp":99.0}]|});
+      ("a negative bid", {|[{"T":"q","S":"AAPL","bp":-1.0,"ap":101.0}]|});
+      ("a price that is a string", {|[{"T":"q","S":"AAPL","bp":"NaN","ap":101.0}]|});
+    ]
+    ~f:(fun (name, payload) ->
+      Alcotest.(check (option (float 1e-9)))
+        (name ^ ": no midpoint") None (quote_mid payload))
+
+let trade s price =
+  sprintf {|{"T":"t","S":"AAPL","p":%g,"t":"2021-02-22T15:51:%02d.000Z"}|} price s
+
+let quote bid ask = sprintf {|{"T":"q","S":"AAPL","bp":%g,"ap":%g}|} bid ask
+let frame items = "[" ^ String.concat ~sep:"," items ^ "]"
+
+let apply graph stats filter items =
+  ignore
+    (Alpaca.apply_frame ~graph ~stats ~filter (Alpaca.Message.of_frame (frame items))
+      : Alpaca.Message.t list)
+
+let mark graph = Price.to_float (Graph.price graph aapl)
+
+let test_a_print_far_from_its_quote_is_not_a_mark () =
+  with_graph ~f:(fun graph ->
+      let stats = Alpaca.Stats.create () in
+      let filter = filter () in
+      apply graph stats filter [ trade 1 100.0; quote 99.9 100.1 ];
+      Alcotest.(check int) "one quote counted" 1 stats.Alpaca.Stats.quotes;
+      apply graph stats filter [ trade 2 106.0 ];
+      Alcotest.check feq "a print 6% off the midpoint leaves the mark" 100.0 (mark graph);
+      Alcotest.(check int) "and is counted" 1 stats.Alpaca.Stats.dropped_prints;
+      Alcotest.(check int) "but not as an applied trade" 1 stats.Alpaca.Stats.trades;
+      Alcotest.(check int) "nor as a rejected message" 0 stats.Alpaca.Stats.rejected;
+      apply graph stats filter [ trade 3 94.0 ];
+      Alcotest.check feq "6% below as well" 100.0 (mark graph);
+      Alcotest.(check int) "counted" 2 stats.Alpaca.Stats.dropped_prints;
+      apply graph stats filter [ trade 4 104.0 ];
+      Alcotest.check feq "a print 4% away is applied" 104.0 (mark graph);
+      apply graph stats filter [ trade 5 105.0 ];
+      Alcotest.check feq "exactly 5% is applied: more than 5% is dropped" 105.0
+        (mark graph);
+      Alcotest.(check int) "nothing more dropped" 2 stats.Alpaca.Stats.dropped_prints)
+
+let test_with_no_quote_the_print_is_applied () =
+  with_graph ~f:(fun graph ->
+      let stats = Alpaca.Stats.create () in
+      let filter = filter () in
+      apply graph stats filter [ trade 1 100.0 ];
+      apply graph stats filter [ trade 2 150.0 ];
+      Alcotest.check feq "no quote yet: applied" 150.0 (mark graph);
+      Alcotest.(check int) "nothing dropped" 0 stats.Alpaca.Stats.dropped_prints;
+      (* A crossed quote is no quote: it forgets the midpoint before it. *)
+      apply graph stats filter [ quote 149.0 151.0; quote 152.0 148.0; trade 3 170.0 ];
+      Alcotest.check feq "after a crossed quote: applied" 170.0 (mark graph);
+      Alcotest.(check int) "still nothing dropped" 0 stats.Alpaca.Stats.dropped_prints)
+
+(* The midpoint is the LATEST quote's, and quotes arrive on their own messages,
+   so a market that has genuinely moved moves its midpoint and its prints mark
+   again: the filter cannot starve a name. And a quote and a trade in one frame
+   are taken in order. *)
+let test_a_moved_market_moves_its_midpoint () =
+  with_graph ~f:(fun graph ->
+      let stats = Alpaca.Stats.create () in
+      let filter = filter () in
+      apply graph stats filter [ trade 1 100.0; quote 99.9 100.1; trade 2 120.0 ];
+      Alcotest.check feq "120 against a 100 midpoint: dropped" 100.0 (mark graph);
+      apply graph stats filter [ quote 119.9 120.1; trade 3 120.0 ];
+      Alcotest.check feq "the quote moved to 120: the print marks" 120.0 (mark graph);
+      Alcotest.(check int) "one dropped in all" 1 stats.Alpaca.Stats.dropped_prints)
+
+(* A print the filter would admit is still refused when it is not a price to
+   believe; and a new session forgets the last session's quotes, so a stream
+   whose quotes do not come back cannot hold its prints against a stale
+   midpoint. *)
+let test_the_filter_admits_only_real_prints () =
+  let filter = filter () in
+  let tick price =
+    { Tick.symbol = aapl; price = Price.of_float price; time = Time.epoch }
+  in
+  Alcotest.(check (list bool))
+    "nan, infinity, zero, negative: never; 100 with no quote: yes"
+    [ false; false; false; false; true ]
+    (List.map [ Float.nan; Float.infinity; 0.0; -1.0; 100.0 ] ~f:(fun p ->
+         Alpaca.Print_filter.admits filter (tick p)));
+  Alpaca.Print_filter.observe_quote filter aapl (Some 100.0);
+  Alcotest.(check bool)
+    "a quote holds 150 off" false
+    (Alpaca.Print_filter.admits filter (tick 150.0));
+  Alpaca.Print_filter.forget_quotes filter;
+  Alcotest.(check bool)
+    "forgotten: 150 marks" true
+    (Alpaca.Print_filter.admits filter (tick 150.0))
+
+(* Quotes are a second subscription, sent once the trades are in force, so a
+   plan that refuses them (405) refuses the quotes alone -- Alpaca leaves the
+   subscriptions as they were -- and the trades keep streaming unfiltered.
+   Before the trades are confirmed a 405 is the plan refusing the book, as
+   ever. *)
+let test_quotes_are_asked_for_after_the_trades () =
+  let open Alpaca in
+  let subscription = Message.Subscription {|{"T":"subscription","trades":["AAPL"]}|} in
+  Alcotest.(check bool)
+    "the trades' confirmation asks for quotes" true
+    (request_quotes ~phase:Phase.Streaming ~quotes_requested:false subscription);
+  Alcotest.(check bool)
+    "once" false
+    (request_quotes ~phase:Phase.Streaming ~quotes_requested:true subscription);
+  Alcotest.(check bool)
+    "not before streaming" false
+    (request_quotes ~phase:Phase.Awaiting_auth ~quotes_requested:false subscription);
+  Alcotest.(check string)
+    "the quotes frame" {|{"action":"subscribe","quotes":["AAPL","MSFT"]}|}
+    (quotes_frame ~symbols:[ aapl; Symbol.of_string "MSFT" ]);
+  let fatal ~quotes_requested =
+    match Failure.in_session ~quotes_requested ~code:405 ~msg:"symbol limit exceeded" with
+    | Failure.Fatal _ -> true
+    | Failure.Refused _ | Failure.Retryable _ -> false
+  in
+  Alcotest.(check bool) "405 for the book: fatal" true (fatal ~quotes_requested:false);
+  Alcotest.(check bool)
+    "405 for the quotes: the trades stream on" false
+    (fatal ~quotes_requested:true);
+  Alcotest.(check bool)
+    "another code is classified as ever" true
+    (match Failure.in_session ~quotes_requested:true ~code:402 ~msg:"" with
+    | Failure.Fatal _ -> true
+    | _ -> false)
 
 (* ------------------------------------------------------------------------ *)
 (* Alpaca: error classification                                              *)
@@ -766,6 +936,45 @@ let test_book_rejects_malformed_files () =
     {|((cash 1.0) (positions ()) (limits (((name a) (scope (Nonsense X)) (kind (Max_drawdown 0.1))))))|};
   rejected "cash is not a number" "((cash lots) (positions ()) (limits ()))"
 
+(* The deviation a print may stand from its quote: 5% unless the book says
+   otherwise, and a deviation that is not a positive number is refused at load
+   and by check-book, as the desk's words are. *)
+let test_book_feed_block () =
+  let book feed =
+    sprintf
+      {|((cash 1.0) (positions (((symbol AAPL) (sector TECH) (qty 1.0)))) (limits ()) %s)|}
+      feed
+  in
+  (match Config.Book.of_string (book "") with
+  | Error e -> Alcotest.failf "no feed block should parse: %s" (Error.to_string_hum e)
+  | Ok b ->
+      Alcotest.check feq "absent: the default 5%" 0.05
+        b.Config.Book.feed.Config.Feed.max_print_deviation);
+  Alcotest.check feq "the default is 5%" 0.05
+    Config.Feed.default.Config.Feed.max_print_deviation;
+  (match Config.Book.of_string (book "(feed ((max_print_deviation 0.02)))") with
+  | Error e -> Alcotest.failf "a feed block should parse: %s" (Error.to_string_hum e)
+  | Ok b ->
+      Alcotest.check feq "written: 2%" 0.02
+        b.Config.Book.feed.Config.Feed.max_print_deviation);
+  List.iter [ "0"; "-0.05"; "nan"; "inf" ] ~f:(fun v ->
+      let body = book (sprintf "(feed ((max_print_deviation %s)))" v) in
+      (match Config.Book.of_string body with
+      | Ok _ -> Alcotest.failf "max_print_deviation %s should be refused at load" v
+      | Error e ->
+          Alcotest.(check bool)
+            (sprintf "%s: the refusal names the word" v)
+            true
+            (String.is_substring (Error.to_string_hum e) ~substring:"max_print_deviation"));
+      match Config.Book.parse body with
+      | Error _ -> Alcotest.failf "%s should parse before it is validated" v
+      | Ok b ->
+          Alcotest.(check bool)
+            (sprintf "%s: check-book lists it" v)
+            true
+            (List.exists (Config.Book.errors b) ~f:(fun s ->
+                 String.is_substring s ~substring:"max_print_deviation")))
+
 (* The feed's own counters, on the wire.
 
    Two rules, and they are the wire rules the snapshot already follows. An
@@ -794,11 +1003,20 @@ let test_alpaca_stats_json () =
      assertion below it would still pass. *)
   let expected_keys =
     List.sort ~compare:String.compare
-      [ "frames"; "trades"; "rejected"; "unknown_symbol"; "reconnects"; "last_error" ]
+      [
+        "frames";
+        "trades";
+        "quotes";
+        "rejected";
+        "dropped_prints";
+        "unknown_symbol";
+        "reconnects";
+        "last_error";
+      ]
   in
   let fresh = Ohcamel.Alpaca_ws.Stats.to_json s in
   Alcotest.(check (list string))
-    "alpaca: exactly six keys, fresh" expected_keys (keys fresh);
+    "alpaca: exactly eight keys, fresh" expected_keys (keys fresh);
   Alcotest.(check bool)
     "a socket that has never errored says null, not \"\"" true
     (match field fresh "last_error" with `Null -> true | _ -> false);
@@ -827,10 +1045,12 @@ let test_alpaca_stats_json () =
   s.Ohcamel.Alpaca_ws.Stats.rejected <- 3;
   s.Ohcamel.Alpaca_ws.Stats.unknown_symbol <- 5;
   s.Ohcamel.Alpaca_ws.Stats.reconnects <- 2;
+  s.Ohcamel.Alpaca_ws.Stats.quotes <- 13;
+  s.Ohcamel.Alpaca_ws.Stats.dropped_prints <- 17;
   s.Ohcamel.Alpaca_ws.Stats.last_error <- Some "connection reset";
   let used = Ohcamel.Alpaca_ws.Stats.to_json s in
   Alcotest.(check (list string))
-    "alpaca: exactly six keys, mutated" expected_keys (keys used);
+    "alpaca: exactly eight keys, mutated" expected_keys (keys used);
   Alcotest.(check int)
     "frames" 7
     (match field used "frames" with `Int n -> n | _ -> Alcotest.fail "frames");
@@ -848,6 +1068,14 @@ let test_alpaca_stats_json () =
   Alcotest.(check int)
     "reconnects" 2
     (match field used "reconnects" with `Int n -> n | _ -> Alcotest.fail "reconnects");
+  Alcotest.(check int)
+    "quotes" 13
+    (match field used "quotes" with `Int n -> n | _ -> Alcotest.fail "quotes");
+  Alcotest.(check int)
+    "dropped_prints" 17
+    (match field used "dropped_prints" with
+    | `Int n -> n
+    | _ -> Alcotest.fail "dropped_prints");
   Alcotest.(check string)
     "the last reason survives" "connection reset"
     (match field used "last_error" with `String e -> e | _ -> "?")
@@ -1100,10 +1328,10 @@ let test_poll_applies_a_repeated_trade_once () =
       let aapl = Symbol.of_string "AAPL" in
       Alcotest.(check int)
         "first poll marks one" 1
-        (Ohcamel.Alpaca_poll.apply ~graph ~stats answer);
+        (Ohcamel.Alpaca_poll.apply ~graph ~stats ~filter:(filter ()) answer);
       Alcotest.(check int)
         "second poll marks none" 0
-        (Ohcamel.Alpaca_poll.apply ~graph ~stats answer);
+        (Ohcamel.Alpaca_poll.apply ~graph ~stats ~filter:(filter ()) answer);
       Alcotest.(check int) "one trade counted" 1 stats.Alpaca.Stats.trades;
       Alcotest.check feq "AAPL at 150.25" 150.25 (Price.to_float (Graph.price graph aapl));
       Alcotest.(check (option string))
@@ -1139,6 +1367,18 @@ let suite =
         test_rejected_prints_are_counted;
       Alcotest.test_case "alpaca: control messages reach the caller" `Quick
         test_control_messages_are_returned;
+      Alcotest.test_case "alpaca: a documented quote message, and no-quote cases" `Quick
+        test_parse_quote;
+      Alcotest.test_case "alpaca: a print far from its quote is not a mark" `Quick
+        test_a_print_far_from_its_quote_is_not_a_mark;
+      Alcotest.test_case "alpaca: with no quote the print is applied" `Quick
+        test_with_no_quote_the_print_is_applied;
+      Alcotest.test_case "alpaca: a moved market moves its midpoint" `Quick
+        test_a_moved_market_moves_its_midpoint;
+      Alcotest.test_case "alpaca: the filter admits only real prints" `Quick
+        test_the_filter_admits_only_real_prints;
+      Alcotest.test_case "alpaca: quotes are asked for after the trades" `Quick
+        test_quotes_are_asked_for_after_the_trades;
       Alcotest.test_case "alpaca: fatal errors are distinguished from retryable" `Quick
         test_failure_classification;
       Alcotest.test_case "alpaca: backoff schedule, capped and overflow-free" `Quick
@@ -1194,4 +1434,6 @@ let suite =
         test_book_parsing;
       Alcotest.test_case "book: malformed files are rejected" `Quick
         test_book_rejects_malformed_files;
+      Alcotest.test_case "book: the feed block and its deviation" `Quick
+        test_book_feed_block;
     ] )

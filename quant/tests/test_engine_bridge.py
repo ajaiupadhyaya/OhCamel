@@ -256,11 +256,29 @@ def test_vitals_copy_numbers_and_nothing_else():
     body = r.json()
     assert body["stabilize_ms"] == {"n": 4096, "p50": 0.03, "p99": 0.4, "max": 1.2, "window": 4096}
     assert body["process"] == {"nodes_recomputed": 9000, "stabilizes": 400}
-    assert body["feed"] == {"healthy": True, "symbols": 1, "stale": 0, "never_seen": 0}
+    assert body["feed"] == {"healthy": True, "symbols": 1, "stale": 0, "never_seen": 0, "dropped_prints": None}
     assert body["mode"] == "live" and body["git_sha"] == "abc1234" and body["uptime_s"] == 1234
     assert body["reachable"] is True and body["book_public"] is False
     for private in ("AAPL", "exposure", "hostname", "a1b2c3d4", "kill_switch"):
         assert private not in r.text
+
+
+@respx.mock
+def test_vitals_carry_the_dropped_print_count_and_nothing_else_of_the_socket():
+    # The feed's count of prints held off the mark for standing too far from their
+    # quote (Task 1.3): a bare count, copied from feed_source.alpaca by name; the
+    # socket's last_error is a sentence and stays behind.
+    ops = {**OPS, "feed_source": {"kind": "alpaca", "alpaca_feed": "iex",
+                                  "alpaca": {"dropped_prints": 4, "quotes": 900, "last_error": "AAPL 405"}}}
+    respx.get(f"{ENGINE}/api/ops").mock(return_value=httpx.Response(200, json=ops))
+    r = _client(ENGINE, book_public=False).get("/api/engine/vitals")
+    assert r.status_code == 200
+    assert r.json()["feed"]["dropped_prints"] == 4
+    assert "AAPL" not in r.text and "quotes" not in r.text and "iex" not in r.text
+    bad = {**OPS, "feed_source": {"alpaca": {"dropped_prints": "AAPL"}}}
+    engine_mod._cache.clear()
+    respx.get(f"{ENGINE}/api/ops").mock(return_value=httpx.Response(200, json=bad))
+    assert _client(ENGINE, book_public=False).get("/api/engine/vitals").json()["feed"]["dropped_prints"] is None
 
 
 @respx.mock

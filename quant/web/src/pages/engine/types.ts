@@ -121,7 +121,14 @@ export interface EngineVitals extends Envelope {
   uptime_s: number | null;
   stabilize_ms: { n: number | null; p50: number | null; p99: number | null; max: number | null; window: number | null };
   process: { nodes_recomputed: number | null; stabilizes: number | null };
-  feed: { healthy: boolean | null; symbols: number | null; stale: number | null; never_seen: number | null };
+  feed: {
+    healthy: boolean | null;
+    symbols: number | null;
+    stale: number | null;
+    never_seen: number | null;
+    /** Prints held off the mark for standing too far from their quote: a bare count, null on a synthetic feed. */
+    dropped_prints: number | null;
+  };
 }
 
 export interface GraphNode {

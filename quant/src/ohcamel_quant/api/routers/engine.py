@@ -44,7 +44,8 @@ warms up -- never a zero standing in for it):
 ``GET /api/ops`` (subset used here): ``mode`` ("demo" | "live"), ``uptime_s``,
 ``build`` {``git_sha``, ``built_at``}, ``feed`` {``healthy``, ``symbols``,
 ``stale``, ``never_seen``, ...}, ``stream`` {``frames_sent``,
-``subscribers``, ...}. It deliberately carries no symbol names.
+``subscribers``, ...}, ``feed_source`` {``alpaca`` {``dropped_prints``, ...} |
+null}. It deliberately carries no symbol names.
 
 ``GET /api/snapshot`` -> ``json_of_snapshot``::
 
@@ -264,7 +265,8 @@ async def vitals(
     book_public: Annotated[bool, Depends(get_book_public)],
 ) -> Any:
     """How the live engine is running, with no book data: stabilize latency, the
-    process's counters, the feed's counts, mode and build.
+    process's counters, the feed's counts (with the prints it dropped from marks,
+    from ``feed_source.alpaca.dropped_prints``), mode and build.
 
     Every field is copied by name and checked for type, so this can only ever
     carry numbers, the two engine modes and a commit hash. 503 when unset or
@@ -280,6 +282,8 @@ async def vitals(
     sha = build.get("git_sha") if isinstance(build, dict) else None
     feed = body.get("feed") if isinstance(body.get("feed"), dict) else {}
     healthy = feed.get("healthy")
+    source = body.get("feed_source") if isinstance(body.get("feed_source"), dict) else {}
+    alpaca = source.get("alpaca") if isinstance(source.get("alpaca"), dict) else {}
     return {
         "configured": True,
         "reachable": True,
@@ -293,6 +297,10 @@ async def vitals(
         "feed": {
             "healthy": healthy if isinstance(healthy, bool) else None,
             **_numbers(feed, ("symbols", "stale", "never_seen")),
+            # Prints the engine held off the mark for standing more than its
+            # deviation from their quote's midpoint: a bare count, null on the
+            # synthetic feed, which has no quotes.
+            "dropped_prints": _number(alpaca.get("dropped_prints")),
         },
         "provenance": [_provenance(ENGINE_PATHS["ops"], fetched_at, mode)],
         "notes": _mode_notes(mode),

@@ -544,7 +544,12 @@ let with_alerts ~f () =
               clear_below = 0.95;
               kill_switch_enabled = true;
               kill_switch_trips_on = [ "aapl-cap" ];
+              (* One breached stabilize raises: this fixture is about the
+                 wire, and drives one. *)
+              raise_after_n = 1;
+              raise_after_s = 0.0;
             }
+          ()
       with
       | Error e -> Alcotest.failf "attach: %s" (Error.to_string_hum e)
       | Ok None -> Alcotest.fail "an enabled config must produce a notifier"

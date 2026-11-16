@@ -63,7 +63,7 @@ let with_oms_graph ?(book_is_current = true) ?(now = Time_ns.now) ?(extra_limits
          to the manager as bin/main.ml wires them. *)
       let alerts =
         Option.bind alerts ~f:(fun config ->
-            Or_error.ok_exn (Ohcamel.Alerts.attach ~graph ~config))
+            Or_error.ok_exn (Ohcamel.Alerts.attach ~graph ~config ()))
       in
       let venue =
         D.Sim_venue.create ~opened_at:(Time_ns.now ())
@@ -245,6 +245,10 @@ let test_a_restart_inside_the_hysteresis_band_comes_back_tripped () =
       sinks = [];
       kill_switch_enabled = true;
       kill_switch_trips_on = [ "aapl-cap" ];
+      (* One breached evaluation trips: these cases drive one
+         stabilize to a breach (test_alerts.ml tests the held rule). *)
+      raise_after_n = 1;
+      raise_after_s = 0.0;
     }
   in
   with_oms_graph ~alerts:config
@@ -263,7 +267,7 @@ let test_a_restart_inside_the_hysteresis_band_comes_back_tripped () =
         (name (D.Oms.halt oms));
       let restart () =
         let alerts =
-          Option.value_exn (Or_error.ok_exn (Ohcamel.Alerts.attach ~graph ~config))
+          Option.value_exn (Or_error.ok_exn (Ohcamel.Alerts.attach ~graph ~config ()))
         in
         Ohcamel.Alerts.hold alerts;
         Ohcamel.Alerts.release alerts ~graph;
@@ -298,6 +302,10 @@ let aapl_cap_alerts =
     sinks = [];
     kill_switch_enabled = true;
     kill_switch_trips_on = [ "aapl-cap" ];
+    (* One breached evaluation trips: these cases drive one
+       stabilize to a breach (test_alerts.ml tests the held rule). *)
+    raise_after_n = 1;
+    raise_after_s = 0.0;
   }
 
 let standing journal = Option.map (D.Journal.standing_trip journal) ~f:fst
@@ -312,7 +320,7 @@ let test_a_trip_at_the_first_sync_is_journaled_before_the_manager_is_wired () =
     ~f:(fun graph _oms journal ->
       let alerts =
         Option.value_exn
-          (Or_error.ok_exn (Ohcamel.Alerts.attach ~graph ~config:aapl_cap_alerts))
+          (Or_error.ok_exn (Ohcamel.Alerts.attach ~graph ~config:aapl_cap_alerts ()))
       in
       Ohcamel.Alerts.hold alerts;
       D.Oms.journal_trips ~journal ~on_event:ignore alerts;
@@ -330,7 +338,7 @@ let test_watch_alerts_journals_a_trip_that_came_before_it () =
     ~f:(fun graph oms journal ->
       let alerts =
         Option.value_exn
-          (Or_error.ok_exn (Ohcamel.Alerts.attach ~graph ~config:aapl_cap_alerts))
+          (Or_error.ok_exn (Ohcamel.Alerts.attach ~graph ~config:aapl_cap_alerts ()))
       in
       Graph.set_qty graph aapl (Qty.of_float 600.0);
       Graph.stabilize graph;

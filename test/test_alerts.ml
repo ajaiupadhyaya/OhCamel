@@ -39,7 +39,13 @@ let evaluated ?(limit = cap) observed =
 
 let unevaluated ?(limit = cap) () = (limit, None)
 let kinds events = List.map events ~f:(fun e -> e.Alerts.Event.kind)
-let tracker ?(clear_below = 0.95) () = Alerts.Tracker.create ~clear_below
+
+(* One breached evaluation raises, as it did before Task 1.3: the cases below
+   test edge detection and hysteresis, which the held-breach rule does not
+   change, so they run with the rule set to its one-evaluation form. The rule
+   itself is tested with the engine's defaults further down. *)
+let tracker ?(clear_below = 0.95) ?(raise_after_n = 1) ?(raise_after_s = 0.0) () =
+  Alerts.Tracker.create ~clear_below ~raise_after_n ~raise_after_s
 
 (* ------------------------------------------------------------------------ *)
 (* Edge triggering                                                           *)
@@ -147,6 +153,140 @@ let test_limits_are_independent () =
   Alcotest.(check bool) "the other is not firing" false (Alerts.Tracker.firing t "dd-cap")
 
 (* ------------------------------------------------------------------------ *)
+(* A held breach, not one print (Task 1.3)                                   *)
+(* ------------------------------------------------------------------------ *)
+
+(* The engine's defaults: three consecutive breached evaluations, the first
+   at least thirty seconds before the one that raises. Both, not either. *)
+let held () =
+  let d = Config.Alerts.default in
+  tracker ~raise_after_n:d.Config.Alerts.raise_after_n
+    ~raise_after_s:d.Config.Alerts.raise_after_s ()
+
+let at_s s = Time.add Time.epoch (Time.Span.of_sec s)
+
+(* Steps [t] through [(seconds, evaluation)] and returns the events of each. *)
+let run t steps =
+  List.map steps ~f:(fun (s, evaluation) ->
+      Alerts.Tracker.step t ~at:(at_s s) [ evaluation ])
+
+let counts events = List.map events ~f:List.length
+
+let test_defaults_are_three_over_thirty () =
+  let d = Config.Alerts.default in
+  Alcotest.(check int) "three evaluations" 3 d.Config.Alerts.raise_after_n;
+  Alcotest.(check (float 0.0)) "thirty seconds" 30.0 d.Config.Alerts.raise_after_s
+
+let test_one_breached_evaluation_raises_nothing () =
+  let t = held () in
+  Alcotest.(check (list int))
+    "one bad print: silent" [ 0 ]
+    (counts (run t [ (0.0, evaluated 150.0) ]));
+  Alcotest.(check bool) "and not firing" false (Alerts.Tracker.firing t "aapl-cap")
+
+let test_three_within_ten_seconds_raise_nothing () =
+  let t = held () in
+  Alcotest.(check (list int))
+    "three breached evaluations over 10 s: silent" [ 0; 0; 0 ]
+    (counts
+       (run t [ (0.0, evaluated 150.0); (5.0, evaluated 151.0); (10.0, evaluated 152.0) ]));
+  Alcotest.(check bool) "not firing" false (Alerts.Tracker.firing t "aapl-cap")
+
+let test_three_spanning_thirty_one_seconds_raise_once () =
+  let t = held () in
+  let events =
+    run t
+      [
+        (0.0, evaluated 150.0);
+        (15.0, evaluated 151.0);
+        (31.0, evaluated 152.0);
+        (40.0, evaluated 153.0);
+        (90.0, evaluated 154.0);
+      ]
+  in
+  Alcotest.(check (list int))
+    "raised at the third, once" [ 0; 0; 1; 0; 0 ] (counts events);
+  Alcotest.(check bool)
+    "a Raised event" true
+    (match List.nth_exn events 2 with
+    | [ e ] -> Alerts.Event.equal_kind e.Alerts.Event.kind Alerts.Event.Raised
+    | _ -> false);
+  Alcotest.(check bool) "firing" true (Alerts.Tracker.firing t "aapl-cap")
+
+(* Both conditions: thirty seconds held over two evaluations is not three. *)
+let test_time_alone_is_not_enough () =
+  let t = held () in
+  Alcotest.(check (list int))
+    "two evaluations 40 s apart: silent" [ 0; 0 ]
+    (counts (run t [ (0.0, evaluated 150.0); (40.0, evaluated 151.0) ]));
+  Alcotest.(check (list int))
+    "the third raises, the first still the start" [ 1 ]
+    (counts (run t [ (41.0, evaluated 152.0) ]))
+
+let test_a_clear_evaluation_restarts_the_count () =
+  let t = held () in
+  Alcotest.(check (list int))
+    "breach, clear, then three breaches over 19 s: silent" [ 0; 0; 0; 0; 0 ]
+    (counts
+       (run t
+          [
+            (0.0, evaluated 150.0);
+            (15.0, evaluated 90.0);
+            (31.0, evaluated 150.0);
+            (40.0, evaluated 150.0);
+            (50.0, evaluated 150.0);
+          ]));
+  Alcotest.(check (list int))
+    "thirty-one seconds after the restart it raises" [ 1 ]
+    (counts (run t [ (62.0, evaluated 150.0) ]))
+
+(* "I cannot tell" neither advances the count nor resets it: an unevaluable
+   round is not a breached evaluation, and a flapping input must not hold a
+   real breach off forever. *)
+let test_an_unevaluable_round_neither_counts_nor_resets () =
+  let t = held () in
+  Alcotest.(check (list int))
+    "breach, no data, breach at 31 s: two evaluations, silent" [ 0; 0; 0 ]
+    (counts
+       (run t [ (0.0, evaluated 150.0); (15.0, unevaluated ()); (31.0, evaluated 150.0) ]));
+  Alcotest.(check (list int))
+    "the third breached evaluation raises, timed from the first" [ 1 ]
+    (counts (run t [ (32.0, evaluated 150.0) ]))
+
+(* n <= 1 and no time: exactly the old rule, one evaluation raises. n = 0 is
+   refused by the config, and a tracker given one treats it as 1. *)
+let test_one_evaluation_and_no_time_is_the_old_rule () =
+  List.iter [ 0; 1 ] ~f:(fun n ->
+      let t = tracker ~raise_after_n:n ~raise_after_s:0.0 () in
+      Alcotest.(check (list int))
+        (sprintf "n = %d: the first breach raises" n)
+        [ 1; 0 ]
+        (counts (run t [ (0.0, evaluated 150.0); (1.0, evaluated 151.0) ])))
+
+(* The recheck re-reads the graph's standing evaluation on the clock: it raises
+   a breach that has met its count and is waiting only on time, and it never
+   counts as an evaluation itself -- so a single print the market never moved
+   off is still one evaluation. *)
+let test_recheck_raises_on_time_and_never_counts () =
+  let t = held () in
+  ignore
+    (run t [ (0.0, evaluated 150.0); (5.0, evaluated 151.0); (10.0, evaluated 152.0) ]);
+  Alcotest.(check int)
+    "recheck at 20 s: not yet thirty" 0
+    (List.length (Alerts.Tracker.recheck t ~at:(at_s 20.0) [ evaluated 152.0 ]));
+  Alcotest.(check int)
+    "recheck at 31 s: raised" 1
+    (List.length (Alerts.Tracker.recheck t ~at:(at_s 31.0) [ evaluated 152.0 ]));
+  let single = held () in
+  ignore (run single [ (0.0, evaluated 150.0) ]);
+  List.iter [ 31.0; 62.0; 93.0 ] ~f:(fun s ->
+      Alcotest.(check int)
+        (sprintf "one print, recheck at %.0f s: silent" s)
+        0
+        (List.length (Alerts.Tracker.recheck single ~at:(at_s s) [ evaluated 150.0 ])));
+  Alcotest.(check bool) "never firing" false (Alerts.Tracker.firing single "aapl-cap")
+
+(* ------------------------------------------------------------------------ *)
 (* Rendering                                                                 *)
 (* ------------------------------------------------------------------------ *)
 
@@ -190,13 +330,19 @@ let test_slack_payload_shape () =
 (* The kill switch                                                           *)
 (* ------------------------------------------------------------------------ *)
 
-let alerts_config ?(enabled = true) ?(kill = false) ?(trips_on = []) () =
+(* One breached evaluation raises here unless a test says otherwise: these
+   cases are about the switch and the notifier's wiring, and each drives one
+   stabilize to a breach. *)
+let alerts_config ?(enabled = true) ?(kill = false) ?(trips_on = []) ?(raise_after_n = 1)
+    ?(raise_after_s = 0.0) () =
   {
     Config.Alerts.enabled;
     sinks = [ Config.Alerts.Sink.Dry_run ];
     clear_below = 0.95;
     kill_switch_enabled = kill;
     kill_switch_trips_on = trips_on;
+    raise_after_n;
+    raise_after_s;
   }
 
 let raised observed =
@@ -299,6 +445,17 @@ let test_config_validation () =
      misread as protection. *)
   invalid "kill switch armed with no triggers"
     { Config.Alerts.default with kill_switch_enabled = true };
+  invalid "raise_after_n of zero" { Config.Alerts.default with raise_after_n = 0 };
+  invalid "negative raise_after_n" { Config.Alerts.default with raise_after_n = -2 };
+  invalid "negative raise_after_s" { Config.Alerts.default with raise_after_s = -1.0 };
+  invalid "nan raise_after_s" { Config.Alerts.default with raise_after_s = Float.nan };
+  invalid "infinite raise_after_s"
+    { Config.Alerts.default with raise_after_s = Float.infinity };
+  Alcotest.(check bool)
+    "one evaluation and no time is a sane config" true
+    (Or_error.is_ok
+       (Config.Alerts.validate
+          { Config.Alerts.default with raise_after_n = 1; raise_after_s = 0.0 }));
   Alcotest.(check bool)
     "a sane config passes" true
     (Or_error.is_ok
@@ -315,7 +472,7 @@ let test_attach_is_off_by_default () =
   in
   Exn.protect
     ~f:(fun () ->
-      match Alerts.attach ~graph ~config:Config.Alerts.default with
+      match Alerts.attach ~graph ~config:Config.Alerts.default () with
       | Ok None -> ()
       | Ok (Some _) -> Alcotest.fail "the default config must not produce a notifier"
       | Error e -> Alcotest.failf "unexpected error: %s" (Error.to_string_hum e))
@@ -356,7 +513,81 @@ let test_book_with_alerts_parses () =
       Alcotest.(check int) "two sinks" 2 (List.length a.Config.Alerts.sinks);
       Alcotest.(check (float 1e-9)) "clear_below" 0.9 a.Config.Alerts.clear_below;
       Alcotest.(check (list string))
-        "trips on" [ "dd-cap" ] a.Config.Alerts.kill_switch_trips_on
+        "trips on" [ "dd-cap" ] a.Config.Alerts.kill_switch_trips_on;
+      Alcotest.(check int)
+        "an alerts block without the rule takes its default count" 3
+        a.Config.Alerts.raise_after_n;
+      Alcotest.(check (float 0.0))
+        "and its default time" 30.0 a.Config.Alerts.raise_after_s
+
+let test_book_with_raise_after_parses () =
+  let sexp =
+    {|((cash 1000.0)
+       (positions (((symbol AAPL) (sector TECH) (qty 1.0))))
+       (limits ())
+       (alerts ((enabled true) (sinks (Log)) (clear_below 0.9)
+                (kill_switch_enabled false) (kill_switch_trips_on ())
+                (raise_after_n 5) (raise_after_s 60.0))))|}
+  in
+  match Config.Book.of_string sexp with
+  | Error e -> Alcotest.failf "should parse: %s" (Error.to_string_hum e)
+  | Ok book ->
+      let a = book.Config.Book.alerts in
+      Alcotest.(check int) "raise_after_n" 5 a.Config.Alerts.raise_after_n;
+      Alcotest.(check (float 0.0)) "raise_after_s" 60.0 a.Config.Alerts.raise_after_s
+
+(* The notifier, the switch and its trip handler on the engine's defaults,
+   with the clock injected: one breached stabilize trips nothing; the breach
+   held over three evaluations spanning 31 s trips it once, and [on_trip]
+   hears it once. *)
+let test_the_switch_trips_on_a_held_breach () =
+  let graph =
+    Graph.create
+      ~instruments:[ { Instrument.symbol = aapl; sector = tech } ]
+      ~limits:[ cap ] ~confidence:0.95 ~return_window:10 ()
+  in
+  let clock = ref 0.0 in
+  Exn.protect
+    ~finally:(fun () -> Graph.destroy graph)
+    ~f:(fun () ->
+      let d = Config.Alerts.default in
+      match
+        Alerts.attach
+          ~now:(fun () -> at_s !clock)
+          ~graph
+          ~config:
+            (alerts_config ~kill:true ~trips_on:[ "aapl-cap" ]
+               ~raise_after_n:d.Config.Alerts.raise_after_n
+               ~raise_after_s:d.Config.Alerts.raise_after_s ())
+          ()
+      with
+      | Error e -> Alcotest.failf "attach: %s" (Error.to_string_hum e)
+      | Ok None -> Alcotest.fail "an enabled config must produce a notifier"
+      | Ok (Some a) ->
+          let trips = ref 0 in
+          Alerts.on_trip a ~f:(fun _ -> Int.incr trips);
+          Graph.set_qty graph aapl (Qty.of_float 1.0);
+          let mark s price =
+            clock := s;
+            Graph.set_price graph aapl (Price.of_float price);
+            Graph.stabilize graph
+          in
+          mark 0.0 150.0;
+          Alcotest.(check (pair bool int))
+            "one breached print: not tripped" (false, 0)
+            (Alerts.halted a, !trips);
+          mark 10.0 151.0;
+          mark 20.0 152.0;
+          Alcotest.(check (pair bool int))
+            "three in 20 s: not tripped" (false, 0)
+            (Alerts.halted a, !trips);
+          clock := 31.0;
+          Alerts.recheck a ~graph;
+          Alcotest.(check (pair bool int))
+            "the recheck at 31 s trips it, once" (true, 1)
+            (Alerts.halted a, !trips);
+          mark 40.0 153.0;
+          Alcotest.(check int) "and only once" 1 !trips)
 
 (* What the wire could not say before.
 
@@ -378,6 +609,7 @@ let test_firing_and_tripped_at_are_readable () =
       match
         Alerts.attach ~graph
           ~config:(alerts_config ~kill:true ~trips_on:[ "aapl-cap" ] ())
+          ()
       with
       | Error e -> Alcotest.failf "attach: %s" (Error.to_string_hum e)
       | Ok None -> Alcotest.fail "an enabled config must produce a notifier"
@@ -442,6 +674,7 @@ let test_nothing_is_evaluated_until_the_book_is_ready () =
         match
           Alerts.attach ~graph
             ~config:(alerts_config ~kill:true ~trips_on:[ "aapl-cap" ] ())
+            ()
         with
         | Error e -> Alcotest.failf "attach: %s" (Error.to_string_hum e)
         | Ok None -> Alcotest.fail "an enabled config must produce a notifier"
@@ -486,6 +719,24 @@ let suite =
         test_unevaluated_from_quiet_is_quiet;
       Alcotest.test_case "limits are tracked independently" `Quick
         test_limits_are_independent;
+      Alcotest.test_case "the held-breach defaults are three over thirty" `Quick
+        test_defaults_are_three_over_thirty;
+      Alcotest.test_case "one breached evaluation raises nothing" `Quick
+        test_one_breached_evaluation_raises_nothing;
+      Alcotest.test_case "three breached evaluations within 10 s raise nothing" `Quick
+        test_three_within_ten_seconds_raise_nothing;
+      Alcotest.test_case "three spanning 31 s raise once" `Quick
+        test_three_spanning_thirty_one_seconds_raise_once;
+      Alcotest.test_case "time held over two evaluations is not enough" `Quick
+        test_time_alone_is_not_enough;
+      Alcotest.test_case "a clear evaluation restarts the count" `Quick
+        test_a_clear_evaluation_restarts_the_count;
+      Alcotest.test_case "an unevaluable round neither counts nor resets" `Quick
+        test_an_unevaluable_round_neither_counts_nor_resets;
+      Alcotest.test_case "one evaluation and no time is the old rule" `Quick
+        test_one_evaluation_and_no_time_is_the_old_rule;
+      Alcotest.test_case "the recheck raises on time and never counts" `Quick
+        test_recheck_raises_on_time_and_never_counts;
       Alcotest.test_case "units survive into the message" `Quick test_units_in_messages;
       Alcotest.test_case "slack payload shape" `Quick test_slack_payload_shape;
       Alcotest.test_case "the kill switch is off by default" `Quick
@@ -502,6 +753,10 @@ let suite =
         test_book_without_alerts_is_inert;
       Alcotest.test_case "a book with an alerts block parses" `Quick
         test_book_with_alerts_parses;
+      Alcotest.test_case "a book with the held-breach rule parses" `Quick
+        test_book_with_raise_after_parses;
+      Alcotest.test_case "the switch trips on a held breach, not one print" `Quick
+        test_the_switch_trips_on_a_held_breach;
       Alcotest.test_case "firing limits and the trip time are readable" `Quick
         test_firing_and_tripped_at_are_readable;
       Alcotest.test_case "nothing is evaluated until the book is ready" `Quick

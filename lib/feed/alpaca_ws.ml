@@ -104,6 +104,10 @@ module Message = struct
      would make the feed brittle against a routine vendor release. *)
   type t =
     | Trade of Types.Tick.t
+    (* A quote's midpoint, or None when the quote has none to give: crossed,
+       a side missing or zero, or a price that is not a number. None is a
+       quote the deviation filter treats as no quote (Print_filter). *)
+    | Quote of { symbol : Types.Symbol.t; mid : float option }
     | Success of string
     | Subscription of string
     | Error of { code : int; msg : string }
@@ -170,8 +174,31 @@ module Message = struct
           }
     | _ -> None
 
+  (* The midpoint of a bid and an ask, when the pair is a quote: both prices
+     to believe and the ask at or above the bid. A locked quote (ask = bid) is
+     one; a crossed one is not -- one of its sides is wrong, and the filter
+     cannot tell which. Alpaca writes 0 for an absent side. *)
+  let quote_mid ~(bid : float option) ~(ask : float option) : float option =
+    match (bid, ask) with
+    | Some bid, Some ask when valid_price bid && valid_price ask && Float.( >= ) ask bid
+      ->
+        Some ((bid +. ask) /. 2.0)
+    | _ -> None
+
   let of_json (json : Yojson.Safe.t) : t =
     match to_string_opt (member "T" json) with
+    | Some "q" -> (
+        match to_string_opt (member "S" json) with
+        | Some symbol when not (String.is_empty symbol) ->
+            Quote
+              {
+                symbol = Types.Symbol.of_string symbol;
+                mid =
+                  quote_mid
+                    ~bid:(to_float_opt (member "bp" json))
+                    ~ask:(to_float_opt (member "ap" json));
+              }
+        | _ -> Other (Yojson.Safe.to_string json))
     | Some "t" -> (
         match
           Option.bind
@@ -254,6 +281,24 @@ module Failure = struct
          ^ " -- the server considers this client too slow. If it recurs, the graph is \
             taking too long per frame.")
     | _ -> Retryable detail
+
+  (* A code as it arrives inside a session. The quotes are a second
+     subscription, asked for once the trades' is confirmed (see
+     [request_quotes]), so a 405 after that is the plan refusing the QUOTES:
+     Alpaca leaves the subscriptions as they were before a refused request, the
+     trades stream on, and the deviation filter has no quote and marks every
+     print as it always has. Retryable in that sense -- the session goes on and
+     the sentence is kept in last_error. Every other code, and a 405 before
+     the quotes were asked for, reads as [of_code]. *)
+  let in_session ~quotes_requested ~code ~msg =
+    match code with
+    | 405 when quotes_requested ->
+        Retryable
+          (sprintf
+             "alpaca: error 405 (%s) -- the quotes subscription was refused; the trades \
+              stream on, and their prints mark without the deviation filter"
+             msg)
+    | _ -> of_code ~code ~msg
 end
 
 (* ------------------------------------------------------------------------ *)
@@ -271,7 +316,15 @@ module Stats = struct
   type t = {
     mutable frames : int;
     mutable trades : int;
+    (* Quotes taken, two-sided or not: the evidence the deviation filter has
+       something to compare against. *)
+    mutable quotes : int;
     mutable rejected : int;
+    (* Valid prints the deviation filter held off the mark: more than
+       Config.Feed.max_print_deviation from their quote's midpoint. Not
+       [rejected], which is a message this module could not believe at all;
+       these are prices it believed and judged not to be where the market is. *)
+    mutable dropped_prints : int;
     mutable unknown_symbol : int;
     mutable reconnects : int;
     mutable last_error : string option;
@@ -281,15 +334,19 @@ module Stats = struct
     {
       frames = 0;
       trades = 0;
+      quotes = 0;
       rejected = 0;
+      dropped_prints = 0;
       unknown_symbol = 0;
       reconnects = 0;
       last_error = None;
     }
 
   let to_string t =
-    sprintf "frames=%d trades=%d rejected=%d unknown_symbol=%d reconnects=%d%s" t.frames
-      t.trades t.rejected t.unknown_symbol t.reconnects
+    sprintf
+      "frames=%d trades=%d quotes=%d rejected=%d dropped_prints=%d unknown_symbol=%d \
+       reconnects=%d%s"
+      t.frames t.trades t.quotes t.rejected t.dropped_prints t.unknown_symbol t.reconnects
       (match t.last_error with None -> "" | Some e -> sprintf " last_error=%S" e)
 
   (* The same counters as [to_string], for /api/ops rather than for a log line.
@@ -305,11 +362,60 @@ module Stats = struct
       [
         ("frames", `Int t.frames);
         ("trades", `Int t.trades);
+        ("quotes", `Int t.quotes);
         ("rejected", `Int t.rejected);
+        ("dropped_prints", `Int t.dropped_prints);
         ("unknown_symbol", `Int t.unknown_symbol);
         ("reconnects", `Int t.reconnects);
         ("last_error", match t.last_error with None -> `Null | Some e -> `String e);
       ]
+end
+
+(* ------------------------------------------------------------------------ *)
+(* A print far from its quote                                                *)
+(* ------------------------------------------------------------------------ *)
+
+(* Each name's latest quote midpoint, and the deviation a print may stand
+   from it and still mark (Config.Feed.max_print_deviation; the completion
+   spec's "debounced", Task 1.3).
+
+   A print more than [max_deviation] from the midpoint -- |p - mid| / mid,
+   strictly more -- is admitted to nothing: not the mark, not the last tick,
+   and it is counted in [Stats.dropped_prints]. A mark and a limit raised on it
+   are what a single bad print could otherwise move, and the held-breach rule
+   in alerts.ml is the second guard behind this one.
+
+   It cannot starve a name. The midpoint is the LATEST quote's, quotes arrive
+   on their own messages and are applied whatever the trades do, so a market
+   that has moved moves its midpoint and its prints mark again. A name with no
+   quote -- none yet, one crossed, zero or one-sided, the poll's names, which
+   have no quotes at all, or a session whose quotes the plan refused -- marks
+   every valid print as it always has. A new session forgets the last one's
+   quotes ([forget_quotes]), so a midpoint never outlives the stream that
+   carried it. *)
+module Print_filter = struct
+  type t = { max_deviation : float; mids : float Types.Symbol.Table.t }
+
+  let create ~max_deviation = { max_deviation; mids = Types.Symbol.Table.create () }
+
+  let observe_quote t symbol = function
+    | Some mid -> Hashtbl.set t.mids ~key:symbol ~data:mid
+    | None -> Hashtbl.remove t.mids symbol
+
+  let midpoint t symbol = Hashtbl.find t.mids symbol
+  let forget_quotes t = Hashtbl.clear t.mids
+
+  (* Whether [tick] may mark. A price that is not one to believe never may,
+     filter or no filter: Message builds no such tick, and this says so again
+     where the mark is decided. Written positively, so a nan deviation or
+     midpoint admits nothing it should not. *)
+  let admits t (tick : Types.Tick.t) =
+    let p = Types.Price.to_float (Types.Tick.price tick) in
+    Message.valid_price p
+    &&
+    match midpoint t (Types.Tick.symbol tick) with
+    | None -> true
+    | Some mid -> Float.( <= ) (Float.abs (p -. mid) /. mid) t.max_deviation
 end
 
 (* ------------------------------------------------------------------------ *)
@@ -326,21 +432,30 @@ end
    Pure with respect to the network, so the tests drive it with captured
    payloads and never open a socket. Returns the non-trade messages for the
    caller to act on. *)
-let apply_frame ~(graph : Graph.t) ~(stats : Stats.t) (messages : Message.t list) =
+let apply_frame ~(graph : Graph.t) ~(stats : Stats.t) ~(filter : Print_filter.t)
+    (messages : Message.t list) =
   let control = ref [] in
   let applied = ref 0 in
   List.iter messages ~f:(fun message ->
       match message with
+      | Message.Quote { symbol; mid } ->
+          (* In frame order, so a quote moves the midpoint for the trades
+             after it in the same frame. A quote marks nothing, so a frame of
+             quotes alone settles nothing. *)
+          stats.Stats.quotes <- stats.Stats.quotes + 1;
+          if Graph.knows_symbol graph symbol then
+            Print_filter.observe_quote filter symbol mid
       | Message.Trade tick ->
-          if Graph.knows_symbol graph (Types.Tick.symbol tick) then (
-            Graph.apply_tick graph tick;
-            stats.Stats.trades <- stats.Stats.trades + 1;
-            Int.incr applied)
-          else
+          if not (Graph.knows_symbol graph (Types.Tick.symbol tick)) then
             (* Not an error. A subscription can legitimately outlive a position,
                and Graph.set_price raises on an unknown symbol by design, so the
                filtering has to happen here. *)
             stats.Stats.unknown_symbol <- stats.Stats.unknown_symbol + 1
+          else if Print_filter.admits filter tick then (
+            Graph.apply_tick graph tick;
+            stats.Stats.trades <- stats.Stats.trades + 1;
+            Int.incr applied)
+          else stats.Stats.dropped_prints <- stats.Stats.dropped_prints + 1
       | Message.Other _ ->
           (* Either a message type this engine does not consume, or a trade that
              failed validation. Counted rather than logged per occurrence: a
@@ -385,6 +500,17 @@ let subscribe_frame ~symbols =
     [
       ("action", `String "subscribe");
       ("trades", `List (List.map symbols ~f:(fun s -> `String (Types.Symbol.to_string s))));
+    ]
+  |> Yojson.Safe.to_string
+
+(* The quotes, for the same names, as a request of their own: sent only after
+   the trades' subscription is confirmed, so a plan that refuses them refuses
+   them alone ([Failure.in_session]). *)
+let quotes_frame ~symbols =
+  `Assoc
+    [
+      ("action", `String "subscribe");
+      ("quotes", `List (List.map symbols ~f:(fun s -> `String (Types.Symbol.to_string s))));
     ]
   |> Yojson.Safe.to_string
 
@@ -439,6 +565,13 @@ module Phase = struct
   type t = Awaiting_greeting | Awaiting_auth | Streaming [@@deriving sexp_of, equal]
 end
 
+(* Whether [message] is the moment to ask for the quotes: the first
+   subscription confirmation once streaming, which is the trades' own. Once. *)
+let request_quotes ~(phase : Phase.t) ~quotes_requested (message : Message.t) =
+  match (message, phase) with
+  | Message.Subscription _, Phase.Streaming -> not quotes_requested
+  | _ -> false
+
 (* How a session ended, and therefore whether to try again.
 
    This is a type rather than a bool because of a bug it exists to prevent. A
@@ -468,7 +601,8 @@ end
 
 (* One connection, handshake to disconnect. Never raises: every way a session can
    end is folded into a single [Outcome.t] at the bottom. *)
-let run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~on_control ~on_event =
+let run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~filter ~on_control
+    ~on_event =
   (* Declared outside the connection callback because [with_connection] insists
      its callback return unit -- so the session's verdict has to be carried out
      by reference rather than returned. *)
@@ -477,6 +611,11 @@ let run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~on_control ~on_ev
   let phase = ref Phase.Awaiting_greeting in
   let streaming_since = ref None in
   let handshake_error = ref None in
+  let quotes_requested = ref false in
+  (* A midpoint never outlives the stream that carried it: this session's
+     quotes may never come (a refused subscription), and the last session's
+     would hold its prints against a market that has since moved. *)
+  Print_filter.forget_quotes filter;
   let%map connection =
     Monitor.try_with ~extract_exn:true (fun () ->
         with_connection feed_uri ~f:(fun ~reader ~writer ->
@@ -493,7 +632,9 @@ let run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~on_control ~on_ev
             in
             let handle_payload payload =
               stats.Stats.frames <- stats.Stats.frames + 1;
-              let control = apply_frame ~graph ~stats (Message.of_frame payload) in
+              let control =
+                apply_frame ~graph ~stats ~filter (Message.of_frame payload)
+              in
               (* Handled in order, and each may need to write a reply, so this is a
              sequential deferred iteration rather than a plain one. *)
               Deferred.List.iter control ~how:`Sequential ~f:(fun message ->
@@ -509,8 +650,14 @@ let run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~on_control ~on_ev
                         (sprintf "authenticated; subscribing to %d symbols"
                            (List.length symbols));
                       send (subscribe_frame ~symbols)
+                  | (Message.Subscription _ as m), phase
+                    when request_quotes ~phase ~quotes_requested:!quotes_requested m ->
+                      quotes_requested := true;
+                      send (quotes_frame ~symbols)
                   | Message.Error { code; msg }, _ ->
-                      (match Failure.of_code ~code ~msg with
+                      (match
+                         Failure.in_session ~quotes_requested:!quotes_requested ~code ~msg
+                       with
                       | Failure.Fatal detail ->
                           stats.Stats.last_error <- Some detail;
                           fatal := Some detail
@@ -593,13 +740,14 @@ let run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~on_control ~on_ev
 let run ?(backoff = Backoff.default) ?(host = default_host)
     ?(on_control = fun (_ : Message.t) -> ()) ?(on_event = fun (_ : string) -> ())
     ~(graph : Graph.t) ~(credentials : Config.Credentials.t) ~(runtime : Config.Runtime.t)
-    ~(symbols : Types.Symbol.t list) ~(stats : Stats.t) () =
+    ~(symbols : Types.Symbol.t list) ~(stats : Stats.t) ~(filter : Print_filter.t) () =
   Lazy.force rng_initialized;
   let feed_uri = stream_uri ~host ~feed:runtime.Config.Runtime.alpaca_feed in
   let rec attempt n =
     on_event (sprintf "connecting to %s (attempt %d)" (Uri.to_string feed_uri) n);
     match%bind
-      run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~on_control ~on_event
+      run_session ~graph ~credentials ~feed_uri ~symbols ~stats ~filter ~on_control
+        ~on_event
     with
     | Outcome.Fatal detail, _ ->
         on_event (sprintf "STOPPING: %s" detail);

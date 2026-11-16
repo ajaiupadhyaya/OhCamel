@@ -100,7 +100,8 @@ let fetch ~(credentials : Config.Credentials.t) ~(feed : string)
    dropped -- the poll asked only for book names -- rather than counted every
    ten seconds as [unknown_symbol]. *)
 let apply ~(graph : Graph.t) ~(stats : Alpaca_ws.Stats.t)
-    (ticks : (Types.Symbol.t * Types.Tick.t) list) : int =
+    ~(filter : Alpaca_ws.Print_filter.t) (ticks : (Types.Symbol.t * Types.Tick.t) list) :
+    int =
   let fresh =
     List.filter ticks ~f:(fun (_, tick) ->
         let symbol = Types.Tick.symbol tick in
@@ -113,15 +114,15 @@ let apply ~(graph : Graph.t) ~(stats : Alpaca_ws.Stats.t)
   (* The websocket's own frame applier: each trade marks its cells and is
      counted, and the graph settles once. *)
   let (_ : Alpaca_ws.Message.t list) =
-    Alpaca_ws.apply_frame ~graph ~stats
+    Alpaca_ws.apply_frame ~graph ~stats ~filter
       (List.map fresh ~f:(fun (_, tick) -> Alpaca_ws.Message.Trade tick))
   in
   List.length fresh
 
 let run ~(graph : Graph.t) ~(credentials : Config.Credentials.t)
     ~(runtime : Config.Runtime.t) ~(symbols : Types.Symbol.t list)
-    ~(every : Time_ns.Span.t) ~(stats : Alpaca_ws.Stats.t) ~(on_event : string -> unit) :
-    unit Deferred.t =
+    ~(every : Time_ns.Span.t) ~(stats : Alpaca_ws.Stats.t)
+    ~(filter : Alpaca_ws.Print_filter.t) ~(on_event : string -> unit) : unit Deferred.t =
   let feed = runtime.Config.Runtime.alpaca_feed in
   let batches = List.chunks_of symbols ~length:batch_size in
   (* The last outcome's class: None before the first, "ok" after a success. *)
@@ -135,7 +136,7 @@ let run ~(graph : Graph.t) ~(credentials : Config.Credentials.t)
       Monitor.try_with ~extract_exn:true (fun () ->
           match%map fetch ~credentials ~feed batch with
           | Error _ as error -> error
-          | Ok ticks -> Ok (apply ~graph ~stats ticks))
+          | Ok ticks -> Ok (apply ~graph ~stats ~filter ticks))
     with
     | Ok (Ok marked) ->
         note "ok"
