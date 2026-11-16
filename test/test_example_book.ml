@@ -999,7 +999,26 @@ let test_desk_defaults () =
   Alcotest.(check (float 0.0)) "incubation_cap 0.0" 0.0 d.Desk_spec.incubation_cap;
   Alcotest.(check (float 0.0)) "vol_target 0.10" 0.10 d.Desk_spec.vol_target;
   Alcotest.(check string) "flatten_at 15:50" "15:50" d.Desk_spec.flatten_at;
-  Alcotest.(check int) "max_open_orders 200" 200 d.Desk_spec.max_open_orders
+  Alcotest.(check int) "max_open_orders 200" 200 d.Desk_spec.max_open_orders;
+  (* R2's word defaults off: a book that does not say it -- the live host's,
+     until the owner writes it -- keeps a limit's trip refusing everything. *)
+  Alcotest.(check bool) "reduce_through_trip false" false d.Desk_spec.reduce_through_trip
+
+(* The example book turns R2 on, and says beside the word that it departs from
+   INC-01's "halts and never liquidates", under INC-02: a book copied from
+   this file lets a stop's flatten and a governor's cut through a limit's
+   trip, and never through a hand's halt. *)
+let test_the_example_book_lets_a_reduction_through_a_limit's_trip () =
+  let book = load () in
+  Alcotest.(check bool)
+    "reduce_through_trip true" true book.Book.desk.Desk_spec.reduce_through_trip;
+  let text = In_channel.read_all path in
+  List.iter [ "(reduce_through_trip true)"; "INC-01"; "INC-02"; "never liquidates" ]
+    ~f:(fun substring ->
+      Alcotest.(check bool)
+        (sprintf "the file says %S" substring)
+        true
+        (String.is_substring text ~substring))
 
 (* The roster's fractions, as the example book ships them: equal, 0.025 each,
    so 23 x 0.025 = 0.575, under the book's (incubation_cap 0.60); the other
@@ -1313,6 +1332,8 @@ let suite =
       Alcotest.test_case "a book without stream streams the first thirty" `Quick
         test_a_book_without_stream_streams_the_first_thirty;
       Alcotest.test_case "defaults" `Quick test_desk_defaults;
+      Alcotest.test_case "the example book lets a reduction through a limit's trip" `Quick
+        test_the_example_book_lets_a_reduction_through_a_limit's_trip;
       Alcotest.test_case "roster fractions sum under the cap" `Quick
         test_roster_fractions_sum_to_the_cap;
       Alcotest.test_case "effective fraction scales the roster" `Quick

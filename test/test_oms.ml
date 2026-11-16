@@ -26,7 +26,7 @@ let limit name scope n = { Limit.name; scope; kind = Limit.Gross_notional (money
    lets that default be taken, as test_gate.ml's [with_book] takes its own:
    an optional argument before the last labelled one is never erased. *)
 let with_oms_graph ?(book_is_current = true) ?(now = Time_ns.now) ?(extra_limits = [])
-    ?equity_history ?venue_name ?alerts ~f () =
+    ?equity_history ?venue_name ?alerts ?(reduce_through_trip = false) ?halt ~f () =
   let graph =
     Graph.create ~starting_cash:(money 1_000_000.0)
       ~instruments:
@@ -74,7 +74,12 @@ let with_oms_graph ?(book_is_current = true) ?(now = Time_ns.now) ?(extra_limits
       in
       let oms =
         D.Oms.create ~graph ~journal
-          ~spec:{ Desk_spec.default with Desk_spec.trading = Desk_spec.Enabled }
+          ~spec:
+            {
+              Desk_spec.default with
+              Desk_spec.trading = Desk_spec.Enabled;
+              reduce_through_trip;
+            }
           ~read:
             (Some
                (let read = D.Sim_venue.read venue in
@@ -83,10 +88,13 @@ let with_oms_graph ?(book_is_current = true) ?(now = Time_ns.now) ?(extra_limits
                 | Some name -> { read with D.Venue.Read.name }))
           ~trade:(Ok (D.Sim_venue.trade ~auto:false venue))
           ~halt:
-            (D.Halt.create
-               (match alerts with
-               | Some a -> D.Halt.Source.of_alerts a
-               | None -> D.Halt.Source.none))
+            (match halt with
+            | Some h -> h
+            | None ->
+                D.Halt.create
+                  (match alerts with
+                  | Some a -> D.Halt.Source.of_alerts a
+                  | None -> D.Halt.Source.none))
           ~accepts_tickets:false ~adv:(D.Oms.Adv.Fixed 1_000_000.0) ~now
           ~rng:(Random.State.make [| 3 |]) ~on_change:ignore ~on_event:ignore
           ~after_fill:ignore
@@ -97,8 +105,10 @@ let with_oms_graph ?(book_is_current = true) ?(now = Time_ns.now) ?(extra_limits
       Option.iter alerts ~f:(D.Oms.watch_alerts oms);
       f graph oms journal)
 
-let with_oms ?book_is_current ?now ?extra_limits ?equity_history ?venue_name ~f () =
+let with_oms ?book_is_current ?now ?extra_limits ?equity_history ?venue_name
+    ?reduce_through_trip ?halt ~f () =
   with_oms_graph ?book_is_current ?now ?extra_limits ?equity_history ?venue_name
+    ?reduce_through_trip ?halt
     ~f:(fun _ oms journal -> f oms journal)
     ()
 
@@ -167,6 +177,21 @@ let rest oms journal ~seed symbol side qty kind =
 let cancel_resting oms o =
   let o = D.Oms.record oms o D.Order.Event.Cancel_requested in
   D.Oms.record oms o D.Order.Event.Venue_cancelled
+
+(* R2 passes a STRATEGY's reduction through a limit's trip: an order that
+   shrinks both the strategy's own position and the account's. A ticket is
+   no strategy's -- it has no own position to shrink -- so under a trip, with
+   the word on, a hand's sell of 100 of the account's AAPL 400 is still
+   refused by the switch. When in doubt, refused. *)
+let test_a_ticket_is_no_strategy's_reduction_and_a_trip_refuses_it () =
+  let halt = D.Halt.create D.Halt.Source.none in
+  D.Halt.restore_trip halt ~limit:"aapl-cap" ~at:(Time_ns.now ());
+  with_oms ~reduce_through_trip:true ~halt
+    ~f:(fun oms _ ->
+      Alcotest.(check (list string))
+        "sell 100 AAPL by ticket: the switch" [ "kill_switch" ]
+        (rules (D.Oms.preview oms (ticket aapl D.Order.Side.Sell 100))))
+    ()
 
 (* The incubation tier sizes on a paper venue only (Task 9): Alpaca's paper
    account, "alpaca-paper", or the demo's simulator, "simulated". Any other
@@ -1297,6 +1322,8 @@ let suite =
         test_a_trip_at_the_first_sync_is_journaled_before_the_manager_is_wired;
       Alcotest.test_case "watch_alerts journals a trip that came before it" `Quick
         test_watch_alerts_journals_a_trip_that_came_before_it;
+      Alcotest.test_case "a ticket is no strategy's reduction, and a trip refuses it"
+        `Quick test_a_ticket_is_no_strategy's_reduction_and_a_trip_refuses_it;
       Alcotest.test_case "incubation is permitted on the paper venues only" `Quick
         test_incubation_is_permitted_on_the_paper_venues_only;
     ] )

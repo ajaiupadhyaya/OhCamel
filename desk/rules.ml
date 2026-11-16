@@ -213,7 +213,19 @@ module Context = struct
     spec : Desk_spec.t;
     universe : Symbol.Set.t;
     can_trade : (unit, string) Result.t;
-    halted : string option;
+    (* The switch: its state decides ([switch_refusal]), and its words
+       (Halt.reason, a restored trip's "(held across a restart)" among them)
+       are what a refusal quotes. *)
+    halt_state : Halt.State.t;
+    halt_why : string option;
+    (* The proposer's own position in the order's name, from its fills
+       (Oms.strategy_position), and the account's as the gate reads it, less
+       what the desk's own resting orders that would shrink it take off
+       (Oms.reducible_account): what [reduces] judges under a limit's trip. A
+       ticket is no strategy's, and its own position is 0, so no ticket
+       passes a trip. *)
+    own : float;
+    account : float;
     (* None: no clock has answered, or the last read failed -- closed. *)
     session : Session.t option;
     mark : Price.t option;
@@ -265,6 +277,63 @@ let is_timing_refusal ~(tif : Order.Tif.t) (failures : Failure.t list) =
          && (not (Order.Tif.equal tif Order.Tif.Opg))
          && List.exists failures ~f:session)
 
+(* Whether an order of [qty] on [side] only shrinks a position: the
+   strategy's own ([own], from its fills) and the account's ([account]) are
+   on one side of zero, the order is on the other, and it is no larger than
+   either, so neither crosses zero. An order larger than the smaller of the
+   two is not clipped to it -- nothing here changes an order -- it is not a
+   reduction, and the switch refuses it whole. Anything else is no reduction
+   either: a flat position on either side, the two on opposite sides, a
+   number that is not a number. Order.epsilon absorbs the noise of a float
+   sum of whole fills, and nothing more. *)
+let reduces ~(own : float) ~(account : float) ~(side : Order.Side.t) ~(qty : int) =
+  let room = Float.min (Float.abs own) (Float.abs account) in
+  qty > 0 && Float.is_finite own && Float.is_finite account
+  && (match side with
+    | Order.Side.Sell -> Float.( > ) own 0.0 && Float.( > ) account 0.0
+    | Order.Side.Buy -> Float.( < ) own 0.0 && Float.( < ) account 0.0)
+  && Float.( <= ) (Float.of_int qty) (room +. Order.epsilon)
+
+(* The switch's rule for an order: None when it may go, else why not. One
+   function, because the order manager asks it again at the wire
+   (Oms.pre_wire) and the two must never answer differently -- the reason
+   [session_refusal] is one function.
+
+   A LIMIT'S TRIP LETS A REDUCTION THROUGH, AND NOTHING ELSE DOES (the
+   owner's ruling R2, 2026-11-15). With the book's (reduce_through_trip)
+   word on, an order [reduces] passes while the switch is Tripped -- a trip
+   this process's source made, or one restored from the journal, which
+   Halt.state reads the same -- so a stop's flatten and a governor's cut are
+   not refused by the very switch they answer to. A hand's halt and the
+   engine's stop refuse everything: the person who pressed it knew something
+   the limits did not, and after the engine's stop no fill would be heard.
+   The refusal quotes the switch's own words ([halt_why], Halt.reason), and
+   under a trip with the word on says what would have passed. A context
+   whose words and state disagree -- words with no state -- is refused. *)
+let switch_refusal ~(spec : Desk_spec.t) ~(halt_state : Halt.State.t)
+    ~(halt_why : string option) ~own ~account ~side ~qty : string option =
+  let words =
+    match halt_why with
+    | Some why -> why
+    | None -> sprintf "the kill switch reads %s" (Halt.State.name halt_state)
+  in
+  match (halt_state, halt_why) with
+  | Halt.State.Clear, None -> None
+  | Halt.State.Tripped _, _ when spec.Desk_spec.reduce_through_trip ->
+      if reduces ~own ~account ~side ~qty then None
+      else
+        Some
+          (sprintf
+             "%s; under a limit's trip only an order that shrinks both the strategy's \
+              own position (%g) and the account's (%g), by no more than either, passes, \
+              and a %s of %d does not"
+             words own account (Order.Side.to_string side) qty)
+  | Halt.State.Clear, Some _
+  | Halt.State.Tripped _, _
+  | Halt.State.Halted _, _
+  | Halt.State.Stopped _, _ ->
+      Some words
+
 let names =
   [
     "universe";
@@ -313,7 +382,10 @@ let check (c : Context.t) (r : Order.Request.t) : Failure.t list =
       | Desk_spec.Disabled, _ -> fail "trading" "the book disables trading"
       | Desk_spec.Enabled, Error why -> fail "trading" why
       | Desk_spec.Enabled, Ok () -> None);
-      Option.map c.halted ~f:(fun why -> { Failure.rule = "kill_switch"; why });
+      Option.map
+        (switch_refusal ~spec:c.spec ~halt_state:c.halt_state ~halt_why:c.halt_why
+           ~own:c.own ~account:c.account ~side:r.Order.Request.side
+           ~qty:r.Order.Request.qty) ~f:(fun why -> { Failure.rule = "kill_switch"; why });
       Option.map
         (session_refusal ~tif:r.Order.Request.tif ~zone:c.new_york ~session:c.session
            ~now:c.now) ~f:(fun why -> { Failure.rule = "session"; why });

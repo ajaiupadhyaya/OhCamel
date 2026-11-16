@@ -137,7 +137,10 @@
  ;
  ; What the kill switch actually does: it halts the desk. Every new order is
  ; refused, every open order the desk owns is cancelled, and positions are left
- ; exactly as they are -- it never liquidates. On the live host a person can
+ ; exactly as they are -- the switch itself never sells anything. One
+ ; exception, the desk block's (reduce_through_trip true): while a LIMIT has
+ ; tripped it, an order that only shrinks a position still goes out -- a
+ ; stopped strategy's flatten, a governor's cut. On the live host a person can
  ; also halt the desk by hand from the dashboard, and a halt stays until someone
  ; resets it there. The switch only exists when (enabled true) below: the whole
  ; alerting block, this switch included, is inert while alerting is off.
@@ -204,10 +207,19 @@
  ;                           strategy with (horizon close) is flattened.
  ;   stream                  the names streamed first. The stream carries
  ;                           thirty; every other name is polled.
+ ;   reduce_through_trip     true | false. While a LIMIT has tripped the kill
+ ;                           switch, an order that only shrinks a position --
+ ;                           shrinks both the strategy's own and the
+ ;                           account's in that name, by no more than either,
+ ;                           never through zero -- still passes it: a stopped
+ ;                           strategy's flatten, a governor's cut. A hand's
+ ;                           halt and the engine's stop still refuse every
+ ;                           order. Default false.
  ;
  ; The values below are the engine's own defaults, written out so that turning
- ; the desk on is one word rather than a guess. Two are not: incubation_cap,
- ; which sizes the roster below, and stream, which names five of its names.
+ ; the desk on is one word rather than a guess. Three are not: incubation_cap,
+ ; which sizes the roster below, stream, which names five of its names, and
+ ; reduce_through_trip.
  (desk
   ((trading disabled)
    (max_order_notional 25000.0)
@@ -231,7 +243,13 @@
    (min_leg_notional 200.0)
    (wave_timeout_s 180.0)
    (flatten_at "15:50")
-   (stream (SPY QQQ IWM TLT GLD))))
+   (stream (SPY QQQ IWM TLT GLD))
+   ; true here, false by default. This DEPARTS from INC-01, which promised
+   ; that "the kill switch halts and never liquidates": under INC-02 (the
+   ; owner's ruling R2, 2026-11-15), a limit's trip lets through the orders
+   ; that only take risk off. A live host keeps INC-01's switch until its
+   ; own book says true.
+   (reduce_through_trip true)))
 
  ; ---------------------------------------------------------------------------
  ; Phase A3: signals. OPTIONAL -- omit this block and the desk registers no

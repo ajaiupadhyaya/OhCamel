@@ -256,6 +256,14 @@ module Book = struct
       (* The names streamed first; the rest of the universe fills the stream
          to [stream_cap] in book order, and anything past it is polled. *)
       stream : string list; [@sexp.default []]
+      (* The owner's ruling R2 (2026-11-15): while a LIMIT has tripped the
+         kill switch, an order that only shrinks a position -- a stop's
+         flatten, a governor's cut -- still passes it (Rules.reduces says
+         which). Never through a hand's halt or the engine's stop. Off unless
+         a book says otherwise, because INC-01 promised a switch that "halts
+         and never liquidates", and a host keeps that promise until its book
+         says it does not. *)
+      reduce_through_trip : bool; [@sexp.default false]
     }
     [@@deriving sexp, compare, equal]
 
@@ -969,6 +977,7 @@ module Summary = struct
               String.concat ~sep:" "
                 (List.map desk.Book.Desk_spec.spread_bps ~f:(fun (sym, bps) ->
                      sprintf "%s=%g" sym bps)) );
+          ("reduce_through_trip", Bool.to_string desk.Book.Desk_spec.reduce_through_trip);
         ];
       alerts =
         [

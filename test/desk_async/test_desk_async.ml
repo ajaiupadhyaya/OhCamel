@@ -121,7 +121,8 @@ let managers_built = ref 0
 let manager ?trade ?read ?(now = Time_ns.now) ?(book_is_current = fun () -> true)
     ?(halt = D.Halt.create D.Halt.Source.none) ?(on_change = ignore) ?(on_event = ignore)
     ?(run = true) ?(incubation_cap = 0.0)
-    ?(max_order_notional = Desk_spec.default.Desk_spec.max_order_notional) f =
+    ?(max_order_notional = Desk_spec.default.Desk_spec.max_order_notional)
+    ?(reduce_through_trip = false) f =
   let trade =
     match trade with Some t -> t | None -> D.Sim_venue.trade ~auto:false f.venue
   in
@@ -135,6 +136,7 @@ let manager ?trade ?read ?(now = Time_ns.now) ?(book_is_current = fun () -> true
           Desk_spec.trading = Desk_spec.Enabled;
           incubation_cap;
           max_order_notional;
+          reduce_through_trip;
         }
       ~read:(Some read) ~trade:(Ok trade) ~halt ~accepts_tickets:true
       ~adv:(D.Oms.Adv.Fixed 1_000_000.0) ~now
@@ -3238,7 +3240,8 @@ type adjust_fixture = {
 let adjust_case ?(last_scale = 0.70) ?last_ratio ?last_factor ?last_governor
     ?(sizing_row = true) ?(stale = false) ?(incubation_cap = 0.5)
     ?(drawdown = fun () -> None) ?dd_cap ?(adjust_now = true) ?(bought = true) ?unfilled
-    ~(sizing : Ohcamel.Config.Book.Signals_spec.sizing) ~overlay () =
+    ?halt ?reduce_through_trip ~(sizing : Ohcamel.Config.Book.Signals_spec.sizing)
+    ~overlay () =
   let name = "exp_adjust" in
   let f = fixture () in
   record_close f;
@@ -3247,7 +3250,9 @@ let adjust_case ?(last_scale = 0.70) ?last_ratio ?last_factor ?last_governor
      the same order again hundreds of seconds later must not be refused as
      a double-click because the clock never moved. *)
   let now () = Time_ns.add tuesday_mid (Time_ns.diff (Time_source.now f.clock) t0) in
-  let oms = manager ~incubation_cap ~max_order_notional:50_000.0 ~now f in
+  let oms =
+    manager ?halt ?reduce_through_trip ~incubation_cap ~max_order_notional:50_000.0 ~now f
+  in
   let source =
     {
       D.Rebalance.Source.strategy = name;
@@ -3656,6 +3661,136 @@ let test_a_product_of_zero_moves_by_the_band_alone () =
       ( Option.map (D.Journal.latest_sizing f.journal ~strategy:name)
           ~f:(fun (_, s, _, _, _) -> s),
         latest_sizing_mode f name ) );
+  cleanup ()
+
+(* R2: an order that only shrinks a position passes a limit's trip, with the
+   book's (reduce_through_trip) word on. The switch's source is a test's: it
+   reads tripped on aapl-cap once the case says so, after the fixture's buy,
+   as the kernel's switch would after a breach. *)
+let trippable () =
+  let tripped = ref None in
+  let source =
+    {
+      D.Halt.Source.tripped = (fun () -> !tripped);
+      firing = (fun () -> []);
+      reset = (fun () -> tripped := None);
+    }
+  in
+  (D.Halt.create source, fun () -> tripped := Some ("aapl-cap", evening))
+
+let own_aapl f name =
+  List.map
+    (D.Journal.source_fills f.journal ~prefix:(sprintf "signal:%s:" name))
+    ~f:(fun (s, q) -> (Symbol.to_string s, q))
+
+(* A stopped strategy's flatten under a live trip: the adjust pass sells all
+   350, the sell reaches the venue and fills, and the strategy holds nothing.
+   It is not cancelled when the venue acknowledges it, as an order that gets
+   its venue id under the switch otherwise is: it went out because the trip
+   lets it. *)
+let test_a_stop's_flatten_reaches_the_venue_through_a_limit's_trip () =
+  let halt, trip = trippable () in
+  let%bind { a_f = f; a_name = name; pass_and_adjust; cleanup; _ } =
+    adjust_case ~adjust_now:false ~halt ~reduce_through_trip:true
+      ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.70" ()
+  in
+  D.Journal.set_strategy_state f.journal ~strategy:name ~state:`Stopped
+    ~rule:(Some "drawdown") ~at:evening ~detail:"drawdown 20.0% reached its line of 15.0%";
+  trip ();
+  Alcotest.(check string)
+    "the switch is tripped" "tripped"
+    (D.Halt.State.name (D.Halt.state halt));
+  let received = D.Sim_venue.received f.venue in
+  let%map () = pass_and_adjust ~at:4.0 in
+  Alcotest.(check (list (triple string int string)))
+    "the buy, then Sell 350 as a day limit"
+    [ ("buy", 350, "limit day"); ("sell", 350, "limit day") ]
+    (strategy_orders f name);
+  Alcotest.(check int)
+    "the sell reached the venue" (received + 1)
+    (D.Sim_venue.received f.venue);
+  Alcotest.(check (list (pair string (float 0.0))))
+    "filled: it holds nothing"
+    [ ("AAPL", 0.0) ]
+    (own_aapl f name);
+  Alcotest.(check string)
+    "and the switch is still tripped" "tripped"
+    (D.Halt.State.name (D.Halt.state halt));
+  cleanup ()
+
+(* A governor's cut under a trip restored from the journal, as a restart
+   leaves one. A drawdown of 0.375 against a cap of 0.5 is a governor of
+   (0.5 - 0.375) / 0.25 = 0.5, so with the overlay at 0.5 the scale is 0.25,
+   a move of 0.45 from the last 0.70: re-sized to trunc(1.0 x 0.5 x 0.25 x
+   100,000 / 100) = 125 from the strategy's own 350, Sell 225 -- smaller than
+   both its 350 and the account's 350. It reaches the venue and fills. *)
+let test_a_governor's_cut_reaches_the_venue_through_a_restored_trip () =
+  let halt = D.Halt.create D.Halt.Source.none in
+  let%bind { a_f = f; a_name = name; pass_and_adjust; cleanup; _ } =
+    adjust_case ~adjust_now:false ~halt ~reduce_through_trip:true
+      ~drawdown:(fun () -> Some 0.375)
+      ~dd_cap:0.5 ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.5" ()
+  in
+  D.Halt.restore_trip halt ~limit:"aapl-cap" ~at:evening;
+  Alcotest.(check string)
+    "the switch is tripped" "tripped"
+    (D.Halt.State.name (D.Halt.state halt));
+  let received = D.Sim_venue.received f.venue in
+  let%map () = pass_and_adjust ~at:4.0 in
+  Alcotest.(check (list (triple string int string)))
+    "the buy, then Sell 225 as a day limit"
+    [ ("buy", 350, "limit day"); ("sell", 225, "limit day") ]
+    (strategy_orders f name);
+  Alcotest.(check int)
+    "the sell reached the venue" (received + 1)
+    (D.Sim_venue.received f.venue);
+  Alcotest.(check (list (pair string (float 0.0))))
+    "filled: it holds 125"
+    [ ("AAPL", 125.0) ]
+    (own_aapl f name);
+  cleanup ()
+
+(* And what R2 does not let through: the same stop's flatten under a hand's
+   halt, the word on; and under a limit's trip with the word off, as on a
+   host whose book does not say it. Neither reaches the venue, and the
+   strategy still holds its 350. *)
+let test_a_hand's_halt_or_the_word_off_still_refuses_the_flatten () =
+  let stopped f name =
+    D.Journal.set_strategy_state f.journal ~strategy:name ~state:`Stopped
+      ~rule:(Some "drawdown") ~at:evening
+      ~detail:"drawdown 20.0% reached its line of 15.0%"
+  in
+  let halt = D.Halt.create D.Halt.Source.none in
+  let%bind { a_f = f; a_name = name; pass_and_adjust; cleanup; _ } =
+    adjust_case ~adjust_now:false ~halt ~reduce_through_trip:true
+      ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.70" ()
+  in
+  stopped f name;
+  D.Halt.halt halt ~why:"halted by hand" ~at:evening;
+  let received = D.Sim_venue.received f.venue in
+  let%bind () = pass_and_adjust ~at:4.0 in
+  Alcotest.(check (pair (list (triple string int string)) int))
+    "a hand's halt: the buy alone, nothing more sent"
+    ([ ("buy", 350, "limit day") ], received)
+    (strategy_orders f name, D.Sim_venue.received f.venue);
+  Alcotest.(check (list (pair string (float 0.0))))
+    "it holds 350"
+    [ ("AAPL", 350.0) ]
+    (own_aapl f name);
+  cleanup ();
+  let halt, trip = trippable () in
+  let%bind { a_f = f; a_name = name; pass_and_adjust; cleanup; _ } =
+    adjust_case ~adjust_now:false ~halt ~sizing:Ohcamel.Config.Book.Signals_spec.Live
+      ~overlay:"0.70" ()
+  in
+  stopped f name;
+  trip ();
+  let received = D.Sim_venue.received f.venue in
+  let%map () = pass_and_adjust ~at:4.0 in
+  Alcotest.(check (pair (list (triple string int string)) int))
+    "the word off: the buy alone, nothing more sent"
+    ([ ("buy", 350, "limit day") ], received)
+    (strategy_orders f name, D.Sim_venue.received f.venue);
   cleanup ()
 
 (* The minute loop over the adjust case at 0.55, its Sell 75 never filled
@@ -4543,6 +4678,12 @@ let suites =
           test_an_unknown_drawdown_holds_the_governor_and_sells_nothing;
         case "a product of zero moves by the band alone"
           test_a_product_of_zero_moves_by_the_band_alone;
+        case "a stop's flatten reaches the venue through a limit's trip"
+          test_a_stop's_flatten_reaches_the_venue_through_a_limit's_trip;
+        case "a governor's cut reaches the venue through a restored trip"
+          test_a_governor's_cut_reaches_the_venue_through_a_restored_trip;
+        case "a hand's halt or the word off still refuses the flatten"
+          test_a_hand's_halt_or_the_word_off_still_refuses_the_flatten;
         case "run does not wait for the adjust pass"
           test_run_does_not_wait_for_the_adjust_pass;
         case "a busy adjust is skipped, and said once"

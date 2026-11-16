@@ -11,6 +11,7 @@ open Core
 open Ohcamel.Types
 module Rules = Ohcamel_desk.Rules
 module Order = Ohcamel_desk.Order
+module Halt = Ohcamel_desk.Halt
 module Desk_spec = Ohcamel.Config.Book.Desk_spec
 
 let aapl = Symbol.of_string "AAPL"
@@ -33,7 +34,10 @@ let context =
     Rules.Context.spec;
     universe = Symbol.Set.of_list [ aapl; Symbol.of_string "MSFT" ];
     can_trade = Ok ();
-    halted = None;
+    halt_state = Halt.State.Clear;
+    halt_why = None;
+    own = 0.0;
+    account = 0.0;
     session = during_monday;
     mark = Some (Price.of_float 150.0);
     stale = false;
@@ -79,7 +83,11 @@ let test_the_book_and_the_desk_decide_whether_to_trade_at_all () =
     { context with can_trade = Error "the venue has no trading half" }
     (request 10);
   check_rules "a tripped switch" [ "kill_switch" ]
-    { context with halted = Some "tripped by nvda-cap" }
+    {
+      context with
+      halt_state = Halt.State.Tripped { limit = "nvda-cap"; at = now };
+      halt_why = Some "tripped by nvda-cap";
+    }
     (request 10);
   check_rules "no clock read, a closed session" [ "session" ]
     { context with session = None }
@@ -250,8 +258,161 @@ let test_an_opposite_resting_order_is_a_wash () =
 let test_every_failure_is_reported_in_rule_order () =
   check_rules "three at once"
     [ "universe"; "kill_switch"; "session" ]
-    { context with halted = Some "halted by hand"; session = None }
+    {
+      context with
+      halt_state = Halt.State.Halted { why = "halted by hand"; at = now };
+      halt_why = Some "halted by hand";
+      session = None;
+    }
     (request ~symbol:(Symbol.of_string "TSLA") 10)
+
+(* ------------------------------------------------------------------------ *)
+(* An order that only shrinks a position, through a limit's trip (R2)        *)
+(* ------------------------------------------------------------------------ *)
+
+(* The switch as each state leaves it, the book's (reduce_through_trip) word
+   on unless a case turns it off, and the strategy's own position and the
+   account's in AAPL as the case gives them. *)
+let switched ?(on = true) ~state ~own ~account () =
+  let halt_state, halt_why =
+    match state with
+    | `Tripped ->
+        ( Halt.State.Tripped { limit = "aapl-cap"; at = now },
+          Some "the kill switch was tripped by aapl-cap at 2026-09-14T14:00:00Z" )
+    | `Halted ->
+        ( Halt.State.Halted { why = "halted by hand"; at = now },
+          Some "the desk was halted by hand at 2026-09-14T14:00:00Z: halted by hand" )
+    | `Stopped ->
+        ( Halt.State.Stopped { why = "the stream ended"; at = now },
+          Some "the desk was stopped by the engine: the stream ended" )
+  in
+  {
+    context with
+    spec = { spec with Desk_spec.reduce_through_trip = on };
+    halt_state;
+    halt_why;
+    own;
+    account;
+  }
+
+let sell = request ~side:Order.Side.Sell
+let buy = request ~side:Order.Side.Buy
+
+(* The brief's cases, long: own +100, the account +80. A sell of 50 shrinks
+   both and is no larger than either, so it passes the trip; 90 is more than
+   the account's 80; 120 is more than both, and would take the strategy
+   through zero to short -- refused whole, never clipped to 80 or 100,
+   because the rules only refuse. Any buy grows the position. A hand's halt
+   and the engine's stop refuse the sell of 50, and so does the trip itself
+   with the word off. *)
+let test_a_sell_that_shrinks_a_long_passes_a_limit's_trip () =
+  let tripped = switched ~state:`Tripped ~own:100.0 ~account:80.0 () in
+  check_rules "sell 50 against own +100, account +80" [] tripped (sell 50);
+  check_rules "sell 90: more than the account's 80" [ "kill_switch" ] tripped (sell 90);
+  check_rules "sell 120: through zero" [ "kill_switch" ] tripped (sell 120);
+  check_rules "sell 120 inside the account's 400, through the strategy's zero"
+    [ "kill_switch" ]
+    (switched ~state:`Tripped ~own:100.0 ~account:400.0 ())
+    (sell 120);
+  check_rules "sell 120 inside the strategy's 400, through the account's zero"
+    [ "kill_switch" ]
+    (switched ~state:`Tripped ~own:400.0 ~account:100.0 ())
+    (sell 120);
+  check_rules "sell 80: exactly the account's whole position" [] tripped (sell 80);
+  check_rules "buy 50: grows it" [ "kill_switch" ] tripped (buy 50);
+  check_rules "a hand's halt refuses the sell of 50" [ "kill_switch" ]
+    (switched ~state:`Halted ~own:100.0 ~account:80.0 ())
+    (sell 50);
+  check_rules "the engine's stop refuses the sell of 50" [ "kill_switch" ]
+    (switched ~state:`Stopped ~own:100.0 ~account:80.0 ())
+    (sell 50);
+  check_rules "the word off refuses the sell of 50" [ "kill_switch" ]
+    (switched ~on:false ~state:`Tripped ~own:100.0 ~account:80.0 ())
+    (sell 50)
+
+(* The same, short: own -100, the account -80. A buy to cover 50 passes; 90
+   is more than the account's 80; 120 would take it through zero to long,
+   and is refused whole; any sell grows the short. *)
+let test_a_buy_that_covers_a_short_passes_a_limit's_trip () =
+  let tripped = switched ~state:`Tripped ~own:(-100.0) ~account:(-80.0) () in
+  check_rules "buy 50 against own -100, account -80" [] tripped (buy 50);
+  check_rules "buy 90: more than the account's 80" [ "kill_switch" ] tripped (buy 90);
+  check_rules "buy 120: through zero" [ "kill_switch" ] tripped (buy 120);
+  check_rules "buy 120 inside the account's -400, through the strategy's zero"
+    [ "kill_switch" ]
+    (switched ~state:`Tripped ~own:(-100.0) ~account:(-400.0) ())
+    (buy 120);
+  check_rules "sell 50: grows the short" [ "kill_switch" ] tripped (sell 50);
+  check_rules "a hand's halt refuses the buy of 50" [ "kill_switch" ]
+    (switched ~state:`Halted ~own:(-100.0) ~account:(-80.0) ())
+    (buy 50)
+
+(* When in doubt, refused: nothing held by either, the strategy flat, the
+   account flat, or the two on opposite sides is no reduction of both. *)
+let test_what_is_not_a_reduction_of_both_is_refused () =
+  List.iter
+    [
+      ("both flat", 0.0, 0.0);
+      ("the strategy flat", 0.0, 80.0);
+      ("the account flat", 100.0, 0.0);
+      ("the strategy long, the account short", 100.0, -80.0);
+      ("the strategy short, the account long", -100.0, 80.0);
+    ]
+    ~f:(fun (what, own, account) ->
+      check_rules (what ^ ": sell 10") [ "kill_switch" ]
+        (switched ~state:`Tripped ~own ~account ())
+        (sell 10);
+      check_rules (what ^ ": buy 10") [ "kill_switch" ]
+        (switched ~state:`Tripped ~own ~account ())
+        (buy 10))
+
+(* [Rules.reduces] itself, which the order manager asks again at the wire:
+   the share counts on both sides of the line, whole and through zero. *)
+let test_reduces_is_the_line () =
+  let r ~own ~account side qty = Rules.reduces ~own ~account ~side ~qty in
+  Alcotest.(check (list bool))
+    "sell 50 / 80 / 81 / 120 against +100 and +80; buy 50; sell 0"
+    [ true; true; false; false; false; false ]
+    [
+      r ~own:100.0 ~account:80.0 Order.Side.Sell 50;
+      r ~own:100.0 ~account:80.0 Order.Side.Sell 80;
+      r ~own:100.0 ~account:80.0 Order.Side.Sell 81;
+      r ~own:100.0 ~account:80.0 Order.Side.Sell 120;
+      r ~own:100.0 ~account:80.0 Order.Side.Buy 50;
+      r ~own:100.0 ~account:80.0 Order.Side.Sell 0;
+    ];
+  Alcotest.(check (list bool))
+    "buy 80 / 81 against -100 and -80; a nan position" [ true; false; false ]
+    [
+      r ~own:(-100.0) ~account:(-80.0) Order.Side.Buy 80;
+      r ~own:(-100.0) ~account:(-80.0) Order.Side.Buy 81;
+      r ~own:Float.nan ~account:80.0 Order.Side.Sell 10;
+    ]
+
+(* A refusal under the trip still quotes the switch's own words -- a restored
+   trip's "(held across a restart)" among them -- and says what would pass. *)
+let test_a_trip's_refusal_quotes_the_switch () =
+  let why =
+    List.map
+      (Rules.check
+         {
+           (switched ~state:`Tripped ~own:100.0 ~account:80.0 ()) with
+           halt_why =
+             Some
+               "the kill switch was tripped by aapl-cap at 2026-09-14T14:00:00Z (held \
+                across a restart)";
+         }
+         (sell 90))
+      ~f:(fun f -> f.Rules.Failure.why)
+  in
+  Alcotest.(check bool)
+    (sprintf "the switch's words, and the line: %s" (String.concat why))
+    true
+    (match why with
+    | [ w ] ->
+        String.is_substring w ~substring:"(held across a restart)"
+        && String.is_substring w ~substring:"shrinks"
+    | _ -> false)
 
 (* ------------------------------------------------------------------------ *)
 (* A market-on-open order (Order.Tif.Opg): the window and the close          *)
@@ -532,6 +693,15 @@ let suite =
       Alcotest.test_case "open orders" `Quick test_open_orders;
       Alcotest.test_case "every failure is reported, in rule order" `Quick
         test_every_failure_is_reported_in_rule_order;
+      Alcotest.test_case "a sell that shrinks a long passes a limit's trip" `Quick
+        test_a_sell_that_shrinks_a_long_passes_a_limit's_trip;
+      Alcotest.test_case "a buy that covers a short passes a limit's trip" `Quick
+        test_a_buy_that_covers_a_short_passes_a_limit's_trip;
+      Alcotest.test_case "what is not a reduction of both is refused" `Quick
+        test_what_is_not_a_reduction_of_both_is_refused;
+      Alcotest.test_case "reduces is the line" `Quick test_reduces_is_the_line;
+      Alcotest.test_case "a trip's refusal quotes the switch" `Quick
+        test_a_trip's_refusal_quotes_the_switch;
       Alcotest.test_case "an opposite resting order is a wash" `Quick
         test_an_opposite_resting_order_is_a_wash;
       Alcotest.test_case

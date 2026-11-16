@@ -198,8 +198,8 @@ let limit name scope n =
 let with_oms ?(now = evening) ?(session_date = "2026-09-14")
     ?(closes = [ (aapl, 149.0); (msft, 299.0); (xom, 100.0) ])
     ?(spec = { Desk_spec.default with Desk_spec.trading = Desk_spec.Enabled })
-    ?(book_is_current = true) ?(held = [ (aapl, 400.0); (msft, 100.0); (xom, -200.0) ]) ~f
-    () =
+    ?(book_is_current = true) ?(held = [ (aapl, 400.0); (msft, 100.0); (xom, -200.0) ])
+    ?(halt = D.Halt.create D.Halt.Source.none) ~f () =
   let graph =
     Graph.create
       ~starting_cash:(Notional.of_float 1_000_000.0)
@@ -262,8 +262,7 @@ let with_oms ?(now = evening) ?(session_date = "2026-09-14")
         D.Oms.create ~graph ~journal ~spec
           ~read:(Some (D.Sim_venue.read venue))
           ~trade:(Ok (D.Sim_venue.trade ~auto:false venue))
-          ~halt:(D.Halt.create D.Halt.Source.none)
-          ~accepts_tickets:false ~adv:(D.Oms.Adv.Fixed 1_000_000.0)
+          ~halt ~accepts_tickets:false ~adv:(D.Oms.Adv.Fixed 1_000_000.0)
           ~now:(fun () -> now)
           ~rng:(Random.State.make [| 15 |]) ~on_change:ignore ~on_event:ignore
           ~after_fill:ignore
@@ -442,6 +441,119 @@ let test_a_flat_signal_sells_exactly_the_strategy's_own_shares () =
             [ ("sell", 100, 0) ]
             (List.map legs ~f:(fun (l : Leg.t) ->
                  (D.Order.Side.to_string l.Leg.side, l.Leg.qty, l.Leg.target))))
+    ()
+
+(* R2 at the order manager: a limit's trip -- here one restored from the
+   journal, as a restart leaves it -- with the book's (reduce_through_trip)
+   word on. The strategy owns AAPL +100 of the account's 400 and XOM -50 of
+   the account's -200 (the book above). Its rules context carries both, so a
+   sell of its 100 AAPL passes, and so does a buy of 50 XOM to cover. A sell
+   of 120 AAPL is inside the account's 400 but takes the strategy through
+   zero: refused whole, the order named with the switch, and nothing
+   journaled -- never clipped to 100. A buy of 60 XOM through the strategy's
+   -50 is refused the same way, and so is any order that grows a position.
+   With the word off, the sell of 100 is refused as every order was before. *)
+let test_a_strategy's_reduction_passes_a_limit's_trip_and_a_flip_is_refused_whole () =
+  let halt = D.Halt.create D.Halt.Source.none in
+  D.Halt.restore_trip halt ~limit:"aapl-cap" ~at:(at "2026-09-14T21:00:00Z");
+  let fills journal =
+    journal_order journal ~n:1 ~source:"signal:exp_a01_tech:1" ~state:D.Order.State.Filled
+      ~fills:[ 100.0 ] 100;
+    journal_order journal ~n:2 ~source:"signal:exp_a01_tech:1" ~symbol:xom
+      ~side:D.Order.Side.Sell ~state:D.Order.State.Filled ~fills:[ 50.0 ] 50
+  in
+  let on = { Desk_spec.default with Desk_spec.trading = Desk_spec.Enabled } in
+  let on = { on with Desk_spec.reduce_through_trip = true } in
+  with_oms ~halt ~spec:on
+    ~f:(fun oms journal ->
+      fills journal;
+      let before = journaled journal in
+      let check legs =
+        D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source ~legs
+      in
+      Alcotest.(check bool)
+        "sell 100 AAPL, the strategy's whole own position, passes the trip" true
+        (Result.is_ok (check [ leg aapl D.Order.Side.Sell 100 ]));
+      Alcotest.(check bool)
+        "buy 50 XOM, covering the strategy's whole short, passes the trip" true
+        (Result.is_ok (check [ leg xom D.Order.Side.Buy 50 ]));
+      Alcotest.(check bool)
+        "both at once pass" true
+        (Result.is_ok
+           (check [ leg aapl D.Order.Side.Sell 100; leg xom D.Order.Side.Buy 50 ]));
+      let why = refusal (check [ leg aapl D.Order.Side.Sell 120 ]) in
+      contains "sell 120 through the strategy's zero: refused, naming the switch"
+        ~substring:"order 1 of 1 (AAPL sell 120 market-on-open): kill_switch:" why;
+      contains "with the restored trip's words" ~substring:"(held across a restart)" why;
+      let why = refusal (check [ leg xom D.Order.Side.Buy 60 ]) in
+      contains "buy 60 through the short's zero: refused"
+        ~substring:"(XOM buy 60 market-on-open): kill_switch:" why;
+      let why =
+        refusal (check [ leg aapl D.Order.Side.Sell 100; leg xom D.Order.Side.Buy 60 ])
+      in
+      contains "a flip beside a reduction refuses the rebalance whole"
+        ~substring:"(XOM buy 60 market-on-open): kill_switch:" why;
+      let why = refusal (check [ leg aapl D.Order.Side.Buy 10 ]) in
+      contains "a buy that grows the long: refused"
+        ~substring:"(AAPL buy 10 market-on-open): kill_switch:" why;
+      Alcotest.(check int) "and nothing journaled" before (journaled journal))
+    ();
+  with_oms ~halt
+    ~f:(fun oms journal ->
+      fills journal;
+      let why =
+        refusal
+          (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
+             ~legs:[ leg aapl D.Order.Side.Sell 100 ])
+      in
+      contains "the word off: the sell of 100 is refused"
+        ~substring:"(AAPL sell 100 market-on-open): kill_switch:" why)
+    ()
+
+(* Two reductions in one name are judged together. The strategy owns AAPL
+   +100 of the account's 400, and a hand's sell of 350 AAPL rests at the
+   venue: if it fills the account holds 50, so the strategy's sell of 100
+   under the trip -- no larger than its own 100 or the account's 400 -- would
+   take the account through zero, and is refused. A sell of 50 is not. *)
+let test_a_resting_reduction_in_the_name_shrinks_the_room_under_a_trip () =
+  let halt = D.Halt.create D.Halt.Source.none in
+  D.Halt.restore_trip halt ~limit:"aapl-cap" ~at:(at "2026-09-14T21:00:00Z");
+  let on =
+    {
+      Desk_spec.default with
+      Desk_spec.trading = Desk_spec.Enabled;
+      reduce_through_trip = true;
+    }
+  in
+  with_oms ~halt ~spec:on
+    ~f:(fun oms journal ->
+      journal_order journal ~n:1 ~source:"signal:exp_a01_tech:1"
+        ~state:D.Order.State.Filled ~fills:[ 100.0 ] 100;
+      let resting =
+        D.Order.create
+          {
+            D.Order.Request.client_order_id = cid 9;
+            symbol = aapl;
+            side = D.Order.Side.Sell;
+            qty = 350;
+            kind = D.Order.Kind.Market;
+            tif = D.Order.Tif.Opg;
+          }
+      in
+      D.Journal.insert_order journal resting ~source:"manual"
+        ~decision_price:(Price.of_float 150.0) ~arrival:None ~verdict:`Null
+        ~at:(at "2026-09-14T23:00:00Z");
+      ignore (D.Oms.record oms resting (D.Order.Event.Acknowledged "venue-9") : D.Order.t);
+      let check legs =
+        D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source ~legs
+      in
+      let why = refusal (check [ leg aapl D.Order.Side.Sell 100 ]) in
+      contains "sell 100 beside the resting 350: refused"
+        ~substring:"(AAPL sell 100 market-on-open): kill_switch:" why;
+      contains "naming the room left" ~substring:"the account's (50)" why;
+      Alcotest.(check bool)
+        "sell 50 fits what is left" true
+        (Result.is_ok (check [ leg aapl D.Order.Side.Sell 50 ])))
     ()
 
 (* An order of the strategy's that may still fill makes its position
@@ -1349,6 +1461,11 @@ let suite =
       Alcotest.test_case
         "a flat signal sells exactly the strategy's own shares, not a hand-bought lot"
         `Quick test_a_flat_signal_sells_exactly_the_strategy's_own_shares;
+      Alcotest.test_case
+        "a strategy's reduction passes a limit's trip, and a flip is refused whole" `Quick
+        test_a_strategy's_reduction_passes_a_limit's_trip_and_a_flip_is_refused_whole;
+      Alcotest.test_case "a resting reduction in the name shrinks the room under a trip"
+        `Quick test_a_resting_reduction_in_the_name_shrinks_the_room_under_a_trip;
       Alcotest.test_case "a strategy with an order that may still fill is not sized"
         `Quick test_a_strategy_with_an_order_that_may_still_fill_is_not_sized;
       Alcotest.test_case "the venue's submit is called in one place" `Quick
