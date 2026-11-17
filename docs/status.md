@@ -941,8 +941,9 @@ never clears a break.** To settle one:
 2. Reverse it at the venue, outside the desk, so the account returns to the
    sub-ledger's sum. If the account holds the name from before the journal
    began, close that holding at the venue.
-3. The next two syncs judge the name whole, and the log says `sub-ledger:
-   SYMBOL sums again`.
+3. The next sync that judges the name -- one with no order of the desk's in it
+   that may still fill -- finds it whole and clears the break, and the log
+   says `sub-ledger: SYMBOL sums again`.
 
 **FOLLOW-UP (not code yet):** the missing settle path is a journaled
 adjustment row. It would be written by a person, carry the reason, and count

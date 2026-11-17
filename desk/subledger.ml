@@ -67,5 +67,6 @@ let refuses (breaks : break list) ~(symbol : Symbol.t) ~(increases : bool) : str
     |> Option.map ~f:(fun b ->
         sprintf
           "the sub-ledger breaks in %s; nothing that grows a strategy's position in %s \
-           is sent until a person settles it (a reduction still goes)"
+           is sent until a person settles it (a reduction goes only if it also shrinks \
+           the account's position, by no more than the account holds)"
           (describe b) (Symbol.to_string symbol))
