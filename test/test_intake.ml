@@ -2031,9 +2031,33 @@ let test_an_overlay_ages_in_session_hours () =
         (read "2026-11-16 13:45"))
     ()
 
+(* Fix round 1, m1: the adjust pass says a strategy's outcome when it
+   differs from the last one said, and a refusal that carries an age -- a
+   quote fetched N s ago, a stamp N s old -- must not read as new every
+   minute. The key it compares drops every "N s" and nothing else: two
+   refusals at different ages are one line, a sale of 10 and of 12 are two. *)
+let test_an_outcome's_age_is_not_what_makes_it_new () =
+  let key = D.Intake.said_key in
+  let refusal age =
+    sprintf
+      "refused, and nothing journaled or sent: order 1 of 1 (SPY sell 10 day limit at \
+       499.50): quote: SPY: its quote was fetched %s s ago, and a quote prices an order \
+       within 5 s of its fetch"
+      age
+  in
+  Alcotest.(check string)
+    "6.0 s and 61.5 s: one key"
+    (key (refusal "6.0"))
+    (key (refusal "61.5"));
+  Alcotest.(check bool)
+    "a sale of 10 and of 12: two" false
+    (String.equal (key "SPY sell 10 at 499.50") (key "SPY sell 12 at 499.50"))
+
 let suite =
   ( "intake",
     [
+      Alcotest.test_case "an outcome's age is not what makes it new" `Quick
+        test_an_outcome's_age_is_not_what_makes_it_new;
       Alcotest.test_case
         "after a restart with no drawdown reading the governor is the fallback" `Quick
         test_after_a_restart_with_no_drawdown_reading_the_governor_is_the_fallback;

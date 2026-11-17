@@ -1334,7 +1334,11 @@ let pre_wire ?(origin = Rules.Origin.Hand) t ~(own : float) (request : Order.Req
           | Rules.Origin.Hand -> Ok trade
           | Rules.Origin.Desk q -> (
               match
-                Rebalance.quote_refusal ~now ~max_age_s:t.spec.Desk_spec.quote_max_age_s q
+                Rebalance.quote_refusal
+                  ~shrinks:
+                    (Rules.shrinks_position ~position:own ~side:request.Order.Request.side
+                       ~qty:request.Order.Request.qty)
+                  ~now ~max_age_s:t.spec.Desk_spec.quote_max_age_s q
               with
               | None -> Ok trade
               | Some why ->
@@ -1536,12 +1540,15 @@ let strategy_position t ~(strategy : string) : (float Symbol.Map.t, string) Resu
    from [strategy_position], at [strategy]'s capital_fraction -- the
    caller's to set to the effective fraction an incubation strategy is sized
    at -- times [scale], which Rebalance.plan refuses outside [0, 1].
-   Rebalance.plan decides. Then every leg worth less than the book's
-   min_leg_notional is dropped (Rebalance.drop_small) -- never a leg whose
-   target is 0, which closes a name and would otherwise leave a residue the
-   desk could never sell: (kept, dropped), so the caller can say what it
-   dropped. *)
-let plan_rebalance t ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
+   Rebalance.plan decides. Then, with [floor] (the adjust pass's re-sizes),
+   every leg worth less than the book's min_leg_notional is dropped
+   (Rebalance.drop_small) -- never a leg whose target is 0, which closes a
+   name and would otherwise leave a residue the desk could never sell:
+   (kept, dropped), so the caller can say what it dropped. A signal's own
+   rebalance drops nothing (the stage review's A-I6, withdrawing the floor
+   there; kept under day limits). *)
+let plan_rebalance ?(floor = true) t
+    ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
     ~(targets : (Symbol.t * float) list) ~(scale : float) :
     (Rebalance.Leg.t list * Rebalance.Leg.t list, string) Result.t =
   let module S = Ohcamel.Config.Book.Signals_spec.Strategy in
@@ -1565,7 +1572,27 @@ let plan_rebalance t ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
     ~scale ~equity:(sizing_equity t) ~account ~marks
     ~current:(strategy_position t ~strategy:strategy.S.name)
   |> Result.map ~f:(fun legs ->
-      Rebalance.drop_small ~legs ~min_leg_notional:t.spec.Desk_spec.min_leg_notional)
+      if floor then
+        Rebalance.drop_small ~legs ~min_leg_notional:t.spec.Desk_spec.min_leg_notional
+      else (legs, []))
+
+(* Whether a strategy's names all have a current mark ([fresh_mark]), and
+   why not: inside the send window a name the book holds that the feed calls
+   stale, or has not seen print, is a reason to WAIT (fix round 1, I1) -- a
+   thin ETF goes minutes without a print, a name may not have printed since a
+   restart -- not to close the day's document; the judgement's own max_age
+   bounds the wait. A name the book does not hold at all is no wait: the plan
+   refuses it for good. *)
+let marks_wait t ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t) : string option
+    =
+  let module S = Ohcamel.Config.Book.Signals_spec.Strategy in
+  List.filter_map strategy.S.symbols ~f:(fun name ->
+      let s = Symbol.of_string name in
+      if not (Graph.knows_symbol t.graph s) then None
+      else match fresh_mark t s with Ok _ -> None | Error why -> Some why)
+  |> function
+  | [] -> None
+  | whys -> Some (String.concat ~sep:"; " whys)
 
 (* Whether the desk may send its own orders now, and why not: the session
    rule for a desk order (Rules.session_refusal: the regular session open,
@@ -1739,9 +1766,11 @@ end
    limit is Rebalance.quote_limit of its name's -- a buy the book's
    intraday_slip_bps above the ask, a sell as far below the bid -- and it is
    judged by the rules as the desk's own day order (Rules.Origin.Desk): the
-   regular session and 09:35 New York, the live mark, the quote (missing,
-   one-sided, crossed or older than quote_max_age_s refuses it, rule
-   [quote]), the tick, and the collar and the order cap at that limit; and
+   regular session and 09:35 New York, the live mark (stale is timing),
+   the quote (Rebalance.quote_refusal: its fetch within quote_max_age_s, its
+   stamp within 60 s for an order that grows a position, rule [quote]), the
+   tick, the collar at that limit and the order cap at the larger of it and
+   the mark; and
    gated at that limit, the price a ticket's limit is gated at. Everything
    else is the same, the max_legs refusal included: a rebalance with more
    orders is split into waves before it gets here ([propose_rebalance]).
@@ -1750,9 +1779,9 @@ end
    refused order failed for timing alone (Rules.is_timing_refusal): the
    rebalance may go later unchanged ([Rebalance_outcome.Not_now]). Every
    other refusal leaves it false. *)
-let check_rebalance ?(timing = ref false) t ~(quotes : Symbol.t -> Venue.Quote.t option)
-    ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t list) :
-    (Checked_rebalance.t, string) Result.t =
+let check_rebalance ?(timing = ref false) t
+    ~(quotes : Symbol.t -> Rebalance.Fetched.t option) ~(source : Rebalance.Source.t)
+    ~(legs : Rebalance.Leg.t list) : (Checked_rebalance.t, string) Result.t =
   let open Result.Let_syntax in
   (* The book as the gate reads it: a name it does not hold is flat here, and
      the universe rule refuses its order below. *)
@@ -1890,7 +1919,13 @@ let check_rebalance ?(timing = ref false) t ~(quotes : Symbol.t -> Venue.Quote.t
            can price it, else none -- the quote rule then says why. *)
         let kind, price =
           match quote with
-          | Some q when Option.is_none (Rebalance.quote_refusal ~now ~max_age_s quote) ->
+          | Some { Rebalance.Fetched.quote = q; _ }
+            when Option.is_none
+                   (Rebalance.quote_refusal
+                      ~shrinks:
+                        (Rules.shrinks_position ~position:ctx.Rules.Context.own
+                           ~side:leg.Rebalance.Leg.side ~qty:leg.Rebalance.Leg.qty)
+                      ~now ~max_age_s quote) ->
               let limit =
                 Price.of_float
                   (Rebalance.quote_limit ~side:leg.Rebalance.Leg.side
@@ -1919,8 +1954,8 @@ let check_rebalance ?(timing = ref false) t ~(quotes : Symbol.t -> Venue.Quote.t
     with
     | _ :: _ as failed ->
         timing :=
-          List.for_all failed ~f:(fun (_, (r : Order.Request.t), _, failures) ->
-              Rules.is_timing_refusal ~tif:r.Order.Request.tif failures);
+          List.for_all failed ~f:(fun (_, _, _, failures) ->
+              Rules.is_timing_refusal ~desk:true failures);
         Error
           (String.concat ~sep:"; "
              (List.map failed ~f:(fun (i, r, _, failures) ->
@@ -2028,7 +2063,10 @@ let send_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t lis
           in
           let%bind fetched =
             Deferred.List.map ~how:`Parallel symbols ~f:(fun s ->
-                Deferred.map (fetch_quote t s) ~f:(fun q -> (s, q)))
+                Deferred.map (fetch_quote t s) ~f:(fun q ->
+                    ( s,
+                      Option.map q ~f:(fun quote ->
+                          { Rebalance.Fetched.quote; at = t.now () }) )))
           in
           let quote_of symbol =
             Option.join (List.Assoc.find fetched symbol ~equal:Symbol.equal)
@@ -2047,7 +2085,8 @@ let send_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t lis
               in
               let arrivals =
                 List.map orders ~f:(fun ((r : Order.Request.t), _) ->
-                    Option.map (quote_of r.Order.Request.symbol) ~f:(fun q ->
+                    Option.map (quote_of r.Order.Request.symbol)
+                      ~f:(fun { Rebalance.Fetched.quote = q; _ } ->
                         (q.Venue.Quote.bid, q.Venue.Quote.ask)))
               in
               match
@@ -2061,7 +2100,7 @@ let send_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t lis
                     sprintf "after the quotes, %s: %s" (name_leg ~i ~n r) (reason f)
                   in
                   return
-                    (if Rules.is_timing_refusal ~tif:r.Order.Request.tif [ f ] then
+                    (if Rules.is_timing_refusal ~desk:true [ f ] then
                        Rebalance_outcome.Not_now why
                      else Rebalance_outcome.Refused why)
               | None ->

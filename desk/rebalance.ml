@@ -105,21 +105,45 @@ let quote_limit ~(side : Order.Side.t) ~(bid : float) ~(ask : float) ~(band_bps 
   | Order.Side.Buy -> Float.round_up ((ask *. (1.0 +. band) *. 100.0) -. 1e-6) /. 100.0
   | Order.Side.Sell -> Float.round_down ((bid *. (1.0 -. band) *. 100.0) +. 1e-6) /. 100.0
 
+(* A quote as the desk received it: the venue's own quote, with its own
+   stamp (when the venue last saw it CHANGE), and the instant the desk's
+   fetch of it answered. *)
+module Fetched = struct
+  type t = { quote : Venue.Quote.t; at : Time_ns.t }
+end
+
+(* How long before its fetch a quote may have last changed and still price
+   an order that GROWS a position: the bound the feed's print filter puts on
+   a midpoint (lib/feed/alpaca_ws.ml). *)
+let max_quote_stamp_age_s = 60.0
+
 (* Whether a quote fetched at send can price a desk order: None when it can,
    else why not -- the rules' [quote] refusal (Rules.check, Oms.pre_wire).
-   No quote; a side that is zero, negative or not a number (one-sided: the
-   venue's "no active bid"); a bid above the ask (crossed); or one stamped
-   more than [max_age_s] from [now], either way -- older, or from a clock
-   ahead of the desk's by more than that. A locked quote, bid equal to ask,
-   prices: it is a market, if a thin one. *)
-let quote_refusal ~(now : Time_ns.t) ~(max_age_s : float) (q : Venue.Quote.t option) :
-    string option =
-  match q with
+   For every order: no quote; a side that is zero, negative or not a number
+   (one-sided: the venue's "no active bid"); a bid above the ask (crossed);
+   a stamp more than [max_age_s] AFTER its fetch (a clock that disagrees
+   with the desk's by more than the bound -- a quote from the future); or a
+   fetch more than [max_age_s] (the book's quote_max_age_s, 5 s) from [now]
+   -- the quote is the one fetched as the order is sent, not one kept.
+
+   THE STAMP IS WHEN THE QUOTE LAST CHANGED, not when it was true: on a thin
+   ETF a current quote can sit unchanged for minutes, and a six-leg wave
+   would need all six to change within the fetch bound. So the stamp is held
+   to [max_quote_stamp_age_s] (60 s) before its fetch only for an order that
+   grows a position; one that only [shrinks] the strategy's own (a stop's
+   flatten, a governor's cut, a decay) takes any quote that passes the rest,
+   whatever its stamp, the price collar standing guard against a quote far
+   from the mark. A locked quote, bid equal to ask, prices: it is a market,
+   if a thin one. *)
+let quote_refusal ?(shrinks = false) ~(now : Time_ns.t) ~(max_age_s : float)
+    (f : Fetched.t option) : string option =
+  match f with
   | None -> Some "no quote answered for it"
-  | Some q -> (
+  | Some { Fetched.quote = q; at = fetched } -> (
       let bid = Price.to_float q.Venue.Quote.bid
       and ask = Price.to_float q.Venue.Quote.ask in
-      let age = Time_ns.Span.to_sec (Time_ns.diff now q.Venue.Quote.at) in
+      let since_fetch = Time_ns.Span.to_sec (Time_ns.diff now fetched) in
+      let stamp_age = Time_ns.Span.to_sec (Time_ns.diff fetched q.Venue.Quote.at) in
       match () with
       | ()
         when not
@@ -129,11 +153,24 @@ let quote_refusal ~(now : Time_ns.t) ~(max_age_s : float) (q : Venue.Quote.t opt
       | () when Float.( > ) bid ask ->
           Some
             (sprintf "its quote is crossed: the bid %.4f is above the ask %.4f" bid ask)
-      | () when not (Float.( <= ) (Float.abs age) max_age_s) ->
+      | () when not (Float.( >= ) stamp_age (-.max_age_s)) ->
           Some
             (sprintf
-               "its quote is %.1f s from now, and a quote prices an order within %g s" age
-               max_age_s)
+               "its quote is stamped %.1f s after it was fetched, from a clock ahead of \
+                the desk's"
+               (-.stamp_age))
+      | () when not (Float.( <= ) (Float.abs since_fetch) max_age_s) ->
+          Some
+            (sprintf
+               "its quote was fetched %.1f s ago, and a quote prices an order within %g \
+                s of its fetch"
+               since_fetch max_age_s)
+      | () when (not shrinks) && not (Float.( <= ) stamp_age max_quote_stamp_age_s) ->
+          Some
+            (sprintf
+               "its quote last changed %.0f s before it was fetched, and an order that \
+                grows a position is priced only off a quote that changed within %g s"
+               stamp_age max_quote_stamp_age_s)
       | () -> None)
 
 (* Legs worth less than [min_leg_notional] at their price, |qty x price|, are

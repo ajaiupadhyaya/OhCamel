@@ -251,9 +251,9 @@ let test_an_opposite_resting_order_is_a_wash () =
   Alcotest.(check (list bool))
     "timing: wash alone, wash with session; final: wash with a cap" [ true; true; false ]
     [
-      Rules.is_timing_refusal ~tif:Order.Tif.Day [ f "wash" ];
-      Rules.is_timing_refusal ~tif:Order.Tif.Day [ f "session"; f "wash" ];
-      Rules.is_timing_refusal ~tif:Order.Tif.Day [ f "wash"; f "notional" ];
+      Rules.is_timing_refusal [ f "wash" ];
+      Rules.is_timing_refusal [ f "session"; f "wash" ];
+      Rules.is_timing_refusal [ f "wash"; f "notional" ];
     ]
 
 let test_every_failure_is_reported_in_rule_order () =
@@ -467,14 +467,21 @@ let test_a_trip's_refusal_quotes_the_switch () =
 
 let new_york = Timezone.find "America/New_York"
 
-(* A quote stamped [age] seconds before [now] (after it, for a negative
-   age): 149.95 x 150.05 around the mark of 150 unless a case says. *)
-let quote ?(bid = 149.95) ?(ask = 150.05) ?(at = now) age =
+(* A quote whose fetch answered [fetched] seconds before [at] (now unless a
+   case says), the venue's own stamp [stamped] seconds before that fetch (0
+   unless a case says; after it, for a negative stamp): 149.95 x 150.05
+   around the mark of 150 unless a case says. *)
+let quote ?(bid = 149.95) ?(ask = 150.05) ?(at = now) ?(stamped = 0.0) fetched =
+  let fetch = Time_ns.sub at (Time_ns.Span.of_sec fetched) in
   Some
     {
-      Ohcamel_desk.Venue.Quote.bid = Price.of_float bid;
-      ask = Price.of_float ask;
-      at = Time_ns.sub at (Time_ns.Span.of_sec age);
+      Ohcamel_desk.Rebalance.Fetched.quote =
+        {
+          Ohcamel_desk.Venue.Quote.bid = Price.of_float bid;
+          ask = Price.of_float ask;
+          at = Time_ns.sub fetch (Time_ns.Span.of_sec stamped);
+        };
+      at = fetch;
     }
 
 (* A desk order's context: Monday's session, the zone loaded, and a quote
@@ -543,6 +550,36 @@ let test_a_desk_order_waits_for_09_35_new_york_in_both_seasons () =
     { (desk ()) with session = None }
     (desk_buy 100)
 
+(* Fix round 1, m3: 09:35 in the two weeks the clocks change in 2026, where
+   an hour's offset decides which side of the line an instant is.
+   - Monday 2 November, the first session on EST after the clocks went back:
+     13:35Z is 08:35 EST (a fixed -4 reads 09:35), refused; 14:34:59.999 EST
+     refused; 14:35Z, 09:35 EST, goes.
+   - Monday 9 March, the first session on EDT after they went forward: 13:35Z
+     is 09:35 EDT and goes (a fixed -5 reads 08:35); 13:34:59.999 refused.
+   And the fixture's own weeks: Monday 14 September (EDT) and Monday 7
+   December (EST) are the case above. *)
+let test_09_35_in_the_weeks_the_clocks_change () =
+  let clock next_open next_close =
+    Some { Rules.Session.next_open = at next_open; next_close = at next_close }
+  in
+  let fall = clock "2026-11-03T14:30:00Z" "2026-11-02T21:00:00Z" in
+  let spring = clock "2026-03-10T13:30:00Z" "2026-03-09T20:00:00Z" in
+  let check what expected session now =
+    check_rules what expected
+      { (desk ~q:(quote ~at:now 1.0) ~at:now ()) with session }
+      (desk_buy 100)
+  in
+  check "Mon 2 Nov 08:35 EST (a fixed -4 reads 09:35)" [ "session" ] fall
+    (at "2026-11-02T13:35:00Z");
+  check "Mon 2 Nov 09:34:59.999999999 EST" [ "session" ] fall
+    (nanosecond_before "2026-11-02T14:35:00Z");
+  check "Mon 2 Nov 09:35 EST" [] fall (at "2026-11-02T14:35:00Z");
+  check "Mon 9 Mar 09:34:59.999999999 EDT" [ "session" ] spring
+    (nanosecond_before "2026-03-09T13:35:00Z");
+  check "Mon 9 Mar 09:35 EDT (a fixed -5 reads 08:35)" [] spring
+    (at "2026-03-09T13:35:00Z")
+
 (* The desk's order is priced off the quote fetched as it is sent, and with
    no usable one it is refused, rule [quote]: none answered; one more than
    quote_max_age_s (5 s) old -- exactly 5 s is inside; one stamped more than
@@ -560,7 +597,7 @@ let test_a_desk_order_with_no_fresh_quote_is_refused () =
     (desk_buy 100);
   refused "none answered" ~substring:"AAPL: no quote answered for it" None;
   refused "5.001 s old" ~substring:"within 5 s" (quote 5.001);
-  refused "6 s ahead of the clock" (quote (-6.0));
+  refused "stamped 6 s after its fetch" (quote ~stamped:(-6.0) 0.0);
   refused "crossed" ~substring:"crossed" (quote ~bid:150.10 ~ask:150.05 1.0);
   refused "no bid" ~substring:"one-sided" (quote ~bid:0.0 1.0);
   refused "not a number" ~substring:"one-sided" (quote ~ask:Float.nan 1.0);
@@ -590,6 +627,72 @@ let test_collar_and_notional_read_the_limit_sent () =
   check_rules "a sell of 166 at 149.79" [] ctx
     (request ~side:Order.Side.Sell ~kind:(limit 149.79) 166);
   check_rules "a limit past the collar" [ "collar" ] ctx (request ~kind:(limit 157.51) 10)
+
+(* Fix round 1, I2: the book's quote_max_age_s (5 s) bounds the FETCH --
+   how long ago the desk received the quote -- and the venue's own stamp,
+   which is when the quote last CHANGED, gets a looser bound of its own,
+   60 s (Rebalance.max_quote_stamp_age_s), and only for an order that grows
+   a position: on a thin ETF a current quote can sit unchanged for minutes.
+   An order that only shrinks the strategy's own position takes any
+   two-sided, uncrossed, finite quote that is not stamped ahead of its fetch,
+   whatever its stamp, with the collar as the guard.
+   - a stop's flatten (own +100, sell 100) on a quote stamped 30 minutes
+     before its fetch, fetched 1 s ago: goes;
+   - a buy on one stamped 61 s before its fetch: refused, naming 60 s;
+   - a buy on one stamped 30 s before, fetched now: goes;
+   - fetched 6 s ago: refused for the buy and the flatten alike;
+   - a sell that GROWS (own 0) on the 30-minute stamp: refused;
+   - the flatten on a crossed or stamped-ahead quote: still no quote. *)
+let test_a_quote's_fetch_is_bounded_and_its_stamp_only_for_growth () =
+  let flatten q = { (desk ~q ()) with own = 100.0 } in
+  let sell =
+    request ~side:Order.Side.Sell ~kind:(Order.Kind.Limit (Price.of_float 149.85))
+  in
+  check_rules "a flatten on a quote stamped 30 minutes before its fetch" []
+    (flatten (quote ~stamped:1800.0 1.0))
+    (sell 100);
+  check_rules "a buy on a quote stamped 61 s before its fetch" [ "quote" ]
+    (desk ~q:(quote ~stamped:61.0 0.0) ())
+    (desk_buy 100);
+  says "naming the stamp's bound" ~substring:"within 60 s"
+    (desk ~q:(quote ~stamped:61.0 0.0) ())
+    (desk_buy 100);
+  check_rules "a buy on one stamped 30 s before, fetched now" []
+    (desk ~q:(quote ~stamped:30.0 0.0) ())
+    (desk_buy 100);
+  check_rules "fetched 6 s ago: the buy" [ "quote" ]
+    (desk ~q:(quote 6.0) ())
+    (desk_buy 100);
+  says "naming the fetch" ~substring:"fetched 6.0 s ago"
+    (desk ~q:(quote 6.0) ())
+    (desk_buy 100);
+  check_rules "fetched 6 s ago: the flatten" [ "quote" ] (flatten (quote 6.0)) (sell 100);
+  check_rules "a sell that grows, on the 30-minute stamp" [ "quote" ]
+    (desk ~q:(quote ~stamped:1800.0 1.0) ())
+    (sell 100);
+  check_rules "the flatten on a crossed quote" [ "quote" ]
+    (flatten (quote ~bid:150.10 ~ask:150.05 ~stamped:1800.0 1.0))
+    (sell 100);
+  check_rules "the flatten on a quote stamped 6 s after its fetch" [ "quote" ]
+    (flatten (quote ~stamped:(-6.0) 1.0))
+    (sell 100)
+
+(* Fix round 1, I4: the order cap reads qty x max(limit, mark), so a limit
+   under the mark never loosens it. A sell of 167 at 144.00, 4% under the
+   mark of 150, is 24,048 at its limit and 25,050 at the mark: refused. A
+   buy limit resting under the mark is held the same way; a buy limit above
+   it is read at its limit. *)
+let test_the_order_cap_reads_the_larger_of_the_limit_and_the_mark () =
+  let ctx = { context with adv20 = Some 1_000_000.0 } in
+  let limit p = Order.Kind.Limit (Price.of_float p) in
+  check_rules "a sell of 167 at 144.00, 4% under the mark" [ "notional" ] ctx
+    (request ~side:Order.Side.Sell ~kind:(limit 144.0) 167);
+  says "computed at the mark" ~substring:"167 x 150.00 = 25050.00" ctx
+    (request ~side:Order.Side.Sell ~kind:(limit 144.0) 167);
+  check_rules "a buy of 167 resting at 144.00" [ "notional" ] ctx
+    (request ~kind:(limit 144.0) 167);
+  check_rules "a buy of 166 at 151.00 is read at its limit" [ "notional" ] ctx
+    (request ~kind:(limit 151.0) 166)
 
 (* No market-on-open order is built, and one that reached the rules -- an
    old journal row's tif -- would be refused by the session rule, whoever
@@ -643,7 +746,7 @@ let test_a_market_on_close_order_until_ten_minutes_before_the_close () =
    Anything else beside them is final; no failure is no refusal. *)
 let test_a_timing_refusal_is_the_session_rule_alone () =
   let f rule = { Rules.Failure.rule; why = "x" } in
-  let timing fs = Rules.is_timing_refusal ~tif:Order.Tif.Day fs in
+  let timing fs = Rules.is_timing_refusal fs in
   Alcotest.(check (list bool))
     "session alone; session and notional; mark alone; none" [ true; false; false; false ]
     [
@@ -703,10 +806,16 @@ let suite =
         test_an_opposite_resting_order_is_a_wash;
       Alcotest.test_case "a desk order waits for 09:35 New York, in EDT and in EST" `Quick
         test_a_desk_order_waits_for_09_35_new_york_in_both_seasons;
+      Alcotest.test_case "09:35 in the weeks the clocks change" `Quick
+        test_09_35_in_the_weeks_the_clocks_change;
       Alcotest.test_case "a desk order with no fresh quote is refused" `Quick
         test_a_desk_order_with_no_fresh_quote_is_refused;
       Alcotest.test_case "the collar and the order cap read the limit sent" `Quick
         test_collar_and_notional_read_the_limit_sent;
+      Alcotest.test_case "a quote's fetch is bounded, and its stamp only for growth"
+        `Quick test_a_quote's_fetch_is_bounded_and_its_stamp_only_for_growth;
+      Alcotest.test_case "the order cap reads the larger of the limit and the mark" `Quick
+        test_the_order_cap_reads_the_larger_of_the_limit_and_the_mark;
       Alcotest.test_case "a market-on-open order is refused" `Quick
         test_a_market_on_open_order_is_refused;
     ] )

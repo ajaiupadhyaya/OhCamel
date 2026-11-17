@@ -923,6 +923,17 @@ type t = {
   (* Each strategy's last adjust outcome said, so a refusal repeated every
      minute -- an intraday proposal outside the session -- costs one line. *)
   adjust_said : string String.Table.t;
+  (* Whether a sizing of the retry set is running: [run] starts one detached,
+     beside the adjust pass, and starts no second while it runs. *)
+  mutable sizing : bool;
+  (* The strategies a sizing or an adjust is proposing for now: one strategy
+     is never sized and adjusted at once ([exclusively]). *)
+  busy : String.Hash_set.t;
+  (* The completions and flattens this process sent, by key and New York
+     date, beside the journal's count (fix round 1, m5): the cap reads the
+     larger, so a write that failed can never let more than the cap
+     through. *)
+  sent_today : int String.Table.t;
 }
 
 (* The most times a session the adjust pass sends a completion for one
@@ -952,6 +963,9 @@ let create ?gauge ~journal ~dir ~strategies ~universe ~on_event ~now () =
     adjusting = false;
     skip_said = false;
     adjust_said = String.Table.create ();
+    sizing = false;
+    busy = String.Hash_set.create ();
+    sent_today = String.Table.create ();
     judged = String.Table.create ();
     refused = String.Hash_set.create ();
     unsettled = String.Map.empty;
@@ -1465,7 +1479,7 @@ let grows oms (strategy : Signals_spec.Strategy.t) (l : Rebalance.Leg.t) =
       let after = q +. (Order.Side.sign l.side *. Float.of_int l.qty) in
       Float.( > ) (Float.abs after) (Float.abs q)
 
-let rebalance ?(sizing_mode = "open") ?(only_shrink = false) ?note t ~oms
+let rebalance ?(floor = true) ?(sizing_mode = "open") ?(only_shrink = false) ?note t ~oms
     ~(scale : unit -> Parts.t) (a : Accepted.t) : Rebalanced.t Deferred.t =
   let doc = a.Accepted.doc in
   let strategy = a.Accepted.strategy in
@@ -1492,13 +1506,22 @@ let rebalance ?(sizing_mode = "open") ?(only_shrink = false) ?note t ~oms
           wait = true;
           attempted = false;
         }
+  | Ok (), None when Option.is_some (Oms.marks_wait oms ~strategy) ->
+      return
+        {
+          Rebalanced.sentence =
+            Oms.Rebalance_outcome.to_string
+              (Not_now ("mark: " ^ Option.value_exn (Oms.marks_wait oms ~strategy)));
+          wait = true;
+          attempted = false;
+        }
   | Ok (), None -> (
       let ratio = incubation_ratio t ~oms strategy in
       let fraction = strategy.capital_fraction in
       let parts = scale () in
       let scale = parts.Parts.effective *. ratio in
       let planned =
-        Oms.plan_rebalance oms ~strategy
+        Oms.plan_rebalance ~floor oms ~strategy
           ~targets:
             (List.map doc.targets ~f:(fun (x : Contract.target) -> (x.symbol, x.weight)))
           ~scale
@@ -1523,8 +1546,9 @@ let rebalance ?(sizing_mode = "open") ?(only_shrink = false) ?note t ~oms
                 log t "%S %d: its sizing could not be recorded: %s" doc.strategy
                   doc.sequence (Error.to_string_hum e))
       in
-      (* The legs under the book's floor (Oms.plan_rebalance drops them),
-         said as part of the sentence, so the record shows what was not
+      (* The legs under the book's floor (Oms.plan_rebalance drops them for
+         the adjust pass, never for a signal's own rebalance), said as part
+         of the sentence, so the record shows what was not
          sent and why. *)
       let floor_sentence dropped =
         sprintf "dropped below the $%.0f floor: %s"
@@ -1628,6 +1652,52 @@ let stopped_by t name =
         (sprintf "its stop state could not be read (%s), so it waits until it can be"
            (Error.to_string_hum e))
 
+(* The key the adjust pass compares a strategy's outcome by, to say it only
+   when it is new (fix round 1, m1): the sentence with every duration in
+   seconds -- a number followed by " s" as a word -- replaced by "#", so a
+   refusal whose only change is a quote's age is not said again every
+   minute. Every other number stays: a sale of 10 is not a sale of 12. *)
+let said_key (sentence : string) : string =
+  let n = String.length sentence in
+  let numeric c = Char.is_digit c || Char.equal c '.' in
+  let buf = Buffer.create n in
+  let rec go i =
+    if i >= n then ()
+    else if numeric sentence.[i] && (i = 0 || not (numeric sentence.[i - 1])) then (
+      let j = ref i in
+      while !j < n && numeric sentence.[!j] do
+        incr j
+      done;
+      let seconds =
+        !j + 1 < n
+        && Char.equal sentence.[!j] ' '
+        && Char.equal sentence.[!j + 1] 's'
+        && (!j + 2 >= n || not (Char.is_alpha sentence.[!j + 2]))
+      in
+      Buffer.add_string buf
+        (if seconds then "#" else String.sub sentence ~pos:i ~len:(!j - i));
+      go !j)
+    else (
+      Buffer.add_char buf sentence.[i];
+      go (i + 1))
+  in
+  go 0;
+  Buffer.contents buf
+
+(* [f] for strategy [name], only while neither the sizing nor the adjust
+   pass is proposing for it already (fix round 1, I3): the two run side by
+   side, and one strategy sized and adjusted at once would read each other's
+   resting orders as its own fill history, unknown. None when it was busy. *)
+let exclusively t name (f : unit -> 'a Deferred.t) : 'a option Deferred.t =
+  if Hash_set.mem t.busy name then return None
+  else (
+    Hash_set.add t.busy name;
+    Monitor.protect
+      (fun () -> Deferred.map (f ()) ~f:Option.some)
+      ~finally:(fun () ->
+        Hash_set.remove t.busy name;
+        Deferred.unit))
+
 let size ?reading t ~(oms : Oms.t option) ~(scale : unit -> float)
     (accepted : Accepted.t list) : unit Deferred.t =
   let parts () =
@@ -1667,11 +1737,19 @@ let size ?reading t ~(oms : Oms.t option) ~(scale : unit -> float)
                     (Option.value_exn (stopped_by t doc.strategy))))
         | None, Some oms -> (
             match%map
-              Monitor.try_with ~extract_exn:true (fun () ->
-                  rebalance t ~oms ~scale:parts a)
+              exclusively t doc.strategy (fun () ->
+                  Monitor.try_with ~extract_exn:true (fun () ->
+                      rebalance ~floor:false t ~oms ~scale:parts a))
             with
-            | Ok outcome -> outcome
-            | Error exn ->
+            | None ->
+                {
+                  Rebalanced.sentence =
+                    "waits: the adjust pass is proposing for this strategy now";
+                  wait = true;
+                  attempted = false;
+                }
+            | Some (Ok outcome) -> outcome
+            | Some (Error exn) ->
                 Rebalanced.final
                   (sprintf
                      "the rebalance raised (%s); the orders whose source is %s are the \
@@ -1905,12 +1983,17 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                      (Lazy.force Desk_time.new_york)
                      ~default:Time_float.Zone.utc)
             in
+            let memory key =
+              Option.value
+                (Hashtbl.find t.sent_today (key ^ "\000" ^ Date.to_string today))
+                ~default:0
+            in
             let tried key =
               match
                 Or_error.try_with (fun () ->
                     Journal.completions_today t.journal ~date:today ~key)
               with
-              | Ok n -> n
+              | Ok n -> Int.max n (memory key)
               (* Unreadable is spent: nothing more is sent this pass. *)
               | Error _ -> max_completions
             in
@@ -2127,6 +2210,8 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
             Deferred.List.iter ~how:(`Max_concurrent_jobs 8) due
               ~f:(fun ((a : Accepted.t), parts, note, ratio) ->
                 let name = a.Accepted.strategy.name in
+                Deferred.ignore_m @@ exclusively t name
+                @@ fun () ->
                 let completing = Option.equal String.equal note (Some "completion") in
                 let flattening = Option.equal String.equal note (Some "stop") in
                 (* Only shrinking, where something IS unknown or the gate
@@ -2190,27 +2275,32 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                       (* A flatten is capped as a completion is, and for the same
                          reason: an order that cannot fill would otherwise be sent
                          and cancelled every pass all session. *)
-                      (if (completing || flattening) && outcome.Rebalanced.attempted then
-                         match
-                           Or_error.try_with (fun () ->
-                               Journal.record_completion t.journal
-                                 ~key:(if flattening then flatten_key name else name)
-                                 ~date:today ~at:(t.now ()))
-                         with
-                         | Ok () -> ()
-                         | Error e ->
-                             log t "%S: its completion could not be counted: %s" name
-                               (Error.to_string_hum e));
+                      if (completing || flattening) && outcome.Rebalanced.attempted then (
+                        let key = if flattening then flatten_key name else name in
+                        Hashtbl.update t.sent_today
+                          (key ^ "\000" ^ Date.to_string today)
+                          ~f:(fun n -> Option.value n ~default:0 + 1);
+                        match
+                          Or_error.try_with (fun () ->
+                              Journal.record_completion t.journal
+                                ~key:(if flattening then flatten_key name else name)
+                                ~date:today ~at:(t.now ()))
+                        with
+                        | Ok () -> ()
+                        | Error e ->
+                            log t "%S: its completion could not be counted: %s" name
+                              (Error.to_string_hum e));
                       outcome.Rebalanced.sentence
                   | Error exn -> sprintf "the rebalance raised (%s)" (Exn.to_string exn)
                 in
                 let said = Hashtbl.find t.adjust_said name in
-                if not (Option.equal String.equal said (Some outcome)) then (
-                  Hashtbl.set t.adjust_said ~key:name ~data:outcome;
+                if not (Option.equal String.equal said (Some (said_key outcome))) then (
+                  Hashtbl.set t.adjust_said ~key:name ~data:(said_key outcome);
                   log t "%S %d: adjusted to scale %g%s: %S" name a.Accepted.doc.sequence
                     (parts.Parts.effective *. ratio)
                     (match note with Some n -> " (" ^ n ^ ")" | None -> "")
-                    outcome)))
+                    outcome);
+                Deferred.unit))
       in
       t.adjusting <- false;
       t.skip_said <- false;
@@ -2222,15 +2312,18 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
    arrived while it was down without waiting a minute. [judge_pass] is
    synchronous, so a plain try/with sees every raise it can make. Then THE
    RETRY SET is sized ([collect_pending]: every accepted judgement still
-   pending, this pass's among them) at the reading as it is then, before the
-   minute's wait begins, so no pass starts while a rebalance is still being
-   proposed -- but only once the venue's clock has answered: before it, the
-   overlay cannot be aged and the session cannot be timed, so nothing is
-   sized at all and every judgement waits, pending (the stage review's
-   A-I1). An intake with no order manager writes its "not sized" sentence
-   over this pass's accepted judgements, as it always has. Then the adjust
-   pass is started and not waited for: its intraday waves can take minutes,
-   and the next pass must not. *)
+   pending, this pass's among them) at the reading as it is then -- but only
+   once the venue's clock has answered: before it, the overlay cannot be aged
+   and the session cannot be timed, so nothing is sized at all and every
+   judgement waits, pending (the stage review's A-I1). An intake with no
+   order manager writes its "not sized" sentence over this pass's accepted
+   judgements, as it always has. The sizing and the adjust pass are BOTH
+   started and not waited for (fix round 1, I3): each strategy's waves are
+   waited on, up to wave_timeout_s each, and a stop's flatten or a
+   governor's cut must not queue behind another strategy's sizing. A sizing
+   still running when the next pass comes is not started again (so no
+   judgement is proposed twice), the adjust pass keeps its own overlap guard,
+   and one strategy is never sized and adjusted at once ([exclusively]). *)
 let run ?(time_source = Time_source.wall_clock ()) ?oms t : unit Deferred.t =
   let rec loop () =
     let accepted =
@@ -2256,17 +2349,20 @@ let run ?(time_source = Time_source.wall_clock ()) ?oms t : unit Deferred.t =
               Hash_set.remove t.said clock_key;
               collect_pending t)
     in
-    let%bind () =
-      match%map
-        Monitor.try_with ~extract_exn:true (fun () ->
-            size t ~oms
-              ~reading:(fun () -> current_reading t)
-              ~scale:(fun () -> effective_scale t)
-              (to_size ()))
-      with
-      | Ok () -> ()
-      | Error exn -> log t "sizing raised: %s" (Exn.to_string exn)
-    in
+    if not t.sizing then (
+      t.sizing <- true;
+      don't_wait_for
+        (match%map
+           Monitor.try_with ~extract_exn:true (fun () ->
+               size t ~oms
+                 ~reading:(fun () -> current_reading t)
+                 ~scale:(fun () -> effective_scale t)
+                 (to_size ()))
+         with
+        | Ok () -> t.sizing <- false
+        | Error exn ->
+            t.sizing <- false;
+            log t "sizing raised: %s" (Exn.to_string exn)));
     don't_wait_for (adjust t ~oms);
     let%bind () = Time_source.after time_source every in
     loop ()

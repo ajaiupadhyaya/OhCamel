@@ -227,11 +227,18 @@
  ;   intraday_slip_bps       every desk order is a day limit this far past the
  ;                           quote fetched as it is sent: a buy above the
  ;                           ask, a sell below the bid. Below the collar.
- ;   quote_max_age_s         a quote older than this when its order is sent,
- ;                           or crossed, or missing a side, is no quote, and
- ;                           the order is refused (rule quote). In (0, 60].
- ;   min_leg_notional        an intraday leg smaller than this, in dollars, is
- ;                           dropped, and the drop journaled.
+ ;   quote_max_age_s         a quote FETCHED longer ago than this when its
+ ;                           order is sent, or crossed, or missing a side, or
+ ;                           stamped ahead of its fetch, is no quote, and the
+ ;                           order is refused (rule quote). In (0, 60]. The
+ ;                           quote's own stamp is when it last changed: an
+ ;                           order that grows a position needs it within 60 s
+ ;                           of the fetch; one that only shrinks the
+ ;                           strategy's own position takes any, the collar
+ ;                           standing guard.
+ ;   min_leg_notional        an adjust-pass leg smaller than this, in dollars,
+ ;                           is dropped, and the drop journaled (a signal's
+ ;                           own rebalance drops none).
  ;   wave_timeout_s          how long the desk waits on one wave of legs before
  ;                           it cancels what is left.
  ;   flatten_at              New York time, HH:MM inside the session, at which a

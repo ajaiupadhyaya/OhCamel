@@ -345,11 +345,16 @@ module Book = struct
       overlay_band : float; [@sexp.default 0.10]
       (* Every desk order (Task 1.7): a day limit priced off the quote
          fetched as it is sent -- a buy this far above the ask, a sell this
-         far below the bid -- and refused (rule [quote]) when that quote is
-         older than [quote_max_age_s], crossed, one-sided or not a number;
-         legs below [min_leg_notional] dropped, each wave waited on for at
-         most [wave_timeout_s]. The word keeps its old name, which books
-         already carry. *)
+         far below the bid -- and refused (rule [quote]) when that quote was
+         FETCHED more than [quote_max_age_s] ago, or is crossed, one-sided,
+         not a number or stamped ahead of its fetch. The quote's own stamp is
+         when it last changed, and is held to 60 s before its fetch only for
+         an order that grows a position (Rebalance.max_quote_stamp_age_s);
+         one that only shrinks the strategy's own takes any stamp, the collar
+         standing guard (fix round 1, I2). The adjust pass's legs below
+         [min_leg_notional] are dropped (a signal's own rebalance drops
+         none), each wave waited on for at most [wave_timeout_s]. The word
+         keeps its old name, which books already carry. *)
       intraday_slip_bps : float; [@sexp.default 10.0]
       quote_max_age_s : float; [@sexp.default 5.0]
       min_leg_notional : float; [@sexp.default 200.0]

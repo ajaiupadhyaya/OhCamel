@@ -2193,17 +2193,20 @@ let test_a_rebalance_whose_session_closes_while_its_quotes_are_fetched_is_refuse
   Graph.destroy f.graph;
   return ()
 
-(* The quote the order is priced off is the quote fetched as it is sent,
-   and one older than the book's quote_max_age_s (5 s) is no quote: the venue
-   answers with a quote stamped six seconds before the manager's now. The
-   rebalance is refused by the quote rule -- for timing alone, Not_now: the
-   next pass fetches another -- and nothing is journaled or sent. At five
-   seconds it goes. Before 09:35 nothing is fetched at all: the send window
-   refuses first, saying 09:35, and the venue is never asked. *)
+(* The quote the order is priced off is the one fetched as it is sent; its
+   own stamp is when it last changed. A buy grows a position, and is priced
+   only off a quote that changed within 60 s of its fetch: the venue answers
+   with one stamped 61 s before, and the rebalance is refused by the quote
+   rule -- for timing alone, Not_now: the next pass fetches another -- and
+   nothing is journaled or sent. Stamped 30 s before, it goes, and fills.
+   The strategy's sale of those 10 shrinks its own position, and goes on a
+   quote that last changed thirty minutes before (fix round 1, I2). Before
+   09:35 nothing is fetched at all: the send window refuses first, saying
+   09:35, and the venue is never asked. *)
 let test_a_rebalance_with_no_fresh_quote_is_not_sent () =
   let f = fixture () in
   record_close f;
-  let age = ref 6.0 and asked = ref 0 in
+  let age = ref 61.0 and asked = ref 0 in
   let venue_read = D.Sim_venue.read f.venue in
   let read =
     {
@@ -2230,20 +2233,31 @@ let test_a_rebalance_with_no_fresh_quote_is_not_sent () =
   (match outcome with
   | D.Oms.Rebalance_outcome.Not_now why ->
       Alcotest.(check bool)
-        (sprintf "six seconds old: the quote rule, for timing: %s" why)
+        (sprintf "a buy on a quote that changed 61 s before: refused, for timing: %s" why)
         true
-        (String.is_substring why ~substring:"quote: AAPL: its quote is 6.0 s from now")
+        (String.is_substring why
+           ~substring:"quote: AAPL: its quote last changed 61 s before it was fetched")
   | other -> Alcotest.failf "not refused: %s" (D.Oms.Rebalance_outcome.to_string other));
   Alcotest.(check (pair int int))
     "nothing journaled, nothing sent" (0, 0)
     ( List.length (D.Journal.recent_orders f.journal ~limit:10),
       D.Sim_venue.received f.venue );
-  age := 5.0;
+  age := 30.0;
   let%bind outcome = D.Oms.send_rebalance oms ~source:aapl_source ~legs in
   (match outcome with
   | D.Oms.Rebalance_outcome.Sent [ _ ] -> ()
+  | other -> Alcotest.failf "30 s: %s" (D.Oms.Rebalance_outcome.to_string other));
+  let%bind () = pump f in
+  age := 1800.0;
+  let%bind outcome =
+    D.Oms.send_rebalance oms ~source:aapl_source
+      ~legs:[ rebalance_leg aapl D.Order.Side.Sell 10 ]
+  in
+  (match outcome with
+  | D.Oms.Rebalance_outcome.Sent [ _ ] -> ()
   | other ->
-      Alcotest.failf "five seconds old: %s" (D.Oms.Rebalance_outcome.to_string other));
+      Alcotest.failf "the sale on a 30-minute stamp: %s"
+        (D.Oms.Rebalance_outcome.to_string other));
   now := Time_ns.of_string_with_utc_offset "2026-09-15T13:34:00Z";
   let before = !asked in
   let%bind outcome = D.Oms.send_rebalance oms ~source:aapl_source ~legs in
@@ -3128,13 +3142,13 @@ let test_two_waves_settle_and_the_second_is_gated_after_the_first_fills () =
   Graph.destroy f.graph;
   return ()
 
-(* The floor on a signal's rebalance (Task 1.7: every rebalance is day
-   limits now, so the floor that was the intraday mode's is every one's).
-   exp_floor holds AAPL and XOM at 0.01 of E 1,000,000. A weight of 0.01 on
-   XOM is 100 / 50 = 2 shares, 100, under the $200 floor: beside AAPL at 0.99
-   (99 shares, 9,900) it is dropped and the sentence names it, and AAPL goes;
-   alone, nothing is sent, the sentence says every order was dropped, and
-   the strategy is sized all the same. *)
+(* The floor is not on a signal's rebalance (the stage review's A-I6,
+   withdrawing Task 10's "both modes"; kept under day limits by fix round 1):
+   nothing is dropped. exp_floor holds AAPL and XOM at 0.01 of E 1,000,000.
+   A weight of 0.01 on XOM is 100 / 50 = 2 shares, 100, under the $200 floor
+   -- and the signal's rebalance sends it all the same, beside AAPL at 0.99
+   (99 shares) or alone, and its sentence names no floor. The adjust pass's
+   floor is test_rebalance's. *)
 let floor_signal targets =
   let f = fixture () in
   record_close f;
@@ -3190,25 +3204,26 @@ let floor_signal targets =
   Graph.destroy f.graph;
   result
 
-let test_a_signal's_leg_under_the_floor_is_dropped () =
+let test_a_signal's_rebalance_sends_a_leg_under_the_floor () =
   let%bind one, sized_one, received_one =
     floor_signal {|{"symbol":"AAPL","weight":0.99},{"symbol":"XOM","weight":0.01}|}
   in
   Alcotest.(check bool)
-    (sprintf "AAPL sent, XOM dropped and named: %S" one)
+    (sprintf "both sent, no floor named: %S" one)
     true
-    (String.is_prefix one ~prefix:"1 day limit order journaled, then sent"
-    && String.is_substring one
-         ~substring:"Dropped below the $200 floor: XOM buy 2 (50.00)");
-  Alcotest.(check (pair bool int)) "sized, AAPL sent" (true, 1) (sized_one, received_one);
+    (String.is_prefix one ~prefix:"2 day limit orders journaled, then sent"
+    && not (String.is_substring one ~substring:"floor"));
+  Alcotest.(check (pair bool int)) "sized, both sent" (true, 2) (sized_one, received_one);
   let%map alone, sized_alone, received_alone =
     floor_signal {|{"symbol":"XOM","weight":0.01}|}
   in
-  Alcotest.(check string)
-    "XOM alone: nothing sent"
-    "no order: every order was dropped below the $200 floor: XOM buy 2 (50.00)" alone;
+  Alcotest.(check bool)
+    (sprintf "XOM alone, 2 x 50 = 100, sent: %S" alone)
+    true
+    (String.is_prefix alone ~prefix:"1 day limit order journaled, then sent"
+    && String.is_substring alone ~substring:"XOM buy 2");
   Alcotest.(check (pair bool int))
-    "sized, and nothing sent" (true, 0) (sized_alone, received_alone)
+    "sized, and sent" (true, 1) (sized_alone, received_alone)
 
 (* ------------------------------------------------------------------------ *)
 (* Task 11: the overlay and the adjust pass                                  *)
@@ -4321,6 +4336,143 @@ let test_a_strategy_crossing_a_resting_order_waits () =
          && String.is_substring line ~substring:"wash trade"));
   e.e_cleanup ()
 
+(* Fix round 1, I3: the adjust pass runs beside the sizing, not behind it.
+   exp_long's document is sized at 10:00 EDT and its day limit rests -- the
+   venue is not pumped -- so its wave waits, up to 180 s. exp_b is stopped
+   and still holds 20 MSFT of its own: its flatten is the adjust pass's, and
+   it reaches the venue at once, while exp_long's wave is still waiting on
+   its fill. *)
+let test_a_stop's_flatten_is_not_held_behind_another_strategy's_sizing () =
+  let e =
+    session_case ~pump:false ~start:"2026-09-15T14:00:00Z"
+      ~strategies:
+        [
+          live_strategy ~name:"exp_long" ();
+          live_strategy ~name:"exp_b" ~symbols:[ "MSFT" ]
+            ~adjust:Ohcamel.Config.Book.Signals_spec.Adjust.Intraday ();
+        ]
+      ()
+  in
+  let f = e.e_f in
+  let bought =
+    D.Order.create
+      {
+        D.Order.Request.client_order_id =
+          D.Ids.Client_order_id.generate ~now:evening ~rng:(Random.State.make [| 43 |]);
+        symbol = msft;
+        side = D.Order.Side.Buy;
+        qty = 20;
+        kind = D.Order.Kind.Limit (Price.of_float 200.5);
+        tif = D.Order.Tif.Day;
+      }
+  in
+  D.Journal.insert_order f.journal
+    { bought with D.Order.state = D.Order.State.Filled }
+    ~source:"signal:exp_b:1" ~decision_price:(Price.of_float 200.0) ~arrival:None
+    ~verdict:`Null
+    ~at:(Time_ns.sub evening (Time_ns.Span.of_day 1.0));
+  ignore
+    (D.Journal.record_fill f.journal bought
+       {
+         D.Order.Fill.execution_id = "x-exp-b";
+         qty = 20.0;
+         price = Price.of_float 200.0;
+         at = Time_ns.sub evening (Time_ns.Span.of_day 1.0);
+         position_qty = None;
+       }
+      : bool);
+  Graph.set_qty f.graph msft (Qty.of_float 20.0);
+  Graph.stabilize f.graph;
+  let zeros = "sha256:" ^ String.make 64 '0' in
+  D.Journal.record_signal f.journal
+    {
+      D.Journal.Signal.strategy = "exp_b";
+      sequence = 1;
+      as_of = Date.of_string "2026-09-14";
+      received_at = evening;
+      verdict = D.Journal.Signal.Verdict.Accepted;
+      rule = None;
+      detail = "passed";
+      document =
+        sprintf
+          {|{"schema_version":1,"strategy":"exp_b","params_hash":"%s","as_of":"2026-09-14","computed_at":"2026-09-14T23:15:00Z","data_hash":"%s","sequence":1,"validation":{"status":"pass","gates_version":"2026-09-02"},"targets":[{"symbol":"MSFT","weight":0.004}]}|}
+          zeros zeros;
+      rebalance = Some "sent";
+    };
+  D.Journal.set_strategy_state f.journal ~strategy:"exp_b" ~state:`Stopped
+    ~rule:(Some "drawdown") ~at:evening ~detail:"drawdown 20.0% reached its line of 15.0%";
+  write_signal e.e_dir ~strategy:"exp_long" ~sequence:1 ();
+  let%bind () = start_run e in
+  let%map () = advance_clock e "2026-09-15T14:00:30Z" in
+  let open_by source =
+    List.filter_map (D.Journal.open_orders f.journal) ~f:(fun r ->
+        Option.some_if
+          (String.equal r.D.Journal.Order_row.source source)
+          (let q = r.D.Journal.Order_row.order.D.Order.request in
+           ( Symbol.to_string q.D.Order.Request.symbol,
+             D.Order.Side.to_string q.D.Order.Request.side,
+             q.D.Order.Request.qty )))
+  in
+  Alcotest.(check (list (triple string string int)))
+    "exp_long's buy still rests, its wave waiting"
+    [ ("AAPL", "buy", 100) ]
+    (open_by "signal:exp_long:1");
+  Alcotest.(check (list (triple string string int)))
+    "exp_b's flatten reached the venue beside it"
+    [ ("MSFT", "sell", 20) ]
+    (open_by "signal:exp_b:1");
+  e.e_cleanup ()
+
+(* Fix round 1, I1. Inside the send window, a name with no CURRENT mark is
+   a matter of timing, not a reason to drop the day's document: a thin ETF
+   with no print for a while, or a name not yet printed after a restart. A
+   live strategy on AAPL and XOM, w 0.5 each; at 10:00 EDT the feed has not
+   heard XOM for ten minutes and calls it stale. The document stays pending
+   and nothing is journaled, a minute later too; XOM prints, and the next
+   pass sizes it: 0.5 x 0.01 x 1,000,000 = 5,000 each, AAPL 50 at 100 and
+   XOM 100 at 50. *)
+let test_a_document_with_a_stale_name_waits_and_is_sized_once_it_prints () =
+  let e =
+    session_case ~start:"2026-09-15T14:00:00Z"
+      ~strategies:[ live_strategy ~symbols:[ "AAPL"; "XOM" ] () ]
+      ()
+  in
+  let f = e.e_f in
+  let later = Time.add (Time.now ()) (Time.Span.of_sec 600.0) in
+  let print s =
+    Graph.apply_tick f.graph
+      {
+        Tick.symbol = s;
+        price = Price.of_float (Hashtbl.find_exn f.marks s);
+        time = later;
+      }
+  in
+  Graph.set_now f.graph later;
+  print aapl;
+  print msft;
+  Graph.stabilize f.graph;
+  write_signal e.e_dir ~strategy:"exp_a01_aapl" ~sequence:1
+    ~targets:{|[{"symbol":"AAPL","weight":0.5},{"symbol":"XOM","weight":0.5}]|} ();
+  let%bind () = start_run e in
+  let%bind () = advance_clock e "2026-09-15T14:01:00Z" in
+  Alcotest.(check (pair (option string) int))
+    "XOM stale: still pending, nothing journaled"
+    (Some (D.Intake.pending ~strategy:"exp_a01_aapl" ~sequence:1), 0)
+    (rebalance_of f ~strategy:"exp_a01_aapl" ~sequence:1, List.length (orders_of f));
+  Alcotest.(check bool)
+    "the wait names the stale name" true
+    (List.exists (Queue.to_list f.events) ~f:(fun line ->
+         String.is_substring line ~substring:"waits, still pending"
+         && String.is_substring line ~substring:"XOM"));
+  print xom;
+  Graph.stabilize f.graph;
+  let%map () = advance_clock e "2026-09-15T14:02:30Z" in
+  Alcotest.(check (list (triple string string int)))
+    "XOM printed: both sized"
+    [ ("signal:exp_a01_aapl:1", "AAPL", 50); ("signal:exp_a01_aapl:1", "XOM", 100) ]
+    (List.sort ~compare:[%compare: string * string * int] (orders_of f));
+  e.e_cleanup ()
+
 (* A-I1 and A-I2. A restart at 10:15 EDT before any venue reading: the pass
    judges the document accepted, and nothing is sized -- the overlay cannot
    be aged and the session cannot be timed, and sizing now would be at the
@@ -5086,6 +5238,47 @@ let test_a_restart_after_two_completions_allows_one_more_not_three () =
        ~f:(String.is_substring ~substring:"tried 3 times this session"));
   cleanup ()
 
+(* Fix round 1, m5: a count that cannot be written never lets more than the
+   cap through. The journal refuses every write to completions (a trigger
+   raises, as a full disk would) while it still reads them -- as zero. The
+   intake keeps its own count beside the journal's: three completions, and
+   the fourth pass sends nothing. *)
+let test_a_completion_count_that_cannot_be_written_still_caps () =
+  let%bind { a_f = f; a_name = name; a_intake = intake; a_oms = oms; cleanup; _ } =
+    adjust_case ~bought:false ~adjust_now:false
+      ~unfilled:[ (D.Order.Side.Buy, 350, `Expired) ]
+      ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.70" ()
+  in
+  ignore
+    (Sqlite3.exec
+       (D.Journal.For_testing.db f.journal)
+       "CREATE TRIGGER no_completions BEFORE INSERT ON completions BEGIN SELECT \
+        RAISE(ABORT, 'disk full'); END"
+      : Sqlite3.Rc.t);
+  let venue_mark = ref 100.0 in
+  let attempt ~at =
+    ignore (D.Intake.judge_pass intake : D.Intake.Accepted.t list);
+    let adjusted = D.Intake.adjust intake ~oms:(Some oms) in
+    let%bind () = settle () in
+    venue_mark := !venue_mark +. 1.0;
+    Hashtbl.set f.marks ~key:aapl ~data:!venue_mark;
+    let%bind () = pump f in
+    let%bind () = advance_to f at in
+    if not (Deferred.is_determined adjusted) then
+      Alcotest.fail "the adjust pass is still waiting";
+    return ()
+  in
+  let%bind () = attempt ~at:200.0 in
+  let%bind () = attempt ~at:400.0 in
+  let%bind () = attempt ~at:600.0 in
+  let%map () = attempt ~at:800.0 in
+  Alcotest.(check (pair int int))
+    "nothing written, and three completions all the same" (0, 3)
+    ( D.Journal.completions_today f.journal ~date:(Date.of_string "2026-09-15") ~key:name,
+      List.count (strategy_orders f name) ~f:(fun (_, _, kind) ->
+          String.equal kind "limit day") );
+  cleanup ()
+
 (* A failed order is eligible for completion -- when the venue cannot still
    work it. The strategy's buy of 350 failed (every lookup missed it) last
    evening. While the venue has said nothing since and the order is of the
@@ -5388,8 +5581,8 @@ let suites =
           test_a_stopped_wave's_orders_are_cancelled_at_the_timeout;
         case "two waves settle, the second gated after the first fills"
           test_two_waves_settle_and_the_second_is_gated_after_the_first_fills;
-        case "a signal's leg under the floor is dropped"
-          test_a_signal's_leg_under_the_floor_is_dropped;
+        case "a signal's rebalance sends a leg under the floor"
+          test_a_signal's_rebalance_sends_a_leg_under_the_floor;
         case "overlay zero flattens and alerts" test_overlay_zero_flattens_and_alerts;
         case "adjust within band does nothing" test_adjust_within_band_does_nothing;
         case "a stopped strategy is flattened by the adjust pass"
@@ -5448,6 +5641,10 @@ let suites =
           test_a_document_judged_before_09_35_is_sized_at_the_first_pass_after;
         case "a restart sizes nothing until the venue clock answers"
           test_a_restart_sizes_nothing_until_the_venue_clock_answers;
+        case "a stop's flatten is not held behind another strategy's sizing"
+          test_a_stop's_flatten_is_not_held_behind_another_strategy's_sizing;
+        case "a document with a stale name waits, and is sized once it prints"
+          test_a_document_with_a_stale_name_waits_and_is_sized_once_it_prints;
         case "a superseding document cancels the older retry"
           test_a_superseding_document_cancels_the_older_retry;
         case "a strategy crossing a resting order waits"
@@ -5470,6 +5667,8 @@ let suites =
           test_a_completion_is_tried_at_most_three_times_a_session;
         case "a restart after two completions allows one more, not three"
           test_a_restart_after_two_completions_allows_one_more_not_three;
+        case "a completion count that cannot be written still caps"
+          test_a_completion_count_that_cannot_be_written_still_caps;
         case "a failed order is completed only when the venue cannot still work it"
           test_a_failed_order_is_completed_only_when_the_venue_cannot_still_work_it;
         case "a rebalance held in part records no sizing, and is retried"

@@ -24,11 +24,16 @@
    ticket is not seen:
    - [session] also refuses one before 09:35 New York ([first_send]): the
      opening quotes are the widest and least settled of the day;
-   - [quote] refuses one whose quote is missing, one-sided, crossed or more
-     than the book's quote_max_age_s from now (Rebalance.quote_refusal).
+   - [quote] refuses one whose quote is missing, one-sided, crossed, stamped
+     ahead of its fetch, or fetched more than the book's quote_max_age_s ago
+     -- or, for an order that grows a position, last changed more than 60 s
+     before its fetch (Rebalance.quote_refusal);
+   - [mark]: a stale or unprinted mark refuses it for timing alone
+     ([is_timing_refusal] ~desk).
    A person's ticket (Origin.Hand) is neither: it is sent as the person
-   priced it, from the open. [collar] and [notional] are computed on the
-   limit actually sent, where the order has one.
+   priced it, from the open. [collar] reads the limit against the mark;
+   [notional] reads qty x the larger of the limit and the mark, so a limit
+   under the mark never loosens the cap.
 
    NO MARKET-ON-OPEN ORDER IS BUILT. Order.Tif.Opg stays a word the journal
    can read -- hundreds of old rows carry it -- and an order of that tif
@@ -178,7 +183,7 @@ let session_refusal ?(desk = false) ~(tif : Order.Tif.t) ~(zone : Timezone.t opt
    person's ticket, or the desk's own order with the quote fetched as it was
    sent (None when no quote answered). *)
 module Origin = struct
-  type t = Hand | Desk of Venue.Quote.t option
+  type t = Hand | Desk of Rebalance.Fetched.t option
 
   let desk = function Hand -> false | Desk _ -> true
 end
@@ -245,20 +250,27 @@ end
    pass) or the quote rule's (no fresh, two-sided quote answered this time;
    the next pass fetches another), and, for an order the session rule
    refused, a mark the feed calls stale or has not printed, because outside
-   the session every name is stale. Any other failure -- the switch, the
-   mandate, a price, a cap -- is final. The intake keeps a judgement whose
-   rebalance was refused for timing pending and tries it again (design
-   §4.3); an empty list is not a refusal at all. *)
-let is_timing_refusal ~(tif : Order.Tif.t) (failures : Failure.t list) =
-  ignore (tif : Order.Tif.t);
+   the session every name is stale. For the DESK'S OWN order ([desk]) a
+   stale or unprinted mark is timing on its own as well (fix round 1, I1):
+   inside the session a thin ETF goes minutes without a print, and a name may
+   not have printed since a restart; the name prints, and the same order goes
+   -- a judgement's own max_age bounds the wait. Any other failure -- the
+   switch, the mandate, a price, a cap -- is final. The intake keeps a
+   judgement whose rebalance was refused for timing pending and tries it
+   again (design §4.3); an empty list is not a refusal at all. *)
+let is_timing_refusal ?(desk = false) (failures : Failure.t list) =
   let session (f : Failure.t) = String.equal f.Failure.rule "session" in
+  let mark (f : Failure.t) = String.equal f.Failure.rule "mark" in
   let timing (f : Failure.t) =
-    session f || String.equal f.Failure.rule "wash" || String.equal f.Failure.rule "quote"
+    session f
+    || String.equal f.Failure.rule "wash"
+    || String.equal f.Failure.rule "quote"
+    || (desk && mark f)
   in
   (not (List.is_empty failures))
   && List.exists failures ~f:timing
   && List.for_all failures ~f:(fun f ->
-      timing f || (String.equal f.Failure.rule "mark" && List.exists failures ~f:session))
+      timing f || (mark f && List.exists failures ~f:session))
 
 (* Whether an order of [qty] on [side] only shrinks a position: what a
    limit's trip lets through (R2). Exactly:
@@ -312,16 +324,17 @@ let is_timing_refusal ~(tif : Order.Tif.t) (failures : Failure.t list) =
    (Oms.reducible_account), and the same unreadable journal makes [netted]
    false (Oms.netted). Order.epsilon absorbs the noise of a float sum of
    whole fills, and nothing more. *)
+let shrinks_position ~(position : float) ~(side : Order.Side.t) ~(qty : int) =
+  qty > 0 && Float.is_finite position
+  && (match side with
+    | Order.Side.Sell -> Float.( > ) position 0.0
+    | Order.Side.Buy -> Float.( < ) position 0.0)
+  && Float.( <= ) (Float.of_int qty) (Float.abs position +. Order.epsilon)
+
 let reduces ~(own : float) ~(account : float) ~(netted : bool) ~(side : Order.Side.t)
     ~(qty : int) =
-  let shrinks position =
-    Float.is_finite position
-    && (match side with
-      | Order.Side.Sell -> Float.( > ) position 0.0
-      | Order.Side.Buy -> Float.( < ) position 0.0)
-    && Float.( <= ) (Float.of_int qty) (Float.abs position +. Order.epsilon)
-  in
-  qty > 0 && shrinks own && (shrinks account || netted)
+  let shrinks position = shrinks_position ~position ~side ~qty in
+  shrinks own && (shrinks account || netted)
 
 (* The switch's rule for an order: None when it may go, else why not. One
    function, because the order manager asks it again at the wire
@@ -429,9 +442,12 @@ let check (c : Context.t) (r : Order.Request.t) : Failure.t list =
       | Origin.Hand -> None
       | Origin.Desk q ->
           Option.map
-            (Rebalance.quote_refusal ~now:c.now
-               ~max_age_s:c.spec.Desk_spec.quote_max_age_s q) ~f:(fun why ->
-              { Failure.rule = "quote"; why = sprintf "%s: %s" sym why }));
+            (Rebalance.quote_refusal
+               ~shrinks:
+                 (shrinks_position ~position:c.own ~side:r.Order.Request.side
+                    ~qty:r.Order.Request.qty)
+               ~now:c.now ~max_age_s:c.spec.Desk_spec.quote_max_age_s q)
+            ~f:(fun why -> { Failure.rule = "quote"; why = sprintf "%s: %s" sym why }));
       (* A whole cent at every price. Rule 612 allows four decimals below a
          dollar, but desk/alpaca_paper.ml sends a limit with two, so a finer
          limit would be journaled and gated at one price and reach the venue
@@ -454,10 +470,16 @@ let check (c : Context.t) (r : Order.Request.t) : Failure.t list =
                m
                (100.0 *. c.spec.Desk_spec.price_collar))
       | _ -> None);
-      (* At the limit actually sent, where the order has one; at the mark
-         for a market order. Only when there is a mark at all: without one
-         [mark] is the reason, and a notional beside it would bury it. *)
-      (match Option.map priced ~f:(fun m -> Option.value limit ~default:m) with
+      (* At the larger of the limit sent and the mark, so a limit under the
+         mark -- a sell below it, a buy resting under it -- never loosens the
+         cap (fix round 1, I4), and a buy limit above it is read where it may
+         fill; at the mark for a market order. Only when there is a mark at
+         all: without one [mark] is the reason, and a notional beside it would
+         bury it. *)
+      (match
+         Option.map priced ~f:(fun m ->
+             Option.value_map limit ~default:m ~f:(fun l -> Float.max l m))
+       with
       | Some m
         when Float.( > )
                (Float.of_int r.Order.Request.qty *. m)

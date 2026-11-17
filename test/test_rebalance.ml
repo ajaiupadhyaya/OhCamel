@@ -289,12 +289,30 @@ let with_oms ?(now = tuesday) ?(session_date = "2026-09-14")
    stamped at the order manager's now. *)
 let quotes oms symbol =
   let m = Price.to_float (Graph.price oms.D.Oms.graph symbol) in
+  let now = oms.D.Oms.now () in
   Some
     {
-      D.Venue.Quote.bid = Price.of_float (m *. 0.9995);
-      ask = Price.of_float (m *. 1.0005);
-      at = oms.D.Oms.now ();
+      D.Rebalance.Fetched.quote =
+        {
+          D.Venue.Quote.bid = Price.of_float (m *. 0.9995);
+          ask = Price.of_float (m *. 1.0005);
+          at = now;
+        };
+      at = now;
     }
+
+(* The same quote, fetched (and so stamped) [age] seconds earlier. *)
+let fetched_earlier oms age symbol =
+  Option.map (quotes oms symbol) ~f:(fun f ->
+      let back t = Time_ns.sub t (Time_ns.Span.of_sec age) in
+      {
+        D.Rebalance.Fetched.quote =
+          {
+            f.D.Rebalance.Fetched.quote with
+            D.Venue.Quote.at = back f.D.Rebalance.Fetched.at;
+          };
+        at = back f.D.Rebalance.Fetched.at;
+      })
 
 let leg symbol side qty =
   { Leg.symbol; weight = 0.0; price = 0.0; target = 0; current = 0; side; qty }
@@ -1508,7 +1526,15 @@ let test_a_rebalance_is_sized_at_the_current_mark_not_yesterday's_close () =
         (refusal
            (D.Oms.plan_rebalance oms ~strategy:tech_strategy
               ~targets:[ (aapl, 1.0) ]
-              ~scale:1.0)))
+              ~scale:1.0));
+      (* ... and the mark rule refuses a desk order on it for timing alone
+         (fix round 1, I1): the name will print again, and the order go. *)
+      let timing = ref false in
+      contains "the mark rule" ~substring:"mark: AAPL's mark is stale"
+        (refusal
+           (D.Oms.check_rebalance ~timing oms ~quotes:(quotes oms) ~source
+              ~legs:[ leg aapl D.Order.Side.Buy 10 ]));
+      Alcotest.(check bool) "for timing alone" true !timing)
     ()
 
 (* The final review's probe: a prefix of the send order is gated. The
@@ -1904,12 +1930,15 @@ let test_drop_small () =
         "2 shares at 150 kept" ([ "buy 2" ], []) (planned 0.003))
     ()
 
-(* The floor is on every rebalance now that every one is day limits (Task
-   1.7), and never on a closing leg (the stage review's A-I6): an overlay-0
-   flatten of a 1-share position at 150 sells the 1 to a target of 0, 150 <
-   200, and drop_small keeps it; a leg of 1 share that grows a position
-   (w 0.002 of E 1,070,000 x 0.1 = 214 -> 1 share at 150) is dropped, and
-   handed back as dropped for the sentence to say. *)
+(* The floor is the adjust pass's alone, and never on a closing leg (the
+   stage review's A-I6, withdrawing Task 10's "both modes"; kept under day
+   limits by fix round 1):
+   - an overlay-0 flatten of a 1-share position at 150: the plan at scale 0
+     sells the 1 to a target of 0, 150 < 200, and drop_small keeps it;
+   - a signal's own rebalance ([floor] false) with a leg of 1 share at 150
+     (w 0.002 of E 1,070,000 x 0.1 = 214 -> 1 share) sends it;
+   - the same leg on the adjust pass grows a position (target 1), is
+     dropped, and is handed back as dropped for the sentence to say. *)
 let test_the_floor_is_never_on_a_closing_leg () =
   let names (ls : Leg.t list) =
     List.map ls ~f:(fun l ->
@@ -1928,16 +1957,19 @@ let test_the_floor_is_never_on_a_closing_leg () =
         (names kept, names dropped));
   with_oms
     ~f:(fun oms _ ->
-      match
-        D.Oms.plan_rebalance oms ~strategy:tech_strategy
-          ~targets:[ (aapl, 0.002) ]
-          ~scale:1.0
-      with
-      | Ok (kept, dropped) ->
-          Alcotest.(check (pair (list string) (list string)))
-            "the growing leg is dropped" ([], [ "buy 1" ])
-            (names kept, names dropped)
-      | Error why -> Alcotest.failf "no targets: %s" why)
+      let planned floor =
+        match
+          D.Oms.plan_rebalance ~floor oms ~strategy:tech_strategy
+            ~targets:[ (aapl, 0.002) ]
+            ~scale:1.0
+        with
+        | Ok (kept, dropped) -> (names kept, names dropped)
+        | Error why -> Alcotest.failf "no targets: %s" why
+      in
+      Alcotest.(check (pair (list string) (list string)))
+        "a signal's: 1 share at 150 is sent" ([ "buy 1" ], []) (planned false);
+      Alcotest.(check (pair (list string) (list string)))
+        "the adjust pass's: the growing leg is dropped" ([], [ "buy 1" ]) (planned true))
     ()
 
 (* Tuesday 15 September at 11:00 EDT (15:00Z): the session is open and
@@ -1978,13 +2010,6 @@ let test_every_leg_is_a_day_limit_off_its_quote () =
             "no market-on-open order" false
             (List.exists checked.D.Oms.Checked_rebalance.orders ~f:(fun (r, _) ->
                  D.Order.Tif.equal r.D.Order.Request.tif D.Order.Tif.Opg)));
-      let aged age s =
-        Option.map (quotes oms s) ~f:(fun q ->
-            {
-              q with
-              D.Venue.Quote.at = Time_ns.sub q.D.Venue.Quote.at (Time_ns.Span.of_sec age);
-            })
-      in
       let refused_for_timing what ~substring q =
         let timing = ref false in
         let why =
@@ -1998,7 +2023,8 @@ let test_every_leg_is_a_day_limit_off_its_quote () =
       refused_for_timing "no quote" ~substring:"quote: AAPL: no quote answered for it"
         (fun _ -> None);
       refused_for_timing "a quote six seconds old"
-        ~substring:"quote: AAPL: its quote is 6.0 s" (aged 6.0))
+        ~substring:"quote: AAPL: its quote was fetched 6.0 s ago"
+        (fetched_earlier oms 6.0))
     ();
   with_oms ~now:(at "2026-09-15T15:00:00Z")
     ~spec:
@@ -2009,15 +2035,7 @@ let test_every_leg_is_a_day_limit_off_its_quote () =
       }
     ~f:(fun oms _ ->
       passes_check "a quote six seconds old under a bound of ten"
-        (D.Oms.check_rebalance oms
-           ~quotes:(fun s ->
-             Option.map (quotes oms s) ~f:(fun q ->
-                 {
-                   q with
-                   D.Venue.Quote.at =
-                     Time_ns.sub q.D.Venue.Quote.at (Time_ns.Span.of_sec 6.0);
-                 }))
-           ~source
+        (D.Oms.check_rebalance oms ~quotes:(fetched_earlier oms 6.0) ~source
            ~legs:[ leg aapl D.Order.Side.Buy 10 ]))
     ()
 
@@ -2027,7 +2045,7 @@ let suite =
       Alcotest.test_case "a desk order's limit is off the far side of the quote" `Quick
         test_a_desk_order's_limit_is_off_the_far_side_of_the_quote;
       Alcotest.test_case "drop_small" `Quick test_drop_small;
-      Alcotest.test_case "the floor is never on a closing leg" `Quick
+      Alcotest.test_case "the floor is the adjust pass's, never on a closing leg" `Quick
         test_the_floor_is_never_on_a_closing_leg;
       Alcotest.test_case "every leg is a day limit off its quote" `Quick
         test_every_leg_is_a_day_limit_off_its_quote;

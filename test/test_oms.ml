@@ -1328,8 +1328,12 @@ let test_a_desk_order's_quote_and_hour_are_asked_again_at_the_wire () =
       let quote age =
         Some
           {
-            D.Venue.Quote.bid = price 149.925;
-            ask = price 150.075;
+            D.Rebalance.Fetched.quote =
+              {
+                D.Venue.Quote.bid = price 149.925;
+                ask = price 150.075;
+                at = Time_ns.sub !now (Time_ns.Span.of_sec age);
+              };
             at = Time_ns.sub !now (Time_ns.Span.of_sec age);
           }
       in
@@ -1344,7 +1348,8 @@ let test_a_desk_order's_quote_and_hour_are_asked_again_at_the_wire () =
         (wire ~origin:(desk (quote 1.0)) ());
       Alcotest.(check string)
         "6 s old"
-        "quote: AAPL: its quote is 6.0 s from now, and a quote prices an order within 5 s"
+        "quote: AAPL: its quote was fetched 6.0 s ago, and a quote prices an order \
+         within 5 s of its fetch"
         (wire ~origin:(desk (quote 6.0)) ());
       Alcotest.(check string)
         "none" "quote: AAPL: no quote answered for it"
@@ -1359,9 +1364,73 @@ let test_a_desk_order's_quote_and_hour_are_asked_again_at_the_wire () =
       Alcotest.(check string) "a ticket at 09:31" "goes" (wire ()))
     ()
 
+(* Fix round 1, m3: an OLD market-on-open fill still reads as one. Nothing
+   builds a market-on-open order any more, but the journal holds hundreds; a
+   filled one, written as that build wrote it, is marked
+   arrival_after_hours on /api/desk/tca's fills, and the costs' note says
+   why. A day order's fill beside it is not marked. *)
+let test_an_old_market_on_open_fill_is_marked_arrival_after_hours () =
+  with_oms
+    ~f:(fun oms journal ->
+      let at = Time_ns.of_string_with_utc_offset in
+      let fill n tif =
+        let o =
+          D.Order.create
+            {
+              D.Order.Request.client_order_id =
+                Option.value_exn
+                  (D.Ids.Client_order_id.of_string
+                     (sprintf "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZ%02d" n));
+              symbol = aapl;
+              side = D.Order.Side.Buy;
+              qty = 10;
+              kind = D.Order.Kind.Market;
+              tif;
+            }
+        in
+        D.Journal.insert_order journal o ~source:"signal:exp_a01_aapl:1"
+          ~decision_price:(price 150.0)
+          ~arrival:(Some (price 149.5, price 150.5))
+          ~verdict:`Null ~at:(at "2026-10-20T23:15:00Z");
+        ignore
+          (D.Journal.record_fill journal o
+             {
+               D.Order.Fill.execution_id = sprintf "x-%d" n;
+               qty = 10.0;
+               price = price 150.1;
+               at = at "2026-10-21T13:30:00Z";
+               position_qty = None;
+             }
+            : bool)
+      in
+      fill 81 D.Order.Tif.Opg;
+      fill 82 D.Order.Tif.Day;
+      let marked =
+        List.map
+          (Yojson.Safe.Util.to_list
+             (D.Oms.fills_json oms (D.Journal.recent_fills journal ~limit:10)))
+          ~f:(fun j ->
+            ( Yojson.Safe.Util.(to_string (member "execution_id" j)),
+              Yojson.Safe.Util.(to_bool (member "arrival_after_hours" j)) ))
+        |> List.sort ~compare:(fun (a, _) (b, _) -> String.compare a b)
+      in
+      Alcotest.(check (list (pair string bool)))
+        "the old market-on-open fill is marked, the day order's not"
+        [ ("x-81", true); ("x-82", false) ]
+        marked;
+      Alcotest.(check bool)
+        "and the note says why" true
+        (String.is_substring
+           (Yojson.Safe.Util.to_string
+              (Yojson.Safe.Util.member "note" (D.Oms.tca_json oms)))
+           ~substring:"arrival quote was read after hours"))
+    ()
+
 let suite =
   ( "oms",
     [
+      Alcotest.test_case "an old market-on-open fill is marked arrival_after_hours" `Quick
+        test_an_old_market_on_open_fill_is_marked_arrival_after_hours;
       Alcotest.test_case "a desk order's quote and hour are asked again at the wire"
         `Quick test_a_desk_order's_quote_and_hour_are_asked_again_at_the_wire;
       Alcotest.test_case "an unevaluable trip-limit refuses a buy that raises gross"

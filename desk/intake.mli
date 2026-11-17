@@ -217,6 +217,11 @@ val collect_pending : t -> Accepted.t list
     at, a later document of the strategy was accepted, it aged past max_age sessions, or
     orders were journaled under its source (a crash while proposing it). *)
 
+val said_key : string -> string
+(** The key the adjust pass compares an outcome by, to say it only when it is new: the
+    sentence with every duration in seconds ("6.0 s") replaced by "#", every other number
+    kept. *)
+
 val adjust : t -> oms:Oms.t option -> unit Deferred.t
 (** For each registered strategy that adjusts intraday, is not stopped, and has a latest
     accepted document, that document is re-sized as day limits off the quote, its sizing

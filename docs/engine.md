@@ -1206,7 +1206,7 @@ container as environment, never as a layer. The runbooks are in
 
 ## What's verified
 
-`make test` runs <!-- count:ocaml-tests -->941<!-- /count --> tests, plus <!-- count:scheduler-tests -->88<!-- /count --> in `test/desk_async` that run with
+`make test` runs <!-- count:ocaml-tests -->946<!-- /count --> tests, plus <!-- count:scheduler-tests -->91<!-- /count --> in `test/desk_async` that run with
 the scheduler -- the order manager's cases, a live strategy's rebalance, the
 transport's bound, the signal intake's minute loop and that suite's own count --
 all hermetic — no network, no credentials, and nothing that waits on the wall
@@ -1615,8 +1615,10 @@ in the next session (Task 1.7; until then it was market-on-open, and 55 of
 the first 59 such orders expired at the auction): sized at the current
 mark, each order priced off the venue's quote fetched as it is sent -- a
 buy 10 bps above the ask, a sell 10 bps below the bid, rounded away from the
-quote to the cent -- and refused, rule `quote`, when that quote is older than
-5 s, crossed or one-sided. Nothing is sized unless the
+quote to the cent -- and refused, rule `quote`, when that quote was fetched
+more than 5 s before the order goes, or is crossed or one-sided, or, for an
+order that grows a position, last changed more than 60 s before its fetch.
+Nothing is sized unless the
 signal's `as_of`, the priced close and the newest recorded session are the
 same day, and no weekday has closed since unrecorded. The rebalance is
 proposed and gated as one unit: the legs that shrink a position go out
