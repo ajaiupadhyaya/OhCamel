@@ -677,6 +677,40 @@ let test_a_quote's_fetch_is_bounded_and_its_stamp_only_for_growth () =
     (flatten (quote ~stamped:(-6.0) 1.0))
     (sell 100)
 
+(* Fix round 2 (c): a desk order that only shrinks the strategy's own
+   position is not refused for a stale mark -- a held name with no fresh
+   print can still be sold -- but collared against the fetched quote's
+   midpoint, 150, and capped at it. A sale of 100 at 149.85 goes; at 140.00,
+   6.7% under the midpoint, the collar refuses it; with no quote the quote
+   rule does, never the mark rule; with no mark at all it goes on the quote
+   too. A buy that grows is still refused for the stale mark. *)
+let test_a_shrinking_desk_order_on_a_stale_mark_is_collared_against_its_quote () =
+  let sell p =
+    request ~side:Order.Side.Sell ~kind:(Order.Kind.Limit (Price.of_float p))
+  in
+  let stale ?(q = quote 1.0) ?(mark = Some (Price.of_float 150.0)) () =
+    { (desk ~q ()) with own = 100.0; stale = true; mark }
+  in
+  check_rules "a sale of 100 at 149.85" [] (stale ()) (sell 149.85 100);
+  check_rules "at 140.00, past the collar from the midpoint" [ "collar" ] (stale ())
+    (sell 140.0 100);
+  says "collared against the midpoint" ~substring:"from the mark of 150.00" (stale ())
+    (sell 140.0 100);
+  check_rules "no quote: the quote rule" [ "quote" ] (stale ~q:None ()) (sell 149.85 100);
+  check_rules "no mark at all: on the quote" [] (stale ~mark:None ()) (sell 149.85 100);
+  check_rules "a buy that grows: the stale mark refuses it" [ "mark" ]
+    { (desk ()) with stale = true }
+    (desk_buy 100)
+
+(* Fix round 2, m-c: a quote stamped after its fetch is from a clock ahead of
+   the desk's, tolerated by a skew of 1 s (Rebalance.max_quote_skew_s), not
+   by the whole fetch bound: 0.5 s ahead prices, 1.5 s ahead does not. *)
+let test_a_quote_stamped_ahead_of_its_fetch_is_tolerated_by_one_second () =
+  check_rules "0.5 s ahead" [] (desk ~q:(quote ~stamped:(-0.5) 0.0) ()) (desk_buy 100);
+  check_rules "1.5 s ahead" [ "quote" ]
+    (desk ~q:(quote ~stamped:(-1.5) 0.0) ())
+    (desk_buy 100)
+
 (* Fix round 1, I4: the order cap reads qty x max(limit, mark), so a limit
    under the mark never loosens it. A sell of 167 at 144.00, 4% under the
    mark of 150, is 24,048 at its limit and 25,050 at the mark: refused. A
@@ -814,6 +848,11 @@ let suite =
         test_collar_and_notional_read_the_limit_sent;
       Alcotest.test_case "a quote's fetch is bounded, and its stamp only for growth"
         `Quick test_a_quote's_fetch_is_bounded_and_its_stamp_only_for_growth;
+      Alcotest.test_case
+        "a shrinking desk order on a stale mark is collared against its quote" `Quick
+        test_a_shrinking_desk_order_on_a_stale_mark_is_collared_against_its_quote;
+      Alcotest.test_case "a quote stamped ahead of its fetch is tolerated by one second"
+        `Quick test_a_quote_stamped_ahead_of_its_fetch_is_tolerated_by_one_second;
       Alcotest.test_case "the order cap reads the larger of the limit and the mark" `Quick
         test_the_order_cap_reads_the_larger_of_the_limit_and_the_mark;
       Alcotest.test_case "a market-on-open order is refused" `Quick

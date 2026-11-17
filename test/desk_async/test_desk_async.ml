@@ -62,7 +62,7 @@ let tech_cap =
 
 (* [extra]: more names, each with its sector and first print, for a case
    that needs more than three (Task 10's waves). *)
-let fixture ?(limits = [ tech_cap ]) ?(extra = []) () =
+let fixture ?(limits = [ tech_cap ]) ?(extra = []) ?(unprinted = []) () =
   let graph =
     Graph.create
       ~starting_cash:(Notional.of_float 1_000_000.0)
@@ -73,6 +73,9 @@ let fixture ?(limits = [ tech_cap ]) ?(extra = []) () =
            { Instrument.symbol = xom; sector = Sector.of_string "ENERGY" };
          ]
         @ List.map extra ~f:(fun (symbol, sector, _) ->
+            { Instrument.symbol; sector = Sector.of_string sector })
+        (* [unprinted]: names the book holds a cell for that never print. *)
+        @ List.map unprinted ~f:(fun (symbol, sector) ->
             { Instrument.symbol; sector = Sector.of_string sector }))
       ~limits ~confidence:0.95 ~return_window:10 ()
   in
@@ -2225,6 +2228,13 @@ let test_a_rebalance_with_no_fresh_quote_is_not_sent () =
                    })));
     }
   in
+  let arrival (o : D.Order.t) =
+    Option.map
+      (Option.value_exn
+         (D.Journal.load_order f.journal o.D.Order.request.D.Order.Request.client_order_id))
+        .D.Journal.Order_row.arrival ~f:(fun (b, a) ->
+        (Price.to_float b, Price.to_float a))
+  in
   let now = ref morning in
   let oms = manager ~read ~now:(fun () -> !now) f in
   in_session f oms;
@@ -2245,7 +2255,11 @@ let test_a_rebalance_with_no_fresh_quote_is_not_sent () =
   age := 30.0;
   let%bind outcome = D.Oms.send_rebalance oms ~source:aapl_source ~legs in
   (match outcome with
-  | D.Oms.Rebalance_outcome.Sent [ _ ] -> ()
+  | D.Oms.Rebalance_outcome.Sent [ o ] ->
+      Alcotest.(check (option (pair (float 1e-9) (float 1e-9))))
+        "the buy's arrival: its quote"
+        (Some (99.95, 100.05))
+        (arrival o)
   | other -> Alcotest.failf "30 s: %s" (D.Oms.Rebalance_outcome.to_string other));
   let%bind () = pump f in
   age := 1800.0;
@@ -2254,7 +2268,13 @@ let test_a_rebalance_with_no_fresh_quote_is_not_sent () =
       ~legs:[ rebalance_leg aapl D.Order.Side.Sell 10 ]
   in
   (match outcome with
-  | D.Oms.Rebalance_outcome.Sent [ _ ] -> ()
+  | D.Oms.Rebalance_outcome.Sent [ o ] ->
+      (* Fix round 2, m-d: a stamp more than 60 s before its fetch is a
+         quote that may no longer be the market's; the cost is not
+         measured from its midpoint. *)
+      Alcotest.(check (option (pair (float 1e-9) (float 1e-9))))
+        "the sale's arrival: none, its quote's stamp being 30 minutes old" None
+        (arrival o)
   | other ->
       Alcotest.failf "the sale on a 30-minute stamp: %s"
         (D.Oms.Rebalance_outcome.to_string other));
@@ -3261,9 +3281,10 @@ let adjust_case ?(last_scale = 0.70) ?last_ratio ?last_factor ?last_governor
     ?(sizing_row = true) ?(stale = false) ?stale_at ?(incubation_cap = 0.5)
     ?(drawdown = fun () -> None) ?dd_cap ?(adjust_now = true) ?(bought = true) ?unfilled
     ?halt ?reduce_through_trip ?limits ?trips_on ?unread_after ?(two_names = false)
-    ~(sizing : Ohcamel.Config.Book.Signals_spec.sizing) ~overlay () =
+    ?(extra_symbols = []) ?unprinted ~(sizing : Ohcamel.Config.Book.Signals_spec.sizing)
+    ~overlay () =
   let name = "exp_adjust" in
-  let f = fixture ?limits () in
+  let f = fixture ?limits ?unprinted () in
   record_close f;
   (* 11:00 EDT on Tuesday when the case starts, and then the case's clock:
      the duplicate rule reads the manager's now, and a case that proposes
@@ -3430,7 +3451,8 @@ let adjust_case ?(last_scale = 0.70) ?last_ratio ?last_factor ?last_governor
         [
           {
             Ohcamel.Config.Book.Signals_spec.Strategy.name;
-            symbols = (if two_names then [ "AAPL"; "MSFT" ] else [ "AAPL" ]);
+            symbols =
+              (if two_names then [ "AAPL"; "MSFT" ] else [ "AAPL" ]) @ extra_symbols;
             max_age = 3;
             sizing;
             capital_fraction = 0.5;
@@ -3488,6 +3510,21 @@ let strategy_orders f name =
               (D.Order.Tif.to_string q.D.Order.Request.tif) )
       else None)
 
+(* The feed goes ten minutes on: every name but [stale] prints again then,
+   so the graph calls [stale] stale and the rest fresh. *)
+let make_stale f ~stale =
+  let later = Time.add (Time.now ()) (Time.Span.of_sec 600.0) in
+  Graph.set_now f.graph later;
+  List.iter [ aapl; msft; xom ] ~f:(fun s ->
+      if not (List.mem stale s ~equal:Symbol.equal) then
+        Graph.apply_tick f.graph
+          {
+            Tick.symbol = s;
+            price = Price.of_float (Hashtbl.find_exn f.marks s);
+            time = later;
+          });
+  Graph.stabilize f.graph
+
 let latest_sizing_mode f name =
   let mode = ref "" in
   ignore
@@ -3520,6 +3557,69 @@ let test_a_stopped_strategy_is_flattened_by_the_adjust_pass () =
     (List.map
        (D.Journal.source_fills f.journal ~prefix:(sprintf "signal:%s:" name))
        ~f:(fun (s, q) -> (Symbol.to_string s, q)));
+  cleanup ()
+
+(* Fix round 2: a flatten to zero needs no sizing mark. The stopped
+   strategy holds AAPL 350 and also lists XOM, which it never traded:
+   (a) XOM's mark is stale -- the feed has not heard it for ten minutes --
+   and the flatten sells the 350 all the same; (b) XOM is a name the book
+   holds a cell for that has never printed, and the same. Every target of a
+   flatten is 0 whatever its price, so no mark is read for it. *)
+let flatten_with_an_untraded ~unprinted () =
+  let%bind { a_f = f; a_name = name; pass_and_adjust; cleanup; _ } =
+    adjust_case ~adjust_now:false
+      ~extra_symbols:[ (if unprinted then "SPY" else "XOM") ]
+      ?unprinted:(if unprinted then Some [ (spy, "FUNDS") ] else None)
+      ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.70" ()
+  in
+  if not unprinted then make_stale f ~stale:[ xom ];
+  D.Journal.set_strategy_state f.journal ~strategy:name ~state:`Stopped
+    ~rule:(Some "drawdown") ~at:evening ~detail:"drawdown 20.0% reached its line of 15.0%";
+  let%map () = pass_and_adjust ~at:4.0 in
+  let orders = strategy_orders f name in
+  cleanup ();
+  orders
+
+let test_a_flatten_is_not_held_by_an_untraded_stale_name () =
+  let%map orders = flatten_with_an_untraded ~unprinted:false () in
+  Alcotest.(check (list (triple string int string)))
+    "XOM stale: Sell 350 all the same"
+    [ ("buy", 350, "limit day"); ("sell", 350, "limit day") ]
+    orders
+
+let test_a_flatten_is_not_held_by_an_untraded_name_never_seen () =
+  let%map orders = flatten_with_an_untraded ~unprinted:true () in
+  Alcotest.(check (list (triple string int string)))
+    "SPY never printed: Sell 350 all the same"
+    [ ("buy", 350, "limit day"); ("sell", 350, "limit day") ]
+    orders
+
+(* Fix round 2 (c): a flatten of a held name whose OWN mark is stale goes on
+   a valid quote, collared against its midpoint: AAPL's feed is silent for
+   ten minutes, the venue still quotes it at 100 x 1.0005 / 0.9995, and the
+   sale of the 350 is sent, at the bid x 0.999 = 99.85. *)
+let test_a_flatten_of_a_name_with_a_stale_mark_goes_on_its_quote () =
+  let%bind { a_f = f; a_name = name; pass_and_adjust; cleanup; _ } =
+    adjust_case ~adjust_now:false ~sizing:Ohcamel.Config.Book.Signals_spec.Live
+      ~overlay:"0.70" ()
+  in
+  make_stale f ~stale:[ aapl ];
+  D.Journal.set_strategy_state f.journal ~strategy:name ~state:`Stopped
+    ~rule:(Some "drawdown") ~at:evening ~detail:"drawdown 20.0% reached its line of 15.0%";
+  let%map () = pass_and_adjust ~at:4.0 in
+  Alcotest.(check (list (triple string int string)))
+    "AAPL stale: Sell 350 on its quote"
+    [ ("buy", 350, "limit day"); ("sell", 350, "limit day") ]
+    (strategy_orders f name);
+  Alcotest.(check (list (float 1e-9)))
+    "at the bid moved 10 bps down" [ 99.85 ]
+    (List.filter_map (D.Journal.recent_orders f.journal ~limit:10) ~f:(fun r ->
+         let q = r.D.Journal.Order_row.order.D.Order.request in
+         match
+           (q.D.Order.Request.side, D.Order.Kind.limit_price q.D.Order.Request.kind)
+         with
+         | D.Order.Side.Sell, Some p -> Some (Price.to_float p)
+         | _ -> None));
   cleanup ()
 
 (* And no document of a stopped strategy is sized: a new one would buy back what the
@@ -4336,6 +4436,122 @@ let test_a_strategy_crossing_a_resting_order_waits () =
          && String.is_substring line ~substring:"wash trade"));
   e.e_cleanup ()
 
+(* Fix round 2, m-b: an adjust job decides a strategy's document before it
+   takes the strategy, and must not re-size one superseded meanwhile. Two
+   stopped strategies: exp_x holds AAPL 20 from its document 1; exp_y holds
+   MSFT 10 and has no accepted document, which the pass says while it
+   decides -- after exp_x's decision. At that moment exp_x's document 2 is
+   accepted. exp_x's job then finds its document 1 no longer the latest, and
+   sends nothing; the next pass flattens it from document 2. *)
+let test_an_adjust_job_skips_a_document_superseded_before_its_turn () =
+  let e =
+    session_case ~pump:false ~start:"2026-09-15T14:00:00Z"
+      ~strategies:[ live_strategy ~name:"exp_x" () ]
+      ()
+  in
+  let f = e.e_f in
+  let zeros = "sha256:" ^ String.make 64 '0' in
+  let hold ~strategy ~symbol ~qty ~seed =
+    let o =
+      D.Order.create
+        {
+          D.Order.Request.client_order_id =
+            D.Ids.Client_order_id.generate ~now:evening
+              ~rng:(Random.State.make [| seed |]);
+          symbol;
+          side = D.Order.Side.Buy;
+          qty;
+          kind = D.Order.Kind.Limit (Price.of_float 300.0);
+          tif = D.Order.Tif.Day;
+        }
+    in
+    D.Journal.insert_order f.journal
+      { o with D.Order.state = D.Order.State.Filled }
+      ~source:(sprintf "signal:%s:1" strategy)
+      ~decision_price:(Price.of_float 100.0) ~arrival:None ~verdict:`Null
+      ~at:(Time_ns.sub evening (Time_ns.Span.of_day 1.0));
+    ignore
+      (D.Journal.record_fill f.journal o
+         {
+           D.Order.Fill.execution_id = sprintf "x-%s" strategy;
+           qty = Float.of_int qty;
+           price = Price.of_float 100.0;
+           at = Time_ns.sub evening (Time_ns.Span.of_day 1.0);
+           position_qty = None;
+         }
+        : bool);
+    Graph.set_qty f.graph symbol (Qty.of_float (Float.of_int qty));
+    Graph.stabilize f.graph;
+    D.Journal.set_strategy_state f.journal ~strategy ~state:`Stopped
+      ~rule:(Some "drawdown") ~at:evening
+      ~detail:"drawdown 20.0% reached its line of 15.0%"
+  in
+  let accept ~strategy ~sequence =
+    D.Journal.record_signal f.journal
+      {
+        D.Journal.Signal.strategy;
+        sequence;
+        as_of = Date.of_string "2026-09-14";
+        received_at = evening;
+        verdict = D.Journal.Signal.Verdict.Accepted;
+        rule = None;
+        detail = "passed";
+        document =
+          sprintf
+            {|{"schema_version":1,"strategy":"%s","params_hash":"%s","as_of":"2026-09-14","computed_at":"2026-09-14T23:15:00Z","data_hash":"%s","sequence":%d,"validation":{"status":"pass","gates_version":"2026-09-02"},"targets":[{"symbol":"AAPL","weight":0.002}]}|}
+            strategy zeros zeros sequence;
+        rebalance = Some "sent";
+      }
+  in
+  hold ~strategy:"exp_x" ~symbol:aapl ~qty:20 ~seed:51;
+  hold ~strategy:"exp_y" ~symbol:msft ~qty:10 ~seed:52;
+  accept ~strategy:"exp_x" ~sequence:1;
+  let superseded = ref false in
+  let now () = Time_source.now e.e_clock in
+  let intake =
+    D.Intake.create
+      ~gauge:
+        (D.Intake.Gauge.create ~spec:(D.Oms.spec e.e_oms)
+           ~venue_now:(fun () -> Some (now ()))
+           ~drawdown:(fun () -> None)
+           ~dd_cap:None ())
+      ~journal:f.journal ~dir:e.e_dir
+      ~strategies:
+        [
+          live_strategy ~name:"exp_x" ();
+          live_strategy ~name:"exp_y" ~symbols:[ "MSFT" ] ();
+        ]
+      ~universe:[ aapl; msft; xom ]
+      ~on_event:(fun line ->
+        Queue.enqueue f.events line;
+        if (not !superseded) && String.is_substring line ~substring:"no accepted document"
+        then (
+          superseded := true;
+          accept ~strategy:"exp_x" ~sequence:2))
+      ~now ()
+  in
+  let sources () =
+    List.filter_map (D.Journal.recent_orders f.journal ~limit:20) ~f:(fun r ->
+        let src = r.D.Journal.Order_row.source in
+        Option.some_if
+          (String.is_prefix src ~prefix:"signal:exp_x:"
+          && D.Order.Side.equal
+               r.D.Journal.Order_row.order.D.Order.request.D.Order.Request.side
+               D.Order.Side.Sell)
+          src)
+  in
+  don't_wait_for (D.Intake.adjust intake ~oms:(Some e.e_oms));
+  let%bind () = settle () in
+  Alcotest.(check (pair bool (list string)))
+    "document 2 accepted mid-pass: nothing sent from document 1" (true, [])
+    (!superseded, sources ());
+  let%bind () = advance_clock e "2026-09-15T14:00:10Z" in
+  don't_wait_for (D.Intake.adjust intake ~oms:(Some e.e_oms));
+  let%map () = settle () in
+  Alcotest.(check (list string))
+    "the next pass flattens it from document 2" [ "signal:exp_x:2" ] (sources ());
+  e.e_cleanup ()
+
 (* Fix round 1, I3: the adjust pass runs beside the sizing, not behind it.
    exp_long's document is sized at 10:00 EDT and its day limit rests -- the
    venue is not pumped -- so its wave waits, up to 180 s. exp_b is stopped
@@ -4868,6 +5084,26 @@ let test_a_governor_cut_beyond_the_band_drops_its_growing_leg () =
       ~drawdown:(fun () -> Some 0.015)
       ~dd_cap:0.02 ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.9" ()
   in
+  Alcotest.(check (list (triple string string int)))
+    "Sell 238 AAPL; no MSFT buy"
+    [ ("AAPL", "buy", 350); ("AAPL", "sell", 238); ("MSFT", "buy", 50) ]
+    (strategy_legs f name);
+  cleanup ()
+
+(* Fix round 2 (d): a governor's cut with one stale name. The same two
+   names and the same cut to 0.5; MSFT's feed is silent for ten minutes. The
+   cut only shrinks, so MSFT is sized off its last mark (200) and its leg, a
+   buy of 6 that would grow, is not sent -- it waits for a fresh mark -- and
+   the over-target AAPL is sold: Sell 238. *)
+let test_a_governor_cut_with_a_stale_name_sells_the_rest () =
+  let%bind { a_f = f; a_name = name; pass_and_adjust; cleanup; _ } =
+    adjust_case ~adjust_now:false ~two_names:true ~last_scale:0.9 ~last_ratio:1.0
+      ~last_factor:0.9 ~last_governor:1.0
+      ~drawdown:(fun () -> Some 0.015)
+      ~dd_cap:0.02 ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.9" ()
+  in
+  make_stale f ~stale:[ msft ];
+  let%map () = pass_and_adjust ~at:4.0 in
   Alcotest.(check (list (triple string string int)))
     "Sell 238 AAPL; no MSFT buy"
     [ ("AAPL", "buy", 350); ("AAPL", "sell", 238); ("MSFT", "buy", 50) ]
@@ -5587,6 +5823,14 @@ let suites =
         case "adjust within band does nothing" test_adjust_within_band_does_nothing;
         case "a stopped strategy is flattened by the adjust pass"
           test_a_stopped_strategy_is_flattened_by_the_adjust_pass;
+        case "a flatten is not held by an untraded stale name"
+          test_a_flatten_is_not_held_by_an_untraded_stale_name;
+        case "a flatten is not held by an untraded name never seen"
+          test_a_flatten_is_not_held_by_an_untraded_name_never_seen;
+        case "a flatten of a name with a stale mark goes on its quote"
+          test_a_flatten_of_a_name_with_a_stale_mark_goes_on_its_quote;
+        case "a governor cut with a stale name sells the rest"
+          test_a_governor_cut_with_a_stale_name_sells_the_rest;
         case "a stopped strategy's document is not sized"
           test_a_stopped_strategy's_document_is_not_sized;
         case "adjust beyond band re-sizes" test_adjust_beyond_band_re_sizes;
@@ -5641,6 +5885,8 @@ let suites =
           test_a_document_judged_before_09_35_is_sized_at_the_first_pass_after;
         case "a restart sizes nothing until the venue clock answers"
           test_a_restart_sizes_nothing_until_the_venue_clock_answers;
+        case "an adjust job skips a document superseded before its turn"
+          test_an_adjust_job_skips_a_document_superseded_before_its_turn;
         case "a stop's flatten is not held behind another strategy's sizing"
           test_a_stop's_flatten_is_not_held_behind_another_strategy's_sizing;
         case "a document with a stale name waits, and is sized once it prints"

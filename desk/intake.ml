@@ -1506,25 +1506,20 @@ let rebalance ?(floor = true) ?(sizing_mode = "open") ?(only_shrink = false) ?no
           wait = true;
           attempted = false;
         }
-  | Ok (), None when Option.is_some (Oms.marks_wait oms ~strategy) ->
-      return
-        {
-          Rebalanced.sentence =
-            Oms.Rebalance_outcome.to_string
-              (Not_now ("mark: " ^ Option.value_exn (Oms.marks_wait oms ~strategy)));
-          wait = true;
-          attempted = false;
-        }
   | Ok (), None -> (
       let ratio = incubation_ratio t ~oms strategy in
       let fraction = strategy.capital_fraction in
       let parts = scale () in
       let scale = parts.Parts.effective *. ratio in
+      let targets =
+        List.map doc.targets ~f:(fun (x : Contract.target) -> (x.symbol, x.weight))
+      in
+      (* A name the plan needs a price for and has none current is a wait,
+         not a refusal (fix rounds 1 and 2, Oms.marks_wait); a re-size that
+         only shrinks sizes a stale name off its last mark. *)
+      let waiting = Oms.marks_wait ~stale_ok:only_shrink oms ~strategy ~targets ~scale in
       let planned =
-        Oms.plan_rebalance ~floor oms ~strategy
-          ~targets:
-            (List.map doc.targets ~f:(fun (x : Contract.target) -> (x.symbol, x.weight)))
-          ~scale
+        Oms.plan_rebalance ~floor ~stale_ok:only_shrink oms ~strategy ~targets ~scale
       in
       let equity = Oms.sizing_equity oms in
       let sized () =
@@ -1558,62 +1553,74 @@ let rebalance ?(floor = true) ?(sizing_mode = "open") ?(only_shrink = false) ?no
                   sprintf "%s %s %d (%.2f)" (Symbol.to_string l.symbol)
                     (Order.Side.to_string l.side) l.qty l.price)))
       in
-      match planned with
-      | Error why -> return (Rebalanced.final ("no targets, and no order: " ^ why))
-      | Ok ([], []) ->
-          sized ();
+      match waiting with
+      | Some why ->
           return
-            (Rebalanced.final
-               "no order: the strategy's own position already equals every target")
-      | Ok ([], dropped) ->
-          sized ();
-          return
-            (Rebalanced.final ("no order: every order was " ^ floor_sentence dropped))
-      | Ok (legs, _) when only_shrink && List.for_all legs ~f:(grows oms strategy) ->
-          return
-            (Rebalanced.final
-               (sprintf
-                  "held: this re-size lowers the strategy's size and only shrinks, and \
-                   every leg would grow its own position: %s"
-                  (String.concat ~sep:"; " (List.map legs ~f:Rebalance.Leg.describe))))
-      | Ok (legs, dropped) when only_shrink && List.exists legs ~f:(grows oms strategy) ->
-          (* The shrinking legs go and the growing ones are dropped, named;
+            {
+              Rebalanced.sentence =
+                Oms.Rebalance_outcome.to_string (Not_now ("mark: " ^ why));
+              wait = true;
+              attempted = false;
+            }
+      | None -> (
+          match planned with
+          | Error why -> return (Rebalanced.final ("no targets, and no order: " ^ why))
+          | Ok ([], []) ->
+              sized ();
+              return
+                (Rebalanced.final
+                   "no order: the strategy's own position already equals every target")
+          | Ok ([], dropped) ->
+              sized ();
+              return
+                (Rebalanced.final ("no order: every order was " ^ floor_sentence dropped))
+          | Ok (legs, _) when only_shrink && List.for_all legs ~f:(grows oms strategy) ->
+              return
+                (Rebalanced.final
+                   (sprintf
+                      "held: this re-size lowers the strategy's size and only shrinks, \
+                       and every leg would grow its own position: %s"
+                      (String.concat ~sep:"; " (List.map legs ~f:Rebalance.Leg.describe))))
+          | Ok (legs, dropped)
+            when only_shrink && List.exists legs ~f:(grows oms strategy) ->
+              (* The shrinking legs go and the growing ones are dropped, named;
              no sizing row, so the next pass plans again -- the shrunk names
              are then at their targets and only the growing legs remain, held. *)
-          let growing, shrinking = List.partition_tf legs ~f:(grows oms strategy) in
-          let%map outcome = Oms.propose_rebalance oms ~source ~legs:shrinking in
-          {
-            Rebalanced.sentence =
-              sprintf
-                "%s. Targets: %s. Not sent, because this re-size lowers the strategy's \
-                 size and only shrinks: %s; no sizing recorded%s"
-                (Oms.Rebalance_outcome.to_string outcome)
-                (String.concat ~sep:"; " (List.map shrinking ~f:Rebalance.Leg.describe))
-                (String.concat ~sep:"; " (List.map growing ~f:Rebalance.Leg.describe))
-                (if List.is_empty dropped then ""
-                 else ". " ^ String.capitalize (floor_sentence dropped));
-            wait = (match outcome with Not_now _ -> true | _ -> false);
-            attempted =
-              (match outcome with
-              | Sent _ | Stopped _ | Waved _ -> true
-              | Refused _ | Not_now _ -> false);
-          }
-      | Ok (legs, dropped) ->
-          let%map outcome = Oms.propose_rebalance oms ~source ~legs in
-          if sized_whole outcome then sized ();
-          {
-            Rebalanced.sentence =
-              sprintf "%s. Targets: %s%s"
-                (Oms.Rebalance_outcome.to_string outcome)
-                (String.concat ~sep:"; " (List.map legs ~f:Rebalance.Leg.describe))
-                (if List.is_empty dropped then ""
-                 else ". " ^ String.capitalize (floor_sentence dropped));
-            wait = (match outcome with Not_now _ -> true | _ -> false);
-            attempted =
-              (match outcome with
-              | Sent _ | Stopped _ | Waved _ -> true
-              | Refused _ | Not_now _ -> false);
-          })
+              let growing, shrinking = List.partition_tf legs ~f:(grows oms strategy) in
+              let%map outcome = Oms.propose_rebalance oms ~source ~legs:shrinking in
+              {
+                Rebalanced.sentence =
+                  sprintf
+                    "%s. Targets: %s. Not sent, because this re-size lowers the \
+                     strategy's size and only shrinks: %s; no sizing recorded%s"
+                    (Oms.Rebalance_outcome.to_string outcome)
+                    (String.concat ~sep:"; "
+                       (List.map shrinking ~f:Rebalance.Leg.describe))
+                    (String.concat ~sep:"; " (List.map growing ~f:Rebalance.Leg.describe))
+                    (if List.is_empty dropped then ""
+                     else ". " ^ String.capitalize (floor_sentence dropped));
+                wait = (match outcome with Not_now _ -> true | _ -> false);
+                attempted =
+                  (match outcome with
+                  | Sent _ | Stopped _ | Waved _ -> true
+                  | Refused _ | Not_now _ -> false);
+              }
+          | Ok (legs, dropped) ->
+              let%map outcome = Oms.propose_rebalance oms ~source ~legs in
+              if sized_whole outcome then sized ();
+              {
+                Rebalanced.sentence =
+                  sprintf "%s. Targets: %s%s"
+                    (Oms.Rebalance_outcome.to_string outcome)
+                    (String.concat ~sep:"; " (List.map legs ~f:Rebalance.Leg.describe))
+                    (if List.is_empty dropped then ""
+                     else ". " ^ String.capitalize (floor_sentence dropped));
+                wait = (match outcome with Not_now _ -> true | _ -> false);
+                attempted =
+                  (match outcome with
+                  | Sent _ | Stopped _ | Waved _ -> true
+                  | Refused _ | Not_now _ -> false);
+              }))
 
 (* The outcome written over the pending sentence, once; or, when it cannot
    be, said. *)
@@ -1653,36 +1660,17 @@ let stopped_by t name =
            (Error.to_string_hum e))
 
 (* The key the adjust pass compares a strategy's outcome by, to say it only
-   when it is new (fix round 1, m1): the sentence with every duration in
-   seconds -- a number followed by " s" as a word -- replaced by "#", so a
-   refusal whose only change is a quote's age is not said again every
-   minute. Every other number stays: a sale of 10 is not a sale of 12. *)
+   when it is new (fix rounds 1 and 2, m1 and m-a): the outcome's kind and
+   its rule -- the words of the sentence -- with every word that holds a
+   digit replaced by "#": every duration, price, quantity, count, date and
+   order id. A refusal whose only change is a quote's age, or a hold whose
+   only change is a leg's mark, is not said again every minute; a refusal
+   for another rule, or a hold after a refusal, is. (The table it is kept in
+   is by strategy.) *)
 let said_key (sentence : string) : string =
-  let n = String.length sentence in
-  let numeric c = Char.is_digit c || Char.equal c '.' in
-  let buf = Buffer.create n in
-  let rec go i =
-    if i >= n then ()
-    else if numeric sentence.[i] && (i = 0 || not (numeric sentence.[i - 1])) then (
-      let j = ref i in
-      while !j < n && numeric sentence.[!j] do
-        incr j
-      done;
-      let seconds =
-        !j + 1 < n
-        && Char.equal sentence.[!j] ' '
-        && Char.equal sentence.[!j + 1] 's'
-        && (!j + 2 >= n || not (Char.is_alpha sentence.[!j + 2]))
-      in
-      Buffer.add_string buf
-        (if seconds then "#" else String.sub sentence ~pos:i ~len:(!j - i));
-      go !j)
-    else (
-      Buffer.add_char buf sentence.[i];
-      go (i + 1))
-  in
-  go 0;
-  Buffer.contents buf
+  String.split sentence ~on:' '
+  |> List.map ~f:(fun word -> if String.exists word ~f:Char.is_digit then "#" else word)
+  |> String.concat ~sep:" "
 
 (* [f] for strategy [name], only while neither the sizing nor the adjust
    pass is proposing for it already (fix round 1, I3): the two run side by
@@ -2212,9 +2200,30 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                 let name = a.Accepted.strategy.name in
                 Deferred.ignore_m @@ exclusively t name
                 @@ fun () ->
-                let completing = Option.equal String.equal note (Some "completion") in
-                let flattening = Option.equal String.equal note (Some "stop") in
-                (* Only shrinking, where something IS unknown or the gate
+                (* Decided before it took the strategy: a document accepted
+                   since is the strategy's now, and this one is not re-sized
+                   (fix round 2, m-b); the next pass decides on the new one.
+                   A journal that cannot say is no permission either. *)
+                let current =
+                  match
+                    Or_error.try_with (fun () ->
+                        Journal.latest_accepted_document t.journal ~strategy:name)
+                  with
+                  | Ok (Some (sequence, _)) -> sequence = a.Accepted.doc.sequence
+                  | Ok None | Error _ -> false
+                in
+                if not current then (
+                  once t ~kind:"adjust superseded"
+                    ~name:(sprintf "%s\000%d" name a.Accepted.doc.sequence) (fun () ->
+                      log t
+                        "%S %d: not adjusted: a later document was accepted before its \
+                         turn, and the next pass decides on that one"
+                        name a.Accepted.doc.sequence);
+                  Deferred.unit)
+                else
+                  let completing = Option.equal String.equal note (Some "completion") in
+                  let flattening = Option.equal String.equal note (Some "stop") in
+                  (* Only shrinking, where something IS unknown or the gate
                    would refuse: legs that would grow the strategy's own
                    position are dropped, named, and the rest sent
                    ([rebalance]). Exactly:
@@ -2235,72 +2244,71 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                    was: the 2026-10-27 completion buys its unfilled legs.
                    Scales are compared with a tolerance, never a bare < on a
                    float that has been round-tripped through a ratio. *)
-                let only_shrink =
-                  let last = Journal.latest_sizing_row t.journal ~strategy:name in
-                  let governor_cut =
-                    reading.governor_unread
-                    ||
-                    match Option.bind last ~f:(fun z -> z.Journal.Sizing.governor) with
-                    | Some g ->
-                        Float.( < ) reading.governor g && beyond reading.governor g
-                    | None -> false
-                  in
-                  match note with
-                  | Some ("decay" | "overlay") -> true
-                  | Some "stop" -> false
-                  (* A completion is taken before a governor's move, so a cut
+                  let only_shrink =
+                    let last = Journal.latest_sizing_row t.journal ~strategy:name in
+                    let governor_cut =
+                      reading.governor_unread
+                      ||
+                      match Option.bind last ~f:(fun z -> z.Journal.Sizing.governor) with
+                      | Some g ->
+                          Float.( < ) reading.governor g && beyond reading.governor g
+                      | None -> false
+                    in
+                    match note with
+                    | Some ("decay" | "overlay") -> true
+                    | Some "stop" -> false
+                    (* A completion is taken before a governor's move, so a cut
                      that lands while orders are unfilled is routed here. *)
-                  | Some "completion" -> (
-                      governor_cut
-                      || stale
-                         &&
-                         match
-                           ( Option.bind last ~f:(fun z -> z.Journal.Sizing.factor),
-                             parts.Parts.factor )
-                         with
-                         | Some f, Some f' -> Float.( < ) f' (f -. 1e-9)
-                         | _ -> false)
-                  | Some _ | None -> governor_cut
-                in
-                let%map outcome =
-                  match%map
-                    Monitor.try_with ~extract_exn:true (fun () ->
-                        rebalance
-                          ~sizing_mode:(if completing then "complete" else "adjust")
-                          ~only_shrink ?note t ~oms
-                          ~scale:(fun () -> parts)
-                          a)
-                  with
-                  | Ok outcome ->
-                      (* A flatten is capped as a completion is, and for the same
+                    | Some "completion" -> (
+                        governor_cut
+                        || stale
+                           &&
+                           match
+                             ( Option.bind last ~f:(fun z -> z.Journal.Sizing.factor),
+                               parts.Parts.factor )
+                           with
+                           | Some f, Some f' -> Float.( < ) f' (f -. 1e-9)
+                           | _ -> false)
+                    | Some _ | None -> governor_cut
+                  in
+                  let%map outcome =
+                    match%map
+                      Monitor.try_with ~extract_exn:true (fun () ->
+                          rebalance
+                            ~sizing_mode:(if completing then "complete" else "adjust")
+                            ~only_shrink ?note t ~oms
+                            ~scale:(fun () -> parts)
+                            a)
+                    with
+                    | Ok outcome ->
+                        (* A flatten is capped as a completion is, and for the same
                          reason: an order that cannot fill would otherwise be sent
                          and cancelled every pass all session. *)
-                      if (completing || flattening) && outcome.Rebalanced.attempted then (
-                        let key = if flattening then flatten_key name else name in
-                        Hashtbl.update t.sent_today
-                          (key ^ "\000" ^ Date.to_string today)
-                          ~f:(fun n -> Option.value n ~default:0 + 1);
-                        match
-                          Or_error.try_with (fun () ->
-                              Journal.record_completion t.journal
-                                ~key:(if flattening then flatten_key name else name)
-                                ~date:today ~at:(t.now ()))
-                        with
-                        | Ok () -> ()
-                        | Error e ->
-                            log t "%S: its completion could not be counted: %s" name
-                              (Error.to_string_hum e));
-                      outcome.Rebalanced.sentence
-                  | Error exn -> sprintf "the rebalance raised (%s)" (Exn.to_string exn)
-                in
-                let said = Hashtbl.find t.adjust_said name in
-                if not (Option.equal String.equal said (Some (said_key outcome))) then (
-                  Hashtbl.set t.adjust_said ~key:name ~data:(said_key outcome);
-                  log t "%S %d: adjusted to scale %g%s: %S" name a.Accepted.doc.sequence
-                    (parts.Parts.effective *. ratio)
-                    (match note with Some n -> " (" ^ n ^ ")" | None -> "")
-                    outcome);
-                Deferred.unit))
+                        if (completing || flattening) && outcome.Rebalanced.attempted then (
+                          let key = if flattening then flatten_key name else name in
+                          Hashtbl.update t.sent_today
+                            (key ^ "\000" ^ Date.to_string today)
+                            ~f:(fun n -> Option.value n ~default:0 + 1);
+                          match
+                            Or_error.try_with (fun () ->
+                                Journal.record_completion t.journal
+                                  ~key:(if flattening then flatten_key name else name)
+                                  ~date:today ~at:(t.now ()))
+                          with
+                          | Ok () -> ()
+                          | Error e ->
+                              log t "%S: its completion could not be counted: %s" name
+                                (Error.to_string_hum e));
+                        outcome.Rebalanced.sentence
+                    | Error exn -> sprintf "the rebalance raised (%s)" (Exn.to_string exn)
+                  in
+                  let said = Hashtbl.find t.adjust_said name in
+                  if not (Option.equal String.equal said (Some (said_key outcome))) then (
+                    Hashtbl.set t.adjust_said ~key:name ~data:(said_key outcome);
+                    log t "%S %d: adjusted to scale %g%s: %S" name a.Accepted.doc.sequence
+                      (parts.Parts.effective *. ratio)
+                      (match note with Some n -> " (" ^ n ^ ")" | None -> "")
+                      outcome)))
       in
       t.adjusting <- false;
       t.skip_said <- false;

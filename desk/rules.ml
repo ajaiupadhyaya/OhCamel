@@ -29,7 +29,9 @@
      -- or, for an order that grows a position, last changed more than 60 s
      before its fetch (Rebalance.quote_refusal);
    - [mark]: a stale or unprinted mark refuses it for timing alone
-     ([is_timing_refusal] ~desk).
+     ([is_timing_refusal] ~desk) -- unless it only shrinks the strategy's
+     own position, when it is priced for the collar and the cap at the
+     fetched quote's midpoint instead (fix round 2).
    A person's ticket (Origin.Hand) is neither: it is sent as the person
    priced it, from the open. [collar] reads the limit against the mark;
    [notional] reads qty x the larger of the limit and the mark, so a limit
@@ -408,8 +410,34 @@ let names =
 let check (c : Context.t) (r : Order.Request.t) : Failure.t list =
   let fail rule why = Some { Failure.rule; why } in
   let sym = Symbol.to_string r.Order.Request.symbol in
+  let shrinks =
+    shrinks_position ~position:c.own ~side:r.Order.Request.side ~qty:r.Order.Request.qty
+  in
+  let quote_refusal q =
+    Rebalance.quote_refusal ~shrinks ~now:c.now
+      ~max_age_s:c.spec.Desk_spec.quote_max_age_s q
+  in
+  (* A DESK ORDER THAT ONLY SHRINKS the strategy's own position, on a mark
+     that is stale or missing (fix round 2): a held name with no fresh print
+     can still be sold, so it is priced -- for the collar and the cap -- at
+     the fetched quote's midpoint instead of refused for the mark; with no
+     valid quote the quote rule refuses it. *)
+  let quote_priced =
+    match c.origin with
+    | Origin.Desk (Some f) when shrinks && Option.is_none (quote_refusal (Some f)) ->
+        Some (Venue.Quote.mid f.Rebalance.Fetched.quote)
+    | Origin.Desk _ | Origin.Hand -> None
+  in
+  let on_quote =
+    shrinks
+    && (match c.origin with Origin.Desk _ -> true | Origin.Hand -> false)
+    && (Option.is_none c.mark || c.stale)
+  in
   let priced =
-    match c.mark with Some p when not c.stale -> Some (Price.to_float p) | _ -> None
+    match c.mark with
+    | Some p when not c.stale -> Some (Price.to_float p)
+    | _ when on_quote -> quote_priced
+    | _ -> None
   in
   let limit =
     Option.map (Order.Kind.limit_price r.Order.Request.kind) ~f:Price.to_float
@@ -435,19 +463,15 @@ let check (c : Context.t) (r : Order.Request.t) : Failure.t list =
            ~zone:c.new_york ~session:c.session ~now:c.now ())
         ~f:(fun why -> { Failure.rule = "session"; why });
       (match (c.mark, c.stale) with
+      | _ when on_quote -> None
       | None, _ -> fail "mark" (sprintf "%s has no mark" sym)
       | Some _, true -> fail "mark" (sprintf "%s's mark is stale" sym)
       | Some _, false -> None);
       (match c.origin with
       | Origin.Hand -> None
       | Origin.Desk q ->
-          Option.map
-            (Rebalance.quote_refusal
-               ~shrinks:
-                 (shrinks_position ~position:c.own ~side:r.Order.Request.side
-                    ~qty:r.Order.Request.qty)
-               ~now:c.now ~max_age_s:c.spec.Desk_spec.quote_max_age_s q)
-            ~f:(fun why -> { Failure.rule = "quote"; why = sprintf "%s: %s" sym why }));
+          Option.map (quote_refusal q) ~f:(fun why ->
+              { Failure.rule = "quote"; why = sprintf "%s: %s" sym why }));
       (* A whole cent at every price. Rule 612 allows four decimals below a
          dollar, but desk/alpaca_paper.ml sends a limit with two, so a finer
          limit would be journaled and gated at one price and reach the venue

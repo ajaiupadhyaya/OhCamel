@@ -1546,8 +1546,21 @@ let strategy_position t ~(strategy : string) : (float Symbol.Map.t, string) Resu
    name and would otherwise leave a residue the desk could never sell:
    (kept, dropped), so the caller can say what it dropped. A signal's own
    rebalance drops nothing (the stage review's A-I6, withdrawing the floor
-   there; kept under day limits). *)
-let plan_rebalance ?(floor = true) t
+   there; kept under day limits).
+
+   [stale_ok] (a re-size that only shrinks: a governor's cut, a decay -- fix
+   round 2): a name the feed calls stale is sized off its last mark, since
+   every leg that would grow is dropped before it is sent and a wrong price
+   can then only change how much is sold; a name never seen still has no
+   price. A name whose weight x scale is 0 needs no price at all
+   (Rebalance.plan). *)
+let sizing_mark ?(stale_ok = false) t symbol : (float, string) Result.t =
+  match (fresh_mark t symbol, live_mark t symbol) with
+  | Ok p, _ -> Ok p
+  | Error _, Some p when stale_ok -> Ok (Price.to_float p)
+  | Error why, _ -> Error why
+
+let plan_rebalance ?(floor = true) ?stale_ok t
     ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
     ~(targets : (Symbol.t * float) list) ~(scale : float) :
     (Rebalance.Leg.t list * Rebalance.Leg.t list, string) Result.t =
@@ -1556,7 +1569,7 @@ let plan_rebalance ?(floor = true) t
   let marks =
     Symbol.Map.of_alist_reduce
       ~f:(fun first _ -> first)
-      (List.map symbols ~f:(fun s -> (s, fresh_mark t s)))
+      (List.map symbols ~f:(fun s -> (s, sizing_mark ?stale_ok t s)))
   in
   (* The account's holdings as the gate reads them: the graph's book, which
      is the account's while [sizing_equity] answers at all. *)
@@ -1582,14 +1595,21 @@ let plan_rebalance ?(floor = true) t
    thin ETF goes minutes without a print, a name may not have printed since a
    restart -- not to close the day's document; the judgement's own max_age
    bounds the wait. A name the book does not hold at all is no wait: the plan
-   refuses it for good. *)
-let marks_wait t ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t) : string option
-    =
+   refuses it for good. Only a name the plan needs a price for counts (fix
+   round 2): one whose weight x scale is not 0 -- so a flatten waits for no
+   mark at all -- and, with [stale_ok] (a re-size that only shrinks), only a
+   name never seen; a stale one is sized off its last mark ([sizing_mark]). *)
+let marks_wait ?stale_ok t ~(strategy : Ohcamel.Config.Book.Signals_spec.Strategy.t)
+    ~(targets : (Symbol.t * float) list) ~(scale : float) : string option =
   let module S = Ohcamel.Config.Book.Signals_spec.Strategy in
   List.filter_map strategy.S.symbols ~f:(fun name ->
       let s = Symbol.of_string name in
-      if not (Graph.knows_symbol t.graph s) then None
-      else match fresh_mark t s with Ok _ -> None | Error why -> Some why)
+      let weight =
+        Option.value (List.Assoc.find targets s ~equal:Symbol.equal) ~default:0.0
+      in
+      if (not (Graph.knows_symbol t.graph s)) || Float.equal (weight *. scale) 0.0 then
+        None
+      else match sizing_mark ?stale_ok t s with Ok _ -> None | Error why -> Some why)
   |> function
   | [] -> None
   | whys -> Some (String.concat ~sep:"; " whys)
@@ -2083,11 +2103,22 @@ let send_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t lis
               let origin_of (r : Order.Request.t) =
                 Rules.Origin.Desk (quote_of r.Order.Request.symbol)
               in
+              (* The quote each order went against, as its arrival -- unless
+                 it last changed more than Rebalance.max_quote_stamp_age_s
+                 before its fetch (an order that only shrinks may go on such
+                 a quote): then no arrival is journaled, and its cost is not
+                 measured from a midpoint that may no longer be the market's
+                 (fix round 2, m-d). The orders table has no note column to
+                 say so; the empty arrival is the record. *)
               let arrivals =
                 List.map orders ~f:(fun ((r : Order.Request.t), _) ->
-                    Option.map (quote_of r.Order.Request.symbol)
-                      ~f:(fun { Rebalance.Fetched.quote = q; _ } ->
-                        (q.Venue.Quote.bid, q.Venue.Quote.ask)))
+                    Option.bind (quote_of r.Order.Request.symbol)
+                      ~f:(fun { Rebalance.Fetched.quote = q; at } ->
+                        Option.some_if
+                          (Float.( <= )
+                             (Time_ns.Span.to_sec (Time_ns.diff at q.Venue.Quote.at))
+                             Rebalance.max_quote_stamp_age_s)
+                          (q.Venue.Quote.bid, q.Venue.Quote.ask)))
               in
               match
                 List.find_mapi orders ~f:(fun i (r, _) ->

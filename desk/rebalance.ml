@@ -64,6 +64,8 @@ module Source = struct
   let prefix ~strategy = sprintf "signal:%s:" strategy
 end
 
+let positive_finite x = Float.is_finite x && Float.( > ) x 0.0
+
 (* One order of a rebalance, with the numbers it was derived from, so the
    outcome the intake records can show the arithmetic. *)
 module Leg = struct
@@ -79,12 +81,11 @@ module Leg = struct
   [@@deriving sexp_of, compare, equal]
 
   let describe t =
-    sprintf "%s %s %d (target %d at %.2f, weight %g; the strategy holds %d)"
-      (Symbol.to_string t.symbol) (Order.Side.to_string t.side) t.qty t.target t.price
+    sprintf "%s %s %d (target %d %s, weight %g; the strategy holds %d)"
+      (Symbol.to_string t.symbol) (Order.Side.to_string t.side) t.qty t.target
+      (if positive_finite t.price then sprintf "at %.2f" t.price else "with no price read")
       t.weight t.current
 end
-
-let positive_finite x = Float.is_finite x && Float.( > ) x 0.0
 
 (* A desk order's limit, from the quote fetched as it is sent (Task 1.7):
    a buy [band_bps] above the ask, a sell [band_bps] below the bid, so the
@@ -117,12 +118,17 @@ end
    a midpoint (lib/feed/alpaca_ws.ml). *)
 let max_quote_stamp_age_s = 60.0
 
+(* How far after its fetch a quote may be stamped: the venue's clock and the
+   desk's disagree by this much at most before the quote is read as one from
+   the future (fix round 2, m-c). *)
+let max_quote_skew_s = 1.0
+
 (* Whether a quote fetched at send can price a desk order: None when it can,
    else why not -- the rules' [quote] refusal (Rules.check, Oms.pre_wire).
    For every order: no quote; a side that is zero, negative or not a number
    (one-sided: the venue's "no active bid"); a bid above the ask (crossed);
-   a stamp more than [max_age_s] AFTER its fetch (a clock that disagrees
-   with the desk's by more than the bound -- a quote from the future); or a
+   a stamp more than [max_quote_skew_s] (1 s) AFTER its fetch (a clock that
+   disagrees with the desk's by more than that -- a quote from the future); or a
    fetch more than [max_age_s] (the book's quote_max_age_s, 5 s) from [now]
    -- the quote is the one fetched as the order is sent, not one kept.
 
@@ -153,7 +159,7 @@ let quote_refusal ?(shrinks = false) ~(now : Time_ns.t) ~(max_age_s : float)
       | () when Float.( > ) bid ask ->
           Some
             (sprintf "its quote is crossed: the bid %.4f is above the ask %.4f" bid ask)
-      | () when not (Float.( >= ) stamp_age (-.max_age_s)) ->
+      | () when not (Float.( >= ) stamp_age (-.max_quote_skew_s)) ->
           Some
             (sprintf
                "its quote is stamped %.1f s after it was fetched, from a clock ahead of \
@@ -410,11 +416,18 @@ let plan ~(symbols : Symbol.t list) ~(weights : (Symbol.t * float) list)
         let weight =
           Option.value (List.Assoc.find weights symbol ~equal:Symbol.equal) ~default:0.0
         in
+        (* A name whose weight x scale is exactly 0 -- every name of a
+           flatten at scale 0, any name the signal gives no weight -- has a
+           target of 0 whatever its price, and no price is read for it (fix
+           round 2): a flatten to zero needs no mark. Its price is the mark
+           when there is a good one, for the sentence, else 0. *)
+        let zero = Float.equal (weight *. scale) 0.0 in
         let%bind price =
           match Map.find marks symbol with
+          | Some (Ok p) when positive_finite p -> Ok p
+          | _ when zero -> Ok 0.0
           | None -> Error (sprintf "%s has no price" name)
           | Some (Error why) -> Error why
-          | Some (Ok p) when positive_finite p -> Ok p
           | Some (Ok p) ->
               Error (sprintf "%s's price is %g, not a positive number" name p)
         in
@@ -423,13 +436,15 @@ let plan ~(symbols : Symbol.t list) ~(weights : (Symbol.t * float) list)
           else Error (sprintf "%s's weight is not a number" name)
         in
         let%bind target =
-          match
-            Float.iround_towards_zero
-              (weight *. capital_fraction *. scale *. equity /. price)
-          with
-          | Some n -> Ok n
-          | None ->
-              Error (sprintf "%s's target is not a representable number of shares" name)
+          if zero then Ok 0
+          else
+            match
+              Float.iround_towards_zero
+                (weight *. capital_fraction *. scale *. equity /. price)
+            with
+            | Some n -> Ok n
+            | None ->
+                Error (sprintf "%s's target is not a representable number of shares" name)
         in
         let held = Option.value (Map.find current symbol) ~default:0.0 in
         let%bind current =

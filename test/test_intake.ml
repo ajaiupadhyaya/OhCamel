@@ -2031,27 +2031,43 @@ let test_an_overlay_ages_in_session_hours () =
         (read "2026-11-16 13:45"))
     ()
 
-(* Fix round 1, m1: the adjust pass says a strategy's outcome when it
-   differs from the last one said, and a refusal that carries an age -- a
-   quote fetched N s ago, a stamp N s old -- must not read as new every
-   minute. The key it compares drops every "N s" and nothing else: two
-   refusals at different ages are one line, a sale of 10 and of 12 are two. *)
+(* Fix rounds 1 and 2 (m1, m-a): the adjust pass says a strategy's outcome
+   when it differs from the last one said, and an outcome is not new for a
+   duration or a price alone -- a quote fetched N s ago, a leg "at <mark>",
+   a "day limit at <limit>". The key it compares keeps the outcome's kind
+   and its rule, and drops every number: two refusals at different ages are
+   one line, as are two held re-sizes at different marks; a quote refusal
+   and a mark refusal are two, and so are a refusal and a hold. *)
 let test_an_outcome's_age_is_not_what_makes_it_new () =
   let key = D.Intake.said_key in
-  let refusal age =
+  let refusal ~rule age =
     sprintf
       "refused, and nothing journaled or sent: order 1 of 1 (SPY sell 10 day limit at \
-       499.50): quote: SPY: its quote was fetched %s s ago, and a quote prices an order \
+       499.50): %s: SPY: its quote was fetched %s s ago, and a quote prices an order \
        within 5 s of its fetch"
-      age
+      rule age
+  in
+  let held mark limit =
+    sprintf
+      "held: this re-size lowers the strategy's size and only shrinks, and every leg \
+       would grow its own position: MSFT buy 6 (target 56 at %s, weight 0.5; the \
+       strategy holds 50) day limit at %s"
+      mark limit
   in
   Alcotest.(check string)
     "6.0 s and 61.5 s: one key"
-    (key (refusal "6.0"))
-    (key (refusal "61.5"));
+    (key (refusal ~rule:"quote" "6.0"))
+    (key (refusal ~rule:"quote" "61.5"));
+  Alcotest.(check string)
+    "held at 200.00 and at 201.37: one key"
+    (key (held "200.00" "200.31"))
+    (key (held "201.37" "201.69"));
   Alcotest.(check bool)
-    "a sale of 10 and of 12: two" false
-    (String.equal (key "SPY sell 10 at 499.50") (key "SPY sell 12 at 499.50"))
+    "a quote refusal and a mark refusal: two" false
+    (String.equal (key (refusal ~rule:"quote" "6.0")) (key (refusal ~rule:"mark" "6.0")));
+  Alcotest.(check bool)
+    "a refusal and a hold: two" false
+    (String.equal (key (refusal ~rule:"quote" "6.0")) (key (held "200.00" "200.31")))
 
 let suite =
   ( "intake",
