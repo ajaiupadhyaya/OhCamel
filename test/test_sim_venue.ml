@@ -117,61 +117,81 @@ let test_the_synthetic_calendar_skips_the_weekend () =
     |> List.filter ~f:(fun d -> Day_of_week.is_sun_or_sat (Date.day_of_week d))
     |> List.map ~f:Date.to_string)
 
-(* The closed phase a test sets (Task 15). After Monday's close the clock is
-   closed and names Tuesday's open and close; a market-on-open order taken
-   then is held -- a step an hour later fills nothing -- until the test opens
-   the session, when it fills as a market order does: AAPL 10 bought at 150
-   plus half a spread of 5 bps, 150 x 1.0005 = 150.075. *)
-let test_a_closed_session_holds_an_opening_auction_order_until_it_opens () =
-  let now = ref (Time_ns.of_string_with_utc_offset "2026-09-14T23:15:00Z") in
+(* A day limit order, as the desk now sends every one of its own (Task
+   1.7), during Tuesday's session at 10:00 EDT, the close at 16:00 EDT
+   (20:00Z), AAPL's mark 150 and its quote 149.925 x 150.075:
+   - a buy at 150.23, at or above the ask, is marketable and fills whole at
+     the ask, 150.075; a sell at 149.77, at or below the bid, at the bid;
+   - a buy at 149.00 rests: a step fills nothing; the mark moves to 148.90,
+     its ask (148.974) comes inside the limit, and the next step fills it;
+   - a buy at 148.00 never meets the ask, rests to the close, and expires
+     there: at 15:59 still resting, at 16:00 the venue reports "expired", and
+     a step after says nothing more of it. *)
+let test_a_day_limit_fills_at_the_quote_rests_and_expires_at_the_close () =
+  let now = ref (Time_ns.of_string_with_utc_offset "2026-09-15T14:00:00Z") in
+  let mark = ref 150.0 in
   let v =
-    Sim.create ~opened_at:t0
-      ~marks:(fun s -> if Symbol.equal s aapl then Some (Price.of_float 150.0) else None)
+    Sim.create ~latency:Time_ns.Span.zero ~opened_at:t0
+      ~marks:(fun _ -> Some (Price.of_float !mark))
       ~now:(fun () -> !now)
       ~half_spread_bps:(fun _ -> 5.0)
       ~cash:(Notional.of_float 100_000.0) ~positions:[] ()
   in
-  let next_open = Time_ns.of_string_with_utc_offset "2026-09-15T13:30:00Z" in
-  let next_close = Time_ns.of_string_with_utc_offset "2026-09-15T20:00:00Z" in
-  Sim.set_session v (Sim.Session.Closed { next_open; next_close });
-  let c = Sim.clock v in
-  Alcotest.(check (triple bool string string))
-    "closed, naming Tuesday's open and close"
-    (false, "2026-09-15T13:30:00.000000000Z", "2026-09-15T20:00:00.000000000Z")
-    ( c.Venue.Session_clock.is_open,
-      Ohcamel_desk.Desk_time.rfc3339 c.Venue.Session_clock.next_open,
-      Ohcamel_desk.Desk_time.rfc3339 c.Venue.Session_clock.next_close );
-  (match
-     Sim.For_testing.submit_now v
-       {
-         Ohcamel_desk.Order.Request.client_order_id =
-           Option.value_exn
-             (Ohcamel_desk.Ids.Client_order_id.of_string "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZZ1");
-         symbol = aapl;
-         side = Ohcamel_desk.Order.Side.Buy;
-         qty = 10;
-         kind = Ohcamel_desk.Order.Kind.Market;
-         tif = Ohcamel_desk.Order.Tif.Opg;
-       }
-   with
-  | Venue.Submission.Accepted _ -> ()
-  | _ -> Alcotest.fail "the venue did not take the order");
-  now := Time_ns.add !now (Time_ns.Span.of_hr 1.0);
-  Alcotest.(check int) "an hour later, still held" 0 (List.length (Sim.step v));
-  now := next_open;
+  let close = Time_ns.of_string_with_utc_offset "2026-09-15T20:00:00Z" in
   Sim.set_session v
     (Sim.Session.Open
-       { next_close; next_open = Time_ns.add next_open (Time_ns.Span.of_day 1.0) });
-  Alcotest.(check bool)
-    "the clock reads open" true (Sim.clock v).Venue.Session_clock.is_open;
-  match Sim.step v with
-  | [ { Venue.Update.event = "fill"; fill = Some f; _ } ] ->
-      Alcotest.(check (float 1e-9))
-        "filled at 150 x 1.0005" 150.075
-        (Price.to_float f.Ohcamel_desk.Order.Fill.price);
-      Alcotest.(check (float 0.0)) "all 10" 10.0 f.Ohcamel_desk.Order.Fill.qty
-  | updates ->
-      Alcotest.failf "expected one fill at the open, got %d updates" (List.length updates)
+       {
+         next_close = close;
+         next_open = Time_ns.of_string_with_utc_offset "2026-09-16T13:30:00Z";
+       });
+  let submit n side limit =
+    match
+      Sim.For_testing.submit_now v
+        {
+          Ohcamel_desk.Order.Request.client_order_id =
+            Option.value_exn
+              (Ohcamel_desk.Ids.Client_order_id.of_string
+                 (sprintf "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZZ%d" n));
+          symbol = aapl;
+          side;
+          qty = 10;
+          kind = Ohcamel_desk.Order.Kind.Limit (Price.of_float limit);
+          tif = Ohcamel_desk.Order.Tif.Day;
+        }
+    with
+    | Venue.Submission.Accepted _ -> ()
+    | _ -> Alcotest.fail "the venue did not take the order"
+  in
+  let said updates =
+    List.map updates ~f:(fun (u : Venue.Update.t) ->
+        ( u.Venue.Update.event,
+          Option.value_map u.Venue.Update.fill ~default:0.0 ~f:(fun f ->
+              Price.to_float f.Ohcamel_desk.Order.Fill.price) ))
+  in
+  let updates = Alcotest.(list (pair string (float 1e-9))) in
+  submit 3 Ohcamel_desk.Order.Side.Buy 150.23;
+  submit 4 Ohcamel_desk.Order.Side.Sell 149.77;
+  Alcotest.(check updates)
+    "marketable: the buy at the ask, the sell at the bid"
+    [ ("fill", 150.075); ("fill", 149.925) ]
+    (said (Sim.step v));
+  submit 5 Ohcamel_desk.Order.Side.Buy 149.0;
+  submit 6 Ohcamel_desk.Order.Side.Buy 148.0;
+  Alcotest.(check updates) "under the ask: both rest" [] (said (Sim.step v));
+  mark := 148.9;
+  Alcotest.(check updates)
+    "the ask comes inside 149.00: it fills there"
+    [ ("fill", 148.9 *. 1.0005) ]
+    (said (Sim.step v));
+  now := Time_ns.of_string_with_utc_offset "2026-09-15T19:59:00Z";
+  Alcotest.(check updates) "15:59: 148.00 still rests" [] (said (Sim.step v));
+  now := close;
+  Alcotest.(check updates) "16:00: it expires" [ ("expired", 0.0) ] (said (Sim.step v));
+  now := Time_ns.add close (Time_ns.Span.of_min 1.0);
+  Alcotest.(check updates) "and nothing more is said of it" [] (said (Sim.step v));
+  Alcotest.(check (list string))
+    "nothing rests at the venue" []
+    (List.map (Sim.open_now v) ~f:(fun o -> o.Venue.Venue_order.client_order_id))
 
 (* A market-on-close order rests through the session and fills at its
    close, at the session's last mark half a spread away: AAPL +10 taken at
@@ -241,6 +261,6 @@ let suite =
       Alcotest.test_case "the synthetic calendar" `Quick test_the_synthetic_calendar;
       Alcotest.test_case "the synthetic calendar skips the weekend" `Quick
         test_the_synthetic_calendar_skips_the_weekend;
-      Alcotest.test_case "a closed session holds an opening-auction order until it opens"
-        `Quick test_a_closed_session_holds_an_opening_auction_order_until_it_opens;
+      Alcotest.test_case "a day limit fills at the quote, rests, and expires at the close"
+        `Quick test_a_day_limit_fills_at_the_quote_rests_and_expires_at_the_close;
     ] )

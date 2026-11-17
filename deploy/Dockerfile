@@ -125,10 +125,10 @@ FROM debian:12.15-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e36
 # The runtime halves of the -dev packages above, plus ca-certificates (live
 # mode verifies Alpaca's and FRED's certificates and cannot without them),
 # curl (the compose healthcheck calls /api/health; a healthcheck that needs a
-# tool the image lacks reports unhealthy forever), and tzdata: a rebalance's
-# market-on-open orders may go only from 19:00 America/New_York, read from the
-# tz database (desk/desk_time.ml), and without the zone the desk refuses every
-# one of them.
+# tool the image lacks reports unhealthy forever), and tzdata: the desk's own
+# orders may go only from 09:35 America/New_York, read from the tz database
+# (desk/desk_time.ml), and without the zone the desk refuses every one of
+# them.
 #
 # sqlite3 -- the CLI, not just the library the engine links -- is for the
 # nightly backup and nothing the engine does: deploy/backup.sh's `sqlite`

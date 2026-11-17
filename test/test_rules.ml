@@ -42,7 +42,7 @@ let context =
     session = during_monday;
     mark = Some (Price.of_float 150.0);
     stale = false;
-    close = None;
+    origin = Rules.Origin.Hand;
     new_york = None;
     adv20 = Some 16_600.0;
     recent = [];
@@ -251,7 +251,7 @@ let test_an_opposite_resting_order_is_a_wash () =
   Alcotest.(check (list bool))
     "timing: wash alone, wash with session; final: wash with a cap" [ true; true; false ]
     [
-      Rules.is_timing_refusal ~tif:Order.Tif.Opg [ f "wash" ];
+      Rules.is_timing_refusal ~tif:Order.Tif.Day [ f "wash" ];
       Rules.is_timing_refusal ~tif:Order.Tif.Day [ f "session"; f "wash" ];
       Rules.is_timing_refusal ~tif:Order.Tif.Day [ f "wash"; f "notional" ];
     ]
@@ -462,33 +462,28 @@ let test_a_trip's_refusal_quotes_the_switch () =
     | _ -> false)
 
 (* ------------------------------------------------------------------------ *)
-(* A market-on-open order (Order.Tif.Opg): the window and the close          *)
+(* The desk's own orders: from 09:35, off a fresh quote (Task 1.7)           *)
 (* ------------------------------------------------------------------------ *)
 
 let new_york = Timezone.find "America/New_York"
 
-(* After Monday's close, as the research service sees it at 19:15 EDT
-   (23:15Z): the clock names Tuesday's open at 09:30 EDT (13:30Z) and its
-   close at 16:00 EDT (20:00Z). The feed stopped printing hours ago, so the
-   mark is stale; the price is Monday's recorded close of 150. *)
-let after_monday =
+(* A quote stamped [age] seconds before [now] (after it, for a negative
+   age): 149.95 x 150.05 around the mark of 150 unless a case says. *)
+let quote ?(bid = 149.95) ?(ask = 150.05) ?(at = now) age =
   Some
     {
-      Rules.Session.next_open = at "2026-09-15T13:30:00Z";
-      next_close = at "2026-09-15T20:00:00Z";
+      Ohcamel_desk.Venue.Quote.bid = Price.of_float bid;
+      ask = Price.of_float ask;
+      at = Time_ns.sub at (Time_ns.Span.of_sec age);
     }
 
-let evening =
-  {
-    context with
-    session = after_monday;
-    now = at "2026-09-14T23:15:00Z";
-    stale = true;
-    close = Some (Date.of_string "2026-09-14", Price.of_float 150.0);
-    new_york;
-  }
+(* A desk order's context: Monday's session, the zone loaded, and a quote
+   one second old. Its limit, 150.21, is the ask moved 10 bps up and
+   rounded up to the cent -- 150.05 x 1.001 = 150.20005. *)
+let desk ?(q = quote 1.0) ?(at = now) () =
+  { context with origin = Rules.Origin.Desk q; new_york; now = at }
 
-let opg = request ~tif:Order.Tif.Opg
+let desk_buy = request ~kind:(Order.Kind.Limit (Price.of_float 150.21))
 
 let why ctx req =
   List.map (Rules.check ctx req) ~f:(fun f ->
@@ -502,163 +497,108 @@ let says what ~substring ctx req =
 
 let nanosecond_before s = Time_ns.sub (at s) Time_ns.Span.nanosecond
 
-(* 19:00 in New York is 23:00Z under daylight saving and 00:00Z the next
-   day under standard time, so the rule is tried on both sides of it in each:
-   Monday 14 September 2026 (EDT, UTC-4) and Monday 7 December 2026 (EST,
-   UTC-5). A fixed offset of -4 would read 23:00Z in December as 19:00 and
-   let an order through at 18:00 EST; the zone refuses it. *)
-let test_the_window_on_both_sides_of_19_00_in_both_seasons () =
-  check_rules "EDT, 18:59:59.999999999" [ "session" ]
-    { evening with now = nanosecond_before "2026-09-14T23:00:00Z" }
-    (opg 100);
-  says "EDT, the refusal names the hour and the boundary"
-    ~substring:"it is 2026-09-14 18:59 ET, before 19:00 ET"
-    { evening with now = nanosecond_before "2026-09-14T23:00:00Z" }
-    (opg 100);
-  check_rules "EDT, 19:00:00" []
-    { evening with now = at "2026-09-14T23:00:00Z" }
-    (opg 100);
-  let after_december_monday =
+(* Nothing the desk decides is sent before 09:35 New York. 09:35 is 13:35Z
+   under daylight saving and 14:35Z under standard time, so the line is
+   tried on both sides in each: Monday 14 September 2026 (EDT) and Monday 7
+   December 2026 (EST), whose session the clock says is open from 09:30. A
+   fixed offset of -4 would call 14:34Z in December 09:34 and refuse nothing
+   at 10:34 EST -- or, the other way about, let an order through at 08:35.
+   A person's ticket is sent as it is priced, from the open. With no zone no
+   desk order goes, saying why; a ticket still does. *)
+let test_a_desk_order_waits_for_09_35_new_york_in_both_seasons () =
+  let monday = during_monday in
+  let december =
     Some
       {
         Rules.Session.next_open = at "2026-12-08T14:30:00Z";
-        next_close = at "2026-12-08T21:00:00Z";
+        next_close = at "2026-12-07T21:00:00Z";
       }
   in
-  let december now =
-    {
-      evening with
-      session = after_december_monday;
-      now;
-      close = Some (Date.of_string "2026-12-07", Price.of_float 150.0);
-    }
-  in
-  check_rules "EST, 18:00 -- 23:00Z, which a fixed -4 would call 19:00" [ "session" ]
-    (december (at "2026-12-07T23:00:00Z"))
-    (opg 100);
-  check_rules "EST, 18:59:59.999999999" [ "session" ]
-    (december (nanosecond_before "2026-12-08T00:00:00Z"))
-    (opg 100);
-  check_rules "EST, 19:00:00 -- 00:00Z the next day" []
-    (december (at "2026-12-08T00:00:00Z"))
-    (opg 100)
-
-(* Alpaca stops taking opening-auction orders at 09:28 for a 09:30 open. At
-   09:27:59.999999999 EDT on Tuesday the order passes -- the next open is
-   today, so the last close was Monday's and its 19:00 has passed -- and at
-   09:28 it is refused, naming the boundary. So is Monday at 17:00 EDT, after
-   the close and before 19:00; and Tuesday at 00:00 EDT passes. *)
-let test_the_window_on_both_sides_of_two_minutes_before_the_open () =
-  check_rules "Tuesday 09:27:59.999999999 EDT" []
-    { evening with now = nanosecond_before "2026-09-15T13:28:00Z" }
-    (opg 100);
-  check_rules "Tuesday 09:28 EDT" [ "session" ]
-    { evening with now = at "2026-09-15T13:28:00Z" }
-    (opg 100);
-  says "the refusal names two minutes before the open"
-    ~substring:"not before 2026-09-15 09:28 ET, two minutes before the next open"
-    { evening with now = at "2026-09-15T13:28:00Z" }
-    (opg 100);
-  check_rules "Tuesday 00:00 EDT" []
-    { evening with now = at "2026-09-15T04:00:00Z" }
-    (opg 100);
-  check_rules "Monday 17:00 EDT, after the close" [ "session" ]
-    { evening with now = at "2026-09-14T21:00:00Z" }
-    (opg 100)
-
-let test_an_opening_auction_order_needs_a_closed_session_a_clock_and_the_zone () =
-  says "during the session" ~substring:"the regular session is open"
-    { evening with session = during_monday; now }
-    (opg 100);
-  says "no clock" ~substring:"no venue clock has answered"
-    { evening with session = None }
-    (opg 100);
-  says "no zone" ~substring:"America/New_York time zone could not be loaded"
-    { evening with new_york = None }
-    (opg 100);
-  (* A day order in the same evening is refused by the session it needs, and
-     by its stale mark: the window is the opening auction's alone. *)
-  check_rules "a day order at 19:15" [ "session"; "mark" ] evening (request 100)
-
-(* The price of a market-on-open order is Monday's recorded close, 150 --
-   never the feed's mark, which is stale in the evening and here set to 10 to
-   show it is not read. The notional cap is computed on the close: 166 x 150 =
-   24,900 passes and 167 x 150 = 25,050 fails, naming 150.00 (at the feed's
-   10 it would be 1,670 and pass). No close, or a close of zero -- a cell
-   nobody wrote, recorded at a close -- is no price: the mark rule refuses,
-   and the notional and collar that need a price are not asked. *)
-let test_an_opening_auction_order_is_priced_at_the_recorded_close () =
-  let ctx =
-    { evening with mark = Some (Price.of_float 10.0); adv20 = Some 1_000_000.0 }
-  in
-  check_rules "166 at the close of 150" [] ctx (opg 166);
-  check_rules "167 at the close of 150" [ "notional" ] ctx (opg 167);
-  says "computed on the close" ~substring:"167 x 150.00 = 25050.00" ctx (opg 167);
-  check_rules "no recorded close" [ "mark" ] { ctx with close = None } (opg 167);
-  says "saying so" ~substring:"AAPL has no recorded session close"
-    { ctx with close = None } (opg 1);
-  check_rules "a close of zero" [ "mark" ]
-    { ctx with close = Some (Date.of_string "2026-09-14", Price.of_float 0.0) }
-    (opg 1)
-
-(* The two weeks the clocks change in 2026, where an hour's offset decides
-   which side of 19:00 or of the open an instant is. Each clock names the
-   session after the last close; each time is written in UTC with its New
-   York reading, and the reading a fixed offset would give where it differs.
-
-   The week the clocks go back: Friday 30 October closes at 16:00 EDT, and
-   the next open is Monday 2 November at 09:30 EST (14:30Z).
-   - Friday 18:59:59.999999999 EDT refused, 19:00 EDT passes.
-   - Saturday 19:00 EDT passes.
-   - Sunday 18:30 EST (23:30Z; a fixed -4 reads 19:30) refused, and Sunday
-     19:00 EST (00:00Z Monday) passes.
-   - Monday 08:30 EST (13:30Z) passes -- the open is today's -- as does
-     09:27:59.999999999 EST, and 09:28 EST (14:28Z) is refused.
-   The week they go forward: Friday 6 March closes at 16:00 EST, and the next
-   open is Monday 9 March at 09:30 EDT (13:30Z).
-   - Friday 18:59:59.999999999 EST (23:59:59Z) refused, 19:00 EST (00:00Z
-     Saturday) passes.
-   - Sunday 18:30 EDT (22:30Z) refused, and Sunday 19:00 EDT (23:00Z; a fixed
-     -5 reads 18:00) passes.
-   - Monday 08:30 EDT (12:30Z) passes, 09:27:59.999999999 EDT passes, and
-     09:28 EDT (13:28Z) is refused. *)
-let test_the_window_in_the_weeks_the_clocks_change () =
-  let clock next_open next_close =
-    Some { Rules.Session.next_open = at next_open; next_close = at next_close }
-  in
-  let fall = clock "2026-11-02T14:30:00Z" "2026-11-02T21:00:00Z" in
-  let spring = clock "2026-03-09T13:30:00Z" "2026-03-09T20:00:00Z" in
   let check what expected session now =
     check_rules what expected
-      {
-        evening with
-        session;
-        now;
-        close = Some (Date.of_string "2026-10-30", Price.of_float 150.0);
-      }
-      (opg 100)
+      { (desk ~q:(quote ~at:now 1.0) ~at:now ()) with session }
+      (desk_buy 100)
   in
-  check "Fri 30 Oct 18:59:59.999999999 EDT" [ "session" ] fall
-    (nanosecond_before "2026-10-30T23:00:00Z");
-  check "Fri 30 Oct 19:00 EDT" [] fall (at "2026-10-30T23:00:00Z");
-  check "Sat 31 Oct 19:00 EDT" [] fall (at "2026-10-31T23:00:00Z");
-  check "Sun 1 Nov 18:30 EST (a fixed -4 reads 19:30)" [ "session" ] fall
-    (at "2026-11-01T23:30:00Z");
-  check "Sun 1 Nov 19:00 EST" [] fall (at "2026-11-02T00:00:00Z");
-  check "Mon 2 Nov 08:30 EST" [] fall (at "2026-11-02T13:30:00Z");
-  check "Mon 2 Nov 09:27:59.999999999 EST" [] fall
-    (nanosecond_before "2026-11-02T14:28:00Z");
-  check "Mon 2 Nov 09:28 EST" [ "session" ] fall (at "2026-11-02T14:28:00Z");
-  check "Fri 6 Mar 18:59:59.999999999 EST" [ "session" ] spring
-    (nanosecond_before "2026-03-07T00:00:00Z");
-  check "Fri 6 Mar 19:00 EST" [] spring (at "2026-03-07T00:00:00Z");
-  check "Sun 8 Mar 18:30 EDT" [ "session" ] spring (at "2026-03-08T22:30:00Z");
-  check "Sun 8 Mar 19:00 EDT (a fixed -5 reads 18:00)" [] spring
-    (at "2026-03-08T23:00:00Z");
-  check "Mon 9 Mar 08:30 EDT" [] spring (at "2026-03-09T12:30:00Z");
-  check "Mon 9 Mar 09:27:59.999999999 EDT" [] spring
-    (nanosecond_before "2026-03-09T13:28:00Z");
-  check "Mon 9 Mar 09:28 EDT" [ "session" ] spring (at "2026-03-09T13:28:00Z")
+  check "EDT 09:34:59.999999999" [ "session" ] monday
+    (nanosecond_before "2026-09-14T13:35:00Z");
+  check "EDT 09:35" [] monday (at "2026-09-14T13:35:00Z");
+  check "EST 09:34:59.999999999" [ "session" ] december
+    (nanosecond_before "2026-12-07T14:35:00Z");
+  check "EST 09:35 (14:35Z, which a fixed -4 would call 10:35)" [] december
+    (at "2026-12-07T14:35:00Z");
+  says "the refusal names the hour and 09:35"
+    ~substring:"it is 2026-09-14 09:31 ET: the desk sends its own orders from 09:35 ET"
+    (desk
+       ~q:(quote ~at:(at "2026-09-14T13:31:00Z") 1.0)
+       ~at:(at "2026-09-14T13:31:00Z") ())
+    (desk_buy 100);
+  check_rules "a ticket at 09:31 goes" []
+    { context with new_york; now = at "2026-09-14T13:31:00Z" }
+    (request 100);
+  says "no zone, no desk order" ~substring:"09:35 ET cannot be told"
+    { (desk ()) with new_york = None }
+    (desk_buy 100);
+  check_rules "no zone, and a ticket still goes" [] context (request 100);
+  check_rules "a closed session refuses the desk's order too" [ "session" ]
+    { (desk ()) with session = None }
+    (desk_buy 100)
+
+(* The desk's order is priced off the quote fetched as it is sent, and with
+   no usable one it is refused, rule [quote]: none answered; one more than
+   quote_max_age_s (5 s) old -- exactly 5 s is inside; one stamped more than
+   5 s ahead of the desk's clock; crossed; one-sided (Alpaca's 0 for no
+   bid); not a number. A locked quote (bid = ask) prices. A ticket never
+   asks for one. *)
+let test_a_desk_order_with_no_fresh_quote_is_refused () =
+  let refused what ?(substring = "") q =
+    check_rules what [ "quote" ] (desk ~q ()) (desk_buy 100);
+    says what ~substring (desk ~q ()) (desk_buy 100)
+  in
+  check_rules "a quote 1 s old prices it" [] (desk ()) (desk_buy 100);
+  check_rules "a quote exactly 5 s old still does" []
+    (desk ~q:(quote 5.0) ())
+    (desk_buy 100);
+  refused "none answered" ~substring:"AAPL: no quote answered for it" None;
+  refused "5.001 s old" ~substring:"within 5 s" (quote 5.001);
+  refused "6 s ahead of the clock" (quote (-6.0));
+  refused "crossed" ~substring:"crossed" (quote ~bid:150.10 ~ask:150.05 1.0);
+  refused "no bid" ~substring:"one-sided" (quote ~bid:0.0 1.0);
+  refused "not a number" ~substring:"one-sided" (quote ~ask:Float.nan 1.0);
+  check_rules "locked prices" []
+    (desk ~q:(quote ~bid:150.05 ~ask:150.05 1.0) ())
+    (desk_buy 100);
+  check_rules "the book's bound, 10 s, lets a 6 s quote through" []
+    {
+      (desk ~q:(quote 6.0) ()) with
+      spec = { spec with Desk_spec.quote_max_age_s = 10.0 };
+    }
+    (desk_buy 100);
+  check_rules "a ticket asks for none" [] context (request 100)
+
+(* The collar and the order cap are evaluated against the limit actually
+   sent. A buy of 166 at a limit of 151.00 is 25,066, over the 25,000 cap,
+   though at the mark of 150 it would be 24,900 and pass; at 150.21 it is
+   24,934.86 and passes. A sell of 166 at 149.79 is 24,865.14. The collar
+   reads the limit against the mark, as it does a ticket's. *)
+let test_collar_and_notional_read_the_limit_sent () =
+  let ctx = { (desk ()) with adv20 = Some 1_000_000.0 } in
+  let limit p = Order.Kind.Limit (Price.of_float p) in
+  check_rules "166 at 150.21" [] ctx (request ~kind:(limit 150.21) 166);
+  check_rules "166 at 151.00" [ "notional" ] ctx (request ~kind:(limit 151.0) 166);
+  says "computed at the limit" ~substring:"166 x 151.00 = 25066.00" ctx
+    (request ~kind:(limit 151.0) 166);
+  check_rules "a sell of 166 at 149.79" [] ctx
+    (request ~side:Order.Side.Sell ~kind:(limit 149.79) 166);
+  check_rules "a limit past the collar" [ "collar" ] ctx (request ~kind:(limit 157.51) 10)
+
+(* No market-on-open order is built, and one that reached the rules -- an
+   old journal row's tif -- would be refused by the session rule, whoever
+   sent it. *)
+let test_a_market_on_open_order_is_refused () =
+  says "a ticket's" ~substring:"no market-on-open order" context
+    (request ~tif:Order.Tif.Opg 100);
+  says "the desk's" ~substring:"no market-on-open order" (desk ())
+    (request ~tif:Order.Tif.Opg 100)
 
 (* ------------------------------------------------------------------------ *)
 (* A market-on-close order (Order.Tif.Cls): until ten minutes before close   *)
@@ -670,6 +610,15 @@ let test_the_window_in_the_weeks_the_clocks_change () =
    naming 15:50; after the close, at 16:30 EDT (20:30Z) on a clock read then
    -- naming Tuesday's open first -- it is refused because the session is
    closed. *)
+(* After Monday's close: the clock names Tuesday's open at 09:30 EDT (13:30Z)
+   and its close at 16:00 EDT (20:00Z). *)
+let after_monday =
+  Some
+    {
+      Rules.Session.next_open = at "2026-09-15T13:30:00Z";
+      next_close = at "2026-09-15T20:00:00Z";
+    }
+
 let test_a_market_on_close_order_until_ten_minutes_before_the_close () =
   let cls = request ~tif:Order.Tif.Cls in
   let monday now = { context with now = at now; new_york } in
@@ -689,29 +638,28 @@ let test_a_market_on_close_order_until_ten_minutes_before_the_close () =
     (cls 100)
 
 (* A refusal of timing alone (the stage review's A-I1): every failure the
-   session rule's -- or, for a day order, a stale mark beside it, since
-   outside the session every name is stale. Anything else beside it, or a
-   stale mark on a market-on-open order (priced at the close, so not a
-   matter of the hour), is final; no failure is no refusal. *)
+   session rule's, the wash rule's or the quote rule's -- or a stale mark
+   beside the session's, since outside the session every name is stale.
+   Anything else beside them is final; no failure is no refusal. *)
 let test_a_timing_refusal_is_the_session_rule_alone () =
   let f rule = { Rules.Failure.rule; why = "x" } in
-  let timing tif fs = Rules.is_timing_refusal ~tif fs in
+  let timing fs = Rules.is_timing_refusal ~tif:Order.Tif.Day fs in
   Alcotest.(check (list bool))
-    "opg: session alone; session and notional; mark alone; none"
-    [ true; false; false; false ]
+    "session alone; session and notional; mark alone; none" [ true; false; false; false ]
     [
-      timing Order.Tif.Opg [ f "session" ];
-      timing Order.Tif.Opg [ f "session"; f "notional" ];
-      timing Order.Tif.Opg [ f "mark" ];
-      timing Order.Tif.Opg [];
+      timing [ f "session" ];
+      timing [ f "session"; f "notional" ];
+      timing [ f "mark" ];
+      timing [];
     ];
   Alcotest.(check (list bool))
-    "day: session and a stale mark; the switch beside it; opg's stale mark"
-    [ true; false; false ]
+    "session and a stale mark; the switch beside it; quote alone; quote and a cap"
+    [ true; false; true; false ]
     [
-      timing Order.Tif.Day [ f "session"; f "mark" ];
-      timing Order.Tif.Day [ f "session"; f "kill_switch" ];
-      timing Order.Tif.Opg [ f "session"; f "mark" ];
+      timing [ f "session"; f "mark" ];
+      timing [ f "session"; f "kill_switch" ];
+      timing [ f "quote" ];
+      timing [ f "quote"; f "notional" ];
     ]
 
 let suite =
@@ -753,17 +701,12 @@ let suite =
         test_a_trip's_refusal_quotes_the_switch;
       Alcotest.test_case "an opposite resting order is a wash" `Quick
         test_an_opposite_resting_order_is_a_wash;
-      Alcotest.test_case
-        "the opening auction's window on both sides of 19:00 ET, in EDT and in EST" `Quick
-        test_the_window_on_both_sides_of_19_00_in_both_seasons;
-      Alcotest.test_case
-        "the opening auction's window on both sides of two minutes before the open" `Quick
-        test_the_window_on_both_sides_of_two_minutes_before_the_open;
-      Alcotest.test_case
-        "an opening-auction order needs a closed session, a clock and the zone" `Quick
-        test_an_opening_auction_order_needs_a_closed_session_a_clock_and_the_zone;
-      Alcotest.test_case "an opening-auction order is priced at the recorded close" `Quick
-        test_an_opening_auction_order_is_priced_at_the_recorded_close;
-      Alcotest.test_case "the opening auction's window in the weeks the clocks change"
-        `Quick test_the_window_in_the_weeks_the_clocks_change;
+      Alcotest.test_case "a desk order waits for 09:35 New York, in EDT and in EST" `Quick
+        test_a_desk_order_waits_for_09_35_new_york_in_both_seasons;
+      Alcotest.test_case "a desk order with no fresh quote is refused" `Quick
+        test_a_desk_order_with_no_fresh_quote_is_refused;
+      Alcotest.test_case "the collar and the order cap read the limit sent" `Quick
+        test_collar_and_notional_read_the_limit_sent;
+      Alcotest.test_case "a market-on-open order is refused" `Quick
+        test_a_market_on_open_order_is_refused;
     ] )

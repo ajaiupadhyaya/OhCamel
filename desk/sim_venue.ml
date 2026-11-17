@@ -75,6 +75,9 @@ type t = {
      [cancel_now] and [step] address by; [by_client] is the second index. *)
   mutable orders : (Venue.Venue_order.t * Order.Request.t * Time_ns.t) String.Map.t;
   mutable by_client : string String.Map.t;
+  (* Venue id -> the close at which a day order still resting expires: the
+     close the venue's clock named when it was taken ([expire]). *)
+  mutable expiries : Time_ns.t String.Map.t;
   (* None until [trade] is called; see [emit]. *)
   mutable updates : Venue.Update.t Pipe.Writer.t option;
   mutable session : Session.t;
@@ -97,6 +100,7 @@ let create ?(session_length = Time_ns.Span.of_min 5.0)
     next_id = 0;
     orders = String.Map.empty;
     by_client = String.Map.empty;
+    expiries = String.Map.empty;
     updates = None;
     session = Session.Rolling;
   }
@@ -242,6 +246,14 @@ module For_testing = struct
           Time_ns.max after_latency (clock t).Venue.Session_clock.next_close
       | Order.Tif.Day | Order.Tif.Opg -> after_latency
     in
+    (* A day order dies at the close the clock names as it is taken: this
+       session's while one is open, the next one's while the market is shut
+       (Alpaca queues a day order sent after hours for the next session). *)
+    (match r.Order.Request.tif with
+    | Order.Tif.Day ->
+        t.expiries <-
+          Map.set t.expiries ~key:id ~data:(clock t).Venue.Session_clock.next_close
+    | Order.Tif.Opg | Order.Tif.Cls -> ());
     t.orders <- Map.set t.orders ~key:id ~data:(order, r, due);
     t.by_client <-
       Map.set t.by_client ~key:order.Venue.Venue_order.client_order_id ~data:id;
@@ -271,11 +283,36 @@ let cancel_now (t : t) (id : string) : Venue.Update.t Or_error.t =
   | Some _ -> Or_error.errorf "simulated venue: order %s is not cancelable" id
   | None -> Or_error.errorf "simulated venue: no order %s" id
 
+(* What this venue models of a DAY LIMIT ORDER (Task 1.7), and what it does
+   not. A marketable one -- a buy at or above the ask, a sell at or below
+   the bid -- fills whole at that side of the quote, the quote being the
+   mark a half-spread away, at the first step once its latency has passed;
+   one that is not rests, and fills at a later step if the mark moves to it;
+   one still resting at its close ([expiries]) expires there, at the first
+   step at or after it, and the venue reports "expired". It does NOT model
+   partial fills, queue position or size at the touch (a limit fills whole
+   or not at all), a quote that is not the mark +/- the half-spread, a
+   locked or crossed market, an early close it was not told of, or Alpaca
+   queueing a day order sent after hours beyond expiring it at the close its
+   clock named. *)
 let step (t : t) : Venue.Update.t list =
   let now = t.now () in
-  Map.to_alist t.orders
-  |> List.filter_map ~f:(fun (id, (o, r, due)) ->
-      (* Nothing trades while a set session is closed: a market-on-open order
+  let expired =
+    Map.to_alist t.orders
+    |> List.filter_map ~f:(fun (id, (o, r, due)) ->
+        match Map.find t.expiries id with
+        | Some close
+          when String.equal o.Venue.Venue_order.status "new" && Time_ns.( >= ) now close
+          ->
+            let o = { o with Venue.Venue_order.status = "expired" } in
+            t.orders <- Map.set t.orders ~key:id ~data:(o, r, due);
+            Some { Venue.Update.event = "expired"; order = o; fill = None; at = now }
+        | Some _ | None -> None)
+  in
+  expired
+  @ (Map.to_alist t.orders
+    |> List.filter_map ~f:(fun (id, (o, r, due)) ->
+        (* Nothing trades while a set session is closed: a market-on-open order
          taken after the close waits there for the session a test opens, and
          then fills as a market order does, half a spread from the mark --
          every fill here pays the spread, the opening auction's included.
@@ -284,72 +321,72 @@ let step (t : t) : Venue.Update.t list =
          at or after it -- the session's last mark, half a spread away --
          whether or not the session now reads closed, since the auction it
          waited for has happened. *)
-      let closed =
-        match (t.session, r.Order.Request.tif) with
-        | _, Order.Tif.Cls -> false
-        | Session.Closed _, (Order.Tif.Day | Order.Tif.Opg) -> true
-        | (Session.Rolling | Session.Open _), (Order.Tif.Day | Order.Tif.Opg) -> false
-      in
-      if
-        (not (String.equal o.Venue.Venue_order.status "new"))
-        || Time_ns.( < ) now due || closed
-      then None
-      else
-        match t.marks o.Venue.Venue_order.symbol with
-        | None -> None
-        | Some mark -> (
-            let m = Price.to_float mark and h = half t o.Venue.Venue_order.symbol in
-            let price =
-              match (o.Venue.Venue_order.side, o.Venue.Venue_order.limit_price) with
-              | Order.Side.Buy, None -> Some (m *. (1.0 +. h))
-              | Order.Side.Sell, None -> Some (m *. (1.0 -. h))
-              | Order.Side.Buy, Some l ->
-                  if Float.( <= ) (m *. (1.0 +. h)) l then Some (m *. (1.0 +. h))
-                  else None
-              | Order.Side.Sell, Some l ->
-                  if Float.( >= ) (m *. (1.0 -. h)) l then Some (m *. (1.0 -. h))
-                  else None
-            in
-            match price with
-            | None -> None
-            | Some price ->
-                let signed =
-                  Order.Side.sign o.Venue.Venue_order.side *. o.Venue.Venue_order.qty
-                in
-                let position =
-                  Qty.add
-                    (Option.value
-                       (Map.find t.positions o.Venue.Venue_order.symbol)
-                       ~default:Qty.zero)
-                    (Qty.of_float signed)
-                in
-                t.positions <-
-                  Map.set t.positions ~key:o.Venue.Venue_order.symbol ~data:position;
-                t.cash <- Notional.sub t.cash (Notional.of_float (signed *. price));
-                let o =
-                  {
-                    o with
-                    Venue.Venue_order.status = "filled";
-                    filled_qty = o.Venue.Venue_order.qty;
-                    filled_avg_price = Some price;
-                  }
-                in
-                t.orders <- Map.set t.orders ~key:id ~data:(o, r, due);
-                Some
-                  {
-                    Venue.Update.event = "fill";
-                    order = o;
-                    fill =
-                      Some
-                        {
-                          Order.Fill.execution_id = id ^ "-1";
-                          qty = o.Venue.Venue_order.qty;
-                          price = Price.of_float price;
-                          at = now;
-                          position_qty = Some (Qty.to_float position);
-                        };
-                    at = now;
-                  }))
+        let closed =
+          match (t.session, r.Order.Request.tif) with
+          | _, Order.Tif.Cls -> false
+          | Session.Closed _, (Order.Tif.Day | Order.Tif.Opg) -> true
+          | (Session.Rolling | Session.Open _), (Order.Tif.Day | Order.Tif.Opg) -> false
+        in
+        if
+          (not (String.equal o.Venue.Venue_order.status "new"))
+          || Time_ns.( < ) now due || closed
+        then None
+        else
+          match t.marks o.Venue.Venue_order.symbol with
+          | None -> None
+          | Some mark -> (
+              let m = Price.to_float mark and h = half t o.Venue.Venue_order.symbol in
+              let price =
+                match (o.Venue.Venue_order.side, o.Venue.Venue_order.limit_price) with
+                | Order.Side.Buy, None -> Some (m *. (1.0 +. h))
+                | Order.Side.Sell, None -> Some (m *. (1.0 -. h))
+                | Order.Side.Buy, Some l ->
+                    if Float.( <= ) (m *. (1.0 +. h)) l then Some (m *. (1.0 +. h))
+                    else None
+                | Order.Side.Sell, Some l ->
+                    if Float.( >= ) (m *. (1.0 -. h)) l then Some (m *. (1.0 -. h))
+                    else None
+              in
+              match price with
+              | None -> None
+              | Some price ->
+                  let signed =
+                    Order.Side.sign o.Venue.Venue_order.side *. o.Venue.Venue_order.qty
+                  in
+                  let position =
+                    Qty.add
+                      (Option.value
+                         (Map.find t.positions o.Venue.Venue_order.symbol)
+                         ~default:Qty.zero)
+                      (Qty.of_float signed)
+                  in
+                  t.positions <-
+                    Map.set t.positions ~key:o.Venue.Venue_order.symbol ~data:position;
+                  t.cash <- Notional.sub t.cash (Notional.of_float (signed *. price));
+                  let o =
+                    {
+                      o with
+                      Venue.Venue_order.status = "filled";
+                      filled_qty = o.Venue.Venue_order.qty;
+                      filled_avg_price = Some price;
+                    }
+                  in
+                  t.orders <- Map.set t.orders ~key:id ~data:(o, r, due);
+                  Some
+                    {
+                      Venue.Update.event = "fill";
+                      order = o;
+                      fill =
+                        Some
+                          {
+                            Order.Fill.execution_id = id ^ "-1";
+                            qty = o.Venue.Venue_order.qty;
+                            price = Price.of_float price;
+                            at = now;
+                            position_qty = Some (Qty.to_float position);
+                          };
+                      at = now;
+                    })))
 
 let received (t : t) = t.next_id
 

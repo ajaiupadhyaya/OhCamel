@@ -225,6 +225,14 @@ let schema =
     (* A strategy's newest sizing is read through this index, which ends in the
        rowid like the others; [latest_sizing] takes its last entry by [at]. *)
     "CREATE INDEX IF NOT EXISTS sizings_by_strategy ON sizings (strategy, at)";
+    (* The adjust pass's completions and stop flattens that reached the venue
+       (Task 1.7), one row each, by its key (Intake.adjust: the strategy, or
+       the strategy's flatten) and the New York session date it went in: the
+       per-session cap is counted from here, so a restart does not start it
+       again. A new table, so schema version 1 still. *)
+    "CREATE TABLE IF NOT EXISTS completions (key TEXT NOT NULL, date TEXT NOT NULL, at \
+     TEXT NOT NULL)";
+    "CREATE INDEX IF NOT EXISTS completions_by_key ON completions (key, date)";
   ]
 
 (* The columns added after files existed, each with the declaration an older
@@ -355,7 +363,7 @@ let tables =
         ~f:(fun rest -> List.hd (String.split rest ~on:' ')))
 
 (* SQLITE_OPEN_READONLY, and NO [set_up]. A backup is checked by reading it,
-   and [open_] would write to it: fourteen CREATE TABLEs, eight indexes, a
+   and [open_] would write to it: fifteen CREATE TABLEs, nine indexes, a
    schema-version insert, and -- on a file that came back missing a table --
    the table itself, after which the check would find it empty and call the
    file sound. So this opens the handle, sets the busy timeout that lets it
@@ -1640,21 +1648,36 @@ let source_orders_unsettled t ~prefix ~(since : Date.t option) : Order_row.t lis
   |> orders_of_ids t
 
 (* The orders under [source] -- one sequence's, signal:<slug>:<sequence> --
-   that ENDED WITH SHARES UNFILLED: expired at the opening auction (Alpaca's
-   paper venue expires most market-on-open orders there), cancelled at an
-   intraday wave's timeout, refused by the venue, or refused before the wire
+   that ENDED WITH SHARES UNFILLED: cancelled at a wave's timeout, expired at
+   the session's close (a day limit the market moved away from; before Task
+   1.7, the opening auction, where Alpaca's paper venue expired most
+   market-on-open orders), refused by the venue, or refused before the wire
    when the order ahead of them was; a partial fill counts, the rest of it
    being unfilled. With [after] -- a journal instant as Sizing.at reads it --
-   only those the venue finished after it: the ones no sizing since has
-   answered, which is what the adjust pass's completion asks. A failed order
-   is not here: the venue may still work it ([source_orders_unsettled]), and
-   the strategy's position is unknown while it does. Oldest first. *)
-let source_orders_unfilled t ~source ~(after : string option) : Order_row.t list =
+   only those last written after it: the ones no sizing since has answered,
+   which is what the adjust pass's completion asks.
+
+   A FAILED ORDER IS HERE ONLY WHEN THE VENUE CANNOT STILL WORK IT: every
+   lookup missed it (failed) AND either the venue has since said it is done
+   with it -- a cancel, expiry or rejection journaled against it -- or it
+   was created before the start of [since], the latest recorded session's
+   date, the session rule that retires such orders. That is exactly the
+   complement of the failed orders [source_orders_unsettled] counts as
+   may-still-fill, so a failed order is either may-still-fill -- the
+   strategy's position unknown, nothing re-sent beside it, no double fill
+   -- or eligible to be completed, never both and never neither. Oldest
+   first. *)
+let source_orders_unfilled t ~source ~(after : string option) ~(since : Date.t option) :
+    Order_row.t list =
+  let since = match since with None -> "" | Some d -> Date.to_string d in
   query t ~what:"unfilled source orders"
-    "SELECT client_order_id FROM orders WHERE source = ? AND state IN \
-     ('rejected_pre_trade','cancelled','expired','rejected_by_venue') AND filled_qty < \
-     qty - 1e-9 AND updated_at > ? ORDER BY created_at, client_order_id"
-    [ text source; text (Option.value after ~default:"") ]
+    ("SELECT client_order_id FROM orders WHERE source = ? AND (state IN \
+      ('rejected_pre_trade','cancelled','expired','rejected_by_venue') OR (state = \
+      'failed' AND (created_at < ? OR EXISTS (SELECT 1 FROM order_events e WHERE \
+      e.client_order_id = orders.client_order_id AND e.event IN " ^ finishing_events
+   ^ ")))) AND filled_qty < qty - 1e-9 AND updated_at > ? ORDER BY created_at, \
+      client_order_id")
+    [ text source; text since; text (Option.value after ~default:"") ]
     ~row:(fun r -> col_text r 0)
   |> orders_of_ids t
 
@@ -1884,3 +1907,23 @@ let strategy_state t ~strategy =
            | other -> failwithf "journal: unknown strategy state %S" other ()
          in
          (state, col_opt_text r 1, col_text r 2, col_text r 3)))
+
+(* One completion or flatten that reached the venue, under [key] on the New
+   York session [date] (Intake.adjust). *)
+let record_completion t ~key ~(date : Date.t) ~at =
+  write t ~what:"completion" (fun () ->
+      run t ~what:"completion" "INSERT INTO completions (key, date, at) VALUES (?, ?, ?)"
+        [ text key; text (Date.to_string date); time at ])
+
+(* How many went under [key] on [date]: the per-session cap's count, from
+   the journal, so a restart after two completions allows one more, not
+   three. *)
+let completions_today t ~(date : Date.t) ~key =
+  match
+    query t ~what:"completions today"
+      "SELECT COUNT(*) FROM completions WHERE key = ? AND date = ?"
+      [ text key; text (Date.to_string date) ]
+      ~row:(fun r -> Data.to_int_exn r.(0))
+  with
+  | [ n ] -> n
+  | _ -> 0

@@ -29,7 +29,7 @@ val version : t -> int
 val open_read_only : string -> (t, string) Result.t
 (** Opens an existing journal with SQLITE_OPEN_READONLY and runs no [set_up]: no pragma,
     no CREATE TABLE, no schema-version insert, nothing that would write a page. That is
-    the whole point -- [open_] would happily add its fourteen tables to a backup that was
+    the whole point -- [open_] would happily add its fifteen tables to a backup that was
     missing them, and then report the backup sound. A handle from here answers every read
     in this interface and raises on every write. *)
 
@@ -363,11 +363,15 @@ val source_orders_unsettled :
     failed with no finishing venue report and created at or after [since] (every one, when
     None). Oldest first. *)
 
-val source_orders_unfilled : t -> source:string -> after:string option -> Order_row.t list
+val source_orders_unfilled :
+  t -> source:string -> after:string option -> since:Date.t option -> Order_row.t list
 (** The orders whose source is exactly [source] that ended with shares unfilled --
     expired, cancelled, refused by the venue or before the wire, a partial fill included
-    -- and, with [after] (a journal instant, as {!Sizing.t}'s [at] reads), only those
-    finished after it. Never a failed order, which may still work. Oldest first. *)
+    -- and, with [after] (a journal instant, as {!Sizing.t}'s [at] reads), only those last
+    written after it. A failed order is among them only when the venue cannot still work
+    it: a finishing venue report journaled against it, or created before midnight UTC of
+    [since] (the latest recorded session's date) -- exactly the failed orders
+    {!source_orders_unsettled} does not count as may-still-fill. Oldest first. *)
 
 val recent_orders : t -> limit:int -> Order_row.t list
 (** Newest first. *)
@@ -519,3 +523,11 @@ val strategy_state :
   ([ `Active | `Stopped ] * string option * string * string) option
 (** (state, rule, at, detail), the table's own column order; None for a strategy never
     given one. *)
+
+val record_completion : t -> key:string -> date:Date.t -> at:Time_ns.t -> unit
+(** One adjust-pass completion or stop flatten that reached the venue, under [key] on the
+    New York session [date]. *)
+
+val completions_today : t -> date:Date.t -> key:string -> int
+(** How many {!record_completion} rows [key] has on [date]: the per-session cap's count,
+    which a restart does not reset. *)

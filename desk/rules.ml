@@ -18,20 +18,24 @@
    rather than passing it: an order sized against liquidity nobody measured is
    exactly the order this rule exists to stop.
 
-   A MARKET-ON-OPEN ORDER (Order.Tif.Opg, a rebalance's) is judged by two of
-   these differently, and by the rest the same:
-   - [session] is the opening auction's window, not the regular session
-     ([Opening_auction]);
-   - [mark] is the newest recorded session's close for the name, not the
-     feed's price. IEX stops printing about 17:00 ET and the feed calls a name
-     stale 90 s after its last print, so in the evening every name is stale;
-     the order will trade at the next open, and the last close is the price
-     the desk recorded for it. [notional], [adv] and [collar] are computed on
-     that close. No close recorded is no price, and the order is refused.
+   THE DESK'S OWN ORDERS (Origin.Desk: a strategy's rebalance, completion,
+   re-size, governor's cut or stop's flatten) are day limits priced off the
+   quote fetched as they are sent (Task 1.7), and two rules see them as a
+   ticket is not seen:
+   - [session] also refuses one before 09:35 New York ([first_send]): the
+     opening quotes are the widest and least settled of the day;
+   - [quote] refuses one whose quote is missing, one-sided, crossed or more
+     than the book's quote_max_age_s from now (Rebalance.quote_refusal).
+   A person's ticket (Origin.Hand) is neither: it is sent as the person
+   priced it, from the open. [collar] and [notional] are computed on the
+   limit actually sent, where the order has one.
 
-   A MARKET-ON-CLOSE ORDER (Order.Tif.Cls) differs in [session] alone
-   ([Closing_auction]); it is priced at the feed's live mark, as a day order
-   is, because it is sent while the session prints. *)
+   NO MARKET-ON-OPEN ORDER IS BUILT. Order.Tif.Opg stays a word the journal
+   can read -- hundreds of old rows carry it -- and an order of that tif
+   that reached these rules would be refused by [session]. A MARKET-ON-CLOSE
+   ORDER (Order.Tif.Cls) differs in [session] alone ([Closing_auction]); it is
+   priced at the feed's live mark, as a day order is, because it is sent
+   while the session prints. *)
 
 open Core
 open Ohcamel.Types
@@ -82,76 +86,15 @@ module Session = struct
     |> List.min_elt ~compare:Time_ns.compare
 end
 
-(* When a market-on-open order may be sent. Alpaca refuses one sent between
-   09:28 and 19:00 ET and queues one sent after 19:00 for the next opening
-   auction. So an Opg order is legal only when all three hold, and the
-   refusal names the one that failed:
-   - the regular session is closed;
-   - it is before [next_open] less two minutes (09:28 on a 09:30 open);
-   - it is at or after 19:00 America/New_York following the last close.
+(* An instant as a refusal names it, in New York's time. *)
+let et zone at =
+  let date, ofday = Time_ns.to_date_ofday at ~zone in
+  sprintf "%s %s ET" (Date.to_string date)
+    (String.prefix (Time_ns.Ofday.to_string ofday) 5)
 
-   The venue's clock names the NEXT open and close, never the last close, so
-   the third is decided this way: it holds when the time of day in New York
-   is 19:00 or later (the last close was today or earlier, and its 19:00 has
-   come), or when the next open is later today in New York (today's session
-   has not opened, so the last close was on an earlier day, whose 19:00 has
-   passed). On a trading day that is exactly the rule. Between midnight and
-   19:00 on a weekend or a holiday it refuses an order the rule would allow,
-   because the clock cannot tell that day from the evening of a trading day
-   before 19:00: failing closed, at hours the research service, which runs at
-   19:15 ET on trading days, never sends at.
-
-   The zone is the tz database's America/New_York (Desk_time.new_york), never
-   a fixed offset, which would put 19:00 an hour wrong for half the year; no
-   zone refuses every Opg order. *)
-module Opening_auction = struct
-  let evening = Time_ns.Ofday.create ~hr:19 ()
-  let last_call = Time_ns.Span.of_min 2.0
-
-  let et zone at =
-    let date, ofday = Time_ns.to_date_ofday at ~zone in
-    sprintf "%s %s ET" (Date.to_string date)
-      (String.prefix (Time_ns.Ofday.to_string ofday) 5)
-
-  let refusal ~(zone : Timezone.t option) ~(session : Session.t option) ~(now : Time_ns.t)
-      : string option =
-    match (session, zone) with
-    | None, _ ->
-        Some
-          "no venue clock has answered, so the opening auction cannot be timed and no \
-           market-on-open order is sent"
-    | Some s, _ when Session.is_open s ~now ->
-        Some
-          "the regular session is open; a market-on-open order is sent after the close, \
-           from 19:00 ET"
-    | Some _, None ->
-        Some
-          "the America/New_York time zone could not be loaded from the tz database, so \
-           19:00 ET cannot be told from any other hour and no market-on-open order is \
-           sent"
-    | Some s, Some zone ->
-        let cutoff = Time_ns.sub s.next_open last_call in
-        if Time_ns.( >= ) now cutoff then
-          Some
-            (sprintf
-               "it is %s, not before %s, two minutes before the next open the clock \
-                names (%s): the venue takes no market-on-open order from then until \
-                19:00 ET"
-               (et zone now) (et zone cutoff) (et zone s.next_open))
-        else
-          let today, ofday = Time_ns.to_date_ofday now ~zone in
-          if
-            Time_ns.Ofday.( >= ) ofday evening
-            || Date.equal (Time_ns.to_date s.next_open ~zone) today
-          then None
-          else
-            Some
-              (sprintf
-                 "it is %s, before 19:00 ET: the venue takes a market-on-open order only \
-                  from 19:00 ET after a close, and the next open (%s) is not today's, so \
-                  today's session may already have closed"
-                 (et zone now) (et zone s.next_open))
-end
+(* The first minute of a session at which the desk sends its own orders:
+   five minutes after the 09:30 open, in New York's wall clock. *)
+let first_send = Time_ns.Ofday.create ~hr:9 ~min:35 ()
 
 (* When a market-on-close order may be sent. Alpaca takes one for the
    closing auction while the regular session is open, until 15:50 ET -- ten
@@ -189,24 +132,56 @@ module Closing_auction = struct
                "it is %s, not before %s, ten minutes before the close the clock names \
                 (%s): the venue takes no market-on-close order from then until the \
                 session ends"
-               (Opening_auction.et zone now)
-               (Opening_auction.et zone cutoff)
-               (Opening_auction.et zone s.next_close))
+               (et zone now) (et zone cutoff) (et zone s.next_close))
 end
 
 (* The session rule for an order of [tif] at [now]: None when it may go, else
    why not. One function, because the order manager asks it again after the
-   arrival quote and before each submit (Oms.pre_wire), when time has passed
-   since [check] asked, and the two must never answer differently. *)
-let session_refusal ~(tif : Order.Tif.t) ~(zone : Timezone.t option)
-    ~(session : Session.t option) ~(now : Time_ns.t) : string option =
+   quote and before each submit (Oms.pre_wire), when time has passed since
+   [check] asked, and the two must never answer differently.
+
+   [desk]: the order is the desk's own (Origin.Desk), which waits for
+   09:35 New York ([first_send]) inside an open session -- weekends and
+   holidays are the venue clock's closed session, as for any day order, and
+   the latest a desk order goes is that session's close, where a day limit
+   still resting expires at the venue (the desk hears the expiry and the
+   order has ended). No zone refuses every desk order, failing closed as the
+   closing auction's rule does. A person's ticket goes from the open. *)
+let session_refusal ?(desk = false) ~(tif : Order.Tif.t) ~(zone : Timezone.t option)
+    ~(session : Session.t option) ~(now : Time_ns.t) () : string option =
   match tif with
-  | Order.Tif.Opg -> Opening_auction.refusal ~zone ~session ~now
+  | Order.Tif.Opg ->
+      Some
+        "the desk sends no market-on-open order: every order is a day limit sent in the \
+         regular session"
   | Order.Tif.Cls -> Closing_auction.refusal ~zone ~session ~now
   | Order.Tif.Day -> (
-      match session with
-      | Some s when Session.is_open s ~now -> None
-      | Some _ | None -> Some "the regular session is closed")
+      match (session, zone) with
+      | Some s, _ when not (Session.is_open s ~now) ->
+          Some "the regular session is closed"
+      | None, _ -> Some "the regular session is closed"
+      | Some _, _ when not desk -> None
+      | Some _, None ->
+          Some
+            "the America/New_York time zone could not be loaded from the tz database, so \
+             09:35 ET cannot be told and no order of the desk's own is sent"
+      | Some _, Some zone ->
+          if Time_ns.Ofday.( >= ) (Time_ns.to_ofday now ~zone) first_send then None
+          else
+            Some
+              (sprintf
+                 "it is %s: the desk sends its own orders from 09:35 ET, once the \
+                  opening quotes have settled"
+                 (et zone now)))
+
+(* Where an order came from, for the two rules that tell them apart: a
+   person's ticket, or the desk's own order with the quote fetched as it was
+   sent (None when no quote answered). *)
+module Origin = struct
+  type t = Hand | Desk of Venue.Quote.t option
+
+  let desk = function Hand -> false | Desk _ -> true
+end
 
 module Context = struct
   type t = {
@@ -239,11 +214,10 @@ module Context = struct
     session : Session.t option;
     mark : Price.t option;
     stale : bool;
-    (* The newest recorded session's close for the order's symbol, and that
-       session's date: an Opg order's price. None when there is none. *)
-    close : (Date.t * Price.t) option;
-    (* America/New_York, for an Opg order's window; None when the tz database
-       could not supply it. *)
+    (* A ticket, or the desk's own order and its quote ([Origin]). *)
+    origin : Origin.t;
+    (* America/New_York, for a desk order's 09:35 and the closing auction's
+       cut-off; None when the tz database could not supply it. *)
     new_york : Timezone.t option;
     adv20 : float option;
     recent : Recent.t list;
@@ -263,28 +237,28 @@ module Failure = struct
   type t = { rule : string; why : string } [@@deriving sexp_of, compare, equal]
 end
 
-(* Whether a refusal of an order of [tif] is one of TIMING -- the order may
-   go later, unchanged, and nothing about it is wrong: its failures are all
-   the session rule's (a market-on-open order before 19:00 ET or after its
-   last call, a day order while the session is closed, no venue clock yet)
-   or the wash rule's (an order of the desk's own rests on the other side of
-   the name, and will have filled or expired by a later pass), and, for a
-   day or market-on-close order refused by the session rule, a mark the feed
-   calls stale or has not printed, because outside the session every name
-   is stale. Any other failure -- the switch, the mandate, a price, a cap --
-   is final. The intake keeps a judgement whose rebalance was refused for
-   timing pending and tries it again (design §4.3); an empty list is not a
-   refusal at all. *)
+(* Whether a refusal is one of TIMING -- the order may go later, unchanged,
+   and nothing about it is wrong: its failures are all the session rule's (a
+   day order while the session is closed or, the desk's own, before 09:35;
+   no venue clock yet), the wash rule's (an order of the desk's own rests on
+   the other side of the name, and will have filled or expired by a later
+   pass) or the quote rule's (no fresh, two-sided quote answered this time;
+   the next pass fetches another), and, for an order the session rule
+   refused, a mark the feed calls stale or has not printed, because outside
+   the session every name is stale. Any other failure -- the switch, the
+   mandate, a price, a cap -- is final. The intake keeps a judgement whose
+   rebalance was refused for timing pending and tries it again (design
+   §4.3); an empty list is not a refusal at all. *)
 let is_timing_refusal ~(tif : Order.Tif.t) (failures : Failure.t list) =
+  ignore (tif : Order.Tif.t);
   let session (f : Failure.t) = String.equal f.Failure.rule "session" in
-  let timing (f : Failure.t) = session f || String.equal f.Failure.rule "wash" in
+  let timing (f : Failure.t) =
+    session f || String.equal f.Failure.rule "wash" || String.equal f.Failure.rule "quote"
+  in
   (not (List.is_empty failures))
   && List.exists failures ~f:timing
   && List.for_all failures ~f:(fun f ->
-      timing f
-      || String.equal f.Failure.rule "mark"
-         && (not (Order.Tif.equal tif Order.Tif.Opg))
-         && List.exists failures ~f:session)
+      timing f || (String.equal f.Failure.rule "mark" && List.exists failures ~f:session))
 
 (* Whether an order of [qty] on [side] only shrinks a position: what a
    limit's trip lets through (R2). Exactly:
@@ -408,6 +382,7 @@ let names =
     "kill_switch";
     "session";
     "mark";
+    "quote";
     "tick";
     "collar";
     "notional";
@@ -420,18 +395,8 @@ let names =
 let check (c : Context.t) (r : Order.Request.t) : Failure.t list =
   let fail rule why = Some { Failure.rule; why } in
   let sym = Symbol.to_string r.Order.Request.symbol in
-  let opening = Order.Tif.equal r.Order.Request.tif Order.Tif.Opg in
-  (* A close of zero or less is a cell nobody wrote, recorded at a close: not
-     a price. *)
-  let close =
-    Option.filter c.close ~f:(fun (_, p) ->
-        let p = Price.to_float p in
-        Float.is_finite p && Float.( > ) p 0.0)
-  in
   let priced =
-    if opening then Option.map close ~f:(fun (_, p) -> Price.to_float p)
-    else
-      match c.mark with Some p when not c.stale -> Some (Price.to_float p) | _ -> None
+    match c.mark with Some p when not c.stale -> Some (Price.to_float p) | _ -> None
   in
   let limit =
     Option.map (Order.Kind.limit_price r.Order.Request.kind) ~f:Price.to_float
@@ -453,22 +418,20 @@ let check (c : Context.t) (r : Order.Request.t) : Failure.t list =
            ~own:c.own ~account:c.account ~netted:c.netted ~side:r.Order.Request.side
            ~qty:r.Order.Request.qty) ~f:(fun why -> { Failure.rule = "kill_switch"; why });
       Option.map
-        (session_refusal ~tif:r.Order.Request.tif ~zone:c.new_york ~session:c.session
-           ~now:c.now) ~f:(fun why -> { Failure.rule = "session"; why });
-      (if opening then
-         match close with
-         | Some _ -> None
-         | None ->
-             fail "mark"
-               (sprintf
-                  "%s has no recorded session close, and a market-on-open order is \
-                   priced at the last close"
-                  sym)
-       else
-         match (c.mark, c.stale) with
-         | None, _ -> fail "mark" (sprintf "%s has no mark" sym)
-         | Some _, true -> fail "mark" (sprintf "%s's mark is stale" sym)
-         | Some _, false -> None);
+        (session_refusal ~desk:(Origin.desk c.origin) ~tif:r.Order.Request.tif
+           ~zone:c.new_york ~session:c.session ~now:c.now ())
+        ~f:(fun why -> { Failure.rule = "session"; why });
+      (match (c.mark, c.stale) with
+      | None, _ -> fail "mark" (sprintf "%s has no mark" sym)
+      | Some _, true -> fail "mark" (sprintf "%s's mark is stale" sym)
+      | Some _, false -> None);
+      (match c.origin with
+      | Origin.Hand -> None
+      | Origin.Desk q ->
+          Option.map
+            (Rebalance.quote_refusal ~now:c.now
+               ~max_age_s:c.spec.Desk_spec.quote_max_age_s q) ~f:(fun why ->
+              { Failure.rule = "quote"; why = sprintf "%s: %s" sym why }));
       (* A whole cent at every price. Rule 612 allows four decimals below a
          dollar, but desk/alpaca_paper.ml sends a limit with two, so a finer
          limit would be journaled and gated at one price and reach the venue
@@ -491,7 +454,10 @@ let check (c : Context.t) (r : Order.Request.t) : Failure.t list =
                m
                (100.0 *. c.spec.Desk_spec.price_collar))
       | _ -> None);
-      (match priced with
+      (* At the limit actually sent, where the order has one; at the mark
+         for a market order. Only when there is a mark at all: without one
+         [mark] is the reason, and a notional beside it would bury it. *)
+      (match Option.map priced ~f:(fun m -> Option.value limit ~default:m) with
       | Some m
         when Float.( > )
                (Float.of_int r.Order.Request.qty *. m)

@@ -1301,9 +1301,69 @@ let test_an_unevaluable_trip_limit_refuses_a_buy_that_raises_gross () =
       Alcotest.(check bool) "not a trip-limit: passes" true (D.Oms.Preview.passed buy))
     ()
 
+(* What a desk order's rules asked, the wire asks again at its own instant
+   (Task 1.7): its quote's age and the hour. A buy of 10 AAPL at 150.23, a
+   day limit off a quote at 10:00 EDT: with the quote 1 s old it may go; 6 s
+   old, or none, the quote rule refuses it at the wire, naming the name;
+   at 09:31 EDT the session rule does, naming 09:35. A ticket asks for no
+   quote and goes from the open. *)
+let test_a_desk_order's_quote_and_hour_are_asked_again_at_the_wire () =
+  let at = Time_ns.of_string_with_utc_offset in
+  let now = ref (at "2026-09-15T14:00:00Z") in
+  with_oms
+    ~now:(fun () -> !now)
+    ~f:(fun oms _ ->
+      let request =
+        {
+          D.Order.Request.client_order_id =
+            Option.value_exn
+              (D.Ids.Client_order_id.of_string "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZ61");
+          symbol = aapl;
+          side = D.Order.Side.Buy;
+          qty = 10;
+          kind = D.Order.Kind.Limit (price 150.23);
+          tif = D.Order.Tif.Day;
+        }
+      in
+      let quote age =
+        Some
+          {
+            D.Venue.Quote.bid = price 149.925;
+            ask = price 150.075;
+            at = Time_ns.sub !now (Time_ns.Span.of_sec age);
+          }
+      in
+      let wire ?origin () =
+        match D.Oms.pre_wire ?origin oms ~own:0.0 request with
+        | Ok _ -> "goes"
+        | Error f -> D.Oms.reason f
+      in
+      let desk q = D.Rules.Origin.Desk q in
+      Alcotest.(check string)
+        "a quote 1 s old" "goes"
+        (wire ~origin:(desk (quote 1.0)) ());
+      Alcotest.(check string)
+        "6 s old"
+        "quote: AAPL: its quote is 6.0 s from now, and a quote prices an order within 5 s"
+        (wire ~origin:(desk (quote 6.0)) ());
+      Alcotest.(check string)
+        "none" "quote: AAPL: no quote answered for it"
+        (wire ~origin:(desk None) ());
+      Alcotest.(check string) "a ticket" "goes" (wire ());
+      now := at "2026-09-15T13:31:00Z";
+      Alcotest.(check string)
+        "09:31"
+        "session: it is 2026-09-15 09:31 ET: the desk sends its own orders from 09:35 \
+         ET, once the opening quotes have settled"
+        (wire ~origin:(desk (quote 1.0)) ());
+      Alcotest.(check string) "a ticket at 09:31" "goes" (wire ()))
+    ()
+
 let suite =
   ( "oms",
     [
+      Alcotest.test_case "a desk order's quote and hour are asked again at the wire"
+        `Quick test_a_desk_order's_quote_and_hour_are_asked_again_at_the_wire;
       Alcotest.test_case "an unevaluable trip-limit refuses a buy that raises gross"
         `Quick test_an_unevaluable_trip_limit_refuses_a_buy_that_raises_gross;
       Alcotest.test_case

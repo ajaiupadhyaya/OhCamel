@@ -224,8 +224,12 @@
  ;                           says OVERLAY STALE.
  ;   overlay_band            a move in the scale larger than this re-sizes every
  ;                           strategy that adjusts intraday.
- ;   intraday_slip_bps       an intraday leg is a limit order this far past the
- ;                           mark, toward the far side. Below the collar.
+ ;   intraday_slip_bps       every desk order is a day limit this far past the
+ ;                           quote fetched as it is sent: a buy above the
+ ;                           ask, a sell below the bid. Below the collar.
+ ;   quote_max_age_s         a quote older than this when its order is sent,
+ ;                           or crossed, or missing a side, is no quote, and
+ ;                           the order is refused (rule quote). In (0, 60].
  ;   min_leg_notional        an intraday leg smaller than this, in dollars, is
  ;                           dropped, and the drop journaled.
  ;   wave_timeout_s          how long the desk waits on one wave of legs before
@@ -280,6 +284,7 @@
    (overlay_fallback 0.5)
    (overlay_band 0.10)
    (intraday_slip_bps 10.0)
+   (quote_max_age_s 5.0)
    (min_leg_notional 200.0)
    (wave_timeout_s 180.0)
    (flatten_at "15:50")

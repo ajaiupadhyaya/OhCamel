@@ -53,6 +53,7 @@ let own_indexes j =
 
 let journal_indexes =
   [
+    "completions_by_key";
     "fills_by_at";
     "fills_by_order";
     "order_events_by_order";
@@ -85,7 +86,7 @@ let test_a_session_survives_a_restart () =
         [ session "2026-09-09"; session "2026-09-10"; session "2026-09-11" ]
         (Journal.sessions j);
       Alcotest.(check (list string))
-        "reopened: the eight indexes, added at open" journal_indexes (own_indexes j);
+        "reopened: the nine indexes, added at open" journal_indexes (own_indexes j);
       let version = ref [] in
       ignore
         (Sqlite3.exec_not_null_no_headers (Journal.For_testing.db j)
@@ -789,6 +790,160 @@ let test_a_reset_lifts_the_halt_and_the_trip_together () =
   Alcotest.(check bool) "no trip" true (Option.is_none (Journal.standing_trip j));
   Journal.close j
 
+(* Task 1.7: the per-session completion cap is counted here, by key and the
+   New York session's date, so a restart does not start it again. Two of the
+   strategy's on the 15th, one the day before, one of its flatten's: the
+   15th's count is 2, the 14th's 1, the flatten's 1, another strategy's 0 --
+   and the same after the file is closed and opened again. *)
+let test_completions_are_counted_by_key_and_date_across_a_restart () =
+  with_temp_path ~f:(fun path ->
+      let j = open_exn path in
+      let t s = Time_ns.of_string_with_utc_offset s in
+      Journal.record_completion j ~key:"alpha" ~date:(date "2026-09-14")
+        ~at:(t "2026-09-14T15:00:00Z");
+      Journal.record_completion j ~key:"alpha" ~date:(date "2026-09-15")
+        ~at:(t "2026-09-15T14:00:00Z");
+      Journal.record_completion j ~key:"alpha" ~date:(date "2026-09-15")
+        ~at:(t "2026-09-15T14:05:00Z");
+      Journal.record_completion j ~key:"alpha:stop" ~date:(date "2026-09-15")
+        ~at:(t "2026-09-15T14:06:00Z");
+      let counts j =
+        List.map
+          [
+            ("alpha", "2026-09-15");
+            ("alpha", "2026-09-14");
+            ("alpha:stop", "2026-09-15");
+            ("beta", "2026-09-15");
+          ]
+          ~f:(fun (key, d) -> Journal.completions_today j ~date:(date d) ~key)
+      in
+      Alcotest.(check (list int)) "by key and date" [ 2; 1; 1; 0 ] (counts j);
+      Journal.close j;
+      let j = open_exn path in
+      Alcotest.(check (list int)) "and after a restart" [ 2; 1; 1; 0 ] (counts j);
+      Journal.close j)
+
+(* A failed order is eligible for completion exactly when the venue cannot
+   still work it -- the complement, among failed orders, of the ones
+   source_orders_unsettled counts as may-still-fill. Under one source, with
+   the latest recorded session 2026-09-14:
+   - failed on the 15th, nothing heard since: may still fill, not eligible;
+   - failed on the 15th, then reported cancelled by the venue: eligible;
+   - failed on the 13th, before the latest session's date: retired by the
+     session rule, eligible;
+   - cancelled unfilled: eligible, as before;
+   - failed with its whole quantity filled: nothing unfilled, in neither. *)
+let test_a_failed_order_is_eligible_for_completion_only_when_finished () =
+  let j = open_exn ":memory:" in
+  let module O = Ohcamel_desk.Order in
+  let source = "signal:alpha:1" in
+  let t s = Time_ns.of_string_with_utc_offset s in
+  let make n ~created ~events () =
+    let request =
+      {
+        O.Request.client_order_id =
+          Option.value_exn
+            (Ohcamel_desk.Ids.Client_order_id.of_string
+               (sprintf "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZ%02d" n));
+        symbol = Symbol.of_string "SPY";
+        side = O.Side.Buy;
+        qty = 10;
+        kind = O.Kind.Limit (Price.of_float 500.0);
+        tif = O.Tif.Day;
+      }
+    in
+    let o = O.create request in
+    Journal.insert_order j o ~source ~decision_price:(Price.of_float 500.0) ~arrival:None
+      ~verdict:`Null ~at:(t created);
+    let o =
+      List.fold events ~init:o ~f:(fun o event ->
+          let o', anomaly = O.apply o event in
+          (match event with
+          | O.Event.Venue_fill f -> ignore (Journal.record_fill j o' f : bool)
+          | _ -> ());
+          Journal.update_order j o' ~event ~anomaly ~at:(t created);
+          o')
+    in
+    o
+  in
+  let failed = [ O.Event.Outcome_unknown "timed out"; O.Event.Not_found ] in
+  let fill =
+    O.Event.Venue_fill
+      {
+        O.Fill.execution_id = "x-5";
+        qty = 10.0;
+        price = Price.of_float 500.0;
+        at = t "2026-09-15T15:00:00Z";
+        position_qty = None;
+      }
+  in
+  ignore (make 1 ~created:"2026-09-15T15:00:00Z" ~events:failed () : O.t);
+  ignore
+    (make 2 ~created:"2026-09-15T15:00:00Z"
+       ~events:(failed @ [ O.Event.Venue_cancelled ])
+       ()
+      : O.t);
+  ignore (make 3 ~created:"2026-09-13T15:00:00Z" ~events:failed () : O.t);
+  ignore
+    (make 4 ~created:"2026-09-15T15:00:00Z"
+       ~events:[ O.Event.Acknowledged "v-4"; O.Event.Venue_cancelled ]
+       ()
+      : O.t);
+  ignore (make 5 ~created:"2026-09-15T15:00:00Z" ~events:(failed @ [ fill ]) () : O.t);
+  let ids rows =
+    List.map rows ~f:(fun (r : Journal.Order_row.t) ->
+        String.drop_prefix
+          (Ohcamel_desk.Ids.Client_order_id.to_string
+             r.Journal.Order_row.order.O.request.O.Request.client_order_id)
+          28)
+  in
+  let since = Some (date "2026-09-14") in
+  Alcotest.(check (list string))
+    "eligible: finished, retired, cancelled" [ "03"; "02"; "04" ]
+    (ids (Journal.source_orders_unfilled j ~source ~after:None ~since));
+  (* With shares left to fill, as Oms.strategy_position reads them. *)
+  Alcotest.(check (list string))
+    "may still fill: the failed one nothing has finished" [ "01" ]
+    (ids
+       (List.filter (Journal.source_orders_unsettled j ~prefix:"signal:alpha:" ~since)
+          ~f:(fun r -> Float.( > ) (O.remaining_qty r.Journal.Order_row.order) O.epsilon)));
+  Journal.close j
+
+(* The journal holds hundreds of market-on-open orders from before Task 1.7,
+   and nothing builds one now. An old row, written as that build wrote it,
+   still loads with its tif, is listed among the recent orders, and reads on
+   /api/desk as time_in_force "opg". *)
+let test_an_old_market_on_open_row_still_loads () =
+  let j = open_exn ":memory:" in
+  ignore
+    (Sqlite3.exec (Journal.For_testing.db j)
+       "INSERT INTO orders (client_order_id, venue_order_id, source, symbol, side, qty, \
+        kind, limit_price, tif, state, filled_qty, avg_fill_price, decision_price, \
+        arrival_bid, arrival_ask, verdict, created_at, updated_at) VALUES \
+        ('ohc-01M2B0CWJ0ZZZZZZZZZZZZZZ77', 'v-77', 'signal:exp_a01_spy:3', 'SPY', 'buy', \
+        12, 'market', NULL, 'opg', 'expired', 0, NULL, 500.0, NULL, NULL, 'null', \
+        '2026-10-21T00:10:00.000000000Z', '2026-10-21T13:31:00.000000000Z')"
+      : Sqlite3.Rc.t);
+  let row =
+    Option.value_exn
+      (Journal.load_order j
+         (Option.value_exn
+            (Ohcamel_desk.Ids.Client_order_id.of_string "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZ77")))
+  in
+  Alcotest.(check (pair string string))
+    "loads as a market-on-open order, expired" ("opg", "expired")
+    ( Ohcamel_desk.Order.Tif.to_string
+        row.Journal.Order_row.order.Ohcamel_desk.Order.request
+          .Ohcamel_desk.Order.Request.tif,
+      Ohcamel_desk.Order.State.to_string
+        row.Journal.Order_row.order.Ohcamel_desk.Order.state );
+  Alcotest.(check int) "listed" 1 (List.length (Journal.recent_orders j ~limit:10));
+  Alcotest.(check string)
+    "and served with its own word" "\"opg\""
+    (Yojson.Safe.to_string
+       (Yojson.Safe.Util.member "time_in_force" (Ohcamel_desk.Oms.order_json row)));
+  Journal.close j
+
 let suite =
   ( "journal",
     [
@@ -840,6 +995,12 @@ let suite =
         test_a_strategy_state_round_trips_and_absent_is_none;
       Alcotest.test_case "the latest accepted document counts incubation" `Quick
         test_the_latest_accepted_document_is_the_newest_accepted_or_incubation;
+      Alcotest.test_case "completions are counted by key and date, across a restart"
+        `Quick test_completions_are_counted_by_key_and_date_across_a_restart;
+      Alcotest.test_case "a failed order is eligible for completion only when finished"
+        `Quick test_a_failed_order_is_eligible_for_completion_only_when_finished;
+      Alcotest.test_case "an old market-on-open row still loads" `Quick
+        test_an_old_market_on_open_row_still_loads;
       Alcotest.test_case "a strategy's fills are read through orders_by_source" `Quick
         test_a_strategy's_fills_are_read_through_orders_by_source;
     ] )

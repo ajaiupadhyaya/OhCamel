@@ -51,13 +51,14 @@ module Kind = struct
   let limit_price = function Market -> None | Limit p -> Some p
 end
 
-(* How long an order is good for. Day is every order a person sends: it works
-   in the regular session and dies at its close. Opg is market-on-open: sent
-   after a close, it waits for the next session's opening auction and is
-   worked there or not at all. Only a live strategy's rebalance sends one
-   (desk/oms.ml, [propose_rebalance]), because a signal computed at the close
-   is actionable at the next open and not before (the charter's no-lookahead
-   rule). Cls is market-on-close: sent during the regular session, until ten
+(* How long an order is good for. Day is every order a person sends, and
+   every order the desk sends of its own (a day limit off the quote, from
+   09:35 New York: Task 1.7): it works in the regular session and dies at its
+   close. Opg is market-on-open: sent after a close, it waited for the next
+   session's opening auction, where Alpaca's paper venue expired 55 of the
+   desk's first 59. NOTHING BUILDS ONE NOW; the word stays so the journal's
+   old rows still read, display and reconcile, and the rules refuse an order
+   that carried it. Cls is market-on-close: sent during the regular session, until ten
    minutes before its close, it waits for that session's closing auction --
    the exit a strategy whose horizon is the close is built on (Tasks 23-24
    send one; Rules.session_refusal says when one may go). The strings are the
@@ -112,8 +113,7 @@ end
 module Request = struct
   (* Whole shares (spec §3.6): an int makes a fractional quantity
      unrepresentable rather than merely rejected. Day orders in the regular
-     session, unless [tif] says Opg -- which only a rebalance sets -- or
-     Cls. *)
+     session, unless [tif] says Cls; Opg only on an old journal row. *)
   type t = {
     client_order_id : Ids.Client_order_id.t;
     symbol : Symbol.t;

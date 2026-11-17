@@ -343,10 +343,15 @@ module Book = struct
       overlay_max_age : float; [@sexp.default 4.0]
       overlay_fallback : float; [@sexp.default 0.5]
       overlay_band : float; [@sexp.default 0.10]
-      (* The intraday rebalance: limit legs priced this far past the mark,
+      (* Every desk order (Task 1.7): a day limit priced off the quote
+         fetched as it is sent -- a buy this far above the ask, a sell this
+         far below the bid -- and refused (rule [quote]) when that quote is
+         older than [quote_max_age_s], crossed, one-sided or not a number;
          legs below [min_leg_notional] dropped, each wave waited on for at
-         most [wave_timeout_s]. *)
+         most [wave_timeout_s]. The word keeps its old name, which books
+         already carry. *)
       intraday_slip_bps : float; [@sexp.default 10.0]
+      quote_max_age_s : float; [@sexp.default 5.0]
       min_leg_notional : float; [@sexp.default 200.0]
       wave_timeout_s : float; [@sexp.default 180.0]
       (* New York wall-clock HH:MM at which a (horizon close) strategy is
@@ -457,6 +462,11 @@ module Book = struct
             then
               fail "intraday_slip_bps" "must be in [0, price_collar x 1e4)"
                 t.intraday_slip_bps
+            else if
+              (* Positive and no more than a minute: a quote older than that
+                 is a price from another moment, whatever the book says. *)
+              not Float.(t.quote_max_age_s > 0.0 && t.quote_max_age_s <= 60.0)
+            then fail "quote_max_age_s" "must be in (0, 60]" t.quote_max_age_s
             else if not Float.(t.min_leg_notional >= 0.0) then
               fail "min_leg_notional" "may not be negative" t.min_leg_notional
             else if not Float.(t.wave_timeout_s > 0.0) then

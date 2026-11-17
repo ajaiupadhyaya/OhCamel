@@ -5,8 +5,9 @@
    accepted_incubation when its strategy is (sizing incubation), on the
    paper venue only, whatever its validation status. Then this turns
    its weights into whole shares, and the order manager proposes them as one
-   rebalance of market-on-open orders (Oms.propose_rebalance), through the
-   same rules, the same gate and the same journal as a ticket.
+   rebalance of day limit orders priced off the quote fetched as they are
+   sent, from 09:35 New York (Oms.propose_rebalance), through the same
+   rules, the same gate and the same journal as a ticket.
 
    OVER THE STRATEGY'S OWN SYMBOLS. A signal lists only the names it wants
    held: its emitter drops a zero weight, so a signal that goes flat names
@@ -17,7 +18,8 @@
    For each symbol, with capital_fraction f (an incubation strategy's
    effective fraction under the book's incubation_cap), the effective scale
    s in [0, 1] (1 until the overlay sets it; 0 flattens), equity E, weight w
-   and the opening-auction price p (the last recorded close):
+   and the current mark p (the feed's live price, fresh -- never yesterday's
+   close: Task 1.7, Oms.plan_rebalance):
 
      target  = trunc(w x f x s x E / p)      toward zero: whole shares, and
                                              never more than the weight asks
@@ -29,7 +31,7 @@
    strategy bought, and never a share the owner holds by hand.
 
    EVERY DOUBT IS NO TARGETS AND A REASON, never a guess: an unknown equity,
-   an unknown or unusable price, an unknown fill history, a weight for a name
+   an unknown, stale or unusable price, an unknown fill history, a weight for a name
    the strategy does not own, a position in one it no longer owns, a position
    that is not a whole number of shares, or a target too large to be one.
    Whether the account still holds what the desk's fills say it should -- a
@@ -42,7 +44,7 @@
    the close it is priced at and the newest recorded session must all be the
    same day, and no weekday may have passed since that day with no session
    recorded: after an outage, a signal from before it would otherwise be
-   sized at a close weeks old and sent to the next open. A document already
+   sized on a record weeks old and sent at the next session. A document already
    sized on its own close is re-sized at the newest one ([calendar_refusal]'s
    standing case). *)
 
@@ -84,29 +86,55 @@ end
 
 let positive_finite x = Float.is_finite x && Float.( > ) x 0.0
 
-(* How a rebalance's orders go (design §4.3). [Open]: market-on-open orders,
-   sent between 19:00 ET and the open, priced at the recorded close -- a
-   daily signal's. [Intraday]: day limit orders sent during the regular
-   session, each at the live mark moved [limit_price]'s slip toward the far
-   side, in waves when there are more than [max_legs] of them
-   (desk/waves.ml). The rules, the gate, the journal and the wire are the
-   same for both. *)
-module Mode = struct
-  type t = Open | Intraday [@@deriving sexp_of, compare, equal]
+(* A desk order's limit, from the quote fetched as it is sent (Task 1.7):
+   a buy [band_bps] above the ask, a sell [band_bps] below the bid, so the
+   order is marketable at once and never far -- the band is validated below
+   the collar (Desk_spec). THE TICK: Alpaca takes a limit at or above $1.00
+   in whole cents and one below $1.00 in hundredths of a cent; the desk sends
+   two decimals at every price (desk/alpaca_paper.ml), and a whole cent is a
+   whole number of hundredths, so a cent is a legal tick everywhere and the
+   rules' [tick] holds every limit to it. Rounded AWAY from the quote: a buy
+   up, so its limit is never below the ask, a sell down, so its limit is
+   never above the bid -- 100.00 x 1.001 = 100.10, and an ask of 100.005 x
+   1.001 = 100.105005 is 100.11, never 100.10. The 1e-6 of a cent absorbs
+   the noise of the float product, and no more. *)
+let quote_limit ~(side : Order.Side.t) ~(bid : float) ~(ask : float) ~(band_bps : float) :
+    float =
+  let band = band_bps /. 10_000.0 in
+  match side with
+  | Order.Side.Buy -> Float.round_up ((ask *. (1.0 +. band) *. 100.0) -. 1e-6) /. 100.0
+  | Order.Side.Sell -> Float.round_down ((bid *. (1.0 -. band) *. 100.0) +. 1e-6) /. 100.0
 
-  (* The sizing row's word for it (Journal.record_sizing's [mode]). *)
-  let to_string = function Open -> "open" | Intraday -> "intraday"
-end
-
-(* An intraday leg's limit: the mark moved [slip_bps] toward the far side --
-   up for a buy, down for a sell -- so the order is marketable at once while
-   the quote is within the slip, and never far: the slip is validated below
-   the collar (Desk_spec). Rounded to the cent, half to even, because the
-   rules' tick refuses a limit that is not a whole cent and the venue is sent
-   two decimals: 123.455 x 1.001 = 123.578455, 12357.8455 cents, 123.58. *)
-let limit_price ~(side : Order.Side.t) ~(mark : float) ~(slip_bps : float) : float =
-  let moved = mark *. (1.0 +. (Order.Side.sign side *. slip_bps /. 10_000.0)) in
-  Float.round_nearest_half_to_even (moved *. 100.0) /. 100.0
+(* Whether a quote fetched at send can price a desk order: None when it can,
+   else why not -- the rules' [quote] refusal (Rules.check, Oms.pre_wire).
+   No quote; a side that is zero, negative or not a number (one-sided: the
+   venue's "no active bid"); a bid above the ask (crossed); or one stamped
+   more than [max_age_s] from [now], either way -- older, or from a clock
+   ahead of the desk's by more than that. A locked quote, bid equal to ask,
+   prices: it is a market, if a thin one. *)
+let quote_refusal ~(now : Time_ns.t) ~(max_age_s : float) (q : Venue.Quote.t option) :
+    string option =
+  match q with
+  | None -> Some "no quote answered for it"
+  | Some q -> (
+      let bid = Price.to_float q.Venue.Quote.bid
+      and ask = Price.to_float q.Venue.Quote.ask in
+      let age = Time_ns.Span.to_sec (Time_ns.diff now q.Venue.Quote.at) in
+      match () with
+      | ()
+        when not
+               (Float.is_finite bid && Float.is_finite ask && Float.( > ) bid 0.0
+              && Float.( > ) ask 0.0) ->
+          Some (sprintf "its quote (%g x %g) is one-sided or not a price" bid ask)
+      | () when Float.( > ) bid ask ->
+          Some
+            (sprintf "its quote is crossed: the bid %.4f is above the ask %.4f" bid ask)
+      | () when not (Float.( <= ) (Float.abs age) max_age_s) ->
+          Some
+            (sprintf
+               "its quote is %.1f s from now, and a quote prices an order within %g s" age
+               max_age_s)
+      | () -> None)
 
 (* Legs worth less than [min_leg_notional] at their price, |qty x price|, are
    not sent: an order that small costs more in spread and attention than it
@@ -161,8 +189,8 @@ let max_legs = 6
    go out in the send order and the loop stops at the first the venue does
    not acknowledge, or when the switch, the book or the session fails
    between two submits, so what reaches the venue is a prefix; and any order
-   that reached it can still go unfilled at the opening auction, or be
-   refused at the open after it was acknowledged. So the fills can be any
+   that reached it can still go unfilled -- a day limit the market moved
+   away from -- or be refused after it was acknowledged. So the fills can be any
    subset of the orders. A sector's notional is the size of a net sum: an
    order that shrinks one name's position can take a sector over its line
    without the order that offsets it -- a cover of a short in one name
@@ -208,7 +236,7 @@ let weekdays_between a b =
 
    A STANDING DOCUMENT is one the desk already sent orders for -- so it
    passed this check once, on its own close -- and is being sized again: an
-   overlay move, or the completion of orders the auction let expire. Its
+   overlay move, or the completion of orders that ended unfilled. Its
    weights hold until its strategy's next document, a month for a monthly
    strategy, so (a) asks of it only that its as_of is not after the newest
    session; the closes are still all the newest session's and (b) still

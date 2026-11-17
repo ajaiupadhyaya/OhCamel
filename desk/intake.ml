@@ -15,9 +15,9 @@
    never recorded with one. [size] plans the targets (Oms.plan_rebalance),
    proposes them as one rebalance (Oms.propose_rebalance), and writes what
    came of it over the pending sentence, once -- unless the rebalance was
-   refused for TIMING alone (Oms.Rebalance_outcome.Not_now: the opening
-   auction's window before 19:00 ET, the session, no venue clock yet), when
-   the sentence stays and the next pass tries again. A judgement leaves the
+   refused for TIMING alone (Oms.Rebalance_outcome.Not_now: the session
+   closed or 09:35 New York not yet come, no venue clock yet, no fresh
+   quote), when the sentence stays and the next pass tries again. A judgement leaves the
    set when it is sized or finally refused, when a later document of its
    strategy is accepted (R5), when it ages past max_age sessions (R4), or
    when orders were journaled under its source -- a crash while proposing
@@ -25,8 +25,8 @@
    Nothing is sized before the venue's clock has answered ([run]). The
    judgement's own verdict, rule and detail are never rewritten. Of several
    documents of one strategy, only the highest sequence is sized: the
-   others' orders would rest beside it until the open, and the strategy's
-   position counts only fills.
+   others' orders would rest beside it, and the strategy's position counts
+   only fills.
 
    THIS IS A TRUST BOUNDARY, AND EVERY DOUBT IS A REFUSAL. The files come
    from another process in another language, and the contract's own principle
@@ -923,19 +923,21 @@ type t = {
   (* Each strategy's last adjust outcome said, so a refusal repeated every
      minute -- an intraday proposal outside the session -- costs one line. *)
   adjust_said : string String.Table.t;
-  (* How many times the adjust pass has completed each strategy -- sized it
-     again because orders of its latest sizing ended unfilled -- with orders
-     that reached the venue, as (the session's UTC date, the count): at most
-     [max_completions] a session ([adjust]). In memory: a restart starts the
-     count again, which costs at most three more waves. *)
-  completions : (string * int) String.Table.t;
 }
 
 (* The most times a session the adjust pass sends a completion for one
-   strategy. A completion whose day limit does not fill is cancelled at its
-   wave's timeout and is itself unfilled, so without a bound a name whose
-   mark is wrong would be sent and cancelled every few minutes all day. *)
+   strategy, or a stop's flatten. A completion whose day limit does not fill
+   is cancelled at its wave's timeout and is itself unfilled, so without a
+   bound a name whose quote is wrong would be sent and cancelled every few
+   minutes all day. Counted in the journal (Journal.completions_today, by
+   the New York session date), so a restart after two allows one more, not
+   three. *)
 let max_completions = 3
+
+(* A stop's flatten is counted under its own key beside the strategy's
+   completions. A slug matches ^[a-z][a-z0-9_]{1,63}$, so no strategy's own
+   key ends in ":stop". *)
+let flatten_key name = name ^ ":stop"
 
 let create ?gauge ~journal ~dir ~strategies ~universe ~on_event ~now () =
   let gauge = match gauge with Some g -> g | None -> Gauge.none () in
@@ -950,7 +952,6 @@ let create ?gauge ~journal ~dir ~strategies ~universe ~on_event ~now () =
     adjusting = false;
     skip_said = false;
     adjust_said = String.Table.create ();
-    completions = String.Table.create ();
     judged = String.Table.create ();
     refused = String.Hash_set.create ();
     unsettled = String.Map.empty;
@@ -1391,9 +1392,13 @@ let pass t = ignore (judge_pass t : Accepted.t list)
    the scale, and the dollars allocated, f x scale x E -- is recorded in
    [sizings] once the plan
    stands and the proposal was not refused: E is read with the plan, before
-   anything is proposed. [mode] is how the legs go (Rebalance.Mode): Open
-   for an accepted document, Intraday for the adjust pass, whose sizing rows
-   say "adjust" ([sizing_mode]). An intraday rebalance whose wait ran out
+   anything is proposed. Every rebalance is day limits off the quote, sent
+   from 09:35 New York (Oms.propose_rebalance); the sizing row says "open"
+   for an accepted document and "adjust" or "complete" for the adjust pass
+   ([sizing_mode]). Nothing is planned outside the desk's send window
+   (Oms.send_window): the marks a plan is priced at are the feed's, stale
+   all evening, and a plan refused for them would close the judgement; so
+   it waits, pending, as a timing refusal. A rebalance whose wait ran out
    records no sizing: its unfilled legs were cancelled, and the next pass
    finds the strategy still sized at the old scale and re-sizes it. *)
 let incubation_ratio t ~oms (strategy : Signals_spec.Strategy.t) =
@@ -1460,8 +1465,8 @@ let grows oms (strategy : Signals_spec.Strategy.t) (l : Rebalance.Leg.t) =
       let after = q +. (Order.Side.sign l.side *. Float.of_int l.qty) in
       Float.( > ) (Float.abs after) (Float.abs q)
 
-let rebalance ?(mode = Rebalance.Mode.Open) ?(sizing_mode = "open") ?(only_shrink = false)
-    ?note t ~oms ~(scale : unit -> Parts.t) (a : Accepted.t) : Rebalanced.t Deferred.t =
+let rebalance ?(sizing_mode = "open") ?(only_shrink = false) ?note t ~oms
+    ~(scale : unit -> Parts.t) (a : Accepted.t) : Rebalanced.t Deferred.t =
   let doc = a.Accepted.doc in
   let strategy = a.Accepted.strategy in
   let source =
@@ -1476,15 +1481,24 @@ let rebalance ?(mode = Rebalance.Mode.Open) ?(sizing_mode = "open") ?(only_shrin
     | Incubation -> Oms.incubation_permitted oms
     | Live | Advisory -> Ok ()
   in
-  match permitted with
-  | Error why -> return (Rebalanced.final (Oms.Rebalance_outcome.to_string (Refused why)))
-  | Ok () -> (
+  match (permitted, Oms.send_window oms) with
+  | Error why, _ ->
+      return (Rebalanced.final (Oms.Rebalance_outcome.to_string (Refused why)))
+  | Ok (), Some why ->
+      return
+        {
+          Rebalanced.sentence =
+            Oms.Rebalance_outcome.to_string (Not_now ("session: " ^ why));
+          wait = true;
+          attempted = false;
+        }
+  | Ok (), None -> (
       let ratio = incubation_ratio t ~oms strategy in
       let fraction = strategy.capital_fraction in
       let parts = scale () in
       let scale = parts.Parts.effective *. ratio in
       let planned =
-        Oms.plan_rebalance oms ~mode ~strategy
+        Oms.plan_rebalance oms ~strategy
           ~targets:
             (List.map doc.targets ~f:(fun (x : Contract.target) -> (x.symbol, x.weight)))
           ~scale
@@ -1509,9 +1523,9 @@ let rebalance ?(mode = Rebalance.Mode.Open) ?(sizing_mode = "open") ?(only_shrin
                 log t "%S %d: its sizing could not be recorded: %s" doc.strategy
                   doc.sequence (Error.to_string_hum e))
       in
-      (* The legs under the book's floor (Oms.plan_rebalance drops them in
-         the intraday mode only), said as part of the sentence, so the
-         record shows what was not sent and why. *)
+      (* The legs under the book's floor (Oms.plan_rebalance drops them),
+         said as part of the sentence, so the record shows what was not
+         sent and why. *)
       let floor_sentence dropped =
         sprintf "dropped below the $%.0f floor: %s"
           (Oms.spec oms).Ohcamel.Config.Book.Desk_spec.min_leg_notional
@@ -1543,7 +1557,7 @@ let rebalance ?(mode = Rebalance.Mode.Open) ?(sizing_mode = "open") ?(only_shrin
              no sizing row, so the next pass plans again -- the shrunk names
              are then at their targets and only the growing legs remain, held. *)
           let growing, shrinking = List.partition_tf legs ~f:(grows oms strategy) in
-          let%map outcome = Oms.propose_rebalance oms ~source ~legs:shrinking ~mode in
+          let%map outcome = Oms.propose_rebalance oms ~source ~legs:shrinking in
           {
             Rebalanced.sentence =
               sprintf
@@ -1561,7 +1575,7 @@ let rebalance ?(mode = Rebalance.Mode.Open) ?(sizing_mode = "open") ?(only_shrin
               | Refused _ | Not_now _ -> false);
           }
       | Ok (legs, dropped) ->
-          let%map outcome = Oms.propose_rebalance oms ~source ~legs ~mode in
+          let%map outcome = Oms.propose_rebalance oms ~source ~legs in
           if sized_whole outcome then sized ();
           {
             Rebalanced.sentence =
@@ -1762,7 +1776,7 @@ let collect_pending t : Accepted.t list =
    a strategy that adjusts intraday, is not stopped, and has an accepted
    document is re-sized from that document -- Journal's
    latest_accepted_document, accepted or accepted_incubation and nothing
-   else, so never an advisory row -- in the intraday mode, its sizing row
+   else, so never an advisory row -- as day limits off the quote, its sizing row
    saying "adjust", when:
    - NOT SIZED: it has no sizing for its latest accepted document (none at
      all, or an older one's: a rebalance that held only part of its size
@@ -1880,11 +1894,25 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
             let band = t.gauge.spec.Ohcamel.Config.Book.Desk_spec.overlay_band in
             let beyond a b = Float.( > ) (Float.abs (a -. b)) band in
             let now_parts = Parts.of_reading reading in
-            (* The session the completions are counted in: a regular session
-               lies inside one UTC date (13:30-21:00Z at the latest), so the
-               UTC date of now names it without a zone. *)
+            (* The session the completions are counted in: New York's date
+               now, on the intake's clock (UTC's when the zone cannot be
+               loaded -- a regular session lies inside one UTC date, and no
+               desk order goes without the zone anyway). *)
             let today =
-              Date.to_string (Time_ns.to_date (t.now ()) ~zone:Time_float.Zone.utc)
+              Time_ns.to_date (t.now ())
+                ~zone:
+                  (Option.value
+                     (Lazy.force Desk_time.new_york)
+                     ~default:Time_float.Zone.utc)
+            in
+            let tried key =
+              match
+                Or_error.try_with (fun () ->
+                    Journal.completions_today t.journal ~date:today ~key)
+              with
+              | Ok n -> n
+              (* Unreadable is spent: nothing more is sent this pass. *)
+              | Error _ -> max_completions
             in
             let holds (s : Signals_spec.Strategy.t) =
               match Oms.strategy_position oms ~strategy:s.name with
@@ -1905,15 +1933,11 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                      while any of its orders may still fill, so one flatten
                      is in flight at a time. *)
                   let flatten () =
-                    let tried =
-                      match Hashtbl.find t.completions (s.name ^ "\000stop") with
-                      | Some (day, n) when String.equal day today -> n
-                      | Some _ | None -> 0
-                    in
+                    let tried = tried (flatten_key s.name) in
                     if not (holds s) then None
                     else if tried >= max_completions then (
                       once t ~kind:"stop flatten cap"
-                        ~name:(s.name ^ "\000" ^ today)
+                        ~name:(s.name ^ "\000" ^ Date.to_string today)
                         (fun () ->
                           log t
                             "%S is stopped and still holds shares; its flatten was tried \
@@ -1965,11 +1989,11 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                           in
                           (* THE COMPLETION. Orders of this document that ended
                              with shares unfilled after the strategy's latest
-                             sizing -- expired at the opening auction, which
-                             Alpaca's paper venue does to most market-on-open
-                             orders; cancelled at a wave's timeout; refused by
-                             the venue or before the wire -- are a sizing that
-                             did not hold, and no overlay move would ever
+                             sizing -- cancelled at a wave's timeout; expired
+                             at the close; refused by the venue or before the
+                             wire; failed, and known not to be worked by the
+                             venue (Journal.source_orders_unfilled says
+                             exactly when) -- are a sizing that did not hold, and no overlay move would ever
                              answer them: the band compares scales, and the
                              scale is unchanged. So the strategy is sized again
                              from its document, intraday, whatever the band,
@@ -1977,22 +2001,26 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                              factor the last sizing used, as the governor
                              branch does, rather than sizing to the fallback.
                              At most [max_completions] a session, counted
-                             only when orders reached the venue, and said
-                             once a session when the count is spent. *)
+                             in the journal only when orders reached the
+                             venue, and said once a session when the count is
+                             spent. *)
                           let unfilled =
                             Journal.source_orders_unfilled t.journal
                               ~source:(Rebalance.Source.name ~strategy:s.name ~sequence)
                               ~after:(Option.map last ~f:(fun z -> z.Journal.Sizing.at))
+                              ~since:
+                                (Option.map
+                                   (List.hd (Journal.recent_sessions t.journal ~limit:1))
+                                   ~f:(fun z -> z.Journal.Session.date))
                           in
                           let completion =
                             match unfilled with
                             | [] -> None
                             | _ :: _ -> (
-                                match Hashtbl.find t.completions s.name with
-                                | Some (day, n)
-                                  when String.equal day today && n >= max_completions ->
+                                match tried s.name with
+                                | n when n >= max_completions ->
                                     once t ~kind:"completion cap"
-                                      ~name:(s.name ^ "\000" ^ day)
+                                      ~name:(s.name ^ "\000" ^ Date.to_string today)
                                       (fun () ->
                                         log t
                                           "%S %d: %d of its orders ended unfilled, and \
@@ -2152,7 +2180,7 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                 let%map outcome =
                   match%map
                     Monitor.try_with ~extract_exn:true (fun () ->
-                        rebalance ~mode:Rebalance.Mode.Intraday
+                        rebalance
                           ~sizing_mode:(if completing then "complete" else "adjust")
                           ~only_shrink ?note t ~oms
                           ~scale:(fun () -> parts)
@@ -2162,12 +2190,17 @@ let adjust t ~(oms : Oms.t option) : unit Deferred.t =
                       (* A flatten is capped as a completion is, and for the same
                          reason: an order that cannot fill would otherwise be sent
                          and cancelled every pass all session. *)
-                      if (completing || flattening) && outcome.Rebalanced.attempted then
-                        Hashtbl.update t.completions
-                          (if flattening then name ^ "\000stop" else name)
-                          ~f:(function
-                            | Some (day, n) when String.equal day today -> (day, n + 1)
-                            | Some _ | None -> (today, 1));
+                      (if (completing || flattening) && outcome.Rebalanced.attempted then
+                         match
+                           Or_error.try_with (fun () ->
+                               Journal.record_completion t.journal
+                                 ~key:(if flattening then flatten_key name else name)
+                                 ~date:today ~at:(t.now ()))
+                         with
+                         | Ok () -> ()
+                         | Error e ->
+                             log t "%S: its completion could not be counted: %s" name
+                               (Error.to_string_hum e));
                       outcome.Rebalanced.sentence
                   | Error exn -> sprintf "the rebalance raised (%s)" (Exn.to_string exn)
                 in

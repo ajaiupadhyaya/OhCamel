@@ -238,7 +238,7 @@ may send one); on the public demo each answers 405.
 
 ## How it's checked
 
-- **<!-- count:ocaml-tests -->940<!-- /count --> tests**, plus <!-- count:scheduler-tests -->87<!-- /count --> scheduler cases in `test/desk_async`, all
+- **<!-- count:ocaml-tests -->941<!-- /count --> tests**, plus <!-- count:scheduler-tests -->88<!-- /count --> scheduler cases in `test/desk_async`, all
   hermetic: no network, no credentials, no waiting on a clock -- the
   scheduler's cases move a clock of their own. Expected values are derived by
   hand beside each assertion, and each suite checks its own count against

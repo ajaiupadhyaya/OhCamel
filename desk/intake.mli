@@ -219,7 +219,7 @@ val collect_pending : t -> Accepted.t list
 
 val adjust : t -> oms:Oms.t option -> unit Deferred.t
 (** For each registered strategy that adjusts intraday, is not stopped, and has a latest
-    accepted document, that document is re-sized in the intraday mode, its sizing
+    accepted document, that document is re-sized as day limits off the quote, its sizing
     journaled with mode "adjust", when: it has no sizing for that document and holds a
     position of its own; or the reading is fresh, held or absent and the effective scale
     is more than [overlay_band] from the one it was last sized at (the sizing's scale over
@@ -240,11 +240,15 @@ val adjust : t -> oms:Oms.t option -> unit Deferred.t
 
     Before any of that, THE COMPLETION: when orders of that document ended with shares
     unfilled after the strategy's latest sizing ({!Journal.source_orders_unfilled}) --
-    expired at the opening auction, cancelled at a wave's timeout, refused -- the strategy
-    is sized again from the document whatever the band, its row "complete" and noted
-    "completion": at the reading, or at the last sizing's factor times the governor when
-    the reading is stale. At most three times a session for one strategy, counted when
-    orders reached the venue, and said once a session when the count is spent.
+    cancelled at a wave's timeout, expired at the close, refused, or failed and known not
+    to be worked by the venue -- the strategy is sized again from the document whatever
+    the band, its row "complete" and noted "completion": at the reading, or at the last
+    sizing's factor times the governor when the reading is stale. At most three times a
+    session for one strategy, counted in the journal by the New York session's date when
+    orders reached the venue (so a restart does not reset it), and said once a session
+    when the count is spent. Nothing is planned outside the desk's send window (from 09:35
+    New York, in the session): a re-size, completion or stop's flatten waits for it,
+    pending, and is not dropped.
 
     At most eight strategies at once. A pass that finds the last one still running skips,
     said once for the whole overlap. Never raises. *)

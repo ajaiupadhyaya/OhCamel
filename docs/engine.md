@@ -980,8 +980,9 @@ file `research/` writes against the desk's own session clock, never
 wall-clock time, and [`desk/rebalance.ml`](../desk/rebalance.ml) turns an
 accepted `live` signal's weights into whole shares --
 `trunc(weight × capital_fraction × equity / price)`, toward zero -- which
-`desk/oms.ml`'s `propose_rebalance` sends as one gated market-on-open
-rebalance through the same rules, gate and journal as a ticket.
+`desk/oms.ml`'s `propose_rebalance` sends as one gated rebalance of day
+limit orders -- priced off the venue's quote fetched as they are sent, from
+09:35 New York -- through the same rules, gate and journal as a ticket.
 
 ### A trail, and not a database
 
@@ -1205,7 +1206,7 @@ container as environment, never as a layer. The runbooks are in
 
 ## What's verified
 
-`make test` runs <!-- count:ocaml-tests -->940<!-- /count --> tests, plus <!-- count:scheduler-tests -->87<!-- /count --> in `test/desk_async` that run with
+`make test` runs <!-- count:ocaml-tests -->941<!-- /count --> tests, plus <!-- count:scheduler-tests -->88<!-- /count --> in `test/desk_async` that run with
 the scheduler -- the order manager's cases, a live strategy's rebalance, the
 transport's bound, the signal intake's minute loop and that suite's own count --
 all hermetic — no network, no credentials, and nothing that waits on the wall
@@ -1609,11 +1610,13 @@ a strategy `live` — that switch is the owner's alone, made in `book.sexp`
 after reading a strategy's report, never inferred from a verdict.
 
 **The rebalance, for a strategy the owner has set `live`.** A validated
-signal becomes one market-on-open rebalance, sent between 19:00 ET after a
-close and two minutes before the next open — inside Alpaca's opening-auction
-window and after the day's close is on record, so a weekend or a holiday
-before 19:00 refuses rather than guesses, because the venue's clock cannot
-yet tell that evening from a trading one. Nothing is sized unless the
+signal becomes one rebalance of day limit orders, sent from 09:35 New York
+in the next session (Task 1.7; until then it was market-on-open, and 55 of
+the first 59 such orders expired at the auction): sized at the current
+mark, each order priced off the venue's quote fetched as it is sent -- a
+buy 10 bps above the ask, a sell 10 bps below the bid, rounded away from the
+quote to the cent -- and refused, rule `quote`, when that quote is older than
+5 s, crossed or one-sided. Nothing is sized unless the
 signal's `as_of`, the priced close and the newest recorded session are the
 same day, and no weekday has closed since unrecorded. The rebalance is
 proposed and gated as one unit: the legs that shrink a position go out
