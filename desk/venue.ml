@@ -219,9 +219,12 @@ module Read = struct
     session_bars :
       Symbol.t list -> date:Date.t -> Bar.t Symbol.Map.t Or_error.t Deferred.t;
         (* Each name's UNADJUSTED daily bar for [date], when the venue has filed
-           it: the session's official close (Session_close.official_close).
-           [daily_bars] is split- and dividend-adjusted for the returns, and an
-           adjusted close is not a price anything traded at. *)
+           it: the venue's close for the session (Session_close.official_close).
+           On Alpaca's IEX feed that close is IEX's last trade in the session,
+           not the consolidated closing print; a bar read at 16:05 is taken as
+           the close and never re-marked. [daily_bars] is split- and
+           dividend-adjusted for the returns, and an adjusted close is not a
+           price anything traded at. *)
     activities :
       since:Date.t -> kinds:string list -> Activity.t list Or_error.t Deferred.t;
         (* The account's activities of [kinds] created on or after [since]. *)

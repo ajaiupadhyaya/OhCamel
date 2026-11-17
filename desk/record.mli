@@ -19,7 +19,10 @@ type session = {
   dividends : float;
       (** Credited on an ex-date to the shares held at the close before it, a short
           debited; inside [pnl]. *)
-  fees : float;  (** The fills' fees, inside both [pnl] and [cost]. *)
+  fees : float;
+      (** The fills' fees, inside both [pnl] and [cost]. A strategy's fees are only those
+          that name its order; Alpaca's documented FEE activity names none, so in practice
+          this is 0.00 and every fee is the account's (Stop.fees_by_order). *)
   cost_measured : float;  (** [cost] over the fills that had an arrival mid. *)
   cost_notional : float;  (** Their [|qty| x arrival_mid], what [cost_bps] divides by. *)
   cost_unknown : int;  (** Fills with no arrival mid: cost not measured, fee counted. *)
@@ -49,8 +52,12 @@ type fill = {
   price : float;
   arrival_mid : float option;
       (** The midpoint of the venue's quote the order was sent against, or None when that
-          quote is not usable as an arrival (stop.ml's [arrival_mid] says which): never a
-          zero and never a guess. *)
+          quote is not usable as an arrival: never a zero and never a guess.
+          Stop.arrival_mid decides, and it is None for an auction order, an order created
+          outside 09:30-16:00 New York, a one-sided, locked or crossed quote, and a quote
+          whose own stamp is missing or more than 60 s older than its order -- so every
+          arrival journaled before orders.arrival_at existed (Task 1.8, fix round 1),
+          which carries no stamp and may have been a stale print, is unknown. *)
   fee : float;  (** Dollars, positive: the venue's fee for this fill, 0 when none. *)
 }
 (** One of a strategy's fills. *)

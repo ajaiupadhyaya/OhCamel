@@ -1542,7 +1542,10 @@ let test_verify_against_a_source_stays_strict_for_tables_the_source_had () =
    dividends table, no marks.source -- holding s_tlt: 100 TLT bought at 90.00, a day
    order sent at 10:00 New York against 89.99/90.01; closes 90.00 and 89.70; and a
    dividends file with TLT's 0.30 ex 2026-11-03. Before Task 1.8 the record reads
-   -30.00, after it 0.00, and the one changed session says why. The file is read and
+   -30.00, after it 0.00, and the one changed session says why. The arrival was
+   journaled with no stamp, as every order before fix round 1, so its cost is unknown.
+   With the book's 0.20% line the record before would have stopped s_tlt and the
+   record after does not, which is marked. The file is read and
    never written: byte for byte the same after the run, and still without the new
    tables. *)
 let tlt_journal path =
@@ -1603,6 +1606,7 @@ let tlt_journal path =
       "DROP TABLE activities";
       "DROP TABLE dividends";
       "ALTER TABLE marks DROP COLUMN source";
+      "ALTER TABLE orders DROP COLUMN arrival_at";
     ] ~f:(fun sql -> ignore (Sqlite3.exec db sql : Sqlite3.Rc.t));
   ignore (Sqlite3.db_close db : bool)
 
@@ -1616,9 +1620,25 @@ let test_record_diff_reads_and_never_writes () =
       Out_channel.write_all dividends
         ~data:"# symbol,ex_date,per_share\nTLT,2026-11-03,0.30\n\n";
       let before = In_channel.read_all path in
+      let module Spec = Ohcamel.Config.Book.Signals_spec in
+      let s_tlt =
+        {
+          Spec.Strategy.name = "s_tlt";
+          symbols = [ "TLT" ];
+          max_age = 3;
+          sizing = Spec.Incubation;
+          capital_fraction = 0.01;
+          cadence = Spec.Cadence.Daily;
+          adjust = Spec.Adjust.Intraday;
+          max_age_minutes = 20;
+          horizon = Spec.Horizon.Carry;
+          stop = Some { Spec.Stop.drawdown = 0.002; sessions = 250 };
+          reinstated = None;
+        }
+      in
       let o =
         Ohcamel_desk.Journal_cli.record_diff ~journal:path ~since:None
-          ~dividends:(Some dividends) ~zone:new_york_summer
+          ~dividends:(Some dividends) ~strategies:(Some [ s_tlt ]) ~zone:new_york_summer
       in
       Alcotest.(check int) "status" 0 o.status;
       let has line = List.exists o.out ~f:(fun l -> String.equal (String.strip l) line) in
@@ -1627,7 +1647,19 @@ let test_record_diff_reads_and_never_writes () =
         true
         (has
            "s_tlt  sessions 2  P&L -30.00 -> 0.00  dividends 30.00  fees 0.00  cost \
-            0.00  cost_unknown 0  cost_bps 0.00");
+            0.00  cost_unknown 1  cost_bps none");
+      (* -30.00 on 10,000 allocated is 0.30% before, past the 0.20% line; 0.00% after. *)
+      Alcotest.(check bool)
+        "its drawdown, line and sessions, and what changes" true
+        (has
+           "s_tlt  drawdown 0.30% -> 0.00% (line 0.20%)  sessions 2 of 250  STOPS \
+            BEFORE, NOT AFTER");
+      Alcotest.(check bool)
+        "the account's fees in the header" true
+        (List.exists o.out
+           ~f:
+             (String.is_substring
+                ~substring:"account fees naming no order: 0 totalling 0.00"));
       Alcotest.(check bool)
         "the changed session and why" true
         (has "2026-11-03  -30.00 -> 0.00  dividend");
@@ -1641,7 +1673,7 @@ let test_record_diff_reads_and_never_writes () =
       Out_channel.write_all dividends ~data:"TLT,2026-11-03,a third\n";
       let bad =
         Ohcamel_desk.Journal_cli.record_diff ~journal:path ~since:None
-          ~dividends:(Some dividends) ~zone:new_york_summer
+          ~dividends:(Some dividends) ~strategies:None ~zone:new_york_summer
       in
       Alcotest.(check int) "a dividends line it cannot read is status 1" 1 bad.status)
 

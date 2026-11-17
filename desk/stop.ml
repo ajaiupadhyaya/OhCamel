@@ -65,7 +65,18 @@ let capital ~zone ~allocations ~previous date =
      ET from a thin book, and an auction fill was never offered at it;
    - the order was created outside 09:30-16:00 New York on a weekday, for the same
      reason: an after-hours quote is not an arrival for a fill in the session;
-   - the quote is one-sided, crossed, locked or not finite (Tca.of_fill's rule). *)
+   - the quote is one-sided, crossed, locked or not finite (Tca.of_fill's rule);
+   - (fix round 1) the row carries no stamp for the quote, or its stamp is more
+     than [arrival_max_age_s] older than the order. Before the stamp was journaled
+     an "arrival" was two numbers whose age nothing recorded -- on the thin names
+     the desk trades, a quote IEX had not updated for many minutes -- and a stale
+     mid measured cost against a market that had moved: the commodity strategies'
+     cost came out at -33.6 and -16.2 bps. So every arrival journaled before
+     orders.arrival_at existed is unknown; Task 1.7 added no field that could
+     tell its arrivals from the ones before it, and none of its orders reached
+     the live journal before this column did. *)
+let arrival_max_age_s = 60.0
+
 let arrival_mid ~zone (f : Journal.Strategy_fill.t) =
   let regular_hours at =
     let date, ofday = Time_ns.to_date_ofday at ~zone in
@@ -73,8 +84,17 @@ let arrival_mid ~zone (f : Journal.Strategy_fill.t) =
     && Time_ns.Ofday.( >= ) ofday Desk_time.session_opens
     && Time_ns.Ofday.( < ) ofday Desk_time.session_closes
   in
+  let fresh =
+    match f.arrival_at with
+    | None -> false
+    | Some stamp ->
+        Float.( <= )
+          (Float.abs (Time_ns.Span.to_sec (Time_ns.diff f.created_at stamp)))
+          arrival_max_age_s
+  in
   match (f.arrival, f.tif) with
   | None, _ | _, (Order.Tif.Opg | Order.Tif.Cls) -> None
+  | Some _, Order.Tif.Day when not fresh -> None
   | Some (bid, ask), Order.Tif.Day ->
       let b = Ohcamel.Types.Price.to_float bid and a = Ohcamel.Types.Price.to_float ask in
       if
@@ -82,6 +102,14 @@ let arrival_mid ~zone (f : Journal.Strategy_fill.t) =
         && regular_hours f.created_at
       then Some ((a +. b) /. 2.0)
       else None
+
+(* A paid dividend's posting is matched to the record whose payable date is within
+   three days of it: the venue posts on or about the payable date, not always on
+   it. *)
+let pay_window = 3
+
+let posted_near ~(pay : Date.t) (posted : Date.t) =
+  Int.abs (Date.diff posted pay) <= pay_window
 
 let cash_dividend (a : Venue.Activity.t) =
   String.equal a.activity_type "DIV"
@@ -102,7 +130,7 @@ let dividends_of ~(cash_dividends : Venue.Cash_dividend.t list)
             | Some s, Some pay, Some per_share
               when cash_dividend a
                    && Ohcamel.Types.Symbol.equal s c.symbol
-                   && Date.equal a.date pay ->
+                   && posted_near ~pay a.date ->
                 Some per_share
             | _ -> None)
       in
@@ -122,7 +150,8 @@ let unmatched_dividends ~(cash_dividends : Venue.Cash_dividend.t list)
       && not
            (List.exists cash_dividends ~f:(fun (c : Venue.Cash_dividend.t) ->
                 Option.equal Ohcamel.Types.Symbol.equal a.symbol (Some c.symbol)
-                && Option.equal Date.equal c.payable_date (Some a.date))))
+                && Option.value_map c.payable_date ~default:false ~f:(fun pay ->
+                    posted_near ~pay a.date))))
 
 (* A FEE activity is a fill's when it names the fill's order; Alpaca's documented
    shape gives a fee no order id, so a fee that names none is the account's,
@@ -224,20 +253,46 @@ let sessions_under ~rule ?dividends ?activities ~journal ~zone ~strategy ~since 
 let sessions ~journal ~zone ~strategy ~since =
   sessions_under ~rule:`Current ~journal ~zone ~strategy ~since ()
 
+(* The names the strategy held at the close before [date]: its own fills dated
+   before it, netted, and not zero. *)
+let held_before ~journal ~zone ~strategy (date : Date.t) =
+  Journal.source_fill_details journal ~prefix:(Rebalance.Source.prefix ~strategy)
+  |> List.filter ~f:(fun (f : Journal.Strategy_fill.t) ->
+      Date.( < ) (Time_ns.to_date f.at ~zone) date)
+  |> List.fold ~init:Ohcamel.Types.Symbol.Map.empty
+       ~f:(fun acc (f : Journal.Strategy_fill.t) ->
+         Map.update acc f.symbol ~f:(fun q -> Option.value q ~default:0.0 +. f.qty))
+  |> Map.filter ~f:(fun q -> Float.( > ) (Float.abs q) 1e-9)
+  |> Map.keys
+
 let stopped journal name =
   match Journal.strategy_state journal ~strategy:name with
   | Some (`Stopped, _, _, _) -> true
   | Some (`Active, _, _, _) | None -> false
 
-let evaluate_one ~journal ~zone ~at ~on_event (s : Spec.Strategy.t) =
+(* A DEFERRED DRAWDOWN RULE (Task 1.8, fix round 1). On a night the record may
+   hold an ex-date's fall without its credit -- the venue's dividends could not
+   be read, or the bars show a distribution no record dates -- the drawdown rule
+   is not evaluated for the strategies it touches, and that is said. The sessions
+   rule still is. Nothing carries over: the next night evaluates again, and a
+   stop already latched stays latched. *)
+let evaluate_one ~defer_drawdown ~journal ~zone ~at ~on_event (s : Spec.Strategy.t) =
   match s.stop with
   | None -> None
   | Some _ when stopped journal s.name -> None
   | Some spec -> (
       let record = sessions ~journal ~zone ~strategy:s.name ~since:s.reinstated in
-      match
-        check ~spec ~record:(Record.summarise record) ~sessions:(List.length record)
-      with
+      let summary =
+        match defer_drawdown s.name with
+        | None -> Record.summarise record
+        | Some why ->
+            on_event
+              (sprintf
+                 "stop      %s drawdown rule deferred tonight: %s; its sessions rule ran"
+                 s.name why);
+            { (Record.summarise record) with Record.max_drawdown = 0.0 }
+      in
+      match check ~spec ~record:summary ~sessions:(List.length record) with
       | `Continue -> None
       | `Stop (rule, detail) ->
           Journal.set_strategy_state journal ~strategy:s.name ~state:`Stopped
@@ -255,9 +310,12 @@ let evaluate_one ~journal ~zone ~at ~on_event (s : Spec.Strategy.t) =
 
 (* Each strategy is guarded on its own, so a read that fails for one leaves every
    other evaluated, and is said. *)
-let evaluate ~journal ~strategies ~zone ~at ~on_event =
+let evaluate ~defer_drawdown ~journal ~strategies ~zone ~at ~on_event =
   List.filter_map strategies ~f:(fun (s : Spec.Strategy.t) ->
-      match Or_error.try_with (fun () -> evaluate_one ~journal ~zone ~at ~on_event s) with
+      match
+        Or_error.try_with (fun () ->
+            evaluate_one ~defer_drawdown ~journal ~zone ~at ~on_event s)
+      with
       | Ok stopped -> stopped
       | Error e ->
           on_event

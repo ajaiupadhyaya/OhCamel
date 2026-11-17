@@ -1372,9 +1372,12 @@ let fetch_quote t symbol : Venue.Quote.t option Deferred.t =
       | `Result (Ok (Some q)) -> Some q
       | `Result (Ok None) | `Result (Error _) | `Timeout -> None)
 
+(* The quote as an arrival, and its own stamp (journaled beside it: Task 1.8). *)
 let arrival_quote t symbol =
   Deferred.map (fetch_quote t symbol)
-    ~f:(Option.map ~f:(fun (q : Venue.Quote.t) -> (q.Venue.Quote.bid, q.Venue.Quote.ask)))
+    ~f:
+      (Option.map ~f:(fun (q : Venue.Quote.t) ->
+           ((q.Venue.Quote.bid, q.Venue.Quote.ask), q.Venue.Quote.at)))
 
 (* The journal, and only then the wire (invariant 10): every order written
    pending_submit in ONE transaction, then held open and remembered for the
@@ -1444,7 +1447,7 @@ let propose t ?(source = "manual") (ticket : Ticket.t) : (Preview.t * Order.t) D
       if not (Preview.passed p) then return (p, refuse t p ~source)
       else
         let request = p.Preview.request in
-        let%bind arrival = arrival_quote t request.Order.Request.symbol in
+        let%bind quoted = arrival_quote t request.Order.Request.symbol in
         (* Time passed while the quote was fetched: the switch may have
            tripped, the book's last applied read may have aged past the
            window, and the session may have closed (Task 1's carried item).
@@ -1461,7 +1464,8 @@ let propose t ?(source = "manual") (ticket : Ticket.t) : (Preview.t * Order.t) D
                   Journal.Insert.order = o;
                   source;
                   decision_price = Option.value_exn p.Preview.decision_price;
-                  arrival;
+                  arrival = Option.map quoted ~f:fst;
+                  arrival_at = Option.map quoted ~f:snd;
                   verdict = Preview.to_json p;
                 };
               ];
@@ -2118,7 +2122,7 @@ let send_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t lis
                           (Float.( <= )
                              (Time_ns.Span.to_sec (Time_ns.diff at q.Venue.Quote.at))
                              Rebalance.max_quote_stamp_age_s)
-                          (q.Venue.Quote.bid, q.Venue.Quote.ask)))
+                          ((q.Venue.Quote.bid, q.Venue.Quote.ask), q.Venue.Quote.at)))
               in
               match
                 List.find_mapi orders ~f:(fun i (r, _) ->
@@ -2142,7 +2146,8 @@ let send_rebalance t ~(source : Rebalance.Source.t) ~(legs : Rebalance.Leg.t lis
                            Journal.Insert.order = o;
                            source = Rebalance.Source.to_string source;
                            decision_price = price;
-                           arrival;
+                           arrival = Option.map arrival ~f:fst;
+                           arrival_at = Option.map arrival ~f:snd;
                            verdict =
                              Preview.to_json
                                {

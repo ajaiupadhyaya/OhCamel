@@ -338,6 +338,22 @@ let activities_of_json (json : Yojson.Safe.t) : Venue.Activity.t list Or_error.t
   | `List items -> Or_error.all (List.map items ~f:activity_of_json)
   | _ -> Or_error.error_string "alpaca_paper: account activities are not a list"
 
+(* When to ask for another page of activities: a full page, whose last id is not
+   the token just sent -- a venue that ignored the token would answer the same
+   page forever -- and fewer than [max_activity_pages] pages so far. *)
+let activity_page_size = 100
+let max_activity_pages = 50
+
+let next_activity_page ~(token : string option) ~(pages : int)
+    (items : Venue.Activity.t list) : string option =
+  match List.last items with
+  | Some last
+    when List.length items >= activity_page_size
+         && pages < max_activity_pages
+         && not (Option.equal String.equal token (Some last.Venue.Activity.id)) ->
+      Some last.Venue.Activity.id
+  | _ -> None
+
 (* GET /v1/corporate-actions, cash_dividends. [rate] is a JSON number there, not a
    string; [number] reads it, and a dividend without an ex-date or a rate refuses
    the page. An absent array is a window with no cash dividend. *)
@@ -685,7 +701,10 @@ let read ~(credentials : Credentials.t) ~(feed : string) : Venue.Read.t =
                 [ String.concat ~sep:"," (List.map symbols ~f:Symbol.to_string) ] );
               ("timeframe", [ "1Day" ]);
               ("start", [ day ]);
-              ("end", [ day ]);
+              (* The end is the next day: the bar is filtered to [date] below,
+                 and an end equal to the start is a window some answers read
+                 as empty. *)
+              ("end", [ Date.to_string (Date.add_days date 1) ]);
               ("adjustment", [ "raw" ]);
               ("feed", [ feed ]);
               ("limit", [ "10000" ]);
@@ -704,14 +723,16 @@ let read ~(credentials : Credentials.t) ~(feed : string) : Venue.Read.t =
     activities =
       (fun ~since ~kinds ->
         (* Oldest first, a hundred at a time, each page from the last id of the
-           one before, until a page comes back short. *)
-        let rec page token acc =
+           one before ([next_activity_page] decides when to stop). From a week
+           before [since]: an activity created late for its date is still found,
+           and the overlap costs nothing, the journal keeping each id once. *)
+        let rec page token pages acc =
           let query =
             [
               ("activity_types", [ String.concat ~sep:"," kinds ]);
-              ("after", [ Date.to_string since ]);
+              ("after", [ Date.to_string (Date.add_days since (-7)) ]);
               ("direction", [ "asc" ]);
-              ("page_size", [ "100" ]);
+              ("page_size", [ Int.to_string activity_page_size ]);
             ]
             @ Option.value_map token ~default:[] ~f:(fun t -> [ ("page_token", [ t ]) ])
           in
@@ -721,12 +742,11 @@ let read ~(credentials : Credentials.t) ~(feed : string) : Venue.Read.t =
           | Error _ as e -> return e
           | Ok items -> (
               let acc = acc @ items in
-              match List.last items with
-              | Some last when List.length items >= 100 ->
-                  page (Some last.Venue.Activity.id) acc
-              | _ -> return (Ok acc))
+              match next_activity_page ~token ~pages:(pages + 1) items with
+              | Some next -> page (Some next) (pages + 1) acc
+              | None -> return (Ok acc))
         in
-        page None []);
+        page None 0 []);
     cash_dividends =
       (fun symbols ~start ~end_ ->
         let rec page token acc =

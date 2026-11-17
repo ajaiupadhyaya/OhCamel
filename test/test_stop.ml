@@ -121,8 +121,9 @@ let test_the_close_stops_the_strategy_past_its_line () =
   let j = journal_with_two_strategies () in
   let strategies = [ strategy "s_dd"; strategy "s_ok"; strategy ~stop:None "s_none" ] in
   let evaluate () =
-    D.Stop.evaluate ~journal:j ~strategies ~zone ~at:(at "2026-10-21T21:05:00Z")
-      ~on_event:ignore
+    D.Stop.evaluate
+      ~defer_drawdown:(fun _ -> None)
+      ~journal:j ~strategies ~zone ~at:(at "2026-10-21T21:05:00Z") ~on_event:ignore
   in
   Alcotest.(check (list string)) "s_dd alone, by its drawdown" [ "s_dd" ] (evaluate ());
   Alcotest.(check (list string))
@@ -143,7 +144,9 @@ let test_the_close_stops_the_strategy_past_its_line () =
 let test_only_a_later_reinstatement_brings_it_back () =
   let j = journal_with_two_strategies () in
   ignore
-    (D.Stop.evaluate ~journal:j
+    (D.Stop.evaluate
+       ~defer_drawdown:(fun _ -> None)
+       ~journal:j
        ~strategies:[ strategy "s_dd" ]
        ~zone ~at:(at "2026-10-21T21:05:00Z") ~on_event:ignore
       : string list);
@@ -160,7 +163,9 @@ let test_only_a_later_reinstatement_brings_it_back () =
      answer, not a reason to stop again. *)
   Alcotest.(check (list string))
     "and the old drawdown does not stop it again" []
-    (D.Stop.evaluate ~journal:j
+    (D.Stop.evaluate
+       ~defer_drawdown:(fun _ -> None)
+       ~journal:j
        ~strategies:[ strategy ~reinstated:(d "2026-10-22") "s_dd" ]
        ~zone ~at:(at "2026-10-22T21:05:00Z") ~on_event:ignore);
   D.Journal.close j
@@ -200,7 +205,8 @@ let test_a_session_sized_to_zero_still_counts () =
 let tlt = Symbol.of_string "TLT"
 
 let journal_holding_tlt ?(tif = D.Order.Tif.Day) ?(created = "2026-11-02T14:00:00Z")
-    ?(arrival = Some (89.99, 90.01)) ?(through_pay_date = false) () =
+    ?(arrival = Some (89.99, 90.01)) ?(stamp_age = Some 2.0) ?(through_pay_date = false)
+    () =
   let j = Or_error.ok_exn (D.Journal.open_ ~path:":memory:") in
   let o =
     {
@@ -219,7 +225,11 @@ let journal_holding_tlt ?(tif = D.Order.Tif.Day) ?(created = "2026-11-02T14:00:0
       D.Order.state = D.Order.State.Filled;
     }
   in
-  D.Journal.insert_order j o
+  D.Journal.insert_order
+    ?arrival_at:
+      (Option.map stamp_age ~f:(fun secs ->
+           Time_ns.sub (at created) (Time_ns.Span.of_sec secs)))
+    j o
     ~source:(D.Rebalance.Source.name ~strategy:"s_tlt" ~sequence:1)
     ~decision_price:(Price.of_float 90.0)
     ~arrival:(Option.map arrival ~f:(fun (b, a) -> (Price.of_float b, Price.of_float a)))
@@ -313,7 +323,7 @@ let test_the_cash_receipt_is_not_counted_twice () =
          activity ~id:"fee-account" ~kind:"FEE" ~date:"2026-11-03" (-0.05);
        ]
        ~recorded_at:(at "2026-11-07T21:06:00Z")
-      : int);
+      : D.Venue.Activity.t list);
   let record = D.Stop.sessions ~journal:j ~zone ~strategy:"s_tlt" ~since:None in
   Alcotest.(check (list (float 1e-9)))
     "the fee once, the dividend once" [ -0.02; 0.0; 0.0 ] (pnls record);
@@ -329,12 +339,16 @@ let test_the_cash_receipt_is_not_counted_twice () =
           ~activities:(D.Journal.activities j)));
   D.Journal.close j
 
-(* Which arrival quote is one. A day order at 10:00 New York against 89.99/90.01: the
-   mid, 90.00. A market-on-open order (its quote read at 19:15 the evening before), a
-   day order created at 19:15, a crossed quote and no quote at all: unknown. *)
+(* Which arrival quote is one. A day order at 10:00 New York against 89.99/90.01,
+   stamped 2 s before the order: the mid, 90.00. A market-on-open order (its quote read
+   at 19:15 the evening before), a day order created at 19:15, a crossed quote and no
+   quote at all: unknown. And fix round 1's rule: a quote whose own stamp is more than
+   60 s older than its order, or an arrival with no stamp at all -- every order
+   journaled before the stamp was (a pair of numbers that may have been a stale
+   print's) -- is unknown. *)
 let test_only_a_session's_quote_is_an_arrival () =
-  let mid ?tif ?created ?arrival () =
-    let j = journal_holding_tlt ?tif ?created ?arrival () in
+  let mid ?tif ?created ?arrival ?stamp_age () =
+    let j = journal_holding_tlt ?tif ?created ?arrival ?stamp_age () in
     let f =
       List.hd_exn
         (D.Journal.source_fill_details j
@@ -349,11 +363,132 @@ let test_only_a_session's_quote_is_an_arrival () =
     (mid ~tif:D.Order.Tif.Opg ~created:"2026-11-02T23:15:00Z" ());
   Alcotest.check unknown "after hours" None (mid ~created:"2026-11-02T23:15:00Z" ());
   Alcotest.check unknown "crossed" None (mid ~arrival:(Some (90.01, 89.99)) ());
-  Alcotest.check unknown "none journaled" None (mid ~arrival:None ())
+  Alcotest.check unknown "none journaled" None (mid ~arrival:None ());
+  Alcotest.check unknown "stamped 90 s before its order" None
+    (mid ~stamp_age:(Some 90.0) ());
+  Alcotest.check unknown "journaled with no stamp" None (mid ~stamp_age:None ())
+
+(* Fix round 1, I1: a night whose dividends could not be read, or whose bars show a
+   distribution nothing records, defers the DRAWDOWN rule for the strategies it names --
+   said once -- and the sessions rule still runs. s_dd is 20% down on a 15% line: with
+   its drawdown deferred it is not stopped, and the next night, with nothing deferred,
+   it is. A strategy past its sessions count is stopped whatever is deferred. *)
+let test_a_deferred_drawdown_rule_does_not_fire_that_night () =
+  let j = journal_with_two_strategies () in
+  let said = ref [] in
+  let evaluate ~defer strategies =
+    D.Stop.evaluate ~defer_drawdown:defer ~journal:j ~strategies ~zone
+      ~at:(at "2026-10-21T21:05:00Z") ~on_event:(fun l -> said := l :: !said)
+  in
+  Alcotest.(check (list string))
+    "deferred: not stopped" []
+    (evaluate
+       ~defer:(fun name ->
+         Option.some_if (String.equal name "s_dd")
+           "the venue's dividends could not be read")
+       [ strategy "s_dd" ]);
+  Alcotest.(check bool)
+    "and said" true
+    (List.exists !said ~f:(fun l ->
+         String.is_substring l ~substring:"s_dd drawdown rule deferred tonight"
+         && String.is_substring l ~substring:"the venue's dividends could not be read"));
+  Alcotest.(check (list string))
+    "a sessions count still stops a deferred strategy" [ "s_ok" ]
+    (evaluate
+       ~defer:(fun _ -> Some "deferred")
+       [ strategy ~stop:(Some { Spec.Stop.drawdown = 0.15; sessions = 2 }) "s_ok" ]);
+  Alcotest.(check (list string))
+    "the next night, nothing deferred, it fires" [ "s_dd" ]
+    (evaluate ~defer:(fun _ -> None) [ strategy "s_dd" ]);
+  D.Journal.close j
+
+(* Fix round 1, minor 9. The rate PAID wins over the rate announced: the record says
+   0.30, the DIV activity posted on 2026-11-07 (a day after the payable date, inside
+   the three-day window) says 0.31, so 100 shares are credited 31.00. *)
+let test_the_rate_paid_wins () =
+  let j = journal_holding_tlt () in
+  ignore
+    (D.Journal.record_activities j
+       [
+         {
+           D.Venue.Activity.id = "div-paid";
+           activity_type = "DIV";
+           sub_type = Some "CDIV";
+           date = d "2026-11-07";
+           symbol = Some tlt;
+           qty = Some 100.0;
+           per_share = Some 0.31;
+           net_amount = 31.0;
+           status = Some "executed";
+           order_id = None;
+         };
+       ]
+       ~recorded_at:(at "2026-11-08T21:06:00Z")
+      : D.Venue.Activity.t list);
+  Alcotest.(check (float 1e-9))
+    "31.00, not 30.00" 31.0
+    (D.Record.summarise (D.Stop.sessions ~journal:j ~zone ~strategy:"s_tlt" ~since:None))
+      .D.Record.dividends;
+  D.Journal.close j
+
+(* One journal, two strategies on TLT through its ex-date: s_tlt long 100 is
+   credited 30.00, s_short short 100 is debited 30.00, and the two net to 0.00 -- the
+   account, flat in TLT at the prior close, is paid nothing. *)
+let test_a_long_and_a_short_net_to_the_account's_receipt () =
+  let j = journal_holding_tlt () in
+  let o =
+    {
+      (D.Order.create
+         {
+           D.Order.Request.client_order_id =
+             Option.value_exn
+               (D.Ids.Client_order_id.of_string "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZ81");
+           symbol = tlt;
+           side = D.Order.Side.Sell;
+           qty = 100;
+           kind = D.Order.Kind.Limit (Price.of_float 89.98);
+           tif = D.Order.Tif.Day;
+         })
+      with
+      D.Order.state = D.Order.State.Filled;
+    }
+  in
+  D.Journal.insert_order j o
+    ~source:(D.Rebalance.Source.name ~strategy:"s_short" ~sequence:1)
+    ~decision_price:(Price.of_float 90.0) ~arrival:None ~verdict:`Null
+    ~at:(at "2026-11-02T14:00:00Z");
+  ignore
+    (D.Journal.record_fill j o
+       {
+         D.Order.Fill.execution_id = "x-short";
+         qty = 100.0;
+         price = Price.of_float 90.0;
+         at = at "2026-11-02T14:00:02Z";
+         position_qty = None;
+       }
+      : bool);
+  D.Journal.record_sizing j ~strategy:"s_short" ~sequence:1
+    ~at:(at "2026-11-02T14:00:00Z") ~tier:"incubation" ~scale:1.0 ~allocated:10_000.0
+    ~mode:"open";
+  let dividends strategy =
+    (D.Record.summarise (D.Stop.sessions ~journal:j ~zone ~strategy ~since:None))
+      .D.Record.dividends
+  in
+  Alcotest.(check (float 1e-9)) "the long credited" 30.0 (dividends "s_tlt");
+  Alcotest.(check (float 1e-9)) "the short debited" (-30.0) (dividends "s_short");
+  Alcotest.(check (float 1e-9))
+    "netting to the flat account's 0.00" 0.0
+    (dividends "s_tlt" +. dividends "s_short");
+  D.Journal.close j
 
 let suite =
   ( "stop",
     [
+      Alcotest.test_case "the rate paid wins" `Quick test_the_rate_paid_wins;
+      Alcotest.test_case "a long and a short net to the account's receipt" `Quick
+        test_a_long_and_a_short_net_to_the_account's_receipt;
+      Alcotest.test_case "a deferred drawdown rule does not fire that night" `Quick
+        test_a_deferred_drawdown_rule_does_not_fire_that_night;
       Alcotest.test_case "a monthly payer's ex-date is not a loss" `Quick
         test_a_monthly_payer's_ex_date_is_not_a_loss;
       Alcotest.test_case "the cash receipt is not counted twice" `Quick

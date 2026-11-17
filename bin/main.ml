@@ -2038,7 +2038,17 @@ let run_journal_verify path = exit_with (Journal_cli.verify path)
 
 (* Task 1.8's before and after, per strategy, read-only. New York's zone dates a
    fill as the desk does; a host without it says so and dates in UTC. *)
-let run_record_diff ~journal ~since ~dividends =
+let run_record_diff ~journal ~since ~dividends ~book =
+  let strategies =
+    Option.map book ~f:(fun path ->
+        match Config.Book.load path with
+        | Ok b ->
+            Option.value_map b.Config.Book.signals ~default:[] ~f:(fun s ->
+                s.Config.Book.Signals_spec.strategies)
+        | Error e ->
+            eprintf "record-diff: %s\n%!" (Error.to_string_hum e);
+            exit 1)
+  in
   let zone =
     match Lazy.force Ohcamel_desk.Desk_time.new_york with
     | Some z -> z
@@ -2046,7 +2056,7 @@ let run_record_diff ~journal ~since ~dividends =
         eprintf "record-diff: no America/New_York zone here; fills are dated in UTC\n%!";
         Time_float.Zone.utc
   in
-  exit_with (Journal_cli.record_diff ~journal ~since ~dividends ~zone)
+  exit_with (Journal_cli.record_diff ~journal ~since ~dividends ~strategies ~zone)
 
 let run_journal_backup ~src ~dir ~name =
   exit_with
@@ -2086,10 +2096,11 @@ let usage () =
     \  ohcamel journal-verify FILE\n\
     \                             print FILE's schema version, integrity, row counts\n\
     \                             and newest rows. Non-zero on any problem.\n\
-    \  ohcamel record-diff --journal FILE [--since DATE] [--dividends CSV]\n\
+    \  ohcamel record-diff --journal FILE [--since DATE] [--dividends CSV] [--book BOOK]\n\
     \                             every strategy's record before and after Task 1.8\n\
     \                             (dividends, fees, cost against the arrival mid),\n\
-    \                             read-only; CSV lines are SYMBOL,EX_DATE,PER_SHARE.\n\n\
+    \                             read-only; CSV lines are SYMBOL,EX_DATE,PER_SHARE;\n\
+    \                             BOOK gives the stop lines to judge each against.\n\n\
      Live and serve need ALPACA_API_KEY, ALPACA_SECRET_KEY and FRED_API_KEY in\n\
      the environment, and a book file (default %s):\n\n\
     \  set -a; source /path/to/.env; set +a\n\
@@ -2192,22 +2203,25 @@ let () =
       | [ path ] -> run_journal_verify path
       | _ -> bad_usage "journal-verify needs one FILE")
   | _ :: "record-diff" :: rest ->
-      let rec flags ~journal ~since ~dividends = function
+      let rec flags ~journal ~since ~dividends ~book = function
         | [] -> (
             match journal with
-            | Some journal -> run_record_diff ~journal ~since ~dividends
+            | Some journal -> run_record_diff ~journal ~since ~dividends ~book
             | None -> bad_usage "record-diff needs --journal FILE")
-        | "--journal" :: path :: more -> flags ~journal:(Some path) ~since ~dividends more
+        | "--journal" :: path :: more ->
+            flags ~journal:(Some path) ~since ~dividends ~book more
         | "--dividends" :: path :: more ->
-            flags ~journal ~since ~dividends:(Some path) more
+            flags ~journal ~since ~dividends:(Some path) ~book more
+        | "--book" :: path :: more ->
+            flags ~journal ~since ~dividends ~book:(Some path) more
         | "--since" :: day :: more -> (
             match Option.try_with (fun () -> Date.of_string day) with
-            | Some d -> flags ~journal ~since:(Some d) ~dividends more
+            | Some d -> flags ~journal ~since:(Some d) ~dividends ~book more
             | None -> bad_usage (sprintf "record-diff: %S is not a date (YYYY-MM-DD)" day)
             )
         | other :: _ -> bad_usage (sprintf "record-diff: unknown argument %S" other)
       in
-      flags ~journal:None ~since:None ~dividends:None rest
+      flags ~journal:None ~since:None ~dividends:None ~book:None rest
   | _ :: "demo" :: rest ->
       let port =
         match rest with

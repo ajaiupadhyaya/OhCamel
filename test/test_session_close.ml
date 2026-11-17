@@ -510,14 +510,20 @@ let cash ~id ~symbol ~ex ~pay rate =
    to no strategy, and an account fee as assigned to none. The same pull again records
    nothing new. A pull that fails leaves the mark where it was, so the next night asks
    from there. *)
+let pulled = function `Pulled -> "pulled" | `Not_pulled -> "not pulled"
+
 let test_the_nightly_pull_records_what_has_gone_ex () =
   let journal = Or_error.ok_exn (Journal.open_ ~path:":memory:") in
   let on = date "2026-11-04" in
+  (* LQD's posted on 2026-11-04 with no record; HYG's posted 2026-11-09, two days after
+     its record's payable date 2026-11-07, which is within the three-day window. *)
+  let hyg = Symbol.of_string "HYG" in
   let activities =
     Ok
       [
         activity ~id:"a1" ~kind:"DIV" ~on:"2026-11-04" ~symbol:lqd ~per_share:0.25 25.0;
         activity ~id:"a2" ~kind:"FEE" ~on:"2026-11-03" (-0.05);
+        activity ~id:"a3" ~kind:"DIV" ~on:"2026-11-09" ~symbol:hyg ~per_share:0.4 40.0;
       ]
   in
   let dividends =
@@ -525,15 +531,17 @@ let test_the_nightly_pull_records_what_has_gone_ex () =
       [
         cash ~id:"c1" ~symbol:tlt ~ex:"2026-11-03" ~pay:"2026-11-06" 0.30;
         cash ~id:"c2" ~symbol:lqd ~ex:"2026-11-05" ~pay:"2026-11-07" 0.27;
+        cash ~id:"c3" ~symbol:hyg ~ex:"2026-11-03" ~pay:"2026-11-07" 0.40;
       ]
   in
-  let lines =
+  let outcome, lines =
     Close.apply_cash_pull ~journal ~date:on ~recorded_at:at ~activities ~dividends
   in
+  Alcotest.(check string) "pulled" "pulled" (pulled outcome);
   Alcotest.(check (list string))
     "what the close says"
     [
-      "session 2026-11-04: dividends and fees pulled: 2 new activities, 1 cash dividend \
+      "session 2026-11-04: dividends and fees pulled: 3 new activities, 2 cash dividends \
        gone ex on record";
       "session 2026-11-04: LQD paid 25.00 on 2026-11-04 with no ex-date on record: \
        credited to no strategy";
@@ -542,26 +550,80 @@ let test_the_nightly_pull_records_what_has_gone_ex () =
     ]
     lines;
   Alcotest.(check (list string))
-    "only TLT's has gone ex" [ "c1" ]
+    "only TLT's and HYG's have gone ex" [ "c1"; "c3" ]
     (List.map (Journal.cash_dividends journal) ~f:(fun c -> c.Venue.Cash_dividend.id));
   Alcotest.(check (option string))
     "pulled through the session" (Some "2026-11-04")
     (Option.map (Journal.cash_pulled_through journal) ~f:Date.to_string);
-  ignore
-    (Close.apply_cash_pull ~journal ~date:on ~recorded_at:at ~activities ~dividends
-      : string list);
-  Alcotest.(check int) "again: nothing twice" 2 (List.length (Journal.activities journal));
-  let failed =
+  let _, again =
+    Close.apply_cash_pull ~journal ~date:on ~recorded_at:at ~activities ~dividends
+  in
+  Alcotest.(check int) "again: nothing twice" 3 (List.length (Journal.activities journal));
+  Alcotest.(check bool)
+    "and the unmatched dividend is not said a second night" false
+    (List.exists again ~f:(String.is_substring ~substring:"credited to no strategy"));
+  let failed_outcome, failed =
     Close.apply_cash_pull ~journal ~date:(date "2026-11-05") ~recorded_at:at ~activities
       ~dividends:(Or_error.error_string "503")
   in
+  Alcotest.(check string) "a failed pull" "not pulled" (pulled failed_outcome);
   Alcotest.(check bool)
-    "a failure is said" true
+    "is said" true
     (List.exists failed ~f:(String.is_substring ~substring:"not pulled"));
   Alcotest.(check (option string))
     "and the pull is not marked past it" (Some "2026-11-04")
     (Option.map (Journal.cash_pulled_through journal) ~f:Date.to_string);
+  (* Two records with different ids for TLT's one ex-date: both kept, and said. *)
+  let _, twice =
+    Close.apply_cash_pull ~journal ~date:(date "2026-11-06") ~recorded_at:at
+      ~activities:(Ok [])
+      ~dividends:
+        (Ok [ cash ~id:"c1-bis" ~symbol:tlt ~ex:"2026-11-03" ~pay:"2026-11-06" 0.30 ])
+  in
+  Alcotest.(check bool)
+    "a second record for one ex-date is named" true
+    (List.exists twice ~f:(fun l ->
+         String.is_substring l
+           ~substring:"TLT has 2 dividend records for ex-date 2026-11-03"
+         && String.is_substring l ~substring:"c1"
+         && String.is_substring l ~substring:"c1-bis"));
+  Alcotest.(check int)
+    "and not deduplicated" 3
+    (List.length (Journal.cash_dividends journal));
   Journal.close journal
+
+(* An unrecorded distribution (fix round 1, I1): the venue's adjusted series moves
+   the day before when a distribution or split is processed, the raw one does not.
+   TLT: adjusted 89.70 -> 89.70, raw 90.00 -> 89.70: the ratios differ by 0.33%, and
+   with no record for 2026-11-03 it is flagged; with one, it is not. SPY: both series
+   600 -> 606: the same ratio, not flagged. A name missing either bar is not judged. *)
+let test_an_unrecorded_distribution_is_found_in_the_bars () =
+  let spy = Symbol.of_string "SPY" in
+  let adjusted =
+    Symbol.Map.of_alist_exn
+      [
+        (tlt, [ bar "2026-11-02" 89.7; bar "2026-11-03" 89.7 ]);
+        (spy, [ bar "2026-11-02" 600.0; bar "2026-11-03" 606.0 ]);
+        (lqd, [ bar "2026-11-02" 110.0; bar "2026-11-03" 110.0 ]);
+      ]
+  in
+  let raw_today =
+    Symbol.Map.of_alist_exn
+      [ (tlt, bar "2026-11-03" 89.7); (spy, bar "2026-11-03" 606.0) ]
+  in
+  let raw_before =
+    Symbol.Map.of_alist_exn
+      [ (tlt, bar "2026-11-02" 90.0); (spy, bar "2026-11-02" 600.0) ]
+  in
+  let found recorded =
+    Close.unrecorded_moves ~date:(date "2026-11-03") ~adjusted ~raw_today ~raw_before
+      ~recorded
+    |> List.map ~f:Symbol.to_string
+  in
+  Alcotest.(check (list string)) "TLT" [ "TLT" ] (found (fun _ -> false));
+  Alcotest.(check (list string))
+    "not once recorded" []
+    (found (fun s -> Symbol.equal s tlt))
 
 let suite =
   ( "session_close",
@@ -574,6 +636,8 @@ let suite =
         test_a_last_print_is_re_marked_when_the_bar_is_filed;
       Alcotest.test_case "the nightly pull records what has gone ex" `Quick
         test_the_nightly_pull_records_what_has_gone_ex;
+      Alcotest.test_case "an unrecorded distribution is found in the bars" `Quick
+        test_an_unrecorded_distribution_is_found_in_the_bars;
       Alcotest.test_case "the close is recorded five minutes after the venue closes"
         `Quick test_the_close_is_recorded_five_minutes_after_the_venue_closes;
       Alcotest.test_case "a failed write seen fifteen minutes after the close is retried"

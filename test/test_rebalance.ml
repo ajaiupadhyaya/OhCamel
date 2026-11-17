@@ -1004,6 +1004,7 @@ let test_both_flattens_of_a_netted_pair_pass_a_limit's_trip () =
             source = "signal:beta:2";
             decision_price = Price.of_float 149.0;
             arrival = None;
+            arrival_at = None;
             verdict = `Null;
           };
         ];

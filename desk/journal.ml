@@ -265,11 +265,18 @@ let added_columns =
     ("sizings", "governor", "REAL");
     ("sizings", "note", "TEXT");
     (* Where a session's mark came from (Task 1.8): 'bar' for the venue's daily
-       bar close, its official close; 'last_print' for the graph's price, taken
-       when the bar was not filed yet, and re-marked from the bar when it is.
+       bar close -- on Alpaca's IEX feed IEX's last trade in the session, not the
+       consolidated closing print, and a bar read at 16:05 is kept as it was
+       read, never re-marked; 'last_print' for the graph's price, taken when the
+       bar was not filed yet, and re-marked from the bar when it is.
        NULL on a mark written before it was recorded: unknown, and never
        re-marked, because nothing says it was a print. *)
     ("marks", "source", "TEXT");
+    (* The arrival quote's own stamp (Task 1.8, fix round 1): when the venue says
+       the quote last changed. An arrival journaled without one -- every order
+       before this column -- is a pair of numbers whose age nothing records, and
+       its cost is not measured (Stop.arrival_mid). *)
+    ("orders", "arrival_at", "TEXT");
   ]
 
 (* The refusal's decision alone, with no SQLite and no IO: [modes] is
@@ -1344,7 +1351,8 @@ let reason_of_detail (detail : string) : string option =
 (* One transaction: the row -- pending_submit, no venue id, no fills -- and
    the [created] event. The order manager calls this before the request that
    submits the order is sent: invariant 10, the journal before the wire. *)
-let insert_order_rows t (o : Order.t) ~source ~decision_price ~arrival ~verdict ~at =
+let insert_order_rows t (o : Order.t) ~source ~decision_price ~arrival ~arrival_at
+    ~verdict ~at =
   let request = o.Order.request in
   let cid = Ids.Client_order_id.to_string request.Order.Request.client_order_id in
   let bid, ask =
@@ -1355,8 +1363,8 @@ let insert_order_rows t (o : Order.t) ~source ~decision_price ~arrival ~verdict 
   run t ~what:"order"
     "INSERT INTO orders (client_order_id, venue_order_id, source, symbol, side, qty, \
      kind, limit_price, tif, state, filled_qty, avg_fill_price, decision_price, \
-     arrival_bid, arrival_ask, verdict, created_at, updated_at) VALUES (?, NULL, ?, ?, \
-     ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)"
+     arrival_bid, arrival_ask, verdict, created_at, updated_at, arrival_at) VALUES (?, \
+     NULL, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?)"
     [
       text cid;
       text source;
@@ -1374,15 +1382,19 @@ let insert_order_rows t (o : Order.t) ~source ~decision_price ~arrival ~verdict 
       text (Yojson.Safe.to_string verdict);
       time at;
       time at;
+      (match (arrival, arrival_at) with
+      | Some _, Some stamp -> time stamp
+      | _ -> Data.NULL);
     ];
   run t ~what:"order created event"
     "INSERT INTO order_events (client_order_id, at, event, state_after, anomaly, detail) \
      VALUES (?, ?, 'created', ?, NULL, NULL)"
     [ text cid; time at; text (Order.State.to_string o.Order.state) ]
 
-let insert_order t (o : Order.t) ~source ~decision_price ~arrival ~verdict ~at =
+let insert_order ?arrival_at t (o : Order.t) ~source ~decision_price ~arrival ~verdict ~at
+    =
   write t ~what:"insert order" (fun () ->
-      insert_order_rows t o ~source ~decision_price ~arrival ~verdict ~at)
+      insert_order_rows t o ~source ~decision_price ~arrival ~arrival_at ~verdict ~at)
 
 module Insert = struct
   type t = {
@@ -1390,6 +1402,7 @@ module Insert = struct
     source : string;
     decision_price : Price.t;
     arrival : (Price.t * Price.t) option;
+    arrival_at : Time_ns.t option;
     verdict : Yojson.Safe.t;
   }
 end
@@ -1401,7 +1414,7 @@ let insert_orders t (orders : Insert.t list) ~at =
   write t ~what:"insert orders" (fun () ->
       List.iter orders ~f:(fun (i : Insert.t) ->
           insert_order_rows t i.order ~source:i.source ~decision_price:i.decision_price
-            ~arrival:i.arrival ~verdict:i.verdict ~at))
+            ~arrival:i.arrival ~arrival_at:i.arrival_at ~verdict:i.verdict ~at))
 
 (* One transaction: the row's state, venue id, filled quantity and average
    price -- a cache for a reader that would rather not pay [load_order]'s
@@ -1703,17 +1716,26 @@ module Strategy_fill = struct
     tif : Order.Tif.t;
     created_at : Time_ns.t;
     venue_order_id : string option;
+    arrival_at : Time_ns.t option;
   }
 end
 
 let source_fill_details t ~prefix : Strategy_fill.t list =
   let lo, hi = source_range prefix in
+  (* A journal opened read-only (record-diff) may predate orders.arrival_at, and
+     cannot be given it: its arrivals then read as unstamped, as they were. *)
+  let stamp =
+    if List.mem (columns t ~table:"orders") "arrival_at" ~equal:String.equal then
+      "o.arrival_at"
+    else "NULL"
+  in
   query t ~what:"source fill details"
-    "SELECT o.symbol, o.side, f.qty, f.price, f.at, o.arrival_bid, o.arrival_ask, o.tif, \
-     o.created_at, o.venue_order_id FROM orders o JOIN fills f ON f.client_order_id = \
-     o.client_order_id WHERE o.source >= ? AND o.source < ? ORDER BY f.at, \
-     f.execution_id"
-    [ lo; hi ] ~row:(fun r ->
+    ("SELECT o.symbol, o.side, f.qty, f.price, f.at, o.arrival_bid, o.arrival_ask, \
+      o.tif, o.created_at, o.venue_order_id, " ^ stamp
+   ^ " FROM orders o JOIN fills f ON f.client_order_id = o.client_order_id WHERE \
+      o.source >= ? AND o.source < ? ORDER BY f.at, f.execution_id")
+    [ lo; hi ]
+    ~row:(fun r ->
       {
         Strategy_fill.symbol = Symbol.of_string (col_text r 0);
         qty = Order.Side.sign (side_of_text (col_text r 1)) *. col_real r 2;
@@ -1725,14 +1747,15 @@ let source_fill_details t ~prefix : Strategy_fill.t list =
             (Order.Tif.of_string (col_text r 7));
         created_at = col_time r 8;
         venue_order_id = col_opt_text r 9;
+        arrival_at = Option.bind (col_opt_text r 10) ~f:Desk_time.parse;
       })
 
 (* The account's activities and the venue's cash-dividend records (Task 1.8).
    Each write is keyed, so a pull repeated after a restart, or one that overlaps
    the night before, changes nothing it has already recorded. *)
 let record_activities t (activities : Venue.Activity.t list) ~(recorded_at : Time_ns.t) :
-    int =
-  let added = ref 0 in
+    Venue.Activity.t list =
+  let added = ref [] in
   write t ~what:"activities" (fun () ->
       List.iter activities ~f:(fun (a : Venue.Activity.t) ->
           let opt_text = function None -> Data.NULL | Some s -> text s in
@@ -1753,8 +1776,8 @@ let record_activities t (activities : Venue.Activity.t list) ~(recorded_at : Tim
               opt_text a.order_id;
               time recorded_at;
             ];
-          added := !added + Sqlite3.changes t.db));
-  !added
+          if Sqlite3.changes t.db > 0 then added := a :: !added));
+  List.rev !added
 
 let activities t : Venue.Activity.t list =
   query t ~what:"activities"

@@ -375,6 +375,37 @@ let test_a_cash_dividend_carries_its_ex_date () =
         | Ok ([], None) -> true
         | _ -> false)
 
+(* Paging the activities: a full page asks for the next from its last id; a short one
+   ends it; a venue that ignores the token -- answering the same full page whose last
+   id is the token just sent -- ends it rather than asking forever; and the pages are
+   capped. *)
+let test_activity_paging_stops () =
+  let page ids =
+    List.map ids ~f:(fun id ->
+        {
+          Venue.Activity.id;
+          activity_type = "FEE";
+          sub_type = None;
+          date = Date.of_string "2026-11-04";
+          symbol = None;
+          qty = None;
+          per_share = None;
+          net_amount = -0.01;
+          status = Some "executed";
+          order_id = None;
+        })
+  in
+  let full = page (List.init 100 ~f:(sprintf "id-%03d")) in
+  let next ?token ?(pages = 1) items = Alpaca.next_activity_page ~token ~pages items in
+  Alcotest.(check (option string)) "a full page goes on" (Some "id-099") (next full);
+  Alcotest.(check (option string)) "a short page ends" None (next (page [ "a"; "b" ]));
+  Alcotest.(check (option string))
+    "the same page again ends" None
+    (next ~token:"id-099" ~pages:2 full);
+  Alcotest.(check (option string))
+    "the cap ends" None
+    (next ~token:"x" ~pages:Alpaca.max_activity_pages full)
+
 let suite =
   ( "alpaca_trading",
     [
@@ -391,4 +422,5 @@ let suite =
         test_an_activity_that_misreads_is_refused;
       Alcotest.test_case "a cash dividend carries its ex-date" `Quick
         test_a_cash_dividend_carries_its_ex_date;
+      Alcotest.test_case "activity paging stops" `Quick test_activity_paging_stops;
     ] )

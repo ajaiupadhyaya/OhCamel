@@ -314,6 +314,7 @@ module Fill_row : sig
 end
 
 val insert_order :
+  ?arrival_at:Time_ns.t ->
   t ->
   Order.t ->
   source:string ->
@@ -323,7 +324,8 @@ val insert_order :
   at:Time_ns.t ->
   unit
 (** One transaction: the orders row and its [created] event. The order manager calls this
-    before the request that submits the order is sent. *)
+    before the request that submits the order is sent. [arrival_at] is the arrival quote's
+    own stamp, written only beside an arrival. *)
 
 module Insert : sig
   type t = {
@@ -331,6 +333,7 @@ module Insert : sig
     source : string;
     decision_price : Price.t;
     arrival : (Price.t * Price.t) option;
+    arrival_at : Time_ns.t option;  (** The arrival quote's own stamp. *)
     verdict : Yojson.Safe.t;
   }
 end
@@ -531,14 +534,19 @@ module Strategy_fill : sig
     tif : Order.Tif.t;
     created_at : Time_ns.t;
     venue_order_id : string option;
+    arrival_at : Time_ns.t option;
+        (** The arrival quote's stamp; None for every order journaled before it was
+            recorded (Task 1.8, fix round 1). *)
   }
 end
 
 val source_fill_details : t -> prefix:string -> Strategy_fill.t list
 (** [source_fill_rows] with the rest of each fill's order; oldest first. *)
 
-val record_activities : t -> Venue.Activity.t list -> recorded_at:Time_ns.t -> int
-(** [INSERT OR IGNORE] by activity id, in one transaction; the number newly recorded. *)
+val record_activities :
+  t -> Venue.Activity.t list -> recorded_at:Time_ns.t -> Venue.Activity.t list
+(** [INSERT OR IGNORE] by activity id, in one transaction; those newly recorded, in the
+    order given. *)
 
 val activities : t -> Venue.Activity.t list
 (** Every recorded activity, by date then id. *)

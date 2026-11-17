@@ -968,6 +968,7 @@ let test_task_1_8's_tables_migrate_an_older_journal () =
           "DROP TABLE activities";
           "DROP TABLE dividends";
           "ALTER TABLE marks DROP COLUMN source";
+          "ALTER TABLE orders DROP COLUMN arrival_at";
         ] ~f:(fun sql ->
           match Sqlite3.exec db sql with
           | Sqlite3.Rc.OK -> ()
@@ -996,8 +997,17 @@ let test_task_1_8's_tables_migrate_an_older_journal () =
       let j = open_exn path in
       Alcotest.(check (triple int int int))
         "opened again: nothing added twice" (1, 11, 6) (shape j);
-      Alcotest.(check int) "schema version 1" 1 Journal.schema_version;
-      Journal.close j)
+      Alcotest.(check int)
+        "orders.arrival_at once" 1
+        (List.count
+           (Journal.For_testing.columns j ~table:"orders")
+           ~f:(String.equal "arrival_at"));
+      Journal.close j;
+      Alcotest.(check (option string))
+        "the FILE says schema version 1" (Some "1")
+        (match Journal.verify path with
+        | Ok r -> r.Journal.Report.schema_version
+        | Error e -> Alcotest.failf "verify: %s" e))
 
 let tlt = Symbol.of_string "TLT"
 
@@ -1022,10 +1032,10 @@ let test_cash_events_are_recorded_once () =
   let j = open_exn ":memory:" in
   Alcotest.(check int)
     "new" 1
-    (Journal.record_activities j [ div_activity () ] ~recorded_at:at);
+    (List.length (Journal.record_activities j [ div_activity () ] ~recorded_at:at));
   Alcotest.(check int)
     "the same pull again adds nothing" 0
-    (Journal.record_activities j [ div_activity () ] ~recorded_at:at);
+    (List.length (Journal.record_activities j [ div_activity () ] ~recorded_at:at));
   Alcotest.(check int) "one row" 1 (List.length (Journal.activities j));
   Alcotest.(check bool)
     "read back as written" true

@@ -60,6 +60,7 @@ val record_diff :
   journal:string ->
   since:Date.t option ->
   dividends:string option ->
+  strategies:Ohcamel.Config.Book.Signals_spec.Strategy.t list option ->
   zone:Time_float.Zone.t ->
   Outcome.t
 (** [ohcamel record-diff --journal FILE [--since DATE] [--dividends FILE]]: every
@@ -70,4 +71,10 @@ val record_diff :
     read-only and nothing is written to it; nothing asks the venue. Dividends are read
     from [--dividends] when given -- one [SYMBOL,EX_DATE,PER_SHARE] a line, blank lines
     and lines from [#] ignored -- else from the journal's own dividends table, else none.
-    Status 1 when the journal or the dividends file cannot be read. *)
+    The header gives the account's fees that name no order (in no strategy's record). With
+    [strategies] (bin reads them from [--book]), each strategy's line also gives its max
+    drawdown before -> after as the stop rules read it (from its reinstatement), its stop
+    line, its sessions against the sessions rule's count, and a marker when the
+    after-state would fire a stop the before-state does not (or the reverse); a strategy
+    already stopped says so and stays stopped. Status 1 when the journal or the dividends
+    file cannot be read. *)

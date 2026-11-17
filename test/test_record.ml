@@ -277,6 +277,24 @@ let test_cost_bps_is_notional_weighted () =
     (Some (15.10 /. 6_000.0 *. 10_000.0))
     s.Record.cost_bps
 
+(* Fix round 1, minor 9: a SELLER on the ex-date held at the close before it, so is
+   owed the dividend. 100 bought on the 2nd at 90.00, sold on the 3rd at 89.70: the
+   30.00 fall is marked and the 30.00 credited, 0.00. *)
+let test_a_seller_on_the_ex_date_is_credited () =
+  let sessions =
+    of_book ~dividends:(tlt_paying "2026-11-03")
+      ~dates:[ "2026-11-02"; "2026-11-03" ]
+      ~closes:tlt_closes
+      [
+        fill ~symbol:tlt "2026-11-02" 100.0 90.0;
+        fill ~symbol:tlt "2026-11-03" (-100.0) 89.7;
+      ]
+  in
+  Alcotest.(check (list approx))
+    "credited" [ 0.0; 30.0 ]
+    (List.map sessions ~f:(fun s -> s.Record.dividends));
+  Alcotest.(check (list approx)) "flat" [ 0.0; 0.0 ] (pnls sessions)
+
 let suite =
   ( "record",
     [
@@ -311,4 +329,6 @@ let suite =
         test_a_fill_with_no_arrival_mid_is_counted_unknown;
       Alcotest.test_case "cost bps is notional-weighted" `Quick
         test_cost_bps_is_notional_weighted;
+      Alcotest.test_case "a seller on the ex-date is credited" `Quick
+        test_a_seller_on_the_ex_date_is_credited;
     ] )
