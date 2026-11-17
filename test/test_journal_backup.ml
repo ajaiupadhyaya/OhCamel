@@ -1677,9 +1677,108 @@ let test_record_diff_reads_and_never_writes () =
       in
       Alcotest.(check int) "a dividends line it cannot read is status 1" 1 bad.status)
 
+(* Fix round 2: record-diff printed each strategy's drawdown line once PER SESSION
+   (18 lines for an 18-session strategy). Two strategies, s_a and s_b, each holding
+   100 TLT from 2026-11-02 through four sessions, no dividends file and no fees: the
+   output is the three header lines and, per strategy, its summary line and its
+   drawdown line -- seven lines, each strategy's drawdown line exactly once, and no
+   session line, since no session's P&L changed. *)
+let test_record_diff_says_each_strategy_once () =
+  with_temp_dir ~f:(fun dir ->
+      let path = Filename.concat dir "two.db" in
+      let j = open_exn path in
+      let tlt = Symbol.of_string "TLT" in
+      List.iteri [ "s_a"; "s_b" ] ~f:(fun n name ->
+          let o =
+            {
+              (Order.create
+                 {
+                   Order.Request.client_order_id =
+                     Option.value_exn
+                       (Ids.Client_order_id.of_string
+                          (sprintf "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZ%02d" (50 + n)));
+                   symbol = tlt;
+                   side = Order.Side.Buy;
+                   qty = 100;
+                   kind = Order.Kind.Limit (Price.of_float 90.02);
+                   tif = Order.Tif.Day;
+                 })
+              with
+              Order.state = Order.State.Filled;
+            }
+          in
+          let created = Time_ns.of_string_with_utc_offset "2026-11-02T15:00:00Z" in
+          Journal.insert_order j o ~source:(sprintf "signal:%s:1" name)
+            ~decision_price:(Price.of_float 90.0) ~arrival:None ~verdict:`Null ~at:created;
+          ignore
+            (Journal.record_fill j o
+               {
+                 Order.Fill.execution_id = "x-" ^ name;
+                 qty = 100.0;
+                 price = Price.of_float 90.0;
+                 at = Time_ns.of_string_with_utc_offset "2026-11-02T15:00:01Z";
+                 position_qty = None;
+               }
+              : bool);
+          Journal.record_sizing j ~strategy:name ~sequence:1 ~at:created
+            ~tier:"incubation" ~scale:1.0 ~allocated:10_000.0 ~mode:"open");
+      List.iter
+        [
+          ("2026-11-02", 90.0);
+          ("2026-11-03", 89.7);
+          ("2026-11-04", 89.9);
+          ("2026-11-05", 90.1);
+        ]
+        ~f:(fun (d, c) ->
+          Journal.record_marks j
+            [ { Journal.Mark.date = date d; symbol = tlt; close = c; qty = 200.0 } ];
+          Journal.record_session j
+            {
+              Journal.Session.date = date d;
+              equity_close = 1_000_000.0;
+              cash_close = 0.0;
+              gross_close = 0.0;
+              net_close = 0.0;
+              recorded_at = Time_ns.of_string_with_utc_offset (d ^ "T21:05:00Z");
+            });
+      Journal.close j;
+      let module Spec = Ohcamel.Config.Book.Signals_spec in
+      let spec name =
+        {
+          Spec.Strategy.name;
+          symbols = [ "TLT" ];
+          max_age = 3;
+          sizing = Spec.Incubation;
+          capital_fraction = 0.01;
+          cadence = Spec.Cadence.Daily;
+          adjust = Spec.Adjust.Intraday;
+          max_age_minutes = 20;
+          horizon = Spec.Horizon.Carry;
+          stop = Some { Spec.Stop.drawdown = 0.15; sessions = 250 };
+          reinstated = None;
+        }
+      in
+      let o =
+        Ohcamel_desk.Journal_cli.record_diff ~journal:path ~since:None ~dividends:None
+          ~strategies:(Some [ spec "s_a"; spec "s_b" ])
+          ~zone:new_york_summer
+      in
+      let shown = String.concat ~sep:"\n" o.out in
+      Alcotest.(check int) "status" 0 o.status;
+      List.iter [ "s_a"; "s_b" ] ~f:(fun name ->
+          Alcotest.(check int)
+            (sprintf "%s's drawdown line once, in:\n%s" name shown)
+            1
+            (List.count o.out ~f:(String.is_prefix ~prefix:(name ^ "  drawdown "))));
+      Alcotest.(check int)
+        (sprintf "three header lines and two a strategy, in:\n%s" shown)
+        7 (List.length o.out))
+
 let suite =
   ( "journal backup",
     [
+      Alcotest.test_case "record-diff says each strategy once" `Quick
+        test_record_diff_says_each_strategy_once;
       Alcotest.test_case "record-diff reads and never writes" `Quick
         test_record_diff_reads_and_never_writes;
       Alcotest.test_case "a live journal round trips through the backup" `Quick

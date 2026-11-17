@@ -298,77 +298,73 @@ let record_diff ~journal:path ~since ~dividends ~strategies:specs ~zone =
                                              (Float.( <> ) x.dividends 0.0)
                                              "dividend";
                                            Option.some_if (Float.( <> ) x.fees 0.0) "fee";
-                                         ])));
-                            (* The stop rules' reading: from the strategy's reinstatement
+                                         ]))));
+                        (* Once per strategy, after its sessions (fix round 2: this
+                               sat inside the loop over them, and printed once a
+                               session). The stop rules' reading: from the strategy's reinstatement
                            when the book names one, as Stop.evaluate reads it. *)
-                            let spec =
-                              Option.bind specs ~f:(fun ss ->
-                                  List.find ss
-                                    ~f:(fun
-                                        (x : Ohcamel.Config.Book.Signals_spec.Strategy.t)
-                                      -> String.equal x.name strategy))
-                            in
-                            let reinstated =
-                              Option.bind spec
+                        let spec =
+                          Option.bind specs ~f:(fun ss ->
+                              List.find ss
                                 ~f:(fun
                                     (x : Ohcamel.Config.Book.Signals_spec.Strategy.t) ->
-                                  x.reinstated)
+                                  String.equal x.name strategy))
+                        in
+                        let reinstated =
+                          Option.bind spec
+                            ~f:(fun (x : Ohcamel.Config.Book.Signals_spec.Strategy.t) ->
+                              x.reinstated)
+                        in
+                        let read rule =
+                          let ss =
+                            Stop.sessions_under ~rule ~dividends ~activities ~journal
+                              ~zone ~strategy ~since:reinstated ()
+                          in
+                          (Record.summarise ss, List.length ss)
+                        in
+                        let (b, bn), (a, an) = (read `Before_1_8, read `Current) in
+                        let pct x = sprintf "%.2f%%" (100.0 *. x) in
+                        let stopped =
+                          match Journal.strategy_state journal ~strategy with
+                          | Some (`Stopped, rule, at, _) ->
+                              sprintf "  (already stopped%s at %s; it stays stopped)"
+                                (Option.value_map rule ~default:"" ~f:(fun r ->
+                                     " by " ^ r))
+                                at
+                          | Some (`Active, _, _, _) | None -> ""
+                        in
+                        match
+                          Option.bind spec
+                            ~f:(fun (x : Ohcamel.Config.Book.Signals_spec.Strategy.t) ->
+                              x.stop)
+                        with
+                        | None ->
+                            say
+                              (sprintf "%s  drawdown %s -> %s (%s)  sessions %d%s"
+                                 strategy (pct b.max_drawdown) (pct a.max_drawdown)
+                                 (if Option.is_none spec then "no stop line known"
+                                  else "no stop line in the book")
+                                 an stopped)
+                        | Some line ->
+                            let fires (r : Record.summary) n =
+                              match Stop.check ~spec:line ~record:r ~sessions:n with
+                              | `Stop _ -> true
+                              | `Continue -> false
                             in
-                            let read rule =
-                              let ss =
-                                Stop.sessions_under ~rule ~dividends ~activities ~journal
-                                  ~zone ~strategy ~since:reinstated ()
-                              in
-                              (Record.summarise ss, List.length ss)
+                            let verdict =
+                              match (fires b bn, fires a an) with
+                              | false, true -> "  WOULD STOP AFTER, NOT BEFORE"
+                              | true, false -> "  STOPS BEFORE, NOT AFTER"
+                              | true, true -> "  stops before and after"
+                              | false, false -> ""
                             in
-                            let (b, bn), (a, an) = (read `Before_1_8, read `Current) in
-                            let pct x = sprintf "%.2f%%" (100.0 *. x) in
-                            let stopped =
-                              match Journal.strategy_state journal ~strategy with
-                              | Some (`Stopped, rule, at, _) ->
-                                  sprintf "  (already stopped%s at %s; it stays stopped)"
-                                    (Option.value_map rule ~default:"" ~f:(fun r ->
-                                         " by " ^ r))
-                                    at
-                              | Some (`Active, _, _, _) | None -> ""
-                            in
-                            match
-                              Option.bind spec
-                                ~f:(fun
-                                    (x : Ohcamel.Config.Book.Signals_spec.Strategy.t) ->
-                                  x.stop)
-                            with
-                            | None ->
-                                say
-                                  (sprintf "%s  drawdown %s -> %s (%s)  sessions %d%s"
-                                     strategy (pct b.max_drawdown) (pct a.max_drawdown)
-                                     (if Option.is_none spec then "no stop line known"
-                                      else "no stop line in the book")
-                                     an stopped)
-                            | Some line ->
-                                let fires (r : Record.summary) n =
-                                  match Stop.check ~spec:line ~record:r ~sessions:n with
-                                  | `Stop _ -> true
-                                  | `Continue -> false
-                                in
-                                let verdict =
-                                  match (fires b bn, fires a an) with
-                                  | false, true -> "  WOULD STOP AFTER, NOT BEFORE"
-                                  | true, false -> "  STOPS BEFORE, NOT AFTER"
-                                  | true, true -> "  stops before and after"
-                                  | false, false -> ""
-                                in
-                                say
-                                  (sprintf
-                                     "%s  drawdown %s -> %s (line %s)  sessions %d of \
-                                      %d%s%s"
-                                     strategy (pct b.max_drawdown) (pct a.max_drawdown)
-                                     (pct
-                                        line
-                                          .Ohcamel.Config.Book.Signals_spec.Stop.drawdown)
-                                     an
-                                     line.Ohcamel.Config.Book.Signals_spec.Stop.sessions
-                                     verdict stopped))))
+                            say
+                              (sprintf
+                                 "%s  drawdown %s -> %s (line %s)  sessions %d of %d%s%s"
+                                 strategy (pct b.max_drawdown) (pct a.max_drawdown)
+                                 (pct line.Ohcamel.Config.Book.Signals_spec.Stop.drawdown)
+                                 an line.Ohcamel.Config.Book.Signals_spec.Stop.sessions
+                                 verdict stopped)))
               with
               | Ok () -> finish all
               | Error e ->
