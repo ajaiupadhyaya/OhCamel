@@ -3805,6 +3805,62 @@ let test_a_stop's_flatten_reaches_the_venue_through_a_limit's_trip () =
     (D.Halt.State.name (D.Halt.state halt));
   cleanup ()
 
+(* The same stop under netting (Task 1.6): a second strategy, exp_short,
+   sold 300 AAPL short through the desk after the case's buy of 350, so the
+   account nets the two to +50. The stopped strategy's flatten sells all
+   350 -- more than the account's 50, which the 1.2 line alone refused
+   forever -- and passes the trip, at the rules and again at the wire,
+   because the sub-ledger sums (350 - 300 = 50) and nothing in the name may
+   still fill. It fills: the strategy holds nothing, and the account holds
+   exactly exp_short's -300. *)
+let test_a_netted_stop's_flatten_reaches_the_venue_through_a_limit's_trip () =
+  let halt, trip = trippable () in
+  let%bind { a_f = f; a_name = name; a_oms = oms; pass_and_adjust; cleanup; _ } =
+    adjust_case ~adjust_now:false ~halt ~reduce_through_trip:true
+      ~sizing:Ohcamel.Config.Book.Signals_spec.Live ~overlay:"0.70" ()
+  in
+  let shorted =
+    D.Oms.propose_rebalance oms ~mode:D.Rebalance.Mode.Intraday
+      ~source:
+        {
+          D.Rebalance.Source.strategy = "exp_short";
+          sequence = 1;
+          as_of = Date.of_string "2026-09-14";
+        }
+      ~legs:[ rebalance_leg aapl D.Order.Side.Sell 300 ]
+  in
+  let%bind () = settle () in
+  let%bind () = pump f in
+  let%bind () = advance_to f 4.0 in
+  (match Deferred.peek shorted with
+  | Some (D.Oms.Rebalance_outcome.Sent (_ :: _)) -> ()
+  | Some other ->
+      Alcotest.failf "exp_short not sold: %s" (D.Oms.Rebalance_outcome.to_string other)
+  | None -> Alcotest.fail "exp_short's sale is still waiting");
+  Alcotest.(check (float 0.0))
+    "the account nets the pair to +50" 50.0
+    (Qty.to_float (Graph.qty f.graph aapl));
+  D.Journal.set_strategy_state f.journal ~strategy:name ~state:`Stopped
+    ~rule:(Some "drawdown") ~at:evening ~detail:"drawdown 20.0% reached its line of 15.0%";
+  trip ();
+  let received = D.Sim_venue.received f.venue in
+  let%map () = pass_and_adjust ~at:6.0 in
+  Alcotest.(check (list (triple string int string)))
+    "the buy, then Sell 350 as a day limit"
+    [ ("buy", 350, "limit day"); ("sell", 350, "limit day") ]
+    (strategy_orders f name);
+  Alcotest.(check int)
+    "the sell reached the venue" (received + 1)
+    (D.Sim_venue.received f.venue);
+  Alcotest.(check (list (pair string (float 0.0))))
+    "filled: it holds nothing"
+    [ ("AAPL", 0.0) ]
+    (own_aapl f name);
+  Alcotest.(check (float 0.0))
+    "and the account holds exp_short's -300" (-300.0)
+    (Qty.to_float (Graph.qty f.graph aapl));
+  cleanup ()
+
 (* A governor's cut under a trip restored from the journal, as a restart
    leaves one. A drawdown of 0.375 against a cap of 0.5 is a governor of
    (0.5 - 0.375) / 0.25 = 0.5, so with the overlay at 0.5 the scale is 0.25,
@@ -5253,6 +5309,8 @@ let suites =
           test_a_product_of_zero_moves_by_the_band_alone;
         case "a stop's flatten reaches the venue through a limit's trip"
           test_a_stop's_flatten_reaches_the_venue_through_a_limit's_trip;
+        case "a netted stop's flatten reaches the venue through a limit's trip"
+          test_a_netted_stop's_flatten_reaches_the_venue_through_a_limit's_trip;
         case "a governor's cut reaches the venue through a restored trip"
           test_a_governor's_cut_reaches_the_venue_through_a_restored_trip;
         case "a hand's halt or the word off still refuses the flatten"

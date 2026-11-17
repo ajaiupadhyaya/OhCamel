@@ -520,7 +520,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **<!-- count:ocaml-tests -->926<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->86<!-- /count --> scheduler cases in `test/desk_async` —
+- **<!-- count:ocaml-tests -->939<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->87<!-- /count --> scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler

@@ -243,7 +243,8 @@ let not_current =
 
 let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
     ~(read : Venue.Read.t) ~(graph : Graph.t) ~(journal : Journal.t) ~(confidence : float)
-    ~(book_is_current : unit -> bool) ~(on_event : string -> unit) : unit Deferred.t =
+    ~(book_is_current : unit -> bool) ~(on_recorded : Date.t -> unit)
+    ~(on_event : string -> unit) : unit Deferred.t =
   let symbols = Graph.symbols graph in
   let day = Date.to_string in
   let record_now date returns =
@@ -339,6 +340,16 @@ let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
     | Error e ->
         on_event
           (sprintf "session %s: the stop rules could not be evaluated: %s" (day date)
+             (Error.to_string_hum e)));
+    (* The night's sub-ledger check (bin/main.ml passes Oms.close_subledger):
+       the strategies' positions summed per name against the account the
+       session was recorded from, and every standing break said. Guarded as
+       the stop rules are: a failure is said, and the close's loop goes on. *)
+    (match Or_error.try_with (fun () -> on_recorded date) with
+    | Ok () -> ()
+    | Error e ->
+        on_event
+          (sprintf "session %s: the sub-ledger could not be checked: %s" (day date)
              (Error.to_string_hum e)));
     match held with
     | Some clock -> close_when_due clock

@@ -226,6 +226,15 @@ module Context = struct
        passes a trip. *)
     own : float;
     account : float;
+    (* Whether the name's sub-ledger is known to sum (Oms.netted): no order
+       of the desk's in it may still fill, and the strategies' own positions
+       with the hand's are the account's (Subledger.check finds no break).
+       Then every fill in the name moves the account by exactly what it
+       moves its owner's own position, which is what [reduces] needs to let
+       one strategy of a netted pair flatten. Read only under a limit's trip
+       with the book's (reduce_through_trip) word on; false otherwise, and
+       false whenever it cannot be read. *)
+    netted : bool;
     (* None: no clock has answered, or the last read failed -- closed. *)
     session : Session.t option;
     mark : Price.t option;
@@ -277,22 +286,53 @@ let is_timing_refusal ~(tif : Order.Tif.t) (failures : Failure.t list) =
          && (not (Order.Tif.equal tif Order.Tif.Opg))
          && List.exists failures ~f:session)
 
-(* Whether an order of [qty] on [side] only shrinks a position: the
-   strategy's own ([own], from its fills) and the account's ([account]) are
-   on one side of zero, the order is on the other, and it is no larger than
-   either, so neither crosses zero. An order larger than the smaller of the
-   two is not clipped to it -- nothing here changes an order -- it is not a
-   reduction, and the switch refuses it whole. Anything else is no reduction
-   either: a flat position on either side, the two on opposite sides, a
+(* Whether an order of [qty] on [side] only shrinks a position: what a
+   limit's trip lets through (R2). Exactly:
+
+     (A) it shrinks the proposer's own position [own] (from its fills)
+         without crossing zero: [own] is on the side of zero opposite the
+         order, and [qty] is no larger than |own|;
+   and one of
+     (B1) it shrinks the account's position [account] (net of the desk's
+          other resting reductions in the name, Oms.reducible_account)
+          without crossing zero, the same way: [account] opposite the order,
+          [qty] no larger than |account|;
+     (B2) [netted]: the name's sub-ledger is known to sum (Rules.Context's
+          [netted]) -- nothing in it may still fill, and the strategies' and
+          the hand's own positions are the account's.
+
+   Why B2 is safe. What must never happen under a trip is a position taken
+   through zero, or the account holding in the name more than its owners
+   together do. With the sub-ledger whole, the account IS the sum of its
+   owners' positions, before the order and -- since a fill moves the account
+   and its owner's own position by the same quantity -- after it, however
+   much of it fills; the order only shrinks its owner's position (A), so the
+   sum of the owners' absolute positions, which bounds the account's,
+   strictly falls, and no owner's position crosses zero. The account's own
+   net may move away from zero, and that is the netting: a strategy long 100
+   beside one short 50 is an account long 50, and the short's cover leaves
+   the account long 100 -- the long's own position, which the trip may cut
+   next -- while the long's sale leaves it short 50, the short's. Without B2
+   neither could ever be flattened through a trip: the long's 100 is more
+   than the account's 50, and the short's cover grows the account's long.
+   When the sum is not known -- a break, an order that may still fill, a
+   journal that cannot be read -- B1 alone binds, as before netting.
+
+   An order larger than its room is not clipped to it -- nothing here
+   changes an order -- it is not a reduction, and the switch refuses it
+   whole. Anything else is no reduction either: a flat own position, a
    number that is not a number. Order.epsilon absorbs the noise of a float
    sum of whole fills, and nothing more. *)
-let reduces ~(own : float) ~(account : float) ~(side : Order.Side.t) ~(qty : int) =
-  let room = Float.min (Float.abs own) (Float.abs account) in
-  qty > 0 && Float.is_finite own && Float.is_finite account
-  && (match side with
-    | Order.Side.Sell -> Float.( > ) own 0.0 && Float.( > ) account 0.0
-    | Order.Side.Buy -> Float.( < ) own 0.0 && Float.( < ) account 0.0)
-  && Float.( <= ) (Float.of_int qty) (room +. Order.epsilon)
+let reduces ~(own : float) ~(account : float) ~(netted : bool) ~(side : Order.Side.t)
+    ~(qty : int) =
+  let shrinks position =
+    Float.is_finite position
+    && (match side with
+      | Order.Side.Sell -> Float.( > ) position 0.0
+      | Order.Side.Buy -> Float.( < ) position 0.0)
+    && Float.( <= ) (Float.of_int qty) (Float.abs position +. Order.epsilon)
+  in
+  qty > 0 && shrinks own && (shrinks account || netted)
 
 (* The switch's rule for an order: None when it may go, else why not. One
    function, because the order manager asks it again at the wire
@@ -310,13 +350,16 @@ let reduces ~(own : float) ~(account : float) ~(side : Order.Side.t) ~(qty : int
    the limits did not, and after the engine's stop no fill would be heard.
    The refusal quotes the switch's own words ([halt_why], Halt.reason), and
    under a trip with the word on says what would have passed. A context
-   whose words and state disagree -- words with no state -- is refused. In
-   production Rebalance.account_refusal has already refused a rebalance when
-   the account holds less than the strategy's own position, so it is the
-   account side, netted of the desk's resting reductions
-   (Oms.reducible_account), that binds here. *)
+   whose words and state disagree -- words with no state -- is refused.
+   Nothing upstream compares one strategy's position with the account's any
+   more (the one sub-ledger check replaced that, desk/subledger.ml): a
+   strategy's own position may exceed the account's, or sit on the other
+   side of zero from it, because other strategies hold the name too. So
+   both halves of [reduces] bind here -- the strategy's own, and either the
+   account's, netted of the desk's resting reductions
+   (Oms.reducible_account), or a sub-ledger known to sum ([netted]). *)
 let switch_refusal ~(spec : Desk_spec.t) ~(halt_state : Halt.State.t)
-    ~(halt_why : string option) ~own ~account ~side ~qty : string option =
+    ~(halt_why : string option) ~own ~account ~netted ~side ~qty : string option =
   let words =
     match halt_why with
     | Some why -> why
@@ -325,14 +368,17 @@ let switch_refusal ~(spec : Desk_spec.t) ~(halt_state : Halt.State.t)
   match (halt_state, halt_why) with
   | Halt.State.Clear, None -> None
   | Halt.State.Tripped _, _ when spec.Desk_spec.reduce_through_trip ->
-      if reduces ~own ~account ~side ~qty then None
+      if reduces ~own ~account ~netted ~side ~qty then None
       else
         Some
           (sprintf
-             "%s; under a limit's trip only an order that shrinks both the strategy's \
-              own position (%.17g) and the account's (%.17g), by no more than either, \
-              passes, and a %s of %d does not"
-             words own account (Order.Side.to_string side) qty)
+             "%s; under a limit's trip only an order that shrinks the strategy's own \
+              position (%.17g) without crossing zero passes, and only if it also shrinks \
+              the account's (%.17g) by no more than it holds, or the name's sub-ledger \
+              is known to sum (%s); a %s of %d does not"
+             words own account
+             (if netted then "it is" else "it is not")
+             (Order.Side.to_string side) qty)
   | Halt.State.Clear, Some _
   | Halt.State.Tripped _, _
   | Halt.State.Halted _, _
@@ -389,7 +435,7 @@ let check (c : Context.t) (r : Order.Request.t) : Failure.t list =
       | Desk_spec.Enabled, Ok () -> None);
       Option.map
         (switch_refusal ~spec:c.spec ~halt_state:c.halt_state ~halt_why:c.halt_why
-           ~own:c.own ~account:c.account ~side:r.Order.Request.side
+           ~own:c.own ~account:c.account ~netted:c.netted ~side:r.Order.Request.side
            ~qty:r.Order.Request.qty) ~f:(fun why -> { Failure.rule = "kill_switch"; why });
       Option.map
         (session_refusal ~tif:r.Order.Request.tif ~zone:c.new_york ~session:c.session

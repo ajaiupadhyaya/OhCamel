@@ -38,6 +38,7 @@ let context =
     halt_why = None;
     own = 0.0;
     account = 0.0;
+    netted = false;
     session = during_monday;
     mark = Some (Price.of_float 150.0);
     stale = false;
@@ -272,8 +273,11 @@ let test_every_failure_is_reported_in_rule_order () =
 
 (* The switch as each state leaves it, the book's (reduce_through_trip) word
    on unless a case turns it off, and the strategy's own position and the
-   account's in AAPL as the case gives them. *)
-let switched ?(on = true) ~state ~own ~account () =
+   account's in AAPL as the case gives them. [netted] -- the name's
+   sub-ledger known to sum (Task 1.6) -- is false unless a case sets it, so
+   every case written for Task 1.2 still judges the 1.2 line alone: the
+   strategy's own position and the account's both shrink. *)
+let switched ?(on = true) ?(netted = false) ~state ~own ~account () =
   let halt_state, halt_why =
     match state with
     | `Tripped ->
@@ -293,6 +297,7 @@ let switched ?(on = true) ~state ~own ~account () =
     halt_why;
     own;
     account;
+    netted;
   }
 
 let sell = request ~side:Order.Side.Sell
@@ -369,7 +374,7 @@ let test_what_is_not_a_reduction_of_both_is_refused () =
 (* [Rules.reduces] itself, which the order manager asks again at the wire:
    the share counts on both sides of the line, whole and through zero. *)
 let test_reduces_is_the_line () =
-  let r ~own ~account side qty = Rules.reduces ~own ~account ~side ~qty in
+  let r ~own ~account side qty = Rules.reduces ~own ~account ~netted:false ~side ~qty in
   Alcotest.(check (list bool))
     "sell 50 / 80 / 81 / 120 against +100 and +80; buy 50; sell 0"
     [ true; true; false; false; false; false ]
@@ -387,6 +392,48 @@ let test_reduces_is_the_line () =
       r ~own:(-100.0) ~account:(-80.0) Order.Side.Buy 80;
       r ~own:(-100.0) ~account:(-80.0) Order.Side.Buy 81;
       r ~own:Float.nan ~account:80.0 Order.Side.Sell 10;
+    ]
+
+(* Under netting (Task 1.6): alpha long 100 and beta short 50 in one name,
+   the account the net +50, the sub-ledger whole ([netted]). Each flatten
+   passes the trip -- alpha's sell of 100 is more than the account's 50, and
+   beta's buy grows the account's long, so neither passes the 1.2 line
+   alone, which the cases above keep with [netted] false. A flip of either
+   strategy's own position is refused whole, so is any increase of it, and a
+   hand's halt still refuses everything. *)
+let test_a_netted_pair's_flattens_pass_a_limit's_trip () =
+  let alpha ?(netted = true) () =
+    switched ~netted ~state:`Tripped ~own:100.0 ~account:50.0 ()
+  in
+  let beta ?(netted = true) () =
+    switched ~netted ~state:`Tripped ~own:(-50.0) ~account:50.0 ()
+  in
+  check_rules "alpha sells its 100" [] (alpha ()) (sell 100);
+  check_rules "beta covers its 50" [] (beta ()) (buy 50);
+  check_rules "alpha sells 150: through its zero" [ "kill_switch" ] (alpha ()) (sell 150);
+  check_rules "beta buys 60: through its zero" [ "kill_switch" ] (beta ()) (buy 60);
+  check_rules "alpha buys 10: grows it" [ "kill_switch" ] (alpha ()) (buy 10);
+  check_rules "beta sells 10: grows its short" [ "kill_switch" ] (beta ()) (sell 10);
+  check_rules "alpha's 100, the sum not known" [ "kill_switch" ] (alpha ~netted:false ())
+    (sell 100);
+  check_rules "beta's cover, the sum not known" [ "kill_switch" ] (beta ~netted:false ())
+    (buy 50);
+  check_rules "a hand's halt refuses alpha's sale" [ "kill_switch" ]
+    (switched ~netted:true ~state:`Halted ~own:100.0 ~account:50.0 ())
+    (sell 100);
+  check_rules "a ticket owns nothing, netted or not" [ "kill_switch" ]
+    (switched ~netted:true ~state:`Tripped ~own:0.0 ~account:50.0 ())
+    (sell 10);
+  let r ~own ~account side qty = Rules.reduces ~own ~account ~netted:true ~side ~qty in
+  Alcotest.(check (list bool))
+    "netted: the strategy's own is the whole line"
+    [ true; true; false; false; false ]
+    [
+      r ~own:100.0 ~account:50.0 Order.Side.Sell 100;
+      r ~own:(-50.0) ~account:50.0 Order.Side.Buy 50;
+      r ~own:100.0 ~account:50.0 Order.Side.Sell 101;
+      r ~own:Float.nan ~account:50.0 Order.Side.Sell 10;
+      r ~own:100.0 ~account:50.0 Order.Side.Sell 0;
     ]
 
 (* A refusal under the trip still quotes the switch's own words -- a restored
@@ -700,6 +747,8 @@ let suite =
       Alcotest.test_case "what is not a reduction of both is refused" `Quick
         test_what_is_not_a_reduction_of_both_is_refused;
       Alcotest.test_case "reduces is the line" `Quick test_reduces_is_the_line;
+      Alcotest.test_case "a netted pair's flattens pass a limit's trip" `Quick
+        test_a_netted_pair's_flattens_pass_a_limit's_trip;
       Alcotest.test_case "a trip's refusal quotes the switch" `Quick
         test_a_trip's_refusal_quotes_the_switch;
       Alcotest.test_case "an opposite resting order is a wash" `Quick

@@ -471,6 +471,93 @@ let test_with_a_manager_the_desk_says_what_it_can_do () =
            (field (field (Desk.body_json desk) "switch") "state")))
     ()
 
+(* The sync pass checks the sub-ledger after each applied read
+   (Oms.check_subledger): a strategy bought AAPL 10, and the account reports
+   7. The first read sees the break, the second finds it standing and says
+   it once -- a line and one journal alert -- and the reads after say
+   nothing more while it stands. A failed read checks nothing. *)
+let test_the_sync_pass_alerts_a_standing_break_once () =
+  with_desk
+    ~f:(fun desk graph journal ->
+      let lines = ref [] in
+      let venue =
+        Ohcamel_desk.Sim_venue.create ~opened_at:at
+          ~marks:(fun _ -> None)
+          ~now:(fun () -> at)
+          ~half_spread_bps:(fun _ -> 5.0)
+          ~cash:Notional.zero ~positions:[] ()
+      in
+      let oms =
+        Ohcamel_desk.Oms.create ~graph ~journal ~trips_on:[]
+          ~spec:Config.Book.Desk_spec.default
+          ~read:(Some (Ohcamel_desk.Sim_venue.read venue))
+          ~trade:(Ok (Ohcamel_desk.Sim_venue.trade ~auto:false venue))
+          ~halt:(Ohcamel_desk.Halt.create Ohcamel_desk.Halt.Source.none)
+          ~accepts_tickets:false ~adv:(Ohcamel_desk.Oms.Adv.Fixed 1_000_000.0)
+          ~now:(fun () -> at)
+          ~rng:(Random.State.make [| 5 |]) ~on_change:ignore
+          ~on_event:(fun l -> lines := l :: !lines)
+          ~after_fill:ignore
+          ~book_is_current:(fun () -> true)
+          ()
+      in
+      Desk.set_oms desk oms;
+      let order =
+        {
+          (Ohcamel_desk.Order.create
+             {
+               Ohcamel_desk.Order.Request.client_order_id =
+                 Option.value_exn
+                   (Ohcamel_desk.Ids.Client_order_id.of_string
+                      "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZZ2");
+               symbol = aapl;
+               side = Ohcamel_desk.Order.Side.Buy;
+               qty = 10;
+               kind = Ohcamel_desk.Order.Kind.Market;
+               tif = Ohcamel_desk.Order.Tif.Opg;
+             })
+          with
+          Ohcamel_desk.Order.state = Ohcamel_desk.Order.State.Filled;
+        }
+      in
+      Journal.insert_order journal order ~source:"signal:alpha:1"
+        ~decision_price:(Price.of_float 150.0) ~arrival:None ~verdict:`Null ~at;
+      ignore
+        (Journal.record_fill journal order
+           {
+             Ohcamel_desk.Order.Fill.execution_id = "x-1";
+             qty = 10.0;
+             price = Price.of_float 150.0;
+             at;
+             position_qty = None;
+           }
+          : bool);
+      let sync seq =
+        Desk.sync_with desk
+          ~account:(Ok (account ~cash:90_000.0 ~equity:91_050.0))
+          ~positions:(Ok [ position aapl 7.0 ])
+          ~at ~seq
+      in
+      let alerts () =
+        List.count (Journal.recent_alerts journal ~limit:10) ~f:(fun a ->
+            String.equal a.Journal.Alert.kind "subledger_break")
+      in
+      sync 1;
+      Alcotest.(check int) "the first read: seen, not said" 0 (alerts ());
+      sync 2;
+      Alcotest.(check int) "the second: one alert" 1 (alerts ());
+      Desk.sync_with desk
+        ~account:(Error (Error.of_string "GET /v2/account timed out"))
+        ~positions:(Ok []) ~at ~seq:3;
+      sync 4;
+      sync 5;
+      Alcotest.(check int) "standing: still one" 1 (alerts ());
+      Alcotest.(check int)
+        "and one line naming both figures" 1
+        (List.count !lines
+           ~f:(String.is_substring ~substring:"sum to 10, and the account holds 7")))
+    ()
+
 let test_api_desk_answers_through_the_server () =
   with_desk
     ~f:(fun desk graph _ ->
@@ -1199,6 +1286,8 @@ let suite =
         test_the_overlay's_clock_is_the_venue_reading_advanced;
       Alcotest.test_case "with a manager the desk says what it can do" `Quick
         test_with_a_manager_the_desk_says_what_it_can_do;
+      Alcotest.test_case "the sync pass alerts a standing break once" `Quick
+        test_the_sync_pass_alerts_a_standing_break_once;
       Alcotest.test_case "/api/desk answers through the server" `Quick
         test_api_desk_answers_through_the_server;
       Alcotest.test_case "a read that started before the last applied one changes nothing"

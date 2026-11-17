@@ -1550,6 +1550,8 @@ let run_live ~book_path ~(serve_port : int option) =
                ~book_is_current:(fun () ->
                  Ohcamel_desk.Desk.book_is_current desk ~now:(Time_ns.now ())
                    ~within:(Time_ns.Span.scale sync_every 2.0))
+               ~on_recorded:(fun date ->
+                 Ohcamel_desk.Oms.close_subledger oms ~date ~at:(Time_ns.now ()))
                ~on_event:live_line)
       | Ohcamel_desk.Desk.Unavailable _ ->
           live_line "session   no venue clock, so no session close is recorded";

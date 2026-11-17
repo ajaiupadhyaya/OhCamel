@@ -128,6 +128,17 @@ type t = {
      because the trip lets it. A hand's halt or the engine's stop landing
      while it is in flight still cancels it. *)
   through_trip : String.Hash_set.t;
+  (* The sub-ledger's breaks as the checks have seen them ([check_subledger]):
+     [seen_breaks], the names that broke at the last check that judged them;
+     [standing_breaks], those that broke at two such checks running -- each
+     alerted once, when it first stood, and what a break refuses
+     ([check_rebalance]). A name leaves both when a check finds it whole,
+     and neither moves while it is not judged. *)
+  mutable seen_breaks : Symbol.Set.t;
+  mutable standing_breaks : Symbol.Set.t;
+  (* Whether the last check could not read the sub-ledger, so a journal that
+     stays unreadable is said once and not once a minute. *)
+  mutable subledger_unread : bool;
 }
 
 let create ~graph ~journal ~spec ~trips_on ~read ~trade ~halt ~accepts_tickets ~adv ~now
@@ -163,6 +174,9 @@ let create ~graph ~journal ~spec ~trips_on ~read ~trade ~halt ~accepts_tickets ~
     failed_cancels = String.Hash_set.create ();
     resent_cancels = String.Hash_set.create ();
     through_trip = String.Hash_set.create ();
+    seen_breaks = Symbol.Set.empty;
+    standing_breaks = Symbol.Set.empty;
+    subledger_unread = false;
   }
 
 let halt t = t.halt
@@ -341,6 +355,213 @@ let reducible_account ?except t symbol =
       else if Float.( < ) held 0.0 then held +. taken
       else held
 
+(* ------------------------------------------------------------------------ *)
+(* One sub-ledger check (desk/subledger.ml)                                  *)
+(* ------------------------------------------------------------------------ *)
+
+(* What one reading of the sub-ledger found. [checked]: the names judged;
+   [unsettled]: the names a strategy trades that were not, because an order
+   of the desk's in them may still fill. *)
+module Subledger_reading = struct
+  type t = {
+    breaks : Subledger.break list;
+    checked : Symbol.Set.t;
+    unsettled : Symbol.Set.t;
+  }
+end
+
+(* The sub-ledger, read: every journaled fill's net quantity by its order's
+   source, grouped by owner (Subledger.owner -- each strategy, and the hand
+   for every ticket), against the account's position as the gate reads it
+   ([account_position]), by Subledger.check.
+
+   WHICH NAMES. Those a strategy has a fill in, ever: the names strategies
+   trade. A name no strategy has traded has no strategy's sizing or stop
+   that depends on it, and the account may hold lots there that no journal
+   row explains -- the droplet's book holds AAPL 400, MSFT 200, NVDA 60, JPM
+   250, XOM -500 and CVX -300, held by no strategy and bought before the
+   journal, or by hand -- which would otherwise read as breaks forever. In a
+   name a strategy does trade, the hand's own fills are one more sub-ledger,
+   so a ticket there sums too.
+
+   WHEN. A name with an order of the desk's that may still fill -- open, or
+   failed and possibly still worked ([failed_still_working]), the orders
+   [strategy_position] calls unsettled -- is not judged at all: the venue
+   can move the account before the fill's report reaches the journal, and a
+   sum read in that instant is not a break. [except] is an order that is
+   not counted, the one [pre_wire] is judging, which [admit] has already put
+   among the open ones. A journal that cannot be read is an Error, never a
+   reading with nothing in it. *)
+let subledger ?except t : (Subledger_reading.t, string) Result.t =
+  match Or_error.try_with (fun () -> Journal.fills_by_source t.journal) with
+  | Error e ->
+      Error (sprintf "the journal's fills could not be read (%s)" (Error.to_string_hum e))
+  | Ok rows -> (
+      match failed_still_working t with
+      | Error why -> Error why
+      | Ok failed ->
+          let own =
+            List.map rows ~f:(fun (source, symbol, q) ->
+                (Subledger.owner ~source, symbol, q))
+          in
+          let traded =
+            Symbol.Set.of_list
+              (List.filter_map own ~f:(fun (owner, symbol, _) ->
+                   Option.some_if (not (String.equal owner Subledger.hand)) symbol))
+          in
+          let in_flight =
+            Symbol.Set.of_list
+              (List.filter_map
+                 (Map.data t.open_ @ failed)
+                 ~f:(fun o ->
+                   Option.some_if
+                     (Float.( > ) (Order.remaining_qty o) Order.epsilon
+                     && not (Option.exists except ~f:(String.equal (key o))))
+                     o.Order.request.Order.Request.symbol))
+          in
+          let checked = Set.diff traded in_flight in
+          Ok
+            {
+              Subledger_reading.breaks =
+                Subledger.check
+                  ~own:(List.filter own ~f:(fun (_, symbol, _) -> Set.mem checked symbol))
+                  ~account:
+                    (List.map (Set.to_list checked) ~f:(fun s ->
+                         (s, account_position t s)))
+                  ~tolerance:Subledger.tolerance;
+              checked;
+              unsettled = Set.inter traded in_flight;
+            })
+
+(* Rules.Context's [netted] for [symbol]: judged in this reading, and whole.
+   Read only under a limit's trip with the book's (reduce_through_trip) word
+   on, the one place it decides anything; false otherwise, and false when
+   the sub-ledger cannot be read. *)
+let netted ?except t symbol =
+  match Halt.state t.halt with
+  | Halt.State.Tripped _ when t.spec.Desk_spec.reduce_through_trip -> (
+      match subledger ?except t with
+      | Error _ -> false
+      | Ok r ->
+          Set.mem r.Subledger_reading.checked symbol
+          && not
+               (List.exists r.Subledger_reading.breaks ~f:(fun b ->
+                    Symbol.equal b.Subledger.symbol symbol)))
+  | Halt.State.Tripped _ | Halt.State.Clear | Halt.State.Halted _ | Halt.State.Stopped _
+    ->
+      false
+
+(* One break said: a line on the log and a row in the journal's alerts,
+   kind subledger_break, the name as its limit. The write is caught: a
+   failed alert is said and changes nothing else. *)
+let say_break t ~at ~(occasion : string) (b : Subledger.break) =
+  let name = Symbol.to_string b.Subledger.symbol in
+  let line =
+    sprintf
+      "sub-ledger %s: %s; nothing that grows a strategy's position in %s is sent until a \
+       person settles it"
+      occasion (Subledger.describe b) name
+  in
+  (match
+     Or_error.try_with (fun () ->
+         Journal.record_alert t.journal
+           { Journal.Alert.at; kind = "subledger_break"; limit_name = name; line })
+   with
+  | Ok () -> ()
+  | Error e ->
+      t.on_event
+        (sprintf "desk      the sub-ledger alert for %s could NOT be journaled (%s)" name
+           (Error.to_string_hum e)));
+  t.on_event ("desk      " ^ line)
+
+(* A reading, folded into what the checks have seen. A break STANDS when the
+   name broke at this check and at the last one that judged it -- a break
+   must persist across a settled state to count, so a sum read between a
+   fill reaching the account and its report reaching the journal, or a
+   positions read the venue has not yet caught up on, is never alerted nor
+   refuses -- and it is alerted once, when it first stands ([alert]).
+   A name judged whole leaves both sets, said once if it had stood; a name
+   not judged keeps whatever it had. *)
+let fold_reading ?(alert = true) t ~at (r : Subledger_reading.t) =
+  let broken =
+    Symbol.Set.of_list
+      (List.map r.Subledger_reading.breaks ~f:(fun b -> b.Subledger.symbol))
+  in
+  let standing = Set.inter broken t.seen_breaks in
+  if alert then
+    List.iter r.Subledger_reading.breaks ~f:(fun b ->
+        if
+          Set.mem standing b.Subledger.symbol
+          && not (Set.mem t.standing_breaks b.Subledger.symbol)
+        then say_break t ~at ~occasion:"at a sync" b);
+  let whole = Set.diff r.Subledger_reading.checked broken in
+  Set.iter (Set.inter whole t.standing_breaks) ~f:(fun s ->
+      t.on_event (sprintf "desk      sub-ledger: %s sums again" (Symbol.to_string s)));
+  t.seen_breaks <- Set.union (Set.diff t.seen_breaks whole) broken;
+  t.standing_breaks <- Set.union (Set.diff t.standing_breaks whole) standing
+
+(* The sync pass's check (Desk.sync_with, after each read of the account is
+   applied): one alert per break, when it first stands, and none after
+   while it stands. *)
+let check_subledger t ~at =
+  match subledger t with
+  | Error why ->
+      if not t.subledger_unread then (
+        t.subledger_unread <- true;
+        t.on_event
+          (sprintf
+             "desk      the sub-ledger could not be checked (%s); a rebalance is refused \
+              while it cannot"
+             why))
+  | Ok r ->
+      t.subledger_unread <- false;
+      fold_reading t ~at r
+
+(* The nightly close's check (Session_close.run_forever, once the session
+   is recorded): every break standing at it said again, one alert each --
+   the night's record that the sub-ledgers sum, or which name breaks. A
+   break that first stands at this check is said here and not twice. *)
+let close_subledger t ~(date : Date.t) ~at =
+  let day = Date.to_string date in
+  match subledger t with
+  | Error why ->
+      t.on_event
+        (sprintf "desk      sub-ledger at the close of %s could not be checked: %s" day
+           why)
+  | Ok r -> (
+      fold_reading ~alert:false t ~at r;
+      let standing =
+        List.filter r.Subledger_reading.breaks ~f:(fun b ->
+            Set.mem t.standing_breaks b.Subledger.symbol)
+      in
+      List.iter standing ~f:(say_break t ~at ~occasion:(sprintf "at the close of %s" day));
+      let n = Set.length r.Subledger_reading.checked in
+      let unsettled =
+        match Set.to_list r.Subledger_reading.unsettled with
+        | [] -> ""
+        | names ->
+            sprintf "; not judged, an order in them may still fill: %s"
+              (String.concat ~sep:", " (List.map names ~f:Symbol.to_string))
+      in
+      match (standing, r.Subledger_reading.breaks) with
+      | _ :: _, _ -> ()
+      | [], [] ->
+          t.on_event
+            (sprintf
+               "desk      sub-ledger at the close of %s: %d name%s checked, no break%s"
+               day n
+               (if n = 1 then "" else "s")
+               unsettled)
+      | [], seen ->
+          t.on_event
+            (sprintf
+               "desk      sub-ledger at the close of %s: %d name%s checked, no standing \
+                break; seen once, and judged again at the next sync: %s%s"
+               day n
+               (if n = 1 then "" else "s")
+               (String.concat ~sep:"; " (List.map seen ~f:Subledger.describe))
+               unsettled))
+
 (* [own]: the proposer's own position in [symbol] -- a strategy's, from its
    fills; 0 for a ticket, which is no strategy's. *)
 let context ?(tif = Order.Tif.Day) ?(own = 0.0) t ~(source : string) ~(symbol : Symbol.t)
@@ -366,6 +587,7 @@ let context ?(tif = Order.Tif.Day) ?(own = 0.0) t ~(source : string) ~(symbol : 
     halt_why = Halt.reason t.halt;
     own;
     account = reducible_account t symbol;
+    netted = netted t symbol;
     session = t.session;
     mark = live_mark t symbol;
     (* Read only for an order that is priced at it: a ticket's context is
@@ -1044,21 +1266,23 @@ let resolve t (client : Ids.Client_order_id.t) ~(delays : Time_ns.Span.t list) :
 
    The switch is the rules' own function too (Rules.switch_refusal): under a
    limit's trip an order that only shrinks the proposer's own position [own]
-   and the account's passes, the account's read here, at this instant, net
-   of the desk's other resting reductions in the name ([reducible_account]). [own]
-   is what the rules were given: a strategy's fills change only in a
-   sequencer job, and this runs inside the one that checked it. *)
+   and either the account's or a sub-ledger known to sum (Rules.reduces)
+   passes, the account's read here, at this instant, net of the desk's other
+   resting reductions in the name ([reducible_account]), and the sub-ledger
+   read here too ([netted]), the order itself -- open since [admit] -- not
+   counted as one that may still fill. [own] is what the rules were given:
+   a strategy's fills change only in a sequencer job, and this runs inside
+   the one that checked it. *)
 let pre_wire t ~(own : float) (request : Order.Request.t) :
     (Wire.permit Venue.Trade.t, Rules.Failure.t) Result.t =
   let fail rule why = Error { Rules.Failure.rule; why } in
   let tif = request.Order.Request.tif in
+  let except = Ids.Client_order_id.to_string request.Order.Request.client_order_id in
   match
     ( Rules.switch_refusal ~spec:t.spec ~halt_state:(Halt.state t.halt)
         ~halt_why:(Halt.reason t.halt) ~own
-        ~account:
-          (reducible_account
-             ~except:(Ids.Client_order_id.to_string request.Order.Request.client_order_id)
-             t request.Order.Request.symbol)
+        ~account:(reducible_account ~except t request.Order.Request.symbol)
+        ~netted:(netted ~except t request.Order.Request.symbol)
         ~side:request.Order.Request.side ~qty:request.Order.Request.qty,
       t.trade )
   with
@@ -1423,9 +1647,15 @@ end
      them against the book as it is now, whatever E they were sized at, and
      re-planning would take the legs out of the caller's hands. What is asked
      again is what makes the legs wrong rather than merely sized at another
-     E: that the book's equity is known ([sizing_equity]), and I2 -- that the
-     account still holds at least the strategy's own position in each name
-     it has one in, in its direction (Rebalance.account_refusal);
+     E: that the book's equity is known ([sizing_equity]);
+   - THE SUB-LEDGER ([subledger]): no order may grow the strategy's own
+     position (Rebalance.grows) in a name whose sub-ledger has a STANDING
+     break ([fold_reading]: broken at two checks running), which the refusal
+     names with both figures (Subledger.refuses); a reduction goes, and so
+     does every order in a name that sums. One sum per name replaced the
+     per-strategy test that the account held the strategy's own position,
+     which two strategies on opposite sides of one name could never pass. A
+     sub-ledger that cannot be read refuses the rebalance;
    - THE CALENDAR (Rebalance.calendar_refusal): the signal's as_of, the
      closes and the newest recorded session are one date, and no weekday
      has closed since it unrecorded -- for a document with an order of its
@@ -1528,12 +1758,35 @@ let check_rebalance ?(timing = ref false) t ~(mode : Rebalance.Mode.t)
         "the book's equity is unknown: " ^ why)
   in
   let%bind () =
-    match
-      List.find_map (Map.to_alist own) ~f:(fun (symbol, q) ->
-          Rebalance.account_refusal ~symbol ~held:(position symbol) ~own:q)
-    with
-    | Some why -> Error why
-    | None -> Ok ()
+    match subledger t with
+    | Error why ->
+        Error
+          (sprintf
+             "the sub-ledger could not be read (%s), so no order is judged against it; \
+              the rebalance is refused rather than sent without it"
+             why)
+    | Ok r -> (
+        let standing =
+          List.filter r.Subledger_reading.breaks ~f:(fun b ->
+              Set.mem t.standing_breaks b.Subledger.symbol)
+        in
+        match
+          List.find_mapi legs ~f:(fun i (leg : Rebalance.Leg.t) ->
+              let symbol = leg.Rebalance.Leg.symbol in
+              Subledger.refuses standing ~symbol
+                ~increases:
+                  (Rebalance.grows
+                     ~position:(Option.value (Map.find own symbol) ~default:0.0)
+                     ~side:leg.Rebalance.Leg.side ~qty:leg.Rebalance.Leg.qty)
+              |> Option.map ~f:(fun why -> (i, leg, why)))
+        with
+        | Some (i, leg, why) ->
+            Error
+              (sprintf "order %d of %d (%s %s %d): %s" (i + 1) n
+                 (Symbol.to_string leg.Rebalance.Leg.symbol)
+                 (Order.Side.to_string leg.Rebalance.Leg.side)
+                 leg.Rebalance.Leg.qty why)
+        | None -> Ok ())
   in
   let now = t.now () in
   let%bind () =

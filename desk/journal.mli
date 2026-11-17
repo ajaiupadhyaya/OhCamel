@@ -353,6 +353,10 @@ val source_fills : t -> prefix:string -> (Symbol.t * float) list
     by symbol, read through orders_by_source: a strategy's own position when [prefix] is
     its "signal:<slug>:". *)
 
+val fills_by_source : t -> (string * Symbol.t * float) list
+(** The net signed quantity of every order's fills, by the order's source and symbol --
+    every source, the hand's included: the sub-ledgers' raw figures (Oms.subledger). *)
+
 val source_orders_unsettled :
   t -> prefix:string -> since:Date.t option -> Order_row.t list
 (** The orders whose source begins with [prefix] that may still fill: non-terminal, or

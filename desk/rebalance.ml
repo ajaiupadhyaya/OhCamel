@@ -31,11 +31,12 @@
    EVERY DOUBT IS NO TARGETS AND A REASON, never a guess: an unknown equity,
    an unknown or unusable price, an unknown fill history, a weight for a name
    the strategy does not own, a position in one it no longer owns, a position
-   that is not a whole number of shares, a target too large to be one, or an
-   account that holds less than the strategy's own position in the same
-   direction -- a hand sale, a reverse split or a fill the desk never heard
-   of, after which selling the strategy's shares would sell what is not
-   there.
+   that is not a whole number of shares, or a target too large to be one.
+   Whether the account still holds what the desk's fills say it should -- a
+   hand sale, a reverse split, a fill the desk never heard of -- is asked of
+   all the strategies at once, per name, by the one sub-ledger check
+   (desk/subledger.ml, Oms.check_rebalance): a strategy's own position alone
+   cannot be compared with an account that nets it against others'.
 
    AND NOTHING IS SIZED OFF THE CALENDAR ([calendar_refusal]). The signal,
    the close it is priced at and the newest recorded session must all be the
@@ -273,24 +274,14 @@ let calendar_refusal ~(zone : Timezone.t option) ~(now : Time_ns.t) ~(as_of : Da
    made, and is not sized against. *)
 let whole_tolerance = 1e-6
 
-(* I2: the account's holding of [symbol], from the book the gate reads, must
-   cover the strategy's own position in its direction. A hand sale or a
-   reverse split can leave it short of it, and then selling the strategy's
-   shares sells what is not there. [plan] asks it for each symbol it sizes,
-   and Oms.check_rebalance asks it again, for every name the strategy holds,
-   under the order manager's queue -- the plan was made outside it. *)
-let account_refusal ~(symbol : Symbol.t) ~(held : float) ~(own : float) : string option =
-  let short_of_it =
-    (Float.( > ) own 0.0 && Float.( < ) held (own -. whole_tolerance))
-    || (Float.( < ) own 0.0 && Float.( > ) held (own +. whole_tolerance))
-  in
-  Option.some_if short_of_it
-    (sprintf
-       "the account holds %.17g %s, less than the strategy's own %.17g: a hand sale, a \
-        split or a fill the desk never heard of; nothing is sized until a person settles \
-        it"
-       held (Symbol.to_string symbol) own)
-
+(* The account's holding of a name is NOT compared here with the strategy's
+   own: several strategies may hold one name, on opposite sides, and the
+   account holds their net, so a strategy's own position may exceed the
+   account's or sit across zero from it with nothing wrong. The account is
+   checked against the strategies' positions SUMMED, per name, by the one
+   sub-ledger check (desk/subledger.ml), which Oms.check_rebalance asks under
+   the order manager's queue. [account] here orders the legs and nothing
+   else. *)
 let plan ~(symbols : Symbol.t list) ~(weights : (Symbol.t * float) list)
     ~(capital_fraction : float) ~(scale : float) ~(equity : (float, string) Result.t)
     ~(account : float Symbol.Map.t) ~(marks : (float, string) Result.t Symbol.Map.t)
@@ -389,16 +380,6 @@ let plan ~(symbols : Symbol.t list) ~(weights : (Symbol.t * float) list)
                  "the strategy's own %s position is %.17g shares, not a whole number; \
                   the desk will not size against it"
                  name held)
-        in
-        (* I2 ([account_refusal]). *)
-        let%bind () =
-          match
-            account_refusal ~symbol
-              ~held:(Option.value (Map.find account symbol) ~default:0.0)
-              ~own:(Float.of_int current)
-          with
-          | Some why -> Error why
-          | None -> Ok ()
         in
         let order = target - current in
         Ok

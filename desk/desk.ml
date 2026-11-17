@@ -207,7 +207,13 @@ let sync_with t ~account ~positions ~at ~seq =
            tries again. *)
         if not t.synced then (
           t.synced <- true;
-          t.on_first_sync ())
+          t.on_first_sync ());
+        (* The sync pass's sub-ledger check (Oms.check_subledger): the
+           strategies' positions summed per name against the account just
+           applied, one alert per break when it first stands. After the
+           first sync's hook, so the trail is restored before anything is
+           said about the book. *)
+        Option.iter t.oms ~f:(fun oms -> Oms.check_subledger oms ~at)
     | Error e, _ | _, Error e -> t.last_error <- Some (Error.to_string_hum e));
     t.on_change ())
 

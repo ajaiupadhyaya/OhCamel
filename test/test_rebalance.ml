@@ -199,7 +199,7 @@ let with_oms ?(now = evening) ?(session_date = "2026-09-14")
     ?(closes = [ (aapl, 149.0); (msft, 299.0); (xom, 100.0) ])
     ?(spec = { Desk_spec.default with Desk_spec.trading = Desk_spec.Enabled })
     ?(book_is_current = true) ?(held = [ (aapl, 400.0); (msft, 100.0); (xom, -200.0) ])
-    ?(halt = D.Halt.create D.Halt.Source.none) ~f () =
+    ?(halt = D.Halt.create D.Halt.Source.none) ?(on_event = ignore) ~f () =
   let graph =
     Graph.create
       ~starting_cash:(Notional.of_float 1_000_000.0)
@@ -264,8 +264,7 @@ let with_oms ?(now = evening) ?(session_date = "2026-09-14")
           ~trade:(Ok (D.Sim_venue.trade ~auto:false venue))
           ~halt ~accepts_tickets:false ~adv:(D.Oms.Adv.Fixed 1_000_000.0)
           ~now:(fun () -> now)
-          ~rng:(Random.State.make [| 15 |]) ~on_change:ignore ~on_event:ignore
-          ~after_fill:ignore
+          ~rng:(Random.State.make [| 15 |]) ~on_change:ignore ~on_event ~after_fill:ignore
           ~book_is_current:(fun () -> book_is_current)
           ()
       in
@@ -586,6 +585,370 @@ let test_a_failed_reduction_the_venue_may_still_work_shrinks_the_room_too () =
       Alcotest.(check bool)
         "sell 50 fits what is left" true
         (Result.is_ok (check [ leg aapl D.Order.Side.Sell 50 ])))
+    ()
+
+(* ------------------------------------------------------------------------ *)
+(* One sub-ledger check: two strategies on opposite sides of one name        *)
+(* ------------------------------------------------------------------------ *)
+
+(* The pair, in AAPL (this book's stand-in for one ETF two strategies
+   trade): alpha bought 100, beta sold 50 short, and the account holds the
+   net -- +50 unless a case says otherwise. MSFT 100 and XOM -200 are held by
+   no strategy: the droplet's seed lots, in names no strategy trades. *)
+let alpha = { tech_strategy with Signals_spec.Strategy.name = "alpha" }
+let beta = { tech_strategy with Signals_spec.Strategy.name = "beta" }
+
+let source_of (s : Signals_spec.Strategy.t) =
+  {
+    D.Rebalance.Source.strategy = s.name;
+    sequence = 2;
+    as_of = Date.of_string "2026-09-14";
+  }
+
+let pair_fills journal =
+  journal_order journal ~n:1 ~source:"signal:alpha:1" ~state:D.Order.State.Filled
+    ~fills:[ 100.0 ] 100;
+  journal_order journal ~n:2 ~source:"signal:beta:1" ~side:D.Order.Side.Sell
+    ~state:D.Order.State.Filled ~fills:[ 50.0 ] 50
+
+let pair_held aapl_qty = [ (aapl, aapl_qty); (msft, 100.0); (xom, -200.0) ]
+
+let set_account oms q =
+  Graph.set_qty oms.D.Oms.graph aapl (Qty.of_float q);
+  Graph.stabilize oms.D.Oms.graph
+
+let check_for oms s legs =
+  D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source:(source_of s) ~legs
+
+let passes what r =
+  match r with Ok _ -> () | Error why -> Alcotest.failf "%s was refused: %s" what why
+
+(* Both strategies of a netted pair are sizable. The old per-strategy rule
+   asked each one alone whether the account held its own position: alpha's
+   +100 against the account's +50 refused alpha, and beta's -50 against
+   +50 refused beta, forever. Summed, 100 - 50 = 50 is the account, and
+   each plans and passes: alpha up to 136 (0.2 x 0.1 x E / 149, E =
+   1,000,000 + 7,500 + 30,000 - 20,000 = 1,017,500), beta down to -68. *)
+let test_both_strategies_of_a_netted_pair_are_sized () =
+  with_oms ~held:(pair_held 50.0)
+    ~f:(fun oms journal ->
+      pair_fills journal;
+      let plan s weight =
+        match
+          D.Oms.plan_rebalance oms ~mode:D.Rebalance.Mode.Open ~strategy:s
+            ~targets:[ (aapl, weight) ]
+            ~scale:1.0
+        with
+        | Ok (legs, _) -> legs
+        | Error why ->
+            Alcotest.failf "%s: no targets: %s" s.Signals_spec.Strategy.name why
+      in
+      let a = plan alpha 0.2 and b = plan beta (-0.1) in
+      Alcotest.(check (list (triple string int int)))
+        "alpha buys 36 to 136, beta sells 18 to -68"
+        [ ("buy", 36, 136); ("sell", 18, -68) ]
+        (List.map (a @ b) ~f:(fun (l : Leg.t) ->
+             (D.Order.Side.to_string l.Leg.side, l.Leg.qty, l.Leg.target)));
+      D.Oms.check_subledger oms ~at:evening;
+      D.Oms.check_subledger oms ~at:evening;
+      passes "alpha's rebalance" (check_for oms alpha a);
+      passes "beta's rebalance" (check_for oms beta b);
+      Alcotest.(check int)
+        "no break alerted" 0
+        (List.length (D.Journal.recent_alerts journal ~limit:10)))
+    ()
+
+(* The account at +40: a break, {AAPL; 50; 40}. Seen once it refuses
+   nothing -- it may be a fill on its way from the venue to the journal --
+   and seen again at the next settled check it stands. Then an increase of
+   either strategy's own position is refused, naming both figures; a
+   reduction of either goes, so the long can still sell and the short still
+   cover; and an order in a name with no break is not touched. *)
+let test_a_standing_break_refuses_either_strategy's_increase_and_no_reduction () =
+  with_oms ~held:(pair_held 40.0)
+    ~f:(fun oms journal ->
+      pair_fills journal;
+      D.Oms.check_subledger oms ~at:evening;
+      passes "alpha's buy at the first sight of the break"
+        (check_for oms alpha [ leg aapl D.Order.Side.Buy 10 ]);
+      D.Oms.check_subledger oms ~at:evening;
+      List.iter
+        [
+          ("alpha's buy", alpha, leg aapl D.Order.Side.Buy 10);
+          ("beta's sell", beta, leg aapl D.Order.Side.Sell 10);
+          ("alpha's sell through its zero", alpha, leg aapl D.Order.Side.Sell 150);
+        ]
+        ~f:(fun (what, s, l) ->
+          let why = refusal (check_for oms s [ l ]) in
+          contains what ~substring:"sub-ledger" why;
+          contains what ~substring:"sum to 50" why;
+          contains what ~substring:"holds 40" why);
+      passes "alpha's sell of its 100"
+        (check_for oms alpha [ leg aapl D.Order.Side.Sell 100 ]);
+      passes "beta's cover of its 50"
+        (check_for oms beta [ leg aapl D.Order.Side.Buy 50 ]);
+      passes "alpha's buy in MSFT, a name with no break"
+        (check_for oms alpha [ leg msft D.Order.Side.Buy 10 ]))
+    ()
+
+(* One alert per break, at the second settled sight of it, and none after
+   while it stands; a name with an order that may still fill is not judged
+   at all; a name that sums again is said once, and a break after that is a
+   new occurrence. The seed lots -- MSFT 100 and XOM -200, and AAPL's own
+   hand ticket -- are never breaks. *)
+let test_a_break_is_alerted_once_when_it_stands () =
+  let lines = ref [] in
+  with_oms ~held:(pair_held 40.0)
+    ~on_event:(fun l -> lines := l :: !lines)
+    ~f:(fun oms journal ->
+      pair_fills journal;
+      let alerts () =
+        List.filter (D.Journal.recent_alerts journal ~limit:50) ~f:(fun a ->
+            String.equal a.D.Journal.Alert.kind "subledger_break")
+      in
+      let count what n = Alcotest.(check int) what n (List.length (alerts ())) in
+      D.Oms.check_subledger oms ~at:evening;
+      count "seen once: no alert" 0;
+      D.Oms.check_subledger oms ~at:evening;
+      count "seen twice: one alert" 1;
+      (match alerts () with
+      | [ a ] ->
+          Alcotest.(check string) "for AAPL" "AAPL" a.D.Journal.Alert.limit_name;
+          contains "the line" ~substring:"sum to 50, and the account holds 40"
+            a.D.Journal.Alert.line
+      | _ -> ());
+      D.Oms.check_subledger oms ~at:evening;
+      D.Oms.check_subledger oms ~at:evening;
+      count "still standing: still one" 1;
+      Alcotest.(check bool)
+        "the log said it" true
+        (List.exists !lines ~f:(String.is_substring ~substring:"sum to 50"));
+      set_account oms 50.0;
+      D.Oms.check_subledger oms ~at:evening;
+      Alcotest.(check bool)
+        "whole again, said" true
+        (List.exists !lines ~f:(String.is_substring ~substring:"AAPL sums again"));
+      (* A hand's buy of 10 resting in AAPL, and a read of the account that
+         already holds its fill (+60) before the fill's report reaches the
+         journal: the name is not judged while the order may fill, however
+         many checks pass. *)
+      let resting =
+        D.Order.create
+          {
+            D.Order.Request.client_order_id = cid 9;
+            symbol = aapl;
+            side = D.Order.Side.Buy;
+            qty = 10;
+            kind = D.Order.Kind.Market;
+            tif = D.Order.Tif.Opg;
+          }
+      in
+      D.Journal.insert_order journal resting ~source:"manual"
+        ~decision_price:(Price.of_float 150.0) ~arrival:None ~verdict:`Null
+        ~at:(at "2026-09-14T23:00:00Z");
+      ignore (D.Oms.record oms resting (D.Order.Event.Acknowledged "venue-9") : D.Order.t);
+      set_account oms 60.0;
+      D.Oms.check_subledger oms ~at:evening;
+      D.Oms.check_subledger oms ~at:evening;
+      count "unsettled: not judged" 1;
+      (* The report arrives: the hand's sub-ledger holds +10 beside the
+         pair's 50, and the account's 60 sums. *)
+      ignore
+        (D.Oms.record oms resting
+           (D.Order.Event.Venue_fill
+              {
+                D.Order.Fill.execution_id = "hand-10";
+                qty = 10.0;
+                price = Price.of_float 150.0;
+                at = evening;
+                position_qty = None;
+              })
+          : D.Order.t);
+      D.Oms.check_subledger oms ~at:evening;
+      D.Oms.check_subledger oms ~at:evening;
+      count "the hand's ticket is its own sub-ledger: whole" 1;
+      set_account oms 55.0;
+      D.Oms.check_subledger oms ~at:evening;
+      D.Oms.check_subledger oms ~at:evening;
+      count "a new break, a new alert" 2)
+    ();
+  (* The droplet's book alone: lots no strategy holds, in names no strategy
+     trades. Nothing to judge, nothing alerted. *)
+  with_oms
+    ~f:(fun oms journal ->
+      journal_order journal ~n:2 ~source:"manual" ~state:D.Order.State.Filled
+        ~fills:[ 50.0 ] 50;
+      D.Oms.check_subledger oms ~at:evening;
+      D.Oms.check_subledger oms ~at:evening;
+      Alcotest.(check int)
+        "the seed lots are no break" 0
+        (List.length (D.Journal.recent_alerts journal ~limit:10)))
+    ()
+
+(* The nightly close says each standing break once, as its own alert, and a
+   close with none says so on the log. *)
+let test_the_close_says_every_standing_break () =
+  let lines = ref [] in
+  with_oms ~held:(pair_held 40.0)
+    ~on_event:(fun l -> lines := l :: !lines)
+    ~f:(fun oms journal ->
+      pair_fills journal;
+      D.Oms.check_subledger oms ~at:evening;
+      D.Oms.check_subledger oms ~at:evening;
+      D.Oms.close_subledger oms ~date:(Date.of_string "2026-09-14") ~at:evening;
+      let alerts =
+        List.filter (D.Journal.recent_alerts journal ~limit:50) ~f:(fun a ->
+            String.equal a.D.Journal.Alert.kind "subledger_break")
+      in
+      Alcotest.(check int)
+        "two alerts: the sync's, then the close's" 2 (List.length alerts);
+      (match alerts with
+      | newest :: _ ->
+          contains "the close's line" ~substring:"the close of 2026-09-14"
+            newest.D.Journal.Alert.line
+      | [] -> ());
+      set_account oms 50.0;
+      D.Oms.close_subledger oms ~date:(Date.of_string "2026-09-15") ~at:evening;
+      Alcotest.(check bool)
+        "a whole close is said" true
+        (List.exists !lines
+           ~f:
+             (String.is_substring
+                ~substring:"the close of 2026-09-15: 1 name checked, no break")))
+    ()
+
+(* R2 under netting. A limit's trip with the book's (reduce_through_trip)
+   word on; alpha +100 and beta -50 net to the account's +50. Under the 1.2
+   line alone -- an order must shrink the strategy's own position AND the
+   account's, by no more than either -- alpha's sell of 100 is more than the
+   account's 50, and beta's buy to cover grows the account's long: neither
+   could ever be flattened. With the sub-ledger whole and nothing in the
+   name that may still fill, the account moves by exactly what the
+   strategy's own position does, so each flatten passes; a flip of either is
+   refused whole, and so is any increase. *)
+let trip_spec =
+  {
+    Desk_spec.default with
+    Desk_spec.trading = Desk_spec.Enabled;
+    reduce_through_trip = true;
+  }
+
+let tripped () =
+  let halt = D.Halt.create D.Halt.Source.none in
+  D.Halt.restore_trip halt ~limit:"dd-cap" ~at:(at "2026-09-14T21:00:00Z");
+  halt
+
+let test_both_flattens_of_a_netted_pair_pass_a_limit's_trip () =
+  with_oms ~halt:(tripped ()) ~spec:trip_spec ~held:(pair_held 50.0)
+    ~f:(fun oms journal ->
+      pair_fills journal;
+      passes "alpha's flatten, sell 100"
+        (check_for oms alpha [ leg aapl D.Order.Side.Sell 100 ]);
+      passes "beta's flatten, buy 50"
+        (check_for oms beta [ leg aapl D.Order.Side.Buy 50 ]);
+      passes "alpha's part, sell 30"
+        (check_for oms alpha [ leg aapl D.Order.Side.Sell 30 ]);
+      List.iter
+        [
+          ("alpha's flip, sell 150", alpha, leg aapl D.Order.Side.Sell 150);
+          ("beta's flip, buy 60", beta, leg aapl D.Order.Side.Buy 60);
+          ("alpha's increase, buy 10", alpha, leg aapl D.Order.Side.Buy 10);
+          ("beta's increase, sell 10", beta, leg aapl D.Order.Side.Sell 10);
+        ]
+        ~f:(fun (what, s, l) ->
+          contains what ~substring:"kill_switch:" (refusal (check_for oms s [ l ]))))
+    ();
+  (* One after the other, in either order: the first fills, the journal and
+     the account move together, and the second passes. *)
+  let fill journal ~n ~source side qty =
+    journal_order journal ~n ~source ~side ~state:D.Order.State.Filled
+      ~fills:[ Float.of_int qty ]
+      qty
+  in
+  with_oms ~halt:(tripped ()) ~spec:trip_spec ~held:(pair_held 50.0)
+    ~f:(fun oms journal ->
+      pair_fills journal;
+      passes "alpha first" (check_for oms alpha [ leg aapl D.Order.Side.Sell 100 ]);
+      fill journal ~n:3 ~source:"signal:alpha:2" D.Order.Side.Sell 100;
+      set_account oms (-50.0);
+      passes "then beta" (check_for oms beta [ leg aapl D.Order.Side.Buy 50 ]))
+    ();
+  with_oms ~halt:(tripped ()) ~spec:trip_spec ~held:(pair_held 50.0)
+    ~f:(fun oms journal ->
+      pair_fills journal;
+      passes "beta first" (check_for oms beta [ leg aapl D.Order.Side.Buy 50 ]);
+      fill journal ~n:3 ~source:"signal:beta:2" D.Order.Side.Buy 50;
+      set_account oms 100.0;
+      passes "then alpha" (check_for oms alpha [ leg aapl D.Order.Side.Sell 100 ]))
+    ();
+  (* And at the wire: the order being sent is itself open by then, and is
+     not what makes the name unsettled. *)
+  with_oms ~halt:(tripped ()) ~spec:trip_spec ~held:(pair_held 50.0)
+    ~f:(fun oms journal ->
+      pair_fills journal;
+      let request =
+        {
+          D.Order.Request.client_order_id = cid 7;
+          symbol = aapl;
+          side = D.Order.Side.Buy;
+          qty = 50;
+          kind = D.Order.Kind.Market;
+          tif = D.Order.Tif.Opg;
+        }
+      in
+      D.Oms.admit oms
+        [
+          {
+            D.Journal.Insert.order = D.Order.create request;
+            source = "signal:beta:2";
+            decision_price = Price.of_float 149.0;
+            arrival = None;
+            verdict = `Null;
+          };
+        ];
+      match D.Oms.pre_wire oms ~own:(-50.0) request with
+      | Ok _ -> ()
+      | Error f -> Alcotest.failf "beta's cover at the wire: %s" (D.Oms.reason f))
+    ()
+
+(* What the netting cannot make safe is refused. A break in the name (the
+   account +40 against the sub-ledger's 50): the account's move is no longer
+   known to be the strategy's, so only the 1.2 line passes -- alpha's sell of
+   40 shrinks both and is no larger than either, its sell of 100 would take
+   the account through zero to a short nobody holds, and beta's cover grows
+   the account. An order of the desk's that may still fill in the name (a
+   hand's buy of 10, resting): the sum is not known, and beta's cover is
+   refused until it is. *)
+let test_a_netted_flatten_is_refused_when_the_sum_is_not_known () =
+  with_oms ~halt:(tripped ()) ~spec:trip_spec ~held:(pair_held 40.0)
+    ~f:(fun oms journal ->
+      pair_fills journal;
+      passes "alpha's sell of 40" (check_for oms alpha [ leg aapl D.Order.Side.Sell 40 ]);
+      contains "alpha's sell of 100 through the account's zero" ~substring:"kill_switch:"
+        (refusal (check_for oms alpha [ leg aapl D.Order.Side.Sell 100 ]));
+      contains "beta's cover" ~substring:"kill_switch:"
+        (refusal (check_for oms beta [ leg aapl D.Order.Side.Buy 50 ])))
+    ();
+  with_oms ~halt:(tripped ()) ~spec:trip_spec ~held:(pair_held 50.0)
+    ~f:(fun oms journal ->
+      pair_fills journal;
+      let resting =
+        D.Order.create
+          {
+            D.Order.Request.client_order_id = cid 9;
+            symbol = aapl;
+            side = D.Order.Side.Buy;
+            qty = 10;
+            kind = D.Order.Kind.Market;
+            tif = D.Order.Tif.Opg;
+          }
+      in
+      D.Journal.insert_order journal resting ~source:"manual"
+        ~decision_price:(Price.of_float 150.0) ~arrival:None ~verdict:`Null
+        ~at:(at "2026-09-14T23:00:00Z");
+      ignore (D.Oms.record oms resting (D.Order.Event.Acknowledged "venue-9") : D.Order.t);
+      contains "beta's cover beside a resting order" ~substring:"kill_switch:"
+        (refusal (check_for oms beta [ leg aapl D.Order.Side.Buy 50 ])))
     ()
 
 (* An order of the strategy's that may still fill makes its position
@@ -994,30 +1357,30 @@ let test_no_targets_while_the_book_is_not_the_account's () =
               ~scale:1.0)))
     ()
 
-(* I2: the account must hold at least the strategy's own position in its
-   direction. The strategy holds SPY 100 and the account only 60 -- a hand
-   sale, a reverse split, a fill the desk missed -- so a flat signal would
-   sell 100 where 60 are held: no targets. Short 50 against an account short
-   only 20, the same. An account holding 100, or 300 with a hand lot beside
-   the strategy's, sells exactly the strategy's 100. *)
-let test_no_targets_when_the_account_holds_less_than_the_strategy's_own () =
+(* Formerly I2 (Task 15): the plan refused a strategy whose own position the
+   account did not cover in its direction. Task 1.6 moved that question to
+   the one sub-ledger check, which sums every strategy's position per name
+   (desk/subledger.ml; its cases are test_subledger.ml's and the order
+   manager's above), because a name two strategies hold on opposite sides is
+   an account that covers neither alone: own +100 beside an account of +60
+   is a second strategy short 40, and own -50 beside +50 is a long 100
+   beside it. So the plan sizes from the strategy's own position whatever
+   the account nets it to -- a flat signal sells exactly the strategy's 100,
+   or buys back exactly its 50 -- and the account orders the legs and
+   nothing else. *)
+let test_the_plan_sizes_a_strategy_whatever_the_account_nets_it_to () =
   let current q = Ok (Symbol.Map.singleton spy q) in
   let account q = Symbol.Map.singleton spy q in
-  (match plan ~current:(current 100.0) ~account:(account 60.0) ~price:500.0 [] with
-  | Ok _ -> Alcotest.fail "a flat signal sold what the account does not hold"
-  | Error why ->
-      contains "long"
-        ~substring:"the account holds 60 SPY, less than the strategy's own 100" why);
-  (match plan ~current:(current (-50.0)) ~account:(account (-20.0)) ~price:500.0 [] with
-  | Ok _ -> Alcotest.fail "a short the account does not hold was bought back"
-  | Error why ->
-      contains "short"
-        ~substring:"the account holds -20 SPY, less than the strategy's own -50" why);
-  List.iter [ 100.0; 300.0 ] ~f:(fun held ->
+  List.iter [ 100.0; 300.0; 60.0; -40.0 ] ~f:(fun held ->
       Alcotest.(check (list (triple string int int)))
-        (sprintf "the account holds %g: sell exactly 100" held)
+        (sprintf "own +100, the account %g: sell exactly 100" held)
         [ ("sell", 100, 0) ]
-        (legs (plan ~current:(current 100.0) ~account:(account held) ~price:500.0 [])))
+        (legs (plan ~current:(current 100.0) ~account:(account held) ~price:500.0 [])));
+  List.iter [ -20.0; 50.0 ] ~f:(fun held ->
+      Alcotest.(check (list (triple string int int)))
+        (sprintf "own -50, the account %g: buy back exactly 50" held)
+        [ ("buy", 50, 0) ]
+        (legs (plan ~current:(current (-50.0)) ~account:(account held) ~price:500.0 [])))
 
 (* The recorded close, never the live mark. E is 1,000,000 + 400 x 150 +
    100 x 300 - 200 x 100 = 1,070,000 at the live book; at a weight of 1 and a
@@ -1182,12 +1545,19 @@ let test_a_rebalance_of_more_than_six_orders_is_refused () =
 (* [plan_rebalance] runs outside the order manager's queue, and
    [check_rebalance] inside it, so what the plan read is asked again there.
    The strategy owns AAPL 100 (one fill, journaled) and the account holds
-   400: a flat signal plans a sale of 100. Then, before the rebalance's turn,
-   the account's AAPL reads 60 -- a hand sale -- and the check refuses in
-   I2's words. And with the book no longer the account's, the equity is
-   unknown: refused in the sizing's words, ahead of the rules. *)
+   100: a flat signal plans a sale of 100. Then, before the rebalance's turn,
+   the account's AAPL reads 60 -- a hand sale outside the desk -- and two
+   sync checks find the break standing. Formerly I2 refused the sale here;
+   since Task 1.6 the check asks the sub-ledger instead, which refuses an
+   order that would grow the strategy's position, naming both figures, and
+   lets the sale go: a desk fill moves the account and the sub-ledger
+   together, so selling the strategy's own shares neither widens the break
+   nor narrows it, and a strategy in a broken name can still be cut. And
+   with the book no longer the account's, the equity is unknown: refused in
+   the sizing's words, ahead of the rules. *)
 let test_the_rebalance_asks_again_what_its_plan_read () =
   with_oms
+    ~held:[ (aapl, 100.0); (msft, 100.0); (xom, -200.0) ]
     ~f:(fun oms journal ->
       journal_order journal ~n:8 ~source:"signal:exp_a01_tech:1"
         ~state:D.Order.State.Filled ~fills:[ 100.0 ] 100;
@@ -1206,9 +1576,23 @@ let test_the_rebalance_asks_again_what_its_plan_read () =
              (D.Order.Side.to_string l.Leg.side, l.Leg.qty)));
       Graph.set_qty oms.D.Oms.graph aapl (Qty.of_float 60.0);
       Graph.stabilize oms.D.Oms.graph;
-      contains "I2, asked again"
-        ~substring:"the account holds 60 AAPL, less than the strategy's own 100"
-        (refusal (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source ~legs)))
+      D.Oms.check_subledger oms ~at:evening;
+      D.Oms.check_subledger oms ~at:evening;
+      Alcotest.(check bool)
+        "the planned sale still goes" true
+        (Result.is_ok
+           (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source ~legs));
+      let why =
+        refusal
+          (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
+             ~legs:[ leg aapl D.Order.Side.Buy 10 ])
+      in
+      contains "the sub-ledger, asked again"
+        ~substring:
+          "order 1 of 1 (AAPL buy 10): the sub-ledger breaks in AAPL: the strategies' \
+           own positions and the desk's hand tickets sum to 100, and the account holds \
+           60"
+        why)
     ();
   with_oms ~book_is_current:false
     ~f:(fun oms _ ->
@@ -1501,6 +1885,19 @@ let suite =
       Alcotest.test_case
         "a failed reduction the venue may still work shrinks the room too" `Quick
         test_a_failed_reduction_the_venue_may_still_work_shrinks_the_room_too;
+      Alcotest.test_case "both strategies of a netted pair are sized" `Quick
+        test_both_strategies_of_a_netted_pair_are_sized;
+      Alcotest.test_case
+        "a standing break refuses either strategy's increase and no reduction" `Quick
+        test_a_standing_break_refuses_either_strategy's_increase_and_no_reduction;
+      Alcotest.test_case "a break is alerted once when it stands" `Quick
+        test_a_break_is_alerted_once_when_it_stands;
+      Alcotest.test_case "the close says every standing break" `Quick
+        test_the_close_says_every_standing_break;
+      Alcotest.test_case "both flattens of a netted pair pass a limit's trip" `Quick
+        test_both_flattens_of_a_netted_pair_pass_a_limit's_trip;
+      Alcotest.test_case "a netted flatten is refused when the sum is not known" `Quick
+        test_a_netted_flatten_is_refused_when_the_sum_is_not_known;
       Alcotest.test_case "a strategy with an order that may still fill is not sized"
         `Quick test_a_strategy_with_an_order_that_may_still_fill_is_not_sized;
       Alcotest.test_case "the venue's submit is called in one place" `Quick
@@ -1528,8 +1925,8 @@ let suite =
         `Quick test_each_order_counts_the_ones_before_it_against_the_open_order_cap;
       Alcotest.test_case "no targets while the book is not the account's" `Quick
         test_no_targets_while_the_book_is_not_the_account's;
-      Alcotest.test_case "no targets when the account holds less than the strategy's own"
-        `Quick test_no_targets_when_the_account_holds_less_than_the_strategy's_own;
+      Alcotest.test_case "the plan sizes a strategy whatever the account nets it to"
+        `Quick test_the_plan_sizes_a_strategy_whatever_the_account_nets_it_to;
       Alcotest.test_case "a rebalance is sized and priced at the close, not the live mark"
         `Quick test_a_rebalance_is_sized_and_priced_at_the_close_not_the_live_mark;
       Alcotest.test_case "a prefix of the send order is gated" `Quick

@@ -1593,6 +1593,21 @@ let source_fills t ~prefix : (Symbol.t * float) list =
       Map.update acc symbol ~f:(fun x -> Option.value x ~default:0.0 +. q))
   |> Map.to_alist
 
+(* Every fill's net signed quantity by its order's source and symbol: the
+   sub-ledgers' raw figures (Oms.subledger groups the sources by owner,
+   Subledger.owner). Fills are facts whatever state their order reached
+   (invariant 11). A whole scan of the fills, grouped: the journal holds a
+   few thousand, and the sync pass asks once a minute. *)
+let fills_by_source t : (string * Symbol.t * float) list =
+  query t ~what:"fills by source"
+    "SELECT o.source, o.symbol, o.side, SUM(f.qty) FROM orders o JOIN fills f ON \
+     f.client_order_id = o.client_order_id GROUP BY o.source, o.symbol, o.side ORDER BY \
+     o.source, o.symbol, o.side"
+    [] ~row:(fun r ->
+      ( col_text r 0,
+        Symbol.of_string (col_text r 1),
+        Order.Side.sign (side_of_text (col_text r 2)) *. col_real r 3 ))
+
 (* The same fills with their prices and instants, oldest first: a strategy's
    record (desk/stop.ml) marks what it held to each close from these. *)
 let source_fill_rows t ~prefix : (Symbol.t * float * float * Time_ns.t) list =

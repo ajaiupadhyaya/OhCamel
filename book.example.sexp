@@ -235,13 +235,17 @@
  ;   stream                  the names streamed first. The stream carries
  ;                           thirty; every other name is polled.
  ;   reduce_through_trip     true | false. While a LIMIT has tripped the kill
- ;                           switch, an order that only shrinks a position --
- ;                           shrinks both the strategy's own and the
- ;                           account's in that name, by no more than either,
- ;                           never through zero -- still passes it: a stopped
- ;                           strategy's flatten, a governor's cut. A hand's
- ;                           halt and the engine's stop still refuse every
- ;                           order. Default false.
+ ;                           switch, an order that only shrinks a position
+ ;                           still passes it: it shrinks the strategy's own
+ ;                           position, never through zero, and either the
+ ;                           account's too, by no more than it holds, or the
+ ;                           name's sub-ledger sums (the strategies' and the
+ ;                           hand's positions are the account's, nothing in
+ ;                           the name may still fill) -- so each of two
+ ;                           strategies on opposite sides of one name can be
+ ;                           flattened. A stopped strategy's flatten, a
+ ;                           governor's cut. A hand's halt and the engine's
+ ;                           stop still refuse every order. Default false.
  ;
  ; The values below are the engine's own defaults, written out so that turning
  ; the desk on is one word rather than a guess. Three are not: incubation_cap,
