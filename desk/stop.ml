@@ -10,7 +10,10 @@
 
    Nothing evaluated these until 2026-11-03, while 23 strategies traded with them
    in the book. The record is Record.sessions_of over the strategy's own fills,
-   so a stop and the page read one drawdown. *)
+   so a stop and the page read one drawdown -- since Task 1.8 with its dividends on
+   their ex-dates and its fills' fees, so an ex-date for a monthly payer is not a
+   fall toward a stop's line. A strategy already stopped stays stopped: [evaluate]
+   skips it, whatever its record now reads. *)
 
 open Core
 module Spec = Ohcamel.Config.Book.Signals_spec
@@ -49,11 +52,105 @@ let capital ~zone ~allocations ~previous date =
         | Some _ | None -> (held, Float.max most dollars))
   |> fun (held, most) -> Float.max (Option.value held ~default:0.0) most
 
-let sessions ~journal ~zone ~strategy ~since =
-  match Journal.source_fill_rows journal ~prefix:(Rebalance.Source.prefix ~strategy) with
+(* WHICH ARRIVAL QUOTE IS ONE (Task 1.8). A fill's cost is measured against the
+   midpoint of the quote its order was sent against -- when that quote is one a
+   trade could have met. It is None, and the fill's cost unknown, never zero and
+   never a guess, when:
+
+   - the order journaled none: since Task 1.7, a quote whose own stamp was more
+     than 60 s older than its fetch (a shrinking order on a thin name), or any
+     order sent with no quote;
+   - the order was an auction's (market-on-open, market-on-close): before 1.7 a
+     market-on-open order's "arrival" was the quote at proposal, read after 19:00
+     ET from a thin book, and an auction fill was never offered at it;
+   - the order was created outside 09:30-16:00 New York on a weekday, for the same
+     reason: an after-hours quote is not an arrival for a fill in the session;
+   - the quote is one-sided, crossed, locked or not finite (Tca.of_fill's rule). *)
+let arrival_mid ~zone (f : Journal.Strategy_fill.t) =
+  let regular_hours at =
+    let date, ofday = Time_ns.to_date_ofday at ~zone in
+    (match Date.day_of_week date with Day_of_week.Sat | Sun -> false | _ -> true)
+    && Time_ns.Ofday.( >= ) ofday Desk_time.session_opens
+    && Time_ns.Ofday.( < ) ofday Desk_time.session_closes
+  in
+  match (f.arrival, f.tif) with
+  | None, _ | _, (Order.Tif.Opg | Order.Tif.Cls) -> None
+  | Some (bid, ask), Order.Tif.Day ->
+      let b = Ohcamel.Types.Price.to_float bid and a = Ohcamel.Types.Price.to_float ask in
+      if
+        Float.is_finite b && Float.is_finite a && Float.( > ) b 0.0 && Float.( > ) a b
+        && regular_hours f.created_at
+      then Some ((a +. b) /. 2.0)
+      else None
+
+let cash_dividend (a : Venue.Activity.t) =
+  String.equal a.activity_type "DIV"
+  && Option.equal String.equal a.status (Some "executed")
+  && not (Option.equal String.equal a.sub_type (Some "SDIV"))
+
+(* The venue's cash-dividend records are the dividends a strategy is credited
+   from, on their ex-dates. The account's DIV activity is the same dividend's
+   cash, posted on the payable date: never credited a second time. When one has
+   posted for the name on the record's payable date and carries a per-share
+   amount, that is the rate paid, and it is the one used. *)
+let dividends_of ~(cash_dividends : Venue.Cash_dividend.t list)
+    ~(activities : Venue.Activity.t list) : Record.dividend list =
+  List.map cash_dividends ~f:(fun (c : Venue.Cash_dividend.t) ->
+      let paid =
+        List.find_map activities ~f:(fun (a : Venue.Activity.t) ->
+            match (a.symbol, c.payable_date, a.per_share) with
+            | Some s, Some pay, Some per_share
+              when cash_dividend a
+                   && Ohcamel.Types.Symbol.equal s c.symbol
+                   && Date.equal a.date pay ->
+                Some per_share
+            | _ -> None)
+      in
+      {
+        Record.ex_date = c.ex_date;
+        symbol = c.symbol;
+        per_share = Option.value paid ~default:c.rate;
+      })
+
+(* A dividend the venue paid that no cash-dividend record names (by name and
+   payable date): its ex-date is not known, so it is credited to no strategy, and
+   the close says so every night until a record arrives. *)
+let unmatched_dividends ~(cash_dividends : Venue.Cash_dividend.t list)
+    ~(activities : Venue.Activity.t list) =
+  List.filter activities ~f:(fun (a : Venue.Activity.t) ->
+      cash_dividend a
+      && not
+           (List.exists cash_dividends ~f:(fun (c : Venue.Cash_dividend.t) ->
+                Option.equal Ohcamel.Types.Symbol.equal a.symbol (Some c.symbol)
+                && Option.equal Date.equal c.payable_date (Some a.date))))
+
+(* A FEE activity is a fill's when it names the fill's order; Alpaca's documented
+   shape gives a fee no order id, so a fee that names none is the account's,
+   recorded and assigned to no strategy. Fees are positive here (a FEE's
+   net_amount is negative). *)
+let fees_by_order (activities : Venue.Activity.t list) =
+  List.fold activities ~init:(String.Map.empty, 0.0, 0)
+    ~f:(fun (by_order, unassigned, count) (a : Venue.Activity.t) ->
+      if
+        String.equal a.activity_type "FEE"
+        && Option.equal String.equal a.status (Some "executed")
+      then
+        let fee = -.a.net_amount in
+        match a.order_id with
+        | Some id ->
+            ( Map.update by_order id ~f:(fun x -> Option.value x ~default:0.0 +. fee),
+              unassigned,
+              count )
+        | None -> (by_order, unassigned +. fee, count + 1)
+      else (by_order, unassigned, count))
+
+let sessions_under ~rule ?dividends ?activities ~journal ~zone ~strategy ~since () =
+  match
+    Journal.source_fill_details journal ~prefix:(Rebalance.Source.prefix ~strategy)
+  with
   | [] -> []
-  | (_, _, _, first) :: _ as rows -> (
-      let first_date = Time_ns.to_date first ~zone in
+  | first :: _ as rows -> (
+      let first_date = Time_ns.to_date first.Journal.Strategy_fill.at ~zone in
       let closes = Hashtbl.Poly.create () in
       List.iter (Journal.closes_since journal ~since:first_date) ~f:(fun (date, s, c) ->
           Hashtbl.set closes ~key:(date, Ohcamel.Types.Symbol.to_string s) ~data:c);
@@ -70,19 +167,62 @@ let sessions ~journal ~zone ~strategy ~since =
       let allocated date =
         capital ~zone ~allocations ~previous:(Map.find previous date) date
       in
+      let activities =
+        match (rule, activities) with
+        | `Before_1_8, _ -> []
+        | `Current, Some given -> given
+        | `Current, None -> Journal.activities journal
+      in
+      let fees, _, _ = fees_by_order activities in
+      let order_qty =
+        List.fold rows ~init:String.Map.empty ~f:(fun acc (f : Journal.Strategy_fill.t) ->
+            match f.venue_order_id with
+            | Some id ->
+                Map.update acc id ~f:(fun x ->
+                    Option.value x ~default:0.0 +. Float.abs f.qty)
+            | None -> acc)
+      in
+      let fee_of (f : Journal.Strategy_fill.t) =
+        match
+          Option.bind f.venue_order_id ~f:(fun id ->
+              Option.both (Map.find fees id) (Map.find order_qty id))
+        with
+        | Some (fee, total) when Float.( > ) total 0.0 -> fee *. Float.abs f.qty /. total
+        | _ -> 0.0
+      in
+      let dividends =
+        match (rule, dividends) with
+        | `Before_1_8, _ -> []
+        | `Current, Some given -> given
+        | `Current, None ->
+            dividends_of ~cash_dividends:(Journal.cash_dividends journal) ~activities
+      in
       let record =
         Record.sessions_of
           ~dates:(List.filter all_dates ~f:(fun date -> Date.( >= ) date first_date))
           ~close:(fun date s ->
             Hashtbl.find closes (date, Ohcamel.Types.Symbol.to_string s))
-          ~allocated
-          (List.map rows ~f:(fun (symbol, qty, price, at) ->
-               { Record.date = Time_ns.to_date at ~zone; symbol; qty; price }))
+          ~allocated ~dividends
+          (List.map rows ~f:(fun (f : Journal.Strategy_fill.t) ->
+               {
+                 Record.date = Time_ns.to_date f.at ~zone;
+                 symbol = f.symbol;
+                 qty = f.qty;
+                 price = f.price;
+                 arrival_mid =
+                   (match rule with
+                   | `Before_1_8 -> None
+                   | `Current -> arrival_mid ~zone f);
+                 fee = (match rule with `Before_1_8 -> 0.0 | `Current -> fee_of f);
+               }))
       in
       match since with
       | None -> record
       | Some since ->
           List.filter record ~f:(fun (s : Record.session) -> Date.( >= ) s.date since))
+
+let sessions ~journal ~zone ~strategy ~since =
+  sessions_under ~rule:`Current ~journal ~zone ~strategy ~since ()
 
 let stopped journal name =
   match Journal.strategy_state journal ~strategy:name with

@@ -716,8 +716,8 @@ let test_a_close_with_no_current_book_records_nothing () =
       let close ~now =
         Ohcamel_desk.Session_close.record_if_current
           ~book_is_current:(fun () -> Desk.book_is_current desk ~now ~within)
-          ~graph ~journal ~date ~returns:[] ~mark_equity:true ~confidence:0.95
-          ~recorded_at:now
+          ~session_bars:Symbol.Map.empty ~graph ~journal ~date ~returns:[]
+          ~mark_equity:true ~confidence:0.95 ~recorded_at:now
       in
       let outcome =
         Alcotest.testable

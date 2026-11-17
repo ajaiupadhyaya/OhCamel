@@ -136,3 +136,160 @@ let backup ~(now : Date.t) ~src ~dir ~name =
                                        (Error.to_string_hum e)))
                         in
                         unlink deleted))))
+
+(* [--dividends FILE]: SYMBOL,EX_DATE,PER_SHARE a line, blank lines and lines from
+   # ignored. A line it cannot read refuses the file and names the line: a diff
+   built on a dividend half-read is a number about nothing. *)
+let parse_dividends text : (Record.dividend list, string) Result.t =
+  String.split_lines text
+  |> List.filter_mapi ~f:(fun i line ->
+      let line = String.strip line in
+      if String.is_empty line || String.is_prefix line ~prefix:"#" then None
+      else
+        Some
+          (match List.map (String.split line ~on:',') ~f:String.strip with
+          | [ symbol; ex_date; per_share ] -> (
+              match
+                ( Option.try_with (fun () -> Date.of_string ex_date),
+                  Option.bind (Float.of_string_opt per_share) ~f:(fun x ->
+                      Option.some_if (Float.is_finite x) x) )
+              with
+              | Some ex_date, Some per_share when not (String.is_empty symbol) ->
+                  Ok
+                    {
+                      Record.ex_date;
+                      symbol = Ohcamel.Types.Symbol.of_string symbol;
+                      per_share;
+                    }
+              | _ -> Error (sprintf "line %d: %S" (i + 1) line))
+          | _ ->
+              Error (sprintf "line %d: %S is not SYMBOL,EX_DATE,PER_SHARE" (i + 1) line)))
+  |> Result.all
+
+(* The strategies the journal has orders for, by their source's slug
+   (signal:<slug>:<sequence>), in order. *)
+let strategies_of journal =
+  Journal.fills_by_source journal
+  |> List.filter_map ~f:(fun (source, _, _) ->
+      match String.split source ~on:':' with
+      | "signal" :: rest when List.length rest >= 2 ->
+          Some (String.concat ~sep:":" (List.drop_last_exn rest))
+      | _ -> None)
+  |> List.dedup_and_sort ~compare:String.compare
+
+(* Task 1.8's before and after, per strategy, for the controller to run on a COPY
+   of the live journal. Read-only by construction ([Journal.open_read_only]: no
+   set_up, no pragma, every write raises), and a journal older than Task 1.8's
+   tables reads as having no activities and no dividends rather than failing. The
+   marks are the journal's under both rules, so a session's P&L can change here
+   only by a dividend or a fee: a re-mark from the bar happens at the close, on the
+   live journal, and is not something a read-only diff can make. *)
+let record_diff ~journal:path ~since ~dividends ~zone =
+  let say, all = lines () in
+  let money = sprintf "%.2f" in
+  let read_dividends () =
+    match dividends with
+    | None -> Ok None
+    | Some file -> (
+        match Or_error.try_with (fun () -> In_channel.read_all file) with
+        | Error e ->
+            Error (sprintf "ohcamel: cannot read %s: %s" file (Error.to_string_hum e))
+        | Ok text ->
+            Result.map_error (parse_dividends text) ~f:(fun why ->
+                sprintf "ohcamel: %s: %s" file why)
+            |> Result.map ~f:Option.some)
+  in
+  match (read_dividends (), Journal.tables_absent_from path) with
+  | Error e, _ | _, Error e -> fail all e
+  | Ok given, Ok absent -> (
+      match Journal.open_read_only path with
+      | Error e -> fail all e
+      | Ok journal ->
+          Exn.protect
+            ~finally:(fun () -> Journal.close journal)
+            ~f:(fun () ->
+              match
+                Or_error.try_with (fun () ->
+                    let has table = not (List.mem absent table ~equal:String.equal) in
+                    let activities =
+                      if has "activities" then Journal.activities journal else []
+                    in
+                    let dividends, from =
+                      match given with
+                      | Some ds -> (ds, Option.value_exn dividends)
+                      | None when has "dividends" ->
+                          ( Stop.dividends_of
+                              ~cash_dividends:(Journal.cash_dividends journal)
+                              ~activities,
+                            "the journal's dividends table" )
+                      | None -> ([], "none: the journal has no dividends table")
+                    in
+                    say
+                      (sprintf
+                         "record-diff: %s, read-only; sessions from %s; dividends from %s"
+                         path
+                         (Option.value_map since ~default:"each strategy's first fill"
+                            ~f:Date.to_string)
+                         from);
+                    say
+                      "Before = the record as computed before Task 1.8 (no dividend, no \
+                       fee, cost not measured); after = with dividends on their \
+                       ex-dates, fees, and cost against the arrival mid. Both read the \
+                       journal's marks.";
+                    List.iter (strategies_of journal) ~f:(fun strategy ->
+                        let before =
+                          Stop.sessions_under ~rule:`Before_1_8 ~journal ~zone ~strategy
+                            ~since ()
+                        in
+                        let after =
+                          Stop.sessions_under ~rule:`Current ~dividends ~activities
+                            ~journal ~zone ~strategy ~since ()
+                        in
+                        let total ss =
+                          List.sum
+                            (module Float)
+                            ss
+                            ~f:(fun (x : Record.session) -> x.pnl)
+                        in
+                        let summary = Record.summarise after in
+                        let sum f = List.sum (module Float) after ~f in
+                        say
+                          (sprintf
+                             "%s  sessions %d  P&L %s -> %s  dividends %s  fees %s  cost \
+                              %s  cost_unknown %d  cost_bps %s"
+                             strategy (List.length after)
+                             (money (total before))
+                             (money (total after))
+                             (money (sum (fun x -> x.dividends)))
+                             (money (sum (fun x -> x.fees)))
+                             (money (sum (fun x -> x.cost)))
+                             (List.sum (module Int) after ~f:(fun x -> x.cost_unknown))
+                             (Option.value_map summary.cost_bps ~default:"none" ~f:money));
+                        let earlier =
+                          Date.Map.of_alist_reduce
+                            ~f:(fun a _ -> a)
+                            (List.map before ~f:(fun (x : Record.session) ->
+                                 (x.date, x.pnl)))
+                        in
+                        List.iter after ~f:(fun (x : Record.session) ->
+                            let was =
+                              Option.value (Map.find earlier x.date) ~default:0.0
+                            in
+                            if Float.( > ) (Float.abs (x.pnl -. was)) 1e-9 then
+                              say
+                                (sprintf "  %s  %s -> %s  %s" (Date.to_string x.date)
+                                   (money was) (money x.pnl)
+                                   (String.concat ~sep:", "
+                                      (List.filter_opt
+                                         [
+                                           Option.some_if
+                                             (Float.( <> ) x.dividends 0.0)
+                                             "dividend";
+                                           Option.some_if (Float.( <> ) x.fees 0.0) "fee";
+                                         ]))))))
+              with
+              | Ok () -> finish all
+              | Error e ->
+                  fail all
+                    (sprintf "ohcamel: record-diff on %s failed: %s" path
+                       (Error.to_string_hum e))))

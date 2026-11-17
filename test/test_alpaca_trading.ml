@@ -270,6 +270,111 @@ let test_trade_update_messages () =
         (Order.Side.equal order.Venue.Venue_order.side Order.Side.Sell)
   | _ -> Alcotest.fail "a fill update was not read as one"
 
+(* GET /v2/account/activities?activity_types=DIV,FEE. CONSTRUCTED, NOT RECORDED: the
+   repo holds no recorded response, so this is built field for field from Alpaca's
+   documented NonTradeActivities shape (its example: activity_type, activity_sub_type,
+   created_at, currency, date, id in "::" form, net_amount, per_share_amount, qty,
+   status and symbol, every number a decimal string). A cash dividend on 100 TLT at
+   0.30, posted on its payable date; a TAF fee, which carries no symbol, no qty and
+   no order id; and a cancelled dividend, read as it is (the record skips it). *)
+let activities_body =
+  {|[
+  {"activity_type": "DIV", "activity_sub_type": "CDIV",
+   "created_at": "2026-11-07T04:12:31.552081Z", "currency": "USD",
+   "date": "2026-11-06", "id": "20261106000000000::8f1d2c3b-4a5e-4f60-9b7a-1c2d3e4f5a6b",
+   "net_amount": "30", "per_share_amount": "0.3", "qty": "100",
+   "status": "executed", "symbol": "TLT"},
+  {"activity_type": "FEE", "activity_sub_type": "TAF",
+   "created_at": "2026-11-05T04:03:10.120411Z", "currency": "USD",
+   "date": "2026-11-04", "id": "20261104000000000::0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+   "net_amount": "-0.02", "status": "executed"},
+  {"activity_type": "DIV", "activity_sub_type": "CDIV",
+   "created_at": "2026-11-07T04:12:31.552081Z", "currency": "USD",
+   "date": "2026-11-06", "id": "20261106000000000::11111111-2222-4333-8444-555555555555",
+   "net_amount": "12.5", "per_share_amount": "0.25", "qty": "50",
+   "status": "canceled", "symbol": "LQD"}
+]|}
+
+let test_account_activities_are_read_as_documented () =
+  match Alpaca.activities_of_json (Yojson.Safe.from_string activities_body) with
+  | Error e -> Alcotest.fail (Error.to_string_hum e)
+  | Ok activities -> (
+      Alcotest.(check int) "three" 3 (List.length activities);
+      match activities with
+      | [ div; fee; cancelled ] ->
+          Alcotest.(check string) "a dividend" "DIV" div.Venue.Activity.activity_type;
+          Alcotest.(check (option string))
+            "cash" (Some "CDIV") div.Venue.Activity.sub_type;
+          Alcotest.(check string)
+            "posted on" "2026-11-06"
+            (Date.to_string div.Venue.Activity.date);
+          Alcotest.(check (option string))
+            "of TLT" (Some "TLT")
+            (Option.map div.Venue.Activity.symbol ~f:Symbol.to_string);
+          Alcotest.(check (option (float 1e-12)))
+            "0.30 a share" (Some 0.3) div.Venue.Activity.per_share;
+          Alcotest.(check (option (float 0.0)))
+            "on 100" (Some 100.0) div.Venue.Activity.qty;
+          Alcotest.(check (float 1e-12)) "30.00" 30.0 div.Venue.Activity.net_amount;
+          Alcotest.(check string) "a fee" "FEE" fee.Venue.Activity.activity_type;
+          Alcotest.(check (float 1e-12)) "-0.02" (-0.02) fee.Venue.Activity.net_amount;
+          Alcotest.(check bool)
+            "no symbol" true
+            (Option.is_none fee.Venue.Activity.symbol);
+          Alcotest.(check (option string)) "no order" None fee.Venue.Activity.order_id;
+          Alcotest.(check (option string))
+            "a cancelled one says so" (Some "canceled") cancelled.Venue.Activity.status
+      | _ -> Alcotest.fail "not three")
+
+let test_an_activity_that_misreads_is_refused () =
+  let refused body =
+    Result.is_error (Alpaca.activities_of_json (Yojson.Safe.from_string body))
+  in
+  Alcotest.(check bool) "not a list" true (refused {|{"message": "forbidden"}|});
+  Alcotest.(check bool)
+    "a net amount that is not a decimal" true
+    (refused
+       {|[{"activity_type": "DIV", "date": "2026-11-06", "id": "x::y", "net_amount": "1e3"}]|});
+  Alcotest.(check bool)
+    "no date" true
+    (refused {|[{"activity_type": "DIV", "id": "x::y", "net_amount": "1"}]|})
+
+(* GET /v1/corporate-actions?types=cash_dividend, CONSTRUCTED from Alpaca's documented
+   corporate_actions_resp and cash_dividend shapes (its example: cusip, ex_date,
+   foreign, id, payable_date, process_date, rate as a number, record_date, special,
+   symbol). The ex-date, which the activity above does not carry. *)
+let corporate_actions_body =
+  {|{"corporate_actions": {"cash_dividends": [
+     {"cusip": "464287432", "ex_date": "2026-11-03", "foreign": false,
+      "id": "6c1a9e2f-3b4d-4e5f-8a6b-7c8d9e0f1a2b", "payable_date": "2026-11-06",
+      "process_date": "2026-11-06", "rate": 0.3, "record_date": "2026-11-03",
+      "special": false, "symbol": "TLT"}]},
+    "next_page_token": null}|}
+
+let test_a_cash_dividend_carries_its_ex_date () =
+  match
+    Alpaca.cash_dividends_of_json (Yojson.Safe.from_string corporate_actions_body)
+  with
+  | Error e -> Alcotest.fail (Error.to_string_hum e)
+  | Ok (dividends, next) ->
+      Alcotest.(check (option string)) "one page" None next;
+      Alcotest.(check (list string))
+        "TLT, ex 2026-11-03, paid 2026-11-06, 0.30"
+        [ "TLT 2026-11-03 2026-11-06 0.3" ]
+        (List.map dividends ~f:(fun (c : Venue.Cash_dividend.t) ->
+             sprintf "%s %s %s %g" (Symbol.to_string c.symbol) (Date.to_string c.ex_date)
+               (Option.value_map c.payable_date ~default:"-" ~f:Date.to_string)
+               c.rate));
+      Alcotest.(check bool)
+        "a window with none is empty, not an error" true
+        (match
+           Alpaca.cash_dividends_of_json
+             (Yojson.Safe.from_string
+                {|{"corporate_actions": {}, "next_page_token": null}|})
+         with
+        | Ok ([], None) -> true
+        | _ -> false)
+
 let suite =
   ( "alpaca_trading",
     [
@@ -280,4 +385,10 @@ let suite =
       Alcotest.test_case "the three answers to a submission" `Quick
         test_the_three_answers_to_a_submission;
       Alcotest.test_case "trade update messages" `Quick test_trade_update_messages;
+      Alcotest.test_case "account activities are read as documented" `Quick
+        test_account_activities_are_read_as_documented;
+      Alcotest.test_case "an activity that misreads is refused" `Quick
+        test_an_activity_that_misreads_is_refused;
+      Alcotest.test_case "a cash dividend carries its ex-date" `Quick
+        test_a_cash_dividend_carries_its_ex_date;
     ] )

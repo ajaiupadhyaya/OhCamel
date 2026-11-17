@@ -82,6 +82,43 @@ module Bar = struct
   [@@deriving sexp_of, compare, equal]
 end
 
+(* One of the account's non-trade activities, as Alpaca's GET
+   /v2/account/activities returns it (its NonTradeActivities shape): the desk
+   asks for DIV and FEE. A dividend's [date] is the day the cash posted -- usually
+   the payable date, not the ex-date -- and [qty] and [per_share] are the
+   account's, never a strategy's. [order_id] is read when an activity carries one;
+   Alpaca's documented shape gives a FEE none, so a fee is the account's unless it
+   names its order. *)
+module Activity = struct
+  type t = {
+    id : string;
+    activity_type : string;
+    sub_type : string option;
+    date : Date.t;
+    symbol : Symbol.t option;
+    qty : float option;
+    per_share : float option;
+    net_amount : float;
+    status : string option;
+    order_id : string option;
+  }
+  [@@deriving sexp_of, compare, equal]
+end
+
+(* A cash dividend as the venue's corporate-action record states it (Alpaca's
+   GET /v1/corporate-actions, cash_dividends): the ex-date and the rate per
+   share, which the activity above does not carry. *)
+module Cash_dividend = struct
+  type t = {
+    id : string;
+    symbol : Symbol.t;
+    ex_date : Date.t;
+    payable_date : Date.t option;
+    rate : float;
+  }
+  [@@deriving sexp_of, compare, equal]
+end
+
 (* The trading half (design §3.4). Kept apart from [Read] so a desk that can
    read an account and not trade it is a value, not a stub that answers "not
    yet": [Trade.t option] is None, and the rules say why. *)
@@ -179,5 +216,22 @@ module Read = struct
     daily_bars :
       Symbol.t list -> days:int -> Bar.t list Symbol.Map.t Or_error.t Deferred.t;
     last_prints : Symbol.t list -> Time_ns.t Symbol.Map.t Or_error.t Deferred.t;
+    session_bars :
+      Symbol.t list -> date:Date.t -> Bar.t Symbol.Map.t Or_error.t Deferred.t;
+        (* Each name's UNADJUSTED daily bar for [date], when the venue has filed
+           it: the session's official close (Session_close.official_close).
+           [daily_bars] is split- and dividend-adjusted for the returns, and an
+           adjusted close is not a price anything traded at. *)
+    activities :
+      since:Date.t -> kinds:string list -> Activity.t list Or_error.t Deferred.t;
+        (* The account's activities of [kinds] created on or after [since]. *)
+    cash_dividends :
+      Symbol.t list ->
+      start:Date.t ->
+      end_:Date.t ->
+      Cash_dividend.t list Or_error.t Deferred.t;
+        (* The names' cash dividends whose venue processing date falls in
+           [start, end_] -- about the payable date, so a window reaching past
+           today finds an ex-date already passed whose cash is still to come. *)
   }
 end

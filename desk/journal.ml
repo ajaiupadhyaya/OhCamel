@@ -233,6 +233,19 @@ let schema =
     "CREATE TABLE IF NOT EXISTS completions (key TEXT NOT NULL, date TEXT NOT NULL, at \
      TEXT NOT NULL)";
     "CREATE INDEX IF NOT EXISTS completions_by_key ON completions (key, date)";
+    (* Task 1.8's two, new tables and so schema version 1 still. The account's
+       DIV and FEE activities as the venue posts them, one row per activity id
+       (INSERT OR IGNORE: a nightly pull that overlaps the last adds nothing);
+       and the venue's cash-dividend records, one row per corporate-action id,
+       which carry the ex-date the activity does not (INSERT OR REPLACE: a rate
+       the venue corrects is corrected here, and every record is recomputed
+       from these rows, so a correction reaches every session it touches). *)
+    "CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, activity_type TEXT NOT \
+     NULL, sub_type TEXT, date TEXT NOT NULL, symbol TEXT, qty REAL, per_share REAL, \
+     net_amount REAL NOT NULL, status TEXT, order_id TEXT, recorded_at TEXT NOT NULL)";
+    "CREATE TABLE IF NOT EXISTS dividends (id TEXT PRIMARY KEY, symbol TEXT NOT NULL, \
+     ex_date TEXT NOT NULL, payable_date TEXT, rate REAL NOT NULL, recorded_at TEXT NOT \
+     NULL)";
   ]
 
 (* The columns added after files existed, each with the declaration an older
@@ -251,6 +264,12 @@ let added_columns =
     ("sizings", "factor", "REAL");
     ("sizings", "governor", "REAL");
     ("sizings", "note", "TEXT");
+    (* Where a session's mark came from (Task 1.8): 'bar' for the venue's daily
+       bar close, its official close; 'last_print' for the graph's price, taken
+       when the bar was not filed yet, and re-marked from the bar when it is.
+       NULL on a mark written before it was recorded: unknown, and never
+       re-marked, because nothing says it was a print. *)
+    ("marks", "source", "TEXT");
   ]
 
 (* The refusal's decision alone, with no SQLite and no IO: [modes] is
@@ -363,7 +382,7 @@ let tables =
         ~f:(fun rest -> List.hd (String.split rest ~on:' ')))
 
 (* SQLITE_OPEN_READONLY, and NO [set_up]. A backup is checked by reading it,
-   and [open_] would write to it: fifteen CREATE TABLEs, nine indexes, a
+   and [open_] would write to it: seventeen CREATE TABLEs, nine indexes, a
    schema-version insert, and -- on a file that came back missing a table --
    the table itself, after which the check would find it empty and call the
    file sound. So this opens the handle, sets the busy timeout that lets it
@@ -818,12 +837,51 @@ module Mark = struct
   [@@deriving sexp_of, compare, equal]
 end
 
-let record_marks t (marks : Mark.t list) =
+let source_text = function `Bar -> "bar" | `Last_print -> "last_print"
+
+let record_marks ?source t (marks : Mark.t list) =
   write t ~what:"marks" (fun () ->
       List.iter marks ~f:(fun (m : Mark.t) ->
           run t ~what:"mark"
-            "INSERT OR REPLACE INTO marks (date, symbol, close, qty) VALUES (?, ?, ?, ?)"
-            [ date m.date; text (Symbol.to_string m.symbol); real m.close; real m.qty ]))
+            "INSERT OR REPLACE INTO marks (date, symbol, close, qty, source) VALUES (?, \
+             ?, ?, ?, ?)"
+            [
+              date m.date;
+              text (Symbol.to_string m.symbol);
+              real m.close;
+              real m.qty;
+              (match source with
+              | None -> Data.NULL
+              | Some f -> text (source_text (f m.symbol)));
+            ]))
+
+let mark_source t d (symbol : Symbol.t) =
+  match
+    query t ~what:"mark source" "SELECT source FROM marks WHERE date = ? AND symbol = ?"
+      [ date d; text (Symbol.to_string symbol) ]
+      ~row:(fun r -> col_opt_text r 0)
+  with
+  | [ Some "bar" ] -> Some `Bar
+  | [ Some "last_print" ] -> Some `Last_print
+  | _ -> None
+
+(* The marks taken from a last print from [since], for the close to re-mark from
+   the venue's bar once it is filed. Oldest first. *)
+let last_print_marks t ~(since : Date.t) =
+  query t ~what:"last-print marks"
+    "SELECT date, symbol FROM marks WHERE source = 'last_print' AND date >= ? ORDER BY \
+     date, symbol"
+    [ date since ]
+    ~row:(fun r -> (col_date r 0, Symbol.of_string (col_text r 1)))
+
+(* A last-print mark replaced by the bar's close, once; its quantity stays. A mark
+   that is not a last print is left as it is, so a re-mark never overwrites a bar. *)
+let remark t ~(date : Date.t) ~(symbol : Symbol.t) ~(close : float) =
+  write t ~what:"remark" (fun () ->
+      run t ~what:"remark"
+        "UPDATE marks SET close = ?, source = 'bar' WHERE date = ? AND symbol = ? AND \
+         source = 'last_print'"
+        [ real close; text (Date.to_string date); text (Symbol.to_string symbol) ])
 
 (* The newest recorded session's close for [symbol], with that session's
    date: the price an opening-auction order is judged and sized at (Task 15).
@@ -1629,6 +1687,138 @@ let source_fill_rows t ~prefix : (Symbol.t * float * float * Time_ns.t) list =
         Order.Side.sign (side_of_text (col_text r 1)) *. col_real r 2,
         col_real r 3,
         col_time r 4 ))
+
+(* A strategy's fills with what its record needs beyond [source_fill_rows]: the
+   arrival quote its order journaled, the order's time in force and creation
+   instant (which decide whether that quote is an arrival, Stop.arrival_mid),
+   and the venue's order id (which a fee that names an order is matched by).
+   Oldest first, as [source_fill_rows]. *)
+module Strategy_fill = struct
+  type t = {
+    symbol : Symbol.t;
+    qty : float;
+    price : float;
+    at : Time_ns.t;
+    arrival : (Price.t * Price.t) option;
+    tif : Order.Tif.t;
+    created_at : Time_ns.t;
+    venue_order_id : string option;
+  }
+end
+
+let source_fill_details t ~prefix : Strategy_fill.t list =
+  let lo, hi = source_range prefix in
+  query t ~what:"source fill details"
+    "SELECT o.symbol, o.side, f.qty, f.price, f.at, o.arrival_bid, o.arrival_ask, o.tif, \
+     o.created_at, o.venue_order_id FROM orders o JOIN fills f ON f.client_order_id = \
+     o.client_order_id WHERE o.source >= ? AND o.source < ? ORDER BY f.at, \
+     f.execution_id"
+    [ lo; hi ] ~row:(fun r ->
+      {
+        Strategy_fill.symbol = Symbol.of_string (col_text r 0);
+        qty = Order.Side.sign (side_of_text (col_text r 1)) *. col_real r 2;
+        price = col_real r 3;
+        at = col_time r 4;
+        arrival = arrival_of_row r ~bid:5 ~ask:6;
+        tif =
+          Option.value_exn ~message:"journal: unknown time in force"
+            (Order.Tif.of_string (col_text r 7));
+        created_at = col_time r 8;
+        venue_order_id = col_opt_text r 9;
+      })
+
+(* The account's activities and the venue's cash-dividend records (Task 1.8).
+   Each write is keyed, so a pull repeated after a restart, or one that overlaps
+   the night before, changes nothing it has already recorded. *)
+let record_activities t (activities : Venue.Activity.t list) ~(recorded_at : Time_ns.t) :
+    int =
+  let added = ref 0 in
+  write t ~what:"activities" (fun () ->
+      List.iter activities ~f:(fun (a : Venue.Activity.t) ->
+          let opt_text = function None -> Data.NULL | Some s -> text s in
+          run t ~what:"activity"
+            "INSERT OR IGNORE INTO activities (id, activity_type, sub_type, date, \
+             symbol, qty, per_share, net_amount, status, order_id, recorded_at) VALUES \
+             (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            [
+              text a.id;
+              text a.activity_type;
+              opt_text a.sub_type;
+              date a.date;
+              opt_text (Option.map a.symbol ~f:Symbol.to_string);
+              opt_real a.qty;
+              opt_real a.per_share;
+              real a.net_amount;
+              opt_text a.status;
+              opt_text a.order_id;
+              time recorded_at;
+            ];
+          added := !added + Sqlite3.changes t.db));
+  !added
+
+let activities t : Venue.Activity.t list =
+  query t ~what:"activities"
+    "SELECT id, activity_type, sub_type, date, symbol, qty, per_share, net_amount, \
+     status, order_id FROM activities ORDER BY date, id"
+    [] ~row:(fun r ->
+      {
+        Venue.Activity.id = col_text r 0;
+        activity_type = col_text r 1;
+        sub_type = col_opt_text r 2;
+        date = col_date r 3;
+        symbol = Option.map (col_opt_text r 4) ~f:Symbol.of_string;
+        qty = col_opt_real r 5;
+        per_share = col_opt_real r 6;
+        net_amount = col_real r 7;
+        status = col_opt_text r 8;
+        order_id = col_opt_text r 9;
+      })
+
+let record_cash_dividends t (dividends : Venue.Cash_dividend.t list)
+    ~(recorded_at : Time_ns.t) =
+  write t ~what:"dividends" (fun () ->
+      List.iter dividends ~f:(fun (c : Venue.Cash_dividend.t) ->
+          run t ~what:"dividend"
+            "INSERT OR REPLACE INTO dividends (id, symbol, ex_date, payable_date, rate, \
+             recorded_at) VALUES (?, ?, ?, ?, ?, ?)"
+            [
+              text c.id;
+              text (Symbol.to_string c.symbol);
+              date c.ex_date;
+              (match c.payable_date with None -> Data.NULL | Some d -> date d);
+              real c.rate;
+              time recorded_at;
+            ]))
+
+let cash_dividends t : Venue.Cash_dividend.t list =
+  query t ~what:"dividends"
+    "SELECT id, symbol, ex_date, payable_date, rate FROM dividends ORDER BY ex_date, id"
+    [] ~row:(fun r ->
+      {
+        Venue.Cash_dividend.id = col_text r 0;
+        symbol = Symbol.of_string (col_text r 1);
+        ex_date = col_date r 2;
+        payable_date = Option.map (col_opt_text r 3) ~f:Date.of_string;
+        rate = col_real r 4;
+      })
+
+(* The last session the venue's activities and dividends were pulled through, in
+   [meta]: the next pull asks from there, so a night whose pull failed is asked
+   again the night after rather than skipped. *)
+let cash_pulled_through t =
+  match
+    query t ~what:"cash pulled through"
+      "SELECT value FROM meta WHERE key = 'cash_pulled_through'" [] ~row:(fun r ->
+        col_text r 0)
+  with
+  | [ v ] -> Option.try_with (fun () -> Date.of_string v)
+  | _ -> None
+
+let set_cash_pulled_through t (d : Date.t) =
+  write t ~what:"cash pulled through" (fun () ->
+      run t ~what:"cash pulled through"
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('cash_pulled_through', ?)"
+        [ date d ])
 
 (* The orders whose source begins with [prefix] that may still fill: every
    one not in a terminal state, and every failed one [unfinished_failed_orders]

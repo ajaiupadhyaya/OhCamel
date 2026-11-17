@@ -29,7 +29,7 @@ val version : t -> int
 val open_read_only : string -> (t, string) Result.t
 (** Opens an existing journal with SQLITE_OPEN_READONLY and runs no [set_up]: no pragma,
     no CREATE TABLE, no schema-version insert, nothing that would write a page. That is
-    the whole point -- [open_] would happily add its fifteen tables to a backup that was
+    the whole point -- [open_] would happily add its seventeen tables to a backup that was
     missing them, and then report the backup sound. A handle from here answers every read
     in this interface and raises on every write. *)
 
@@ -134,8 +134,24 @@ module Mark : sig
   [@@deriving sexp_of, compare, equal]
 end
 
-val record_marks : t -> Mark.t list -> unit
+val record_marks :
+  ?source:(Symbol.t -> [ `Bar | `Last_print ]) -> t -> Mark.t list -> unit
+(** With [source], each mark's origin is written beside it: [`Bar] for the venue's daily
+    bar close, [`Last_print] for a price taken when the bar was not filed. Without, the
+    origin is NULL, as on every mark written before it was recorded. *)
+
 val marks : t -> Date.t -> Mark.t list
+
+val mark_source : t -> Date.t -> Symbol.t -> [ `Bar | `Last_print ] option
+(** None for a mark with no recorded origin, or no mark. *)
+
+val last_print_marks : t -> since:Date.t -> (Date.t * Symbol.t) list
+(** The marks from [since] taken from a last print, oldest first: what the close re-marks
+    once the venue files the bar. *)
+
+val remark : t -> date:Date.t -> symbol:Symbol.t -> close:float -> unit
+(** A last-print mark's close replaced by the bar's, and its origin set to [`Bar]; its
+    quantity stays. A mark that is not a last print is not touched. *)
 
 val latest_close : t -> Symbol.t -> (Date.t * float) option
 (** The newest recorded session's close for the symbol, with that session's date: the
@@ -503,6 +519,42 @@ val source_fill_rows : t -> prefix:string -> (Symbol.t * float * float * Time_ns
 (** [source_fills]' fills one by one: symbol, signed quantity, price, instant; oldest
     first. *)
 
+(** A strategy's fill with its order's arrival quote, time in force, creation instant and
+    venue id: what its record's cost and fees are read from. *)
+module Strategy_fill : sig
+  type t = {
+    symbol : Symbol.t;
+    qty : float;  (** Signed, bought positive. *)
+    price : float;
+    at : Time_ns.t;
+    arrival : (Price.t * Price.t) option;
+    tif : Order.Tif.t;
+    created_at : Time_ns.t;
+    venue_order_id : string option;
+  }
+end
+
+val source_fill_details : t -> prefix:string -> Strategy_fill.t list
+(** [source_fill_rows] with the rest of each fill's order; oldest first. *)
+
+val record_activities : t -> Venue.Activity.t list -> recorded_at:Time_ns.t -> int
+(** [INSERT OR IGNORE] by activity id, in one transaction; the number newly recorded. *)
+
+val activities : t -> Venue.Activity.t list
+(** Every recorded activity, by date then id. *)
+
+val record_cash_dividends :
+  t -> Venue.Cash_dividend.t list -> recorded_at:Time_ns.t -> unit
+(** [INSERT OR REPLACE] by the venue's corporate-action id, in one transaction: a rate the
+    venue corrects replaces the one recorded. *)
+
+val cash_dividends : t -> Venue.Cash_dividend.t list
+(** Every recorded cash dividend, by ex-date then id. *)
+
+val cash_pulled_through : t -> Date.t option
+(** The last session whose close pulled the venue's activities and dividends. *)
+
+val set_cash_pulled_through : t -> Date.t -> unit
 val closes_since : t -> since:Date.t -> (Date.t * Symbol.t * float) list
 val allocations : t -> strategy:string -> (Time_ns.t * float) list
 

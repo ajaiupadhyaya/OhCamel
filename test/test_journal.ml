@@ -944,9 +944,156 @@ let test_an_old_market_on_open_row_still_loads () =
        (Yojson.Safe.Util.member "time_in_force" (Ohcamel_desk.Oms.order_json row)));
   Journal.close j
 
+(* Task 1.8, onto a journal written by the build before it: no activities table, no
+   dividends table, and marks with no source column, holding one mark. The file is
+   made by this build and then cut back to that shape by hand. Opening it adds the two
+   tables and the column, once; the old mark reads back with its close and an unknown
+   origin; opening it again adds nothing and the file is still schema version 1. *)
+let test_task_1_8's_tables_migrate_an_older_journal () =
+  with_temp_path ~f:(fun path ->
+      let j = open_exn path in
+      Journal.record_marks j
+        [
+          {
+            Journal.Mark.date = date "2026-11-02";
+            symbol = Symbol.of_string "TLT";
+            close = 90.0;
+            qty = 100.0;
+          };
+        ];
+      Journal.close j;
+      let db = Sqlite3.db_open path in
+      List.iter
+        [
+          "DROP TABLE activities";
+          "DROP TABLE dividends";
+          "ALTER TABLE marks DROP COLUMN source";
+        ] ~f:(fun sql ->
+          match Sqlite3.exec db sql with
+          | Sqlite3.Rc.OK -> ()
+          | rc -> Alcotest.failf "%s: %s" (Sqlite3.Rc.to_string rc) sql);
+      ignore (Sqlite3.db_close db : bool);
+      let shape j =
+        ( List.count
+            (Journal.For_testing.columns j ~table:"marks")
+            ~f:(String.equal "source"),
+          List.length (Journal.For_testing.columns j ~table:"activities"),
+          List.length (Journal.For_testing.columns j ~table:"dividends") )
+      in
+      let j = open_exn path in
+      Alcotest.(check (triple int int int))
+        "marks.source once, and the two tables" (1, 11, 6) (shape j);
+      Alcotest.(check (list (float 0.0)))
+        "the old mark's close" [ 90.0 ]
+        (List.map
+           (Journal.marks j (date "2026-11-02"))
+           ~f:(fun m -> m.Journal.Mark.close));
+      Alcotest.(check bool)
+        "and its origin unknown" true
+        (Option.is_none
+           (Journal.mark_source j (date "2026-11-02") (Symbol.of_string "TLT")));
+      Journal.close j;
+      let j = open_exn path in
+      Alcotest.(check (triple int int int))
+        "opened again: nothing added twice" (1, 11, 6) (shape j);
+      Alcotest.(check int) "schema version 1" 1 Journal.schema_version;
+      Journal.close j)
+
+let tlt = Symbol.of_string "TLT"
+
+let div_activity ?(id = "20261106000000000::a") () =
+  {
+    Ohcamel_desk.Venue.Activity.id;
+    activity_type = "DIV";
+    sub_type = Some "CDIV";
+    date = date "2026-11-06";
+    symbol = Some tlt;
+    qty = Some 100.0;
+    per_share = Some 0.3;
+    net_amount = 30.0;
+    status = Some "executed";
+    order_id = None;
+  }
+
+(* A nightly pull repeated -- after a restart, or overlapping the night before --
+   records nothing twice: activities by their id, dividends by the venue's
+   corporate-action id, and a corrected rate replaces the one recorded. *)
+let test_cash_events_are_recorded_once () =
+  let j = open_exn ":memory:" in
+  Alcotest.(check int)
+    "new" 1
+    (Journal.record_activities j [ div_activity () ] ~recorded_at:at);
+  Alcotest.(check int)
+    "the same pull again adds nothing" 0
+    (Journal.record_activities j [ div_activity () ] ~recorded_at:at);
+  Alcotest.(check int) "one row" 1 (List.length (Journal.activities j));
+  Alcotest.(check bool)
+    "read back as written" true
+    (Ohcamel_desk.Venue.Activity.equal (div_activity ())
+       (List.hd_exn (Journal.activities j)));
+  let dividend rate =
+    {
+      Ohcamel_desk.Venue.Cash_dividend.id = "ca-1";
+      symbol = tlt;
+      ex_date = date "2026-11-03";
+      payable_date = Some (date "2026-11-06");
+      rate;
+    }
+  in
+  Journal.record_cash_dividends j [ dividend 0.3 ] ~recorded_at:at;
+  Journal.record_cash_dividends j [ dividend 0.31 ] ~recorded_at:at;
+  Alcotest.(check (list (float 0.0)))
+    "one dividend, the corrected rate" [ 0.31 ]
+    (List.map (Journal.cash_dividends j) ~f:(fun c ->
+         c.Ohcamel_desk.Venue.Cash_dividend.rate));
+  Alcotest.(check (option string))
+    "never pulled" None
+    (Option.map (Journal.cash_pulled_through j) ~f:Date.to_string);
+  Journal.set_cash_pulled_through j (date "2026-11-03");
+  Journal.set_cash_pulled_through j (date "2026-11-04");
+  Alcotest.(check (option string))
+    "pulled through the latest" (Some "2026-11-04")
+    (Option.map (Journal.cash_pulled_through j) ~f:Date.to_string);
+  Journal.close j
+
+(* A mark from a last print is found, and re-marked from the bar once; a bar's
+   mark is never re-marked. *)
+let test_a_last_print_mark_is_re_marked_from_the_bar () =
+  let j = open_exn ":memory:" in
+  let spy = Symbol.of_string "SPY" in
+  let mark symbol close =
+    { Journal.Mark.date = date "2026-11-03"; symbol; close; qty = 10.0 }
+  in
+  Journal.record_marks j
+    ~source:(fun s -> if Symbol.equal s tlt then `Last_print else `Bar)
+    [ mark tlt 89.71; mark spy 600.0 ];
+  Alcotest.(check (list string))
+    "the print is found" [ "2026-11-03 TLT" ]
+    (List.map
+       (Journal.last_print_marks j ~since:(date "2026-11-01"))
+       ~f:(fun (d, s) -> Date.to_string d ^ " " ^ Symbol.to_string s));
+  Journal.remark j ~date:(date "2026-11-03") ~symbol:tlt ~close:89.70;
+  Journal.remark j ~date:(date "2026-11-03") ~symbol:spy ~close:1.0;
+  Alcotest.(check (list (float 0.0)))
+    "re-marked from the bar, the bar's mark untouched" [ 600.0; 89.70 ]
+    (List.map (Journal.marks j (date "2026-11-03")) ~f:(fun m -> m.Journal.Mark.close));
+  Alcotest.(check bool)
+    "and it is a bar now" true
+    (Poly.equal (Journal.mark_source j (date "2026-11-03") tlt) (Some `Bar));
+  Alcotest.(check int)
+    "nothing left to re-mark" 0
+    (List.length (Journal.last_print_marks j ~since:(date "2026-11-01")));
+  Journal.close j
+
 let suite =
   ( "journal",
     [
+      Alcotest.test_case "Task 1.8's tables migrate an older journal" `Quick
+        test_task_1_8's_tables_migrate_an_older_journal;
+      Alcotest.test_case "cash events are recorded once" `Quick
+        test_cash_events_are_recorded_once;
+      Alcotest.test_case "a last-print mark is re-marked from the bar" `Quick
+        test_a_last_print_mark_is_re_marked_from_the_bar;
       Alcotest.test_case "a failed reset leaves the halt and the trip standing" `Quick
         test_a_failed_reset_leaves_the_halt_and_the_trip_standing;
       Alcotest.test_case "a reset lifts the halt and the trip together" `Quick

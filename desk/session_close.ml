@@ -137,15 +137,128 @@ let forecasts ~(date : Date.t) ~(confidence : float) (s : Graph.Snapshot.t) :
       None;
   ]
 
-let marks ~(date : Date.t) (s : Graph.Snapshot.t) : Journal.Mark.t list =
-  Map.to_alist (Graph.Snapshot.prices s)
+(* THE OFFICIAL CLOSE (Task 1.8). A session's marks were the graph's price five
+   minutes after the close: the feed's last print, which on a thin name can be a
+   trade from the afternoon and is never the closing auction. The venue's daily
+   bar for the session is its own close, so a mark is taken from it when the
+   venue has filed it -- on a half-day too, since the bar is the day's whatever
+   hour it ended -- and from the last print only when it has not, tagged
+   [`Last_print] so the next close re-marks it from the bar ([remark_recent]).
+   On Alpaca's IEX feed the bar's close is IEX's last trade in the session, the
+   venue's close; the consolidated tape's would need the SIP feed. *)
+let official_close (bars : Venue.Bar.t Symbol.Map.t)
+    ~(last_print : Symbol.t -> float option) ~(date : Date.t) (symbol : Symbol.t) :
+    (float * [ `Bar | `Last_print ]) option =
+  match Map.find bars symbol with
+  | Some (b : Venue.Bar.t)
+    when Date.equal b.date date && Float.is_finite b.close && Float.( > ) b.close 0.0 ->
+      Some (b.close, `Bar)
+  | _ -> Option.map (last_print symbol) ~f:(fun p -> (p, `Last_print))
+
+(* The night's dividends and fees, decided from what the venue answered: every
+   activity recorded by its id; a cash dividend once it has gone ex (one ex after
+   the session is asked for again on the night it does); the pull marked through
+   the session only when both answered, so a failed night is asked again from
+   where the last good one ended. What a strategy cannot be credited with is said
+   every night it stands: a paid dividend no record dates, and a fee that names
+   no order. Returns the lines to say. *)
+let apply_cash_pull ~(journal : Journal.t) ~(date : Date.t) ~(recorded_at : Time_ns.t)
+    ~(activities : Venue.Activity.t list Or_error.t)
+    ~(dividends : Venue.Cash_dividend.t list Or_error.t) : string list =
+  let day = Date.to_string date in
+  let added =
+    match activities with
+    | Ok xs -> Some (Journal.record_activities journal xs ~recorded_at)
+    | Error _ -> None
+  in
+  let gone_ex =
+    match dividends with
+    | Ok xs ->
+        let gone =
+          List.filter xs ~f:(fun (c : Venue.Cash_dividend.t) ->
+              Date.( <= ) c.ex_date date)
+        in
+        Journal.record_cash_dividends journal gone ~recorded_at;
+        Some (List.length gone)
+    | Error _ -> None
+  in
+  let plural n word = sprintf "%d %s%s" n word (if n = 1 then "" else "s") in
+  let headline =
+    match (added, gone_ex, activities, dividends) with
+    | Some a, Some g, _, _ ->
+        Journal.set_cash_pulled_through journal date;
+        sprintf "session %s: dividends and fees pulled: %s, %s gone ex on record" day
+          (if a = 1 then "1 new activity" else sprintf "%d new activities" a)
+          (plural g "cash dividend")
+    | _, _, activities, dividends ->
+        let why what = function
+          | Ok _ -> None
+          | Error e -> Some (sprintf "%s: %s" what (Error.to_string_hum e))
+        in
+        sprintf
+          "session %s: dividends and fees not pulled (%s); asked again at the next close"
+          day
+          (String.concat ~sep:"; "
+             (List.filter_opt
+                [ why "activities" activities; why "cash dividends" dividends ]))
+  in
+  let all_activities = Journal.activities journal in
+  let unmatched =
+    Stop.unmatched_dividends
+      ~cash_dividends:(Journal.cash_dividends journal)
+      ~activities:all_activities
+    |> List.map ~f:(fun (a : Venue.Activity.t) ->
+        sprintf
+          "session %s: %s paid %.2f on %s with no ex-date on record: credited to no \
+           strategy"
+          day
+          (Option.value_map a.symbol ~default:"?" ~f:Symbol.to_string)
+          a.net_amount (Date.to_string a.date))
+  in
+  let _, unassigned, count = Stop.fees_by_order all_activities in
+  let fees =
+    if count = 0 then []
+    else
+      [
+        sprintf "session %s: %s totalling %.2f names no order: assigned to no strategy"
+          day (plural count "account fee") unassigned;
+      ]
+  in
+  (headline :: unmatched) @ fees
+
+(* A last-print mark of [date] re-marked from the bar the venue has since filed;
+   the number re-marked. *)
+let remark_from ~(journal : Journal.t) ~(date : Date.t) (bars : Venue.Bar.t Symbol.Map.t)
+    =
+  Journal.last_print_marks journal ~since:date
+  |> List.filter ~f:(fun (d, _) -> Date.equal d date)
+  |> List.count ~f:(fun (_, symbol) ->
+      match official_close bars ~last_print:(fun _ -> None) ~date symbol with
+      | Some (close, `Bar) ->
+          Journal.remark journal ~date ~symbol ~close;
+          true
+      | Some (_, `Last_print) | None -> false)
+
+(* Each name's mark at its official close, and where that close came from. *)
+let marks ~(date : Date.t) ~(session_bars : Venue.Bar.t Symbol.Map.t)
+    (s : Graph.Snapshot.t) : (Journal.Mark.t * [ `Bar | `Last_print ]) list =
+  let prices = Graph.Snapshot.prices s in
+  Map.to_alist prices
   |> List.map ~f:(fun (symbol, price) ->
-      {
-        Journal.Mark.date;
-        symbol;
-        close = Price.to_float price;
-        qty = Qty.to_float (Map.find_exn (Graph.Snapshot.quantities s) symbol);
-      })
+      let close, source =
+        Option.value
+          (official_close session_bars
+             ~last_print:(fun s -> Option.map (Map.find prices s) ~f:Price.to_float)
+             ~date symbol)
+          ~default:(Price.to_float price, `Last_print)
+      in
+      ( {
+          Journal.Mark.date;
+          symbol;
+          close;
+          qty = Qty.to_float (Map.find_exn (Graph.Snapshot.quantities s) symbol);
+        },
+        source ))
 
 (* The journal is the record, and the live graph must never be ahead of it.
    Roll and mark a FORK, not the live graph -- the fork shares the same code,
@@ -161,9 +274,9 @@ let marks ~(date : Date.t) (s : Graph.Snapshot.t) : Journal.Mark.t list =
    the live graph exactly where it found it -- still one roll behind, same as
    the journal -- so a retry after a failed write records the session, and
    rolls its windows, exactly once. *)
-let record ~(graph : Graph.t) ~(journal : Journal.t) ~(date : Date.t)
-    ~(returns : (Symbol.t * float) list) ~(mark_equity : bool) ~(confidence : float)
-    ~(recorded_at : Time_ns.t) =
+let record ~(session_bars : Venue.Bar.t Symbol.Map.t) ~(graph : Graph.t)
+    ~(journal : Journal.t) ~(date : Date.t) ~(returns : (Symbol.t * float) list)
+    ~(mark_equity : bool) ~(confidence : float) ~(recorded_at : Time_ns.t) =
   match Journal.session journal date with
   | Some _ -> `Already_recorded
   | None ->
@@ -177,7 +290,17 @@ let record ~(graph : Graph.t) ~(journal : Journal.t) ~(date : Date.t)
         ~f:(fun () ->
           apply fork;
           let s = Graph.snapshot fork in
-          Journal.record_marks journal (marks ~date s);
+          let marked = marks ~date ~session_bars s in
+          let sources =
+            Symbol.Map.of_alist_reduce
+              ~f:(fun a _ -> a)
+              (List.map marked ~f:(fun ((m : Journal.Mark.t), source) ->
+                   (m.symbol, source)))
+          in
+          Journal.record_marks journal
+            ~source:(fun symbol ->
+              Option.value (Map.find sources symbol) ~default:`Last_print)
+            (List.map marked ~f:fst);
           Journal.record_forecasts journal (forecasts ~date ~confidence s);
           Journal.record_session journal
             {
@@ -209,10 +332,11 @@ let restore ~(graph : Graph.t) ~(journal : Journal.t) : int =
    account's as of a recent read is written down. The demo calls [record]
    directly, because its venue is simulated from the book it marks, which is
    current by construction. *)
-let record_if_current ~(book_is_current : unit -> bool) ~graph ~journal ~date ~returns
-    ~mark_equity ~confidence ~recorded_at =
+let record_if_current ~(book_is_current : unit -> bool) ~session_bars ~graph ~journal
+    ~date ~returns ~mark_equity ~confidence ~recorded_at =
   if book_is_current () then
-    record ~graph ~journal ~date ~returns ~mark_equity ~confidence ~recorded_at
+    record ~session_bars ~graph ~journal ~date ~returns ~mark_equity ~confidence
+      ~recorded_at
   else `Book_not_current
 
 let retry_every = Time_ns.Span.of_min 10.0
@@ -247,16 +371,99 @@ let not_current =
 let sub_ledger_skipped date =
   sprintf "session %s: sub-ledger not checked: session not recorded" (Date.to_string date)
 
+(* How far back a last-print mark is looked for: two weeks of sessions is long
+   past the hours a late bar takes to be filed. *)
+let remark_window = 14
+
+let remark_recent ~(read : Venue.Read.t) ~(journal : Journal.t) ~(date : Date.t)
+    ~(on_event : string -> unit) : unit Deferred.t =
+  let pending =
+    Journal.last_print_marks journal ~since:(Date.add_days date (-remark_window))
+    |> List.filter ~f:(fun (d, _) -> Date.( < ) d date)
+    |> List.Assoc.sort_and_group ~compare:Date.compare
+  in
+  Deferred.List.iter ~how:`Sequential pending ~f:(fun (d, symbols) ->
+      match%map read.Venue.Read.session_bars symbols ~date:d with
+      | Error e ->
+          on_event
+            (sprintf "session %s: marks of %s not re-marked from the bar: %s"
+               (Date.to_string date) (Date.to_string d) (Error.to_string_hum e))
+      | Ok bars -> (
+          match Or_error.try_with (fun () -> remark_from ~journal ~date:d bars) with
+          | Ok 0 -> ()
+          | Ok n ->
+              on_event
+                (sprintf "session %s: %d mark%s of %s re-marked from the venue's bar"
+                   (Date.to_string date) n
+                   (if n = 1 then "" else "s")
+                   (Date.to_string d))
+          | Error e ->
+              on_event
+                (sprintf "session %s: marks of %s could not be re-marked: %s"
+                   (Date.to_string date) (Date.to_string d) (Error.to_string_hum e))))
+
+(* The symbols any strategy's own orders have filled in: whose dividends its
+   record may be owed. The hand's are not a strategy's. *)
+let strategy_symbols (journal : Journal.t) =
+  Journal.fills_by_source journal
+  |> List.filter_map ~f:(fun (source, symbol, _) ->
+      Option.some_if (String.is_prefix source ~prefix:"signal:") symbol)
+  |> Symbol.Set.of_list |> Set.to_list
+
+(* A process date runs to about the payable date, so the window for the venue's
+   cash dividends reaches back a month before the last pull, for one processed
+   ahead of its payable date, and three months ahead of the session, for an
+   ex-date already passed whose cash is still to come. *)
+let pull_cash ~(read : Venue.Read.t) ~(journal : Journal.t) ~(date : Date.t)
+    ~(on_event : string -> unit) : unit Deferred.t =
+  let since =
+    match Journal.cash_pulled_through journal with
+    | Some d -> d
+    | None -> ( match Journal.session_dates journal with d :: _ -> d | [] -> date)
+  in
+  let%bind activities = read.Venue.Read.activities ~since ~kinds:[ "DIV"; "FEE" ] in
+  (* The strategies' names, and any name the venue just paid a dividend on, so a
+     paid dividend finds its record in the same pull. *)
+  let symbols =
+    (strategy_symbols journal
+    @
+    match activities with
+    | Ok xs -> List.filter_map xs ~f:(fun (a : Venue.Activity.t) -> a.symbol)
+    | Error _ -> [])
+    |> Symbol.Set.of_list |> Set.to_list
+  in
+  let%map dividends =
+    read.Venue.Read.cash_dividends symbols ~start:(Date.add_days since (-30))
+      ~end_:(Date.add_days date 90)
+  in
+  match
+    Or_error.try_with (fun () ->
+        apply_cash_pull ~journal ~date ~recorded_at:(Time_ns.now ()) ~activities
+          ~dividends)
+  with
+  | Ok lines -> List.iter lines ~f:on_event
+  | Error e ->
+      on_event
+        (sprintf "session %s: the venue's dividends and fees could not be recorded: %s"
+           (Date.to_string date) (Error.to_string_hum e))
+
 let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
     ~(read : Venue.Read.t) ~(graph : Graph.t) ~(journal : Journal.t) ~(confidence : float)
     ~(book_is_current : unit -> bool) ~(on_recorded : Date.t -> unit)
     ~(on_event : string -> unit) : unit Deferred.t =
   let symbols = Graph.symbols graph in
   let day = Date.to_string in
-  let record_now date returns =
+  let record_now date returns ~session_bars =
     Or_error.try_with (fun () ->
-        record_if_current ~book_is_current ~graph ~journal ~date ~returns
+        record_if_current ~book_is_current ~session_bars ~graph ~journal ~date ~returns
           ~mark_equity:true ~confidence ~recorded_at:(Time_ns.now ()))
+  in
+  (* The session's official closes, for its marks: a read that fails marks every
+     name from its last print, tagged so, and re-marked once the bar is filed. *)
+  let session_bars_of date =
+    match%map read.Venue.Read.session_bars symbols ~date with
+    | Ok bars -> bars
+    | Error _ -> Symbol.Map.empty
   in
   let rec wait_for_close () =
     match%bind read.Venue.Read.clock () with
@@ -281,6 +488,11 @@ let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
           (roll_plan ~date ~symbols ~silent bars, silent)
     in
     let last = attempt >= attempts in
+    let%bind session_bars =
+      match plan with
+      | Error _ when not last -> return Symbol.Map.empty
+      | _ -> session_bars_of date
+    in
     match plan with
     | Error why when not last ->
         on_event
@@ -302,7 +514,7 @@ let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
                           (List.map (Set.to_list silent_names) ~f:Symbol.to_string))) )
           | Error why -> ([], "windows NOT rolled: " ^ why)
         in
-        match record_now date returns with
+        match record_now date returns ~session_bars with
         | Ok `Book_not_current when not last ->
             on_event
               (sprintf
@@ -324,12 +536,19 @@ let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
                  "session %s: the record FAILED (%s); the live graph was not touched, \
                   retrying in 10 min"
                  (day date) (Error.to_string_hum e));
-            retry date returns how ~why:(Error.to_string_hum e) ~held:None)
+            retry date returns how ~session_bars ~why:(Error.to_string_hum e) ~held:None)
   and journaled date how outcome ~held =
     on_event
       (match outcome with
       | `Recorded -> sprintf "session %s recorded, %s" (day date) how
       | `Already_recorded -> sprintf "session %s was already recorded" (day date));
+    (* Before the stop rules read the record (Task 1.8): last-print marks from
+       the sessions before this one re-marked from their bars where the venue
+       has filed them, and the account's DIV and FEE activities and the
+       venue's cash dividends pulled since the last pull. Each step says what
+       it did or why it could not, and none stops the close's loop. *)
+    let%bind () = remark_recent ~read ~journal ~date ~on_event in
+    let%bind () = pull_cash ~read ~journal ~date ~on_event in
     (* INC-01's stop rules, once the session is on the record: its marks are
        what each strategy's drawdown is read from (desk/stop.ml). Already
        recorded too, since the process that recorded it may have stopped before
@@ -382,24 +601,24 @@ let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
      between would be skipped. For the same reason a retry that gives up, or
      records late, goes to the kept clock's session directly instead of asking
      the venue what comes next. *)
-  and retry date returns how ~why ~held =
+  and retry date returns how ~session_bars ~why ~held =
     let%bind () = Clock_ns.after retry_every in
     let again ~held =
-      match record_now date returns with
+      match record_now date returns ~session_bars with
       | Ok ((`Recorded | `Already_recorded) as outcome) ->
           journaled date how outcome ~held
       | Ok `Book_not_current ->
           on_event
             (sprintf "session %s: still not recorded (%s); again in 10 min" (day date)
                not_current);
-          retry date returns how ~why:not_current ~held
+          retry date returns how ~session_bars ~why:not_current ~held
       | Error e ->
           on_event
             (sprintf
                "session %s: the record FAILED again (%s); the live graph was not \
                 touched, retrying in 10 min"
                (day date) (Error.to_string_hum e));
-          retry date returns how ~why:(Error.to_string_hum e) ~held
+          retry date returns how ~session_bars ~why:(Error.to_string_hum e) ~held
     in
     match%bind
       match held with Some clock -> return (Ok clock) | None -> read.Venue.Read.clock ()

@@ -201,6 +201,14 @@ let read (t : t) : Venue.Read.t =
              "simulated venue: it keeps no bar history; the demo's returns come from its \
               own synthetic bars"));
     last_prints = (fun _ -> return (Ok Symbol.Map.empty));
+    (* No bar history, so no official close: a mark here is the simulated
+       price, tagged as a last print. No account activities and no corporate
+       actions: the simulated book pays no dividends and charges no fees. *)
+    session_bars =
+      (fun _ ~date:_ ->
+        return (Or_error.error_string "simulated venue: it keeps no bar history"));
+    activities = (fun ~since:_ ~kinds:_ -> return (Ok []));
+    cash_dividends = (fun _ ~start:_ ~end_:_ -> return (Ok []));
   }
 
 (* The trading half. A limit fills against the side of the quote the order

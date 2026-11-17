@@ -192,9 +192,174 @@ let test_a_session_sized_to_zero_still_counts () =
     "both sessions count" 2 (D.Record.summarise record).D.Record.sessions;
   D.Journal.close j
 
+(* Task 1.8, through the journal. s_tlt buys 100 TLT at 90.00 on 2026-11-02, a day
+   order sent at 10:00 New York against a 89.99/90.01 quote; TLT closes 90.00, then
+   89.70 on 2026-11-03, its ex-date for 0.30 paid 2026-11-06. Its record reads 0.00
+   and 0.00, where the record before Task 1.8 read 0.00 and -30.00 -- the ex-date as
+   a loss. The fill's cost is 100 x (90.00 - 90.00) = 0.00 against the mid. *)
+let tlt = Symbol.of_string "TLT"
+
+let journal_holding_tlt ?(tif = D.Order.Tif.Day) ?(created = "2026-11-02T14:00:00Z")
+    ?(arrival = Some (89.99, 90.01)) ?(through_pay_date = false) () =
+  let j = Or_error.ok_exn (D.Journal.open_ ~path:":memory:") in
+  let o =
+    {
+      (D.Order.create
+         {
+           D.Order.Request.client_order_id =
+             Option.value_exn
+               (D.Ids.Client_order_id.of_string "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZ80");
+           symbol = tlt;
+           side = D.Order.Side.Buy;
+           qty = 100;
+           kind = D.Order.Kind.Limit (Price.of_float 90.02);
+           tif;
+         })
+      with
+      D.Order.state = D.Order.State.Filled;
+    }
+  in
+  D.Journal.insert_order j o
+    ~source:(D.Rebalance.Source.name ~strategy:"s_tlt" ~sequence:1)
+    ~decision_price:(Price.of_float 90.0)
+    ~arrival:(Option.map arrival ~f:(fun (b, a) -> (Price.of_float b, Price.of_float a)))
+    ~verdict:`Null ~at:(at created);
+  D.Journal.For_testing.run j ~what:"venue id"
+    "UPDATE orders SET venue_order_id = 'venue-tlt-1'" [];
+  ignore
+    (D.Journal.record_fill j o
+       {
+         D.Order.Fill.execution_id = "x-tlt";
+         qty = 100.0;
+         price = Price.of_float 90.0;
+         at = at "2026-11-02T14:00:01Z";
+         position_qty = None;
+       }
+      : bool);
+  D.Journal.record_sizing j ~strategy:"s_tlt" ~sequence:1 ~at:(at created)
+    ~tier:"incubation" ~scale:1.0 ~allocated:10_000.0 ~mode:"open";
+  List.iter
+    ([ ("2026-11-02", 90.0); ("2026-11-03", 89.7) ]
+    @ if through_pay_date then [ ("2026-11-06", 89.7) ] else [])
+    ~f:(fun (date, c) ->
+      D.Journal.record_marks j
+        [ { D.Journal.Mark.date = d date; symbol = tlt; close = c; qty = 100.0 } ];
+      D.Journal.record_session j
+        {
+          D.Journal.Session.date = d date;
+          equity_close = 1_000_000.0;
+          cash_close = 0.0;
+          gross_close = 0.0;
+          net_close = 0.0;
+          recorded_at = at (date ^ "T21:05:00Z");
+        });
+  D.Journal.record_cash_dividends j
+    [
+      {
+        D.Venue.Cash_dividend.id = "ca-tlt-nov";
+        symbol = tlt;
+        ex_date = d "2026-11-03";
+        payable_date = Some (d "2026-11-06");
+        rate = 0.30;
+      };
+    ]
+    ~recorded_at:(at "2026-11-03T21:06:00Z");
+  j
+
+let pnls record = List.map record ~f:(fun (s : D.Record.session) -> s.D.Record.pnl)
+
+let test_a_monthly_payer's_ex_date_is_not_a_loss () =
+  let j = journal_holding_tlt () in
+  let now = D.Stop.sessions ~journal:j ~zone ~strategy:"s_tlt" ~since:None in
+  Alcotest.(check (list (float 1e-9))) "flat through the ex-date" [ 0.0; 0.0 ] (pnls now);
+  Alcotest.(check (list (float 1e-9)))
+    "before Task 1.8, a loss" [ 0.0; -30.0 ]
+    (pnls
+       (D.Stop.sessions_under ~rule:`Before_1_8 ~journal:j ~zone ~strategy:"s_tlt"
+          ~since:None ()));
+  Alcotest.(check (option (float 1e-9)))
+    "measured against the 90.00 mid: 0 bps" (Some 0.0)
+    (D.Record.summarise now).D.Record.cost_bps;
+  D.Journal.close j
+
+(* The pay date's cash is never a second dividend: the DIV activity posted on the
+   payable date, 2026-11-06, a recorded session here, sets the rate paid (0.30, the
+   same) and adds nothing to that session. A fee that
+   names the fill's order is the fill's: 0.02 off the first session's P&L. A fee that
+   names none is the account's and nobody's. *)
+let test_the_cash_receipt_is_not_counted_twice () =
+  let j = journal_holding_tlt ~through_pay_date:true () in
+  let activity ?order_id ?symbol ?per_share ~id ~kind ~date net =
+    {
+      D.Venue.Activity.id;
+      activity_type = kind;
+      sub_type = None;
+      date = d date;
+      symbol;
+      qty = None;
+      per_share;
+      net_amount = net;
+      status = Some "executed";
+      order_id;
+    }
+  in
+  ignore
+    (D.Journal.record_activities j
+       [
+         activity ~id:"div" ~kind:"DIV" ~date:"2026-11-06" ~symbol:tlt ~per_share:0.30
+           30.0;
+         activity ~id:"fee-named" ~kind:"FEE" ~date:"2026-11-03" ~order_id:"venue-tlt-1"
+           (-0.02);
+         activity ~id:"fee-account" ~kind:"FEE" ~date:"2026-11-03" (-0.05);
+       ]
+       ~recorded_at:(at "2026-11-07T21:06:00Z")
+      : int);
+  let record = D.Stop.sessions ~journal:j ~zone ~strategy:"s_tlt" ~since:None in
+  Alcotest.(check (list (float 1e-9)))
+    "the fee once, the dividend once" [ -0.02; 0.0; 0.0 ] (pnls record);
+  Alcotest.(check (float 1e-9))
+    "30.00 credited, not 60.00" 30.0 (D.Record.summarise record).D.Record.dividends;
+  let _, unassigned, count = D.Stop.fees_by_order (D.Journal.activities j) in
+  Alcotest.(check (pair (float 1e-9) int))
+    "the account's fee, nobody's" (0.05, 1) (unassigned, count);
+  Alcotest.(check int)
+    "every paid dividend has its record" 0
+    (List.length
+       (D.Stop.unmatched_dividends ~cash_dividends:(D.Journal.cash_dividends j)
+          ~activities:(D.Journal.activities j)));
+  D.Journal.close j
+
+(* Which arrival quote is one. A day order at 10:00 New York against 89.99/90.01: the
+   mid, 90.00. A market-on-open order (its quote read at 19:15 the evening before), a
+   day order created at 19:15, a crossed quote and no quote at all: unknown. *)
+let test_only_a_session's_quote_is_an_arrival () =
+  let mid ?tif ?created ?arrival () =
+    let j = journal_holding_tlt ?tif ?created ?arrival () in
+    let f =
+      List.hd_exn
+        (D.Journal.source_fill_details j
+           ~prefix:(D.Rebalance.Source.prefix ~strategy:"s_tlt"))
+    in
+    D.Journal.close j;
+    D.Stop.arrival_mid ~zone f
+  in
+  let unknown = Alcotest.(option (float 1e-9)) in
+  Alcotest.check unknown "a session's quote" (Some 90.0) (mid ());
+  Alcotest.check unknown "an auction's" None
+    (mid ~tif:D.Order.Tif.Opg ~created:"2026-11-02T23:15:00Z" ());
+  Alcotest.check unknown "after hours" None (mid ~created:"2026-11-02T23:15:00Z" ());
+  Alcotest.check unknown "crossed" None (mid ~arrival:(Some (90.01, 89.99)) ());
+  Alcotest.check unknown "none journaled" None (mid ~arrival:None ())
+
 let suite =
   ( "stop",
     [
+      Alcotest.test_case "a monthly payer's ex-date is not a loss" `Quick
+        test_a_monthly_payer's_ex_date_is_not_a_loss;
+      Alcotest.test_case "the cash receipt is not counted twice" `Quick
+        test_the_cash_receipt_is_not_counted_twice;
+      Alcotest.test_case "only a session's quote is an arrival" `Quick
+        test_only_a_session's_quote_is_an_arrival;
       Alcotest.test_case "the drawdown rule fires at its line" `Quick
         test_the_drawdown_rule_fires_at_its_line;
       Alcotest.test_case "the sessions rule fires at its count" `Quick

@@ -55,3 +55,19 @@ val backup : now:Date.t -> src:string -> dir:string -> name:string option -> Out
     process may not remove -- stops the prune at that file, status 1, with the path on
     stderr: what was deleted before it is named on stdout, nothing after it is touched,
     and the copy, verified before the prune began, stays. *)
+
+val record_diff :
+  journal:string ->
+  since:Date.t option ->
+  dividends:string option ->
+  zone:Time_float.Zone.t ->
+  Outcome.t
+(** [ohcamel record-diff --journal FILE [--since DATE] [--dividends FILE]]: every
+    strategy's record recomputed from the journal under the rule before Task 1.8 and the
+    rule after it, side by side -- sessions, total P&L before and after, dividends
+    credited, fees, cost against the arrival mid, fills whose cost is unknown, and every
+    session whose P&L changed with the reason (dividend, fee). The journal is opened
+    read-only and nothing is written to it; nothing asks the venue. Dividends are read
+    from [--dividends] when given -- one [SYMBOL,EX_DATE,PER_SHARE] a line, blank lines
+    and lines from [#] ignored -- else from the journal's own dividends table, else none.
+    Status 1 when the journal or the dividends file cannot be read. *)

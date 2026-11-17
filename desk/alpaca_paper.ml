@@ -293,6 +293,89 @@ let bars_of_json (json : Yojson.Safe.t) :
       Ok (bars, token)
   | _ -> Or_error.error_string "alpaca_paper: no bars object"
 
+(* A text field that may be absent: None, never "". *)
+let optional_string json key =
+  match field json key with
+  | Some (`String s) when not (String.is_empty s) -> Some s
+  | _ -> None
+
+let date_field ~what json key =
+  let open Or_error.Let_syntax in
+  let%bind s = string_field ~what json key in
+  match Desk_time.local_date s with
+  | Some d -> Ok d
+  | None -> Or_error.errorf "alpaca_paper: %s.%s is not a date: %S" what key s
+
+(* GET /v2/account/activities, NonTradeActivities: every number a decimal string,
+   held to [decimal]'s rule. A dividend's per_share_amount and qty are optional
+   (Alpaca: "not present for other activity types"); a net amount and a date are
+   not, and an activity missing either refuses the page rather than become a
+   dividend of nothing on no day. *)
+let activity_of_json (json : Yojson.Safe.t) : Venue.Activity.t Or_error.t =
+  let open Or_error.Let_syntax in
+  let what = "activity" in
+  let%bind id = string_field ~what json "id" in
+  let%bind activity_type = string_field ~what json "activity_type" in
+  let%bind date = date_field ~what json "date" in
+  let%bind net_amount = decimal ~what json "net_amount" in
+  let%bind qty = optional_decimal ~what json "qty" in
+  let%map per_share = optional_decimal ~what json "per_share_amount" in
+  {
+    Venue.Activity.id;
+    activity_type;
+    sub_type = optional_string json "activity_sub_type";
+    date;
+    symbol = Option.map (optional_string json "symbol") ~f:Symbol.of_string;
+    qty;
+    per_share;
+    net_amount;
+    status = optional_string json "status";
+    order_id = optional_string json "order_id";
+  }
+
+let activities_of_json (json : Yojson.Safe.t) : Venue.Activity.t list Or_error.t =
+  match json with
+  | `List items -> Or_error.all (List.map items ~f:activity_of_json)
+  | _ -> Or_error.error_string "alpaca_paper: account activities are not a list"
+
+(* GET /v1/corporate-actions, cash_dividends. [rate] is a JSON number there, not a
+   string; [number] reads it, and a dividend without an ex-date or a rate refuses
+   the page. An absent array is a window with no cash dividend. *)
+let cash_dividend_of_json (json : Yojson.Safe.t) : Venue.Cash_dividend.t Or_error.t =
+  let open Or_error.Let_syntax in
+  let what = "cash_dividend" in
+  let%bind id = string_field ~what json "id" in
+  let%bind symbol = string_field ~what json "symbol" in
+  let%bind ex_date = date_field ~what json "ex_date" in
+  let%map rate =
+    match Option.bind (field json "rate") ~f:number with
+    | Some r when Float.is_finite r -> Ok r
+    | _ -> Or_error.errorf "alpaca_paper: %s.rate is missing" what
+  in
+  {
+    Venue.Cash_dividend.id;
+    symbol = Symbol.of_string symbol;
+    ex_date;
+    payable_date =
+      Option.bind (optional_string json "payable_date") ~f:Desk_time.local_date;
+    rate;
+  }
+
+let cash_dividends_of_json (json : Yojson.Safe.t) :
+    (Venue.Cash_dividend.t list * string option) Or_error.t =
+  match field json "corporate_actions" with
+  | Some (`Assoc _ as actions) ->
+      let token =
+        match field json "next_page_token" with Some (`String s) -> Some s | _ -> None
+      in
+      let items =
+        match field actions "cash_dividends" with Some (`List xs) -> xs | _ -> []
+      in
+      Or_error.map
+        (Or_error.all (List.map items ~f:cash_dividend_of_json))
+        ~f:(fun ds -> (ds, token))
+  | _ -> Or_error.error_string "alpaca_paper: no corporate_actions object"
+
 (* ---------------------------------------------------------------------- *)
 (* The trading half: pure parts                                             *)
 (* ---------------------------------------------------------------------- *)
@@ -592,4 +675,79 @@ let read ~(credentials : Credentials.t) ~(feed : string) : Venue.Read.t =
                ]
              "/v2/stocks/trades/latest")
           last_prints_of_json);
+    session_bars =
+      (fun symbols ~date ->
+        let day = Date.to_string date in
+        let rec page token acc =
+          let query =
+            [
+              ( "symbols",
+                [ String.concat ~sep:"," (List.map symbols ~f:Symbol.to_string) ] );
+              ("timeframe", [ "1Day" ]);
+              ("start", [ day ]);
+              ("end", [ day ]);
+              ("adjustment", [ "raw" ]);
+              ("feed", [ feed ]);
+              ("limit", [ "10000" ]);
+            ]
+            @ Option.value_map token ~default:[] ~f:(fun t -> [ ("page_token", [ t ]) ])
+          in
+          match%bind get (data_uri ~query "/v2/stocks/bars") bars_of_json with
+          | Error _ as e -> return e
+          | Ok (bars, next) -> (
+              let acc = Map.merge_skewed acc bars ~combine:(fun ~key:_ a b -> a @ b) in
+              match next with Some t -> page (Some t) acc | None -> return (Ok acc))
+        in
+        Deferred.Or_error.map (page None Symbol.Map.empty) ~f:(fun m ->
+            Map.filter_map m ~f:(fun bars ->
+                List.find bars ~f:(fun (b : Venue.Bar.t) -> Date.equal b.date date))));
+    activities =
+      (fun ~since ~kinds ->
+        (* Oldest first, a hundred at a time, each page from the last id of the
+           one before, until a page comes back short. *)
+        let rec page token acc =
+          let query =
+            [
+              ("activity_types", [ String.concat ~sep:"," kinds ]);
+              ("after", [ Date.to_string since ]);
+              ("direction", [ "asc" ]);
+              ("page_size", [ "100" ]);
+            ]
+            @ Option.value_map token ~default:[] ~f:(fun t -> [ ("page_token", [ t ]) ])
+          in
+          match%bind
+            get (trading_uri ~query "/v2/account/activities") activities_of_json
+          with
+          | Error _ as e -> return e
+          | Ok items -> (
+              let acc = acc @ items in
+              match List.last items with
+              | Some last when List.length items >= 100 ->
+                  page (Some last.Venue.Activity.id) acc
+              | _ -> return (Ok acc))
+        in
+        page None []);
+    cash_dividends =
+      (fun symbols ~start ~end_ ->
+        let rec page token acc =
+          let query =
+            [
+              ( "symbols",
+                [ String.concat ~sep:"," (List.map symbols ~f:Symbol.to_string) ] );
+              ("types", [ "cash_dividend" ]);
+              ("start", [ Date.to_string start ]);
+              ("end", [ Date.to_string end_ ]);
+              ("limit", [ "1000" ]);
+            ]
+            @ Option.value_map token ~default:[] ~f:(fun t -> [ ("page_token", [ t ]) ])
+          in
+          match%bind
+            get (data_uri ~query "/v1/corporate-actions") cash_dividends_of_json
+          with
+          | Error _ as e -> return e
+          | Ok (items, next) -> (
+              let acc = acc @ items in
+              match next with Some t -> page (Some t) acc | None -> return (Ok acc))
+        in
+        if List.is_empty symbols then return (Ok []) else page None []);
   }

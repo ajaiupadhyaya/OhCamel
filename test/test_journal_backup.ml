@@ -456,7 +456,7 @@ let test_verify_reports_the_version_the_counts_and_the_newest_rows () =
       Alcotest.(check (list string))
         "no table is missing" [] r.Journal.Report.missing_tables;
       Alcotest.(check (list (pair string int)))
-        "the fifteen counts, in schema order"
+        "the seventeen counts, in schema order"
         [
           ("meta", 1);
           ("orders", 1);
@@ -473,6 +473,8 @@ let test_verify_reports_the_version_the_counts_and_the_newest_rows () =
           ("sizings", 0);
           ("strategy_state", 0);
           ("completions", 0);
+          ("activities", 0);
+          ("dividends", 0);
         ]
         r.Journal.Report.counts;
       Alcotest.(check (option string))
@@ -511,7 +513,7 @@ let test_verify_reports_an_empty_journal_as_empty_not_broken () =
         "no newest order" None
         (Option.map r.Journal.Report.newest_order ~f:fst);
       Alcotest.(check int)
-        "every table counted, all but meta empty" 15
+        "every table counted, all but meta empty" 17
         (List.length r.Journal.Report.counts))
 
 (* A truncated copy is what a full disk or a killed container leaves behind,
@@ -702,7 +704,7 @@ let test_verify_names_a_missing_table () =
         "alerts is missing" [ "alerts" ] r.Journal.Report.missing_tables;
       Alcotest.(check bool) "so the copy is not clean" false (Journal.Report.clean r);
       Alcotest.(check int)
-        "fourteen tables counted, not fifteen" 14
+        "sixteen tables counted, not seventeen" 16
         (List.length r.Journal.Report.counts);
       Alcotest.(check bool)
         "and the printed report names it" true
@@ -737,11 +739,12 @@ let test_verify_names_a_schema_version_this_build_does_not_know () =
              && String.is_substring p ~substring:(Int.to_string Journal.schema_version))))
 
 (* [Journal.tables] is read out of the schema rather than written down twice,
-   so this pins what the schema holds today: fifteen tables, in the order the
-   CREATE TABLE statements appear -- the fifteenth, completions, Task 1.7's.
-   A sixteenth is a line in this list and a count in the report, both in the
+   so this pins what the schema holds today: seventeen tables, in the order the
+   CREATE TABLE statements appear -- the fifteenth, completions, Task 1.7's; the
+   sixteenth and seventeenth, activities and dividends, Task 1.8's. An
+   eighteenth is a line in this list and a count in the report, both in the
    task that adds it. *)
-let test_tables_is_the_schemas_fifteen_in_order () =
+let test_tables_is_the_schemas_seventeen_in_order () =
   Alcotest.(check (list string))
     "the schema's tables, in its order"
     [
@@ -760,6 +763,8 @@ let test_tables_is_the_schemas_fifteen_in_order () =
       "sizings";
       "strategy_state";
       "completions";
+      "activities";
+      "dividends";
     ]
     Journal.tables
 
@@ -1533,9 +1538,118 @@ let test_verify_against_a_source_stays_strict_for_tables_the_source_had () =
         (Journal.Report.clean additive
         && List.equal String.equal additive.Journal.Report.absent_in_source [ "alerts" ]))
 
+(* record-diff (Task 1.8), on a journal at the schema before it -- no activities or
+   dividends table, no marks.source -- holding s_tlt: 100 TLT bought at 90.00, a day
+   order sent at 10:00 New York against 89.99/90.01; closes 90.00 and 89.70; and a
+   dividends file with TLT's 0.30 ex 2026-11-03. Before Task 1.8 the record reads
+   -30.00, after it 0.00, and the one changed session says why. The file is read and
+   never written: byte for byte the same after the run, and still without the new
+   tables. *)
+let tlt_journal path =
+  let j = open_exn path in
+  let tlt = Symbol.of_string "TLT" in
+  let o =
+    {
+      (Order.create
+         {
+           Order.Request.client_order_id =
+             Option.value_exn
+               (Ids.Client_order_id.of_string "ohc-01M2B0CWJ0ZZZZZZZZZZZZZZ70");
+           symbol = tlt;
+           side = Order.Side.Buy;
+           qty = 100;
+           kind = Order.Kind.Limit (Price.of_float 90.02);
+           tif = Order.Tif.Day;
+         })
+      with
+      Order.state = Order.State.Filled;
+    }
+  in
+  Journal.insert_order j o ~source:"signal:s_tlt:1" ~decision_price:(Price.of_float 90.0)
+    ~arrival:(Some (Price.of_float 89.99, Price.of_float 90.01))
+    ~verdict:`Null
+    ~at:(Time_ns.of_string_with_utc_offset "2026-11-02T15:00:00Z");
+  ignore
+    (Journal.record_fill j o
+       {
+         Order.Fill.execution_id = "x-tlt";
+         qty = 100.0;
+         price = Price.of_float 90.0;
+         at = Time_ns.of_string_with_utc_offset "2026-11-02T15:00:01Z";
+         position_qty = None;
+       }
+      : bool);
+  Journal.record_sizing j ~strategy:"s_tlt" ~sequence:1
+    ~at:(Time_ns.of_string_with_utc_offset "2026-11-02T15:00:00Z")
+    ~tier:"incubation" ~scale:1.0 ~allocated:10_000.0 ~mode:"open";
+  List.iter
+    [ ("2026-11-02", 90.0); ("2026-11-03", 89.7) ]
+    ~f:(fun (d, c) ->
+      Journal.record_marks j
+        [ { Journal.Mark.date = date d; symbol = tlt; close = c; qty = 100.0 } ];
+      Journal.record_session j
+        {
+          Journal.Session.date = date d;
+          equity_close = 1_000_000.0;
+          cash_close = 0.0;
+          gross_close = 0.0;
+          net_close = 0.0;
+          recorded_at = Time_ns.of_string_with_utc_offset (d ^ "T21:05:00Z");
+        });
+  Journal.close j;
+  let db = Sqlite3.db_open path in
+  List.iter
+    [
+      "DROP TABLE activities";
+      "DROP TABLE dividends";
+      "ALTER TABLE marks DROP COLUMN source";
+    ] ~f:(fun sql -> ignore (Sqlite3.exec db sql : Sqlite3.Rc.t));
+  ignore (Sqlite3.db_close db : bool)
+
+let new_york_summer = Time_float.Zone.of_utc_offset ~hours:(-5)
+
+let test_record_diff_reads_and_never_writes () =
+  with_temp_dir ~f:(fun dir ->
+      let path = Filename.concat dir "copy.db" in
+      tlt_journal path;
+      let dividends = Filename.concat dir "dividends.csv" in
+      Out_channel.write_all dividends
+        ~data:"# symbol,ex_date,per_share\nTLT,2026-11-03,0.30\n\n";
+      let before = In_channel.read_all path in
+      let o =
+        Ohcamel_desk.Journal_cli.record_diff ~journal:path ~since:None
+          ~dividends:(Some dividends) ~zone:new_york_summer
+      in
+      Alcotest.(check int) "status" 0 o.status;
+      let has line = List.exists o.out ~f:(fun l -> String.equal (String.strip l) line) in
+      Alcotest.(check bool)
+        (sprintf "the strategy's row, in:\n%s" (String.concat ~sep:"\n" o.out))
+        true
+        (has
+           "s_tlt  sessions 2  P&L -30.00 -> 0.00  dividends 30.00  fees 0.00  cost \
+            0.00  cost_unknown 0  cost_bps 0.00");
+      Alcotest.(check bool)
+        "the changed session and why" true
+        (has "2026-11-03  -30.00 -> 0.00  dividend");
+      Alcotest.(check bool)
+        "byte for byte the same" true
+        (String.equal before (In_channel.read_all path));
+      Alcotest.(check (result (list string) string))
+        "and still without the new tables"
+        (Ok [ "activities"; "dividends" ])
+        (Journal.tables_absent_from path);
+      Out_channel.write_all dividends ~data:"TLT,2026-11-03,a third\n";
+      let bad =
+        Ohcamel_desk.Journal_cli.record_diff ~journal:path ~since:None
+          ~dividends:(Some dividends) ~zone:new_york_summer
+      in
+      Alcotest.(check int) "a dividends line it cannot read is status 1" 1 bad.status)
+
 let suite =
   ( "journal backup",
     [
+      Alcotest.test_case "record-diff reads and never writes" `Quick
+        test_record_diff_reads_and_never_writes;
       Alcotest.test_case "a live journal round trips through the backup" `Quick
         test_a_live_journal_round_trips_through_the_backup;
       Alcotest.test_case "the backup only reads the source" `Quick
@@ -1562,8 +1676,8 @@ let suite =
         test_verify_names_a_missing_table;
       Alcotest.test_case "verify names a schema version this build does not know" `Quick
         test_verify_names_a_schema_version_this_build_does_not_know;
-      Alcotest.test_case "tables is the schema's fifteen, in order" `Quick
-        test_tables_is_the_schemas_fifteen_in_order;
+      Alcotest.test_case "tables is the schema's seventeen, in order" `Quick
+        test_tables_is_the_schemas_seventeen_in_order;
       Alcotest.test_case "the reckoning day is a Saturday" `Quick
         test_the_reckoning_day_is_a_saturday;
       Alcotest.test_case "retention keeps twenty of sixty-one dailies" `Quick

@@ -232,8 +232,8 @@ let with_book ~f =
 
 let at = Time_ns.of_string_with_utc_offset "2026-09-11T20:05:00Z"
 
-let record graph journal =
-  Close.record ~graph ~journal ~date:(date "2026-09-11")
+let record ?(session_bars = Symbol.Map.empty) graph journal =
+  Close.record ~session_bars ~graph ~journal ~date:(date "2026-09-11")
     ~returns:[ (aapl, 0.01); (xom, -0.01) ]
     ~mark_equity:true ~confidence:0.95 ~recorded_at:at
 
@@ -401,9 +401,179 @@ let test_drawdown_survives_a_restart () =
         "measured from the restored peak" (2_000.0 /. 104_000.0)
         (Graph.current_drawdown graph))
 
+(* The official close (Task 1.8): the venue's daily bar for the session, and the last
+   print only when the bar is not filed -- tagged so, to be re-marked. A bar for
+   another date is not this session's. On a half-day the bar is the day's close
+   whenever it came, so the rule is the same. *)
+let test_the_official_close_prefers_the_bar () =
+  let bars =
+    Symbol.Map.of_alist_exn
+      [ (aapl, bar "2026-09-11" 101.0); (xom, bar "2026-09-10" 49.0) ]
+  in
+  let last_print s =
+    if Symbol.equal s aapl then Some 100.5
+    else if Symbol.equal s xom then Some 50.0
+    else None
+  in
+  let official s = Close.official_close bars ~last_print ~date:(date "2026-09-11") s in
+  let show = function
+    | None -> "none"
+    | Some (p, `Bar) -> sprintf "%g bar" p
+    | Some (p, `Last_print) -> sprintf "%g last_print" p
+  in
+  Alcotest.(check string) "the bar" "101 bar" (show (official aapl));
+  Alcotest.(check string)
+    "yesterday's bar is not today's" "50 last_print"
+    (show (official xom));
+  Alcotest.(check string)
+    "nothing at all" "none"
+    (show (official (Symbol.of_string "SPY")))
+
+(* The close marks AAPL from its bar, 101, and XOM, with no bar filed, from the
+   graph's 50 -- each tagged with where it came from. *)
+let test_the_close_marks_at_the_official_close () =
+  with_book ~f:(fun graph journal ->
+      ignore
+        (record
+           ~session_bars:(Symbol.Map.of_alist_exn [ (aapl, bar "2026-09-11" 101.0) ])
+           graph journal
+          : [ `Recorded | `Already_recorded ]);
+      Alcotest.(check (list string))
+        "marks and their origins"
+        [ "AAPL 101 bar"; "XOM 50 last_print" ]
+        (List.map
+           (Journal.marks journal (date "2026-09-11"))
+           ~f:(fun m ->
+             sprintf "%s %g %s"
+               (Symbol.to_string m.Journal.Mark.symbol)
+               m.Journal.Mark.close
+               (match
+                  Journal.mark_source journal (date "2026-09-11") m.Journal.Mark.symbol
+                with
+               | Some `Bar -> "bar"
+               | Some `Last_print -> "last_print"
+               | None -> "unknown"))))
+
+(* The night after, XOM's bar is filed: its last-print mark is re-marked to the bar's
+   49.80, and AAPL's bar mark is left alone. *)
+let test_a_last_print_is_re_marked_when_the_bar_is_filed () =
+  with_book ~f:(fun graph journal ->
+      ignore
+        (record
+           ~session_bars:(Symbol.Map.of_alist_exn [ (aapl, bar "2026-09-11" 101.0) ])
+           graph journal
+          : [ `Recorded | `Already_recorded ]);
+      Alcotest.(check int)
+        "a bar for another day re-marks nothing" 0
+        (Close.remark_from ~journal ~date:(date "2026-09-11")
+           (Symbol.Map.of_alist_exn [ (xom, bar "2026-09-12" 49.8) ]));
+      Alcotest.(check int)
+        "one re-marked" 1
+        (Close.remark_from ~journal ~date:(date "2026-09-11")
+           (Symbol.Map.of_alist_exn
+              [ (aapl, bar "2026-09-11" 1.0); (xom, bar "2026-09-11" 49.8) ]));
+      Alcotest.(check (list (float 1e-9)))
+        "XOM from its bar, AAPL untouched" [ 101.0; 49.8 ]
+        (List.map
+           (Journal.marks journal (date "2026-09-11"))
+           ~f:(fun m -> m.Journal.Mark.close)))
+
+let activity ?symbol ?per_share ?(status = Some "executed") ~id ~kind ~on net =
+  {
+    Venue.Activity.id;
+    activity_type = kind;
+    sub_type = None;
+    date = date on;
+    symbol;
+    qty = None;
+    per_share;
+    net_amount = net;
+    status;
+    order_id = None;
+  }
+
+let tlt = Symbol.of_string "TLT"
+let lqd = Symbol.of_string "LQD"
+
+let cash ~id ~symbol ~ex ~pay rate =
+  {
+    Venue.Cash_dividend.id;
+    symbol;
+    ex_date = date ex;
+    payable_date = Some (date pay);
+    rate;
+  }
+
+(* The nightly pull, decided without a venue. Every activity is recorded; a cash
+   dividend only once it has gone ex (LQD's ex-date is after the session); the pull is
+   marked through the session. An LQD dividend paid with no record is said as credited
+   to no strategy, and an account fee as assigned to none. The same pull again records
+   nothing new. A pull that fails leaves the mark where it was, so the next night asks
+   from there. *)
+let test_the_nightly_pull_records_what_has_gone_ex () =
+  let journal = Or_error.ok_exn (Journal.open_ ~path:":memory:") in
+  let on = date "2026-11-04" in
+  let activities =
+    Ok
+      [
+        activity ~id:"a1" ~kind:"DIV" ~on:"2026-11-04" ~symbol:lqd ~per_share:0.25 25.0;
+        activity ~id:"a2" ~kind:"FEE" ~on:"2026-11-03" (-0.05);
+      ]
+  in
+  let dividends =
+    Ok
+      [
+        cash ~id:"c1" ~symbol:tlt ~ex:"2026-11-03" ~pay:"2026-11-06" 0.30;
+        cash ~id:"c2" ~symbol:lqd ~ex:"2026-11-05" ~pay:"2026-11-07" 0.27;
+      ]
+  in
+  let lines =
+    Close.apply_cash_pull ~journal ~date:on ~recorded_at:at ~activities ~dividends
+  in
+  Alcotest.(check (list string))
+    "what the close says"
+    [
+      "session 2026-11-04: dividends and fees pulled: 2 new activities, 1 cash dividend \
+       gone ex on record";
+      "session 2026-11-04: LQD paid 25.00 on 2026-11-04 with no ex-date on record: \
+       credited to no strategy";
+      "session 2026-11-04: 1 account fee totalling 0.05 names no order: assigned to no \
+       strategy";
+    ]
+    lines;
+  Alcotest.(check (list string))
+    "only TLT's has gone ex" [ "c1" ]
+    (List.map (Journal.cash_dividends journal) ~f:(fun c -> c.Venue.Cash_dividend.id));
+  Alcotest.(check (option string))
+    "pulled through the session" (Some "2026-11-04")
+    (Option.map (Journal.cash_pulled_through journal) ~f:Date.to_string);
+  ignore
+    (Close.apply_cash_pull ~journal ~date:on ~recorded_at:at ~activities ~dividends
+      : string list);
+  Alcotest.(check int) "again: nothing twice" 2 (List.length (Journal.activities journal));
+  let failed =
+    Close.apply_cash_pull ~journal ~date:(date "2026-11-05") ~recorded_at:at ~activities
+      ~dividends:(Or_error.error_string "503")
+  in
+  Alcotest.(check bool)
+    "a failure is said" true
+    (List.exists failed ~f:(String.is_substring ~substring:"not pulled"));
+  Alcotest.(check (option string))
+    "and the pull is not marked past it" (Some "2026-11-04")
+    (Option.map (Journal.cash_pulled_through journal) ~f:Date.to_string);
+  Journal.close journal
+
 let suite =
   ( "session_close",
     [
+      Alcotest.test_case "the official close prefers the bar" `Quick
+        test_the_official_close_prefers_the_bar;
+      Alcotest.test_case "the close marks at the official close" `Quick
+        test_the_close_marks_at_the_official_close;
+      Alcotest.test_case "a last print is re-marked when the bar is filed" `Quick
+        test_a_last_print_is_re_marked_when_the_bar_is_filed;
+      Alcotest.test_case "the nightly pull records what has gone ex" `Quick
+        test_the_nightly_pull_records_what_has_gone_ex;
       Alcotest.test_case "the close is recorded five minutes after the venue closes"
         `Quick test_the_close_is_recorded_five_minutes_after_the_venue_closes;
       Alcotest.test_case "a failed write seen fifteen minutes after the close is retried"
