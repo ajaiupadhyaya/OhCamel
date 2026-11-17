@@ -58,11 +58,25 @@ val refuses : break list -> symbol:Symbol.t -> increases:bool -> string option
 
     [increases] is the caller's, judged against THE PROPOSING STRATEGY'S OWN position
     (Rebalance.grows: it opens a position, takes one further from zero, or takes it
-    through zero), never against the account's. Every desk fill moves the account and the
-    sub-ledger by the same quantity, so no desk order widens or narrows a break: what an
-    order risks is the size of the strategy it belongs to. A reduction of its own goes, so
-    every strategy in a broken name can still be cut and stopped -- the long sells, the
-    short covers -- and what it may not do is grow, however the account's net moves. *)
+    through zero), never against the account's: what an order risks is the size of the
+    strategy it belongs to. Every desk fill moves the account and the sub-ledger by the
+    same quantity, so no desk order widens or narrows a break. A reduction is not refused
+    here; the caller (Oms.check_rebalance) holds it to the account's room as well
+    ({!reduction_refusal}), since with the sum broken a reduction of the strategy's own
+    could still take the account through zero. *)
+
+val settle : string
+(** How a person settles a break, as a sentence the alert ends with: reverse the trade
+    made outside the desk at the venue (a holding that predates the journal is closed at
+    the venue). A desk ticket does not clear one: its fill moves the hand's sub-ledger and
+    the account by the same quantity. *)
+
+val reduction_refusal : break -> account:float -> side:Order.Side.t -> qty:int -> string
+(** Why a REDUCTION of a strategy's own position in a name with a standing break may not
+    go: with the sum broken, the account's move is not known to be the strategy's, so a
+    reduction must also shrink the account's position ([account], net of the desk's
+    resting reductions) by no more than it holds -- Rules.reduces with [netted] false, the
+    caller's test -- and this one does not. Names both figures and the account's room. *)
 
 val describe : break -> string
 (** The break as a sentence's clause: the name, the sub-ledger's sum and the account's

@@ -244,8 +244,16 @@
  ;                           the name may still fill) -- so each of two
  ;                           strategies on opposite sides of one name can be
  ;                           flattened. A stopped strategy's flatten, a
- ;                           governor's cut. A hand's halt and the engine's
- ;                           stop still refuse every order. Default false.
+ ;                           governor's cut. Under that netting a short's
+ ;                           cover can RAISE the account's net position in
+ ;                           the name, by at most the other strategies' own
+ ;                           positions there (their long, hedged until then,
+ ;                           is left unhedged); under a drawdown trip nothing
+ ;                           at the account's level bounds it beyond that,
+ ;                           and the gate still judges every such order. A
+ ;                           hand's halt and the engine's stop still refuse
+ ;                           every order. Default false (ruling R2, the
+ ;                           spec's default, awaits the owner).
  ;
  ; The values below are the engine's own defaults, written out so that turning
  ; the desk on is one word rather than a guess. Three are not: incubation_cap,

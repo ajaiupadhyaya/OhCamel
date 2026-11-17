@@ -241,6 +241,12 @@ let not_current =
   "the desk has not applied a recent read of the account, so the book may not be the \
    account's"
 
+(* The night's sub-ledger check runs once a session is on the record
+   ([on_recorded]); a night whose session never is says so instead of
+   staying silent, so the log never reads as a clean night. *)
+let sub_ledger_skipped date =
+  sprintf "session %s: sub-ledger not checked: session not recorded" (Date.to_string date)
+
 let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
     ~(read : Venue.Read.t) ~(graph : Graph.t) ~(journal : Journal.t) ~(confidence : float)
     ~(book_is_current : unit -> bool) ~(on_recorded : Date.t -> unit)
@@ -308,6 +314,7 @@ let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
             on_event
               (sprintf "session %s NOT recorded after %d attempts: %s" (day date) attempts
                  not_current);
+            on_event (sub_ledger_skipped date);
             wait_for_close ()
         | Ok ((`Recorded | `Already_recorded) as outcome) ->
             journaled date how outcome ~held:None
@@ -417,6 +424,7 @@ let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
                   is closed instead"
                  (day date) why
                  (day clock.Venue.Session_clock.next_close_date));
+            on_event (sub_ledger_skipped date);
             close_when_due clock
         | `Retry -> again ~held)
   in

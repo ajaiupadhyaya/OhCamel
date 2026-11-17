@@ -661,10 +661,15 @@ let test_both_strategies_of_a_netted_pair_are_sized () =
 (* The account at +40: a break, {AAPL; 50; 40}. Seen once it refuses
    nothing -- it may be a fill on its way from the venue to the journal --
    and seen again at the next settled check it stands. Then an increase of
-   either strategy's own position is refused, naming both figures; a
-   reduction of either goes, so the long can still sell and the short still
-   cover; and an order in a name with no break is not touched. *)
-let test_a_standing_break_refuses_either_strategy's_increase_and_no_reduction () =
+   either strategy's own position is refused, naming both figures. A
+   reduction goes only if it also shrinks the account's position by no more
+   than it holds (fix round 1, I1): alpha's sell of 40 does; its sell of 100
+   would take the account's +40 to -60, a short nobody holds, and is
+   refused in the sub-ledger's words; beta's cover grows the account's long
+   and is refused the same way until the break is settled. An order in a
+   name with no break is not touched. *)
+let test_a_standing_break_refuses_either_strategy's_increase_and_holds_a_reduction_to_the_account
+    () =
   with_oms ~held:(pair_held 40.0)
     ~f:(fun oms journal ->
       pair_fills journal;
@@ -677,19 +682,70 @@ let test_a_standing_break_refuses_either_strategy's_increase_and_no_reduction ()
           ("alpha's buy", alpha, leg aapl D.Order.Side.Buy 10);
           ("beta's sell", beta, leg aapl D.Order.Side.Sell 10);
           ("alpha's sell through its zero", alpha, leg aapl D.Order.Side.Sell 150);
+          ( "alpha's sell of 100 through the account's zero",
+            alpha,
+            leg aapl D.Order.Side.Sell 100 );
+          ("beta's cover, growing the account's long", beta, leg aapl D.Order.Side.Buy 50);
         ]
         ~f:(fun (what, s, l) ->
           let why = refusal (check_for oms s [ l ]) in
           contains what ~substring:"sub-ledger" why;
           contains what ~substring:"sum to 50" why;
           contains what ~substring:"holds 40" why);
-      passes "alpha's sell of its 100"
-        (check_for oms alpha [ leg aapl D.Order.Side.Sell 100 ]);
-      passes "beta's cover of its 50"
-        (check_for oms beta [ leg aapl D.Order.Side.Buy 50 ]);
+      contains "a reduction's refusal says how to settle"
+        ~substring:"reverse the trade made outside the desk at the venue"
+        (refusal (check_for oms alpha [ leg aapl D.Order.Side.Sell 100 ]));
+      passes "alpha's sell of 40, inside the account's 40"
+        (check_for oms alpha [ leg aapl D.Order.Side.Sell 40 ]);
       passes "alpha's buy in MSFT, a name with no break"
         (check_for oms alpha [ leg msft D.Order.Side.Buy 10 ]))
     ()
+
+(* A standing break binds while the name cannot be judged (fix round 1,
+   C1). With several strategies in one ETF something often rests in it, and
+   a name with an order that may still fill is not judged at all -- so the
+   break must not drop out of the refusal then. Another strategy's order
+   (gamma's buy of 5) resting in AAPL, and separately a hand's buy of 10:
+   alpha's increase is still refused, naming the figures last judged. Once
+   the resting order is done and a check judges the name whole, the break
+   clears and the increase passes. *)
+let test_a_standing_break_binds_while_an_order_rests_in_the_name () =
+  let rest journal oms ~n ~source qty =
+    let o =
+      D.Order.create
+        {
+          D.Order.Request.client_order_id = cid n;
+          symbol = aapl;
+          side = D.Order.Side.Buy;
+          qty;
+          kind = D.Order.Kind.Market;
+          tif = D.Order.Tif.Opg;
+        }
+    in
+    D.Journal.insert_order journal o ~source ~decision_price:(Price.of_float 150.0)
+      ~arrival:None ~verdict:`Null ~at:(at "2026-09-14T23:00:00Z");
+    D.Oms.record oms o (D.Order.Event.Acknowledged (sprintf "venue-%d" n))
+  in
+  List.iter
+    [ ("another strategy's", "signal:gamma:1"); ("a hand's", "manual") ]
+    ~f:(fun (whose, source) ->
+      with_oms ~held:(pair_held 40.0)
+        ~f:(fun oms journal ->
+          pair_fills journal;
+          D.Oms.check_subledger oms ~at:evening;
+          D.Oms.check_subledger oms ~at:evening;
+          let resting = rest journal oms ~n:9 ~source 5 in
+          D.Oms.check_subledger oms ~at:evening;
+          let why = refusal (check_for oms alpha [ leg aapl D.Order.Side.Buy 10 ]) in
+          contains (whose ^ " order resting: alpha's increase") ~substring:"sum to 50" why;
+          contains (whose ^ " order resting: the figures") ~substring:"holds 40" why;
+          ignore (D.Oms.record oms resting D.Order.Event.Venue_cancelled : D.Order.t);
+          set_account oms 50.0;
+          D.Oms.check_subledger oms ~at:evening;
+          passes
+            (whose ^ " order done and the name whole: alpha's increase")
+            (check_for oms alpha [ leg aapl D.Order.Side.Buy 10 ]))
+        ())
 
 (* One alert per break, at the second settled sight of it, and none after
    while it stands; a name with an order that may still fill is not judged
@@ -1578,10 +1634,18 @@ let test_the_rebalance_asks_again_what_its_plan_read () =
       Graph.stabilize oms.D.Oms.graph;
       D.Oms.check_subledger oms ~at:evening;
       D.Oms.check_subledger oms ~at:evening;
+      contains "the planned sale of 100 against the account's 60: refused"
+        ~substring:
+          "order 1 of 1 (AAPL sell 100): the sub-ledger breaks in AAPL: the strategies' \
+           own positions and the desk's hand tickets sum to 100, and the account holds \
+           60; a reduction in AAPL goes only if it also shrinks the account's position \
+           (60"
+        (refusal (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source ~legs));
       Alcotest.(check bool)
-        "the planned sale still goes" true
+        "a sale of 60, inside the account's 60, goes" true
         (Result.is_ok
-           (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source ~legs));
+           (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
+              ~legs:[ leg aapl D.Order.Side.Sell 60 ]));
       let why =
         refusal
           (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
@@ -1593,6 +1657,30 @@ let test_the_rebalance_asks_again_what_its_plan_read () =
            own positions and the desk's hand tickets sum to 100, and the account holds \
            60"
         why)
+    ();
+  (* The short mirror: the strategy short 50 of its own (XOM, one fill) and
+     the account short 50; the account's XOM then reads -20. A cover of 50
+     would take the account through zero to +30, a long nobody holds, and is
+     refused; a cover of 20 goes. *)
+  with_oms
+    ~held:[ (aapl, 0.0); (msft, 100.0); (xom, -50.0) ]
+    ~f:(fun oms journal ->
+      journal_order journal ~n:8 ~source:"signal:exp_a01_tech:1" ~symbol:xom
+        ~side:D.Order.Side.Sell ~state:D.Order.State.Filled ~fills:[ 50.0 ] 50;
+      Graph.set_qty oms.D.Oms.graph xom (Qty.of_float (-20.0));
+      Graph.stabilize oms.D.Oms.graph;
+      D.Oms.check_subledger oms ~at:evening;
+      D.Oms.check_subledger oms ~at:evening;
+      contains "a cover of 50 against the account's -20: refused"
+        ~substring:"a buy of 50 does not"
+        (refusal
+           (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
+              ~legs:[ leg xom D.Order.Side.Buy 50 ]));
+      Alcotest.(check bool)
+        "a cover of 20 goes" true
+        (Result.is_ok
+           (D.Oms.check_rebalance oms ~mode:D.Rebalance.Mode.Open ~source
+              ~legs:[ leg xom D.Order.Side.Buy 20 ])))
     ();
   with_oms ~book_is_current:false
     ~f:(fun oms _ ->
@@ -1888,8 +1976,10 @@ let suite =
       Alcotest.test_case "both strategies of a netted pair are sized" `Quick
         test_both_strategies_of_a_netted_pair_are_sized;
       Alcotest.test_case
-        "a standing break refuses either strategy's increase and no reduction" `Quick
-        test_a_standing_break_refuses_either_strategy's_increase_and_no_reduction;
+        "a standing break refuses an increase and holds a reduction to the account" `Quick
+        test_a_standing_break_refuses_either_strategy's_increase_and_holds_a_reduction_to_the_account;
+      Alcotest.test_case "a standing break binds while an order rests in the name" `Quick
+        test_a_standing_break_binds_while_an_order_rests_in_the_name;
       Alcotest.test_case "a break is alerted once when it stands" `Quick
         test_a_break_is_alerted_once_when_it_stands;
       Alcotest.test_case "the close says every standing break" `Quick

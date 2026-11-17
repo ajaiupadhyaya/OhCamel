@@ -45,6 +45,20 @@ let describe b =
      account holds %.17g"
     (Symbol.to_string b.symbol) b.strategies b.account
 
+let settle =
+  "To settle it, reverse the trade made outside the desk at the venue -- a holding that \
+   predates the journal is closed at the venue -- since a desk ticket's fill moves the \
+   hand's sub-ledger and the account alike and never clears a break."
+
+let reduction_refusal b ~(account : float) ~(side : Order.Side.t) ~(qty : int) =
+  sprintf
+    "the sub-ledger breaks in %s; a reduction in %s goes only if it also shrinks the \
+     account's position (%.17g, net of the desk's resting reductions) by no more than it \
+     holds, and a %s of %d does not: it could take the account through zero to a \
+     position nobody holds. %s"
+    (describe b) (Symbol.to_string b.symbol) account (Order.Side.to_string side) qty
+    settle
+
 let refuses (breaks : break list) ~(symbol : Symbol.t) ~(increases : bool) : string option
     =
   if not increases then None

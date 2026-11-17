@@ -520,7 +520,7 @@ Each page is assembled at build time from `web/` by its own rule in `lib/dune`; 
 
 ## What is verified
 
-- **<!-- count:ocaml-tests -->939<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->87<!-- /count --> scheduler cases in `test/desk_async` —
+- **<!-- count:ocaml-tests -->940<!-- /count --> hermetic tests**, plus <!-- count:scheduler-tests -->87<!-- /count --> scheduler cases in `test/desk_async` —
   no network, no credentials, nothing waiting on a clock: the scheduler's
   cases move a clock of their own. Expected values are derived by hand with
   the derivation beside the assertion. Seven are worth knowing by name: Euler
@@ -917,6 +917,36 @@ thresholds, say -- is carried over by regenerating it with both edits, the old
 one archived beside the earlier copies in `~/book-archive/`, then a `diff`
 against the archived book that shows only the example's own change, then
 `check-book`, then the restart above.
+
+### A sub-ledger break
+
+Since Task 1.6 the desk sums every strategy's own position in a name, with
+the hand tickets' fills beside them, and compares the sum with the account,
+in every name a strategy has traded. It does this at each sync (once a
+minute) and at the nightly close. A break that holds across two checks in a
+row is alerted once: a `sub-ledger at a sync:` line on the live log and a
+journal alert of kind `subledger_break`. The nightly close repeats it as
+`sub-ledger at the close of DATE:`. While the break stands, no strategy order
+that grows a position in that name is sent. A reduction is sent only if it
+also shrinks the account's position by no more than the account holds.
+
+The figures come from the desk's own fills, so every desk order moves the
+account and the sub-ledger by the same amount. **A desk ticket therefore
+never clears a break.** To settle one:
+
+1. Find the trade made outside the desk: a trade on the Alpaca dashboard, a
+   corporate action, or a fill the desk never heard of. The alert names the
+   symbol, the sub-ledger's sum and the account's figure.
+2. Reverse it at the venue, outside the desk, so the account returns to the
+   sub-ledger's sum. If the account holds the name from before the journal
+   began, close that holding at the venue.
+3. The next two syncs judge the name whole, and the log says `sub-ledger:
+   SYMBOL sums again`.
+
+**FOLLOW-UP (not code yet):** the missing settle path is a journaled
+adjustment row. It would be written by a person, carry the reason, and count
+in the hand's sub-ledger, so that a holding which predates the journal, or a
+corporate action, can be recorded instead of traded away.
 
 ### Credential rotation
 

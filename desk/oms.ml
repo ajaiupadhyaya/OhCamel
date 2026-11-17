@@ -130,12 +130,13 @@ type t = {
   through_trip : String.Hash_set.t;
   (* The sub-ledger's breaks as the checks have seen them ([check_subledger]):
      [seen_breaks], the names that broke at the last check that judged them;
-     [standing_breaks], those that broke at two such checks running -- each
-     alerted once, when it first stood, and what a break refuses
-     ([check_rebalance]). A name leaves both when a check finds it whole,
-     and neither moves while it is not judged. *)
+     [standing_breaks], those that broke at two such checks running, each
+     with the figures it was last judged at -- each alerted once, when it
+     first stood, and what a break refuses ([check_rebalance]), whether or
+     not the name can be judged at that moment. A name leaves both when a
+     check finds it whole, and neither moves while it is not judged. *)
   mutable seen_breaks : Symbol.Set.t;
-  mutable standing_breaks : Symbol.Set.t;
+  mutable standing_breaks : Subledger.break Symbol.Map.t;
   (* Whether the last check could not read the sub-ledger, so a journal that
      stays unreadable is said once and not once a minute. *)
   mutable subledger_unread : bool;
@@ -175,7 +176,7 @@ let create ~graph ~journal ~spec ~trips_on ~read ~trade ~halt ~accepts_tickets ~
     resent_cancels = String.Hash_set.create ();
     through_trip = String.Hash_set.create ();
     seen_breaks = Symbol.Set.empty;
-    standing_breaks = Symbol.Set.empty;
+    standing_breaks = Symbol.Map.empty;
     subledger_unread = false;
   }
 
@@ -458,9 +459,9 @@ let say_break t ~at ~(occasion : string) (b : Subledger.break) =
   let name = Symbol.to_string b.Subledger.symbol in
   let line =
     sprintf
-      "sub-ledger %s: %s; nothing that grows a strategy's position in %s is sent until a \
-       person settles it"
-      occasion (Subledger.describe b) name
+      "sub-ledger %s: %s; nothing that grows a strategy's position in %s is sent, and a \
+       reduction only if it also shrinks the account's, until a person settles it. %s"
+      occasion (Subledger.describe b) name Subledger.settle
   in
   (match
      Or_error.try_with (fun () ->
@@ -492,13 +493,20 @@ let fold_reading ?(alert = true) t ~at (r : Subledger_reading.t) =
     List.iter r.Subledger_reading.breaks ~f:(fun b ->
         if
           Set.mem standing b.Subledger.symbol
-          && not (Set.mem t.standing_breaks b.Subledger.symbol)
+          && not (Map.mem t.standing_breaks b.Subledger.symbol)
         then say_break t ~at ~occasion:"at a sync" b);
   let whole = Set.diff r.Subledger_reading.checked broken in
-  Set.iter (Set.inter whole t.standing_breaks) ~f:(fun s ->
-      t.on_event (sprintf "desk      sub-ledger: %s sums again" (Symbol.to_string s)));
+  Set.iter whole ~f:(fun s ->
+      if Map.mem t.standing_breaks s then
+        t.on_event (sprintf "desk      sub-ledger: %s sums again" (Symbol.to_string s)));
   t.seen_breaks <- Set.union (Set.diff t.seen_breaks whole) broken;
-  t.standing_breaks <- Set.union (Set.diff t.standing_breaks whole) standing
+  t.standing_breaks <-
+    List.fold r.Subledger_reading.breaks
+      ~init:(Map.filter_keys t.standing_breaks ~f:(fun s -> not (Set.mem whole s)))
+      ~f:(fun acc b ->
+        if Set.mem standing b.Subledger.symbol then
+          Map.set acc ~key:b.Subledger.symbol ~data:b
+        else acc)
 
 (* The sync pass's check (Desk.sync_with, after each read of the account is
    applied): one alert per break, when it first stands, and none after
@@ -530,11 +538,19 @@ let close_subledger t ~(date : Date.t) ~at =
            why)
   | Ok r -> (
       fold_reading ~alert:false t ~at r;
-      let standing =
-        List.filter r.Subledger_reading.breaks ~f:(fun b ->
-            Set.mem t.standing_breaks b.Subledger.symbol)
-      in
-      List.iter standing ~f:(say_break t ~at ~occasion:(sprintf "at the close of %s" day));
+      (* Every break standing, a name not judged tonight among them, at the
+         figures it was last judged at. *)
+      let standing = Map.data t.standing_breaks in
+      List.iter standing ~f:(fun b ->
+          say_break t ~at
+            ~occasion:
+              (if Set.mem r.Subledger_reading.checked b.Subledger.symbol then
+                 sprintf "at the close of %s" day
+               else
+                 sprintf
+                   "at the close of %s (as last judged; an order in it may still fill)"
+                   day)
+            b);
       let n = Set.length r.Subledger_reading.checked in
       let unsettled =
         match Set.to_list r.Subledger_reading.unsettled with
@@ -1648,11 +1664,14 @@ end
      re-planning would take the legs out of the caller's hands. What is asked
      again is what makes the legs wrong rather than merely sized at another
      E: that the book's equity is known ([sizing_equity]);
-   - THE SUB-LEDGER ([subledger]): no order may grow the strategy's own
-     position (Rebalance.grows) in a name whose sub-ledger has a STANDING
-     break ([fold_reading]: broken at two checks running), which the refusal
-     names with both figures (Subledger.refuses); a reduction goes, and so
-     does every order in a name that sums. One sum per name replaced the
+   - THE SUB-LEDGER ([subledger]): in a name whose sub-ledger has a
+     STANDING break ([fold_reading]: broken at two checks running) -- until a
+     reading judges the name whole, so an order resting in it does not lift
+     the break -- no order may grow the strategy's own position
+     (Rebalance.grows), and a reduction goes only if it also shrinks the
+     account's position by no more than it holds (Rules.reduces with
+     [netted] false); each refusal names both figures (Subledger.refuses,
+     Subledger.reduction_refusal). Every order in a name that sums goes. One sum per name replaced the
      per-strategy test that the account held the strategy's own position,
      which two strategies on opposite sides of one name could never pass. A
      sub-ledger that cannot be read refuses the rebalance;
@@ -1766,18 +1785,41 @@ let check_rebalance ?(timing = ref false) t ~(mode : Rebalance.Mode.t)
               the rebalance is refused rather than sent without it"
              why)
     | Ok r -> (
-        let standing =
-          List.filter r.Subledger_reading.breaks ~f:(fun b ->
-              Set.mem t.standing_breaks b.Subledger.symbol)
+        (* A name with a standing break binds until a reading judges it
+           whole: a name not judged now -- an order in it may still fill,
+           which with several strategies in one ETF is the common case --
+           keeps its break, at the figures this reading has or else the
+           last ones judged. *)
+        let binding symbol =
+          match Map.find t.standing_breaks symbol with
+          | None -> None
+          | Some last -> (
+              match
+                List.find r.Subledger_reading.breaks ~f:(fun b ->
+                    Symbol.equal b.Subledger.symbol symbol)
+              with
+              | Some now -> Some now
+              | None when Set.mem r.Subledger_reading.checked symbol -> None
+              | None -> Some last)
         in
         match
           List.find_mapi legs ~f:(fun i (leg : Rebalance.Leg.t) ->
               let symbol = leg.Rebalance.Leg.symbol in
-              Subledger.refuses standing ~symbol
-                ~increases:
-                  (Rebalance.grows
-                     ~position:(Option.value (Map.find own symbol) ~default:0.0)
-                     ~side:leg.Rebalance.Leg.side ~qty:leg.Rebalance.Leg.qty)
+              let side = leg.Rebalance.Leg.side and qty = leg.Rebalance.Leg.qty in
+              let held = Option.value (Map.find own symbol) ~default:0.0 in
+              Option.bind (binding symbol) ~f:(fun b ->
+                  if Rebalance.grows ~position:held ~side ~qty then
+                    Subledger.refuses [ b ] ~symbol ~increases:true
+                  else
+                    (* A reduction of the strategy's own goes only if it also
+                       shrinks the account's, by no more than it holds (the
+                       1.2 line): with the sum broken, nothing says the
+                       account's move is the strategy's, and own +100 against
+                       an account of 60 would sell it through zero to a
+                       short nobody holds. *)
+                    let account = reducible_account t symbol in
+                    if Rules.reduces ~own:held ~account ~netted:false ~side ~qty then None
+                    else Some (Subledger.reduction_refusal b ~account ~side ~qty))
               |> Option.map ~f:(fun why -> (i, leg, why)))
         with
         | Some (i, leg, why) ->

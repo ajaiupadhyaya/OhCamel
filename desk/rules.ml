@@ -318,11 +318,26 @@ let is_timing_refusal ~(tif : Order.Tif.t) (failures : Failure.t list) =
    When the sum is not known -- a break, an order that may still fill, a
    journal that cannot be read -- B1 alone binds, as before netting.
 
+   WHAT THIS WIDENS, FOR WHOEVER APPROVES R2. Before netting, an order that
+   passed a trip never moved the account's position away from zero. Under
+   B2 it can: a short's cover raises the account's NET position in the name
+   by up to the cover's size, which is at most what the other strategies
+   hold on the other side -- their long, hedged until then, becomes
+   unhedged. Under a drawdown trip nothing at the account's level bounds
+   that beyond the other strategies' own positions; the gate still judges
+   every such order against every limit, so under a gross or VaR trip the
+   cover may still be refused there. R2 is the spec's default awaiting the
+   owner, and the book's word stays off until the owner approves it.
+
    An order larger than its room is not clipped to it -- nothing here
    changes an order -- it is not a reduction, and the switch refuses it
-   whole. Anything else is no reduction either: a flat own position, a
-   number that is not a number. Order.epsilon absorbs the noise of a float
-   sum of whole fills, and nothing more. *)
+   whole. Nor is a flat own position. A number that is not a number: a NaN
+   [own] fails (A), so it always refuses; a NaN [account] fails only B1, so
+   it refuses unless [netted] holds -- which it cannot then, since the
+   account's NaN comes from a journal that could not be read
+   (Oms.reducible_account), and the same unreadable journal makes [netted]
+   false (Oms.netted). Order.epsilon absorbs the noise of a float sum of
+   whole fills, and nothing more. *)
 let reduces ~(own : float) ~(account : float) ~(netted : bool) ~(side : Order.Side.t)
     ~(qty : int) =
   let shrinks position =
