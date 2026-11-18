@@ -190,6 +190,8 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     else:
         try:
             kr = run_kronos(bars, py, threads=ctx.threads)
+            if hasattr(ctx, "read"):   # what the subprocess wrote and the ledger takes in: a recorded read (Task 3.3)
+                ctx.read("kronos: the subprocess's forecasts (out.csv)", kr, source="derived:kronos")
             new += [{"symbol": r.symbol, "asof": r.asof, "model": "kronos", "var": r.var_kronos, "q05": r.q05_kronos,
                      "made_at": made_at} for r in kr.itertuples()]
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:

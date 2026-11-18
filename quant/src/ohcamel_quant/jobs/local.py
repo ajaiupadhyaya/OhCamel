@@ -24,7 +24,7 @@ from .artifacts import ArtifactSpec, build_manifest, publish, write_tables
 from .context import JobContext
 from .db import iso, parse_iso
 from .kinds import get_kind, load_handler
-from .provenance import check_seed, checkout_sha, kernels_info, lock_hash
+from .provenance import check_seed, checkout_sha, kernels_info, lock_hash, runtime_info
 from .queue import params_hash
 from .ulid import new_ulid
 
@@ -61,7 +61,7 @@ def execute(kind: str, params: dict[str, Any], ctx: JobContext, staging: Path) -
     return {"data_asof": spec.data_asof, "provenance": spec.provenance, "notes": spec.notes,
             "survivorship": spec.survivorship, "engine": spec.engine, "tables": names, "verdict": spec.verdict,
             "verdict_detail": spec.verdict_detail, **record, "threads": ctx.threads, "lock_hash": lock_hash(),
-            "kernels": kernels_info()}
+            "kernels": kernels_info(), "runtime": runtime_info()}
 
 
 def make_context(params: dict[str, Any], *, settings: Any = None, threads: int = 1,

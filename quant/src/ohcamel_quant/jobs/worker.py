@@ -109,9 +109,9 @@ class Worker:
             try:
                 manifest = build_manifest(job, out.result, code_sha=self.cfg.code_sha, finished_at=iso(now),
                                           cpu_seconds=out.cpu_seconds, peak_rss_bytes=out.peak_rss_bytes)
-            except ValueError as e:  # a refused manifest (an unseeded draw, a bad verdict) fails the job, unpublished
-                shutil.rmtree(out.staging, ignore_errors=True)
-                fail(self.conn, job.id, error=f"manifest refused: {e}"[:2000], retries=retries_for(job.kind),
+            except ValueError as e:  # a refused manifest (an unseeded draw, a bad verdict) fails the job, unpublished;
+                shutil.rmtree(out.staging, ignore_errors=True)   # deterministic, so never retried (fix round 1)
+                fail(self.conn, job.id, error=f"manifest refused: {e}"[:2000], retries=0,
                      cpu_seconds=out.cpu_seconds, peak_rss_bytes=out.peak_rss_bytes, now=now)
                 return
             final = publish(out.staging, self.cfg.artifacts_root, job, manifest)

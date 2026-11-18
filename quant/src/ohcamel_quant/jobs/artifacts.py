@@ -62,7 +62,8 @@ def build_manifest(job: Job, result: dict[str, Any], *, code_sha: str, finished_
     """The II.3 manifest. Task 3.3 adds what makes its numbers reproducible: ``data_hash`` (the sorted per-read
     hashes, hashed; null with ``data_hash_note`` when a read went unrecorded), ``reads`` (each read's name, hash,
     source and whether an export can serve it again), ``seed`` (every seed recorded, by name; null when the kind
-    draws none), ``lock_hash`` (SHA-256 of quant/uv.lock), ``threads`` and ``kernels`` (engine, wheel API) --
+    draws none), ``lock_hash`` (SHA-256 of quant/uv.lock), ``threads`` and ``kernels`` (engine, wheel API) and
+    ``runtime`` (Python version, platform; a difference only warns) --
     random and parallel kernels are bit-identical only for one (seed, threads, engine). A result that drew
     random numbers without a seed, or whose kind declares draws and recorded no seed, is refused
     (``UnseededDraw``, a ValueError)."""
@@ -101,6 +102,7 @@ def build_manifest(job: Job, result: dict[str, Any], *, code_sha: str, finished_
         "lock_hash": result.get("lock_hash"),
         "threads": result.get("threads"),
         "kernels": result.get("kernels"),
+        "runtime": result.get("runtime"),
     }
 
 

@@ -93,7 +93,7 @@ the next runs):
 | `ingest.bars_minute` | weekdays 19:00, and every 30 min 10:00–15:30 | S | warehouse (50 names) |
 | `ingest.fred_warehouse`, `ingest.fred` | daily 07:00, 06:30 | S | warehouse, FRED cache |
 | `ingest.universes`, `ingest.factors` | Sun 05:00, Sat 06:00 | S | warehouse |
-| `ingest.sec_facts` (heavy), `ingest.holdings_13f` | Sun 02:00, 03:00 | M, S | warehouse |
+| `ingest.sec_facts` (heavy), `ingest.holdings_13f` | Sun 04:00, 04:30 (clear of the 06:30 UTC warehouse export) | M, S | warehouse |
 | `risk.mc_intraday` | weekdays 09:45 and every 15 min 10:00–15:45 | S | P1 intraday |
 | `risk.mc_atlas` | weekdays 20:00 | M heavy | P1 |
 | `vol.surface_history` | weekdays 21:00 | M heavy | P7 |
@@ -115,7 +115,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->2144<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->2159<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.

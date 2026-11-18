@@ -111,17 +111,42 @@ def test_a_series_and_non_tables_hash_canonically():
     assert P.frame_hash([("SPY", 1.0)]) != P.frame_hash([("SPY", 2.0)])
 
 
+def test_a_frame_inside_a_dict_is_hashed_whole_not_through_its_repr():
+    """Fix round 1: a dict holding a DataFrame was hashed through str(frame), which truncates to its head and tail:
+    two 1000-row frames differing in row 500 hashed equal."""
+    a = pd.DataFrame({"x": np.arange(1000, dtype=float)})
+    b = a.copy()
+    b.loc[500, "x"] = -1.0
+    assert P.frame_hash({"panel": a}) != P.frame_hash({"panel": b})
+    assert P.frame_hash({"s": a["x"]}) != P.frame_hash({"s": b["x"]})
+    assert P.frame_hash({"panel": a}) == P.frame_hash({"panel": a.copy()})
+
+
+def test_an_object_the_hash_cannot_encode_is_refused_not_hashed_by_its_repr():
+    class Opaque:
+        def __repr__(self) -> str:
+            return "Opaque(...)"
+
+    with pytest.raises(TypeError, match="Opaque"):
+        P.frame_hash({"x": Opaque()})
+    with pytest.raises(TypeError, match="Opaque"):
+        P.frame_hash(pd.DataFrame({"x": [Opaque()]}))
+
+
 def test_duplicate_column_names_are_refused():
     df = pd.DataFrame([[1, 2]], columns=["a", "a"])
     with pytest.raises(ValueError, match="duplicate"):
         P.frame_hash(df)
 
 
-def test_data_hash_is_the_hash_of_the_sorted_per_read_hashes():
-    reads = [{"sha256": "b" * 64}, {"sha256": "a" * 64}]
+def test_data_hash_is_the_hash_of_the_sorted_name_and_hash_lines():
+    reads = [{"name": "x", "sha256": "b" * 64}, {"name": "y", "sha256": "a" * 64}]
     assert P.data_hash(reads) == P.data_hash(list(reversed(reads)))
     assert P.data_hash(reads) != P.data_hash(reads[:1])
     assert P.data_hash([]) == P.sha256_text("")
+    swapped = [{"name": "x", "sha256": "a" * 64}, {"name": "y", "sha256": "b" * 64}]
+    assert P.data_hash(swapped) != P.data_hash(reads)                       # two reads cannot trade their data
+    assert P.data_hash(reads) == P.sha256_text("x\t" + "b" * 64 + "\n" + "y\t" + "a" * 64)
 
 
 # --- the recorder ------------------------------------------------------------------------------------------------
@@ -241,12 +266,12 @@ def test_an_earlier_artifact_is_recorded_and_a_replay_pins_it(tmp_path):
 # committed file the code SHA covers. A new one fails here until it is one of the three.
 DIRECT_READS = {
     ("products/experiment.py", "read_text("): (2, "the frozen config is committed (code SHA); a frozen universe on "
-                                                  "the data volume is recorded by load_config"),
+                                                  "the data volume is recorded by load_config (source data_dir)"),
     ("products/data_integrity.py", "read_parquet("): (1, "the committed fixtures, recorded with ctx.read"),
     ("products/io.py", "connect("): (1, "the artifact index: the lookup is recorded"),
     ("products/io.py", "read_text("): (2, "an earlier artifact's manifest: the lookup is recorded"),
     ("products/io.py", "read_parquet("): (1, "an earlier artifact's table: recorded by read_table"),
-    ("products/kronos_shadow.py", "read_csv("): (1, "Kronos's own output (computed here from recorded bars)"),
+    ("products/kronos_shadow.py", "read_csv("): (1, "Kronos's output, recorded with ctx.read (derived:kronos)"),
     ("products/kronos_shadow.py", "subprocess."): (3, "Kronos runs as a subprocess on recorded bars"),
     ("products/factor_screen.py", "read_text("): (1, "the owner's committed factor ledger (code SHA)"),
     ("products/q01.py", "open_ro("): (1, "the freeze CLI, not the job"),
@@ -298,3 +323,51 @@ def test_a_vendor_retrys_jitter_is_not_a_draw_from_the_random_module():
     with rec.active():
         assert 0.0 <= http.backoff_delay(3) <= http.BACKOFF_CAP_S
     assert rec.unseeded == []
+
+
+def test_a_frozen_universe_on_the_data_volume_is_a_recorded_read(tmp_path, monkeypatch):
+    """Fix round 1: load_config lays {data_dir}/experiments/<EXP>/universe.yaml over a config with no universe; that
+    file is data the job read, not code, and no export holds it."""
+    from ohcamel_quant.products import experiment as X
+
+    (tmp_path / "exps" / "EXP-T").mkdir(parents=True)
+    (tmp_path / "exps" / "EXP-T" / "config.yaml").write_text("experiment: EXP-T\nseed: 1\n")
+    (tmp_path / "frozen" / "EXP-T").mkdir(parents=True)
+    (tmp_path / "frozen" / "EXP-T" / "universe.yaml").write_text("universe: [SPY, TLT]\nuniverse_frozen_on: '2026-10-08'\n")
+    monkeypatch.setattr(X, "EXPERIMENTS", tmp_path / "exps")
+    monkeypatch.setattr(X, "FROZEN_DIR", tmp_path / "frozen")
+    rec = P.Recorder()
+    with rec.active():
+        cfg = X.load_config("EXP-T")
+    assert cfg["universe"] == ["SPY", "TLT"]
+    assert [(r["name"], r["source"], r["regenerable"]) for r in rec.reads] == [
+        ("data_dir: experiments/EXP-T/universe.yaml", "data_dir", False)]
+
+
+def _unseeded_in(src: str, name: str) -> list[str]:
+    import ast
+
+    bad = []
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Call) and not node.args and not node.keywords:
+            fn = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+            if fn in ("default_rng", "RandomState"):
+                bad.append(f"{name}:{node.lineno}: {fn}() with no seed")
+        if isinstance(node, ast.ImportFrom) and node.module == "numpy.random" and \
+                any(a.name == "default_rng" for a in node.names):
+            bad.append(f"{name}:{node.lineno}: from numpy.random import default_rng")
+    return bad
+
+
+def test_no_unseeded_generator_is_written_anywhere_in_the_package():
+    """Fix round 1: the runtime detector cannot see an RNG bound at import (``from numpy.random import default_rng``)
+    or an unseeded ``np.random.RandomState()``; so the source may contain neither, nor a bare ``default_rng()``
+    (read from the syntax tree, so a docstring that names one is not a hit)."""
+    from ohcamel_quant.config import REPO_ROOT
+
+    assert len(_unseeded_in("import numpy as np\nfrom numpy.random import default_rng\nnp.random.RandomState()\n"
+                            "default_rng()\nnp.random.default_rng(7)\n'default_rng()'\n", "probe")) == 3
+    bad = []
+    for f in sorted((REPO_ROOT / "quant" / "src" / "ohcamel_quant").rglob("*.py")):
+        bad += _unseeded_in(f.read_text(), f.name)
+    assert not bad, bad

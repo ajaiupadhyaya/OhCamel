@@ -152,3 +152,36 @@ def test_the_tools_script_runs_the_same_check(made):
                        capture_output=True, text=True, timeout=300)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "every table matches" in r.stdout
+
+
+def test_an_unknown_code_sha_on_either_side_is_drift(made, capsys, tmp_path, monkeypatch):
+    """Fix round 1: "unknown" == "unknown" proved nothing; an unknown SHA on either side is drift."""
+    art, export = made
+    monkeypatch.setattr(R, "checkout_sha", lambda: "unknown")
+    rc, out = _run(capsys, art, "--warehouse", export)
+    assert rc == 3 and "unknown" in out
+    rc, out = _run(capsys, _with_manifest(art, tmp_path, code_sha="unknown"), "--warehouse", export)
+    assert rc == 3
+
+
+def test_a_different_platform_or_python_warns_and_proceeds(made, capsys, tmp_path):
+    art, export = made
+    m = json.loads((art / "manifest.json").read_text())
+    assert set(m["runtime"]) == {"python", "platform"} and m["runtime"]["python"]
+    rc, out = _run(capsys, _with_manifest(art, tmp_path, runtime={"python": "3.12.0", "platform": "Linux-x86_64"}),
+                   "--warehouse", export)
+    assert rc == 0 and "WARNING" in out and "Linux-x86_64" in out and "3.12.0" in out
+
+
+def test_the_data_hash_message_says_which_export_can_regenerate_an_artifact(made, capsys, tmp_path):
+    art, export = made
+    altered = tmp_path / "altered"
+    shutil.copytree(export, altered)
+    f = altered / "bars_daily.parquet"
+    con = duckdb.connect()
+    con.execute(f"COPY (SELECT * REPLACE (adj_close * 1.0001 AS adj_close) FROM read_parquet('{f}')) "
+                f"TO '{tmp_path / 'b.parquet'}' (FORMAT PARQUET)")
+    con.close()
+    shutil.move(tmp_path / "b.parquet", f)
+    rc, out = _run(capsys, art, "--warehouse", altered)
+    assert rc == 4 and "first export after it" in out

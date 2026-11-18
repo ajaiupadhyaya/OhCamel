@@ -273,3 +273,14 @@ def test_bars_come_from_the_warehouse_when_there_is_one(market, monkeypatch):
     c._warehouse = object()
     KS.bars_of(c, "SPY")
     assert seen == ["SPY"]
+
+
+def test_the_kronos_subprocess_output_is_a_recorded_read(market, shadow_db, monkeypatch):
+    """Fix round 1: the forecasts the Kronos subprocess writes are read back into the ledger, so they are part of
+    what the job read: recorded (source derived:kronos), never silently outside the data hash."""
+    real_inc = KS.incumbent_rows
+    monkeypatch.setattr(KS, "incumbent_rows", lambda sym, ret, made_at: real_inc(sym, ret.iloc[-300:], made_at))
+    c = ctx(Truncated(market, "2026-05-01"))
+    KS.run({"tickers": ["SPY"]}, c)
+    kr = [r for r in c.recorder.reads if r["source"] == "derived:kronos"]
+    assert len(kr) == 1 and kr[0]["name"].startswith("kronos:")

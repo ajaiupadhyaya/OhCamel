@@ -72,10 +72,18 @@ def test_restore_rebuilds_the_warehouse_with_its_migrations_version(wh, tmp_path
     try:
         latest = max(n for n, _ in migration_files())
         assert migrate(con) == latest                                     # the runner sees the right version
-        pk = con.execute("SELECT count(*) FROM duckdb_constraints() WHERE constraint_type = 'PRIMARY KEY'").fetchone()[0]
-        assert pk > 0                                                     # primary keys came back with the schema
+        restored = con.execute(CONSTRAINTS).fetchall()
     finally:
         con.close()
+    src = duckdb.connect(str(wh), read_only=True)
+    try:
+        assert restored == src.execute(CONSTRAINTS).fetchall() and restored    # every key and NOT NULL came back
+    finally:
+        src.close()
+
+
+CONSTRAINTS = ("SELECT table_name, constraint_type, constraint_column_names FROM duckdb_constraints() "
+               "ORDER BY table_name, constraint_type, constraint_column_names::VARCHAR")
 
 
 def test_restore_never_overwrites_an_existing_file_unless_told_and_then_keeps_it(wh, tmp_path):
@@ -104,3 +112,41 @@ def test_the_cli_exports_and_restores(wh, tmp_path, capsys):
     assert "2026-11-17" in capsys.readouterr().out
     assert main(["restore", str(tmp_path / "w" / "2026-11-17"), str(tmp_path / "r.duckdb")]) == 0
     assert _counts(tmp_path / "r.duckdb") == _counts(wh)
+
+
+# --- the export waits for a warehouse writer that is running (fix round 1) ------------------------------------
+
+def _running(tmp_path, kind):
+    from ohcamel_quant.jobs.db import connect, utcnow
+    from ohcamel_quant.jobs.queue import claim_next, enqueue
+
+    db = tmp_path / "jobs.sqlite"
+    conn = connect(db)
+    enqueue(conn, kind=kind, params={}, priority=2, mem_class="S", heavy=False, submitted_by="schedule:t",
+            now=utcnow())
+    job = claim_next(conn, allowed_classes=frozenset({"S"}), allow_heavy=True, now=utcnow())
+    conn.close()
+    return db, job
+
+
+def test_the_export_waits_for_a_running_ingest_then_fails_loudly(wh, tmp_path):
+    db, job = _running(tmp_path, "ingest.bars_daily")
+    with pytest.raises(E.ExportFailed, match=f"ingest.bars_daily {job.id}"):
+        E.export_warehouse(wh, tmp_path / "w", day="2026-11-17", jobs_db=db, wait_s=0.3, poll_s=0.1)
+    assert not (tmp_path / "w").exists() or not any((tmp_path / "w").iterdir())
+
+
+def test_the_export_goes_ahead_once_the_writer_finishes(wh, tmp_path, monkeypatch):
+    db, _ = _running(tmp_path, "ingest.sec_facts")
+    answers = iter([[("ingest.sec_facts", "X")], []])
+    monkeypatch.setattr(E, "_writers_running", lambda path: next(answers))
+    out = E.export_warehouse(wh, tmp_path / "w", day="2026-11-17", jobs_db=db, wait_s=5, poll_s=0.01)
+    assert (out / E.RECORD).is_file()
+
+
+def test_a_job_that_does_not_write_the_warehouse_does_not_hold_the_export(wh, tmp_path):
+    db, _ = _running(tmp_path, "ingest.fred")                       # writes an artifact, never the warehouse
+    out = E.export_warehouse(wh, tmp_path / "w", day="2026-11-17", jobs_db=db, wait_s=0.2, poll_s=0.1)
+    assert (out / E.RECORD).is_file()
+    out = E.export_warehouse(wh, tmp_path / "w2", day="2026-11-17", jobs_db=tmp_path / "absent.sqlite")
+    assert (out / E.RECORD).is_file()                               # no queue yet: nothing can be writing

@@ -16,7 +16,7 @@ T0 = datetime(2026, 10, 6, 14, 0, tzinfo=UTC)
 MANIFEST_KEYS = ["id", "kind", "params", "params_hash", "code_sha", "data_asof", "started_at", "finished_at",
                  "cpu_seconds", "peak_rss_bytes", "engine", "provenance", "notes", "survivorship", "tables",
                  "verdict", "verdict_detail", "data_hash", "data_hash_note", "reads", "seed", "lock_hash", "threads",
-                 "kernels"]
+                 "kernels", "runtime"]
 
 
 @pytest.fixture
@@ -307,3 +307,48 @@ def test_a_kind_with_unrecorded_reads_publishes_data_hash_null_with_the_reason(c
     legacy = {k: v for k, v in base.items() if k not in ("reads", "unseeded", "unrecorded")}
     m = build_manifest(job, legacy, **kw)
     assert m["data_hash"] is None and "no reads were recorded" in m["data_hash_note"]
+
+
+
+# --- pinned tables (fix round 1): a seed or stream change fails loudly -------------------------------------------
+# The canonical hash of each table with every float rounded to 9 significant digits (so a last-bit libm difference
+# between macOS and Linux cannot move it, while any change of seed, stream or method does), pinned at the values
+# the code produced on 2026-11-18 -- tables the review found equal to b8a9604's. On the NumPy reference only: the
+# Rust kernels draw from another generator (equal in distribution, not in value), so there it is skipped.
+
+def _rounded_hash(df):
+    import numpy as np
+
+    from ohcamel_quant.jobs.provenance import frame_hash
+
+    out = df.copy()
+    for c in out.columns:
+        if pd.api.types.is_float_dtype(out[c]):
+            out[c] = [float(f"{x:.9g}") if np.isfinite(x) else x for x in out[c]]
+    return frame_hash(out)
+
+
+GOLDEN = {
+    "risk.mc_atlas": ({"n_paths": 2_000, "member_paths": 2_000, "members": False}, {
+        "summary": "8a0081eb7d13672faf956c13c2dea33407563fbfe310c569b169935838669e66",
+        "euler": "d40e16cf30c306b5dc524264402db9c4cc03128db375579c976eed82a06108d5",
+        "members": "5a05a9781d46871fc92b8b780a4358ca99b1dab5720c74f41d0cb9cf915bdf5f"}),
+    "vol.forecast_league": ({"tickers": ["SPY"], "eval_days": 42, "refit_every": 1000}, {
+        "league": "13066a63060380a953cd4fa86fe1cc59ebc9793a718f02420c064336a34aec03",
+        "dm": "6362d591ba00163750d67d5df4cf4d2ef5b01470d307c01f78212a8e5b05a557",
+        "summary": "b10a27b94146a65598549639f5aaf15d09ab01250d8aafae63c75735d60f525e",
+        "forecasts": "09b56dbbad42764e8fcf840f4119c40c017b7fb514c85df9f920291104d4ef87",
+        "skipped": "fc42feaab8427b4e7db905c2f52111759b58430f3e8a439dda232194f1c8d5ef",
+        "dropped": "66b783bee1be18a2b9df15a26bed354e4c3b652f029eaa06118ef4f7c49158bb"}),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(GOLDEN))
+def test_the_pinned_tables_of_two_seeded_products_have_not_moved(tmp_path, fixture_wh, kind):
+    from ohcamel_quant import kernels
+
+    if kernels.engine_of("copula_t_paths") != "python":
+        pytest.skip("pinned on the NumPy reference kernels")
+    params, want = GOLDEN[kind]
+    got = {t: _rounded_hash(df) for t, df in _tables(_run(tmp_path, fixture_wh, kind=kind, params=params))[1].items()}
+    assert got == want, got

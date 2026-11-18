@@ -17,6 +17,14 @@
 #      `.part` copies excluded, ssh in BatchMode so a missing key fails
 #      instead of prompting a launchd job that has no terminal; a failing
 #      rsync fails the run; OHCAMEL_SSH_HOST re-points the host alias.
+#   W. the warehouse exports (Task 3.3 fix round 1): the main rsync excludes
+#      warehouse/; a listing of the host's exports picks the NEWEST and each
+#      month's newest; each is pulled into DATE.part, checked (export.json,
+#      load.sql and every Parquet file it names) and only then renamed to
+#      DATE; one already on the laptop is not pulled again. Then the laptop
+#      keeps its 3 newest exports and each month's newest -- and prunes
+#      nothing at all when the newest did not arrive whole, so the only
+#      off-box copy is never the one deleted.
 #   L. the plist: lints, carries the label, runs this script by its path
 #      under $HOME through a shell (launchd expands no `~`), on a calendar
 #      interval (launchd runs a missed one on wake, which is the "while the
@@ -55,14 +63,39 @@ mkdir -p "$scratch/bin"
 cat >"$scratch/bin/rsync" <<'SHIM'
 #!/usr/bin/env bash
 { printf 'rsync'; printf ' %q' "$@"; printf '\n'; } >>"$SHIM_LOG"
+dest=${!#}
+case " $* " in
+*" --list-only "*)
+	[ "${SHIM_LIST_EXIT:-0}" = 0 ] || exit "$SHIM_LIST_EXIT"
+	printf 'drwxrwx---          4,096 2026/11/17 06:31:00 .\n'
+	for d in ${SHIM_REMOTE_EXPORTS-}; do
+		printf 'drwxrwx---          4,096 2026/11/17 06:31:00 %s\n' "$d"
+	done
+	printf 'drwxrwx---          4,096 2026/11/17 06:31:00 2026-11-18.part\n'
+	exit 0
+	;;
+*"/warehouse/20"[0-9][0-9]-*)
+	d=$(basename "$dest" .part)
+	mkdir -p "$dest"
+	printf "COPY bars_daily FROM '/backups/warehouse/%s.part/bars_daily.parquet' (FORMAT 'parquet');\n" "$d" >"$dest/load.sql"
+	printf 'PAR1' >"$dest/bars_daily.parquet"
+	case " ${SHIM_BAD_EXPORTS-} " in
+	*" $d "*) ;;
+	*) printf '{"day": "%s"}\n' "$d" >"$dest/export.json" ;;
+	esac
+	exit "${SHIM_EXPORT_EXIT:-0}"
+	;;
+esac
 exit "${SHIM_EXIT:-0}"
 SHIM
 chmod +x "$scratch/bin/rsync"
 
 rc=0
 run_pull() { # [VAR=value ...]
-	rm -rf "$home"
-	mkdir -p "$home"
+	run_pull_keep "$@"
+}
+run_pull_keep() { # like run_pull, but $home is the caller's (a laptop with exports on it)
+	[ "${keep_home:-0}" = 1 ] || { rm -rf "$home"; mkdir -p "$home"; }
 	: >"$log"
 	rc=0
 	env -u OHCAMEL_SSH_HOST -u OHCAMEL_PULL_DIR HOME="$home" PATH="$scratch/bin:$PATH" SHIM_LOG="$log" "$@" \
@@ -79,7 +112,7 @@ expect_has() { # LABEL FILE FIXED-STRING
 run_pull
 expect_rc "P1 a pull whose rsync succeeds" 0
 n=$(grep -c . "$log" || true)
-if [ "$n" = 1 ]; then ok "P1 exactly one rsync call"; else no "P1 exactly one rsync call" "$n calls"; fi
+if [ "$n" = 2 ]; then ok "P1 two rsync calls with no export on the host: the pull and the export listing"; else no "P1 two rsync calls" "$n calls"; fi
 call=$(head -n1 "$log")
 for word in " -a" " ohcamel:/var/backups/ohcamel/ " " $home/Backups/ohcamel/" "BatchMode=yes" ".part"; do
 	case "$call" in
@@ -111,6 +144,69 @@ case "$call" in
 *" $scratch/elsewhere/") ok "P4 OHCAMEL_PULL_DIR re-points the destination" ;;
 *) no "P4 OHCAMEL_PULL_DIR re-points the destination" "call was: $(printf '%s' "$call" | cut -c1-300)" ;;
 esac
+
+
+# --- W. the warehouse exports ---------------------------------------------------------
+exports() { (cd "$home/Backups/ohcamel/warehouse" 2>/dev/null && find . -mindepth 1 -maxdepth 1 | sed 's|^\./||' | sort | tr '\n' ' ' | sed 's/ $//'); }
+plant() { # DATE...: verified exports already on the laptop
+	local d
+	for d in "$@"; do
+		mkdir -p "$home/Backups/ohcamel/warehouse/$d"
+		printf "COPY bars_daily FROM '/x/%s/bars_daily.parquet' (FORMAT 'parquet');\n" "$d" >"$home/Backups/ohcamel/warehouse/$d/load.sql"
+		printf 'PAR1' >"$home/Backups/ohcamel/warehouse/$d/bars_daily.parquet"
+		: >"$home/Backups/ohcamel/warehouse/$d/export.json"
+	done
+}
+
+run_pull
+case "$(head -n1 "$log")" in
+*"--exclude=warehouse/"*) ok "W1 the main pull excludes warehouse/ (the exports are pulled apart)" ;;
+*) no "W1 the main pull excludes warehouse/" "$(head -n1 "$log" | cut -c1-300)" ;;
+esac
+
+run_pull SHIM_REMOTE_EXPORTS="2026-09-29 2026-09-30 2026-10-31 2026-11-15 2026-11-16 2026-11-17"
+expect_rc "W2 a first pull of the exports" 0
+if [ "$(exports)" = "2026-09-30 2026-10-31 2026-11-17" ]; then
+	ok "W2 the newest export and each month's newest arrive, nothing else"
+else
+	no "W2 the newest export and each month's newest arrive, nothing else" "laptop has: $(exports)"
+fi
+if [ -f "$home/Backups/ohcamel/warehouse/2026-11-17/export.json" ]; then ok "W2 each arrives whole, under its date"; else no "W2 each arrives whole" "$(exports)"; fi
+grep -q -- "--list-only" "$log" && ok "W2 the host's exports are listed with rsync, not a shell" || no "W2 listed with rsync" "no --list-only call"
+
+rm -rf "$home"; mkdir -p "$home"
+plant 2026-10-31 2026-11-12 2026-11-13 2026-11-14 2026-11-15 2026-11-16
+keep_home=1 run_pull SHIM_REMOTE_EXPORTS="2026-10-31 2026-11-16 2026-11-17"
+expect_rc "W3 a nightly pull over a laptop holding six exports" 0
+if [ "$(exports)" = "2026-10-31 2026-11-15 2026-11-16 2026-11-17" ]; then
+	ok "W3 the laptop keeps its 3 newest exports and each month's newest (11-12, 11-13, 11-14 pruned)"
+else
+	no "W3 the laptop keeps its 3 newest and each month's newest" "laptop has: $(exports)"
+fi
+if grep -q "warehouse/2026-10-31/" "$log"; then no "W3 an export already on the laptop is not pulled again" "10-31 was pulled"; else ok "W3 an export already on the laptop is not pulled again"; fi
+
+rm -rf "$home"; mkdir -p "$home"
+plant 2026-10-31 2026-11-12 2026-11-13 2026-11-14 2026-11-15 2026-11-16
+keep_home=1 run_pull SHIM_REMOTE_EXPORTS="2026-10-31 2026-11-16 2026-11-17" SHIM_BAD_EXPORTS=2026-11-17
+expect_rc "W4 a newest export that arrives incomplete fails the run" 1
+if [ "$(exports)" = "2026-10-31 2026-11-12 2026-11-13 2026-11-14 2026-11-15 2026-11-16" ]; then
+	ok "W4 and nothing is pruned, and no half copy is left"
+else
+	no "W4 and nothing is pruned, and no half copy is left" "laptop has: $(exports)"
+fi
+expect_has "W4 and the failure names the export" "$scratch/err" "2026-11-17"
+
+rm -rf "$home"; mkdir -p "$home"
+plant 2026-11-12 2026-11-13 2026-11-14 2026-11-15
+keep_home=1 run_pull SHIM_REMOTE_EXPORTS="2026-11-16" SHIM_LIST_EXIT=12
+expect_rc "W5 a listing that fails fails the run" 1
+if [ "$(exports)" = "2026-11-12 2026-11-13 2026-11-14 2026-11-15" ]; then ok "W5 and prunes nothing"; else no "W5 and prunes nothing" "laptop has: $(exports)"; fi
+
+rm -rf "$home"; mkdir -p "$home"
+plant 2026-11-12 2026-11-13 2026-11-14 2026-11-15
+keep_home=1 run_pull SHIM_REMOTE_EXPORTS="2026-11-16" SHIM_EXPORT_EXIT=23
+expect_rc "W6 an rsync of the newest export that fails fails the run" 1
+if [ "$(exports)" = "2026-11-12 2026-11-13 2026-11-14 2026-11-15" ]; then ok "W6 and prunes nothing, leaves no .part"; else no "W6 and prunes nothing, leaves no .part" "laptop has: $(exports)"; fi
 
 # --- L. the plist -------------------------------------------------------------------
 if command -v plutil >/dev/null 2>&1; then

@@ -51,11 +51,14 @@
 #      table back from the Parquet files against the warehouse, writes
 #      export.json, and only then renames the directory to YYYY-MM-DD; a
 #      failure leaves no dated directory (quant/src/ohcamel_quant/warehouse/
-#      export.py). Before it runs, the disk is checked: an export wants twice
-#      the newest export's size free (BACKUP_EXPORT_MIN_KB, 1 GiB, when there is
-#      none yet); short of that, the oldest exports that are neither the newest
-#      nor a month-end are pruned first, and if that is still not enough the
-#      export is refused -- a failed step -- and nothing more is deleted. After
+#      export.py). Before it opens the warehouse it reads /data/jobs.sqlite and
+#      waits (up to 30 min) while a warehouse-writing ingest runs, then fails
+#      the step if one still does. Before it runs, the disk is checked: an
+#      export wants twice the newest export's size free (BACKUP_EXPORT_MIN_KB,
+#      1 GiB, when there is none yet or it cannot be measured); short of that,
+#      what pruning the oldest exports that are neither the newest nor a
+#      month-end would free is totalled first, and if it is not enough the
+#      export is refused -- a failed step -- and nothing is deleted. After
 #      a good export, the 14 newest exports and the newest of each calendar
 #      month are kept, and leftover YYYY-MM-DD*.part directories go. A failed
 #      export prunes nothing. The status record names the step `warehouse`.
@@ -404,35 +407,59 @@ month_ends() {
 	export_dirs "$1" | awk '{ m = substr($0, 1, 7); last[m] = $0 } END { for (m in last) print last[m] }' | sort
 }
 
-# kb PATH: its size on disk in KiB.
+# kb PATH: its size on disk in KiB, or nothing when it cannot be measured.
 kb() { du -sk "$1" 2>/dev/null | awk '{ print $1 }'; }
 
-# export_room DIR DRY: make room for tonight's export, or refuse it (1).
+# export_room DIR DRY: make room for tonight's export, or refuse it (1). It
+# totals what pruning may free FIRST -- the oldest dailies, never the newest
+# export, never a month-end -- and deletes nothing unless that is enough. A
+# size du cannot measure frees nothing; an unmeasurable newest export asks for
+# BACKUP_EXPORT_MIN_KB.
 BACKUP_EXPORT_MIN_KB=${BACKUP_EXPORT_MIN_KB:-1048576}
 export_room() {
-	local dir="$1" dry="$2" newest need free freed=0 name size ends
+	local dir="$1" dry="$2" newest need free freeable=0 name size ends size_newest
+	local victims=()
 	newest=$(export_dirs "$dir" | tail -n 1)
-	if [ -n "$newest" ]; then need=$(($(kb "$dir/warehouse/$newest") * 2)); else need=$BACKUP_EXPORT_MIN_KB; fi
-	free=${BACKUP_FREE_KB:-$(df -Pk "$dir" | awk 'NR == 2 { print $4 }')}
+	need=$BACKUP_EXPORT_MIN_KB
+	if [ -n "$newest" ]; then
+		size_newest=$(kb "$dir/warehouse/$newest")
+		case "$size_newest" in
+		'' | *[!0-9]*) backup_err "could not measure warehouse/$newest; asking for ${BACKUP_EXPORT_MIN_KB} KiB free instead" ;;
+		*) need=$((size_newest * 2)) ;;
+		esac
+	fi
+	free=${BACKUP_FREE_KB:-$(df -Pk "$dir" 2>/dev/null | awk 'NR == 2 { print $4 }')}
+	case "$free" in '' | *[!0-9]*) backup_err "could not measure the free space under $dir"; free=0 ;; esac
 	if [ "$free" -ge "$need" ]; then return 0; fi
-	backup_say "short of disk for the warehouse export: ${free} KiB free, ${need} KiB wanted (twice the newest export); pruning the oldest dailies first -- never the newest export, never a month-end"
+	backup_say "short of disk for the warehouse export: ${free} KiB free, ${need} KiB wanted (twice the newest export); the oldest dailies would go first -- never the newest export, never a month-end"
 	ends=" $(month_ends "$dir" | tr '\n' ' ') "
 	for name in $(export_dirs "$dir"); do
-		[ "$((free + freed))" -lt "$need" ] || break
+		[ "$((free + freeable))" -lt "$need" ] || break
 		[ "$name" != "$newest" ] || continue
 		case "$ends" in *" $name "*) continue ;; esac
 		size=$(kb "$dir/warehouse/$name")
+		case "$size" in
+		'' | *[!0-9]*)
+			backup_err "could not measure warehouse/$name; it counts for nothing and is kept"
+			continue
+			;;
+		esac
+		victims+=("$name")
+		freeable=$((freeable + size))
+	done
+	if [ "$((free + freeable))" -lt "$need" ]; then
+		backup_err "the warehouse export does not fit: ${free} KiB free and ${freeable} KiB that pruning the old dailies could free, ${need} KiB wanted -- not attempted, and nothing was deleted"
+		return 1
+	fi
+	for name in ${victims[@]+"${victims[@]}"}; do
 		if [ "$dry" = 1 ]; then
 			printf '+ rm -rf -- %s\n' "$(printf '%q' "$dir/warehouse/$name")"
 		else
 			rm -rf -- "${dir:?}/warehouse/$name"
-			backup_say "pruned warehouse/$name early ($size KiB) to make room"
+			backup_say "pruned warehouse/$name early to make room"
 		fi
-		freed=$((freed + size))
 	done
-	if [ "$((free + freed))" -ge "$need" ]; then return 0; fi
-	backup_err "the warehouse export does not fit: $((free + freed)) KiB free after pruning every old daily, ${need} KiB wanted -- not attempted; the newest export ($newest) and the month-ends are kept"
-	return 1
+	return 0
 }
 
 # prune_exports DIR: after a good export, the 14 newest and the newest of each
@@ -493,7 +520,7 @@ run_entry() {
 	export)
 		# The Quant image's own exporter (step 5b): read-only, verified, renamed.
 		image=ghcr.io/ajaiupadhyaya/ohcamel-quant
-		cmd+=(--entrypoint python ohcamel-backup -m ohcamel_quant.warehouse export "$path" /backups/warehouse --date "${dest#warehouse/}")
+		cmd+=(--entrypoint python ohcamel-backup -m ohcamel_quant.warehouse export "$path" /backups/warehouse --date "${dest#warehouse/}" --jobs-db /data/jobs.sqlite)
 		if ! export_room "$dir" "$dry"; then
 			return 1
 		fi

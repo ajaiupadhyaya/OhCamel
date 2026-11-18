@@ -37,7 +37,8 @@ pandas' metadata blob. So this hashes a canonical encoding of the VALUES instead
    Every width and byte order is explicit, so macOS and Linux agree, and nothing pyarrow or pandas writes is
    hashed, so a patch bump of either changes nothing.
 
-``data_hash`` is the SHA-256 of the sorted per-read hashes, one a line (the brief's definition).
+``data_hash`` is the SHA-256 of the sorted ``name<TAB>sha256`` lines, one a read: the brief's "sorted per-read
+hashes" with each read's name bound to its hash (fix round 1), so two reads cannot swap their data unnoticed.
 
 THE RECORDER
 
@@ -50,7 +51,10 @@ active -- ``products.io``'s reads of earlier artifacts. Seeds come from ``ctx.se
 While active, it also watches for random numbers drawn without a seed: a generator from
 ``numpy.random.default_rng()`` with no argument that was drawn from (its state moved; arch builds one it never
 uses, and a module import -- scipy.stats draws doc examples -- is not the job's), a draw from numpy's legacy
-global state, a draw from the ``random`` module. Each is written to
+global state, a draw from the ``random`` module. Not seen at runtime, so forbidden in the source instead
+(tests/test_jobs_provenance.py reads the syntax tree): ``from numpy.random import default_rng`` at module level
+(the name is bound before the recorder patches it) and an unseeded ``np.random.RandomState()`` (its own state,
+not the global one). Each is written to
 ``unseeded`` and fails the manifest. What it cannot see: a ``Generator(PCG64())`` built without a seed, an
 unseeded RNG inside a C/Rust extension or a subprocess (the Rust kernels and Kronos take their seed as an
 argument, so they cannot run unseeded), and thread-count-dependent numerics -- which is why the manifest
@@ -85,6 +89,9 @@ class UnseededDraw(ValueError):
 
 _INGEST = ("ingest.universes", "ingest.bars_daily", "ingest.bars_minute", "ingest.fred_warehouse", "ingest.factors",
            "ingest.sec_facts", "ingest.holdings_13f", "ingest.option_snapshots", "ingest.corp_actions")
+#: The kinds that write /data/warehouse.duckdb (ingest.fred writes an artifact only): the nightly export waits for
+#: a running one, and no schedule of one may fall inside the export's window (tests/test_jobs_schedules.py).
+WAREHOUSE_WRITERS = frozenset(_INGEST)
 
 #: Kinds whose reads do not all pass through the recorder. Their manifests publish ``data_hash: null`` with this
 #: reason, so a hash never claims more than was hashed. (tests/test_jobs_provenance.py holds every direct read in
@@ -155,8 +162,10 @@ def sha256_text(text: str) -> str:
 
 
 def data_hash(reads: Iterable[dict[str, Any]]) -> str:
-    """The SHA-256 of the sorted per-read hashes, one a line."""
-    return sha256_text("\n".join(sorted(str(r["sha256"]) for r in reads)))
+    """The SHA-256 of the sorted ``name<TAB>sha256`` lines, one a read. A deliberate strengthening of the brief's
+    "hash of the sorted per-read hashes" (fix round 1): with the names bound, two reads cannot trade their data and
+    leave the hash unchanged. It changes the value for artifacts made from here on; nothing stored is rewritten."""
+    return sha256_text("\n".join(sorted(f"{r['name']}\t{r['sha256']}" for r in reads)))
 
 
 def file_sha256(path: Path) -> str | None:
@@ -196,6 +205,13 @@ def checkout_sha() -> str:
         return "unknown"
 
 
+def runtime_info() -> dict[str, str]:
+    """The interpreter and platform: recorded, and a difference only warns (regenerate.py)."""
+    import platform
+
+    return {"python": platform.python_version(), "platform": platform.platform()}
+
+
 def kernels_info() -> dict[str, Any]:
     """The engine the kernels dispatcher chose for this process, and the wheel API it speaks when Rust."""
     from .. import kernels
@@ -207,13 +223,40 @@ def kernels_info() -> dict[str, Any]:
 # --- the canonical hash --------------------------------------------------------------------------------------------
 
 def _json_default(o: Any) -> Any:
+    """What canonical JSON makes of a value json cannot encode. A frame or series nested in a dict is hashed whole
+    (``frame_hash``) -- never through its repr, which pandas truncates to the head and tail -- and anything else
+    without a defined encoding is refused rather than hashed by whatever its repr says (fix round 1)."""
+    import numpy as np
+    import pandas as pd
+
+    if isinstance(o, (pd.DataFrame, pd.Series)):
+        return {"__frame_sha256__": frame_hash(o)}
+    if isinstance(o, pd.Timestamp):
+        return o.isoformat()
     if isinstance(o, (datetime, date)):
         return o.isoformat()
     if isinstance(o, Decimal):
         return float(o)
-    if hasattr(o, "tolist"):
+    if isinstance(o, (np.ndarray, np.generic)):
         return o.tolist()
-    return str(o)
+    if isinstance(o, (set, frozenset)):
+        return sorted(o, key=repr)
+    if isinstance(o, Path):
+        return str(o)
+    raise TypeError(f"{type(o).__name__} has no canonical encoding; it would be hashed by its repr, which need not "
+                    "show all of it -- convert it to a frame, a list or a scalar before it is read")
+
+
+def _name_default(o: Any) -> Any:
+    """For a read's NAME only (a label, not data): anything prints."""
+    try:
+        return _json_default(o)
+    except TypeError:
+        return str(o)
+
+
+def name_json(o: Any) -> str:
+    return json.dumps(_norm_json(o), sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=_name_default)
 
 
 def _norm_json(o: Any) -> Any:
@@ -501,7 +544,7 @@ class Recorder:
 
 def _sql_name(sql: str, params: Any) -> str:
     text = " ".join(str(sql).split())
-    return f"warehouse: {text}" + ("" if params is None else f" | {canonical_json(params)}")
+    return f"warehouse: {text}" + ("" if params is None else f" | {name_json(params)}")
 
 
 _FETCHES = ("fetchall", "fetchone", "fetchmany", "df", "fetchdf", "fetch_df", "fetchnumpy", "arrow",
@@ -602,7 +645,7 @@ class RecordingMarket:
             data = getattr(out, "data", None)
             if data is None and hasattr(out, "quotes"):
                 data = out.quotes
-            args = canonical_json({"args": list(a), "kwargs": k})
+            args = name_json({"args": list(a), "kwargs": k})
             self._rec.record(f"market.{name}{args}", data, source=_sources(getattr(out, "provenance", None)))
             return out
 

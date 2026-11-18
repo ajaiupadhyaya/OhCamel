@@ -176,6 +176,13 @@ esac
 exec "$@"
 SHIM
 chmod +x "$scratch/bin/timeout"
+# du, failing on request (a measurement that fails must not become a shell error).
+cat >"$scratch/bin/du" <<'SHIM'
+#!/usr/bin/env bash
+[ "${SHIM_DU_FAIL:-0}" = 1 ] && exit 1
+exec /usr/bin/du "$@"
+SHIM
+chmod +x "$scratch/bin/du"
 
 # fresh: a new scratch checkout, an empty backup directory, an empty log.
 fresh() {
@@ -338,7 +345,7 @@ while IFS=' ' read -r volume path method uid; do
 		;;
 	export)
 		case "$line" in
-		*" --entrypoint python ohcamel-backup -m ohcamel_quant.warehouse export $path /backups/warehouse --date $today") ok "$label exports $path read-only into /backups/warehouse/$today" ;;
+		*" --entrypoint python ohcamel-backup -m ohcamel_quant.warehouse export $path /backups/warehouse --date $today --jobs-db /data/jobs.sqlite") ok "$label exports $path read-only into /backups/warehouse/$today, waiting on a running ingest" ;;
 		*) no "$label exports $path into /backups/warehouse/$today" "run $i was: $(printf '%s' "$line" | cut -c1-300)" ;;
 		esac
 		;;
@@ -766,9 +773,28 @@ expect_eq "X5 and was never attempted" "$(cat "$export_seen")" ""
 expect_eq "X5 and nothing was deleted to make room" "$(exports)" "2026-08-31 2026-09-12"
 expect_eq "X5 and the record names the step" "$(status)" "2026-09-27T06:31:00Z false 1 7 warehouse"
 
+# Room that pruning cannot make is refused BEFORE anything is deleted: two old
+# dailies (800 KB) cannot free the ~4 MB a 2 MB newest export asks for.
+fresh
+plant_exports 2026-08-31 2026-09-10 2026-09-11 2026-09-12
+head -c 2097152 /dev/zero >"$backups/warehouse/2026-09-12/big.parquet"
+run_backup BACKUP_FREE_KB=0 --
+expect_rc "X7 an export pruning cannot make room for fails the run" 1
+expect_eq "X7 and nothing was deleted first" "$(exports)" "2026-08-31 2026-09-10 2026-09-11 2026-09-12"
+expect_eq "X7 and the export was not attempted" "$(cat "$export_seen")" ""
+
+# A size that cannot be measured is not a shell error and frees nothing.
+fresh
+plant_exports 2026-08-31 2026-09-10 2026-09-11 2026-09-12
+run_backup SHIM_DU_FAIL=1 BACKUP_FREE_KB=50 --
+expect_rc "X8 du failing: the export is refused, not crashed" 1
+expect_has "X8 and says the measurement failed" "$scratch/err" "could not measure"
+if grep -q "syntax error" "$scratch/err"; then no "X8 no shell syntax error" "$(grep 'syntax error' "$scratch/err" | head -1)"; else ok "X8 no shell syntax error"; fi
+expect_eq "X8 and nothing was deleted" "$(exports)" "2026-08-31 2026-09-10 2026-09-11 2026-09-12"
+
 fresh
 run_backup -- --dry-run
-expect_has "X6 --dry-run prints the export's command" "$scratch/out" "ohcamel_quant.warehouse export /data/warehouse.duckdb /backups/warehouse --date $today"
+expect_has "X6 --dry-run prints the export's command" "$scratch/out" "ohcamel_quant.warehouse export /data/warehouse.duckdb /backups/warehouse --date $today --jobs-db /data/jobs.sqlite"
 expect_eq "X6 --dry-run makes no export directory" "$(listing)" ""
 
 # --- S. the run's record, for the Ledger ----------------------------------------------

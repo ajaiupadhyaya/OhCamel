@@ -203,3 +203,20 @@ def test_a_refused_manifest_fails_the_job_and_publishes_nothing(cfg, conn):
     d = get_job(conn, job.id)
     assert d.state == "failed" and "manifest refused" in d.error and "without a seed" in d.error
     assert not staging.exists() and not (cfg.artifacts_root / "ops.selftest" / job.id).exists()
+
+
+def test_a_refused_manifest_is_not_retried_even_for_an_ingest(cfg, conn):
+    """Fix round 1: an unseeded draw is deterministic -- a retry would draw unseeded again -- so it fails at once,
+    even for an ingest kind (which otherwise gets two retries)."""
+    from ohcamel_quant.jobs.runner import Outcome
+
+    _q(conn, kind="ingest.fred", params={"series": "DGS10"})
+    w = Worker(cfg, admit=admit_all)
+    job = claim_next(w.conn, allowed_classes=frozenset({"S"}), allow_heavy=True, now=utcnow())
+    staging = cfg.artifacts_root / ".staging" / job.id
+    staging.mkdir(parents=True)
+    result = {"ok": True, "data_asof": None, "provenance": [], "notes": [], "survivorship": None, "engine": "python",
+              "tables": [], "reads": [], "seed": None, "unrecorded": [],
+              "unseeded": ["the random module's global state was drawn from"]}
+    w._settle(job, Outcome("done", result, None, 0.1, 1, staging))
+    assert get_job(conn, job.id).state == "failed"

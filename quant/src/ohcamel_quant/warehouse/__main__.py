@@ -37,6 +37,8 @@ def main(argv: list[str] | None = None) -> int:
     x.add_argument("warehouse")
     x.add_argument("root")
     x.add_argument("--date", default=None, help="the directory's date (default: today, UTC)")
+    x.add_argument("--jobs-db", default=None, help="the job queue (jobs.sqlite): wait while an ingest writes")
+    x.add_argument("--wait-s", type=float, default=1800.0, help="how long to wait for a running ingest")
     v = sub.add_parser("verify", help="print an export's verified record")
     v.add_argument("export")
     rs = sub.add_parser("restore", help="build a NEW warehouse file from an export")
@@ -80,7 +82,8 @@ def _export_cmd(a: argparse.Namespace) -> int:
         if a.cmd == "export":
             os.umask(0o007)   # group-writable: deploy/backup.sh, as the host user in the group, prunes old exports
             day = a.date or datetime.now(UTC).date().isoformat()
-            out = E.export_warehouse(Path(a.warehouse), Path(a.root), day=day)
+            out = E.export_warehouse(Path(a.warehouse), Path(a.root), day=day,
+                                     jobs_db=Path(a.jobs_db) if a.jobs_db else None, wait_s=a.wait_s)
             rec = E.read_record(out)
             print(f"export: {out} -- {len(rec['tables'])} tables, {sum(rec['tables'].values())} rows, "
                   f"{rec['bytes']} bytes, schema version {rec['schema_version']}, verified")

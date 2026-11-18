@@ -6,8 +6,14 @@ plus ``export.json``, the record that makes it a good export: every table's row 
 Parquet files and equal to the source's, the source's migration version, the DuckDB that wrote it.
 
 * The source is opened READ-ONLY (DuckDB 1.5: EXPORT works on a read-only connection). A read-only process holds
-  the shared lock, so the single writer -- an ingest job -- waits for the export (it retries for 30 s, then the
-  job's own two retries apply); the export retries the open for 60 s when an ingest holds the write lock.
+  the shared lock, and an ingest cannot open the writer while it is held: ``run_ingest`` opens the writer once
+  per key with a 30 s timeout, so a key whose open times out during an export is logged FAILED (no retry of that
+  key), and if the run's summary log write times out too the job fails (then the job-level retries apply). Two
+  things keep the two apart: before opening the warehouse the export reads the job queue (``jobs_db``,
+  read-only) and waits while any warehouse-writing ingest is RUNNING -- up to ``wait_s`` (30 min), then the
+  export fails loudly and the backup's status record names the step; and no warehouse-writing schedule fires
+  inside the export's window, the backup timer's 06:30 UTC plus ``EXPORT_BUDGET_MIN``, in either New York
+  offset (tests/test_jobs_schedules.py). A writer started by hand during an export can still lose keys.
 * It is written to ``<day>.part``, verified, and only then renamed to ``<day>``; a failure removes the
   ``.part`` and leaves every earlier export as it was. A second export on one day replaces the first only
   after it has verified. ``deploy/pull-backups.sh`` skips ``*.part``.
@@ -37,6 +43,11 @@ import duckdb
 from .db import _connect
 
 RECORD = "export.json"
+#: The window no warehouse-writing schedule may start in, from the backup timer's 06:30 UTC (the export follows
+#: the backup's copies by seconds; an export of ~0.5 GB is estimated at minutes, not an hour).
+EXPORT_BUDGET_MIN = 60
+WRITER_WAIT_S = 1800.0
+WRITER_POLL_S = 15.0
 SOURCE_TIMEOUT_S = 60.0
 SOURCE_CONFIG = {"threads": 1, "memory_limit": "256MB"}
 _COPY = re.compile(r"""^COPY\s+("?)(?P<table>[^"\s]+)\1\s+FROM\s+'(?P<path>[^']+)'""", re.IGNORECASE)
@@ -87,13 +98,50 @@ def _size(directory: Path) -> int:
     return sum(p.stat().st_size for p in directory.rglob("*") if p.is_file())
 
 
-def export_warehouse(src: Path, root: Path, *, day: str) -> Path:
-    """Export ``src`` to ``root/<day>`` (module docstring); return the directory."""
+def _writers_running(jobs_db: Path) -> list[tuple[str, str]]:
+    """``[(kind, id)]`` of the warehouse-writing jobs RUNNING in the queue, read-only; none when there is no queue."""
+    import sqlite3
+
+    from ..jobs.provenance import WAREHOUSE_WRITERS
+
+    if not Path(jobs_db).is_file():
+        return []
+    con = sqlite3.connect(f"file:{jobs_db}?mode=ro", uri=True, timeout=10)
+    try:
+        rows = con.execute("SELECT kind, id FROM jobs WHERE state = 'running'").fetchall()
+    finally:
+        con.close()
+    return [(k, i) for k, i in rows if k in WAREHOUSE_WRITERS]
+
+
+def wait_for_writers(jobs_db: Path | None, *, wait_s: float = WRITER_WAIT_S, poll_s: float = WRITER_POLL_S) -> None:
+    """Return once no warehouse-writing job runs; raise ExportFailed after ``wait_s`` naming the ones still running."""
+    import time
+
+    if jobs_db is None:
+        return
+    deadline = time.monotonic() + wait_s
+    while True:
+        running = _writers_running(Path(jobs_db))
+        if not running:
+            return
+        if time.monotonic() >= deadline:
+            raise ExportFailed("a warehouse writer is still running after " f"{wait_s:g} s: "
+                               + ", ".join(f"{k} {i}" for k, i in running)
+                               + " -- no export tonight; the previous exports are kept")
+        time.sleep(poll_s)
+
+
+def export_warehouse(src: Path, root: Path, *, day: str, jobs_db: Path | None = None,
+                     wait_s: float = WRITER_WAIT_S, poll_s: float = WRITER_POLL_S) -> Path:
+    """Export ``src`` to ``root/<day>`` (module docstring); return the directory. With ``jobs_db``, wait for a
+    running warehouse writer first."""
     src, root = Path(src), Path(root)
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
         raise ValueError(f"day must be YYYY-MM-DD, got {day!r}")
     if not src.is_file():
         raise ExportFailed(f"{src} does not exist: nothing to export")
+    wait_for_writers(jobs_db, wait_s=wait_s, poll_s=poll_s)
     root.mkdir(parents=True, exist_ok=True)
     final, part, old = root / day, root / f"{day}.part", root / f"{day}.old.part"
     shutil.rmtree(part, ignore_errors=True)

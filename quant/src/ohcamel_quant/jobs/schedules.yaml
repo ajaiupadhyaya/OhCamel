@@ -103,8 +103,10 @@ schedules:
     mem_class: S
     heavy: false
 
+  # Sunday 04:00 and 04:30 New York (Task 3.3 fix round 1; were 02:00 and 03:00): clear of the nightly warehouse
+  # export, 06:30-07:30 UTC = 01:30-02:30 EST / 02:30-03:30 EDT (tests/test_jobs_schedules.py).
   - name: warehouse-sec-facts
-    cron: "0 2 * * 0"
+    cron: "0 4 * * 0"
     kind: ingest.sec_facts
     params: {}
     priority: 2
@@ -112,7 +114,7 @@ schedules:
     heavy: true
 
   - name: warehouse-13f
-    cron: "0 3 * * 0"
+    cron: "30 4 * * 0"
     kind: ingest.holdings_13f
     params: {}
     priority: 2

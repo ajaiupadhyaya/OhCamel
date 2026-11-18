@@ -117,14 +117,22 @@ for a in "$@"; do
 	esac
 done
 {
-	printf 'verb=%s img=%s vol=%s ::' "$verb" "${OHCAMEL_IMAGE-}" "${OHCAMEL_BACKUP_VOLUME-}"
+	printf 'verb=%s img=%s vol=%s tag=%s ::' "$verb" "${OHCAMEL_IMAGE-}" "${OHCAMEL_BACKUP_VOLUME-}" "${OHCAMEL_TAG-}"
 	printf ' %q' "$@"
 	printf '\n'
 } >>"$SHIM_LOG"
 case "$verb" in
 ps)
 	case " $* " in
-	*" --services "*) [ -n "${SHIM_PS_SERVICES-}" ] && printf '%s\n' $SHIM_PS_SERVICES ;;
+	*" --services "*)
+		# compose interpolates the whole file first: docker-compose.yml's ${OHCAMEL_TAG:?} fails without a tag.
+		if [ -z "${OHCAMEL_TAG-}" ]; then
+			echo 'error while interpolating services.ohcamel-backup.image: required variable OHCAMEL_TAG is missing a value' >&2
+			exit 1
+		fi
+		[ "${SHIM_PS_EXIT:-0}" = 0 ] || exit "$SHIM_PS_EXIT"
+		[ -n "${SHIM_PS_SERVICES-}" ] && printf '%s\n' $SHIM_PS_SERVICES
+		;;
 	*) [ -n "${SHIM_PS_IMAGE-}" ] && printf '%s\n' "$SHIM_PS_IMAGE" ;;
 	esac
 	exit 0
@@ -496,6 +504,30 @@ for word in " vol=quant_data " " --user 10002:$gid " \
 	esac
 done
 expect_has "W6 and says the old file is kept beside it" "$scratch/out" "pre-restore"
+
+# The second guard fails CLOSED: compose's answer is only trusted when compose answered.
+wfresh
+run_restore SHIM_PS_EXIT=1 -- --warehouse "$export_dir" --replace-live --services-stopped
+expect_rc "W5b compose ps failing is a refusal, not 'nothing running'" 1
+expect_eq "W5b and nothing was run" "$(verb_lines run | grep -c . || true)" "0"
+expect_has "W5b and the refusal says compose did not answer" "$scratch/err" "could not ask compose"
+
+wfresh
+run_restore OHCAMEL_TAG= SHIM_PS_IMAGE=ghcr.io/ajaiupadhyaya/ohcamel:feedface -- --warehouse "$export_dir" --replace-live --services-stopped
+expect_rc "W5c with no OHCAMEL_TAG in the environment the check still runs (the tag is supplied)" 0
+case "$(verb_lines ps | grep -- '--services')" in
+*" tag=feedface "*) ok "W5c compose ps is asked with the running engine's tag" ;;
+*) no "W5c compose ps is asked with the running engine's tag" "$(verb_lines ps | cut -c1-200)" ;;
+esac
+
+wfresh
+run_restore SHIM_PS_EXIT=125 -- --warehouse "$export_dir" --replace-live --services-stopped
+expect_rc "W5d docker without compose (exit 125) is a refusal too" 1
+
+wfresh
+run_restore SHIM_PS_EXIT=1 -- --warehouse "$export_dir" --replace-live --services-stopped --no-compose-check
+expect_rc "W5e --no-compose-check, typed by the operator, skips the second guard" 0
+expect_has "W5e and says the guard was skipped" "$scratch/err" "--no-compose-check"
 
 wfresh
 cat >"$scratch/bin/fakepython" <<'PY'

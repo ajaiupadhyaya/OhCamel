@@ -5,7 +5,7 @@
 #   deploy/restore.sh --drill FILE   [--dry-run]
 #   deploy/restore.sh --restore FILE [--dry-run] [--during-market]
 #   deploy/restore.sh --warehouse EXPORT_DIR [--to FILE] [--local-python PY] [--dry-run]
-#   deploy/restore.sh --warehouse EXPORT_DIR --replace-live --services-stopped [--dry-run]
+#   deploy/restore.sh --warehouse EXPORT_DIR --replace-live --services-stopped [--no-compose-check] [--dry-run]
 #
 # --warehouse EXPORT_DIR (Task 3.3) rebuilds a DuckDB warehouse from one of
 # backup.sh's nightly exports (/var/backups/ohcamel/warehouse/YYYY-MM-DD),
@@ -22,7 +22,10 @@
 #   - --replace-live replaces quant_data's /data/warehouse.duckdb, and only with
 #     --services-stopped, the operator's word that ohcamel-worker and
 #     ohcamel-quant -- the warehouse's only users -- are stopped; compose is
-#     asked too, and a running one is refused. The live file is moved aside
+#     asked too (with the engine's tag, which docker-compose.yml needs to
+#     parse), and a running one is refused -- and so is a compose that does not
+#     answer: the check fails closed. --no-compose-check, typed by the
+#     operator, skips the second guard (said on stderr). The live file is moved aside
 #     inside the volume as warehouse.duckdb.pre-restore-<UTC>, never deleted.
 #     Start them again afterwards: docker compose up -d ohcamel-worker ohcamel-quant.
 #   - --local-python PY runs the same restore with a host python that has
@@ -157,7 +160,7 @@ usage() {
 usage: deploy/restore.sh --drill FILE [--dry-run]
        deploy/restore.sh --restore FILE [--dry-run] [--during-market]
        deploy/restore.sh --warehouse EXPORT_DIR [--to FILE] [--local-python PY] [--dry-run]
-       deploy/restore.sh --warehouse EXPORT_DIR --replace-live --services-stopped [--dry-run]
+       deploy/restore.sh --warehouse EXPORT_DIR --replace-live --services-stopped [--no-compose-check] [--dry-run]
 
   --drill     verify a COPY of FILE with `ohcamel journal-verify` in a
               throwaway container; the live volume is never touched
@@ -176,7 +179,7 @@ QUANT_IMAGE=ghcr.io/ajaiupadhyaya/ohcamel-quant
 
 # restore_warehouse ARG...: --warehouse mode (the header).
 restore_warehouse() {
-	local export="" to="" py="" dry=0 replace=0 stopped=0
+	local export="" to="" py="" dry=0 replace=0 stopped=0 compose_check=1
 	while [ $# -gt 0 ]; do
 		case "$1" in
 		--warehouse) [ $# -ge 2 ] || usage; export=$2; shift ;;
@@ -185,6 +188,7 @@ restore_warehouse() {
 		--dry-run) dry=1 ;;
 		--replace-live) replace=1 ;;
 		--services-stopped) stopped=1 ;;
+		--no-compose-check) compose_check=0 ;;
 		*) usage ;;
 		esac
 		shift
@@ -196,7 +200,7 @@ restore_warehouse() {
 	fi
 	local compose="$restore_here/docker-compose.yml" root="$restore_here/.."
 	local dir="${OHCAMEL_BACKUP_DIR:-/var/backups/ohcamel}"
-	local export_real dir_real day rel target in_target running tag gid
+	local export_real dir_real day rel target in_target running tag gid ps_out ps_rc ps_err
 	if [ ! -d "$export" ]; then
 		restore_err "$export is not a directory"
 		return 1
@@ -276,7 +280,24 @@ restore_warehouse() {
 		restore_err "--replace-live replaces the live warehouse; stop ohcamel-worker and ohcamel-quant first (docker compose stop ohcamel-worker ohcamel-quant) and say so with --services-stopped"
 		return 1
 	fi
-	running=$(docker compose -f "$compose" ps --status running --services 2>/dev/null | grep -xE 'ohcamel-worker|ohcamel-quant' | tr '\n' ' ') || running=""
+	# compose's answer counts only when compose answered: a failed `ps` (no tag, no
+	# daemon, no compose plugin) is a refusal, never "nothing is running". The tag
+	# is supplied because docker-compose.yml requires it to parse at all.
+	if [ "$compose_check" = 1 ]; then
+		ps_rc=0
+		ps_err=$(mktemp "${TMPDIR:-/tmp}/ohcamel-restore-ps.XXXXXX")
+		ps_out=$(OHCAMEL_TAG="$tag" docker compose -f "$compose" ps --status running --services 2>"$ps_err") || ps_rc=$?
+		if [ "$ps_rc" -ne 0 ]; then
+			restore_err "refusing: could not ask compose which services are running (docker compose ps exited $ps_rc: $(head -c 200 "$ps_err" | tr '\n' ' ')) -- with the worker and the API confirmed stopped by other means, pass --no-compose-check"
+			rm -f "$ps_err"
+			return 1
+		fi
+		rm -f "$ps_err"
+		running=$(printf '%s\n' "$ps_out" | grep -xE 'ohcamel-worker|ohcamel-quant' | tr '\n' ' ' || true)
+	else
+		restore_err "--no-compose-check: compose was not asked whether ohcamel-worker or ohcamel-quant runs; the operator's --services-stopped is the only guard"
+		running=""
+	fi
 	if [ -n "$running" ]; then
 		restore_err "refusing: compose reports ${running% } still running -- the warehouse's users must be stopped before it is replaced (docker compose stop ohcamel-worker ohcamel-quant)"
 		return 1

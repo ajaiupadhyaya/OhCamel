@@ -72,7 +72,10 @@ def _check_kind_and_reads(m: dict[str, Any]) -> None:
 def _check_code(m: dict[str, Any], allow: bool) -> None:
     here = {"code_sha": checkout_sha(), "lock_hash": P.lock_hash(), "kernels": P.kernels_info()}
     drift = []
-    if m.get("code_sha") != here["code_sha"]:
+    if "unknown" in (m.get("code_sha"), here["code_sha"]) or not m.get("code_sha"):
+        drift.append(f"code: the artifact names {m.get('code_sha')!r}, this checkout is {here['code_sha']!r} -- an "
+                     "unknown SHA on either side proves nothing")
+    elif m.get("code_sha") != here["code_sha"]:
         drift.append(f"code: the artifact was made by {m.get('code_sha')}, this checkout is {here['code_sha']}")
     if m.get("lock_hash") != here["lock_hash"]:
         drift.append(f"lock: quant/uv.lock hashes {here['lock_hash']}, the manifest says {m.get('lock_hash')}")
@@ -82,6 +85,11 @@ def _check_code(m: dict[str, Any], allow: bool) -> None:
                      "(random kernels agree across engines only in distribution)")
     elif want == "rust" and (m.get("kernels") or {}).get("api") != here["kernels"]["api"]:
         drift.append(f"kernels: wheel API {m['kernels'].get('api')} then, {here['kernels']['api']} now")
+    then, now = m.get("runtime") or {}, P.runtime_info()
+    for key in ("python", "platform"):
+        if then.get(key) and then.get(key) != now[key]:
+            _say(f"WARNING {key}: the artifact ran on {then[key]}, this process runs on {now[key]} -- a float may move "
+                 "in its last bits (libm, SIMD); the tables are compared within the tolerance")
     if not drift:
         _say(f"code {here['code_sha'][:12]}, lock {str(here['lock_hash'])[:12]}, kernels {here['kernels']['engine']}: "
              "as the manifest names them")
@@ -213,7 +221,9 @@ def regenerate(artifact: Path, export: Path, *, artifacts_root: Path | None = No
         got_hash = P.data_hash(result["reads"]) if not P.unrecorded_note(m["kind"], result) else None
         if got_hash != m["data_hash"]:
             lines = _diff_reads(m["reads"], result["reads"])
-            _say("data_hash differs: the export does not hold the data the job read (no table was compared)\n"
+            _say("data_hash differs: the export does not hold the data the job read (no table was compared). An "
+                 "artifact can be regenerated only from the first export after it, before the next ingest touches "
+                 "what it read -- use that night's export\n"
                  + "\n".join(lines or ["  - (the reads are the same; an unrecorded read appeared: "
                                        f"{P.unrecorded_note(m['kind'], result)})"]))
             return 4

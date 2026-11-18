@@ -38,7 +38,13 @@ def load_config(exp: str) -> dict[str, Any]:
     path = frozen_universe_path(exp)
     if not cfg.get("universe") and path.exists():
         frozen = yaml.safe_load(path.read_text()) or {}
-        cfg.update({k: frozen[k] for k in FROZEN_KEYS if k in frozen})
+        laid = {k: frozen[k] for k in FROZEN_KEYS if k in frozen}
+        from ..jobs.provenance import current
+
+        rec = current()
+        if rec is not None:   # data the job read from the volume, not code: recorded; no export holds it (Task 3.3)
+            rec.record(f"data_dir: experiments/{exp}/universe.yaml", laid, source="data_dir")
+        cfg.update(laid)
     return cfg
 
 

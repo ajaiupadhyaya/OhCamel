@@ -197,3 +197,35 @@ def test_corp_actions_run_weekdays_at_1820_before_the_bars_and_alone_in_their_mi
     assert {n for n, hm in at if hm == (18, 20)} == {e.name}
     (bars,) = [x for x in s.entries if x.kind == "ingest.bars_daily"]
     assert [hm for n, hm in at if n == bars.name] == [(18, 30)]
+
+
+def test_no_warehouse_writer_is_scheduled_inside_the_nightly_export_window():
+    """Task 3.3 fix round 1: the warehouse export opens it read-only at the backup timer's time (06:30 UTC) and
+    holds the shared lock for up to EXPORT_BUDGET_MIN; a writer that starts then waits 30 s and fails its keys.
+    So no warehouse-writing cron may fire inside [timer, timer + budget) in either New York offset (EST, EDT);
+    a writer already running when the export starts is waited for by the export itself."""
+    import re
+    from datetime import date, timedelta
+
+    from ohcamel_quant.config import REPO_ROOT
+    from ohcamel_quant.jobs.cron import fire_times, parse_cron
+    from ohcamel_quant.jobs.provenance import WAREHOUSE_WRITERS
+    from ohcamel_quant.jobs.schedules import load_schedules
+    from ohcamel_quant.warehouse.export import EXPORT_BUDGET_MIN
+
+    timer = (REPO_ROOT / "deploy/systemd/ohcamel-backup.timer").read_text()
+    h, m = map(int, re.search(r"^OnCalendar=\*-\*-\* (\d\d):(\d\d):00 UTC$", timer, re.M).groups())
+    start, end = h * 60 + m, h * 60 + m + EXPORT_BUDGET_MIN
+    clashes = []
+    for e in load_schedules().entries:
+        if e.kind not in WAREHOUSE_WRITERS:
+            continue
+        c = parse_cron(e.cron)
+        for first in (date(2026, 1, 5), date(2026, 7, 6)):          # a winter week (EST), a summer week (EDT)
+            for i in range(7):
+                for t in fire_times(c, first + timedelta(days=i)):
+                    minute = t.hour * 60 + t.minute
+                    if start <= minute < end or start <= minute + 1440 < end:
+                        clashes.append(f"{e.name} {t.isoformat()}")
+    assert not clashes, f"warehouse writers inside the export window {h:02d}:{m:02d}+{EXPORT_BUDGET_MIN}m UTC: {clashes}"
+    assert WAREHOUSE_WRITERS and "ingest.fred" not in WAREHOUSE_WRITERS   # ingest.fred writes an artifact only
