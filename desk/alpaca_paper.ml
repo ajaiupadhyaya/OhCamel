@@ -365,14 +365,28 @@ let activities_of_json (json : Yojson.Safe.t) : Venue.Activity.t Venue.Page.t Or
 let activity_page_size = 100
 let max_activity_pages = 50
 
-let next_activity_page ~(token : string option) ~(pages : int)
-    (items : Venue.Activity.t list) : [ `Next of string | `Done | `Capped ] =
-  match List.last items with
+let next_activity_page ~(token : string option) ~(pages : int) ~(count : int)
+    ~(last_id : string option) : [ `Next of string | `Done | `Capped ] =
+  match last_id with
   | Some last
-    when List.length items >= activity_page_size
-         && not (Option.equal String.equal token (Some last.Venue.Activity.id)) ->
-      if pages < max_activity_pages then `Next last.Venue.Activity.id else `Capped
+    when count >= activity_page_size && not (Option.equal String.equal token (Some last))
+    ->
+      if pages < max_activity_pages then `Next last else `Capped
   | _ -> `Done
+
+(* A page of activities with what paging needs, from the RAW page (fix round 4):
+   its item count and its last item's id, whatever parsed. Paging on the parsed
+   items took a full page with one malformed item for the last page, and with the
+   malformed item last, asked from the wrong id. *)
+let activity_page_of_json (json : Yojson.Safe.t) :
+    (Venue.Activity.t Venue.Page.t * int * string option) Or_error.t =
+  Or_error.map (activities_of_json json) ~f:(fun page ->
+      let raw = match json with `List items -> items | _ -> [] in
+      let last_id =
+        Option.bind (List.last raw) ~f:(fun item ->
+            match field item "id" with Some (`String id) -> Some id | _ -> None)
+      in
+      (page, List.length raw, last_id))
 
 (* GET /v1/corporate-actions, cash_dividends. [rate] is a JSON number there, not a
    string; [number] reads it, and a dividend without an ex-date or a rate refuses
@@ -755,13 +769,16 @@ let read ~(credentials : Credentials.t) ~(feed : string) : Venue.Read.t =
             @ Option.value_map token ~default:[] ~f:(fun t -> [ ("page_token", [ t ]) ])
           in
           match%bind
-            get (trading_uri ~query "/v2/account/activities") activities_of_json
+            get (trading_uri ~query "/v2/account/activities") activity_page_of_json
           with
           | Error _ as e -> return e
-          | Ok ({ Venue.Page.items; skipped } : Venue.Activity.t Venue.Page.t) -> (
+          | Ok
+              ( ({ Venue.Page.items; skipped } : Venue.Activity.t Venue.Page.t),
+                count,
+                last_id ) -> (
               let items_so_far, skipped_so_far = acc in
               let acc = (items_so_far @ items, skipped_so_far @ skipped) in
-              match next_activity_page ~token ~pages:(pages + 1) items with
+              match next_activity_page ~token ~pages:(pages + 1) ~count ~last_id with
               | `Next next -> page (Some next) (pages + 1) acc
               | `Done -> return (Ok { Venue.Page.items = fst acc; skipped = snd acc })
               | `Capped ->

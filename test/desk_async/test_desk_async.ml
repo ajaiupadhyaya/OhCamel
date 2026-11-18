@@ -5900,7 +5900,7 @@ let tlt_read ~cash_dividends ~adjusted_before =
    and nothing waits on the wall or leaves a wall-clock timer behind. Returns the
    journal and what the close said, once the night's sub-ledger hook has run -- the
    last step after the stop rules. *)
-let a_night_on_tlt ~cash_dividends ~adjusted_before =
+let a_night_on_tlt ?(read_with = Fn.id) ~cash_dividends ~adjusted_before () =
   let journal = tlt_journal () in
   let graph =
     Graph.create ~starting_cash:(Notional.of_float 991_000.0)
@@ -5918,7 +5918,7 @@ let a_night_on_tlt ~cash_dividends ~adjusted_before =
   don't_wait_for
     (D.Session_close.run_forever ~time_source:(Time_source.read_only clock)
        ~strategies:tlt_strategies
-       ~read:(tlt_read ~cash_dividends ~adjusted_before)
+       ~read:(read_with (tlt_read ~cash_dividends ~adjusted_before))
        ~graph ~journal ~confidence:0.95
        ~book_is_current:(fun () -> true)
        ~on_recorded:(fun _ -> Ivar.fill_if_empty night ())
@@ -5960,7 +5960,7 @@ let tlt_paying =
    only the order -- pull, then stop -- keeps the fall from stopping it. *)
 let test_the_night_pulls_before_the_stop_rules_read () =
   let%map journal, lines =
-    a_night_on_tlt ~cash_dividends:tlt_paying ~adjusted_before:90.0
+    a_night_on_tlt ~cash_dividends:tlt_paying ~adjusted_before:90.0 ()
   in
   Alcotest.(check bool) "no stop" false (stopped journal);
   Alcotest.(check (option string))
@@ -5977,7 +5977,7 @@ let test_the_night_pulls_before_the_stop_rules_read () =
    distribution check defers nothing: only the failed pull does. *)
 let test_a_failed_pull_defers_the_drawdown_rule () =
   let%map journal, lines =
-    a_night_on_tlt ~cash_dividends:(Or_error.error_string "503") ~adjusted_before:90.0
+    a_night_on_tlt ~cash_dividends:(Or_error.error_string "503") ~adjusted_before:90.0 ()
   in
   Alcotest.(check bool) "no stop" false (stopped journal);
   Alcotest.(check bool)
@@ -5996,14 +5996,14 @@ let test_a_failed_pull_defers_the_drawdown_rule () =
    suggest a distribution -- the same fall stops it, which is what the line is for. *)
 let test_an_unrecorded_distribution_defers_the_holder's_drawdown_rule () =
   let%bind journal, lines =
-    a_night_on_tlt ~cash_dividends:(Ok []) ~adjusted_before:89.7
+    a_night_on_tlt ~cash_dividends:(Ok []) ~adjusted_before:89.7 ()
   in
   Alcotest.(check bool) "no stop" false (stopped journal);
   Alcotest.(check bool)
     "deferred, naming TLT" true
     (said_any lines "s_tlt drawdown rule deferred tonight: TLT moved by a distribution");
   D.Journal.close journal;
-  let%map journal, _ = a_night_on_tlt ~cash_dividends:(Ok []) ~adjusted_before:90.0 in
+  let%map journal, _ = a_night_on_tlt ~cash_dividends:(Ok []) ~adjusted_before:90.0 () in
   Alcotest.(check bool)
     "with nothing to suggest one, the fall stops it" true (stopped journal);
   D.Journal.close journal
@@ -6114,6 +6114,101 @@ let test_a_distribution_defers_one_night_only () =
   Alcotest.(check bool)
     "said" true
     (said_any lines "s_tlt was deferred for a distribution last session");
+  D.Journal.close journal;
+  return ()
+
+(* Fix round 4, N4: a journal never pulled counts every recorded session. s_tlt's
+   journal holds 2026-11-02; with no good pull ever, night 11-03 stands at two sessions
+   unpulled and defers, and night 11-04 at three is past the bound and stops it -- the
+   same two deferred nights a pulled journal gets, not three. *)
+let test_a_never_pulled_journal_gets_two_deferred_nights () =
+  let journal = tlt_journal () in
+  let read =
+    tlt_read ~cash_dividends:(Or_error.error_string "403") ~adjusted_before:90.0
+  in
+  let night d =
+    record_tlt_session journal d 89.7;
+    let%map () =
+      D.Session_close.after_recorded ~strategies:tlt_strategies ~read ~journal
+        ~date:(day d) ~adjusted:Symbol.Map.empty ~session_bars:Symbol.Map.empty
+        ~on_recorded:ignore ~on_event:ignore
+    in
+    stopped journal
+  in
+  let%bind first = night "2026-11-03" in
+  Alcotest.(check bool) "11-03: deferred" false first;
+  let%map second = night "2026-11-04" in
+  Alcotest.(check bool) "11-04: past the bound, stopped" true second;
+  D.Journal.close journal
+
+(* Fix round 4, N2: the deferral decision itself raising -- here the journal's alerts
+   table is gone, so reading and writing alerts both fail -- is said, and the night
+   falls back to the conservative choice: nothing deferred. The pull failed inside its
+   bound, which would have deferred s_tlt; instead its drawdown rule runs and stops it
+   (its standing is written before the alert that then fails), and the sub-ledger hook
+   is still reached. *)
+let test_a_raising_deferral_evaluates_the_drawdown_rule () =
+  let journal = tlt_journal () in
+  D.Journal.set_cash_pulled_through journal (day "2026-11-02");
+  record_tlt_session journal "2026-11-03" 89.7;
+  D.Journal.For_testing.run journal ~what:"drop alerts" "DROP TABLE alerts" [];
+  let said = Queue.create () in
+  let reached = ref false in
+  let%map () =
+    D.Session_close.after_recorded ~strategies:tlt_strategies
+      ~read:(tlt_read ~cash_dividends:(Or_error.error_string "403") ~adjusted_before:90.0)
+      ~journal ~date:(day "2026-11-03") ~adjusted:Symbol.Map.empty
+      ~session_bars:Symbol.Map.empty
+      ~on_recorded:(fun _ -> reached := true)
+      ~on_event:(Queue.enqueue said)
+  in
+  let lines = Queue.to_list said in
+  Alcotest.(check bool)
+    "the failure is said" true
+    (said_any lines "deciding tonight's deferrals failed");
+  Alcotest.(check bool)
+    "the drawdown rule ran and stopped s_tlt" true
+    (match D.Journal.strategy_state journal ~strategy:"s_tlt" with
+    | Some (`Stopped, Some "drawdown", _, _) -> true
+    | _ -> false);
+  Alcotest.(check bool) "the sub-ledger hook was reached" true !reached;
+  D.Journal.close journal
+
+(* Fix round 4, audit: a venue read that RAISES inside run_forever -- here the session
+   bars, at the close and again for the distribution check -- is caught like one that
+   answers an error: the marks fall back to last prints and the night completes. *)
+let test_a_raising_venue_read_does_not_end_the_close () =
+  let%map journal, lines =
+    a_night_on_tlt
+      ~read_with:(fun r ->
+        { r with D.Venue.Read.session_bars = (fun _ ~date:_ -> failwith "bars raised") })
+      ~cash_dividends:tlt_paying ~adjusted_before:90.0 ()
+  in
+  Alcotest.(check bool) "no stop" false (stopped journal);
+  Alcotest.(check bool)
+    "the marks from last prints" true
+    (said_any lines "session 2026-11-03: 0 of 1 marks from the venue's bar");
+  D.Journal.close journal
+
+(* Fix round 4, N2: one strategy's deferral raising does not drop the decision for the
+   night -- that strategy is simply not deferred, and said. With the alerts table gone,
+   s_tlt's distribution check (which reads its alerts) raises inside [deferrals], which
+   still answers: nothing deferred. *)
+let test_one_strategy's_deferral_raising_is_said_and_not_deferred () =
+  let journal = tlt_journal () in
+  record_tlt_session journal "2026-11-03" 89.7;
+  D.Journal.For_testing.run journal ~what:"drop alerts" "DROP TABLE alerts" [];
+  let said = Queue.create () in
+  let deferred =
+    D.Session_close.deferrals ~strategies:tlt_strategies ~journal
+      ~zone:(Time_float.Zone.of_utc_offset ~hours:(-5))
+      ~date:(day "2026-11-03") ~pulled:`Pulled ~unrecorded:[ tlt ]
+      ~on_event:(Queue.enqueue said)
+  in
+  Alcotest.(check (list string)) "not deferred" [] (Map.keys deferred);
+  Alcotest.(check bool)
+    "and said" true
+    (said_any (Queue.to_list said) "s_tlt's deferral could not be decided");
   D.Journal.close journal;
   return ()
 
@@ -6329,6 +6424,14 @@ let suites =
           test_a_pull_failing_three_nights_defers_two_and_then_stops;
         case "a distribution defers one night only"
           test_a_distribution_defers_one_night_only;
+        case "a never-pulled journal gets two deferred nights"
+          test_a_never_pulled_journal_gets_two_deferred_nights;
+        case "a raising deferral evaluates the drawdown rule"
+          test_a_raising_deferral_evaluates_the_drawdown_rule;
+        case "one strategy's deferral raising is said and not deferred"
+          test_one_strategy's_deferral_raising_is_said_and_not_deferred;
+        case "a raising venue read does not end the close"
+          test_a_raising_venue_read_does_not_end_the_close;
         case "a raising read does not stop the close"
           test_a_raising_read_does_not_stop_the_close;
       ] );

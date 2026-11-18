@@ -419,32 +419,56 @@ let test_a_cash_dividend_carries_its_ex_date () =
    id is the token just sent -- ends it rather than asking forever; and the pages are
    capped. *)
 let test_activity_paging_stops () =
-  let page ids =
-    List.map ids ~f:(fun id ->
-        {
-          Venue.Activity.id;
-          activity_type = "FEE";
-          sub_type = None;
-          date = Date.of_string "2026-11-04";
-          symbol = None;
-          qty = None;
-          per_share = None;
-          net_amount = -0.01;
-          status = Some "executed";
-          order_id = None;
-        })
+  let next ?token ?(pages = 1) ?(count = 100) last_id =
+    Alpaca.next_activity_page ~token ~pages ~count ~last_id
   in
-  let full = page (List.init 100 ~f:(sprintf "id-%03d")) in
-  let next ?token ?(pages = 1) items = Alpaca.next_activity_page ~token ~pages items in
   let show = function `Next t -> "next " ^ t | `Done -> "done" | `Capped -> "capped" in
-  Alcotest.(check string) "a full page goes on" "next id-099" (show (next full));
-  Alcotest.(check string) "a short page ends" "done" (show (next (page [ "a"; "b" ])));
+  Alcotest.(check string)
+    "a full page goes on" "next id-099"
+    (show (next (Some "id-099")));
+  Alcotest.(check string) "a short page ends" "done" (show (next ~count:2 (Some "b")));
   Alcotest.(check string)
     "the same page again ends" "done"
-    (show (next ~token:"id-099" ~pages:2 full));
+    (show (next ~token:"id-099" ~pages:2 (Some "id-099")));
   Alcotest.(check string)
     "the cap is said, not taken for the end" "capped"
-    (show (next ~token:"x" ~pages:Alpaca.max_activity_pages full))
+    (show (next ~token:"x" ~pages:Alpaca.max_activity_pages (Some "id-099")))
+
+(* Fix round 4, N3: paging reads the RAW page. A full page of 100 with one malformed
+   item parses to 99, and was taken for the last page, the rest unread; and with the
+   malformed item last, the token was the wrong id. Both go on from the raw page's last
+   id. *)
+let test_paging_counts_the_raw_page () =
+  let item i =
+    if i = 50 then
+      sprintf {|{"activity_type": "FEE", "id": "id-%03d", "net_amount": "x"}|} i
+    else
+      sprintf
+        {|{"activity_type": "FEE", "date": "2026-11-04", "id": "id-%03d", "net_amount": "-0.01"}|}
+        i
+  in
+  let body items = Yojson.Safe.from_string ("[" ^ String.concat ~sep:"," items ^ "]") in
+  let decide items =
+    match Alpaca.activity_page_of_json (body items) with
+    | Error e -> Alcotest.failf "refused: %s" (Error.to_string_hum e)
+    | Ok (page, count, last_id) ->
+        ( List.length page.Venue.Page.items,
+          match Alpaca.next_activity_page ~token:None ~pages:1 ~count ~last_id with
+          | `Next t -> "next " ^ t
+          | `Done -> "done"
+          | `Capped -> "capped" )
+  in
+  Alcotest.(check (pair int string))
+    "99 parsed of 100, and the next page asked" (99, "next id-099")
+    (decide (List.init 100 ~f:item));
+  let last_bad =
+    List.init 100 ~f:(fun i ->
+        if i = 99 then {|{"activity_type": "FEE", "id": "id-099", "net_amount": "x"}|}
+        else item (if i = 50 then 51 else i))
+  in
+  Alcotest.(check (pair int string))
+    "the malformed one last: the token is still its id" (99, "next id-099")
+    (decide last_bad)
 
 let suite =
   ( "alpaca_trading",
@@ -465,4 +489,6 @@ let suite =
       Alcotest.test_case "a cash dividend carries its ex-date" `Quick
         test_a_cash_dividend_carries_its_ex_date;
       Alcotest.test_case "activity paging stops" `Quick test_activity_paging_stops;
+      Alcotest.test_case "paging counts the raw page" `Quick
+        test_paging_counts_the_raw_page;
     ] )

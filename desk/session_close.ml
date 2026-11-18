@@ -598,10 +598,11 @@ let pull_deferral_sessions = 2
 let sessions_unpulled (journal : Journal.t) =
   let dates = Journal.session_dates journal in
   let after d = List.count dates ~f:(fun x -> Date.( > ) x d) in
-  match (Journal.cash_pulled_through journal, dates) with
-  | Some d, _ -> after d
-  | None, first :: _ -> after first
-  | None, [] -> 0
+  (* Never pulled: every recorded session is one without its dividends (fix round
+     4: counting after the first gave a never-pulled journal a third night). *)
+  match Journal.cash_pulled_through journal with
+  | Some d -> after d
+  | None -> List.length dates
 
 (* An alert written once: none of [kind] already recorded whose line [matches]. *)
 let alert_once ~(journal : Journal.t) ~(kind : string) ~(limit_name : string)
@@ -684,38 +685,74 @@ let deferrals ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
         && String.equal a.limit_name strategy
         && String.is_prefix a.line ~prefix:(sprintf "session %s:" (Date.to_string d)))
   in
+  (* Each strategy on its own: a read that raises for one leaves it undeferred
+     (its drawdown rule runs) and is said, and the others are decided as usual. *)
   List.filter_map names ~f:(fun strategy ->
-      match pull_reason with
-      | Some why -> Some (strategy, why)
-      | None -> (
-          let held = Stop.held_before ~journal ~zone ~strategy date in
-          match List.filter unrecorded ~f:(List.mem held ~equal:Symbol.equal) with
-          | [] -> None
-          | flagged -> (
-              let why =
-                sprintf
-                  "%s moved by a distribution or split no record dates (the venue's \
-                   adjusted and raw closes disagree)"
-                  (String.concat ~sep:", " (List.map flagged ~f:Symbol.to_string))
-              in
-              match previous with
-              | Some p when deferred_for_a_distribution_on p strategy ->
-                  on_event
-                    (sprintf
-                       "session %s: %s was deferred for a distribution last session; its \
-                        drawdown rule is evaluated tonight (%s)"
-                       day strategy why);
-                  None
-              | _ ->
-                  Journal.record_alert journal
-                    {
-                      Journal.Alert.at = Time_ns.now ();
-                      kind = "drawdown_deferred";
-                      limit_name = strategy;
-                      line = sprintf "session %s: %s" day why;
-                    };
-                  Some (strategy, why))))
+      match
+        Or_error.try_with (fun () ->
+            match pull_reason with
+            | Some why -> Some (strategy, why)
+            | None -> (
+                let held = Stop.held_before ~journal ~zone ~strategy date in
+                match List.filter unrecorded ~f:(List.mem held ~equal:Symbol.equal) with
+                | [] -> None
+                | flagged -> (
+                    let why =
+                      sprintf
+                        "%s moved by a distribution or split no record dates (the \
+                         venue's adjusted and raw closes disagree)"
+                        (String.concat ~sep:", " (List.map flagged ~f:Symbol.to_string))
+                    in
+                    match previous with
+                    | Some p when deferred_for_a_distribution_on p strategy ->
+                        on_event
+                          (sprintf
+                             "session %s: %s was deferred for a distribution last \
+                              session; its drawdown rule is evaluated tonight (%s)"
+                             day strategy why);
+                        None
+                    | _ ->
+                        Journal.record_alert journal
+                          {
+                            Journal.Alert.at = Time_ns.now ();
+                            kind = "drawdown_deferred";
+                            limit_name = strategy;
+                            line = sprintf "session %s: %s" day why;
+                          };
+                        Some (strategy, why))))
+      with
+      | Ok decided -> decided
+      | Error e ->
+          on_event
+            (sprintf
+               "session %s: %s's deferral could not be decided (%s); its drawdown rule \
+                is evaluated"
+               day strategy (Error.to_string_hum e));
+          None)
   |> String.Map.of_alist_reduce ~f:(fun a _ -> a)
+
+(* Every venue read, made to answer an error rather than raise (fix round 4): a
+   closure that raises -- synchronously or later -- would otherwise escape the
+   close's loop to the main monitor and end the process. *)
+let caught (r : Venue.Read.t) : Venue.Read.t =
+  let safe f =
+    match%map Monitor.try_with ~extract_exn:true ~rest:`Log f with
+    | Ok answer -> answer
+    | Error exn -> Error (Error.of_exn exn)
+  in
+  {
+    r with
+    account = (fun () -> safe (fun () -> r.account ()));
+    positions = (fun () -> safe (fun () -> r.positions ()));
+    clock = (fun () -> safe (fun () -> r.clock ()));
+    latest_quote = (fun s -> safe (fun () -> r.latest_quote s));
+    daily_bars = (fun ss ~days -> safe (fun () -> r.daily_bars ss ~days));
+    last_prints = (fun ss -> safe (fun () -> r.last_prints ss));
+    session_bars = (fun ss ~date -> safe (fun () -> r.session_bars ss ~date));
+    activities = (fun ~since ~kinds -> safe (fun () -> r.activities ~since ~kinds));
+    cash_dividends =
+      (fun ss ~start ~end_ -> safe (fun () -> r.cash_dividends ss ~start ~end_));
+  }
 
 (* AFTER A SESSION IS ON THE RECORD, in this order, because each step changes
    what the next reads: last-print marks of the sessions before re-marked from
@@ -729,6 +766,7 @@ let after_recorded ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t li
     ~(read : Venue.Read.t) ~(journal : Journal.t) ~(date : Date.t)
     ~(adjusted : Venue.Bar.t list Symbol.Map.t) ~(session_bars : Venue.Bar.t Symbol.Map.t)
     ~(on_recorded : Date.t -> unit) ~(on_event : string -> unit) : unit Deferred.t =
+  let read = caught read in
   let day = Date.to_string date in
   let zone = Option.value (Lazy.force Desk_time.new_york) ~default:Time_float.Zone.utc in
   (match
@@ -751,8 +789,21 @@ let after_recorded ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t li
   let%bind unrecorded =
     unrecorded_today ~read ~journal ~date ~adjusted ~session_bars ~on_event
   in
+  (* Guarded whole, and conservative on failure: no deferral, so the drawdown
+     rule runs (fix round 4). *)
   let deferrals =
-    deferrals ~strategies ~journal ~zone ~date ~pulled ~unrecorded ~on_event
+    match
+      Or_error.try_with (fun () ->
+          deferrals ~strategies ~journal ~zone ~date ~pulled ~unrecorded ~on_event)
+    with
+    | Ok d -> d
+    | Error e ->
+        on_event
+          (sprintf
+             "session %s: deciding tonight's deferrals failed (%s); nothing is deferred, \
+              so every drawdown rule is evaluated"
+             day (Error.to_string_hum e));
+        String.Map.empty
   in
   let defer_drawdown strategy = Map.find deferrals strategy in
   (match
@@ -781,6 +832,7 @@ let run_forever ~(time_source : Time_source.t)
     ~(read : Venue.Read.t) ~(graph : Graph.t) ~(journal : Journal.t) ~(confidence : float)
     ~(book_is_current : unit -> bool) ~(on_recorded : Date.t -> unit)
     ~(on_event : string -> unit) : unit Deferred.t =
+  let read = caught read in
   let symbols = Graph.symbols graph in
   let day = Date.to_string in
   let record_now date returns ~session_bars =
