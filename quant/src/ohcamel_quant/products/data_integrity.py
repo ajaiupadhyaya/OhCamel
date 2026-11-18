@@ -26,12 +26,28 @@ the archive under ``fixtures/archive/`` is how a repair is recorded. Checks, all
   ``corp_actions`` (``warehouse/adjust.py``) against the vendor's ``bars_daily.adj_close``, flagged when they
   differ by more than ``DRIFT_RTOL`` (1e-6) relative. One finding per series, dated on the LAST session beyond
   the tolerance: a backward adjustment by an action dated E moves every bar before E, so an action missing
-  from (or extra in) ``corp_actions`` shows as drift up to the session before E. Listed largest first, at most
-  ``DRIFT_LISTED``, the rest counted. Series with no raw bars yet, or no full corporate-action history yet
-  (the backfill is incomplete), are counted and named in a note, never reported as drift. Yahoo's own figures
-  wander by up to ~2e-6 on 1990-onward histories (float32 prices, rounded amounts: adjust.py's docstring), so
-  long histories can carry old findings of that size; like every old warehouse finding they are listed and
-  do not fail the lamp.
+  from (or extra in) ``corp_actions`` shows as drift up to the session before E. Series with no raw bars yet,
+  or no full corporate-action history yet (the backfill is incomplete), are counted and named in a note,
+  never reported as drift.
+
+  *What gates.* Unlike a large move, an adjustment drift is never a real market event, so the recency rule
+  alone would be wrong: an old missing split is a defect today. A drift finding gates when it is inside the
+  last ``RECENT_BDAYS`` sessions OR its size exceeds ``DRIFT_VENDOR_BAND`` (5e-6) at any date. The band is
+  Yahoo's own precision, measured (task-3.2 report; adjust.py): its float32 prices and rounded amounts wander
+  from the exact convention by at most 4.2e-7 on 2020-onward slices and 1.0-1.7e-6 on 1990-onward histories
+  (SPY 1.1e-6, XOM 1.0e-6, KO 1.1e-6, TLT 1.7e-6 over 290 dividends); 5e-6 is three times the worst seen,
+  and a missing dividend of even 0.1% yield is 200 times it. So old drift under the band is listed and does
+  not gate; ``adjust_max_drift`` in the summary (the largest non-excepted drift over every compared series,
+  flagged or not) shows the band holding, or not, every night.
+
+  *Exceptions.* ``DRIFT_EXCEPTIONS`` names (ticker, session, reason) for bars where the vendor's convention
+  is known to differ from adjust.py's: each is REPORTED as its own non-gating finding carrying the reason and
+  its size, and is left out of the series' drift and of ``adjust_max_drift``. Nothing is absorbed unnamed.
+
+  *What it can prove.* For Yahoo-served series the raw bars are rebuilt from Yahoo's own split list, so the
+  split part of the comparison is an identity: a split Yahoo never lists is invisible here (``split_suspect``
+  and ``split_unconfirmed`` are the backstop). What it does test is every dividend, every split that
+  ``corp_actions`` and the bars' response disagree on, and Alpaca's raw prints against its adjusted series.
 - ``split_unconfirmed``: a ``split_suspect`` session of a warehouse series whose corporate-action history covers
   it but records no split that day -- the page repair (``data/splits.py``) divides that history by a split
   nobody recorded, which may be a real gap. Shown for a look; the ``split_suspect`` finding itself gates.
@@ -41,6 +57,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from ..data import fixtures as F
@@ -53,7 +70,14 @@ JUMP = 0.40
 STALE_BDAYS = 5
 RECENT_BDAYS = 10
 DRIFT_RTOL = 1e-6
+DRIFT_VENDOR_BAND = 5e-6
 DRIFT_LISTED = 25
+#: (ticker, session, reason): bars where Yahoo's convention is known to differ from warehouse/adjust.py's.
+DRIFT_EXCEPTIONS: tuple[tuple[str, str, str], ...] = (
+    ("KO", "2001-09-10", "the 2001-09-12 ex-date fell while the market was shut after 9/11 (Yahoo also lists "
+                         "0.09 on 09-17): Yahoo leaves this session unadjusted for it, adjust.py's rule 3 "
+                         "adjusts every session before the ex-date; one bar, about 0.7%"),
+)
 NAMES_LISTED = 12
 SERIOUS = ("split_suspect", "bad_print", "nonpositive", "calendar", "adjust_drift")
 COLUMNS = ["source", "ticker", "date", "check", "detail", "gating"]
@@ -123,11 +147,12 @@ def adjust_drift(con: Any, tickers: list[str]) -> tuple[list[dict[str, Any]], di
     from ..warehouse import adjust
 
     counts: dict[str, Any] = {"compared": 0, "no_raw": [], "no_actions": [], "not_comparable": [], "raw_gaps": [],
-                              "failed": []}
+                              "failed": [], "max_drift": float("nan"), "excepted": []}
     out: list[dict[str, Any]] = []
     if not tickers:
         return out, counts
     cover = _coverage(con, tickers)
+    except_at = {(t, pd.Timestamp(d)): why for t, d, why in DRIFT_EXCEPTIONS}
     for t in tickers:
         raw = adjust.read_raw(con, t)
         if raw.empty:
@@ -153,17 +178,34 @@ def adjust_drift(con: Any, tickers: list[str]) -> tuple[list[dict[str, Any]], di
         common = v.index.intersection(derived.index)
         rel = (derived.loc[common] / v.loc[common] - 1.0).abs()
         counts["compared"] += 1
+        excepted = [d for d in rel.index if (t, d) in except_at and rel.loc[d] > DRIFT_RTOL]
+        for d in excepted:
+            counts["excepted"].append(f"{t} {d.date()}")
+            out.append({"ticker": t, "date": str(d.date()), "check": "adjust_drift", "size": float(rel.loc[d]),
+                        "excepted": True,
+                        "detail": f"excepted bar, drift {rel.loc[d]:.2e} relative: {except_at[(t, d)]}"})
+        rel = rel.drop(excepted)
+        if len(rel):
+            counts["max_drift"] = float(np.nanmax([counts["max_drift"], rel.max()]))
         beyond = rel[rel > DRIFT_RTOL]
         if beyond.empty:
             continue
         first, last, worst = beyond.index[0].date(), beyond.index[-1].date(), rel.idxmax().date()
         out.append({"ticker": t, "date": str(last), "check": "adjust_drift", "size": float(rel.max()),
+                    "excepted": False,
                     "detail": f"adj_close derived from raw bars and corp_actions differs from the vendor's by up to "
                               f"{rel.max():.2e} relative (on {worst}); {len(beyond)} of {len(rel)} sessions beyond "
                               f"{DRIFT_RTOL:g}, {first} to {last}: an action missing from or extra in corp_actions "
                               f"on the session after {last} shows this way"})
-    out.sort(key=lambda r: (-r["size"], r["ticker"]))
+    out.sort(key=lambda r: (r["excepted"], -r["size"], r["ticker"]))
     return out, counts
+
+
+def drift_gates(r: dict[str, Any], recent: pd.Timestamp | None) -> bool:
+    """An ``adjust_drift`` finding gates when recent or beyond the vendor band; an excepted bar never does."""
+    if r.get("excepted"):
+        return False
+    return r["size"] > DRIFT_VENDOR_BAND or (recent is not None and pd.Timestamp(r["date"]) >= recent)
 
 
 def split_unconfirmed(con: Any, suspects: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -230,10 +272,17 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
             drift, counts = adjust_drift(ctx.warehouse, list(last))
         except duckdb.CatalogException as e:
             notes.append(f"adjust_drift not run: the warehouse predates migration 002 ({e}); the next ingest migrates it")
-        if len(drift) > DRIFT_LISTED:
-            notes.append(f"adjust_drift: {len(drift) - DRIFT_LISTED} more series beyond {DRIFT_RTOL:g} not listed "
-                         f"(the {DRIFT_LISTED} largest are)")
-        rows += [{"source": "warehouse", **{k: v for k, v in r.items() if k != "size"}} for r in drift[:DRIFT_LISTED]]
+        newest_w = max(last.values())
+        recent_w = newest_w - pd.offsets.BDay(int(params.get("recent_bdays", RECENT_BDAYS)))
+        for r in drift:
+            r["gating"] = drift_gates(r, recent_w)
+        listed = [r for r in drift if r["excepted"]]
+        flagged = sorted((r for r in drift if not r["excepted"]), key=lambda r: (not r["gating"], -r["size"]))
+        if len(flagged) > DRIFT_LISTED:
+            notes.append(f"adjust_drift: {len(flagged) - DRIFT_LISTED} more series beyond {DRIFT_RTOL:g} not listed "
+                         f"(the gating ones first, then the {DRIFT_LISTED} largest)")
+        rows += [{"source": "warehouse", **{k: v for k, v in r.items() if k not in ("size", "excepted")}}
+                 for r in [*flagged[:DRIFT_LISTED], *listed]]
         if counts.get("no_raw"):
             notes.append(f"adjust_drift: {len(counts['no_raw'])} series have no raw bars yet (the bars_raw backfill "
                          f"has not reached them): {_names(counts['no_raw'])}")
@@ -259,6 +308,8 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     recent = (newest - pd.offsets.BDay(int(params.get("recent_bdays", RECENT_BDAYS)))) if newest is not None else None
 
     def gates(r: dict[str, Any]) -> bool:
+        if "gating" in r:                    # adjust_drift decided its own (drift_gates)
+            return bool(r["gating"])
         if r["check"] not in SERIOUS:
             return False
         if r["source"] == "fixtures" or not r["date"]:
@@ -274,9 +325,13 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                              **{f"n_{k}": int(by.get(k, 0)) for k in ("split_suspect", "jump", "bad_print",
                                                                       "nonpositive", "calendar", "stale",
                                                                       "split_unconfirmed")},
-                             "n_adjust_drift": len(drift), "adjust_compared": int(counts.get("compared", 0)),
+                             "n_adjust_drift": sum(not r["excepted"] for r in drift),
+                             "n_adjust_drift_gating": sum(bool(r["gating"]) for r in drift),
+                             "adjust_compared": int(counts.get("compared", 0)),
+                             "adjust_max_drift": float(counts.get("max_drift", float("nan"))),
                              **{f"adjust_{k}": len(counts.get(k, [])) for k in ("no_raw", "no_actions",
-                                                                                "not_comparable", "raw_gaps")},
+                                                                                "not_comparable", "raw_gaps",
+                                                                                "failed", "excepted")},
                              "n_gating": len(serious), "n_history": history}])
     n = checked["warehouse"] + checked["fixtures"]
     if n == 0:

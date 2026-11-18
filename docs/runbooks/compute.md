@@ -149,13 +149,30 @@ dc exec ohcamel-worker python -m ohcamel_quant.jobs run-schedule warehouse-bars-
   backfill (563 keys, 322 cpu-s, 233 MB peak), so expect 15-30 minutes. It rewrites `bars_daily` with the
   vendor's current series (what the nightly run does on any re-adjustment) and writes `bars_raw` beside it.
 - Both are resumable: `missing` / `raw_missing` select only the tickers not yet done, so a killed run is
-  finished by enqueueing it again. Both are retried twice by the queue, like every ingest.
+  finished by enqueueing it again. Both are retried twice by the queue, like every ingest. One exception:
+  a Stooq-served ticker never gets raw bars (Stooq lists no splits), so `raw_missing` re-fetches every such
+  ticker on every run and never reports "nothing to do". Its notes give the count; stop when only those remain
+  (the `adjust_not_comparable` count of `ops.data_integrity`).
+- When: never inside the evening chain (18:20 corporate actions, 18:30 bars, 18:40-18:50 signals and overlay,
+  19:15 integrity). The worker runs one job at a time, so a 15-30 minute backfill there delays every one of
+  them, and the signals the desk sizes from. Quiet windows in schedules.yaml: weekdays 00:45-04:00 New York
+  (after the 23:00 farm's 90-minute budget, before the 04:05 self-test), or Saturday 10:00 to Sunday 01:30.
 - Progress: `ops.data_integrity`'s notes name the series with no raw bars yet and those with no corporate-action
   history yet; once both lists are empty, `adjust_drift` compares every series.
-- The cut-over (owner): after 30 nights in which `adjust_drift` has no gating finding, a follow-up commit stops
-  writing `bars_daily` and points `warehouse/readers.py` at `warehouse/adjust.py`. Expect OLD (non-gating)
-  `adjust_drift` findings of 1-2e-6 on 1990-onward histories: Yahoo's own float32 figures wander that far from
-  the exact convention (task-3.2 report).
+
+**What gates.** An `adjust_drift` finding fails the integrity lamp when it is inside the last 10 sessions OR
+larger than the vendor band, 5e-6, at any date (an old missing split is a defect today). Under the band, an
+old finding is listed only: Yahoo's own float32 figures wander up to 1.7e-6 from the exact convention on
+1990-onward histories (task-3.2 report). Bars where Yahoo's convention is known to differ (KO 2001-09-10, an
+ex-date while the market was shut) are named in `DRIFT_EXCEPTIONS` and reported with the reason, never gating.
+The summary's `adjust_max_drift` shows the largest non-excepted drift every night, so the band is evidenced.
+
+**The cut-over criterion ("30 days clean").** 30 consecutive weekday `ops.data_integrity` runs, each with:
+`adjust_no_raw = adjust_no_actions = adjust_failed = 0`; `adjust_compared` equal to the warehouse series minus
+the Stooq-served ones (`adjust_not_comparable`); `adjust_raw_gaps = 0`, or each such series named and
+explained; `n_adjust_drift_gating = 0`; and no `adjust_drift` finding above the band at any date except the
+named exceptions (`adjust_max_drift <= 5e-6`). Then a follow-up commit stops writing `bars_daily` and points
+`warehouse/readers.py` at `warehouse/adjust.py`.
 
 ## Risk-free rate for `api.portfolio_compare`
 

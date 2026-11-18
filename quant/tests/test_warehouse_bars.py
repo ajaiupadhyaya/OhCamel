@@ -248,6 +248,8 @@ def test_a_readjustment_replaces_bars_daily_but_keeps_the_raw_rows(setup, monkey
 
 
 def test_alpaca_bars_store_alpacas_own_raw_pass(setup, monkeypatch):
+    # CONSTRUCTED stand-in for Alpaca's adjustment=raw pass: the committed SPY bars with every price before
+    # 2020-01-02 tripled, as if a 3:1 split fell there (SPY never split; only the plumbing is under test)
     ctx, path = setup
     raw_spy = SPY[["open", "high", "low", "close", "volume"]] * 1.0
     raw_spy.loc[raw_spy.index < "2020-01-02", ["open", "high", "low", "close"]] *= 3.0
@@ -283,3 +285,79 @@ def test_raw_missing_backfills_only_the_names_without_raw_rows(setup, monkeypatc
     bars.run_bars_daily({"tickers": ["SPY", "QQQ"], "raw_missing": True}, ctx)
     assert seen == [("QQQ", True)]                                             # resumable: only what is missing
     assert len(raw_rows(path, "QQQ")) == len(SPY) and raw_rows(path).equals(spy_raw)
+
+
+# ------------------------------------------------------------------ fix round 1, I3: a failed raw pass never changes bars_daily
+def broken_raw(exc):
+    def fetch(t, start, end, s):
+        raise exc
+    return fetch
+
+
+def test_a_raw_pass_that_breaks_keeps_the_full_fetchs_bars(setup, monkeypatch):
+    ctx, path = setup
+    monkeypatch.setattr(ctx.market, "settings", ctx.market.settings.model_copy(
+        update={"price_providers": ["yahoo", "alpaca", "stooq"]}))
+    stooq_calls = []
+    monkeypatch.setitem(prices.PROVIDERS, "yahoo", failing("yahoo", "HTTP 429"))
+    monkeypatch.setitem(prices.PROVIDERS, "alpaca", vendor("alpaca", SPY))
+    monkeypatch.setitem(prices.PROVIDERS, "stooq", vendor("stooq", SPY, stooq_calls))
+    monkeypatch.setitem(bars.RAW_FETCH, "alpaca", broken_raw(KeyError("c")))      # not a DataUnavailable
+    bars.run_bars_daily({"tickers": ["SPY"]}, ctx)
+    status, _, detail = last_log(path)
+    assert status == "ok" and stored(path)[2:] == ("alpaca", "alpaca") and stooq_calls == []
+    assert raw_rows(path).empty and json.loads(detail)["raw"].startswith("none: alpaca raw pass failed (KeyError")
+
+
+def test_a_raw_pass_that_breaks_keeps_the_incremental_bars(setup, monkeypatch):
+    ctx, path = setup
+    early = SPY[SPY.index <= "2026-05-15"]
+    monkeypatch.setitem(prices.PROVIDERS, "yahoo", failing("yahoo", "HTTP 429"))
+    monkeypatch.setitem(prices.PROVIDERS, "alpaca", vendor("alpaca", early))
+    monkeypatch.setitem(bars.RAW_FETCH, "alpaca", lambda t, start, end, s: early[["open", "high", "low", "close",
+                                                                                    "volume"]])
+    bars.run_bars_daily({"tickers": ["SPY"]}, ctx)
+    full_calls = []
+    monkeypatch.setitem(prices.PROVIDERS, "alpaca", vendor("alpaca", SPY, full_calls))
+    monkeypatch.setitem(bars.RAW_FETCH, "alpaca", broken_raw(RuntimeError("socket closed")))
+    bars.run_bars_daily({"tickers": ["SPY"]}, ctx)
+    detail = json.loads(last_log(path)[2])
+    assert detail["mode"] == "incremental" and len(full_calls) == 1          # one incremental call, no refetch
+    assert stored(path)[:2] == (len(SPY), date(2026, 6, 1))
+    assert detail["raw"].startswith("none: alpaca raw pass failed (RuntimeError")
+    assert len(raw_rows(path)) == len(early)                                 # the earlier raw rows stay
+
+
+def test_fetch_alpaca_raw_asks_for_unadjusted_bars_and_refuses_a_malformed_page(tmp_path, monkeypatch):
+    """CONSTRUCTED pages in the shape Alpaca documents for GET /v2/stocks/{sym}/bars (bars of t, o, h, l, c, v and
+    next_page_token); no real raw page is committed (no keys on the machine that wrote this)."""
+    import httpx
+    import respx
+
+    from ohcamel_quant.data import http
+
+    monkeypatch.setattr(http, "_sleep", lambda s: None)
+    http.reset_rate_limits()
+    monkeypatch.setattr(prices, "_now", lambda: datetime(2026, 6, 2, 23, 0, tzinfo=UTC))
+    s = Settings(offline=False, data_dir=tmp_path, http_retries=0, APCA_API_KEY_ID="k", APCA_API_SECRET_KEY="s")
+    page1 = {"bars": [{"t": "2020-08-28T04:00:00Z", "o": 504.05, "h": 505.77, "l": 498.31, "c": 499.23, "v": 46907479}],
+             "next_page_token": "p2"}
+    page2 = {"bars": [{"t": "2020-08-31T04:00:00Z", "o": 127.58, "h": 131.0, "l": 126.0, "c": 129.04, "v": 225702700}],
+             "next_page_token": None}
+    seen = []
+
+    def answer(request):
+        seen.append(dict(request.url.params))
+        return httpx.Response(200, json=page2 if request.url.params.get("page_token") == "p2" else page1)
+
+    with respx.mock() as router:
+        router.get(f"{prices.ALPACA_BASE}/stocks/AAPL/bars").mock(side_effect=answer)
+        raw = prices.fetch_alpaca_raw("AAPL", date(2020, 8, 1), None, s)
+    assert {p["adjustment"] for p in seen} == {"raw"} and seen[0]["start"] == "2020-08-01"
+    assert raw["close"].tolist() == [499.23, 129.04] and raw["volume"].tolist() == [46907479.0, 225702700.0]
+    assert list(raw.index) == [pd.Timestamp("2020-08-28"), pd.Timestamp("2020-08-31")]
+    bad = {"bars": [{"t": "2020-08-28T04:00:00Z", "o": 504.05}], "next_page_token": None}     # no h, l, c, v
+    with respx.mock() as router:
+        router.get(f"{prices.ALPACA_BASE}/stocks/AAPL/bars").mock(return_value=httpx.Response(200, json=bad))
+        with pytest.raises(KeyError):
+            prices.fetch_alpaca_raw("AAPL", date(2020, 8, 1), None, s)

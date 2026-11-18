@@ -1,0 +1,30 @@
+{
+  "source": "yahoo",
+  "synthetic": false,
+  "symbol": "XLK",
+  "url": "https://query2.finance.yahoo.com/v8/finance/chart/XLK",
+  "params": {
+    "period1": 1719273600,
+    "period2": 1795058690,
+    "interval": "1mo",
+    "events": "div|split"
+  },
+  "fetched": "2026-11-17T22:24:50-05:00",
+  "window": "period1 = 2024-06-25 00:00 UTC (deliberately the day after an XLK ex-date) .. the fetch; 30 monthly bars 2024-07 .. 2026-11, last trade 2026-11-17 16:00 EST",
+  "n_rows": 30,
+  "events": {
+    "dividends": 10,
+    "splits": [
+      "2025-12-05 2:1"
+    ]
+  },
+  "original_sha256": "d06f44ef51b936e5ea2470f589fa49db89a6e9804b23ef2b5ec8c47d69b21f14",
+  "original_bytes": 5168,
+  "trimmed": "nothing: the vendor's response bytes, unmodified; gzip -n -9",
+  "findings": [
+    "the request ingest.corp_actions makes (interval=1mo, events=div|split, no bars needed)",
+    "events BEFORE period1 are listed: the 2024-06-24 dividend (0.2) appears although period1 is 2024-06-25 -- a monthly response lists the events of the whole month that contains period1 (completion task 3.2 fix round 1, C1)",
+    "the events are exactly those of the daily response yahoo_chart_XLK_2026-11-17.json.gz, fetched 38 minutes earlier: the same 10 dividends with the same amounts and the same 2:1 split on 2025-12-05"
+  ],
+  "used_by": "completion task 3.2: tests/test_warehouse_adjust.py (ingest.corp_actions nightly window)"
+}

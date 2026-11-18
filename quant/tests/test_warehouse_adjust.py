@@ -19,6 +19,8 @@ from ohcamel_quant.warehouse import adjust
 
 DATA = Path(__file__).parent / "data"
 YAHOO = {s: DATA / f"yahoo_chart_{s}_2026-11-17.json.gz" for s in ("AAPL", "NVDA", "XLK")}
+# The request ingest.corp_actions really makes (interval=1mo), period1 = 2024-06-25: real, provenance in its sidecar
+XLK_MONTHLY = DATA / "yahoo_chart_XLK_1mo_2026-11-17.json.gz"
 
 
 def raw_frame(closes, volume=1000.0, start="2024-01-02"):
@@ -79,6 +81,10 @@ def _yahoo(symbol):
 
 @pytest.mark.parametrize("symbol", sorted(YAHOO))
 def test_the_derived_series_equals_the_committed_vendor_series_within_1e6(symbol):
+    """What this proves and what it cannot: Yahoo serves no raw prices, so the raw bars here are rebuilt from
+    Yahoo's own split list and the split round trip (1e-12) is an identity -- a split Yahoo omitted would be
+    invisible. The DIVIDEND convention is the real test: computed from the events alone, it must land on
+    Yahoo's independently published adjclose within 1e-6."""
     vendor, raw, acts = _yahoo(symbol)
     assert (acts["kind"] == "split").sum() == 1 and (acts["kind"] == "dividend").sum() >= 10
     full = adjust.series(raw, acts, dividends=True)
@@ -133,6 +139,15 @@ def test_a_dividend_before_the_first_bar_adjusts_nothing_and_an_impossible_one_i
         adjust.series(raw, NONE, dividends=True))
     with pytest.raises(ValueError, match="no positive factor"):
         adjust.series(raw, actions(("2024-01-03", "dividend", None, 100.0)), dividends=True)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), 0.0, -1.0])
+@pytest.mark.parametrize("div", [False, True])
+def test_a_missing_or_non_positive_raw_close_is_refused_on_every_path(bad, div):
+    raw = raw_frame([100.0, 101.0, 102.0])
+    raw.iloc[1, raw.columns.get_loc("close")] = bad
+    with pytest.raises(ValueError, match="close"):
+        adjust.series(raw, NONE, dividends=div)
 
 
 def test_bars_has_the_shape_of_bars_daily():
@@ -357,23 +372,68 @@ def test_the_backfilled_warehouse_derives_the_vendors_adjusted_close(backfilled)
     f, summary = spec.tables["findings"], spec.tables["summary"].iloc[0]
     assert "adjust_drift" not in set(f["check"]) and "split_unconfirmed" not in set(f["check"])
     assert (summary["adjust_compared"], summary["n_adjust_drift"], summary["adjust_no_raw"],
-            summary["adjust_no_actions"]) == (3, 0, 0, 0)
+            summary["adjust_no_actions"], summary["adjust_failed"]) == (3, 0, 0, 0, 0)
+    assert 0 < summary["adjust_max_drift"] < 1e-6                     # the band's evidence, every night
     assert spec.verdict == "PASS", f
 
 
-def test_a_missing_dividend_is_reported_where_it_bites(backfilled):
+def _drift_rows(spec, ticker=None):
+    f = spec.tables["findings"]
+    f = f[f["check"] == "adjust_drift"]
+    return f if ticker is None else f[f["ticker"] == ticker]
+
+
+def test_an_old_missing_dividend_or_split_gates_at_any_date(backfilled):
+    """An adjustment drift is never a real market event, so its size, not its age, decides (fix round 1, I1)."""
     path, settings = backfilled
     ((ex,),) = _rw(path, "SELECT max(ex_date) FROM corp_actions WHERE ticker = 'XLK' AND kind = 'dividend'")
     _rw(path, "DELETE FROM corp_actions WHERE ticker = 'XLK' AND kind = 'dividend' AND ex_date = ?", [ex])
+    _rw(path, "DELETE FROM corp_actions WHERE ticker = 'NVDA' AND kind = 'split'")            # 2024-06-10
     spec = _integrity(path, settings)
-    f = spec.tables["findings"]
-    (row,) = f[f["check"] == "adjust_drift"].itertuples()
     ((before,),) = _rw(path, "SELECT max(date) FROM bars_daily WHERE ticker = 'XLK' AND date < ?", [ex])
-    assert (row.ticker, row.date, row.source) == ("XLK", str(before), "warehouse")
-    assert "beyond 1e-06" in row.detail and str(before) in row.detail
-    assert row.gating == False and spec.verdict == "PASS"                    # noqa: E712  months old: listed only
-    recent = _integrity(path, settings, {"recent_bdays": 60})
-    assert recent.verdict == "FAIL" and "XLK" in recent.verdict_detail     # inside the window: it fails the lamp
+    (xlk,) = _drift_rows(spec, "XLK").itertuples()
+    assert (xlk.date, xlk.source, bool(xlk.gating)) == (str(before), "warehouse", True)   # two months old, gates
+    assert "beyond 1e-06" in xlk.detail and str(before) in xlk.detail
+    (nvda,) = _drift_rows(spec, "NVDA").itertuples()
+    assert nvda.date == "2024-06-07" and bool(nvda.gating)                                # two years old, gates
+    assert spec.verdict == "FAIL" and {"XLK", "NVDA"} <= set(spec.verdict_detail.replace(",", " ").split())
+
+
+def _nudge(path, ticker, where, rel=1.2e-6):
+    _rw(path, f"UPDATE bars_daily SET adj_close = adj_close * {1 + rel!r} WHERE ticker = ? AND {where}", [ticker])
+
+
+def test_an_old_drift_inside_the_vendor_band_is_listed_and_does_not_gate(backfilled):
+    path, settings = backfilled
+    _nudge(path, "AAPL", "date < DATE '2021-01-01'")                  # 1.2e-6 on 2020's bars: Yahoo-noise-sized
+    spec = _integrity(path, settings)
+    (row,) = _drift_rows(spec, "AAPL").itertuples()
+    assert row.date == "2020-12-31" and not bool(row.gating) and spec.verdict == "PASS"
+    s = spec.tables["summary"].iloc[0]
+    assert 1e-6 < s["adjust_max_drift"] < 5e-6 and s["n_adjust_drift"] == 1 and s["n_adjust_drift_gating"] == 0
+
+
+def test_a_recent_drift_inside_the_vendor_band_gates(backfilled):
+    path, settings = backfilled
+    _nudge(path, "AAPL", "date >= DATE '2026-11-12'")                 # the last four sessions
+    spec = _integrity(path, settings)
+    (row,) = _drift_rows(spec, "AAPL").itertuples()
+    assert row.date == "2026-11-17" and bool(row.gating) and spec.verdict == "FAIL"
+
+
+def test_an_excepted_bar_is_reported_with_its_reason_and_does_not_gate(backfilled, monkeypatch):
+    from ohcamel_quant.products import data_integrity as DI
+
+    path, settings = backfilled
+    monkeypatch.setattr(DI, "DRIFT_EXCEPTIONS", (("XLK", "2025-03-21", "CONSTRUCTED for this test: a known "
+                                                                         "vendor quirk on this session"),))
+    _nudge(path, "XLK", "date = DATE '2025-03-21'", rel=7e-3)          # KO-2001-09-10-sized, on one bar
+    spec = _integrity(path, settings)
+    (row,) = _drift_rows(spec, "XLK").itertuples()
+    assert row.date == "2025-03-21" and not bool(row.gating) and spec.verdict == "PASS"
+    assert "excepted" in row.detail and "CONSTRUCTED for this test" in row.detail and "6.95e-03" in row.detail       # 1/1.007 - 1
+    s = spec.tables["summary"].iloc[0]
+    assert s["adjust_excepted"] == 1 and s["adjust_max_drift"] < 1e-6 and s["n_adjust_drift"] == 0
 
 
 def test_day_one_says_what_is_missing_instead_of_flooding(backfilled):
@@ -429,7 +489,8 @@ def test_the_full_backfill_resumes_where_it_stopped(wh):
     with respx.mock() as router:
         _serve(router, {"AAPL": _payload("AAPL"), "XLK": _payload("XLK")}, seen)
         corp_actions.run_corp_actions({"tickers": ["AAPL"], "full": True}, ctx)        # killed after AAPL
-        corp_actions.run_corp_actions({"tickers": ["AAPL", "XLK"]}, ctx)               # a nightly run: not a backfill
+        nightly = corp_actions.run_corp_actions({"tickers": ["AAPL", "XLK"]}, ctx)     # a nightly run: not a backfill
+        assert nightly["tables"]["ingest_summary"]["status"].tolist() == ["ok", "ok"]
         seen.clear()
         corp_actions.run_corp_actions({"tickers": ["AAPL", "XLK"], "full": True, "missing": True}, ctx)
         assert [s for s, _ in seen] == ["XLK"]
@@ -437,11 +498,73 @@ def test_the_full_backfill_resumes_where_it_stopped(wh):
         assert out["notes"] == ["every ticker already has a full fetch on record"]
 
 
-def test_two_events_of_a_kind_on_one_session_refuse_the_response():
+def test_two_dividends_on_one_session_are_summed_and_two_splits_are_refused():
+    """CONSTRUCTED events in Yahoo's shape (two epochs on one New York session, 2024-01-02)."""
     from ohcamel_quant.data.base import DataUnavailable
     from ohcamel_quant.warehouse.ingest import corp_actions
 
-    two = {"chart": {"result": [{"meta": {"exchangeTimezoneName": "America/New_York"}, "events": {"dividends": {
-        "a": {"amount": 0.1, "date": 1704205800}, "b": {"amount": 0.2, "date": 1704210000}}}}]}}   # both 2024-01-02
-    with pytest.raises(DataUnavailable, match="more than one event"):
-        corp_actions.parse_yahoo_events(two)
+    meta = {"exchangeTimezoneName": "America/New_York"}
+    two = {"chart": {"result": [{"meta": meta, "events": {"dividends": {
+        "a": {"amount": 0.1, "date": 1704205800}, "b": {"amount": 0.2, "date": 1704210000}}}}]}}
+    got = corp_actions.parse_yahoo_events(two)
+    assert got["kind"].tolist() == ["dividend"] and got["cash"].iloc[0] == pytest.approx(0.3, rel=1e-15)
+    splits = {"chart": {"result": [{"meta": meta, "events": {"splits": {
+        "a": {"date": 1704205800, "numerator": 2, "denominator": 1},
+        "b": {"date": 1704210000, "numerator": 3, "denominator": 1}}}}]}}
+    with pytest.raises(DataUnavailable, match="more than one split"):
+        corp_actions.parse_yahoo_events(splits)
+
+
+# ------------------------------------------------------------------ fix round 1: C1 and I4 (the monthly request, events before period1)
+def _monthly():
+    return json.loads(gzip.decompress(XLK_MONTHLY.read_bytes()))
+
+
+def test_a_monthly_response_lists_events_before_period1_and_the_same_events_as_daily():
+    from ohcamel_quant.warehouse.ingest import corp_actions
+
+    monthly, daily = corp_actions.parse_yahoo_events(_monthly()), corp_actions.parse_yahoo_events(_payload("XLK"))
+    assert monthly["ex_date"].min() == pd.Timestamp("2024-06-24")           # period1 was 2024-06-25
+    pd.testing.assert_frame_equal(monthly, daily)                           # 10 dividends and the 2:1 split, identical
+
+
+def test_a_nightly_run_over_events_already_stored_before_its_window_is_ok_and_writes_nothing(wh):
+    import respx
+
+    from ohcamel_quant.warehouse.ingest import corp_actions
+
+    ctx, path = wh
+    with respx.mock() as router:
+        _serve(router, {"XLK": _payload("XLK")})
+        corp_actions.run_corp_actions({"tickers": ["XLK"], "full": True}, ctx)
+    before = _stored(path)
+    with respx.mock() as router:
+        _serve(router, {"XLK": _monthly()})                                 # every event is before 2026-09-18
+        out = corp_actions.run_corp_actions({"tickers": ["XLK"]}, ctx)
+    (row,) = out["tables"]["ingest_summary"].itertuples()
+    assert row.status == "ok", row.detail
+    detail = json.loads(row.detail)
+    assert (detail["new"], detail["revised"], detail["withdrawn"]) == (0, 0, 0)
+    assert _stored(path) == before
+
+
+def test_a_nightly_run_sees_a_revision_of_an_action_before_its_window(wh):
+    import respx
+
+    from ohcamel_quant.warehouse.ingest import corp_actions
+
+    ctx, path = wh
+    with respx.mock() as router:
+        _serve(router, {"XLK": _payload("XLK")})
+        corp_actions.run_corp_actions({"tickers": ["XLK"], "full": True}, ctx)
+    revised = _monthly()
+    divs = revised["chart"]["result"][0]["events"]["dividends"]
+    first = min(divs, key=lambda k: divs[k]["date"])                       # 2024-06-24, long before the window
+    divs[first]["amount"] = 0.21
+    with respx.mock() as router:
+        _serve(router, {"XLK": revised})
+        out = corp_actions.run_corp_actions({"tickers": ["XLK"]}, ctx)
+    assert out["tables"]["ingest_summary"]["status"].tolist() == ["ok"]
+    _, revs = _stored(path)
+    assert [(r[1], r[2]) for r in revs] == [("2024-06-24", "dividend")]
+    assert revs[0][4] == pytest.approx(0.4, rel=1e-12) and revs[0][6] == pytest.approx(0.42, rel=1e-12)  # x2: the split

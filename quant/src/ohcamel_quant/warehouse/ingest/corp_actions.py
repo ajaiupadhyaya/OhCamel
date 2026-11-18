@@ -73,10 +73,15 @@ def parse_yahoo_events(payload: dict[str, Any]) -> pd.DataFrame:
         rows.append({"ex_date": pd.Timestamp(d), "kind": "dividend", "ratio": np.nan, "cash": float(amount) * later})
     out = pd.DataFrame(rows, columns=COLUMNS)
     out["ex_date"] = pd.to_datetime(out["ex_date"]).astype("datetime64[ns]")
-    dup = out.duplicated(["ex_date", "kind"], keep=False)
-    if dup.any():   # two events on one session: refuse the response rather than pick one
-        days = sorted({f"{k} {d.date()}" for d, k in zip(out.loc[dup, "ex_date"], out.loc[dup, "kind"], strict=True)})
-        raise DataUnavailable(f"yahoo: more than one event of a kind on one session ({', '.join(days)})")
+    split_dup = out[out["kind"] == "split"].duplicated(["ex_date"], keep=False)
+    if split_dup.any():   # two splits on one session: no sum is right, so refuse the response
+        days = sorted({str(d.date()) for d in out.loc[split_dup[split_dup].index, "ex_date"]})
+        raise DataUnavailable(f"yahoo: more than one split on one session ({', '.join(days)})")
+    # Two dividends on one session (a regular and a special, say) are one ex-date's total cash: the
+    # price falls by both, and the table holds one dividend per (ticker, ex_date)
+    divs = out[out["kind"] == "dividend"].groupby("ex_date", as_index=False).agg(cash=("cash", "sum"))
+    divs["kind"], divs["ratio"] = "dividend", np.nan
+    out = pd.concat([out[out["kind"] == "split"], divs[COLUMNS]], ignore_index=True)
     return out.sort_values(["ex_date", "kind"], kind="stable").reset_index(drop=True)
 
 
@@ -138,9 +143,13 @@ def _val(x: Any) -> float | None:
 
 def write_actions(con: Any, ticker: str, state: KeyState, p: ActionsPayload) -> Written:
     now = utcnow()
+    # Every stored row the response could name: a monthly response lists the events of the whole month that
+    # holds period1 (tests/data/yahoo_chart_XLK_1mo_2026-11-17.json.gz), so events before the window start
+    # arrive too; each is compared with what is stored (a revision is still a revision), never re-inserted.
+    since = min([p.window_start, *(pd.Timestamp(d).date() for d in p.actions["ex_date"])])
     stored = {(pd.Timestamp(d), k): (r, c) for d, k, r, c in con.execute(
         "SELECT ex_date, kind, ratio, cash FROM corp_actions WHERE ticker = ? AND ex_date >= ?",
-        [ticker, p.window_start]).fetchall()}
+        [ticker, since]).fetchall()}
     seen: set[tuple[pd.Timestamp, str]] = set()
     new = revised = 0
     for a in p.actions.itertuples(index=False):
@@ -163,8 +172,8 @@ def write_actions(con: Any, ticker: str, state: KeyState, p: ActionsPayload) -> 
         revised += 1
     withdrawn = 0
     for key, (old_ratio, old_cash) in sorted(stored.items()):
-        if key in seen or key[0].date() > p.reached:
-            continue
+        if key in seen or key[0].date() > p.reached or key[0].date() < p.window_start:
+            continue                    # withdrawn means: absent from the window the vendor was asked for
         done = con.execute("SELECT count(*) FROM corp_action_revisions WHERE ticker = ? AND ex_date = ? AND kind = ? "
                            "AND new_ratio IS NULL AND new_cash IS NULL", [ticker, key[0].date(), key[1]]).fetchone()[0]
         if not done:   # said once, not every night the vendor keeps leaving it out

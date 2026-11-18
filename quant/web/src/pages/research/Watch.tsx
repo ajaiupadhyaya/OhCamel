@@ -6,8 +6,8 @@
  *                       session before it exists; realised rows are scored by QLIKE.
  *   factors.screen      every expression in the owner's trial ledger, re-screened on the
  *                       warehouse universe, exploration window only, against Alpha158.
- *   ops.data_integrity  unadjusted splits, bad prints, non-positive prices, calendar faults and
- *                       stale series, in the warehouse and the committed fixtures.
+ *   ops.data_integrity  unadjusted splits, bad prints, non-positive prices, calendar faults,
+ *                       stale series and adjustment drift, in the warehouse and the committed fixtures.
  */
 import { ArtifactCell, DataTable, Section } from "../../components";
 import { Absent, Note } from "../../design";
@@ -23,7 +23,8 @@ export interface ScreenRow {
   hash: string; expression: string; hypothesis?: string; lint_ok: boolean; failed?: string; duplicate_of?: string | null;
   rank_ic_mean?: number | null; rank_ic_hac_t?: number | null; rank_autocorr_lag1?: number | null; long_short_hac_t?: number | null; dates?: number | null;
 }
-export interface Finding { source: string; ticker: string; date: string; check: string; detail: string }
+/** One ops.data_integrity finding; ``gating`` is the job's own verdict on it (absent in artifacts before 2026-10-19's). */
+export interface Finding { source: string; ticker: string; date: string; check: string; detail: string; gating?: boolean }
 
 const MODELS = ["kronos", "garch", "gjr", "egarch", "ewma"];
 /** Annualised volatility from a one-day variance forecast, for reading tonight's rows. */
@@ -153,32 +154,49 @@ function IntegrityTables({ m }: { m: Manifest }) {
   return <IntegrityReport findings={f.rows ?? []} />;
 }
 
-// ops.data_integrity's SERIOUS checks (products/data_integrity.py), the ones that can fail its lamp
+// ops.data_integrity's SERIOUS checks (products/data_integrity.py): the defect classes. Whether a row fails the
+// lamp is the job's own `gating`; the names decide only for an older artifact that carries no `gating`.
 const SERIOUS = new Set(["split_suspect", "bad_print", "nonpositive", "calendar", "adjust_drift"]);
 
+const gates = (f: Finding) => (f.gating === undefined ? SERIOUS.has(f.check) : f.gating);
+
 export function IntegrityReport({ findings }: { findings: Finding[] }) {
-  const serious = findings.filter((f) => SERIOUS.has(f.check));
-  const rest = findings.filter((f) => !SERIOUS.has(f.check));
+  const defects = findings.filter(gates);
+  const historical = findings.filter((f) => !gates(f) && SERIOUS.has(f.check));
+  const unconfirmed = findings.filter((f) => !gates(f) && f.check === "split_unconfirmed");
+  const rest = findings.filter((f) => !gates(f) && !SERIOUS.has(f.check) && f.check !== "split_unconfirmed");
   const cols = [
     { key: "check" as const, label: "Check", render: (f: Finding) => <span className="num">{f.check.replace(/_/g, " ").toUpperCase()}</span> },
     { key: "ticker" as const, label: "Series", render: (f: Finding) => <span className="num">{f.ticker} · {f.source}</span> },
     { key: "date" as const, label: "Session", render: (f: Finding) => <span className="num">{f.date ? fmtDate(f.date) : "—"}</span> },
     { key: "detail" as const, label: "Detail", render: (f: Finding) => <span>{f.detail}</span> },
   ];
+  const key = (f: Finding) => `${f.source}${f.ticker}${f.date}${f.check}`;
+  const table = (title: string, rows: Finding[]) =>
+    rows.length > 0 && (
+      <>
+        <h3 className="sl-sub">{title}</h3>
+        <DataTable<Finding> columns={cols} rows={rows} rowKey={key} compact maxHeight={22 * 10} />
+      </>
+    );
   return (
     <div className="sl-art-body">
-      <Readline items={[{ k: "DEFECTS", v: fmtNum(serious.length, 0), tone: serious.length ? "loss" : "" }, { k: "TO LOOK AT", v: fmtNum(rest.length, 0) }, { k: "POLICY", v: "DETECTS · NEVER REPAIRS" }]} />
-      {serious.length ? (
-        <DataTable<Finding> columns={cols} rows={serious} rowKey={(f) => `${f.source}${f.ticker}${f.date}${f.check}`} compact />
+      <Readline
+        items={[
+          { k: "DEFECTS", v: fmtNum(defects.length, 0), tone: defects.length ? "loss" : "" },
+          { k: "HISTORICAL", v: fmtNum(historical.length, 0) },
+          { k: "TO LOOK AT", v: fmtNum(unconfirmed.length + rest.length, 0) },
+          { k: "POLICY", v: "DETECTS · NEVER REPAIRS" },
+        ]}
+      />
+      {defects.length ? (
+        <DataTable<Finding> columns={cols} rows={defects} rowKey={key} compact />
       ) : (
         <Absent reason="NO DEFECTS" source={`${KINDS.integrity} · findings`} />
       )}
-      {rest.length > 0 && (
-        <>
-          <h3 className="sl-sub">LARGE MOVES AND STALE SERIES · POSSIBLY REAL</h3>
-          <DataTable<Finding> columns={cols} rows={rest} rowKey={(f) => `${f.source}${f.ticker}${f.date}${f.check}`} compact maxHeight={22 * 10} />
-        </>
-      )}
+      {table("LISTED · HISTORICAL · OLDER THAN THE LAMP'S WINDOW, INSIDE THE VENDOR'S PRECISION, OR EXCEPTED WITH A REASON", historical)}
+      {table("SPLIT SUSPECTS WITH NO RECORDED SPLIT · THE PAGE REPAIR MAY BE DIVIDING A REAL GAP", unconfirmed)}
+      {table("LARGE MOVES AND STALE SERIES · POSSIBLY REAL", rest)}
     </div>
   );
 }

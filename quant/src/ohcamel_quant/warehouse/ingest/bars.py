@@ -108,22 +108,25 @@ def _ns(df: pd.DataFrame) -> pd.DataFrame:
 
 def raw_for(ticker: str, frame: pd.DataFrame, prov: Provenance, start: date,
             settings: Any) -> tuple[pd.DataFrame | None, str]:
-    """The unadjusted bars for ``frame``'s sessions from the vendor that served it, and how (or why not)."""
-    splits = prov.detail.get("splits")
-    if splits is not None:
-        n = len(splits)
-        return raw_from_split_adjusted(frame, splits), f"{prov.source} split-adjusted bars x its {n} listed split(s)"
-    fetch = RAW_FETCH.get(prov.source)
-    if fetch is None:
-        return None, f"none: {prov.source} serves split-adjusted prices and lists no splits"
+    """The unadjusted bars for ``frame``'s sessions from the vendor that served it, and how (or why not).
+
+    Never raises: any failure is ``(None, "none: ...")``, so a raw problem cannot change ``bars_daily``."""
     try:
+        splits = prov.detail.get("splits")
+        if splits is not None:
+            n = len(splits)
+            return (raw_from_split_adjusted(frame, splits),
+                    f"{prov.source} split-adjusted bars x its {n} listed split(s)")
+        fetch = RAW_FETCH.get(prov.source)
+        if fetch is None:
+            return None, f"none: {prov.source} serves split-adjusted prices and lists no splits"
         raw = fetch(ticker, start, None, settings)
-    except DataUnavailable as e:
-        return None, f"none: {prov.source} raw pass failed ({e})"
-    raw = raw[["open", "high", "low", "close", "volume"]].astype(float)
-    raw.index = pd.DatetimeIndex(raw.index).astype("datetime64[ns]")
-    raw = raw[raw.index.isin(frame.index)]
-    return raw, f"{prov.source} adjustment=raw"
+        raw = raw[["open", "high", "low", "close", "volume"]].astype(float)
+        raw.index = pd.DatetimeIndex(raw.index).astype("datetime64[ns]")
+        raw = raw[raw.index.isin(frame.index)]
+        return raw, f"{prov.source} adjustment=raw"
+    except Exception as e:  # noqa: BLE001 - the raw pass is secondary: it must never cost the key its bars
+        return None, f"none: {prov.source} raw pass failed ({type(e).__name__}: {e})"
 
 
 def _with_raw(p: BarsPayload, ticker: str, start: date, settings: Any) -> BarsPayload:
@@ -131,7 +134,9 @@ def _with_raw(p: BarsPayload, ticker: str, start: date, settings: Any) -> BarsPa
     return p
 
 
-def fetch_bars(ticker: str, state: KeyState, settings: Any, *, start: date, full: bool) -> BarsPayload:
+def _fetch_split_adjusted(ticker: str, state: KeyState, settings: Any, *, start: date, full: bool
+                          ) -> tuple[BarsPayload, date]:
+    """The bars from the vendor chain, and the start the raw pass should ask for (no raw yet)."""
     reasons: list[str] = []
     src = state.extra.get("source")
     if state.data_asof is not None and src in prices.PROVIDERS and not full:
@@ -140,19 +145,25 @@ def fetch_bars(ticker: str, state: KeyState, settings: Any, *, start: date, full
             new, prov = prices.PROVIDERS[src](ticker, frm, None, settings)
             new = _ns(new)
             prices.merge_incremental(state.extra["tail"], new)  # raises on re-adjusted history
-            return _with_raw(BarsPayload(new, prov, "incremental", []), ticker, frm, settings)
+            return BarsPayload(new, prov, "incremental", []), frm
         except DataUnavailable as e:
             reasons.append(f"incremental {src}: {e}")
     for name in prices.provider_order(ticker, start, settings):
         try:
             df, prov = prices.PROVIDERS[name](ticker, start, None, settings)
             asked = max(start, prices.ALPACA_HISTORY_START) if name == "alpaca" else start
-            return _with_raw(BarsPayload(_ns(df), prov, "full", reasons, asked), ticker, asked, settings)
+            return BarsPayload(_ns(df), prov, "full", reasons, asked), asked
         except DataUnavailable as e:
             reasons.append(str(e))
         except Exception as e:  # noqa: BLE001 - a malformed vendor payload must not stop the chain
             reasons.append(f"{name}: unexpected response ({type(e).__name__}: {e})")
     raise DataUnavailable("; ".join(reasons) or f"{ticker}: no price provider configured")
+
+
+def fetch_bars(ticker: str, state: KeyState, settings: Any, *, start: date, full: bool) -> BarsPayload:
+    """The vendor chain's bars, then (outside the chain, so it cannot change which vendor serves) the raw pass."""
+    payload, raw_start = _fetch_split_adjusted(ticker, state, settings, start=start, full=full)
+    return _with_raw(payload, ticker, raw_start, settings)
 
 
 def write_bars(con: Any, ticker: str, state: KeyState, p: BarsPayload) -> Written:

@@ -33,10 +33,15 @@ dividend amounts rounded, so on 1990-onward histories with 130-290 dividends its
 different convention. One known exception: an ex-date the market was shut for (KO, 2001-09-12) -- Yahoo
 leaves the last session before it unadjusted, this module adjusts it (rule 3); one bar, 0.7%.
 
-**Point in time.** :func:`series` uses exactly the actions it is given, and a backward adjustment by an
-action dated ``E`` rescales every bar before ``E``: levels change, returns before ``E`` do not. A caller that
-must see history as it was known on date ``D`` passes ``asof=D``: actions with an ex-date after ``D`` and
-bars after ``D`` are then ignored, so nothing learned after ``D`` reaches the result.
+**Point in time, and its limit.** :func:`series` uses exactly the actions it is given, and a backward
+adjustment by an action dated ``E`` rescales every bar before ``E``: levels change, returns before ``E`` do
+not. ``asof=D`` ignores actions with an ex-date after ``D`` and bars after ``D``. That is NOT a full
+point-in-time read: ``corp_actions`` holds each action's LATEST statement, so a revision the vendor made
+after ``D`` (to an action dated on or before ``D``) still reaches a ``D``-dated read. The earlier statements
+are in ``corp_action_revisions`` (with ``seen_at``) for a reader that needs them. Nothing reads ``asof`` yet.
+
+Raw closes must be finite and positive on every path (a NaN or non-positive close is refused, whether or
+not a dividend uses it): a derived series with a hole in it is not the vendor's series.
 """
 
 from __future__ import annotations
@@ -102,6 +107,11 @@ def series(raw: pd.DataFrame, actions: pd.DataFrame, *, dividends: bool,
     if asof is not None:
         keep = idx <= pd.Timestamp(asof)
         bars, idx = bars[keep], idx[keep]
+    close = bars["close"].to_numpy()
+    bad = ~(np.isfinite(close) & (close > 0))
+    if bad.any():
+        days = ", ".join(str(d.date()) for d in idx[bad][:5])
+        raise ValueError(f"raw close missing or not positive on {int(bad.sum())} session(s): {days}")
     splits = a[a["kind"] == "split"]
     s = split_factor(idx, splits)
     out = bars[PRICES].div(s, axis=0)

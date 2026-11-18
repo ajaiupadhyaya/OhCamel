@@ -43,7 +43,7 @@ describe("Watch", () => {
     expect(html).toContain("NO REALISED DAYS YET");
   });
 
-  it("separates defects from large moves worth a look", () => {
+  it("separates defects from large moves worth a look (CONSTRUCTED rows, an older artifact with no gating column)", () => {
     const html = render(
       <IntegrityReport
         findings={[
@@ -56,15 +56,46 @@ describe("Watch", () => {
     expect(html).toContain("LARGE MOVES AND STALE SERIES");
   });
 
-  it("counts adjustment drift as a defect, the way the job's lamp does", () => {
+  // CONSTRUCTED findings in the shape ops.data_integrity publishes (products/data_integrity.py COLUMNS)
+  it("counts only gating rows as defects, as the job's lamp does", () => {
     const html = render(
       <IntegrityReport
-        findings={[{ source: "warehouse", ticker: "XLK", date: "2026-09-19", check: "adjust_drift", detail: "up to 1.97e-03" }]}
+        findings={[
+          { source: "warehouse", ticker: "XLK", date: "2026-09-18", check: "adjust_drift", detail: "up to 7.07e-04", gating: true },
+          { source: "warehouse", ticker: "TLT", date: "2003-04-25", check: "adjust_drift", detail: "up to 1.68e-06", gating: false },
+        ]}
       />,
     );
     expect(html).toContain("ADJUST DRIFT");
-    expect(html).not.toContain("LARGE MOVES AND STALE SERIES");
     expect(html).not.toContain("NO DEFECTS");
+    expect(html).toContain("LISTED · HISTORICAL");
+    expect(html.indexOf("XLK")).toBeLessThan(html.indexOf("LISTED · HISTORICAL"));
+    expect(html.indexOf("TLT")).toBeGreaterThan(html.indexOf("LISTED · HISTORICAL"));
+  });
+
+  it("lists old and excepted rows under their own heading and says there are no defects", () => {
+    const html = render(
+      <IntegrityReport
+        findings={[
+          { source: "warehouse", ticker: "KO", date: "2001-09-10", check: "adjust_drift", detail: "excepted bar, drift 7.20e-03 relative: shut market", gating: false },
+          { source: "warehouse", ticker: "APA", date: "2020-03-09", check: "split_suspect", detail: "close moved -53.8%", gating: false },
+        ]}
+      />,
+    );
+    expect(html).toContain("NO DEFECTS");
+    expect(html).toContain("LISTED · HISTORICAL");
+    expect(html).toContain("excepted bar");
+    expect(html).not.toContain("LARGE MOVES AND STALE SERIES");
+  });
+
+  it("gives an unconfirmed split its own accurate heading", () => {
+    const html = render(
+      <IntegrityReport
+        findings={[{ source: "warehouse", ticker: "NVDA", date: "2024-06-10", check: "split_unconfirmed", detail: "no split recorded", gating: false }]}
+      />,
+    );
+    expect(html).toContain("SPLIT SUSPECTS WITH NO RECORDED SPLIT");
+    expect(html).not.toContain("LARGE MOVES AND STALE SERIES");
   });
 
   it("states an empty ledger instead of an empty table", () => {
