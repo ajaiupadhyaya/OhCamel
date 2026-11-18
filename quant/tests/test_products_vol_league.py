@@ -164,7 +164,8 @@ def test_an_implausible_intraday_leg_is_nan_and_named():
     another split basis than the minute bars (here 2x: open 202, close 200.4 against minutes near 100) are not a
     -50% / +100% leg. Each such leg is NaN -- so the session has no full-day target -- and the name is noted."""
     note = ("AAA: 1 session(s) with an intraday leg beyond +-30% or a non-positive official price (daily and "
-            "minute bars on different split bases, or a bad print): no full-day target")
+            "minute bars on different split bases, or a bad print): 2026-05-27; no full-day target on those "
+            "sessions")
     zero = _frame([("2026-05-26", 99.0, 100.5, 98.5, 100.0), ("2026-05-27", 0.0, 102.0, 99.0, 100.2),
                    ("2026-05-28", 101.0, 102.0, 99.0, 100.2)], ["2026-05-27", "2026-05-28"], _px)
     days = pd.DatetimeIndex(["2026-05-27", "2026-05-28"])
@@ -181,6 +182,43 @@ def test_an_implausible_intraday_leg_is_nan_and_named():
     assert np.isnan(legs["open_leg"][0]) and np.isnan(legs["close_leg"][0])
     assert legs["overnight"][0] == pytest.approx((202.0 / 200.0 - 1.0) ** 2, abs=1e-15)   # daily basis is whole
     assert notes == [note]
+
+
+def test_a_basis_mismatch_in_the_window_scores_the_name_on_the_squared_return(market, tmp_path):
+    """The leg bound end to end: the real daily bars with SPY's official open (and high) doubled on one recent
+    session -- a CONSTRUCTED mismatch against the constructed minute bars -- leave SPY without a full-day target,
+    and the run says it was scored on the squared return for that reason, naming the session."""
+    path = build_fixture_warehouse(tmp_path / "w.duckdb")
+    day = fixtures.history("SPY")[0].index[-5].date()
+    with open_rw(path) as con:
+        con.register("incoming", _minute_bars("SPY"))
+        con.execute("INSERT INTO bars_minute SELECT ticker, ts, open, high, low, close, volume, source FROM incoming")
+        con.unregister("incoming")
+        con.execute("UPDATE bars_daily SET open = open * 2, high = greatest(high, open * 2) "
+                    "WHERE ticker = 'SPY' AND date = ?", [day])
+    with duckdb.connect(str(path), read_only=True) as c:
+        spec = vol_league.run({"tickers": ["SPY"], "eval_days": 42}, ctx(market, c))
+    assert (spec.tables["league"]["target"] == "squared_return").all()
+    assert any(n.startswith("SPY: 1 session(s) with an intraday leg") and str(day) in n for n in spec.notes)
+    assert ("SPY: scored on the squared daily return -- implausible intraday legs left its full-day target "
+            "incomplete") in spec.notes
+
+
+def test_the_daily_legs_read_the_repair_and_say_so(tmp_path):
+    """``_daily_bars`` on a warehouse holding a constructed unadjusted 4:1 split (test_splits.unadjusted_split)
+    is the clean fixture's bars bit for bit (it would not be if the read were the raw ``ohlcv``), and the repair
+    reaches the league's notes once."""
+    from test_splits import SPLIT_NOTE, unadjusted_split
+
+    split = unadjusted_split(tmp_path / "split.duckdb")
+    clean = build_fixture_warehouse(tmp_path / "clean.duckdb")
+    with duckdb.connect(str(split), read_only=True) as s, duckdb.connect(str(clean), read_only=True) as c:
+        pd.testing.assert_frame_equal(vol_league._daily_bars(_Daily(s), "SPY"), vol_league._daily_bars(_Daily(c), "SPY"),
+                                      check_exact=True)
+        notes: list[str] = []
+        days = pd.DatetimeIndex(fixtures.history("SPY")[0].index[-60:])
+        vol_league._target_legs(_Daily(s), "SPY", days, notes=notes)
+    assert notes == [SPLIT_NOTE]
 
 
 def test_a_session_with_under_100_prints_is_excluded_and_named(con):

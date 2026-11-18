@@ -81,23 +81,30 @@ def _minute_only(ctx: Any, ticker: str, days: pd.DatetimeIndex, *, min_prints: i
     return _minute_parts(ctx, ticker, days, min_prints=min_prints, notes=notes)["rv"]
 
 
-def _daily_bars(ctx: Any, ticker: str) -> pd.DataFrame:
+def _daily_bars(ctx: Any, ticker: str, notes: list[str] | None = None) -> pd.DataFrame:
     """The warehouse's daily bars (the official open and close) through the one split-repaired read of the
     daily bars (``readers.repaired_ohlcv``, the read ``bars_panel`` makes for many names): ``close`` is
-    split-adjusted, ``adj_close`` total-return adjusted."""
+    split-adjusted, ``adj_close`` total-return adjusted. Each repair is added to ``notes`` (once) as
+    ``"TICKER: ..."``, as ``bars_panel`` words it."""
     from ..warehouse.readers import repaired_ohlcv
 
-    return repaired_ohlcv(ctx.warehouse, ticker).data
+    ds = repaired_ohlcv(ctx.warehouse, ticker)
+    if notes is not None and ds.provenance:
+        for n in ds.provenance[0].detail.get("notes") or []:
+            said = f"{ticker}: {n}"
+            if str(n).startswith("split-adjusted") and said not in notes:
+                notes.append(said)
+    return ds.data
 
 
-def _overnight_return(ctx: Any, ticker: str, days: pd.DatetimeIndex) -> np.ndarray:
+def _overnight_return(ctx: Any, ticker: str, days: pd.DatetimeIndex, notes: list[str] | None = None) -> np.ndarray:
     """``open_t / close_{t-1} - 1`` on ``days`` from the daily bars table, total-return adjusted (O and C scaled
     by adj_close / close, the basis of ``realized.adjusted_ohlc``), so a split or an ex-dividend date is not an
     overnight move. The previous close is the previous session of the FULL daily-bar index, never of ``days``
     (a session missing from ``days`` must not make it two sessions old); NaN where either bar is invalid."""
     from ..options.realized import adjusted_ohlc
 
-    bars = _daily_bars(ctx, ticker)
+    bars = _daily_bars(ctx, ticker, notes)
     f = bars["adj_close"] / bars["close"]
     ok = pd.Series(bars.index.isin(adjusted_ohlc(bars).index), index=bars.index)
     on = (bars["open"] * f) / (bars["close"] * f).shift(1) - 1.0
@@ -106,6 +113,8 @@ def _overnight_return(ctx: Any, ticker: str, days: pd.DatetimeIndex) -> np.ndarr
 
 
 LEG_BOUND = 0.30  # the split rule's threshold (data.splits): an intraday leg beyond it is a basis mismatch or a bad print
+LEG_DATES = 3     # the implausible sessions a note names before "and N more"
+LEG_NOTE = "session(s) with an intraday leg beyond"
 
 
 def _intraday_legs(ctx: Any, ticker: str, days: pd.DatetimeIndex, first: np.ndarray, last: np.ndarray,
@@ -125,10 +134,13 @@ def _intraday_legs(ctx: Any, ticker: str, days: pd.DatetimeIndex, first: np.ndar
     priced = np.isfinite(first) & np.isfinite(last) & ~np.isnan(o) & ~np.isnan(c)
     bad_o = priced & ~((o > 0) & (np.abs(open_leg) <= LEG_BOUND))
     bad_c = priced & ~((c > 0) & (np.abs(close_leg) <= LEG_BOUND))
-    if (bad_o | bad_c).any() and notes is not None:
-        notes.append(f"{ticker}: {int((bad_o | bad_c).sum())} session(s) with an intraday leg beyond "
-                     f"+-{LEG_BOUND:.0%} or a non-positive official price (daily and minute bars on different "
-                     "split bases, or a bad print): no full-day target")
+    bad = bad_o | bad_c
+    if bad.any() and notes is not None:
+        when = [str(d.date()) for d in days[bad][:LEG_DATES]]
+        more = f" and {int(bad.sum()) - LEG_DATES} more" if bad.sum() > LEG_DATES else ""
+        notes.append(f"{ticker}: {int(bad.sum())} {LEG_NOTE} +-{LEG_BOUND:.0%} or a "
+                     "non-positive official price (daily and minute bars on different split bases, or a bad "
+                     f"print): {', '.join(when)}{more}; no full-day target on those sessions")
     return np.where(bad_o, np.nan, open_leg), np.where(bad_c, np.nan, close_leg)
 
 
@@ -139,7 +151,7 @@ def _target_legs(ctx: Any, ticker: str, days: pd.DatetimeIndex, *, min_prints: i
     (first -> last bar's close) and ``close_leg`` (last bar's close -> official close)."""
     m = _minute_parts(ctx, ticker, days, min_prints=min_prints, notes=notes)
     open_leg, close_leg = _intraday_legs(ctx, ticker, days, m["first"], m["last"], notes)
-    return {"overnight": _overnight_return(ctx, ticker, days) ** 2, "open_leg": open_leg ** 2,
+    return {"overnight": _overnight_return(ctx, ticker, days, notes) ** 2, "open_leg": open_leg ** 2,
             "minute": m["rv"], "close_leg": close_leg ** 2}
 
 
@@ -167,11 +179,15 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
             if len(s) < V.EST_WINDOW + eval_days:
                 raise ValueError(f"{len(s)} sessions (< {V.EST_WINDOW + eval_days})")
             r = s.to_numpy(float)
+            seen = len(notes)
             try:
                 mrv = _daily_rv(ctx, t, s.index, notes=notes)
             except DataUnavailable:  # no warehouse, or the name is not in its daily bars
                 mrv = np.full(len(s), np.nan)
             ok = np.isfinite(mrv).sum() >= V.HAR_WINDOW + 60 and np.isfinite(mrv[-(V.HAR_WINDOW + eval_days + 22):]).all()
+            if not ok and any(n.startswith(f"{t}: ") and LEG_NOTE in n for n in notes[seen:]):
+                notes.append(f"{t}: scored on the squared daily return -- implausible intraday legs left its "
+                             "full-day target incomplete")
             target = mrv if ok else r * r
             nl = V.league_for(r, target, has_minute=ok, eval_days=eval_days, refit_every=refit)
         except (DataUnavailable, ValueError, KeyError, np.linalg.LinAlgError) as e:

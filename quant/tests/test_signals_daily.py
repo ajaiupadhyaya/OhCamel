@@ -675,10 +675,13 @@ def test_the_data_hash_is_the_hash_of_the_frame_the_strategy_read(tmp_path, monk
     _fake(monkeypatch, "mix_daily", strategies.static_mix, "daily")
     run_at, sig = _mini(tmp_path, monkeypatch, split, _row("farm_mix_daily", "mix_daily", "one"),
                         [{"cell_id": "mix_daily@one", "verdict": "FAIL", "selected_params": '{"weights": {"SPY": 0.5}}'}])
+    first = run_at(date(2026, 5, 29))
     spec = run_at(LAST)
-    assert _emitted(spec).loc["farm_mix_daily", "status"] == "written"
+    for run in (first, spec):
+        row = _emitted(run).loc["farm_mix_daily"]
+        assert (row["status"], row["data_source"]) == ("written", "warehouse")
     assert served and all(bars is not None for bars, _ in served)   # the warehouse served the strategy's closes
-    (px,) = read
+    px = read[-1]
     with open_ro(split) as con:
         panel, notes = readers.bars_panel(con, ["SPY"], None, None)
     assert abs(px["SPY"].pct_change().loc[SPLIT_EX]) < 0.30
@@ -687,4 +690,47 @@ def test_the_data_hash_is_the_hash_of_the_frame_the_strategy_read(tmp_path, monk
     doc = json.loads((sig / f"farm_mix_daily-{LAST}.json").read_text())
     assert doc["data_hash"] == data_hash(_raw_rows(clean, ["SPY"], px.index))     # the repaired bars, bit for bit
     assert doc["data_hash"] != data_hash(_raw_rows(split, ["SPY"], px.index))     # never the vendor's split bytes
-    assert spec.notes.count(f"farm_mix_daily: data hash over split-repaired bars -- {notes[0]}") == 1
+    # Said once per (cell, symbol, ex-date): on the first document whose window reaches the ex-date, never again.
+    said = f"farm_mix_daily: data hash over split-repaired bars -- {notes[0]}"
+    assert first.notes.count(said) == 1 and not [n for n in spec.notes if "split-repaired" in n]
+
+
+def test_a_provider_served_read_is_the_frame_hashed_and_says_so(tmp_path, monkeypatch):
+    """When the warehouse cannot serve the strategy's closes (here: stale and short of the default window), the
+    strategy reads the providers; the document's hash is over the bars it read, not the warehouse's, and the run
+    says which source the hash covers and why. The same inputs give the same hash twice."""
+    from ohcamel_quant.data.market import MarketData as Market
+    from ohcamel_quant.signals.contract import data_hash
+    from ohcamel_quant.warehouse import freshness, readers
+    from ohcamel_quant.warehouse.db import open_ro, open_rw
+
+    wh = build_fixture_warehouse(tmp_path / "wh.duckdb")
+    with open_rw(wh) as con:           # the warehouse's own bytes differ from the providers' on its last sessions
+        con.execute("UPDATE bars_daily SET volume = volume * 2 WHERE ticker = 'SPY' AND date >= DATE '2026-05-01'")
+    monkeypatch.setattr(freshness, "_now", lambda: datetime(2026, 6, 10, 14, 0, tzinfo=UTC))   # stale by 06-10
+    read = []
+    real_weights = daily._weights
+    monkeypatch.setattr(daily, "_weights", lambda cell, params, px, rf, mkt: read.append(px)
+                        or real_weights(cell, params, px, rf, mkt))
+    _fake(monkeypatch, "mix_daily", strategies.static_mix, "daily")
+    hashes = []
+    for k in ("a", "b"):
+        (tmp_path / k).mkdir()
+        run_at, sig = _mini(tmp_path / k, monkeypatch, wh, _row("farm_mix_daily", "mix_daily", "one"),
+                            [{"cell_id": "mix_daily@one", "verdict": "FAIL",
+                              "selected_params": '{"weights": {"SPY": 0.5}}'}])
+        spec = run_at(LAST)
+        row = _emitted(spec).loc["farm_mix_daily"]
+        assert row["status"] == "written" and row["data_source"] == "providers: fixture:alpaca"
+        fell = [n for n in spec.notes if n.startswith("farm_mix_daily: data hash over provider-served bars")]
+        assert len(fell) == 1 and "warehouse not used" in fell[0] and "stale" in fell[0]
+        hashes.append(json.loads((sig / f"farm_mix_daily-{LAST}.json").read_text())["data_hash"])
+    px = read[-1]
+    bars = Market(Settings(offline=True, data_dir=tmp_path)).ohlcv("SPY").data.loc[px.index]
+    read_rows = bars.reset_index().assign(symbol="SPY")
+    read_rows["date"] = read_rows["date"].dt.date
+    assert hashes[0] == hashes[1] == data_hash(read_rows)            # the frame the strategy read, twice over
+    with open_ro(wh) as con:
+        panel, _ = readers.bars_panel(con, ["SPY"], None, None, field="volume")
+    assert (panel["SPY"].loc[px.index] != bars["volume"]).any()
+    assert hashes[0] != data_hash(_raw_rows(wh, ["SPY"], px.index))   # not the warehouse's rows

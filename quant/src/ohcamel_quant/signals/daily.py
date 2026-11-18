@@ -41,6 +41,10 @@ service's rows are not this producer's and are skipped silently):
   document's params then carrying ``gross_scaled: true`` (INC-01);
 * ``validation`` is the cell's NEWEST farm verdict, and only when that row
   selected the parameters that ran (same ``params_hash``); otherwise unvalidated;
+* ``data_hash`` is over the bars the strategy read on its sessions: the warehouse's, split-repaired
+  (``readers.bars_panel``), when the warehouse served its closes; else the providers' (``ctx.market.ohlcv``,
+  the path ``prices`` fell back to), with the emitted row's ``data_source`` and a run note naming the
+  fallback and why. A split repair in the hashed window is noted once per (cell, symbol, ex-date);
 * ``sequence`` is ``max(SPY sessions in bars_daily through as_of, the slug's last
   document's sequence + 1)``: it only rises, whatever happens to the table;
   a session SPY has no bar for is refused.
@@ -87,7 +91,11 @@ EXECUTION_NOTES = [
     "the backtest engine fills at the close of d+1 (execution_lag=1); the desk fills at the open of d+1 by "
     "market-on-open: the farm's fill price is not the desk's",
 ]
-EMITTED = ["slug", "as_of", "sequence", "gross_scaled", "n_targets", "status", "note", "last_rebalance", "path"]
+# ``data_source``: what a written document's data_hash covers -- "warehouse", or "providers: <sources>" when the
+# warehouse could not serve the strategy's closes (the run's notes then say why). The v1 document has no field
+# for it (the schema is closed), so the artifact's row is where it is recorded.
+EMITTED = ["slug", "as_of", "sequence", "gross_scaled", "n_targets", "status", "note", "last_rebalance", "path",
+           "data_source"]
 REFUSED = ["slug", "reason"]
 
 
@@ -216,16 +224,18 @@ def validation_for(cell: Cell, farm_cells: pd.DataFrame | None, *, manifest: str
 
 
 # ------------------------------------------------------------------- the inputs
-def _inputs(cell: Cell, ctx: Any) -> tuple[pd.DataFrame, pd.Series | None, pd.Series | None]:
-    """Prices, rf and market exactly as products/farm.py's ``run_cell`` builds them."""
+def _inputs(cell: Cell, ctx: Any) -> tuple[pd.DataFrame, pd.Series | None, pd.Series | None, list[Any]]:
+    """Prices, rf and market exactly as products/farm.py's ``run_cell`` builds them, and the prices'
+    provenance (which says whether the warehouse or the providers served them)."""
     from ..backtest.strategies import get_strategy
     from ..data.base import DataUnavailable
 
     spec = get_strategy(str(cell.strategy))
     try:
-        px = ctx.market.prices(list(cell.symbols), warehouse_first=True).data.dropna()
+        ds = ctx.market.prices(list(cell.symbols), warehouse_first=True)
     except DataUnavailable as e:
         raise CellRefused(f"prices: {e}") from e
+    px = ds.data.dropna()
     if px.empty:
         raise CellRefused("no common sessions for the cell's symbols")
     try:
@@ -238,7 +248,19 @@ def _inputs(cell: Cell, ctx: Any) -> tuple[pd.DataFrame, pd.Series | None, pd.Se
             mkt = ctx.market.prices(["SPY"], warehouse_first=True).data["SPY"].reindex(px.index)
         except DataUnavailable as e:
             raise CellRefused(f"market (SPY) prices: {e}") from e
-    return px, rf, mkt
+    return px, rf, mkt, list(ds.provenance)
+
+
+def _served_by(provenance: list[Any]) -> tuple[str, str | None]:
+    """``("warehouse", None)`` when the warehouse served the prices, else ``("providers: <sources>", why)``:
+    the sources that did (each ticker's provenance) and the derived "warehouse not used (...)" note, when any."""
+    sources = [p.source for p in provenance if p.source != "derived"]
+    if sources and all(s.startswith("warehouse:") for s in sources):
+        return "warehouse", None
+    why = next((str(p.detail.get("note")) for p in provenance if p.source == "derived"
+                and str(p.detail.get("note", "")).startswith("warehouse not used")),
+               "no warehouse was tried (none configured, or its file is absent)")
+    return "providers: " + "+".join(dict.fromkeys(sources)), why
 
 
 def _last_doc(out_dir: Path, slug: str) -> dict[str, Any] | None:
@@ -273,10 +295,20 @@ def _sequence(ctx: Any, as_of: date, last: dict[str, Any] | None) -> int:
     return max(int(count), (int(last["sequence"]) + 1) if last else 1)
 
 
+def _long(cols: dict[str, pd.DataFrame], symbols: list[str], sessions: pd.DatetimeIndex) -> pd.DataFrame:
+    """Wide OHLCV frames as the data hash's long rows (symbol, date, open, high, low, close, volume) on ``sessions``."""
+    wide = {f: c.reindex(columns=pd.Index(symbols, name="ticker")) for f, c in cols.items()}
+    long = pd.concat({f: c.stack(future_stack=True) for f, c in wide.items()}, axis=1).dropna(how="all")
+    df = long.rename_axis(["date", "symbol"]).reset_index()
+    df = df[df["date"].isin(sessions)][["symbol", "date", "open", "high", "low", "close", "volume"]].copy()
+    df["date"] = df["date"].dt.date
+    return df
+
+
 def _bars(ctx: Any, symbols: list[str], sessions: pd.DatetimeIndex) -> tuple[pd.DataFrame, list[str]]:
-    """The bars the strategy read: the warehouse's OHLCV on the sessions it used, through ``readers.bars_panel``
-    -- the one split-repaired read the strategy's own warehouse-first closes come through -- and its repair
-    notes. A split the vendor did not adjust is hashed as the strategy saw it, never as the vendor's bytes."""
+    """The bars the strategy read when the warehouse served it: the warehouse's OHLCV on the sessions it used,
+    through ``readers.bars_panel`` -- the one split-repaired read the strategy's own warehouse-first closes come
+    through -- and its repair notes. A split the vendor did not adjust is hashed as the strategy saw it."""
     from ..data.base import DataUnavailable
     from ..warehouse.readers import bars_panel
 
@@ -284,15 +316,37 @@ def _bars(ctx: Any, symbols: list[str], sessions: pd.DatetimeIndex) -> tuple[pd.
     cols, notes = {}, []
     try:
         for f in ("open", "high", "low", "close", "volume"):
-            wide, notes = bars_panel(ctx.warehouse, symbols, lo, hi, field=f)
-            cols[f] = wide.reindex(columns=pd.Index(symbols, name="ticker"))
+            cols[f], notes = bars_panel(ctx.warehouse, symbols, lo, hi, field=f)
     except DataUnavailable as e:
         raise CellRefused(f"no bars for the data hash: {e}") from e
-    long = pd.concat({f: c.stack(future_stack=True) for f, c in cols.items()}, axis=1).dropna(how="all")
-    df = long.rename_axis(["date", "symbol"]).reset_index()
-    df = df[df["date"].isin(sessions)][["symbol", "date", "open", "high", "low", "close", "volume"]].copy()
-    df["date"] = df["date"].dt.date
-    return df, notes
+    return _long(cols, symbols, sessions), notes
+
+
+def _provider_bars(ctx: Any, symbols: list[str], sessions: pd.DatetimeIndex) -> pd.DataFrame:
+    """The bars the strategy read when the providers served it: ``ctx.market.ohlcv`` per symbol -- the split-
+    repaired path ``MarketData.prices`` took on its fallback -- on the sessions it used."""
+    from ..data.base import DataUnavailable
+
+    frames = {}
+    try:
+        for t in symbols:
+            frames[t] = ctx.market.ohlcv(t).data
+    except DataUnavailable as e:
+        raise CellRefused(f"no bars for the data hash: {e}") from e
+    cols = {f: pd.DataFrame({t: d[f] for t, d in frames.items()}) for f in ("open", "high", "low", "close", "volume")}
+    return _long(cols, symbols, sessions)
+
+
+_EX = re.compile(r"before (\d{4}-\d{2}-\d{2})")
+
+
+def _new_repairs(repairs: list[str], last: dict[str, Any] | None) -> list[str]:
+    """The repairs to say on this document: each (symbol, ex-date) once, on the first document whose window
+    reaches the ex-date -- every repair on a cell's first document ever, afterwards only an ex-date later than
+    the last written document's ``as_of``."""
+    if last is None:
+        return list(repairs)
+    return [r for r in repairs if (m := _EX.search(r)) and m.group(1) > last["as_of"]]
 
 
 def _last_period_end(as_of: date, cadence: str) -> date:
@@ -383,11 +437,12 @@ def _emit(cell: Cell, params: dict[str, Any], ctx: Any, out_dir: Path, farm_id: 
     from ..backtest.strategies import get_strategy
 
     cadence = get_strategy(str(cell.strategy)).default_rebalance
-    px, rf, mkt = _inputs(cell, ctx)
+    px, rf, mkt, prov = _inputs(cell, ctx)
     raw, as_of, ran = _weights(cell, params, px, rf, mkt)
     path = out_dir / f"{cell.slug}-{as_of.isoformat()}.json"
     row: dict[str, Any] = {"slug": cell.slug, "as_of": as_of.isoformat(), "sequence": None,
-                           "gross_scaled": False, "n_targets": None, "note": None, "path": path.name}
+                           "gross_scaled": False, "n_targets": None, "note": None, "path": path.name,
+                           "data_source": None}
     if path.exists():
         return {**row, "status": "already_present", "note": "a document for this session is already there"}
     last = _last_doc(out_dir, cell.slug)
@@ -404,16 +459,23 @@ def _emit(cell: Cell, params: dict[str, Any], ctx: Any, out_dir: Path, farm_id: 
     if hold is not None and retry is None:
         return {**row, "status": "held", "note": hold}
     sequence = _sequence(ctx, as_of, last)
-    bars, repairs = _bars(ctx, list(px.columns), px.index)
+    source, why = _served_by(prov)
+    if why is None:
+        bars, repairs = _bars(ctx, list(px.columns), px.index)
+        said = [f"{cell.slug}: data hash over split-repaired bars -- {r}" for r in _new_repairs(repairs, last)]
+    else:   # the strategy read the providers: hash what it read, and say so
+        bars = _provider_bars(ctx, list(px.columns), px.index)
+        said = [f"{cell.slug}: data hash over provider-served bars ({source.removeprefix('providers: ')}), "
+                f"not the warehouse's -- {why}"]
     if notes is not None:
-        notes += [f"{cell.slug}: data hash over split-repaired bars -- {r}" for r in repairs]
+        notes += said
     doc = signal_v1(strategy=cell.slug, params={**ran, "gross_scaled": True} if scaled else dict(ran),
                     as_of=as_of, sequence=sequence,
                     validation=validation_for(cell, farm, manifest=farm_id, params=params), targets=targets,
                     bars=bars)
     write_atomic(doc, path)
     done = {**row, "sequence": sequence, "gross_scaled": scaled, "n_targets": len(targets),
-            "last_rebalance": as_of.isoformat()}
+            "last_rebalance": as_of.isoformat(), "data_source": source}
     if retry is not None:
         return {**done, "status": "retry", "note": f"retry: {retry} (the last document is {last['as_of']})"}
     if missed is not None:
