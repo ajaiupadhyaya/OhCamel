@@ -22,11 +22,14 @@ val sessions :
 val arrival_mid : zone:Time_float.Zone.t -> Journal.Strategy_fill.t -> float option
 (** The midpoint of the quote a fill's order was sent against, when it is an arrival: a
     two-sided, uncrossed, finite quote journaled for a day order created 09:30-16:00 in
-    [zone] on a weekday, with the quote's own stamp no more than 60 s from the order's
-    creation. None -- the cost unknown -- for no quote, an auction order (market-on-open's
-    was read after hours), an order created outside the session, a one-sided, locked or
-    crossed quote, or a quote with no stamp or an older one: every order journaled before
-    orders.arrival_at existed is unknown. *)
+    [zone] on a weekday, with the quote's own stamp no more than
+    [Rebalance.max_quote_stamp_age_s] (60 s) from the order's creation -- the same
+    constant the rule at send measures against the quote's FETCH; creation comes a little
+    after the fetch, so the difference can only make a fill unknown. None -- the cost
+    unknown -- for no quote, an auction order (market-on-open's was read after hours), an
+    order created outside the session, a one-sided, locked or crossed quote, or a quote
+    with no stamp or an older one: every order journaled before orders.arrival_at existed
+    is unknown. *)
 
 val dividends_of :
   cash_dividends:Venue.Cash_dividend.t list ->

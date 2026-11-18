@@ -511,6 +511,7 @@ let cash ~id ~symbol ~ex ~pay rate =
    nothing new. A pull that fails leaves the mark where it was, so the next night asks
    from there. *)
 let pulled = function `Pulled -> "pulled" | `Not_pulled -> "not pulled"
+let page items = { Venue.Page.items; skipped = [] }
 
 let test_the_nightly_pull_records_what_has_gone_ex () =
   let journal = Or_error.ok_exn (Journal.open_ ~path:":memory:") in
@@ -520,19 +521,21 @@ let test_the_nightly_pull_records_what_has_gone_ex () =
   let hyg = Symbol.of_string "HYG" in
   let activities =
     Ok
-      [
-        activity ~id:"a1" ~kind:"DIV" ~on:"2026-11-04" ~symbol:lqd ~per_share:0.25 25.0;
-        activity ~id:"a2" ~kind:"FEE" ~on:"2026-11-03" (-0.05);
-        activity ~id:"a3" ~kind:"DIV" ~on:"2026-11-09" ~symbol:hyg ~per_share:0.4 40.0;
-      ]
+      (page
+         [
+           activity ~id:"a1" ~kind:"DIV" ~on:"2026-11-04" ~symbol:lqd ~per_share:0.25 25.0;
+           activity ~id:"a2" ~kind:"FEE" ~on:"2026-11-03" (-0.05);
+           activity ~id:"a3" ~kind:"DIV" ~on:"2026-11-09" ~symbol:hyg ~per_share:0.4 40.0;
+         ])
   in
   let dividends =
     Ok
-      [
-        cash ~id:"c1" ~symbol:tlt ~ex:"2026-11-03" ~pay:"2026-11-06" 0.30;
-        cash ~id:"c2" ~symbol:lqd ~ex:"2026-11-05" ~pay:"2026-11-07" 0.27;
-        cash ~id:"c3" ~symbol:hyg ~ex:"2026-11-03" ~pay:"2026-11-07" 0.40;
-      ]
+      (page
+         [
+           cash ~id:"c1" ~symbol:tlt ~ex:"2026-11-03" ~pay:"2026-11-06" 0.30;
+           cash ~id:"c2" ~symbol:lqd ~ex:"2026-11-05" ~pay:"2026-11-07" 0.27;
+           cash ~id:"c3" ~symbol:hyg ~ex:"2026-11-03" ~pay:"2026-11-07" 0.40;
+         ])
   in
   let outcome, lines =
     Close.apply_cash_pull ~journal ~date:on ~recorded_at:at ~activities ~dividends
@@ -576,9 +579,11 @@ let test_the_nightly_pull_records_what_has_gone_ex () =
   (* Two records with different ids for TLT's one ex-date: both kept, and said. *)
   let _, twice =
     Close.apply_cash_pull ~journal ~date:(date "2026-11-06") ~recorded_at:at
-      ~activities:(Ok [])
+      ~activities:(Ok (page []))
       ~dividends:
-        (Ok [ cash ~id:"c1-bis" ~symbol:tlt ~ex:"2026-11-03" ~pay:"2026-11-06" 0.30 ])
+        (Ok
+           (page
+              [ cash ~id:"c1-bis" ~symbol:tlt ~ex:"2026-11-03" ~pay:"2026-11-06" 0.30 ]))
   in
   Alcotest.(check bool)
     "a second record for one ex-date is named" true
@@ -590,7 +595,32 @@ let test_the_nightly_pull_records_what_has_gone_ex () =
   Alcotest.(check int)
     "and not deduplicated" 3
     (List.length (Journal.cash_dividends journal));
-  Journal.close journal
+  Journal.close journal;
+  (* Fix round 3: on a night the dividends read failed, a paid dividend is not
+     reported as unmatched for want of records that were never read. *)
+  let fresh = Or_error.ok_exn (Journal.open_ ~path:":memory:") in
+  let _, lines =
+    Close.apply_cash_pull ~journal:fresh ~date:on ~recorded_at:at
+      ~activities:
+        (Ok (page [ activity ~id:"x1" ~kind:"DIV" ~on:"2026-11-04" ~symbol:lqd 25.0 ]))
+      ~dividends:(Or_error.error_string "403")
+  in
+  Alcotest.(check bool)
+    "no unmatched report without the records" false
+    (List.exists lines ~f:(String.is_substring ~substring:"credited to no strategy"));
+  let outcome, lines =
+    Close.apply_cash_pull ~journal:fresh ~date:on ~recorded_at:at
+      ~activities:(Ok { Venue.Page.items = []; skipped = [ "bad::2: no date" ] })
+      ~dividends:(Ok (page []))
+  in
+  Alcotest.(check string) "a page with a skipped item is pulled" "pulled" (pulled outcome);
+  Alcotest.(check bool)
+    "and the skip is said" true
+    (List.mem lines
+       "session 2026-11-04: 1 activities skipped as unreadable (first: bad::2: no date); \
+        the rest recorded"
+       ~equal:String.equal);
+  Journal.close fresh
 
 (* An unrecorded distribution (fix round 1, I1): the venue's adjusted series moves
    the day before when a distribution or split is processed, the raw one does not.

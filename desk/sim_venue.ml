@@ -207,8 +207,10 @@ let read (t : t) : Venue.Read.t =
     session_bars =
       (fun _ ~date:_ ->
         return (Or_error.error_string "simulated venue: it keeps no bar history"));
-    activities = (fun ~since:_ ~kinds:_ -> return (Ok []));
-    cash_dividends = (fun _ ~start:_ ~end_:_ -> return (Ok []));
+    activities =
+      (fun ~since:_ ~kinds:_ -> return (Ok { Venue.Page.items = []; skipped = [] }));
+    cash_dividends =
+      (fun _ ~start:_ ~end_:_ -> return (Ok { Venue.Page.items = []; skipped = [] }));
   }
 
 (* The trading half. A limit fills against the side of the quote the order

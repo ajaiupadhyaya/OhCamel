@@ -333,9 +333,30 @@ let activity_of_json (json : Yojson.Safe.t) : Venue.Activity.t Or_error.t =
     order_id = optional_string json "order_id";
   }
 
-let activities_of_json (json : Yojson.Safe.t) : Venue.Activity.t list Or_error.t =
+(* Every item that parses, and for each that does not a line naming it -- by its
+   id when it has one, else by its place -- and why: one malformed record is not
+   a reason to refuse the records beside it (fix round 3). *)
+let page_of (items : Yojson.Safe.t list) ~(parse : Yojson.Safe.t -> 'a Or_error.t) :
+    'a Venue.Page.t =
+  let parsed, skipped =
+    List.partition_map
+      (List.mapi items ~f:(fun i j -> (i, j)))
+      ~f:(fun (i, json) ->
+        match parse json with
+        | Ok x -> First x
+        | Error e ->
+            let name =
+              match field json "id" with
+              | Some (`String id) -> id
+              | _ -> sprintf "item %d" (i + 1)
+            in
+            Second (sprintf "%s: %s" name (Error.to_string_hum e)))
+  in
+  { Venue.Page.items = parsed; skipped }
+
+let activities_of_json (json : Yojson.Safe.t) : Venue.Activity.t Venue.Page.t Or_error.t =
   match json with
-  | `List items -> Or_error.all (List.map items ~f:activity_of_json)
+  | `List items -> Ok (page_of items ~parse:activity_of_json)
   | _ -> Or_error.error_string "alpaca_paper: account activities are not a list"
 
 (* When to ask for another page of activities: a full page, whose last id is not
@@ -345,14 +366,13 @@ let activity_page_size = 100
 let max_activity_pages = 50
 
 let next_activity_page ~(token : string option) ~(pages : int)
-    (items : Venue.Activity.t list) : string option =
+    (items : Venue.Activity.t list) : [ `Next of string | `Done | `Capped ] =
   match List.last items with
   | Some last
     when List.length items >= activity_page_size
-         && pages < max_activity_pages
          && not (Option.equal String.equal token (Some last.Venue.Activity.id)) ->
-      Some last.Venue.Activity.id
-  | _ -> None
+      if pages < max_activity_pages then `Next last.Venue.Activity.id else `Capped
+  | _ -> `Done
 
 (* GET /v1/corporate-actions, cash_dividends. [rate] is a JSON number there, not a
    string; [number] reads it, and a dividend without an ex-date or a rate refuses
@@ -378,7 +398,7 @@ let cash_dividend_of_json (json : Yojson.Safe.t) : Venue.Cash_dividend.t Or_erro
   }
 
 let cash_dividends_of_json (json : Yojson.Safe.t) :
-    (Venue.Cash_dividend.t list * string option) Or_error.t =
+    (Venue.Cash_dividend.t Venue.Page.t * string option) Or_error.t =
   match field json "corporate_actions" with
   | Some (`Assoc _ as actions) ->
       let token =
@@ -387,9 +407,7 @@ let cash_dividends_of_json (json : Yojson.Safe.t) :
       let items =
         match field actions "cash_dividends" with Some (`List xs) -> xs | _ -> []
       in
-      Or_error.map
-        (Or_error.all (List.map items ~f:cash_dividend_of_json))
-        ~f:(fun ds -> (ds, token))
+      Ok (page_of items ~parse:cash_dividend_of_json, token)
   | _ -> Or_error.error_string "alpaca_paper: no corporate_actions object"
 
 (* ---------------------------------------------------------------------- *)
@@ -740,13 +758,22 @@ let read ~(credentials : Credentials.t) ~(feed : string) : Venue.Read.t =
             get (trading_uri ~query "/v2/account/activities") activities_of_json
           with
           | Error _ as e -> return e
-          | Ok items -> (
-              let acc = acc @ items in
+          | Ok ({ Venue.Page.items; skipped } : Venue.Activity.t Venue.Page.t) -> (
+              let items_so_far, skipped_so_far = acc in
+              let acc = (items_so_far @ items, skipped_so_far @ skipped) in
               match next_activity_page ~token ~pages:(pages + 1) items with
-              | Some next -> page (Some next) (pages + 1) acc
-              | None -> return (Ok acc))
+              | `Next next -> page (Some next) (pages + 1) acc
+              | `Done -> return (Ok { Venue.Page.items = fst acc; skipped = snd acc })
+              | `Capped ->
+                  (* The cap is a night not pulled: what lies past it is unread,
+                     and a pull that says it read everything must have. *)
+                  return
+                    (Or_error.errorf
+                       "alpaca_paper: account activities stopped at the %d-page cap, the \
+                        rest unread"
+                       max_activity_pages))
         in
-        page None 0 []);
+        page None 0 ([], []));
     cash_dividends =
       (fun symbols ~start ~end_ ->
         let rec page token acc =
@@ -765,9 +792,14 @@ let read ~(credentials : Credentials.t) ~(feed : string) : Venue.Read.t =
             get (data_uri ~query "/v1/corporate-actions") cash_dividends_of_json
           with
           | Error _ as e -> return e
-          | Ok (items, next) -> (
-              let acc = acc @ items in
-              match next with Some t -> page (Some t) acc | None -> return (Ok acc))
+          | Ok (({ Venue.Page.items; skipped } : Venue.Cash_dividend.t Venue.Page.t), next)
+            -> (
+              let items_so_far, skipped_so_far = acc in
+              let acc = (items_so_far @ items, skipped_so_far @ skipped) in
+              match next with
+              | Some t -> page (Some t) acc
+              | None -> return (Ok { Venue.Page.items = fst acc; skipped = snd acc }))
         in
-        if List.is_empty symbols then return (Ok []) else page None []);
+        if List.is_empty symbols then return (Ok { Venue.Page.items = []; skipped = [] })
+        else page None ([], []));
   }

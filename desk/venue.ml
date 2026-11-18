@@ -105,6 +105,14 @@ module Activity = struct
   [@@deriving sexp_of, compare, equal]
 end
 
+(* A page of venue records as read: those that parsed, and a line for each that
+   did not (its id when it has one, and why). One malformed record is skipped
+   and said, never a reason to refuse the records beside it (Task 1.8, fix
+   round 3). *)
+module Page = struct
+  type 'a t = { items : 'a list; skipped : string list }
+end
+
 (* A cash dividend as the venue's corporate-action record states it (Alpaca's
    GET /v1/corporate-actions, cash_dividends): the ex-date and the rate per
    share, which the activity above does not carry. *)
@@ -226,13 +234,13 @@ module Read = struct
            dividend-adjusted for the returns, and an adjusted close is not a
            price anything traded at. *)
     activities :
-      since:Date.t -> kinds:string list -> Activity.t list Or_error.t Deferred.t;
+      since:Date.t -> kinds:string list -> Activity.t Page.t Or_error.t Deferred.t;
         (* The account's activities of [kinds] created on or after [since]. *)
     cash_dividends :
       Symbol.t list ->
       start:Date.t ->
       end_:Date.t ->
-      Cash_dividend.t list Or_error.t Deferred.t;
+      Cash_dividend.t Page.t Or_error.t Deferred.t;
         (* The names' cash dividends whose venue processing date falls in
            [start, end_] -- about the payable date, so a window reaching past
            today finds an ex-date already passed whose cash is still to come. *)

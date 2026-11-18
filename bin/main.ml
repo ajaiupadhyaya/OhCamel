@@ -1545,7 +1545,8 @@ let run_live ~book_path ~(serve_port : int option) =
              refused; a book older than that has a sync that is failing or
              stalled, and is not recorded as the account's. *)
           don't_wait_for
-            (Ohcamel_desk.Session_close.run_forever ~strategies ~read ~graph ~journal
+            (Ohcamel_desk.Session_close.run_forever
+               ~time_source:(Time_source.wall_clock ()) ~strategies ~read ~graph ~journal
                ~confidence:runtime.Config.Runtime.confidence
                ~book_is_current:(fun () ->
                  Ohcamel_desk.Desk.book_is_current desk ~now:(Time_ns.now ())

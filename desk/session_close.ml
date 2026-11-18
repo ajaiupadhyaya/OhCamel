@@ -168,13 +168,22 @@ let official_close (bars : Venue.Bar.t Symbol.Map.t)
    another id, for a name's ex-date (both are kept: which is right is not this
    code's to guess). *)
 let apply_cash_pull ~(journal : Journal.t) ~(date : Date.t) ~(recorded_at : Time_ns.t)
-    ~(activities : Venue.Activity.t list Or_error.t)
-    ~(dividends : Venue.Cash_dividend.t list Or_error.t) :
+    ~(activities : Venue.Activity.t Venue.Page.t Or_error.t)
+    ~(dividends : Venue.Cash_dividend.t Venue.Page.t Or_error.t) :
     [ `Pulled | `Not_pulled ] * string list =
   let day = Date.to_string date in
+  let skipped what = function
+    | Ok ({ skipped = []; _ } : _ Venue.Page.t) | Error _ -> []
+    | Ok { skipped = first :: _ as all; _ } ->
+        [
+          sprintf "session %s: %d %s skipped as unreadable (first: %s); the rest recorded"
+            day (List.length all) what first;
+        ]
+  in
   let added =
     match activities with
-    | Ok xs -> Some (Journal.record_activities journal xs ~recorded_at)
+    | Ok page ->
+        Some (Journal.record_activities journal page.Venue.Page.items ~recorded_at)
     | Error _ -> None
   in
   let known =
@@ -184,9 +193,9 @@ let apply_cash_pull ~(journal : Journal.t) ~(date : Date.t) ~(recorded_at : Time
   in
   let gone_ex =
     match dividends with
-    | Ok xs ->
+    | Ok page ->
         let gone =
-          List.filter xs ~f:(fun (c : Venue.Cash_dividend.t) ->
+          List.filter page.Venue.Page.items ~f:(fun (c : Venue.Cash_dividend.t) ->
               Date.( <= ) c.ex_date date)
         in
         Journal.record_cash_dividends journal gone ~recorded_at;
@@ -219,8 +228,12 @@ let apply_cash_pull ~(journal : Journal.t) ~(date : Date.t) ~(recorded_at : Time
   in
   let cash_dividends = Journal.cash_dividends journal in
   let fresh = Option.value added ~default:[] in
+  (* Only against a dividends read that answered: on a night it failed, every
+     paid dividend would read as unmatched for want of the records not read. *)
   let unmatched =
-    Stop.unmatched_dividends ~cash_dividends ~activities:fresh
+    (match dividends with
+      | Ok _ -> Stop.unmatched_dividends ~cash_dividends ~activities:fresh
+      | Error _ -> [])
     |> List.map ~f:(fun (a : Venue.Activity.t) ->
         sprintf
           "session %s: %s paid %.2f on %s with no ex-date on record: credited to no \
@@ -258,7 +271,10 @@ let apply_cash_pull ~(journal : Journal.t) ~(date : Date.t) ~(recorded_at : Time
                     (List.map group ~f:(fun (c : Venue.Cash_dividend.t) -> c.id))))
         | _ -> None)
   in
-  (outcome, (headline :: unmatched) @ fees @ duplicates)
+  ( outcome,
+    (headline :: skipped "activities" activities)
+    @ skipped "cash-dividend records" dividends
+    @ unmatched @ fees @ duplicates )
 
 (* A DISTRIBUTION NOTHING RECORDS (fix round 1). When the venue processes a
    distribution or a split it rescales its ADJUSTED bars before the ex-date, and
@@ -464,7 +480,13 @@ let remark_recent ~(read : Venue.Read.t) ~(journal : Journal.t) ~(date : Date.t)
         |> List.filter ~f:(fun (d, _) -> Date.( < ) d date)
         |> List.Assoc.sort_and_group ~compare:Date.compare
       in
+      (* Each date on its own: one that raises is said and the dates after it
+         are still re-marked. *)
       Deferred.List.iter ~how:`Sequential pending ~f:(fun (d, symbols) ->
+          guarded ~on_event
+            ~what:(sprintf "re-marking %s from the bar" (Date.to_string d))
+            ~date ~default:()
+          @@ fun () ->
           match%map read.Venue.Read.session_bars symbols ~date:d with
           | Error e ->
               on_event
@@ -509,7 +531,9 @@ let pull_cash ~(read : Venue.Read.t) ~(journal : Journal.t) ~(date : Date.t)
         (strategy_symbols journal
         @
         match activities with
-        | Ok xs -> List.filter_map xs ~f:(fun (a : Venue.Activity.t) -> a.symbol)
+        | Ok page ->
+            List.filter_map page.Venue.Page.items ~f:(fun (a : Venue.Activity.t) ->
+                a.symbol)
         | Error _ -> [])
         |> Symbol.Set.of_list |> Set.to_list
       in
@@ -559,6 +583,140 @@ let unrecorded_today ~(read : Venue.Read.t) ~(journal : Journal.t) ~(date : Date
               unrecorded_moves ~date ~adjusted ~raw_today:session_bars ~raw_before
                 ~recorded))
 
+(* THE DEFERRAL'S BOUND (fix round 3). A pull can fail every night -- a
+   persistent 403, a page the venue keeps serving with something this build
+   cannot read -- and a deferral with no end would keep a strategy in real
+   drawdown from ever stopping. So the drawdown rule is deferred for a failed
+   pull only while at most [pull_deferral_sessions] recorded sessions stand
+   after the last good pull (after the first session, when there has never
+   been one); past that it is evaluated without the dividends, and said. The
+   desk is told by a journaled alert, [cash_pull_failing], on the first night
+   deferred and on the night the bound is passed -- once each per run of
+   failures, never nightly. *)
+let pull_deferral_sessions = 2
+
+let sessions_unpulled (journal : Journal.t) =
+  let dates = Journal.session_dates journal in
+  let after d = List.count dates ~f:(fun x -> Date.( > ) x d) in
+  match (Journal.cash_pulled_through journal, dates) with
+  | Some d, _ -> after d
+  | None, first :: _ -> after first
+  | None, [] -> 0
+
+(* An alert written once: none of [kind] already recorded whose line [matches]. *)
+let alert_once ~(journal : Journal.t) ~(kind : string) ~(limit_name : string)
+    ~(matches : string -> bool) (line : string) =
+  if
+    not
+      (List.exists (Journal.recent_alerts journal ~limit:1_000)
+         ~f:(fun (a : Journal.Alert.t) ->
+           String.equal a.kind kind
+           && String.equal a.limit_name limit_name
+           && matches a.line))
+  then
+    Journal.record_alert journal
+      { Journal.Alert.at = Time_ns.now (); kind; limit_name; line }
+
+(* Which strategies' drawdown rule waits tonight, and why: every one, on a
+   failed pull inside its bound; a strategy that held a name the bars flag as
+   an unrecorded distribution -- one night per strategy by construction: a
+   strategy deferred for a distribution on the session before is not deferred
+   for one again tonight (each such deferral is journaled as an alert,
+   [drawdown_deferred], which is what the next night reads). *)
+let deferrals ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
+    ~(journal : Journal.t) ~zone ~(date : Date.t) ~(pulled : [ `Pulled | `Not_pulled ])
+    ~(unrecorded : Symbol.t list) ~(on_event : string -> unit) : string String.Map.t =
+  let day = Date.to_string date in
+  let names =
+    List.filter_map strategies
+      ~f:(fun (s : Ohcamel.Config.Book.Signals_spec.Strategy.t) ->
+        Option.map s.stop ~f:(fun _ -> s.name))
+  in
+  let pull_reason =
+    match pulled with
+    | `Pulled -> None
+    | `Not_pulled ->
+        let n = sessions_unpulled journal in
+        let since =
+          match Journal.cash_pulled_through journal with
+          | Some d -> "last pulled " ^ Date.to_string d
+          | None -> "never pulled"
+        in
+        let key line = String.is_substring line ~substring:("(" ^ since ^ ")") in
+        if n <= pull_deferral_sessions then (
+          let line =
+            sprintf
+              "the venue's dividends could not be pulled (%s); the drawdown rule is \
+               deferred, for at most %d sessions"
+              since pull_deferral_sessions
+          in
+          on_event
+            (sprintf
+               "session %s: %s; the drawdown rule is deferred tonight for every strategy \
+                (session %d of at most %d), so an ex-date's fall may lack its credit; \
+                the sessions rule runs"
+               day line n pull_deferral_sessions);
+          alert_once ~journal ~kind:"cash_pull_failing" ~limit_name:"dividends"
+            ~matches:(fun l -> key l && String.is_substring l ~substring:"is deferred")
+            line;
+          Some "the venue's dividends could not be pulled tonight")
+        else
+          let line =
+            sprintf
+              "the venue's dividends have not been pulled for %d sessions (%s); the \
+               drawdown rule is evaluated without them"
+              n since
+          in
+          on_event (sprintf "session %s: %s" day line);
+          alert_once ~journal ~kind:"cash_pull_failing" ~limit_name:"dividends"
+            ~matches:(fun l -> key l && String.is_substring l ~substring:"without them")
+            line;
+          None
+  in
+  let previous =
+    List.filter (Journal.session_dates journal) ~f:(fun d -> Date.( < ) d date)
+    |> List.last
+  in
+  let deferred_for_a_distribution_on d strategy =
+    List.exists (Journal.recent_alerts journal ~limit:1_000)
+      ~f:(fun (a : Journal.Alert.t) ->
+        String.equal a.kind "drawdown_deferred"
+        && String.equal a.limit_name strategy
+        && String.is_prefix a.line ~prefix:(sprintf "session %s:" (Date.to_string d)))
+  in
+  List.filter_map names ~f:(fun strategy ->
+      match pull_reason with
+      | Some why -> Some (strategy, why)
+      | None -> (
+          let held = Stop.held_before ~journal ~zone ~strategy date in
+          match List.filter unrecorded ~f:(List.mem held ~equal:Symbol.equal) with
+          | [] -> None
+          | flagged -> (
+              let why =
+                sprintf
+                  "%s moved by a distribution or split no record dates (the venue's \
+                   adjusted and raw closes disagree)"
+                  (String.concat ~sep:", " (List.map flagged ~f:Symbol.to_string))
+              in
+              match previous with
+              | Some p when deferred_for_a_distribution_on p strategy ->
+                  on_event
+                    (sprintf
+                       "session %s: %s was deferred for a distribution last session; its \
+                        drawdown rule is evaluated tonight (%s)"
+                       day strategy why);
+                  None
+              | _ ->
+                  Journal.record_alert journal
+                    {
+                      Journal.Alert.at = Time_ns.now ();
+                      kind = "drawdown_deferred";
+                      limit_name = strategy;
+                      line = sprintf "session %s: %s" day why;
+                    };
+                  Some (strategy, why))))
+  |> String.Map.of_alist_reduce ~f:(fun a _ -> a)
+
 (* AFTER A SESSION IS ON THE RECORD, in this order, because each step changes
    what the next reads: last-print marks of the sessions before re-marked from
    the bars now filed; the venue's dividends and fees pulled; the bars checked
@@ -593,29 +751,10 @@ let after_recorded ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t li
   let%bind unrecorded =
     unrecorded_today ~read ~journal ~date ~adjusted ~session_bars ~on_event
   in
-  (match pulled with
-  | `Pulled -> ()
-  | `Not_pulled ->
-      on_event
-        (sprintf
-           "session %s: the drawdown rule is deferred tonight for every strategy: the \
-            venue's dividends could not be pulled, so an ex-date's fall may lack its \
-            credit; the sessions rule runs"
-           day));
-  let defer_drawdown strategy =
-    match pulled with
-    | `Not_pulled -> Some "the venue's dividends could not be pulled tonight"
-    | `Pulled -> (
-        let held = Stop.held_before ~journal ~zone ~strategy date in
-        match List.filter unrecorded ~f:(List.mem held ~equal:Symbol.equal) with
-        | [] -> None
-        | names ->
-            Some
-              (sprintf
-                 "%s moved by a distribution or split no record dates (the venue's \
-                  adjusted and raw closes disagree)"
-                 (String.concat ~sep:", " (List.map names ~f:Symbol.to_string))))
+  let deferrals =
+    deferrals ~strategies ~journal ~zone ~date ~pulled ~unrecorded ~on_event
   in
+  let defer_drawdown strategy = Map.find deferrals strategy in
   (match
      Or_error.try_with (fun () ->
          Stop.evaluate ~defer_drawdown ~journal ~strategies ~zone ~at:(Time_ns.now ())
@@ -637,7 +776,8 @@ let after_recorded ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t li
            (Error.to_string_hum e)));
   return ()
 
-let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
+let run_forever ~(time_source : Time_source.t)
+    ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
     ~(read : Venue.Read.t) ~(graph : Graph.t) ~(journal : Journal.t) ~(confidence : float)
     ~(book_is_current : unit -> bool) ~(on_recorded : Date.t -> unit)
     ~(on_event : string -> unit) : unit Deferred.t =
@@ -646,7 +786,7 @@ let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
   let record_now date returns ~session_bars =
     Or_error.try_with (fun () ->
         record_if_current ~book_is_current ~session_bars ~graph ~journal ~date ~returns
-          ~mark_equity:true ~confidence ~recorded_at:(Time_ns.now ()))
+          ~mark_equity:true ~confidence ~recorded_at:(Time_source.now time_source))
   in
   (* The session's closes from the venue's bars, for its marks: a read that fails marks every
      name from its last print, tagged so, and re-marked once the bar is filed. *)
@@ -663,11 +803,11 @@ let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
              "session close: the venue's clock is unavailable (%s); asking again in 10 \
               min"
              (Error.to_string_hum e));
-        let%bind () = Clock_ns.after retry_every in
+        let%bind () = Time_source.after time_source retry_every in
         wait_for_close ()
     | Ok clock -> close_when_due clock
   and close_when_due clock =
-    let%bind () = Clock_ns.at (due clock) in
+    let%bind () = Time_source.at time_source (due clock) in
     close clock.Venue.Session_clock.next_close_date 1
   and close date attempt =
     let%bind plan, silent_names, adjusted =
@@ -690,7 +830,7 @@ let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
           (sprintf
              "session %s: windows not rolled yet (%s); attempt %d of %d, again in 10 min"
              (day date) why attempt attempts);
-        let%bind () = Clock_ns.after retry_every in
+        let%bind () = Time_source.after time_source retry_every in
         close date (attempt + 1)
     | _ -> (
         let returns, how =
@@ -711,7 +851,7 @@ let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
               (sprintf
                  "session %s: not recorded yet (%s); attempt %d of %d, again in 10 min"
                  (day date) not_current attempt attempts);
-            let%bind () = Clock_ns.after retry_every in
+            let%bind () = Time_source.after time_source retry_every in
             close date (attempt + 1)
         | Ok `Book_not_current ->
             on_event
@@ -745,7 +885,7 @@ let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
     | None ->
         (* Past this close before the clock is asked again, so its answer is
            the next session's close and not this one's. *)
-        let%bind () = Clock_ns.after (Time_ns.Span.of_min 1.0) in
+        let%bind () = Time_source.after time_source (Time_ns.Span.of_min 1.0) in
         wait_for_close ()
   (* A write that failed (Session_close.record's own comment: the journal is
      the record) left the live graph untouched, so the safe thing to do is
@@ -765,7 +905,7 @@ let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
      records late, goes to the kept clock's session directly instead of asking
      the venue what comes next. *)
   and retry date returns how ~adjusted ~session_bars ~why ~held =
-    let%bind () = Clock_ns.after retry_every in
+    let%bind () = Time_source.after time_source retry_every in
     let again ~held =
       match record_now date returns ~session_bars with
       | Ok ((`Recorded | `Already_recorded) as outcome) ->
@@ -799,7 +939,7 @@ let run_forever ~(strategies : Ohcamel.Config.Book.Signals_spec.Strategy.t list)
           if Date.( > ) clock.Venue.Session_clock.next_close_date date then Some clock
           else None
         in
-        match retry_or_give_up ~now:(Time_ns.now ()) ~date clock with
+        match retry_or_give_up ~now:(Time_source.now time_source) ~date clock with
         | `Give_up ->
             on_event
               (sprintf

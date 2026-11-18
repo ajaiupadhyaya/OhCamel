@@ -5756,22 +5756,15 @@ let test_a_crash_left_pending_is_retried_unless_its_orders_were_journaled () =
   Alcotest.(check int) "two sent in all" 2 (D.Sim_venue.received f.venue);
   e.e_cleanup ()
 
-(* ---- Task 1.8, fix round 1: the close's night, in its order -------------- *)
+(* ---- Task 1.8, fix rounds 1 and 3: the close's night, in its order ------- *)
 
-(* run_forever, end to end, on a venue whose clock names a close already past --
-   2026-11-03 21:00Z, so the close is due at once and nothing waits on the wall --
-   and answers an error on every later call, so the loop then idles. s_tlt holds 100
-   TLT bought at 90.00 on 2026-11-02 on 10,000 allocated, with a drawdown line of
-   0.2%. TLT closes 90.00, then 89.70 on its ex-date for 0.30: -30.00 marked, 0.3% of
-   10,000, past the line unless the 30.00 is credited before the stop rules read it.
-
-   [cash_dividends] is what the venue answers for the night's pull; [adjusted_before]
-   is the venue's ADJUSTED close for 2026-11-02 (its raw one is 90.00): 89.70 when
-   the venue has processed the distribution, 90.00 when it has not. Returns the
-   journal and what the close said, once the night's sub-ledger hook has run -- the
-   last step after the stop rules. *)
+(* s_tlt holds 100 TLT bought at 90.00 on 2026-11-02 on 10,000 allocated, with a
+   drawdown line of 0.2%. TLT closes 90.00, then 89.70 on its ex-date for 0.30: -30.00
+   marked, 0.3% of 10,000, past the line unless the 30.00 is credited before the stop
+   rules read it. *)
 let tlt = Symbol.of_string "TLT"
 let day = Date.of_string
+let utc = Time_ns.of_string_with_utc_offset
 
 let tlt_bar d close =
   {
@@ -5783,9 +5776,40 @@ let tlt_bar d close =
     volume = 1e6;
   }
 
-let a_night_on_tlt ~cash_dividends ~adjusted_before =
+let tlt_strategies =
+  [
+    {
+      Ohcamel.Config.Book.Signals_spec.Strategy.name = "s_tlt";
+      symbols = [ "TLT" ];
+      max_age = 3;
+      sizing = Ohcamel.Config.Book.Signals_spec.Incubation;
+      capital_fraction = 0.01;
+      cadence = Ohcamel.Config.Book.Signals_spec.Cadence.Daily;
+      adjust = Ohcamel.Config.Book.Signals_spec.Adjust.Intraday;
+      max_age_minutes = 20;
+      horizon = Ohcamel.Config.Book.Signals_spec.Horizon.Carry;
+      stop =
+        Some { Ohcamel.Config.Book.Signals_spec.Stop.drawdown = 0.002; sessions = 250 };
+      reinstated = None;
+    };
+  ]
+
+let record_tlt_session journal d close =
+  D.Journal.record_marks journal
+    ~source:(fun _ -> `Bar)
+    [ { D.Journal.Mark.date = day d; symbol = tlt; close; qty = 100.0 } ];
+  D.Journal.record_session journal
+    {
+      D.Journal.Session.date = day d;
+      equity_close = 1_000_000.0;
+      cash_close = 991_000.0;
+      gross_close = 9_000.0;
+      net_close = 9_000.0;
+      recorded_at = utc (d ^ "T21:05:00Z");
+    }
+
+let tlt_journal () =
   let journal = Or_error.ok_exn (D.Journal.open_ ~path:":memory:") in
-  let at = Time_ns.of_string_with_utc_offset in
   let o =
     {
       (D.Order.create
@@ -5806,34 +5830,78 @@ let a_night_on_tlt ~cash_dividends ~adjusted_before =
   D.Journal.insert_order journal o ~source:"signal:s_tlt:1"
     ~decision_price:(Price.of_float 90.0)
     ~arrival:(Some (Price.of_float 89.99, Price.of_float 90.01))
-    ~verdict:`Null ~at:(at "2026-11-02T15:00:00Z");
+    ~verdict:`Null ~at:(utc "2026-11-02T15:00:00Z");
   ignore
     (D.Journal.record_fill journal o
        {
          D.Order.Fill.execution_id = "x-night";
          qty = 100.0;
          price = Price.of_float 90.0;
-         at = at "2026-11-02T15:00:01Z";
+         at = utc "2026-11-02T15:00:01Z";
          position_qty = None;
        }
       : bool);
   D.Journal.record_sizing journal ~strategy:"s_tlt" ~sequence:1
-    ~at:(at "2026-11-02T15:00:00Z") ~tier:"incubation" ~scale:1.0 ~allocated:10_000.0
+    ~at:(utc "2026-11-02T15:00:00Z") ~tier:"incubation" ~scale:1.0 ~allocated:10_000.0
     ~mode:"open";
-  D.Journal.record_marks journal
-    ~source:(fun _ -> `Bar)
-    [
-      { D.Journal.Mark.date = day "2026-11-02"; symbol = tlt; close = 90.0; qty = 100.0 };
-    ];
-  D.Journal.record_session journal
-    {
-      D.Journal.Session.date = day "2026-11-02";
-      equity_close = 1_000_000.0;
-      cash_close = 991_000.0;
-      gross_close = 9_000.0;
-      net_close = 9_000.0;
-      recorded_at = at "2026-11-02T21:05:00Z";
-    };
+  record_tlt_session journal "2026-11-02" 90.0;
+  journal
+
+let page items = { D.Venue.Page.items; skipped = [] }
+
+(* The venue: [cash_dividends] is what the night's pull is answered; [adjusted_before]
+   the venue's ADJUSTED close for 2026-11-02 (its raw one is 90.00) -- 89.70 when it
+   has processed the distribution, 90.00 when it has not. Its clock names a close at
+   2026-11-03 21:00Z on its first call and answers an error after, so the loop idles. *)
+let tlt_read ~cash_dividends ~adjusted_before =
+  let asked = ref false in
+  let close = utc "2026-11-03T21:00:00Z" in
+  {
+    D.Venue.Read.name = "test";
+    account = (fun () -> return (Or_error.error_string "unused in this test"));
+    positions = (fun () -> return (Or_error.error_string "unused in this test"));
+    clock =
+      (fun () ->
+        if !asked then return (Or_error.error_string "asked once is enough")
+        else (
+          asked := true;
+          return
+            (Ok
+               {
+                 D.Venue.Session_clock.now = close;
+                 is_open = false;
+                 next_open = utc "2026-11-04T14:30:00Z";
+                 next_close = close;
+                 next_close_date = day "2026-11-03";
+               })));
+    latest_quote = (fun _ -> return (Or_error.error_string "unused in this test"));
+    daily_bars =
+      (fun _ ~days:_ ->
+        return
+          (Ok
+             (Symbol.Map.singleton tlt
+                [ tlt_bar "2026-11-02" adjusted_before; tlt_bar "2026-11-03" 89.7 ])));
+    last_prints = (fun _ -> return (Ok Symbol.Map.empty));
+    session_bars =
+      (fun _ ~date ->
+        return
+          (Ok
+             (match Date.to_string date with
+             | "2026-11-03" -> Symbol.Map.singleton tlt (tlt_bar "2026-11-03" 89.7)
+             | "2026-11-02" -> Symbol.Map.singleton tlt (tlt_bar "2026-11-02" 90.0)
+             | _ -> Symbol.Map.empty)));
+    activities = (fun ~since:_ ~kinds:_ -> return (Ok (page [])));
+    cash_dividends =
+      (fun _ ~start:_ ~end_:_ -> return (Or_error.map cash_dividends ~f:page));
+  }
+
+(* run_forever, end to end, on a clock of the case's own: it starts at the venue's
+   close and is advanced to the close's due time, five minutes on, so the close runs
+   and nothing waits on the wall or leaves a wall-clock timer behind. Returns the
+   journal and what the close said, once the night's sub-ledger hook has run -- the
+   last step after the stop rules. *)
+let a_night_on_tlt ~cash_dividends ~adjusted_before =
+  let journal = tlt_journal () in
   let graph =
     Graph.create ~starting_cash:(Notional.of_float 991_000.0)
       ~instruments:[ { Instrument.symbol = tlt; sector = Sector.of_string "BONDS" } ]
@@ -5844,81 +5912,32 @@ let a_night_on_tlt ~cash_dividends ~adjusted_before =
   Graph.set_returns graph tlt
     [| 0.001; -0.002; 0.003; -0.001; 0.0; 0.002; -0.003; 0.001; 0.0; -0.001 |];
   Graph.stabilize graph;
-  let asked = ref false in
-  let close = at "2026-11-03T21:00:00Z" in
-  let read : D.Venue.Read.t =
-    {
-      name = "test";
-      account = (fun () -> return (Or_error.error_string "unused in this test"));
-      positions = (fun () -> return (Or_error.error_string "unused in this test"));
-      clock =
-        (fun () ->
-          if !asked then return (Or_error.error_string "asked once is enough")
-          else (
-            asked := true;
-            return
-              (Ok
-                 {
-                   D.Venue.Session_clock.now = close;
-                   is_open = false;
-                   next_open = at "2026-11-04T14:30:00Z";
-                   next_close = close;
-                   next_close_date = day "2026-11-03";
-                 })));
-      latest_quote = (fun _ -> return (Or_error.error_string "unused in this test"));
-      daily_bars =
-        (fun _ ~days:_ ->
-          return
-            (Ok
-               (Symbol.Map.singleton tlt
-                  [ tlt_bar "2026-11-02" adjusted_before; tlt_bar "2026-11-03" 89.7 ])));
-      last_prints = (fun _ -> return (Ok Symbol.Map.empty));
-      session_bars =
-        (fun _ ~date ->
-          return
-            (Ok
-               (match Date.to_string date with
-               | "2026-11-03" -> Symbol.Map.singleton tlt (tlt_bar "2026-11-03" 89.7)
-               | "2026-11-02" -> Symbol.Map.singleton tlt (tlt_bar "2026-11-02" 90.0)
-               | _ -> Symbol.Map.empty)));
-      activities = (fun ~since:_ ~kinds:_ -> return (Ok []));
-      cash_dividends = (fun _ ~start:_ ~end_:_ -> return cash_dividends);
-    }
-  in
-  let strategies =
-    [
-      {
-        Ohcamel.Config.Book.Signals_spec.Strategy.name = "s_tlt";
-        symbols = [ "TLT" ];
-        max_age = 3;
-        sizing = Ohcamel.Config.Book.Signals_spec.Incubation;
-        capital_fraction = 0.01;
-        cadence = Ohcamel.Config.Book.Signals_spec.Cadence.Daily;
-        adjust = Ohcamel.Config.Book.Signals_spec.Adjust.Intraday;
-        max_age_minutes = 20;
-        horizon = Ohcamel.Config.Book.Signals_spec.Horizon.Carry;
-        stop =
-          Some { Ohcamel.Config.Book.Signals_spec.Stop.drawdown = 0.002; sessions = 250 };
-        reinstated = None;
-      };
-    ]
-  in
+  let clock = Time_source.create ~now:(utc "2026-11-03T21:00:00Z") () in
   let said = Queue.create () in
   let night = Ivar.create () in
   don't_wait_for
-    (D.Session_close.run_forever ~strategies ~read ~graph ~journal ~confidence:0.95
+    (D.Session_close.run_forever ~time_source:(Time_source.read_only clock)
+       ~strategies:tlt_strategies
+       ~read:(tlt_read ~cash_dividends ~adjusted_before)
+       ~graph ~journal ~confidence:0.95
        ~book_is_current:(fun () -> true)
        ~on_recorded:(fun _ -> Ivar.fill_if_empty night ())
        ~on_event:(Queue.enqueue said));
-  match%map Clock_ns.with_timeout (Time_ns.Span.of_sec 10.0) (Ivar.read night) with
-  | `Timeout -> Alcotest.fail "the close never reached its sub-ledger step"
-  | `Result () ->
-      Graph.destroy graph;
-      (journal, Queue.to_list said)
+  let%bind () = Scheduler.yield_until_no_jobs_remain () in
+  let%bind () = Time_source.advance_by_alarms clock ~to_:(utc "2026-11-03T21:05:00Z") in
+  let%map () = Scheduler.yield_until_no_jobs_remain () in
+  if not (Ivar.is_full night) then
+    Alcotest.fail "the close never reached its sub-ledger step";
+  Graph.destroy graph;
+  (journal, Queue.to_list said)
 
 let stopped journal =
   List.exists (D.Journal.recent_alerts journal ~limit:10) ~f:(fun a ->
       String.equal a.D.Journal.Alert.kind "incubation_stopped")
+
+let alerts_of journal kind =
+  List.count (D.Journal.recent_alerts journal ~limit:50) ~f:(fun a ->
+      String.equal a.D.Journal.Alert.kind kind)
 
 let said_any lines substring = List.exists lines ~f:(String.is_substring ~substring)
 
@@ -5953,15 +5972,19 @@ let test_the_night_pulls_before_the_stop_rules_read () =
   D.Journal.close journal
 
 (* The venue's dividends cannot be read: the drawdown rule is deferred for the night,
-   and said; nothing is stopped; the pull is not marked through the session. *)
+   and said for the strategy, naming the failed pull; nothing is stopped; the pull is
+   not marked through the session. The adjusted and raw series agree (90.00), so the
+   distribution check defers nothing: only the failed pull does. *)
 let test_a_failed_pull_defers_the_drawdown_rule () =
   let%map journal, lines =
-    a_night_on_tlt ~cash_dividends:(Or_error.error_string "503") ~adjusted_before:89.7
+    a_night_on_tlt ~cash_dividends:(Or_error.error_string "503") ~adjusted_before:90.0
   in
   Alcotest.(check bool) "no stop" false (stopped journal);
   Alcotest.(check bool)
-    "said" true
-    (said_any lines "the drawdown rule is deferred tonight for every strategy");
+    "said for the strategy, naming the failed pull" true
+    (said_any lines
+       "s_tlt drawdown rule deferred tonight: the venue's dividends could not be pulled \
+        tonight");
   Alcotest.(check (option string))
     "not pulled through" None
     (Option.map (D.Journal.cash_pulled_through journal) ~f:Date.to_string);
@@ -5985,18 +6008,61 @@ let test_an_unrecorded_distribution_defers_the_holder's_drawdown_rule () =
     "with nothing to suggest one, the fall stops it" true (stopped journal);
   D.Journal.close journal
 
+(* Fix round 3, N1: the deferral has a bound. The last good pull was 2026-11-02, and
+   every pull after it fails. Night 1 (11-03, one session unpulled) and night 2 (11-04,
+   two) defer the drawdown rule; night 3 (11-05, three) is past the bound and the rule
+   is evaluated without the dividends, so the -30.00 stops s_tlt. The desk is told by a
+   cash_pull_failing alert on night 1 and on night 3 only. *)
+let test_a_pull_failing_three_nights_defers_two_and_then_stops () =
+  let journal = tlt_journal () in
+  D.Journal.set_cash_pulled_through journal (day "2026-11-02");
+  let read =
+    tlt_read ~cash_dividends:(Or_error.error_string "403") ~adjusted_before:90.0
+  in
+  let night d =
+    record_tlt_session journal d 89.7;
+    let said = Queue.create () in
+    let%map () =
+      D.Session_close.after_recorded ~strategies:tlt_strategies ~read ~journal
+        ~date:(day d) ~adjusted:Symbol.Map.empty ~session_bars:Symbol.Map.empty
+        ~on_recorded:ignore ~on_event:(Queue.enqueue said)
+    in
+    (stopped journal, alerts_of journal "cash_pull_failing", Queue.to_list said)
+  in
+  let%bind stop1, alerts1, _ = night "2026-11-03" in
+  Alcotest.(check (pair bool int)) "night 1: deferred, alerted" (false, 1) (stop1, alerts1);
+  let%bind stop2, alerts2, _ = night "2026-11-04" in
+  Alcotest.(check (pair bool int))
+    "night 2: deferred, not alerted again" (false, 1) (stop2, alerts2);
+  let%map stop3, alerts3, lines3 = night "2026-11-05" in
+  Alcotest.(check (pair bool int))
+    "night 3: past the bound, stopped, alerted" (true, 2) (stop3, alerts3);
+  Alcotest.(check bool)
+    "and said" true
+    (said_any lines3
+       "the venue's dividends have not been pulled for 3 sessions (last pulled \
+        2026-11-02); the drawdown rule is evaluated without them");
+  D.Journal.close journal
+
 (* A step that raises -- here the venue's activities read itself, and its bars read --
    is caught and said; the close goes on to its stop rules and its sub-ledger hook,
-   with the drawdown rule deferred for a pull that never answered. *)
+   with the drawdown rule deferred for a pull that never answered. Two last-print marks
+   on two dates, the first of whose bars read raises: the second is still re-marked. *)
 let test_a_raising_read_does_not_stop_the_close () =
   let journal = Or_error.ok_exn (D.Journal.open_ ~path:":memory:") in
   let read : D.Venue.Read.t =
     {
       (clock_only_read (fun () -> return (Or_error.error_string "unused"))) with
       activities = (fun ~since:_ ~kinds:_ -> failwith "the activities read raised");
-      session_bars = (fun _ ~date:_ -> failwith "the bars read raised");
+      session_bars =
+        (fun _ ~date ->
+          if Date.equal date (day "2026-10-30") then failwith "the bars read raised"
+          else return (Ok (Symbol.Map.singleton tlt (tlt_bar (Date.to_string date) 90.5))));
     }
   in
+  D.Journal.record_marks journal
+    ~source:(fun _ -> `Last_print)
+    [ { D.Journal.Mark.date = day "2026-10-30"; symbol = tlt; close = 90.0; qty = 1.0 } ];
   D.Journal.record_marks journal
     ~source:(fun _ -> `Last_print)
     [ { D.Journal.Mark.date = day "2026-11-02"; symbol = tlt; close = 90.0; qty = 1.0 } ];
@@ -6014,10 +6080,42 @@ let test_a_raising_read_does_not_stop_the_close () =
     "the raise is said" true
     (said_any lines "the activities read raised");
   Alcotest.(check bool) "the bars' too" true (said_any lines "the bars read raised");
+  Alcotest.(check (option (float 1e-9)))
+    "and the next date was still re-marked" (Some 90.5)
+    (List.hd
+       (List.map
+          (D.Journal.marks journal (day "2026-11-02"))
+          ~f:(fun m -> m.D.Journal.Mark.close)));
   Alcotest.(check bool)
     "and the drawdown rule deferred" true
     (said_any lines "the drawdown rule is deferred tonight");
   D.Journal.close journal
+
+(* Fix round 3, N1 (d): a distribution's deferral is one night by construction. The
+   bars flag TLT on 2026-11-03 and again on 11-04 (as a split's following night might
+   read): s_tlt's drawdown rule is deferred on the 3rd -- journaled as a
+   drawdown_deferred alert -- and evaluated on the 4th, said so. *)
+let test_a_distribution_defers_one_night_only () =
+  let journal = tlt_journal () in
+  let zone = Time_float.Zone.of_utc_offset ~hours:(-5) in
+  let on d =
+    record_tlt_session journal d 89.7;
+    let said = Queue.create () in
+    let deferred =
+      D.Session_close.deferrals ~strategies:tlt_strategies ~journal ~zone ~date:(day d)
+        ~pulled:`Pulled ~unrecorded:[ tlt ] ~on_event:(Queue.enqueue said)
+    in
+    (Map.keys deferred, Queue.to_list said)
+  in
+  let first, _ = on "2026-11-03" in
+  Alcotest.(check (list string)) "the 3rd: deferred" [ "s_tlt" ] first;
+  let second, lines = on "2026-11-04" in
+  Alcotest.(check (list string)) "the 4th: not again" [] second;
+  Alcotest.(check bool)
+    "said" true
+    (said_any lines "s_tlt was deferred for a distribution last session");
+  D.Journal.close journal;
+  return ()
 
 let suites =
   [
@@ -6227,6 +6325,10 @@ let suites =
           test_a_failed_pull_defers_the_drawdown_rule;
         case "an unrecorded distribution defers the holder's drawdown rule"
           test_an_unrecorded_distribution_defers_the_holder's_drawdown_rule;
+        case "a pull failing three nights defers two and then stops"
+          test_a_pull_failing_three_nights_defers_two_and_then_stops;
+        case "a distribution defers one night only"
+          test_a_distribution_defers_one_night_only;
         case "a raising read does not stop the close"
           test_a_raising_read_does_not_stop_the_close;
       ] );

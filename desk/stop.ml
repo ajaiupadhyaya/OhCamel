@@ -75,7 +75,11 @@ let capital ~zone ~allocations ~previous date =
      orders.arrival_at existed is unknown; Task 1.7 added no field that could
      tell its arrivals from the ones before it, and none of its orders reached
      the live journal before this column did. *)
-let arrival_max_age_s = 60.0
+(* One constant with the rule at send (Rebalance.max_quote_stamp_age_s): there it
+   is measured against the quote's fetch, here against the order's creation, which
+   comes a little after the fetch -- so the drift can only make a fill unknown,
+   never measure one the rule at send would not have journaled. *)
+let arrival_max_age_s = Rebalance.max_quote_stamp_age_s
 
 let arrival_mid ~zone (f : Journal.Strategy_fill.t) =
   let regular_hours at =

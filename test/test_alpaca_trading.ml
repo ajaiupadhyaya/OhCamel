@@ -298,7 +298,7 @@ let activities_body =
 let test_account_activities_are_read_as_documented () =
   match Alpaca.activities_of_json (Yojson.Safe.from_string activities_body) with
   | Error e -> Alcotest.fail (Error.to_string_hum e)
-  | Ok activities -> (
+  | Ok { Venue.Page.items = activities; skipped = _ } -> (
       Alcotest.(check int) "three" 3 (List.length activities);
       match activities with
       | [ div; fee; cancelled ] ->
@@ -326,18 +326,57 @@ let test_account_activities_are_read_as_documented () =
             "a cancelled one says so" (Some "canceled") cancelled.Venue.Activity.status
       | _ -> Alcotest.fail "not three")
 
-let test_an_activity_that_misreads_is_refused () =
-  let refused body =
-    Result.is_error (Alpaca.activities_of_json (Yojson.Safe.from_string body))
-  in
-  Alcotest.(check bool) "not a list" true (refused {|{"message": "forbidden"}|});
+(* Fix round 3: one malformed item no longer refuses the page. A page holding a good
+   dividend, one whose net amount is "1e3" and one with no date reads as the good one,
+   with the other two skipped and said -- the first by its id. Only a body that is not
+   a list at all is refused. *)
+let test_a_malformed_activity_is_skipped_and_the_rest_kept () =
   Alcotest.(check bool)
-    "a net amount that is not a decimal" true
-    (refused
-       {|[{"activity_type": "DIV", "date": "2026-11-06", "id": "x::y", "net_amount": "1e3"}]|});
-  Alcotest.(check bool)
-    "no date" true
-    (refused {|[{"activity_type": "DIV", "id": "x::y", "net_amount": "1"}]|})
+    "not a list is refused" true
+    (Result.is_error
+       (Alpaca.activities_of_json (Yojson.Safe.from_string {|{"message": "forbidden"}|})));
+  match
+    Alpaca.activities_of_json
+      (Yojson.Safe.from_string
+         {|[{"activity_type": "DIV", "date": "2026-11-06", "id": "good::1", "net_amount": "30", "symbol": "TLT"},
+            {"activity_type": "DIV", "date": "2026-11-06", "id": "bad::2", "net_amount": "1e3"},
+            {"activity_type": "DIV", "id": "bad::3", "net_amount": "1"}]|})
+  with
+  | Error e -> Alcotest.failf "the page was refused: %s" (Error.to_string_hum e)
+  | Ok { Venue.Page.items; skipped } ->
+      Alcotest.(check (list string))
+        "the good one kept" [ "good::1" ]
+        (List.map items ~f:(fun (a : Venue.Activity.t) -> a.id));
+      Alcotest.(check int) "two skipped" 2 (List.length skipped);
+      Alcotest.(check bool)
+        "the first named by its id, with why" true
+        (String.is_substring (List.hd_exn skipped) ~substring:"bad::2"
+        && String.is_substring (List.hd_exn skipped) ~substring:"net_amount")
+
+(* And a cash-dividend record with no ex-date is skipped, the record beside it kept. *)
+let test_a_malformed_cash_dividend_is_skipped_and_the_rest_kept () =
+  match
+    Alpaca.cash_dividends_of_json
+      (Yojson.Safe.from_string
+         {|{"corporate_actions": {"cash_dividends": [
+             {"id": "ca-good", "symbol": "TLT", "ex_date": "2026-11-03", "rate": 0.3,
+              "cusip": "464287432", "foreign": false, "special": false, "process_date": "2026-11-06"},
+             {"id": "ca-bad", "symbol": "HYG", "rate": 0.4,
+              "cusip": "464288513", "foreign": false, "special": false, "process_date": "2026-11-06"}]},
+           "next_page_token": null}|})
+  with
+  | Error e -> Alcotest.failf "the page was refused: %s" (Error.to_string_hum e)
+  | Ok ({ Venue.Page.items; skipped }, _) ->
+      Alcotest.(check (list string))
+        "the good one kept" [ "ca-good" ]
+        (List.map items ~f:(fun (c : Venue.Cash_dividend.t) -> c.id));
+      Alcotest.(check bool)
+        "the bad one named" true
+        (match skipped with
+        | [ line ] ->
+            String.is_substring line ~substring:"ca-bad"
+            && String.is_substring line ~substring:"ex_date"
+        | _ -> false)
 
 (* GET /v1/corporate-actions?types=cash_dividend, CONSTRUCTED from Alpaca's documented
    corporate_actions_resp and cash_dividend shapes (its example: cusip, ex_date,
@@ -356,7 +395,7 @@ let test_a_cash_dividend_carries_its_ex_date () =
     Alpaca.cash_dividends_of_json (Yojson.Safe.from_string corporate_actions_body)
   with
   | Error e -> Alcotest.fail (Error.to_string_hum e)
-  | Ok (dividends, next) ->
+  | Ok ({ Venue.Page.items = dividends; _ }, next) ->
       Alcotest.(check (option string)) "one page" None next;
       Alcotest.(check (list string))
         "TLT, ex 2026-11-03, paid 2026-11-06, 0.30"
@@ -372,7 +411,7 @@ let test_a_cash_dividend_carries_its_ex_date () =
              (Yojson.Safe.from_string
                 {|{"corporate_actions": {}, "next_page_token": null}|})
          with
-        | Ok ([], None) -> true
+        | Ok ({ Venue.Page.items = []; skipped = [] }, None) -> true
         | _ -> false)
 
 (* Paging the activities: a full page asks for the next from its last id; a short one
@@ -397,14 +436,15 @@ let test_activity_paging_stops () =
   in
   let full = page (List.init 100 ~f:(sprintf "id-%03d")) in
   let next ?token ?(pages = 1) items = Alpaca.next_activity_page ~token ~pages items in
-  Alcotest.(check (option string)) "a full page goes on" (Some "id-099") (next full);
-  Alcotest.(check (option string)) "a short page ends" None (next (page [ "a"; "b" ]));
-  Alcotest.(check (option string))
-    "the same page again ends" None
-    (next ~token:"id-099" ~pages:2 full);
-  Alcotest.(check (option string))
-    "the cap ends" None
-    (next ~token:"x" ~pages:Alpaca.max_activity_pages full)
+  let show = function `Next t -> "next " ^ t | `Done -> "done" | `Capped -> "capped" in
+  Alcotest.(check string) "a full page goes on" "next id-099" (show (next full));
+  Alcotest.(check string) "a short page ends" "done" (show (next (page [ "a"; "b" ])));
+  Alcotest.(check string)
+    "the same page again ends" "done"
+    (show (next ~token:"id-099" ~pages:2 full));
+  Alcotest.(check string)
+    "the cap is said, not taken for the end" "capped"
+    (show (next ~token:"x" ~pages:Alpaca.max_activity_pages full))
 
 let suite =
   ( "alpaca_trading",
@@ -418,8 +458,10 @@ let suite =
       Alcotest.test_case "trade update messages" `Quick test_trade_update_messages;
       Alcotest.test_case "account activities are read as documented" `Quick
         test_account_activities_are_read_as_documented;
-      Alcotest.test_case "an activity that misreads is refused" `Quick
-        test_an_activity_that_misreads_is_refused;
+      Alcotest.test_case "a malformed activity is skipped and the rest kept" `Quick
+        test_a_malformed_activity_is_skipped_and_the_rest_kept;
+      Alcotest.test_case "a malformed cash dividend is skipped and the rest kept" `Quick
+        test_a_malformed_cash_dividend_is_skipped_and_the_rest_kept;
       Alcotest.test_case "a cash dividend carries its ex-date" `Quick
         test_a_cash_dividend_carries_its_ex_date;
       Alcotest.test_case "activity paging stops" `Quick test_activity_paging_stops;
