@@ -27,6 +27,7 @@ PRETTY = {
     "vol.forecast_league": "Vol forecast league", "cov.league": "Covariance league", "farm.sweep": "Strategy farm", "vol.surface_history": "Vol surface",
     "models.xs_lgbm": "Cross-section model", "regime.hmm": "Regime model", "ops.data_integrity": "Data integrity", "kronos.shadow": "Kronos shadow",
     "factors.screen": "Factor screen", "signals.daily": "Daily signals", "signals.overlay": "Exposure overlay", "desk.report": "Desk report",
+    "ingest.corp_actions": "Corporate actions",
 }
 
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -122,7 +122,7 @@ def _seconds(text):
 
 
 def test_schedules_cover_every_handler():
-    assert sorted(s["kind"] for s in SCHEDULES) == sorted(HANDLERS) and len(HANDLERS) == 8
+    assert sorted(s["kind"] for s in SCHEDULES) == sorted(HANDLERS) and len(HANDLERS) == 9
     assert len({s["name"] for s in SCHEDULES}) == len(SCHEDULES)
     for s in SCHEDULES:
         assert set(s) == B4_KEYS  # no max_age or other extra key: load_schedules would raise
@@ -144,3 +144,10 @@ def test_schedules_cover_every_handler():
     assert opt["cron"] == "20 16 * * 1-5"  # after 16:15 New York, session days
     assert opt["params"]["underlyings"] == list(OPTION_UNDERLYINGS)
     assert next(s for s in SCHEDULES if s["kind"] == "ingest.sec_facts")["heavy"] is True
+
+
+def test_corp_actions_freshness_is_due_three_hours_after_its_run():
+    # completion task 3.2: weekdays 18:20, so due 21:20 New York like every session dataset (+3 h)
+    entry = next(s for s in SCHEDULES if s["kind"] == "ingest.corp_actions")
+    assert entry["cron"] == "20 18 * * 1-5" and KIND_DATASET["ingest.corp_actions"] == "corp_actions"
+    assert freshness.FRESHNESS["corp_actions"] == {"rule": "session", "due": time(21, 20)}

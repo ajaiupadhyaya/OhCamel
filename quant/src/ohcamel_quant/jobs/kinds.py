@@ -101,7 +101,8 @@ _W = "ohcamel_quant.jobs.handlers.warehouse"
 for _kind, _mem, _heavy in (("ingest.universes", "S", False), ("ingest.bars_daily", "S", False),
                             ("ingest.bars_minute", "S", False), ("ingest.fred_warehouse", "S", False),
                             ("ingest.factors", "S", False), ("ingest.sec_facts", "M", True),
-                            ("ingest.holdings_13f", "S", False), ("ingest.option_snapshots", "S", False)):
+                            ("ingest.holdings_13f", "S", False), ("ingest.option_snapshots", "S", False),
+                            ("ingest.corp_actions", "S", False)):
     register(KindSpec(_kind, f"{_W}:{_kind.split('.', 1)[1]}", _mem, heavy=_heavy))
 
 # Lane M's products (compute plan M2-M8; ship plan Lane M). Private: scheduled only.

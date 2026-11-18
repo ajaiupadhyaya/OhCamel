@@ -175,3 +175,25 @@ def test_worker_runs_its_scheduler(tmp_path):
         w.request_stop()
         t.join(20)
         conn.close()
+
+
+def test_corp_actions_run_weekdays_at_1820_before_the_bars_and_alone_in_their_minute():
+    """Completion task 3.2: ingest.corp_actions, weekdays 18:20, class S, before the 18:30 daily bars it is
+    checked against, with no other job at 18:20 (the nightly backup is 06:30 UTC, deploy/systemd)."""
+    from zoneinfo import ZoneInfo
+
+    from ohcamel_quant.jobs.cron import fire_times, parse_cron
+
+    ny = ZoneInfo("America/New_York")
+    s = load_schedules(DEFAULT_PATH)
+    (e,) = [x for x in s.entries if x.kind == "ingest.corp_actions"]
+    assert (e.cron, e.mem_class, e.heavy, e.priority, e.params) == ("20 18 * * 1-5", "S", False, 2, {})
+    spec = REGISTRY["ingest.corp_actions"]
+    assert (spec.mem_class, spec.heavy, spec.public, spec.retries) == ("S", False, False, 2)
+    assert s.max_age_s["ingest.corp_actions"] == 78 * 3600
+    monday = datetime(2026, 11, 16).date()
+    at = {(x.name, (t.astimezone(ny).hour, t.astimezone(ny).minute))
+          for x in s.entries for t in fire_times(parse_cron(x.cron), monday)}
+    assert {n for n, hm in at if hm == (18, 20)} == {e.name}
+    (bars,) = [x for x in s.entries if x.kind == "ingest.bars_daily"]
+    assert [hm for n, hm in at if n == bars.name] == [(18, 30)]

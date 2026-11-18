@@ -235,6 +235,8 @@ def test_old_warehouse_findings_are_listed_but_only_new_ones_fail_the_lamp(monke
 
     from ohcamel_quant.warehouse import readers
     monkeypatch.setattr(readers, "ohlcv", lambda con, t, *a, **k: _DS(frames[t]))
+    # this stand-in warehouse has no tables; adjust_drift is tested on a real one (test_warehouse_adjust.py)
+    monkeypatch.setattr(DI, "adjust_drift", lambda con, tickers: ([], {"compared": 0}))
     c2 = ctx(None, {"tickers": ["OLD", "OK"]})
     c2._warehouse = WH()
     spec = DI.run({"tickers": ["OLD", "OK"]}, c2)

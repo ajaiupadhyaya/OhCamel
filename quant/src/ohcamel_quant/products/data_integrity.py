@@ -22,6 +22,19 @@ the archive under ``fixtures/archive/`` is how a repair is recorded. Checks, all
 - ``nonpositive``: a price at or below zero, or negative volume.
 - ``calendar``: duplicate or unsorted sessions.
 - ``stale``: the last bar is more than 5 business days older than the newest bar of any series checked.
+- ``adjust_drift`` (completion task 3.2, warehouse only): the adjusted close DERIVED from ``bars_raw`` and
+  ``corp_actions`` (``warehouse/adjust.py``) against the vendor's ``bars_daily.adj_close``, flagged when they
+  differ by more than ``DRIFT_RTOL`` (1e-6) relative. One finding per series, dated on the LAST session beyond
+  the tolerance: a backward adjustment by an action dated E moves every bar before E, so an action missing
+  from (or extra in) ``corp_actions`` shows as drift up to the session before E. Listed largest first, at most
+  ``DRIFT_LISTED``, the rest counted. Series with no raw bars yet, or no full corporate-action history yet
+  (the backfill is incomplete), are counted and named in a note, never reported as drift. Yahoo's own figures
+  wander by up to ~2e-6 on 1990-onward histories (float32 prices, rounded amounts: adjust.py's docstring), so
+  long histories can carry old findings of that size; like every old warehouse finding they are listed and
+  do not fail the lamp.
+- ``split_unconfirmed``: a ``split_suspect`` session of a warehouse series whose corporate-action history covers
+  it but records no split that day -- the page repair (``data/splits.py``) divides that history by a split
+  nobody recorded, which may be a real gap. Shown for a look; the ``split_suspect`` finding itself gates.
 """
 
 from __future__ import annotations
@@ -39,7 +52,10 @@ KIND = "ops.data_integrity"
 JUMP = 0.40
 STALE_BDAYS = 5
 RECENT_BDAYS = 10
-SERIOUS = ("split_suspect", "bad_print", "nonpositive", "calendar")
+DRIFT_RTOL = 1e-6
+DRIFT_LISTED = 25
+NAMES_LISTED = 12
+SERIOUS = ("split_suspect", "bad_print", "nonpositive", "calendar", "adjust_drift")
 COLUMNS = ["source", "ticker", "date", "check", "detail", "gating"]
 
 
@@ -93,6 +109,86 @@ def stale(last: dict[str, pd.Timestamp], bdays: int = STALE_BDAYS) -> list[dict[
              "detail": f"last bar {d.date()}, newest across series {newest.date()}"} for t, d in last.items() if d < cut]
 
 
+def _coverage(con: Any, tickers: list[str]) -> dict[str, pd.Timestamp]:
+    """Per ticker, the earliest window start of a successful ``ingest.corp_actions`` fetch: its corporate-action
+    history is known from there on."""
+    rows = con.execute("SELECT key, min(CAST(json_extract_string(detail, '$.window_start') AS DATE)) FROM ingest_log "
+                       "WHERE dataset = 'corp_actions' AND status = 'ok' AND list_contains(?, key) GROUP BY key",
+                       [tickers]).fetchall()
+    return {k: pd.Timestamp(d) for k, d in rows if d is not None}
+
+
+def adjust_drift(con: Any, tickers: list[str]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """``adjust_drift`` findings (all of them, largest first) and counts (module docstring)."""
+    from ..warehouse import adjust
+
+    counts: dict[str, Any] = {"compared": 0, "no_raw": [], "no_actions": [], "not_comparable": [], "raw_gaps": [],
+                              "failed": []}
+    out: list[dict[str, Any]] = []
+    if not tickers:
+        return out, counts
+    cover = _coverage(con, tickers)
+    for t in tickers:
+        raw = adjust.read_raw(con, t)
+        if raw.empty:
+            counts["no_raw"].append(t)
+            continue
+        vendor = con.execute("SELECT date, adj_close, source FROM bars_daily WHERE ticker = ? ORDER BY date", [t]).df()
+        if vendor.empty:
+            continue
+        if str(vendor["source"].iloc[-1]) == "stooq":       # Stooq's adj_close is its close: no dividends to compare
+            counts["not_comparable"].append(t)
+            continue
+        if t not in cover or cover[t] > raw.index[0]:
+            counts["no_actions"].append(t)
+            continue
+        try:
+            derived = adjust.series(raw, adjust.read_actions(con, t), dividends=True)["close"]
+        except ValueError as e:
+            counts["failed"].append(f"{t} ({e})")
+            continue
+        v = pd.Series(vendor["adj_close"].to_numpy(float), index=pd.DatetimeIndex(pd.to_datetime(vendor["date"])))
+        if not v.index.isin(derived.index).all():
+            counts["raw_gaps"].append(t)
+        common = v.index.intersection(derived.index)
+        rel = (derived.loc[common] / v.loc[common] - 1.0).abs()
+        counts["compared"] += 1
+        beyond = rel[rel > DRIFT_RTOL]
+        if beyond.empty:
+            continue
+        first, last, worst = beyond.index[0].date(), beyond.index[-1].date(), rel.idxmax().date()
+        out.append({"ticker": t, "date": str(last), "check": "adjust_drift", "size": float(rel.max()),
+                    "detail": f"adj_close derived from raw bars and corp_actions differs from the vendor's by up to "
+                              f"{rel.max():.2e} relative (on {worst}); {len(beyond)} of {len(rel)} sessions beyond "
+                              f"{DRIFT_RTOL:g}, {first} to {last}: an action missing from or extra in corp_actions "
+                              f"on the session after {last} shows this way"})
+    out.sort(key=lambda r: (-r["size"], r["ticker"]))
+    return out, counts
+
+
+def split_unconfirmed(con: Any, suspects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``split_unconfirmed`` findings for warehouse ``split_suspect`` rows (module docstring)."""
+    if not suspects:
+        return []
+    tickers = sorted({r["ticker"] for r in suspects})
+    cover = _coverage(con, tickers)
+    recorded = {(k, str(d)) for k, d in con.execute(
+        "SELECT ticker, ex_date FROM corp_actions WHERE kind = 'split' AND list_contains(?, ticker)",
+        [tickers]).fetchall()}
+    out = []
+    for r in suspects:
+        t, d = r["ticker"], r["date"]
+        if t in cover and cover[t] <= pd.Timestamp(d) and (t, d) not in recorded:
+            out.append({"source": "warehouse", "ticker": t, "date": d, "check": "split_unconfirmed",
+                        "detail": "corp_actions records no split on this session although its history covers it: "
+                                  "the page repair divides the history before it by a split nobody recorded"})
+    return out
+
+
+def _names(xs: list[str]) -> str:
+    return ", ".join(xs[:NAMES_LISTED]) + (f" and {len(xs) - NAMES_LISTED} more" if len(xs) > NAMES_LISTED else "")
+
+
 def _warehouse_tickers(ctx: Any) -> list[str]:
     try:
         return [r[0] for r in ctx.warehouse.execute("SELECT DISTINCT ticker FROM bars_daily ORDER BY 1").fetchall()]
@@ -123,6 +219,36 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
             if i % 50 == 0:
                 ctx.progress((i + 1) / len(tickers), t)
         rows += [{"source": "warehouse", **f} for f in stale(last)]
+    drift: list[dict[str, Any]] = []
+    counts: dict[str, Any] = {}
+    if last:
+        import duckdb
+
+        try:
+            suspects = [r for r in rows if r["source"] == "warehouse" and r["check"] == "split_suspect"]
+            rows += split_unconfirmed(ctx.warehouse, suspects)
+            drift, counts = adjust_drift(ctx.warehouse, list(last))
+        except duckdb.CatalogException as e:
+            notes.append(f"adjust_drift not run: the warehouse predates migration 002 ({e}); the next ingest migrates it")
+        if len(drift) > DRIFT_LISTED:
+            notes.append(f"adjust_drift: {len(drift) - DRIFT_LISTED} more series beyond {DRIFT_RTOL:g} not listed "
+                         f"(the {DRIFT_LISTED} largest are)")
+        rows += [{"source": "warehouse", **{k: v for k, v in r.items() if k != "size"}} for r in drift[:DRIFT_LISTED]]
+        if counts.get("no_raw"):
+            notes.append(f"adjust_drift: {len(counts['no_raw'])} series have no raw bars yet (the bars_raw backfill "
+                         f"has not reached them): {_names(counts['no_raw'])}")
+        if counts.get("no_actions"):
+            notes.append(f"adjust_drift: {len(counts['no_actions'])} series have no corporate-action history from "
+                         f"their first raw bar yet (ingest.corp_actions full backfill): {_names(counts['no_actions'])}")
+        if counts.get("not_comparable"):
+            notes.append(f"adjust_drift: {len(counts['not_comparable'])} series come from Stooq, whose adj_close carries "
+                         f"no dividends: {_names(counts['not_comparable'])}")
+        if counts.get("raw_gaps"):
+            notes.append(f"adjust_drift: {len(counts['raw_gaps'])} series have sessions in bars_daily with no raw bar "
+                         f"(compared where both exist): {_names(counts['raw_gaps'])}")
+        if counts.get("failed"):
+            notes.append(f"adjust_drift: the actions of {len(counts['failed'])} series could not be applied: "
+                         f"{_names(counts['failed'])}")
     root = F._root() / "history"
     for p in sorted(root.glob("*.parquet")):
         df = pd.read_parquet(p).rename(columns={"close_adj": "adj_close"})
@@ -146,7 +272,11 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     history = int((findings["check"].isin(SERIOUS) & ~findings["gating"].astype(bool)).sum()) if len(findings) else 0
     summary = pd.DataFrame([{"warehouse_series": checked["warehouse"], "fixture_series": checked["fixtures"],
                              **{f"n_{k}": int(by.get(k, 0)) for k in ("split_suspect", "jump", "bad_print",
-                                                                      "nonpositive", "calendar", "stale")},
+                                                                      "nonpositive", "calendar", "stale",
+                                                                      "split_unconfirmed")},
+                             "n_adjust_drift": len(drift), "adjust_compared": int(counts.get("compared", 0)),
+                             **{f"adjust_{k}": len(counts.get(k, [])) for k in ("no_raw", "no_actions",
+                                                                                "not_comparable", "raw_gaps")},
                              "n_gating": len(serious), "n_history": history}])
     n = checked["warehouse"] + checked["fixtures"]
     if n == 0:

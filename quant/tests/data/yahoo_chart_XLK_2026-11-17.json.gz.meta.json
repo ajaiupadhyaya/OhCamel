@@ -1,0 +1,28 @@
+{
+  "source": "yahoo",
+  "synthetic": false,
+  "symbol": "XLK",
+  "url": "https://query2.finance.yahoo.com/v8/finance/chart/XLK",
+  "params": {
+    "period1": 1717200000,
+    "period2": "the fetch instant plus one day, about 1795056427 (not recorded to the second)",
+    "interval": "1d",
+    "events": "div|split",
+    "includeAdjustedClose": "true"
+  },
+  "fetched": "2026-11-17T21:47:07-05:00",
+  "window": "2024-06-03 .. 2026-11-17 (the last bar is the completed 2026-11-17 session; fetched after the close)",
+  "n_rows": 618,
+  "events": {
+    "dividends": 10,
+    "splits": [
+      "2025-12-05 2:1"
+    ]
+  },
+  "original_sha256": "aa4ab5ecdfab665a0d2ce57d6783e61f77ac45917d8cfe1adb68e7a235310319",
+  "original_bytes": 70284,
+  "trimmed": "nothing: the vendor's response bytes, unmodified; gzip -n -9",
+  "why_it_runs_to_the_fetch_date": "Yahoo's close is split-adjusted and its adjclose dividend-adjusted for every action up to the day of the fetch, but the response lists only the events inside [period1, period2]; a slice that stopped earlier would carry later actions' factors with no event to explain them",
+  "measured": "warehouse/adjust.py's convention reproduces this payload's adjclose to 1.7e-07 relative at worst (the brief's gate is 1e-6)",
+  "used_by": "completion task 3.2: the raw-bars and corporate-action round trip (tests/test_warehouse_adjust.py)"
+}

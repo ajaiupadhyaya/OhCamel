@@ -56,6 +56,17 @@ describe("Watch", () => {
     expect(html).toContain("LARGE MOVES AND STALE SERIES");
   });
 
+  it("counts adjustment drift as a defect, the way the job's lamp does", () => {
+    const html = render(
+      <IntegrityReport
+        findings={[{ source: "warehouse", ticker: "XLK", date: "2026-09-19", check: "adjust_drift", detail: "up to 1.97e-03" }]}
+      />,
+    );
+    expect(html).toContain("ADJUST DRIFT");
+    expect(html).not.toContain("LARGE MOVES AND STALE SERIES");
+    expect(html).not.toContain("NO DEFECTS");
+  });
+
   it("states an empty ledger instead of an empty table", () => {
     expect(render(<ScreenReport rows={[]} />)).toContain("NO TRIALS IN THE LEDGER");
   });

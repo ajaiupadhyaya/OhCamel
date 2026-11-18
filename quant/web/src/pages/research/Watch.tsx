@@ -153,7 +153,8 @@ function IntegrityTables({ m }: { m: Manifest }) {
   return <IntegrityReport findings={f.rows ?? []} />;
 }
 
-const SERIOUS = new Set(["split_suspect", "bad_print", "nonpositive", "calendar"]);
+// ops.data_integrity's SERIOUS checks (products/data_integrity.py), the ones that can fail its lamp
+const SERIOUS = new Set(["split_suspect", "bad_print", "nonpositive", "calendar", "adjust_drift"]);
 
 export function IntegrityReport({ findings }: { findings: Finding[] }) {
   const serious = findings.filter((f) => SERIOUS.has(f.check));

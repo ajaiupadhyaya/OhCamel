@@ -51,7 +51,7 @@ PROD: dict[str, tuple[str, str]] = {
 # (key, label, who, the jobs it feeds, warehouse dataset, the track its first job writes). Vendor
 # names from data/prices.py's vendor chain and each ingest module.
 FEEDS: tuple[tuple[str, str, str, tuple[str, ...], str, str], ...] = (
-    ("prices", "Prices", "Yahoo, Alpaca, Stooq", ("ingest.bars_daily",), "bars_daily", "daily"),
+    ("prices", "Prices", "Yahoo, Alpaca, Stooq", ("ingest.bars_daily", "ingest.corp_actions"), "bars_daily", "daily"),
     ("minute", "Minute bars", "Alpaca (IEX)", ("ingest.bars_minute",), "bars_minute", "minute"),
     ("cboe", "Option chains", "Cboe, 15-minute delay", ("ingest.option_snapshots",), "option_snapshots", "options"),
     ("fred", "Rates & macro", "FRED", ("ingest.fred_warehouse", "ingest.fred"), "fred", "macro"),

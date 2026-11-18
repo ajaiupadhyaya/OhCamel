@@ -1,0 +1,28 @@
+{
+  "source": "yahoo",
+  "synthetic": false,
+  "symbol": "AAPL",
+  "url": "https://query2.finance.yahoo.com/v8/finance/chart/AAPL",
+  "params": {
+    "period1": 1577836800,
+    "period2": "the fetch instant plus one day, about 1795056427 (not recorded to the second)",
+    "interval": "1d",
+    "events": "div|split",
+    "includeAdjustedClose": "true"
+  },
+  "fetched": "2026-11-17T21:47:07-05:00",
+  "window": "2020-01-02 .. 2026-11-17 (the last bar is the completed 2026-11-17 session; fetched after the close)",
+  "n_rows": 1729,
+  "events": {
+    "dividends": 28,
+    "splits": [
+      "2020-08-31 4:1"
+    ]
+  },
+  "original_sha256": "f9d3acdfdca880ada95b7703250681d25dbe723783ac289a51dea80b544afb5b",
+  "original_bytes": 191973,
+  "trimmed": "nothing: the vendor's response bytes, unmodified; gzip -n -9",
+  "why_it_runs_to_the_fetch_date": "Yahoo's close is split-adjusted and its adjclose dividend-adjusted for every action up to the day of the fetch, but the response lists only the events inside [period1, period2]; a slice that stopped earlier would carry later actions' factors with no event to explain them",
+  "measured": "warehouse/adjust.py's convention reproduces this payload's adjclose to 4.2e-07 relative at worst (the brief's gate is 1e-6)",
+  "used_by": "completion task 3.2: the raw-bars and corporate-action round trip (tests/test_warehouse_adjust.py)"
+}

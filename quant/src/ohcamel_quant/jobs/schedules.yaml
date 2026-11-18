@@ -23,6 +23,7 @@ max_age:
   ingest.sec_facts: 204h
   ingest.holdings_13f: 204h
   ingest.option_snapshots: 78h
+  ingest.corp_actions: 78h
   # Lane M (products). Nightly kinds 78h like Lane C's session kinds; intraday 35m (one missed run + slack,
   # the deck's MC_MAX_AGE_S on ship/lane-f).
   risk.mc_atlas: 78h
@@ -122,6 +123,17 @@ schedules:
     cron: "20 16 * * 1-5"
     kind: ingest.option_snapshots
     params: {underlyings: [XLB, XLC, XLE, XLF, XLI, XLK, XLP, XLRE, XLU, XLV, XLY, SPY, QQQ, IWM, TLT, GLD, TSLA, NVDA, AAPL, AMZN, PLTR, AMD, META, MSFT, GOOGL, AVGO, MSTR, NFLX, COIN, HOOD]}
+    priority: 2
+    mem_class: S
+    heavy: false
+
+  # Completion task 3.2: every split and cash dividend of the universe (Yahoo events, the last 60 days),
+  # before the 18:30 daily bars, so ops.data_integrity's adjust_drift (19:15) compares tonight's vendor
+  # series with tonight's actions. Light: one ~5 KB response per ticker.
+  - name: warehouse-corp-actions
+    cron: "20 18 * * 1-5"
+    kind: ingest.corp_actions
+    params: {}
     priority: 2
     mem_class: S
     heavy: false

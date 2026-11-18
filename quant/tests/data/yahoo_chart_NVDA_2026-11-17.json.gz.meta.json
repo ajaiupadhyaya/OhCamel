@@ -1,0 +1,28 @@
+{
+  "source": "yahoo",
+  "synthetic": false,
+  "symbol": "NVDA",
+  "url": "https://query2.finance.yahoo.com/v8/finance/chart/NVDA",
+  "params": {
+    "period1": 1704067200,
+    "period2": "the fetch instant plus one day, about 1795056427 (not recorded to the second)",
+    "interval": "1d",
+    "events": "div|split",
+    "includeAdjustedClose": "true"
+  },
+  "fetched": "2026-11-17T21:47:07-05:00",
+  "window": "2024-01-02 .. 2026-11-17 (the last bar is the completed 2026-11-17 session; fetched after the close)",
+  "n_rows": 723,
+  "events": {
+    "dividends": 11,
+    "splits": [
+      "2024-06-10 10:1"
+    ]
+  },
+  "original_sha256": "d284f4be793bea3b674ac6ae2d8548d2a727715e0fd539d39cbeb1d362804ca2",
+  "original_bytes": 81692,
+  "trimmed": "nothing: the vendor's response bytes, unmodified; gzip -n -9",
+  "why_it_runs_to_the_fetch_date": "Yahoo's close is split-adjusted and its adjclose dividend-adjusted for every action up to the day of the fetch, but the response lists only the events inside [period1, period2]; a slice that stopped earlier would carry later actions' factors with no event to explain them",
+  "measured": "warehouse/adjust.py's convention reproduces this payload's adjclose to 3.3e-07 relative at worst (the brief's gate is 1e-6)",
+  "used_by": "completion task 3.2: the raw-bars and corporate-action round trip (tests/test_warehouse_adjust.py)"
+}

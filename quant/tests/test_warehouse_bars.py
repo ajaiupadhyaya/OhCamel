@@ -199,3 +199,87 @@ def test_universe_runs_carry_the_survivorship_note(tmp_path, monkeypatch):
                                                   price_providers=["yahoo"])))
     assert bars.run_bars_daily({}, ctx)["survivorship"] == SURVIVORSHIP
     assert HANDLERS["ingest.bars_daily"] is bars.run_bars_daily
+
+
+# ------------------------------------------------------------------ raw bars (completion task 3.2)
+def raw_rows(path, ticker="SPY"):
+    with open_ro(path) as con:
+        return con.execute("SELECT date, open, high, low, close, volume, source FROM bars_raw WHERE ticker = ? "
+                           "ORDER BY date", [ticker]).df()
+
+
+def with_splits(name, frame, splits):
+    """A vendor whose provenance lists the splits its bars are adjusted for (what data/prices.py's Yahoo does)."""
+    def fetch(ticker, start, end, settings):
+        out = frame[frame.index >= pd.Timestamp(start)]
+        return out.copy(), Provenance.now(name, symbol=ticker, splits=splits)
+    return fetch
+
+
+def test_yahoo_bars_are_stored_raw_too_by_multiplying_the_splits_back(setup, monkeypatch):
+    ctx, path = setup
+    monkeypatch.setitem(prices.PROVIDERS, "yahoo", with_splits("yahoo", SPY, [["2020-01-02", 2.0]]))
+    bars.run_bars_daily({"tickers": ["SPY"]}, ctx)
+    raw = raw_rows(path)
+    assert len(raw) == len(SPY) and set(raw["source"]) == {"yahoo"}
+    before = pd.to_datetime(raw["date"]) < "2020-01-02"
+    assert raw.loc[before, "close"].to_numpy() == pytest.approx(SPY.loc[SPY.index < "2020-01-02", "close"] * 2,
+                                                                 rel=1e-15)
+    assert raw.loc[before, "volume"].to_numpy() == pytest.approx(SPY.loc[SPY.index < "2020-01-02", "volume"] / 2,
+                                                                  rel=1e-15)
+    assert raw.loc[~before, "close"].to_numpy() == pytest.approx(SPY.loc[SPY.index >= "2020-01-02", "close"],
+                                                                  rel=1e-15)
+    assert "raw" in json.loads(last_log(path)[2])
+
+
+def test_a_readjustment_replaces_bars_daily_but_keeps_the_raw_rows(setup, monkeypatch):
+    ctx, path = setup
+    early = SPY[SPY.index <= "2026-05-15"]
+    monkeypatch.setitem(prices.PROVIDERS, "yahoo", with_splits("yahoo", early, []))
+    bars.run_bars_daily({"tickers": ["SPY"]}, ctx)
+    first = raw_rows(path)
+    readj = SPY.copy()
+    readj["adj_close"] *= 0.99                                   # a new dividend: bars_daily is replaced whole
+    monkeypatch.setitem(prices.PROVIDERS, "yahoo", with_splits("yahoo", readj, []))
+    bars.run_bars_daily({"tickers": ["SPY"]}, ctx)
+    after = raw_rows(path)
+    assert len(after) == len(SPY)                                # the new sessions added
+    assert after.iloc[: len(first)].equals(first)                # every earlier raw row as it was
+
+
+def test_alpaca_bars_store_alpacas_own_raw_pass(setup, monkeypatch):
+    ctx, path = setup
+    raw_spy = SPY[["open", "high", "low", "close", "volume"]] * 1.0
+    raw_spy.loc[raw_spy.index < "2020-01-02", ["open", "high", "low", "close"]] *= 3.0
+    asked = []
+    monkeypatch.setitem(prices.PROVIDERS, "yahoo", failing("yahoo", "HTTP 429"))
+    monkeypatch.setitem(prices.PROVIDERS, "alpaca", vendor("alpaca", SPY))
+    monkeypatch.setitem(bars.RAW_FETCH, "alpaca",
+                        lambda t, start, end, s: asked.append((t, start)) or raw_spy[raw_spy.index >= pd.Timestamp(start)])
+    bars.run_bars_daily({"tickers": ["SPY"]}, ctx)
+    raw = raw_rows(path)
+    assert asked == [("SPY", prices.ALPACA_HISTORY_START)] and set(raw["source"]) == {"alpaca"}
+    assert raw["close"].to_numpy() == pytest.approx(raw_spy["close"].to_numpy(), rel=1e-15)
+
+
+def test_a_vendor_with_no_raw_prices_stores_none_and_says_why(setup, monkeypatch):
+    ctx, path = setup
+    monkeypatch.setitem(prices.PROVIDERS, "yahoo", vendor("yahoo", SPY))      # no splits in its provenance
+    bars.run_bars_daily({"tickers": ["SPY"]}, ctx)
+    assert raw_rows(path).empty and stored(path)[0] == len(SPY)               # bars_daily unaffected
+    assert json.loads(last_log(path)[2])["raw"].startswith("none")
+
+
+def test_raw_missing_backfills_only_the_names_without_raw_rows(setup, monkeypatch):
+    ctx, path = setup
+    monkeypatch.setitem(prices.PROVIDERS, "yahoo", vendor("yahoo", SPY))
+    bars.run_bars_daily({"tickers": ["SPY", "QQQ"]}, ctx)                     # bars, no raw
+    monkeypatch.setitem(prices.PROVIDERS, "yahoo", with_splits("yahoo", SPY, []))
+    bars.run_bars_daily({"tickers": ["SPY"], "full": True}, ctx)               # SPY now has raw
+    spy_raw = raw_rows(path)
+    seen = []
+    real = bars.fetch_bars
+    monkeypatch.setattr(bars, "fetch_bars", lambda t, st, s, **kw: seen.append((t, kw["full"])) or real(t, st, s, **kw))
+    bars.run_bars_daily({"tickers": ["SPY", "QQQ"], "raw_missing": True}, ctx)
+    assert seen == [("QQQ", True)]                                             # resumable: only what is missing
+    assert len(raw_rows(path, "QQQ")) == len(SPY) and raw_rows(path).equals(spy_raw)

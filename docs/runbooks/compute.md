@@ -131,6 +131,32 @@ done
 `python -m ohcamel_quant.warehouse run <kind>` runs one ingest in the calling process, outside the queue. Do not
 use it on the droplet while the worker is up: DuckDB allows one writer process, and the worker is it.
 
+### Raw bars and corporate actions (completion task 3.2)
+
+Migration `002_raw_bars.sql` adds `bars_raw`, `corp_actions` and `corp_action_revisions`; the first ingest after
+the deploy applies it (three empty tables: no rewrite of `bars_daily`, no long lock). From then on the nightly
+`warehouse-corp-actions` (18:20) and `warehouse-bars-daily` (18:30) keep both tables current, but only from the
+deploy onward. The history is one backfill, in this order, through the queue:
+
+```bash
+dc exec ohcamel-worker python -m ohcamel_quant.jobs run-schedule warehouse-corp-actions --params '{"full": true, "missing": true}'
+dc exec ohcamel-worker python -m ohcamel_quant.jobs run-schedule warehouse-bars-daily --params '{"raw_missing": true}'
+```
+
+- The first asks Yahoo for every universe ticker's splits and dividends since 1990: one ~50 KB response per
+  ticker (monthly bars, `events=div|split`), ~560 requests, expected well under 15 minutes.
+- The second re-fetches, in full, every ticker with no raw bar yet: the same requests as the 2026-10-08 bars
+  backfill (563 keys, 322 cpu-s, 233 MB peak), so expect 15-30 minutes. It rewrites `bars_daily` with the
+  vendor's current series (what the nightly run does on any re-adjustment) and writes `bars_raw` beside it.
+- Both are resumable: `missing` / `raw_missing` select only the tickers not yet done, so a killed run is
+  finished by enqueueing it again. Both are retried twice by the queue, like every ingest.
+- Progress: `ops.data_integrity`'s notes name the series with no raw bars yet and those with no corporate-action
+  history yet; once both lists are empty, `adjust_drift` compares every series.
+- The cut-over (owner): after 30 nights in which `adjust_drift` has no gating finding, a follow-up commit stops
+  writing `bars_daily` and points `warehouse/readers.py` at `warehouse/adjust.py`. Expect OLD (non-gating)
+  `adjust_drift` findings of 1-2e-6 on 1990-onward histories: Yahoo's own float32 figures wander that far from
+  the exact convention (task-3.2 report).
+
 ## Risk-free rate for `api.portfolio_compare`
 
 `api.portfolio_compare` (and the synchronous `POST /api/portfolio/compare` it backs) needs a daily risk-free

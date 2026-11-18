@@ -53,7 +53,7 @@ def is_fresh(data_asof: date | None, last_ok_ran_at: datetime | None, now: datet
 
 
 DATASETS = ("universe_members", "bars_daily", "bars_minute", "fred", "factors", "sec_facts", "holdings_13f",
-            "option_snapshots")
+            "option_snapshots", "corp_actions")
 #: Session datasets are due 3 h after their schedule (warehouse/schedules.py); calendar
 #: datasets are stale when the last successful run is older than one missed run allows.
 FRESHNESS: dict[str, dict[str, Any]] = {
@@ -65,6 +65,7 @@ FRESHNESS: dict[str, dict[str, Any]] = {
     "sec_facts": {"rule": "age", "max_age_h": 204},
     "holdings_13f": {"rule": "age", "max_age_h": 204},
     "option_snapshots": {"rule": "session", "due": time(19, 20)},
+    "corp_actions": {"rule": "session", "due": time(21, 20)},
 }
 SUCCESS = ("ok", "partial")
 

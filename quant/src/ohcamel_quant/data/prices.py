@@ -193,11 +193,40 @@ def parse_yahoo_chart(
                 df = df.iloc[:-1]
                 notes.append(f"dropped in-progress session {session.date()} (not yet closed)")
     events = r.get("events") or {}
+    splits, dividends = yahoo_events(r)
     info = {
         "meta": meta, "notes": notes, "timezone": tzname,
         "n_dividends": len(events.get("dividends") or {}), "n_splits": len(events.get("splits") or {}),
+        "splits": splits, "dividends": dividends,
     }
     return _finish(df), info
+
+
+def yahoo_events(result: dict[str, Any]) -> tuple[list[list[Any]], list[list[Any]]]:
+    """A chart result's ``events`` as ``(splits, dividends)``, each a list sorted by date of
+    ``[ex-date ISO, value]``: a split's value is new shares per old share (numerator over denominator,
+    4.0 for 4:1, 0.1 for 1:10), a dividend's the vendor's amount per share, which Yahoo states
+    adjusted for every split up to the day of the request. The event's epoch is converted to an
+    exchange-local session date, as the bars' timestamps are. Malformed events raise ValueError."""
+    tzname = (result.get("meta") or {}).get("exchangeTimezoneName") or "UTC"
+    events = result.get("events") or {}
+
+    def day(epoch: Any) -> str:
+        return pd.Timestamp(int(epoch), unit="s", tz="UTC").tz_convert(tzname).date().isoformat()
+
+    splits: list[list[Any]] = []
+    for ev in (events.get("splits") or {}).values():
+        num, den = float(ev["numerator"]), float(ev["denominator"])
+        if not (np.isfinite(num) and np.isfinite(den) and num > 0 and den > 0):
+            raise ValueError(f"yahoo: malformed split event {ev!r}")
+        splits.append([day(ev["date"]), num / den])
+    dividends: list[list[Any]] = []
+    for ev in (events.get("dividends") or {}).values():
+        amount = float(ev["amount"])
+        if not (np.isfinite(amount) and amount >= 0):
+            raise ValueError(f"yahoo: malformed dividend event {ev!r}")
+        dividends.append([day(ev["date"]), amount])
+    return sorted(splits), sorted(dividends)
 
 
 def _fetch_yahoo(ticker: str, start: date, end: date | None, settings: Settings) -> tuple[pd.DataFrame, Provenance]:
@@ -217,6 +246,11 @@ def _fetch_yahoo(ticker: str, start: date, end: date | None, settings: Settings)
         "adjustment": "close split-adjusted; adj_close split+dividend adjusted (Yahoo adjclose)",
         "timezone": info["timezone"], "currency": info["meta"].get("currency"),
     }
+    if end is None:
+        # every split from the window's start to today: what the split-adjusted bars divide by, so
+        # warehouse/ingest/bars.py can multiply them back into raw prices. Only a window that runs to
+        # today lists them all: Yahoo adjusts for splits after `end` but lists none of them.
+        detail["splits"] = info["splits"]
     if info["notes"]:
         detail["notes"] = info["notes"]
     return df, Provenance.now("yahoo", **detail)
@@ -306,6 +340,32 @@ def _fetch_alpaca(ticker: str, start: date, end: date | None, settings: Settings
         adjustment="OHLCV adjustment=split; adj_close adjustment=all (splits, dividends, spin-offs)",
         notes=notes,
     )
+
+
+def fetch_alpaca_raw(ticker: str, start: date, end: date | None, settings: Settings) -> pd.DataFrame:
+    """Alpaca's UNADJUSTED daily bars (``adjustment=raw``: open, high, low, close, volume as printed), for the
+    warehouse's ``bars_raw``; the same window, feed fallback and in-progress rule as :func:`_fetch_alpaca`."""
+    if not (settings.alpaca_key_id and settings.alpaca_secret_key):
+        raise DataUnavailable("alpaca: API keys not configured")
+    sym = alpaca_symbol(ticker)
+    s = max(start, ALPACA_HISTORY_START)
+    end_utc = _now() - SIP_DELAY
+    if end is not None:
+        end_utc = min(end_utc, datetime(end.year, end.month, end.day, 23, 59, tzinfo=NY).astimezone(UTC))
+    try:
+        bars = _alpaca_pages(sym, s, end_utc, "raw", "sip", settings)
+    except http.FetchError as e:
+        if e.status != 403:
+            raise
+        bars = _alpaca_pages(sym, s, end_utc, "raw", "iex", settings)
+    df = parse_alpaca_bars(bars)
+    end_ny = end_utc.astimezone(NY)
+    if len(df) and df.index[-1] == pd.Timestamp(end_ny.date()) and end_ny.time() < NY_CLOSE:
+        df = df.iloc[:-1]
+    if df.empty:
+        raise DataUnavailable(f"alpaca: no raw bars for {sym}")
+    df.index.name = "date"
+    return df.astype(float)
 
 
 # ------------------------------------------------------------------- stooq

@@ -42,6 +42,13 @@ EXPECTED_COLUMNS = {
                      ("shares", F), ("shares_type", V), ("value_usd", F), ("weight", F)],
     "ingest_log": [("dataset", V), ("key", V), ("ran_at", T), ("rows", INT), ("status", V), ("detail", V),
                    ("data_asof", D)],
+    # 002_raw_bars.sql (completion task 3.2): raw bars, the actions that adjust them, and every revision
+    "bars_raw": [("ticker", V), ("date", D), ("open", F), ("high", F), ("low", F), ("close", F),
+                 ("volume", F), ("source", V)],
+    "corp_actions": [("ticker", V), ("ex_date", D), ("kind", V), ("ratio", F), ("cash", F), ("source", V),
+                     ("fetched_at", T)],
+    "corp_action_revisions": [("ticker", V), ("ex_date", D), ("kind", V), ("old_ratio", F), ("old_cash", F),
+                              ("new_ratio", F), ("new_cash", F), ("source", V), ("seen_at", T)],
 }
 EXPECTED_PKS = {
     "universe_members": ["universe", "ticker"],
@@ -52,6 +59,8 @@ EXPECTED_PKS = {
     "option_snapshots": ["underlying", "asof", "expiry", "strike", "cp"],
     "sec_facts": ["cik", "tag", "unit", "period_start", "period_end", "filed"],
     "holdings_13f": ["accession", "cusip", "put_call"],
+    "bars_raw": ["ticker", "date"],
+    "corp_actions": ["ticker", "ex_date", "kind"],
 }
 
 
@@ -88,8 +97,41 @@ def test_migrate_is_idempotent(tmp_path):
     path = tmp_path / "w.duckdb"
     with open_rw(path) as con:
         first = migrate(con)
-        assert migrate(con) == first == 1  # one migration file, 001_init.sql
-        assert con.execute("SELECT count(*) FROM schema_version").fetchone()[0] == 1
+        assert migrate(con) == first == 2  # 001_init.sql, 002_raw_bars.sql
+        assert con.execute("SELECT count(*) FROM schema_version").fetchone()[0] == 2
+
+
+def test_002_on_a_version_1_warehouse_adds_tables_and_leaves_bars_daily_alone(tmp_path):
+    """The live file is at version 1 with years of bars: 002 must only add (no rewrite, no long lock)."""
+    from ohcamel_quant.warehouse.db import migration_files
+
+    path = tmp_path / "w.duckdb"
+    con = duckdb.connect(str(path))
+    con.execute("CREATE TABLE schema_version (version INTEGER NOT NULL, applied_at TIMESTAMP NOT NULL)")
+    for stmt in migration_files()[0][1].read_text().split(";"):
+        body = "\n".join(x for x in stmt.splitlines() if not x.strip().startswith("--")).strip()
+        if body:
+            con.execute(body)
+    con.execute("INSERT INTO schema_version VALUES (1, now())")
+    con.execute("INSERT INTO bars_daily VALUES ('SPY', DATE '2026-11-16', 1, 2, 0.5, 1.5, 1.4, 10, 'yahoo', now())")
+    before = con.execute("SELECT * FROM bars_daily").fetchall()
+    con.close()
+    with open_rw(path) as con:
+        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 2
+        assert con.execute("SELECT * FROM bars_daily").fetchall() == before
+        assert con.execute("SELECT count(*) FROM bars_raw").fetchone()[0] == 0
+        assert con.execute("SELECT count(*) FROM corp_actions").fetchone()[0] == 0
+
+
+def test_corp_actions_refuses_the_same_action_twice(tmp_path):
+    with open_rw(tmp_path / "w.duckdb") as con:
+        row = "('AAPL', DATE '2020-08-31', 'split', 4.0, NULL, 'yahoo', now())"
+        con.execute(f"INSERT INTO corp_actions VALUES {row}")
+        with pytest.raises(duckdb.ConstraintException):
+            con.execute(f"INSERT INTO corp_actions VALUES {row}")
+        con.execute("INSERT INTO corp_actions VALUES ('AAPL', DATE '2020-08-31', 'dividend', NULL, 0.82, "
+                    "'yahoo', now())")  # a different kind on the same day is a different action
+        assert con.execute("SELECT count(*) FROM corp_actions").fetchone()[0] == 2
 
 
 def test_open_ro_refuses_writes_and_missing_files(tmp_path):

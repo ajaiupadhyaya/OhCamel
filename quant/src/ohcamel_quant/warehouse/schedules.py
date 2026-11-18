@@ -27,6 +27,7 @@ KIND_DATASET = {
     "ingest.universes": "universe_members", "ingest.bars_daily": "bars_daily", "ingest.bars_minute": "bars_minute",
     "ingest.fred_warehouse": "fred", "ingest.factors": "factors", "ingest.sec_facts": "sec_facts",
     "ingest.holdings_13f": "holdings_13f", "ingest.option_snapshots": "option_snapshots",
+    "ingest.corp_actions": "corp_actions",
 }
 
 SCHEDULES: list[dict] = [
@@ -47,6 +48,9 @@ SCHEDULES: list[dict] = [
     {"name": "warehouse-option-snapshots", "cron": "20 16 * * 1-5", "kind": "ingest.option_snapshots",
      "params": {"underlyings": list(OPTION_UNDERLYINGS)},
      "priority": 2, "mem_class": "S", "heavy": False},
+    # completion task 3.2: splits and dividends before the 18:30 daily bars they are checked against
+    {"name": "warehouse-corp-actions", "cron": "20 18 * * 1-5", "kind": "ingest.corp_actions", "params": {},
+     "priority": 2, "mem_class": "S", "heavy": False},
 ]
 
 MAX_AGE: dict[str, str] = {
@@ -58,4 +62,5 @@ MAX_AGE: dict[str, str] = {
     "ingest.sec_facts": "204h",
     "ingest.holdings_13f": "204h",
     "ingest.option_snapshots": "78h",
+    "ingest.corp_actions": "78h",
 }

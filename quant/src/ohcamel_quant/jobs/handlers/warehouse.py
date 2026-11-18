@@ -17,7 +17,8 @@ from ..artifacts import ArtifactSpec
 from ..context import JobContext
 
 KINDS = ("ingest.universes", "ingest.bars_daily", "ingest.bars_minute", "ingest.fred_warehouse",
-         "ingest.factors", "ingest.sec_facts", "ingest.holdings_13f", "ingest.option_snapshots")
+         "ingest.factors", "ingest.sec_facts", "ingest.holdings_13f", "ingest.option_snapshots",
+         "ingest.corp_actions")
 
 
 def as_spec(result: dict[str, Any]) -> ArtifactSpec:
@@ -45,3 +46,4 @@ factors = _adapter("ingest.factors")
 sec_facts = _adapter("ingest.sec_facts")
 holdings_13f = _adapter("ingest.holdings_13f")
 option_snapshots = _adapter("ingest.option_snapshots")
+corp_actions = _adapter("ingest.corp_actions")

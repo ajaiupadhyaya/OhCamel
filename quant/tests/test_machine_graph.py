@@ -569,6 +569,10 @@ def test_feeds_pull_their_jobs_and_the_first_writes_the_track():
     assert f["m"] == {"who": "Yahoo, Alpaca, Stooq", "dataset": "bars_daily", "keys": 12, "asof": "2026-10-28",
                       "ok": "2026-10-28T22:41:00", "behind": 1, "stale": False}
     assert "status" not in f and f["n"] == "Prices from Yahoo, Alpaca, Stooq"
+    # completion task 3.2: the corporate actions come from the same vendor; only the bars job writes the track
+    assert sorted(_edges_from(g, "feed:prices", "pull")) == ["j:ingest.bars_daily", "j:ingest.corp_actions"]
+    assert not _edges_from(g, "j:ingest.corp_actions", "write")
+    assert _node(g, "j:ingest.corp_actions")["l"] == "Corporate actions"
 
 
 def test_a_feed_carries_the_warehouses_stale_flag():
