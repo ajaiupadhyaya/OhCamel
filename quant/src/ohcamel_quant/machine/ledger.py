@@ -134,12 +134,12 @@ def load_static(path: Path, as_of: date) -> list[Row]:
 
 
 # ------------------------------------------------------------------ the backup
-# deploy/backup.sh names a step by its copy's stem (desk, recorder, jobs, option-snapshots, book, deploy-env), and
+# deploy/backup.sh names a step by its copy's stem (desk, recorder, jobs, option-snapshots, warehouse, book, deploy-env), and
 # a refused backup directory as backup-dir.
 _STEP = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _STEP_WORDS = {"backup-dir": "the backup directory", "desk": "the desk's journal", "recorder": "the recorder",
                "jobs": "jobs.sqlite", "option-snapshots": "the option snapshots", "book": "book.sexp",
-               "deploy-env": "the deploy settings"}
+               "deploy-env": "the deploy settings", "warehouse": "the warehouse export"}
 
 
 def _failure(failed: Any, steps: Any, names: list[str]) -> str:

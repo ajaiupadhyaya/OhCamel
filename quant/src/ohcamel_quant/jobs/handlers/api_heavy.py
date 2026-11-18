@@ -49,7 +49,9 @@ def backtest_sweep(params: dict[str, Any], ctx: JobContext) -> ArtifactSpec:
     from ...api.routers.backtest import JOB_MAX_GRID, JOB_SWEEP_BYTES, SweepIn, _do_sweep
 
     ctx.progress(0.05, "loading")
-    payload = _do_sweep(SweepIn(**params), ctx.market, max_combos=JOB_MAX_GRID, max_bytes=JOB_SWEEP_BYTES,
+    body = SweepIn(**params)
+    ctx.seed(body.seed)   # the request's seed (default 7): SPA and the bootstrap draw with it (Task 3.3)
+    payload = _do_sweep(body, ctx.market, max_combos=JOB_MAX_GRID, max_bytes=JOB_SWEEP_BYTES,
                         threads=ctx.threads)  # CSCV on the cscv_pbo kernel with admission's threads (A4)
     return _spec(payload, kernels.engine_of("backtest_weights"))
 
@@ -65,7 +67,9 @@ def backtest_walkforward(params: dict[str, Any], ctx: JobContext) -> ArtifactSpe
     ctx.progress(0.05, "loading")
     from ... import kernels
 
-    return _spec(_do_walkforward(WalkForwardIn(**params), ctx.market, max_combos=JOB_MAX_GRID,
+    body = WalkForwardIn(**params)
+    ctx.seed(body.seed)   # the request's seed (default 7), recorded (Task 3.3)
+    return _spec(_do_walkforward(body, ctx.market, max_combos=JOB_MAX_GRID,
                                  max_bytes=JOB_SWEEP_BYTES), kernels.engine_of("backtest_weights"))
 
 

@@ -188,6 +188,7 @@ def test_a_failed_backup_is_its_own_row(tmp_path):
     (["recorder"], "failed at the recorder (1 of its 6 steps)"),
     (["desk", "book"], "failed at the desk's journal and book.sexp (2 of its 6 steps)"),
     (["backup-dir"], "failed at the backup directory"),
+    (["warehouse"], "failed at the warehouse export (1 of its 6 steps)"),     # Task 3.3: the nightly export
 ])
 def test_a_failed_run_record_names_the_step(tmp_path, names, words):
     failed = 6 if names == ["backup-dir"] else len(names)

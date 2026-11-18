@@ -22,6 +22,7 @@ from ..backtest import metrics as M
 from ..backtest.engine import EngineConfig, StrategyContext, run_backtest
 from ..backtest.strategies import buy_and_hold, get_strategy
 from ..backtest.validation import (
+    BOOTSTRAP_SEED,
     bootstrap_sharpe,
     cost_sensitivity,
     cscv_pbo,
@@ -76,7 +77,8 @@ def run_cell(strategy: str, universe: str, ctx: Any,
     bench = run_backtest(sctx, buy_and_hold, {}, EngineConfig(rebalance="never")).returns_net.reindex(sw.returns.index)
     pick = wf["folds"][-1]["combo"]
     costs = cost_sensitivity(sw.results[pick], list(COST_GRID_BPS), rf)
-    boot = bootstrap_sharpe(oos, rf, reps=1000, alpha=0.10, use_kernels=True, threads=ctx.threads)
+    seed = ctx.seed(BOOTSTRAP_SEED, "bootstrap")   # the bootstrap's and SPA's fixed seed, recorded (Task 3.3)
+    boot = bootstrap_sharpe(oos, rf, reps=1000, alpha=0.10, seed=seed, use_kernels=True, threads=ctx.threads)
     trials = np.array([M.sharpe_per_period(M.excess(sw.returns[c], rf)) for c in sw.returns.columns])
     reg = regime_table(oos)
     row = {"cell_id": cell_id(strategy, universe), "strategy": strategy, "universe": universe, "status": "ok",
@@ -84,7 +86,7 @@ def run_cell(strategy: str, universe: str, ctx: Any,
            "n_combos": int(len(sw.combos)), "holdout_return": M.total_return(oos), "sr_pp": sr, "n": int(len(ex)),
            "skew": sk, "kurt": ku, "psr": M.probabilistic_sharpe(sr, len(ex), sk, ku), "boot_lo5": boot["ci_low"],
            "pbo": cscv_pbo(sw.returns, PBO_S, threads=ctx.threads)["pbo"],
-           "spa_p": spa_test(bench.fillna(0.0), sw.returns)["pvalue_consistent"],
+           "spa_p": spa_test(bench.fillna(0.0), sw.returns, seed=seed)["pvalue_consistent"],
            "oos_sharpe_ann": M.sharpe(ex),
            "cost_curve": json.dumps(costs["curve"]), "selected_params": json.dumps(sw.combos[pick])}
     return row, reg.assign(cell_id=row["cell_id"]), trials
@@ -93,6 +95,7 @@ def run_cell(strategy: str, universe: str, ctx: Any,
 def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     from .io import previous_artifact, read_table
 
+    ctx.seed(BOOTSTRAP_SEED, "bootstrap")   # recorded even when no cell runs tonight (Task 3.3)
     budget = float(params.get("budget_minutes", BUDGET_MINUTES)) * 60.0
     t0 = time.monotonic()
     prev = previous_artifact("farm.sweep", db_path=DB_PATH)

@@ -300,7 +300,10 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                          f"{_names(counts['failed'])}")
     root = F._root() / "history"
     for p in sorted(root.glob("*.parquet")):
-        df = pd.read_parquet(p).rename(columns={"close_adj": "adj_close"})
+        df = pd.read_parquet(p)
+        if hasattr(ctx, "read"):                                   # recorded: the committed fixtures (Task 3.3)
+            ctx.read(f"fixture: history/{p.name}", df, source="fixture")
+        df = df.rename(columns={"close_adj": "adj_close"})
         df.index = pd.DatetimeIndex(df.index)
         checked["fixtures"] += 1
         rows += [{"source": "fixtures", "ticker": p.stem, **f} for f in check_bars(df)]

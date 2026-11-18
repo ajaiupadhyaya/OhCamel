@@ -4,6 +4,31 @@
 #
 #   deploy/restore.sh --drill FILE   [--dry-run]
 #   deploy/restore.sh --restore FILE [--dry-run] [--during-market]
+#   deploy/restore.sh --warehouse EXPORT_DIR [--to FILE] [--local-python PY] [--dry-run]
+#   deploy/restore.sh --warehouse EXPORT_DIR --replace-live --services-stopped [--dry-run]
+#
+# --warehouse EXPORT_DIR (Task 3.3) rebuilds a DuckDB warehouse from one of
+# backup.sh's nightly exports (/var/backups/ohcamel/warehouse/YYYY-MM-DD),
+# with the Quant image's `python -m ohcamel_quant.warehouse restore`
+# (quant/src/ohcamel_quant/warehouse/export.py): IMPORT DATABASE into a new
+# file, every table's count checked against the export's export.json, then
+# renamed into place. EXPORT_DIR must be in the backup directory (the
+# container sees it as /backups) and must carry export.json -- a partial or
+# unverified export is refused before anything runs.
+#
+#   - By default the restore writes a NEW file, /var/backups/ohcamel/restored/
+#     warehouse-YYYY-MM-DD.duckdb (--to FILE, inside the backup directory,
+#     chooses another), as uid 10002; the live warehouse is never named.
+#   - --replace-live replaces quant_data's /data/warehouse.duckdb, and only with
+#     --services-stopped, the operator's word that ohcamel-worker and
+#     ohcamel-quant -- the warehouse's only users -- are stopped; compose is
+#     asked too, and a running one is refused. The live file is moved aside
+#     inside the volume as warehouse.duckdb.pre-restore-<UTC>, never deleted.
+#     Start them again afterwards: docker compose up -d ohcamel-worker ohcamel-quant.
+#   - --local-python PY runs the same restore with a host python that has
+#     ohcamel_quant (quant/.venv/bin/python), no docker at all; --to FILE is
+#     then required and must not exist. It cannot replace the live warehouse,
+#     which is in a volume. deploy/warehouse-drill.sh uses it.
 #
 # --drill FILE verifies a COPY of FILE and never touches the live volume: the
 # file is copied into a scratch directory, a throwaway container of the engine
@@ -131,6 +156,8 @@ usage() {
 	cat >&2 <<'EOF'
 usage: deploy/restore.sh --drill FILE [--dry-run]
        deploy/restore.sh --restore FILE [--dry-run] [--during-market]
+       deploy/restore.sh --warehouse EXPORT_DIR [--to FILE] [--local-python PY] [--dry-run]
+       deploy/restore.sh --warehouse EXPORT_DIR --replace-live --services-stopped [--dry-run]
 
   --drill     verify a COPY of FILE with `ohcamel journal-verify` in a
               throwaway container; the live volume is never touched
@@ -139,12 +166,143 @@ usage: deploy/restore.sh --drill FILE [--dry-run]
               check /api/desk's session count against the drill's
   --dry-run   print every command and run none
   --during-market   override the weekday 09:25-17:10 America/New_York refusal
+  --warehouse  rebuild a warehouse from a nightly export: a new file by
+              default; --replace-live (with --services-stopped) for the live one
 EOF
 	exit 2
 }
 
+QUANT_IMAGE=ghcr.io/ajaiupadhyaya/ohcamel-quant
+
+# restore_warehouse ARG...: --warehouse mode (the header).
+restore_warehouse() {
+	local export="" to="" py="" dry=0 replace=0 stopped=0
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--warehouse) [ $# -ge 2 ] || usage; export=$2; shift ;;
+		--to) [ $# -ge 2 ] || usage; to=$2; shift ;;
+		--local-python) [ $# -ge 2 ] || usage; py=$2; shift ;;
+		--dry-run) dry=1 ;;
+		--replace-live) replace=1 ;;
+		--services-stopped) stopped=1 ;;
+		*) usage ;;
+		esac
+		shift
+	done
+	[ -n "$export" ] || usage
+	if [ -n "$py" ] && [ "$replace" = 1 ]; then
+		restore_err "--local-python cannot replace the live warehouse: it is in the quant_data volume; use the container (drop --local-python)"
+		exit 2
+	fi
+	local compose="$restore_here/docker-compose.yml" root="$restore_here/.."
+	local dir="${OHCAMEL_BACKUP_DIR:-/var/backups/ohcamel}"
+	local export_real dir_real day rel target in_target running tag gid
+	if [ ! -d "$export" ]; then
+		restore_err "$export is not a directory"
+		return 1
+	fi
+	if [ ! -f "$export/export.json" ]; then
+		restore_err "$export has no export.json: it is not a verified export (a partial or failed one never takes its dated name), so it is not restored"
+		return 1
+	fi
+	export_real=$(cd "$export" && pwd -P)
+	day=${export_real##*/}
+
+	if [ -n "$py" ]; then
+		if [ -z "$to" ]; then
+			restore_err "--local-python needs --to FILE, a new file"
+			return 1
+		fi
+		if [ -e "$to" ]; then
+			restore_err "$to exists; a restore writes a new file and never overwrites one"
+			return 1
+		fi
+		if [ "$dry" = 1 ]; then
+			printf '+ %s\n' "$(quoted "$py" -m ohcamel_quant.warehouse restore "$export" "$to")"
+			return 0
+		fi
+		"$py" -m ohcamel_quant.warehouse restore "$export" "$to" || return 1
+		restore_say "warehouse restored from $export into $to (a new file; nothing live was touched)"
+		return 0
+	fi
+
+	if [ ! -d "$dir" ]; then
+		restore_err "$dir does not exist; the restore container reads it as /backups"
+		return 1
+	fi
+	dir_real=$(cd "$dir" && pwd -P)
+	case "$export_real/" in
+	"$dir_real"/*) rel=${export_real#"$dir_real"/} ;;
+	*)
+		restore_err "$export is not in $dir, the only host directory the restore container sees (as /backups); copy it there first"
+		return 1
+		;;
+	esac
+	tag=$(engine_tag "$compose" "$root") || return 1
+	gid=$(id -g)
+	local run=(docker compose -f "$compose" --profile backup run --rm -T --user "10002:$gid" --entrypoint python
+		ohcamel-backup -m ohcamel_quant.warehouse restore "/backups/$rel")
+
+	if [ "$replace" = 0 ]; then
+		target="${to:-$dir/restored/warehouse-$day.duckdb}"
+		case "$target" in
+		"$dir"/*) in_target="/backups/${target#"$dir"/}" ;;
+		*)
+			restore_err "--to $target is not in $dir (the container writes only there); use --local-python to restore elsewhere"
+			return 1
+			;;
+		esac
+		if [ -e "$target" ]; then
+			restore_err "$target exists; a restore writes a new file and never overwrites one"
+			return 1
+		fi
+		if [ "$dry" = 1 ]; then
+			printf '+ OHCAMEL_TAG=%s OHCAMEL_IMAGE=%s OHCAMEL_BACKUP_VOLUME=quant_data OHCAMEL_BACKUP_DIR=%s %s\n' \
+				"$(printf '%q' "$tag")" "$QUANT_IMAGE" "$(printf '%q' "$dir")" "$(quoted "${run[@]}" "$in_target")"
+			return 0
+		fi
+		mkdir -p "$(dirname "$target")"
+		if ! OHCAMEL_TAG="$tag" OHCAMEL_IMAGE="$QUANT_IMAGE" OHCAMEL_BACKUP_VOLUME=quant_data \
+			OHCAMEL_BACKUP_DIR="$dir" "${run[@]}" "$in_target"; then
+			restore_err "the restore container failed; nothing live was touched"
+			return 1
+		fi
+		restore_say "warehouse restored from $export into $target (a new file; the live warehouse was not touched)"
+		return 0
+	fi
+
+	# --replace-live: the operator's word, then compose's.
+	if [ "$stopped" = 0 ]; then
+		restore_err "--replace-live replaces the live warehouse; stop ohcamel-worker and ohcamel-quant first (docker compose stop ohcamel-worker ohcamel-quant) and say so with --services-stopped"
+		return 1
+	fi
+	running=$(docker compose -f "$compose" ps --status running --services 2>/dev/null | grep -xE 'ohcamel-worker|ohcamel-quant' | tr '\n' ' ') || running=""
+	if [ -n "$running" ]; then
+		restore_err "refusing: compose reports ${running% } still running -- the warehouse's users must be stopped before it is replaced (docker compose stop ohcamel-worker ohcamel-quant)"
+		return 1
+	fi
+	if [ "$dry" = 1 ]; then
+		printf '+ OHCAMEL_TAG=%s OHCAMEL_IMAGE=%s OHCAMEL_BACKUP_VOLUME=quant_data OHCAMEL_BACKUP_DIR=%s %s\n' \
+			"$(printf '%q' "$tag")" "$QUANT_IMAGE" "$(printf '%q' "$dir")" "$(quoted "${run[@]}" /data/warehouse.duckdb --replace)"
+		return 0
+	fi
+	if ! OHCAMEL_TAG="$tag" OHCAMEL_IMAGE="$QUANT_IMAGE" OHCAMEL_BACKUP_VOLUME=quant_data \
+		OHCAMEL_BACKUP_DIR="$dir" "${run[@]}" /data/warehouse.duckdb --replace; then
+		restore_err "the restore container failed; the live warehouse is as it was (a failed import never replaces it)"
+		return 1
+	fi
+	restore_say "the live warehouse is restored from $export; the previous file is kept in quant_data as warehouse.duckdb.pre-restore-<UTC>. Start its users again: docker compose -f $compose up -d ohcamel-worker ohcamel-quant"
+	return 0
+}
+
 restore_main() {
 	local mode="" file="" dry=0 during=0 arg
+	for arg in "$@"; do
+		if [ "$arg" = --warehouse ]; then
+			restore_warehouse "$@"
+			return
+		fi
+	done
 	for arg in "$@"; do
 		case "$arg" in
 		--drill | --restore)

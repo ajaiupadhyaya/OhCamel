@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from ..backtest.validation import BOOTSTRAP_SEED
 from ..data.base import Provenance
 from ..jobs.artifacts import ArtifactSpec
 from ..models import xsec as X
@@ -71,6 +72,8 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                                                      "once, after the warehouse backfill (methodology p5-exp-q01; "
                                                      "docs/runbooks/compute.md)"])
     cfg, h, version = X.Q01Config.from_dict(raw), config_hash(raw), int(raw["methodology_version"])
+    ctx.seed(cfg.seed, "lightgbm")             # the frozen config's LightGBM seed (deterministic=True), recorded
+    ctx.seed(BOOTSTRAP_SEED, "bootstrap")      # the holdout bootstrap's default seed (models/xsec.py), recorded
     tickers = sorted(set(cfg.universe) | {cfg.benchmark})
     panel, prov = load_panel(ctx.warehouse, tickers)
     samples = X.build_samples(panel, cfg)

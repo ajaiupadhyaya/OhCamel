@@ -106,8 +106,14 @@ class Worker:
         now = self.now()
         if out.status == "done":
             assert out.result is not None
-            manifest = build_manifest(job, out.result, code_sha=self.cfg.code_sha, finished_at=iso(now),
-                                      cpu_seconds=out.cpu_seconds, peak_rss_bytes=out.peak_rss_bytes)
+            try:
+                manifest = build_manifest(job, out.result, code_sha=self.cfg.code_sha, finished_at=iso(now),
+                                          cpu_seconds=out.cpu_seconds, peak_rss_bytes=out.peak_rss_bytes)
+            except ValueError as e:  # a refused manifest (an unseeded draw, a bad verdict) fails the job, unpublished
+                shutil.rmtree(out.staging, ignore_errors=True)
+                fail(self.conn, job.id, error=f"manifest refused: {e}"[:2000], retries=retries_for(job.kind),
+                     cpu_seconds=out.cpu_seconds, peak_rss_bytes=out.peak_rss_bytes, now=now)
+                return
             final = publish(out.staging, self.cfg.artifacts_root, job, manifest)
             art = {"id": job.id, "kind": job.kind, "params_hash": job.params_hash, "finished_at": iso(now),
                    "path": str(final), "data_asof": manifest["data_asof"]}

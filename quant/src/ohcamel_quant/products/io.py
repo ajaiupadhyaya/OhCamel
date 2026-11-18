@@ -3,6 +3,11 @@
 Handlers use these to carry state forward: a farm's evaluated cells, an
 experiment's stored selection and once-only holdout, the surface history.
 Read-only: nothing here writes jobs.sqlite or an artifact directory.
+
+Inside a job (Task 3.3) both reads are recorded by the job's recorder: a lookup as
+``artifact-lookup: <kind> ...`` hashed over the artifact id it found (or none), a table as
+``artifact: <kind>/<id>/<table>`` hashed over its rows. ``tools/regenerate.py`` replays a run with every
+lookup pinned to the artifact the original run found, so a later artifact cannot change the re-run.
 """
 
 from __future__ import annotations
@@ -34,6 +39,26 @@ def previous_artifact(kind: str, params_hash: str | None = None, *, db_path: Pat
     With ``with_table``, the newest one that also holds that table. Experiments look their once-only holdout up
     this way: an INSUFFICIENT DATA run (a vendor outage, a short history) publishes no holdout, and reading the
     newest artifact instead would let the next run score the holdout a second time."""
+    from ..jobs.provenance import current
+
+    rec = current()
+    lookup = f"artifact-lookup: {kind} params_hash={params_hash} with_table={with_table}"
+    if rec is not None and rec.replay is not None:
+        if lookup not in rec.replay:
+            raise LookupError(f"the re-run looked up {lookup}, which the original run did not")
+        pinned = rec.replay[lookup]
+        got = None if pinned is None else (json.loads((Path(pinned) / "manifest.json").read_text()), Path(pinned))
+    else:
+        got = _newest(kind, params_hash, db_path, with_table)
+    if rec is not None:
+        found = got[0].get("id") if got else None
+        rec.record(lookup, {"artifact": found}, source="artifact")
+        rec.reads[-1]["artifact"] = None if got is None else f"{got[1].parent.name}/{got[1].name}"
+    return got
+
+
+def _newest(kind: str, params_hash: str | None, db_path: Path | None,
+            with_table: str | None) -> tuple[dict[str, Any], Path] | None:
     from ..jobs.paths import jobs_db_path
 
     db = Path(db_path) if db_path is not None else jobs_db_path()
@@ -66,5 +91,11 @@ def latest_with_path(kind: str, *, now: datetime,
 
 
 def read_table(path: Path, name: str) -> pd.DataFrame | None:
+    from ..jobs.provenance import current
+
     f = Path(path) / f"{name}.parquet"
-    return pd.read_parquet(f) if f.exists() else None
+    df = pd.read_parquet(f) if f.exists() else None
+    rec = current()
+    if rec is not None:
+        rec.record(f"artifact: {Path(path).parent.name}/{Path(path).name}/{name}", df, source="artifact")
+    return df

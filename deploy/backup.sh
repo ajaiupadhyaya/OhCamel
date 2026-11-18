@@ -44,6 +44,22 @@
 #      The journal's dailies are pruned by `ohcamel journal-backup` itself and
 #      are not this script's to touch. /etc/ohcamel/live.env -- the trading
 #      keys -- is never copied, never mounted, never named by a running command.
+#   5b. The warehouse export (Task 3.3), the list's `export` line: the Quant
+#      image (uid 10002) runs `python -m ohcamel_quant.warehouse export`, which
+#      opens /data/warehouse.duckdb READ-ONLY, runs DuckDB's EXPORT DATABASE
+#      (Parquet, zstd) into /backups/warehouse/YYYY-MM-DD.part, counts every
+#      table back from the Parquet files against the warehouse, writes
+#      export.json, and only then renames the directory to YYYY-MM-DD; a
+#      failure leaves no dated directory (quant/src/ohcamel_quant/warehouse/
+#      export.py). Before it runs, the disk is checked: an export wants twice
+#      the newest export's size free (BACKUP_EXPORT_MIN_KB, 1 GiB, when there is
+#      none yet); short of that, the oldest exports that are neither the newest
+#      nor a month-end are pruned first, and if that is still not enough the
+#      export is refused -- a failed step -- and nothing more is deleted. After
+#      a good export, the 14 newest exports and the newest of each calendar
+#      month are kept, and leftover YYYY-MM-DD*.part directories go. A failed
+#      export prunes nothing. The status record names the step `warehouse`.
+#      BACKUP_FREE_KB pins the free space for a test.
 #   6. Records the run for the public Ledger: one `ohcamel-backup-status`
 #      container (the Quant image, uid 10002, quant_data its only mount) writes
 #      /data/ops/backup.json atomically -- {finished_at, ok, failed, steps,
@@ -304,8 +320,13 @@ read_list() {
 			ext=parquet
 			dest="option-snapshots-$today.parquet"
 			;;
+		export)
+			stem=warehouse
+			ext=""
+			dest="warehouse/$today"
+			;;
 		*)
-			refuse "$list" "$lineno" "unknown method '$method' -- journal, sqlite or snapshot (duckdb is reserved for Lane C)"
+			refuse "$list" "$lineno" "unknown method '$method' -- journal, sqlite, snapshot or export (duckdb is reserved for Lane C)"
 			;;
 		esac
 		i=0
@@ -368,6 +389,69 @@ prune_dated() {
 		done
 }
 
+# --- the warehouse export's retention and disk check (step 5b) ----------------
+
+# export_dirs DIR: the dated export directories under DIR/warehouse, oldest
+# first, by name. Only names of exactly YYYY-MM-DD.
+export_dirs() {
+	[ -d "$1/warehouse" ] || return 0
+	find "$1/warehouse" -mindepth 1 -maxdepth 1 -type d | sed 's|.*/||' |
+		grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort || true
+}
+
+# month_ends DIR: the newest export of each calendar month, one a line.
+month_ends() {
+	export_dirs "$1" | awk '{ m = substr($0, 1, 7); last[m] = $0 } END { for (m in last) print last[m] }' | sort
+}
+
+# kb PATH: its size on disk in KiB.
+kb() { du -sk "$1" 2>/dev/null | awk '{ print $1 }'; }
+
+# export_room DIR DRY: make room for tonight's export, or refuse it (1).
+BACKUP_EXPORT_MIN_KB=${BACKUP_EXPORT_MIN_KB:-1048576}
+export_room() {
+	local dir="$1" dry="$2" newest need free freed=0 name size ends
+	newest=$(export_dirs "$dir" | tail -n 1)
+	if [ -n "$newest" ]; then need=$(($(kb "$dir/warehouse/$newest") * 2)); else need=$BACKUP_EXPORT_MIN_KB; fi
+	free=${BACKUP_FREE_KB:-$(df -Pk "$dir" | awk 'NR == 2 { print $4 }')}
+	if [ "$free" -ge "$need" ]; then return 0; fi
+	backup_say "short of disk for the warehouse export: ${free} KiB free, ${need} KiB wanted (twice the newest export); pruning the oldest dailies first -- never the newest export, never a month-end"
+	ends=" $(month_ends "$dir" | tr '\n' ' ') "
+	for name in $(export_dirs "$dir"); do
+		[ "$((free + freed))" -lt "$need" ] || break
+		[ "$name" != "$newest" ] || continue
+		case "$ends" in *" $name "*) continue ;; esac
+		size=$(kb "$dir/warehouse/$name")
+		if [ "$dry" = 1 ]; then
+			printf '+ rm -rf -- %s\n' "$(printf '%q' "$dir/warehouse/$name")"
+		else
+			rm -rf -- "${dir:?}/warehouse/$name"
+			backup_say "pruned warehouse/$name early ($size KiB) to make room"
+		fi
+		freed=$((freed + size))
+	done
+	if [ "$((free + freed))" -ge "$need" ]; then return 0; fi
+	backup_err "the warehouse export does not fit: $((free + freed)) KiB free after pruning every old daily, ${need} KiB wanted -- not attempted; the newest export ($newest) and the month-ends are kept"
+	return 1
+}
+
+# prune_exports DIR: after a good export, the 14 newest and the newest of each
+# month; leftover YYYY-MM-DD*.part directories of a killed run.
+prune_exports() {
+	local dir="$1" name keep
+	keep=" $( (export_dirs "$dir" | tail -n 14; month_ends "$dir") | sort -u | tr '\n' ' ') "
+	for name in $(export_dirs "$dir"); do
+		case "$keep" in *" $name "*) continue ;; esac
+		rm -rf -- "${dir:?}/warehouse/$name"
+		backup_say "pruned warehouse/$name (the 14 newest exports and each month's newest are kept)"
+	done
+	find "$dir/warehouse" -mindepth 1 -maxdepth 1 -type d -name '20*.part' | sed 's|.*/||' |
+		grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}(\.old)?\.part$' | while IFS= read -r name; do
+		rm -rf -- "${dir:?}/warehouse/$name"
+		backup_say "removed the leftover warehouse/$name"
+	done
+}
+
 # copy_config SRC DIR NAME STEM EXT DRY: book.sexp or deploy/.env beside the
 # backups at 0640, then the 14 newest of that stem.
 copy_config() {
@@ -406,6 +490,14 @@ run_entry() {
 		image=ghcr.io/ajaiupadhyaya/ohcamel-quant
 		cmd+=(--entrypoint python ohcamel-backup -c "$snapshot_script" "$path" /backups "$dest")
 		;;
+	export)
+		# The Quant image's own exporter (step 5b): read-only, verified, renamed.
+		image=ghcr.io/ajaiupadhyaya/ohcamel-quant
+		cmd+=(--entrypoint python ohcamel-backup -m ohcamel_quant.warehouse export "$path" /backups/warehouse --date "${dest#warehouse/}")
+		if ! export_room "$dir" "$dry"; then
+			return 1
+		fi
+		;;
 	esac
 	if [ "$dry" = 1 ]; then
 		printf '+ OHCAMEL_TAG=%s OHCAMEL_BACKUP_VOLUME=%s OHCAMEL_BACKUP_DIR=%s' \
@@ -425,6 +517,9 @@ run_entry() {
 		backup_say "$volume:$path -> $dest ok"
 		if [ "$method" = sqlite ] || [ "$method" = snapshot ]; then
 			prune_dated "$dir" "${entry_stem[$i]}" "${entry_ext[$i]}"
+		fi
+		if [ "$method" = export ]; then
+			prune_exports "$dir"
 		fi
 		return 0
 		;;

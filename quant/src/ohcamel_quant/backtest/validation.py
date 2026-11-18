@@ -242,8 +242,12 @@ def optimal_block(x: np.ndarray) -> float:
     return max(1.0, b) if math.isfinite(b) else 1.0
 
 
+#: The bootstrap's and the SPA test's seed since they were written; the jobs that use them record it (Task 3.3).
+BOOTSTRAP_SEED = 7
+
+
 def bootstrap_sharpe(r: pd.Series, rf: pd.Series | None = None, reps: int = 1000, alpha: float = 0.05,
-                     seed: int = 7, bins: int = 30, *, use_kernels: bool = False, threads: int = 1,
+                     seed: int = BOOTSTRAP_SEED, bins: int = 30, *, use_kernels: bool = False, threads: int = 1,
                      max_reps: int = MAX_REPS) -> dict[str, Any]:
     """Stationary-bootstrap (Politis & Romano 1994) distribution of the
     annualized Sharpe ratio, expected block length by Politis & White (2004).
@@ -293,7 +297,8 @@ def bootstrap_sharpe(r: pd.Series, rf: pd.Series | None = None, reps: int = 1000
     return out
 
 
-def spa_test(benchmark: pd.Series, models: pd.DataFrame, reps: int = 1000, seed: int = 7) -> dict[str, Any]:
+def spa_test(benchmark: pd.Series, models: pd.DataFrame, reps: int = 1000,
+             seed: int = BOOTSTRAP_SEED) -> dict[str, Any]:
     """Hansen (2005) SPA test. H0: no strategy in ``models`` has a higher
     expected daily return than ``benchmark``. Losses are negative returns;
     stationary bootstrap with block length = median Politis-White length of the
@@ -456,7 +461,7 @@ def run_config_from(config: EngineConfig, **kw: Any) -> EngineConfig:
 
 
 __all__ = [
-    "CSCV_CHUNK_BYTES", "JOB_MAX_REPS", "MAX_GRID", "MAX_REPS", "SweepResult", "bootstrap_sharpe",
+    "BOOTSTRAP_SEED", "CSCV_CHUNK_BYTES", "JOB_MAX_REPS", "MAX_GRID", "MAX_REPS", "SweepResult", "bootstrap_sharpe",
     "cost_sensitivity", "cscv_pbo",
     "deflated_sharpe_for_grid", "optimal_block", "param_grid", "run_weights", "spa_test", "sweep",
     "sweep_footprint_bytes",

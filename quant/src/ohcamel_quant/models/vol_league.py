@@ -38,6 +38,7 @@ EVAL_DAYS = 250
 REFIT_EVERY = 21
 EWMA_LAMBDA = 0.94
 MCS_SIZE = 0.10
+MCS_SEED = 7   # the MCS bootstrap's seed since M3; vol.forecast_league records it (Task 3.3)
 SQRT2_OV_PI = math.sqrt(2.0 / math.pi)
 LNSIGMA_MAX = math.log(np.finfo(float).max)
 
@@ -176,7 +177,7 @@ def dm_test(la: np.ndarray, lb: np.ndarray) -> dict[str, float]:
     return {"stat": stat, "pvalue": float(2.0 * stats.norm.sf(abs(stat)))}
 
 
-def mcs_members(losses: pd.DataFrame, size: float = MCS_SIZE, seed: int = 7) -> set[str]:
+def mcs_members(losses: pd.DataFrame, size: float = MCS_SIZE, seed: int = MCS_SEED) -> set[str]:
     """Hansen, Lunde & Nason (2011) Model Confidence Set at level ``size`` (``arch``'s MCS, range statistic,
     stationary bootstrap, block length Politis-White on the mean loss)."""
     from arch.bootstrap import MCS
@@ -198,7 +199,7 @@ class NameLeague:
 
 
 def league_for(r: np.ndarray, rv: np.ndarray, *, has_minute: bool, est_window: int = EST_WINDOW,
-               eval_days: int = EVAL_DAYS, refit_every: int = REFIT_EVERY) -> NameLeague:
+               eval_days: int = EVAL_DAYS, refit_every: int = REFIT_EVERY, seed: int = MCS_SEED) -> NameLeague:
     """``r`` daily returns; ``rv`` the close-to-close realized-variance target on the same days
     (minute RV + squared overnight return, or r^2)."""
     target = np.asarray(rv, dtype=float)[-eval_days:]
@@ -218,7 +219,7 @@ def league_for(r: np.ndarray, rv: np.ndarray, *, has_minute: bool, est_window: i
         out.forecast["har_covers"] = "close_to_close"   # the target includes the overnight move
     losses = pd.DataFrame({m: qlike(target, f) for m, f in fc.items()})
     try:
-        keep: set[str] | None = mcs_members(losses) if losses.shape[1] > 1 else set(losses.columns)
+        keep: set[str] | None = mcs_members(losses, seed=seed) if losses.shape[1] > 1 else set(losses.columns)
     except (IndexError, ValueError) as e:  # arch's MCS can fail on degenerate loss sets: say so, never guess
         keep = None
         out.dropped["mcs"] = f"model confidence set not computable: {e}"

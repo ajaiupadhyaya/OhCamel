@@ -27,9 +27,13 @@ def publish_artifact(db, root, kind, tables, *, verdict=None, finished=T0, param
                      now=finished - timedelta(seconds=4))
     staging = root / ".staging" / job.id
     names = write_tables(staging, tables)
+    from ohcamel_quant.jobs.kinds import REGISTRY
+
+    draws = REGISTRY.get(kind) is not None and REGISTRY[kind].draws_random   # Task 3.3: a seed, or no manifest
     m = build_manifest(job, {"data_asof": data_asof, "provenance": [{"source": "test"}], "notes": list(notes),
                              "survivorship": None, "engine": "python", "tables": names, "verdict": verdict,
-                             "verdict_detail": None if verdict is None else "test"},
+                             "verdict_detail": None if verdict is None else "test",
+                             "seed": {"test": 0} if draws else None},
                        code_sha="abc", finished_at=iso(finished), cpu_seconds=1.0, peak_rss_bytes=1)
     final = publish(staging, root, job, m)
     finish(conn, job.id, artifact={"id": job.id, "kind": kind, "params_hash": job.params_hash,

@@ -59,11 +59,23 @@ def write_tables(staging: Path, tables: dict[str, Any]) -> list[str]:
 
 def build_manifest(job: Job, result: dict[str, Any], *, code_sha: str, finished_at: str, cpu_seconds: float,
                    peak_rss_bytes: int | None) -> dict[str, Any]:
+    """The II.3 manifest. Task 3.3 adds what makes its numbers reproducible: ``data_hash`` (the sorted per-read
+    hashes, hashed; null with ``data_hash_note`` when a read went unrecorded), ``reads`` (each read's name, hash,
+    source and whether an export can serve it again), ``seed`` (every seed recorded, by name; null when the kind
+    draws none), ``lock_hash`` (SHA-256 of quant/uv.lock), ``threads`` and ``kernels`` (engine, wheel API) --
+    random and parallel kernels are bit-identical only for one (seed, threads, engine). A result that drew
+    random numbers without a seed, or whose kind declares draws and recorded no seed, is refused
+    (``UnseededDraw``, a ValueError)."""
+    from .provenance import check_seed, data_hash, unrecorded_note
+
     if result.get("engine", "python") not in ENGINES:
         raise ValueError(f"engine must be one of {ENGINES}")
     verdict = result.get("verdict")
     if verdict is not None and verdict not in VERDICTS:
         raise ValueError(f"verdict must be one of {VERDICTS} or None; got {verdict!r}")
+    check_seed(job.kind, result)
+    note = unrecorded_note(job.kind, result)
+    reads = list(result.get("reads") or [])
     return {
         "id": job.id,
         "kind": job.kind,
@@ -82,16 +94,48 @@ def build_manifest(job: Job, result: dict[str, Any], *, code_sha: str, finished_
         "tables": list(result.get("tables") or []),
         "verdict": verdict,
         "verdict_detail": result.get("verdict_detail"),
+        "data_hash": None if note else data_hash(reads),
+        "data_hash_note": note,
+        "reads": reads,
+        "seed": dict(result["seed"]) if result.get("seed") else None,
+        "lock_hash": result.get("lock_hash"),
+        "threads": result.get("threads"),
+        "kernels": result.get("kernels"),
     }
 
 
+READS_FILE = "reads.json"
+
+
 def publish(staging: Path, root: Path, job: Job, manifest: dict[str, Any]) -> Path:
-    """Write manifest.json into the staged directory, then rename it into place (one filesystem: atomic)."""
+    """Write manifest.json into the staged directory, then rename it into place (one filesystem: atomic).
+
+    Task 3.3: a manifest's ``reads`` list (thousands for a nightly job over every name) goes to ``reads.json``
+    beside it, and the manifest keeps a summary -- the file, the count, the sources, how many reads no export can
+    serve again -- since every artifact lookup parses the manifest. The names stay in reads.json, which no route
+    serves: a read's name can carry the symbols a desk job read."""
+    reads = manifest.get("reads")
+    if isinstance(reads, list):
+        (staging / READS_FILE).write_text(json.dumps(reads, separators=(",", ":")))
+        manifest = {**manifest, "reads": {
+            "file": READS_FILE, "count": len(reads), "sources": sorted({str(r.get("source")) for r in reads}),
+            "not_regenerable": sum(1 for r in reads if not r.get("regenerable"))}}
     (staging / "manifest.json").write_text(json.dumps(manifest, indent=1, sort_keys=False))
     final = root / job.kind / job.id
     final.parent.mkdir(parents=True, exist_ok=True)
     os.replace(staging, final)
     return final
+
+
+def read_reads(path: Path) -> list[dict[str, Any]]:
+    """An artifact's recorded reads: ``reads.json`` beside its manifest (or a list kept in the manifest itself)."""
+    m = json.loads((Path(path) / "manifest.json").read_text())
+    r = m.get("reads")
+    if isinstance(r, list):
+        return r
+    if isinstance(r, dict) and r.get("file"):
+        return json.loads((Path(path) / str(r["file"])).read_text())
+    return []
 
 
 def inside(root: Path, p: Path) -> bool:

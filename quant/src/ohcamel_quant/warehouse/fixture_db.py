@@ -1,7 +1,11 @@
 """A small warehouse built from the committed real fixtures, with no network
 (compute plan gate GC: offline tests and CI need no vendor). Bars: the nine
 fixture ETFs (fixtures/history). FRED: VIXCLS, DGS10, DGS2 (fixtures/macro).
-``ingest_log`` rows carry each fixture's own fetched_at as ran_at."""
+``ingest_log`` rows carry each fixture's own fetched_at as ran_at.
+
+``requested_start`` (default none) writes it into each bars row's log detail, as a real full-history ingest
+does: the facade then serves a request from 1990 out of the warehouse (``readers.bars_coverage``) instead of
+falling back to the providers. The restore drill and Task 3.3's tests use it so the job reads the warehouse."""
 
 from __future__ import annotations
 
@@ -20,7 +24,7 @@ def _ts(iso: str) -> datetime | None:
     return datetime.fromisoformat(iso).astimezone(UTC).replace(tzinfo=None) if iso else None
 
 
-def build_fixture_warehouse(path: Path) -> Path:
+def build_fixture_warehouse(path: Path, *, requested_start: str | None = None) -> Path:
     with open_rw(path) as con:
         con.execute("BEGIN TRANSACTION")
         last_bars, ran_bars = None, None
@@ -34,8 +38,10 @@ def build_fixture_warehouse(path: Path) -> Path:
             insert_frame(con, "INSERT OR REPLACE INTO bars_daily SELECT ticker, CAST(date AS DATE), open, high, "
                               "low, close, adj_close, volume, source, fetched_at FROM incoming", frame)
             asof = df.index[-1].date()
-            log_row(con, "bars_daily", sym, "ok", len(frame), json.dumps({"source": prov.source, "fixture": True}),
-                    asof, ran_at=ran)
+            detail = {"source": prov.source, "fixture": True}
+            if requested_start is not None:
+                detail["requested_start"] = requested_start
+            log_row(con, "bars_daily", sym, "ok", len(frame), json.dumps(detail), asof, ran_at=ran)
             last_bars, ran_bars = max(filter(None, [last_bars, asof])), ran
         log_row(con, "bars_daily", SUMMARY_KEY, "ok", 0, json.dumps({"fixture": True}), last_bars, ran_at=ran_bars)
         hit = fixtures.macro(list(fixtures.FRED_FIXTURE_COLUMNS))

@@ -55,6 +55,7 @@ def _members(ctx: Any, spec: Any) -> list[tuple[str, str]]:
 
 def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     p = {**DEFAULTS, **params}
+    seed = ctx.seed(p["seed"])   # the params' seed or the fixed default, recorded in the manifest (Task 3.3)
     books = _books()
     summary, euler, prov, notes, last = [], [], [], [], []
     for i, (key, b) in enumerate(books.items()):
@@ -64,7 +65,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         r, pv = _returns(ctx, tickers)
         prov += pv
         last.append(r.index[-1])
-        br = mc_risk.book_risk(r, w, n_paths=int(p["n_paths"]), seed=int(p["seed"]), threads=ctx.threads)
+        br = mc_risk.book_risk(r, w, n_paths=int(p["n_paths"]), seed=seed, threads=ctx.threads)
         for row in br.rows:
             summary.append({"book": key, **row, "notional": b["notional"], "var_usd": row["var"] * b["notional"],
                             "es_usd": row["es"] * b["notional"], "nu": br.nu, "observations": len(r),
@@ -89,7 +90,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
             surv = SURVIVORSHIP
         try:
             r, _ = _returns(ctx, [t])
-            br = mc_risk.book_risk(r, np.array([1.0]), n_paths=int(p["member_paths"]), seed=int(p["seed"]),
+            br = mc_risk.book_risk(r, np.array([1.0]), n_paths=int(p["member_paths"]), seed=seed,
                                    threads=ctx.threads, alphas=MEMBER_ALPHAS, horizons=(1, 10),
                                    methods=MEMBER_METHODS)
             members += [{"ticker": t, "universe": u, **row, "observations": len(r), "reason": None}
@@ -116,6 +117,7 @@ def run_intraday(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     from ..deck.live import live_weights
 
     p = {**INTRADAY, **params}
+    seed = ctx.seed(p["seed"])
     rows, prov, notes, last = [], [], [], []
     for key, b in _books().items():
         tickers = [h["ticker"] for h in b["holdings"]]
@@ -130,7 +132,7 @@ def run_intraday(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         prov += q.provenance_dicts()
         if missing:
             notes.append(f"{key}: no live mark for {', '.join(missing)} (held at the previous close)")
-        br = mc_risk.book_risk(r, np.array([lw[t] for t in tickers]), n_paths=int(p["n_paths"]), seed=int(p["seed"]),
+        br = mc_risk.book_risk(r, np.array([lw[t] for t in tickers]), n_paths=int(p["n_paths"]), seed=seed,
                                threads=ctx.threads, alphas=(0.99,), horizons=(1,))
         for row in br.rows:
             rows.append({"book": key, **row, "var_usd": row["var"] * b["notional"], "es_usd": row["es"] * b["notional"],

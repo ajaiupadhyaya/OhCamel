@@ -34,3 +34,19 @@ def test_the_image_carries_kronos_isolated_with_the_experiments_pinned_weights()
     ignore = [ln.strip() for ln in (REPO_ROOT / "quant" / "Dockerfile.dockerignore").read_text().splitlines()]
     for p in ("research/kronos/uv.lock", "research/kronos/src/", "research/kronos/vendor/"):
         assert f"!{p}" in ignore, p
+
+
+def test_the_runtime_image_holds_the_lock_it_was_installed_from_where_the_manifest_reads_it():
+    """Task 3.3: every manifest's lock_hash is the SHA-256 of quant/uv.lock under REPO_ROOT (/app in the image). The
+    pydeps stage syncs --frozen from that file and the runtime stage copies /app/quant whole, so the lock on disk
+    in the running container is the one installed; a COPY that dropped it would publish lock_hash null."""
+    from ohcamel_quant.jobs.provenance import lock_path
+
+    text = (REPO_ROOT / "quant" / "Dockerfile").read_text()
+    pydeps = text[text.index("AS pydeps"):text.index("AS kronos")]
+    runtime = text[text.index("AS runtime"):]
+    assert "COPY quant/pyproject.toml quant/uv.lock quant/README.md ./" in pydeps and "uv sync --frozen" in pydeps
+    assert "COPY --from=pydeps /app/quant /app/quant" in runtime
+    assert lock_path() == REPO_ROOT / "quant" / "uv.lock" and lock_path().is_file()
+    lines = [ln.strip() for ln in (REPO_ROOT / "quant" / "Dockerfile.dockerignore").read_text().splitlines()]
+    assert any(ln in ("!quant/uv.lock", "!quant/") for ln in lines), "the lock must pass the build context"

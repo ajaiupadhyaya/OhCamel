@@ -15,7 +15,8 @@ from ohcamel_quant.jobs.queue import claim_next, enqueue
 T0 = datetime(2026, 10, 6, 14, 0, tzinfo=UTC)
 MANIFEST_KEYS = ["id", "kind", "params", "params_hash", "code_sha", "data_asof", "started_at", "finished_at",
                  "cpu_seconds", "peak_rss_bytes", "engine", "provenance", "notes", "survivorship", "tables",
-                 "verdict", "verdict_detail"]
+                 "verdict", "verdict_detail", "data_hash", "data_hash_note", "reads", "seed", "lock_hash", "threads",
+                 "kernels"]
 
 
 @pytest.fixture
@@ -82,6 +83,25 @@ def test_write_tables_writes_parquet_and_validates_names(tmp_path):
         write_tables(tmp_path, {"../escape": pd.DataFrame({"a": [1]})})
 
 
+def test_publish_writes_the_reads_beside_the_manifest(tmp_path, conn):
+    """A nightly job over 600 names makes thousands of reads: the list goes to reads.json, the manifest keeps a
+    summary (every manifest is read on each artifact lookup; no read's name, which can carry a desk job's
+    symbols), and read_reads gives the list back."""
+    from ohcamel_quant.jobs.artifacts import read_reads
+
+    job = _job(conn)
+    root = tmp_path / "artifacts"
+    staging = root / ".staging" / job.id
+    staging.mkdir(parents=True)
+    reads = [{"name": "market.fred", "sha256": "a" * 64, "source": "fred", "regenerable": False},
+             {"name": "w", "sha256": "b" * 64, "source": "warehouse", "regenerable": True}]
+    final = publish(staging, root, job, {"id": job.id, "reads": reads})
+    m = json.loads((final / "manifest.json").read_text())
+    assert m["reads"] == {"file": "reads.json", "count": 2, "sources": ["fred", "warehouse"],
+                          "not_regenerable": 1}                                 # a count: names stay in reads.json
+    assert read_reads(final) == reads
+
+
 def test_publish_moves_staging_into_place(tmp_path, conn):
     job = _job(conn)
     root = tmp_path / "artifacts"
@@ -121,3 +141,169 @@ def test_latest_skips_a_row_whose_directory_is_gone(tmp_path, conn):
     _row(conn, root, "A1", "h1", T0)
     _row(conn, root, "A2", "h1", T0 + timedelta(hours=1), with_manifest=False)
     assert latest_artifact(conn, "ingest.fred", "h1", now=T0, max_age_s=None)["manifest"]["id"] == "A1"
+
+
+# --- Task 3.3: a number can be regenerated -------------------------------------------------------------------------
+# The fixture warehouse (the nine committed ETFs, logged as full-history fetches so the facade serves them), the
+# clock pinned to 2026-06-01 17:00 New York -- the fixtures' last session, so the warehouse is fresh -- and
+# risk.mc_atlas, a seeded product (Monte Carlo paths), small, reading the books' returns from the warehouse.
+
+ATLAS = {"n_paths": 2_000, "member_paths": 2_000, "members": False}
+FIXTURE_NOW = datetime(2026, 6, 1, 21, 0, tzinfo=UTC)
+
+
+@pytest.fixture(scope="module")
+def fixture_wh(tmp_path_factory):
+    from ohcamel_quant.warehouse.fixture_db import build_fixture_warehouse
+
+    return build_fixture_warehouse(tmp_path_factory.mktemp("wh") / "warehouse.duckdb", requested_start="1990-01-01")
+
+
+def _settings(tmp_path, wh):
+    from ohcamel_quant.config import Settings
+
+    return Settings(warehouse_path=wh, offline=True, data_dir=tmp_path / "data")
+
+
+def _run(tmp_path, wh, kind="risk.mc_atlas", params=None, name="a"):
+    from ohcamel_quant.jobs.local import run_local
+
+    return run_local(kind, ATLAS if params is None else params, artifacts_root=tmp_path / name,
+                     settings=_settings(tmp_path, wh), threads=1, now=FIXTURE_NOW, code_sha="test")
+
+
+def _tables(path):
+    m = json.loads((path / "manifest.json").read_text())
+    return m, {t: pd.read_parquet(path / f"{t}.parquet") for t in m["tables"]}
+
+
+def _reads(path):
+    from ohcamel_quant.jobs.artifacts import read_reads
+
+    return read_reads(path)
+
+
+def test_two_runs_of_a_seeded_product_on_one_fixture_give_one_data_hash_and_equal_tables(tmp_path, fixture_wh):
+    from ohcamel_quant.jobs.provenance import lock_hash
+
+    p1 = _run(tmp_path, fixture_wh, name="a")
+    m1, t1 = _tables(p1)
+    m2, t2 = _tables(_run(tmp_path, fixture_wh, name="b"))
+    reads = _reads(p1)
+    assert m1["data_hash"] is not None and m1["data_hash"] == m2["data_hash"]
+    assert m1["data_hash_note"] is None
+    assert m1["seed"] == {"seed": 20_261_006}                         # atlas's fixed seed, recorded, not changed
+    assert m1["lock_hash"] == lock_hash() and len(m1["lock_hash"]) == 64
+    assert m1["threads"] == 1 and m1["kernels"]["engine"] in ("rust", "python")
+    assert reads and all(r["regenerable"] for r in reads)
+    assert all(r["source"].startswith("warehouse:") for r in reads)         # the warehouse served the books
+    # the reads live beside the manifest (reads.json); the manifest says how many, from where, and none unservable
+    assert m1["reads"] == {"file": "reads.json", "count": len(reads), "sources": ["warehouse:fixture:alpaca"],
+                           "not_regenerable": 0}
+    assert set(t1) == set(t2) == {"summary", "euler", "members"}
+    for name in t1:
+        pd.testing.assert_frame_equal(t1[name], t2[name])
+
+
+def test_changing_one_input_row_changes_the_data_hash(tmp_path, fixture_wh):
+    import shutil
+
+    import duckdb
+
+    changed = tmp_path / "changed.duckdb"
+    shutil.copy(fixture_wh, changed)
+    con = duckdb.connect(str(changed))
+    con.execute("UPDATE bars_daily SET adj_close = adj_close * 1.0001 WHERE ticker = 'SPY' AND date = DATE '2026-05-29'")
+    con.close()
+    pb, pm = _run(tmp_path, fixture_wh, name="base"), _run(tmp_path, changed, name="moved")
+    base, moved = (json.loads((p / "manifest.json").read_text()) for p in (pb, pm))
+    assert base["data_hash"] != moved["data_hash"]
+    changed_reads = [r["name"] for r, b in zip(_reads(pm), _reads(pb), strict=True) if r["sha256"] != b["sha256"]]
+    assert changed_reads and all("SPY" in n for n in changed_reads), changed_reads    # only the books holding SPY
+
+
+# Three test kinds, registered for the tests below only: one that draws from an unseeded generator, one that
+# declares it draws and takes its seed from params, one that declares it draws and records nothing.
+
+def unseeded_handler(params, ctx):
+    import numpy as np
+
+    from ohcamel_quant.jobs.artifacts import ArtifactSpec
+
+    x = np.random.default_rng().normal(size=3)
+    return ArtifactSpec(tables={"draws": pd.DataFrame({"x": x})}, data_asof=None, provenance=[])
+
+
+def params_seed_handler(params, ctx):
+    from ohcamel_quant.jobs.artifacts import ArtifactSpec
+
+    rng = ctx.rng(params.get("seed"))
+    return ArtifactSpec(tables={"draws": pd.DataFrame({"x": rng.normal(size=3)})}, data_asof=None, provenance=[])
+
+
+def silent_handler(params, ctx):
+    from ohcamel_quant.jobs.artifacts import ArtifactSpec
+
+    return ArtifactSpec(tables={"draws": pd.DataFrame({"x": [1.0]})}, data_asof=None, provenance=[])
+
+
+@pytest.fixture
+def test_kinds():
+    from ohcamel_quant.jobs.kinds import REGISTRY, KindSpec, register
+
+    added = [register(KindSpec("test.unseeded", "test_jobs_artifacts:unseeded_handler", "S", heavy=False)),
+             register(KindSpec("test.params_seed", "test_jobs_artifacts:params_seed_handler", "S", heavy=False,
+                               draws_random=True)),
+             register(KindSpec("test.silent", "test_jobs_artifacts:silent_handler", "S", heavy=False,
+                               draws_random=True))]
+    yield
+    for k in added:
+        REGISTRY.pop(k.name, None)
+
+
+def test_a_product_that_draws_random_numbers_with_no_seed_fails_the_manifest_build(tmp_path, fixture_wh, test_kinds):
+    from ohcamel_quant.jobs.provenance import UnseededDraw
+
+    with pytest.raises(UnseededDraw, match="default_rng"):
+        _run(tmp_path, fixture_wh, kind="test.unseeded", params={}, name="u")
+    with pytest.raises(UnseededDraw, match="no seed"):
+        _run(tmp_path, fixture_wh, kind="test.params_seed", params={}, name="p")
+    with pytest.raises(UnseededDraw, match="declares it draws random numbers"):
+        _run(tmp_path, fixture_wh, kind="test.silent", params={}, name="s")
+    assert not (tmp_path / "u" / "test.unseeded").exists()               # nothing was published
+    m = json.loads((_run(tmp_path, fixture_wh, kind="test.params_seed", params={"seed": 5}, name="ok")
+                    / "manifest.json").read_text())
+    assert m["seed"] == {"seed": 5}
+
+
+def test_build_manifest_refuses_a_declared_draw_with_no_seed_and_any_unseeded_draw(conn):
+    from ohcamel_quant.jobs.provenance import UnseededDraw
+
+    enqueue(conn, kind="risk.mc_atlas", params={}, priority=2, mem_class="M", heavy=False,
+            submitted_by="schedule:t", now=T0)
+    job = claim_next(conn, allowed_classes=frozenset({"M"}), allow_heavy=True, now=T0)
+    base = {"data_asof": None, "provenance": [], "notes": [], "survivorship": None, "engine": "python", "tables": [],
+            "reads": [], "unseeded": [], "unrecorded": []}
+    kw = {"code_sha": "x", "finished_at": iso(T0), "cpu_seconds": 0.0, "peak_rss_bytes": 0}
+    with pytest.raises(UnseededDraw, match="declares it draws random numbers"):
+        build_manifest(job, {**base, "seed": None}, **kw)
+    with pytest.raises(UnseededDraw, match="global state"):
+        build_manifest(job, {**base, "seed": {"seed": 1}, "unseeded": ["numpy.random's global state was drawn from"]},
+                       **kw)
+    m = build_manifest(job, {**base, "seed": {"seed": 1}}, **kw)
+    assert m["seed"] == {"seed": 1} and m["data_hash"] is not None
+
+
+def test_a_kind_with_unrecorded_reads_publishes_data_hash_null_with_the_reason(conn):
+    job = _job(conn)   # ingest.fred records through the facade: complete
+    base = {"data_asof": None, "provenance": [], "notes": [], "survivorship": None, "engine": "python", "tables": [],
+            "reads": [{"name": "market.fred", "sha256": "a" * 64, "source": "fred", "regenerable": False}],
+            "seed": None, "unseeded": [], "unrecorded": []}
+    kw = {"code_sha": "x", "finished_at": iso(T0), "cpu_seconds": 0.0, "peak_rss_bytes": 0}
+    m = build_manifest(job, base, **kw)
+    assert m["data_hash"] is not None and m["data_hash_note"] is None
+    m = build_manifest(job, {**base, "unrecorded": ["warehouse.sql() bypassed the recorder"]}, **kw)
+    assert m["data_hash"] is None and "warehouse.sql()" in m["data_hash_note"]
+    legacy = {k: v for k, v in base.items() if k not in ("reads", "unseeded", "unrecorded")}
+    m = build_manifest(job, legacy, **kw)
+    assert m["data_hash"] is None and "no reads were recorded" in m["data_hash_note"]

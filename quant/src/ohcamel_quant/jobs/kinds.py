@@ -27,6 +27,9 @@ class KindSpec:
     heavy: bool
     public: bool = False
     validate: str | None = None   # "package.module:PydanticModel"
+    #: Task 3.3: the kind draws random numbers, so its manifest must record at least one seed (``ctx.seed``);
+    #: a manifest without one is refused (jobs/provenance.py).
+    draws_random: bool = False
 
     @property
     def retries(self) -> int:
@@ -87,9 +90,9 @@ _H = "ohcamel_quant.jobs.handlers.api_heavy"
 register(KindSpec("api.risk_backtest", f"{_H}:risk_backtest", "M", heavy=False, public=True,
                   validate="ohcamel_quant.api.routers.risk:BacktestIn"))
 register(KindSpec("api.backtest_sweep", f"{_H}:backtest_sweep", "M", heavy=False, public=True,
-                  validate="ohcamel_quant.api.routers.backtest:SweepIn"))
+                  validate="ohcamel_quant.api.routers.backtest:SweepIn", draws_random=True))
 register(KindSpec("api.backtest_walkforward", f"{_H}:backtest_walkforward", "M", heavy=False, public=True,
-                  validate="ohcamel_quant.api.routers.backtest:WalkForwardIn"))
+                  validate="ohcamel_quant.api.routers.backtest:WalkForwardIn", draws_random=True))
 register(KindSpec("api.portfolio_compare", f"{_H}:portfolio_compare", "M", heavy=False, public=True,
                   validate="ohcamel_quant.api.routers.portfolio:CompareIn"))
 
@@ -107,18 +110,20 @@ for _kind, _mem, _heavy in (("ingest.universes", "S", False), ("ingest.bars_dail
 
 # Lane M's products (compute plan M2-M8; ship plan Lane M). Private: scheduled only.
 _P = "ohcamel_quant.products"
-register(KindSpec("risk.mc_atlas", f"{_P}.atlas:run", "M", heavy=True))
-register(KindSpec("risk.mc_intraday", f"{_P}.atlas:run_intraday", "S", heavy=False))
-register(KindSpec("vol.forecast_league", f"{_P}.vol_league:run", "M", heavy=True))
+# draws_random (Task 3.3): Monte Carlo paths, bootstraps, MCS/SPA resampling, LightGBM, HMM restarts, Kronos
+# sampling -- each records the seed it already used (none was changed).
+register(KindSpec("risk.mc_atlas", f"{_P}.atlas:run", "M", heavy=True, draws_random=True))
+register(KindSpec("risk.mc_intraday", f"{_P}.atlas:run_intraday", "S", heavy=False, draws_random=True))
+register(KindSpec("vol.forecast_league", f"{_P}.vol_league:run", "M", heavy=True, draws_random=True))
 register(KindSpec("cov.league", f"{_P}.cov_league:run", "M", heavy=True))
-register(KindSpec("farm.sweep", f"{_P}.farm:run", "L", heavy=True))
+register(KindSpec("farm.sweep", f"{_P}.farm:run", "L", heavy=True, draws_random=True))
 register(KindSpec("vol.surface_history", f"{_P}.surface_history:run", "M", heavy=True))
-register(KindSpec("models.xs_lgbm", f"{_P}.q01:run", "M", heavy=True))
-register(KindSpec("regime.hmm", f"{_P}.q02:run", "M", heavy=True))
+register(KindSpec("models.xs_lgbm", f"{_P}.q01:run", "M", heavy=True, draws_random=True))
+register(KindSpec("regime.hmm", f"{_P}.q02:run", "M", heavy=True, draws_random=True))
 # 2026-10-19 (docs/superpowers/plans/2026-10-19-kronos-qlib-rdagent.md): Kronos in prospective shadow (EXP-K01's
 # design; torch runs in research/kronos's own venv, a subprocess), the owner's factor ledger re-screened on the
 # warehouse universe, and the nightly data-integrity sweep. Private: scheduled only.
-register(KindSpec("kronos.shadow", f"{_P}.kronos_shadow:run", "L", heavy=True))
+register(KindSpec("kronos.shadow", f"{_P}.kronos_shadow:run", "L", heavy=True, draws_random=True))
 register(KindSpec("factors.screen", f"{_P}.factor_screen:run", "M", heavy=True))
 register(KindSpec("ops.data_integrity", f"{_P}.data_integrity:run", "S", heavy=False))
 

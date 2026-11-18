@@ -168,6 +168,7 @@ def _daily_rv(ctx: Any, ticker: str, days: pd.DatetimeIndex, *, min_prints: int 
 def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     eval_days = int(params.get("eval_days", V.EVAL_DAYS))
     refit = int(params.get("refit_every", V.REFIT_EVERY))
+    mcs_seed = ctx.seed(V.MCS_SEED, "mcs")   # the MCS bootstrap's fixed seed, recorded (Task 3.3), never changed
     notes: list[str] = []
     names, surv = _names(ctx, params, notes)
     league, dm, fcs, skipped, dropped, prov, last = [], [], [], [], [], [], []
@@ -189,7 +190,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                 notes.append(f"{t}: scored on the squared daily return -- implausible intraday legs left its "
                              "full-day target incomplete")
             target = mrv if ok else r * r
-            nl = V.league_for(r, target, has_minute=ok, eval_days=eval_days, refit_every=refit)
+            nl = V.league_for(r, target, has_minute=ok, eval_days=eval_days, refit_every=refit, seed=mcs_seed)
         except (DataUnavailable, ValueError, KeyError, np.linalg.LinAlgError) as e:
             skipped.append({"ticker": t, "reason": str(e)})
             continue

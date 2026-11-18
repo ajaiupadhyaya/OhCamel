@@ -18,7 +18,7 @@ What lives where, inside `/data`:
 |---|---|---|
 | `/data/jobs.sqlite` (WAL) | worker and API (`POST /api/jobs`) | nightly, `deploy/backup.list` (`sqlite`), 14 kept |
 | `/data/artifacts/<kind>/<id>/` | worker only, immutable once published | no |
-| `/data/warehouse.duckdb` | worker's `ingest.*` jobs only; the API opens it read-only | no (`duckdb` method reserved, refused by `backup.sh`) |
+| `/data/warehouse.duckdb` | worker's `ingest.*` jobs only; the API opens it read-only | nightly export, `deploy/backup.list` (`export`): `warehouse/YYYY-MM-DD/`, the 14 newest and each month's newest kept (Task 3.3; `docs/runbooks/restore-drill-2026-11.md`) |
 | `/data/experiments/EXP-Q01/universe.yaml` | the Q01 freeze, once | no |
 | `/data/deck/recorder.sqlite` | API (the Flight Deck recorder) | nightly (`sqlite`) |
 
@@ -267,8 +267,15 @@ lost is gone), and the holdout rule above applies.
 
 ## Restoring the warehouse
 
-`/data/warehouse.duckdb` has no backup: every dataset in it except `option_snapshots` can be fetched again from
-its vendor, and that re-fetch is the restore.
+Since Task 3.3 the warehouse is exported every night (`deploy/backup.sh`, the `export` line of
+`deploy/backup.list`) to `/var/backups/ohcamel/warehouse/YYYY-MM-DD/`, and that export is the restore:
+`deploy/restore.sh --warehouse /var/backups/ohcamel/warehouse/YYYY-MM-DD` writes a NEW file under
+`/var/backups/ohcamel/restored/`; with the worker and the API stopped,
+`deploy/restore.sh --warehouse ... --replace-live --services-stopped` replaces `/data/warehouse.duckdb` (the old
+file moved aside, never deleted). `docs/runbooks/restore-drill-2026-11.md` is the drill and its sizes.
+
+Without an export (before the first one, or every export lost), every dataset except `option_snapshots` can be
+fetched again from its vendor, and that re-fetch is the restore:
 
 1. `dc stop ohcamel-worker` (the only writer). From step 2 until the first ingest recreates the file,
    `/api/warehouse/freshness` answers 503 `warehouse_unavailable`.

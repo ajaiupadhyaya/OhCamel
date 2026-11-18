@@ -37,6 +37,15 @@
 #      wait for `the first sync succeeded, so N session closes are restored`,
 #      then compare /api/desk's `sessions` with the verify count and fail on a
 #      mismatch. --dry-run prints every command in that order and runs none.
+#   W. --warehouse EXPORT (Task 3.3) rebuilds a warehouse from a nightly export:
+#      by default into a NEW file beside the backups (the live warehouse is never
+#      named), in the Quant image as uid 10002; an export that is not under the
+#      backup directory or has no export.json (unverified, partial) is refused
+#      before any docker call; --replace-live needs --services-stopped AND a
+#      compose that reports neither ohcamel-worker nor ohcamel-quant running,
+#      and then moves the live file aside (never deletes it); --local-python
+#      runs the same restore with a host python and no docker at all (the
+#      drill on a machine without a daemon).
 #   U. the arguments: a file outside the backup directory is refused (the
 #      restore container sees that directory as /backups and nothing else);
 #      --drill and --restore together, or neither, is a usage error.
@@ -108,13 +117,16 @@ for a in "$@"; do
 	esac
 done
 {
-	printf 'verb=%s ::' "$verb"
+	printf 'verb=%s img=%s vol=%s ::' "$verb" "${OHCAMEL_IMAGE-}" "${OHCAMEL_BACKUP_VOLUME-}"
 	printf ' %q' "$@"
 	printf '\n'
 } >>"$SHIM_LOG"
 case "$verb" in
 ps)
-	[ -n "${SHIM_PS_IMAGE-}" ] && printf '%s\n' "$SHIM_PS_IMAGE"
+	case " $* " in
+	*" --services "*) [ -n "${SHIM_PS_SERVICES-}" ] && printf '%s\n' $SHIM_PS_SERVICES ;;
+	*) [ -n "${SHIM_PS_IMAGE-}" ] && printf '%s\n' "$SHIM_PS_IMAGE" ;;
+	esac
 	exit 0
 	;;
 run)
@@ -406,6 +418,104 @@ fresh
 run_restore DEPLOY_NOW=$saturday SHIM_RESTORE_EXIT=1 -- --restore "$file"
 expect_rc "R8 the restore container failing fails the restore" 1
 expect_eq "R8 and the engine is started back on whatever is in the volume" "$(verb_lines start | grep -c . || true)" "1"
+
+
+# --- W. the warehouse, from a nightly export ---------------------------------------
+# An export as backup.sh leaves it: warehouse/YYYY-MM-DD with its record. The
+# shim's run never opens it.
+wfresh() {
+	fresh
+	export_dir="$backups/warehouse/2026-09-27"
+	mkdir -p "$export_dir"
+	printf '{"day": "2026-09-27"}\n' >"$export_dir/export.json"
+	: >"$export_dir/bars_daily.parquet"
+}
+
+wfresh
+run_restore -- --warehouse "$export_dir" --dry-run
+expect_rc "W1 --warehouse --dry-run" 0
+expect_eq "W1 makes no docker call" "$(calls)" "0"
+expect_has "W1 prints the restore into a new file beside the backups" "$scratch/out" \
+	"-m ohcamel_quant.warehouse restore /backups/warehouse/2026-09-27 /backups/restored/warehouse-2026-09-27.duckdb"
+expect_lacks "W1 never names the live warehouse" "$scratch/out" "/data/warehouse.duckdb"
+
+wfresh
+run_restore -- --warehouse "$export_dir"
+expect_rc "W2 a restore to a new file" 0
+expect_eq "W2 exactly one docker call, a run" "$(sed -n 's/^verb=\([a-z]*\) .*/\1/p' "$log" | tr '\n' ' ')" "run "
+line=$(verb_lines run)
+for word in " img=ghcr.io/ajaiupadhyaya/ohcamel-quant " " --profile backup " " --rm " " --user 10002:$gid " \
+	" --entrypoint python ohcamel-backup -m ohcamel_quant.warehouse restore /backups/warehouse/2026-09-27 /backups/restored/warehouse-2026-09-27.duckdb"; do
+	case "$line" in
+	*"$word"*) ok "W2 the run carries$word" ;;
+	*) no "W2 the run carries$word" "run was: $(printf '%s' "$line" | cut -c1-300)" ;;
+	esac
+done
+case "$line" in
+*--replace* | *"/data/warehouse.duckdb"*) no "W2 the new-file restore never replaces the live warehouse" "$line" ;;
+*) ok "W2 the new-file restore never replaces the live warehouse" ;;
+esac
+expect_has "W2 and says where the restored file is" "$scratch/out" "$backups/restored/warehouse-2026-09-27.duckdb"
+
+wfresh
+rm "$export_dir/export.json"
+run_restore -- --warehouse "$export_dir"
+expect_rc "W3 an export without export.json is refused" 1
+expect_eq "W3 before any docker call" "$(calls)" "0"
+expect_has "W3 and the refusal says why" "$scratch/err" "export.json"
+
+wfresh
+other="$scratch/elsewhere/2026-09-27"
+mkdir -p "$other"
+: >"$other/export.json"
+run_restore -- --warehouse "$other"
+expect_rc "W3 an export outside the backup directory is refused" 1
+expect_eq "W3 before any docker call (outside)" "$(calls)" "0"
+
+wfresh
+run_restore -- --warehouse "$export_dir" --replace-live
+expect_rc "W4 --replace-live without --services-stopped is refused" 1
+expect_eq "W4 before any docker call" "$(calls)" "0"
+expect_has "W4 and the refusal names the confirmation" "$scratch/err" "--services-stopped"
+
+wfresh
+run_restore SHIM_PS_SERVICES="ohcamel-quant ohcamel-worker" -- --warehouse "$export_dir" --replace-live --services-stopped
+expect_rc "W5 --replace-live while the worker and the API run is refused" 1
+expect_eq "W5 and nothing was run" "$(verb_lines run | grep -c . || true)" "0"
+expect_has "W5 and the refusal names what is running" "$scratch/err" "ohcamel-worker"
+
+wfresh
+run_restore SHIM_PS_SERVICES="ohcamel-live caddy" -- --warehouse "$export_dir" --replace-live --services-stopped
+expect_rc "W6 --replace-live with the warehouse's users stopped" 0
+line=$(verb_lines run)
+for word in " vol=quant_data " " --user 10002:$gid " \
+	" -m ohcamel_quant.warehouse restore /backups/warehouse/2026-09-27 /data/warehouse.duckdb --replace"; do
+	case "$line" in
+	*"$word"*) ok "W6 the run carries$word" ;;
+	*) no "W6 the run carries$word" "run was: $(printf '%s' "$line" | cut -c1-300)" ;;
+	esac
+done
+expect_has "W6 and says the old file is kept beside it" "$scratch/out" "pre-restore"
+
+wfresh
+cat >"$scratch/bin/fakepython" <<'PY'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$SHIM_PY_LOG"
+PY
+chmod +x "$scratch/bin/fakepython"
+run_restore SHIM_PY_LOG="$scratch/py.log" -- --warehouse "$export_dir" --local-python "$scratch/bin/fakepython" --to "$scratch/r.duckdb"
+expect_rc "W7 --local-python" 0
+expect_eq "W7 makes no docker call at all" "$(calls)" "0"
+expect_eq "W7 runs the restore with that python" "$(cat "$scratch/py.log")" \
+	"-m ohcamel_quant.warehouse restore $export_dir $scratch/r.duckdb"
+
+wfresh
+: >"$scratch/r.duckdb"
+run_restore -- --warehouse "$export_dir" --local-python "$scratch/bin/fakepython" --to "$scratch/r.duckdb"
+expect_rc "W8 a --to that exists is refused" 1
+expect_has "W8 and named" "$scratch/err" "r.duckdb"
+run_restore -- --warehouse "$export_dir" --local-python "$scratch/bin/fakepython" --replace-live --services-stopped
+expect_rc "W8 --local-python cannot replace the live warehouse (it is in a volume)" 2
 
 # --- U. the arguments -------------------------------------------------------------
 fresh

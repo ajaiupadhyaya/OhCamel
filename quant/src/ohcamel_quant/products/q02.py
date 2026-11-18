@@ -45,6 +45,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
 
     cfg = load_config("EXP-Q02")
     version, h = int(cfg["methodology_version"]), config_hash(cfg)
+    hmm_seed = ctx.seed(cfg["model"]["seed"], "hmm")   # the frozen config's HMM restart seed, recorded (Task 3.3)
     try:
         spy, d10, d2, oas, prov = load_inputs(ctx, cfg)
     except DataUnavailable as e:
@@ -69,7 +70,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                             data_asof=None, provenance=prov, notes=[f"first dates: {short}"],
                             verdict="INSUFFICIENT DATA",
                             verdict_detail=f"SHORT HISTORY · FIRST REFIT {need.date()} NEEDS {m['min_train_weeks']}W")
-    p_high, probs, fits = Q.oos_probabilities(z, refits, ks=tuple(m["ks"]), restarts=m["restarts"], seed=m["seed"],
+    p_high, probs, fits = Q.oos_probabilities(z, refits, ks=tuple(m["ks"]), restarts=m["restarts"], seed=hmm_seed,
                                               min_train=m["min_train_weeks"])
     frame = pd.DataFrame({"rv": Q.target_rv(spy, z.index, cfg["target"]["sessions"]),
                           "rv_end": Q.target_end(spy, z.index, cfg["target"]["sessions"]),

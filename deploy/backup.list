@@ -24,6 +24,13 @@
 #                      same online backup API, for a database the engine does
 #                      not own), integrity_checked before the copy takes its
 #                      name STEM-YYYY-MM-DD.EXT; backup.sh keeps the 14 newest.
+#             export   the whole warehouse, nightly (Task 3.3): the Quant
+#                      image's `python -m ohcamel_quant.warehouse export`,
+#                      EXPORT DATABASE from a read-only connection into
+#                      warehouse/YYYY-MM-DD/ (Parquet per table, schema.sql,
+#                      load.sql, export.json), verified before it takes its
+#                      name; backup.sh keeps the 14 newest and the newest of
+#                      each month. Restored with deploy/restore.sh --warehouse.
 #             duckdb   reserved for Lane C (CHECKPOINT, then a file copy) and
 #                      refused until that lane teaches backup.sh the method.
 #   UID     the uid the copy runs as: the uid of the image that owns the
@@ -39,7 +46,8 @@
 # having copied nothing is the failure mode this file exists to prevent.
 #
 # Later lanes APPEND here rather than editing backup.sh.
-# The warehouse file itself is not copied. `duckdb` stays reserved.
+# The warehouse file itself is not copied; it is exported (the `export` line).
+# `duckdb` stays reserved.
 # Option snapshots cannot be re-fetched, so they are exported read-only.
 
 # The desk's journal: every order, event, fill, session close, mark and
@@ -62,3 +70,8 @@ quant_data /data/jobs.sqlite sqlite 10002
 # option_snapshots only, read-only, from the Quant image (uid 10002). The
 # live warehouse.duckdb file is not copied.
 quant_data /data/warehouse.duckdb snapshot 10002
+
+# The whole warehouse, exported read-only every night into
+# warehouse/YYYY-MM-DD/ (Task 3.3): what tools/regenerate.py re-runs a job
+# against, and what deploy/restore.sh --warehouse rebuilds a warehouse from.
+quant_data /data/warehouse.duckdb export 10002

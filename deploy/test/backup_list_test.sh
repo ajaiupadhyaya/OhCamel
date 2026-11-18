@@ -36,6 +36,13 @@
 #   E. --dry-run and --check run no container and write nothing.
 #   F. a missing backup directory is refused before any backup container
 #      runs, and is recorded as a failed run.
+#   X. the warehouse export (Task 3.3): one container runs the Quant image's
+#      `python -m ohcamel_quant.warehouse export` (read-only EXPORT DATABASE,
+#      verified, renamed into place) into warehouse/YYYY-MM-DD; the newest 14
+#      exports and the newest of each month are kept; a failed export prunes
+#      nothing and is a failed step; when the disk is short, old dailies (never
+#      the newest export, never a month-end) are pruned BEFORE the export runs,
+#      and an export that still does not fit is refused, not attempted.
 #   S. every run that reaches its steps is recorded for the Ledger by ONE
 #      ohcamel-backup-status container: ok on success, ok false with the
 #      failed steps named on failure; a record that cannot be written is
@@ -80,6 +87,7 @@ gid=$(id -g)
 log="$scratch/docker.log"
 status_log="$scratch/status.log"
 timeout_log="$scratch/timeout.log"
+export_seen="$scratch/export-seen.log"
 backups="$scratch/backups"
 repo="$scratch/repo"
 
@@ -130,6 +138,14 @@ run)
 		[ "${SHIM_EXIT_JOURNAL:-0}" = 0 ] || exit "$SHIM_EXIT_JOURNAL"
 		: >"$OHCAMEL_BACKUP_DIR/desk-$SHIM_TODAY.db"
 		;;
+	*" ohcamel_quant.warehouse export "*)
+		# What the export container would leave: the dated directory with its record.
+		# The directory count it saw is logged, so a case can tell a prune ran BEFORE it.
+		find "$OHCAMEL_BACKUP_DIR/warehouse" -mindepth 1 -maxdepth 1 -name '20*' 2>/dev/null | grep -c . >>"$SHIM_EXPORT_SEEN" || true
+		[ "${SHIM_EXIT_EXPORT:-0}" = 0 ] || exit "$SHIM_EXIT_EXPORT"
+		mkdir -p "$OHCAMEL_BACKUP_DIR/warehouse/$SHIM_TODAY"
+		: >"$OHCAMEL_BACKUP_DIR/warehouse/$SHIM_TODAY/export.json"
+		;;
 	*"option_snapshots"*)
 		[ "${SHIM_EXIT_SNAPSHOT:-0}" = 0 ] || exit "$SHIM_EXIT_SNAPSHOT"
 		: >"$OHCAMEL_BACKUP_DIR/${!#}"
@@ -173,6 +189,7 @@ fresh() {
 	: >"$log"
 	: >"$status_log"
 	: >"$timeout_log"
+	: >"$export_seen"
 }
 
 # run_backup [VAR=value ...] -- [backup.sh arguments ...]
@@ -190,7 +207,7 @@ run_backup() {
 	env -u OHCAMEL_TAG -u OHCAMEL_IMAGE -u OHCAMEL_BACKUP_VOLUME -u OHCAMEL_BACKUP_LIST \
 		-u COMPOSE_PROJECT_NAME \
 		PATH="$scratch/bin:$PATH" SHIM_LOG="$log" SHIM_TODAY="$today" SHIM_STATUS_LOG="$status_log" \
-		SHIM_TIMEOUT_LOG="$timeout_log" \
+		SHIM_TIMEOUT_LOG="$timeout_log" SHIM_EXPORT_SEEN="$export_seen" \
 		BACKUP_FINISHED_AT=2026-09-27T06:31:00Z \
 		OHCAMEL_BACKUP_DIR="$backups" BACKUP_TODAY="$today" \
 		SHIM_PS_IMAGE="ghcr.io/ajaiupadhyaya/ohcamel:cafe1234" \
@@ -230,7 +247,8 @@ n_entries=$(printf '%s\n' "$entries" | grep -c . || true)
 for want in 'desk_data /data/desk.db journal 10001' \
 	'quant_data /data/deck/recorder.sqlite sqlite 10002' \
 	'quant_data /data/jobs.sqlite sqlite 10002' \
-	'quant_data /data/warehouse.duckdb snapshot 10002'; do
+	'quant_data /data/warehouse.duckdb snapshot 10002' \
+	'quant_data /data/warehouse.duckdb export 10002'; do
 	if printf '%s\n' "$entries" | grep -qxF -- "$want"; then
 		ok "L1 backup.list carries '$want'"
 	else
@@ -318,6 +336,12 @@ while IFS=' ' read -r volume path method uid; do
 		*) no "$label runs python in the backup container" "run $i was: $(printf '%s' "$line" | cut -c1-200)" ;;
 		esac
 		;;
+	export)
+		case "$line" in
+		*" --entrypoint python ohcamel-backup -m ohcamel_quant.warehouse export $path /backups/warehouse --date $today") ok "$label exports $path read-only into /backups/warehouse/$today" ;;
+		*) no "$label exports $path into /backups/warehouse/$today" "run $i was: $(printf '%s' "$line" | cut -c1-300)" ;;
+		esac
+		;;
 	sqlite)
 		base=${path##*/}
 		dest="${base%.*}-$today.${base##*.}"
@@ -350,10 +374,10 @@ done <<EOF
 $entries
 EOF
 
-# What is in the directory afterwards: the three files the (simulated)
-# containers wrote and the two backup.sh copies itself. 3 + 2 = 5.
-expect_eq "A5 the directory holds the three copies and the two configuration files" "$(listing)" \
-	"book-$today.sexp deploy-$today.env desk-$today.db jobs-$today.sqlite option-snapshots-$today.parquet recorder-$today.sqlite"
+# What is in the directory afterwards: the copies the (simulated) containers
+# wrote, today's warehouse export, and the two backup.sh copies itself.
+expect_eq "A5 the directory holds the copies, the export and the two configuration files" "$(listing)" \
+	"book-$today.sexp deploy-$today.env desk-$today.db jobs-$today.sqlite option-snapshots-$today.parquet recorder-$today.sqlite warehouse warehouse/$today warehouse/$today/export.json"
 if cmp -s "$repo/book.sexp" "$backups/book-$today.sexp"; then
 	ok "A6 book-$today.sexp is book.sexp, byte for byte"
 else
@@ -516,14 +540,14 @@ run_backup SHIM_EXIT_SQLITE=1 --
 expect_rc "C1 the recorder's copy failing fails the run" 1
 expect_eq "C1 and every line still ran" "$(runs)" "$n_entries"
 expect_eq "C1 and the journal and the configuration were still copied" "$(listing)" \
-	"book-$today.sexp deploy-$today.env desk-$today.db option-snapshots-$today.parquet"
+	"book-$today.sexp deploy-$today.env desk-$today.db option-snapshots-$today.parquet warehouse warehouse/$today warehouse/$today/export.json"
 
 fresh
 run_backup SHIM_EXIT_JOURNAL=1 --
 expect_rc "C2 the journal's copy failing fails the run" 1
 expect_eq "C2 and every line still ran" "$(runs)" "$n_entries"
 expect_eq "C2 and the recorder, the job queue and the configuration were still copied" "$(listing)" \
-	"book-$today.sexp deploy-$today.env jobs-$today.sqlite option-snapshots-$today.parquet recorder-$today.sqlite"
+	"book-$today.sexp deploy-$today.env jobs-$today.sqlite option-snapshots-$today.parquet recorder-$today.sqlite warehouse warehouse/$today warehouse/$today/export.json"
 
 # Exit 3 is the container saying "the file is not in the volume": the recorder
 # writes its first row the first minute a US session is open, so a host
@@ -539,7 +563,7 @@ rm "$repo/book.sexp"
 run_backup --
 expect_rc "C4 a missing book.sexp fails the run" 1
 expect_eq "C4 and everything else was still copied" "$(listing)" \
-	"deploy-$today.env desk-$today.db jobs-$today.sqlite option-snapshots-$today.parquet recorder-$today.sqlite"
+	"deploy-$today.env desk-$today.db jobs-$today.sqlite option-snapshots-$today.parquet recorder-$today.sqlite warehouse warehouse/$today warehouse/$today/export.json"
 
 # --- D. retention of what backup.sh writes ---------------------------------------
 # The journal's dailies are pruned by `ohcamel journal-backup` (ruling 11) and
@@ -653,7 +677,7 @@ rmdir "$backups"
 run_backup --
 expect_rc "F1 a missing backup directory is refused" 1
 expect_eq "F1 before any backup container runs" "$(runs)" "0"
-expect_eq "F1 and the refusal is recorded as a failed run, step backup-dir" "$(status)" "2026-09-27T06:31:00Z false 6 6 backup-dir"
+expect_eq "F1 and the refusal is recorded as a failed run, step backup-dir" "$(status)" "2026-09-27T06:31:00Z false 7 7 backup-dir"
 expect_has "F1 and the refusal names the directory" "$scratch/err" "$backups"
 if [ -e "$backups" ]; then
 	no "F1 and the directory was not created behind the owner's back" "it exists now"
@@ -661,12 +685,98 @@ else
 	ok "F1 and the directory was not created behind the owner's back"
 fi
 
+
+# --- X. the warehouse export ------------------------------------------------------------
+# plant_exports DATE...: dated export directories, each holding a 400 KB part
+# file so the disk-space cases have something to free.
+plant_exports() {
+	local d
+	mkdir -p "$backups/warehouse"
+	for d in "$@"; do
+		mkdir -p "$backups/warehouse/$d"
+		head -c 409600 /dev/zero >"$backups/warehouse/$d/bars_daily.parquet"
+		: >"$backups/warehouse/$d/export.json"
+	done
+}
+exports() { (cd "$backups/warehouse" 2>/dev/null && find . -mindepth 1 -maxdepth 1 | sed 's|^\./||' | sort | tr '\n' ' ' | sed 's/ $//'); }
+
+fresh
+run_backup --
+expect_rc "X1 a clean run" 0
+if [ -f "$backups/warehouse/$today/export.json" ]; then
+	ok "X1 the run leaves a dated export directory, warehouse/$today, with its record"
+else
+	no "X1 the run leaves a dated export directory, warehouse/$today" "listing: $(listing)"
+fi
+
+# 15 planted: 07-31 and 08-31 are month-ends, 08-30 is not, 09-01..09-12 are
+# dailies. With today's export that is 16; the 14 newest are today, 09-12 ..
+# 09-01 and 08-31; the newest of July (07-31) is kept as July's month-end;
+# 08-30 is neither and goes. Leftovers of a killed run go too; a file that is
+# not an export's name stays.
+fresh
+plant_exports 2026-07-31 2026-08-30 2026-08-31 2026-09-01 2026-09-02 2026-09-03 2026-09-04 2026-09-05 \
+	2026-09-06 2026-09-07 2026-09-08 2026-09-09 2026-09-10 2026-09-11 2026-09-12
+mkdir -p "$backups/warehouse/2026-09-20.part" "$backups/warehouse/2026-09-21.old.part"
+: >"$backups/warehouse/notes.txt"
+run_backup --
+expect_rc "X2 a run over 15 exports" 0
+expect_eq "X2 15 exports and today's prune to the 14 newest plus July's month-end (08-30 deleted)" "$(exports)" \
+	"2026-07-31 2026-08-31 2026-09-01 2026-09-02 2026-09-03 2026-09-04 2026-09-05 2026-09-06 2026-09-07 2026-09-08 2026-09-09 2026-09-10 2026-09-11 2026-09-12 $today notes.txt"
+expect_has "X2 and the prune says what it kept" "$scratch/out" "pruned warehouse/2026-08-30"
+
+# A failed export is a failed step and prunes nothing.
+fresh
+plant_exports 2026-07-31 2026-08-30 2026-08-31 2026-09-01 2026-09-02 2026-09-03 2026-09-04 2026-09-05 \
+	2026-09-06 2026-09-07 2026-09-08 2026-09-09 2026-09-10 2026-09-11 2026-09-12
+run_backup SHIM_EXIT_EXPORT=1 --
+expect_rc "X3 a failed export fails the run" 1
+expect_eq "X3 and is recorded as the failed step warehouse" "$(status)" "2026-09-27T06:31:00Z false 1 7 warehouse"
+expect_eq "X3 and prunes no export (15 stay 15, no today's)" "$(exports | wc -w | tr -d ' ')" "15"
+expect_has "X3 and says the export is not to be trusted" "$scratch/err" "warehouse/$today is not to be trusted"
+
+# Short of disk: an export needs twice the newest export's size free. 50 KB
+# free, the newest 400 KB: 800 KB wanted, so the two OLDEST dailies that are
+# not month-ends (08-30, 09-01) are pruned before the export runs -- the
+# container saw 13 directories -- and the newest and the month-ends stay.
+fresh
+plant_exports 2026-07-31 2026-08-30 2026-08-31 2026-09-01 2026-09-02 2026-09-03 2026-09-04 2026-09-05 \
+	2026-09-06 2026-09-07 2026-09-08 2026-09-09 2026-09-10 2026-09-11 2026-09-12
+run_backup BACKUP_FREE_KB=50 --
+expect_rc "X4 a run short of disk" 0
+expect_eq "X4 pruned BEFORE the export: the container saw 13 exports" "$(cat "$export_seen")" "13"
+case " $(exports) " in
+*" 2026-08-30 "* | *" 2026-09-01 "*) no "X4 the two oldest dailies went for space" "$(exports)" ;;
+*) ok "X4 the two oldest dailies went for space" ;;
+esac
+for kept in 2026-07-31 2026-08-31 2026-09-12; do
+	case " $(exports) " in
+	*" $kept "*) ok "X4 $kept stayed (a month-end, or the newest export)" ;;
+	*) no "X4 $kept stayed (a month-end, or the newest export)" "$(exports)" ;;
+	esac
+done
+expect_has "X4 and the run says why it pruned early" "$scratch/out" "short of disk"
+
+# Still short with nothing left that may go: refused, not attempted.
+fresh
+plant_exports 2026-08-31 2026-09-12
+run_backup BACKUP_FREE_KB=50 --
+expect_rc "X5 an export that cannot fit fails the run" 1
+expect_eq "X5 and was never attempted" "$(cat "$export_seen")" ""
+expect_eq "X5 and nothing was deleted to make room" "$(exports)" "2026-08-31 2026-09-12"
+expect_eq "X5 and the record names the step" "$(status)" "2026-09-27T06:31:00Z false 1 7 warehouse"
+
+fresh
+run_backup -- --dry-run
+expect_has "X6 --dry-run prints the export's command" "$scratch/out" "ohcamel_quant.warehouse export /data/warehouse.duckdb /backups/warehouse --date $today"
+expect_eq "X6 --dry-run makes no export directory" "$(listing)" ""
+
 # --- S. the run's record, for the Ledger ----------------------------------------------
 fresh
 run_backup --
 expect_rc "S1 a clean run" 0
 expect_eq "S1 is recorded once" "$(status_runs)" "1"
-expect_eq "S1 as ok: finished_at, ok, failed, steps, no failed step" "$(status)" "2026-09-27T06:31:00Z true 0 6"
+expect_eq "S1 as ok: finished_at, ok, failed, steps, no failed step" "$(status)" "2026-09-27T06:31:00Z true 0 7"
 srun=$(grep ' ohcamel-backup-status ' "$log")
 case "$srun" in
 *" tag=cafe1234 "*" --profile backup run --rm -T --user 10002:$gid ohcamel-backup-status "*) ok "S1 the record runs the status service as uid 10002 at the engine's tag" ;;
@@ -679,12 +789,12 @@ expect_eq "S1 the record is the last docker call" "$(tail -n 1 "$log" | grep -c 
 fresh
 run_backup SHIM_EXIT_SQLITE=1 --
 expect_rc "S2 a failing step fails the run" 1
-expect_eq "S2 and is recorded as failed, naming the two sqlite steps" "$(status)" "2026-09-27T06:31:00Z false 2 6 recorder jobs"
+expect_eq "S2 and is recorded as failed, naming the two sqlite steps" "$(status)" "2026-09-27T06:31:00Z false 2 7 recorder jobs"
 
 fresh
 rm "$repo/book.sexp"
 run_backup SHIM_EXIT_JOURNAL=1 --
-expect_eq "S3 the journal and the book failing are both named" "$(status)" "2026-09-27T06:31:00Z false 2 6 desk book"
+expect_eq "S3 the journal and the book failing are both named" "$(status)" "2026-09-27T06:31:00Z false 2 7 desk book"
 
 fresh
 run_backup SHIM_EXIT_STATUS=1 --

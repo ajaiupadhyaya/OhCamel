@@ -36,7 +36,7 @@ from ..jobs.artifacts import ArtifactSpec
 from ..models import kronos_k01 as K
 from ..models import vol_league as V
 from ..risk.core import ewma_variance_path
-from .io import previous_artifact
+from .io import previous_artifact, read_table
 
 KIND = "kronos.shadow"
 MODELS = ("kronos", "garch", "gjr", "egarch", "ewma")
@@ -165,6 +165,7 @@ def score(real: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
 
 def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     cfg = K.load_config(CONFIG)
+    ctx.seed(cfg["sampling"]["seed"], "kronos")   # EXP-K01's base seed, passed to the subprocess by its config
     names = [str(t).upper() for t in params.get("tickers", cfg["names"])]
     made_at = now_utc().isoformat(timespec="seconds")
     notes: list[str] = []
@@ -195,7 +196,8 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
             err = getattr(e, "stderr", b"") or b""
             notes.append(f"Kronos subprocess failed ({type(e).__name__}): {err.decode(errors='replace')[-300:]}")
     prev = previous_artifact(KIND, db_path=DB_PATH, with_table="ledger")
-    old = pd.read_parquet(prev[1] / "ledger.parquet") if prev else pd.DataFrame(columns=LEDGER_COLUMNS)
+    old = read_table(prev[1], "ledger") if prev else None          # recorded (products/io.py)
+    old = pd.DataFrame(columns=LEDGER_COLUMNS) if old is None else old
     ledger = (pd.concat([old, pd.DataFrame(new, columns=LEDGER_COLUMNS)], ignore_index=True)
               .drop_duplicates(["symbol", "asof", "model"], keep="first")          # a made forecast is never rewritten
               .sort_values(["asof", "symbol", "model"]).reset_index(drop=True))

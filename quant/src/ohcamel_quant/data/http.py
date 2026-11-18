@@ -110,6 +110,11 @@ def _throttle(host: str, interval: float) -> None:
         _sleep(wait)
 
 
+#: The jitter's own generator: a retry's wait feeds no number, and a job drawing from the random module's
+#: global state is refused as an unseeded draw (jobs/provenance.py).
+_JITTER = random.Random()
+
+
 def backoff_delay(attempt: int, retry_after: str | None = None) -> float:
     """Seconds to wait before retry ``attempt`` (0-based): a numeric
     ``Retry-After`` (capped) wins; otherwise full jitter
@@ -119,7 +124,7 @@ def backoff_delay(attempt: int, retry_after: str | None = None) -> float:
             return min(RETRY_AFTER_CAP_S, max(0.0, float(retry_after)))
         except ValueError:
             pass
-    return random.uniform(0.0, min(BACKOFF_CAP_S, BACKOFF_BASE_S * (2**attempt)))
+    return _JITTER.uniform(0.0, min(BACKOFF_CAP_S, BACKOFF_BASE_S * (2**attempt)))
 
 
 def _excerpt(resp: httpx.Response, n: int = 160) -> str:

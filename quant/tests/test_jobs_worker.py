@@ -184,3 +184,22 @@ def test_cli_worker_help_runs():
     r = subprocess.run([sys.executable, "-m", "ohcamel_quant", "worker", "--help"], capture_output=True,
                        text=True, timeout=60)
     assert r.returncode == 0 and "ohcamel-quant worker" in r.stdout
+
+
+def test_a_refused_manifest_fails_the_job_and_publishes_nothing(cfg, conn):
+    """Task 3.3: a result that drew random numbers without a seed is refused by build_manifest; the worker
+    fails the job with that reason instead of dying, and nothing is published."""
+    from ohcamel_quant.jobs.runner import Outcome
+
+    _q(conn, params={"tag": "u"})
+    w = Worker(cfg, admit=admit_all)
+    job = claim_next(w.conn, allowed_classes=frozenset({"S"}), allow_heavy=True, now=utcnow())
+    staging = cfg.artifacts_root / ".staging" / job.id
+    staging.mkdir(parents=True)
+    result = {"ok": True, "data_asof": None, "provenance": [], "notes": [], "survivorship": None, "engine": "python",
+              "tables": [], "reads": [], "seed": None, "unrecorded": [],
+              "unseeded": ["numpy.random.default_rng() with no seed was drawn from (1 generator)"]}
+    w._settle(job, Outcome("done", result, None, 0.1, 1, staging))
+    d = get_job(conn, job.id)
+    assert d.state == "failed" and "manifest refused" in d.error and "without a seed" in d.error
+    assert not staging.exists() and not (cfg.artifacts_root / "ops.selftest" / job.id).exists()
