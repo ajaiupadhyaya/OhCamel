@@ -145,6 +145,28 @@ def test_coverage_from_warehouse_judges_adjustment_by_source(tmp_path):
     assert "stooq" in excluded["MIXD"]
 
 
+def test_q01_feature_panel_reads_the_repaired_series(wh, tmp_path):
+    """Task 3.1: on a warehouse holding a constructed unadjusted 4:1 split (test_splits.unadjusted_split), the
+    panel has no return beyond 30% on the ex-date, equals the clean fixture panel bit for bit, and its features
+    with it; the repair is named in the panel's provenance."""
+    from test_splits import SPLIT_EX, SPLIT_NOTE, unadjusted_split
+
+    from ohcamel_quant.models.features import build_features, month_ends
+
+    split = unadjusted_split(tmp_path / "split.duckdb")
+    with duckdb.connect(str(split), read_only=True) as con:
+        panel, prov = q01.load_panel(con, FIXTURE_ETFS)
+    with duckdb.connect(str(wh), read_only=True) as con:
+        clean, clean_prov = q01.load_panel(con, FIXTURE_ETFS)
+    ret = panel.adj_close.pct_change()
+    assert abs(ret.loc[SPLIT_EX, "SPY"]) < 0.30 and (ret.abs().max() < 0.30).all()
+    for f in ("open", "close", "adj_close", "volume"):
+        pd.testing.assert_frame_equal(getattr(panel, f), getattr(clean, f), check_exact=True)
+    assert prov[0]["repairs"] == [SPLIT_NOTE] and "repairs" not in clean_prov[0]
+    dates = month_ends(panel.adj_close.index)
+    pd.testing.assert_frame_equal(build_features(panel, dates), build_features(clean, dates), check_exact=True)
+
+
 def test_q01_holdout_is_evaluated_once_and_carried_forward(market, wh, test_cfg, monkeypatch, tmp_path):
     db, root = tmp_path / "jobs.sqlite", tmp_path / "artifacts"
     first = _run(market, wh, test_cfg, monkeypatch, db)

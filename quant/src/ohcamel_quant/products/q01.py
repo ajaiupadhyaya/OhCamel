@@ -34,13 +34,23 @@ HOLDOUT_TABLES = ("holdout", "holdout_returns", "holdout_costs", "holdout_regime
 
 
 def load_panel(con: Any, tickers: list[str], start: str = PANEL_START) -> tuple[Panel, list[dict[str, Any]]]:
-    df = con.execute("SELECT ticker, date, open, close, adj_close, volume, source FROM bars_daily "
-                     "WHERE list_contains(?, ticker) AND date >= ? ORDER BY date", [tickers, start]).df()
-    df["date"] = pd.to_datetime(df["date"])
-    piv = {c: df.pivot(index="date", columns="ticker", values=c).reindex(columns=tickers)
-           for c in ("open", "close", "adj_close", "volume")}
-    sources = df.groupby("ticker")["source"].agg(lambda s: sorted(set(s))).to_dict()
-    return Panel(**piv), [{"source": "warehouse:bars_daily", "tickers": tickers, "vendors": sources}]
+    """The panel from ``readers.bars_panel``, the one split-repaired read of the daily bars; each repair is
+    named in the provenance's ``repairs``. The vendors are read off the same window (a repair changes no source)."""
+    from ..warehouse.readers import bars_panel
+
+    begin = pd.Timestamp(start).date()
+    piv, repairs = {}, []
+    for c in ("open", "close", "adj_close", "volume"):
+        wide, notes = bars_panel(con, tickers, begin, None, field=c)
+        piv[c] = wide.reindex(columns=tickers)
+        repairs = repairs or notes   # every field comes off the same repaired bars: the notes are the same
+    src = con.execute("SELECT ticker, source FROM bars_daily WHERE list_contains(?, ticker) AND date >= ?",
+                      [tickers, begin]).df()
+    sources = src.groupby("ticker")["source"].agg(lambda s: sorted(set(s))).to_dict()
+    prov: dict[str, Any] = {"source": "warehouse:bars_daily", "tickers": tickers, "vendors": sources}
+    if repairs:
+        prov["repairs"] = repairs
+    return Panel(**piv), [prov]
 
 
 def _insufficient(detail: str, notes: list[str] | None = None) -> ArtifactSpec:

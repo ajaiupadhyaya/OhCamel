@@ -165,17 +165,17 @@ def load_products(db: Path, now: datetime, schedules: Schedules | None = None) -
 
 
 # ------------------------------------------------------------------ the warehouse: freshness, closes, readouts
-def _closes(con: Any, tickers: list[str]) -> pd.DataFrame:
+def _closes(con: Any, tickers: list[str]) -> tuple[pd.DataFrame, list[str]]:
     """Daily ``adj_close`` of ``tickers`` from ``LOOKBACK_DAYS`` before the warehouse's newest bar, as one
-    wide frame (dates ascending by ticker; NaN where a ticker has no bar). One SQL read."""
-    marks = ",".join("?" * len(tickers))
-    df = con.execute(
-        f"SELECT ticker, date, adj_close FROM bars_daily WHERE ticker IN ({marks}) "
-        f"AND date >= (SELECT max(date) FROM bars_daily) - {LOOKBACK_DAYS}", tickers).fetchdf()
-    if df.empty:
-        return pd.DataFrame()
-    df["date"] = pd.to_datetime(df["date"])
-    return df.pivot(index="date", columns="ticker", values="adj_close").sort_index()
+    wide frame (dates ascending by ticker; NaN where a ticker has no bar), split-repaired, and the repair notes:
+    ``readers.bars_panel``, the one read of the daily bars (one SQL read of the bars, after the newest date)."""
+    from ..warehouse.readers import bars_panel
+
+    newest = con.execute("SELECT max(date) FROM bars_daily").fetchone()[0]
+    if newest is None:
+        return pd.DataFrame(), []
+    closes, notes = bars_panel(con, tickers, newest - timedelta(days=LOOKBACK_DAYS), None)
+    return (pd.DataFrame(), notes) if closes.empty else (closes, notes)
 
 
 def _public_why(e: WarehouseUnavailable, settings: Settings) -> str:
@@ -198,20 +198,22 @@ def _public_why(e: WarehouseUnavailable, settings: Settings) -> str:
     return UNREADABLE
 
 
-def load_warehouse(settings: Settings, world: World, now: datetime) -> tuple[dict | None, dict[str, dict], list[str], dict[str, str]]:
-    """``(freshness datasets, readouts, equities in cluster order, why)``, read-only. A warehouse that is
-    locked, absent, unconfigured or unreadable gives ``(None, {}, the equities sorted, {"warehouse": why})``."""
+def load_warehouse(settings: Settings, world: World,
+                   now: datetime) -> tuple[dict | None, dict[str, dict], list[str], dict[str, str], list[str]]:
+    """``(freshness datasets, readouts, equities in cluster order, why, repairs)``, read-only; ``repairs`` names
+    each unadjusted split the closes were repaired through (``readers.bars_panel``). A warehouse that is locked,
+    absent, unconfigured or unreadable gives ``(None, {}, the equities sorted, {"warehouse": why}, [])``."""
     equities = list(world.equities)
     try:
         with open_ro(settings=settings) as con:
             fresh = dataset_freshness(con, now)["datasets"]
-            closes = _closes(con, world.daily())
+            closes, repairs = _closes(con, world.daily())
     except WarehouseUnavailable as e:
-        return None, {}, sorted(equities), {"warehouse": _public_why(e, settings)}
+        return None, {}, sorted(equities), {"warehouse": _public_why(e, settings)}, []
     except duckdb.Error:   # opened, but it is not a warehouse we can read
         log.warning("warehouse unreadable", exc_info=True)
-        return None, {}, sorted(equities), {"warehouse": UNREADABLE}
-    return fresh, ticker_readouts(closes), cluster_order(closes, equities), {}
+        return None, {}, sorted(equities), {"warehouse": UNREADABLE}, []
+    return fresh, ticker_readouts(closes), cluster_order(closes, equities), {}, repairs
 
 
 # ------------------------------------------------------------------ the day's runs
@@ -248,8 +250,8 @@ def load_inputs(db: Path, settings: Settings, now: datetime) -> Inputs:
     schedules = load_schedules()
     world = load_world()
     products, jobs_why = _read_products(db, now, schedules)
-    fresh, readouts, order, why = load_warehouse(settings, world, now)
+    fresh, readouts, order, why, repairs = load_warehouse(settings, world, now)
     if jobs_why:
         why = {**why, "jobs": jobs_why}
     return Inputs(world, job_clock(schedules, now.astimezone(NY).date()), load_roster(), products, fresh, readouts,
-                  order, why)
+                  order, why, tuple(repairs))

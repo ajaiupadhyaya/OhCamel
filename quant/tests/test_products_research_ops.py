@@ -6,7 +6,7 @@ the subprocess path is covered in research/kronos's own suite (tests/test_shadow
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -22,6 +22,7 @@ from ohcamel_quant.products import kronos_shadow as KS
 @dataclass
 class _DS:
     data: pd.DataFrame
+    provenance: list = field(default_factory=list)
 
     def provenance_dicts(self):
         return [{"source": "fixture", "fetched_at": "", "detail": {}}]

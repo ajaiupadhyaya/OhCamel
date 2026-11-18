@@ -63,11 +63,12 @@ def kronos_python() -> Path | None:
 def bars_of(ctx: Any, ticker: str, end: Any = None) -> Any:
     """Daily bars from the warehouse (written by the 18:30 ingest, so tonight's close is in it); the market
     facade only when there is no warehouse (offline tests, a fresh host). Never a vendor's intraday cache
-    when the warehouse has the bar."""
+    when the warehouse has the bar. Split-repaired (``readers.repaired_ohlcv``), as the market facade's bars
+    are; each repair is a note in the first provenance entry."""
     try:
         from ..warehouse import readers
 
-        return readers.ohlcv(ctx.warehouse, ticker, end=end)
+        return readers.repaired_ohlcv(ctx.warehouse, ticker, end=end)
     except DataUnavailable:
         return ctx.market.ohlcv(ticker, end=end)
 

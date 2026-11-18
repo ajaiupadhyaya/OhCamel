@@ -118,7 +118,8 @@ class Product:
 @dataclass(frozen=True)
 class Inputs:
     """Everything the graph is built from. ``freshness`` is the warehouse's ``datasets`` (None when the
-    warehouse could not be read); ``order`` is the equities' cluster order; ``why`` names what is missing."""
+    warehouse could not be read); ``order`` is the equities' cluster order; ``why`` names what is missing;
+    ``repairs`` each unadjusted split the readouts' closes were repaired through (``readers.bars_panel``)."""
 
     world: World
     clock: Mapping[str, JobClock]
@@ -128,6 +129,7 @@ class Inputs:
     readouts: Mapping[str, dict]
     order: Sequence[str]
     why: Mapping[str, str]
+    repairs: Sequence[str] = ()
 
 
 def _provenance(manifest: Any) -> list[dict]:

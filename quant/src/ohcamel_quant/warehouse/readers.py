@@ -70,6 +70,84 @@ def ohlcv(con: Any, ticker: str, start: date | None = None, end: date | None = N
     return Dataset(df, [prov])
 
 
+def _with_notes(ds: Dataset, notes: list[str]) -> Dataset:
+    """``ds`` with ``notes`` appended to its first provenance entry's ``detail.notes``."""
+    provs = list(ds.provenance)
+    if notes and provs:
+        head = provs[0]
+        detail = dict(head.detail)
+        detail["notes"] = [*(detail.get("notes") or []), *notes]
+        provs[0] = Provenance(head.source, head.fetched_at, head.synthetic, detail)
+    return Dataset(ds.data, provs)
+
+
+def repaired_ohlcv(con: Any, ticker: str, start: date | None = None, end: date | None = None, *,
+                   path: str = "") -> Dataset:
+    """:func:`ohlcv` with every unadjusted split repaired (``data.splits.present``), each repair a sentence in
+    the first provenance entry's ``detail.notes``. The read path for one name; :func:`bars_panel` for many.
+
+    Only the stored bars in ``[start, end]`` are read, so nothing after ``end`` can rescale what came before it.
+    ``ohlcv`` itself stays the vendor's bytes: ``ops.data_integrity`` must see the defect it reports."""
+    from ..data.splits import present
+
+    ds = ohlcv(con, ticker, start, end, path=path)
+    fixed, notes = present(ds.data)
+    return _with_notes(Dataset(fixed, list(ds.provenance)), notes)
+
+
+def bars_panel(con: Any, tickers: list[str], start: date | None, end: date | None, *,
+               field: str = "adj_close") -> tuple[pd.DataFrame, list[str]]:
+    """One field of the daily bars of many names, split-repaired: ``(wide frame, repair notes)``.
+
+    The one read path for a reader that wants daily bars from the warehouse. One SQL read of the stored bars in
+    ``[start, end]`` (either may be None); each name repaired on its own (``data.splits.present``: a session
+    whose close-to-close and adjusted moves are both beyond 30% and whose overnight ratio is within 3% of a
+    standard split ratio has every bar before it divided by that ratio, volume multiplied). ``field`` is one of
+    ``BAR_COLUMNS``; every field comes off the same repaired bars, so a price divided by a ratio has its volume
+    multiplied by it. The frame is indexed by ``date`` (datetime64, ascending), its columns (axis ``ticker``)
+    one per requested name that has a stored bar (upper-cased, in the order asked; a name with none has no column), NaN where a name
+    has no bar on a session another has. Notes: one sentence per repaired ex-date, ``"TICKER: ..."``, in the
+    order the names were asked, oldest ex-date first. Deterministic: the same warehouse gives the same frame.
+
+    Point in time: a repair uses the ex-date's bar and the bar before it, and changes only bars BEFORE the
+    ex-date. A split after ``end`` is never read, so a reader as of ``end`` sees nothing it could not have
+    known then; within the window the result equals repairing the whole stored history and cutting it."""
+    if field not in BAR_COLUMNS:
+        raise ValueError(f"field {field!r} is not one of {', '.join(BAR_COLUMNS)}")
+    want = list(dict.fromkeys(t.upper().strip() for t in tickers if t.strip()))
+    empty = pd.DataFrame(index=_date_index([]), columns=pd.Index([], name="ticker"), dtype=float)
+    if not want:
+        return empty, []
+    from ..data.splits import present
+
+    sql = f"SELECT ticker, date, {', '.join(BAR_COLUMNS)} FROM bars_daily WHERE list_contains(?, ticker)"
+    args: list[Any] = [want]
+    if start is not None:
+        sql += " AND date >= ?"
+        args.append(start)
+    if end is not None:
+        sql += " AND date <= ?"
+        args.append(end)
+    raw = con.execute(sql + " ORDER BY ticker, date", args).df()
+    cols: dict[str, pd.Series] = {}
+    notes: list[str] = []
+    by = dict(tuple(raw.groupby("ticker", sort=False))) if len(raw) else {}
+    for t in want:
+        if t not in by:
+            continue
+        g = by[t]
+        bars = g[BAR_COLUMNS].astype(float)
+        bars.index = _date_index(g["date"])
+        fixed, said = present(bars)
+        cols[t] = fixed[field]
+        notes += [f"{t}: {n}" for n in said]
+    if not cols:
+        return empty, notes
+    wide = pd.DataFrame(cols).sort_index()
+    wide.index.name, wide.columns.name = "date", "ticker"
+    return wide, notes
+
+
 def bars_status(con: Any, tickers: list[str]) -> dict[str, tuple[date | None, datetime | None]]:
     """Per ticker: (last stored session, last successful ingest's ran_at)."""
     last = dict(con.execute(
@@ -139,19 +217,9 @@ def _warehouse_bars(settings: Settings, want: list[str], start: date | None,
                     parts.append(f"window: start {from_} before stored history: "
                                  + ", ".join(f"{t} (from {cover[t][0]})" for t in short))
                 return None, "warehouse not used (" + "; ".join(parts) + "); served from providers"
-            from ..data.splits import present as split_present
-
-            frames = {}
-            for t in want:
-                ds = ohlcv(con, t, path=str(path))
-                fixed, notes = split_present(ds.data)
-                provs = list(ds.provenance)
-                if notes and provs:
-                    head = provs[0]
-                    detail = dict(head.detail)
-                    detail["notes"] = [*(detail.get("notes") or []), *notes]
-                    provs[0] = Provenance(head.source, head.fetched_at, head.synthetic, detail)
-                frames[t] = Dataset(fixed, provs)
+            # The whole stored history, as the pages have always read it (see repaired_ohlcv): the frames are
+            # cut to the window afterwards, and a split's repair changes no return before its ex-date.
+            frames = {t: repaired_ohlcv(con, t, path=str(path)) for t in want}
     except WarehouseUnavailable as e:
         return None, f"warehouse not used ({e}); served from providers"
     return _WarehouseBars(settings, frames), None

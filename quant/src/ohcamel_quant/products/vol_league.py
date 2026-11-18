@@ -82,12 +82,12 @@ def _minute_only(ctx: Any, ticker: str, days: pd.DatetimeIndex, *, min_prints: i
 
 
 def _daily_bars(ctx: Any, ticker: str) -> pd.DataFrame:
-    """The warehouse's daily bars (the official open and close), split-repaired as ``MarketData.ohlcv`` does
-    on its way out (``data.splits.present``): ``close`` is split-adjusted, ``adj_close`` total-return adjusted."""
-    from ..data.splits import present
-    from ..warehouse.readers import ohlcv
+    """The warehouse's daily bars (the official open and close) through the one split-repaired read of the
+    daily bars (``readers.repaired_ohlcv``, the read ``bars_panel`` makes for many names): ``close`` is
+    split-adjusted, ``adj_close`` total-return adjusted."""
+    from ..warehouse.readers import repaired_ohlcv
 
-    return present(ohlcv(ctx.warehouse, ticker).data)[0]
+    return repaired_ohlcv(ctx.warehouse, ticker).data
 
 
 def _overnight_return(ctx: Any, ticker: str, days: pd.DatetimeIndex) -> np.ndarray:
@@ -105,14 +105,31 @@ def _overnight_return(ctx: Any, ticker: str, days: pd.DatetimeIndex) -> np.ndarr
     return on.reindex(days).to_numpy(float)
 
 
-def _intraday_legs(ctx: Any, ticker: str, days: pd.DatetimeIndex, first: np.ndarray,
-                   last: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+LEG_BOUND = 0.30  # the split rule's threshold (data.splits): an intraday leg beyond it is a basis mismatch or a bad print
+
+
+def _intraday_legs(ctx: Any, ticker: str, days: pd.DatetimeIndex, first: np.ndarray, last: np.ndarray,
+                   notes: list[str] | None = None) -> tuple[np.ndarray, np.ndarray]:
     """The two legs the minute RV does not cover: official open -> first bar's close, and last bar's close ->
     official close, as simple returns. Both prices of each leg are on one basis: the daily bars' UNADJUSTED
     (split-adjusted only) ``open`` and ``close``, like the minute closes; the overnight term uses the
-    total-return adjusted prices, as the previous close and the open are on different dates."""
+    total-return adjusted prices, as the previous close and the open are on different dates. A leg beyond
+    ``LEG_BOUND`` either way, or one priced off a non-positive official open or close, is NaN: minutes from an
+    open, it is the daily and minute tables on different split bases or a bad print, not a move. Those
+    sessions are counted in ``notes``."""
     bars = _daily_bars(ctx, ticker).reindex(days)
-    return first / bars["open"].to_numpy(float) - 1.0, bars["close"].to_numpy(float) / last - 1.0
+    o, c = bars["open"].to_numpy(float), bars["close"].to_numpy(float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        open_leg, close_leg = first / o - 1.0, c / last - 1.0
+    # A session missing its minute or daily bar is NaN already: missing, not implausible, and not counted.
+    priced = np.isfinite(first) & np.isfinite(last) & ~np.isnan(o) & ~np.isnan(c)
+    bad_o = priced & ~((o > 0) & (np.abs(open_leg) <= LEG_BOUND))
+    bad_c = priced & ~((c > 0) & (np.abs(close_leg) <= LEG_BOUND))
+    if (bad_o | bad_c).any() and notes is not None:
+        notes.append(f"{ticker}: {int((bad_o | bad_c).sum())} session(s) with an intraday leg beyond "
+                     f"+-{LEG_BOUND:.0%} or a non-positive official price (daily and minute bars on different "
+                     "split bases, or a bad print): no full-day target")
+    return np.where(bad_o, np.nan, open_leg), np.where(bad_c, np.nan, close_leg)
 
 
 def _target_legs(ctx: Any, ticker: str, days: pd.DatetimeIndex, *, min_prints: int = MIN_PRINTS,
@@ -121,7 +138,7 @@ def _target_legs(ctx: Any, ticker: str, days: pd.DatetimeIndex, *, min_prints: i
     ``overnight`` (close_{t-1} -> official open), ``open_leg`` (official open -> first bar's close), ``minute``
     (first -> last bar's close) and ``close_leg`` (last bar's close -> official close)."""
     m = _minute_parts(ctx, ticker, days, min_prints=min_prints, notes=notes)
-    open_leg, close_leg = _intraday_legs(ctx, ticker, days, m["first"], m["last"])
+    open_leg, close_leg = _intraday_legs(ctx, ticker, days, m["first"], m["last"], notes)
     return {"overnight": _overnight_return(ctx, ticker, days) ** 2, "open_leg": open_leg ** 2,
             "minute": m["rv"], "close_leg": close_leg ** 2}
 

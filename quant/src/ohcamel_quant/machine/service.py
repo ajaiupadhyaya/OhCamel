@@ -57,11 +57,13 @@ def _notes(why: dict, nodes: list[dict]) -> list[str]:
 
 def build_machine(db: Path, settings: Settings, now: datetime) -> dict:
     """The response but for ``runs``: ``{asof, nodes, edges, x, provenance, notes}``. ``now`` is a
-    timezone-aware time. A store that is missing or fails leaves its nodes missing, and says so in ``notes``."""
+    timezone-aware time. A store that is missing or fails leaves its nodes missing, and says so in ``notes``.
+    Each unadjusted split the closes were repaired through is named in the provenance's ``repairs``."""
     inp = load_inputs(db, settings, now)
     graph = build_graph(inp)
+    repairs = {"repairs": list(inp.repairs)} if inp.repairs else {}
     return {"asof": iso(now), **graph, "x": extras(inp),
-            "provenance": [Provenance.now("ohcamel-machine", store="jobs.sqlite+warehouse").to_dict()],
+            "provenance": [Provenance.now("ohcamel-machine", store="jobs.sqlite+warehouse", **repairs).to_dict()],
             "notes": _notes(dict(inp.why), graph["nodes"])}
 
 

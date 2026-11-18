@@ -159,6 +159,30 @@ def test_previous_close_is_the_previous_session_even_when_days_skips_one():
     assert np.isnan(on[0]) and on[1] == pytest.approx(100.5 / 110.0 - 1.0, abs=1e-15)
 
 
+def test_an_implausible_intraday_leg_is_nan_and_named():
+    """Task 3.1 (the deferred review's leg bound): a zero official open is not an infinite leg, and daily bars on
+    another split basis than the minute bars (here 2x: open 202, close 200.4 against minutes near 100) are not a
+    -50% / +100% leg. Each such leg is NaN -- so the session has no full-day target -- and the name is noted."""
+    note = ("AAA: 1 session(s) with an intraday leg beyond +-30% or a non-positive official price (daily and "
+            "minute bars on different split bases, or a bad print): no full-day target")
+    zero = _frame([("2026-05-26", 99.0, 100.5, 98.5, 100.0), ("2026-05-27", 0.0, 102.0, 99.0, 100.2),
+                   ("2026-05-28", 101.0, 102.0, 99.0, 100.2)], ["2026-05-27", "2026-05-28"], _px)
+    days = pd.DatetimeIndex(["2026-05-27", "2026-05-28"])
+    notes: list[str] = []
+    legs = vol_league._target_legs(_Daily(zero), "AAA", days, notes=notes)
+    assert np.isnan(legs["open_leg"][0]) and np.isnan(vol_league._daily_rv(_Daily(zero), "AAA", days)[0])
+    assert legs["close_leg"][0] == pytest.approx((100.2 / 100.0 - 1.0) ** 2, abs=1e-15)   # a sane leg is kept
+    assert legs["open_leg"][1] == pytest.approx((101.5 / 101.0 - 1.0) ** 2, abs=1e-15)
+    assert notes == [note]
+    basis = _frame([("2026-05-26", 198.0, 201.0, 197.0, 200.0), ("2026-05-27", 202.0, 204.0, 198.0, 200.4)],
+                   ["2026-05-27"], _px)
+    notes = []
+    legs = vol_league._target_legs(_Daily(basis), "AAA", days[:1], notes=notes)
+    assert np.isnan(legs["open_leg"][0]) and np.isnan(legs["close_leg"][0])
+    assert legs["overnight"][0] == pytest.approx((202.0 / 200.0 - 1.0) ** 2, abs=1e-15)   # daily basis is whole
+    assert notes == [note]
+
+
 def test_a_session_with_under_100_prints_is_excluded_and_named(con):
     notes: list[str] = []
     days = pd.DatetimeIndex(fixtures.history("TLT")[0].index[-N_SESSIONS:])

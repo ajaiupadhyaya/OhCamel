@@ -8,6 +8,7 @@ import json
 from datetime import UTC, date, datetime, timedelta
 
 import numpy as np
+import pandas as pd
 import pytest
 from test_warehouse_db import hold_writer
 
@@ -202,3 +203,80 @@ def test_prices_default_still_reads_the_providers(tmp_path, wh, monkeypatch):
     pin(monkeypatch, datetime(2026, 6, 2, 14, 0, tzinfo=UTC))
     ds = market(tmp_path, wh).prices(["SPY"], start=FIRST)
     assert [p.source for p in ds.provenance] == ["fixture:alpaca"]
+
+
+# ---------------------------------------------------------------- one read path repairs splits (Task 3.1)
+def test_every_warehouse_read_is_the_one_repair(tmp_path, monkeypatch):
+    """The pages' warehouse-first read, the one-name read and ``bars_panel`` give the same repaired bars on a
+    warehouse holding a constructed unadjusted 4:1 split (test_splits.unadjusted_split), each with its note."""
+    from test_splits import SPLIT_EX, SPLIT_NOTE, unadjusted_split
+
+    wh = unadjusted_split(tmp_path / "split.duckdb")
+    pin(monkeypatch, datetime(2026, 6, 2, 14, 0, tzinfo=UTC))
+    for t in ("SPY", "QQQ"):
+        _record_full_fetch(wh, t, "1990-01-01")
+    got = market(tmp_path, wh).prices(["SPY", "QQQ"], warehouse_first=True)
+    assert [p.source for p in got.provenance] == ["warehouse:fixture:alpaca"] * 2
+    with open_ro(wh) as con:
+        panel, notes = readers.bars_panel(con, ["SPY", "QQQ"], None, None)
+        one = readers.repaired_ohlcv(con, "SPY", path=str(wh))
+        raw = readers.ohlcv(con, "SPY").data
+    assert notes == [SPLIT_NOTE]
+    pd.testing.assert_frame_equal(got.data, panel.dropna().rename_axis(columns=None), check_exact=True,
+                                  check_freq=False)
+    pd.testing.assert_series_equal(one.data["adj_close"], panel["SPY"].dropna(), check_names=False, check_exact=True)
+    said = SPLIT_NOTE.removeprefix("SPY: ")
+    assert got.provenance[0].detail["notes"] == [said] and one.provenance[0].detail["notes"] == [said]
+    assert "notes" not in got.provenance[1].detail
+    assert raw.loc[: pd.Timestamp(SPLIT_EX)].iloc[-2]["close"] > 4 * 600     # ohlcv is still the vendor's bytes
+
+
+def test_the_shadow_and_the_factor_screen_read_the_repair(tmp_path):
+    """``kronos_shadow.bars_of`` (which ``factors.screen`` also reads) took the vendor's bytes from the warehouse."""
+    import duckdb
+    from test_splits import SPLIT_EX, unadjusted_split
+
+    from ohcamel_quant.jobs.context import JobContext
+    from ohcamel_quant.products.kronos_shadow import bars_of
+
+    wh = unadjusted_split(tmp_path / "split.duckdb")
+    ctx = JobContext(job_id="t", params={}, threads=1, progress_fn=lambda f, m: None, cancelled_fn=lambda: False,
+                     _market=MarketData(Settings(offline=True, data_dir=tmp_path)),
+                     _warehouse=duckdb.connect(str(wh), read_only=True))
+    try:
+        ds = bars_of(ctx, "SPY")
+    finally:
+        ctx.close()
+    ret = ds.data["adj_close"].pct_change()
+    assert abs(ret.loc[SPLIT_EX]) < 0.30
+    want, _ = fixtures.history("SPY")
+    np.testing.assert_array_equal(ds.data.to_numpy(), want.to_numpy())
+    assert ds.provenance[0].detail["notes"] == ["split-adjusted 4:1 before 2026-03-02 (vendor adj_close did not "
+                                                "absorb it)"]
+
+
+def test_the_factor_screen_carries_its_repairs_and_reads_nothing_after_its_window(tmp_path):
+    """``factors.screen`` reads to the exploration window's end (2023-12-31): a split before it is repaired and
+    named in the artifact's provenance; the constructed 2026 split is after it and is never read."""
+    import duckdb
+    from test_splits import unadjusted_split
+
+    from ohcamel_quant.jobs.context import JobContext
+    from ohcamel_quant.products import factor_screen as FS
+
+    wh = unadjusted_split(tmp_path / "split.duckdb")                      # SPY, 2026-03-02: after the window
+    with open_rw(wh) as con:                                               # and QQQ 4:1 on 2019-06-03, within it
+        con.execute("UPDATE bars_daily SET open = open * 4, high = high * 4, low = low * 4, close = close * 4, "
+                    "adj_close = adj_close * 4, volume = volume / 4 WHERE ticker = 'QQQ' AND date < DATE '2019-06-03'")
+    ctx = JobContext(job_id="t", params={}, threads=1, progress_fn=lambda f, m: None, cancelled_fn=lambda: False,
+                     _market=MarketData(Settings(offline=True, data_dir=tmp_path)),
+                     _warehouse=duckdb.connect(str(wh), read_only=True))
+    repairs: list[str] = []
+    try:
+        fields, missing = FS.load_fields(ctx, ["SPY", "QQQ"], FS.W.EXPLORATION_END, repairs=repairs)
+    finally:
+        ctx.close()
+    assert missing == []
+    assert repairs == ["QQQ: split-adjusted 4:1 before 2019-06-03 (vendor adj_close did not absorb it)"]
+    got = fields["close"]["QQQ"].dropna()
+    assert (got.pct_change().dropna().abs() < 0.30).all() and got.index[-1] <= FS.W.EXPLORATION_END

@@ -632,3 +632,59 @@ def test_every_run_notes_the_leverage_and_the_fill_the_verdict_was_earned_at(wor
     prov = {p["source"]: p for p in world["spec"].provenance}
     assert prov["signals.freeze"]["artifact"] == freeze.freeze_id(date(2026, 6, 1))
     assert prov["signals.freeze"]["artifact"] is not None
+
+
+# ------------------------------------------------------------------ Task 3.1: one read path repairs splits
+def _raw_rows(wh: Path, symbols: list[str], sessions: pd.DatetimeIndex) -> pd.DataFrame:
+    """The warehouse's OHLCV rows on ``sessions``, read as the vendor wrote them."""
+    import duckdb
+
+    with duckdb.connect(str(wh), read_only=True) as con:
+        df = con.execute("SELECT ticker AS symbol, date, open, high, low, close, volume FROM bars_daily "
+                         "WHERE list_contains(?, ticker)", [symbols]).df()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df[df["date"].isin(sessions)].copy()
+    df["date"] = df["date"].dt.date
+    return df
+
+
+def test_the_data_hash_is_the_hash_of_the_frame_the_strategy_read(tmp_path, monkeypatch):
+    """On a warehouse holding a constructed unadjusted 4:1 split in SPY (test_splits.unadjusted_split), served
+    warehouse-first (fresh, full history): the strategy reads the repaired closes, and the document's data hash
+    is over the same repaired bars -- equal to the clean fixture's, never the vendor's split bytes."""
+    from test_splits import SPLIT_EX, unadjusted_split
+
+    from ohcamel_quant.signals.contract import data_hash
+    from ohcamel_quant.warehouse import freshness, readers
+    from ohcamel_quant.warehouse.db import open_ro, open_rw
+    from ohcamel_quant.warehouse.ingest.base import log_row
+
+    split = unadjusted_split(tmp_path / "split.duckdb")
+    clean = build_fixture_warehouse(tmp_path / "clean.duckdb")
+    with open_rw(split) as con:      # the full fetch C3 logs: the warehouse covers the default window
+        log_row(con, "bars_daily", "SPY", "ok", 0, json.dumps({"mode": "full", "requested_start": "1990-01-01"}),
+                LAST, ran_at=datetime(2026, 6, 1, 21, 0))
+    monkeypatch.setattr(freshness, "_now", lambda: datetime(2026, 6, 2, 14, 0, tzinfo=UTC))
+    served = []
+    real_bars = readers._warehouse_bars
+    monkeypatch.setattr(readers, "_warehouse_bars", lambda *a: served.append(real_bars(*a)) or served[-1])
+    read = []
+    real_weights = daily._weights
+    monkeypatch.setattr(daily, "_weights", lambda cell, params, px, rf, mkt: read.append(px)
+                        or real_weights(cell, params, px, rf, mkt))
+    _fake(monkeypatch, "mix_daily", strategies.static_mix, "daily")
+    run_at, sig = _mini(tmp_path, monkeypatch, split, _row("farm_mix_daily", "mix_daily", "one"),
+                        [{"cell_id": "mix_daily@one", "verdict": "FAIL", "selected_params": '{"weights": {"SPY": 0.5}}'}])
+    spec = run_at(LAST)
+    assert _emitted(spec).loc["farm_mix_daily", "status"] == "written"
+    assert served and all(bars is not None for bars, _ in served)   # the warehouse served the strategy's closes
+    (px,) = read
+    with open_ro(split) as con:
+        panel, notes = readers.bars_panel(con, ["SPY"], None, None)
+    assert abs(px["SPY"].pct_change().loc[SPLIT_EX]) < 0.30
+    pd.testing.assert_series_equal(px["SPY"], panel["SPY"].loc[px.index], check_names=False, check_exact=True,
+                                   check_freq=False)
+    doc = json.loads((sig / f"farm_mix_daily-{LAST}.json").read_text())
+    assert doc["data_hash"] == data_hash(_raw_rows(clean, ["SPY"], px.index))     # the repaired bars, bit for bit
+    assert doc["data_hash"] != data_hash(_raw_rows(split, ["SPY"], px.index))     # never the vendor's split bytes
+    assert spec.notes.count(f"farm_mix_daily: data hash over split-repaired bars -- {notes[0]}") == 1

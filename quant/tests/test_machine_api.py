@@ -351,7 +351,7 @@ def test_a_real_lock_keeps_the_authored_sentence_and_not_duckdbs(warehouse, tmp_
         raise duckdb.IOException(f'IO Error: Could not set lock on file "{warehouse}": Conflicting lock is held in /usr/bin/python3 (PID 7)')
 
     monkeypatch.setattr(duckdb, "connect", busy)
-    _, readouts, _, why = load_warehouse(Settings(warehouse_path=warehouse, data_dir=tmp_path), load_world(), NOW)
+    _, readouts, _, why, _ = load_warehouse(Settings(warehouse_path=warehouse, data_dir=tmp_path), load_world(), NOW)
     assert readouts == {} and why == {"warehouse": "The warehouse is busy with its nightly update."}
 
 
@@ -363,7 +363,7 @@ def test_a_warehouse_failure_with_no_authored_words_is_one_fixed_sentence(tmp_pa
 
     monkeypatch.setattr(load, "open_ro", broken)
     with caplog.at_level("WARNING", logger="ohcamel_quant.machine.load"):
-        _, _, _, why = load_warehouse(Settings(warehouse_path=tmp_path / "wh.duckdb", data_dir=tmp_path), load_world(), NOW)
+        _, _, _, why, _ = load_warehouse(Settings(warehouse_path=tmp_path / "wh.duckdb", data_dir=tmp_path), load_world(), NOW)
     assert why == {"warehouse": load.UNREADABLE}
     assert "/srv" not in why["warehouse"] and "/srv/data/wh.duckdb" in caplog.text    # whole, in the server's log only
 
@@ -393,26 +393,26 @@ def test_a_corrupt_warehouse_file_tells_the_public_only_that_it_could_not_be_rea
 
 def test_an_absent_warehouse_at_a_relative_path_has_the_plain_sentence(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    _, _, _, why = load_warehouse(Settings(warehouse_path=Path("deep/dir/wh.duckdb"), data_dir=tmp_path), load_world(), NOW)
+    _, _, _, why, _ = load_warehouse(Settings(warehouse_path=Path("deep/dir/wh.duckdb"), data_dir=tmp_path), load_world(), NOW)
     assert why == {"warehouse": "The warehouse has no data yet."}
 
 
 def test_an_absent_warehouse_is_unavailable_in_plain_words(tmp_path):
     gone = tmp_path / "deep" / "dir" / "wh.duckdb"
-    fresh, readouts, order, why = load_warehouse(Settings(warehouse_path=gone, data_dir=tmp_path), load_world(), NOW)
+    fresh, readouts, order, why, _ = load_warehouse(Settings(warehouse_path=gone, data_dir=tmp_path), load_world(), NOW)
     assert fresh is None and readouts == {} and order == sorted(load_world().equities)
     assert why == {"warehouse": "The warehouse has no data yet."}
 
 
 def test_an_unconfigured_warehouse_is_unavailable(tmp_path):
-    fresh, readouts, _, why = load_warehouse(Settings(warehouse_path=None, data_dir=tmp_path), load_world(), NOW)
+    fresh, readouts, _, why, _ = load_warehouse(Settings(warehouse_path=None, data_dir=tmp_path), load_world(), NOW)
     assert fresh is None and readouts == {} and why == {"warehouse": "This host has no warehouse."}
 
 
 def test_a_warehouse_without_its_tables_is_unavailable_not_a_crash(tmp_path):
     path = tmp_path / "empty.duckdb"
     duckdb.connect(str(path)).close()
-    fresh, readouts, order, why = load_warehouse(Settings(warehouse_path=path, data_dir=tmp_path), load_world(), NOW)
+    fresh, readouts, order, why, _ = load_warehouse(Settings(warehouse_path=path, data_dir=tmp_path), load_world(), NOW)
     assert fresh is None and readouts == {} and why["warehouse"] and str(tmp_path) not in why["warehouse"]
     assert order == sorted(load_world().equities)
 
@@ -446,12 +446,12 @@ def test_the_closes_are_one_read_of_the_last_380_days(warehouse, tmp_path, monke
             yield Spy(con)
 
     def keep(con, tickers):
-        frames.append(real_closes(con, tickers))
-        return frames[-1]
+        frames.append(real_closes(con, tickers)[0])
+        return frames[-1], []
 
     monkeypatch.setattr(load, "open_ro", spy)
     monkeypatch.setattr(load, "_closes", keep)
-    _, readouts, order, _ = load_warehouse(Settings(warehouse_path=warehouse, data_dir=tmp_path), load_world(), NOW)
+    _, readouts, order, _, _ = load_warehouse(Settings(warehouse_path=warehouse, data_dir=tmp_path), load_world(), NOW)
     assert len([s for s in seen if "adj_close" in s]) == 1
     (closes,) = frames
     assert 250 < len(closes) < 270 and closes.index.min() >= pd.Timestamp("2026-06-01") - pd.Timedelta(days=380)
@@ -465,7 +465,7 @@ def test_a_warehouse_with_no_bars_gives_no_readouts_and_alphabetical_equities(tm
     path = tmp_path / "bare.duckdb"
     with open_rw(path):
         pass                                                    # migrated, no rows
-    fresh, readouts, order, why = load_warehouse(Settings(warehouse_path=path, data_dir=tmp_path), load_world(), NOW)
+    fresh, readouts, order, why, _ = load_warehouse(Settings(warehouse_path=path, data_dir=tmp_path), load_world(), NOW)
     assert fresh is not None and readouts == {} and order == sorted(load_world().equities) and not why
 
 
@@ -1073,8 +1073,8 @@ def test_it_fits_the_budget(served, store, monkeypatch):
     real = load.load_warehouse
 
     def every_ticker(settings, world, now):
-        fresh, _, order, why = real(settings, world, now)
-        return fresh, fat_readouts(world.daily()), order, why
+        fresh, _, order, why, repairs = real(settings, world, now)
+        return fresh, fat_readouts(world.daily()), order, why, repairs
 
     monkeypatch.setattr(load, "load_warehouse", every_ticker)
     r = served.client.get("/api/machine")
@@ -1233,3 +1233,30 @@ def test_a_refresh_that_fails_still_answers_with_the_last_good_graph(served, sto
     served.clock[0] = NOW + timedelta(minutes=6)
     r = served.client.get("/api/machine")
     assert r.status_code == 200 and r.json()["asof"] == first["asof"]
+
+
+def test_the_machines_closes_are_the_one_repaired_read(tmp_path, warehouse):
+    """Task 3.1: on a warehouse holding a constructed unadjusted 4:1 split in SPY (test_splits.unadjusted_split),
+    the Machine's readouts equal the clean fixture's, its closes are ``readers.bars_panel``'s over the same
+    window, and the repair is named in the build's provenance."""
+    from test_splits import SPLIT_EX, SPLIT_NOTE, unadjusted_split
+
+    from ohcamel_quant.warehouse.db import open_ro
+    from ohcamel_quant.warehouse.readers import bars_panel
+
+    split = unadjusted_split(tmp_path / "split.duckdb")
+    world = load_world()
+    got = load_warehouse(Settings(warehouse_path=split, data_dir=tmp_path), world, NOW)
+    want = load_warehouse(Settings(warehouse_path=warehouse, data_dir=tmp_path), world, NOW)
+    assert got[1]["SPY"] == want[1]["SPY"] and got[1] == want[1]
+    with open_ro(split) as con:
+        closes, notes = load._closes(con, world.daily())
+        newest = con.execute("SELECT max(date) FROM bars_daily").fetchone()[0]
+        panel, said = bars_panel(con, world.daily(), newest - timedelta(days=load.LOOKBACK_DAYS), None)
+    pd.testing.assert_frame_equal(closes, panel, check_exact=True)
+    assert notes == said == [SPLIT_NOTE] and abs(closes["SPY"].pct_change().loc[SPLIT_EX]) < 0.30
+    connect(tmp_path / "jobs.sqlite").close()
+    m = build_machine(tmp_path / "jobs.sqlite", Settings(warehouse_path=split, data_dir=tmp_path), NOW)
+    assert m["provenance"][0]["detail"]["repairs"] == [SPLIT_NOTE]
+    clean = build_machine(tmp_path / "jobs.sqlite", Settings(warehouse_path=warehouse, data_dir=tmp_path), NOW)
+    assert "repairs" not in clean["provenance"][0]["detail"]

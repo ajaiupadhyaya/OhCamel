@@ -273,21 +273,26 @@ def _sequence(ctx: Any, as_of: date, last: dict[str, Any] | None) -> int:
     return max(int(count), (int(last["sequence"]) + 1) if last else 1)
 
 
-def _bars(ctx: Any, symbols: list[str], sessions: pd.DatetimeIndex) -> pd.DataFrame:
-    """The bars the strategy read: the warehouse's OHLCV rows on the sessions it used."""
+def _bars(ctx: Any, symbols: list[str], sessions: pd.DatetimeIndex) -> tuple[pd.DataFrame, list[str]]:
+    """The bars the strategy read: the warehouse's OHLCV on the sessions it used, through ``readers.bars_panel``
+    -- the one split-repaired read the strategy's own warehouse-first closes come through -- and its repair
+    notes. A split the vendor did not adjust is hashed as the strategy saw it, never as the vendor's bytes."""
     from ..data.base import DataUnavailable
+    from ..warehouse.readers import bars_panel
 
+    lo, hi = sessions[0].date(), sessions[-1].date()
+    cols, notes = {}, []
     try:
-        df = ctx.warehouse.execute(
-            "SELECT ticker AS symbol, date, open, high, low, close, volume FROM bars_daily "
-            "WHERE ticker IN (SELECT UNNEST(?)) AND date BETWEEN ? AND ?",
-            [symbols, sessions[0].date(), sessions[-1].date()]).df()
+        for f in ("open", "high", "low", "close", "volume"):
+            wide, notes = bars_panel(ctx.warehouse, symbols, lo, hi, field=f)
+            cols[f] = wide.reindex(columns=pd.Index(symbols, name="ticker"))
     except DataUnavailable as e:
         raise CellRefused(f"no bars for the data hash: {e}") from e
-    df["date"] = pd.to_datetime(df["date"])
-    df = df[df["date"].isin(sessions)].copy()
+    long = pd.concat({f: c.stack(future_stack=True) for f, c in cols.items()}, axis=1).dropna(how="all")
+    df = long.rename_axis(["date", "symbol"]).reset_index()
+    df = df[df["date"].isin(sessions)][["symbol", "date", "open", "high", "low", "close", "volume"]].copy()
     df["date"] = df["date"].dt.date
-    return df
+    return df, notes
 
 
 def _last_period_end(as_of: date, cadence: str) -> date:
@@ -373,7 +378,8 @@ def _hold_reason(cadence: str, as_of: date, targets: dict[str, float],
 
 
 def _emit(cell: Cell, params: dict[str, Any], ctx: Any, out_dir: Path, farm_id: str | None,
-          farm: pd.DataFrame | None, desk: dict[str, Any] | None = None) -> dict[str, Any]:
+          farm: pd.DataFrame | None, desk: dict[str, Any] | None = None,
+          notes: list[str] | None = None) -> dict[str, Any]:
     from ..backtest.strategies import get_strategy
 
     cadence = get_strategy(str(cell.strategy)).default_rebalance
@@ -398,10 +404,13 @@ def _emit(cell: Cell, params: dict[str, Any], ctx: Any, out_dir: Path, farm_id: 
     if hold is not None and retry is None:
         return {**row, "status": "held", "note": hold}
     sequence = _sequence(ctx, as_of, last)
+    bars, repairs = _bars(ctx, list(px.columns), px.index)
+    if notes is not None:
+        notes += [f"{cell.slug}: data hash over split-repaired bars -- {r}" for r in repairs]
     doc = signal_v1(strategy=cell.slug, params={**ran, "gross_scaled": True} if scaled else dict(ran),
                     as_of=as_of, sequence=sequence,
                     validation=validation_for(cell, farm, manifest=farm_id, params=params), targets=targets,
-                    bars=_bars(ctx, list(px.columns), px.index))
+                    bars=bars)
     write_atomic(doc, path)
     done = {**row, "sequence": sequence, "gross_scaled": scaled, "n_targets": len(targets),
             "last_rebalance": as_of.isoformat()}
@@ -471,7 +480,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         ctx.check_cancelled()
         ctx.progress(i / max(1, len(todo)), c.slug)
         try:
-            emitted.append(_emit(c, frozen[c.slug], ctx, Path(out_dir), farm_id, farm, desk))
+            emitted.append(_emit(c, frozen[c.slug], ctx, Path(out_dir), farm_id, farm, desk, run_notes))
         except CellRefused as e:
             refused.append({"slug": c.slug, "reason": str(e)})
         except Exception as e:  # noqa: BLE001 - one cell's failure is its refusal, never the run's (h)

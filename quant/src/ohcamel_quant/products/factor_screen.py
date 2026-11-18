@@ -54,15 +54,22 @@ def universe(ctx: Any) -> tuple[list[str], bool]:
         return list(W.NAMES), False
 
 
-def load_fields(ctx: Any, names: list[str], end: pd.Timestamp) -> tuple[dict[str, pd.DataFrame], list[str]]:
+def load_fields(ctx: Any, names: list[str], end: pd.Timestamp,
+                repairs: list[str] | None = None) -> tuple[dict[str, pd.DataFrame], list[str]]:
+    """The exploration window's fields, split-repaired (``bars_of``); each repair appended to ``repairs`` as
+    ``"TICKER: ..."`` when a list is given."""
     bars, missing = {}, []
     for t in names:
         ctx.check_cancelled()
         try:
-            df = bars_of(ctx, t, end=end.date()).data.dropna()   # warehouse first: never 560 vendor calls
+            ds = bars_of(ctx, t, end=end.date())                 # warehouse first: never 560 vendor calls
         except DataUnavailable:
             missing.append(t)
             continue
+        df = ds.data.dropna()
+        if repairs is not None and ds.provenance:
+            said = ds.provenance[0].detail.get("notes") or []
+            repairs += [f"{t}: {n}" for n in said if str(n).startswith("split-adjusted")]
         if len(df) >= 260:
             bars[t] = df.rename(columns={"adj_close": "close_adj"})
         else:
@@ -121,7 +128,8 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
                             verdict="INSUFFICIENT DATA", verdict_detail="NO TRIALS IN THE LEDGER YET")
     names, from_wh = universe(ctx)
     names = names[: int(params["max_names"])] if params.get("max_names") else names
-    fields, missing = load_fields(ctx, names, W.EXPLORATION_END)
+    repairs: list[str] = []
+    fields, missing = load_fields(ctx, names, W.EXPLORATION_END, repairs)
     if not fields or fields["close"].shape[1] < 5:
         return ArtifactSpec(tables={"screens": pd.DataFrame()}, data_asof=None, provenance=[],
                             notes=[f"{len(missing)} names without bars"], verdict="INSUFFICIENT DATA",
@@ -136,7 +144,8 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         tables={**out, "universe": pd.DataFrame({"ticker": list(fields["close"].columns)})},
         data_asof=str(fields["close"].index[-1].date()),
         provenance=[{"source": "warehouse:bars_daily" if from_wh else "fixtures", "fetched_at": "",
-                     "detail": {"names": width, "missing": len(missing), "window_end": str(W.EXPLORATION_END.date())}}],
+                     "detail": {"names": width, "missing": len(missing), "window_end": str(W.EXPLORATION_END.date()),
+                                **({"repairs": repairs} if repairs else {})}}],
         notes=[f"{len(trials)} distinct expressions = n_trials for any DSR on a factor promoted from this ledger",
                f"exploration window only (to {W.EXPLORATION_END.date()}); labels purged at its end; reported, never gated",
                *([] if from_wh else ["no warehouse: the nine committed ETFs only"])],
