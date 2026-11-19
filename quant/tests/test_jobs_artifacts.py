@@ -359,15 +359,26 @@ def test_the_pinned_tables_of_risk_mc_atlas_have_not_moved(tmp_path, fixture_wh)
 LEAGUE_GOLDEN = Path(__file__).parent / "data" / "golden" / "vol_forecast_league_fixture.json"
 LEAGUE_EXACT = {"league": {"rank_qlike", "in_mcs", "n"}, "summary": {"names", "mean_rank", "mcs_rate"}}
 RTOL = 1e-6
+#: Per-column relative tolerances, as strict as the cross-platform evidence allows. Linux CI (fix round 1 of Task
+#: 3.4) measured against the macOS golden: dm.stat 6.3e-7, dm.pvalue 2.5e-7, forecasts.var_1d_egarch 3.7e-8 (the
+#: other forecast columns and the league's losses ~1e-15). The Diebold-Mariano statistic divides the mean of a
+#: DIFFERENCE of two near-equal loss series by its standard error, so the fits' ~1e-10 platform noise is amplified
+#: by the cancellation; 1e-6 left those two columns ~1.6x headroom, 1e-5 leaves ~16x. The forecasts are the fits'
+#: own output and need no such allowance: 1e-7 (about 3x the measured 3.7e-8).
+LEAGUE_RTOL = {("dm", "stat"): 1e-5, ("dm", "pvalue"): 1e-5,
+               **{("forecasts", c): 1e-7 for c in ("var_1d_garch", "var_1d_gjr", "var_1d_egarch", "var_1d_ewma")}}
 
 
 def _golden_frame(t):
     return pd.DataFrame(t["rows"], columns=t["columns"])
 
 
-def compare_to_golden(got, golden, exact, rtol=RTOL):
+def compare_to_golden(got, golden, exact, rtol=RTOL, col_rtol=None):
     """(problems, differences): problems are readable mismatches; differences name every table and float column
-    with its largest absolute and relative difference."""
+    with its largest absolute and relative difference. ``col_rtol`` (default ``LEAGUE_RTOL``) overrides ``rtol`` per
+    (table, column). Non-finite values must match exactly (NaN with NaN, +inf with +inf); relative differences are
+    taken only where both values are finite."""
+    col_rtol = LEAGUE_RTOL if col_rtol is None else col_rtol
     import numpy as np
 
     problems, diffs = [], []
@@ -383,14 +394,22 @@ def compare_to_golden(got, golden, exact, rtol=RTOL):
             a, b = want[col], have[col]
             floaty = pd.api.types.is_float_dtype(b) and col not in exact.get(name, set())
             if floaty:
+                tol = col_rtol.get((name, col), rtol)
                 x, y = a.to_numpy(dtype=float), b.to_numpy(dtype=float)
-                both_nan = np.isnan(x) & np.isnan(y)
-                d = np.where(both_nan, 0.0, np.abs(x - y))
-                r = np.where(both_nan, 0.0, d / np.maximum(np.abs(x), 1e-300))
+                finite = np.isfinite(x) & np.isfinite(y)
+                same_nonfinite = ~finite & ((np.isnan(x) & np.isnan(y)) | (x == y))
+                with np.errstate(invalid="ignore"):
+                    d = np.where(finite, np.abs(x - y), 0.0)
+                r = np.where(finite, d / np.maximum(np.abs(x), 1e-300), 0.0)
                 if d.size and float(d.max()) > 0:
                     diffs.append(f"{name}.{col}: max abs {float(d.max()):.3e}, max rel {float(r.max()):.3e}")
-                if (r > rtol).any() or (np.isnan(x) != np.isnan(y)).any():
-                    problems.append(f"{name}.{col}: beyond {rtol:g} relative -- max abs {float(d.max()):.3e}, "
+                odd = ~finite & ~same_nonfinite
+                if odd.any():
+                    i = int(np.flatnonzero(odd)[0])
+                    problems.append(f"{name}.{col}: non-finite values must match exactly (row {i}: golden {x[i]!r}, "
+                                    f"got {y[i]!r})")
+                elif (r > tol).any():
+                    problems.append(f"{name}.{col}: beyond {tol:g} relative -- max abs {float(d.max()):.3e}, "
                                     f"max rel {float(r.max()):.3e} (row {int(r.argmax())}: golden {x[r.argmax()]!r}, "
                                     f"got {y[r.argmax()]!r})")
             else:
@@ -413,8 +432,50 @@ def test_the_league_comparison_reports_sizes_and_holds_its_tolerance():
     far["forecasts"].loc[0, "var_1d_garch"] *= 1 + 1e-5
     far["league"].loc[0, "rank_qlike"] += 1
     problems, _ = compare_to_golden(far, golden, LEAGUE_EXACT)
-    assert any("forecasts.var_1d_garch: beyond 1e-06 relative" in p and "max rel" in p for p in problems)
+    assert any("forecasts.var_1d_garch: beyond 1e-07 relative" in p and "max rel" in p for p in problems)
     assert any(p.startswith("league.rank_qlike: must be equal") for p in problems)
+
+
+
+def test_the_league_tolerance_is_per_column_as_measured_across_platforms():
+    """Linux CI against the macOS golden measured dm.stat 6.3e-7 and dm.pvalue 2.5e-7 relative, the forecasts at most
+    3.7e-8: the DM columns get 1e-5, the forecast columns 1e-7, the rest keep 1e-6."""
+    golden = json.loads(LEAGUE_GOLDEN.read_text())["tables"]
+    got = {k: _golden_frame(t) for k, t in golden.items()}
+
+    def moved(table, col, rel):
+        g = {k: v.copy() for k, v in got.items()}
+        g[table].loc[0, col] *= 1 + rel
+        return compare_to_golden(g, golden, LEAGUE_EXACT)[0]
+
+    assert moved("dm", "stat", 5e-6) == [] and moved("dm", "pvalue", 5e-6) == []
+    assert moved("dm", "stat", 2e-5) and moved("dm", "pvalue", 2e-5)
+    assert moved("forecasts", "var_1d_egarch", 5e-8) == []
+    assert any("forecasts.var_1d_egarch: beyond 1e-07 relative" in p for p in moved("forecasts", "var_1d_egarch", 5e-7))
+    assert moved("league", "qlike", 5e-7) == [] and moved("league", "qlike", 5e-6)
+
+
+def test_non_finite_league_values_must_match_exactly():
+    """An inf against a finite value, or +inf against -inf, is a mismatch however the relative difference comes
+    out (inf - inf is NaN, which compares false against any tolerance); NaN against NaN is equal."""
+    golden = json.loads(LEAGUE_GOLDEN.read_text())["tables"]
+    got = {k: _golden_frame(t) for k, t in golden.items()}
+    gold = {k: dict(v) for k, v in golden.items()}
+
+    def with_values(golden_value, got_value):
+        g = {k: v.copy() for k, v in got.items()}
+        g["dm"]["stat"] = g["dm"]["stat"].astype(float)
+        g["dm"].loc[0, "stat"] = got_value
+        want = {k: dict(v) for k, v in gold.items()}
+        rows = [list(r) for r in golden["dm"]["rows"]]
+        rows[0][golden["dm"]["columns"].index("stat")] = golden_value
+        want["dm"] = {**golden["dm"], "rows": rows}
+        return compare_to_golden(g, want, LEAGUE_EXACT)[0]
+
+    inf = float("inf")
+    assert with_values(inf, 1.0) and with_values(1.0, inf) and with_values(inf, -inf)
+    assert with_values(inf, inf) == [] and with_values(float("nan"), float("nan")) == []
+    assert with_values(float("nan"), 1.0)
 
 
 def test_the_pinned_values_of_vol_forecast_league_have_not_moved(tmp_path, fixture_wh):

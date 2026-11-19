@@ -182,9 +182,10 @@ def test_a_queue_that_cannot_be_read_fails_the_export_readably(wh, tmp_path):
 
 
 def test_the_writer_wait_and_the_export_fit_inside_the_backup_unit_with_room_for_the_record():
-    """The export's wait for a writer plus its own run budget must end before systemd's TimeoutStartSec kills the
-    backup, with ten minutes left for the copies before it and the status record after it (120 s); backup.sh
-    bounds the export container at exactly wait + budget."""
+    """The export's wait for a writer plus its own run budget, plus timeout(1)'s 120 s grace before it SIGKILLs a
+    CLI that ignored the SIGTERM, must end before systemd's TimeoutStartSec kills the backup, with ten minutes left
+    for the copies before it and the status record after it (120 s); backup.sh bounds the export container at
+    exactly wait + budget, with that kill-after."""
     import re
 
     from ohcamel_quant.config import REPO_ROOT
@@ -192,7 +193,10 @@ def test_the_writer_wait_and_the_export_fit_inside_the_backup_unit_with_room_for
     unit = (REPO_ROOT / "deploy/systemd/ohcamel-backup.service").read_text()
     timeout_s = int(re.search(r"^TimeoutStartSec=(\d+)min$", unit, re.M).group(1)) * 60
     assert E.WRITER_WAIT_S == 600
-    assert E.WRITER_WAIT_S + E.EXPORT_RUN_BUDGET_S + 600 + 120 <= timeout_s
     script = (REPO_ROOT / "deploy/backup.sh").read_text()
+    kill_after = int(re.search(r"^EXPORT_KILL_AFTER_S=(\d+)$", script, re.M).group(1))
+    assert kill_after == 120
+    assert E.WRITER_WAIT_S + E.EXPORT_RUN_BUDGET_S + kill_after + 600 + 120 <= timeout_s
     bound = int(re.search(r"^EXPORT_TIMEOUT_S=(\d+)$", script, re.M).group(1))
     assert bound == E.WRITER_WAIT_S + E.EXPORT_RUN_BUDGET_S
+    assert 'timeout -k "$EXPORT_KILL_AFTER_S" "$EXPORT_TIMEOUT_S"' in script

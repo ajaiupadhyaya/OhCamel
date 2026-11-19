@@ -523,6 +523,13 @@ copy_config() {
 # The export container's bound, in seconds: warehouse/export.py's WRITER_WAIT_S + EXPORT_RUN_BUDGET_S
 # (quant/tests/test_warehouse_export.py holds the three numbers and the unit's TimeoutStartSec together).
 EXPORT_TIMEOUT_S=2400
+# The grace after the SIGTERM before timeout(1) SIGKILLs the export's CLI (the budget test counts it too).
+EXPORT_KILL_AFTER_S=120
+
+# export_container DEST: the export container's name, one per day (warehouse/YYYY-MM-DD).
+export_container() {
+	printf 'ohcamel-export-%s' "${1#warehouse/}"
+}
 
 # run_entry INDEX COMPOSE_FILE TAG DIR GID DRY: one list line, one container.
 run_entry() {
@@ -541,12 +548,16 @@ run_entry() {
 		cmd+=(--entrypoint python ohcamel-backup -c "$snapshot_script" "$path" /backups "$dest")
 		;;
 	export)
-		# The Quant image's own exporter (step 5b): read-only, verified, renamed.
+		# The Quant image's own exporter (step 5b): read-only, verified, renamed. It runs even when an earlier
+		# copy failed this run (that step is named failed on its own), so the export is still attempted.
 		image=ghcr.io/ajaiupadhyaya/ohcamel-quant
-		cmd+=(--entrypoint python ohcamel-backup -m ohcamel_quant.warehouse export "$path" /backups/warehouse --date "${dest#warehouse/}" --jobs-db /data/jobs.sqlite)
+		cmd+=(--name "$(export_container "$dest")" --entrypoint python ohcamel-backup -m ohcamel_quant.warehouse export "$path" /backups/warehouse --date "${dest#warehouse/}" --jobs-db /data/jobs.sqlite)
 		# Bounded: the exporter's wait for a live writer (10 min) plus its own run (30 min), well inside the
 		# unit's TimeoutStartSec (60 min), so a slow export is a failed step the record names, never a killed unit.
-		cmd=(timeout "$EXPORT_TIMEOUT_S" "${cmd[@]}")
+		# -k: SIGKILL EXPORT_KILL_AFTER_S after the SIGTERM if the CLI ignores it (timeout then exits 137). The
+		# container is NAMED so that, on 124 or 137, it is removed below: a container that outlived its CLI would
+		# keep the warehouse's read lock into the next ingest.
+		cmd=(timeout -k "$EXPORT_KILL_AFTER_S" "$EXPORT_TIMEOUT_S" "${cmd[@]}")
 		if ! export_room "$dir" "$dry"; then
 			return 1
 		fi
@@ -576,8 +587,10 @@ run_entry() {
 		fi
 		return 0
 		;;
-	export:124)
-		backup_err "$volume:$path (export) timed out after ${EXPORT_TIMEOUT_S} s -- warehouse/${dest#warehouse/} is not to be trusted; the earlier exports are kept"
+	export:124 | export:137)
+		backup_err "$volume:$path (export) timed out after ${EXPORT_TIMEOUT_S} s (exit $rc) -- warehouse/${dest#warehouse/} is not to be trusted; the earlier exports are kept"
+		# The CLI is gone; its container may not be. Remove it by name so it releases the warehouse.
+		docker rm -f "$(export_container "$dest")" >/dev/null 2>&1 || backup_err "could not remove the export container $(export_container "$dest") (it may already be gone)"
 		return 1
 		;;
 	sqlite:3)

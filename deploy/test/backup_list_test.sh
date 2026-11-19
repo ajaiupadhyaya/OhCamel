@@ -172,11 +172,17 @@ chmod +x "$scratch/bin/docker"
 cat >"$scratch/bin/timeout" <<'SHIM'
 #!/usr/bin/env bash
 set -u
+kill_after=""
+if [ "$1" = "-k" ]; then kill_after="$2"; shift 2; fi
 printf '%s\n' "$1" >>"$SHIM_TIMEOUT_LOG"
+[ -n "$kill_after" ] && printf '%s %s\n' "$kill_after" "$1" >>"$SHIM_TIMEOUT_LOG.kill"
 shift
 case " $* " in
 *" ohcamel-backup-status "*) [ "${SHIM_HANG_STATUS:-0}" = 1 ] && exit 124 ;;
-*" ohcamel_quant.warehouse export "*) [ "${SHIM_HANG_EXPORT:-0}" = 1 ] && exit 124 ;;
+*" ohcamel_quant.warehouse export "*)
+	[ "${SHIM_HANG_EXPORT:-0}" = 1 ] && exit 124
+	[ "${SHIM_KILL_EXPORT:-0}" = 1 ] && exit 137
+	;;
 esac
 exec "$@"
 SHIM
@@ -201,6 +207,7 @@ fresh() {
 	: >"$log"
 	: >"$status_log"
 	: >"$timeout_log"
+	rm -f "$timeout_log.kill"
 	: >"$export_seen"
 	rm -f "$export_seen.before"
 }
@@ -812,9 +819,25 @@ run_backup SHIM_HANG_EXPORT=1 --
 expect_rc "X10 an export that times out fails the run" 1
 expect_eq "X10 and the record is written, naming the step" "$(status)" "2026-09-27T06:31:00Z false 1 7 warehouse"
 expect_has "X10 and the timeout is said" "$scratch/err" "timed out"
+expect_eq "X10 and the export's container is removed by name, so it cannot hold the warehouse into the next ingest" \
+	"$(grep -c "^verb=rm .* -f ohcamel-export-$today\$" "$log")" "1"
 for f in "book-$today.sexp" "deploy-$today.env"; do
 	if [ -e "$backups/$f" ]; then ok "X10 $f was still copied"; else no "X10 $f was still copied" "$(listing)"; fi
 done
+
+# Task 3.3 leftover: `timeout -k 120` so an export that ignores SIGTERM is SIGKILLed 120 s later (timeout exits
+# 137), and the named container is removed either way.
+fresh
+run_backup SHIM_KILL_EXPORT=1 --
+expect_rc "X11 an export killed after its grace fails the run" 1
+expect_eq "X11 and the record names the step" "$(status)" "2026-09-27T06:31:00Z false 1 7 warehouse"
+expect_eq "X11 and its container is removed by name" "$(grep -c "^verb=rm .* -f ohcamel-export-$today\$" "$log")" "1"
+fresh
+run_backup --
+expect_eq "X12 the export runs in a container named for its date" \
+	"$(grep ' ohcamel_quant.warehouse export ' "$log" | grep -c -- " --name ohcamel-export-$today ")" "1"
+expect_eq "X12 and a clean export removes nothing" "$(grep -c '^verb=rm ' "$log")" "0"
+expect_eq "X12 the export's timeout kills 120 s after its 2400 s bound" "$(cat "$timeout_log.kill" 2>/dev/null)" "120 2400"
 
 fresh
 run_backup -- --dry-run
