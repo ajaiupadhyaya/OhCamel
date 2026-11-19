@@ -193,7 +193,11 @@ class FixtureChainMarket(MarketData):
 def test_a_chain_stamped_on_sunday_counts_its_tuesday_expiry_from_the_quotes():
     """The review's case: the payload was generated on Sunday, and T to Tuesday's expiry came out 1.7 days with an
     implied dividend yield of 48% against the vendor spot. The quotes are Friday's close: T must be at least the two
-    sessions (Monday, Tuesday) left from them in business time, and the Tuesday slice's implied q is under 5%."""
+    sessions (Monday, Tuesday) left from them in business time, and the Tuesday slice's implied q is under 5%.
+
+    Which assertion guards what: T is guarded by `T >= business` and, exactly, `T == 4/365` (Sunday's stamp gave
+    0.004753). The |q| < 5% assertion is carried by the option-implied spot (Task 4.2) and would pass with the wrong
+    T too (-0.76% then); with Black-76 parity against the vendor spot q is 23.4% even at the right T."""
     opt_router._CACHE.clear()
     b = opt_router._bundle("SPY", FixtureChainMarket())
     opt_router._CACHE.clear()

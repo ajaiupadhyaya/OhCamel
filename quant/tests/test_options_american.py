@@ -202,6 +202,8 @@ def test_spy_put_and_call_agree_within_half_a_vol_point_on_every_quote_pinned_pa
     ca, ce, _, _ = spy_2026_11_15_american
     am = resolved(same_strike_pairs(ca))
     assert len(am) >= 25 and am["slice"].nunique() >= 4
+    if len(ce.slices) == 32:                                          # the whole chain (Rust, CI's native job)
+        assert len(am) == 298
     worst = am.loc[am["d"].abs().idxmax()]
     assert am["d"].abs().max() < 0.5, (worst["slice"], worst["strike"], worst["d"])
     eu = same_strike_pairs(ce).set_index(["slice", "strike"])

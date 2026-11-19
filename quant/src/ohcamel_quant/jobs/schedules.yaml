@@ -121,12 +121,13 @@ schedules:
     mem_class: S
     heavy: false
 
-  # Completion task 3.4: the option chains twice a session -- 15:45 New York, before the close (closing option
+  # Completion task 3.4: the option chains twice a session -- 15:42 New York (the "1545" pull; its own minute,
+  # risk.mc_intraday and signals.overlay fire at 15:45), before the close (closing option
   # quotes are stale and wide; vol.surface_history prefers this pull), intraday priority 1 and light so the
   # 09:25-16:05 heavy window never holds it -- and 16:20, after it. Both write the warehouse (WAREHOUSE_WRITERS),
   # hours away from the 06:30 UTC export in either offset.
   - name: warehouse-option-snapshots-1545
-    cron: "45 15 * * 1-5"
+    cron: "42 15 * * 1-5"
     kind: ingest.option_snapshots
     params: {underlyings: [XLB, XLC, XLE, XLF, XLI, XLK, XLP, XLRE, XLU, XLV, XLY, SPY, QQQ, IWM, TLT, GLD, TSLA, NVDA, AAPL, AMZN, PLTR, AMD, META, MSFT, GOOGL, AVGO, MSTR, NFLX, COIN, HOOD], pull: "1545"}
     priority: 1

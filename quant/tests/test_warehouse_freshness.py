@@ -147,7 +147,7 @@ def test_schedules_cover_every_handler():
         "max_age": MAX_AGE, "schedules": SCHEDULES}
     opts = {s["params"]["pull"]: s for s in SCHEDULES if s["kind"] == "ingest.option_snapshots"}
     assert opts["1620"]["cron"] == "20 16 * * 1-5"  # after 16:15 New York, session days
-    assert opts["1545"]["cron"] == "45 15 * * 1-5"  # before the 16:00 close (quotes 15 minutes delayed)
+    assert opts["1545"]["cron"] == "42 15 * * 1-5"  # before the 16:00 close (quotes 15 minutes delayed)
     assert all(o["params"]["underlyings"] == list(OPTION_UNDERLYINGS) for o in opts.values())
     assert next(s for s in SCHEDULES if s["kind"] == "ingest.sec_facts")["heavy"] is True
 

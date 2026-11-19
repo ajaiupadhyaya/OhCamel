@@ -83,7 +83,13 @@ def _statements(sql: str) -> list[str]:
 
 
 def migrate(con: duckdb.DuckDBPyConnection) -> int:
-    """Apply every migration newer than ``schema_version``; return the version."""
+    """Apply every migration newer than ``schema_version`` and finish any table move; return the version."""
+    current = _apply_sql(con)
+    _move_option_snapshots(con)
+    return current
+
+
+def _apply_sql(con: duckdb.DuckDBPyConnection) -> int:
     con.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL, applied_at TIMESTAMP NOT NULL)")
     current = int(con.execute("SELECT coalesce(max(version), 0) FROM schema_version").fetchone()[0])
     for number, path in migration_files():
@@ -100,7 +106,6 @@ def migrate(con: duckdb.DuckDBPyConnection) -> int:
             con.execute("ROLLBACK")
             raise
         current = number
-    _move_option_snapshots(con)
     return current
 
 
@@ -109,29 +114,56 @@ OPTION_SNAPSHOTS_OLD = "option_snapshots_v2"
 _OLD_COLUMNS = 'underlying, "asof", expiry, strike, cp, bid, ask, last, volume, open_interest, source'
 
 
-def _move_option_snapshots(con: duckdb.DuckDBPyConnection) -> int:
+def move_incomplete(con: object) -> bool:
+    """True while migration 003's option-table move is unfinished (``option_snapshots_v2`` still exists): the new
+    ``option_snapshots`` then holds only part of the history, so every reader of it refuses rather than read a
+    part. ``python -m ohcamel_quant.warehouse migrate`` finishes it (docs/runbooks/compute.md)."""
+    return bool(con.execute("SELECT count(*) FROM duckdb_tables() WHERE schema_name = 'main' AND table_name = ?",
+                            [OPTION_SNAPSHOTS_OLD]).fetchone()[0])
+
+
+def _move_option_snapshots(con: duckdb.DuckDBPyConnection) -> tuple[int, int]:
     """Move every row of the pre-003 ``option_snapshots`` (renamed ``option_snapshots_v2``) into the new table as
     the after-close pull (``pull = '1620'``, the new columns NULL), ONE SNAPSHOT DAY PER TRANSACTION, then drop the
     old table. A day already in the new table was moved whole (its transaction committed), so a resumed move
-    copies only the days still missing. Returns the number of days moved. Rationale and measurements:
+    copies only the days still missing. Returns ``(days, rows)`` moved. Rationale and measurements:
     003_option_quotes.sql."""
-    if not con.execute("SELECT count(*) FROM duckdb_tables() WHERE schema_name = 'main' AND table_name = ?",
-                       [OPTION_SNAPSHOTS_OLD]).fetchone()[0]:
-        return 0
+    if not move_incomplete(con):
+        return 0, 0
     days = [d for (d,) in con.execute(
         f'SELECT DISTINCT "asof" FROM {OPTION_SNAPSHOTS_OLD} EXCEPT '
         "SELECT DISTINCT \"asof\" FROM option_snapshots WHERE pull = '1620' ORDER BY 1").fetchall()]
+    rows = 0
     for d in days:
         con.execute("BEGIN TRANSACTION")
         try:
-            con.execute(f"INSERT INTO option_snapshots ({_OLD_COLUMNS}, pull) SELECT {_OLD_COLUMNS}, '1620' "
-                        f'FROM {OPTION_SNAPSHOTS_OLD} WHERE "asof" = ?', [d])
+            rows += int(con.execute(f"INSERT INTO option_snapshots ({_OLD_COLUMNS}, pull) SELECT {_OLD_COLUMNS}, "
+                                    f"'1620' FROM {OPTION_SNAPSHOTS_OLD} WHERE \"asof\" = ?", [d]).fetchone()[0])
             con.execute("COMMIT")
         except Exception:
             con.execute("ROLLBACK")
             raise
     con.execute(f"DROP TABLE {OPTION_SNAPSHOTS_OLD}")
-    return len(days)
+    return len(days), rows
+
+
+def apply_migrations(path: Path | None = None, *, settings: Settings | None = None,
+                     timeout_s: float = 30.0) -> dict[str, float | int]:
+    """``python -m ohcamel_quant.warehouse migrate``: open the warehouse as the writer (its 256 MB limit), apply
+    every pending migration and finish any table move, and say what was done -- ``{version, days_moved,
+    rows_moved, seconds}``. The owner runs it off-hours right after a deploy that brings a migration
+    (docs/runbooks/compute.md); skipped, the first writer to open the file does the same work inside its job."""
+    p = _resolve(path, settings)
+    con = _connect(p, read_only=False, timeout_s=timeout_s, config={
+        "threads": 1, "memory_limit": RW_MEMORY_LIMIT, "preserve_insertion_order": False})
+    try:
+        t0 = time.monotonic()
+        version = _apply_sql(con)
+        days, rows = _move_option_snapshots(con)
+        return {"version": version, "days_moved": days, "rows_moved": rows,
+                "seconds": round(time.monotonic() - t0, 3)}
+    finally:
+        con.close()
 
 
 @contextmanager

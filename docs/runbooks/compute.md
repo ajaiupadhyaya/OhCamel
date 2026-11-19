@@ -105,6 +105,32 @@ dc exec ohcamel-worker python -m ohcamel_quant.jobs run-schedule <NAME> [--param
 Examples: `run-schedule risk-atlas-nightly` (P1), `run-schedule farm-nightly --params '{"budget_minutes": 30}'`,
 `run-schedule exp-q01-monthly` after the universe freeze.
 
+## After a deploy that brings a warehouse migration
+
+Migrations (`quant/src/ohcamel_quant/warehouse/migrations/NNN_*.sql`) are applied by the first process that
+opens the warehouse to write. Most take an instant. **003 (completion task 3.4)** replaces `option_snapshots` (its
+key gains `pull`): it renames the old table to `option_snapshots_v2`, creates the new one, and then moves the rows
+one snapshot day per transaction -- measured at the writer's 256 MB: 4.8 million rows in 11 s, 12 million in 27 s
+on a laptop; allow two or three times that on the droplet. Run it yourself, off-hours, right after the deploy that
+brings it, so it does not happen inside whichever ingest opens the writer first (possibly the 10:00 minute-bar run
+in session, which would lock the warehouse for that time: API 503s, `signals.overlay` and `risk.mc_intraday`
+failing their 2 s reader open):
+
+```bash
+dc exec ohcamel-worker python -m ohcamel_quant.jobs status        # no ingest running or queued
+dc exec ohcamel-worker python -m ohcamel_quant.warehouse migrate   # prints {version, days_moved, rows_moved, seconds}
+```
+
+Run it outside 09:25-17:10 New York and away from the 06:30 UTC export. It opens the file as the writer, waits up
+to 30 s for a reader or an ingest to let go, and fails (nothing changed) if one does not. Run again, it prints
+`days_moved: 0`.
+
+If it is skipped, the first writer does the same work inside its job. If that process dies part way, the move
+resumes on the next writer's open, and until it completes every reader of the table refuses rather than read a
+part: `vol.surface_history` publishes no new day and says why, the warehouse freshness marks `option_snapshots`
+`migrating` (the Machine's option feed shows that reason), and the nightly backup's `option-snapshots` step fails
+and keeps the previous parquet. Running `migrate` finishes it.
+
 ## Enqueueing a backfill
 
 The warehouse fills itself through its ingest schedules: each ingest is incremental from the newest stored date

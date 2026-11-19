@@ -90,6 +90,12 @@ describe("HistoryReport (P7 vol.surface_history)", () => {
     expect(html).toContain("overstates the premium by the overnight share");
     expect(html).not.toContain(">NO HAR<");
   });
+  it("a row computed before task 3.4 (basis_note set) is marked OLD BASIS by its date, the reason in the tooltip", () => {
+    const old = { ...row("2026-10-05", 0.0361, 0.0148), basis_note: "computed before task 3.4: T from the payload's UTC timestamp read as New York time" };
+    const html = render(<HistoryReport history={[old, { ...row("2026-10-06", 0.04, 0.0148), basis_note: null }]} summary={[]} errors={[]} ticker="SPY" />);
+    expect(html.match(/>OLD BASIS</g)?.length).toBe(1);
+    expect(html).toContain("read as New York time");
+  });
   it("a day without a HAR forecast reads NO HAR, never a number; an absent underlying says so", () => {
     const html = render(<HistoryReport history={[row("2026-10-05", 0.0361, null), row("2026-10-06", 0.04, 0.0148)]} summary={[]} errors={[{ underlying: "QQQ", asof: "2026-10-06", error: "no ingest_log row" }]} ticker="SPY" />);
     expect(html).toContain("SPY · 2 DAYS");

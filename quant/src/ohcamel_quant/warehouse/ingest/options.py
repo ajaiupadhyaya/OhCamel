@@ -1,5 +1,5 @@
 """``ingest.option_snapshots`` (compute plan C6; completion task 3.4): Cboe's delayed full chain for 30
-underlyings into ``option_snapshots``, twice a session -- the ``'1545'`` pull before the close (15:45 New York) and
+underlyings into ``option_snapshots``, twice a session -- the ``'1545'`` pull before the close (scheduled 15:42 New York) and
 the ``'1620'`` pull after it. The history P7 builds on; it starts empty and grows, and cannot be re-fetched.
 
 Each row keeps what a surface needs: ``spot`` (the underlying price the vendor stated in the same payload),
@@ -8,7 +8,8 @@ data/cboe.py: the header's ``last_trade_time``, else the payload's ``timestamp``
 ``vendor_iv`` (Cboe's own implied vol, stored for comparison only, never used as the surface's IV; NULL where Cboe
 has no model value). ``asof`` is the New York date of ``quote_ts``.
 
-A ``'1545'`` pull must hold quotes of a market still open: when the payload's quotes are more than
+A ``'1545'`` pull must be stamped by the vendor's quote time (``last_trade_time``; the payload clock's reading
+is not trusted for it) and hold quotes of a market still open: when the payload's quotes are more than
 ``LIVE_LAG_MAX`` older than the payload itself (a holiday, a 13:00 half day) or taken at or after 16:00, the key
 stores nothing and says so -- closing quotes are never filed as pre-close ones. Only the standard root is kept:
 adjusted roots (``SPY1``) share (expiry, strike, cp) with it.
@@ -29,7 +30,7 @@ BROAD = ("SPY", "QQQ", "IWM", "TLT", "GLD")
 TOP_NAMES = ("TSLA", "NVDA", "AAPL", "AMZN", "PLTR", "AMD", "META", "MSFT", "GOOGL", "AVGO", "MSTR", "NFLX",
              "COIN", "HOOD")
 OPTION_UNDERLYINGS = SECTORS + BROAD + TOP_NAMES
-#: The pulls: before the close (15:45 New York) and after it (16:20). ``vol.surface_history`` prefers the first.
+#: The pulls: before the close ('1545', scheduled 15:42 New York) and after it (16:20). ``vol.surface_history`` prefers the first.
 PULLS = ("1545", "1620")
 DEFAULT_PULL = "1620"
 #: A pre-close payload's quotes run the 15-minute delay behind it; more than this and the market was not open.
@@ -49,10 +50,15 @@ def _utc(ny: pd.Timestamp) -> pd.Timestamp:
 def pre_close_refusal(chain: Any) -> str | None:
     """Why ``chain`` cannot be a '1545' (pre-close) snapshot, or None when it can."""
     as_of = pd.Timestamp(chain.as_of)
+    if getattr(chain, "quote_ts_source", None) != "cboe:last_trade_time":
+        # stamped from the payload's own clock: were Cboe's `timestamp` ever not UTC, this stamp would be hours off
+        # with nothing to show it, so a pre-close snapshot is filed only on the vendor's quote time
+        return (f"no last_trade_time in the payload (quote time from {getattr(chain, 'quote_ts_source', None)}): a "
+                "pre-close snapshot is stored only on the vendor's own quote time")
     gen = getattr(chain, "payload_ts", None)
     if gen is not None and pd.Timestamp(gen) - _utc(as_of) > LIVE_LAG_MAX:
         return (f"closing quotes: taken at {as_of} New York, {pd.Timestamp(gen) - _utc(as_of)} before the payload "
-                "(the market was not open at 15:45)")
+                "(the market was not open at the pre-close pull)")
     if as_of.time() >= pd.Timestamp("16:00").time():
         return f"closing quotes: taken at {as_of} New York, at or after the 16:00 close"
     return None

@@ -281,6 +281,8 @@ def _feeds(g: _Graph, inp: Inputs, tracks: dict[str, list[str]]) -> None:
             why = inp.why.get("warehouse") or "The warehouse could not be read."
         elif fr is None:
             why = "The warehouse has no record of this feed yet."
+        elif fr.get("migrating"):   # task 3.4: its table is part way through a one-time move; no figure for a part
+            why = "This feed's table is being migrated; its figures return when the move completes."
         else:
             m |= {"keys": fr.get("keys"), "asof": fr.get("data_asof"), "ok": fr.get("last_ok_at"),
                   "behind": fr.get("keys_behind"), "stale": fr.get("stale")}

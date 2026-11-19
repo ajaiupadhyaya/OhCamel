@@ -112,6 +112,8 @@ export interface HistoryRow {
   vrp_note: string | null;
   n_slices: number | null;
   spot: number | null;
+  /** Set on a row computed before task 3.4 (no pull): the old time and discount basis, kept as published. */
+  basis_note?: string | null;
 }
 
 export interface HistorySummaryRow {

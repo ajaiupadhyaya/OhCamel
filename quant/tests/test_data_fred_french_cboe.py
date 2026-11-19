@@ -288,15 +288,30 @@ def test_a_last_trade_time_after_the_payload_is_not_believed():
 
 
 def test_a_new_root_is_kept_under_its_own_name():
-    """Cboe's SPX payload carried 692 contracts under a root SPXO on 2026-11-19 (live, not committed). The
-    symbol here is CONSTRUCTED in that shape: the parser keeps the root as given, never merges or drops it."""
-    payload = {"timestamp": "2026-11-19 14:58:21", "data": {"symbol": "^SPX", "current_price": 7399.15,
-               "last_trade_time": "2026-11-19T09:43:20", "options": [
-                   {"option": "SPXO261216C07400000", "bid": 150.0, "ask": 152.0},     # CONSTRUCTED
-                   {"option": "SPXW261216C07400000", "bid": 151.0, "ask": 153.0}]}}   # CONSTRUCTED
-    q = cboe.parse_chain(payload, "SPX").quotes
-    assert sorted(q["root"]) == ["SPXO", "SPXW"] and set(q["strike"]) == {7400.0}
+    """Cboe's SPX payload carried 692 contracts under a root SPXO on 2026-11-19; the committed real excerpt keeps
+    the SPXO and SPXW 7400 strikes of 2026-12-16. The parser keeps each root as given, never merges or drops it."""
+    q = cboe.parse_chain(json.loads(HEADERS["spx"].read_text()), "SPX").quotes
+    assert sorted(q["root"]) == ["SPXO", "SPXO", "SPXW", "SPXW"] and set(q["strike"]) == {7400.0}
 
+
+HEADERS = {k: Path(__file__).parent / "data" / f"cboe_{k}_header_2026-11-19.json" for k in ("spy", "spx")}
+
+
+@pytest.mark.parametrize("which", ["spy", "spx"])
+def test_cboes_timestamp_is_utc_and_its_last_trade_time_new_york_on_real_payloads(which):
+    """Two real payloads fetched 2026-11-19 (headers kept whole, a few contracts; the sidecar records the UTC instant
+    each response landed). Read as UTC, the payload's `timestamp` precedes its own fetch by under a minute (the
+    CDN's cache age); read as New York time it would be five hours AFTER it. The header's `last_trade_time`, read
+    as New York time, is the 15-minute delay behind it -- the chain's quote time."""
+    payload = json.loads(HEADERS[which].read_text())
+    meta = json.loads(HEADERS[which].with_name(HEADERS[which].name + ".meta.json").read_text())
+    fetched = pd.Timestamp(meta["fetched_utc"]).tz_convert("UTC").tz_localize(None)
+    ch = cboe.parse_chain(payload, which.upper())
+    assert ch.quote_ts_source == "cboe:last_trade_time"
+    assert pd.Timedelta(0) <= fetched - ch.payload_ts < pd.Timedelta(minutes=2)
+    quote_utc = ch.as_of.tz_localize("America/New_York").tz_convert("UTC").tz_localize(None)
+    assert pd.Timedelta(minutes=14) <= ch.payload_ts - quote_utc <= pd.Timedelta(minutes=16)
+    assert ch.as_of == pd.Timestamp(payload["data"]["last_trade_time"])
 
 @respx.mock
 def test_fetch_chain_index_underscore_and_cache(tmp_path):

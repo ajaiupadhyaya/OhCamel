@@ -179,7 +179,12 @@ mv -- "$part" "$dir/$dest"
 # `python -c SCRIPT SRC DIR DEST`. It opens the warehouse read-only and copies
 # option_snapshots to a parquet. It never checkpoints and never writes the
 # live database. A missing table or a missing file fails this line and leaves
-# the previous day's parquet where it is.
+# the previous day's parquet where it is. So does a table part way through
+# migration 003's move (option_snapshots_v2 still exists, completion task 3.4):
+# the new table then holds only part of the history, and copying it would
+# replace the last whole copy of the one dataset that cannot be re-fetched.
+# The step is named failed (option-snapshots) until
+# `python -m ohcamel_quant.warehouse migrate` has run.
 snapshot_script='import os, sys, duckdb
 src, directory, dest = sys.argv[1], sys.argv[2], sys.argv[3]
 part = os.path.join(directory, dest + ".part")
@@ -196,6 +201,14 @@ try:
     ).fetchone()[0]
     if not found:
         sys.stderr.write("backup: %s has no option_snapshots table\n" % src)
+        sys.exit(1)
+    moving = con.execute(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+        ["option_snapshots_v2"],
+    ).fetchone()[0]
+    if moving:
+        sys.stderr.write("backup: %s: option_snapshots is part way through its move (migration 003); "
+                         "run python -m ohcamel_quant.warehouse migrate -- the previous parquet is kept\n" % src)
         sys.exit(1)
     con.execute("COPY (SELECT * FROM option_snapshots) TO ? (FORMAT PARQUET)", [part])
 finally:

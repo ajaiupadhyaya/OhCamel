@@ -9,6 +9,8 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .db import move_incomplete
+
 NY = ZoneInfo("America/New_York")
 #: A session's daily bars are expected from vendors by 16:20 New York
 #: (16:00 close + Alpaca's 16-minute SIP delay + slack).
@@ -98,4 +100,8 @@ def dataset_freshness(con: Any, now: datetime) -> dict[str, Any]:
                    "last_ok_at": _iso(last_ok), "keys": len(mine),
                    "keys_behind": sum(1 for _, _, d in mine if asof is not None and (d is None or d < asof)),
                    "keys_failed": sum(1 for _, st, _ in mine if st == "failed"), "stale": stale, "rule": rule["rule"]}
+    # task 3.4: while migration 003's option-table move is unfinished the table holds part of the history; the
+    # dataset reads "migrating" (and stale), not a figure for a part
+    if move_incomplete(con):
+        out["option_snapshots"] |= {"migrating": True, "stale": True}
     return {"now": now.isoformat(), "datasets": out}

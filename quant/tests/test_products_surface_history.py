@@ -46,7 +46,8 @@ def _quotes(asof=ASOF, atm=0.20, pull="1545", spot=SPOT, und="SPY", stored=True)
                              "bid": max(m - 0.02, 0.01), "ask": m + 0.02, "last": m, "volume": 10.0,
                              "open_interest": 100.0, "source": "test",
                              "spot": spot if stored else None, "quote_ts": _utc(asof) if stored else None,
-                             "vendor_iv": iv if stored else None, "pull": pull if stored else "1620",
+                             # 10 points off the true smile: were vendor_iv ever used as the IV, the ATM checks fail
+                             "vendor_iv": iv + 0.10 if stored else None, "pull": pull if stored else "1620",
                              "quote_ts_source": "cboe:last_trade_time" if stored else None})
     return pd.DataFrame(rows)
 
@@ -297,3 +298,21 @@ def test_a_row_stored_before_the_new_columns_uses_its_ingest_log_and_says_so(mar
         con.close()
     assert chain.as_of == pd.Timestamp("2026-06-01 16:20:00") and chain.spot == SPOT
     assert meta["pull"] == "1620" and "before task 3.4" in meta["quote_ts_source"]
+
+
+def test_a_carried_row_from_before_task_3_4_is_marked_old_basis_by_its_blank_pull(market, wh, tmp_path, monkeypatch):
+    """Fix round 1: a row carried from an artifact computed before task 3.4 (whenever that ran: no date is assumed)
+    has no `pull`; it is marked by that, with the reason, as OLD TARGET marks a VRP. Today's rows are not."""
+    db, root = tmp_path / "jobs.sqlite", tmp_path / "artifacts"
+    monkeypatch.setattr(surface_history, "DB_PATH", db)
+    cols = ["underlying", "asof", "atm_iv_30d", "atm_iv_90d", "term_slope", "rr25_30d", "bf25_30d", "mf_var_30d",
+            "vrp", "vrp_note", "n_slices", "spot", "vrp_covers"]
+    old = pd.DataFrame([["SPY", "2026-05-20", 0.2, 0.22, 0.02, -0.04, 0.01, 0.04, 0.0148, None, 8, 600.0,
+                         "close_to_close"]], columns=cols)
+    publish_artifact(db, root, "vol.surface_history", {"history": old})
+    spec = surface_history.run({}, ctx(market, wh))
+    h = spec.tables["history"].set_index("asof")
+    assert "payload" in h.loc["2026-05-20", "basis_note"] and "par" in h.loc["2026-05-20", "basis_note"]
+    assert h.loc["2026-05-20", "atm_iv_30d"] == 0.2                       # marked, not changed
+    assert pd.isna(h.loc["2026-06-01", "basis_note"]) and h.loc["2026-06-01", "pull"] == "1545"
+    assert not any("2026-11-19" in n for n in spec.notes) and any("basis_note" in n for n in spec.notes)

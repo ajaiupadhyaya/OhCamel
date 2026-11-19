@@ -4,7 +4,7 @@ only grows; the snapshots themselves cannot be re-fetched (Lane C C6).
 
 What a snapshot's surface is built from (completion task 3.4):
 
-* **Pull.** The 15:45 pull (``pull = '1545'``) when the day has one: closing option quotes are stale and wide.
+* **Pull.** The pre-close pull (``pull = '1545'``, scheduled 15:42 New York) when the day has one: closing option quotes are stale and wide.
   With only the 16:20 pull, that one is used and the row (``pull``) and the notes say so.
 * **Time.** ``T`` is ACT/365 calendar time from the snapshot's ``quote_ts`` (the vendor's statement of when its
   quotes were taken, data/cboe.py) to the settlement instant -- 16:00 New York on the expiry date, 09:30 for
@@ -40,6 +40,7 @@ from ..macro.curve import MAX_CURVE_LAG_DAYS, zero_curve_on
 from ..models.surface_metrics import day_metrics, vrp
 from ..options.chain import analyze_chain
 from ..options.surface import build_surface
+from ..warehouse.db import move_incomplete
 
 KIND = "vol.surface_history"
 DB_PATH: Path | None = None
@@ -48,15 +49,31 @@ COLS = ["underlying", "asof", "atm_iv_30d", "atm_iv_90d", "term_slope", "rr25_30
         "vrp", "vrp_covers", "vrp_note", "n_slices", "spot",
         # task 3.4: which pull, the quote time T counts from (New York) and its source, the discount curve's date,
         # and which level the American IVs used ('implied' | 'vendor'). Rows carried from before are blank here.
-        "pull", "quote_ts", "quote_ts_source", "curve_date", "surface_spot"]
+        "pull", "quote_ts", "quote_ts_source", "curve_date", "surface_spot",
+        # set on a carried row computed before task 3.4 (it has no pull): the page marks it OLD BASIS
+        "basis_note"]
 #: The pull a snapshot's surface prefers, then the fallback (warehouse/ingest/options.py).
 PULL_PREFERENCE = ("1545", "1620")
 OLD_ROW_SOURCE = "cboe:timestamp via ingest_log (stored before task 3.4; up to 20 minutes after the quotes)"
+OLD_BASIS_NOTE = ("computed before task 3.4: T from the payload's UTC timestamp read as New York time (about 5 hours "
+                  "short; 30-day ATM vol about 0.4% high, relative) and discounting at par yields, not the zero curve; "
+                  "kept as published, not recomputed (the snapshot cannot be re-fetched)")
 OPEN_TO_CLOSE_NOTE = ("the HAR forecast behind this VRP was of open-to-close variance only: it overstates the "
                       "premium by the overnight share, so it is not shown")
 
 
 def _pending(con: Any, done: set[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The snapshot days not yet in the history. Refuses (``DataUnavailable``) on a warehouse whose
+    ``option_snapshots`` is not readable as a whole: before migration 3 (no ``pull``), or while its move is
+    incomplete (``warehouse.db.move_incomplete``) -- a part of the history is never processed as if it were all."""
+    cols = {c for (c,) in con.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = 'main' "
+                                      "AND table_name = 'option_snapshots'").fetchall()}
+    if "pull" not in cols:
+        raise DataUnavailable("option_snapshots is not yet at migration 3 (no pull column): the deploy's "
+                              "`python -m ohcamel_quant.warehouse migrate` (or the first ingest) has not run")
+    if move_incomplete(con):
+        raise DataUnavailable("option_snapshots is part way through migration 3's move (option_snapshots_v2 "
+                              "still exists): run `python -m ohcamel_quant.warehouse migrate`; nothing is read until then")
     rows = con.execute('SELECT DISTINCT underlying, CAST("asof" AS VARCHAR) FROM option_snapshots '
                        'ORDER BY 2, 1').fetchall()
     return [(u, a) for u, a in rows if (u, a) not in done]
@@ -111,6 +128,11 @@ def _blank_old_basis(hist: pd.DataFrame) -> pd.DataFrame:
     if old.any():
         hist["vrp"] = hist["vrp"].astype(float).mask(old)
         hist["vrp_note"] = hist["vrp_note"].astype(object).mask(old, OPEN_TO_CLOSE_NOTE)
+    # task 3.4: a row with no pull was computed on the old time and discount basis; marked, never recomputed
+    for c in ("pull", "basis_note"):
+        if c not in hist:
+            hist[c] = None
+    hist["basis_note"] = hist["basis_note"].astype(object).mask(hist["pull"].isna(), OLD_BASIS_NOTE)
     return hist.reindex(columns=[*COLS, *[c for c in hist.columns if c not in COLS]])
 
 
@@ -168,7 +190,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         rows.append({"underlying": und, "asof": asof, **m, "vrp": v, "vrp_note": why, "spot": chain.spot,
                      "vrp_covers": "close_to_close" if why is None else None, "pull": meta["pull"],
                      "quote_ts": chain.as_of.isoformat(), "quote_ts_source": meta["quote_ts_source"],
-                     "curve_date": str(zc.date.date()), "surface_spot": ca.iv_spot_source})
+                     "curve_date": str(zc.date.date()), "surface_spot": ca.iv_spot_source, "basis_note": None})
         ctx.progress((i + 1) / max(len(todo), 1), f"{und} {asof}")
     if after_close_only:
         notes.append(f"{len(after_close_only)} snapshot{'s' if len(after_close_only) != 1 else ''} had only the "
@@ -192,10 +214,9 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         data_asof=str(hist["asof"].max()), provenance=[{"source": "warehouse:option_snapshots (Cboe delayed)"}],
         notes=[*notes, "SVI per expiry; ATM in total variance, RR/BF linear in T, no extrapolation; "
                        "model-free variance by the Cboe method",
-               "the 15:45 pull is preferred to the 16:20 one; T is ACT/365 calendar time from the quotes' own time "
+               "the pre-close pull ('1545') is preferred to the 16:20 one; T is ACT/365 calendar time from the quotes' own time "
                "(quote_ts) to 16:00 New York on the expiry; discounting with the Treasury zero curve bootstrapped "
-               "from the snapshot date's par yields; rows carried from before 2026-11-19 have no pull or "
-               "quote_ts: their T ran from the payload's UTC stamp read as New York time (about 5 hours short) "
-               "and they discounted at par yields"],
+               "from the snapshot date's par yields; a carried row with no pull was computed before that (its "
+               "basis_note says how) and is marked OLD BASIS, not recomputed"],
         verdict="DESCRIPTIVE ONLY",
         verdict_detail=f"{days} DAY{'S' if days != 1 else ''} · {hist['underlying'].nunique()} UNDERLYINGS · MEASUREMENT")

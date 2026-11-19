@@ -50,7 +50,16 @@ export function HistoryReport({ history, summary, errors, ticker }: { history: H
   const last = pts[pts.length - 1];
 
   const histCols: Column<HistoryPoint>[] = [
-    { key: "asof", label: "Date", render: (r) => <span className="num">{fmtDate(r.asof, "iso")}</span> },
+    {
+      key: "asof",
+      label: "Date",
+      render: (r) => (
+        <span className="num" title={r.basis_note ?? undefined}>
+          {fmtDate(r.asof, "iso")}
+          {r.basis_note ? <> · <span>OLD BASIS</span></> : null}
+        </span>
+      ),
+    },
     { key: "atm_iv_30d", label: "ATM 30D", numeric: true, format: (v) => fmtPct(v, 1), info: INFO.atm_30d },
     { key: "atm_iv_90d", label: "ATM 90D", numeric: true, format: (v) => fmtPct(v, 1) },
     { key: "term_slope", label: "Slope", numeric: true, format: (v) => fmtVolPts(v, 2), hideBelow: 600, title: "ATM 90D − 30D, vol pts" },

@@ -61,9 +61,19 @@ def test_live_spy_cboe_chain(live):
     # Task 3.4: Cboe added SPXO (settlement not established) beside SPX and SPXW in November 2026; it is kept under
     # its own root. A root beyond these three is a vendor change to look at, so this still fails on one.
     assert spx.spot > 1000 and {"SPX", "SPXW"} <= roots <= {"SPX", "SPXW", "SPXO"}, roots
-    # the quote time is the vendor's (last_trade_time, New York), never later than the payload was generated (UTC)
+    # the quote time is the vendor's (last_trade_time, New York) and the payload's `timestamp` is UTC (task 3.4):
+    # the payload was generated within minutes of this test, and in session its quotes run the 15-minute delay
+    # behind it. Read in the wrong zone, either gap is five hours off.
     assert ch.quote_ts_source == "cboe:last_trade_time" and ch.payload_ts is not None
-    assert pd.Timestamp(ch.as_of).tz_localize("America/New_York").tz_convert("UTC").tz_localize(None) <= ch.payload_ts
+    now = pd.Timestamp.now(tz="UTC").tz_localize(None)
+    assert abs(now - ch.payload_ts) < pd.Timedelta(minutes=30), (now, ch.payload_ts)
+    lag = ch.payload_ts - pd.Timestamp(ch.as_of).tz_localize("America/New_York").tz_convert("UTC").tz_localize(None)
+    ny = pd.Timestamp.now(tz="America/New_York")
+    in_session = ny.weekday() < 5 and pd.Timestamp("09:50").time() <= ny.time() <= pd.Timestamp("15:55").time()
+    if in_session:   # a holiday would fail this: then the quotes are the last session's, days old
+        assert pd.Timedelta(minutes=10) <= lag <= pd.Timedelta(minutes=30), lag
+    else:
+        assert pd.Timedelta(0) <= lag <= pd.Timedelta(days=4), lag
 
 
 def test_live_aapl_companyfacts(live):

@@ -7,6 +7,7 @@ controller's backfill, local checks) or build the offline fixture warehouse.
   export <warehouse> <root> [--date D]       the nightly export (warehouse/export.py; deploy/backup.sh)
   verify <export dir>                        print an export's record, or fail
   restore <export dir> <target> [--replace]  a new warehouse file from an export
+  migrate [<warehouse>]                      apply pending migrations and finish a table move (after a deploy)
 """
 
 from __future__ import annotations
@@ -46,7 +47,14 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("target")
     rs.add_argument("--replace", action="store_true",
                     help="replace an existing TARGET (moved aside, never deleted); the caller has stopped its users")
+    m = sub.add_parser("migrate", help="apply pending migrations and finish any table move; print what was done")
+    m.add_argument("warehouse", nargs="?", default=None, help="the file (default: OHCAMEL_QUANT_WAREHOUSE_PATH)")
     a = p.parse_args(argv)
+    if a.cmd == "migrate":
+        from .db import apply_migrations
+
+        print(json.dumps(apply_migrations(Path(a.warehouse) if a.warehouse else None)))
+        return 0
     if a.cmd == "run":
         from .ingest import HANDLERS
 

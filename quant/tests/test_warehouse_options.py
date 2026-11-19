@@ -157,3 +157,17 @@ def test_a_pre_close_pull_that_finds_closing_quotes_stores_nothing(tmp_path):
 def test_an_unknown_pull_is_refused(tmp_path):
     with pytest.raises(ValueError, match="pull"):
         options.run_option_snapshots({"underlyings": ["SPY"], "pull": "1600"}, ctx(tmp_path))
+
+
+@respx.mock
+def test_a_pre_close_pull_stamped_by_the_payload_clock_stores_nothing(tmp_path):
+    """Fix round 1: a 15:45 payload without last_trade_time is stamped from Cboe's `timestamp` (UTC). If that reading
+    were ever wrong the stamp would be five hours off with nothing to show it, and that fallback is exactly the
+    signature: a pre-close pull is stored only when the quote time came from last_trade_time."""
+    no_ltt = _payload("2026-11-18 20:45:09", None, 735.5, 4.1)                       # CONSTRUCTED
+    del no_ltt["data"]["last_trade_time"]
+    respx.get(cboe.URL.format(sym="SPY")).mock(return_value=httpx.Response(200, json=no_ltt))
+    spec = options.run_option_snapshots({"underlyings": ["SPY"], "pull": "1545"}, ctx(tmp_path))
+    s = spec["tables"]["ingest_summary"].iloc[0]
+    assert s["rows"] == 0 and "last_trade_time" in json.loads(s["detail"])["skipped"]
+    assert rows(tmp_path) == []

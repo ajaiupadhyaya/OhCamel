@@ -1,0 +1,19 @@
+{
+  "source": "cboe",
+  "synthetic": false,
+  "symbol": "SPY",
+  "url": "https://cdn.cboe.com/api/global/delayed_quotes/options/SPY.json",
+  "fetched_utc": "2026-11-19T14:59:00Z",
+  "fetched_note": "the instant the response finished writing to disk (file mtime, UTC); the request began a few seconds earlier. The machine's clock read 09:58:59 EST = 14:58:59 UTC just before the SPY request.",
+  "payload_timestamp": "2026-11-19 14:58:11",
+  "header_last_trade_time": "2026-11-19T09:43:10",
+  "reading": "timestamp is UTC (it precedes the fetch by under a minute: the CDN's cache age); last_trade_time is New York time, 15 minutes behind it (the delayed feed). Read as New York time, timestamp would be five hours AFTER the fetch.",
+  "original_sha256": "d2c2f2de4a30082b5db09a6e59ef50dbe596c8f777aab9e270d73b12f836e8ad",
+  "original_bytes": 5560833,
+  "n_contracts_original": 12550,
+  "trimmed": "the top-level timestamp and the whole data header kept; of the contracts, only SPY261120C00738000, SPY261120P00738000; per-contract fields cut to option, bid, ask, last_trade_price, volume, open_interest, iv, delta, gamma, theta, vega, rho, last_trade_time",
+  "roots_kept": [
+    "SPY"
+  ],
+  "used_by": "completion task 3.4 fix round 1: the UTC reading of Cboe's timestamp (tests/test_data_fred_french_cboe.py)"
+}

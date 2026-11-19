@@ -1,0 +1,59 @@
+{
+ "timestamp": "2026-11-19 14:58:11",
+ "data": {
+  "symbol": "SPY",
+  "security_type": "stock",
+  "exchange_id": 3,
+  "current_price": 737.96,
+  "price_change": 7.76,
+  "price_change_percent": 1.0627,
+  "bid": 737.95,
+  "ask": 737.98,
+  "bid_size": 40,
+  "ask_size": 120,
+  "open": 737.46,
+  "high": 739.8999,
+  "low": 735.42,
+  "close": 737.96,
+  "prev_day_close": 730.2,
+  "volume": 3171930,
+  "iv30": 18.474,
+  "iv30_change": -1.427,
+  "iv30_change_percent": -7.1705,
+  "seqno": 33276977644,
+  "last_trade_time": "2026-11-19T09:43:10",
+  "tick": "down",
+  "options": [
+   {
+    "option": "SPY261120C00738000",
+    "bid": 4.86,
+    "ask": 4.88,
+    "last_trade_price": 4.93,
+    "volume": 4793.0,
+    "open_interest": 1831.0,
+    "iv": 0.2729,
+    "delta": 0.508,
+    "gamma": 0.0333,
+    "theta": -2.5265,
+    "vega": 0.1745,
+    "rho": 0.0304,
+    "last_trade_time": "2026-11-19T09:43:07"
+   },
+   {
+    "option": "SPY261120P00738000",
+    "bid": 4.67,
+    "ask": 4.68,
+    "last_trade_price": 4.69,
+    "volume": 1435.0,
+    "open_interest": 4274.0,
+    "iv": 0.273,
+    "delta": -0.4938,
+    "gamma": 0.0337,
+    "theta": -2.5328,
+    "vega": 0.1742,
+    "rho": -0.0269,
+    "last_trade_time": "2026-11-19T09:43:06"
+   }
+  ]
+ }
+}

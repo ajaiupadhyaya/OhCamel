@@ -593,6 +593,17 @@ def test_a_feed_without_freshness_is_missing():
     assert "status" not in _node(g, "feed:sec13f")
 
 
+
+def test_the_option_feed_reads_migrating_not_a_count_while_its_table_moves():
+    """Task 3.4 fix round 1: while migration 003's move is unfinished the warehouse marks option_snapshots
+    `migrating`; the feed shows that reason, not the figures of a part of the table."""
+    fresh = {k: ({**v, "migrating": True, "stale": True} if k == "option_snapshots" else v)
+             for k, v in _inputs().freshness.items()}
+    n = _node(build_graph(_inputs(freshness=fresh)), "feed:cboe")
+    assert n["status"] == "missing" and "migrat" in n["why"] and "keys" not in n["m"]
+    assert "status" not in _node(build_graph(_inputs()), "feed:cboe")
+
+
 def test_series_reads_follow_the_spec_exceptions():
     g = build_graph(_inputs())
     world, _, _ = _static()

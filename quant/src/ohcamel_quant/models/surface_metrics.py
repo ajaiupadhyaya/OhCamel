@@ -12,9 +12,7 @@ minute RV + overnight; a forecast of the open-to-close part alone overstates the
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
 
-import numpy as np
 import pandas as pd
 
 from ..options.metrics import constant_maturity_variance
@@ -71,15 +69,3 @@ def vrp(mf_var_30d: float | None, har_22d_daily: float | None, *, covers: str | 
     if mf_var_30d is None or har_22d_daily is None or covers != "close_to_close":
         return float("nan")
     return float(mf_var_30d) - 252.0 * float(har_22d_daily)
-
-
-def rate_curve(row: pd.Series) -> Callable[[float], float]:
-    """FRED CMT yields (percent, bond-equivalent) -> continuous ``r = 2 ln(1 + y/200)``, linear in tenor
-    (the options router's convention), from one dated row of ``MarketData.treasury_curve``."""
-    last = row.dropna()
-    if len(last) < 2:
-        raise ValueError("fewer than two tenors on the Treasury curve")
-    tenors = np.asarray(last.index, dtype=float)
-    rates = 2.0 * np.log1p(last.to_numpy(dtype=float) / 200.0)
-    o = np.argsort(tenors)
-    return lambda T: float(np.interp(T, tenors[o], rates[o]))
