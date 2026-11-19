@@ -479,6 +479,53 @@ def test_a_split_suspect_with_no_recorded_split_is_named(backfilled):
     assert (row.ticker, row.date) == ("NVDA", str(ex)) and "no split" in row.detail
 
 
+def test_the_wider_checks_on_a_backfilled_warehouse_flag_stale_feeds_and_gate_a_new_vendor_change(backfilled):
+    """Completion task 3.6 on the committed Yahoo responses: no calendar cached -> missing_session is not run and a
+    note says so; the feeds nothing has filled (minute bars, option chains, FRED) are each one stale_* row that does
+    not gate; a vendor change on the newest session gates."""
+    path, settings = backfilled
+    spec = _integrity(path, settings)
+    f = spec.tables["findings"]
+    assert spec.verdict == "PASS", f[f["gating"]]
+    assert any("missing_session not checked" in n for n in spec.notes), spec.notes
+    stale = f[f["check"].str.startswith("stale_")]
+    assert set(stale["check"]) == {"stale_minute", "stale_options", "stale_fred"} and not stale["gating"].any()
+    assert set(stale["ticker"]) == {"*"}
+    (last,) = _rw(path, "SELECT max(date) FROM bars_daily WHERE ticker = 'XLK'")[0]
+    _rw(path, "UPDATE bars_daily SET source = 'alpaca' WHERE ticker = 'XLK' AND date = ?", [last])
+    spec = _integrity(path, settings)
+    f = spec.tables["findings"]
+    (row,) = f[f["check"] == "vendor_change"].itertuples()
+    assert (row.ticker, row.date, bool(row.gating)) == ("XLK", str(last), True) and spec.verdict == "FAIL"
+    assert spec.tables["summary"].iloc[0]["n_vendor_change"] == 1
+
+
+def test_a_session_missing_from_a_series_gates_on_the_cached_calendar(backfilled):
+    """With the real Alpaca calendar slice cached, a session deleted from XLK's newest bars is a gating
+    missing_session finding, and nothing else in the slice's range is."""
+    import json
+    from datetime import date, datetime
+    from pathlib import Path
+
+    from ohcamel_quant.warehouse import calendar
+    from ohcamel_quant.warehouse.db import open_rw
+
+    sl = Path(__file__).parent / "data" / "alpaca_calendar_2026-11-02_2026-12-31.json"
+    if not sl.exists():
+        pytest.skip("BLOCKED (completion task 3.6): no real Alpaca /v2/calendar slice committed yet "
+                    "(python -m ohcamel_quant.warehouse calendar-slice 2026-11-02 2026-12-31 quant/tests/data)")
+    path, settings = backfilled
+    with open_rw(path) as con:
+        calendar.write_calendar(con, calendar.parse_alpaca_calendar(json.loads(sl.read_text())), date(2026, 11, 2),
+                                date(2026, 12, 31), source="alpaca", fetched_at=datetime(2026, 11, 19, 12, 0))
+    f = _integrity(path, settings).tables["findings"]
+    assert "missing_session" not in set(f["check"]), f[f["check"] == "missing_session"]
+    _rw(path, "DELETE FROM bars_daily WHERE ticker = 'XLK' AND date = DATE '2026-11-10'")
+    f = _integrity(path, settings).tables["findings"]
+    (row,) = f[f["check"] == "missing_session"].itertuples()
+    assert (row.ticker, row.date, bool(row.gating)) == ("XLK", "2026-11-10", True)
+
+
 def test_the_full_backfill_resumes_where_it_stopped(wh):
     import respx
 

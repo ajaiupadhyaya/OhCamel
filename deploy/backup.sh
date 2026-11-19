@@ -9,9 +9,37 @@
 #                                none, write nothing
 #   deploy/backup.sh --check     read and validate backup.list and print its
 #                                entries; no docker call of any kind
+#   deploy/backup.sh --catch-up  the run, only if no backup has finished since
+#                                the latest 06:30 UTC and now is a time it may
+#                                start -- what ohcamel-backup-catchup.service
+#                                does after a boot (step 0 below)
 #
 # What a run does, in order:
 #
+#   0. --catch-up only (completion task 3.6). A host that is down at 06:30 UTC,
+#      or that restarts while the backup runs, misses that night's copy; the
+#      catch-up timer asks 5 minutes after every boot and every 15 minutes
+#      after. In order, and the first that answers ends the check with exit 0:
+#      a run finished (ok or failed) since the latest 06:30 UTC -- nothing to
+#      catch up, no docker or systemctl call at all; the backup directory
+#      missing or unwritable -- said, left to the nightly run's record; inside
+#      the trading session window (09:25-17:10 New York, weekdays: the export
+#      would hold the warehouse the 15:42 option pull writes, the copies would
+#      load the live desk's host) or within the export's CATCHUP_HOLD_MIN
+#      before a warehouse writer's schedule (CATCHUP_WRITERS, held equal to
+#      schedules.yaml by quant/tests/test_jobs_schedules.py) -- held, said why,
+#      tried again at the next check; the docker daemon not answering yet
+#      (a check right after boot), or today's export container running --
+#      nothing started. Otherwise the run below.
+#      Every run that reaches its record (step 6) is remembered, ok or failed,
+#      in OHCAMEL_BACKUP_STATE (default ~/.local/state/ohcamel-backup)/last-run
+#      as "EPOCH ok|failed"; a run the restart killed never gets that far, so
+#      it is caught up. Session days are weekdays here: a holiday holds the
+#      catch-up to the evening too, the cautious side. One run at a time: every
+#      run that copies (nightly, catch-up, by hand) takes a lock in that state
+#      directory first (flock(1)); a run that finds it held starts nothing and
+#      exits 0, so a catch-up can never start beside a running backup, under
+#      systemd or under cron.
 #   1. Reads deploy/backup.list (the line format is documented there) and
 #      validates every line against deploy/docker-compose.yml's volumes before
 #      anything runs. A malformed line is exit 2 with the file and line named,
@@ -54,7 +82,10 @@
 #      export.py). Before it opens the warehouse it reads /data/jobs.sqlite and
 #      waits (up to 10 min) while a warehouse-writing ingest runs with a live
 #      heartbeat (a dead worker's stale row does not count), then fails
-#      the step if one still does. Before it runs, the disk is checked: an
+#      the step if one still does. Its container is named ohcamel-export-DATE:
+#      a leftover of that name (a run the host's restart killed) is removed
+#      first, and one still RUNNING fails the step by name instead of starting
+#      a second export beside it. Before it runs, the disk is checked: an
 #      export wants twice the newest export's size free (BACKUP_EXPORT_MIN_KB,
 #      1 GiB, when there is none yet or it cannot be measured); short of that,
 #      what pruning the oldest exports that are neither the newest nor a
@@ -374,6 +405,162 @@ read_list() {
 	fi
 }
 
+# --- the catch-up (step 0) -----------------------------------------------------
+
+# The nightly timer's instant, seconds after midnight UTC (ohcamel-backup.timer's OnCalendar, 06:30:00 UTC).
+BACKUP_SLOT_UTC_S=23400
+# The export's window before a warehouse writer's schedule (warehouse/export.py EXPORT_BUDGET_MIN).
+CATCHUP_HOLD_MIN=60
+# Every firing of a warehouse-writing schedule in schedules.yaml as CRON-DAYS@HH:MM, New York time (the intraday
+# minute bars every 30 minutes from 10:00 to 15:30 are each listed; quant/tests/test_jobs_schedules.py expands the
+# crons and holds this list equal to them).
+CATCHUP_WRITERS="1-5@10:00 1-5@10:30 1-5@11:00 1-5@11:30 1-5@12:00 1-5@12:30 1-5@13:00 1-5@13:30 1-5@14:00 1-5@14:30 1-5@15:00 1-5@15:30 1-5@15:42 1-5@16:20 1-5@18:20 1-5@18:30 1-5@19:00 *@07:00 6@06:00 0@04:00 0@04:30 0@05:00"
+# The trading session window, New York minutes after midnight, weekdays: 09:25 to 17:10.
+CATCHUP_SESSION_FROM=565
+CATCHUP_SESSION_TO=1030
+
+# at_fmt TZ EPOCH FORMAT: an instant in a zone, by GNU date or BSD date.
+at_fmt() {
+	TZ="$1" date -d "@$2" "+$3" 2>/dev/null || TZ="$1" date -r "$2" "+$3"
+}
+
+# last_slot EPOCH: the latest 06:30 UTC at or before EPOCH (UTC has no DST, so it is arithmetic).
+last_slot() {
+	local e="$1" s
+	s=$((e - e % 86400 + BACKUP_SLOT_UTC_S))
+	if [ "$s" -gt "$e" ]; then s=$((s - 86400)); fi
+	printf '%s\n' "$s"
+}
+
+backup_state_dir() {
+	printf '%s\n' "${OHCAMEL_BACKUP_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/ohcamel-backup}"
+}
+
+# last_run: the epoch of the last finished run, or nothing.
+last_run() {
+	local f e
+	f="$(backup_state_dir)/last-run"
+	[ -f "$f" ] || return 0
+	e=$(cut -d' ' -f1 "$f" 2>/dev/null) || return 0
+	case "$e" in '' | *[!0-9]*) return 0 ;; esac
+	printf '%s\n' "$e"
+}
+
+# remember_run OUTCOME: step 0's record of a finished run. Never fails the run.
+remember_run() {
+	local d e
+	d=$(backup_state_dir)
+	e=${BACKUP_NOW:-$(date -u +%s)}
+	if mkdir -p "$d" 2>/dev/null && printf '%s %s\n' "$e" "$1" >"$d/last-run.part" && mv -- "$d/last-run.part" "$d/last-run"; then
+		return 0
+	fi
+	backup_err "could not remember this run in $d/last-run -- the catch-up may run the backup again"
+	return 0
+}
+
+# cron_day DAYS DOW: does a cron day-of-week field (*, 1-5 or one digit) take DOW (0 = Sunday)?
+cron_day() {
+	case "$1" in
+	'*') return 0 ;;
+	1-5) [ "$2" -ge 1 ] && [ "$2" -le 5 ] ;;
+	*) [ "$1" = "$2" ] ;;
+	esac
+}
+
+# catchup_hold EPOCH: why a catch-up may not start now, on stdout, or nothing.
+catchup_hold() {
+	local dow hh mm m spec days at w d wd delta
+	read -r dow hh mm <<EOF2
+$(at_fmt America/New_York "$1" '%w %H %M')
+EOF2
+	m=$((10#$hh * 60 + 10#$mm))
+	if [ "$dow" -ge 1 ] && [ "$dow" -le 5 ] && [ "$m" -ge "$CATCHUP_SESSION_FROM" ] && [ "$m" -lt "$CATCHUP_SESSION_TO" ]; then
+		printf '%s\n' "inside the trading session window (09:25-17:10 New York, weekdays): the export would hold the warehouse the session's option pull writes, and the copies would load the host the live desk runs on"
+		return 0
+	fi
+	for spec in $CATCHUP_WRITERS; do
+		days=${spec%@*}
+		at=${spec#*@}
+		w=$((10#${at%:*} * 60 + 10#${at#*:}))
+		for d in 0 1; do
+			wd=$(((dow + d) % 7))
+			delta=$((w + d * 1440 - m))
+			if [ "$delta" -ge 0 ] && [ "$delta" -le "$CATCHUP_HOLD_MIN" ] && cron_day "$days" "$wd"; then
+				printf '%s\n' "a warehouse writer is scheduled at $at New York, within the export's $CATCHUP_HOLD_MIN minutes"
+				return 0
+			fi
+		done
+	done
+}
+
+# backup_lock: take the one-backup-at-a-time lock for the rest of this process (0), or say another run holds
+# it (1). Every run that copies takes it -- the nightly run and the catch-up, from systemd or from cron alike
+# (the host ran both from the ohcamel user's crontab from 2026-11-03), and a run by hand. flock(1) where it
+# exists (util-linux, on the host): the lock dies with its holder, so a restart leaves none behind. Without it
+# (macOS), a directory holding the holder's pid, taken over once that process is gone.
+backup_lock() {
+	local d pid
+	d=$(backup_state_dir)
+	if ! mkdir -p "$d" 2>/dev/null; then
+		backup_err "cannot create $d for the backup lock; running without it"
+		return 0
+	fi
+	if command -v flock >/dev/null 2>&1; then
+		exec 9>>"$d/lock"
+		flock -n 9 || return 1
+		return 0
+	fi
+	if ! mkdir "$d/lock.d" 2>/dev/null; then
+		pid=$(cat "$d/lock.d/pid" 2>/dev/null) || pid=""
+		if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+			return 1
+		fi
+		rm -rf "${d:?}/lock.d"
+		mkdir "$d/lock.d" 2>/dev/null || return 1
+	fi
+	printf '%s\n' "$$" >"$d/lock.d/pid"
+	# shellcheck disable=SC2064 # the path is fixed now, on purpose
+	trap "rm -rf '$d/lock.d'" EXIT
+	return 0
+}
+
+# export_state DEST: the state of the export container for DEST (running, exited, created ...), or nothing.
+export_state() {
+	docker ps -a --filter "name=^/?$(export_container "$1")\$" --format '{{.State}}' 2>/dev/null | head -n 1 || true
+}
+
+# catchup_gate DIR TODAY: 0 when the catch-up should run the backup now; 1 when it should not (said why).
+catchup_gate() {
+	local dir="$1" today="$2" now slot last hold slot_day
+	now=${BACKUP_NOW:-$(date -u +%s)}
+	slot=$(last_slot "$now")
+	slot_day=$(at_fmt UTC "$slot" '%F')
+	last=$(last_run)
+	if [ -n "$last" ] && [ "$last" -ge "$slot" ]; then
+		backup_say "catch-up: nothing to catch up -- a backup finished at $(at_fmt UTC "$last" '%FT%H:%MZ'), after the 06:30 UTC run of $slot_day"
+		return 1
+	fi
+	if [ ! -d "$dir" ] || [ ! -w "$dir" ]; then
+		backup_say "catch-up: $dir does not exist or is not writable; the nightly run's record names that (step backup-dir) -- nothing started"
+		return 1
+	fi
+	hold=$(catchup_hold "$now")
+	if [ -n "$hold" ]; then
+		backup_say "catch-up: no backup has finished since the 06:30 UTC run of $slot_day, but not now -- $hold; the next check tries again"
+		return 1
+	fi
+	if ! docker info >/dev/null 2>&1; then
+		backup_say "catch-up: the docker daemon is not answering yet (just booted?) -- nothing started; the next check tries again"
+		return 1
+	fi
+	if [ "$(export_state "warehouse/$today")" = running ]; then
+		backup_say "catch-up: an export is already running ($(export_container "warehouse/$today")) -- nothing started"
+		return 1
+	fi
+	backup_say "catch-up: no backup has finished since the 06:30 UTC run of $slot_day (last: $([ -n "$last" ] && at_fmt UTC "$last" '%FT%H:%MZ' || echo none recorded)); running it now"
+	return 0
+}
+
 # --- the run -------------------------------------------------------------------
 
 # quoted ARG...: the command as one shell-quoted line, for --dry-run.
@@ -558,6 +745,26 @@ run_entry() {
 		# container is NAMED so that, on 124 or 137, it is removed below: a container that outlived its CLI would
 		# keep the warehouse's read lock into the next ingest.
 		cmd=(timeout -k "$EXPORT_KILL_AFTER_S" "$EXPORT_TIMEOUT_S" "${cmd[@]}")
+		# The name is one a day: a leftover (a run the host's restart killed) would refuse this run on the
+		# name, and a running one is another backup's export. Read-only, and not in a dry run.
+		if [ "$dry" = 0 ]; then
+			local state
+			state=$(export_state "$dest")
+			case "$state" in
+			'') ;;
+			running)
+				backup_err "an export is already running as $(export_container "$dest") (another backup run): this run's export is not started -- that run records its own outcome"
+				return 1
+				;;
+			*)
+				backup_say "removing the leftover export container $(export_container "$dest") ($state: a run the host's restart or a kill left behind)"
+				if ! docker rm -f "$(export_container "$dest")" >/dev/null 2>&1; then
+					backup_err "could not remove the leftover export container $(export_container "$dest"); the export would fail on its name"
+					return 1
+				fi
+				;;
+			esac
+		fi
 		if ! export_room "$dir" "$dry"; then
 			return 1
 		fi
@@ -634,27 +841,31 @@ record_status() {
 
 usage() {
 	cat >&2 <<'EOF'
-usage: deploy/backup.sh [--dry-run | --check]
+usage: deploy/backup.sh [--dry-run | --check | --catch-up]
 
   (no flag)   back up every file deploy/backup.list names, plus book.sexp and
               deploy/.env, into /var/backups/ohcamel (OHCAMEL_BACKUP_DIR)
   --dry-run   print every container run and copy; start nothing, write nothing
   --check     read and validate deploy/backup.list and print its entries; no
               docker call of any kind
+  --catch-up  the run, only when no backup has finished since the latest
+              06:30 UTC and nothing holds it (the session window, a warehouse
+              writer due within the hour, a backup already running)
 EOF
 	exit 2
 }
 
 backup_main() {
-	local dry=0 check=0 arg
+	local dry=0 check=0 catchup=0 arg
 	for arg in "$@"; do
 		case "$arg" in
 		--dry-run) dry=1 ;;
 		--check) check=1 ;;
+		--catch-up) catchup=1 ;;
 		*) usage ;;
 		esac
 	done
-	if [ "$dry" = 1 ] && [ "$check" = 1 ]; then usage; fi
+	if [ $((dry + check + catchup)) -gt 1 ]; then usage; fi
 
 	local compose="$backup_here/docker-compose.yml" list="$backup_here/backup.list" root="$backup_here/.."
 	local dir="${OHCAMEL_BACKUP_DIR:-/var/backups/ohcamel}"
@@ -663,6 +874,16 @@ backup_main() {
 	local today="${BACKUP_TODAY:-$(date -u +%F)}"
 	local i n tag gid steps failures=0
 	local failed_steps=()
+
+	# Step 0: the catch-up runs the backup only when one was missed and nothing holds it. Then one run at a time:
+	# a run that finds another holding the lock starts nothing.
+	if [ "$catchup" = 1 ]; then
+		catchup_gate "$dir" "$today" || return 0
+	fi
+	if [ "$dry" = 0 ] && [ "$check" = 0 ] && ! backup_lock; then
+		backup_say "another backup run is already running (it holds $(backup_state_dir)/lock) -- nothing started; that run records its own outcome"
+		return 0
+	fi
 
 	read_list "$list" "$compose" "$today"
 	n=${#entry_line[@]}
@@ -729,10 +950,12 @@ backup_main() {
 	if [ "$failures" -ne 0 ]; then
 		backup_err "$failures of $steps steps FAILED (above)"
 		record_status "$compose" "$tag" "$gid" "$dry" false "$failures" "$steps" "${failed_steps[@]}"
+		[ "$dry" = 1 ] || remember_run failed
 		return 1
 	fi
 	record_status "$compose" "$tag" "$gid" "$dry" true 0 "$steps"
 	if [ "$dry" = 0 ]; then
+		remember_run ok
 		backup_say "done: $n copies and the two configuration files, in $dir"
 	fi
 	return 0

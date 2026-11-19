@@ -150,6 +150,60 @@ def test_killed_child_is_a_failure_with_a_reason(cfg, conn):
     assert "137" in err and "without a result" in err
 
 
+def test_wall_limits_follow_the_class_and_an_l_kind_s_budget():
+    """Completion task 3.6 (spec, Operations): every job has a wall-clock limit -- S 10 min, M 45 min, L its
+    compute budget plus 10."""
+    from ohcamel_quant.jobs.kinds import REGISTRY, get_kind, wall_limit_for
+    from ohcamel_quant.products import farm
+
+    assert get_kind("ops.selftest").wall_limit_s == 600
+    assert get_kind("cov.league").wall_limit_s == 2700
+    assert get_kind("farm.sweep").budget_s == farm.BUDGET_MINUTES * 60
+    assert get_kind("farm.sweep").wall_limit_s == farm.BUDGET_MINUTES * 60 + 600
+    # the schedule's own budget wins for the run it starts (farm.sweep takes budget_minutes)
+    assert wall_limit_for(get_kind("farm.sweep"), {"budget_minutes": 30}) == 30 * 60 + 600
+    assert wall_limit_for(get_kind("ops.selftest"), {"budget_minutes": 300}) == 600   # not an L kind: ignored
+    assert all(k.wall_limit_s > 0 and (k.mem_class != "L" or k.budget_s) for k in REGISTRY.values())
+
+
+def test_a_job_past_its_wall_limit_is_killed_whole_and_the_worker_takes_the_next(cfg, conn, tmp_path, monkeypatch):
+    """A hung job -- it ignores cancellation, holds the warehouse's write lock and has a child of its own -- is
+    killed at its wall limit with its whole process group; the lock is released, the row is failed with a reason
+    naming the wall limit, and the same worker runs the next job."""
+    import duckdb
+
+    from ohcamel_quant.jobs import worker as W
+
+    monkeypatch.setattr(W, "wall_limit_for", lambda spec, params: 3.0)
+    wh = tmp_path / "w.duckdb"
+    pidfile = tmp_path / "sleeper.pid"
+    hung = _q(conn, params={"tag": "h", "sleep_s": 60, "ignore_cancel": True, "hold_warehouse": str(wh),
+                            "sleeper_pidfile": str(pidfile)})
+    w = Worker(cfg, admit=admit_all)
+    t0 = time.monotonic()
+    out = w.run_once()
+    took = time.monotonic() - t0
+    assert out.status == "failed" and took < 30, (out.status, took)
+    d = get_job(conn, hung.id)
+    assert d.state == "failed" and "wall limit" in d.error and "3 s" in d.error, d.error
+    sleeper = int(pidfile.read_text())
+
+    def gone(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        return False
+
+    assert _wait(lambda: gone(sleeper), 10), "the job's own child outlived it (the process group was not killed)"
+    con = duckdb.connect(str(wh))          # the writer's lock went with the process
+    con.close()
+    assert not (cfg.artifacts_root / "ops.selftest" / hung.id).exists()
+    nxt = _q(conn, params={"tag": "after"})          # enqueued after: two jobs queued in one instant claim by id
+    out2 = w.run_once()
+    assert out2.status == "done" and get_job(conn, nxt.id).state == "done"
+
+
 def test_sigterm_requests_stop(cfg):
     w = Worker(cfg, admit=admit_all)
     previous = install_signal_handlers(w)

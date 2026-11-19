@@ -5,8 +5,10 @@
 # the next open (13:30 or 14:30 UTC). The zone is written out so the instant
 # does not move with the host's local time.
 #
-# Persistent=true: a firing missed while the host was down runs at the next
-# boot, so a reboot across 06:30 costs no night's copy.
+# Not Persistent (completion task 3.6): a firing missed while the host was
+# down is ohcamel-backup-catchup.timer's to run, 5 minutes after the boot --
+# Persistent=true ran it at the boot itself, inside the trading session if the
+# host came up then, and never re-ran a backup the restart had killed half way.
 #
 # Enabled by owner step O12: systemctl enable --now ohcamel-backup.timer, and
 # `systemctl list-timers 'ohcamel-*'` shows the next firing. `User=` is a
@@ -17,7 +19,7 @@ Description=Run ohcamel-backup.service daily at 06:30 UTC
 
 [Timer]
 OnCalendar=*-*-* 06:30:00 UTC
-Persistent=true
+Persistent=false
 AccuracySec=1min
 Unit=ohcamel-backup.service
 

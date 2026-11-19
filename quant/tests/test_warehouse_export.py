@@ -192,6 +192,9 @@ def test_the_writer_wait_and_the_export_fit_inside_the_backup_unit_with_room_for
 
     unit = (REPO_ROOT / "deploy/systemd/ohcamel-backup.service").read_text()
     timeout_s = int(re.search(r"^TimeoutStartSec=(\d+)min$", unit, re.M).group(1)) * 60
+    # the catch-up (completion task 3.6) runs the same script under the same ceiling
+    catchup = (REPO_ROOT / "deploy/systemd/ohcamel-backup-catchup.service").read_text()
+    assert int(re.search(r"^TimeoutStartSec=(\d+)min$", catchup, re.M).group(1)) * 60 == timeout_s
     assert E.WRITER_WAIT_S == 600
     script = (REPO_ROOT / "deploy/backup.sh").read_text()
     kill_after = int(re.search(r"^EXPORT_KILL_AFTER_S=(\d+)$", script, re.M).group(1))

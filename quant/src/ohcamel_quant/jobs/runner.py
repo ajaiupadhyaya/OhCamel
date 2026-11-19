@@ -7,13 +7,21 @@
   as an upper bound.
 * Cancel (``beat()`` returns 'cancelled') or stop (``stop`` set): the child's
   cancel event is set; after ``grace_s`` it is terminated, then killed.
+* Wall limit (completion task 3.6): a run older than ``wall_limit_s`` is not asked -- a hung job does not
+  read its cancel event -- it is killed at once with its whole process group (the child makes itself a
+  group leader first thing, jobs/child.py, so whatever it started, a Kronos subprocess say, goes with it):
+  SIGTERM to the group, then SIGKILL after ``KILL_AFTER_S``. A process's locks die with it, the warehouse
+  writer's among them (DuckDB holds an OS file lock). The outcome is ``failed`` with a reason naming the
+  wall limit; the worker settles it like any failure and takes the next job.
 """
 
 from __future__ import annotations
 
 import multiprocessing as mp
+import os
 import resource
 import shutil
+import signal
 import threading
 import time
 from collections.abc import Callable
@@ -36,8 +44,41 @@ class Outcome:
     staging: Path
 
 
+#: Seconds between the SIGTERM to a job's process group and the SIGKILL, at its wall limit.
+KILL_AFTER_S = 3.0
+
+
+def kill_group(proc: Any, kill_after_s: float = KILL_AFTER_S) -> None:
+    """SIGTERM the child's process group, then SIGKILL it. The group is the child's own (it calls ``setpgid`` at
+    its start); if it has not yet, or the group is this process's, only the child is signalled -- never the
+    worker's own group."""
+    pid = proc.pid
+
+    def signal_group(sig: int) -> None:
+        try:
+            pgid = os.getpgid(pid)
+        except ProcessLookupError:
+            pgid = None
+        if pgid is not None and pgid == pid and pgid != os.getpgrp():
+            try:
+                os.killpg(pgid, sig)
+                return
+            except ProcessLookupError:
+                pass
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+
+    signal_group(signal.SIGTERM)
+    proc.join(kill_after_s)
+    signal_group(signal.SIGKILL)   # the group too: a grandchild that ignored the SIGTERM outlives its parent's exit
+    proc.join(5)
+
+
 def run_in_child(job: Job, *, threads: int, db_path: Path, staging_root: Path, stop: threading.Event,
-                 beat: Callable[[], str], heartbeat_s: float = 15.0, grace_s: float = 15.0) -> Outcome:
+                 beat: Callable[[], str], heartbeat_s: float = 15.0, grace_s: float = 15.0,
+                 wall_limit_s: float | None = None) -> Outcome:
     ctx = mp.get_context("spawn")
     staging = staging_root / job.id
     shutil.rmtree(staging, ignore_errors=True)
@@ -52,7 +93,8 @@ def run_in_child(job: Job, *, threads: int, db_path: Path, staging_root: Path, s
     msg: dict[str, Any] | None = None
     reason: str | None = None
     deadline: float | None = None
-    next_beat = time.monotonic() + heartbeat_s
+    started = time.monotonic()
+    next_beat = started + heartbeat_s
     while True:
         if parent_conn.poll(0.2):
             try:
@@ -68,6 +110,11 @@ def run_in_child(job: Job, *, threads: int, db_path: Path, staging_root: Path, s
                     msg = None
             break
         t = time.monotonic()
+        if wall_limit_s is not None and reason in (None, "cancelled", "interrupted") and t - started >= wall_limit_s:
+            # a stop or cancel already in its grace still ends here: the limit is the outer bound
+            reason = reason or "wall_limit"
+            kill_group(proc)
+            break
         if reason is None and stop.is_set():
             reason, deadline = "interrupted", t + grace_s
             cancel.set()
@@ -92,6 +139,9 @@ def run_in_child(job: Job, *, threads: int, db_path: Path, staging_root: Path, s
     peak = msg.get("peak_rss_bytes") if msg else None
     if peak is None:
         peak = maxrss_bytes(after.ru_maxrss)
+    if reason == "wall_limit":
+        return Outcome("failed", None, (f"wall limit: the job ran past its wall-clock limit of {wall_limit_s:g} s "
+                                        f"and was killed with its process group"), cpu, peak, staging)
     if msg and msg.get("ok") and reason != "cancelled":
         return Outcome("done", msg, None, cpu, peak, staging)
     if reason == "interrupted":

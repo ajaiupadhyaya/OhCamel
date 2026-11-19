@@ -9,6 +9,9 @@ controller's backfill, local checks) or build the offline fixture warehouse.
   restore <export dir> <target> [--replace]  a new warehouse file from an export
   migrate [<warehouse>]                      apply pending migrations and finish a table move (after a deploy)
   backfill-vintages [--series S] [--since D] fill fred_vintages once, resumable (docs/runbooks/compute.md)
+  calendar                                   refresh exchange_calendar from Alpaca now (needs APCA_* keys)
+  calendar-slice <start> <end> <dir>         save Alpaca's /v2/calendar for a range, with a .meta.json sidecar
+                                             (the test fixture of completion task 3.6; needs APCA_* keys)
 """
 
 from __future__ import annotations
@@ -54,7 +57,27 @@ def main(argv: list[str] | None = None) -> int:
                                                   "OHCAMEL_QUANT_WAREHOUSE_PATH")
     bv.add_argument("--series", action="append", default=None, help="repeatable (default: every VINTAGE_SERIES)")
     bv.add_argument("--since", default=None, help="keyless only: start the Friday grid here instead of resuming")
+    sub.add_parser("calendar", help="refresh exchange_calendar from Alpaca's /v2/calendar now (the nightly bars run "
+                                    "does it too); needs OHCAMEL_QUANT_WAREHOUSE_PATH and APCA_* keys")
+    cs = sub.add_parser("calendar-slice", help="save Alpaca's /v2/calendar for a range, unmodified, with a "
+                                               ".meta.json sidecar (a test fixture); needs APCA_* keys")
+    cs.add_argument("start")
+    cs.add_argument("end")
+    cs.add_argument("dir")
     a = p.parse_args(argv)
+    if a.cmd == "calendar-slice":
+        return _calendar_slice(a)
+    if a.cmd == "calendar":
+        from .ingest.base import IngestFailed
+        from .ingest.calendar import run_calendar
+
+        try:
+            spec = run_calendar(LocalContext(market=MarketData()))
+        except IngestFailed as e:
+            print(f"calendar: FAILED -- {e}", file=sys.stderr)
+            return 1
+        print(json.dumps({k: v for k, v in spec.items() if k != "tables"}, default=str, indent=2))
+        return 0
     if a.cmd == "backfill-vintages":
         from datetime import date as _date
 
@@ -98,6 +121,42 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(freshness.dataset_freshness(con, freshness._now()), indent=2))
         return 0
     return 2  # pragma: no cover - argparse enforces the choices
+
+
+def _calendar_slice(a: argparse.Namespace) -> int:
+    """The response bytes exactly as Alpaca sent them, and the sidecar the fixture convention asks for (synthetic
+    false, source, the instant the response arrived in UTC, sha256, what was kept). The keys go in headers only:
+    neither file names them."""
+    import hashlib
+    from datetime import UTC, date, datetime
+
+    from ..config import get_settings
+    from ..data import http
+    from ..data.prices import _alpaca_headers
+    from .calendar import ALPACA_CALENDAR, parse_alpaca_calendar
+
+    s = get_settings()
+    if not (s.alpaca_key_id and s.alpaca_secret_key):
+        print("calendar-slice: FAILED -- no Alpaca keys (APCA_API_KEY_ID / APCA_API_SECRET_KEY)", file=sys.stderr)
+        return 1
+    start, end = date.fromisoformat(a.start), date.fromisoformat(a.end)
+    params = {"start": start.isoformat(), "end": end.isoformat()}
+    resp = http.get(ALPACA_CALENDAR, s, params=params, headers=_alpaca_headers(s), source="alpaca")
+    fetched = datetime.now(UTC).replace(microsecond=0)
+    body = resp.content
+    frame = parse_alpaca_calendar(json.loads(body))          # refuse to save anything that is not a calendar
+    out = Path(a.dir) / f"alpaca_calendar_{start}_{end}.json"
+    out.write_bytes(body)
+    meta = {"source": "alpaca", "synthetic": False, "url": ALPACA_CALENDAR, "params": params,
+            "fetched_utc": fetched.isoformat().replace("+00:00", "Z"),
+            "fetched_note": "the instant the response finished arriving (UTC, this machine's clock)",
+            "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body), "n_sessions": len(frame),
+            "kept": "the whole response body, unmodified",
+            "used_by": "completion task 3.6: the exchange calendar's freshness and integrity tests "
+                       "(tests/test_warehouse_freshness.py)"}
+    out.with_name(out.name + ".meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    print(f"calendar-slice: {out} -- {len(frame)} sessions, sha256 {meta['sha256']}")
+    return 0
 
 
 def _export_cmd(a: argparse.Namespace) -> int:

@@ -154,6 +154,54 @@ def test_integrity_finds_each_defect_that_has_happened_here():
     assert "calendar" in {f["check"] for f in DI.check_bars(dup)}
 
 
+def test_a_series_missing_one_session_inside_its_range_is_flagged():
+    """Completion task 3.6: ``missing_session`` -- a session the exchange calendar has, inside the series' own
+    range (first bar to last), with no bar. The sessions passed here are the weekdays of 2026-11-02..11-13 (no
+    exchange holiday falls in that fortnight); the series starts after the first and ends before the last, so
+    only the hole inside it is a finding."""
+    sessions = pd.bdate_range("2026-11-02", "2026-11-13")
+    have = sessions[1:-1].delete(4)                          # 11-03 .. 11-12 without Mon 11-09
+    got = DI.missing_sessions(pd.DatetimeIndex(have), sessions)
+    assert [(f["date"], f["check"]) for f in got] == [("2026-11-09", "missing_session")]
+    assert DI.missing_sessions(pd.DatetimeIndex(sessions[1:-1]), sessions) == []
+    # only the calendar's coverage is judged: a range past the calendar's end is not a hole
+    assert DI.missing_sessions(pd.DatetimeIndex(have.append(pd.DatetimeIndex(["2026-11-20"]))),
+                               sessions[:-2])[0]["date"] == "2026-11-09"
+
+
+def test_a_zero_volume_bar_on_a_tier1_name_is_flagged():
+    """Completion task 3.6: ``flat_bar`` -- on a tier-1 name (the deep ETFs, which trade every session), a bar with
+    no volume, or with open = high = low = close, is a vendor's filler, not a session. Checked on tier-1 names
+    only: a thin single stock can have a real empty day."""
+    assert "SPY" in DI.TIER1 and "AAPL" not in DI.TIER1
+    zero = _bars()
+    zero.iloc[12, zero.columns.get_loc("volume")] = 0.0
+    got = DI.flat_bars(zero, "SPY")
+    assert [(f["date"], f["check"]) for f in got] == [(str(zero.index[12].date()), "flat_bar")]
+    assert DI.flat_bars(zero, "AAPL") == []
+    flat = _bars()
+    flat.iloc[7, :5] = flat.iloc[6]["close"]
+    assert [f["check"] for f in DI.flat_bars(flat, "XLK")] == ["flat_bar"]
+    assert DI.flat_bars(_bars(), "SPY") == []
+
+
+def test_a_ticker_whose_source_changes_mid_series_is_flagged(tmp_path):
+    """Completion task 3.6: ``vendor_change`` -- the bars ingest serves one vendor per ticker (a full replace when
+    the vendor changes), so a series whose ``source`` changes from one session to the next mixes two vendors'
+    adjustment conventions. One finding per change, dated on the first session of the new vendor."""
+    from ohcamel_quant.warehouse.db import open_rw
+
+    wh = tmp_path / "w.duckdb"
+    days = pd.bdate_range("2026-11-02", periods=6)
+    with open_rw(wh) as con:
+        for t, sources in (("MIX", ["yahoo"] * 3 + ["alpaca"] * 3), ("ONE", ["yahoo"] * 6)):
+            for d, s in zip(days, sources, strict=True):
+                con.execute("INSERT INTO bars_daily VALUES (?, ?, 1, 1, 1, 1, 1, 100, ?, now())", [t, d.date(), s])
+        got = DI.vendor_changes(con, ["MIX", "ONE"])
+    assert [(f["ticker"], f["date"], f["check"]) for f in got] == [("MIX", "2026-11-05", "vendor_change")]
+    assert "yahoo" in got[0]["detail"] and "alpaca" in got[0]["detail"]
+
+
 def test_stale_series_are_named():
     last = {"A": pd.Timestamp("2026-10-16"), "B": pd.Timestamp("2026-10-01")}
     assert [f["ticker"] for f in DI.stale(last)] == ["B"]
@@ -237,6 +285,10 @@ def test_old_warehouse_findings_are_listed_but_only_new_ones_fail_the_lamp(monke
     monkeypatch.setattr(readers, "ohlcv", lambda con, t, *a, **k: _DS(frames[t]))
     # this stand-in warehouse has no tables; adjust_drift is tested on a real one (test_warehouse_adjust.py)
     monkeypatch.setattr(DI, "adjust_drift", lambda con, tickers: ([], {"compared": 0}))
+    # and the task-3.6 reads (tested on real warehouses above and in test_warehouse_freshness.py)
+    monkeypatch.setattr(DI, "warehouse_sessions", lambda con: None)
+    monkeypatch.setattr(DI, "vendor_changes", lambda con, tickers: [])
+    monkeypatch.setattr(DI, "stale_feeds", lambda con, now: [])
     c2 = ctx(None, {"tickers": ["OLD", "OK"]})
     c2._warehouse = WH()
     spec = DI.run({"tickers": ["OLD", "OK"]}, c2)

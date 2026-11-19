@@ -67,6 +67,61 @@ def test_freshness_marks_missed_session_stale(wh):
     assert f["bars_daily"]["stale"] is True
 
 
+#: A real slice of Alpaca's GET /v2/calendar (the paper trading API), committed with its .meta.json sidecar.
+CALENDAR_SLICE = (__import__("pathlib").Path(__file__).parent / "data" / "alpaca_calendar_2026-11-02_2026-12-31.json")
+
+
+def _load_slice(con):
+    from ohcamel_quant.warehouse import calendar
+
+    if not CALENDAR_SLICE.exists():
+        pytest.skip("BLOCKED (completion task 3.6): no real Alpaca /v2/calendar slice is committed yet -- the agent's "
+                    "key answered 401. With APCA_API_KEY_ID/APCA_API_SECRET_KEY set: python -m ohcamel_quant.warehouse "
+                    "calendar-slice 2026-11-02 2026-12-31 quant/tests/data (writes the slice and its .meta.json)")
+    meta = json.loads(CALENDAR_SLICE.with_name(CALENDAR_SLICE.name + ".meta.json").read_text())
+    assert meta["synthetic"] is False and meta["source"] == "alpaca"
+    frame = calendar.parse_alpaca_calendar(json.loads(CALENDAR_SLICE.read_text()))
+    calendar.write_calendar(con, frame, date(2026, 11, 2), date(2026, 12, 31), source="alpaca",
+                            fetched_at=utc(2026, 11, 19, 12, 0))
+    return frame
+
+
+def test_the_day_after_thanksgiving_half_session_is_not_stale(tmp_path):
+    """Completion task 3.6: freshness reads the exchange calendar (Alpaca's /v2/calendar, cached in the warehouse).
+    Thanksgiving (Thu 2026-11-26) is no session and the Friday after it closes at 13:00. On that Friday morning the
+    newest daily bars are Wednesday's and the last run (Thursday 18:30, which found nothing) was before the
+    weekday rule's Thursday due time -- the weekday rule calls bars_daily stale all through the half session.
+    With the calendar, Wednesday is the expected session: fresh. Friday night, Friday's half-session bars are in."""
+    path = tmp_path / "w.duckdb"
+    with open_rw(path) as con:
+        frame = _load_slice(con)
+        days = {d.date(): (o, c) for d, o, c in frame[["date", "open", "close"]].itertuples(index=False)}
+        assert date(2026, 11, 26) not in days and days[date(2026, 11, 27)] == (time(9, 30), time(13, 0))
+        log_row(con, "bars_daily", "SPY", "ok", 1, "{}", date(2026, 11, 25), ran_at=utc(2026, 11, 26, 23, 30))
+        log_row(con, "bars_daily", "*", "ok", 1, "{}", date(2026, 11, 25), ran_at=utc(2026, 11, 26, 23, 30))
+    with open_ro(path) as con:
+        out = freshness.dataset_freshness(con, datetime(2026, 11, 27, 15, 0, tzinfo=UTC))   # Fri 10:00 EST
+    assert out["calendar"]["source"] == "alpaca" and out["calendar"].get("note") is None
+    assert out["datasets"]["bars_daily"]["stale"] is False
+    with open_rw(path) as con:
+        log_row(con, "bars_daily", "SPY", "ok", 1, "{}", date(2026, 11, 27), ran_at=utc(2026, 11, 27, 23, 30))
+        log_row(con, "bars_daily", "*", "ok", 1, "{}", date(2026, 11, 27), ran_at=utc(2026, 11, 27, 23, 30))
+    with open_ro(path) as con:
+        late = freshness.dataset_freshness(con, datetime(2026, 11, 28, 3, 0, tzinfo=UTC))   # Fri 22:00 EST
+    assert late["datasets"]["bars_daily"]["stale"] is False
+    with open_ro(path) as con:
+        cal = freshness.load_calendar(con)
+    assert freshness.expected_session(datetime(2026, 11, 28, 3, 0, tzinfo=UTC), time(21, 30), cal) == date(2026, 11, 27)
+    assert freshness.expected_session(datetime(2026, 11, 27, 15, 0, tzinfo=UTC), time(21, 30), cal) == date(2026, 11, 25)
+
+
+def test_without_a_cached_calendar_freshness_says_it_counts_weekdays(wh):
+    """No calendar cached (migration 005 applied, nothing ingested yet): the weekday rule, and the answer says so."""
+    with open_ro(wh) as con:
+        out = freshness.dataset_freshness(con, NOW)
+    assert out["calendar"]["source"] == "weekdays" and "no exchange calendar" in out["calendar"]["note"]
+
+
 def client(monkeypatch, value):
     if value is None:
         monkeypatch.delenv("OHCAMEL_QUANT_WAREHOUSE_PATH", raising=False)

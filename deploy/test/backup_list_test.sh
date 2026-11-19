@@ -119,6 +119,13 @@ done
 } >>"$SHIM_LOG"
 case "$verb" in
 ps)
+	# `ps -a --filter name=...`: the export container's state (completion task 3.6), none unless a case asks
+	case " $* " in
+	*" -a "*)
+		[ -n "${SHIM_EXPORT_STATE-}" ] && printf '%s\n' "$SHIM_EXPORT_STATE"
+		exit 0
+		;;
+	esac
 	[ -n "${SHIM_PS_IMAGE-}" ] && printf '%s\n' "$SHIM_PS_IMAGE"
 	exit 0
 	;;
@@ -229,7 +236,7 @@ run_backup() {
 		PATH="$scratch/bin:$PATH" SHIM_LOG="$log" SHIM_TODAY="$today" SHIM_STATUS_LOG="$status_log" \
 		SHIM_TIMEOUT_LOG="$timeout_log" SHIM_EXPORT_SEEN="$export_seen" \
 		BACKUP_FINISHED_AT=2026-09-27T06:31:00Z \
-		OHCAMEL_BACKUP_DIR="$backups" BACKUP_TODAY="$today" \
+		OHCAMEL_BACKUP_DIR="$backups" BACKUP_TODAY="$today" OHCAMEL_BACKUP_STATE="$scratch/state" \
 		SHIM_PS_IMAGE="ghcr.io/ajaiupadhyaya/ohcamel:cafe1234" \
 		${envs[@]+"${envs[@]}"} \
 		bash "$repo/deploy/backup.sh" "$@" >"$scratch/out" 2>"$scratch/err" || rc=$?

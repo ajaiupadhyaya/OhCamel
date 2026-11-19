@@ -1,0 +1,24 @@
+# Fires ohcamel-backup-catchup.service 5 minutes after boot (at most a minute
+# late, so a backup a reboot missed starts within 15 minutes of the boot), then
+# 15 minutes after each check ends -- so a check held by the session window or
+# a writer's schedule is tried again until the window closes (completion task
+# 3.6). Monotonic, not Persistent: there is nothing to replay, each check reads
+# the present (the last finished run against the latest 06:30 UTC).
+#
+# It replaces ohcamel-backup.timer's Persistent=true, whose boot-time firing
+# ran the backup whenever the host came up, inside the session too.
+#
+# Enabled by the owner: systemctl enable --now ohcamel-backup-catchup.timer;
+# `systemctl list-timers 'ohcamel-*'` shows the next check.
+
+[Unit]
+Description=Check for a missed nightly backup 5 minutes after boot and every 15 minutes after
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=15min
+AccuracySec=1min
+Unit=ohcamel-backup-catchup.service
+
+[Install]
+WantedBy=timers.target

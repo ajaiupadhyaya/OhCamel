@@ -1,7 +1,11 @@
 """When is warehouse data current? Session datasets are judged against the
-New York session clock; exchange holidays are not known, so a session counts as
-covered when the last successful ingest ran after it was due and found nothing
-newer (one session of slack, never more)."""
+New York session clock, on the exchange calendar cached in the warehouse
+(completion task 3.6: Alpaca's ``/v2/calendar``, ``warehouse/calendar.py``) --
+holidays are not sessions, and the day after Thanksgiving is a session. Where
+the calendar is missing or does not cover a date, sessions are counted as
+weekdays and the answer says so (``calendar.note``). Either way a session counts
+as covered when the last successful ingest ran after it was due and found
+nothing newer (one session of slack, never more): a vendor that publishes late."""
 
 from __future__ import annotations
 
@@ -9,7 +13,10 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .calendar import Calendar, load_calendar
 from .db import move_incomplete
+
+__all__ = ["Calendar", "load_calendar", "expected_session", "is_fresh", "dataset_freshness", "calendar_status"]
 
 NY = ZoneInfo("America/New_York")
 #: A session's daily bars are expected from vendors by 16:20 New York
@@ -29,33 +36,50 @@ def _prev_weekday(d: date) -> date:
     return d
 
 
-def expected_session(now: datetime, due: time) -> date:
-    """The latest weekday whose ``due`` New York time has passed at ``now``."""
+def _prev_session(d: date, cal: Calendar | None) -> date:
+    """The session before ``d``: the calendar's where it covers ``d`` and has one before it, else the weekday's."""
+    if cal is not None and cal.covers(d):
+        p = cal.previous(d)
+        if p is not None:
+            return p
+    return _prev_weekday(d)
+
+
+def expected_session(now: datetime, due: time, cal: Calendar | None = None) -> date:
+    """The latest session whose ``due`` New York time has passed at ``now``: on the calendar where it covers
+    today, else the latest such weekday."""
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
     ny = now.astimezone(NY)
     d = ny.date()
+    if cal is not None and cal.covers(d):
+        if cal.is_session(d) and ny.time() >= due:
+            return d
+        p = cal.previous(d)
+        if p is not None:
+            return p
     if d.weekday() >= 5 or ny.time() < due:
         d = _prev_weekday(d)  # Sat/Sun -> Fri; a weekday before `due` -> the previous weekday
     return d
 
 
-def is_fresh(data_asof: date | None, last_ok_ran_at: datetime | None, now: datetime, due: time) -> bool:
+def is_fresh(data_asof: date | None, last_ok_ran_at: datetime | None, now: datetime, due: time,
+             cal: Calendar | None = None) -> bool:
     """``data_asof`` reaches the expected session, or it is exactly one session
     behind and the last successful ingest ran after that session was due."""
     if data_asof is None:
         return False
-    exp = expected_session(now, due)
+    exp = expected_session(now, due, cal)
     if data_asof >= exp:
         return True
-    if last_ok_ran_at is None or data_asof < _prev_weekday(exp):
+    if last_ok_ran_at is None or data_asof < _prev_session(exp, cal):
         return False
     ran = last_ok_ran_at if last_ok_ran_at.tzinfo else last_ok_ran_at.replace(tzinfo=UTC)
     return ran >= datetime.combine(exp, due, NY)
 
 
 DATASETS = ("universe_members", "bars_daily", "bars_minute", "fred", "factors", "sec_facts", "holdings_13f",
-            "option_snapshots", "corp_actions", "universe_membership", "fred_vintages")
+            "option_snapshots", "corp_actions", "universe_membership", "fred_vintages", "exchange_calendar")
 #: A dataset written inside another's ingest run, so judged by that run's summary row (completion task 3.5:
 #: ingest.universes writes the dated membership; ingest.fred_warehouse appends the vintages under its own run).
 RUN_OF = {"universe_membership": "universe_members"}
@@ -73,6 +97,8 @@ FRESHNESS: dict[str, dict[str, Any]] = {
     "corp_actions": {"rule": "session", "due": time(21, 20)},
     "universe_membership": {"rule": "age", "max_age_h": 204},
     "fred_vintages": {"rule": "age", "max_age_h": 30},
+    # completion task 3.6: refreshed inside the weekday bars run (ingest/calendar.py), so aged like a session kind
+    "exchange_calendar": {"rule": "age", "max_age_h": 78},
 }
 SUCCESS = ("ok", "partial")
 
@@ -81,7 +107,24 @@ def _iso(v: Any) -> str | None:
     return v.isoformat() if v is not None else None
 
 
+def calendar_status(cal: Calendar | None, now: datetime) -> dict[str, Any]:
+    """What the session rule stood on: ``{"source": "alpaca", "first", "last"}``, plus a ``note`` whenever any part
+    of the answer fell back to counting weekdays."""
+    today = now.astimezone(NY).date()
+    if cal is None:
+        return {"source": "weekdays", "first": None, "last": None,
+                "note": "no exchange calendar cached in the warehouse (exchange_calendar is empty or predates "
+                        "migration 005; the nightly bars run fetches it from Alpaca's /v2/calendar): sessions are "
+                        "counted as weekdays, so holidays and early closes are not known"}
+    out: dict[str, Any] = {"source": cal.source, "first": cal.first.isoformat(), "last": cal.last.isoformat()}
+    if not cal.covers(today):
+        out["note"] = (f"the cached exchange calendar covers {cal.first} to {cal.last}, not today ({today}): "
+                       "sessions outside it are counted as weekdays")
+    return out
+
+
 def dataset_freshness(con: Any, now: datetime) -> dict[str, Any]:
+    cal = load_calendar(con)
     keys = con.execute(
         "SELECT dataset, key, status, data_asof FROM (SELECT *, row_number() OVER "
         "(PARTITION BY dataset, key ORDER BY ran_at DESC) AS rn FROM ingest_log WHERE key <> '*') WHERE rn = 1"
@@ -97,7 +140,7 @@ def dataset_freshness(con: Any, now: datetime) -> dict[str, Any]:
         last_run, last_status, last_ok = runs.get(RUN_OF.get(ds, ds), (None, None, None))
         rule = FRESHNESS[ds]
         if rule["rule"] == "session":
-            stale = not is_fresh(asof, last_ok, now, rule["due"])
+            stale = not is_fresh(asof, last_ok, now, rule["due"], cal)
         else:
             ok_at = last_ok.replace(tzinfo=UTC) if last_ok is not None else None
             stale = ok_at is None or (now - ok_at).total_seconds() > rule["max_age_h"] * 3600
@@ -109,4 +152,4 @@ def dataset_freshness(con: Any, now: datetime) -> dict[str, Any]:
     # dataset reads "migrating" (and stale), not a figure for a part
     if move_incomplete(con):
         out["option_snapshots"] |= {"migrating": True, "stale": True}
-    return {"now": now.isoformat(), "datasets": out}
+    return {"now": now.isoformat(), "datasets": out, "calendar": calendar_status(cal, now)}

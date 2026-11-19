@@ -282,6 +282,10 @@ DIRECT_READS = {
     ("signals/contract.py", "read_text("): (1, "the committed JSON schema (code SHA)"),
     ("signals/roster.py", "read_text("): (1, "the committed roster (code SHA)"),
     ("signals/report.py", "httpx."): (2, "the live engine: UNRECORDED_READS"),
+    # completion task 3.6: ops.selftest's test-only hang (never scheduled, not submittable through the API): it holds
+    # a DuckDB file's writer lock and starts a `sleep`; nothing is read and nothing reaches the artifact
+    ("jobs/handlers/selftest.py", "duckdb.connect("): (1, "test-only: holds a writer lock, reads nothing"),
+    ("jobs/handlers/selftest.py", "subprocess."): (1, "test-only: a `sleep` child, reads nothing"),
 }
 PATTERNS = ("read_parquet(", "read_csv(", "read_text(", "read_bytes(", "connect_ro(", "open_ro(", "duckdb.connect(",
             "httpx.", "requests.", "urlopen(", "subprocess.", "connect(")

@@ -1,0 +1,47 @@
+# The backup's catch-up, as a one-shot (completion task 3.6): deploy/backup.sh
+# --catch-up asks whether a backup has finished since the latest 06:30 UTC
+# (the nightly timer's firing) and, if none has -- the host was down then, or
+# restarted while the backup ran -- runs it, under the nightly run's rules:
+#
+#   - not inside the trading session window, 09:25-17:10 New York on weekdays:
+#     the export holds the warehouse's shared lock, which the 15:42 option pull
+#     needs as the writer, and the copies load the host the live desk runs on;
+#   - not within the export's 60 minutes before a warehouse writer's schedule
+#     (the same rule tests/test_jobs_schedules.py holds the nightly run to);
+#   - not beside a running backup: the nightly unit active, or today's export
+#     container running, is a clean "nothing started". A leftover export
+#     container that a restart killed is removed by name first, since the
+#     name would otherwise refuse the run.
+#
+# A check that finds nothing to do calls no docker and exits 0 in
+# milliseconds; a held check says why and exits 0. Each finished run (ok or
+# failed) is remembered in ~ohcamel/.local/state/ohcamel-backup/last-run.
+# Started by ohcamel-backup-catchup.timer 5 minutes after boot and every 15
+# minutes after; `systemctl start ohcamel-backup-catchup.service` runs a check
+# now, and `journalctl -t ohcamel-backup-catchup` is its history.
+#
+# Installed by the owner (docs/runbooks/compute.md, after the Task 3.6 deploy):
+#   install -m 0644 deploy/systemd/ohcamel-backup-catchup.{service,timer} \
+#     deploy/systemd/ohcamel-backup.timer /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now ohcamel-backup-catchup.timer
+#
+# User, directory and ceiling are ohcamel-backup.service's, for the same
+# reasons (see that unit): the catch-up IS the nightly run, started later.
+# deploy/test/backup_catchup_test.sh reads this file.
+
+[Unit]
+Description=OhCamel backup catch-up (deploy/backup.sh --catch-up): the nightly backup, when a reboot missed it
+Documentation=file:///home/ohcamel/OhCamel/deploy/backup.sh
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=ohcamel
+Group=ohcamel
+WorkingDirectory=/home/ohcamel/OhCamel
+ExecStart=/home/ohcamel/OhCamel/deploy/backup.sh --catch-up
+TimeoutStartSec=60min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ohcamel-backup-catchup

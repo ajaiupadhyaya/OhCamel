@@ -263,3 +263,45 @@ def test_no_warehouse_writer_is_scheduled_inside_the_nightly_export_window():
                         clashes.append(f"{e.name} {t.isoformat()}")
     assert not clashes, f"warehouse writers inside the export window {h:02d}:{m:02d}+{EXPORT_BUDGET_MIN}m UTC: {clashes}"
     assert WAREHOUSE_WRITERS and "ingest.fred" not in WAREHOUSE_WRITERS   # ingest.fred writes an artifact only
+
+
+def test_the_backup_catch_up_holds_for_every_warehouse_writer_and_the_session_window():
+    """Completion task 3.6: deploy/backup.sh --catch-up starts a missed backup only outside the trading session
+    window (09:25-17:10 New York) and not within the export's window before a warehouse writer's schedule. Its list
+    of writers (CATCHUP_WRITERS, New York times) must be exactly schedules.yaml's warehouse-writing entries, its hold
+    the export's budget, and its slot the nightly timer's 06:30 UTC."""
+    import re
+
+    from ohcamel_quant.config import REPO_ROOT
+    from ohcamel_quant.jobs.cron import parse_cron
+    from ohcamel_quant.jobs.provenance import WAREHOUSE_WRITERS
+    from ohcamel_quant.jobs.schedules import load_schedules
+    from ohcamel_quant.warehouse.export import EXPORT_BUDGET_MIN
+
+    def expand(field, top):      # the forms schedules.yaml's writers use: N, */N, A-B
+        if field.startswith("*/"):
+            return range(0, top, int(field[2:]))
+        if "-" in field:
+            a, b = map(int, field.split("-"))
+            return range(a, b + 1)
+        return [int(field)]
+
+    script = (REPO_ROOT / "deploy/backup.sh").read_text()
+    shell = re.search(r'^CATCHUP_WRITERS="([^"]+)"$', script, re.M).group(1).split()
+    want = set()
+    for e in load_schedules().entries:
+        if e.kind not in WAREHOUSE_WRITERS:
+            continue
+        parse_cron(e.cron)
+        minute, hour, dom, month, dow = e.cron.split()
+        assert (dom, month) == ("*", "*") and (dow in ("*", "1-5") or dow.isdigit()), e.cron  # the shell reads no more
+        want |= {f"{dow}@{h:02d}:{m:02d}" for h in expand(hour, 24) for m in expand(minute, 60)}
+    assert len(shell) == len(set(shell))
+    shell = set(shell)
+    assert shell == want, f"backup.sh CATCHUP_WRITERS {sorted(shell)} != schedules.yaml writers {sorted(want)}"
+    assert int(re.search(r"^CATCHUP_HOLD_MIN=(\d+)$", script, re.M).group(1)) == EXPORT_BUDGET_MIN
+    assert int(re.search(r"^CATCHUP_SESSION_FROM=(\d+)$", script, re.M).group(1)) == 9 * 60 + 25
+    assert int(re.search(r"^CATCHUP_SESSION_TO=(\d+)$", script, re.M).group(1)) == 17 * 60 + 10
+    timer = (REPO_ROOT / "deploy/systemd/ohcamel-backup.timer").read_text()
+    h, m = map(int, re.search(r"^OnCalendar=\*-\*-\* (\d\d):(\d\d):00 UTC$", timer, re.M).groups())
+    assert int(re.search(r"^BACKUP_SLOT_UTC_S=(\d+)$", script, re.M).group(1)) == (h * 60 + m) * 60

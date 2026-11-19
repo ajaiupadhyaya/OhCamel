@@ -72,6 +72,20 @@ dc exec ohcamel-worker python -m ohcamel_quant.jobs cancel <JOB_ID>
 
 cancels a queued job at once, or a running one at its next heartbeat (15 s); nothing is published.
 
+## Wall limits (completion task 3.6)
+
+Every job has a wall-clock limit, from its kind (`quant/src/ohcamel_quant/jobs/kinds.py`): class S 10 minutes,
+class M 45 minutes, class L its compute budget plus 10 (`farm.sweep` 90 + 10, or the `budget_minutes` it is run
+with plus 10; `kronos.shadow` 45 + 10). A run past it is killed with its whole process group (anything it started
+goes too, and the warehouse's writer lock with it) and the job is `failed` with an error that begins `wall limit:`;
+the worker takes the next job. Ingest kinds are retried twice, like any ingest failure.
+
+A backfill runs as its schedule's kind, so an S-class backfill (`ingest.corp_actions {"full": true, "missing":
+true}`, `ingest.bars_daily {"raw_missing": true}`) is held to 10 minutes a run. Both are resumable: each attempt
+commits ticker by ticker, a killed attempt loses at most the ticker it was writing, and the two retries continue
+from there -- about 30 minutes of work for one enqueue. If `status` then shows it `failed` with `wall limit`,
+enqueue the same command again until its notes say nothing is left.
+
 ## Draining the worker
 
 There is no pause flag. A stop sends SIGTERM: the running job gets 15 s to finish, then it is re-queued without
@@ -154,6 +168,24 @@ killed run resumes where it stopped when run again. A value is dated by the firs
 Situation comes out on a Friday) or up to six days after, never before. Run it off-hours, away from the 06:30 UTC
 export; it holds the writer only while a batch is written. `fred_vintages` is append-only: nothing in it is ever
 deleted or updated, a re-run appends only rows that say something new.
+
+**005 (completion task 3.6)** only creates one empty table, `exchange_calendar`: instant, nothing moved. Run
+`migrate` with the same two commands. It fills on the next weekday `ingest.bars_daily` (18:30 New York), which
+fetches Alpaca's `/v2/calendar` with the worker's `APCA_*` keys (from 1990 the first time, then the last month
+and the next 400 days each night); to have it now:
+
+```bash
+dc exec ohcamel-worker python -m ohcamel_quant.warehouse calendar   # prints the run's notes; FAILED names the reason
+```
+
+Until it fills, `GET /api/warehouse/freshness` answers `calendar.source: "weekdays"` with a note, session datasets
+are judged on weekdays as before, and `ops.data_integrity` skips `missing_session` with a note. A failed calendar
+fetch never fails the bars run: it is a note on that run, and the last cached calendar stays in use.
+
+The integrity lamp after this deploy: `missing_session`, `flat_bar` (tier-1 ETFs only) and `vendor_change` gate
+when they fall in the last 10 sessions; older ones are listed only. `stale_minute`, `stale_options` and
+`stale_fred` never gate (the freshness lamps carry a stale feed). Read the first night's findings before trusting
+a red lamp: a single stock halted for a whole session is a real `missing_session`.
 
 ## Enqueueing a backfill
 
@@ -269,6 +301,54 @@ committed values then take precedence over the file. With the same values `confi
 holdout already evaluated stays carried, not stale.
 
 Tests: `quant/tests/test_products_q01.py` (`test_freeze_*`, `test_a_committed_universe_wins_over_the_frozen_file`).
+
+## The backup's catch-up (completion task 3.6)
+
+`ohcamel-backup.timer` no longer fires at boot (`Persistent=false`). `ohcamel-backup-catchup.timer` checks 5
+minutes after every boot and every 15 minutes after: if no backup has finished since the latest 06:30 UTC, it runs
+`deploy/backup.sh --catch-up` -- but not inside 09:25-17:10 New York on a weekday, not within an hour before a
+warehouse writer's schedule, and not beside a running backup (it says which, and the next check tries again).
+Install once, after the deploy that brings it:
+
+```bash
+sudo install -m 0644 deploy/systemd/ohcamel-backup.timer deploy/systemd/ohcamel-backup-catchup.service \
+  deploy/systemd/ohcamel-backup-catchup.timer /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now ohcamel-backup-catchup.timer
+systemctl list-timers 'ohcamel-*'          # the catch-up's next check is listed
+journalctl -t ohcamel-backup-catchup -n 5  # "nothing to catch up", a hold and why, or a run
+```
+
+**While the host still runs the backup from the `ohcamel` user's crontab** (docs/status.md, "What the owner
+holds": no sudo for `ohcamel` since 2026-11-03), add one line to that crontab (`crontab -e` as `ohcamel`) beside the
+06:30 UTC backup line; it checks every 15 minutes, so a missed backup starts within 15 minutes of boot:
+
+```cron
+*/15 * * * * /home/ohcamel/OhCamel/deploy/backup.sh --catch-up >>$HOME/backup.log 2>&1
+```
+
+Under cron and under systemd alike, every run that copies takes one lock (`flock`,
+`~ohcamel/.local/state/ohcamel-backup/lock`), so the catch-up can never start beside the nightly run; a check
+right after boot that finds the docker daemon not answering yet waits for the next check. When the units replace
+cron (O12), remove this line with the other two.
+
+The first check after install finds no run remembered (`~ohcamel/.local/state/ohcamel-backup/last-run` is
+written by every run from this deploy on) and, outside the windows above, runs one backup: expected, and
+harmless (the day's copies are replaced, the export only after it verifies).
+
+### The calendar fixture (unblocks two tests)
+
+`quant/tests/test_warehouse_freshness.py::test_the_day_after_thanksgiving_half_session_is_not_stale` and
+`quant/tests/test_warehouse_adjust.py::test_a_session_missing_from_a_series_gates_on_the_cached_calendar` skip
+until a real slice of Alpaca's calendar is committed (the agent's key was refused). On a machine with working
+`APCA_API_KEY_ID`/`APCA_API_SECRET_KEY` (paper keys are enough):
+
+```bash
+cd quant && uv run --frozen python -m ohcamel_quant.warehouse calendar-slice 2026-11-02 2026-12-31 tests/data
+uv run --frozen pytest -q tests/test_warehouse_freshness.py tests/test_warehouse_adjust.py   # no skips
+```
+
+It writes `alpaca_calendar_2026-11-02_2026-12-31.json` (the response body, unmodified) and its `.meta.json`
+(synthetic false, source, fetch instant in UTC, sha256); neither file names the keys. Commit both.
 
 ## Restoring jobs.sqlite
 

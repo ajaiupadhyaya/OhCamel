@@ -115,7 +115,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->2223<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->2235<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.
@@ -803,8 +803,10 @@ rollback plan written before it ships, and no task has bumped it yet.
   `ohcamel journal-backup` keeps the 5 newest pre-deploy copies by name.
 - **Nightly.** `deploy/systemd/ohcamel-backup.timer` runs
   `ohcamel-backup.service` -- `deploy/backup.sh` -- at 06:30 UTC
-  (`Persistent=true`, so a firing missed while the host was down runs at the
-  next boot). It copies every line of `deploy/backup.list` (the journal,
+  (a firing missed while the host was down, or a run a restart killed, is run
+  by `ohcamel-backup-catchup.timer` on its first check after the boot, 5
+  minutes in, outside the trading session window and away from warehouse
+  writers -- completion task 3.6, docs/runbooks/compute.md). It copies every line of `deploy/backup.list` (the journal,
   `desk_data:/data/desk.db`, as `desk-YYYY-MM-DD.db`; the Quant recorder,
   `quant_data:/data/deck/recorder.sqlite`; the job queue, `quant_data:/data/jobs.sqlite`) and `book.sexp` and `deploy/.env`
   beside them at 0640. The journal's copy is made with SQLite's online

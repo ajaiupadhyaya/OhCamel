@@ -51,6 +51,27 @@ the archive under ``fixtures/archive/`` is how a repair is recorded. Checks, all
 - ``split_unconfirmed``: a ``split_suspect`` session of a warehouse series whose corporate-action history covers
   it but records no split that day -- the page repair (``data/splits.py``) divides that history by a split
   nobody recorded, which may be a real gap. Shown for a look; the ``split_suspect`` finding itself gates.
+
+Completion task 3.6 widened the look (spec, Operations: missing sessions, flat or zero-volume bars, a vendor
+change inside a series, and stale minute, option and FRED data):
+
+- ``missing_session`` (warehouse): a session of the exchange calendar (Alpaca's ``/v2/calendar``, cached in
+  ``exchange_calendar``) inside the series' own range -- first bar to last, where the calendar covers it -- with
+  no bar. A hole, never a market event, except a single name halted all day. Gates when recent, like the
+  checks above; older holes are listed (up to ``MISSING_LISTED`` a series, the rest counted in one row). With
+  no calendar cached the check is not run and a note says so: weekdays would call every holiday a hole.
+- ``flat_bar``: on a tier-1 name (``TIER1``: the broad and sector ETFs, which trade every session), a bar with
+  no volume or with open = high = low = close -- a vendor's filler. Tier-1 only: a thin single stock can
+  have a real empty day. Gates when recent (warehouse) or at any date (fixtures), like the checks above.
+- ``vendor_change`` (warehouse): ``bars_daily.source`` changes from one session to the next. The bars ingest
+  serves one vendor per ticker and replaces a series whole when its vendor changes, so a mixed series is two
+  vendors' adjustment conventions stitched together. Dated on the first session of the new vendor; gates when
+  recent.
+- ``stale_minute``, ``stale_options``, ``stale_fred`` (warehouse): ``bars_minute``, ``option_snapshots`` and
+  ``fred`` as ``warehouse/freshness.py`` judges them on the same calendar -- the dataset stale (one row, ticker
+  ``*``), else a key behind it (a minute ticker or an option underlying more than one session behind the
+  expected session, a FRED series whose last fetch failed). Shown, never gating, like ``stale``: the Watch
+  page's freshness lamps already carry a stale feed, and this lamp is for defects in the data.
 """
 
 from __future__ import annotations
@@ -64,6 +85,7 @@ from ..data import fixtures as F
 from ..data.base import DataUnavailable
 from ..data.splits import SPLIT_RATIOS
 from ..jobs.artifacts import ArtifactSpec
+from ..warehouse.ingest.options import BROAD, SECTORS
 
 KIND = "ops.data_integrity"
 JUMP = 0.40
@@ -79,7 +101,14 @@ DRIFT_EXCEPTIONS: tuple[tuple[str, str, str], ...] = (
                          "adjusts every session before the ex-date; one bar, about 0.7%"),
 )
 NAMES_LISTED = 12
-SERIOUS = ("split_suspect", "bad_print", "nonpositive", "calendar", "adjust_drift")
+#: Tier-1 names for ``flat_bar``: the broad and sector ETFs, which print volume every session.
+TIER1: frozenset[str] = frozenset(BROAD + SECTORS)
+#: Old ``missing_session`` rows listed one by one per series; the rest are counted in one row.
+MISSING_LISTED = 5
+#: The datasets the stale_* checks read from warehouse/freshness.py, and the check each one names.
+STALE_FEEDS = {"bars_minute": "stale_minute", "option_snapshots": "stale_options", "fred": "stale_fred"}
+SERIOUS = ("split_suspect", "bad_print", "nonpositive", "calendar", "adjust_drift", "missing_session", "flat_bar",
+           "vendor_change")
 COLUMNS = ["source", "ticker", "date", "check", "detail", "gating"]
 
 
@@ -122,6 +151,98 @@ def check_bars(df: pd.DataFrame) -> list[dict[str, Any]]:
         add(d, "bad_print", f"high {df.loc[d, 'high']:g} / low {df.loc[d, 'low']:g} against a body of "
                             f"{lo.loc[d]:g}-{hi.loc[d]:g}")
     return out
+
+
+def missing_sessions(index: pd.DatetimeIndex, sessions: Any) -> list[dict[str, Any]]:
+    """``missing_session`` findings: each of ``sessions`` (the calendar's, in its coverage) inside the series' range
+    -- its first bar to its last, clipped to the sessions' own first and last -- with no bar."""
+    have = pd.DatetimeIndex(index).normalize()
+    cal = pd.DatetimeIndex(sorted(pd.Timestamp(d) for d in sessions))
+    if have.empty or cal.empty:
+        return []
+    lo, hi = max(have.min(), cal[0]), min(have.max(), cal[-1])
+    want = cal[(cal >= lo) & (cal <= hi)]
+    gone = want.difference(have)
+    return [{"date": str(d.date()), "check": "missing_session",
+             "detail": "the exchange calendar has a session here, inside the series' range, and the series no bar"}
+            for d in gone]
+
+
+def flat_bars(df: pd.DataFrame, ticker: str) -> list[dict[str, Any]]:
+    """``flat_bar`` findings on a tier-1 name: no volume, or open = high = low = close."""
+    if ticker not in TIER1:
+        return []
+    zero = df["volume"] == 0
+    flat = (df["open"] == df["high"]) & (df["high"] == df["low"]) & (df["low"] == df["close"])
+    out = []
+    for d in df.index[zero | flat]:
+        what = " and ".join(w for w, hit in (("no volume", bool(zero.loc[d])),
+                                             ("open = high = low = close", bool(flat.loc[d]))) if hit)
+        out.append({"date": str(pd.Timestamp(d).date()), "check": "flat_bar",
+                    "detail": f"{what} on a tier-1 name, which trades every session: a vendor's filler bar"})
+    return out
+
+
+def vendor_changes(con: Any, tickers: list[str]) -> list[dict[str, Any]]:
+    """``vendor_change`` findings: ``bars_daily.source`` differs from the session before, per ticker."""
+    if not tickers:
+        return []
+    rows = con.execute(
+        "SELECT ticker, date, prev, source FROM (SELECT ticker, date, source, lag(source) OVER "
+        "(PARTITION BY ticker ORDER BY date) AS prev FROM bars_daily WHERE list_contains(?, ticker)) "
+        "WHERE prev IS NOT NULL AND source IS DISTINCT FROM prev ORDER BY ticker, date", [tickers]).fetchall()
+    return [{"ticker": t, "date": str(pd.Timestamp(d).date()), "check": "vendor_change",
+             "detail": f"the series changes vendor here, {prev} to {src}: two vendors' adjustments in one series "
+                       f"(the bars ingest replaces a series whole when its vendor changes)"}
+            for t, d, prev, src in rows]
+
+
+def stale_feeds(con: Any, now: Any) -> list[dict[str, Any]]:
+    """``stale_minute``, ``stale_options``, ``stale_fred`` (module docstring), from warehouse/freshness.py."""
+    from ..warehouse import freshness
+
+    fr = freshness.dataset_freshness(con, now)["datasets"]
+    cal = freshness.load_calendar(con)
+    out: list[dict[str, Any]] = []
+    for ds, check in STALE_FEEDS.items():
+        f = fr[ds]
+        if f["stale"]:
+            why = ("its option-table move (migration 003) is unfinished" if f.get("migrating") else
+                   f"last good run {f['last_ok_at'] or 'never'}, data through {f['data_asof'] or 'nothing'}")
+            out.append({"ticker": "*", "date": f["data_asof"] or "", "check": check, "detail": f"{ds} is stale: {why}"})
+            continue
+        latest = con.execute(
+            "SELECT key, arg_max(status, ran_at), max(data_asof) FILTER (WHERE status IN ('ok', 'partial')) "
+            "FROM ingest_log WHERE dataset = ? AND key <> '*' GROUP BY key ORDER BY key", [ds]).fetchall()
+        rule = freshness.FRESHNESS[ds]
+        if rule["rule"] == "session":
+            exp = freshness.expected_session(now, rule["due"], cal)
+            floor = freshness._prev_session(exp, cal)
+            for key, _, asof in latest:
+                if asof is None or asof < floor:
+                    out.append({"ticker": key, "date": str(asof) if asof else "", "check": check,
+                                "detail": f"{ds}: this key's data runs through {asof or 'nothing'}, more than one "
+                                          f"session behind the expected {exp}"})
+        else:
+            for key, status, asof in latest:
+                if status == "failed":
+                    out.append({"ticker": key, "date": str(asof) if asof else "", "check": check,
+                                "detail": f"{ds}: this series' last fetch failed; its data runs through "
+                                          f"{asof or 'nothing'}"})
+    return out
+
+
+def _clip_missing(ticker: str, found: list[dict[str, Any]], recent: pd.Timestamp | None) -> list[dict[str, Any]]:
+    """Every recent hole; the old ones up to MISSING_LISTED, the rest in one counted row."""
+    new = [f for f in found if recent is not None and pd.Timestamp(f["date"]) >= recent]
+    old = [f for f in found if f not in new]
+    if len(old) <= MISSING_LISTED:
+        return [*old, *new]
+    rest = old[MISSING_LISTED:]
+    summary = {"date": rest[-1]["date"], "check": "missing_session",
+               "detail": f"{len(rest)} more sessions missing from {rest[0]['date']} to {rest[-1]['date']} "
+                         f"(the first {MISSING_LISTED} are listed)"}
+    return [*old[:MISSING_LISTED], summary, *new]
 
 
 def stale(last: dict[str, pd.Timestamp], bdays: int = STALE_BDAYS) -> list[dict[str, Any]]:
@@ -227,6 +348,17 @@ def split_unconfirmed(con: Any, suspects: list[dict[str, Any]]) -> list[dict[str
     return out
 
 
+def warehouse_sessions(con: Any) -> list[pd.Timestamp] | None:
+    """The cached exchange calendar's sessions, or None when there is none (or no table: before migration 005)."""
+    from ..warehouse.calendar import load_calendar
+
+    try:
+        cal = load_calendar(con)
+    except DataUnavailable:
+        return None
+    return None if cal is None else [pd.Timestamp(d) for d in cal.days]
+
+
 def _names(xs: list[str]) -> str:
     return ", ".join(xs[:NAMES_LISTED]) + (f" and {len(xs) - NAMES_LISTED} more" if len(xs) > NAMES_LISTED else "")
 
@@ -246,9 +378,15 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     if not tickers:
         notes.append("no warehouse configured or empty: the committed fixtures are checked alone")
     last: dict[str, pd.Timestamp] = {}
+    holes: dict[str, list[dict[str, Any]]] = {}
     if tickers:
         from ..warehouse import readers
 
+        sessions = warehouse_sessions(ctx.warehouse)
+        if sessions is None:
+            notes.append("missing_session not checked: no exchange calendar is cached in the warehouse (the nightly "
+                         "bars run fetches Alpaca's /v2/calendar into exchange_calendar); weekdays would call every "
+                         "holiday a hole")
         for i, t in enumerate(tickers):
             ctx.check_cancelled()
             try:
@@ -258,6 +396,11 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
             checked["warehouse"] += 1
             last[t] = pd.Timestamp(df.index[-1])
             rows += [{"source": "warehouse", "ticker": t, **f} for f in check_bars(df)]
+            rows += [{"source": "warehouse", "ticker": t, **f} for f in flat_bars(df, t)]
+            if sessions is not None:
+                found = missing_sessions(pd.DatetimeIndex(df.index), sessions)
+                if found:
+                    holes[t] = found
             if i % 50 == 0:
                 ctx.progress((i + 1) / len(tickers), t)
         rows += [{"source": "warehouse", **f} for f in stale(last)]
@@ -274,6 +417,15 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
             notes.append(f"adjust_drift not run: the warehouse predates migration 002 ({e}); the next ingest migrates it")
         newest_w = max(last.values())
         recent_w = newest_w - pd.offsets.BDay(int(params.get("recent_bdays", RECENT_BDAYS)))
+        for t, found in holes.items():
+            rows += [{"source": "warehouse", "ticker": t, **f} for f in _clip_missing(t, found, recent_w)]
+        try:
+            rows += [{"source": "warehouse", **f} for f in vendor_changes(ctx.warehouse, list(last))]
+            from ..warehouse import freshness
+
+            rows += [{"source": "warehouse", **f} for f in stale_feeds(ctx.warehouse, freshness._now())]
+        except duckdb.CatalogException as e:
+            notes.append(f"vendor_change and stale_* not run: the warehouse lacks a table they read ({e})")
         for r in drift:
             r["gating"] = drift_gates(r, recent_w)
         listed = [r for r in drift if r["excepted"]]
@@ -307,6 +459,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
         df.index = pd.DatetimeIndex(df.index)
         checked["fixtures"] += 1
         rows += [{"source": "fixtures", "ticker": p.stem, **f} for f in check_bars(df)]
+        rows += [{"source": "fixtures", "ticker": p.stem, **f} for f in flat_bars(df, p.stem)]
     newest = max(last.values()) if last else None
     recent = (newest - pd.offsets.BDay(int(params.get("recent_bdays", RECENT_BDAYS)))) if newest is not None else None
 
@@ -327,7 +480,9 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
     summary = pd.DataFrame([{"warehouse_series": checked["warehouse"], "fixture_series": checked["fixtures"],
                              **{f"n_{k}": int(by.get(k, 0)) for k in ("split_suspect", "jump", "bad_print",
                                                                       "nonpositive", "calendar", "stale",
-                                                                      "split_unconfirmed")},
+                                                                      "split_unconfirmed", "missing_session",
+                                                                      "flat_bar", "vendor_change", "stale_minute",
+                                                                      "stale_options", "stale_fred")},
                              "n_adjust_drift": sum(not r["excepted"] for r in drift),
                              "n_adjust_drift_gating": sum(bool(r["gating"]) for r in drift),
                              "adjust_compared": int(counts.get("compared", 0)),

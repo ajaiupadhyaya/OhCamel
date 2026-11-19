@@ -20,6 +20,12 @@ THREAD_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NU
 
 
 def child_main(job: dict[str, Any], threads: int, staging: str, db_path: str, cancel_event: Any, conn: Any) -> None:
+    # its own process group (completion task 3.6): at the wall limit the worker kills the group, so whatever this
+    # job starts goes with it, and the worker's own group is never signalled
+    try:
+        os.setpgid(0, 0)
+    except OSError:
+        pass
     for var in THREAD_VARS:
         os.environ[var] = str(threads)
     from .context import JobCancelled, JobContext

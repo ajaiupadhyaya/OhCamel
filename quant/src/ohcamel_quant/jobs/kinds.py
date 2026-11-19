@@ -30,13 +30,29 @@ class KindSpec:
     #: Task 3.3: the kind draws random numbers, so its manifest must record at least one seed (``ctx.seed``);
     #: a manifest without one is refused (jobs/provenance.py).
     draws_random: bool = False
+    #: Completion task 3.6: an L kind's compute budget in seconds (its wall limit is this plus WALL_MARGIN_S).
+    budget_s: int | None = None
 
     @property
     def retries(self) -> int:
         return retries_for(self.name)
 
+    @property
+    def wall_limit_s(self) -> int:
+        """The wall-clock seconds a run may take before the worker kills it (spec, Operations): S 10 min, M 45 min,
+        L its budget plus 10 min."""
+        if self.mem_class == "L":
+            assert self.budget_s is not None
+            return int(self.budget_s) + WALL_MARGIN_S
+        return WALL_LIMIT_S[self.mem_class]
+
 
 REGISTRY: dict[str, KindSpec] = {}
+#: Completion task 3.6 (spec, Operations): every job has a wall-clock limit. A run past it is killed with its whole
+#: process group and failed with a reason naming the limit (jobs/runner.py); the worker takes the next job. The
+#: limit is per kind, not per memory class's admission budget: S 10 min, M 45 min, L its compute budget plus 10.
+WALL_LIMIT_S = {"S": 600, "M": 2700}
+WALL_MARGIN_S = 600
 
 
 def retries_for(kind: str) -> int:
@@ -44,9 +60,19 @@ def retries_for(kind: str) -> int:
     return 2 if kind.startswith("ingest.") else 0
 
 
+def wall_limit_for(spec: KindSpec, params: dict[str, Any]) -> float:
+    """The wall limit of one run: the kind's, except that an L kind run with its own ``budget_minutes`` (the farm's
+    schedule passes one) is held to that budget plus the margin."""
+    if spec.mem_class == "L" and params.get("budget_minutes") is not None:
+        return float(params["budget_minutes"]) * 60.0 + WALL_MARGIN_S
+    return float(spec.wall_limit_s)
+
+
 def register(spec: KindSpec) -> KindSpec:
     if spec.mem_class not in ("S", "M", "L"):
         raise ValueError(f"{spec.name}: mem_class must be S, M or L")
+    if spec.mem_class == "L" and not spec.budget_s:
+        raise ValueError(f"{spec.name}: an L kind declares its compute budget (budget_s), its wall limit's base")
     if spec.name in REGISTRY and REGISTRY[spec.name] != spec:
         raise ValueError(f"kind {spec.name!r} is already registered differently")
     REGISTRY[spec.name] = spec
@@ -116,14 +142,19 @@ register(KindSpec("risk.mc_atlas", f"{_P}.atlas:run", "M", heavy=True, draws_ran
 register(KindSpec("risk.mc_intraday", f"{_P}.atlas:run_intraday", "S", heavy=False, draws_random=True))
 register(KindSpec("vol.forecast_league", f"{_P}.vol_league:run", "M", heavy=True, draws_random=True))
 register(KindSpec("cov.league", f"{_P}.cov_league:run", "M", heavy=True))
-register(KindSpec("farm.sweep", f"{_P}.farm:run", "L", heavy=True, draws_random=True))
+# farm.sweep's budget is products/farm.py's BUDGET_MINUTES (90; this module must not import pandas, so the number
+# is restated and tests/test_jobs_worker.py holds the two equal).
+register(KindSpec("farm.sweep", f"{_P}.farm:run", "L", heavy=True, draws_random=True, budget_s=5400))
 register(KindSpec("vol.surface_history", f"{_P}.surface_history:run", "M", heavy=True))
 register(KindSpec("models.xs_lgbm", f"{_P}.q01:run", "M", heavy=True, draws_random=True))
 register(KindSpec("regime.hmm", f"{_P}.q02:run", "M", heavy=True, draws_random=True))
 # 2026-10-19 (docs/superpowers/plans/2026-10-19-kronos-qlib-rdagent.md): Kronos in prospective shadow (EXP-K01's
 # design; torch runs in research/kronos's own venv, a subprocess), the owner's factor ledger re-screened on the
 # warehouse universe, and the nightly data-integrity sweep. Private: scheduled only.
-register(KindSpec("kronos.shadow", f"{_P}.kronos_shadow:run", "L", heavy=True, draws_random=True))
+# kronos.shadow declares no budget of its own: its Kronos subprocess is bounded at 30 min (run_kronos's timeout_s)
+# and the bars and incumbent fits around it are minutes. Its budget is the M limit, 45 min, so an L kind is never
+# held tighter than an M one (wall limit 55 min).
+register(KindSpec("kronos.shadow", f"{_P}.kronos_shadow:run", "L", heavy=True, draws_random=True, budget_s=2700))
 register(KindSpec("factors.screen", f"{_P}.factor_screen:run", "M", heavy=True))
 register(KindSpec("ops.data_integrity", f"{_P}.data_integrity:run", "S", heavy=False))
 

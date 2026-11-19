@@ -198,7 +198,30 @@ def test_universe_runs_carry_the_survivorship_note(tmp_path, monkeypatch):
     ctx = LocalContext(market=MarketData(Settings(offline=False, data_dir=tmp_path, warehouse_path=path,
                                                   price_providers=["yahoo"])))
     assert bars.run_bars_daily({}, ctx)["survivorship"] == SURVIVORSHIP
-    assert HANDLERS["ingest.bars_daily"] is bars.run_bars_daily
+    # completion task 3.6: the handler is the bars run with the exchange calendar's refresh after it
+    assert HANDLERS["ingest.bars_daily"].__wrapped__ is bars.run_bars_daily
+
+
+def test_the_nightly_bars_run_refreshes_the_calendar_and_a_failed_refresh_is_only_a_note(tmp_path, monkeypatch):
+    """Completion task 3.6: without Alpaca keys the calendar's key fails with the reason, the bars run is not
+    failed by it, and its notes say the calendar was not refreshed. A run for named tickers does not try."""
+    path = tmp_path / "w.duckdb"
+    with open_rw(path) as con:
+        con.execute("INSERT INTO universe_members VALUES ('sp500', 'SPY', 'x', NULL, 't', ?)", [SURVIVORSHIP])
+    monkeypatch.setattr(bars, "_now", lambda: datetime(2026, 6, 2, 14, 0, tzinfo=UTC))
+    monkeypatch.setitem(prices.PROVIDERS, "yahoo", vendor("yahoo", SPY))
+    ctx = LocalContext(market=MarketData(Settings(offline=False, data_dir=tmp_path, warehouse_path=path,
+                                                  price_providers=["yahoo"], alpaca_key_id=None,
+                                                  alpaca_secret_key=None)))
+    spec = HANDLERS["ingest.bars_daily"]({}, ctx)
+    assert spec["data_asof"] is not None
+    assert any("exchange_calendar not refreshed" in n and "no Alpaca keys" in n for n in spec["notes"]), spec["notes"]
+    with open_ro(path) as con:
+        (status,) = con.execute("SELECT status FROM ingest_log WHERE dataset = 'exchange_calendar' AND key = 'alpaca'"
+                                ).fetchone()
+    assert status == "failed"
+    spec = HANDLERS["ingest.bars_daily"]({"tickers": ["SPY"]}, ctx)
+    assert not any("exchange_calendar" in n for n in spec["notes"])
 
 
 # ------------------------------------------------------------------ raw bars (completion task 3.2)

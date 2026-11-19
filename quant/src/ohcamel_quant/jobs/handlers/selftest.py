@@ -8,6 +8,9 @@ Test-only parameters, never scheduled:
 * ``sleep_s`` (0-60): wait, checking for cancellation every 50 ms.
 * ``fail_if_exists`` (path): raise if that file exists (the "failed newest job" test).
 * ``exit_hard`` (bool): ``os._exit(137)`` with no result (what an OOM kill looks like).
+* ``ignore_cancel`` (bool): the sleep does not read the cancel event -- a hung job (completion task 3.6).
+* ``hold_warehouse`` (path): open that DuckDB file as the writer and hold it while sleeping.
+* ``sleeper_pidfile`` (path): start a ``sleep`` child of the job's own and write its pid there.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ from ...data.base import Provenance
 from ..artifacts import ArtifactSpec
 from ..context import JobContext
 
-ALLOWED = {"tag", "sleep_s", "fail_if_exists", "exit_hard"}
+ALLOWED = {"tag", "sleep_s", "fail_if_exists", "exit_hard", "ignore_cancel", "hold_warehouse", "sleeper_pidfile"}
 
 
 class SelftestIn(BaseModel):
@@ -51,11 +54,24 @@ def run(params: dict[str, Any], ctx: JobContext) -> ArtifactSpec:
         raise RuntimeError(f"ops.selftest: fail_if_exists file {marker} exists")
     if params.get("exit_hard"):
         os._exit(137)
+    held = None
+    if params.get("hold_warehouse"):
+        import duckdb
+
+        held = duckdb.connect(str(params["hold_warehouse"]))      # the writer's lock, held for the sleep
+    if params.get("sleeper_pidfile"):
+        import subprocess
+
+        child = subprocess.Popen(["sleep", str(int(sleep_s) + 60)])
+        Path(str(params["sleeper_pidfile"])).write_text(str(child.pid))
     t_end = time.monotonic() + sleep_s
     while time.monotonic() < t_end:
-        ctx.check_cancelled()
+        if not params.get("ignore_cancel"):
+            ctx.check_cancelled()
         ctx.progress(1.0 - (t_end - time.monotonic()) / sleep_s, "sleeping")
         time.sleep(0.05)
+    if held is not None:
+        held.close()
     import pandas as pd
 
     now = datetime.now(UTC)

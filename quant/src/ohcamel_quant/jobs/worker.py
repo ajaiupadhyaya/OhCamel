@@ -3,7 +3,8 @@
 One job at a time. Each poll: housekeeping every minute (stale re-queue, SSE
 events older than 48 h, abandoned staging dirs), stamp the heartbeat file (the
 compose healthcheck), ask admission, claim, run in a child, settle -- and
-after each published artifact, prune its kind (II.3 retention). SIGTERM/SIGINT request a stop: the running job is
+after each published artifact, prune its kind (II.3 retention). A run past its kind's wall limit (completion task
+3.6: S 10 min, M 45 min, L budget + 10) is killed with its process group and failed. SIGTERM/SIGINT request a stop: the running job is
 given ``grace_s`` (15 s) to finish or notice, then re-queued -- compose
 gives the container 25 s (stop_grace_period).
 """
@@ -25,7 +26,7 @@ from pathlib import Path
 from .admission import Admission, make_admit
 from .artifacts import build_manifest, prune, prune_housekeeping, publish
 from .db import connect, iso, utcnow
-from .kinds import retries_for
+from .kinds import get_kind, retries_for, wall_limit_for
 from .queue import (
     Job,
     claim_next,
@@ -96,11 +97,19 @@ class Worker:
 
         out = run_in_child(job, threads=adm.threads, db_path=self.cfg.db_path,
                            staging_root=self.cfg.artifacts_root / ".staging", stop=self.stop, beat=beat,
-                           heartbeat_s=self.cfg.heartbeat_s, grace_s=self.cfg.grace_s)
+                           heartbeat_s=self.cfg.heartbeat_s, grace_s=self.cfg.grace_s,
+                           wall_limit_s=self._wall_limit(job))
         self._settle(job, out)
         log.info("%s %s -> %s (%.2f cpu s, peak %s B)", job.kind, job.id, out.status, out.cpu_seconds,
                  out.peak_rss_bytes)
         return out
+
+    def _wall_limit(self, job: Job) -> float | None:
+        """The kind's wall limit (kinds.wall_limit_for); a kind the registry no longer knows fails in the child."""
+        try:
+            return wall_limit_for(get_kind(job.kind), job.params)
+        except ValueError:
+            return None
 
     def _settle(self, job: Job, out: Outcome) -> None:
         now = self.now()

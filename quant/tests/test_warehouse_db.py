@@ -55,6 +55,8 @@ EXPECTED_COLUMNS = {
     "universe_membership": [("universe", V), ("ticker", V), ("start", D), ("end", D), ("source", V)],
     "fred_vintages": [("series", V), ("date", D), ("realtime_start", D), ("value", F), ("source", V),
                       ("fetched_at", T)],
+    # 005_exchange_calendar.sql (completion task 3.6): the exchange's sessions, from Alpaca's /v2/calendar
+    "exchange_calendar": [("date", D), ("open", "TIME"), ("close", "TIME"), ("source", V), ("fetched_at", T)],
 }
 EXPECTED_PKS = {
     "universe_members": ["universe", "ticker"],
@@ -68,6 +70,7 @@ EXPECTED_PKS = {
     "bars_raw": ["ticker", "date"],
     "corp_actions": ["ticker", "ex_date", "kind"],
     "fred_vintages": ["series", "date", "realtime_start"],
+    "exchange_calendar": ["date"],
 }
 
 
@@ -104,8 +107,9 @@ def test_migrate_is_idempotent(tmp_path):
     path = tmp_path / "w.duckdb"
     with open_rw(path) as con:
         first = migrate(con)
-        assert migrate(con) == first == 4  # 001_init, 002_raw_bars, 003_option_quotes, 004_membership_vintages
-        assert con.execute("SELECT count(*) FROM schema_version").fetchone()[0] == 4
+        # 001_init, 002_raw_bars, 003_option_quotes, 004_membership_vintages, 005_exchange_calendar
+        assert migrate(con) == first == 5
+        assert con.execute("SELECT count(*) FROM schema_version").fetchone()[0] == 5
 
 
 def test_002_on_a_version_1_warehouse_adds_tables_and_leaves_bars_daily_alone(tmp_path):
@@ -124,7 +128,7 @@ def test_002_on_a_version_1_warehouse_adds_tables_and_leaves_bars_daily_alone(tm
     before = con.execute("SELECT * FROM bars_daily").fetchall()
     con.close()
     with open_rw(path) as con:
-        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 4
+        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 5
         assert con.execute("SELECT * FROM bars_daily").fetchall() == before
         assert con.execute("SELECT count(*) FROM bars_raw").fetchone()[0] == 0
         assert con.execute("SELECT count(*) FROM corp_actions").fetchone()[0] == 0
@@ -159,7 +163,7 @@ def test_003_on_a_version_2_warehouse_keeps_every_row_as_the_after_close_pull(tm
     con.executemany("INSERT INTO option_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", OLD_ROWS)
     con.close()
     with open_rw(path) as con:
-        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 4
+        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 5
         got = con.execute('SELECT underlying, "asof", expiry, strike, cp, bid, ask, last, volume, open_interest, '
                           "source, spot, quote_ts, vendor_iv, pull, quote_ts_source FROM option_snapshots "
                           'ORDER BY "asof", underlying, cp').fetchall()
@@ -184,10 +188,23 @@ def test_004_on_a_version_3_warehouse_only_adds_two_empty_tables(tmp_path):
     before = {t: con.execute(f"SELECT * FROM {t} ORDER BY ALL").fetchall() for t in ("fred", "universe_members")}
     con.close()
     with open_rw(path) as con:
-        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 4
+        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 5
         assert {t: con.execute(f"SELECT * FROM {t} ORDER BY ALL").fetchall() for t in before} == before
         for t in ("universe_membership", "fred_vintages"):
             assert con.execute(f"SELECT count(*) FROM {t}").fetchone()[0] == 0
+
+
+def test_005_on_a_version_4_warehouse_only_adds_an_empty_calendar(tmp_path):
+    """Completion task 3.6: the live file is at version 4. 005 creates exchange_calendar and touches nothing else."""
+    path = tmp_path / "w.duckdb"
+    con = _at_version(path, 4)
+    con.execute("INSERT INTO bars_daily VALUES ('SPY', DATE '2026-11-27', 1, 1, 1, 1, 1, 1, 'yahoo', now())")
+    before = con.execute("SELECT * FROM bars_daily ORDER BY ALL").fetchall()
+    con.close()
+    with open_rw(path) as con:
+        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 5
+        assert con.execute("SELECT * FROM bars_daily ORDER BY ALL").fetchall() == before
+        assert con.execute("SELECT count(*) FROM exchange_calendar").fetchone()[0] == 0
 
 
 def test_an_interrupted_move_resumes_on_the_next_open(tmp_path):

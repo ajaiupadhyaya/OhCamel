@@ -14,9 +14,10 @@ from .universes import run_universes  # noqa: E402
 
 HANDLERS["ingest.universes"] = run_universes
 
-from . import bars  # noqa: E402
+from . import bars, calendar  # noqa: E402
 
-HANDLERS["ingest.bars_daily"] = bars.run_bars_daily
+# completion task 3.6: the exchange calendar is refreshed inside the nightly bars run (ingest/calendar.py)
+HANDLERS["ingest.bars_daily"] = calendar.with_calendar(bars.run_bars_daily)
 
 from . import minute  # noqa: E402
 
