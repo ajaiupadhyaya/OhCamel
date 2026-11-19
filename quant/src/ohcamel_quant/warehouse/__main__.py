@@ -67,9 +67,13 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(out))
         return 0
     if a.cmd == "migrate":
-        from .db import apply_migrations
+        from .db import WarehouseUnavailable, apply_migrations
 
-        print(json.dumps(apply_migrations(Path(a.warehouse) if a.warehouse else None)))
+        try:
+            print(json.dumps(apply_migrations(Path(a.warehouse) if a.warehouse else None)))
+        except WarehouseUnavailable as e:
+            print(f"migrate: FAILED -- {e}", file=sys.stderr)
+            return 1
         return 0
     if a.cmd == "run":
         from .ingest import HANDLERS

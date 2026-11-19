@@ -115,7 +115,7 @@ the synchronous caps), with a per-client cap and rate limit.
 `artifacts/<kind>/<id>/` (immutable, retained per kind), `warehouse.duckdb`, `experiments/EXP-Q01/universe.yaml`
 (after the freeze), `deck/recorder.sqlite`, and the Parquet vendor cache.
 
-**Code and tests.** The Quant suite is <!-- count:quant-tests -->2217<!-- /count --> tests, offline against
+**Code and tests.** The Quant suite is <!-- count:quant-tests -->2218<!-- /count --> tests, offline against
 committed real data and a fixture warehouse, and it passes on the Rust kernels and on the NumPy references. The
 Rust crate, the web app and the deploy scripts have their own suites. CI runs all of them, and
 `scripts/check-counts.sh --verify` holds the published count to pytest's collected count.
@@ -271,6 +271,9 @@ From the Ship spec (`superpowers/specs/2026-10-05-the-ship-design.md` §2); each
   `(trading enabled)`; any `(sizing live)` and the `alerts` block remain the owner's (see *The engine*, below).
 - Accounts and money: the basic-auth password, the Alpaca, FRED and GitHub accounts, DNS, and every spending
   decision.
+- **After the Day 4 deploy (completion stage 3), run `migrate` off-hours** on the live host -- warehouse migrations
+  003 and 004, then the `universe_membership` and `fred_vintages` fills -- as the compute runbook's *After a deploy
+  that brings a warehouse migration* says ([runbooks/compute.md](runbooks/compute.md)).
 
 ---
 

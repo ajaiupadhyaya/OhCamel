@@ -154,6 +154,9 @@ def apply_migrations(path: Path | None = None, *, settings: Settings | None = No
     rows_moved, seconds}``. The owner runs it off-hours right after a deploy that brings a migration
     (docs/runbooks/compute.md); skipped, the first writer to open the file does the same work inside its job."""
     p = _resolve(path, settings)
+    if not p.is_file():
+        # a mistyped path must not become a new, empty warehouse reported as migrated (task 3.4 leftover N1)
+        raise WarehouseUnavailable(f"warehouse {p} does not exist: nothing to migrate (check the path)")
     con = _connect(p, read_only=False, timeout_s=timeout_s, config={
         "threads": 1, "memory_limit": RW_MEMORY_LIMIT, "preserve_insertion_order": False})
     try:

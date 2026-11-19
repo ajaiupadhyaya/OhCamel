@@ -147,3 +147,15 @@ def test_the_migrate_command_reads_the_configured_path(tmp_path, capsys, monkeyp
     with open_rw(path) as con:                                            # and a writer finds it done
         assert not move_incomplete(con)
     assert os.path.exists(path)
+
+
+def test_the_migrate_command_refuses_a_path_that_does_not_exist(tmp_path, capsys):
+    """Task 3.4 leftover N1: a mistyped path used to become a new, empty warehouse at the newest version and print
+    success. It is refused instead, and nothing is created."""
+    from ohcamel_quant.warehouse.__main__ import main
+
+    path = tmp_path / "no-such-warehouse.duckdb"
+    assert main(["migrate", str(path)]) == 1
+    err = capsys.readouterr().err
+    assert "migrate: FAILED" in err and "does not exist" in err and str(path) in err
+    assert not path.exists() and not list(tmp_path.iterdir())
