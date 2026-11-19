@@ -16,6 +16,7 @@ from ohcamel_quant.macro import recession as rec
 # completion task 3.5: fit_expanding on the committed FRED slices (spread GS10 - TB3MS, h = 12), 545 targets
 OOS_BRIER_GS10_TB3MS = 0.07955644359663917
 INSAMPLE_BRIER_GS10_TB3MS = 0.07614020498010228
+BASELINE_BRIER_GS10_TB3MS = 0.09027487576800113  # fix round 1: the real-time constant forecast
 
 
 def _months(n: int, start: str = "1970-01-01") -> pd.DatetimeIndex:
@@ -236,3 +237,42 @@ def test_sahm_at_exactly_the_threshold_triggers_whatever_the_summation_order():
     s = rec.sahm_rule(pd.Series(first_published, index=_months(16, "2007-01-01"), dtype=float))
     apr = pd.Timestamp("2008-04-01")
     assert s.loc[apr, "sahm"] == 0.5 and bool(s.loc[apr, "triggered"])
+
+
+# ------------------------------------------------ fix round 1: the benchmarks the page shows beside the scores
+def test_real_time_baseline_brier_and_skill_on_the_committed_basis(real):
+    """The constant forecast an analyst could have made at each origin -- the share of recession months among
+    the labels known then (the fit's own sample) -- scored on exactly the targets the probit is scored on."""
+    usrec, x = real
+    o = rec.fit_expanding(usrec, x, 12)
+    assert list(o.baseline.index) == list(o.oos_prob.index)
+    scored = o.oos_prob.index.intersection(usrec.index)
+    y = usrec.loc[scored]
+    assert o.baseline_brier == pytest.approx(float(((o.baseline.loc[scored] - y) ** 2).mean()), rel=1e-12)
+    assert o.baseline_brier == pytest.approx(BASELINE_BRIER_GS10_TB3MS, rel=1e-6)
+    assert o.brier_skill == pytest.approx(1 - o.oos_brier / o.baseline_brier, rel=1e-12)
+    d = o.to_dict()
+    assert d["baseline_brier"] == o.baseline_brier and d["brier_skill"] == o.brier_skill
+
+
+def test_the_baseline_at_an_origin_ignores_later_labels(real):
+    usrec, x = real
+    o = rec.fit_expanding(usrec, x, 12)
+    target, origin = pd.Timestamp("2008-06-01"), pd.Timestamp("2007-06-01")
+    u2 = usrec.copy()
+    u2[u2.index > origin] = 1 - u2[u2.index > origin]
+    assert rec.fit_expanding(u2, x, 12).baseline[target] == o.baseline[target]
+    # and it is the mean of the labels known at the end of June 2007 over the months the fit paired
+    known = rec.usrec_known_at(usrec, "2007-06-30")
+    yl, _ = rec.align_forecast(known, x[x.index <= origin], 12)
+    assert o.baseline[target] == pytest.approx(float(yl[yl.index <= origin - pd.DateOffset(months=12)].mean()))
+
+
+def test_hit_rates_come_with_the_never_recession_rate(real):
+    usrec, x = real
+    o = rec.fit_expanding(usrec, x, 12)
+    scored = o.oos_prob.index.intersection(usrec.index)
+    assert o.base_hit_rate == pytest.approx(1 - float(usrec.loc[scored].mean()), rel=1e-12)
+    assert o.to_dict()["base_hit_rate"] == o.base_hit_rate
+    # on this basis the probit's out-of-sample hit rate is below never predicting a recession
+    assert o.oos_hit_rate < o.base_hit_rate

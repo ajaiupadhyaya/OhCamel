@@ -90,7 +90,7 @@ function Headline({ d }: { d: Dashboard }) {
         <StatTile key={r.id} size="sm" label={label} value={fmtUnits(r.latest, r.units)} caption={`${fmtUnits(r.change?.["1M"], r.units, { signed: true, change: true })} 1M · ${fmtDate(r.date, "short").toUpperCase()}`} />
       ))}
       {sahm && (
-        <StatTile size="sm" label="SAHM" info={INFO.sahm} value={`${fmtNum(sahm.value, 2)} PP`} tone={sahm.triggered ? "loss" : "neutral"} caption={<span className={sahm.triggered ? "loss" : ""}>{sahm.triggered ? "TRIGGERED" : "BELOW"} · {fmtNum(sahm.threshold, 2)} PP</span>} />
+        <StatTile size="sm" label="SAHM" info={INFO.sahm} value={`${fmtNum(sahm.value, 2)} PP`} tone={sahm.triggered ? "loss" : "neutral"} caption={<span className={sahm.triggered ? "loss" : ""}>{sahm.triggered ? "TRIGGERED" : "BELOW"} · {fmtNum(sahm.threshold, 2)} PP{sahm.basis === "first published" ? " · AS FIRST PUBLISHED" : sahm.basis === "revised" ? " · REVISED" : ""}</span>} />
       )}
     </StatGrid>
   );

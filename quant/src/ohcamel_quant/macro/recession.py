@@ -23,7 +23,10 @@ chronology stood that day (:func:`usrec_known_at`: final values up to the last t
 then, the regime it opened after it -- NBER dates a turning point 4 to 21 months after it happens, and until then
 FRED's USREC read 0 through a recession and 1 past its trough). The spread is a Treasury yield difference,
 never revised. ``oos_brier`` is the mean squared error of those probabilities against today's USREC; it is the
-number the page leads with. The in-sample fit (:func:`fit_probit`, every month's final label, every month's
+number the page leads with, beside ``baseline_brier`` -- the constant forecast available at each origin (the share
+of recession months among the labels that origin's fit used), scored on the same targets -- and ``brier_skill``,
+``1 - oos_brier / baseline_brier``. A hit rate is shown with ``base_hit_rate``, the share of scored months with no
+recession: never forecasting one scores that. The in-sample fit (:func:`fit_probit`, every month's final label, every month's
 data) stays as the comparison it is.
 
 Sahm rule (Sahm 2019)
@@ -300,11 +303,18 @@ class RecessionOOS:
     insample_hit_rate: float
     n_scored: int
     scored: tuple[str, str]      # first and last scored target month
+    # fix round 1: what the scores are measured against, on the same scored targets
+    baseline: pd.Series          # the real-time constant forecast: the mean of the labels the origin's fit used
+    baseline_brier: float        # its Brier score
+    brier_skill: float           # 1 - oos_brier / baseline_brier (> 0: the probit beats the constant)
+    base_hit_rate: float         # 1 - mean(final USREC): the hit rate of never predicting a recession
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {"h": self.h, "oos_brier": self.oos_brier, "oos_hit_rate": self.oos_hit_rate,
                 "insample_brier": self.insample_brier, "insample_hit_rate": self.insample_hit_rate,
+                "baseline_brier": self.baseline_brier, "brier_skill": self.brier_skill,
+                "base_hit_rate": self.base_hit_rate,
                 "n_scored": self.n_scored, "scored": {"start": self.scored[0], "end": self.scored[1]}}
 
 
@@ -330,6 +340,7 @@ def fit_expanding(usrec: pd.Series, x: pd.DataFrame, h: int, *, min_obs: int = 6
     final = final[~final.index.duplicated(keep="last")].sort_index()
     cols = list(xm.columns)
     probs: dict[pd.Timestamp, float] = {}
+    constant: dict[pd.Timestamp, float] = {}
     origin: dict[pd.Timestamp, pd.Timestamp] = {}
     fit_end: dict[pd.Timestamp, pd.Timestamp] = {}
     nobs: dict[pd.Timestamp, int] = {}
@@ -370,6 +381,7 @@ def fit_expanding(usrec: pd.Series, x: pd.DataFrame, h: int, *, min_obs: int = 6
         beta = b
         target = t + off
         probs[target] = float(norm.cdf(np.r_[1.0, xg[i]] @ b))
+        constant[target] = float(y.mean())   # the same labels, known at t, forecast as a constant
         origin[target], fit_end[target], nobs[target] = t, grid[s[-1] + h], len(s)
     if not probs:
         raise ValueError("no origin had a known sample to fit")
@@ -384,6 +396,9 @@ def fit_expanding(usrec: pd.Series, x: pd.DataFrame, h: int, *, min_obs: int = 6
     yb = final.loc[scored]
     ob, oh = _brier_hit(oos.loc[scored], yb)
     ib, ih = _brier_hit(ins.loc[scored], yb)
+    const = pd.Series(constant, name="baseline").sort_index()
+    const.index.name = "date"
+    bb, _ = _brier_hit(const.loc[scored], yb)
     notes = [f"out of sample: each probability comes from a probit fitted at the end of its origin month on "
              f"the labels NBER had announced by then, {len(oos)} refits",
              f"scored on {len(scored)} target months {scored[0].date()}..{scored[-1].date()} against today's "
@@ -392,7 +407,9 @@ def fit_expanding(usrec: pd.Series, x: pd.DataFrame, h: int, *, min_obs: int = 6
                         fit_end=pd.Series(fit_end).sort_index(), nobs=pd.Series(nobs).sort_index(),
                         oos_brier=ob, oos_hit_rate=oh, insample_prob=ins.loc[oos.index.intersection(ins.index)],
                         insample_brier=ib, insample_hit_rate=ih, n_scored=len(scored),
-                        scored=(scored[0].date().isoformat(), scored[-1].date().isoformat()), notes=notes)
+                        scored=(scored[0].date().isoformat(), scored[-1].date().isoformat()),
+                        baseline=const, baseline_brier=bb, brier_skill=1.0 - ob / bb,
+                        base_hit_rate=1.0 - float(yb.mean()), notes=notes)
 
 
 def sahm_realtime(vintages: pd.DataFrame) -> pd.DataFrame:

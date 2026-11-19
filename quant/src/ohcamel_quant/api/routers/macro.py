@@ -131,16 +131,33 @@ def dashboard(market: Market) -> dict[str, Any]:
             rows.append(row)
         categories = list(dict.fromkeys(s["category"] for s in cfg["series"]))
         highlights: dict[str, Any] = {}
-        if "UNRATE" in got:
+        sahm_note = None
+        vrows, vprov, _ = _unrate_vintages(market)
+        if vrows is not None:
+            # as first published (fix round 1, M4): only the last 18 months' vintages are needed for the latest
+            # reading (the rule reads t-14..t)
+            recent = vrows[vrows["date"] >= vrows["date"].max() - pd.DateOffset(months=18)]
+            sahm = rec.sahm_realtime(recent)
+            if not sahm.empty:
+                provs.append(vprov)
+                highlights["sahm_rule"] = {"value": float(sahm["sahm"].iloc[-1]), "date": sahm.index[-1],
+                                           "threshold": rec.SAHM_THRESHOLD,
+                                           "triggered": bool(sahm["triggered"].iloc[-1]),
+                                           "basis": "first published", "published": sahm["published"].iloc[-1]}
+        if "sahm_rule" not in highlights and "UNRATE" in got:
             sahm = rec.sahm_rule(got["UNRATE"])
             if not sahm.empty:
                 highlights["sahm_rule"] = {"value": float(sahm["sahm"].iloc[-1]), "date": sahm.index[-1],
                                            "threshold": rec.SAHM_THRESHOLD,
-                                           "triggered": bool(sahm["triggered"].iloc[-1])}
+                                           "triggered": bool(sahm["triggered"].iloc[-1]), "basis": "revised"}
+                sahm_note = ("Sahm highlight on today's revised UNRATE: its vintages (fred_vintages) are not in the "
+                             "warehouse, so it is not the reading as first published")
         notes = ["change vs 1M/3M/1Y = latest minus the value that was latest at that earlier date; "
                  "horizons shorter than a series' release frequency (e.g. 1M for quarterly GDP) are null",
                  "percentile = share of the last 10 years' observations at or below the latest value",
                  "values are as published by FRED (latest vintage, revisions included)"]
+        if sahm_note:
+            notes.append(sahm_note)
         if missing:
             notes.append("unavailable: " + ", ".join(sorted(missing)))
         return clean({

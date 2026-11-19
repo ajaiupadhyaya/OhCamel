@@ -114,11 +114,22 @@ export function RecessionTab() {
 
 const OOS_INFO = {
   title: "Out-of-sample Brier",
-  text: "Mean squared error of the probabilities, each from a probit refitted at the end of its origin month on the recession dates NBER had announced by then, against today's NBER dates. Lower is better; always forecasting the base rate scores about 0.12. The in-sample figure is one fit on every month, hindsight included.",
+  text: "Mean squared error of the probabilities, each from a probit refitted at the end of its origin month on the recession dates NBER had announced by then, against today's NBER dates. Lower is better. BASELINE is the constant forecast available at each origin — the share of recession months among the labels that origin's fit used — scored on the same months; SKILL is 1 − OOS ÷ BASELINE, below zero when the probit does worse than that constant. The in-sample figure is one fit on every month, hindsight included.",
   reference: "Brier (1950), Monthly Weather Review 78(1)",
 };
+const HIT_INFO = {
+  title: "Hit rate",
+  text: "Share of scored months where the probability's side of 50% matched what happened. Recessions are rare, so never predicting one scores the share of months without one — NEVER-RECESSION — and a model below that rate calls the turn worse than doing nothing.",
+};
 
-/** The headline: the out-of-sample Brier score, the in-sample one as its caption. Exported for its test. */
+/** Above, below or equal to the never-recession rate, in words (to the shown precision). */
+function vsNever(hit: number, never: number): string {
+  const a = Math.round(hit * 100), b = Math.round(never * 100);
+  return a < b ? "BELOW IT" : a > b ? "ABOVE IT" : "EQUAL TO IT";
+}
+
+/** The headline: the out-of-sample Brier score with its real-time baseline and skill, then the hit rate with the
+ *  never-recession rate (fix round 1). Exported for its test. */
 export function Current({ d, h }: { d: RecessionOut; h: string }) {
   const p = d.current.probability;
   const p2 = d.current.probability_with_nfci;
@@ -126,7 +137,8 @@ export function Current({ d, h }: { d: RecessionOut; h: string }) {
   const o = d.oos;
   return (
     <StatGrid min={150}>
-      <StatTile size="lg" label={`OOS BRIER · ${h}M`} info={OOS_INFO} value={fmtNum(o.oos_brier, 3)} caption={`IN-SAMPLE ${fmtNum(o.insample_brier, 3)} · HIT ${fmtPct(o.oos_hit_rate, 0)} · ${fmtDate(o.scored.start, "year")}–${fmtDate(o.scored.end, "year")}`} />
+      <StatTile size="lg" label={`OOS BRIER · ${h}M`} info={OOS_INFO} value={fmtNum(o.oos_brier, 3)} caption={`BASELINE ${fmtNum(o.baseline_brier, 3)} · SKILL ${fmtPct(o.brier_skill, 0, { signed: true })} · IN-SAMPLE ${fmtNum(o.insample_brier, 3)} · ${fmtDate(o.scored.start, "year")}–${fmtDate(o.scored.end, "year")}`} />
+      <StatTile size="lg" label="HIT RATE · OOS" info={HIT_INFO} value={fmtPct(o.oos_hit_rate, 0)} tone={o.oos_hit_rate < o.base_hit_rate ? "loss" : "neutral"} caption={`NEVER-RECESSION ${fmtPct(o.base_hit_rate, 0)} · OOS ${vsNever(o.oos_hit_rate, o.base_hit_rate)} · IN-SAMPLE ${fmtPct(o.insample_hit_rate, 0)}, ${vsNever(o.insample_hit_rate, o.base_hit_rate)}`} />
       <StatTile size="lg" label={`P(REC) · ${h}M`} info={INFO.probit} value={fmtPct(p, 0)} tone={p >= 0.5 ? "loss" : "neutral"} caption={`TARGET ${fmtDate(d.current.target, "month").toUpperCase()}`} />
       {p2 != null && <StatTile size="lg" label="+ NFCI" info={INFO.nfci} value={fmtPct(p2, 0)} tone={p2 >= 0.5 ? "loss" : "neutral"} caption={d.current.nfci_origin ? `NFCI ${fmtDate(d.current.nfci_origin, "month").toUpperCase()}` : undefined} />}
       <StatTile size="lg" label="10Y − 3M" info={INFO.s3m10y} value={`${fmtNum(d.current.spread, 2, { signed: true })} PP`} tone={d.current.spread < 0 ? "loss" : "neutral"} caption={`ORIGIN ${fmtDate(d.current.origin, "month").toUpperCase()}`} />

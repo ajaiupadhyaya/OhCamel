@@ -21,7 +21,7 @@ const d = {
   h: 12,
   models: { spread: { h: 12, params: { const: -0.4, spread: -0.7 }, std_errors: {}, pvalues: {}, loglik: -150, loglik_null: -240, nobs: 790, pseudo_r2_mcfadden: 0.36, pseudo_r2_estrella: 0.271, regressors: ["spread"] } },
   current: { origin: "2026-11-01", target: "2027-11-01", spread: 0.42, probability: 0.134 },
-  oos: { h: 12, oos_brier: 0.0812, oos_hit_rate: 0.877, insample_brier: 0.077, insample_hit_rate: 0.897, n_scored: 545, scored: { start: "1981-06-01", end: "2026-10-01" } },
+  oos: { h: 12, oos_brier: 0.0812, oos_hit_rate: 0.877, insample_brier: 0.077, insample_hit_rate: 0.897, baseline_brier: 0.0903, brier_skill: 0.1, base_hit_rate: 0.905, n_scored: 545, scored: { start: "1981-06-01", end: "2026-10-01" } },
   sample: { start: "1960-01-01", end: "2026-11-01", nobs: 790 },
 } as unknown as RecessionOut;
 
@@ -35,6 +35,22 @@ describe("recession headline (completion task 3.5)", () => {
     expect(html).toContain("0.081");
     expect(html).toContain("IN-SAMPLE 0.077");
     expect(html.indexOf("0.081")).toBeLessThan(html.indexOf("IN-SAMPLE 0.077"));
+  });
+
+  it("shows the computed real-time baseline and skill, not a hard-coded benchmark (fix round 1)", () => {
+    expect(html).toContain("BASELINE 0.090");
+    expect(html).toContain("SKILL +10%");
+    expect(html).not.toContain("0.12");
+  });
+
+  it("shows each hit rate with the never-recession rate and says when it is below it (fix round 1)", () => {
+    expect(html).toContain("HIT RATE · OOS");
+    expect(html).toContain("88%");
+    expect(html).toContain("NEVER-RECESSION 91%");
+    expect(html).toContain("OOS BELOW IT");
+    expect(html).toContain("IN-SAMPLE 90%, BELOW IT");
+    const above = render(<Current d={{ ...d, oos: { ...d.oos, oos_hit_rate: 0.93 } } as RecessionOut} h="12" />);
+    expect(above).toContain("OOS ABOVE IT");
   });
 
   it("labels the pseudo-R² as the in-sample fit's", () => {

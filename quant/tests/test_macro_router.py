@@ -232,7 +232,9 @@ def test_recession_and_taylor_code_paths(macro_stub_client):
     assert any("month-to-date" in n for n in j["notes"])
     assert j["recessions"] and any("GS10 - TB3MS" in n for n in j["notes"])
     # completion task 3.5: the headline is out of sample, and the Sahm rule is read only as first published
-    assert set(j["oos"]) >= {"oos_brier", "insample_brier", "oos_hit_rate", "n_scored", "scored"}
+    assert set(j["oos"]) >= {"oos_brier", "insample_brier", "oos_hit_rate", "n_scored", "scored",
+                             "baseline_brier", "brier_skill", "base_hit_rate"}  # fix round 1: the benchmarks
+    assert j["oos"]["brier_skill"] == pytest.approx(1 - j["oos"]["oos_brier"] / j["oos"]["baseline_brier"])
     assert "spread_oos" in j["probability"]["columns"]
     assert j["current"]["probability"] == j["probability"]["data"]["spread_oos"][-1]
     assert j["sahm"] is None and any("first published" in n and "not from today's revised" in n for n in j["notes"])
@@ -276,6 +278,46 @@ def test_recession_sahm_from_vintages_with_their_hash_in_provenance(app, tmp_pat
     (prov,) = [p for p in j["provenance"] if p["source"] == "warehouse:alfred"]
     assert prov["detail"]["rows"] == len(rows) and len(prov["detail"]["sha256"]) == 64
     assert prov["detail"]["realtime_through"] == "2026-11-19"
+
+
+def _vintage_client(app, tmp_path):
+    from datetime import date
+
+    from ohcamel_quant.config import Settings
+    from ohcamel_quant.data import fred
+    from ohcamel_quant.warehouse.db import open_rw
+    from ohcamel_quant.warehouse.ingest import macro as macro_ingest
+
+    csv = (Path(__file__).parent / "data" / "alfred_unrate_vintages_2026-11-19.csv").read_text()
+    rows = fred.parse_alfredgraph_csv(csv, "UNRATE", [date(2020, 5, 7), date(2020, 5, 8), date(2020, 6, 5),
+                                                      date(2021, 1, 8), date(2026, 11, 19)])
+    path = tmp_path / "w.duckdb"
+    with open_rw(path) as con:
+        macro_ingest.append_vintages(con, "UNRATE", rows, "alfred-graph")
+    app.dependency_overrides[get_market] = lambda: _MacroStub(Settings(warehouse_path=path, offline=True))
+    macro_router.clear_cache()
+    return TestClient(app)
+
+
+def test_dashboard_sahm_highlight_is_as_first_published_with_vintages(app, tmp_path):
+    """Fix round 1 (M4): with UNRATE's vintages the dashboard's Sahm tile reads as first published; without them
+    it keeps the revised-series value and says so."""
+    try:
+        j = _vintage_client(app, tmp_path).get("/api/macro/dashboard").json()
+    finally:
+        app.dependency_overrides.pop(get_market, None)
+        macro_router.clear_cache()
+    s = j["highlights"]["sahm_rule"]
+    # June 2020 as first published on 2021-01-08: ma3 13.0667 against a prior low of 3.5333
+    assert s["basis"] == "first published" and s["date"] == "2020-06-01" and s["published"] == "2021-01-08"
+    assert s["value"] == pytest.approx(13.066666667 - 3.533333333, abs=1e-6)
+
+
+def test_dashboard_sahm_highlight_without_vintages_is_labelled_revised(macro_stub_client):
+    j = macro_stub_client.get("/api/macro/dashboard").json()
+    s = j["highlights"]["sahm_rule"]
+    assert s["basis"] == "revised" and "published" not in s
+    assert any("Sahm" in n and "revised" in n for n in j["notes"])
 
 
 # ------------------------------------------------------------------ live

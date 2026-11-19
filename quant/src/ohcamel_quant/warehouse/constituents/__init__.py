@@ -24,7 +24,15 @@ each name its ``[start, end)`` stints. What the table cannot say is written down
   old ticker (FB in 2013, now META) has no stint under the old ticker and its current ticker reads as a member
   from before coverage; each such row is a note, and ``readers.members_asof`` refuses dates before coverage;
 * an effective date is the first session WITHOUT the removed name and WITH the added one (the table's own note:
-  some dates are the replaced name's last day, one session off).
+  some dates are the replaced name's last day, one session off);
+* a removal of a ticker that is a member again right after it, with no addition between, is read as the TICKER
+  passing from one member company to another, not as a gap: the walk records two stints meeting on that date, so
+  the ticker's membership is unbroken, and writes a note. That is what happened in the case it was written for:
+  on 2015-03-23 Allergan Inc. (AGN) left when Actavis bought it, and Actavis -- already a member, added as ACT --
+  took the ticker AGN; likewise T on 2005-11-18 (SBC bought AT&T Corp. and took its ticker). The walk finds the
+  same shape at AN and SUN (1998) and MCK (1994), all before coverage, and reads them the same way unchecked.
+  It is a reading of the rows, stated here and in the note, not a date the table gives; a stint read this way
+  is a ticker's, and the company behind it may differ before and after the date.
 """
 
 from __future__ import annotations
@@ -239,8 +247,9 @@ def membership_intervals(current: list[str], as_of: date,
                              "(renamed, or its removal is not in the table): no stint recorded for it")
         if c.removed:
             if c.removed in open_end:
-                notes.append(f"{c.removed} removed {c.effective.isoformat()} while already a member after that "
-                             "date (an addition is missing): its later stint is taken to start there")
+                notes.append(f"{c.removed} removed {c.effective.isoformat()} while a member again right after it "
+                             "with no addition recorded: read as the ticker passing to another member company "
+                             "(module docstring), its membership unbroken")
                 stints.append(Stint(c.removed, c.effective, open_end.pop(c.removed)))
             open_end[c.removed] = c.effective
     stints += [Stint(t, None, e) for t, e in open_end.items()]
