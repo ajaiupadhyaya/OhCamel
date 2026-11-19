@@ -1,5 +1,5 @@
-# source: https://en.wikipedia.org/w/index.php?title=List_of_S%26P_500_companies&action=raw
-# retrieved: 2026-10-06
+# source: https://en.wikipedia.org/w/index.php?title=List_of_S%26P_500_companies&action=raw&oldid=1384572480
+# retrieved: 2026-11-19
 ticker,name
 MMM,3M
 AOS,A. O. Smith
@@ -129,7 +129,6 @@ COO,Cooper Companies (The)
 CPRT,Copart
 GLW,Corning Inc.
 CPAY,Corpay
-CTVA,Corteva
 CSGP,CoStar Group
 COST,Costco
 CRH,CRH plc
@@ -271,7 +270,6 @@ J,Jacobs Solutions
 JNJ,Johnson & Johnson
 JCI,Johnson Controls
 JPM,JPMorgan Chase
-KVUE,Kenvue
 KDP,Keurig Dr Pepper
 KEY,KeyCorp
 KEYS,Keysight Technologies
@@ -308,7 +306,7 @@ MAS,Masco
 MA,Mastercard
 MKC,McCormick & Company
 MCD,McDonald's
-MCK,McKesson Corporation
+MCK,McKesson
 MDT,Medtronic
 MRK,Merck & Co.
 META,Meta Platforms
@@ -349,6 +347,7 @@ NVR,"NVR, Inc."
 NXPI,NXP Semiconductors
 ORLY,O'Reilly Automotive
 OXY,Occidental Petroleum
+OKTA,"Okta, Inc."
 ODFL,Old Dominion
 OMC,Omnicom Group
 ON,ON Semiconductor
@@ -359,7 +358,6 @@ PCAR,Paccar
 PKG,Packaging Corporation of America
 PLTR,Palantir Technologies
 PANW,Palo Alto Networks
-PSKY,Paramount Skydance Corporation
 PH,Parker Hannifin
 PAYX,Paychex
 PYPL,PayPal
@@ -378,18 +376,17 @@ PG,Procter & Gamble
 PGR,Progressive Corporation
 PLD,Prologis
 PRU,Prudential Financial
-PEG,Public Service Enterprise Group
 PTC,PTC Inc.
+PEG,Public Service Enterprise Group
 PSA,Public Storage
 PHM,PulteGroup
-PWR,Quanta Services
-QCOM,Qualcomm
-DGX,Quest Diagnostics
 Q,Qnity Electronics
+QCOM,Qualcomm
+PWR,Quanta Services
+DGX,Quest Diagnostics
 RL,Ralph Lauren Corporation
 RJF,Raymond James Financial
 RDDT,Reddit
-RTX,RTX Corporation
 O,Realty Income
 REG,Regency Centers
 REGN,Regeneron Pharmaceuticals
@@ -403,6 +400,7 @@ ROL,"Rollins, Inc."
 ROP,Roper Technologies
 ROST,Ross Stores
 RCL,Royal Caribbean Group
+RTX,RTX Corporation
 SPGI,S&P Global
 CRM,Salesforce
 SNDK,Sandisk
@@ -413,6 +411,7 @@ SRE,Sempra
 NOW,ServiceNow
 SHW,Sherwin-Williams
 SPG,Simon Property Group
+SKYD,Skydance
 SWKS,Skyworks Solutions
 SJM,J.M. Smucker Company (The)
 SW,Smurfit Westrock
@@ -452,6 +451,7 @@ TDG,TransDigm Group
 TRV,Travelers Companies (The)
 TRMB,Trimble Inc.
 TFC,Truist Financial
+TWLO,Twilio
 TYL,Tyler Technologies
 TSN,Tyson Foods
 USB,U.S. Bancorp
@@ -479,12 +479,12 @@ V,Visa Inc.
 VST,Vistra Corp.
 VMRK,Vivmark Residential
 VMC,Vulcan Materials Company
+VYLR,Vylor
 WRB,W. R. Berkley Corporation
 GWW,W. W. Grainger
 WAB,Wabtec
 WMT,Walmart
 DIS,Walt Disney Company (The)
-WBD,Warner Bros. Discovery
 WM,Waste Management
 WAT,Waters Corporation
 WEC,WEC Energy Group

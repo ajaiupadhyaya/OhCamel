@@ -8,6 +8,7 @@ controller's backfill, local checks) or build the offline fixture warehouse.
   verify <export dir>                        print an export's record, or fail
   restore <export dir> <target> [--replace]  a new warehouse file from an export
   migrate [<warehouse>]                      apply pending migrations and finish a table move (after a deploy)
+  backfill-vintages [--series S] [--since D] fill fred_vintages once, resumable (docs/runbooks/compute.md)
 """
 
 from __future__ import annotations
@@ -49,7 +50,22 @@ def main(argv: list[str] | None = None) -> int:
                     help="replace an existing TARGET (moved aside, never deleted); the caller has stopped its users")
     m = sub.add_parser("migrate", help="apply pending migrations and finish any table move; print what was done")
     m.add_argument("warehouse", nargs="?", default=None, help="the file (default: OHCAMEL_QUANT_WAREHOUSE_PATH)")
+    bv = sub.add_parser("backfill-vintages", help="fill fred_vintages from ALFRED once (resumable); needs "
+                                                  "OHCAMEL_QUANT_WAREHOUSE_PATH")
+    bv.add_argument("--series", action="append", default=None, help="repeatable (default: every VINTAGE_SERIES)")
+    bv.add_argument("--since", default=None, help="keyless only: start the Friday grid here instead of resuming")
     a = p.parse_args(argv)
+    if a.cmd == "backfill-vintages":
+        from datetime import date as _date
+
+        from ..config import get_settings
+        from .ingest.macro import VINTAGE_SERIES, backfill_vintages
+
+        for sid in a.series or list(VINTAGE_SERIES):
+            out = backfill_vintages(sid, get_settings(), since=_date.fromisoformat(a.since) if a.since else None,
+                                    progress=lambda m: print(m, file=sys.stderr))
+            print(json.dumps(out))
+        return 0
     if a.cmd == "migrate":
         from .db import apply_migrations
 

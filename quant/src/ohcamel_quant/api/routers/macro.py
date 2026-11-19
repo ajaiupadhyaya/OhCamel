@@ -355,13 +355,35 @@ def curve_history(
 # =========================================================================
 # Recession
 # =========================================================================
+def _unrate_vintages(market: MarketData) -> tuple[pd.DataFrame | None, Provenance | None, str | None]:
+    """UNRATE's vintages published by today, from the warehouse (completion task 3.5): ``(rows, provenance,
+    None)``, or ``(None, None, why not)``. The provenance names the rows read and their canonical hash."""
+    from ...jobs.provenance import frame_hash
+    from ...warehouse import readers
+    from ...warehouse.db import WarehouseUnavailable, open_ro, warehouse_path
+
+    try:
+        with open_ro(warehouse_path(market.settings)) as con:
+            rows = readers.fred_vintage_rows(con, "UNRATE", date.today())
+    except (WarehouseUnavailable, DataUnavailable) as e:
+        return None, None, str(e)
+    except Exception as e:  # noqa: BLE001 - a warehouse before migration 004 has no fred_vintages table
+        return None, None, f"{type(e).__name__}: {e}"
+    if rows.empty:
+        return None, None, "no UNRATE vintages in the warehouse yet (fred_vintages)"
+    prov = Provenance.now("warehouse:alfred", dataset="fred_vintages", series="UNRATE", rows=len(rows),
+                          realtime_through=str(rows["realtime_start"].max().date()), sha256=frame_hash(rows))
+    return rows, prov, None
+
+
 @router.get("/recession")
 def recession(
     market: Market,
     h: Annotated[int, Query(ge=1, le=24, description="forecast horizon, months")] = 12,
     extra: Annotated[Literal["none", "nfci"], Query(description="optional extra regressor")] = "nfci",
 ) -> dict[str, Any]:
-    """Estrella-Mishkin yield-curve probit and the Sahm rule."""
+    """Estrella-Mishkin yield-curve probit, refit out of sample (the headline is its Brier score), and the Sahm
+    rule as first published."""
     def build() -> dict[str, Any]:
         core, provs = _require(market, ["USREC", "T10Y3M"], "recession probit")
         early, p2, miss_early = _fetch(market, ["GS10", "TB3MS"])
@@ -377,15 +399,18 @@ def recession(
         usrec = core["USREC"]
         base = rec.fit_probit(usrec, spread.to_frame("spread"), h)
         notes += base.notes
+        oos = rec.fit_expanding(usrec, spread.to_frame("spread"), h)
+        notes += oos.notes
         off = pd.DateOffset(months=h)
         prob = base.fitted.copy()
         prob.index = prob.index + off
-        last_origin = base.fitted.index[-1]
+        last_origin = oos.origin.iloc[-1]
         models: dict[str, Any] = {"spread": base.to_dict()}
-        prob_frame = pd.DataFrame({"spread_model": prob})
-        current: dict[str, Any] = {"origin": last_origin, "target": last_origin + off,
+        prob_frame = pd.DataFrame({"spread_oos": oos.oos_prob, "spread_model": prob})
+        current: dict[str, Any] = {"origin": last_origin, "target": oos.oos_prob.index[-1],
                                    "spread": float(spread.loc[last_origin]),
-                                   "probability": float(base.fitted.iloc[-1])}
+                                   "probability": float(oos.oos_prob.iloc[-1]),
+                                   "fit_end": oos.fit_end.iloc[-1]}
         if extra == "nfci":
             got, p3, miss = _fetch(market, ["NFCI"])
             provs += p3
@@ -400,33 +425,46 @@ def recession(
                     prob_frame["spread_nfci_model"] = p
                     current["probability_with_nfci"] = float(m2.fitted.iloc[-1])
                     current["nfci_origin"] = m2.fitted.index[-1]
+                    notes.append("the +NFCI model is IN-SAMPLE on NFCI as revised today: the Chicago Fed re-estimates "
+                                 "its whole history every week and ALFRED keeps its vintages only from 2011, so it "
+                                 "is a comparison, not a forecast record")
                 except ValueError as e:
                     notes.append(f"NFCI model not estimated: {e}")
             else:
                 notes.append("NFCI unavailable: " + "; ".join(miss.values()))
         notes.append("the excess bond premium (Gilchrist & Zakrajsek 2012) is not on FRED and is not used")
         sahm_payload: dict[str, Any] | None = None
-        got_u, p4, miss_u = _fetch(market, ["UNRATE"])
-        provs += p4
-        if "UNRATE" in got_u:
-            s = rec.sahm_rule(got_u["UNRATE"])
-            sahm_payload = {"series": frame(s[["unrate", "ma3", "sahm"]]), "threshold": rec.SAHM_THRESHOLD,
-                            "latest": {"date": s.index[-1], "value": float(s["sahm"].iloc[-1]),
-                                       "triggered": bool(s["triggered"].iloc[-1])},
-                            "trigger_dates": [d for d, v in s["triggered"].items()
-                                              if v and not s["triggered"].shift(1).fillna(False).loc[d]]}
-        else:
-            notes.append("Sahm rule unavailable: " + "; ".join(miss_u.values()))
-        notes.append("NBER dates (USREC) are assigned with a lag of many months; recent zeros are provisional")
-        notes.append(f"probabilities are in-sample fits indexed by the TARGET month (origin + {h} months)")
+        rows, vprov, why = _unrate_vintages(market)
+        if rows is not None:
+            s = rec.sahm_realtime(rows)
+            provs.append(vprov)
+            if len(s):
+                sahm_payload = {"series": frame(s[["unrate", "ma3", "sahm"]]), "threshold": rec.SAHM_THRESHOLD,
+                                "latest": {"date": s.index[-1], "value": float(s["sahm"].iloc[-1]),
+                                           "triggered": bool(s["triggered"].iloc[-1]),
+                                           "published": s["published"].iloc[-1]},
+                                "trigger_dates": [d for d, v in s["triggered"].items()
+                                                  if v and not s["triggered"].shift(1).fillna(False).loc[d]],
+                                "basis": "as first published: each month's value from the UNRATE vintage of "
+                                         "its first release (ALFRED)"}
+        if sahm_payload is None:
+            notes.append("Sahm rule not shown: it is read from UNRATE as first published, and "
+                         + (why or "the vintages give no month") + " -- not from today's revised series")
+        notes.append("NBER dates (USREC) are assigned 4-21 months late; the out-of-sample fits use only the dates "
+                     "announced by each origin, and the recent zeros are provisional")
+        notes.append(f"probabilities are indexed by the TARGET month (origin + {h} months); SPREAD is out of "
+                     "sample, IN-SAMPLE is one fit on every month's final label, for comparison")
         return clean({
             "h": h, "models": models, "probability": frame(prob_frame), "current": current,
+            "oos": oos.to_dict(),
             "spread": series(spread), "recessions": rec.recession_episodes(usrec), "sahm": sahm_payload,
-            "sample": {"start": base.fitted.index[0], "end": last_origin, "nobs": base.nobs},
+            "sample": {"start": base.fitted.index[0], "end": base.fitted.index[-1], "nobs": base.nobs},
             "notes": notes,
             "method": {"model": "probit P(USREC_{t+h}=1) = Phi(a + b spread_t)",
                        "reference": "Estrella & Mishkin (1998); pseudo-R2 of Estrella (1998)",
-                       "errors": "Newey-West HAC", "sahm": "Sahm (2019), threshold 0.50pp"},
+                       "oos": "refit every month on the labels NBER had announced by its end; Brier score "
+                              "against today's USREC",
+                       "errors": "Newey-West HAC", "sahm": "Sahm (2019), threshold 0.50pp, as first published"},
             "provenance": _prov(provs),
         })
 

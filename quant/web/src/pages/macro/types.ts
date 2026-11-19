@@ -126,10 +126,12 @@ export interface RecessionOut extends Envelope {
   h: number;
   models: { spread: ProbitModel; spread_nfci?: ProbitModel };
   probability: FramePayload;
-  current: { origin: string; target: string; spread: number; probability: number; probability_with_nfci?: number; nfci_origin?: string };
+  current: { origin: string; target: string; spread: number; probability: number; fit_end?: string; probability_with_nfci?: number; nfci_origin?: string };
+  /** Out of sample (completion task 3.5): refit every month on what NBER had announced; scored against today's USREC. */
+  oos: { h: number; oos_brier: number; oos_hit_rate: number; insample_brier: number; insample_hit_rate: number; n_scored: number; scored: { start: string; end: string } };
   spread: SeriesPayload;
   recessions: Episode[];
-  sahm: null | { series: FramePayload; threshold: number; latest: { date: string; value: number; triggered: boolean }; trigger_dates: string[] };
+  sahm: null | { series: FramePayload; threshold: number; latest: { date: string; value: number; triggered: boolean; published?: string }; trigger_dates: string[]; basis?: string };
   sample: { start: string; end: string; nobs: number };
 }
 

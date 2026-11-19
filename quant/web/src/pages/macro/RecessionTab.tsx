@@ -1,8 +1,9 @@
 /**
- * RECESSION — GET /api/macro/recession?h=&extra=: the Estrella–Mishkin term-spread probit
- * (optionally + NFCI), fitted probability indexed by the TARGET month with NBER recessions
- * shaded, the current h-month-ahead probability, HAC coefficients, the spread itself and the
- * Sahm rule.
+ * RECESSION — GET /api/macro/recession?h=&extra=: the Estrella–Mishkin term-spread probit refit
+ * out of sample every month on the NBER dates announced by then (completion task 3.5) — its Brier
+ * score is the headline, the one-shot in-sample fit beside it for comparison — the probability by
+ * TARGET month with NBER recessions shaded (optionally + NFCI, in sample), HAC coefficients, the
+ * spread itself and the Sahm rule as first published.
  */
 import { useState } from "react";
 import { DataTable, Panel, SegmentedControl, StatGrid, StatTile, Toggle, type Column } from "../../components";
@@ -22,7 +23,7 @@ const RANGES = [
   { value: "2005", label: "2005–" },
 ] as const;
 const LIVE_ITEMS = [
-  { k: "P(NBER RECESSION · t+h) · PROBIT · 10Y−3M", note: "recession" },
+  { k: "OUT-OF-SAMPLE BRIER · P(NBER RECESSION · t+h) · PROBIT · 10Y−3M", note: "recession" },
   { k: "+ NFCI · HAC STANDARD ERRORS · PSEUDO-R²", note: "recession" },
   { k: "SAHM RULE · 3M AVG UNRATE − 12M LOW", note: "recession" },
 ];
@@ -73,7 +74,7 @@ export function RecessionTab() {
       <Panel<RecessionOut>
         title={
           <>
-            P(RECESSION) · {h}M · AT TARGET MONTH
+            P(RECESSION) · {h}M · OUT OF SAMPLE · AT TARGET MONTH
             <Note n={1} to="recession" />
           </>
         }
@@ -98,51 +99,60 @@ export function RecessionTab() {
       <Panel<RecessionOut>
         title={
           <>
-            SAHM RULE · PP
+            SAHM RULE · AS FIRST PUBLISHED · PP
             <Note n={2} to="recession" />
           </>
         }
         query={q}
         skeletonHeight={280}
       >
-        {(d) => (d.sahm ? <Sahm d={d} from={from} /> : <div className="mc-none num">INSUFFICIENT DATA · UNRATE UNAVAILABLE</div>)}
+        {(d) => (d.sahm ? <Sahm d={d} from={from} /> : <div className="mc-none num">NOT SHOWN · UNRATE AS FIRST PUBLISHED (ALFRED VINTAGES) NOT IN THE WAREHOUSE YET</div>)}
       </Panel>
     </div>
   );
 }
 
-function Current({ d, h }: { d: RecessionOut; h: string }) {
+const OOS_INFO = {
+  title: "Out-of-sample Brier",
+  text: "Mean squared error of the probabilities, each from a probit refitted at the end of its origin month on the recession dates NBER had announced by then, against today's NBER dates. Lower is better; always forecasting the base rate scores about 0.12. The in-sample figure is one fit on every month, hindsight included.",
+  reference: "Brier (1950), Monthly Weather Review 78(1)",
+};
+
+/** The headline: the out-of-sample Brier score, the in-sample one as its caption. Exported for its test. */
+export function Current({ d, h }: { d: RecessionOut; h: string }) {
   const p = d.current.probability;
   const p2 = d.current.probability_with_nfci;
   const m = d.models.spread;
+  const o = d.oos;
   return (
     <StatGrid min={150}>
+      <StatTile size="lg" label={`OOS BRIER · ${h}M`} info={OOS_INFO} value={fmtNum(o.oos_brier, 3)} caption={`IN-SAMPLE ${fmtNum(o.insample_brier, 3)} · HIT ${fmtPct(o.oos_hit_rate, 0)} · ${fmtDate(o.scored.start, "year")}–${fmtDate(o.scored.end, "year")}`} />
       <StatTile size="lg" label={`P(REC) · ${h}M`} info={INFO.probit} value={fmtPct(p, 0)} tone={p >= 0.5 ? "loss" : "neutral"} caption={`TARGET ${fmtDate(d.current.target, "month").toUpperCase()}`} />
       {p2 != null && <StatTile size="lg" label="+ NFCI" info={INFO.nfci} value={fmtPct(p2, 0)} tone={p2 >= 0.5 ? "loss" : "neutral"} caption={d.current.nfci_origin ? `NFCI ${fmtDate(d.current.nfci_origin, "month").toUpperCase()}` : undefined} />}
       <StatTile size="lg" label="10Y − 3M" info={INFO.s3m10y} value={`${fmtNum(d.current.spread, 2, { signed: true })} PP`} tone={d.current.spread < 0 ? "loss" : "neutral"} caption={`ORIGIN ${fmtDate(d.current.origin, "month").toUpperCase()}`} />
-      <StatTile size="lg" label="R² · ESTRELLA" info={INFO.pseudoR2} value={fmtNum(m.pseudo_r2_estrella, 3)} caption={`${fmtDate(d.sample.start, "year")}–${fmtDate(d.sample.end, "year")} · N ${fmtNum(d.sample.nobs, 0)}`} />
+      <StatTile size="lg" label="R² · ESTRELLA · IN-SAMPLE" info={INFO.pseudoR2} value={fmtNum(m.pseudo_r2_estrella, 3)} caption={`${fmtDate(d.sample.start, "year")}–${fmtDate(d.sample.end, "year")} · N ${fmtNum(d.sample.nobs, 0)}`} />
     </StatGrid>
   );
 }
 
 function ProbHistory({ d, from }: { d: RecessionOut; from?: string }) {
   const P = d.probability;
-  const cols = [P.data.spread_model as (number | null)[], ...(P.data.spread_nfci_model ? [P.data.spread_nfci_model as (number | null)[]] : [])];
+  const cols = [P.data.spread_oos as (number | null)[], P.data.spread_model as (number | null)[], ...(P.data.spread_nfci_model ? [P.data.spread_nfci_model as (number | null)[]] : [])];
   const c = clip(P.index, cols, from);
   return (
     <>
-      <Readline items={[{ k: "SHADED", v: "NBER RECESSION" }, { k: "EPISODES", v: fmtNum(nberBands(d.recessions, from).length, 0) }]} />
+      <Readline items={[{ k: "SHADED", v: "NBER RECESSION" }, { k: "EPISODES", v: fmtNum(nberBands(d.recessions, from).length, 0) }, { k: "SPREAD", v: "OUT OF SAMPLE" }, { k: "DOTTED", v: "IN SAMPLE" }]} />
       <XYChart
         x={c.x}
         time
-        series={[{ name: "SPREAD", y: c.ys[0], tone: "ink" }, ...(c.ys[1] ? [{ name: "+NFCI", y: c.ys[1], tone: "ink2" as const, dash: "dot" as const }] : [])]}
+        series={[{ name: "SPREAD · OOS", y: c.ys[0], tone: "ink" }, { name: "IN-SAMPLE", y: c.ys[1], tone: "ink3" as const, dash: "dot" as const }, ...(c.ys[2] ? [{ name: "+NFCI · IN-SAMPLE", y: c.ys[2], tone: "ink2" as const, dash: "dot" as const }] : [])]}
         hlines={[{ at: 0.5, label: "50%", tone: "ink3", dash: "dot" }]}
         bands={nberBands(d.recessions, from)}
         zero
         yFormat="pct"
         digits={0}
         height={280}
-        ariaLabel="Fitted recession probability at the target month, NBER recessions shaded"
+        ariaLabel="Out-of-sample recession probability at the target month, in-sample fit dotted, NBER recessions shaded"
       />
     </>
   );

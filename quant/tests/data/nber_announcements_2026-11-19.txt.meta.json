@@ -1,0 +1,11 @@
+{
+  "source": "nber",
+  "synthetic": false,
+  "page": "NBER Business Cycle Dating Committee Announcements",
+  "url": "https://www.nber.org/research/business-cycle-dating/business-cycle-dating-committee-announcements",
+  "fetched_utc": "2026-11-19T17:44:06.370434+00:00",
+  "fetched_note": "the instant the request began (UTC)",
+  "original_sha256": "668eccade04879f092a0f4f752ebb421e3fb072199c6a75f8c130e70234eee47",
+  "trimmed": "the page's list of announcements only: the HTML tags removed, each text line's whitespace collapsed, one line per text node (a date line, then its title line); the navigation, header and footer dropped",
+  "used_by": "completion task 3.5: the recession probit's labels as known at each date (macro/recession.py NBER_ANNOUNCEMENTS; tests/test_macro_recession.py)"
+}

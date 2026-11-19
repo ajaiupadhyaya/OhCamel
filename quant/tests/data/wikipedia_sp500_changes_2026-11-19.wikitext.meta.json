@@ -1,0 +1,14 @@
+{
+  "source": "wikipedia",
+  "synthetic": false,
+  "article": "Historical components of the S&P 500 (the id=\"changes\" wikitable)",
+  "url": "https://en.wikipedia.org/w/index.php?title=Historical_components_of_the_S%26P_500&action=raw&oldid=1385951946",
+  "revision": 1385951946,
+  "fetched_utc": "2026-11-19T17:42:17.104603+00:00",
+  "fetched_note": "the instant the request began (UTC)",
+  "original_sha256": "aa8759f0821c6b65346151032a561b3cc38f4f6b8850d3a80050e5d07c1b2919",
+  "original_bytes": 141919,
+  "trimmed": "the changes table's opening line and its two header rows, and every row with an effective date on or after 2023-01-01 (2023-01-03 .. 2026-10-30), byte for byte as served; the article's prose, the older rows and everything after the table were dropped",
+  "pairs_with": "quant/src/ohcamel_quant/warehouse/constituents/sp500.csv (List of S&P 500 companies, revision 1384572480, fetched the same day)",
+  "used_by": "completion task 3.5: universe_membership and readers.members_asof (tests/test_warehouse_universes.py)"
+}

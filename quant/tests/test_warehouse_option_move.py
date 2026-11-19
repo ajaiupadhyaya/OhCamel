@@ -123,7 +123,7 @@ def test_the_migrate_command_completes_the_move_and_says_what_it_moved(tmp_path,
     killed_after_one_day(path)
     assert main(["migrate", str(path)]) == 0
     out = json.loads(capsys.readouterr().out)
-    assert out["version"] == 3 and out["days_moved"] == 2 and out["rows_moved"] == 2 and out["seconds"] >= 0
+    assert out["version"] == migration_files()[-1][0] and out["days_moved"] == 2 and out["rows_moved"] == 2 and out["seconds"] >= 0
     with open_ro(path) as con:
         assert not move_incomplete(con)
         assert con.execute("SELECT count(*) FROM option_snapshots").fetchone()[0] == len(ROWS)

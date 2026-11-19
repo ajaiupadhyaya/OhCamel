@@ -55,7 +55,10 @@ def is_fresh(data_asof: date | None, last_ok_ran_at: datetime | None, now: datet
 
 
 DATASETS = ("universe_members", "bars_daily", "bars_minute", "fred", "factors", "sec_facts", "holdings_13f",
-            "option_snapshots", "corp_actions")
+            "option_snapshots", "corp_actions", "universe_membership", "fred_vintages")
+#: A dataset written inside another's ingest run, so judged by that run's summary row (completion task 3.5:
+#: ingest.universes writes the dated membership; ingest.fred_warehouse appends the vintages under its own run).
+RUN_OF = {"universe_membership": "universe_members"}
 #: Session datasets are due 3 h after their schedule (warehouse/schedules.py); calendar
 #: datasets are stale when the last successful run is older than one missed run allows.
 FRESHNESS: dict[str, dict[str, Any]] = {
@@ -68,6 +71,8 @@ FRESHNESS: dict[str, dict[str, Any]] = {
     "holdings_13f": {"rule": "age", "max_age_h": 204},
     "option_snapshots": {"rule": "session", "due": time(19, 20)},
     "corp_actions": {"rule": "session", "due": time(21, 20)},
+    "universe_membership": {"rule": "age", "max_age_h": 204},
+    "fred_vintages": {"rule": "age", "max_age_h": 30},
 }
 SUCCESS = ("ok", "partial")
 
@@ -89,7 +94,7 @@ def dataset_freshness(con: Any, now: datetime) -> dict[str, Any]:
         mine = [(k, st, d) for dd, k, st, d in keys if dd == ds]
         dates = [d for _, _, d in mine if d is not None]
         asof = max(dates) if dates else None
-        last_run, last_status, last_ok = runs.get(ds, (None, None, None))
+        last_run, last_status, last_ok = runs.get(RUN_OF.get(ds, ds), (None, None, None))
         rule = FRESHNESS[ds]
         if rule["rule"] == "session":
             stale = not is_fresh(asof, last_ok, now, rule["due"])

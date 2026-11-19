@@ -1,0 +1,20 @@
+{
+  "source": "alfred",
+  "synthetic": false,
+  "series": "UNRATE",
+  "url": "https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=UNRATE,UNRATE,UNRATE,UNRATE,UNRATE&vintage_date=2020-05-07,2020-05-08,2020-06-05,2021-01-08,2026-11-19",
+  "fetched_utc": "2026-11-19T17:47:03.782111+00:00",
+  "fetched_note": "the instant the response finished (UTC); the request began at 2026-11-19T17:47:01.978203+00:00",
+  "original_sha256": "aa9a0380c47aed524ca7f1f910d4e501ff1fc3973fc72428cb5f3c0742fd401f",
+  "original_bytes": 28574,
+  "vintage_dates_requested": [
+    "2020-05-07",
+    "2020-05-08",
+    "2020-06-05",
+    "2021-01-08",
+    "2026-11-19"
+  ],
+  "trimmed": "the header row and the observation rows 2018-10-01 .. 2020-06-01 kept, byte for byte (the original has every month from 1948-01-01); nothing else changed",
+  "reading": "one column per requested vintage date, each named UNRATE_<vintage date>: the series as ALFRED served it on that date. April 2020 is absent on 2020-05-07, 14.7 from 2020-05-08 (the first release) and 14.8 from the 2021-01-08 seasonal revision",
+  "used_by": "completion task 3.5: readers.fred_asof reads revised series as first published (tests/test_warehouse_macro_sec.py)"
+}

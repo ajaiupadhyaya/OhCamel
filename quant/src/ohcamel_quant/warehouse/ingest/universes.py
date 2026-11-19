@@ -1,7 +1,9 @@
 """``ingest.universes`` (compute plan C2): ``universe_members`` from the committed
 constituent lists (sp500, ndx100) and the site's universes.json ('site', ~45),
 names from SEC company_tickers where it lists the ticker. Each universe is
-replaced whole in one transaction."""
+replaced whole in one transaction. Completion task 3.5: in the same transaction, a
+universe whose changes table is committed (sp500) has its dated stints replaced in
+``universe_membership`` (``constituents.membership_intervals``)."""
 
 from __future__ import annotations
 
@@ -12,8 +14,16 @@ import pandas as pd
 from ...data import sec
 from ...data.base import DataUnavailable
 from ...data.market import load_universes
-from ..constituents import SURVIVORSHIP, load_constituents
-from .base import KeyState, Written, insert_frame, run_ingest
+from ..constituents import (
+    CHANGES_SOURCES,
+    COVERAGE_START,
+    MEMBERSHIP_SURVIVORSHIP,
+    SURVIVORSHIP,
+    load_changes,
+    load_constituents,
+    membership_intervals,
+)
+from .base import KeyState, Written, insert_frame, log_row, run_ingest
 
 UNIVERSES = ("sp500", "ndx100", "site")
 COLUMNS = ["universe", "ticker", "name", "added", "source", "survivorship"]
@@ -42,6 +52,36 @@ def universe_rows(universe: str, sec_names: dict[str, str] | None) -> pd.DataFra
     return pd.DataFrame(rows, columns=COLUMNS)
 
 
+MEMBERSHIP_COLUMNS = ["universe", "ticker", "start", "end", "source"]
+
+
+def membership_rows(universe: str) -> tuple[pd.DataFrame, list[str]]:
+    """``universe_membership`` rows from the committed list and changes table (empty for a universe without one),
+    and the walk's notes."""
+    if universe not in CHANGES_SOURCES:
+        return pd.DataFrame(columns=MEMBERSHIP_COLUMNS), []
+    c, ch = load_constituents(universe), load_changes(universe)
+    stints, notes = membership_intervals([t for t, _ in c.members], c.as_of, ch.changes)
+    source = (f"{ch.source}@{ch.as_of.isoformat()}+{c.source}; coverage from "
+              f"{COVERAGE_START[universe].isoformat()}; {MEMBERSHIP_SURVIVORSHIP}")
+    frame = pd.DataFrame([{"universe": universe, "ticker": s.ticker, "start": s.start, "end": s.end,
+                           "source": source} for s in stints], columns=MEMBERSHIP_COLUMNS)
+    return frame, notes
+
+
+def write_membership(con: Any, universe: str) -> tuple[int, list[str]]:
+    frame, notes = membership_rows(universe)
+    if frame.empty:
+        return 0, notes
+    con.execute("DELETE FROM universe_membership WHERE universe = ?", [universe])
+    insert_frame(con, 'INSERT INTO universe_membership SELECT universe, ticker, CAST("start" AS DATE), '
+                      'CAST("end" AS DATE), source FROM incoming', frame)
+    as_of = load_constituents(universe).as_of
+    log_row(con, "universe_membership", universe, "ok", len(frame),
+            f'{{"stints": {len(frame)}, "unplaced_rows": {len(notes)}}}', as_of)
+    return len(frame), notes
+
+
 def _sec_names(settings: Any) -> tuple[dict[str, str] | None, str | None]:
     try:
         table, _ = sec.ticker_table(settings)
@@ -66,8 +106,15 @@ def run_universes(params: dict, ctx: Any) -> dict:
         added = frame["added"].iloc[0] if len(frame) else None
         base = str(frame["source"].iloc[0]).split("+")[0] if len(frame) else key
         named = int(frame["source"].str.contains("sec:company_tickers").sum())
-        return Written(len(frame), added, {"source": base, "sec_named": named})
+        stints, unplaced = write_membership(con, key)
+        detail = {"source": base, "sec_named": named}
+        if stints:
+            detail |= {"membership_stints": stints, "membership_unplaced": len(unplaced)}
+        return Written(len(frame), added, detail)
 
     notes = [f"universe members are {SURVIVORSHIP}"] + ([warn] if warn else [])
+    notes += [f"{u}: universe_membership has dated stints from its changes table (coverage from "
+              f"{COVERAGE_START[u].isoformat()}); {len(membership_rows(u)[1])} change row(s) could not be placed "
+              "(ticker changes; constituents module docstring)" for u in CHANGES_SOURCES]
     return run_ingest(dataset="universe_members", keys=list(UNIVERSES), ctx=ctx, read_state=read_state,
                       fetch=fetch, write=write, notes=notes, survivorship=SURVIVORSHIP)

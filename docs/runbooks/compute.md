@@ -131,6 +131,30 @@ part: `vol.surface_history` publishes no new day and says why, the warehouse fre
 `migrating` (the Machine's option feed shows that reason), and the nightly backup's `option-snapshots` step fails
 and keeps the previous parquet. Running `migrate` finishes it.
 
+**004 (completion task 3.5)** only creates two empty tables, `universe_membership` and `fred_vintages`: instant,
+nothing moved. Run `migrate` with the same two commands anyway, so the version is in place before an ingest opens
+the file. Then fill them -- neither fill happens inside the migration:
+
+- `universe_membership` fills on the next `ingest.universes` (Sunday 05:00 New York) from the committed lists; to
+  have it now, `dc exec ohcamel-worker python -m ohcamel_quant.warehouse run ingest.universes` (seconds).
+- `fred_vintages` fills on the next `ingest.fred_warehouse` (07:00 New York daily). With `FRED_API_KEY` in the
+  worker's environment that run fetches every UNRATE vintage ALFRED has (exact release dates) and nothing else is
+  needed. Without the key it records only that day's vintage, and the history needs the one-off backfill below.
+  Until UNRATE has vintages the recession page shows no Sahm rule (it says why) rather than one computed on
+  revised figures.
+
+```bash
+dc exec ohcamel-worker python -m ohcamel_quant.warehouse backfill-vintages   # prints {series, rows, source, batches}
+```
+
+With the key it is one request set. Without it, it reads ALFRED's graph download on every Friday from UNRATE's
+first vintage (1960-03-15), 12 Fridays a request (ALFRED answers no more), about 290 requests; each batch is its
+own short write and logs its last Friday (`ingest_log`, dataset `fred_vintages`, key `backfill:UNRATE`), so a
+killed run resumes where it stopped when run again. A value is dated by the first Friday that shows it -- on its release day (the Employment
+Situation comes out on a Friday) or up to six days after, never before. Run it off-hours, away from the 06:30 UTC
+export; it holds the writer only while a batch is written. `fred_vintages` is append-only: nothing in it is ever
+deleted or updated, a re-run appends only rows that say something new.
+
 ## Enqueueing a backfill
 
 The warehouse fills itself through its ingest schedules: each ingest is incremental from the newest stored date

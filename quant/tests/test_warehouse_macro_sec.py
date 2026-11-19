@@ -4,17 +4,20 @@ with vendor-format samples (respx) taken from the data layer's own tests."""
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 from datetime import date
+from pathlib import Path
 
 import httpx
 import numpy as np
+import pandas as pd
 import pytest
 import respx
 
 from ohcamel_quant.config import Settings
 from ohcamel_quant.data import fred, french, http, sec
-from ohcamel_quant.data.base import Provenance
+from ohcamel_quant.data.base import DataUnavailable, Provenance
 from ohcamel_quant.data.market import Dataset, MarketData
 from ohcamel_quant.warehouse import readers
 from ohcamel_quant.warehouse.db import open_ro
@@ -232,3 +235,136 @@ def test_fred_ingest_carries_the_model_series():
     assert "BAA10Y" in macro.DEFAULT_SERIES
     for sid in experiment.load_config("EXP-Q02")["fred"].values():
         assert sid in macro.DEFAULT_SERIES, sid
+
+
+# ------------------------------------------- vintages, read as first published (completion task 3.5)
+DATA = Path(__file__).parent / "data"
+# Committed ALFRED slices (sidecars say what was kept): UNRATE as served on five vintage dates, and on the six
+# Fridays of May 2020 for the keyless backfill.
+VINTAGES = DATA / "alfred_unrate_vintages_2026-11-19.csv"
+VINTAGE_DATES = [date(2020, 5, 7), date(2020, 5, 8), date(2020, 6, 5), date(2021, 1, 8), date(2026, 11, 19)]
+FRIDAYS = DATA / "alfred_unrate_fridays_2020-05_2026-11-19.csv"
+
+
+def _vintage_rows():
+    return fred.parse_alfredgraph_csv(VINTAGES.read_text(), "UNRATE", VINTAGE_DATES)
+
+
+def _warehouse_with_vintages(tmp_path):
+    from ohcamel_quant.warehouse.db import open_rw
+
+    path = tmp_path / "w.duckdb"
+    with open_rw(path) as con:
+        macro.append_vintages(con, "UNRATE", _vintage_rows(), "alfred-graph")
+    return path
+
+
+def test_alfred_fixture_parses_to_vintage_rows():
+    meta = json.loads((DATA / (VINTAGES.name + ".meta.json")).read_text())
+    assert meta["synthetic"] is False and meta["url"].startswith(fred.ALFREDGRAPH) and len(meta["original_sha256"]) == 64
+    rows = _vintage_rows()
+    april = rows[rows["date"] == "2020-04-01"][["realtime_start", "value"]].to_numpy().tolist()
+    # absent on 2020-05-07, first published 14.7 on 2020-05-08, revised to 14.8 on 2021-01-08, unchanged since
+    assert [(str(d.date()), v) for d, v in april] == [("2020-05-08", 14.7), ("2021-01-08", 14.8)]
+    jan = rows[rows["date"] == "2020-01-01"]["value"].tolist()
+    assert jan == [3.6, 3.5, 3.6]  # 3.6 (2020-05-07), revised 3.5 (2021-01-08), 3.6 again today
+
+
+def test_alfred_refuses_a_column_for_another_date():
+    # asked for a date before a series' first vintage, ALFRED answers today's data under today's name
+    text = "observation_date,USREC_20261119\n2007-06-01,0\n"
+    with pytest.raises(DataUnavailable, match="no vintage of USREC on 20120601"):
+        fred.parse_alfredgraph_csv(text, "USREC", [date(2012, 6, 1)])
+
+
+def test_fred_asof_reads_april_2020_as_first_published(tmp_path):
+    path = _warehouse_with_vintages(tmp_path)
+    with open_ro(path) as con:
+        may = readers.fred_asof(con, "UNRATE", date(2020, 5, 15))
+        before = readers.fred_asof(con, "UNRATE", date(2020, 5, 7))
+        now = readers.fred_asof(con, "UNRATE", date(2026, 11, 19))
+        feb21 = readers.fred_asof(con, "UNRATE", date(2021, 2, 1))
+        feb21_first = readers.fred_asof(con, "UNRATE", date(2021, 2, 1), first_release=True)
+    assert may[pd.Timestamp("2020-04-01")] == 14.7          # the first release, not today's 14.8
+    assert now[pd.Timestamp("2020-04-01")] == 14.8
+    assert pd.Timestamp("2020-04-01") not in before.index    # not yet published on 2020-05-07
+    assert may.index.max() == pd.Timestamp("2020-04-01")
+    # as it stood on 2021-02-01 (January 2021's seasonal revision known) vs every month's first release
+    assert feb21[pd.Timestamp("2020-01-01")] == 3.5 and feb21_first[pd.Timestamp("2020-01-01")] == 3.6
+    with open_ro(path) as con, pytest.raises(DataUnavailable, match="no vintages"):
+        readers.fred_asof(con, "NFCI", date(2021, 2, 1))
+
+
+def test_vintages_are_appended_never_deleted(tmp_path):
+    from ohcamel_quant.warehouse.db import open_rw
+
+    path = _warehouse_with_vintages(tmp_path)
+    q_all = "SELECT date, realtime_start, value FROM fred_vintages ORDER BY ALL"
+    first = q(tmp_path, q_all)
+    with open_rw(path) as con:
+        assert macro.append_vintages(con, "UNRATE", _vintage_rows(), "alfred-graph") == 0   # nothing new
+        # the Fridays of May 2020: the same April figure seen a week later says nothing new; May's first
+        # release (2020-06-05, 13.3) is already stored; nothing is replaced
+        fr = fred.parse_alfredgraph_csv(FRIDAYS.read_text(), "UNRATE", macro.friday_grid(date(2020, 5, 1),
+                                                                                          date(2020, 6, 5)))
+        assert macro.append_vintages(con, "UNRATE", fr, "alfred-graph") > 0  # 2020-05-01 dates earlier rows
+    after = q(tmp_path, q_all)
+    assert set(first) <= set(after)  # every earlier row is still there
+    with open_ro(path) as con:
+        assert readers.fred_asof(con, "UNRATE", date(2020, 5, 15))[pd.Timestamp("2020-04-01")] == 14.7
+
+
+def test_api_vintages_parse_and_page(tmp_path):
+    # the API's own shape (series/observations with a real-time period), April 2020 as ALFRED records it
+    page1 = {"count": 3, "offset": 0, "limit": 2, "observations": [
+        {"realtime_start": "2020-05-08", "realtime_end": "2021-01-07", "date": "2020-04-01", "value": "14.7"},
+        {"realtime_start": "2021-01-08", "realtime_end": "9999-12-31", "date": "2020-04-01", "value": "14.8"}]}
+    page2 = {"count": 3, "offset": 2, "limit": 2, "observations": [
+        {"realtime_start": "2020-06-05", "realtime_end": "9999-12-31", "date": "2020-05-01", "value": "."}]}
+    s = Settings(offline=False, data_dir=tmp_path, http_retries=0, FRED_API_KEY="test-not-a-key")
+    with respx.mock:
+        route = respx.get(f"{fred.API}/series/observations").mock(
+            side_effect=[httpx.Response(200, json=page1), httpx.Response(200, json=page2)])
+        rows, prov = fred.fetch_vintages("UNRATE", s)
+        assert route.calls[0].request.url.params["realtime_start"] == "1776-07-04"
+        assert route.calls[1].request.url.params["offset"] == "2"   # the second page asked for
+    assert rows["value"].tolist() == [14.7, 14.8] and str(rows["realtime_start"].iloc[1].date()) == "2021-01-08"
+    assert macro._vintage_source(prov) == "alfred-api"              # a missing value ('.') is dropped
+    with pytest.raises(DataUnavailable, match="no vintages"):
+        fred.parse_api_vintages(page2, "UNRATE")
+
+
+@respx.mock
+def test_fred_ingest_appends_todays_vintage_without_a_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(fred, "_today_ny", lambda: date(2026, 11, 19))
+    unrate = "observation_date,UNRATE\n2020-03-01,4.4\n2020-04-01,14.8\n"
+    respx.get(fred.FREDGRAPH).mock(return_value=httpx.Response(200, text=unrate))
+    # today's column of the committed slice, as ALFRED serves one vintage
+    lines = VINTAGES.read_text().splitlines()
+    today = "\n".join(["observation_date,UNRATE_20261119"] + [f"{ln.split(',')[0]},{ln.split(',')[-1]}"
+                                                              for ln in lines[1:]]) + "\n"
+    route = respx.get(fred.ALFREDGRAPH).mock(return_value=httpx.Response(200, text=today))
+    spec = macro.run_fred({"series": ["UNRATE"]}, ctx(tmp_path))
+    assert route.calls[0].request.url.params["vintage_date"] == "2026-11-19"
+    got = q(tmp_path, "SELECT realtime_start, value, source FROM fred_vintages WHERE date = DATE '2020-04-01'")
+    assert got == [(date(2026, 11, 19), 14.8, "alfred-graph")]
+    assert ("fred_vintages", "UNRATE", "ok") in q(tmp_path, "SELECT dataset, key, status FROM ingest_log")
+    assert any("fred_vintages" in n for n in spec["notes"])
+    macro.run_fred({"series": ["UNRATE"]}, ctx(tmp_path))          # again: nothing new is appended
+    assert q(tmp_path, "SELECT count(*) FROM fred_vintages")[0][0] == len(lines) - 1
+
+
+@respx.mock
+def test_keyless_backfill_resumes_after_its_last_batch(tmp_path, monkeypatch):
+    monkeypatch.setattr(fred, "ALFRED_BATCH", 6)
+    route = respx.get(fred.ALFREDGRAPH).mock(return_value=httpx.Response(200, text=FRIDAYS.read_text()))
+    s = Settings(offline=False, data_dir=tmp_path, http_retries=0, warehouse_path=tmp_path / "w.duckdb",
+                 FRED_API_KEY=None)
+    out = macro.backfill_vintages("UNRATE", s, since=date(2020, 5, 1), until=date(2020, 6, 5), progress=lambda m: None)
+    assert out["batches"] == 1 and out["through"] == "2020-06-05" and out["source"] == "alfred-graph"
+    assert route.calls[0].request.url.params["vintage_date"] == ("2020-05-01,2020-05-08,2020-05-15,2020-05-22,"
+                                                                 "2020-05-29,2020-06-05")
+    assert q(tmp_path, "SELECT realtime_start, value FROM fred_vintages WHERE date = DATE '2020-04-01'") == [
+        (date(2020, 5, 8), 14.7)]                                   # first seen on its release Friday
+    again = macro.backfill_vintages("UNRATE", s, until=date(2020, 6, 5), progress=lambda m: None)
+    assert again["batches"] == 0 and len(route.calls) == 1         # resumes after 2020-06-05: nothing left

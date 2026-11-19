@@ -1,0 +1,20 @@
+{
+  "source": "alfred",
+  "synthetic": false,
+  "series": "UNRATE",
+  "url": "https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=UNRATE,UNRATE,UNRATE,UNRATE,UNRATE,UNRATE&vintage_date=2020-05-01,2020-05-08,2020-05-15,2020-05-22,2020-05-29,2020-06-05",
+  "fetched_utc": "2026-11-19T17:54:55.970687+00:00",
+  "fetched_note": "the instant the response finished (UTC); the request began at 2026-11-19T17:54:52.064602+00:00",
+  "original_sha256": "d0bc06a0cbc59afb608063d9a9a9a5186b991ea7b1d57216587a1e445840c548",
+  "original_bytes": 30582,
+  "vintage_dates_requested": [
+    "2020-05-01",
+    "2020-05-08",
+    "2020-05-15",
+    "2020-05-22",
+    "2020-05-29",
+    "2020-06-05"
+  ],
+  "trimmed": "the header row and the observation rows 2019-10-01 .. 2020-06-01 kept, byte for byte (the original has every month from 1948-01-01)",
+  "used_by": "completion task 3.5: the keyless fred_vintages backfill over a Friday grid (tests/test_warehouse_macro_sec.py)"
+}

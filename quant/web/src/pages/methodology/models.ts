@@ -588,10 +588,15 @@ export const MODELS: Model[] = [
       { tex: T`P(\text{REC}_{t+12} = 1) = \Phi(a + b\cdot\text{spread}_t)` },
       { tex: T`\text{SAHM}_t = \overline{u}^{(3)}_t - \min\left(\overline{u}^{(3)}_{t-12..t-1}\right) \ge 0.50` },
     ],
-    assumptions: ["NBER recession dates; Newey–West standard errors with h lags because targets overlap.", "Fit quality reported as Estrella's pseudo-R²."],
+    assumptions: [
+      "Refit out of sample every month from 1980: each fit uses only the recession dates NBER had announced by the end of its origin month (NBER dates a turning point 4–21 months late), and its probability is scored against today's dates. The Brier score of those probabilities is the headline; the one-shot in-sample fit is shown beside it for comparison.",
+      "The Sahm rule is read as first published: each month's value comes from the unemployment-rate vintage of its first release (ALFRED), not from today's revised series.",
+      "NBER recession dates; Newey–West standard errors with h lags because targets overlap (in-sample fit).",
+      "Fit quality of the in-sample fit reported as Estrella's pseudo-R².",
+    ],
     appears: [MACRO],
     refs: ["estrella_mishkin_1998", "sahm_2019", "newey_west_1987"],
-    keywords: "probit inversion unemployment",
+    keywords: "probit inversion unemployment out-of-sample brier alfred vintage",
   },
   {
     id: "regimes",

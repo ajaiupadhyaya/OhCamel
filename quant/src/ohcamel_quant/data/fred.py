@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import io
 import logging
-from datetime import date
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -94,6 +95,103 @@ def _fetch_api(sid: str, settings: Settings) -> tuple[pd.Series, Provenance]:
     return parse_api_observations(payload, sid), Provenance.now(
         "fred", endpoint=f"{API}/series/observations", series=[sid]
     )
+
+
+# --------------------------------------------------------------- vintages (ALFRED; completion task 3.5)
+#: ALFRED's keyless graph download: ``?id=S,S,...&vintage_date=D1,D2,...`` gives one column per vintage date,
+#: named ``S_YYYYMMDD``. Asked for a date before the series' first vintage, it answers with TODAY's data under
+#: today's name -- so every column's name is checked against the date asked for.
+ALFREDGRAPH = "https://alfred.stlouisfed.org/graph/alfredgraph.csv"
+VINTAGE_COLUMNS = ["date", "realtime_start", "value"]
+#: How many vintage dates one ALFRED graph request carries: it answers at most 12 columns and drops the rest
+#: (checked live 2026-11-19 with 12, 13, 15 and 20), which the column check refuses.
+ALFRED_BATCH = 12
+
+
+def _today_ny() -> date:
+    """Today in New York (indirection so tests can pin the clock): the keyless path's vintage date."""
+    return datetime.now(ZoneInfo("America/New_York")).date()
+
+
+def _vintage_frame(rows: list[tuple[Any, Any, float]]) -> pd.DataFrame:
+    df = pd.DataFrame(rows, columns=VINTAGE_COLUMNS)
+    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+    df["realtime_start"] = pd.to_datetime(df["realtime_start"]).dt.normalize()
+    df["value"] = df["value"].astype(float)
+    return df.sort_values(["date", "realtime_start"]).reset_index(drop=True)
+
+
+def parse_alfredgraph_csv(text: str, series_id: str, vintage_dates: list[date]) -> pd.DataFrame:
+    """ALFRED graph CSV with one column per vintage date -> ``date, realtime_start, value`` rows: for each
+    observation, a row at the first vintage (in date order) that shows it and at each later vintage whose value
+    differs. ``realtime_start`` is the vintage date ASKED FOR -- the true release is on or before it. A column
+    named for another date than the one asked (ALFRED's answer before a series' first vintage) is refused."""
+    df = parse_fredgraph_csv(text)
+    sid = series_id.upper()
+    want = {f"{sid}_{d.strftime('%Y%m%d')}": d for d in vintage_dates}
+    unknown = [c for c in df.columns if c not in want]
+    if unknown or len(df.columns) != len(want):
+        missing = sorted(set(want) - set(df.columns))
+        raise DataUnavailable(f"alfred: {sid} answered columns {list(df.columns)} for vintages "
+                              f"{sorted(d.isoformat() for d in vintage_dates)} (no vintage of {sid} on "
+                              f"{', '.join(m.rsplit('_', 1)[1] for m in missing) or '?'})")
+    rows: list[tuple[Any, Any, float]] = []
+    for c in sorted(df.columns, key=lambda c: want[c]):
+        col = df[c].dropna()
+        rows += [(d, want[c], float(v)) for d, v in col.items()]
+    out = _vintage_frame(rows)
+    changed = out.groupby("date")["value"].transform(lambda s: s.ne(s.shift()))
+    return out[changed].reset_index(drop=True)
+
+
+def parse_api_vintages(payload: dict[str, Any], series_id: str) -> pd.DataFrame:
+    """FRED API ``series/observations`` over the whole real-time period (``realtime_start=1776-07-04``,
+    ``realtime_end=9999-12-31``) -> ``date, realtime_start, value`` rows, exactly ALFRED's vintages (``.``,
+    a missing value, dropped)."""
+    if "error_message" in payload:
+        raise DataUnavailable(f"fred api: {payload['error_message']}")
+    obs = payload.get("observations") or []
+    rows = [(o["date"], o["realtime_start"], float(o["value"])) for o in obs if o.get("value") not in (None, ".", "")]
+    if not rows:
+        raise DataUnavailable(f"fred api: no vintages for {series_id}")
+    return _vintage_frame(rows)
+
+
+def fetch_vintages(series_id: str, settings: Settings,
+                   vintage_dates: list[date] | None = None) -> tuple[pd.DataFrame, Provenance]:
+    """Every published vintage of a series. With ``FRED_API_KEY``: the API's whole real-time period, paged, exact
+    (``vintage_dates`` is then ignored). Without: ALFRED's graph download at ``vintage_dates`` (default today, New
+    York), each value dated by the first of those dates that shows it."""
+    sid = series_id.upper()
+    if settings.fred_api_key:
+        obs: list[dict[str, Any]] = []
+        while True:
+            payload = http.get_json(f"{API}/series/observations", settings, params={
+                "series_id": sid, "api_key": settings.fred_api_key, "file_type": "json",
+                "realtime_start": "1776-07-04", "realtime_end": "9999-12-31", "limit": 100000, "offset": len(obs)},
+                source="fred-api")
+            if "error_message" in payload:
+                raise DataUnavailable(f"fred api: {payload['error_message']}")
+            page = payload.get("observations") or []
+            obs += page
+            if not page or len(obs) >= int(payload.get("count") or 0):
+                break
+        df = parse_api_vintages({"observations": obs}, sid).drop_duplicates().reset_index(drop=True)
+        return df, Provenance.now("alfred", endpoint=f"{API}/series/observations", series=[sid],
+                                  realtime="1776-07-04..9999-12-31")
+    if vintage_dates is None:
+        vintage_dates = [_today_ny()]
+    dates = sorted(set(vintage_dates))
+    frames = []
+    for i in range(0, len(dates), ALFRED_BATCH):
+        batch = dates[i:i + ALFRED_BATCH]
+        text = http.get_text(ALFREDGRAPH, settings, source="alfred", params={
+            "id": ",".join([sid] * len(batch)), "vintage_date": ",".join(d.isoformat() for d in batch)})
+        frames.append(parse_alfredgraph_csv(text, sid, batch))
+    df = pd.concat(frames).sort_values(["date", "realtime_start"])
+    changed = df.groupby("date")["value"].transform(lambda s: s.ne(s.shift()))
+    return df[changed].reset_index(drop=True), Provenance.now(
+        "alfred", endpoint=ALFREDGRAPH, series=[sid], vintages=[dates[0].isoformat(), dates[-1].isoformat()])
 
 
 def _series(ids: list[str], settings: Settings) -> tuple[dict[str, pd.Series], list[Provenance], list[str]]:
@@ -306,5 +404,6 @@ def rf_series_used(provenance: list[dict[str, Any]]) -> str | None:
 
 __all__ = [
     "rf_error_reason", "rf_series_used", "fetch_series", "fetch_metadata", "risk_free_daily", "parse_fredgraph_csv",
-    "parse_api_observations", "yield_to_daily_return",
+    "parse_api_observations", "yield_to_daily_return", "parse_alfredgraph_csv", "parse_api_vintages",
+    "fetch_vintages",
 ]

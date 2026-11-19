@@ -11,6 +11,7 @@ dependency override whose curve is derived from the REAL DGS2/DGS10 fixture
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -229,8 +230,12 @@ def test_recession_and_taylor_code_paths(macro_stub_client):
     assert j["current"]["origin"] == "2026-06-01" and j["current"]["target"] == "2027-06-01"
     assert j["probability"]["index"][-1] == "2027-06-01"
     assert any("month-to-date" in n for n in j["notes"])
-    assert j["recessions"] and j["sahm"]["threshold"] == 0.5
-    assert any("GS10 - TB3MS" in n for n in j["notes"])
+    assert j["recessions"] and any("GS10 - TB3MS" in n for n in j["notes"])
+    # completion task 3.5: the headline is out of sample, and the Sahm rule is read only as first published
+    assert set(j["oos"]) >= {"oos_brier", "insample_brier", "oos_hit_rate", "n_scored", "scored"}
+    assert "spread_oos" in j["probability"]["columns"]
+    assert j["current"]["probability"] == j["probability"]["data"]["spread_oos"][-1]
+    assert j["sahm"] is None and any("first published" in n and "not from today's revised" in n for n in j["notes"])
     t = macro_stub_client.get("/api/macro/taylor", params={"r_star": 1.0, "pi_star": 2.0}).json()
     last = t["latest"]
     # 1 + 2.5 + 0.5*0.5 + 0.5*(-0.990..) with gap = 100(1/1.01 - 1)
@@ -238,6 +243,39 @@ def test_recession_and_taylor_code_paths(macro_stub_client):
     assert last["taylor_1993"] == pytest.approx(1 + 2.5 + 0.25 + 0.5 * gap, abs=1e-6)
     assert last["fed_funds"] == pytest.approx(3.0)
     assert t["params"]["r_star"] == 1.0
+
+
+def test_recession_sahm_from_vintages_with_their_hash_in_provenance(app, tmp_path):
+    """With UNRATE's vintages in the warehouse (the committed ALFRED slice), the Sahm rule is the as-published
+    one and the payload's provenance names the rows read and their canonical hash."""
+    from datetime import date
+
+    from ohcamel_quant.config import Settings
+    from ohcamel_quant.data import fred
+    from ohcamel_quant.warehouse.db import open_rw
+    from ohcamel_quant.warehouse.ingest import macro as macro_ingest
+
+    csv = (Path(__file__).parent / "data" / "alfred_unrate_vintages_2026-11-19.csv").read_text()
+    rows = fred.parse_alfredgraph_csv(csv, "UNRATE", [date(2020, 5, 7), date(2020, 5, 8), date(2020, 6, 5),
+                                                      date(2021, 1, 8), date(2026, 11, 19)])
+    path = tmp_path / "w.duckdb"
+    with open_rw(path) as con:
+        macro_ingest.append_vintages(con, "UNRATE", rows, "alfred-graph")
+    app.dependency_overrides[get_market] = lambda: _MacroStub(Settings(warehouse_path=path, offline=True))
+    macro_router.clear_cache()
+    try:
+        j = TestClient(app).get("/api/macro/recession", params={"h": 12}).json()
+    finally:
+        app.dependency_overrides.pop(get_market, None)
+        macro_router.clear_cache()
+    s = j["sahm"]
+    assert s is not None and s["latest"]["date"] == "2020-06-01" and s["latest"]["published"] == "2021-01-08"
+    assert "first published" in s["basis"]
+    apr = s["series"]["index"].index("2020-04-01")
+    assert s["series"]["data"]["unrate"][apr] == 14.7                 # not today's 14.8
+    (prov,) = [p for p in j["provenance"] if p["source"] == "warehouse:alfred"]
+    assert prov["detail"]["rows"] == len(rows) and len(prov["detail"]["sha256"]) == 64
+    assert prov["detail"]["realtime_through"] == "2026-11-19"
 
 
 # ------------------------------------------------------------------ live
@@ -262,7 +300,8 @@ def test_live_recession_and_taylor(mclient):
     j = _ok(mclient.get("/api/macro/recession"))
     assert j["models"]["spread"]["params"]["spread"] < 0  # inversion raises recession odds
     assert 0 <= j["current"]["probability"] <= 1
-    assert j["sahm"] is not None
+    assert j["sahm"] is not None or any("first published" in n for n in j["notes"])
+    assert 0 < j["oos"]["oos_brier"] < 0.25
     t = _ok(mclient.get("/api/macro/taylor"))
     assert "taylor_1993" in t["series"]["columns"]
 

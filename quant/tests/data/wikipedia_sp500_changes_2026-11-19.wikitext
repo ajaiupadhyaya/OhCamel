@@ -1,0 +1,642 @@
+{| class="wikitable sortable" id="changes"
+|-
+! data-sort-type="date" rowspan="2" | Effective Date
+! colspan="2" | Added
+! colspan="2" | Removed
+! rowspan="2" | Reason
+! rowspan="2" | Refs
+|-
+! Ticker || Security || Ticker || Security
+|-
+|October 30, 2026
+|OKTA
+|[[Okta, Inc.]]
+|KVUE
+|[[Kenvue]]
+|S&P 500 constituent [[Kimberly-Clark]] acquired Kenvue.
+|<ref>{{Cite web |title=Okta Set to Join S&P 500; Others to Join S&P MidCap 400 and S&P SmallCap 600 |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20261030-1485650/1485650_kvue-ramp546.pdf |date=October 30, 2026 |access-date=November 3, 2026 |website=S&P Dow Jones Indices |language=en}}</ref>
+|-
+|October 6, 2026
+|TWLO
+|[[Twilio]]
+|WBD
+|[[Warner Bros. Discovery]]
+|[[Paramount Skydance]] acquired Warner Bros. Discovery
+|<ref name=":1">{{Cite web |title=Vylor Added to the S&P 500; Twilio Set to Join S&P 500; Others to Join S&P MidCap 400 and S&P SmallCap 600 |url=https://press.spglobal.com/2026-10-01-Vylor-Added-to-the-S-P-500-Twilio-Set-to-Join-S-P-500-Others-to-Join-S-P-MidCap-400-and-S-P-SmallCap-600 |access-date=2026-10-08 |website=News Release Archive |language=en}}</ref>
+|-
+|October 6, 2026
+|
+|
+|CTVA
+|[[Corteva]]
+|Market capitalization changes.
+|<ref name=":1" />
+|-
+|October 1, 2026
+|VYLR
+|[[Vylor]]
+|
+|
+|Corteva completed the corporate spin-off of Vylor
+|<ref name=":1" />
+|-
+|| September 21, 2026
+|| BE
+|| [[Bloom Energy]]
+|| TAP
+|| [[Molson Coors]]
+|| Market capitalization changes.
+|| <ref name=bloomeverpure>{{Cite web |date=September 4, 2026 |title=Bloom Energy, Illumina, and Everpure Set to Join S&P 500; Others to Join S&P 100, S&P MidCap 400, and S&P SmallCap 600|url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20260904-1484999/1484999_shuffle5461-sept2026.pdf |access-date=September 21, 2026 |website=S&P Dow Jones Indices}}</ref>
+|-
+|| September 21, 2026
+|| P
+|| [[Everpure]]
+|| TTD
+|| [[The Trade Desk]]
+|| Market capitalization changes.
+|| <ref name=bloomeverpure/>
+|-
+|| September 21, 2026
+|| ILMN
+|| [[Illumina, Inc.]]
+|| BLDR
+|| [[Builders FirstSource]]
+|| Market capitalization changes.
+|| <ref name=bloomeverpure/>
+|-
+|| August 18, 2026
+|| RDDT
+|| [[Reddit]]
+|| AVB
+|| [[AvalonBay Communities]]
+|| Equity Residential (now [[Vivmark Residential]]) acquired AvalonBay Communities.
+|| <ref>{{Cite web |title=Reddit Set to Join S&P 500 and Sun Communities to Join S&P MidCap 400 |url=https://press.spglobal.com/2026-08-13-Reddit-Set-to-Join-S-P-500-and-Sun-Communities-to-Join-S-P-MidCap-400 |access-date=2026-08-15 |website=News Release Archive |language=en}}</ref>
+|-
+|| August 5, 2026
+|| FERG
+|| [[Ferguson Enterprises]] 
+|| EA 
+|| [[Electronic Arts]] 
+|| An investor consortium comprising Saudi Arabia's Public Investment Fund (PIF), [[Silver Lake (investment firm)|Silver Lake]], and [[Affinity Partners]] acquired Electronic Arts.
+|| <ref>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20260731-1484374/1484374_ea5-rezi6.pdf |title=Ferguson Enterprises Set to Join S&P 500 and ADI Global Distribution to Join S&P SmallCap 600 | publisher=[[S&P Global]] |date=July 31, 2026 |access-date=August 5, 2026}}</ref>
+|-
+|| June 30, 2026
+|| 
+|| 
+|| CAG 
+|| [[Conagra Brands]] 
+|| Market capitalization changes.
+|| <ref name=honeywellaero>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20260623-1484127/1484127_hon-jhg-bld-ari-1546.pdf |title=Honeywell Aerospace Set to Join S&P 500 & S&P 100; Others to Join S&P MidCap 400 and S&P SmallCap 600 | publisher=[[S&P Global]] |date=June 23, 2026 |access-date=June 29, 2026}}</ref>
+|-
+|| June 29, 2026 
+|| HONA 
+|| [[Honeywell Aerospace]] 
+|| 
+|| 
+|| [[Honeywell]] completed the [[corporate spin-off]] of Honeywell Aerospace.
+|| <ref name=honeywellaero/>
+|-
+|| June 22, 2026
+|| MRVL
+|| [[Marvell Technology]]
+|| POOL
+|| [[Pool Corporation]]
+|| Market capitalization changes.
+|| <ref name=marvellflex>{{Cite web |date=2026-06-05 |title=Marvell Technology and Flex Set to Join S&P 500; Others to Join S&P MidCap 400 and S&P SmallCap 600 |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20260605-1483743/1483743_shuffle546-june2026.pdf |access-date=2026-06-05 |website=S&P Dow Jones Indices}}</ref>
+|-
+|| June 22, 2026
+|| FLEX
+|| [[Flex Ltd.]]
+|| CPB
+|| [[Campbell's]]
+|| Market capitalization changes.
+|| <ref name=marvellflex/>
+|-
+|| June 2, 2026
+|| 
+|| 
+|| EPAM
+|| EPAM Systems
+|| Market capitalization changes.
+|| <ref name=fedexfreight>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20260527-1483532/1483532_fdx-amwd-56.pdf |title=FedEx Freight Holding Company Set to Join S&P 500; EPAM Systems and Dave to Join S&P SmallCap 600 | publisher=[[S&P Global]] |date=May 27, 2026 |access-date=June 3, 2026}}</ref>
+|-
+|| June 1, 2026 
+|| FDXF 
+|| [[FedEx Freight]]
+||
+|| 
+|| [[FedEx Corp.]] completed the [[corporate spin-off]] of FedEx Freight Holding.
+|| <ref name=fedexfreight/>
+|-
+|| May 7, 2026
+|| VEEV
+|| [[Veeva Systems]]
+|| CTRA
+|| [[Coterra|Coterra Energy]]
+|| [[Devon Energy]] acquired Coterra Energy.
+|| <ref>{{Cite web |title=Veeva Systems Set to Join S&P 500 |url=https://press.spglobal.com/2026-04-30-Veeva-Systems-Set-to-Join-S-P-500 |access-date=2026-05-07 |website=News Release Archive |language=en}}</ref><ref>{{Cite web |date=2026-04-30 | title=Veeva Systems Set to Join S&P 500 |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20260430-1483117/1483117_ctra5.pdf |access-date=2026-05-07 |website=S&P Global}}</ref>
+|-
+|| April 9, 2026 
+|| CASY 
+|| [[Casey's]] 
+|| HOLX 
+|| [[Hologic]] 
+|| [[Blackstone Inc.]] and [[TPG Inc.]] acquired Hologic.
+|| <ref>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20260406-1482697/1482697_5holx.pdf |title=Casey's General Stores Set to Join S&P 500; DigitalOcean Holdings to Join S&P MidCap 400; Broadstone Net Lease to Join S&P SmallCap 600 | publisher=[[S&P Global]] |date=April 6, 2026 |access-date=April 8, 2026}}</ref>
+|-
+|| March 23, 2026
+|| VRT 
+|| [[Vertiv]] 
+|| MTCH 
+|| [[Match Group]] 
+|| Market capitalization changes.
+|| <ref name=vertivlumentum>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20260306-1482263/1482263_march2026rebalance1546.pdf |title=Vertiv Holdings, Lumentum Holdings, Coherent, and EchoStar Set to Join S&P 500; Others to Join S&P 100, S&P MidCap 400, and S&P SmallCap 600 | publisher=[[S&P Global]] |date=March 6, 2026 |access-date=March 24, 2026}}</ref>
+|-
+|| March 23, 2026 
+|| LITE 
+|| [[Lumentum]] 
+|| MOH 
+|| [[Molina Healthcare]]
+|| Market capitalization changes.
+|| <ref name=vertivlumentum/>
+|-
+|| March 23, 2026 
+|| COHR 
+|| [[Coherent Corp.]] 
+|| LW 
+|| [[Lamb Weston]] 
+|| Market capitalization changes.
+|| <ref name=vertivlumentum/>
+|-
+|| March 23, 2026 
+|| SATS
+|| [[EchoStar]]
+|| PAYC 
+|| [[Paycom]] 
+|| Market capitalization changes.
+|| <ref name=vertivlumentum/>
+|-
+|| February 9, 2026
+|| CIEN 
+|| [[Ciena]]
+|| DAY 
+|| [[Dayforce]] 
+|| [[Thoma Bravo]] L.P. acquired Dayforce.
+|| <ref>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20260204-1482028/1482028_day5dvax6.pdf |title=Ciena Set to Join S&P 500; Arrowhead Pharmaceuticals to Join S&P MidCap 400; ADT and OneSpaWorld Holdings to Join S&P SmallCap 600 | publisher=[[S&P Global]] |date=February 4, 2026 |access-date=February 7, 2026}}</ref>
+|-
+|| December 22, 2025
+|| CRH
+|| [[CRH plc|CRH]]
+|| LKQ
+|| [[LKQ Corporation]]
+|| Market capitalization changes.
+|| <ref name=crhcarvana>{{Cite web |title=CRH, Carvana and Comfort Systems USA Set to Join S&P 500; Others to Join S&P MidCap 400 and S&P SmallCap 600 |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20251205-1480992/1480992_december2025rebalance.pdf |access-date=2025-12-05 |website=S&P Dow Jones Indices}}</ref>
+|-
+|| December 22, 2025
+|| CVNA
+|| [[Carvana]]
+|| SOLS
+|| [[Solstice Advanced Materials]]
+|| Market capitalization changes.
+|| <ref name=crhcarvana/>
+|-
+|| December 22, 2025
+|| FIX
+|| [[Comfort Systems USA]]
+|| MHK
+|| [[Mohawk Industries]]
+|| Market capitalization changes.
+|| <ref name=crhcarvana/>
+|-
+|| December 11, 2025
+|| ARES
+|| [[Ares Management]]
+|| K
+|| [[Kellanova]]
+|| [[Mars Inc.]] acquired Kellanova.
+|| <ref>{{Cite web |date=2025-12-10 |title=Ares Management Set to Join S&P 500; Sezzle and Vital Farms to Join S&P SmallCap 600 |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20251208-1481001/1481001_56-k-hsii-vtle.pdf |website=S&P Dow Jones Indices}}</ref>
+|-
+|| November 28, 2025
+|| SNDK
+|| [[Sandisk]]
+|| IPG
+|| [[The Interpublic Group of Companies|Interpublic Group]]
+|| [[Omnicom Group]] acquired (The) Interpublic Group.
+|| <ref>{{Cite web |title=Sandisk Set to Join S&P 500; Upwork, First Interstate BancSystem, PTC Therapeutics to Join S&P SmallCap 600 |url=https://press.spglobal.com/2025-11-24-Sandisk-Set-to-Join-S-P-500-Upwork,-First-Interstate-BancSystem,-PTC-Therapeutics-to-Join-S-P-SmallCap-600 |access-date=2025-11-25 |website=News Release Archive |language=en}}</ref><ref>{{Cite web |title=Sandisk Corp. To Replace Interpublic Group of Companies In S&P 500 | url=https://www.nasdaq.com/articles/sandisk-corp-replace-interpublic-group-companies-sp-500 |website=NASDAQ}}</ref>
+|-
+|| November 4, 2025
+|| 
+|| 
+|| EMN
+|| [[Eastman Chemical Company|Eastman Chemical Co.]]
+|| Market capitalization changes.
+|| <ref name=solsticeqnity>{{Cite web |title=Solstice Advance Materials and Qnity Electronics Set to Join S&P 500; Others to Join S&P SmallCap 600 |url=https://press.spglobal.com/2025-10-27-Solstice-Advance-Materials-and-Qnity-Electronics-Set-to-Join-S-P-500-Others-to-Join-S-P-SmallCap-600 |access-date=2025-10-31 |website=News Release Archive |language=en}}</ref>
+|-
+|| November 3, 2025
+|| Q
+|| [[Qnity Electronics]]
+|| 
+|| 
+|| Dupont completed the [[corporate spin-off]] of Qnity Electronics.
+|| <ref name=solsticeqnity/>
+|-
+|| October 31, 2025
+|| 
+|| 
+|| KMX
+|| [[CarMax]]
+|| Market capitalization changes.
+|| <ref name=solsticeqnity/>
+|-
+|| October 30, 2025
+|| SOLS
+|| [[Solstice Advanced Materials]]
+|| 
+|| 
+|| Honeywell International completed the [[corporate spin-off]] of Solstice Advanced Materials.
+|| <ref name=solsticeqnity/>
+|-
+|| September 22, 2025
+|| EME
+|| [[Emcor]]
+|| ENPH
+|| [[Enphase Energy]]
+|| Market capitalization changes.
+|| <ref name=applovinrobinhood>{{Cite web |date=September 5, 2025 |title=AppLovin, Robinhood Markets and Emcor Group Set to Join S&P 500; Others to Join S&P 100, S&P MidCap 400 and S&P SmallCap 600 | url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20250905-1479730/1479730_sept2025-1500rebalance.pdf | website=S&P Global}}</ref>
+|-
+|| September 22, 2025
+|| HOOD
+|| [[Robinhood Markets]]
+|| CZR
+|| [[Caesars Entertainment]]
+|| Market capitalization changes.
+|| <ref name=applovinrobinhood/>
+|-
+|| September 22, 2025
+|| APP
+|| [[AppLovin]]
+|| MKTX
+|| [[MarketAxess]]
+|| Market capitalization changes.
+|| <ref name=applovinrobinhood/>
+|-
+|| August 28, 2025
+|| IBKR 
+|| [[Interactive Brokers]] 
+|| WBA 
+|| [[Walgreens Boots Alliance]]
+|| [[Sycamore Partners]] acquired Walgreen Boots Alliance.
+|| <ref>{{Cite web |date=August 25, 2025 |title=Interactive Brokers Group Set to Join S&P 500 |url=https://press.spglobal.com/2025-08-25-Interactive-Brokers-Group-Set-to-Join-S-P-500,-Talen-Energy-to-Join-S-P-MidCap-400-and-Kinetik-Holdings-to-Join-S-P-SmallCap-600 |website=S&P Global}}</ref>
+|-
+|| July 23, 2025
+|| XYZ 
+|| [[Block, Inc.]]
+|| HES 
+|| [[Hess Corporation]] 
+|| Chevron acquired Hess.
+|| <ref>{{Cite web |date=July 18, 2025 |title=Block Set to Join S&P 500 |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20250718-1478910/1478910_hes5.pdf |website=S&P Global}}</ref>
+|-
+|| July 18, 2025 
+|| TTD 
+|| [[The Trade Desk]]
+|| ANSS 
+|| [[Ansys]]
+|| Synopsys acquired Ansys.
+|| <ref>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20250714-1478894/1478894_5-anss.pdf |title=The Trade Desk Set to Join S&P 500 | publisher=[[S&P Global]] |date=July 14, 2025 |access-date=July 17, 2025}}</ref>
+|-
+|| July 9, 2025
+|| DDOG
+|| [[Datadog]] 
+|| JNPR 
+|| [[Juniper Networks]]
+|| Hewlett Packard Enterprise acquired Juniper Networks.
+|| <ref>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20250702-1478699/1478699_jnpr5.pdf |title=Datadog Set to Join S&P 500 | publisher=[[S&P Global]] |date=July 2, 2025 |access-date=July 10, 2025}}</ref>
+|-
+|| May 19, 2025 
+|| COIN 
+|| [[Coinbase]] 
+|| DFS 
+|| [[Discover Financial]] 
+|| Capital One acquired Discover Financial.
+|| <ref>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20250512-1478052/1478052_dfs5.pdf |title=Coinbase Global Set to Join S&P 500 | publisher=[[S&P Global]] |date=May 12, 2025 |access-date=May 16, 2025}}</ref>
+|-
+|| March 24, 2025
+|| DASH 
+|| [[DoorDash]]
+|| BWA 
+|| [[BorgWarner]] 
+|| Market capitalization changes.
+|| <ref name=doordashtko>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20250307-1477251/1477251_march2025rebalance1500.pdf |title=DoorDash, TKO Group Holdings, Williams-Sonoma and Expand Energy Set to Join S&P 500; Others to Join S&P 100, S&P MidCap 400 and S&P SmallCap 600 | publisher=[[S&P Global]] |date=March 7, 2025 |access-date=March 24, 2025}}</ref>
+|-
+|| March 24, 2025 
+|| TKO 
+|| [[TKO Group Holdings]] 
+|| TFX 
+|| [[Teleflex]]
+|| Market capitalization changes.
+|| <ref name=doordashtko/>
+|-
+|| March 24, 2025
+|| WSM
+|| [[Williams-Sonoma, Inc.]] 
+|| CE
+|| [[Celanese]] 
+|| Market capitalization changes.
+|| <ref name=doordashtko/>
+|-
+|| March 24, 2025 
+|| EXE 
+|| [[Expand Energy]] 
+|| FMC 
+|| [[FMC Corporation]]
+|| Market capitalization changes.
+|| <ref name=doordashtko/>
+|-
+|| December 23, 2024 
+|| APO 
+|| [[Apollo Global Management]] 
+|| QRVO 
+|| [[Qorvo]] 
+|| Market capitalization changes.
+|| <ref name=apolloworkday>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20241206-1475790/1475790_dec2024apowday.pdf |title=Apollo Global Management and Workday Set to Join S&P 500; Others to Join S&P MidCap 400 and S&P SmallCap 600 | publisher=[[S&P Global]] |date=December 6, 2024 |access-date=December 25, 2024}}</ref>
+|-
+|| December 23, 2024 
+|| WDAY 
+|| [[Workday, Inc.]]
+|| AMTM 
+|| [[Amentum (company)|Amentum]]
+|| Market capitalization changes.
+|| <ref name=apolloworkday/>
+|-
+|| December 23, 2024 
+|| LII
+|| [[Lennox International]]
+|| CTLT 
+|| [[Catalent]] 
+|| [[Novo Holdings A/S]] acquired Catalent.
+|| <ref>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20241218-1475819/1475819_ctlt5.pdf |title=Lennox International Set to Join S&P 500 and BILL Holdings to Join S&P MidCap 400 | publisher=[[S&P Global]] |date=December 18, 2024 |access-date=December 23, 2024}}</ref>
+|-
+|| November 26, 2024
+|| TPL 
+|| [[Texas Pacific Land Corporation]]
+|| MRO
+|| [[Marathon Oil]] 
+|| ConocoPhillips acquired Marathon Oil.
+|| <ref>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20241121-1475569/1475569_5-mro.pdf |title=Texas Pacific Land Set to Join S&P 500, Mueller Industries to Join S&P MidCap 400 and Atlas Energy Solutions to Join S&P SmallCap 600 | publisher=[[S&P Global]] |date=November 21, 2024 |access-date=November 25, 2024}}</ref>
+|-
+|| October 1, 2024 
+|| 
+|| 
+|| BBWI
+|| [[Bath & Body Works, Inc.]] 
+|| Market capitalization changes.
+|| <ref name="sp20240924">{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20240924-1474558/1474558_jacobs56.pdf |title=Amentum Set to Join S&P 500; Bath & Body Works to Join S&P SmallCap 600 |date=September 24, 2024 |access-date=September 30, 2024}}</ref>
+|-
+|| September 30, 2024
+|| AMTM 
+|| [[Amentum (company)|Amentum]]
+|| 
+||
+|| [[Jacobs Solutions]] completed the [[corporate spin-off]] of its Critical Mission Solutions and Cyber Intelligence business, which merged with private Amentum to create newly publicly traded Amentum Holdings.
+|| <ref name="sp20240924" />
+|-
+|| September 23, 2024 
+|| PLTR 
+|| [[Palantir Technologies]] 
+|| AAL 
+|| [[American Airlines Group]]
+|| Market capitalization changes.
+|| <ref name="sp20240906">{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20240906-1474143/1474143_septembershuffle546.pdf |title=Palantir Technologies, Dell Technologies, and Erie Indemnity Set to Join S&P 500; Others to Join S&P MidCap 400 and S&P SmallCap 600 |date=September 6, 2024 |access-date=September 21, 2024}}</ref>
+|-
+|| September 23, 2024 
+|| DELL
+|| [[Dell Technologies]] 
+|| ETSY 
+|| [[Etsy]]
+|| Market capitalization changes.
+|| <ref name="sp20240906" />
+|-
+|| September 23, 2024 
+|| ERIE 
+|| [[Erie Insurance Group|Erie Indemnity]] 
+|| BIO
+|| [[Bio-Rad Laboratories]] 
+|| Market capitalization changes.
+|| <ref name="sp20240906" />
+|-
+|| June 24, 2024
+|| KKR 
+|| [[KKR (company)|KKR]]
+|| RHI
+|| [[Robert Half]] 
+|| Market capitalization changes.
+|| <ref name="sp20240607">{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20240607-1472747/1472747_finaljuneshuffle546.pdf |title=KKR, CrowdStrike Holdings and GoDaddy Set to Join S&P 500; Others to Join S&P MidCap 400 and S&P SmallCap 600 |date=June 7, 2024 |access-date=June 22, 2024}}</ref>
+|-
+|| June 24, 2024
+|| CRWD
+|| [[CrowdStrike]]
+|| CMA 
+|| [[Comerica]] 
+|| Market capitalization changes.
+|| <ref name="sp20240607" />
+|-
+|| June 24, 2024 
+|| GDDY
+|| [[GoDaddy]] 
+|| ILMN 
+|| [[Illumina, Inc.]]
+|| Market capitalization changes.
+|| <ref name="sp20240607" />
+|-
+|| May 8, 2024 
+|| VST
+|| [[Vistra Corp|Vistra]]
+|| PXD 
+|| [[Pioneer Natural Resources]] 
+|| [[ExxonMobil]] acquired Pioneer Natural Resources.
+|| <ref>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20240503-1472096/1472096_5pxd.pdf |title=Vistra Set to Join S&P 500; Aaon to Join S&P MidCap 400; Marathon Digital Holdings to Join S&P SmallCap 600 | publisher=[[S&P Global]] |date=May 3, 2024 |access-date=May 7, 2024}}</ref>
+|-
+|| April 3, 2024 
+|| 
+|| 
+|| XRAY 
+|| [[Dentsply Sirona]]
+|| Market capitalization changes.
+|| <ref name="sp20240327" />
+|-
+|| April 3, 2024
+|| 
+|| 
+|| VFC 
+|| [[VF Corporation]] 
+|| Market capitalization changes.
+|| <ref name="sp20240327" />
+|-
+|| April 2, 2024
+|GEV
+|| [[GE Vernova]]
+||
+||
+|| General Electric completed the [[corporate spin-off]] of GE Vernova.
+|| <ref name="sp20240327" />
+|-
+|| April 1, 2024
+|| SOLV
+|| [[Solventum]]
+|| 
+|| 
+|| 3M completed the [[corporate spin-off]] of Solventum.
+|| <ref name="sp20240327">{{Cite web |date=March 27, 2024 |title=GE Vernova and Solventum Set to Join S&P 500; Dentsply Sirona to Join S&P MidCap 400; Others to Join S&P SmallCap 600 | url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20240327-1471355/1471355_5gemmm.pdf |access-date=March 28, 2024 |publisher=S&P Dow Jones Indices}}</ref>
+|-
+|| March 18, 2024 
+|| SMCI 
+|| [[Supermicro]]
+|| WHR
+|| [[Whirlpool Corporation]] 
+|| Market capitalization changes.
+|| <ref name="sp20240301">{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20240301-1470916/1470916_mar2024shuf.pdf |title=Super Micro Computer and Deckers Outdoor Set to join S&P 500; Others to Join S&P 100, S&P MidCap 400 and S&P SmallCap 600 |date=March 1, 2024 |access-date=March 17, 2024}}</ref>
+|-
+|| March 18, 2024 
+|| DECK
+|| [[Deckers Brands]] 
+|| ZION 
+|| [[Zions Bancorporation]]
+|| Market capitalization changes.
+|| <ref name="sp20240301" />
+|-
+|| December 18, 2023 
+|| UBER 
+|| [[Uber]] 
+|| SEE 
+|| [[Sealed Air]] 
+|| Market capitalization changes.
+|| <ref name="sp20231201">{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20231201-1467851/1467851_dec2023shuf.pdf |title=Uber Technologies, Jabil and Builders FirstSource Set to Join S&P 500; Others to Join S&P MidCap 400 and S&P SmallCap 600 |date=December 1, 2023 |access-date=December 16, 2023}}</ref>
+|-
+|| December 18, 2023
+|| JBL
+|| [[Jabil]] 
+|| ALK 
+|| [[Alaska Air Group]] 
+|| Market capitalization changes.
+|| <ref name="sp20231201" />
+|-
+|| December 18, 2023 
+|| BLDR 
+|| [[Builders FirstSource]]
+|| SEDG 
+|| [[SolarEdge]]
+|| Market capitalization changes.
+|| <ref name="sp20231201" />
+|-
+|| October 18, 2023 
+|| HUBB 
+|| [[Hubbell Incorporated|Hubbell]]
+|| OGN 
+|| [[Organon & Co.]]
+|| Market capitalization changes.
+|| <ref name="sp20231013" />
+|-
+|| October 18, 2023
+|| LULU 
+|| [[Lululemon|Lululemon Athletica]] 
+|| ATVI
+|| [[Activision Blizzard]]
+|| [[Acquisition of Activision Blizzard by Microsoft]].
+|| <ref name="sp20231013">{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20231013-1466909/1466909_5atvi.pdf |title=Lululemon Athletica & Hubbell Set to Join S&P 500; Others to Join S&P MidCap 400 and S&P SmallCap 600 |date=October 13, 2023 |access-date=October 17, 2023}}</ref>
+|-
+|| October 3, 2023 
+|| 
+|| 
+|| DXC 
+|| [[DXC Technology]]
+|| Market capitalization changes.
+|| <ref name="Sept28" />
+|-
+|| October 2, 2023 
+|| VLTO 
+|| [[Veralto]]
+|| 
+|| 
+|| Danaher Corporation completed the [[corporate spin-off]] of Veralto.
+|| <ref name="Sept28">{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20230928-1466640/1466640_554-k-dhr-armk.pdf |title=Veralto Set to Join S&P 500; Vestis to Join S&P MidCap 400; Others to Join S&P SmallCap 600 |date=September 28, 2023 |access-date=October 2, 2023}}</ref>
+|-
+|| September 18, 2023
+|| BX
+|| [[Blackstone Inc|Blackstone]]
+|| LNC
+|| [[Lincoln National Corporation]]
+|| Market capitalization changes.
+|| <ref name=blackstoneairbnb>{{Cite web |title=Blackstone and Airbnb Set to Join S&P 500; Others to Join S&P 100, S&P MidCap 400 and S&P SmallCap 600 |url=https://press.spglobal.com/2023-09-01-Blackstone-and-Airbnb-Set-to-Join-S-P-500-Others-to-Join-S-P-100,-S-P-MidCap-400-and-S-P-SmallCap-600 |access-date=2023-09-14 |website=News Release Archive}}</ref>
+|-
+|| September 18, 2023
+|ABNB
+|| [[Airbnb]]
+|| NWL
+|| [[Newell Brands]]
+|| Market capitalization changes.
+|| <ref name=blackstoneairbnb/>
+|-
+|| August 25, 2023
+|| KVUE 
+|| [[Kenvue]] 
+|| AAP 
+|| [[Advance Auto Parts]]
+|| Johnson & Johnson offered to exchange the shares of Kenvue held for shares of Johnson & Johnson in a split-off exchange offer.
+|| <ref>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20230821-1465675/1465675_5jnj6.pdf |title=Kenvue Set to Join S&P 500; Advance Auto Parts to Join S&P SmallCap 600 |date=August 21, 2023 |access-date=August 28, 2023}}</ref>
+|-
+|| June 20, 2023
+|| PANW 
+|| [[Palo Alto Networks]] 
+|| DISH
+|| [[Dish Network]]
+|| Market capitalization changes.
+|| <ref>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20230602-1464356/1464356_shufjun23.pdf |title=Palo Alto Networks Set to S&P 500; Others to Join S&P MidCap 400 and S&P SmallCap 600 | date=June 2, 2023 |access-date=June 19, 2023}}</ref>
+|-
+|| May 4, 2023 
+|| AXON 
+|| [[Axon Enterprise]]
+|| FRC 
+|| [[First Republic Bank]] 
+|| The [[Federal Deposit Insurance Corporation]] (FDIC) placed First Republic Bank into receivership.
+|| <ref>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20230501-1463787/1463787_frc5.pdf |title=Axon Enterprise Set to Join S&P 500; STAG Industrial to Join S&P MidCap 400 |date=May 1, 2023 |access-date=May 3, 2023}}</ref>
+|-
+|| March 20, 2023 
+|| FICO 
+|| [[FICO|Fair Isaac]] 
+|| LUMN 
+|| [[Lumen Technologies]]
+|| Market capitalization changes.
+|| <ref>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20230303-1461866/1461866_shufflemarch2023.pdf |title=Fair Isaac & Co. Set to Join S&P 500; Others to Join S&P MidCap 400 and S&P SmallCap 600 | publisher=[[S&P Global]] |date=March 3, 2023 |access-date=March 19, 2023}}</ref>
+|-
+|| March 15, 2023 
+|| BG
+|| [[Bunge Global]]
+|| SBNY 
+|| [[Signature Bank]]
+|| The FDIC placed Signature Bank into FDIC Receivership.
+|| <ref>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20230313-1463166/1463166_5-sbny.pdf |title=Bunge Set to Join S&P 500 | publisher=[[S&P Global]] |date=March 13, 2023 |access-date=March 14, 2023}}</ref>
+|-
+|| March 15, 2023
+|| PODD 
+|| Insulet 
+|| SIVB 
+|| [[SVB Financial Group]] 
+|| The FDIC placed SVB's main subsidiary, [[Silicon Valley Bank]], into receivership.
+|| <ref>{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20230310-1461992/1461992_sivb-5.pdf |title=Insulet Set to Join S&P 500 | publisher=[[S&P Global]] |date=March 10, 2023 |access-date=March 14, 2023}}</ref>
+|-
+|| January 5, 2023 
+|| 
+|| 
+|| VNO 
+|| [[Vornado Realty Trust]]
+|| Market capitalization changes.
+|| <ref name="1460542_ge5spingehc">{{cite web |url=https://www.spglobal.com/spdji/en/documents/indexnews/announcements/20221228-1460542/1460542_ge5spingehc.pdf |title=GE HealthCare Technologies Set to Join S&P 500; Vornado Realty Trust to Join S&P MidCap 400; RXO to Join S&P SmallCap 600 | publisher=[[S&P Global]] |date=December 28, 2022 |access-date=December 28, 2022}}</ref>
+|-
+|| January 4, 2023 
+|| GEHC 
+|| [[GE HealthCare]] 
+|| 
+|| 
+|| General Electric completed the [[corporate spin-off]] of GE HealthCare.
+|| <ref name="1460542_ge5spingehc" />
+|}

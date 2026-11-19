@@ -1,0 +1,12 @@
+{
+  "source": "fred",
+  "synthetic": false,
+  "series": "GS10",
+  "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=GS10",
+  "fetched_utc": "2026-11-19T17:47:43Z",
+  "fetched_note": "the instant the response finished (UTC), to the second",
+  "original_sha256": "018e609eb98c52ec8d2cf0ea9f8e1450c24974c31cca455cc19717a77703af78",
+  "original_bytes": 14222,
+  "trimmed": "nothing: the whole response as served",
+  "used_by": "completion task 3.5: the out-of-sample recession probit (tests/test_macro_recession.py)"
+}

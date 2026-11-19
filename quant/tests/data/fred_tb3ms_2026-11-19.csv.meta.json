@@ -1,0 +1,12 @@
+{
+  "source": "fred",
+  "synthetic": false,
+  "series": "TB3MS",
+  "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=TB3MS",
+  "fetched_utc": "2026-11-19T17:47:43Z",
+  "fetched_note": "the instant the response finished (UTC), to the second",
+  "original_sha256": "33fae406051a658c316580f8e8b5e461157e6663bc03b35648cc7cd3e89ee26b",
+  "original_bytes": 17881,
+  "trimmed": "nothing: the whole response as served",
+  "used_by": "completion task 3.5: the out-of-sample recession probit (tests/test_macro_recession.py)"
+}

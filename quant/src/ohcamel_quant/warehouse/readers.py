@@ -249,6 +249,55 @@ def warehouse_prices(settings: Settings, tickers: list[str], start: date | None,
     return (bars.prices(want, start, end, field), None) if bars is not None else (None, note)
 
 
+def members_asof(con: Any, universe: str, asof: date) -> list[str]:
+    """The index's members on ``asof`` (completion task 3.5): every ticker with a ``universe_membership`` stint
+    whose ``start`` is on or before ``asof`` (or unknown: before coverage) and whose ``end`` is after it (or NULL),
+    sorted. Refuses -- ``DataUnavailable`` -- a universe with no stints, and a date before the changes table's
+    coverage (``constituents.COVERAGE_START``), where the stints cannot be trusted."""
+    from .constituents import COVERAGE_START
+
+    u = universe.strip().lower()
+    cov = COVERAGE_START.get(u)
+    if cov is not None and asof < cov:
+        raise DataUnavailable(f"{u}: membership before {cov.isoformat()} is not known (the changes table is "
+                              "complete only from then)")
+    n = con.execute("SELECT count(*) FROM universe_membership WHERE universe = ?", [u]).fetchone()[0]
+    if not n:
+        raise DataUnavailable(f"{u}: no dated membership in the warehouse")
+    rows = con.execute('SELECT DISTINCT ticker FROM universe_membership WHERE universe = ? AND '
+                       '("start" IS NULL OR "start" <= ?) AND ("end" IS NULL OR "end" > ?) ORDER BY ticker',
+                       [u, asof, asof]).fetchall()
+    return [t for (t,) in rows]
+
+
+def fred_vintage_rows(con: Any, series: str, asof: date) -> pd.DataFrame:
+    """Every ``fred_vintages`` row of ``series`` published on or before ``asof`` (``date, realtime_start, value``,
+    sorted): what :func:`fred_asof` reads, and what a product hashes into its provenance."""
+    df = con.execute("SELECT date, realtime_start, value FROM fred_vintages WHERE series = ? AND realtime_start <= ? "
+                     "ORDER BY date, realtime_start", [series.upper().strip(), asof]).df()
+    for c in ("date", "realtime_start"):
+        df[c] = pd.to_datetime(df[c]).astype("datetime64[ns]")
+    return df
+
+
+def fred_asof(con: Any, series: str, asof: date, *, first_release: bool = False) -> pd.Series:
+    """A revised series as it stood on ``asof`` (completion task 3.5): for each observation published by then, the
+    value of the latest vintage with ``realtime_start <= asof`` -- what a reader of FRED saw that day. Its newest
+    observations are their first publication; an older one carries the revisions published by ``asof`` and no
+    later. ``first_release=True`` gives instead every observation's FIRST published value (earliest
+    ``realtime_start``), revisions ignored even when known by ``asof``. Indexed by ``date``; empty when nothing
+    was published by ``asof``. Raises ``DataUnavailable`` when the series has no vintages at all."""
+    sid = series.upper().strip()
+    if not con.execute("SELECT count(*) FROM fred_vintages WHERE series = ?", [sid]).fetchone()[0]:
+        raise DataUnavailable(f"{sid}: no vintages in the warehouse (fred_vintages)")
+    rows = fred_vintage_rows(con, sid, asof)
+    pick = rows.groupby("date", sort=True)["value"]
+    out = (pick.first() if first_release else pick.last()).astype(float)
+    out.index = _date_index(out.index)
+    out.name = sid
+    return out
+
+
 def sec_facts_asof(con: Any, ticker: str, asof: date, tags: list[str] | None = None) -> pd.DataFrame:
     """Facts available on ``asof`` (II.5 point-in-time rule: ``filed <= asof``): for each
     (tag, unit, period_start, period_end) the latest value filed on or before ``asof``."""
