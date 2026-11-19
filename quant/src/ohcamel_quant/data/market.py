@@ -73,7 +73,8 @@ class OptionChain:
     contract (OCC symbol). Rows with no two-sided market are kept; analytics
     decide what to filter and say so. ``exercise`` ('american' | 'european') is set
     only by a source that states the style; otherwise analytics classify the
-    underlying (options.parity.exercise_style).
+    underlying (options.parity.exercise_style). ``as_of`` is when the quotes were
+    taken (tz-naive New York), not when the vendor served them (``payload_ts``).
     """
 
     underlying: str
@@ -81,6 +82,8 @@ class OptionChain:
     as_of: pd.Timestamp
     quotes: pd.DataFrame
     exercise: str | None = None
+    quote_ts_source: str | None = None       # which vendor field gave ``as_of`` (data/cboe.py)
+    payload_ts: pd.Timestamp | None = None   # when the vendor generated the payload, tz-naive UTC
 
 
 def _window(df: pd.DataFrame, start: date | None, end: date | None) -> pd.DataFrame:

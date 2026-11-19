@@ -51,6 +51,9 @@ __all__ = [
     "fit_svensson",
     "ParametricFit",
     "curve_on",
+    "DatedZeroCurve",
+    "zero_curve_on",
+    "MAX_CURVE_LAG_DAYS",
     "yield_pca",
     "curve_spreads",
     "monthly_sample",
@@ -439,6 +442,53 @@ def curve_on(curves: pd.DataFrame, when: pd.Timestamp | str, min_tenors: int = 5
         raise ValueError(f"no Treasury curve with >= {min_tenors} tenors on or before {ts.date()}")
     d = eligible.index[-1]
     return d, eligible.iloc[-1].dropna()
+
+
+#: How many calendar days before the date asked for its discount curve may be dated. FRED serves a date's CMT curve
+#: the next business day, and a holiday adds days: a Tuesday snapshot after a Monday holiday, run that evening, has
+#: Friday's curve (4 days). Older than this, the curve is refused, never silently another week's.
+MAX_CURVE_LAG_DAYS = 5
+
+
+@dataclass
+class DatedZeroCurve:
+    """The zero curve to discount with on ``on``, bootstrapped from the par curve dated ``date`` (<= ``on``)."""
+
+    on: pd.Timestamp
+    date: pd.Timestamp
+    curve: ZeroCurve
+
+    def rate(self, T: float) -> float:
+        """Continuously-compounded zero rate at ``T`` years, DECIMAL: ``P(T) = exp(-rate(T) T)`` is the
+        bootstrapped discount factor exactly (``ZeroCurve.zero`` is ``-ln P(T) / T``)."""
+        return float(self.curve.zero(float(T))) / 100.0
+
+    @property
+    def lag_days(self) -> int:
+        return int((self.on - self.date).days)
+
+    def note(self) -> str:
+        base = (f"discounting: Treasury zero curve bootstrapped (macro.curve.bootstrap_par_curve, Hull ch. 4) from "
+                f"the FRED constant-maturity par yields dated {self.date.date()}; continuously-compounded zeros, "
+                "P(T) = exp(-z(T) T), T in ACT/365 years (the CMT tenors read as years of 365 days)")
+        if self.lag_days:
+            base += (f"; no curve dated {self.on.date()}: the nearest earlier one ({self.lag_days} day"
+                     f"{'s' if self.lag_days != 1 else ''} before) is used")
+        return base
+
+
+def zero_curve_on(curves: pd.DataFrame, when: pd.Timestamp | str, max_lag_days: int = MAX_CURVE_LAG_DAYS,
+                  min_tenors: int = 5) -> DatedZeroCurve:
+    """The zero curve as of ``when``: the par curve dated ``when`` (or the nearest earlier one at most
+    ``max_lag_days`` calendar days before, with ``min_tenors`` quoted tenors), bootstrapped
+    (:func:`bootstrap_par_curve`). Point in time: nothing dated after ``when`` is read. Raises ValueError when no
+    curve qualifies -- another date's curve is never used silently."""
+    on = pd.Timestamp(when).normalize()
+    d, par = curve_on(curves, on, min_tenors)
+    if (on - d).days > max_lag_days:
+        raise ValueError(f"no Treasury curve within {max_lag_days} days on or before {on.date()} "
+                         f"(the latest is {d.date()})")
+    return DatedZeroCurve(on, d, bootstrap_par_curve(np.asarray(par.index, dtype=float), par.to_numpy(dtype=float)))
 
 
 def curve_spreads(curves: pd.DataFrame) -> pd.DataFrame:

@@ -4,8 +4,9 @@ Pipeline (each step is recorded in ``ChainAnalytics.notes`` / per-row flags):
 
 1. drop contracts with non-standard deliverables (OCC roots ending in a digit,
    e.g. ``AAPL1`` after a corporate action) -- their payoff is not ``(S-K)^+``;
-2. settlement instant and ACT/365 ``T`` per expiry (:mod:`.parity`); expired
-   slices are dropped;
+2. settlement instant and ACT/365 ``T`` per expiry from the quotes' own time
+   (:mod:`.parity`); expired slices are dropped; an index root whose settlement is
+   not established (:func:`.parity.root_settlement`) is left out, never merged;
 3. quote-quality flags: ``no_quote`` / ``stale`` (missing bid or ask -- Cboe's delayed
    payload carries no per-quote timestamp, so a one-sided quote is the only
    observable staleness), ``zero_bid``, ``crossed``
@@ -132,6 +133,15 @@ def analyze_chain(
                      f"(adjusted roots: {', '.join(sorted(q.loc[nonstd, 'root'].unique()))})")
         q = q[~nonstd].reset_index(drop=True)
 
+    known = q["root"].map(lambda r: parity.root_settlement(r, chain.underlying))
+    unknown = known.isna()
+    if unknown.any():
+        counts = q.loc[unknown, "root"].value_counts().sort_index()
+        notes.append(f"{int(unknown.sum())} contracts under root(s) "
+                     + ", ".join(f"{r} ({n})" for r, n in counts.items())
+                     + f" left out: their settlement (open or close) is not established for {chain.underlying}, so "
+                     "their time to expiry is not known; they are not merged into another root's expiry")
+        q = q[~unknown].reset_index(drop=True)
     q["settlement"] = q["root"].map(parity.settlement_style)
     q["expiry"] = pd.to_datetime(q["expiry"]).dt.normalize()
     q["expiry_ts"] = parity.expiry_timestamps(q["expiry"], q["root"]).to_numpy()
@@ -250,9 +260,9 @@ def analyze_chain(
 
     notes.append(f"quotes flagged 'wide' when bid-ask spread > {max_rel_spread:.0%} of mid; IVs use mids")
     if rate_curve is not None:
-        notes.append("discount D per expiry from the Treasury curve (FRED constant-maturity yields, "
-                     "continuously compounded, interpolated in T); forward F implied from put-call parity "
-                     "with D fixed; q = r - ln(F/S)/T")
+        notes.append("discount D = exp(-r(T) T) per expiry from the rate curve given (the Treasury zero curve "
+                     "bootstrapped from FRED constant-maturity par yields, continuously compounded); forward F "
+                     "implied from put-call parity with D fixed; q = r - ln(F/S)/T")
     else:
         notes.append("forward F and discount D per expiry are implied from put-call parity (no external "
                      "rate or dividend assumption); r = -ln D / T and q = r - ln(F/S)/T are continuously "
@@ -305,7 +315,8 @@ def analyze_chain(
         notes.append("greeks are Black-Scholes at the American IV, not tree greeks (an in-the-money put near "
                      "its exercise boundary has |delta| closer to 1 than shown); model_price is the European "
                      "value at that IV, so mid - model_price is the early-exercise premium")
-    notes.append("Cboe delayed quotes (15 minutes); T is ACT/365 from the quote time to 16:00 ET "
+    notes.append(f"Cboe delayed quotes (15 minutes); T is ACT/365 calendar time from the quotes' own time "
+                 f"({as_of} ET, the vendor's quote timestamp, not when the payload was served) to 16:00 ET "
                  "(09:30 ET for AM-settled index roots)")
     return ChainAnalytics(
         underlying=str(chain.underlying), spot=spot, as_of=as_of, quotes=q, slices=slices,

@@ -43,7 +43,15 @@ dividends are carried by the pair-implied continuous ``q``.
 Timing: ``T`` is ACT/365 from the quote instant to the settlement instant, both
 US/Eastern wall-clock: 16:00 for PM-settled contracts, 09:30 (the opening print
 used for the special opening quotation) for AM-settled index roots (SPX, NDX,
-RUT, DJX monthly roots and VIX). Days are counted as 24-hour calendar days of
+RUT, DJX monthly roots and VIX). The quote instant is the chain's ``as_of``: the
+vendor's statement of when its quotes were taken (data/cboe.py: Cboe's
+``last_trade_time``), never when the payload was generated -- a payload served on
+a Sunday holds Friday's closing quotes (completion task 3.4). Calendar time, not
+business time: it is the VIX white paper's convention and the one r and q are
+quoted in; over a weekend it is longer than the business time to the same expiry.
+A root whose settlement is not established for an index underlying
+(:func:`root_settlement`; e.g. ``SPXO``) gets no settlement instant: the chain
+keeps it out of every slice rather than guess. Days are counted as 24-hour calendar days of
 wall-clock time (a DST switch does not add or remove an hour), which is the Cboe
 VIX white paper's minute count (1,440 minutes per calendar day, 525,600 per year).
 Early-close sessions (13:00 ET) are not modelled: T is overstated by 3 hours there.
@@ -79,6 +87,25 @@ def exercise_style(underlying: str) -> Exercise:
 def settlement_style(root: str) -> str:
     """'AM' for AM-settled index roots, else 'PM'."""
     return "AM" if str(root).upper() in AM_SETTLED_ROOTS else "PM"
+
+
+#: PM-settled roots of the cash-settled indices: SPX weeklies and end-of-month (SPXW), Mini-SPX (XSP), Nasdaq-100
+#: weeklies (NDXP), Russell 2000 weeklies (RUTW), Mini-Russell (MRUT), S&P 100 (XEO, OEX) and Nanos (NANOS).
+PM_INDEX_ROOTS = frozenset({"SPXW", "XSP", "NDXP", "RUTW", "MRUT", "XEO", "OEX", "NANOS"})
+
+
+def root_settlement(root: str, underlying: str) -> str | None:
+    """'AM' | 'PM' for a contract root, or None when it is not established. Index underlyings
+    (``EUROPEAN_UNDERLYINGS``) list roots that settle at the open (``AM_SETTLED_ROOTS``) and at the close
+    (``PM_INDEX_ROOTS``); any other root of theirs -- Cboe added ``SPXO`` to the SPX payload in November 2026 --
+    is None, so its contracts are kept out of the analysis rather than timed by a guess. ETF and single-name
+    options all settle at the close: 'PM'."""
+    r = str(root).upper()
+    if r in AM_SETTLED_ROOTS:
+        return "AM"
+    if r in PM_INDEX_ROOTS or exercise_style(underlying) == "american":
+        return "PM"
+    return None
 
 
 def expiry_timestamp(expiry: Any, root: str) -> pd.Timestamp:

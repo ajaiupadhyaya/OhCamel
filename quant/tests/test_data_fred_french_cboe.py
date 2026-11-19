@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import gzip
 import io
+import json
 import zipfile
+from pathlib import Path
 
 import httpx
 import numpy as np
@@ -248,7 +251,9 @@ def test_parse_occ_variable_root():
 def test_parse_chain():
     ch = cboe.parse_chain(CBOE_SPY, "SPY")
     q = ch.quotes
-    assert ch.spot == 534.01 and ch.as_of == pd.Timestamp("2024-06-07 16:15:03")
+    # Task 3.4: Cboe's `timestamp` is UTC; with no last_trade_time it is the quote time, said so, in New York time
+    assert ch.spot == 534.01 and ch.as_of == pd.Timestamp("2024-06-07 12:15:03")
+    assert ch.quote_ts_source == "cboe:timestamp" and ch.payload_ts == pd.Timestamp("2024-06-07 16:15:03")
     assert len(q) == 2  # the malformed symbol is skipped
     call = q[q["type"] == "C"].iloc[0]
     assert call["strike"] == 400.0 and np.isnan(call["vendor_iv"])  # iv 0 -> NaN
@@ -258,6 +263,39 @@ def test_parse_chain():
     for col in ("expiry", "strike", "type", "bid", "ask", "last", "volume", "open_interest", "vendor_iv",
                 "contract"):
         assert col in q.columns
+
+
+
+SPY_CHAIN_2026_11_15 = Path(__file__).parent / "data" / "cboe_spy_2026-11-15.json.gz"
+
+
+def test_a_chain_is_stamped_with_its_quotes_time_not_the_payloads():
+    """Task 3.4. Cboe's `timestamp` is when the payload was generated, in UTC; the header's `last_trade_time` is the
+    underlying's last trade in New York time, 15 minutes behind it intraday (a fetch at 09:58:59 EST on 2026-11-19
+    read timestamp 14:58:11 and last_trade_time 09:43:10). The committed payload was generated on Sunday
+    2026-11-15 at 22:22:02 UTC, its quotes are Friday's close: the chain is stamped Friday 16:00 New York."""
+    ch = cboe.parse_chain(json.loads(gzip.decompress(SPY_CHAIN_2026_11_15.read_bytes())), "SPY")
+    assert ch.as_of == pd.Timestamp("2026-11-13 16:00:00")          # New York, tz-naive (the analytics convention)
+    assert ch.quote_ts_source == "cboe:last_trade_time"
+    assert ch.payload_ts == pd.Timestamp("2026-11-15 22:22:02")     # UTC, tz-naive
+    assert ch.spot == 754.37                                         # the payload's own statement of the underlying
+
+
+def test_a_last_trade_time_after_the_payload_is_not_believed():
+    payload = {"timestamp": "2026-11-19 14:58:11", "data": {**CBOE_SPY["data"], "last_trade_time": "2026-11-19T10:30:00"}}
+    ch = cboe.parse_chain(payload, "SPY")
+    assert ch.as_of == pd.Timestamp("2026-11-19 09:58:11") and ch.quote_ts_source == "cboe:timestamp"
+
+
+def test_a_new_root_is_kept_under_its_own_name():
+    """Cboe's SPX payload carried 692 contracts under a root SPXO on 2026-11-19 (live, not committed). The
+    symbol here is CONSTRUCTED in that shape: the parser keeps the root as given, never merges or drops it."""
+    payload = {"timestamp": "2026-11-19 14:58:21", "data": {"symbol": "^SPX", "current_price": 7399.15,
+               "last_trade_time": "2026-11-19T09:43:20", "options": [
+                   {"option": "SPXO261216C07400000", "bid": 150.0, "ask": 152.0},     # CONSTRUCTED
+                   {"option": "SPXW261216C07400000", "bid": 151.0, "ask": 153.0}]}}   # CONSTRUCTED
+    q = cboe.parse_chain(payload, "SPX").quotes
+    assert sorted(q["root"]) == ["SPXO", "SPXW"] and set(q["strike"]) == {7400.0}
 
 
 @respx.mock

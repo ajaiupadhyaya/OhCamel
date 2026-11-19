@@ -1,10 +1,22 @@
 """/api/options -- listed-option analytics on real Cboe delayed chains and real OHLCV.
 
 Everything is derived from the quotes: the forward and discount factor of every
-expiry come from put-call parity, implied vols are our own (Black-76 on mids),
-smiles are raw SVI fits with static-arbitrage diagnostics, and densities are
-Breeden-Litzenberger. The only external rate is the optional FRED 3-month bill
-used to prefill ``r`` in the calculator when the caller omits it.
+European expiry come from put-call parity, implied vols are our own (Black-76 on
+mids, the American tree for American exercise), smiles are raw SVI fits with
+static-arbitrage diagnostics, and densities are Breeden-Litzenberger. External
+rates: American-style chains discount with the Treasury zero curve as of the
+chain's quote date (:func:`_treasury_rate_curve`), and the calculator prefills
+``r`` from the FRED 3-month bill when the caller omits it.
+
+Time to expiry (completion task 3.4) is ACT/365 calendar time from the chain's
+quote time (``OptionChain.as_of``: the vendor's statement of when its quotes were
+taken, data/cboe.py -- never the time the payload was generated) to the
+settlement instant (16:00 New York, 09:30 for AM-settled index roots;
+options/parity.py). Calendar rather than business time: rates and dividend
+yields are calendar rates, and it is the Cboe VIX convention; over a weekend it
+counts the two closed days, so T exceeds the business time to the same expiry
+(the 2026-11-15 payload: Friday 16:00 to Tuesday 16:00 is 4/365 = 0.01096 years
+against 2 sessions / 252 = 0.00794).
 """
 
 from __future__ import annotations
@@ -23,6 +35,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ...data.base import DataUnavailable
 from ...data.market import MarketData, get_market
+from ...macro.curve import zero_curve_on
 from ...options import bsm, density, realized, strategy, svi
 from ...options.chain import CONTRACT_MULTIPLIER, ChainAnalytics, analyze_chain
 from ...options.parity import InsufficientQuotes, exercise_style
@@ -80,26 +93,21 @@ def _norm(ticker: str) -> str:
     return t
 
 
-def _treasury_rate_curve(market: MarketData):
-    """Latest Treasury constant-maturity curve from FRED as ``T -> r``.
+def _treasury_rate_curve(market: MarketData, on: date):
+    """The Treasury zero curve as of the chain's quote date ``on``, as ``T -> r``.
 
-    FRED CMT yields are bond-equivalent (semiannual) percent; converted to
-    continuous compounding ``r = 2 ln(1 + y/200)`` and interpolated linearly in
-    tenor (flat beyond the ends). Used as the discount curve for American-style
-    underlyings, as the Cboe VIX white paper uses Treasury rates.
+    FRED's constant-maturity yields are PAR yields (bond-equivalent percent); the zero curve is bootstrapped from
+    the curve dated ``on`` -- or the nearest earlier one within ``MAX_CURVE_LAG_DAYS``, said in the note -- by
+    ``macro.curve.zero_curve_on``, and ``r(T)`` is its continuously-compounded zero at ``T`` (ACT/365 years), so
+    ``exp(-r T)`` is the bootstrapped discount factor. Nothing dated after ``on`` is read. Used for American-style
+    underlyings, as the Cboe VIX white paper uses Treasury rates. Returns ``(curve, provenance, note)``.
     """
-    ds = market.treasury_curve(date.today() - timedelta(days=30))
-    curve = ds.data.dropna(how="all")
-    if curve.empty:
-        raise DataUnavailable("no recent Treasury curve observation")
-    last = curve.iloc[-1].dropna()
-    if len(last) < 2:
-        raise DataUnavailable("fewer than two tenors on the latest Treasury curve")
-    tenors = np.asarray(last.index, dtype=float)
-    rates = 2.0 * np.log1p(last.to_numpy(dtype=float) / 200.0)
-    order = np.argsort(tenors)
-    tenors, rates = tenors[order], rates[order]
-    return (lambda T: float(np.interp(T, tenors, rates))), ds.provenance_dicts()
+    ds = market.treasury_curve(on - timedelta(days=30), on)
+    try:
+        zc = zero_curve_on(ds.data.dropna(how="all"), pd.Timestamp(on))
+    except ValueError as e:
+        raise DataUnavailable(str(e)) from e
+    return zc.rate, ds.provenance_dicts(), zc.note()
 
 
 def _bundle(ticker: str, market: MarketData, max_rel_spread: float = 0.5) -> _Bundle:
@@ -116,7 +124,7 @@ def _bundle(ticker: str, market: MarketData, max_rel_spread: float = 0.5) -> _Bu
     rate_curve, curve_note = None, None
     if (getattr(ds.data, "exercise", None) or exercise_style(t)) == "american":
         try:
-            rate_curve, curve_prov = _treasury_rate_curve(market)
+            rate_curve, curve_prov, curve_note = _treasury_rate_curve(market, pd.Timestamp(ds.data.as_of).date())
             provenance += curve_prov
         except (DataUnavailable, ValueError) as e:
             curve_note = (f"Treasury curve unavailable ({e}); rates inferred from put-call parity, which "
@@ -174,7 +182,7 @@ def expiries(ticker: str, market: Market) -> dict[str, Any]:
         "method": {"forward": ("put-call parity regression per expiry" if ca.european else
                                "the strike pair nearest the money priced as American (call and put share one "
                                "vol); parity elsewhere is a bound"),
-                   "day_count": "ACT/365 to settlement",
+                   "day_count": "ACT/365 calendar time from the quote time (as_of) to settlement",
                    "reference": REFS["parity"]},
         "notes": ca.notes, "errors": ca.errors, "provenance": b.provenance,
     })

@@ -13,7 +13,11 @@ shared lock that blocks the writer. So:
 
 Migrations are ``migrations/NNN_name.sql`` applied in order inside a
 transaction; ``schema_version`` records each. Comments in those files must not
-contain a semicolon (statements are split on it).
+contain a semicolon (statements are split on it). A migration that replaces a
+table too large to copy in one transaction (003: ``option_snapshots``) renames
+it and creates the new one; :func:`migrate` then moves the rows in bounded
+transactions (:func:`_move_option_snapshots`) and drops the old table, resuming
+on the next open if interrupted.
 """
 
 from __future__ import annotations
@@ -96,7 +100,38 @@ def migrate(con: duckdb.DuckDBPyConnection) -> int:
             con.execute("ROLLBACK")
             raise
         current = number
+    _move_option_snapshots(con)
     return current
+
+
+#: 003_option_quotes.sql's old table: present only between that migration and the end of the move.
+OPTION_SNAPSHOTS_OLD = "option_snapshots_v2"
+_OLD_COLUMNS = 'underlying, "asof", expiry, strike, cp, bid, ask, last, volume, open_interest, source'
+
+
+def _move_option_snapshots(con: duckdb.DuckDBPyConnection) -> int:
+    """Move every row of the pre-003 ``option_snapshots`` (renamed ``option_snapshots_v2``) into the new table as
+    the after-close pull (``pull = '1620'``, the new columns NULL), ONE SNAPSHOT DAY PER TRANSACTION, then drop the
+    old table. A day already in the new table was moved whole (its transaction committed), so a resumed move
+    copies only the days still missing. Returns the number of days moved. Rationale and measurements:
+    003_option_quotes.sql."""
+    if not con.execute("SELECT count(*) FROM duckdb_tables() WHERE schema_name = 'main' AND table_name = ?",
+                       [OPTION_SNAPSHOTS_OLD]).fetchone()[0]:
+        return 0
+    days = [d for (d,) in con.execute(
+        f'SELECT DISTINCT "asof" FROM {OPTION_SNAPSHOTS_OLD} EXCEPT '
+        "SELECT DISTINCT \"asof\" FROM option_snapshots WHERE pull = '1620' ORDER BY 1").fetchall()]
+    for d in days:
+        con.execute("BEGIN TRANSACTION")
+        try:
+            con.execute(f"INSERT INTO option_snapshots ({_OLD_COLUMNS}, pull) SELECT {_OLD_COLUMNS}, '1620' "
+                        f'FROM {OPTION_SNAPSHOTS_OLD} WHERE "asof" = ?', [d])
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+    con.execute(f"DROP TABLE {OPTION_SNAPSHOTS_OLD}")
+    return len(days)
 
 
 @contextmanager

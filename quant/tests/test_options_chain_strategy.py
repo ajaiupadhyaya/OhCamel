@@ -93,6 +93,27 @@ def test_chain_flags_bad_quotes_and_drops_adjusted_roots():
     assert any("non-standard" in n for n in out.notes)
 
 
+
+def test_a_root_whose_settlement_is_not_established_is_kept_apart_and_not_fitted():
+    """Cboe's SPX payload carries a root SPXO (692 contracts on 2026-11-19, expiring 2026-12-16 and 2027-01-20, both
+    Wednesdays, and SPXW lists 2026-12-16 too). Whether it settles at the open or the close is not established, so
+    its time to expiry is not known: it is never merged into SPXW's slice of the same date, and never fitted. The
+    SPXO rows here are CONSTRUCTED (the SPXW chain's quotes moved 5%)."""
+    base = make_chain(root="SPXW")
+    base = OptionChain(underlying="SPX", spot=base.spot, as_of=base.as_of, quotes=base.quotes, exercise="european")
+    odd = base.quotes[base.quotes["expiry"] == pd.Timestamp("2026-11-20")].assign(
+        root="SPXO", bid=lambda x: x["bid"] * 1.05, ask=lambda x: x["ask"] * 1.05)
+    mixed = OptionChain(underlying="SPX", spot=base.spot, as_of=base.as_of, exercise="european",
+                        quotes=pd.concat([base.quotes, odd], ignore_index=True))
+    a, b = analyze_chain(base), analyze_chain(mixed)
+    assert "SPXO" not in set(b.quotes["root"]) and b.slices.loc["2026-11-20", "roots"] == "SPXW"
+    pd.testing.assert_frame_equal(a.slices, b.slices)
+    assert any("SPXO" in n and str(len(odd)) in n and "settlement" in n for n in b.notes)
+    assert parity.root_settlement("SPXO", "SPX") is None
+    assert [parity.root_settlement(r, "SPX") for r in ("SPX", "SPXW")] == ["AM", "PM"]
+    assert parity.root_settlement("SPY", "SPY") == "PM"     # ETF and equity options all settle at the close
+
+
 def test_resolve_expiry(ca):
     assert ca.resolve("2026-10-30") == "2026-10-30"
     assert ca.resolve(None) == "2026-10-02"                   # first expiry >= 7 days out

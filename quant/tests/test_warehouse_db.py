@@ -34,7 +34,9 @@ EXPECTED_COLUMNS = {
     "factors": [("dataset", V), ("factor", V), ("date", D), ("value", F)],
     "option_snapshots": [("underlying", V), ("asof", D), ("expiry", D), ("strike", F), ("cp", V),
                          ("bid", F), ("ask", F), ("last", F), ("volume", F), ("open_interest", F),
-                         ("source", V)],
+                         ("source", V),
+                         # 003_option_quotes.sql (completion task 3.4)
+                         ("spot", F), ("quote_ts", T), ("vendor_iv", F), ("pull", V), ("quote_ts_source", V)],
     "sec_facts": [("cik", V), ("ticker", V), ("tag", V), ("unit", V), ("period_start", D),
                   ("period_end", D), ("filed", D), ("form", V), ("value", F)],
     "holdings_13f": [("cik", V), ("filer", V), ("accession", V), ("form", V), ("period", D), ("filed", D),
@@ -56,7 +58,7 @@ EXPECTED_PKS = {
     "bars_minute": ["ticker", "ts"],
     "fred": ["series", "date"],
     "factors": ["dataset", "factor", "date"],
-    "option_snapshots": ["underlying", "asof", "expiry", "strike", "cp"],
+    "option_snapshots": ["underlying", "asof", "expiry", "strike", "cp", "pull"],
     "sec_facts": ["cik", "tag", "unit", "period_start", "period_end", "filed"],
     "holdings_13f": ["accession", "cusip", "put_call"],
     "bars_raw": ["ticker", "date"],
@@ -87,8 +89,8 @@ def test_asof_column_needs_quoting(tmp_path):
     with pytest.raises(duckdb.ParserException):
         duckdb.connect().execute("CREATE TABLE t (asof DATE)")
     with open_rw(tmp_path / "w.duckdb") as con:
-        con.execute("INSERT INTO option_snapshots (underlying, \"asof\", expiry, strike, cp) "
-                    "VALUES ('SPY', DATE '2024-06-07', DATE '2024-06-21', 530, 'P')")
+        con.execute("INSERT INTO option_snapshots (underlying, \"asof\", expiry, strike, cp, pull) "
+                    "VALUES ('SPY', DATE '2024-06-07', DATE '2024-06-21', 530, 'P', '1620')")
         assert con.execute('SELECT underlying, max("asof") FROM option_snapshots GROUP BY underlying'
                            ).fetchall() == [("SPY", date(2024, 6, 7))]
 
@@ -97,8 +99,8 @@ def test_migrate_is_idempotent(tmp_path):
     path = tmp_path / "w.duckdb"
     with open_rw(path) as con:
         first = migrate(con)
-        assert migrate(con) == first == 2  # 001_init.sql, 002_raw_bars.sql
-        assert con.execute("SELECT count(*) FROM schema_version").fetchone()[0] == 2
+        assert migrate(con) == first == 3  # 001_init.sql, 002_raw_bars.sql, 003_option_quotes.sql
+        assert con.execute("SELECT count(*) FROM schema_version").fetchone()[0] == 3
 
 
 def test_002_on_a_version_1_warehouse_adds_tables_and_leaves_bars_daily_alone(tmp_path):
@@ -117,10 +119,75 @@ def test_002_on_a_version_1_warehouse_adds_tables_and_leaves_bars_daily_alone(tm
     before = con.execute("SELECT * FROM bars_daily").fetchall()
     con.close()
     with open_rw(path) as con:
-        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 2
+        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 3
         assert con.execute("SELECT * FROM bars_daily").fetchall() == before
         assert con.execute("SELECT count(*) FROM bars_raw").fetchone()[0] == 0
         assert con.execute("SELECT count(*) FROM corp_actions").fetchone()[0] == 0
+
+
+
+def _at_version(path, version):
+    """A warehouse file built by the migrations up to ``version`` only (the live file before a deploy)."""
+    from ohcamel_quant.warehouse.db import _statements, migration_files
+
+    con = duckdb.connect(str(path))
+    con.execute("CREATE TABLE schema_version (version INTEGER NOT NULL, applied_at TIMESTAMP NOT NULL)")
+    for number, f in migration_files():
+        if number <= version:
+            for stmt in _statements(f.read_text()):
+                con.execute(stmt)
+            con.execute("INSERT INTO schema_version VALUES (?, now())", [number])
+    return con
+
+
+OLD_ROWS = [("SPY", date(2026, 11, 13), date(2026, 11, 20), 750.0, "C", 5.1, 5.2, 5.15, 10.0, 100.0, "cboe"),
+            ("SPY", date(2026, 11, 13), date(2026, 11, 20), 750.0, "P", 4.9, 5.0, 4.95, 12.0, 90.0, "cboe"),
+            ("QQQ", date(2026, 11, 16), date(2026, 11, 20), 600.0, "C", 7.0, 7.2, 7.1, 3.0, 40.0, "cboe")]
+
+
+def test_003_on_a_version_2_warehouse_keeps_every_row_as_the_after_close_pull(tmp_path):
+    """Task 3.4: the primary key gains `pull`. DuckDB cannot alter a key in place, so 003 renames the table and
+    creates the new one, and open_rw moves the rows one snapshot day per transaction (a single-transaction copy of
+    a few million rows does not fit the writer's 256 MB). Old rows keep pull '1620' and NULL in the new columns."""
+    path = tmp_path / "w.duckdb"
+    con = _at_version(path, 2)
+    con.executemany("INSERT INTO option_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", OLD_ROWS)
+    con.close()
+    with open_rw(path) as con:
+        assert con.execute("SELECT max(version) FROM schema_version").fetchone()[0] == 3
+        got = con.execute('SELECT underlying, "asof", expiry, strike, cp, bid, ask, last, volume, open_interest, '
+                          "source, spot, quote_ts, vendor_iv, pull, quote_ts_source FROM option_snapshots "
+                          'ORDER BY "asof", underlying, cp').fetchall()
+        assert got == [(*r, None, None, None, "1620", None) for r in OLD_ROWS]
+        tables = {t for (t,) in con.execute("SELECT table_name FROM duckdb_tables()").fetchall()}
+        assert "option_snapshots_v2" not in tables
+        # the same contract in the 15:45 pull is a second row; the same pull twice is refused
+        con.execute("INSERT INTO option_snapshots (underlying, \"asof\", expiry, strike, cp, pull) "
+                    "VALUES ('SPY', DATE '2026-11-13', DATE '2026-11-20', 750, 'C', '1545')")
+        with pytest.raises(duckdb.ConstraintException):
+            con.execute("INSERT INTO option_snapshots (underlying, \"asof\", expiry, strike, cp, pull) "
+                        "VALUES ('SPY', DATE '2026-11-13', DATE '2026-11-20', 750, 'C', '1620')")
+
+
+def test_an_interrupted_move_resumes_on_the_next_open(tmp_path):
+    """The move commits one snapshot day at a time: killed half way, the next open_rw copies the days still
+    missing (never one twice) and only then drops the old table."""
+    path = tmp_path / "w.duckdb"
+    con = _at_version(path, 2)
+    con.executemany("INSERT INTO option_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", OLD_ROWS)
+    from ohcamel_quant.warehouse.db import _statements, migration_files
+
+    for stmt in _statements(dict(migration_files())[3].read_text()):     # 003 committed, the move not started
+        con.execute(stmt)
+    con.execute("INSERT INTO schema_version VALUES (3, now())")
+    con.execute("INSERT INTO option_snapshots SELECT *, NULL, NULL, NULL, '1620', NULL FROM option_snapshots_v2 "
+                "WHERE \"asof\" = DATE '2026-11-13'")                    # the first day moved, then the kill
+    con.close()
+    with open_rw(path) as con:
+        assert con.execute("SELECT count(*), count(DISTINCT (underlying, \"asof\", expiry, strike, cp)) "
+                           "FROM option_snapshots").fetchone() == (3, 3)
+        tables = {t for (t,) in con.execute("SELECT table_name FROM duckdb_tables()").fetchall()}
+        assert "option_snapshots_v2" not in tables
 
 
 def test_corp_actions_refuses_the_same_action_twice(tmp_path):

@@ -199,6 +199,34 @@ def test_corp_actions_run_weekdays_at_1820_before_the_bars_and_alone_in_their_mi
     assert [hm for n, hm in at if n == bars.name] == [(18, 30)]
 
 
+
+def test_option_chains_are_pulled_at_1545_and_1620_new_york_in_both_offsets():
+    """Completion task 3.4: one ingest.option_snapshots pull before the close (15:45 New York, priority 1 like the
+    other intraday entries, light so the 09:25-16:05 heavy window never holds it) and one after it (16:20), both
+    every weekday, at the same New York minute in a winter (EST) and a summer (EDT) week."""
+    from zoneinfo import ZoneInfo
+
+    from ohcamel_quant.jobs.cron import fire_times, parse_cron
+    from ohcamel_quant.jobs.provenance import WAREHOUSE_WRITERS
+    from ohcamel_quant.warehouse.ingest.options import OPTION_UNDERLYINGS
+
+    ny = ZoneInfo("America/New_York")
+    s = load_schedules(DEFAULT_PATH)
+    pulls = {e.params.get("pull"): e for e in s.entries if e.kind == "ingest.option_snapshots"}
+    assert set(pulls) == {"1545", "1620"}
+    pre, post = pulls["1545"], pulls["1620"]
+    assert (pre.cron, pre.priority, pre.mem_class, pre.heavy) == ("45 15 * * 1-5", 1, "S", False)
+    assert (post.cron, post.priority, post.mem_class, post.heavy) == ("20 16 * * 1-5", 2, "S", False)
+    assert pre.params["underlyings"] == post.params["underlyings"] == list(OPTION_UNDERLYINGS)
+    assert "ingest.option_snapshots" in WAREHOUSE_WRITERS     # so the export-window test below covers both
+    for monday in (datetime(2026, 1, 5).date(), datetime(2026, 7, 6).date()):
+        for e, hm in ((pre, (15, 45)), (post, (16, 20))):
+            fires = [t.astimezone(ny) for i in range(7)
+                     for t in fire_times(parse_cron(e.cron), monday + timedelta(days=i))]
+            assert sorted(f.weekday() for f in fires) == [0, 1, 2, 3, 4]
+            assert {(f.hour, f.minute) for f in fires} == {hm}
+
+
 def test_no_warehouse_writer_is_scheduled_inside_the_nightly_export_window():
     """Task 3.3 fix round 1: the warehouse export opens it read-only at the backup timer's time (06:30 UTC) and
     holds the shared lock for up to EXPORT_BUDGET_MIN; a writer that starts then waits 30 s and fails its keys.

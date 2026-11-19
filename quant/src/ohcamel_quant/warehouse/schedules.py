@@ -45,8 +45,13 @@ SCHEDULES: list[dict] = [
      "priority": 2, "mem_class": "M", "heavy": True},
     {"name": "warehouse-13f", "cron": "30 4 * * 0", "kind": "ingest.holdings_13f", "params": {},
      "priority": 2, "mem_class": "S", "heavy": False},
+    # completion task 3.4: a pull before the close (closing option quotes are stale and wide; vol.surface_history
+    # prefers this one), intraday priority 1 and light so the 09:25-16:05 heavy window never holds it
+    {"name": "warehouse-option-snapshots-1545", "cron": "45 15 * * 1-5", "kind": "ingest.option_snapshots",
+     "params": {"underlyings": list(OPTION_UNDERLYINGS), "pull": "1545"},
+     "priority": 1, "mem_class": "S", "heavy": False},
     {"name": "warehouse-option-snapshots", "cron": "20 16 * * 1-5", "kind": "ingest.option_snapshots",
-     "params": {"underlyings": list(OPTION_UNDERLYINGS)},
+     "params": {"underlyings": list(OPTION_UNDERLYINGS), "pull": "1620"},
      "priority": 2, "mem_class": "S", "heavy": False},
     # completion task 3.2: splits and dividends before the 18:30 daily bars they are checked against
     {"name": "warehouse-corp-actions", "cron": "20 18 * * 1-5", "kind": "ingest.corp_actions", "params": {},

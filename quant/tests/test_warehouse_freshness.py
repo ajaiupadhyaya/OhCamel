@@ -122,11 +122,16 @@ def _seconds(text):
 
 
 def test_schedules_cover_every_handler():
-    assert sorted(s["kind"] for s in SCHEDULES) == sorted(HANDLERS) and len(HANDLERS) == 9
+    # every handler scheduled; ingest.option_snapshots twice (completion task 3.4: the 15:45 and 16:20 pulls)
+    kinds = [s["kind"] for s in SCHEDULES]
+    assert set(kinds) == set(HANDLERS) and len(HANDLERS) == 9 and len(kinds) == 10
+    assert kinds.count("ingest.option_snapshots") == 2
     assert len({s["name"] for s in SCHEDULES}) == len(SCHEDULES)
     for s in SCHEDULES:
         assert set(s) == B4_KEYS  # no max_age or other extra key: load_schedules would raise
-        assert s["mem_class"] in ("S", "M", "L") and s["priority"] == 2 and len(s["cron"].split()) == 5
+        # priority 2 (nightly), except the pre-close option pull, intraday (priority 1)
+        want = 1 if s["params"].get("pull") == "1545" else 2
+        assert s["mem_class"] in ("S", "M", "L") and s["priority"] == want and len(s["cron"].split()) == 5
         assert isinstance(s["heavy"], bool) and isinstance(s["params"], dict)
     assert set(MAX_AGE) == set(HANDLERS)
     for kind, dur in MAX_AGE.items():
@@ -140,9 +145,10 @@ def test_schedules_cover_every_handler():
     # the two objects paste into schedules.yaml unchanged.
     assert json.loads(json.dumps({"max_age": MAX_AGE, "schedules": SCHEDULES})) == {
         "max_age": MAX_AGE, "schedules": SCHEDULES}
-    opt = next(s for s in SCHEDULES if s["kind"] == "ingest.option_snapshots")
-    assert opt["cron"] == "20 16 * * 1-5"  # after 16:15 New York, session days
-    assert opt["params"]["underlyings"] == list(OPTION_UNDERLYINGS)
+    opts = {s["params"]["pull"]: s for s in SCHEDULES if s["kind"] == "ingest.option_snapshots"}
+    assert opts["1620"]["cron"] == "20 16 * * 1-5"  # after 16:15 New York, session days
+    assert opts["1545"]["cron"] == "45 15 * * 1-5"  # before the 16:00 close (quotes 15 minutes delayed)
+    assert all(o["params"]["underlyings"] == list(OPTION_UNDERLYINGS) for o in opts.values())
     assert next(s for s in SCHEDULES if s["kind"] == "ingest.sec_facts")["heavy"] is True
 
 

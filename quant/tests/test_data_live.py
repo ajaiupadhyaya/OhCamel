@@ -57,7 +57,13 @@ def test_live_spy_cboe_chain(live):
     assert ch.spot > 100 and len(q) > 1000 and set(q["type"]) == {"C", "P"}
     assert (q["expiry"] >= pd.Timestamp(date.today()) - pd.Timedelta(days=1)).all()
     spx = live.option_chain("SPX").data
-    assert spx.spot > 1000 and spx.quotes["root"].isin(["SPX", "SPXW"]).all()
+    roots = set(spx.quotes["root"])
+    # Task 3.4: Cboe added SPXO (settlement not established) beside SPX and SPXW in November 2026; it is kept under
+    # its own root. A root beyond these three is a vendor change to look at, so this still fails on one.
+    assert spx.spot > 1000 and {"SPX", "SPXW"} <= roots <= {"SPX", "SPXW", "SPXO"}, roots
+    # the quote time is the vendor's (last_trade_time, New York), never later than the payload was generated (UTC)
+    assert ch.quote_ts_source == "cboe:last_trade_time" and ch.payload_ts is not None
+    assert pd.Timestamp(ch.as_of).tz_localize("America/New_York").tz_convert("UTC").tz_localize(None) <= ch.payload_ts
 
 
 def test_live_aapl_companyfacts(live):

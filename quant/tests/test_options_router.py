@@ -4,7 +4,10 @@ endpoints against a dependency-overridden market serving the numerical test chai
 
 from __future__ import annotations
 
+import gzip
+import json
 import math
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -151,6 +154,77 @@ def test_strategy_endpoint(chain_client):
     assert j["max_loss"] is None           # -inf serializes to null: unbounded
     assert j["max_loss_unbounded"] is True and j["max_profit_unbounded"] is False
     assert chain_client.post("/api/options/strategy", json={"ticker": "TESTX", "legs": [{"qty": 1}]}).status_code == 422
+
+
+
+# ------------------------------------------------------------------ Task 3.4: the quote time and the zero curve
+SPY_CHAIN_2026_11_15 = Path(__file__).parent / "data" / "cboe_spy_2026-11-15.json.gz"
+_META = json.loads(SPY_CHAIN_2026_11_15.with_name(SPY_CHAIN_2026_11_15.name + ".meta.json").read_text())
+#: The curve FRED served for that chain (dated 2026-11-12, in the fixture's sidecar).
+FRED_2026_11_12 = (_META["treasury_curve"]["date"], _META["treasury_curve"]["tenor_years"],
+                   _META["treasury_curve"]["yield_pct"])
+#: CONSTRUCTED: a steep par curve (0.25% at one month to 8% at 30 years), not market data -- it separates the
+#: bootstrapped zero from the par yield, which a flat curve would not.
+STEEP_CONSTRUCTED = ("2026-11-12", [1 / 12, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 20.0, 30.0],
+                     [0.25, 0.5, 1.0, 2.0, 3.5, 4.5, 5.75, 6.5, 7.0, 7.75, 8.0])
+
+
+class FixtureChainMarket(MarketData):
+    """Offline market serving the committed Sunday SPY payload and one dated Treasury curve."""
+
+    def __init__(self, curve=FRED_2026_11_12):
+        super().__init__()
+        self._curve = curve
+
+    def option_chain(self, ticker: str) -> Dataset:
+        from ohcamel_quant.data.cboe import parse_chain
+
+        ch = parse_chain(json.loads(gzip.decompress(SPY_CHAIN_2026_11_15.read_bytes())), "SPY")
+        return Dataset(ch, [Provenance.now("fixture", note=SPY_CHAIN_2026_11_15.name)])
+
+    def treasury_curve(self, start=None, end=None) -> Dataset:
+        d, tenors, ylds = self._curve
+        df = pd.DataFrame([ylds], index=pd.DatetimeIndex([d]), columns=[float(t) for t in tenors])
+        df = df[(df.index >= pd.Timestamp(start)) if start else slice(None)]
+        df = df[(df.index <= pd.Timestamp(end)) if end else slice(None)]
+        return Dataset(df, [Provenance.now("fixture", note="treasury curve")])
+
+
+def test_a_chain_stamped_on_sunday_counts_its_tuesday_expiry_from_the_quotes():
+    """The review's case: the payload was generated on Sunday, and T to Tuesday's expiry came out 1.7 days with an
+    implied dividend yield of 48% against the vendor spot. The quotes are Friday's close: T must be at least the two
+    sessions (Monday, Tuesday) left from them in business time, and the Tuesday slice's implied q is under 5%."""
+    opt_router._CACHE.clear()
+    b = opt_router._bundle("SPY", FixtureChainMarket())
+    opt_router._CACHE.clear()
+    s = b.ca.slices.loc["2026-11-17"]
+    business = opt_router.trading_days_between(pd.Timestamp("2026-11-13 16:00"), "2026-11-17") / 252.0
+    assert opt_router.trading_days_between(pd.Timestamp("2026-11-13 16:00"), "2026-11-17") == 2
+    assert s["T"] >= business
+    assert s["T"] == pytest.approx(4.0 / 365.0, abs=1e-9)        # Friday 16:00 to Tuesday 16:00, ACT/365
+    assert abs(s["div_yield"]) < 0.05
+    assert b.ca.as_of == pd.Timestamp("2026-11-13 16:00")
+
+
+def test_the_router_discounts_with_the_bootstrapped_zero_rate_not_the_par_yield():
+    """On a steep curve the zero rate at a two-year expiry sits above the par yield there; the slice's rate must be
+    the zero of the curve bootstrapped from that date's par yields, continuously compounded, at the slice's T."""
+    from ohcamel_quant.macro.curve import bootstrap_par_curve
+
+    opt_router._CACHE.clear()
+    b = opt_router._bundle("SPY", FixtureChainMarket(STEEP_CONSTRUCTED))
+    opt_router._CACHE.clear()
+    s = b.ca.slices
+    assert (s["rate_source"] == "treasury").all()
+    _, tenors, ylds = STEEP_CONSTRUCTED
+    zc = bootstrap_par_curve(tenors, ylds)
+    longest = s.loc[s["T"].idxmax()]
+    T = float(longest["T"])
+    assert T > 1.5
+    assert longest["rate"] == pytest.approx(float(zc.zero(T)) / 100.0, abs=1e-10)
+    par = 2.0 * math.log1p(float(np.interp(T, tenors, ylds)) / 200.0)   # the old par-yield discounting
+    assert longest["rate"] - par > 5e-4                                  # more than 5 bp apart
+    assert any("bootstrapped" in n and "2026-11-12" in n for n in b.ca.notes)
 
 
 # ------------------------------------------------------------------ live

@@ -192,7 +192,8 @@ def test_spy_put_and_call_agree_within_half_a_vol_point_on_every_quote_pinned_pa
     """The brief's condition, asserted where it is testable: on the review's SPY chain, at every
     strike with |k| < 0.15 whose call and put IVs are each pinned within +-0.25 points by their own
     bid/ask, the American IVs of the put and the call differ by under 0.5 points -- all of them
-    (287 pairs on the whole chain; the reference engine's five expiries hold fewer).
+    (298 pairs on the whole chain since task 3.4's quote time, 287 before; the reference engine's five
+    expiries hold fewer).
 
     The check can fail: the same pairs inverted with Black-76 (the chain before this work) differ by
     0.5 points or more at some of them (16 on the whole chain, up to 2.0 points at two years), so it
@@ -211,15 +212,16 @@ def test_spy_put_and_call_agree_within_half_a_vol_point_on_every_quote_pinned_pa
 
 def test_spy_ivs_use_the_option_implied_underlying(spy_2026_11_15_american):
     """The payload's spot, 754.37, is the 16:00 close; the options quoted to 16:15 put the
-    underlying at 752.62 (front expiry, 0.7 days: the American pair nearest the money at q = 0). The
-    chain keeps the vendor spot, carries the implied level separately, says which the IVs use and
-    why -- and the yield the stale spot used to fake (132% at 0.7 days) is gone."""
+    underlying at 752.44 (front expiry, 3 days from the quotes' own time: the American pair nearest the
+    money at q = 0; 752.62 when T was counted from Sunday's payload stamp, before task 3.4). The chain
+    keeps the vendor spot, carries the implied level separately, says which the IVs use and why -- and
+    the yield the stale spot fakes under Black-76 (31% at 3 days) is gone."""
     ca, ce, chain, _ = spy_2026_11_15_american
     assert ca.spot == chain.spot == 754.37                           # the vendor's spot, untouched
     assert ca.iv_spot_source == "implied" and ca.iv_spot == ca.implied_spot
-    assert ca.implied_spot == pytest.approx(752.616, abs=0.001)
+    assert ca.implied_spot == pytest.approx(752.442, abs=0.001)
     note = next(n for n in ca.notes if "option-implied underlying" in n)
-    assert "752.62" in note and "754.37" in note and "16:15" in note
+    assert "752.44" in note and "754.37" in note and "16:15" in note
     short = ca.slices["dte"] < 7
     assert short.any() and (ca.slices.loc[short, "div_yield"].abs() < 0.05).all()
     assert (ce.slices.loc[short, "div_yield"] > 0.15).all()          # Black-76's q from the stale spot
@@ -234,15 +236,15 @@ def _reference_expiries(c):
 
 def test_spy_every_blank_iv_has_a_status_and_the_counts_are_exact(spy_2026_11_15_american):
     """Every quote says why it has, or has not, an IV. Exact counts per status and side on the five
-    expiries both engines hold. Whole chain (Rust): ok 4515 C / 4023 P, at_intrinsic 750 / 1949,
-    below_model_forward 251 / 0, no_vol 8 / 0 (prices flat in vol at the root), wide 306 / 112,
-    zero_bid 480 / 226."""
+    expiries both engines hold. Whole chain (reference engine, task 3.4's quote time and zero curve): ok
+    4604 C / 4001 P, at_intrinsic 658 / 1971, below_model_forward 252 / 0, no_vol 10 / 0 (prices flat in
+    vol at the root), wide 306 / 112, zero_bid 480 / 226."""
     ca = spy_2026_11_15_american[0]
     assert set(ca.quotes["iv_status"]) <= set(chain_mod.IV_STATUSES)
     q = _reference_expiries(ca)
     got = {k: int(v) for k, v in q.groupby(["iv_status", "type"]).size().items()}
-    assert got == {("ok", "C"): 627, ("ok", "P"): 577, ("no_vol", "C"): 1, ("at_intrinsic", "C"): 178, ("at_intrinsic", "P"): 362,
-                   ("below_model_forward", "C"): 54, ("wide", "C"): 53, ("wide", "P"): 30,
+    assert got == {("ok", "C"): 638, ("ok", "P"): 573, ("no_vol", "C"): 2, ("at_intrinsic", "C"): 167, ("at_intrinsic", "P"): 366,
+                   ("below_model_forward", "C"): 53, ("wide", "C"): 53, ("wide", "P"): 30,
                    ("zero_bid", "C"): 113, ("zero_bid", "P"): 57}
     note = next(n for n in ca.notes if n.startswith("below_model_forward:"))
     assert "single dividend yield" in note and "discrete dividends are not available" in note
@@ -250,15 +252,16 @@ def test_spy_every_blank_iv_has_a_status_and_the_counts_are_exact(spy_2026_11_15
 
 def test_spy_has_no_model_free_arbitrage(spy_2026_11_15_american):
     """arb_bound on the American chain is a tradeable crossing of an exercise bound against the
-    implied 752.62 (tolerance: the front pair's half-spread, 0.025): none on the whole chain,
-    against 87 forward-bound flags before this work -- which the European twin still shows (20 on
-    the five expiries, e.g. the 0.7-day 565 call at 186.28 / 189.05 against D (F - K) = 187.67).
+    implied 752.44 (tolerance: the front pair's half-spread): none on the whole chain, against the
+    forward-bound flags the European twin shows (59 on the whole chain, 19 on the five expiries, e.g.
+    the 3-day 595 call at 156.37 / 158.62, mid 157.495, against D (F - K) = 157.630).
 
-    Hand-check of the two quotes closest to crossing (both 0.7-day puts, intrinsic K - 752.616):
-      768 P: ask 15.58 vs intrinsic 768 - 752.616 = 15.384 -> the ask is 0.196 ABOVE it: no
+    Hand-check of the two quotes closest to crossing (both 3-day puts, intrinsic K - 752.442):
+      768 P: ask 15.58 vs intrinsic 768 - 752.442 = 15.558 -> the ask is 0.022 ABOVE it: no
              crossing (at_intrinsic: the bid 15.16 is below intrinsic);
-      763 P: ask 10.62 vs intrinsic 10.384 -> 0.236 above: no crossing (at_intrinsic).
-    No bid exceeds S (calls) or K (puts)."""
+      763 P: ask 10.62 vs intrinsic 10.558 -> 0.062 above: no crossing (at_intrinsic).
+    (Before task 3.4, with T from Sunday's payload stamp, the level was 752.616 and these margins 0.196 and
+    0.236.) No bid exceeds S (calls) or K (puts)."""
     ca, ce, _, _ = spy_2026_11_15_american
     q = ca.quotes
     assert int(q["arb_bound"].sum()) == 0
@@ -267,11 +270,11 @@ def test_spy_has_no_model_free_arbitrage(spy_2026_11_15_american):
     v = q["valid"]
     assert (q.loc[v, "ask"] - exer[v]).min() > -0.025                  # the definition, recomputed
     row = q[(q["slice"] == "2026-11-16") & (q["strike"] == 768.0) & (q["type"] == "P")].iloc[0]
-    assert row["ask"] == 15.58 and row["ask"] - (768.0 - S) == pytest.approx(0.196, abs=1e-3)
+    assert row["ask"] == 15.58 and row["ask"] - (768.0 - S) == pytest.approx(0.022, abs=1e-3)
     assert row["iv_status"] == "at_intrinsic"
-    assert int(_reference_expiries(ce)["arb_bound"].sum()) == 20
+    assert int(_reference_expiries(ce)["arb_bound"].sum()) == 19
     if len(ce.slices) == 32:                                          # the whole chain (Rust)
-        assert int(ce.quotes["arb_bound"].sum()) == 87
+        assert int(ce.quotes["arb_bound"].sum()) == 59
 
 
 def test_spy_parity_residual_after_early_exercise_is_within_half_a_dollar_beyond_six_months(spy_2026_11_15_american):
