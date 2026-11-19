@@ -1,0 +1,207 @@
+{
+ "provenance": {
+  "what": "vol.forecast_league on the fixture warehouse (build_fixture_warehouse, requested_start 1990-01-01), clock pinned at 2026-06-01T21:00:00Z, threads 1 -- the tables test_jobs_artifacts.py compares against",
+  "made": "2026-11-19, Task 3.3 fix round 2",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "python": "3.13.12",
+  "numpy": "2.5.3",
+  "scipy": "1.18.1",
+  "pandas": "3.0.6",
+  "kernels": {
+   "engine": "python",
+   "api": null
+  },
+  "code": "b5a96fec51d9b26c49144158acae2460a2aa3cc9 plus the fix-round-2 working tree",
+  "check": "these tables hash (floats at 9 significant digits) to the round-1 pins, which the review found equal to b8a9604's"
+ },
+ "params": {
+  "tickers": [
+   "SPY"
+  ],
+  "eval_days": 42,
+  "refit_every": 1000
+ },
+ "tables": {
+  "league": {
+   "columns": [
+    "ticker",
+    "model",
+    "qlike",
+    "mse",
+    "n",
+    "in_mcs",
+    "rank_qlike",
+    "target"
+   ],
+   "rows": [
+    [
+     "SPY",
+     "garch",
+     -8.709257105194736,
+     1.2792463989910129e-08,
+     42,
+     true,
+     3,
+     "squared_return"
+    ],
+    [
+     "SPY",
+     "gjr",
+     -8.801731429012145,
+     1.0775666114658449e-08,
+     42,
+     true,
+     2,
+     "squared_return"
+    ],
+    [
+     "SPY",
+     "egarch",
+     -8.815922941149276,
+     1.0526471224621991e-08,
+     42,
+     true,
+     1,
+     "squared_return"
+    ],
+    [
+     "SPY",
+     "ewma",
+     -8.699162592499366,
+     1.2204282980220226e-08,
+     42,
+     true,
+     4,
+     "squared_return"
+    ]
+   ]
+  },
+  "dm": {
+   "columns": [
+    "ticker",
+    "a",
+    "b",
+    "stat",
+    "pvalue"
+   ],
+   "rows": [
+    [
+     "SPY",
+     "garch",
+     "gjr",
+     1.6761288350956973,
+     0.09371295978056095
+    ],
+    [
+     "SPY",
+     "garch",
+     "egarch",
+     0.9550857730936319,
+     0.33953432294459296
+    ],
+    [
+     "SPY",
+     "garch",
+     "ewma",
+     -0.45878912648840203,
+     0.6463856038838229
+    ],
+    [
+     "SPY",
+     "gjr",
+     "egarch",
+     0.2222008278716094,
+     0.8241575496775295
+    ],
+    [
+     "SPY",
+     "gjr",
+     "ewma",
+     -1.5150400379355295,
+     0.12976226507744504
+    ],
+    [
+     "SPY",
+     "egarch",
+     "ewma",
+     -0.9485876674717583,
+     0.34283036576158443
+    ]
+   ]
+  },
+  "summary": {
+   "columns": [
+    "model",
+    "names",
+    "mean_rank",
+    "mcs_rate",
+    "median_qlike"
+   ],
+   "rows": [
+    [
+     "egarch",
+     1,
+     1.0,
+     1.0,
+     -8.815922941149276
+    ],
+    [
+     "ewma",
+     1,
+     4.0,
+     1.0,
+     -8.699162592499366
+    ],
+    [
+     "garch",
+     1,
+     3.0,
+     1.0,
+     -8.709257105194736
+    ],
+    [
+     "gjr",
+     1,
+     2.0,
+     1.0,
+     -8.801731429012145
+    ]
+   ]
+  },
+  "forecasts": {
+   "columns": [
+    "ticker",
+    "asof",
+    "var_1d_garch",
+    "var_1d_gjr",
+    "var_1d_egarch",
+    "var_1d_ewma"
+   ],
+   "rows": [
+    [
+     "SPY",
+     "2026-06-01",
+     4.440372760444514e-05,
+     3.7164571947923096e-05,
+     2.457069414510516e-05,
+     4.959835220638948e-05
+    ]
+   ]
+  },
+  "skipped": {
+   "columns": [
+    "ticker",
+    "reason"
+   ],
+   "rows": []
+  },
+  "dropped": {
+   "columns": [
+    "ticker",
+    "model",
+    "reason"
+   ],
+   "rows": []
+  }
+ }
+}

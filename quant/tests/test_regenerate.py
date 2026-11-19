@@ -185,3 +185,27 @@ def test_the_data_hash_message_says_which_export_can_regenerate_an_artifact(made
     shutil.move(tmp_path / "b.parquet", f)
     rc, out = _run(capsys, art, "--warehouse", altered)
     assert rc == 4 and "first export after it" in out
+
+
+def test_a_manifest_with_the_pre_name_binding_data_hash_is_named_as_such(made, capsys, tmp_path):
+    """Fix round 2: an artifact made before fix round 1 hashed only the sorted per-read hashes. When every read
+    matches, regenerate says the manifest's data_hash predates the definition and goes on to the tables."""
+    from ohcamel_quant.jobs import provenance as P
+    from ohcamel_quant.jobs.artifacts import read_reads
+
+    art, export = made
+    old = P.legacy_data_hash(read_reads(art))
+    rc, out = _run(capsys, _with_manifest(art, tmp_path, data_hash=old), "--warehouse", export)
+    assert rc == 0 and "predates" in out and "every table matches" in out
+
+
+def test_a_mismatch_on_another_platform_says_the_tolerance_holds_only_on_one(made, capsys, tmp_path):
+    """Fix round 2: optimizer-fitted products are not bit-portable (Linux CI moved the vol league's GARCH fits); the
+    1e-9 comparison holds on the platform the artifact was made on, and a mismatch elsewhere says so."""
+    art, export = made
+    copy = _with_manifest(art, tmp_path, runtime={"python": "3.12.0", "platform": "Linux-6.8-x86_64-with-glibc2.39"})
+    s = pd.read_parquet(copy / "summary.parquet")
+    s.loc[0, "var"] = s.loc[0, "var"] + 1e-6
+    s.to_parquet(copy / "summary.parquet", index=False)
+    rc, out = _run(capsys, copy, "--warehouse", export)
+    assert rc == 1 and "made on another platform" in out and "Linux-6.8-x86_64" in out

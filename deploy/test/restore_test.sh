@@ -521,6 +521,12 @@ case "$(verb_lines ps | grep -- '--services')" in
 esac
 
 wfresh
+run_restore SHIM_PS_EXIT=1 -- --warehouse "$export_dir" --replace-live --services-stopped --dry-run
+expect_rc "W5f a --replace-live dry run" 0
+expect_eq "W5f asks compose nothing" "$(verb_lines ps | grep -c -- '--services' || true)" "0"
+expect_has "W5f and prints the check it would make" "$scratch/out" "would refuse if ohcamel-worker or ohcamel-quant runs"
+
+wfresh
 run_restore SHIM_PS_EXIT=125 -- --warehouse "$export_dir" --replace-live --services-stopped
 expect_rc "W5d docker without compose (exit 125) is a refusal too" 1
 

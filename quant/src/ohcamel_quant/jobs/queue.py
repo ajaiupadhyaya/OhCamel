@@ -225,7 +225,12 @@ def requeue(conn: sqlite3.Connection, job_id: str, *, reason: str, now: datetime
             _event(conn, job_id, "queued", now, None, reason)
 
 
-def requeue_stale(conn: sqlite3.Connection, *, now: datetime, stale_after_s: float = 300.0,
+#: A running job with no heartbeat for this long has a dead worker (requeue_stale; the warehouse export uses it too
+#: to tell a live writer from a stale row).
+STALE_AFTER_S = 300.0
+
+
+def requeue_stale(conn: sqlite3.Connection, *, now: datetime, stale_after_s: float = STALE_AFTER_S,
                   max_attempts: int = 3) -> list[tuple[str, str]]:
     """Running jobs whose last heartbeat is older than ``stale_after_s``: the worker died.
 

@@ -52,7 +52,8 @@
 #      export.json, and only then renames the directory to YYYY-MM-DD; a
 #      failure leaves no dated directory (quant/src/ohcamel_quant/warehouse/
 #      export.py). Before it opens the warehouse it reads /data/jobs.sqlite and
-#      waits (up to 30 min) while a warehouse-writing ingest runs, then fails
+#      waits (up to 10 min) while a warehouse-writing ingest runs with a live
+#      heartbeat (a dead worker's stale row does not count), then fails
 #      the step if one still does. Before it runs, the disk is checked: an
 #      export wants twice the newest export's size free (BACKUP_EXPORT_MIN_KB,
 #      1 GiB, when there is none yet or it cannot be measured); short of that,
@@ -62,6 +63,11 @@
 #      a good export, the 14 newest exports and the newest of each calendar
 #      month are kept, and leftover YYYY-MM-DD*.part directories go. A failed
 #      export prunes nothing. The status record names the step `warehouse`.
+#      The export runs LAST, after every copy and the two configuration
+#      files, and is bounded at EXPORT_TIMEOUT_S (40 min: the exporter's
+#      10-minute wait for a live writer plus 30 minutes of export) inside the
+#      unit's 60-minute TimeoutStartSec, so a slow export is a failed step and
+#      the status record is still written.
 #      BACKUP_FREE_KB pins the free space for a test.
 #   6. Records the run for the public Ledger: one `ohcamel-backup-status`
 #      container (the Quant image, uid 10002, quant_data its only mount) writes
@@ -501,6 +507,10 @@ copy_config() {
 	return 1
 }
 
+# The export container's bound, in seconds: warehouse/export.py's WRITER_WAIT_S + EXPORT_RUN_BUDGET_S
+# (quant/tests/test_warehouse_export.py holds the three numbers and the unit's TimeoutStartSec together).
+EXPORT_TIMEOUT_S=2400
+
 # run_entry INDEX COMPOSE_FILE TAG DIR GID DRY: one list line, one container.
 run_entry() {
 	local i="$1" compose="$2" tag="$3" dir="$4" gid="$5" dry="$6"
@@ -521,6 +531,9 @@ run_entry() {
 		# The Quant image's own exporter (step 5b): read-only, verified, renamed.
 		image=ghcr.io/ajaiupadhyaya/ohcamel-quant
 		cmd+=(--entrypoint python ohcamel-backup -m ohcamel_quant.warehouse export "$path" /backups/warehouse --date "${dest#warehouse/}" --jobs-db /data/jobs.sqlite)
+		# Bounded: the exporter's wait for a live writer (10 min) plus its own run (30 min), well inside the
+		# unit's TimeoutStartSec (60 min), so a slow export is a failed step the record names, never a killed unit.
+		cmd=(timeout "$EXPORT_TIMEOUT_S" "${cmd[@]}")
 		if ! export_room "$dir" "$dry"; then
 			return 1
 		fi
@@ -549,6 +562,10 @@ run_entry() {
 			prune_exports "$dir"
 		fi
 		return 0
+		;;
+	export:124)
+		backup_err "$volume:$path (export) timed out after ${EXPORT_TIMEOUT_S} s -- warehouse/${dest#warehouse/} is not to be trusted; the earlier exports are kept"
+		return 1
 		;;
 	sqlite:3)
 		backup_say "$volume:$path is absent in the volume -- nothing to copy yet (the recorder writes its first row the first open minute after a deploy); not a failure"
@@ -655,9 +672,12 @@ backup_main() {
 		backup_say "$today -- $n entr$([ "$n" = 1 ] && echo y || echo ies), engine image tag $tag, into $dir"
 	fi
 
+	# Every copy first, the warehouse export last: it is the slow step (it may
+	# wait for a live ingest), so nothing else waits on it, and it is bounded so
+	# the record below is always written.
 	i=0
 	while [ "$i" -lt "$n" ]; do
-		if ! run_entry "$i" "$compose" "$tag" "$dir" "$gid" "$dry"; then
+		if [ "${entry_method[$i]}" != export ] && ! run_entry "$i" "$compose" "$tag" "$dir" "$gid" "$dry"; then
 			failures=$((failures + 1))
 			failed_steps+=("${entry_stem[$i]}")
 		fi
@@ -671,6 +691,14 @@ backup_main() {
 		failures=$((failures + 1))
 		failed_steps+=(deploy-env)
 	fi
+	i=0
+	while [ "$i" -lt "$n" ]; do
+		if [ "${entry_method[$i]}" = export ] && ! run_entry "$i" "$compose" "$tag" "$dir" "$gid" "$dry"; then
+			failures=$((failures + 1))
+			failed_steps+=("${entry_stem[$i]}")
+		fi
+		i=$((i + 1))
+	done
 
 	if [ "$failures" -ne 0 ]; then
 		backup_err "$failures of $steps steps FAILED (above)"

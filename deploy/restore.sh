@@ -283,7 +283,11 @@ restore_warehouse() {
 	# compose's answer counts only when compose answered: a failed `ps` (no tag, no
 	# daemon, no compose plugin) is a refusal, never "nothing is running". The tag
 	# is supplied because docker-compose.yml requires it to parse at all.
-	if [ "$compose_check" = 1 ]; then
+	if [ "$compose_check" = 1 ] && [ "$dry" = 1 ]; then
+		printf '+ OHCAMEL_TAG=%s %s   # would refuse if ohcamel-worker or ohcamel-quant runs, or if compose does not answer\n' \
+			"$(printf '%q' "$tag")" "$(quoted docker compose -f "$compose" ps --status running --services)"
+		running=""
+	elif [ "$compose_check" = 1 ]; then
 		ps_rc=0
 		ps_err=$(mktemp "${TMPDIR:-/tmp}/ohcamel-restore-ps.XXXXXX")
 		ps_out=$(OHCAMEL_TAG="$tag" docker compose -f "$compose" ps --status running --services 2>"$ps_err") || ps_rc=$?

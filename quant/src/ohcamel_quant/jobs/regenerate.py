@@ -19,7 +19,10 @@ In order, refusing loudly at the first thing that would make the comparison unfa
 5. The data: the re-run's ``data_hash`` must equal the manifest's; if not, the reads that differ are named and
    no table is compared -- the export does not hold the data the job read (exit 4).
 6. The tables: every table, every column, equal; floats within 1e-9 (absolute, or relative to the larger
-   magnitude). Wall-clock stamp columns (``provenance.RUN_STAMPS``) are masked and named. A mismatch prints the
+   magnitude). That holds on the platform the artifact was made on: an optimizer-fitted product (GARCH by
+   Nelder-Mead, the HMM, LightGBM) is not bit-portable -- Linux CI moved the vol league's fitted values against
+   macOS -- so across platforms a mismatch may be the platform, and the message says so when the manifest's
+   ``runtime.platform`` differs from this one. Wall-clock stamp columns (``provenance.RUN_STAMPS``) are masked and named. A mismatch prints the
    table, the column, how many rows differ, the first rows and the largest difference (exit 1).
 """
 
@@ -219,6 +222,11 @@ def regenerate(artifact: Path, export: Path, *, artifacts_root: Path | None = No
         finally:
             ctx.close()
         got_hash = P.data_hash(result["reads"]) if not P.unrecorded_note(m["kind"], result) else None
+        if got_hash is not None and got_hash != m["data_hash"] and m["data_hash"] == P.legacy_data_hash(result["reads"]) \
+                and not _diff_reads(m["reads"], result["reads"]):
+            _say("the manifest's data_hash predates the name-binding definition (Task 3.3 fix round 1: sorted per-read "
+                 "hashes, no names); every read's hash matches the re-run, so the data is the same -- comparing tables")
+            got_hash = m["data_hash"]
         if got_hash != m["data_hash"]:
             lines = _diff_reads(m["reads"], result["reads"])
             _say("data_hash differs: the export does not hold the data the job read (no table was compared). An "
@@ -245,7 +253,13 @@ def regenerate(artifact: Path, export: Path, *, artifacts_root: Path | None = No
         if masked:
             _say(f"masked as wall-clock stamps: {', '.join(sorted(masked))}")
         if problems:
-            _say("MISMATCH\n" + "\n".join(f"  - {p}" for p in problems))
+            then = (m.get("runtime") or {}).get("platform")
+            now = P.runtime_info()["platform"]
+            where = ("" if not then or then == now else
+                     f"\n  The artifact was made on another platform ({then}; this is {now}). The {TOL:g} comparison "
+                     "holds on the platform an artifact was made on; an optimizer-fitted product (GARCH, HMM, "
+                     "LightGBM) can move beyond it across platforms -- re-run on the recording platform to judge it.")
+            _say("MISMATCH\n" + "\n".join(f"  - {p}" for p in problems) + where)
             return 1
         _say(f"every table matches ({len(m['tables'])} tables, floats within {TOL:g})")
         return 0

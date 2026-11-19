@@ -150,3 +150,49 @@ def test_a_job_that_does_not_write_the_warehouse_does_not_hold_the_export(wh, tm
     assert (out / E.RECORD).is_file()
     out = E.export_warehouse(wh, tmp_path / "w2", day="2026-11-17", jobs_db=tmp_path / "absent.sqlite")
     assert (out / E.RECORD).is_file()                               # no queue yet: nothing can be writing
+
+
+# --- fix round 2: only a live writer is waited for; the wait fits inside the backup unit -------------------------
+
+def test_a_running_row_whose_heartbeat_is_stale_is_not_a_writer(wh, tmp_path):
+    """A worker that died leaves its job 'running' until requeue_stale runs, which it cannot while the worker is
+    down: a row with no heartbeat within STALE_AFTER_S is nothing writing, and must not hold the export."""
+    from datetime import timedelta
+
+    from ohcamel_quant.jobs.db import connect, utcnow
+    from ohcamel_quant.jobs.queue import STALE_AFTER_S, claim_next, enqueue
+
+    db = tmp_path / "jobs.sqlite"
+    conn = connect(db)
+    then = utcnow() - timedelta(seconds=STALE_AFTER_S + 60)
+    enqueue(conn, kind="ingest.bars_daily", params={}, priority=2, mem_class="S", heavy=False,
+            submitted_by="schedule:t", now=then)
+    claim_next(conn, allowed_classes=frozenset({"S"}), allow_heavy=True, now=then)     # heartbeat_at = then
+    conn.close()
+    assert E._writers_running(db) == []
+    out = E.export_warehouse(wh, tmp_path / "w", day="2026-11-17", jobs_db=db, wait_s=0.2, poll_s=0.1)
+    assert (out / E.RECORD).is_file()
+
+
+def test_a_queue_that_cannot_be_read_fails_the_export_readably(wh, tmp_path):
+    bad = tmp_path / "jobs.sqlite"
+    bad.write_bytes(b"this is not a database" * 100)
+    with pytest.raises(E.ExportFailed, match="could not read the job queue"):
+        E.export_warehouse(wh, tmp_path / "w", day="2026-11-17", jobs_db=bad, wait_s=0.2, poll_s=0.1)
+
+
+def test_the_writer_wait_and_the_export_fit_inside_the_backup_unit_with_room_for_the_record():
+    """The export's wait for a writer plus its own run budget must end before systemd's TimeoutStartSec kills the
+    backup, with ten minutes left for the copies before it and the status record after it (120 s); backup.sh
+    bounds the export container at exactly wait + budget."""
+    import re
+
+    from ohcamel_quant.config import REPO_ROOT
+
+    unit = (REPO_ROOT / "deploy/systemd/ohcamel-backup.service").read_text()
+    timeout_s = int(re.search(r"^TimeoutStartSec=(\d+)min$", unit, re.M).group(1)) * 60
+    assert E.WRITER_WAIT_S == 600
+    assert E.WRITER_WAIT_S + E.EXPORT_RUN_BUDGET_S + 600 + 120 <= timeout_s
+    script = (REPO_ROOT / "deploy/backup.sh").read_text()
+    bound = int(re.search(r"^EXPORT_TIMEOUT_S=(\d+)$", script, re.M).group(1))
+    assert bound == E.WRITER_WAIT_S + E.EXPORT_RUN_BUDGET_S

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -310,11 +311,10 @@ def test_a_kind_with_unrecorded_reads_publishes_data_hash_null_with_the_reason(c
 
 
 
-# --- pinned tables (fix round 1): a seed or stream change fails loudly -------------------------------------------
-# The canonical hash of each table with every float rounded to 9 significant digits (so a last-bit libm difference
-# between macOS and Linux cannot move it, while any change of seed, stream or method does), pinned at the values
-# the code produced on 2026-11-18 -- tables the review found equal to b8a9604's. On the NumPy reference only: the
-# Rust kernels draw from another generator (equal in distribution, not in value), so there it is skipped.
+# --- pinned tables (fix rounds 1 and 2): a seed or stream change fails loudly ------------------------------------
+# risk.mc_atlas: the canonical hash of each table with every float rounded to 9 significant digits, pinned at the
+# values the code produced on 2026-11-18 (tables the review found equal to b8a9604's); it passed on Linux CI too.
+# On the NumPy reference only: the Rust kernels draw from another generator (equal in distribution, not in value).
 
 def _rounded_hash(df):
     import numpy as np
@@ -328,27 +328,103 @@ def _rounded_hash(df):
     return frame_hash(out)
 
 
-GOLDEN = {
-    "risk.mc_atlas": ({"n_paths": 2_000, "member_paths": 2_000, "members": False}, {
-        "summary": "8a0081eb7d13672faf956c13c2dea33407563fbfe310c569b169935838669e66",
-        "euler": "d40e16cf30c306b5dc524264402db9c4cc03128db375579c976eed82a06108d5",
-        "members": "5a05a9781d46871fc92b8b780a4358ca99b1dab5720c74f41d0cb9cf915bdf5f"}),
-    "vol.forecast_league": ({"tickers": ["SPY"], "eval_days": 42, "refit_every": 1000}, {
-        "league": "13066a63060380a953cd4fa86fe1cc59ebc9793a718f02420c064336a34aec03",
-        "dm": "6362d591ba00163750d67d5df4cf4d2ef5b01470d307c01f78212a8e5b05a557",
-        "summary": "b10a27b94146a65598549639f5aaf15d09ab01250d8aafae63c75735d60f525e",
-        "forecasts": "09b56dbbad42764e8fcf840f4119c40c017b7fb514c85df9f920291104d4ef87",
-        "skipped": "fc42feaab8427b4e7db905c2f52111759b58430f3e8a439dda232194f1c8d5ef",
-        "dropped": "66b783bee1be18a2b9df15a26bed354e4c3b652f029eaa06118ef4f7c49158bb"}),
-}
+ATLAS_PIN = ({"n_paths": 2_000, "member_paths": 2_000, "members": False}, {
+    "summary": "8a0081eb7d13672faf956c13c2dea33407563fbfe310c569b169935838669e66",
+    "euler": "d40e16cf30c306b5dc524264402db9c4cc03128db375579c976eed82a06108d5",
+    "members": "5a05a9781d46871fc92b8b780a4358ca99b1dab5720c74f41d0cb9cf915bdf5f"})
 
 
-@pytest.mark.parametrize("kind", sorted(GOLDEN))
-def test_the_pinned_tables_of_two_seeded_products_have_not_moved(tmp_path, fixture_wh, kind):
+def _reference_kernels_only():
     from ohcamel_quant import kernels
 
     if kernels.engine_of("copula_t_paths") != "python":
         pytest.skip("pinned on the NumPy reference kernels")
-    params, want = GOLDEN[kind]
-    got = {t: _rounded_hash(df) for t, df in _tables(_run(tmp_path, fixture_wh, kind=kind, params=params))[1].items()}
+
+
+def test_the_pinned_tables_of_risk_mc_atlas_have_not_moved(tmp_path, fixture_wh):
+    _reference_kernels_only()
+    params, want = ATLAS_PIN
+    got = {t: _rounded_hash(df) for t, df in _tables(_run(tmp_path, fixture_wh, params=params))[1].items()}
     assert got == want, got
+
+
+# vol.forecast_league: GARCH fits by Nelder-Mead (xatol 1e-10, fatol 1e-14) are not bit-portable -- Linux CI hashed
+# league, dm, summary and forecasts differently from macOS at 9 digits (fix round 2). So its pin is the committed
+# VALUES (tests/data/golden/, with their provenance): every non-numeric column, every integer and boolean column,
+# the ranking and selection columns and the row set must be EQUAL; every other float within RTOL relative. A
+# different seed, stream or method moves these values by percent; the optimizer's own tolerance is ~1e-10. Every
+# nonzero difference is reported as a warning ("vol.forecast_league golden: largest differences ..."), pass or
+# fail, so a CI log says how large the cross-platform difference is.
+
+LEAGUE_GOLDEN = Path(__file__).parent / "data" / "golden" / "vol_forecast_league_fixture.json"
+LEAGUE_EXACT = {"league": {"rank_qlike", "in_mcs", "n"}, "summary": {"names", "mean_rank", "mcs_rate"}}
+RTOL = 1e-6
+
+
+def _golden_frame(t):
+    return pd.DataFrame(t["rows"], columns=t["columns"])
+
+
+def compare_to_golden(got, golden, exact, rtol=RTOL):
+    """(problems, differences): problems are readable mismatches; differences name every table and float column
+    with its largest absolute and relative difference."""
+    import numpy as np
+
+    problems, diffs = [], []
+    if sorted(got) != sorted(golden):
+        return [f"tables differ: got {sorted(got)}, golden {sorted(golden)}"], diffs
+    for name in sorted(golden):
+        want, have = _golden_frame(golden[name]), got[name].reset_index(drop=True)
+        if list(have.columns) != list(want.columns) or len(have) != len(want):
+            problems.append(f"{name}: shape or columns differ: got {list(have.columns)} x {len(have)}, golden "
+                            f"{list(want.columns)} x {len(want)}")
+            continue
+        for col in want.columns:
+            a, b = want[col], have[col]
+            floaty = pd.api.types.is_float_dtype(b) and col not in exact.get(name, set())
+            if floaty:
+                x, y = a.to_numpy(dtype=float), b.to_numpy(dtype=float)
+                both_nan = np.isnan(x) & np.isnan(y)
+                d = np.where(both_nan, 0.0, np.abs(x - y))
+                r = np.where(both_nan, 0.0, d / np.maximum(np.abs(x), 1e-300))
+                if d.size and float(d.max()) > 0:
+                    diffs.append(f"{name}.{col}: max abs {float(d.max()):.3e}, max rel {float(r.max()):.3e}")
+                if (r > rtol).any() or (np.isnan(x) != np.isnan(y)).any():
+                    problems.append(f"{name}.{col}: beyond {rtol:g} relative -- max abs {float(d.max()):.3e}, "
+                                    f"max rel {float(r.max()):.3e} (row {int(r.argmax())}: golden {x[r.argmax()]!r}, "
+                                    f"got {y[r.argmax()]!r})")
+            else:
+                ga = [None if pd.isna(v) else (v.item() if hasattr(v, "item") else v) for v in a]
+                gb = [None if pd.isna(v) else (v.item() if hasattr(v, "item") else v) for v in b]
+                if ga != gb:
+                    problems.append(f"{name}.{col}: must be equal -- golden {ga}, got {gb}")
+    return problems, diffs
+
+
+def test_the_league_comparison_reports_sizes_and_holds_its_tolerance():
+    golden = json.loads(LEAGUE_GOLDEN.read_text())["tables"]
+    got = {k: _golden_frame(t) for k, t in golden.items()}
+    assert compare_to_golden(got, golden, LEAGUE_EXACT) == ([], [])
+    near = {k: v.copy() for k, v in got.items()}
+    near["league"].loc[0, "qlike"] *= 1 + 1e-8
+    problems, diffs = compare_to_golden(near, golden, LEAGUE_EXACT)
+    assert problems == [] and diffs and "league.qlike: max abs" in diffs[0]
+    far = {k: v.copy() for k, v in got.items()}
+    far["forecasts"].loc[0, "var_1d_garch"] *= 1 + 1e-5
+    far["league"].loc[0, "rank_qlike"] += 1
+    problems, _ = compare_to_golden(far, golden, LEAGUE_EXACT)
+    assert any("forecasts.var_1d_garch: beyond 1e-06 relative" in p and "max rel" in p for p in problems)
+    assert any(p.startswith("league.rank_qlike: must be equal") for p in problems)
+
+
+def test_the_pinned_values_of_vol_forecast_league_have_not_moved(tmp_path, fixture_wh):
+    import warnings
+
+    _reference_kernels_only()
+    doc = json.loads(LEAGUE_GOLDEN.read_text())
+    got = _tables(_run(tmp_path, fixture_wh, kind="vol.forecast_league", params=doc["params"]))[1]
+    problems, diffs = compare_to_golden(got, doc["tables"], LEAGUE_EXACT)
+    if diffs:
+        warnings.warn("vol.forecast_league golden: largest differences from the values made on "
+                      f"{doc['provenance']['platform']}: " + "; ".join(diffs), stacklevel=1)
+    assert not problems, "vol.forecast_league golden:\n  " + "\n  ".join(problems + ["differences: " + "; ".join(diffs)])

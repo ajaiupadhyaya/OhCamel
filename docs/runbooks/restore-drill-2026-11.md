@@ -15,7 +15,7 @@ This file holds two runs. The first was made on the **fixture warehouse, on the 
 the droplet is not to be contacted from an agent session and no Docker daemon was running there. The second --
 **last night's real backup** -- is the owner's to run, and is not filled in.
 
-## 1. Run on the fixture warehouse, on this machine (2026-11-18, re-run after fix round 1)
+## 1. Run on the fixture warehouse, on this machine (2026-11-19, re-run after fix round 2)
 
 Not production data. The fixture warehouse is the nine committed ETFs (`fixtures/history`, 2016-06-01 to
 2026-06-01), three FRED series and the universe definitions, built by
@@ -28,15 +28,15 @@ with its clock pinned at the fixtures' last session (2026-06-01 17:00 New York),
 - Software: the repository's `quant/.venv` -- Python 3.13.12, DuckDB 1.5.6, pandas 3.0.6, pyarrow 25.0.1,
   numpy 2.5.3. No Rust wheel in this venv, so the kernels ran on the NumPy reference (the manifest says
   `kernels {'engine': 'python'}`; in the image they run on Rust and the manifest says so).
-- Code: the working tree that became Task 3.3's fix-round-1 commit, on top of `c790de2` (the Task 3.3 commit). The
-  manifest's `code_sha` reads `c790de2...` because the run preceded the commit -- the artifact and the re-run used
+- Code: the working tree that became Task 3.3's fix-round-2 commit, on top of `b5a96fe` (fix round 1). The
+  manifest's `code_sha` reads `b5a96fe...` because the run preceded the commit -- the artifact and the re-run used
   one checkout, which is what regenerate's code check asks.
 - Command, from the repository root: `deploy/warehouse-drill.sh --fixture $SCRATCH` (a new directory).
 - The transcript below is the script's output verbatim, except that the scratch directory's path is written
   `$SCRATCH` and the repository's `$REPO` (both were long absolute paths); the first line is the start time.
 
 ```text
-2026-11-18T09:04:53Z
+2026-11-19T14:47:52Z
 
 == drill: 1. the warehouse: the fixture warehouse (the committed ETFs, logged as full-history fetches)
 $ python -m ohcamel_quant.warehouse build-fixture $SCRATCH/live/warehouse.duckdb --requested-start 1990-01-01
@@ -45,7 +45,7 @@ $SCRATCH/live/warehouse.duckdb
 == drill: 2. a published number: risk.mc_atlas on it, the clock pinned at the fixtures' last session
 $ python -m ohcamel_quant.jobs.local risk.mc_atlas --artifacts $SCRATCH/artifacts --warehouse $SCRATCH/live/warehouse.duckdb --offline --now 2026-06-01T21:00:00Z --params '{"n_paths": 20000, "member_paths": 20000, "members": ["SPY", "QQQ", "TLT"]}'
 ohcamel_kernels is not importable (No module named 'ohcamel_kernels'); kernels run on the NumPy reference
-artifact risk.mc_atlas 01KT2FRZ40FYC1TYG0KB4KNJYC
+artifact risk.mc_atlas 01KT2FRZ40292DVW9F8EWYA86D
   data_hash 3408ae76934dc9b485bb14e605a1f9414c7a75ec5eb4db51c493ace755406b57
   seed {'seed': 20261006}  lock_hash 333652225230a743b566de79c7ce14c1ed3a07b3a7d85aff4a4ebdff687ce875  threads 1  kernels {'engine': 'python', 'api': None}
   reads 4 - warehouse:fixture:alpaca (reads.json)
@@ -53,7 +53,7 @@ artifact risk.mc_atlas 01KT2FRZ40FYC1TYG0KB4KNJYC
 == drill: 3. the nightly export, as backup.sh runs it (read-only EXPORT DATABASE, verified, renamed)
 $ python -m ohcamel_quant.warehouse export $SCRATCH/live/warehouse.duckdb $SCRATCH/backups/warehouse --date 2026-06-01
 export: $SCRATCH/backups/warehouse/2026-06-01 -- 13 tables, 31118 rows, 488602 bytes, schema version 2, verified
-export took 473 ms; on disk: 528 KiB; warehouse file: 3084 KiB
+export took 403 ms; on disk: 528 KiB; warehouse file: 3084 KiB
 
 == drill: 4. wipe: the warehouse is deleted; only the export is left
 $ rm $SCRATCH/live/warehouse.duckdb
@@ -64,10 +64,10 @@ restore: $SCRATCH/restored/warehouse.duckdb -- 13 tables, 31118 rows, every coun
 restore: warehouse restored from $SCRATCH/backups/warehouse/2026-06-01 into $SCRATCH/restored/warehouse.duckdb (a new file; nothing live was touched)
 
 == drill: 6. regenerate the published number from the export
-$ python tools/regenerate.py $SCRATCH/artifacts/risk.mc_atlas/01KT2FRZ40FYC1TYG0KB4KNJYC --warehouse $SCRATCH/backups/warehouse/2026-06-01
-regenerate: risk.mc_atlas 01KT2FRZ40FYC1TYG0KB4KNJYC (started 2026-06-01T21:00:00.000Z, data_hash 3408ae76934dc9b4..., seed {'seed': 20261006}, threads 1)
+$ python tools/regenerate.py $SCRATCH/artifacts/risk.mc_atlas/01KT2FRZ40292DVW9F8EWYA86D --warehouse $SCRATCH/backups/warehouse/2026-06-01
+regenerate: risk.mc_atlas 01KT2FRZ40292DVW9F8EWYA86D (started 2026-06-01T21:00:00.000Z, data_hash 3408ae76934dc9b4..., seed {'seed': 20261006}, threads 1)
 ohcamel_kernels is not importable (No module named 'ohcamel_kernels'); kernels run on the NumPy reference
-regenerate: code c790de22c3ae, lock 333652225230, kernels python: as the manifest names them
+regenerate: code b5a96fec51d9, lock 333652225230, kernels python: as the manifest names them
 regenerate: export $SCRATCH/backups/warehouse/2026-06-01 of 2026-06-01 (schema version 2, 31118 rows)
 regenerate: data_hash matches (4 reads)
 regenerate:   summary: matches
@@ -77,10 +77,10 @@ regenerate: every table matches (3 tables, floats within 1e-09)
 
 == drill: 7. the negative check: one altered row in a copy of the export must fail the re-run
 altered bars_daily.adj_close by 1 part in 10^4 where ticker = 'SPY' AND date = DATE '2026-05-29' (1 row(s), bars_daily.parquet)
-$ python tools/regenerate.py $SCRATCH/artifacts/risk.mc_atlas/01KT2FRZ40FYC1TYG0KB4KNJYC --warehouse $SCRATCH/altered/2026-06-01
-regenerate: risk.mc_atlas 01KT2FRZ40FYC1TYG0KB4KNJYC (started 2026-06-01T21:00:00.000Z, data_hash 3408ae76934dc9b4..., seed {'seed': 20261006}, threads 1)
+$ python tools/regenerate.py $SCRATCH/artifacts/risk.mc_atlas/01KT2FRZ40292DVW9F8EWYA86D --warehouse $SCRATCH/altered/2026-06-01
+regenerate: risk.mc_atlas 01KT2FRZ40292DVW9F8EWYA86D (started 2026-06-01T21:00:00.000Z, data_hash 3408ae76934dc9b4..., seed {'seed': 20261006}, threads 1)
 ohcamel_kernels is not importable (No module named 'ohcamel_kernels'); kernels run on the NumPy reference
-regenerate: code c790de22c3ae, lock 333652225230, kernels python: as the manifest names them
+regenerate: code b5a96fec51d9, lock 333652225230, kernels python: as the manifest names them
 regenerate: export $SCRATCH/altered/2026-06-01 of 2026-06-01 (schema version 2, 31118 rows)
 regenerate: data_hash differs: the export does not hold the data the job read (no table was compared). An artifact can be regenerated only from the first export after it, before the next ingest touches what it read -- use that night's export
   - different rows: market.returns{"args":[["SPY","QQQ","IWM","TLT","IEF","GLD"]],"kwargs":{}}
@@ -88,11 +88,11 @@ regenerate: data_hash differs: the export does not hold the data the job read (n
 regenerate exited 4 on the altered export, as it must
 
 == drill: PASS -- export, wipe, restore and regenerate on the fixture warehouse; the altered export was caught
-deploy/warehouse-drill.sh --fixture $SCRATCH  5.32s user 0.81s system 19% cpu 31.947 total
+deploy/warehouse-drill.sh --fixture $SCRATCH  5.16s user 0.69s system 99% cpu 5.888 total
 exit 0
 ```
 
-What it shows: the export took 473 ms for 31,118 rows (13 tables) and is 528 KiB on disk against a
+What it shows: the export took 403 ms for 31,118 rows (13 tables) and is 528 KiB on disk against a
 3,084 KiB DuckDB file; the restore came back with every table's count equal to the export's record and the
 migration version (2) intact; the re-run from the export matched every table of the artifact, its `data_hash`
 included; and one adjusted close changed by one part in ten thousand in a copy of the export was caught before
@@ -141,6 +141,12 @@ This is the drill on real data. Nothing below has been run; fill it in with the 
    `--scratch`. The second command restores the export into a new file under `/var/backups/ohcamel/restored/`.)
    Remove `/var/backups/ohcamel/drill` and `restored/` afterwards.
 
+   Same platform: `regenerate.py`'s 1e-9 comparison holds on the platform the artifact was made on. An
+   optimizer-fitted product (GARCH by Nelder-Mead, the HMM, LightGBM) is not bit-portable -- Linux CI moved the
+   vol league's fitted values against macOS (fix round 2) -- so judge a production artifact by regenerating it in
+   the Quant image on the droplet (the container command above), not on the laptop; a mismatch on another
+   platform says so in its message.
+
 3. Record here: the date of the export, the artifact's kind and id, `du -sh` of the export directory, how long
    the nightly export took (`journalctl -u ohcamel-backup.service` around 06:30 UTC), the restore's counts, the
    `regenerate` transcript, and the altered-row run's non-zero exit.
@@ -182,12 +188,16 @@ no writer can open the file while it runs. An ingest does not simply wait for it
 during an export is logged FAILED and not retried that night, and if the run's summary log write times out as
 well the job fails (then its job-level retries apply). Two things keep them apart (fix round 1): the export
 first reads the job queue (`/data/jobs.sqlite`, read-only) and waits while any warehouse-writing ingest is
-running -- up to 30 minutes, then the export fails loudly and the Ledger's backup row says "failed at the
+running with a live heartbeat (a dead worker's leftover row, older than the queue's own staleness threshold,
+does not count) -- up to 10 minutes, then the export fails loudly and the Ledger's backup row says "failed at the
 warehouse export"; and no warehouse-writing schedule fires between 06:30 and 07:30 UTC in either New York offset
 (`tests/test_jobs_schedules.py` holds it, reading the backup timer). `ingest.sec_facts` and
 `ingest.holdings_13f` moved from Sunday 02:00 and 03:00 New York to 04:00 and 04:30 for this (02:00 EST is 07:00
 UTC; 03:00 EDT is 07:00 UTC). An ingest started by hand during an export can still lose keys. At ~0.3-0.5 GB the
 export should take tens of seconds to a couple of minutes on the droplet's shared vCPUs (estimated, not measured).
+The export runs last in the backup, after every copy and the book and deploy-env copies, and `backup.sh` bounds it
+at 40 minutes (the 10-minute wait plus 30 of export) inside the unit's 60-minute `TimeoutStartSec`: a slow export
+is a failed step, and the status record is still written.
 
 Which export regenerates an artifact: the first export after the artifact was made, before the next ingest
 changes what it read. A later export holds later data; `regenerate.py` then reports `data_hash differs` (exit 4)

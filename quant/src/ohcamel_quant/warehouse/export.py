@@ -10,8 +10,9 @@ Parquet files and equal to the source's, the source's migration version, the Duc
   per key with a 30 s timeout, so a key whose open times out during an export is logged FAILED (no retry of that
   key), and if the run's summary log write times out too the job fails (then the job-level retries apply). Two
   things keep the two apart: before opening the warehouse the export reads the job queue (``jobs_db``,
-  read-only) and waits while any warehouse-writing ingest is RUNNING -- up to ``wait_s`` (30 min), then the
-  export fails loudly and the backup's status record names the step; and no warehouse-writing schedule fires
+  read-only) and waits while any warehouse-writing ingest is RUNNING with a live heartbeat (a dead worker's stale
+  row does not count) -- up to ``wait_s`` (10 min), then the export fails loudly and the backup's status record
+  names the step; and no warehouse-writing schedule fires
   inside the export's window, the backup timer's 06:30 UTC plus ``EXPORT_BUDGET_MIN``, in either New York
   offset (tests/test_jobs_schedules.py). A writer started by hand during an export can still lose keys.
 * It is written to ``<day>.part``, verified, and only then renamed to ``<day>``; a failure removes the
@@ -46,7 +47,11 @@ RECORD = "export.json"
 #: The window no warehouse-writing schedule may start in, from the backup timer's 06:30 UTC (the export follows
 #: the backup's copies by seconds; an export of ~0.5 GB is estimated at minutes, not an hour).
 EXPORT_BUDGET_MIN = 60
-WRITER_WAIT_S = 1800.0
+#: How long the export waits for a live warehouse writer, and how long the export itself may run: backup.sh bounds the
+#: export container at their sum (EXPORT_TIMEOUT_S), which with the copies before it and the status record after it
+#: stays inside the backup unit's TimeoutStartSec (tests/test_warehouse_export.py parses both files).
+WRITER_WAIT_S = 600.0
+EXPORT_RUN_BUDGET_S = 1800.0
 WRITER_POLL_S = 15.0
 SOURCE_TIMEOUT_S = 60.0
 SOURCE_CONFIG = {"threads": 1, "memory_limit": "256MB"}
@@ -98,19 +103,31 @@ def _size(directory: Path) -> int:
     return sum(p.stat().st_size for p in directory.rglob("*") if p.is_file())
 
 
-def _writers_running(jobs_db: Path) -> list[tuple[str, str]]:
-    """``[(kind, id)]`` of the warehouse-writing jobs RUNNING in the queue, read-only; none when there is no queue."""
+def _writers_running(jobs_db: Path, now: datetime | None = None) -> list[tuple[str, str]]:
+    """``[(kind, id)]`` of the warehouse-writing jobs RUNNING in the queue whose heartbeat (else ``started_at``) is
+    newer than ``requeue_stale``'s threshold, read-only; none when there is no queue. A row older than that is a dead
+    worker's leftover -- nothing is writing -- which only a running worker would requeue."""
     import sqlite3
+    from datetime import timedelta
 
+    from ..jobs.db import iso, utcnow
     from ..jobs.provenance import WAREHOUSE_WRITERS
+    from ..jobs.queue import STALE_AFTER_S
 
     if not Path(jobs_db).is_file():
         return []
-    con = sqlite3.connect(f"file:{jobs_db}?mode=ro", uri=True, timeout=10)
+    cutoff = iso((now or utcnow()) - timedelta(seconds=STALE_AFTER_S))
     try:
-        rows = con.execute("SELECT kind, id FROM jobs WHERE state = 'running'").fetchall()
-    finally:
-        con.close()
+        con = sqlite3.connect(f"file:{jobs_db}?mode=ro", uri=True, timeout=10)
+        try:
+            rows = con.execute("SELECT j.kind, j.id FROM jobs j LEFT JOIN job_progress p ON p.job_id = j.id "
+                               "WHERE j.state = 'running' AND COALESCE(p.heartbeat_at, j.started_at) >= ?",
+                               (cutoff,)).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        raise ExportFailed(f"could not read the job queue {jobs_db} to see whether an ingest is writing ({e}); "
+                           "no export tonight -- the previous exports are kept") from e
     return [(k, i) for k, i in rows if k in WAREHOUSE_WRITERS]
 
 

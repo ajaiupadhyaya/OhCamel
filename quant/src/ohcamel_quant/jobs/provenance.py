@@ -168,6 +168,12 @@ def data_hash(reads: Iterable[dict[str, Any]]) -> str:
     return sha256_text("\n".join(sorted(f"{r['name']}\t{r['sha256']}" for r in reads)))
 
 
+def legacy_data_hash(reads: Iterable[dict[str, Any]]) -> str:
+    """The definition before fix round 1 (the sorted per-read hashes alone): regenerate.py recognises a manifest
+    made with it, so its message can say so."""
+    return sha256_text("\n".join(sorted(str(r["sha256"]) for r in reads)))
+
+
 def file_sha256(path: Path) -> str | None:
     try:
         return hashlib.sha256(Path(path).read_bytes()).hexdigest()

@@ -142,6 +142,10 @@ run)
 		# What the export container would leave: the dated directory with its record.
 		# The directory count it saw is logged, so a case can tell a prune ran BEFORE it.
 		find "$OHCAMEL_BACKUP_DIR/warehouse" -mindepth 1 -maxdepth 1 -name '20*' 2>/dev/null | grep -c . >>"$SHIM_EXPORT_SEEN" || true
+		# Which copies were already made when the export started (it runs last, after them).
+		for f in "book-$SHIM_TODAY.sexp" "deploy-$SHIM_TODAY.env" "desk-$SHIM_TODAY.db"; do
+			[ -e "$OHCAMEL_BACKUP_DIR/$f" ] && printf '%s\n' "$f" >>"$SHIM_EXPORT_SEEN.before"
+		done
 		[ "${SHIM_EXIT_EXPORT:-0}" = 0 ] || exit "$SHIM_EXIT_EXPORT"
 		mkdir -p "$OHCAMEL_BACKUP_DIR/warehouse/$SHIM_TODAY"
 		: >"$OHCAMEL_BACKUP_DIR/warehouse/$SHIM_TODAY/export.json"
@@ -172,6 +176,7 @@ printf '%s\n' "$1" >>"$SHIM_TIMEOUT_LOG"
 shift
 case " $* " in
 *" ohcamel-backup-status "*) [ "${SHIM_HANG_STATUS:-0}" = 1 ] && exit 124 ;;
+*" ohcamel_quant.warehouse export "*) [ "${SHIM_HANG_EXPORT:-0}" = 1 ] && exit 124 ;;
 esac
 exec "$@"
 SHIM
@@ -197,6 +202,7 @@ fresh() {
 	: >"$status_log"
 	: >"$timeout_log"
 	: >"$export_seen"
+	rm -f "$export_seen.before"
 }
 
 # run_backup [VAR=value ...] -- [backup.sh arguments ...]
@@ -792,6 +798,24 @@ expect_has "X8 and says the measurement failed" "$scratch/err" "could not measur
 if grep -q "syntax error" "$scratch/err"; then no "X8 no shell syntax error" "$(grep 'syntax error' "$scratch/err" | head -1)"; else ok "X8 no shell syntax error"; fi
 expect_eq "X8 and nothing was deleted" "$(exports)" "2026-08-31 2026-09-10 2026-09-11 2026-09-12"
 
+
+# The export runs LAST of the copies, after the book and deploy/.env, so a slow
+# or killed export cannot stop them; it is bounded by `timeout`, and a timed-out
+# export is a failed step the record names -- the record is still written.
+fresh
+run_backup --
+expect_eq "X9 the book, deploy/.env and the journal were copied before the export started" \
+	"$(sort "$export_seen.before" 2>/dev/null | tr '\n' ' ')" "book-$today.sexp deploy-$today.env desk-$today.db "
+
+fresh
+run_backup SHIM_HANG_EXPORT=1 --
+expect_rc "X10 an export that times out fails the run" 1
+expect_eq "X10 and the record is written, naming the step" "$(status)" "2026-09-27T06:31:00Z false 1 7 warehouse"
+expect_has "X10 and the timeout is said" "$scratch/err" "timed out"
+for f in "book-$today.sexp" "deploy-$today.env"; do
+	if [ -e "$backups/$f" ]; then ok "X10 $f was still copied"; else no "X10 $f was still copied" "$(listing)"; fi
+done
+
 fresh
 run_backup -- --dry-run
 expect_has "X6 --dry-run prints the export's command" "$scratch/out" "ohcamel_quant.warehouse export /data/warehouse.duckdb /backups/warehouse --date $today --jobs-db /data/jobs.sqlite"
@@ -830,7 +854,7 @@ fresh
 run_backup SHIM_EXIT_STATUS=1 SHIM_EXIT_SQLITE=1 --
 expect_rc "S5 nor turn a failed backup into a good one" 1
 
-expect_eq "S5 the record's run, and only it, is bounded at 120 s" "$(cat "$timeout_log")" "120"
+expect_eq "S5 the export is bounded at 2400 s and the record at 120 s, and nothing else is" "$(cat "$timeout_log" | tr '\n' ' ')" "2400 120 "
 
 fresh
 run_backup SHIM_HANG_STATUS=1 --

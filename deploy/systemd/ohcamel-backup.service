@@ -39,10 +39,12 @@ User=ohcamel
 Group=ohcamel
 WorkingDirectory=/home/ohcamel/OhCamel
 ExecStart=/home/ohcamel/OhCamel/deploy/backup.sh
-# The journal is small (megabytes) and the recorder is ~12k rows; a run is
-# seconds. Half an hour is the ceiling at which a stuck daemon call becomes a
-# failed run rather than a unit that never ends.
-TimeoutStartSec=30min
+# The journal is small (megabytes) and the recorder is ~12k rows; those copies
+# take seconds. The warehouse export (Task 3.3) runs last, bounded by backup.sh
+# at 40 minutes (a 10-minute wait for a live ingest plus 30 of export), so an
+# hour is the ceiling at which a stuck daemon call becomes a failed run rather
+# than a unit that never ends -- and it leaves the status record its time.
+TimeoutStartSec=60min
 # A failure is a failed unit in journalctl and `systemctl list-timers`; the
 # watchdog (ohcamel-watch, Task 18) alerts on a newest backup older than 26 h,
 # which is how a silent miss is noticed.
