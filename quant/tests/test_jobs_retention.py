@@ -164,16 +164,20 @@ def test_the_worker_prunes_its_kind_after_publishing(tmp_path, monkeypatch):
 @pytest.mark.parametrize("env, want", [("0123456789abcdef0123456789abcdef01234567", "0123456789abcdef0123456789abcdef01234567"),
                                        ("unknown", None), ("", None), (None, None)])
 def test_api_ops_reports_the_image_build_sha(tmp_path, monkeypatch, env, want):
-    """The footer's BUILD reads /api/ops build.git_sha: the image's OHCAMEL_GIT_SHA, never the 'unknown' default."""
+    """/api/ops computes build.git_sha from the image's OHCAMEL_GIT_SHA (never the 'unknown' default), and the public
+    app never sends it (the owner's ruling, 2026-11-20; api/redact.py): the route's own value is checked, then the
+    response."""
     from ohcamel_quant import __version__
     from ohcamel_quant.api.app import create_app
     from ohcamel_quant.api.routers.jobs import get_jobs_db_path
+    from ohcamel_quant.api.routers.ops import build_info
 
     if env is None:
         monkeypatch.delenv("OHCAMEL_GIT_SHA", raising=False)
     else:
         monkeypatch.setenv("OHCAMEL_GIT_SHA", env)
+    assert build_info()["git_sha"] == want
     app = create_app()
     app.dependency_overrides[get_jobs_db_path] = lambda: tmp_path / "jobs.sqlite"
     j = TestClient(app).get("/api/ops").json()
-    assert j["build"] == {"git_sha": want, "version": __version__}
+    assert j["build"] == {"version": __version__}

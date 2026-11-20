@@ -104,7 +104,8 @@ def test_status_reports_health_and_ops_subset():
     body = r.json()
     assert body["configured"] is True and body["reachable"] is True
     assert body["health"] == HEALTH
-    assert body["ops"]["mode"] == "live" and body["ops"]["build"]["git_sha"] == "abc1234"
+    # the owner's ruling (2026-11-20): no commit SHA leaves the public app (api/redact.py), the engine's included
+    assert body["ops"]["mode"] == "live" and "git_sha" not in body["ops"]["build"]
     assert "gc" not in body["ops"]  # only the documented subset is passed through
     assert body["ops"]["feed"] == {"healthy": True, "symbols": 1, "stale": 0, "never_seen": 0}
     assert body["provenance"][0]["source"] == "ohcamel-engine"
@@ -257,7 +258,7 @@ def test_vitals_copy_numbers_and_nothing_else():
     assert body["stabilize_ms"] == {"n": 4096, "p50": 0.03, "p99": 0.4, "max": 1.2, "window": 4096}
     assert body["process"] == {"nodes_recomputed": 9000, "stabilizes": 400}
     assert body["feed"] == {"healthy": True, "symbols": 1, "stale": 0, "never_seen": 0, "dropped_prints": None}
-    assert body["mode"] == "live" and body["git_sha"] == "abc1234" and body["uptime_s"] == 1234
+    assert body["mode"] == "live" and "git_sha" not in body and body["uptime_s"] == 1234   # api/redact.py
     assert body["reachable"] is True and body["book_public"] is False
     for private in ("AAPL", "exposure", "hostname", "a1b2c3d4", "kill_switch"):
         assert private not in r.text
@@ -291,7 +292,7 @@ def test_vitals_refuse_a_field_of_the_wrong_type():
     assert r.status_code == 200
     assert "AAPL" not in r.text
     body = r.json()
-    assert body["mode"] is None and body["uptime_s"] is None and body["git_sha"] is None
+    assert body["mode"] is None and body["uptime_s"] is None and "git_sha" not in body
     assert body["stabilize_ms"] == {"n": None, "p50": None, "p99": None, "max": 1.0, "window": 4096}
 
 

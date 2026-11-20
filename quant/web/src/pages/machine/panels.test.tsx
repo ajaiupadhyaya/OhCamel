@@ -282,3 +282,22 @@ describe("text from the wire", () => {
     STEPS.forEach((_, k) => expect(side(out, "tour", { step: k + 1 })).not.toContain("<img"));
   });
 });
+
+describe("the commit SHA (the owner's ruling, 2026-11-20)", () => {
+  // The public app sends no SHA (quant/src/ohcamel_quant/api/redact.py), so a product's manifest arrives without
+  // `code`: the provenance line then shows no code at all -- not an empty one, not a placeholder.
+  const withoutCode: MachineOut = JSON.parse(JSON.stringify(FIXTURE));
+  for (const n of withoutCode.nodes) delete (n.m as Record<string, unknown>).code;
+  const sha = String((FIXTURE.nodes.find((n) => n.id === "p:farm.sweep")!.m as Record<string, unknown>).code);
+
+  it("renders no code line when the manifest carries none", () => {
+    const html = focus(withoutCode, "p:farm.sweep");
+    expect(html).toContain("mx-prov");
+    expect(html).not.toMatch(/>code\b|code <b/);
+    expect(html).not.toContain(sha.slice(0, 7));
+  });
+
+  it("renders it only when the field is present", () => {
+    expect(focus(FIXTURE, "p:farm.sweep")).toContain(sha.slice(0, 7));
+  });
+});

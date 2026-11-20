@@ -33,7 +33,9 @@ interval; a group's ``cpu`` is in cores; memory is in bytes. History holds up
 to 720 samples (an hour at 5 s).
 
 ``GET /api/ops`` -- the Quant app's operations summary: the image build
-(``build.git_sha`` from ``OHCAMEL_GIT_SHA``, read by the site footer), the job
+(``build.version``; ``build.git_sha`` from ``OHCAMEL_GIT_SHA`` is computed but never
+sent -- the public app sends no commit SHA, the owner's ruling of 2026-11-20,
+api/redact.py -- so the footer shows a build only where one is reported), the job
 queue (Lane B, B6) and the US session clock (read by the masthead's dateline and
 the machine's top bar).
 """

@@ -30,6 +30,7 @@ from ..data.base import DataUnavailable
 from . import routers as routers_pkg
 from . import seo
 from .ratelimit import RateLimit
+from .redact import RedactSha
 
 log = logging.getLogger("ohcamel_quant")
 
@@ -65,6 +66,9 @@ def create_app() -> FastAPI:
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
     )
+    # Innermost, so it runs before gzip: no commit SHA leaves this app, which is what the public host serves
+    # (the owner's ruling, 2026-11-20; api/redact.py)
+    app.add_middleware(RedactSha)
     app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
     s = get_settings()
     app.add_middleware(RateLimit, per_min=s.rate_limit_per_min, burst=s.rate_limit_burst)  # outermost: before gzip
