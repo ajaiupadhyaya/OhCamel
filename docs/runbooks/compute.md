@@ -86,6 +86,25 @@ commits ticker by ticker, a killed attempt loses at most the ticker it was writi
 from there -- about 30 minutes of work for one enqueue. If `status` then shows it `failed` with `wall limit`,
 enqueue the same command again until its notes say nothing is left.
 
+**Every ingest pass walks its keys stalest-first** (fix round 1): by the last time each key was attempted
+(`ingest_log`), never-attempted first. After a complete night that is the night before's order, unchanged; after a
+pass killed at its limit, the retry begins with the keys the killed attempt never reached, so the retries and the
+next night cover the whole universe instead of dying at the same ticker. What a complete pass fetches and stores
+is unchanged. This holds for every `run_ingest` pass: daily and minute bars, corporate actions, option chains, SEC
+facts, 13F, FRED, factors, universes. The exchange calendar is refreshed before the bars pass, not after it, so a
+killed bars pass cannot starve it.
+
+**Before the deploy that brings the limits**, on the droplet (read-only: it opens `jobs.sqlite` with `mode=ro`):
+
+```bash
+dc exec ohcamel-worker python -m ohcamel_quant.jobs wall-times            # --days N, default 30
+```
+
+One line per kind: runs, p95 and max wall time of the finished runs (done or failed) in the window, the kind's
+wall limit (an L kind's from its newest run's budget), and `OVER 70%` where the slowest run took more than 70% of
+its limit. A flagged kind is the owner's call before the deploy (raise its class or budget, or accept the kill);
+no limit was raised for it here.
+
 ## Draining the worker
 
 There is no pause flag. A stop sends SIGTERM: the running job gets 15 s to finish, then it is re-queued without
@@ -179,13 +198,17 @@ dc exec ohcamel-worker python -m ohcamel_quant.warehouse calendar   # prints the
 ```
 
 Until it fills, `GET /api/warehouse/freshness` answers `calendar.source: "weekdays"` with a note, session datasets
-are judged on weekdays as before, and `ops.data_integrity` skips `missing_session` with a note. A failed calendar
-fetch never fails the bars run: it is a note on that run, and the last cached calendar stays in use.
+are judged on weekdays as before, and `ops.data_integrity` skips `missing_session` with a note. A host without
+`APCA_*` keys fetches nothing and logs nothing: its `exchange_calendar` row reads not stale with that note (an
+announced fallback, not a fault lamp). With keys, a failed fetch is logged failed -- a fault lamp, as a fault --
+and is still only a note on the bars run, never its failure; the last cached calendar stays in use. The dataset's
+data date is today at most (the calendar runs about 400 days ahead; the last session cached is in the log detail).
 
-The integrity lamp after this deploy: `missing_session`, `flat_bar` (tier-1 ETFs only) and `vendor_change` gate
-when they fall in the last 10 sessions; older ones are listed only. `stale_minute`, `stale_options` and
-`stale_fred` never gate (the freshness lamps carry a stale feed). Read the first night's findings before trusting
-a red lamp: a single stock halted for a whole session is a real `missing_session`.
+The integrity lamp after this deploy: `flat_bar` (tier-1 ETFs only) and `vendor_change` gate when they fall in
+the last 10 sessions; `missing_session` gates in that window only on a tier-1 name or when three or more tickers
+miss the same session -- one single stock without a session is most likely halted all day, and is listed only.
+Older findings of all three are listed only. `stale_minute`, `stale_options` and `stale_fred` never gate (the
+freshness lamps carry a stale feed). Read the first night's findings before trusting a red lamp.
 
 ## Enqueueing a backfill
 
@@ -323,15 +346,21 @@ holds": no sudo for `ohcamel` since 2026-11-03), add one line to that crontab (`
 06:30 UTC backup line; it checks every 15 minutes, so a missed backup starts within 15 minutes of boot:
 
 ```cron
+@reboot sleep 300; /home/ohcamel/OhCamel/deploy/backup.sh --catch-up >>$HOME/backup.log 2>&1
 */15 * * * * /home/ohcamel/OhCamel/deploy/backup.sh --catch-up >>$HOME/backup.log 2>&1
 ```
 
-Under cron and under systemd alike, every run that copies takes one lock (`flock`,
-`~ohcamel/.local/state/ohcamel-backup/lock`), so the catch-up can never start beside the nightly run; a check
-right after boot that finds the docker daemon not answering yet waits for the next check. When the units replace
-cron (O12), remove this line with the other two.
+The `@reboot` line is the one that keeps "within 15 minutes of boot": a `*/15` check that falls in the first
+minute after boot can find the docker daemon not answering yet, and then waits for the next quarter hour. Under
+cron and under systemd alike, every run that copies takes one lock (`flock`, `/var/backups/ohcamel/.state/lock`,
+the same path for every user, root's hand run included), so the catch-up can never start beside the nightly run.
+If `.state` cannot be written (it was created by another user without the group's write bit), the catch-up
+refuses and says so, rather than run a full backup every 15 minutes without a lock or a record: fix it with
+`sudo chgrp ohcamel /var/backups/ohcamel/.state && sudo chmod 2770 /var/backups/ohcamel/.state`.
+`deploy/pull-backups.sh` does not pull `.state/`. When the units replace cron (O12), remove these two lines with
+the other two.
 
-The first check after install finds no run remembered (`~ohcamel/.local/state/ohcamel-backup/last-run` is
+The first check after install finds no run remembered (`/var/backups/ohcamel/.state/last-run` is
 written by every run from this deploy on) and, outside the windows above, runs one backup: expected, and
 harmless (the day's copies are replaced, the export only after it verifies).
 

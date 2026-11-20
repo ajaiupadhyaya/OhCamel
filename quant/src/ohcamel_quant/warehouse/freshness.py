@@ -148,8 +148,17 @@ def dataset_freshness(con: Any, now: datetime) -> dict[str, Any]:
                    "last_ok_at": _iso(last_ok), "keys": len(mine),
                    "keys_behind": sum(1 for _, _, d in mine if asof is not None and (d is None or d < asof)),
                    "keys_failed": sum(1 for _, st, _ in mine if st == "failed"), "stale": stale, "rule": rule["rule"]}
+    # fix round 1, M5: a calendar never fetched (a host without Alpaca keys logs no attempt) is an announced
+    # weekday fallback -- not stale, the reason on the row -- not a lamp that reads stale every night. A host with
+    # keys whose fetch fails logs a failed run, which shows as the failure it is.
+    status = calendar_status(cal, now)
+    ec = out["exchange_calendar"]
+    if ec["last_run_at"] is None and ec["keys"] == 0:
+        ec["stale"] = False
+    if status.get("note"):
+        ec["note"] = status["note"]
     # task 3.4: while migration 003's option-table move is unfinished the table holds part of the history; the
     # dataset reads "migrating" (and stale), not a figure for a part
     if move_incomplete(con):
         out["option_snapshots"] |= {"migrating": True, "stale": True}
-    return {"now": now.isoformat(), "datasets": out, "calendar": calendar_status(cal, now)}
+    return {"now": now.isoformat(), "datasets": out, "calendar": status}

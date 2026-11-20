@@ -6,7 +6,9 @@
   (it never falls), so it is used only when the child died without a result,
   as an upper bound.
 * Cancel (``beat()`` returns 'cancelled') or stop (``stop`` set): the child's
-  cancel event is set; after ``grace_s`` it is terminated, then killed.
+  cancel event is set; after ``grace_s`` its process group is terminated, then killed. Whether the child
+  stopped in time or not, its group is SIGKILLed afterwards, so nothing it started outlives a cancel or a
+  stop (fix round 1, I2).
 * Wall limit (completion task 3.6): a run older than ``wall_limit_s`` is not asked -- a hung job does not
   read its cancel event -- it is killed at once with its whole process group (the child makes itself a
   group leader first thing, jobs/child.py, so whatever it started, a Kronos subprocess say, goes with it):
@@ -48,31 +50,40 @@ class Outcome:
 KILL_AFTER_S = 3.0
 
 
-def kill_group(proc: Any, kill_after_s: float = KILL_AFTER_S) -> None:
-    """SIGTERM the child's process group, then SIGKILL it. The group is the child's own (it calls ``setpgid`` at
-    its start); if it has not yet, or the group is this process's, only the child is signalled -- never the
-    worker's own group."""
-    pid = proc.pid
+def group_of(proc: Any) -> int | None:
+    """The child's own process group id, once it leads one (it calls ``setpgid(0, 0)`` first thing): ``None``
+    before then, after it is gone, or if its group is this process's -- the worker's own group is never a target."""
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, PermissionError):
+        return None
+    return pgid if pgid == proc.pid and pgid != os.getpgrp() else None
 
-    def signal_group(sig: int) -> None:
+
+def _signal(proc: Any, pgid: int | None, sig: int) -> None:
+    """``sig`` to the recorded group when there is one -- whether or not its leader is still alive: a member that
+    ignored the SIGTERM outlives the leader's exit -- else to the child alone."""
+    if pgid is not None:
         try:
-            pgid = os.getpgid(pid)
-        except ProcessLookupError:
-            pgid = None
-        if pgid is not None and pgid == pid and pgid != os.getpgrp():
-            try:
-                os.killpg(pgid, sig)
-                return
-            except ProcessLookupError:
-                pass
-        try:
-            os.kill(pid, sig)
-        except ProcessLookupError:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError):
             pass
+        return
+    try:
+        os.kill(proc.pid, sig)
+    except ProcessLookupError:
+        pass
 
-    signal_group(signal.SIGTERM)
+
+def kill_group(proc: Any, kill_after_s: float = KILL_AFTER_S, pgid: int | None = None) -> None:
+    """SIGTERM the child's process group, wait ``kill_after_s``, then SIGKILL the same group. The group is looked
+    up ONCE, before the first signal (fix round 1, I1): after the SIGTERM the wait reaps the leader, and a second
+    lookup would find nothing and miss the members still running. ``pgid`` passes a group recorded earlier."""
+    if pgid is None:
+        pgid = group_of(proc)
+    _signal(proc, pgid, signal.SIGTERM)
     proc.join(kill_after_s)
-    signal_group(signal.SIGKILL)   # the group too: a grandchild that ignored the SIGTERM outlives its parent's exit
+    _signal(proc, pgid, signal.SIGKILL)
     proc.join(5)
 
 
@@ -95,7 +106,10 @@ def run_in_child(job: Job, *, threads: int, db_path: Path, staging_root: Path, s
     deadline: float | None = None
     started = time.monotonic()
     next_beat = started + heartbeat_s
+    pgid: int | None = None          # the child's group, recorded once it leads one (while it is surely alive)
     while True:
+        if pgid is None:
+            pgid = group_of(proc)
         if parent_conn.poll(0.2):
             try:
                 msg = parent_conn.recv()
@@ -113,7 +127,7 @@ def run_in_child(job: Job, *, threads: int, db_path: Path, staging_root: Path, s
         if wall_limit_s is not None and reason in (None, "cancelled", "interrupted") and t - started >= wall_limit_s:
             # a stop or cancel already in its grace still ends here: the limit is the outer bound
             reason = reason or "wall_limit"
-            kill_group(proc)
+            kill_group(proc, pgid=pgid)
             break
         if reason is None and stop.is_set():
             reason, deadline = "interrupted", t + grace_s
@@ -124,15 +138,15 @@ def run_in_child(job: Job, *, threads: int, db_path: Path, staging_root: Path, s
                 reason, deadline = "cancelled", t + grace_s
                 cancel.set()
         if deadline is not None and t >= deadline:
-            proc.terminate()
-            proc.join(3)
-            if proc.is_alive():
-                proc.kill()
+            kill_group(proc, 3.0, pgid=pgid)      # fix round 1, I2: the whole group, not the child alone
             break
     proc.join(5)
     if proc.is_alive():
-        proc.kill()
-        proc.join(5)
+        kill_group(proc, 0.0, pgid=pgid)
+    if reason is not None and pgid is not None:
+        # a cancelled, stopped or killed run leaves nothing it started running, even when the child itself
+        # exited in time (fix round 1, I2): a cancelled kronos.shadow's subprocess, say
+        _signal(proc, pgid, signal.SIGKILL)
     parent_conn.close()
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
     cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)

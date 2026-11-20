@@ -26,7 +26,7 @@ from pathlib import Path
 from .admission import Admission, make_admit
 from .artifacts import build_manifest, prune, prune_housekeeping, publish
 from .db import connect, iso, utcnow
-from .kinds import get_kind, retries_for, wall_limit_for
+from .kinds import UnknownKind, get_kind, retries_for, wall_limit_for
 from .queue import (
     Job,
     claim_next,
@@ -107,9 +107,10 @@ class Worker:
     def _wall_limit(self, job: Job) -> float | None:
         """The kind's wall limit (kinds.wall_limit_for); a kind the registry no longer knows fails in the child."""
         try:
-            return wall_limit_for(get_kind(job.kind), job.params)
-        except ValueError:
+            spec = get_kind(job.kind)
+        except UnknownKind:
             return None
+        return wall_limit_for(spec, job.params)
 
     def _settle(self, job: Job, out: Outcome) -> None:
         now = self.now()

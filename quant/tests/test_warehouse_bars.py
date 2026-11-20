@@ -203,25 +203,47 @@ def test_universe_runs_carry_the_survivorship_note(tmp_path, monkeypatch):
 
 
 def test_the_nightly_bars_run_refreshes_the_calendar_and_a_failed_refresh_is_only_a_note(tmp_path, monkeypatch):
-    """Completion task 3.6: without Alpaca keys the calendar's key fails with the reason, the bars run is not
-    failed by it, and its notes say the calendar was not refreshed. A run for named tickers does not try."""
+    """Completion task 3.6: a host without Alpaca keys refreshes no calendar and logs no failure for it (fix round
+    1, M5: an announced weekday fallback is a note, not a fault lamp): the bars run says so in a note. A run for
+    named tickers does not try."""
     path = tmp_path / "w.duckdb"
     with open_rw(path) as con:
         con.execute("INSERT INTO universe_members VALUES ('sp500', 'SPY', 'x', NULL, 't', ?)", [SURVIVORSHIP])
     monkeypatch.setattr(bars, "_now", lambda: datetime(2026, 6, 2, 14, 0, tzinfo=UTC))
     monkeypatch.setitem(prices.PROVIDERS, "yahoo", vendor("yahoo", SPY))
+    for var in ("APCA_API_KEY_ID", "APCA_API_SECRET_KEY"):        # a keyless host, whatever this machine has
+        monkeypatch.delenv(var, raising=False)
     ctx = LocalContext(market=MarketData(Settings(offline=False, data_dir=tmp_path, warehouse_path=path,
-                                                  price_providers=["yahoo"], alpaca_key_id=None,
-                                                  alpaca_secret_key=None)))
+                                                  price_providers=["yahoo"])))
     spec = HANDLERS["ingest.bars_daily"]({}, ctx)
     assert spec["data_asof"] is not None
     assert any("exchange_calendar not refreshed" in n and "no Alpaca keys" in n for n in spec["notes"]), spec["notes"]
     with open_ro(path) as con:
-        (status,) = con.execute("SELECT status FROM ingest_log WHERE dataset = 'exchange_calendar' AND key = 'alpaca'"
-                                ).fetchone()
-    assert status == "failed"
+        assert con.execute("SELECT count(*) FROM ingest_log WHERE dataset = 'exchange_calendar'").fetchone()[0] == 0
     spec = HANDLERS["ingest.bars_daily"]({"tickers": ["SPY"]}, ctx)
     assert not any("exchange_calendar" in n for n in spec["notes"])
+
+
+def test_a_bars_pass_killed_at_its_wall_limit_does_not_starve_the_calendar(tmp_path, monkeypatch):
+    """Fix round 1, I3: the calendar is refreshed BEFORE the bars pass, so a pass killed part way (here: raising out
+    of the loop, as a kill would end it) has already refreshed it."""
+    from ohcamel_quant.warehouse.ingest import calendar as cal_ingest
+
+    calls = []
+    monkeypatch.setattr(cal_ingest, "run_calendar", lambda ctx: calls.append("calendar") or {
+        "notes": [], "provenance": [], "tables": {}})
+
+    class Killed(BaseException):
+        pass
+
+    def bars_killed(params, ctx):
+        calls.append("bars")
+        raise Killed
+
+    with pytest.raises(Killed):
+        cal_ingest.with_calendar(bars_killed)({}, LocalContext(market=MarketData(Settings(offline=True,
+                                                                                            data_dir=tmp_path))))
+    assert calls == ["calendar", "bars"]
 
 
 # ------------------------------------------------------------------ raw bars (completion task 3.2)

@@ -57,8 +57,10 @@ change inside a series, and stale minute, option and FRED data):
 
 - ``missing_session`` (warehouse): a session of the exchange calendar (Alpaca's ``/v2/calendar``, cached in
   ``exchange_calendar``) inside the series' own range -- first bar to last, where the calendar covers it -- with
-  no bar. A hole, never a market event, except a single name halted all day. Gates when recent, like the
-  checks above; older holes are listed (up to ``MISSING_LISTED`` a series, the rest counted in one row). With
+  no bar. A hole, never a market event, except a single name halted all day -- so a recent hole gates only on a
+  tier-1 name or when ``MISSING_SHARED`` (3) tickers or more miss the same session (fix round 1); one single
+  stock's recent hole, and every old one, is listed only (up to ``MISSING_LISTED`` a series, the rest counted in
+  one row). With
   no calendar cached the check is not run and a note says so: weekdays would call every holiday a hole.
 - ``flat_bar``: on a tier-1 name (``TIER1``: the broad and sector ETFs, which trade every session), a bar with
   no volume or with open = high = low = close -- a vendor's filler. Tier-1 only: a thin single stock can
@@ -105,6 +107,8 @@ NAMES_LISTED = 12
 TIER1: frozenset[str] = frozenset(BROAD + SECTORS)
 #: Old ``missing_session`` rows listed one by one per series; the rest are counted in one row.
 MISSING_LISTED = 5
+#: A recent session missing from this many tickers at once is the data's hole, not one name's halt (fix round 1).
+MISSING_SHARED = 3
 #: The datasets the stale_* checks read from warehouse/freshness.py, and the check each one names.
 STALE_FEEDS = {"bars_minute": "stale_minute", "option_snapshots": "stale_options", "fred": "stale_fred"}
 SERIOUS = ("split_suspect", "bad_print", "nonpositive", "calendar", "adjust_drift", "missing_session", "flat_bar",
@@ -243,6 +247,23 @@ def _clip_missing(ticker: str, found: list[dict[str, Any]], recent: pd.Timestamp
                "detail": f"{len(rest)} more sessions missing from {rest[0]['date']} to {rest[-1]['date']} "
                          f"(the first {MISSING_LISTED} are listed)"}
     return [*old[:MISSING_LISTED], summary, *new]
+
+
+def missing_rows(holes: dict[str, list[dict[str, Any]]], recent: pd.Timestamp | None) -> list[dict[str, Any]]:
+    """Every series' ``missing_session`` rows (old ones clipped, ``_clip_missing``), each with its ``gating``: a
+    recent hole gates on a tier-1 name, or when ``MISSING_SHARED`` tickers or more miss that same session; one single
+    stock's recent hole is shown only, being most likely a full-day halt (fix round 1, M4)."""
+    shared: dict[str, int] = {}
+    for found in holes.values():
+        for f in found:
+            shared[f["date"]] = shared.get(f["date"], 0) + 1
+    out = []
+    for t, found in holes.items():
+        for f in _clip_missing(t, found, recent):
+            new = recent is not None and pd.Timestamp(f["date"]) >= recent
+            out.append({"source": "warehouse", "ticker": t, **f,
+                        "gating": bool(new and (t in TIER1 or shared.get(f["date"], 0) >= MISSING_SHARED))})
+    return out
 
 
 def stale(last: dict[str, pd.Timestamp], bdays: int = STALE_BDAYS) -> list[dict[str, Any]]:
@@ -417,8 +438,7 @@ def run(params: dict[str, Any], ctx: Any) -> ArtifactSpec:
             notes.append(f"adjust_drift not run: the warehouse predates migration 002 ({e}); the next ingest migrates it")
         newest_w = max(last.values())
         recent_w = newest_w - pd.offsets.BDay(int(params.get("recent_bdays", RECENT_BDAYS)))
-        for t, found in holes.items():
-            rows += [{"source": "warehouse", "ticker": t, **f} for f in _clip_missing(t, found, recent_w)]
+        rows += missing_rows(holes, recent_w)
         try:
             rows += [{"source": "warehouse", **f} for f in vendor_changes(ctx.warehouse, list(last))]
             from ..warehouse import freshness

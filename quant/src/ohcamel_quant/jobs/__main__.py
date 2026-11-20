@@ -3,6 +3,8 @@
   status                              running and queued jobs, then the ten newest settled
   run-schedule NAME [--params JSON]   enqueue a schedules.yaml entry now, as the scheduler would
   cancel ID                           cancel a queued or running job
+  wall-times [--days N]               per kind, p95 and max wall time of the last N days' finished runs beside its
+                                      wall limit; flags a kind whose slowest run took over 70% of it (read-only)
 
 ``run-schedule`` enqueues with the entry's kind, priority, memory class and
 heavy flag, ``submitted_by = schedule:NAME`` (contract II.2 allows only that
@@ -22,7 +24,9 @@ import argparse
 import json
 import sys
 from contextlib import closing
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from .db import connect, utcnow
 from .queue import cancel, enqueue, list_jobs, progress_of
@@ -87,6 +91,62 @@ def _cancel(conn, job_id: str) -> int:
     return 0
 
 
+#: The share of a kind's wall limit above which ``wall-times`` flags it (fix round 1, I3).
+WALL_FLAG = 0.70
+
+
+def wall_times(db: Path, *, days: int = 30, now: datetime | None = None) -> list[dict[str, Any]]:
+    """Per kind, over runs that finished (done or failed) in the last ``days``: count, p95 and max wall time
+    (finished_at - started_at of the last attempt, seconds) and the kind's wall limit (of its newest run's params:
+    the farm's budget). Opens jobs.sqlite READ-ONLY (a URI ``mode=ro``): nothing is created or written."""
+    import sqlite3
+
+    import numpy as np
+
+    from .db import parse_iso
+    from .kinds import UnknownKind, get_kind, wall_limit_for
+
+    now = now or utcnow()
+    since = (now - timedelta(days=days)).isoformat()
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        rows = con.execute("SELECT kind, params, started_at, finished_at FROM jobs WHERE state IN ('done', 'failed') "
+                           "AND started_at IS NOT NULL AND finished_at IS NOT NULL AND finished_at >= ? "
+                           "ORDER BY finished_at", [since]).fetchall()
+    finally:
+        con.close()
+    by: dict[str, dict[str, Any]] = {}
+    for kind, params, started, finished in rows:
+        d = by.setdefault(kind, {"kind": kind, "secs": [], "params": "{}"})
+        d["secs"].append((parse_iso(finished) - parse_iso(started)).total_seconds())
+        d["params"] = params                       # the newest run's, for an L kind's own budget
+    out = []
+    for kind in sorted(by):
+        d = by[kind]
+        try:
+            limit: float | None = wall_limit_for(get_kind(kind), json.loads(d["params"] or "{}"))
+        except (UnknownKind, ValueError):
+            limit = None
+        secs = np.asarray(d["secs"], float)
+        p95, mx = float(np.percentile(secs, 95)), float(secs.max())
+        out.append({"kind": kind, "runs": len(secs), "p95_s": p95, "max_s": mx, "limit_s": limit,
+                    "flag": limit is not None and mx > WALL_FLAG * limit})
+    return out
+
+
+def _wall_times(db: Path, days: int) -> int:
+    rows = wall_times(db, days=days)
+    print(f"{'kind':<28} {'runs':>5} {'p95_s':>7} {'max_s':>7} {'limit_s':>7}   (last {days} days; flag: max over "
+          f"{WALL_FLAG:.0%} of the limit)")
+    for r in rows:
+        lim = f"{r['limit_s']:.0f}" if r["limit_s"] is not None else "-"
+        flag = f"  OVER {WALL_FLAG:.0%}" if r["flag"] else ""
+        print(f"{r['kind']:<28} {r['runs']:>5} {r['p95_s']:>7.0f} {r['max_s']:>7.0f} {lim:>7}{flag}")
+    if not rows:
+        print("no finished runs in the window")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     from .schedules import DEFAULT_PATH
 
@@ -100,12 +160,16 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--params", help="JSON object replacing the entry's params")
     c = sub.add_parser("cancel", help="cancel a queued or running job")
     c.add_argument("job_id")
+    wt = sub.add_parser("wall-times", help="per kind, p95 and max wall time beside its wall limit (read-only)")
+    wt.add_argument("--days", type=int, default=30)
     a = p.parse_args(argv)
     db = a.db
     if db is None:
         from .paths import jobs_db_path
 
         db = jobs_db_path()
+    if a.cmd == "wall-times":
+        return _wall_times(db, a.days)
     with closing(connect(db)) as conn:
         if a.cmd == "status":
             return _status(conn)

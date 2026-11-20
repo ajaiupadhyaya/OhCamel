@@ -10,7 +10,8 @@ Test-only parameters, never scheduled:
 * ``exit_hard`` (bool): ``os._exit(137)`` with no result (what an OOM kill looks like).
 * ``ignore_cancel`` (bool): the sleep does not read the cancel event -- a hung job (completion task 3.6).
 * ``hold_warehouse`` (path): open that DuckDB file as the writer and hold it while sleeping.
-* ``sleeper_pidfile`` (path): start a ``sleep`` child of the job's own and write its pid there.
+* ``sleeper_pidfile`` (path): start a child of the job's own that ignores SIGTERM (a shell looping on ``sleep``
+  under ``trap '' TERM``: only SIGKILL ends it) and write its pid there.
 """
 
 from __future__ import annotations
@@ -62,7 +63,7 @@ def run(params: dict[str, Any], ctx: JobContext) -> ArtifactSpec:
     if params.get("sleeper_pidfile"):
         import subprocess
 
-        child = subprocess.Popen(["sleep", str(int(sleep_s) + 60)])
+        child = subprocess.Popen(["sh", "-c", "trap '' TERM; while :; do sleep 1; done"])
         Path(str(params["sleeper_pidfile"])).write_text(str(child.pid))
     t_end = time.monotonic() + sleep_s
     while time.monotonic() < t_end:

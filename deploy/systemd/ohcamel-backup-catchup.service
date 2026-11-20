@@ -15,7 +15,8 @@
 #
 # A check that finds nothing to do calls no docker and exits 0 in
 # milliseconds; a held check says why and exits 0. Each finished run (ok or
-# failed) is remembered in ~ohcamel/.local/state/ohcamel-backup/last-run.
+# failed) is remembered in /var/backups/ohcamel/.state/last-run, beside the
+# lock every run takes (one path for every user's run).
 # Started by ohcamel-backup-catchup.timer 5 minutes after boot and every 15
 # minutes after; `systemctl start ohcamel-backup-catchup.service` runs a check
 # now, and `journalctl -t ohcamel-backup-catchup` is its history.

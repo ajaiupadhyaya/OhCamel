@@ -116,6 +116,18 @@ def _write_log(path: Any, threads: int, dataset: str, key: str, status: str, row
         log_row(con, dataset, key, status, rows, json.dumps(detail, default=str), data_asof)
 
 
+def stalest_first(con: Any, dataset: str, keys: list[str]) -> list[str]:
+    """``keys`` ordered by the last time each was attempted (its newest ``ingest_log`` row, any status), keys never
+    attempted first, ties in the given order (fix round 1, I3). On a night after a complete pass this is that
+    pass's order; after a pass killed at its wall limit, the retry begins with the keys the killed attempt never
+    reached, so repeated attempts cover every key instead of dying at the same place. Order only: a pass that
+    completes fetches and stores exactly what it did before."""
+    last = dict(con.execute("SELECT key, max(ran_at) FROM ingest_log WHERE dataset = ? AND key <> ? "
+                            "AND list_contains(?, key) GROUP BY key", [dataset, SUMMARY_KEY, keys]).fetchall())
+    return [k for _, _, k in sorted(((last.get(k) is not None, last.get(k) or datetime.min, k) for k in keys),
+                                    key=lambda r: (r[0], r[1]))]
+
+
 def run_ingest(*, dataset: str, keys: list[str], ctx: IngestContext,
                read_state: Callable[[Any, list[str]], dict[str, KeyState]],
                fetch: Callable[[str, KeyState, Any], Iterable[Any]],
@@ -130,6 +142,7 @@ def run_ingest(*, dataset: str, keys: list[str], ctx: IngestContext,
     threads = max(1, int(getattr(ctx, "threads", 1) or 1))
     with open_rw(path, threads=threads) as con:
         states = read_state(con, keys)
+        keys = stalest_first(con, dataset, keys)
     n = len(keys)
     results: list[dict[str, Any]] = []
     sources: dict[str, int] = {}

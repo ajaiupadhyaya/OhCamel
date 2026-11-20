@@ -32,12 +32,14 @@
 #      (a check right after boot), or today's export container running --
 #      nothing started. Otherwise the run below.
 #      Every run that reaches its record (step 6) is remembered, ok or failed,
-#      in OHCAMEL_BACKUP_STATE (default ~/.local/state/ohcamel-backup)/last-run
-#      as "EPOCH ok|failed"; a run the restart killed never gets that far, so
+#      in the backup directory's .state/last-run as "EPOCH ok|failed" -- one
+#      path every user's run shares, cron's, systemd's or a hand run as root
+#      (fix round 1, M6); a catch-up that cannot write there refuses to run,
+#      since without it there is neither a lock nor a record; a run the restart killed never gets that far, so
 #      it is caught up. Session days are weekdays here: a holiday holds the
 #      catch-up to the evening too, the cautious side. One run at a time: every
 #      run that copies (nightly, catch-up, by hand) takes a lock in that state
-#      directory first (flock(1)); a run that finds it held starts nothing and
+#      directory (.state/lock, flock(1)) first; a run that finds it held starts nothing and
 #      exits 0, so a catch-up can never start beside a running backup, under
 #      systemd or under cron.
 #   1. Reads deploy/backup.list (the line format is documented there) and
@@ -433,7 +435,20 @@ last_slot() {
 }
 
 backup_state_dir() {
-	printf '%s\n' "${OHCAMEL_BACKUP_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/ohcamel-backup}"
+	printf '%s\n' "${OHCAMEL_BACKUP_DIR:-/var/backups/ohcamel}/.state"
+}
+
+# state_ready: create the state directory, group-writable like the backup directory itself (three uids share
+# that), and say whether this run can write in it.
+state_ready() {
+	local d
+	d=$(backup_state_dir)
+	mkdir -p "$d" 2>/dev/null || return 1
+	chmod 2770 "$d" 2>/dev/null || true
+	[ -w "$d" ] || return 1
+	: >>"$d/lock" 2>/dev/null || return 1
+	chmod 0660 "$d/lock" 2>/dev/null || true
+	return 0
 }
 
 # last_run: the epoch of the last finished run, or nothing.
@@ -501,12 +516,13 @@ EOF2
 backup_lock() {
 	local d pid
 	d=$(backup_state_dir)
-	if ! mkdir -p "$d" 2>/dev/null; then
-		backup_err "cannot create $d for the backup lock; running without it"
+	if ! state_ready; then
+		backup_err "cannot write $d for the backup lock; running without it (the catch-up refuses in this state)"
 		return 0
 	fi
 	if command -v flock >/dev/null 2>&1; then
-		exec 9>>"$d/lock"
+		# read-only: flock needs no write access, so a lock file another user created still locks
+		exec 9<"$d/lock"
 		flock -n 9 || return 1
 		return 0
 	fi
@@ -542,6 +558,10 @@ catchup_gate() {
 	fi
 	if [ ! -d "$dir" ] || [ ! -w "$dir" ]; then
 		backup_say "catch-up: $dir does not exist or is not writable; the nightly run's record names that (step backup-dir) -- nothing started"
+		return 1
+	fi
+	if ! state_ready; then
+		backup_say "catch-up: the backup's state directory $(backup_state_dir) cannot be written -- it holds the lock and the record of the last run, and without them every check would start a full backup; nothing started (fix its ownership: the ohcamel group, group-writable)"
 		return 1
 	fi
 	hold=$(catchup_hold "$now")
@@ -875,14 +895,9 @@ backup_main() {
 	local i n tag gid steps failures=0
 	local failed_steps=()
 
-	# Step 0: the catch-up runs the backup only when one was missed and nothing holds it. Then one run at a time:
-	# a run that finds another holding the lock starts nothing.
+	# Step 0: the catch-up runs the backup only when one was missed and nothing holds it.
 	if [ "$catchup" = 1 ]; then
 		catchup_gate "$dir" "$today" || return 0
-	fi
-	if [ "$dry" = 0 ] && [ "$check" = 0 ] && ! backup_lock; then
-		backup_say "another backup run is already running (it holds $(backup_state_dir)/lock) -- nothing started; that run records its own outcome"
-		return 0
 	fi
 
 	read_list "$list" "$compose" "$today"
@@ -911,6 +926,13 @@ backup_main() {
 		backup_err "$dir is not writable by $(id -un) (uid $(id -u), gid $(id -g)); nothing runs. It must be group-writable, because uid 10001 writes the journal's copies, uid 10002 the recorder's and this user the book's: install -d -m 0770 -o 10001 -g ohcamel $dir"
 		[ "$dry" = 1 ] || record_status "$compose" "$tag" "$gid" 0 false "$steps" "$steps" backup-dir
 		return 1
+	fi
+
+	# One run at a time, taken once the list is known good and the directory is there (a malformed list or a
+	# missing directory still creates nothing).
+	if [ "$dry" = 0 ] && ! backup_lock; then
+		backup_say "another backup run is already running (it holds $(backup_state_dir)/lock) -- nothing started; that run records its own outcome"
+		return 0
 	fi
 
 	if [ "$dry" = 1 ]; then

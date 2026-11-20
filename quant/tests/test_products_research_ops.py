@@ -169,6 +169,26 @@ def test_a_series_missing_one_session_inside_its_range_is_flagged():
                                sessions[:-2])[0]["date"] == "2026-11-09"
 
 
+def test_a_single_stock_missing_a_recent_session_is_flagged_but_a_shared_or_tier1_hole_gates():
+    """Fix round 1, M4: one single stock without a recent session is most likely halted all day -- a market event,
+    shown, not gating. The same recent session missing from a tier-1 name, or from MISSING_SHARED tickers at once,
+    is the data's hole, and gates. Old holes never gate."""
+    recent = pd.Timestamp("2026-11-09")
+    hole = [{"date": "2026-11-10", "check": "missing_session", "detail": "x"}]
+    old = [{"date": "2026-10-01", "check": "missing_session", "detail": "x"}]
+
+    def gating(holes):
+        return {(r["ticker"], r["date"]): r["gating"] for r in DI.missing_rows(holes, recent)}
+
+    assert gating({"AAPL": hole}) == {("AAPL", "2026-11-10"): False}
+    assert gating({"SPY": hole}) == {("SPY", "2026-11-10"): True}
+    shared = {t: hole for t in ["AAPL", "MSFT", "KO"][:DI.MISSING_SHARED]}
+    assert set(gating(shared).values()) == {True} and DI.MISSING_SHARED >= 2
+    fewer = {t: hole for t in ["AAPL", "MSFT", "KO", "PEP"][:DI.MISSING_SHARED - 1]}
+    assert set(gating(fewer).values()) == {False}
+    assert gating({"SPY": old}) == {("SPY", "2026-10-01"): False}
+
+
 def test_a_zero_volume_bar_on_a_tier1_name_is_flagged():
     """Completion task 3.6: ``flat_bar`` -- on a tier-1 name (the deep ETFs, which trade every session), a bar with
     no volume, or with open = high = low = close, is a vendor's filler, not a session. Checked on tier-1 names

@@ -105,7 +105,7 @@ scratch=$(mktemp -d "${TMPDIR:-/tmp}/backup-catchup-test.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
 log="$scratch/docker.log"
 backups="$scratch/backups"
-state="$scratch/state"
+state="$backups/.state"   # fix round 1, M6: under the backup directory, one path for every user
 repo="$scratch/repo"
 mkdir -p "$scratch/bin"
 cat >"$scratch/bin/docker" <<'SHIM'
@@ -160,7 +160,7 @@ catch_up() {
 	rc=0
 	env -u OHCAMEL_TAG -u OHCAMEL_IMAGE -u OHCAMEL_BACKUP_VOLUME -u COMPOSE_PROJECT_NAME \
 		PATH="$scratch/bin:$PATH" SHIM_LOG="$log" SHIM_TODAY="$today" \
-		OHCAMEL_BACKUP_DIR="$backups" OHCAMEL_BACKUP_STATE="$state" BACKUP_NOW="$(epoch "$now")" \
+		OHCAMEL_BACKUP_DIR="$backups" BACKUP_NOW="$(epoch "$now")" \
 		BACKUP_TODAY="$today" BACKUP_FINISHED_AT="$now" "$@" \
 		bash "$repo/deploy/backup.sh" --catch-up >"$scratch/out" 2>"$scratch/err" || rc=$?
 }
@@ -267,7 +267,9 @@ if [ "$rc" = 0 ] && [ "$(exports)" = 1 ]; then ok "W6 a weekend daytime check ru
 fresh
 mkdir -p "$state" && printf '%s ok\n' "$(epoch 2026-11-18T06:41:00Z)" >"$state/last-run"
 # another run holds the lock: a second process takes it (backup.sh is sourceable) and sleeps with it
-OHCAMEL_BACKUP_STATE="$state" bash -c 'source "$1"; backup_lock || exit 9; exec sleep 30' holder "$repo/deploy/backup.sh" &
+# ... as ANOTHER user would (another HOME): the lock is the backup directory's, so it still holds (M6)
+OHCAMEL_BACKUP_DIR="$backups" HOME="$scratch/another-home" \
+	bash -c 'source "$1"; backup_lock || exit 9; exec sleep 30' holder "$repo/deploy/backup.sh" &
 holder=$!
 sleep 1
 catch_up 2026-11-19T07:07:00Z
@@ -301,7 +303,7 @@ fi
 fresh
 rc=0
 env -u OHCAMEL_TAG PATH="$scratch/bin:$PATH" SHIM_LOG="$log" SHIM_TODAY=2026-11-19 SHIM_EXPORT_STATE=running \
-	OHCAMEL_BACKUP_DIR="$backups" OHCAMEL_BACKUP_STATE="$state" BACKUP_TODAY=2026-11-19 \
+	OHCAMEL_BACKUP_DIR="$backups" BACKUP_TODAY=2026-11-19 \
 	BACKUP_FINISHED_AT=2026-11-19T06:31:00Z bash "$repo/deploy/backup.sh" >"$scratch/out" 2>"$scratch/err" || rc=$?
 if [ "$rc" = 1 ] && [ "$(exports)" = 0 ] && grep -q 'already running' "$scratch/err" && grep -q ' warehouse' "$log"; then
 	ok "C4 the nightly run beside a running export fails that step by name and starts no second export"
@@ -316,6 +318,34 @@ if [ "$rc" = 0 ] && [ ! -s "$log" ] && grep -q 'does not exist' "$scratch/out"; 
 	ok "C5 a missing backup directory is said and left to the nightly run's record (no container every 15 minutes)"
 else
 	no "C5 missing directory" "rc=$rc out=$(cat "$scratch/out") log=$(tr '\n' ' ' <"$log")"
+fi
+
+# --- M6: one state for every user, and no catch-up without it -------------------
+fresh
+mkdir -p "$state" && printf '%s ok\n' "$(epoch 2026-11-19T06:44:00Z)" >"$state/last-run"
+catch_up 2026-11-19T10:07:00Z HOME="$scratch/another-home"
+if [ "$rc" = 0 ] && [ ! -s "$log" ] && grep -q 'nothing to catch up' "$scratch/out"; then
+	ok "M6a a run under another user (another HOME) reads the same record of the last run"
+else
+	no "M6a another user's run" "rc=$rc out=$(cat "$scratch/out") log=$(tr '\n' ' ' <"$log")"
+fi
+fresh
+# a .state this user cannot make a directory of (on the host: one another user created without the group's
+# write bit; here, a plain file in its place -- a test user could chmod back a directory it owns)
+: >"$state"
+catch_up 2026-11-19T07:07:00Z
+rm -f "$state"
+if [ "$rc" = 0 ] && [ "$(runs)" = 0 ] && [ "$(exports)" = 0 ] && grep -q 'cannot be written' "$scratch/out"; then
+	ok "M6b a state directory the catch-up cannot write: it refuses (no backup every 15 minutes without a lock or a record)"
+else
+	no "M6b unwritable state" "rc=$rc out=$(cat "$scratch/out") log=$(tr '\n' ' ' <"$log")"
+fi
+fresh
+catch_up 2026-11-19T07:07:00Z
+if [ -f "$state/last-run" ] && [ -f "$state/lock" ]; then
+	ok "M6c the record and the lock live in the backup directory's .state"
+else
+	no "M6c state location" "$(ls -la "$backups" "$state" 2>&1 | tr '\n' ' ')"
 fi
 
 finish

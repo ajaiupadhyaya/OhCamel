@@ -163,6 +163,11 @@ case "$(head -n1 "$log")" in
 *"--exclude=warehouse/"*) ok "W1 the main pull excludes warehouse/ (the exports are pulled apart)" ;;
 *) no "W1 the main pull excludes warehouse/" "$(head -n1 "$log" | cut -c1-300)" ;;
 esac
+# completion task 3.6 fix round 1: the backup's lock and last-run record live in .state/ -- the host's, not a copy
+case "$(head -n1 "$log")" in
+*"--exclude=.state/"*) ok "W1b the main pull leaves out .state/ (backup.sh's lock and record)" ;;
+*) no "W1b the main pull leaves out .state/" "$(head -n1 "$log" | cut -c1-300)" ;;
+esac
 
 run_pull SHIM_REMOTE_EXPORTS="2026-09-29 2026-09-30 2026-10-31 2026-11-15 2026-11-16 2026-11-17"
 expect_rc "W2 a first pull of the exports" 0

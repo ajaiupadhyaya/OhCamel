@@ -17,6 +17,9 @@
 # still here. In-progress `.part` copies are left behind: a half-written file
 # is not a backup.
 #
+# .state/ is not pulled: it is backup.sh's lock and the record of its last run
+# (completion task 3.6), the host's own bookkeeping, not a copy.
+#
 # The warehouse exports (Task 3.3) are the exception to "keeps everything":
 # each is a few hundred MB and the host makes one a night, so the main rsync
 # excludes warehouse/ and a second step pulls only the host's NEWEST export and
@@ -48,7 +51,7 @@ printf 'pull-backups: %s  %s:%s -> %s/\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$hos
 
 rc=0
 ssh_cmd='ssh -o BatchMode=yes -o ConnectTimeout=20'
-rsync -a --partial --timeout=120 --exclude='*.part' --exclude='*.part-journal' --exclude=warehouse/ \
+rsync -a --partial --timeout=120 --exclude='*.part' --exclude='*.part-journal' --exclude=warehouse/ --exclude=.state/ \
 	-e "$ssh_cmd" \
 	"$host:$src" "$dest/" || rc=$?
 if [ "$rc" -ne 0 ]; then

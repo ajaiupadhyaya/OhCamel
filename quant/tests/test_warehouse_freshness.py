@@ -120,6 +120,36 @@ def test_without_a_cached_calendar_freshness_says_it_counts_weekdays(wh):
     with open_ro(wh) as con:
         out = freshness.dataset_freshness(con, NOW)
     assert out["calendar"]["source"] == "weekdays" and "no exchange calendar" in out["calendar"]["note"]
+    # fix round 1, M5: a host that never fetched a calendar (no Alpaca keys) reads as an announced fallback --
+    # not stale, the note on the row -- rather than a lamp that is stale or failed every night
+    cal = out["datasets"]["exchange_calendar"]
+    assert cal["stale"] is False and cal["last_status"] is None and "weekdays" in cal["note"]
+
+
+def test_the_calendar_dataset_never_shows_a_data_date_after_today(tmp_path, monkeypatch):
+    """Fix round 1, M5: the calendar is published ahead (the committed slice runs to 2026-12-31); refreshed on
+    2026-11-19 its dataset's data_asof is that day, and the last session cached is in the log's detail."""
+    from ohcamel_quant.config import Settings
+    from ohcamel_quant.data.market import MarketData
+    from ohcamel_quant.warehouse.ingest import calendar as cal_ingest
+    from ohcamel_quant.warehouse.ingest.base import LocalContext
+
+    if not CALENDAR_SLICE.exists():
+        pytest.skip("BLOCKED (completion task 3.6): no real Alpaca /v2/calendar slice committed yet")
+    path = tmp_path / "w.duckdb"
+    payload = json.loads(CALENDAR_SLICE.read_text())
+    monkeypatch.setattr(cal_ingest, "fetch_calendar", lambda settings, start, end: payload)
+    monkeypatch.setattr(cal_ingest, "window", lambda con, today: (date(2026, 11, 2), date(2026, 12, 31)))
+    monkeypatch.setattr(freshness, "_now", lambda: datetime(2026, 11, 19, 12, 0, tzinfo=UTC))
+    ctx = LocalContext(market=MarketData(Settings(offline=True, data_dir=tmp_path, warehouse_path=path,
+                                                  APCA_API_KEY_ID="k", APCA_API_SECRET_KEY="s")))
+    cal_ingest.run_calendar(ctx)
+    with open_ro(path) as con:
+        out = freshness.dataset_freshness(con, datetime(2026, 11, 19, 12, 0, tzinfo=UTC))
+        detail = con.execute("SELECT detail FROM ingest_log WHERE dataset = 'exchange_calendar' AND key = 'alpaca'"
+                             ).fetchone()[0]
+    assert out["datasets"]["exchange_calendar"]["data_asof"] == "2026-11-19"
+    assert json.loads(detail)["last_session"] == "2026-12-31"
 
 
 def client(monkeypatch, value):

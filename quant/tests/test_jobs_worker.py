@@ -150,6 +150,59 @@ def test_killed_child_is_a_failure_with_a_reason(cfg, conn):
     assert "137" in err and "without a result" in err
 
 
+def _gone(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+def _cancel_with_a_stubborn_grandchild(cfg, conn, tmp_path, *, ignore_cancel):
+    pidfile = tmp_path / f"sleeper-{ignore_cancel}.pid"
+    j = _q(conn, params={"tag": f"cg{ignore_cancel}", "sleep_s": 60, "ignore_cancel": ignore_cancel,
+                         "sleeper_pidfile": str(pidfile)})
+    w = Worker(cfg, admit=admit_all)
+    out = []
+    t = threading.Thread(target=lambda: out.append(w.run_once()))
+    t.start()
+    assert _wait(lambda: pidfile.exists() and pidfile.read_text().strip() != "")
+    assert _wait(lambda: (progress_of(conn, j.id) or {}).get("message") == "sleeping")
+    sleeper = int(pidfile.read_text())
+    cancel(conn, j.id, now=utcnow())
+    t.join(30)
+    assert not t.is_alive() and out[0].status == "cancelled", out
+    assert _wait(lambda: _gone(sleeper), 10), "a cancelled job's own child outlived it"
+
+
+def test_a_cancelled_job_that_ignores_its_cancel_is_killed_with_its_process_group(cfg, conn, tmp_path):
+    """Fix round 1, I2: the grace runs out, and the kill reaches the child's whole group, a child that ignores
+    SIGTERM included -- not the child alone, which would orphan what it started."""
+    _cancel_with_a_stubborn_grandchild(cfg, conn, tmp_path, ignore_cancel=True)
+
+
+def test_a_cancelled_job_that_stops_leaves_nothing_it_started_running(cfg, conn, tmp_path):
+    """Fix round 1, I2: the job notices the cancel and exits by itself; what it started is killed with its group."""
+    _cancel_with_a_stubborn_grandchild(cfg, conn, tmp_path, ignore_cancel=False)
+
+
+def test_kill_group_reaches_a_grandchild_that_ignores_sigterm(tmp_path):
+    """Fix round 1, I1, the reviewer's reproduction: the leader dies on the SIGTERM and is reaped during the wait;
+    the SIGKILL must still go to the group recorded before the first signal."""
+    import multiprocessing as mp
+
+    from ohcamel_quant.jobs.runner import kill_group
+
+    pidfile = tmp_path / "gc.pid"
+    proc = mp.get_context("spawn").Process(target=_stubborn_leader, args=(str(pidfile),))
+    proc.start()
+    assert _wait(lambda: pidfile.exists() and pidfile.read_text().strip() != "")
+    gc = int(pidfile.read_text())
+    kill_group(proc, 1.0)
+    assert not proc.is_alive()
+    assert _wait(lambda: _gone(gc), 10), "the grandchild that traps TERM survived kill_group"
+
+
 def test_wall_limits_follow_the_class_and_an_l_kind_s_budget():
     """Completion task 3.6 (spec, Operations): every job has a wall-clock limit -- S 10 min, M 45 min, L its
     compute budget plus 10."""
@@ -164,11 +217,15 @@ def test_wall_limits_follow_the_class_and_an_l_kind_s_budget():
     assert wall_limit_for(get_kind("farm.sweep"), {"budget_minutes": 30}) == 30 * 60 + 600
     assert wall_limit_for(get_kind("ops.selftest"), {"budget_minutes": 300}) == 600   # not an L kind: ignored
     assert all(k.wall_limit_s > 0 and (k.mem_class != "L" or k.budget_s) for k in REGISTRY.values())
+    # fix round 1, M10: a malformed budget is the kind's own limit, never no limit at all
+    farm_limit = get_kind("farm.sweep").wall_limit_s
+    for bad in ("ninety", None, -5, 0, float("nan"), float("inf"), [90]):
+        assert wall_limit_for(get_kind("farm.sweep"), {"budget_minutes": bad}) == farm_limit, bad
 
 
 def test_a_job_past_its_wall_limit_is_killed_whole_and_the_worker_takes_the_next(cfg, conn, tmp_path, monkeypatch):
-    """A hung job -- it ignores cancellation, holds the warehouse's write lock and has a child of its own -- is
-    killed at its wall limit with its whole process group; the lock is released, the row is failed with a reason
+    """A hung job -- it ignores cancellation, holds the warehouse's write lock and has a child of its own that
+    ignores SIGTERM (fix round 1, I1) -- is killed at its wall limit with its whole process group; the lock is released, the row is failed with a reason
     naming the wall limit, and the same worker runs the next job."""
     import duckdb
 
@@ -187,15 +244,7 @@ def test_a_job_past_its_wall_limit_is_killed_whole_and_the_worker_takes_the_next
     d = get_job(conn, hung.id)
     assert d.state == "failed" and "wall limit" in d.error and "3 s" in d.error, d.error
     sleeper = int(pidfile.read_text())
-
-    def gone(pid):
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
-        return False
-
-    assert _wait(lambda: gone(sleeper), 10), "the job's own child outlived it (the process group was not killed)"
+    assert _wait(lambda: _gone(sleeper), 10), "the job's own child outlived it (the process group was not killed)"
     con = duckdb.connect(str(wh))          # the writer's lock went with the process
     con.close()
     assert not (cfg.artifacts_root / "ops.selftest" / hung.id).exists()
@@ -274,3 +323,16 @@ def test_a_refused_manifest_is_not_retried_even_for_an_ingest(cfg, conn):
               "unseeded": ["the random module's global state was drawn from"]}
     w._settle(job, Outcome("done", result, None, 0.1, 1, staging))
     assert get_job(conn, job.id).state == "failed"
+
+
+def _stubborn_leader(pidfile):
+    """A spawn child that leads its own group (as jobs/child.py does) and starts a shell that ignores SIGTERM."""
+    import subprocess
+    import time as _t
+    from pathlib import Path
+
+    os.setpgid(0, 0)
+    child = subprocess.Popen(["sh", "-c", "trap '' TERM; while :; do sleep 1; done"])
+    Path(pidfile).write_text(str(child.pid))
+    while True:
+        _t.sleep(0.1)

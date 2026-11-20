@@ -10,6 +10,7 @@ handlers. ``public`` kinds may be submitted through ``POST /api/jobs``
 from __future__ import annotations
 
 import importlib
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -64,7 +65,13 @@ def wall_limit_for(spec: KindSpec, params: dict[str, Any]) -> float:
     """The wall limit of one run: the kind's, except that an L kind run with its own ``budget_minutes`` (the farm's
     schedule passes one) is held to that budget plus the margin."""
     if spec.mem_class == "L" and params.get("budget_minutes") is not None:
-        return float(params["budget_minutes"]) * 60.0 + WALL_MARGIN_S
+        try:
+            minutes = float(params["budget_minutes"])
+        except (TypeError, ValueError):
+            minutes = math.nan
+        if math.isfinite(minutes) and minutes > 0:
+            return minutes * 60.0 + WALL_MARGIN_S
+        # fix round 1, M10: a malformed budget is the kind's own limit, never no limit at all
     return float(spec.wall_limit_s)
 
 

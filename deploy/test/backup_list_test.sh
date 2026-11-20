@@ -236,7 +236,7 @@ run_backup() {
 		PATH="$scratch/bin:$PATH" SHIM_LOG="$log" SHIM_TODAY="$today" SHIM_STATUS_LOG="$status_log" \
 		SHIM_TIMEOUT_LOG="$timeout_log" SHIM_EXPORT_SEEN="$export_seen" \
 		BACKUP_FINISHED_AT=2026-09-27T06:31:00Z \
-		OHCAMEL_BACKUP_DIR="$backups" BACKUP_TODAY="$today" OHCAMEL_BACKUP_STATE="$scratch/state" \
+		OHCAMEL_BACKUP_DIR="$backups" BACKUP_TODAY="$today" \
 		SHIM_PS_IMAGE="ghcr.io/ajaiupadhyaya/ohcamel:cafe1234" \
 		${envs[@]+"${envs[@]}"} \
 		bash "$repo/deploy/backup.sh" "$@" >"$scratch/out" 2>"$scratch/err" || rc=$?
@@ -248,7 +248,8 @@ runs() { grep '^verb=run ' "$log" | grep -vc ' ohcamel-backup-status ' || true; 
 status_runs() { grep '^verb=run ' "$log" | grep -c ' ohcamel-backup-status ' || true; }
 run_line() { grep '^verb=run ' "$log" | grep -v ' ohcamel-backup-status ' | sed -n "${1}p"; }
 status() { cat "$status_log"; }
-listing() { (cd "$backups" && find . -mindepth 1 | sed 's|^\./||' | sort | tr '\n' ' ' | sed 's/ $//'); }
+# .state (the lock and the last run's record, completion task 3.6) is the script's own, not a copy
+listing() { (cd "$backups" && find . -mindepth 1 -not -path './.state' -not -path './.state/*' | sed 's|^\./||' | sort | tr '\n' ' ' | sed 's/ $//'); }
 mode_of() { find "$1" -maxdepth 0 -exec ls -ld {} \; | cut -c1-10; }
 
 expect_rc() {

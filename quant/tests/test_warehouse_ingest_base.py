@@ -167,3 +167,38 @@ def test_log_row_signature(tmp_path):
     with open_rw(tmp_path / "w.duckdb") as con:
         log_row(con, "fred", "X", "ok", 3, "{}", date(2024, 1, 2))
         assert con.execute("SELECT rows, data_asof FROM ingest_log").fetchone() == (3, date(2024, 1, 2))
+
+
+class Killed(BaseException):
+    """What a wall-limit kill looks like from inside the pass: it stops between keys, nothing is caught."""
+
+
+def test_an_ingest_killed_after_k_of_n_keys_covers_the_rest_on_its_retry(tmp_path):
+    """Fix round 1, I3: a pass walks its keys stalest-first (by the last time each was attempted, never-attempted
+    first, ties in the given order), so a retry after a kill starts with the keys the killed attempt never reached
+    instead of starting over from the first. Two attempts, each killed after 4 of 10 keys, plus a third, cover all
+    ten; and a pass that completes still fetches and stores the same keys it always did."""
+    keys = [f"K{i}" for i in range(10)]
+    seen: list[list[str]] = []
+
+    def killed_after(k):
+        attempt: list[str] = []
+        seen.append(attempt)
+
+        def fetch(key, state, settings):
+            if len(attempt) == k:
+                raise Killed
+            attempt.append(key)
+            yield date(2024, 1, 3)
+        return fetch
+
+    ctx = ctx_for(tmp_path)
+    for _ in range(2):
+        with pytest.raises(Killed):
+            run(ctx, keys, fetch=killed_after(4))
+    assert seen[0] == keys[:4] and seen[1] == keys[4:8]       # the retry began where the killed attempt stopped
+    run(ctx, keys, fetch=killed_after(10))
+    assert seen[2][:2] == ["K8", "K9"] and sorted(seen[2]) == sorted(keys)    # the stalest two first, then all
+    with open_ro(ctx.market.settings.warehouse_path) as con:
+        got = {k for (k,) in con.execute("SELECT DISTINCT series FROM fred").fetchall()}
+    assert got == set(keys)

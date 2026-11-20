@@ -124,3 +124,43 @@ def test_every_shipped_schedule_name_is_accepted(tmp_path):
     with connect(db) as conn:
         # two entries with the same kind and params (e.g. the minute bars' nightly and intraday) share one live job
         assert {j.kind for j in list_jobs(conn, limit=500)} == {e.kind for e in entries}
+
+
+def test_wall_times_prints_p95_and_max_beside_each_kinds_limit_and_flags_above_70_percent(paths, capsys):
+    """Fix round 1, I3: the owner's read-only check before the deploy that brings the wall limits -- per kind, the
+    p95 and the max wall time of the last 30 days' finished runs from jobs.sqlite, beside wall_limit_s, and a flag
+    on any kind whose slowest run took more than 70% of its limit."""
+    import sqlite3
+    from datetime import UTC, datetime, timedelta
+
+    db, _ = paths
+    connect(db).close()                                          # the schema, as the worker makes it
+    now = datetime.now(UTC)
+    rows = []
+
+    def add(kind, mem, seconds, days_ago=1, state="done", params="{}"):
+        start = now - timedelta(days=days_ago)
+        rows.append((f"{kind}-{len(rows)}", kind, params, "h", 2, mem, 0, state, start.isoformat(),
+                     start.isoformat(), (start + timedelta(seconds=seconds)).isoformat(), 1, "schedule:x"))
+
+    for s in range(1, 21):
+        add("ops.selftest", "S", s)                              # p95 19 s, max 20 s of 600: fine
+    add("cov.league", "M", 2000)                                 # 74% of 2700: flagged
+    add("cov.league", "M", 600)
+    add("cov.league", "M", 2690, days_ago=40)                    # outside the 30 days: not counted
+    add("farm.sweep", "L", 5000, params='{"budget_minutes": 90}')  # 83% of 6000: flagged
+    add("ingest.bars_daily", "S", 700, state="failed")           # a run killed at its limit is counted too
+    with sqlite3.connect(db) as c:
+        c.executemany("INSERT INTO jobs (id, kind, params, params_hash, priority, mem_class, heavy, state, "
+                      "submitted_at, started_at, finished_at, attempts, submitted_by) VALUES "
+                      "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+    before = db.read_bytes()
+    assert run(paths, "wall-times") == 0
+    out = capsys.readouterr().out
+    lines = {ln.split()[0]: ln for ln in out.splitlines() if ln and ln.split()[0] in
+             ("ops.selftest", "cov.league", "farm.sweep", "ingest.bars_daily")}
+    assert lines["ops.selftest"].split()[1:5] == ["20", "19", "20", "600"] and "OVER 70%" not in lines["ops.selftest"]
+    assert lines["cov.league"].split()[1:5] == ["2", "1930", "2000", "2700"] and "OVER 70%" in lines["cov.league"]
+    assert lines["farm.sweep"].split()[4] == "6000" and "OVER 70%" in lines["farm.sweep"]
+    assert lines["ingest.bars_daily"].split()[3:5] == ["700", "600"] and "OVER 70%" in lines["ingest.bars_daily"]
+    assert db.read_bytes() == before                             # read-only
